@@ -288,12 +288,41 @@ class PSS(Analysis):
          error is +332 ppm against trapezoidal's +83 ppm at the same grid,
          both second order, so on THIS circuit composed Gear-2 is still the
          worse choice and `method='trap'` -- the default -- remains the
-         right answer.  What the composition buys is that a two-step method
-         is CORRECT when it is the right tool, which is a stiff autonomous
-         circuit: `doc/transient_review.md` sec. 4.6 measures trapezoidal
-         ringing at `|e_n/e_{n-1}| ~ 0.9960` at `h*lambda = -1000` where
-         Gear-2 sits at 0.0972.  Before this, such a circuit had no good
-         option.
+         right answer.
+
+         ⚠⚠ AND THE STIFF-CIRCUIT JUSTIFICATION DOES NOT REPRODUCE.  This
+         item used to say the composition earns its place because a stiff
+         autonomous circuit needs a two-step method, citing
+         `doc/transient_review.md` sec. 4.6 -- trapezoidal ringing at
+         `|e_n/e_{n-1}| ~ 0.9960` at `h*lambda = -1000` where Gear-2 sits at
+         0.0972.  ⚠ THOSE ARE RINGDOWN NUMBERS.  They measure a TRANSIENT,
+         and a periodic steady state has no transient to ring; the citation
+         was carried across contexts without checking that it transfers.
+
+         Measured on two stiff autonomous circuits: the phase element plus a
+         fast RC at exactly `h*lambda = -1000`, and a diode peak detector
+         whose orbit has a fast edge every period.  Trapezoidal shows NO
+         ringing in either -- the alternating signature is identical between
+         the methods and falls at ~h^3 under refinement, so it is the sharp
+         edge being resolved, not an undamped mode -- and trapezoidal is 4x
+         BETTER on frequency at both grids (+83.084 against +332.180 ppm at
+         200 points; +1.287 against +5.126 at 1600).
+
+         So no circuit measured so far prefers Gear-2 for autonomous PSS.
+         The composition still earns its place on its OWN evidence and does
+         not need that story: without it an autonomous Gear-2 run is
+         silently biased in the period by 2.5 ppm and its orbit does not
+         close in radius, so `method='gear'` was quietly WRONG there rather
+         than merely inferior.  Making an offered method correct is the
+         justification; "and it is the better method for stiff oscillators"
+         was mine and is unsupported.
+
+         What would establish that half: a circuit where trapezoidal
+         actually fails inside a PSS run.  Two attempts did not find one --
+         possibly because a decoupled parasitic is never excited and the
+         diode was not stiff enough in conduction, so a genuinely stiff
+         RELAXATION oscillator, where the fast mode is in the orbit itself,
+         is the case still untried.
 
     4d. THE CHEAP APPROXIMATE ALTERNATIVE, measured and NOT shipped.  The
         4b system is seam-free but doubles the unknowns, so it is worth
