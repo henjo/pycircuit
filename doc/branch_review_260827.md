@@ -315,9 +315,17 @@ keeping: an item that was measured and dropped is cheaper to leave
 closed than to re-discover.
 
 **Parked, not refused:** ~~vector PCNR Stage 3 (JAX), by the branch
-author's decision.~~ **OPENED 2026-08-31** at the author's request and
-scoped from measurement — roadmap §49. Nothing else is parked that a
-reviewer needs to weigh.
+author's decision.~~ **DONE 2026-09-01** — opened at the author's request
+and carried to all five gates (roadmap §49). Vector PCNR runs DC and
+transient on the traced backend, agreeing with the CPU to 4.4e-16 and
+~1e-5 respectively at a +4–13% wall premium and no extra steps.
+
+⚠ It also gave the CHAINED path a jax backend (§49.7): 25 of 38 library
+classes — every real compact model — could not be evaluated on that
+backend at all before. That is a **capability, not a speed-up**: the
+traced chained path is ~18× slower than the CPU (§49.8), and `§22`'s
+disjointness still keeps those classes out of `solve_batched`. Nothing
+else is parked that a reviewer needs to weigh.
 
 ## 8. Repo-root hygiene (done, 2026-08-27)
 

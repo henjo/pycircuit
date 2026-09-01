@@ -971,9 +971,19 @@ the form it was argued — here is what actually landed.
     15       vector PCNR Stage 1 (BJT, CPU)          DONE
     15       vector PCNR Stage 2 (FETs, CPU)         DONE -- diff pair
                                                      [14,FAIL] -> [22,22]
-    15       vector PCNR Stage 3 (JAX)               OPENED 2026-08-31 by
-                                                     the user; scoped from
-                                                     measurement in sec. 49
+    15       vector PCNR Stage 3 (JAX)               DONE 2026-09-01.  All
+                                                     five gates; DC to
+                                                     4.4e-16 and transient
+                                                     to ~1e-5 vs the CPU,
+                                                     premium +4-13% wall
+                                                     and 0% steps.  Sec. 49
+                                                     carries the work; 49.7
+                                                     gave the CHAINED path
+                                                     a jax backend on the
+                                                     way, which is a
+                                                     capability and not a
+                                                     speed-up (~18x slower
+                                                     than the CPU, 49.8)
     15       the unlimited-node failure              DONE 2026-08-26 (sec.
                                                      27).  It was the SEED,
                                                      not the node: v_lim_init
