@@ -470,6 +470,16 @@ Exactly the predicted `|R_TR(-1000)| = 0.996008`. Textbook and expected of pure 
 finding is the absence of mitigation, **and its interaction with 4.2** — the estimator
 amplifies this ringing by 4 and then rejects steps because of it.
 
+> ⚠ **These are RINGDOWN numbers and they do NOT transfer to PSS** (2026-09-01). They were
+> cited in `shooting.py` to justify Gear-2 for stiff *oscillators*, and that citation was
+> wrong: a periodic steady state has no transient to ring. Measured on three stiff
+> autonomous circuits including van der Pol at `mu = 100` (stiffness ratio 5443),
+> trapezoidal shows **no ringing inside a PSS run** — the alternating signature is identical
+> between methods and falls at ~h³, i.e. it is the resolved edge — and trapezoidal is
+> **4× better on frequency** and the only method to give a finite answer at 8000 points.
+> See `benchmarks/pss_stiff_autonomous.py`. This section stands for transients; it says
+> nothing about shooting.
+
 ### 4.7 Backward Euler's LTE carries a `(1+r)/2` bias on variable steps
 
 `integrator.py:83`. `gn - gn_1` approximates `((h1+h2)/2) q''`, not `h1 q''`, because the

@@ -5,10 +5,11 @@
 this document exists to make the leapfrog thread resumable after it, not to be read during
 it.
 
-Everything below is committed. A substantial backlog is **unpushed** on
-`cna-jax-vectorization` — `git log --oneline origin/cna-jax-vectorization..HEAD | wc -l`
-for the current count, deliberately not pasted here because it goes stale on the next
-commit. **Pushing is the maintainer's call and has not been done.**
+Everything below is committed. ⚠ **The "unpushed backlog" this paragraph used to describe
+is gone** (2026-09-01): `cna-jax-vectorization` is pushed to its tip, and has been routinely
+since. Merging to master remains the repo owner's call and has NOT been done. Use
+`git log --oneline origin/cna-jax-vectorization..HEAD | wc -l` to check the current state
+rather than trusting any count written here.
 
 ---
 
