@@ -653,24 +653,39 @@ class PSS(Analysis):
          rebuilt at the current `T` on every residual evaluation, so
          `dh/dT = h/T` keeps holding.
 
-         ⚠ AND VAN DER POL, THE CIRCUIT THAT MOTIVATED IT, STILL DOES NOT
-         SOLVE THROUGH IT.  A throwaway driver did: on a 1105-step grid
-         taken from an adaptive transient it converged to -47.3 ppm where
-         20000 UNIFORM points give -60.6, i.e. 18x fewer points and better
-         accuracy.  Through this analysis it does not, and the diagnosis
-         eliminated the obvious causes -- the opening step is large not
-         small, the plumbing is right (benign circuits converge), and the
-         analytic Jacobian is no worse on a non-uniform grid than on a
-         uniform one (~30% off on BOTH, which is the plain path's known
-         flat-history seeding, item 4b).
+         VAN DER POL, THE CIRCUIT THAT MOTIVATED IT, NOW SOLVES THROUGH IT
+         (2026-09-02).  On its own 1105-step LTE-chosen grid, one added
+         opening step: trapezoidal converges at -73.8 ppm and Gear-2 at
+         -100.6, against the 20000 UNIFORM points a uniform grid needs for
+         -60.6.  18x fewer points, and Gear-2 solves it for the first time
+         on any grid.  Pinned by
+         `test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis`.
 
-         What is left is that the throwaway used FINITE DIFFERENCES -- an
-         effectively exact Jacobian -- with `x_0` as the unknown and no
-         manufacturing step, and a stiff relaxation oscillator is the first
-         circuit that cannot tolerate the plain path's 30%.  So the two
-         methods fail it for DIFFERENT reasons: trapezoidal integrates it
-         but shoots with an inexact Jacobian, Gear-2 has the exact Jacobian
-         (4b) but hits the fold at `v = -1` where `mu(1 - v^2)` vanishes.
+         ⚠ THE BLOCKER WAS THE MANUFACTURED OPENING STEP, AND THIS
+         DOCSTRING PREVIOUSLY NAMED IT WRONG.  It read: "what is left is
+         that the throwaway used FINITE DIFFERENCES ... a stiff relaxation
+         oscillator is the first circuit that cannot tolerate the plain
+         path's 30%".  MEASURED: an exact finite-difference Jacobian on the
+         real analysis does NOT fix it -- it fails identically -- and once
+         the opening step is subdivided the analytic and finite-difference
+         Jacobians agree to SIX DIGITS (-73.8 ppm both).  The ~30% was
+         never what stopped this case.
+
+         What stopped it: `_traverse` manufactures `x(0)` with ONE
+         order-dropped Euler step of `hs[0]`, and a grid taken from an
+         adaptive transient opens wherever that transient's window happened
+         to start.  Here `h[0] = 1.4845` against a MEDIAN step of 4.62e-04
+         -- 3200x coarser -- and the INNER Newton fails on that one step
+         (100 iterations, residual 1e7x over tolerance at `v`).  The
+         throwaway never met this because its unknown was `x_0` itself, so
+         it had no manufacturing step to take.  `_period_grid` now opens on
+         the grid's own finest step; see the guard there.
+
+         ⚠ THE OLD DIAGNOSIS HAD ALREADY SEEN THE CAUSE AND FILED IT AS AN
+         EXONERATION -- "the opening step is large not small" was written
+         down as one of the obvious causes ELIMINATED.  It was checked
+         against the wrong worry (that the opening step might be too small
+         to open the trajectory) and never against its own size.
 
          ⚠ THE FIX PROPOSED HERE WAS TRIED AND IS WRONG AS STATED.  It
          read: `iq_{-1} = -(i(x_0) + u(t_0))` is exactly available from the
@@ -1104,6 +1119,28 @@ class PSS(Analysis):
                 'grid step fractions must sum to 1 (they are fractions of '
                 'the period, so that every step scales with T when the '
                 'period is an unknown); they sum to %.12g' % total)
+        ## ⚠ THE OPENING STEP IS MANUFACTURED, SO IT MUST NOT BE THE GRID'S
+        ## COARSE END.  `_traverse` builds `x(0)` from the unknown with ONE
+        ## order-dropped step of `hs[0]`, and a grid taken from an adaptive
+        ## transient opens wherever that transient's window happened to
+        ## start -- on van der Pol at mu=100, `h[0] = 1.4845` against a
+        ## MEDIAN of 4.62e-04, 3200x coarser.  That single Euler step moves
+        ## the state 7.4%, and the shooting Newton then has to invert a map
+        ## whose first act is that step.  Opening at the grid's own finest
+        ## step instead costs ONE extra step in 1105 and is the difference
+        ## between not converging and converging.
+        ##
+        ## ⚠ THE 8x IS MEASURED, NOT DERIVED, and it is a guard rather than
+        ## a threshold: it exists so grids that already work are left
+        ## exactly as the caller wrote them ('2:1' opens at 2x its finest,
+        ## 'smooth' at 5x, and neither needs this).  The falsifier is in
+        ## the record: on van der Pol's grid, an opening step of 1e-1 still
+        ## fails for gear and 1e-2 converges, against a ratio here of
+        ## 13939.  Anything between those bounds separates the two cases.
+        if fr[0] > 8.0 * fr.min():
+            d = float(fr.min())
+            fr = np.concatenate(([d, fr[0] - d], fr[1:]))
+
         hs = fr * period
         times = np.concatenate(([0.0], np.cumsum(hs)))
         return times, hs

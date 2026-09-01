@@ -1,13 +1,12 @@
-"""The LTE-chosen grid's prize, measured -- and not yet reachable through PSS.
+"""The LTE-chosen grid's prize, measured -- and now reachable through PSS.
 
 RECORDED SCOPE ITEM 5: a transient adapts because it cannot see the future;
 PSS re-solves the SAME interval repeatedly, so it can be handed a grid that
 was chosen well once and then frozen.  The grid still never moves inside a
 solve, so the shooting Newton stays exact.
 
-⚠ THE MECHANISM IS BUILT (`PSS.solve(grid=...)`) AND THIS CASE STILL DOES
-NOT GO THROUGH IT.  What this driver measures is what the prize WOULD be,
-using its own `(x_0, T)` unknowns and a FINITE-DIFFERENCE Jacobian:
+This driver keeps its OWN `(x_0, T)` unknowns and a FINITE-DIFFERENCE
+Jacobian, because that is what made it a control:
 
     method  grid              steps  outcome        period       err ppm
     trap    LTE-chosen         1105  converged     162.834707      -47.3
@@ -18,18 +17,23 @@ using its own `(x_0, T)` unknowns and a FINITE-DIFFERENCE Jacobian:
 18x fewer points AND better accuracy than the uniform grid that does
 converge -- and at 1105 points a uniform grid does not converge at all.
 
-⚠ WHY THE REAL ANALYSIS DOES NOT REPRODUCE IT.  The finite-difference
-Jacobian here is effectively exact; the shipped plain path seeds both
-sensitivity rings with `I` (the flat-history assumption, docstring item 4b)
-and measures ~30% off -- on uniform grids too, so it is not a grid problem.
-A stiff relaxation oscillator is simply the first circuit that cannot
-tolerate that 30%.  Gear-2 has the exact Jacobian instead and hits the fold
-at `v = -1`, where `mu(1 - v^2)` vanishes.
+⚠ THE REAL ANALYSIS NOW REPRODUCES IT (2026-09-02): `PSS.solve(grid=...)`
+converges on the same grid at -73.8 ppm (trap) and -100.6 ppm (gear), the
+latter being a case NO driver here ever solved.
 
-The fix named in item 5 addresses both: `iq_{-1} = -(i(x_0) + u(t_0))` is
-exactly available from the DAE, so trapezoidal can take a solved-history
-formulation with no manufacturing step -- an exact Jacobian, clear of the
-fold.  Keep this driver until that lands: it is the target to hit.
+⚠ AND THE REASON RECORDED HERE FOR WHY IT DID NOT WAS WRONG.  This header
+read: "the finite-difference Jacobian here is effectively exact; the
+shipped plain path ... measures ~30% off ... a stiff relaxation oscillator
+is simply the first circuit that cannot tolerate that 30%."  Measured
+since: giving the real analysis an exact finite-difference Jacobian does
+NOT fix it, and after the real fix both Jacobians agree to six digits.
+The blocker was the MANUFACTURED OPENING STEP -- `h[0] = 1.4845` against a
+median of 4.62e-04, an order-dropped Euler step the inner Newton could not
+solve.  This driver never met it because its unknown is `x_0` itself.
+`_period_grid` now opens a coarse-opening grid on its own finest step.
+
+Kept as a control: it is the independent implementation the analysis is
+checked against, and its -47.3 ppm is still the better answer.
 """
 import warnings, sys
 import numpy as np

@@ -1,6 +1,7 @@
 # PSS / shooting — state, records and open items
 
-*Written 2026-09-01; item 6 re-measured and its verdict reversed 2026-09-02.*
+*Written 2026-09-01. On 2026-09-02 item 6 was re-measured and its verdict reversed,
+and item 5's payoff case was closed — both by falsifying a recorded diagnosis.*
 
 **Read this first if you are picking the shooting work back up.** The detailed record
 lives in the `PSS` class docstring in `pycircuit/circuit/shooting.py`, which is long
@@ -37,18 +38,30 @@ free-running period (+332.185 vs +332.184 ppm predicted) and the radius wobble c
 2.095e-04 → 6.6e-12.
 
 Van der Pol, μ=100, stiffness ratio 5443, true period 162.842412: **20 000 uniform points**
-needed; an adaptive grid of **1105** converges in a prototype at −47.3 ppm against the
-uniform run's −60.6. The uniform-grid restriction costs ~17× the points.
+needed; an adaptive grid of **1106** converges **through the analysis** (2026-09-02) at
+−73.8 ppm (trap) and −100.6 (gear), against the uniform run's −60.6. The prototype with its
+own unknowns still gives the best answer, −47.3. The uniform-grid restriction cost ~18× the
+points.
 
 ## Open items, ranked, each with its gate
 
-1. **Item 5's payoff case.** `solve(grid=…)` works and is tested on benign circuits;
-   van der Pol still does not solve through it. Diagnosis eliminated the opening step
-   size, the plumbing, and the Jacobian-on-non-uniform-grids. What is left: the plain
-   path's Jacobian is ~30% off (its flat-history seed, docstring 4b) and a stiff
-   relaxation oscillator is the first circuit that cannot tolerate it.
-   *Gate:* does it converge with an exact outer Jacobian? `benchmarks/pss_lte_grid.py`
-   is the target to hit.
+1. **Item 5's payoff case — DONE 2026-09-02.** Van der Pol now solves through
+   `PSS.solve(grid=…)` on its own 1105-step LTE-chosen grid: trapezoidal −73.8 ppm,
+   Gear-2 −100.6 ppm (its first convergence on this grid by any driver), against the
+   20 000 uniform points a uniform grid needs for −60.6. Pinned by
+   `test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis`.
+
+   ⚠ **The gate's answer was no, and that is what found it.** The gate was "does it
+   converge with an exact outer Jacobian?" It does **not** — an exact finite-difference
+   Jacobian on the real analysis fails identically. The blocker was the **manufactured
+   opening step**: `_traverse` builds `x(0)` with one order-dropped Euler step of
+   `hs[0]`, and an LTE grid opens wherever the transient's window started — here
+   `h[0] = 1.4845` against a median of `4.62e-04`, 3200× coarser, and the *inner*
+   Newton fails on that single step. `_period_grid` now opens a coarse-opening grid on
+   its own finest step, gated at 8× so grids that already work are untouched. With that,
+   the analytic and finite-difference Jacobians agree to six digits — the plain path's
+   ~30% Jacobian was never what stopped this case.
+
 2. **Item 6, matrix-free variational shooting — GATE PASSED 2026-09-02, ready to build.**
    The gate was "on a quiet box, does the propagation share pass ~30%". It does:
    single-threaded BLAS, it crosses 30% near m=220 and reaches 79% at m=1002.
@@ -96,6 +109,11 @@ Every one of these was settled by measurement, and each cost real time:
   the problem well-posed; the ~30% Jacobian error is what that costs.
 - **`doc/transient_review.md` §4.6's ringdown numbers do not transfer to PSS.** A
   periodic steady state has no transient to ring.
+- **An observation recorded as an exoneration.** The old item-5 diagnosis listed "the
+  opening step is large not small" among the obvious causes *eliminated*. It had seen the
+  cause and checked it against the wrong worry — that the opening step might be too small
+  to open the trajectory — never against its own size. The note that would have solved it
+  was already written down, filed under things ruled out.
 - **A measurement named for the question it was meant to settle, not for what it timed.**
   Item 6's harness accumulated `toolkit.linearsolver` and was called "the propagation
   share". It was stable, reproducible, and under a third of the propagation, because
@@ -116,5 +134,5 @@ transient, the free-running limit cycle.
 |---|---|
 | `pss_seam_cost.py` | what the cold-start seam costs, per method |
 | `pss_stiff_autonomous.py` | whether a stiff oscillator needs Gear-2 (it does not) |
-| `pss_lte_grid.py` | the LTE-chosen grid's prize, and the target to hit |
+| `pss_lte_grid.py` | the LTE-chosen grid's prize; now a CONTROL, the analysis reaches it |
 | `pss_matrix_free_ceiling.py` | item 6's ceiling (gate passed, m>~250), and three failed measurement designs |

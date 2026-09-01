@@ -1621,3 +1621,120 @@ def test_a_non_uniform_grid_works_when_the_period_is_an_unknown():
                 '%s/%s solved T=%.9f, %.1f ppm from the true 1e-3 -- a grid ' \
                 'frozen in absolute time rather than in fractions would ' \
                 'fail exactly here' % (method, kind, pss.period, 1e6 * err)
+
+
+def test_a_grid_that_opens_coarse_is_subdivided_but_a_benign_one_is_not():
+    """RECORDED SCOPE ITEM 5: the opening step is MANUFACTURED.
+
+    `_traverse` builds `x(0)` from the unknown with one order-dropped Euler
+    step of `hs[0]`, so a grid taken from an adaptive transient opens
+    wherever that transient's window happened to start -- which has nothing
+    to do with what a good opening step is.  On van der Pol that step is
+    3200x the grid's median.
+
+    ⚠ The guard is what this pins as much as the subdivision.  A grid that
+    already works must come back EXACTLY as the caller wrote it, or every
+    recorded non-uniform result silently moves onto a different grid.
+    """
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_q20_rlc(), method='trap')
+
+    ## benign grids are returned untouched -- '2:1' opens at 2x its finest,
+    ## 'smooth' at 5x, and a uniform grid at 1x
+    for kind, n in (('2:1', 100), ('smooth', 100), ('uniform', 100)):
+        fr = _grid_fracs(kind, n)
+        times, hs = pss._period_grid(1e-3, n, fr)
+        assert len(hs) == n, '%s grid was resized' % kind
+        assert np.allclose(hs, fr * 1e-3), '%s grid was rewritten' % kind
+
+    ## a grid opening far coarser than its finest step gains ONE step, and
+    ## opens on that finest step
+    fr = np.concatenate(([0.5], np.full(500, 0.001)))
+    fr = fr / fr.sum()
+    times, hs = pss._period_grid(1e-3, len(fr), fr)
+    assert len(hs) == len(fr) + 1
+    assert hs[0] == pytest.approx(fr.min() * 1e-3, rel=1e-12)
+    assert hs[0] + hs[1] == pytest.approx(fr[0] * 1e-3, rel=1e-12)
+    ## the period is preserved -- a subdivision that moved it would change
+    ## the interval the solve believes it integrated
+    assert times[-1] == pytest.approx(1e-3, rel=1e-12)
+    assert np.allclose(np.diff(times), hs)
+
+    ## and it is idempotent: the result opens at its own finest step, so
+    ## feeding it back changes nothing
+    fr2 = hs / hs.sum()
+    _t2, hs2 = pss._period_grid(1e-3, len(fr2), fr2)
+    assert len(hs2) == len(hs) and np.allclose(hs2, hs)
+
+
+def _van_der_pol(mu=100.0):
+    """The canonical stiff relaxation oscillator; no sources, so autonomous.
+
+        C dv/dt = -i_L + mu (v - v^3/3),    L di_L/dt = v
+    """
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    return c
+
+
+def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
+    """RECORDED SCOPE ITEM 5's PAYOFF CASE, and it is the whole point of it.
+
+    A transient adapts because it cannot see the future; PSS re-solves the
+    SAME interval repeatedly, so it can be handed a grid chosen well once.
+    The prize on van der Pol at mu=100 is ~18x fewer points than the
+    uniform grid that converges (1106 against 20000).
+
+    ⚠ THIS CASE FAILED THROUGH THE ANALYSIS FOR A REASON THE RECORD NAMED
+    WRONG.  It was attributed to the plain path's ~30% Jacobian, on the
+    evidence that a prototype with finite differences converged.  Measured
+    afterwards: an exact finite-difference Jacobian does NOT fix it, and
+    with the opening step subdivided the analytic and finite-difference
+    Jacobians agree to six digits.  The blocker was the manufactured
+    opening step, which the prototype did not have because its unknown was
+    `x_0` itself.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 162.842412                      # measured free-running period
+
+    ## one period of ACCEPTED steps from a settled adaptive transient
+    cir = _van_der_pol()
+    x0 = np.zeros(cir.n)
+    x0[cir.get_node_index('v')] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, reltol=1e-7).solve(refnode=gnd, tend=1200.0 + T,
+                                                timestep=0.05, x0=x0)
+    t = np.asarray(res.sweep_values, dtype=float).ravel()
+    xs = np.asarray(res.x, dtype=float)
+    j0 = int(np.searchsorted(t, t[-1] - T))
+    win_t, win_x = t[j0:], xs[:, j0:]
+    fr = np.diff(win_t)
+    fr = fr / fr.sum()
+    iref = cir.get_node_index(gnd)
+    seed = np.concatenate((win_x[:iref, 0], win_x[iref + 1:, 0]))
+
+    ## the pathology this case exists for: the window opens on a coarse step
+    assert fr[0] > 100 * np.median(fr), \
+        'the LTE grid no longer opens coarse (%.3e against a median of ' \
+        '%.3e), so this case no longer tests what it was written for' \
+        % (fr[0], np.median(fr))
+
+    pss = PSS(_van_der_pol(), method='trap', reltol=1e-7)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, x0=seed, grid=fr, maxiterations=25)
+
+    assert pss.converged, \
+        'van der Pol did not solve through PSS.solve(grid=...) on its own ' \
+        'LTE-chosen grid -- item 5 has no payoff case without this'
+    err = 1e6 * (pss.period - T) / T
+    assert abs(err) < 200, \
+        'solved T=%.6f, %.1f ppm from the measured %.6f' % (pss.period, err, T)
+    ## fewer than 1200 steps, against the 20000 a uniform grid needs
+    assert len(pss.times) < 1200
