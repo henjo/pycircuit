@@ -341,11 +341,25 @@ diode string that PCNR alone cannot pass completes with 12 points
 rescued, matching both a lowered-floor reference and the CPU's PCNR to
 0.13% of swing.
 
-What remains parked is Psi-tc's rung exponents, which are DC-calibrated
-and negligible against the transient's ~1e9 companion conductance at the
-floor. gmin and gshunt carry every demonstrated rescue, so it is a third
-resort that has not been needed. Nothing else is parked that a reviewer
-needs to weigh.
+Psi-tc's rung exponents were the last thing parked here, and the
+parking note was **wrong**: it said they were DC-calibrated and negligible
+against a ~1e9 transient diagonal.  Measured, that figure came from a
+1e-18 floor, and where the rescue actually fires the diagonal is ~1e-3 --
+so the exponents are too LARGE.  Nor is the sensitivity about scale: with
+gmin and gshunt disabled so Psi-tc must work alone, the shipped grid
+rescues 1 of 4 circuits and a HALF-DECADE shift rescues 4 of 4, failing at
+exactly the offsets that reproduce the shipped grid of visited `g`.  Left
+alone deliberately -- gmin lands first on every demonstrated rescue, so
+Psi-tc never runs in production, and tuning a grid to four circuits with no
+mechanism is fitting noise.
+
+⚠ Chasing it did find a real defect a reviewer should know about, now
+fixed: `_adaptive_ladder_traced` **never searched the range it declared**.
+With nothing landed it escalated to `e_max` then refined only just below
+`e_start`, so reachable exponents were `{e_start..e_max}` plus three points
+within one decade of the start -- nothing below, whatever `e_end` said.
+Both DC continuation ladders use that driver.  Nothing else is parked that
+a reviewer needs to weigh.
 
 ## 8. Repo-root hygiene (done, 2026-08-27)
 
@@ -395,26 +409,27 @@ include it, and deleting it would break the docs build. It stays.
 Use `.venv/bin/python -m pytest`, not a bare `python` — the system
 interpreter has none of the dependencies.
 
-Collection is **2,803 tests**: 2,716 in `pycircuit/circuit/tests` and 87
+Collection is **2,820 tests**: 2,733 in `pycircuit/circuit/tests` and 87
 elsewhere in the tree. The suite supports `pytest-xdist`, and `pytest.ini`
 records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
 A bare `pytest` from the repo root also works, as of the §8 cleanup:
-**2,803 tests collected, no errors.** Before that it aborted during
+**2,820 tests collected, no errors.** Before that it aborted during
 collection.
 
-### Verified green at HEAD, 2026-09-01
+### Verified green at HEAD, 2026-09-01 (end of day)
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,712 | 3 | 3 | **0** |
+| `pycircuit/circuit/tests` | 2,729 | 3 | 3 | **0** |
 | rest of the tree | 85 | 3 | 0 | **0** |
-| **total** | **2,797** | **6** | **3** | **0** |
+| **total** | **2,814** | **6** | **3** | **0** |
 
-(2026-08-31 read 2,778 / 2,784 collected; the 19 added tests are
-`test_jax_continuation.py`, the transient-point rescue.)
+(2026-08-31 read 2,778 / 2,784 collected. The day added 36: the
+transient-point rescue and its PCNR layer, trapezoidal, `grid_locked`,
+vector PCNR inside Fang, and the ladder-reachability gates.)
 
 ⚠ On a BUSY machine this reads **2,777 / 7** instead: the perf guard
 abstains rather than measure, and says so in the warnings summary. The
@@ -437,9 +452,9 @@ reproducible here, and replaced by measurement rather than adjusted
 toward.) Over 20 min serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
-check worth doing rather than trusting the totals: 2,797 passed + 6
-skipped + 3 xfailed = 2,806, less the **3 module-level skips that
-collection does not count**, gives **2,803** — the collected total. (It
+check worth doing rather than trusting the totals: 2,814 passed + 6
+skipped + 3 xfailed = 2,823, less the **3 module-level skips that
+collection does not count**, gives **2,820** — the collected total. (It
 reconciles either way: the perf guard's abstention moves a test between
 the passed and skipped columns without changing the sum.)
 

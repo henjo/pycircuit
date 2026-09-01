@@ -130,12 +130,15 @@ the suite.
 
 ## What is deliberately NOT here (each with its trigger, recorded)
 
-- Rescaling Ψ-tc's continuation rungs to the transient's own diagonal.
-  Its `e_start=0 / e_max=+6` are DC-calibrated and negligible against the
-  ~1e9 companion conductance at the dt floor; gmin and gshunt carry every
-  demonstrated rescue, so this is a third resort that has not been
-  needed.  Trigger = a forced-non-converged exit that survives
-  `continuation=True` on the PCNR path.
+- Ψ-tc's continuation rung exponents — **the recorded reason was tested
+  and disproved** (2026-09-01).  Not a scale problem: with gmin and gshunt
+  disabled the shipped grid rescues 1 of 4 circuits and a half-decade shift
+  rescues 4 of 4, failing at exactly the offsets that reproduce the shipped
+  grid of visited `g`.  Left alone deliberately, since gmin lands first on
+  every demonstrated rescue and tuning a grid to four circuits with no
+  mechanism is fitting noise.  The chase did find and fix a real defect —
+  the ladder driver never searched the range it declared.  Trigger to
+  revisit = a forced-non-converged exit that survives `continuation=True`.
 - Batch compaction for finished lanes (invisible in the flat benchmark
   wall; trigger = many-lane profiles showing dispatch cost).
 - `Sin.next_event` quarter-period breakpoint coalescing (trigger = a

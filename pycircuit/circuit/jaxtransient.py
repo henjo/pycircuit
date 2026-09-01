@@ -3127,12 +3127,20 @@ class JAXTransient(Analysis):
         ## re-declaration the CPU Transient makes.
         Parameter(name='analysis', desc='Analysis name', default='tran'),
         ## P6: the integrator choice, reachable at last -- the traced loop
-        ## implemented both methods all along, but eval_method was hardcoded
-        ## at both call sites.  String-valued on this backend (the traced
-        ## kernels select by name; there is no Integrator instance to hold
-        ## state).  Trapezoidal stays CPU-only until someone ports a
-        ## VARIABLE-STEP trap estimator: the uniform-grid trap branch was
-        ## deleted for cause (its LTE formula assumed equal steps).
+        ## implemented euler and gear all along, but eval_method was
+        ## hardcoded at both call sites.  String-valued on this backend (the
+        ## traced kernels select by name; there is no Integrator instance to
+        ## hold state), which is also why P17 can refuse strategy objects
+        ## without refusing this.
+        ##
+        ## 'trap' joined them 2026-09-01.  This comment said until then that
+        ## trapezoidal "stays CPU-only until someone ports a VARIABLE-STEP
+        ## trap estimator" -- kept here because the sentence was wrong in an
+        ## expensive way: the estimator existed, in `_lte_kernels`, already
+        ## used by the CPU and already traceable.  Only the wiring was
+        ## missing.  ⚠ The trap estimator differences the CHARGE, not the
+        ## companion current, because the trap recursion carries an undamped
+        ## (-1)^n mode; see `ywr_error_ratio`.
         Parameter(name='integrator',
                   desc="Integration method: 'gear' (default, order 2, the "
                        "CPU's default too), 'euler' (order 1), or 'trap' "

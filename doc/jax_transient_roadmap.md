@@ -141,8 +141,9 @@ with a synthetic rung that converges only for `g <= 10^k`: the ladder landed
 for `k >= -1` and failed for every `k <= -2`, against an `e_end` of -12
 advertising a search to 1e-12.  A descent phase now walks the exponent down
 to `e_end` before giving up.  It runs exactly where the old code was about to
-fail, so it can only reach further; the suite is unchanged at 2,806 and both
-DC ladders use the same driver.
+fail, so it can only reach further; the suite was unchanged across the fix
+(2,806 before and after, 2,814 once its own gates were added) and both DC
+ladders use the same driver.
 
 ## Refused, with cause — do not re-propose without new measurement
 
