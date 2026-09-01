@@ -226,6 +226,10 @@ class PSS(Analysis):
         self.irefnode = self.cir.get_node_index(
             gnd if irefnode is None else irefnode)
         self._tran = None
+        ## Only assembled when the period is an unknown; an extra assembly
+        ## per timestep is not worth paying on the fixed-period path.
+        self._want_dfdh = False
+        self._dfdh = None
 
     def _is_autonomous(self, times):
         """True when nothing in the circuit depends on `t`.
@@ -246,6 +250,108 @@ class PSS(Analysis):
             if float(np.max(np.abs(u - u0))) > AUTONOMOUS_U_TOL * scale:
                 return False
         return True
+
+    def _traverse(self, x_in, T, times, dt, want_dT):
+        """One pass over the period, with the sensitivities accumulated.
+
+        Returns ``(x0, x_end, dx_end/dx0, dx_end/dT)`` -- the last only when
+        asked for.  Shared by the fixed-period and autonomous systems so the
+        period map is written once; they differ only in what they build from
+        it.
+
+        EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a function of
+        its arguments alone; if iteration k+1 inherited the ring buffers
+        iteration k ended with, the period map would depend on which
+        iteration it was and the monodromy would be the derivative of
+        something else.  `_begin_run` also makes the first step
+        `is_first_step`, so a multi-step method opens at order 1 -- the same
+        restart the old `iq_last=None` produced, now for the integrator's
+        own reason.
+        """
+        toolkit = self.toolkit
+        n = self.cir.n
+        self._want_dfdh = want_dT
+        self._begin_period(x_in)
+        x = self.solve_timestep(x_in, times[0], dt)
+        iq_last = self._iq
+        x0 = copy(x)
+
+        ## `Px[k]` is d(x_{n-k})/d(x0), `Pq` is d(iq_n)/d(x0), `Cs[k]` the
+        ## capacitance of step n-k.  Two of each -- as far back as any
+        ## method here reaches.  Both rings open seeded with the entering
+        ## step, mirroring how the transient seeds `_qlast` with `q0`
+        ## repeated: at the start of a period there is no earlier point to
+        ## differentiate against.
+        eye = np.asarray(toolkit.eye(n - 1))
+        Px = [eye, eye]
+        Cs = [copy(np.asarray(self._C)), copy(np.asarray(self._C))]
+        a_first, b_first = self._coeffs
+        Pq = (a_first[0] * Cs[0] if b_first else np.zeros((n - 1, n - 1)))
+        ## The period column, propagated the same way with one extra source
+        ## term.  Zero at the start: the entering state does not depend on T.
+        Pt = [np.zeros(n - 1), np.zeros(n - 1)]
+        Pqt = np.zeros(n - 1)
+
+        ## Kept for PAC.
+        self.Cvec = [copy(self._C)]
+        self.Jtvec = [copy(self._Jf)]
+        self.times = times
+
+        for t in times[1:]:
+            x = copy(self.solve_timestep(x, t, dt, iq_last=iq_last))
+            iq_last = self._iq
+            self.Cvec.append(copy(self._C))
+            self.Jtvec.append(copy(self._Jf))
+
+            ## ONE RECURSION FOR EVERY METHOD.  Each writes its companion as
+            ## `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`, so differentiating
+            ## the step gives
+            ##
+            ##     S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
+            ##     P_n  = -Jf_n^-1 S
+            ##     Pq_n = a_0 C_n P_n + S
+            ##
+            ## Euler is `b = 0` reaching back one step, trapezoidal `b = -1`
+            ## reaching back one, Gear-2 `b = 0` reaching back two.  The
+            ## coefficients come from the integrator that RAN, so an
+            ## order-dropped step contributes its own.
+            ##
+            ## ⚠ A SOLVE, NOT AN INVERSE (stage 11).  `inv(Jf) @ ...` formed
+            ## a dense inverse per timestep per iteration and squared the
+            ## condition number it then multiplied through.
+            alphas, b = self._coeffs
+            Jf = np.asarray(self._Jf)
+            C_new = np.asarray(self._C)
+
+            S = b * Pq if b else np.zeros_like(Px[0])
+            for k in range(1, len(alphas)):
+                S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
+            Px_new = -self.toolkit.linearsolver(Jf, S)
+            Pq = alphas[0] * (C_new @ Px_new) + S
+
+            if want_dT:
+                ## The SAME recursion, plus the step size's own dependence
+                ## on T.  Every step scales together (`h = T/(N-1)`), so
+                ## `dh/dT = h/T`, and `df/dh` at fixed solution is Fang's
+                ## `p` -- already shared.  For an autonomous circuit its
+                ## `du/dt` half vanishes, which is what makes this term the
+                ## companion derivative alone.
+                St = b * Pqt if b else np.zeros_like(Pt[0])
+                for k in range(1, len(alphas)):
+                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
+                St = St + np.asarray(self._dfdh).ravel() * (dt / T)
+                Pt_new = -self.toolkit.linearsolver(Jf, St)
+                Pqt = alphas[0] * (C_new @ Pt_new) + St
+                Pt = [Pt_new, Pt[0]]
+
+            Px = [Px_new, Px[0]]
+            Cs = [copy(C_new), Cs[0]]
+
+        self._want_dfdh = False
+        ## Kept for the autonomous check after the solve: its spectrum is
+        ## the only place a free period announces itself.
+        self._monodromy = Px[0]
+        return x0, x, Px[0], (Pt[0] if want_dT else None)
 
     def _transient(self):
         """The `Transient` this analysis integrates with.
@@ -354,6 +460,18 @@ class PSS(Analysis):
         tr._dt = dt
         x_full, J_full = self._transient_step(tr, x0, t)
 
+        ## d(residual)/dh at the converged point, for the period
+        ## derivative -- BEFORE `_push_history`, because it reads `_qlast`
+        ## as the PREVIOUS charges, which the push is about to overwrite.
+        ## `Transient.residual_dh` is Fang's `p`, already shared: it is
+        ## `d(iq)/dh + du/dt`, and for an AUTONOMOUS circuit the second term
+        ## is identically zero -- which is exactly why solving for the
+        ## period is tractable here and would not be on a driven circuit,
+        ## where scaling T also moves every source evaluation.
+        if self._want_dfdh:
+            (self._dfdh,) = remove_row_col(
+                (tr.residual_dh(x_full, t, dt),), irefnode, toolkit)
+
         ## The history advance is the accept path's, called rather than
         ## copied -- and `_dt_last` must roll AFTER the step, because
         ## `get_diff` read it as `h_last` while solving.
@@ -403,7 +521,36 @@ class PSS(Analysis):
         #create vector with timepoints and a more fitting dt
         times,dt=toolkit.linspace(0,period,num=int(period/dt),endpoint=True,
                              retstep=True)
+        npts = len(times)
         alpha = 1
+
+        ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
+        ## system is solved.  Structural and exact -- see `_is_autonomous`.
+        self.autonomous = self._is_autonomous(times)
+        phase_k, phase_pin = 0, 0.0
+        if self.autonomous:
+            ## An unseeded autonomous run starts at the origin, which IS a
+            ## periodic solution -- the trivial one -- and the augmented
+            ## system would sit there just as contentedly as the fixed one
+            ## did.  The operating point is the honest default: for a phase
+            ## accumulator `ic` pins it on the orbit.
+            if x0 is None:
+                from pycircuit.circuit.dcanalysis import DC
+                xdc = np.asarray(DC(self.cir, toolkit=self.toolkit).solve().x,
+                                 dtype=float).reshape(-1)
+                x = np.concatenate((xdc[:irefnode], xdc[irefnode + 1:]))
+
+            ## THE PHASE CONDITION pins the coordinate moving FASTEST at the
+            ## seed, so the orbit crosses the pinning hyperplane
+            ## transversally.  Pin a slow one and the last row of the
+            ## bordered Jacobian is nearly parallel to the null direction it
+            ## exists to remove, which is a singular system wearing an extra
+            ## equation.
+            self._begin_period(x)
+            _x1 = self.solve_timestep(x, times[0], dt)
+            _x2 = self.solve_timestep(_x1, times[1], dt, iq_last=self._iq)
+            phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
+            phase_pin = float(np.asarray(_x1)[phase_k])
 
         ## Resolved here as well as in `solve_timestep`, because the SHOOTING
         ## Jacobian depends on which integrator the inner steps used.
@@ -453,90 +600,43 @@ class PSS(Analysis):
         newton = True
 
         def func(x):
-            ## EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a
-            ## function of `x0` alone; if iteration k+1 inherited the ring
-            ## buffers iteration k ended with, the period map would depend on
-            ## which iteration it was and the monodromy would be the
-            ## derivative of something else.  `_begin_run` also makes the
-            ## first step of each traversal `is_first_step`, so trapezoidal
-            ## falls back to Euler there -- the same restart the old
-            ## `iq_last=None` produced, now for the integrator's own reason.
-            self._begin_period(x)
-            x = self.solve_timestep(x, times[0], dt)
-            iq_last = self._iq
-            x0 = copy(x)
-            ## `Px` is d(x_n)/d(x0) and `Pq` is d(iq_n)/d(x0).  The first
-            ## step of the period is taken by Euler (the integrator drops
-            ## order on `is_first_step`), so the companion entering the loop
-            ## is `(q_1 - q_0)/h` and its sensitivity to `x_1` is that step's
-            ## own `Geq`.  Under Euler the row is identically zero and stays
-            ## so.
-            ## `Px_k` is d(x_{n-k})/d(x0) and `Pq` is d(iq_n)/d(x0); `Cs_k`
-            ## is the capacitance matrix of step n-k.  Two of each, which is
-            ## as far back as any method here reaches.  Both rings open
-            ## seeded with the entering step, mirroring how the transient
-            ## seeds `_qlast` with `q0` repeated -- at the start of a period
-            ## there is no earlier point to differentiate against.
-            eye = np.asarray(toolkit.eye(n - 1))
-            Px = [eye, eye]
-            Cs = [copy(np.asarray(self._C)), copy(np.asarray(self._C))]
-            a_first, b_first = self._coeffs
-            Pq = (a_first[0] * Cs[0] if b_first else
-                  np.zeros((n - 1, n - 1)))
+            x0, x_end, Mx, _Mt = self._traverse(x, period, times, dt,
+                                                want_dT=False)
+            D = np.asarray(toolkit.eye(n - 1))
+            return x0 - x_end, D - alpha * Mx
 
-            ## Save C and transient jacobian for PAC analysis
-            self.Cvec = [copy(self._C)]
-            self.Jtvec = [copy(self._Jf)]
-            self.times = times
-            for t in times[1:]:
-                x = copy(self.solve_timestep(x, t, dt, iq_last=iq_last))
-                iq_last = self._iq
-                self.Cvec.append(copy(self._C))
-                self.Jtvec.append(copy(self._Jf))
-                ## STAGE 11 -- A SOLVE, NOT AN INVERSE.
-                ##
-                ## This read `inv(Jf) @ C @ Jshoot`, which forms an explicit dense
-                ## inverse at every timestep of every shooting iteration: at
-                ## N=137, M=1000 with 20 shooting iterations that is 20,000 dense
-                ## inversions plus 40,000 dense matmuls.  The quantity wanted is
-                ## the solution of `Jf X = C @ Jshoot`, and asking for it directly
-                ## is both faster and better conditioned -- forming an inverse
-                ## squares the condition number you then multiply through.
-                ##
-                ## The standard result in the field (Telichevesky, Kundert & White,
-                ## DAC 1995) is stronger still: matrix-free shooting needs only
-                ## products with the monodromy matrix, never the matrix itself.
-                ## That is a rewrite; this is the same computation, correctly
-                ## expressed, and it is bit-comparable rather than merely close.
-                ## ONE RECURSION FOR EVERY METHOD.  Each writes its
-                ## companion as `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`, so
-                ## differentiating the step gives
-                ##
-                ##     S    = sum_{k>=1} a_k C_{n-k} Px_{n-k} + b Pq
-                ##     Px_n = -Jf_n^-1 S
-                ##     Pq_n = a_0 C_n Px_n + S
-                ##
-                ## Euler is `b = 0` with one past term, trapezoidal `b = -1`
-                ## with one, Gear-2 `b = 0` with two.  The coefficients come
-                ## from the integrator that ran, so an order-dropped step
-                ## contributes its own.
-                alphas, b = self._coeffs
-                S = b * Pq if b else np.zeros_like(Px[0])
-                for k in range(1, len(alphas)):
-                    S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
-                Px_new = -self.toolkit.linearsolver(np.asarray(self._Jf), S)
-                C_new = np.asarray(self._C)
-                Pq = alphas[0] * (C_new @ Px_new) + S
-                Px = [Px_new, Px[0]]
-                Cs = [copy(C_new), Cs[0]]
+        def func_autonomous(z):
+            """Residual and Jacobian of the AUGMENTED system.
 
-            residual = x0 - x
+            Unknowns are `(x0, T)`; equations are the period map's fixed
+            point plus a phase condition, because without one the system is
+            singular by construction -- every point on the orbit is a
+            solution, so `I - M` has a null direction along it.
 
-            D = np.asarray(toolkit.eye(n-1))
-            ## Kept for the autonomous check after the solve: its spectrum is
-            ## the only place a free period announces itself.
-            self._monodromy = Px[0]
-            return residual, D - alpha * Px[0]
+                F = [ x0 - phi_T(x0) ,  x0[k] - pinned ]
+                J = [[ I - M , -dphi/dT ],
+                     [ e_k^T ,     0    ]]
+
+            `k` is the coordinate moving fastest at the seed, so the orbit
+            crosses the pinning hyperplane transversally; pinning a slow
+            coordinate makes the last row nearly parallel to the null
+            direction it is there to remove.
+            """
+            x_in, T = z[:-1], float(z[-1])
+            tms, h = toolkit.linspace(0.0, T, num=npts, endpoint=True,
+                                      retstep=True)
+            x0, x_end, Mx, Mt = self._traverse(x_in, T, tms, h, want_dT=True)
+
+            D = np.asarray(toolkit.eye(n - 1))
+            m = n - 1
+            J = np.zeros((m + 1, m + 1))
+            J[:m, :m] = D - alpha * Mx
+            J[:m, m] = -np.asarray(Mt).ravel()
+            J[m, phase_k] = 1.0
+            F = np.zeros(m + 1)
+            F[:m] = x0 - x_end
+            F[m] = x0[phase_k] - phase_pin
+            return F, J
         
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
@@ -562,9 +662,30 @@ class PSS(Analysis):
         _tol = _tol * _ratio
 
         ## Find periodic steady state x-vector
-        x0_ss, _info, _ier, _mesg = analysis.fsolve(
-            func, x, maxiter=maxiterations, reltol=_shoot_reltol,
-            abstol=_tol, xtol=_tol, toolkit=self.toolkit, full_output=True)
+        if self.autonomous:
+            ## The period joins the unknowns.  Its residual row is the phase
+            ## condition -- in the units of the coordinate it pins, hence
+            ## `_tol[phase_k]` -- while the UNKNOWN it adds is a time, whose
+            ## own floor has to be a time; mixing the two is the flavour
+            ## error F6(a) names, one row further out.
+            z0 = np.concatenate((np.asarray(x, dtype=float), [period]))
+            abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
+            xtol_z = np.concatenate((_tol, [1e-15 * period]))
+            z_ss, _info, _ier, _mesg = analysis.fsolve(
+                func_autonomous, z0, maxiter=maxiterations,
+                reltol=_shoot_reltol, abstol=abstol_z, xtol=xtol_z,
+                toolkit=self.toolkit, full_output=True)
+            x0_ss = z_ss[:-1]
+            self.period = period = float(z_ss[-1])
+            ## The grid follows the solved period; everything downstream --
+            ## the replay, the waveform, the DFT -- must use it or the
+            ## answer is reported on a period the solver rejected.
+            times, dt = toolkit.linspace(0.0, period, num=npts,
+                                         endpoint=True, retstep=True)
+        else:
+            x0_ss, _info, _ier, _mesg = analysis.fsolve(
+                func, x, maxiter=maxiterations, reltol=_shoot_reltol,
+                abstol=_tol, xtol=_tol, toolkit=self.toolkit, full_output=True)
         self.converged = (_ier == 1)
         self.shooting_iterations = maxiterations if not self.converged else None
         ## ⚠ AN AUTONOMOUS OSCILLATOR CANNOT BE SOLVED AT A FIXED PERIOD,
@@ -599,21 +720,12 @@ class PSS(Analysis):
             except np.linalg.LinAlgError:                 # pragma: no cover
                 rho = None
         self.spectral_radius = rho
-        self.autonomous = self._is_autonomous(times)
-        if self.autonomous:
-            warnings.warn(
-                'PSS: no source in this circuit depends on time, so it is '
-                'AUTONOMOUS (self-oscillating) and a FIXED-period shooting '
-                'analysis cannot solve it. At the orbit period the starting '
-                'phase is free, so the Jacobian is singular; at any other '
-                'period the orbit does not close and the only periodic '
-                'solution is the trivial one -- an unseeded run returns it. '
-                'Solving for the period jointly with a phase condition is a '
-                'different analysis and is not implemented. The monodromy '
-                'spectral radius here is %s; the result below is not a '
-                'periodic steady state.'
-                % ('%.6f' % rho if rho is not None else 'unavailable'),
-                RuntimeWarning, stacklevel=2)
+        ## `self.autonomous` was decided before the solve and chose which
+        ## system ran; nothing to re-derive here.  It used to WARN at this
+        ## point that a self-oscillating circuit could not be solved at all,
+        ## which was true of the fixed-period system and is no longer true
+        ## of this one -- the period was an unknown and `self.period` holds
+        ## what it came to.
         if not self.converged:
             ## ⚠ THIS USED TO BE SILENT.  `fsolve` builds the "No
             ## convergence" message and then discards it whenever

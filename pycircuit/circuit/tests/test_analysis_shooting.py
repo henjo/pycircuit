@@ -261,7 +261,11 @@ def test_pss_uses_a_solve_not_an_explicit_inverse():
     """
     import inspect
     from pycircuit.circuit import shooting
-    src = inspect.getsource(shooting.PSS.solve)
+    ## Both, because the accumulation moved out of `solve` into `_traverse`
+    ## when the autonomous system began sharing the period map -- a source
+    ## check has to follow the code it is about.
+    src = (inspect.getsource(shooting.PSS.solve)
+           + inspect.getsource(shooting.PSS._traverse))
     assert 'linalg.inv' not in src, 'the explicit inverse is back'
     assert 'linearsolver' in src
 
@@ -781,38 +785,83 @@ def _phase_circuit():
     return c
 
 
-def test_an_autonomous_circuit_is_diagnosed_not_silently_wrong():
-    """Fixed-period shooting cannot solve a self-oscillating circuit.
+def test_an_autonomous_circuit_is_solved_for_its_own_period():
+    """Autonomous shooting: the period is an unknown, not an argument.
 
-    There is no period at which the analysis both has a solution and an
-    invertible Jacobian.  Measured on this element: at the nominal period
-    the discretisation precesses by 2.1e-3 rad per cycle at 100
-    steps/period (falling as h^2), so the period map is a rotation by
-    slightly less than 2*pi whose only fixed point is the ORIGIN -- and an
-    unseeded run duly returns radius 0.  Push the period to where the orbit
-    closes and the starting phase becomes free: |eig(M)| goes 0.9615 ->
-    1.000226 and sigma_min(I-M) goes 2.3e-02 -> 1.6e-04.
+    ⚠ This test used to assert the opposite -- that a self-oscillating
+    circuit could only be DIAGNOSED, returning the trivial orbit with a
+    warning.  That was honest while only the fixed-period system existed,
+    and expired when the augmented one landed.  The claim it protects is
+    the same underneath: such a circuit must not come back silently wrong.
 
-    Before this, both outcomes were silent: the trivial solution came back
-    labelled "converged".
+    Why a fixed period cannot work, which is what the augmented system is
+    for.  At the nominal period the discretisation precesses -- measured
+    2.1e-3 rad per cycle at 100 steps/period, falling as h^2 -- so the
+    period map is a rotation by slightly less than 2*pi whose only fixed
+    point is the ORIGIN.  Push the period to where the orbit closes and the
+    starting phase goes free instead: |eig(M)| 0.9615 -> 1.000226,
+    sigma_min(I-M) 2.3e-02 -> 1.6e-04.  Neither has a solution a fixed
+    period could find, so `(x0, T)` are solved together with a phase
+    condition removing the rotational freedom.
+
+    Validated against an INDEPENDENT measurement: integrating one nominal
+    period and reading the angle actually turned gives a precession
+    implying T = +83.37 ppm at 200 steps/period; the solver finds
+    +83.08 ppm.  The error falls x4 per halving of the step, matching the
+    h^2 precession that causes it.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
 
-    pss = PSS(_phase_circuit(), method='trap', reltol=1e-6)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-        res = pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=20)
+    def run(n):
+        pss = PSS(_phase_circuit(), method='trap', reltol=1e-8)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            res = pss.solve(period=1e-3, timestep=1e-3 / n,
+                            maxiterations=30)
+        nonconv = any('did not converge' in str(c.message) for c in caught)
+        return pss, res, nonconv
 
+    pss, res, nonconv = run(200)
     assert pss.autonomous is True
-    assert any('AUTONOMOUS' in str(c.message) for c in caught), \
-        'a self-oscillating circuit was solved without a word'
+    assert not nonconv, 'the augmented system did not converge'
 
-    ## and the trivial solution is what a fixed-period solve finds
-    v = np.asarray(res['tpss'].v('o'), dtype=float).ravel()
-    assert np.max(np.abs(v)) < 1e-3, \
-        'expected the trivial orbit from a fixed-period solve, got %.3e' \
-        % np.max(np.abs(v))
+    ## the orbit closes -- radius is the amplitude, not zero and not drifting
+    vo = np.asarray(res['tpss'].v('o'), dtype=float).ravel()
+    vs = np.asarray(res['tpss'].v('s'), dtype=float).ravel()
+    rad = np.hypot(vo, vs)
+    assert abs(rad.max() - 1.0) < 1e-4 and abs(rad.min() - 1.0) < 1e-4, \
+        'orbit radius %.7f..%.7f, expected 1' % (rad.min(), rad.max())
+
+    ## and the period it solved for is the precession-corrected one
+    ppm = 1e6 * (pss.period - 1e-3) / 1e-3
+    assert 70.0 < ppm < 95.0, 'period came out %+.3f ppm, expected ~+83' % ppm
+
+    ## second order: halving the step quarters the correction
+    pss2, _r2, _nc2 = run(400)
+    ppm2 = 1e6 * (pss2.period - 1e-3) / 1e-3
+    assert 3.0 < ppm / ppm2 < 5.0, \
+        'period error is not second order in h: %+.3f -> %+.3f' % (ppm, ppm2)
+
+
+def test_the_free_phase_eigenvalue_appears_at_the_solved_period():
+    """The degeneracy is real, and the phase condition is what handles it.
+
+    Solved AT its own period the monodromy has an eigenvalue on the unit
+    circle -- that is the rotational freedom, and it is why `I - M` alone is
+    singular and the bordered row is not optional.  At the nominal period
+    the same circuit reads 0.9615, which is why no spectral threshold can
+    detect autonomy (a Q=1000 DRIVEN resonator sits at 0.99686).
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_phase_circuit(), method='trap', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
+    assert pss.spectral_radius > 0.99, \
+        'no unit-circle eigenvalue at the solved period: %.6f' \
+        % pss.spectral_radius
 
 
 @pytest.mark.parametrize('kind', ['rc', 'rectifier'])
