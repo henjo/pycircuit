@@ -965,6 +965,12 @@ def test_pss_lte_per_step_peak_is_not_enough_for_a_limit_cycle():
         'the per-step peak now flags it; rewrite this test, do not delete it'
     assert pss.total_lte > 1.0, \
         'the period total must flag an answer this far off: %r' % pss.total_lte
+    ## and the accurate one must NOT be flagged, or the report is just noise
+    peak_t, trap = _pss_lte('trap')
+    assert abs(peak_t - 20.0) / 20.0 < 1e-3, peak_t
+    assert not trap._caught, \
+        'trapezoidal lands at %.5f V and must not be warned about: %r' % (
+            peak_t, trap._caught)
     assert pss._caught, 'nothing warned about a 56%-low "converged" answer'
     assert 'accumulated over the period' in pss._caught[0], pss._caught
 
@@ -996,6 +1002,42 @@ def test_pss_lte_seam_is_separated_because_it_does_not_follow_the_grid():
         'the seam now improves with the grid (%r -> %r); if that is a real ' \
         'fix, this test should assert the fix, not the old behaviour' % (
             coarse.max_lte_seam, fine.max_lte_seam)
+
+
+def test_pss_lte_seam_is_reported_only_where_a_method_can_have_one():
+    """⚠ THE SEAM WAS FLAGGED FOR TWO METHODS THAT CANNOT HAVE ONE.
+
+    The first condition was `h_last2 is None` -- the reach of the LTE
+    estimator's third divided difference, not of the integrator.  Euler's
+    companion reads `q_{n-1}`; trapezoidal's reads `q_{n-1}` and `iq_{n-1}`,
+    which the order-dropped opening step supplies consistently.  Neither
+    touches the fabricated charge, so neither can pay for it -- measured in
+    `benchmarks/pss_seam_cost.py` by comparing PSS's fixed point against the
+    limit cycle the same grid and method reach with a real history: euler
+    5.1e-12 V, trapezoidal 1.3e-11 V, both zero, while the report was
+    calling them 0.286 and 15.1 times tolerance.
+
+    Gear-2 reads `q_{n-2}`, which at that step is the entering unknown, and
+    the shooting condition does not constrain that to be the orbit's own
+    `x(-dt)`.  Its cost there is 1.266e-01 V against an interior
+    contribution of 1.070e-01.
+
+    So the test is mechanistic, not numerical: a seam is reported exactly
+    for methods whose companion reaches two charges back.
+    """
+    for method in ('euler', 'trap'):
+        _peak, pss = _pss_lte(method)
+        assert pss.max_lte_seam is None, \
+            '%s cannot have a seam -- its companion never reads the ' \
+            'entering unknown -- but one was reported: %r' % (
+                method, pss.max_lte_seam)
+        assert pss.max_lte is not None, \
+            '%s reported no interior LTE at all' % method
+
+    _peak, gear = _pss_lte('gear')
+    assert gear.max_lte_seam is not None and gear.max_lte_seam > 1.0, \
+        'gear2 DOES read the entering unknown and must still report it: %r' \
+        % gear.max_lte_seam
 
 
 def test_pss_lte_floors_are_the_lte_ones_not_the_newton_ones():

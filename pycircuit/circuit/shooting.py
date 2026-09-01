@@ -148,19 +148,41 @@ class PSS(Analysis):
              because the estimator bounds ONE step and the 56% is what 99
              of them do together.  A transient is right to control on that
              number; a periodic analysis cannot report only it.  The sum
-             over the period reads 25.99, against gear2's 0.941 and trap's
+             over the period reads 26.27, against gear2's 0.941 and trap's
              0.340 -- tracking amplitude errors of 55.9%, 1.17% and 0.05%.
-           - THE COLD-START SEAM IS PART OF THE MAP, and it does not follow
-             the grid.  `_begin_period` re-seeds a flat history every
-             shooting iteration -- which is exactly what keeps phi a
-             function of `x0` alone -- so the discrete period map opens off
-             a past that never happened.  For the multistep methods that
-             dominates everything else and gets WORSE under refinement:
-             halving the step took gear2's interior peak 5.114e4 -> 1.105e4
-             while its seam went 3.836e7 -> 5.347e7 (reltol=1e-9).  Reported
-             as a single maximum it would have hidden the interior figure
-             and pointed the user at a finer grid, which is the wrong
-             remedy for it.
+           - THE COLD-START SEAM IS PART OF THE MAP.  `_begin_period`
+             re-seeds a flat history every shooting iteration -- which is
+             exactly what keeps phi a function of `x0` alone -- so the
+             discrete period map opens off a past that never happened, and
+             that defect is inside the map the solve converged on.
+
+         ⚠ AND A THIRD THING, WHICH CORRECTED THE SECOND (same day, by
+         measurement -- `benchmarks/pss_seam_cost.py`).  The report first
+         flagged a seam for ALL THREE methods and called it the dominant
+         term for the multistep pair.  Measured against the limit cycle the
+         same grid and method reach with a real history, the seam costs
+         **5.1e-12 V for euler and 1.3e-11 V for trapezoidal -- zero** --
+         while the report was calling them 0.286 and 15.1 times tolerance.
+         Only Gear-2 pays: 1.266e-01 V at 100 points/period, 54% of its
+         total error, rising to 73% at 400 points because the seam falls as
+         h^2 while the interior falls faster.
+
+         The discriminator is HOW FAR THE COMPANION REACHES, not how far the
+         estimator does.  Euler reads `q_{n-1}`; trapezoidal reads `q_{n-1}`
+         and `iq_{n-1}`, which the order-dropped opening step supplies
+         consistently.  Gear-2 reads `q_{n-2}`, which at that step is the
+         entering unknown -- and shooting constrains `x(0) = x(P)`, NOT
+         `x_in` to be the orbit's `x(-dt)`, so it is an O(h^2) stand-in
+         being read as a history point.  Removing the order drop makes
+         Gear-2 WORSE (2.34e-1 -> 4.39e-1 at 100 points): the drop is
+         protective and 1.266e-01 is the residue it leaves.
+
+         So `max_lte_seam` is a FLAG, not a magnitude -- at 100 points the
+         estimator's seam/interior ratio is 505x and the answer's is 1.18x
+         -- and the remedy it points at is not a finer grid but making the
+         entering history part of the shooting unknowns.  Not built; the
+         measured prize is Gear-2's error going 2.34e-1 -> 1.07e-1 at 100
+         points, at no extra cost per iteration.
 
     RECORDED SCOPE, in order, neither of these planned work yet:
 
@@ -273,6 +295,7 @@ class PSS(Analysis):
         self._want_lte = False
         self._lte = None
         self._lte_seam = False
+        self._lte_valid = True
         ## Reported by `solve`: the peak normalised truncation error over the
         ## converged period, and where in the period it fell.  None until a
         ## solve has run, or when the grid was too short to difference.
@@ -528,15 +551,60 @@ class PSS(Analysis):
         ## act on this.  Also before the push, for the same reason.
         if self._want_lte:
             self._lte = tr.step_lte(x_full, self._insert_refnode(x0), J_full)
-            ## `h_last2 is None` is exactly the transient's own statement
-            ## that the third past charge is not a real point (see
-            ## `Integrator.compute_lte`) -- which, at the START of a PSS
-            ## replay, means the estimator is differencing the flat history
-            ## `_begin_run` seeded rather than the end of the previous
-            ## period.  Recorded per step so the report can separate the
-            ## SEAM from the interior; measured, they differ by three
-            ## orders of magnitude and have different remedies.
-            self._lte_seam = tr._dt_last2 is None
+            ## A SEAM STEP IS ONE WHOSE COMPANION READS THE ENTERING
+            ## UNKNOWN, not merely one whose ESTIMATOR does.
+            ##
+            ## ⚠ THIS CONDITION WAS `h_last2 is None` ALONE, AND THAT FLAGGED
+            ## A PHANTOM FOR TWO METHODS OF THREE.  `h_last2 is None` is the
+            ## transient's statement that the third past charge is not real,
+            ## which is the reach of the LTE estimator's third divided
+            ## difference -- not the reach of the integrator.  Euler's
+            ## companion reads `q_{n-1}`; trapezoidal's reads `q_{n-1}` and
+            ## `iq_{n-1}`, and the order-dropped opening step supplies an
+            ## `iq` consistent with it, which is what that drop is FOR.
+            ## Neither can see the fabricated charge at all.  Measured
+            ## (`benchmarks/pss_seam_cost.py`): trapezoidal's seam reading
+            ## was 15.1 times tolerance while its cost is 1.3e-11 V, and
+            ## euler's 0.286 against 5.1e-12 V.  Both are exactly zero; the
+            ## reading was an artefact of the measurement.
+            ##
+            ## Gear-2 reads `q_{n-2}` -- which at that step IS the entering
+            ## unknown -- and the shooting condition constrains `x(0)` to
+            ## equal `x(P)`, NOT `x_in` to be the orbit's own `x(-dt)`.  So
+            ## `x_in` sits O(h^2) off a real history point and Gear-2 reads
+            ## it as one.  That one costs 1.266e-01 V at 100 points/period
+            ## against an interior contribution of 1.070e-01 -- the seam is
+            ## 54% of its total error -- and it is the term that STOPS
+            ## converging: it falls as h^2 while the interior falls faster,
+            ## so its share grows to 68% at 200 points and 73% at 400.
+            ##
+            ## TWO DIFFERENT THINGS ARE TRUE OF AN OPENING STEP, and the
+            ## first version of this conflated them -- which showed up as
+            ## trapezoidal's phantom simply MOVING from the seam into the
+            ## interior total (0.340 -> 15.47) when the seam test was
+            ## tightened.  Suppressing a bad number is not the same as
+            ## classifying it.
+            ##
+            ##   the ESTIMATE is invalid when the ESTIMATOR differences a
+            ##   charge that was never a real point.  Its divided difference
+            ##   reaches `p = ORDER + 1` charges back -- 2 for Euler, 3 for
+            ##   the second-order pair -- so at the step with only two real
+            ##   past charges, euler's estimate is sound and trap's and
+            ##   gear2's are not.  An unsound estimate is DISCARDED: it is
+            ##   not an interior reading and, on its own, not a seam either.
+            ##
+            ##   a SEAM exists when the COMPANION reads the entering
+            ##   unknown, i.e. when its charge reach `len(alphas) - 1` is
+            ##   deep enough to touch it.  Only Gear-2's is.
+            ##
+            ## `_dt_last2 is None` says exactly "two real past charges" here
+            ## (it is set from `_dt_last` one step later), so it is the step
+            ## index in disguise; both tests are written against the count.
+            _real_past = 2 if tr._dt_last2 is None else 3
+            _p = getattr(tr.active_integrator, 'ORDER', 1) + 1
+            _reach = len(tr._companion_coeffs[0]) - 1
+            self._lte_valid = _real_past >= _p
+            self._lte_seam = _reach >= _real_past
 
         ## The history advance is the accept path's, called rather than
         ## copied -- and `_dt_last` must roll AFTER the step, because
@@ -847,7 +915,8 @@ class PSS(Analysis):
             x = self.solve_timestep(X[-1], t, dt, iq_last=iq_last)
             iq_last = self._iq
             if self._lte is not None:
-                lte_seen.append((float(self._lte), float(t), self._lte_seam))
+                lte_seen.append((float(self._lte), float(t), self._lte_seam,
+                                 self._lte_valid))
             X.append(copy(x))
         self._want_lte = False
 
@@ -865,27 +934,40 @@ class PSS(Analysis):
         ## tolerance -- while its amplitude is 56% low, because a transient's
         ## criterion bounds each step and says nothing about the 99 of them
         ## that damp the orbit.  `total_lte`, the SUM over the interior, is
-        ## the one that sees it: 25.99 for that run against 0.941 for gear2
+        ## the one that sees it: 26.27 for that run against 0.941 for gear2
         ## and 0.340 for trap, tracking the amplitude errors of 55.9%, 1.17%
         ## and 0.05%.  It is an upper bound -- it adds magnitudes, so it
         ## cannot see the cancellation that makes trapezoidal's real error
         ## far smaller than its summed one -- which is the right direction
         ## for a diagnostic to be wrong in.
         ##
-        ## `max_lte_seam` is the peak over the opening steps, where the
-        ## estimator is differencing the flat history `_begin_run` seeds.
-        ## ⚠ IT IS NOT AN ARTEFACT OF THE MEASUREMENT.  Every shooting
-        ## iteration cold-starts the period (`_begin_period`, which is what
-        ## keeps phi a function of `x0` alone), so the discrete period map
-        ## really does open with a fabricated past and an order-dropped
-        ## step, and that defect is inside the map the solve converged on.
-        ## The measurement only makes it visible.  For the multistep methods
-        ## it dominates and, unlike the interior, IT DOES NOT IMPROVE WITH
-        ## THE GRID -- halving the step on that resonator took gear2's
-        ## interior peak 5.114e4 -> 1.105e4 (at reltol=1e-9) while its seam
-        ## went 3.836e7 -> 5.347e7.  Refining the timestep is the wrong
-        ## response to it; it is a property of the formulation.
-        interior = [p for p in lte_seen if not p[2]]
+        ## `max_lte_seam` is the peak over the opening steps of a method
+        ## whose COMPANION reads the entering unknown -- Gear-2 here, and
+        ## `None` for euler and trapezoidal, which cannot have a seam.  See
+        ## `solve_timestep` for why that is the right condition and what the
+        ## looser one reported.
+        ##
+        ## ⚠ IT IS A FLAG, NOT A MAGNITUDE.  The seam is real -- measured at
+        ## 1.266e-01 V on the Q=20 resonator at 100 points/period, against
+        ## an interior contribution of 1.070e-01, and it is the term that
+        ## stops converging (54% of Gear-2's error there, 73% at 400 points)
+        ## -- but the NUMBER printed overstates it by orders of magnitude,
+        ## because the estimator differences a fabricated charge while the
+        ## solution merely reads one.  At 100 points the estimator's
+        ## seam/interior ratio is 505x and the answer's is 1.18x.  So use it
+        ## to know the seam is there; use `benchmarks/pss_seam_cost.py` to
+        ## know what it costs.
+        ##
+        ## The fix is not a smaller timestep -- refining makes its SHARE
+        ## grow.  It is to make the entering history part of the shooting
+        ## unknowns, so the map is a fixed point in the augmented state
+        ## rather than one that opens off a stand-in.  Not built; the prize
+        ## measured on that resonator is Gear-2's error going 2.34e-1 ->
+        ## 1.07e-1 at 100 points, at no extra cost per iteration.
+        ## An unsound estimate is reported as neither: for trapezoidal that
+        ## step is the ONLY one whose number was ever wrong, and dropping it
+        ## is what keeps it out of both figures.
+        interior = [p for p in lte_seen if not p[2] and p[3]]
         seam = [p for p in lte_seen if p[2]]
         if interior:
             self.max_lte, self.max_lte_time = max(interior)[:2]
