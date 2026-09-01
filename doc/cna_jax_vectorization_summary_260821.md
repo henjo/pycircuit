@@ -95,9 +95,14 @@ minus source stepping (which would scale companion history).  SER
 recorded.  The JAX transient-point rescue was deferred with its full
 architectural reasoning and a reopening trigger; it was **BUILT
 2026-09-01** (P25 entry, rewritten there with what the deferral got
-right and wrong).  It is `continuation`, **default off**: a traced graph
-carries the branch whether or not it runs (~1.15 s of compile plus ~14%
-per step), where the CPU's Python rescue costs nothing until it fires.
+right and wrong), on the plain Newton AND on both PCNR views — the
+latter being the CPU's own arrangement, gmin stepping over a solver that
+limits, and the one that pays: a series diode string PCNR alone cannot
+pass completes with 12 points rescued, matching a lowered-floor
+reference and the CPU's PCNR to 0.13% of swing.  It is `continuation`,
+**default off**: a traced graph carries the branch whether or not it
+runs (~1 s of compile plus ~14% per step), where the CPU's Python rescue
+costs nothing until it fires.
 
 **The repair campaign that preceded parity**
 (`doc/transient_review_260820.md`, F1–F19 + hygiene, all executed;
@@ -125,12 +130,12 @@ the suite.
 
 ## What is deliberately NOT here (each with its trigger, recorded)
 
-- Layering the (now built) JAX transient-point rescue on **PCNR**.  The
-  chain wraps a plain Newton that does not limit, while the CPU's wraps
-  one that does, so a junction circuit's JAX failure is `exp` overflow —
-  which no conductance in parallel with the junction can fix.  Trigger =
-  a forced-non-converged chunk exit on a circuit the CPU rescue
-  completes.  Ψ-tc also needs transient-scaled rung exponents.
+- Rescaling Ψ-tc's continuation rungs to the transient's own diagonal.
+  Its `e_start=0 / e_max=+6` are DC-calibrated and negligible against the
+  ~1e9 companion conductance at the dt floor; gmin and gshunt carry every
+  demonstrated rescue, so this is a third resort that has not been
+  needed.  Trigger = a forced-non-converged exit that survives
+  `continuation=True` on the PCNR path.
 - Batch compaction for finished lanes (invisible in the flat benchmark
   wall; trigger = many-lane profiles showing dispatch cost).
 - `Sin.next_event` quarter-period breakpoint coalescing (trigger = a

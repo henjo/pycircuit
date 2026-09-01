@@ -760,26 +760,55 @@ existing TLine tests before/after, per house rules.
   the first thing the chain changes is where Newton starts.  That alone
   carried this case.
 
-  **And the new finding, which is the next open item.**  The CPU chain
-  sits on a solver that LIMITS (`pnjlim`); this one sits on a plain
-  Newton that does not.  For a junction circuit the dominant JAX failure
-  is the diode exponential overflowing — `exp(200)` from one bad Newton
-  step — and no conductance in parallel with a junction can fix a term
-  that is already infinite.  Measured on the documented cold start: the
-  gmin rung at g = 1e-2 diverges exactly as the plain rung does.  So on
-  this backend the chain's natural home is layered on **PCNR**, which is
-  this backend's only limiting mechanism, not on the plain Newton it now
-  wraps.  Ψ-tc has a second, smaller version of the same problem: its
-  rung exponents (`e_start=0`, `e_max=+6`) are calibrated for DC
-  diagonals, and in transient at the dt floor the companion conductance
-  is ~1e9, so every rung of the ladder is negligible against it.  Both
-  are scoped, neither is built.
+  **The finding that forced a second layer — now BUILT.**  The CPU chain
+  sits on a solver that LIMITS (`pnjlim`); the first cut of this one sat
+  on a plain Newton that does not.  For a junction circuit the dominant
+  JAX failure is the diode exponential overflowing — `exp(200)` from one
+  bad Newton step — and no conductance in parallel with a junction can
+  fix a term that is already infinite.  Measured on the documented cold
+  start: the gmin rung at g = 1e-2 diverges exactly as the plain rung
+  does.
 
-  *The trigger that reopens THAT work,* stated concretely: a JAX run
-  whose forced-non-converged exit survives `continuation=True` — i.e. a
-  circuit whose failure is the junction overflow described above rather
-  than a basin or seed problem.  The chain as built handles the second;
-  only PCNR layering can handle the first.
+  So the chain was layered on **PCNR** as well, which is this backend's
+  only limiting mechanism and therefore the analogue of the CPU's base
+  solver — gmin stepping on top of a limited Newton being the
+  combination SPICE has always shipped.  Both PCNR paths take it: the
+  pair view (`pcnr_inner_loop`) and the device view
+  (`pcnr_vector_timestep`, sec. 49), because a chain that only traced
+  through the scalar path would miss every real compact model.
+
+  The three deformations are now stamped by ONE shared helper,
+  `_continuation_terms`, used by the plain Newton and both PCNR
+  assemblies — a rung has to mean the same thing in all of them, or a
+  ladder's final pure rung is not the system its earlier rungs were
+  approaching.  For PCNR the ladder carries only `x`: convergence there
+  REQUIRES `|g_lim| → 0`, i.e. `v_lim == e_a − e_b`, so a converged
+  rung's limited unknowns are recoverable from its `x`, and the rescued
+  point's `v_lim` (which the step controller reads) is recomputed from
+  the rescued `x` for the same reason.
+
+  *And it pays off exactly where the plain layer did not.*  A series
+  diode string driven hard and fast — limiting each junction says
+  nothing about the STRING — with the floor pinned: **PCNR alone raises
+  `NoConvergenceError`; PCNR plus the chain completes, 12 points
+  rescued, 0 forced**, agreeing with a lowered-floor PCNR reference and
+  with the CPU's own PCNR to **0.13% of a 9.96 V swing** (both, to
+  within 6e-6 V of each other).  Eight of sixteen swept configurations
+  showed the same rescue.  Cost on PCNR has the plain path's shape:
+  ~0.9–1.0 s fixed, near-constant across a 4x growth in steps.
+
+  Still open: Ψ-tc's rung exponents (`e_start=0`, `e_max=+6`) are
+  calibrated for DC diagonals, and in transient at the dt floor the
+  companion conductance is ~1e9, so every rung of that ladder is
+  negligible against it.  Scoped, not built — and note that gmin and
+  gshunt carry the demonstrated rescues, so this is a third-resort
+  ladder that has not yet been needed.
+
+  *The trigger that reopens what remains,* stated concretely: a JAX run
+  whose forced-non-converged exit survives `continuation=True` on the
+  PCNR path.  That is the run whose rescue needs Ψ-tc to be doing real
+  work, and therefore the one that would justify rescaling its rung
+  exponents to the transient's own diagonal.
 
 ---
 

@@ -324,8 +324,28 @@ transient on the traced backend, agreeing with the CPU to 4.4e-16 and
 classes — every real compact model — could not be evaluated on that
 backend at all before. That is a **capability, not a speed-up**: the
 traced chained path is ~18× slower than the CPU (§49.8), and `§22`'s
-disjointness still keeps those classes out of `solve_batched`. Nothing
-else is parked that a reviewer needs to weigh.
+disjointness still keeps those classes out of `solve_batched`.
+
+**The transient-point continuation rescue landed 2026-09-01**, closing
+the last item `doc/backend_parity_260821.md`'s P25 entry carried as
+deferred. `transient_point_rescue`: junction-gmin -> gshunt -> Psi-tc at
+the dt floor, on the plain Newton and on BOTH PCNR views. A reviewer
+should weigh two things about it. First, it is **default off**
+(`continuation`), and deliberately so — on the CPU the chain is Python
+control flow that costs nothing until it fires, whereas a traced graph
+carries it in every step of every run (~1 s of compile plus ~14% per
+step, measured). Second, the layer that earns its keep is the PCNR one,
+not the plain-Newton one: without limiting, a junction circuit fails by
+`exp` overflow, which no parallel conductance repairs. On PCNR a series
+diode string that PCNR alone cannot pass completes with 12 points
+rescued, matching both a lowered-floor reference and the CPU's PCNR to
+0.13% of swing.
+
+What remains parked is Psi-tc's rung exponents, which are DC-calibrated
+and negligible against the transient's ~1e9 companion conductance at the
+floor. gmin and gshunt carry every demonstrated rescue, so it is a third
+resort that has not been needed. Nothing else is parked that a reviewer
+needs to weigh.
 
 ## 8. Repo-root hygiene (done, 2026-08-27)
 
@@ -375,23 +395,26 @@ include it, and deleting it would break the docs build. It stays.
 Use `.venv/bin/python -m pytest`, not a bare `python` — the system
 interpreter has none of the dependencies.
 
-Collection is **2,784 tests**: 2,697 in `pycircuit/circuit/tests` and 87
+Collection is **2,803 tests**: 2,716 in `pycircuit/circuit/tests` and 87
 elsewhere in the tree. The suite supports `pytest-xdist`, and `pytest.ini`
 records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
 A bare `pytest` from the repo root also works, as of the §8 cleanup:
-**2,784 tests collected, no errors.** Before that it aborted during
+**2,803 tests collected, no errors.** Before that it aborted during
 collection.
 
-### Verified green at HEAD, 2026-08-31
+### Verified green at HEAD, 2026-09-01
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,693 | 3 | 3 | **0** |
+| `pycircuit/circuit/tests` | 2,712 | 3 | 3 | **0** |
 | rest of the tree | 85 | 3 | 0 | **0** |
-| **total** | **2,778** | **6** | **3** | **0** |
+| **total** | **2,797** | **6** | **3** | **0** |
+
+(2026-08-31 read 2,778 / 2,784 collected; the 19 added tests are
+`test_jax_continuation.py`, the transient-point rescue.)
 
 ⚠ On a BUSY machine this reads **2,777 / 7** instead: the perf guard
 abstains rather than measure, and says so in the warnings summary. The
@@ -414,9 +437,9 @@ reproducible here, and replaced by measurement rather than adjusted
 toward.) Over 20 min serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
-check worth doing rather than trusting the totals: 2,778 passed + 6
-skipped + 3 xfailed = 2,787, less the **3 module-level skips that
-collection does not count**, gives **2,784** — the collected total. (It
+check worth doing rather than trusting the totals: 2,797 passed + 6
+skipped + 3 xfailed = 2,806, less the **3 module-level skips that
+collection does not count**, gives **2,803** — the collected total. (It
 reconciles either way: the perf guard's abstention moves a test between
 the passed and skipped columns without changing the sum.)
 

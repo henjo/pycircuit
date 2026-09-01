@@ -356,3 +356,121 @@ def test_the_rescued_waveform_is_right_not_merely_finite():
     dev = float(np.max(np.abs(v_res - np.interp(t_res, t_ref, v_ref))))
     assert dev < 0.02 * swing, 'rescued waveform off by %.3e V of %.3f V' % (
         dev, swing)
+
+
+# ---------------------------------------------------------------------------
+# The chain layered on PCNR -- where the CPU has always had it
+# ---------------------------------------------------------------------------
+
+def _diode_chain(nd=2, va=5.0, freq=2e6, rs=1e3):
+    """A series diode string driven hard and fast.
+
+    Two junctions in series with tiny node capacitances: the limiter alone
+    walks into points it cannot leave, because limiting each junction says
+    nothing about the STRING.  This is what is left for a conductance
+    homotopy once limiting is already in place.
+    """
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=va, freq=freq)
+    c['R'] = R('a', 'n0', r=rs)
+    for i in range(nd):
+        c['D%d' % i] = Diode('n%d' % i, 'n%d' % (i + 1))
+        c['C%d' % i] = C('n%d' % (i + 1), gnd, c=1e-13)
+    c['RL'] = R('n%d' % nd, gnd, r=1e5)
+    return c
+
+
+_PTS = 2e-7
+
+
+def _run_chain(cont, minstep=_PTS):
+    def go():
+        tran = JAXTransient(_diode_chain(), pcnr=True, continuation=cont,
+                            reltol=1e-6, minstep=minstep, firststep=_PTS)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=20 * _PTS, timestep=_PTS, uic=True)
+        return (np.asarray(res.sweep_values, float),
+                np.asarray(res.v('n0'), float).reshape(-1), tran.statistics)
+    return _with_jax(go)
+
+
+def test_the_chain_completes_a_pcnr_run_pcnr_alone_cannot():
+    """The point of LAYERING it on PCNR rather than the plain Newton.
+
+    On the plain Newton the chain is nearly useless for a junction
+    circuit: that solver does not limit, so the failure is the diode
+    exponential overflowing, and no conductance in parallel with a
+    junction repairs a term that is already infinite.  PCNR limits, so it
+    is the analogue of the CPU's base solver -- and gmin stepping on top
+    of a limited Newton is the combination SPICE has always shipped.
+    """
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+
+    with pytest.raises(NoConvergenceError):
+        _run_chain(False)
+
+    _t, v, stats = _run_chain(True)
+    assert stats.gmin_rescues > 0
+    assert stats.forced_nonconverged_steps == 0
+    assert np.all(np.isfinite(v))
+
+
+def test_pcnr_rescued_waveform_is_right_not_merely_finite():
+    """Same gate as the plain path: a rescued point that is not a solution
+    would be worse than the raise it replaced."""
+    t_res, v_res, s_res = _run_chain(True)
+    t_ref, v_ref, s_ref = _run_chain(False, minstep=1e-15)
+    assert s_res.gmin_rescues > 0 and s_ref.gmin_rescues == 0
+
+    swing = float(v_ref.max() - v_ref.min())
+    dev = float(np.max(np.abs(v_res - np.interp(t_res, t_ref, v_ref))))
+    assert dev < 0.02 * swing, 'rescued waveform off by %.3e V of %.3f V' % (
+        dev, swing)
+
+
+def test_vector_pcnr_traces_with_the_chain_armed():
+    """The chain must also compile into the DEVICE-view PCNR path, and
+    must not perturb it.
+
+    Routed separately from the pair view (sec. 49), so an armed chain that
+    only ever traced through the scalar path would be untested here --
+    and the vector path is the one every real compact model takes.
+    """
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit import elements_hdl as _eh
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit import numeric
+
+    def build():
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nd, ng, nv = c.add_node('d'), c.add_node('g'), c.add_node('vdd')
+        c['vg'] = VSin(ng, gnd, va=0.4, vo=1.1, freq=1e6, toolkit=jaxtoolkit)
+        c['vd'] = VS(nv, gnd, v=1.8, toolkit=jaxtoolkit)
+        c['Rd'] = R(nv, nd, r=1e4, toolkit=jaxtoolkit)
+        c['Cd'] = C(nd, gnd, c=1e-13, toolkit=jaxtoolkit)
+        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=jaxtoolkit)
+        return c
+
+    saved = _cm.default_toolkit
+    _cm.default_toolkit = jaxtoolkit
+    try:
+        out = {}
+        for cont in (False, True):
+            tran = JAXTransient(build(), pcnr=True, reltol=1e-8,
+                                continuation=cont)
+            meta, _vt = tran._pcnr_setup()
+            assert meta[0] == 'vector', 'test no longer covers the vector path'
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(refnode=gnd, tend=1e-6, timestep=2e-8,
+                                 uic=True)
+            out[cont] = (np.asarray(res.v('d'), float).reshape(-1),
+                         tran.statistics.gmin_rescues)
+    finally:
+        _cm.default_toolkit = saved
+
+    assert out[True][1] == 0 and out[False][1] == 0
+    assert np.array_equal(out[True][0], out[False][0]), \
+        'the armed chain perturbed the vector PCNR path'

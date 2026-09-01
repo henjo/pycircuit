@@ -21,8 +21,16 @@ strongly non-linear circuits. Gaps below, worst first.
    drop to 1st order + reset integrator history after crossing a discontinuity
    (CPU: `was_break_step -> _is_first_step`). Risk: ringing/overshoot on sharp
    edges (VPulse/PWL). *Port target #2.*
-3. **Nonlinear continuation.** No gmin-stepping / source-stepping (CPU
-   `nrsolver.py` strategies). Hard operating points that need homotopy fail.
+3. **Nonlinear continuation.** ~~No gmin-stepping / source-stepping (CPU
+   `nrsolver.py` strategies). Hard operating points that need homotopy
+   fail.~~ **DONE** — DC got the full adaptive ladder
+   (`dc_with_continuation`: junction-gmin -> gshunt -> Psi-tc, P18/P25),
+   and the transient got the failed-time-point rescue on 2026-09-01
+   (`transient_point_rescue`, gated at the dt floor, on the plain Newton
+   and both PCNR views; `continuation` Parameter, default off because a
+   traced graph carries the branch whether or not it runs).  SOURCE
+   stepping stays absent on purpose: scaling u(t) mid-transient would
+   scale the integrator's companion history with it.
 4. **Jacobian scaling / equilibration.** No scaler strategies (CPU
    `_get_scaler`: RowMax / L2 / Sinkhorn). Worse conditioning on wide
    dynamic-range matrices.

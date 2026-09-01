@@ -365,6 +365,46 @@ def _gmin_junction_rows(circuit):
 ## inconsistency-floor trap by its measured signature).
 
 
+def _continuation_terms(F, J, x, gmin_rows=None, gmin=0.0, gshunt_nodes=0,
+                        gshunt=0.0, ptc_g=0.0, ptc_anchor=None):
+    """Stamp the three continuation deformations into an assembled (F, J).
+
+    ONE definition, shared by every solver that can be a continuation rung
+    -- the plain Newton, scalar PCNR and vector PCNR -- because a rung has
+    to mean the same thing in all of them or the ladder's final pure rung
+    is not the same system the other rungs were approaching.
+    `dc_operating_point` stamps the identical terms inline; that one is
+    left alone deliberately, since DC assembles F and J differently enough
+    that sharing would mean passing its gmin/gshunt/ptc switches through
+    two more layers for no gain.
+
+    All three are STRUCTURALLY skipped when the caller passes none, so an
+    ordinary step compiles exactly the graph it compiled before; the `g`
+    operands are TRACED, so one compiled rung serves every rung of a
+    ladder; and `g = 0` adds exact zeros, which is what makes the pure
+    rung the undeformed system (the P22 no-residue rule).
+    """
+    if gmin_rows is not None:
+        ra, rb = gmin_rows
+        vj = x[ra] - x[rb]
+        F = F.at[ra].add(gmin * vj)
+        F = F.at[rb].add(-gmin * vj)
+        J = _scatter_junction_G(J, ra, rb, jnp.full(ra.shape, 1.0) * gmin, 1.0)
+    if gshunt_nodes > 0:
+        idx = jnp.arange(gshunt_nodes)
+        F = F.at[idx].add(gshunt * x[idx])
+        J = J.at[idx, idx].add(gshunt)
+    if ptc_anchor is not None:
+        ## Psi-tc mid-transient.  The CPU's note applies unchanged: this is
+        ## safe here where SOURCE stepping is not, because the anchor is a
+        ## state the circuit actually passed through and nothing scales
+        ## u(t) -- scaling the excitation mid-transient would scale the
+        ## integrator's companion history with it.
+        F = F + ptc_g * (x - ptc_anchor)
+        J = J + ptc_g * jnp.eye(x.shape[0])
+    return F, J
+
+
 def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
                             min_step=0.25, max_rungs=60, active=True):
     """Traced twin of nrsolver._adaptive_conductance_ladder: one compiled
@@ -638,34 +678,8 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
             F = F + tline_dG @ x
             J = J + tline_dG
 
-        ## P18/P25 CONTINUATION TERMS -- the same three deformations
-        ## `dc_operating_point` carries, stamped identically so a rung means
-        ## the same thing in both analyses.  All three are STRUCTURALLY
-        ## skipped when the caller passes none (the ordinary step compiles
-        ## exactly the graph it compiled before), and their g operands are
-        ## TRACED so one compiled rung serves every rung of a ladder.  g = 0
-        ## adds exact zeros, which is what makes the ladder's final pure
-        ## rung the undeformed system -- the P22 rule that an accepted point
-        ## carries no residue.
-        if gmin_rows is not None:
-            ra, rb = gmin_rows
-            vj = x[ra] - x[rb]
-            F = F.at[ra].add(gmin * vj)
-            F = F.at[rb].add(-gmin * vj)
-            J = _scatter_junction_G(J, ra, rb,
-                                    jnp.full(ra.shape, 1.0) * gmin, 1.0)
-        if gshunt_nodes > 0:
-            idx = jnp.arange(gshunt_nodes)
-            F = F.at[idx].add(gshunt * x[idx])
-            J = J.at[idx, idx].add(gshunt)
-        if ptc_anchor is not None:
-            ## Psi-tc mid-transient.  The CPU's note applies unchanged: this
-            ## is safe here where SOURCE stepping is not, because the anchor
-            ## is a state the circuit actually passed through and nothing
-            ## scales u(t) -- scaling the excitation mid-transient would
-            ## scale the integrator's companion history with it.
-            F = F + ptc_g * (x - ptc_anchor)
-            J = J + ptc_g * jnp.eye(x.shape[0])
+        F, J = _continuation_terms(F, J, x, gmin_rows, gmin, gshunt_nodes,
+                                   gshunt, ptc_g, ptc_anchor)
 
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
         F_sub = jnp.delete(F, irefnode)
@@ -737,14 +751,36 @@ def transient_point_rescue(rung_newton, x_anchor, nr_state, needs_rescue,
     Returns `(nr_state, rescued)` -- the state carrying the rescued point
     and its converged flag, and whether this chain is what converged it.
     """
-    x_in, conv_in = nr_state.x, nr_state.converged
+    ## `rung_newton` here returns a NewtonState (the plain path's natural
+    ## currency); `_rescue_chain` speaks bare arrays so the PCNR paths can
+    ## share it.  Adapt rather than push the tuple form outward.
+    def _rung(seed, kind, g):
+        st = rung_newton(seed, kind, g)
+        return st.x, st.converged
+
+    x_out, conv, rescued = _rescue_chain(
+        _rung, x_anchor, nr_state.x, nr_state.converged, needs_rescue,
+        gmin_rows=gmin_rows, n_nodes=n_nodes)
+    return nr_state._replace(x=x_out, converged=conv), rescued
+
+
+def _rescue_chain(rung_newton, x_anchor, x_in, conv_in, needs_rescue,
+                  gmin_rows=None, n_nodes=0):
+    """The chain itself, on bare arrays.
+
+    Split out from `transient_point_rescue` so the PCNR paths can reuse it:
+    they carry `(x, v_lim)` rather than a NewtonState, and pass the pair
+    concatenated -- the driver only ever `jnp.where`s the seed, so any flat
+    array is a valid carrier.
+
+    `rung_newton(seed, kind, g) -> (x, converged)`.
+    """
     active = jnp.logical_and(needs_rescue, jnp.logical_not(conv_in))
     false = jnp.asarray(False)
 
     def ladder(kind, seed, act, **kw):
         def rung(xs, g):
-            st = rung_newton(xs, kind, g)
-            return st.x, st.converged
+            return rung_newton(xs, kind, g)
         return _adaptive_ladder_traced(rung, seed, active=act, **kw)
 
     ## The physical homotopy first (a leaky junction is a circuit), then the
@@ -773,8 +809,7 @@ def transient_point_rescue(rung_newton, x_anchor, nr_state, needs_rescue,
     x_out = jnp.where(rescued,
                       jnp.where(c_g, x_g, jnp.where(c_s, x_s, x_p)),
                       x_in)
-    return (nr_state._replace(
-        x=x_out, converged=jnp.logical_or(conv_in, rescued)), rescued)
+    return x_out, jnp.logical_or(conv_in, rescued), rescued
 
 
 # ---------------------------------------------------------------------------
@@ -1619,7 +1654,9 @@ def pcnr_vector_timestep(state: TransientState, circuit, irefnode, devices,
                          eval_method='euler', reltol=1e-4, abstol=1e-12,
                          xtol=1e-12, maxiter=100, params_tree=None,
                          tline_dG=None, analysis='tran',
-                         provided_function=None, first_order=None):
+                         provided_function=None, first_order=None, x0=None,
+                         gmin_rows=None, gmin=0.0, gshunt_nodes=0, gshunt=0.0,
+                         ptc_g=0.0, ptc_anchor=None):
     """One timestep of vector PCNR: `pcnr_inner_loop`'s device-shaped twin.
 
     Everything the residual carries beyond ``circuit.i`` -- the companion
@@ -1653,10 +1690,17 @@ def pcnr_vector_timestep(state: TransientState, circuit, irefnode, devices,
         if tline_dG is not None:
             u_extra = u_extra + tline_dG @ x
             J_extra = J_extra + tline_dG
-        return u_extra, J_extra
+        ## `u_extra`/`J_extra` are added straight onto g_mna/J_mm, so
+        ## stamping the deformation into them IS stamping it into the MNA
+        ## block -- the same terms, in the same place, as the other two
+        ## solvers.
+        return _continuation_terms(u_extra, J_extra, x, gmin_rows, gmin,
+                                   gshunt_nodes, gshunt, ptc_g, ptc_anchor)
 
     ## The predictor knows the system size; the call site should not have to.
-    x_pred = extrapolate_predictor(state)
+    ## `x0` overrides it for a continuation rung (see `pcnr_inner_loop` on
+    ## why v_lim need not be carried alongside).
+    x_pred = extrapolate_predictor(state) if x0 is None else x0
     return pcnr_vector_inner_loop(
         circuit, devices, x_pred, epar, x_pred.shape[0], irefnode,
         reltol=reltol, abstol=abstol, xtol=xtol, maxiter=maxiter,
@@ -1822,7 +1866,9 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
                     j_fns=None,
                     eval_method='gear', reltol=1e-4, abstol=1e-12,
                     xtol=1e-12, maxiter=100, params_tree=None, tline_dG=None,
-                    analysis='tran', provided_function=None):
+                    analysis='tran', provided_function=None, x0=None,
+                    gmin_rows=None, gmin=0.0, gshunt_nodes=0, gshunt=0.0,
+                    ptc_g=0.0, ptc_anchor=None):
     """One time point by PCNR: predict on the Schur-reduced system, correct
     each junction's own unknown with pnjlim.  Returns PcnrState."""
     from pycircuit.circuit._limiting import _pnjlim_branchless
@@ -1846,7 +1892,12 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
         if tline_dG is not None:
             F = F + tline_dG @ x
             J = J + tline_dG
-        return F, J
+        ## The continuation rung's deformation goes in BEFORE the junction
+        ## stamps are moved onto their own unknowns, so gmin is a plain
+        ## parallel conductance across the junction exactly as it is for the
+        ## plain Newton and at DC -- it is not part of the limited quantity.
+        return _continuation_terms(F, J, x, gmin_rows, gmin, gshunt_nodes,
+                                   gshunt, ptc_g, ptc_anchor)
 
     def body(ps: PcnrState):
         x, v_lim = ps.x, ps.v_lim
@@ -1901,7 +1952,12 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
     def cond(ps: PcnrState):
         return jnp.logical_and(~ps.converged, ps.iters < maxiter)
 
-    x0 = extrapolate_predictor(state)
+    ## A continuation rung is seeded from the previous rung's solution;
+    ## v_lim follows from it, because PCNR convergence REQUIRES
+    ## |g_lim| -> 0, i.e. v_lim == e_a - e_b.  So a converged rung's
+    ## limited unknowns are recoverable from its x, and the ladder does
+    ## not have to carry them.
+    x0 = extrapolate_predictor(state) if x0 is None else x0
     init = PcnrState(x=x0, v_lim=x0[j_ra] - x0[j_rb],
                      iters=jnp.asarray(0), converged=jnp.asarray(False))
     return jax.lax.while_loop(cond, body, init)
@@ -2030,6 +2086,71 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                    iters=pstate.iters,
                                    converged=pstate.converged)
             pcnr_v_lim = pstate.v_lim
+            if rescue_meta is not None:
+                ## THE CHAIN ON TOP OF PCNR -- the arrangement the CPU has
+                ## always had, and the one that makes the deformations mean
+                ## something for a junction circuit.  Layered on the PLAIN
+                ## Newton the chain is nearly useless here: that solver does
+                ## not limit, so a junction circuit fails by the exponential
+                ## overflowing, and no conductance in PARALLEL with a
+                ## junction can repair a term that is already infinite.
+                ## PCNR is this backend's limiting mechanism, so it is the
+                ## analogue of the CPU's base solver, and gmin stepping on
+                ## top of a limited Newton is the combination SPICE has
+                ## always shipped.
+                _gmin_rows, _n_nodes = rescue_meta
+
+                def _pcnr_rung(xs, kind, g):
+                    if kind == 'gmin':
+                        kw = dict(gmin_rows=_gmin_rows, gmin=g)
+                    elif kind == 'gshunt':
+                        kw = dict(gshunt_nodes=_n_nodes, gshunt=g)
+                    else:
+                        kw = dict(ptc_g=g, ptc_anchor=xs)
+                    if pcnr_meta[0] == 'vector':
+                        ps = pcnr_vector_timestep(
+                            state, circuit, irefnode, pcnr_meta[1],
+                            tline_params, tline_indices, pcnr_meta[2],
+                            eval_method=eval_method, reltol=reltol,
+                            abstol=abstol, xtol=xtol, maxiter=maxiter,
+                            params_tree=params_tree, tline_dG=tline_dG,
+                            analysis=analysis,
+                            provided_function=provided_function,
+                            x0=xs, **kw)
+                    else:
+                        _ra, _rb, _IS, _VT, _fns = pcnr_meta
+                        ps = pcnr_inner_loop(
+                            state, circuit, irefnode, _ra, _rb, _IS,
+                            pcnr_VT, tline_params, tline_indices, j_VT=_VT,
+                            j_fns=_fns, eval_method=eval_method,
+                            reltol=reltol, abstol=abstol, xtol=xtol,
+                            maxiter=maxiter, params_tree=params_tree,
+                            tline_dG=tline_dG, analysis=analysis,
+                            provided_function=provided_function,
+                            x0=xs, **kw)
+                    return ps.x, ps.converged
+
+                _x_r, _conv_r, rescued = _rescue_chain(
+                    _pcnr_rung, state.x_history[0], nr_state.x,
+                    nr_state.converged,
+                    jnp.logical_and(state.dt <= dt_min * (1.0 + 1e-9),
+                                    jnp.logical_not(nr_state.converged)),
+                    gmin_rows=_gmin_rows, n_nodes=_n_nodes)
+
+                ## Recover the limited unknowns of the rescued point from
+                ## its x.  Sound for the same reason the ladder need not
+                ## carry them: a converged PCNR point satisfies
+                ## v_lim == e_a - e_b to tolerance.  The controller reads
+                ## this, so it must belong to the point being committed.
+                if pcnr_meta[0] == 'vector':
+                    _devs = pcnr_meta[1]
+                    _v_r = (jnp.concatenate(
+                        [_x_r[d.probe_a] - _x_r[d.probe_b] for d in _devs])
+                        if _devs else jnp.zeros(0))
+                else:
+                    _v_r = _x_r[pcnr_meta[0]] - _x_r[pcnr_meta[1]]
+                pcnr_v_lim = jnp.where(rescued, _v_r, pcnr_v_lim)
+                nr_state = nr_state._replace(x=_x_r, converged=_conv_r)
         else:
             nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
                                          eval_method=eval_method, reltol=reltol, abstol=abstol,
@@ -2791,6 +2912,11 @@ class JAXTransient(Analysis):
         ## NoConvergenceError without this and completes with 8 rescued
         ## points with it -- the predictor overshoots the junction while the
         ## last accepted state, where the ladders seed, is still good.)
+        ## Applies to whichever solver the step uses: the plain Newton, or
+        ## PCNR (both the pair and device views).  On PCNR it is the CPU's
+        ## own arrangement -- gmin stepping on top of a LIMITED Newton --
+        ## and that is where it earns its keep: a series diode string that
+        ## PCNR alone cannot get through completes with 12 points rescued.
         Parameter(name='continuation',
                   desc='Rescue a failed time point at minstep with the '
                        'junction-gmin/gshunt/pseudo-transient chain '
