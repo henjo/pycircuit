@@ -10,7 +10,8 @@ Gear-2's answer at that grid is only 1.17% low, and it improves 5x when the
 grid is halved -- which is not what a defect that dominates the error and
 gets WORSE under refinement should do.  So before anyone builds the fix (make
 the seeded history part of the shooting unknowns, so the period map is a
-fixed point in the augmented state), the question to answer is how much of
+fixed point in the state a two-step method needs), the question to answer
+is how much of
 the answer the seam is actually responsible for.
 
 THE DECOMPOSITION.  `_begin_period` re-seeds a flat charge history at every
@@ -85,10 +86,13 @@ while the same drop inside PSS costs 1.3e-11 V.  Only fixed-point against
 fixed-point is a fair comparison, which is what `run` does.
 """
 import warnings
+from copy import copy
+
 import numpy as np
 
 from pycircuit import circuit
 from pycircuit.circuit import SubCircuit, gnd, VSin, R, L, C
+from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.shooting import PSS
 
 ## Enough periods for the primed continuation to reach its own limit cycle.
@@ -116,7 +120,139 @@ def peak_of(pss, X, node='c'):
     return float(np.max(np.abs(np.asarray([x[i] for x in X], dtype=float))))
 
 
-def solve_augmented(method, npts, f0=1e3, Q=20.0, reltol=1e-9):
+def _q_dot(pss, x_full, t):
+    """`qdot = -(i(x) + u(t))` -- free from the DAE, exactly, no solve.
+
+    The residual a converged step satisfies IS `i(x) + iq + u = 0`, so the
+    companion current is the exact charge derivative at that point.  This is
+    the asymmetry the whole seam rests on: the DAE hands over the first
+    derivative of the charge and refuses the second (`qddot` needs `xdot`,
+    which needs `C^-1`, and C is singular in MNA).  It is also why
+    TRAPEZOIDAL has no seam -- it needs only `iq_{-1}`, which is exactly
+    this -- while Gear-2 needs a second CHARGE, which no residual equation
+    supplies.
+    """
+    tr = pss._transient()
+    i = np.asarray(pss.cir.i(x_full, tr.epar), dtype=float)
+    u = np.asarray(pss.cir.u(t, analysis=pss.par.analysis), dtype=float)
+    return -(i + u)
+
+
+def _install_back_extrapolated(pss, x0_full, times, dt):
+    """METHOD H: build `q_{-1}` from derivatives instead of solving for it.
+
+        q_{-1} = q_0 - (3h/2) qdot_0 + (h/2) qdot_1     error (5/12) h^3 q3
+
+    Both derivatives are free (`_q_dot`).  `x_1` comes from ONE throwaway
+    backward-Euler predictor step; its own O(h^2) error enters with
+    coefficient `h/2` and so lands at O(h^3), which is why a first-order
+    predictor is enough for a second-order extrapolation.
+
+    Compare the shipped plain path, which is ALGEBRAICALLY the first-order
+    member of this family -- its entering charge is exactly
+    `q_0 - h qdot_0` (verified to 1.6e-38) -- so this is the same idea
+    carried one term further, and the seam should fall as h^3 not h^2.
+    """
+    tr = pss._transient()
+    n = pss.cir.n
+    q0 = np.asarray(pss.cir.q(x0_full, tr.epar), dtype=float)
+    qd0 = _q_dot(pss, x0_full, times[0])
+
+    ## The predictor: a fresh run seeded at x_0 opens `is_first_step`, so the
+    ## step is order-dropped to backward Euler -- exactly what is wanted, and
+    ## it needs no history beyond `q_0`.
+    tr._begin_run(x0_full, n)
+    tr._dt = dt
+    x0_red = np.concatenate((np.asarray(x0_full)[:pss.irefnode],
+                             np.asarray(x0_full)[pss.irefnode + 1:]))
+    x1_red = pss.solve_timestep(x0_red, times[1], dt)
+    x1_full = np.asarray(pss._insert_refnode(x1_red), dtype=float)
+    qd1 = _q_dot(pss, x1_full, times[1])
+
+    qm1 = q0 - 1.5 * dt * qd0 + 0.5 * dt * qd1
+
+    ## Install: ring index 0 is `q_0` (the previous point for the step to
+    ## `h`), index 1 is `q_{-1}`.  Index 2 is never read by a two-step
+    ## companion; it is filled to keep the ring well formed.
+    tr._begin_run(x0_full, n)
+    tr._dt = dt
+    tr._qlast = pss.toolkit.array([q0, qm1, qm1][:len(tr._qlast)])
+    tr._q_cache = None
+    tr._is_first_step = False
+    tr._no_history = False
+    tr._dt_last = dt
+    tr._dt_last2 = None
+    return tr
+
+
+def solve_back_extrapolated(method, npts, f0=1e3, Q=20.0, reltol=1e-9):
+    """Shoot on `x_0` alone, with the history back-extrapolated (method H).
+
+    ⚠ THE JACOBIAN HERE IS APPROXIMATE ON PURPOSE.  `d q_{-1}/d x_0` is a
+    real term (`C_0 + (3h/2) G_0 - (h/2) G_1 dx_1/dx_0`) and this seeds the
+    sensitivity rings the way the plain path does instead -- flat.  That is
+    sound for THIS measurement: a Newton's fixed point is set by its
+    RESIDUAL, and only its iteration count by its Jacobian.  Shipping the
+    formulation would need the exact one; measuring its accuracy does not.
+    """
+    from pycircuit.circuit import analysis as _an
+    period = 1.0 / f0
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(q20_rlc(f0, Q), method=method, reltol=reltol)
+    ## One ordinary solve first, purely to initialise `irefnode`, the inner
+    ## `Transient` and the autonomy verdict.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=period, timestep=period / npts, maxiterations=40)
+
+    times, dt = pss.toolkit.linspace(0.0, period, num=npts, endpoint=True,
+                                     retstep=True)
+    m = pss.cir.n - 1
+    eye = np.asarray(pss.toolkit.eye(m))
+
+    def traverse(x0_red):
+        x0_full = np.asarray(pss._insert_refnode(x0_red), dtype=float)
+        _install_back_extrapolated(pss, x0_full, times, dt)
+        C0 = np.asarray(pss._C_at(x0_red))
+        Px, Cs = [eye, eye], [C0, C0]
+        Pq = np.zeros((m, m))
+        x = copy(x0_red)
+        for t in times[1:]:
+            x = copy(pss.solve_timestep(x, t, dt))
+            Px_new, Pq = pss._step_sensitivity(
+                Px, Cs, Pq, np.asarray(pss._Jf), np.asarray(pss._C))
+            Px = [Px_new, Px[0]]
+            Cs = [copy(np.asarray(pss._C)), Cs[0]]
+        return x, Px[0]
+
+    def func(x0_red):
+        x_end, Px = traverse(x0_red)
+        return np.asarray(x0_red) - np.asarray(x_end), eye - Px
+
+    tol = _an.newton_tolerance_vectors(
+        len(pss.cir.nodes), len(pss.cir.branches), pss.par.iabstol,
+        pss.par.vabstol, pss.toolkit)[1]
+    (tol,) = remove_row_col((tol,), pss.irefnode, pss.toolkit)
+    x0_ss, _i, ier, _m = _an.fsolve(
+        func, np.zeros(m), maxiter=40, reltol=reltol, abstol=tol, xtol=tol,
+        toolkit=pss.toolkit, full_output=True)
+    assert ier == 1, 'back-extrapolated %s/%d did not converge' % (method, npts)
+
+    ## The replay must open the way the solve did -- same lesson as the
+    ## shipped path, and the reason this is a call rather than a copy.
+    x0_full = np.asarray(pss._insert_refnode(x0_ss), dtype=float)
+    _install_back_extrapolated(pss, x0_full, times, dt)
+    io_ = pss.cir.get_node_index('c')
+    io_ -= 1 if io_ > pss.irefnode else 0
+    x = copy(x0_ss)
+    peak = abs(float(np.asarray(x)[io_]))
+    for t in times[1:]:
+        x = pss.solve_timestep(x, t, dt)
+        peak = max(peak, abs(float(np.asarray(x)[io_])))
+    return peak
+
+
+def solve_shipped(method, npts, f0=1e3, Q=20.0, reltol=1e-9):
     """The shipped formulation, whatever it is for this method.
 
     For a companion reaching two charges back this solves for `(x_0, x_{-1})`
@@ -131,7 +267,7 @@ def solve_augmented(method, npts, f0=1e3, Q=20.0, reltol=1e-9):
         warnings.simplefilter('ignore')
         res = pss.solve(period=period, timestep=period / npts,
                         maxiterations=40)
-    assert pss.converged, 'augmented %s/%d did not converge' % (method, npts)
+    assert pss.converged, 'shipped %s/%d did not converge' % (method, npts)
     return float(np.max(np.abs(
         np.asarray(res['tpss'].v('c'), dtype=float).ravel()))), pss
 
@@ -143,8 +279,8 @@ def run(method, npts, f0=1e3, Q=20.0, reltol=1e-3):
     ## THE PLAIN FORMULATION, held here on purpose.  Gear-2 now solves for
     ## its entering history, so measuring the shipped path would measure a
     ## seam of zero and the record of what the seam WAS would be gone.  This
-    ## keeps the before, and `solve_augmented` supplies the after.
-    pss._augmented = lambda: False
+    ## keeps the before, and `solve_shipped` supplies the after.
+    pss._solves_history = lambda: False
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res = pss.solve(period=period, timestep=period / npts,
@@ -187,12 +323,16 @@ def run(method, npts, f0=1e3, Q=20.0, reltol=1e-3):
         last = window
     primed = peak_of(pss, last)
 
-    fixed, apss = solve_augmented(method, npts, f0, Q)
+    fixed, apss = solve_shipped(method, npts, f0, Q)
+    ## Method H only says anything for a companion that reads two charges;
+    ## for the others there is no `q_{-1}` in the recursion to build.
+    bx = (solve_back_extrapolated(method, npts, f0, Q)
+          if pss._companion_reach() >= 2 else None)
     return dict(method=method, npts=npts, cold=cold, primed=primed,
                 analytic=Q, max_lte=pss.max_lte, total_lte=pss.total_lte,
                 seam_lte=pss.max_lte_seam, hist_spread=spread,
-                fixed=fixed, augmented=apss.augmented,
-                fixed_seam=apss.max_lte_seam)
+                fixed=fixed, solved_history=apss.solved_history,
+                fixed_seam=apss.max_lte_seam, backextrap=bx)
 
 
 def main(reltol=1e-9):
@@ -223,9 +363,39 @@ def main(reltol=1e-9):
     print('\ndoes the fix REACH the cycle a real history produces?')
     for r in rows:
         gap = abs(r['fixed'] - r['primed'])
-        print('  %-6s n=%-4d augmented=%-6s |shipped - primed| = %.2e  %s'
-              % (r['method'], r['npts'], r['augmented'], gap,
+        print('  %-6s n=%-4d solved_history=%-6s |shipped - primed| = %.2e  %s'
+              % (r['method'], r['npts'], r['solved_history'], gap,
                  'seam reported: %s' % r['fixed_seam']))
+
+    ## METHOD H -- the cheap approximate alternative, kept as a measurement.
+    ## It shoots on `x_0` ALONE and builds the history from derivatives the
+    ## DAE gives away, so it does not double the unknowns.  The question it
+    ## answers is whether an approximation can make the seam stop mattering
+    ## without the exact formulation's 2m x 2m solve.
+    bx = [r for r in rows if r['backextrap'] is not None]
+    if bx:
+        print('\nmethod H (derivative back-extrapolation, single unknown):')
+        hdr = ('  %-6s %5s | %10s %10s | %10s %10s'
+               % ('method', 'npts', 'seam plain', 'seam H', 'share plain',
+                  'share H'))
+        print(hdr); print('  ' + '-' * (len(hdr) - 2))
+        for r in bx:
+            interior = abs(r['primed'] - r['analytic'])
+            sp = abs(r['primed'] - r['cold'])
+            sh = abs(r['backextrap'] - r['primed'])
+            print('  %-6s %5d | %10.3e %10.3e | %10.3f %10.4f'
+                  % (r['method'], r['npts'], sp, sh,
+                     sp / interior, sh / interior))
+        for a, b in zip(bx, bx[1:]):
+            if a['method'] != b['method']:
+                continue
+            fa = abs(a['backextrap'] - a['primed'])
+            fb = abs(b['backextrap'] - b['primed'])
+            pa = abs(a['primed'] - a['cold'])
+            pb = abs(b['primed'] - b['cold'])
+            print('  %s %d -> %d per halving: plain %5.2fx (h^2 = 4), '
+                  'H %5.2fx (h^3 = 8)'
+                  % (a['method'], a['npts'], b['npts'], pa / pb, fa / fb))
 
     print('\nwhat the estimator says vs what it costs, where a seam exists'
           ' at all:')

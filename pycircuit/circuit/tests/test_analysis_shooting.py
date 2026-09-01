@@ -402,7 +402,7 @@ def test_non_convergence_is_reported():
 
     This test used to pin the report on TRAPEZOIDAL, which did not converge
     because its monodromy was structurally incomplete.  Phase 3 gave it the
-    augmented (x, iq) state and it converges in 6 iterations, so that case
+    `(x, iq)` monodromy and it converges in 6 iterations, so that case
     is gone -- as it should be.  The property being protected was never
     "trap fails"; it is "a capped solve says so".  An iteration cap is the
     honest way to produce one, because it cannot expire when a method is
@@ -639,10 +639,10 @@ def test_pss_uses_the_transient_integrator_not_a_private_copy():
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: the augmented (x, iq) monodromy
+# Phase 3: the (x, iq) monodromy
 # ---------------------------------------------------------------------------
 
-def test_trapezoidal_shooting_converges_with_the_augmented_state():
+def test_trapezoidal_shooting_converges_with_the_x_iq_monodromy():
     """Trapezoidal's period map carries `iq`, so the monodromy must too.
 
     With an x-only monodromy trap did not converge at all -- worse, applying
@@ -668,7 +668,7 @@ def test_trapezoidal_is_now_right_on_both_axes():
     Euler CONVERGED the shooting equation and landed at 8.815 V against a
     20 V analytic peak (a discretisation error), while trapezoidal did not
     converge the shooting equation and landed at 19.848 V.  With the
-    augmented state, trap converges AND lands at 19.990 V -- 0.05% of
+    `(x, iq)` monodromy, trap converges AND lands at 19.990 V -- 0.05% of
     analytic.
 
     Euler is asserted unchanged in the same breath, because the unified
@@ -791,10 +791,10 @@ def test_an_autonomous_circuit_is_solved_for_its_own_period():
     ⚠ This test used to assert the opposite -- that a self-oscillating
     circuit could only be DIAGNOSED, returning the trivial orbit with a
     warning.  That was honest while only the fixed-period system existed,
-    and expired when the augmented one landed.  The claim it protects is
+    and expired when the free-period one landed.  The claim it protects is
     the same underneath: such a circuit must not come back silently wrong.
 
-    Why a fixed period cannot work, which is what the augmented system is
+    Why a fixed period cannot work, which is what the free-period system is
     for.  At the nominal period the discretisation precesses -- measured
     2.1e-3 rad per cycle at 100 steps/period, falling as h^2 -- so the
     period map is a rotation by slightly less than 2*pi whose only fixed
@@ -824,7 +824,7 @@ def test_an_autonomous_circuit_is_solved_for_its_own_period():
 
     pss, res, nonconv = run(200)
     assert pss.autonomous is True
-    assert not nonconv, 'the augmented system did not converge'
+    assert not nonconv, 'the free-period system did not converge'
 
     ## the orbit closes -- radius is the amplitude, not zero and not drifting
     vo = np.asarray(res['tpss'].v('o'), dtype=float).ravel()
@@ -929,13 +929,13 @@ def _pss_plain(method, timestep=1e-5, reltol=1e-3, **kw):
     import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_q20_rlc(), method=method, reltol=reltol, **kw)
-    pss._augmented = lambda: False
+    pss._solves_history = lambda: False
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         res = pss.solve(period=1e-3, timestep=timestep, maxiterations=40)
     pss._caught = [str(x.message) for x in caught
                    if issubclass(x.category, RuntimeWarning)]
-    assert pss.converged and not pss.augmented
+    assert pss.converged and not pss.solved_history
     peak = float(np.max(np.abs(
         np.asarray(res['tpss'].v('c'), dtype=float).ravel())))
     return peak, pss
@@ -1068,7 +1068,7 @@ def test_pss_lte_seam_is_reported_only_where_a_method_can_have_one():
     ## ...and must NOT be, once that point is an unknown the solve closed.
     ## A flag that survived its own fix would be the worst of both.
     _peak, aug = _pss_lte('gear')
-    assert aug.augmented and aug.max_lte_seam is None, \
+    assert aug.solved_history and aug.max_lte_seam is None, \
         'the solved history is not a seam: %r' % aug.max_lte_seam
 
 
@@ -1121,7 +1121,7 @@ def test_pss_lte_measurement_does_not_touch_the_solution():
     assert_array_equal(measured, unmeasured)
 
 
-def test_pss_augments_exactly_where_the_companion_needs_it():
+def test_pss_solves_history_exactly_where_the_companion_needs_it():
     """The formulation follows the integrator's reach, not its name.
 
     MEASURED, in `benchmarks/pss_seam_cost.py`: a companion reading one
@@ -1140,14 +1140,14 @@ def test_pss_augments_exactly_where_the_companion_needs_it():
 
     for name in ('euler', 'trap'):
         _p, pss = _pss_lte(name)
-        assert pss.augmented is False, \
-            '%s has no seam to fix and must not pay for the augmented ' \
-            'system' % name
+        assert pss.solved_history is False, \
+            '%s has no seam to fix and must not pay for a solved ' \
+            'history' % name
     _p, gear = _pss_lte('gear')
-    assert gear.augmented is True
+    assert gear.solved_history is True
 
 
-def test_pss_augmented_state_removes_the_gear2_seam():
+def test_pss_solved_history_removes_the_gear2_seam():
     """The fix, against the number that predicted it.
 
     The seam was measured by continuing 80 periods past the converged solve
@@ -1165,7 +1165,7 @@ def test_pss_augmented_state_removes_the_gear2_seam():
     plain_err = {100: 2.336e-01, 200: 4.549e-02, 400: 9.924e-03}
     for npts, target in predicted.items():
         peak, pss = _pss_lte('gear', timestep=1e-3 / npts, reltol=1e-9)
-        assert pss.augmented and pss.converged
+        assert pss.solved_history and pss.converged
         assert abs(peak - target) < 5e-5, \
             'npts=%d landed at %.5f, not the primed limit cycle %.5f' % (
                 npts, peak, target)
@@ -1178,7 +1178,7 @@ def test_pss_augmented_state_removes_the_gear2_seam():
             'the solved history is not a seam: %r' % pss.max_lte_seam
 
 
-def test_pss_augmented_jacobian_is_the_exact_one():
+def test_pss_solved_history_jacobian_is_the_exact_one():
     """⚠ THE PLAIN PATH'S JACOBIAN CARRIES THE ASSUMPTION IT IS FIXING.
 
     It seeds both sensitivity rings with `I`, which says `d x_{-1}/d x_0 =
@@ -1187,7 +1187,7 @@ def test_pss_augmented_jacobian_is_the_exact_one():
     history solved for, the Jacobian is exact and the same circuit needs a
     handful of residual evaluations instead of a dozen.
 
-    So the augmented system is not a cost: it doubles the unknowns of a
+    So solving for the history is not a cost: it doubles the unknowns of a
     solve that is not the expensive part, and removes iterations from the
     part that is.
     """
@@ -1206,7 +1206,7 @@ def test_pss_augmented_jacobian_is_the_exact_one():
             return orig(wrapped, x0, *a, **kw)
         pss = PSS(_q20_rlc(), method='gear', reltol=1e-9)
         if force_plain:
-            pss._augmented = lambda: False
+            pss._solves_history = lambda: False
         _an.fsolve = spy
         try:
             with warnings.catch_warnings():
@@ -1223,14 +1223,14 @@ def test_pss_augmented_jacobian_is_the_exact_one():
         'approximate one\'s %d' % (aug, plain)
 
 
-def test_pss_augmented_history_refuses_a_companion_it_cannot_seed():
-    """The augmented state carries charges, so `b != 0` needs a third unknown.
+def test_pss_solved_history_refuses_a_companion_it_cannot_seed():
+    """A solved history carries charges, so `b != 0` needs a third unknown.
 
     A companion with an `iq_{n-1}` term reads a value no charge determines;
     seeding it with zeros would be inventing an initial condition the solve
     never closed.  No such two-step method exists here -- Gear-2 has `b = 0`
     -- so this is a refusal with a reason rather than dead code, and it is
-    what makes the zero `Pq` seed in `_traverse_augmented` true.
+    what makes the zero `Pq` seed in `_traverse_solved_history` true.
     """
     from pycircuit.circuit.integrator import Gear2Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1243,3 +1243,73 @@ def test_pss_augmented_history_refuses_a_companion_it_cannot_seed():
             pss.solve(period=1e-3, timestep=1e-5, maxiterations=4)
     finally:
         Gear2Integrator.companion_coefficients = orig
+
+
+def test_the_composed_autonomous_system_removes_the_seam_too():
+    """⚠ THIS TEST EXPIRED AS WRITTEN, AND WAS REWRITTEN AS IT ASKED.
+
+    It used to assert that autonomous Gear-2 KEPT its seam, with the note
+    that if the two enlargements were ever composed "the wobble assertion
+    below is what must flip -- rewrite it, do not delete it".  They were,
+    the same day, and this is that rewrite: the property under protection
+    is unchanged -- the seam is visible as an orbit that does not close in
+    radius -- only its expected value moved.
+
+    An autonomous circuit under a two-step method needs BOTH enlargements:
+    the period because it is not given, the history because the companion
+    reads it.  The composed system solves `(x_0, x_{-1}, T)` against both
+    states closing plus a phase condition.
+
+    The gate is the free-running measurement, as it was for the driven
+    case: continuing past the solve on a real history gives +332.184 ppm at
+    200 steps and +82.652 at 400, against a plain formulation's +329.682
+    and +82.342.  The composed solve must LAND there, not merely improve.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def solved(method, n):
+        pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=1e-3, timestep=1e-3 / n, maxiterations=30)
+        assert pss.converged and pss.autonomous
+        rad = np.hypot(
+            np.asarray(res['tpss'].v('o'), dtype=float).ravel(),
+            np.asarray(res['tpss'].v('s'), dtype=float).ravel())
+        return pss, float(np.max(rad) - np.min(rad)), \
+            1e6 * (pss.period - 1e-3) / 1e-3
+
+    ## a two-step companion needs the history even when the period is free
+    gear200, wobble200, ppm200 = solved('gear', 200)
+    assert gear200.solved_history is True, \
+        'a free period does not remove the need for a readable history'
+
+    ## the orbit closes now -- this is the assertion that flipped
+    assert wobble200 < 1e-9, \
+        'the seam is back: orbit radius spread %.3e (was 2.095e-04 on the ' \
+        'plain formulation, and must now be gone)' % wobble200
+
+    ## and the period is the free-running one, not merely nearer to it
+    for n, target in ((200, 332.184), (400, 82.652)):
+        _p, _w, ppm = solved('gear', n)
+        assert abs(ppm - target) < 0.05, \
+            'n=%d solved %+.3f ppm, not the free-running %+.3f' % (
+                n, ppm, target)
+
+    ## the free-phase eigenvalue survives the enlargement, so the autonomous
+    ## diagnostic still says what it said -- on a 2m x 2m spectrum that now
+    ## also carries the two-step method's parasitic roots
+    assert gear200.spectral_radius > 0.99, \
+        'no unit-circle eigenvalue in the composed monodromy: %.6f' \
+        % gear200.spectral_radius
+
+    ## ⚠ AND THE VALUE CAVEAT, PINNED.  On this circuit Gear-2 is still the
+    ## worse choice -- its own phase error is ~4x trapezoidal's -- so the
+    ## default stays `trap`.  What composing buys is that a two-step method
+    ## is CORRECT when it is the right tool, i.e. a stiff oscillator.
+    _t, _tw, trap_ppm = solved('trap', 200)
+    assert abs(ppm200) > 2.0 * abs(trap_ppm), \
+        "gear2's phase error (%+.1f ppm) is no longer dominant against " \
+        "trapezoidal's (%+.1f ppm); the recommendation to default to trap " \
+        "rested on that, so re-measure it" % (ppm200, trap_ppm)

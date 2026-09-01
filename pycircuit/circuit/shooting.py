@@ -180,10 +180,43 @@ class PSS(Analysis):
          So `max_lte_seam` is a FLAG, not a magnitude -- at 100 points the
          estimator's seam/interior ratio is 505x and the answer's is 1.18x.
 
-      4b. AUGMENTED STATE FOR A TWO-STEP COMPANION -- DONE (2026-09-01),
+    ⚠ THREE THINGS IN THIS CLASS ENLARGE SOMETHING, AND ALL THREE WERE
+    ONCE CALLED "AUGMENTED".  One word, three referents, in one file --
+    which is how a reader ends up applying a statement about one of them to
+    another.  They are now named apart, and the names are worth learning:
+
+      the `(x, iq)` MONODROMY   what trapezoidal's period map differentiates.
+                                Its recursion carries a companion current, so
+                                an x-only monodromy is structurally
+                                incomplete.  About the DERIVATIVE, not the
+                                unknowns.
+      the FREE-PERIOD system    what an autonomous circuit solves: unknowns
+                                `(x0, T)` with a phase condition, because the
+                                period is not given.  `func_solved_history`'s
+                                sibling `func_autonomous`.
+      a SOLVED ENTERING HISTORY unknowns `(x0, x_{-1})`, 4b.  About where
+                                the period map STARTS, not how long it runs.
+                                DRIVEN circuits.  `self.solved_history`.
+      the COMPOSED system       unknowns `(x0, x_{-1}, T)`, 4c -- the second
+                                and third TOGETHER, for an autonomous
+                                circuit under a two-step method.  ⚠ NOT a
+                                synonym for either half: quoting 4b's
+                                numbers as "the composed system's" is an
+                                error this docstring has already made.
+
+    ⚠ AND "THE SEAM IS REMOVED" IS NOT "THE ANSWER IS RIGHT".  Below,
+    `exact` means the SEAM is gone -- the solve lands on the limit cycle the
+    same grid and method reach from a real history.  It does NOT mean the
+    analytic answer: 4b's Gear-2 at 100 points/period returns 19.89297 V
+    against 20 V, still 1.070e-01 V out, and that residue is ordinary
+    interior discretisation error which no history fix touches.  Read
+    `exact` as "seam-free", never as "error-free".
+
+      4b. A SOLVED ENTERING HISTORY FOR A TWO-STEP COMPANION (DRIVEN
+         circuits; the autonomous composition is 4c) -- DONE (2026-09-01),
          and it is the remedy that measurement pointed at.  `(x_0, x_{-1})`
          are unknowns together and both must close; see
-         `_traverse_augmented`.  Applied where the COMPANION reaches two
+         `_traverse_solved_history`.  Applied where the COMPANION reaches two
          charges back (`_companion_reach`), which is Gear-2 alone -- euler
          and trapezoidal keep the plain path because their seam measured
          zero, and enlarging their system would double the unknowns to fix
@@ -194,22 +227,274 @@ class PSS(Analysis):
          history produces, removing it must LAND on that cycle.  It does,
          to 2.5e-07 V:
 
-              points   plain      primed     augmented   error     gain
+              points   plain      primed     solved-hist error     gain
                  100   19.76639   19.89297   19.89297    2.34e-1 -> 1.07e-1  2.18x
                  200   19.95451   19.98524   19.98524    4.55e-2 -> 1.48e-2  3.08x
                  400   19.99008   19.99735   19.99735    9.92e-3 -> 2.65e-3  3.74x
+
+         ⚠ Read the `error` column: 19.89297 is NOT 20 V.  The seam is gone;
+         1.070e-01 V of interior discretisation error remains, untouched.
 
          ⚠ AND IT IS CHEAPER, WHICH WAS NOT THE EXPECTATION.  Two residual
          evaluations against twelve, 4.3x faster wall-clock on that circuit.
          The plain path seeds BOTH sensitivity rings with `I` -- which is
          the flat-history assumption written into the Jacobian -- so its
          Newton was inexact and nobody could see it, because Newton
-         converges anyway from an approximate Jacobian.  The augmented one
-         is exact.
+         converges anyway from an approximate Jacobian.  The
+         solved-history one is exact.
 
-         Autonomous runs stay on the plain path: the period is already an
-         unknown there and the two enlargements have not been composed, so
-         an autonomous Gear-2 run keeps the seam it has always had.
+      4c. THE COMPOSED SYSTEM -- `(x_0, x_{-1}, T)`, AUTONOMOUS ONLY -- DONE
+         (2026-09-01), `func_autonomous_solved_history`.  It is 4b's
+         enlargement AND the free-period one at once, because an autonomous
+         circuit under a two-step method needs both: the period because it
+         is not given, the history because the companion reads it.  4b alone
+         does not cover such a circuit and 4b's numbers are not this one's.
+
+         ⚠ REFUSED FIRST, ON THE MEASUREMENT BELOW, THEN BUILT BECAUSE IT
+         WAS ASKED FOR.  The evidence did not change; the decision did, and
+         it was the owner's to make.  The measurement still stands and is
+         still the reason `trap` is the default -- see the value caveat at
+         the end of this item.
+
+         WHAT THE SEAM DOES TO AN OSCILLATOR IS NOT WHAT IT DOES TO A DRIVEN
+         CIRCUIT, and the guess was backwards.  The expectation was that it
+         would matter MORE, the period being an unknown a per-period kick
+         could land in.  Measured on the quadrature phase element it is the
+         opposite: the seam moved the solved period by 2.5 ppm of a 332 ppm
+         error (0.75%, and 0.38% at 400 steps) against 54% for the driven
+         resonator.  The reason is one item up -- a shooting fixed point
+         ABSORBS a once-per-period perturbation, and a free period is one
+         more degree of freedom to absorb it into -- so the kick landed in
+         the orbit's SHAPE, as a radius wobble of 2.095e-04 on an orbit of
+         radius 1, instead of its frequency.
+
+         Composing fixes both, and the wobble is the visible half:
+
+              points   plain       free-running   composed
+                 200   +329.682    +332.184       +332.185   ppm
+                 400    +82.342     +82.652        +82.651   ppm
+              radius wobble at 200: 2.095e-04  ->  6.6e-12
+
+         The free-phase eigenvalue survives the enlargement -- the composed
+         run reads `spectral_radius` 1.000000 -- so the autonomous
+         diagnostic still says what it said.  ⚠ But it now reads the FULL
+         2m x 2m map, whose spectrum carries the parasitic roots of the
+         two-step discretisation alongside the physical multipliers.  See
+         the literature note: controlling those roots is the whole subject,
+         and a future threshold on this number should know it is not reading
+         a purely physical spectrum.
+
+         ⚠ THE VALUE CAVEAT, UNCHANGED BY BUILDING IT.  Gear-2's own phase
+         error is +332 ppm against trapezoidal's +83 ppm at the same grid,
+         both second order, so on THIS circuit composed Gear-2 is still the
+         worse choice and `method='trap'` -- the default -- remains the
+         right answer.  What the composition buys is that a two-step method
+         is CORRECT when it is the right tool, which is a stiff autonomous
+         circuit: `doc/transient_review.md` sec. 4.6 measures trapezoidal
+         ringing at `|e_n/e_{n-1}| ~ 0.9960` at `h*lambda = -1000` where
+         Gear-2 sits at 0.0972.  Before this, such a circuit had no good
+         option.
+
+    4d. THE CHEAP APPROXIMATE ALTERNATIVE, measured and NOT shipped.  The
+        4b system is seam-free but doubles the unknowns, so it is worth
+        knowing what an approximation buys.  (Method H was measured against
+        4b, the DRIVEN system -- not against 4c.)  `q_{-1}` can be BUILT from
+        `x_0` instead of solved for, keeping the system at m unknowns.
+
+        ⚠ AND THE PLAIN PATH IS ALREADY THE FIRST-ORDER MEMBER OF THAT
+        FAMILY, which is the fact that reframes the whole question.  Its
+        entering charge is EXACTLY `q_0 - h qdot_0` -- checked against the
+        converged iterate to 1.6e-38 relative -- because backward Euler on
+        the opening step says exactly that.  So "add a pseudo-history" is
+        not an alternative to what shipped before 4b; it IS what shipped
+        before 4b, at first order, and it is what measured 1.266e-01 V.
+
+        THE STRUCTURAL FACT UNDERNEATH: a converged step satisfies
+        `i(x) + iq + u = 0`, so `qdot = -(i + u)` is EXACTLY available with
+        no solve, while `qddot` needs `xdot = C^-1(...)` and C is singular
+        in MNA.  The DAE gives away the first derivative of the charge and
+        refuses the second.  ⚠ That also explains 4b's measurement rather
+        than merely restating it: TRAPEZOIDAL needs only `iq_{-1}`, which is
+        that free derivative, so it is exactly initialised and has no seam
+        (1.3e-11 V).  Gear-2 needs a second CHARGE, which no residual
+        equation supplies.  That asymmetry is the whole story.
+
+        Carrying it one term further, using derivatives rather than fitting
+        charges (better conditioned: a quadratic fit `q_{-1} = 3q_0 - 3q_1 +
+        q_2` has coefficients summing to 7 in magnitude and amplifies
+        inner-solve noise):
+
+            q_{-1} = q_0 - (3h/2) qdot_0 + (h/2) qdot_1,  error (5/12) h^3
+
+        `x_1` is one throwaway backward-Euler predictor; its O(h^2) error
+        enters with coefficient h/2 and lands at O(h^3), so a first-order
+        predictor suffices.  Measured on the Q=20 resonator
+        (`benchmarks/pss_seam_cost.py`, `solve_back_extrapolated`):
+
+              points   seam plain   seam H     share plain   share H
+                 100   1.266e-01    1.985e-03      1.183      0.0185
+                 200   3.074e-02    1.175e-04      2.083      0.0080
+                 400   7.272e-03    8.769e-06      2.742      0.0033
+
+        64x smaller at 100 points, and falling 16.9x then 13.4x per halving
+        against the plain path's 4.1x -- at least the h^3 predicted, better
+        than that on these grids.  The share is what matters: the plain
+        seam GROWS as a fraction of the error and method H's VANISHES.
+
+        ⚠ AND IT DOES NOT SUBSTITUTE FOR 4c.  Measured on the autonomous
+        phase element at 200 steps/period, where the frequency is the
+        unknown and so the thing to watch:
+
+              formulation        its   period ppm   err vs ref   wobble
+              plain (x_in, T)     18     329.682      2.50      2.095e-04
+              method H (x0, T)     3     329.720      2.46      5.8e-06
+              composed 4c         14     332.185      0.001     6.6e-12
+
+        H removes the orbit's WOBBLE -- 5.8e-06 against 5.0e-04 for a flat
+        seed, so the construction itself works -- and leaves 98% of the
+        FREQUENCY error.  It fixes the shape of the orbit and not its
+        period.
+
+        ⚠ THAT SPLIT CORRECTS THIS DOCSTRING'S OWN EARLIER ATTRIBUTION.  4c
+        above called the 2.5 ppm "what the seam does to the period".  It is
+        not: the two are separate defects that one subtraction
+        (`|plain - free-running|`) had lumped together, because that
+        difference contains both and can be attributed to whichever one the
+        reader has in mind.
+
+              the SEAM (entering-history error)  ->  the radius WOBBLE.
+                  H fixes it, 86x.
+              the MISSING CLOSURE (one equation
+                  where a two-step map needs two) ->  the FREQUENCY, 2.5 ppm.
+                  H does not touch it; only 4c does.
+
+        It also sharpens the literature note: "k conditions for a k-step
+        method" is NOT a statement about initialising history.  History can
+        be initialised perfectly -- H does -- and the answer is still wrong
+        if k-1 conditions are missing.  The two are independent
+        requirements.
+
+        THE REASON IS A MISSING EQUATION, NOT AN INACCURATE HISTORY, and
+        method H is what PROVES it rather than merely suggesting it, because
+        it changes exactly one variable:
+
+              formulation   |q_-1 - q_N-2|/|q|   order   freq err   order
+              plain              4.984e-04        h^2     2.502      h^3
+              method H           3.005e-05        h^3     2.464      h^3
+              4c (solved)        0                 --     0.001       --
+
+        H cuts the history mismatch 16.6x and lifts its order from h^2 to
+        h^3 -- and the frequency moves 1.5%.  A 16.6x better history buys
+        nothing, so the history is not what is wrong.
+
+        What is wrong is the equation count.  For a two-step method the
+        discrete state is the PAIR, so periodicity is a condition on the
+        pair: 4c imposes BOTH closures (`x_0 = x_{N-1}` and `x_{-1} =
+        x_{N-2}`), while H imposes one and CONSTRUCTS the other state.  The
+        period that closes the first component is not the period that closes
+        the pair, and that gap is O(h^3) however well the history is built.  This is the literature note's
+        "k conditions for a k-step method" arriving as a number: H supplies
+        one (plus the phase row), 4c supplies two.  On a DRIVEN circuit the
+        period is given, so the missing condition has nowhere to go and H
+        does fine; on an autonomous one it goes straight into the period.
+
+        ⚠ AND H CONVERGES FASTEST, TO THE WRONG ANSWER -- three Newton
+        iterations against 4c's fourteen and the plain path's eighteen, with
+        `ier == 1` and the residual satisfied.  This class already records
+        that a converged shooting solve is not evidence of a correct answer
+        (see the successive-substitution defect above); here it is again, in
+        a formulation built the same day.  Fast convergence on a smaller
+        system is not a merit when the system is missing an equation.
+
+        SO WHY IS IT NOT SHIPPED.  ⚠ NOT ON SPEED -- that argument was made
+        here and was WRONG.  Method H's 15 residual evaluations are an
+        artefact of the flat Jacobian it was handed for the ACCURACY
+        measurement; given a good one (finite differences) it converges in
+        3, against 4b's 2.  That is not a difference worth a decision, and
+        comparing an exact-Jacobian formulation against a deliberately
+        crippled one was not a fair comparison.
+
+        What is actually left against it: it would be a SECOND formulation
+        for a job 4b already does seam-free, in a tree that has paid more
+        than once for duplicate paths -- and its exact Jacobian is
+        unwritten.  `d q_{-1}/d x_0 = C_0 + (3h/2) G_0 - (h/2) G_1
+        dx_1/dx_0` needs deriving, including the predictor's own
+        sensitivity; until it exists H is either slow (flat Jacobian, 15) or
+        expensive (finite differences, m+1 traversals per iteration).
+
+        For the DRIVEN case that leaves a maintenance judgement -- a second
+        formulation for a job 4b already does seam-free -- which belongs to
+        whoever owns the trade.  For the AUTONOMOUS case it is no longer a
+        judgement at all: H is measurably wrong there, by 98% of the
+        frequency error, and 4c is not optional.
+
+        WHAT WOULD REOPEN IT: a circuit large enough that the 2m x 2m dense
+        `J_phi` factorisation dominates -- Kundert puts that above a few
+        hundred unknowns.  ⚠ But note where that argument really points:
+        with the matrix-free Krylov solve of recorded scope item 6, the
+        enlargement costs 2x (vector length), not 8x (factorisation).  So
+        the scaling case is an argument for item 6 first, and only then for
+        approximating the history.
+
+    WHAT THE LITERATURE SAYS ABOUT 4b (checked 2026-09-01, because the fix
+    above looked like something that ought to be standard):
+
+      THE GENERAL RESULT IS CLASSICAL, and it is exactly what 4b hit.  A
+      k-step linear multistep method turns a first-order continuous problem
+      into a k-th ORDER DISCRETE one, which introduces parasitic (spurious)
+      solutions and needs **k conditions** to determine the discrete
+      solution -- not one.  That is why a single periodicity condition on
+      `x0` is under-determined for Gear-2.  It is the founding observation
+      of BOUNDARY VALUE METHODS (Brugnano & Trigiante), which supply the k
+      conditions as "one initial and k-1 final", chosen at both ends
+      deliberately because it improves stability.  A periodic BVP hands
+      them over for free: requiring the whole k-tuple to close is what
+      `func_solved_history` does.  The parasitic roots are also the spurious
+      eigenvalues that appear in the 2m x 2m monodromy, which is why the
+      autonomous eigenvalue-at-1 diagnostic would need redefining if the two
+      systems were ever composed.  Standard reference for the BVP side:
+      Ascher, Mattheij & Russell, "Numerical Solution of Boundary Value
+      Problems for ODEs" (SIAM, 1995).
+
+      THE CIRCUIT LITERATURE ASSUMES THE PROBLEM AWAY, consistently and
+      reasonably.  Kundert ("Simulation Methods for RF Integrated Circuits",
+      ICCAD 1997) writes the shooting map as `phi_T(v0, 0)` with the state
+      `v` alone and gives the sensitivity's component pieces as
+      `Jf(v(ts)) = G(v(ts)) + C(v(ts))/hs` -- a ONE-STEP, backward-Euler
+      shaped Jacobian, no `q_{n-2}` term, no history in the state.  Gourary,
+      Rusakov, Ulyanov & Zharov (MES 2019,
+      doi:10.31114/2078-7707-2019-1-25-30) likewise solve "with respect to
+      the state vector at the beginning of one period".  Both are correct
+      for the one-step methods they are written for; the plain path IS that
+      formulation.  The gap opens only when a two-step companion is handed
+      to it.  ⚠ Note the 2019 paper's title promises more than it delivers
+      here: its case for single-step is A-STABILITY ("the common drawback of
+      BDF methods is the lack of A-stability for order higher than 2"), not
+      history at the period boundary.
+
+      THE CLOSEST ANYONE COMES is Wambacq, Vandersteen, Phillips,
+      Roychowdhury, Eberle, Yang, Long & Demir, "CAD for RF circuits", which
+      argues for one-step Chebyshev-IRK discretisation and says of it:
+      "Each step is independent of the ones before and after".  That
+      independence is precisely the property whose ABSENCE is the seam --
+      but they argue it from stability and step adaptivity, not from
+      initialisation.
+
+      ⚠ AND THE STANDARD CASE AGAINST GEAR-2 DOES NOT APPLY HERE, which is
+      the part worth keeping.  The same paper's objections are all about an
+      ADAPTIVE grid: BDF "not actually as numerically stable as is popularly
+      believed"; "the second order Gear method is not A-stable for
+      nonuniform steps, and in fact it is not stable for any timestep if the
+      ratios between consecutive steps exceed about 2.4"; "a rapid change of
+      timestep in a multistep code also necessarily comes with a loss of
+      order".  PSS freezes a UNIFORM grid for the whole solve -- that is
+      what makes (3) a Newton, see above -- so none of those bite inside a
+      run.  Shooting is the one place Gear-2 is on its best behaviour, which
+      is an argument for having repaired it rather than refused it.
+
+      WHAT IS NOT IN ANY OF IT: a number.  No source found quantifies what a
+      mis-initialised history costs on a circuit.  The figures in 4b are
+      this tree's own; `benchmarks/pss_seam_cost.py` is the measurement.
 
     RECORDED SCOPE, in order, neither of these planned work yet:
 
@@ -325,7 +610,7 @@ class PSS(Analysis):
         self._lte_valid = True
         self._history_is_solved = False
         ## Set by `solve`: whether the entering history joined the unknowns.
-        self.augmented = False
+        self.solved_history = False
         ## Reported by `solve`: the peak normalised truncation error over the
         ## converged period, and where in the period it fell.  None until a
         ## solve has run, or when the grid was too short to difference.
@@ -371,9 +656,10 @@ class PSS(Analysis):
     def _companion_reach(self):
         """How many charges back the chosen integrator's companion reads.
 
-        The mechanistic property that decides whether this analysis needs an
-        augmented state: a method reaching one charge back can be started
-        from a single unknown, one reaching two cannot.  Asked of the
+        The mechanistic property that decides whether this analysis needs
+        the entering history as an unknown: a method reaching one charge
+        back can be started from a single unknown, one reaching two
+        cannot.  Asked of the
         integrator rather than inferred from `method`, so a fourth method
         arrives with the right answer instead of the default one.
         """
@@ -381,7 +667,7 @@ class PSS(Analysis):
         alphas, _b = integ.companion_coefficients(1.0, 1.0)
         return len(alphas) - 1
 
-    def _augmented(self):
+    def _solves_history(self):
         """Whether the period map needs the entering history as an unknown.
 
         MEASURED, NOT ASSUMED (`benchmarks/pss_seam_cost.py`).  A method
@@ -394,12 +680,14 @@ class PSS(Analysis):
         rising to 73% at 400 as the seam falls one order slower than the
         interior.
 
-        Autonomous runs stay on the plain path for now: the period is
-        already an unknown there and the two enlargements have not been
-        composed.  Recorded rather than hidden -- an autonomous Gear-2 run
-        keeps the seam it has always had.
+        Autonomous runs take it too, through the composed system
+        (`func_autonomous_solved_history`): a free period does not remove
+        the need for a history the companion can read.  See 4c in the class
+        docstring for what the seam does to an oscillator, which is NOT what
+        it does to a driven circuit -- 0.75% of the error against 54%,
+        landing in the orbit's shape rather than its frequency.
         """
-        return self._companion_reach() >= 2 and not self.autonomous
+        return self._companion_reach() >= 2
 
     def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new):
         """One step of the sensitivity recursion, for ANY seed width.
@@ -413,7 +701,8 @@ class PSS(Analysis):
             Pq_n = a_0 C_n P_n + S
 
         `P` is `d x_j / d(unknowns)`: one block wide in the plain
-        formulation, two in the augmented one.  Nothing here depends on that
+        formulation, two when the history is solved for.  Nothing here
+        depends on that
         width, which is why the two systems share this and not a copy.
 
         ⚠ A SOLVE, NOT AN INVERSE (stage 11).  `inv(Jf) @ ...` formed a dense
@@ -428,7 +717,8 @@ class PSS(Analysis):
         Pq_new = alphas[0] * (C_new @ Px_new) + S
         return Px_new, Pq_new
 
-    def _traverse_augmented(self, x0_in, xm1_in, times, dt):
+    def _traverse_solved_history(self, x0_in, xm1_in, times, dt,
+                                 T=None, want_dT=False):
         """One period from a SOLVED history, for a two-step companion.
 
         The plain `_traverse` solves for a single entering state `x_in` and
@@ -450,8 +740,14 @@ class PSS(Analysis):
         opening step to drop and no fabricated charge to read.
 
         Returns `(x_last, x_prev, P_last, P_prev)`, the `P` being
-        `d x / d(x_0, x_{-1})` as one `n x 2n` block.
+        `d x / d(x_0, x_{-1})` as one `n x 2n` block -- and with `want_dT`,
+        two more entries: `d x_{N-1}/dT` and `d x_{N-2}/dT`, for the
+        autonomous system, where the period is an unknown too.  BOTH rows
+        need a period column, which is the one thing the composed system
+        needs that neither enlargement carried alone.
         """
+        toolkit = self.toolkit
+        self._want_dfdh = want_dT
         toolkit = self.toolkit
         m = self.cir.n - 1
 
@@ -492,6 +788,14 @@ class PSS(Analysis):
         self.Jtvec = []
         self.times = times
 
+        ## The period column, propagated by the SAME recursion with one
+        ## extra source term.  Zero at the start: neither unknown depends on
+        ## T -- they are states, and the solve owns them.  (In the plain
+        ## autonomous system the single entering unknown is likewise
+        ## T-independent, so this opens the same way.)
+        Pt = [np.zeros(m), np.zeros(m)]
+        Pqt = np.zeros(m)
+
         x, x_prev = copy(x0_in), copy(xm1_in)
         P_prev = Px[1]
         for t in times[1:]:
@@ -503,11 +807,39 @@ class PSS(Analysis):
             Jf = np.asarray(self._Jf)
             C_new = np.asarray(self._C)
             Px_new, Pq = self._step_sensitivity(Px, Cs, Pq, Jf, C_new)
+
+            if want_dT:
+                ## Every step scales together (`h = T/(N-1)`), so `dh/dT =
+                ## h/T`, and `df/dh` at fixed solution is Fang's `p` --
+                ## `residual_dh`, already shared.  For an AUTONOMOUS circuit
+                ## its `du/dt` half vanishes, which is what makes solving
+                ## for the period tractable at all.
+                alphas, b = self._coeffs
+                St = b * Pqt if b else np.zeros_like(Pt[0])
+                for k in range(1, len(alphas)):
+                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
+                St = St + np.asarray(self._dfdh).ravel() * (dt / T)
+                Pt_new = -toolkit.linearsolver(Jf, St)
+                Pqt = alphas[0] * (C_new @ Pt_new) + St
+                Pt = [Pt_new, Pt[0]]
+
             P_prev = Px[0]
             Px = [Px_new, Px[0]]
             Cs = [copy(C_new), Cs[0]]
 
-        self._monodromy = Px[0][:, :m]
+        self._want_dfdh = False
+        ## ⚠ THE FULL 2m x 2m MAP, not the `d x_{N-1}/d x_0` corner.  For a
+        ## two-step method the one-period map acts on the PAIR, and its
+        ## spectrum is the physical Floquet multipliers TOGETHER WITH the
+        ## parasitic roots the k-step discretisation introduces (see the
+        ## literature note in the class docstring -- controlling those roots
+        ## is the whole subject).  The autonomous unit-circle eigenvalue is
+        ## in there; a threshold read off `spectral_radius` is reading a
+        ## spectrum with spurious members and should know it.
+        M = np.vstack((Px[0], Px[1]))
+        self._monodromy = M if want_dT else Px[0][:, :m]
+        if want_dT:
+            return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
         return x, x_prev, Px[0], P_prev
 
     def _install_history(self, x0_in, xm1_in, dt):
@@ -522,10 +854,10 @@ class PSS(Analysis):
         `_dt_last2` stays None on purpose.  The THIRD charge in the ring is
         still `q(x_{-1})` repeated, and the LTE estimator differences three,
         so its opening reading remains unsound and the report goes on
-        discarding it -- the augmented state fixes what the SOLUTION reads,
+        discarding it -- a solved history fixes what the SOLUTION reads,
         not what the estimator does.
 
-        Shared by `_traverse_augmented` and the final replay, because a
+        Shared by `_traverse_solved_history` and the final replay, because a
         replay that opened differently from the solve would report a
         waveform the residual was never driven to zero on.
         """
@@ -533,7 +865,7 @@ class PSS(Analysis):
         _alphas, b = tr._get_integrator().companion_coefficients(dt, dt)
         if b:
             raise NotImplementedError(
-                'the augmented state carries solved CHARGES, so a companion '
+                'a solved entering history carries CHARGES, so a companion '
                 'with a b != 0 term needs iq_{-1} as an unknown of its own. '
                 'No such two-step method exists here (gear2 has b = 0); this '
                 'refuses rather than seeding an iq nothing solved for.')
@@ -837,7 +1169,7 @@ class PSS(Analysis):
             _p = getattr(tr.active_integrator, 'ORDER', 1) + 1
             _reach = len(tr._companion_coeffs[0]) - 1
             self._lte_valid = _real_past >= _p
-            ## `_history_is_solved` is the augmented formulation saying the
+            ## `_history_is_solved` is that formulation saying the
             ## deepest charge is an UNKNOWN the solve closed, not a stand-in
             ## -- so there is no seam to report even though the companion
             ## reaches that far.  Without this the fix would go on flagging
@@ -903,7 +1235,7 @@ class PSS(Analysis):
         phase_k, phase_pin = 0, 0.0
         if self.autonomous:
             ## An unseeded autonomous run starts at the origin, which IS a
-            ## periodic solution -- the trivial one -- and the augmented
+            ## periodic solution -- the trivial one -- and the free-period
             ## system would sit there just as contentedly as the fixed one
             ## did.  The operating point is the honest default: for a phase
             ## accumulator `ic` pins it on the orbit.
@@ -929,7 +1261,7 @@ class PSS(Analysis):
         ## Jacobian depends on which integrator the inner steps used.
         ##
         ## ⚠ THE NAME IS VALIDATED BEFORE ANYTHING ASKS THE INTEGRATOR A
-        ## QUESTION.  `_augmented` resolves `method` to a class to ask how
+        ## QUESTION.  `_solves_history` resolves `method` to a class to ask how
         ## far its companion reaches; run first, it turned an unknown name
         ## into a `KeyError` from a dict several frames down, in place of the
         ## `ValueError` this raises.  Two tests caught it, both written for
@@ -942,8 +1274,8 @@ class PSS(Analysis):
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,
         ## and after it, since the two are not composed yet.
-        augmented = self._augmented()
-        self.augmented = augmented
+        solved_history = self._solves_history()
+        self.solved_history = solved_history
         xm1_ss = None
 
         ## THE SHOOTING JACOBIAN FOLLOWS THE INTEGRATOR'S OWN COEFFICIENTS.
@@ -962,7 +1294,7 @@ class PSS(Analysis):
         ## conductance the same resonator converges in FIVE iterations
         ## (2.64 -> 2.6e-2 -> 1.0e-2 -> 1.9e-4 -> 3.9e-5).
         ##
-        ## TRAPEZOIDAL NEEDS THE AUGMENTED STATE, and now has it.  Its
+        ## TRAPEZOIDAL'S MONODROMY MUST CARRY `iq` AS WELL AS `x`.  Its
         ## recursion carries `iq` as well as `x`, so the period map is a
         ## function of (x, iq); an x-only monodromy is structurally
         ## incomplete, and measured, using the Euler form for trap converged
@@ -992,7 +1324,7 @@ class PSS(Analysis):
             D = np.asarray(toolkit.eye(n - 1))
             return x0 - x_end, D - alpha * Mx
 
-        def func_augmented(z):
+        def func_solved_history(z):
             """Residual and Jacobian when the entering history is an unknown.
 
             Unknowns are `(x_0, x_{-1})`; the equations are that BOTH close,
@@ -1001,7 +1333,7 @@ class PSS(Analysis):
                 J = [[ I - A(N-1,0) , -A(N-1,-1) ],
                      [   -A(N-2,0)  , I - A(N-2,-1) ]]
 
-            with `A(j,k) = d x_j / d x_k`, which is what `_traverse_augmented`
+            with `A(j,k) = d x_j / d x_k`, which is what `_traverse_solved_history`
             returns as one `n x 2n` block per row.  A two-step companion needs
             two states to be continued, so periodicity of ONE of them is an
             under-determined statement about the orbit -- which is the defect
@@ -1010,7 +1342,7 @@ class PSS(Analysis):
             """
             m = n - 1
             x0_in, xm1_in = z[:m], z[m:]
-            x_last, x_prev, P_last, P_prev = self._traverse_augmented(
+            x_last, x_prev, P_last, P_prev = self._traverse_solved_history(
                 x0_in, xm1_in, times, dt)
 
             D = np.asarray(toolkit.eye(m))
@@ -1024,7 +1356,7 @@ class PSS(Analysis):
             return F, J
 
         def func_autonomous(z):
-            """Residual and Jacobian of the AUGMENTED system.
+            """Residual and Jacobian of the FREE-PERIOD system.
 
             Unknowns are `(x0, T)`; equations are the period map's fixed
             point plus a phase condition, because without one the system is
@@ -1056,6 +1388,59 @@ class PSS(Analysis):
             F[m] = x0[phase_k] - phase_pin
             return F, J
         
+        def func_autonomous_solved_history(z):
+            """Both enlargements at once: `(x_0, x_{-1}, T)`.
+
+            The free-period system and a solved entering history grow the
+            SAME unknown vector in different directions, and a two-step
+            method on an autonomous circuit needs both -- the period because
+            it is not given, the history because the companion reads it.
+
+                F = [ x_0  - x_{N-1} ,  x_{-1} - x_{N-2} ,  x_0[k] - pin ]
+
+                J = [[ I - A(N-1,0) ,   -A(N-1,-1) , -dx_{N-1}/dT ],
+                     [   -A(N-2,0)  , I - A(N-2,-1), -dx_{N-2}/dT ],
+                     [     e_k^T    ,       0      ,       0      ]]
+
+            ⚠ ONE PHASE ROW STILL SUFFICES, and it pins only the `x_0`
+            block.  Time translation slides BOTH states along the orbit
+            together -- the null vector is `(xdot(0) ds, xdot(-h) ds, dT)` --
+            so the freedom stays one-dimensional and pinning `x_0[k]` kills
+            it whenever `xdot(0)[k] != 0`.  That is the same reason `k` is
+            chosen as the fastest-moving coordinate at the seed, and the
+            same reason a slow one would leave the last row nearly parallel
+            to the direction it exists to remove.
+
+            ⚠ THE HISTORY POINT MOVES WITH T.  `x_{-1}` sits at `-T/(N-1)`,
+            so its location tracks the unknown.  The residual is still the
+            right statement -- `x_{-1}` and `x_{N-2}` are the same phase of
+            the orbit at every T -- and the T column is just the propagation
+            accumulated to step N-2, which the ring already carries.
+            """
+            m = n - 1
+            x0_in, xm1_in, T = z[:m], z[m:2 * m], float(z[-1])
+            tms, h = toolkit.linspace(0.0, T, num=npts, endpoint=True,
+                                      retstep=True)
+            (x_last, x_prev, P_last, P_prev, Pt_last,
+             Pt_prev) = self._traverse_solved_history(
+                x0_in, xm1_in, tms, h, T=T, want_dT=True)
+
+            D = np.asarray(toolkit.eye(m))
+            J = np.zeros((2 * m + 1, 2 * m + 1))
+            J[:m, :m] = D - alpha * P_last[:, :m]
+            J[:m, m:2 * m] = -alpha * P_last[:, m:]
+            J[:m, 2 * m] = -np.asarray(Pt_last).ravel()
+            J[m:2 * m, :m] = -alpha * P_prev[:, :m]
+            J[m:2 * m, m:2 * m] = D - alpha * P_prev[:, m:]
+            J[m:2 * m, 2 * m] = -np.asarray(Pt_prev).ravel()
+            J[2 * m, phase_k] = 1.0
+
+            F = np.zeros(2 * m + 1)
+            F[:m] = np.asarray(x0_in) - np.asarray(x_last)
+            F[m:2 * m] = np.asarray(xm1_in) - np.asarray(x_prev)
+            F[2 * m] = np.asarray(x0_in)[phase_k] - phase_pin
+            return F, J
+
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
         ## amps on branch rows -- so its absolute floor is the `xtol` flavour
@@ -1080,7 +1465,26 @@ class PSS(Analysis):
         _tol = _tol * _ratio
 
         ## Find periodic steady state x-vector
-        if self.autonomous:
+        if self.autonomous and solved_history:
+            ## BOTH unknowns and the period.  The floors follow the same
+            ## rule as the plain autonomous system: the two state blocks
+            ## take the solution-unit tolerance, and the row that adds a
+            ## TIME as an unknown takes a time as its floor -- mixing them
+            ## is flavour error F6(a) one row further out.
+            m_ = n - 1
+            xa = np.asarray(x, dtype=float)
+            z0 = np.concatenate((xa, xa, [period]))
+            abstol_z = np.concatenate((_tol, _tol, [_tol[phase_k]]))
+            xtol_z = np.concatenate((_tol, _tol, [1e-15 * period]))
+            z_ss, _info, _ier, _mesg = analysis.fsolve(
+                func_autonomous_solved_history, z0, maxiter=maxiterations,
+                reltol=_shoot_reltol, abstol=abstol_z, xtol=xtol_z,
+                toolkit=self.toolkit, full_output=True)
+            x0_ss, xm1_ss = z_ss[:m_], z_ss[m_:2 * m_]
+            self.period = period = float(z_ss[-1])
+            times, dt = toolkit.linspace(0.0, period, num=npts,
+                                         endpoint=True, retstep=True)
+        elif self.autonomous:
             ## The period joins the unknowns.  Its residual row is the phase
             ## condition -- in the units of the coordinate it pins, hence
             ## `_tol[phase_k]` -- while the UNKNOWN it adds is a time, whose
@@ -1100,17 +1504,17 @@ class PSS(Analysis):
             ## answer is reported on a period the solver rejected.
             times, dt = toolkit.linspace(0.0, period, num=npts,
                                          endpoint=True, retstep=True)
-        elif augmented:
+        elif solved_history:
             ## THE SEED IS THE OLD FORMULATION'S ASSUMPTION, written down:
             ## `x_{-1} = x_0`.  It is what the plain path silently assumes
             ## (it seeds both charge rings with the entering state), so an
-            ## augmented run starts exactly where a plain one starts and the
+            ## solved-history run starts where a plain one starts and the
             ## comparison between them is about the SOLVE, not the seed.
             xa = np.asarray(x, dtype=float)
             z0 = np.concatenate((xa, xa))
             tol_z = np.concatenate((_tol, _tol))
             z_ss, _info, _ier, _mesg = analysis.fsolve(
-                func_augmented, z0, maxiter=maxiterations,
+                func_solved_history, z0, maxiter=maxiterations,
                 reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
                 toolkit=self.toolkit, full_output=True)
             x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
@@ -1202,11 +1606,12 @@ class PSS(Analysis):
         ## number can: it is `|J^-1 Eg| / (TRTOL (reltol ref + lte_abstol))`,
         ## the quantity a transient would have rejected a step on.
         ## ⚠ THE REPLAY MUST OPEN THE WAY THE SOLVE DID, or the waveform is
-        ## not the solution: a plain replay of an augmented answer would
-        ## reintroduce the very seam the augmented system exists to remove,
+        ## not the solution: a plain replay of a solved-history answer
+        ## would reintroduce the very seam that formulation exists to
+        ## remove,
         ## and the reported amplitude would not be the one the residual was
         ## driven to zero on.
-        if augmented:
+        if solved_history:
             self._install_history(x0_ss, xm1_ss, dt)
             tr = self._transient()
             X = [np.asarray(x0_ss, dtype=float)]
@@ -1268,8 +1673,9 @@ class PSS(Analysis):
         ##
         ## The fix is not a smaller timestep -- refining makes its SHARE
         ## grow.  It is to make the entering history part of the shooting
-        ## unknowns, so the map is a fixed point in the augmented state
-        ## rather than one that opens off a stand-in.  Not built; the prize
+        ## unknowns, so the map is a fixed point in the state a two-step
+        ## method actually needs, rather than one that opens off a
+        ## stand-in.  Not built; the prize
         ## measured on that resonator is Gear-2's error going 2.34e-1 ->
         ## 1.07e-1 at 100 points, at no extra cost per iteration.
         ## An unsound estimate is reported as neither: for trapezoidal that
@@ -1321,11 +1727,11 @@ class PSS(Analysis):
                    else '%.3g' % self.max_lte_seam),
                 RuntimeWarning, stacklevel=2)
 
-        ## ⚠ THE PLAIN PATH'S FIRST ENTRY IS A SEED, THE AUGMENTED PATH'S IS
-        ## A SOLUTION.  Plain takes N steps from `x0_ss` and reports their
-        ## results; augmented starts AT `x_0` and takes N-1, so dropping the
+        ## ⚠ THE PLAIN PATH'S FIRST ENTRY IS A SEED, THE OTHER PATH'S IS A
+        ## SOLUTION.  Plain takes N steps from `x0_ss` and reports their
+        ## results; the other starts AT `x_0` and takes N-1, so dropping the
         ## first would drop a real point and shift the waveform by a step.
-        X = toolkit.array(X if augmented else X[1:]).T
+        X = toolkit.array(X if solved_history else X[1:]).T
 
         # Insert reference node voltage
         X = toolkit.concatenate((X[:irefnode], 
