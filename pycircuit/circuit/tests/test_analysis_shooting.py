@@ -390,15 +390,27 @@ def test_euler_shooting_converges_like_a_newton():
 
 
 def test_non_convergence_is_reported():
-    """It used to be silent, which is why this survived.
+    """It used to be silent, which is why the missing Jacobian survived.
 
     `fsolve` builds the "No convergence" message and discards it whenever
-    `full_output=False` -- how PSS called it.  Trapezoidal still uses
-    successive substitution (its period map carries `iq` as well as `x`), so
-    it is the honest case to pin: it does NOT converge here, and must say so.
+    `full_output=False` -- how PSS called it -- so a shooting solve that
+    never converged returned a plausible waveform with no diagnostic.
+
+    This test used to pin the report on TRAPEZOIDAL, which did not converge
+    because its monodromy was structurally incomplete.  Phase 3 gave it the
+    augmented (x, iq) state and it converges in 6 iterations, so that case
+    is gone -- as it should be.  The property being protected was never
+    "trap fails"; it is "a capped solve says so".  An iteration cap is the
+    honest way to produce one, because it cannot expire when a method is
+    repaired.
     """
-    _trace, nonconv, _res = _shooting_trace('trap', maxiterations=12)
+    _trace, nonconv, _res = _shooting_trace('trap', maxiterations=2)
     assert nonconv, 'a non-converged shooting solve returned silently'
+
+    ## and the same solve, uncapped, must NOT warn -- otherwise the
+    ## assertion above would pass on a warning that fires unconditionally
+    _t2, still, _r2 = _shooting_trace('trap', maxiterations=30)
+    assert not still, 'the warning fires even on a converged solve'
 
 
 def test_pss_tolerance_parameters_reach_the_shooting_solve():
@@ -620,3 +632,61 @@ def test_pss_uses_the_transient_integrator_not_a_private_copy():
     assert isinstance(tr.base_integrator, TrapezoidalIntegrator)
     assert tr._effective_method in ('TrapezoidalIntegrator',
                                     'EulerIntegrator')
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: the augmented (x, iq) monodromy
+# ---------------------------------------------------------------------------
+
+def test_trapezoidal_shooting_converges_with_the_augmented_state():
+    """Trapezoidal's period map carries `iq`, so the monodromy must too.
+
+    With an x-only monodromy trap did not converge at all -- worse, applying
+    the Euler form to it converged SLOWER than no Jacobian (0.90 against
+    0.855 per iteration), because the Jacobian was wrong rather than absent.
+    Differentiating the two recursions together costs one extra matrix
+    product and makes it a real Newton: measured 6 iterations at reltol 1e-4
+    and 13 at 1e-9, residual 2.9e-11.
+    """
+    loose, nc_loose, _r = _shooting_trace('trap', reltol=1e-4,
+                                          maxiterations=40)
+    tight, nc_tight, _r2 = _shooting_trace('trap', reltol=1e-9,
+                                           maxiterations=40)
+    assert not nc_loose and not nc_tight
+    assert len(loose) <= 10, 'trap took %d shooting iterations' % len(loose)
+    assert tight[-1][0] < 1e-9, 'final residual %.3e' % tight[-1][0]
+
+
+def test_trapezoidal_is_now_right_on_both_axes():
+    """The point of the whole repair.
+
+    The two failure modes were orthogonal and neither method escaped both:
+    Euler CONVERGED the shooting equation and landed at 8.815 V against a
+    20 V analytic peak (a discretisation error), while trapezoidal did not
+    converge the shooting equation and landed at 19.848 V.  With the
+    augmented state, trap converges AND lands at 19.990 V -- 0.05% of
+    analytic.
+
+    Euler is asserted unchanged in the same breath, because the unified
+    propagation must reduce to the old one when the `iq` row is identically
+    zero; if this drifts, the "one formula, two methods" claim is false.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    peaks = {}
+    for method in ('euler', 'trap'):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = PSS(_q20_rlc(), method=method, reltol=1e-6).solve(
+                period=1e-3, timestep=1e-5, maxiterations=40)
+        peaks[method] = float(np.max(np.abs(
+            np.asarray(res['tpss'].v('c'), dtype=float).ravel())))
+
+    ## trapezoidal does not damp the limit cycle: within 0.5% of 20 V
+    assert abs(peaks['trap'] - 20.0) < 0.1, \
+        'trap peak %.4f V, analytic 20 V' % peaks['trap']
+    ## and Euler still damps it, by its own documented amount -- this is
+    ## the level-2 error the shooting solve cannot see
+    assert 8.5 < peaks['euler'] < 9.2, \
+        'euler peak moved to %.4f V' % peaks['euler']

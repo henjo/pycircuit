@@ -57,24 +57,30 @@ class PSS(Analysis):
     map stops being smooth and (3) loses its quadratic rate.  Choose the
     grid once, freeze it, shoot on it.
 
-    ⚠ **STATUS.  (3) is a true Newton for `method='euler'` only.**  The
-    monodromy accumulation was missing a factor of `1/h`, and since `C` is
-    singular the product collapsed to exactly zero -- so the Jacobian was
+    **(3) is a true Newton for both methods.**  It was neither, for years:
+    the monodromy accumulation was missing a factor of `1/h`, and since `C`
+    is singular the product collapsed to exactly zero -- so the Jacobian was
     the identity and this was successive substitution, `x0 <- phi(x0)`, on
-    every circuit and without saying so.  Fixed for Euler (a Q=20 resonator
-    now converges in 5 iterations against ~130 for successive substitution).
-    Trapezoidal still uses successive substitution, because its period map
-    carries `iq` as well as `x` and an x-only monodromy is structurally
-    incomplete -- measured, the Euler form applied to trap converges SLOWER
-    than no Jacobian at all.  Non-convergence is now reported.
+    every circuit and without saying so.  It was found by its RATE: the
+    residual fell 0.855 per iteration on a Q=20 resonator, and `exp(-pi/Q)
+    = 0.8546` is that circuit's own per-period decay.  Non-convergence is
+    reported now; it used to be discarded with `full_output=False`.
 
-    ⚠ **And note the two failures are orthogonal, so neither method is yet
-    right on both axes.**  On the Q=20 resonator against a 20 V analytic
-    peak: Euler converges the shooting equation and lands at 8.815 V, its
-    own damping (a level-2 error); trapezoidal does not converge the
-    shooting equation and lands at 19.848 V (a level-3 error).  Making trap
-    a true Newton needs the augmented `(x, iq)` state, and is the work that
-    makes this analysis trustworthy.
+    Trapezoidal needed more than the factor.  Its period map carries `iq` as
+    well as `x`, so an x-only monodromy is structurally incomplete -- and
+    measured, applying the Euler form to it converged SLOWER than no
+    Jacobian at all (0.90 against 0.855), a wrong Jacobian being worse than
+    none.  Differentiating both recursions together propagates
+    `d(x, iq)/dx0` for one extra matrix product per step, and Euler is the
+    same formula with the `iq` row identically zero.
+
+    ⚠ **THE TWO FAILURE MODES ARE ORTHOGONAL, and only trapezoidal escapes
+    both.**  On the Q=20 resonator against a 20 V analytic peak: Euler
+    converges the shooting equation in 5 iterations and lands at 8.815 V --
+    56% low, a level-2 discretisation error that levels 1 and 3 cannot see.
+    Trapezoidal converges in 6 and lands at 19.990 V.  A converged shooting
+    solve is not by itself evidence of a correct answer, which is why the
+    LTE report in the recorded scope below is worth more than it looks.
 
     (2) DOES NOT EXIST HERE, AND UNDER A SHOOTING METHOD IT CANNOT BE A
     CONTROLLER.  The grid is a fixed `linspace`; under `fixed_timestep` both
@@ -352,17 +358,29 @@ class PSS(Analysis):
         ## conductance the same resonator converges in FIVE iterations
         ## (2.64 -> 2.6e-2 -> 1.0e-2 -> 1.9e-4 -> 3.9e-5).
         ##
-        ## TRAPEZOIDAL IS NOT COVERED BY THIS, and must not pretend to be.
-        ## Its recursion carries `iq` as well as `x`, so the period map is a
-        ## function of (x, iq) and an x-only monodromy is structurally
-        ## incomplete -- measured, using the Euler form for trap converges
-        ## SLOWER than no Jacobian at all (0.90 vs 0.855 per iteration).  So
-        ## trap keeps successive substitution, which is what it has always
-        ## had; it is now named rather than mislabelled, the pointless
-        ## per-step linear solves that built an all-zero matrix are skipped,
-        ## and the convergence verdict below tells the caller what happened.
-        ## Making trap a true Newton needs the augmented (x, iq) state.
-        newton = (method == 'euler')
+        ## TRAPEZOIDAL NEEDS THE AUGMENTED STATE, and now has it.  Its
+        ## recursion carries `iq` as well as `x`, so the period map is a
+        ## function of (x, iq); an x-only monodromy is structurally
+        ## incomplete, and measured, using the Euler form for trap converged
+        ## SLOWER than no Jacobian at all (0.90 against 0.855 per iteration).
+        ##
+        ## Differentiating the two recursions together,
+        ##
+        ##     iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}
+        ##     0    = i(x_n) + iq_n + u(t_n)
+        ##
+        ## gives a propagation of `d(x,iq)/dx0` that costs one extra matrix
+        ## product over the Euler form:
+        ##
+        ##     rhs   = Geq_{n-1} Px + Pq
+        ##     Px_n  = Jf_n^-1 rhs
+        ##     Pq_n  = Geq_n Px_n - rhs
+        ##
+        ## Euler is the SAME recursion with `Pq == 0`: its companion carries
+        ## no `iq_{n-1}` term, so dF/diq_{n-1} vanishes and the second row
+        ## never enters.  One formula, two methods, which is why this is not
+        ## a second code path.
+        newton = True
 
         def func(x):
             ## EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a
@@ -377,7 +395,15 @@ class PSS(Analysis):
             x = self.solve_timestep(x, times[0], dt)
             iq_last = self._iq
             x0 = copy(x)
-            Jshoot = np.asarray(toolkit.eye(n-1))
+            ## `Px` is d(x_n)/d(x0) and `Pq` is d(iq_n)/d(x0).  The first
+            ## step of the period is taken by Euler (the integrator drops
+            ## order on `is_first_step`), so the companion entering the loop
+            ## is `(q_1 - q_0)/h` and its sensitivity to `x_1` is that step's
+            ## own `Geq`.  Under Euler the row is identically zero and stays
+            ## so.
+            Px = np.asarray(toolkit.eye(n-1))
+            Pq = (np.zeros((n - 1, n - 1)) if method == 'euler'
+                  else copy(np.asarray(self._Geq)))
             C = copy(np.asarray(self._Geq))
 
             ## Save C and transient jacobian for PAC analysis
@@ -404,17 +430,16 @@ class PSS(Analysis):
                 ## products with the monodromy matrix, never the matrix itself.
                 ## That is a rewrite; this is the same computation, correctly
                 ## expressed, and it is bit-comparable rather than merely close.
-                if newton:
-                    Jshoot = self.toolkit.linearsolver(np.asarray(self._Jf),
-                                                       C @ Jshoot)
-                    C = copy(np.asarray(self._Geq))
+                rhs = C @ Px + Pq
+                Px = self.toolkit.linearsolver(np.asarray(self._Jf), rhs)
+                if method != 'euler':
+                    Pq = np.asarray(self._Geq) @ Px - rhs
+                C = copy(np.asarray(self._Geq))
 
             residual = x0 - x
 
             D = np.asarray(toolkit.eye(n-1))
-            ## Successive substitution is `J = I`: the update is then
-            ## `x0 <- x0 - (x0 - phi(x0)) = phi(x0)`.
-            return residual, (D - alpha * Jshoot) if newton else D
+            return residual, D - alpha * Px
         
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
