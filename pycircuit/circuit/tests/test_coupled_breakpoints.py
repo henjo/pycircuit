@@ -222,3 +222,57 @@ def test_the_standard_paths_own_controller_is_not_mistaken_for_an_injection():
         warnings.simplefilter('ignore')
         res = tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
     assert len(np.asarray(res.v('b').x, dtype=float).ravel()) > 10
+
+
+def test_the_excursion_bound_does_not_break_a_fixed_grid():
+    """`max_dv_step` must not shrink a step the caller fixed.
+
+    `fixed_timestep` states that the output points are the caller's, and
+    `grid_locked` already stops the coupled solver's own over-band retry from
+    touching them.  The excursion veto (`max_dv_step`/`max_di_step`) was NOT
+    guarded on this path, so with a bound set the grid survived the LTE and
+    was then broken by the voltage check instead -- silently, since the run
+    still returns a waveform.
+
+    Measured before the fix on the circuit below (bound 1e10, i.e. 0.01 V):
+    447 points spanning dt 9.0e-10 .. 1.0e-6 with 1722 rejections, where the
+    caller asked for 21 uniform ones.
+
+    The standard path needs no such guard: its voltage check already sits
+    inside `if not fixed_timestep:`, so it is structurally unreachable there.
+    The JAX backend has always guarded its own (`dv_ok = ratio <= 1 |
+    fixed_timestep`); this asymmetry was found porting `grid_locked` to that
+    backend, not by a test, which is why there is one now.
+    """
+    step, tend, bound = 1e-6, 2e-5, 1e10
+
+    def rc_pulse():
+        c = SubCircuit()
+        c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=5e-6, tr=1e-7, tf=1e-7,
+                         pw=5e-6, per=2e-5)
+        c['R'] = R('a', 'b', r=1e3)
+        c['C'] = C('b', gnd, c=1e-9)
+        return c
+
+    ## ANTI-VACUITY FIRST: the bound must actually bite when the grid is free,
+    ## or the assertion below passes on a check that never ran.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        free = Transient(rc_pulse(), toolkit=numeric, reltol=1e-5,
+                         max_dv_step=bound)
+        free.solve(tend=tend, timestep=step, coupled_lte=True)
+    assert free.statistics.rejected_steps > 0, \
+        'the excursion bound never fired, so this test proves nothing'
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tran = Transient(rc_pulse(), toolkit=numeric, reltol=1e-5,
+                         max_dv_step=bound)
+        res = tran.solve(tend=tend, timestep=step, coupled_lte=True,
+                         fixed_timestep=True)
+
+    t = np.asarray(res.v('b').x, dtype=float).ravel()
+    dt = np.diff(t)
+    assert np.allclose(dt, step, rtol=1e-9), \
+        'the excursion bound broke the fixed grid: steps ranged %g .. %g' \
+        % (dt.min(), dt.max())

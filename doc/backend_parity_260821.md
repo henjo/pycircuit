@@ -887,16 +887,27 @@ existing TLine tests before/after, per house rules.
   test covered `coupled_lte` with a non-default integrator; one does now
   (`test_euler_coupled_uses_an_euler_dh_derivative`).
 
-  *(a-bis) A P9 asymmetry, decided rather than inherited.*  With
+  *(a-bis) A P9 asymmetry, decided and then FIXED on the CPU.*  With
   `fixed_timestep` the JAX path bypasses the `max_dv`/`max_di` excursion check
-  (`dv_ok = ... | fixed_timestep`); the CPU's coupled outer loop does **not**,
-  and will still shrink and reject on it — breaking the grid it was told to
-  keep.  Kept the JAX behaviour when `grid_locked` landed 2026-09-01, on P9's
-  own principle: `fixed_timestep` is the caller stating that the output points
-  are theirs, so the honest response to an over-tolerance step is to take it
-  and let the run's accuracy be what was asked for.  The CPU side is the one
-  that should change; recorded here rather than silently mirrored, because a
-  cross-backend disagreement found later reads as drift.
+  (`dv_ok = ... | fixed_timestep`); the CPU's coupled loop did not, and would
+  shrink and reject on it — breaking the grid it was told to keep.  The JAX
+  behaviour was kept when `grid_locked` landed, on P9's own principle:
+  `fixed_timestep` is the caller stating that the output points are theirs.
+
+  The CPU side was then corrected (same day).  Reproduced first, on a pulsed
+  RC with `max_dv_step=1e10` (a 0.01 V bound) and `coupled_lte=True`: the
+  caller asked for **21 uniform points** and got **447 spanning dt 9.0e-10 ..
+  1.0e-6, with 1722 rejections** — silently, since a waveform is still
+  returned.  Guarded now, with an anti-vacuity test (the bound must fire on
+  the free-grid run, or the assertion proves nothing).
+
+  ⚠ Only the COUPLED path needed it.  A matching guard was written for the
+  standard path and removed again on reading the indentation: that voltage
+  check already sits inside `if not fixed_timestep:`, so it is structurally
+  unreachable under a fixed grid.  Measured before noticing — no bound from
+  1e12 down to 1e6, at 1 V or 5 V, produced a single rejection there.  A
+  guard that cannot fire is the dead-but-plausible branch this tree has paid
+  for twice.
 
   *(c) `bordered` measured, and refused rather than ported.*  The scope note
   above says "re-derive `bordered`'s denominator pairing"; that was never

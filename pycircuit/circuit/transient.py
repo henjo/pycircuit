@@ -2679,6 +2679,14 @@ class Transient(Analysis):
                     _ratio = float(np.max(_d[:_nn])) / _bv
                     if _nn < len(_d):
                         _ratio = max(_ratio, float(np.max(_d[_nn:])) / _bi)
+                    ## No `fixed_timestep` guard is needed HERE: this whole
+                    ## block already sits inside `if not fixed_timestep:`
+                    ## above, so under a fixed grid the veto is structurally
+                    ## unreachable.  (One was added while fixing the coupled
+                    ## path below and removed again on reading the
+                    ## indentation -- a guard that cannot fire is the kind of
+                    ## dead-but-plausible branch this file has paid for
+                    ## before.)
                     if _ratio > 1.0:
                         accept = False
                         dt_next = dt * max(MIN_SHRINK_RATIO, 0.9 / _ratio)
@@ -3155,7 +3163,14 @@ class Transient(Analysis):
                         if _nn < len(_d):
                             _ratio = max(_ratio,
                                          float(np.max(_d[_nn:])) / _bi)
-                        if _ratio > 1.0:
+                        ## Same fixed-grid guard as the standard path above:
+                        ## the caller owns the step size, so this veto must
+                        ## not shrink it.  Doubly so here -- `grid_locked`
+                        ## already suppresses the coupled solver's own
+                        ## over-band retry under a fixed grid, and leaving
+                        ## this one live meant the grid survived the LTE and
+                        ## was then broken by the excursion check instead.
+                        if _ratio > 1.0 and not fixed_timestep:
                             self.statistics.rejected_steps += 1
                             h_curr = max(minstep, h_curr * max(
                                 MIN_SHRINK_RATIO, 0.9 / _ratio))
