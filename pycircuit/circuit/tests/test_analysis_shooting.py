@@ -414,3 +414,64 @@ def test_pss_tolerance_parameters_reach_the_shooting_solve():
     assert tight[-1][0] < loose[-1][0] / 100.0, \
         'tightening reltol did not tighten the shooting residual ' \
         '(%.3e vs %.3e)' % (tight[-1][0], loose[-1][0])
+
+
+def test_pss_tolerances_mean_what_they_mean_in_transient():
+    """`reltol`/`iabstol`/`vabstol` are advertised with the same words on
+    `Transient`, `JAXTransient` and `PSS`, so they must mean the same thing.
+
+    They did not.  PSS's per-timestep Newton passed neither absolute
+    tolerance to `fsolve`, so it ran on library scalar defaults and the two
+    Parameters this class documents did nothing to it at all -- while on
+    `Transient` they set the per-unknown floors of exactly the same solve.
+
+    Asymmetric values here on purpose: `iabstol` and `vabstol` share the
+    default 1e-12, so a swapped FLAVOUR is invisible with the defaults.
+    """
+    from pycircuit.circuit.analysis import newton_tolerance_vectors
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+
+    cir = _q20_rlc()
+    n_nodes, n_branches = len(cir.nodes), len(cir.branches)
+    IAB, VAB = 3e-9, 7e-6          # distinct, and distinct from the defaults
+
+    abstol, xtol = newton_tolerance_vectors(n_nodes, n_branches, IAB, VAB,
+                                            circuit.numeric)
+    ## residual flavour: currents on node rows, volts on branch rows
+    assert np.allclose(np.asarray(abstol)[:n_nodes], IAB)
+    assert np.allclose(np.asarray(abstol)[n_nodes:], VAB)
+    ## increment flavour: transposed
+    assert np.allclose(np.asarray(xtol)[:n_nodes], VAB)
+    assert np.allclose(np.asarray(xtol)[n_nodes:], IAB)
+
+    ## and the transient reaches that same definition
+    tr = Transient(cir, toolkit=circuit.numeric, iabstol=IAB, vabstol=VAB)
+    assert np.allclose(np.asarray(tr._newton_abstol_vector()),
+                       np.asarray(abstol))
+    assert np.allclose(np.asarray(tr._newton_xtol_vector()),
+                       np.asarray(xtol))
+
+
+def test_pss_absolute_tolerances_reach_the_inner_solve():
+    """Anti-dead-knob: loosening the absolute floors must change the work.
+
+    With the floors set absurdly wide the per-timestep Newton should accept
+    almost immediately, so the run differs from one at the defaults.  A knob
+    that is accepted and ignored is this codebase's most-paid-for defect
+    class, and these two were exactly that here.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    def run(**kw):
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = PSS(_q20_rlc(), method='euler', **kw).solve(
+                period=1e-3, timestep=1e-5, maxiterations=8)
+        return np.asarray(res['tpss'].v('c'), dtype=float).ravel()
+
+    tight = run()
+    loose = run(iabstol=1e-2, vabstol=1e-2)
+    assert not np.allclose(tight, loose), \
+        'iabstol/vabstol made no difference to the inner solve'

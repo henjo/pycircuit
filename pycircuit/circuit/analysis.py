@@ -279,6 +279,33 @@ class Analysis(sim.Analysis):
                 "RowL2Scaler(), SinkhornKnoppScaler()), not %r" % (scaler,))
         return scaler
 
+def newton_tolerance_vectors(n_nodes, n_branches, iabstol, vabstol, toolkit):
+    """The Newton absolute tolerances, per unknown, in BOTH flavours.
+
+    Returns ``(abstol, xtol)``:
+
+    * ``abstol`` tests the RESIDUAL ``f``.  A node row of the residual is a
+      current and a branch row is a voltage, hence `iabstol` on nodes and
+      `vabstol` on branches.
+    * ``xtol`` tests an INCREMENT ``dx``.  An increment on a node is a
+      voltage and on a branch is a current, so the two vectors are
+      transposed with respect to each other.
+
+    ⚠ Getting the flavours backwards is invisible until someone changes one
+    of them, because `iabstol` and `vabstol` share the default 1e-12 -- the
+    same class of error the LTE tolerances were separated for.  That is why
+    this lives in one place: `Transient`, `JAXTransient` and `PSS` all
+    describe these three Parameters to the user with the same words, so
+    they had better mean the same thing, and three transcriptions of one
+    rule is how they stop meaning it.
+    """
+    ones_n = toolkit.ones(n_nodes)
+    ones_b = toolkit.ones(n_branches)
+    abstol = toolkit.concatenate((iabstol * ones_n, vabstol * ones_b))
+    xtol = toolkit.concatenate((vabstol * ones_n, iabstol * ones_b))
+    return abstol, xtol
+
+
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method

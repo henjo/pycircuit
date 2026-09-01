@@ -89,6 +89,13 @@ class PSS(Analysis):
     driving `Transient`.  Reusing `Transient` at `fixed_timestep=True` would
     supply (2), the limiting/PCNR machinery and breakpoints, and remove a
     third copy of the integrator algebra -- planned, not done.
+
+    `reltol`, `iabstol` and `vabstol` mean exactly what they mean on
+    `Transient`: `reltol` is relative, and the two absolute floors are
+    applied PER UNKNOWN in both flavours by
+    `analysis.newton_tolerance_vectors`, which is the single definition all
+    three analyses read.  `reltol` sets the SHOOTING tolerance and the
+    per-timestep solves run `INNER_TOL_FACTOR` times tighter.
     """
 
     parameters = Analysis.parameters + \
@@ -198,7 +205,20 @@ class PSS(Analysis):
         ## leaving the two defaults to meet by accident, which is what
         ## happened before: the inner solve used `par.reltol` while the outer
         ## ran on fsolve's own defaults, and nothing related them.
+        ##
+        ## AND `iabstol`/`vabstol` MEAN HERE WHAT THEY MEAN IN `Transient`.
+        ## This solve used fsolve's scalar defaults, so the two Parameters
+        ## this class advertises with the same words as the transient did
+        ## nothing at all to it.  `newton_tolerance_vectors` is the single
+        ## definition of both flavours; the transient's Newton and the JAX
+        ## backend's read it too.
+        abstol, xtol = analysis.newton_tolerance_vectors(
+            len(self.cir.nodes), len(self.cir.branches),
+            self.par.iabstol, self.par.vabstol, self.toolkit)
+        (abstol, xtol) = remove_row_col((abstol, xtol), irefnode,
+                                        self.toolkit)
         x = analysis.fsolve(func, x0, reltol=self.par.reltol / INNER_TOL_FACTOR,
+                            abstol=abstol, xtol=xtol,
                             maxiter=self.par.maxiter, toolkit=self.toolkit)
 
         ## STAGE 11 -- RECOMPUTE THE COMPANION AT THE CONVERGED POINT.
@@ -326,10 +346,10 @@ class PSS(Analysis):
         ## the transient's Newton uses for `i(x)`.  Getting that backwards is
         ## F6(a)'s defect, and it is easy to walk into here because the
         ## quantity is called a residual.
-        _nn = len(self.cir.nodes)
-        _tol = np.concatenate((np.full(_nn, float(self.par.vabstol)),
-                               np.full(n - _nn, float(self.par.iabstol))))
-        _tol = np.delete(_tol, irefnode)
+        _tol = analysis.newton_tolerance_vectors(
+            len(self.cir.nodes), len(self.cir.branches),
+            self.par.iabstol, self.par.vabstol, self.toolkit)[1]
+        (_tol,) = remove_row_col((_tol,), irefnode, self.toolkit)
 
         ## Find periodic steady state x-vector
         x0_ss, _info, _ier, _mesg = analysis.fsolve(

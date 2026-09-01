@@ -3720,20 +3720,20 @@ class JAXTransient(Analysis):
     def _newton_abstol(self, n):
         """Per-row Newton RESIDUAL floor: currents on node rows, volts on
         branch rows -- the same split Transient._newton builds (F6(b))."""
-        import jax.numpy as jnp
+        from pycircuit.circuit.analysis import newton_tolerance_vectors
         n_nodes = len(self.cir.nodes)
-        return jnp.concatenate((
-            self.par.iabstol * jnp.ones(n_nodes),
-            self.par.vabstol * jnp.ones(n - n_nodes)))
+        return newton_tolerance_vectors(
+            n_nodes, n - n_nodes, self.par.iabstol, self.par.vabstol,
+            self.toolkit)[0]
 
     def _newton_xtol(self, n):
         """Per-row Newton UPDATE floor -- the transposed flavour: volts on
         node rows, amps on branch rows."""
-        import jax.numpy as jnp
+        from pycircuit.circuit.analysis import newton_tolerance_vectors
         n_nodes = len(self.cir.nodes)
-        return jnp.concatenate((
-            self.par.vabstol * jnp.ones(n_nodes),
-            self.par.iabstol * jnp.ones(n - n_nodes)))
+        return newton_tolerance_vectors(
+            n_nodes, n - n_nodes, self.par.iabstol, self.par.vabstol,
+            self.toolkit)[1]
 
     def _lte_abstol(self, n):
         """Per-row absolute LTE tolerance, in the SOLUTION domain.

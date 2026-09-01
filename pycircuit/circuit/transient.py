@@ -696,13 +696,8 @@ class Transient(Analysis):
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
     def _newton(self, func, x0):
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
-        
-        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
-                                 self.par.vabstol * ones_branches))
-        xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
-                                 self.par.iabstol * ones_branches))
+        abstol = self._newton_abstol_vector()
+        xtol = self._newton_xtol_vector()
         
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
         
@@ -1284,11 +1279,10 @@ class Transient(Analysis):
         for testing ``f``, not for testing an increment ``dx`` -- see
         :meth:`_newton_xtol_vector`, and `_newton` which builds both.
         """
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
-        return self.toolkit.concatenate(
-            (self.par.iabstol * ones_nodes,
-             self.par.vabstol * ones_branches))
+        from pycircuit.circuit.analysis import newton_tolerance_vectors
+        return newton_tolerance_vectors(
+            len(self.cir.nodes), len(self.cir.branches),
+            self.par.iabstol, self.par.vabstol, self.toolkit)[0]
 
     def _newton_xtol_vector(self):
         """The Newton SOLUTION tolerance, per unknown -- the other flavour.
@@ -1300,11 +1294,10 @@ class Transient(Analysis):
         happen to share default values (`iabstol` and `vabstol` are both 1e-12),
         so a swap is invisible until someone changes one of them.
         """
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
-        return self.toolkit.concatenate(
-            (self.par.vabstol * ones_nodes,
-             self.par.iabstol * ones_branches))
+        from pycircuit.circuit.analysis import newton_tolerance_vectors
+        return newton_tolerance_vectors(
+            len(self.cir.nodes), len(self.cir.branches),
+            self.par.iabstol, self.par.vabstol, self.toolkit)[1]
 
     def _residual_and_jacobian(self, x, t, provided_function=None):
         """``(f, J)`` at ``(x, t)`` using the current ``self._dt``.
