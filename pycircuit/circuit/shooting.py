@@ -672,11 +672,29 @@ class PSS(Analysis):
          but shoots with an inexact Jacobian, Gear-2 has the exact Jacobian
          (4b) but hits the fold at `v = -1` where `mu(1 - v^2)` vanishes.
 
-         ONE FIX ADDRESSES BOTH, and 4d's measurement is what makes it
-         possible: `iq_{-1} = -(i(x_0) + u(t_0))` is EXACTLY available from
-         the DAE, so trapezoidal can take a solved-history formulation with
-         no manufacturing step and no fabricated history -- an exact
-         Jacobian, and clear of Gear-2's fold.  Not built.
+         ⚠ THE FIX PROPOSED HERE WAS TRIED AND IS WRONG AS STATED.  It
+         read: `iq_{-1} = -(i(x_0) + u(t_0))` is exactly available from the
+         DAE (item 4d), so trapezoidal can take a solved-history
+         formulation seeded that way -- an exact Jacobian, clear of the
+         fold.  The seeding half is true and was built.
+
+         The formulation half is not.  A one-step companion depends on
+         `x_{-1}` ONLY through `iq_{-1}`, and `d(iq_{-1})/d x_{-1} = -G` is
+         SINGULAR at every purely reactive node -- most of a resonator.  So
+         admitting `x_{-1}` as m unknowns leaves the 2m x 2m system
+         rank-deficient, and it fails exactly as it should:
+         `LinAlgError: Singular matrix`, on 25 tests at once.
+
+         THE CORRECTED DESIGN: for a `b != 0` method the second unknown is
+         `iq_{-1}` ITSELF -- the `(x, iq)` state its monodromy already uses
+         -- closed by `iq_{-1} = iq_{N-1}`.  That is a different
+         formulation, not a seeding fix.  Not built.
+
+         Kept from the attempt: `_install_history` now takes the entering
+         step size `h_prev` separately.  `x_{-1}` sits one step BEFORE
+         `x_0`, and on a periodic grid that step is `hs[-1]`, not `hs[0]`.
+         Uniform grids hide this; a caller's grid with a 16438:1 spread
+         does not.
 
       5b. LTE-CHOSEN grid, the original wording -- pick the step sequence from an adaptive run and
          freeze it, refining BETWEEN shooting solves.  The grid still never
@@ -982,6 +1000,21 @@ class PSS(Analysis):
         it does to a driven circuit -- 0.75% of the error against 54%,
         landing in the orbit's shape rather than its frequency.
         """
+        ## ⚠ TRAPEZOIDAL CANNOT JOIN THIS FORMULATION BY SOLVING FOR
+        ## `x_{-1}`, and trying it is how that was learned.  `iq_{-1}` is
+        ## exactly derivable from `x_{-1}` -- `-(i(x_{-1}) + u)`, item 4d --
+        ## but the derivative that matters runs the other way: a one-step
+        ## companion reads ONLY `iq_{-1}`, so the trajectory depends on
+        ## `x_{-1}` solely through it, and `d(iq_{-1})/d x_{-1} = -G` is
+        ## SINGULAR wherever a node carries no conductance -- every purely
+        ## reactive node, which is most of a resonator.  Adding `x_{-1}` as
+        ## m unknowns then makes the 2m x 2m system rank-deficient, and it
+        ## fails exactly as it should: `LinAlgError: Singular matrix`, on 25
+        ## tests at once.
+        ##
+        ## The right second unknown for a `b != 0` method is `iq_{-1}`
+        ## ITSELF -- the `(x, iq)` state its monodromy already uses -- with
+        ## the closure `iq_{-1} = iq_{N-1}`.  See item 5's note; not built.
         return self._companion_reach() >= 2
 
     def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new):
@@ -1055,7 +1088,7 @@ class PSS(Analysis):
         ## None because the THIRD charge is still `q(x_{-1})` repeated -- the
         ## LTE estimator differences three, so its opening reading remains
         ## unsound and the report goes on discarding it.
-        tr = self._install_history(x0_in, xm1_in, hs[0])
+        tr = self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
 
         ## `P_0 = [I 0]`, `P_{-1} = [0 I]` -- the two unknowns, exactly.  The
         ## plain path seeds BOTH rings with `I`, which is the flat-history
@@ -1065,11 +1098,16 @@ class PSS(Analysis):
         zero = np.zeros((m, m))
         Px = [np.hstack((eye, zero)), np.hstack((zero, eye))]
         Cs = [np.asarray(self._C_at(x0_in)), np.asarray(self._C_at(xm1_in))]
-        ## Zero because `_install_history` has already refused any companion
-        ## with a `b != 0` term: with `b = 0` the recursion never reads
-        ## `d(iq_{n-1})/d(unknowns)`, so there is nothing to seed.  A future
-        ## two-step method carrying `iq` would need it as a third unknown,
-        ## which is what that refusal says.
+        ## `Pq` is `d(iq_{-1})/d(x_0, x_{-1})`.  For `b = 0` the recursion
+        ## never reads it and zero is right.  For `b != 0` it is NOT zero,
+        ## and it is exactly differentiable because `_install_history` seeds
+        ## `iq_{-1} = -(i(x_{-1}) + u)` from the DAE:
+        ##
+        ##     d(iq_{-1})/d x_{-1} = -G(x_{-1}),   d(iq_{-1})/d x_0 = 0
+        ##
+        ## Leaving it at zero would make the Jacobian wrong for trapezoidal
+        ## in the same way the plain path's flat seed is wrong -- which is
+        ## the whole defect this formulation removes.
         Pq = np.zeros((m, 2 * m))
 
         ## Kept for PAC as the plain path does -- but opening EMPTY, because
@@ -1157,7 +1195,7 @@ class PSS(Analysis):
             return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
         return x, x_prev, Px[0], P_prev
 
-    def _install_history(self, x0_in, xm1_in, dt):
+    def _install_history(self, x0_in, xm1_in, dt, h_prev=None):
         """Open a run ON a solved two-point history rather than a seed.
 
         `_begin_run(x_{-1})` opens the rings on the earlier point and the
@@ -1178,14 +1216,38 @@ class PSS(Analysis):
         """
         tr = self._transient()
         _alphas, b = tr._get_integrator().companion_coefficients(dt, dt)
-        if b:
-            raise NotImplementedError(
-                'a solved entering history carries CHARGES, so a companion '
-                'with a b != 0 term needs iq_{-1} as an unknown of its own. '
-                'No such two-step method exists here (gear2 has b = 0); this '
-                'refuses rather than seeding an iq nothing solved for.')
         tr._begin_run(self._insert_refnode(xm1_in), self.cir.n)
         tr._dt = dt
+
+        ## ⚠ A `b != 0` COMPANION IS REFUSED HERE, AND THE FIRST REASON
+        ## GIVEN FOR IT WAS WRONG.  It said a solved history carries CHARGES
+        ## while such a method also reads `iq_{-1}`, "which no charge
+        ## determines".  The DAE determines it exactly -- a converged point
+        ## satisfies `i(x) + iq + u = 0`, so `iq_{-1} = -(i(x_{-1}) + u)`,
+        ## the same identity item 4d rests on -- and seeding it was tried.
+        ##
+        ## It fails for the derivative running the OTHER way.  A one-step
+        ## companion reads only `iq_{-1}`, so the trajectory depends on
+        ## `x_{-1}` solely through it, and `d(iq_{-1})/d x_{-1} = -G` is
+        ## SINGULAR wherever a node carries no conductance -- every purely
+        ## reactive node, which is most of a resonator.  Admitting `x_{-1}`
+        ## as m unknowns then leaves the 2m x 2m system rank-deficient:
+        ## measured, `LinAlgError: Singular matrix` on 25 tests at once.
+        ##
+        ## The right second unknown for such a method is `iq_{-1}` ITSELF --
+        ## the `(x, iq)` state its monodromy already uses -- closed by
+        ## `iq_{-1} = iq_{N-1}`.  That is a different formulation, not a
+        ## seeding fix, and it is not built.
+        if b:
+            raise NotImplementedError(
+                'a solved entering history admits `x_{-1}` as the second '
+                'unknown, and a companion with a b != 0 term depends on it '
+                'only through `iq_{-1} = -(i(x_{-1}) + u)`, whose derivative '
+                '-G is singular at every purely reactive node -- so the '
+                'enlarged system would be rank-deficient. Such a method '
+                'needs `iq_{-1}` itself as the unknown, which is a different '
+                'formulation; this refuses rather than solving a singular '
+                'one.')
         ## The charge half of `_push_history`, without its `_iq` roll: no
         ## step has been solved yet, so there is no companion current to
         ## push -- and a `b = 0` companion never reads one, which the guard
@@ -1196,7 +1258,13 @@ class PSS(Analysis):
         tr._q_cache = None
         tr._is_first_step = False
         tr._no_history = False
-        tr._dt_last = dt
+        ## ⚠ THE STEP THAT PRODUCED `x_0` IS THE PERIOD'S LAST ONE, NOT ITS
+        ## FIRST.  `x_{-1}` sits one step BEFORE `x_0`, and on a periodic
+        ## grid that step is `hs[-1]`.  With a uniform grid the two are
+        ## equal and this never showed; on a caller's grid (item 5) with a
+        ## 16438:1 spread, handing `hs[0]` to a method that reads `h_last`
+        ## states a step ratio that never happened.
+        tr._dt_last = dt if h_prev is None else h_prev
         tr._dt_last2 = None
         self._history_is_solved = True
         return tr
@@ -1935,7 +2003,7 @@ class PSS(Analysis):
         ## and the reported amplitude would not be the one the residual was
         ## driven to zero on.
         if solved_history:
-            self._install_history(x0_ss, xm1_ss, hs[0])
+            self._install_history(x0_ss, xm1_ss, hs[0], h_prev=hs[-1])
             tr = self._transient()
             X = [np.asarray(x0_ss, dtype=float)]
             walk = times[1:]

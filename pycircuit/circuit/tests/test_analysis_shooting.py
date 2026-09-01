@@ -1224,22 +1224,42 @@ def test_pss_solved_history_jacobian_is_the_exact_one():
 
 
 def test_pss_solved_history_refuses_a_companion_it_cannot_seed():
-    """A solved history carries charges, so `b != 0` needs a third unknown.
+    """⚠ THE REASON THIS TEST PROTECTED WAS WRONG, AND THE REFUSAL SURVIVES.
 
-    A companion with an `iq_{n-1}` term reads a value no charge determines;
-    seeding it with zeros would be inventing an initial condition the solve
-    never closed.  No such two-step method exists here -- Gear-2 has `b = 0`
-    -- so this is a refusal with a reason rather than dead code, and it is
-    what makes the zero `Pq` seed in `_traverse_solved_history` true.
+    It used to say a `b != 0` companion reads an `iq_{n-1}` that "no charge
+    determines".  The DAE determines it exactly -- `iq_{-1} =
+    -(i(x_{-1}) + u)`, item 4d -- and seeding it that way was built and
+    tried.
+
+    It fails for the derivative running the OTHER way.  A one-step companion
+    depends on `x_{-1}` ONLY through `iq_{-1}`, and
+    `d(iq_{-1})/d x_{-1} = -G` is singular at every purely reactive node --
+    most of a resonator.  Admitting `x_{-1}` as m unknowns leaves the
+    2m x 2m system rank-deficient: measured, `LinAlgError: Singular matrix`
+    on 25 tests at once.
+
+    So the refusal stands on a sharper reason, and the property under test
+    is now that reason: such a method must stay OFF this formulation, and
+    the second unknown it would need is `iq_{-1}` itself.
     """
     from pycircuit.circuit.integrator import Gear2Integrator
     circuit.default_toolkit = circuit.numeric
+
+    ## trapezoidal has `b != 0`, so it must NOT be routed here
+    assert PSS(_q20_rlc(), method='trap')._solves_history() is False, \
+        'a b != 0 companion was admitted to the solved-history formulation; ' \
+        'its enlarged system is rank-deficient (dq/dx = -G is singular at ' \
+        'reactive nodes), so this must stay on the plain path until the ' \
+        'iq_{-1} formulation exists'
+    assert PSS(_q20_rlc(), method='gear')._solves_history() is True
+
+    ## and reaching the installer with such a companion is refused, loudly
     pss = PSS(_q20_rlc(), method='gear')
     orig = Gear2Integrator.companion_coefficients
     try:
         Gear2Integrator.companion_coefficients = \
             lambda self, h, hl: (orig(self, h, hl)[0], -1.0)
-        with pytest.raises(NotImplementedError, match='iq_'):
+        with pytest.raises(NotImplementedError, match='rank-deficient'):
             pss.solve(period=1e-3, timestep=1e-5, maxiterations=4)
     finally:
         Gear2Integrator.companion_coefficients = orig
