@@ -903,9 +903,20 @@ existing TLine tests before/after, per house rules.
   understands only the PAIR-view meta `(ra, rb, IS, VT, fns)`.  Handed the
   device-view `('vector', devices, epar)` — which is what EVERY real compact
   model produces — it used the literal string `'vector'` as an array index and
-  died several frames deep with "JAX does not support string indexing".  Now
-  refused at `_pcnr_setup`, naming the combination and the working alternative.
-  Wiring vector PCNR into Fang remains genuinely unported.
+  died several frames deep with "JAX does not support string indexing".  Refused at `_pcnr_setup` as a stopgap the
+  same day, then **actually wired** rather than left refused: the Schur-reduced
+  `(F_eff, J_eff)` is an n-sized system whose Newton step equals predict's
+  `dx_mna`, so fang's machinery — eq (18)'s second solve against the same
+  factors included — works on it unchanged, and that argument never depended on
+  WHICH view produced the blocks.  Five sites: the assembly (through
+  `pcnr_vector_blocks`, which shadows participants out of `circuit.i`/`G`, so
+  the ordinary i/G must not be called on that path), the CORRECT phase
+  (per-device `pcnr_limit_branchless`), the `g_lim` convergence test (PER
+  COMPONENT here, `pcnr.lim_converged`'s rule — a 40 V `vds` sharing a device
+  with a `vbe` would otherwise loosen the `vbe` component fortyfold), eq (18)'s
+  `v_lim` correction, and the seed.  Measured against the CPU on an EKV NMOS:
+  standard-path vector PCNR 2.000e-05, coupled 2.030e-05 — as accurate as the
+  path already trusted, which is the claim being made.
 
 ---
 

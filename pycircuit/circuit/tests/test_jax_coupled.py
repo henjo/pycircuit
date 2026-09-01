@@ -272,37 +272,76 @@ def test_euler_coupled_uses_an_euler_dh_derivative():
         % len(tj)
 
 
-def test_vector_pcnr_under_coupled_is_refused_not_crashed():
-    """PCNR-inside-Fang is PAIR-VIEW only, and must say so.
+def test_vector_pcnr_runs_inside_the_coupled_path():
+    """The DEVICE view of PCNR, inside Fang -- wired 2026-09-01.
 
-    `fang_inner_loop` unpacks `pcnr_meta` as (ra, rb, IS, VT, fns).  Handed
-    the device-view 3-tuple `('vector', devices, epar)` it used the literal
-    string 'vector' as an array index and died with "JAX does not support
-    string indexing" several frames deep -- naming nothing a caller could
-    act on.  Every real compact model takes the device view, so this was
-    reachable by anyone combining a MOSFET with coupled_lte.
+    PCNR-inside-Fang understood only the PAIR view `(ra, rb, IS, VT, fns)`.
+    Handed the device-view 3-tuple `('vector', devices, epar)` it used the
+    literal string 'vector' as an array index and died with "JAX does not
+    support string indexing" several frames deep.  Since every real compact
+    model takes the device view, that was reachable by anyone combining a
+    MOSFET with `coupled_lte`; it was refused at setup as a stopgap, and is
+    now actually implemented.
+
+    What made the port small: the Schur-reduced `(F_eff, J_eff)` is an
+    n-sized system whose Newton step equals predict's `dx_mna`, so fang's
+    machinery -- eq (18)'s second solve against the same factors included --
+    works on it unchanged.  That argument never depended on WHICH view
+    produced the blocks, which is why the device view drops in.
+
+    Measured at landing against the CPU (EKV NMOS, uic, reltol 1e-8/1e-9):
+    standard-path vector PCNR 2.000e-05, coupled 2.030e-05 -- the coupled
+    path is as accurate as the path already trusted, which is the claim.
     """
     import pycircuit.circuit.circuit as _cm
     from pycircuit.circuit import elements_hdl as _eh
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.transient import Transient
 
-    saved = _cm.default_toolkit
-    _cm.default_toolkit = jaxtoolkit
-    try:
-        c = SubCircuit(toolkit=jaxtoolkit)
+    def build(tk):
+        _cm.default_toolkit = tk
+        c = SubCircuit(toolkit=tk)
         nd, ng, nv = c.add_node('d'), c.add_node('g'), c.add_node('vdd')
-        c['vg'] = VSin(ng, gnd, va=0.4, vo=1.1, freq=1e6, toolkit=jaxtoolkit)
-        c['vd'] = VS(nv, gnd, v=1.8, toolkit=jaxtoolkit)
-        c['Rd'] = R(nv, nd, r=1e4, toolkit=jaxtoolkit)
-        c['Cd'] = C(nd, gnd, c=1e-13, toolkit=jaxtoolkit)
-        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=jaxtoolkit)
+        c['vg'] = VSin(ng, gnd, va=0.4, vo=1.1, freq=1e6, toolkit=tk)
+        c['vd'] = VS(nv, gnd, v=1.8, toolkit=tk)
+        c['Rd'] = R(nv, nd, r=1e4, toolkit=tk)
+        c['Cd'] = C(nd, gnd, c=1e-13, toolkit=tk)
+        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=tk)
+        return c
 
-        tran = JAXTransient(c, pcnr=True, coupled_lte=True)
-        with pytest.raises(NotImplementedError, match='vector PCNR'):
-            tran._pcnr_setup()
+    tend, ts = 1e-6, 2e-8
+    saved = _cm.default_toolkit
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            rc = Transient(build(numeric), toolkit=numeric, uic=True,
+                           reltol=1e-9).solve(refnode=gnd, tend=tend,
+                                              timestep=ts)
+        tc = np.asarray(rc.v('d').x[0], float)
+        vc = np.asarray(rc.v('d').y, float)
+
+        _cm.default_toolkit = jaxtoolkit
+        tran = JAXTransient(build(jaxtoolkit), pcnr=True, reltol=1e-8,
+                            coupled_lte=True)
+        ## the routing this test exists for
+        meta, _vt = tran._pcnr_setup()
+        assert meta[0] == 'vector', 'test no longer covers the device view'
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(refnode=gnd, tend=tend, timestep=ts, uic=True)
+        t = np.asarray(res.sweep_values, float).reshape(-1)
+        v = np.asarray(res.v('d'), float).reshape(-1)
     finally:
         _cm.default_toolkit = saved
+
+    assert len(t) > 10
+    assert np.all(np.isfinite(v))
+    span = float(np.max(np.abs(vc)))
+    dev = float(np.max(np.abs(v - np.interp(t, tc, vc))))
+    assert dev < 1e-3 * span, \
+        'coupled vector PCNR drifted from the CPU: %.3e (span %.3f)' % (dev,
+                                                                        span)
 
 
 # ---------------------------------------------------------------------------

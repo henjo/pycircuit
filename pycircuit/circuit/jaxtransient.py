@@ -1230,8 +1230,51 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
     ## 5.4e-3 median on the pulsed RC when its reset ran ungated.
     no_hist = state.h_history[0] == 0.0
 
+    ## PCNR comes in two views and fang now takes both.  The PAIR view
+    ## (`pcnr_junctions`) lists pn-junction probes; the DEVICE view (sec. 49)
+    ## lets a device own `m` unknowns of mixed kind, which is what every real
+    ## compact model needs.  Until 2026-09-01 only the pair view was wired
+    ## here and the device view reached this function as the literal string
+    ## 'vector' used as an array index.
+    _vector = pcnr_meta is not None and pcnr_meta[0] == 'vector'
+    _devs = pcnr_meta[1] if _vector else None
+    _epar = pcnr_meta[2] if _vector else None
+
     def assemble(x, h, v_lim):
         st_h = state._replace(dt=h)
+        if _vector:
+            ## The device view assembles through `pcnr_vector_blocks`, which
+            ## SHADOWS each participant out of `circuit.i`/`G` and re-stamps
+            ## it at `v_lim` -- so the ordinary i/G must not be called here.
+            ## Everything the residual carries beyond the devices is handed
+            ## in as u_extra/J_extra, exactly as `pcnr_vector_timestep` does.
+            q_C = circuit.q(x, params_tree=params_tree)
+            C_C = circuit.C(x, params_tree=params_tree)
+            I_u = circuit.u(t_prev + h, analysis=analysis,
+                            params_tree=params_tree)
+            if provided_function is not None:
+                I_u = I_u + provided_function(t_prev + h)
+            I_u = apply_tline_sources(I_u, t_prev + h, tline_params,
+                                      tline_indices, state.tline_history,
+                                      state.tline_head)
+            i_C, G_eq = compute_integration(q_C, C_C, st_h,
+                                            method=eval_method,
+                                            first_order=first_order)
+            u_extra, J_extra = i_C + I_u, G_eq
+            if tline_dG is not None:
+                u_extra = u_extra + tline_dG @ x
+                J_extra = J_extra + tline_dG
+            g_mna, g_lim, J_mm, J_ml, J_lm = pcnr_vector_blocks(
+                circuit, _devs, x, v_lim, _epar, x.shape[0],
+                u_extra, J_extra)
+            ## The same Schur identity the scalar path writes by hand: the
+            ## reduced (F_eff, J_eff) is an n-sized system whose Newton step
+            ## equals predict's dx_mna, so fang's machinery -- eq (18)'s
+            ## second solve against the same factors included -- works on it
+            ## unchanged.  That is the whole argument for PCNR-inside-Fang,
+            ## and it does not care which view produced the blocks.
+            return (g_mna - J_ml @ g_lim, J_mm - J_ml @ J_lm, q_C, g_lim,
+                    J_lm)
         I_G = circuit.i(x, params_tree=params_tree)
         G_G = circuit.G(x, params_tree=params_tree)
         q_C = circuit.q(x, params_tree=params_tree)
@@ -1249,7 +1292,7 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             F = F + tline_dG @ x
             J = J + tline_dG
         if pcnr_meta is None:
-            return F, J, q_C, None
+            return F, J, q_C, None, None
         ## PCNR-INSIDE-FANG: the CPU's design note is the whole argument --
         ## the Schur-reduced (f_eff, J_eff) IS an n-sized system whose Newton
         ## step equals predict's dx_mna, so fang's machinery works on it
@@ -1269,17 +1312,37 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         J = _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
         F = F.at[j_ra].add(-g_l * g_lim)
         F = F.at[j_rb].add(g_l * g_lim)
-        return F, J, q_C, g_lim
+        ## The pair view's J_lm is the incidence itself (-1 at ra, +1 at rb),
+        ## which the two sites below apply by indexing rather than by a
+        ## matrix product; None marks "index, do not multiply".
+        return F, J, q_C, g_lim, None
 
     def body(fs: FangState):
         from pycircuit.circuit._limiting import _pnjlim_branchless
         x, h, v_lim = fs.x, fs.h, fs.v_lim
-        f, J, _q_x, g_lim = assemble(x, h, v_lim)
+        f, J, _q_x, g_lim, J_lm = assemble(x, h, v_lim)
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
         dx0_sub = jnp.linalg.solve(J_sub, -jnp.delete(f, irefnode))
         dx0 = jnp.insert(dx0_sub, irefnode, 0.0)
         x1 = x + dx0
-        if pcnr_meta is not None:
+        if _vector:
+            ## J_ll = I, so the limited unknowns follow from the MNA step.
+            v_raw = v_lim - (g_lim + J_lm @ dx0)
+            ## CORRECT: each device limits only the variables it owns, with
+            ## its OWN law, handed its whole block at once and its own slice
+            ## of the entering iterate.  Nothing is shared, so one device's
+            ## limiter cannot disturb another's -- the property PCNR buys,
+            ## and why there is no ordering here.
+            if _devs:
+                v1 = jnp.concatenate([
+                    jnp.asarray(d.element.pcnr_limit_branchless(
+                        jax.lax.dynamic_slice(v_raw, (d.off,), (d.m,)),
+                        jax.lax.dynamic_slice(v_lim, (d.off,), (d.m,)),
+                        d.params, _epar, d.element.toolkit, x[d.rows]))
+                    for d in _devs])
+            else:                                    # pragma: no cover
+                v1 = v_raw
+        elif pcnr_meta is not None:
             ## PCNR's CORRECT phase: the MNA update is taken in FULL (that is
             ## the method's point); only each device's own unknown is limited.
             j_ra, j_rb, j_IS, j_VT, _fns = pcnr_meta
@@ -1325,8 +1388,18 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             ## v_lim != e_a - e_b -- a vector that is not a solution of the
             ## circuit, whose LTE then reads low (the CPU's measured
             ## half-wave lesson, applied to this path from the start).
-            conv_x = jnp.logical_and(conv_x, jnp.max(jnp.abs(g_lim)) < (
-                reltol * jnp.maximum(jnp.max(jnp.abs(v1)), 1.0) + 1e-12))
+            if _vector:
+                ## ⚠ PER COMPONENT, `pcnr.lim_converged`'s rule.  Against a
+                ## single max over the whole vector, a 40 V `vds` sharing a
+                ## device with a `vbe` would loosen the `vbe` component
+                ## fortyfold.  For scalar diodes the two coincide, which is
+                ## why the pair-view form below is right for its own case.
+                lim_ok = jnp.all(jnp.abs(g_lim) < reltol * jnp.maximum(
+                    jnp.abs(v1), 1.0) + 1e-12)
+            else:
+                lim_ok = jnp.max(jnp.abs(g_lim)) < (
+                    reltol * jnp.maximum(jnp.max(jnp.abs(v1)), 1.0) + 1e-12)
+            conv_x = jnp.logical_and(conv_x, lim_ok)
 
         ## A held step whose error is over the band is reported unconverged so
         ## the caller shrinks and retries -- exactly the CPU's hold_h return.
@@ -1436,8 +1509,11 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                 ## must move it too, or the loop can return with the exact
                 ## v_lim != e_a - e_b inconsistency the g_lim test guards
                 ## (the CPU learned this as a stage-4 defect).
-                j_ra2, j_rb2 = pcnr_meta[0], pcnr_meta[1]
-                v_corr = v1 + (dxh[j_ra2] - dxh[j_rb2]) * dh
+                if _vector:
+                    v_corr = v1 - (J_lm @ dxh) * dh
+                else:
+                    j_ra2, j_rb2 = pcnr_meta[0], pcnr_meta[1]
+                    v_corr = v1 + (dxh[j_ra2] - dxh[j_rb2]) * dh
             else:
                 v_corr = v1
 
@@ -1459,7 +1535,10 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         return jnp.logical_and(~fs.done, fs.iters < maxiter)
 
     x0 = extrapolate_predictor(state)
-    if pcnr_meta is not None:
+    if _vector:
+        v0 = (jnp.concatenate([x0[d.probe_a] - x0[d.probe_b] for d in _devs])
+              if _devs else jnp.zeros(0))
+    elif pcnr_meta is not None:
         _ra0, _rb0 = pcnr_meta[0], pcnr_meta[1]
         v0 = x0[_ra0] - x0[_rb0]
     else:
@@ -3434,24 +3513,6 @@ class JAXTransient(Analysis):
             ## chain -- which is what this refusal replaced, and is worse
             ## than the NotImplementedError it replaced in turn.
             self._pcnr_vector_check_q()
-            if self.par.coupled_lte:
-                ## PCNR-INSIDE-FANG IS PAIR-VIEW ONLY.  `fang_inner_loop`
-                ## unpacks `pcnr_meta` as the 5-tuple (ra, rb, IS, VT, fns)
-                ## and indexes `x` with `j_ra`/`j_rb`; handed this 3-tuple it
-                ## used the literal string 'vector' as an array index and
-                ## died several frames deep with "JAX does not support string
-                ## indexing" -- a message that names nothing a caller can act
-                ## on.  Refused here instead, at setup, where the combination
-                ## is still visible.  Routing a path before its failure mode
-                ## is as good as the old one is a regression; this branch has
-                ## paid for that lesson twice already.
-                raise NotImplementedError(
-                    'coupled_lte with vector PCNR is not implemented on this '
-                    'backend: PCNR-inside-Fang handles only the pair view '
-                    '(devices declaring pn-junction probes), and this circuit '
-                    'has %d device(s) declaring pcnr_probes. Use '
-                    'coupled_lte=False (PCNR runs on the standard path), or '
-                    'the CPU Transient.' % len(devices))
             return ('vector', devices, epar), VT
         meta = _junction_arrays(self.cir)
         if meta is None:

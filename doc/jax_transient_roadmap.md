@@ -98,14 +98,16 @@ count of physics-carrying models on an earlier tree.  They answer different
 questions.)  This is the largest open item on the backend by value, and it
 is an `hdl.py` problem, not a transient one.
 
-**(E) Vector PCNR inside the coupled path.**  PCNR-inside-Fang understands
-only the PAIR view `(ra, rb, IS, VT, fns)`; the DEVICE view — which every real
-compact model produces — is not wired in.  Until 2026-09-01 that combination
-crashed with "JAX does not support string indexing" several frames deep; it is
-now **refused at `_pcnr_setup`**, naming the combination and the alternative.
-The refusal is the interim state, not the answer: wiring the device view into
-`fang_inner_loop` is the actual item, and it is the same shape as the work that
-put the continuation chain on both PCNR views.
+*(E) Vector PCNR inside the coupled path — CLOSED 2026-09-01, same day it
+was opened.  PCNR-inside-Fang understood only the pair view; the device view,
+which every real compact model produces, reached `fang_inner_loop` as the
+literal string `'vector'` used as an array index.  Briefly refused at setup,
+then actually wired: the Schur-reduced `(F_eff, J_eff)` is an n-sized system
+whose Newton step equals predict's `dx_mna`, so fang's machinery — eq (18)'s
+second solve against the same factors included — works on it unchanged, and
+that argument never depended on which view produced the blocks.  Measured
+against the CPU on an EKV NMOS: standard-path vector PCNR 2.000e-05, coupled
+2.030e-05, i.e. as accurate as the path already trusted.*
 
 ## Refused, with cause — do not re-propose without new measurement
 
