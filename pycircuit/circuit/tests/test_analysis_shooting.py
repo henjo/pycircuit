@@ -1505,3 +1505,99 @@ def test_the_parasitic_roots_stay_far_from_the_physical_ones():
         'a second eigenvalue at %.3e is no longer negligible -- with the ' \
         'parasitic roots this close to the physical one, `spectral_radius` ' \
         'is a maximum over a mixed spectrum and needs separating' % ev[1]
+
+
+def _grid_fracs(kind, n):
+    if kind == '2:1':
+        f = np.where(np.arange(n) % 2 == 0, 2.0, 1.0)
+    elif kind == 'smooth':
+        f = 1.0 + 0.8 * np.sin(2 * np.pi * np.arange(n) / n)
+    else:
+        f = np.ones(n)
+    return f / f.sum()
+
+
+def test_a_callers_grid_is_validated_before_it_is_used():
+    """The contract is step FRACTIONS of the period, summing to one.
+
+    Fractions and not absolute times, because an autonomous period is an
+    unknown: every step has to scale with `T` or `dh/dT = h/T` -- the
+    identity the period column rests on -- stops holding.  A grid that
+    silently did not sum to one would shorten or lengthen the period the
+    solve believes it integrated, which no residual could detect.
+    """
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_q20_rlc(), method='trap')
+    for bad, why in ((np.array([0.5, 0.4]), 'sum to 1'),
+                     (np.array([0.5, 0.6]), 'sum to 1'),
+                     (np.array([-0.5, 1.5]), 'positive'),
+                     (np.array([1.0]), 'at least two')):
+        with pytest.raises(ValueError, match=why):
+            pss._period_grid(1e-3, 200, bad)
+
+    ## and a good one lands where it says
+    fr = _grid_fracs('2:1', 100)
+    times, hs = pss._period_grid(1e-3, 100, fr)
+    assert len(hs) == 100 and len(times) == 101
+    assert abs(times[-1] - 1e-3) < 1e-15
+    assert np.allclose(np.diff(times), hs)
+
+
+def test_a_non_uniform_grid_solves_a_driven_circuit():
+    """RECORDED SCOPE ITEM 5, the driven half.
+
+    ⚠ The recorded blocker -- "blocked on `Transient` accepting a
+    non-uniform grid; `fixed_timestep` is uniform-only" -- was stale.
+    `Transient.solve`'s loop is uniform-only and always was, but PSS never
+    uses that loop: it drives `solve_timestep` one step at a time, and
+    non-uniform steps went through unchanged.
+
+    The analytic per-period decay is the check, because it does not care
+    what grid produced it.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    analytic = float(np.exp(-np.pi / 20.0))
+    for method in ('trap', 'gear'):
+        for kind in ('2:1', 'smooth'):
+            pss = PSS(_q20_rlc(), method=method, reltol=1e-9)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = pss.solve(period=1e-3, timestep=1e-5, maxiterations=40,
+                                grid=_grid_fracs(kind, 200))
+            assert pss.converged, '%s/%s did not converge' % (method, kind)
+            peak = float(np.max(np.abs(np.asarray(
+                res['tpss'].v('c'), dtype=float).ravel())))
+            assert abs(peak - 20.0) < 0.5, \
+                '%s/%s peak %.5f against 20 V analytic' % (method, kind, peak)
+            assert abs(pss.spectral_radius - analytic) < 0.01, \
+                '%s/%s rho %.6f against exp(-pi/Q) %.6f' % (
+                    method, kind, pss.spectral_radius, analytic)
+
+
+def test_a_non_uniform_grid_works_when_the_period_is_an_unknown():
+    """The autonomous half, which is where the FRACTIONS matter.
+
+    The grid is rebuilt at the current `T` on every residual evaluation, so
+    each step scales with the unknown and `dh/dT = h/T` still holds.  If the
+    grid were frozen in absolute time instead, the period column would be
+    wrong and the solve would converge to the wrong `T` -- which is what
+    this asserts against.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    for method in ('trap', 'gear'):
+        for kind in ('2:1', 'smooth'):
+            pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30,
+                          grid=_grid_fracs(kind, 200))
+            assert pss.converged, '%s/%s did not converge' % (method, kind)
+            ## the true period is 1.000e-03; a deliberately awkward grid
+            ## costs accuracy but must not move the answer by a factor
+            err = abs(pss.period - 1e-3) / 1e-3
+            assert err < 5e-3, \
+                '%s/%s solved T=%.9f, %.1f ppm from the true 1e-3 -- a grid ' \
+                'frozen in absolute time rather than in fractions would ' \
+                'fail exactly here' % (method, kind, pss.period, 1e6 * err)

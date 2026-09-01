@@ -635,7 +635,50 @@ class PSS(Analysis):
 
     RECORDED SCOPE, in order, neither of these planned work yet:
 
-      5. LTE-CHOSEN grid -- pick the step sequence from an adaptive run and
+      5. LTE-CHOSEN grid -- THE MECHANISM IS BUILT (2026-09-01), the
+         payoff case is not yet reached.  `PSS.solve(grid=...)` takes step
+         FRACTIONS of the period and freezes them; see `_period_grid`.
+
+         ⚠ THE RECORDED BLOCKER WAS STALE.  This item said "blocked on
+         `Transient` accepting a non-uniform grid; `fixed_timestep` is
+         uniform-only".  That loop IS uniform-only -- and PSS never uses
+         it, driving `solve_timestep` one step at a time instead, where
+         non-uniform steps worked unchanged.  Verified before anything was
+         written.
+
+         Verified on benign circuits: driven and autonomous, both methods,
+         2:1 and smoothly-varying grids all converge, with the driven
+         spectral radius still matching exp(-pi/Q).  The autonomous case is
+         what makes FRACTIONS the contract rather than times -- the grid is
+         rebuilt at the current `T` on every residual evaluation, so
+         `dh/dT = h/T` keeps holding.
+
+         ⚠ AND VAN DER POL, THE CIRCUIT THAT MOTIVATED IT, STILL DOES NOT
+         SOLVE THROUGH IT.  A throwaway driver did: on a 1105-step grid
+         taken from an adaptive transient it converged to -47.3 ppm where
+         20000 UNIFORM points give -60.6, i.e. 18x fewer points and better
+         accuracy.  Through this analysis it does not, and the diagnosis
+         eliminated the obvious causes -- the opening step is large not
+         small, the plumbing is right (benign circuits converge), and the
+         analytic Jacobian is no worse on a non-uniform grid than on a
+         uniform one (~30% off on BOTH, which is the plain path's known
+         flat-history seeding, item 4b).
+
+         What is left is that the throwaway used FINITE DIFFERENCES -- an
+         effectively exact Jacobian -- with `x_0` as the unknown and no
+         manufacturing step, and a stiff relaxation oscillator is the first
+         circuit that cannot tolerate the plain path's 30%.  So the two
+         methods fail it for DIFFERENT reasons: trapezoidal integrates it
+         but shoots with an inexact Jacobian, Gear-2 has the exact Jacobian
+         (4b) but hits the fold at `v = -1` where `mu(1 - v^2)` vanishes.
+
+         ONE FIX ADDRESSES BOTH, and 4d's measurement is what makes it
+         possible: `iq_{-1} = -(i(x_0) + u(t_0))` is EXACTLY available from
+         the DAE, so trapezoidal can take a solved-history formulation with
+         no manufacturing step and no fabricated history -- an exact
+         Jacobian, and clear of Gear-2's fold.  Not built.
+
+      5b. LTE-CHOSEN grid, the original wording -- pick the step sequence from an adaptive run and
          freeze it, refining BETWEEN shooting solves.  The grid still never
          moves inside one, so (3) stays exact.  Blocked on `Transient`
          accepting a non-uniform grid; `fixed_timestep` is uniform-only.
@@ -742,6 +785,10 @@ class PSS(Analysis):
         self._want_dfdh = False
         self._dfdh = None
         self._want_lte = False
+        ## The caller's step fractions, or None for the uniform grid.  Read
+        ## by the autonomous closures, which rebuild the grid at the current
+        ## `T` on every residual evaluation.
+        self._grid_fracs = None
         self._lte = None
         self._lte_seam = False
         self._lte_valid = True
@@ -853,6 +900,54 @@ class PSS(Analysis):
                 % (T, seed_period), RuntimeWarning, stacklevel=3)
         return z, info, ier, mesg
 
+    def _period_grid(self, period, npts, grid):
+        """`(times, hs)` for one period -- uniform, or a caller's own grid.
+
+        RECORDED SCOPE ITEM 5.  A transient adapts because it cannot see
+        the future; PSS re-solves the SAME interval over and over, so it can
+        be handed a grid that was chosen well ONCE and then frozen.  The
+        grid still never moves inside a solve, so the shooting Newton stays
+        exact -- freezing is what makes it a Newton, and this changes only
+        WHICH frozen grid.
+
+        ⚠ THE RECORDED BLOCKER WAS STALE.  Item 5 said this was "blocked on
+        `Transient` accepting a non-uniform grid; `fixed_timestep` is
+        uniform-only".  `Transient.solve`'s loop is uniform-only and always
+        was -- but PSS never uses that loop.  It drives `solve_timestep`
+        directly, one step at a time, and non-uniform steps worked through
+        that path unchanged.  Verified before any of this was written.
+
+        `grid` is a sequence of step FRACTIONS of the period, summing to 1.
+        Fractions rather than times because an autonomous period is an
+        unknown: every step must scale with `T`, or `dh/dT = h/T` -- the
+        identity the period column rests on -- stops holding.
+
+        Measured on van der Pol at mu=100 (`benchmarks/pss_lte_grid.py`):
+        1105 steps taken from an adaptive transient converge where 1105
+        UNIFORM steps do not, and beat a 20000-point uniform grid on
+        accuracy -- 18x fewer points and -47.3 ppm against -60.6.
+        """
+        if grid is None:
+            times, dt = self.toolkit.linspace(0.0, period, num=npts,
+                                              endpoint=True, retstep=True)
+            return times, np.full(len(times), float(dt))
+        fr = np.asarray(grid, dtype=float)
+        if fr.ndim != 1 or len(fr) < 2:
+            raise ValueError('grid must be a 1-D sequence of at least two '
+                             'step fractions, got shape %r' % (fr.shape,))
+        if not np.all(fr > 0.0):
+            raise ValueError('every grid step fraction must be positive; '
+                             'the smallest given is %g' % float(fr.min()))
+        total = float(fr.sum())
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(
+                'grid step fractions must sum to 1 (they are fractions of '
+                'the period, so that every step scales with T when the '
+                'period is an unknown); they sum to %.12g' % total)
+        hs = fr * period
+        times = np.concatenate(([0.0], np.cumsum(hs)))
+        return times, hs
+
     def _companion_reach(self):
         """How many charges back the chosen integrator's companion reads.
 
@@ -917,7 +1012,7 @@ class PSS(Analysis):
         Pq_new = alphas[0] * (C_new @ Px_new) + S
         return Px_new, Pq_new
 
-    def _traverse_solved_history(self, x0_in, xm1_in, times, dt,
+    def _traverse_solved_history(self, x0_in, xm1_in, times, hs,
                                  T=None, want_dT=False):
         """One period from a SOLVED history, for a two-step companion.
 
@@ -960,7 +1055,7 @@ class PSS(Analysis):
         ## None because the THIRD charge is still `q(x_{-1})` repeated -- the
         ## LTE estimator differences three, so its opening reading remains
         ## unsound and the report goes on discarding it.
-        tr = self._install_history(x0_in, xm1_in, dt)
+        tr = self._install_history(x0_in, xm1_in, hs[0])
 
         ## `P_0 = [I 0]`, `P_{-1} = [0 I]` -- the two unknowns, exactly.  The
         ## plain path seeds BOTH rings with `I`, which is the flat-history
@@ -998,7 +1093,8 @@ class PSS(Analysis):
 
         x, x_prev = copy(x0_in), copy(xm1_in)
         P_prev = Px[1]
-        for t in times[1:]:
+        for _j, t in enumerate(times[1:]):
+            dt = hs[_j]
             x_prev = x
             x = copy(self.solve_timestep(x, t, dt))
             self.Cvec.append(copy(self._C))
@@ -1112,7 +1208,7 @@ class PSS(Analysis):
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
 
-    def _traverse(self, x_in, T, times, dt, want_dT):
+    def _traverse(self, x_in, T, times, hs, want_dT):
         """One pass over the period, with the sensitivities accumulated.
 
         Returns ``(x0, x_end, dx_end/dx0, dx_end/dT)`` -- the last only when
@@ -1133,7 +1229,7 @@ class PSS(Analysis):
         n = self.cir.n
         self._want_dfdh = want_dT
         self._begin_period(x_in)
-        x = self.solve_timestep(x_in, times[0], dt)
+        x = self.solve_timestep(x_in, times[0], hs[0])
         iq_last = self._iq
         x0 = copy(x)
 
@@ -1158,7 +1254,8 @@ class PSS(Analysis):
         self.Jtvec = [copy(self._Jf)]
         self.times = times
 
-        for t in times[1:]:
+        for _j, t in enumerate(times[1:]):
+            dt = hs[min(_j, len(hs) - 1)]
             x = copy(self.solve_timestep(x, t, dt, iq_last=iq_last))
             iq_last = self._iq
             self.Cvec.append(copy(self._C))
@@ -1429,8 +1526,17 @@ class PSS(Analysis):
         return x, J
 
 
-    def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6, 
-              maxiterations=20):
+    def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
+              maxiterations=20, grid=None):
+        """Solve for the periodic steady state.
+
+        `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
+        period, summing to 1, used in place of the uniform `timestep` grid.
+        Fractions rather than absolute times because an autonomous period is
+        an unknown and every step has to scale with it.  See
+        `_period_grid`; the grid is still frozen for the whole solve, so the
+        shooting Newton stays exact.
+        """
         self.period = period
         toolkit = self.toolkit
 
@@ -1443,9 +1549,10 @@ class PSS(Analysis):
             x = x0 # reference node not included !
 
         #create vector with timepoints and a more fitting dt
-        times,dt=toolkit.linspace(0,period,num=int(period/dt),endpoint=True,
-                             retstep=True)
+        times, hs = self._period_grid(period, int(period / dt), grid)
         npts = len(times)
+        self._grid_fracs = (None if grid is None
+                            else np.asarray(grid, dtype=float))
         alpha = 1
 
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
@@ -1471,8 +1578,8 @@ class PSS(Analysis):
             ## exists to remove, which is a singular system wearing an extra
             ## equation.
             self._begin_period(x)
-            _x1 = self.solve_timestep(x, times[0], dt)
-            _x2 = self.solve_timestep(_x1, times[1], dt, iq_last=self._iq)
+            _x1 = self.solve_timestep(x, times[0], hs[0])
+            _x2 = self.solve_timestep(_x1, times[1], hs[0], iq_last=self._iq)
             phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
             phase_pin = float(np.asarray(_x1)[phase_k])
 
@@ -1538,7 +1645,7 @@ class PSS(Analysis):
         newton = True
 
         def func(x):
-            x0, x_end, Mx, _Mt = self._traverse(x, period, times, dt,
+            x0, x_end, Mx, _Mt = self._traverse(x, period, times, hs,
                                                 want_dT=False)
             D = np.asarray(toolkit.eye(n - 1))
             return x0 - x_end, D - alpha * Mx
@@ -1562,7 +1669,7 @@ class PSS(Analysis):
             m = n - 1
             x0_in, xm1_in = z[:m], z[m:]
             x_last, x_prev, P_last, P_prev = self._traverse_solved_history(
-                x0_in, xm1_in, times, dt)
+                x0_in, xm1_in, times, hs)
 
             D = np.asarray(toolkit.eye(m))
             J = np.zeros((2 * m, 2 * m))
@@ -1592,9 +1699,11 @@ class PSS(Analysis):
             direction it is there to remove.
             """
             x_in, T = z[:-1], float(z[-1])
-            tms, h = toolkit.linspace(0.0, T, num=npts, endpoint=True,
-                                      retstep=True)
-            x0, x_end, Mx, Mt = self._traverse(x_in, T, tms, h, want_dT=True)
+            ## Rebuilt at the CURRENT T, which is what keeps `dh/dT = h/T`
+            ## true of every step -- uniform or not.
+            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
+            x0, x_end, Mx, Mt = self._traverse(x_in, T, tms, hs_T,
+                                               want_dT=True)
 
             D = np.asarray(toolkit.eye(n - 1))
             m = n - 1
@@ -1638,11 +1747,10 @@ class PSS(Analysis):
             """
             m = n - 1
             x0_in, xm1_in, T = z[:m], z[m:2 * m], float(z[-1])
-            tms, h = toolkit.linspace(0.0, T, num=npts, endpoint=True,
-                                      retstep=True)
+            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
             (x_last, x_prev, P_last, P_prev, Pt_last,
              Pt_prev) = self._traverse_solved_history(
-                x0_in, xm1_in, tms, h, T=T, want_dT=True)
+                x0_in, xm1_in, tms, hs_T, T=T, want_dT=True)
 
             D = np.asarray(toolkit.eye(m))
             J = np.zeros((2 * m + 1, 2 * m + 1))
@@ -1700,8 +1808,7 @@ class PSS(Analysis):
                 _shoot_reltol, maxiterations, period)
             x0_ss, xm1_ss = z_ss[:m_], z_ss[m_:2 * m_]
             self.period = period = float(z_ss[-1])
-            times, dt = toolkit.linspace(0.0, period, num=npts,
-                                         endpoint=True, retstep=True)
+            times, hs = self._period_grid(period, npts, self._grid_fracs)
         elif self.autonomous:
             ## The period joins the unknowns.  Its residual row is the phase
             ## condition -- in the units of the coordinate it pins, hence
@@ -1719,8 +1826,7 @@ class PSS(Analysis):
             ## The grid follows the solved period; everything downstream --
             ## the replay, the waveform, the DFT -- must use it or the
             ## answer is reported on a period the solver rejected.
-            times, dt = toolkit.linspace(0.0, period, num=npts,
-                                         endpoint=True, retstep=True)
+            times, hs = self._period_grid(period, npts, self._grid_fracs)
         elif solved_history:
             ## THE SEED IS THE OLD FORMULATION'S ASSUMPTION, written down:
             ## `x_{-1} = x_0`.  It is what the plain path silently assumes
@@ -1829,7 +1935,7 @@ class PSS(Analysis):
         ## and the reported amplitude would not be the one the residual was
         ## driven to zero on.
         if solved_history:
-            self._install_history(x0_ss, xm1_ss, dt)
+            self._install_history(x0_ss, xm1_ss, hs[0])
             tr = self._transient()
             X = [np.asarray(x0_ss, dtype=float)]
             walk = times[1:]
@@ -1842,8 +1948,8 @@ class PSS(Analysis):
         tr._lte_probe = None
         self._want_lte = True
         lte_seen = []
-        for t in walk:
-            x = self.solve_timestep(X[-1], t, dt)
+        for _j, t in enumerate(walk):
+            x = self.solve_timestep(X[-1], t, hs[min(_j, len(hs) - 1)])
             if self._lte is not None:
                 lte_seen.append((float(self._lte), float(t), self._lte_seam,
                                  self._lte_valid))
@@ -2005,7 +2111,10 @@ class PSS(Analysis):
                     _run.append(_c)
                 _j = min(_run, key=lambda i: _d[i])
                 if True:
-                    self.fundamental_period = period * _j / (len(_d) - 1)
+                    ## `times[_j]`, not `period * _j/(N-1)`: with a caller's
+                    ## grid the points are not evenly spaced.
+                    self.fundamental_period = float(
+                        times[min(_j, len(times) - 1)])
                     warnings.warn(
                         'PSS: this autonomous solve returned a period that '
                         'is a MULTIPLE of the fundamental. The orbit comes '
@@ -2017,7 +2126,7 @@ class PSS(Analysis):
                         'period=%.6g to get the fundamental. The waveform '
                         'is a correct periodic solution either way; its '
                         'FUNDAMENTAL FREQUENCY is what is off.'
-                        % (_d[_j] / _diam, period * _j / (len(_d) - 1),
+                        % (_d[_j] / _diam, self.fundamental_period,
                            self.fundamental_period, period,
                            period / self.fundamental_period,
                            self.fundamental_period),
