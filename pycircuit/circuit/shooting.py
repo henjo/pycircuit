@@ -76,11 +76,48 @@ class PSS(Analysis):
     a true Newton needs the augmented `(x, iq)` state, and is the work that
     makes this analysis trustworthy.
 
-    (2) does not exist here at all: the grid is a fixed `linspace`, and this
-    class carries its own transcription of one integrator step rather than
-    driving `Transient`.  Reusing `Transient` at `fixed_timestep=True` would
-    supply (2), the limiting/PCNR machinery and breakpoints, and remove a
-    third copy of the integrator algebra -- planned, not done.
+    (2) DOES NOT EXIST HERE, AND UNDER A SHOOTING METHOD IT CANNOT BE A
+    CONTROLLER.  The grid is a fixed `linspace`; under `fixed_timestep` both
+    transient backends skip the LTE verdict outright, keeping only the
+    order drop that protects the integrator across a breakpoint.  Nor is
+    that a wiring gap to be closed: if the step sequence adapts to `x0`
+    then phi is a DIFFERENT discrete map for each `x0`, so it is not smooth
+    in `x0` and the accumulated monodromy is the derivative of a
+    neighbouring problem.  Freezing the grid is what makes (3) a Newton.
+
+    So (2) changes kind here.  The estimator is still computable on a
+    frozen grid, and what it measures is not convergence but ACCURACY:
+    which of the three levels is limiting the answer.  That question is
+    live rather than academic -- on a Q=20 resonator with `method='euler'`
+    the shooting solve converges completely (5 iterations, residual
+    3.9e-05) and lands at 8.815 V against a 20 V analytic peak.  The answer
+    is 56% low for a reason (1) and (3) cannot see, and nothing currently
+    says so.
+
+    RECORDED SCOPE, in order, none of it planned work yet:
+
+      4. LTE as a REPORT -- evaluate the estimator on the converged
+         periodic solution and say whether the run is discretisation-
+         limited.  Needs only the estimator exposed; catches the case above.
+      5. LTE-CHOSEN grid -- pick the step sequence from an adaptive run and
+         freeze it, refining BETWEEN shooting solves.  The grid still never
+         moves inside one, so (3) stays exact.  Blocked on `Transient`
+         accepting a non-uniform grid; `fixed_timestep` is uniform-only.
+         Note this is the better structure anyway: a transient adapts
+         because it cannot see the future, while PSS re-solves the same
+         interval repeatedly and can therefore choose its grid once, well.
+      6. MATRIX-FREE variational shooting (Telichevesky, Kundert & White,
+         DAC 1995) -- the only structure that permits per-iteration
+         adaptivity, because `M v` is obtained by integrating the
+         variational system along the stored trajectory on that iteration's
+         own grid.  The outer solve becomes an INEXACT Newton, phi shifting
+         slightly between iterations.  A rewrite, not an increment on the
+         above, and it should not leak into one.
+
+    Driving `Transient` at `fixed_timestep=True` -- the next planned step --
+    buys one integrator definition, the limiting/PCNR machinery, breakpoints
+    and the order drop.  It does NOT buy (2); saying otherwise was this
+    docstring's own earlier error.
 
     `reltol`, `iabstol` and `vabstol` mean exactly what they mean on
     `Transient` -- the tolerances of the TRANSIENT solution, applied to the
