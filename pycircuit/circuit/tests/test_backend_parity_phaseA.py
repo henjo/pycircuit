@@ -287,8 +287,15 @@ def test_p6_integrator_defaults_agree_and_the_choice_is_live():
             v = np.asarray(res.v('out'), float).reshape(-1)
             errs[m] = float(np.max(np.abs(v - (1 - np.exp(-t / 1e-3)))))
         assert errs['euler'] > 3.0 * errs['gear'], errs
-        with pytest.raises(ValueError, match='CPU-only'):
-            JAXTransient(rc_step(), integrator='trap')._eval_method()
+        ## Trapezoidal was CPU-only until 2026-09-01 and this line asserted
+        ## the refusal.  It is now a third selectable method, and 'trapezoidal'
+        ## is accepted as an alias the way the CPU spells it.
+        assert JAXTransient(rc_step(), integrator='trap')._eval_method() \
+            == 'trap'
+        assert JAXTransient(rc_step(),
+                            integrator='trapezoidal')._eval_method() == 'trap'
+        with pytest.raises(ValueError, match="'gear', 'euler' or 'trap'"):
+            JAXTransient(rc_step(), integrator='bdf3')._eval_method()
     _with_jax(go)
 
 

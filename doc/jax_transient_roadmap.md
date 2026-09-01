@@ -37,7 +37,7 @@ way (a `lax.cond` that is free under `jit` is not free under `vmap`).
 | 4 | Jacobian scaling / equilibration | **REFUSED (P17)** | `nrsolver`/`scaler`/`linearsolver` are refused in `__init__`, permanently: a traced `while_loop` cannot dispatch into per-iteration Python objects. Use `Transient` |
 | 5 | Order-drop on aggressive shrink | **PART DONE, part open** | see *Open* below — the zero-stability half is covered, the stalled-estimate half is not |
 | 6 | Per-domain tolerances (`iabstol`/`vabstol`, `dx`+residual) | **DONE** | F6(b): `_newton_abstol`/`_newton_xtol` build the per-row vectors (iabstol on node rows, vabstol on branch rows, transposed for the update test); `conv_f` and `conv_x` are both scored, per-row, on the consistent `(F(x), dx)` pair. The old single scalar was wrong three ways at once — flavour, reference and norm |
-| 7 | Integration-method selection | **DONE** | `integrator` Parameter (P6): 'gear' (default) or 'euler' |
+| 7 | Integration-method selection | **DONE** | `integrator` Parameter (P6): 'gear' (default), 'euler', and 'trap' since 2026-09-01 |
 | 8 | Coupled solver (Fang DAC'13) | **DONE** | `coupled_lte` Parameter, `fang_inner_loop` (P19). PCNR-inside-Fang runs too |
 | 9 | Pluggable step controllers | **OPEN** | see *Open* below |
 | 10 | Device bypassing (`bypass`/`bypasstol`) | **REFUSED (P13)** | A non-concept here, not a missing feature: bypassing skips evaluating quiescent elements, and a vmapped evaluation group computes all lanes of all instances in one kernel. There is nothing to skip |
@@ -130,10 +130,16 @@ put the continuation chain on both PCNR views.
 
 ## CPU-only, with cause
 
-Trapezoidal integration (the uniform-grid trap branch was deleted as
-dead-but-plausible; a variable-step trap estimator has not been written),
-the coupled 'bordered' eq (12) branch, and coupled + `fixed_timestep`
+The coupled 'bordered' eq (12) branch, and coupled + `fixed_timestep`
 (`grid_locked` is not wired here — refused, not approximated).
+
+*Trapezoidal integration left this list on 2026-09-01* — `integrator='trap'`.
+The entry had claimed "a variable-step trap estimator has not been written";
+the kernels existed and were already used by the CPU, and only the wiring was
+missing. The one part that had to be written is the estimator's use of the
+**charge** rather than the companion current, since differencing `g` measures
+the trap recursion's undamped `(−1)^n` mode. Landing figures and the stiff-mode
+ringing gate are in `doc/backend_parity_260821.md`'s P6 entry.
 
 ## Where the authoritative records live
 

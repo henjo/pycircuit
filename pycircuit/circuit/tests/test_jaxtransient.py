@@ -66,9 +66,22 @@ def test_jax_lte_order_per_method():
 
     assert orders['euler'] == 2.0
     assert orders['gear'] == 3.0
-    ## 'trap' was deleted (review hygiene): unreachable in production, and
-    ## its formula was uniform-grid-only.
-    with pytest.raises(ValueError, match='trapezoidal branch was deleted'):
+
+    ## 'trap' was deleted once for cause (unreachable, and its formula was
+    ## uniform-grid-only); rebuilt 2026-09-01 against the CHARGE.  This
+    ## fixture has h_history[2] == 0, i.e. only two accepted steps, so the
+    ## trap branch is in its Euler fallback -- assert that, because the
+    ## fallback is a deliberate choice and not an accident: the CPU falls
+    ## back to a g-based form there, which for trapezoidal is the
+    ## mode-contaminated shape.
+    _, p_trap = ywr_error_ratio(i_curr, x_curr, J, st, irefnode=1,
+                                method='trap',
+                                q_curr=jnp.zeros_like(i_curr))
+    assert float(p_trap) == 2.0, 'trap did not fall back to Euler on a ' \
+        'two-step history'
+
+    ## and it must REFUSE rather than guess when the charge is withheld
+    with pytest.raises(ValueError, match='q_curr is required'):
         ywr_error_ratio(i_curr, x_curr, J, st, irefnode=1, method='trap')
 
 
@@ -326,22 +339,31 @@ def _lte_ratio(h, method, order, G=1.0e6):
     from pycircuit.circuit.jaxtransient import TransientState, ywr_error_ratio
     n = 2
     g = (lambda t: G * t) if order == 1 else (lambda t: G * t ** 2 / 2.0)
+    ## TRAPEZOIDAL DIFFERENCES THE CHARGE, not the companion current, so it
+    ## needs a q-history with a constant non-zero third derivative -- and a
+    ## THIRD real past step, or the estimator's own guard falls back to
+    ## Euler and this gate would measure Euler while claiming to measure
+    ## trap.  q = G t^3/6 gives q''' = G.
+    q = lambda t: G * t ** 3 / 6.0
+    q_hist = jnp.array([[q(-h), 0.0], [q(-2 * h), 0.0], [q(-3 * h), 0.0]])
     st = TransientState(
         t=0.0, dt=h, step_idx=5, x_history=jnp.zeros((3, n)),
-        q_history=jnp.zeros((3, n)),
+        q_history=q_hist,
         iq_history=jnp.array([[g(-h), 0.0], [g(-2 * h), 0.0], [0.0, 0.0]]),
-        h_history=jnp.array([h, h, 0.0]),
+        h_history=jnp.array([h, h, h]),
         results_buffer=None, time_buffer=None,
         tline_history=None, tline_head=None,
         sig_max=jnp.array(1.0), ref_running=jnp.array(1.0), n_rejected=0)
     r, _p = ywr_error_ratio(
         jnp.array([g(0.0), 0.0]), jnp.array([1.0, 0.0]),
         jnp.eye(n), st, irefnode=1, method=method,
-        trtol=1.0, lte_rel=0.0, lte_abstol=1.0)
+        trtol=1.0, lte_rel=0.0, lte_abstol=1.0,
+        q_curr=jnp.array([q(0.0), 0.0]))
     return float(r) / h ** order
 
 
-@pytest.mark.parametrize('method,order', [('euler', 1), ('gear', 2)])
+@pytest.mark.parametrize('method,order', [('euler', 1), ('gear', 2),
+                                          ('trap', 2)])
 def test_gate_9_1a_jax_lte_scales_with_the_right_power_of_h(method, order):
     """Gate 9-1(a): the estimate must follow h^order, not merely be non-zero."""
     hs = (1e-4, 5e-5, 2.5e-5, 1.25e-5)

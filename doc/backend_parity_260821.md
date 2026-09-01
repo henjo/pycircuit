@@ -158,6 +158,31 @@ reachable from the API (hardcoded at both call sites). Exposing it as
 CPU-only until someone ports the *variable-step* estimator — the uniform-grid trap
 branch was deleted for cause; say so in the Parameter doc.
 
+**DONE 2026-09-01, and the framing above was wrong in a way worth keeping.**
+"Port the variable-step estimator" implied the mathematics was missing. It was
+not: `trapezoidal_lte` and `third_divided_difference` were already in
+`_lte_kernels`, already used by the CPU, already plain arithmetic that traces.
+What was missing was the WIRING — a much smaller claim, and the gap between the
+two is roughly the day of work nobody did because the record said otherwise.
+
+⚠ The one part that genuinely had to be written, and could not be copied: the
+estimator must difference the **charge**, not the companion current. The Gear-2
+branch beside it differences `g`; for trapezoidal that is forbidden, because the
+recursion `iq_n = 2(q_n − q_{n−1})/h − iq_{n−1}` carries an undamped `(−1)^n`
+mode and differencing `g` measures that mode (a 1.9x swing from step history
+alone). So `ywr_error_ratio` gained a `q_curr` argument. Copying the neighbouring
+branch — the obvious move — would have produced a plausible, passing, wrong
+estimator; the deletion of the old branch is what forced the question to be asked.
+
+Measured at landing (rc/vsin, reltol 1e-4, ~5x bounds per the conformance
+harness's rule): **rc 4.2779e-06, vsin 4.1643e-03**, step counts 61/60 and 92/89
+CPU/JAX; Gear-2 measures rc 4.3e-6 / vsin 2.9e-3 for reference. The decisive gate
+is the stiff mode: at `h·λ = -1000` both backends ring at **0.9960**, the textbook
+`|R_TR(-1000)| = 0.996008`. That is what proves the branch is really trapezoidal
+— an estimator that had silently fallen back to Euler would still have passed the
+smooth pairings. The ringing is unmitigated on both backends and must stay that
+way; damping the JAX side would be a parity break dressed as an improvement.
+
 This also forces the deferred F19(b) decision into the open: **the shipped defaults
 differ** (CPU Euler, JAX Gear-2), so identical scripts get different methods by
 backend. Recommendation: make **Gear-2 the CPU default too** — the Phase-0 baseline

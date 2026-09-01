@@ -125,6 +125,13 @@ def test_both_backends_reach_the_same_definition():
     ## one cannot drift from the other.
     assert jax.gear2_step(1.7, 2e-9, 1.3, 0.8, 1e-5, 7e-6) == \
         K.bdf2_companion(1.7, 2e-9, 1.3, 0.8, 1e-5, 7e-6)
+    ## Same rule for trapezoidal, whose JAX branch was rebuilt 2026-09-01.
+    ## The COMPANION is a shared kernel call; the ESTIMATOR is not shared
+    ## (the CPU's primary path and the JAX branch both difference the charge,
+    ## but through different history containers), which is why this checks
+    ## the companion and `test_gate_9_1a...` checks the estimator's scaling.
+    assert jax.trap_step(1.7, 2e-9, 1.3, 0.55, 1e-5) == \
+        K.trapezoidal_companion(1.7, 2e-9, 1.3, 0.55, 1e-5)
 
 
 def test_kernels_accept_arrays_elementwise():

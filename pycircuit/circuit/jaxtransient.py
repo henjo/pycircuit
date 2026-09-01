@@ -6,8 +6,11 @@ import warnings
 import jax.numpy as jnp
 
 from pycircuit.circuit._lte_kernels import (bdf2_companion, euler_companion,
+                                            trapezoidal_companion,
                                             second_divided_difference,
-                                            euler_lte, gear2_lte)
+                                            third_divided_difference,
+                                            euler_lte, gear2_lte,
+                                            trapezoidal_lte)
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.nrsolver import NoConvergenceError
 from pycircuit.utilities.param import Parameter
@@ -125,14 +128,25 @@ class TransientState(NamedTuple):
 ## Euler and Gear-2 were already bit-for-bit the same expression, so those runs do
 ## not move.
 ##
-## THE TRAPEZOIDAL BRANCH WAS DELETED (review hygiene): no production path
-## could reach it (at the time, `eval_method` was hardcoded 'gear' at both
-## call sites; P6 has since exposed the gear/euler choice as the
-## `integrator` Parameter), and its LTE formula was the uniform-grid one -- wrong the
+## THE TRAPEZOIDAL BRANCH WAS DELETED once (review hygiene): no production
+## path could reach it (at the time, `eval_method` was hardcoded 'gear' at
+## both call sites; P6 has since exposed the choice as the `integrator`
+## Parameter), and its LTE formula was the uniform-grid one -- wrong the
 ## moment the step changed, had anyone ever wired it up.  Dead-but-plausible
 ## solver branches are exactly how the 3/4-optimism defect survived twice.
-## The CPU's trapezoidal integrator, with the correct variable-step
-## estimator, lives in integrator.py.
+##
+## REBUILT 2026-09-01, and the deletion is why the rebuild is trustworthy:
+## restoring the branch meant restoring only the COMPANION (one shared kernel
+## call), while the estimator had to be written against the charge, not
+## transcribed from the g-based form the old branch used.  Had the branch
+## survived unreachable, the wrong formula would have come back with it.
+##
+## The record said for weeks that "a variable-step trap estimator has not
+## been written".  That was wrong: `trapezoidal_lte` and
+## `third_divided_difference` were already in `_lte_kernels`, already used by
+## the CPU, already plain arithmetic that traces.  What had not been written
+## was the WIRING -- a much smaller claim, and the difference between them is
+## about a day of work someone did not do.
 
 def backward_euler_step(q_curr, C_curr, q_prev, dt):
     return euler_companion(q_curr, C_curr, q_prev, dt)
@@ -140,6 +154,10 @@ def backward_euler_step(q_curr, C_curr, q_prev, dt):
 
 def gear2_step(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev):
     return bdf2_companion(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev)
+
+
+def trap_step(q_curr, C_curr, q_prev, iq_prev, dt):
+    return trapezoidal_companion(q_curr, C_curr, q_prev, iq_prev, dt)
 
 def effective_first_order(state: TransientState):
     """Is this step effectively integrated at order 1?
@@ -189,11 +207,31 @@ def compute_integration(q_curr, C_curr, state: TransientState, method='gear',
 
         return jax.lax.cond(fallback, _euler, _gear)
 
+    def do_trap():
+        ## Trapezoidal needs the previous COMPANION CURRENT, which Euler and
+        ## Gear-2 do not -- `iq_history` has been maintained all along (rolled
+        ## on accept only, which is exactly the semantics the recursion
+        ## needs) and until now was read by nobody but the LTE estimator.
+        iq_prev = state.iq_history[0]
+        fallback = (effective_first_order(state) if first_order is None
+                    else first_order)
+
+        def _euler():
+            return do_euler()
+
+        def _trap():
+            return trap_step(q_curr, C_curr, q_prev, iq_prev, dt)
+
+        return jax.lax.cond(fallback, _euler, _trap)
+
     if method == 'euler':
         return do_euler()
     elif method in ('gear', 'gear2'):
         return do_gear2()
-    raise ValueError("eval_method must be 'euler' or 'gear', not %r" % (method,))
+    elif method in ('trap', 'trapezoidal'):
+        return do_trap()
+    raise ValueError(
+        "eval_method must be 'euler', 'gear' or 'trap', not %r" % (method,))
 
 # ---------------------------------------------------------------------------
 # Phase 2: Inner Newton Loop
@@ -818,7 +856,8 @@ def _rescue_chain(rung_newton, x_anchor, x_in, conv_in, needs_rescue,
 
 def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
                     method='gear', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12,
-                    first_order=None, relref='sigglobal', n_nodes=None):
+                    first_order=None, relref='sigglobal', n_nodes=None,
+                    q_curr=None):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
     Mirrors the CPU transient's estimator: forms the residual as a
@@ -826,6 +865,10 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
     maps it to the solution space with ``J^-1`` (the DAE Jacobian factor), and
     normalizes by a voltage-domain tolerance.  ``g_n`` is the just-computed
     companion current, ``g_{n-1}``/``g_{n-2}`` come from the iq history.
+
+    ``q_curr`` is required only by the trapezoidal branch, which differences
+    the CHARGE rather than the companion current -- see there for why it may
+    not do what the other two do.
 
     Returns ``(error_ratio, order_plus_one)``.
     """
@@ -880,11 +923,59 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
             return gear2_lte(h1, h2, q3_over_6), jnp.asarray(3.0)
 
         Eg, order_p1 = jax.lax.cond(first, _euler_branch, _gear_branch, None)
+    elif method in ('trap', 'trapezoidal'):
+        ## ⚠ THIS IS NOT THE GEAR-2 BRANCH WITH A DIFFERENT CONSTANT, and the
+        ## difference is the whole reason the old trapezoidal branch was
+        ## deleted rather than repaired.
+        ##
+        ## The Gear-2 branch above differences the COMPANION CURRENT `g`.
+        ## Trapezoidal must not: its recursion
+        ##     iq_n = 2 (q_n - q_{n-1})/h - iq_{n-1}
+        ## carries an UNDAMPED (-1)^n homogeneous mode, so differencing `g`
+        ## measures that mode rather than the truncation error -- recorded in
+        ## `_lte_kernels` and `integrator.py` as a 1.9x swing produced by step
+        ## history alone.  The estimator therefore differences the CHARGE:
+        ## `third_divided_difference` returns q'''/6 and `trapezoidal_lte`
+        ## consumes exactly that, so the pairing is stated once (the same
+        ## discipline that kept the 3/4 optimism from recurring here).
+        ##
+        ## The deleted branch used YWR Table I's TRAP entry,
+        ## `Eg = -(1/6)(g_n - 2 g_{n-1} + g_{n-2})` -- a uniform-grid formula,
+        ## and `g`-based, so it was wrong twice over.
+        if q_curr is None:
+            raise ValueError(
+                'the trapezoidal LTE differences the charge, so q_curr is '
+                'required; the caller passed none')
+        first = (effective_first_order(state) if first_order is None
+                 else first_order)
+
+        ## `q_history` seeds to [q0, q0, q0], so the third difference is not
+        ## real until two steps have been accepted -- the JAX analogue of the
+        ## CPU's `h_last2 is None`.  The CPU falls back to a g-based form for
+        ## that one step; this one falls back to EULER instead, because the
+        ## g-based form is the mode-contaminated shape above and
+        ## `effective_first_order` has already forced Euler integration on
+        ## exactly those steps.  Estimating an Euler step with the Euler
+        ## formula is the consistent choice, not a concession.
+        h2_unready = jnp.logical_or(state.h_history[1] == 0.0,
+                                    state.h_history[2] == 0.0)
+        use_euler = jnp.logical_or(first, h2_unready)
+
+        def _euler_branch(_):
+            return euler_lte(g_n, g_nm1), jnp.asarray(2.0)
+
+        def _trap_branch(_):
+            h0 = jnp.where(state.h_history[0] == 0.0, dt, state.h_history[0])
+            h1 = jnp.where(state.h_history[1] == 0.0, h0, state.h_history[1])
+            q3_over_6 = third_divided_difference(q_curr, state.q_history,
+                                                 dt, h0, h1)
+            return trapezoidal_lte(dt, q3_over_6), jnp.asarray(3.0)
+
+        Eg, order_p1 = jax.lax.cond(use_euler, _euler_branch, _trap_branch,
+                                    None)
     else:
         raise ValueError(
-            "method must be 'euler' or 'gear', not %r (the trapezoidal "
-            "branch was deleted -- its formula was uniform-grid-only and no "
-            "production path could reach it)" % (method,))
+            "method must be 'euler', 'gear' or 'trap', not %r" % (method,))
 
     # lte = J^-1 Eg in the reduced (reference-node-removed) space.
     J_r = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
@@ -2262,7 +2353,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 i_curr, x_curr, J, state, irefnode,
                 method=eval_method, trtol=trtol, lte_rel=lte_reltol,
                 lte_abstol=lte_abstol, first_order=first_order,
-                relref=relref, n_nodes=n_nodes)
+                relref=relref, n_nodes=n_nodes, q_curr=q_curr)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
@@ -2727,8 +2818,8 @@ class JAXTransient(Analysis):
       CPU deliberately has no imitation of it.
 
     * **CPU-only, with cause**: trapezoidal integration (the uniform-grid
-      trap branch was deleted; a variable-step trap estimator has not been
-      written), the coupled 'bordered' branch, and coupled+fixed_timestep
+      trap branch was deleted; rebuilt against the CHARGE 2026-09-01, so
+      trapezoidal is no longer CPU-only -- `integrator='trap'`), the coupled 'bordered' branch, and coupled+fixed_timestep
       (grid_locked is not wired here yet -- refused, not approximated).
     """
 
@@ -2872,8 +2963,9 @@ class JAXTransient(Analysis):
         ## deleted for cause (its LTE formula assumed equal steps).
         Parameter(name='integrator',
                   desc="Integration method: 'gear' (default, order 2, the "
-                       "CPU's default too) or 'euler' (order 1). "
-                       'Trapezoidal is CPU-only -- see the source note',
+                       "CPU's default too), 'euler' (order 1), or 'trap' "
+                       '(order 2, non-dissipative -- rings on stiff modes, '
+                       'see the source note)',
                   unit='', default='gear'),
         Parameter(name='uic',
                   desc='Use initial conditions (skip DC OP computation)',
@@ -3030,12 +3122,12 @@ class JAXTransient(Analysis):
     def _eval_method(self):
         """The traced loop's method name, validated -- P6."""
         method = self.par.integrator
-        if method not in ('gear', 'euler'):
+        if method in ('trapezoidal',):
+            method = 'trap'
+        if method not in ('gear', 'euler', 'trap'):
             raise ValueError(
-                "integrator must be 'gear' or 'euler' on this backend, not %r. "
-                "Trapezoidal is CPU-only: the uniform-grid trap branch was "
-                "deleted for cause and a variable-step trap estimator has not "
-                "been written." % (method,))
+                "integrator must be 'gear', 'euler' or 'trap' on this "
+                "backend, not %r." % (method,))
         return method
 
     def _timestep_max(self, tend):
