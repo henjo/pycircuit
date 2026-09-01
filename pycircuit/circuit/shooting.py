@@ -29,13 +29,6 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
 
     return freqs, X
 
-## How much tighter the per-timestep Newton runs than the shooting Newton.
-## The period map is only known to the inner tolerance, so the outer residual
-## has a floor there; 100x buys two decades of headroom for the outer solve
-## to converge into.
-INNER_TOL_FACTOR = 100.0
-
-
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
 
@@ -56,11 +49,10 @@ class PSS(Analysis):
     3. the shooting Newton, which finds the periodic point of the discrete
        map.
 
-    Two rules order them.  **The inner tolerance must be far tighter than
-    the outer**: the period map is only KNOWN to the accuracy of (1), so
-    (3)'s residual has a floor there whatever its Jacobian is --
-    `INNER_TOL_FACTOR` states the ratio instead of leaving two defaults to
-    meet by accident.  And **LTE must not run per shooting iteration**: an
+    Two rules order them.  **(3) cannot be tighter than (1)**: the period
+    map is only KNOWN to the accuracy of the per-timestep solves, so the
+    shooting residual has a floor there whatever its Jacobian is.  And
+    **LTE must not run per shooting iteration**: an
     adaptive grid makes the step sequence a function of `x0`, so the period
     map stops being smooth and (3) loses its quadratic rate.  Choose the
     grid once, freeze it, shoot on it.
@@ -91,11 +83,15 @@ class PSS(Analysis):
     third copy of the integrator algebra -- planned, not done.
 
     `reltol`, `iabstol` and `vabstol` mean exactly what they mean on
-    `Transient`: `reltol` is relative, and the two absolute floors are
-    applied PER UNKNOWN in both flavours by
-    `analysis.newton_tolerance_vectors`, which is the single definition all
-    three analyses read.  `reltol` sets the SHOOTING tolerance and the
-    per-timestep solves run `INNER_TOL_FACTOR` times tighter.
+    `Transient` -- the tolerances of the TRANSIENT solution, applied to the
+    per-timestep Newton, with the two absolute floors applied PER UNKNOWN in
+    both flavours by `analysis.newton_tolerance_vectors`, the single
+    definition all three analyses read.  Nothing here rescales them.
+
+    The shooting criterion is expressed against that one: `steadyratio`
+    (>= 1, default 1) multiplies it, so by default the shooting solve is
+    held to the SAME relative tolerance as the transient, and raising it
+    buys fewer shooting iterations for a looser periodic steady state.
     """
 
     parameters = Analysis.parameters + \
@@ -117,6 +113,23 @@ class PSS(Analysis):
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
+         ## `reltol` MEANS THE SAME THING IN EVERY ANALYSIS: the relative
+         ## tolerance of the transient solution.  It is applied to the
+         ## per-timestep Newton here exactly as `Transient` applies it, and
+         ## nothing rescales it.
+         ##
+         ## `steadyratio` is how the SHOOTING criterion is expressed relative
+         ## to it: shooting reltol = reltol * steadyratio, with 1 meaning the
+         ## two are equal.  It is >= 1 because the period map is only KNOWN
+         ## to the accuracy of the inner solves, so asking the shooting
+         ## residual to beat that is asking it to resolve its own noise --
+         ## refused rather than silently accepted.  Raise it to accept a
+         ## looser periodic steady state for fewer shooting iterations.
+         Parameter(name='steadyratio',
+                   desc='Shooting tolerance as a multiple of reltol (>= 1); '
+                        '1 holds the shooting solve to the same relative '
+                        'tolerance as the transient, larger relaxes it',
+                   unit='', default=1.0),
          Parameter(name='method',
                    desc="Integration method for the inner transient: 'trap' "
                         "(default) or 'euler'",
@@ -197,14 +210,12 @@ class PSS(Analysis):
             self._iq = iq
             return f, J
 
-        ## ⚠ THE INNER SOLVE MUST BE TIGHTER THAN THE OUTER ONE.  The
-        ## shooting Newton iterates on the period map phi, and phi is only
-        ## KNOWN to whatever tolerance these per-timestep solves reach -- so
-        ## the outer residual can never be driven below it, however good the
-        ## Jacobian is.  `INNER_TOL_FACTOR` states the ratio rather than
-        ## leaving the two defaults to meet by accident, which is what
-        ## happened before: the inner solve used `par.reltol` while the outer
-        ## ran on fsolve's own defaults, and nothing related them.
+        ## `reltol` HERE IS TRANSIENT'S `reltol`, unscaled: this is the
+        ## per-timestep Newton, and it is the same solve `Transient` applies
+        ## that Parameter to.  The SHOOTING criterion is derived from it in
+        ## `solve` via `steadyratio`, in the loosening direction -- the
+        ## period map is only known to the accuracy reached here, so the
+        ## outer test cannot be tighter than this one.
         ##
         ## AND `iabstol`/`vabstol` MEAN HERE WHAT THEY MEAN IN `Transient`.
         ## This solve used fsolve's scalar defaults, so the two Parameters
@@ -217,7 +228,7 @@ class PSS(Analysis):
             self.par.iabstol, self.par.vabstol, self.toolkit)
         (abstol, xtol) = remove_row_col((abstol, xtol), irefnode,
                                         self.toolkit)
-        x = analysis.fsolve(func, x0, reltol=self.par.reltol / INNER_TOL_FACTOR,
+        x = analysis.fsolve(func, x0, reltol=self.par.reltol,
                             abstol=abstol, xtol=xtol,
                             maxiter=self.par.maxiter, toolkit=self.toolkit)
 
@@ -351,9 +362,20 @@ class PSS(Analysis):
             self.par.iabstol, self.par.vabstol, self.toolkit)[1]
         (_tol,) = remove_row_col((_tol,), irefnode, self.toolkit)
 
+        ## The shooting criterion, expressed against the transient one.
+        _ratio = float(self.par.steadyratio)
+        if _ratio < 1.0:
+            raise ValueError(
+                'steadyratio must be >= 1 (got %g): the period map is only '
+                'known to the accuracy of the per-timestep solves, so a '
+                'shooting tolerance tighter than reltol asks the outer '
+                'residual to resolve its own noise.' % _ratio)
+        _shoot_reltol = self.par.reltol * _ratio
+        _tol = _tol * _ratio
+
         ## Find periodic steady state x-vector
         x0_ss, _info, _ier, _mesg = analysis.fsolve(
-            func, x, maxiter=maxiterations, reltol=self.par.reltol,
+            func, x, maxiter=maxiterations, reltol=_shoot_reltol,
             abstol=_tol, xtol=_tol, toolkit=self.toolkit, full_output=True)
         self.converged = (_ier == 1)
         self.shooting_iterations = maxiterations if not self.converged else None

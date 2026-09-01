@@ -475,3 +475,61 @@ def test_pss_absolute_tolerances_reach_the_inner_solve():
     loose = run(iabstol=1e-2, vabstol=1e-2)
     assert not np.allclose(tight, loose), \
         'iabstol/vabstol made no difference to the inner solve'
+
+
+def test_steadyratio_relates_the_shooting_criterion_to_reltol():
+    """`reltol` is the TRANSIENT tolerance, in every analysis; `steadyratio`
+    expresses the shooting criterion against it.
+
+    Default 1 means the shooting solve is held to the same relative
+    tolerance as the transient -- not tighter, which it could not achieve
+    (the period map is only known to the accuracy of the per-timestep
+    solves), and not looser by some hidden constant either.  Raising it buys
+    fewer shooting iterations for a looser periodic steady state.
+
+    Measured at landing on this resonator at reltol 1e-9: steadyratio 1 took
+    10 iterations to |F| = 3.1e-11, and 100 took 8 to 6.4e-9.
+    """
+    tight, _nc1, _r1 = _shooting_trace('euler', reltol=1e-9,
+                                       maxiterations=40)
+    circuit.default_toolkit = circuit.numeric
+    import warnings as _w
+    import pycircuit.circuit.analysis as _an
+    trace, orig = [], _an.fsolve
+
+    def spy(f, x0, *a, **kw):
+        if f.__qualname__ != 'PSS.solve.<locals>.func':
+            return orig(f, x0, *a, **kw)
+
+        def logged(x, *aa):
+            F, J = f(x, *aa)
+            trace.append(float(np.max(np.abs(F))))
+            return F, J
+        logged.__qualname__ = f.__qualname__
+        return orig(logged, x0, *a, **kw)
+
+    _an.fsolve = spy
+    try:
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            PSS(_q20_rlc(), method='euler', reltol=1e-9,
+                steadyratio=100.0).solve(period=1e-3, timestep=1e-5,
+                                         maxiterations=40)
+    finally:
+        _an.fsolve = orig
+
+    ## looser criterion => stops earlier, at a larger residual
+    assert len(trace) < len(tight), \
+        'steadyratio did not relax the shooting solve (%d vs %d iterations)' \
+        % (len(trace), len(tight))
+    assert trace[-1] > tight[-1][0]
+
+
+def test_steadyratio_below_one_is_refused():
+    """A shooting tolerance tighter than the transient's asks the outer
+    residual to resolve the inner solves' own noise.  Refused, not silently
+    accepted -- the period map is simply not known that well."""
+    circuit.default_toolkit = circuit.numeric
+    with pytest.raises(ValueError, match='steadyratio must be >= 1'):
+        PSS(_q20_rlc(), method='euler', steadyratio=0.01).solve(
+            period=1e-3, timestep=1e-5, maxiterations=4)
