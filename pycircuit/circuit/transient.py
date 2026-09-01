@@ -887,6 +887,36 @@ class Transient(Analysis):
             rows.append((int(row), float(m), float(o)))
         return rows
 
+    def _begin_run(self, x, n):
+        """Reset every piece of PER-RUN integrator state and seed the rings.
+
+        Both `_solve` and `_solve_coupled` carried a byte-identical copy of
+        this, and `PSS` needs it too -- it re-integrates one period from a
+        fresh state on every shooting iteration, so "begin a run" happens
+        many times per analysis there.
+
+        The charge history is rebuilt per run, so the STEP history must be:
+        without that, a second `solve()` on the same object starts with a
+        stale `_dt_last2` while `_qlast[2]` is the freshly seeded initial
+        charge, breaking the invariant 4g(b) relies on -- that
+        `h_last2 is not None` exactly when `q_last[2]` is a real past point.
+        """
+        self.base_integrator = self._get_integrator()
+        hist_len = max(2, self.base_integrator.get_required_history())
+        q0 = self.cir.q(x, self.epar)
+        self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
+        self._iqlast = self.toolkit.zeros((hist_len, n))
+        self._dt_last = None
+        self._dt_last2 = None
+        ## Excursion-check running maxima are per-run state too.
+        self._dv_run_v = 0.0
+        self._dv_run_i = 0.0
+        ## Phase-2 gauge shift (idtmod.md 5.2): polled after update_iparv so
+        ## late-bound moduli are resolved; static for the run.
+        self._periodic_rows = self._collect_periodic_states()
+        self._is_first_step = True
+        self._no_history = True
+
     def _push_history(self, x, X=None):
         """Push one ACCEPTED point onto the integrator's ring buffers.
 
@@ -2334,26 +2364,7 @@ class Transient(Analysis):
                 "as well as the analysis-level ic dict -- both are starting "
                 "values, and both are ignored without uic.)")
 
-        self.base_integrator = self._get_integrator()
-        hist_len = max(2, self.base_integrator.get_required_history())
-        q0 = self.cir.q(x, self.epar)
-        self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
-        self._iqlast = self.toolkit.zeros((hist_len, n))
-        ## The charge history is rebuilt per RUN, so the step history must be too.
-        ## Without this a second `solve()` on the same object starts with a stale
-        ## `_dt_last2` from the previous run while `_qlast[2]` is the freshly
-        ## seeded initial charge -- breaking the one invariant 4g(b) relies on,
-        ## that `h_last2 is not None` exactly when `q_last[2]` is a real past
-        ## point.  `_dt_last` had the same staleness before 4g(b); nothing read it
-        ## in a way that showed.
-        self._dt_last = None
-        self._dt_last2 = None
-        ## Excursion-check running maxima are per-run state too.
-        self._dv_run_v = 0.0
-        self._dv_run_i = 0.0
-        ## Phase-2 gauge shift (idtmod.md 5.2): polled after update_iparv so
-        ## late-bound moduli are resolved; static for the run.
-        self._periodic_rows = self._collect_periodic_states()
+        self._begin_run(x, n)
 
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
@@ -2366,8 +2377,6 @@ class Transient(Analysis):
         was_break_step = False
         force_order_drop = False
         _t_run_start = time.perf_counter()
-        self._is_first_step = True
-        self._no_history = True
         t = 0.0
         ## DECISION D2, 2026-08-01.  The clamp on how large an ACCEPTED step may
         ## grow.  It defaults to `timestep` -- the historical behaviour, and what
@@ -2889,34 +2898,13 @@ class Transient(Analysis):
         x = x0
         ## P22: the state-row mask for eq (6), built once at the seed.
         self._lte_state_mask = self._state_row_mask(x0)
-        self.base_integrator = self._get_integrator()
-        hist_len = max(2, self.base_integrator.get_required_history())
-        q0 = self.cir.q(x, self.epar)
-        self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
-        self._iqlast = self.toolkit.zeros((hist_len, n))
-        ## The charge history is rebuilt per RUN, so the step history must be too.
-        ## Without this a second `solve()` on the same object starts with a stale
-        ## `_dt_last2` from the previous run while `_qlast[2]` is the freshly
-        ## seeded initial charge -- breaking the one invariant 4g(b) relies on,
-        ## that `h_last2 is not None` exactly when `q_last[2]` is a real past
-        ## point.  `_dt_last` had the same staleness before 4g(b); nothing read it
-        ## in a way that showed.
-        self._dt_last = None
-        self._dt_last2 = None
-        ## Excursion-check running maxima are per-run state too.
-        self._dv_run_v = 0.0
-        self._dv_run_i = 0.0
-        ## Phase-2 gauge shift (idtmod.md 5.2): polled after update_iparv so
-        ## late-bound moduli are resolved; static for the run.
-        self._periodic_rows = self._collect_periodic_states()
+        self._begin_run(x, n)
 
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
             self.cir.accept_step(0.0, X[-1], self.epar)
         timelist = []
         
-        self._is_first_step = True
-        self._no_history = True
         t = 0.0
         ## Same opening ramp as `solve()` -- this path had the same defect.
         h = self._opening_step(timestep)

@@ -533,3 +533,90 @@ def test_steadyratio_below_one_is_refused():
     with pytest.raises(ValueError, match='steadyratio must be >= 1'):
         PSS(_q20_rlc(), method='euler', steadyratio=0.01).solve(
             period=1e-3, timestep=1e-5, maxiterations=4)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: PSS drives Transient
+# ---------------------------------------------------------------------------
+
+def test_pss_finds_the_conducting_solution_of_a_rectifier():
+    """The payoff for driving `Transient` instead of a private step.
+
+    PSS carried its own transcription of one integrator step, with no
+    limiting.  On a rectifier that Newton never gets the diode to turn on,
+    and the non-conducting solution IS periodic -- so the shooting solve
+    converged to it and reported success.  Measured before the change: a
+    40 V drive returned v(c) spanning +-2.4e-07 V, i.e. reverse leakage,
+    with no diagnostic of any kind.  A silently wrong answer, not a
+    failure, which is the worse of the two.
+
+    Validated against the circuit integrated to steady state rather than
+    against arithmetic: 40 periods of transient on the same grid, last
+    period compared point for point.  Measured at landing, 5.8e-04 -- 0.01%
+    of the 3.94 V ripple.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import EulerIntegrator
+    circuit.default_toolkit = circuit.numeric
+
+    per, n = 1e-3, 200
+
+    def rect():
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=10.0, freq=1 / per)
+        c['R'] = R('a', 'b', r=1e3)
+        c['D'] = Diode('b', 'c')
+        c['RL'] = R('c', gnd, r=1e4)
+        c['CL'] = C('c', gnd, c=1e-7)
+        return c
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = PSS(rect(), method='euler', reltol=1e-6).solve(
+            period=per, timestep=per / n, maxiterations=20)
+    t_p = np.asarray(res['tpss'].sweep_values, dtype=float)
+    v_p = np.asarray(res['tpss'].v('c'), dtype=float).ravel()
+
+    ## the diode must actually conduct -- the defect this replaces returned
+    ## a waveform six orders smaller than this bound
+    assert v_p.max() > 1.0, \
+        'the rectifier never conducted: v(c) peaks at %.3e' % v_p.max()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rt = Transient(rect(), toolkit=circuit.numeric,
+                       integrator=EulerIntegrator(), reltol=1e-6).solve(
+            tend=40 * per, timestep=per / n, fixed_timestep=True)
+    t_t = np.asarray(rt.v('c').x, dtype=float).ravel()
+    v_t = np.asarray(rt.v('c').y, dtype=float).ravel()
+    last = t_t >= 39 * per
+    t_l, v_l = t_t[last] - 39 * per, v_t[last]
+
+    dev = float(np.max(np.abs(v_p - np.interp(t_p, t_l, v_l))))
+    ripple = float(v_l.max() - v_l.min())
+    assert dev < 0.01 * ripple, \
+        'PSS differs from the settled transient by %.3e (%.2f%% of ripple)' \
+        % (dev, 100 * dev / ripple)
+
+
+def test_pss_uses_the_transient_integrator_not_a_private_copy():
+    """One integrator definition, reached through the real class.
+
+    The private step is gone; `method` now selects an `Integrator` object
+    that `Transient.get_diff` drives, which is why `_effective_method`
+    reports what actually ran -- including the order drop the integrator
+    applies on the first step of each period.
+    """
+    circuit.default_toolkit = circuit.numeric
+    import warnings
+    pss = PSS(_q20_rlc(), method='trap')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-5, maxiterations=3)
+    tr = pss._transient()
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    assert isinstance(tr.base_integrator, TrapezoidalIntegrator)
+    assert tr._effective_method in ('TrapezoidalIntegrator',
+                                    'EulerIntegrator')

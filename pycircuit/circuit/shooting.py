@@ -175,117 +175,140 @@ class PSS(Analysis):
 
     
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
-        self.parameters = super(PSS, self).parameters + self.parameters            
+        self.parameters = super(PSS, self).parameters + self.parameters
         super(PSS, self).__init__(cir, **kvargs)
+        ## The reference row is fixed for the analysis, and both the shooting
+        ## loop and the Transient this drives need it.  It was recomputed in
+        ## every method from a `refnode` argument that no caller ever varied.
+        self.irefnode = self.cir.get_node_index(
+            gnd if irefnode is None else irefnode)
+        self._tran = None
+
+    def _transient(self):
+        """The `Transient` this analysis integrates with.
+
+        PSS used to carry its OWN transcription of one integrator step --
+        the third in the tree, after `Transient` and `JAXTransient` -- and
+        it had already cost the two defects its docstring records: `method`
+        declared and never read, and a companion current fed back from the
+        iterate before the converged one.  Driving the real thing removes
+        the copy and brings what came with it: the limiting machinery, PCNR,
+        breakpoint order drops, and the continuation rescue.
+
+        The tolerances are handed over unchanged, which is the point of
+        `newton_tolerance_vectors`: `reltol`/`iabstol`/`vabstol` mean the
+        same thing on both sides, so passing them through is a no-op in
+        meaning.
+        """
+        if getattr(self, '_tran', None) is None:
+            from pycircuit.circuit.transient import Transient
+            from pycircuit.circuit.integrator import (EulerIntegrator,
+                                                      TrapezoidalIntegrator)
+            method = getattr(self.par, 'method', 'euler')
+            integ = (EulerIntegrator() if method == 'euler'
+                     else TrapezoidalIntegrator())
+            self._tran = Transient(
+                self.cir, toolkit=self.toolkit, integrator=integ,
+                reltol=self.par.reltol, iabstol=self.par.iabstol,
+                vabstol=self.par.vabstol, maxiter=self.par.maxiter,
+                analysis=self.par.analysis)
+            self._tran.irefnode = self.irefnode
+        return self._tran
+
+    def _begin_period(self, x_reduced):
+        """Start one traversal of the period from a clean integrator state.
+
+        Every shooting iteration re-integrates the SAME interval from its own
+        `x0`, so "begin a run" happens once per iteration here, not once per
+        analysis.  Without the reset, iteration k+1 would inherit the ring
+        buffers iteration k ended with and the period map would depend on
+        which iteration it was -- phi must be a function of `x0` alone or the
+        monodromy is the derivative of something else.
+        """
+        tr = self._transient()
+        tr._begin_run(self._insert_refnode(x_reduced), self.cir.n)
+        return tr
+
+    def _insert_refnode(self, x):
+        return self.toolkit.concatenate(
+            (x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
 
     def solve_timestep(self, x0, t, dt, refnode=gnd, iq_last=None):
-        """One timestep of the inner transient.
+        """One timestep of the inner transient, taken by `Transient`.
 
-        Returns the solution; the companion current at the converged point is left
-        in ``self._iq`` for the caller to feed back as ``iq_last``.  Kept out of
-        the return value so existing callers are unaffected.
+        This used to be a private transcription of one integrator step --
+        the third in the tree -- and it had already cost two defects that
+        its own comments recorded: `method` was declared and never read, so
+        PSS was backward-Euler only, and the companion current fed back to
+        the next step belonged to the iterate BEFORE the converged one.
+        Both are structurally impossible now: the integrator is an
+        `Integrator` object driven by `Transient.get_diff`, and the
+        companion current is the one that class stores at its own converged
+        point.
 
-        STAGE 11 -- `method` NOW SELECTS SOMETHING.  It was declared with
-        `default="euler"` and never read anywhere in this file: `solve_timestep`
-        hard-coded `C/dt` and `q(xlast)/dt`, so PSS was backward-Euler only.
+        What came with the change, none of which the copy had: the limiting
+        machinery (measured -- a rectifier whose diode never turned on, so
+        the non-conducting solution was returned as a converged periodic
+        steady state), PCNR when the circuit and Parameters ask for it,
+        breakpoint order drops, and the continuation rescue.
 
-        For a PERIODIC STEADY-STATE solver that is the worst available fixed
-        choice, because backward Euler's numerical damping attenuates exactly the
-        limit cycle PSS exists to find.  Measured on a series RLC driven at
-        resonance, Q = 20, against the analytic peak of 20 V:
+        `dt` is imposed by the caller: PSS owns the grid, which is what
+        keeps the period map a smooth function of `x0`.  `iq_last` is
+        retained in the signature for callers that pass it, but the
+        companion history now lives in the `Transient`'s own ring buffers,
+        rolled here through `_push_history`.
+
+        The measured cost of backward Euler on a limit cycle is unchanged
+        and still the reason `method` matters -- it damps exactly what PSS
+        exists to find:
 
             steps/period    PSS peak    fraction of analytic
                       20      2.63 V       13.2%
                       50      5.61 V       28.1%
                      100      8.81 V       44.1%
                      200     12.20 V       61.0%
-
-        Silently, and worse as the step coarsens -- an oscillator's amplitude
-        comes out low and a resonator's Q understated with no diagnostic at all.
-
-        `iq_last` is the previous step's companion current, which trapezoidal
-        needs and Euler ignores.  `None` means "no history yet", and the first
-        step of a sweep therefore falls back to Euler, which is standard: there is
-        nothing to average against.
         """
         toolkit = self.toolkit
-        concatenate, array = toolkit.concatenate, toolkit.array
+        irefnode = self.irefnode
+        tr = self._transient()
 
-        n=self.cir.n
-        analysis_name = self.par.analysis
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.cir.get_node_index(refnode)
+        ## ONE INTEGRATOR STEP, taken by the class that owns the definition.
+        ## `Transient.solve_timestep` applies the chosen integrator through
+        ## `get_diff` (so `method` selects something because the integrator
+        ## object does), the limiting machinery, PCNR when asked for, and the
+        ## continuation rescue.  None of that existed on the copy this
+        ## replaced.
+        tr._dt = dt
+        x_full, J_full = self._transient_step(tr, x0, t)
 
-        method = getattr(self.par, 'method', 'euler')
-        if method not in ('euler', 'trap', 'trapezoidal'):
-            raise ValueError(
-                "method must be 'euler' or 'trap', not %r" % (method,))
-        ## Trapezoidal needs a companion current to average against; without one
-        ## (the first step of a sweep) it degenerates to Euler by construction.
-        use_trap = method in ('trap', 'trapezoidal') and iq_last is not None
+        ## The history advance is the accept path's, called rather than
+        ## copied -- and `_dt_last` must roll AFTER the step, because
+        ## `get_diff` read it as `h_last` while solving.
+        tr._push_history(x_full)
+        tr._dt_last2 = tr._dt_last
+        tr._dt_last = dt
+        tr._is_first_step = False
+        tr._no_history = False
 
-        self._iq = None
+        ## Reduced-system views for the shooting Jacobian.  `_Geq` is the
+        ## companion conductance the step actually used, which is the factor
+        ## the monodromy needs; `_iq` is kept for the caller's own bookkeeping
+        ## as before.
+        (self._Jf, self._Geq) = remove_row_col(
+            (J_full, tr._Geq), irefnode, toolkit)
+        self._C = self._Geq
+        self._iq = tr._iq
 
-        def func(x):
-            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
-            C = self.cir.C(x)
-            q, qlast = self.cir.q(x), self.cir.q(xlast)
-            if use_trap:
-                ## iq_n = 2 (q_n - q_{n-1})/dt - iq_{n-1}, and dq/dx = 2C/dt.
-                iq = 2.0 * (q - qlast) / dt - iq_last
-                Geq = 2.0 * C / dt
-            else:
-                iq = (q - qlast) / dt
-                Geq = C / dt
-            f = self.cir.i(x) + iq + self.cir.u(t, analysis=analysis_name)
-            J = self.cir.G(x) + Geq
-            (f, J, C, Geq_r) = remove_row_col((f, J, C, Geq), irefnode,
-                                              self.toolkit)
-            self._Jf, self._C, self._Geq = J, C, Geq_r
-            self._iq = iq
-            return f, J
-
-        ## `reltol` HERE IS TRANSIENT'S `reltol`, unscaled: this is the
-        ## per-timestep Newton, and it is the same solve `Transient` applies
-        ## that Parameter to.  The SHOOTING criterion is derived from it in
-        ## `solve` via `steadyratio`, in the loosening direction -- the
-        ## period map is only known to the accuracy reached here, so the
-        ## outer test cannot be tighter than this one.
-        ##
-        ## AND `iabstol`/`vabstol` MEAN HERE WHAT THEY MEAN IN `Transient`.
-        ## This solve used fsolve's scalar defaults, so the two Parameters
-        ## this class advertises with the same words as the transient did
-        ## nothing at all to it.  `newton_tolerance_vectors` is the single
-        ## definition of both flavours; the transient's Newton and the JAX
-        ## backend's read it too.
-        abstol, xtol = analysis.newton_tolerance_vectors(
-            len(self.cir.nodes), len(self.cir.branches),
-            self.par.iabstol, self.par.vabstol, self.toolkit)
-        (abstol, xtol) = remove_row_col((abstol, xtol), irefnode,
-                                        self.toolkit)
-        x = analysis.fsolve(func, x0, reltol=self.par.reltol,
-                            abstol=abstol, xtol=xtol,
-                            maxiter=self.par.maxiter, toolkit=self.toolkit)
-
-        ## STAGE 11 -- RECOMPUTE THE COMPANION AT THE CONVERGED POINT.
-        ##
-        ## `func` leaves `self._iq` wherever fsolve last evaluated it, and fsolve
-        ## evaluates at the iterate BEFORE the update it returns -- so the stored
-        ## value belongs to the previous iterate, not to `x`.  Feeding that back as
-        ## `iq_last` seeds the trapezoidal recursion with a point the circuit was
-        ## never at, and the recursion has an undamped (-1)^n mode to amplify it.
-        ## Exactly the staleness found in the JAX Newton under 9(e), in a second
-        ## place.
-        xf = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-        xl = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
-        dq = (self.cir.q(xf) - self.cir.q(xl)) / dt
-        self._iq = (2.0 * dq - iq_last) if use_trap else dq
-
-        # Insert reference node voltage
-        #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+        x = toolkit.concatenate((x_full[:irefnode], x_full[irefnode + 1:]))
         return x
+
+    def _transient_step(self, tr, x0_reduced, t):
+        """`Transient.solve_timestep` on the FULL vector, returning
+        ``(x, J)``.  PSS works on the reduced system throughout; this is the
+        one place the two conventions meet."""
+        x_full = self._insert_refnode(x0_reduced)
+        x, _feval, J, _f = tr.solve_timestep(x_full, t)
+        return x, J
 
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6, 
@@ -342,9 +365,15 @@ class PSS(Analysis):
         newton = (method == 'euler')
 
         def func(x):
-            ## STAGE 11 -- the companion current is carried through the sweep, so
-            ## trapezoidal has something to average against.  `iq_last=None` on the
-            ## first step is what makes it fall back to Euler there.
+            ## EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a
+            ## function of `x0` alone; if iteration k+1 inherited the ring
+            ## buffers iteration k ended with, the period map would depend on
+            ## which iteration it was and the monodromy would be the
+            ## derivative of something else.  `_begin_run` also makes the
+            ## first step of each traversal `is_first_step`, so trapezoidal
+            ## falls back to Euler there -- the same restart the old
+            ## `iq_last=None` produced, now for the integrator's own reason.
+            self._begin_period(x)
             x = self.solve_timestep(x, times[0], dt)
             iq_last = self._iq
             x0 = copy(x)
@@ -436,6 +465,7 @@ class PSS(Analysis):
         
         X = [x0_ss]
         iq_last = None
+        self._begin_period(x0_ss)
         for t in times:
             x = self.solve_timestep(X[-1], t, dt, iq_last=iq_last)
             iq_last = self._iq
