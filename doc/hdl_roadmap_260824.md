@@ -5991,3 +5991,41 @@ now evaluable on the JAX transient, which is 25 of 38 library classes and the
 reason that backend exists. §22's disjointness is untouched -- these classes
 still have no `eval_i_pure` and still cannot join a `vmap` group, so
 `solve_batched` is unchanged. Tracing was never what that measurement refused.
+
+### 49.8 G5, the cost gate — and an honest note on what the traced path costs
+
+**The PCNR premium is small.** Circuit built once so the trace is paid once,
+minimum of three repeats after a warm call:
+
+    easy MOS    CPU  pcnr=False 0.502 s -> pcnr=True 0.532 s    +6.1%
+    easy MOS    JAX  pcnr=False 9.171 s -> pcnr=True 9.561 s    +4.3%
+    diff pair   JAX  pcnr=False 10.168 s -> pcnr=True 11.499 s  +13.1%
+
+with the accepted step count **unchanged in every case**. Against the CPU's
+recorded **40-60% iteration premium** for vector PCNR that is comfortable --
+with the caveat that these are WALL and STEP figures and the recorded one is
+ITERATIONS, which the traced path does not expose, so it is not the same metric
+and should not be quoted as if it were.
+
+⚠ **AND THE TRACED CHAINED PATH IS ~18x SLOWER THAN THE CPU on these
+circuits.** 9.2 s against 0.5 s, and it is not compile: successive solves on
+one instance run 11.9, 9.5, 9.1, 9.3 s, so ~2.7 s is tracing and ~9.2 s is
+execution, every time. A compact model's chain is hundreds of primitives, and
+running it inside a `lax.while_loop` pays per-op dispatch on all of them.
+
+**So §49.7 bought a CAPABILITY, not a speed-up, and the distinction should
+survive into whatever reads this next.** What it is worth:
+
+* the transient parity Stage 3 needed, which is now measurable rather than
+  refused;
+* running the same compact model on both backends, which is how a backend
+  disagreement becomes findable at all;
+* a floor to improve from -- 18x slower is a number to attack, where "cannot
+  evaluate" was not.
+
+**What it is NOT worth yet** is a reason to run a compact model on JAX for
+speed. `solve_batched` is where that backend pays (22.5x at 512 lanes), and
+§22's disjointness still keeps chained models out of it: they have no
+`eval_i_pure`, so they cannot join a `vmap` group. A chained model on the JAX
+transient today is slower than the CPU and correct, which is the right order to
+achieve those two in.
