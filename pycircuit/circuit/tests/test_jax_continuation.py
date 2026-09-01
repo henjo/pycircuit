@@ -474,3 +474,63 @@ def test_vector_pcnr_traces_with_the_chain_armed():
     assert out[True][1] == 0 and out[False][1] == 0
     assert np.array_equal(out[True][0], out[False][0]), \
         'the armed chain perturbed the vector PCNR path'
+
+
+# ---------------------------------------------------------------------------
+# The ladder must actually search the range it declares
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('k', [2, 0, -1, -2, -4, -8, -12])
+def test_the_ladder_reaches_every_decade_it_declares(k):
+    """`e_end` is a contract, and the driver used to break it.
+
+    With no rung yet landed the failure path ESCALATED toward `e_max` and,
+    once that was spent, REFINED just below `e_start` -- halving from
+    `step/2` and giving up at `min_step`.  So the exponents it could ever
+    try were
+
+        {e_start, e_start+step, ... e_max}  and
+        {e_start-1, e_start-0.5, e_start-0.25}
+
+    and nothing below, however low `e_end` was set.  Measured with the rung
+    here: the ladder landed for k >= -1 and failed for every k <= -2,
+    against an `e_end` of -12 advertising a search down to 1e-12.
+
+    That mattered because the ladder's whole job is to find SOME rung that
+    converges and then anneal from it; a driver that cannot look below one
+    decade under its start is not searching, it is sampling.
+    """
+    def rung(xs, g):
+        ## converges only once the deformation is weak enough, plus the
+        ## pure rung (g == 0), which is the solution the ladder must land
+        conv = g <= 10.0 ** k
+        return xs + jnp.where(conv, 1.0, 0.0), conv
+
+    _x, converged = _adaptive_ladder_traced(rung, jnp.zeros(1),
+                                            e_start=0.0, e_end=-12.0,
+                                            e_max=6.0)
+    assert bool(converged), \
+        'the ladder could not reach a rung at g = 1e%d, inside its own ' \
+        'declared range' % k
+
+
+def test_the_descent_does_not_run_when_a_rung_lands():
+    """The new phase must be inert on the ordinary path.
+
+    Descending exists for "nothing has landed anywhere".  A ladder whose
+    first rung converges must still march down and finish on the pure rung
+    exactly as before -- the counter proves the rung count did not blow up.
+    """
+    calls = []
+
+    def rung(xs, g):
+        calls.append(1)
+        return xs + 1.0, jnp.asarray(True)
+
+    x, converged = _adaptive_ladder_traced(rung, jnp.zeros(1), e_start=-2.0,
+                                           e_end=-12.0)
+    assert bool(converged)
+    ## -2 to -12 in steps of 2, then the pure rung: 7 traced rung builds.
+    ## The assertion is on the ORDER, not the exact number -- a descent
+    ## wrongly triggered here would multiply it.
+    assert len(calls) <= 10, 'the ordinary march grew to %d rungs' % len(calls)

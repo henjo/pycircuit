@@ -76,12 +76,34 @@ dispatch, whereas a step controller runs per step and its choice could be
 made statically at trace time, exactly as `integrator` already is.  So this
 is open, not refused — but nobody has asked for it.
 
-**(C) Ψ-tc's continuation rung exponents.**  `e_start=0`, `e_max=+6` are
-calibrated for DC diagonals.  At the transient dt floor the companion
-conductance is ~1e9, so every rung of that ladder is negligible against it.
-gmin and gshunt carry **every** rescue demonstrated so far, so this is a
-third resort that has not been reached.  Trigger: a forced-non-converged
-exit that survives `continuation=True` on the PCNR path.
+**(C) Ψ-tc's continuation rung exponents — HYPOTHESIS TESTED AND DISPROVED
+2026-09-01, and the real defect was elsewhere.**
+
+The claim was that `e_start=0` / `e_max=+6` are DC-calibrated and that at the
+transient dt floor the companion conductance is ~1e9, so every rung is
+negligible.  Measured, that reasoning is wrong twice: the ~1e9 figure came
+from a 1e-18 floor, and on the circuits where the rescue actually fires the
+diagonal is ~1e-3, so the shipped exponents are too LARGE, not too small.
+
+The measurement that matters: with gmin and gshunt disabled so Ψ-tc must
+carry the rescue alone, the shipped grid rescues **1 of 4** test circuits
+while a **half-decade** shift of the same exponents rescues **4 of 4**.  A
+finer sweep on one circuit shows failures at offsets ≡ 0 (mod 2) — i.e.
+exactly the offsets that reproduce the shipped grid of visited `g` values,
+the marching step being 2 decades.  So the sensitivity is to WHICH RUNGS ARE
+VISITED, not to their scale, and re-scaling would have moved the same window
+somewhere else rather than fixing anything.
+
+Chasing that turned up a genuine driver defect, now fixed — see *(F)* — but
+the fix does **not** change these four results, so the grid sensitivity is
+real and unexplained.  It is also **invisible in production**: gmin lands
+first on every rescue demonstrated to date, so Ψ-tc never executes.  Left
+alone deliberately; tuning an exponent grid to four circuits with no
+mechanism would be fitting noise.
+
+Trigger to revisit: a forced-non-converged exit that survives
+`continuation=True` — i.e. a case where gmin and gshunt both fail and Ψ-tc
+is actually asked to work.
 
 **(D) Chained compact models cannot batch.**  The chained HDL path gained a
 jax backend (§49.7) — 25 of 38 library classes, every real compact model,
@@ -108,6 +130,19 @@ second solve against the same factors included — works on it unchanged, and
 that argument never depended on which view produced the blocks.  Measured
 against the CPU on an EKV NMOS: standard-path vector PCNR 2.000e-05, coupled
 2.030e-05, i.e. as accurate as the path already trusted.*
+
+**(F) FIXED 2026-09-01 — the ladder did not search the range it declared.**
+`_adaptive_ladder_traced`'s failure path, with no rung yet landed, escalated
+toward `e_max` and then refined just below `e_start`, halving until it gave
+up.  The exponents it could ever try were
+`{e_start, e_start+step, … e_max}` and `{e_start-1, e_start-0.5,
+e_start-0.25}` — **nothing below**, however low `e_end` was set.  Measured
+with a synthetic rung that converges only for `g <= 10^k`: the ladder landed
+for `k >= -1` and failed for every `k <= -2`, against an `e_end` of -12
+advertising a search to 1e-12.  A descent phase now walks the exponent down
+to `e_end` before giving up.  It runs exactly where the old code was about to
+fail, so it can only reach further; the suite is unchanged at 2,806 and both
+DC ladders use the same driver.
 
 ## Refused, with cause — do not re-propose without new measurement
 

@@ -465,7 +465,7 @@ def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
     8 -- identical).  That is the death march, and it is why this is gated
     at the dt floor rather than run on every step."""
     def cond(st):
-        (_x, _e, step, _le, _hl, _pure, done, fail, rungs) = st
+        (_x, _e, step, _le, _hl, _pure, done, fail, rungs, _lo) = st
         return jnp.logical_and(
             active,
             jnp.logical_and(
@@ -473,7 +473,8 @@ def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
                 rungs < max_rungs))
 
     def body(st):
-        (x_seed, e, step, last_e, has_last, pure, done, fail, rungs) = st
+        (x_seed, e, step, last_e, has_last, pure, done, fail, rungs,
+         e_low) = st
         g = jnp.where(pure, 0.0, 10.0 ** e)
         x_try, conv = rung_solve(x_seed, g)
 
@@ -490,28 +491,61 @@ def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
                                                     jnp.logical_not(pure)))
         e_march = jnp.maximum(e - step, e_end)
 
-        ## Failure bookkeeping: escalate before any rung has landed,
-        ## refine (halve the step from the last landing) afterwards.
+        ## Failure bookkeeping, in three phases: escalate, then DESCEND,
+        ## then refine.
+        ##
+        ## ⚠ THE DESCENT PHASE WAS MISSING, AND `e_end` WAS THEREFORE A LIE.
+        ## With no rung yet landed the driver escalated toward `e_max` and,
+        ## once that was spent, refined just below `e_start` -- halving from
+        ## `step/2` and giving up at `min_step`.  So the exponents it could
+        ## ever try were
+        ##
+        ##     {e_start, e_start+step, ... e_max}  and
+        ##     {e_start-1, e_start-0.5, e_start-0.25}
+        ##
+        ## and NOTHING BELOW, however low `e_end` was set.  Measured on a
+        ## synthetic rung that converges only for g <= 10^k: the ladder
+        ## landed for k >= -1 and failed for every k <= -2, against an
+        ## `e_end` of -12 advertising a search down to 1e-12.
+        ##
+        ## That is why Psi-tc looked "DC-calibrated" in transient: its first
+        ## rung is at g = 1, and if that one does not converge the ladder
+        ## could not reach the g that would.  Re-scaling the exponents (the
+        ## recorded guess) would only have moved the same one-decade window
+        ## somewhere else -- measured, a half-decade shift rescued 4 of 4
+        ## test circuits while the shipped grid rescued 1 of 4, which looks
+        ## like scale sensitivity and is actually this.
+        ##
+        ## Descending keeps the step and walks `e_low` down to `e_end`, so
+        ## the whole declared range is searched before giving up.  It can
+        ## only make the driver reach further: the phase runs exactly where
+        ## the old code was already about to fail.
         step_f = step / 2.0
         e_escalate = jnp.minimum(e + step, e_max)
         can_escalate = jnp.logical_and(jnp.logical_not(has_last),
                                        e < e_max - 1e-12)
+        e_descend = jnp.maximum(e_low - step, e_end)
+        can_descend = jnp.logical_and(jnp.logical_not(has_last),
+                                      e_low > e_end + 1e-12)
         e_refine = jnp.maximum(
             jnp.where(has_last, last_e, e_start) - step_f, e_end)
-        e_fail = jnp.where(can_escalate, e_escalate, e_refine)
-        step_n_fail = jnp.where(can_escalate, step, step_f)
-        fail_n = jnp.logical_and(jnp.logical_not(can_escalate),
+        searching = jnp.logical_or(can_escalate, can_descend)
+        e_fail = jnp.where(can_escalate, e_escalate,
+                           jnp.where(can_descend, e_descend, e_refine))
+        step_n_fail = jnp.where(searching, step, step_f)
+        fail_n = jnp.logical_and(jnp.logical_not(searching),
                                  step_f < min_step)
 
         e_n = jnp.where(conv, e_march, e_fail)
         step_n = jnp.where(conv, step, step_n_fail)
         return (x_next, e_n, step_n, last_e_n, has_last_n, pure_n,
                 done_n, jnp.where(conv, jnp.asarray(False), fail_n),
-                rungs + 1)
+                rungs + 1, jnp.minimum(e_low, e_n))
 
     init = (x0, jnp.asarray(e_start), jnp.asarray(2.0),
             jnp.asarray(e_start), jnp.asarray(False), jnp.asarray(False),
-            jnp.asarray(False), jnp.asarray(False), jnp.asarray(0))
+            jnp.asarray(False), jnp.asarray(False), jnp.asarray(0),
+            jnp.asarray(e_start))
     final = jax.lax.while_loop(cond, body, init)
     return final[0], final[6]
 

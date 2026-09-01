@@ -825,12 +825,37 @@ existing TLine tests before/after, per house rules.
   showed the same rescue.  Cost on PCNR has the plain path's shape:
   ~0.9–1.0 s fixed, near-constant across a 4x growth in steps.
 
-  Still open: Ψ-tc's rung exponents (`e_start=0`, `e_max=+6`) are
-  calibrated for DC diagonals, and in transient at the dt floor the
-  companion conductance is ~1e9, so every rung of that ladder is
-  negligible against it.  Scoped, not built — and note that gmin and
-  gshunt carry the demonstrated rescues, so this is a third-resort
-  ladder that has not yet been needed.
+  *Ψ-tc's rung exponents: the hypothesis above was TESTED AND DISPROVED
+  2026-09-01.*  It read: "`e_start=0`, `e_max=+6` are calibrated for DC
+  diagonals, and in transient at the dt floor the companion conductance is
+  ~1e9, so every rung is negligible against it."  Both halves are wrong.
+  The ~1e9 came from a 1e-18 floor; on the circuits where the rescue
+  actually fires the diagonal is ~1e-3, so the shipped exponents are too
+  LARGE.  And the sensitivity is not to scale at all: with gmin and gshunt
+  disabled so Ψ-tc must carry the rescue alone, the shipped grid rescues
+  **1 of 4** circuits and a **half-decade** shift rescues **4 of 4**, with
+  a finer sweep failing at exactly the offsets ≡ 0 (mod 2) — the ones that
+  reproduce the shipped grid of visited `g`, the step being 2 decades.  So
+  it is the VISITED RUNGS, not their magnitude, and re-scaling would have
+  moved the same window elsewhere.
+
+  Left alone deliberately: gmin lands first on every rescue demonstrated to
+  date, so Ψ-tc never executes in production, and tuning an exponent grid
+  to four circuits with no mechanism is fitting noise.
+
+  **What the chase did turn up is a real driver defect, now fixed.**
+  `_adaptive_ladder_traced` did not search the range it declared: with no
+  rung yet landed it escalated toward `e_max`, then refined just below
+  `e_start`, halving until it gave up — so the exponents it could ever try
+  were `{e_start … e_max}` plus `{e_start-1, e_start-0.5, e_start-0.25}`
+  and nothing below, however low `e_end` was set.  Measured with a rung
+  converging only for `g <= 10^k`: landed for `k >= -1`, failed for every
+  `k <= -2`, against `e_end = -12`.  A descent phase now walks down to
+  `e_end` before failing.  Both DC ladders use the same driver, and the
+  suite is unchanged — the phase runs exactly where the old code was
+  already about to give up, so it can only reach further.  It does NOT
+  change the four Ψ-tc results, which is how we know the grid sensitivity
+  is a separate, still-unexplained thing.
 
   *The trigger that reopens what remains,* stated concretely: a JAX run
   whose forced-non-converged exit survives `continuation=True` on the
