@@ -943,6 +943,49 @@ existing TLine tests before/after, per house rules.
   standard-path vector PCNR 2.000e-05, coupled 2.030e-05 — as accurate as the
   path already trusted, which is the claim being made.
 
+### The stalled-estimate order drop — built both ways, measured, reverted
+
+2026-09-01.  The CPU drops a Gear-2 step to Euler in two places aimed at a
+stalled 2nd-order estimate: `Gear2Integrator.check_order_drop`'s
+`h_curr/h_last < 0.1` proxy, and stage 4b's `MAX_REJECT = 3` cap.  Both were
+implemented on this backend and both were removed again.
+`benchmarks/order_drop_stalled_estimate.py` reproduces it.
+
+*Ported literally, neither fires where it matters.*  The backends give up in
+different places: the CPU force-accepts after three rejections at a point,
+this loop shrinks to the `dt_min` floor (~130 halvings at 1e-18) and
+force-accepts there.  At the floor `dt` equals the previous accepted step, so
+the ratio never trips, and the point has been rejected zero times, so the
+count never reaches three.  1900 force-accepts, unchanged.
+
+*Ported faithfully — a converged floor step whose LTE failed sent back for one
+retry at order 1, which is where this backend actually gives up — it works and
+is still wrong.*  Against an error-controlled reference (same run, floor
+lowered until nothing is force-accepted):
+
+| reltol | circuit | force-accepts off → on | error off | error on | |
+|---|---|---|---|---|---|
+| 1e-6 | stiff RLC | 1900 → 516 | 5.142e-01 | 6.949e-01 | 1.35x worse |
+| 1e-6 | pulsed RC | 12 → 12 | 7.156e-04 | 1.114e-03 | 1.56x worse |
+| 1e-7 | stiff RLC | 1900 → 688 | 5.196e-01 | 6.946e-01 | 1.34x worse |
+| 1e-7 | pulsed RC | 55 → 55 | 6.935e-04 | 4.505e-03 | 6.50x worse |
+| 1e-8 | stiff RLC | 1900 → 864 | 5.208e-01 | 6.946e-01 | 1.33x worse |
+| 1e-8 | pulsed RC | 600 → 480 | 7.035e-04 | 4.498e-03 | 6.39x worse |
+
+**Worse in 6 of 6 while cutting force-accepts by up to 3x.**  The finding:
+*fewer force-accepts is not a better answer.*  Dropping to order 1 makes the
+ESTIMATE pass while making the actual error larger — the order-1 estimator is
+agreeing with a less accurate method about a smaller claim.  The force-accept
+count is a label on a step, not a measurement of its error, and optimising the
+label made the waveform worse every time.
+
+The CPU benefits because `MAX_REJECT` turns a stalled estimate into a
+force-accept within three retries and the drop prevents that.  Here the deep
+floor already prevents it: nothing left to save, only accuracy to spend.
+Reopen if this backend ever gains a rejection cap — the floor can cost ~130
+solves at one point, which is a real reason to want one — because that would
+recreate the CPU's situation and with it the trade.
+
 ---
 
 ## Suggested order

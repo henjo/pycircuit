@@ -57,15 +57,14 @@ is two different mechanisms and only one is missing:
   the shared `MAX_GROWTH_RATIO = 2.0`, below the bound, and the force-accept
   path keeps the dt floor rather than growing (the CPU's own defect here was
   a force-accept path taking 10x, parasitic root 4.76).
-- *The shrink branch* — **not ported.**  It has nothing to do with
-  zero-stability: it is a heuristic for a STALLED ESTIMATE.  A step only
-  shrinks 10x below the last accepted one after several consecutive
-  rejections, and what rejects repeatedly is a 2nd-order estimate built on a
-  third difference of a solution that is not three times differentiable —
-  a discontinuity.  Measured value on the CPU (stiff RLC, reltol 1e-5):
-  fires **3–6 times a run**, and removing it took `Gear2('ywr')` and
-  `Gear2('classic')` from **0 force-accepts to 1 each**.  That is the size of
-  the prize, and it is why this is worth doing rather than closing.
+- *The shrink branch* — **BUILT, MEASURED AND REVERTED 2026-09-01.**  Both
+  CPU rules were implemented here (the ratio proxy and the `MAX_REJECT`
+  cap) and both were taken out again; the numbers are in
+  `benchmarks/order_drop_stalled_estimate.py` and summarised under
+  *Refused* below.  In short: ported literally neither rule fires where it
+  matters, and ported faithfully — to the dt floor, which is where THIS
+  backend gives up — it cuts force-accepts hard and makes the answer worse
+  every time.
 
 **(B) Pluggable step controllers.**  The CPU has a `StepController` strategy
 (`IntegralController`, `PIController`, `SolutionLTEController`); JAX inlines
@@ -159,6 +158,48 @@ ladders use the same driver.
   point fails.  Here it compiles into every step of every run: measured
   ~1 s of fixed compile plus ~14% per step.  Off by default; turn it on
   when a run reports `n_forced_nonconverged > 0`.
+- **The stalled-estimate order drop** (old item 5's second half).  Built
+  both ways 2026-09-01, measured, reverted;
+  `benchmarks/order_drop_stalled_estimate.py` reproduces it.
+
+  Ported LITERALLY, neither CPU rule ever fires where it matters, because
+  the backends give up in different places: the CPU force-accepts after
+  three rejections at a point, while this loop keeps shrinking to the
+  `dt_min` floor — ~130 halvings at the default 1e-18 — and force-accepts
+  there.  At the floor `dt` equals the previous accepted step, so the ratio
+  proxy never trips, and the point has been rejected zero times, so the
+  count never reaches three.  1900 force-accepts, unchanged by either rule.
+
+  Ported FAITHFULLY — sending a converged floor step whose LTE failed back
+  for one retry at order 1 — it works as advertised and is still wrong:
+
+  | reltol | circuit | force-accepts off → on | error off | error on | |
+  |---|---|---|---|---|---|
+  | 1e-6 | stiff RLC | 1900 → 516 | 5.142e-01 | 6.949e-01 | 1.35x worse |
+  | 1e-6 | pulsed RC | 12 → 12 | 7.156e-04 | 1.114e-03 | 1.56x worse |
+  | 1e-7 | stiff RLC | 1900 → 688 | 5.196e-01 | 6.946e-01 | 1.34x worse |
+  | 1e-7 | pulsed RC | 55 → 55 | 6.935e-04 | 4.505e-03 | 6.50x worse |
+  | 1e-8 | stiff RLC | 1900 → 864 | 5.208e-01 | 6.946e-01 | 1.33x worse |
+  | 1e-8 | pulsed RC | 600 → 480 | 7.035e-04 | 4.498e-03 | 6.39x worse |
+
+  Error is measured against an error-controlled reference — the same run
+  with the floor lowered until nothing is force-accepted.  **Worse in 6 of
+  6 configurations while cutting force-accepts by up to 3x.**
+
+  ⚠ The transferable finding: **fewer force-accepts is not a better
+  answer.**  Dropping to order 1 makes the ESTIMATE pass while making the
+  actual error larger — the order-1 estimator is agreeing with a less
+  accurate method about a smaller claim.  The force-accept count is a label
+  on a step, not a measurement of its error, and optimising the label made
+  the waveform worse every time.  The CPU benefits because its `MAX_REJECT`
+  cap turns a stalled estimate into a force-accept within three retries and
+  the drop prevents that; here the deep floor already prevents it, so there
+  is nothing left for the drop to save and only accuracy for it to spend.
+
+  What would reopen it: giving this backend a rejection cap (for cost
+  reasons — the floor can cost ~130 solves at one point), which would
+  recreate the CPU's situation and with it the trade the drop exists for.
+
 - **The coupled 'bordered' eq (12) branch.**  Measured on the CPU 2026-09-01
   before writing any JAX code (`benchmarks/coupled_bordered_gear2.py`,
   reltol 1e-5), because `bordered` was recorded as mistuned under Gear-2 and
