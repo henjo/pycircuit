@@ -29,6 +29,24 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
 
     return freqs, X
 
+## ⚠ THE SPECTRAL RADIUS CANNOT DECIDE THIS, and trying it first is the
+## instructive part.  An autonomous orbit gives an eigenvalue at exactly 1
+## -- but only AT its own period, and a run at any other period reads well
+## below (measured 0.9615 on the quadrature phase element at the nominal
+## period against 1.000226 at the corrected one).  Worse, a merely
+## lightly-damped DRIVEN circuit sits near 1 too: a Q=1000 resonator has
+## `exp(-pi/Q) = 0.99686`.  So no threshold separates the two -- one
+## setting misses the autonomous case where users will actually run it, the
+## other fires on every high-Q filter.
+##
+## The distinction is structural, not spectral, and it is exact: a circuit
+## is autonomous when nothing in it depends on `t`.  `u(t)` is sampled
+## across the period and compared; a phase accumulator driven by a DC
+## source is autonomous however energetically it oscillates, which is
+## precisely the case arc 5 asks about.
+AUTONOMOUS_U_TOL = 1e-12
+
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
 
@@ -208,6 +226,26 @@ class PSS(Analysis):
         self.irefnode = self.cir.get_node_index(
             gnd if irefnode is None else irefnode)
         self._tran = None
+
+    def _is_autonomous(self, times):
+        """True when nothing in the circuit depends on `t`.
+
+        Exact where a spectral test is not: see `AUTONOMOUS_U_TOL`.  The
+        source vector is sampled across the period and compared with the
+        first sample; a circuit driven only by DC -- a VCO macromodel, a
+        phase accumulator, an LC or ring oscillator -- has a constant `u`
+        and a one-parameter family of periodic solutions, which is what
+        makes fixed-period shooting ill-posed for it.
+        """
+        u0 = np.asarray(self.cir.u(times[0], analysis=self.par.analysis),
+                        dtype=float)
+        scale = max(float(np.max(np.abs(u0))), 1.0)
+        for t in times[1::max(1, len(times) // 8)]:
+            u = np.asarray(self.cir.u(t, analysis=self.par.analysis),
+                           dtype=float)
+            if float(np.max(np.abs(u - u0))) > AUTONOMOUS_U_TOL * scale:
+                return False
+        return True
 
     def _transient(self):
         """The `Transient` this analysis integrates with.
@@ -495,6 +533,9 @@ class PSS(Analysis):
             residual = x0 - x
 
             D = np.asarray(toolkit.eye(n-1))
+            ## Kept for the autonomous check after the solve: its spectrum is
+            ## the only place a free period announces itself.
+            self._monodromy = Px[0]
             return residual, D - alpha * Px[0]
         
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
@@ -526,6 +567,53 @@ class PSS(Analysis):
             abstol=_tol, xtol=_tol, toolkit=self.toolkit, full_output=True)
         self.converged = (_ier == 1)
         self.shooting_iterations = maxiterations if not self.converged else None
+        ## ⚠ AN AUTONOMOUS OSCILLATOR CANNOT BE SOLVED AT A FIXED PERIOD,
+        ## and this is the only place it says so.
+        ##
+        ## A circuit whose oscillation is self-sustaining -- a VCO
+        ## macromodel, an LC or ring oscillator, any phase accumulator
+        ## driven by a DC source -- has a one-parameter family of periodic
+        ## solutions, because rotating the starting point along the orbit
+        ## gives another one.  Its monodromy therefore has an eigenvalue at
+        ## exactly 1 and `I - M` is singular AT the true period.  Away from
+        ## it the orbit does not close at all: measured on the quadrature
+        ## phase element, the discretisation precesses by 2.1e-3 rad per
+        ## cycle at 100 steps/period (falling as h^2), so the period map is
+        ## a rotation by slightly less than 2*pi whose ONLY fixed point is
+        ## the origin -- which is what an unseeded run returns, silently.
+        ##
+        ## Measured either side on that element: |eig(M)| = 0.968 and
+        ## sigma_min(I-M) = 2.3e-02 at the nominal period, against
+        ## |eig(M)| = 1.000226 and 1.6e-04 at the corrected one.  So there is
+        ## no period at which this analysis both has a solution and an
+        ## invertible Jacobian, and the answer is not a better seed: it is
+        ## the autonomous formulation, which solves for the period jointly
+        ## with a phase condition.  Not implemented -- but a run that
+        ## returns the origin, or refuses to converge, deserves to be told
+        ## why rather than left to look like a tolerance problem.
+        rho = None
+        if getattr(self, '_monodromy', None) is not None:
+            try:
+                rho = float(np.max(np.abs(np.linalg.eigvals(
+                    np.asarray(self._monodromy)))))
+            except np.linalg.LinAlgError:                 # pragma: no cover
+                rho = None
+        self.spectral_radius = rho
+        self.autonomous = self._is_autonomous(times)
+        if self.autonomous:
+            warnings.warn(
+                'PSS: no source in this circuit depends on time, so it is '
+                'AUTONOMOUS (self-oscillating) and a FIXED-period shooting '
+                'analysis cannot solve it. At the orbit period the starting '
+                'phase is free, so the Jacobian is singular; at any other '
+                'period the orbit does not close and the only periodic '
+                'solution is the trivial one -- an unseeded run returns it. '
+                'Solving for the period jointly with a phase condition is a '
+                'different analysis and is not implemented. The monodromy '
+                'spectral radius here is %s; the result below is not a '
+                'periodic steady state.'
+                % ('%.6f' % rho if rho is not None else 'unavailable'),
+                RuntimeWarning, stacklevel=2)
         if not self.converged:
             ## ⚠ THIS USED TO BE SILENT.  `fsolve` builds the "No
             ## convergence" message and then discards it whenever

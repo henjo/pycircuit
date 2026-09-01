@@ -754,3 +754,98 @@ def test_pss_method_selection_cannot_fall_through_silently():
     with pytest.raises(ValueError, match="'euler', 'trap' or 'gear'"):
         PSS(_q20_rlc(), method='bdf3').solve(period=1e-3, timestep=1e-5,
                                              maxiterations=2)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 (arc 5): a phase circuit is an AUTONOMOUS oscillator
+# ---------------------------------------------------------------------------
+
+def _phase_circuit():
+    """A quadrature phase accumulator driven by a DC source.
+
+    `IdtmodQuadrature` was built so a phase circuit could be handed to a
+    shooting analysis: over one output period its state vector returns
+    exactly to itself, which the scalar `Idtmod` phase cannot do.  But the
+    only excitation is DC -- the oscillation is self-sustaining -- so the
+    circuit is autonomous, and that is the property that decides whether
+    fixed-period shooting applies.
+    """
+    from pycircuit.circuit.elements import VS, IdtmodQuadrature
+    c = SubCircuit()
+    c.add_node('in'); c.add_node('o'); c.add_node('s')
+    c['vin'] = VS('in', gnd, v=1e3)
+    c['X'] = IdtmodQuadrature('in', gnd, 'o', gnd, 's', gnd, modulus=1.0,
+                              amplitude=1.0, ic=0.0)
+    c['Ro'] = R('o', gnd, r=1e6)
+    c['Rs'] = R('s', gnd, r=1e6)
+    return c
+
+
+def test_an_autonomous_circuit_is_diagnosed_not_silently_wrong():
+    """Fixed-period shooting cannot solve a self-oscillating circuit.
+
+    There is no period at which the analysis both has a solution and an
+    invertible Jacobian.  Measured on this element: at the nominal period
+    the discretisation precesses by 2.1e-3 rad per cycle at 100
+    steps/period (falling as h^2), so the period map is a rotation by
+    slightly less than 2*pi whose only fixed point is the ORIGIN -- and an
+    unseeded run duly returns radius 0.  Push the period to where the orbit
+    closes and the starting phase becomes free: |eig(M)| goes 0.9615 ->
+    1.000226 and sigma_min(I-M) goes 2.3e-02 -> 1.6e-04.
+
+    Before this, both outcomes were silent: the trivial solution came back
+    labelled "converged".
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    pss = PSS(_phase_circuit(), method='trap', reltol=1e-6)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res = pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=20)
+
+    assert pss.autonomous is True
+    assert any('AUTONOMOUS' in str(c.message) for c in caught), \
+        'a self-oscillating circuit was solved without a word'
+
+    ## and the trivial solution is what a fixed-period solve finds
+    v = np.asarray(res['tpss'].v('o'), dtype=float).ravel()
+    assert np.max(np.abs(v)) < 1e-3, \
+        'expected the trivial orbit from a fixed-period solve, got %.3e' \
+        % np.max(np.abs(v))
+
+
+@pytest.mark.parametrize('kind', ['rc', 'rectifier'])
+def test_driven_circuits_are_not_called_autonomous(kind):
+    """Anti-false-positive, and the reason the test is structural.
+
+    ⚠ The spectral radius cannot make this call.  An autonomous orbit gives
+    an eigenvalue at 1 only AT its own period -- 0.9615 at the nominal one
+    here -- while a merely lightly damped DRIVEN circuit sits near 1 as
+    well: a Q=1000 resonator has exp(-pi/Q) = 0.99686.  No threshold
+    separates them.  Whether anything depends on `t` does, exactly.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+
+    if kind == 'rc':
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+        c['R'] = R('a', 'b', r=1e3)
+        c['C'] = C('b', gnd, c=1e-7)
+    else:
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=10.0, freq=1e3)
+        c['R'] = R('a', 'b', r=1e3)
+        c['D'] = Diode('b', 'c')
+        c['RL'] = R('c', gnd, r=1e4)
+        c['CL'] = C('c', gnd, c=1e-7)
+
+    pss = PSS(c, method='trap', reltol=1e-6)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=20)
+    assert pss.autonomous is False
+    assert not any('AUTONOMOUS' in str(x.message) for x in caught)
