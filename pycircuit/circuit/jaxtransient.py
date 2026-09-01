@@ -97,6 +97,14 @@ class TransientState(NamedTuple):
     ## the accepted error is unbounded.  Counted here for the same reason.
     n_forced_lte: Any = 0
 
+    ## P18/P25 on this backend: time points the continuation chain was asked
+    ## to rescue AND did -- i.e. points that would otherwise have been forced
+    ## through non-converged.  The CPU counts the same event as
+    ## `statistics.gmin_rescues`.  A run whose `n_forced_nonconverged` is 0
+    ## only because this is non-zero is a run the rescue saved; both numbers
+    ## are reported so the two cases stay distinguishable.
+    n_rescued: Any = 0
+
     ## F11/F19: "do not trust a 2nd-order polynomial through this point" --
     ## set when the PREVIOUS accepted step landed on a breakpoint, consumed by
     ## effective_first_order.  An explicit flag rather than an h_history
@@ -358,16 +366,33 @@ def _gmin_junction_rows(circuit):
 
 
 def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
-                            min_step=0.25, max_rungs=60):
+                            min_step=0.25, max_rungs=60, active=True):
     """Traced twin of nrsolver._adaptive_conductance_ladder: one compiled
     rung solver (g traced) inside a lax.while_loop carrying (seed,
     exponent, step, last-converged exponent, phase flags).  Returns
-    (x, converged) where converged means the g = 0 rung landed."""
+    (x, converged) where converged means the g = 0 rung landed.
+
+    `active` (traced) gates the loop CONDITION, so an inactive ladder runs
+    ZERO rungs and returns its seed.  That placement is the whole cost
+    argument for calling this from inside a time step, and it is measured
+    (sec. 50): wrapping the ladder in a `lax.cond` instead is free under
+    `jit` but NOT under `vmap`, where a batched predicate cannot branch --
+    XLA has one instruction stream for all lanes, so `cond` degenerates to
+    a `select` that evaluates BOTH sides.  A fixed-trip-count rung driver
+    behind such a `cond` measured 59x against no ladder at all with ZERO
+    lanes failing.  Gating the condition instead measured 0.9x, i.e. free.
+    The residual hazard is intrinsic and unavoidable: a vmapped while_loop
+    runs until EVERY lane's condition is false, so one lane in rescue costs
+    what all of them cost (measured 55.3x at 1 lane of 8, and 55.3x at 8 of
+    8 -- identical).  That is the death march, and it is why this is gated
+    at the dt floor rather than run on every step."""
     def cond(st):
         (_x, _e, step, _le, _hl, _pure, done, fail, rungs) = st
         return jnp.logical_and(
-            jnp.logical_not(jnp.logical_or(done, fail)),
-            rungs < max_rungs)
+            active,
+            jnp.logical_and(
+                jnp.logical_not(jnp.logical_or(done, fail)),
+                rungs < max_rungs))
 
     def body(st):
         (x_seed, e, step, last_e, has_last, pure, done, fail, rungs) = st
@@ -559,8 +584,11 @@ def dc_with_continuation(circuit, irefnode, n, n_nodes, params_tree=None,
     return jax.lax.cond(conv, lambda xc: xc, run_ladder, (x, conv))
 
 
-def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None, analysis='tran', provided_function=None):
-    x_init = extrapolate_predictor(state)
+def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None, analysis='tran', provided_function=None, x0=None, gmin_rows=None, gmin=0.0, gshunt_nodes=0, gshunt=0.0, ptc_g=0.0, ptc_anchor=None):
+    ## `x0` overrides the predictor: a continuation rung is seeded from the
+    ## previous rung's solution, not from an extrapolation the failed step
+    ## has already shown to be bad.
+    x_init = extrapolate_predictor(state) if x0 is None else x0
 
     def apply_tlines(I_u, t_curr):
         ## Extracted to module level so the fang and pcnr assemblies share it.
@@ -610,6 +638,35 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
             F = F + tline_dG @ x
             J = J + tline_dG
 
+        ## P18/P25 CONTINUATION TERMS -- the same three deformations
+        ## `dc_operating_point` carries, stamped identically so a rung means
+        ## the same thing in both analyses.  All three are STRUCTURALLY
+        ## skipped when the caller passes none (the ordinary step compiles
+        ## exactly the graph it compiled before), and their g operands are
+        ## TRACED so one compiled rung serves every rung of a ladder.  g = 0
+        ## adds exact zeros, which is what makes the ladder's final pure
+        ## rung the undeformed system -- the P22 rule that an accepted point
+        ## carries no residue.
+        if gmin_rows is not None:
+            ra, rb = gmin_rows
+            vj = x[ra] - x[rb]
+            F = F.at[ra].add(gmin * vj)
+            F = F.at[rb].add(-gmin * vj)
+            J = _scatter_junction_G(J, ra, rb,
+                                    jnp.full(ra.shape, 1.0) * gmin, 1.0)
+        if gshunt_nodes > 0:
+            idx = jnp.arange(gshunt_nodes)
+            F = F.at[idx].add(gshunt * x[idx])
+            J = J.at[idx, idx].add(gshunt)
+        if ptc_anchor is not None:
+            ## Psi-tc mid-transient.  The CPU's note applies unchanged: this
+            ## is safe here where SOURCE stepping is not, because the anchor
+            ## is a state the circuit actually passed through and nothing
+            ## scales u(t) -- scaling the excitation mid-transient would
+            ## scale the integrator's companion history with it.
+            F = F + ptc_g * (x - ptc_anchor)
+            J = J + ptc_g * jnp.eye(x.shape[0])
+
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
         F_sub = jnp.delete(F, irefnode)
         xdiff_sub = jnp.linalg.solve(J_sub, -F_sub)
@@ -653,6 +710,72 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
                                    F_norm=jnp.asarray(jnp.inf), iters=0,
                                    converged=jnp.asarray(False))
     return jax.lax.while_loop(cond_fun, body_fun, initial_nr_state)
+
+def transient_point_rescue(rung_newton, x_anchor, nr_state, needs_rescue,
+                           gmin_rows=None, n_nodes=0):
+    """The failed-time-point continuation chain, traced -- P18 phase 3 +
+    P25's `Transient._rescue_solver`, which this mirrors rung for rung:
+    junction-gmin -> gshunt -> pseudo-transient, each ladder seeded from
+    the last accepted state, each ending at EXACTLY zero, and only a pure
+    (undeformed) converged solution reported as converged.
+
+    No source stepping, for the CPU's reason: scaling u(t) mid-transient
+    would scale the integrator's companion history too, which is
+    ill-posed.  Psi-tc is mid-transient-safe because its anchor is a state
+    the circuit actually occupied and it scales nothing.
+
+    THE CHAINING IS DONE WITH FLAGS, NOT `lax.cond`.  "gshunt only if gmin
+    failed" is expressed by ANDing into the next ladder's `active`, which
+    lands in that ladder's loop CONDITION -- so a skipped ladder runs zero
+    rungs.  The DC twin (`dc_with_continuation`) chains with `lax.cond`
+    instead, which is right THERE (small graphs, top level, once per lane)
+    and would be wrong here: under `vmap` a `cond` on a batched predicate
+    becomes a `select` that evaluates both sides, so every skipped ladder
+    would run in full on every step of every lane.  Measured at 59x; see
+    `_adaptive_ladder_traced`.
+
+    Returns `(nr_state, rescued)` -- the state carrying the rescued point
+    and its converged flag, and whether this chain is what converged it.
+    """
+    x_in, conv_in = nr_state.x, nr_state.converged
+    active = jnp.logical_and(needs_rescue, jnp.logical_not(conv_in))
+    false = jnp.asarray(False)
+
+    def ladder(kind, seed, act, **kw):
+        def rung(xs, g):
+            st = rung_newton(xs, kind, g)
+            return st.x, st.converged
+        return _adaptive_ladder_traced(rung, seed, active=act, **kw)
+
+    ## The physical homotopy first (a leaky junction is a circuit), then the
+    ## crude one (a resistor to ground everywhere), then Psi-tc -- the CPU's
+    ## order, for the CPU's reason: prefer the deformation whose intermediate
+    ## solutions are closest to solutions of the real circuit.
+    if gmin_rows is not None:
+        x_g, c_g = ladder('gmin', x_anchor, active, e_start=-2.0, e_end=-12.0)
+    else:
+        x_g, c_g = x_in, false
+
+    a_s = jnp.logical_and(active, jnp.logical_not(c_g))
+    if n_nodes > 0:
+        x_s, c_s = ladder('gshunt', x_anchor, a_s, e_start=-3.0, e_end=-12.0)
+    else:
+        x_s, c_s = x_in, false
+
+    a_p = jnp.logical_and(a_s, jnp.logical_not(c_s))
+    ## Psi-tc's rungs march delta = 1/g from 1 s out to 1e12 s; e_max = +6 is
+    ## the escalation (heavier damping) if even the first step fails.
+    x_p, c_p = ladder('ptc', x_anchor, a_p, e_start=0.0, e_end=-12.0,
+                      e_max=6.0)
+
+    landed = jnp.logical_or(c_g, jnp.logical_or(c_s, c_p))
+    rescued = jnp.logical_and(active, landed)
+    x_out = jnp.where(rescued,
+                      jnp.where(c_g, x_g, jnp.where(c_s, x_s, x_p)),
+                      x_in)
+    return (nr_state._replace(
+        x=x_out, converged=jnp.logical_or(conv_in, rescued)), rescued)
+
 
 # ---------------------------------------------------------------------------
 # Phase 3: Outer Time Loop & Adaptive Control
@@ -1812,7 +1935,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None, rescue_meta=None):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1842,6 +1965,9 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                alive)
 
     def time_body(state: TransientState):
+        ## Did the continuation chain save this point?  Overwritten below on
+        ## the one path that runs it; carried into both counter updates.
+        rescued = jnp.asarray(False)
         if coupled:
             ## FANG'S COUPLED PATH (P19).  A step that must LAND somewhere --
             ## the next breakpoint or tend (tend is in t_breaks_array) -- has
@@ -1911,6 +2037,41 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                          params_tree=params_tree, max_dv=max_dv,
                                          tline_dG=tline_dG, analysis=analysis,
                                          provided_function=provided_function)
+            if rescue_meta is not None:
+                ## AT THE dt FLOOR ONLY -- the CPU's trigger exactly ("below
+                ## minstep, engage the chain for one point"), and the reason
+                ## the death march stays affordable: a vmapped while_loop
+                ## costs what its WORST lane costs, so a ladder that ran on
+                ## every step would charge every lane for the unluckiest one.
+                ## At the floor the alternative is force-accepting a
+                ## non-solution, so the trade is the ladder against a wrong
+                ## answer, not against a fast one.
+                _gmin_rows, _n_nodes = rescue_meta
+
+                def _rung_newton(xs, kind, g):
+                    if kind == 'gmin':
+                        kw = dict(gmin_rows=_gmin_rows, gmin=g)
+                    elif kind == 'gshunt':
+                        kw = dict(gshunt_nodes=_n_nodes, gshunt=g)
+                    else:
+                        ## The moving anchor: every rung is anchored at ITS
+                        ## OWN seed, which -- since the driver reseeds each
+                        ## rung from the last converged iterate -- IS the
+                        ## pseudo-time march.  The first rung is therefore
+                        ## anchored at the last accepted state.
+                        kw = dict(ptc_g=g, ptc_anchor=xs)
+                    return newton_inner_loop(
+                        state, circuit, irefnode, tline_params, tline_indices,
+                        eval_method=eval_method, reltol=reltol, abstol=abstol,
+                        xtol=xtol, maxiter=maxiter, params_tree=params_tree,
+                        max_dv=max_dv, tline_dG=tline_dG, analysis=analysis,
+                        provided_function=provided_function, x0=xs, **kw)
+
+                nr_state, rescued = transient_point_rescue(
+                    _rung_newton, state.x_history[0], nr_state,
+                    jnp.logical_and(state.dt <= dt_min * (1.0 + 1e-9),
+                                    jnp.logical_not(nr_state.converged)),
+                    gmin_rows=_gmin_rows, n_nodes=_n_nodes)
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
@@ -2288,6 +2449,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 + jnp.where(forced, 1, 0),
                 n_forced_lte=state.n_forced_lte
                 + jnp.where(forced_lte, 1, 0),
+                n_rescued=state.n_rescued + jnp.where(rescued, 1, 0),
                 ## F11: the CPU's breakpoint discipline, ported.  A step that
                 ## LANDS on a breakpoint (calculate_next_dt truncates onto
                 ## them, so landing is exact to t_eps) marks the NEXT step
@@ -2340,7 +2502,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 dt=retry_dt,
                 n_rejected=state.n_rejected + 1,
                 n_nonconverged=state.n_nonconverged
-                + jnp.where(nr_state.converged, 0, 1))
+                + jnp.where(nr_state.converged, 0, 1),
+                n_rescued=state.n_rescued + jnp.where(rescued, 1, 0))
 
         return jax.lax.cond(accept, do_accept, do_reject, None)
 
@@ -2363,7 +2526,7 @@ class JAXTransientStatistics(object):
 
     __slots__ = ('accepted_steps', 'rejected_steps', 'signal_max',
                  'nonconverged_steps', 'forced_nonconverged_steps',
-                 'force_accepts')
+                 'force_accepts', 'gmin_rescues')
 
     def __init__(self):
         self.accepted_steps = 0
@@ -2374,13 +2537,17 @@ class JAXTransientStatistics(object):
         ## F19(c): the JAX analogue of the CPU's force_accepts -- converged
         ## Newton, failing LTE, accepted at the dt floor.
         self.force_accepts = 0
+        ## P18/P25: points the continuation chain rescued at the dt floor.
+        ## Named for the CPU's counter so the two backends' run reports
+        ## can be compared field by field.
+        self.gmin_rescues = 0
 
     def __repr__(self):
         return ('<JAXTransientStatistics accepted=%d rejected=%d '
-                'nonconverged=%d forced=%d signal_max=%.4g>'
+                'nonconverged=%d forced=%d rescued=%d signal_max=%.4g>'
                 % (self.accepted_steps, self.rejected_steps,
                    self.nonconverged_steps, self.forced_nonconverged_steps,
-                   self.signal_max))
+                   self.gmin_rescues, self.signal_max))
 
 
 class JAXTransient(Analysis):
@@ -2592,6 +2759,44 @@ class JAXTransient(Analysis):
         Parameter(name='minstep',
                   desc='Minimum timestep to prevent infinite loops', unit='s',
                   default=1e-18),
+        ## P18/P25's chain, on this backend.  DEFAULT OFF, unlike the CPU,
+        ## which engages it unconditionally at minstep -- and the difference
+        ## is not timidity, it is what a traced graph charges for an unused
+        ## branch.  On the CPU the chain is Python control flow: absent from
+        ## the interpreter until a point fails, so it costs exactly nothing
+        ## on a healthy run.  Here it is compiled into every step of every
+        ## run whether or not a rung ever executes.  Measured on a 6-stage RC
+        ## ladder with a diode, interleaved, min of 3 (sec. 50):
+        ##
+        ##     steps    off      on      ratio
+        ##       136   0.835 s  1.969 s  2.36x
+        ##       555   1.034 s  2.191 s  2.12x
+        ##      2128   1.707 s  2.966 s  1.74x
+        ##
+        ## The ratio decays because the cost is mostly FIXED -- the absolute
+        ## gap is 1.13/1.16/1.26 s across a 16x growth in steps, i.e. a
+        ## compile cost (the step graph roughly doubles) plus ~14% per step.
+        ## A fixed second of compile on every run is the wrong default for a
+        ## rescue most runs never reach -- and MOST RUNS DO NOT REACH IT for
+        ## a specific reason worth knowing: a failed Newton rejects the step
+        ## and halves dt, so with the default 1e-18 floor there are ~130
+        ## halvings between a normal step and the point where this arms.  The
+        ## step-size controller is the first line of defence and it is very
+        ## good.  What gets past it is a point that fails at the FLOOR, and
+        ## there the alternative is force-accepting a non-solution.
+        ## `n_forced_nonconverged > 0` in the run report is the signal to
+        ## turn this on; `statistics.gmin_rescues` then says how often it
+        ## earned its keep.  (It does earn it: with the floor pinned, a 5 V
+        ## 2 MHz source into a diode at ten points per period raises
+        ## NoConvergenceError without this and completes with 8 rescued
+        ## points with it -- the predictor overshoots the junction while the
+        ## last accepted state, where the ladders seed, is still good.)
+        Parameter(name='continuation',
+                  desc='Rescue a failed time point at minstep with the '
+                       'junction-gmin/gshunt/pseudo-transient chain '
+                       '(costs ~1 s of compile; enable when a run reports '
+                       'forced non-converged steps)',
+                  unit='', default=False),
         ## P14: same spacing rule as the CPU's breakpoint handling.
         Parameter(name='minbreak',
                   desc='Minimum time difference for breakpoint events',
@@ -2882,6 +3087,20 @@ class JAXTransient(Analysis):
                     mods[lane, j], offs[lane, j] = base_rows[row]
         return (jnp.array(rows, dtype=jnp.int32), jnp.array(mods),
                 jnp.array(offs))
+
+    def _rescue_meta(self):
+        """Ingredients for the failed-point continuation chain, or None.
+
+        `(gmin_rows, n_nodes)`: the junction scatter targets for the
+        physical homotopy (None when the circuit declares no junctions --
+        the ladder is then skipped structurally, exactly as at DC) and the
+        node count for the gshunt ladder.  Both are FULL-system indices,
+        because the deformations are stamped before the reference row is
+        deleted.
+        """
+        if not self.par.continuation:
+            return None
+        return (_gmin_junction_rows(self.cir), len(self.cir.nodes))
 
     def _pcnr_setup(self):
         """(ra, rb, IS) arrays + VT, or (None, VT): static trace-time junction
@@ -3230,7 +3449,8 @@ class JAXTransient(Analysis):
                                    coupled=bool(self.par.coupled_lte),
                                    gamma_min=_gm, gamma_max=_gx, eta=_eta,
                                    pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
-                                   tline_dG=_tline_dG)
+                                   tline_dG=_tline_dG,
+                                   rescue_meta=self._rescue_meta())
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -3254,6 +3474,7 @@ class JAXTransient(Analysis):
         b_n_nonconverged = jnp.full(batch_size, 0)
         b_n_forced_nc = jnp.full(batch_size, 0)
         b_n_forced_lte = jnp.full(batch_size, 0)
+        b_n_rescued = jnp.full(batch_size, 0)
         b_force_first = jnp.full(batch_size, False)
         
         while np.any(current_t < tend):
@@ -3278,6 +3499,7 @@ class JAXTransient(Analysis):
                 n_nonconverged=b_n_nonconverged,
                 n_forced_nonconverged=b_n_forced_nc,
                 n_forced_lte=b_n_forced_lte,
+                n_rescued=b_n_rescued,
                 force_first_order=b_force_first
             )
             
@@ -3321,6 +3543,7 @@ class JAXTransient(Analysis):
             b_n_nonconverged = final_state.n_nonconverged
             b_n_forced_nc = final_state.n_forced_nonconverged
             b_n_forced_lte = final_state.n_forced_lte
+            b_n_rescued = final_state.n_rescued
             b_force_first = final_state.force_first_order
             x_hist = final_state.x_history
             q_hist = final_state.q_history
@@ -3485,7 +3708,8 @@ class JAXTransient(Analysis):
                                    coupled=bool(self.par.coupled_lte),
                                    gamma_min=_gm, gamma_max=_gx, eta=_eta,
                                    pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
-                                   tline_dG=_tline_dG)
+                                   tline_dG=_tline_dG,
+                                   rescue_meta=self._rescue_meta())
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]
@@ -3504,6 +3728,7 @@ class JAXTransient(Analysis):
         n_nonconverged = jnp.array(0)
         n_forced_nc = jnp.array(0)
         n_forced_lte = jnp.array(0)
+        n_rescued = jnp.array(0)
         force_first = jnp.array(False)
 
         while current_t < tend:
@@ -3526,6 +3751,7 @@ class JAXTransient(Analysis):
                 n_nonconverged=n_nonconverged,
                 n_forced_nonconverged=n_forced_nc,
                 n_forced_lte=n_forced_lte,
+                n_rescued=n_rescued,
                 force_first_order=force_first
             )
         
@@ -3570,6 +3796,7 @@ class JAXTransient(Analysis):
             n_nonconverged = final_state.n_nonconverged
             n_forced_nc = final_state.n_forced_nonconverged
             n_forced_lte = final_state.n_forced_lte
+            n_rescued = final_state.n_rescued
             force_first = final_state.force_first_order
 
             ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END MAY
@@ -3603,6 +3830,7 @@ class JAXTransient(Analysis):
         self.statistics.nonconverged_steps = int(n_nonconverged)
         self.statistics.forced_nonconverged_steps = int(n_forced_nc)
         self.statistics.force_accepts = int(n_forced_lte)
+        self.statistics.gmin_rescues = int(n_rescued)
 
         ## F19(c): mirror the CPU force-accept warning -- an unbounded
         ## accepted truncation error must not be invisible.

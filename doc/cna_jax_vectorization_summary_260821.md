@@ -92,9 +92,12 @@ exactly-zero final rung — only a pure converged solution is ever
 accepted).  The CPU transient's failed-point rescue uses the same chain
 minus source stepping (which would scale companion history).  SER
 δ-adaptation was prototyped, measured, and rejected with the numbers
-recorded; the JAX transient-point rescue is deferred with its full
-architectural reasoning and a concrete reopening trigger (both in the
-P25 entry).
+recorded.  The JAX transient-point rescue was deferred with its full
+architectural reasoning and a reopening trigger; it was **BUILT
+2026-09-01** (P25 entry, rewritten there with what the deferral got
+right and wrong).  It is `continuation`, **default off**: a traced graph
+carries the branch whether or not it runs (~1.15 s of compile plus ~14%
+per step), where the CPU's Python rescue costs nothing until it fires.
 
 **The repair campaign that preceded parity**
 (`doc/transient_review_260820.md`, F1–F19 + hygiene, all executed;
@@ -122,9 +125,12 @@ the suite.
 
 ## What is deliberately NOT here (each with its trigger, recorded)
 
-- JAX transient-point continuation rescue (P25 entry: the ladder would
-  have to be traced into the step body; trigger = a forced-non-converged
-  chunk exit on a circuit the CPU rescue completes).
+- Layering the (now built) JAX transient-point rescue on **PCNR**.  The
+  chain wraps a plain Newton that does not limit, while the CPU's wraps
+  one that does, so a junction circuit's JAX failure is `exp` overflow —
+  which no conductance in parallel with the junction can fix.  Trigger =
+  a forced-non-converged chunk exit on a circuit the CPU rescue
+  completes.  Ψ-tc also needs transient-scaled rung exponents.
 - Batch compaction for finished lanes (invisible in the flat benchmark
   wall; trigger = many-lane profiles showing dispatch cost).
 - `Sin.next_event` quarter-period breakpoint coalescing (trigger = a

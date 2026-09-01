@@ -664,47 +664,122 @@ existing TLine tests before/after, per house rules.
   > dominated by refinement rungs after repeated maxiter failures);
   > the prototype lives in the session record, the numbers here.
 
-  **The still-open sibling: the JAX transient-point rescue** — recorded
-  here in full so the deferral is a decision, not an omission.
+  **The JAX transient-point rescue — BUILT 2026-09-01 (sec. 50).**  This
+  entry recorded a deferral, "in full so the deferral is a decision, not
+  an omission".  It has now been implemented, and the deferral's own
+  reasoning is kept below because two thirds of it was right and the
+  third that was wrong is the part worth reading.
 
-  *Why the CPU rescue cannot be ported as-is.*  The CPU rescue is Python
-  control flow: Newton failure is an exception, caught per time point;
-  below `minstep` the loop swaps in a different solver object
-  (`_rescue_solver`) and runs the ladder — try/except, dynamic rung
-  counts, data-dependent branching, all decided at runtime in the
-  interpreter.  The JAX loop (`outer_time_loop`) is a `lax.while_loop`
-  traced ONCE into a single XLA program: no exceptions, no runtime
-  choice of code path.  "Newton failed" is a boolean in the traced
-  state; the compiled body reacts only through `jnp.where` (shrink dt)
-  and, at the dt floor, force-accepts and exits the chunk (the P22
-  early exit) — so failure is observable from Python only at CHUNK
-  granularity, after the compiled program has already given up.
+  *What shipped.*  `transient_point_rescue` in `jaxtransient.py`: the
+  CPU chain rung for rung — junction-gmin → gshunt → Ψ-tc, each ladder
+  seeded from the last accepted state, each ending at EXACTLY zero, only
+  a pure converged solution reported as converged (the P22 no-residue
+  rule).  `newton_inner_loop` gained the same three deformation terms
+  `dc_operating_point` carries, stamped identically.  It is gated at the
+  dt floor — `at_floor AND not converged`, the CPU's "below minstep"
+  trigger exactly — and exposed as the `continuation` Parameter,
+  **default OFF**, with `statistics.gmin_rescues` named for the CPU's
+  counter.
 
-  *What a port would require.*  The ladder compiled INTO the step body:
-  behind a `lax.cond` on the failure flag, the adaptive rung driver (a
-  `lax.while_loop`) wrapping the per-rung Newton (another
-  `lax.while_loop`), with the gmin/gshunt/Ψtc deformation terms, nested
-  inside the outermost time loop and vmapped across lanes.  The DC side
-  already made this move (`dc_with_continuation` IS the ladder in
-  traced code) — but there it sits at top level and runs once per lane;
-  here it would be three loops deep and present in every compiled step
-  of every run.
+  *Why the CPU rescue could not be ported as-is* (unchanged, and still
+  the reason the port looks nothing like the original).  The CPU rescue
+  is Python control flow: Newton failure is an exception, caught per
+  time point; below `minstep` the loop swaps in a different solver
+  object (`_rescue_solver`) and runs the ladder — try/except, dynamic
+  rung counts, data-dependent branching, all decided at runtime in the
+  interpreter.  The JAX loop is a `lax.while_loop` traced ONCE into a
+  single XLA program: no exceptions, no runtime choice of code path.
 
-  *Why it stays deferred* — three costs against no demonstrated need:
-  (1) compile-time and graph size — the ladder traced into the hottest
-  kernel of the backend whether or not any point ever fails; (2) vmap
-  semantics — one lane entering a 60-rung rescue makes every lane pay
-  (vmapped `while_loop`s run until ALL lanes' conditions are false —
-  the death-march hazard the P22 chunk exit specifically engineered
-  around); (3) the P18 scope finding — no legitimate circuit reaching
-  the rescue could be fabricated even on the CPU, where experimenting
-  is cheap.
+  *The one that was WRONG — and it was the design.*  The deferral said a
+  port would put the ladder "behind a `lax.cond` on the failure flag".
+  Built that way it would have been far worse than the entry feared, and
+  silently: under `jit` a `lax.cond` executes only the taken branch, so
+  it tests clean, but under `vmap` — the batched sweep this backend
+  exists for — a batched predicate cannot branch, because XLA has one
+  instruction stream for all lanes.  `cond` degenerates to a `select`
+  that evaluates BOTH sides.  Measured: a fixed-trip rung driver behind
+  such a `cond` cost **59x** against no ladder at all with **ZERO lanes
+  failing**.  The fix is to gate the ladder's loop CONDITION instead
+  (`_adaptive_ladder_traced(..., active=)`), which makes an unasked
+  ladder run zero rungs: **0.9x, i.e. free**.  The chaining follows the
+  same rule — "gshunt only if gmin failed" is an AND into the next
+  ladder's `active`, not a nested `cond`.  The DC twin
+  (`dc_with_continuation`) does use `lax.cond`, which is right THERE
+  (small graphs, top level, once per lane) and would have been wrong
+  here.
 
-  *The trigger that reopens it,* stated concretely: a real JAX
-  transient run hitting the forced-non-converged chunk exit on a
-  circuit the CPU path CAN complete via its rescue.  Until then the
-  honest contract is today's: the JAX run fails loudly at the chunk
-  boundary, and the CPU backend is the fallback for that circuit.
+  *Cost (2) was RIGHT, and is now a number.*  The death march is real
+  and irreducible: a vmapped `while_loop` runs until EVERY lane's
+  condition is false, so one lane in rescue costs what all of them cost
+  — measured **55.3x at 1 lane of 8, and 55.3x at 8 of 8, identical**.
+  That is why the chain is gated at the dt floor rather than run
+  speculatively: at the floor the alternative is force-accepting a point
+  that is not a solution, so the trade is the ladder against a wrong
+  answer, not against a fast one.
+
+  *Cost (1) was RIGHT at real scale, though a small probe missed it.*
+  On a synthetic 20x20 loop the graph doubled while compile time did not
+  measurably move, which briefly read as the cost being unsupported.  On
+  a real circuit (6-stage RC ladder with a diode, interleaved, min of 3)
+  it is plainly there: 136/555/2128 steps cost 2.36x/2.12x/1.74x with
+  the chain armed, and the decaying ratio is the tell — the ABSOLUTE gap
+  is 1.13/1.16/1.26 s across a 16x growth in steps.  A fixed ~1.15 s of
+  compile, plus ~14% per step.  Hence default OFF: on the CPU the chain
+  is absent from the interpreter until it runs, here it is compiled into
+  every step of every run.  `n_forced_nonconverged > 0` in the run
+  report is the signal to turn it on.
+
+  *Cost (3), the scope finding — HELD until the mechanism behind it was
+  understood, then fell.*  Three circuits were tried first and none
+  triggered anything (a near-singular reverse-diode chain, a floating
+  capacitor node, the documented cold-start diode); the armed chain
+  reproduced the disarmed run bit for bit in every case.  **The reason is
+  the step-size controller**, and it is worth stating plainly because it
+  is what four years of "no fabricable trigger" actually measures: a
+  failed Newton REJECTS the step and shrinks dt, and with a floor at
+  1e-18 there are ~130 halvings between a normal step and the floor.  The
+  controller solves the point long before the rescue is reachable.  That
+  is a first line of defence, not an absence of failure — and it means a
+  trigger must take the controller out of the way.
+
+  Pinning `minstep` at the step size does exactly that, and then the
+  trigger is easy: a 5 V, 2 MHz source through 1 k into a diode at ten
+  points per period.  The extrapolated PREDICTOR the plain Newton starts
+  from overshoots the junction into its exponential, while the last
+  ACCEPTED state — which is where the ladders seed — is still good.
+  Measured: **the plain Newton raises `NoConvergenceError`; with the
+  chain armed the run completes, 8 points rescued, 0 forced.**  The
+  rescued waveform agrees with a lowered-floor JAX reference to 6.0e-2 V
+  and with the CPU backend to 5.7e-2 V on a 5.633 V swing (~1%, which is
+  the coarse step's truncation error, and the two independent references
+  corroborate each other).  Both are tests:
+  `test_the_chain_completes_a_run_the_plain_newton_cannot` and
+  `test_the_rescued_waveform_is_right_not_merely_finite`.
+
+  Note what the demonstration says about the SEED, not the deformation:
+  the first thing the chain changes is where Newton starts.  That alone
+  carried this case.
+
+  **And the new finding, which is the next open item.**  The CPU chain
+  sits on a solver that LIMITS (`pnjlim`); this one sits on a plain
+  Newton that does not.  For a junction circuit the dominant JAX failure
+  is the diode exponential overflowing — `exp(200)` from one bad Newton
+  step — and no conductance in parallel with a junction can fix a term
+  that is already infinite.  Measured on the documented cold start: the
+  gmin rung at g = 1e-2 diverges exactly as the plain rung does.  So on
+  this backend the chain's natural home is layered on **PCNR**, which is
+  this backend's only limiting mechanism, not on the plain Newton it now
+  wraps.  Ψ-tc has a second, smaller version of the same problem: its
+  rung exponents (`e_start=0`, `e_max=+6`) are calibrated for DC
+  diagonals, and in transient at the dt floor the companion conductance
+  is ~1e9, so every rung of the ladder is negligible against it.  Both
+  are scoped, neither is built.
+
+  *The trigger that reopens THAT work,* stated concretely: a JAX run
+  whose forced-non-converged exit survives `continuation=True` — i.e. a
+  circuit whose failure is the junction overflow described above rather
+  than a basin or seed problem.  The chain as built handles the second;
+  only PCNR layering can handle the first.
 
 ---
 
