@@ -301,3 +301,116 @@ def test_pss_still_matches_the_ac_reference_with_a_fine_step():
         amp = 0.5 * (v.max() - v.min())
         assert amp == pytest.approx(ref, rel=0.02), \
             '%s gives %.6f against the AC reference %.6f' % (method, amp, ref)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: the shooting Newton was not a Newton
+# ---------------------------------------------------------------------------
+
+def _q20_rlc(f0=1e3, Q=20.0):
+    """A resonator whose per-period decay is exp(-pi/Q) = 0.8546.
+
+    That number is the whole diagnostic: successive substitution converges at
+    exactly the circuit's own decay rate, so observing 0.855 per iteration is
+    how the missing Jacobian was found.
+    """
+    L_, C_ = 1e-3, 1.0 / ((2 * np.pi * f0) ** 2 * 1e-3)
+    c = SubCircuit()
+    c.add_node('a'); c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=1.0, freq=f0)
+    c['R'] = R('a', 'b', r=(1.0 / Q) * np.sqrt(L_ / C_))
+    c['L'] = L('b', 'c', L=L_)
+    c['C'] = C('c', gnd, c=C_)
+    return c
+
+
+def _shooting_trace(method, reltol=1e-4, maxiterations=30):
+    """Run PSS, returning (residual per outer iteration, non-converged?)."""
+    import warnings as _w
+    import pycircuit.circuit.analysis as _an
+    trace, orig = [], _an.fsolve
+
+    def spy(f, x0, *a, **kw):
+        if f.__qualname__ != 'PSS.solve.<locals>.func':
+            return orig(f, x0, *a, **kw)
+
+        def logged(x, *aa):
+            F, J = f(x, *aa)
+            trace.append((float(np.max(np.abs(F))),
+                          float(np.max(np.abs(np.eye(len(x)) - np.asarray(J))))))
+            return F, J
+        logged.__qualname__ = f.__qualname__
+        return orig(logged, x0, *a, **kw)
+
+    circuit.default_toolkit = circuit.numeric
+    _an.fsolve = spy
+    try:
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter('always')
+            res = PSS(_q20_rlc(), method=method, reltol=reltol).solve(
+                period=1e-3, timestep=1e-5, maxiterations=maxiterations)
+        nonconv = any('did not converge' in str(c.message) for c in caught)
+    finally:
+        _an.fsolve = orig
+    return trace, nonconv, res
+
+
+def test_the_shooting_jacobian_is_not_identically_zero():
+    """The regression on the defect itself.
+
+    `Jshoot = solve(Jf, C @ Jshoot)` used the RAW capacitance matrix where
+    backward Euler's per-step sensitivity is `Jf^-1 C(x_{n-1})/h`.  C is
+    singular, so the accumulated product collapsed to EXACTLY zero and the
+    Jacobian handed to fsolve was the identity -- making the "shooting
+    Newton" plain successive substitution, on every circuit, silently.
+    """
+    trace, _nc, _res = _shooting_trace('euler')
+    jmax = max(j for _f, j in trace)
+    assert jmax > 1e-3, \
+        'the monodromy is ~zero (max %.3e): the shooting Newton has ' \
+        'degenerated to successive substitution' % jmax
+
+
+def test_euler_shooting_converges_like_a_newton():
+    """Few iterations, and tightening the tolerance costs few more.
+
+    Successive substitution on this circuit contracts by 0.8546 per
+    iteration, so reaching 1e-9 would need ~130.  A Newton reaches it in a
+    handful; measured at landing, 5 iterations at reltol 1e-4 and 10 at
+    1e-9.
+    """
+    loose, nc_loose, _r = _shooting_trace('euler', reltol=1e-4)
+    tight, nc_tight, _r2 = _shooting_trace('euler', reltol=1e-9)
+
+    assert not nc_loose and not nc_tight
+    assert len(loose) <= 8, 'euler took %d shooting iterations' % len(loose)
+    assert len(tight) <= 15, 'euler took %d at reltol 1e-9' % len(tight)
+    ## five extra decades for a handful of iterations is the Newton signature
+    assert tight[-1][0] < 1e-9, 'final residual %.3e' % tight[-1][0]
+
+
+def test_non_convergence_is_reported():
+    """It used to be silent, which is why this survived.
+
+    `fsolve` builds the "No convergence" message and discards it whenever
+    `full_output=False` -- how PSS called it.  Trapezoidal still uses
+    successive substitution (its period map carries `iq` as well as `x`), so
+    it is the honest case to pin: it does NOT converge here, and must say so.
+    """
+    _trace, nonconv, _res = _shooting_trace('trap', maxiterations=12)
+    assert nonconv, 'a non-converged shooting solve returned silently'
+
+
+def test_pss_tolerance_parameters_reach_the_shooting_solve():
+    """`reltol` was a dead knob for the outer Newton.
+
+    `solve()` passed neither tolerance to `fsolve`, so the shooting solve ran
+    on library defaults while the inner solves used `par.reltol` -- the two
+    were unrelated, which is exactly what the inner/outer ordering rule
+    exists to prevent.
+    """
+    loose, _a, _b = _shooting_trace('euler', reltol=1e-4)
+    tight, _c, _d = _shooting_trace('euler', reltol=1e-9)
+    assert tight[-1][0] < loose[-1][0] / 100.0, \
+        'tightening reltol did not tighten the shooting residual ' \
+        '(%.3e vs %.3e)' % (tight[-1][0], loose[-1][0])

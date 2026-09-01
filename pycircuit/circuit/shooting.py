@@ -2,6 +2,7 @@ from pycircuit.post import InternalResultDict
 from .circuit import gnd
 from pycircuit.circuit.analysis import *
 from copy import copy
+import warnings
 import pycircuit.circuit.analysis as analysis
 import numpy as np
 
@@ -28,17 +29,66 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
 
     return freqs, X
 
+## How much tighter the per-timestep Newton runs than the shooting Newton.
+## The period map is only known to the inner tolerance, so the outer residual
+## has a floor there; 100x buys two decades of headroom for the outer solve
+## to converge into.
+INNER_TOL_FACTOR = 100.0
+
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
-    
+
     The algorithm is described in [1] p65.
 
-     1. Kenneth S. Kundert, Jacob K. White, Alberto Sangiovanni-Vincentelli 
+     1. Kenneth S. Kundert, Jacob K. White, Alberto Sangiovanni-Vincentelli
         (1990)
         Steady-State Methods for Simulating Analog and Microwave Circuits
         Kluwer Academic Publishers
         ISBN 0792390695
-    
+
+    **THREE CONVERGENCE CHECKS NEST HERE, AND THEY ARE NOT INTERCHANGEABLE.**
+
+    1. the per-timestep Newton, which solves the discretised circuit
+       equations at one time point;
+    2. the local truncation error, which decides how far the DISCRETE
+       trajectory is from the true one;
+    3. the shooting Newton, which finds the periodic point of the discrete
+       map.
+
+    Two rules order them.  **The inner tolerance must be far tighter than
+    the outer**: the period map is only KNOWN to the accuracy of (1), so
+    (3)'s residual has a floor there whatever its Jacobian is --
+    `INNER_TOL_FACTOR` states the ratio instead of leaving two defaults to
+    meet by accident.  And **LTE must not run per shooting iteration**: an
+    adaptive grid makes the step sequence a function of `x0`, so the period
+    map stops being smooth and (3) loses its quadratic rate.  Choose the
+    grid once, freeze it, shoot on it.
+
+    ⚠ **STATUS.  (3) is a true Newton for `method='euler'` only.**  The
+    monodromy accumulation was missing a factor of `1/h`, and since `C` is
+    singular the product collapsed to exactly zero -- so the Jacobian was
+    the identity and this was successive substitution, `x0 <- phi(x0)`, on
+    every circuit and without saying so.  Fixed for Euler (a Q=20 resonator
+    now converges in 5 iterations against ~130 for successive substitution).
+    Trapezoidal still uses successive substitution, because its period map
+    carries `iq` as well as `x` and an x-only monodromy is structurally
+    incomplete -- measured, the Euler form applied to trap converges SLOWER
+    than no Jacobian at all.  Non-convergence is now reported.
+
+    ⚠ **And note the two failures are orthogonal, so neither method is yet
+    right on both axes.**  On the Q=20 resonator against a 20 V analytic
+    peak: Euler converges the shooting equation and lands at 8.815 V, its
+    own damping (a level-2 error); trapezoidal does not converge the
+    shooting equation and lands at 19.848 V (a level-3 error).  Making trap
+    a true Newton needs the augmented `(x, iq)` state, and is the work that
+    makes this analysis trustworthy.
+
+    (2) does not exist here at all: the grid is a fixed `linspace`, and this
+    class carries its own transcription of one integrator step rather than
+    driving `Transient`.  Reusing `Transient` at `fixed_timestep=True` would
+    supply (2), the limiting/PCNR machinery and breakpoints, and remove a
+    third copy of the integrator algebra -- planned, not done.
     """
 
     parameters = Analysis.parameters + \
@@ -134,12 +184,22 @@ class PSS(Analysis):
                 Geq = C / dt
             f = self.cir.i(x) + iq + self.cir.u(t, analysis=analysis_name)
             J = self.cir.G(x) + Geq
-            (f, J, C) = remove_row_col((f, J, C), irefnode, self.toolkit)
-            self._Jf, self._C = J, C
+            (f, J, C, Geq_r) = remove_row_col((f, J, C, Geq), irefnode,
+                                              self.toolkit)
+            self._Jf, self._C, self._Geq = J, C, Geq_r
             self._iq = iq
             return f, J
 
-        x = analysis.fsolve(func, x0, reltol=self.par.reltol, toolkit=self.toolkit)
+        ## ⚠ THE INNER SOLVE MUST BE TIGHTER THAN THE OUTER ONE.  The
+        ## shooting Newton iterates on the period map phi, and phi is only
+        ## KNOWN to whatever tolerance these per-timestep solves reach -- so
+        ## the outer residual can never be driven below it, however good the
+        ## Jacobian is.  `INNER_TOL_FACTOR` states the ratio rather than
+        ## leaving the two defaults to meet by accident, which is what
+        ## happened before: the inner solve used `par.reltol` while the outer
+        ## ran on fsolve's own defaults, and nothing related them.
+        x = analysis.fsolve(func, x0, reltol=self.par.reltol / INNER_TOL_FACTOR,
+                            maxiter=self.par.maxiter, toolkit=self.toolkit)
 
         ## STAGE 11 -- RECOMPUTE THE COMPANION AT THE CONVERGED POINT.
         ##
@@ -178,6 +238,41 @@ class PSS(Analysis):
                              retstep=True)
         alpha = 1
 
+        ## Resolved here as well as in `solve_timestep`, because the SHOOTING
+        ## Jacobian depends on which integrator the inner steps used.
+        method = getattr(self.par, 'method', 'euler')
+        if method not in ('euler', 'trap', 'trapezoidal'):
+            raise ValueError(
+                "method must be 'euler' or 'trap', not %r" % (method,))
+
+        ## THE SHOOTING JACOBIAN IS ONLY EXACT FOR A ONE-STEP METHOD.
+        ##
+        ## Backward Euler's per-step sensitivity is
+        ##     dx_n/dx_{n-1} = Jf_n^-1 * C(x_{n-1})/h
+        ## -- the COMPANION CONDUCTANCE at the previous point, not the raw
+        ## capacitance matrix.  The `/h` was missing, and because C is
+        ## singular the accumulated product collapsed to EXACTLY ZERO: the
+        ## Jacobian handed to fsolve was `I - 0 = I`, so the "shooting
+        ## Newton" was plain successive substitution `x0 <- phi(x0)`.  That
+        ## converges at the circuit's own per-period decay -- measured on a
+        ## Q=20 resonator as 0.855 per iteration against exp(-pi/Q) = 0.8546,
+        ## which is how it was found -- and it never reached fsolve's
+        ## tolerance, on any circuit, silently.  With the companion
+        ## conductance the same resonator converges in FIVE iterations
+        ## (2.64 -> 2.6e-2 -> 1.0e-2 -> 1.9e-4 -> 3.9e-5).
+        ##
+        ## TRAPEZOIDAL IS NOT COVERED BY THIS, and must not pretend to be.
+        ## Its recursion carries `iq` as well as `x`, so the period map is a
+        ## function of (x, iq) and an x-only monodromy is structurally
+        ## incomplete -- measured, using the Euler form for trap converges
+        ## SLOWER than no Jacobian at all (0.90 vs 0.855 per iteration).  So
+        ## trap keeps successive substitution, which is what it has always
+        ## had; it is now named rather than mislabelled, the pointless
+        ## per-step linear solves that built an all-zero matrix are skipped,
+        ## and the convergence verdict below tells the caller what happened.
+        ## Making trap a true Newton needs the augmented (x, iq) state.
+        newton = (method == 'euler')
+
         def func(x):
             ## STAGE 11 -- the companion current is carried through the sweep, so
             ## trapezoidal has something to average against.  `iq_last=None` on the
@@ -186,7 +281,7 @@ class PSS(Analysis):
             iq_last = self._iq
             x0 = copy(x)
             Jshoot = np.asarray(toolkit.eye(n-1))
-            C = copy(np.asarray(self._C))
+            C = copy(np.asarray(self._Geq))
 
             ## Save C and transient jacobian for PAC analysis
             self.Cvec = [copy(self._C)]
@@ -212,17 +307,53 @@ class PSS(Analysis):
                 ## products with the monodromy matrix, never the matrix itself.
                 ## That is a rewrite; this is the same computation, correctly
                 ## expressed, and it is bit-comparable rather than merely close.
-                Jshoot = self.toolkit.linearsolver(np.asarray(self._Jf),
-                                                   C @ Jshoot)
-                C = copy(np.asarray(self._C))
+                if newton:
+                    Jshoot = self.toolkit.linearsolver(np.asarray(self._Jf),
+                                                       C @ Jshoot)
+                    C = copy(np.asarray(self._Geq))
 
             residual = x0 - x
 
             D = np.asarray(toolkit.eye(n-1))
-            return residual, D - alpha * Jshoot
+            ## Successive substitution is `J = I`: the update is then
+            ## `x0 <- x0 - (x0 - phi(x0)) = phi(x0)`.
+            return residual, (D - alpha * Jshoot) if newton else D
         
+        ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
+        ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
+        ## amps on branch rows -- so its absolute floor is the `xtol` flavour
+        ## (vabstol on nodes, iabstol on branches), not the residual flavour
+        ## the transient's Newton uses for `i(x)`.  Getting that backwards is
+        ## F6(a)'s defect, and it is easy to walk into here because the
+        ## quantity is called a residual.
+        _nn = len(self.cir.nodes)
+        _tol = np.concatenate((np.full(_nn, float(self.par.vabstol)),
+                               np.full(n - _nn, float(self.par.iabstol))))
+        _tol = np.delete(_tol, irefnode)
+
         ## Find periodic steady state x-vector
-        x0_ss = analysis.fsolve(func, x, maxiter=maxiterations, toolkit=self.toolkit)
+        x0_ss, _info, _ier, _mesg = analysis.fsolve(
+            func, x, maxiter=maxiterations, reltol=self.par.reltol,
+            abstol=_tol, xtol=_tol, toolkit=self.toolkit, full_output=True)
+        self.converged = (_ier == 1)
+        self.shooting_iterations = maxiterations if not self.converged else None
+        if not self.converged:
+            ## ⚠ THIS USED TO BE SILENT.  `fsolve` builds the "No
+            ## convergence" message and then discards it whenever
+            ## `full_output=False`, which is how this call was written -- so
+            ## a shooting solve that never converged returned a
+            ## plausible-looking waveform with no diagnostic at all.  It was
+            ## non-convergent on EVERY circuit, including a linear RLC whose
+            ## answer was visibly close, which is why nobody noticed.
+            warnings.warn(
+                'PSS: the shooting solve did not converge in %d iterations '
+                '(method=%r, %s). The returned waveform is the last iterate, '
+                'not a periodic steady state -- raise maxiterations, or use '
+                "method='euler', which solves a true Newton system while "
+                'trapezoidal still uses successive substitution.'
+                % (maxiterations, method,
+                   'true Newton' if newton else 'successive substitution'),
+                RuntimeWarning, stacklevel=2)
         
         X = [x0_ss]
         iq_last = None
