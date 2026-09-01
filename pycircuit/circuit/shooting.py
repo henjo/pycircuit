@@ -338,12 +338,35 @@ class PSS(Analysis):
          justification; "and it is the better method for stiff oscillators"
          was mine and is unsupported.
 
-         What would establish that half: a circuit where trapezoidal
-         actually fails inside a PSS run.  Two attempts did not find one --
-         possibly because a decoupled parasitic is never excited and the
-         diode was not stiff enough in conduction, so a genuinely stiff
-         RELAXATION oscillator, where the fast mode is in the orbit itself,
-         is the case still untried.
+         ⚠ THE UNTRIED CASE IS NOW TRIED AND THE CLAIM IS REFUTED, not
+         merely unsupported.  Van der Pol at `mu = 100` -- the canonical
+         stiff relaxation oscillator, fast mode IN the orbit, measured
+         stiffness ratio 5443 (edge timescale 0.0299 against a period of
+         162.842412):
+
+              method   npts        h   outcome         period      err ppm
+              trap     2000   0.0815   NoConvergence        -            -
+              gear     2000   0.0815   NoConvergence        -            -
+              trap     8000   0.0204   NOT converged   162.813755        -
+              gear     8000   0.0204   NoConvergence        -            -
+              trap    20000   0.0081   converged       162.832543    -60.6
+              gear    20000   0.0081   converged       162.823215   -117.9
+
+         Trapezoidal wins on both counts: it is the only method that
+         produced a finite answer at 8000 points, and at 20000 it is TWICE
+         as accurate.  Across three circuits no case has been found where
+         Gear-2 is the better choice for autonomous PSS, so the default
+         stands and this half of the justification is closed as refuted.
+
+         ⚠ AND THE BINDING CONSTRAINT TURNED OUT TO BE THE GRID, NOT THE
+         METHOD.  Neither method runs that circuit below 20000 points,
+         because this analysis freezes a UNIFORM grid (which is what makes
+         (3) a Newton) and the edge needs `h < 0.01` against a period of
+         162.8.  The adaptive transient that produced the reference used
+         ~1160 points per period, so the uniform grid costs about 17x the
+         points on this circuit class.  That is a measured argument for
+         RECORDED SCOPE ITEM 5, the LTE-chosen grid -- and the first one it
+         has had.
 
     4d. THE CHEAP APPROXIMATE ALTERNATIVE, measured and NOT shipped.  The
         4b system is seam-free but doubles the unknowns, so it is worth

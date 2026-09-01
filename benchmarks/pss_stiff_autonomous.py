@@ -11,7 +11,7 @@ steady state has no transient to ring.  The citation was carried from the
 context it was measured in into one where it had not been checked.  This
 script is the check, and it came out negative.
 
-RESULT (2026-09-01):
+RESULT (2026-09-01).  Three circuits, and the third settles it.
 
     method  npts   period ppm      vf max      alt ripple
     trap     200      +83.084      0.539510     6.451e-03
@@ -31,21 +31,41 @@ biased in the period by 2.5 ppm and its orbit does not close in radius, so
 `method='gear'` was WRONG there rather than merely inferior.  Making an
 offered method correct is the justification.
 
-WHAT WOULD REOPEN IT: a circuit where trapezoidal actually fails inside a
-PSS run.  Two attempts here did not find one, and two attempts are not
-proof of absence -- a decoupled parasitic is never excited, and the diode
-below may not be stiff enough in conduction.  The case still untried is a
-genuinely stiff RELAXATION oscillator, where the fast mode lives in the
-orbit itself rather than on a side node.
+THE CASE THAT WAS UNTRIED IS NOW TRIED, and it closes the question the
+other way.  Van der Pol at mu = 100 -- the canonical stiff relaxation
+oscillator, fast mode IN the orbit, stiffness ratio 5443:
+
+    method   npts        h   outcome              period       err ppm
+    trap     2000   0.0815   NoConvergenceError        -             -
+    gear     2000   0.0815   NoConvergenceError        -             -
+    trap     8000   0.0204   NOT converged     162.813755             -
+    gear     8000   0.0204   NoConvergenceError        -             -
+    trap    20000   0.0081   converged         162.832543         -60.6
+    gear    20000   0.0081   converged         162.823215        -117.9
+
+⚠ TRAPEZOIDAL WINS ON BOTH COUNTS.  It is the only one that produced a
+finite answer at 8000 points, and at 20000 it is TWICE as accurate.  So
+"Gear-2 is the right tool for a stiff oscillator" is now refuted rather
+than merely unsupported -- three circuits, no circuit yet found where
+trapezoidal is the worse choice for autonomous PSS.
+
+⚠ AND THE BINDING CONSTRAINT IS NOT THE METHOD, IT IS THE GRID.  Neither
+method runs this circuit below 20000 points, because PSS freezes a UNIFORM
+grid and the edge needs `h < 0.01` while the period is 162.8.  The adaptive
+transient that produced the reference used ~1160 points per period.  So
+the uniform-grid restriction costs about **17x the points** on this circuit
+class, and that is a measured argument for the LTE-chosen grid (recorded
+scope item 5) rather than for any integration method.
 """
 import warnings
 
 import numpy as np
 
 from pycircuit import circuit
-from pycircuit.circuit import SubCircuit, gnd, VS, R, C, Diode
-from pycircuit.circuit.elements import IdtmodQuadrature
+from pycircuit.circuit import SubCircuit, gnd, VS, R, C, L, Diode
+from pycircuit.circuit.elements import IdtmodQuadrature, BSource
 from pycircuit.circuit.shooting import PSS
+from pycircuit.circuit.transient import Transient
 
 NOM = 1e-3
 TAU = 5e-9          # h*lambda = -1000 at 200 steps/period
@@ -97,6 +117,64 @@ def peak_detector(cf=1e-9, rload=1e5):
     return c
 
 
+MU = 100.0
+VDP_PERIOD = 162.842412     # measured, see `van_der_pol`
+
+
+def van_der_pol(mu=MU):
+    """THE canonical stiff relaxation oscillator, and the decisive case.
+
+        C dv/dt = -i_L + mu (v - v^3/3),    L di_L/dt = v
+
+    No sources at all, so `u` is identically zero and the structural test
+    calls it autonomous.  At `mu = 100` the orbit sits on its slow branches
+    and crosses between them in O(1/mu): measured, the edge timescale is
+    0.0299 against a period of 162.842412 (cycle-to-cycle spread 1.3e-06
+    from a settled adaptive transient), a stiffness ratio of **5443**.  The
+    asymptotic `(3 - 2 ln 2) mu = 161.37` agrees to the expected order.
+
+    This is the circuit the earlier two were not.  A decoupled parasitic is
+    never excited and a diode edge was not stiff enough; here the fast mode
+    IS the orbit.
+    """
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    return c
+
+
+def van_der_pol_seed(tend=1200.0):
+    """A point on the limit cycle, from a settled adaptive transient."""
+    circuit.default_toolkit = circuit.numeric
+    cir = van_der_pol()
+    x0 = np.zeros(cir.n)
+    x0[cir.get_node_index('v')] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, reltol=1e-7).solve(refnode=gnd, tend=tend,
+                                                timestep=0.05, x0=x0)
+    xs = np.asarray(res.x, dtype=float)
+    iref = cir.get_node_index(gnd)
+    return np.concatenate((xs[:iref, -1], xs[iref + 1:, -1]))
+
+
+def run_vdp(method, npts, seed, reltol=1e-7):
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(van_der_pol(), method=method, reltol=reltol)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        try:
+            pss.solve(period=VDP_PERIOD, timestep=VDP_PERIOD / npts,
+                      x0=seed, maxiterations=25)
+        except Exception as exc:
+            return dict(outcome=type(exc).__name__, period=None)
+    return dict(outcome='converged' if pss.converged else 'NOT converged',
+                period=pss.period)
+
+
 def run(build, method, npts, reltol=1e-6, node='f'):
     circuit.default_toolkit = circuit.numeric
     pss = PSS(build(), method=method, reltol=reltol)
@@ -144,6 +222,22 @@ def main():
         a, b = keep[(m, 200)]['alt'], keep[(m, 1600)]['alt']
         print('  %-5s alt ripple 200 -> 1600: %.2fx  (8x refinement)'
               % (m, a / b))
+
+    print('\nVAN DER POL, mu=%g -- the canonical stiff relaxation oscillator'
+          % MU)
+    print('true period %.6f, edge timescale 0.0299, stiffness ratio 5443'
+          % VDP_PERIOD)
+    seed = van_der_pol_seed()
+    print('%-6s %7s %9s %-20s %12s %10s'
+          % ('method', 'npts', 'h', 'outcome', 'period', 'err ppm'))
+    for m in ('trap', 'gear'):
+        for npts in (2000, 20000):
+            r = run_vdp(m, npts, seed)
+            err = ('%10.1f' % (1e6 * (r['period'] - VDP_PERIOD) / VDP_PERIOD)
+                   if r['period'] else '%10s' % '-')
+            per = ('%12.6f' % r['period']) if r['period'] else '%12s' % '-'
+            print('%-6s %7d %9.4f %-20s %s %s'
+                  % (m, npts, VDP_PERIOD / (npts - 1), r['outcome'], per, err))
 
 
 if __name__ == '__main__':
