@@ -196,9 +196,33 @@ ladders use the same driver.
   the drop prevents that; here the deep floor already prevents it, so there
   is nothing left for the drop to save and only accuracy for it to spend.
 
-  What would reopen it: giving this backend a rejection cap (for cost
-  reasons — the floor can cost ~130 solves at one point), which would
-  recreate the CPU's situation and with it the trade the drop exists for.
+  ⚠ **A first version of this entry said the trigger was "if this backend
+  ever gains a rejection cap", reasoning that a cap would produce more
+  force-accepts and so give the drop something to save.  That is wrong, and
+  the measurement above already refutes it**: the raised-floor runs ARE the
+  force-accept-rich regime — 1900 force-accepts in 1908 accepted steps,
+  more extreme than any 3-rejection cap would produce — and the drop lost
+  there.  Frequency is not the variable; the drop was harmful per step it
+  fired on, so firing it more often is worse, not better.
+
+  The explanation that does fit: `h_curr/h_last < 0.1` is a DETECTOR.
+  Repeated rejection is how an Integrator object, which sees only two step
+  sizes, infers "we are near a discontinuity" — and that matters because a
+  2nd-order LTE rests on a third divided difference, meaningless where the
+  solution is not three times differentiable.  **This backend already has
+  the real signal**: `force_first_order` drops the order on any step that
+  lands on a declared breakpoint (F11), so on the test circuits (VPulse,
+  declared edges) the corners were already integrated at order 1 before any
+  of this was added.  What the rule caught instead was ordinary stiff steps
+  at the dt floor — the pulsed RC has ~12 declared edges in that run and the
+  rule fired 55 times — where order 2 is simply more accurate.  The proxy
+  was second-guessing the estimator exactly where the estimator was right.
+
+  So the trigger is **a discontinuity this backend has no breakpoint for** —
+  a kink internal to a device model, or a piecewise I-V curve whose corner
+  is in the solution but not in the time-breakpoint list.  There the proxy
+  would be the only detector available, doing the job it was designed for
+  rather than overriding a working estimator.
 
 - **The coupled 'bordered' eq (12) branch.**  Measured on the CPU 2026-09-01
   before writing any JAX code (`benchmarks/coupled_bordered_gear2.py`,

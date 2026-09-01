@@ -979,12 +979,25 @@ agreeing with a less accurate method about a smaller claim.  The force-accept
 count is a label on a step, not a measurement of its error, and optimising the
 label made the waveform worse every time.
 
-The CPU benefits because `MAX_REJECT` turns a stalled estimate into a
-force-accept within three retries and the drop prevents that.  Here the deep
-floor already prevents it: nothing left to save, only accuracy to spend.
-Reopen if this backend ever gains a rejection cap — the floor can cost ~130
-solves at one point, which is a real reason to want one — because that would
-recreate the CPU's situation and with it the trade.
+⚠ *A first version of this entry blamed the difference on the CPU's
+`MAX_REJECT` cap producing force-accepts the drop then saves, and named "if
+this backend gains a rejection cap" as the trigger.  The measurement above
+already refutes that*: the raised-floor runs ARE that regime — 1900
+force-accepts in 1908 accepted steps — and the drop lost.  Frequency is not
+the variable; the drop was harmful per step it fired on.
+
+What does explain it: `h_curr/h_last < 0.1` is a DETECTOR for "near a
+discontinuity", which an Integrator object can only infer from repeated
+rejection because it sees nothing else.  This backend already has the real
+signal — `force_first_order` drops the order on any step landing on a
+declared breakpoint (F11) — so the corners were already at order 1, and the
+rule's extra firings landed on ordinary stiff floor steps where order 2 is
+better (pulsed RC: ~12 declared edges, 55 firings).
+
+Trigger: a discontinuity with NO declared breakpoint — a kink internal to a
+device model, or a piecewise I-V curve whose corner is in the solution but
+not in the time-breakpoint list.  There the proxy is the only detector
+available.
 
 ---
 

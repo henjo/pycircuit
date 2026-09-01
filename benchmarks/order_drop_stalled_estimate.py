@@ -54,10 +54,30 @@ method about a smaller claim.  The force-accept count is a label on a step,
 not a measurement of its error, and optimising the label made the waveform
 worse in 6 of 6 configurations.
 
-Why the CPU benefits and this backend does not: its `MAX_REJECT` cap turns a
-stalled estimate into a force-accept within three retries, and the order drop
-prevents that.  Here the deep `dt_min` floor already prevents it -- there is
-nothing left for the order drop to save, only accuracy for it to spend.
+Why the CPU benefits and this backend does not -- and note the first answer to
+this was wrong.  It blamed the CPU's `MAX_REJECT` cap for producing
+force-accepts that the drop then saves, making "if this backend gains a
+rejection cap" the trigger.  The table above already refutes that: the
+raised-floor runs ARE the force-accept-rich regime, 1900 force-accepts in 1908
+accepted steps, and the drop lost anyway.  Frequency is not the variable; the
+drop was harmful per step it fired on, so firing it more often is worse.
+
+What does explain it: `h_curr/h_last < 0.1` is a DETECTOR.  Repeated rejection
+is how an Integrator object -- which sees only two step sizes -- infers "we are
+near a discontinuity", and that matters because a 2nd-order LTE rests on a
+third divided difference, meaningless where the solution is not three times
+differentiable.  **This backend already has the real signal**:
+`force_first_order` drops the order on any step landing on a declared
+breakpoint (F11).  On the circuits here (VPulse, declared edges) the corners
+were already integrated at order 1, so the rule's firings landed on ordinary
+stiff floor steps instead -- the pulsed RC has ~12 declared edges in the run
+and the rule fires 55 times -- where order 2 is simply more accurate.  The
+proxy was second-guessing the estimator exactly where the estimator was right.
+
+TRIGGER TO REOPEN: a discontinuity with no declared breakpoint -- a kink
+internal to a device model, or a piecewise I-V curve whose corner is in the
+solution but not in the time-breakpoint list.  There the proxy is the only
+detector available, and would be doing the job it was designed for.
 """
 import argparse, warnings
 
