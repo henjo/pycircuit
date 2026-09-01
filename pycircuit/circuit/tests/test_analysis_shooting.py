@@ -898,3 +898,150 @@ def test_driven_circuits_are_not_called_autonomous(kind):
         pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=20)
     assert pss.autonomous is False
     assert not any('AUTONOMOUS' in str(x.message) for x in caught)
+
+
+def _pss_lte(method, timestep=1e-5, reltol=1e-3, **kw):
+    """Run the Q=20 resonator and return (peak amplitude, the pss object)."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_q20_rlc(), method=method, reltol=reltol, **kw)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res = pss.solve(period=1e-3, timestep=timestep, maxiterations=40)
+    pss._caught = [str(x.message) for x in caught
+                   if issubclass(x.category, RuntimeWarning)]
+    assert pss.converged, '%s did not converge' % method
+    peak = float(np.max(np.abs(
+        np.asarray(res['tpss'].v('c'), dtype=float).ravel())))
+    return peak, pss
+
+
+def test_pss_reports_the_truncation_error_neither_newton_can_see():
+    """THE THIRD LEVEL, and the only one that ranks the answers.
+
+    Three convergence criteria stand between a PSS run and its answer: the
+    inner Newton, the shooting Newton, and the discretisation.  The first
+    two are checked while it runs and BOTH SAY YES for all three
+    integrators here -- while their amplitudes are 8.815 V, 19.766 V and
+    19.990 V against 20 V analytic.  A 56% disagreement between two
+    "converged" answers is invisible to every check that asks whether an
+    equation was solved, because each integrator solved its own to
+    tolerance.
+
+    The report is what sees it, and this test pins the ordering rather than
+    the digits: whichever integrator is furthest from the analytic answer
+    must carry the largest truncation error.
+    """
+    peaks, total, peak_lte = {}, {}, {}
+    for m in ('euler', 'gear', 'trap'):
+        peaks[m], pss = _pss_lte(m)
+        total[m], peak_lte[m] = pss.total_lte, pss.max_lte
+
+    ## the physics, unchanged: damping orders euler >> gear2 > trap
+    assert peaks['euler'] < peaks['gear'] < peaks['trap'], peaks
+    ## and the report orders the same way, both per step and per period
+    assert total['euler'] > total['gear'] > total['trap'], total
+    assert peak_lte['euler'] > peak_lte['gear'] > peak_lte['trap'], peak_lte
+
+
+def test_pss_lte_per_step_peak_is_not_enough_for_a_limit_cycle():
+    """⚠ THE PER-STEP CRITERION PASSES THE 56%-LOW ANSWER.
+
+    A transient controls its grid on the peak per-step error, and by that
+    criterion euler at 100 points/period is IN TOLERANCE at reltol=1e-3
+    (0.288).  Its amplitude is 8.815 V against 20 V.  Nothing is wrong with
+    the estimate -- it bounds one step, and the 56% is what 99 of them do
+    together -- which is exactly why a periodic analysis cannot report only
+    that number.  `total_lte` sums the period and reads ~26.
+
+    Deliberately expires: if the estimator ever bounds accumulated error
+    directly, this test's premise is gone and it should be rewritten, not
+    deleted -- the property to keep is that the report flags the 8.815 V.
+    """
+    peak, pss = _pss_lte('euler')
+    assert abs(peak - 20.0) / 20.0 > 0.4, \
+        'euler no longer damps this hard: %.4f V' % peak
+    assert pss.max_lte < 1.0, \
+        'the per-step peak now flags it; rewrite this test, do not delete it'
+    assert pss.total_lte > 1.0, \
+        'the period total must flag an answer this far off: %r' % pss.total_lte
+    assert pss._caught, 'nothing warned about a 56%-low "converged" answer'
+    assert 'accumulated over the period' in pss._caught[0], pss._caught
+
+
+def test_pss_lte_seam_is_separated_because_it_does_not_follow_the_grid():
+    """The cold-start seam is a property of the map, not of the timestep.
+
+    Every shooting iteration re-integrates the period from its own `x0`
+    with a fabricated flat history -- that is what keeps phi a function of
+    `x0` alone -- so the discrete period map really does open with an
+    order-dropped step off a past that never happened.  For the multistep
+    methods that seam dwarfs the interior and, unlike the interior, it does
+    not fall when the grid is refined.  Reporting one number would let it
+    hide the one a smaller timestep can fix.
+    """
+    _p1, coarse = _pss_lte('gear', timestep=1e-5)
+    _p2, fine = _pss_lte('gear', timestep=5e-6)
+
+    ## the interior behaves like a transient's error: refine, it falls
+    assert fine.max_lte < 0.5 * coarse.max_lte, \
+        'interior LTE did not fall with the grid: %r -> %r' % (
+            coarse.max_lte, fine.max_lte)
+    assert fine.total_lte < coarse.total_lte
+
+    ## the seam does not -- and it is much larger, so a single max would
+    ## have reported only this and called a finer grid the remedy
+    assert coarse.max_lte_seam > 50 * coarse.max_lte
+    assert fine.max_lte_seam > 0.5 * coarse.max_lte_seam, \
+        'the seam now improves with the grid (%r -> %r); if that is a real ' \
+        'fix, this test should assert the fix, not the old behaviour' % (
+            coarse.max_lte_seam, fine.max_lte_seam)
+
+
+def test_pss_lte_floors_are_the_lte_ones_not_the_newton_ones():
+    """`lte_vabstol`/`lte_iabstol` move the report and nothing else.
+
+    They exist as separate parameters for the reason `Transient` records:
+    one knob must not move the truncation criterion and the Newton
+    criterion together.  Raising them relaxes what the report calls
+    resolved; `reltol`/`iabstol`/`vabstol` are untouched, so the same
+    solution comes back.
+    """
+    _peak, tight = _pss_lte('euler')
+    peak, loose = _pss_lte('euler', lte_vabstol=1.0, lte_iabstol=1.0)
+
+    assert tight._caught and not loose._caught, \
+        'the LTE floors did not silence the report: %r' % (loose._caught,)
+    assert loose.total_lte < tight.total_lte
+    ## same answer, only the accounting moved
+    assert abs(peak - _peak) < 1e-9 * max(1.0, abs(peak))
+    assert loose.par.reltol == tight.par.reltol
+
+
+def test_pss_lte_measurement_does_not_touch_the_solution():
+    """A measurement that changes what it measures is not one.
+
+    `step_lte` runs inside the timestep loop, before the history push, and
+    reads `_qlast`/`_iqlast`/`_q_at` -- all of which the next step depends
+    on.  With the estimator neutralised the waveform must come back bit for
+    bit, or the report is participating in the answer.
+    """
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+
+    def run():
+        pss = PSS(_q20_rlc(), method='gear', reltol=1e-3)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)
+        return np.asarray(res['tpss'].x, dtype=float)
+
+    measured = run()
+    orig = Transient.step_lte
+    try:
+        Transient.step_lte = lambda self, *a, **kw: None
+        unmeasured = run()
+    finally:
+        Transient.step_lte = orig
+    assert_array_equal(measured, unmeasured)

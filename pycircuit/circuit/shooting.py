@@ -137,11 +137,33 @@ class PSS(Analysis):
     is 56% low for a reason (1) and (3) cannot see, and nothing currently
     says so.
 
-    RECORDED SCOPE, in order, none of it planned work yet:
+      4. LTE AS A REPORT -- DONE (2026-09-01).  `max_lte`, `total_lte` and
+         `max_lte_seam`, measured on the final replay through
+         `Transient.step_lte`; see the block in `solve` for what each one
+         means and why one number was not enough.  Two things it taught,
+         neither of them anticipated by the paragraph above:
 
-      4. LTE as a REPORT -- evaluate the estimator on the converged
-         periodic solution and say whether the run is discretisation-
-         limited.  Needs only the estimator exposed; catches the case above.
+           - THE PER-STEP PEAK PASSES THE 56%-LOW ANSWER.  At reltol=1e-3
+             euler's peak LTE on that resonator is 0.288, in tolerance,
+             because the estimator bounds ONE step and the 56% is what 99
+             of them do together.  A transient is right to control on that
+             number; a periodic analysis cannot report only it.  The sum
+             over the period reads 25.99, against gear2's 0.941 and trap's
+             0.340 -- tracking amplitude errors of 55.9%, 1.17% and 0.05%.
+           - THE COLD-START SEAM IS PART OF THE MAP, and it does not follow
+             the grid.  `_begin_period` re-seeds a flat history every
+             shooting iteration -- which is exactly what keeps phi a
+             function of `x0` alone -- so the discrete period map opens off
+             a past that never happened.  For the multistep methods that
+             dominates everything else and gets WORSE under refinement:
+             halving the step took gear2's interior peak 5.114e4 -> 1.105e4
+             while its seam went 3.836e7 -> 5.347e7 (reltol=1e-9).  Reported
+             as a single maximum it would have hidden the interior figure
+             and pointed the user at a finer grid, which is the wrong
+             remedy for it.
+
+    RECORDED SCOPE, in order, neither of these planned work yet:
+
       5. LTE-CHOSEN grid -- pick the step sequence from an adaptive run and
          freeze it, refining BETWEEN shooting solves.  The grid still never
          moves inside one, so (3) stays exact.  Blocked on `Transient`
@@ -157,10 +179,11 @@ class PSS(Analysis):
          slightly between iterations.  A rewrite, not an increment on the
          above, and it should not leak into one.
 
-    Driving `Transient` at `fixed_timestep=True` -- the next planned step --
-    buys one integrator definition, the limiting/PCNR machinery, breakpoints
-    and the order drop.  It does NOT buy (2); saying otherwise was this
-    docstring's own earlier error.
+    Driving `Transient` -- done -- buys one integrator definition, the
+    limiting/PCNR machinery, breakpoints and the order drop.  It does NOT
+    buy (2) as a CONTROLLER; saying otherwise was this docstring's own
+    earlier error, and item 4 above is what (2) turned out to be able to be
+    instead.
 
     `reltol`, `iabstol` and `vabstol` mean exactly what they mean on
     `Transient` -- the tolerances of the TRANSIENT solution, applied to the
@@ -205,6 +228,23 @@ class PSS(Analysis):
          ## residual to beat that is asking it to resolve its own noise --
          ## refused rather than silently accepted.  Raise it to accept a
          ## looser periodic steady state for fewer shooting iterations.
+         ## The LTE floors, separate from the Newton ones for the reason
+         ## `Transient` records: one knob must not move both criteria.  Same
+         ## names, same defaults, same meaning -- this analysis reports the
+         ## number a transient would have controlled on.
+         Parameter(name='lte_vabstol',
+                   desc='Absolute voltage floor for the truncation-error '
+                        'estimate', unit='V', default=1e-12),
+         Parameter(name='lte_iabstol',
+                   desc='Absolute current floor for the truncation-error '
+                        'estimate', unit='A', default=1e-12),
+         Parameter(name='TRTOL',
+                   desc='Truncation error over-estimation factor (SPICE '
+                        'TRTOL / Spectre lteratio)', unit='', default=7.0),
+         Parameter(name='relref',
+                   desc="What the relative LTE tolerance is measured "
+                        "against: 'pointlocal', 'alllocal' or 'sigglobal'",
+                   unit='', default='sigglobal'),
          Parameter(name='steadyratio',
                    desc='Shooting tolerance as a multiple of reltol (>= 1); '
                         '1 holds the shooting solve to the same relative '
@@ -230,6 +270,16 @@ class PSS(Analysis):
         ## per timestep is not worth paying on the fixed-period path.
         self._want_dfdh = False
         self._dfdh = None
+        self._want_lte = False
+        self._lte = None
+        self._lte_seam = False
+        ## Reported by `solve`: the peak normalised truncation error over the
+        ## converged period, and where in the period it fell.  None until a
+        ## solve has run, or when the grid was too short to difference.
+        self.max_lte = None
+        self.max_lte_time = None
+        self.max_lte_seam = None
+        self.total_lte = None
 
     def _is_autonomous(self, times):
         """True when nothing in the circuit depends on `t`.
@@ -390,7 +440,10 @@ class PSS(Analysis):
                 self.cir, toolkit=self.toolkit, integrator=integ,
                 reltol=self.par.reltol, iabstol=self.par.iabstol,
                 vabstol=self.par.vabstol, maxiter=self.par.maxiter,
-                analysis=self.par.analysis)
+                analysis=self.par.analysis,
+                lte_vabstol=self.par.lte_vabstol,
+                lte_iabstol=self.par.lte_iabstol,
+                TRTOL=self.par.TRTOL, relref=self.par.relref)
             self._tran.irefnode = self.irefnode
         return self._tran
 
@@ -471,6 +524,19 @@ class PSS(Analysis):
         if self._want_dfdh:
             (self._dfdh,) = remove_row_col(
                 (tr.residual_dh(x_full, t, dt),), irefnode, toolkit)
+        ## Measured, not controlled: the grid is the caller's, so nothing can
+        ## act on this.  Also before the push, for the same reason.
+        if self._want_lte:
+            self._lte = tr.step_lte(x_full, self._insert_refnode(x0), J_full)
+            ## `h_last2 is None` is exactly the transient's own statement
+            ## that the third past charge is not a real point (see
+            ## `Integrator.compute_lte`) -- which, at the START of a PSS
+            ## replay, means the estimator is differencing the flat history
+            ## `_begin_run` seeded rather than the end of the previous
+            ## period.  Recorded per step so the report can separate the
+            ## SEAM from the interior; measured, they differ by three
+            ## orders of magnitude and have different remedies.
+            self._lte_seam = tr._dt_last2 is None
 
         ## The history advance is the accept path's, called rather than
         ## copied -- and `_dt_last` must roll AFTER the step, because
@@ -744,13 +810,126 @@ class PSS(Analysis):
                    'true Newton' if newton else 'successive substitution'),
                 RuntimeWarning, stacklevel=2)
         
+        ## THE THIRD LEVEL, MEASURED ON THE WAY OUT.
+        ##
+        ## Three convergence criteria stand between a PSS run and its answer,
+        ## and the first two are checked while it runs: the inner Newton
+        ## (`i(x) + iq + u` under `reltol/iabstol/vabstol`) and the shooting
+        ## Newton (`x0 - phi(x0)` under the same, times `steadyratio`).  Both
+        ## ask whether an EQUATION was solved.  Neither asks whether the
+        ## equation was the right one -- the discrete period map is not the
+        ## continuous one, and the gap between them is truncation error.
+        ##
+        ## PSS imposes its grid (`h = T/(N-1)`, uniform, N from `timestep`),
+        ## so this cannot be a CONTROL signal -- nothing here may shrink a
+        ## step, and doing so would change the period map between shooting
+        ## iterations and destroy the monodromy.  It is a MEASUREMENT, taken
+        ## on the converged solution over the final replay and reported.
+        ##
+        ## ⚠ IT IS THE LEVEL THAT WAS SILENT, and the one that dominates.
+        ## On the Q=20 resonator at 100 steps/period all three integrators
+        ## report a converged shooting solve, and their amplitudes are
+        ## 8.815 V (euler), 19.766 V (gear2) and 19.990 V (trap) against
+        ## 20 V analytic -- a 56% disagreement between two "converged"
+        ## answers.  Nothing in the two Newton criteria can see that, because
+        ## each integrator solved ITS OWN equations to tolerance.  This
+        ## number can: it is `|J^-1 Eg| / (TRTOL (reltol ref + lte_abstol))`,
+        ## the quantity a transient would have rejected a step on.
         X = [x0_ss]
         iq_last = None
-        self._begin_period(x0_ss)
+        tr = self._begin_period(x0_ss)
+        ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
+        ## the period's, not something an earlier shooting iteration saw.
+        tr._lte_probe = None
+        self._want_lte = True
+        lte_seen = []
         for t in times:
             x = self.solve_timestep(X[-1], t, dt, iq_last=iq_last)
             iq_last = self._iq
+            if self._lte is not None:
+                lte_seen.append((float(self._lte), float(t), self._lte_seam))
             X.append(copy(x))
+        self._want_lte = False
+
+        ## THREE NUMBERS, BECAUSE THEY HAVE DIFFERENT REMEDIES.
+        ##
+        ## `max_lte` is the INTERIOR per-step peak -- steps whose estimator
+        ## saw only real past charges.  It is exactly the quantity a
+        ## transient controls its grid on, and it ranks the integrators the
+        ## way their answers rank: on the Q=20 resonator at 100 points per
+        ## period it reads euler 0.2876, gear2 0.0763, trap 0.0239 against
+        ## amplitudes of 8.815 / 19.766 / 19.990 V (analytic 20 V).
+        ##
+        ## ⚠ BUT THE PEAK IS A PER-STEP NUMBER AND A LIMIT CYCLE IS WHAT A
+        ## WHOLE PERIOD DOES.  At `reltol=1e-3` euler's peak is 0.288 -- in
+        ## tolerance -- while its amplitude is 56% low, because a transient's
+        ## criterion bounds each step and says nothing about the 99 of them
+        ## that damp the orbit.  `total_lte`, the SUM over the interior, is
+        ## the one that sees it: 25.99 for that run against 0.941 for gear2
+        ## and 0.340 for trap, tracking the amplitude errors of 55.9%, 1.17%
+        ## and 0.05%.  It is an upper bound -- it adds magnitudes, so it
+        ## cannot see the cancellation that makes trapezoidal's real error
+        ## far smaller than its summed one -- which is the right direction
+        ## for a diagnostic to be wrong in.
+        ##
+        ## `max_lte_seam` is the peak over the opening steps, where the
+        ## estimator is differencing the flat history `_begin_run` seeds.
+        ## ⚠ IT IS NOT AN ARTEFACT OF THE MEASUREMENT.  Every shooting
+        ## iteration cold-starts the period (`_begin_period`, which is what
+        ## keeps phi a function of `x0` alone), so the discrete period map
+        ## really does open with a fabricated past and an order-dropped
+        ## step, and that defect is inside the map the solve converged on.
+        ## The measurement only makes it visible.  For the multistep methods
+        ## it dominates and, unlike the interior, IT DOES NOT IMPROVE WITH
+        ## THE GRID -- halving the step on that resonator took gear2's
+        ## interior peak 5.114e4 -> 1.105e4 (at reltol=1e-9) while its seam
+        ## went 3.836e7 -> 5.347e7.  Refining the timestep is the wrong
+        ## response to it; it is a property of the formulation.
+        interior = [p for p in lte_seen if not p[2]]
+        seam = [p for p in lte_seen if p[2]]
+        if interior:
+            self.max_lte, self.max_lte_time = max(interior)[:2]
+            self.total_lte = float(sum(p[0] for p in interior))
+        else:                                            # pragma: no cover
+            self.max_lte = self.max_lte_time = self.total_lte = None
+        self.max_lte_seam = max(seam)[0] if seam else None
+
+        ## Named so the warning can lead with whichever is actually
+        ## limiting: the three have three different answers.
+        _limits = [
+            (self.total_lte, 'accumulated over the period',
+             'use a smaller timestep or a less damping method -- this is '
+             'the figure that sets a limit cycle, and a per-step criterion '
+             'can be in tolerance while it is not'),
+            (self.max_lte, 'in one interior step',
+             'use a smaller timestep or a higher-order method'),
+            (self.max_lte_seam, 'over the opening steps',
+             "this is the period map's own seam, where each shooting "
+             'iteration cold-starts from a fabricated history; it does '
+             'NOT improve with a smaller timestep'),
+        ]
+        _over = [(v, where, fix) for v, where, fix in _limits
+                 if v is not None and v > 1.0]
+        if _over:
+            v, where, fix = max(_over, key=lambda r: r[0])
+            warnings.warn(
+                'PSS: the shooting solve converged, but the periodic '
+                'solution is not resolved at this accuracy (method=%r, %d '
+                'points per period). Local truncation error reaches %.3g '
+                'times tolerance %s: %s. Neither Newton criterion can see '
+                'this -- they ask whether the discrete equations were '
+                'solved, not whether the discretisation is the right one. '
+                '(peak interior %s at t=%.6g s, period total %s, opening '
+                'steps %s; relax lte_vabstol/lte_iabstol/TRTOL if this '
+                'accuracy is intended.)'
+                % (method, npts, v, where, fix,
+                   'n/a' if self.max_lte is None else '%.3g' % self.max_lte,
+                   -1.0 if self.max_lte_time is None else self.max_lte_time,
+                   'n/a' if self.total_lte is None
+                   else '%.3g' % self.total_lte,
+                   'n/a' if self.max_lte_seam is None
+                   else '%.3g' % self.max_lte_seam),
+                RuntimeWarning, stacklevel=2)
 
         X = toolkit.array(X[1:]).T
 

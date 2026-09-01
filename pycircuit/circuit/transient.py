@@ -926,6 +926,10 @@ class Transient(Analysis):
         self._periodic_rows = self._collect_periodic_states()
         self._is_first_step = True
         self._no_history = True
+        ## The measurement probe's running reference is per-run state too:
+        ## carrying one run's signal maximum into the next would make the
+        ## relative floor depend on what ran before it.
+        self._lte_probe = None
 
     def _push_history(self, x, X=None):
         """Push one ACCEPTED point onto the integrator's ring buffers.
@@ -1995,6 +1999,45 @@ class Transient(Analysis):
                            list(h_hist[:degree]), h)
         err = float(np.max(abs(lte) / etol))
         return (gamma_min <= err <= gamma_max), err
+
+    def step_lte(self, x_curr, x_last, J):
+        """Normalised local truncation error of the step just taken.
+
+        The number the step controller tests against 1 -- `|J^-1 Eg| / etol`
+        with `etol = TRTOL (reltol ref + lte_abstol)` -- computed by asking
+        the controller itself rather than restating the chain, so the
+        estimator, the `J^-1` map, `relref` and the TRTOL folding are the
+        ones a transient would have used.  `last_err` is exposed on the
+        controllers precisely so it can be read from outside.
+
+        ⚠ Call BEFORE :meth:`_push_history`: it reads `_qlast`/`_iqlast` as
+        the PREVIOUS charges, which the push overwrites.
+
+        For a caller that IMPOSES the grid this is not a control signal --
+        nothing can act on it -- it is a MEASUREMENT: how far the discrete
+        trajectory is from the true one, which is the only thing a Newton
+        residual cannot tell you.  Returns None on a step with no history
+        to difference.
+        """
+        from pycircuit.circuit.stepcontroller import IntegralController
+        if getattr(self, '_lte_probe', None) is None:
+            self._lte_probe = IntegralController().set_relref(self.par.relref)
+        ## ⚠ THE LTE FLOORS, NOT THE NEWTON ONES -- the shared helper, not a
+        ## second transcription of it: the two `abstol` flavours were split
+        ## by stage 0.3d precisely because they are different quantities.
+        self._lte_probe.evaluate_step(
+            x_curr=x_curr, x_last=x_last,
+            q_curr=self._q_at(x_curr),
+            q_last_hist=self._qlast, iq_last_hist=self._iqlast,
+            h_curr=self._dt,
+            h_last=self._dt_last if self._dt_last is not None else self._dt,
+            h_last2=self._dt_last2, no_history=self._no_history, J=J,
+            active_integrator=self.active_integrator,
+            irefnode=self.irefnode, reltol=self.par.reltol,
+            abstol=self._lte_abstol_vector(),
+            toolkit=self.toolkit, max_step=self._dt, TRTOL=self.LTERATIO,
+            n_nodes=len(self.cir.nodes))
+        return self._lte_probe.last_err
 
     def residual_dh(self, x, t, h=None):
         """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.
