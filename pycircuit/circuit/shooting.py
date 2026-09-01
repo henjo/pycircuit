@@ -786,6 +786,53 @@ class PSS(Analysis):
          slightly between iterations.  A rewrite, not an increment on the
          above, and it should not leak into one.
 
+         ITS CASE GOT STRONGER THREE TIMES ON 2026-09-01, from work that was
+         not about it:
+
+           - 4b/4c DOUBLE THE UNKNOWNS for a two-step method, so whatever
+             the dense `J_phi` costs, this analysis now pays it on a vector
+             twice as long.
+           - THE LITERATURE NOTE puts a number on when that bites: Kundert
+             (ICCAD'97) has forming and factoring `J_phi` at O(N^2 S) and
+             O(N^3), "intractable when N exceeds several hundred", and names
+             matrix-implicit Krylov as the answer -- this item.
+           - 4d's SCALING ARGUMENT for method H pointed here instead.  H's
+             only advantage over 4b was keeping the system at m unknowns for
+             a dense solve; with a matrix-free solve the enlargement costs
+             2x (vector length) rather than 8x (factorisation), so item 6
+             removes H's reason to exist rather than competing with it.
+
+         ⚠ AND THE COST TO ATTACK IS PROBABLY NOT THE FACTORISATION.  The
+         final `J_phi` factorisation is one O(m^3); the SENSITIVITY
+         PROPAGATION that builds it runs `linearsolver(Jf, S)` once per
+         timestep with an `m`-column (or `2m`-column) right-hand side --
+         that is `m` back-substitutions per step, `N m` in total.
+         Matrix-free replaces it with ONE column per Krylov iteration:
+         `k N` for `k` iterations.
+
+         MEASURED (2026-09-01, `benchmarks/pss_matrix_free_ceiling.py`) and
+         PARTIAL.  At m=40 the propagation is 2.2% of a traversal by one
+         method and 5.8-6.1% by an independent one, so the ceiling there is
+         1.01x-1.03x: matrix-free buys nothing at that size.
+
+         ⚠ ABOVE m=40 THIS MACHINE COULD NOT MEASURE IT, and three methods
+         failed to make it so at load average 17-27.  A with/without
+         comparison returned a NEGATIVE propagation cost; paired ratios came
+         out below 1.0 three-to-four times in thirteen, which is impossible;
+         and the in-run method that should cancel load still swung
+         2.9% -> 19.1% at m=110 between runs.  So the item is NOT refused
+         and NOT justified -- it is unmeasured above m=40, and no number
+         from those runs should be quoted.
+
+         What IS load-independent, counted exactly: per step the traversal
+         does TWO one-column solves (the inner Newton) and ONE solve with 2m
+         columns (the propagation).  And at m=40 both kinds together are
+         under 5% of a traversal, so most of the time is ASSEMBLY -- device
+         evaluation and matrix building -- which matrix-free does not touch.
+         Whatever the crossover is, the O(N^3) argument alone will overstate
+         it for this code.  The gate to re-run on a quiet box is whether the
+         propagation share passes ~30%.
+
     Driving `Transient` -- done -- buys one integrator definition, the
     limiting/PCNR machinery, breakpoints and the order drop.  It does NOT
     buy (2) as a CONTROLLER; saying otherwise was this docstring's own
