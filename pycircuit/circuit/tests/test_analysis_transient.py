@@ -694,3 +694,39 @@ def test_step_count_and_error_respond_to_reltol(name):
         'the controller is not reacting' % (name, steps)
     assert errs[-1] < 0.2 * errs[0], \
         '%s: less than 5x accuracy from a 1e3 tolerance change: %s' % (name, errs)
+
+
+def test_companion_conductance_is_exposed_beside_the_companion_current():
+    """`_Geq` is the other half of `_iq`, and shooting needs it.
+
+    A caller that must form the per-step sensitivity `Jf^-1 Geq` -- the
+    monodromy of a shooting method -- cannot recompute the companion
+    conductance without repeating the whole assembly, and `_iq` has been
+    stored here since stage 11 for exactly that kind of reason.  Pinned
+    against the integrator's own definition rather than a recorded number:
+    backward Euler's is `C/h`.
+    """
+    import warnings
+    from pycircuit.circuit.integrator import EulerIntegrator
+    circuit.default_toolkit = circuit.numeric
+
+    from pycircuit.circuit.elements import VS
+    c = SubCircuit()
+    c.add_node('in'); c.add_node('out')
+    c['V1'] = VS('in', gnd, v=1.0)
+    c['R1'] = R('in', 'out', r=1e3)
+    c['C1'] = C('out', gnd, c=1e-9)
+
+    step = 1e-7
+    tran = Transient(c, toolkit=circuit.numeric,
+                     integrator=EulerIntegrator(), reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2e-6, timestep=step, fixed_timestep=True)
+
+    x_end = np.asarray(res.x, dtype=float)[:, -1]
+    C_end = np.asarray(tran.cir.C(x_end, tran.epar), dtype=float)
+    assert tran._Geq is not None, '_Geq was never stored'
+    assert np.allclose(np.asarray(tran._Geq, dtype=float), C_end / step,
+                       rtol=1e-9, atol=0.0), \
+        'the stored companion conductance is not the integrator´s C/h'

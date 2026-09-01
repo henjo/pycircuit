@@ -783,6 +783,12 @@ class Transient(Analysis):
         )
         
         self._iq = iq
+        ## The companion CONDUCTANCE, stored beside the companion current for
+        ## the same reason: a caller that needs the per-step sensitivity
+        ## `Jf^-1 Geq` -- shooting's monodromy -- cannot recompute it without
+        ## repeating the whole assembly.  `_iq` has been kept here since
+        ## stage 11; this is its other half.
+        self._Geq = geq
         ## The class actually running this step -- check_order_drop() may have
         ## dropped to a lower-order integrator than the one requested, so this
         ## is derived from the live object rather than compared against a
@@ -880,6 +886,28 @@ class Transient(Analysis):
                     "element cannot be wrapped this way." % (int(row), c_row))
             rows.append((int(row), float(m), float(o)))
         return rows
+
+    def _push_history(self, x, X=None):
+        """Push one ACCEPTED point onto the integrator's ring buffers.
+
+        Both accept paths in this file carried their own copy of these two
+        lines, and a third caller is arriving (`PSS`, which imposes its own
+        grid and so cannot use either loop).  Three transcriptions of a ring
+        push is how the trailing-window gauge shift below gets applied to two
+        of them and forgotten in the third.
+
+        `X` is the solution window the gauge shift also has to rewrap; a
+        caller that keeps no waveform passes none, and then only the state
+        and the `_qlast` ring are shifted.
+        """
+        self._iqlast = self.toolkit.concatenate(
+            (self.toolkit.array([self._iq]), self._iqlast))[:-1]
+        self._qlast = self.toolkit.concatenate(
+            (self.toolkit.array([self._q_at(x)]), self._qlast))[:-1]
+        ## AFTER the ring push, so the newest ring entry shares the old gauge
+        ## with its elders when the increment lands on all of them.
+        if self._periodic_rows:
+            self._apply_periodic_shifts(x, [] if X is None else X)
 
     def _apply_periodic_shifts(self, x, X):
         """Rewrap periodic states after an ACCEPTED step -- the gauge shift.
@@ -2782,12 +2810,7 @@ class Transient(Analysis):
             # We push the newest values to index 0, and slice off the oldest `[:-1]` to 
             # maintain a constant buffer size (e.g. size 2 for Gear2).
             # This acts as a mathematical sliding window across the simulation time.
-            self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
-            self._qlast = self.toolkit.concatenate((self.toolkit.array([self._q_at(x)]), self._qlast))[:-1]
-            ## AFTER the ring push, so the newest ring entry shares the old
-            ## gauge with its elders when the increment lands on all of them.
-            if self._periodic_rows:
-                self._apply_periodic_shifts(x, X)
+            self._push_history(x, X)
             ## Roll before overwriting: _dt_last2 takes the value _dt_last is
             ## about to lose.  Reversing these two lines makes _dt_last2 equal
             ## _dt_last and the estimator silently differences the wrong grid.
@@ -3254,12 +3277,7 @@ class Transient(Analysis):
                 self._dt_last2 = None
             self._is_first_step = False
             self._no_history = False
-            self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
-            self._qlast = self.toolkit.concatenate((self.toolkit.array([self._q_at(x_curr)]), self._qlast))[:-1]
-            ## AFTER the ring push, so the newest ring entry shares the old
-            ## gauge with its elders when the increment lands on all of them.
-            if self._periodic_rows:
-                self._apply_periodic_shifts(x_curr, X)
+            self._push_history(x_curr, X)
 
             ## THE SOLVED STEP CARRIES FORWARD.  This is the whole point of the
             ## method -- `fang_timestep` returned the step size it solved for, and
