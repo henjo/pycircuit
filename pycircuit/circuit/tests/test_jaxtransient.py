@@ -897,3 +897,121 @@ def test_tline_element_step_cap_holds_the_delay():
     ## guards against is >= 2x TD, so the bound sits between the two.
     assert TD * 0.5 <= delay <= TD * 1.75, \
         'delay %.3e -- the uncapped regime measured >= 2x TD' % delay
+
+
+# ---------------------------------------------------------------------------
+# The PI step-size controller (ported 2026-09-01)
+# ---------------------------------------------------------------------------
+
+def _pi_circuit():
+    from pycircuit.circuit.circuit import SubCircuit
+    from pycircuit.circuit.elements import R, C, VPulse
+    from pycircuit.circuit import gnd
+    c = SubCircuit()
+    c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-5, tr=1e-7, tf=1e-7,
+                     pw=2e-5, per=5e-5)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-9)
+    return c
+
+
+def _pi_run(**kw):
+    import warnings
+    from pycircuit.circuit import circuit as circuit_mod, gnd
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        tran = JAXTransient(_pi_circuit(), reltol=1e-5, **kw)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tran.solve(gnd, tend=1.2e-4, timestep=1e-6, uic=True)
+        return tran.statistics
+    finally:
+        circuit_mod.default_toolkit = saved
+
+
+def test_pi_gains_match_the_cpu_controller():
+    """One definition of Gustafsson's gains, pinned across the two files.
+
+    The gains are re-stated here as constants because `pi_factor` uses Python
+    `min`/`max` and cannot be traced -- so there ARE two copies, and this is
+    what stops them drifting.  The repo has paid twice for a formula living in
+    two places (the 3/4 optimism, and the stage-4a benchmark keeping its own
+    copy of this very law).
+
+    ⚠ They must be applied PER UNIT ORDER.  Undivided, the loop is linearly
+    unstable -- and it does not look like divergence, because the growth clamp
+    turns it into a permanent period-2 limit cycle (h alternating 0.857/0.429
+    on the CPU, whose only test asserted `len(steps) > 10`).
+    """
+    from pycircuit.circuit.stepcontroller import PIController
+    from pycircuit.circuit.jaxtransient import PI_K_I, PI_K_P
+
+    cpu = PIController()
+    assert (PI_K_I, PI_K_P) == (cpu.k_i, cpu.k_p)
+
+
+def test_pi_no_history_degrades_to_the_integral_update():
+    """The `last_err <= 0` sentinel must kill the P term exactly.
+
+    On the CPU the sentinel is `None` and the accept path substitutes `err`
+    for it, making `(err_prev/err)**(k_P/p)` exactly 1 -- the elementary
+    pure-I update, which is the textbook response to a rejection.  A traced
+    state cannot hold None, so 0.0 carries the same meaning and must behave
+    identically.
+    """
+    from pycircuit.circuit.jaxtransient import _pi_factor, PI_K_I
+
+    err, p = 0.4, 3.0
+    sentinel = float(_pi_factor(jnp.asarray(err), jnp.asarray(0.0),
+                                jnp.asarray(p)))
+    same = float(_pi_factor(jnp.asarray(err), jnp.asarray(err),
+                            jnp.asarray(p)))
+    assert sentinel == pytest.approx(same, rel=1e-12)
+    ## and that value IS the pure-I factor
+    assert sentinel == pytest.approx(err ** (-PI_K_I / p), rel=1e-12)
+
+
+def test_pi_is_selectable_and_actually_changes_the_run():
+    """Anti-vacuity: the parameter must reach the step-size law.
+
+    A knob that is accepted and ignored is this codebase's most-paid-for
+    defect class, so the assertion is that the two laws produce DIFFERENT
+    step sequences -- not merely that 'pi' is accepted.
+    """
+    integral = _pi_run(step_controller='integral')
+    pi = _pi_run(step_controller='pi')
+    assert (pi.accepted_steps, pi.rejected_steps) != \
+        (integral.accepted_steps, integral.rejected_steps), \
+        'step_controller made no difference to the run'
+
+
+def test_pi_refuses_the_lower_lte_band():
+    """The CPU's refusal, ported rather than dropped.
+
+    `PIController.set_lte_band` raises for `gamma_min > 0`: a growth-retry
+    redo has undefined PI history semantics.  This backend has a two-sided
+    band on the standard path too, so the same refusal has to cross -- and
+    it must be a refusal, not a silent ignore.
+    """
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        tran = JAXTransient(_pi_circuit(), step_controller='pi',
+                            lte_gamma_min=0.7, lte_gamma_max=3.0)
+        with pytest.raises(NotImplementedError, match='lower LTE band'):
+            tran._step_controller()
+        ## the default band (gamma_min = 0) passes
+        ok = JAXTransient(_pi_circuit(), step_controller='pi')
+        assert ok._step_controller() == 'pi'
+        ## and an unknown law is refused by name
+        bad = JAXTransient(_pi_circuit(), step_controller='pid')
+        with pytest.raises(ValueError, match="'integral' or 'pi'"):
+            bad._step_controller()
+    finally:
+        circuit_mod.default_toolkit = saved

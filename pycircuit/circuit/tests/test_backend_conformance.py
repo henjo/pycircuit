@@ -56,12 +56,13 @@ def _cpu(kind, uic, integrator=None):
             np.asarray(res.v('out'), float).reshape(-1))
 
 
-def _jax(kind, uic, integrator='gear'):
+def _jax(kind, uic, integrator='gear', controller='integral'):
     saved = circuit_mod.default_toolkit
     circuit_mod.default_toolkit = jaxtoolkit
     try:
         from pycircuit.circuit.jaxtransient import JAXTransient
-        tran = JAXTransient(_build(kind), reltol=RELTOL, integrator=integrator)
+        tran = JAXTransient(_build(kind), reltol=RELTOL, integrator=integrator,
+                            step_controller=controller)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=TEND, timestep=TIMESTEP, uic=uic)
@@ -187,3 +188,44 @@ def test_trapezoidal_rings_on_both_backends_identically():
     ## and, decisively, NOT an Euler fallback in disguise
     assert d_jax > 0.9, 'the JAX trap branch damped like a lower order: %.4f' \
         % d_jax
+
+
+@pytest.mark.parametrize('kind,uic,bound', [('rc', True, 4e-3),
+                                            ('vsin', False, 1.5e-2)])
+def test_backends_agree_on_the_pi_controller(kind, uic, bound):
+    """The PI step-size law, matched across backends.
+
+    `StepController` is a strategy OBJECT on the CPU and a trace-time string
+    here -- P17 refuses per-iteration Python dispatch, but a controller runs
+    once per step, so the choice is static and selectable exactly as
+    `integrator` is.
+
+    Bounds ~5x the measurement at landing: rc 7.6111e-04 (63/63 points),
+    vsin 3.1433e-03 (124 CPU / 122 JAX).  For reference the INTEGRAL pairing
+    measures rc 4.3e-6 / vsin 2.9e-3, so PI agrees across backends to the
+    same order that the default law does -- which is the claim.  The rc row
+    is looser than integral's by two orders and that is expected, not drift:
+    PI's step sequence differs from the integral one on both sides, so the
+    two runs land on different points and the comparison carries an
+    interpolation error the integral pairing (identical step sequences)
+    does not.
+    """
+    from pycircuit.circuit.stepcontroller import PIController
+
+    tran = Transient(_build(kind), toolkit=numeric,
+                     integrator=Gear2Integrator(), reltol=RELTOL, uic=uic)
+    tran.step_controller = PIController()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=TEND, timestep=TIMESTEP)
+    tc = np.asarray(res.sweep_values, float)
+    vc = np.asarray(res.v('out'), float).reshape(-1)
+
+    tj, vj = _jax(kind, uic, controller='pi')
+
+    for t in (tc, tj):
+        assert t[0] == 0.0
+        assert np.all(np.diff(t) > 0)
+
+    dev = float(np.max(np.abs(vj - np.interp(tj, tc, vc))))
+    assert dev < bound, '%s: PI backends disagree by %.3e' % (kind, dev)

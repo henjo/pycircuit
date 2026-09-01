@@ -39,7 +39,7 @@ way (a `lax.cond` that is free under `jit` is not free under `vmap`).
 | 6 | Per-domain tolerances (`iabstol`/`vabstol`, `dx`+residual) | **DONE** | F6(b): `_newton_abstol`/`_newton_xtol` build the per-row vectors (iabstol on node rows, vabstol on branch rows, transposed for the update test); `conv_f` and `conv_x` are both scored, per-row, on the consistent `(F(x), dx)` pair. The old single scalar was wrong three ways at once — flavour, reference and norm |
 | 7 | Integration-method selection | **DONE** | `integrator` Parameter (P6): 'gear' (default), 'euler', and 'trap' since 2026-09-01 |
 | 8 | Coupled solver (Fang DAC'13) | **DONE** | `coupled_lte` Parameter, `fang_inner_loop` (P19). PCNR-inside-Fang runs too |
-| 9 | Pluggable step controllers | **OPEN** | see *Open* below |
+| 9 | Pluggable step controllers | **DONE** | `step_controller` Parameter ('integral'/'pi'), 2026-09-01 — see below |
 | 10 | Device bypassing (`bypass`/`bypasstol`) | **REFUSED (P13)** | A non-concept here, not a missing feature: bypassing skips evaluating quiescent elements, and a vmapped evaluation group computes all lanes of all instances in one kernel. There is nothing to skip |
 | 11 | `provided_function` and `accept_step` | **DONE** | `provided_function` is supported (P11/F4 contract; must be jax-traceable, baked in at jit time). `accept_step` is not missing but *superseded*: the traced TLine ring buffer (`tline_history`/`tline_head`) replaced what the CPU's `accept_step` writes |
 | 12 | DC init in `solve_batched` (was `x=0`, "for now") | **DONE** | `solve_batched` calls `dc_with_continuation` |
@@ -66,14 +66,47 @@ is two different mechanisms and only one is missing:
   backend gives up — it cuts force-accepts hard and makes the answer worse
   every time.
 
-**(B) Pluggable step controllers.**  The CPU has a `StepController` strategy
-(`IntegralController`, `PIController`, `SolutionLTEController`); JAX inlines
-one law — F17's `target = safety**p` band aim in `calculate_next_dt`, written
-in the CPU's vocabulary so the two read as one rule.  Note this is **not**
-automatically covered by P17's refusal: P17 refuses per-ITERATION Python
-dispatch, whereas a step controller runs per step and its choice could be
-made statically at trace time, exactly as `integrator` already is.  So this
-is open, not refused — but nobody has asked for it.
+**(B) Pluggable step controllers — DONE 2026-09-01.**  `step_controller`
+Parameter: `'integral'` (default) or `'pi'`.  Not covered by P17's refusal, as
+this entry once implied: P17 refuses per-ITERATION Python dispatch, whereas a
+step controller runs once per step, so the choice is trace-static and
+selectable exactly as `integrator` is.
+
+⚠ The item was narrower than its name.  Most of `stepcontroller.py` is SHARED
+machinery, not strategy — `relref`, the band, `_band_target`, `_damp`,
+`MAX_GROWTH_RATIO`/`MIN_SHRINK_RATIO` — and all of it was already ported (P7,
+P8, F17).  Two of the three *laws* were ported too: the integral law on the
+standard path, and Fang's solution-space LTE on the coupled one, which is not
+an alternative but IS `coupled_lte=True`.  So the only law actually missing was
+**PI**, and porting it is a factor swap inside `calculate_next_dt` plus one
+state field for the P term's history.
+
+Carried across with it, because they are the expensive parts:
+
+* the gains are **per unit order** (`k_I/p`, `k_P/p`).  Undivided the loop is
+  linearly unstable — and does not look it, because the growth clamp turns the
+  oscillation into a permanent period-2 limit cycle (CPU: h alternating
+  0.857/0.429, whose only test asserted `len(steps) > 10`).  A test pins the
+  constants against the CPU object, since `pi_factor` uses Python `min`/`max`
+  and cannot be traced, so there genuinely are two copies.
+* the **refusal of the lower band**: `PIController.set_lte_band` raises for
+  `gamma_min > 0`, because a growth-retry redo has undefined PI history
+  semantics.  This backend has a two-sided band on the standard path too, so
+  the refusal had to cross.
+* **clearing the history on rejection**, so the next accepted step takes the
+  elementary update rather than differencing against an error measured at a
+  step size the point no longer uses.
+
+Cross-backend at matched order: rc **7.6111e-04** (63/63 points), vsin
+**3.1433e-03** (124 CPU / 122 JAX) — the same order the integral pairing
+agrees to.
+
+⚠ **It is not an improvement, and is not the default.**  Reproduced here
+independently: rc-pulse 1e-4 takes 200 → 233 accepted steps, rc-vsin 1e-5 goes
+27 → 56 rejections, and rc-pulse 1e-4 improves 17 → 15 rejections.  That
+recovers the CPU's own verdict — *"comparable, at 0-13% more steps"* — which is
+why neither backend defaults to it.  Ported for parity of choice, not because a
+circuit was found that wants it.
 
 **(C) Ψ-tc's continuation rung exponents — HYPOTHESIS TESTED AND DISPROVED
 2026-09-01, and the real defect was elsewhere.**

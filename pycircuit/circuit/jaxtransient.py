@@ -108,6 +108,13 @@ class TransientState(NamedTuple):
     ## are reported so the two cases stay distinguishable.
     n_rescued: Any = 0
 
+    ## The PREVIOUS ACCEPTED step's normalised error, for the PI controller's
+    ## P term.  Zero is the "no usable history" sentinel (the CPU spells it
+    ## `None`), which drives the P factor to exactly 1 and so degrades the
+    ## update to the elementary pure-I one.  Inert under the default
+    ## integral controller, which never reads it.
+    last_err: Any = 0.0
+
     ## F11/F19: "do not trust a 2nd-order polynomial through this point" --
     ## set when the PREVIOUS accepted step landed on a breakpoint, consumed by
     ## effective_first_order.  An explicit flag rather than an h_history
@@ -1149,7 +1156,37 @@ def collect_breakpoints(cir, tend, minbreak=1e-14):
     return merged
 
 
-def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0, eta=jnp.inf):
+## Gustafsson's gains, as `PIController.__init__` defaults them on the CPU.
+## ⚠ PER UNIT ORDER -- `k_I/p` and `k_P/p`, not the bare numerators.  Used
+## undivided the loop is linearly UNSTABLE (spectral radius 1.12 at p=2, 1.78
+## at p=3), and it does not look like divergence: the growth clamp converts the
+## growing oscillation into a permanent period-2 limit cycle, measured on the
+## CPU as h alternating 0.857/0.429 for the length of the run.  The only test
+## there asserted `len(steps) > 10`, so it was invisible.  A test pins these
+## against the CPU object so the two definitions cannot drift.
+PI_K_I, PI_K_P = 0.3, 0.4
+
+
+def _pi_factor(err, last_err, order_p1):
+    """`PIController.pi_factor`, traced.
+
+    `err^(-k_I/p) * (err_prev/err)^(k_P/p)`, clamped to the shared ratios.
+    `last_err <= 0` is the no-history sentinel: substituting `err` for it
+    makes the P term exactly 1, i.e. the elementary integral update.  That is
+    the textbook response to a rejection (Hairer & Wanner II.4), and is why
+    the reject path clears the history rather than keeping an error measured
+    at a different step size for the same time point -- a sequence the P term
+    is not meaningful over.
+    """
+    from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
+                                                  MAX_GROWTH_RATIO)
+    e = jnp.maximum(err, 1e-12)
+    e_prev = jnp.maximum(jnp.where(last_err > 0.0, last_err, err), 1e-12)
+    factor = (e ** (-PI_K_I / order_p1)) * ((e_prev / e) ** (PI_K_P / order_p1))
+    return jnp.clip(factor, MIN_SHRINK_RATIO, MAX_GROWTH_RATIO)
+
+
+def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0, eta=jnp.inf, controller='integral', last_err=0.0):
     ## THE CPU'S LAW, F17 (doc/transient_review_260820.md): aim at
     ## target = safety**p, not at err = 1.0 -- the rejection threshold
     ## itself.  Aiming at the edge meant every successor step that landed a
@@ -1164,9 +1201,19 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
                                                   MAX_GROWTH_RATIO)
     safety = 0.9
     target = safety ** order_p1
-    factor = jnp.where(error_ratio <= 0.0, MAX_GROWTH_RATIO,
-                       (target / jnp.maximum(error_ratio, 1e-12))
-                       ** (1.0 / order_p1))
+    if controller == 'pi':
+        ## The PI law aims at err == 1 through its gains rather than at
+        ## `target`; these are two controllers, not one with a different
+        ## constant, so the safety aim is deliberately absent here.
+        ## Everything downstream -- the eta damper, both ratio clamps, the dt
+        ## bounds and the breakpoint truncation -- is shared, which is why
+        ## this is a factor swap rather than a second function.
+        factor = jnp.where(error_ratio <= 0.0, MAX_GROWTH_RATIO,
+                           _pi_factor(error_ratio, last_err, order_p1))
+    else:
+        factor = jnp.where(error_ratio <= 0.0, MAX_GROWTH_RATIO,
+                           (target / jnp.maximum(error_ratio, 1e-12))
+                           ** (1.0 / order_p1))
     factor = jnp.clip(factor, MIN_SHRINK_RATIO, MAX_GROWTH_RATIO)
     ## P8: eq (16)'s damper, the CPU's `_damp` -- inert at the default
     ## eta=inf, a clamp on the step CHANGE when the band sets one.
@@ -2234,7 +2281,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None, rescue_meta=None):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None, rescue_meta=None, controller='integral'):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -2644,7 +2691,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             else:
                 next_dt = calculate_next_dt(state.dt, error_ratio, dt_min, dt_max,
                                             t_breaks_array, state.t + state.dt, order_p1,
-                                            eta=s_eta)
+                                            eta=s_eta, controller=controller,
+                                            last_err=state.last_err)
 
             ## PHASE-2 GAUGE SHIFT (idtmod.md 5.2), ACCEPT-ONLY AND BRANCHLESS.
             ## Each declared periodic row is rewrapped by an exact n*modulus
@@ -2834,6 +2882,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 n_forced_lte=state.n_forced_lte
                 + jnp.where(forced_lte, 1, 0),
                 n_rescued=state.n_rescued + jnp.where(rescued, 1, 0),
+                ## The PI term differences consecutive ACCEPTED errors.
+                last_err=error_ratio,
                 ## F11: the CPU's breakpoint discipline, ported.  A step that
                 ## LANDS on a breakpoint (calculate_next_dt truncates onto
                 ## them, so landing is exact to t_eps) marks the NEXT step
@@ -2887,7 +2937,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 n_rejected=state.n_rejected + 1,
                 n_nonconverged=state.n_nonconverged
                 + jnp.where(nr_state.converged, 0, 1),
-                n_rescued=state.n_rescued + jnp.where(rescued, 1, 0))
+                n_rescued=state.n_rescued + jnp.where(rescued, 1, 0),
+                ## Dropped, deliberately: see `_pi_factor`.  The next accepted
+                ## step then takes the elementary update instead of
+                ## differencing against an error from a step size this time
+                ## point no longer uses.
+                last_err=jnp.asarray(0.0))
 
         return jax.lax.cond(accept, do_accept, do_reject, None)
 
@@ -2948,8 +3003,13 @@ class JAXTransient(Analysis):
       solve included), `relref` with the unit-group split, the standard LTE
       acceptance band (`lte_gamma_*`/`lte_eta`), `fixed_timestep` (bit-equal
       fixed-grid waveforms across backends), `provided_function` (must be
-      jax-traceable; baked in at jit time), and the `integrator` choice --
-      'gear' (default, matching the CPU's Gear2 default) or 'euler'.
+      jax-traceable; baked in at jit time), the `integrator` choice --
+      'gear' (default, matching the CPU's Gear2 default), 'euler' or 'trap'
+      -- and `step_controller`, 'integral' (default) or 'pi'.  Both of those
+      are trace-time STRINGS where the CPU takes objects, which is what
+      keeps them clear of P17: the objects P17 refuses are dispatched per
+      Newton ITERATION, while an integrator and a controller are chosen once
+      per run and once per step.
       Research paths run on both backends too: `coupled_lte` (Fang),
       `pcnr`, PCNR-inside-Fang, and TLine on every path.
 
@@ -3057,6 +3117,26 @@ class JAXTransient(Analysis):
         ## (F5): 'auto' resolves to Fang's (0.7, 3.0, 0.15) on the coupled
         ## path; explicit values pass through verbatim.  The standard JAX
         ## path does not read the band yet (parity item P8).
+        ## The CPU's StepController strategy, as a trace-time STRING rather
+        ## than an injected object.  P17 refuses `nrsolver`/`scaler`/
+        ## `linearsolver` because a traced while_loop cannot dispatch into
+        ## per-ITERATION Python objects; a step controller runs once per step
+        ## and its choice is static, so it is selectable here exactly as
+        ## `integrator` is.  `SolutionLTEController` is not in this list
+        ## because it is not an alternative: it IS the coupled path, reached
+        ## by `coupled_lte=True`.
+        ##
+        ## ⚠ 'pi' is NOT an improvement on the CPU's own measurements --
+        ## better on one circuit/tolerance row, worse on two, identical on
+        ## the rest, at 0-13% more steps -- which is why the CPU does not
+        ## default to it either.  Ported for parity of choice, not because a
+        ## circuit was found that wants it.
+        Parameter(name='step_controller',
+                  desc="Step-size control law: 'integral' (default, Yao et "
+                       "al. ICECS 2014) or 'pi' (Gustafsson gains). The "
+                       'coupled path uses Fang solution-space LTE and '
+                       'ignores this.',
+                  unit='', default='integral'),
         Parameter(name='lte_gamma_min',
                   desc="Lower edge of the LTE acceptance band; 'auto' means "
                        "0.7 (Fang) on the coupled path and 0.0 (no lower "
@@ -3581,6 +3661,29 @@ class JAXTransient(Analysis):
                 "(roadmap sec. 49.5); use Transient for this circuit."
                 % (type(exc).__name__,))
 
+    def _step_controller(self):
+        """The step-size law, validated -- and PI's band refusal, ported.
+
+        `PIController.set_lte_band` raises for `gamma_min > 0` on the CPU:
+        a growth-retry redo has undefined PI history semantics, and an
+        accepted-and-ignored option is this codebase's most-paid-for defect
+        class.  The same refusal has to cross, because this backend has a
+        two-sided band on the standard path too.
+        """
+        law = self.par.step_controller
+        if law not in ('integral', 'pi'):
+            raise ValueError(
+                "step_controller must be 'integral' or 'pi', not %r" % (law,))
+        if law == 'pi':
+            gm, _gx, _eta = self._standard_band()
+            if gm > 0.0:
+                raise NotImplementedError(
+                    "step_controller='pi' does not implement the lower LTE "
+                    'band (lte_gamma_min=%g): the growth-retry redo has '
+                    "undefined PI history semantics. Use 'integral', or "
+                    'lte_gamma_min=0.' % gm)
+        return law
+
     def _standard_band(self):
         """The STANDARD path's (gamma_min, gamma_max, eta) -- P8.
 
@@ -3869,6 +3972,7 @@ class JAXTransient(Analysis):
                                    gamma_min=_gm, gamma_max=_gx, eta=_eta,
                                    pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
                                    tline_dG=_tline_dG,
+                                   controller=self._step_controller(),
                                    rescue_meta=self._rescue_meta())
             
         # JIT the vmapped run_chunk
@@ -3894,6 +3998,7 @@ class JAXTransient(Analysis):
         b_n_forced_nc = jnp.full(batch_size, 0)
         b_n_forced_lte = jnp.full(batch_size, 0)
         b_n_rescued = jnp.full(batch_size, 0)
+        b_last_err = jnp.full(batch_size, 0.0)
         b_force_first = jnp.full(batch_size, False)
         
         while np.any(current_t < tend):
@@ -3919,6 +4024,7 @@ class JAXTransient(Analysis):
                 n_forced_nonconverged=b_n_forced_nc,
                 n_forced_lte=b_n_forced_lte,
                 n_rescued=b_n_rescued,
+                last_err=b_last_err,
                 force_first_order=b_force_first
             )
             
@@ -3963,6 +4069,7 @@ class JAXTransient(Analysis):
             b_n_forced_nc = final_state.n_forced_nonconverged
             b_n_forced_lte = final_state.n_forced_lte
             b_n_rescued = final_state.n_rescued
+            b_last_err = final_state.last_err
             b_force_first = final_state.force_first_order
             x_hist = final_state.x_history
             q_hist = final_state.q_history
@@ -4119,6 +4226,7 @@ class JAXTransient(Analysis):
                                    gamma_min=_gm, gamma_max=_gx, eta=_eta,
                                    pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
                                    tline_dG=_tline_dG,
+                                   controller=self._step_controller(),
                                    rescue_meta=self._rescue_meta())
         
         results_list = [np.array([x0])]
@@ -4139,6 +4247,7 @@ class JAXTransient(Analysis):
         n_forced_nc = jnp.array(0)
         n_forced_lte = jnp.array(0)
         n_rescued = jnp.array(0)
+        last_err = jnp.array(0.0)
         force_first = jnp.array(False)
 
         while current_t < tend:
@@ -4162,6 +4271,7 @@ class JAXTransient(Analysis):
                 n_forced_nonconverged=n_forced_nc,
                 n_forced_lte=n_forced_lte,
                 n_rescued=n_rescued,
+                last_err=last_err,
                 force_first_order=force_first
             )
         
@@ -4207,6 +4317,7 @@ class JAXTransient(Analysis):
             n_forced_nc = final_state.n_forced_nonconverged
             n_forced_lte = final_state.n_forced_lte
             n_rescued = final_state.n_rescued
+            last_err = final_state.last_err
             force_first = final_state.force_first_order
 
             ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END MAY
