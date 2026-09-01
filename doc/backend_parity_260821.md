@@ -862,6 +862,17 @@ existing TLine tests before/after, per house rules.
   test covered `coupled_lte` with a non-default integrator; one does now
   (`test_euler_coupled_uses_an_euler_dh_derivative`).
 
+  *(a-bis) A P9 asymmetry, decided rather than inherited.*  With
+  `fixed_timestep` the JAX path bypasses the `max_dv`/`max_di` excursion check
+  (`dv_ok = ... | fixed_timestep`); the CPU's coupled outer loop does **not**,
+  and will still shrink and reject on it — breaking the grid it was told to
+  keep.  Kept the JAX behaviour when `grid_locked` landed 2026-09-01, on P9's
+  own principle: `fixed_timestep` is the caller stating that the output points
+  are theirs, so the honest response to an over-tolerance step is to take it
+  and let the run's accuracy be what was asked for.  The CPU side is the one
+  that should change; recorded here rather than silently mirrored, because a
+  cross-backend disagreement found later reads as drift.
+
   *(b) coupled + vector PCNR crashed instead of refusing.*  PCNR-inside-Fang
   understands only the PAIR-view meta `(ra, rb, IS, VT, fns)`.  Handed the
   device-view `('vector', devices, epar)` — which is what EVERY real compact

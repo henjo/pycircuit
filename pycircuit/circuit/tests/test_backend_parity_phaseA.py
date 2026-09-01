@@ -394,9 +394,15 @@ def test_p9_fixed_timestep_on_jax():
         dev = float(np.max(np.abs(vc[:m] - v[:m])))
         assert dev < 1e-12, 'backends disagree on the fixed grid: %.3e' % dev
 
-        with pytest.raises(NotImplementedError, match='grid_locked'):
-            JAXTransient(pc(), coupled_lte=True).solve(
-                gnd, tend=1e-6, timestep=1e-7, uic=True, fixed_timestep=True)
+        ## Until 2026-09-01 this asserted a NotImplementedError: the CPU's
+        ## grid_locked was not wired through fang's hold machinery.  It now
+        ## is, so the same call must produce a uniform grid instead of a
+        ## refusal.
+        rj2 = JAXTransient(pc(), coupled_lte=True).solve(
+            gnd, tend=1e-6, timestep=1e-7, uic=True, fixed_timestep=True)
+        t2 = np.asarray(rj2.sweep_values, float).reshape(-1)
+        assert np.allclose(np.diff(t2), 1e-7, rtol=1e-9), \
+            'the coupled path did not keep the caller grid'
     _with_jax(go)
 
 

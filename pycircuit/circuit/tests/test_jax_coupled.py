@@ -303,3 +303,92 @@ def test_vector_pcnr_under_coupled_is_refused_not_crashed():
             tran._pcnr_setup()
     finally:
         _cm.default_toolkit = saved
+
+
+# ---------------------------------------------------------------------------
+# grid_locked: the caller's grid wins over the method's step-size solve
+# ---------------------------------------------------------------------------
+
+_TD, _TR, _PW, _TF, _PER = 1e-5, 1e-7, 2e-5, 1e-7, 5e-5
+_STEP, _GTEND = 1e-6, 2e-5
+
+
+def _pulsed_rc(tk=None):
+    from pycircuit.circuit.elements import VPulse
+    kw = {'toolkit': tk} if tk is not None else {}
+    c = SubCircuit(**kw)
+    c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=_TD, tr=_TR, tf=_TF,
+                     pw=_PW, per=_PER, **kw)
+    c['R'] = R('a', 'b', r=1e3, **kw)
+    c['C'] = C('b', gnd, c=1e-9, **kw)
+    return c
+
+
+def _jax_pulsed(fixed):
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        tran = JAXTransient(_pulsed_rc(jaxtoolkit), coupled_lte=True,
+                            reltol=1e-5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=_GTEND, timestep=_STEP,
+                             fixed_timestep=fixed)
+        return (np.asarray(res.sweep_values, float).reshape(-1),
+                np.asarray(res.v('b'), float).reshape(-1))
+    finally:
+        circuit_mod.default_toolkit = saved
+
+
+def test_fixed_timestep_keeps_the_grid_on_the_coupled_path():
+    """The JAX mirror of the CPU's gate 12-4 test.
+
+    `fixed_timestep` and Fang's method are not in conflict: one exists to
+    CHOOSE the step size, the other says the caller already has.  So the grid
+    is kept and the LTE equation is dropped on every step, exactly as for a
+    breakpoint-truncated one -- the circuit is still solved coupled, it just
+    has nothing left to solve for.
+
+    The whole semantic content is one flag: an over-band HELD step is normally
+    reported unconverged so the caller shrinks and retries, and under a locked
+    grid shrinking is not an option we have.  On the CPU, conflating the two
+    made the retry shrink h and the uniform grid disappear.
+    """
+    t, _v = _jax_pulsed(True)
+    dt = np.diff(t)
+    assert np.allclose(dt, _STEP, rtol=1e-9), \
+        'grid was not uniform: steps ranged %g .. %g' % (dt.min(), dt.max())
+
+
+def test_fixed_timestep_and_adaptive_differ_on_the_coupled_path():
+    """Guard against the test above passing because nothing adapts anyway."""
+    t, _v = _jax_pulsed(False)
+    dt = np.diff(t)
+    assert not np.allclose(dt, _STEP, rtol=1e-9), \
+        'the adaptive coupled path produced a uniform grid, so the ' \
+        'fixed-step test above proves nothing'
+
+
+def test_fixed_grid_coupled_matches_the_cpu():
+    """And the waveform on that grid is the CPU's.
+
+    Measured at landing: 21 steps on both backends, max deviation 4.4e-16 --
+    the two solvers are doing the same arithmetic on the same points, which
+    is the strongest form this comparison can take (no interpolation).
+    """
+    from pycircuit.circuit.transient import Transient
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rc = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
+            tend=_GTEND, timestep=_STEP, coupled_lte=True,
+            fixed_timestep=True)
+    vc = np.asarray(rc.v('b').y, float).ravel()
+
+    tj, vj = _jax_pulsed(True)
+    assert len(tj) == len(vc), 'step counts differ: %d vs %d' % (len(tj),
+                                                                 len(vc))
+    dev = float(np.max(np.abs(vj - vc)))
+    assert dev < 1e-12, 'fixed-grid coupled backends disagree: %.3e' % dev

@@ -1207,7 +1207,8 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                     params_tree=None, gamma_min=0.7, gamma_max=3.0, eta=0.15,
                     dt_min=1e-18, dt_max=jnp.inf, pcnr_meta=None,
                     pcnr_VT=0.025, tline_dG=None, analysis='tran',
-                    provided_function=None, state_mask=None):
+                    provided_function=None, state_mask=None,
+                    grid_locked=False):
     from pycircuit.circuit._lte_kernels import (step_for_error_ratio,
                                                 euler_companion_dh,
                                                 bdf2_companion_dh)
@@ -1329,8 +1330,25 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
 
         ## A held step whose error is over the band is reported unconverged so
         ## the caller shrinks and retries -- exactly the CPU's hold_h return.
-        held_over = jnp.logical_and(hold_h,
-                                    jnp.logical_and(~eps_ok, err > gamma_max))
+        ##
+        ## UNLESS THE GRID IS LOCKED.  `hold_h` means "the step size is
+        ## imposed", which has three sources: a breakpoint truncation, a tend
+        ## truncation, and a caller-imposed fixed grid.  For the first two,
+        ## shrinking IS available to us and an over-band held step should be
+        ## retried smaller.  For the third it is not: `fixed_timestep` is the
+        ## caller stating that the output points are theirs, so the honest
+        ## response to an over-tolerance step is to take it and let the run's
+        ## accuracy be what was asked for -- exactly what the standard path
+        ## does.  Conflating the two costs the grid: on the CPU it broke
+        ## `test_fixed_timestep_keeps_the_grid_on_the_coupled_path`, where the
+        ## retry shrank h and the uniform grid disappeared.
+        ##
+        ## `grid_locked` is trace-static, so this compiles the `hold_h`
+        ## behaviour away entirely under a fixed grid.
+        held_over = jnp.logical_and(
+            hold_h, jnp.logical_and(~eps_ok, err > gamma_max))
+        if grid_locked:
+            held_over = jnp.asarray(False)
 
         def plain(_):
             ## hold_h, in-band, or no history: nothing to solve for h.
@@ -2143,14 +2161,24 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## over-band held step is reported for the shrink-and-retry below,
             ## exactly the CPU's hold_h contract (F3 included: tend-truncated
             ## steps cannot overshoot).
-            future = jnp.where(t_breaks_array > state.t + t_eps,
-                               t_breaks_array, jnp.inf)
-            next_break = jnp.min(future)
-            overshoots = state.t + state.dt > next_break
-            h_entry = jnp.where(overshoots, next_break - state.t, state.dt)
-            hold_h = jnp.logical_or(
-                overshoots,
-                jnp.abs((state.t + h_entry) - next_break) <= t_eps)
+            if fixed_timestep:
+                ## P9's rule reaches the coupled path: THE GRID WINS, and
+                ## breakpoints do not move it (the CPU's `if fixed_timestep:
+                ## h = timestep` ignores them for the same measured reason --
+                ## a VPulse run collapsing 30 -> 292 steps when they did).
+                ## There is nothing for the coupled system to solve, so the
+                ## step is held on every step, not only at a corner.
+                h_entry = state.dt
+                hold_h = jnp.asarray(True)
+            else:
+                future = jnp.where(t_breaks_array > state.t + t_eps,
+                                   t_breaks_array, jnp.inf)
+                next_break = jnp.min(future)
+                overshoots = state.t + state.dt > next_break
+                h_entry = jnp.where(overshoots, next_break - state.t, state.dt)
+                hold_h = jnp.logical_or(
+                    overshoots,
+                    jnp.abs((state.t + h_entry) - next_break) <= t_eps)
             fstate = fang_inner_loop(
                 state._replace(dt=h_entry), circuit, irefnode,
                 hold_h, tline_params, tline_indices,
@@ -2160,7 +2188,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
                 dt_min=dt_min, dt_max=dt_max, pcnr_meta=pcnr_meta,
                 pcnr_VT=pcnr_VT, tline_dG=tline_dG, analysis=analysis,
-                provided_function=provided_function, state_mask=state_mask)
+                provided_function=provided_function, state_mask=state_mask,
+                grid_locked=bool(fixed_timestep))
             ## Re-enter the shared accept machinery with fang's verdict: the
             ## solved h is both the step taken and (clipped) the next guess --
             ## "the solved step carries forward" is the method's whole point.
@@ -2466,7 +2495,16 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## 5.0559e-3 against a requested tend of 5e-3, where `Transient` lands on
             ## it exactly.  `tend` is itself in `t_breaks_array`, which is why the
             ## overshoot showed up at the end of every run.
-            if coupled:
+            if coupled and fixed_timestep:
+                ## Under a locked grid fang solved no h -- the step was held --
+                ## so there is no "solved step carries forward" to honour and
+                ## the grid branch below is the right one.  Ordering matters:
+                ## `coupled` used to win unconditionally, which would have
+                ## carried the HELD step forward as if it had been solved and
+                ## quietly re-derived the grid from itself.
+                next_dt = jnp.maximum(
+                    jnp.minimum(grid_dt, tend - (state.t + state.dt)), dt_min)
+            elif coupled:
                 ## The SOLVED step carries forward; breakpoint truncation for
                 ## the NEXT point happens at the next fang entry.  Solved is
                 ## the operative word (P22's mask port measured the hole): a
@@ -2817,10 +2855,28 @@ class JAXTransient(Analysis):
       lane with its own adaptive (or coupled (x, h)) step sequence.  The
       CPU deliberately has no imitation of it.
 
-    * **CPU-only, with cause**: trapezoidal integration (the uniform-grid
-      trap branch was deleted; rebuilt against the CHARGE 2026-09-01, so
-      trapezoidal is no longer CPU-only -- `integrator='trap'`), the coupled 'bordered' branch, and coupled+fixed_timestep
-      (grid_locked is not wired here yet -- refused, not approximated).
+    * **CPU-only, with cause**: the coupled 'bordered' eq (12) branch.  That
+      is the whole list as of 2026-09-01, and it is not a queue -- `bordered`
+      is recorded as MISTUNED under Gear-2 (1181 time points where 'approx'
+      took 350), which is this backend's default, and its measured value is
+      near zero.  Porting it wants a CPU-side re-derivation first; see the
+      P19 note.
+
+      Two items left this list on 2026-09-01.  *Trapezoidal* is now
+      `integrator='trap'` -- the record had said a variable-step estimator
+      "has not been written" when the kernels existed and only the wiring
+      did not; the part that genuinely had to be written is that the
+      estimator differences the CHARGE, since differencing the companion
+      current measures the trap recursion's undamped (-1)^n mode.  *coupled
+      + fixed_timestep* now works: `grid_locked` reduced to one flag, since
+      an over-band HELD step is normally reported unconverged so the caller
+      shrinks, and under a caller-imposed grid shrinking is not available.
+
+    * **A P9 asymmetry, deliberate**: under `fixed_timestep` this backend
+      bypasses the `max_dv`/`max_di` excursion check; the CPU's coupled loop
+      does not, and will shrink and reject on it -- breaking the grid it was
+      told to keep.  The grid wins here, on P9's own principle.  The CPU side
+      is the one that should change.
     """
 
     ## STAGE 9(b)/(c) -- TOLERANCES ARE SETTABLE, AND THEY ARE THE CPU'S.
@@ -3843,15 +3899,6 @@ class JAXTransient(Analysis):
                 'inconsistent state and integrates a spurious startup '
                 'transient. Pass uic=True or an explicit x0.',
                 RuntimeWarning, stacklevel=2)
-        if fixed_timestep and self.par.coupled_lte:
-            ## The CPU's coupled path locks the grid via grid_locked; wiring
-            ## the same through fang's hold machinery is real work not yet
-            ## done on this backend.  Refused rather than approximated.
-            raise NotImplementedError(
-                'fixed_timestep with coupled_lte is not implemented on this '
-                'backend yet; the CPU path supports it (grid_locked). Use '
-                'coupled_lte=False for a fixed grid here.')
-
         ## Same contract as the CPU (P12): ic without uic is a different
         ## feature (constraining the operating point) and is refused, not
         ## silently ignored.  `include_state=False`, as on the CPU: an

@@ -130,8 +130,7 @@ put the continuation chain on both PCNR views.
 
 ## CPU-only, with cause
 
-The coupled 'bordered' eq (12) branch, and coupled + `fixed_timestep`
-(`grid_locked` is not wired here — refused, not approximated).
+The coupled 'bordered' eq (12) branch — and that is now the whole list.
 
 *Trapezoidal integration left this list on 2026-09-01* — `integrator='trap'`.
 The entry had claimed "a variable-step trap estimator has not been written";
@@ -140,6 +139,16 @@ missing. The one part that had to be written is the estimator's use of the
 **charge** rather than the companion current, since differencing `g` measures
 the trap recursion's undamped `(−1)^n` mode. Landing figures and the stiff-mode
 ringing gate are in `doc/backend_parity_260821.md`'s P6 entry.
+
+*coupled + `fixed_timestep` left it the same day.* `grid_locked` turned out
+to be **one flag**: an over-band HELD step is normally reported unconverged so
+the caller shrinks and retries, and under a caller-imposed grid shrinking is
+not an option we have. Wired through `fang_inner_loop`, with the coupled
+branch's `hold_h` forced true and `h_entry = grid_dt` under a fixed grid (P9's
+"the grid wins" reaching the coupled path), and the accept path's `next_dt`
+ordering inverted so the grid beats the "solved step carries forward" rule —
+there is no solved step when the step was held. Measured: 21 steps on both
+backends, waveforms agreeing to **4.4e-16** on identical points.
 
 ## Where the authoritative records live
 
