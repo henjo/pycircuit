@@ -1313,3 +1313,195 @@ def test_the_composed_autonomous_system_removes_the_seam_too():
         "gear2's phase error (%+.1f ppm) is no longer dominant against " \
         "trapezoidal's (%+.1f ppm); the recommendation to default to trap " \
         "rested on that, so re-measure it" % (ppm200, trap_ppm)
+
+
+def test_an_autonomous_period_that_is_a_multiple_is_reported_as_one():
+    """⚠ `k*T` SOLVES THE PERIODICITY CONDITION WHENEVER `T` DOES.
+
+    So the free-period system has a solution at every integer multiple and
+    converges to whichever the seed is nearest -- measured on this element
+    (true period 1.000e-03): seeds of 1e-3, 2e-3 and 3e-3 return
+    1.000083e-03, 2.000665e-03 and 3.002245e-03, and ALL report
+    `converged`.  Each waveform is a correct periodic solution; the
+    FUNDAMENTAL FREQUENCY is wrong by the factor, which is usually the
+    thing a PSS user wanted.  Nothing said so until this landed.
+
+    The detector needs no extra solve: a k-fold orbit comes back near
+    `x_0` partway through.  It must find the EARLIEST such return -- a
+    three-fold orbit passes close at `T/3` and `2T/3`, and reporting the
+    nearer of the two named a fundamental that was itself a multiple.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def run(seed, method='trap'):
+        pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            pss.solve(period=seed, timestep=seed / 200, maxiterations=30)
+        assert pss.converged
+        return pss, [str(c.message) for c in caught
+                     if 'MULTIPLE of the fundamental' in str(c.message)]
+
+    ## the fundamental itself must NOT warn -- a report that fires on the
+    ## right answer is noise
+    one, hits = run(1.0e-3)
+    assert not hits, 'warned on the fundamental itself: %r' % hits
+    assert one.fundamental_period is None
+
+    ## two and three times it must, and must name the right factor
+    for seed, factor in ((2.0e-3, 2.0), (3.0e-3, 3.0)):
+        pss, hits = run(seed)
+        assert hits, 'no warning at %gx the fundamental' % factor
+        assert pss.fundamental_period is not None
+        ratio = pss.period / pss.fundamental_period
+        assert abs(ratio - factor) < 0.25, \
+            'seed %g: called it %.2f times the fundamental, expected %g -- ' \
+            'if this drifted to a smaller factor the earliest-recurrence ' \
+            'rule has regressed to a nearest-recurrence one' % (
+                seed, ratio, factor)
+
+    ## a DRIVEN run is exempt: its period is the caller's, and asking for
+    ## two source periods is a legitimate request rather than a mistake
+    pss = PSS(_q20_rlc(), method='gear', reltol=1e-6)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        pss.solve(period=2e-3, timestep=2e-3 / 200, maxiterations=40)
+    assert pss.autonomous is False
+    assert not [c for c in caught if 'MULTIPLE' in str(c.message)], \
+        'a driven run was told its own requested period is a multiple'
+
+
+def test_the_trivial_period_root_is_named_not_returned_bare():
+    """⚠ `T = 0` IS A REGULAR ROOT OF EVERY AUTONOMOUS SHOOTING SYSTEM.
+
+    `x0 - phi_T(x0)` vanishes identically at `T = 0`, and the phase
+    condition does not exclude it -- it constrains `x0`, not the period.
+    So a seed below the fundamental is drawn there, and the run either
+    returns a period of ~1e-18 or dies with a singular Jacobian on the way
+    down.  Measured on BOTH autonomous elements, so it belongs to the
+    formulation and not to a circuit: from a 1e-4 seed against a 1e-3
+    fundamental, Gear-2 returned -1.5e-20 and 3.9e-19, and trapezoidal
+    raised a bare `LinAlgError` from three seeds of five.
+
+    Neither was a SILENT wrong answer -- the collapse reports
+    `converged = False` and the exception is loud -- but neither said
+    anything about the cause, and the generic advice attached to
+    non-convergence ("raise maxiterations") is actively wrong here: no
+    number of iterations reaches a fundamental from below.
+
+    Which of the two failure modes appears is method-dependent, so this
+    accepts either and insists only that it be NAMED.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    for method in ('trap', 'gear'):
+        pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            try:
+                pss.solve(period=1e-4, timestep=1e-4 / 200, maxiterations=30)
+            except np.linalg.LinAlgError as exc:
+                assert 'seed BELOW the fundamental' in str(exc), \
+                    '%s raised a bare singular-matrix error with no cause: ' \
+                    '%s' % (method, exc)
+                continue
+        named = [c for c in caught if 'TRIVIAL root' in str(c.message)]
+        assert named, \
+            '%s returned period %r from a seed below the fundamental ' \
+            'without naming the trivial root' % (method, pss.period)
+
+    ## and a sound seed is untouched -- the guard must not fire on the
+    ## answer it exists to distinguish from
+    for method in ('trap', 'gear'):
+        pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
+        assert pss.converged
+        assert not [c for c in caught if 'TRIVIAL root' in str(c.message)], \
+            '%s: the guard fired on a good solve' % method
+        assert abs(pss.period - 1e-3) / 1e-3 < 1e-3
+
+
+def test_the_monodromy_is_the_pair_map_not_a_corner_of_it():
+    """⚠ A SUB-BLOCK OF A SENSITIVITY IS NOT A MONODROMY.
+
+    For a two-step method the one-period map acts on the PAIR
+    `(x_n, x_{n-1})`, so the monodromy is `2m x 2m`.  The solved-history
+    path used to hand back the `d x_{N-1}/d x_0` corner of it instead, and
+    the eigenvalues of a corner mean nothing: it reported a spectral radius
+    of 1.2796 for this resonator -- ABOVE ONE, i.e. an unstable orbit --
+    where the circuit decays by `exp(-pi/Q)` every period.
+
+    The analytic decay is the check, so this cannot drift with a
+    reimplementation.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    analytic = float(np.exp(-np.pi / 20.0))
+
+    def rho(method, force_plain):
+        pss = PSS(_q20_rlc(), method=method, reltol=1e-9)
+        if force_plain:
+            pss._solves_history = lambda: False
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)
+        assert pss.converged
+        return pss
+
+    for method in ('trap', 'gear'):
+        for plain in (True, False):
+            pss = rho(method, plain)
+            assert abs(pss.spectral_radius - analytic) < 0.01, \
+                'method=%r plain=%r reports rho=%.6f against the analytic ' \
+                'per-period decay %.6f -- a value above 1 here means a ' \
+                'corner of the sensitivity is being read as a monodromy' % (
+                    method, plain, pss.spectral_radius, analytic)
+
+    ## and the shape follows the method's reach, mechanically
+    m = _q20_rlc().n - 1
+    assert np.asarray(rho('gear', False)._monodromy).shape == (2 * m, 2 * m)
+    assert np.asarray(rho('trap', False)._monodromy).shape == (m, m)
+
+
+def test_the_parasitic_roots_stay_far_from_the_physical_ones():
+    """The k-step method's spurious roots, and why they are not a problem.
+
+    A k-step method turns an m-dimensional system into a k*m-dimensional
+    discrete one, so the monodromy's spectrum carries (k-1)*m PARASITIC
+    roots beside the physical multipliers -- controlling them is the whole
+    subject of the boundary-value-methods literature cited in the class
+    docstring.  Reading `max |eig|` off such a spectrum is only safe while
+    the parasitic roots stay small.
+
+    For Gear-2 they do, and the reason is quantitative rather than hopeful:
+    its parasitic root is 1/3 per STEP (the roots of `1.5z^2 - 2z + 0.5`
+    are 1 and 1/3), so over a period it is `(1/3)^N` -- about 1e-95 at 200
+    points.  Measured, the autonomous 16x16 spectrum is the physical unit
+    eigenvalue and nothing else above 1e-5.
+
+    Written to expire: a method whose parasitic root sits nearer the unit
+    circle would need the physical multipliers separated rather than a
+    maximum taken, and this is where that would first show.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    ## BDF-2's own roots, so the claim above is checked and not asserted
+    assert np.allclose(sorted(np.roots([1.5, -2.0, 0.5])), [1.0 / 3.0, 1.0])
+
+    pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
+    ev = np.sort(np.abs(np.linalg.eigvals(np.asarray(pss._monodromy))))[::-1]
+
+    assert abs(ev[0] - 1.0) < 1e-3, \
+        'the physical free-phase eigenvalue is not on the unit circle: %r' \
+        % ev[0]
+    assert ev[1] < 1e-3, \
+        'a second eigenvalue at %.3e is no longer negligible -- with the ' \
+        'parasitic roots this close to the physical one, `spectral_radius` ' \
+        'is a maximum over a mixed spectrum and needs separating' % ev[1]

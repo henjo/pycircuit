@@ -277,12 +277,33 @@ class PSS(Analysis):
 
          The free-phase eigenvalue survives the enlargement -- the composed
          run reads `spectral_radius` 1.000000 -- so the autonomous
-         diagnostic still says what it said.  ⚠ But it now reads the FULL
-         2m x 2m map, whose spectrum carries the parasitic roots of the
-         two-step discretisation alongside the physical multipliers.  See
-         the literature note: controlling those roots is the whole subject,
-         and a future threshold on this number should know it is not reading
-         a purely physical spectrum.
+         diagnostic still says what it said.  It now reads the FULL 2m x 2m
+         map, whose spectrum carries the parasitic roots of the two-step
+         discretisation alongside the physical multipliers.
+
+         ⚠ THAT WAS RECORDED AS AN OPEN WORRY AND HAS BEEN MEASURED: the
+         parasitic roots are not a problem, and the reason is quantitative.
+         Gear-2's parasitic root is 1/3 per STEP -- the roots of
+         `1.5z^2 - 2z + 0.5` are 1 and 1/3 -- so over a period it is
+         `(1/3)^N`, about 1e-95 at 200 points.  The autonomous 16x16
+         spectrum measures as [1.000, 3.5e-06, 5.2e-16, 4.7e-17, 0, ...]:
+         one physical unit eigenvalue and nothing else above rounding, so
+         `max |eig|` picks the physical one.  A method whose parasitic root
+         sat nearer the unit circle would need them separated; Gear-2's does
+         not, and a test pins the gap so a future method cannot inherit the
+         assumption silently.
+
+         ⚠ WHAT THE SAME MEASUREMENT DID FIND, in the DRIVEN path rather
+         than the autonomous one: `_traverse_solved_history` was handing
+         back `Px[0][:, :m]`, the `d x_{N-1}/d x_0` CORNER of the
+         sensitivity, as the monodromy.  A corner of a sensitivity is not a
+         monodromy and its eigenvalues mean nothing -- it reported
+         `spectral_radius` 1.279605 for the Q=20 resonator, ABOVE ONE and so
+         reading as an unstable orbit, where the analytic per-period decay
+         is exp(-pi/Q) = 0.854636 and every other path reports 0.855.  Fixed
+         to the pair map, which now reads 0.854833 -- closer to analytic
+         than the plain path's 0.853369 -- and pinned against the analytic
+         decay rather than against itself.
 
          ⚠ THE VALUE CAVEAT, UNCHANGED BY BUILDING IT.  Gear-2's own phase
          error is +332 ppm against trapezoidal's +83 ppm at the same grid,
@@ -525,6 +546,70 @@ class PSS(Analysis):
       mis-initialised history costs on a circuit.  The figures in 4b are
       this tree's own; `benchmarks/pss_seam_cost.py` is the measurement.
 
+    4e. WHAT THE SCALAR `Idtmod` FORMS DO -- idtmod arc 5, investigated
+        2026-09-01, and it turned up a defect that is NOT about `Idtmod`.
+
+        The scalar element runs: with `ic` set, DC solves and a transient
+        integrates it correctly, the state advancing one modulus per output
+        period and the gauge shift (`_apply_periodic_shifts`) wrapping it
+        back.  ⚠ That wrap is why shooting does not simply refuse it -- the
+        state DOES return to itself once wrapped, so `x0 - phi(x0)` is
+        satisfiable, and `IdtmodQuadrature`'s docstring claim that the
+        scalar form "structurally cannot" close is true of the RAW state
+        and not of the wrapped one this tree actually integrates.
+
+        But asking whether the answer was right exposed the general defect:
+
+        ⚠ AN AUTONOMOUS PERIOD IS DETERMINED ONLY UP TO AN INTEGER MULTIPLE,
+        AND THE SOLVE FOLLOWS ITS SEED.  `k*T` satisfies the periodicity
+        condition whenever `T` does.  Measured on the quadrature element,
+        true period 1.000e-03:
+
+              seed      solved         converged?
+              1e-3      1.000083e-03   yes
+              2e-3      2.000665e-03   yes
+              3e-3      3.002245e-03   yes
+
+        Every one is a correct periodic solution and every one reports
+        success; the FUNDAMENTAL FREQUENCY -- usually the thing a PSS user
+        wanted -- is wrong by the factor.  This is a property of the
+        free-period system (4c), not of `Idtmod`, and it was silent.
+        Detected now: see the recurrence check in `solve`, which needs no
+        extra solve and sets `fundamental_period`.  Driven runs are exempt,
+        their period being the caller's.
+
+        ⚠ AND THE SECOND DEFECT IS ALSO NOT ABOUT `Idtmod`.  What looked
+        like the scalar form's seed-fragility -- Gear-2 collapsing to
+        `T ~ 1e-18`, trapezoidal raising a bare `LinAlgError` -- reproduces
+        on the QUADRATURE element too: from a 1e-4 seed against a 1e-3
+        fundamental, Gear-2 returns -1.5e-20 there and trapezoidal dies from
+        three seeds of five.  `T = 0` is a REGULAR ROOT of every autonomous
+        shooting system, because `x0 - phi_T(x0)` vanishes identically
+        there and the phase condition constrains `x0`, not the period.  So
+        any seed below the fundamental is drawn to it.
+
+        Neither outcome was silent -- the collapse reports
+        `converged = False` and the exception is loud -- but neither named
+        its cause, and the generic non-convergence advice ("raise
+        maxiterations") is actively wrong for it: no number of iterations
+        reaches a fundamental from below.  `_free_period_solve` now names
+        both, and says what to do instead (seed at or above the expected
+        period; a short transient and the interval between two output
+        recurrences gives one).
+
+        ⚠ THREE TIMES IN THIS ITEM the defect looked like the element and
+        was the formulation.  The scalar form's raw state not closing is
+        answered by the gauge shift; the multiple-period ambiguity and the
+        trivial root are properties of the free-period system that any
+        autonomous circuit has.  Arc 5's deliverable turned out to be two
+        diagnostics on 4c, not a change to `Idtmod` at all.
+
+        STILL OPEN, and genuinely about the scalar form: seeded correctly
+        it converges, but a pure phase accumulator has no amplitude to pin,
+        so its orbit is a ramp and nothing distinguishes one starting phase
+        from another beyond the phase condition itself.  Whether that is a
+        limitation worth removing has not been established.
+
     RECORDED SCOPE, in order, neither of these planned work yet:
 
       5. LTE-CHOSEN grid -- pick the step sequence from an adaptive run and
@@ -647,6 +732,9 @@ class PSS(Analysis):
         self.max_lte_time = None
         self.max_lte_seam = None
         self.total_lte = None
+        ## Set by `solve` when an autonomous run lands on a multiple of the
+        ## fundamental; None when it did not (or on a driven run).
+        self.fundamental_period = None
 
     def _is_autonomous(self, times):
         """True when nothing in the circuit depends on `t`.
@@ -681,6 +769,66 @@ class PSS(Analysis):
                 'trapezoidal': TrapezoidalIntegrator,
                 'gear': Gear2Integrator,
                 'gear2': Gear2Integrator}[method]()
+
+    ## Below this fraction of the seed, a solved period is the trivial
+    ## root rather than an orbit.  Deliberately loose: a real fundamental
+    ## reached from a seed one decade high is ~0.1 of it, and the trivial
+    ## root lands 15 orders down, so nothing sits near this line.
+    DEGENERATE_PERIOD_FACTOR = 1e-6
+
+    def _free_period_solve(self, func, z0, abstol, xtol, reltol, maxiter,
+                           seed_period):
+        """Solve a free-period system, with its degenerate root named.
+
+        ⚠ `T = 0` IS A REGULAR ROOT OF EVERY AUTONOMOUS SHOOTING SYSTEM.
+        `x0 - phi_T(x0)` vanishes identically at `T = 0`, and the phase
+        condition does not exclude it -- it constrains `x0`, not the
+        period -- so Newton reaches it from any seed below the fundamental
+        and the run returns a period of ~1e-18 with no orbit in it.
+
+        Measured on BOTH autonomous elements in the tree, so it is a
+        property of the formulation and not of any circuit: from a 1e-4
+        seed against a 1e-3 fundamental, Gear-2 returned -1.5e-20 on the
+        quadrature element and 3.9e-19 on the scalar `Idtmod`, and
+        trapezoidal raised a bare `LinAlgError` from three seeds of five as
+        its Jacobian went singular on the way down.
+
+        Neither outcome was a silent wrong answer -- the collapse reports
+        `converged = False` and the exception is loud -- but both told the
+        user nothing about the cause, and the generic non-convergence
+        advice ("raise maxiterations") is wrong for it: no number of
+        iterations reaches a fundamental from below.
+        """
+        try:
+            z, info, ier, mesg = analysis.fsolve(
+                func, z0, maxiter=maxiter, reltol=reltol, abstol=abstol,
+                xtol=xtol, toolkit=self.toolkit, full_output=True)
+        except np.linalg.LinAlgError as exc:
+            raise np.linalg.LinAlgError(
+                'PSS: the free-period Jacobian went singular while solving '
+                'for an autonomous period seeded at %.6g s (%s). The usual '
+                'cause is a seed BELOW the fundamental: `T = 0` solves the '
+                'periodicity condition identically, so the iteration is '
+                'drawn to it and the Jacobian degenerates on the way. Seed '
+                'at or above the expected period -- a short transient and '
+                'the interval between two output recurrences is the usual '
+                'way to get one.' % (seed_period, exc)) from exc
+
+        T = float(z[-1])
+        if not np.isfinite(T) or abs(T) < self.DEGENERATE_PERIOD_FACTOR * abs(
+                seed_period):
+            warnings.warn(
+                'PSS: this autonomous solve collapsed onto the TRIVIAL root, '
+                'returning a period of %.6g s from a seed of %.6g s. `T = 0` '
+                'satisfies `x0 - phi_T(x0) = 0` identically and the phase '
+                'condition does not exclude it (it constrains x0, not the '
+                'period), so a seed below the fundamental is drawn there. '
+                'The returned waveform is not a periodic steady state. '
+                'Raising maxiterations will not help -- seed at or above the '
+                'expected period instead; a short transient and the interval '
+                'between two output recurrences gives one.'
+                % (T, seed_period), RuntimeWarning, stacklevel=3)
+        return z, info, ier, mesg
 
     def _companion_reach(self):
         """How many charges back the chosen integrator's companion reads.
@@ -865,8 +1013,27 @@ class PSS(Analysis):
         ## is the whole subject).  The autonomous unit-circle eigenvalue is
         ## in there; a threshold read off `spectral_radius` is reading a
         ## spectrum with spurious members and should know it.
-        M = np.vstack((Px[0], Px[1]))
-        self._monodromy = M if want_dT else Px[0][:, :m]
+        ## ⚠ ALWAYS THE FULL 2m x 2m MAP, NEVER THE `d x_{N-1}/d x_0`
+        ## CORNER.  This used to hand the corner back on the driven path
+        ## (`Px[0][:, :m]`), and a sub-block of a sensitivity is not a
+        ## monodromy: its eigenvalues mean nothing.  Measured, it reported
+        ## `spectral_radius` 1.279605 for the Q=20 resonator -- ABOVE ONE,
+        ## reading as an unstable orbit -- where the analytic per-period
+        ## decay is exp(-pi/Q) = 0.854636 and every other path reports
+        ## 0.855.  For a two-step method the one-period map acts on the
+        ## PAIR, so the monodromy is the pair's.
+        ##
+        ## Its spectrum carries the parasitic roots of the discretisation
+        ## alongside the physical multipliers -- but they are not a problem
+        ## here and the reason is quantitative: BDF-2's parasitic root is
+        ## 1/3 per STEP (roots of `1.5z^2 - 2z + 0.5` are 1 and 1/3), so
+        ## over a period it is (1/3)^N, which at 200 points is ~1e-95.
+        ## Measured on the autonomous element the 16x16 spectrum is
+        ## [1.000, 3.5e-06, 5.2e-16, 4.7e-17, 0, ...]: one physical unit
+        ## eigenvalue and nothing else above rounding, so `max |eig|` picks
+        ## the physical one.  A method whose parasitic root sat nearer the
+        ## unit circle would need that separated; Gear-2's does not.
+        self._monodromy = np.vstack((Px[0], Px[1]))
         if want_dT:
             return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
         return x, x_prev, Px[0], P_prev
@@ -1505,10 +1672,9 @@ class PSS(Analysis):
             z0 = np.concatenate((xa, xa, [period]))
             abstol_z = np.concatenate((_tol, _tol, [_tol[phase_k]]))
             xtol_z = np.concatenate((_tol, _tol, [1e-15 * period]))
-            z_ss, _info, _ier, _mesg = analysis.fsolve(
-                func_autonomous_solved_history, z0, maxiter=maxiterations,
-                reltol=_shoot_reltol, abstol=abstol_z, xtol=xtol_z,
-                toolkit=self.toolkit, full_output=True)
+            z_ss, _info, _ier, _mesg = self._free_period_solve(
+                func_autonomous_solved_history, z0, abstol_z, xtol_z,
+                _shoot_reltol, maxiterations, period)
             x0_ss, xm1_ss = z_ss[:m_], z_ss[m_:2 * m_]
             self.period = period = float(z_ss[-1])
             times, dt = toolkit.linspace(0.0, period, num=npts,
@@ -1522,10 +1688,9 @@ class PSS(Analysis):
             z0 = np.concatenate((np.asarray(x, dtype=float), [period]))
             abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
             xtol_z = np.concatenate((_tol, [1e-15 * period]))
-            z_ss, _info, _ier, _mesg = analysis.fsolve(
-                func_autonomous, z0, maxiter=maxiterations,
-                reltol=_shoot_reltol, abstol=abstol_z, xtol=xtol_z,
-                toolkit=self.toolkit, full_output=True)
+            z_ss, _info, _ier, _mesg = self._free_period_solve(
+                func_autonomous, z0, abstol_z, xtol_z, _shoot_reltol,
+                maxiterations, period)
             x0_ss = z_ss[:-1]
             self.period = period = float(z_ss[-1])
             ## The grid follows the solved period; everything downstream --
@@ -1760,6 +1925,81 @@ class PSS(Analysis):
         ## SOLUTION.  Plain takes N steps from `x0_ss` and reports their
         ## results; the other starts AT `x_0` and takes N-1, so dropping the
         ## first would drop a real point and shift the waveform by a step.
+        ## ⚠ AN AUTONOMOUS PERIOD IS ONLY DETERMINED UP TO AN INTEGER
+        ## MULTIPLE, AND THE SOLVE FOLLOWS THE SEED.
+        ##
+        ## `k*T` is a period whenever `T` is, so `x0 - phi_{kT}(x0) = 0` has
+        ## solutions at every multiple and the free-period system converges
+        ## to whichever one the seed is nearest.  Measured on the quadrature
+        ## phase element, whose true period is 1.000e-03: seeds of 1e-3,
+        ## 2e-3 and 3e-3 return 1.000083e-03, 2.000665e-03 and 3.002245e-03
+        ## and ALL report `converged`.  The reported waveform is a correct
+        ## periodic solution in each case -- and its fundamental frequency
+        ## is wrong by the factor, which is what a PSS user is usually
+        ## after.  Nothing said so.
+        ##
+        ## The detector is cheap and needs no extra solve: an orbit
+        ## traversed k times comes back near `x_0` partway through.  Grid
+        ## points do not land on `T/k` in general (`T/2` at 199 steps is
+        ## step 99.5), so this is a NEAREST-APPROACH test against the
+        ## orbit's own diameter rather than an equality, and the endpoints
+        ## are excluded because every orbit is near `x_0` there.
+        ##
+        ## Driven runs are exempt: their period is the caller's, and asking
+        ## for two source periods is a legitimate request, not a mistake.
+        if self.autonomous and len(X) > 8:
+            _pts = [np.asarray(v, dtype=float) for v in X]
+            _d = np.array([float(np.max(np.abs(v - _pts[0]))) for v in _pts])
+            _diam = float(np.max(_d))
+            ## ⚠ THE THRESHOLD IS THE GRID, NOT A FIXED FRACTION.  A k-fold
+            ## orbit returns BETWEEN grid points, so the nearest approach is
+            ## bounded below by how far the solution moves in one step: at
+            ## 200 points over two periods that is ~1.6% of the diameter,
+            ## and a fixed 1% test therefore fired on nothing.  Comparing
+            ## against the per-step displacement is scale-free and tightens
+            ## automatically as the grid refines.
+            _step = float(np.max([np.max(np.abs(_pts[i + 1] - _pts[i]))
+                                  for i in range(len(_pts) - 1)]))
+            _edge = max(2, len(_d) // 20)
+            _inner = _d[_edge:-_edge]
+            ## ⚠ THE EARLIEST RECURRENCE, NOT THE NEAREST.  A three-fold
+            ## orbit passes close to `x_0` at both `T/3` and `2T/3`, and
+            ## `argmin` picked whichever happened to be numerically nearer
+            ## -- it reported `2T/3` as "the fundamental", which is wrong by
+            ## a factor of two and would have sent the reader to a period
+            ## that is itself a multiple.
+            _near = [j for j in range(_edge, len(_d) - _edge)
+                     if _d[j] < 3.0 * _step and _d[j] < 0.25 * _diam]
+            if _diam > 0.0 and _near:
+                ## The closest approach WITHIN THE FIRST cluster: the first
+                ## point over the threshold is up to a step early, which
+                ## read 3% low and made the multiple look like 2.06 rather
+                ## than 2.00.
+                _run = [_near[0]]
+                for _c in _near[1:]:
+                    if _c != _run[-1] + 1:
+                        break
+                    _run.append(_c)
+                _j = min(_run, key=lambda i: _d[i])
+                if True:
+                    self.fundamental_period = period * _j / (len(_d) - 1)
+                    warnings.warn(
+                        'PSS: this autonomous solve returned a period that '
+                        'is a MULTIPLE of the fundamental. The orbit comes '
+                        'back within %.2g of its own diameter at t=%.6g s, '
+                        'so the fundamental is about %.6g s and the '
+                        'returned %.6g s traverses it about %.1f times. '
+                        'k*T solves the periodicity condition whenever T '
+                        'does, so the solve follows its seed -- re-run with '
+                        'period=%.6g to get the fundamental. The waveform '
+                        'is a correct periodic solution either way; its '
+                        'FUNDAMENTAL FREQUENCY is what is off.'
+                        % (_d[_j] / _diam, period * _j / (len(_d) - 1),
+                           self.fundamental_period, period,
+                           period / self.fundamental_period,
+                           self.fundamental_period),
+                        RuntimeWarning, stacklevel=2)
+
         X = toolkit.array(X if solved_history else X[1:]).T
 
         # Insert reference node voltage
