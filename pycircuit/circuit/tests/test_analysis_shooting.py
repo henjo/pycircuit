@@ -3159,3 +3159,119 @@ def test_every_flag_combination_is_walked():
     assert refused == expected, \
         'the refused set moved: %r were refused, expected %r' \
         % (sorted(refused), sorted(expected))
+
+
+def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
+    """A line search on the shooting Newton, and what it does and does not buy.
+
+    All three `fsolve` call sites took the FULL step with `limiter=None` and
+    no line search.  Brachtendorf et al. (TCAD 33(6) 867-878) describe
+    "shooting, finite difference, or harmonic balance techniques IN
+    CONJUNCTION WITH A DAMPED NEWTON METHOD" as what is "widely employed"
+    for limit cycles, so the absence was a departure from standard practice
+    rather than a neutral choice.
+
+    ⚠ WHAT IT DOES NOT BUY, measured before it was kept: it does NOT rescue
+    a far seed.  Van der Pol at mu=1 from seeds at 4x/10x/30x the orbit
+    amplitude still fails -- the failure MODE changes (10x and 30x now raise
+    loudly where they used to return a wrong period) but seed dependence is
+    untouched.  That matches the literature: the higher the Q, "the tighter
+    are the constraints for the initial estimate", and even the probe
+    technique "is still not always obtained".  Damping is the baseline, not
+    the fix for the trivial-root basin.
+
+    ⚠ AND THE COST HAD TO BE ENGINEERED AWAY.  The obvious implementation
+    evaluates `F` at the trial point and lets the NEXT iteration evaluate it
+    again at the same point, which DOUBLES every converging solve -- measured
+    10 -> 20 residual evaluations here, each a full pass over the period.
+    Carrying the trial evaluation forward makes the common case cost what
+    the undamped loop cost: 10 -> 11 and 2 -> 3, the +1 being the last
+    iteration's trial that the loop exits before reusing.
+    """
+    import warnings
+    import numpy as _np
+    from pycircuit.circuit import analysis as _an
+    from pycircuit.circuit import numeric as _tk
+    circuit.default_toolkit = circuit.numeric
+
+    ## the damping itself, on the textbook overshoot problem
+    calls = [0]
+
+    def f(x):
+        calls[0] += 1
+        v = float(_np.clip(x[0], -1e8, 1e8))
+        return (_np.array([_np.arctan(v)]),
+                _np.array([[1.0 / (1.0 + v * v)]]))
+
+    _x, _i, ier_off, _m = _an.fsolve(f, _np.array([1.5]), maxiter=40,
+                                     toolkit=_tk, full_output=True,
+                                     line_search=False)
+    assert ier_off == 2, \
+        'undamped Newton converged on arctan from 1.5, so this problem no ' \
+        'longer separates the two and the test proves nothing'
+    calls[0] = 0
+    x_on, _i, ier_on, _m = _an.fsolve(f, _np.array([1.5]), maxiter=40,
+                                      toolkit=_tk, full_output=True,
+                                      line_search=True)
+    assert ier_on == 1 and abs(float(x_on[0])) < 1e-8, \
+        'the damped solve did not reach the root (ier=%r, x=%r)' \
+        % (ier_on, x_on)
+
+    ## and the cost, on a real shooting solve: within one evaluation of
+    ## undamped, not double it
+    cir, per = _resonator_at_resonance()
+    counts = {}
+    for tag, ls in (('undamped', False), ('damped', True)):
+        n = [0]
+        orig = _an.fsolve
+
+        def counting(fn, *a, **k):
+            def g(z, *aa):
+                n[0] += 1
+                return fn(z, *aa)
+            k['line_search'] = ls
+            return orig(g, *a, **k)
+
+        import pycircuit.circuit.shooting as _sh
+        _sh.analysis.fsolve = counting
+        try:
+            pss = PSS(cir, method='trap', reltol=1e-10)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=per, timestep=per / 200, maxiterations=40)
+            assert pss.converged
+            counts[tag] = n[0]
+        finally:
+            _sh.analysis.fsolve = orig
+
+    assert counts['damped'] <= counts['undamped'] + 2, \
+        'damping cost %d residual evaluations against %d undamped -- the ' \
+        'trial evaluation is not being carried forward, which doubles ' \
+        'every converging solve' % (counts['damped'], counts['undamped'])
+
+    ## ⚠ AND THAT PSS ACTUALLY ASKS FOR IT.  The two checks above force the
+    ## flag themselves, so both pass with every shipped call site setting
+    ## `line_search=False` -- verified by mutation, which is how this gap
+    ## was found.  This one RECORDS what PSS passes instead of overriding
+    ## it.
+    seen = []
+    orig = _an.fsolve
+
+    def recording(fn, *a, **k):
+        seen.append(bool(k.get('line_search', False)))
+        return orig(fn, *a, **k)
+
+    import pycircuit.circuit.shooting as _sh
+    _sh.analysis.fsolve = recording
+    try:
+        for cf, per_, method in ((lambda: _resonator_at_resonance()[0],
+                                  _resonator_at_resonance()[1], 'trap'),
+                                 (_phase_circuit, 1e-3, 'trap')):
+            pss = PSS(cf(), method=method, reltol=1e-8)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=per_, timestep=per_ / 100, maxiterations=30)
+    finally:
+        _sh.analysis.fsolve = orig
+
+    assert seen and all(seen),         'PSS called fsolve with line_search=%r -- the damping is '         'implemented and not asked for' % (seen,)

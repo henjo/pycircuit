@@ -212,6 +212,47 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## Autonomous convergence: the outer Newton is now damped (2026-09-02)
+
+A review round read Brachtendorf, Melville, Feldmann, Lampe & Laur (TCAD 33(6) 867-878).
+Three results.
+
+**1. The trivial/DC collapse is generic, not ours.** *"Newton-like methods often fail to
+converge toward the limit cycle of high Q oscillators … and converges to the unstable
+DC-operating point solution instead. This result is INDEPENDENT OF THE SPECIFIC METHOD
+EMPLOYED"*, and *"the higher the quality factor … the tighter are the constraints for the
+initial estimate"*. Our `T = 0` regular-root record and the seed-sensitivity observation
+are that property of the problem. **Nothing to fix in the diagnosis.**
+
+**2. The outer Newton had no globalisation — now it does.** All three `fsolve` call sites
+took the full step with `limiter=None` and no line search, where the paper calls a
+**damped** Newton what is "widely employed". Added a bounded backtracking line search,
+off by default in `fsolve` so no other analysis changes.
+
+⚠ **What it does NOT buy, measured before keeping it:** it does not rescue a far seed.
+Van der Pol from 4×/10×/30× amplitude still fails; the failure *mode* improves (10× and
+30× now raise loudly instead of returning a wrong period) but seed dependence is untouched.
+That matches the literature, including the probe technique's own caveat that convergence
+"is still not always obtained". **Damping is the baseline, not the fix for the basin.**
+
+⚠ **And the cost had to be engineered away.** The obvious implementation evaluates `F` at
+the trial point and lets the next iteration evaluate it again at the same point —
+**doubling every converging solve** (measured 10 → 20 residual evaluations, each a full
+pass over the period). Carrying the trial forward makes the common case cost what undamped
+cost: **10 → 11** and **2 → 3**. A test guards the count, because the expensive version
+passes every correctness check.
+
+**3. A hazard our structure avoids, now recorded as a reason rather than luck.** The paper
+warns that adding an algebraic equation *"transforms the system of (implicit) ODEs to a
+system of DAEs"* and that *"transient methods may run into severe problems when the index
+… is two or higher"*. Our phase row augments the **outer** system; the inner integration is
+unaugmented, so it cannot raise the index of the DAE actually integrated — which matters
+in proportion to how badly index 2 already behaves here.
+
+Also recorded: the trivial-root warning now names the **probe technique** (Bizzarri et al.,
+already in the library) as the literature remedy, instead of only advising a better seed.
+And both phase conditions we tried are the standard two — there is no third being missed.
+
 ## The transposed monodromy: a spike that succeeded (2026-09-02)
 
 A review round identified one piece of machinery as the **shared dependency** of the two

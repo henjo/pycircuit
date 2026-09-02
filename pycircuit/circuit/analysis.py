@@ -307,7 +307,8 @@ def newton_tolerance_vectors(n_nodes, n_branches, iabstol, vabstol, toolkit):
 
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
-           xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None):
+           xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None,
+           line_search=False):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
     In each iteration the linear system
@@ -315,19 +316,66 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     M{J(x_n)(x_{n+1}-x_n) + F(xn) = 0
 
     is solved and a new value for x is obtained x_{n+1}
-    
+
+    ``line_search`` backtracks when the full Newton step does not reduce
+    ``||F||``.  Off by default, so every existing caller keeps taking the
+    full step.
+
+    ⚠ IT CANNOT CHANGE A SOLVE THAT WAS ALREADY WORKING.  The full step is
+    tried FIRST and accepted whenever it improves the residual, which is the
+    common case; the halving only runs where the undamped iteration would
+    have moved uphill -- and moving uphill is not a step a converging solve
+    takes.  What it costs is one extra residual evaluation per rejected
+    trial, which for a shooting analysis is a whole traversal, so the budget
+    is deliberately small.
     """
+
+    ## Bounded on purpose: each trial costs a residual, and for a shooting
+    ## caller that is a full pass over the period.  Four halvings reach
+    ## 1/16 of the Newton step, and a direction that is still uphill there
+    ## is not one more halving away from being useful.
+    _LS_MAX_HALVINGS = 4
     
     converged = False
     ier = 2
+    cached = None
     for i in range(maxiter):
-        F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
+        if cached is None:
+            F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
+        else:
+            F, J = cached
         xdiff = toolkit.linearsolver(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
-        
+        cached = None
+
+        if line_search:
+            ## ⚠ THE FULL STEP IS TRIED FIRST AND KEPT IF IT IMPROVES, so a
+            ## converging solve takes the same steps as the undamped one.
+            ##
+            ## ⚠ AND THE TRIAL EVALUATION IS CARRIED FORWARD, which is what
+            ## makes it affordable.  Evaluating `F` at the trial point and
+            ## then letting the NEXT iteration evaluate it again at the same
+            ## point doubles the cost of every converging solve -- measured,
+            ## 10 -> 20 residual evaluations on a Q=20 resonator, and for a
+            ## shooting caller each of those is a full pass over the period.
+            ## Cached, the common case costs exactly what the undamped loop
+            ## costs and only a REJECTED trial is extra.
+            F0 = float(toolkit.sqrt(toolkit.sum(F * F)))
+            step = 1.0
+            Ft, Jt = f(x, *args)
+            for _k in range(_LS_MAX_HALVINGS):
+                if float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0:
+                    break
+                step *= 0.5
+                x = x0 + step * xdiff
+                Ft, Jt = f(x, *args)
+            xdiff = x - x0          # the step actually taken, for conv_x
+            cached = (Ft, Jt)
+
         if limiter is not None:
             x = limiter(x, x0)
+            cached = None           # `x` moved after the trial evaluation
 
         # KCL Scale: Upper bound of absolute branch currents/voltages
         I_scale = toolkit.dot(abs(J), abs(x)) + abs(F)

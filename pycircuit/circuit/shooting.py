@@ -1196,7 +1196,8 @@ class PSS(Analysis):
             if solver is None:
                 z, info, ier, mesg = analysis.fsolve(
                     func, z0, maxiter=maxiter, reltol=reltol, abstol=abstol,
-                    xtol=xtol, toolkit=self.toolkit, full_output=True)
+                    xtol=xtol, toolkit=self.toolkit, full_output=True,
+                    line_search=True)
             else:
                 ## ⚠ THE MATRIX-FREE ROUTE COMES THROUGH HERE TOO, so the
                 ## trivial-root diagnosis below covers it.  Routing it around
@@ -1226,7 +1227,14 @@ class PSS(Analysis):
                 'The returned waveform is not a periodic steady state. '
                 'Raising maxiterations will not help -- seed at or above the '
                 'expected period instead; a short transient and the interval '
-                'between two output recurrences gives one.'
+                'between two output recurrences gives one. The literature '
+                'remedy for this basin is the PROBE technique -- a periodic '
+                'voltage source that feeds the oscillator until its own '
+                'current reaches zero, widening the basin so a Newton is '
+                'less likely to fall into the DC solution (Bizzarri et al., '
+                '"Probe Based Shooting Method ..."); it is not implemented '
+                'here, and it widens the basin rather than removing the '
+                'seed dependence.'
                 % (T, seed_period), RuntimeWarning, stacklevel=3)
         return z, info, ier, mesg
 
@@ -2956,6 +2964,19 @@ class PSS(Analysis):
             ## restructured, and re-selecting BETWEEN outer iterations does
             ## not threaten `phi` being a function of `x_0` alone.
             ##
+            ## ⚠ THE PHASE ROW SITS OUTSIDE THE INTEGRATOR ON PURPOSE, and
+            ## that placement is load-bearing rather than incidental.
+            ## Brachtendorf et al. (TCAD 33(6) 867-878) warn of the
+            ## alternative: "adding an algebraic equation transforms the
+            ## system of (implicit) ODEs to a system of DAEs.  Transient
+            ## methods may run into severe problems when the index of a
+            ## system of DAEs is two or higher."  This augments the OUTER
+            ## shooting system; the inner integration is unaugmented, so the
+            ## phase condition cannot raise the index of the DAE actually
+            ## being integrated -- which matters here in proportion to how
+            ## badly index 2 already behaves (trap and euler both fail to
+            ## converge on a V-source/C/C/R loop where gear does).
+            ##
             ## ⚠ THE RULE IS CANONICAL; RE-SELECTING IT WAS TRIED AND
             ## REJECTED, WITH NUMBERS.  Aprille & Trick's oscillator paper
             ## picks `k` by `argmax |f_k(x^i(T^i))|` -- the same quantity an
@@ -3236,6 +3257,17 @@ class PSS(Analysis):
                 "(method='trap' or 'euler') where the manufactured opening "
                 'is what this replaces.' % method)
 
+        ## ⚠ THE OUTER NEWTON IS DAMPED, which it was not.  All three
+        ## `fsolve` calls took the FULL step with `limiter=None` and no line
+        ## search -- a departure from standard practice rather than a
+        ## neutral choice: Brachtendorf et al. (TCAD 33(6) 867-878) describe
+        ## "shooting, finite difference, or harmonic balance techniques IN
+        ## CONJUNCTION WITH A DAMPED NEWTON METHOD" as what is "widely
+        ## employed" for limit cycles.  The full step is still tried first
+        ## and kept whenever it improves the residual, so a solve that was
+        ## converging is unchanged; the halving only runs where the
+        ## undamped iteration would have moved uphill.
+
         ## Find periodic steady state x-vector
         if self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
@@ -3360,7 +3392,7 @@ class PSS(Analysis):
                 z_ss, _info, _ier, _mesg = analysis.fsolve(
                     func_solved_history, z0, maxiter=maxiterations,
                     reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
-                    toolkit=self.toolkit, full_output=True)
+                    toolkit=self.toolkit, full_output=True, line_search=True)
             x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
         elif matrix_free:
             ## RECORDED SCOPE ITEM 6 on the PLAIN path: `m` columns rather
@@ -3380,7 +3412,8 @@ class PSS(Analysis):
         else:
             x0_ss, _info, _ier, _mesg = analysis.fsolve(
                 func, x, maxiter=maxiterations, reltol=_shoot_reltol,
-                abstol=_tol, xtol=_tol, toolkit=self.toolkit, full_output=True)
+                abstol=_tol, xtol=_tol, toolkit=self.toolkit,
+                full_output=True, line_search=True)
         self.converged = (_ier == 1)
         self.shooting_iterations = maxiterations if not self.converged else None
         ## ⚠ AN AUTONOMOUS OSCILLATOR CANNOT BE SOLVED AT A FIXED PERIOD,
