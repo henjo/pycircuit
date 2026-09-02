@@ -1850,20 +1850,34 @@ def test_a_matrix_free_solve_agrees_with_the_dense_one():
     assert pd.spectral_radius is not None
 
 
-def test_matrix_free_refuses_the_paths_it_has_not_got():
-    """Refused, not silently dense: the caller asked for a cost model.
+def test_matrix_free_covers_every_shooting_system():
+    """All four systems take `matrix_free=True`; none falls back silently.
 
-    Quietly taking the dense route would be a performance surprise with no
-    symptom -- the answer would be right and the reason for asking gone.
-
-    Three of the four systems are converted (driven plain, driven
-    solved-history, autonomous plain); only the COMPOSED autonomous one --
-    a two-step method on a self-oscillating circuit -- is not.
+    ⚠ THIS TEST USED TO ASSERT A REFUSAL and is kept, inverted, on purpose.
+    It guarded the composed autonomous system raising `NotImplementedError`
+    rather than quietly taking the dense route -- a performance surprise
+    with no symptom, since the answer would be right and only the reason for
+    asking would be gone. Now that the system is converted, the same risk
+    runs the other way: a later refactor could reintroduce a silent dense
+    fallback, and the shape of that failure is `spectral_radius` coming back
+    NOT None, because only the dense path forms a monodromy.
     """
+    import warnings
     circuit.default_toolkit = circuit.numeric
-    pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
-    with pytest.raises(NotImplementedError, match='COMPOSED'):
-        pss.solve(period=1e-3, timestep=1e-3 / 50, matrix_free=True)
+    cases = ((_q20_rlc(), 'trap', 1e-3, 100),        # driven plain
+             (_rc_ladder(6), 'gear', 1e-3, 50),      # driven solved-history
+             (_phase_circuit(), 'trap', 1e-3, 200),  # autonomous plain
+             (_phase_circuit(), 'gear', 1e-3, 100))  # autonomous composed
+    for cir, method, period, npts in cases:
+        pss = PSS(cir, method=method, reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=period, timestep=period / npts,
+                      maxiterations=25, matrix_free=True)
+        assert pss.spectral_radius is None, \
+            '%s/%s reported a spectral radius after a matrix-free solve, ' \
+            'which means a monodromy was formed -- the dense path ran' \
+            % (method, 'autonomous' if pss.autonomous else 'driven')
 
 
 def test_a_parasitic_root_near_the_unit_circle_is_not_read_as_stability():
@@ -2165,6 +2179,68 @@ def test_a_matrix_free_autonomous_solve_agrees_with_the_dense_one():
             res = pss.solve(period=1e-3, timestep=1e-3 / 200,
                             maxiterations=30, matrix_free=mf)
         out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
+    (pd, xd), (pm, xm) = out
+    assert pd.converged and pm.converged
+    assert np.max(np.abs(xd - xm)) / np.max(np.abs(xd)) < 1e-9
+    assert abs(pm.period - pd.period) < 1e-12 * pd.period, \
+        'matrix-free solved T=%.12g against the dense %.12g' \
+        % (pm.period, pd.period)
+
+
+def test_a_matrix_free_composed_autonomous_solve_agrees_with_the_dense_one():
+    """BOTH enlargements at once, matrix-free: `(x_0, x_{-1}, T)`.
+
+    The last of the four systems.  With `w = (v_0, v_{-1}, s)` and `M v` the
+    `2m` pair map,
+
+        J w = [ v - M v - s (dx_{N-1}/dT, dx_{N-2}/dT) ;  v[k] ]
+
+    -- ONE phase row, pinning the `x_0` block only, because time translation
+    slides both states along the orbit together and the freedom stays
+    one-dimensional.
+
+    ⚠ BOTH period columns are asserted against the dense traversal before
+    the solve is.  They are the part with no analogue in the other three
+    systems, and a solve can absorb a wrong one by moving `x_0` instead --
+    returning a converged answer at a period that is quietly off.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=25)
+    m = pss.cir.n - 1
+    T = pss.period
+    times, hs = pss._period_grid(T, 100, None)
+    rng = np.random.default_rng(11)
+    a, b = 0.01 * rng.standard_normal(m), 0.01 * rng.standard_normal(m)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        xl, xp, Pl, Pp, Ptl, Ptp = pss._traverse_solved_history(
+            a, b, times, hs, T=T, want_dT=True)
+        C0, st, xlf, xpf, Ptlf, Ptpf = pss._traverse_factored(
+            a, b, times, hs, T=T, want_dT=True)
+
+    rel = lambda g, w: (np.linalg.norm(np.asarray(g).ravel()
+                                       - np.asarray(w).ravel())
+                        / max(np.linalg.norm(np.asarray(w).ravel()), 1e-300))
+    assert rel(Ptlf, Ptl) < 1e-11, 'dx_{N-1}/dT differs by %.3e' % rel(Ptlf, Ptl)
+    assert rel(Ptpf, Ptp) < 1e-11, 'dx_{N-2}/dT differs by %.3e' % rel(Ptpf, Ptp)
+    M = np.vstack((Pl, Pp))
+    for _ in range(3):
+        v = rng.standard_normal(2 * m)
+        assert rel(pss._monodromy_matvec(C0, st, v), M @ v) < 1e-9
+
+    ## and the solve itself, period included
+    out = []
+    for mf in (False, True):
+        p = PSS(_phase_circuit(), method='gear', reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = p.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=25,
+                        matrix_free=mf)
+        out.append((p, np.asarray(r['tpss'].x, dtype=float).ravel()))
     (pd, xd), (pm, xm) = out
     assert pd.converged and pm.converged
     assert np.max(np.abs(xd - xm)) / np.max(np.abs(xd)) < 1e-9

@@ -155,8 +155,37 @@ Nothing from the original three. Two candidates, neither started:
   **The remaining gap is diagnostic** — naming an inconsistent phase plane the way the
   `T = 0` trivial root is named — and is not started.
 
-- **Matrix-free for the autonomous and plain paths — DONE 2026-09-02.** Three of the four
-  systems are now converted; only the composed autonomous `(x₀, x₋₁, T)` raises.
+- **Matrix-free for the autonomous and plain paths — DONE 2026-09-02.** All four
+  shooting systems now take `matrix_free=True`; nothing refuses.
+
+  | system | | | |
+  |---|---|---|---|
+  | driven solved-history (2m cols) | 1.36× (242) | 1.51× (502) | 2.13× (1002) |
+  | driven plain (m cols) | 1.10× (242) | 1.34× (502) | 1.63× (1002) |
+  | autonomous plain (m + border) | 1.02× (128) | 1.11× (308) | 1.34× (608) |
+  | autonomous composed (2m + border) | 1.22× (208) | 1.65× (408) | |
+
+  All agree with the dense path to ≤2e-16, and both autonomous systems reproduce the
+  period exactly. The plain path's propagation share is about half the solved-history
+  path's — 42.5% vs 63.8% at m=502 — exactly what m columns instead of 2m against the
+  same assembly must mean, and why the two 2m systems win earlier and by more.
+
+  The composed bordered matvec is `J[v;s] = [v − Mv − s·(Pt_last, Pt_prev) ; v[k]]` —
+  one phase row pinning the `x₀` block only, because time translation slides both states
+  along the orbit together so the freedom stays one-dimensional.
+
+  ⚠ **Found on the way: the plain path had its own inlined copy of `_step_sensitivity`**,
+  byte-for-byte, while that method's docstring claimed the systems "share this and not a
+  copy". Found because a timer wrapped around it reported the plain path's propagation
+  share as **0.0%** — not a small number but a wrong one. De-duplicated.
+
+  ⚠ **And two bugs from `_coeffs` being live state.** The manufacturing step is
+  order-dropped to Euler (`b = 0`) while loop steps run the method's own pair. Applying
+  the opening's pair to every step put the period column 40–50% out for trap and gear;
+  applying the loop's to the opening made `Pq` non-zero where `_traverse` seeds it at
+  zero — 100% wrong for trap. **Both times the trajectory itself matched to zero**, and
+  `euler` was exact under both, so a one-method test would have passed.
+
 
   | system | m=242/128 | m=502/308 | m=1002/608 |
   |---|---|---|---|

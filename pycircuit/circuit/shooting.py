@@ -1426,7 +1426,8 @@ class PSS(Analysis):
             return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
         return x, x_prev, Px[0], P_prev
 
-    def _traverse_factored(self, x0_in, xm1_in, times, hs):
+    def _traverse_factored(self, x0_in, xm1_in, times, hs, T=None,
+                           want_dT=False):
         """One period WITHOUT the sensitivities, keeping each step factored.
 
         RECORDED SCOPE ITEM 6, the trajectory half.  `_traverse_solved_history`
@@ -1450,10 +1451,14 @@ class PSS(Analysis):
         long period and a large circuit can run out of memory where the
         dense path merely ran slowly.
         """
-        from scipy.linalg import lu_factor
+        from scipy.linalg import lu_factor, lu_solve
         m = self.cir.n - 1
+        self._want_dfdh = want_dT
         self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
         C0 = [np.asarray(self._C_at(x0_in)), np.asarray(self._C_at(xm1_in))]
+        Cs = list(C0)
+        Pt = [np.zeros(m), np.zeros(m)]
+        Pqt = np.zeros(m)
         steps = []
         x, x_prev = copy(x0_in), copy(xm1_in)
         for _j, t in enumerate(times[1:]):
@@ -1466,8 +1471,28 @@ class PSS(Analysis):
             ## here.  It was right by luck rather than by construction --
             ## the plain path, whose opening IS dropped to Euler, showed
             ## what that luck is worth.  See `_traverse_factored_plain`.
-            steps.append((lu_factor(np.asarray(self._Jf)),
-                          np.asarray(self._C).copy()) + self._coeffs)
+            alphas, b = self._coeffs
+            C_new = np.asarray(self._C).copy()
+            lu = lu_factor(np.asarray(self._Jf))
+            steps.append((lu, C_new, alphas, b))
+            if want_dT:
+                ## BOTH ROWS NEED A PERIOD COLUMN -- `dx_{N-1}/dT` and
+                ## `dx_{N-2}/dT` -- and the ring carries both, so this is the
+                ## same one-column recursion the plain path runs, kept to the
+                ## end.  Neither depends on the Krylov direction, so both are
+                ## computed once per Newton iteration rather than per GMRES
+                ## iteration.
+                St = b * Pqt if b else np.zeros(m)
+                for k in range(1, len(alphas)):
+                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
+                St = St + np.asarray(self._dfdh).ravel() * (hs[_j] / T)
+                Pt_new = -lu_solve(lu, St)
+                Pqt = alphas[0] * (C_new @ Pt_new) + St
+                Pt = [Pt_new, Pt[0]]
+            Cs = [C_new, Cs[0]]
+        self._want_dfdh = False
+        if want_dT:
+            return C0, steps, x, x_prev, Pt[0], Pt[1]
         return C0, steps, x, x_prev
 
     def _monodromy_matvec(self, C0, steps, v):
@@ -2244,18 +2269,20 @@ class PSS(Analysis):
         is `None` after a matrix-free solve -- not forming that matrix is
         the entire point.
 
-        Three of the four systems are converted.  Measured end to end,
+        ALL FOUR SYSTEMS are converted.  Measured end to end,
         single-threaded, against the dense path:
 
           driven solved-history (2m columns)   1.36x/1.51x/2.13x  m=242/502/1002
           driven plain          (m columns)    1.10x/1.34x/1.63x  m=242/502/1002
           autonomous plain      (m + border)   1.02x/1.11x/1.34x  m=128/308/608
+          autonomous composed   (2m + border)  1.22x/1.65x        m=208/408
 
         The plain path's share is about HALF the solved-history path's --
         42.5% against 63.8% at m=502 -- which is what `m` columns instead of
-        `2m` against the same assembly has to mean.  The COMPOSED autonomous
-        system `(x_0, x_{-1}, T)` is not converted and raises, rather than
-        silently taking the dense route the caller asked to avoid.
+        `2m` against the same assembly has to mean, and it is why the two
+        `2m` systems win earlier and by more.  Every one of them agrees with
+        the dense path to <= 2e-16, and both autonomous ones reproduce the
+        period exactly.
         """
         self.period = period
         toolkit = self.toolkit
@@ -2555,16 +2582,6 @@ class PSS(Analysis):
         ## implies; quietly taking the dense route would be a performance
         ## surprise with no symptom, which is the shape of defect this tree
         ## has paid for before.
-        if matrix_free and self.autonomous and solved_history:
-            raise NotImplementedError(
-                'PSS: matrix_free=True does not yet cover the COMPOSED '
-                'autonomous system -- a two-step method on a self-'
-                'oscillating circuit, whose unknowns are (x_0, x_{-1}, T). '
-                'The other three systems are converted: driven plain, '
-                'driven solved-history, and the plain autonomous (x_0, T). '
-                "Use matrix_free=False here, or method='trap' if a one-step "
-                'method is acceptable for this circuit.')
-
         ## Find periodic steady state x-vector
         if self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
@@ -2577,9 +2594,42 @@ class PSS(Analysis):
             z0 = np.concatenate((xa, xa, [period]))
             abstol_z = np.concatenate((_tol, _tol, [_tol[phase_k]]))
             xtol_z = np.concatenate((_tol, _tol, [1e-15 * period]))
+            _mfc = None
+            if matrix_free:
+                ## BOTH ENLARGEMENTS AT ONCE, matrix-free.  With
+                ## `w = (v_0, v_{-1}, s)` and `M v` the `2m` pair map,
+                ##     J w = [ v - M v - s (Pt_last, Pt_prev) ; v[k] ]
+                ## -- one phase row, pinning the `x_0` block only, exactly as
+                ## the dense system does and for the same reason.
+                self._monodromy = None
+
+                def _build_comp(z):
+                    x0_, xm1_, T_ = z[:m_], z[m_:2 * m_], float(z[-1])
+                    tms_, hsT_ = self._period_grid(T_, npts, self._grid_fracs)
+                    (C0_, st_, xl_, xp_, Ptl_,
+                     Ptp_) = self._traverse_factored(
+                        x0_, xm1_, tms_, hsT_, T=T_, want_dT=True)
+                    Ptv_ = np.concatenate((np.asarray(Ptl_).ravel(),
+                                           np.asarray(Ptp_).ravel()))
+                    F_ = np.concatenate(
+                        (np.asarray(x0_, dtype=float) - np.asarray(xl_, dtype=float),
+                         np.asarray(xm1_, dtype=float) - np.asarray(xp_, dtype=float),
+                         [float(np.asarray(x0_, dtype=float)[phase_k])
+                          - phase_pin]))
+
+                    def mv_(w):
+                        v_, s_ = w[:2 * m_], float(w[2 * m_])
+                        top = (v_ - alpha * self._monodromy_matvec(C0_, st_, v_)
+                               - s_ * Ptv_)
+                        return np.concatenate((top, [v_[phase_k]]))
+                    return F_, mv_
+
+                def _mfc(z0_, ab_, xt_, rt_, mi_):
+                    return self._matrix_free_newton(_build_comp, z0_, ab_,
+                                                    xt_, rt_, mi_)
             z_ss, _info, _ier, _mesg = self._free_period_solve(
                 func_autonomous_solved_history, z0, abstol_z, xtol_z,
-                _shoot_reltol, maxiterations, period)
+                _shoot_reltol, maxiterations, period, solver=_mfc)
             x0_ss, xm1_ss = z_ss[:m_], z_ss[m_:2 * m_]
             self.period = period = float(z_ss[-1])
             times, hs = self._period_grid(period, npts, self._grid_fracs)

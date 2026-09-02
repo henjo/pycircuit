@@ -163,20 +163,30 @@ crosses 30% near m=220 and reaches 79% at m=1002.  Item 6 is JUSTIFIED
 above m~250 and remains POINTLESS at m=40, where the old verdict stands on
 the corrected number too (4.8%, ceiling 1.02x).
 
-⚠ AND IT IS NOW BUILT -- `PSS.solve(matrix_free=True)`, driven
-solved-history path only.  What it actually delivers, end to end, against
-the dense path on this same ladder:
+⚠ AND IT IS NOW BUILT for ALL FOUR shooting systems --
+`PSS.solve(matrix_free=True)`.  What it delivers end to end against the
+dense path (the first two rows on this same ladder, the autonomous ones on
+a quadrature oscillator driving one):
 
-      m    dense (iters)      matrix-free (iters)     speedup
-    242      2.113 s (2)            1.557 s (2)        1.36x
-    502      9.255 s (2)            6.131 s (3)        1.51x
-   1002     52.402 s (2)           24.636 s (3)        2.13x
+  driven solved-history (2m cols)    1.36x / 1.51x / 2.13x   m=242/502/1002
+  driven plain          (m cols)     1.10x / 1.34x / 1.63x   m=242/502/1002
+  autonomous plain      (m+border)   1.02x / 1.11x / 1.34x   m=128/308/608
+  autonomous composed   (2m+border)  1.22x / 1.65x           m=208/408
 
-Lower than the traversal-only figures below (2.23x at m=502) because a
-`solve` also does setup, the replay and the DFT, none of which this
-touches, and matrix-free spends an extra Newton iteration.  Both numbers
-are true; say which one is being quoted.  Measured k: 2/4/7/12 at
-m=40/110/242/502, against the 20 assumed here.
+⚠ THE PLAIN PATH'S SHARE IS ABOUT HALF the solved-history path's -- 42.5%
+against 63.8% at m=502, 60.7% against 79.1% at m=1002 -- because it
+propagates `m` columns rather than `2m` against the same assembly.  That is
+why the two `2m` systems win earlier and by more, and it is the figure to
+reach for when asked whether matrix-free is worth it for a given circuit.
+
+All four agree with the dense path to <= 2e-16 and both autonomous systems
+reproduce the period exactly.
+
+These end-to-end numbers are LOWER than the traversal-only figures below
+(2.23x at m=502) because a `solve` also does setup, the replay and the DFT,
+none of which this touches, and matrix-free spends an extra Newton
+iteration.  Both are true; say which one is being quoted.  Measured k:
+2/4/7/12 at m=40/110/242/502, against the 20 assumed here.
 
 ⚠ BUT THE SHARE DEPENDS ON BLAS THREADING, so quote the condition with the
 number.  With threads left free those same sizes read 4.8 / 7.2 / 12.4 /
