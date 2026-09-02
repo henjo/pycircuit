@@ -2322,3 +2322,59 @@ def test_a_failed_inner_krylov_solve_says_so():
         'the Krylov failure was not named; warnings were %r' % msgs
     assert any('matrix_free=False' in m for m in msgs), \
         'the message does not say what to do instead'
+
+
+def test_pss_refuses_a_circuit_carrying_hidden_state():
+    """A `TLine` under PSS was SILENTLY A SHORT, and reported success.
+
+    ⚠ THIS IS KUNDERT'S HIDDEN STATE, and the tree already knew the defect
+    by name -- `transient.py` carries a comment about the identical failure
+    being found and fixed THERE ("TLine.G saw an empty buffer and stamped
+    the line as a DC SHORT").  PSS reproduced it, because `TLine.history` is
+    filled by `cir.accept_step`, which a forward transient calls at every
+    accepted step and which PSS never calls: it drives `solve_timestep`
+    directly.
+
+    Measured on a quarter-wave open stub before the refusal went in:
+
+        PSS  converged       True
+        PSS  spectral_radius 0.0        <- a circuit reporting no state
+        PSS  warnings        NONE
+        PSS  amp v(b)        0.999969   <- line absent, source sees an open
+        TRAN amp v(b)        0.244201   <- line active
+
+    ⚠ AND FILLING THE BUFFER IS NOT THE FIX, which is why this asserts a
+    REFUSAL and not a number.  Calling `accept_step` per step would populate
+    the history and make `phi` genuinely history-dependent, so the monodromy
+    would be the derivative of a neighbouring problem -- the exact thing
+    `_begin_period` exists to prevent.  `_begin_period` resets what is in
+    `x`; no reset of the integrator rings can make a period map that is not
+    a function of `x_0` into one that is.
+    """
+    from pycircuit.circuit import TLine, Node
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-9
+    c = SubCircuit()
+    c['vs'] = VSin(Node('a'), gnd, va=1.0, freq=1.0 / per)
+    c['rs'] = R(Node('a'), Node('b'), r=50.0)
+    c['t1'] = TLine(Node('b'), gnd, Node('c'), gnd, Z0=50.0, TD=per / 4.0)
+
+    ## the element declares it, and the circuit finds it by instance name
+    assert c.hidden_state_elements() == ['t1']
+
+    with pytest.raises(NotImplementedError, match='HIDDEN STATE'):
+        PSS(c).solve(period=per, timestep=per / 200)
+
+    ## ⚠ and the refusal must not sweep in ordinary circuits.  Overriding
+    ## `accept_step` is NOT the criterion -- `_WrapEvents` and the HDL
+    ## `@cross` wrapper do, and feed only `next_event`, which PSS ignores
+    ## because it imposes its own grid.  A diode's `_vlim` is hidden state
+    ## too and is self-erasing (the inner Newton drives it to `v` at
+    ## convergence), so it is not declared either.
+    assert _q20_rlc().hidden_state_elements() == []
+    pss = PSS(_q20_rlc(), method='trap', reltol=1e-6)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=20)
+    assert pss.converged

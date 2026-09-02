@@ -2350,6 +2350,12 @@ class TLine(Circuit):
         """
         return float(self.iparv.TD) / 2.0
 
+    ## ⚠ `history` IS HIDDEN STATE and `G`/`u` stamp from it: with the
+    ## buffer empty they stamp a DC SHORT, which is why a shooting analysis
+    ## has to refuse this element rather than integrate it and hope.  See
+    ## `Circuit.hidden_state`.
+    hidden_state = True
+
     def accept_step(self, t, x, epar):
         # Extract voltages and currents from x
         # x is [Vp1, Vm1, Vp2, Vm2, I1, I2]

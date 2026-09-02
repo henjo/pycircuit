@@ -212,7 +212,46 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
-## External review, 2026-09-02 — three findings, all confirmed
+## ⚠ Hidden state: PSS silently replaced a TLine with a short (fixed 2026-09-02)
+
+Raised by external review, reproduced here before acting. On a quarter-wave open stub:
+
+| | PSS | Transient |
+|---|---|---|
+| converged | **True** | — |
+| spectral_radius | **0.0** | — |
+| warnings | **none** | — |
+| amplitude v(b) | **0.999969** (line absent) | **0.244201** (line active) |
+| TLine history | **0** | 4 |
+
+**Mechanism.** `TLine.history` is per-element state outside `x`, filled by
+`cir.accept_step` — which a forward transient calls at every accepted step and which
+PSS never calls, because it drives `solve_timestep` directly. `TLine.G`/`u` branch on
+an empty buffer and stamp a **DC short**. This is Kundert's hidden state: the period
+map is not a function of `x₀`, so the periodicity condition is imposed on an incomplete
+state and Newton converges to something meaningless. `spectral_radius = 0.0` is the
+tell — a circuit reporting no state at all. ⚠ **The tree already knew this defect by
+name**: `transient.py` carries a comment about the identical failure being found and
+fixed *there*.
+
+**Why filling the buffer is not the fix.** Calling `accept_step` per step would populate
+the history and make `phi` genuinely history-dependent — so the monodromy would be the
+derivative of a neighbouring problem, the exact failure `_begin_period` exists to
+prevent. `_begin_period` resets what is *in* `x`; that is the right scope for the
+integrator rings and the wrong one for state outside the vector, and no reset of the
+rings turns a period map that is not a function of `x₀` into one that is.
+
+**What was done: refuse, and say why.** `Circuit.hidden_state` is declared on the
+element (`TLine` sets it), `hidden_state_elements()` finds them by instance path, and
+`PSS.solve` raises naming the elements and pointing at `Transient`. ⚠ Overriding
+`accept_step` is deliberately *not* the criterion — `_WrapEvents` and the HDL `@cross`
+wrapper override it and feed only `next_event`, which PSS ignores because it imposes
+its own grid; a diode's `_vlim` is hidden state too but self-erasing. Sniffing the
+method would refuse ordinary circuits.
+
+No PSS test used a `TLine`, which is why this was never caught here.
+
+## External review, 2026-09-02 — first round, three findings, all confirmed
 
 A read-only review against the shooting/PSS literature (Telichevesky/Kundert/White
 DAC'95, Kundert ICCAD'97, Nastov, ter Maten) raised three; each was verified here

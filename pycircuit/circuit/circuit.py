@@ -450,11 +450,43 @@ class Circuit():
                 self.nodes.remove(node)
                 self.nodes.insert(self._nterminalnodes-1, node)
                 
+    ## ⚠ STATE OUTSIDE `x` THAT THE STAMPS DEPEND ON -- Kundert's HIDDEN
+    ## STATE.  An element setting this True is saying: `i`, `G` or `u` read
+    ## something that `accept_step` filled, so the element's contribution is
+    ## not a function of `x` alone.
+    ##
+    ## A TRANSIENT can carry that state, because it walks forward and calls
+    ## `accept_step` at every accepted step.  A SHOOTING analysis cannot:
+    ## its whole premise is that the period map is a function of `x_0`, and
+    ## it re-integrates the same interval from a fresh state on every
+    ## iteration.  Hidden state breaks that premise silently -- measured on
+    ## a quarter-wave `TLine`, PSS returned `converged = True`,
+    ## `spectral_radius = 0.0` and an amplitude of 0.999969 where a
+    ## transient gives 0.244201, because an empty history stamps the line as
+    ## a DC SHORT.
+    ##
+    ## Declared on the ELEMENT rather than sniffed by the analysis, because
+    ## overriding `accept_step` is not the same question: `_WrapEvents` and
+    ## the HDL `@cross` wrapper override it and feed only `next_event`,
+    ## which a shooting analysis ignores because it imposes its own grid.
+    ## Those stay False, and say so.
+    hidden_state = False
+
     def accept_step(self, t, x, epar):
         """Called by the transient solver when a time step is accepted.
         This allows elements with state history (e.g. T-Lines) to update their internal history buffers.
+
+        ⚠ An element that STAMPS from what this fills must also set
+        `hidden_state = True`; see the note above it.
         """
         pass
+
+    def hidden_state_elements(self, prefix=''):
+        """Names of elements carrying hidden state, for an analysis to refuse.
+
+        A leaf element answers for itself; `SubCircuit` recurses.
+        """
+        return [prefix or type(self).__name__] if self.hidden_state else []
 
     def reset_state(self, epar=None):
         """Discard any state carried over from a previous analysis.
@@ -1542,6 +1574,14 @@ class SubCircuit(Circuit):
             if hasattr(element, 'accept_step'):
                 subx = x[elementnodemap[instance]]
                 element.accept_step(t, subx, epar)
+
+    def hidden_state_elements(self, prefix=''):
+        """Every child carrying hidden state, named by its instance path."""
+        found = []
+        for instance, element in self.elements.items():
+            name = '%s.%s' % (prefix, instance) if prefix else str(instance)
+            found.extend(element.hidden_state_elements(name))
+        return found
 
     def reset_state(self, epar=None):
         """Propagate reset_state to all child elements -- see Circuit.reset_state."""

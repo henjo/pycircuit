@@ -2381,6 +2381,40 @@ class PSS(Analysis):
         the dense path to <= 2e-16, and both autonomous ones reproduce the
         period exactly.
         """
+        ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
+        ## `TLine.history` is filled by `cir.accept_step`, which the
+        ## TRANSIENT calls at every accepted step and which this analysis
+        ## never calls -- PSS drives `solve_timestep` directly.  With the
+        ## buffer empty `TLine.G`/`u` stamp a DC SHORT, so the line is
+        ## silently absent: measured on a quarter-wave open stub, PSS
+        ## returned `converged = True`, `spectral_radius = 0.0`, NO warning,
+        ## and an amplitude of 0.999969 where a transient gives 0.244201.
+        ##
+        ## ⚠ AND FILLING THE BUFFER IS NOT THE FIX.  Calling `accept_step`
+        ## per step would populate it and make `phi` genuinely
+        ## history-dependent -- so the monodromy would be the derivative of
+        ## a neighbouring problem, which is the exact failure `_begin_period`
+        ## exists to prevent.  `_begin_period` resets what is IN `x`; that is
+        ## the right scope for the integrator rings and the wrong one for
+        ## state living outside the vector, and no reset of the rings can
+        ## fix a period map that is not a function of `x_0`.  The honest
+        ## answers are to admit the delay state into the unknowns (a
+        ## different analysis) or to refuse; this refuses.
+        _hidden = self.cir.hidden_state_elements()
+        if _hidden:
+            raise NotImplementedError(
+                'PSS: this circuit carries HIDDEN STATE -- %s -- and a '
+                'shooting analysis cannot solve it. The period map must be '
+                'a function of x_0 alone, and these elements stamp from '
+                'state that lives outside x and is filled by accept_step, '
+                'which only a forward transient calls. Left alone the '
+                'answer would be silently wrong rather than slow: an empty '
+                'TLine history stamps the line as a DC short and the solve '
+                'reports converged. Use Transient for this circuit; making '
+                'it shootable means admitting the delay state into the '
+                'unknowns, which is a different analysis.'
+                % ', '.join(sorted(_hidden)))
+
         self.period = period
         toolkit = self.toolkit
 
