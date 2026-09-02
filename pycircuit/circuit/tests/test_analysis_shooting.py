@@ -2943,3 +2943,83 @@ def test_x0_unknown_solves_for_the_period_s_own_start():
         assert abs(peak - got[('trap', 100, True)]) < 1e-6, \
             'matrix_free=%s changed the x0_unknown answer: %.6f against ' \
             '%.6f' % (mf, peak, got[('trap', 100, True)])
+
+
+def test_the_period_column_agrees_with_the_vector_field_at_T():
+    """Aprille & Trick's closed form, used as an independent check.
+
+    [AT-O] (IEEE TCT 19(4) 354-360, 1972) eq.(19) gives the period column in
+    closed form: `dH/dT = -f(x(T))`, the vector field at the END of the
+    period -- so `dx_end/dT = xdot(T)`.
+
+    ⚠ THAT IS THE CONTINUOUS DERIVATIVE AND IT IS NOT WHAT THIS CODE
+    COMPUTES, deliberately.  PSS rebuilds the grid at the current `T`, so
+    every step scales and the exact derivative of the DISCRETE map carries
+    the `dh/dT = h/T` terms `companion_dT` accumulates.  The two agree only
+    to O(h), and the accumulated one is the more exact object -- replacing
+    it with `-f(x(T))` would be a step backwards.
+
+    ⚠ WHAT MAKES IT VALUABLE IS THE INDEPENDENCE.  The check does not
+    re-derive the accumulation; it compares against a quantity taken from
+    the converged waveform itself, so an error IN the accumulation cannot
+    hide in it.  The assertion is therefore about the RATE, not the value:
+    the gap must be O(h) and must FALL under refinement.
+
+    Measured (autonomous phase circuit, relative gap, ratio between
+    successive doublings):
+
+        npts    trap                gear
+         100    9.51e-02            3.25e-02
+         200    4.73e-02  (2.01x)   1.61e-02  (2.02x)
+         400    2.36e-02  (2.00x)   7.99e-03  (2.01x)
+         800    1.18e-02  (2.00x)   3.99e-03  (2.01x)
+
+    ⚠ AND IT REJECTS THE DEFECT IT WAS ADDED FOR.  With Gear-2's period
+    column back on the PARTIAL `d/dh_n` -- the 3/2 error fixed earlier --
+    the gap stops falling and plateaus at exactly 0.5, which is
+    `|1.5x - x| / |x|`: 0.486 / 0.495 / 0.498 / 0.499, ratio 1.00.  A
+    constant-factor error is invisible to any test that only asks whether a
+    number is small; it is unmissable to one that asks whether it falls.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    for method in ('trap', 'gear'):
+        gaps = []
+        for npts in (100, 200, 400):
+            pss = PSS(_phase_circuit(), method=method, reltol=1e-10)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = pss.solve(period=1e-3, timestep=1e-3 / npts,
+                                maxiterations=30)
+            assert pss.converged
+            T = pss.period
+            Xw = np.asarray(res['tpss'].x, dtype=float)
+            ir = pss.irefnode
+            red = lambda col: np.concatenate((Xw[:ir, col], Xw[ir + 1:, col]))
+            x0 = red(0)
+            times, hs = pss._period_grid(T, npts, None)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                if pss._solves_history():
+                    _a, _b, _c, _d, Mt, _e = pss._traverse_solved_history(
+                        x0, red(-2), times, hs, T=T, want_dT=True)
+                else:
+                    _x0, _xe, _M, Mt = pss._traverse(x0, T, times, hs,
+                                                     want_dT=True)
+            ## xdot(T) from the converged waveform -- nothing borrowed from
+            ## the accumulation being checked
+            xdot = (red(-1) - red(-2)) / hs[-1]
+            Mt = np.asarray(Mt, dtype=float).ravel()
+            gaps.append(float(np.linalg.norm(Mt - xdot)
+                              / max(np.linalg.norm(xdot), 1e-300)))
+
+        assert gaps[0] < 0.25, \
+            '%s: the period column is %.3e from the vector field at T on ' \
+            'the coarsest grid -- an O(1) gap is a wrong column, not a ' \
+            'discretisation difference' % (method, gaps[0])
+        for a, b in zip(gaps, gaps[1:]):
+            assert b < a / 1.6, \
+                '%s: the gap to -f(x(T)) went %.3e -> %.3e, a factor of ' \
+                '%.2f where O(h) needs ~2. A gap that does not FALL is a ' \
+                'constant-factor error in the column -- exactly what a 3/2 ' \
+                'partial-derivative bug looks like here' % (method, a, b, a / b)

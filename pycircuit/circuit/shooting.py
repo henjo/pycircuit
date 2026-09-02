@@ -814,7 +814,34 @@ class PSS(Analysis):
          Gear-2's solved-history route is quadratic.  It is a contraction,
          not a Newton.
 
-         ⚠ WHICH MAKES THE FIX NAMEABLE: make `x_0` the unknown.  The
+         ⚠ AND THE LITERATURE SETTLES THE DESIGN QUESTION: `x_0` IS THE
+        CANONICAL UNKNOWN, so this is a RETURN and not an invention.
+        Aprille & Trick (Proc IEEE 60(1) 108-114, 1972), "The Problem":
+        "determine the periodic state w(0) such that integrating (1) from
+        the initial state w(0) over the interval [0, T] we obtain the
+        periodic solution", with Step 1 "for the given initial state x_0^i
+        compute the solution x^i(t; x_0^i), 0 <= t <= T".  The trajectory
+        begins AT the unknown; there is no pre-image and nothing
+        manufactured before the first step.  Same in the oscillator paper
+        (IEEE TCT 19(4) 354-360) and in Trick, Colon & Fan (TCAS 22(5)
+        391-396) eq.(2).
+
+        ⚠ AND THE IDENTITY SEED IS THEIRS TOO, which is what makes the frame
+        error precise.  [AT-P] gives the discrete sensitivity for backward
+        Euler as `Phi(T,0;x_0) = PROD [I - h F(x)]^-1` -- k factors seeded by
+        `z(0)` at `t = 0`, i.e. the identity AT `x_0`, which in their
+        formulation IS the unknown.  This file kept A&T's JACOBIAN and
+        changed A&T's UNKNOWN.  `Px = [I, I]` is not wrong in isolation; it
+        is correct for the formulation it came from and wrong for the one it
+        now sits in.
+
+        ⚠ WHAT PRECEDENT DOES NOT SETTLE is the COST, because A&T never paid
+        it: they used BACKWARD EULER, which is L-stable, so the `(-1)^n`
+        obstruction that forces an L-stable opener here never arose for
+        them.  Their Phi is derived at fixed step for one method; the k-step
+        and non-uniform-grid questions are later work.
+
+        ⚠ WHICH MAKES THE FIX NAMEABLE: make `x_0` the unknown.  The
          throwaway driver that solved van der Pol did exactly that (its
          unknown was `x_0` itself), and item 5's note already half-records
          it.  Not built here; written down so the next attempt starts from
@@ -2836,6 +2863,28 @@ class PSS(Analysis):
             _x1 = self.solve_timestep(x, times[0], hs[0])
             _x2 = self.solve_timestep(_x1, times[1], hs[0], iq_last=self._iq)
             phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
+            ## ⚠ THE RULE ITSELF IS CANONICAL.  Aprille & Trick's
+            ## oscillator paper, Step 3: "select k by
+            ## |f_k(x^i(T^i))| = max_k |f_k(x^i(T^i))|" -- argmax of the
+            ## vector field, which is what an argmax over one step is up to
+            ## `h`, and `h` is common to every coordinate so the mixed units
+            ## cancel exactly.  Both the rule and the decision not to
+            ## replace it with a Poincare row have precedent as well as
+            ## measurement behind them.
+            ##
+            ## ⚠ WHAT IS NOT CANONICAL IS FREEZING IT.  Their Step 3 sits
+            ## INSIDE the iteration (Step 5 returns to Step 1), so `k` and
+            ## the pinned value are re-chosen from the CURRENT trajectory
+            ## every iterate -- "note that in this method, an initial k and
+            ## w_0k are not required".  Pinning `w_0k = x_0k^i`, the
+            ## iterate's OWN current value, is attainable by construction,
+            ## which removes the failure mode measured below (a far seed
+            ## pinning a value the orbit never reaches) structurally rather
+            ## than by advice.  Not done here: `analysis.fsolve` exposes no
+            ## per-iteration hook, so it needs the autonomous outer solve
+            ## restructured, and re-selecting BETWEEN outer iterations does
+            ## not threaten `phi` being a function of `x_0` alone.
+            ##
             ## ⚠ THE PIN MUST BE IN THE UNKNOWN'S OWN FRAME.  `_x1` is the
             ## state one step AFTER the seed, which is the right thing to
             ## pin when the unknown is `x_in` and `x_0` is manufactured from

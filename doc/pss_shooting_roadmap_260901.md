@@ -212,6 +212,60 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## The canonical papers, read against the open questions (2026-09-02)
+
+A second review round read Aprille & Trick (Proc IEEE 60(1) 108-114, 1972; IEEE TCT
+19(4) 354-360, 1972) and Trick, Colon & Fan (IEEE TCAS 22(5) 391-396, 1975). Four
+results, each verified here before being recorded.
+
+**1. `x₀` is the canonical unknown — the manufactured opening step is a deviation, not a
+refinement.** [AT-P]'s Step 1: *"for the given initial state x_0^i compute the solution
+x^i(t; x_0^i), 0 ≤ t ≤ T"*. The trajectory begins **at** the unknown. So
+`solve(x0_unknown=True)` is a **return**, and the design question is settled by
+precedent; only the cost is open.
+
+**2. The identity seed is theirs too — which states our frame error exactly.** [AT-P]
+gives `Phi = PROD [I − h F(x)]⁻¹`, seeded by `z(0)` at t=0, i.e. the identity **at `x₀`,
+which in their formulation is the unknown**. This file **kept A&T's Jacobian and changed
+A&T's unknown**. `Px = [I, I]` is correct for the formulation it came from.
+
+**3. The period column has a closed form, and it makes a free permanent check.** [AT-O]
+eq.(19): `dH/dT = −f(x(T))`. That is the *continuous* derivative and is **not** what we
+compute — the grid scales with T, so the exact discrete derivative carries the `dh/dT`
+terms `companion_dT` accumulates, and ours is the more exact object. But the gap must be
+**O(h) and must fall**:
+
+| npts | trap | gear |
+|---|---|---|
+| 100 | 9.51e-02 | 3.25e-02 |
+| 200 | 4.73e-02 (2.01×) | 1.61e-02 (2.02×) |
+| 400 | 2.36e-02 (2.00×) | 7.99e-03 (2.01×) |
+| 800 | 1.18e-02 (2.00×) | 3.99e-03 (2.01×) |
+
+⚠ **Verified to reject the defect it was added for:** with Gear-2's period column back on
+the partial `d/dh_n`, the gap **stops falling** and plateaus at exactly 0.5 — 0.486 /
+0.495 / 0.498 / 0.499, ratio 1.00. A constant-factor error is invisible to a test that
+asks whether a number is small and unmissable to one that asks whether it *falls*. Its
+value is its **independence**: it compares against the converged waveform, so an error in
+the accumulation cannot hide inside it. Now a permanent test.
+
+**4. The phase rule is canonical; freezing it is not.** [AT-O] Step 3 selects
+`k = argmax|f_k(x(T))|` — vindicating our rule and our rejection of the Poincaré upgrade.
+But their Step 3 sits **inside** the loop, pinning `w_0k = x_0k^i`, the iterate's own
+current value — attainable by construction, which removes the "far seed pins an
+unattainable value" failure mode *structurally*. ⚠ **Not done:** `analysis.fsolve`
+exposes no per-iteration hook, so it needs the autonomous outer solve restructured.
+Re-selecting between outer iterations would not threaten `phi` being a function of `x₀`
+alone.
+
+⚠ **A correction the reviewer volunteered on index-2:** they had called admitting the
+constraint "research-shaped". [TCF] 1975 solves it, by the same authors — *"the method
+yields valid results even when the capacitor voltages and inductor currents are not an
+independent set"*, with worked capacitor-loop and inductor-cutset examples, and it shoots
+on the **independent states** rather than the full MNA vector. **The priority is
+unchanged** — index-2 still produces no silent wrong answer here — but if support is ever
+wanted, [TCF] §III is the reference and it is not research.
+
 ## `x₀` as the unknown — SHIPPED as `solve(x0_unknown=True)` (2026-09-02)
 
 The formulation change three findings point at: the plain path solves for `x_in`, the
