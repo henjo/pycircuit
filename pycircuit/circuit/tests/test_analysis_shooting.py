@@ -1503,9 +1503,15 @@ def test_the_parasitic_roots_stay_far_from_the_physical_ones():
     points.  Measured, the autonomous 16x16 spectrum is the physical unit
     eigenvalue and nothing else above 1e-5.
 
-    Written to expire: a method whose parasitic root sits nearer the unit
-    circle would need the physical multipliers separated rather than a
-    maximum taken, and this is where that would first show.
+    ⚠ THIS NO LONGER GUARDS `spectral_radius`, and it is kept for what it
+    still says.  Since 2026-09-02 the multipliers ARE separated rather than
+    maximised over (`_spectral_report`), so a near-unit parasitic root no
+    longer reads as stability -- that case is
+    `test_a_parasitic_root_near_the_unit_circle_is_not_read_as_stability`.
+    What this test still pins is the QUANTITATIVE claim the class docstring
+    makes about Gear-2 specifically: its spurious roots are ~1e-95 over a
+    period, so on every method in this tree today the separation changes no
+    number and only documents why the old maximum was safe.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -1859,3 +1865,99 @@ def test_matrix_free_refuses_the_paths_it_has_not_got():
     pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
     with pytest.raises(NotImplementedError, match='autonomous'):
         pss.solve(period=1e-3, timestep=1e-3 / 50, matrix_free=True)
+
+
+def test_a_parasitic_root_near_the_unit_circle_is_not_read_as_stability():
+    """RECORDED SCOPE ITEM 3, and the case the whole item exists for.
+
+    Gear-2's spurious root is `(1/3)^N` over a period, so for every method
+    in this tree today `max |eig|` over the composed spectrum happens to
+    pick the physical multiplier.  A method whose parasitic root sat near
+    the unit circle would make that maximum report the DISCRETISATION'S OWN
+    ARTEFACT as the orbit's stability -- a decaying orbit read as marginal,
+    with nothing in the output to say so.
+
+    No such method is in the tree, so the monodromy is SYNTHESISED with the
+    structure the theory gives it: physical modes whose two halves agree
+    (`v_{-1} = v_0`, one timestep apart on a smooth trajectory) and
+    parasitic modes whose halves are opposed (`v_{-1} = -v_0`, the
+    alternating root).  Waiting for such a method to exist before testing
+    the separation would mean shipping it untested on the day it arrives.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_rc_ladder(2), method='gear', reltol=1e-6)
+    m = pss.cir.n - 1
+
+    rng = np.random.default_rng(7)
+    Vp = rng.standard_normal((m, m))     # physical directions
+    Vq = rng.standard_normal((m, m))     # parasitic directions
+    ## halves EQUAL for physical, OPPOSED for parasitic
+    V = np.block([[Vp, Vq], [Vp, -Vq]])
+    phys_vals = np.linspace(0.80, 0.30, m)          # a decaying orbit
+    para_vals = np.linspace(0.99, 0.95, m)          # spurious, near the circle
+    lam = np.concatenate((phys_vals, para_vals))
+    M = V @ np.diag(lam) @ np.linalg.inv(V)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        rho, phys, para = pss._spectral_report(M)
+
+    ## the naive maximum -- what this used to report -- is the artefact
+    naive = float(np.max(np.abs(np.linalg.eigvals(M))))
+    assert abs(naive - 0.99) < 1e-8, \
+        'the synthesised spectrum is not the case under test (max %r)' % naive
+
+    assert abs(rho - 0.80) < 1e-8, \
+        'spectral_radius is %r; the physical multiplier is 0.80 and 0.99 ' \
+        'is the parasitic root -- the separation did not happen' % rho
+    assert len(phys) == m and len(para) == m
+    assert abs(para[0] - 0.99) < 1e-8
+
+    ## and it says so, rather than separating silently
+    assert any('PARASITIC' in str(w.message) for w in caught), \
+        'a parasitic root within a decade of the physical spectrum was ' \
+        'separated without warning'
+
+
+def test_the_physical_block_split_shrinks_with_the_step():
+    """Why the eigenvector's block structure is the right discriminator.
+
+    The claim is not that physical and parasitic modes happen to differ; it
+    is that they differ FOR A REASON THAT SCALES.  A physical mode's two
+    halves are one timestep apart on a smooth trajectory, so they converge
+    as `v_{-1} = e^{-lambda h} v_0 -> v_0`; a parasitic mode's are related
+    by the method's spurious root and stay O(1) apart however fine the grid
+    gets.  So refining `h` must shrink the physical split and leave the
+    parasitic one alone -- which is a prediction, and this checks it.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def split_at(npts):
+        pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-3 / npts, maxiterations=30)
+        M = np.asarray(pss._monodromy)
+        m = pss.cir.n - 1
+        _ev, V = np.linalg.eig(M)
+        s = np.sort(np.linalg.norm(V[m:, :] - V[:m, :], axis=0))
+        return s[0], s[-1]          # smallest physical, largest parasitic
+
+    p50, q50 = split_at(50)
+    p200, q200 = split_at(200)
+
+    ## the physical split falls with h, and at first order
+    assert p200 < p50 / 2.5, \
+        'the physical block split did not shrink with h (%.4f at N=50, ' \
+        '%.4f at N=200) -- the discriminator rests on it doing so' % (p50, p200)
+    ratio = p50 / p200
+    assert 2.5 < ratio < 6.0, \
+        'the physical split scaled by %.2f for a 4x refinement; first order ' \
+        'in h predicts ~4 and this is the evidence the split means what it ' \
+        'is taken to mean' % ratio
+    ## while the parasitic one does not
+    assert q200 > 0.5 and q50 > 0.5, \
+        'parasitic splits collapsed too (%.3f, %.3f); nothing separates' \
+        % (q50, q200)

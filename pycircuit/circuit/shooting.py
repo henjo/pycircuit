@@ -1383,8 +1383,12 @@ class PSS(Analysis):
         ## parasitic roots the k-step discretisation introduces (see the
         ## literature note in the class docstring -- controlling those roots
         ## is the whole subject).  The autonomous unit-circle eigenvalue is
-        ## in there; a threshold read off `spectral_radius` is reading a
-        ## spectrum with spurious members and should know it.
+        ## in there.  ⚠ `spectral_radius` NO LONGER TAKES A MAXIMUM OVER
+        ## THIS MIXTURE (2026-09-02): `_spectral_report` separates the
+        ## physical multipliers from the parasitic roots by the
+        ## eigenvector's block structure and reports the maximum over the
+        ## physical ones, so a method whose spurious root sits near the
+        ## unit circle cannot have it read back as the orbit's stability.
         ## ⚠ ALWAYS THE FULL 2m x 2m MAP, NEVER THE `d x_{N-1}/d x_0`
         ## CORNER.  This used to hand the corner back on the driven path
         ## (`Px[0][:, :m]`), and a sub-block of a sensitivity is not a
@@ -1569,6 +1573,116 @@ class PSS(Analysis):
                 ier, mesg = 1, 'Success'
                 break
         return z, {}, ier, mesg
+
+    ## Below this, a multiplier says the mode decays by six decades in one
+    ## period and no stability question turns on it -- so parasitic
+    ## contamination at that level is not worth a warning.  Used only to
+    ## keep the warning off circuits where the WHOLE spectrum is numerical
+    ## noise; it never changes a reported number.
+    SPECTRAL_NOISE_FLOOR = 1e-6
+
+    def _spectral_report(self, M):
+        """Split a composed spectrum into physical multipliers and parasitics.
+
+        RECORDED SCOPE ITEM 3.  A k-step method turns an m-dimensional
+        system into a k*m-dimensional discrete one, so the composed
+        monodromy's spectrum carries `(k-1) m` PARASITIC roots beside the
+        physical Floquet multipliers.  `max |eig|` over that mixture is only
+        a stability verdict while the parasitic roots stay small -- which
+        for Gear-2 they emphatically do (`(1/3)^N`, ~1e-95 at 200 points)
+        and for a method whose spurious root sits nearer the unit circle
+        they would not.  This separates them instead of hoping.
+
+        THE DISCRIMINATOR IS THE EIGENVECTOR'S BLOCK STRUCTURE, not the
+        eigenvalue.  The composed map acts on the PAIR `(x_0, x_{-1})`:
+
+          - a PHYSICAL mode follows the linearised ODE, so its two halves
+            are one timestep apart on a smooth trajectory and
+            `v_{-1} = e^{-lambda h} v_0 -> v_0` as `h -> 0`;
+          - a PARASITIC mode is `r^n u` for the method's spurious root `r`,
+            so `v_{-1} = u / r` -- three times `v_0` for BDF-2, minus it for
+            a trapezoidal-like root -- and the halves differ by O(1)
+            whatever `h` is.
+
+        So `||v_{-1} - v_0||` (against a unit-norm eigenvector) is O(h) for
+        a physical mode and O(1) for a parasitic one.  MEASURED, and it is
+        the h-scaling that makes it a prediction rather than a story: on the
+        phase circuit the physical ratio falls 0.1281 -> 0.0316 when the
+        grid goes from 50 to 200 points -- a factor of 4.05 for a factor of
+        4 in `h` -- while the parasitic ratios sit at 1.0 to 10.  On the
+        Q=20 RLC the parasitic ratio is 1.9997 against the 2.0 that BDF-2's
+        `v_{-1} = 3 v_0` predicts exactly.
+
+        ⚠ THE SPLIT IS BY RANK, NOT BY A THRESHOLD, and that was measured
+        into the design rather than chosen.  A threshold of 0.25 was tried
+        first and returned NO physical modes at all on a stiff RC ladder --
+        `lambda h ~ 40` there, so every mode's halves differ by O(1) and the
+        classifier called the entire spectrum parasitic, handing back a
+        `spectral_radius` of `None` where the old code said 6e-15.  A
+        `k`-step method on `m` states has EXACTLY `m` physical multipliers
+        and `(k-1) m` spurious ones -- that is structural -- so the `m`
+        smallest splits are the physical set by construction, and the
+        question of where to put a cut never arises.
+
+        ⚠ ON A STIFF CIRCUIT THE LABELS MAY STILL BE WRONG, and it does not
+        matter: when the physical modes are themselves stiff, a parasitic
+        root can have the smaller split and swap places with one.  Every
+        mode involved then has `|mu|` at the noise floor, so the RADIUS is
+        unaffected -- it is the labels, not the number, that degrade.  What
+        this buys is the case that motivated the item: a method whose
+        spurious root sits NEAR THE UNIT CIRCLE, where the physical modes
+        are well resolved, the splits separate cleanly, and taking a
+        maximum over the mixture would report the discretisation's own
+        artefact as the orbit's stability.
+
+        Returns `(rho, physical, parasitic)`: the spectral radius over the
+        PHYSICAL multipliers only, and both sets sorted by magnitude.  An
+        `m x m` monodromy (any one-step method, the plain path) has no pairs
+        and no parasitic roots, so everything in it is physical.  `None`
+        gives `(None, None, None)` -- the matrix-free path forms no
+        monodromy at all.
+        """
+        if M is None:
+            return None, None, None
+        M = np.asarray(M)
+        m = self.cir.n - 1
+        try:
+            ev, V = np.linalg.eig(M)
+        except np.linalg.LinAlgError:                     # pragma: no cover
+            return None, None, None
+
+        if M.shape[0] != 2 * m:
+            ## one-step method: the monodromy IS the physical map
+            phys = np.sort(np.abs(ev))[::-1]
+            return float(phys[0]), phys, np.array([])
+
+        ## columns of `V` are unit-norm, so this needs no denominator and
+        ## cannot divide by a vanishing block -- a mode living entirely in
+        ## one half reads as O(1) here, which is what it is.
+        split = np.linalg.norm(V[m:, :] - V[:m, :], axis=0)
+        order = np.argsort(split)
+        phys = np.sort(np.abs(ev[order[:m]]))[::-1]
+        para = np.sort(np.abs(ev[order[m:]]))[::-1]
+        rho = float(phys[0])
+        ## ⚠ THE POINT AT WHICH THIS STOPS BEING BOOKKEEPING.  While the
+        ## parasitic roots are 80 orders down, separating them changes no
+        ## number and only documents why the maximum was safe.  Once one
+        ## climbs to within a decade of the physical spectrum, the method's
+        ## spurious roots are a real part of what the analysis reports and
+        ## the user is entitled to know before reading a stability verdict.
+        if len(para) and para[0] > 0.1 * rho and rho > self.SPECTRAL_NOISE_FLOOR:
+            warnings.warn(
+                'PSS: this method\'s PARASITIC roots are no longer '
+                'negligible -- the largest is %.4g against a physical '
+                'spectral radius of %.4g. A k-step method contributes '
+                '(k-1)*m spurious roots to the composed monodromy, and '
+                '`spectral_radius` now reports the maximum over the '
+                'PHYSICAL multipliers only (separated by eigenvector block '
+                'structure). Treat the separation as load-bearing here '
+                'rather than cosmetic: check `floquet_multipliers` and '
+                '`parasitic_roots` before drawing a stability conclusion.'
+                % (para[0], rho), RuntimeWarning, stacklevel=3)
+        return rho, phys, para
 
     def _install_history(self, x0_in, xm1_in, dt, h_prev=None):
         """Open a run ON a solved two-point history rather than a seed.
@@ -2358,13 +2472,8 @@ class PSS(Analysis):
         ## with a phase condition.  Not implemented -- but a run that
         ## returns the origin, or refuses to converge, deserves to be told
         ## why rather than left to look like a tolerance problem.
-        rho = None
-        if getattr(self, '_monodromy', None) is not None:
-            try:
-                rho = float(np.max(np.abs(np.linalg.eigvals(
-                    np.asarray(self._monodromy)))))
-            except np.linalg.LinAlgError:                 # pragma: no cover
-                rho = None
+        rho, self.floquet_multipliers, self.parasitic_roots = \
+            self._spectral_report(getattr(self, '_monodromy', None))
         self.spectral_radius = rho
         ## `self.autonomous` was decided before the solve and chose which
         ## system ran; nothing to re-derive here.  It used to WARN at this

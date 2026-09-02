@@ -43,7 +43,13 @@ needed; an adaptive grid of **1106** converges **through the analysis** (2026-09
 own unknowns still gives the best answer, −47.3. The uniform-grid restriction cost ~18× the
 points.
 
-## Open items, ranked, each with its gate
+## The three ranked items — all closed 2026-09-02
+
+Each had a gate written down before the work started. Two of the three gates were
+answered **no**, and in both cases that is what found the real cause: item 5's exact
+Jacobian did not fix it (the manufactured opening step did), and item 6's ceiling was
+being measured by an instrument that timed a third of what it was named for.
+
 
 1. **Item 5's payoff case — DONE 2026-09-02.** Van der Pol now solves through
    `PSS.solve(grid=…)` on its own 1105-step LTE-chosen grid: trapezoidal −73.8 ppm,
@@ -88,10 +94,56 @@ points.
    monodromy, so `spectral_radius` is `None`. The autonomous and plain paths are not
    converted and **raise** rather than silently going dense.
 
-3. **Autonomous Gear-2 diagnostics.** The composed monodromy is 2m×2m and mixes physical
-   multipliers with the discretisation's parasitic roots. Harmless for Gear-2 (its
-   parasitic root is 1/3 per step, ~1e-95 over a period) and **not** harmless for a
-   method whose root sits nearer the unit circle. A test pins the gap.
+3. **Autonomous Gear-2 diagnostics — DONE 2026-09-02.** The composed monodromy is
+   2m×2m and mixes physical Floquet multipliers with the discretisation's parasitic
+   roots. `spectral_radius` no longer takes a maximum over that mixture:
+   `_spectral_report` separates them and reports the maximum over the **physical**
+   multipliers, exposing both sets as `floquet_multipliers` / `parasitic_roots` and
+   warning when a parasitic root climbs within a decade of the physical spectrum.
+
+   **The discriminator is the eigenvector's block structure, not the eigenvalue.** The
+   composed map acts on the pair `(x₀, x₋₁)`: a physical mode's halves are one timestep
+   apart on a smooth trajectory (`v₋₁ = e^{−λh} v₀ → v₀`), while a parasitic mode's are
+   related by the method's spurious root and stay O(1) apart. That is a prediction, and
+   it holds — the physical split falls **0.1281 → 0.0316** when the phase circuit goes
+   from 50 to 200 points (factor 4.05 for 4× in h), and the Q=20 RLC's parasitic split
+   is **1.9997** against the 2.0 that BDF-2's `v₋₁ = 3v₀` predicts exactly.
+
+   ⚠ **The split is by rank, not by a threshold**, and that was measured into the design:
+   a 0.25 threshold returned *no* physical modes on a stiff RC ladder (λh ≈ 40, so every
+   mode's halves differ by O(1)) and handed back `spectral_radius = None`. A k-step
+   method on m states has exactly m physical multipliers — structural — so the m smallest
+   splits are the physical set and no cut has to be chosen. On a stiff circuit the labels
+   can still swap, and it does not matter: every mode involved is at the noise floor, so
+   the radius is unaffected.
+
+   No method in the tree has a near-unit parasitic root, so this changes no number today.
+   The case it exists for is pinned by a synthesised monodromy
+   (`test_a_parasitic_root_near_the_unit_circle_is_not_read_as_stability`), because
+   waiting for such a method to arrive would mean shipping the separation untested on the
+   day it does.
+
+## What is open now
+
+Nothing from the original three. Two candidates, neither started:
+
+- **The phase condition.** The autonomous phase row is a coordinate pin chosen once at
+  the seed (`phase_k`, `phase_pin`) and then frozen — so transversality is only ever
+  checked at the seed, and `phase_pin` is a *value* the orbit must attain, which a solve
+  that moves far from its seed can miss entirely, making the system inconsistent rather
+  than merely ill-conditioned. The cheap upgrade is the **orthogonality/Poincaré row**
+  `⟨x₀ − x_ref, f(x_ref)⟩ = 0` — one row, no quadrature, no reference trajectory, and
+  `xdot(0)` is already available in closed form. The integral (Doedel) condition is the
+  heavier option and its extra value is mainly in *continuation*, which is not the
+  setting here. ⚠ **Neither is justified yet:** the gate is a case where the current pin
+  demonstrably fails — a `phase_pin` outside the converged orbit's range on `k`, or a
+  stiff case losing transversality at the solution though not at the seed. If that case
+  cannot be built, neither upgrade is warranted. Note the evidence that exonerated the
+  phase row for item 5 (the converging prototype used the same family of condition) says
+  nothing about these two failure modes.
+- **Matrix-free for the autonomous and plain paths.** Item 6 converted the driven
+  solved-history path only; the others raise. Whether it is worth extending depends on
+  the same propagation share, unmeasured for those formulations.
 
 ## Traps — things that looked true and were not
 
