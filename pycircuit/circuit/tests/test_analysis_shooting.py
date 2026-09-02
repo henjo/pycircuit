@@ -4799,3 +4799,75 @@ def test_no_periodic_covariance_exists_for_an_oscillator():
     assert s2 > 1e-3, \
         'I - M kron M is near-singular (%.3e) on a DRIVEN circuit too, so ' \
         'the obstruction is not the unit multiplier after all' % s2
+
+
+@pytest.mark.parametrize('mu', [0.5, 1.0])
+def test_the_coloured_noise_functional_is_exactly_zero_here(mu):
+    """⚠ A REGRESSION TEST WITH AN EXACT ANSWER OF ZERO, and it separates
+    two functionals that share a PPV.
+
+    Demir 2002 defines two different scalars from the same `v_1(t)`:
+
+        c_w  = (1/T) ∫ v_1ᵀ B_w B_wᵀ v_1 dt     WHITE   — QUADRATIC
+        V_0m = (1/T) ∫ v_1ᵀ B_cm dt             COLOURED — LINEAR
+
+    The white one is the time-average of a SQUARE; the coloured one is the
+    plain time-average — the zeroth Fourier coefficient of a periodic
+    scalar. Using the quadratic form for a coloured source returns a
+    plausible non-zero number from the same PPV, and nothing that did not
+    know to look would catch it.
+
+    §VIII gives the discriminating case: on a parallel-RLC oscillator with
+    a nonlinear current source, "the time-average of [the Floquet vector
+    entry] for the capacitor voltage is 0! Thus … any stationary …
+    colored-noise source … connected across the capacitor has NO
+    contribution to the oscillator spectrum due to phase noise, because
+    V_0m = 0." Van der Pol is that circuit.
+
+    ⚠ THE SECOND ASSERTION IS WHAT MAKES THIS A TEST RATHER THAN A
+    TAUTOLOGY. A vector of zeros would pass the first one. The RMS of the
+    same entries is ~0.40, so the WHITE functional is emphatically not
+    zero in the same position — measured `|mean|/rms ~ 1e-11`. Zero and
+    non-zero from one PPV, which is exactly the discrimination the
+    coloured functional needs and the quadratic one destroys.
+
+    (Both entries come back zero here, not just the capacitor's, which van
+    der Pol's symmetry under `(v,i) -> (-v,-i)` predicts: the PPV is odd
+    over the period.)
+    """
+    period = 6.6634 if mu >= 1.0 else 6.35
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    pss = PSS(c, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=period, timestep=period / 200,
+                  x0=np.array([2.0, 0.0]), maxiterations=60)
+    assert pss.converged
+    m = c.n - 1
+    _v, info = pss.ppv()
+
+    S = np.asarray(info['samples'])[:, :m]
+    tms = np.asarray(info['times'], dtype=float)
+    h = np.diff(tms)
+    T = pss.period
+    mean = (S * h[:, None]).sum(axis=0) / T           # the COLOURED scalar
+    rms = np.sqrt(((S ** 2) * h[:, None]).sum(axis=0) / T)   # ~ the WHITE one
+
+    assert (rms > 0.1).all(), \
+        'the PPV samples are ~zero (rms %s), so the zero below would be ' \
+        'vacuous' % np.array2string(rms, precision=4)
+    ratio = np.abs(mean) / rms
+    assert (ratio < 1e-8).all(), \
+        'the time-average of the PPV is %s (relative %s), not zero. Demir ' \
+        'section VIII says a coloured source on this oscillator ' \
+        'contributes NO phase noise; a non-zero mean here means either ' \
+        'the PPV or the averaging is wrong' \
+        % (np.array2string(mean, precision=4),
+           np.array2string(ratio, precision=4))

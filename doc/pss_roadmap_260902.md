@@ -532,9 +532,58 @@ covariance route is the wrong method for an oscillator.**
 checked against forward-rebuilt propagators at **1.8e-15** per step. That is what Demir's
 diffusion constant `c = (1/T)∫ v₁ᵀBBᵀv₁ dt` integrates.
 
-⚠ **The open check, offered and not yet run:** the diffusion constant measured from the
-linear covariance growth must equal `c` from the PPV. Independent of any transcribed
-convention — the same style as the van der Pol phase-shift gate.
+**The diffusion constant is confirmed from its defining paper.** Demir 2002 eq. (65) is
+`c_w = (1/T) ∫ v₁ᵀ B_w B_wᵀ v₁ dt`, and Lemma VII.1 gives `σ²(t) = c_w·t + [coloured]` — the
+white term exactly linear in `t`, which is the measured growth (1.825 → 1793.4 over 1000
+periods, ratios 9.8/10.0/10.0). **The PPV here, that diffusion measurement, and eq. (65) are
+three views of one constant.**
+
+⚠ **TWO DIFFERENT FUNCTIONALS SHARE THE PPV, and one is not a square:**
+
+    c_w  = (1/T) ∫ v₁ᵀ B_w B_wᵀ v₁ dt     WHITE    — QUADRATIC
+    V_0m = (1/T) ∫ v₁ᵀ B_cm dt            COLOURED — LINEAR
+
+`V_0m` is the zeroth Fourier coefficient of a periodic scalar. **Using the quadratic form for
+a coloured source returns a plausible non-zero number from the same PPV**, and nothing that
+did not know to look would catch it.
+
+⚠ **RUN HERE, AND IT IS AN EXACT ZERO.** Demir §VIII: on a parallel-RLC oscillator with a
+nonlinear current source — van der Pol is that circuit — "the time-average of [the Floquet
+vector entry] for the capacitor voltage is 0! … any … colored-noise source connected across
+the capacitor has NO contribution to the oscillator spectrum due to phase noise." Measured on
+our PPV: **|mean|/rms ~ 1e-11** with rms ~0.40, at μ = 0.5 and 1.0. Zero and non-zero from one
+vector, which is exactly the discrimination the coloured functional needs and the quadratic
+one destroys. Now a test.
+
+### A4e. Oscillator phase noise — NEW; a different output shape, no sweep
+
+⚠ **NOT A SWEEP, AND NOT pnoise's SHAPE.** Demir 2002 (68)+(69): once the PSS waveform's
+Fourier coefficients `X_i`, the single scalar `c_w`, and one `V_0m` per coloured source are
+known, "we have an analytical expression that gives us the spectrum at any frequency. The
+computation of the spectrum is not performed separately for every frequency of interest."
+Closed form in a handful of scalars — no per-frequency solve, no sideband grid, and it
+sidesteps the 1/f sweep-grid trap in A4d because there is no sweep to land a point on.
+
+Near carrier a Lorentzian with `c_eff = c_w + Σ|V_0m|² S_Nm(0)`; away from it white gives
+`1/f²` and coloured gives `1/f³`. The i-th harmonic's skirt scales `i²` and its corner `i⁴`,
+so higher harmonics are `20·log₁₀(i)` dB noisier.
+
+⚠ **(69) IS A TWO-REGIME LIMITING FORM, NOT EXACT** — the transform "does not have a simple
+closed form", and there is no exact expression joining the regimes. Whatever is implemented
+must say which regime it is reporting. That is the quantitative version of A4b's `f_Δ`
+boundary.
+
+⚠ **AND 1/f NEEDS AN EXPOSED CUTOFF.** `K I^a/f` "is not a well-defined spectral density …
+It blows up at [f=0]", so Demir *postulates* a cutoff. The near-carrier linewidth depends on
+`S_Nm(0)`; **with no cutoff the linewidth diverges**. It is directly visible in the output, so
+it must be a parameter and not a buried constant.
+
+**Two assertable invariants:** the carrier PSD is finite and per-harmonic total power is
+conserved — analyses "based on linear time-invariant or linear time-varying concepts
+erroneously predict infinite noise power … as well as infinite total integrated power".
+
+**Validity (Assumption IV.1):** the coloured theory needs source bandwidth ≪ `f₀`. True of 1/f
+and burst noise; **a coloured source with bandwidth comparable to `f₀` is outside it.**
 
 ### A4d. Coloured noise — NEW; costs nothing structural for the path we built
 
