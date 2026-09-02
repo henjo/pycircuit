@@ -791,6 +791,78 @@ likely that a full trap stays full through the off-state". Truth sits between id
 (fully white) and always-on (full 1/f). Shipping the idealised form trades over-prediction for
 under-prediction, which is worth saying rather than discovering.
 
+### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
+
+Directive: *"we will need driven oscillators for pll analysis"*. Recorded now while the
+reading is fresh; nothing built.
+
+⚠ **THE T4-1 FALSIFICATION STANDS AND DOES NOT TRANSFER.** C5 closed saltation correction
+after measuring the monodromy–FD gap falling at exactly 2.00x per doubling — O(h)
+discretisation, not the O(1) a missing term leaves. **That result holds for pycircuit's switch
+models**, whose discrete map has no instant where the field is undefined. A PLL with a
+**digital PFD** is the other side of that line: the model is not Lipschitz continuous, and
+there saltation is **mandatory and carries the feedback**.
+
+| | field at the switch | saltation |
+|---|---|---|
+| pycircuit switch models | **defined** | not needed — C5, falsified correctly |
+| Verilog PFD / integer divider | **undefined** | **mandatory** |
+
+⚠ **AND THE REASON IS STRUCTURAL, NOT ACCURACY.** Along a *locked* orbit the reference and
+divided edges coincide, the PFD never changes state, and "the analog part of the circuit
+behaves as if it were not connected to the digital one; the loop … is thus **OPEN**." The
+plain variational model then has a null block and **at least two unit multipliers** —
+describing an open loop while the circuit runs a closed one. Omitting saltation there does not
+give a slightly wrong Jacobian; it gives the Jacobian of a different circuit.
+
+⚠ **A GATE WOULD MISFIRE HERE.** "At least two unit eigenvalues" is exactly the condition for
+lacking asymptotic phase, so running that check on a naive locked-PLL variational model flags
+it invalid — and the right response is to **add the saltation terms**, not to distrust the
+gate. Our own `ppv()` second-multiplier warning would fire for the same reason.
+
+⚠ **THE 1/f OBSERVATION-WINDOW CAVEAT (A4e) DOES NOT APPLY TO A PLL.** Free-running: the
+jitter integral diverges and needs a cutoff tied to observation time. In a PLL "the integral
+in (61) **converges** even when the ideal flicker noise PSD is used", because the loop's
+jitter transfer is **high-pass** — it suppresses exactly the low-frequency content that makes
+the free-running integral diverge. So free-running needs the window; a PLL does not, and a
+single total rms jitter in ps is a meaningful number there.
+
+**Different output shape too:** free-running variance grows without bound (∝Δt white, ∝Δt²
+for 1/f); a PLL's **settles**, and can peak and ring on the way from the locking dynamics.
+**Free test:** at short Δt the loop has almost no effect, so PLL jitter must equal
+free-running VCO jitter there.
+
+⚠ **THREE JITTER METRICS, NOT INTERCHANGEABLE** — absolute/edge, k-cycle
+`τ(t+kT) − τ(t)`, and cycle-to-cycle (the *second* difference). Three numbers from one phase
+process. Given three of this branch's defects have been unstated conventions, `jitter` as an
+API name without the metric attached is the same trap.
+
+**Noise folding in a PLL is ordinary LPTV aliasing**, present in an all-analog PLL too — not
+an artefact of the PFD sampling. No new machinery to explain it.
+
+**Two modelling choices worth copying:** use **zero crossings** rather than edges as switching
+events (saltation needs `grad h`, so the surface must be differentiable), and **promote the
+reference phase to a state variable**. That last is the fourth appearance of one device in this
+line — promote the quantity you want to perturb into an explicit state, or normalise time by
+the local frequency, so periodic objects become comparable. Worth recognising up front.
+
+⚠ **AND THE PPV IS AN OPERATING-POINT OBJECT.** For A2's use — noise at a locked PLL's
+operating point — one PPV is correct, and sweeping the control voltage means redoing the
+analysis at each point, which is ordinary. But PPVs at different control voltages have
+**different periods**, so a tabulated PPV cannot be interpolated pointwise; normalise by the
+instantaneous free-running frequency first. (The "totally wrong predictions" result in that
+literature is about using a fixed PPV as a *transient macromodel* across a capture transient —
+a different activity, and not implied by anything in A1–A3.)
+
+**An exact test vector exists for the unlocked driven oscillator** (Armand 1969, on Adler
+1946): the whole spectrum from one scalar `K`, sidebands at `w1 + n·Ω` on **one side only**,
+magnitudes a geometric ladder with ratio `tan(θ/2)`, phase advancing by exactly `θ` per
+sideband, `Σ|A_n|² = E²` **exactly**, and clean degeneration to a single tone at both limits.
+A conserved quantity plus two limits catches normalisation, sign and branch errors — the
+failure class that has cost this branch the most. Valid within Adler's three conditions, whose
+first two are **high Q** and **slow time constants** — the same two triggers as A2's validity
+boundary, sixty years earlier.
+
 ### A5. Envelope-following — last
 
 Linaro et al. (OJCAS 2020) apply EFM to the *variational* problem, with a
