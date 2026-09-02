@@ -494,13 +494,27 @@ circuits driven [by stationary] noise sources … can be decomposed into AM and 
 there will always be EQUAL AMOUNTS OF BOTH."** An LTI circuit must give AM = PM exactly — a
 free regression test, and the noise counterpart of the change of basis above.
 
-⚠ **THE ANSWER HAS A HARD BOUNDARY, and it is the sharpest thing here.** `S_phi` (the phase
-spectrum, which the PPV gives) is **valid at all offset frequencies**. `S_v` and `L(f)` in
-dBc/Hz are valid **only for Δf well above f_Δ**: "the output voltage is a linear function of
-the phase only when the deviations in phase are small … It is this nonlinear [behaviour that]
-causes the linewidth". **Same mechanism as A4c's unbounded phase variance** — the diffusion
-that broadens the line is exactly what makes `exp(jφ)` non-linearisable near the carrier. **If
-`S_phi` is ever converted to `L(f)`, it must not be a linear scaling below `f_Δ`.**
+⚠ **THE ANSWER HAS A HARD BOUNDARY**, and the first version of this entry got the
+recommendation **backwards**. It said, from Kundert: `S_phi` is valid at all offset
+frequencies while `S_v` and `L(f)` hold only for Δf ≫ `f_Δ` — implying `S_phi` is the safe
+thing to report everywhere. **Demir 2006 rejects his own derivation of `S_phi` for exactly
+that region:** the excess phase is a Wiener process, so the PSD formula's precondition (a
+stable LTI system) fails, and "the PSD … has a singularity at the origin … [it] and its total
+power has no mathematical or physical meaning". The obvious patch is rejected too — making
+the integrator leaky "end[s] up with a qualitatively incorrect phase noise model", because a
+leaky integrator's output is stationary and the phase genuinely random-walks.
+
+**The two sources are not in conflict; they answer different questions.** *Above* the corner
+(Kundert's `f_Δ` and the Lorentzian corner are the same frequency) `S_phi` and `L` agree and
+both are fine — which is where phase noise is normally plotted, and why the loose usage
+survives. *Below* it, `L(f)` is the physically correct object and is finite, but a
+small-signal analysis **cannot produce it** (the tapering comes from the nonlinear
+phase-to-voltage map); `S_phi` **is** computable there and is meaningless. **So below the
+corner neither is correctly available from a small-signal computation** — A4e's near-carrier
+branch is what supplies `L` there.
+
+⚠ **Net: do not report `S_phi` near the carrier as though it were a spectrum.** The earlier
+framing here implied it was the safe choice everywhere; it is the opposite.
 
 Calibration: phase noise on bipolar resonant oscillators predictable "to within 2 dB".
 
@@ -585,6 +599,43 @@ erroneously predict infinite noise power … as well as infinite total integrate
 **Validity (Assumption IV.1):** the coloured theory needs source bandwidth ≪ `f₀`. True of 1/f
 and burst noise; **a coloured source with bandwidth comparable to `f₀` is outside it.**
 
+⚠ **JITTER IS WELL-POSED EXACTLY WHERE THE SPECTRUM IS NOT.** "The integral of a stationary
+process is itself not necessarily stationary, but it has stationary increments … The
+difference operation, in a sense, undoes the nonstationarity." The increment
+`α(t+Δt) − α(t)` is the output of a *stable* delayed integrator, so its PSD is legitimate and
+"does not explode at f=0". The reported quantity is therefore **σ²(Δt), a function of
+accumulation time** — not a bare spectrum and not a single number.
+
+⚠ **The common literature formula is built on the bad object.** Equations relating jitter to
+phase noise "appear elsewhere … [where `S_phi`] is defined in the sense of (23) as the
+ill-defined PSD"; in others "no distinction is made between the well-defined `L(f)` and the
+problematic `S_phi`". **If jitter-from-spectrum is implemented from a typical reference, it
+will be the unsound version.** The sound one integrates the macro-source PSD through the
+stable delayed-integrator transfer function.
+
+**A cheap sanity check on any implementation:** white gives `σ² ∝ Δt` (jitter ∝ √Δt); 1/f
+gives `σ² ∝ Δt²` (jitter **linear** in Δt), because "within small accumulation times, 1/f
+noise samples in time are indeed almost fully correlated".
+
+⚠ **TWO LOW-FREQUENCY CUTOFFS AND ONLY ONE IS LEGITIMATE.** A cutoff on the **1/f source
+model**, representing finite observation time, is sound — Demir is explicit it is "*not* …
+the 3-dB frequency of the Lorentzian" and that "we are NOT trying to fix a problem we created
+by doing something ill-defined". A cutoff on `S_phi` to stop it diverging is the illegitimate
+one. Because the legitimate cutoff encodes observation time, **a 1/f jitter number without a
+stated observation window is incomplete.**
+
+⚠ **EXPOSE `c` AND `c_i` AS FIRST-CLASS OUTPUTS.** Demir 2006 §IX exists *only* as a
+workaround for simulators that do not provide them — reverse-engineering the scalars by
+curve-fitting `L(f)`, or by switching sources on and off. **The PPV computes them directly.**
+They are also the per-source attribution handle: the total jitter decomposes into "contributions
+from the individual noise sources, e.g. the on-chip inductor and the transistors" — available
+in simulation and not from measurement.
+
+**Naming, on the author's own warning** that the historical terms are "somewhat confusing and
+not very precise": call them `ssb_phase_noise_L` and `jitter_variance(delta_t)`, not
+`phase_noise` and `jitter`. Three of this branch's defects have been unstated conventions;
+this is cheap insurance.
+
 ### A4d. Coloured noise — NEW; costs nothing structural for the path we built
 
 ⚠ **THE FILTER DOES NOT ENTER THE PSS.** Demir 1996 synthesises 1/f from white sources
@@ -611,6 +662,14 @@ The reasoning that produced it was sound in isolation (Demir's "large time const
 on warm start, A4's own μ=0.05 → ~24 periods) and reached a false conclusion because it never
 asked whether those states are *coupled*. Shape 4 from §D: two things each considered alone.
 
+⚠ **AND "COSTS NOTHING STRUCTURAL" NEEDS A DISTINCTION THIS ENTRY DID NOT DRAW.** It is true
+of a **synthesised** Lorentzian filter — fictitious, linear, no deterministic drive, no
+dependence on the circuit, measured to stay out of the PSS. It is **not** true of a
+**physically modelled trap**: real oxide-trap states are bias-modulated and depend on the
+circuit solution down to the drain voltage, so they have a deterministic periodic component
+and genuinely belong among the circuit variables. Same words, two different objects — the
+recurring failure shape on this branch.
+
 **What survives, and only for A4c's route:** the covariance system's spectrum is `{λᵢλⱼ}`, so
 slow filter poles enter **squared**. Measured `σ_min(I − M_aug ⊗ M_aug)` tracking `T/tau`
 exactly: 8.6e-01 / 1.4e-01 / 1.4e-02 / 1.4e-04 / 1.4e-06 at `tau/T` of 1e0…1e6. A 10-decade
@@ -633,6 +692,28 @@ in `pnoise`'s preconditions before the first coloured source arrives.
 **placeholder its own author disowned** in the same paragraph: "either a theoretical or
 experimental derivation of a model for flicker noise associated with a time-varying current is
 needed." Do not implement it as if it were the model.
+
+⚠ **AND THE PAPER THAT CLOSES IT SAYS SWITCHING WHITENS 1/f, NOT SCALES IT.** Mahmutoglu &
+Demir 2015: under a switched bias the trap state "is perfectly reset in every switching
+period … the trap noise turns into white noise for time scales above the switching period …
+a WHITENING EFFECT, as opposed to a frequency independent power reduction." **Below
+`f_switch` the spectrum is flat, and the corner moves to `f_switch`, not the trap rate.**
+Above it the benefit reverses — the switched PSD "falls on top of the PSD for the
+non-switching case", so a flat "3 dB better because switched" model is wrong in *both*
+directions.
+
+**Consequence for a stationary flicker model at an averaged bias**, which is what would be
+implemented first: below `f_switch` the real spectrum is white while the model says 1/f, so
+**the error grows without bound as the offset decreases**. Not a constant offset, not
+trimmable with a fudge factor. If 1/f is ever added that way, say so explicitly — the same
+class of fix as pnoise's two named exceptions.
+
+⚠ **The idealised correction is an upper bound, not a prediction.** Its own §II-F: the
+assumption that a trap empties instantly at switch-off "is clearly violated in physical
+systems", and with a realistic trap model the whitening is only *partial* — "it is quite
+likely that a full trap stays full through the off-state". Truth sits between ideal switching
+(fully white) and always-on (full 1/f). Shipping the idealised form trades over-prediction for
+under-prediction, which is worth saying rather than discovering.
 
 ### A5. Envelope-following — last
 
