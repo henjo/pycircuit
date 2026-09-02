@@ -1738,3 +1738,124 @@ def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
         'solved T=%.6f, %.1f ppm from the measured %.6f' % (pss.period, err, T)
     ## fewer than 1200 steps, against the 20000 a uniform grid needs
     assert len(pss.times) < 1200
+
+
+def _rc_ladder(sections):
+    """A driven RC ladder whose `m` grows linearly with `sections`."""
+    c = SubCircuit()
+    c.add_node('n0')
+    c['vs'] = VSin('n0', gnd, va=1.0, freq=1e3)
+    for k in range(sections):
+        a, b = 'n%d' % k, 'n%d' % (k + 1)
+        c.add_node(b)
+        c['R%d' % k] = R(a, b, r=1e3)
+        c['C%d' % k] = C(b, gnd, c=1e-9)
+    return c
+
+
+def _varying_c_ladder(sections=6):
+    """The ladder with a STATE-DEPENDENT capacitance on its last node.
+
+    ⚠ WITHOUT THIS THE MATVEC TESTS CANNOT FAIL, and that was measured, not
+    supposed.  `_step_sensitivity` carries a RING of capacitances -- `Cs[0]`
+    and `Cs[1]`, the two steps a Gear-2 companion reaches back -- and on a
+    linear RC ladder every `C` along the period is the SAME matrix, so
+    corrupting the ring (`Cs = [C_new, C_new]` instead of
+    `[C_new, Cs[0]]`) changes nothing and the tests stayed green through
+    the mutation.  A `q_func` makes `C` a function of the solution, the
+    ring entries genuinely differ (measured: 2.99e-09 against a 1e-09
+    linear part), and the same mutation is caught.
+    """
+    c = _rc_ladder(sections)
+    last = 'n%d' % sections
+    c['Q'] = BSource(last, gnd, last, gnd,
+                     q_func=lambda v: 2e-9 * np.tanh(v / 0.5))
+    return c
+
+
+def test_the_matrix_free_matvec_is_the_dense_monodromy():
+    """RECORDED SCOPE ITEM 6: `M v` without ever forming `M`.
+
+    The dense path propagates `2m` columns per step; the matrix-free path
+    replays the SAME recursion at width 1 on a stored factorisation.  If
+    those two disagree, everything built on the matvec is measuring its own
+    bug, so this pins them against each other directly rather than against
+    a converged answer that could absorb the difference.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_varying_c_ladder(), method='gear', reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 25, maxiterations=20)
+    m = pss.cir.n - 1
+    times, hs = pss._period_grid(1e-3, 25, None)
+    ## ⚠ THE TWO HISTORY STATES MUST DIFFER, and that was also measured.
+    ## Seeded with `x_0 = x_{-1} = 0`, the two opening capacitances
+    ## `C(x_0)` and `C(x_{-1})` are the same matrix, so seeding the ring
+    ## with the WRONG one is invisible -- a mutation replacing
+    ## `_C_at(xm1_in)` with `_C_at(x0_in)` stayed green.  Two genuinely
+    ## different entering states are what make the opening testable.
+    xa = np.full(m, 0.05)
+    xb = np.full(m, -0.03)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _xl, _xp, P_last, P_prev = pss._traverse_solved_history(xa, xb, times, hs)
+        M = np.vstack((P_last, P_prev))
+        C0, steps, _a, _b = pss._traverse_factored(xa, xb, times, hs)
+
+    rng = np.random.default_rng(0)
+    for _ in range(3):
+        v = rng.standard_normal(2 * m)
+        got = pss._monodromy_matvec(C0, steps, v)
+        want = M @ v
+        err = np.linalg.norm(got - want) / np.linalg.norm(want)
+        assert err < 1e-11, 'matvec differs from the dense monodromy by %.3e' % err
+
+
+def test_a_matrix_free_solve_agrees_with_the_dense_one():
+    """The two paths must answer the same, or the fast one is not an option.
+
+    ⚠ The convergence TEST is not identical between them -- `fsolve` scales
+    its residual by `|J| . |x|`, which matrix-free has no way to form -- so
+    this asserts on the converged ANSWER and the converged/not verdict,
+    which are what a caller sees, and not on the iteration count, which
+    measurably differs (matrix-free takes one more at m >= 502).
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    out = []
+    for mf in (False, True):
+        pss = PSS(_varying_c_ladder(), method='gear', reltol=1e-6)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=1e-3, timestep=1e-3 / 25, maxiterations=20,
+                            matrix_free=mf)
+        out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
+    (pd, xd), (pm, xm) = out
+    assert pd.converged and pm.converged
+    rel = np.max(np.abs(xd - xm)) / np.max(np.abs(xd))
+    assert rel < 1e-9, 'matrix-free and dense waveforms differ by %.3e' % rel
+
+    ## ⚠ NOT FORMING THE MONODROMY MEANS NOT REPORTING ONE.  `_monodromy`
+    ## survives on the object between solves, so a matrix-free run that left
+    ## it alone would hand back the PREVIOUS run's radius as its own.
+    assert pm.spectral_radius is None
+    assert pd.spectral_radius is not None
+
+
+def test_matrix_free_refuses_the_paths_it_has_not_got():
+    """Refused, not silently dense: the caller asked for a cost model.
+
+    Quietly taking the dense route would be a performance surprise with no
+    symptom -- the answer would be right and the reason for asking gone.
+    """
+    circuit.default_toolkit = circuit.numeric
+    ## the plain single-unknown path (a one-step method)
+    pss = PSS(_rc_ladder(6), method='trap', reltol=1e-6)
+    with pytest.raises(NotImplementedError, match='plain'):
+        pss.solve(period=1e-3, timestep=1e-4, matrix_free=True)
+    ## and the autonomous one
+    pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
+    with pytest.raises(NotImplementedError, match='autonomous'):
+        pss.solve(period=1e-3, timestep=1e-3 / 50, matrix_free=True)

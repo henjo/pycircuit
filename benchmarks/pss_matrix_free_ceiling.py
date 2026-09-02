@@ -163,6 +163,21 @@ crosses 30% near m=220 and reaches 79% at m=1002.  Item 6 is JUSTIFIED
 above m~250 and remains POINTLESS at m=40, where the old verdict stands on
 the corrected number too (4.8%, ceiling 1.02x).
 
+⚠ AND IT IS NOW BUILT -- `PSS.solve(matrix_free=True)`, driven
+solved-history path only.  What it actually delivers, end to end, against
+the dense path on this same ladder:
+
+      m    dense (iters)      matrix-free (iters)     speedup
+    242      2.113 s (2)            1.557 s (2)        1.36x
+    502      9.255 s (2)            6.131 s (3)        1.51x
+   1002     52.402 s (2)           24.636 s (3)        2.13x
+
+Lower than the traversal-only figures below (2.23x at m=502) because a
+`solve` also does setup, the replay and the DFT, none of which this
+touches, and matrix-free spends an extra Newton iteration.  Both numbers
+are true; say which one is being quoted.  Measured k: 2/4/7/12 at
+m=40/110/242/502, against the 20 assumed here.
+
 ⚠ BUT THE SHARE DEPENDS ON BLAS THREADING, so quote the condition with the
 number.  With threads left free those same sizes read 4.8 / 7.2 / 12.4 /
 18.2% -- the `C @ P` products thread well and the Python-level assembly

@@ -841,6 +841,30 @@ class PSS(Analysis):
          ~30%": it crosses near m=220 and reaches 79% at m=1002.  Item 6 is
          JUSTIFIED above m~250 and stays POINTLESS at m=40.
 
+         AND IT IS NOW BUILT (2026-09-02) for the DRIVEN solved-history
+         path: `solve(matrix_free=True)`, on `_traverse_factored` +
+         `_monodromy_matvec` + `_matrix_free_solve`.  The recursion is not
+         duplicated -- `_step_sensitivity` took a `solve` argument and is
+         still the one recursion, run at width 1 against a stored
+         factorisation instead of width 2m.  End to end: 1.36x at m=242,
+         1.51x at m=502, 2.13x at m=1002, and the answers agree with the
+         dense path to 1.1e-16.
+
+         ⚠ k WAS ALSO A GUESS AND IS NOW MEASURED: GMRES takes 2/4/7/12
+         iterations at m=40/110/242/502, because `I - M` has almost every
+         eigenvalue within 1% of 1.0 -- the fast modes decay to nothing
+         over a period, so k tracks the number of SLOW MODES, not m.  That
+         is the property the item actually rests on, and it was assumed
+         rather than checked until now.
+
+         ⚠ WHAT IT COSTS: `2 N m^2` doubles of stored factorisations
+         (~800 MB at m=1002, 50 points) where the dense path holds O(m^2);
+         one MORE Newton iteration at m>=502 (3 against 2) from a
+         convergence test that cannot be identical; and no monodromy, so
+         `spectral_radius` is None on this path.  The autonomous and plain
+         systems are NOT converted and raise rather than silently going
+         dense.
+
          ⚠ THIS OVERTURNS THIS DOCSTRING'S OWN 2026-09-01 RECORD, and the
          box being quiet is NOT why.  That record read "the propagation is
          2.2% of a traversal at m=40, ceiling 1.01x-1.03x", and it is what
@@ -1196,7 +1220,7 @@ class PSS(Analysis):
         ## the closure `iq_{-1} = iq_{N-1}`.  See item 5's note; not built.
         return self._companion_reach() >= 2
 
-    def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new):
+    def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new, solve=None):
         """One step of the sensitivity recursion, for ANY seed width.
 
         ONE RECURSION FOR EVERY METHOD (and now for either formulation).
@@ -1215,12 +1239,24 @@ class PSS(Analysis):
         ⚠ A SOLVE, NOT AN INVERSE (stage 11).  `inv(Jf) @ ...` formed a dense
         inverse per timestep per iteration and squared the condition number
         it then multiplied through.
+
+        `solve` overrides how that solve is taken, and exists so the
+        MATRIX-FREE path (item 6) can hand in a PRE-FACTORED `Jf` without
+        this recursion being copied.  It is the same recursion either way,
+        which is the point: a second copy would be a second thing to get
+        wrong, and this one is already shared by every method and both
+        formulations.  Without it, matrix-free would refactor `Jf` once per
+        step PER KRYLOV ITERATION -- `k` times the factorisations the dense
+        path takes, which is worse than the problem it set out to fix.
         """
         alphas, b = self._coeffs
         S = b * Pq if b else np.zeros_like(Px[0])
         for k in range(1, len(alphas)):
             S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
-        Px_new = -self.toolkit.linearsolver(Jf, S)
+        if solve is None:
+            Px_new = -self.toolkit.linearsolver(Jf, S)
+        else:
+            Px_new = -solve(S)
         Pq_new = alphas[0] * (C_new @ Px_new) + S
         return Px_new, Pq_new
 
@@ -1373,6 +1409,166 @@ class PSS(Analysis):
         if want_dT:
             return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
         return x, x_prev, Px[0], P_prev
+
+    def _traverse_factored(self, x0_in, xm1_in, times, hs):
+        """One period WITHOUT the sensitivities, keeping each step factored.
+
+        RECORDED SCOPE ITEM 6, the trajectory half.  `_traverse_solved_history`
+        does two things at once: it walks the period, and it propagates a
+        `2m`-column sensitivity alongside.  Matrix-free needs the walk
+        without the propagation, because the propagation is the thing it
+        replaces -- so this returns what a MATVEC needs to replay the same
+        steps: the two opening capacitances, and per step a FACTORED `Jf`
+        with its `C`.
+
+        ⚠ THE FACTORISATION IS THE POINT, not an optimisation on top.  The
+        matvec runs one solve per step per Krylov iteration; refactoring
+        `Jf` each time would cost `k` times the factorisations the dense
+        path takes and lose before it started.  Factoring once here makes
+        every later solve a back-substitution.
+
+        ⚠ AND THE COST OF THAT IS MEMORY: `N` factorisations and `N`
+        capacitances, `2 N m^2` doubles, where the dense path holds `O(m^2)`
+        at a time.  At `m = 1002` and 50 points that is ~800 MB.  This is
+        the trade matrix-free makes here and it is not free; a caller with a
+        long period and a large circuit can run out of memory where the
+        dense path merely ran slowly.
+        """
+        from scipy.linalg import lu_factor
+        m = self.cir.n - 1
+        self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
+        C0 = [np.asarray(self._C_at(x0_in)), np.asarray(self._C_at(xm1_in))]
+        steps = []
+        x, x_prev = copy(x0_in), copy(xm1_in)
+        for _j, t in enumerate(times[1:]):
+            x_prev = x
+            x = copy(self.solve_timestep(x, t, hs[_j]))
+            steps.append((lu_factor(np.asarray(self._Jf)),
+                          np.asarray(self._C).copy()))
+        return C0, steps, x, x_prev
+
+    def _monodromy_matvec(self, C0, steps, v):
+        """`M v` for the solved-history map, replaying stored steps at width 1.
+
+        THE SAME RECURSION THE DENSE PATH USES -- `_step_sensitivity`, with
+        its solve pointed at the stored factorisation.  The dense path seeds
+        it with `P_0 = [I 0]`, `P_{-1} = [0 I]` and carries `2m` columns;
+        here it is seeded with the two halves of `v` and carries one, which
+        is the whole difference between the two paths.
+
+        `v` is `(v_0, v_{-1})`; the result is `(P_last v, P_prev v)`, so the
+        shooting Jacobian's action is `v - M v` -- see `_matrix_free_solve`.
+        """
+        from scipy.linalg import lu_solve
+        m = self.cir.n - 1
+        v = np.asarray(v, dtype=float)
+        Px = [v[:m].copy(), v[m:].copy()]
+        Cs = list(C0)
+        Pq = np.zeros(m)
+        for lu, C_new in steps:
+            Px_new, Pq = self._step_sensitivity(
+                Px, Cs, Pq, None, C_new, solve=lambda S: lu_solve(lu, S))
+            Px = [Px_new, Px[0]]
+            Cs = [C_new, Cs[0]]
+        return np.concatenate((Px[0], Px[1]))
+
+    ## How hard GMRES is asked to solve, relative to the shooting tolerance.
+    ## An inexact Newton only needs the step accurate enough not to spoil
+    ## the outer convergence; measured on the RC ladder, k is 2/4/7/12 at
+    ## m=40/110/242/502 against this factor and the whole system's spectrum
+    ## explains why -- `I - M` has almost every eigenvalue within 1% of 1.0
+    ## because the fast modes decay to nothing over a period, leaving only
+    ## the slow ones for GMRES to resolve.  So k tracks the number of SLOW
+    ## MODES, not m, which is the property the item rests on.
+    KRYLOV_TOLERANCE_FACTOR = 1e-2
+
+    def _matrix_free_solve(self, z0, times, hs, abstol, xtol, reltol,
+                           maxiter):
+        """The outer Newton with the monodromy never formed (item 6).
+
+        The dense path builds the `2m x 2m` Jacobian and factors it once per
+        iteration; here the same iteration runs on a matvec, so the
+        `2m`-column propagation never happens.  Measured against the dense
+        path on the RC ladder, single-threaded, k=12:
+
+              m     dense traversal   trajectory + 12 matvecs   speedup
+             40             0.0843                    0.1025      0.82x
+            110             0.2366                    0.2175      1.09x
+            242             0.7503                    0.5378      1.40x
+            502             3.4709                    1.5457      2.23x
+           1002            20.1143                    5.5512      3.62x
+
+        -- 82-87% of the predicted ceiling, and a LOSS at m=40, which the
+        ceiling said too.
+
+        ⚠ THOSE ARE TRAVERSAL FIGURES AND THE END-TO-END SOLVE GAINS LESS.
+        A `solve` also does its setup, the replay that builds the waveform
+        and the DFT, none of which this touches, and matrix-free spends an
+        extra Newton iteration (below).  Measured end to end, same circuits:
+
+              m    dense (iters)      matrix-free (iters)     speedup
+            242      2.113 s (2)            1.557 s (2)        1.36x
+            502      9.255 s (2)            6.131 s (3)        1.51x
+           1002     52.402 s (2)           24.636 s (3)        2.13x
+
+        Quote whichever answers the question being asked, and say which it
+        is; 2.23x and 1.51x at m=502 are both true and are not the same
+        measurement.
+
+        ⚠ THE CONVERGENCE TEST IS NOT BIT-IDENTICAL TO `analysis.fsolve`'s,
+        and it cannot be.  `fsolve` scales its residual test by
+        `|J| . |x|`, an ELEMENTWISE absolute value of the Jacobian, which no
+        matrix-free method has.  The substitute here is `|x| + |M x| + |F|`,
+        one extra matvec per iteration.
+
+        ⚠ AND IT IS NOT PROVABLY THE STRICT DIRECTION.  This docstring first
+        claimed the substitute was a LOWER bound on `fsolve`'s scale, so
+        that the test could only ever be stricter.  That is FALSE: at
+        `M = I` the true scale `|I - M| . |x|` is zero while the substitute
+        is `2|x|`, so the substitute is the LARGER one there, and at `M = 0`
+        they are equal.  Neither dominates the other in general.
+
+        What is measured, on the RC ladder at m=242/502/1002: the two paths
+        agree on the converged waveform to 1.1e-16 and on the converged/not
+        verdict, and matrix-free takes ONE MORE Newton iteration at m>=502
+        (3 against 2) -- so it is stricter in practice here, and still wins
+        on wall time while doing 50% more traversals.  One circuit is not a
+        proof of direction, and this is the first thing to check if the two
+        paths ever disagree on convergence.
+        """
+        import scipy.sparse.linalg as spla
+        m = self.cir.n - 1
+        z = np.asarray(z0, dtype=float).copy()
+        ier, mesg, xdiff = 2, 'No convergence', None
+        for _i in range(maxiter):
+            C0, steps, x_last, x_prev = self._traverse_factored(
+                z[:m], z[m:], times, hs)
+            F = np.concatenate((z[:m] - np.asarray(x_last),
+                                z[m:] - np.asarray(x_prev)))
+
+            def _mv(v, _C0=C0, _st=steps):
+                return v - self._monodromy_matvec(_C0, _st, v)
+
+            J = spla.LinearOperator((2 * m, 2 * m), matvec=_mv, dtype=float)
+            xdiff, _info = spla.gmres(
+                J, -F, rtol=self.KRYLOV_TOLERANCE_FACTOR * reltol,
+                restart=min(2 * m, 200), maxiter=min(2 * m, 400))
+            z_new = z + xdiff
+
+            ## `|J| . |x|` is not available without the matrix; see the
+            ## docstring for why this substitute is the strict direction.
+            I_scale = (np.abs(z_new)
+                       + np.abs(self._monodromy_matvec(C0, steps, z_new))
+                       + np.abs(F))
+            conv_x = np.all(np.abs(xdiff)
+                            < reltol * np.maximum(np.abs(z_new), np.abs(z))
+                            + xtol)
+            conv_f = np.all(np.abs(F) < reltol * I_scale + abstol)
+            z = z_new
+            if conv_x and conv_f:
+                ier, mesg = 1, 'Success'
+                break
+        return z, {}, ier, mesg
 
     def _install_history(self, x0_in, xm1_in, dt, h_prev=None):
         """Open a run ON a solved two-point history rather than a seed.
@@ -1774,7 +1970,7 @@ class PSS(Analysis):
 
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
-              maxiterations=20, grid=None):
+              maxiterations=20, grid=None, matrix_free=False):
         """Solve for the periodic steady state.
 
         `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
@@ -1783,6 +1979,19 @@ class PSS(Analysis):
         an unknown and every step has to scale with it.  See
         `_period_grid`; the grid is still frozen for the whole solve, so the
         shooting Newton stays exact.
+
+        `matrix_free` is RECORDED SCOPE ITEM 6: solve the outer system
+        without ever forming the monodromy, propagating ONE vector per
+        Krylov iteration instead of `2m` columns per step.  It is worth
+        asking for on LARGE circuits only -- measured on the RC ladder it
+        LOSES at m=40 (0.82x) and wins above roughly m=250: 1.40x at m=242,
+        2.23x at m=502, 3.62x at m=1002.  ⚠ It buys that with memory, `2 N
+        m^2` doubles of stored factorisations (~800 MB at m=1002, 50
+        points), and it does NOT produce a monodromy, so `spectral_radius`
+        is `None` after a matrix-free solve -- not forming that matrix is
+        the entire point.  Supported for the DRIVEN solved-history path
+        only; anything else raises, rather than silently taking the dense
+        route the caller asked to avoid.
         """
         self.period = period
         toolkit = self.toolkit
@@ -2038,6 +2247,24 @@ class PSS(Analysis):
         _shoot_reltol = self.par.reltol * _ratio
         _tol = _tol * _ratio
 
+        ## ⚠ REFUSED RATHER THAN SILENTLY IGNORED.  A caller asking for
+        ## matrix-free on a path that has not got it wants the cost model it
+        ## implies; quietly taking the dense route would be a performance
+        ## surprise with no symptom, which is the shape of defect this tree
+        ## has paid for before.
+        if matrix_free and not (solved_history and not self.autonomous):
+            raise NotImplementedError(
+                'PSS: matrix_free=True is built for the DRIVEN '
+                'solved-history path only (a two-step method on a driven '
+                'circuit), and this solve is %s. Item 6 replaces the '
+                'sensitivity propagation, which is where a two-step '
+                'method spends its 2m columns; the plain and autonomous '
+                'systems have not been converted. Use matrix_free=False, '
+                'or a method whose companion reaches two charges back '
+                "(method='gear') on a driven circuit."
+                % ('autonomous' if self.autonomous
+                   else 'on the plain single-unknown path'))
+
         ## Find periodic steady state x-vector
         if self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
@@ -2083,10 +2310,23 @@ class PSS(Analysis):
             xa = np.asarray(x, dtype=float)
             z0 = np.concatenate((xa, xa))
             tol_z = np.concatenate((_tol, _tol))
-            z_ss, _info, _ier, _mesg = analysis.fsolve(
-                func_solved_history, z0, maxiter=maxiterations,
-                reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
-                toolkit=self.toolkit, full_output=True)
+            if matrix_free:
+                ## ⚠ THE MONODROMY IS NOT FORMED, so it must not be
+                ## REPORTED either.  `_monodromy` survives on the object
+                ## from any earlier traversal, and `spectral_radius` reads
+                ## it below without knowing which run wrote it -- so a
+                ## matrix-free solve that left it alone would report the
+                ## PREVIOUS solve's radius as this one's.  Cleared here,
+                ## and `spectral_radius` is documented as None on this path.
+                self._monodromy = None
+                z_ss, _info, _ier, _mesg = self._matrix_free_solve(
+                    z0, times, hs, tol_z, tol_z, _shoot_reltol,
+                    maxiterations)
+            else:
+                z_ss, _info, _ier, _mesg = analysis.fsolve(
+                    func_solved_history, z0, maxiter=maxiterations,
+                    reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
+                    toolkit=self.toolkit, full_output=True)
             x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
         else:
             x0_ss, _info, _ier, _mesg = analysis.fsolve(

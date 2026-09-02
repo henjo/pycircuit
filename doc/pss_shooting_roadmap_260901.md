@@ -62,29 +62,31 @@ points.
    the analytic and finite-difference Jacobians agree to six digits — the plain path's
    ~30% Jacobian was never what stopped this case.
 
-2. **Item 6, matrix-free variational shooting — GATE PASSED 2026-09-02, ready to build.**
-   The gate was "on a quiet box, does the propagation share pass ~30%". It does:
-   single-threaded BLAS, it crosses 30% near m=220 and reaches 79% at m=1002.
+2. **Item 6, matrix-free variational shooting — BUILT 2026-09-02.**
+   `PSS.solve(matrix_free=True)`, driven solved-history path only. The gate ("does the
+   propagation share pass ~30%?") passed — it crosses near m=220 and reaches 79% at
+   m=1002 — and the thing was then built and measured end to end:
 
-   | m | propagation | (solve alone) | ceiling k=20 |
+   | m | dense (iters) | matrix-free (iters) | speedup |
    |---|---|---|---|
-   | 40 | 4.8% | 2.3% | 1.02× |
-   | 110 | 15.0% | 6.2% | 1.14× |
-   | 242 | 38.1% | 14.1% | 1.54× |
-   | 502 | 63.8% | 21.3% | 2.58× |
-   | 1002 | 79.1% | 24.9% | 4.44× |
+   | 242 | 2.113 s (2) | 1.557 s (2) | 1.36× |
+   | 502 | 9.255 s (2) | 6.131 s (3) | 1.51× |
+   | 1002 | 52.402 s (2) | 24.636 s (3) | 2.13× |
 
-   ⚠ **The old record was overturned by a fix to the harness, not by the quiet box.**
-   It read 2.2% at m=40, ceiling 1.01–1.03×, because it timed `toolkit.linearsolver`
-   alone. `_step_sensitivity` also forms `C @ P` — m×m against m×2m, O(m³), the same
-   order as the solve — and matrix-free eliminates those too, because it never forms
-   `P`. The old number was stable and reproducible; it was answering a different
-   question. Its **verdict** at m=40 survives on the corrected figure (4.8%, 1.02×).
+   Answers agree with the dense path to **1.1e-16**. The traversal-only speedup is
+   higher (2.23× at m=502, 3.62× at m=1002) because a `solve` also does setup, replay
+   and the DFT; both are true, so say which is being quoted.
 
-   ⚠ Quote the threading condition with the number: threads free, the same sizes read
-   4.8 / 7.2 / 12.4 / 18.2%. `k=20` is an assumption, so this is an upper bound on an
-   upper bound. `benchmarks/pss_matrix_free_ceiling.py` carries it and the three
-   measurement designs that failed on a loaded box.
+   ⚠ **`k` was an assumption and is now measured**: GMRES takes 2/4/7/12 iterations at
+   m=40/110/242/502, because `I − M` has almost every eigenvalue within 1% of 1.0 — the
+   fast modes decay to nothing over a period, so **k tracks the number of slow modes,
+   not m**. That is the property the whole item rests on and it had never been checked.
+
+   ⚠ **What it costs:** `2·N·m²` doubles of stored factorisations (~800 MB at m=1002,
+   50 points); one extra Newton iteration at m≥502, from a convergence test that cannot
+   be identical (`fsolve` scales by `|J|·|x|`, which no matrix-free method has); and no
+   monodromy, so `spectral_radius` is `None`. The autonomous and plain paths are not
+   converted and **raise** rather than silently going dense.
 
 3. **Autonomous Gear-2 diagnostics.** The composed monodromy is 2m×2m and mixes physical
    multipliers with the discretisation's parasitic roots. Harmless for Gear-2 (its
@@ -109,6 +111,13 @@ Every one of these was settled by measurement, and each cost real time:
   the problem well-posed; the ~30% Jacobian error is what that costs.
 - **`doc/transient_review.md` §4.6's ringdown numbers do not transfer to PSS.** A
   periodic steady state has no transient to ring.
+- **A test that could not fail, on a circuit that could not show the defect.** The
+  matrix-free matvec tests were first written on a linear RC ladder, where every `C`
+  along the period is the same matrix — so corrupting the recursion's capacitance ring
+  changed nothing and the suite stayed green through the mutation. Seeding both history
+  states with zeros hid a second defect the same way. Fixed with a state-dependent `C`
+  (a `BSource` `q_func`) and two distinct entering states; both mutations are now caught.
+  ⚠ Neither hole was visible from reading the test — only from mutating the code under it.
 - **An observation recorded as an exoneration.** The old item-5 diagnosis listed "the
   opening step is large not small" among the obvious causes *eliminated*. It had seen the
   cause and checked it against the wrong worry — that the opening step might be too small
@@ -135,4 +144,4 @@ transient, the free-running limit cycle.
 | `pss_seam_cost.py` | what the cold-start seam costs, per method |
 | `pss_stiff_autonomous.py` | whether a stiff oscillator needs Gear-2 (it does not) |
 | `pss_lte_grid.py` | the LTE-chosen grid's prize; now a CONTROL, the analysis reaches it |
-| `pss_matrix_free_ceiling.py` | item 6's ceiling (gate passed, m>~250), and three failed measurement designs |
+| `pss_matrix_free_ceiling.py` | item 6's ceiling and its delivered speedups; three failed measurement designs |
