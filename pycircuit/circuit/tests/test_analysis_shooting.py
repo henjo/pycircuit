@@ -1961,3 +1961,100 @@ def test_the_physical_block_split_shrinks_with_the_step():
     assert q200 > 0.5 and q50 > 0.5, \
         'parasitic splits collapsed too (%.3f, %.3f); nothing separates' \
         % (q50, q200)
+
+
+def _scaled_vdp(mu=1.0, gain=1e4):
+    """van der Pol with a VCVS copy of `v` scaled by `gain`.
+
+    The copy is perfectly slaved, so the ORBIT is unchanged and only the
+    arithmetic inside the phase-pin's `argmax` moves.  That makes it the
+    instrument for asking whether comparing coordinates in different units
+    is a defect.
+    """
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    c.add_node('big')
+    c['E'] = VCVS('v', gnd, 'big', gnd, g=gain)
+    c['Rb'] = R('big', gnd, r=1e9)
+    return c
+
+
+def test_the_phase_pin_compares_units_on_purpose():
+    """Why `argmax |x2 - x1|` is right to be dimensionally inconsistent.
+
+    The phase row `e_k` exists to remove the orbit's own tangent direction
+    from the singular `I - M`, and it can only do that in proportion to
+    `|e_k . fhat|` -- its alignment with that direction.  `argmax |dx_k|`
+    over ONE STEP is `argmax |f_k|` up to `h`, and `argmax |f_k|` is exactly
+    `argmax |e_k . fhat|`.  So the rule maximises the very quantity the row
+    needs, and it does so BECAUSE it compares raw magnitudes rather than
+    despite it.
+
+    ⚠ WRITTEN BECAUSE THE OBVIOUS FIX IS WRONG AND WAS ALMOST MADE.  Reading
+    `argmax` over a vector mixing volts, amperes and a scaled copy looks
+    like a units bug, and the natural repair -- normalise each coordinate by
+    its own swing -- was measured here and picks a row **704x worse
+    aligned** on this circuit.  The scaling that lets a large coordinate win
+    the argmax is the same scaling that makes it dominate the flow vector;
+    the two cancel exactly, which is why the raw comparison is the correct
+    one.
+
+    Seeded at `v`'s TURNING POINT, the hardest case for the rule: the
+    pinned value then sits ~1e-3 of the way into the coordinate's range,
+    i.e. nearly tangent to the orbit in that coordinate's own terms, and
+    the row is STILL fully aligned because the scaled copy dominates `f`.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 6.663293                      # measured free-running period, mu=1
+
+    cir = _scaled_vdp()
+    iref = cir.get_node_index(gnd)
+    iv = cir.get_node_index('v')
+    x0 = np.zeros(cir.n)
+    x0[iv] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, reltol=1e-8).solve(refnode=gnd, tend=35.0,
+                                                timestep=0.02, x0=x0)
+    t = np.asarray(res.sweep_values, dtype=float).ravel()
+    X = np.asarray(res.x, dtype=float)
+    W = X[:, t > 21.0]                 # a settled window, ~2 periods
+    red = lambda f: np.concatenate((f[:iref], f[iref + 1:]))
+    seed = red(W[:, int(np.argmax(W[iv]))])          # v at its turning point
+    swing = np.array([np.ptp(W[i]) for i in range(W.shape[0]) if i != iref])
+
+    ## replay the production rule for choosing the row
+    pss = PSS(_scaled_vdp(), method='trap', reltol=1e-9)
+    times, hs = pss._period_grid(T, 200, None)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss._begin_period(seed)
+        x1 = np.asarray(pss.solve_timestep(seed, times[0], hs[0]), float)
+        x2 = np.asarray(pss.solve_timestep(x1, times[1], hs[0],
+                                           iq_last=pss._iq), float)
+    step = np.abs(x2 - x1)
+    k = int(np.argmax(step))
+    k_norm = int(np.argmax(step / np.maximum(swing, 1e-300)))
+
+    ## the flow at the seed, and each candidate row's alignment with it
+    f = x1 - seed
+    f = f / np.linalg.norm(f)
+    align, align_norm = abs(f[k]), abs(f[k_norm])
+
+    assert align > 0.9, \
+        'the row `argmax |dx|` chose is only %.3e aligned with the flow; ' \
+        'the whole defence of the rule is that this stays near 1' % align
+    assert k_norm != k, \
+        'the unit-normalised argmax picked the same row, so this circuit ' \
+        'no longer separates the two rules and the test proves nothing'
+    assert align_norm < 0.01, \
+        'the unit-normalised row is %.3e aligned -- it was 1.4e-03 when ' \
+        'this was written, and the point is that it is far worse' % align_norm
+    assert align / align_norm > 100, \
+        'the two rules are now within %.0fx; the measured gap was 704x' \
+        % (align / align_norm)

@@ -127,20 +127,34 @@ being measured by an instrument that timed a third of what it was named for.
 
 Nothing from the original three. Two candidates, neither started:
 
-- **The phase condition.** The autonomous phase row is a coordinate pin chosen once at
-  the seed (`phase_k`, `phase_pin`) and then frozen — so transversality is only ever
-  checked at the seed, and `phase_pin` is a *value* the orbit must attain, which a solve
-  that moves far from its seed can miss entirely, making the system inconsistent rather
-  than merely ill-conditioned. The cheap upgrade is the **orthogonality/Poincaré row**
-  `⟨x₀ − x_ref, f(x_ref)⟩ = 0` — one row, no quadrature, no reference trajectory, and
-  `xdot(0)` is already available in closed form. The integral (Doedel) condition is the
-  heavier option and its extra value is mainly in *continuation*, which is not the
-  setting here. ⚠ **Neither is justified yet:** the gate is a case where the current pin
-  demonstrably fails — a `phase_pin` outside the converged orbit's range on `k`, or a
-  stiff case losing transversality at the solution though not at the seed. If that case
-  cannot be built, neither upgrade is warranted. Note the evidence that exonerated the
-  phase row for item 5 (the converging prototype used the same family of condition) says
-  nothing about these two failure modes.
+- ~~**The phase condition.**~~ **TESTED AND REJECTED 2026-09-02, with numbers.** The
+  gate was "a case where the frozen pin demonstrably fails". It could not be built, and
+  the attempt overturned the reasoning behind the proposal.
+
+  **The `argmax` compares volts with amperes on purpose.** The phase row removes the
+  orbit's tangent in proportion to `|e_k·f̂|`; one step of `|Δx_k|` *is* `|f_k|` up to h,
+  so `argmax|Δx_k|` is exactly `argmax |e_k·f̂|` — it maximises the quantity the row
+  needs. The "obvious repair" of normalising each coordinate by its own swing picks a row
+  **704× worse aligned** (1.4e-03 against 1.0000), measured on a van der Pol carrying a
+  VCVS-scaled copy of `v`. Pinned by `test_the_phase_pin_compares_units_on_purpose`.
+
+  **The orthogonality row buys 2–6× conditioning and never decides anything.** On the
+  case built to break the pin (seeded at `v`'s turning point, pin sitting 1e-3 into its
+  coordinate's range), both rows converge to the same answer at every grid, with bordered
+  condition numbers 1.2e3 / 3.0e2 / 8.2e1 (pin) against 2.0e2 / 6.0e1 / 3.7e1
+  (orthogonality) at 200/800/3200 points — and the gap *shrinks* as the grid refines. The
+  row's alignment at the solution stayed 1.0000 throughout: the tangency the attack aimed
+  at never materialised.
+
+  ⚠ **One real failure mode survives, and it is about seeds, not the condition.**
+  `phase_pin` is a *value* the orbit must attain, so a far seed can pin one outside its
+  range and the system is then inconsistent, not merely hard: on van der Pol at μ=1,
+  seeds at 4×/10×/30× the orbit amplitude pin `v` at −5.66/−9.50/−15.46 against an orbit
+  range of [−2.01, 2.01], all reported as ordinary non-convergence. The orthogonality
+  row's plane through the same far seed misses the orbit too, so it fixes nothing here.
+  **The remaining gap is diagnostic** — naming an inconsistent phase plane the way the
+  `T = 0` trivial root is named — and is not started.
+
 - **Matrix-free for the autonomous and plain paths.** Item 6 converted the driven
   solved-history path only; the others raise. Whether it is worth extending depends on
   the same propagation share, unmeasured for those formulations.

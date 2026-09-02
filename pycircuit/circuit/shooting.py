@@ -2147,6 +2147,45 @@ class PSS(Analysis):
             ## bordered Jacobian is nearly parallel to the null direction it
             ## exists to remove, which is a singular system wearing an extra
             ## equation.
+            ##
+            ## ⚠ THE `argmax` COMPARES VOLTS WITH AMPERES ON PURPOSE, and
+            ## the obvious repair is WRONG.  The row can only remove the
+            ## orbit's tangent in proportion to `|e_k . fhat|`; one step of
+            ## `|dx_k|` IS `|f_k|` up to `h`, so this argmax is exactly
+            ## `argmax |e_k . fhat|` -- it maximises the quantity the row
+            ## needs.  Normalising each coordinate by its own swing, which
+            ## is what the vector's mixed units invite, was MEASURED on a
+            ## van der Pol carrying a VCVS-scaled copy of `v` and picks a
+            ## row 704x WORSE aligned (1.4e-03 against 1.0000).  The
+            ## scaling that lets a large coordinate win the argmax is the
+            ## same scaling that makes it dominate `f`; the two cancel.
+            ## Pinned by `test_the_phase_pin_compares_units_on_purpose`.
+            ##
+            ## ⚠ AND THE UPGRADE THIS INVITED WAS TESTED AND REJECTED.  An
+            ## orthogonality (Poincare) row `<x0 - x_ref, f(x_ref)> = 0`
+            ## looks strictly better -- it is the flow-aligned row by
+            ## construction, and it cannot pin an unattainable VALUE.
+            ## Measured against this rule on the case built to break it
+            ## (seeded at `v`'s turning point, so the pin sits 1e-3 of the
+            ## way into its coordinate's range): both converge, to the same
+            ## answer, at every grid tried, and the bordered condition
+            ## number is 1.2e3/3.0e2/8.2e1 for the pin against
+            ## 2.0e2/6.0e1/3.7e1 for orthogonality at 200/800/3200 points --
+            ## a 2-6x edge that never decides anything, and it SHRINKS as
+            ## the grid refines.  The row's alignment at the solution stayed
+            ## 1.0000 throughout: the tangency this was supposed to induce
+            ## never materialised.
+            ##
+            ## What IS real: `phase_pin` is a VALUE the orbit must attain,
+            ## so a seed far off the orbit can pin one outside its range and
+            ## the system is then INCONSISTENT rather than merely hard --
+            ## measured on van der Pol at mu=1, seeds at 4x/10x/30x the
+            ## orbit amplitude pin `v` at -5.66/-9.50/-15.46 against an
+            ## orbit range of [-2.01, 2.01], and all three report ordinary
+            ## non-convergence.  ⚠ That is NOT an argument for the
+            ## orthogonality row: its plane through the same far seed misses
+            ## the orbit too (checked).  It is an argument about SEEDS, and
+            ## the remaining gap is diagnostic, not formulational.
             self._begin_period(x)
             _x1 = self.solve_timestep(x, times[0], hs[0])
             _x2 = self.solve_timestep(_x1, times[1], hs[0], iq_last=self._iq)
