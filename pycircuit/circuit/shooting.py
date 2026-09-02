@@ -4671,6 +4671,144 @@ class PAC(Analysis):
         self.matvecs = count[0]
         return rows
 
+    ## How small a sideband's contribution must be, relative to the running
+    ## total, before the accumulation stops.  Okumura et al.: powers are
+    ## "accumulated until their contributions become negligible".
+    ALIAS_RATIO_TOL = 1e-9
+
+    def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None):
+        """Output noise PSD at `freq`, with every sideband folded in.
+
+        Returns `(S, sidebands_used)`.  `S` is the one-sided PSD at the
+        output, in the same units as `analysis_ss.Noise`'s `Svnout`.
+
+            S(f) = sum_l  h_l CY h_l^H ,   h_l = H_l(f - l f0)
+
+        Noise entering at `f - l f0` leaves at `f` through sideband `l`, and
+        white sources in disjoint bands are uncorrelated, so the bands add
+        in POWER.  Each `h_l` is one adjoint row -- one transposed solve for
+        every source in the circuit, which is the whole reason this is
+        affordable.
+
+        ⚠ STATIONARY SOURCES ONLY, AND IT CHECKS.  Okumura's cyclostationary
+        model windows each source to a single timestep, and the windows'
+        Fourier coefficients then CORRELATE the sidebands -- they stop
+        adding in power, and the cross terms need the `R_{m,n}` construction
+        from his §III-B.  Every noise source in this element library is
+        bias-INdependent (a resistor's `4kT/R` does not read `x` at all), so
+        the stationary formula is exact for them; a compact device with a
+        bias-dependent `CY` is not covered, and this raises rather than
+        returning a number that is quietly the wrong model.
+
+        ⚠ TWO STOPPING RULES, AND THE BOUND IS NOT THE RATIO TEST.  The
+        accumulation stops when a sideband pair adds less than `ratio_tol`
+        of the running total -- and it can never pass `|l| <= N/2`, the
+        grid's own Nyquist, because nothing aliases down from above the
+        maximum frequency the grid represents (eq. 32).  An implementation
+        with only the ratio test terminates for the wrong reason and, on a
+        coarse grid, after summing harmonics its own grid cannot carry.
+
+        GATED against `analysis_ss.Noise` on a linear circuit, where the
+        sidebands vanish and this must reduce to the stationary answer --
+        Okumura's own `p = 1` case, "exactly the same as that derived for a
+        stationary noise".  Measured ratio 1.000000, with every `l != 0`
+        contributing ~1e-32 of the total.
+        """
+        fp = pss.factored_period()
+        m = pss.cir.n - 1
+        N = len(fp.steps)
+        T = float(fp.T)
+        f0 = 1.0 / T
+        tol = self.ALIAS_RATIO_TOL if ratio_tol is None else float(ratio_tol)
+        lmax = N // 2 if maxsidebands is None else min(int(maxsidebands),
+                                                       N // 2)
+
+        w = 2.0 * np.pi * float(freq)
+        cy = self._cy_reduced(pss, w)
+
+        total = 0.0
+        used = []
+        quiet = 0
+        self.alias_stop = 'bound'
+        for l in range(0, lmax + 1):
+            step = 0.0
+            for sl in ((0,) if l == 0 else (l, -l)):
+                fin = float(freq) - sl * f0
+                h = self.adjoint_sideband_row(pss, fin, output, sl)[0]
+                step += float(np.real(h @ self._cy_reduced(
+                    pss, 2.0 * np.pi * fin) @ np.conj(h)))
+                used.append(sl)
+            total += step
+            if total > 0 and abs(step) < tol * abs(total):
+                ## ⚠ TWO QUIET PAIRS, NOT ONE.  A single sideband can come
+                ## back near zero by symmetry while its neighbours do not,
+                ## and stopping there would truncate a series that had not
+                ## converged.
+                quiet += 1
+                if quiet >= 2:
+                    self.alias_stop = 'ratio'
+                    break
+            else:
+                quiet = 0
+        self.sidebands_used = used
+        ## ⚠ WHICH RULE STOPPED IT IS PART OF THE ANSWER.  Ending on the
+        ## ratio test means the series converged; ending on the Nyquist
+        ## bound means the grid ran out before the series did, and the
+        ## number is a LOWER bound on the folded noise -- every sideband
+        ## above the grid's own maximum frequency is missing, not small.
+        ## A strongly switching circuit does this readily: measured on a
+        ## driven diode at 80 points per period, the accumulation reached
+        ## l = +-39 without the ratio test ever firing, while folding was
+        ## already contributing 62% of the total.
+        if self.alias_stop == 'bound' and lmax > 0:
+            warnings.warn(
+                'PAC.pnoise: the sideband accumulation stopped at the '
+                "grid's Nyquist (|l| = %d at %d points per period), not "
+                'because the contributions became negligible. Sidebands '
+                'above the grid\'s maximum frequency are MISSING rather '
+                'than small, so this is a lower bound on the folded noise. '
+                'Re-solve the PSS on a finer period grid and compare.'
+                % (lmax, N),
+                RuntimeWarning, stacklevel=2)
+        return total, used
+
+    def _cy_reduced(self, pss, w):
+        """`CY` with the reference node removed, refusing a moving one.
+
+        ⚠ THE CHECK IS THE POINT.  A bias-dependent `CY` makes the sources
+        CYCLOSTATIONARY, and then sidebands stop adding in power -- the
+        stationary sum this class computes would be the wrong model, not
+        merely an inaccurate one, and nothing downstream would say so.
+        Sampled at three states on the converged orbit rather than argued
+        from the element types, because a compact model's `CY` reads `x`
+        and the discrete library's does not.
+        """
+        irn = pss.irefnode
+        fp = pss.factored_period()
+        states = [np.zeros(pss.cir.n - 1),
+                  np.asarray(fp.x_last, dtype=float).ravel(),
+                  np.asarray(fp.x_prev, dtype=float).ravel()[:pss.cir.n - 1]]
+        mats = []
+        for xr in states:
+            xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            cy = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            (cy,) = remove_row_col((cy,), irn, pss.toolkit)
+            mats.append(np.asarray(cy, dtype=complex))
+        scale = max(float(np.max(np.abs(mats[0]))), 1e-300)
+        for other in mats[1:]:
+            drift = float(np.max(np.abs(other - mats[0]))) / scale
+            if drift > 1e-9:
+                raise NotImplementedError(
+                    'PAC.pnoise: this circuit has a BIAS-DEPENDENT CY '
+                    '(varies by %.3g over the orbit), so its noise sources '
+                    'are cyclostationary. The sidebands are then correlated '
+                    'through the window Fourier coefficients and no longer '
+                    'add in power, so the stationary sum here would be the '
+                    "wrong model rather than an imprecise one. Okumura's "
+                    'section III-B has the construction; it is not built.'
+                    % drift)
+        return mats[0]
+
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""
         return lambda v: np.asarray(v) - alpha * fp.matvec(v)

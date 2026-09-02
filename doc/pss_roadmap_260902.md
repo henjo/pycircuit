@@ -177,7 +177,7 @@ for the `func_solved_history` cross-check (it matched PSS to 4.0e-13). Confirm `
 sign/transpose differences against p.192 before coding — the algebra was read off a page
 image and `pdftotext` drops it.
 
-### A3. pnoise — ⚠ UNBLOCKED 2026-09-02, and it sits ON TOP OF A1
+### A3. pnoise — ⚠ BUILT 2026-09-02 for STATIONARY sources; cyclostationary is not
 
 Needs the **adjoint** formulation: pnoise is many-to-one (hundreds of sources, one output),
 so a forward solve costs one solve *per source* and recycling does not help, because the
@@ -293,9 +293,34 @@ is not a check.
 grid's own Nyquist, per eq. (32). Nothing aliases down from above what the grid represents,
 so the remedy is a finer grid and clamping would answer a question nobody asked.
 
-⚠ **STILL MISSING:** the cyclostationary window model (one stationary source per timestep),
-`CY` collection across the element library, and the aliasing accumulation with its *ratio
-test* — which now has the bound to operate inside.
+⚠ **AND THE ACCUMULATION IS BUILT** — `PAC.pnoise(pss, freq, output)`:
+
+    S(f) = Σ_l  h_l CY h_l^H ,   h_l = H_l(f - l f0)
+
+Noise entering at `f - l f0` leaves at `f` through sideband `l`; white sources in disjoint
+bands are uncorrelated, so the bands add in power. Each `h_l` is one adjoint row — one
+transposed solve for *every source in the circuit*.
+
+| gate | result |
+|---|---|
+| linear divider vs `analysis_ss.Noise` (Okumura's `p = 1`) | ratio **1.000000**, l≠0 terms ~1e-32 |
+| …per doubling of the period grid | 7.80x / 7.33x / 6.75x → 3.9e-09 at 400 pts |
+| diode mixer: share of output noise from the fold | **62%** |
+| …and the folded total under refinement | 1.0001 / 1.0004 / 1.0001 |
+
+⚠ **BOTH STOPPING RULES, AND WHICH ONE FIRED IS PART OF THE ANSWER.** Ending on the ratio
+test means the series converged. Ending on the grid's Nyquist means the grid ran out first
+and every sideband above it is **missing rather than small** — a lower bound, and it warns.
+Measured on the diode: 80 and 160 points end on the bound, 320 and 640 on the ratio test,
+totals differing by 0.04%.
+
+⚠ **STATIONARY SOURCES ONLY, AND IT CHECKS RATHER THAN ASSUMES.** A bias-dependent `CY`
+makes the sources cyclostationary; the windows' Fourier coefficients then correlate the
+sidebands, they stop adding in power, and the cross terms need the `R_{m,n}` construction
+from §III-B — **not read, not built**. Summing powers anyway would answer a different
+question and look normal doing it, so `pnoise` samples `CY` along the orbit and raises.
+Every source in the discrete element library is bias-independent (a resistor's `4kT/R` never
+reads `x`), so the refusal is unreachable there; a compact device's `CY` does read `x`.
 
 **Gate: open, and A1 is built** (2026-09-02), so `H_l` is available. Start from Okumura's
 §III, not from the DAC'96 deferral. ⚠ The `p = 1` reduction is the first thing to write:

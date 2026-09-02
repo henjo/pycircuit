@@ -4334,3 +4334,180 @@ def test_the_sideband_row_costs_one_solve_per_sideband():
         'the sideband row took %.1f matvecs per sideband at m=%d; it is ' \
         'supposed to be independent of the number of sources' \
         % (per_sideband, m)
+
+
+def _divider():
+    """A linear divider with noisy resistors, and an independent answer."""
+    c = SubCircuit()
+    n1, n2 = c.add_nodes('net1', 'net2')
+    c['vs'] = VSin(n1, gnd, va=1.0, vac=1.0, freq=1e3)
+    c['R1'] = R(n1, n2, r=9e3)
+    c['R2'] = R(n2, gnd, r=1e3)
+    c['C'] = C(n2, gnd, c=1e-9)
+    return c
+
+
+def _diode_mixer():
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+    c['R'] = R(1, 2, r=1e4)
+    c['D'] = Diode(2, gnd)
+    c['C'] = C(2, gnd, c=1e-12)
+    return c
+
+
+def _pnoise_at(cir, per, fout, node, npts, **kw):
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / npts, maxiterations=40)
+    assert pss.converged
+    irn = pss.irefnode
+    k = cir.get_node_index(node)
+    k = k - 1 if k > irn else k
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S, used = pac.pnoise(pss, fout, k, **kw)
+    return S, used, pac
+
+
+def test_pnoise_reduces_to_the_stationary_analysis_on_a_linear_circuit():
+    """⚠ OKUMURA'S `p = 1` CASE, against a reference pnoise cannot influence.
+
+    A linear circuit converts nothing, so every sideband but `l = 0`
+    vanishes and the fold collapses to the ordinary stationary formula —
+    "exactly the same as that derived for a stationary noise". That makes
+    `analysis_ss.Noise` the answer: a different analysis, an `(sC + G)`
+    solve, no monodromy and no period anywhere in it.
+
+    Measured: the `l != 0` terms come back ~1e-32 of the total, and the
+    ratio against `Svnout` is 1.000000.
+
+    ⚠ THE RATE, NOT THE SIZE. Per doubling of the period grid the residual
+    falls 7.80x / 7.33x / 6.75x, reaching 3.9e-09 at 400 points. That is at
+    least second order — the exact exponent is not asserted here because it
+    has not been established, only that the disagreement is discretisation
+    and not a defect.
+    """
+    from pycircuit.circuit.analysis_ss import Noise
+    circuit.default_toolkit = circuit.numeric
+    per, fout = 1e-3, 700.0
+    rels = []
+    for npts in (50, 100, 200):
+        cir = _divider()
+        ref = complex(Noise(cir, inputsrc='vs',
+                            outputnodes=(cir.get_node('net2'), gnd)
+                            ).solve(fout)['Svnout']).real
+        S, used, _pac = _pnoise_at(cir, per, fout, cir.get_node('net2'), npts)
+        assert S > 0, 'pnoise returned %r' % S
+        rels.append(abs(S - ref) / ref)
+        assert 0 in used and len(used) > 1, \
+            'the accumulation never looked past l=0, so the fold is untested'
+
+    assert rels[-1] < 1e-6, \
+        'pnoise disagrees with the AC noise analysis by %.3e on a LINEAR ' \
+        'circuit, where the two compute the same quantity' % rels[-1]
+    for a, b in zip(rels, rels[1:]):
+        assert a / b > 4.0, \
+            'the residual against the stationary analysis falls only %.2fx ' \
+            'per doubling (%.3e -> %.3e). A constant offset would look ' \
+            'small and never move' % (a / b, a, b)
+
+
+def test_pnoise_folds_and_the_fold_is_not_a_rounding_term():
+    """On a mixer the sidebands carry a large share of the output noise.
+
+    62% here, so an implementation that quietly summed only `l = 0` would
+    be wrong by a factor, not by a tolerance — and would still return a
+    plausible-looking PSD. The linear test above cannot catch that, because
+    there the fold is *supposed* to contribute nothing.
+    """
+    cir = _diode_mixer()
+    S_all, used, _p = _pnoise_at(cir, 1e-6, 3e5, 2, 80)
+    S_l0, _u, _p2 = _pnoise_at(_diode_mixer(), 1e-6, 3e5, 2, 80,
+                               maxsidebands=0)
+    assert S_l0 > 0 and S_all > S_l0
+    share = (S_all - S_l0) / S_all
+    assert share > 0.25, \
+        'the sidebands contribute only %.1f%% of the output noise on a ' \
+        'driven diode; either the fold is not working or this circuit ' \
+        'stopped mixing' % (100 * share)
+    assert max(abs(np.asarray(used))) > 5, \
+        'the accumulation stopped after |l|=%d on a switching circuit' \
+        % max(abs(np.asarray(used)))
+
+
+def test_pnoise_says_when_the_grid_stopped_it_rather_than_the_series():
+    """⚠ WHICH STOPPING RULE FIRED IS PART OF THE ANSWER.
+
+    Ending on the ratio test means the series converged. Ending on the
+    grid's Nyquist means the grid ran out first, and every sideband above
+    it is MISSING rather than small — the number is a lower bound. A
+    strongly switching circuit reaches that readily: measured on this
+    diode, 80 and 160 points per period both end on the bound, 320 and 640
+    end on the ratio test, and the totals differ by only 0.04% — so the
+    warning is not proof of a bad answer, it is a statement that the
+    accumulation cannot vouch for itself.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _diode_mixer()
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 80, maxiterations=40)
+    irn = pss.irefnode
+    k = cir.get_node_index(2)
+    k = k - 1 if k > irn else k
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with pytest.warns(RuntimeWarning, match='Nyquist'):
+        pac.pnoise(pss, 3e5, k)
+    assert pac.alias_stop == 'bound'
+
+    ## the linear circuit's series does converge, and says so
+    _S, _u, pac2 = _pnoise_at(_divider(), 1e-3, 700.0,
+                              _divider().get_node('net2'), 100)
+    assert pac2.alias_stop == 'ratio', \
+        'a linear circuit folds nothing and must stop on the ratio test, ' \
+        'not on the grid'
+
+
+def test_pnoise_refuses_cyclostationary_sources():
+    """⚠ A BIAS-DEPENDENT `CY` IS A DIFFERENT MODEL, NOT A HARDER SUM.
+
+    Okumura's cyclostationary treatment windows each source to a single
+    timestep, and the windows' Fourier coefficients CORRELATE the
+    sidebands: they stop adding in power and pick up cross terms needing
+    the `R_{m,n}` construction. Summing powers anyway would answer a
+    different question and look entirely normal doing it.
+
+    Every noise source in the discrete element library is bias-independent
+    — a resistor's `4kT/R` does not read `x` at all — so this refusal is
+    unreachable there. A compact device's `CY` does read `x`, which is why
+    the check samples the orbit rather than reasoning from element types.
+    """
+    class _BiasNoisyR(R):
+        """A resistor whose noise follows its own terminal voltage."""
+        def CY(self, x, w, epar=circuit.defaultepar):
+            base = 4 * self.toolkit.kboltzmann * epar.T / self.iparv.r
+            iPSD = base * (1.0 + 10.0 * abs(float(np.asarray(x).ravel()[0])))
+            return self.toolkit.array([[iPSD, -iPSD], [-iPSD, iPSD]])
+
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    n1, n2 = c.add_nodes('net1', 'net2')
+    c['vs'] = VSin(n1, gnd, va=1.0, vac=1.0, freq=1e3)
+    c['R1'] = _BiasNoisyR(n1, n2, r=9e3)
+    c['R2'] = R(n2, gnd, r=1e3)
+    c['C'] = C(n2, gnd, c=1e-9)
+    pss = PSS(c, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
+    assert pss.converged
+    with pytest.raises(NotImplementedError, match='cyclostationary'):
+        PAC(c, toolkit=circuit.numeric).pnoise(pss, 700.0, 1)
