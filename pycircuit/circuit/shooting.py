@@ -3300,6 +3300,17 @@ class PSS(Analysis):
         technique, which pumps energy in precisely so the solve cannot fall
         to the DC point.
 
+        ⚠ THE SAME STATEMENT EXISTS IN THE LITERATURE, in words, and the
+        measurement above is its quantitative form.  Kundert
+        (*Introduction to RF Simulation*, v2 2003; relayed, cited not
+        verified here) on starting shooting from a plain transient: "this
+        is sufficient to get convergence even on troublesome circuits
+        EXCEPT WHEN THE TIME CONSTANTS IN THE CIRCUIT ARE MUCH LARGER THAN
+        THE PERIOD OF THE SIGNAL."  That is exactly the mu = 1 -> 1 period
+        against mu = 0.05 -> ~24 periods above, and the reason the count
+        tracks the `1/mu` envelope rather than the seed: the envelope time
+        constant IS the time constant he names.
+
         See `benchmarks/pss_warm_start.py` for the probe that failed and the
         counts that decided the interface.
 
@@ -4149,6 +4160,25 @@ class PSS(Analysis):
         
         ## THE THIRD LEVEL, MEASURED ON THE WAY OUT.
         ##
+        ## ⚠ WHY THE NESTING WORKS AT ALL, which this docstring stated the
+        ## shape of and never the reason for.  Kundert (*Introduction to RF
+        ## Simulation*, v2 2003; relayed from the docs session, cited not
+        ## verified here): "the strong convergence properties of shooting
+        ## methods result from its nature AS A MULTILEVEL NEWTON METHOD, and
+        ## not from the fact it is a time-domain method.  Indeed, it is
+        ## possible to formulate harmonic balance as a time-domain method
+        ## yet its convergence properties do not fundamentally change."
+        ##
+        ## The mechanism is that `phi_T` "is a near linear function ... even
+        ## when the underlying circuit is behaving in a strongly nonlinear
+        ## fashion, because `phi_T` is evaluated over one period of the
+        ## large periodic clock signal" -- the nonlinearity is absorbed by
+        ## the INNER transient, which is "a natural continuation method,
+        ## quite robust".  So the outer Newton sees a nearly linear map and
+        ## the arrangement below is not an arbitrary ordering of three
+        ## tests: each level exists because the level inside it has already
+        ## made the level outside tractable.
+        ##
         ## Three convergence criteria stand between a PSS run and its answer,
         ## and the first two are checked while it runs: the inner Newton
         ## (`i(x) + iq + u` under `reltol/iabstol/vabstol`) and the shooting
@@ -4834,10 +4864,45 @@ class PAC(Analysis):
     ALIAS_RATIO_TOL = 1e-9
 
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None):
-        """Output noise PSD at `freq`, with every sideband folded in.
+        """TIME-AVERAGED output noise PSD at `freq`, sidebands folded in.
 
-        Returns `(S, sidebands_used)`.  `S` is the one-sided PSD at the
-        output, in the same units as `analysis_ss.Noise`'s `Svnout`.
+        Returns `(S, sidebands_used)`.  `S` is the one-sided
+        **time-averaged** PSD at the output, in the same units as
+        `analysis_ss.Noise`'s `Svnout`.
+
+        ⚠ "TIME-AVERAGED" IS NOT A HEDGE, IT IS THE SPECIFICATION, and
+        saying so is the whole of this paragraph's job.  TWO SEPARATE
+        MECHANISMS make an output noise cyclostationary, and only one of
+        them is about the sources:
+
+          1. bias-dependent sources modulated by the time-varying operating
+             point -- this is what `_cy_reduced` refuses, because the
+             stationary sum would be the wrong model;
+          2. the PERIODIC SOURCE-TO-OUTPUT TRANSFER FUNCTION -- which
+             applies even when every source is stationary.  A circuit whose
+             only noise is the thermal noise of constant resistors STILL
+             has cyclostationary output noise.
+
+        The sideband sum here handles (2) correctly and returns its TIME
+        AVERAGE.  That is the right answer for most uses and it is
+        incomplete for two ordinary RF topologies, both named by Kundert
+        (*Introduction to RF Simulation*, v2 2003 -- relayed from the docs
+        session, cited not verified here): a NONLINEAR SUBSEQUENT STAGE
+        ("an oscillator drives a limiter ... the same is true when an
+        oscillator drives a mixer"), and CASCADED STAGES OFF A SHARED
+        REFERENCE, where "the second mixer is synchronous with, and tracks
+        the variations in, the cyclostationary noise of the first."  The
+        test is whether anything downstream can track the PSD's variation:
+        if it cannot, the phase is unknown to it and the time average is
+        sufficient.
+
+        ⚠ AND A SCALAR CANNOT CARRY WHAT IS MISSING.  Cyclostationary noise
+        is CORRELATED between frequencies separated by `k f0`, where
+        stationary noise has no correlation between different frequencies
+        at all.  This returns one number per output frequency, so it does
+        not represent that correlation -- deliberately, and stated here
+        rather than left for a caller to discover by getting a wrong answer
+        in one of the two topologies above.
 
             S(f) = sum_l  h_l CY h_l^H ,   h_l = H_l(f - l f0)
 
@@ -4847,8 +4912,9 @@ class PAC(Analysis):
         every source in the circuit, which is the whole reason this is
         affordable.
 
-        ⚠ STATIONARY SOURCES ONLY, AND IT CHECKS.  Okumura's cyclostationary
-        model windows each source to a single timestep, and the windows'
+        ⚠ STATIONARY SOURCES ONLY, AND IT CHECKS -- mechanism (1) above.
+        Okumura's cyclostationary model windows each source to a single
+        timestep, and the windows'
         Fourier coefficients then CORRELATE the sidebands -- they stop
         adding in power, and the cross terms need the `R_{m,n}` construction
         from his §III-B.  Every noise source in this element library is

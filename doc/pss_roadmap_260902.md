@@ -350,6 +350,23 @@ and every sideband above it is **missing rather than small** — a lower bound, 
 Measured on the diode: 80 and 160 points end on the bound, 320 and 640 on the ratio test,
 totals differing by 0.04%.
 
+⚠ **WHAT IT RETURNS IS THE *TIME-AVERAGED* PSD, now said out loud** (2026-09-02, from
+Kundert's tutorial — citation, not measurement). **Two mechanisms make output noise
+cyclostationary, and only one is about the sources:** bias-dependent sources modulated by the
+operating point (refused, below), *and* the **periodic source-to-output transfer function** —
+which applies even when every source is stationary, so a circuit whose only noise is constant
+resistors still has cyclostationary output noise. The sideband sum handles the second
+correctly and returns its time average.
+
+That is right for most uses and **incomplete for two ordinary RF topologies**, both named: a
+**nonlinear subsequent stage** ("an oscillator drives a limiter … the same is true when an
+oscillator drives a mixer"), and **cascaded stages off a shared reference**, where "the second
+mixer is synchronous with, and tracks the variations in, the cyclostationary noise of the
+first." The test is whether anything downstream can track the PSD's variation. Also: a scalar
+per frequency cannot carry the **correlation between frequencies separated by `k f0`** that
+cyclostationary noise has and stationary noise does not — stated in the docstring rather than
+left to be discovered.
+
 ⚠ **STATIONARY SOURCES ONLY, AND IT CHECKS RATHER THAN ASSUMES.** A bias-dependent `CY`
 makes the sources cyclostationary; the windows' Fourier coefficients then correlate the
 sidebands, they stop adding in power, and the cross terms need the `R_{m,n}` construction
@@ -451,6 +468,27 @@ rediscovered: with `x0=None` the seed is the **operating point**, and on an auto
 circuit that is an *equilibrium* — a transient started exactly there never leaves. The
 pre-integration needs somewhere to go: an `x0` off the equilibrium, or a device `ic`.
 This is the same reason it does not substitute for B5.
+
+### A4b. The output layer — NEW 2026-09-02, unbuilt
+
+A1–A3 answer "what does the circuit do"; these are "what should the number be". All from
+Kundert's 47-page tutorial — **citations, not measurements**, and weighed as literature.
+
+**AM/PM conversion is a change of basis on results PAC already has.** "It is possible, using
+a change of basis, to recast these transfer functions in terms of the AM and PM components of
+the modulation." Upper and lower sidebands counter-rotate about the carrier: equal magnitudes
+parallel to it is pure AM, perpendicular is pure PM, the general case is an ellipse and is
+both. **No new solve** — linear algebra on `adjoint_sideband_row`'s output, and a measurement
+designers actually ask for. The cheapest real feature on this list.
+
+**PAC's result is indexed by sideband, not one number per frequency** — "for a single output
+frequency there may be many transfer functions from a single input". Conversion gain is one
+entry; image, LO and supply rejection are the others. `adjoint_sideband_row` already returns
+this shape; what is missing is a result object that carries it. Calibration target: measured
+mixers agree "to within 0.25 dB".
+
+**Gate:** none needed for AM/PM — it is a basis change on tested output. The others are
+interface decisions, not measurements.
 
 ### A5. Envelope-following — last
 
