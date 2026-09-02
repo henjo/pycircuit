@@ -212,6 +212,40 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## ⚠ Gear-2's period column was exactly 3/2 too large (fixed 2026-09-02)
+
+Raised by external review, reproduced here before acting. The autonomous Jacobian's
+`d/dT` column against central differences:
+
+| method | npts | ratio code/FD | relerr before | relerr after |
+|---|---|---|---|---|
+| trap | 100→400 | 0.99993 → 1.00000 | 7.1e-3 → 1.8e-3 | unchanged |
+| gear | 100→400 | **1.4859 → 1.4972** | **0.49** | **1.5e-9** (FD floor) |
+
+**Cause: a result carried across contexts.** `residual_dh` is Fang's `p` — `d/dh_m` with
+the past steps *held fixed*, and `bdf2_alphas_dh`'s own docstring says so ("h2 is a past
+step and is held fixed"). Correct for the coupled time-stepping method it was written
+for; wrong for shooting, which rebuilds the grid at the current `T` so every step is
+`c_k·T` and `h_{n-1}` moves too. Euler and trapezoidal never noticed — their
+coefficients depend on `h_n` alone, so the partial *is* the total. **That is exactly why
+only Gear-2 was hit, and why a one-method test would have found nothing.**
+
+**The fix is one term and no new derivative.** The `alphas` are homogeneous of degree −1
+in the step sizes (they must be — `iq` approximates `dq/dt`), so Euler's theorem gives
+`Σⱼ hⱼ ∂aₖ/∂hⱼ = −aₖ` and hence `T·d(iq)/dT = −Σₖ aₖ q_{n−k}` exactly. Verified
+numerically for variable-step BDF-2 to 6.4e-08 (the FD floor). Implemented **once** in
+`Integrator.companion_dT` from `companion_coefficients` rather than as three more
+per-method partials — which is what that file explicitly warns against.
+
+**What it buys:** quadratic convergence restored. Gear on the phase circuit now runs
+`1.69e-1 → 1.06e-2 → 3.78e-6 → 3.48e-12 → 2.76e-15`.
+
+⚠ **Trapezoidal's column is still O(h), and that is a different defect.** Its autonomous
+route is the *plain* path, whose `Pt` opens at zero although `x₀` is manufactured by a
+step of size `c₀·T` and does depend on T. Measured: trap's Newton is visibly **linear**
+(`3.91e-3 → 3.14e-4 → 2.66e-5 …`, ratio ~0.076 held constant) where gear's is quadratic.
+That is the plain path's seeding, not this — see the review's §3.
+
 ## ⚠ Hidden state: PSS silently replaced a TLine with a short (fixed 2026-09-02)
 
 Raised by external review, reproduced here before acting. On a quarter-wave open stub:

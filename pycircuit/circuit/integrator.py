@@ -118,6 +118,48 @@ class Integrator(ABC):
             'used where a per-step sensitivity is needed (shooting).'
             % type(self).__name__)
 
+    def companion_dT(self, q_curr, q_last, h_curr, h_last):
+        """``d(iq)/dT`` when EVERY step scales together -- the shooting half.
+
+        ⚠ NOT `companion_dh`, AND THE DIFFERENCE IS A FACTOR OF 3/2 FOR
+        GEAR-2.  `companion_dh` is a PARTIAL: `d/dh_n` with `h_{n-1}` held
+        fixed, which is right for the coupled time-stepping method it was
+        written for -- there `h_{n-1}` really is a past step that is not
+        moving.  A shooting analysis solving for the PERIOD rebuilds its
+        grid at the current `T`, so every step is `c_k T` and `h_{n-1}`
+        moves too; the total derivative needs that route as well.
+
+        Euler and trapezoidal do not notice, because their coefficients
+        depend on `h_n` alone and the partial IS the total.  Gear-2's depend
+        on both, and on a uniform grid the missing route is exactly half the
+        one that is there -- measured against finite differences on the
+        autonomous system, the ratio of the code's column to the true one
+        was 1.4859 / 1.4939 / 1.4972 at 100 / 200 / 400 points per period,
+        converging on 3/2.
+
+        ⚠ ONE IMPLEMENTATION FOR EVERY METHOD, and it does not differentiate
+        anything.  The `alphas` are homogeneous of degree -1 in the step
+        sizes -- they must be, since `iq` approximates `dq/dt` -- so Euler's
+        theorem gives
+
+            sum_j h_j d(alpha_k)/d(h_j)  =  -alpha_k
+
+        and therefore `T d(iq)/dT = -sum_k alpha_k q_{n-k}` exactly, with no
+        per-method partial to write down or get wrong.  Verified numerically
+        for the variable-step BDF-2 coefficients to 6.4e-08, which is the
+        finite-difference floor.  Writing three more derivative routines
+        instead is what this file already warns against; the coefficients
+        are taken from `companion_coefficients` rather than transcribed.
+
+        Returns `T d(iq)/dT`, i.e. WITHOUT the `1/T`, because the integrator
+        does not know the period -- the caller divides.
+        """
+        alphas, _b = self.companion_coefficients(h_curr, h_last)
+        acc = alphas[0] * q_curr
+        for k in range(1, len(alphas)):
+            acc = acc + alphas[k] * q_last[k - 1]
+        return -acc
+
     def companion_dh(self, q_curr, q_last, h_curr, h_last):
         """``d(iq)/dh`` at fixed solution -- the integrator half of Fang's ``p``.
 

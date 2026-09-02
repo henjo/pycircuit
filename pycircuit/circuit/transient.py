@@ -2073,6 +2073,43 @@ class Transient(Analysis):
         return self.toolkit.array(d_iq, dtype=float) + \
             self.toolkit.array(d_u, dtype=float)
 
+    def residual_dT(self, x, h=None):
+        """``T df/dT`` at fixed solution, for a grid whose EVERY step scales.
+
+        The shooting counterpart of :meth:`residual_dh`.  That one is a
+        PARTIAL -- ``d/dh_m`` with the past steps held fixed, which is what
+        the coupled time-stepping method needs because there they are held
+        fixed.  A shooting analysis solving for the period rebuilds its grid
+        at the current ``T``, so every step is ``c_k T`` and the total
+        derivative needs every step's route; see
+        :meth:`Integrator.companion_dT` for why that is one term rather than
+        a second set of partials.
+
+        ⚠ THE SOURCE HALF IS DELIBERATELY ABSENT, and this is only correct
+        because of who calls it.  ``residual_dh`` carries ``du/dt`` because
+        ``u`` is evaluated at ``t_{m-1} + h``; under a scaling grid the
+        source term's route is ``du/dt * t_n``, not ``du/dt * h_n``.  The
+        only caller is a shooting analysis's period column, which exists
+        ONLY on the autonomous path -- and ``PSS._is_autonomous`` is
+        structural: it is true exactly when no source varies with time, so
+        ``du/dt`` is identically zero there.  A driven caller would need the
+        ``t_n`` route added, and would be wrong without it.
+
+        ⚠ AND THAT IS WHY THERE IS NO ``t`` ARGUMENT.  `residual_dh` takes
+        one because it evaluates `du/dt` there; taking one here and not
+        reading it is the F8/F18 defect class this tree has a standing guard
+        against (`test_no_function_accepts_an_argument_it_never_reads`),
+        which caught exactly that within one run of adding this method.  A
+        future driven caller adds the argument back WITH the term that uses
+        it.
+        """
+        if h is None:
+            h = self._dt
+        q = self._q_at(x)
+        h_last = self._dt_last if self._dt_last is not None else h
+        d_iq = self.active_integrator.companion_dT(q, self._qlast, h, h_last)
+        return self.toolkit.array(d_iq, dtype=float)
+
     def _solve_timestep_pcnr(self, x0, t, provided_function=None):
         """One time point by PCNR rather than by limiting -- STAGE 13.
 

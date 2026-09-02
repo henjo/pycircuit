@@ -2378,3 +2378,77 @@ def test_pss_refuses_a_circuit_carrying_hidden_state():
         warnings.simplefilter('ignore')
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=20)
     assert pss.converged
+
+
+def test_the_period_column_is_a_total_derivative_not_a_partial():
+    """RECORDED SCOPE: Gear-2's `d(phi)/dT` was exactly 3/2 too large.
+
+    ⚠ THE CAUSE IS A RESULT CARRIED ACROSS CONTEXTS.  `residual_dh` is
+    Fang's `p`, `d/dh_m` with the past steps HELD FIXED -- correct for the
+    coupled time-stepping method it was written for, where they are fixed.
+    `bdf2_alphas_dh`'s own docstring says so: "h2 is a past step and is held
+    fixed".  A shooting analysis solving for the period rebuilds its grid at
+    the current `T`, so every step is `c_k T` and `h_{n-1}` moves too.
+
+    Euler and trapezoidal never noticed -- their coefficients depend on
+    `h_n` alone, so the partial IS the total -- which is exactly why only
+    Gear-2 was hit, and why a one-method test would have found nothing.
+    Measured before the fix, the ratio of the code's column to the true one
+    was 1.4859 / 1.4939 / 1.4972 at 100 / 200 / 400 points, converging on
+    3/2, with the residue after dividing by 3/2 halving per refinement.
+
+    The fix is one term and no new derivative: the `alphas` are homogeneous
+    of degree -1 in the step sizes, so `T d(iq)/dT = -sum_k a_k q_{n-k}`
+    exactly (`Integrator.companion_dT`).
+
+    ⚠ TRAPEZOIDAL IS STILL O(h) HERE AND THAT IS A DIFFERENT DEFECT.  Its
+    autonomous route is the PLAIN path, whose `Pt` opens at zero although
+    `x_0` is manufactured by a step of size `c_0 T` and does depend on T.
+    That is the plain path's seeding, not this; asserted loosely on purpose
+    so it does not silently tighten.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cap = {}
+    orig = PSS._free_period_solve
+
+    def grab(self, func, z0, abstol, xtol, reltol, maxiter, seed_period,
+             solver=None):
+        cap['func'] = func
+        cap['z0'] = np.asarray(z0, dtype=float).copy()
+        return orig(self, func, z0, abstol, xtol, reltol, maxiter,
+                    seed_period, solver=solver)
+
+    try:
+        PSS._free_period_solve = grab
+        got = {}
+        for method in ('gear', 'trap'):
+            pss = PSS(_phase_circuit(), method=method, reltol=1e-9)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
+            func, z = cap['func'], cap['z0'].copy()
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _F, J = func(z)
+                d = 1e-7 * abs(z[-1])
+                zp, zm = z.copy(), z.copy()
+                zp[-1] += d
+                zm[-1] -= d
+                fp, _ = func(zp)
+                fm, _ = func(zm)
+            fd = (np.asarray(fp, float) - np.asarray(fm, float)) / (2 * d)
+            col = np.asarray(J, float)[:, -1]
+            got[method] = (np.linalg.norm(col - fd)
+                           / max(np.linalg.norm(fd), 1e-300))
+    finally:
+        PSS._free_period_solve = orig
+
+    ## Gear-2's column is now the total derivative, to the FD floor
+    assert got['gear'] < 1e-7, \
+        "Gear-2's period column is %.3e from finite differences; it was " \
+        '4.9e-01 when it used the partial, and 3/2 of the truth' % got['gear']
+    ## trapezoidal unchanged, and still carrying the plain path's seed error
+    assert got['trap'] < 5e-2, \
+        "trapezoidal's period column is %.3e, worse than the O(h) seeding " \
+        'error it is expected to carry' % got['trap']

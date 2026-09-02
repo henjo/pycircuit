@@ -982,7 +982,7 @@ class PSS(Analysis):
         ## Only assembled when the period is an unknown; an extra assembly
         ## per timestep is not worth paying on the fixed-period path.
         self._want_dfdh = False
-        self._dfdh = None
+        self._dfdT = None
         self._want_lte = False
         ## The caller's step fractions, or None for the uniform grid.  Read
         ## by the autonomous closures, which rebuild the grid at the current
@@ -1388,7 +1388,7 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros_like(Pt[0])
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdh).ravel() * (dt / T)
+                St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -toolkit.linearsolver(Jf, St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -1521,7 +1521,7 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros(m)
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdh).ravel() * (hs[_j] / T)
+                St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -lu.solve(St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -1622,7 +1622,7 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros(m)
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdh).ravel() * (dt / T)
+                St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -lu.solve(St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -2090,7 +2090,7 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros_like(Pt[0])
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdh).ravel() * (dt / T)
+                St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -self.toolkit.linearsolver(Jf, St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -2232,8 +2232,17 @@ class PSS(Analysis):
         ## period is tractable here and would not be on a driven circuit,
         ## where scaling T also moves every source evaluation.
         if self._want_dfdh:
-            (self._dfdh,) = remove_row_col(
-                (tr.residual_dh(x_full, t, dt),), irefnode, toolkit)
+            ## ⚠ `residual_dT`, NOT `residual_dh`.  The grid is rebuilt at
+            ## the current `T` on every residual evaluation, so every step
+            ## scales and the partial `d/dh_n` is not the total -- for
+            ## Gear-2 it is 3/2 of it on a uniform grid, measured against
+            ## finite differences at 1.4859/1.4939/1.4972 for 100/200/400
+            ## points, converging on the exact 3/2.  Euler and trapezoidal
+            ## were never wrong: their coefficients depend on `h_n` alone,
+            ## so the partial IS the total, which is why only Gear-2 was
+            ## hit.  See `Integrator.companion_dT`.
+            (self._dfdT,) = remove_row_col(
+                (tr.residual_dT(x_full, dt),), irefnode, toolkit)
         ## Measured, not controlled: the grid is the caller's, so nothing can
         ## act on this.  Also before the push, for the same reason.
         if self._want_lte:
