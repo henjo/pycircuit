@@ -2778,3 +2778,69 @@ def test_an_index_2_solve_that_converges_is_correct():
         'a CONVERGED index-2 solve disagrees with a settled transient by ' \
         '%.3e over its states -- that is the silent wrong answer this ' \
         'exists to catch' % worst
+
+
+def test_the_returned_waveform_closes_on_a_non_uniform_grid():
+    """The replay must walk the same `(t, h)` pairs the traversal did.
+
+    The two traversals pair them differently: `_traverse_solved_history`
+    walks `times[1:]` with `hs[_j]`, while the plain `_traverse` takes the
+    MANUFACTURING step at `(times[0], hs[0])` first and only then walks
+    `times[1:]` with `hs[_j]` -- so in the plain case the step after the
+    opening one uses `hs[0]` again, not `hs[1]`.  The replay set
+    `walk = times` and indexed `hs[min(_j, ...)]`, pairing `times[k]` with
+    `hs[k]` from k=1 on: off by one against the traversal.
+
+    ⚠ A UNIFORM GRID HIDES IT COMPLETELY, since every `hs` is the same
+    number -- which is why it survived every uniform test here.  Measured on
+    this resonator at 200 points, closure `|x(T) - x(0)|` of the RETURNED
+    waveform, with `converged = True` in every row:
+
+          grid      trap (before)   trap (after)   gear (control)
+          uniform     5.61e-13        5.61e-13       4.62e-14
+          4:1         1.70e-02        1.44e-11       5.33e-15
+          16:1        4.88e-03        3.55e-14       1.78e-14
+
+    Gear closes on every grid either way because it takes the
+    solved-history branch, whose pairing was already right -- which is what
+    made it a clean control rather than a second unknown.
+
+    ⚠ AND THE HEADLINE ppm FIGURES WERE NEVER AFFECTED, which is worth
+    stating because the opposite was assumed when this was found.  The
+    period comes from the shooting SOLVE, not the replay: van der Pol still
+    reads -73.8 ppm (trap) and -100.6 ppm (gear) after the fix.  What the
+    shift corrupted is the returned waveform, `times`, and the LTE reports
+    -- and every recorded LTE figure was taken on a uniform grid, so no
+    recorded number moved.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir, per = _resonator_at_resonance()
+    npts = 200
+
+    def closure(method, ratio):
+        if ratio == 1.0:
+            g = None
+        else:
+            fr = np.where(np.arange(npts) % 2 == 0, ratio, 1.0)
+            g = fr / fr.sum()
+        pss = PSS(cir, method=method, reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / npts, grid=g,
+                            maxiterations=40)
+        assert pss.converged, '%s/%s did not converge' % (method, ratio)
+        X = np.asarray(res['tpss'].x, dtype=float)
+        return float(np.max(np.abs(X[:, -1] - X[:, 0])))
+
+    ## the plain path, where the pairing was wrong
+    for ratio in (1.0, 4.0, 16.0):
+        c = closure('trap', ratio)
+        assert c < 1e-8, \
+            'the returned waveform does not close on a %.0f:1 grid ' \
+            '(|x(T)-x(0)| = %.4e) -- it is not the solution the residual ' \
+            'was driven to zero on' % (ratio, c)
+
+    ## and the solved-history control, which was always right
+    for ratio in (1.0, 4.0, 16.0):
+        assert closure('gear', ratio) < 1e-8

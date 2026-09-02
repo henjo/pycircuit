@@ -3192,22 +3192,52 @@ class PSS(Analysis):
         ## remove,
         ## and the reported amplitude would not be the one the residual was
         ## driven to zero on.
+        ## ⚠ AND IT MUST WALK THE SAME (t, h) PAIRS, which it did not.
+        ## The two traversals pair them differently: `_traverse_solved_history`
+        ## walks `times[1:]` with `hs[_j]`, while the plain `_traverse` takes
+        ## the MANUFACTURING step at `(times[0], hs[0])` FIRST and only then
+        ## walks `times[1:]` with `hs[_j]` -- so in the plain case the step
+        ## AFTER the opening one uses `hs[0]` again, not `hs[1]`.  This
+        ## replay set `walk = times` and indexed `hs[min(_j, ...)]`, which
+        ## pairs `times[k]` with `hs[k]` from `k = 1` on and is off by one
+        ## against the traversal.
+        ##
+        ## A UNIFORM GRID HIDES IT COMPLETELY -- every `hs` is the same
+        ## number -- which is why it survived every uniform test in this
+        ## file.  Measured on the Q=20 resonator at 200 points, closure
+        ## `|x(T) - x(0)|` of the RETURNED waveform:
+        ##
+        ##       grid      trap            gear (control)
+        ##       uniform   5.61e-13        4.62e-14
+        ##       4:1       1.70e-02        5.33e-15
+        ##       16:1      4.88e-03        1.78e-14
+        ##
+        ## with `converged = True` in every row.  Gear closes on every grid
+        ## because it takes the solved-history branch, whose pairing was
+        ## already right; the plain path returned a waveform that is not the
+        ## solution its own residual was driven to zero on.
+        ##
+        ## Now built as explicit `(t, h)` PAIRS rather than two sequences
+        ## indexed in parallel, because the parallel indexing is the bug and
+        ## a pair cannot be misaligned by one.
         if solved_history:
             self._install_history(x0_ss, xm1_ss, hs[0], h_prev=hs[-1])
             tr = self._transient()
             X = [np.asarray(x0_ss, dtype=float)]
-            walk = times[1:]
+            walk = list(zip(times[1:], hs[:len(times) - 1]))
         else:
             X = [x0_ss]
             tr = self._begin_period(x0_ss)
-            walk = times
+            ## the manufacturing step, then the loop -- exactly `_traverse`
+            walk = ([(times[0], hs[0])]
+                    + list(zip(times[1:], hs[:len(times) - 1])))
         ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
         ## the period's, not something an earlier shooting iteration saw.
         tr._lte_probe = None
         self._want_lte = True
         lte_seen = []
-        for _j, t in enumerate(walk):
-            x = self.solve_timestep(X[-1], t, hs[min(_j, len(hs) - 1)])
+        for t, dt in walk:
+            x = self.solve_timestep(X[-1], t, dt)
             if self._lte is not None:
                 lte_seen.append((float(self._lte), float(t), self._lte_seam,
                                  self._lte_valid))

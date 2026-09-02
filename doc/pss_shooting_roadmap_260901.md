@@ -212,6 +212,39 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## ⚠ The plain-path replay walked a shifted grid (fixed 2026-09-02)
+
+The two traversals pair `(t, h)` differently: `_traverse_solved_history` walks
+`times[1:]` with `hs[_j]`, while the plain `_traverse` takes the **manufacturing step**
+at `(times[0], hs[0])` first and only then walks `times[1:]` with `hs[_j]` — so the step
+after the opening one uses `hs[0]` again, not `hs[1]`. The replay set `walk = times` and
+indexed `hs[min(_j, …)]`, pairing `times[k]` with `hs[k]` from k=1 on: **off by one**.
+
+Closure `|x(T) − x(0)|` of the RETURNED waveform, Q=20 resonator at resonance, 200
+points, `converged = True` in every row:
+
+| grid | trap (before) | trap (after) | gear (control) |
+|---|---|---|---|
+| uniform | 5.61e-13 | 5.61e-13 | 4.62e-14 |
+| 4:1 | **1.70e-02** | 1.44e-11 | 5.33e-15 |
+| 16:1 | **4.88e-03** | 3.55e-14 | 1.78e-14 |
+
+**A uniform grid hides it completely** — every `hs` is the same number — which is why it
+survived every uniform test here. Gear closes either way because it takes the
+solved-history branch, whose pairing was already right; that made it a clean control.
+
+Now built as explicit `(t, h)` pairs rather than two sequences indexed in parallel,
+because the parallel indexing *is* the bug and a pair cannot be misaligned by one.
+
+⚠ **The headline ppm figures were NOT affected, contrary to what was assumed when this
+was found** — including by me, in the triage that recommended holding it for a decision.
+The period comes from the shooting **solve**, not the replay: van der Pol still reads
+**−73.8 ppm** (trap) and **−100.6 ppm** (gear) after the fix. What the shift corrupted is
+the returned waveform, `pss.times`, and the LTE reports — and every recorded LTE figure
+was taken on a **uniform** grid, so **no recorded number moved** and the full suite is
+unmoved. The item was worth fixing on its own terms (a returned waveform that is not the
+solution its residual was driven to zero on), not because it invalidated results.
+
 ## Matrix-free against a SPARSE baseline — the gate holds (settled 2026-09-02)
 
 The round-one worry: every recorded matrix-free speedup had a dense baseline on *both*
