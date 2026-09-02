@@ -1855,15 +1855,14 @@ def test_matrix_free_refuses_the_paths_it_has_not_got():
 
     Quietly taking the dense route would be a performance surprise with no
     symptom -- the answer would be right and the reason for asking gone.
+
+    Three of the four systems are converted (driven plain, driven
+    solved-history, autonomous plain); only the COMPOSED autonomous one --
+    a two-step method on a self-oscillating circuit -- is not.
     """
     circuit.default_toolkit = circuit.numeric
-    ## the plain single-unknown path (a one-step method)
-    pss = PSS(_rc_ladder(6), method='trap', reltol=1e-6)
-    with pytest.raises(NotImplementedError, match='plain'):
-        pss.solve(period=1e-3, timestep=1e-4, matrix_free=True)
-    ## and the autonomous one
     pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
-    with pytest.raises(NotImplementedError, match='autonomous'):
+    with pytest.raises(NotImplementedError, match='COMPOSED'):
         pss.solve(period=1e-3, timestep=1e-3 / 50, matrix_free=True)
 
 
@@ -2058,3 +2057,117 @@ def test_the_phase_pin_compares_units_on_purpose():
     assert align / align_norm > 100, \
         'the two rules are now within %.0fx; the measured gap was 704x' \
         % (align / align_norm)
+
+
+def test_the_plain_matrix_free_matvec_carries_each_step_s_coefficients():
+    """The plain path's `M v` and `dphi/dT`, against the dense traversal.
+
+    ⚠ WRITTEN AROUND TWO BUGS THIS CAUGHT, and `trap` and `gear` are in the
+    list because of them.  `_coeffs` is LIVE STATE and the MANUFACTURING
+    step is order-dropped to Euler (`b = 0`) while the loop steps run the
+    method's own pair -- measured, trapezoidal opens at
+    `((49000, -49000), 0.0)` and runs at `((98000, -98000), -1.0)`.
+
+    Applying the OPENING's pair to every step put the period column 40-50%
+    out for `trap` and `gear`; applying the LOOP's to the opening seeded
+    `Pq` non-zero where `_traverse` seeds it at zero, a 100% error for
+    `trap`.  Both times the TRAJECTORY matched to zero, so nothing but a
+    direct comparison against the dense sensitivity would have found them,
+    and `euler` was exact under both -- a one-method test would have passed.
+
+    ⚠ What this actually guards is the OPENING pair.  Inside the loop the
+    coefficients are constant for every method in the tree, so a mutation
+    swapping them for a post-run snapshot does NOT fail this -- checked.
+    They are still stored per step, against a future variable-order method.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    for method in ('trap', 'euler', 'gear'):
+        pss = PSS(_rc_ladder(12), method=method, reltol=1e-6)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-3 / 50, maxiterations=2)
+        m = pss.cir.n - 1
+        times, hs = pss._period_grid(1e-3, 50, None)
+        rng = np.random.default_rng(3)
+        x_in = 0.01 * rng.standard_normal(m)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _x0, _xe, Mx, Mt = pss._traverse(x_in, 1e-3, times, hs,
+                                             want_dT=True)
+            opening, steps, x0f, xef, Mtf = pss._traverse_factored_plain(
+                x_in, 1e-3, times, hs, want_dT=True)
+
+        ## the trajectory must be the same one, or the rest is meaningless
+        assert np.allclose(np.asarray(_x0), np.asarray(x0f), rtol=0, atol=0)
+        assert np.allclose(np.asarray(_xe), np.asarray(xef), rtol=0, atol=0)
+
+        ## the period column: one vector, computed once per Newton iteration
+        want_t = np.asarray(Mt).ravel()
+        err_t = (np.linalg.norm(np.asarray(Mtf).ravel() - want_t)
+                 / max(np.linalg.norm(want_t), 1e-300))
+        assert err_t < 1e-11, \
+            '%s: dphi/dT differs from the dense column by %.3e' % (method, err_t)
+
+        for _ in range(3):
+            v = rng.standard_normal(m)
+            got = pss._monodromy_matvec_plain(opening, steps, v)
+            want = np.asarray(Mx) @ v
+            err = np.linalg.norm(got - want) / np.linalg.norm(want)
+            assert err < 1e-11, \
+                '%s: matvec differs from the dense monodromy by %.3e' \
+                % (method, err)
+
+
+def test_a_matrix_free_plain_solve_agrees_with_the_dense_one():
+    """RECORDED SCOPE ITEM 6 on the driven plain path (m columns, not 2m).
+
+    Measured share 42.5% at m=502 and 60.7% at m=1002 -- about half the
+    solved-history path's, as the column count says it must be -- and it
+    delivers 1.34x and 1.63x end to end there.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    for method in ('trap', 'euler'):
+        out = []
+        for mf in (False, True):
+            pss = PSS(_q20_rlc(), method=method, reltol=1e-6)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = pss.solve(period=1e-3, timestep=1e-3 / 100,
+                                maxiterations=40, matrix_free=mf)
+            out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
+        (pd, xd), (pm, xm) = out
+        assert pd.converged and pm.converged, method
+        rel = np.max(np.abs(xd - xm)) / np.max(np.abs(xd))
+        assert rel < 1e-9, '%s: waveforms differ by %.3e' % (method, rel)
+
+
+def test_a_matrix_free_autonomous_solve_agrees_with_the_dense_one():
+    """The BORDERED system, matrix-free: unknowns `(x_0, T)`.
+
+    `dphi/dT` is one column and does not depend on the Krylov direction, so
+    the trajectory pass computes it once per Newton iteration and the matvec
+    reads it:  `J [v; s] = [ (I - M) v - s dphi/dT ; v_k ]`.
+
+    The PERIOD is asserted as well as the waveform, because it is the
+    unknown the border exists for -- a matvec that dropped the `dphi/dT`
+    term entirely would still close the state equations and return a wrong
+    period.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    out = []
+    for mf in (False, True):
+        pss = PSS(_phase_circuit(), method='trap', reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=1e-3, timestep=1e-3 / 200,
+                            maxiterations=30, matrix_free=mf)
+        out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
+    (pd, xd), (pm, xm) = out
+    assert pd.converged and pm.converged
+    assert np.max(np.abs(xd - xm)) / np.max(np.abs(xd)) < 1e-9
+    assert abs(pm.period - pd.period) < 1e-12 * pd.period, \
+        'matrix-free solved T=%.12g against the dense %.12g' \
+        % (pm.period, pd.period)

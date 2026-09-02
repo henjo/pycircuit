@@ -155,9 +155,33 @@ Nothing from the original three. Two candidates, neither started:
   **The remaining gap is diagnostic** — naming an inconsistent phase plane the way the
   `T = 0` trivial root is named — and is not started.
 
-- **Matrix-free for the autonomous and plain paths.** Item 6 converted the driven
-  solved-history path only; the others raise. Whether it is worth extending depends on
-  the same propagation share, unmeasured for those formulations.
+- **Matrix-free for the autonomous and plain paths — DONE 2026-09-02.** Three of the four
+  systems are now converted; only the composed autonomous `(x₀, x₋₁, T)` raises.
+
+  | system | m=242/128 | m=502/308 | m=1002/608 |
+  |---|---|---|---|
+  | driven solved-history (2m cols) | 1.36× | 1.51× | 2.13× |
+  | driven plain (m cols) | 1.10× | 1.34× | 1.63× |
+  | autonomous plain (m + border) | 1.02× | 1.11× | 1.34× |
+
+  Propagation share for the plain path is about half the solved-history path's — 42.5%
+  vs 63.8% at m=502, 60.7% vs 79.1% at m=1002 — exactly what m columns instead of 2m
+  against the same assembly must mean. All three agree with the dense path to ≤2e-16,
+  and the autonomous one reproduces the period exactly.
+
+  ⚠ **Found on the way: the plain path had its own inlined copy of `_step_sensitivity`**,
+  byte-for-byte, while that method's docstring claimed the systems "share this and not a
+  copy". They did not — only the solved-history path called it. Found because a timer
+  wrapped around `_step_sensitivity` reported the plain path's propagation share as
+  **0.0%**, which is not a small number but a wrong one. De-duplicated.
+
+  ⚠ **And two bugs from `_coeffs` being live state.** The manufacturing step is
+  order-dropped to Euler (`b = 0`) while loop steps run the method's own pair. Applying
+  the opening's pair to every step put the period column 40–50% out for trap and gear;
+  applying the loop's to the opening made `Pq` non-zero where `_traverse` seeds it at
+  zero — 100% wrong for trap. **Both times the trajectory itself matched to zero**, and
+  `euler` was exact under both, so a one-method test would have passed.
+
 
 ## Traps — things that looked true and were not
 

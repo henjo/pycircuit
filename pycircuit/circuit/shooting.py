@@ -1046,7 +1046,7 @@ class PSS(Analysis):
     DEGENERATE_PERIOD_FACTOR = 1e-6
 
     def _free_period_solve(self, func, z0, abstol, xtol, reltol, maxiter,
-                           seed_period):
+                           seed_period, solver=None):
         """Solve a free-period system, with its degenerate root named.
 
         ⚠ `T = 0` IS A REGULAR ROOT OF EVERY AUTONOMOUS SHOOTING SYSTEM.
@@ -1069,9 +1069,16 @@ class PSS(Analysis):
         iterations reaches a fundamental from below.
         """
         try:
-            z, info, ier, mesg = analysis.fsolve(
-                func, z0, maxiter=maxiter, reltol=reltol, abstol=abstol,
-                xtol=xtol, toolkit=self.toolkit, full_output=True)
+            if solver is None:
+                z, info, ier, mesg = analysis.fsolve(
+                    func, z0, maxiter=maxiter, reltol=reltol, abstol=abstol,
+                    xtol=xtol, toolkit=self.toolkit, full_output=True)
+            else:
+                ## ⚠ THE MATRIX-FREE ROUTE COMES THROUGH HERE TOO, so the
+                ## trivial-root diagnosis below covers it.  Routing it around
+                ## this wrapper would have lost the one message that makes an
+                ## autonomous collapse readable.
+                z, info, ier, mesg = solver(z0, abstol, xtol, reltol, maxiter)
         except np.linalg.LinAlgError as exc:
             raise np.linalg.LinAlgError(
                 'PSS: the free-period Jacobian went singular while solving '
@@ -1220,7 +1227,8 @@ class PSS(Analysis):
         ## the closure `iq_{-1} = iq_{N-1}`.  See item 5's note; not built.
         return self._companion_reach() >= 2
 
-    def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new, solve=None):
+    def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new, solve=None,
+                          coeffs=None):
         """One step of the sensitivity recursion, for ANY seed width.
 
         ONE RECURSION FOR EVERY METHOD (and now for either formulation).
@@ -1249,7 +1257,11 @@ class PSS(Analysis):
         step PER KRYLOV ITERATION -- `k` times the factorisations the dense
         path takes, which is worse than the problem it set out to fix.
         """
-        alphas, b = self._coeffs
+        ## `coeffs` overrides the LIVE `_coeffs` for the same reason `solve`
+        ## overrides the solve: a matrix-free replay happens after the run
+        ## that produced the steps, when `_coeffs` no longer describes the
+        ## step being replayed.  See `_traverse_factored_plain`.
+        alphas, b = self._coeffs if coeffs is None else coeffs
         S = b * Pq if b else np.zeros_like(Px[0])
         for k in range(1, len(alphas)):
             S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
@@ -1447,8 +1459,15 @@ class PSS(Analysis):
         for _j, t in enumerate(times[1:]):
             x_prev = x
             x = copy(self.solve_timestep(x, t, hs[_j]))
+            ## ⚠ THE COEFFICIENTS ARE STORED PER STEP, like `Jf` and `C`.
+            ## `_coeffs` is live state; on THIS path the history is
+            ## installed so no step is order-dropped and the pair is
+            ## constant, which is why a single post-run snapshot was right
+            ## here.  It was right by luck rather than by construction --
+            ## the plain path, whose opening IS dropped to Euler, showed
+            ## what that luck is worth.  See `_traverse_factored_plain`.
             steps.append((lu_factor(np.asarray(self._Jf)),
-                          np.asarray(self._C).copy()))
+                          np.asarray(self._C).copy()) + self._coeffs)
         return C0, steps, x, x_prev
 
     def _monodromy_matvec(self, C0, steps, v):
@@ -1469,12 +1488,113 @@ class PSS(Analysis):
         Px = [v[:m].copy(), v[m:].copy()]
         Cs = list(C0)
         Pq = np.zeros(m)
-        for lu, C_new in steps:
+        for lu, C_new, alphas, b in steps:
             Px_new, Pq = self._step_sensitivity(
-                Px, Cs, Pq, None, C_new, solve=lambda S: lu_solve(lu, S))
+                Px, Cs, Pq, None, C_new,
+                solve=lambda S, _l=lu: lu_solve(_l, S), coeffs=(alphas, b))
             Px = [Px_new, Px[0]]
             Cs = [C_new, Cs[0]]
         return np.concatenate((Px[0], Px[1]))
+
+    def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False):
+        """The PLAIN path's trajectory pass, factored -- item 6 for one-step
+        methods and for the systems whose unknown is a single entering state.
+
+        Mirrors `_traverse`'s opening exactly, which is the whole
+        requirement: the manufacturing step first, then BOTH rings seeded
+        with the same `C` and `Pq = a_0 C` for a `b != 0` method.  Getting
+        that opening wrong would give a matvec for a DIFFERENT map than the
+        dense path's, and the two would disagree only in the third figure --
+        the kind of difference a converged answer absorbs.
+
+        With `want_dT` it also propagates the PERIOD COLUMN.  That column
+        does not depend on the Newton direction, so it is computed once here
+        rather than once per Krylov iteration, and returned as a vector --
+        which is exactly what the bordered autonomous matvec needs.
+        """
+        from scipy.linalg import lu_factor
+        toolkit = self.toolkit
+        m = self.cir.n - 1
+        self._want_dfdh = want_dT
+        self._begin_period(x_in)
+        x = self.solve_timestep(x_in, times[0], hs[0])
+        x0 = copy(x)
+        C_open = np.asarray(self._C).copy()
+
+        ## ⚠ THE COEFFICIENTS BELONG TO THE STEP, NOT TO THE RUN.  `_coeffs`
+        ## is live state and the MANUFACTURING step is order-dropped, so it
+        ## reports Euler's `(alphas, b)` -- `b = 0` -- where the loop steps
+        ## report the method's own: measured on this ladder, trapezoidal
+        ## opens at `((49000, -49000), 0.0)` and then runs at
+        ## `((98000, -98000), -1.0)`.
+        ##
+        ## Both halves of that were got wrong here first, in opposite
+        ## directions, with the trajectory itself matching to ZERO both
+        ## times: reading the coefficients ONCE BEFORE THE LOOP applied the
+        ## OPENING's to every step and put the period column 40-50% out for
+        ## `trap` and `gear`; reading them once in the matvec applied the
+        ## LOOP's to the opening and made `Pq` non-zero where `_traverse`
+        ## seeds it at zero, which is a 100% error for `trap`.  `euler` was
+        ## exact under both and would have passed a one-method test.
+        ##
+        ## ⚠ WHAT IS LOAD-BEARING IS THE OPENING PAIR.  Inside the loop the
+        ## coefficients are CONSTANT for every method in this tree, so
+        ## storing them per step is currently belt-and-braces -- a mutation
+        ## replacing them with a post-run snapshot does NOT fail the tests,
+        ## and that is recorded rather than hidden.  They are stored anyway
+        ## because a variable-order method would make the loop vary too, and
+        ## that failure would be silent.
+        a_open, b_open = self._coeffs
+        Pt = [np.zeros(m), np.zeros(m)]
+        Pqt = np.zeros(m)
+        Cs = [C_open, C_open]
+        steps = []
+        for _j, t in enumerate(times[1:]):
+            dt = hs[_j]
+            x = copy(self.solve_timestep(x, t, dt))
+            alphas, b = self._coeffs
+            Jf = np.asarray(self._Jf)
+            C_new = np.asarray(self._C).copy()
+            lu = lu_factor(Jf)
+            steps.append((lu, C_new, alphas, b))
+            if want_dT:
+                ## the same recursion with the step size's own source term,
+                ## one column wide -- see `_traverse`
+                from scipy.linalg import lu_solve
+                St = b * Pqt if b else np.zeros(m)
+                for k in range(1, len(alphas)):
+                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
+                St = St + np.asarray(self._dfdh).ravel() * (dt / T)
+                Pt_new = -lu_solve(lu, St)
+                Pqt = alphas[0] * (C_new @ Pt_new) + St
+                Pt = [Pt_new, Pt[0]]
+            Cs = [C_new, Cs[0]]
+        self._want_dfdh = False
+        return ((C_open, a_open, b_open), steps, x0, x,
+                (Pt[0] if want_dT else None))
+
+    def _monodromy_matvec_plain(self, opening, steps, v):
+        """`M v` for the plain path, one column through the stored steps."""
+        from scipy.linalg import lu_solve
+        m = self.cir.n - 1
+        C_open, a_open, b_open = opening
+        v = np.asarray(v, dtype=float)
+        Px = [v.copy(), v.copy()]
+        Cs = [C_open, C_open]
+        ## ⚠ THE OPENING PAIR, NOT THE LOOP'S.  `_traverse` opens `Pq` at
+        ## `a_0 C` for a `b != 0` method reading `_coeffs` right after the
+        ## MANUFACTURING step -- which is order-dropped to Euler, where
+        ## `b = 0`, so in practice `Pq` opens at ZERO for every method here.
+        ## Using the loop's pair instead makes it non-zero and the matvec
+        ## 100% wrong for `trap`; this is the half that is load-bearing.
+        Pq = a_open[0] * (C_open @ v) if b_open else np.zeros(m)
+        for lu, C_new, alphas, b in steps:
+            Px_new, Pq = self._step_sensitivity(
+                Px, Cs, Pq, None, C_new, solve=lambda S, _l=lu: lu_solve(_l, S),
+                coeffs=(alphas, b))
+            Px = [Px_new, Px[0]]
+            Cs = [C_new, Cs[0]]
+        return Px[0]
 
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
     ## An inexact Newton only needs the step accurate enough not to spoil
@@ -1540,30 +1660,46 @@ class PSS(Analysis):
         proof of direction, and this is the first thing to check if the two
         paths ever disagree on convergence.
         """
-        import scipy.sparse.linalg as spla
         m = self.cir.n - 1
-        z = np.asarray(z0, dtype=float).copy()
-        ier, mesg, xdiff = 2, 'No convergence', None
-        for _i in range(maxiter):
+
+        def build(z):
             C0, steps, x_last, x_prev = self._traverse_factored(
                 z[:m], z[m:], times, hs)
             F = np.concatenate((z[:m] - np.asarray(x_last),
                                 z[m:] - np.asarray(x_prev)))
+            return F, (lambda v: v - self._monodromy_matvec(C0, steps, v))
 
-            def _mv(v, _C0=C0, _st=steps):
-                return v - self._monodromy_matvec(_C0, _st, v)
+        return self._matrix_free_newton(build, z0, abstol, xtol, reltol,
+                                        maxiter)
 
-            J = spla.LinearOperator((2 * m, 2 * m), matvec=_mv, dtype=float)
+    def _matrix_free_newton(self, build, z0, abstol, xtol, reltol, maxiter):
+        """The Newton loop every matrix-free system shares.
+
+        `build(z)` returns `(F, matvec)` for the current iterate -- one
+        trajectory pass, then a linear operator that never forms its matrix.
+        Written once because the four systems differ ONLY in those two
+        things: the plain path's `I - M`, the solved-history path's `2m`
+        pair, and the bordered autonomous versions of each.
+        """
+        import scipy.sparse.linalg as spla
+        z = np.asarray(z0, dtype=float).copy()
+        n = len(z)
+        ier, mesg, xdiff = 2, 'No convergence', None
+        for _i in range(maxiter):
+            F, mv = build(z)
+
+            def _mv(v, _f=mv):
+                return _f(v)
+
+            J = spla.LinearOperator((n, n), matvec=_mv, dtype=float)
             xdiff, _info = spla.gmres(
                 J, -F, rtol=self.KRYLOV_TOLERANCE_FACTOR * reltol,
-                restart=min(2 * m, 200), maxiter=min(2 * m, 400))
+                restart=min(n, 200), maxiter=min(n, 400))
             z_new = z + xdiff
 
-            ## `|J| . |x|` is not available without the matrix; see the
-            ## docstring for why this substitute is the strict direction.
-            I_scale = (np.abs(z_new)
-                       + np.abs(self._monodromy_matvec(C0, steps, z_new))
-                       + np.abs(F))
+            ## `|J| . |x|` is not available without the matrix; see
+            ## `_matrix_free_solve` for what this substitute is and is not.
+            I_scale = np.abs(z_new) + np.abs(mv(z_new)) + np.abs(F)
             conv_x = np.all(np.abs(xdiff)
                             < reltol * np.maximum(np.abs(z_new), np.abs(z))
                             + xtol)
@@ -1838,11 +1974,14 @@ class PSS(Analysis):
             Jf = np.asarray(self._Jf)
             C_new = np.asarray(self._C)
 
-            S = b * Pq if b else np.zeros_like(Px[0])
-            for k in range(1, len(alphas)):
-                S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
-            Px_new = -self.toolkit.linearsolver(Jf, S)
-            Pq = alphas[0] * (C_new @ Px_new) + S
+            ## ⚠ THIS USED TO BE AN INLINE COPY of `_step_sensitivity`,
+            ## byte-for-byte, while that method's own docstring said the two
+            ## systems "share this and not a copy".  They did not: only the
+            ## solved-history path called it.  Found while measuring the
+            ## plain path's propagation share -- a timer wrapped around
+            ## `_step_sensitivity` reported 0.0%, which is not a small
+            ## number but a wrong one.
+            Px_new, Pq = self._step_sensitivity(Px, Cs, Pq, Jf, C_new)
 
             if want_dT:
                 ## The SAME recursion, plus the step size's own dependence
@@ -2103,9 +2242,20 @@ class PSS(Analysis):
         m^2` doubles of stored factorisations (~800 MB at m=1002, 50
         points), and it does NOT produce a monodromy, so `spectral_radius`
         is `None` after a matrix-free solve -- not forming that matrix is
-        the entire point.  Supported for the DRIVEN solved-history path
-        only; anything else raises, rather than silently taking the dense
-        route the caller asked to avoid.
+        the entire point.
+
+        Three of the four systems are converted.  Measured end to end,
+        single-threaded, against the dense path:
+
+          driven solved-history (2m columns)   1.36x/1.51x/2.13x  m=242/502/1002
+          driven plain          (m columns)    1.10x/1.34x/1.63x  m=242/502/1002
+          autonomous plain      (m + border)   1.02x/1.11x/1.34x  m=128/308/608
+
+        The plain path's share is about HALF the solved-history path's --
+        42.5% against 63.8% at m=502 -- which is what `m` columns instead of
+        `2m` against the same assembly has to mean.  The COMPOSED autonomous
+        system `(x_0, x_{-1}, T)` is not converted and raises, rather than
+        silently taking the dense route the caller asked to avoid.
         """
         self.period = period
         toolkit = self.toolkit
@@ -2405,18 +2555,15 @@ class PSS(Analysis):
         ## implies; quietly taking the dense route would be a performance
         ## surprise with no symptom, which is the shape of defect this tree
         ## has paid for before.
-        if matrix_free and not (solved_history and not self.autonomous):
+        if matrix_free and self.autonomous and solved_history:
             raise NotImplementedError(
-                'PSS: matrix_free=True is built for the DRIVEN '
-                'solved-history path only (a two-step method on a driven '
-                'circuit), and this solve is %s. Item 6 replaces the '
-                'sensitivity propagation, which is where a two-step '
-                'method spends its 2m columns; the plain and autonomous '
-                'systems have not been converted. Use matrix_free=False, '
-                'or a method whose companion reaches two charges back '
-                "(method='gear') on a driven circuit."
-                % ('autonomous' if self.autonomous
-                   else 'on the plain single-unknown path'))
+                'PSS: matrix_free=True does not yet cover the COMPOSED '
+                'autonomous system -- a two-step method on a self-'
+                'oscillating circuit, whose unknowns are (x_0, x_{-1}, T). '
+                'The other three systems are converted: driven plain, '
+                'driven solved-history, and the plain autonomous (x_0, T). '
+                "Use matrix_free=False here, or method='trap' if a one-step "
+                'method is acceptable for this circuit.')
 
         ## Find periodic steady state x-vector
         if self.autonomous and solved_history:
@@ -2445,9 +2592,38 @@ class PSS(Analysis):
             z0 = np.concatenate((np.asarray(x, dtype=float), [period]))
             abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
             xtol_z = np.concatenate((_tol, [1e-15 * period]))
+            _mf = None
+            if matrix_free:
+                ## THE BORDERED SYSTEM, matrix-free.  `dphi/dT` is ONE column
+                ## and does not depend on the Krylov direction, so the
+                ## trajectory pass computes it once per Newton iteration and
+                ## the matvec just uses it:
+                ##     J [v; s] = [ (I - M) v - s dphi/dT ; v_k ]
+                m_ = n - 1
+
+                def _build_auto(z):
+                    xin_, T_ = z[:m_], float(z[-1])
+                    tms_, hsT_ = self._period_grid(T_, npts, self._grid_fracs)
+                    op_, st_, x0_, xe_, Mt_ = self._traverse_factored_plain(
+                        xin_, T_, tms_, hsT_, want_dT=True)
+                    x0_ = np.asarray(x0_, dtype=float)
+                    Mt_ = np.asarray(Mt_, dtype=float).ravel()
+                    F_ = np.concatenate((x0_ - np.asarray(xe_, dtype=float),
+                                         [x0_[phase_k] - phase_pin]))
+
+                    def mv_(w):
+                        v_, s_ = w[:m_], float(w[m_])
+                        top = (v_ - alpha * self._monodromy_matvec_plain(
+                            op_, st_, v_)) - s_ * Mt_
+                        return np.concatenate((top, [v_[phase_k]]))
+                    return F_, mv_
+
+                def _mf(z0_, ab_, xt_, rt_, mi_):
+                    return self._matrix_free_newton(_build_auto, z0_, ab_,
+                                                    xt_, rt_, mi_)
             z_ss, _info, _ier, _mesg = self._free_period_solve(
                 func_autonomous, z0, abstol_z, xtol_z, _shoot_reltol,
-                maxiterations, period)
+                maxiterations, period, solver=_mf)
             x0_ss = z_ss[:-1]
             self.period = period = float(z_ss[-1])
             ## The grid follows the solved period; everything downstream --
@@ -2481,6 +2657,20 @@ class PSS(Analysis):
                     reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
                     toolkit=self.toolkit, full_output=True)
             x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
+        elif matrix_free:
+            ## RECORDED SCOPE ITEM 6 on the PLAIN path: `m` columns rather
+            ## than `2m`, so a lower share and a lower ceiling than the
+            ## solved-history route -- 42.5% and 1.71x at m=502, 60.7% and
+            ## 2.50x at m=1002.
+            def _build(z):
+                opening, steps, x0_, xe_, _dT = self._traverse_factored_plain(
+                    z, period, times, hs, want_dT=False)
+                return (np.asarray(x0_) - np.asarray(xe_),
+                        lambda v: v - alpha * self._monodromy_matvec_plain(
+                            opening, steps, v))
+            x0_ss, _info, _ier, _mesg = self._matrix_free_newton(
+                _build, np.asarray(x, dtype=float), _tol, _tol,
+                _shoot_reltol, maxiterations)
         else:
             x0_ss, _info, _ier, _mesg = analysis.fsolve(
                 func, x, maxiter=maxiterations, reltol=_shoot_reltol,
