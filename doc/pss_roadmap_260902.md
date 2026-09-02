@@ -65,7 +65,7 @@ for the `func_solved_history` cross-check (it matched PSS to 4.0e-13). Confirm `
 sign/transpose differences against p.192 before coding — the algebra was read off a page
 image and `pdftotext` drops it.
 
-### A3. pnoise — blocked on a reference
+### A3. pnoise — ⚠ UNBLOCKED 2026-09-02, the paper is on this machine
 
 Needs the **adjoint** formulation: pnoise is many-to-one (hundreds of sources, one output),
 so a forward solve costs one solve *per source* and recycling does not help, because the
@@ -73,12 +73,27 @@ RHS is what changes.
 
 Shares its machinery with A2 — both bottleneck on the transposed replay, now built.
 
-⚠ **Blocked:** Okumura, Tanimoto, Itakura & Sugawara (1993), IEEE TCAS-I 40, 581-590,
-doi:10.1109/81.244907 — **not in the library**. DAC'96 defers to it explicitly.
+~~**Blocked:** Okumura et al. 1993 not in the library.~~ **It was acquired 2026-09-02**
+and is at `~/docs/02-oscillator-noise-jitter/Okumura-Tanimoto-Itakura-Sugawara-1993-…
+(TCAS-I).pdf`. Relayed by the docs session, not read here — the quotes below are theirs.
 
-**Gate:** acquire the paper. Do not start from the DAC'96 deferral alone.
+Its eq. (36) is `T^T X^a = d_j`: **one transposed solve per output**, chosen for exactly
+our asymmetry — "it is efficient to use the adjoint method … *because circuits have many
+noise sources*". With `M^T` a reverse replay (26d43da), the machinery is in place.
 
-### A4. Warm start — PREMISE CHECKED 2026-09-02, blocked on the criterion
+⚠ **Two limits on what the paper gives.** The adjoint is a *brief passage*; it cites [34]
+= Vlach & Singhal, an out-of-print textbook that could not be obtained — **and is not
+needed**: Trick, Colon & Fan 1975 (in `07-`) argues the classical adjoint-*network*
+construction, which is what [34] would describe, is the wrong route here ("no convolution
+of the adjoint circuit response with the original circuit response is required"), and
+Director & Rohrer 1969 (in `07-`) is the primary source for the classical treatment.
+What Okumura 1993 *does* supply is the part we need: LPTV transfer functions **from a
+shooting solution**, and cyclostationary sources with aliasing handled by accumulation
+under a ratio-test stopping rule.
+
+**Gate: open.** Start from Okumura's §III, not from the DAC'96 deferral.
+
+### A4. Warm start — ⚠ SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
 
 De Luca, Bolcato & Schilders (2019, TCAS-I) frame our exact situation: "none of the works
 in the literature addresses the relevant problem of automatically identifying such a proper
@@ -119,10 +134,52 @@ both *also* true at the trivial root — it is a fixed point of the period map, 
 every periodicity test. Telling them apart needs something amplitude-like, which is what
 `DEGENERATE_PERIOD_FACTOR` does for the period.
 
-**Blocker:** the criterion is `||u^k - ũ^k|| <= eps` and what `ũ^k` is has been *guessed*
-here as the previous iterate — that guess produces the behaviour above. **Get the
-definition before building.** The machinery is ready and the value is established; this is
-the only thing in the way.
+⚠ **BOTH PARAGRAPHS ABOVE DIAGNOSE THE WRONG THING. Corrected 2026-09-02** from the
+paper itself (relayed by the docs session). Two independent errors, and the second is the
+one that actually explains the measurement:
+
+1. **The definition was guessed wrong.** `u^k = x^k − x^{k+1}` (eq. 4) is the **measured**
+   shooting error between consecutive pre-integration periods, and the criterion compares
+   it against the **Jacobian-propagated prediction**, `u^k = J_φ(x*) u^{k−1}` (eq. 8). It
+   asks *"does the error still evolve the way the linear model says it should"* — a test
+   of being **inside the linear region**. The guess here — `ũ^k` = the previous iterate —
+   made it `||u^k − u^{k−1}||`, a test of whether the error has **settled**. Different
+   question, and the one that gave the backwards reading.
+2. ⚠ **And the gate was run on a circuit class the paper excludes.** Its title and §I say
+   **non-autonomous**; its conclusion offers autonomous circuits only as conditional
+   future work ("*may be easily extended* … *could be effective if* the time evolution of
+   the period is characterized by a linear region"), conditioned on a variable their
+   formulation does not have. **Van der Pol is autonomous**, and its trivial root is a
+   genuine fixed point of `φ`. So the diagnosis above — the probe settles and reports
+   converged while the state is stuck at the trivial root — is the *predictable* result:
+   the criterion detects proximity to **a** fixed point, and on an autonomous circuit the
+   DC point **is** one. No variant of it can separate them there, and the paper never
+   claimed otherwise.
+
+**Revised gate: a DRIVEN circuit**, where there is no trivial root to be attracted to and
+"inside the linear region" is unambiguous. That is the class the paper addresses and a
+large share of real PSS use. For the *autonomous* trivial-root basin the right tool is the
+probe technique (B5, Bizzarri et al., in `01-`), which pumps energy in so the solve cannot
+fall to the DC point. **A4 and B5 answer different halves of the seeding problem; neither
+substitutes for the other.**
+
+⚠ **The measured value above stands** — it was never criterion-dependent.
+
+**What shipped instead, and why first.** `PSS.solve(..., tstab=<seconds>)` runs a plain
+`Transient` from the seed and hands its final state to the shooting solve. Directive:
+*"We need to add warm start as an option. It is in every commercial tool."* An explicit
+option needs no criterion, so it was not blocked on any of the above — and the user's
+field experience is that the automatic version is where the trouble is: *"Spectre has an
+automatic tstab criterion but it does not work properly on circuits with even moderate Q,
+and does not work [on] high Q circuits"* — **opinion, offered as such, not measurement**,
+but pointing the same way as the μ = 0.05 row above. The option is therefore the primary
+interface; an automatic criterion is an addition on top of it, not a prerequisite.
+
+⚠ **The one limit `tstab` cannot pass**, asserted in the suite rather than left to be
+rediscovered: with `x0=None` the seed is the **operating point**, and on an autonomous
+circuit that is an *equilibrium* — a transient started exactly there never leaves. The
+pre-integration needs somewhere to go: an `x0` off the equilibrium, or a device `ic`.
+This is the same reason it does not substitute for B5.
 
 ### A5. Envelope-following — last
 

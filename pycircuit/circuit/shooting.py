@@ -2683,7 +2683,7 @@ class PSS(Analysis):
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
-              x0_unknown=False):
+              x0_unknown=False, tstab=None):
         """Solve for the periodic steady state.
 
         `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
@@ -2692,6 +2692,61 @@ class PSS(Analysis):
         an unknown and every step has to scale with it.  See
         `_period_grid`; the grid is still frozen for the whole solve, so the
         shooting Newton stays exact.
+
+        `tstab` runs a TRANSIENT for that many seconds before shooting and
+        uses its final state as the seed -- the stabilisation time every
+        commercial PSS offers, and the standard answer to a seed that is not
+        close enough.  `None` (the default) shoots from `x0`, or from the
+        operating point, exactly as before.
+
+        ⚠ IT IS THE REMEDY FOR THE FAILURE THIS ANALYSIS FAILS MOST OFTEN.
+        Seeded near the unstable DC point -- the trivial-root basin, which is
+        where an unseeded autonomous run starts -- van der Pol does not
+        solve at all, and one period of `tstab` fixes it:
+
+              circuit                    without tstab      periods needed
+              mu = 1  (strongly attracting)  LinAlgError            1
+              mu = 0.05 (high-Q)             not converged         ~24
+
+        The count is the `1/mu` amplitude-envelope constant, so it is a
+        property of how strongly the limit cycle attracts and NOT of how bad
+        the seed is: from 4x and even 20x the orbit amplitude, one period
+        suffices at `mu = 1`.  A high-Q oscillator needs proportionally
+        more, which is the usual guidance stated as a number.
+
+        ⚠ AND THE STOPPING POINT IS THE CALLER'S, DELIBERATELY.  De Luca,
+        Bolcato & Schilders (2019) give a criterion for detecting the handoff
+        automatically, and the probe it rests on was measured here and does
+        NOT identify it -- near the DC point the monodromy is nearly
+        constant, so the probe settles into its own eigenvector and reports
+        convergence while the state is stuck at the trivial root.  Every
+        obvious substitute shares that defect, because the trivial root IS a
+        fixed point of the period map and passes every periodicity test.  So
+        the number is asked for rather than guessed.
+
+        ⚠ AND THE COMMERCIAL AUTOMATIC CRITERION IS REPORTED NOT TO SURVIVE
+        Q EITHER.  Spectre does offer one; this tree's user reports from
+        their own practice that it does not work properly on circuits of
+        even moderate Q and does not work on high-Q ones.  That is field
+        experience and not a measurement, and it is recorded as such --
+        but it points the same way as the probe measured here, which
+        reported "settled" while the state was still in the trivial-root
+        basin, and it is the same axis: the harder the oscillator attracts,
+        the longer the approach and the easier it is for a detector to stop
+        early.  Measured above, `mu = 0.05` needs ~24 periods and FIVE is
+        not enough.
+
+        ⚠ AND IT CANNOT ESCAPE AN EQUILIBRIUM IT IS STARTED ON.  With
+        `x0=None` the seed is the operating point, which on an autonomous
+        circuit is an equilibrium -- a transient started exactly there never
+        leaves, so no amount of `tstab` helps.  The pre-integration needs
+        somewhere to go: pass an `x0` off the equilibrium, or an `ic` on a
+        device.  That limit is why this is not a substitute for the probe
+        technique, which pumps energy in precisely so the solve cannot fall
+        to the DC point.
+
+        See `benchmarks/pss_warm_start.py` for the probe that failed and the
+        counts that decided the interface.
 
         `x0_unknown` solves for `x_0` itself instead of for `x_in`, the
         pre-image of a manufactured opening step.  The plain path's default
@@ -2841,6 +2896,7 @@ class PSS(Analysis):
         else:
             x = x0 # reference node not included !
 
+
         #create vector with timepoints and a more fitting dt
         ## ⚠ the flag must be set BEFORE the grid is built, because
         ## `_period_grid` consults it to decide whether to subdivide a
@@ -2865,12 +2921,44 @@ class PSS(Analysis):
             ## system would sit there just as contentedly as the fixed one
             ## did.  The operating point is the honest default: for a phase
             ## accumulator `ic` pins it on the orbit.
+            ##
+            ## ⚠ `tstab` RUNS AFTER THIS, NOT BEFORE, and the order is the
+            ## whole of what makes it work.  A pre-integration seeded from
+            ## `zeros` starts AT the equilibrium of an autonomous circuit and
+            ## a transient from an exact equilibrium never leaves it, so the
+            ## warm start would return the basin it was asked to escape.
+            ## Starting it from the operating point is the honest version of
+            ## the same statement.
             if x0 is None:
                 from pycircuit.circuit.dcanalysis import DC
                 xdc = np.asarray(DC(self.cir, toolkit=self.toolkit).solve().x,
                                  dtype=float).reshape(-1)
                 x = np.concatenate((xdc[:irefnode], xdc[irefnode + 1:]))
 
+        if tstab:
+            ## ⚠ THE PRE-INTEGRATION IS A PLAIN TRANSIENT, and it has to be:
+            ## its whole value is that it is NOT a shooting solve, so it
+            ## cannot be captured by the basin that the shooting Newton is
+            ## stuck in.  It runs on its own adaptive grid -- `timestep` is
+            ## a first step, not an imposed one -- because nothing here
+            ## needs `phi` to be a function of `x_0`; that requirement
+            ## starts when the shooting does.
+            from pycircuit.circuit.transient import Transient
+            _xred = np.asarray(x, dtype=float).reshape(-1)
+            _xfull = np.concatenate((_xred[:irefnode],
+                                     np.zeros(1), _xred[irefnode:]))
+            _pre = Transient(
+                self.cir, toolkit=self.toolkit, reltol=self.par.reltol,
+                iabstol=self.par.iabstol, vabstol=self.par.vabstol,
+                nrsolver=self.par.nrsolver,
+                linearsolver=self.par.linearsolver, scaler=self.par.scaler)
+            _res = _pre.solve(refnode=refnode, tend=float(tstab),
+                              timestep=dt, x0=_xfull)
+            _last = np.asarray(_res.x, dtype=float)[:, -1]
+            x = np.concatenate((_last[:irefnode], _last[irefnode + 1:]))
+            self.tstab_state = x
+
+        if self.autonomous:
             ## THE PHASE CONDITION pins the coordinate moving FASTEST at the
             ## seed, so the orbit crosses the pinning hyperplane
             ## transversally.  Pin a slow one and the last row of the

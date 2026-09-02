@@ -3386,3 +3386,148 @@ def test_the_monodromy_is_correct_across_a_switching_boundary():
             'factor of %.2f where O(h) needs ~2. A gap that does NOT fall ' \
             'is the O(1) signature of a missing saltation correction' \
             % (a, b, a / b)
+
+
+def test_tstab_rescues_the_trivial_root_basin():
+    """`tstab`: pre-integrate a transient, then shoot from where it lands.
+
+    The stabilisation time every commercial PSS offers, and the standard
+    answer to a seed that is not close enough. It is the remedy for the
+    failure this analysis fails most often — an unseeded autonomous run
+    starts at the operating point, which sits at the bottom of the
+    trivial-root basin.
+
+    Measured on van der Pol seeded near the unstable DC point:
+
+        circuit                        without tstab      periods needed
+        mu = 1  (strongly attracting)  LinAlgError              1
+        mu = 0.05 (high-Q)             not converged           ~24
+
+    The count is the `1/mu` amplitude-envelope constant — a property of how
+    strongly the cycle attracts, not of how bad the seed is. From 4x and
+    even 20x the orbit amplitude, one period suffices at mu = 1.
+
+    ⚠ THE STOPPING POINT IS THE CALLER'S, DELIBERATELY. De Luca et al. give
+    a criterion for detecting the handoff; the probe it rests on was
+    measured here and does NOT identify it — near the DC point the monodromy
+    is nearly constant, so the probe settles into its own eigenvector and
+    reports convergence while the state is stuck at the trivial root. Every
+    obvious substitute shares that defect, because the trivial root IS a
+    fixed point of the period map and passes every periodicity test.
+
+    ⚠ AND `tstab` MUST OUTRANK THE OPERATING-POINT SEED. The autonomous path
+    seeds from DC when `x0 is None`; a pre-integration run precisely to
+    leave that basin must not then be replaced by the point at the bottom of
+    it. This asserts that ordering, because getting it backwards would
+    disable the option exactly where it earns its place.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def vdp(mu):
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        return c
+
+    per = 6.663293
+    seed = np.zeros(vdp(1.0).cir.n - 1 if hasattr(vdp(1.0), 'cir')
+                    else PSS(vdp(1.0)).cir.n - 1)
+    seed[0] = 0.04                      # near the unstable DC point
+
+    def run(mu, period, tstab, x0=None):
+        pss = PSS(vdp(mu), method='trap', reltol=1e-9)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=period, timestep=period / 200, x0=x0,
+                          maxiterations=40, tstab=tstab)
+            return pss, ('converged' if pss.converged else 'not-converged')
+        except Exception as exc:                          # noqa: BLE001
+            return pss, type(exc).__name__
+
+    ## without it, the strongly-attracting case cannot be solved at all
+    _p, cold = run(1.0, per, None, seed)
+    assert cold != 'converged', \
+        'the cold solve now converges from a DC-adjacent seed, so this test ' \
+        'has lost the failure it exists to rescue (got %r)' % cold
+
+    ## one period of stabilisation is enough there
+    warm, out = run(1.0, per, 1.0 * per, seed)
+    assert out == 'converged', \
+        'tstab of one period did not rescue the DC-adjacent seed: %r' % out
+    assert abs(warm.period - per) < 5e-3 * per, \
+        'tstab converged to T=%.6f against a measured %.6f' \
+        % (warm.period, per)
+
+    ## and the state actually moved -- tstab ran, rather than being ignored
+    assert hasattr(warm, 'tstab_state'), 'tstab did not record its state'
+    assert np.linalg.norm(np.asarray(warm.tstab_state) - seed) > 0.1, \
+        'the pre-integration returned essentially the seed it was given'
+
+    ## ⚠ AND THE LIMIT IT CANNOT PASS, asserted rather than left to be
+    ## rediscovered.  With `x0=None` the seed is the OPERATING POINT, and on
+    ## an autonomous circuit that is an equilibrium -- a transient started
+    ## exactly there never leaves, so no amount of `tstab` escapes the basin.
+    ## The pre-integration needs somewhere to go: an `x0` off the
+    ## equilibrium, or a device `ic`.  This is the same reason the option is
+    ## not a substitute for the probe technique.
+    _auto, out = run(1.0, per, 3.0 * per, None)
+    assert out != 'converged', \
+        'tstab from the operating point now escapes an equilibrium (%r) -- ' \
+        'if that is real the docstring limit is wrong and should be fixed, ' \
+        'not the test' % out
+
+
+def test_tstab_also_runs_on_the_driven_path():
+    """`tstab` is NOT autonomous-only, and this test exists to pin that.
+
+    The pre-integration sits outside the `if self.autonomous:` branch on
+    purpose: a driven circuit gets a warm start too, and that is the class
+    every commercial tool applies it to most. Nesting it one level deeper
+    would be invisible -- the autonomous test would still pass, driven runs
+    would silently ignore `tstab=`, and the option would be half a feature.
+
+    ⚠ It is also the class the AUTOMATIC criterion is for. De Luca, Bolcato
+    & Schilders (2019) is titled for NON-autonomous circuits and offers the
+    autonomous case only as conditional future work, so when that criterion
+    is built it is gated here, not on van der Pol -- a driven circuit has no
+    trivial root for the test to be attracted to. See the A4 entry in
+    `doc/pss_roadmap_260902.md`; the earlier gate ran on the wrong class.
+
+    The check is that the state actually MOVED and the answer did not: a
+    warm start may not change where a converging solve lands.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def run(tstab):
+        pss = PSS(_q20_rlc(), method='trap', reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=1e-5, maxiterations=40,
+                            tstab=tstab)
+        assert pss.converged, 'tstab=%r did not converge' % (tstab,)
+        return pss, float(np.max(np.abs(np.asarray(
+            res['tpss'].v('c'), dtype=float).ravel())))
+
+    cold_pss, cold_peak = run(None)
+    warm_pss, warm_peak = run(3.0 * per)
+
+    assert getattr(cold_pss, 'tstab_state', None) is None, \
+        'tstab_state was recorded on a run that asked for no tstab'
+    warm_seed = getattr(warm_pss, 'tstab_state', None)
+    assert warm_seed is not None, \
+        'tstab= was accepted on the driven path but no pre-integration ran ' \
+        '-- the block is probably nested inside `if self.autonomous:`'
+    assert float(np.max(np.abs(np.asarray(warm_seed, dtype=float)))) > 1e-9, \
+        'the driven pre-integration returned the zero seed unchanged'
+
+    ## the warm start moves the SEED, never the SOLUTION
+    assert abs(warm_peak - cold_peak) < 1e-3, \
+        'tstab changed a converged answer: %.6f warm against %.6f cold' \
+        % (warm_peak, cold_peak)
