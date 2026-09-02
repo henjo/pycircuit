@@ -212,6 +212,50 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## Two checks run before building: one negative, one falsified (2026-09-02)
+
+A review round proposed two cheap checks ahead of any capability work. Both were run and
+**neither leads to a build.**
+
+**1. Does the inner Newton's factorisation come free? No — and it should not.** Two
+sources (DAC'95, De Luca 2019) *assume* the per-step factors are already available from the
+integration, which would make `_traverse_factored`'s explicit `_factorise` a redundant
+O(m³) on the path measured at 79% of a traversal. Checked: `StandardNewton` calls
+`linsolver.solve(...)`, which factors and **discards**, and `shooting.py`'s `_factorise` is
+the *only* `.factor()` call site in the tree. Even if a factorisation were retained it would
+be of `J(x_k)`, one iterate before the converged point the sensitivity needs — a
+substitution this tree has already measured (median 5.5e-9, max 2.2e-5 on a diode circuit)
+and rejected as "an approximation, not a saved duplicate". **No redundancy to remove.**
+
+**2. Saltation across switching boundaries — falsified.** Bizzarri & Wei (ECCTD 2011) state
+that "the monodromy matrix is not defined at impact events", and with no state jump the
+correction `S` still differs from `I` whenever the *vector field* jumps — which an ideal
+switch does. If it reached this code, every switching circuit's monodromy would be
+accumulated through an undefined linearisation.
+
+**It does not reach it**, and the reason is structural: PSS's monodromy is the exact
+derivative of the **discrete** period map, where each step uses its own converged `Jf`/`C`
+describing whichever side of the switch it is on. Saltation is a continuous-time construct;
+a discrete map has no instant at which the field is undefined. Measured on a switched RC,
+control crossing twice per period, Ron/Roff spanning six decades:
+
+| npts | rel err (analytic monodromy vs finite differences) |
+|---|---|
+| 400 | 4.858e-04 |
+| 800 | 2.426e-04 (2.00×) |
+| 1600 | 1.212e-04 (2.00×) |
+| 3200 | 6.058e-05 (2.00×) |
+
+⚠ **The assertion is on the RATE, not the size** — a missing saltation term is an O(1)
+error that does not vanish under refinement, so "the gap is small" would not distinguish it.
+Exactly first order means discretisation, with no O(1) term hiding underneath.
+
+⚠ **And the circuit had to be built twice.** The first two attempts put the switch in
+series with the source, which clamps the node each period and erases the state: `|M|` came
+out **1.4e-22** and then **7.4e-51**, so the test compared numerical zero against numerical
+zero and reported a meaningless "rel err 1.000". A switched element must change the decay
+*rate* without clamping, or there is no monodromy to check. Both are now pinned by the test.
+
 ## Autonomous convergence: the outer Newton is now damped (2026-09-02)
 
 A review round read Brachtendorf, Melville, Feldmann, Lampe & Laur (TCAD 33(6) 867-878).

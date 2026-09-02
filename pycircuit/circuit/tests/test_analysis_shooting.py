@@ -3275,3 +3275,114 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
         _sh.analysis.fsolve = orig
 
     assert seen and all(seen),         'PSS called fsolve with line_search=%r -- the damping is '         'implemented and not asked for' % (seen,)
+
+
+def test_the_monodromy_is_correct_across_a_switching_boundary():
+    """The saltation concern, run as a falsifier and NOT confirmed.
+
+    Bizzarri & Wei (ECCTD 2011) state that for hybrid systems "the monodromy
+    matrix is not defined at impact events", so the transition matrix needs
+    a SALTATION correction `S` -- and with no state jump `S` still differs
+    from the identity whenever the VECTOR FIELD jumps, which an ideal switch
+    does.  If that reached this code, every switching circuit's monodromy
+    would be accumulated through a boundary where the linearisation does not
+    exist.
+
+    ⚠ IT DOES NOT REACH IT, and the reason is structural rather than lucky.
+    PSS's monodromy is the exact derivative of the DISCRETE period map: each
+    step uses its own converged `Jf` and `C`, which already describe
+    whichever side of the switch that step is on.  The saltation matrix is a
+    CONTINUOUS-time construct for correcting `Phi(t2,t0)` when the flow is
+    discontinuous; a discrete map has no instant at which the field is
+    undefined.
+
+    ⚠ THE ASSERTION IS ON THE RATE, not the size.  A missing saltation term
+    is an O(1) structural error that does not vanish under refinement, so
+    "the gap is small" would not distinguish it from discretisation error.
+    Measured on a switched RC whose control crosses twice per period, with
+    Ron/Roff spanning six decades:
+
+        npts    rel err (analytic monodromy vs finite differences)
+         400    4.858e-04
+         800    2.426e-04   (2.00x)
+        1600    1.212e-04   (2.00x)
+        3200    6.058e-05   (2.00x)
+
+    Exactly first order, so the residue is discretisation and there is no
+    O(1) term hiding under it.
+
+    ⚠ AND THE CIRCUIT HAD TO BE BUILT TWICE.  The first two attempts put the
+    switch in series with the source, which CLAMPS the node each period and
+    erases the state: |M| came out 1.4e-22 and then 7.4e-51, so the test was
+    comparing numerical zero against numerical zero and reporting a
+    meaningless "rel err 1.000".  The switched element must change the decay
+    RATE without clamping, or there is no monodromy to check.
+    """
+    import warnings
+    from pycircuit.circuit import VSwitch
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def switched(ron, roff):
+        c = SubCircuit()
+        c.add_node('ctl')
+        c.add_node('a')
+        c.add_node('b')
+        c['vc'] = VSin('ctl', gnd, va=2.0, freq=1.0 / per)
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per, phase=90.0)
+        c['rs'] = R('a', 'b', r=1e5)
+        c['c'] = C('b', gnd, c=1e-6)
+        ## a switched LOAD, not a switched path to the source
+        c['sw'] = VSwitch('b', gnd, 'ctl', gnd, Ron=ron, Roff=roff,
+                          Von=1.0, Voff=0.0)
+        return c
+
+    gaps = []
+    for npts in (200, 400, 800):
+        pss = PSS(switched(1e3, 1e9), method='trap', reltol=1e-11)
+        m = pss.cir.n - 1
+        times, hs = pss._period_grid(per, npts, None)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / npts, maxiterations=40)
+        assert pss.converged
+        ir = pss.irefnode
+        Xw = np.asarray(res['tpss'].x, dtype=float)
+        ctl = Xw[pss.cir.get_node_index('ctl')]
+        toggles = int(np.sum(np.diff((ctl > 0.5).astype(int)) != 0))
+        assert toggles >= 2, \
+            'the switch no longer toggles (%d crossings), so this test has ' \
+            'lost its subject' % toggles
+        x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
+
+        def phi(v):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
+                                               per, times, hs, want_dT=False)
+            return np.asarray(xe, dtype=float)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+        M = np.asarray(M, dtype=float)
+        assert np.linalg.norm(M) > 0.1, \
+            'the monodromy is %.3e -- the circuit erases its state each ' \
+            'period, so there is nothing to check' % np.linalg.norm(M)
+
+        base = phi(x0)
+        Mfd = np.zeros((m, m))
+        for j in range(m):
+            d = 1e-7 * max(abs(x0[j]), 1.0)
+            xp = x0.copy()
+            xp[j] += d
+            Mfd[:, j] = (phi(xp) - base) / d
+        gaps.append(float(np.linalg.norm(M - Mfd)
+                          / max(np.linalg.norm(Mfd), 1e-300)))
+
+    for a, b in zip(gaps, gaps[1:]):
+        assert b < a / 1.6, \
+            'the monodromy gap across the switch went %.3e -> %.3e, a ' \
+            'factor of %.2f where O(h) needs ~2. A gap that does NOT fall ' \
+            'is the O(1) signature of a missing saltation correction' \
+            % (a, b, a / b)
