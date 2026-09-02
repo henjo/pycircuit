@@ -3087,3 +3087,75 @@ def test_the_monodromy_transpose_is_a_reverse_replay():
     assert abs(lhs - rhs) < 1e-9 * max(abs(rhs), 1.0), \
         'adjoint identity fails: <M^T u, w> = %.12g against <u, M w> = ' \
         '%.12g' % (lhs, rhs)
+
+
+def test_every_flag_combination_is_walked():
+    """method x `x0_unknown` x `matrix_free` x driven/autonomous, all 24.
+
+    ⚠ WRITTEN BECAUSE A PAIR THAT EACH WORKED ALONE CRASHED TOGETHER.
+    `solve(x0_unknown=True, matrix_free=True)` raised `AttributeError` on a
+    line written in the same commit as the feature: the matrix-free
+    traversal read `self._coeffs` for its opening seed, and on the
+    `open_at_x0` path no step has run to set it.  Each flag had a test; the
+    PAIR had none, and threading a flag through a second path "so they
+    cannot disagree" is exactly when the untested combination looks safest.
+
+    Three things are asserted, and the second is the one with teeth:
+
+      * nothing CRASHES -- an unexpected exception type is a failure, while
+        a documented `NotImplementedError` is a result;
+      * `matrix_free` does not change the ANSWER.  It is an implementation
+        of the same solve, so any difference beyond the convergence
+        tolerance is a defect in the matvec, not a numerical detail;
+      * the REFUSALS are exactly the expected set -- `gear` with
+        `x0_unknown`, which has nothing to change.  A refusal that quietly
+        spreads to another combination would look like a passing test.
+    """
+    import warnings
+    import itertools
+    circuit.default_toolkit = circuit.numeric
+
+    driven, per_d = _resonator_at_resonance(), None
+    per_d = 1.0 / (1.0 / (2 * np.pi * np.sqrt(1e-3 * 1e-9)))
+    systems = (('driven', lambda: _resonator_at_resonance()[0],
+                _resonator_at_resonance()[1]),
+               ('autonomous', _phase_circuit, 1e-3))
+
+    refused, answers = set(), {}
+    for sysname, cf, per in systems:
+        for method, x0u, mf in itertools.product(
+                ('euler', 'trap', 'gear'), (False, True), (False, True)):
+            key = (sysname, method, x0u, mf)
+            pss = PSS(cf(), method=method, reltol=1e-8)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    pss.solve(period=per, timestep=per / 100,
+                              maxiterations=30, x0_unknown=x0u,
+                              matrix_free=mf)
+            except NotImplementedError:
+                refused.add(key)
+                continue
+            except Exception as exc:                  # noqa: BLE001
+                raise AssertionError(
+                    '%r crashed with %s: %s -- a combination that raises '
+                    'anything but NotImplementedError is a defect, not a '
+                    'documented limit' % (key, type(exc).__name__, exc))
+            assert pss.converged, '%r did not converge' % (key,)
+            answers[key] = float(pss.period)
+
+    ## `matrix_free` is an implementation of the same solve
+    for (sysname, method, x0u, mf), per in list(answers.items()):
+        if mf:
+            continue
+        other = (sysname, method, x0u, True)
+        if other in answers:
+            assert abs(answers[other] - per) < 1e-9 * max(abs(per), 1e-30), \
+                'matrix_free changed the answer for %r: %.12g against ' \
+                '%.12g' % ((sysname, method, x0u), answers[other], per)
+
+    expected = {(s, 'gear', True, mf)
+                for s in ('driven', 'autonomous') for mf in (False, True)}
+    assert refused == expected, \
+        'the refused set moved: %r were refused, expected %r' \
+        % (sorted(refused), sorted(expected))
