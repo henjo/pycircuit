@@ -2676,6 +2676,28 @@ class PSS(Analysis):
             ## same scaling that makes it dominate `f`; the two cancel.
             ## Pinned by `test_the_phase_pin_compares_units_on_purpose`.
             ##
+            ## ⚠ A REVIEW DISPUTED THESE CONDITION NUMBERS AND THEN
+            ## RETRACTED, and the reason is worth keeping because it is a
+            ## trap this file can fall into again.  The reviewer measured
+            ## the pin and the orthogonality row as IDENTICAL (edge 1.000x)
+            ## and argued a gap was arithmetically impossible, since
+            ## `|fhat[k]| = 0.9999` makes `e_k` and `fhat` nearly parallel.
+            ## Their harness took the CODE'S analytic `J` and swapped only
+            ## the border row, so both readings were the conditioning of
+            ## the SAME operator -- and on the plain path that operator is
+            ## in the wrong frame (see item 4b's correction below), so its
+            ## defect dominated `cond` in both cases.  Identical numbers
+            ## were guaranteed by construction.
+            ##
+            ## ⚠ THE REASONING WAS ALSO WRONG, INDEPENDENTLY: `cond` is a
+            ## function of the WHOLE row, not of its projection on `e_k`.
+            ## Alignment 0.9999 makes two rows nearly PARALLEL, not equal --
+            ## `e_k` is a unit vector and `fhat` is dense -- and it places
+            ## no bound on the conditioning gap.  Switching the phase
+            ## condition means solving a DIFFERENT system and living with
+            ## ITS conditioning, so the comparison has to build both
+            ## systems, which is what the numbers above do.
+            ##
             ## ⚠ AND THE UPGRADE THIS INVITED WAS TESTED AND REJECTED.  An
             ## orthogonality (Poincare) row `<x0 - x_ref, f(x_ref)> = 0`
             ## looks strictly better -- it is the flow-aligned row by

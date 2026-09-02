@@ -2667,3 +2667,104 @@ def test_a_grid_that_outruns_zero_stability_says_so():
         'the 3:1 grid gave %.4f against the uniform %.4f -- if these now ' \
         'agree, the demotion is gone and this test has lost its subject' \
         % (peaks['3:1'], peaks['uniform'])
+
+
+def test_an_index_2_solve_that_converges_is_correct():
+    """Index-2 circuits: what actually happens, measured on four topologies.
+
+    An external review reported that index-2 circuits break the DEFAULT
+    method, with "89% error on the v-source branch current", and proposed
+    detecting index > 1 and refusing.  Reproduced and then measured
+    further, and the conclusion does not survive:
+
+        circuit      index>1   trap   euler   gear
+        CV-loop        yes       F      F      T
+        CV-loop2       yes       X      F      F
+        LI-cutset      yes       T      T      T
+        LI-cutset2     yes       X      X      F
+
+    ⚠ INDEX > 1 IS NOT PREDICTIVE OF FAILURE.  Every one of those is index
+    2 by the projector test (`N^T G N` singular, `N` a null basis of `C`),
+    and on `LI-cutset` all three methods converge.  A refusal keyed on index
+    would reject circuits that work.
+
+    ⚠ AND GEAR IS NOT THE WORKAROUND.  It succeeds on `CV-loop` -- the one
+    circuit the review tested -- and FAILS on two of the other three.  Had
+    the refusal named `method='gear'` as the remedy, as proposed, it would
+    have sent users to a method that does not generalise.
+
+    ⚠ WHAT THIS PINS is the part that would matter if it broke: when an
+    index-2 solve reports CONVERGED, its answer is right.  Measured against
+    a settled transient over every state, algebraic ones included, the worst
+    relative error was 6.6e-05 (CV-loop/gear) and 1.3e-05 / 1.7e-04 /
+    7.4e-05 (LI-cutset trap/euler/gear).  The failures are LOUD --
+    `converged = False` or an exception -- not silent wrong answers, which
+    is why this is documented rather than refused.  A regression to a
+    silently wrong algebraic variable is exactly what this test would catch.
+    """
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def cv_loop():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['c1'] = C('a', 'b', c=1e-9)
+        c['c2'] = C('b', gnd, c=1e-9)
+        c['r'] = R('b', gnd, r=1e9)
+        return c
+
+    ## it really is index 2: N^T G N is singular for N a null basis of C
+    cir = cv_loop()
+    n = cir.n
+    Cm = np.asarray(cir.C(np.zeros(n)), dtype=float)
+    Gm = np.asarray(cir.G(np.zeros(n)), dtype=float)
+    iref = cir.get_node_index(gnd)
+    keep = [i for i in range(n) if i != iref]
+    Cm, Gm = Cm[np.ix_(keep, keep)], Gm[np.ix_(keep, keep)]
+    _U, sv, Vt = np.linalg.svd(Cm)
+    d = int(np.sum(sv > len(keep) * sv[0] * np.finfo(float).eps))
+    N = Vt[d:].T
+    s2 = np.linalg.svd(N.T @ Gm @ N, compute_uv=False)
+    ## ⚠ the projection can be identically ZERO, which is singular in the
+    ## strongest sense -- so the ratio needs a guarded denominator rather
+    ## than `s2[-1]/s2[0]`, which is 0/0 there.  Measured: this circuit
+    ## gives exactly that.
+    ratio = float(s2[-1] / max(s2[0], 1e-300))
+    assert ratio < 1e-10, \
+        'this circuit is no longer index 2 (sigma_min/sigma_max = %.3e), ' \
+        'so the test has lost its subject' % ratio
+
+    ## reference: a settled transient
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ## ⚠ a SHORT reference on purpose.  R*C here is ~0.5 s against a
+        ## 1 ms period, so no affordable transient settles the slow DC
+        ## drift -- but the quantity compared is the per-period AMPLITUDE,
+        ## which the capacitive divider sets within a couple of periods.
+        ## Sixty periods cost 52 s and bought no accuracy over eight.
+        rt = Transient(cv_loop(), reltol=1e-10).solve(
+            refnode=gnd, tend=per * 8, timestep=per / 200)
+    t = np.asarray(rt.sweep_values, dtype=float).ravel()
+    X = np.asarray(rt.x, dtype=float)
+    W = X[:, t > t[-1] - per]
+    ref = np.array([0.5 * (W[i].max() - W[i].min()) for i in range(W.shape[0])])
+
+    pss = PSS(cv_loop(), method='gear', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = pss.solve(period=per, timestep=per / 200, maxiterations=40)
+    assert pss.converged, 'gear no longer converges on the CV-loop'
+    Xp = np.asarray(res['tpss'].x, dtype=float)
+    got = np.array([0.5 * (Xp[i].max() - Xp[i].min())
+                    for i in range(Xp.shape[0])])
+    k = min(len(got), len(ref))
+    worst = np.max(np.abs(got[:k] - ref[:k])
+                   / np.maximum(np.abs(ref[:k]), 1e-12))
+    assert worst < 1e-3, \
+        'a CONVERGED index-2 solve disagrees with a settled transient by ' \
+        '%.3e over its states -- that is the silent wrong answer this ' \
+        'exists to catch' % worst

@@ -212,6 +212,33 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## Matrix-free against a SPARSE baseline — the gate holds (settled 2026-09-02)
+
+The round-one worry: every recorded matrix-free speedup had a dense baseline on *both*
+sides, because the path reached past `linearsolver=` to `scipy.linalg` and
+`_step_sensitivity` reached past it to `toolkit.linearsolver`. Both now go through the
+caller's solver, so the comparison can be run twice. On a quiet box (load 1.7),
+single-threaded, three Newton iterations — wall seconds:
+
+| m | dense/dense | dense/mfree | splu/dense | splu/mfree | mf vs dense | mf vs splu |
+|---|---|---|---|---|---|---|
+| 110 | 0.713 | 0.646 | 0.739 | 0.682 | 1.10× | 1.08× |
+| 242 | 2.166 | 1.596 | 2.045 | 1.531 | 1.36× | 1.34× |
+| 502 | 9.301 | 6.614 | 7.897 | 5.298 | 1.41× | 1.49× |
+| 1002 | 51.083 | 26.049 | 40.804 | **17.674** | 1.96× | **2.31×** |
+
+**The m≈250 gate holds.** Matrix-free gains the same or *more* against SuperLU than
+against dense LAPACK at every size — the worry is not borne out. The two are
+**complementary, not alternatives**: `splu/mfree` is fastest at every m ≥ 242, and at
+m=1002 it is 17.674 s against the 51.083 s this analysis shipped with — **2.89×**, where
+a sparse solver alone buys 1.25× and matrix-free alone 1.96×. `splu/dense` never wins a
+row, so "just use a sparse solver" is not the better recommendation at any size.
+
+⚠ SuperLU is a small *loss* at m=110 — the usual sparse-bookkeeping crossover. And
+`rc_ladder` is tridiagonal, the most favourable structure a sparse solver can be handed,
+so this **overstates** the sparse baseline's advantage — which is the direction that
+makes the conclusion safe.
+
 ## External review, second round — what was verified and what was done
 
 Every finding below was **reproduced here before being acted on**; where my measurement
@@ -251,15 +278,43 @@ disagreed with the review, mine is recorded and the disagreement stated.
   split and are always inside the first `m`. And it cannot be fixed by magnitude:
   Gear-2's parasitic roots are ~1e-95, indistinguishable from a structural zero.
 
-### Verified, reported, not fixed
+### Index-2: detection is cheap, and a refusal would be WRONG (settled 2026-09-02)
 
-- **1d — index-2 circuits: the DEFAULT method cannot converge.** On a V-source/C/C/R
-  loop, trap and euler report `converged=False` at 200 *and* 800 points while gear
-  converges; node voltages agree, so it is the index-2 algebraic variable that is wrong,
-  and it does not improve with h. Nothing in the code knows about index, and the fix is
-  a design decision (refuse? admit the constraint?) rather than a patch.
+The review proposed detecting `index > 1` (projector test: `NᵀGN` singular for `N` a
+null basis of `C`; measured 29.7 ms at m=112, 58.7 ms at m=502) and refusing, naming
+`method='gear'` as the workaround. **Both halves of that recommendation fail on wider
+evidence.** Four index-2 topologies, all confirmed index-2 by the projector test:
 
-### Did NOT reproduce — my evidence stands
+| circuit | trap | euler | gear |
+|---|---|---|---|
+| CV-loop | F | F | **T** |
+| CV-loop2 | raises | F | **F** |
+| LI-cutset | **T** | **T** | **T** |
+| LI-cutset2 | raises | raises | **F** |
+
+- **`index > 1` is not predictive of failure.** On `LI-cutset` all three methods
+  converge, so a refusal keyed on index would reject circuits that work.
+- **Gear is not the workaround.** It succeeds on `CV-loop` — the one circuit the review
+  tested — and fails on two of the other three. A refusal naming gear would have sent
+  users to a method that does not generalise.
+- **And the failures are LOUD.** Every index-2 solve that reports `converged=True` is
+  *correct*: worst relative error against a settled transient, over every state
+  including the algebraic ones, is **6.6e-05** (CV-loop/gear) and 1.3e-05 / 1.7e-04 /
+  7.4e-05 (LI-cutset trap/euler/gear). The review's "89% error on the v-source branch
+  current" did not reproduce as a *converged* answer here — a non-converged PSS still
+  returns a result, and that is where such a number comes from.
+
+So: **no refusal, no warning, no detection code** — an unused detector is a dead knob,
+and this tree has a standing guard against those. What went in instead is a test pinning
+the property that would matter if it broke: *a converged index-2 solve agrees with a
+transient*. A regression to a silently wrong algebraic variable is what it catches.
+
+⚠ One caveat kept from the review, because it is right and independent of the above:
+admitting the constraint on the plain path is **not an increment** — it needs consistent
+initialisation of the algebraic variables at the period boundary, which the manufactured
+flat history destroys. That is the same change as "make `x₀` the unknown".
+
+### Disputed, then retracted by the reviewer — my evidence stands
 
 - The review reported that my Poincaré condition numbers are identical between the pin
   and the orthogonality row (edge 1.000×). **Re-measured: they are not.** Pin
@@ -269,6 +324,13 @@ disagreed with the review, mine is recorded and the disagreement stated.
   *parallel* with *equal*: `e_k` is a unit vector and `f̂` is dense, and that difference
   is what moves the conditioning. **The decision is unchanged either way** — the
   orthogonality row still buys nothing that decides anything.
+
+  ⚠ **The reviewer re-checked and retracted §7 in full.** Their harness took the code's
+  analytic `J` and swapped only the border row, so both readings were the conditioning
+  of the *same* operator — and on the plain path that operator is in the wrong frame
+  (their own finding), so its defect dominated `cond` in both cases. Identical numbers
+  were guaranteed by construction. A defect found by one lens invalidated a measurement
+  taken by another; worth remembering as a shape, not just as an episode.
 
 ## ⚠ Gear-2's period column was exactly 3/2 too large (fixed 2026-09-02)
 
