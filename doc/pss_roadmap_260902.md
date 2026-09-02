@@ -36,8 +36,44 @@ forms it. That is why the withdrawal does not carry over.
 thousand-node RF mixer.
 *They use GCR, not GMRES; whether that matters here is unexamined.*
 
-**Gate:** none needed to start — the operator is built and tested. The honest first step is
-a single-frequency PAC against a dense reference, then the sweep.
+⚠ **THE WITHDRAWN PAC BODY WAS NEVER WRONG, and this is now RUN rather than reasoned**
+(docs session, `~/docs/pycircuit-pac-operator.md`). It is the *un-preconditioned* form of
+the right operator. Its `L` is block lower bidiagonal and its `B` is confined to the first
+`N` rows and last `N` columns, so `(L + αB)v = -u` is `(I + α L⁻¹B) v = -L⁻¹u`; applying
+`L⁻¹` is forward substitution through the timesteps, which is `_monodromy_matvec`'s
+recursion, and **`H := L⁻¹B` IS THE MONODROMY**.
+
+Checked against our own code, not assumed from the paper:
+
+| check | result |
+|---|---|
+| `L` block lower bidiagonal (upper block part) | max `0.0` |
+| `B` confined to last `N` cols / first `N` rows | max `0.0` outside, both |
+| `L⁻¹Bv` vs forward substitution through the steps | rel `7.4e-19` |
+| last block vs a monodromy replay | rel `1.3e-15` |
+| `(L+αB)v` vs `L(I + αL⁻¹B)v` | rel `4.3e-17` |
+
+So the **419.5 GiB was entirely the cost of FORMING `L`** — nothing else — and the
+preconditioner that removes it is the traversal that already exists. **Keep the operator;
+do not re-derive it. Never form `L`.**
+
+⚠ **Three plumbing gaps, none of them in the operator:**
+1. `_monodromy_matvec` and `_monodromy_matvec_plain` both do `np.asarray(v, dtype=float)`
+   — hard-real. PAC needs complex `v`.
+2. `_traverse_factored`'s stored factors are local to the `_build` closures and discarded;
+   a PAC hook needs them retained.
+3. `pss.Jtvec` / `pss.Cvec` — which the dead body reads — are written only by `_traverse`
+   and `_traverse_solved_history`, **not** by either `_traverse_factored*`. After
+   `matrix_free=True` they are absent or stale. **The matrix-free PAC must take the
+   factors, not `Jtvec`/`Cvec`.**
+
+⚠ **Incidental third source for the order-dropped opening step.** Okumura, Sugawara &
+Tanimoto 1990: "if the second-order integration method is used, the first point is
+approximated by the backward Euler algorithm, in order to solve the start-up problems."
+Same choice, same reason, in the PAC context.
+
+**Gate:** none needed to start — the operator is confirmed and the traversal is built. The
+honest first step is a single-frequency PAC against a dense reference, then the sweep.
 **Size:** the largest item here that is not research.
 
 ### A2. PPV (perturbation projection vector)
