@@ -1265,7 +1265,17 @@ class PSS(Analysis):
         ## the record: on van der Pol's grid, an opening step of 1e-1 still
         ## fails for gear and 1e-2 converges, against a ratio here of
         ## 13939.  Anything between those bounds separates the two cases.
-        if fr[0] > 8.0 * fr.min():
+        ## ⚠ AND IT IS ONLY NEEDED WHEN THERE IS A MANUFACTURED STEP TO
+        ## PROTECT.  The subdivision exists because `_traverse` builds `x(0)`
+        ## with one order-dropped Euler step of `hs[0]` FROM `x_in` -- an
+        ## iterate that may be far from the orbit -- and a coarse `hs[0]`
+        ## there defeats the inner Newton.  With `x0_unknown` the first step
+        ## starts ON the orbit and the same coarse step is solvable:
+        ## measured on van der Pol's own LTE grid, the raw 1105-step grid
+        ## converges and reaches -47.3 ppm where the subdivided 1106-step
+        ## one reaches -73.8.  So the subdivision COSTS accuracy, and it is
+        ## skipped where it buys nothing.
+        if fr[0] > 8.0 * fr.min() and not getattr(self, '_open_at_x0', False):
             d = float(fr.min())
             fr = np.concatenate(([d, fr[0] - d], fr[1:]))
 
@@ -1697,7 +1707,8 @@ class PSS(Analysis):
             Cs = [C_new, Cs[0]]
         return np.concatenate((Px[0], Px[1]))
 
-    def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False):
+    def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False,
+                                 open_at_x0=False):
         """The PLAIN path's trajectory pass, factored -- item 6 for one-step
         methods and for the systems whose unknown is a single entering state.
 
@@ -1717,9 +1728,15 @@ class PSS(Analysis):
         m = self.cir.n - 1
         self._want_dfdh = want_dT
         self._begin_period(x_in)
-        x = self.solve_timestep(x_in, times[0], hs[0])
-        x0 = copy(x)
-        C_open = np.asarray(self._C).copy()
+        if open_at_x0:
+            ## no manufacturing step -- see `_traverse`, which this mirrors
+            x = copy(x_in)
+            x0 = copy(x_in)
+            C_open = np.asarray(self._C_at(x_in)).copy()
+        else:
+            x = self.solve_timestep(x_in, times[0], hs[0])
+            x0 = copy(x)
+            C_open = np.asarray(self._C).copy()
 
         ## ⚠ THE COEFFICIENTS BELONG TO THE STEP, NOT TO THE RUN.  `_coeffs`
         ## is live state and the MANUFACTURING step is order-dropped, so it
@@ -1744,7 +1761,11 @@ class PSS(Analysis):
         ## and that is recorded rather than hidden.  They are stored anyway
         ## because a variable-order method would make the loop vary too, and
         ## that failure would be silent.
-        a_open, b_open = self._coeffs
+        ## ⚠ `b_open = 0` when opening AT `x_0`: no companion current has
+        ## been formed, so the matvec must seed `Pq` at zero to match
+        ## `_traverse`'s exact seed rather than the manufactured one.
+        a_open, b_open = ((self._coeffs[0], 0.0) if open_at_x0
+                          else self._coeffs)
         Pt = [np.zeros(m), np.zeros(m)]
         Pqt = np.zeros(m)
         Cs = [C_open, C_open]
@@ -2161,7 +2182,7 @@ class PSS(Analysis):
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
 
-    def _traverse(self, x_in, T, times, hs, want_dT):
+    def _traverse(self, x_in, T, times, hs, want_dT, open_at_x0=False):
         """One pass over the period, with the sensitivities accumulated.
 
         Returns ``(x0, x_end, dx_end/dx0, dx_end/dT)`` -- the last only when
@@ -2182,9 +2203,27 @@ class PSS(Analysis):
         n = self.cir.n
         self._want_dfdh = want_dT
         self._begin_period(x_in)
-        x = self.solve_timestep(x_in, times[0], hs[0])
-        iq_last = self._iq
-        x0 = copy(x)
+        if open_at_x0:
+            ## ⚠ NO MANUFACTURING STEP: the caller's unknown IS `x_0`.
+            ## `_begin_period` has seeded both charge rings from `q(x_in)`
+            ## and marked the next step `is_first_step`, so the first step
+            ## INSIDE the period is order-dropped to Euler -- which is the
+            ## L-stable opener this formulation cannot do without.  See
+            ## `x0_unknown` on `solve` for why, and for what it costs.
+            x = copy(x_in)
+            x0 = copy(x_in)
+            C_open = np.asarray(self._C_at(x_in))
+        else:
+            x = self.solve_timestep(x_in, times[0], hs[0])
+            x0 = copy(x)
+            C_open = np.asarray(self._C)
+        ## ⚠ `None`, not `self._iq`, when nothing has been solved yet: no
+        ## companion current exists at `x_0` because no step has formed one.
+        ## `solve_timestep` reads `iq_last=None` as "open the run", which is
+        ## the same restart `_begin_period` already asked for -- passing a
+        ## stale `_iq` from a previous traversal would be the hidden-state
+        ## defect this class refuses elsewhere.
+        iq_last = None if open_at_x0 else self._iq
 
         ## `Px[k]` is d(x_{n-k})/d(x0), `Pq` is d(iq_n)/d(x0), `Cs[k]` the
         ## capacitance of step n-k.  Two of each -- as far back as any
@@ -2194,17 +2233,32 @@ class PSS(Analysis):
         ## differentiate against.
         eye = np.asarray(toolkit.eye(n - 1))
         Px = [eye, eye]
-        Cs = [copy(np.asarray(self._C)), copy(np.asarray(self._C))]
-        a_first, b_first = self._coeffs
-        Pq = (a_first[0] * Cs[0] if b_first else np.zeros((n - 1, n - 1)))
+        Cs = [copy(C_open), copy(C_open)]
+        if open_at_x0:
+            ## ⚠ AND HERE THE SEED IS EXACT RATHER THAN ASSUMED.  With `x_0`
+            ## the unknown and both rings holding `q(x_0)`, `dq_{-1}/dx_0`
+            ## really IS `C` -- the same `I` the other branch writes down as
+            ## an assumption about a history it did not solve for.  `Pq` is
+            ## zero because no companion current has been formed yet: the
+            ## opening step has not been taken.  That is the whole reason
+            ## this path has an exact Jacobian and the other does not.
+            Pq = np.zeros((n - 1, n - 1))
+        else:
+            a_first, b_first = self._coeffs
+            Pq = (a_first[0] * Cs[0] if b_first else np.zeros((n - 1, n - 1)))
         ## The period column, propagated the same way with one extra source
         ## term.  Zero at the start: the entering state does not depend on T.
         Pt = [np.zeros(n - 1), np.zeros(n - 1)]
         Pqt = np.zeros(n - 1)
 
         ## Kept for PAC.
-        self.Cvec = [copy(self._C)]
-        self.Jtvec = [copy(self._Jf)]
+        ## ⚠ `C_open`, not `self._C`: on the `open_at_x0` path no step has
+        ## run, so `_C` does not exist yet.  `C_open` is the same matrix the
+        ## other branch would have found there, evaluated at `x_0` directly.
+        ## (Kept for PAC, which is withdrawn; `Jtvec` opens empty for the
+        ## same reason -- there is no solved `Jf` at `x_0`.)
+        self.Cvec = [copy(C_open)]
+        self.Jtvec = ([] if open_at_x0 else [copy(self._Jf)])
         self.times = times
 
         for _j, t in enumerate(times[1:]):
@@ -2518,7 +2572,8 @@ class PSS(Analysis):
 
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
-              maxiterations=20, grid=None, matrix_free=False):
+              maxiterations=20, grid=None, matrix_free=False,
+              x0_unknown=False):
         """Solve for the periodic steady state.
 
         `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
@@ -2527,6 +2582,49 @@ class PSS(Analysis):
         an unknown and every step has to scale with it.  See
         `_period_grid`; the grid is still frozen for the whole solve, so the
         shooting Newton stays exact.
+
+        `x0_unknown` solves for `x_0` itself instead of for `x_in`, the
+        pre-image of a manufactured opening step.  The plain path's default
+        is to manufacture `x(0)` with one order-dropped Euler step and hand
+        `fsolve` that step's PRE-IMAGE, while the Jacobian it returns is
+        taken with respect to `x_0` -- a frame error, and the reason the
+        true `dF/dx_in` is SINGULAR (rank 1/3, 2/4, 1/3 on three circuits,
+        `sigma_min` exactly 0) and the iteration is a CONTRACTION with a
+        linear rate rather than a Newton.  With this set there is no
+        manufacturing step, the unknown is the period's own start, and the
+        Jacobian is exact.
+
+        ⚠ IT IS NOT FREE, AND THE TRADE-OFF IS GRID-DEPENDENT.  Trapezoidal
+        still needs an L-stable opener -- without one its period map is
+        `A_trap^K`, singular at EVEN K on every MNA circuit (the
+        `(-1)^n` obstruction, now a theorem; see item 4d) -- so the Euler
+        step moves INSIDE the period, where it degrades the ORBIT and not
+        just the opening.  Measured on a Q=20 resonator against its analytic
+        20 V peak:
+
+              npts    default (x_in)    x0_unknown
+               100       20.01273        19.76939
+               200       20.02208        19.96123
+
+        18x worse at 100 points, 1.8x at 200; the order is preserved and the
+        gap closes as the single first-order step is diluted, but the
+        constant is real.
+
+        ⚠ AND ON A HARD CASE IT IS THE OTHER WAY ROUND, which is why this is
+        an option and not a repair.  Van der Pol on its 1105-step LTE grid
+        reaches -47.3 ppm in four iterations against the default path's
+        -73.8 -- exactly the figure the throwaway driver in
+        `benchmarks/pss_lte_grid.py` has been recorded as "the target to
+        hit" since item 5 was written, and for the same reason: its unknown
+        was `x_0` too.  Convergence is quadratic at even and odd point
+        counts alike (2.9e+00 -> 9.1e-08 -> 1.1e-14).
+
+        So: uniform grid on a benign circuit, leave it off; non-uniform grid
+        on a stiff one, turn it on, where the quadratic rate is what decides
+        whether it converges at all.  `benchmarks/pss_x0_unknown.py` is the
+        driver those numbers come from.  Euler is unchanged to the digit
+        either way -- its manufacturing step IS an Euler step, so the two
+        maps coincide, which is what makes it the control.
 
         `matrix_free` is RECORDED SCOPE ITEM 6: solve the outer system
         without ever forming the monodromy, propagating ONE vector per
@@ -2634,10 +2732,17 @@ class PSS(Analysis):
             x = x0 # reference node not included !
 
         #create vector with timepoints and a more fitting dt
+        ## ⚠ the flag must be set BEFORE the grid is built, because
+        ## `_period_grid` consults it to decide whether to subdivide a
+        ## coarse opening step -- see the note there.
+        self._open_at_x0 = bool(x0_unknown)
         times, hs = self._period_grid(period, int(period / dt), grid)
         npts = len(times)
         self._grid_fracs = (None if grid is None
                             else np.asarray(grid, dtype=float))
+        ## read by `_period_grid`, which is called from the residual
+        ## closures and so cannot take it as an argument
+        self._open_at_x0 = bool(x0_unknown)
         alpha = 1
 
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
@@ -2727,7 +2832,16 @@ class PSS(Analysis):
             _x1 = self.solve_timestep(x, times[0], hs[0])
             _x2 = self.solve_timestep(_x1, times[1], hs[0], iq_last=self._iq)
             phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
-            phase_pin = float(np.asarray(_x1)[phase_k])
+            ## ⚠ THE PIN MUST BE IN THE UNKNOWN'S OWN FRAME.  `_x1` is the
+            ## state one step AFTER the seed, which is the right thing to
+            ## pin when the unknown is `x_in` and `x_0` is manufactured from
+            ## it -- and the wrong thing when the unknown IS `x_0`.  With a
+            ## fine opening step the two are nearly equal and the mismatch
+            ## hides; on van der Pol's own LTE grid, where the opening step
+            ## is 1.4845 against a median of 4.6e-04, it pins a value the
+            ## orbit need never attain and the solve dies with a bare
+            ## non-convergence.
+            phase_pin = float(np.asarray(x if x0_unknown else _x1)[phase_k])
 
         ## Resolved here as well as in `solve_timestep`, because the SHOOTING
         ## Jacobian depends on which integrator the inner steps used.
@@ -2795,7 +2909,8 @@ class PSS(Analysis):
 
         def func(x):
             x0, x_end, Mx, _Mt = self._traverse(x, period, times, hs,
-                                                want_dT=False)
+                                                want_dT=False,
+                                                open_at_x0=x0_unknown)
             D = np.asarray(toolkit.eye(n - 1))
             return x0 - x_end, D - alpha * Mx
 
@@ -2852,7 +2967,8 @@ class PSS(Analysis):
             ## true of every step -- uniform or not.
             tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
             x0, x_end, Mx, Mt = self._traverse(x_in, T, tms, hs_T,
-                                               want_dT=True)
+                                               want_dT=True,
+                                               open_at_x0=x0_unknown)
 
             D = np.asarray(toolkit.eye(n - 1))
             m = n - 1
@@ -2945,6 +3061,21 @@ class PSS(Analysis):
         ## implies; quietly taking the dense route would be a performance
         ## surprise with no symptom, which is the shape of defect this tree
         ## has paid for before.
+        ## ⚠ REFUSED RATHER THAN IGNORED, like `matrix_free` above.  A
+        ## solved-history method already solves for `x_0` and `x_{-1}`
+        ## directly and manufactures nothing, so there is no frame to
+        ## correct and the flag would be a no-op -- and a no-op flag that
+        ## the caller believes changed something is worse than an error.
+        if x0_unknown and solved_history:
+            raise NotImplementedError(
+                'PSS: x0_unknown=True has nothing to change for a two-step '
+                "method (method=%r). The solved-history formulation already "
+                'solves for x_0 and x_{-1} as real trajectory states and '
+                'manufactures no opening step, so its Jacobian is exact '
+                'without this. Drop the flag, or use a one-step method '
+                "(method='trap' or 'euler') where the manufactured opening "
+                'is what this replaces.' % method)
+
         ## Find periodic steady state x-vector
         if self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
@@ -3018,7 +3149,8 @@ class PSS(Analysis):
                     xin_, T_ = z[:m_], float(z[-1])
                     tms_, hsT_ = self._period_grid(T_, npts, self._grid_fracs)
                     op_, st_, x0_, xe_, Mt_ = self._traverse_factored_plain(
-                        xin_, T_, tms_, hsT_, want_dT=True)
+                        xin_, T_, tms_, hsT_, want_dT=True,
+                        open_at_x0=x0_unknown)
                     x0_ = np.asarray(x0_, dtype=float)
                     Mt_ = np.asarray(Mt_, dtype=float).ravel()
                     F_ = np.concatenate((x0_ - np.asarray(xe_, dtype=float),
@@ -3077,7 +3209,8 @@ class PSS(Analysis):
             ## 2.50x at m=1002.
             def _build(z):
                 opening, steps, x0_, xe_, _dT = self._traverse_factored_plain(
-                    z, period, times, hs, want_dT=False)
+                    z, period, times, hs, want_dT=False,
+                    open_at_x0=x0_unknown)
                 return (np.asarray(x0_) - np.asarray(xe_),
                         lambda v: v - alpha * self._monodromy_matvec_plain(
                             opening, steps, v))
@@ -3229,8 +3362,13 @@ class PSS(Analysis):
             X = [x0_ss]
             tr = self._begin_period(x0_ss)
             ## the manufacturing step, then the loop -- exactly `_traverse`
-            walk = ([(times[0], hs[0])]
-                    + list(zip(times[1:], hs[:len(times) - 1])))
+            ## ... unless there was no manufacturing step, in which case the
+            ## replay opens AT `x_0` and walks the period alone.  Getting
+            ## this wrong is the same class of defect as the grid shift
+            ## above: a replay that does not reproduce its own traversal.
+            walk = list(zip(times[1:], hs[:len(times) - 1]))
+            if not x0_unknown:
+                walk = [(times[0], hs[0])] + walk
         ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
         ## the period's, not something an earlier shooting iteration saw.
         tr._lte_probe = None
@@ -3429,7 +3567,14 @@ class PSS(Analysis):
                            self.fundamental_period),
                         RuntimeWarning, stacklevel=2)
 
-        X = toolkit.array(X if solved_history else X[1:]).T
+        ## ⚠ THE FIRST ENTRY IS DROPPED ONLY WHEN IT IS NOT PART OF THE
+        ## PERIOD.  On the default plain path `X[0]` is `x_in`, the
+        ## pre-image of the manufactured step, which sits one step BEFORE
+        ## t=0 and is not a point of the orbit.  With `x0_unknown` -- and on
+        ## the solved-history path -- `X[0]` IS `x(0)`, so dropping it both
+        ## discards a real sample and leaves the waveform one column short
+        ## of `times`.
+        X = toolkit.array(X if (solved_history or x0_unknown) else X[1:]).T
 
         # Insert reference node voltage
         X = toolkit.concatenate((X[:irefnode], 

@@ -41,10 +41,19 @@ WHAT IT BUYS, MEASURED (this file):
   * QUADRATIC CONVERGENCE.  Q=20 resonator, 2 iterations:
     2.9e+00 -> 9.1e-08 -> 1.1e-14, at EVEN and odd point counts alike.
   * VAN DER POL, item 5's payoff case, on its 1105-step LTE grid:
-    -47.3 ppm in 4 iterations (1.5e-02 -> 6.5e-04 -> 1.9e-06 -> 2.6e-10)
-    against the shipped path's -73.8 ppm.  That -47.3 is exactly what the
-    throwaway driver in `pss_lte_grid.py` reached, and for the same reason:
-    its unknown was `x_0` and it manufactured nothing.
+    -47.3 ppm against the default path's -73.8 -- exactly what the
+    throwaway driver in `pss_lte_grid.py` reached, the figure recorded as
+    "the target to hit" since item 5 was written.
+
+    ⚠ AND THAT GAIN IS NOT THE FORMULATION ALONE.  The first version of
+    this note said it was, and that was wrong: measured on the SAME grid,
+    the `x_0` formulation gives -73.8 subdivided and -47.3 raw.  The gain
+    comes from the formulation making the opening-step SUBDIVISION
+    unnecessary -- that subdivision exists only to protect a manufactured
+    step taken from an iterate that may be far from the orbit, and it costs
+    accuracy.  With `x_0` the unknown the first step starts ON the orbit and
+    the raw grid is solvable.  Two separate changes, one enabling the other,
+    and the confound was only visible by running both grids.
   * EULER IS UNCHANGED to the digit (8.83917 / 12.28401 at 100 / 200
     points, both formulations), which is the control -- euler's
     manufacturing step IS an Euler step, so the two maps coincide.

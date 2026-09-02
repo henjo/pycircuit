@@ -2844,3 +2844,84 @@ def test_the_returned_waveform_closes_on_a_non_uniform_grid():
     ## and the solved-history control, which was always right
     for ratio in (1.0, 4.0, 16.0):
         assert closure('gear', ratio) < 1e-8
+
+
+def test_x0_unknown_solves_for_the_period_s_own_start():
+    """`x0_unknown=True`: solve for `x_0`, manufacture nothing.
+
+    The default plain path hands `fsolve` the PRE-IMAGE of a manufactured
+    opening step while returning a Jacobian taken with respect to `x_0` --
+    a frame error, and the reason the true `dF/dx_in` is singular and the
+    iteration is a contraction rather than a Newton.
+
+    ⚠ TRAPEZOIDAL STILL NEEDS AN L-STABLE OPENER, which is why this moves
+    the Euler step INSIDE the period rather than removing it.  Without one
+    the period map is `A_trap^K`, singular at EVEN K on every MNA circuit --
+    the `(-1)^n` obstruction, and the fourth design to meet it.  Checked on
+    the model problem before any of this was built: `sigma_min(I - A^K)` is
+    exactly 0.0 for bare trapezoidal at K=100 and 200 and 6.0e-03 with the
+    Euler opener.  Hence the even/odd point counts below: they are the
+    recorded falsifier for that whole family of reformulations.
+
+    What it costs and buys, both measured:
+
+        Q=20 at resonance, analytic 20 V     default    x0_unknown
+          100 points                         20.01273    19.76939
+          200 points                         20.02208    19.96123
+
+    -- the in-period Euler step degrades the ORBIT, worse on a benign
+    uniform grid.  And on van der Pol's own 1105-step LTE grid the sign
+    flips: -47.3 ppm against the default's -73.8.
+
+    ⚠ THAT GAIN IS NOT THE FORMULATION ALONE and the first attribution here
+    was wrong.  It comes from the formulation making the opening-step
+    SUBDIVISION unnecessary: that subdivision exists only to protect a
+    manufactured step taken from an iterate that may be far from the orbit,
+    and measured on the same grid it costs -47.3 -> -73.8.  With `x_0` the
+    unknown the first step starts ON the orbit and the raw grid is solvable.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir, per = _resonator_at_resonance()
+
+    got = {}
+    for method in ('trap', 'euler'):
+        for npts in (100, 101, 200):
+            for flag in (False, True):
+                pss = PSS(cir, method=method, reltol=1e-10)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    res = pss.solve(period=per, timestep=per / npts,
+                                    maxiterations=40, x0_unknown=flag)
+                assert pss.converged, \
+                    '%s/%d/x0_unknown=%s did not converge -- an EVEN point ' \
+                    'count failing here is the (-1)^n mode returning' \
+                    % (method, npts, flag)
+                X = np.asarray(res['tpss'].x, dtype=float)
+                closure = float(np.max(np.abs(X[:, -1] - X[:, 0])))
+                assert closure < 1e-8, \
+                    '%s/%d/x0_unknown=%s: the returned waveform does not ' \
+                    'close (%.3e)' % (method, npts, flag, closure)
+                v = np.asarray(res['tpss'].v('n2', gnd), dtype=float).ravel()
+                got[(method, npts, flag)] = 0.5 * (v.max() - v.min())
+
+    ## EULER IS THE CONTROL: its manufacturing step IS an Euler step, so the
+    ## two formulations describe the same map and must agree to the digit.
+    for npts in (100, 101, 200):
+        a, b = got[('euler', npts, False)], got[('euler', npts, True)]
+        assert abs(a - b) < 1e-9 * max(abs(a), 1.0), \
+            'euler at %d points gives %.6f without and %.6f with the flag; ' \
+            'these describe the same map and must agree' % (npts, a, b)
+
+    ## trapezoidal genuinely differs, and in the direction measured
+    assert got[('trap', 100, True)] < got[('trap', 100, False)], \
+        'the in-period Euler step no longer costs accuracy on a uniform ' \
+        'grid -- that cost is why this is an option and not the default'
+    assert abs(got[('trap', 200, True)] - 20.0) \
+        < abs(got[('trap', 100, True)] - 20.0), \
+        'the x0_unknown error does not shrink with refinement'
+
+    ## and the combination with nothing to change is refused, not ignored
+    with pytest.raises(NotImplementedError, match='nothing to change'):
+        PSS(cir, method='gear').solve(period=per, timestep=per / 100,
+                                      x0_unknown=True)

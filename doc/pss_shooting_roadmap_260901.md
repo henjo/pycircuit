@@ -212,7 +212,7 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
-## `x₀` as the unknown — designed, prototyped, measured, NOT shipped (2026-09-02)
+## `x₀` as the unknown — SHIPPED as `solve(x0_unknown=True)` (2026-09-02)
 
 The formulation change three findings point at: the plain path solves for `x_in`, the
 pre-image of a manufactured opening step, while its Jacobian is taken with respect to
@@ -261,10 +261,30 @@ the period degrades the **orbit**, not just the opening. Against the analytic 20
 diluted, and the *order* is preserved, but the constant is real.
 
 **So the trade-off is grid-dependent and both directions are measured:** a uniform grid
-on a benign circuit favours the shipped path; a non-uniform grid on a stiff one favours
-`x₀`, where quadratic convergence is what decides whether it converges at all. That is a
-decision about defaults, not a bug — which is why the driver exists and the change does
-not.
+on a benign circuit favours the default; a non-uniform grid on a stiff one favours `x₀`.
+Shipped as an **option**, `solve(x0_unknown=True)`, the same shape as `matrix_free`.
+`method='gear'` refuses it — a solved-history formulation already solves for `x₀` and
+`x₋₁` directly, so the flag would be a no-op, and a no-op flag the caller believes in is
+worse than an error.
+
+⚠ **The −47.3 ppm is NOT the formulation alone, and the first version of this entry said
+it was.** Measured on the *same* grid, the `x₀` formulation gives −73.8 subdivided and
+−47.3 raw. The gain comes from the formulation making the **opening-step subdivision
+unnecessary** — that subdivision exists only to protect a manufactured step taken from an
+iterate that may be far from the orbit, and it costs accuracy. With `x₀` the unknown the
+first step starts *on* the orbit and the raw grid is solvable. Two changes, one enabling
+the other; the confound was visible only by running both grids.
+
+⚠ **Two frame errors surfaced only end to end**, neither predicted by the prototype:
+- the **phase pin** was taken one step after the seed (`_x1[phase_k]`), right when `x_in`
+  is the unknown and wrong when `x₀` is. With a fine opening step the two nearly agree
+  and it hides; on van der Pol's grid (opening step 1.4845 against a median 4.6e-04) it
+  pinned a value the orbit need not attain and the solve died.
+- the **replay** dropped `X[0]`, correct when it is the pre-image and wrong when it is
+  `x(0)` — one column short of `times`.
+
+Both are the same shape as the bugs this campaign keeps finding: a quantity that is right
+in one frame carried into another.
 
 ## ⚠ The plain-path replay walked a shifted grid (fixed 2026-09-02)
 
