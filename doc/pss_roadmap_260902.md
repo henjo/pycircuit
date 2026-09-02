@@ -15,6 +15,10 @@ an hour's work each; two were killed after being built. Run the gate first.
 
 ## A. Capabilities — unbuilt, entry points known
 
+⚠ **These are not five independent choices.** A1 → A3 is a dependency chain (A3 consumes
+A1's `H_l`), A2 shares A1/A3's transposed replay, and A5 is gated on an unsettled question.
+The order that falls out is **A1 first**, because two other items sit on it.
+
 ### A1. PAC (periodic AC) — closest to hand
 
 **The operator already exists.** Telichevesky, Kundert & White (DAC 1996, pp.292-297)
@@ -101,7 +105,7 @@ for the `func_solved_history` cross-check (it matched PSS to 4.0e-13). Confirm `
 sign/transpose differences against p.192 before coding — the algebra was read off a page
 image and `pdftotext` drops it.
 
-### A3. pnoise — ⚠ UNBLOCKED 2026-09-02, the paper is on this machine
+### A3. pnoise — ⚠ UNBLOCKED 2026-09-02, and it sits ON TOP OF A1
 
 Needs the **adjoint** formulation: pnoise is many-to-one (hundreds of sources, one output),
 so a forward solve costs one solve *per source* and recycling does not help, because the
@@ -127,7 +131,65 @@ What Okumura 1993 *does* supply is the part we need: LPTV transfer functions **f
 shooting solution**, and cyclostationary sources with aliasing handled by accumulation
 under a ratio-test stopping rule.
 
-**Gate: open.** Start from Okumura's §III, not from the DAC'96 deferral.
+⚠ **A3 IS NOT A SIBLING OF A1, IT IS A CONSUMER OF IT. Corrected 2026-09-02** on a full
+read of the paper (docs session, `~/docs/pycircuit-pnoise-analysis.md`; the first pass had
+read only the abstract and the adjoint paragraph). `H_l(·)`, the Fourier coefficients of
+the LPTV transfer function, is an **input** to the noise calculation — and it is exactly
+what A1 computes. The paper's own structure is sequential: "*first*, a numerical
+calculation method for the time-varying transfer function … *next*, a noise analysis
+method is proposed for these circuits."
+
+    PSS  →  H_l  (A1 / PAC)  →  S_alias  (A3 / pnoise), adjoint used INSIDE A3
+                                                        because the sources are many
+
+So acquiring the reference did not open A3 for parallel work; it established that **PAC is
+a dependency, not a preference**. That is also why DAC'96 is titled "Efficient AC *and
+Noise* Analysis" — one recycled-Krylov solve serves both. With A1's operator now confirmed
+rather than rewritten, the order is **A1, then A3 on top of it**.
+
+⚠ **AND IT NEEDS NO NEW INPUTS — the paper says so explicitly**, and names the shooting
+route specifically: "the specific information required for noise calculation are `h_m`,
+`S_m`, and `H_l(·)` … for the Fourier components `H_l(·)`, they are directly obtained by
+the harmonic balance method, while they are **obtained via `J_m` and `C_m` matrices as
+by-products of the final transient analysis in the shooting method**."
+
+| input | what it is | where it already is |
+|---|---|---|
+| `h_m` | the timesteps | `hs` |
+| `S_m` | per-interval white noise density | `CY(x, w, epar)` across the element library; `analysis_ss.Noise` already consumes it |
+| `H_l` | LPTV transfer coefficients | "via `J_m` and `C_m`" — `Jtvec` / `Cvec` ⚠ *but see A1's gap 3: the factored traversals never write them* |
+
+⚠ **The cyclostationary model is one stationary source per timestep**, which is why it
+lands on the machinery we have rather than needing new machinery: `c(t) = Σ n_m(t) w_m(t)`
+with `n_m` stationary and `w_m` a T-periodic non-overlapping window — and "**the number of
+integration time points in one period is used for the number of discrete points**". The
+windows *are* the steps, each at its own bias-dependent density. That maps onto a **frozen
+grid with no adaptation**, which is what PSS has.
+
+⚠ **A stated validity condition, worth knowing before rather than after:** the
+modulated-white model holds because time samples "discretized by more than several tens of
+picoseconds can be regarded as uncorrelated". **Below ~tens of ps per step the premise
+fails**, and nothing in the formulation will say so.
+
+**Two properties to build the tests around, before any physics:**
+
+1. **The truncation bound is hard, not heuristic** (eq. 32): `N, L <= (w_max - w0)/ws` —
+   you cannot alias down from above the grid's own maximum representable frequency. The
+   abstract's "accumulated until their contributions become negligible" is a ratio test
+   operating *inside* that ceiling, **not instead of one**. An implementation carrying only
+   the ratio test is missing the bound that makes it terminate for the right reason.
+2. **It reduces to the stationary result at `p = 1`** (eq. 33): one window of width `T`
+   collapses the whole cyclostationary machinery to `S_alias(w0) = Σ_l |H_l(w0 - l ws)|²`,
+   which "is exactly the same as that derived for a stationary noise". **A free first unit
+   test** that exercises the `H_l` path without needing any cyclostationary modelling to be
+   correct yet.
+
+⚠ **Not read:** §IV–V (three worked examples) and the construction of the window Fourier
+coefficients `R_{m,n}`. Flagged rather than glossed — B5 is the entry where a §III reading
+was refuted by §V.
+
+**Gate: open, but sequenced.** Start from Okumura's §III, not from the DAC'96 deferral —
+**and not before A1 produces `H_l`.**
 
 ### A4. Warm start — ⚠ SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
 
