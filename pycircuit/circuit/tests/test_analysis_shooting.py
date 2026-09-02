@@ -4017,3 +4017,109 @@ def test_the_matvecs_take_a_complex_vector():
             '%s matvec is not exactly two real replays' % name
     assert not np.iscomplexobj(np.asarray(fp.matvec(vr))), \
         'the real path became complex; a real replay must stay real'
+
+
+def _adjoint_ladder(sections=8):
+    c = SubCircuit()
+    c.add_node('n0')
+    c['vs'] = VSin('n0', gnd, va=1.0, vac=1.0, freq=1e3)
+    for k in range(sections):
+        a, b = 'n%d' % k, 'n%d' % (k + 1)
+        c.add_node(b)
+        c['R%d' % k] = R(a, b, r=1e3)
+        c['C%d' % k] = C(b, gnd, c=1e-7)
+    return c
+
+
+def test_the_adjoint_row_is_m_forward_solves_in_one():
+    """⚠ THE MANY-TO-ONE IDENTITY, which is what makes pnoise affordable.
+
+    pnoise is hundreds of sources into one output. Forward, that is one
+    solve PER SOURCE, and recycling does not help because the right-hand
+    side is what changes. Okumura et al. (1993) reach for the adjoint for
+    exactly this reason -- "it is efficient to use the adjoint method …
+    because circuits have many noise sources" -- and
+
+        d^T y_0 = alpha ((I - alpha M)^-T d)^T W u
+
+    turns the whole row into ONE transposed solve plus a reverse replay.
+
+    ⚠ THE ASSERTION IS THE COUNT, NOT THE CLOCK. Measured speedup grows
+    linearly with `m` (7.0x / 16.9x / 40.0x at m = 6 / 14 / 32, agreement
+    ~1e-15), which is the right shape -- but this machine runs more than
+    one agent and a wall-clock ratio here would be measuring the neighbours.
+    So the test compares matvec counts, which no concurrent load can move.
+
+    ⚠ AND IT COSTS NO NEW MACHINERY. `_traverse_factored` already stores
+    every step's factorisation and every factorisation already solves
+    transposed, so the reverse pass needs no reverse integrator -- the
+    thing Demir & Roychowdhury call "often unavailable even in existing
+    time-domain simulators".
+    """
+    import warnings
+    import scipy.sparse.linalg as spla
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder()
+    per, f = 1e-3, 700.0
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 120, maxiterations=40)
+    assert pss.converged
+    fp = pss.factored_period()
+    n = fp.width
+    alpha = np.exp(-2j * np.pi * f * per)
+
+    pac = PAC(cir, toolkit=circuit.numeric)
+    row = pac.adjoint_transfer_row(pss, f, 1)
+    adjoint_matvecs = pac.matvecs
+
+    ## the forward route: one solve per source
+    d = np.zeros(n)
+    d[1] = 1.0
+    fwd = np.zeros(m, dtype=complex)
+    fwd_matvecs = [0]
+
+    def _mv(v):
+        fwd_matvecs[0] += 1
+        return np.asarray(v) - alpha * fp.matvec(v)
+
+    for i in range(m):
+        u = np.zeros(m)
+        u[i] = 1.0
+        w, _ = pss._forced_replay(fp, f, u)
+        A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
+        y0, info = spla.gmres(A, alpha * np.asarray(w), rtol=1e-13,
+                              restart=min(n, 50), maxiter=min(n, 200))
+        assert info == 0
+        fwd[i] = d @ y0
+
+    rel = np.linalg.norm(row - fwd) / np.linalg.norm(fwd)
+    assert rel < 1e-11, \
+        'the adjoint row disagrees with %d forward solves by %.3e -- one ' \
+        'of the two transposes is wrong, and the forward route is the one ' \
+        'with an independent reference behind it' % (m, rel)
+    assert adjoint_matvecs < fwd_matvecs[0], \
+        'the adjoint used %d matvecs against %d for the forward route at ' \
+        'm=%d; the whole point is that it does not scale with the number ' \
+        'of sources' % (adjoint_matvecs, fwd_matvecs[0], m)
+
+
+def test_the_adjoint_row_refuses_the_plain_path():
+    """It needs the reverse replay, which is Gear-2 only.
+
+    Refused in words rather than reaching for `alphas[2]` on a one-step
+    companion, which is what it used to do one frame deeper.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder(3)
+    per = 1e-3
+    pss = PSS(cir, method='trap', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 120, maxiterations=40)
+    assert pss.converged
+    with pytest.raises(NotImplementedError, match='solved-history'):
+        PAC(cir, toolkit=circuit.numeric).adjoint_transfer_row(pss, 700.0, 1)

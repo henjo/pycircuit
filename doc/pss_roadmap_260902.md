@@ -260,6 +260,22 @@ fails**, and nothing in the formulation will say so.
 coefficients `R_{m,n}`. Flagged rather than glossed — B5 is the entry where a §III reading
 was refuted by §V.
 
+⚠ **THE ADJOINT HALF IS BUILT 2026-09-02.** `PAC.adjoint_transfer_row(pss, freq, output)`
+returns every source's contribution to one output in **a single transposed solve**, against
+one solve *per source* forward. Measured on RC ladders: agreement **9.6e-16** with the `m`
+forward solves, and the speedup grows linearly with `m` — 7.0x / 16.9x / 40.0x at
+m = 6 / 14 / 32 — which is the shape the identity predicts, since forward is O(m) solves and
+this is O(1). Gear-2 only; the reverse replay is.
+
+⚠ **WHAT IS STILL MISSING, stated so the next reader does not over-read the above.** The
+output here is the state at `t = 0` — one linear functional. A **sideband** coefficient
+`H_l` is a functional *distributed over the period*, `(1/N) Σ_n e^{-j l ω₀ t_n} d^T y_n`,
+whose adjoint needs the reverse pass to take an injection at **every step** rather than a
+seed at the end. That is the next piece. After it: the cyclostationary window model (one
+stationary source per timestep), `CY` collection across the element library, and the
+aliasing accumulation with **both** its stopping rules — the ratio test *and* the hard
+`N, L <= (w_max - w0)/ws` bound it operates inside.
+
 **Gate: open, and A1 is built** (2026-09-02), so `H_l` is available. Start from Okumura's
 §III, not from the DAC'96 deferral. ⚠ The `p = 1` reduction is the first thing to write:
 it exercises the `H_l` path against the stationary formula before any cyclostationary

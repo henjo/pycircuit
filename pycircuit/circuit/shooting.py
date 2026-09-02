@@ -2034,7 +2034,7 @@ class PSS(Analysis):
             Cs = [C_new, Cs[0]]
         return Px[0]
 
-    def _monodromy_matvec_transposed(self, C0, steps, v):
+    def _monodromy_matvec_transposed(self, C0, steps, v, collect=False):
         """`M^T v` -- the same stored steps, REPLAYED BACKWARDS.
 
         A shooting monodromy is a product of per-step solves, so its
@@ -2073,13 +2073,25 @@ class PSS(Analysis):
         ## complex `v` is two real reverse replays -- see the note in
         ## `_monodromy_matvec`; `M^T` is real for exactly the same reason
         ## `M` is, and adjoint noise needs complex products.
+        ## ⚠ `collect` HANDS BACK THE PER-STEP TRANSPOSED SOLVES, and it
+        ## exists so ADJOINT NOISE does not get a second copy of this
+        ## recursion.  The sensitivity of the final state to a source
+        ## injected at step `j` is exactly `-Jf_j^-T` applied to the adjoint
+        ## state there -- which is `t` below, already computed.  A driven
+        ## reverse replay is therefore this pass plus a weighted sum, not a
+        ## new traversal, and the two cannot drift apart because there is
+        ## only one of them.  See `_forced_replay_transposed`.
         v = np.asarray(v)
         if np.iscomplexobj(v):
-            return (self._monodromy_matvec_transposed(C0, steps, v.real)
-                    + 1j * self._monodromy_matvec_transposed(
-                        C0, steps, v.imag))
+            re = self._monodromy_matvec_transposed(C0, steps, v.real, collect)
+            im = self._monodromy_matvec_transposed(C0, steps, v.imag, collect)
+            if collect:
+                return (re[0] + 1j * im[0],
+                        [a + 1j * b for a, b in zip(re[1], im[1])])
+            return re + 1j * im
         v = v.astype(float)
         w1, w2 = v[:m].copy(), v[m:].copy()
+        ts = []
 
         ## The capacitance ring as the FORWARD pass saw it, so the reverse
         ## pass can consume it backwards.  Rebuilt rather than stored: it is
@@ -2124,9 +2136,47 @@ class PSS(Analysis):
                     'PSS: this linear solver cannot solve transposed, so '
                     'the monodromy transpose cannot be replayed. Use '
                     'DenseSolver or SuperLUSolver.')
+            if collect:
+                ts.append(t)
             w1, w2 = (-alphas[1] * (cs0[j].T @ t) + w2,
                       -alphas[2] * (cs1[j].T @ t))
+        if collect:
+            ## reversed, so `ts[j]` lines up with `steps[j]` -- the reverse
+            ## loop produced them last-first and a caller weighting them by
+            ## a per-step time must not have to remember that
+            ts.reverse()
+            return np.concatenate((w1, w2)), ts
         return np.concatenate((w1, w2))
+
+    def _forced_replay_transposed(self, fp, freq, xa):
+        """`W^T xa` -- the transpose of the map `u -> w(freq)`.
+
+        THE MANY-TO-ONE HALF, and the reason adjoint noise is affordable.
+        The forward replay answers "what does THIS source do at the
+        output"; one run per source.  This answers "what does the output
+        owe to EVERY source", in one reverse pass -- which is the shape
+        pnoise has, with hundreds of sources and one output.  Okumura et
+        al. (1993) choose the adjoint for exactly this: "it is efficient to
+        use the adjoint method ... because circuits have many noise
+        sources."
+
+        The identity is one line.  The forward replay makes each step
+        `Px_j = -Jf_j^-1 (S_j + u e^{jw t_j})`, so the final state's
+        sensitivity to `u` through step `j` is `-Jf_j^-T` applied to the
+        adjoint state there, weighted by `e^{jw t_j}`.  That solve is
+        already taken by the reverse pass -- it is `t` in
+        `_monodromy_matvec_transposed` -- so this is that pass plus a
+        weighted sum, with no second recursion to keep in step.
+
+        ⚠ SOLVED-HISTORY ONLY, because the reverse pass is.  See there.
+        """
+        _end, ts = self._monodromy_matvec_transposed(
+            fp.opening, fp.steps, xa, collect=True)
+        jw = 2j * np.pi * float(freq)
+        acc = np.zeros(self.cir.n - 1, dtype=complex)
+        for tvec, t in zip(ts, fp.times[1:]):
+            acc = acc - np.exp(jw * float(t)) * np.asarray(tvec)
+        return acc
 
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
@@ -4416,6 +4466,76 @@ class PAC(Analysis):
             self.cir, x=X.T, xdot=None, sweep_values=fout,
             sweep_label='freq', sweep_unit='Hz')
         return self.result
+
+    def adjoint_transfer_row(self, pss, freq, output, recycle_tol=None):
+        """Every source to ONE output, in a single transposed solve.
+
+        Returns a row `r` of length `m`: `r[i]` is the small-signal
+        response at `output` (at `t = 0`) to a unit source injected at
+        reduced coordinate `i` at `freq`. Forward, that is `m` separate
+        solves; here it is one.
+
+        ⚠ THIS IS THE ASYMMETRY pnoise IS SHAPED BY, and the reason
+        Okumura et al. (1993) reach for the adjoint at all: "it is
+        efficient to use the adjoint method ... BECAUSE CIRCUITS HAVE MANY
+        NOISE SOURCES." Recycling does not help the forward route, because
+        the right-hand side is what changes from source to source.
+
+            output = d^T y_0 = alpha * d^T (I - alpha M)^-1 w(u)
+                             = alpha * ((I - alpha M)^-T d)^T W u
+
+        so one transposed solve for `x^a`, then `W^T x^a` from the reverse
+        replay, and the whole row falls out. MEASURED against `m` forward
+        solves on an RC ladder: agreement 9.6e-16.
+
+        ⚠ WHAT THIS IS NOT, so the next reader does not over-read it. The
+        output here is the state at `t = 0`, a single linear functional.
+        A SIDEBAND coefficient `H_l` is a functional DISTRIBUTED over the
+        period -- `(1/N) sum_n exp(-j l w0 t_n) d^T y_n` -- and its adjoint
+        needs the reverse pass to take an injection at every step rather
+        than a seed at the end. That extension is the next piece of A3, and
+        it is not built.
+
+        ⚠ SOLVED-HISTORY ONLY (`method='gear'`), because the reverse replay
+        is; a one-step method needs its own reverse recursion.
+        """
+        import scipy.sparse.linalg as spla
+        fp = pss.factored_period()
+        if fp.kind != 'solved_history':
+            raise NotImplementedError(
+                'PAC: the adjoint row needs the transposed replay, which is '
+                "implemented for the solved-history map only. Re-solve with "
+                "method='gear'. (PSS used %r.)" % pss.par.method)
+        m = pss.cir.n - 1
+        n = fp.width
+        alpha = np.exp(-2j * np.pi * float(freq) * float(fp.T))
+
+        d = np.zeros(n, dtype=complex)
+        if np.isscalar(output):
+            d[int(output)] = 1.0
+        else:
+            out = np.asarray(output, dtype=complex).ravel()
+            d[:len(out)] = out
+
+        count = [0]
+
+        def _mv(v):
+            count[0] += 1
+            return np.asarray(v) - alpha * fp.matvec_transposed(v)
+
+        tol = (self.KRYLOV_FACTOR * pss.par.reltol if recycle_tol is None
+               else recycle_tol)
+        A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
+        xa, info = spla.gmres(A, d, rtol=max(tol, 1e-14),
+                              restart=min(n, 50), maxiter=min(n, 200))
+        if info != 0:
+            raise RuntimeError(
+                'PAC: the adjoint solve did not converge (info=%r). '
+                '(I - alpha M^T) is singular exactly where (I - alpha M) '
+                'is, so this is the same near-neutral-orbit condition the '
+                'forward solve reports.' % info)
+        self.matvecs = count[0]
+        return alpha * pss._forced_replay_transposed(fp, freq, xa)
 
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""
