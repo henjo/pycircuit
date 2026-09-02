@@ -212,6 +212,60 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## `x₀` as the unknown — designed, prototyped, measured, NOT shipped (2026-09-02)
+
+The formulation change three findings point at: the plain path solves for `x_in`, the
+pre-image of a manufactured opening step, while its Jacobian is taken with respect to
+`x₀`. See `benchmarks/pss_x0_unknown.py`.
+
+⚠ **The obvious version is the FOURTH design to die on the `(−1)ⁿ` mode — and this time
+it was predicted, not discovered.** Dropping the manufacturing step removes the L-stable
+opener, so trapezoidal's period map becomes `A_trap^K`, which the L-stability theorem
+says is singular at even K. Measured on the model problem *before any shooting code was
+written* — `sigma_min(I − A^K)`:
+
+| circuit | variant | K=100 (even) | K=101 (odd) | K=200 (even) |
+|---|---|---|---|---|
+| Q=20 | trap bare | **0.0** | 6.18e-03 | **0.0** |
+| Q=20 | euler bare | 6.31e-03 | 6.32e-03 | 7.33e-03 |
+| Q=20 | trap **E-open** | 6.04e-03 | 6.10e-03 | 9.84e-03 |
+| RC | trap bare | **0.0** | 9.99e-01 | **0.0** |
+| RC | trap **E-open** | 9.99e-01 | 9.99e-01 | 9.99e-01 |
+
+Ten lines of linear algebra, not a build. **This is what the standing "measure before
+building" warning is for, and it paid.**
+
+**The design that survives** keeps one L-stable step and moves it *inside* the period:
+unknown `x₀`, no manufacturing step, first step order-dropped to Euler — which
+`_begin_period` already arranges. Period map `A_trap^{K−1} A_euler`, non-singular at
+every K.
+
+**What it buys:**
+- **Quadratic convergence**, at even and odd point counts alike: 2.9e+00 → 9.1e-08 →
+  1.1e-14 in two iterations on the Q=20 resonator.
+- **Van der Pol, item 5's payoff case: −47.3 ppm** in four iterations against the shipped
+  path's **−73.8 ppm**. That −47.3 is exactly what the throwaway driver in
+  `pss_lte_grid.py` reached — and for the same reason: its unknown was `x₀`.
+- **Euler is unchanged to the digit** (8.83917 / 12.28401), the control — euler's
+  manufacturing step *is* an Euler step, so the two maps coincide.
+
+⚠ **What it costs, and why it is not shipped on a hunch.** Moving the Euler step inside
+the period degrades the **orbit**, not just the opening. Against the analytic 20 V:
+
+| npts | shipped (`x_in`) | `x₀` formulation |
+|---|---|---|
+| 100 | 20.01273 | 19.76939 |
+| 200 | 20.02208 | 19.96123 |
+
+18× worse at 100 points, 1.8× at 200 — the gap closes as the single first-order step is
+diluted, and the *order* is preserved, but the constant is real.
+
+**So the trade-off is grid-dependent and both directions are measured:** a uniform grid
+on a benign circuit favours the shipped path; a non-uniform grid on a stiff one favours
+`x₀`, where quadratic convergence is what decides whether it converges at all. That is a
+decision about defaults, not a bug — which is why the driver exists and the change does
+not.
+
 ## ⚠ The plain-path replay walked a shifted grid (fixed 2026-09-02)
 
 The two traversals pair `(t, h)` differently: `_traverse_solved_history` walks
