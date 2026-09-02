@@ -2178,6 +2178,14 @@ class PSS(Analysis):
             return np.concatenate((w1, w2)), ts, states
         return np.concatenate((w1, w2))
 
+    ## How many deflated power iterations estimate the second multiplier.
+    ## Convergence is at |lambda_3|/|lambda_2|, which is fast in the case
+    ## that matters -- a lone slow node leaves everything below it tiny.
+    PPV_DEFLATION_ITERS = 30
+    ## Above this, the bordered extraction is losing digits AND the phase
+    ## equation's instantaneous-response assumption is in doubt.
+    PPV_SECOND_MULTIPLIER_WARN = 0.9
+
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
 
@@ -2214,6 +2222,33 @@ class PSS(Analysis):
         border absorbed a residual the null space should have taken -- the
         computed `v` is not in the null space.  Measured on van der Pol:
         1.4e-11.
+
+        ⚠ ITS VALIDITY BOUNDARY IS SLOW NODES, AND THE VAN DER POL GATE
+        CANNOT SEE IT.  The phase equation `alpha' = v_1^T(t+alpha) b(t)`
+        treats the oscillator's frequency response as INSTANTANEOUS; the
+        truth is a convolution, and the PPV form is what you get by
+        assuming the kernel is `v_1(t) delta(t - tau)`.  Real circuits have
+        finite bandwidth, so a slow node FILTERS the noise of devices near
+        it, the PPV cannot see the filtering, and phase noise is
+        OVER-ESTIMATED.  Lai (Cadence) is explicit that better extraction
+        does not help: "although the PPV can be extracted correctly, the
+        oscillator noise analysis is still inaccurate: the phase noise is
+        always over-estimated."
+
+        ⚠ AND HE NAMES THIS TEST'S OWN REGIME AS THE BLIND SPOT: "the
+        phase equation was verified to be correct in many previous works
+        ... because it was evaluated on SMALL, SIMPLE OSCILLATORS, and
+        perturbations were applied to OSCILLATOR CORES.  Since oscillator
+        cores have very wide bandwidth, ignoring the dynamics may not
+        compromise the macromodelling accuracy very much."  That is
+        `test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has`
+        exactly -- van der Pol, perturbed at its core.  It passes whether
+        or not this failure mode is present, so it establishes that the
+        extraction and normalisation are right and says NOTHING about the
+        model's range.  The fix is a frequency-aware PPV, which is this
+        same bordered system at nonzero `w_s` -- the classical PPV is its
+        DC point, and `PAC` already solves at nonzero frequency.  Not
+        built.  (Cited from the docs session, not verified here.)
 
         ⚠ `q` IS EXACT, NOT DIFFERENCED.  `q = C(0) xdot(0)` looks like it
         needs the orbit's tangent, and differencing the waveform for it
@@ -2337,9 +2372,59 @@ class PSS(Analysis):
         ## answer -- it was being discarded.
         _end, _ts, states = self._monodromy_matvec_transposed(
             fp.opening, fp.steps, v, collect=True)
+        ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
+        ## the residuals above can see it.  The border removes the PHASE
+        ## mode's singularity and does nothing about any OTHER root
+        ## approaching the unit circle -- which a slow node puts there.
+        ## MEASURED on van der Pol with one weakly coupled RC node:
+        ##
+        ##     tau/T    |lambda_2|    sigma_min(bordered)   null residual
+        ##     none      0.000856          8.62e-01            4.1e-11
+        ##     1e2       0.990049          4.49e-03            4.6e-11
+        ##     1e4       0.999900          4.47e-05            4.6e-11
+        ##     1e6       0.999999          4.47e-07            4.4e-11
+        ##
+        ## `sigma_min` tracks `T/tau` over six decades while the residual
+        ## does not move at all: GMRES converges, the answer looks clean,
+        ## and the conditioning has lost six digits.  So this estimates
+        ## `|lambda_2|` explicitly rather than trusting a small residual.
+        ##
+        ## Deflated power iteration, using the eigenvectors already in
+        ## hand: `u` spans the unit mode and `v` is its left partner, so
+        ## `w -> M w - (v.Mw / v.u) u` removes it exactly.
+        vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
+        lam2 = 0.0
+        if abs(vu) > 1e-300:
+            rng = np.random.default_rng(12345)
+            w = rng.standard_normal(n)
+            for _k in range(self.PPV_DEFLATION_ITERS):
+                w = w - (float(v @ w) / vu) * u
+                nw = float(np.linalg.norm(w))
+                if nw < 1e-300:
+                    break
+                w = w / nw
+                Mw = np.asarray(self._monodromy_matvec(
+                    fp.opening, fp.steps, w))
+                lam2 = float(np.linalg.norm(Mw))
+                w = Mw
+        if lam2 > self.PPV_SECOND_MULTIPLIER_WARN:
+            warnings.warn(
+                'PSS.ppv: a SECOND Floquet multiplier sits at %.6f, near '
+                'the unit circle. The bordered extraction removes only the '
+                'phase mode, so its conditioning degrades as that root '
+                'approaches 1 -- measured losing six digits over six '
+                'decades of time constant while every residual stayed at '
+                '1e-11. ⚠ AND THE PHASE EQUATION ITSELF IS THE DEEPER '
+                'ISSUE: it treats the frequency response as instantaneous, '
+                'so slow nodes that FILTER a device\'s noise are not seen '
+                'and phase noise is OVER-ESTIMATED. Neither a smaller '
+                'tolerance nor a better extraction fixes that; it needs a '
+                'frequency-aware PPV. Treat this result as an upper bound.'
+                % lam2, RuntimeWarning, stacklevel=2)
         info = {'border_residual': y,
                 'tangent_border_residual': yf,
                 'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
+                'second_multiplier': lam2,
                 'q': q, 'xdot': xdot,
                 'samples': np.asarray(states),
                 'times': np.asarray(fp.times, dtype=float)}
@@ -4657,6 +4742,9 @@ class PAC(Analysis):
                 % pss.par.method,
                 RuntimeWarning, stacklevel=2)
 
+        for f in freqs:
+            self._check_harmonic(pss, f, 'a sweep point')
+
         rhs = []
         for f in freqs:
             w, _ = pss._forced_replay(fp, f, u_ac)
@@ -4733,6 +4821,7 @@ class PAC(Analysis):
                 'PAC: the adjoint row needs the transposed replay, which is '
                 "implemented for the solved-history map only. Re-solve with "
                 "method='gear'. (PSS used %r.)" % pss.par.method)
+        self._check_harmonic(pss, freq, 'the adjoint row')
         m = pss.cir.n - 1
         n = fp.width
         alpha = np.exp(-2j * np.pi * float(freq) * float(fp.T))
@@ -4805,6 +4894,7 @@ class PAC(Analysis):
                 "is implemented for the solved-history map only. Re-solve "
                 "with method='gear'. (PSS used %r.)" % pss.par.method)
 
+        self._check_harmonic(pss, freq, 'the sideband row')
         m = pss.cir.n - 1
         n = fp.width
         T = float(fp.T)
@@ -5100,6 +5190,50 @@ class PAC(Analysis):
                     'section III-B has the construction; it is not built.'
                     % drift)
         return mats[0]
+
+    ## How close to a harmonic of `f0` counts as "on" it, as a fraction of
+    ## `f0`.  `sigma_min` falls LINEARLY with the distance, so this is also
+    ## roughly the conditioning floor being accepted.
+    HARMONIC_GUARD = 1e-6
+
+    def _check_harmonic(self, pss, freq, what):
+        """Refuse an autonomous small-signal solve sitting on a harmonic.
+
+        ⚠ `I - exp(-j w T) M` IS SINGULAR AT EVERY HARMONIC OF `f0`, NOT
+        JUST AT DC, AND ONLY FOR AN OSCILLATOR.  At `w = k w0` the factor
+        `exp(-j w T)` is 1 and the operator is `I - M`, which an autonomous
+        circuit's unit multiplier makes singular.  MEASURED on van der Pol,
+        `sigma_min(I - exp(-jwT) M)`:
+
+            offset/f0    0     0.25    0.5    0.75    1      2      3
+            sigma_min   2.8e-11 0.51   0.65   0.51  2.8e-11 2.8e-11 2.8e-11
+
+        and LINEAR in the distance to the nearest one -- 2.5e-1, 2.6e-2,
+        2.6e-3, 2.6e-4 at 0.9, 0.99, 0.999, 0.9999 of the way there.  The
+        same sweep on a DRIVEN ladder never drops below 0.78: no unit
+        multiplier, no singularity, harmonics included.
+
+        ⚠ AND IT IS PHYSICS, NOT CONDITIONING.  A perturbation at a
+        harmonic is a perturbation along the orbit, and an oscillator's
+        response to that is unbounded phase drift -- there is no bounded
+        periodic answer to return.  So this refuses rather than tightening
+        a tolerance, and says which quantity to ask for instead.
+        """
+        if not getattr(pss, 'autonomous', False):
+            return
+        f0 = 1.0 / float(pss.factored_period().T)
+        r = abs(float(freq)) / f0
+        d = abs(r - round(r))
+        if d <= self.HARMONIC_GUARD:
+            raise ValueError(
+                'PAC: %s at %.6g Hz is on harmonic %d of this OSCILLATOR\'s '
+                'own frequency (%.6g Hz), where I - exp(-j w T) M is '
+                'singular -- the unit Floquet multiplier makes it exactly '
+                'I - M there. That is physics, not conditioning: a '
+                'perturbation along the orbit produces unbounded phase '
+                'drift, so there is no bounded periodic response to '
+                'return. Ask off-harmonic, or ask for the phase quantity '
+                'instead (PSS.ppv()).' % (what, float(freq), round(r), f0))
 
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""

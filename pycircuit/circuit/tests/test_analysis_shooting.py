@@ -4871,3 +4871,205 @@ def test_the_coloured_noise_functional_is_exactly_zero_here(mu):
         'the PPV or the averaging is wrong' \
         % (np.array2string(mean, precision=4),
            np.array2string(ratio, precision=4))
+
+
+def _vdp_with_slow_node(tau_over_T=None, T=6.6634, mu=1.0):
+    """van der Pol, optionally with one weakly coupled slow RC node.
+
+    The coupling resistor is large, so the node barely loads the orbit —
+    what it adds is a Floquet multiplier at `exp(-T/tau)`, which is the
+    only thing under test.
+    """
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    if tau_over_T is not None:
+        c.add_node('w')
+        rbig = 1e6
+        c['Rs'] = R('v', 'w', r=rbig)
+        c['Cs'] = C('w', gnd, c=tau_over_T * T / rbig)
+    return c
+
+
+def _solve_slow(tau_over_T):
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _vdp_with_slow_node(tau_over_T)
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.6634, timestep=6.6634 / 300, x0=x0,
+                  maxiterations=60)
+    assert pss.converged, 'tau/T=%r did not converge' % (tau_over_T,)
+    return cir, pss
+
+
+def test_a_slow_node_degrades_the_ppv_border_silently():
+    """⚠ THE BORDER FIXES THE PHASE MODE AND NOTHING ELSE.
+
+    `ppv()`'s bordered solve removes the singularity the UNIT multiplier
+    causes. A second multiplier approaching 1 — which one slow node puts
+    there — is untouched, and the conditioning goes with it. Measured on
+    van der Pol with one weakly coupled RC node:
+
+        tau/T   |lambda_2|   sigma_min(bordered)   null residual
+        none     0.000856         8.62e-01            4.1e-11
+        1e2      0.990049         4.49e-03            4.6e-11
+        1e4      0.999900         4.47e-05            4.6e-11
+        1e6      0.999999         4.47e-07            4.4e-11
+
+    ⚠ `sigma_min` tracks `T/tau` over six decades WHILE THE RESIDUAL DOES
+    NOT MOVE. GMRES converges, every diagnostic reads clean, and six
+    digits of conditioning are gone. That is why `ppv()` estimates
+    `|lambda_2|` explicitly instead of trusting a small residual — a
+    residual cannot see this, and neither could this test if it only
+    checked residuals.
+    """
+    smins, lam2s = [], []
+    for tt in (1e2, 1e4):
+        cir, pss = _solve_slow(tt)
+        m = cir.n - 1
+        fp = pss.factored_period()
+        n = fp.width
+        M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _v, info = pss.ppv()
+        q = info['q']
+        qp = np.concatenate((q, np.zeros(n - m)))
+        A = np.zeros((n + 1, n + 1))
+        A[:n, :n] = np.eye(n) - M.T
+        A[:n, n] = qp
+        A[n, :n] = qp
+        smins.append(np.linalg.svd(A, compute_uv=False)[-1])
+        lam2s.append(info['second_multiplier'])
+        assert info['null_residual'] < 1e-7, \
+            'the residual should stay clean -- that is the whole point'
+
+    assert lam2s[0] > 0.98 and lam2s[1] > 0.999, \
+        'the slow node did not produce a near-unit multiplier (%s), so ' \
+        'nothing is being tested' % lam2s
+    decay = smins[0] / smins[1]
+    assert 30 < decay < 300, \
+        'sigma_min of the bordered system fell %.1fx for 100x the time ' \
+        'constant (%.3e -> %.3e); the degradation is supposed to track ' \
+        'T/tau' % (decay, smins[0], smins[1])
+
+
+def test_the_ppv_says_when_a_second_multiplier_is_near_one():
+    """The detector, because no residual can report this.
+
+    Deflated power iteration against the eigenvectors `ppv()` already has:
+    `u` spans the unit mode and `v` is its left partner, so the projection
+    removes it exactly and what is left converges to `|lambda_2|`.
+    Recovered to six digits against a dense eigendecomposition.
+
+    ⚠ THE WARNING IS ABOUT MORE THAN CONDITIONING. The phase equation
+    treats the oscillator's frequency response as INSTANTANEOUS, so a slow
+    node that filters a nearby device's noise is invisible to it and phase
+    noise comes out OVER-ESTIMATED. Better extraction does not fix that —
+    Lai (Cadence) is explicit that the PPV "can be extracted correctly"
+    and the analysis is "still inaccurate". So the result is an upper
+    bound, and the warning says so rather than implying a tolerance would
+    help.
+    """
+    import warnings
+    for tt, expect in ((None, False), (1e0, False), (1e2, True)):
+        cir, pss = _solve_slow(tt)
+        fp = pss.factored_period()
+        n = fp.width
+        M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        true2 = np.sort(np.abs(np.linalg.eigvals(M)))[::-1][1]
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter('always')
+            _v, info = pss.ppv()
+        got = info['second_multiplier']
+        assert abs(got - true2) < 1e-4 * max(true2, 1e-3), \
+            'the deflated power iteration reports |lambda_2| = %.6f ' \
+            'against %.6f from a dense eigendecomposition' % (got, true2)
+        fired = any('SECOND Floquet multiplier' in str(w.message)
+                    for w in rec)
+        assert fired is expect, \
+            'tau/T=%r: |lambda_2| = %.6f and warned=%s' % (tt, got, fired)
+
+
+def test_the_pac_operator_is_singular_at_every_harmonic_of_an_oscillator():
+    """⚠ AT DC *AND* AT EVERY HARMONIC, AND ONLY FOR AN OSCILLATOR.
+
+    `I - exp(-j w T) M` is what PAC solves. At `w = k w0` the factor is 1
+    and the operator is `I - M`, which an autonomous circuit's unit
+    multiplier makes singular. Measured on van der Pol:
+
+        offset/f0    0      0.25   0.5    0.75    1       2       3
+        sigma_min  2.8e-11  0.51   0.65   0.51  2.8e-11 2.8e-11 2.8e-11
+
+    and LINEAR in the distance to the nearest harmonic — 2.5e-1, 2.6e-2,
+    2.6e-3, 2.6e-4 at 0.9, 0.99, 0.999, 0.9999 of the way. The same sweep
+    on a DRIVEN ladder never drops below 0.78.
+
+    ⚠ IT IS PHYSICS, NOT CONDITIONING, which is why PAC refuses rather
+    than tightening a tolerance: a perturbation at a harmonic is a
+    perturbation ALONG the orbit, and an oscillator answers that with
+    unbounded phase drift. There is no bounded periodic response to
+    return, so a number there would be a wrong answer rather than an
+    imprecise one.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    _cir, pss = _solve_slow(None)                 # van der Pol, autonomous
+    fp = pss.factored_period()
+    n = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+
+    def smin(ratio):
+        a = np.exp(-2j * np.pi * ratio)
+        return np.linalg.svd(np.eye(n) - a * M, compute_uv=False)[-1]
+
+    for k in (0.0, 1.0, 2.0, 3.0):
+        assert smin(k) < 1e-7, \
+            'harmonic %g is not singular (%.3e); the unit multiplier has ' \
+            'gone and so has the oscillator' % (k, smin(k))
+    for r in (0.25, 0.5, 0.75):
+        assert smin(r) > 0.1, \
+            'offset %g is singular too (%.3e), so the singularity is not ' \
+            'specific to the harmonics' % (r, smin(r))
+    ## linear approach, not quadratic and not a cliff
+    near = [smin(1.0 - d) for d in (1e-2, 1e-3, 1e-4)]
+    for a, b in zip(near, near[1:]):
+        assert 5 < a / b < 20, \
+            'sigma_min falls %.1fx per decade of distance to the harmonic ' \
+            '(%.3e -> %.3e), not the linear 10x' % (a / b, a, b)
+
+    ## and PAC refuses there rather than returning something
+    pac = PAC(pss.cir, toolkit=circuit.numeric)
+    f0 = 1.0 / pss.period
+    with pytest.raises(ValueError, match='harmonic'):
+        pac.adjoint_sideband_row(pss, f0, 0, 0)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pac.adjoint_sideband_row(pss, 0.37 * f0, 0, 0)   # off-harmonic: fine
+
+    ## a DRIVEN circuit has no such structure and is not refused
+    cir2 = _adjoint_ladder(3)
+    pss2 = PSS(cir2, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    fp2 = pss2.factored_period()
+    n2 = fp2.width
+    M2 = np.column_stack([fp2.matvec(e) for e in np.eye(n2)])
+    for k in (0.0, 1.0, 2.0):
+        s2 = np.linalg.svd(np.eye(n2) - np.exp(-2j * np.pi * k) * M2,
+                           compute_uv=False)[-1]
+        assert s2 > 1e-3, \
+            'a DRIVEN circuit is singular at harmonic %g (%.3e)' % (k, s2)
+    PAC(cir2, toolkit=circuit.numeric).adjoint_sideband_row(
+        pss2, 1.0 / pss2.period, 1, 0)             # not refused

@@ -196,6 +196,12 @@ that touches the monodromy, the adjoint or the border:
 The fitted scale converges to **1** — not to some other constant a direction-only test would
 have accepted — and the residual falls at O(h).
 
+⚠ **THE NORMALISATION NOW HAS AN INDEPENDENT STATEMENT FROM THE EQUATION, and it agrees.**
+Lai, Zhu & Feng (IMS 2009) give the scaling condition as `⟨Ω₂Q, V₁⟩ = 1`, and `Ω₂Q` is
+`dq/dt₂ = C·u₁` — so it is literally `V₁ᵀ C u₁ = 1`. Our bordered solve returns what behaves
+as `Cᵀv₁`, so `v·ẋ = 1` **is** that condition. The physical experiment and the equation reach
+the same place by different routes.
+
 ⚠ **AND THE TRANSCRIBED NORMALISATION IS A 7% ERROR HERE.** Demir's Remark 3.1 reads
 `v₁ᵀ C(0) u₁(0) = 1`, and bordering with `q` makes `v·q = 1` fall out for free. But the
 vector this bordered solve returns behaves as `Cᵀv₁` — it contracts with a **state**
@@ -207,6 +213,69 @@ phase-noise number downstream.
 as `vᵀCδ` gives residuals **0.36 / 0.40 / 0.42 that GROW under refinement**, with
 per-direction ratios scattering from −0.44 to 28.7. `v·δ` converges at O(h). Do not change it
 back without re-running that experiment.
+
+⚠ **AND THE GATE ABOVE IS BLIND TO THE MODEL'S OWN VALIDITY BOUNDARY — measured 2026-09-02.**
+The phase equation `α' = v₁ᵀ(t+α) b(t)` treats the oscillator's frequency response as
+**instantaneous**; the truth is a convolution, and the PPV form assumes the kernel is
+`v₁(t)δ(t−τ)`. Real circuits have finite bandwidth, so a **slow node filters the noise of
+devices near it**, the PPV cannot see the filtering, and phase noise comes out
+**over-estimated**. Lai (Cadence) is explicit that better extraction does not help: "although
+the PPV can be extracted correctly, the oscillator noise analysis is still inaccurate: the
+phase noise is always over-estimated."
+
+⚠ **He names this branch's own gate as the blind spot:** the phase equation "was verified to
+be correct in many previous works … because it was evaluated on SMALL, SIMPLE OSCILLATORS,
+and perturbations were applied to OSCILLATOR CORES." That is van der Pol perturbed at its
+core — exactly the gate above. It passes whether or not the failure is present, so it
+establishes that the extraction and normalisation are right and says **nothing about the
+model's range**.
+
+⚠ **THE EXTRACTION DEGRADES TOO, AND SILENTLY — reproduced here on our own code**, matching a
+relayed synthetic result to three digits. The border removes the *phase* mode and nothing
+else, so a second multiplier approaching 1 takes the conditioning with it:
+
+| τ/T | \|λ₂\| | σ_min(bordered) | null residual |
+|---|---|---|---|
+| none | 0.000856 | 8.62e-01 | 4.1e-11 |
+| 1e2 | 0.990049 | 4.49e-03 | 4.6e-11 |
+| 1e4 | 0.999900 | 4.47e-05 | 4.6e-11 |
+| 1e6 | 0.999999 | 4.47e-07 | 4.4e-11 |
+
+`σ_min` tracks `T/τ` over six decades **while the residual does not move**. So `ppv()` now
+estimates `|λ₂|` by deflated power iteration (recovered to six digits) and **warns**, saying
+the result is an upper bound — because no residual can report this.
+
+**The fix is a frequency-aware PPV, and it is A1's operator.** FW-PPV is this same bordered
+system at nonzero `ω_s`: "if we make the small frequency `ω_s = 0`, it is the augmented PPV
+extraction equation … the previous PPV extraction methods give us the transfer function at
+`ω_s = 0`." **The classical PPV is the DC point of a PAC-like solve.**
+
+⚠ **BUT THE GAIN IS MODEST AND THE RULE IS NOT "DISTANCE FROM DC" — measured here.**
+`I − e^{−jωT}M` is singular at **every harmonic of `f₀`**, not only at DC, and only for an
+oscillator:
+
+| offset/f₀ | 0 | 0.25 | 0.5 | 0.75 | 1 | 2 | 3 |
+|---|---|---|---|---|---|---|---|
+| autonomous | **2.8e-11** | 0.51 | 0.65 | 0.51 | **2.8e-11** | **2.8e-11** | **2.8e-11** |
+| driven | 0.79 | — | 0.92 | — | 0.79 | 0.79 | — |
+
+`σ_min` falls **linearly with the distance to the nearest harmonic** (2.5e-1 / 2.6e-2 /
+2.6e-3 / 2.6e-4 at 0.9 / 0.99 / 0.999 / 0.9999 of the way). So FW-PPV's advantage is bounded
+by `min(T/τ, distance-to-nearest-harmonic)` and is **roughly 1–3 orders in the regime of
+interest** — an earlier relayed figure of "nine orders" was withdrawn by its author as a
+misreading of their own table.
+
+**PAC now refuses an autonomous solve on a harmonic** rather than discovering it when GMRES
+fails — it is physics, not conditioning: a perturbation at a harmonic is a perturbation
+*along* the orbit, answered with unbounded phase drift.
+
+⚠ **And FW-PPV as formulated is structurally near-DC.** Mei's Lemma 2.2: augmenting by **one**
+column restores rank at `s = 0` but *not* at `s = j·i·ω₀`; Lemma 3.2: the full **Toeplitz
+block** is needed for rank everywhere. Lai drops the AC columns for GMRES conditioning, which
+reinstates the single-column form and with it near-DC-only validity. Fine for phase noise,
+not for a general oscillator AC sweep. (That reading is the docs session's inference, checkable
+against Lai's (24) and Mei's Lemma 3.2.) Its foundation (Mei & Roychowdhury, *Oscillator-AC*)
+is **now in the library**; Armand 1969 and Adler 1946 are not.
 
 **Why bordered and not an eigenvector:** this is the 2003 improvement's entire content, and
 it matters most exactly where a PPV is wanted. Multipliers crowd 1 on high-Q oscillators
@@ -677,6 +746,13 @@ network sits near 1e-8. ⚠ **That ill-conditioning is physical, not numerical:*
 a 10⁶-period time constant has not reached periodic steady state within one period, so its
 periodic covariance is not a well-posed question. The A4c one-solve trick will not swallow 1/f,
 and correctly so.
+
+⚠ **TWO OPPOSITE SWEEP HAZARDS, AND A GRID POLICY HAS TO SATISFY BOTH.** Landing a point
+*on* a harmonic gives absurd totals (below); sampling *too coarsely* near the injection
+multiples of a driven oscillator hides real structure — a 5 GHz LC oscillator with a 5 MHz
+supply perturbation shows spikes at 5 and 10 MHz from up-converted flicker that a 5-point/decade
+log sweep misses entirely. Same physics (1/f power at DC, translated by a periodic signal),
+opposite sampling failures.
 
 ⚠ **THE REAL 1/f ITEM FOR THIS PATH IS A SWEEP-GRID TRAP, NOT AN ARCHITECTURE.** A 1/f source
 is singular at DC, and folding puts a copy of that singularity at **every harmonic**.
