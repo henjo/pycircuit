@@ -487,8 +487,103 @@ entry; image, LO and supply rejection are the others. `adjoint_sideband_row` alr
 this shape; what is missing is a result object that carries it. Calibration target: measured
 mixers agree "to within 0.25 dB".
 
+⚠ **AM/PM NEEDS THE SIDEBAND CORRELATION, and there is a free invariant.** "To find the AM
+or PM noise of a carrier, one must perform PNoise analysis [computing] both the noise at the
+upper and lower sidebands … along with [their] correlation." And: **"Linear time-invariant
+circuits driven [by stationary] noise sources … can be decomposed into AM and PM noise, but
+there will always be EQUAL AMOUNTS OF BOTH."** An LTI circuit must give AM = PM exactly — a
+free regression test, and the noise counterpart of the change of basis above.
+
+⚠ **THE ANSWER HAS A HARD BOUNDARY, and it is the sharpest thing here.** `S_phi` (the phase
+spectrum, which the PPV gives) is **valid at all offset frequencies**. `S_v` and `L(f)` in
+dBc/Hz are valid **only for Δf well above f_Δ**: "the output voltage is a linear function of
+the phase only when the deviations in phase are small … It is this nonlinear [behaviour that]
+causes the linewidth". **Same mechanism as A4c's unbounded phase variance** — the diffusion
+that broadens the line is exactly what makes `exp(jφ)` non-linearisable near the carrier. **If
+`S_phi` is ever converted to `L(f)`, it must not be a linear scaling below `f_Δ`.**
+
+Calibration: phase noise on bipolar resonant oscillators predictable "to within 2 dB".
+
 **Gate:** none needed for AM/PM — it is a basis change on tested output. The others are
 interface decisions, not measurements.
+
+### A4c. Time-varying noise statistics — NEW 2026-09-02
+
+The covariance route, and it is a PSS problem the existing machinery already solves. Demir,
+Liu & Sangiovanni-Vincentelli (TCAD 1996) propagate a covariance alongside the transient:
+`K' = EK + KE^T + FF^T`. For a periodic large signal `E` and `F` are T-periodic, so the
+cyclostationary covariance is the T-periodic solution — **a shooting problem whose monodromy
+is the Kronecker square of the circuit's**, `M ⊗ M`, with multipliers `λᵢλⱼ`.
+
+⚠ **For a DRIVEN circuit it costs ONE linear solve** — the Lyapunov equation is linear in
+`K`, so shooting on it is exact in one step, no Newton. (Relayed measurement, three LTP
+systems: kron identity to 2.2e-14, one solve reaching 1.0e-13 against a 40-period brute-force
+run at 1.1e-13.)
+
+⚠ **For an OSCILLATOR it does not exist, and the failure is the physics.** `λ₁ = 1` gives
+`λ₁² = 1`, so `I − M ⊗ M` is exactly singular — **verified here on our own monodromy:**
+σ_min = 3.1e-11 against σ_min(I − M) = 3.8e-11, spectrum matching `{λᵢλⱼ}` to 2.6e-15, and a
+driven circuit showing no such obstruction. The covariance does not settle, it **grows** —
+variance linear in `t` is a random walk, which is phase diffusion, which is the linewidth.
+**So the near-unit multiplier is not an inconvenience here; it is the answer, and it says the
+covariance route is the wrong method for an oscillator.**
+
+**The PPV over the period is now available** (`ppv()['samples']`) — `Phi(T,s)ᵀv(T) = v(s)`,
+checked against forward-rebuilt propagators at **1.8e-15** per step. That is what Demir's
+diffusion constant `c = (1/T)∫ v₁ᵀBBᵀv₁ dt` integrates.
+
+⚠ **The open check, offered and not yet run:** the diffusion constant measured from the
+linear covariance growth must equal `c` from the PPV. Independent of any transcribed
+convention — the same style as the van der Pol phase-shift gate.
+
+### A4d. Coloured noise — NEW; costs nothing structural for the path we built
+
+⚠ **THE FILTER DOES NOT ENTER THE PSS.** Demir 1996 synthesises 1/f from white sources
+through a Lorentzian network because Itô theory admits only white driving noise — "we can not
+express a flicker noise source in terms of the standard white Gaussian noise process" — at
+"one state variable per decade of frequency". That reads like it would drag 10+ decades of
+time constants into the shooting run. **It does not.** The network has no deterministic drive
+and is one-directionally coupled, so the augmented `E` is block-triangular and the filter's
+deterministic periodic solution is identically zero. Measured: PSS solution identical with and
+without the filter to **1.2e-14**, and `M_aug`'s circuit block matching `M` to 2e-15…6e-15 at
+every `tau` tried.
+
+⚠ **AND IN A FREQUENCY-DOMAIN pnoise IT DOES NOT EXIST AT ALL** — which is the path A3 took.
+The Lorentzian network is an artefact of the SDE formulation specifically. No SDE is formed
+here, so nothing needs synthesising: **a coloured source is just a different `S(f)`, folded
+like any other.** SpectreRF confirms by omission (no filter, no augmentation in its Pnoise
+treatment of flicker), and Kundert states the consequence directly — "S_u(f) is generally pink
+or proportional to 1/f. Then S_phi(f) would be proportional to 1/f³ at low frequencies." **A
+slope, not a state.**
+
+⚠ **AN EARLIER VERSION OF THIS ENTRY CLAIMED AN ARCHITECTURAL FORK — filter states inside the
+MNA versus outside — and there is no fork.** It was recorded as untested and it was wrong.
+The reasoning that produced it was sound in isolation (Demir's "large time constants", Kundert
+on warm start, A4's own μ=0.05 → ~24 periods) and reached a false conclusion because it never
+asked whether those states are *coupled*. Shape 4 from §D: two things each considered alone.
+
+**What survives, and only for A4c's route:** the covariance system's spectrum is `{λᵢλⱼ}`, so
+slow filter poles enter **squared**. Measured `σ_min(I − M_aug ⊗ M_aug)` tracking `T/tau`
+exactly: 8.6e-01 / 1.4e-01 / 1.4e-02 / 1.4e-04 / 1.4e-06 at `tau/T` of 1e0…1e6. A 10-decade
+network sits near 1e-8. ⚠ **That ill-conditioning is physical, not numerical:** a process with
+a 10⁶-period time constant has not reached periodic steady state within one period, so its
+periodic covariance is not a well-posed question. The A4c one-solve trick will not swallow 1/f,
+and correctly so.
+
+⚠ **THE REAL 1/f ITEM FOR THIS PATH IS A SWEEP-GRID TRAP, NOT AN ARCHITECTURE.** A 1/f source
+is singular at DC, and folding puts a copy of that singularity at **every harmonic**.
+SpectreRF: "place a cluster of frequencies near each harmonic … but AVOID PUTTING FREQUENCY
+POINTS PRECISELY ON THE HARMONICS … you run the risk of generating absurd noise totals because
+a very narrow noise peak artificially has its apparent width greatly magnified … and has its
+amplitude exaggerated by placing a point precisely at the singularity." Plausible-looking
+nonsense, no error raised — the same shape as the convention defects this branch keeps
+finding. Not reachable today (every source in the discrete library is white), and it belongs
+in `pnoise`'s preconditions before the first coloured source arrives.
+
+⚠ The legacy 1/f-under-modulation rule (use the DC average of the time-varying current) is a
+**placeholder its own author disowned** in the same paragraph: "either a theoretical or
+experimental derivation of a model for flicker noise associated with a time-varying current is
+needed." Do not implement it as if it were the model.
 
 ### A5. Envelope-following — last
 

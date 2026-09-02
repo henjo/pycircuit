@@ -4672,3 +4672,130 @@ def test_the_ppv_refuses_what_has_no_phase():
     assert pss.converged and not pss.autonomous
     with pytest.raises(ValueError, match='FREE-RUNNING'):
         pss.ppv()
+
+
+def test_the_ppv_samples_are_the_propagated_adjoint():
+    """`v(t)` over the whole period, checked by FORWARD machinery.
+
+    Oscillator phase noise is an integral over the orbit — Demir's
+    diffusion constant is `c = (1/T) ∫ v₁ᵀ(t) B(t)Bᵀ(t) v₁(t) dt` — so the
+    PPV at `t = 0` is not enough. `Phi(T,s)ᵀ v(T) = v(s)`, and the reverse
+    replay computes that sequence on its way to the answer; it was being
+    discarded.
+
+    ⚠ CHECKED AGAINST THE FORWARD STEP MAPS, not against itself. The
+    propagator `Phi(T,s_j)` is rebuilt here by applying the forward
+    recursion from step `j` to the end, and its transpose is compared with
+    what the reverse pass recorded. Same shape as the existing `M` vs `Mᵀ`
+    test, but per step, and it is what a future oscillator pnoise would be
+    resting on. Measured worst case over all steps: 1.8e-15.
+    """
+    _cir, pss, v, info = _vdp_ppv(60)
+    fp = pss.factored_period()
+    n = fp.width
+    m = pss.cir.n - 1
+    samples = np.asarray(info['samples'])
+    assert samples.shape == (len(fp.steps), n), \
+        'expected one PPV sample per step, got %r' % (samples.shape,)
+
+    cs0, cs1, ring = [], [], list(fp.opening)
+    for _lu, C_new, _a, _b in fp.steps:
+        cs0.append(ring[0])
+        cs1.append(ring[1])
+        ring = [C_new, ring[0]]
+
+    def fwd_from(j, p):
+        p0, p1 = p[:m].copy(), p[m:].copy()
+        for k in range(j, len(fp.steps)):
+            lu, _Cn, alphas, b = fp.steps[k]
+            assert not b, 'this rebuild assumes the Gear-2 companion'
+            pn = -lu.solve(alphas[1] * (cs0[k] @ p0)
+                           + alphas[2] * (cs1[k] @ p1))
+            p0, p1 = pn, p0
+        return np.concatenate((p0, p1))
+
+    ## the rebuild must be the monodromy, or it is checking nothing
+    Mf = np.column_stack([fwd_from(0, e) for e in np.eye(n)])
+    Mm = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    assert np.linalg.norm(Mf - Mm) / np.linalg.norm(Mm) < 1e-12, \
+        'the forward rebuild is not the monodromy, so it cannot check the ' \
+        'reverse pass'
+
+    worst = 0.0
+    for j in range(len(fp.steps)):
+        Psi = np.column_stack([fwd_from(j, e) for e in np.eye(n)])
+        pred = Psi.T @ v
+        worst = max(worst, np.linalg.norm(pred - samples[j])
+                    / max(np.linalg.norm(pred), 1e-300))
+    assert worst < 1e-11, \
+        'the reverse pass states are not the propagated adjoint (worst ' \
+        '%.3e), so they are not the PPV over the period' % worst
+
+
+def test_no_periodic_covariance_exists_for_an_oscillator():
+    """⚠ WHY OSCILLATOR NOISE NEEDS THE PPV AND NOT A COVARIANCE SHOOT.
+
+    Time-varying noise statistics are a Lyapunov ODE alongside the
+    transient, and for a periodic large signal its periodic solution is a
+    shooting problem whose monodromy is the KRONECKER SQUARE of the
+    circuit's: `Phi_lyap = M ⊗ M`, so its multipliers are the pairwise
+    products `lambda_i lambda_j`.
+
+    For a DRIVEN circuit that is a single linear solve — the Lyapunov
+    equation is linear in `K`, so no Newton iteration. For an AUTONOMOUS
+    one it does not exist: `lambda_1 = 1` gives `lambda_1^2 = 1`, and
+    `I - M ⊗ M` is exactly as singular as `I - M`. The covariance does not
+    settle, it GROWS — variance linear in `t` is a random walk, which is
+    phase diffusion, which is the linewidth.
+
+    ⚠ SO THE UNIT MULTIPLIER IS NOT AN INCONVENIENCE HERE, IT IS THE
+    ANSWER. The same near-unit-eigenvalue obstruction this codebase keeps
+    meeting — eigen-selection, the bordered phase row, the PPV — appears
+    once more as `lambda_1^2 = 1`, and this time what it obstructs is the
+    wrong method for the question. Relayed measurements on three LTP
+    systems put the kron identity at 2.2e-14 and the phase-mode growth at
+    dead linear (trace K 1.825 -> 1793.4 over 1000 periods); this checks
+    the structural half on our own monodromy.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    _cir, pss, _v, _info = _vdp_ppv(60)
+    fp = pss.factored_period()
+    n = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    K = np.kron(M, M)
+
+    ev = np.linalg.eigvals(M)
+    outer = np.sort_complex(np.array([a * b for a in ev for b in ev]))
+    got = np.sort_complex(np.linalg.eigvals(K))
+    scale = max(float(np.max(np.abs(outer))), 1e-30)
+    assert np.linalg.norm(got - outer) / scale < 1e-9, \
+        'the covariance monodromy is not the Kronecker square of the ' \
+        'circuit monodromy, so its multipliers are not the pairwise products'
+
+    s_lyap = np.linalg.svd(np.eye(n * n) - K, compute_uv=False)[-1]
+    s_circ = np.linalg.svd(np.eye(n) - M, compute_uv=False)[-1]
+    assert s_lyap < 1e-7, \
+        'I - M kron M has sigma_min %.3e on an AUTONOMOUS circuit. If the ' \
+        'covariance shooting problem has become solvable, the unit ' \
+        'multiplier has gone, and so has the oscillator' % s_lyap
+    assert s_lyap < 100 * max(s_circ, 1e-16), \
+        'the covariance system is singular to a different degree than the ' \
+        'circuit one (%.3e against %.3e); the obstruction should be the ' \
+        'same unit multiplier squared' % (s_lyap, s_circ)
+
+    ## the contrast: a DRIVEN circuit has no such obstruction
+    cir2 = _adjoint_ladder(4)
+    pss2 = PSS(cir2, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    fp2 = pss2.factored_period()
+    n2 = fp2.width
+    M2 = np.column_stack([fp2.matvec(e) for e in np.eye(n2)])
+    s2 = np.linalg.svd(np.eye(n2 * n2) - np.kron(M2, M2),
+                       compute_uv=False)[-1]
+    assert s2 > 1e-3, \
+        'I - M kron M is near-singular (%.3e) on a DRIVEN circuit too, so ' \
+        'the obstruction is not the unit multiplier after all' % s2

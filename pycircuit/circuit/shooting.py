@@ -2105,11 +2105,13 @@ class PSS(Analysis):
                 C0, steps, np.asarray(v).imag, collect, ii)
             if collect:
                 return (re[0] + 1j * im[0],
-                        [a + 1j * b for a, b in zip(re[1], im[1])])
+                        [a + 1j * b for a, b in zip(re[1], im[1])],
+                        [a + 1j * b for a, b in zip(re[2], im[2])])
             return re + 1j * im
         v = v.astype(float)
         w1, w2 = v[:m].copy(), v[m:].copy()
         ts = []
+        states = []
 
         ## The capacitance ring as the FORWARD pass saw it, so the reverse
         ## pass can consume it backwards.  Rebuilt rather than stored: it is
@@ -2160,12 +2162,20 @@ class PSS(Analysis):
                       -alphas[2] * (cs1[j].T @ t))
             if inj is not None:
                 w1 = w1 + inj[j]
+            if collect:
+                ## ⚠ THE ADJOINT STATE AFTER THE STEP, which for a seed of
+                ## the PPV IS the PPV at that time -- `Phi(T,s_j)^T v(T) =
+                ## v(s_j)`.  Oscillator phase noise needs `v(t)` over the
+                ## whole period, not `v(0)`, and it is already being
+                ## computed here and thrown away.
+                states.append(np.concatenate((w1.copy(), w2.copy())))
         if collect:
             ## reversed, so `ts[j]` lines up with `steps[j]` -- the reverse
             ## loop produced them last-first and a caller weighting them by
             ## a per-step time must not have to remember that
             ts.reverse()
-            return np.concatenate((w1, w2)), ts
+            states.reverse()
+            return np.concatenate((w1, w2)), ts, states
         return np.concatenate((w1, w2))
 
     def ppv(self, tol=None):
@@ -2319,10 +2329,20 @@ class PSS(Analysis):
                 'PSS.ppv: the null vector is orthogonal to the orbit '
                 'tangent, so no normalisation makes it a phase projector.')
         v = v / vx
+        ## ⚠ THE PPV OVER THE PERIOD, not just at `t = 0`, because that is
+        ## what an oscillator noise calculation needs: Demir's diffusion
+        ## constant is `c = (1/T) integral v_1^T(t) B(t) B^T(t) v_1(t) dt`,
+        ## an integral over the orbit.  `Phi(T,s)^T v(T) = v(s)`, and the
+        ## reverse replay computes exactly that sequence on its way to the
+        ## answer -- it was being discarded.
+        _end, _ts, states = self._monodromy_matvec_transposed(
+            fp.opening, fp.steps, v, collect=True)
         info = {'border_residual': y,
                 'tangent_border_residual': yf,
                 'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
-                'q': q, 'xdot': xdot}
+                'q': q, 'xdot': xdot,
+                'samples': np.asarray(states),
+                'times': np.asarray(fp.times, dtype=float)}
         return v, info
 
     def _forced_replay_transposed(self, fp, freq, xa):
@@ -2347,7 +2367,7 @@ class PSS(Analysis):
 
         ⚠ SOLVED-HISTORY ONLY, because the reverse pass is.  See there.
         """
-        _end, ts = self._monodromy_matvec_transposed(
+        _end, ts, _states = self._monodromy_matvec_transposed(
             fp.opening, fp.steps, xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
@@ -4843,7 +4863,7 @@ class PAC(Analysis):
             inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
                                      * float(freq)) * tms[:N]) / N)[:, None]
                       * d[None, :])
-            g, ts = pss._monodromy_matvec_transposed(
+            g, ts, _st = pss._monodromy_matvec_transposed(
                 fp.opening, fp.steps, np.zeros(n, dtype=complex),
                 collect=True, inject=inject)
             forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
@@ -4912,6 +4932,32 @@ class PAC(Analysis):
         every source in the circuit, which is the whole reason this is
         affordable.
 
+        ⚠ A PRECONDITION FOR THE FIRST COLOURED SOURCE, recorded here
+        because it is unreachable today and will be silent when it is not.
+        A 1/f source is singular at DC, and folding puts a copy of that
+        singularity at EVERY harmonic.  SpectreRF: "place a cluster of
+        frequencies near each harmonic ... but AVOID PUTTING FREQUENCY
+        POINTS PRECISELY ON THE HARMONICS ... you run the risk of
+        generating absurd noise totals because a very narrow noise peak
+        artificially has its apparent width greatly magnified by a large
+        frequency, and has its amplitude exaggerated by placing a point
+        precisely at the singularity."  Plausible nonsense, no error
+        raised.  Every source in the discrete library is white, so `freq`
+        landing on `k f0` is harmless now; it stops being harmless the day
+        one is not.
+
+        ⚠ AND AN OSCILLATOR IS NOT THIS FUNCTION'S PROBLEM AT ALL.  A
+        driven circuit's output noise is cyclostationary; an AUTONOMOUS
+        one's is STATIONARY, and structurally so -- "cyclostationarity in
+        the oscillator's output would, by definition, imply a time
+        reference ... noisy autonomous systems cannot provide a perfect
+        time reference" (Demir 2002).  That is the physical counterpart of
+        `I - M kron M` being exactly singular for an oscillator
+        (`test_no_periodic_covariance_exists_for_an_oscillator`): there is
+        no cyclostationary object to compute, not a hard one.  Oscillator
+        phase noise is a different output shape entirely -- a closed form
+        in a few scalars with no frequency sweep -- and is not built.
+
         ⚠ STATIONARY SOURCES ONLY, AND IT CHECKS -- mechanism (1) above.
         Okumura's cyclostationary model windows each source to a single
         timestep, and the windows'
@@ -4922,6 +4968,20 @@ class PAC(Analysis):
         the stationary formula is exact for them; a compact device with a
         bias-dependent `CY` is not covered, and this raises rather than
         returning a number that is quietly the wrong model.
+
+        ⚠ `maxsidebands` IS AN ACCURACY KNOB HERE AND A REPORTING KNOB IN
+        `PAC.solve`, WHICH IS THE OPPOSITE OF HOW IT READS.  SpectreRF's
+        own documentation states the inversion (relayed, cited not verified
+        here): reducing sidebands "affects only the amount of information
+        generated, not its quality.  HOWEVER, NOISE SOURCES GENERATE
+        SIGNALS AT ALL FREQUENCIES, and therefore with PNoise, reducing the
+        number of sidebands acts to REDUCE THE NUMBER OF NOISE
+        CONTRIBUTIONS in the output and so REDUCES THE ACCURACY of the
+        result."  A driven signal lives at the frequencies it is driven at,
+        so dropping sidebands drops answers you did not ask for; noise
+        lives at all of them, so dropping sidebands drops power that
+        belonged in the total.  Capping it here always makes `S` a LOWER
+        bound, never a cheaper estimate of the same number.
 
         ⚠ TWO STOPPING RULES, AND THE BOUND IS NOT THE RATIO TEST.  The
         accumulation stops when a sideband pair adds less than `ratio_tol`
@@ -4936,6 +4996,15 @@ class PAC(Analysis):
         Okumura's own `p = 1` case, "exactly the same as that derived for a
         stationary noise".  Measured ratio 1.000000, with every `l != 0`
         contributing ~1e-32 of the total.
+
+        ⚠ AND THE TIME-AVERAGE CHOICE MATCHES THE REFERENCE IMPLEMENTATION,
+        which is worth recording because it was documented above as a
+        deliberate scope decision and could have been the wrong one.
+        SpectreRF Theory on PNoise and QPnoise, both: "THE TIME-AVERAGE of
+        the noise at the output of the circuit is computed in the form of a
+        spectral density versus frequency."  Same quantity, same
+        limitation.  (Relayed from the docs session; cited, not verified
+        here.)
         """
         fp = pss.factored_period()
         m = pss.cir.n - 1
