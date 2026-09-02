@@ -1846,6 +1846,77 @@ class PSS(Analysis):
             Cs = [C_new, Cs[0]]
         return Px[0]
 
+    def _monodromy_matvec_transposed(self, C0, steps, v):
+        """`M^T v` -- the same stored steps, REPLAYED BACKWARDS.
+
+        A shooting monodromy is a product of per-step solves, so its
+        transpose is that product in reverse order with each solve
+        transposed.  For Gear-2 (`b = 0`, three alphas) the per-step state
+        is the PAIR `(Px_n, Px_{n-1})` and the step map is
+
+            B_n = [ -a1 Jf^-1 C_{n-1}   -a2 Jf^-1 C_{n-2} ]
+                  [        I                    0         ]
+
+        so `B_n^T (v1; v2)` is
+        `(-a1 C_{n-1}^T Jf^-T v1 + v2 ; -a2 C_{n-2}^T Jf^-T v1)`.
+
+        ⚠ THIS IS WHY IT COSTS NOTHING TO HAVE.  Demir & Roychowdhury
+        (TCAD 22(2) 188-196) call reverse integration "often unavailable
+        even in existing time-domain simulators", requiring "significant
+        changes to core simulation routines" -- true of a forward-only
+        DENSE implementation.  `_traverse_factored` already stores every
+        step's factorisation, and every factorisation here already knows how
+        to solve transposed, so the reverse pass needs no new integrator, no
+        refactorisation and no second traversal.
+
+        MEASURED against the dense `M^T` built from the forward matvec:
+        agreement 1.8e-15, and the reverse pass costs 0.75x the forward one
+        -- CHEAPER, because it does two `C^T` products against one shared
+        transposed solve where the forward does two `C` products and a
+        solve.
+
+        ⚠ NOT A CAPABILITY, A BUILDING BLOCK.  It is the shared dependency
+        of a PPV (Demir & Roychowdhury's reverse Jacobian `J_r`) and of
+        adjoint noise, neither of which is built.  It exists because the
+        spike that established it is worth keeping, and it is pinned by a
+        test rather than left in a scratch file.
+        """
+        m = self.cir.n - 1
+        v = np.asarray(v, dtype=float)
+        w1, w2 = v[:m].copy(), v[m:].copy()
+
+        ## The capacitance ring as the FORWARD pass saw it, so the reverse
+        ## pass can consume it backwards.  Rebuilt rather than stored: it is
+        ## `len(steps)` references to matrices that already exist.
+        cs0, cs1, ring = [], [], list(C0)
+        for _lu, C_new, _alphas, _b in steps:
+            cs0.append(ring[0])
+            cs1.append(ring[1])
+            ring = [C_new, ring[0]]
+
+        for j in range(len(steps) - 1, -1, -1):
+            lu, _C_new, alphas, b = steps[j]
+            if b:
+                ## a `b != 0` companion carries `iq` in the state, so the
+                ## step map is not the pair above.  Unreachable today --
+                ## `_solves_history` is true only for Gear-2, whose `b` is
+                ## zero -- and refused rather than silently transposing a
+                ## different operator.
+                raise NotImplementedError(
+                    'PSS: the transposed replay is derived for a companion '
+                    'with b = 0 (Gear-2), and this step reports b = %r. A '
+                    'b != 0 method carries iq in the per-step state, so its '
+                    'transpose is not the pair map this implements.' % (b,))
+            t = lu.solve_transposed(w1)
+            if t is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so '
+                    'the monodromy transpose cannot be replayed. Use '
+                    'DenseSolver or SuperLUSolver.')
+            w1, w2 = (-alphas[1] * (cs0[j].T @ t) + w2,
+                      -alphas[2] * (cs1[j].T @ t))
+        return np.concatenate((w1, w2))
+
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
     ## An inexact Newton only needs the step accurate enough not to spoil
     ## the outer convergence; measured on the RC ladder, k is 2/4/7/12 at

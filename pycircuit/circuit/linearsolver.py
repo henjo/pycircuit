@@ -42,13 +42,35 @@ class _Factored(object):
     `N` of them does not branch on which solver produced them.
     """
 
-    __slots__ = ('_f', '_solve')
+    __slots__ = ('_f', '_solve', '_solve_t')
 
-    def __init__(self, f, solve):
+    def __init__(self, f, solve, solve_transposed=None):
         self._f, self._solve = f, solve
+        self._solve_t = solve_transposed
 
     def solve(self, b):
         return self._solve(self._f, b)
+
+    def solve_transposed(self, b):
+        """``A^T x = b`` against the SAME factorisation, or ``None``.
+
+        ⚠ THIS IS WHAT MAKES A REVERSE REPLAY POSSIBLE WITHOUT A REVERSE
+        INTEGRATOR.  A shooting monodromy is a product of per-step solves,
+        so its transpose is that product replayed in reverse order with
+        transposed solves -- and every factorisation here already supports
+        one (LAPACK's ``trans``, SuperLU's ``trans='T'``).  Demir &
+        Roychowdhury (TCAD 22(2) 188-196) describe reverse integration as
+        "often unavailable even in existing time-domain simulators and may
+        require significant changes to core simulation routines"; that is
+        true of a forward-only DENSE implementation and not of one that
+        already stores its factors.
+
+        `None` when the solver cannot do it, so a caller can refuse rather
+        than silently transpose the wrong thing.
+        """
+        if self._solve_t is None:
+            return None
+        return self._solve_t(self._f, b)
 
 
 class LinearSolver(ABC):
@@ -110,7 +132,8 @@ class DenseSolver(LinearSolver):
             from scipy.linalg import lu_factor, lu_solve
         except ImportError:                               # pragma: no cover
             return None
-        return _Factored(lu_factor(A), lambda f, b: lu_solve(f, b))
+        return _Factored(lu_factor(A), lambda f, b: lu_solve(f, b),
+                         lambda f, b: lu_solve(f, b, trans=1))
 
     def __repr__(self):
         return 'DenseSolver()'
@@ -157,7 +180,8 @@ class SuperLUSolver(LinearSolver):
         if A.dtype == object:
             return None
         return _Factored(self._spla.splu(self._sp.csc_matrix(A)),
-                         lambda f, b: f.solve(numpy.asarray(b)))
+                         lambda f, b: f.solve(numpy.asarray(b)),
+                         lambda f, b: f.solve(numpy.asarray(b), trans='T'))
 
     def __repr__(self):
         return 'SuperLUSolver()'

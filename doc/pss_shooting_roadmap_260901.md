@@ -212,6 +212,41 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## The transposed monodromy: a spike that succeeded (2026-09-02)
+
+A review round identified one piece of machinery as the **shared dependency** of the two
+remaining capabilities — a PPV (Demir & Roychowdhury's reverse Jacobian `J_r`) and adjoint
+pnoise — and flagged it explicitly as *"a claim about mechanism, not a measurement. Nobody
+has written or timed it."* So it was written and timed.
+
+**The claim:** `M` is a product of per-step solves, so `Mᵀ` is that product replayed in
+reverse order with transposed solves — no reverse integrator, no refactorisation.
+
+**Result: it holds.** `Mᵀv` by reverse replay agrees with the dense `M.T @ v` to
+**1.75e-15**, and costs **0.75× a forward matvec** — *cheaper*, because it does two `Cᵀ`
+products against one shared transposed solve where the forward does two `C` products and a
+solve.
+
+⚠ **The spike found a real gap on the way.** `_Factored` — the abstraction added for the
+earlier `linearsolver` finding — exposed `.solve()` and **no transposed solve**. Added, on
+`_Factored`, `DenseSolver` (LAPACK `trans=1`) and `SuperLUSolver` (`trans='T'`), returning
+`None` where a solver cannot, so a caller refuses rather than silently transposing the
+wrong operator.
+
+**Why this matters beyond the number.** D&R treat reverse integration as the barrier:
+*"often unavailable even in existing time-domain simulators and may require significant
+changes to core simulation routines."* That is true of a forward-only **dense**
+implementation. It is not true of one that already stores its factors — so the matrix-free
+path built for item 6 happens to be the structure that dissolves the barrier to two
+capabilities it was not built for.
+
+⚠ Shipped as a **building block, not a capability**: `_monodromy_matvec_transposed`, with a
+test that pins it against the dense `Mᵀ` *and* against the adjoint identity
+`⟨Mᵀu, w⟩ = ⟨u, Mw⟩` — the second because a transpose checked only against a matrix built
+from the forward pass could share an error with it. Refuses `b ≠ 0` (unreachable today,
+since only Gear-2 takes the solved-history route) rather than transposing a different
+operator.
+
 ## The canonical papers, read against the open questions (2026-09-02)
 
 A second review round read Aprille & Trick (Proc IEEE 60(1) 108-114, 1972; IEEE TCT

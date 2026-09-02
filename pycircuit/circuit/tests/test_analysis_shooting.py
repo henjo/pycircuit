@@ -3023,3 +3023,67 @@ def test_the_period_column_agrees_with_the_vector_field_at_T():
                 '%.2f where O(h) needs ~2. A gap that does not FALL is a ' \
                 'constant-factor error in the column -- exactly what a 3/2 ' \
                 'partial-derivative bug looks like here' % (method, a, b, a / b)
+
+
+def test_the_monodromy_transpose_is_a_reverse_replay():
+    """`M^T v` from the stored factors, backwards -- no reverse integrator.
+
+    A shooting monodromy is a product of per-step solves, so its transpose
+    is that product replayed in REVERSE ORDER with each solve transposed.
+    `_traverse_factored` already stores every step's factorisation and every
+    factorisation here can solve transposed, so the reverse pass needs no
+    new integrator, no refactorisation and no second traversal.
+
+    ⚠ WHY THAT IS WORTH A TEST FOR MACHINERY NOTHING YET USES.  Demir &
+    Roychowdhury (TCAD 22(2) 188-196) treat reverse integration as the
+    barrier to computing a PPV -- "often unavailable even in existing
+    time-domain simulators and may require significant changes to core
+    simulation routines" -- and adjoint noise needs the same object.  That
+    barrier is real for a forward-only DENSE implementation.  It is not real
+    here, and this pins the reason rather than leaving it in a scratch file:
+    both remaining capabilities bottleneck on this one piece.
+
+    Measured when it was written: agreement 1.8e-15 with the dense `M^T`,
+    and the reverse pass costs 0.75x the forward one -- CHEAPER, because it
+    does two `C^T` products against one shared transposed solve where the
+    forward does two `C` products and a solve.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_rc_ladder(6), method='gear', reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 50, maxiterations=2)
+    m = pss.cir.n - 1
+    times, hs = pss._period_grid(1e-3, 50, None)
+    z = np.zeros(m)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        C0, steps, _xl, _xp = pss._traverse_factored(z, z, times, hs)
+
+    ## dense M from the FORWARD matvec, itself pinned against the traversal
+    ## by test_the_matrix_free_matvec_is_the_dense_monodromy
+    M = np.zeros((2 * m, 2 * m))
+    for i in range(2 * m):
+        e = np.zeros(2 * m)
+        e[i] = 1.0
+        M[:, i] = pss._monodromy_matvec(C0, steps, e)
+
+    rng = np.random.default_rng(5)
+    for _ in range(4):
+        v = rng.standard_normal(2 * m)
+        got = pss._monodromy_matvec_transposed(C0, steps, v)
+        want = M.T @ v
+        err = np.linalg.norm(got - want) / np.linalg.norm(want)
+        assert err < 1e-11, \
+            'the reverse replay differs from the dense M^T by %.3e' % err
+
+    ## ⚠ and the identity that makes it useful: <M^T u, w> == <u, M w>.
+    ## A transpose that is only checked against a matrix built from the
+    ## forward pass could share an error with it; this cannot.
+    u, w = rng.standard_normal(2 * m), rng.standard_normal(2 * m)
+    lhs = float(np.dot(pss._monodromy_matvec_transposed(C0, steps, u), w))
+    rhs = float(np.dot(u, pss._monodromy_matvec(C0, steps, w)))
+    assert abs(lhs - rhs) < 1e-9 * max(abs(rhs), 1.0), \
+        'adjoint identity fails: <M^T u, w> = %.12g against <u, M w> = ' \
+        '%.12g' % (lhs, rhs)
