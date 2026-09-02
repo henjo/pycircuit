@@ -386,13 +386,33 @@ class PSS(Analysis):
          ⚠ THAT CLEAN SEPARATION IS A PROPERTY OF THE CIRCUITS TESTED, NOT
          OF THE METHOD, and it is known to degrade in one specific place:
          HIGH-Q OSCILLATORS, whose PHYSICAL multipliers cluster near 1.
-         Bizzarri et al. -- "[shooting] is not suited to simulate
-         oscillators based on very high quality resonators since these lead
-         to fundamental matrices with eigenvalues very close to 1" -- and
-         Demir & Roychowdhury on the PPV -- "the oscillatory-mode eigenvalue
-         of 1 ... cannot be distinguished from other eigenvalues of the
-         system that are close to 1.  This is particularly true for many LC
-         oscillators."
+         FOUR INDEPENDENT WITNESSES, and the earliest is Demir (IJCTA 2000)
+         on a Colpitts oscillator: "the four largest eigenvalues of the
+         monodromy matrix ... all four eigenvalues are +1.  THIS IS USUALLY
+         THE CASE FOR HIGH-Q OSCILLATORS.  In fact, several eigenvalues can
+         become very close to 1 such that they are NOT NUMERICALLY
+         DISTINGUISHABLE from the one that is supposed to be equal to 1
+         theoretically."  Then Bizzarri et al. -- "[shooting] is not suited
+         to simulate oscillators based on very high quality resonators since
+         these lead to fundamental matrices with eigenvalues very close to
+         1" -- and Demir & Roychowdhury on the PPV -- "the oscillatory-mode
+         eigenvalue of 1 ... cannot be distinguished from other eigenvalues
+         of the system that are close to 1.  This is particularly true for
+         many LC oscillators." -- and this codebase's own measurement below.
+
+         ⚠ AND THE HISTORY SAYS WHAT TO DO ABOUT IT, which is why it is
+         recorded rather than just cited.  Demir's 2000 remedy was to SELECT
+         the eigenvector with the largest inner product against
+         `C(0) xdot(0)` -- measured 0.2 against 1e-5, 1e-7, 2e-5.  His own
+         2003 paper rejects that heuristic: "no guarantee that any of the
+         candidate eigenvectors will be appreciably more orthonormal than
+         the others, leading to a potential breakdown."  The SAME VECTOR
+         then changes role: sampled `C(t) u_1(t)` becomes the augmented row
+         `q`, so no selection happens at all.  The quantity used to CHOOSE
+         among candidates becomes the CONSTRAINT that makes the candidate
+         unique.  That is the whole of the 2003 improvement, and it is why
+         a PPV built here must go to the augmented solve and NOT to the
+         eigenvectors this method returns.
 
          ⚠ ONE CAUSE, AND IT SURFACES IN THREE PLACES HERE, which is why it
          is written down once instead of three times as coincidences:
@@ -2403,6 +2423,28 @@ class PSS(Analysis):
         4 in `h` -- while the parasitic ratios sit at 1.0 to 10.  On the
         Q=20 RLC the parasitic ratio is 1.9997 against the 2.0 that BDF-2's
         `v_{-1} = 3 v_0` predicts exactly.
+
+        ⚠ THE MODE COUNT HERE IS AN ODE COUNT AND THE OBJECT IS A DAE, and
+        the difference is structural rather than an off-by-`k`.  Demir
+        (IJCTA 28:163-185, 2000) gives the DAE monodromy as
+
+            Phi(t,s) = U(t) D(t-s) V(s) C(s)
+
+        with `D = diag[exp(mu_1 (t-s)), ..., exp(mu_d (t-s)), 0, ..., 0]`
+        for `d = rank(C)`: "equation (19) has k = n - m Floquet multipliers
+        that are 0", and on a real circuit "there are also eigenvalues
+        exactly equal to 0 due to the ALGEBRAIC EQUATIONS in the MNA
+        formulation".  So the `m - rank(C)` structural zeros are the
+        theory's, not an artefact -- which is why `parasitic_roots` comes
+        back identically zero on every MNA circuit tried here.
+
+        ⚠ AND THE FACTORISATION CARRIES A TRAILING `C(s)` WITH NO ODE
+        ANALOGUE (where `C = I` and it disappears).  A DAE monodromy is not
+        simply a product of state-transition blocks, so an ODE-shaped
+        count does not merely miscount -- it describes a different object.
+        Anyone revisiting this split should start there and not from the
+        eigenvector heuristic below.  Relayed from the docs session's read;
+        check it against the paper before building on it.
 
         ⚠ THE SPLIT IS BY RANK, NOT BY A THRESHOLD, and that was measured
         into the design rather than chosen.  A threshold of 0.25 was tried

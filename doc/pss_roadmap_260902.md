@@ -138,6 +138,40 @@ independently measured that breakdown — at ~2 points per cycle the parasitic r
 ⚠ **`J_r` is NOT `J_f^T`.** `J_f = Omega D_C + D_G`, `J_r = D_{C^T} Omega - D_{G^T}`: the
 operator differs *and* the sign on `G` differs. No free transpose at the block level.
 
+⚠ **THE TRANSCRIPTION IS CONFIRMED TWICE** (2026-09-02), though still worth checking
+against the PDF before coding. Traversa & Bonani (IET CDS 5(1):46-51, 2011), in extractable
+text, give the direct/adjoint pair as `d/dt[C z] - A z = 0` and `C^T dw/dt + A^T w = 0` —
+**including the opposite relative sign on the `A` term**, which is exactly the feature that
+makes `J_r != J_f^T` and rules out a free transpose. And Demir (IJCTA 2000) Remark 3.1 gives
+`v_i^T(t) C(t) u_j(t) = delta_ij`, which is precisely the meaning assigned to the `q` row.
+
+⚠ **AND THE 2003 IMPROVEMENT IS ONE MOVE, worth understanding before building.** Demir 2000
+SELECTED the eigenvector by its inner product against `C(0) xdot(0)` (0.2 against 1e-5,
+1e-7, 2e-5). His 2003 paper rejects that heuristic outright — "no guarantee that any of the
+candidate eigenvectors will be appreciably more orthonormal than the others". The same
+vector then changes role: it becomes the augmented row `q`, so **no selection is performed
+at all**. The quantity used to *choose among* candidates becomes the *constraint that makes
+the candidate unique*. That is why A2 goes to the augmented solve and not to
+`_spectral_report`'s eigenvectors.
+
+⚠ **SCOPE, RECORDED AS A CHOICE RATHER THAN LEFT IMPLICIT.** There are two tiers. Demir's
+PPV is **phase noise only**: one augmented-Jacobian solve. Traversa & Bonani's is phase +
+**orbital** + correlation, needing *all* direct and adjoint Floquet eigenvectors from a
+generalised eigenvalue problem — and they say plainly that Demir's approach "considers only
+phase noise … neglecting orbital noise which may in some cases become important".
+
+**The DAE caveat picks the tier for us.** As of 2011 the orbital analyses are "currently
+limited to … ordinary differential equations … although this is not the most general case
+because the modified nodal analysis of circuits, in general, leads to … DAEs. The
+Floquet-based analysis of *phase* noise has been formulated for DAEs [Demir 2000], whereas
+the extension … for orbital fluctuations … is currently under development." For an MNA
+simulator the cheap tier is the one with a formulation behind it. Both papers assume
+**index-1** explicitly, which is this solver's operating assumption too (see B4).
+
+⚠ **Traversa & Bonani does NOT port** — its algorithm is a generalised eigenvalue problem on
+**harmonic-balance** Jacobians, and there is no HB path here. It also inherits the objection
+D&R raise against eigen-based extraction. Flagged so nobody chases it.
+
 **Gate:** verify the block-cyclic `Omega` against the BVP operator already written by hand
 for the `func_solved_history` cross-check (it matched PSS to 4.0e-13). Confirm `J_r`'s two
 sign/transpose differences against p.192 before coding — the algebra was read off a page
