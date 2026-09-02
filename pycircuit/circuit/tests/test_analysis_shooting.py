@@ -2925,3 +2925,21 @@ def test_x0_unknown_solves_for_the_period_s_own_start():
     with pytest.raises(NotImplementedError, match='nothing to change'):
         PSS(cir, method='gear').solve(period=per, timestep=per / 100,
                                       x0_unknown=True)
+
+    ## ⚠ AND IT COMPOSES WITH `matrix_free`, which was written and NOT
+    ## exercised: the matrix-free traversal read `self._coeffs` for its
+    ## opening seed, and on this path no step has run to set it, so the
+    ## pair raised `AttributeError`.  Two flags that are each tested alone
+    ## and never together is how that survives.
+    for mf in (False, True):
+        pss = PSS(cir, method='trap', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / 100, maxiterations=40,
+                            x0_unknown=True, matrix_free=mf)
+        assert pss.converged, 'x0_unknown + matrix_free=%s did not converge' % mf
+        v = np.asarray(res['tpss'].v('n2', gnd), dtype=float).ravel()
+        peak = 0.5 * (v.max() - v.min())
+        assert abs(peak - got[('trap', 100, True)]) < 1e-6, \
+            'matrix_free=%s changed the x0_unknown answer: %.6f against ' \
+            '%.6f' % (mf, peak, got[('trap', 100, True)])

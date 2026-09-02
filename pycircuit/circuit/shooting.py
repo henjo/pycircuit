@@ -1764,8 +1764,12 @@ class PSS(Analysis):
         ## ⚠ `b_open = 0` when opening AT `x_0`: no companion current has
         ## been formed, so the matvec must seed `Pq` at zero to match
         ## `_traverse`'s exact seed rather than the manufactured one.
-        a_open, b_open = ((self._coeffs[0], 0.0) if open_at_x0
-                          else self._coeffs)
+        ## ⚠ `_coeffs` DOES NOT EXIST YET on the `open_at_x0` path -- no step
+        ## has run to set it -- so it must not be read at all, not even for
+        ## the half that is then discarded.  `b_open = 0` makes the matvec
+        ## seed `Pq` at zero, which is what `_traverse` does there, and
+        ## `a_open` is unused in consequence.
+        a_open, b_open = ((None, 0.0) if open_at_x0 else self._coeffs)
         Pt = [np.zeros(m), np.zeros(m)]
         Pqt = np.zeros(m)
         Cs = [C_open, C_open]
