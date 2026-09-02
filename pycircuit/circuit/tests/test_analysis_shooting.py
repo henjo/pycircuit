@@ -5073,3 +5073,53 @@ def test_the_pac_operator_is_singular_at_every_harmonic_of_an_oscillator():
             'a DRIVEN circuit is singular at harmonic %g (%.3e)' % (k, s2)
     PAC(cir2, toolkit=circuit.numeric).adjoint_sideband_row(
         pss2, 1.0 / pss2.period, 1, 0)             # not refused
+
+
+def test_pac_refuses_an_operating_point_from_another_circuit():
+    """⚠ THE DRIVEN-OSCILLATOR TRAP, WHICH IS NOT A TYPO GUARD.
+
+    The natural way to model a driven oscillator is to solve the PSS of
+    the bare oscillator and treat the injection as a perturbation. It is
+    wrong: the injection DEVICE is present even when its SIGNAL is zero.
+    Buonomo & Lo Schiavo — "in absence of the injection signal, the
+    injection circuit affects the basic LC oscillator by CHANGING THE
+    NONLINEARITY OF THE FEEDBACK LOOP … [it] can affect the start-up
+    condition … OR ITS OSCILLATION AMPLITUDE, or both."
+
+    So the free-running orbit of the circuit-with-the-device is not the
+    orbit of the circuit-without-it, and every Floquet quantity built on
+    the wrong one inherits the error. The analysis would converge and
+    report a plausible number.
+
+    ⚠ THE REFERENCE-NODE CHECK CANNOT CATCH THIS. Two circuits differing
+    by one device have the same reference node and, as here, the same node
+    count — so the existing guard passes and the answer is quietly about
+    the wrong orbit.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    ## same topology, same node count, same refnode — different objects
+    bare = _adjoint_ladder(3)
+    other = _adjoint_ladder(3)
+    pss = PSS(bare, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    assert pss.converged
+    assert bare.n == other.n, 'the two circuits must look alike for this ' \
+        'test to be about identity rather than shape'
+
+    pac_other = PAC(other, toolkit=circuit.numeric)
+    for call in (lambda: pac_other.solve(pss, [700.0]),
+                 lambda: pac_other.adjoint_transfer_row(pss, 700.0, 1),
+                 lambda: pac_other.adjoint_sideband_row(pss, 700.0, 1, 0),
+                 lambda: pac_other.pnoise(pss, 700.0, 1)):
+        with pytest.raises(ValueError, match='different circuit'):
+            call()
+
+    ## the matching pair is accepted
+    pac_same = PAC(bare, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pac_same.adjoint_sideband_row(pss, 700.0, 1, 0)

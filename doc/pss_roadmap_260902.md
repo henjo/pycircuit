@@ -854,6 +854,22 @@ instantaneous free-running frequency first. (The "totally wrong predictions" res
 literature is about using a fixed PPV as a *transient macromodel* across a capture transient —
 a different activity, and not implied by anything in A1–A3.)
 
+⚠ **A BASE-SOLUTION TRAP, AND IT IS NOW GUARDED.** The natural way to model a driven
+oscillator — solve the PSS of the bare oscillator, treat the injection as a perturbation — is
+**wrong**, because the injection *device* is present even when its *signal* is zero: "in
+absence of the injection signal, the injection circuit affects the basic LC oscillator by
+**changing the nonlinearity of the feedback loop** … [it] can affect the start-up condition …
+**or its oscillation amplitude**, or both." So the free-running orbit of the
+circuit-with-the-device is not the orbit of the circuit-without-it, and every Floquet quantity
+built on the wrong one inherits the error. **The analysis converges and reports a plausible
+number.**
+
+It generalises past dividers to **any driven oscillator whose drive enters through a real
+device** — injection-locked VCOs, supply and substrate coupling paths. `PAC` now refuses an
+operating point solved on a different circuit object; the existing reference-node check could
+not catch it, since two circuits differing by one device have the same reference node and
+often the same node count.
+
 **An exact test vector exists for the unlocked driven oscillator** (Armand 1969, on Adler
 1946): the whole spectrum from one scalar `K`, sidebands at `w1 + n·Ω` on **one side only**,
 magnitudes a geometric ladder with ratio `tan(θ/2)`, phase advancing by exactly `θ` per
@@ -862,6 +878,13 @@ A conserved quantity plus two limits catches normalisation, sign and branch erro
 failure class that has cost this branch the most. Valid within Adler's three conditions, whose
 first two are **high Q** and **slow time constants** — the same two triggers as A2's validity
 boundary, sixty years earlier.
+
+⚠ **And Adler's equation has limits on what it can PRODUCE, not just where it holds:** phase
+only (no envelope), small injection only, first harmonic only. An ILFD locking range is
+available in closed form beyond those limits — **inversely proportional to Q**, SPICE-validated
+over R = 300–800 Ω — with the authors flagging their own artefact: the first-order expression
+is **symmetric about tank resonance** and real locking ranges are not, repaired by substituting
+the free-running frequency for `ω₀`.
 
 ### A5. Envelope-following — last
 

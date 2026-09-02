@@ -4742,6 +4742,7 @@ class PAC(Analysis):
                 % pss.par.method,
                 RuntimeWarning, stacklevel=2)
 
+        self._check_circuit(pss)
         for f in freqs:
             self._check_harmonic(pss, f, 'a sweep point')
 
@@ -4821,6 +4822,7 @@ class PAC(Analysis):
                 'PAC: the adjoint row needs the transposed replay, which is '
                 "implemented for the solved-history map only. Re-solve with "
                 "method='gear'. (PSS used %r.)" % pss.par.method)
+        self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the adjoint row')
         m = pss.cir.n - 1
         n = fp.width
@@ -4894,6 +4896,7 @@ class PAC(Analysis):
                 "is implemented for the solved-history map only. Re-solve "
                 "with method='gear'. (PSS used %r.)" % pss.par.method)
 
+        self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the sideband row')
         m = pss.cir.n - 1
         n = fp.width
@@ -5096,6 +5099,7 @@ class PAC(Analysis):
         limitation.  (Relayed from the docs session; cited, not verified
         here.)
         """
+        self._check_circuit(pss)
         fp = pss.factored_period()
         m = pss.cir.n - 1
         N = len(fp.steps)
@@ -5195,6 +5199,39 @@ class PAC(Analysis):
     ## `f0`.  `sigma_min` falls LINEARLY with the distance, so this is also
     ## roughly the conditioning floor being accepted.
     HARMONIC_GUARD = 1e-6
+
+    def _check_circuit(self, pss):
+        """The operating point must belong to THIS circuit, not a similar one.
+
+        ⚠ A DRIVEN OSCILLATOR MAKES THIS A CORRECTNESS TRAP RATHER THAN A
+        TYPO GUARD.  The natural way to model one is to solve the PSS of
+        the bare oscillator and then treat the injection as a perturbation
+        -- and it is wrong, because the injection DEVICE is present even
+        when its SIGNAL is zero.  Buonomo & Lo Schiavo: "in absence of the
+        injection signal, the injection circuit affects the basic LC
+        oscillator by CHANGING THE NONLINEARITY OF THE FEEDBACK LOOP ...
+        [it] can affect the start-up condition of the basic differential LC
+        oscillator OR ITS OSCILLATION AMPLITUDE, or both."
+
+        So the free-running orbit of the circuit-with-the-device is not the
+        orbit of the circuit-without-it, and every Floquet quantity built
+        on the wrong one inherits the error -- monodromy, PPV, phase noise.
+        The analysis would converge and report a plausible number.
+
+        The reference-node check below catches a mismatched `refnode`; it
+        cannot catch this, because two circuits differing by one device
+        have the same reference node and often the same node count.
+        """
+        if self.cir is not pss.cir:
+            raise ValueError(
+                'PAC: this analysis was built on a different circuit object '
+                'than the PSS it was handed. If that is deliberate -- e.g. '
+                'solving the PSS of a bare oscillator and perturbing a '
+                'version with an injection device added -- it is a '
+                'CORRECTNESS error, not a bookkeeping one: the injection '
+                'device changes the free-running orbit even with its signal '
+                'at zero, so the base solution is the wrong one to '
+                'linearise about. Solve the PSS on the SAME circuit.')
 
     def _check_harmonic(self, pss, freq, what):
         """Refuse an autonomous small-signal solve sitting on a harmonic.
