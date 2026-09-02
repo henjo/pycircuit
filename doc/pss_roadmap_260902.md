@@ -78,7 +78,7 @@ doi:10.1109/81.244907 — **not in the library**. DAC'96 defers to it explicitly
 
 **Gate:** acquire the paper. Do not start from the DAC'96 deferral alone.
 
-### A4. Warm start — retires advice we currently give
+### A4. Warm start — PREMISE CHECKED 2026-09-02, blocked on the criterion
 
 De Luca, Bolcato & Schilders (2019, TCAS-I) frame our exact situation: "none of the works
 in the literature addresses the relevant problem of automatically identifying such a proper
@@ -90,7 +90,39 @@ during pre-integration to find the first period after which the iteration is ins
 contraction region. "Non-invasive … can be implemented with little effort", ~`M * nnz(A)`
 flops.
 
-**Gate:** none beyond the usual — it reuses shipped machinery. Cheapest capability here.
+**Gate — RUN, and it split.** `benchmarks/pss_warm_start.py`.
+
+⚠ **The value is confirmed and it is large.** Seeded near the unstable DC point — the
+trivial-root basin the literature describes — van der Pol fails cold and converges after
+pre-integration:
+
+| circuit | cold solve | periods needed |
+|---|---|---|
+| μ = 1 (strongly attracting) | `LinAlgError` | **1** |
+| μ = 0.05 (high-Q) | not converged | **~24** |
+
+The ~24 is the `1/mu` envelope time constant, so the count is a property of how strongly
+the cycle attracts, not of the seed. A large-amplitude seed is far easier — from 4× and
+even 20× the orbit amplitude, one period suffices at μ = 1.
+
+⚠ **But the stopping criterion is the open part, and it is blocked on the paper.**
+Carrying a probe through the variational system each period (`u^{k+1} = M_k u^k`) and
+watching its direction settle **does not identify the handoff**: the drift is *small*
+(1.4e-02) while the solve still fails and *large* (1.2e-01) once it succeeds. It moves the
+wrong way. The reason is diagnostic — near the DC point the monodromy is nearly constant,
+so the probe settles into its own eigenvector and reports "converged" while the state is
+stuck at the trivial root.
+
+⚠ **The obvious alternatives share the defect**, which is why this is not worth guessing
+at: "the state stopped changing period to period" and "the shooting residual is small" are
+both *also* true at the trivial root — it is a fixed point of the period map, so it passes
+every periodicity test. Telling them apart needs something amplitude-like, which is what
+`DEGENERATE_PERIOD_FACTOR` does for the period.
+
+**Blocker:** the criterion is `||u^k - ũ^k|| <= eps` and what `ũ^k` is has been *guessed*
+here as the previous iterate — that guess produces the behaviour above. **Get the
+definition before building.** The machinery is ready and the value is established; this is
+the only thing in the way.
 
 ### A5. Envelope-following — last
 
