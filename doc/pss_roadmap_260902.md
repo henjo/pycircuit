@@ -160,8 +160,9 @@ one that actually explains the measurement:
 "inside the linear region" is unambiguous. That is the class the paper addresses and a
 large share of real PSS use. For the *autonomous* trivial-root basin the right tool is the
 probe technique (B5, Bizzarri et al., in `01-`), which pumps energy in so the solve cannot
-fall to the DC point. **A4 and B5 answer different halves of the seeding problem; neither
-substitutes for the other.**
+fall to the DC point — **or, per B5, a device `ic`, which is what that paper's own authors
+use on their flagship high-Q oscillator.** A4 and B5 answer different halves of the seeding
+problem and neither substitutes for the other, but the cheap half is the `ic`.
 
 ⚠ **The measured value above stands** — it was never criterion-dependent.
 
@@ -266,8 +267,29 @@ be removed without changing the steady state. Named in our trivial-root warning 
 "convergence is still not always obtained for high-Q oscillators as long as the initial
 estimate is not close enough."
 
-**Gate:** decide whether widening is worth a new element and a solve mode, given that the
-damped Newton (already shipped) did *not* rescue far seeds either.
+⚠ **PRIORITY DOWN 2026-09-02, and the paper is what lowered it.** Read past its §III (docs
+session, `~/docs/pycircuit-probe-analysis.md`) and the authors do **not** use the probe to
+get convergence on their own flagship high-Q example. On the Pierce crystal oscillator:
+*"it is easy to assign a tentative current to the Ls inductor modeling the crystal and
+obtain convergence in a few iterations (**we did this with conventional SH**)"*. That is
+exactly the device-`ic` workaround `tstab`'s limit already points at, so **basic
+convergence on a crystal oscillator costs one sensible `ic`, not a new element and a solve
+mode.** An earlier reading of this entry — that the probe is the only thing that can inject
+the energy the equilibrium seed lacks — is **wrong**, and the same paper refutes it.
+
+**What it does buy** is the *sweep*: unstable limit cycles, coexisting solutions, and a
+stability verdict — none of which anyone has asked for. It is also not turnkey: probe
+placement is circuit-specific, and seeding `omega_p` needs **the eigenvalues of the system
+Jacobian at the equilibrium**.
+
+**Worth remembering separately:** its 2×2 power-flow test (`P = dv_R dy_R + dv_I dy_I`)
+skips the eigenvalue computation — but it is **one-directional**. Only `P > 0 ⇒ unstable`
+is proven; the authors state plainly that the converse and `P < 0 ⇒ stable` "have not been
+proven", only tested. A cheap *instability* detector, not a replacement for
+`_spectral_report`.
+
+**Gate:** only if unstable cycles or multiple coexisting solutions are actually wanted.
+Not for seeding.
 
 ---
 

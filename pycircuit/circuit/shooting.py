@@ -306,6 +306,35 @@ class PSS(Analysis):
          not, and a test pins the gap so a future method cannot inherit the
          assumption silently.
 
+         ⚠ THAT CLEAN SEPARATION IS A PROPERTY OF THE CIRCUITS TESTED, NOT
+         OF THE METHOD, and it is known to degrade in one specific place:
+         HIGH-Q OSCILLATORS, whose PHYSICAL multipliers cluster near 1.
+         Bizzarri et al. -- "[shooting] is not suited to simulate
+         oscillators based on very high quality resonators since these lead
+         to fundamental matrices with eigenvalues very close to 1" -- and
+         Demir & Roychowdhury on the PPV -- "the oscillatory-mode eigenvalue
+         of 1 ... cannot be distinguished from other eigenvalues of the
+         system that are close to 1.  This is particularly true for many LC
+         oscillators."
+
+         ⚠ ONE CAUSE, AND IT SURFACES IN THREE PLACES HERE, which is why it
+         is written down once instead of three times as coincidences:
+           - `max |eig|` above, and `_spectral_report`'s split, both assume
+             the unit root is identifiable.
+           - THE PHASE ROW below removes the singularity from the unit
+             eigenvalue and only that one.  Bizzarri et al. again: "this is
+             not enough if any other eigenvalue is close to 1 and in this
+             case possibly ill conditioned matrices must be managed."  The
+             bordered system stays formally nonsingular and gets badly
+             conditioned, so the failure is a slow, loud Newton rather than
+             a `LinAlgError` -- the shape that invites the wrong diagnosis.
+           - PPV eigen-selection, if it is ever built, picks the same root
+             and inherits the same limit.
+         Measured here only that the unbordered composed null space is
+         EXACTLY 1-D on the circuits tested (sigma_min/sigma_next = 1.2e-11)
+         -- true, and NOT a claim about the high-Q case, which has not been
+         measured.
+
          ⚠ WHAT THE SAME MEASUREMENT DID FIND, in the DRIVEN path rather
          than the autonomous one: `_traverse_solved_history` was handing
          back `Px[0][:, :m]`, the `d x_{N-1}/d x_0` CORNER of the
@@ -2959,6 +2988,13 @@ class PSS(Analysis):
             self.tstab_state = x
 
         if self.autonomous:
+            ## ⚠ AND IT IS SUFFICIENT IN PRINCIPLE, DEGRADED IN PRACTICE ON
+            ## HIGH-Q: the row removes the singularity from the UNIT
+            ## multiplier and only that one, so an oscillator whose other
+            ## multipliers cluster near 1 gives a bordered system that is
+            ## nonsingular and ill conditioned.  Same cause as the
+            ## eigen-selection limit in the class docstring; read it there.
+            ##
             ## THE PHASE CONDITION pins the coordinate moving FASTEST at the
             ## seed, so the orbit crosses the pinning hyperplane
             ## transversally.  Pin a slow one and the last row of the
