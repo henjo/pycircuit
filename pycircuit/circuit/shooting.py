@@ -2885,6 +2885,42 @@ class PSS(Analysis):
             ## restructured, and re-selecting BETWEEN outer iterations does
             ## not threaten `phi` being a function of `x_0` alone.
             ##
+            ## ⚠ THE RULE IS CANONICAL; RE-SELECTING IT WAS TRIED AND
+            ## REJECTED, WITH NUMBERS.  Aprille & Trick's oscillator paper
+            ## picks `k` by `argmax |f_k(x^i(T^i))|` -- the same quantity an
+            ## argmax over one step is, up to an `h` common to every
+            ## coordinate -- and their Step 3 sits INSIDE the loop, pinning
+            ## `w_0k = x_0k^i`, the iterate's OWN value, so that "an initial
+            ## k and w_0k are not required".  That looks like a free repair
+            ## for the far-seed failure recorded below.  It is not.
+            ##
+            ## Built and measured 2026-09-02: re-selecting `k` and the pin
+            ## from the current trajectory between outer iterations REGRESSES
+            ## the working case.  Van der Pol at mu=1 from an ON-ORBIT seed
+            ## went from converged to NOT converged, and far seeds wandered
+            ## to periods of -52, -1088 and +110 against a true 6.6633.
+            ##
+            ## ⚠ AND THE REASON IS STRUCTURAL, not a bug in the attempt.
+            ## Pinning the iterate's own value makes the phase residual
+            ## `x_0[k] - pin` IDENTICALLY ZERO at every iterate, so the row
+            ## carries no information: it constrains the STEP (`dz[k] = 0`)
+            ## and nothing else, and with `k` re-chosen each iteration a
+            ## different coordinate is frozen each time, so the orbit slides
+            ## along itself.
+            ##
+            ## A&T do not have this problem because THEY HAVE NO PHASE
+            ## EQUATION.  Their unknown vector SUBSTITUTES the period for the
+            ## pinned coordinate -- `v = [x_01, ..., x_0(k-1), T,
+            ## x_0(k+1), ..., x_0n]` -- an n x n system in which `x_0k` is a
+            ## CONSTANT rather than an unknown with a trivially satisfied
+            ## equation.  The constraint is structural where ours is
+            ## algebraic.  So Step 3 is not portable to a bordered
+            ## formulation as a drop-in: taking it means taking the
+            ## substitution with it.
+            ##
+            ## The frozen pin's failure mode below therefore STANDS, and its
+            ## fix is that substitution, not a moving pin.
+            ##
             ## ⚠ THE PIN MUST BE IN THE UNKNOWN'S OWN FRAME.  `_x1` is the
             ## state one step AFTER the seed, which is the right thing to
             ## pin when the unknown is `x_in` and `x_0` is manufactured from

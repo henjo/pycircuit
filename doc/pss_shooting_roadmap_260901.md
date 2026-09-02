@@ -249,14 +249,29 @@ asks whether a number is small and unmissable to one that asks whether it *falls
 value is its **independence**: it compares against the converged waveform, so an error in
 the accumulation cannot hide inside it. Now a permanent test.
 
-**4. The phase rule is canonical; freezing it is not.** [AT-O] Step 3 selects
-`k = argmax|f_k(x(T))|` — vindicating our rule and our rejection of the Poincaré upgrade.
-But their Step 3 sits **inside** the loop, pinning `w_0k = x_0k^i`, the iterate's own
-current value — attainable by construction, which removes the "far seed pins an
-unattainable value" failure mode *structurally*. ⚠ **Not done:** `analysis.fsolve`
-exposes no per-iteration hook, so it needs the autonomous outer solve restructured.
-Re-selecting between outer iterations would not threaten `phi` being a function of `x₀`
-alone.
+**4. The phase rule is canonical; re-selecting it was TRIED AND REJECTED.** [AT-O] Step 3
+selects `k = argmax|f_k(x(T))|` — vindicating our rule and our rejection of the Poincaré
+upgrade. Their Step 3 also sits **inside** the loop, pinning the iterate's own value, which
+looked like a free repair for the far-seed failure mode.
+
+**Built (with a per-iteration hook in `fsolve`) and measured — it regresses the working
+case.** Van der Pol at μ=1 from an **on-orbit** seed went from converged to *not*
+converged, and far seeds wandered to periods of −52, −1088 and +110 against a true 6.6633.
+Reverted.
+
+⚠ **The reason is structural, not a flaw in the attempt.** Pinning the iterate's own value
+makes the phase residual `x₀[k] − pin` **identically zero** at every iterate, so the row
+carries no information — it constrains the *step* (`dz[k] = 0`) and nothing else, and with
+`k` re-chosen each iteration a different coordinate is frozen each time, so the orbit
+slides along itself. **A&T do not have this problem because they have no phase equation**:
+their unknown vector *substitutes* the period for the pinned coordinate
+(`v = [x_01, …, x_0(k−1), T, x_0(k+1), …, x_0n]`), an n×n system where `x₀ₖ` is a
+**constant**, not an unknown with a trivially-satisfied equation. The constraint is
+structural where ours is algebraic.
+
+So Step 3 is **not portable to a bordered formulation as a drop-in** — taking it means
+taking the substitution with it. The frozen pin's failure mode stands, and *that* is its
+fix.
 
 ⚠ **A correction the reviewer volunteered on index-2:** they had called admitting the
 constraint "research-shaped". [TCF] 1975 solves it, by the same authors — *"the method
