@@ -143,27 +143,64 @@ def test_PSS_nonlinear_C():
         'v(C) spans only %.3f V -- the tanh knee is not being crossed' % (v.max() - v.min())
 
 
-def test_PAC_is_withdrawn():
-    """Stage 11: PAC says it is unimplemented instead of allocating 420 GiB.
+def test_PAC_runs_on_a_nonlinear_circuit_without_forming_the_operator():
+    """⚠ PAC IS NO LONGER WITHDRAWN — this test used to assert that it was.
 
-    It was `@unittest.skip("Skip failing test")` -- advertised in the analysis
-    inventory, never validated, and forming the whole (N*M)x(N*M) operator densely.
-    An analysis that announces its absence is strictly better than one that fails
-    somewhere deep in an allocation.
+    Stage 11 withdrew it for forming the whole `(N m) x (N m)` operator
+    densely: 419.5 GiB at `N = 137`, `m = 1000`. The withdrawal note said
+    the body was "the starting point for a matrix-free rewrite", and that
+    turned out to be exactly right — the operator in it was CORRECT, just
+    un-preconditioned. See `PAC`'s docstring and
+    `test_the_pac_operator_is_the_monodromy_and_L_is_never_formed`.
+
+    This keeps the withdrawal's own circuit — a diode, so genuinely
+    nonlinear and genuinely time-varying, which is the case PAC exists for
+    and the one the AC gate cannot cover — and asserts the two things the
+    rewrite promises: it runs, and it never allocates the operator.
+
+    ⚠ THE MEMORY ASSERTION IS THE POINT, not the numbers. The dense route
+    would allocate `(N m)^2` complex entries; this circuit is small enough
+    that doing so would succeed and pass a value check silently. So the
+    test counts what is stored: `N` factorisations of an `m x m` matrix,
+    which is `O(N m^2)` and not `O(N^2 m^2)`.
     """
+    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir['vs'] = VSin(1, gnd, vac=2.0, va=2.0, freq=1e6, phase=20)
     cir['R'] = R(1, 2, r=1e6)
     cir['D'] = Diode(2, gnd)
     cir['C'] = C(2, gnd, c=1e-12)
-    pss = PSS(cir)
-    res = pss.solve(period=1e-6, timestep=1e-6/10)
-    with pytest.raises(NotImplementedError, match='withdrawn as unimplemented'):
-        PAC(cir).solve(pss, np.array([1e6]))
+    pss = PSS(cir, method='gear')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 40)
+    assert pss.converged
+
+    pac = PAC(cir)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = pac.solve(pss, np.array([1e6, 3e6]))
+    X = np.asarray(res.x, dtype=complex)
+    assert np.isfinite(X).all(), 'PAC returned non-finite entries'
+    assert np.abs(X).max() > 0, \
+        'PAC returned all zeros on a driven circuit -- the source vector is ' \
+        'probably being read positionally again (see the AC gate)'
+
+    ## the operator is never formed: what is stored is per-STEP, m x m
+    fp = pss.factored_period()
+    m = cir.n - 1
+    N = len(fp.steps)
+    assert N > 1 and fp.width <= 2 * m, \
+        'the factored period should hold N per-step m x m factorisations, ' \
+        'not one (N m) x (N m) matrix'
+    assert pac.matvecs < 4 * fp.width, \
+        'PAC used %d matvecs for 2 frequencies on an m=%d circuit; forming ' \
+        'the monodromy would take %d, and the point is not to' \
+        % (pac.matvecs, m, fp.width)
 
 
-@unittest.skip("Superseded by test_PAC_is_withdrawn; kept for the rewrite")
+@unittest.skip("Superseded by the PAC gate tests at the end of this file")
 def test_PAC():
     circuit.default_toolkit = circuit.numeric
     N = 10
@@ -3531,3 +3568,452 @@ def test_tstab_also_runs_on_the_driven_path():
     assert abs(warm_peak - cold_peak) < 1e-3, \
         'tstab changed a converged answer: %.6f warm against %.6f cold' \
         % (warm_peak, cold_peak)
+
+
+def _pac_L_and_B(pss, N):
+    """`L` and `B` exactly as the withdrawn `PAC.solve` body builds them.
+
+    Kept as a helper rather than inlined because the point of the test is
+    that THIS construction -- the one in the tree -- has the properties
+    DAC'96 claims for it, and only for the method it was written for.
+    """
+    times = pss.times[:-1]
+    hs = np.diff(pss.times)
+    M = len(times)
+    L = np.zeros((N * M, N * M))
+    B = np.zeros_like(L)
+    for i, (_t, h, J, Cm) in enumerate(zip(times, hs, pss.Jtvec, pss.Cvec)):
+        L[i * N:(i + 1) * N, i * N:(i + 1) * N] = J
+        if i > 0:
+            L[i * N:(i + 1) * N, (i - 1) * N:i * N] = -np.asarray(Cm) / h
+    B[0:N, (M - 1) * N:M * N] = -np.asarray(pss.Cvec[-1]) / hs[0]
+    return L, B, M
+
+
+def _pac_operator_pieces(method, npts=40):
+    """One trajectory, two descriptions of it: `L`/`B`, and our own matvec.
+
+    Both sides are driven from the SAME seed and the SAME grid on purpose.
+    Convergence is irrelevant here — these are linear-algebra identities on
+    whatever `Jtvec`/`Cvec` hold — but the two sides must describe one
+    trajectory or the comparison means nothing.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _q20_rlc()
+    per, N = 1e-3, cir.n - 1
+    pss = PSS(cir, method=method, reltol=1e-9)
+    pss._open_at_x0 = False
+    pss.autonomous = False
+    times, hs = pss._period_grid(per, npts, None)
+    x0 = np.zeros(N)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss._traverse(x0, per, times, hs, False)
+        Jt = [np.asarray(j).copy() for j in pss.Jtvec]
+        Cv = [np.asarray(c).copy() for c in pss.Cvec]
+        tms = np.asarray(pss.times).copy()
+        opening, steps, _x0, _x, _ = pss._traverse_factored_plain(
+            x0, per, times, hs)
+    pss.Jtvec, pss.Cvec, pss.times = Jt, Cv, tms
+    L, B, M = _pac_L_and_B(pss, N)
+    Mmv = np.column_stack([pss._monodromy_matvec_plain(opening, steps, e)
+                           for e in np.eye(N)])
+    ## the last block of `L^-1 B`, as a map on the wrapped state
+    H = np.zeros((N, N))
+    for j in range(N):
+        e = np.zeros(N)
+        e[j] = 1.0
+        b = np.zeros(N * M)
+        b[0:N] = B[0:N, (M - 1) * N:M * N] @ e
+        H[:, j] = np.linalg.solve(L, b)[(M - 1) * N:M * N]
+    return pss, L, B, N, M, H, Mmv
+
+
+def test_the_pac_operator_is_the_monodromy_and_L_is_never_formed():
+    """⚠ THE WITHDRAWN PAC BODY HOLDS THE RIGHT OPERATOR, and this pins it.
+
+    DAC'96 reaches the iterative form by "reinterpreting the use of `L^-1`
+    … as a preconditioner". The algebra is one line:
+
+        (L + αB)v = -u   ⟺   (I + α L^-1 B) v = -L^-1 u
+
+    `L` is block lower bidiagonal, so applying `L^-1` is forward
+    substitution through the timesteps — which is the recursion
+    `_monodromy_matvec_plain` already runs against stored factors. So
+    `H := L^-1 B` IS THE MONODROMY, the 419.5 GiB that withdrew PAC was
+    entirely the cost of FORMING `L`, and the rewrite keeps the operator
+    and never builds the matrix.
+
+    This test exists because that identification is the load-bearing claim
+    under the whole PAC item, and it arrived by relay from a reading of the
+    paper. A claim that is not in the suite is a claim that drifts.
+    """
+    _pss, L, B, N, M, H, Mmv = _pac_operator_pieces('euler')
+
+    ## (1) the two structural claims DAC'96 makes -- about OUR matrices
+    upper = 0.0
+    for i in range(M):
+        for j in range(M):
+            if j > i or j < i - 1:
+                upper = max(upper, np.abs(
+                    L[i * N:(i + 1) * N, j * N:(j + 1) * N]).max())
+    assert upper == 0.0, \
+        'L is not block lower bidiagonal (max %g outside) -- the forward ' \
+        'substitution that makes L^-1 cheap does not apply' % upper
+    Bout = B.copy()
+    Bout[0:N, (M - 1) * N:M * N] = 0.0
+    assert np.abs(Bout).max() == 0.0, \
+        'B is not confined to the first N rows and last N columns; the ' \
+        'periodic wrap is the only thing it is supposed to carry'
+
+    ## (2) the algebraic identity the whole reformulation rests on
+    rng = np.random.default_rng(0)
+    v = rng.standard_normal(N * M)
+    alpha = np.exp(-2j * np.pi * 3.0)
+    lhs = (L + alpha * B) @ v
+    rhs = L @ (v + alpha * np.linalg.solve(L, B @ v))
+    assert np.linalg.norm(lhs - rhs) / np.linalg.norm(lhs) < 1e-12, \
+        '(L + aB)v != L(I + a L^-1 B)v -- the preconditioned form is not ' \
+        'the same operator'
+
+    ## (3) and the identification itself: L^-1 B IS the monodromy, up to
+    ##     the sign B carries (`B = -C/h`)
+    rel = np.linalg.norm(H + Mmv) / np.linalg.norm(Mmv)
+    assert rel < 1e-11, \
+        'the last block of L^-1 B is not -M (rel %.3g) -- PAC cannot be ' \
+        'built on the traversal if the two disagree' % rel
+
+
+@pytest.mark.parametrize('method', ['trap', 'gear'])
+def test_the_pac_L_is_backward_euler_only(method):
+    """⚠ AND THE OPERATOR IS EULER-SHAPED, WHICH IS NOT A DETAIL.
+
+    The withdrawn body says so in its own comment — "create LHS matrix
+    using backward Euler discretization" — and builds `L` with exactly two
+    terms per row: `L[i,i] = J`, `L[i,i-1] = -C/h`. A TWO-STEP method's
+    variational system is block TRI-diagonal, so for `trap` or `gear` that
+    `L` describes a different recursion than the trajectory it was built
+    from, and `L^-1 B` is not the monodromy at all.
+
+    ⚠ THIS IS THE TRAP A REWRITE WOULD FALL INTO. The structural checks in
+    the sibling test PASS for every method — `L` really is block lower
+    bidiagonal whatever `Jtvec` holds, because that is a property of how
+    the loop writes it, not of the physics. Verifying the structure and
+    then assuming the identification is exactly the mistake: measured on
+    the Q=20 resonator at 40 points, our monodromy has ρ = 0.8545 (trap) /
+    0.8412 (gear) against the analytic 0.854636, while `-L^-1 B` has ρ = 0.
+
+    So the rewrite must take `H` from the traversal, which carries each
+    step's own `(alphas, b)`, and must NOT rebuild `L`. That is the same
+    conclusion the memory cost forces, reached independently.
+    """
+    _pss, _L, _B, _N, _M, H, Mmv = _pac_operator_pieces(method)
+
+    rho_ours = max(abs(np.linalg.eigvals(Mmv)))
+    rho_H = max(abs(np.linalg.eigvals(-H)))
+    assert abs(rho_ours - 0.854636) < 0.02, \
+        '%s monodromy rho %.6f is not the analytic exp(-pi/Q) -- this test ' \
+        'compares against it, so it has to be right first' % (method, rho_ours)
+    assert rho_H < 1e-3, \
+        '%s: -L^-1 B now has rho %.6g. If the Euler-shaped L has started ' \
+        'agreeing with a two-step monodromy, either L gained the third term ' \
+        'or the monodromy lost it -- find out which before trusting either' \
+        % (method, rho_H)
+
+
+def _pac_circuit(f0=1e3, Q=20.0):
+    """The Q=20 resonator with an AC amplitude on its source.
+
+    `vac` and `va` are different knobs: `va` drives the LARGE signal that
+    the periodic operating point is a response to, `vac` is the small
+    signal PAC linearises for. A circuit with only `va` set has nothing
+    for PAC to analyse, which `PAC.solve` refuses rather than returning
+    zeros.
+    """
+    L_, C_ = 1e-3, 1.0 / ((2 * np.pi * f0) ** 2 * 1e-3)
+    c = SubCircuit()
+    c.add_node('a'); c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=1.0, vac=1.0, freq=f0)
+    c['R'] = R('a', 'b', r=(1.0 / Q) * np.sqrt(L_ / C_))
+    c['L'] = L('b', 'c', L=L_)
+    c['C'] = C('c', gnd, c=C_)
+    return c
+
+
+def _pac_y0(pss, freq, per):
+    """`y_0` by a DENSE solve of the same `m x m` system PAC solves.
+
+    Dense on purpose: this is the reference the matrix-free path is
+    measured against, so it must not share its solver.
+    """
+    fp = pss.factored_period()
+    irn = pss.irefnode
+    (u_ac,) = remove_row_col((pss.cir.u(0, analysis='ac'),), irn,
+                             pss.toolkit)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    w, _ = pss._forced_replay(fp, freq, u_ac)
+    alpha = np.exp(-2j * np.pi * freq * per)
+    n = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    return np.linalg.solve(np.eye(n) - alpha * M, alpha * np.asarray(w)), M
+
+
+def _pac_vs_ac(method, npts, freq=700.0, per=1e-3, x0_unknown=False):
+    import warnings
+    from pycircuit.circuit.analysis_ss import AC
+    circuit.default_toolkit = circuit.numeric
+    cir = _pac_circuit()
+    m = cir.n - 1
+    pss = PSS(cir, method=method, reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / npts, maxiterations=40,
+                  x0_unknown=x0_unknown)
+    assert pss.converged, '%s at %d points did not converge' % (method, npts)
+    y0, _M = _pac_y0(pss, freq, per)
+    irn = pss.irefnode
+    xac = np.asarray(AC(cir, toolkit=circuit.numeric).solve(freqs=freq).x,
+                     dtype=complex).ravel()
+    xac = np.concatenate((xac[:irn], xac[irn + 1:]))
+    return (np.linalg.norm(np.asarray(y0)[:m] - xac) / np.linalg.norm(xac),
+            pss)
+
+
+def test_pac_agrees_with_the_ac_analysis_on_a_linear_circuit():
+    """⚠ THE GATE FOR PAC, against a reference it cannot influence.
+
+    On a LINEAR circuit the periodic operating point is irrelevant to the
+    small signal: the linearisation is constant, every sideband but `l = 0`
+    vanishes, and the LPTV response collapses to the LTI transfer function.
+    So `AC` — a different analysis, a different code path, an `(sC + G)`
+    solve that never touches a monodromy — is the answer PAC must produce.
+
+    This is the check the withdrawn implementation never had: its only test
+    was `@unittest.skip('Skip failing test')`.
+
+    ⚠ AND IT IS WHAT CAUGHT THE DEAD BODY'S REAL DEFECT. That body read its
+    source vector as `self.cir.u(0, analysis_name)` — POSITIONALLY, into a
+    signature whose second parameter is `epar`. It took the transient source
+    at `t = 0`, which is zero for every sinusoid, so the whole analysis
+    would have returned zeros. Reproduced here before it was fixed: `|PAC|`
+    exactly 0 against `|AC|` of 1.01, at every frequency and every method.
+    """
+    rel, _pss = _pac_vs_ac('gear', 1000)
+    assert rel < 1e-4, \
+        'PAC disagrees with the AC analysis by %.3e on a LINEAR circuit, ' \
+        'where the two are solving the same problem by different routes' % rel
+
+
+@pytest.mark.parametrize('method,x0_unknown,expect', [
+    ('trap', False, 'first'),
+    ('trap', True, 'second'),
+    ('euler', False, 'first'),
+    ('euler', True, 'first'),
+])
+def test_pac_order_is_lost_to_the_manufacturing_step(method, x0_unknown,
+                                                     expect):
+    """⚠ PAC ON THE PLAIN PATH IS FIRST ORDER WHATEVER THE METHOD.
+
+    `_traverse_factored_plain` takes one step OUTSIDE its loop to
+    manufacture a history, and that step is not in `steps`. For the
+    homogeneous map its effect is folded into the `opening` triple — the
+    documented flat-history approximation. For the DRIVEN map it also means
+    THE SOURCE IS NEVER APPLIED THERE: one step of `u` out of `N`, a
+    relative O(h), which drags a second-order method down to first.
+
+    ⚠ THE RATE IS THE ASSERTION, NOT THE SIZE. A constant-factor error is
+    invisible to "is it small" and unmissable to "does it fall" — the same
+    reason the saltation falsifier and the A&T period column are rate
+    checks. Measured against the AC analysis at 700 Hz, per doubling:
+
+        trap, plain            2.00x   4.13e-03 at 250 points
+        trap, x0_unknown=True  4.00x   1.09e-04 at 250 points
+        euler, either          2.00x   1.40e-02, identical to five digits
+
+    ⚠ EULER IS THE CONTROL AND IT IS WHY THIS IS THE MANUFACTURING STEP.
+    `x0_unknown` does not move euler's rate at all — it is a first-order
+    method either way — so the trapezoidal gain cannot be some other thing
+    the formulation does. The trajectory is not implicated either: trap's
+    WAVEFORM converges at ~4.2x per doubling on this circuit with or
+    without the manufacturing step.
+    """
+    r1, _ = _pac_vs_ac(method, 250, x0_unknown=x0_unknown)
+    r2, _ = _pac_vs_ac(method, 500, x0_unknown=x0_unknown)
+    ratio = r1 / r2
+    if expect == 'second':
+        assert 3.4 < ratio < 4.6, \
+            '%s/x0_unknown=%s: %.4e -> %.4e is %.2fx per doubling, not the ' \
+            "method's own second order. If the manufacturing step now " \
+            'carries its source this test should be REWRITTEN, not relaxed' \
+            % (method, x0_unknown, r1, r2, ratio)
+    else:
+        assert 1.7 < ratio < 2.4, \
+            '%s/x0_unknown=%s: %.4e -> %.4e is %.2fx per doubling, not the ' \
+            'first order the dropped manufacturing source predicts' \
+            % (method, x0_unknown, r1, r2, ratio)
+
+
+def test_the_forced_replay_superposes():
+    """`y_end = M y0 + w` — the property the whole `m x m` reduction rests on.
+
+    PAC solves an `m x m` system instead of an `(N m) x (N m)` one because
+    the driven replay is LINEAR in its initial state and its source
+    separately. If that ever stopped holding, `(I - alpha M) y_0 = alpha w`
+    would be solving the wrong equation, and the answer would still look
+    entirely plausible.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _pac_circuit()
+    per = 1e-3
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 200, maxiterations=40)
+    fp = pss.factored_period()
+    irn = pss.irefnode
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), irn, pss.toolkit)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+
+    rng = np.random.default_rng(3)
+    y0 = (rng.standard_normal(fp.width)
+          + 1j * rng.standard_normal(fp.width))
+    w, _ = pss._forced_replay(fp, 700.0, u_ac)
+    both, _ = pss._forced_replay(fp, 700.0, u_ac, y0=y0)
+    pred = np.asarray(fp.matvec(y0)) + np.asarray(w)
+    rel = np.linalg.norm(np.asarray(both) - pred) / np.linalg.norm(pred)
+    assert rel < 1e-12, \
+        'the driven replay does not superpose (rel %.3e): y_end != M y0 + w' \
+        % rel
+
+
+def test_pac_recycling_matches_the_per_frequency_solve():
+    """ONE Krylov subspace for the whole sweep — Telichevesky et al. Thm 1.
+
+    `A(alpha) = I - alpha M`, so `span{r, Ar, A^2 r, …}` is the Krylov
+    space of `M` and does not depend on `alpha` at all. A basis built once
+    therefore serves every frequency in the sweep, and each frequency costs
+    a small dense least-squares over it rather than its own run of
+    full-period replays.
+
+    ⚠ THE RIGHT-HAND SIDE IS NOT SHARED, and that is why the implementation
+    checks rather than assumes: `w(f)` genuinely differs per frequency, so
+    the shared span is not the space GMRES would have picked for any but
+    the first. It minimises the TRUE residual over the span and extends the
+    basis — one matvec, kept for every later frequency — until every
+    frequency is inside tolerance. The answer is therefore never worse than
+    the per-frequency solve; only the count moves. Measured on RC ladders,
+    24 frequencies:
+
+        m=4    72 matvecs -> 6    12.0x
+        m=14  168 matvecs -> 15   11.2x
+        m=42  302 matvecs -> 26   11.6x
+
+    with the two routes agreeing to 1.2e-13.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('n0')
+    c['vs'] = VSin('n0', gnd, va=1.0, vac=1.0, freq=1e3)
+    for k in range(6):
+        a, b = 'n%d' % k, 'n%d' % (k + 1)
+        c.add_node(b)
+        c['R%d' % k] = R(a, b, r=1e3)
+        c['C%d' % k] = C(b, gnd, c=1e-7)
+    per = 1e-3
+    pss = PSS(c, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 150, maxiterations=40)
+    assert pss.converged
+
+    freqs = np.logspace(1, 4, 12)
+    out = {}
+    for rec in (False, True):
+        pac = PAC(c, toolkit=circuit.numeric)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pac.solve(pss, freqs, recycle=rec)
+        out[rec] = (np.asarray(res.x, dtype=complex), pac.matvecs)
+
+    a, na = out[False]
+    b, nb = out[True]
+    rel = np.linalg.norm(a - b) / np.linalg.norm(a)
+    assert rel < 1e-9, \
+        'recycled sweep disagrees with the per-frequency solve by %.3e -- ' \
+        'the shared subspace is supposed to change the COST and not the ' \
+        'answer' % rel
+    assert nb < na, \
+        'recycling used %d matvecs against %d for the per-frequency solve, ' \
+        'so it is not recycling anything' % (nb, na)
+
+
+def test_pac_refuses_what_it_cannot_answer():
+    """The two ways to ask PAC a question that has no answer.
+
+    Both were reachable in the withdrawn body, and neither announced
+    itself: a source with no `vac` gave a zero right-hand side and returned
+    zeros, and nothing checked that the operating point had converged.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    ## (a) no operating point yet
+    cir = _pac_circuit()
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with pytest.raises(RuntimeError, match='call solve'):
+        pss.factored_period()
+
+    ## (b) an operating point, but no small-signal source
+    L_, C_ = 1e-3, 1.0 / ((2 * np.pi * 1e3) ** 2 * 1e-3)
+    quiet = SubCircuit()
+    quiet.add_node('a'); quiet.add_node('b')
+    quiet['vs'] = VSin('a', gnd, va=1.0, vac=0.0, freq=1e3)
+    quiet['R'] = R('a', 'b', r=(1.0 / 20.0) * np.sqrt(L_ / C_))
+    quiet['L'] = L('b', 'c', L=L_)
+    quiet['C'] = C('c', gnd, c=C_)
+    pss2 = PSS(quiet, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss2.solve(period=per, timestep=per / 150, maxiterations=40)
+    assert pss2.converged
+    with pytest.raises(ValueError, match='identically zero'):
+        PAC(quiet, toolkit=circuit.numeric).solve(pss2, [700.0])
+
+
+def test_the_matvecs_take_a_complex_vector():
+    """PAC needs `I + alpha(f) H` with `alpha` complex; `M` is real.
+
+    So a complex product is TWO REAL REPLAYS against the same stored
+    factors, exactly — not a complex refactorisation, which would double
+    the stored factors for a map with no imaginary part. The three matvecs
+    used to cast with `dtype=float`, which does not refuse a complex vector,
+    it DISCARDS its imaginary half.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _pac_circuit()
+    per = 1e-3
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 150, maxiterations=40)
+    fp = pss.factored_period()
+    rng = np.random.default_rng(7)
+    vr = rng.standard_normal(fp.width)
+    vi = rng.standard_normal(fp.width)
+
+    for name, mv in (('forward', fp.matvec),
+                     ('transposed', fp.matvec_transposed)):
+        got = mv(vr + 1j * vi)
+        want = np.asarray(mv(vr)) + 1j * np.asarray(mv(vi))
+        assert np.iscomplexobj(got), \
+            '%s matvec returned a real result for a complex vector -- the ' \
+            'imaginary half was discarded' % name
+        assert np.array_equal(got, want), \
+            '%s matvec is not exactly two real replays' % name
+    assert not np.iscomplexobj(np.asarray(fp.matvec(vr))), \
+        'the real path became complex; a real replay must stay real'

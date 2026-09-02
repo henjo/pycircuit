@@ -47,6 +47,83 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
 AUTONOMOUS_U_TOL = 1e-12
 
 
+def _complex_solve(lu, b):
+    """`lu.solve(b)` for a complex `b` against a REAL factorisation.
+
+    Two back-substitutions, not a complex refactorisation: the step
+    Jacobians are real, so the solve is real and splits exactly.
+    """
+    b = np.asarray(b)
+    if np.iscomplexobj(b):
+        return lu.solve(b.real) + 1j * lu.solve(b.imag)
+    return lu.solve(b)
+
+
+class FactoredPeriod(object):
+    """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
+
+    `PSS.solve` throws its factorisations away: they live inside the Newton's
+    `build` closure and go out of scope with it.  Every small-signal analysis
+    over a periodic operating point needs the same thing back -- products
+    with the monodromy, never the monodromy itself -- so this is what
+    `PSS.factored_period()` hands out.
+
+    ⚠ `matvec` IS THE WHOLE INTERFACE, and deliberately so.  The withdrawn
+    `PAC` read `pss.Jtvec` / `pss.Cvec` and rebuilt the `(NM)x(NM)` operator
+    from them, which is where its 419.5 GiB went.  Two things are wrong with
+    that route and only one of them is the memory: those two lists are
+    written by `_traverse` and `_traverse_solved_history` and by NEITHER
+    factored traversal, so after `solve(matrix_free=True)` they are stale or
+    absent -- an analysis reading them would rebuild an operator for a
+    DIFFERENT trajectory than the one that converged, silently.
+
+    ⚠ AND THE REBUILT OPERATOR WAS EULER-SHAPED.  See
+    `test_the_pac_L_is_backward_euler_only`: the old `L` has two terms per
+    row, so for `trap` or `gear` it is not the discretisation the trajectory
+    was produced by and `L^-1 B` is not the monodromy at all -- measured,
+    spectral radius 0 against the analytic 0.8546.  A `matvec` cannot make
+    that mistake, because each step carries its own `(alphas, b)`.
+    """
+
+    __slots__ = ('kind', 'opening', 'steps', 'x_last', 'x_prev', 'width',
+                 'times', 'T', 'open_at_x0', '_pss')
+
+    def __init__(self, kind, opening, steps, x_last, x_prev, pss,
+                 times=None, T=None, open_at_x0=False):
+        self.kind, self.opening, self.steps = kind, opening, steps
+        self.x_last, self.x_prev, self._pss = x_last, x_prev, pss
+        ## the grid the steps were taken on -- a forced replay needs the
+        ## time of each step to evaluate `exp(j w t)` there, and reading it
+        ## off `pss.times` later is exactly the parallel-indexing trap the
+        ## final replay's `(t, h)` pairing was rewritten to remove
+        self.times, self.T = times, T
+        ## whether the period opened AT `x_0` -- no manufacturing step.  A
+        ## driven replay needs to know: the manufacturing step is not in
+        ## `steps`, so its share of the source is not applied, and that
+        ## costs an order.  See `PAC.solve`.
+        self.open_at_x0 = bool(open_at_x0)
+        m = pss.cir.n - 1
+        ## the solved-history map acts on the PAIR, the plain map on one
+        ## state -- the same distinction `_monodromy` carries
+        self.width = 2 * m if kind == 'solved_history' else m
+
+    def matvec(self, v):
+        """`M v`, real or complex, replaying the stored factors."""
+        if self.kind == 'solved_history':
+            return self._pss._monodromy_matvec(self.opening, self.steps, v)
+        return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
+
+    def matvec_transposed(self, v):
+        """`M^T v` -- solved-history only; see `_monodromy_matvec_transposed`."""
+        if self.kind != 'solved_history':
+            raise NotImplementedError(
+                'PSS: the transposed replay is implemented for the '
+                'solved-history map only, and this period was traversed on '
+                "the plain path (method=%r)." % self._pss.par.method)
+        return self._pss._monodromy_matvec_transposed(
+            self.opening, self.steps, v)
+
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
 
@@ -1140,6 +1217,14 @@ class PSS(Analysis):
         ## Set by `solve` when an autonomous run lands on a multiple of the
         ## fundamental; None when it did not (or on a driven run).
         self.fundamental_period = None
+        ## What `factored_period()` needs to replay the CONVERGED period:
+        ## which seed, which grid, which opening.  Written at the end of
+        ## `solve`, and cleared at its start so a failed or interrupted run
+        ## cannot leave a previous solution's state readable as this one's.
+        self._period_state = None
+        self._factored_period_cache = None
+        ## Set to None by `solve` on the tstab path only -- see there.
+        self.tstab_state = None
 
     def _is_autonomous(self, times):
         """True when nothing in the circuit depends on `t`.
@@ -1443,7 +1528,7 @@ class PSS(Analysis):
         return self._companion_reach() >= 2
 
     def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new, solve=None,
-                          coeffs=None):
+                          coeffs=None, source=None):
         """One step of the sensitivity recursion, for ANY seed width.
 
         ONE RECURSION FOR EVERY METHOD (and now for either formulation).
@@ -1476,10 +1561,24 @@ class PSS(Analysis):
         ## overrides the solve: a matrix-free replay happens after the run
         ## that produced the steps, when `_coeffs` no longer describes the
         ## step being replayed.  See `_traverse_factored_plain`.
+        ## ⚠ `source` ENTERS THE SOLVE AND NOT `Pq`, and the asymmetry is
+        ## the physics rather than a convenience.  A small-signal source
+        ## appears in the step's residual -- `Jf dx + S + du = 0` -- but NOT
+        ## in the companion, because `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`
+        ## is built from CHARGES, and an injected current is not one.
+        ## Adding it to `Pq` as well would feed a fictitious charge forward
+        ## into every later step, and the error would grow along the period
+        ## rather than announce itself.
+        ##
+        ## This is what makes PAC share the recursion instead of copying it:
+        ## the homogeneous propagation (`source=None`) is the monodromy and
+        ## the driven one is the forced response, and they differ by this
+        ## one term.
         alphas, b = self._coeffs if coeffs is None else coeffs
         S = b * Pq if b else np.zeros_like(Px[0])
         for k in range(1, len(alphas)):
             S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
+        S_solve = S if source is None else S + source
         if solve is None:
             ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`.
             ## This is the DENSE propagation -- the thing matrix-free is
@@ -1490,9 +1589,9 @@ class PSS(Analysis):
             ## flattered it; both sides go through the same strategy now.
             ## `DenseSolver` IS `toolkit.linearsolver`, so the default is
             ## unchanged.
-            Px_new = -self._get_linearsolver().solve(Jf, S, self.toolkit)
+            Px_new = -self._get_linearsolver().solve(Jf, S_solve, self.toolkit)
         else:
-            Px_new = -solve(S)
+            Px_new = -solve(S_solve)
         Pq_new = alphas[0] * (C_new @ Px_new) + S
         return Px_new, Pq_new
 
@@ -1759,7 +1858,23 @@ class PSS(Analysis):
         shooting Jacobian's action is `v - M v` -- see `_matrix_free_solve`.
         """
         m = self.cir.n - 1
-        v = np.asarray(v, dtype=float)
+        ## ⚠ COMPLEX `v` IS TWO REAL REPLAYS, NOT A COMPLEX FACTORISATION.
+        ## `Jf` and `C` are real, so `M` is a REAL linear map and
+        ## `M(a + ib) = Ma + i Mb` exactly.  PAC needs complex products
+        ## (`I + alpha(f) H` with `alpha = exp(-2j pi f T)`), and the
+        ## alternative -- factoring `Jf` in complex arithmetic -- would
+        ## double the stored factors and roughly quadruple the solve cost
+        ## for a map that has no imaginary part to begin with.  Splitting
+        ## costs two back-substitutions against the SAME factors.
+        ##
+        ## ⚠ The float cast below is therefore a GUARD, not a convenience:
+        ## it used to swallow a complex `v` silently by discarding the
+        ## imaginary part, which is a wrong answer rather than an error.
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return (self._monodromy_matvec(C0, steps, v.real)
+                    + 1j * self._monodromy_matvec(C0, steps, v.imag))
+        v = v.astype(float)
         Px = [v[:m].copy(), v[m:].copy()]
         Cs = list(C0)
         Pq = np.zeros(m)
@@ -1865,7 +1980,23 @@ class PSS(Analysis):
         """`M v` for the plain path, one column through the stored steps."""
         m = self.cir.n - 1
         C_open, a_open, b_open = opening
-        v = np.asarray(v, dtype=float)
+        ## ⚠ COMPLEX `v` IS TWO REAL REPLAYS, NOT A COMPLEX FACTORISATION.
+        ## `Jf` and `C` are real, so `M` is a REAL linear map and
+        ## `M(a + ib) = Ma + i Mb` exactly.  PAC needs complex products
+        ## (`I + alpha(f) H` with `alpha = exp(-2j pi f T)`), and the
+        ## alternative -- factoring `Jf` in complex arithmetic -- would
+        ## double the stored factors and roughly quadruple the solve cost
+        ## for a map that has no imaginary part to begin with.  Splitting
+        ## costs two back-substitutions against the SAME factors.
+        ##
+        ## ⚠ The float cast below is therefore a GUARD, not a convenience:
+        ## it used to swallow a complex `v` silently by discarding the
+        ## imaginary part, which is a wrong answer rather than an error.
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return (self._monodromy_matvec_plain(opening, steps, v.real)
+                    + 1j * self._monodromy_matvec_plain(opening, steps, v.imag))
+        v = v.astype(float)
         Px = [v.copy(), v.copy()]
         Cs = [C_open, C_open]
         ## ⚠ THE OPENING PAIR, NOT THE LOOP'S.  `_traverse` opens `Pq` at
@@ -1919,7 +2050,15 @@ class PSS(Analysis):
         test rather than left in a scratch file.
         """
         m = self.cir.n - 1
-        v = np.asarray(v, dtype=float)
+        ## complex `v` is two real reverse replays -- see the note in
+        ## `_monodromy_matvec`; `M^T` is real for exactly the same reason
+        ## `M` is, and adjoint noise needs complex products.
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return (self._monodromy_matvec_transposed(C0, steps, v.real)
+                    + 1j * self._monodromy_matvec_transposed(
+                        C0, steps, v.imag))
+        v = v.astype(float)
         w1, w2 = v[:m].copy(), v[m:].copy()
 
         ## The capacitance ring as the FORWARD pass saw it, so the reverse
@@ -1933,6 +2072,21 @@ class PSS(Analysis):
 
         for j in range(len(steps) - 1, -1, -1):
             lu, _C_new, alphas, b = steps[j]
+            if len(alphas) < 3:
+                ## ⚠ A ONE-STEP COMPANION HAS NO `alphas[2]`, and this used
+                ## to read it anyway -- an `IndexError` from inside a
+                ## reverse loop, three frames from the cause, where the
+                ## `b != 0` case one line below states its refusal
+                ## plainly.  Unreachable through `solve`, which takes this
+                ## path only for Gear-2, but PPV and adjoint noise both
+                ## call the transposed replay directly and a one-step
+                ## method is the obvious thing to try first.
+                raise NotImplementedError(
+                    'PSS: the transposed replay is derived for a two-step '
+                    'companion (Gear-2) and this step has %d alpha '
+                    'coefficients, so there is no second history term to '
+                    'transpose. A one-step method needs its own reverse '
+                    'recursion, not this one.' % len(alphas))
             if b:
                 ## a `b != 0` companion carries `iq` in the state, so the
                 ## step map is not the pair above.  Unreachable today --
@@ -1953,6 +2107,109 @@ class PSS(Analysis):
             w1, w2 = (-alphas[1] * (cs0[j].T @ t) + w2,
                       -alphas[2] * (cs1[j].T @ t))
         return np.concatenate((w1, w2))
+
+    def factored_period(self):
+        """The converged period's steps, kept factored -- see `FactoredPeriod`.
+
+        Runs the factored traversal ONCE, at the solution, and caches it.
+        Lazy on purpose: `_traverse_factored` stores `N` factorisations and
+        `N` capacitances (`2 N m^2` doubles -- ~800 MB at m=1002 and 50
+        points), which is a bad trade to impose on every `solve` for the
+        callers who never ask.
+
+        ⚠ IT RE-TRAVERSES RATHER THAN REUSING THE NEWTON'S FACTORS, and the
+        difference is not efficiency.  The last `build` call inside the
+        Newton is at the last TRIAL iterate; the converged answer is the one
+        after it.  Reusing those factors would give an operator for a
+        trajectory near the solution instead of at it -- a small error, in
+        the third figure, of exactly the kind a converged answer absorbs
+        without complaint.
+        """
+        if getattr(self, '_period_state', None) is None:
+            raise RuntimeError(
+                'PSS: no period to factor -- call solve() first. '
+                '(factored_period() replays the CONVERGED trajectory, so '
+                'there has to be one.)')
+        if not self.converged:
+            raise RuntimeError(
+                'PSS: the shooting solve did not converge, so there is no '
+                'periodic operating point to linearise about. A '
+                'small-signal analysis over a non-solution is not a '
+                'meaningful answer -- fix the PSS run first.')
+        if self._factored_period_cache is not None:
+            return self._factored_period_cache
+
+        solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
+        if solved:
+            C0, steps, x_last, x_prev = self._traverse_factored(
+                x0, xm1, times, hs, T=T)
+            fp = FactoredPeriod('solved_history', C0, steps, x_last, x_prev,
+                                self, times=times, T=T)
+        else:
+            opening, steps, x0_out, x_last, _dT = \
+                self._traverse_factored_plain(x0, T, times, hs,
+                                              open_at_x0=x0_unknown)
+            fp = FactoredPeriod('plain', opening, steps, x_last, x0_out,
+                                self, times=times, T=T,
+                                open_at_x0=x0_unknown)
+        self._factored_period_cache = fp
+        return fp
+
+    def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
+        """One period of the LINEARISED circuit, driven at `freq`.
+
+        The same recursion as `_monodromy_matvec`, with `source` switched
+        on: `_step_sensitivity` is linear in `(y0, source)`, so this returns
+
+            y_end = M y0 + w(freq)
+
+        with `w` the particular response from a zero initial state.  That
+        superposition is not an incidental property -- it is what lets PAC
+        solve an `m x m` system instead of an `(N m) x (N m)` one, and it is
+        asserted in the suite rather than assumed.
+
+        ⚠ THE SOLVE IS REAL, THE REPLAY IS COMPLEX.  `Jf` is real and stays
+        factored once; a complex right-hand side costs two back-substitutions
+        against those same factors.  See the note in `_monodromy_matvec`.
+        """
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
+
+        if fp.kind == 'solved_history':
+            if y0 is None:
+                Px = [np.zeros(m, dtype=complex), np.zeros(m, dtype=complex)]
+            else:
+                y0 = np.asarray(y0, dtype=complex).ravel()
+                Px = [y0[:m].copy(), y0[m:].copy()]
+            Cs = list(fp.opening)
+            Pq = np.zeros(m, dtype=complex)
+        else:
+            C_open, a_open, b_open = fp.opening
+            v = (np.zeros(m, dtype=complex) if y0 is None
+                 else np.asarray(y0, dtype=complex).ravel().copy())
+            Px = [v.copy(), v.copy()]
+            Cs = [C_open, C_open]
+            ## the OPENING pair, exactly as `_monodromy_matvec_plain` -- see
+            ## the note there; using the loop's makes it wrong for `trap`
+            Pq = (a_open[0] * (C_open @ v) if b_open
+                  else np.zeros(m, dtype=complex))
+
+        ys = []
+        for (lu, C_new, alphas, b), t in zip(fp.steps, fp.times[1:]):
+            src = u_ac * np.exp(jw * float(t))
+            Px_new, Pq = self._step_sensitivity(
+                Px, Cs, Pq, None, C_new,
+                solve=lambda S, _l=lu: _complex_solve(_l, S),
+                coeffs=(alphas, b), source=src)
+            Px = [Px_new, Px[0]]
+            Cs = [C_new, Cs[0]]
+            if collect:
+                ys.append(Px_new.copy())
+
+        end = (np.concatenate((Px[0], Px[1])) if fp.kind == 'solved_history'
+               else Px[0])
+        return end, ys
 
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
     ## An inexact Newton only needs the step accurate enough not to spoil
@@ -2918,6 +3175,16 @@ class PSS(Analysis):
                 'the analysis with PSS(cir, irefnode=...) and leave '
                 "solve()'s refnode at its default."
                 % (irefnode, self.irefnode))
+        ## ⚠ CLEARED BEFORE THE RUN, not after it.  These describe the
+        ## period this call is about to solve for; leaving the previous
+        ## call's behind would let `factored_period()` hand back an operator
+        ## for the LAST solve after this one failed, and `converged` alone
+        ## would not catch it -- a second solve that fails leaves the first
+        ## solve's `converged=True` nowhere in sight but its state very much
+        ## in reach.
+        self._period_state = None
+        self._factored_period_cache = None
+
         n = self.cir.n
         dt = timestep
         if x0 is None:
@@ -3670,6 +3937,25 @@ class PSS(Analysis):
         ## Now built as explicit `(t, h)` PAIRS rather than two sequences
         ## indexed in parallel, because the parallel indexing is the bug and
         ## a pair cannot be misaligned by one.
+        ## ⚠ WHAT A LATER FACTORED REPLAY NEEDS, and the reason it is kept
+        ## HERE rather than inside the Newton.  `_traverse_factored*` runs
+        ## inside `_matrix_free_solve`'s `build` closure, whose `steps` go
+        ## out of scope with the closure -- and the last `build` call is at
+        ## the last TRIAL iterate, which is the converged one only by
+        ## accident.  `PAC` wants the factors of the SOLUTION.
+        ##
+        ## So this keeps the four things a replay cannot re-derive from
+        ## outside (which seed, which grid, which opening) and
+        ## `factored_period()` runs the traversal on demand.  That costs one
+        ## traversal for a caller who asks and nothing at all for one who
+        ## does not -- where retaining `N` factorisations from every solve
+        ## would cost `2 N m^2` doubles on every run, which is the memory
+        ## trade `_traverse_factored` documents and most callers never want.
+        self._period_state = (bool(solved_history), copy(x0_ss),
+                              None if xm1_ss is None else copy(xm1_ss),
+                              times, hs, float(period), bool(x0_unknown))
+        self._factored_period_cache = None
+
         if solved_history:
             self._install_history(x0_ss, xm1_ss, hs[0], h_prev=hs[-1])
             tr = self._transient()
@@ -3911,104 +4197,282 @@ class PSS(Analysis):
         return InternalResultDict({'tpss': tpss, 'fpss': fpss})
 
 class PAC(Analysis):
-    """Small-signal analysis over a time varying operating point"""
+    """Small-signal analysis over a periodic operating point, matrix-free.
 
-    parameters  = [Parameter(name='analysis', desc='Analysis name', 
+    THE OPERATOR IS THE MONODROMY, and the whole method is one line of
+    algebra on the withdrawn implementation's own system.  That system was
+
+        (L + alpha B) v = -u,   alpha = exp(-2j pi f T)
+
+    with `L` the block lower bidiagonal discretisation over the period and
+    `B` the periodic wrap.  Telichevesky, Kundert & White (DAC 1996) reach
+    the iterative form by "reinterpreting the use of `L^-1` ... as a
+    preconditioner":
+
+        (I + alpha L^-1 B) v = -L^-1 u
+
+    `L` is block lower bidiagonal, so applying `L^-1` is forward
+    substitution through the timesteps -- which is the recursion PSS already
+    runs against stored factors -- and `B` is confined to the first `m` rows
+    and last `m` columns, so `L^-1 B` acts only on the LAST block.  Both
+    claims are checked against our own matrices in
+    `test_the_pac_operator_is_the_monodromy_and_L_is_never_formed`.
+
+    What is left after that is `m x m`:
+
+        (I - alpha M) y_0 = alpha w(f)
+
+    with `M` the monodromy and `w` the forced response over one period from
+    a zero initial state.  `y_0` is the small-signal state at `t = 0`; one
+    more driven replay gives the rest of the period.
+
+    ⚠ WHY THE 419.5 GiB IS GONE, precisely.  It was never the operator: it
+    was the cost of FORMING `L` and `B`, `(N m)^2` complex entries, 279.7 +
+    139.8 GiB at `N = 137`, `m = 1000`.  Nothing here forms either.  The
+    stored per-step factors PSS already makes are the preconditioner, and
+    the only dense object is `m x m` and only if the caller asks for it.
+
+    ⚠ AND THE OLD `L` WAS BACKWARD-EULER-SHAPED, which is the trap a rewrite
+    falls into.  It has two terms per row; a two-step method's variational
+    system has three.  Rebuilding it for `trap` or `gear` gives an operator
+    for a different recursion than the trajectory it came from -- measured,
+    spectral radius 0 against the analytic 0.8546
+    (`test_the_pac_L_is_backward_euler_only`).  Taking `M` from the
+    traversal cannot make that mistake, because every step carries its own
+    `(alphas, b)`.
+    """
+
+    parameters  = [Parameter(name='analysis', desc='Analysis name',
                              default='ac')]
 
+    ## How hard GMRES is asked to solve the `m x m` system, relative to the
+    ## PSS reltol that produced the operating point.  Looser than the
+    ## operating point itself would be answering a question the trajectory
+    ## cannot support; much tighter buys nothing, because the linearisation
+    ## is only as good as the trajectory.
+    KRYLOV_FACTOR = 1e-2
+
     def __init__(self, cir, toolkit=None, **kvargs):
-        self.parameters = super(PAC, self).parameters + self.parameters            
+        self.parameters = super(PAC, self).parameters + self.parameters
         super(PAC, self).__init__(cir, toolkit=toolkit, **kvargs)
-    
-    def solve(self, pss, freqs, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
-              maxiterations=20):
-        raise NotImplementedError(
-            "PAC is withdrawn as unimplemented (stage 11). It forms the whole "
-            "(N*M)x(N*M) operator densely: at N=137 unknowns and M=1000 time "
-            "points that is 419.5 GiB (279.7 GiB for L in complex128 plus 139.8 "
-            "GiB for B), which is not a tuning problem but a consequence of the "
-            "formulation. It has also never been validated -- its only test was "
-            "@unittest.skip('Skip failing test'). A thin advertised feature is "
-            "worse than an absent one, so it says so instead of allocating.\n\n"
-            "The body below is kept, unreachable, because it is the starting "
-            "point for a matrix-free rewrite (Telichevesky, Kundert & White, DAC "
-            "1995): PAC needs only products with the operator, never the operator "
-            "itself. Use PSS for periodic steady state in the meantime.")
 
-        tk = self.toolkit
-        analysis_name = self.par.analysis
-        print('solve PAC analysis_name = ' + analysis_name)
-        ## Create U vector which is the RHS evaluated at every time instant
-        T = pss.period
-        times = pss.times[:-1]
-        hs = tk.diff(pss.times)
+    def solve(self, pss, freqs, refnode=gnd, recycle=True):
+        """Sideband response at each frequency in `freqs`.
 
-        N = self.cir.n - 1 ## ref node removed
-        M = len(times)
+        `pss` must be a CONVERGED `PSS` -- the periodic operating point is
+        what this linearises about, and there is no meaningful small-signal
+        answer about a non-solution.  `PSS.factored_period()` enforces it.
+
+        `recycle` shares one Krylov subspace across the sweep, which is
+        where the sweep's cost goes; see `_solve_subspace`.
+        """
+        toolkit = self.toolkit
+        freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
+        fp = pss.factored_period()
+        T = float(fp.T)
+        m = self.cir.n - 1
 
         irefnode = self.cir.get_node_index(refnode)
-        (u0,) = remove_row_col((self.cir.u(0, analysis_name),), irefnode, self.toolkit)
+        if irefnode != pss.irefnode:
+            raise ValueError(
+                'PAC: refnode (index %d) differs from the PSS the operating '
+                'point came from (index %d). The monodromy eliminated one '
+                'and this would report against the other.'
+                % (irefnode, pss.irefnode))
+        ## ⚠ `analysis=` BY KEYWORD.  `Circuit.u(t, epar, analysis, ...)`
+        ## takes `epar` second, and the withdrawn body wrote
+        ## `self.cir.u(0, analysis_name)` -- passing 'ac' as the element
+        ## parameter set and taking the TRANSIENT source vector, which is
+        ## zero at `t = 0` for every sinusoid.  The whole analysis would
+        ## have returned zeros, silently, with no source to speak of.
+        (u_ac,) = remove_row_col((self.cir.u(0, analysis=self.par.analysis),),
+                                 irefnode, toolkit)
+        if not np.any(np.asarray(u_ac)):
+            raise ValueError(
+                'PAC: the %r source vector is identically zero, so there is '
+                'nothing to analyse. Independent sources take their '
+                'small-signal amplitude from `vac`/`iac`, not from `va` -- '
+                'a source with va= set and vac=0 drives the operating point '
+                'and not this.' % self.par.analysis)
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
 
-        ## Create LHS matrix using backward Euler discretization
-        L = tk.zeros((N*M, N*M),dtype=tk.cdouble)
-        ## 0.1c: no dtype, so B was float64 while L is complex -- it worked by
-        ## promotion, not by intent.  Corrected even though unreachable, so the
-        ## starting point for a rewrite is not itself wrong.
-        B = tk.zeros(L.shape, dtype=tk.cdouble)
-        for i, (t, h, J, C) in enumerate(zip(times, hs, pss.Jtvec, pss.Cvec)):
-            L[i*N:(i+1)*N, i*N:(i+1)*N] = J
-            if i > 0:
-                L[i*N:(i+1)*N, (i-1)*N:i*N] = -C / h
-        B[0:N,(M-1)*N:M*N] = -pss.Cvec[-1] / hs[0]
+        ## the forced response at each frequency -- one period replay each,
+        ## and unavoidable: the source is what changes across the sweep
+        ## ⚠ THE MANUFACTURING STEP IS NOT IN `steps`, AND IT COSTS AN
+        ## ORDER.  On the plain path `_traverse_factored_plain` takes one
+        ## step OUTSIDE the loop to manufacture a history, and folds its
+        ## effect into the `opening` triple as a flat-history assumption.
+        ## For the HOMOGENEOUS map that is the documented approximation the
+        ## whole plain path is built on.  For the DRIVEN one it also means
+        ## the source is never applied at that step -- one step of `u` out
+        ## of `N`, i.e. a relative O(h).
+        ##
+        ## ⚠ MEASURED, on the Q=20 resonator against the AC analysis at
+        ## 700 Hz, rel error per doubling of the grid:
+        ##
+        ##     trap, plain            2.00x  (O(h))   4.13e-03 at 250 pts
+        ##     trap, x0_unknown=True  4.00x  (O(h^2)) 1.09e-04 at 250 pts
+        ##     euler, either          2.00x  (O(h))   1.40e-02, unchanged
+        ##
+        ## The euler row is the control: `x0_unknown` does not move it at
+        ## all (identical to five digits), so the trapezoidal gain is the
+        ## manufacturing step and not something else the formulation does.
+        ## The trajectory is NOT the problem -- trap's waveform converges at
+        ## 4.2x per doubling either way.
+        ##
+        ## So this is a silent order loss for a caller who did nothing
+        ## wrong, which is the one thing worth a warning.  Gear-2 takes the
+        ## solved-history path and has no manufacturing step at all.
+        if (fp.kind == 'plain' and not fp.open_at_x0
+                and pss.par.method != 'euler'):
+            warnings.warn(
+                'PAC: this operating point was solved on the PLAIN path '
+                'with a manufacturing step (method=%r, x0_unknown=False). '
+                'The manufacturing step carries no small-signal source, so '
+                'the response is FIRST order in the timestep whatever the '
+                "method's own order -- measured 2.00x per doubling against "
+                '4.00x for the same run with x0_unknown=True. The answer is '
+                'not wrong, it is one order less accurate than the '
+                'trajectory it came from. Re-solve with x0_unknown=True, or '
+                "with method='gear', to get the method's own order."
+                % pss.par.method,
+                RuntimeWarning, stacklevel=2)
 
-        outfreq = []
-        outV = []
-        for fs in freqs:
-            phase_shift = tk.zeros(N * M, dtype=tk.cdouble)
-            u = tk.zeros(N * M, dtype=tk.cdouble)
-            for i,t in enumerate(times):
-                phase_shift[i*N:(i+1)*N] = tk.exp(2j*tk.pi*fs*t)
-                u[i*N:(i+1)*N] = u0
-            
-            u *= phase_shift
-            
-            alpha = tk.exp(-2j*tk.pi*fs*T)
+        rhs = []
+        for f in freqs:
+            w, _ = pss._forced_replay(fp, f, u_ac)
+            rhs.append(np.exp(-2j * np.pi * f * T) * np.asarray(w))
 
-            ## Solve discrete-time AC-voltage vector
-            v = tk.linearsolver(L + alpha*B, -u)
-            
-            ## multiply v matrix by exp(-j*2*pi*fs) so the spectrum
-            ## is evaluated at 2*pi*(fs + 1/T) instead of 2*pi/T
-            ## this will also make v T-periodic
-            v_shifted = (v / phase_shift)
+        alphas = [np.exp(-2j * np.pi * f * T) for f in freqs]
+        tol = max(pss.par.reltol * self.KRYLOV_FACTOR, 1e-14)
+        if recycle:
+            ys, self.matvecs = self._solve_subspace(fp, alphas, rhs, tol)
+        else:
+            ys, self.matvecs = self._solve_each(fp, alphas, rhs, tol)
 
-            freqs, V = freq_analysis(v_shifted.reshape(M,N),
-                                     times, axis=0)
-
-            outfreq.extend((abs(freqs + fs)).tolist())
+        ## one driven replay per frequency turns `y_0` into the period
+        outfreq, outV = [], []
+        for f, y0 in zip(freqs, ys):
+            _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0, collect=True)
+            y = np.array([np.asarray(y0)[:m]] + [np.asarray(v)[:m]
+                                                 for v in ysteps])
+            ## `v(t) = y(t) exp(-j w t)` is T-periodic; its DFT is the
+            ## sideband set, exactly as the withdrawn body intended
+            tms = np.asarray(fp.times, dtype=float)[:len(y)]
+            v = y * np.exp(-2j * np.pi * f * tms)[:, None]
+            sb, V = freq_analysis(v, tms, axis=0)
+            outfreq.extend((np.abs(sb + f)).tolist())
             outV.extend(V.tolist())
-            
-        ## Sort on frequency
-        freqs, X = zip(*sorted(zip(outfreq, outV)))
 
-        X = np.array(X)
-        freqs = np.array(freqs)
+        order = np.argsort(np.asarray(outfreq))
+        fout = np.asarray(outfreq)[order]
+        X = np.asarray(outV)[order]
+        X = np.concatenate((X[:, :irefnode],
+                            np.zeros((len(fout), 1)),
+                            X[:, irefnode:]), axis=1)
+        self.result = analysis.CircuitResult(
+            self.cir, x=X.T, xdot=None, sweep_values=fout,
+            sweep_label='freq', sweep_unit='Hz')
+        return self.result
 
-        # Insert reference node voltage
-        irefnode = self.cir.get_node_index(refnode)
-        X = tk.concatenate((X[:,:irefnode], 
-                            tk.zeros((len(freqs),1)), 
-                            X[:,irefnode:]), axis=1)
+    def _op(self, fp, alpha):
+        """`v -> (I - alpha M) v`, never forming `M`."""
+        return lambda v: np.asarray(v) - alpha * fp.matvec(v)
 
+    def _solve_each(self, fp, alphas, rhs, tol):
+        """One GMRES per frequency -- the baseline the sweep is measured against."""
+        import scipy.sparse.linalg as spla
+        n = fp.width
+        ys, count = [], [0]
 
-        res = analysis.CircuitResult(self.cir, x = X.T, 
-                                        xdot=None,
-                                        sweep_values=freqs, 
-                                        sweep_label='freq', 
-                                        sweep_unit='Hz')
+        for alpha, b in zip(alphas, rhs):
+            op = self._op(fp, alpha)
 
-        
-        return res
+            def _mv(v, _op=op):
+                count[0] += 1
+                return _op(v)
 
-        
-            
+            A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
+            y, info = spla.gmres(A, b, rtol=tol, restart=min(n, 50),
+                                 maxiter=min(n, 200))
+            if info != 0:
+                raise RuntimeError(
+                    'PAC: GMRES did not converge on the m x m system '
+                    '(info=%r). The operating point is converged, so this is '
+                    'the small-signal solve, not the PSS -- (I - alpha M) is '
+                    'near-singular when a Floquet multiplier sits at '
+                    'exp(2j pi f T), i.e. the circuit is being driven at a '
+                    'frequency where the orbit is neutrally stable.' % info)
+            ys.append(y)
+        return ys, count[0]
+
+    def _solve_subspace(self, fp, alphas, rhs, tol):
+        """ONE Krylov subspace for the whole sweep -- the recycling.
+
+        ⚠ THE SUBSPACE IS FREQUENCY-INDEPENDENT AND THAT IS THE WHOLE POINT.
+        `A(alpha) = I - alpha M`, so
+
+            span{r, A r, A^2 r, ...} = span{r, M r, M^2 r, ...}
+
+        for every `alpha` -- Telichevesky et al.'s Theorem 1.  A basis of
+        `M`'s Krylov space therefore serves every frequency, and each one
+        costs a small dense least-squares over it instead of its own run of
+        full-period replays.
+
+        ⚠ WHAT IS NOT FREE is the right-hand side: `w(f)` genuinely differs
+        per frequency, so a basis grown from one frequency's residual is not
+        the space GMRES would have chosen for another.  This does not
+        guess -- it minimises the TRUE residual over the shared span, checks
+        it, and extends the basis (one matvec, kept for every later
+        frequency) until every frequency is inside tolerance.  So the answer
+        is never worse than the per-frequency solve; only the matvec count
+        varies.
+        """
+        n = fp.width
+        V = np.zeros((n, 0), dtype=complex)
+        MV = np.zeros((n, 0), dtype=complex)
+        count = [0]
+
+        def extend(seed):
+            """One Arnoldi step of `M` from `seed`, orthogonal to `V`."""
+            nonlocal V, MV
+            v = np.asarray(seed, dtype=complex).ravel().copy()
+            if V.shape[1]:
+                v = v - V @ (V.conj().T @ v)
+                v = v - V @ (V.conj().T @ v)   ## reorthogonalise once
+            nv = np.linalg.norm(v)
+            if nv < 1e-14:
+                return False
+            v = v / nv
+            count[0] += 1
+            Mv = np.asarray(fp.matvec(v), dtype=complex)
+            V = np.hstack((V, v[:, None]))
+            MV = np.hstack((MV, Mv[:, None]))
+            return True
+
+        extend(rhs[0])
+        ys = [None] * len(alphas)
+        pending = list(range(len(alphas)))
+        for _round in range(min(n, 200)):
+            still = []
+            for i in pending:
+                alpha, b = alphas[i], rhs[i]
+                AV = V - alpha * MV
+                y, *_ = np.linalg.lstsq(AV, b, rcond=None)
+                x = V @ y
+                r = b - (x - alpha * (MV @ y))
+                ys[i] = x
+                nb = np.linalg.norm(b)
+                if np.linalg.norm(r) > tol * (nb if nb else 1.0):
+                    still.append((i, r))
+            if not still:
+                return ys, count[0]
+            if V.shape[1] >= n:
+                break
+            ## grow the shared basis on the worst residual -- one matvec,
+            ## and every frequency gets to use it
+            worst = max(still, key=lambda p: np.linalg.norm(p[1]))
+            if not extend(worst[1]):
+                break
+            pending = [i for i, _r in still]
+        return ys, count[0]
