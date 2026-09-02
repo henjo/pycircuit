@@ -2788,7 +2788,10 @@ class PSS(Analysis):
         ## no `iq_{n-1}` term, so dF/diq_{n-1} vanishes and the second row
         ## never enters.  One formula, two methods, which is why this is not
         ## a second code path.
-        newton = True
+        ## (`newton = True` lived here and fed a message branch that is
+        ## gone: it was set unconditionally, so the 'successive
+        ## substitution' alternative was dead and the claim it selected was
+        ## false anyway -- see the non-convergence warning below.)
 
         def func(x):
             x0, x_end, Mx, _Mt = self._traverse(x, period, times, hs,
@@ -3128,14 +3131,34 @@ class PSS(Analysis):
             ## plausible-looking waveform with no diagnostic at all.  It was
             ## non-convergent on EVERY circuit, including a linear RLC whose
             ## answer was visibly close, which is why nobody noticed.
+            ## ⚠ THIS MESSAGE USED TO CLAIM A "true Newton", AND THAT IS
+            ## FALSE ON THE PLAIN PATH.  `newton` is set True
+            ## unconditionally, so the alternative branch was dead and every
+            ## non-convergence was reported as a Newton failing.  Measured
+            ## 2026-09-02: the true `dF/dx_in` is SINGULAR on every circuit
+            ## tried (rank 1/3, 2/4, 1/3; sigma_min exactly 0), so no method
+            ## solves a true Newton in the frame the plain path's unknown
+            ## lives in -- it is a contraction, and its residual falls
+            ## LINEARLY at a constant ratio.  Advising `method='euler'` on
+            ## the strength of a distinction that does not exist sent people
+            ## sideways.
+            ##
+            ## The advice that IS backed: the solved-history route has an
+            ## exact Jacobian (item 4b) and converges quadratically --
+            ## measured 1.69e-01 -> 1.06e-02 -> 3.78e-06 -> 3.48e-12 against
+            ## trapezoidal's linear 3.91e-03 -> 3.14e-04 -> 2.66e-05 on the
+            ## same circuit.
             warnings.warn(
                 'PSS: the shooting solve did not converge in %d iterations '
-                '(method=%r, %s). The returned waveform is the last iterate, '
-                'not a periodic steady state -- raise maxiterations, or use '
-                "method='euler', which solves a true Newton system while "
-                'trapezoidal still uses successive substitution.'
-                % (maxiterations, method,
-                   'true Newton' if newton else 'successive substitution'),
+                '(method=%r). ⚠ The returned waveform IS STILL A FULL '
+                'RESULT -- it is the last iterate, not a periodic steady '
+                'state -- so a reader who does not check `converged` gets '
+                'an array that looks like an answer and is not. Raise '
+                "maxiterations, or use method='gear', whose solved-history "
+                'formulation has an exact Jacobian and converges '
+                'quadratically where the plain path is a contraction with a '
+                'linear rate.'
+                % (maxiterations, method),
                 RuntimeWarning, stacklevel=2)
         
         ## THE THIRD LEVEL, MEASURED ON THE WAY OUT.
@@ -3266,8 +3289,16 @@ class PSS(Analysis):
                  if v is not None and v > 1.0]
         if _over:
             v, where, fix = max(_over, key=lambda r: r[0])
+            ## ⚠ DO NOT ASSERT CONVERGENCE HERE.  This clause read "the
+            ## shooting solve converged, but ..." unconditionally, and the
+            ## LTE report is produced whether or not it did -- so a
+            ## non-converged run emitted a warning whose first words said it
+            ## had converged, directly beside the warning that said it had
+            ## not.  Two reviewers read non-converged waveforms as answers
+            ## in this file's history; contradictory warnings are not why,
+            ## but they are not help either.
             warnings.warn(
-                'PSS: the shooting solve converged, but the periodic '
+                'PSS: the shooting solve %s, and the periodic '
                 'solution is not resolved at this accuracy (method=%r, %d '
                 'points per period). Local truncation error reaches %.3g '
                 'times tolerance %s: %s. Neither Newton criterion can see '
@@ -3276,7 +3307,8 @@ class PSS(Analysis):
                 '(peak interior %s at t=%.6g s, period total %s, opening '
                 'steps %s; relax lte_vabstol/lte_iabstol/TRTOL if this '
                 'accuracy is intended.)'
-                % (method, npts, v, where, fix,
+                % ('converged' if self.converged else 'did NOT converge',
+                   method, npts, v, where, fix,
                    'n/a' if self.max_lte is None else '%.3g' % self.max_lte,
                    -1.0 if self.max_lte_time is None else self.max_lte_time,
                    'n/a' if self.total_lte is None

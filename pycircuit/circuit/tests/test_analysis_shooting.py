@@ -2701,6 +2701,16 @@ def test_an_index_2_solve_that_converges_is_correct():
     `converged = False` or an exception -- not silent wrong answers, which
     is why this is documented rather than refused.  A regression to a
     silently wrong algebraic variable is exactly what this test would catch.
+
+    ⚠ WHAT IS PINNED IS PINNED FOR THE LINEAR CASE.  All four circuits are
+    LINEAR, so `rank(C)` and the constraint structure are constant along the
+    orbit.  On a NONLINEAR index-2 circuit both can vary with the operating
+    point, so the index itself can change around the period -- and a solve
+    could then be consistent at the points it checks and inconsistent
+    between them, which is the one shape a converged-and-wrong answer could
+    still take.  Offered as the gap rather than as a finding: no such
+    circuit has been built here, and neither reviewer nor this test has
+    evidence one exists in this tree.
     """
     import warnings
     from pycircuit.circuit.transient import Transient
