@@ -19,7 +19,7 @@ an hour's work each; two were killed after being built. Run the gate first.
 A1's `H_l`), A2 shares A1/A3's transposed replay, and A5 is gated on an unsettled question.
 The order that falls out is **A1 first**, because two other items sit on it.
 
-### A1. PAC (periodic AC) — closest to hand
+### A1. PAC (periodic AC) — ⚠ BUILT 2026-09-02
 
 **The operator already exists.** Telichevesky, Kundert & White (DAC 1996, pp.292-297)
 reach the iterative form by "reinterpreting the use of `L^-1` … as a preconditioner",
@@ -76,9 +76,47 @@ Tanimoto 1990: "if the second-order integration method is used, the first point 
 approximated by the backward Euler algorithm, in order to solve the start-up problems."
 Same choice, same reason, in the PAC context.
 
-**Gate:** none needed to start — the operator is confirmed and the traversal is built. The
-honest first step is a single-frequency PAC against a dense reference, then the sweep.
-**Size:** the largest item here that is not research.
+**⚠ BUILT.** `PAC.solve(pss, freqs, recycle=True)`. What is left after the preconditioning
+is `m x m`: `(I - α M) y_0 = α w(f)`, with `w` the forced response over one period from a
+zero initial state. Nothing forms `L` or `B`.
+
+**The gate was run against a reference PAC cannot influence.** On a linear circuit the LPTV
+response collapses to the LTI one, so the `AC` analysis is the answer. Rel error at 700 Hz,
+**per doubling of the grid** — the rate is the assertion, not the size:
+
+| method | rate | rel @ 250 pts |
+|---|---|---|
+| euler | 2.00x (O(h)) | 1.40e-02 |
+| gear | **4.00x (O(h²))** | 1.65e-04 |
+| trap | 2.00x (O(h)) | 4.13e-03 |
+
+⚠ **Trapezoidal is second order and its PAC is first**, and the first hypothesis was wrong.
+Not the `(-1)^n` mode — the monodromy's `null(C)` modes sit at **0**, not −1, because the
+Euler opening step annihilates them, exactly as C1's theorem says an L-stable opener does.
+Not the trajectory either — trap's waveform converges at ~4.2x per doubling. It is the
+**manufacturing step**: it lives outside `_traverse_factored_plain`'s loop, so it is not in
+`steps` and the source is never applied there — one step of `u` out of `N`. Falsified as
+predicted, with euler as the control:
+
+| | rate | rel @ 250 |
+|---|---|---|
+| trap, plain | 2.00x | 4.13e-03 |
+| trap, `x0_unknown=True` | **4.00x** | 1.09e-04 |
+| euler, either | 2.00x | 1.40e-02, identical to five digits |
+
+`PAC` warns and names the two ways out (`x0_unknown=True`, or gear's solved-history path).
+
+**The sweep recycles one Krylov subspace** — `A(α) = I − αM`, so the space is `M`'s and is
+α-independent (Thm 1). The RHS is *not* shared, so it minimises the true residual over the
+span and extends the basis when a frequency needs it. On RC ladders, 24 frequencies:
+72→6 / 168→15 / 302→26 matvecs (**~11.6x**), agreeing to 1.2e-13.
+
+⚠ **Two defects the dead body carried, and only the gate found the second.** Its `L` is
+backward-Euler-shaped, which is *not* the discretisation for a two-step method (see the
+table in C1's neighbourhood: `-L⁻¹B` has ρ = 0 against our 0.8545/0.8412) — and it read its
+source vector **positionally**, `u(0, analysis_name)` into a signature whose second
+parameter is `epar`, taking the transient source at `t = 0`, which is zero for every
+sinusoid. It would have returned zeros at every frequency, silently.
 
 ### A2. PPV (perturbation projection vector)
 
@@ -188,8 +226,10 @@ fails**, and nothing in the formulation will say so.
 coefficients `R_{m,n}`. Flagged rather than glossed — B5 is the entry where a §III reading
 was refuted by §V.
 
-**Gate: open, but sequenced.** Start from Okumura's §III, not from the DAC'96 deferral —
-**and not before A1 produces `H_l`.**
+**Gate: open, and A1 is built** (2026-09-02), so `H_l` is available. Start from Okumura's
+§III, not from the DAC'96 deferral. ⚠ The `p = 1` reduction is the first thing to write:
+it exercises the `H_l` path against the stationary formula before any cyclostationary
+modelling has to be right.
 
 ### A4. Warm start — ⚠ SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
 
