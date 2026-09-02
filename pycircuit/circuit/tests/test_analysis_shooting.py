@@ -2247,3 +2247,78 @@ def test_a_matrix_free_composed_autonomous_solve_agrees_with_the_dense_one():
     assert abs(pm.period - pd.period) < 1e-12 * pd.period, \
         'matrix-free solved T=%.12g against the dense %.12g' \
         % (pm.period, pd.period)
+
+
+def test_pss_forwards_its_solver_strategies_to_the_inner_transient():
+    """`nrsolver`, `linearsolver` and `scaler` must reach the thing that solves.
+
+    ⚠ THEY DID NOT, AND THE CONSTRUCTOR ACCEPTED THEM ANYWAY.  All three are
+    declared on the base `Analysis`, so `PSS(cir, linearsolver=SuperLUSolver())`
+    has always been valid input -- and `_transient()` forwarded the tolerances
+    and not these, so the inner `Transient` resolved to `DenseSolver` and
+    `StandardNewton` whatever the caller asked for.
+
+    That is the THIRD parameter this class has accepted and never read
+    (`method` declared and never read; `analysis='PSS'` matching nothing),
+    and each one was invisible for the same reason: the constructor validates
+    the name, nothing checks the boundary.  So this asserts on the RESOLVED
+    OBJECT the inner analysis will actually use -- a test that the string
+    'linearsolver' appears in the source passes with the parameter dropped.
+    """
+    from pycircuit.circuit.linearsolver import SuperLUSolver, DenseSolver
+    from pycircuit.circuit.nrsolver import DampedNewton, StandardNewton
+    circuit.default_toolkit = circuit.numeric
+
+    pss = PSS(_q20_rlc(), method='trap', reltol=1e-6,
+              linearsolver=SuperLUSolver(), nrsolver=DampedNewton())
+    tran = pss._transient()
+    assert isinstance(tran._get_linearsolver(), SuperLUSolver), \
+        'the inner Transient resolved to %r, not the SuperLUSolver asked for' \
+        % tran._get_linearsolver()
+    assert isinstance(tran._get_nrsolver(), DampedNewton), \
+        'the inner Transient resolved to %r, not the DampedNewton asked for' \
+        % tran._get_nrsolver()
+
+    ## and the default is still the historical dense path, unmoved
+    plain = PSS(_q20_rlc(), method='trap', reltol=1e-6)._transient()
+    assert isinstance(plain._get_linearsolver(), DenseSolver)
+    assert isinstance(plain._get_nrsolver(), StandardNewton)
+
+
+def test_a_failed_inner_krylov_solve_says_so():
+    """A Krylov failure must name itself, not become 'No convergence'.
+
+    ⚠ THE INNER SOLVE'S VERDICT USED TO BE DISCARDED.  `gmres` returns an
+    `info` saying whether it converged, broke down, or ran out of cycles,
+    and dropping it meant a matrix-free run could spend its whole budget --
+    scipy's `maxiter` counts RESTART CYCLES, so the pair multiplies, and the
+    earlier `restart=200, maxiter=400` was a worst case near 80 000 matvecs,
+    each a full replay of the period -- and then report the same generic
+    outer message as a circuit that simply needed another iteration.
+
+    This file's standard is that a failure says what happened, which is why
+    `T = 0` and the singular free-period Jacobian are named.  The inner
+    solve is now held to it too.  Starved of cycles on purpose, because the
+    honest way to test a failure path is to cause the failure.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_rc_ladder(20), method='gear', reltol=1e-6)
+    old_cycles, old_restart = pss.KRYLOV_MAX_CYCLES, pss.KRYLOV_RESTART
+    try:
+        ## one cycle of a one-dimensional Krylov space cannot solve this
+        pss.KRYLOV_MAX_CYCLES, pss.KRYLOV_RESTART = 1, 1
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            pss.solve(period=1e-3, timestep=1e-3 / 25, maxiterations=5,
+                      matrix_free=True)
+    finally:
+        pss.KRYLOV_MAX_CYCLES, pss.KRYLOV_RESTART = old_cycles, old_restart
+
+    assert not pss.converged, \
+        'a starved inner solve still reported convergence'
+    msgs = [str(w.message) for w in caught]
+    assert any('inner solve did not converge' in m for m in msgs), \
+        'the Krylov failure was not named; warnings were %r' % msgs
+    assert any('matrix_free=False' in m for m in msgs), \
+        'the message does not say what to do instead'

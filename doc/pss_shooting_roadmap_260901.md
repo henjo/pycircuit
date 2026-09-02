@@ -212,6 +212,46 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## External review, 2026-09-02 — three findings, all confirmed
+
+A read-only review against the shooting/PSS literature (Telichevesky/Kundert/White
+DAC'95, Kundert ICCAD'97, Nastov, ter Maten) raised three; each was verified here
+before being acted on.
+
+1. **`nrsolver` / `linearsolver` / `scaler` were accepted and silently discarded.**
+   Declared on the base `Analysis`, so `PSS(cir, linearsolver=SuperLUSolver())` was
+   valid input — and `_transient()` forwarded the tolerances and not these, so the
+   inner `Transient` resolved to `DenseSolver`/`StandardNewton` regardless. **The third
+   time this class has taken a parameter it never read** (`method` declared and never
+   read; `analysis='PSS'` matching nothing), and invisible the same way each time: the
+   constructor validates the name, nothing checks the boundary. Fixed; the test asserts
+   the *resolved object*, since a test that the string `linearsolver` appears in the
+   source passes with the parameter dropped.
+
+2. **The matrix-free path was hardcoded to dense LAPACK** — and so was the dense
+   propagation, one layer further in (`_step_sensitivity` → `toolkit.linearsolver`).
+   Both now go through the caller's solver, via a `factor()` hook the `LinearSolver`
+   ABC already declared and no subclass implemented; `DenseSolver` and `SuperLUSolver`
+   implement it now. ⚠ **The measurement half is OPEN.** Every recorded speedup has a
+   dense baseline on both sides, so the m≈250 gate may move. The attempt to re-measure
+   read load average 31–43 with a second session benchmarking the same machine, and its
+   readings disagreed with earlier ones by 25–30% on the dense/dense pair alone — not
+   quotable in either direction. Harness: `benchmarks/pss_matrix_free_sparse.py`.
+
+3. **GMRES's `info` was discarded**, so a Krylov breakdown became the generic outer
+   "No convergence" with nothing naming it — in a file whose standard is that failures
+   name themselves. Also: scipy's `maxiter` counts *restart cycles*, so the old
+   `restart=200, maxiter=400` was a worst case near 80 000 matvecs, each a full replay
+   of the period, with no diagnostic while it was being spent. Now surfaced, bounded
+   (`KRYLOV_RESTART` × `KRYLOV_MAX_CYCLES`), and exercised by a test that starves the
+   solve on purpose.
+
+Two things the review explicitly said were **not** findings and should not be "fixed":
+the `conv_f` ordering in `_matrix_free_newton` (it mirrors `analysis.fsolve`; changing
+one alone creates the inconsistency), and the absence of a GMRES preconditioner
+(correct as-is — `I − M` clusters at 1, which is why k tracks slow modes, and the
+Gourary adaptive-preconditioning work is harmonic balance and does not transfer).
+
 ## Traps — things that looked true and were not
 
 Every one of these was settled by measurement, and each cost real time:

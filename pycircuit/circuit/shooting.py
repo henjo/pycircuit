@@ -1266,7 +1266,16 @@ class PSS(Analysis):
         for k in range(1, len(alphas)):
             S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
         if solve is None:
-            Px_new = -self.toolkit.linearsolver(Jf, S)
+            ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`.
+            ## This is the DENSE propagation -- the thing matrix-free is
+            ## measured against -- and it used to be hardcoded to the
+            ## toolkit, so `linearsolver=SuperLUSolver()` reached the inner
+            ## Newton (once forwarded) and never the propagation.  Comparing
+            ## a sparse matrix-free path against a dense baseline would have
+            ## flattered it; both sides go through the same strategy now.
+            ## `DenseSolver` IS `toolkit.linearsolver`, so the default is
+            ## unchanged.
+            Px_new = -self._get_linearsolver().solve(Jf, S, self.toolkit)
         else:
             Px_new = -solve(S)
         Pq_new = alphas[0] * (C_new @ Px_new) + S
@@ -1426,6 +1435,34 @@ class PSS(Analysis):
             return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
         return x, x_prev, Px[0], P_prev
 
+    def _factorise(self, Jf):
+        """One step's `Jf`, factored by the CALLER'S linear solver.
+
+        ⚠ THIS USED TO REACH FOR `scipy.linalg.lu_factor` DIRECTLY, which
+        made every matrix-free run dense-LAPACK whatever `linearsolver=`
+        said -- and a circuit Jacobian at m=1002 is very sparse, so a dense
+        LU is ~3e8 flops per step, `N` times over.  The recorded 2.13x at
+        m=1002 and the m~250 gate were therefore both measured against a
+        DENSE baseline; see `benchmarks/pss_matrix_free_ceiling.py` for what
+        they become when both sides get a sparse solver.
+
+        A solver whose `factor` returns `None` (the symbolic toolkits, and
+        any solver that has not implemented one) falls back to `solve` per
+        replayed step -- correct, and `k` times the factorisations, which is
+        the cost matrix-free exists to avoid.  It is a fallback, not a mode
+        to run in.
+        """
+        solver = self._get_linearsolver()
+        fac = solver.factor(Jf, self.toolkit)
+        if fac is not None:
+            return fac
+        toolkit, A = self.toolkit, Jf
+
+        class _PerSolve(object):
+            def solve(self, b):
+                return solver.solve(A, b, toolkit)
+        return _PerSolve()
+
     def _traverse_factored(self, x0_in, xm1_in, times, hs, T=None,
                            want_dT=False):
         """One period WITHOUT the sensitivities, keeping each step factored.
@@ -1451,7 +1488,6 @@ class PSS(Analysis):
         long period and a large circuit can run out of memory where the
         dense path merely ran slowly.
         """
-        from scipy.linalg import lu_factor, lu_solve
         m = self.cir.n - 1
         self._want_dfdh = want_dT
         self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
@@ -1473,7 +1509,7 @@ class PSS(Analysis):
             ## what that luck is worth.  See `_traverse_factored_plain`.
             alphas, b = self._coeffs
             C_new = np.asarray(self._C).copy()
-            lu = lu_factor(np.asarray(self._Jf))
+            lu = self._factorise(np.asarray(self._Jf))
             steps.append((lu, C_new, alphas, b))
             if want_dT:
                 ## BOTH ROWS NEED A PERIOD COLUMN -- `dx_{N-1}/dT` and
@@ -1486,7 +1522,7 @@ class PSS(Analysis):
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
                 St = St + np.asarray(self._dfdh).ravel() * (hs[_j] / T)
-                Pt_new = -lu_solve(lu, St)
+                Pt_new = -lu.solve(St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
             Cs = [C_new, Cs[0]]
@@ -1507,7 +1543,6 @@ class PSS(Analysis):
         `v` is `(v_0, v_{-1})`; the result is `(P_last v, P_prev v)`, so the
         shooting Jacobian's action is `v - M v` -- see `_matrix_free_solve`.
         """
-        from scipy.linalg import lu_solve
         m = self.cir.n - 1
         v = np.asarray(v, dtype=float)
         Px = [v[:m].copy(), v[m:].copy()]
@@ -1516,7 +1551,7 @@ class PSS(Analysis):
         for lu, C_new, alphas, b in steps:
             Px_new, Pq = self._step_sensitivity(
                 Px, Cs, Pq, None, C_new,
-                solve=lambda S, _l=lu: lu_solve(_l, S), coeffs=(alphas, b))
+                solve=lambda S, _l=lu: _l.solve(S), coeffs=(alphas, b))
             Px = [Px_new, Px[0]]
             Cs = [C_new, Cs[0]]
         return np.concatenate((Px[0], Px[1]))
@@ -1537,7 +1572,6 @@ class PSS(Analysis):
         rather than once per Krylov iteration, and returned as a vector --
         which is exactly what the bordered autonomous matvec needs.
         """
-        from scipy.linalg import lu_factor
         toolkit = self.toolkit
         m = self.cir.n - 1
         self._want_dfdh = want_dT
@@ -1580,17 +1614,16 @@ class PSS(Analysis):
             alphas, b = self._coeffs
             Jf = np.asarray(self._Jf)
             C_new = np.asarray(self._C).copy()
-            lu = lu_factor(Jf)
+            lu = self._factorise(Jf)
             steps.append((lu, C_new, alphas, b))
             if want_dT:
                 ## the same recursion with the step size's own source term,
                 ## one column wide -- see `_traverse`
-                from scipy.linalg import lu_solve
                 St = b * Pqt if b else np.zeros(m)
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
                 St = St + np.asarray(self._dfdh).ravel() * (dt / T)
-                Pt_new = -lu_solve(lu, St)
+                Pt_new = -lu.solve(St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
             Cs = [C_new, Cs[0]]
@@ -1600,7 +1633,6 @@ class PSS(Analysis):
 
     def _monodromy_matvec_plain(self, opening, steps, v):
         """`M v` for the plain path, one column through the stored steps."""
-        from scipy.linalg import lu_solve
         m = self.cir.n - 1
         C_open, a_open, b_open = opening
         v = np.asarray(v, dtype=float)
@@ -1615,8 +1647,8 @@ class PSS(Analysis):
         Pq = a_open[0] * (C_open @ v) if b_open else np.zeros(m)
         for lu, C_new, alphas, b in steps:
             Px_new, Pq = self._step_sensitivity(
-                Px, Cs, Pq, None, C_new, solve=lambda S, _l=lu: lu_solve(_l, S),
-                coeffs=(alphas, b))
+                Px, Cs, Pq, None, C_new,
+                solve=lambda S, _l=lu: _l.solve(S), coeffs=(alphas, b))
             Px = [Px_new, Px[0]]
             Cs = [C_new, Cs[0]]
         return Px[0]
@@ -1630,6 +1662,19 @@ class PSS(Analysis):
     ## the slow ones for GMRES to resolve.  So k tracks the number of SLOW
     ## MODES, not m, which is the property the item rests on.
     KRYLOV_TOLERANCE_FACTOR = 1e-2
+
+    ## ⚠ THE BUDGET IS A CHOICE AND SCIPY'S UNITS ARE A TRAP.  `maxiter`
+    ## counts RESTART CYCLES, not matvecs, so the pair multiplies: the
+    ## earlier `restart=min(n, 200), maxiter=min(n, 400)` was a worst case
+    ## near 80 000 matvecs, each a full N-step replay of the period, with no
+    ## diagnostic when it was being spent.  Measured k is 2-12 on circuits
+    ## whose `I - M` clusters at 1, which is the property the whole method
+    ## rests on, so 200 x 20 is already four thousand times what a
+    ## well-behaved system needs; a circuit that exceeds it is telling you it
+    ## does not cluster, and the answer is the dense path, not a bigger
+    ## budget.
+    KRYLOV_RESTART = 200
+    KRYLOV_MAX_CYCLES = 20
 
     def _matrix_free_solve(self, z0, times, hs, abstol, xtol, reltol,
                            maxiter):
@@ -1717,9 +1762,36 @@ class PSS(Analysis):
                 return _f(v)
 
             J = spla.LinearOperator((n, n), matvec=_mv, dtype=float)
-            xdiff, _info = spla.gmres(
+            xdiff, info = spla.gmres(
                 J, -F, rtol=self.KRYLOV_TOLERANCE_FACTOR * reltol,
-                restart=min(n, 200), maxiter=min(n, 400))
+                restart=min(n, self.KRYLOV_RESTART),
+                maxiter=self.KRYLOV_MAX_CYCLES)
+            ## ⚠ THE INNER SOLVE'S VERDICT IS NOT DISCARDED.  It used to be,
+            ## and a Krylov breakdown then surfaced as the generic outer
+            ## 'No convergence' with nothing naming the cause -- in a file
+            ## whose whole standard is that a failure says what happened
+            ## (`T = 0`, the trivial root, the singular free-period
+            ## Jacobian).  An unconverged GMRES makes `xdiff` a direction
+            ## the Newton has no reason to trust, so the outer loop is told
+            ## to stop rather than iterate on it.
+            if info != 0:
+                warnings.warn(
+                    'PSS: the matrix-free inner solve did not converge at '
+                    'outer iteration %d -- GMRES returned info=%d (%s) on a '
+                    '%d-unknown system, after at most %d matvecs, each a '
+                    'full replay of the period. The Newton step it returned '
+                    'is not a direction worth iterating on, so this solve '
+                    'stops here and reports not-converged. Measured k on '
+                    'well-behaved circuits is 2-12 because `I - M` clusters '
+                    'at 1; needing more than %d means this system does not '
+                    'cluster, and the dense path (matrix_free=False) is the '
+                    'reliable answer for it.'
+                    % (_i, info,
+                       'breakdown' if info < 0 else 'iteration limit',
+                       n, min(n, self.KRYLOV_RESTART) * self.KRYLOV_MAX_CYCLES,
+                       min(n, self.KRYLOV_RESTART) * self.KRYLOV_MAX_CYCLES),
+                    RuntimeWarning, stacklevel=3)
+                return z, {}, 2, 'No convergence (inner Krylov solve failed)'
             z_new = z + xdiff
 
             ## `|J| . |x|` is not available without the matrix; see
@@ -2068,7 +2140,20 @@ class PSS(Analysis):
                 analysis=self.par.analysis,
                 lte_vabstol=self.par.lte_vabstol,
                 lte_iabstol=self.par.lte_iabstol,
-                TRTOL=self.par.TRTOL, relref=self.par.relref)
+                TRTOL=self.par.TRTOL, relref=self.par.relref,
+                ## ⚠ THE SOLVER STRATEGIES GO THROUGH TOO, and they used not
+                ## to.  `nrsolver`, `linearsolver` and `scaler` are declared
+                ## on the base `Analysis`, so `PSS(cir, linearsolver=...)`
+                ## has always been ACCEPTED -- and then dropped here, with
+                ## the inner `Transient` resolving to `DenseSolver` /
+                ## `StandardNewton` whatever the caller asked for.  That is
+                ## the third time this class has taken a parameter it never
+                ## read (`method` declared and never read; `analysis='PSS'`
+                ## matching nothing), and the same shape each time: accepted
+                ## at the constructor, silently discarded at the boundary.
+                nrsolver=self.par.nrsolver,
+                linearsolver=self.par.linearsolver,
+                scaler=self.par.scaler)
             self._tran.irefnode = self.irefnode
         return self._tran
 
@@ -2269,8 +2354,20 @@ class PSS(Analysis):
         is `None` after a matrix-free solve -- not forming that matrix is
         the entire point.
 
+        ⚠ EVERY FIGURE BELOW HAS A DENSE BASELINE ON BOTH SIDES, and that
+        is a property of how they were taken rather than a choice.  Until
+        2026-09-02 this path reached past `linearsolver=` to
+        `scipy.linalg.lu_factor`, and the dense propagation reached past it
+        to `toolkit.linearsolver`; both go through the caller's solver now,
+        so the comparison can be re-asked with a sparse one -- and it has
+        NOT been, because the box was shared with another session
+        benchmarking at load 31-43 when it was tried.  A circuit Jacobian at
+        m=1002 is very sparse, so the m~250 gate and these ratios may move.
+        `benchmarks/pss_matrix_free_sparse.py` is the harness; run it quiet
+        before quoting any of this as the sparse answer.
+
         ALL FOUR SYSTEMS are converted.  Measured end to end,
-        single-threaded, against the dense path:
+        single-threaded, against a DENSE-solver dense path:
 
           driven solved-history (2m columns)   1.36x/1.51x/2.13x  m=242/502/1002
           driven plain          (m columns)    1.10x/1.34x/1.63x  m=242/502/1002

@@ -33,6 +33,24 @@ from abc import ABC, abstractmethod
 import numpy
 
 
+class _Factored(object):
+    """A reusable factorisation: whatever the solver made, plus how to use it.
+
+    Deliberately thin.  Every solver here already has a factorisation object
+    of its own (`lu_factor`'s tuple, `splu`'s object, KLU's numeric handle);
+    this only gives them ONE name the callers can hold, so a caller storing
+    `N` of them does not branch on which solver produced them.
+    """
+
+    __slots__ = ('_f', '_solve')
+
+    def __init__(self, f, solve):
+        self._f, self._solve = f, solve
+
+    def solve(self, b):
+        return self._solve(self._f, b)
+
+
 class LinearSolver(ABC):
     """Solve ``A x = b`` for the Newton iteration."""
 
@@ -43,13 +61,24 @@ class LinearSolver(ABC):
     def factor(self, A, toolkit):
         """Optional: return a reusable factorisation, or ``None``.
 
-        Unused on the transient path today, and the reason is worth stating
-        because 7b-2 proposed otherwise.  Newton's last factorisation is of
-        ``J(x_k)``; the step controller needs ``J`` at the *converged*
-        ``x_{k+1}``, which nothing else factors.  Reusing across that boundary
-        substitutes a different matrix -- measured at median 5.5e-9 and max
-        2.2e-5 relative on a diode circuit -- so it is an approximation, not a
-        saved duplicate, and it cannot be done under a bit-identical gate.
+        A returned object exposes ``.solve(b)`` for the SAME ``A``.
+
+        ⚠ STILL UNUSED ON THE TRANSIENT PATH, and the reason is worth
+        stating because 7b-2 proposed otherwise.  Newton's last
+        factorisation is of ``J(x_k)``; the step controller needs ``J`` at
+        the *converged* ``x_{k+1}``, which nothing else factors.  Reusing
+        across that boundary substitutes a different matrix -- measured at
+        median 5.5e-9 and max 2.2e-5 relative on a diode circuit -- so it is
+        an approximation, not a saved duplicate, and it cannot be done under
+        a bit-identical gate.
+
+        ⚠ THE SHOOTING PATH IS DIFFERENT and does use it.  Matrix-free
+        variational shooting replays each stored timestep once per Krylov
+        iteration against the SAME ``Jf`` -- not a nearby one -- so the
+        factorisation is a saved duplicate there rather than an
+        approximation, and without it the replay would refactor ``k`` times
+        over.  Returning ``None`` is still valid: the caller falls back to
+        ``solve`` and pays exactly that.
         """
         return None
 
@@ -64,6 +93,24 @@ class DenseSolver(LinearSolver):
 
     def solve(self, A, b, toolkit):
         return toolkit.linearsolver(A, b)
+
+    def factor(self, A, toolkit):
+        """A LAPACK LU, reusable -- or ``None`` for a symbolic matrix.
+
+        ``toolkit.linearsolver`` has no factor/solve split to borrow, so
+        this reaches for LAPACK directly.  That is safe precisely where it
+        is used and nowhere else: an object-dtype matrix (the symbolic
+        toolkits) returns ``None`` and the caller falls back to ``solve``,
+        which stays toolkit-agnostic as this class promises.
+        """
+        A = numpy.asarray(A)
+        if A.dtype == object:
+            return None
+        try:
+            from scipy.linalg import lu_factor, lu_solve
+        except ImportError:                               # pragma: no cover
+            return None
+        return _Factored(lu_factor(A), lambda f, b: lu_solve(f, b))
 
     def __repr__(self):
         return 'DenseSolver()'
@@ -96,6 +143,21 @@ class SuperLUSolver(LinearSolver):
             return toolkit.linearsolver(A, b)
         Acsc = self._sp.csc_matrix(A)
         return self._spla.splu(Acsc).solve(numpy.asarray(b))
+
+    def factor(self, A, toolkit):
+        """An ``splu`` object, which already IS a reusable factorisation.
+
+        ⚠ ``splu`` takes ONE right-hand side column at a time in the shape
+        the shooting replay uses, which is exactly the shape matrix-free
+        wants -- one vector per Krylov iteration.  A dense multi-column
+        solve is what the DENSE propagation does, and that is the
+        comparison, not this.
+        """
+        A = numpy.asarray(A)
+        if A.dtype == object:
+            return None
+        return _Factored(self._spla.splu(self._sp.csc_matrix(A)),
+                         lambda f, b: f.solve(numpy.asarray(b)))
 
     def __repr__(self):
         return 'SuperLUSolver()'
