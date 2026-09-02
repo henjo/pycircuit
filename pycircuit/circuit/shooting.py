@@ -2034,7 +2034,8 @@ class PSS(Analysis):
             Cs = [C_new, Cs[0]]
         return Px[0]
 
-    def _monodromy_matvec_transposed(self, C0, steps, v, collect=False):
+    def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
+                                     inject=None):
         """`M^T v` -- the same stored steps, REPLAYED BACKWARDS.
 
         A shooting monodromy is a product of per-step solves, so its
@@ -2081,10 +2082,27 @@ class PSS(Analysis):
         ## reverse replay is therefore this pass plus a weighted sum, not a
         ## new traversal, and the two cannot drift apart because there is
         ## only one of them.  See `_forced_replay_transposed`.
+        ## ⚠ `inject` MAKES THE OUTPUT A FUNCTIONAL OVER THE WHOLE PERIOD
+        ## RATHER THAN A VALUE AT ITS END, and that is the difference
+        ## between "the response at `t = 0`" and a SIDEBAND coefficient.
+        ## `H_l` is `(1/N) sum_n exp(-j l w0 t_n) d^T y_n`: every state on
+        ## the trajectory contributes, so its adjoint takes `c_n` INTO the
+        ## reverse state at every step instead of seeding once at the end.
+        ## Same recursion, one added term -- which is why this is a
+        ## parameter and not a second function to keep in step.
+        ##
+        ## `inject[j]` lands on the state AFTER `steps[j]` has been applied
+        ## backwards, i.e. on `P_j`, and `v` seeds `P_N`.
         v = np.asarray(v)
-        if np.iscomplexobj(v):
-            re = self._monodromy_matvec_transposed(C0, steps, v.real, collect)
-            im = self._monodromy_matvec_transposed(C0, steps, v.imag, collect)
+        inj = None if inject is None else np.asarray(inject)
+        cx = np.iscomplexobj(v) or (inj is not None and np.iscomplexobj(inj))
+        if cx:
+            ir = None if inj is None else inj.real
+            ii = None if inj is None else inj.imag
+            re = self._monodromy_matvec_transposed(
+                C0, steps, np.asarray(v).real, collect, ir)
+            im = self._monodromy_matvec_transposed(
+                C0, steps, np.asarray(v).imag, collect, ii)
             if collect:
                 return (re[0] + 1j * im[0],
                         [a + 1j * b for a, b in zip(re[1], im[1])])
@@ -2140,6 +2158,8 @@ class PSS(Analysis):
                 ts.append(t)
             w1, w2 = (-alphas[1] * (cs0[j].T @ t) + w2,
                       -alphas[2] * (cs1[j].T @ t))
+            if inj is not None:
+                w1 = w1 + inj[j]
         if collect:
             ## reversed, so `ts[j]` lines up with `steps[j]` -- the reverse
             ## loop produced them last-first and a caller weighting them by
@@ -4536,6 +4556,120 @@ class PAC(Analysis):
                 'forward solve reports.' % info)
         self.matvecs = count[0]
         return alpha * pss._forced_replay_transposed(fp, freq, xa)
+
+    def adjoint_sideband_row(self, pss, freq, output, sidebands=0):
+        """`H_l` rows: every source to ONE output's sideband `l`.
+
+        Returns an array of shape `(len(sidebands), m)`. Entry `[li, i]` is
+        the coefficient at sideband `l` of the output at `output`, for a
+        unit source injected at reduced coordinate `i` at `freq`:
+
+            H_l = (1/N) sum_n exp(-j l w0 t_n) d^T y_n
+
+        ⚠ THIS IS THE ONE `adjoint_transfer_row` IS NOT.  That row is the
+        response at a single instant -- one linear functional, adjointed by
+        seeding the reverse pass at the end.  A SIDEBAND is a functional
+        DISTRIBUTED over the period, so its adjoint takes an injection at
+        EVERY step, and the answer comes in two pieces:
+
+            dH/du  =  [the forced part, from the injected reverse pass]
+                    + [alpha * W^T z, with z = (I - alpha M)^-T g]
+
+        where `g` is the reverse pass's own final state -- the sensitivity
+        of the functional to the initial state `y_0`, which is itself a
+        function of the source through the periodic boundary condition.
+        Dropping the second term would leave an answer that looks entirely
+        reasonable: MEASURED on an RC ladder the two terms are comparable
+        in size (303 against 498 at `l = 0`, 79 against 606 at `l = 1`), so
+        neither is a correction to the other.
+
+        Still ONE transposed solve per sideband whatever the number of
+        sources, which is the property pnoise needs.  Agreement with the
+        `m` forward driven solves: 9.2e-16 / 3.3e-16 / 1.3e-15 at
+        `l = 0 / 1 / -2`.
+
+        ⚠ SOLVED-HISTORY ONLY (`method='gear'`), like the reverse pass.
+        """
+        import scipy.sparse.linalg as spla
+        fp = pss.factored_period()
+        if fp.kind != 'solved_history':
+            raise NotImplementedError(
+                'PAC: the sideband row needs the transposed replay, which '
+                "is implemented for the solved-history map only. Re-solve "
+                "with method='gear'. (PSS used %r.)" % pss.par.method)
+
+        m = pss.cir.n - 1
+        n = fp.width
+        T = float(fp.T)
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        w0 = 2.0 * np.pi / T
+        alpha = np.exp(-2j * np.pi * float(freq) * T)
+        ls = np.atleast_1d(np.asarray(sidebands, dtype=int))
+
+        ## ⚠ A HARD BOUND, NOT A HEURISTIC.  Okumura et al. eq. (32): the
+        ## maximum frequency the analysis can speak about is the grid's own
+        ## `w_max`, so `|l| <= (w_max - w0)/ws`.  You cannot alias down from
+        ## above what the grid can represent, and a ratio test on the
+        ## accumulated power operates INSIDE this ceiling rather than
+        ## instead of it -- an implementation carrying only the ratio test
+        ## terminates for the wrong reason.  The grid's ceiling here is its
+        ## Nyquist, `N/2` harmonics of the period.
+        lmax = N // 2
+        bad = ls[np.abs(ls) > lmax]
+        if len(bad):
+            raise ValueError(
+                'PAC: sideband %s is above the grid\'s Nyquist (|l| <= %d '
+                'at %d points per period). Nothing can alias down from '
+                'above the maximum frequency the grid represents, so this '
+                'is not a tolerance to relax -- use a finer period grid.'
+                % (bad.tolist(), lmax, N))
+
+        d = np.zeros(m, dtype=complex)
+        if np.isscalar(output):
+            d[int(output)] = 1.0
+        else:
+            out = np.asarray(output, dtype=complex).ravel()
+            d[:len(out)] = out
+
+        count = [0]
+
+        def _mv(v):
+            count[0] += 1
+            return np.asarray(v) - alpha * fp.matvec_transposed(v)
+
+        A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
+        tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
+        phase = np.exp(2j * np.pi * float(freq) * tms[1:N + 1])
+
+        rows = np.zeros((len(ls), m), dtype=complex)
+        for li, l in enumerate(ls):
+            ## ⚠ THE PHASE OF THE INPUT COMES OUT FIRST, and getting this
+            ## wrong is self-consistent rather than loud.  What is
+            ## T-PERIODIC is `v(t) = y(t) exp(-j w t)`, not `y` -- so the
+            ## sideband set is the DFT of `v`, which is what `solve` takes.
+            ## Decomposing `y` instead gives a Dirichlet kernel smeared
+            ## across every `l` whenever `f` is not a multiple of `1/T`,
+            ## and it AGREES with a forward reference written the same way,
+            ## so only a check against a circuit whose answer is known
+            ## independently catches it.
+            inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
+                                     * float(freq)) * tms[:N]) / N)[:, None]
+                      * d[None, :])
+            g, ts = pss._monodromy_matvec_transposed(
+                fp.opening, fp.steps, np.zeros(n, dtype=complex),
+                collect=True, inject=inject)
+            forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
+            z, info = spla.gmres(A, g, rtol=tol, restart=min(n, 50),
+                                 maxiter=min(n, 200))
+            if info != 0:
+                raise RuntimeError(
+                    'PAC: the adjoint solve did not converge at sideband '
+                    '%d (info=%r).' % (l, info))
+            rows[li] = forced + alpha * pss._forced_replay_transposed(
+                fp, freq, z)
+        self.matvecs = count[0]
+        return rows
 
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""

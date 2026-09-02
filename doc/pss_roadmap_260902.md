@@ -267,14 +267,35 @@ forward solves, and the speedup grows linearly with `m` — 7.0x / 16.9x / 40.0x
 m = 6 / 14 / 32 — which is the shape the identity predicts, since forward is O(m) solves and
 this is O(1). Gear-2 only; the reverse replay is.
 
-⚠ **WHAT IS STILL MISSING, stated so the next reader does not over-read the above.** The
-output here is the state at `t = 0` — one linear functional. A **sideband** coefficient
-`H_l` is a functional *distributed over the period*, `(1/N) Σ_n e^{-j l ω₀ t_n} d^T y_n`,
-whose adjoint needs the reverse pass to take an injection at **every step** rather than a
-seed at the end. That is the next piece. After it: the cyclostationary window model (one
-stationary source per timestep), `CY` collection across the element library, and the
-aliasing accumulation with **both** its stopping rules — the ratio test *and* the hard
-`N, L <= (w_max - w0)/ws` bound it operates inside.
+⚠ **AND THE SIDEBAND ROWS ARE BUILT TOO** (`PAC.adjoint_sideband_row`). `H_l` is a
+functional *distributed over the period*, so its adjoint takes an injection at **every
+step** — and the initial state is itself a function of the source through the periodic
+boundary condition, which is a **second term**, `α W^T z` with `z = (I − αM)^{-T} g`. The
+two are comparable in size (140 against 749 at `l = 0`), so an implementation with only the
+first returns a plausible number rather than an obviously broken one.
+
+Verified three ways, each against something the adjoint path cannot influence:
+
+| check | result |
+|---|---|
+| nonlinear (diode), l = 0 / 1 / −2, vs `m` forward driven solves | **3.1e-16 / 4.1e-16 / 1.5e-15** |
+| … and the sidebands are real there | \|H₁\|/\|H₀\| = 0.50, \|H₋₂\|/\|H₀\| = 0.13 |
+| linear circuit: every l ≠ 0 | **~10 orders below H₀** |
+| `H₀` vs the LTI transfer function, per doubling | **4.06x / 4.03x / 4.02x** = O(h²) |
+
+⚠ **A CONVENTION ERROR THAT ONLY THE LINEAR CASE COULD CATCH.** The first version
+decomposed `y(t)` rather than `v(t) = y(t)e^{-jωt}`, the part that is actually T-periodic.
+It agreed with a forward reference written the same way to 1e-15 — and reported
+\|H₁\| ≈ \|H₀\| on a *linear* circuit, which has nothing to convert with. Self-consistency
+is not a check.
+
+**The hard truncation bound is implemented as a refusal**, not a comment: `|l| <= N/2`, the
+grid's own Nyquist, per eq. (32). Nothing aliases down from above what the grid represents,
+so the remedy is a finer grid and clamping would answer a question nobody asked.
+
+⚠ **STILL MISSING:** the cyclostationary window model (one stationary source per timestep),
+`CY` collection across the element library, and the aliasing accumulation with its *ratio
+test* — which now has the bound to operate inside.
 
 **Gate: open, and A1 is built** (2026-09-02), so `H_l` is available. Start from Okumura's
 §III, not from the DAC'96 deferral. ⚠ The `p = 1` reduction is the first thing to write:

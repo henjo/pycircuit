@@ -4123,3 +4123,214 @@ def test_the_adjoint_row_refuses_the_plain_path():
     assert pss.converged
     with pytest.raises(NotImplementedError, match='solved-history'):
         PAC(cir, toolkit=circuit.numeric).adjoint_transfer_row(pss, 700.0, 1)
+
+
+def _sideband_forward(pss, fp, freq, k, l, N, alpha, A):
+    """`H_l` for every source, the expensive way: one driven solve each."""
+    m = pss.cir.n - 1
+    tms = np.asarray(fp.times, dtype=float)
+    w0 = 2.0 * np.pi / float(fp.T)
+    out = np.zeros(m, dtype=complex)
+    for i in range(m):
+        u = np.zeros(m)
+        u[i] = 1.0
+        w, _ = pss._forced_replay(fp, freq, u)
+        y0 = np.linalg.solve(A, alpha * np.asarray(w))
+        _e, ys = pss._forced_replay(fp, freq, u, y0=y0, collect=True)
+        y = [np.asarray(y0)[:m]] + [np.asarray(v)[:m] for v in ys]
+        ## the DFT of `v = y exp(-j w t)`, which is what is T-periodic
+        out[i] = sum(np.exp(-1j * (l * w0 + 2.0 * np.pi * freq) * tms[j])
+                     * y[j][k] for j in range(N)) / N
+    return out
+
+
+def _sideband_pair(cir, per, freq, k, ls, npts=60, reltol=1e-11):
+    """The adjoint rows and the `m` forward driven solves they replace."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(cir, method='gear', reltol=reltol)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / npts, maxiterations=40)
+    assert pss.converged
+    fp = pss.factored_period()
+    n = fp.width
+    N = len(fp.steps)
+    alpha = np.exp(-2j * np.pi * freq * per)
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    A = np.eye(n) - alpha * M
+    rows = PAC(cir, toolkit=circuit.numeric).adjoint_sideband_row(
+        pss, freq, k, ls)
+    fwds = np.array([_sideband_forward(pss, fp, freq, k, l, N, alpha, A)
+                     for l in np.atleast_1d(ls)])
+    return pss, rows, fwds
+
+
+@pytest.mark.parametrize('l', [0, 1, -2])
+def test_the_sideband_adjoint_needs_both_terms(l):
+    """⚠ A SIDEBAND IS A FUNCTIONAL OVER THE WHOLE PERIOD, not a value at
+    one instant, and that changes the adjoint in two ways.
+
+    `H_l` is the `l`-th Fourier coefficient of `v(t) = y(t) exp(-j w t)`,
+    the part that is actually T-periodic. Every state on the trajectory
+    contributes, so the reverse pass takes an injection at EVERY step
+    rather than a seed at the end — and the initial state `y_0` is itself a
+    function of the source through the periodic boundary condition, which
+    is a SECOND term:
+
+        dH/du = [forced part, from the injected reverse pass]
+              + [alpha * W^T z,  z = (I - alpha M)^-T g]
+
+    ⚠ DROPPING THE SECOND TERM WOULD NOT LOOK WRONG. Measured, the two are
+    comparable — 140 against 749 at `l = 0` — so an implementation with
+    only the first returns a plausible number rather than an obviously
+    broken one. Hence a comparison against `m` independent forward driven
+    solves, not a reasonableness check.
+
+    ⚠ AND THE CIRCUIT HAS TO BE NONLINEAR FOR THIS TO MEAN ANYTHING. On a
+    linear circuit the linearisation is time-INvariant and every `l != 0`
+    is zero, so an `l = 1` comparison would be two noise-level numbers
+    agreeing. The diode makes the sidebands real: measured
+    `|H_1|/|H_0| = 0.50` and `|H_-2|/|H_0| = 0.13`.
+    """
+    cir = SubCircuit()
+    cir['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+    cir['R'] = R(1, 2, r=1e4)
+    cir['D'] = Diode(2, gnd)
+    cir['C'] = C(2, gnd, c=1e-12)
+    _pss, rows, fwds = _sideband_pair(cir, 1e-6, 1e6, 1, [l])
+
+    assert np.abs(fwds[0]).max() > 1e-3, \
+        'sideband l=%d is numerically absent (%.3g), so this comparison ' \
+        'would be two zeros agreeing -- the circuit is not mixing' \
+        % (l, np.abs(fwds[0]).max())
+    rel = np.linalg.norm(rows[0] - fwds[0]) / np.linalg.norm(fwds[0])
+    assert rel < 1e-11, \
+        'sideband l=%d: the adjoint row disagrees with %d forward driven ' \
+        'solves by %.3e' % (l, cir.n - 1, rel)
+
+
+def test_sidebands_vanish_on_a_linear_circuit():
+    """⚠ THE CHECK THAT CAUGHT A CONVENTION ERROR, and could only have.
+
+    A linear circuit's linearisation is time-INvariant however hard it is
+    driven, so it converts nothing: `H_l = 0` for every `l != 0`. Measured
+    here at ~10 orders below `H_0`.
+
+    The first implementation decomposed `y(t)` rather than
+    `v(t) = y(t) exp(-j w t)`. That is self-consistent — it agreed with a
+    forward reference written the same way to 1e-15 — but it smears a
+    Dirichlet kernel across every `l` whenever `f` is not a multiple of
+    `1/T`, and reported `|H_1|` comparable to `|H_0|` on this very circuit.
+    Only a case whose answer is known independently separates the two.
+    """
+    cir = _adjoint_ladder(4)
+    _pss, rows, _f = _sideband_pair(cir, 1e-3, 700.0, 1, [0, 1, -2, 3])
+    h0 = np.abs(rows[0]).max()
+    assert h0 > 1.0, 'H_0 is empty (%.3g); nothing is being measured' % h0
+    for li, l in enumerate([0, 1, -2, 3][1:], start=1):
+        rel = np.abs(rows[li]).max() / h0
+        assert rel < 1e-8, \
+            'a LINEAR circuit converted %.3g of H_0 into sideband l=%d. ' \
+            'It has no time-varying linearisation to convert with, so this ' \
+            'is the sideband convention, not the circuit' % (rel, l)
+
+
+def test_H0_is_the_ac_transfer_function_and_converges_like_gear():
+    """`H_0` against a reference the adjoint path cannot influence.
+
+    On a linear circuit the `l = 0` row IS the LTI transfer function from
+    each source to the output — an `(sC + G)` solve, no monodromy, no
+    replay, no adjoint. That makes it the strongest available check of the
+    whole `H_l` path, and it is the one the pnoise build should be able to
+    lean on.
+
+    ⚠ THE RATE IS THE ASSERTION. The residual at 60 points is 1.2e-03,
+    which in isolation says nothing — it could be a defect of any size.
+    Per doubling of the grid it falls 4.06x / 4.03x / 4.02x, which is
+    Gear-2's own O(h^2) and therefore pure discretisation.
+    """
+    from pycircuit.circuit.analysis import remove_row_col
+    circuit.default_toolkit = circuit.numeric
+    per, freq, k = 1e-3, 700.0, 1
+    rels = []
+    for npts in (60, 120, 240):
+        cir = _adjoint_ladder(4)
+        m = cir.n - 1
+        _pss, rows, _f = _sideband_pair(cir, per, freq, k, [0], npts=npts,
+                                        reltol=1e-12)
+        irn = _pss.irefnode
+        G = np.asarray(cir.G(np.zeros(cir.n)))
+        Cm = np.asarray(cir.C(np.zeros(cir.n)))
+        G, Cm = remove_row_col((G, Cm), irn, _pss.toolkit)
+        sM = 2j * np.pi * freq * np.asarray(Cm) + np.asarray(G)
+        ac = np.array([-np.linalg.solve(sM, np.eye(m)[:, i])[k]
+                       for i in range(m)])
+        rels.append(np.linalg.norm(rows[0] - ac) / np.linalg.norm(ac))
+
+    for a, b in zip(rels, rels[1:]):
+        ratio = a / b
+        assert 3.4 < ratio < 4.6, \
+            'H_0 against the AC transfer converges at %.2fx per doubling ' \
+            '(%.4e -> %.4e), not the O(h^2) Gear-2 gives everywhere else. ' \
+            'A wrong constant is invisible to a size check and obvious ' \
+            'here' % (ratio, a, b)
+
+
+def test_the_sideband_bound_is_hard():
+    """⚠ THE TRUNCATION BOUND IS A REFUSAL, NOT A TOLERANCE.
+
+    Okumura et al. eq. (32): the maximum frequency the analysis can speak
+    about is the grid's own, so `|l| <= (w_max - w0)/ws`. Nothing aliases
+    down from above what the grid represents. The abstract's "accumulated
+    until their contributions become negligible" is a ratio test operating
+    INSIDE that ceiling — an implementation carrying only the ratio test
+    stops for the wrong reason, and on a coarse grid it would stop having
+    summed harmonics the grid cannot represent.
+
+    So this is refused rather than clamped: the remedy is a finer period
+    grid, and silently returning the nearest representable sideband would
+    answer a question the caller did not ask.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder(3)
+    per = 1e-3
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 40, maxiterations=40)
+    fp = pss.factored_period()
+    lmax = len(fp.steps) // 2
+    pac = PAC(cir, toolkit=circuit.numeric)
+
+    pac.adjoint_sideband_row(pss, 700.0, 1, lmax)      # at the edge: fine
+    with pytest.raises(ValueError, match='Nyquist'):
+        pac.adjoint_sideband_row(pss, 700.0, 1, lmax + 1)
+
+
+def test_the_sideband_row_costs_one_solve_per_sideband():
+    """The many-to-one property has to survive the distributed output.
+
+    The injected reverse pass and the transposed solve both depend on `l`,
+    so the cost is per SIDEBAND — but still not per SOURCE, which is the
+    asymmetry pnoise is shaped by. This asserts the count, not the clock:
+    this machine runs more than one agent.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder(10)
+    per, freq = 1e-3, 700.0
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 60, maxiterations=40)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    rows = pac.adjoint_sideband_row(pss, freq, 1, [0, 1, 2])
+    assert rows.shape == (3, m)
+    per_sideband = pac.matvecs / 3.0
+    assert per_sideband < m, \
+        'the sideband row took %.1f matvecs per sideband at m=%d; it is ' \
+        'supposed to be independent of the number of sources' \
+        % (per_sideband, m)
