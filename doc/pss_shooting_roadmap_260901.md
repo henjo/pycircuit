@@ -3,6 +3,10 @@
 *Written 2026-09-01. On 2026-09-02 item 6 was re-measured and its verdict reversed,
 and item 5's payoff case was closed — both by falsifying a recorded diagnosis.*
 
+> ⚠ **This file is the RECORD — what was built, measured and falsified.**
+> For what is LEFT to do, its cost and its gate, read
+> **`doc/pss_roadmap_260902.md`** first.
+
 **Read this first if you are picking the shooting work back up.** The detailed record
 lives in the `PSS` class docstring in `pycircuit/circuit/shooting.py`, which is long
 and is the authority; this file is the map to it.
