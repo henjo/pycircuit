@@ -118,7 +118,7 @@ source vector **positionally**, `u(0, analysis_name)` into a signature whose sec
 parameter is `epar`, taking the transient source at `t = 0`, which is zero for every
 sinusoid. It would have returned zeros at every frequency, silently.
 
-### A2. PPV (perturbation projection vector)
+### A2. PPV — ⚠ BUILT 2026-09-02, normalisation MEASURED not transcribed
 
 **Unblocked** by `_monodromy_matvec_transposed` (shipped, agrees with dense `M^T` to
 1.8e-15, costs 0.75x a forward matvec).
@@ -172,10 +172,46 @@ simulator the cheap tier is the one with a formulation behind it. Both papers as
 **harmonic-balance** Jacobians, and there is no HB path here. It also inherits the objection
 D&R raise against eigen-based extraction. Flagged so nobody chases it.
 
-**Gate:** verify the block-cyclic `Omega` against the BVP operator already written by hand
-for the `func_solved_history` cross-check (it matched PSS to 4.0e-13). Confirm `J_r`'s two
-sign/transpose differences against p.192 before coding — the algebra was read off a page
-image and `pdftotext` drops it.
+⚠ **BUILT** as `PSS.ppv()` — two bordered solves, both matrix-free, no eigendecomposition
+anywhere:
+
+    [ I - M^T   q ] [v]   [0]          [ I - M   q ] [u]   [0]
+    [   q^T     0 ] [y] = [1]          [  q^T    0 ] [y] = [1]
+
+`q = C(0) ẋ(0)` is **exact, not differenced** — the DAE gives `dq/dt = -(i(x)+u)`, so
+`q = -(i(x₀) + u(0))`, two evaluations at the converged solution. `y` back at **1.4e-11** is
+D&R's free correctness check; null residual **4.7e-11**.
+
+**GATED PHYSICALLY, because an identity check cannot settle a scale.** Displace van der Pol
+by `eps·delta`, integrate the *full nonlinear* system until the transverse modes die (second
+multiplier 8.6e-4 per period), read the surviving displacement along the tangent. Nothing in
+that touches the monodromy, the adjoint or the border:
+
+| npts | worst \|1−ratio\| | rel resid | fitted scale |
+|---|---|---|---|
+| 200 | 5.52e-02 | 1.90e-02 | 1.006266 |
+| 400 | 2.45e-02 | 8.94e-03 | 1.003290 |
+| 800 | 1.16e-02 | 4.35e-03 | **1.001677** |
+
+The fitted scale converges to **1** — not to some other constant a direction-only test would
+have accepted — and the residual falls at O(h).
+
+⚠ **AND THE TRANSCRIBED NORMALISATION IS A 7% ERROR HERE.** Demir's Remark 3.1 reads
+`v₁ᵀ C(0) u₁(0) = 1`, and bordering with `q` makes `v·q = 1` fall out for free. But the
+vector this bordered solve returns behaves as `Cᵀv₁` — it contracts with a **state**
+perturbation directly — so the right normalisation is `v·ẋ(0) = 1`. Both statements are true
+of different objects; using one where the other belongs is a silent scale error in every
+phase-noise number downstream.
+
+⚠ **The obvious repair is also wrong, and was measured so.** Predicting a state jump's shift
+as `vᵀCδ` gives residuals **0.36 / 0.40 / 0.42 that GROW under refinement**, with
+per-direction ratios scattering from −0.44 to 28.7. `v·δ` converges at O(h). Do not change it
+back without re-running that experiment.
+
+**Why bordered and not an eigenvector:** this is the 2003 improvement's entire content, and
+it matters most exactly where a PPV is wanted. Multipliers crowd 1 on high-Q oscillators
+(four independent witnesses), `_spectral_report`'s split was measured labelling a parasitic
+root physical, and a bordered solve never has to tell candidates apart.
 
 ### A3. pnoise — ⚠ BUILT 2026-09-02 for STATIONARY sources; cyclostationary is not
 

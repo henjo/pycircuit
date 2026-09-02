@@ -2168,6 +2168,163 @@ class PSS(Analysis):
             return np.concatenate((w1, w2)), ts
         return np.concatenate((w1, w2))
 
+    def ppv(self, tol=None):
+        """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
+
+        Returns `(v, info)`.  `v` is the pair-space left null vector of
+        `I - M`, normalised so that `v . xdot(0) = 1` -- see the note on the
+        normalisation below, which was MEASURED rather than transcribed.
+        The phase shift caused by a state perturbation `delta` at `t = 0` is
+        then `v[:m] . delta`.  `info` carries both border residuals, the
+        null residual, `q` and the scaled tangent.
+
+        ⚠ AN AUGMENTED SOLVE, NOT AN EIGENVECTOR, and the difference is the
+        whole content of the 2003 paper.  Demir's 2000 method SELECTED the
+        right eigenvector by its inner product against `C(0) xdot(0)` --
+        measured 0.2 against 1e-5, 1e-7, 2e-5 on a Colpitts.  His 2003
+        paper rejects that: "no guarantee that any of the candidate
+        eigenvectors will be appreciably more orthonormal than the others,
+        leading to a potential breakdown."  The same vector then changes
+        role -- it becomes the BORDER, so the candidate is unique and
+        nothing is selected:
+
+            [ I - M^T   q ] [v]     [0]
+            [   q^T     0 ] [y]  =  [1]
+
+        This matters here specifically.  `_spectral_report`'s eigenvector
+        split was measured labelling a parasitic root physical at ~2 points
+        per cycle, and multipliers cluster near 1 on exactly the high-Q
+        oscillators a PPV is wanted for -- four independent sources say so.
+        A bordered solve does not care how close the other multipliers are;
+        it never has to tell them apart.
+
+        ⚠ `y` COMING BACK ZERO IS A FREE CORRECTNESS CHECK, and it is not
+        decoration.  With a zero first block on the right-hand side,
+        `(I - M^T) v + y q = 0` forces `y q = 0`, so a nonzero `y` means the
+        border absorbed a residual the null space should have taken -- the
+        computed `v` is not in the null space.  Measured on van der Pol:
+        1.4e-11.
+
+        ⚠ `q` IS EXACT, NOT DIFFERENCED.  `q = C(0) xdot(0)` looks like it
+        needs the orbit's tangent, and differencing the waveform for it
+        would be O(h) at best.  The DAE gives it directly: `dq/dt + i(x) +
+        u(t) = 0` and `dq/dt = C xdot`, so `q = -(i(x_0) + u(0))` -- two
+        evaluations at the converged solution, no derivative anywhere.
+        """
+        import scipy.sparse.linalg as spla
+        fp = self.factored_period()
+        if fp.kind != 'solved_history':
+            raise NotImplementedError(
+                'PSS.ppv: the augmented solve needs the transposed replay, '
+                "which is implemented for the solved-history map only. "
+                "Re-solve with method='gear'. (method=%r.)" % self.par.method)
+        if not self.autonomous:
+            raise ValueError(
+                'PSS.ppv: a perturbation projection vector describes the '
+                'phase of a FREE-RUNNING oscillator. This circuit is '
+                'driven, so its phase is the source\'s and there is no '
+                'unit Floquet multiplier to project onto.')
+
+        m = self.cir.n - 1
+        n = fp.width
+        irn = self.irefnode
+        x0r = np.asarray(self._period_state[1], dtype=float).ravel()
+        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        qf = -(np.asarray(self.cir.i(x0f)).ravel()
+               + np.asarray(self.cir.u(0.0,
+                                       analysis=self.par.analysis)).ravel())
+        q = np.delete(np.asarray(qf, dtype=float), irn)
+        qp = np.concatenate((q, np.zeros(n - m)))
+        nq = float(np.linalg.norm(qp))
+        if nq == 0.0:
+            raise ValueError(
+                'PSS.ppv: C(0) xdot(0) is zero, so the orbit has no tangent '
+                'at t=0 and there is nothing to normalise against. That '
+                'should not happen on a converged limit cycle.')
+
+        def _mv(z):
+            z = np.asarray(z)
+            v_, y_ = z[:n], z[n]
+            top = v_ - self._monodromy_matvec_transposed(
+                fp.opening, fp.steps, v_) + y_ * qp
+            return np.concatenate((top, [float(qp @ v_)]))
+
+        rtol = max(self.par.reltol * 1e-2 if tol is None else tol, 1e-14)
+        A = spla.LinearOperator((n + 1, n + 1), matvec=_mv, dtype=float)
+        rhs = np.zeros(n + 1)
+        rhs[n] = 1.0
+        z, code = spla.gmres(A, rhs, rtol=rtol, restart=min(n + 1, 50),
+                             maxiter=min(n + 1, 200))
+        if code != 0:
+            raise RuntimeError(
+                'PSS.ppv: the augmented solve did not converge (info=%r). '
+                'The border is `q` itself; if the orbit tangent is nearly '
+                'orthogonal to the null direction the bordering is poor.'
+                % code)
+        v, y = z[:n], float(z[n])
+        resid = float(np.linalg.norm(
+            v - self._monodromy_matvec_transposed(fp.opening, fp.steps, v)))
+
+        ## ⚠ THE SCALE NEEDS THE TANGENT, so the RIGHT null vector is solved
+        ## for too -- by the same bordering, not by an eigendecomposition,
+        ## for the same reason: on a high-Q oscillator the other multipliers
+        ## crowd 1 and no selection among candidates is reliable.
+        def _mvf(zz):
+            zz = np.asarray(zz)
+            u_, yy = zz[:n], zz[n]
+            top = u_ - self._monodromy_matvec(
+                fp.opening, fp.steps, u_) + yy * qp
+            return np.concatenate((top, [float(qp @ u_)]))
+
+        Af = spla.LinearOperator((n + 1, n + 1), matvec=_mvf, dtype=float)
+        zf, codef = spla.gmres(Af, rhs, rtol=rtol, restart=min(n + 1, 50),
+                               maxiter=min(n + 1, 200))
+        if codef != 0:
+            raise RuntimeError(
+                'PSS.ppv: the tangent solve did not converge (info=%r).'
+                % codef)
+        u, yf = zf[:n], float(zf[n])
+
+        ## `u` is the tangent's DIRECTION; its scale comes from `C u = q`,
+        ## which is the definition of `q` read backwards.  Least squares
+        ## because `C` is singular for a DAE and only its range is
+        ## determined.
+        x0red = np.asarray(self.cir.C(x0f))
+        Cm = np.delete(np.delete(x0red, irn, 0), irn, 1)
+        Cu = np.asarray(Cm, dtype=float) @ u[:m]
+        denom = float(Cu @ Cu)
+        if denom == 0.0:
+            raise ValueError(
+                'PSS.ppv: C(0) annihilates the orbit tangent, so its scale '
+                'is not determined by C u = q.')
+        xdot = u[:m] * (float(q @ Cu) / denom)
+
+        ## ⚠ NORMALISED BY `v . xdot = 1`, WHICH IS NOT WHAT `v . q = 1`
+        ## GIVES, and the difference is not cosmetic -- measured 0.93 apart
+        ## on van der Pol, i.e. a 7% error in every phase-noise number
+        ## downstream.  The defining property is that displacing the state
+        ## ALONG the orbit by `eps xdot` advances the phase by `eps`, so
+        ## `v . xdot = 1` is the normalisation a state perturbation sees.
+        ## Demir's Remark 3.1 reads `v_1^T C u_1 = 1`; the vector this
+        ## bordered solve returns behaves as `C^T v_1` -- it is contracted
+        ## with a state perturbation directly -- so the two statements agree
+        ## about different objects.  ⚠ TREATING THEM AS THE SAME OBJECT WAS
+        ## MEASURED WRONG: predicting a state jump's phase shift as
+        ## `v^T C delta` gives residuals of 0.36/0.40/0.42 that GROW with
+        ## refinement and per-direction ratios scattering from -0.44 to
+        ## 28.7, while `v . delta` converges at O(h).
+        vx = float(v[:m] @ xdot)
+        if vx == 0.0:
+            raise ValueError(
+                'PSS.ppv: the null vector is orthogonal to the orbit '
+                'tangent, so no normalisation makes it a phase projector.')
+        v = v / vx
+        info = {'border_residual': y,
+                'tangent_border_residual': yf,
+                'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
+                'q': q, 'xdot': xdot}
+        return v, info
+
     def _forced_replay_transposed(self, fp, freq, xa):
         """`W^T xa` -- the transpose of the map `u -> w(freq)`.
 

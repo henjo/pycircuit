@@ -4511,3 +4511,164 @@ def test_pnoise_refuses_cyclostationary_sources():
     assert pss.converged
     with pytest.raises(NotImplementedError, match='cyclostationary'):
         PAC(c, toolkit=circuit.numeric).pnoise(pss, 700.0, 1)
+
+
+def _vdp_ppv(npts, mu=1.0):
+    """A converged van der Pol and its PPV."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    pss = PSS(c, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.6634, timestep=6.6634 / npts,
+                  x0=np.array([2.0, 0.0]), maxiterations=50)
+    assert pss.converged, 'van der Pol did not converge at %d points' % npts
+    v, info = pss.ppv()
+    return c, pss, v, info
+
+
+def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
+    """⚠ THE GATE FOR A2, and it is a physical experiment, not an identity.
+
+    A PPV is only worth having if `v . delta` is the phase shift a real
+    perturbation causes. So: displace van der Pol's state by `eps delta`,
+    integrate the FULL NONLINEAR system for several periods until the
+    transverse components have died (the second multiplier is 8.6e-4 per
+    period), and read the surviving displacement along the orbit tangent.
+    Nothing in that measurement touches the monodromy, the adjoint, or the
+    bordered solve.
+
+    ⚠ THE SCALE IS THE ASSERTION, NOT JUST THE DIRECTION. A direction check
+    passes for any normalisation, and the normalisation is exactly what was
+    in doubt. Measured against the true shift, per doubling of the period
+    grid:
+
+        npts   worst |1-ratio|   rel resid   fitted scale
+         200      5.52e-02        1.90e-02     1.006266
+         400      2.45e-02        8.94e-03     1.003290
+         800      1.16e-02        4.35e-03     1.001677
+
+    The fitted scale converges to ONE -- not to some other constant that a
+    direction-only test would have accepted -- and the residual falls at
+    O(h), which is the discretisation of the map the PPV is computed from.
+    """
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    rng = np.random.default_rng(0)
+    dirs = [d / np.linalg.norm(d) for d in
+            (rng.standard_normal(2) for _ in range(4))]
+
+    out = []
+    for npts in (200, 400):
+        cir, pss, v, info = _vdp_ppv(npts)
+        m = cir.n - 1
+        irn = pss.irefnode
+        T = pss.period
+        xdot = info['xdot']
+        x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
+        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+
+        def integrate(xi, nper=3, ppp=2000):
+            ## ⚠ `reltol` HERE IS THE COST, not `ppp`. `Transient` adapts,
+            ## so `timestep` is a first step and the tolerance sets the
+            ## step count. At 1e-12 this test took 447 s; the signal being
+            ## measured is ~9e-3, so 1e-9 is still three orders finer than
+            ## anything it has to resolve.
+            tran = Transient(cir, toolkit=circuit.numeric, reltol=1e-9,
+                             iabstol=1e-13, vabstol=1e-11)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(refnode=gnd, tend=nper * T,
+                                 timestep=T / ppp, x0=xi)
+            return np.asarray(res.x, dtype=float)[:, -1]
+
+        ref = integrate(x0f)
+        meas, pred = [], []
+        for d in dirs:
+            eps = 1e-5
+            dr = np.concatenate((d[:irn], np.zeros(1), d[irn:]))
+            dx = np.delete(integrate(x0f + eps * dr) - ref, irn)
+            meas.append(float(dx @ xdot) / float(xdot @ xdot) / eps)
+            pred.append(float(v[:m] @ d))
+        meas, pred = np.array(meas), np.array(pred)
+        out.append((np.linalg.norm(meas - pred) / np.linalg.norm(meas),
+                    float((pred @ meas) / (pred @ pred))))
+
+    (r_coarse, _s_coarse), (r_fine, s_fine) = out
+    assert abs(s_fine - 1.0) < 0.02, \
+        'the PPV predicts the phase shift up to a factor of %.4f, not 1. ' \
+        'The direction is right and the NORMALISATION is not -- which is ' \
+        'the whole question this test exists to settle' % s_fine
+    ratio = r_coarse / r_fine
+    assert 1.6 < ratio < 2.8, \
+        'the disagreement with the measured phase shift falls %.2fx per ' \
+        'doubling (%.3e -> %.3e), not the O(h) that says it is ' \
+        'discretisation of the period map' % (ratio, r_coarse, r_fine)
+
+
+def test_the_ppv_normalisation_is_not_the_one_transcribed():
+    """⚠ `v . q = 1` IS THE WRONG SCALE HERE, and it looks right.
+
+    Demir's Remark 3.1 reads `v_1^T C(0) u_1(0) = 1`, and bordering the
+    augmented system with `q = C xdot` makes `v . q = 1` fall out for free.
+    It is a 7% error. The vector this bordered solve returns behaves as
+    `C^T v_1` -- it contracts with a STATE perturbation directly -- so the
+    two statements are both true of different objects, and using one where
+    the other belongs is a silent scale error in every phase-noise number
+    downstream.
+
+    ⚠ THE OBVIOUS REPAIR IS ALSO WRONG, and was measured so before this
+    normalisation was chosen: predicting the shift as `v^T C delta`
+    gives residuals of 0.36 / 0.40 / 0.42 that GROW under refinement, with
+    per-direction ratios scattering from -0.44 to 28.7. `v . delta` with
+    `v . xdot = 1` converges at O(h). Do not "fix" this back without
+    re-running that experiment.
+    """
+    cir, _pss, v, info = _vdp_ppv(400)
+    m = cir.n - 1
+    assert abs(float(v[:m] @ info['xdot']) - 1.0) < 1e-9, \
+        'the returned PPV is not normalised by v . xdot = 1'
+    vq = float(v[:m] @ info['q'])
+    assert abs(vq - 1.0) > 0.5, \
+        'v . q is %.6f, i.e. indistinguishable from the normalisation this ' \
+        'test exists to rule out. Either C is now the identity on this ' \
+        'circuit (in which case pick another) or the scale has been ' \
+        'changed back' % vq
+
+
+def test_the_ppv_border_residual_is_the_free_check():
+    """`y` coming back zero is D&R's own correctness check, and it is real.
+
+    With a zero first block on the right-hand side, `(I - M^T)v + y q = 0`
+    forces `y q = 0`, so a nonzero `y` means the border absorbed a residual
+    that belongs to the null space -- the computed `v` is not in it. Both
+    solves report it, and both come back at ~1e-11.
+    """
+    _cir, _pss, _v, info = _vdp_ppv(200)
+    for key in ('border_residual', 'tangent_border_residual'):
+        assert abs(info[key]) < 1e-7, \
+            '%s is %.3e; the bordered system absorbed a null-space ' \
+            'residual, so the vector it returned is not the PPV' \
+            % (key, info[key])
+    assert info['null_residual'] < 1e-7, \
+        '||v - M^T v|| / ||v|| is %.3e' % info['null_residual']
+
+
+def test_the_ppv_refuses_what_has_no_phase():
+    """A driven circuit's phase is its source's, not its own."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder(3)
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    assert pss.converged and not pss.autonomous
+    with pytest.raises(ValueError, match='FREE-RUNNING'):
+        pss.ppv()
