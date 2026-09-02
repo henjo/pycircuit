@@ -212,6 +212,64 @@ Nothing from the original three. Two candidates, neither started:
   `euler` was exact under both, so a one-method test would have passed.
 
 
+## External review, second round — what was verified and what was done
+
+Every finding below was **reproduced here before being acted on**; where my measurement
+disagreed with the review, mine is recorded and the disagreement stated.
+
+### Fixed
+
+| # | Finding | Evidence |
+|---|---|---|
+| 1b | **`_is_autonomous` sampled ~9 points** (`times[1::len//8]`) while calling itself exact. A `VPulse` placed *between* samples: 40% and 20% duty read correctly, **5%, 1% and 0.5% all read AUTONOMOUS** — which routes the solve to the free-period system and **discards the caller's period**. `DEGENERATE_PERIOD_FACTOR` cannot catch it (it tests |T|). Now evaluates every grid point; cost is N `u()` calls once per solve, with early exit. |
+| 1c | **Two reference nodes in one analysis.** `__init__` fixes `self.irefnode` (used by the traversal); `solve()` computed its own from `refnode=` (used to reinsert the zero row). Never compared. Now refused — there is no answer to give, since the two disagree about which variable was eliminated. |
+| 1e | **Grid ratio > 1+√2 silently demotes Gear-2 to first order.** Measured on a Q=20 resonator *at resonance*, alternating 3:1 grid: **7.998 / 11.429 / 14.550 / 16.853** at N=100/200/400/800 against a uniform **19.915 / 20.010 / 20.022 / 20.024** and an analytic 20 V — 60% low, `converged=True` every time. (The review reported 7.97/11.40/14.52/16.83; agreement to three digits.) `_period_grid` now warns, naming the *ratio* — refining does not help, since a refined 3:1 grid is still 3:1. |
+| 3a | **The `(−1)ⁿ` obstruction had the right conclusion and the wrong cause.** Not the `iq` recursion: trapezoidal is A-stable but **not L-stable**, so it maps `null(C)` by exactly −1 per step. `A_trap = (C/h+G/2)⁻¹(C/h−G/2) → −I` on `null(C)`; Euler's → 0. Verified to 1e-9: Q=20 has m=4, rank(C)=2 and **exactly 2** modes at −1 (trap) / 0 (euler); RC has m=3, rank(C)=1 and 2 of each. This makes "the plain path is correct for trapezoidal" **provable**, and adds the corollary that *any* L-stable opening step works, rescuing exactly `m − rank(C)` modes. |
+
+### Documentation corrected in place
+
+- **The "true Newton for both methods" claim was false for the plain path.** The true
+  `dF/dx_in` is **singular on every circuit tested** — rank 1/3 (RC), 2/4 (Q20), 1/3
+  (nonlinear), σ_min exactly 0 — so an exact Newton for that formulation *does not
+  exist*. What `_traverse` returns approximates `dF/dx₀`, a different and well-posed
+  derivative, which is why the path works at all and why it converges **linearly**
+  (trap's autonomous residual falls at a constant ratio ~0.076).
+- **The "~30%" Jacobian error is a single-circuit number and misframed.** Measured:
+  1.56 (RC), 0.0066/0.0037 (Q20 euler/trap), 4.73 (nonlinear) — 0.4% to 470%, not 30%,
+  and it is a *different operator*, not a perturbation.
+- **`max_lte_seam` is `None` on all three shipped methods** — the seam is collected only
+  for a companion reaching two charges back (Gear-2 alone), and Gear-2 always takes
+  solved-history, which clears the flag. Its `_limits` warning entry is dead too.
+- **"driving Transient buys limiting, PCNR, breakpoints and the continuation rescue" is
+  1-for-4.** Limiting reaches. `PSS(pcnr=True)` raises `KeyError`; `_rescue_solver` and
+  `cir.next_event` appear nowhere in PSS, because they are armed inside `Transient.solve`
+  which PSS never calls — the same structural fact as the TLine refusal.
+- **`_spectral_report`'s split is an ODE count.** Index-1 MNA with `d = rank(C) < m` has
+  `d` physical, `d` parasitic and `2(m−d)` structural zeros, so both arrays are
+  mislabelled on real circuits (`parasitic_roots` comes back identically zero).
+  ⚠ `spectral_radius` is unaffected — the physical multipliers have the smallest block
+  split and are always inside the first `m`. And it cannot be fixed by magnitude:
+  Gear-2's parasitic roots are ~1e-95, indistinguishable from a structural zero.
+
+### Verified, reported, not fixed
+
+- **1d — index-2 circuits: the DEFAULT method cannot converge.** On a V-source/C/C/R
+  loop, trap and euler report `converged=False` at 200 *and* 800 points while gear
+  converges; node voltages agree, so it is the index-2 algebraic variable that is wrong,
+  and it does not improve with h. Nothing in the code knows about index, and the fix is
+  a design decision (refuse? admit the constraint?) rather than a patch.
+
+### Did NOT reproduce — my evidence stands
+
+- The review reported that my Poincaré condition numbers are identical between the pin
+  and the orthogonality row (edge 1.000×). **Re-measured: they are not.** Pin
+  1.21e3 / 3.02e2 / 8.23e1 against orthogonality 1.95e2 / 5.99e1 / 3.69e1 at
+  200/800/3200 points — a 6.2× / 5.0× / 2.2× edge, as recorded. The review's reasoning
+  (alignment `|f̂[k]| ≈ 0.9999`, so "the pin row IS the orthogonality row") conflates
+  *parallel* with *equal*: `e_k` is a unit vector and `f̂` is dense, and that difference
+  is what moves the conditioning. **The decision is unchanged either way** — the
+  orthogonality row still buys nothing that decides anything.
+
 ## ⚠ Gear-2's period column was exactly 3/2 too large (fixed 2026-09-02)
 
 Raised by external review, reproduced here before acting. The autonomous Jacobian's

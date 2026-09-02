@@ -2452,3 +2452,218 @@ def test_the_period_column_is_a_total_derivative_not_a_partial():
     assert got['trap'] < 5e-2, \
         "trapezoidal's period column is %.3e, worse than the O(h) seeding " \
         'error it is expected to carry' % got['trap']
+
+
+def test_autonomy_is_decided_on_every_grid_point_not_a_stride():
+    """A narrow pulse must not read as a DC circuit.
+
+    ⚠ `_is_autonomous` sampled `times[1::len(times)//8]` -- about nine
+    points -- while its docstring called the test "exact where a spectral
+    test is not".  Nine points cannot see a narrow pulse.  Measured on an RC
+    driven by a `VPulse` placed BETWEEN two of those samples: 40% and 20%
+    duty were read correctly, and 5%, 1% and 0.5% all came back AUTONOMOUS.
+
+    What that costs is not a warning: an autonomous verdict routes the solve
+    to the FREE-PERIOD system, which solves for `T` and DISCARDS the period
+    the caller asked for.  `DEGENERATE_PERIOD_FACTOR` cannot catch it either
+    -- it tests the magnitude of `T`, not whether the circuit was driven.
+    PWM, sampling clocks, S/H and mixer LOs are core PSS workload and are
+    exactly the shapes a stride misses.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def pulsed(duty):
+        ## td places the pulse between the samples the old stride took
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=per * 0.19,
+                         tr=per * 1e-4, tf=per * 1e-4,
+                         pw=per * duty, per=per)
+        c['r'] = R('a', 'b', r=1e3)
+        c['c'] = C('b', gnd, c=1e-9)
+        return c
+
+    for duty in (0.40, 0.05, 0.01, 0.005):
+        pss = PSS(pulsed(duty), method='trap', reltol=1e-6)
+        times, _hs = pss._period_grid(per, 200, None)
+        assert not pss._is_autonomous(times), \
+            'a %.1f%% duty pulse read as autonomous; it would be solved at ' \
+            'a period of the analysis\'s own choosing' % (100 * duty)
+
+    ## and the verdict still holds for a genuinely autonomous circuit
+    pss = PSS(_phase_circuit(), method='trap', reltol=1e-8)
+    times, _hs = pss._period_grid(1e-3, 200, None)
+    assert pss._is_autonomous(times)
+
+    ## end to end: the requested period is the one that comes back
+    pss = PSS(pulsed(0.01), method='trap', reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 200, maxiterations=30)
+    assert pss.converged
+    assert abs(pss.period - per) < 1e-15 * per, \
+        'a driven solve returned T=%.9g for a requested %.9g' \
+        % (pss.period, per)
+
+
+def test_one_reference_node_per_analysis():
+    """The traversal and the reported waveform must agree on which node is 0.
+
+    `self.irefnode` is fixed in `__init__` and is what the TRAVERSAL uses --
+    `_transient.irefnode`, every `remove_row_col`, the monodromy's shape.
+    `solve()` computed its OWN from `refnode=` and used that to reinsert the
+    zero row into the result.  The two were never compared, so
+    `PSS(cir).solve(refnode='b')` solved against ground and reported against
+    `b`: each row sensible alone, the set incoherent, with ground itself
+    coming back non-zero.
+
+    Refused rather than silently rotated, because there is no answer to
+    give -- the two choices disagree about which variable was eliminated
+    before the solve began.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('a')
+    c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+    c['r'] = R('a', 'b', r=1e3)
+    c['c'] = C('b', gnd, c=1e-7)
+
+    with pytest.raises(ValueError, match='different reference node'):
+        PSS(c).solve(refnode='b', period=1e-3, timestep=1e-5)
+
+    ## the default still works, and so does agreeing explicitly
+    pss = PSS(c)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-5, maxiterations=20)
+    assert pss.converged
+
+
+def test_the_alternating_mode_is_l_stability_not_the_iq_recursion():
+    """Why trapezoidal shooting dies at even step counts -- the real cause.
+
+    The class docstring blamed trapezoidal's `iq` RECURSION
+    (`iq_n = ... - iq_{n-1}`, homogeneous mode `(-1)^n`).  That is the wrong
+    cause: trapezoidal is A-stable but NOT L-stable, so it maps the null
+    space of the singular MNA `C` by exactly `-1` per step, and an X-ONLY
+    formulation carrying no `iq` variable at all is singular in the same
+    way.  For `C x' + G x + u = 0`,
+
+        A_trap  = (C/h + G/2)^-1 (C/h - G/2)   ->  -I  on null(C)
+        A_euler = (C/h + G)^-1 (C/h)           ->   0  on null(C)
+
+    so the count of `-1` modes is exactly `m - rank(C)`, one per ALGEBRAIC
+    variable, on every MNA circuit.  That is a prediction with a number in
+    it, which is why it is worth a test: it says the opening step must be
+    L-STABLE and nothing more specific, so any L-stable opener rescues
+    exactly those modes and Euler is not privileged.
+    """
+    circuit.default_toolkit = circuit.numeric
+    h = 1e-3 / 200
+    for name, cir in (('Q=20 RLC', _q20_rlc()), ('RC', _rc_ladder(1))):
+        n = cir.n
+        Cm = np.asarray(cir.C(np.zeros(n)), dtype=float)
+        Gm = np.asarray(cir.G(np.zeros(n)), dtype=float)
+        iref = cir.get_node_index(gnd)
+        keep = [i for i in range(n) if i != iref]
+        Cm = Cm[np.ix_(keep, keep)]
+        Gm = Gm[np.ix_(keep, keep)]
+        m = len(keep)
+        rank_c = np.linalg.matrix_rank(Cm)
+        algebraic = m - rank_c
+        assert algebraic > 0, '%s has no algebraic variables to test' % name
+
+        e_trap = np.linalg.eigvals(np.linalg.solve(Cm / h + Gm / 2.0,
+                                                   Cm / h - Gm / 2.0))
+        e_eul = np.linalg.eigvals(np.linalg.solve(Cm / h + Gm, Cm / h))
+        n_minus1 = int(np.sum(np.abs(e_trap + 1.0) < 1e-9))
+        n_zero = int(np.sum(np.abs(e_eul) < 1e-9))
+        assert n_minus1 == algebraic, \
+            '%s: trapezoidal has %d modes at -1, m - rank(C) = %d' \
+            % (name, n_minus1, algebraic)
+        assert n_zero == algebraic, \
+            '%s: Euler has %d modes at 0, m - rank(C) = %d' \
+            % (name, n_zero, algebraic)
+
+
+def _resonator_at_resonance():
+    """A Q=20 series resonator DRIVEN AT ITS RESONANCE, analytic peak 20 V."""
+    Lv, Cv, Q = 1e-3, 1e-9, 20.0
+    f0 = 1.0 / (2 * np.pi * np.sqrt(Lv * Cv))
+    c = SubCircuit()
+    c.add_node('n1')
+    c.add_node('n2')
+    c['vs'] = VSin(gnd, 'n1', va=1.0, freq=f0)
+    c['L'] = L('n1', 'n2', L=Lv)
+    c['C'] = C('n2', gnd, c=Cv)
+    c['R'] = R('n1', 'n2', r=Q * np.sqrt(Lv / Cv))
+    return c, 1.0 / f0
+
+
+def test_a_grid_that_outruns_zero_stability_says_so():
+    """A caller's grid can demote Gear-2 to first order, silently.
+
+    `_period_grid` validated positivity and sum-to-1 and NOTHING about the
+    interior ratios.  A two-step method is zero-stable only to
+    `h_n/h_{n-1} = 1 + sqrt(2)`; past it the integrator drops the step to
+    Euler -- correct, and invisible.  Measured on this resonator with an
+    alternating 3:1 grid, half the steps demoted:
+
+          npts   uniform    3:1 grid     (analytic peak 20 V)
+           100   19.91489    7.99821
+           800   20.02443   16.85280
+
+    60% low at 100 points, crawling up at FIRST order, `converged = True`
+    every time.  ⚠ And refining does not fix it -- a refined 3:1 grid is
+    still 3:1 -- which is why the warning names the RATIO rather than
+    advising a smaller step.
+
+    ⚠ This is the premise item 5 removed.  The class docstring's literature
+    note argues Wambacq's objections to non-uniform BDF "do not bite inside
+    a run" because the grid is uniform and frozen; a caller's grid is frozen
+    but not uniform.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir, per = _resonator_at_resonance()
+    n = 100
+    bad = np.where(np.arange(n) % 2 == 0, 3.0, 1.0)
+    bad = bad / bad.sum()
+    smooth = _grid_fracs('smooth', n)
+
+    def warns(method, fr):
+        pss = PSS(cir, method=method, reltol=1e-8)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            pss._period_grid(per, n, fr)
+        return [w for w in caught if 'zero-stable' in str(w.message)]
+
+    assert warns('gear', bad), \
+        'a 3:1 grid on a two-step method was accepted without a word'
+    ## and it does not cry wolf
+    assert not warns('gear', smooth), 'a smooth grid should not warn'
+    assert not warns('trap', bad), \
+        'a ONE-step method is not subject to the two-step bound'
+
+    ## the damage the warning is about, so the number is pinned too
+    peaks = {}
+    for label, fr in (('uniform', None), ('3:1', bad)):
+        pss = PSS(cir, method='gear', reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / n, grid=fr,
+                            maxiterations=30)
+        v = np.asarray(res['tpss'].v('n2', gnd), dtype=float).ravel()
+        peaks[label] = 0.5 * (v.max() - v.min())
+        assert pss.converged, '%s did not converge' % label
+    assert abs(peaks['uniform'] - 20.0) < 0.2, \
+        'the uniform reference is %.4f, not the analytic 20 V' % peaks['uniform']
+    assert peaks['3:1'] < 0.6 * peaks['uniform'], \
+        'the 3:1 grid gave %.4f against the uniform %.4f -- if these now ' \
+        'agree, the demotion is gone and this test has lost its subject' \
+        % (peaks['3:1'], peaks['uniform'])

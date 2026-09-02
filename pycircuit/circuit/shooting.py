@@ -177,6 +177,19 @@ class PSS(Analysis):
          Gear-2 WORSE (2.34e-1 -> 4.39e-1 at 100 points): the drop is
          protective and 1.266e-01 is the residue it leaves.
 
+         ⚠ AND ON EVERY SHIPPED METHOD IT IS `None`, so the treatment below
+         describes a number the code as configured cannot produce.  Verified
+         2026-09-02 across all three: the seam is collected only for a
+         method whose companion reaches two charges back, which is Gear-2
+         alone -- and Gear-2 always takes the solved-history path, which has
+         no manufactured opening and clears the flag.  Euler and trapezoidal
+         reach one.  So the figures below are reachable only through the
+         superseded plain-Gear route (a test gets at them by monkeypatching
+         it), and the `_limits` warning entry that quotes them is dead code
+         on the shipped paths.  Kept because the reasoning is what the
+         figure is FOR, and because a fourth method reaching two charges
+         back on the plain path would revive both.
+
          So `max_lte_seam` is a FLAG, not a magnitude -- at 100 points the
          estimator's seam/interior ratio is 505x and the answer's is 1.18x.
 
@@ -772,6 +785,41 @@ class PSS(Analysis):
          makes trapezoidal's shooting problem well-posed, and the ~30%
          Jacobian error is what that costs.
 
+         ⚠ THE "~30% JACOBIAN ERROR" IS WRONG IN BOTH DIRECTIONS, and the
+         real statement is stronger.  Measured 2026-09-02 against a
+         finite-difference `dF/dx_in` on three circuits at 100 points:
+
+               circuit   method   relerr(J_code, J_true)   rank(J_true)/m
+               RC        euler/trap        1.56                 1/3
+               Q=20 RLC  euler             6.6e-03              2/4
+               Q=20 RLC  trap              3.7e-03              2/4
+               nonlinear euler/trap        4.73                 1/3
+
+         So it is 0.4% on one circuit and 470% on another -- "~30%" was a
+         single-circuit number carried as if it were a property of the
+         method.
+
+         ⚠ AND THE FRAMING WAS WRONG TOO: `J_code` IS NOT AN APPROXIMATION
+         TO `dF/dx_in`.  That derivative is SINGULAR on every circuit above
+         -- `sigma_min` is exactly 0.0 and the rank is 1/3, 2/4, 1/3 -- so
+         AN EXACT NEWTON FOR THIS FORMULATION DOES NOT EXIST, and a solver
+         handed the true Jacobian fails on the first step rather than
+         converging faster.  What `_traverse` returns is `I - dx_end/dx_0`
+         with a flat-history seed: an approximation to a DIFFERENT and
+         WELL-POSED derivative, taken with respect to `x_0` while the
+         unknown is `x_in`.  That is why the plain path works at all, and
+         why its convergence is LINEAR rather than quadratic -- measured on
+         the autonomous phase circuit, trapezoidal's residual falls
+         3.91e-03 -> 3.14e-04 -> 2.66e-05 at a constant ratio ~0.076 where
+         Gear-2's solved-history route is quadratic.  It is a contraction,
+         not a Newton.
+
+         ⚠ WHICH MAKES THE FIX NAMEABLE: make `x_0` the unknown.  The
+         throwaway driver that solved van der Pol did exactly that (its
+         unknown was `x_0` itself), and item 5's note already half-records
+         it.  Not built here; written down so the next attempt starts from
+         the right statement rather than from "the Jacobian is 30% off".
+
          NOT PROPOSING A FOURTH.  Bordering the `(x, iq)` system to remove
          the alternating mode remains formally available -- the analogy to
          the phase condition is exact -- but the null direction there is a
@@ -779,6 +827,38 @@ class PSS(Analysis):
          `xdot(0)`, and three derivations in this item have now looked sound
          and failed on contact.  Anyone taking it up should measure before
          building: the falsifier is cheap and is even/odd step counts.
+
+         ⚠ AND THE CONCLUSION IS NOW A THEOREM, NOT A TALLY OF THREE FAILED
+         ATTEMPTS.  This item blamed trapezoidal's `iq` RECURSION for the
+         `(-1)^n` mode.  That is the wrong cause, and an external review
+         (2026-09-02) found the right one: trapezoidal is A-stable but NOT
+         L-STABLE, so it maps the null space of the singular MNA `C` by
+         exactly `-1` per step.  For `C x' + G x + u = 0` the one-step
+         amplification is
+
+             A_trap  = (C/h + G/2)^-1 (C/h - G/2)   ->  -I  on null(C)
+             A_euler = (C/h + G)^-1 (C/h)           ->   0  on null(C)
+
+         so the count of `-1` modes is exactly `m - rank(C)` -- one per
+         ALGEBRAIC variable -- on every MNA circuit, and it has nothing to
+         do with `iq`.  Verified here to 1e-09: the Q=20 resonator has
+         `m = 4`, `rank(C) = 2` and exactly two eigenvalues at `-1` under
+         trapezoidal and two at `0` under Euler; a plain RC has `m = 3`,
+         `rank(C) = 1` and two of each.  A review reproduced the same
+         singularity in an X-ONLY formulation containing no `iq` variable at
+         all (cond 6.9e+18 at even K, 8.2e+04 at odd), which is the
+         falsifier for the old attribution.
+
+         What that buys, beyond a correct cause: the conclusion generalises.
+         ANY formulation whose period map is `A_trap^K` without an L-stable
+         opening step is singular at even `K` on every MNA circuit -- so
+         "the plain path is correct for trapezoidal" is provable rather than
+         observed.  And the cure is not specific to Euler: any L-STABLE
+         opening step works, and it rescues exactly `m - rank(C)` modes.
+         Corroborated in the literature the review checked: Houben (2003,
+         App. A) biases theta off 1/2 so that "numerical oscillations due to
+         the DAE character are damped out" -- the same mechanism, attributed
+         there to the DAE.
 
          Kept from the attempt: `_install_history` now takes the entering
          step size `h_prev` separately.  `x_{-1}` sits one step BEFORE
@@ -1009,8 +1089,8 @@ class PSS(Analysis):
         """True when nothing in the circuit depends on `t`.
 
         Exact where a spectral test is not: see `AUTONOMOUS_U_TOL`.  The
-        source vector is sampled across the period and compared with the
-        first sample; a circuit driven only by DC -- a VCO macromodel, a
+        source vector is evaluated at EVERY point of the grid and compared
+        with the first; a circuit driven only by DC -- a VCO macromodel, a
         phase accumulator, an LC or ring oscillator -- has a constant `u`
         and a one-parameter family of periodic solutions, which is what
         makes fixed-period shooting ill-posed for it.
@@ -1018,7 +1098,24 @@ class PSS(Analysis):
         u0 = np.asarray(self.cir.u(times[0], analysis=self.par.analysis),
                         dtype=float)
         scale = max(float(np.max(np.abs(u0))), 1.0)
-        for t in times[1::max(1, len(times) // 8)]:
+        ## ⚠ EVERY POINT ON THE GRID, NOT A STRIDE THROUGH IT.  This used to
+        ## sample `times[1::len(times)//8]` -- about nine points -- while
+        ## calling itself "exact where a spectral test is not".  Nine points
+        ## cannot see a narrow pulse: measured on an RC driven by a `VPulse`
+        ## positioned BETWEEN two samples, 40% and 20% duty were read
+        ## correctly and 5%, 1% and 0.5% all came back AUTONOMOUS.  A clock
+        ## misread that way is routed to the free-period system, which
+        ## solves for `T` and DISCARDS the period the caller asked for --
+        ## and `DEGENERATE_PERIOD_FACTOR` cannot catch it, because it tests
+        ## the magnitude of `T`, not whether the circuit was driven.  PWM,
+        ## sampling clocks, S/H and mixer LOs are core PSS workload and are
+        ## exactly the shapes a stride misses.
+        ##
+        ## The cost is `N` evaluations of `u` ONCE per solve, against `N`
+        ## Newton solves in the traversal it decides -- and the loop exits
+        ## at the first sample that differs, which is the common case for
+        ## every driven circuit.
+        for t in times[1:]:
             u = np.asarray(self.cir.u(t, analysis=self.par.analysis),
                            dtype=float)
             if float(np.max(np.abs(u - u0))) > AUTONOMOUS_U_TOL * scale:
@@ -1171,6 +1268,50 @@ class PSS(Analysis):
         if fr[0] > 8.0 * fr.min():
             d = float(fr.min())
             fr = np.concatenate(([d, fr[0] - d], fr[1:]))
+
+        ## ⚠ A CALLER'S GRID CAN SILENTLY DEMOTE GEAR-2 TO FIRST ORDER.
+        ## `_period_grid` validated positivity and sum-to-1 and nothing
+        ## about the INTERIOR ratios.  A two-step method is zero-stable only
+        ## up to `h_n / h_{n-1} = 1 + sqrt(2)`, and past it the integrator's
+        ## own guard drops the step to Euler -- correct, and invisible.
+        ## Measured on a Q=20 resonator driven at resonance with an
+        ## alternating 3:1 grid, where half the steps are demoted:
+        ##
+        ##       npts   uniform    3:1 grid
+        ##        100   19.91489    7.99821
+        ##        200   20.00960   11.42923
+        ##        400   20.02218   14.54985
+        ##        800   20.02443   16.85280
+        ##
+        ## against an analytic peak of 20 V -- 60% low at 100 points,
+        ## crawling up at FIRST order, and `converged = True` every time.
+        ## Refining does not fix it, because refining a 3:1 grid keeps it
+        ## 3:1.  So the warning names the ratio rather than suggesting a
+        ## smaller step, which is the advice that does not work here.
+        ##
+        ## ⚠ This is what item 5 removed the premise for: the literature
+        ## note in the class docstring argues Wambacq's objections to
+        ## non-uniform BDF "do not bite inside a run" because the grid is
+        ## UNIFORM and frozen.  A caller's grid is frozen but not uniform.
+        if len(fr) > 1 and self._companion_reach() >= 2:
+            from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
+            ratios = fr[1:] / fr[:-1]
+            worst = float(np.max(ratios))
+            if worst > ZERO_STABILITY_RATIO:
+                n_bad = int(np.sum(ratios > ZERO_STABILITY_RATIO))
+                warnings.warn(
+                    'PSS: this grid steps up by %.3fx where a two-step '
+                    'method is zero-stable only to %.3fx, at %d of %d '
+                    'interior ratios. Those steps are dropped to Euler by '
+                    'the integrator, so the run is first-order there and '
+                    'the answer can be far low while reporting converged -- '
+                    'measured 60%% low on a Q=20 resonator with an '
+                    'alternating 3:1 grid. Refining will NOT fix it: a '
+                    'refined 3:1 grid is still 3:1. Smooth the grid so '
+                    'adjacent steps stay within %.3fx, or use a one-step '
+                    "method (method='trap')."
+                    % (worst, ZERO_STABILITY_RATIO, n_bad, len(ratios),
+                       ZERO_STABILITY_RATIO), RuntimeWarning, stacklevel=3)
 
         hs = fr * period
         times = np.concatenate(([0.0], np.cumsum(hs)))
@@ -1857,6 +1998,28 @@ class PSS(Analysis):
         smallest splits are the physical set by construction, and the
         question of where to put a cut never arises.
 
+        ⚠ THE COUNT IS AN ODE COUNT, AND MNA CIRCUITS ARE DAEs.  This
+        splits `2m` eigenvalues as `m` physical and `m` parasitic, which is
+        right for an ODE.  An index-1 MNA system with `d = rank(C) < m` has
+        `d` physical multipliers, `d` parasitic ones and `2(m - d)`
+        STRUCTURAL ZEROS from the algebraic variables -- so on a real
+        circuit both arrays are mislabelled: measured on the Q=20 resonator
+        (`m = 4`, `rank(C) = 2`), `parasitic_roots` comes back identically
+        zero and `floquet_multipliers` carries two structural zeros beside
+        the two real multipliers.
+
+        ⚠ `spectral_radius` IS UNAFFECTED, which is why this is recorded
+        rather than re-engineered.  The physical multipliers have the
+        SMALLEST block split by construction, so they are always inside the
+        first `m`, and the maximum over that set is the right number --
+        0.97531 on that circuit, against the analytic 0.9753.  What is
+        unreliable is the LABELLING of the diagnostic arrays.  And it cannot
+        be fixed by magnitude either: Gear-2's true parasitic roots are
+        `(1/3)^N`, about 1e-95, which is numerically indistinguishable from
+        a structural zero -- so on this method the two populations cannot be
+        told apart at all, by any test, and saying so is the honest
+        position.
+
         ⚠ ON A STIFF CIRCUIT THE LABELS MAY STILL BE WRONG, and it does not
         matter: when the physical modes are themselves stiff, a parasitic
         root can have the smaller split and swap places with one.  Every
@@ -2114,6 +2277,19 @@ class PSS(Analysis):
         iterate before the converged one.  Driving the real thing removes
         the copy and brings what came with it: the limiting machinery, PCNR,
         breakpoint order drops, and the continuation rescue.
+
+        ⚠ THAT LIST IS 1-FOR-4 AS SHIPPED, and an external review counted it
+        (2026-09-02).  Verified here: LIMITING does reach -- `cir.limit` is
+        called on the inner Newton and the rectifier measurably conducts,
+        which is the defect that motivated driving `Transient` at all.  The
+        other three do not.  `PSS(cir, pcnr=True)` raises `KeyError` because
+        this class declares no `pcnr` Parameter; the continuation rescue
+        (`_rescue_solver`) and breakpoints (`cir.next_event`) are armed only
+        inside `Transient.solve`, which PSS never calls -- it drives
+        `solve_timestep` directly, and imposes its own grid, so a breakpoint
+        has nothing to move.  The same structural fact behind the TLine
+        refusal above: what `Transient.solve` does per accepted step, PSS
+        does not do at all.
 
         The tolerances are handed over unchanged, which is the point of
         `newton_tolerance_vectors`: `reltol`/`iabstol`/`vabstol` mean the
@@ -2427,7 +2603,29 @@ class PSS(Analysis):
         self.period = period
         toolkit = self.toolkit
 
-        irefnode=self.cir.get_node_index(refnode)
+        ## ⚠ ONE REFERENCE NODE PER ANALYSIS, CHECKED.  `self.irefnode` is
+        ## fixed in `__init__` from `irefnode=` and is what the TRAVERSAL
+        ## uses -- `_transient.irefnode`, every `remove_row_col`, the
+        ## monodromy's shape.  This local one comes from `solve`'s own
+        ## `refnode=` and is what reinserts the zero row into the RESULT.
+        ## They were never compared, so `PSS(cir).solve(refnode=b)` solved
+        ## against ground and reported against `b`: each row sensible on its
+        ## own, the set of them incoherent, with ground itself coming back
+        ## non-zero.  Refused rather than silently rotated, because there is
+        ## no answer to give -- the two choices disagree about which
+        ## variable was eliminated before the solve began.
+        irefnode = self.cir.get_node_index(refnode)
+        if irefnode != self.irefnode:
+            raise ValueError(
+                'PSS: solve(refnode=...) names a different reference node '
+                '(index %d) than the analysis was constructed with (index '
+                '%d). The traversal eliminated one and the result would '
+                'reinsert the other, so the waveform would be reported '
+                'against a node the solve never used -- ground itself comes '
+                'back non-zero. Pass the same node to both, or construct '
+                'the analysis with PSS(cir, irefnode=...) and leave '
+                "solve()'s refnode at its default."
+                % (irefnode, self.irefnode))
         n = self.cir.n
         dt = timestep
         if x0 is None:
