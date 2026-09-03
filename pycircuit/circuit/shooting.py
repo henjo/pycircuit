@@ -6110,6 +6110,42 @@ class PAC(Analysis):
         ## refuses what is definitely invalid and admits a band that is
         ## already suspect -- deliberately, because refusing at 3x would
         ## be fitting a threshold to one example.
+        ## ⚠ AND THE DERIVATION HAS A PRECONDITION THE BOUND DOES NOT
+        ## STATE, so it is checked rather than assumed.  The box argument
+        ## is `2 df S(df) <= integral_{-df}^{+df} S <= 1`, and the FIRST
+        ## inequality needs `S(f) >= S(df)` for every `|f| <= df` -- the
+        ## spectrum must not dip below its edge value anywhere further in.
+        ## True of a monotone skirt; TRUE of the flattened near-carrier
+        ## shape; true even with a spur, which ADDS power inside rather
+        ## than creating a dip.
+        ##
+        ## ⚠ FALSE FOR A LOCKED PLL, whose phase-noise transfer function
+        ## is HIGH-PASS: the spectrum is SUPPRESSED at DC and rises to the
+        ## free-running level beyond the loop bandwidth, so it dips below
+        ## its edge value everywhere inside.  The bound is not thereby
+        ## shown to be violated there -- total power is still 1 -- it is
+        ## NO LONGER DERIVED, and a floor that is not derived cannot be
+        ## used as one.  Unreachable today because this method refuses a
+        ## driven circuit, and squarely in the way of the driven-oscillator
+        ## work, which is why it is a check and not a comment.
+        probe = np.unique(np.concatenate((
+            offs, np.logspace(np.log10(offs.min() / 1e3),
+                              np.log10(offs.max()), 32))))
+        sprobe = ((i ** 2) * (f0 ** 2)
+                  * (c + self.coloured_diffusion(pss, probe)) / probe ** 2)
+        if np.any(np.diff(sprobe) > 1e-12 * np.abs(sprobe[:-1])):
+            k = int(np.argmax(np.diff(sprobe) > 0)) + 1
+            raise ValueError(
+                'PAC.phase_psd: the spectrum RISES with offset near '
+                '%.6g Hz, so it dips below its edge value further in and '
+                'the power bound below is no longer derived -- its box '
+                'argument needs S(f) >= S(df) for every |f| <= df. That '
+                'happens for a high-pass-shaped spectrum such as a locked '
+                'loop, and for a source whose density grows faster than '
+                'f^2. The bound may still hold; it is not established '
+                'here, so it is refused rather than applied.'
+                % float(probe[k]))
+
         power = 2.0 * offs * sphi
         bad = power >= 1.0
         if np.any(bad):

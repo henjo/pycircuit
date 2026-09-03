@@ -553,6 +553,109 @@ Whether (2) binds in practice depends on whether the circuit ahead of the filter
 band-limited the noise — which is a per-circuit question, not a property of the filter. Same
 shape as the two-sided/one-sided trap: a condition asserted without being checked.
 
+#### A4b-note. The invariance any AM/PM split must have — Kärtner 1990 §3.2, and it is a TEST
+
+Under a linear change of state variables `x' = Ax` the Floquet basis transforms as `u' = Au`,
+`v'ᵀ = vᵀA⁻¹`, and Kärtner obtains *"the same equation for the time shift θ(t) … therefore the
+separation in amplitude and phase is **independent of the co-ordinate system used** … this is by
+no means a trivial result, since there are **arbitrarily many other definitions of amplitude and
+phase which seem to be more illustrative but do not have this invariance**, and therefore a
+change of co-ordinates also **transforms a part of phase noise into amplitude noise** and vice
+versa."*
+
+⚠ **THIS IS THE TEST `PAC.am_pm` HAS TO PASS, AND IT DOES NOT HAVE ONE.** Kundert's framing —
+*"AM/PM is a change of basis"* on PAC's per-sideband transfer functions — makes Kärtner's §3.2
+the property that change of basis must have, and his warning is that most plausible-looking
+definitions **do not have it**. A controlled transformation: apply `A`, recompute, require the
+phase process **unchanged** and the amplitude process to transform as `dX' = A·dX`. **External
+in the strong sense** — a with/without difference whose answer the implementation cannot
+influence. Not built; the netlist-level route to a coordinate change is the open part (a
+different `refnode` is one, and is the cheapest thing to try first).
+
+⚠ **AND IT IS WHY LEESON FAILS, WHICH JOINS IT TO DEMIR'S COROLLARY 6.1.** Kärtner: Leeson
+carries an extra `f⁻ᵅ` term *"due to the amplitude noise, since in Leeson's derivation no
+distinction is made between amplitude and phase noise … it is clear that the so-defined
+single-sideband phase noise **is no longer independent of the state variable to be measured**."*
+**That is Demir's Corollary 6.1 used as a criterion.** A decomposition lacking Kärtner's
+invariance yields a "phase noise" that depends on where you probe — exactly the property Demir
+proves the correct definition has. ⚠ **The two results are one fact seen from two sides**, which
+is what Demir meant by "the same characterization by a completely different derivation" — and
+reading both *confirms* it rather than taking his word.
+
+What Kärtner captures that Leeson cannot: *"the feedback of the oscillation onto the noise
+sources, which results in **multiplicative noise**"*, and *"the mixing and upconversion of noise
+due to the non-linearities"* through a coefficient that *"determines **how much of this
+low-frequency noise is upconverted** to f₀"* — where in Leeson *"only the noise figure for
+small-signal operation of the active element enters, which can hardly describe the discussed
+effects."* That upconversion coefficient is our `Γ`.
+
+⚠ **And his numerical route is SHOOTING, in 1990** — *"the so-called shooting methods, which are
+based on the fact that the computation of the limit cycle can be formulated as a boundary value
+problem."* So the "completely different derivation" differs in its **analysis** (Langevin plus
+perturbation methods rather than Floquet DAE machinery) and lands on the same numerical object
+computed by the same means. **His `v₁` is what our bordered solve returns.**
+
+#### A4c-note. Demir Ch.6 is the primary for the covariance split — and one open question
+
+Theorem 6.1 / eq. (6.79)–(6.81) give the variance as a **node-dependent prefactor** `ẋ_{s,k}²`
+times a **node-independent integral** `(1/T)∫v₁ᵀFFᵀv₁`, hence *"a linear ramp envelope"* with
+slope `α`. **That is our `d`, in closed form, as the adjoint quadratic form** — so our two
+routes are Demir's derivation and its numerical dual. The split is standard, not improvised.
+
+⚠ **Corollary 6.1 claims `β²α` is node-independent** — *"phase noise a property of the WHOLE
+oscillator circuit … by no means a trivial observation"* — with `β = 2πf_c/max x_s`. **MEASURED
+HERE AND IT DOES NOT HOLD ON OUR FIXTURES:** a **110%** spread across nodes on the lossy
+asymmetric LC (`β²α` = 2.01e-07 vs 9.60e-08). With `β = ω₀/max|x_k|` the invariant reduces to
+`max|ẋ_k|/max|x_k|` being node-independent, which is **exactly true for a sinusoid and false
+otherwise** — measured 1.414·ω₀ and 1.072·ω₀ at two nodes of one circuit.
+
+⚠ **NOT ASSERTED EITHER WAY.** Either the transcription of `β` is wrong or the corollary carries
+a near-sinusoidal precondition the excerpt does not state. Declaring it false from one
+measurement, without the paper's definition of `f_c`, would be the over-claim this branch has
+now made twice. **Open question, not a finding.**
+
+⚠ **Its validity boundary is `λ₂` again.** The step to (6.74) drops every Floquet mode but the
+first under `|exp(η_i)| ≪ 1` — *"satisfied for 'most' oscillator circuits"* — and Remark 6.2:
+*"a second eigenvalue that has a magnitude close to 1 suggests that the oscillator circuit is
+close to being unstable, which is usually the case for **high-Q oscillators**."* That is
+**`Q ↔ λ₂` written as intuition in 1998**, nineteen years before it became an equality.
+
+⚠ **A disambiguation to keep next to the ISF note below.** (6.79) implies the **node-voltage
+variance** peaks at that node's transitions, via the `ẋ_{s,k}²` prefactor. **The PPV does not.**
+Both true of the same circuit at once — and *"peaks at transitions"* is precisely the phrase
+that would get mis-transferred between them.
+
+⚠ **Kärtner is settled better than the secondary sources put it.** Demir §6.4: his methodology
+*"arrives at exactly the same phase noise characterization … even though his definition of phase
+noise, and his derivation … is completely different than ours."* Not "Kärtner came first" —
+**two completely different derivations, eight years apart, producing the identical formula**,
+certified by the later author about his own result.
+
+#### B-note. Why shooting is robust, and what parallel shooting costs
+
+Kundert Ch.8: shooting converges *"if the state-transition function is near linear … it is quite
+often the case (usually by design) that the state-transition function is linear even when the
+overall circuit behavior is not … **numerical integration is a natural continuation method where
+time is the continuation parameter**. This **hiding of the nonlinear behavior** gives shooting
+methods a considerable advantage."*
+
+⚠ **That is the mechanism behind two things this record had without an explanation** —
+"shooting-Newton needs no preconditioner", and why all five Gourary papers are about HB. The
+outer Newton never sees the nonlinearity because time-stepping already continued through it.
+
+⚠⚠ **AND THE COST, WHICH THIS RECORD HAD FILED AS FREE:** *"the advantage that shooting methods
+enjoy by hiding nonlinear behavior from the outer loop is **often lost with parallel shooting
+methods**."* The parallel-in-time and GPU-shooting papers are filed here as "parallelisation,
+not correctness". **From the method's own author, the trade is not free: multiple/parallel
+shooting forfeits the property that makes shooting converge on strongly nonlinear circuits.**
+That bounds a whole class of speedups before anyone reaches for one.
+
+Also: shooting *"cannot handle distributed devices"* and lumping them *"considerably increase[s]
+the cost"* — the 1990 position our `TLine` refusal reproduces, with Yang & Phillips 2002 as the
+dated escape. And eq. (8.1) shows **HB and finite-difference are one method in two bases**:
+*"though both methods give the same answer, the matrices in the finite-difference method are
+denser."* The basis choice is a sparsity choice.
+
 #### A2-note. The closed-form ISF is a different object from the PPV, and they peak in
 #### different places — recorded 2026-09-03 from primaries
 
@@ -1202,6 +1305,69 @@ assertion in it passed. Two independent floors, and for a coloured source the *n
 |---|---|
 | Lorentzian corner (white only) | 8.2e-09 Hz |
 | **power bound (colour-aware)** | **2.5e-06 Hz** |
+
+⚠⚠ **AND A THIRD FLOOR EXISTS THAT IS NOT A MODEL PROPERTY AT ALL — Kärtner 1990.** He frames
+the `1/f` divergence as a dilemma with two exits. *Every* other source we hold takes the first
+(postulate a cutoff): Demir 2002 calls it a postulate, Demir 2006 replaces it with a continuum,
+Vanassche 2003 shows the chosen value is observable through `|ln γ|`. **Kärtner takes the
+second — account for the finite measurement time** — after noting that *"other measurements
+show that the 1/f characteristic is conserved down to the microhertz"*, i.e. the cutoff may not
+exist. That gives `f > 1/(2T_obs)`.
+
+| floor | depends on | blind to |
+|---|---|---|
+| Lorentzian corner | `c` alone | colour |
+| `2Δf·S_φ ≤ 1` | the spectrum's own values | — (but needs monotonicity) |
+| **`f > 1/(2T_obs)`** | **the measurement, not the model** | — inescapable |
+
+⚠ **The third explains why the other two exist**: they are *model-side substitutes for a
+measurement-side limit*. A measurement of duration `T_obs` cannot resolve structure below
+`1/(2T_obs)` whatever the model says. **If `phase_psd` ever takes an observation window, this is
+the floor that belongs to it — and it is the one a user will recognise.** Not built.
+
+⚠⚠ **AND IT INTERLOCKS WITH A DISCRIMINATING EXPONENT THAT IS THE RIGHT NEXT GATE FOR A4d.**
+Kärtner: *"in the case α = 1 the phase fluctuations are growing proportionally to **τ²**, in
+comparison with the white noise case where the phase fluctuations are proportional to **τ**
+… 1/f noise with its infinite correlation time leads to a **quasi-deterministic motion** of the
+phase."* The phase does not diffuse, it **drifts**.
+
+**DERIVED HERE, NOT YET MEASURED** — flagged as such deliberately. From `Var[α(t+τ)−α(t)] =
+4∫₀^∞ S_α(f)·sin²(πfτ) df`:
+
+| source | `S_α` | `Var(τ)` |
+|---|---|---|
+| white | `∝ f⁻²` | `∝ τ` — Wiener, and we measured 1.825 → 1793.4 over 1 → 1000 periods, **dead linear** |
+| flicker | `∝ f⁻³` | `∝ τ²` |
+
+⚠ **And the `f⁻³` integral is log-divergent at the origin** — `sin²(πfτ) ~ (πfτ)²` makes the
+integrand `~1/f` — **which is exactly why the third floor is needed to make the second law
+finite.** Kärtner says the same: an *"additional logarithmic part at exactly α = 1 … but this
+logarithm is essentially constant in the range τ ≪ 2T"*. **The τ² law and the `1/(2T_obs)` floor
+are one construction, not two findings.**
+
+⚠ This is a gate whose wrong answer differs in **slope on a log-log plot**, not in magnitude —
+**the shape-vs-scale problem inverted, for once in our favour**, after a `1/f³` slope of −2.998
+failed to notice a skirt carrying 3.10× unit power.
+
+⚠⚠ **AND THE BOUND ITSELF HAD AN UNSTATED PRECONDITION — §D shape 0e, one hour after shape 0e
+was written up.** The box argument is `2Δf·S(Δf) ≤ ∫_{−Δf}^{+Δf}S ≤ 1`, and the **first**
+inequality needs `S(f) ≥ S(Δf)` for every `|f| ≤ Δf`: the spectrum must not dip below its edge
+value further in. True of a monotone skirt, of the flattened near-carrier shape, and even with
+a spur (which *adds* power inside rather than creating a dip).
+
+⚠ **FALSE FOR A LOCKED PLL**, whose phase-noise transfer function is **high-pass** — suppressed
+at DC, rising to the free-running level beyond the loop bandwidth, so it dips below its edge
+value everywhere inside. The bound is not thereby shown to be *violated* there (total power is
+still 1); it is **no longer derived**, and a floor that is not derived cannot be used as one.
+Now **checked on the shape of the returned spectrum**, so it will catch the PLL case when A6
+lands without needing to know about loops. *A correction is not self-certifying, and neither is
+a generalisation.*
+
+⚠ **A side-finding from building the falsifier:** `diffusion_constant` samples `CY` at the
+single frequency `f₀`. That is exactly right for a white source and **meaningless for a coloured
+one** — a rising source made `c = 53.3` and drowned every offset below `f₀`, so the guard never
+fired and the test passed for the wrong reason. Not a defect today (no shipped source is
+coloured) but it is the next thing to get wrong.
 
 ⚠ **It is a LOWER BOUND on the breakdown, not the breakdown.** On Vanassche's own example the
 observed flattening is at ~300 Hz, **3× the bound**. So it refuses what is definitely invalid

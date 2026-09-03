@@ -6603,3 +6603,80 @@ def test_the_power_bound_reproduces_vanassches_worked_example():
     assert abs(theirs - 100.0) < 1e-9, \
         'their worked example gives %.6f Hz against the ">= 100 Hz" ' \
         'printed in the paper' % theirs
+
+
+class _BlueNoise(IS):
+    """A source whose PSD RISES as `f²` — enough to break the power bound's
+    monotonicity precondition, and nothing else in the tree can.
+    """
+
+    instparams = IS.instparams + [
+        Parameter(name='fref', desc='Reference', unit='Hz', default=1.0)]
+
+    def CY(self, x, w, epar=None):
+        f = abs(float(w)) / (2.0 * np.pi)
+        p = self.iparv.noisePSD * (f / self.iparv.fref) ** 4
+        return self.toolkit.array([[p, -p], [-p, p]])
+
+    ## ⚠ `f^4` RATHER THAN `f^2`, and the offsets below sit ABOVE `f0`.
+    ## `S_phi ~ (c + Gamma(f))/f^2` needs `Gamma` to grow faster than `f^2`
+    ## to turn the spectrum upward, AND `diffusion_constant` samples `CY`
+    ## at the single frequency `f0` -- so a rising source makes `c` huge
+    ## and the white term dominates every offset BELOW `f0`. The first
+    ## version of this fixture swept 1e-4..1e-1 with `f0 = 0.15` and the
+    ## guard never fired, because `c` was 53.3.
+
+
+def test_the_power_bound_refuses_when_its_own_derivation_does_not_apply():
+    """⚠ THE BOUND ADDED AN HOUR AGO HAD AN UNSTATED PRECONDITION.
+
+    `2·Δf·S(Δf) ≤ ∫_{-Δf}^{+Δf} S ≤ 1` — and the FIRST inequality needs
+    `S(f) ≥ S(Δf)` for every `|f| ≤ Δf`. The spectrum must not dip below
+    its edge value anywhere further in. That holds for a monotone skirt,
+    for the flattened near-carrier shape, and even with a spur (which
+    *adds* power inside rather than creating a dip).
+
+    ⚠ IT FAILS FOR A LOCKED PLL, whose phase-noise transfer function is
+    HIGH-PASS: suppressed at DC, rising to the free-running level beyond
+    the loop bandwidth, so it dips below its edge value everywhere inside.
+    The bound is not thereby shown to be *violated* there — total power is
+    still 1 — it is **no longer derived**, and a floor that is not derived
+    cannot be used as one.
+
+    ⚠ THAT IS §D SHAPE 0e A SECOND TIME, in a bound written an hour after
+    shape 0e was written up: a result asserted outside the conditions its
+    own derivation assumes. A correction is not self-certifying, and
+    neither is a generalisation.
+
+    Unreachable through a driven circuit today, because `phase_psd`
+    refuses those — so the reachable case is a source whose density grows
+    faster than `f²`, which is what `_BlueNoise` is for. The check is on
+    the *shape of the returned spectrum*, so it will catch the PLL case
+    when driven oscillators land, without needing to know about loops.
+    """
+    _cir, pss, pac = _lc_osc(a=0.25, rs=0.2, npts=240)
+    ## sanity: the ordinary case is monotone and passes
+    offs = np.logspace(-0.5, 1.5, 12)
+    assert np.all(np.diff(pac.phase_psd(pss, offs)) < 0)
+
+    cir2 = SubCircuit()
+    cir2.add_node('v')
+    cir2['C'] = C('v', gnd, c=1.0)
+    cir2['B'] = BSource('v', gnd, gnd, 'v',
+                        i_func=lambda u: 1.0 * (u - u ** 3 / 3.0)
+                        + 0.25 * (u ** 2 - 2.0))
+    cir2.add_node('x')
+    cir2['L'] = L('v', 'x', L=1.0)
+    cir2['Rs'] = R('x', gnd, r=0.2)
+    cir2['n'] = _BlueNoise('v', gnd, i=0.0, noisePSD=1e-6, fref=1.0)
+    import warnings
+    pss2 = PSS(cir2, method='gear', reltol=1e-12)
+    x0 = np.zeros(cir2.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss2.solve(period=6.66, timestep=6.66 / 240, x0=x0, maxiterations=80)
+    assert pss2.converged
+    pac2 = PAC(cir2, toolkit=circuit.numeric)
+    with pytest.raises(ValueError, match='RISES with offset'):
+        pac2.phase_psd(pss2, offs)
