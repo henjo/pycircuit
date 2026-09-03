@@ -1323,6 +1323,18 @@ Each of these cost real time. They are recorded so the next reader spends none.
 
 Sixteen claims were overturned across this campaign. Four shapes account for most:
 
+0c. **A fixture whose blind spots were never recorded next to its coverage.** "Verified to
+   1e-15" says nothing about which errors the check is *capable* of seeing. Van der Pol's
+   `C = diag(1, −1)`, so along the capacitor node `v·δ` and `vᵀCδ` are numerically
+   **identical** — the 7% transcription error is invisible to any single-direction probe
+   there, and two gates in this campaign probed exactly there. The shipped physical gate
+   survives only because it uses four *random* directions. ⚠ **A unit reactance makes `C` the
+   identity up to a sign; run the fixture at `c = 2` and the same blind direction separates
+   the two formulations by exactly the capacitance.** Now asserted on both fixtures, so the
+   blindness is a measured property rather than a hypothesis. (Independently found by the
+   docs session on Srivastava's ring oscillator, where `τ = 1` makes `C = I` outright and its
+   PPV oracle passes a missing-`C` implementation to 2e-15. Same shape, two circuits.)
+
 0b. **A measurement that shares the assumption under test.** `diffusion_constant`'s Monte
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the

@@ -5846,3 +5846,76 @@ def test_the_oscillator_covariance_refuses_a_driven_circuit():
         pss.solve(period=1e-3, timestep=1e-3 / 400, refnode=gnd)
     with pytest.raises(ValueError, match='GROWS'):
         PAC(cir, toolkit=circuit.numeric).oscillator_covariance(pss)
+
+
+def _vdp_scaled(cval, lval, period, npts=400):
+    """van der Pol with reactances that are NOT unity — see the test below."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=cval)
+    c['L'] = L('v', gnd, L=lval)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    pss = PSS(c, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=period, timestep=period / npts,
+                  x0=np.array([2.0, 0.0]), maxiterations=80)
+    assert pss.converged
+    v, info = pss.ppv()
+    irn = pss.irefnode
+    x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
+    x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+    Cf = np.asarray(c.C(x0f))
+    Cm = np.delete(np.delete(Cf, irn, 0), irn, 1).astype(float)
+    return c, pss, v, info, Cm
+
+
+def test_the_ppv_fixture_is_blind_to_a_missing_C_from_one_direction():
+    """⚠ THIS TESTS THE TEST, and it found a real hole in the fixture.
+
+    `v·δ` (right) and `vᵀCδ` (the transcription of Demir's Remark 3.1 that
+    cost 7% before it was measured out) are distinguished by
+    `test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has` —
+    but only because it perturbs in four RANDOM directions. Van der Pol as
+    shipped has `C = diag(1, −1)`, so along the capacitor node the two
+    formulations are **numerically identical**: `v·e₀ = vᵀCe₀` exactly,
+    ratio 1.0000. Any single-direction probe at the capacitor — which is
+    what two earlier gates in this campaign actually did — cannot see the
+    difference at all.
+
+    ⚠ "VERIFIED TO 1e-15" SAYS NOTHING ABOUT WHICH ERRORS A FIXTURE CAN
+    SEE. A unit reactance makes `C` the identity up to a sign, and an
+    implementation that drops the `C` weighting then passes every check
+    exactly. The repair is to run the same circuit at a reactance that is
+    not 1: with `c = 2` the same blind direction separates the two
+    formulations by exactly the capacitance.
+
+    Asserted on both fixtures on purpose — the blindness is recorded as a
+    measured property of the shipped one, not as a hypothesis about it, so
+    that a future test written against van der Pol knows what it is
+    choosing when it perturbs at the capacitor.
+    """
+    _c1, _p1, v1, _i1, Cm1 = _vdp_scaled(1.0, 1.0, 6.6634)
+    m = 2
+    e0 = np.array([1.0, 0.0])
+    plain1 = float(v1[:m] @ e0)
+    weighted1 = float(v1[:m] @ (Cm1 @ e0))
+    assert abs(weighted1 / plain1 - 1.0) < 1e-12, \
+        'the shipped fixture was expected to be BLIND here (ratio 1); it ' \
+        'now reads %.6f, so C is no longer diag(1,-1) and this test has ' \
+        'stopped describing the fixture' % (weighted1 / plain1)
+
+    _c2, _p2, v2, _i2, Cm2 = _vdp_scaled(2.0, 3.0, 6.6634 * np.sqrt(6.0))
+    plain2 = float(v2[:m] @ e0)
+    weighted2 = float(v2[:m] @ (Cm2 @ e0))
+    assert abs(weighted2 / plain2 - 2.0) < 1e-9, \
+        'ratio %.6f; at c = 2 the missing-C error must show as exactly ' \
+        'the capacitance from the SAME direction the unit fixture cannot ' \
+        'see it from' % (weighted2 / plain2)
+    ## and the normalisation itself must survive the rescaling -- the
+    ## property under test is the fixture's discriminating power, not a
+    ## claim that a scaled circuit is solved differently
+    assert abs(float(v2[:m] @ _i2['xdot']) - 1.0) < 1e-9
