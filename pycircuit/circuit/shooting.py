@@ -5910,6 +5910,162 @@ class PAC(Analysis):
         quad = np.einsum('ij,jk,ik->i', S, 0.5 * np.real(cy), S)
         return float((quad * h).sum() / T)
 
+    def colour_projection(self, pss):
+        """`<v_1>` — the PPV's TIME AVERAGE, which is a different functional.
+
+        Returns `(vbar, info)`.  `vbar` is `(1/T) integral v_1(t) dt` over
+        the orbit; `info` carries the per-entry `rms` and the ratio
+        `|mean|/rms`, which is the number that says whether a coloured
+        source at that node can upconvert at all.
+
+        ⚠ COLOURED SOURCES CONTRACT THE SQUARE OF THE MEAN; WHITE ONES
+        CONTRACT THE MEAN OF THE SQUARE.  `diffusion_constant` computes
+        `(1/T) integral v^T (CY/2) v dt`.  A coloured source's low-frequency
+        power cannot be modulated away, so what survives is
+        `V_0m = (1/T) integral v_1^T B_cm dt` -- LINEAR, no square -- and the
+        contraction is `vbar^T (CY/2) vbar`.  Same vector, same matrix,
+        the mean and the square exchanged.
+
+        ⚠ AND USING THE QUADRATIC ONE FOR A COLOURED SOURCE RETURNS A
+        PLAUSIBLE NUMBER, NOT AN ERROR.  It is never zero where the white
+        answer is not, so nothing downstream would look wrong.  The
+        measured separation is 22 ORDERS on van der Pol -- `c = 7.95e-08`
+        against `Gamma = 1.9e-29` -- so the two functionals are not close
+        approximations of each other and cannot be substituted.
+
+        ⚠ TWO INDEPENDENT MECHANISMS FORCE `vbar` TO ZERO, AND ONLY ONE OF
+        THEM IS THE ONE DESIGNERS KNOW.  Measured on an LC oscillator,
+        sweeping an even term `a (u^2 - 2)` in the nonlinearity and a
+        series tank resistance `Rs`:
+
+            a      Rs      Gamma/c
+            0.00   0.00    2.4e-22
+            0.00   0.20    9.7e-23
+            0.25   0.00    4.9e-23
+            0.25   0.05    2.1e-04
+            0.25   0.20    4.1e-03
+
+        NEITHER ASYMMETRY ALONE NOR LOSS ALONE UPCONVERTS.  `c` is
+        7.9e-08 to 1.2e-07 in every row, so the quadratic functional
+        cannot produce that pattern.
+
+        * A SYMMETRIC waveform gives `vbar = 0` -- Hajimiri & Lee, and the
+          reason symmetry is the first thing a VCO designer reaches for.
+        * A LOSSLESS LC TANK gives `vbar[0] = 0` STRUCTURALLY, whatever the
+          waveform does.  `v` behaves as `C^T v_1` and `dv/dt = G^T v_1`,
+          whose inductor row is exactly `v[0]`; periodicity of `v[1]` then
+          forces `integral v[0] dt = 0`.  ⚠ THIS IS A PROPERTY OF THE
+          TOPOLOGY, NOT OF THE ORBIT, and it is why van der Pol reports
+          zero at every asymmetry -- it makes van der Pol useless as a
+          POSITIVE fixture and perfect as a negative one.
+
+        ⚠ `Gamma <= c` ALWAYS, at the same `CY`, by Cauchy-Schwarz on the
+        weighted mean -- with equality only if `v` is constant over the
+        orbit.  Both use the same quadrature here so the bound holds
+        exactly at the discrete level, which makes it an assertion rather
+        than an expectation.
+        """
+        self._check_circuit(pss)
+        if not getattr(pss, 'autonomous', False):
+            raise ValueError(
+                'PAC.colour_projection: the PPV time-average is the kernel '
+                "of a FREE-RUNNING oscillator's coloured-noise upconversion. "
+                "A driven circuit's phase is its source's.")
+        _v, info = pss.ppv()
+        m = pss.cir.n - 1
+        S = np.asarray(info['samples'])[:, :m]
+        tms = np.asarray(info['times'], dtype=float)
+        h = np.diff(tms)
+        T = float(pss.period)
+        ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES, deliberately:
+        ## it is what makes `Gamma <= c` exact rather than approximate.
+        vbar = (S * h[:, None]).sum(0) / T
+        rms = np.sqrt((S ** 2 * h[:, None]).sum(0) / T)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            sym = np.where(rms > 0, np.abs(vbar) / rms, 0.0)
+        return vbar, {'rms': rms, 'symmetry': sym,
+                      'samples': S, 'times': tms}
+
+    def coloured_diffusion(self, pss, freqs):
+        """`Gamma(f) = vbar^T (CY(2 pi f)/2) vbar` — the coloured analogue of `c`.
+
+        Returns an array over `freqs`.  `CY` is evaluated at each offset,
+        so a source whose density varies with frequency -- which is what
+        "coloured" means -- is folded in exactly as a white one is.
+
+        ⚠ NO FILTER, NO EXTRA STATE, NO SDE.  Demir 1996 synthesises 1/f
+        from white sources through a Lorentzian network at "one state
+        variable per decade", because Ito theory admits only white driving
+        noise.  That is an artefact of the SDE formulation.  This path
+        never forms an SDE, so a coloured source is just a different
+        `S(f)` -- a SLOPE, NOT A STATE.  SpectreRF confirms by omission:
+        no filter and no augmentation in its treatment of flicker.
+
+        ⚠ THE `CY/2` IS THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION THE
+        REST OF THIS CLASS USES, and it is shared rather than repeated so
+        the pair cannot drift the way `diffusion_constant` and
+        `covariance` once did over exactly that factor.
+        """
+        vbar, _ = self.colour_projection(pss)
+        out = []
+        for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
+            cy = np.real(self._cy_reduced(pss, 2.0 * np.pi * float(f)))
+            out.append(float(vbar @ (0.5 * cy) @ vbar))
+        return np.asarray(out)
+
+    def phase_psd(self, pss, offsets, harmonic=1):
+        """`S_phi(f)` in rad^2/Hz at `offsets` from harmonic `i` — white AND coloured.
+
+            S_phi,i(f) = i^2 f_0^2 (c + Gamma(f)) / f^2
+
+        ⚠ THE CONVENTION IS PINNED BY `oscillator_spectrum`, NOT ARGUED.
+        `lorentzian`'s far skirt is `i^2 f_0^2 c / f^2` exactly, and that
+        object was gated by power conservation to 1.000000.  So this
+        expression is the same quantity its tail already reports, with the
+        coloured term added -- no second convention is introduced, which
+        is the only reason a `S_phi` is shipped here at all after a
+        one-sided/two-sided error cost this class a factor of two.
+
+        ⚠ THE TWO TERMS ADD BECAUSE THE SOURCES ARE INDEPENDENT, and with
+        `CY ~ 1/f` the coloured term gives `S_phi ~ 1/f^3` -- Kundert's
+        "S_u(f) is generally pink ... then S_phi(f) would be proportional
+        to 1/f^3 at low frequencies".
+
+        ⚠ REFUSED BELOW THE LORENTZIAN CORNER, and this is a validity
+        boundary rather than a conditioning one.  There the excess phase is
+        a Wiener process whose spectrum is singular at the origin; the
+        finite value the real lineshape attains comes from the NONLINEAR
+        phase-to-voltage map, which `oscillator_spectrum` carries and this
+        does not.  Reporting `S_phi` near the carrier is the mistake this
+        object invites, so it raises instead.
+        """
+        self._check_circuit(pss)
+        f0 = 1.0 / float(pss.period)
+        i = int(harmonic)
+        if i < 1:
+            raise ValueError('PAC.phase_psd: harmonic must be >= 1.')
+        c = self.diffusion_constant(pss)
+        offs = np.atleast_1d(np.asarray(offsets, dtype=float))
+        if np.any(offs <= 0.0):
+            raise ValueError(
+                'PAC.phase_psd: offsets must be positive; S_phi diverges '
+                'at zero offset and that divergence is physical.')
+        ## The i-th harmonic's Lorentzian half-width.  `S_i(f) =
+        ## i^2 f0^2 c / (pi^2 i^4 f0^4 c^2 + f^2)` is a Lorentzian in `f`
+        ## whose denominator is `f_h^2 + f^2`, so `f_h = pi i^2 f0^2 c`.
+        corner = np.pi * (i ** 2) * (f0 ** 2) * c
+        if offs.min() <= corner:
+            raise ValueError(
+                'PAC.phase_psd: offset %.6g Hz is at or below the '
+                'Lorentzian corner %.6g Hz for harmonic %d, where S_phi is '
+                'not the right object -- the excess phase is a Wiener '
+                'process and its spectrum is singular at the origin. The '
+                'finite value the LINESHAPE attains there comes from the '
+                'nonlinear phase-to-voltage map: use oscillator_spectrum().'
+                % (float(offs.min()), corner, i))
+        gam = self.coloured_diffusion(pss, offs)
+        return (i ** 2) * (f0 ** 2) * (c + gam) / offs ** 2
+
     @staticmethod
     def lorentzian(offsets, c, f0, harmonic=1):
         """The `i`-th harmonic's normalised lineshape at `offsets` from it.

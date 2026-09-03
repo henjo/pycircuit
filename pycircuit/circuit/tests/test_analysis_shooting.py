@@ -6298,3 +6298,235 @@ def test_the_transcap_fixtures_sensitivity_is_linear_not_thresholded():
         'the sensitivity is not linear in the asymmetry (%s); a ' \
         'threshold would mean weakly transcapacitive models slip past'\
         % np.round(out, 6)
+
+
+class _Flicker(IS):
+    """A current source whose PSD is `noisePSD * (fref / f)` — coloured.
+
+    ⚠ EVERY SOURCE IN THE DISCRETE LIBRARY IS WHITE, so nothing in the
+    tree can exercise the coloured path. This exists for that, and for
+    nothing else. `CY(x, w)` already takes `w`; no element used it.
+    """
+
+    instparams = IS.instparams + [
+        Parameter(name='fref', desc='Corner of the 1/f law', unit='Hz',
+                  default=1.0)]
+
+    def CY(self, x, w, epar=None):
+        f = abs(float(w)) / (2.0 * np.pi)
+        scale = self.iparv.fref / max(f, 1e-300)
+        p = self.iparv.noisePSD * scale
+        return self.toolkit.array([[p, -p], [-p, p]])
+
+
+def _lc_osc(a=0.0, rs=0.0, psd=1e-6, npts=240, flicker=False, fref=1.0):
+    """An LC oscillator with optional even nonlinearity and tank loss.
+
+    `a` breaks the waveform's half-wave symmetry; `rs` breaks the LOSSLESS
+    tank's structural identity. Both are needed — see the test below.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 1.0 * (u - u ** 3 / 3.0)
+                       + a * (u ** 2 - 2.0))
+    if rs > 0.0:
+        cir.add_node('x')
+        cir['L'] = L('v', 'x', L=1.0)
+        cir['Rs'] = R('x', gnd, r=rs)
+    else:
+        cir['L'] = L('v', gnd, L=1.0)
+    if flicker:
+        cir['n'] = _Flicker('v', gnd, i=0.0, noisePSD=psd, fref=fref)
+    else:
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    m = cir.n - 1
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.66, timestep=6.66 / npts, x0=x0, maxiterations=80)
+    assert pss.converged, 'a=%r rs=%r did not converge' % (a, rs)
+    return cir, pss, PAC(cir, toolkit=circuit.numeric)
+
+
+def test_coloured_upconversion_needs_asymmetry_AND_loss():
+    """⚠ FIVE DISCRIMINATIONS THE QUADRATIC FUNCTIONAL CANNOT PRODUCE.
+
+    A white source contracts the MEAN OF THE SQUARE of the PPV; a coloured
+    one contracts the SQUARE OF THE MEAN. Same vector, same matrix, mean
+    and square exchanged — and substituting one for the other returns a
+    plausible non-zero number rather than an error.
+
+    So the gate is a pattern of ZEROS, which the quadratic functional
+    cannot fake because it is large in every row:
+
+        a      Rs      Gamma/c      c
+        0.00   0.00    2.4e-22      7.95e-08
+        0.00   0.20    9.7e-23      1.01e-07
+        0.25   0.00    4.9e-23      8.22e-08
+        0.25   0.05    2.1e-04      8.65e-08
+        0.25   0.20    4.1e-03      1.20e-07
+
+    ⚠ TWO INDEPENDENT MECHANISMS FORCE THE ZERO, and only one is the one
+    designers know:
+
+    * a SYMMETRIC waveform gives `<v> = 0` — Hajimiri & Lee, and the
+      reason symmetry is the first thing reached for in a VCO;
+    * a LOSSLESS LC TANK gives `<v>[0] = 0` STRUCTURALLY, whatever the
+      waveform does. `v` behaves as `CᵀV₁` and `dv/dt = Gᵀv₁`, whose
+      inductor row is exactly `v[0]`; periodicity of `v[1]` then forces
+      `∫v[0] dt = 0`. A property of the TOPOLOGY, not of the orbit.
+
+    That second one is why van der Pol reports zero at every asymmetry,
+    and why it is useless as a positive fixture and perfect as a negative
+    one. A gate built only on van der Pol would have passed an
+    implementation that returns zero always.
+    """
+    rows = []
+    for a, rs in ((0.0, 0.0), (0.0, 0.2), (0.25, 0.0),
+                  (0.25, 0.05), (0.25, 0.2)):
+        _cir, pss, pac = _lc_osc(a=a, rs=rs)
+        c = pac.diffusion_constant(pss)
+        gam = float(pac.coloured_diffusion(pss, [1.0 / pss.period])[0])
+        rows.append((a, rs, c, gam))
+        assert c > 1e-8, 'a=%r rs=%r: c = %.3e, the white functional ' \
+            'should be large in EVERY row or the zeros below prove ' \
+            'nothing' % (a, rs, c)
+    for a, rs, c, gam in rows[:3]:
+        assert gam / c < 1e-15, \
+            'a=%r rs=%r gives Gamma/c = %.3e; with either the symmetry ' \
+            'or the lossless identity intact this must vanish' \
+            % (a, rs, gam / c)
+    for a, rs, c, gam in rows[3:]:
+        assert gam / c > 1e-5, \
+            'a=%r rs=%r gives Gamma/c = %.3e; breaking BOTH must ' \
+            'upconvert' % (a, rs, gam / c)
+    assert rows[4][3] / rows[4][2] > rows[3][3] / rows[3][2], \
+        'more tank loss must upconvert more, not less'
+
+
+def test_gamma_never_exceeds_c_at_the_same_density():
+    """Cauchy-Schwarz on the weighted mean, asserted exactly.
+
+    `(Σhᵢxᵢ/T)² ≤ (Σhᵢxᵢ²)/T`, so the square of the mean never exceeds
+    the mean of the square. Both functionals use the SAME quadrature here
+    deliberately, which makes this hold at the discrete level rather than
+    only in the limit — an assertion, not an expectation. Equality would
+    mean the PPV is constant over the orbit, i.e. no orbit.
+    """
+    for a, rs in ((0.0, 0.0), (0.25, 0.2)):
+        _cir, pss, pac = _lc_osc(a=a, rs=rs)
+        c = pac.diffusion_constant(pss)
+        gam = float(pac.coloured_diffusion(pss, [1.0 / pss.period])[0])
+        assert gam <= c * (1.0 + 1e-12), \
+            'a=%r rs=%r: Gamma = %.6e exceeds c = %.6e, which is ' \
+            'arithmetically impossible at one CY — the two functionals ' \
+            'are not sharing a quadrature' % (a, rs, gam, c)
+
+
+def test_the_phase_psd_convention_is_the_lorentzians_own():
+    """⚠ NO SECOND CONVENTION IS INTRODUCED, and that is the whole point.
+
+    A one-sided/two-sided slip already cost this class a factor of two, so
+    `phase_psd` is not given an independent normalisation: it is checked
+    against `lorentzian`'s far skirt, an object already gated by power
+    conservation to 1.000000.
+
+        S_phi,i(f) = i² f₀² (c + Γ(f)) / f²   and   lorentzian → i² f₀² c / f²
+
+    ⚠ AND THE RESIDUAL IS FULLY ACCOUNTED FOR, which is stronger than it
+    being small. The Lorentzian carries an `f_h²` term its skirt drops, so
+    the disagreement must be exactly `(i²·corner/f)²` — quartic in the
+    harmonic. Measured at offsets starting 1e3 corners out:
+
+        harmonic     1        2        3
+        max |1-r|  1.0e-06  1.6e-05  8.1e-05
+        ratio        1        16       81      = 1 : 2⁴ : 3⁴
+
+    A convention error would not reproduce that ratio.
+    """
+    _cir, pss, pac = _lc_osc()
+    c = pac.diffusion_constant(pss)
+    f0 = 1.0 / float(pss.period)
+    corner = np.pi * f0 ** 2 * c
+    offs = np.logspace(np.log10(corner * 1e3), np.log10(corner * 1e9), 7)
+    errs = []
+    for i in (1, 2, 3):
+        S = pac.phase_psd(pss, offs, harmonic=i)
+        Lz = PAC.lorentzian(offs, c, f0, harmonic=i)
+        errs.append(float(np.max(np.abs(S / Lz - 1.0))))
+    assert errs[0] < 2e-6, 'harmonic 1 off by %.3e' % errs[0]
+    for i, e in zip((2, 3), errs[1:]):
+        assert abs(e / errs[0] / i ** 4 - 1.0) < 0.05, \
+            'harmonic %d residual is %.3e, %.2fx the fundamental rather ' \
+            'than the %d predicted by the Lorentzian curvature — the ' \
+            'agreement is not the analytic one' % (i, e, e / errs[0], i ** 4)
+
+
+def test_the_phase_psd_refuses_below_the_lorentzian_corner():
+    """A validity boundary, not a conditioning one.
+
+    Below the corner the excess phase is a Wiener process whose spectrum is
+    singular at the origin; the finite value the real lineshape attains
+    comes from the NONLINEAR phase-to-voltage map, which
+    `oscillator_spectrum` carries and this does not. Returning a large
+    number there would be the mistake this object invites.
+    """
+    _cir, pss, pac = _lc_osc()
+    c = pac.diffusion_constant(pss)
+    corner = np.pi * (1.0 / float(pss.period)) ** 2 * c
+    with pytest.raises(ValueError, match='Lorentzian corner'):
+        pac.phase_psd(pss, [corner * 0.5])
+    with pytest.raises(ValueError, match='diverges at zero offset'):
+        pac.phase_psd(pss, [0.0])
+    ## and just above it is fine
+    assert np.all(np.isfinite(pac.phase_psd(pss, [corner * 10.0])))
+
+
+def test_a_flicker_source_gives_a_one_over_f_cubed_skirt():
+    """⚠ THE SLOPE IS THE ASSERTION — 30 dB/decade, not 20.
+
+    Kundert: "S_u(f) is generally pink or proportional to 1/f. Then
+    S_phi(f) would be proportional to 1/f³ at low frequencies." With
+    `CY ∝ 1/f` the coloured term carries one more power of `f` than the
+    white one, so the skirt steepens from `1/f²` to `1/f³` below the
+    flicker corner and returns to `1/f²` above it.
+
+    ⚠ A SLOPE, NOT A STATE. Demir 1996 synthesises 1/f through a
+    Lorentzian filter network at one state variable per decade because Itô
+    theory admits only white driving noise — an artefact of the SDE
+    formulation. No SDE is formed here, so nothing is synthesised and the
+    PSS never sees a filter. The corner appearing at the right place is
+    what says the frequency dependence went in correctly.
+    """
+    _cir, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True,
+                             fref=1.0 / 6.66)
+    offs = np.logspace(-6, -1, 26)
+    S = pac.phase_psd(pss, offs)
+    slope = np.diff(np.log10(S)) / np.diff(np.log10(offs))
+    assert slope[0] < -2.9, \
+        'low-offset slope is %.3f decades/decade; a 1/f source must give ' \
+        '1/f^3 there, and -2 would mean the frequency dependence never ' \
+        'reached CY' % slope[0]
+    assert slope[-1] > -2.1, \
+        'high-offset slope is %.3f; above the flicker corner the white ' \
+        'term must dominate and the skirt return to 1/f^2' % slope[-1]
+    ## the corner is where the two terms are equal, and it must sit inside
+    ## the swept band rather than at an end of it
+    assert -2.9 < np.median(slope) < -2.1, \
+        'the sweep does not straddle the flicker corner (median slope ' \
+        '%.3f), so neither asymptote is being tested against the other' \
+        % np.median(slope)
+    ## and a WHITE source on the same circuit must not steepen
+    _c2, pss2, pac2 = _lc_osc(a=0.25, rs=0.2, flicker=False)
+    S2 = pac2.phase_psd(pss2, offs)
+    sl2 = np.diff(np.log10(S2)) / np.diff(np.log10(offs))
+    assert abs(sl2.min() + 2.0) < 1e-6 and abs(sl2.max() + 2.0) < 1e-6, \
+        'a white source gave slopes in [%.4f, %.4f]; it must be exactly ' \
+        '1/f^2 everywhere or the 1/f^3 above is not evidence' \
+        % (sl2.min(), sl2.max())

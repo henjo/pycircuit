@@ -960,7 +960,7 @@ not very precise": call them `ssb_phase_noise_L` and `jitter_variance(delta_t)`,
 `phase_noise` and `jitter`. Three of this branch's defects have been unstated conventions;
 this is cheap insurance.
 
-### A4d. Coloured noise — NEW; costs nothing structural for the path we built
+### A4d. Coloured noise — ⚠ **BUILT 2026-09-03**; it did cost nothing structural
 
 ⚠ **THE FILTER DOES NOT ENTER THE PSS.** Demir 1996 synthesises 1/f from white sources
 through a Lorentzian network because Itô theory admits only white driving noise — "we can not
@@ -1045,6 +1045,78 @@ systems", and with a realistic trap model the whitening is only *partial* — "i
 likely that a full trap stays full through the off-state". Truth sits between ideal switching
 (fully white) and always-on (full 1/f). Shipping the idealised form trades over-prediction for
 under-prediction, which is worth saying rather than discovering.
+
+#### A4d-built. `colour_projection`, `coloured_diffusion`, `phase_psd`
+
+```
+Gamma(f) = <v>ᵀ (CY(2πf)/2) <v>          the SQUARE OF THE MEAN
+c        = (1/T)∫ vᵀ (CY/2) v dt          the MEAN OF THE SQUARE
+S_φ,i(f) = i² f₀² (c + Gamma(f)) / f²
+```
+
+Same vector, same matrix, mean and square exchanged — and **substituting one for the other
+returns a plausible non-zero number, not an error.** Measured separation on van der Pol:
+`c = 7.95e-08` against `Γ = 1.9e-29`, **22 orders**. They are not approximations of each other.
+
+⚠ **THE GATE IS A PATTERN OF ZEROS, WHICH THE QUADRATIC FUNCTIONAL CANNOT FAKE** because it is
+large in every row:
+
+| `a` (even term) | `Rs` (tank loss) | `Γ/c` | `c` |
+|---|---|---|---|
+| 0.00 | 0.00 | 2.4e-22 | 7.95e-08 |
+| 0.00 | 0.20 | 9.7e-23 | 1.01e-07 |
+| 0.25 | 0.00 | 4.9e-23 | 8.22e-08 |
+| **0.25** | **0.05** | **2.1e-04** | 8.65e-08 |
+| **0.25** | **0.20** | **4.1e-03** | 1.20e-07 |
+
+⚠ **TWO INDEPENDENT MECHANISMS FORCE THE ZERO, AND ONLY ONE IS THE ONE DESIGNERS KNOW.**
+A *symmetric* waveform gives `⟨v⟩ = 0` — Hajimiri & Lee, why symmetry is the first thing a VCO
+designer reaches for. A *lossless LC tank* gives `⟨v⟩[0] = 0` **structurally**, whatever the
+waveform does: `v` behaves as `Cᵀv₁` and `dv/dt = Gᵀv₁`, whose inductor row is exactly `v[0]`,
+so periodicity of `v[1]` forces `∫v[0] dt = 0`. **A property of the topology, not the orbit.**
+
+⚠ **Which makes van der Pol useless as a POSITIVE fixture** — it reports zero at *every*
+asymmetry — **and perfect as a negative one.** A gate built only on van der Pol would have
+passed an implementation that returns zero always. §D shape 0c, caught before it shipped this
+time rather than after.
+
+⚠ **NO SECOND CONVENTION IS INTRODUCED.** `phase_psd` is checked against `lorentzian`'s far
+skirt, already gated by power conservation to 1.000000 — and **the residual is fully accounted
+for**, which is stronger than it being small: the Lorentzian carries an `f_h²` term its skirt
+drops, so the disagreement must be exactly `(i²·corner/f)²`, quartic in the harmonic.
+
+| harmonic | 1 | 2 | 3 |
+|---|---|---|---|
+| max \|1−ratio\| | 1.0e-06 | 1.6e-05 | 8.1e-05 |
+| ratio | 1 | **16** | **81** = 1 : 2⁴ : 3⁴ |
+
+⚠ **A SLOPE, NOT A STATE — confirmed.** With `CY ∝ 1/f` the skirt steepens to `1/f³` below the
+flicker corner and returns to `1/f²` above it, the corner landing where `Γ(f) = c`:
+
+| offset (Hz) | 1e-6 | 1e-5 | 1e-4 | 6.3e-4 | 1.6e-3 | 1e-2 | 6.3e-2 |
+|---|---|---|---|---|---|---|---|
+| slope | −2.998 | −2.979 | −2.824 | **−2.428** | −2.230 | −2.045 | −2.008 |
+
+`Γ = c` at **6.31e-04 Hz**, the middle of the sweep. A *white* source on the same circuit gives
+−2.000000 everywhere, so the steepening is the frequency dependence and nothing else. **The PSS
+never sees a filter and no state was added** — Demir's Lorentzian synthesis network is an
+artefact of the SDE formulation, and no SDE is formed on this path.
+
+⚠ **`Γ ≤ c` always**, by Cauchy-Schwarz on the weighted mean, and both functionals share a
+quadrature *deliberately* so the bound holds exactly at the discrete level — an assertion
+rather than an expectation.
+
+⚠ **REFUSED BELOW THE LORENTZIAN CORNER**, a validity boundary rather than a conditioning one:
+there the excess phase is a Wiener process with a singular spectrum, and the finite value the
+real lineshape attains comes from the **nonlinear** phase-to-voltage map, which
+`oscillator_spectrum` carries and this does not.
+
+**Still open from this entry:** the sweep-grid trap (a cluster near each harmonic, never *on*
+one), the bias-modulated physical trap (which genuinely does belong among the circuit
+variables, unlike a synthesised filter), and Mahmutoglu & Demir's whitening under switched bias
+— below `f_switch` the real spectrum is flat while a stationary flicker model says `1/f`, so
+**the error grows without bound as the offset decreases**. `_Flicker` is a test-only element;
+no shipped source is coloured yet.
 
 ### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
 
