@@ -85,7 +85,41 @@ Available as `_vdp_at_Q(Q)`.
 solve becomes the thing under test. And *transient* settling to 1% takes **≈ 4.6·Q periods** —
 460 at `Q = 100` — which is door (e) taxing the **test harness** rather than the circuit.
 
-⚠⚠ **THAT SECOND COST BREAKS A GATE WE ALREADY SHIP.**
+⚠⚠ **AND THEN THE MEASUREMENT SAID OTHERWISE — the gate is NOT badly broken, and the protection
+is ACCIDENTAL.** Measured with a *generic* perturbation direction (both components), which is
+what the shipped gate actually uses:
+
+| `Q` | `λ₂` | `\|d·x̂\|` | raw error n=1 → n=6 | Aitken(1,2,3) |
+|---|---|---|---|---|
+| 0.12 | 0.0003 | 0.865 | −0.46% → −0.49% | −0.49% |
+| 15.9 | 0.939 | 0.736 | −0.41% → −0.63% | **−1.05%** |
+| 63.7 | 0.984 | 0.734 | −0.73% → −0.88% | **−1.87%** |
+
+⚠ **A random direction in 2-D is ~71% tangential**, so the phase signal dominates and the
+transverse contamination enters as a small additive term. The gate is accurate to <1% at
+`Q = 64` **because the fixture has two states**, not because the gate is sound.
+
+⚠⚠ **THAT PROTECTION SCALES AS `1/√m` AND VANISHES ON A REAL CIRCUIT.** A random unit vector's
+tangential fraction is `~1/√m`: 0.71 at `m = 2`, 0.32 at `m = 10`, 0.10 at `m = 100`. So on any
+circuit with more than a handful of states a random kick is **mostly transverse**, the
+contamination dominates, and the three-period premise does bite. **The gate's validity is a
+property of the fixture's DIMENSION** — a fourth variation on the fixture theme, and the first
+one that is about size rather than structure.
+
+⚠⚠ **AND AITKEN IS NOT A FREE IMPROVEMENT.** Applied where the geometric mode dominates the
+residual it removes ~90% of the error (measured elsewhere on a transverse kick); applied where
+it does not, it **amplifies** the remaining systematic — 0.63% → 1.05% and 0.88% → 1.87% above.
+So the repair is **conditional on the contamination being the dominant residual**, which must be
+established before applying it rather than assumed.
+
+⚠ **The transverse-kick configuration that motivated all this is itself degenerate three times
+over** and should not be used: near-zero signal (a transverse kick barely shifts phase — that is
+what high `Q` means), a prediction that is a **5× cancellation** (`v·d̂ = +0.01010 − 0.00820 =
++0.00190`), and the direction where `C = diag(1,−1)`'s sign structure is most active. **The safe
+kick is constructed from `ẋ_s(0)` and is neither a coordinate axis nor its exact orthogonal
+complement** — the convenient choice and the clever choice are both degenerate.
+
+⚠ **The stated premise is still false, and that stands separately from the measured error.**
 `test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has` integrates **3 periods** and
 reads the surviving tangential displacement, on the stated premise that *"the transverse
 components have died (the second multiplier is 8.6e-4 per period)"*. At `Q = 16`, `λ₂³ = 0.83`
