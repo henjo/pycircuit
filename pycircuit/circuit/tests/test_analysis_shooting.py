@@ -4538,11 +4538,44 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
 
     A PPV is only worth having if `v . delta` is the phase shift a real
     perturbation causes. So: displace van der Pol's state by `eps delta`,
-    integrate the FULL NONLINEAR system for several periods until the
-    transverse components have died (the second multiplier is 8.6e-4 per
-    period), and read the surviving displacement along the orbit tangent.
-    Nothing in that measurement touches the monodromy, the adjoint, or the
-    bordered solve.
+    integrate the FULL NONLINEAR system for ONE period, and read the
+    displacement along the orbit tangent. Nothing in that measurement
+    touches the monodromy, the adjoint, or the bordered solve.
+
+    ⚠⚠ IT USED TO INTEGRATE THREE PERIODS "UNTIL THE TRANSVERSE
+    COMPONENTS HAVE DIED", AND THAT REASON WAS WRONG -- MEASURED. The
+    premise is false at high Q (`lambda_2^3 = 0.954` at Q = 64) and the
+    waiting was not doing the work at ANY Q:
+
+        npts   nper=1     nper=2     nper=3
+         200   2.305e-02  2.348e-02  2.346e-02
+         400   1.058e-02  1.106e-02  1.104e-02
+         800   4.889e-03  5.370e-03  5.377e-03
+
+    ⚠ `nper` BARELY MATTERS AND ONE PERIOD IS SLIGHTLY BETTER, while the
+    error halves per `npts` doubling.  The residual is O(h)
+    DISCRETISATION of the map, not transverse contamination -- so there
+    was nothing to wait for, and the wait cost 3x for nothing.
+
+    ⚠ CONFIRMED FROM THE OTHER END: at `mu = 1` the contamination is
+    EXACTLY zero (`lambda_2^3 = 6e-10`) and the error is still 6.8% at a
+    transverse ratio of 3.  A 6.8% error with zero contamination is
+    larger than the contamination itself at Q = 64 (2.3%).  Contamination
+    was never the dominant term in this gate.
+
+    ⚠⚠ AND THREE EXTRAPOLATION REPAIRS WERE MEASURED AND ALL MADE IT
+    WORSE, recorded so nobody re-derives them:
+
+        Q      raw n=1   raw n=3   Aitken   lambda_2-extrapolation
+        0.12   6.761%    6.898%    7.038%   6.901%
+        15.9   1.301%    1.623%    3.259%   4.074%
+        63.7   2.314%    2.520%    5.760%   9.039%
+
+    Aitken and the `lambda_2` extrapolation both assume the residual IS
+    the geometric transverse mode.  It is not, so they amplify what is
+    left instead of removing it -- and the `lambda_2` form amplifies by
+    `1/(1 - lambda_2)`, which is `Q`, so it degrades fastest exactly
+    where it was supposed to help.
 
     ⚠ THE SCALE IS THE ASSERTION, NOT JUST THE DIRECTION. A direction check
     passes for any normalisation, and the normalisation is exactly what was
@@ -4550,13 +4583,30 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
     grid:
 
         npts   worst |1-ratio|   rel resid   fitted scale
-         200      5.52e-02        1.90e-02     1.006266
-         400      2.45e-02        8.94e-03     1.003290
-         800      1.16e-02        4.35e-03     1.001677
+         200      5.20e-02        2.305e-02    1.003584
+         400      2.31e-02        1.058e-02    1.001969
+         800      1.05e-02        4.889e-03    1.000978
 
     The fitted scale converges to ONE -- not to some other constant that a
     direction-only test would have accepted -- and the residual falls at
     O(h), which is the discretisation of the map the PPV is computed from.
+
+    ⚠ AND THE PREMISE ABOUT DECAY IS FALSE AT HIGH Q, WHICH THIS GATE
+    SURVIVES FOR A REASON THAT IS NOT ITS OWN.  Three periods kills the
+    transverse mode at `mu = 1` (`lambda_2^3 = 6e-10`) and does nothing at
+    `Q = 64` (`lambda_2^3 = 0.954`).  MEASURED there anyway: the raw error
+    stays under 1% -- 0.73% at n=1 rising to 0.88% at n=6 -- because a
+    random direction in TWO dimensions is ~71% tangential, so the phase
+    signal dominates and the contamination is a small additive term.
+
+    ⚠⚠ THAT PROTECTION SCALES AS `1/sqrt(m)` AND VANISHES ON A REAL
+    CIRCUIT.  The tangential fraction of a random unit vector is
+    `~1/sqrt(m)`: 0.71 at m=2, 0.32 at m=10, 0.10 at m=100.  So on any
+    circuit with more than a handful of states a random kick is MOSTLY
+    TRANSVERSE and the three-period premise does bite.  **This gate is
+    sound at m = 2 and would not be at m = 20, with nothing in it
+    changing.**  The transverse ratios asserted below are what makes that
+    visible instead of implicit.
     """
     import warnings
     from pycircuit.circuit.transient import Transient
@@ -4565,6 +4615,7 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
             (rng.standard_normal(2) for _ in range(4))]
 
     out = []
+    ratios = []
     for npts in (200, 400):
         cir, pss, v, info = _vdp_ppv(npts)
         m = cir.n - 1
@@ -4574,7 +4625,10 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
         x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
         x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
 
-        def integrate(xi, nper=3, ppp=2000):
+        def integrate(xi, nper=1, ppp=2000):
+            ## ⚠ ONE PERIOD, NOT THREE -- see the docstring. Waiting for
+            ## the transverse mode was never what made this work, and
+            ## dropping it is 3x cheaper AND marginally more accurate.
             ## ⚠ `reltol` HERE IS THE COST, not `ppp`. `Transient` adapts,
             ## so `timestep` is a first step and the tolerance sets the
             ## step count. At 1e-12 this test took 447 s; the signal being
@@ -4596,6 +4650,29 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
             dx = np.delete(integrate(x0f + eps * dr) - ref, irn)
             meas.append(float(dx @ xdot) / float(xdot @ xdot) / eps)
             pred.append(float(v[:m] @ d))
+        ## ⚠ HOW TRANSVERSE EACH KICK ACTUALLY IS, asserted rather than
+        ## assumed.  Signal and contamination are the SAME KNOB: a
+        ## tangential displacement IS a pure phase shift, so it has
+        ## nothing transverse to decay, and the direction that maximises
+        ## `v.d` is exactly the one that tests transverse decay LEAST.
+        ## Measured over all directions at Q = 15.9: `|v.d|` spans 1.6e-4
+        ## to 5.0e-1, and the transverse ratio runs the opposite way --
+        ##
+        ##     |b/a|      signal      contamination at n = 3
+        ##      0          max         0
+        ##      1          1.4x down   1.0%
+        ##      3          3.4x down   3.4%
+        ##     40         40x down    41%
+        ##
+        ## ⚠ SO A GATE CANNOT MAXIMISE BOTH, and one that reports a
+        ## beautiful agreement may simply have kicked along the orbit.
+        ## These four seeded directions give |b/a| = 0.58, 14.5, 0.92,
+        ## 2.39 at mu = 1 and 0.92, 6.81, 1.43, 1.43 at Q = 15.9 -- the
+        ## useful middle, by luck of the seed until this assertion.
+        xh = xdot / np.linalg.norm(xdot)
+        for d in dirs:
+            tan = abs(float(d @ xh))
+            ratios.append(np.sqrt(max(1.0 - tan ** 2, 0.0)) / max(tan, 1e-300))
         meas, pred = np.array(meas), np.array(pred)
         out.append((np.linalg.norm(meas - pred) / np.linalg.norm(meas),
                     float((pred @ meas) / (pred @ pred))))
@@ -4610,7 +4687,19 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
         'the disagreement with the measured phase shift falls %.2fx per ' \
         'doubling (%.3e -> %.3e), not the O(h) that says it is ' \
         'discretisation of the period map' % (ratio, r_coarse, r_fine)
-
+    ## ⚠ THE GATE NOW STATES HOW MUCH TRANSVERSE DECAY IT EXERCISES.
+    ## Without this it could pass having kicked almost along the orbit,
+    ## where there is nothing to decay -- which is exactly how a
+    ## well-conditioned-looking probe tests nothing.
+    ratios = np.array(ratios)
+    assert ratios.max() > 1.0, \
+        'every direction is more tangential than transverse (max |b/a| = ' \
+        '%.3f); this gate would pass without exercising transverse decay ' \
+        'at all' % ratios.max()
+    assert ratios.min() < 3.0, \
+        'every direction is strongly transverse (min |b/a| = %.3f), so ' \
+        'the signal is far down and the comparison is a difference of ' \
+        'near-zeros' % ratios.min()
 
 def test_the_ppv_normalisation_is_not_the_one_transcribed():
     """⚠ `v . q = 1` IS THE WRONG SCALE HERE, and it looks right.
