@@ -504,6 +504,51 @@ reads `x`), so the refusal is unreachable there; a compact device's `CY` does re
 it exercises the `H_l` path against the stationary formula before any cyclostationary
 modelling has to be right.
 
+⚠⚠⚠ **THE COST BLOCKER IS LIFTED — HULL & MEYER 1993 NEED ONE SOURCE PER DEVICE, NOT `p` PER
+DEVICE.** This entry recorded the barrier as cost: Okumura's construction wants one independent
+stationary source per timestep interval per device (~25,000 sources, ~14× PSS per frequency
+point). **Hull & Meyer carry the modulation in the RESPONSE instead of in the SOURCES:**
+
+> *"cyclostationary noise sources, such as shot noise, may be modeled as **modulated stationary
+> noise sources**. The impulse response that is calculated **includes the effect of this
+> modulation**. … the hypothetical stationary noise source has spectral density
+> `S_i(ω) = 2q·Ī_c` where `Ī_c = (1/T)∫₀ᵀ I_c(u) du`."*
+
+One stationary source per device, its density using the **cycle-averaged** current, with the
+modulation carried by the impulse response `h(u)` we compute anyway. **Same physics, `p` times
+cheaper**, and `H_l` is already built.
+
+⚠ **Its condition is stated and checkable:** *"valid when the impulse response duration is much
+less than the time it takes for the mixer circuit to significantly change its state … **none of
+the large-signal state variables may change significantly over the decay time of the impulse
+response**."*
+
+⚠ **Note the regime — it is the OPPOSITE of high-Q, and they say so:** *"high-Q filters should be
+avoided, since they cause the impulse response to ring, and thus require a very large value of
+M."* So the cheap construction is valid for fast-settling circuits and degrades exactly where
+`λ₂ → 1`. **The same boundary as everything else in this record, from a fourth direction** — and
+it means the two constructions are complementary rather than redundant: Okumura's expensive one
+is what a high-Q circuit needs.
+
+Validated against silicon: a 1 GHz monolithic mixer, predicted vs measured NF over LO power
+−12…+6 dBm, *"in good agreement"*, ~**1 dB** error at low LO powers.
+
+⚠ **CITATION HAZARD ON THE SSB RULE, because Hull & Meyer state it most loosely and theirs is
+the reference a mixer designer reaches for:**
+
+| source | condition | verdict |
+|---|---|---|
+| Ström & Signell 1977 | LPF, all `T_k = 0` above `f_s/2`, **and input band-limited** | *"approximately"* |
+| RLF98 | two-sided BPF, `BW < ω₀/2` | **NOT stationary** (`i = 0, ±2` survive) |
+| RLF98 | one-sided BPF, `BW < ω₀` | stationary |
+| **Hull & Meyer 1993** | **any filter, `BW < f_LO`** | *"stationary"* |
+
+Taken literally the last is too loose — RLF98 Result 1 leaves `i = 0, ±2` for a two-sided filter
+just under `ω₀`. **But they are not wrong for their configuration:** an IF filter sits at `f_IF`
+far from any half-multiple of `f_LO`, so the `±2` terms have no support overlap and vanish
+anyway. **Sufficient in their case, not the general rule.** Our support-overlap test is the
+general form; a docstring line should say why the textbook mixer statement looks weaker.
+
 ⚠ **AND WHEN IT IS BUILT, THE FIRST GATE IS ALREADY CHOSEN, AND IT IS EXTERNAL.**
 Roychowdhury, Long & Feldmann (1998) Fig. 1: stationary noise → mixer(×cos ω₀t) → bandpass at
 `f₀`, `BW ≪ f₀` → mixer(×cos ω₀t). A stationary-only path shifts and scales by ¼ twice and
@@ -582,6 +627,25 @@ proves the correct definition has. ⚠ **The two results are one fact seen from 
 is what Demir meant by "the same characterization by a completely different derivation" — and
 reading both *confirms* it rather than taking his word.
 
+⚠ **AND LEESON IS MORE CAREFUL THAN HIS REPUTATION — he stated the Demir 2006 boundary in
+1966.** His own conditions: the RF spectrum equals the two-sided phase spectrum *"subject to the
+limitations that Δθ ≪ 1 (small total modulation index) and that AM ≪ FM components"*. **`S_φ`
+and the RF spectrum coincide only for small modulation index** — which is exactly the near-
+carrier boundary `phase_psd` refuses at. He *conditioned* it; **what Demir added is that the
+condition NECESSARILY fails there.**
+
+He also calls it *"a **heuristic** derivation, presented **without formal proof**"* of *"a linear
+feedback oscillator"*, and handles upconversion by **inflating the noise figure empirically** —
+9 dB *"taken high to account for nonlinear mixing of noise at third harmonic and higher
+frequencies which is mixed into the pass band by second harmonic periodic parameter
+variations"*, concluding *"the excellent fit of the data implies that this degradation of
+effective noise figure may well be an adequate description."*
+
+⚠ **So Kärtner's critique is right and narrower than it sounds: Leeson KNEW about upconversion
+and absorbed it into a fitted parameter. Kärtner's advance is that his coupling coefficient —
+our `Γ` — PREDICTS what Leeson FITS.** That is the cleanest statement of what A4d buys over the
+textbook formula, and it is worth having in those terms rather than as "Leeson is wrong".
+
 What Kärtner captures that Leeson cannot: *"the feedback of the oscillation onto the noise
 sources, which results in **multiplicative noise**"*, and *"the mixing and upconversion of noise
 due to the non-linearities"* through a coefficient that *"determines **how much of this
@@ -602,17 +666,43 @@ times a **node-independent integral** `(1/T)∫v₁ᵀFFᵀv₁`, hence *"a line
 slope `α`. **That is our `d`, in closed form, as the adjoint quadratic form** — so our two
 routes are Demir's derivation and its numerical dual. The split is standard, not improvised.
 
-⚠ **Corollary 6.1 claims `β²α` is node-independent** — *"phase noise a property of the WHOLE
-oscillator circuit … by no means a trivial observation"* — with `β = 2πf_c/max x_s`. **MEASURED
-HERE AND IT DOES NOT HOLD ON OUR FIXTURES:** a **110%** spread across nodes on the lossy
-asymmetric LC (`β²α` = 2.01e-07 vs 9.60e-08). With `β = ω₀/max|x_k|` the invariant reduces to
-`max|ẋ_k|/max|x_k|` being node-independent, which is **exactly true for a sinusoid and false
-otherwise** — measured 1.414·ω₀ and 1.072·ω₀ at two nodes of one circuit.
+✅ **Corollary 6.1 HOLDS EXACTLY — and the earlier "110% spread" recorded here was MY
+TRANSCRIPTION ERROR, now corrected.** Demir (6.18) defines `S = max_t ẋ_s(t)`, the **maximum
+SLEW RATE**; I read it as `max x_s`, the **amplitude**. With `β = 2πf_c/S` and `α = [max ẋ_s²]·c`
+the node-dependence cancels identically:
 
-⚠ **NOT ASSERTED EITHER WAY.** Either the transcription of `β` is wrong or the corollary carries
-a near-sinusoidal precondition the excerpt does not state. Declaring it false from one
-measurement, without the paper's definition of `f_c`, would be the over-claim this branch has
-now made twice. **Open question, not a finding.**
+```
+β²α  =  (2πf_c)²/(max ẋ_k)² · (max ẋ_k)² · c  =  (2πf_c)² c
+```
+
+**MEASURED: rel. deviation 2.22e-16 and 0.00e+00 across the nodes of both fixtures.**
+
+⚠ **The same failure shape as the `v·q = 1` PPV normalisation** — a symbol transcribed as the
+plausible quantity rather than the defined one, self-consistent afterwards. Refusing to call the
+corollary false on one measurement was right, and *for the stated reason*: the conditions were
+unseen, and the unseen thing was in my own reading, not the paper's.
+
+⚠ **And a non-trivial confirmation falls out.** Demir notes that taking the high-to-low
+transition *"yields exactly the same results"*. On the **asymmetric** oscillator `max ẋ = 1.767`
+and `max(−ẋ) = 2.606` — **47.5% apart** — and the invariant holds for either, because `α`'s
+square and `β`'s reciprocal cancel whichever extremum is chosen. That is his mini-invariance
+surviving a case where the two branches are nowhere near equal.
+
+⚠⚠ **BUT THE PRECONDITION IS NOT NEAR-SINUSOIDALITY — IT IS THAT `Γ` BE WELL-DEFINED, PER
+CIRCUIT VARIABLE.** §6.2.3's examples are a *ring*, a *relaxation* and a *harmonic* oscillator,
+so waveform shape is not the issue. What fails is a **triangle wave**: *"ẋ_s(t) for a
+triangle-wave is a periodic piecewise constant function, and hence x_s(t) does not have
+well-defined low-to-high transition times."* His heuristic is checkable — *"the periodic
+waveforms obtained as their time derivatives look like themselves"*, i.e. differentiate and see
+whether isolated peaks survive.
+
+⚠⚠⚠ **AND THAT IS A HAZARD INSIDE ANY TWO-NODE TEST BUILT ON THIS.** Demir says only that
+every practical oscillator has **a** circuit variable with well-defined `Γ` — *not every*
+variable. Point such a test at a node carrying a **ramp** — an integrator output, a relaxation
+oscillator's timing capacitor — and `ẋ` is piecewise constant, `Γ` is ill-defined, and **the
+test fails with no bug present.** A 0c/0d hazard *inside the gate*. Cheap guard: check that
+`ẋ_k` attains its maximum on isolated points. Measured on our fixtures, the max is attained over
+**1.9%–3.7%** of the period — isolated, so both are admissible.
 
 ⚠ **Its validity boundary is `λ₂` again.** The step to (6.74) drops every Floquet mode but the
 first under `|exp(η_i)| ≪ 1` — *"satisfied for 'most' oscillator circuits"* — and Remark 6.2:
