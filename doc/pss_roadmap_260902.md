@@ -756,12 +756,19 @@ one destroys. Now a test.
 
 ### A4e. Oscillator phase noise — ⚠ CLOSED FORM BUILT 2026-09-03
 
-⚠⚠ **OPEN DEFECT 2026-09-03: `c`'s ABSOLUTE SCALE IS UNDER SUSPICION OF ~2×.** The Monte
-Carlo that validated it injects `CY/h`; the independent **kT/C** gate on A4c establishes the
-physical injection as `CY/2h`. And two MC routes to the same `c` differ by **2.31×**
-(zero-crossing over 150 periods 1.596e-07, `Var(v·δ)` over one period 6.898e-08) — **not
-explained**, and 2.31 ≠ 2.0, so neither can be assumed to be the other. Shape results are
-scale-independent and stand; the level does not. **Do not halve anything until this resolves.**
+⚠ **RESOLVED 2026-09-03 — and it WAS a 2× error in shipped code.** `diffusion_constant` used
+full `CY` where `covariance` used `CY/2`. Its Monte Carlo validation (0.9965) was against an
+injection carrying the *same* hot convention, so it confirmed the bug rather than catching it.
+**kT/C**, external to both, settled it: that injection gives **1.92× kT/C** over ten runs.
+Fixed; `c` = 7.9516e-08 against a corrected MC at 7.7083e-08, **ratio 1.0316**.
+
+⚠ **The 2.31× was NOT a code defect** — it was the diagnostic contracting a full *pair*
+deviation with a `v` normalised on the first block only (`1/(v·u_pair) = 1.508`). Every shipped
+path contracts the first block, which is where an injected current lands, so the shipped
+normalisation was right. Corrected, the variance ratio goes 2.13 → **1.07**.
+
+⚠ **The lesson, recorded in §D:** *a measurement built on the assumption under test cannot
+test it.* Two of this session's gates agreed with the code because they shared its convention.
 
 ⚠ **BUILT** — `PAC.diffusion_constant(pss)`, `PAC.lorentzian(...)`,
 `PAC.oscillator_spectrum(pss, offsets, output, harmonic)`.
@@ -1220,6 +1227,11 @@ Each of these cost real time. They are recorded so the next reader spends none.
 ## D. How these items keep failing — the shapes worth checking for
 
 Sixteen claims were overturned across this campaign. Four shapes account for most:
+
+0b. **A measurement that shares the assumption under test.** `diffusion_constant`'s Monte
+   Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
+   while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the
+   measurement assumes before trusting what it confirms.**
 
 0. **A result asserted outside the regime the claim is about.** A4's criterion tested on an
    autonomous circuit when the paper says non-autonomous; the A2 gate's window set to 2–4 time

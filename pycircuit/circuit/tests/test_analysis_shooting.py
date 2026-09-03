@@ -5328,9 +5328,21 @@ def test_the_diffusion_constant_matches_the_monte_carlo_measurement():
     """
     _cir, pss, pac = _solve_vdp_noise()
     c = pac.diffusion_constant(pss)
-    assert abs(c - 1.5903e-07) < 0.02 * 1.5903e-07, \
-        'c = %.6e against the 1.5903e-07 this configuration gave when the ' \
-        'Monte Carlo gate ran; the two are the same integral' % c
+    assert abs(c - 7.9516e-08) < 0.05 * 7.9516e-08, \
+        'c = %.6e against 7.9516e-08, which a Monte Carlo with the ' \
+        'CORRECT injection (Var(i) = CY/2h) measured at 7.7083e-08 -- ' \
+        'ratio 1.0316, inside its 4.1%% uncertainty' % c
+    ## ⚠ THE OLD VALUE HERE WAS 1.5903e-07, EXACTLY TWICE THIS, and it
+    ## passed against a Monte Carlo that injected `Var(i) = CY/h`. That
+    ## measurement carried the same one-sided-as-two-sided error as the
+    ## code, so it confirmed the bug instead of catching it. `kT/C` --
+    ## external to both -- showed that injection reproducing 1.92x the
+    ## right answer over ten runs. A measurement built on the assumption
+    ## under test cannot test it.
+    from pycircuit.circuit.shooting import PAC as _PAC
+    assert abs(c * 2 - 1.5903e-07) < 0.05 * 1.5903e-07, \
+        'the pre-fix value is no longer exactly twice this one; if the ' \
+        'convention changed again, re-derive rather than re-fit'
 
 
 def test_the_lorentzian_conserves_the_carrier_power_exactly():

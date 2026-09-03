@@ -310,29 +310,28 @@ known, the spectrum is available at any frequency. Which also means it never mee
 near-carrier singularity a swept small-signal computation would, and never meets the 1/f
 sweep-grid trap: there is no sweep to place a point on.
 
-⚠⚠ **THE ABSOLUTE SCALE OF `c` IS UNVERIFIED AND UNDER SUSPICION OF A FACTOR OF ~2.**
-Read this before quoting a level from `oscillator_spectrum`.
+⚠ **ITS SCALE WAS WRONG BY 2× AND IS NOW FIXED** — kept because how it survived is the
+instructive part. `diffusion_constant` used the full `CY` while `covariance` used `CY/2`: two
+functions in one class disagreeing about whether `CY` is one- or two-sided. It was validated
+against a Monte Carlo injecting `Var(i) = CY/h` and agreed to 0.9965 — **because that Monte
+Carlo carried the same hot convention.** A measurement built on the assumption under test
+cannot test it.
 
-`c` was validated against a Monte Carlo of the full nonlinear circuit at ratio 0.9965. That
-Monte Carlo injects `Var(i) = CY/h` per step. The **independent kT/C gate** on `covariance()` —
-exact, and external to both — establishes the physical injection as **`CY/2h`**. So the Monte
-Carlo that validated `c` appears to carry **twice** the physical noise power, and `c` with it.
+Settled against **kT/C**, external to both: that injection reproduces **1.92× kT/C** over ten
+runs (1.75–2.04). With `CY/2` throughout, `c` = 7.9516e-08 against a correctly scaled Monte
+Carlo at 7.7083e-08 — **ratio 1.0316**, inside its 4.1% uncertainty.
 
-⚠ **And two Monte Carlo routes to the same `c` disagree by 2.31×** — zero-crossing timing over
-150 periods gives 1.596e-07, `Var(v·δ)` over one period gives 6.898e-08, same circuit, same
-injection. **That gap is not explained.** Van der Pol's λ₂ = 8.6e-04 decays within a period, so
-orbital contamination would push the one-period estimate the *other* way.
-
-⚠ **Do not "fix" this by halving anything** until the 2.31× is resolved: 2.0 and 2.31 are not
-the same discrepancy, and matching one would bury the other.
-
-**What stands regardless:** everything shape-like below is independent of `c`'s scale — total
-power conservation, the `1/f²` skirt, the `20·log₁₀(i)` harmonic scaling, the peak-to-half-width
-relation. Only the absolute level is in question.
+⚠ **A second, larger-looking discrepancy was not a code defect at all.** Two Monte Carlo routes
+disagreed by 2.31×. It was in the *diagnostic*: `ppv()` normalises on the **first block**
+(`v[:m]·ẋ = 1`), which is right for a perturbation entering the first block — an injected
+current, and what every shipped path does — but wrong for contracting against a full **pair**
+deviation, where the factor is `1/(v·u_pair) = 1.508`. Correcting it turned a 2.13 variance
+ratio into **1.07**. The accompanying sign flip is a convention: a later zero crossing means
+*delayed*, projecting onto the tangent makes positive mean *advanced*.
 
 | check | result |
 |---|---|
-| `c` vs the A2 gate's Monte Carlo — ⚠ **see above** | 1.5903e-07 vs 1.5959e-07 (0.35%) |
+| `c` vs a correctly-scaled Monte Carlo | 7.9516e-08 vs **7.7083e-08** (1.03) |
 | `∫ S_i df` over the implemented function | **1.000000**, every harmonic and `c` |
 | peak and half-width | analytic to 1e-12 |
 | far skirt | **4.00× per doubling** = 1/f² |

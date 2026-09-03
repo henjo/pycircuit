@@ -5662,36 +5662,31 @@ class PAC(Analysis):
         number from the same PPV.  Only stationary white sources are
         supported here, which `_cy_reduced` enforces.
 
-        ⚠⚠ ITS ABSOLUTE SCALE IS UNVERIFIED AND UNDER SUSPICION OF A
-        FACTOR OF ABOUT TWO.  Read this before quoting a number from it.
+        ⚠ ITS SCALE WAS WRONG BY 2x AND IS NOW FIXED -- kept because the
+        way it survived is the instructive part.  `diffusion_constant` used
+        the full `CY` while `covariance` used `CY/2`: two functions in this
+        class disagreeing about whether `CY` is one- or two-sided.  It was
+        validated against a Monte Carlo injecting `Var(i) = CY/h` per step
+        and agreed to 0.9965 -- because that Monte Carlo carried the SAME
+        hot convention.  A measurement built on the assumption under test
+        cannot test it.
 
-        It was validated against a Monte Carlo of the full nonlinear
-        circuit (zero-crossing timing, 150 periods) at ratio 0.9965.  That
-        Monte Carlo injects `Var(i) = CY/h` per step.  The INDEPENDENT
-        `kT/C` gate on `covariance()` -- exact, and external to both --
-        establishes that the physical injection is `CY/2h`.  So the Monte
-        Carlo that validated this constant appears to carry TWICE the
-        physical noise power, and this constant with it.
+        SETTLED AGAINST `kT/C`, which is external to both: an injection of
+        `Var(i) = CY/h` reproduces 1.92x `kT/C` over ten independent runs
+        (1.75-2.04).  With `CY/2` throughout, `diffusion_constant` gives
+        7.9516e-08 against a correctly scaled Monte Carlo at 7.7083e-08 --
+        ratio 1.0316, inside that measurement's 4.1% uncertainty.
 
-        ⚠ AND TWO MONTE CARLO ROUTES TO THE SAME `c` DISAGREE BY 2.31x:
-        zero-crossing timing over 150 periods gives 1.596e-07, while
-        `Var(v . delta)` over one period gives 6.898e-08 on the same
-        circuit and the same injection.  That gap is NOT explained -- van
-        der Pol's second multiplier is 8.6e-04, so orbital contamination
-        decays within one period and would push the one-period estimate
-        the other way.  Something in one of the two measurements is wrong
-        and it is not yet known which.
-
-        ⚠ WHAT STANDS REGARDLESS: everything SHAPE-like in
-        `oscillator_spectrum` is independent of `c`'s scale -- total power
-        conservation, the `1/f^2` skirt, the `20 log10(i)` harmonic
-        scaling, the peak-to-half-width relation.  Those were checked
-        against the implemented functions and do not move.  What is in
-        question is only the absolute level.
-
-        ⚠ DO NOT "FIX" THIS BY HALVING ANYTHING until the 2.31x is
-        resolved: a 2.0 and a 2.31 are not the same discrepancy, and
-        matching one would bury the other.
+        ⚠ AND A SECOND DISCREPANCY WAS NOT A CODE DEFECT AT ALL.  Two Monte
+        Carlo routes disagreed by 2.31x, which looked like a third error.
+        It was in the DIAGNOSTIC: `ppv()` normalises on the FIRST BLOCK
+        (`v[:m] . xdot = 1`), which is right for a perturbation entering
+        the first block -- an injected current, and what every shipped path
+        does -- but wrong for contracting against a full PAIR deviation,
+        where the factor is `1/(v . u_pair) = 1.508`.  Correcting it turned
+        a 2.13 variance ratio into 1.07.  The sign difference alongside it
+        is a convention, not an error: a later zero crossing means DELAYED,
+        while projecting onto the tangent makes positive mean ADVANCED.
         """
         self._check_circuit(pss)
         if not getattr(pss, 'autonomous', False):
@@ -5706,7 +5701,16 @@ class PAC(Analysis):
         h = np.diff(tms)
         T = float(pss.period)
         cy = self._cy_reduced(pss, 2.0 * np.pi / T)
-        quad = np.einsum('ij,jk,ik->i', S, np.real(cy), S)
+        ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
+        ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`), and
+        ## these two functions disagreed about it until a Monte Carlo was
+        ## run against `kT/C`: an injection of `Var(i) = CY/h` per step
+        ## reproduces `1.92x kT/C` over ten independent runs (1.75-2.04),
+        ## so that convention carries TWICE the physical noise power.
+        ## `covariance` was already right; this was not, and its agreement
+        ## with a Monte Carlo built on the SAME hot convention is exactly
+        ## why the error survived.
+        quad = np.einsum('ij,jk,ik->i', S, 0.5 * np.real(cy), S)
         return float((quad * h).sum() / T)
 
     @staticmethod
