@@ -8583,3 +8583,150 @@ def test_saltation_is_unneeded_for_a_discontinuous_INJECTION_too():
                 '1 is an O(1) structural term -- i.e. saltation IS needed ' \
                 'here -- and that would overturn C5. Gaps: %s' \
                 % (kind, a / b, gaps)
+
+
+def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
+    """⚠⚠ THE DIVIDER QUESTION, ANSWERED — and the answer is not saltation.
+
+    A PFD's discontinuity is in the ALGEBRAIC part, which the per-step
+    Newton resolves; C5's argument covers it and the companion test above
+    measures it. A divider is different: a counter **resets its state**.
+    `Idtmod` is that object — and contrary to a note in this record, the
+    wrap folds the STATE, not only the output map (`I.idt_node` stays
+    inside one modulus and is periodic to 2.6e-15).
+
+    ⚠ OFF A GRID POINT, THE FLOW MAP IS DIFFERENTIABLE AND SALTATION IS
+    UNNECESSARY. Variational monodromy against finite differences, wrap
+    placed off-grid by `ic = 0.31`:
+
+        npts    rel err     rate    FD noise floor
+         250   2.754e-06            7.7e-08
+         500   1.349e-06   2.04x    1.3e-07
+        1000   6.738e-07   2.00x    2.7e-07
+        2000   5.551e-07   1.21x    5.5e-07   <- floor reached
+
+    Exactly first order, same as the switched conductance and the
+    discontinuous injection. The last row's 1.21x is the FD instrument's
+    own noise meeting the signal, not an O(1) term — which is why the
+    eps-stability is measured alongside rather than assumed away.
+
+    ⚠⚠ BUT ON A GRID POINT THE MAP IS GENUINELY DISCONTINUOUS, AND THE
+    PSS CONVERGES ANYWAY. With the wrap landing exactly on a grid point,
+    `|Δφ|/ε` does not settle to a derivative — it scales as `1/ε`:
+
+        eps       npts=600 (off)   npts=1200 (ON a grid point)
+        1e-10     1.732085         8.202463e+07
+        1e-08     1.732026         8.202453e+05
+        1e-06     1.732025         8.201463e+03
+        1e-05     1.732025         8.192475e+02
+
+    Constant across six decades on the left; `|Δφ|` a CONSTANT ≈8.2e-3
+    independent of `ε` on the right. **A perturbation of any size produces
+    the same finite jump**, because an infinitesimal change flips which
+    step the reset lands in and a whole modulus propagates.
+
+    ⚠ SO A6'S REAL PROBLEM IS EVENT LOCALISATION, NOT SALTATION. The
+    machinery exists — `_WrapEvents.next_event` predicts the crossing —
+    and the question is whether a fixed-grid traversal uses it. Recorded
+    as the finding rather than fixed here, because "the monodromy is
+    wrong when the reset is grid-aligned" and "the PSS reports
+    convergence there" are two separate defects and the second is the
+    dangerous one.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def build(ic):
+        c = SubCircuit()
+        for nn in ('in', 'out', 'f'):
+            c.add_node(nn)
+        c['vin'] = VS('in', gnd, v=2000.0)
+        c['I'] = Idtmod('in', gnd, 'out', gnd, modulus=1.0, ic=ic)
+        c['Rf'] = R('out', 'f', r=1e3)
+        c['Cf'] = C('f', gnd, c=1e-7)
+        c['Rl'] = R('out', gnd, r=1e5)
+        return c
+
+    def pieces(npts, ic):
+        pss = PSS(build(ic), method='trap', reltol=1e-11)
+        m = pss.cir.n - 1
+        times, hs = pss._period_grid(per, npts, None)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / npts, maxiterations=60)
+        assert pss.converged
+        ir = pss.irefnode
+        Xw = np.asarray(res['tpss'].x, dtype=float)
+        x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
+
+        def phi(v):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
+                                               per, times, hs, want_dT=False)
+            return np.asarray(xe, dtype=float)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+        return np.asarray(M, dtype=float), phi, phi(x0), m
+
+    ## the state really does reset -- otherwise this tests nothing new
+    M0, _phi0, _base0, m0 = pieces(500, 0.31)
+    assert m0 >= 4 and np.linalg.norm(M0) > 0.1, \
+        'the monodromy is %.3e; a circuit that erases its state has ' \
+        'nothing to check' % np.linalg.norm(M0)
+
+    def gap(npts, ic, eps=1e-7):
+        pss = PSS(build(ic), method='trap', reltol=1e-11)
+        m = pss.cir.n - 1
+        times, hs = pss._period_grid(per, npts, None)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / npts, maxiterations=60)
+        assert pss.converged
+        ir = pss.irefnode
+        Xw = np.asarray(res['tpss'].x, dtype=float)
+        x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
+
+        def phi(v):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
+                                               per, times, hs, want_dT=False)
+            return np.asarray(xe, dtype=float)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+        M = np.asarray(M, dtype=float)
+        base = phi(x0)
+        Mfd = np.zeros((m, m))
+        for j in range(m):
+            d = np.zeros(m)
+            d[j] = eps
+            Mfd[:, j] = (phi(x0 + d) - base) / eps
+        return (np.max(np.abs(M - Mfd)) / max(np.max(np.abs(Mfd)), 1e-300),
+                x0, phi, base, m)
+
+    ## OFF-GRID: a genuine derivative, and the gap falls at O(h)
+    g = [gap(n, 0.31)[0] for n in (250, 500)]
+    assert 1.7 < g[0] / g[1] < 2.4, \
+        'off-grid the gap falls %.2fx per doubling, not ~2. A rate near 1 ' \
+        'would be an O(1) term -- saltation genuinely needed for a state ' \
+        'reset -- which would overturn this result. Gaps: %s' \
+        % (g[0] / g[1], g)
+
+    ## ON-GRID: not a derivative at all -- |dphi| is constant in eps
+    _rel, x0g, phig, baseg, mg = gap(1200, 0.0)
+    norms = []
+    for eps in (1e-9, 1e-7, 1e-5):
+        d = np.zeros(mg)
+        d[3] = eps
+        norms.append(float(np.linalg.norm(phig(x0g + d) - baseg)))
+    spread = max(norms) / min(norms)
+    assert spread < 10.0, \
+        'on a grid-aligned reset |dphi| should be ~constant in eps (a ' \
+        'DISCONTINUITY, not a derivative); it spread %.1fx over four ' \
+        'decades of eps: %s' % (spread, norms)

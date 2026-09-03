@@ -1841,13 +1841,44 @@ The stated reason described an unmitigated dead zone; the replacement described 
 continuous-time construct a discrete map does not need. Neither survived a measurement, and the
 second was falsified by the instrument that had already settled the first.
 
-⚠⚠ **WHERE THE REAL DIFFICULTY PROBABLY IS — the open question, not a finding.** C5's argument
-turns on the discontinuity being in the **algebraic** part (the current or the conductance),
-which the per-step Newton resolves. It does not obviously extend to a discontinuity in the
-**STATE**: a genuine reset of `x`, which is exactly what a **divider or counter rollover** is.
-**So the hard part of a PLL may be the divider rather than the PFD**, and that is the next thing
-to measure. It is also a different kind of object — a sampled/reset system rather than a
-smooth-in-between flow — which is where the record's `Idtmod` wrap work already lives.
+⚠⚠ **THE DIVIDER WAS THE OPEN QUESTION AND IT IS NOW MEASURED — saltation is not needed there
+either, and the real problem is something else entirely.**
+
+⚠ First, a correction to this record: **`Idtmod` folds the STATE, not only the output map.**
+`I.idt_node` stays inside one modulus and is periodic to 2.6e-15. So it *is* the state-reset
+object the question needed.
+
+**Off a grid point the flow map is differentiable and the gap falls at O(h)** — wrap placed
+off-grid with `ic = 0.31`:
+
+| npts | rel err | rate | FD noise floor |
+|---|---|---|---|
+| 250 | 2.754e-06 | — | 7.7e-08 |
+| 500 | 1.349e-06 | **2.04×** | 1.3e-07 |
+| 1000 | 6.738e-07 | **2.00×** | 2.7e-07 |
+| 2000 | 5.551e-07 | 1.21× | **5.5e-07** ← floor |
+
+Exactly first order, same as the switched conductance and the discontinuous injection. The last
+row's 1.21× is the FD instrument's **own noise meeting the signal**, which is why the
+eps-stability is measured alongside rather than assumed away.
+
+⚠⚠⚠ **BUT ON A GRID POINT THE MAP IS GENUINELY DISCONTINUOUS, AND THE PSS CONVERGES ANYWAY.**
+
+| ε | npts=600 (off) | npts=1200 (**on** a grid point) |
+|---|---|---|
+| 1e-10 | 1.732085 | 8.202463e+07 |
+| 1e-08 | 1.732026 | 8.202453e+05 |
+| 1e-06 | 1.732025 | 8.201463e+03 |
+| 1e-05 | 1.732025 | 8.192475e+02 |
+
+Constant across six decades on the left; on the right `|Δφ|` is a **constant ≈8.2e-3 independent
+of `ε`** — a perturbation of *any* size gives the same finite jump, because an infinitesimal
+change flips which step the reset lands in and a whole modulus propagates.
+
+⚠ **SO A6'S REAL PROBLEM IS EVENT LOCALISATION, NOT SALTATION.** The machinery exists —
+`_WrapEvents.next_event` predicts the crossing — and the question is whether a fixed-grid
+traversal uses it. Two separate defects, and **the second is the dangerous one**: the monodromy
+is wrong when the reset is grid-aligned, *and* the PSS reports convergence there.
 
 ⚠ **What the dead zone IS still worth to this roadmap:** an unmitigated loop, or one whose
 offset is too small, genuinely does sit where the linearisation describes a disconnected
