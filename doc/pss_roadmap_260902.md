@@ -862,6 +862,11 @@ deviation with a `v` normalised on the first block only (`1/(v·u_pair) = 1.508`
 path contracts the first block, which is where an injected current lands, so the shipped
 normalisation was right. Corrected, the variance ratio goes 2.13 → **1.07**.
 
+⚠ **A SHARED DISCRETISATION IS SHAPE 0b WEARING A RATE.** A convergence rules out a *defect*;
+only independent anchors rule out a *shared* one. Two implementations carrying the same O(h)
+white-noise approximation would converge together to the wrong answer — the O(h) approximation
+is then the instrument, and `kT/C` and the zero-crossing Monte Carlo are what stand outside it.
+
 ⚠ **The lesson, recorded in §D:** *a measurement built on the assumption under test cannot
 test it.* Two of this session's gates agreed with the code because they shared its convention.
 
@@ -1334,6 +1339,24 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    blindness is a measured property rather than a hypothesis. (Independently found by the
    docs session on Srivastava's ring oscillator, where `τ = 1` makes `C = I` outright and its
    PPV oracle passes a missing-`C` implementation to 2e-15. Same shape, two circuits.)
+
+   ⚠ **AND THE BLINDNESS IS COMPUTABLE, SO THE PROBE CAN BE DESIGNED RATHER THAN DRAWN.**
+   `v·δ = vᵀCδ` exactly when `vᵀ(C − I)δ = 0`, so the blind set is a **hyperplane with a known
+   normal** and `(C − I)ᵀv` is the direction of maximum sensitivity — one matrix-vector product
+   from quantities already in hand. Van der Pol's `C = diag(1,−1)` gives `(0, −2v₁)`, and `e₀`
+   is orthogonal to it *exactly*, which is why the capacitor ratio is 1.0000 rather than merely
+   small. Along the designed probe the two hypotheses predict **opposite signs**, so no
+   tolerance is needed to separate them; the circuit picks one (measured −5.4215e-01 against
+   `v·δ` = −5.4131e-01 and `vᵀCδ` = +5.4131e-01, converging 0.9984 → 0.9992 at O(h)).
+
+   ⚠ **The structural rule generalises past this circuit: in an MNA-shaped `C` the ALGEBRAIC
+   rows are the best probes.** `C` is *zero* there, so `C − I = −I` and the discrepancy is
+   maximal — the rows a DAE solver already treats specially discriminate best, and the
+   capacitor nodes everyone reaches for first are the blind ones.
+
+   ⚠ **A designed probe's optimality is about ONE error**, so the random-direction gate stays:
+   it is not aimed at a hypothesis. Recording what a check can see applies to the check built
+   from this rule too.
 
 0b. **A measurement that shares the assumption under test.** `diffusion_constant`'s Monte
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965

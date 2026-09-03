@@ -5919,3 +5919,94 @@ def test_the_ppv_fixture_is_blind_to_a_missing_C_from_one_direction():
     ## property under test is the fixture's discriminating power, not a
     ## claim that a scaled circuit is solved differently
     assert abs(float(v2[:m] @ _i2['xdot']) - 1.0) < 1e-9
+
+
+def test_the_ppv_gate_probes_the_direction_of_maximum_sensitivity():
+    """⚠ THE DESIGNED PROBE, replacing four random directions and hope.
+
+    `v·δ` and `vᵀCδ` agree exactly when `vᵀ(C − I)δ = 0`, so the set of
+    directions blind to a dropped `C` is a HYPERPLANE with a known normal:
+
+        blind  ⟺  δ ⊥ (C − I)ᵀv
+
+    which makes `(C − I)ᵀv` itself the direction of maximum sensitivity,
+    available for one matrix-vector product from quantities already in
+    hand. Van der Pol's `C = diag(1, −1)` gives `(C − I)ᵀv = (0, −2v₁)`, so
+    `e₀` — the capacitor node — is orthogonal to it EXACTLY. That is why
+    the companion test measures a ratio of 1.0000 there: not a near miss,
+    an exact one.
+
+    ⚠ ALONG THE DESIGNED PROBE THE TWO HYPOTHESES PREDICT OPPOSITE SIGNS,
+    so no tolerance is needed to separate them — the circuit picks one:
+
+        npts   measured      v·δ (right)   vᵀCδ (wrong)   ratio
+         400   −5.4215e-01   −5.4131e-01   +5.4131e-01    0.998443
+         800   −5.4153e-01   −5.4110e-01   +5.4110e-01    0.999213
+
+    The magnitude converges at O(h) as a bonus; the SIGN alone already
+    decides it. Four random directions scored 0.43/0.78/0.81/0.96 on this
+    fixture — they work, and the spread is exactly the luck this removes.
+
+    ⚠ THIS IS A TARGETED PROBE AND ITS OPTIMALITY IS ABOUT ONE ERROR. It
+    maximises sensitivity to a dropped `C` weighting and says nothing
+    about any other defect; the random-direction gate stays because it is
+    not aimed at a hypothesis. Recording which errors a check can see is
+    the whole point of §D shape 0c, and that applies to this one too.
+
+    ⚠ AND THE STRUCTURAL RULE IS WORTH MORE THAN THIS CIRCUIT. `C` is ZERO
+    on algebraic rows, so `C − I = −I` there and the discrepancy is
+    maximal: in an MNA-shaped system the rows a DAE solver already treats
+    specially are the BEST probes, and the capacitor nodes everyone
+    reaches for first are the blind ones.
+    """
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    out = []
+    for npts in (400, 800):
+        cir, pss, v, info = _vdp_ppv(npts)
+        m = cir.n - 1
+        irn = pss.irefnode
+        T = pss.period
+        xdot = info['xdot']
+        x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
+        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        Cm = np.delete(np.delete(np.asarray(cir.C(x0f)), irn, 0),
+                       irn, 1).astype(float)
+
+        normal = (Cm - np.eye(m)).T @ v[:m]
+        assert abs(float(normal @ np.eye(m)[0])) < 1e-12 * max(
+            np.linalg.norm(normal), 1e-300), \
+            'the capacitor axis is no longer exactly in the blind ' \
+            'hyperplane, so this fixture has changed shape'
+        d = normal / np.linalg.norm(normal)
+
+        def integrate(xi, nper=3, ppp=2000):
+            tran = Transient(cir, toolkit=circuit.numeric, reltol=1e-9,
+                             iabstol=1e-13, vabstol=1e-11)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(refnode=gnd, tend=nper * T,
+                                 timestep=T / ppp, x0=xi)
+            return np.asarray(res.x, dtype=float)[:, -1]
+
+        eps = 1e-5
+        ref = integrate(x0f)
+        dr = np.concatenate((d[:irn], np.zeros(1), d[irn:]))
+        dx = np.delete(integrate(x0f + eps * dr) - ref, irn)
+        meas = float(dx @ xdot) / float(xdot @ xdot) / eps
+        p_ok = float(v[:m] @ d)
+        p_bug = float(v[:m] @ (Cm @ d))
+
+        assert np.sign(p_ok) != np.sign(p_bug), \
+            'the designed probe no longer separates the two formulations ' \
+            'by sign; it is not the maximum-sensitivity direction'
+        assert np.sign(meas) == np.sign(p_ok), \
+            'the CIRCUIT chose the vTCd formulation (measured %+.4e, ' \
+            'v.d %+.4e); the PPV normalisation is wrong' % (meas, p_ok)
+        out.append(abs(p_ok / meas - 1.0))
+
+    assert out[0] < 5e-3, 'coarse grid off by %.3e' % out[0]
+    assert out[1] < 0.75 * out[0], \
+        'the designed probe does not converge (%.3e -> %.3e); a residue ' \
+        'that does not shrink is a defect, not discretisation'\
+        % (out[0], out[1])
