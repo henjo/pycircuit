@@ -5469,6 +5469,65 @@ class PAC(Analysis):
         cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         cy = cyfn(pss, w)
 
+        ## ⚠⚠ ON A HARMONIC, A SIDEBAND FOLDS THE SOURCES TO DC -- AND
+        ## SOME DEVICE MODELS ARE NOT DEFINED THERE.  Sideband `l`
+        ## evaluates `CY` at `f - l f0`, so `f = k f0` evaluates it at
+        ## ZERO.  A `1/f` term is infinite there; and MEASURED on
+        ## `PspMosLongChannel`, a flicker term with its coefficient set to
+        ## ZERO is `0/0` and returns `nan`:
+        ##
+        ##     fnt=1, nfa=0        CY(f=0) = nan   <- DISABLED flicker
+        ##     fnt=1, nfa=8e22     CY(f=0) = inf   <- the real singularity
+        ##
+        ## ⚠ THE FIRST IS THE NASTIER ONE: a caller who sets `nfa = 0`
+        ## believing flicker is off still gets `nan` out of `pnoise`, with
+        ## no exception anywhere.
+        ##
+        ## ⚠ AND IT IS NOT "HARMONICS ARE BAD".  A driven divider with
+        ## white sources returns 1.490351e-17 at exactly `f0`, and at
+        ## `2 f0` and `3 f0` -- the fold to DC is harmless when the
+        ## sources are defined there.  So this checks the SOURCES at the
+        ## frequency that will actually be used, rather than refusing a
+        ## harmonic on principle.
+        f0_ = 1.0 / float(pss.period)
+        lscan = max(1, int(maxsidebands or 8))
+        offs = np.abs(float(freq) - np.arange(-lscan, lscan + 1) * f0_)
+        near = float(np.min(offs))
+        if near <= self.HARMONIC_GUARD * f0_:
+            probe = cyfn(pss, 2.0 * np.pi * near)
+            if not np.all(np.isfinite(np.asarray(probe))):
+                raise ValueError(
+                    'PAC.pnoise: %.12g Hz sits on a harmonic of %.12g Hz, '
+                    'so a sideband folds the noise sources to DC -- and at '
+                    'DC this circuit\'s CY is not finite. A 1/f term is '
+                    'infinite there; a flicker term whose COEFFICIENT IS '
+                    'ZERO is 0/0 and gives nan, so disabling flicker does '
+                    'not avoid this. Offset from the harmonic: SpectreRF\'s '
+                    'own advice is to cluster frequencies NEAR each '
+                    'harmonic and never place one ON it.'
+                    % (float(freq), f0_))
+
+        ## ⚠ AND THE STEEP REGION BESIDE IT IS A SWEEP HAZARD RATHER THAN
+        ## A WRONG NUMBER, so it warns instead of raising.  MEASURED with
+        ## a real flicker source: the plateau is 1.321483e-16, `f0 + 1` Hz
+        ## gives 1.321766e-16 and `f0 + 0.01` Hz gives 1.350047e-16 -- 2%
+        ## high, finite, entirely plausible.  The VALUE is right; a grid
+        ## that lands there by accident integrates a spike it never
+        ## resolved.  SpectreRF: "you run the risk of generating absurd
+        ## noise totals because a very narrow noise peak artificially has
+        ## its apparent width greatly magnified".
+        elif near < 1e-6 * f0_ and float(freq) > 0.0:
+            cy_hi = cyfn(pss, 2.0 * np.pi * max(float(freq) * 2.0, f0_))
+            if not np.allclose(cy, cy_hi, rtol=1e-9, atol=0.0):
+                warnings.warn(
+                    'PAC.pnoise: %.12g Hz is %.3g Hz from a harmonic of '
+                    '%.12g Hz and a source has a frequency-dependent CY, '
+                    'so the folded density varies steeply here. The VALUE '
+                    'is correct; a swept grid landing this close will '
+                    'misrepresent the integrated total. Cluster near each '
+                    'harmonic deliberately rather than by accident.'
+                    % (float(freq), near, f0_), RuntimeWarning, stacklevel=2)
+
         total = 0.0
         used = []
         quiet = 0

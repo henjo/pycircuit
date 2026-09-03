@@ -7878,3 +7878,142 @@ def test_pnoise_runs_on_a_real_mosfet_through_the_modulated_path():
         'va %.0e -> %.0e grew the departure by %.2f against the %.2f a ' \
         'quadratic term predicts; a LINEAR departure would mean the cycle ' \
         'average is wrong' % (vas[1], vas[2], got, expect)
+
+
+def test_pnoise_refuses_a_harmonic_only_when_the_sources_are_undefined_there():
+    """⚠⚠ ON A HARMONIC A SIDEBAND FOLDS THE SOURCES TO DC, and some
+    device models are not defined there — but "harmonics are bad" is the
+    wrong rule and would refuse a valid measurement.
+
+    Sideband `l` evaluates `CY` at `f − l·f₀`, so `f = k·f₀` evaluates it
+    at **zero**. Measured on `PspMosLongChannel`:
+
+        fnt=1, nfa=0        CY(f=0) = nan    ← a DISABLED flicker term, 0/0
+        fnt=1, nfa=8e22     CY(f=0) = inf    ← the real 1/f singularity
+
+    ⚠ THE FIRST IS THE NASTIER ONE. A caller who sets `nfa = 0` believing
+    flicker is off still gets `nan` out of `pnoise`, with no exception
+    anywhere — the term is disabled and its `0/f` is still `0/0`.
+
+    ⚠⚠ AND THE FOLD TO DC IS HARMLESS WHEN THE SOURCES ARE DEFINED THERE.
+    A driven divider with white sources returns 1.490351e-17 at exactly
+    `f₀`, and at 2f₀ and 3f₀. So the guard checks the **sources at the
+    frequency that will actually be used**, rather than refusing a
+    harmonic on principle. That distinction is the whole content: a rule
+    keyed on "is this a harmonic" would break a working analysis, and one
+    keyed on "is the result nan" would fire after the fact without saying
+    why.
+
+    ⚠ THIS BECAME REACHABLE ONLY WHEN THE MOS NOISE MODEL WAS EXERCISED.
+    The roadmap has carried the sweep-grid trap as a known hazard since
+    A4d and could not test it, because every source in the discrete
+    library is white and defined everywhere.
+    """
+    from pycircuit.circuit import compact
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    ## the white case must keep working, at several harmonics
+    cir = _divider()
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-5, refnode=gnd, maxiterations=40)
+    irn = pss.irefnode
+    k = cir.get_node_index('net2')
+    k = k - 1 if k > irn else k
+    d = np.zeros(cir.n - 1)
+    d[k] = 1.0
+    pac = PAC(cir, toolkit=circuit.numeric)
+    for m in (1, 2, 3):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S, _u = pac.pnoise(pss, m * 1e3, d)
+        assert np.isfinite(S) and S > 0, \
+            'the white divider stopped working at %d*f0 (S = %r); a fold ' \
+            'to DC is harmless when the sources are defined there' % (m, S)
+
+    ## and both MOS cases must raise, naming the mechanism
+    for nfa in (0.0, 8e22):
+        cirm = _cs_amp(2e-2, fnt=1.0)
+        cirm['M'] = compact.PspMosLongChannel('d', 'g', gnd, gnd,
+                                              fnt=1.0, nfa=nfa, ef=1.0)
+        pm = PSS(cirm, method='gear', reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pm.solve(period=1e-6, timestep=1e-6 / 12, refnode=gnd,
+                     maxiterations=60)
+        assert pm.converged
+        irn = pm.irefnode
+        kk = cirm.get_node_index('d')
+        kk = kk - 1 if kk > irn else kk
+        dd = np.zeros(cirm.n - 1)
+        dd[kk] = 1.0
+        pcm = PAC(cirm, toolkit=circuit.numeric)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            off, _u = pcm.pnoise(pm, 1e6 + 1e2, dd, modulated=True,
+                                 maxsidebands=2)
+        assert np.isfinite(off), \
+            'nfa=%r: 100 Hz off the harmonic is already broken (%r), so ' \
+            'the guard below would be masking a different defect' % (nfa, off)
+        with pytest.raises(ValueError, match='sits on a harmonic'):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pcm.pnoise(pm, 1e6, dd, modulated=True, maxsidebands=2)
+
+
+def test_the_mos_flicker_term_shows_a_one_over_f_corner_in_pnoise():
+    """⚠ THE COLOURED PATH, EXERCISED FROM A REAL DEVICE.
+
+    `pnoise` evaluates each sideband's source at `f − l·f₀`, so a
+    frequency-dependent `CY` is folded at the right frequency per
+    sideband. With `PspMosLongChannel`'s flicker term enabled the output
+    shows a `1/f` region below the corner and the thermal plateau above:
+
+        f (Hz)     S              local slope
+        1e2        1.499166e-15   −0.7465
+        1e3        2.687271e-16   −0.2659
+        1e4        1.456832e-16   −0.0383
+        1e5        1.333788e-16   (plateau)
+
+    Asserted as a *shape* — steepening toward low offset and flat at high
+    — rather than against a slope value, because the corner's position is
+    a property of the card's `nfa` and not of the analysis. What the
+    analysis has to get right is that the two regions exist and are
+    ordered, which a white-only path cannot produce at all.
+    """
+    from pycircuit.circuit import compact
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _cs_amp(2e-2, fnt=1.0)
+    cir['M'] = compact.PspMosLongChannel('d', 'g', gnd, gnd,
+                                         fnt=1.0, nfa=8e22, ef=1.0)
+    pss = PSS(cir, method='gear', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 12, refnode=gnd,
+                  maxiterations=60)
+    assert pss.converged
+    irn = pss.irefnode
+    k = cir.get_node_index('d')
+    k = k - 1 if k > irn else k
+    d = np.zeros(cir.n - 1)
+    d[k] = 1.0
+    pac = PAC(cir, toolkit=circuit.numeric)
+    fs = np.array([1e2, 1e3, 1e4, 1e5])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Ss = np.array([pac.pnoise(pss, f, d, modulated=True,
+                                  maxsidebands=2)[0] for f in fs])
+    assert np.all(np.diff(Ss) < 0), \
+        'the output noise is not falling with frequency (%s); a flicker ' \
+        'term must dominate at low offset' % Ss
+    slopes = np.diff(np.log10(Ss)) / np.diff(np.log10(fs))
+    assert slopes[0] < -0.5, \
+        'low-offset slope is %.4f; with flicker enabled the spectrum must ' \
+        'steepen toward DC' % slopes[0]
+    assert slopes[-1] > -0.2, \
+        'high-offset slope is %.4f; above the corner the thermal term ' \
+        'must dominate and the spectrum flatten' % slopes[-1]
+    assert slopes[0] < slopes[-1], 'the corner is not ordered'
