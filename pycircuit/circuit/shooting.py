@@ -2237,6 +2237,18 @@ class PSS(Analysis):
         Three separate things that a "high-Q oscillators are hard" summary
         would blur into one.
 
+        ⚠ THE QUADRATIC RUNG BELOW WOULD NOT FIX THE SLOW-NODE BOUNDARY,
+        which is the obvious hope and is wrong.  TWO INDEPENDENT
+        approximations are in play: the LINEAR ISOCHRON one is in the
+        perturbation's AMPLITUDE -- it treats isochrons as flat
+        hyperplanes, and the quadratic rung adds their curvature -- while
+        the INSTANTANEOUS-RESPONSE one is in the DYNAMICS, ignoring the
+        bandwidth between injection point and core.  Slow nodes are the
+        second.  Noise is small by construction, so the linear term
+        dominates it by definition; the quadratic rung would earn its cost
+        on LARGE perturbations -- injection locking, big supply or
+        substrate interferers -- not on phase noise.
+
         ⚠ AND THE PPV IS ONE RUNG ON A LADDER, worth knowing before it is
         mistaken for exact.  Suvak & Demir (TCAD 2011) place it: an EXACT
         phase equation exists and is "practically unusable"; the PPV
@@ -2422,6 +2434,32 @@ class PSS(Analysis):
         ## does not move at all: GMRES converges, the answer looks clean,
         ## and the conditioning has lost six digits.  So this estimates
         ## `|lambda_2|` explicitly rather than trusting a small residual.
+        ##
+        ## ⚠ AND THE ACCURACY COST WAS GATED, WITH A NEGATIVE RESULT worth
+        ## recording so nobody re-derives a fix from the warning alone.
+        ## Monte Carlo on the FULL NONLINEAR circuit -- 200 realisations,
+        ## 150 periods, phase read from zero-crossing timing, so no PPV
+        ## appears anywhere in the measurement:
+        ##
+        ##     core injection (control)   c_ppv/c_meas = 0.9965
+        ##     slow node, tau/T = 10      c_ppv/c_meas = 0.8016
+        ##
+        ## Within 20%, about 2 sigma at this sample count, and in the
+        ## UNDER-predicting direction.  The literature's "significant
+        ## over-estimation" DOES NOT REPRODUCE at this time constant, so a
+        ## frequency-aware fix is not justified by measurement on a circuit
+        ## we can build.  The warning buys the honest statement that the
+        ## number is degrading -- not a claim about how far.
+        ##
+        ## ⚠ Larger `tau/T` is untested and the cost is why: the
+        ## measurement needs ~15 time constants of settling.
+        ## ⚠ AND IT TOOK THREE ATTEMPTS.  A window of 2-4 time constants
+        ## read the slow mode's DECAY as diffusion; an impulse test could
+        ## not resolve a 1e-11 time shift; and one noise amplitude for both
+        ## circuits put a 2.5 V jump per step on an orbit of amplitude 2,
+        ## because the slow node's capacitance is 6.7e-5 F against the
+        ## core's 1.0.  Each time the number was read before the
+        ## MEASUREMENT was shown to be in the regime it assumes.
         ##
         ## Deflated power iteration, using the eigenvectors already in
         ## hand: `u` spans the unit mode and `v` is its left partner, so
@@ -5129,6 +5167,19 @@ class PAC(Analysis):
         lives at all of them, so dropping sidebands drops power that
         belonged in the total.  Capping it here always makes `S` a LOWER
         bound, never a cheaper estimate of the same number.
+
+        ⚠ AN OBSERVABLE SYMPTOM WORTH KNOWING BEFORE IT IS SEEN.  For an
+        oscillator `Phi(T) - I` is singular and its null vector IS THE PPV,
+        so a near-carrier noise computation is ill-conditioned by
+        construction.  Gourary et al. name what that looks like: "the
+        standard time domain noise analysis yields FLAT PSD CURVES OR
+        CURVES WITH UNEXPECTED SLOPE NEAR THE OSCILLATION FREQUENCY."  If
+        oscillator noise ever comes out flat near the carrier, that is the
+        singularity -- not the physics, the noise models or the source
+        definitions -- which points at the right layer immediately.  A
+        published removal exists in a time-domain form written for
+        shooting, using that same null vector; it is not built.  (Cited,
+        not verified here.)
 
         ⚠ TWO STOPPING RULES, AND THE BOUND IS NOT THE RATIO TEST.  The
         accumulation stops when a sideband pair adds less than `ratio_tol`

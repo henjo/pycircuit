@@ -127,6 +127,15 @@ stages off a shared reference. A scalar per frequency also cannot carry the corr
 opposite of how it reads. A driven signal lives at the frequencies it is driven at; noise
 lives at all of them. Capping it always makes `S` a **lower bound**.
 
+⚠ **AN OBSERVABLE SYMPTOM, worth knowing before it is seen.** For an oscillator
+`Φ(T) − I` is singular and **its null vector is the PPV**, so a near-carrier noise computation
+is ill-conditioned by construction. What that looks like: "the standard time domain noise
+analysis yields **flat PSD curves or curves with unexpected slope near the oscillation
+frequency**." If oscillator noise ever comes out flat near the carrier, that is the
+singularity — not the physics, the noise models or the source definitions. A published removal
+exists in a time-domain form written for shooting, built from that same null vector; **not
+built here**.
+
 ⚠ **Which stopping rule fired is part of the answer.** The ratio test means the series
 converged; the grid's Nyquist means the grid ran out first and sidebands above it are
 **missing rather than small**. It warns.
@@ -198,8 +207,37 @@ perturbations applied to oscillator cores." The extraction degrades too, and sil
 | 1e6 | 0.999999 | 4.47e-07 | 4.4e-11 |
 
 `σ_min` tracks `T/τ` over six decades **while the residual does not move**. So `ppv()`
-estimates `|λ₂|` by deflated power iteration and **warns**, saying the result is an upper
-bound — no residual can report this.
+estimates `|λ₂|` by deflated power iteration and **warns** — no residual can report this.
+
+⚠ **THE ACCURACY COST WAS GATED, AND THE RESULT IS NEGATIVE.** Monte Carlo on the full
+nonlinear circuit — 200 realisations, 150 periods, phase read from zero-crossing timing, so
+no PPV appears in the measurement:
+
+| case | c_ppv / c_measured |
+|---|---|
+| core injection (control) | **0.9965** |
+| slow node, τ/T = 10 | **0.8016** |
+
+Within 20%, about 2σ at this sample count, and in the **under**-predicting direction. The
+literature's "significant over-estimation" **does not reproduce** at this time constant, so a
+frequency-aware fix is **not justified by measurement** on a circuit we can build. The warning
+buys the honest statement that the number is degrading — not a claim about how far. Larger
+`τ/T` is untested; the measurement needs ~15 time constants of settling, so its cost scales
+with `τ`.
+
+⚠ **It took three attempts to measure**, each a case of reading a number before showing the
+*measurement* was in the regime it assumes: a window of 2–4 time constants read the slow
+mode's decay as diffusion; an impulse test could not resolve a 1e-11 time shift; and one noise
+amplitude for both circuits put a 2.5 V jump per step on an orbit of amplitude 2, because the
+slow node's capacitance is 6.7e-5 F against the core's 1.0.
+
+⚠ **The quadratic rung would not fix this**, which is the obvious hope. Two *independent*
+approximations: the **linear isochron** one is in the perturbation's **amplitude** (isochrons
+treated as flat hyperplanes; the quadratic rung adds their curvature), the
+**instantaneous-response** one is in the **dynamics** (the bandwidth between injection point
+and core). Slow nodes are the second. Noise is small by construction, so the linear term
+dominates it by definition — the quadratic rung would earn its cost on *large* perturbations:
+injection locking, big supply or substrate interferers.
 
 ### Q — one number that subsumes four diagnostics
 
@@ -283,10 +321,11 @@ offsets, which is where phase noise lives.
 ## Open, and stated as open
 
 - **Oscillator AM/PM magnitude** — ratio right, absolute rows ~1e-12, cause unestablished.
-- **A2's slow-node validity boundary** — detected and warned, not fixed. The fix is a
-  frequency-aware PPV, which is this same bordered system at `ω_s ≠ 0`; measured, the offset
-  puts a floor under the conditioning at ~`ω_s/f₀`, worth ~1–3 orders in the regime of
-  interest.
+- **A2's slow-node validity boundary** — detected and warned, and the fix is **not justified
+  by measurement**: gated at τ/T = 10, the classical PPV is within 20% of a nonlinear Monte
+  Carlo (0.8016 against a 0.9965 control). Larger τ/T untested.
+- **Near-carrier oscillator noise** — `Φ(T) − I` is singular there. The published removal is
+  not built; the symptom is a flat or wrong-slope PSD near the carrier.
 - **Cyclostationary sources** — refused, not supported.
 - **Trapezoidal over long runs** — it has no numerical *damping*, which is a measured result
   and stands; but a constant-bias error growing as `t²` eventually drags the amplitude error

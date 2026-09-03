@@ -245,7 +245,26 @@ else, so a second multiplier approaching 1 takes the conditioning with it:
 estimates `|λ₂|` by deflated power iteration (recovered to six digits) and **warns**, saying
 the result is an upper bound — because no residual can report this.
 
-**The fix is a frequency-aware PPV, and it is A1's operator.** FW-PPV is this same bordered
+⚠ **GATED 2026-09-03, AND THE RESULT IS NEGATIVE — the fix is not justified.** Monte Carlo on
+the full nonlinear circuit (200 realisations, 150 periods, phase from zero-crossing timing, no
+PPV in the measurement): control **0.9965**, slow node at τ/T = 10 **0.8016**. Within 20%,
+~2σ, and **under**-predicting. The literature's "significant over-estimation" does not
+reproduce at this time constant. Larger τ/T is untested — the measurement needs ~15 time
+constants of settling, so its cost scales with τ.
+
+⚠ **It took three attempts, all the same mistake:** a window of 2–4 time constants read the
+slow mode's *decay* as diffusion; an impulse test could not resolve a 1e-11 time shift; and one
+noise amplitude for both circuits put a **2.5 V jump per step** on an orbit of amplitude 2.
+Each time a number was read before the *measurement* was shown to be in the regime it assumes.
+That is a §D shape about the instrument rather than the quantity.
+
+⚠ **And the quadratic isochron rung would not fix it either** — two independent
+approximations. Linear-isochron is in the perturbation's **amplitude** (flat hyperplanes;
+curvature is what quadratic adds); instantaneous-response is in the **dynamics**. Slow nodes
+are the second, and noise is small by construction, so quadratic would earn its cost on *large*
+perturbations — injection locking, big interferers — not on phase noise.
+
+**The fix, if it is ever wanted, is a frequency-aware PPV, and it is A1's operator.** FW-PPV is this same bordered
 system at nonzero `ω_s`: "if we make the small frequency `ω_s = 0`, it is the augmented PPV
 extraction equation … the previous PPV extraction methods give us the transfer function at
 `ω_s = 0`." **The classical PPV is the DC point of a PAC-like solve.**
@@ -923,6 +942,33 @@ available in closed form beyond those limits — **inversely proportional to Q**
 over R = 300–800 Ω — with the authors flagging their own artefact: the first-order expression
 is **symmetric about tank resonance** and real locking ranges are not, repaired by substituting
 the free-running frequency for `ω₀`.
+
+### A7. Near-carrier oscillator noise — the singularity has a published removal
+
+⚠ **`Φ(T) − I` IS SINGULAR FOR AN OSCILLATOR, AND ITS NULL VECTOR IS THE PPV.** So a
+near-carrier noise computation is ill-conditioned *by construction* — the thing being computed
+is the thing that breaks the matrix.
+
+⚠ **THE OBSERVABLE SYMPTOM, worth recording before it is seen:** "the standard time domain
+noise analysis yields **flat PSD curves or curves with unexpected slope near the oscillation
+frequency**." Flat oscillator noise near the carrier is *that singularity* — not the physics,
+the noise models or the source definitions. It points at the right layer immediately.
+
+**The removal** replaces the output-node equation with a combination built from the null
+vector, carrying the `1/(1 − e^{jΔωT})` factor **analytically** rather than evaluating it
+numerically — the same factor measured here as vanishing at every harmonic. Result: "a
+nonsingular matrix when the frequency offset is zero". A time-domain form written for shooting
+exists. **Not built.**
+
+Contrast with the other route already recorded, which gets *closer* to the singularity rather
+than removing it. This one is the more direct, and it is built from a vector we already
+compute.
+
+⚠ **A scope split for the PLL work:** integer-N is tractable by PSS methods; **fractional-N
+with a Δ-Σ divider is outside both shooting and HB** — its period is "so large that the
+shooting or the harmonic balance methods are inapplicable" — and must go time-domain, where a
+measured numerical noise floor in commercial simulators becomes the binding constraint. Worth
+saying before fractional-N is promised.
 
 ### A5. Envelope-following — last
 
