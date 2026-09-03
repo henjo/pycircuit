@@ -1801,8 +1801,39 @@ there saltation is **mandatory and carries the feedback**.
 | pycircuit switch models | **defined** | not needed — C5, falsified correctly |
 | Verilog PFD / integer divider | **undefined** | **mandatory** |
 
-⚠ **AND THE REASON IS STRUCTURAL, NOT ACCURACY.** Along a *locked* orbit the reference and
-divided edges coincide, the PFD never changes state, and "the analog part of the circuit
+⚠⚠ **THE RATIONALE BELOW IS RIGHT ABOUT SALTATION AND WRONG ABOUT WHY — corrected 2026-09-03
+from Andreas's domain knowledge plus a measurement.** It rests on the locked orbit sitting at
+*exactly zero* phase error, where the PFD never switches. That is the **dead zone**: the interval
+in edge *timing* (not voltage, and only picoseconds wide) in which the PFD cannot resolve the
+difference, the pulses are too narrow to switch the charge pump fully, `K_d` collapses to zero
+and the loop gain with it.
+
+⚠ **But real designs deliberately keep the operating point OUT of it** — a fixed DC current
+into the CP output, or an offset between the switched up and down sources, moves the static
+phase error away from zero. So along the locked orbit of a *shipped* PLL the PFD **does** switch,
+every cycle, with finite pulse widths, and the loop is **not** open in the variational sense.
+
+⚠ **MEASURED, and the pathology does not reproduce.** Two van der Pol oscillators, 1% detuned,
+coupled through a narrow zero-gain notch — `|λ| = [1.000129, 0.983971, 0.166, 0.138]`, **one**
+unit multiplier, indistinguishable from the same pair under a linear coupling
+(`[1, 0.981052, 0.166, 0.136]`). The extra unit multiplier needs the orbit to *live inside* the
+notch, which is the unmitigated-dead-zone case — a broken design, not the normal one.
+
+⚠⚠ **SO SALTATION IS STILL MANDATORY, FOR A DIFFERENT REASON: the PFD switches twice per cycle
+at instants where the field is discontinuous, and the monodromy must carry the jump conditions
+there.** Not "the loop looks open" but "the trajectory crosses a discontinuity". The original
+reason would have sent this work chasing a fix for a pathology that only appears in a loop
+nobody ships — and would have declared success on a well-designed loop where the extra
+multiplier was never going to appear.
+
+⚠ **What the dead zone IS still worth to this roadmap:** an unmitigated loop, or one whose
+offset is too small, genuinely does sit where the linearisation describes a disconnected
+circuit. That is a real failure mode to be able to *detect* — and `ppv()`'s
+`PPV_SECOND_MULTIPLIER_WARN` would fire on it, which is the right behaviour arrived at for an
+unrelated reason.
+
+⚠ **The literature's original claim, kept for the record.** Along a *locked* orbit the reference
+and divided edges coincide, the PFD never changes state, and "the analog part of the circuit
 behaves as if it were not connected to the digital one; the loop … is thus **OPEN**." The
 plain variational model then has a null block and **at least two unit multipliers** —
 describing an open loop while the circuit runs a closed one. Omitting saltation there does not
