@@ -985,7 +985,7 @@ over R = 300–800 Ω — with the authors flagging their own artefact: the firs
 is **symmetric about tank resonance** and real locking ranges are not, repaired by substituting
 the free-running frequency for `ω₀`.
 
-### A7. Near-carrier oscillator noise — the singularity has a published removal
+### A7. Near-carrier oscillator noise — ⚠ BUILT 2026-09-03
 
 ⚠ **`Φ(T) − I` IS SINGULAR FOR AN OSCILLATOR, AND ITS NULL VECTOR IS THE PPV.** So a
 near-carrier noise computation is ill-conditioned *by construction* — the thing being computed
@@ -996,15 +996,42 @@ noise analysis yields **flat PSD curves or curves with unexpected slope near the
 frequency**." Flat oscillator noise near the carrier is *that singularity* — not the physics,
 the noise models or the source definitions. It points at the right layer immediately.
 
-**The removal** replaces the output-node equation with a combination built from the null
-vector, carrying the `1/(1 − e^{jΔωT})` factor **analytically** rather than evaluating it
-numerically — the same factor measured here as vanishing at every harmonic. Result: "a
-nonsingular matrix when the frequency offset is zero". A time-domain form written for shooting
-exists. **Not built.**
+⚠ **BUILT — and derived here rather than transcribed**, which the ledger argues for. With `u`,
+`v` the right and left null vectors of `I − M` (the tangent and the PPV, both of which `ppv()`
+already returns):
 
-Contrast with the other route already recorded, which gets *closer* to the singularity rather
-than removing it. This one is the more direct, and it is built from a vector we already
-compute.
+    [ I − αM   u ] [ w ]   [ b ]
+    [   vᵀ     0 ] [ s ] = [ 0 ]
+
+Since `vᵀ(I − αM) = (1 − α)vᵀ` and `vᵀw = 0`, the border variable is **bounded**,
+`s = (vᵀb)/(vᵀu)`, with no `1/ε` in it; and since `(I − αM)u = (1 − α)u`, the solution is
+`y = w + s·u/(1 − α)` — the vanishing factor in **closed form** rather than inverted
+numerically.
+
+| offset/f₀ | σ_min plain | σ_min **bordered** |
+|---|---|---|
+| 3e-01 | 5.68e-01 | 1.17e-01 |
+| 1e-03 | 2.61e-03 | **2.04e-01** |
+| 1e-06 | 2.61e-06 | **2.04e-01** |
+| 1e-09 | 2.61e-09 | **2.04e-01** |
+
+The plain operator tracks the offset over **nine decades**; the bordered one is flat. The two
+agree to **5.7e-12** where the plain solve is still trustworthy, and their disagreement grows
+as `1/Δf` — that is the *plain* solve losing digits.
+
+⚠ **THE TEST ASSERTS BOTH HALVES.** Flat conditioning alone would be satisfied by an operator
+that had stopped solving the right problem, so agreement with the plain solve *where the plain
+solve can be believed* is what says it is still the same equation. And `|y|` growing 10× per
+decade closer to the harmonic says the pole was removed from the **conditioning**, not from the
+**answer**.
+
+Wired into `adjoint_sideband_row` for autonomous circuits only — a driven circuit has no pole,
+and the plain solve is correct and cheaper there. `HARMONIC_GUARD` drops from 1e-6 to
+**1e-12**: it used to be the conditioning floor being accepted and now excludes only what has
+no finite answer. Transposed variant included, borders swapped.
+
+⚠ **It still refuses an EXACT harmonic**, and should: `1/(1 − α)` is then a division by zero
+and the physical response is unbounded.
 
 ⚠ **A scope split for the PLL work:** integer-N is tractable by PSS methods; **fractional-N
 with a Δ-Σ divider is outside both shooting and HB** — its period is "so large that the
