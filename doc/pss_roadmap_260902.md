@@ -44,6 +44,20 @@ from seven sides**, and they enter through structurally different doors:
 **(g) is why the other six are not a coincidence:** each of (a)–(f) is a sensitivity to slow
 amplitude decay, and (g) says that is precisely what `λ₂` measures.
 
+⚠⚠⚠ **AND (g)'s NAME IS ONLY RIGHT WHILE THE OSCILLATOR'S AMPLITUDE MODE IS THE SLOWEST
+NON-UNIT MODE.** A parasitic with `τ_p/T > Q_osc` simply **is** the second multiplier — by
+definition, not by error — and then `Q = −1/log|λ₂|` reports **the parasitic's decay time in
+periods** under the name `Q`. MEASURED on a `Q = 16` oscillator: at `τ_p/T` = 32 and 100, `λ₂`
+is the parasitic and `Q` returns 32 and 100.
+
+⚠ **The number is right and its NAME is wrong**, which is why nothing misbehaves — every
+residual stays clean and the value is well converged. **A DCO's gated capacitor sits at
+`τ_p/T ≈ 10⁴`, permanently in that regime**, so on exactly the circuits a hierarchical DCO
+method exists for, a reported `Q` would be the gated cap's RC in periods. That connects the DCO
+thread to the `Q` identity. Read `Q` as *"cycles for the **slowest non-unit mode** to decay by
+1/e"*, which is what it computes; it is the *oscillator's* `Q` only when that mode is the
+oscillator's. Everywhere else in this record the two have been used interchangeably.
+
 ⚠ **AND THE FIELD HAS NOT ABSORBED (g).** A citation-forward search on the anchors:
 `Q = log(threshold)/log|λ₂|` has been **cited once, ever**. The shooting-methods literature has
 essentially stopped — **9 citations of Telichevesky 1995 since 2021**, most from other fields —

@@ -2181,7 +2181,14 @@ class PSS(Analysis):
     ## How many deflated power iterations estimate the second multiplier.
     ## Convergence is at |lambda_3|/|lambda_2|, which is fast in the case
     ## that matters -- a lone slow node leaves everything below it tiny.
+    ## ⚠ RETIRED 2026-09-03, kept as a name so the history reads.  The
+    ## deflated power iteration this sized converged at
+    ## `|lambda_3|/|lambda_2|` and lost three digits at a ratio of 1.065;
+    ## Arnoldi replaced it at machine precision and fewer matvecs.
     PPV_DEFLATION_ITERS = 30
+    ## Arnoldi basis size for the second-multiplier estimate.  Exact at
+    ## `k = n`; above that it is a truncation and `lam2` is a lower bound.
+    PPV_RITZ_BASIS = 12
     ## Above this, the bordered extraction is losing digits AND the phase
     ## equation's instantaneous-response assumption is in doubt.
     PPV_SECOND_MULTIPLIER_WARN = 0.9
@@ -2504,24 +2511,71 @@ class PSS(Analysis):
         ## core's 1.0.  Each time the number was read before the
         ## MEASUREMENT was shown to be in the regime it assumes.
         ##
-        ## Deflated power iteration, using the eigenvectors already in
-        ## hand: `u` spans the unit mode and `v` is its left partner, so
-        ## `w -> M w - (v.Mw / v.u) u` removes it exactly.
+        ## ⚠ ARNOLDI RITZ VALUES, NOT A DEFLATED POWER ITERATION -- and the
+        ## replacement is BOTH more accurate and cheaper, which is rare
+        ## enough to state plainly.  Power iteration converges at
+        ## `|lambda_3|/|lambda_2|`, so it fails exactly where a parasitic
+        ## multiplier crowds the oscillatory one.  Arnoldi does not care
+        ## about that ratio.  MEASURED on van der Pol at `Q = 16` with one
+        ## parasitic RC swept through it:
+        ##
+        ##     tau_p/T   lam2/lam3   POWER err   RITZ err
+        ##       1        2.554      3.53e-14    0
+        ##       4        1.206      1.52e-06    1.11e-15
+        ##       8        1.065      1.41e-03    0
+        ##      16        1.000      1.10e-05    2.22e-16
+        ##      32        1.032      4.61e-03    2.22e-16
+        ##     100        1.054      2.48e-03    2.22e-16
+        ##
+        ## Machine precision everywhere INCLUDING at exact degeneracy,
+        ## against a power iteration losing three digits at a ratio of
+        ## 1.065 -- and at `k` matvecs rather than
+        ## `PPV_DEFLATION_ITERS = 30`.
+        ##
+        ## ⚠ THE ROUTE IS GARCIA, ROMERO & ACHA (IEEE Trans. Power
+        ## Systems 37(1), 2022): Ritz values of `I - M` map back as
+        ## `lambda = 1 - theta`.  They take `H` from the GMRES that
+        ## already solved the Newton correction; here it is a small
+        ## dedicated Arnoldi, because this call has no GMRES of its own.
+        ##
+        ## ⚠ EXACT AT `k = n` AND A TRUNCATION OTHERWISE.  The cap keeps a
+        ## large circuit from paying `n` matvecs for a diagnostic; on a
+        ## truncated basis a mode outside the Krylov space is missed, so
+        ## `lam2` is a LOWER bound there and the warning below can only
+        ## under-fire.  Sorted by real part, not magnitude, because an
+        ## amplitude mode is real and positive while a complex pair of
+        ## larger modulus would be an oscillation about the orbit.
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
         lam2 = 0.0
-        if abs(vu) > 1e-300:
-            rng = np.random.default_rng(12345)
-            w = rng.standard_normal(n)
-            for _k in range(self.PPV_DEFLATION_ITERS):
-                w = w - (float(v @ w) / vu) * u
-                nw = float(np.linalg.norm(w))
-                if nw < 1e-300:
+        kk = int(min(n, self.PPV_RITZ_BASIS))
+        if kk >= 2:
+            ## ⚠ EVERY LOCAL HERE IS UNDERSCORED ON PURPOSE.  The first
+            ## version of this block used `q` for the Arnoldi start
+            ## vector, silently overwriting `C(0) xdot(0)` -- which is
+            ## returned as `info['q']` and consumed by two tests.  The
+            ## suite caught it as a shape mismatch three frames away.
+            _rng = np.random.default_rng(12345)
+            _q0 = _rng.standard_normal(n)
+            _q0 = _q0 / np.linalg.norm(_q0)
+            _Qb = [_q0]
+            _H = np.zeros((kk + 1, kk))
+            for _j in range(kk):
+                _wj = _Qb[_j] - np.asarray(self._monodromy_matvec(
+                    fp.opening, fp.steps, _Qb[_j]))
+                for _i in range(_j + 1):
+                    _H[_i, _j] = float(_Qb[_i] @ _wj)
+                    _wj = _wj - _H[_i, _j] * _Qb[_i]
+                _H[_j + 1, _j] = float(np.linalg.norm(_wj))
+                if _H[_j + 1, _j] < 1e-13:
+                    kk = _j + 1
                     break
-                w = w / nw
-                Mw = np.asarray(self._monodromy_matvec(
-                    fp.opening, fp.steps, w))
-                lam2 = float(np.linalg.norm(Mw))
-                w = Mw
+                _Qb.append(_wj / _H[_j + 1, _j])
+            theta = np.linalg.eigvals(_H[:kk, :kk])
+            lams = 1.0 - theta
+            ## drop the unit root the border already accounts for
+            keep = np.real(lams)[np.abs(lams - 1.0) > 1e-6]
+            if keep.size:
+                lam2 = float(max(np.max(keep), 0.0))
         if lam2 > self.PPV_SECOND_MULTIPLIER_WARN:
             warnings.warn(
                 'PSS.ppv: a SECOND Floquet multiplier sits at %.6f, near '
@@ -2551,8 +2605,26 @@ class PSS(Analysis):
         ## vocabularies for one thing -- which is why the same circuits
         ## defeat the phase row, the eigen-split, the probe's continuation
         ## and the PPV's instantaneous-response assumption.  Not four
-        ## coincidences.  It costs nothing here: the deflated power
-        ## iteration above already produced `|lambda_2|`.
+        ## coincidences.  It costs nothing here: the Arnoldi above already
+        ## produced `|lambda_2|`.
+        ##
+        ## ⚠⚠ AND ITS NAME IS ONLY RIGHT WHILE THE OSCILLATOR'S AMPLITUDE
+        ## MODE IS THE SLOWEST NON-UNIT MODE.  A parasitic with
+        ## `tau_p/T > Q_osc` simply IS the second multiplier -- by
+        ## definition, not by error -- and then this reports THE
+        ## PARASITIC'S DECAY TIME IN PERIODS under the name `Q`.  MEASURED:
+        ## at `tau_p/T` = 32 and 100 on a `Q = 16` oscillator, `lam2` is
+        ## the parasitic and `Q` returns 32 and 100.
+        ##
+        ## ⚠ THE NUMBER IS RIGHT AND ITS NAME IS WRONG, which is why
+        ## nothing misbehaves: every residual stays clean and the value is
+        ## well converged.  A DCO's gated capacitor sits at
+        ## `tau_p/T ~ 1e4`, i.e. permanently in that regime, so on exactly
+        ## the circuits a hierarchical DCO method exists for, a reported
+        ## `Q` would be the gated cap's RC in periods.  Read `Q` as
+        ## "cycles for the SLOWEST NON-UNIT MODE to decay by 1/e", which is
+        ## what it computes; it is the oscillator's Q only when that mode
+        ## is the oscillator's.
         ##
         ## Reported for a `1/e` threshold, so `Q` is cycles-to-1/e.
         ##
