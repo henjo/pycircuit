@@ -756,6 +756,13 @@ one destroys. Now a test.
 
 ### A4e. Oscillator phase noise — ⚠ CLOSED FORM BUILT 2026-09-03
 
+⚠⚠ **OPEN DEFECT 2026-09-03: `c`'s ABSOLUTE SCALE IS UNDER SUSPICION OF ~2×.** The Monte
+Carlo that validated it injects `CY/h`; the independent **kT/C** gate on A4c establishes the
+physical injection as `CY/2h`. And two MC routes to the same `c` differ by **2.31×**
+(zero-crossing over 150 periods 1.596e-07, `Var(v·δ)` over one period 6.898e-08) — **not
+explained**, and 2.31 ≠ 2.0, so neither can be assumed to be the other. Shape results are
+scale-independent and stand; the level does not. **Do not halve anything until this resolves.**
+
 ⚠ **BUILT** — `PAC.diffusion_constant(pss)`, `PAC.lorentzian(...)`,
 `PAC.oscillator_spectrum(pss, offsets, output, harmonic)`.
 

@@ -310,9 +310,29 @@ known, the spectrum is available at any frequency. Which also means it never mee
 near-carrier singularity a swept small-signal computation would, and never meets the 1/f
 sweep-grid trap: there is no sweep to place a point on.
 
+⚠⚠ **THE ABSOLUTE SCALE OF `c` IS UNVERIFIED AND UNDER SUSPICION OF A FACTOR OF ~2.**
+Read this before quoting a level from `oscillator_spectrum`.
+
+`c` was validated against a Monte Carlo of the full nonlinear circuit at ratio 0.9965. That
+Monte Carlo injects `Var(i) = CY/h` per step. The **independent kT/C gate** on `covariance()` —
+exact, and external to both — establishes the physical injection as **`CY/2h`**. So the Monte
+Carlo that validated `c` appears to carry **twice** the physical noise power, and `c` with it.
+
+⚠ **And two Monte Carlo routes to the same `c` disagree by 2.31×** — zero-crossing timing over
+150 periods gives 1.596e-07, `Var(v·δ)` over one period gives 6.898e-08, same circuit, same
+injection. **That gap is not explained.** Van der Pol's λ₂ = 8.6e-04 decays within a period, so
+orbital contamination would push the one-period estimate the *other* way.
+
+⚠ **Do not "fix" this by halving anything** until the 2.31× is resolved: 2.0 and 2.31 are not
+the same discrepancy, and matching one would bury the other.
+
+**What stands regardless:** everything shape-like below is independent of `c`'s scale — total
+power conservation, the `1/f²` skirt, the `20·log₁₀(i)` harmonic scaling, the peak-to-half-width
+relation. Only the absolute level is in question.
+
 | check | result |
 |---|---|
-| `c` vs the A2 gate's Monte Carlo measurement | 1.5903e-07 vs **1.5959e-07** (0.35%) |
+| `c` vs the A2 gate's Monte Carlo — ⚠ **see above** | 1.5903e-07 vs 1.5959e-07 (0.35%) |
 | `∫ S_i df` over the implemented function | **1.000000**, every harmonic and `c` |
 | peak and half-width | analytic to 1e-12 |
 | far skirt | **4.00× per doubling** = 1/f² |

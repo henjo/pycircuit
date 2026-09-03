@@ -5662,12 +5662,36 @@ class PAC(Analysis):
         number from the same PPV.  Only stationary white sources are
         supported here, which `_cy_reduced` enforces.
 
-        ⚠ ALREADY VALIDATED AGAINST A PHYSICAL MEASUREMENT.  The same
-        expression, evaluated for a single injected source, was compared
-        against the phase diffusion of the full nonlinear circuit measured
-        by Monte Carlo with zero-crossing timing: ratio 0.9965 on the
-        control.  So the scalar this spectrum is built on is not a fresh
-        claim.
+        ⚠⚠ ITS ABSOLUTE SCALE IS UNVERIFIED AND UNDER SUSPICION OF A
+        FACTOR OF ABOUT TWO.  Read this before quoting a number from it.
+
+        It was validated against a Monte Carlo of the full nonlinear
+        circuit (zero-crossing timing, 150 periods) at ratio 0.9965.  That
+        Monte Carlo injects `Var(i) = CY/h` per step.  The INDEPENDENT
+        `kT/C` gate on `covariance()` -- exact, and external to both --
+        establishes that the physical injection is `CY/2h`.  So the Monte
+        Carlo that validated this constant appears to carry TWICE the
+        physical noise power, and this constant with it.
+
+        ⚠ AND TWO MONTE CARLO ROUTES TO THE SAME `c` DISAGREE BY 2.31x:
+        zero-crossing timing over 150 periods gives 1.596e-07, while
+        `Var(v . delta)` over one period gives 6.898e-08 on the same
+        circuit and the same injection.  That gap is NOT explained -- van
+        der Pol's second multiplier is 8.6e-04, so orbital contamination
+        decays within one period and would push the one-period estimate
+        the other way.  Something in one of the two measurements is wrong
+        and it is not yet known which.
+
+        ⚠ WHAT STANDS REGARDLESS: everything SHAPE-like in
+        `oscillator_spectrum` is independent of `c`'s scale -- total power
+        conservation, the `1/f^2` skirt, the `20 log10(i)` harmonic
+        scaling, the peak-to-half-width relation.  Those were checked
+        against the implemented functions and do not move.  What is in
+        question is only the absolute level.
+
+        ⚠ DO NOT "FIX" THIS BY HALVING ANYTHING until the 2.31x is
+        resolved: a 2.0 and a 2.31 are not the same discrepancy, and
+        matching one would bury the other.
         """
         self._check_circuit(pss)
         if not getattr(pss, 'autonomous', False):
