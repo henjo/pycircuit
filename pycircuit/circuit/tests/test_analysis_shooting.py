@@ -6862,3 +6862,113 @@ def test_the_reported_Q_amplifies_its_own_lambda2_error_by_Q():
         assert abs(q_f / Q - 1.0) < 0.02, \
             'mu = 1/(2 pi Q) gave Q = %.4f against %.4f requested; the ' \
             'fixture recipe no longer holds on this solver' % (q_f, Q)
+
+
+class _StateDependentNoise(IS):
+    """A source whose `CY` reads `x` — multiplicative noise, `G = G(x)`.
+
+    ⚠ NOTHING IN THE TREE DOES THIS, which is why it exists here. Every
+    shipped source has a constant `noisePSD`, and both compact MOS models
+    have `CY` identically ZERO (no noise model at all).
+    """
+
+    def CY(self, x, w, epar=None):
+        p = self.iparv.noisePSD * (1.0 + 0.5 * float(np.asarray(x).ravel()[0]))
+        return self.toolkit.array([[p, -p], [-p, p]])
+
+
+def test_multiplicative_noise_is_refused_on_every_path():
+    """⚠⚠ ONE GUARD COVERS TWO UNRELATED THEORETICAL HAZARDS.
+
+    `_cy_reduced` samples `CY` at three states on the orbit and refuses a
+    bias-dependent one. It was built for CYCLOSTATIONARITY: a
+    bias-dependent `CY` correlates the sidebands through the window
+    Fourier coefficients, so they stop adding in power and the stationary
+    sum would be the wrong model.
+
+    ⚠ IT ALSO CLOSES THE ITÔ/STRATONOVICH AMBIGUITY, WHICH IS A DIFFERENT
+    QUESTION ENTIRELY. Demir ch.2: the Itô SDE `dX = f dt + G dW` and the
+    Stratonovich one agree *"as long as `G(t,x) = G(t)` is independent of
+    `x`"*; otherwise they are **two distinct Markov processes** differing
+    *"in the systematic (drift) behavior but not in the fluctuational
+    (diffusion) behavior"*. `CY = GGᵀ`, so a state-dependent `CY` is
+    exactly a state-dependent `G` — and the guard refuses it.
+
+    ⚠ SO THE SHIPPED CODE NEVER FACES THE INTERPRETATION CHOICE. Demir's
+    own resolution is that the drift shift is *"on the order of the noise
+    source intensity"* and *"for most practical physical systems the noise
+    signals are small compared with the deterministic signals"* — a
+    small-noise assumption. We do not need to lean on it, because the case
+    where it matters raises instead.
+
+    ⚠ AND THE FIXTURE POINT IS SHARPER THAN IT LOOKS: for ADDITIVE noise
+    Itô and Stratonovich are IDENTICAL, so a suite whose sources are all
+    state-independent could not detect an interpretation error even in
+    principle. Ours are all additive. **The reason that is safe here is
+    not the fixtures — it is that the code path does not exist**, which is
+    a stronger position than an untested one and worth distinguishing.
+
+    ⚠ THE TELL, IF IT EVER ARRIVES: the drift shifts by `½G∂ₓG` and the
+    diffusion does not. A discrepancy in a MEAN but not in a VARIANCE is
+    where to look.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    cir['n'] = _StateDependentNoise('v', gnd, i=0.0, noisePSD=1e-6)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.6634, timestep=6.6634 / 240,
+                  x0=np.array([2.0, 0.0]), maxiterations=60)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    ## every noise path funnels through `_cy_reduced`, so every one refuses
+    for name, call in (
+            ('diffusion_constant', lambda: pac.diffusion_constant(pss)),
+            ('oscillator_covariance',
+             lambda: pac.oscillator_covariance(pss)),
+            ('coloured_diffusion',
+             lambda: pac.coloured_diffusion(pss, [1.0 / pss.period])),
+            ('oscillator_spectrum',
+             lambda: pac.oscillator_spectrum(pss, [1e-3], 0)),
+    ):
+        with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT CY'):
+            call()
+
+
+def test_the_compact_mos_models_have_no_noise_model_at_all():
+    """⚠ A GAP WORTH STATING: `PspMosLongChannel.CY` is IDENTICALLY ZERO.
+
+    The transcapacitance is modelled (and non-reciprocal at 32× McAndrew's
+    bound in saturation), but the noise is not modelled at all — so a MOS
+    circuit in this tree is noiseless, and every noise result above comes
+    from discrete `IS`/`VS`/`R` sources.
+
+    Pinned because it is the precondition for two separate things: any
+    real `pnoise` on a MOS circuit, and the reachability of the
+    bias-dependent-`CY` refusal above. If a noise model lands, that
+    refusal stops being unreachable and this test should fail loudly
+    rather than the change being noticed later.
+    """
+    from pycircuit.circuit import compact
+    circuit.default_toolkit = circuit.numeric
+    for name in ('PspMosLongChannel', 'PspPmosLongChannel'):
+        cls = getattr(compact, name)
+        inst = cls(*cls.terminals)
+        worst = 0.0
+        for vg in np.linspace(0.0, 1.2, 5):
+            for vd in np.linspace(0.0, 1.2, 5):
+                cy = np.asarray(inst.CY(np.array([vd, vg, 0.0, 0.0]),
+                                        2.0 * np.pi * 1e9), dtype=float)
+                worst = max(worst, float(np.max(np.abs(cy))))
+        assert worst == 0.0, \
+            '%s now has a nonzero CY (max %.3e). Good -- but the ' \
+            'bias-dependent refusal is now REACHABLE from a real device, ' \
+            'and whether that CY reads x decides whether pnoise works on ' \
+            'MOS circuits at all' % (name, worst)

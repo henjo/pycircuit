@@ -616,6 +616,29 @@ windowed-stationary decomposition is a numerical construct whose fidelity to a r
 not settled by its numerical validation — the same tension as synthesised filters versus
 physical trap states in A4d.
 
+⚠⚠ **AND THAT ONE GUARD CLOSES A SECOND, UNRELATED HAZARD: THE ITÔ/STRATONOVICH CHOICE.**
+Demir ch.2: the Itô SDE `dX = f dt + G dW` and the Stratonovich one agree *"as long as
+`G(t,x) = G(t)` is independent of `x`"*; otherwise they are **two distinct Markov processes**
+differing *"in the systematic (drift) behavior but not in the fluctuational (diffusion)
+behavior"*. `CY = GGᵀ`, so a state-dependent `CY` **is** a state-dependent `G` — and the
+cyclostationarity guard refuses it. **The shipped code never faces the interpretation choice**,
+so it need not lean on Demir's small-noise resolution (*"the noise signals are small compared
+with the deterministic signals"*). Now pinned on all four noise paths.
+
+⚠ **The fixture point is sharper than it looks: for ADDITIVE noise the two interpretations are
+IDENTICAL**, so a suite whose sources are all state-independent could not detect an
+interpretation error *even in principle*. Ours are all additive. **What makes that safe is not
+the fixtures — it is that the code path does not exist**, which is a stronger position than an
+untested one and worth distinguishing. ⚠ The tell if it ever arrives: the drift shifts by
+`½G∂ₓG` and the diffusion does not, so look for a discrepancy in a **mean** but not a variance.
+
+⚠⚠ **MEASURED GAP: `PspMosLongChannel.CY` IS IDENTICALLY ZERO.** The transcapacitance is
+modelled (non-reciprocal at 32× McAndrew's bound in saturation) and **the noise is not modelled
+at all** — so a MOS circuit here is noiseless, and every noise result in this document comes
+from discrete `IS`/`VS`/`R` sources. That is the precondition for two separate things: any real
+`pnoise` on a MOS circuit, and the *reachability* of the refusal below. Pinned, so a noise model
+landing fails loudly rather than being noticed later.
+
 ⚠ **STATIONARY SOURCES ONLY, AND IT CHECKS RATHER THAN ASSUMES.** A bias-dependent `CY`
 makes the sources cyclostationary; the windows' Fourier coefficients then correlate the
 sidebands, they stop adding in power, and the cross terms need the `R_{m,n}` construction
@@ -657,6 +680,17 @@ is what a high-Q circuit needs.
 
 Validated against silicon: a 1 GHz monolithic mixer, predicted vs measured NF over LO power
 −12…+6 dBm, *"in good agreement"*, ~**1 dB** error at low LO powers.
+
+⚠ **GENEALOGY, TWO CORRECTIONS TO THIS RECORD'S IMPLICIT CHRONOLOGY.** **Held & Kerr 1978** is
+the conversion matrix's source, and its headline is *empirical*: *"correlation of downconverted
+components of the time-varying shot noise is shown to explain the **'anomalous' noise observed
+in millimeter-wave mixers**"*, validated at 87 and 115 GHz. **Sideband correlation — the fact
+the whole cyclostationary line rests on — entered the literature as the explanation of an
+experimental anomaly, measured before it was formalised.** And **Rizzoli 1994** had a general
+**autonomous** HB noise analysis *"[overcoming] the limitations of the traditional
+frequency-conversion approach"* **six years before** Demir/Mehrotra/Roychowdhury — a different
+object (frequency-conversion, not Floquet), but this record's implicit story in which oscillator
+noise analysis begins with the PPV line is too narrow.
 
 ⚠ **CITATION HAZARD ON THE SSB RULE, because Hull & Meyer state it most loosely and theirs is
 the reference a mixer designer reaches for:**
@@ -858,7 +892,37 @@ methods a considerable advantage."*
 "shooting-Newton needs no preconditioner", and why all five Gourary papers are about HB. The
 outer Newton never sees the nonlinearity because time-stepping already continued through it.
 
-⚠⚠ **AND THE COST, WHICH THIS RECORD HAD FILED AS FREE:** *"the advantage that shooting methods
+⚠⚠⚠ **AND A SECOND, WORSE COST — MEASURED: PARALLEL SHOOTING BIASES `λ₂`, WHICH `Q` THEN
+AMPLIFIES.** Kundert ch.4: *"at each step a high-order integration method needs the **history**
+of the solution over several past time-steps. **This history cannot extend beyond a shooting
+interval boundary.** Thus it is necessary to build up to higher order integration methods by
+**taking several steps of a low order method at the beginning of each interval**."*
+
+Low-order steps are what biases `λ₂`, so parallel shooting **injects that bias at every
+subinterval boundary**, into the one quantity §0 says everything is bounded by. Measured
+(trapezoidal throughout, backward Euler at each boundary, 400 pts/period):
+
+| `Q` | subintervals | low-order fraction | rel err `λ₂` | `Q` error | `Q ×` λ₂err |
+|---|---|---|---|---|---|
+| 3.18 | 0 (pure trap) | 0% | +2.9e-05 | +0.0% | +0.0% |
+| 3.18 | 20 | 5% | −1.34e-03 | −0.4% | −0.4% |
+| 3.18 | 100 | 25% | −7.01e-03 | −2.2% | −2.2% |
+| 15.92 | 20 | 5% | −2.22e-03 | −3.4% | −3.5% |
+| 15.92 | 100 | 25% | −1.11e-02 | **−15.1%** | −17.7% |
+
+Three things: the bias is **negative and linear** in the low-order fraction (≈ −0.028 × fraction
+at `Q = 3.18`); **the amplification law holds through it** (predicted vs measured agree at −0.4%
+and −2.2%, departing at −15.1% vs −17.7% where the first-order expansion gives out); and ⚠ **the
+`λ₂` bias itself grows with `Q`** — −7.0e-3 at `Q = 3.18` against −1.11e-2 at `Q = 15.92` for the
+same 100 subintervals — so the `Q` error grows **superlinearly**: 6.9× for a 5× in `Q`.
+
+⚠ **So parallel shooting has THREE costs, not one: memory, the lost nonlinearity-hiding, and a
+systematic `λ₂` bias amplified by `Q`.** The parallel-in-time and GPU-shooting papers filed here
+as "parallelisation, not correctness" were **mis-filed** — they are parallelisation *at a
+correctness price that scales with the thing you care about most*. Not extrapolated past
+`Q = 16`; the trend is superlinear and the direction unambiguous.
+
+⚠⚠ **AND THE COST KUNDERT STATES DIRECTLY:** *"the advantage that shooting methods
 enjoy by hiding nonlinear behavior from the outer loop is **often lost with parallel shooting
 methods**."* The parallel-in-time and GPU-shooting papers are filed here as "parallelisation,
 not correctness". **From the method's own author, the trade is not free: multiple/parallel
