@@ -2555,6 +2555,36 @@ class PSS(Analysis):
         ## iteration above already produced `|lambda_2|`.
         ##
         ## Reported for a `1/e` threshold, so `Q` is cycles-to-1/e.
+        ##
+        ## ⚠⚠ AND THIS LINE IS WANG & ROYCHOWDHURY'S IDENTITY
+        ## `Q = log(threshold)/log|lambda_2|`, which does double duty and
+        ## was shipped before either use was noticed.  It is what makes
+        ## "bounded by Q" and "bounded by lambda_2" the SAME SENTENCE --
+        ## the organising fact of this whole area, since a designer's
+        ## objective (raise Q) IS the numerics' failure mode (lambda_2 ->
+        ## 1).  It is also an ERROR AMPLIFIER:
+        ##
+        ##     (dQ/Q) / (dlambda_2/lambda_2)  =  -1/ln(lambda_2)  =  Q
+        ##
+        ## ⚠ SO THE RELATIVE ERROR IN `Q` IS `Q` TIMES THE RELATIVE ERROR
+        ## IN `lambda_2`, and a caller reading `Q` at high Q is reading a
+        ## quantity far less accurate than the multiplier behind it.
+        ## MEASURED end to end on van der Pol tuned by `mu = 1/(2 pi Q)`,
+        ## against the finest grid:
+        ##
+        ##     Q      npts   rel err lam2   rel err Q   ratio
+        ##      3.18   120    1.04e-03      3.31e-03      3.2
+        ##     15.92   120    5.75e-04      9.23e-03     16.1
+        ##     63.66   120    4.89e-04      3.21e-02     65.7
+        ##     63.66   480    7.56e-06      4.81e-04     63.7
+        ##
+        ## ⚠ THAT IS A RESOLUTION REQUIREMENT SCALING WITH `Q`, NOT A
+        ## FIXED ACCURACY: 120 points/period gives `Q` to 0.3% at Q = 3
+        ## and only 3.2% at Q = 64.  Payable here because Gear-2's
+        ## `lambda_2` converges at better than second order (~8x per
+        ## doubling); a method that BIASES `lambda_2` at fixed order has
+        ## no such escape, and backward Euler's 5.6e-2 bias would become
+        ## 85% in `Q` at Q = 100.
         Q = (-1.0 / np.log(lam2) if 0.0 < lam2 < 1.0 else float('inf'))
         info = {'border_residual': y,
                 'tangent_border_residual': yf,

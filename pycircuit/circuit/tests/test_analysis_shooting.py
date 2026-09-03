@@ -6680,3 +6680,96 @@ def test_the_power_bound_refuses_when_its_own_derivation_does_not_apply():
     pac2 = PAC(cir2, toolkit=circuit.numeric)
     with pytest.raises(ValueError, match='RISES with offset'):
         pac2.phase_psd(pss2, offs)
+
+
+def _vdp_at_Q(Q, npts=480, mu=None):
+    """A van der Pol tuned to a target `Q` — `μ = 1/(2πQ)`.
+
+    ⚠ THE RECIPE IS MEASURED, NOT ASSUMED. `λ₂ ≈ exp(−μT)` with `T ≈ 2π`
+    gives `Q = 1/(μT) = 1/(2πμ)`, and against this solver: predicted
+    3.183/7.958/15.92/63.66 against measured 3.182/7.959/15.92/63.67 at
+    `μ` = 0.05/0.02/0.01/0.0025 — four digits.
+
+    ⚠ THE PERIOD SEED MATTERS AT SMALL `μ`. `2π/√(1−μ²/4)` and
+    `reltol = 1e-12`, or the shooting solve becomes the thing under test
+    rather than the instrument measuring it.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q) if mu is None else mu
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                  maxiterations=150)
+    assert pss.converged, 'mu = %r did not converge' % mu
+    return cir, pss, PAC(cir, toolkit=circuit.numeric)
+
+
+def test_the_reported_Q_amplifies_its_own_lambda2_error_by_Q():
+    """⚠⚠ `info['Q']` CARRIES A `Q`-FOLD AMPLIFIED ERROR, AND NOTHING SAID SO.
+
+    `Q = −1/ln λ₂` differentiates to
+
+        (dQ/Q) / (dλ₂/λ₂)  =  −1/ln λ₂  =  Q
+
+    so **the relative error in `Q` is `Q` times the relative error in
+    `λ₂`**. That makes the identity behind §0 of the roadmap do double
+    duty: it is what ties the seven `λ₂` failure modes together, AND it
+    multiplies every `λ₂` error by `Q` on the way out.
+
+    ⚠ MEASURED END TO END IN THIS SOLVER, not just in the algebra —
+    `λ₂` against the finest grid, and the ratio of the two relative
+    errors:
+
+        Q_target   npts   rel err λ₂   rel err Q    ratio
+          3.18      120    1.04e-03     3.31e-03      3.2
+         15.92      120    5.75e-04     9.23e-03     16.1
+         63.66      120    4.89e-04     3.21e-02     65.7
+         63.66      240    6.29e-05     4.02e-03     63.9
+         63.66      480    7.56e-06     4.81e-04     63.7
+
+    ⚠ SO THE EXPOSURE IS A RESOLUTION REQUIREMENT THAT SCALES WITH `Q`,
+    not a fixed accuracy. 120 points/period gives `Q` to 0.3% at `Q = 3`
+    and to only 3.2% at `Q = 64`; to report `Q` to 1% at `Q = 100` needs
+    `λ₂` to 1e-4 relative, and at `Q = 1000` to 1e-5.
+
+    ⚠ AND THE GOOD NEWS IS THAT IT IS A RESOLUTION PROBLEM RATHER THAN A
+    BIAS. Gear-2's `λ₂` converges here at better than second order
+    (4.89e-04 → 6.29e-05 → 7.56e-06, ~8× per doubling), so the requirement
+    is payable. A method that biased `λ₂` at fixed order — backward Euler
+    does — would not have that escape, and the amplification would turn a
+    5.6e-2 bias into 85% at `Q = 100`.
+
+    ⚠ THIS TEST DOES NOT ASSERT ACCURACY. It asserts the SENSITIVITY, so
+    that the cost of reading `Q` is pinned rather than discovered. A
+    future change that broke the identity would show up here as a ratio
+    that is no longer `Q`.
+    """
+    for Q in (3.183, 15.915, 63.662):
+        rows = []
+        for npts in (120, 480):
+            _cir, pss, _pac = _vdp_at_Q(Q, npts=npts)
+            _v, info = pss.ppv()
+            rows.append((info['second_multiplier'], info['Q']))
+        (l_c, q_c), (l_f, q_f) = rows
+        el = abs(l_c / l_f - 1.0)
+        eq = abs(q_c / q_f - 1.0)
+        assert el > 0, 'lambda2 identical at two grids; nothing to amplify'
+        ratio = eq / el
+        assert abs(ratio / q_f - 1.0) < 0.10, \
+            'at Q = %.3f the error amplification is %.2f, not Q. Either ' \
+            'info["Q"] is no longer -1/log(lambda2) or the identity ' \
+            'Q = log(threshold)/log|lambda2| has been broken' % (q_f, ratio)
+        ## and the recipe itself, so the fixture cannot drift
+        assert abs(q_f / Q - 1.0) < 0.02, \
+            'mu = 1/(2 pi Q) gave Q = %.4f against %.4f requested; the ' \
+            'fixture recipe no longer holds on this solver' % (q_f, Q)

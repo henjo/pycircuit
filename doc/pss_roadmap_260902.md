@@ -50,6 +50,53 @@ cyclostationary cost blocker's *remedy* is bounded by the same quantity (Hull & 
 construction fails because the impulse response rings), so even the escape route from a cost
 problem is door (e).
 
+⚠⚠⚠ **AND (g) IS NOT A SEVENTH DOOR — IT AMPLIFIES ALL THE OTHERS.** Differentiating
+`Q = −1/ln λ₂`:
+
+```
+(dQ/Q) / (dλ₂/λ₂)  =  −1/ln λ₂  =  Q
+```
+
+**The relative error in `Q` is `Q` times the relative error in `λ₂`.** MEASURED end to end in
+this solver, not just in the algebra, on van der Pol tuned by the recipe below:
+
+| `Q` | npts | rel err `λ₂` | rel err `Q` | **ratio** |
+|---|---|---|---|---|
+| 3.18 | 120 | 1.04e-03 | 3.31e-03 | **3.2** |
+| 15.92 | 120 | 5.75e-04 | 9.23e-03 | **16.1** |
+| 63.66 | 120 | 4.89e-04 | 3.21e-02 | **65.7** |
+| 63.66 | 480 | 7.56e-06 | 4.81e-04 | **63.7** |
+
+⚠ **So the exposure is a RESOLUTION REQUIREMENT SCALING WITH `Q`, not a fixed accuracy.** To
+report `Q` to 1% needs `λ₂` to 1e-4 relative at `Q = 100` and 1e-5 at `Q = 1000`. **Payable
+here** — Gear-2's `λ₂` converges at better than second order (~8× per doubling) — but a method
+that *biases* `λ₂` at fixed order has no escape: backward Euler's measured **−5.6e-2** bias
+becomes **−85% in `Q` at `Q = 100`**. Now pinned by
+`test_the_reported_Q_amplifies_its_own_lambda2_error_by_Q`, which asserts the *sensitivity*
+rather than the accuracy.
+
+### The high-Q fixture recipe — `μ = 1/(2πQ)`
+
+`λ₂ ≈ exp(−μT)` with `T ≈ 2π` gives `Q = 1/(2πμ)`. **Verified on this solver to four digits:**
+predicted 3.183 / 7.958 / 15.92 / 63.66 against measured 3.182 / 7.959 / 15.92 / 63.67.
+Available as `_vdp_at_Q(Q)`.
+
+⚠ **Two costs.** The period seed must be `2π/√(1−μ²/4)` with `reltol = 1e-12`, or the shooting
+solve becomes the thing under test. And *transient* settling to 1% takes **≈ 4.6·Q periods** —
+460 at `Q = 100` — which is door (e) taxing the **test harness** rather than the circuit.
+
+⚠⚠ **THAT SECOND COST BREAKS A GATE WE ALREADY SHIP.**
+`test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has` integrates **3 periods** and
+reads the surviving tangential displacement, on the stated premise that *"the transverse
+components have died (the second multiplier is 8.6e-4 per period)"*. At `Q = 16`, `λ₂³ = 0.83`
+— **nothing has died**. The gate's *method*, not just its coverage, is `λ₂`-bound.
+
+⚠ **One gate that does NOT degrade, and why that is not reassurance.** `oscillator_covariance`'s
+`d/T` against `diffusion_constant` *improves* with Q — 1.0054 → 1.0013 → 1.000016 → 0.99967 at
+`Q` = 0.14 → 15.9. But both routes ride the **same monodromy**, so a shared `λ₂` error cancels:
+this is the shared-instrument shape (§D 0b) wearing a reassuring number. Its agreement says
+nothing about `λ₂` accuracy.
+
 **Consequence for planning:** the failures below are not a collection of unrelated sharp edges
 to be patched one at a time. Any item whose gate passes on van der Pol at `μ = 1` has been
 tested at `|λ₂| = 8.5e-4` — six orders from where a real LC oscillator sits — and has therefore
