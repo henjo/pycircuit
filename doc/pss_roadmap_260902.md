@@ -472,6 +472,25 @@ per frequency cannot carry the **correlation between frequencies separated by `k
 cyclostationary noise has and stationary noise does not — stated in the docstring rather than
 left to be discovered.
 
+⚠ **THE RECORDED BLOCKER WAS WRONG, and the real one is different in kind.** This entry said
+cyclostationary needs "the `R_{m,n}` construction … **not read, not built**", as though the
+window Fourier coefficients were exotic. They are not. The windows are **rectangular and
+non-overlapping**, so `W_{m,k}` is the Fourier series of a **boxcar** — a `sinc` times a phase,
+closed form. And the per-interval sources are taken **uncorrelated** (justified because
+`H(jω,t)` is time-invariant within each interval), so the sum is *incoherent* over intervals
+and coherent only over sidebands within one. Nothing is missing.
+
+**The actual barrier is cost**, which is a different decision to make: the source count is
+(timepoints per period) × (noisy devices) — a 500-point grid with 50 noisy devices is **25 000
+stationary sources** — and the reported analysis ran at **~14× the PSS per frequency point**
+"because all aliasing components need to be computed". Unmeasured here.
+
+⚠ **And its authors left the physics open**: "it is further necessary to discuss the
+correspondence between the actual physical phenomena of noises and this modeling". The
+windowed-stationary decomposition is a numerical construct whose fidelity to a real device is
+not settled by its numerical validation — the same tension as synthesised filters versus
+physical trap states in A4d.
+
 ⚠ **STATIONARY SOURCES ONLY, AND IT CHECKS RATHER THAN ASSUMES.** A bias-dependent `CY`
 makes the sources cyclostationary; the windows' Fourier coefficients then correlate the
 sidebands, they stop adding in power, and the cross terms need the `R_{m,n}` construction

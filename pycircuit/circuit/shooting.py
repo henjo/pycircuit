@@ -5224,6 +5224,30 @@ class PAC(Analysis):
         phase noise is a different output shape entirely -- a closed form
         in a few scalars with no frequency sweep -- and is not built.
 
+        ⚠ WHY CYCLOSTATIONARY IS NOT BUILT -- AND THE REASON RECORDED HERE
+        FIRST WAS WRONG.  This said the cross terms need "the `R_{m,n}`
+        construction from section III-B", unread, as though the window
+        Fourier coefficients were an exotic object.  They are not.  The
+        model is `c(t) = sum_m n_m(t) w_m(t)` with `w_m` a T-periodic
+        RECTANGULAR window over interval `m`, non-overlapping -- so
+        `W_{m,k}` is the Fourier series of a BOXCAR, closed form, a `sinc`
+        times a phase.  The `n_m` are taken UNCORRELATED across intervals,
+        justified because `H(jw,t)` is time-invariant within each one, so
+        the sum is INCOHERENT over `m` and coherent only over `k` within a
+        single interval.  Nothing there is missing.
+        ⚠ THE ACTUAL BARRIER IS COST, which is a different decision.  The
+        source count is (timepoints per period) x (noisy devices) -- a
+        500-point grid with 50 noisy devices is 25 000 stationary sources
+        -- and the reported noise analysis ran at ~14x the PSS PER
+        FREQUENCY POINT, "because all aliasing components need to be
+        computed".  Whether that is affordable is unmeasured here.
+        ⚠ AND ITS AUTHORS LEFT THE PHYSICS OPEN: "it is further necessary
+        to discuss the correspondence between the actual physical phenomena
+        of noises and this modeling".  The windowed-stationary
+        decomposition is a numerical construct, and its fidelity to a real
+        device is not settled by its numerical validation.
+        (Cited, not verified here; the boxcar observation is ours.)
+
         ⚠ STATIONARY SOURCES ONLY, AND IT CHECKS -- mechanism (1) above.
         Okumura's cyclostationary model windows each source to a single
         timestep, and the windows'
