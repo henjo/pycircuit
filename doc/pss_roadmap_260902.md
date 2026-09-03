@@ -504,6 +504,33 @@ reads `x`), so the refusal is unreachable there; a compact device's `CY` does re
 it exercises the `H_l` path against the stationary formula before any cyclostationary
 modelling has to be right.
 
+⚠ **AND WHEN IT IS BUILT, THE FIRST GATE IS ALREADY CHOSEN, AND IT IS EXTERNAL.**
+Roychowdhury, Long & Feldmann (1998) Fig. 1: stationary noise → mixer(×cos ω₀t) → bandpass at
+`f₀`, `BW ≪ f₀` → mixer(×cos ω₀t). A stationary-only path shifts and scales by ¼ twice and
+returns **¼** of the input power. The truth is `o(t) = i(t)·cos²(ω₀t)`, so
+`⟨o²⟩ = ⟨i²⟩·E[cos⁴] =` **⅜** — *"50% more than that predicted by the previous naïve
+analysis."* **1.5× = 1.76 dB, a number that separates**, not a shape agreement. And it satisfies
+the discipline rule the `CY/2` error taught: `E[cos⁴] = 0.375` is a two-line time-domain
+identity using **none** of the HPSD machinery it gates, so its answer cannot be influenced by
+the implementation under test. It is this problem's `kT/C`. (A 4M-sample Monte Carlo of the
+cascade gives 0.374918.) A result of ¼ names exactly what was dropped: the cyclostationary
+components' contribution to the *stationary* output, which the HPSD route reaches by 1 → 3 → 5
+nonzero HPSDs, the extra ¼ landing on the lobe at zero.
+
+⚠ **THE "FILTERING MAKES IT STATIONARY" SHORTCUT IS THREE RULES, AND THE MIDDLE ONE IS A TRAP.**
+The support-overlap test on `S_xx,i(ω) = H(−ω)H(ω + i·ω₀)S_nn,i(ω)` — checkable from the
+transfer function alone, before any noise analysis runs:
+
+| filter | bandwidth | result |
+|---|---|---|
+| low-pass | `< ω₀/2` | **stationary** (Strom & Signell) |
+| two-sided bandpass | `< ω₀/2` | `i = 0, ±2` survive — **NOT stationary** |
+| one-sided (SSB) bandpass | `< ω₀` | **stationary** (RLF98 Result 2) |
+
+A narrow two-sided bandpass is the natural thing to reach for and it does **not** license the
+cheap path: **the one-sidedness does the work, not the narrowness** — and the one-sided case
+tolerates *twice* the bandwidth. ⚠ Do not implement the shortcut from the one-line version.
+
 ### A4. Warm start — ⚠ SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
 
 De Luca, Bolcato & Schilders (2019, TCAS-I) frame our exact situation: "none of the works
