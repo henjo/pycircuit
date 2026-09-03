@@ -2541,20 +2541,33 @@ class PSS(Analysis):
         ## ⚠ EXACT AT `k = n` AND A TRUNCATION OTHERWISE.  The cap keeps a
         ## large circuit from paying `n` matvecs for a diagnostic.
         ##
-        ## ⚠⚠ AND A TRUNCATED `lam2` IS AN OVER-ESTIMATE, NOT A LOWER
-        ## BOUND -- an earlier version of this comment said the opposite
-        ## and was falsified.  An unconverged Ritz value near `lam2`
-        ## carries a component of the PHASE mode, which pulls it toward 1,
-        ## never down.  Measured on a synthetic 40x40: over-estimates in
-        ## 83% of draws at `k = 3` (median +3.5e-02), 57% at `k = 5`,
-        ## converged by `k = 8`.  ⚠ THE SIGN IS A PROPERTY OF AUTONOMY:
-        ## replacing the unit multiplier by 0.30 (a driven circuit) makes
-        ## it a lower bound in 100% of draws at every `k`.
+        ## ⚠ A TRUNCATED `lam2` IS A LOWER BOUND, so the near-unit warning
+        ## below can only UNDER-fire -- and that is Cauchy interlacing,
+        ## not an accident: `theta_j >= lambda_j(A)` for a Rayleigh-Ritz
+        ## projection, hence `1 - theta_2 <= lam2`.  MEASURED on a
+        ## synthetic 40x40 with a verified-normal `M`
+        ## (`||M^H M - M M^H||/||M||^2 = 8.9e-16`): a lower bound in
+        ## 100.0% of 200 draws at `k` = 3, 5, 8 and 12.
         ##
-        ## So the near-unit warning below OVER-fires rather than missing,
-        ## which is the safe direction for a warning -- but `Q` is then
-        ## wrong by `Q` times the error, by the amplification law.  Use
-        ## `k = n` when the number matters.
+        ## ⚠⚠ AND THIS SURVIVED A ROUND TRIP THROUGH A FALSE REFUTATION,
+        ## which is why it is written out.  An intermediate version of
+        ## this comment said "over-estimate, not a lower bound", on a
+        ## measurement whose selection rule took the largest `|1 - theta|`
+        ## after discarding `|lam - 1| < 1e-8`.  On a truncated basis that
+        ## picks the UNCONVERGED UNIT-MODE Ritz value -- below 1 but above
+        ## `lam2` -- so it measured its own filter and attributed the
+        ## result to the phase mode contaminating `lam2`.  Selecting
+        ## `theta_2` as the second-smallest Ritz value of `I - M`, which
+        ## is what interlacing is about, restores the bound.
+        ##
+        ## ⚠ THE BOUND IS FOR A NORMAL `M`.  At forced eigenvector
+        ## conditioning `cond(V) = 1e6` it fails in 100% of draws at
+        ## `k = 20` -- but by exactly `1 - lam2`, i.e. the unit mode being
+        ## SELECTED as `lam2`, a selection failure rather than a Ritz one:
+        ## at that conditioning `|lam_1 - 1|` is 1.5e-8 to 4.3e-8 and no
+        ## value-based rule separates it.  A fixed absolute tolerance is
+        ## the weak point; deflating the phase mode explicitly with `q`,
+        ## which this method already has, would sidestep it.
         ##
         ## ⚠ ONE FAILURE MODE CHECKED AND NOT LIVE HERE.  At
         ## `cond(V) >= 1e4` the `|lam - 1|` filter itself fails: the phase

@@ -7243,3 +7243,141 @@ def test_the_ppv_physical_gate_cannot_verify_the_ppv_at_high_q():
         'a random direction at m = %d should be mostly transverse ' \
         '(1/sqrt(m) = %.2f tangential); got |b/a| min %.2f' \
         % (m, 1.0 / np.sqrt(m), min(ratios))
+
+
+def _asym_lossy_osc(Q, idc=0.0, npts=480, seedT=None,
+                    arel=0.25, rrel=0.2):
+    """An oscillator with `∫v₀ dt ≠ 0`, at any `Q`.
+
+    ⚠ BOTH PERTURBATIONS SCALE WITH `μ`, and that is not cosmetic. At
+    `Q = 30`, `μ = 5.3e-3`; a fixed `rs = 0.02` contributes an effective
+    conductance **four times** the negative resistance and the oscillator
+    does not start, while a fixed `a = 0.25` swamps the van der Pol term
+    entirely. Written as `a = 0.25μ`, `rs = 0.2μ` this reduces at `μ = 1`
+    to exactly the A4d fixture, and stays a *perturbed* oscillator as `Q`
+    rises.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                       + arel * mu * (u ** 2 - 2.0))
+    cir.add_node('x')
+    cir['L'] = L('v', 'x', L=1.0)
+    cir['Rs'] = R('x', gnd, r=rrel * mu)
+    if idc:
+        cir['I'] = IS('v', gnd, i=idc)
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=seedT or 2.0 * np.pi, timestep=(seedT or 2.0
+                  * np.pi) / npts, x0=x0, maxiterations=250)
+    assert pss.converged, 'Q=%r idc=%r did not converge' % (Q, idc)
+    return cir, pss
+
+
+def test_the_ppv_predicts_a_frequency_shift_at_high_q():
+    """⚠⚠ THE PPV GATE THAT WORKS AT HIGH Q — because it has no transient.
+
+    The state-kick gate cannot verify the PPV at `Q = 60`: its observable
+    is contaminated by transverse modes that need `4.6·Q ≈ 277` periods to
+    decay. This one perturbs a SOURCE and measures the resulting PERIOD:
+
+        ΔT / δi  =  ∫₀ᵀ v₀(t) dt
+
+    ⚠ THE NEW PERIOD IS A PROPERTY OF THE CONVERGED ORBIT, so there is no
+    transient for a slow mode to contaminate. The measurement re-solves
+    the PSS and never touches `v`, the monodromy or the bordered solve.
+
+    MEASURED at `Q = 75`:
+
+        idc     ΔT/ulp     ratio to prediction
+        1e-06        3.2   0.967611
+        1e-04      328.5   0.998574
+        1e-02    32896.7   1.000006      ← six parts per million
+        1e-01   328992.4   1.000084
+        3e-01   987106.3   1.000215
+
+    ⚠ A TWO-SIDED OPTIMUM, AND BOTH SIDES ARE UNDERSTOOD. Below ~300 ulp
+    the period difference is round-off — at `idc = 1e-6` it is 3.2 ulp,
+    and there the error grows with `npts` because more steps accumulate
+    more of it, which is the tell. Above `1e-2` the second-order term in
+    `δi` takes over, linear in `idc` as it should be (8.4e-5 → 2.15e-4 for
+    a 3× injection). A single-amplitude assertion would have landed on one
+    side or the other and read as a defect.
+
+    ⚠⚠ AND THIS GATE IS THE SAME FUNCTIONAL AS A4d's `Γ`, which is why it
+    exists at all here: a DC current IS a zero-frequency coloured source,
+    so both contract `∫v dt`. It therefore validates
+    `colour_projection`'s kernel — which had no external gate — and it
+    inherits A4d's preconditions exactly. On a lossless symmetric tank
+    both the prediction and the measurement are zero (measured `4e-11` and
+    `1e-15`), which is a confirmation of the structural identity and
+    useless as a gate.
+    """
+    Q = 60.0
+    _c0, p0 = _asym_lossy_osc(Q)
+    _v, info = p0.ppv()
+    T0 = float(p0.period)
+    m = p0.cir.n - 1
+    S = np.asarray(info['samples'])[:, :m]
+    h = np.diff(np.asarray(info['times'], dtype=float))
+    pred = float((S[:, 0] * h).sum())
+    assert info['Q'] > 40.0, \
+        'Q = %.2f; this gate exists to run in the regime the state-kick ' \
+        'gate cannot reach' % info['Q']
+    assert abs(pred) > 1e-9, \
+        'int v0 dt = %.3e is at the structural zero; an asymmetric LOSSY ' \
+        'tank is required or there is nothing to measure' % pred
+
+    ratios = []
+    for idc in (1e-4, 1e-2, 1e-1):
+        _c1, p1 = _asym_lossy_osc(Q, idc=idc, seedT=T0)
+        ratios.append(((float(p1.period) - T0) / idc) / pred)
+    ## the sweet spot: off the round-off floor, below the quadratic term
+    assert abs(ratios[1] - 1.0) < 1e-4, \
+        'at idc = 1e-2 the PPV predicts dT/di to %.3e relative; this is ' \
+        'the one measurement that reaches high Q with no transient in it' \
+        % abs(ratios[1] - 1.0)
+    ## and both edges behave as their mechanisms say
+    assert abs(ratios[0] - 1.0) > abs(ratios[1] - 1.0), \
+        'the small injection is no longer round-off limited, so the ' \
+        'two-sided structure this test documents has changed'
+    assert abs(ratios[2] - 1.0) > abs(ratios[1] - 1.0), \
+        'the large injection no longer shows the second-order term'
+
+
+def test_the_frequency_shift_gate_converges_at_first_order():
+    """`O(h)` on the low-`Q` fixture, where round-off is far away.
+
+    At `μ = 1` the signal is `∫v₀ dt ≈ 9.9e-4` — five orders above the ulp
+    floor — so the residual is pure discretisation and must halve with the
+    grid. Measured 9.92e-05 → 4.58e-05, **ratio 2.17**.
+
+    Asserted separately from the high-`Q` test because they establish
+    different things: this one that the gate is a *converging* measurement
+    of the right quantity, that one that it still works where the
+    alternative does not.
+    """
+    errs = []
+    for npts in (480, 960):
+        _c0, p0 = _asym_lossy_osc(1.0, npts=npts)
+        _v, info = p0.ppv()
+        T0 = float(p0.period)
+        m = p0.cir.n - 1
+        S = np.asarray(info['samples'])[:, :m]
+        h = np.diff(np.asarray(info['times'], dtype=float))
+        pred = float((S[:, 0] * h).sum())
+        _c1, p1 = _asym_lossy_osc(1.0, idc=1e-6, npts=npts, seedT=T0)
+        errs.append(abs(((float(p1.period) - T0) / 1e-6) / pred - 1.0))
+    assert errs[0] < 3e-4, 'coarse grid off by %.3e' % errs[0]
+    assert errs[1] < 0.6 * errs[0], \
+        'the gate does not converge (%.3e -> %.3e); a residual that does ' \
+        'not shrink is a defect, not discretisation' % (errs[0], errs[1])
