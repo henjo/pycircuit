@@ -2216,6 +2216,40 @@ class PSS(Analysis):
         A bordered solve does not care how close the other multipliers are;
         it never has to tell them apart.
 
+        ⚠ AND THAT IS THE METHOD'S STATED DESIGN DRIVER, not a lucky
+        property of it.  Demir, Long & Roychowdhury (ICCAD 2000), who
+        introduced the single-solve route: it is "especially advantageous
+        for HIGH-Q OSCILLATORS, MONODROMY MATRICES OF WHICH OFTEN HAVE MANY
+        EIGENVALUES CLOSE TO 1 THAT ARE NUMERICALLY INDISTINGUISHABLE from
+        the oscillatory [unit eigenvalue]", and "a key advantage is that it
+        DISPENSES WITH THE NEED TO SELECT THE CORRECT ONE-EIGENFUNCTION
+        from amongst a potentially large set of choices".  So the hardest
+        case in this codebase is the case the method was aimed at.
+
+        ⚠ WHICH DOES NOT RETRACT THE SLOW-NODE BOUNDARY BELOW, and keeping
+        the two apart is the point.  Near-degenerate multipliers make
+        EIGENANALYSIS ILL-POSED -- there is no fact of the matter about
+        which eigenfunction is the PPV -- while they make this bordered
+        solve merely ILL-CONDITIONED, which is measured above and warned
+        about.  Ill-conditioned beats ill-posed, and neither is the same as
+        the PHASE EQUATION's own limit, which is about the response being
+        treated as instantaneous and is not an extraction question at all.
+        Three separate things that a "high-Q oscillators are hard" summary
+        would blur into one.
+
+        ⚠ AND THE PPV IS ONE RUNG ON A LADDER, worth knowing before it is
+        mistaken for exact.  Suvak & Demir (TCAD 2011) place it: an EXACT
+        phase equation exists and is "practically unusable"; the PPV
+        equation is its LINEAR isochron approximation; a QUADRATIC one is
+        more accurate.  Isochrons are the geometric form of asymptotic
+        phase, so an oscillator without asymptotic phase is one whose
+        isochrons do not exist -- the same fact as the Floquet condition,
+        seen in the geometry.  Computing exact isochrons is exponential, so
+        the only live question is which local approximation is affordable.
+
+        `c` -- the diffusion constant this vector feeds -- has the
+        designer-facing reading "JITTER PER SECOND".
+
         ⚠ `y` COMING BACK ZERO IS A FREE CORRECTNESS CHECK, and it is not
         decoration.  With a zero first block on the right-hand side,
         `(I - M^T) v + y q = 0` forces `y q = 0`, so a nonzero `y` means the

@@ -164,6 +164,27 @@ directly. Independently confirmed from the equation: `⟨Ω₂Q, V₁⟩ = 1` wi
 residuals 0.36 / 0.40 / 0.42 that **grow** under refinement, with per-direction ratios from
 −0.44 to 28.7. Do not change it back without re-running that experiment.
 
+⚠ **THE BORDERED ROUTE'S DESIGN DRIVER IS THE HARD CASE ITSELF.** Demir, Long &
+Roychowdhury (ICCAD 2000), who introduced the single-solve method: it is "especially
+advantageous for **high-Q oscillators, monodromy matrices of which often have many
+eigenvalues close to 1 that are numerically indistinguishable** from the oscillatory
+[unit eigenvalue]", and "dispenses with the need to **select the correct one-eigenfunction**
+from amongst a potentially large set of choices". So the hardest case here is the case the
+method was aimed at — established rather than assumed.
+
+⚠ **Which does not retract the boundary below, and the distinction is the point.**
+Near-degenerate multipliers make **eigenanalysis ill-posed** — there is no fact of the matter
+about which eigenfunction is the PPV — while they make this bordered solve merely
+**ill-conditioned**, which is measured and warned about. Ill-conditioned beats ill-posed, and
+neither is the phase equation's own limit. Three separate things a "high-Q is hard" summary
+would blur into one.
+
+⚠ **And the PPV is one rung on a ladder.** An *exact* phase equation exists and is
+"practically unusable"; the PPV equation is its **linear isochron approximation**; a quadratic
+one is more accurate. Isochrons are the geometric form of asymptotic phase, so an oscillator
+without asymptotic phase is one whose isochrons do not exist. Computing exact isochrons is
+exponential, so the only live question is which local approximation is affordable.
+
 ⚠ **VALIDITY BOUNDARY — SLOW NODES, and the gate above cannot see it.** The phase equation
 treats the frequency response as **instantaneous**; a slow node *filters* the noise of devices
 near it and the PPV cannot see the filtering. The literature names this test's own regime as
