@@ -8469,3 +8469,117 @@ def test_am_pm_is_invariant_under_a_change_of_reference_node():
                 'refnode %s moved %s by %.3e relative; the split of a ' \
                 'differential observable must not depend on which row was ' \
                 'eliminated' % (rn, nm, rel)
+
+
+def test_saltation_is_unneeded_for_a_discontinuous_INJECTION_too():
+    """⚠⚠ C5 GENERALISES, AND THAT REMOVES A6'S REASON FOR SALTATION.
+
+    C5 measured a switched *conductance* (`VSwitch`) and found the
+    monodromy-vs-finite-difference gap falling at exactly **2.00× per
+    doubling** — O(h) discretisation, not the O(1) a missing saltation
+    term leaves. The reason it gave is general: *"each step uses its own
+    converged `Jf` and `C`, which already describe whichever side of the
+    switch that step is on. The saltation matrix is a CONTINUOUS-time
+    construct … a discrete map has no instant at which the field is
+    undefined."*
+
+    A PFD is not a switched conductance — it is a discontinuous **current
+    injection**, `K·sign(v_ctl − V_th)`, whose Jacobian is *zero* either
+    side of the crossing and undefined at it. So C5's result had to be
+    re-run with the element changed and everything else held, and it
+    reproduces:
+
+        element                    200        400          800
+        VSwitch (conductance)   9.74e-04   4.86e-04   2.43e-04   2.01x 2.00x
+        sign source (injection) 7.54e-05   3.76e-05   1.88e-05   2.01x 2.00x
+
+    Both toggle twice per period with `|M|` = 0.653 and 0.990, so neither
+    is the numerical-zero trap C5's own docstring records falling into.
+
+    ⚠⚠ SO A6'S SALTATION CLAIM IS NOW WRONG TWICE OVER. Its stated reason
+    — a locked orbit sitting at zero phase error, leaving the loop open —
+    describes an unmitigated dead zone, which real designs avoid by
+    offsetting the charge pump. And the replacement reason — that the
+    field is discontinuous at the switching instants — is falsified here,
+    measured, at exactly first order.
+
+    ⚠ WHAT WOULD STILL NEED IT, recorded as the open question rather than
+    a finding: C5's argument turns on the discrete map having no undefined
+    instant, which holds when the discontinuity is in the ALGEBRAIC part
+    — the current or the conductance — because the per-step Newton
+    resolves it. It would not obviously hold for a discontinuity in the
+    STATE: a genuine reset of `x`, which is what a divider or counter
+    rollover is. **So the hard part of a PLL may be the divider rather
+    than the PFD**, and that is the next thing to measure rather than
+    assume.
+    """
+    import warnings
+    from pycircuit.circuit import VSwitch
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def build(kind):
+        c = SubCircuit()
+        for nn in ('ctl', 'a', 'b'):
+            c.add_node(nn)
+        c['vc'] = VSin('ctl', gnd, va=2.0, freq=1.0 / per)
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per, phase=90.0)
+        c['rs'] = R('a', 'b', r=1e5)
+        c['c'] = C('b', gnd, c=1e-6)
+        if kind == 'vswitch':
+            c['sw'] = VSwitch('b', gnd, 'ctl', gnd, Ron=1e3, Roff=1e9,
+                              Von=1.0, Voff=0.0)
+        else:
+            c['sw'] = BSource('b', gnd, 'ctl', gnd,
+                              i_func=lambda u: 2e-5 * np.sign(u - 0.5))
+        return c
+
+    def gap(kind, npts):
+        pss = PSS(build(kind), method='trap', reltol=1e-11)
+        m = pss.cir.n - 1
+        times, hs = pss._period_grid(per, npts, None)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pss.solve(period=per, timestep=per / npts, maxiterations=60)
+        assert pss.converged
+        ir = pss.irefnode
+        Xw = np.asarray(res['tpss'].x, dtype=float)
+        ctl = Xw[pss.cir.get_node_index('ctl')]
+        toggles = int(np.sum(np.diff((ctl > 0.5).astype(int)) != 0))
+        assert toggles >= 2, \
+            '%s no longer toggles (%d), so the test has lost its subject' \
+            % (kind, toggles)
+        x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
+
+        def phi(v):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
+                                               per, times, hs, want_dT=False)
+            return np.asarray(xe, dtype=float)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+        M = np.asarray(M, dtype=float)
+        assert np.linalg.norm(M) > 0.1, \
+            '%s erases its state (|M| = %.3e); comparing zero against ' \
+            'zero reports a meaningless agreement' \
+            % (kind, np.linalg.norm(M))
+        base = phi(x0)
+        Mfd = np.zeros((m, m))
+        eps = 1e-7
+        for j in range(m):
+            d = np.zeros(m)
+            d[j] = eps
+            Mfd[:, j] = (phi(x0 + d) - base) / eps
+        return np.max(np.abs(M - Mfd)) / max(np.max(np.abs(Mfd)), 1e-300)
+
+    for kind in ('vswitch', 'signsrc'):
+        gaps = [gap(kind, n) for n in (200, 400, 800)]
+        for a, b in zip(gaps, gaps[1:]):
+            assert 1.7 < a / b < 2.3, \
+                '%s: the gap falls %.2fx per doubling, not ~2. A rate near ' \
+                '1 is an O(1) structural term -- i.e. saltation IS needed ' \
+                'here -- and that would overturn C5. Gaps: %s' \
+                % (kind, a / b, gaps)

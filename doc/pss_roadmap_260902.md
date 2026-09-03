@@ -1819,12 +1819,35 @@ unit multiplier, indistinguishable from the same pair under a linear coupling
 (`[1, 0.981052, 0.166, 0.136]`). The extra unit multiplier needs the orbit to *live inside* the
 notch, which is the unmitigated-dead-zone case — a broken design, not the normal one.
 
-⚠⚠ **SO SALTATION IS STILL MANDATORY, FOR A DIFFERENT REASON: the PFD switches twice per cycle
-at instants where the field is discontinuous, and the monodromy must carry the jump conditions
-there.** Not "the loop looks open" but "the trajectory crosses a discontinuity". The original
-reason would have sent this work chasing a fix for a pathology that only appears in a loop
-nobody ships — and would have declared success on a well-designed loop where the extra
-multiplier was never going to appear.
+⚠⚠⚠ **AND THE REPLACEMENT REASON IS FALSIFIED TOO — MEASURED. SALTATION IS NOT NEEDED FOR A
+PFD AT ALL.** I proposed that saltation is still mandatory because the PFD switches twice per
+cycle where the field is discontinuous. C5 measured a switched *conductance* and found the
+monodromy-vs-finite-difference gap falling at exactly **2.00× per doubling** — O(h), not the
+O(1) a missing term leaves. A PFD is a discontinuous **injection**, not a conductance, so C5's
+result had to be re-run with that element and everything else held:
+
+| element | 200 | 400 | 800 | rate |
+|---|---|---|---|---|
+| `VSwitch` (conductance) | 9.74e-04 | 4.86e-04 | 2.43e-04 | 2.01×, 2.00× |
+| sign source (**injection**) | 7.54e-05 | 3.76e-05 | 1.88e-05 | 2.01×, 2.00× |
+
+Both toggle twice per period with `|M|` = 0.653 and 0.990, so neither is the numerical-zero trap
+C5's own docstring records falling into. **C5's reason turns out to be general**: each step uses
+its own converged `Jf` and `C`, which already describe whichever side of the switch that step is
+on, and a *discrete* map has no instant at which the field is undefined.
+
+⚠ **So A6's saltation claim was wrong twice over — the stated reason and my replacement for it.**
+The stated reason described an unmitigated dead zone; the replacement described a
+continuous-time construct a discrete map does not need. Neither survived a measurement, and the
+second was falsified by the instrument that had already settled the first.
+
+⚠⚠ **WHERE THE REAL DIFFICULTY PROBABLY IS — the open question, not a finding.** C5's argument
+turns on the discontinuity being in the **algebraic** part (the current or the conductance),
+which the per-step Newton resolves. It does not obviously extend to a discontinuity in the
+**STATE**: a genuine reset of `x`, which is exactly what a **divider or counter rollover** is.
+**So the hard part of a PLL may be the divider rather than the PFD**, and that is the next thing
+to measure. It is also a different kind of object — a sampled/reset system rather than a
+smooth-in-between flow — which is where the record's `Idtmod` wrap work already lives.
 
 ⚠ **What the dead zone IS still worth to this roadmap:** an unmitigated loop, or one whose
 offset is too small, genuinely does sit where the linearisation describes a disconnected
