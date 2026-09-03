@@ -523,13 +523,82 @@ transfer function alone, before any noise analysis runs:
 
 | filter | bandwidth | result |
 |---|---|---|
-| low-pass | `< ω₀/2` | **stationary** (Strom & Signell) |
+| low-pass | `< ω₀/2` | ⚠ **"approximately" stationary, and TWO conditions — see below** |
 | two-sided bandpass | `< ω₀/2` | `i = 0, ±2` survive — **NOT stationary** |
 | one-sided (SSB) bandpass | `< ω₀` | **stationary** (RLF98 Result 2) |
 
 A narrow two-sided bandpass is the natural thing to reach for and it does **not** license the
 cheap path: **the one-sidedness does the work, not the narrowness** — and the one-sided case
 tolerates *twice* the bandwidth. ⚠ Do not implement the shortcut from the one-line version.
+
+⚠⚠ **AND THE LOW-PASS ROW ABOVE WAS ITSELF A ONE-LINE VERSION, CORRECTED 2026-09-03 FROM THE
+PRIMARY.** Ström & Signell 1977 p.538 Example 2 states three things the citation compresses
+away, and the second one bites:
+
+1. the condition is on **`T_k(f)` for EVERY harmonic `k`**, not on the filter's own passband —
+   every harmonic transfer function must vanish above `f_s/2`;
+2. ⚠⚠ **the INPUT must ALSO be band-limited to `f_s/2`** — *"although {T_k(f)} are assumed
+   ideal, we will obtain FOLDING OF THE INPUT unless also `R_u(f) = 0, |f| > f_s/2`, i.e. the
+   input has to be lowpass filtered before transmission"*, restated as *"the necessity of band
+   limiting the input u(t) is evident also in this relation"*. **A white noise source violates
+   this by construction**, and white is the default assumption everywhere else in this stack;
+3. the conclusion is *"**approximately** weakly stationary"*. The paper's alternative route is
+   *"regarding the sampling time as random over one sampling interval (or equivalently
+   **averaging** the mean and spectral density over one period)"* — a time-averaging argument,
+   which is a **weaker and different claim** than genuine stationarity.
+
+⚠ So a precondition test built on the low-pass row must check **the input's band limit as well
+as the filter's**, and must not promise stationarity where the paper says "approximately".
+Whether (2) binds in practice depends on whether the circuit ahead of the filter has already
+band-limited the noise — which is a per-circuit question, not a property of the filter. Same
+shape as the two-sided/one-sided trap: a condition asserted without being checked.
+
+#### A2-note. The closed-form ISF is a different object from the PPV, and they peak in
+#### different places — recorded 2026-09-03 from primaries
+
+Hajimiri & Lee's closed-form ISF is **eq. (36)**, `Γ_i(x) = f'_i / Σ_j f'_j²` — *not* eq. (31),
+which is the projection step, and which is the number the secondary literature repeats. Nothing
+in this tree cited it; recorded so nothing starts to.
+
+⚠ **THE TWO PAPERS MAKE DIRECTLY OPPOSED CLAIMS ABOUT WHERE THE SENSITIVITY PEAKS**, and this is
+sharper than "they differ in shape and magnitude":
+
+| | peaks when |
+|---|---|
+| Hajimiri, on his eq. (36) | *"maximum during transitions … waveforms with larger slope show a smaller peak"* — **this** node's transitions |
+| Srivastava, on the exact PPV | *"the PPV's discontinuities … take place when the oscillator's response is smooth … a node is most sensitive to noise when **the next node in the ring** experiences rapid transitions"* |
+
+**We compute the exact PPV**, so the second is ours. A designer reasoning from the closed form
+would place a noise-critical device at exactly the wrong node in a ring.
+
+⚠ **And the closed form assumes HOW the perturbation enters** — eqs. (34)–(36) are derived for
+*capacitive node perturbations*, `Δq_i/C_i`. That is the same assumption Andreani identifies as
+failing for linear-region transistors: two independent routes to one caveat. Our bordered solve
+makes no such assumption.
+
+#### A2-note-2. When the PPV framework itself diverges — and it is not "non-stationary"
+
+Vanassche, Gielen & Sansen (ICCAD 2002) exist to locate the split between Demir/Mehrotra/
+Roychowdhury and Hajimiri & Lee. The models differ only in whether the shift is inside the
+argument: exact `θ' = ε·Γ(t+θ)·n(t)` versus approximate `θ' = ε·Γ(t)·n(t)`.
+
+> *"for `n(t)` a **stationary** (noise) source, equations (1) and (2) will, up to 0-th order in
+> ε, **predict the same output phase noise**. On the other hand, when `n(t)` is no longer
+> stationary, results diverge."*
+
+⚠ **The operational form is better than "non-stationary", and it is the sentence to keep:**
+*"note that at first, near `t = 0`, the predicted phases are the same. However, **when θ becomes
+too large** [they diverge]."* So the failure condition is not the source's stationarity as such
+— **it is that `θ` grows large.** A stationary source makes `θ` *diffuse*; a non-stationary one
+makes it grow *secularly*, which is what carries it out of range. Same secular growth PPV-HB
+splits off as `(Δf/f₀)·t`, and the same unbounded drift Kundert describes: three descriptions,
+one mechanism.
+
+⚠ **CONSEQUENCE, AND IT IS A CLEAN BOUNDARY: nothing in our noise path depends on the
+distinction**, because every source we support is stationary and the two frameworks then agree
+to 0th order. **It becomes load-bearing the moment anything drives the oscillator** — injection
+locking, a PLL in lock, coupled oscillators. That is exactly A6, so A6 must use the exact form
+and cannot inherit the linearisation the stationary path is allowed.
 
 ### A4. Warm start — ⚠ SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
 

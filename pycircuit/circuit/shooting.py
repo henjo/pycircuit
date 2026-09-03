@@ -6031,6 +6031,21 @@ class PAC(Analysis):
         "S_u(f) is generally pink ... then S_phi(f) would be proportional
         to 1/f^3 at low frequencies".
 
+        ⚠ AND THIS IS THE LINEARISED PHASE MODEL, WHICH IS EXACT ENOUGH
+        ONLY BECAUSE THE SOURCES ARE STATIONARY.  Vanassche, Gielen &
+        Sansen (ICCAD 2002) locate the split between the exact phase
+        equation `theta' = eps Gamma(t + theta) n(t)` and the approximate
+        `theta' = eps Gamma(t) n(t)`: for a STATIONARY source the two
+        "will, up to 0-th order in eps, predict the same output phase
+        noise", and they diverge otherwise.  Their operational form is
+        better than "non-stationary" -- "at first, near t = 0, the
+        predicted phases are the same. However, when THETA BECOMES TOO
+        LARGE [they diverge]".  A stationary source makes `theta` DIFFUSE;
+        a driven one makes it grow SECULARLY, which is what carries it out
+        of range.  ⚠ So this is sound for free-running noise and must NOT
+        be reused for injection locking, a PLL in lock, or coupled
+        oscillators -- there the shift has to stay inside the argument.
+
         ⚠ REFUSED BELOW THE LORENTZIAN CORNER, and this is a validity
         boundary rather than a conditioning one.  There the excess phase is
         a Wiener process whose spectrum is singular at the origin; the
