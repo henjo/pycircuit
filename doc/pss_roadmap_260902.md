@@ -683,7 +683,7 @@ than a transfer pair, and carries the free LTI invariant (AM = PM exactly).
 **Gate:** none needed for AM/PM — it was a basis change on tested output. The others are
 interface decisions, not measurements.
 
-### A4c. Time-varying noise statistics — NEW 2026-09-02
+### A4c. Time-varying noise statistics — ⚠ BUILT 2026-09-03 for DRIVEN circuits
 
 The covariance route, and it is a PSS problem the existing machinery already solves. Demir,
 Liu & Sangiovanni-Vincentelli (TCAD 1996) propagate a covariance alongside the transient:
@@ -691,10 +691,33 @@ Liu & Sangiovanni-Vincentelli (TCAD 1996) propagate a covariance alongside the t
 cyclostationary covariance is the T-periodic solution — **a shooting problem whose monodromy
 is the Kronecker square of the circuit's**, `M ⊗ M`, with multipliers `λᵢλⱼ`.
 
-⚠ **For a DRIVEN circuit it costs ONE linear solve** — the Lyapunov equation is linear in
-`K`, so shooting on it is exact in one step, no Newton. (Relayed measurement, three LTP
-systems: kron identity to 2.2e-14, one solve reaching 1.0e-13 against a 40-period brute-force
-run at 1.1e-13.)
+⚠ **BUILT** — `PAC.covariance(pss, samples=True)` returns `K(t)` over the period.
+`(I − M⊗M)vec(K₀) = vec(K₁)`, **one linear solve, no Newton**, because the Lyapunov equation
+is linear in `K` — unlike the trajectory it rides on.
+
+⚠ **GATED AGAINST kT/C — exact, famous, and independent of `R`**, so nothing about the
+resistor, the drive or the grid should appear in it, and the covariance shares no machinery
+with the closed form it is checked against:
+
+| npts | 100 | 200 | 400 | 800 |
+|---|---|---|---|---|
+| full `CY` | 1.861 | 1.928 | 1.963 | 1.981 |
+| **`CY/2`** | 0.931 | 0.964 | 0.982 | **0.991** |
+
+⚠ **A FACTOR OF TWO SETTLED BY MEASUREMENT.** The two candidate conventions differ by exactly
+the factor at issue: full `CY` converges to **2**, halved to **1**. So `CY` is a *one-sided*
+density and the per-step injection carries `CY/2`. Either could have been argued from the
+definitions; the sequence decides it. The assertion is the **rate** — the error halves per
+doubling, O(h), which a piecewise-constant approximation to white noise gives, and which a
+wrong *constant* would not do.
+
+⚠ **A PRECONDITION THAT PRODUCED A WRONG READING FIRST.** The initial attempt came back at
+**0.517** and looked like a factor-of-two bug. It was not: the RC pole sat at 159 kHz while the
+grid's Nyquist was 100 kHz, so the *discrete* system genuinely does not carry the noise the
+continuous one does. **A kT/C that comes back low is the grid, not the code** — now its own
+test, with the under-resolved case reproduced deliberately.
+
+**Cost:** `(2m)²` unknowns, dense, so `O(m⁴)`. Small circuits only.
 
 ⚠ **For an OSCILLATOR it does not exist, and the failure is the physics.** `λ₁ = 1` gives
 `λ₁² = 1`, so `I − M ⊗ M` is exactly singular — **verified here on our own monodromy:**
