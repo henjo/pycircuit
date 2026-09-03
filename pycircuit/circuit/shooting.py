@@ -2421,8 +2421,29 @@ class PSS(Analysis):
                 'tolerance nor a better extraction fixes that; it needs a '
                 'frequency-aware PPV. Treat this result as an upper bound.'
                 % lam2, RuntimeWarning, stacklevel=2)
+        ## ⚠ ONE NUMBER THAT SUBSUMES FOUR DIAGNOSTICS.  An amplitude
+        ## perturbation decays to `|lambda_2|` of its size each cycle, so
+        ## the cycles needed to fall below a threshold IS the oscillator's
+        ## Q: `Q = log(threshold)/log|lambda_2|` (Wang & Roychowdhury).
+        ## The usual definitions do not apply to an autonomous circuit --
+        ## `f_r/df` presumes a Bode plot of a BIBO-stable linear system,
+        ## and stored/dissipated presumes damping a self-sustaining
+        ## oscillator does not have.  Nor is it the resonator's Q.
+        ##
+        ## ⚠ AND IT IS THE SAME CONDITION AS EVERY FAILURE THIS CLASS
+        ## WARNS ABOUT.  "High Q", "a second multiplier near 1", "slow
+        ## amplitude restoration" and "a long time constant" are four
+        ## vocabularies for one thing -- which is why the same circuits
+        ## defeat the phase row, the eigen-split, the probe's continuation
+        ## and the PPV's instantaneous-response assumption.  Not four
+        ## coincidences.  It costs nothing here: the deflated power
+        ## iteration above already produced `|lambda_2|`.
+        ##
+        ## Reported for a `1/e` threshold, so `Q` is cycles-to-1/e.
+        Q = (-1.0 / np.log(lam2) if 0.0 < lam2 < 1.0 else float('inf'))
         info = {'border_residual': y,
                 'tangent_border_residual': yf,
+                'Q': Q,
                 'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
                 'second_multiplier': lam2,
                 'q': q, 'xdot': xdot,

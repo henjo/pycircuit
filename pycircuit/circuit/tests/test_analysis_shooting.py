@@ -5222,3 +5222,59 @@ def test_am_pm_refuses_a_harmonic_with_no_carrier():
     pac = PAC(cir, toolkit=circuit.numeric)
     with pytest.raises(ValueError, match='no component at harmonic'):
         pac.am_pm(pss, 137.0, 1, carrier=57)     # far above anything present
+
+
+@pytest.mark.parametrize('tau_over_T', [10.0, 100.0])
+def test_the_oscillator_Q_is_recovered_from_the_second_multiplier(tau_over_T):
+    """⚠ ONE NUMBER THAT SUBSUMES FOUR DIAGNOSTICS, and it is already computed.
+
+    An amplitude perturbation decays to `|lambda_2|` of its size each
+    cycle, so the cycles needed to fall below a threshold IS the
+    oscillator's Q: `Q = log(threshold)/log|lambda_2|`. The usual
+    definitions do not apply to an autonomous circuit — `f_r/df` presumes a
+    Bode plot of a BIBO-stable linear system, stored/dissipated presumes
+    damping a self-sustaining oscillator does not have, and it is NOT the
+    Q of the resonator inside it.
+
+    ⚠ AND IT IS THE SAME CONDITION AS EVERY FAILURE THIS MODULE WARNS
+    ABOUT. "High Q", "a second multiplier near 1", "slow amplitude
+    restoration" and "a long time constant" are four vocabularies for one
+    thing — which is why the same circuits defeat the phase row, the
+    eigen-split, the probe's continuation and the PPV's
+    instantaneous-response assumption.
+
+    ⚠ THE TEST IS A CONSTRUCTION CHECK, WHICH IS WHY IT IS WORTH HAVING.
+    The slow node is built with a KNOWN `tau/T`, and its multiplier is
+    `exp(-T/tau)`, so `Q` must come back as `tau/T` itself. Measured 10.00
+    and 99.99 for 10 and 100 — an independent quantity reproducing an input
+    the computation never sees.
+    """
+    _cir, pss = _solve_slow(tau_over_T)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _v, info = pss.ppv()
+    Q = info['Q']
+    assert abs(Q - tau_over_T) < 0.02 * tau_over_T, \
+        'Q came back %.3f for a node built with tau/T = %g; Q is defined ' \
+        'as cycles-to-1/e and the multiplier is exp(-T/tau), so the two ' \
+        'are the same number' % (Q, tau_over_T)
+    assert info['second_multiplier'] > 0.9, \
+        'the slow node did not produce a near-unit multiplier'
+
+
+def test_a_fast_oscillator_has_a_small_Q():
+    """The control: plain van der Pol restores amplitude within a cycle.
+
+    `|lambda_2| = 8.5e-04`, so Q ~ 0.14 — the perturbation is gone before
+    the cycle ends, which is what "low Q" means for an oscillator and is
+    the opposite corner from the case that breaks every method here.
+    """
+    _cir, pss = _solve_slow(None)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _v, info = pss.ppv()
+    assert info['Q'] < 1.0, \
+        'plain van der Pol reports Q = %.3f; it restores amplitude in ' \
+        'well under a cycle' % info['Q']
