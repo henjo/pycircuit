@@ -44,6 +44,16 @@ from seven sides**, and they enter through structurally different doors:
 **(g) is why the other six are not a coincidence:** each of (a)–(f) is a sensitivity to slow
 amplitude decay, and (g) says that is precisely what `λ₂` measures.
 
+⚠ **AND THE FIELD HAS NOT ABSORBED (g).** A citation-forward search on the anchors:
+`Q = log(threshold)/log|λ₂|` has been **cited once, ever**. The shooting-methods literature has
+essentially stopped — **9 citations of Telichevesky 1995 since 2021**, most from other fields —
+while the PPV line is cited ~150 times, almost entirely by applications. So the identity that
+organises this whole document is one we re-derived independently and ship at
+`shooting.py:2558`, and it is **not** a result anyone is building on. Treat that as a reason to
+state it carefully rather than as a reason to doubt it: we verified it numerically here
+(`test_the_reported_Q_amplifies_its_own_lambda2_error_by_Q`) and it has now reproduced in three
+independent settings.
+
 ⚠ **AND IT PREDICTS WHERE THE NEXT ONE WILL BE: anywhere a method assumes the non-oscillatory
 modes have died.** That is a search rule, not a summary. It already found one — the
 cyclostationary cost blocker's *remedy* is bounded by the same quantity (Hull & Meyer's cheap
@@ -631,6 +641,34 @@ interpretation error *even in principle*. Ours are all additive. **What makes th
 the fixtures — it is that the code path does not exist**, which is a stronger position than an
 untested one and worth distinguishing. ⚠ The tell if it ever arrives: the drift shifts by
 `½G∂ₓG` and the diffusion does not, so look for a discrepancy in a **mean** but not a variance.
+
+⚠⚠⚠ **AND THE REFUSAL'S SCOPE IS FAR WIDER THAN "AN UNUSUAL CASE" — IT IS A BLANKET REFUSAL OF
+MOS pnoise.** There is **no physically correct MOS noise model whose `CY` is state-independent**:
+thermal channel noise is `4kT·γ·g_d0` with `g_d0` bias-dependent, flicker goes as `I_D^AF`, gate
+shot noise as `2qI_G`, and Mahmutoglu & Demir (2015) are explicit that trap capture and emission
+rates *"depend on the voltages across the MOSFET which can considerably vary with time during
+large-signal operation"* — state-dependent **twice over**, since the Wiener process is also
+*"modulated with a state (N_t) dependent term"*, which *"in fact makes the equation nonlinear."*
+
+⚠ So the guard is **not a filter that would pass some MOS models and refuse others**. The answer
+to "will a real device pass it" is already determined, and it is **no**. Currently invisible only
+because `CY ≡ 0` means nothing reaches it. **Same shape as the `TLine` refusal: a scope broader
+than its author intended, masked by a feature that does not exist yet.** The refusal message now
+says so.
+
+⚠⚠ **THAT REORDERS THIS ROADMAP: the cyclostationary path is not an enhancement for MOS pnoise,
+it is the PRECONDITION.** And the literature's answer to a bias-dependent `CY` is not to refuse
+it — Hull & Meyer's construction *is* the standard treatment of exactly this case, their worked
+example being **shot noise modulated by the collector current**. One source per device at the
+cycle-averaged current, modulation in the `H_l` that A1 already computes, under a **checkable
+condition** where we currently have a blanket refusal — and it fails in the familiar direction,
+degrading as `λ₂ → 1` when the impulse response rings.
+
+⚠ **SECOND-ORDER CONSEQUENCE, WORTH KNOWING BEFORE THE MODEL LANDS.** The same check is what
+keeps Itô/Stratonovich out of reach. Relaxing it for MOS makes the interpretations diverge, and
+**Demir's small-noise escape may not carry for trap noise** — a trap occupancy is a two-state
+Markov chain, not a small perturbation of a large signal, and the same paper calls the state
+dependence *nonlinear*. The tell stays: a discrepancy in a **mean** but not a variance.
 
 ⚠⚠ **MEASURED GAP: `PspMosLongChannel.CY` IS IDENTICALLY ZERO.** The transcapacitance is
 modelled (non-reciprocal at 32× McAndrew's bound in saturation) and **the noise is not modelled

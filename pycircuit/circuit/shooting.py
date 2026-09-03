@@ -5408,6 +5408,41 @@ class PAC(Analysis):
         Sampled at three states on the converged orbit rather than argued
         from the element types, because a compact model's `CY` reads `x`
         and the discrete library's does not.
+
+        ⚠⚠ AND ITS SCOPE IS WIDER THAN "AN UNUSUAL CASE" -- IT IS A
+        BLANKET REFUSAL OF MOS pnoise, currently invisible only because
+        `compact.PspMosLongChannel.CY` is IDENTICALLY ZERO so nothing
+        reaches it.  There is no physically correct MOS noise model whose
+        `CY` is state-independent: thermal channel noise is
+        `4kT gamma g_d0` with `g_d0` bias-dependent, flicker goes as
+        `I_D^AF`, gate shot noise as `2qI_G`, and Mahmutoglu & Demir
+        (2015) are explicit that trap rates "depend on the voltages across
+        the MOSFET which can considerably vary with time during
+        large-signal operation".  So the answer to "will a real device
+        pass this check" is already determined, and it is no.
+
+        ⚠ THE ROUTE OUT IS THE CYCLOSTATIONARY CONSTRUCTION, NOT A
+        DIFFERENT DEVICE MODEL, and that reorders the roadmap: the
+        cyclostationary path is not an enhancement for MOS pnoise, it is
+        the PRECONDITION.  Hull & Meyer (1993) make it affordable -- one
+        stationary source per device at the cycle-averaged current, with
+        the modulation carried by the impulse response `H_l` that A1
+        already computes -- and their worked example IS shot noise
+        modulated by the collector current, i.e. exactly this case.  Their
+        condition is checkable rather than a blanket refusal, and it fails
+        in the familiar direction: a ringing impulse response breaks it,
+        so it degrades as `lambda_2 -> 1`.
+
+        ⚠ SECOND-ORDER CONSEQUENCE, WORTH KNOWING BEFORE THE MODEL LANDS.
+        This same check is what keeps the Ito/Stratonovich choice out of
+        reach (`CY = GG^T`, so a state-dependent `CY` is a state-dependent
+        `G`).  Relaxing it for MOS makes the two interpretations diverge,
+        and Demir's escape -- "the noise signals are small compared with
+        the deterministic signals" -- may NOT carry for trap noise: a trap
+        occupancy is a two-state Markov chain rather than a small
+        perturbation of a large signal, and the same paper says the state
+        dependence "in fact makes the equation nonlinear".  The tell would
+        be a discrepancy in a MEAN but not in a variance.
         """
         irn = pss.irefnode
         fp = pss.factored_period()
@@ -5425,13 +5460,25 @@ class PAC(Analysis):
             drift = float(np.max(np.abs(other - mats[0]))) / scale
             if drift > 1e-9:
                 raise NotImplementedError(
-                    'PAC.pnoise: this circuit has a BIAS-DEPENDENT CY '
-                    '(varies by %.3g over the orbit), so its noise sources '
-                    'are cyclostationary. The sidebands are then correlated '
+                    'PAC: this circuit has a BIAS-DEPENDENT CY (varies by '
+                    '%.3g over the orbit), so its noise sources are '
+                    'cyclostationary. The sidebands are then correlated '
                     'through the window Fourier coefficients and no longer '
                     'add in power, so the stationary sum here would be the '
-                    "wrong model rather than an imprecise one. Okumura's "
-                    'section III-B has the construction; it is not built.'
+                    'wrong model rather than an imprecise one. '
+                    '⚠ THIS IS THE NORMAL CASE FOR ANY COMPACT MOS MODEL, '
+                    'not an exotic one: thermal channel noise is '
+                    '4kT.gamma.gd0 with gd0 bias-dependent, flicker goes '
+                    'as I_D^AF, gate shot noise as 2qI_G, and trap capture '
+                    'and emission rates read the terminal voltages. So '
+                    'this is in effect a refusal of MOS pnoise, and the '
+                    'route out is the CYCLOSTATIONARY construction rather '
+                    'than a different device model. Hull & Meyer (1993) '
+                    'make it affordable -- ONE stationary source per '
+                    'device at the CYCLE-AVERAGED current, with the '
+                    'modulation carried by the impulse response, valid '
+                    'while no large-signal state variable changes much '
+                    'over the impulse response decay time. Not built.'
                     % drift)
         return mats[0]
 
