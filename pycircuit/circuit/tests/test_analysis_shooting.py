@@ -7754,3 +7754,127 @@ def test_the_sideband_sum_gives_three_eighths_and_not_one_quarter():
     assert abs(S8 / S2 - 1.0) < 1e-12, \
         'sidebands beyond l = +-2 contribute %.3e; cos^2 has exactly ' \
         'three nonzero Fourier coefficients' % abs(S8 / S2 - 1.0)
+
+
+def _cs_amp(va, f0=1e6, fnt=1.0):
+    """A common-source stage on a real compact MOSFET, sinusoidally driven.
+
+    ⚠ `va` MUST BE NONZERO. At `va = 0` the source is constant, the
+    circuit has no periodic excitation, and `PSS` infers an AUTONOMOUS
+    problem — `pnoise` then routes into the deflated oscillator solve and
+    fails inside `ppv()` three frames away. The DC limit is approached
+    with a small drive, not with no drive.
+    """
+    from pycircuit.circuit import compact
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    for nn in ('g', 'd', 'vdd'):
+        cir.add_node(nn)
+    cir['vdd'] = VS('vdd', gnd, v=1.2)
+    cir['vg'] = VSin('g', gnd, v=0.7, va=va, freq=f0)
+    cir['rl'] = R('vdd', 'd', r=5e3)
+    cir['M'] = compact.PspMosLongChannel('d', 'g', gnd, gnd, fnt=fnt)
+    return cir
+
+
+def _cs_solved(va, f0=1e6, npts=12):
+    """One PSS on the compact model, reused for every pnoise call.
+
+    ⚠ THE PSS DOMINATES THE COST -- 30 s at 40 points against 4 s for
+    `pnoise` -- and it is the compact model's evaluation, not the grid:
+    `reltol` 1e-6 to 1e-10 all take ~30 s.  So the test solves each
+    operating point ONCE and calls `pnoise` twice on it.
+
+    ⚠ AND 12 POINTS IS ENOUGH, WHICH IS NOT AN APPROXIMATION.  The
+    answer is 1.320116127e-16 at 12, 20, 30 and 40 points -- identical to
+    ten digits -- because the cycle average is a rectangular rule on a
+    PERIODIC smooth function, which converges spectrally.  The modulation
+    is still fully seen: the departure from DC is 1e-4 at `va = 2e-2` on
+    the same grid.
+    """
+    import warnings
+    cir = _cs_amp(va, f0=f0)
+    pss = PSS(cir, method='gear', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1.0 / f0, timestep=1.0 / (f0 * npts), refnode=gnd,
+                  maxiterations=60)
+    assert pss.converged, 'va = %r did not converge' % va
+    irn = pss.irefnode
+    k = cir.get_node_index('d')
+    k = k - 1 if k > irn else k
+    d = np.zeros(cir.n - 1)
+    d[k] = 1.0
+    return cir, pss, PAC(cir, toolkit=circuit.numeric), d
+
+
+def _cs_pn(pac, pss, d, modulated, fout=1e5):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return pac.pnoise(pss, fout, d, modulated=modulated,
+                          maxsidebands=2)[0]
+
+
+def test_pnoise_runs_on_a_real_mosfet_through_the_modulated_path():
+    """⚠⚠ MOS pnoise, end to end, on a compact surface-potential model.
+
+    A common-source stage on `PspMosLongChannel` with `fnt = 1`, driven at
+    1 MHz. Two things this establishes that nothing else does:
+
+    ⚠ THE BIAS-DEPENDENT REFUSAL IS REACHABLE FROM A REAL DEVICE.
+    `modulated=False` raises with *"BIAS-DEPENDENT CY (varies by 0.998
+    over the orbit)"* — nearly a factor of two across one cycle. That was
+    recorded here as unreachable while the model was believed noiseless;
+    it is not.
+
+    ⚠⚠ AND THE MODULATED ANSWER REDUCES TO `analysis_ss.Noise`, which is a
+    different analysis on a different code path. Driving the gate ever
+    more weakly must recover the DC noise at the same operating point:
+
+        va       pnoise(modulated)   ratio to analysis_ss.Noise
+        1e-4     1.320248e-16        1.000000
+        5e-3     1.320239e-16        0.999994
+        2e-2     1.320116e-16        0.999900
+        5e-2     1.319418e-16        0.999371
+
+    ⚠ THE DEPARTURE IS QUADRATIC IN `va`, TO THREE DIGITS — 6.0e-6,
+    1.00e-4, 6.29e-4 against ratios of 16 and 6.25 in `va²`. That is the
+    structural signature rather than a tolerance: the first-order term
+    vanishes because a sinusoid's cycle average is zero, so the leading
+    correction to a cycle-averaged `CY` is second order. A linear
+    departure would mean the averaging was wrong; no departure at all
+    would mean the modulation was being ignored.
+    """
+    from pycircuit.circuit.analysis_ss import Noise
+
+    vas = (1e-4, 5e-3, 2e-2)
+    solved = [_cs_solved(va) for va in vas]
+
+    ## the refusal, on the same solve the modulated run uses
+    _c, pss, pac, d = solved[-1]
+    with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT CY'):
+        _cs_pn(pac, pss, d, False)
+
+    cir0 = _cs_amp(0.0)
+    ref = float(np.real(Noise(cir0, inputsrc='vg',
+                              outputnodes=(cir0.get_node('d'), gnd),
+                              toolkit=circuit.numeric
+                              ).solve(1e5, complexfreq=False)['Svnout']))
+    assert ref > 0
+
+    dev = [abs(_cs_pn(pc, ps, dd, True) / ref - 1.0)
+           for _cc, ps, pc, dd in solved]
+    assert dev[0] < 1e-6, \
+        'at va = 1e-4 the modulated pnoise is %.3e from analysis_ss.Noise; ' \
+        'the weak-drive limit must recover the DC answer' % dev[0]
+    assert dev[-1] > 5e-5, \
+        'the strongest drive departs by only %.3e, so the modulation is ' \
+        'not being seen at all' % dev[-1]
+    ## quadratic: the departure grows as va^2, not as va
+    expect = (vas[2] / vas[1]) ** 2
+    got = dev[2] / dev[1]
+    assert abs(got / expect - 1.0) < 0.15, \
+        'va %.0e -> %.0e grew the departure by %.2f against the %.2f a ' \
+        'quadratic term predicts; a LINEAR departure would mean the cycle ' \
+        'average is wrong' % (vas[1], vas[2], got, expect)
