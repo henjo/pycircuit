@@ -5427,3 +5427,111 @@ def test_the_oscillator_spectrum_is_built_and_refuses_a_driven_circuit():
         p2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     with pytest.raises(ValueError, match='FREE-RUNNING'):
         PAC(driven, toolkit=circuit.numeric).diffusion_constant(p2)
+
+
+def test_the_deflated_solve_removes_the_harmonic_singularity():
+    """⚠ A7 — THE POLE IS THE ANSWER'S, AND IT IS NOW CARRIED ANALYTICALLY.
+
+    At `α = 1` the operator `I − αM` is singular by the unit multiplier,
+    and the solution really does diverge: an oscillator's phase response
+    goes as `1/Δf`. What is wrong is *computing* a `1/ε` quantity through a
+    system whose conditioning is also `1/ε` — the answer is genuinely large
+    and the digits are genuinely gone.
+
+    Bordering with the tangent and the PPV — both of which `ppv()` already
+    returns — makes the border variable bounded, `s = (vᵀb)/(vᵀu)`, and the
+    pole comes back through `u/(1 − α)` in closed form.
+
+    Measured here: the plain operator's `σ_min` tracks the offset over nine
+    decades while the bordered one is FLAT, and the solutions agree to
+    ~1e-11 where the plain solve is still trustworthy.
+
+    ⚠ THE TEST ASSERTS BOTH HALVES. Flat conditioning alone would be
+    satisfied by an operator that had stopped solving the right problem, so
+    agreement with the plain solve — in the regime where the plain solve
+    can be believed — is what says it is still the same equation.
+    """
+    import warnings
+    _cir, pss = _solve_slow(None)                # van der Pol, autonomous
+    pac = PAC(pss.cir, toolkit=circuit.numeric)
+    fp = pss.factored_period()
+    n = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+
+    smins, rels = [], []
+    for r in (1e-2, 1e-4, 1e-6):
+        alpha = np.exp(-2j * np.pi * r)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            y = pac._deflated_solve(pss, alpha, b)
+        smins.append(np.linalg.svd(np.eye(n) - alpha * M,
+                                   compute_uv=False)[-1])
+        yp = np.linalg.solve(np.eye(n) - alpha * M, b)
+        rels.append(np.linalg.norm(y - yp) / np.linalg.norm(y))
+
+    ## the plain operator really is degrading, or this proves nothing
+    assert smins[0] / smins[-1] > 1e3, \
+        'the plain operator only degraded %.1fx over four decades of ' \
+        'offset (%s); the singularity being removed is not being exercised' \
+        % (smins[0] / smins[-1], smins)
+
+    ## and where the plain solve can still be believed, the two agree
+    assert rels[0] < 1e-7, \
+        'the deflated solve disagrees with the plain one by %.3e at an ' \
+        'offset where the plain one is well conditioned — it is solving a ' \
+        'different equation' % rels[0]
+
+    ## the physical pole survives: |y| grows as 1/df
+    mags = []
+    for r in (1e-3, 1e-4, 1e-5):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            mags.append(np.linalg.norm(
+                pac._deflated_solve(pss, np.exp(-2j * np.pi * r), b)))
+    for a, b_ in zip(mags, mags[1:]):
+        assert 8.0 < b_ / a < 12.0, \
+            'the response grows %.2fx per decade closer to the harmonic, ' \
+            'not the 10x of a 1/df pole — the pole has been removed from ' \
+            'the ANSWER rather than from the conditioning' % (b_ / a)
+
+
+def test_the_deflated_solve_still_refuses_an_exact_harmonic():
+    """Because the physical response there is unbounded.
+
+    `1/(1 − α)` is a division by zero at a harmonic. The pole is removed
+    from the CONDITIONING, not from the answer, so an exact harmonic is
+    still a question with no finite answer.
+    """
+    _cir, pss = _solve_slow(None)
+    pac = PAC(pss.cir, toolkit=circuit.numeric)
+    n = pss.factored_period().width
+    with pytest.raises(ValueError, match='EXACT harmonic'):
+        pac._deflated_solve(pss, 1.0 + 0.0j, np.ones(n))
+
+
+def test_the_deflated_solve_works_transposed_too():
+    """The adjoint rows need `(I − αMᵀ)`, whose borders swap.
+
+    Its null space is spanned by the PPV and its left null space by the
+    tangent, so `u` and `v` exchange roles. Checked against a dense
+    transposed solve where that is still trustworthy.
+    """
+    import warnings
+    _cir, pss = _solve_slow(None)
+    pac = PAC(pss.cir, toolkit=circuit.numeric)
+    fp = pss.factored_period()
+    n = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    rng = np.random.default_rng(3)
+    d = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    alpha = np.exp(-2j * np.pi * 1e-2)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        x = pac._deflated_solve(pss, alpha, d, transposed=True)
+    xp = np.linalg.solve(np.eye(n) - alpha * M.T, d)
+    rel = np.linalg.norm(x - xp) / np.linalg.norm(x)
+    assert rel < 1e-7, \
+        'the transposed deflated solve disagrees with a dense transposed ' \
+        'solve by %.3e; the borders are probably not swapped' % rel

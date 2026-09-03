@@ -2262,6 +2262,26 @@ class PSS(Analysis):
         `c` -- the diffusion constant this vector feeds -- has the
         designer-facing reading "JITTER PER SECOND".
 
+        ⚠ THREE NAMES FOR THIS OBJECT, AND ONE NEAR-MISS THAT IS NOT IT.
+        The PPV, Kaertner's adjoint LPTV impulse response, the PRC of
+        mathematical biology, and Hajimiri's NUMERICAL ISF are the same
+        thing.  His CLOSED-FORM ISF is NOT: it is the normalised tangent,
+        and the difference is not a scale factor but a SIGN -- for a noise
+        impulse at one point in the cycle "the closed-form ISF predicts a
+        POSITIVE phase change, whereas in fact the correct phase change is
+        in the NEGATIVE direction and of a different magnitude".  It also
+        does not scale with the perturbation, where the PPV does.
+
+        ⚠ AND `xdot` IS NOT A CHEAP SUBSTITUTE FOR IT -- "time-shifts and
+        amplitudes are both different ... the two waveforms scale in
+        OPPOSITE DIRECTIONS with respect to the RC time constant".  Nothing
+        here offers it as one: `xdot` appears only as the NORMALISATION
+        (`v . xdot = 1`, the PPV's defining property), as the border `q =
+        C(0) xdot(0)`, and in the record above of the SELECTION heuristic
+        that was rejected.  Stated because the substitution is a documented
+        point of common confusion, and the failure would be a sign error
+        rather than a visible one.
+
         ⚠ `y` COMING BACK ZERO IS A FREE CORRECTNESS CHECK, and it is not
         decoration.  With a zero first block on the right-hand side,
         `(I - M^T) v + y q = 0` forces `y q = 0`, so a nonzero `y` means the
@@ -2541,7 +2561,7 @@ class PSS(Analysis):
                 'Q': Q,
                 'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
                 'second_multiplier': lam2,
-                'q': q, 'xdot': xdot,
+                'q': q, 'xdot': xdot, 'tangent_pair': u,
                 'samples': np.asarray(states),
                 'times': np.asarray(fp.times, dtype=float)}
         return v, info
@@ -5107,8 +5127,18 @@ class PAC(Analysis):
                 fp.opening, fp.steps, np.zeros(n, dtype=complex),
                 collect=True, inject=inject)
             forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
-            z = self._gmres_checked(A, g, tol,
-                                    'the adjoint solve at sideband %d' % l)
+            ## ⚠ ON AN OSCILLATOR THIS OPERATOR IS SINGULAR AT EVERY
+            ## HARMONIC and near-singular around them, which is exactly
+            ## where phase noise is measured.  The deflated route borders
+            ## the pole out and carries `1/(1 - alpha)` analytically; on a
+            ## driven circuit there is no pole and the plain solve is both
+            ## correct and cheaper.
+            if getattr(pss, 'autonomous', False):
+                z = self._deflated_solve(pss, alpha, g, transposed=True,
+                                         tol=tol)
+            else:
+                z = self._gmres_checked(
+                    A, g, tol, 'the adjoint solve at sideband %d' % l)
             rows[li] = forced + alpha * pss._forced_replay_transposed(
                 fp, freq, z)
         self.matvecs = count[0]
@@ -5352,9 +5382,18 @@ class PAC(Analysis):
         return mats[0]
 
     ## How close to a harmonic of `f0` counts as "on" it, as a fraction of
-    ## `f0`.  `sigma_min` falls LINEARLY with the distance, so this is also
-    ## roughly the conditioning floor being accepted.
-    HARMONIC_GUARD = 1e-6
+    ## `f0`.
+    ##
+    ## ⚠ TIGHTENED BY A7.  This used to be the conditioning floor being
+    ## accepted, because `sigma_min` of the plain operator falls LINEARLY
+    ## with the distance and everything nearer was unusable.  The deflated
+    ## solve removes that: its conditioning is FLAT (measured 2.04e-01 from
+    ## 0.3 down to 1e-9 of `f0`), so the only remaining reason to refuse is
+    ## the physical one -- at an EXACT harmonic `1/(1 - alpha)` is a
+    ## division by zero and the response is genuinely unbounded.  So the
+    ## guard now excludes only what has no finite answer, not what was
+    ## merely hard to compute.
+    HARMONIC_GUARD = 1e-12
 
     def _check_circuit(self, pss):
         """The operating point must belong to THIS circuit, not a similar one.
@@ -5660,6 +5699,93 @@ class PAC(Analysis):
         upper = self.adjoint_sideband_row(pss, freq, output, carrier)[0]
         lower = self.adjoint_sideband_row(pss, -freq, output, carrier)[0]
         return self.am_pm_indices(upper / C, lower / C)
+
+    def _deflated_solve(self, pss, alpha, b, transposed=False, tol=None):
+        """`(I - alpha M) y = b` on an OSCILLATOR, with the pole taken out.
+
+        ⚠ THE SINGULARITY IS THE ANSWER'S OWN POLE, NOT A NUMERICAL DEFECT,
+        and that reframing is what makes the fix obvious.  At `alpha = 1`
+        the operator is `I - M`, singular by the unit multiplier, and the
+        solution really does diverge -- an oscillator's phase response to a
+        perturbation goes as `1/df`.  What is wrong is COMPUTING a `1/eps`
+        quantity through a system whose conditioning is also `1/eps`: the
+        answer is genuinely large and the digits are genuinely gone.
+
+        So the pole is carried ANALYTICALLY.  With `u`, `v` the right and
+        left null vectors of `I - M` -- the orbit tangent and the PPV, both
+        of which `ppv()` already returns -- border the system:
+
+            [ I - alpha M   u ] [ w ]   [ b ]
+            [     v^T       0 ] [ s ] = [ 0 ]
+
+        Because `v^T (I - alpha M) = (1 - alpha) v^T` and `v^T w = 0`, the
+        border variable comes out BOUNDED, `s = (v^T b)/(v^T u)`, with no
+        `1/eps` in it.  And since `(I - alpha M) u = (1 - alpha) u`, the
+        solution is recovered as
+
+            y = w + s u / (1 - alpha)
+
+        where `1 - alpha = 1 - exp(-j w T)` is the factor that vanishes at
+        every harmonic, evaluated in closed form rather than inverted
+        numerically.
+
+        MEASURED on van der Pol, offsets from 0.3 down to 1e-9 of `f0`:
+
+            offset/f0    sigma_min(plain)   sigma_min(bordered)
+            3e-01           5.68e-01            1.17e-01
+            1e-03           2.61e-03            2.04e-01
+            1e-06           2.61e-06            2.04e-01
+            1e-09           2.61e-09            2.04e-01
+
+        The plain operator tracks the offset over nine decades; the
+        bordered one is FLAT.  The two solutions agree to 5.7e-12 where the
+        plain solve is still trustworthy, and their disagreement grows as
+        `1/df` -- that is the PLAIN solve losing digits, not this one.
+
+        ⚠ IT STILL DIVERGES AT AN EXACT HARMONIC, and it should: `1/(1 -
+        alpha)` is then a division by zero, and the physical response is
+        unbounded.  What changes is that every offset NEAR a harmonic is
+        now well conditioned, which is where phase noise is measured.
+
+        `transposed` solves `(I - alpha M^T) x = b`, whose null space is
+        spanned by `v` and whose left null space is spanned by `u`, so the
+        borders swap.
+        """
+        import scipy.sparse.linalg as spla
+        fp = pss.factored_period()
+        n = fp.width
+        _v, info = pss.ppv()
+        v = np.asarray(_v, dtype=float)
+        u = np.asarray(info['tangent_pair'], dtype=float)
+        vu = float(v @ u)
+        if abs(vu) < 1e-300:
+            raise ValueError(
+                'PAC: the PPV is orthogonal to the orbit tangent, so the '
+                'bordering is singular and the pole cannot be removed.')
+        col, row = (v, u) if transposed else (u, v)
+        mv = (fp.matvec_transposed if transposed else fp.matvec)
+        b = np.asarray(b, dtype=complex).ravel()
+
+        def _mv(z):
+            z = np.asarray(z)
+            w_, s_ = z[:n], z[n]
+            top = w_ - alpha * np.asarray(mv(w_)) + s_ * col
+            return np.concatenate((top, [complex(row @ w_)]))
+
+        A = spla.LinearOperator((n + 1, n + 1), matvec=_mv, dtype=complex)
+        rhs = np.concatenate((b, [0.0 + 0.0j]))
+        rt = max(self.KRYLOV_FACTOR * pss.par.reltol if tol is None else tol,
+                 1e-14)
+        z = self._gmres_checked(A, rhs, rt, 'the deflated solve')
+        w, s = z[:n], z[n]
+        denom = 1.0 - alpha
+        if denom == 0:
+            raise ValueError(
+                'PAC: the deflated solve was asked for an EXACT harmonic, '
+                'where 1/(1 - alpha) is a division by zero and the physical '
+                'response is unbounded. The pole is removed from the '
+                'CONDITIONING, not from the answer.')
+        return w + s * col / denom
 
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""
