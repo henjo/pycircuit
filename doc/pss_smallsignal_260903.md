@@ -219,12 +219,21 @@ no PPV appears in the measurement:
 | core injection (control) | **0.9965** |
 | slow node, τ/T = 10 | **0.8016** |
 
-Within 20%, about 2σ at this sample count, and in the **under**-predicting direction. The
-literature's "significant over-estimation" **does not reproduce** at this time constant, so a
-frequency-aware fix is **not justified by measurement** on a circuit we can build. The warning
-buys the honest statement that the number is degrading — not a claim about how far. Larger
-`τ/T` is untested; the measurement needs ~15 time constants of settling, so its cost scales
-with `τ`.
+Within 20%, about 2σ at this sample count, and in the **under**-predicting direction.
+
+⚠ **That is a NULL, not a falsification** — and this section first read it as one. `τ/T = 10`
+is *outside* the regime the reported mechanism needs: it bites through ill-conditioning, and
+by the table above `σ_min` at τ/T = 10 is ~**4.5e-02**, healthy. The reported case is a
+gated-capacitor tuning bank at **τ/T ~ 3e9** — eight orders away. **A null at 10 is what the
+mechanism predicts.**
+
+So: not reproduced at τ/T = 10, which is outside the regime; **untested** where it is
+reported. The fix is still not built for a reason that stands alone — **cost**: ~15 time
+constants of settling means 150 000 periods per realisation at τ/T = 1e4.
+
+⚠ And the 0.80 runs **opposite** to the reported effect. If it survives the ~10% Monte Carlo
+uncertainty it is a separate ~20% *under*-prediction where conditioning is fine, not a weak
+version of the reported one. At ~2.5σ, not established either way.
 
 ⚠ **It took three attempts to measure**, each a case of reading a number before showing the
 *measurement* was in the regime it assumes: a window of 2–4 time constants read the slow

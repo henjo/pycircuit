@@ -2445,11 +2445,34 @@ class PSS(Analysis):
         ##     slow node, tau/T = 10      c_ppv/c_meas = 0.8016
         ##
         ## Within 20%, about 2 sigma at this sample count, and in the
-        ## UNDER-predicting direction.  The literature's "significant
-        ## over-estimation" DOES NOT REPRODUCE at this time constant, so a
-        ## frequency-aware fix is not justified by measurement on a circuit
-        ## we can build.  The warning buys the honest statement that the
-        ## number is degrading -- not a claim about how far.
+        ## UNDER-predicting direction.
+        ##
+        ## ⚠ BUT THAT IS NOT A FALSIFICATION, AND THIS DOCSTRING SAID IT
+        ## WAS.  `tau/T = 10` is OUTSIDE the regime the reported mechanism
+        ## needs: it bites through ill-conditioning, and by the table above
+        ## `sigma_min` at `tau/T = 10` is ~4.5e-02 -- healthy.  The PPV has
+        ## no large entries there and nothing is splitting into two nearly
+        ## cancelling components.  Lai's own case is a gated-capacitor
+        ## tuning bank whose off-caps have RC "larger than 1 second" at
+        ## 3.15 GHz, i.e. `tau/T ~ 3e9` -- eight orders from what was
+        ## tested.  A null result at 10 is what the mechanism PREDICTS, not
+        ## evidence against it.
+        ##
+        ## ⚠ SO THE HONEST RECORD IS: not reproduced at `tau/T = 10`, which
+        ## is outside the regime where the mechanism predicts an effect;
+        ## UNTESTED at the `tau/T ~ 1e9` where it is reported.  And the
+        ## reason the fix is still not built is COST, not falsification:
+        ## the measurement needs ~15 time constants of settling, so at
+        ## `tau/T = 1e4` that is 150 000 periods per realisation.  That
+        ## argument stands on its own; the falsification framing does not,
+        ## and this codebase's ledger distinguishes them.
+        ##
+        ## ⚠ AND THE 0.80 IS IN THE OPPOSITE DIRECTION TO THE REPORTED
+        ## EFFECT.  If it survives the ~10% Monte Carlo uncertainty at 200
+        ## realisations it is a separate ~20% UNDER-prediction at a `tau/T`
+        ## where the conditioning is fine -- not a weak version of Lai's.
+        ## At ~2.5 sigma it is not established either way, and it is
+        ## recorded rather than resolved.
         ##
         ## ⚠ Larger `tau/T` is untested and the cost is why: the
         ## measurement needs ~15 time constants of settling.

@@ -245,12 +245,29 @@ else, so a second multiplier approaching 1 takes the conditioning with it:
 estimates `|λ₂|` by deflated power iteration (recovered to six digits) and **warns**, saying
 the result is an upper bound — because no residual can report this.
 
-⚠ **GATED 2026-09-03, AND THE RESULT IS NEGATIVE — the fix is not justified.** Monte Carlo on
-the full nonlinear circuit (200 realisations, 150 periods, phase from zero-crossing timing, no
-PPV in the measurement): control **0.9965**, slow node at τ/T = 10 **0.8016**. Within 20%,
-~2σ, and **under**-predicting. The literature's "significant over-estimation" does not
-reproduce at this time constant. Larger τ/T is untested — the measurement needs ~15 time
-constants of settling, so its cost scales with τ.
+⚠ **GATED 2026-09-03 — and the result is a NULL, not a falsification.** Monte Carlo on the
+full nonlinear circuit (200 realisations, 150 periods, phase from zero-crossing timing, no PPV
+in the measurement): control **0.9965**, slow node at τ/T = 10 **0.8016**.
+
+⚠ **BUT τ/T = 10 IS OUTSIDE THE REGIME THE MECHANISM NEEDS, and an earlier version of this
+entry read the null as a refutation.** The reported effect bites through ill-conditioning, and
+by our own table `σ_min` at τ/T = 10 is ~**4.5e-02** — healthy. The PPV has no large entries
+there and nothing is splitting into nearly cancelling components. Lai's own case is a
+gated-capacitor tuning bank whose off-caps have RC "larger than 1 second" at 3.15 GHz, i.e.
+**τ/T ~ 3e9** — eight orders from what was tested. **A null at 10 is what the mechanism
+predicts.**
+
+**The honest record:** not reproduced at τ/T = 10, which is outside the regime where the
+mechanism predicts an effect; **untested** at the τ/T ~ 1e9 where it is reported.
+
+**And the fix is still not built for a reason that stands on its own: COST.** The measurement
+needs ~15 time constants of settling, so at τ/T = 1e4 that is 150 000 periods per realisation.
+That argument justifies the decision; the falsification framing did not, and this ledger
+distinguishes them.
+
+⚠ **The 0.80 is in the OPPOSITE direction to the reported effect.** If it survives the ~10%
+Monte Carlo uncertainty it is a separate ~20% *under*-prediction at a τ/T where conditioning
+is fine — not a weak version of Lai's. At ~2.5σ it is not established either way.
 
 ⚠ **It took three attempts, all the same mistake:** a window of 2–4 time constants read the
 slow mode's *decay* as diffusion; an impulse test could not resolve a 1e-11 time shift; and one
@@ -1127,6 +1144,14 @@ Each of these cost real time. They are recorded so the next reader spends none.
 ## D. How these items keep failing — the shapes worth checking for
 
 Sixteen claims were overturned across this campaign. Four shapes account for most:
+
+0. **A result asserted outside the regime the claim is about.** A4's criterion tested on an
+   autonomous circuit when the paper says non-autonomous; the A2 gate's window set to 2–4 time
+   constants when the quantity is asymptotic; and the A2 gate's *conclusion* read as a
+   falsification when it was run at τ/T = 10 and the mechanism needs τ/T ~ 1e9. **Three
+   instances, and the third was in the conclusion rather than the instrument.** Before reading
+   a null as evidence, check that the measurement was inside the regime where the effect is
+   predicted to exist.
 
 1. **A quantity right in one frame, carried into another.** The `x_in`/`x_0` Jacobian
    frame; the phase pin taken one step after the seed; the replay's `X[0]`; A&T's Step 3
