@@ -349,6 +349,13 @@ offsets, which is where phase noise lives.
 
 ## Method requirements
 
+⚠ **Nothing assumes `C` is symmetric** — checked, because a MOS transcapacitance matrix is
+not. The forward recursion uses `C @ x` and the reverse uses `C.T @ t` explicitly, which is
+the correct transpose pairing rather than a symmetric shortcut, so a non-symmetric `C` from a
+compact model propagates correctly through the adjoint. Every element in the discrete library
+happens to give an exactly symmetric `C` (`max|C − Cᵀ| = 0`), so the case is unreachable
+today — but the code is already right for it.
+
 | capability | method |
 |---|---|
 | `PAC.solve`, `pnoise` | any; **gear** for the method's own order |
