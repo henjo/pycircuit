@@ -8206,3 +8206,97 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
         'the PPV differs between inner solvers; the largest component ' \
         'gap is %.3e' % float(np.max(np.abs(v0 - v1)))
     assert r0 < 1e-9 and r1 < 1e-9
+
+
+def test_the_in_tree_gmres_matches_scipy_and_keeps_its_hessenberg():
+    """⚠ WRITTEN RATHER THAN IMPORTED, AND SPEED IS NOT THE REASON.
+
+    `_arnoldi_gmres` exists for two things SciPy's cannot do:
+
+    **It keeps `H`.** García, Romero & Acha read the Floquet multipliers
+    off exactly this matrix — Ritz values `θ` of `I − M` map back as
+    `λ = 1 − θ` — so a GMRES that discards its Hessenberg matrix throws
+    away the spectrum it just computed.
+
+    **It judges by residual, not by a status flag.** SciPy returns
+    `info = 4` on a HAPPY breakdown — the Krylov space exhausted *because
+    the answer is exact* — which turned an exact AM/PM result into a
+    `RuntimeError` and is why `PAC._gmres_checked` had to overrule it.
+    Here the breakdown is detected where it happens.
+
+    Gated three ways: agreement with SciPy to ~1e-15 on well-conditioned
+    systems; Ritz values of `H` recovering a known spectrum to 1e-15 at
+    `k = n`; and reorthogonalisation earning its cost — **5 orders** on
+    the Ritz values (3.51e-10 → 4.48e-15 at a spectral spread of 1e2),
+    because modified Gram-Schmidt loses orthogonality as the basis grows
+    and a drifted basis gives multipliers **the residual cannot see are
+    wrong**.
+    """
+    import scipy.sparse.linalg as spla
+    from pycircuit.circuit.shooting import _arnoldi_gmres
+    rng = np.random.default_rng(0)
+
+    for n in (4, 12, 40):
+        A = rng.standard_normal((n, n)) + n * np.eye(n)
+        b = rng.standard_normal(n)
+        x1, relres, _H, _k = _arnoldi_gmres(lambda v: A @ v, b, rtol=1e-13)
+        x2, info = spla.gmres(A, b, rtol=1e-13, restart=min(n, 50),
+                              maxiter=min(n, 200))
+        assert info == 0, 'scipy failed on the reference system'
+        assert np.linalg.norm(x1 - x2) / np.linalg.norm(x1) < 1e-10, \
+            'n=%d: the in-tree solve disagrees with scipy' % n
+        assert (np.linalg.norm(A @ x1 - b) / np.linalg.norm(b)
+                < max(1e3 * 1e-13, 1e-10)), \
+            'n=%d: relres reported %.3e but the true residual disagrees' \
+            % (n, relres)
+
+    ## H carries the spectrum
+    n = 10
+    ev = np.linspace(0.1, 0.9, n)
+    Qr, _r = np.linalg.qr(rng.standard_normal((n, n)))
+    A = Qr @ np.diag(ev) @ Qr.T
+    b = rng.standard_normal(n)
+    _x, _rr, H, k = _arnoldi_gmres(lambda v: A @ v, b, rtol=1e-15)
+    assert k == n, 'the full basis was not built (k = %d)' % k
+    ritz = np.sort(np.real(np.linalg.eigvals(H)))
+    assert np.max(np.abs(ritz - ev)) < 1e-12, \
+        'the Ritz values of H do not recover the spectrum (max err %.3e); ' \
+        'H is the whole reason this function exists' \
+        % float(np.max(np.abs(ritz - ev)))
+
+    ## reorthogonalisation is not decoration
+    ev2 = np.logspace(0, 2, 30)
+    Q2, _r2 = np.linalg.qr(np.random.default_rng(7).standard_normal((30, 30)))
+    A2 = Q2 @ np.diag(ev2) @ Q2.T
+    b2 = np.random.default_rng(7).standard_normal(30)
+    errs = {}
+    for ro in (False, True):
+        _x2, _r3, H2, k2 = _arnoldi_gmres(lambda v: A2 @ v, b2,
+                                          rtol=1e-15, reortho=ro)
+        assert k2 == 30
+        errs[ro] = float(np.max(np.abs(
+            np.sort(np.real(np.linalg.eigvals(H2))) - ev2) / ev2))
+    assert errs[True] < errs[False] / 100.0, \
+        'reorthogonalisation buys only %.1fx on the Ritz values (%.3e -> ' \
+        '%.3e); if it has stopped mattering the extra pass should go, and ' \
+        'if it has stopped WORKING the multipliers are wrong in a way the ' \
+        'residual cannot see' % (errs[False] / errs[True],
+                                 errs[False], errs[True])
+
+
+def test_the_ppv_is_unchanged_by_the_gmres_swap():
+    """The bordered solves moved off scipy; the answers must not move.
+
+    `ppv()`'s two augmented solves now use `_arnoldi_gmres` and judge
+    convergence by relative residual rather than by a status code. That is
+    a change to *how failure is decided*, not to the mathematics, so the
+    values are pinned against what the scipy path produced.
+    """
+    _cir, pss, _pac = _vdp_at_Q(16.0, npts=480)
+    _v, info = pss.ppv()
+    assert abs(info['second_multiplier'] - 0.9394257319) < 1e-9, \
+        'lambda_2 = %.10f against the 0.9394257319 the scipy path gave' \
+        % info['second_multiplier']
+    assert abs(info['Q'] - 16.003453) < 1e-4
+    assert info['null_residual'] < 1e-11
+    assert abs(info['border_residual']) < 1e-11

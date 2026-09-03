@@ -59,6 +59,73 @@ def _complex_solve(lu, b):
     return lu.solve(b)
 
 
+def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
+    """GMRES that keeps its Hessenberg matrix and judges its own residual.
+
+    Returns `(x, relres, H, k)`: the solution, the RELATIVE residual, the
+    `k x k` Hessenberg matrix of the Krylov basis actually built, and `k`.
+
+    ⚠ WRITTEN RATHER THAN IMPORTED FOR TWO REASONS, AND SPEED IS NEITHER.
+
+    FIRST, `H` IS THE POINT.  Garcia, Romero & Acha (IEEE Trans. Power
+    Systems 37(1), 2022) read the Floquet multipliers off exactly this
+    matrix -- Ritz values `theta` of `I - M` map back as `lam = 1 - theta`
+    -- so a GMRES that discards `H` throws away the spectrum it just
+    computed.  `scipy.sparse.linalg.gmres` discards it.
+
+    SECOND, AND THE REASON THIS IS A CORRECTNESS CHANGE: SciPy REPORTS
+    BREAKDOWN ON SYSTEMS IT HAS ALREADY SOLVED.  When the Krylov space is
+    exhausted the next basis vector is numerically zero -- a HAPPY
+    breakdown, where the answer is EXACT -- and it comes back as
+    `info = 4`.  Trusting that flag turns an exact answer into a
+    `RuntimeError`, which is what it did for AM/PM at small offsets and
+    why `PAC._gmres_checked` exists to overrule it.  Here the breakdown is
+    detected where it happens and returned as the converged answer it is.
+
+    ⚠ REORTHOGONALISED ONCE BY DEFAULT.  Modified Gram-Schmidt loses
+    orthogonality as the basis grows, and the Ritz values are read off `H`
+    -- so a basis that has drifted gives multipliers that are wrong in a
+    way the residual cannot see.  One extra pass is `O(k n)` against the
+    matvec's cost, which here is a full replay of the period.
+
+    ⚠ NO RESTARTS.  Restarting discards the basis, which is the object
+    this exists to keep.  For the systems here -- `2m` unknowns, `k`
+    bounded by `n` -- the full basis is affordable; a caller that needs
+    restarts needs a different function and should not silently get one.
+    """
+    b = np.asarray(b)
+    n = b.shape[0]
+    kmax = int(min(n, maxiter if maxiter else n))
+    beta = float(np.linalg.norm(b))
+    if beta == 0.0 or kmax < 1:
+        return np.zeros_like(b), 0.0, np.zeros((0, 0)), 0
+    Q = [b / beta]
+    H = np.zeros((kmax + 1, kmax), dtype=b.dtype)
+    for j in range(kmax):
+        w = np.asarray(matvec(Q[j]))
+        for i in range(j + 1):
+            H[i, j] = np.vdot(Q[i], w)
+            w = w - H[i, j] * Q[i]
+        if reortho:
+            for i in range(j + 1):
+                c = np.vdot(Q[i], w)
+                H[i, j] += c
+                w = w - c * Q[i]
+        H[j + 1, j] = float(np.linalg.norm(w))
+        rhs = np.zeros(j + 2, dtype=b.dtype)
+        rhs[0] = beta
+        y, *_ = np.linalg.lstsq(H[:j + 2, :j + 1], rhs, rcond=None)
+        relres = float(np.linalg.norm(H[:j + 2, :j + 1] @ y - rhs)) / beta
+        happy = H[j + 1, j] <= 1e-14 * max(beta, 1.0)
+        if relres <= rtol or happy or j + 1 == kmax:
+            x = np.zeros_like(b)
+            for i in range(j + 1):
+                x = x + y[i] * Q[i]
+            return x, relres, np.array(H[:j + 1, :j + 1]), j + 1
+        Q.append(w / H[j + 1, j])
+    raise AssertionError('unreachable')
+
+
 class FactoredPeriod(object):
     """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
 
@@ -2371,14 +2438,19 @@ class PSS(Analysis):
         A = spla.LinearOperator((n + 1, n + 1), matvec=_mv, dtype=float)
         rhs = np.zeros(n + 1)
         rhs[n] = 1.0
-        z, code = spla.gmres(A, rhs, rtol=rtol, restart=min(n + 1, 50),
-                             maxiter=min(n + 1, 200))
-        if code != 0:
+        ## ⚠ JUDGED BY ITS RESIDUAL, NOT BY A STATUS CODE.  SciPy returns
+        ## `info = 4` on a HAPPY breakdown -- the Krylov space exhausted
+        ## because the answer is exact -- and these bordered operators are
+        ## small enough to hit that routinely.  `_arnoldi_gmres` detects
+        ## the breakdown where it happens and returns the exact answer.
+        z, relres, _Ha, _ka = _arnoldi_gmres(
+            _mv, rhs, rtol=rtol, maxiter=min(n + 1, 200))
+        if relres > max(1e3 * rtol, 1e-8):
             raise RuntimeError(
-                'PSS.ppv: the augmented solve did not converge (info=%r). '
-                'The border is `q` itself; if the orbit tangent is nearly '
-                'orthogonal to the null direction the bordering is poor.'
-                % code)
+                'PSS.ppv: the augmented solve did not converge (relative '
+                'residual %.3e). The border is `q` itself; if the orbit '
+                'tangent is nearly orthogonal to the null direction the '
+                'bordering is poor.' % relres)
         v, y = z[:n], float(z[n])
         resid = float(np.linalg.norm(
             v - self._monodromy_matvec_transposed(fp.opening, fp.steps, v)))
@@ -2395,12 +2467,12 @@ class PSS(Analysis):
             return np.concatenate((top, [float(qp @ u_)]))
 
         Af = spla.LinearOperator((n + 1, n + 1), matvec=_mvf, dtype=float)
-        zf, codef = spla.gmres(Af, rhs, rtol=rtol, restart=min(n + 1, 50),
-                               maxiter=min(n + 1, 200))
-        if codef != 0:
+        zf, relresf, _Hf, _kf = _arnoldi_gmres(
+            _mvf, rhs, rtol=rtol, maxiter=min(n + 1, 200))
+        if relresf > max(1e3 * rtol, 1e-8):
             raise RuntimeError(
-                'PSS.ppv: the tangent solve did not converge (info=%r).'
-                % codef)
+                'PSS.ppv: the tangent solve did not converge (relative '
+                'residual %.3e).' % relresf)
         u, yf = zf[:n], float(zf[n])
 
         ## `u` is the tangent's DIRECTION; its scale comes from `C u = q`,
@@ -5939,10 +6011,14 @@ class PAC(Analysis):
         harmonic is that the operator is nearly singular there and no
         tolerance will fix it.
         """
-        import scipy.sparse.linalg as spla
+        ## ⚠ NOW OUR OWN ARNOLDI-GMRES, which returns the residual as its
+        ## verdict instead of a status flag that has to be overruled.
+        ## The workaround below survives as the TOLERANCE decision; what
+        ## has gone is the second opinion about whether the solve failed.
         n = b.shape[0]
-        x, info = spla.gmres(A, b, rtol=rtol, restart=min(n, 50),
-                             maxiter=min(n, 200))
+        x, relres, _H, _k = _arnoldi_gmres(
+            A.matvec, b, rtol=rtol, maxiter=min(n, 200))
+        info = 0
         r = float(np.linalg.norm(b - A.matvec(x)))
         scale = max(float(np.linalg.norm(b)), 1e-300)
         if r / scale > max(1e3 * rtol, 1e-8):
