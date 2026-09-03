@@ -7526,3 +7526,134 @@ def test_the_modulated_path_accepts_what_the_stationary_one_refuses():
         'modulated %.6e against frozen-at-mean %.6e; the construction is ' \
         'defined as the cycle-averaged source, so these are the same ' \
         'quantity and a difference is a quadrature error' % (S, S_mean)
+
+
+class _SquareMixer(Circuit):
+    """`i_out = g·(v_lo)²·(v_in)` — transconductance `g·cos²(ω₀t)`.
+
+    A four-quadrant-style element built for one purpose: give the
+    noise-to-output transfer an exactly known periodic shape. Driving `lo`
+    with a unit cosine makes the small-signal transconductance `g·cos²`,
+    whose Fourier coefficients are `H₀ = ½`, `H_±2 = ¼` and nothing else.
+    """
+
+    terminals = ('outp', 'outn', 'inp', 'inn', 'lop', 'lon')
+    instparams = [Parameter(name='g', desc='Transconductance coefficient',
+                            unit='A/V^3', default=1.0)]
+
+    def i(self, x, epar=None):
+        g = self.iparv.g
+        f = g * (x[4] - x[5]) ** 2 * (x[2] - x[3])
+        return self.toolkit.array([f, -f, 0.0, 0.0, 0.0, 0.0])
+
+    def G(self, x, epar=None):
+        g = self.iparv.g
+        vi = x[2] - x[3]
+        vlo = x[4] - x[5]
+        J = np.zeros((6, 6))
+        dvi = g * vlo * vlo
+        dlo = 2.0 * g * vlo * vi
+        for r, sgn in ((0, 1.0), (1, -1.0)):
+            J[r, 2], J[r, 3] = sgn * dvi, -sgn * dvi
+            J[r, 4], J[r, 5] = sgn * dlo, -sgn * dlo
+        return self.toolkit.array(J)
+
+    def C(self, x, epar=None):
+        return self.toolkit.zeros((6, 6))
+
+    def CY(self, x, w, epar=None):
+        return self.toolkit.zeros((6, 6))
+
+
+def _cos2_mixer(f0=1e3, psd=1e-18, rin=1e3, rout=1e3, g=1e-3, npts=400):
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    for nn in ('lo', 'vin', 'out'):
+        cir.add_node(nn)
+    cir['vlo'] = VSin('lo', gnd, va=1.0, freq=f0)
+    cir['nsrc'] = IS('vin', gnd, i=0.0, noisePSD=psd)
+    cir['rin'] = R('vin', gnd, r=rin)
+    cir['M'] = _SquareMixer('out', gnd, 'vin', gnd, 'lo', gnd, g=g)
+    cir['rout'] = R('out', gnd, r=rout)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1.0 / f0, timestep=1.0 / (f0 * npts), refnode=gnd,
+                  maxiterations=60)
+    assert pss.converged
+    irn = pss.irefnode
+    k = cir.get_node_index('out')
+    k = k - 1 if k > irn else k
+    d = np.zeros(cir.n - 1)
+    d[k] = 1.0
+    return cir, pss, PAC(cir, toolkit=circuit.numeric), d, (rout * g * rin) ** 2
+
+
+def test_the_sideband_sum_gives_three_eighths_and_not_one_quarter():
+    """⚠⚠ THE EXTERNAL GATE FOR THE CYCLOSTATIONARY PATH — and the wrong
+    answer is a specific number, not merely a wrong shape.
+
+    Roychowdhury, Long & Feldmann (1998) follow stationary noise through a
+    cascade of mixers and report that a naive stationary-only analysis
+    returns **¼** of the input power where the truth is **⅜** — *"50% more
+    than that predicted by the previous naive analysis"*.
+
+    Realised here by Parseval rather than by a mixer chain, which is the
+    same content in one element. A transconductance `∝ cos²(ω₀t)` has
+    `H₀ = ½` and `H_±2 = ¼`, so
+
+        Σ_l |H_l|²  =  ¼ + 1/16 + 1/16  =  3/8      (full sum)
+        |H₀|²       =  ¼                            (l = 0 alone)
+
+    and `3/8` is also `E[cos⁴]`, a two-line trigonometric identity **using
+    none of the machinery it gates**. That is what makes this external in
+    the strong sense: its answer cannot be influenced by the
+    implementation under test. It is this problem's `kT/C`.
+
+    MEASURED, at three output frequencies:
+
+        maxsidebands   S/(gain²·PSD)   sidebands used
+             0           0.250021      [0]
+             2           0.375023      [−2 … 2]
+             4           0.375023      converged
+             8           0.375023      converged
+
+    ⚠ THE RATIO IS THE ASSERTION, AND IT IS DISCRETISATION-FREE. Both
+    terms carry the same `H₀` error, so `full/l₀ = 1.500005` while each
+    absolute value is 2.3e-05 off `3/8` at 400 points per period. A
+    tolerance on the absolute number would have been a grid test; the
+    ratio is the physics.
+
+    ⚠ AND IT PINS THE ACCUMULATION, WHICH NOTHING ELSE DID. `pnoise` was
+    gated as a *ratio* against `analysis_ss.Noise` on a circuit whose
+    transfer is time-INVARIANT — where every sideband but `l = 0` is zero,
+    so the sum was never exercised. This is the first absolute,
+    analytically known target for `H_l` on a genuinely time-varying
+    transfer, and truncating at `l = 0` reproduces exactly the error
+    RLF98 names.
+    """
+    _cir, pss, pac, d, gain2 = _cos2_mixer()
+    psd = 1e-18
+    for fout in (10.0, 50.0, 137.0):
+        S0, u0 = pac.pnoise(pss, fout, d, maxsidebands=0)
+        Sf, uf = pac.pnoise(pss, fout, d, maxsidebands=4)
+        assert sorted(u0) == [0]
+        assert abs(S0 / (gain2 * psd) - 0.25) < 1e-3, \
+            'f=%g: l=0 alone gives %.6f, not the 1/4 a stationary-only ' \
+            'analysis returns' % (fout, S0 / (gain2 * psd))
+        assert abs(Sf / (gain2 * psd) - 0.375) < 1e-3, \
+            'f=%g: the full sum gives %.6f, not E[cos^4] = 3/8' \
+            % (fout, Sf / (gain2 * psd))
+        ## the discriminating number, free of the grid
+        assert abs(Sf / S0 - 1.5) < 1e-4, \
+            'f=%g: full/l0 = %.6f rather than 1.5 (1.76 dB). Both share ' \
+            'the same H_0 discretisation error, so this ratio is the ' \
+            'physics and a tolerance on the absolute value would not be' \
+            % (fout, Sf / S0)
+    ## and it converges where Parseval says it must: H_l = 0 for |l| > 2
+    S2, _ = pac.pnoise(pss, 50.0, d, maxsidebands=2)
+    S8, _ = pac.pnoise(pss, 50.0, d, maxsidebands=8)
+    assert abs(S8 / S2 - 1.0) < 1e-12, \
+        'sidebands beyond l = +-2 contribute %.3e; cos^2 has exactly ' \
+        'three nonzero Fourier coefficients' % abs(S8 / S2 - 1.0)
