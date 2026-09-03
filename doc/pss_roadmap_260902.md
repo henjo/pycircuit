@@ -49,7 +49,14 @@ amplitude decay, and (g) says that is precisely what `λ₂` measures.
 essentially stopped — **9 citations of Telichevesky 1995 since 2021**, most from other fields —
 while the PPV line is cited ~150 times, almost entirely by applications. So the identity that
 organises this whole document is one we re-derived independently and ship at
-`shooting.py:2558`, and it is **not** a result anyone is building on. Treat that as a reason to
+`shooting.py:2558`, and it is **not** a result anyone is building on.
+
+⚠ **Read the count carefully, though: a field can stop publishing on something because it is
+FINISHED rather than because it is abandoned.** Nine citations since 2021 alone reads as
+abandonment; the same nine *plus* Cadence shipping shooting-adjacent PSS acceleration into
+**PSpice** in 2023 reads as settled — the vendor datum is the discriminator. And "cited once
+ever" could mean nobody noticed *or* that everyone who needed it re-derived it. **We re-derived
+it independently**, which is one data point for the second reading. Treat that as a reason to
 state it carefully rather than as a reason to doubt it: we verified it numerically here
 (`test_the_reported_Q_amplifies_its_own_lambda2_error_by_Q`) and it has now reproduced in three
 independent settings.
@@ -959,6 +966,23 @@ HAVE THE PROBLEM.** Harmonic balance has **no timestep history to break at an in
 boundary**, so the forced low-order restarts do not exist there and no `λ₂` bias is injected. So
 the GPU-parallelism argument is *cleaner on the HB side than on the shooting side* — which is the
 first thing in this record that favours HB over shooting on anything but sparsity.
+
+⚠⚠ **THE BIAS IS AVOIDABLE BY CHANGING THE INTEGRATOR, NOT ONLY BY ABANDONING THE PARALLELISM
+— and we already hold the note, argued for a different reason.** The cost is not of *parallelism*
+but of *parallelising a method with history*, so a **one-step** high-order method pays none of it:
+there is no multistep history to break at a boundary. `shooting.py:689` already records Wambacq,
+Vandersteen, Phillips, Roychowdhury, Eberle, Yang, Long & Demir arguing for one-step
+Chebyshev-IRK precisely because *"each step is independent of the ones before and after"* — from
+**stability and step adaptivity**. The parallel-shooting bias is a **second, independent
+motivation for the same property, which that paper does not state.**
+
+⚠⚠ **BUT THE ESCAPE COLLIDES WITH OUR OWN ARCHITECTURE, AND THAT IS THE LIVE CONSTRAINT.** We
+ship `euler`, `trap` and `gear` (BDF-2). Trapezoidal *is* one-step and would pay no bias — but
+**every adjoint path refuses anything but `gear`**: `factored_period().matvec_transposed`, `ppv`,
+`_forced_replay_transposed`, `covariance`, `oscillator_covariance` and `_lyapunov_pieces` all
+require the solved-history factors. So "switch the integrator to dodge the parallel-shooting
+bias" would cost **the entire A1–A4d surface**. Adopting IRK means rebuilding the transposed
+replay for a one-step companion, which is a real project and not a flag change.
 
 ⚠ **So parallel shooting has THREE costs, not one: memory, the lost nonlinearity-hiding, and a
 systematic `λ₂` bias amplified by `Q`.** The parallel-in-time and GPU-shooting papers filed here
@@ -1909,8 +1933,35 @@ both — a bulk of fast modes *and* `λ₁ = 1` — so **the gate must be run on
 genuine damped bulk before this is adopted**, and neither of our fixtures qualifies. Not their
 result refuted; **untestable on what we have**, which is exactly §D 0c.
 
-**Gate to run:** a circuit with ≥10 states and a spread of fast modes; compare truncated Ritz
-values against `_spectral_report` at low and high `Q`. Cheap — the mapping is already verified.
+⚠⚠⚠ **THE GATE WAS RUN — on a synthetic `{1, λ₂, U(0, bulk_max)^38}` carrying BOTH a bulk and
+`λ₁`. Both effects are real, they cross over, and THEY ARE NOT COMPARABLE IN SIZE.** Median Ritz
+error in `λ₂` over 12 draws at `k = 8`, `bulk_max = 0.35`:
+
+| `Q` | 0.14 | 1 | 2 | 8 | 32 | 64 | 256 |
+|---|---|---|---|---|---|---|---|
+| err(`λ₂`) | 8.9e-03 | 2.9e-02 | 2.1e-04 | **2.5e-05** | 9.0e-05 | 2.1e-04 | 2.8e-04 |
+
+**Non-monotonic, sweet spot at `Q ≈ 4–16`.**
+
+⚠ **The lower edge is a CLIFF and it is predictable:** the error drops immediately above
+`Q = −1/ln(bulk_max)` — verified at 0.53, 0.95 and 2.80 for `bulk_max` = 0.15, 0.35, 0.70.
+**`λ₂` must be slower than the fastest of the fast modes before Arnoldi can separate it.**
+
+⚠⚠ **AND THE TWO EFFECTS ARE VERY UNEQUAL, WHICH SETTLES IT:** the bulk cliff is **3–4 orders
+over a factor ~2 in `Q`**; the `λ₁` degradation is **1–1.5 orders over four decades**. So the
+Ritz route is governed by the **bulk** question, not the `λ₁` collision. My concern was real and
+is **second-order**. The honest statement is neither "improves with `Q`" nor "degrades": it
+**improves sharply up to the bulk edge, then degrades gently forever**.
+
+⚠⚠⚠ **AND THE FINDING NEITHER OF US ANTICIPATED — THE BULK WIDTH DOMINATES `Q` ENTIRELY.** At
+`bulk_max = 0.15` the error is ~1e-7 across the whole usable range; at 0.70 it never gets below
+1e-2. **Five orders, from the PARASITICS rather than from the oscillator.** A circuit with fast,
+well-separated parasitic modes gets an essentially free `λ₂`; one whose fast modes are sluggish
+does not, **whatever its `Q`**. That inverts the usual reading of §0: here the thing that decides
+is not the designed quantity but the incidental one.
+
+**Gate remaining:** confirm on a real circuit with ≥10 states — the synthetic settles the
+mechanism, not the applicability. Cheap; the mapping is already verified above.
 
 ### A5. Envelope-following — last
 
