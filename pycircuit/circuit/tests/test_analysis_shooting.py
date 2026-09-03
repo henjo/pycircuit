@@ -6105,12 +6105,27 @@ def test_the_transposed_replay_gate_cannot_see_a_dropped_transpose():
         NON-symmetric C      3.994e-16       4.667e-01   ← caught
 
     ⚠ AND THE ERROR CLASS IS REAL IN THIS TREE, not hypothetical.
-    `compact.PspMosLongChannel`'s `C` is non-symmetric at a ratio of
-    **0.44** over a normal saturation bias box — `Cgd = −4.31 fF` against
-    `Cdg = −0.13 fF`, a factor of 33, which is Ward-Dutton charge
-    partition, not a modelling nicety. So the moment a PSS is run on a MOS
-    circuit the transpose matters, and until then nothing in the suite
+    `compact.PspMosLongChannel`'s `C` is non-symmetric — `Cgd = −4.31 fF`
+    against `Cdg = −0.13 fF`, a factor of 33, which is Ward-Dutton charge
+    partition and the model being RIGHT. So the moment a PSS is run on a
+    MOS circuit the transpose matters, and until then nothing in the suite
     would change state to say so.
+
+    ⚠ QUOTED AGAINST `Cox`, BECAUSE THAT IS THE COMPARABLE NORMALISATION
+    AND THE FIRST ATTEMPT USED A DIFFERENT ONE. McAndrew's figure is a
+    nonreciprocity over `Cox` (`|C_ij − C_ji| ≲ 0.01·Cox`); the 0.44 this
+    once quoted was a ratio to `max|C|`, and 33 is a spread between two
+    entries — three different denominators. Measured properly:
+
+        |C_ij - C_ji|  = 4.97 fF   (worst over Vg, Vd in [0, 1.2])
+        Cox            = 15.35 fF  (max Cgg, Vds = 0)
+        ratio          = 0.324     =  32x McAndrew's 0.01
+
+    and `Cox` is anchored OUTSIDE the `C()` code by the model's own
+    geometry: `eps_ox W L / tox` with `W = L = 1e-6`, `tox = 2.2e-9` gives
+    15.70 fF, 2.24% from the measured value. So the conclusion holds --
+    McAndrew's 1% is a floor for the IDEAL long-channel case, not a
+    typical value -- but at 32x, not the 44x first written down.
 
     ⚠ A SYMMETRIC `C` MAKES THIS A TOTAL BLIND SPOT RATHER THAN A WEAK
     PROBE. `C = Cᵀ` means no perturbation direction, random or designed,
@@ -6175,3 +6190,74 @@ def test_the_compact_mos_models_really_are_transcapacitive():
         'max|C-C^T|/max|C| = %.3e; the compact MOS models are no longer ' \
         'transcapacitive, so the transpose blind spot recorded against ' \
         'them needs re-deriving rather than deleting' % worst
+
+    ## ⚠ AND `Cox` ITSELF, ANCHORED BY GEOMETRY RATHER THAN BY `C()`.
+    ## The comparable form of McAndrew's bound is `|C_ij - C_ji| / Cox`,
+    ## so `Cox` has to come from somewhere the code under test cannot
+    ## move it: `eps_ox W L / tox` from the model's own parameters.
+    inst = compact.PspMosLongChannel(*compact.PspMosLongChannel.terminals)
+    p = inst.iparv
+    cox_geom = 3.9 * 8.8541878128e-12 * p.w * p.l / p.tox
+    cgg = max(abs(float(np.asarray(inst.C(np.array([0.0, vg, 0.0, 0.0])),
+                                   dtype=float)[1, 1]))
+              for vg in np.linspace(0.0, 2.5, 26))
+    assert abs(cgg / cox_geom - 1.0) < 0.05, \
+        'max Cgg = %.4e against eps_ox W L / tox = %.4e; if these have ' \
+        'parted company the Cox normalisation below is no longer ' \
+        'anchored by geometry' % (cgg, cox_geom)
+    nonrecip = 0.0
+    for vg in np.linspace(0.0, 1.2, 13):
+        for vd in np.linspace(0.0, 1.2, 13):
+            Cm = np.asarray(inst.C(np.array([vd, vg, 0.0, 0.0])),
+                            dtype=float)
+            nonrecip = max(nonrecip, float(np.max(np.abs(Cm - Cm.T))))
+    assert 25.0 < nonrecip / cgg / 0.01 < 40.0, \
+        'nonreciprocity is %.1fx McAndrew 1%% of Cox; the recorded 32x ' \
+        'no longer describes this model' % (nonrecip / cgg / 0.01)
+
+
+def test_the_transcap_fixtures_sensitivity_is_linear_not_thresholded():
+    """⚠ HOW SMALL A TRANSCAPACITANCE `_TransCap` CAN STILL CATCH.
+
+    A designed probe's discriminating power degrades with weak asymmetry,
+    which raises the fair question of whether this fixture is a gross-error
+    gate. It is not, and the reason is structural rather than lucky: the
+    dropped-transpose error is proportional to `C − Cᵀ` itself, so it
+    scales LINEARLY with the asymmetry and has no threshold.
+
+        asym    dropped-.T error      ratio to asym
+        0.700      4.6667e-01            0.6667
+        0.350      2.3333e-01            0.6667
+        0.100      6.6667e-02            0.6667
+        0.020      1.3333e-02            0.6667
+        0.005      3.3333e-03            0.6667
+        0.000      3.9942e-16            (the floor)
+
+    ⚠ AND THAT IS A DIFFERENT STRUCTURE FROM A PROBE-DIRECTION FAILURE,
+    which is why the "weak asymmetry defeats it" result does NOT transfer
+    here. A probe degrades because a DIRECTION becomes misaligned — a
+    geometric effect with a distribution over draws. This degrades because
+    the QUANTITY shrinks, deterministically, with no distribution at all.
+    At McAndrew's own 1% the error is still 1e-2 against a 4e-16 floor:
+    fourteen orders of margin. The discriminator dies only at exactly
+    zero, which is what makes it a §D shape 0d rather than a weak test.
+    """
+    base = -1.0e-12
+    out = []
+    for asym in (0.35, 0.1, 0.02):
+        d = asym * 2e-12 / 2.0
+        _cir, pss = _transcap_pss(base - d, base + d)
+        fp = pss.factored_period()
+        n = fp.width
+        Mf = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        scale = max(float(np.max(np.abs(Mf))), 1e-300)
+        err = float(np.max(np.abs(
+            _replay_transposed_by_hand(pss, False) - Mf.T))) / scale
+        out.append(err / asym)
+        assert err > 1e-4, \
+            'asym %.3f gives only %.3e; the fixture has become a ' \
+            'gross-error gate' % (asym, err)
+    assert max(out) / min(out) - 1.0 < 1e-6, \
+        'the sensitivity is not linear in the asymmetry (%s); a ' \
+        'threshold would mean weakly transcapacitive models slip past'\
+        % np.round(out, 6)

@@ -1372,11 +1372,26 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    | non-symmetric `C` | 3.994e-16 | **4.667e-01 — caught** |
 
    ⚠ **AND THE CLASS IS REAL IN THIS TREE.** `compact.PspMosLongChannel`'s `C` is
-   non-symmetric at ratio **0.44** over a normal saturation box — `Cgd = −4.31 fF` against
-   `Cdg = −0.13 fF`, a factor of **33**. That is Ward-Dutton charge partition, not a modelling
-   nicety, and it is 44× McAndrew's 1%-of-Cox figure. So the transpose matters the moment a
+   non-symmetric — `Cgd = −4.31 fF` against `Cdg = −0.13 fF`, a factor of **33**. That is
+   Ward-Dutton charge partition, the model being *right*. So the transpose matters the moment a
    PSS runs on a MOS circuit, and nothing in the suite would have changed state to say so.
    Now covered by `_TransCap`, a fixture that exists for no other reason.
+
+   ⚠ **QUOTED AGAINST `Cox`, AND THE FIRST ATTEMPT USED THE WRONG DENOMINATOR.** McAndrew's
+   figure is a nonreciprocity over `Cox`; the 0.44 first written here was a ratio to `max|C|`,
+   and 33 is a spread between two entries — three different normalisations, one of which was
+   compared to the other two. Measured properly: `|C_ij − C_ji| = 4.97 fF` against
+   `Cox = 15.35 fF` → **0.324 = 32× McAndrew's 0.01**, not 44×. `Cox` anchored *outside* the
+   `C()` code by the model's own geometry (`ε_ox W L / tox` = 15.70 fF, **2.24%** away). The
+   direction of the conclusion survives — **his 1% is a floor for the ideal long-channel case,
+   not a typical value** — but the magnitude was 37% wrong. *The normalisation is where every
+   error in this campaign has lived.*
+
+   ⚠ **The fixture's sensitivity is LINEAR in the asymmetry, not thresholded** — 0.6667×asym
+   across four decades, so at McAndrew's own 1% the error is still 1e-2 against a 4e-16 floor.
+   That is a different structure from a probe-direction failure (a *direction* misaligning, with
+   a distribution over draws) and is why "weak asymmetry defeats it" does not transfer: here the
+   *quantity* shrinks, deterministically. The discriminator dies only at exactly zero.
 
    ⚠ **The earlier "max|C − Cᵀ| = 0 across the element library" was scoped to the DISCRETE
    library and used as though it covered the tree.** The compact models were never in that
