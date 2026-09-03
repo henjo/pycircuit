@@ -683,7 +683,7 @@ than a transfer pair, and carries the free LTI invariant (AM = PM exactly).
 **Gate:** none needed for AM/PM — it was a basis change on tested output. The others are
 interface decisions, not measurements.
 
-### A4c. Time-varying noise statistics — ⚠ BUILT 2026-09-03 for DRIVEN circuits
+### A4c. Time-varying noise statistics — ⚠ BUILT 2026-09-03, DRIVEN **and AUTONOMOUS**
 
 The covariance route, and it is a PSS problem the existing machinery already solves. Demir,
 Liu & Sangiovanni-Vincentelli (TCAD 1996) propagate a covariance alongside the transient:
@@ -753,6 +753,74 @@ the capacitor has NO contribution to the oscillator spectrum due to phase noise.
 our PPV: **|mean|/rms ~ 1e-11** with rms ~0.40, at μ = 0.5 and 1.0. Zero and non-zero from one
 vector, which is exactly the discrimination the coloured functional needs and the quadratic
 one destroys. Now a test.
+
+
+#### A4c-osc. The oscillator's covariance — **BUILT 2026-09-03**, `PAC.oscillator_covariance`
+
+`covariance` refuses an oscillator, correctly: `λ₁ = 1` ⇒ `λ₁² = 1`, so `I − M⊗M` is exactly
+singular (**σ_min 2.3e-11 against a next singular value of 0.997** — a cleanly *one-dimensional*
+null space) and no periodic covariance exists. The answer is not a number, it is a **split**:
+
+```
+K(t₀ + nT) = K_orb + n·d·u·uᵀ
+
+[ I − M⊗M    u⊗u ] [ vec(K_orb) ]   [ vec(K₁) ]
+[ (v⊗v)ᵀ      0  ] [     d      ] = [    0    ]
+```
+
+The border is the pair `ppv()` already computes — `u⊗u` right null, `v⊗v` left null — so this
+deflates exactly as A7's PAC solve does. **Bordered σ_min comes back to 5.4e-02: nine orders.**
+
+⚠ **`d` has a closed form and never needed the Kronecker.** Left-multiplying by `(v⊗v)ᵀ` kills
+the singular block: `d = (vᵀK₁v)/(v·u)²`, an O(n²) contraction behind an O(n⁴) solve. Both are
+computed; they agree to **4e-15**, which makes a disagreement diagnostic (the border pair is
+wrong) rather than a precision question.
+
+⚠ **THE GATE IS A PREDICTION, NOT A RESIDUAL.** A bordered system can always be solved. Running
+the real Lyapunov recursion forward **forty periods (9,600 steps) from `K = 0`**, touching
+nothing the bordered solve produced:
+
+| periods | 1 | 2 | 5 | 10 | 20 | 40 |
+|---|---|---|---|---|---|---|
+| rel. err | 2.6e-07 | 1.1e-10 | 2.2e-10 | 5.4e-10 | 1.2e-09 | 2.5e-09 |
+| walk / total trace | 0.953 | 0.976 | 0.990 | 0.995 | 0.998 | 0.999 |
+
+The first period is the loosest **because of physics** — starting from `K = 0` leaves a
+transient in the bounded part, which decays with `|λ₂| = 8.5e-4` and is gone by period two. And
+`P(T) − P(0) = d·u uᵀ` to **3.2e-15**.
+
+⚠ **`d/T` IS AN INDEPENDENT ROUTE TO THE DIFFUSION CONSTANT, AND THE ANCHORS ARE INDEPENDENT
+TOO** — which is precisely the property that was missing when a 2× error survived a 0.9965
+agreement. A phase deviation `α` displaces the state by `α·u`, so the walk is `Var(α)·u uᵀ =
+c·t·u uᵀ` and `d = c·T`. `c` is a quadratic form in the **adjoint**-replayed PPV; `d` is a
+**forward** Lyapunov recursion closed by a bordered Kronecker solve. `covariance`'s injection is
+anchored to **kT/C**; `diffusion_constant` to a **nonlinear Monte Carlo** on zero crossings.
+
+Asserted as a *convergence*, not a tolerance — both carry an O(h) piecewise-constant white-noise
+approximation, so what must hold is that the gap halves:
+
+| npts | 120 | 240 | 480 |
+|---|---|---|---|
+| `(d/T)/c − 1` | 1.87% | 1.03% | 0.54% |
+
+⚠ **`(v·u) = 0.663`, NOT 1, AND ASSUMING OTHERWISE IS THE 2.31×.** `ppv()` normalises on the
+first block (`v[:m]·ẋ = 1`) — right for a perturbation entering the first block, which is where
+an injected current lands. The full *pair* contraction is a different number, so `(v·u)⁻² = 2.27`.
+That exact slip was chased as a code defect. `d` is written with the pair product spelled out.
+
+⚠ **`d` ALONE IS NOT AN INVARIANT.** `u → s·u` sends `d → d/s²`; only `d·u uᵀ` — returned as
+`info['growth']` — is a property of the circuit. `u` is pinned by `C u = q`, the same condition
+`ppv()` scales the tangent with, which is what gives `d` its `d = cT` reading.
+
+⚠ **And the split is the answer, not a numerical device.** Demir 2002: an oscillator's noise is
+*stationary*, not cyclostationary, because "noisy autonomous systems cannot provide a perfect
+time reference". `K_orb` is the orbital/amplitude noise a designer can read; `n·d·u uᵀ` is the
+walk along the orbit that no periodic object can hold. Reporting only their sum at some finite
+time is what makes an oscillator covariance look divergent and useless.
+
+`_lyapunov_pieces` is now **shared** by both routes, so the `CY/2` convention, the `b = 0`
+restriction and the `C` ring cannot drift apart the way `diffusion_constant` and `covariance`
+once did over exactly that factor of two.
 
 ### A4e. Oscillator phase noise — ⚠ CLOSED FORM BUILT 2026-09-03
 

@@ -5316,15 +5316,19 @@ def _solve_vdp_noise(npts=240, psd=1e-6):
 def test_the_diffusion_constant_matches_the_monte_carlo_measurement():
     """⚠ THE SCALAR THE WHOLE SPECTRUM IS BUILT ON, against a physical number.
 
-    `c = (1/T) ∫ v₁ᵀ CY v₁ dt`. The A2 gate measured the same quantity a
-    completely different way — Monte Carlo on the full nonlinear circuit,
-    200 realisations, 150 periods, phase read from zero-crossing timing so
-    no PPV appears in the measurement at all — and got `1.5959e-07` for
-    this exact configuration, against `1.5903e-07` predicted.
+    `c = (1/T) ∫ v₁ᵀ (CY/2) v₁ dt`, measured a completely different way —
+    Monte Carlo on the full nonlinear circuit, phase read from
+    zero-crossing timing so no PPV appears in the measurement at all —
+    which gives `7.7083e-08` against `7.9516e-08` predicted, ratio 1.0316
+    inside the measurement's 4.1% uncertainty at N=1200.
 
-    So the closed-form spectrum below does not rest on a fresh claim: its
-    one input is already tied to a measurement of the real circuit at
-    better than half a percent.
+    ⚠ AN EARLIER VERSION OF THIS TEST PASSED AT 1.5903e-07, EXACTLY TWICE,
+    against a Monte Carlo injecting `Var(i) = CY/h`. That measurement
+    carried the same one-sided-as-two-sided convention the code did, so it
+    confirmed the bug rather than catching it, at a ratio of 0.9965.
+    `kT/C` — external to both — showed that injection reproducing 1.92× the
+    right answer over ten runs. A measurement built on the assumption under
+    test cannot test it.
     """
     _cir, pss, pac = _solve_vdp_noise()
     c = pac.diffusion_constant(pss)
@@ -5339,7 +5343,6 @@ def test_the_diffusion_constant_matches_the_monte_carlo_measurement():
     ## external to both -- showed that injection reproducing 1.92x the
     ## right answer over ten runs. A measurement built on the assumption
     ## under test cannot test it.
-    from pycircuit.circuit.shooting import PAC as _PAC
     assert abs(c * 2 - 1.5903e-07) < 0.05 * 1.5903e-07, \
         'the pre-fix value is no longer exactly twice this one; if the ' \
         'convention changed again, re-derive rather than re-fit'
@@ -5679,3 +5682,167 @@ def test_the_covariance_samples_are_periodic_and_positive():
         assert w.min() > -1e-12 * max(abs(w).max(), 1e-300), \
             'K at step %d has eigenvalue %.3e; a covariance cannot be ' \
             'negative definite' % (j, w.min())
+
+
+def _osc_cov(npts=240):
+    _cir, pss, pac = _solve_vdp_noise(npts=npts)
+    K_orb, d, info = pac.oscillator_covariance(pss, samples=True)
+    return pss, pac, K_orb, d, info
+
+
+def test_the_oscillator_covariance_predicts_the_walk_forty_periods_out():
+    """⚠ THE ASSERTION IS A PREDICTION, NOT A PROPERTY OF THE SOLVE.
+
+    `covariance` refuses an oscillator because `I − M⊗M` is singular there
+    and no periodic covariance exists. The claim this makes instead is a
+    split — a bounded part plus a random walk along the orbit:
+
+        K(t₀ + nT) = K_orb + n·d·u·uᵀ
+
+    which is falsifiable in a way "the residual is small" is not: run the
+    real Lyapunov recursion forward for forty periods (9,600 steps, from
+    `K = 0`, touching nothing the bordered solve produced) and compare.
+    A bordered system can always be solved; only this says the answer
+    means anything.
+
+    ⚠ THE FIRST PERIOD IS THE LOOSEST, AND THAT IS PHYSICS. Starting from
+    `K = 0` rather than `K_orb` leaves a transient in the bounded part; it
+    decays with `|λ₂| = 8.5e-4` and is gone by period two. Measured
+    2.6e-07, 1.1e-10, 2.2e-10, 5.4e-10, 1.2e-09, 2.5e-09 at periods
+    1/2/5/10/20/40 — the walk dominates 99.9% of the trace by then, so the
+    late numbers test the growth term and the early one tests the bound.
+    """
+    pss, pac, K_orb, d, info = _osc_cov()
+    u = info['tangent_pair']
+    As, Qs, _K1, M, _m, n = pac._lyapunov_pieces(pss, 'test')
+    ## the split's own periodicity statement: P is periodic UP TO the
+    ## growth, which appears exactly once per period -- not periodic
+    P = info['orbital_samples']
+    grow = d * np.outer(u, u)
+    assert np.max(np.abs(P[-1] - K_orb - grow)) < 1e-10 * np.max(np.abs(grow))
+
+    K = np.zeros((n, n))
+    seen = {}
+    for p in range(1, 41):
+        for A, Q in zip(As, Qs):
+            K = A @ K @ A.T + Q
+        if p in (1, 2, 40):
+            pred = K_orb + p * grow
+            seen[p] = np.max(np.abs(K - pred)) / np.max(np.abs(pred))
+    assert seen[1] < 1e-5, \
+        'one period off by %.3e; the bounded part is wrong' % seen[1]
+    assert seen[40] < 1e-7, \
+        'forty periods off by %.3e; the growth RATE is wrong -- that ' \
+        'error accumulates where the first-period one does not' % seen[40]
+    assert seen[2] < seen[1], \
+        'the initial transient does not decay, so the split is not a ' \
+        'decomposition into a settling part plus a walk'
+
+
+def test_the_growth_rate_is_the_diffusion_constant_by_another_route():
+    """⚠ TWO SEPARATELY ANCHORED QUANTITIES, CLOSED INTO A LOOP.
+
+    A phase deviation `α` displaces the state by `α·u`, so the growing
+    covariance is `Var(α)·u uᵀ = c·t·u uᵀ` and therefore `d = c·T`. The two
+    sides share the `CY/2` convention and nothing else: `c` is a quadratic
+    form in the ADJOINT-replayed PPV, `d` comes from a FORWARD Lyapunov
+    recursion closed by a bordered Kronecker solve.
+
+    ⚠ AND THEIR ANCHORS ARE INDEPENDENT TOO, which is the property that
+    was missing when a 2× error survived a 0.9965 agreement. The
+    injection behind `d` is pinned by `kT/C`; `c` is pinned by a nonlinear
+    Monte Carlo reading phase from zero crossings. Neither measurement can
+    influence the other's answer.
+
+    ⚠ ASSERTED AS A CONVERGENCE, NOT A TOLERANCE. Both carry an O(h)
+    piecewise-constant approximation to white noise, so at any single grid
+    they differ by a real amount; what must hold is that the difference
+    HALVES per doubling. Measured 1.87% → 1.03% → 0.54%. A shared error
+    would cancel and give a flat ratio of 1; a wrong one would not shrink.
+    """
+    errs = []
+    for npts in (120, 240, 480):
+        _cir, pss, pac = _solve_vdp_noise(npts=npts)
+        _K, _d, info = pac.oscillator_covariance(pss)
+        c = pac.diffusion_constant(pss)
+        errs.append(abs(info['c_from_growth'] / c - 1.0))
+    assert errs[0] < 0.03, 'coarsest grid off by %.3f' % errs[0]
+    for a, b in zip(errs, errs[1:]):
+        assert b < 0.7 * a, \
+            'the disagreement %.4f -> %.4f is not first-order; a ' \
+            'difference that does not converge away is a defect, not ' \
+            'discretisation' % (a, b)
+
+
+def test_the_bordered_kronecker_solve_matches_its_closed_form():
+    """`d = (vᵀK₁v)/(v·u)²` — the `O(n²)` contraction behind the `O(n⁴)` solve.
+
+    Left-multiplying the bordered system by `(v⊗v)ᵀ` annihilates the
+    singular block, so the growth rate never needed the Kronecker at all.
+    They are the same quantity by construction, which makes a disagreement
+    diagnostic rather than a precision question: it would mean the border
+    pair is not the null pair.
+
+    ⚠ AND THE DEFLATION IS WHAT MAKES EITHER COMPUTABLE. `I − M⊗M` has
+    `σ_min = 2.3e-11` against a next singular value of 0.997 — a cleanly
+    one-dimensional null space, which is why bordering with a single pair
+    is the right repair. Bordered, `σ_min` comes back to 5.4e-02: nine
+    orders recovered, the same shape as A7's deflated PAC solve.
+    """
+    _pss, _pac, _K, d, info = _osc_cov()
+    assert info['d_residual'] < 1e-9, \
+        'the solve and the closed form differ by %.3e; the border pair ' \
+        'is not the null pair' % info['d_residual']
+    assert info['sigma_min'] < 1e-8, \
+        'sigma_min = %.3e; I - M kron M is supposed to be SINGULAR here ' \
+        '-- if it is not, this circuit is not autonomous' % info['sigma_min']
+    assert info['sigma_min_bordered'] > 1e-3, \
+        'bordered sigma_min = %.3e; the deflation did not recover the '\
+        'conditioning' % info['sigma_min_bordered']
+    assert info['null_residual'] < 1e-8
+
+
+def test_the_pair_inner_product_is_not_one_and_d_scales_with_the_tangent():
+    """⚠ THE 2.31× THAT WAS CHASED AS A CODE DEFECT, PINNED AS A NUMBER.
+
+    `ppv()` normalises on the FIRST BLOCK, `v[:m]·ẋ = 1` — right for a
+    perturbation entering the first block, which is where an injected
+    current lands and what every shipped path does. The FULL PAIR
+    contraction is a different number, ≈0.663, so `(v·u)⁻² ≈ 2.27`.
+    Assuming the pair product is 1 is exactly the error that produced a
+    2.31× discrepancy between two Monte Carlo routes.
+
+    ⚠ AND `d` ALONE IS NOT AN INVARIANT. Rescaling `u → s·u` sends
+    `d → d/s²`; only the product `d·u uᵀ` is a property of the circuit.
+    Asserted directly, because a future change to how the tangent is
+    scaled would silently move `d` while leaving every structural check
+    passing — `info['growth']` is what downstream code should read.
+    """
+    _pss, _pac, _K, d, info = _osc_cov()
+    vu = info['pair_inner']
+    assert 0.5 < abs(vu) < 0.9, \
+        'v.u = %.4f; if this has become 1.0 the pair normalisation ' \
+        'changed and every d is off by %.3f' % (vu, 1.0 / vu ** 2)
+    u = info['tangent_pair']
+    assert np.allclose(info['growth'], d * np.outer(u, u))
+    ## the invariant, stated as a rescaling that must not move it
+    s = 3.0
+    assert abs((d / s ** 2) * np.outer(s * u, s * u)
+               - d * np.outer(u, u)).max() < 1e-18
+
+
+def test_the_oscillator_covariance_refuses_a_driven_circuit():
+    """The mirror of `covariance`'s refusal, and it is not symmetry for its
+    own sake. A driven circuit's `I − M⊗M` is nonsingular, so there is no
+    null direction to border with and no walk to split off; bordering it
+    anyway would return a `d` near zero and an arbitrary `K_orb`, which is
+    a plausible wrong answer rather than an error.
+    """
+    import warnings
+    cir = _rc_noisy()
+    pss = PSS(cir, method='gear')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 400, refnode=gnd)
+    with pytest.raises(ValueError, match='GROWS'):
+        PAC(cir, toolkit=circuit.numeric).oscillator_covariance(pss)
