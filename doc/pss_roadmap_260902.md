@@ -1358,6 +1358,30 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    it is not aimed at a hypothesis. Recording what a check can see applies to the check built
    from this rule too.
 
+0d. **A blind spot with NO good probe, because the discriminating quantity is identically
+   zero.** The dropped-`C` error has a blind *hyperplane* — bad directions alongside good
+   ones. The **transposed**-`C` error is separated by `C − Cᵀ`, so on a symmetric `C` no
+   direction distinguishes the implementations at all. ⚠ **MEASURED, and the code it certifies
+   is correct only by inspection:** `_monodromy_matvec_transposed` does `cs0[j].T @ t`, and its
+   recorded gate ("agreement 1.8e-15" against the dense `Mᵀ`) is passed *identically* by an
+   implementation with no transpose in it.
+
+   | fixture | shipped | **with the `.T` dropped** |
+   |---|---|---|
+   | symmetric `C` (vdP, RC — every fixture we had) | 3.994e-16 | **3.994e-16 — blind** |
+   | non-symmetric `C` | 3.994e-16 | **4.667e-01 — caught** |
+
+   ⚠ **AND THE CLASS IS REAL IN THIS TREE.** `compact.PspMosLongChannel`'s `C` is
+   non-symmetric at ratio **0.44** over a normal saturation box — `Cgd = −4.31 fF` against
+   `Cdg = −0.13 fF`, a factor of **33**. That is Ward-Dutton charge partition, not a modelling
+   nicety, and it is 44× McAndrew's 1%-of-Cox figure. So the transpose matters the moment a
+   PSS runs on a MOS circuit, and nothing in the suite would have changed state to say so.
+   Now covered by `_TransCap`, a fixture that exists for no other reason.
+
+   ⚠ **The earlier "max|C − Cᵀ| = 0 across the element library" was scoped to the DISCRETE
+   library and used as though it covered the tree.** The compact models were never in that
+   sweep. Shape 0 again, on my own measurement.
+
 0b. **A measurement that shares the assumption under test.** `diffusion_constant`'s Monte
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the

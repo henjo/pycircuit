@@ -6010,3 +6010,168 @@ def test_the_ppv_gate_probes_the_direction_of_maximum_sensitivity():
         'the designed probe does not converge (%.3e -> %.3e); a residue ' \
         'that does not shrink is a defect, not discretisation'\
         % (out[0], out[1])
+
+
+class _TransCap(Circuit):
+    """A two-node element with a deliberately NON-SYMMETRIC `C`.
+
+    `q = C v` with `C[0,1] != C[1,0]`. Physically this is a
+    transcapacitance: `∂q_a/∂v_b` need not equal `∂q_b/∂v_a` once the
+    charge is partitioned between terminals, which is what Ward-Dutton
+    does in a MOS channel. It exists here because every other fixture in
+    this file has a symmetric `C` and therefore cannot express the
+    difference — see the test below.
+    """
+
+    terminals = ('plus', 'minus')
+    instparams = [Parameter(name='c11', desc='', unit='F', default=1e-12),
+                  Parameter(name='c12', desc='', unit='F', default=0.0),
+                  Parameter(name='c21', desc='', unit='F', default=0.0),
+                  Parameter(name='c22', desc='', unit='F', default=1e-12)]
+
+    def update(self, subject):
+        p = self.iparv
+        self._C = self.toolkit.array([[p.c11, p.c12], [p.c21, p.c22]])
+
+    def C(self, x, epar=None):
+        return self._C
+
+    def G(self, x, epar=None):
+        return self.toolkit.zeros((2, 2))
+
+    def i(self, x, epar=None):
+        return self.toolkit.zeros(2)
+
+    def q(self, x, epar=None):
+        return self._C @ x
+
+
+def _transcap_pss(c12, c21, npts=60):
+    """A driven pair whose `C` is symmetric or not, as asked."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir.add_node('b')
+    cir['vs'] = VSin('a', gnd, va=1.0, vac=1.0, freq=1e6)
+    cir['R1'] = R('a', 'b', r=1e3)
+    cir['R2'] = R('b', gnd, r=1e3)
+    cir['Cb'] = C('b', gnd, c=1e-12)
+    cir['T'] = _TransCap('a', 'b', c11=2e-12, c12=c12, c21=c21, c22=2e-12)
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / npts, refnode=gnd)
+    assert pss.converged
+    return cir, pss
+
+
+def _replay_transposed_by_hand(pss, use_T):
+    """The reverse recursion, with the `C` transpose optionally omitted."""
+    fp = pss.factored_period()
+    m = pss.cir.n - 1
+    n = fp.width
+    cs0, cs1, ring = [], [], list(fp.opening)
+    for _lu, C_new, _a, _b in fp.steps:
+        cs0.append(ring[0])
+        cs1.append(ring[1])
+        ring = [C_new, ring[0]]
+
+    def one(v):
+        w1, w2 = v[:m].copy(), v[m:].copy()
+        for j in range(len(fp.steps) - 1, -1, -1):
+            lu, _Cn, alphas, _b = fp.steps[j]
+            t = lu.solve_transposed(w1)
+            A0 = cs0[j].T if use_T else cs0[j]
+            A1 = cs1[j].T if use_T else cs1[j]
+            w1, w2 = (-alphas[1] * (A0 @ t) + w2,
+                      -alphas[2] * (A1 @ t))
+        return np.concatenate((w1, w2))
+
+    return np.column_stack([one(e) for e in np.eye(n)])
+
+
+def test_the_transposed_replay_gate_cannot_see_a_dropped_transpose():
+    """⚠⚠ THE GATE UNDER THE WHOLE ADJOINT STACK IS BLIND ON EVERY FIXTURE
+    IN THIS FILE, and the code it certifies is correct only by inspection.
+
+    `_monodromy_matvec_transposed` does `cs0[j].T @ t`, and its recorded
+    gate is "MEASURED against the dense `Mᵀ` … agreement 1.8e-15". That
+    gate is passed IDENTICALLY by an implementation with no transpose in
+    it, because van der Pol and the RC pair both have a symmetric `C`:
+
+        fixture            shipped code    with the .T DROPPED
+        symmetric C          3.994e-16       3.994e-16   ← blind
+        NON-symmetric C      3.994e-16       4.667e-01   ← caught
+
+    ⚠ AND THE ERROR CLASS IS REAL IN THIS TREE, not hypothetical.
+    `compact.PspMosLongChannel`'s `C` is non-symmetric at a ratio of
+    **0.44** over a normal saturation bias box — `Cgd = −4.31 fF` against
+    `Cdg = −0.13 fF`, a factor of 33, which is Ward-Dutton charge
+    partition, not a modelling nicety. So the moment a PSS is run on a MOS
+    circuit the transpose matters, and until then nothing in the suite
+    would change state to say so.
+
+    ⚠ A SYMMETRIC `C` MAKES THIS A TOTAL BLIND SPOT RATHER THAN A WEAK
+    PROBE. `C = Cᵀ` means no perturbation direction, random or designed,
+    separates the two implementations — the discriminating quantity is
+    `C − Cᵀ` and it is identically zero. Contrast the dropped-`C`
+    hyperplane, where a bad direction exists alongside good ones.
+    """
+    for label, (c12, c21), blind in (
+            ('symmetric', (-1e-12, -1e-12), True),
+            ('transcapacitive', (-1.7e-12, -0.3e-12), False)):
+        _cir, pss = _transcap_pss(c12, c21)
+        fp = pss.factored_period()
+        n = fp.width
+        Mf = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        scale = max(float(np.max(np.abs(Mf))), 1e-300)
+        shipped = float(np.max(np.abs(
+            _replay_transposed_by_hand(pss, True) - Mf.T))) / scale
+        dropped = float(np.max(np.abs(
+            _replay_transposed_by_hand(pss, False) - Mf.T))) / scale
+        assert shipped < 1e-12, \
+            '%s: the shipped recursion is wrong (%.3e)' % (label, shipped)
+        if blind:
+            assert dropped < 1e-12, \
+                'the symmetric fixture was expected to be BLIND; it now ' \
+                'separates by %.3e, so its C is no longer symmetric and ' \
+                'this test has stopped describing it' % dropped
+        else:
+            assert dropped > 1e-3, \
+                'the transcapacitive fixture no longer sees a dropped ' \
+                'transpose (%.3e); it is the only thing in this file ' \
+                'that can' % dropped
+        ## and the shipped path itself, through the public entry point
+        Mt = np.column_stack([fp.matvec_transposed(e) for e in np.eye(n)])
+        assert float(np.max(np.abs(Mt - Mf.T))) / scale < 1e-12
+
+
+def test_the_compact_mos_models_really_are_transcapacitive():
+    """The premise of the test above, pinned so it cannot go stale quietly.
+
+    If a future change symmetrised these models' `C`, the blindness note
+    would become harmless and nobody would know to remove it — and, worse,
+    a real physical effect would have been lost. Ward-Dutton partition in
+    saturation decouples the drain from the channel charge, so `∂q_g/∂v_d`
+    is small while `∂q_d/∂v_g` is not. That asymmetry is the model being
+    right, not a defect.
+    """
+    from pycircuit.circuit import compact
+    circuit.default_toolkit = circuit.numeric
+    worst = 0.0
+    for name in ('PspMosLongChannel', 'PspPmosLongChannel'):
+        cls = getattr(compact, name)
+        inst = cls(*cls.terminals)
+        for vg in np.linspace(0.0, 1.2, 7):
+            for vd in np.linspace(0.0, 1.2, 7):
+                Cm = np.asarray(inst.C(np.array([vd, vg, 0.0, 0.0])),
+                                dtype=float)
+                s = float(np.max(np.abs(Cm)))
+                if s == 0.0:
+                    continue
+                worst = max(worst, float(np.max(np.abs(Cm - Cm.T))) / s)
+    assert worst > 0.1, \
+        'max|C-C^T|/max|C| = %.3e; the compact MOS models are no longer ' \
+        'transcapacitive, so the transpose blind spot recorded against ' \
+        'them needs re-deriving rather than deleting' % worst
