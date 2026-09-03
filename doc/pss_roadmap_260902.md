@@ -13,6 +13,50 @@ an hour's work each; two were killed after being built. Run the gate first.
 
 ---
 
+## 0. The organising fact — read this before any item below
+
+⚠⚠⚠ **THE THING DESIGNERS OPTIMISE FOR IS THE THING THAT BREAKS EVERY NUMERICAL METHOD, AND
+THIS IS AN IDENTITY RATHER THAN A TRADE-OFF ANYONE CHOSE.**
+
+A designer's whole objective on an LC oscillator is to push `Q` up. Pushing `Q` up *is* pushing
+`|λ₂|` toward 1. And `λ₂ → 1` is simultaneously every failure mode in this document. **The
+better the circuit, the worse the numerics.**
+
+The link is not an analogy. Wang & Roychowdhury (2017): `Q = log(threshold)/log|λ₂|` — so
+"bounded by `Q`" and "bounded by `λ₂`" are **the same sentence**. ⚠ **And we already ship it**:
+`PSS.ppv()`'s `info['Q']` is `-1/log(λ₂)`, which is that identity at a `1/e` threshold
+(`shooting.py:2558`). A high-Q oscillator is *defined* by slow amplitude decay, and slow
+amplitude decay *is* the second multiplier approaching one.
+
+⚠ **So the seven places this quantity appears are not seven findings. They are one edge seen
+from seven sides**, and they enter through structurally different doors:
+
+| | door | source |
+|---|---|---|
+| (a) | **numerical distinguishability** — `λ₁ = 1` cannot be separated from `λ₂ ≈ 1`, so eigen-based PPV extraction fails | Demir & Roychowdhury 2003 |
+| (b) | **conditioning** — the bordered Jacobian degrades; `σ_min` tracks `T/τ` over six decades | Lai DAC 2006; measured here |
+| (c) | **truncation validity** — the single-mode reduction needs `\|exp(η_i)\| ≪ 1` | Demir 1998 (6.72) |
+| (d) | **theory validity** — two multipliers at 1 means no asymptotic phase; the PPV is undefined | Demir 2006 |
+| (e) | **settling and ringing** — long `tstab`, ringing impulse response, large `M` | SpectreRF; Hull & Meyer; the probe methods |
+| (f) | **method-dependence of the value** — backward Euler biases `λ₂` low, so `Q` is method-dependent | measured, docs session |
+| (g) | **physical identity** — `Q = log(threshold)/log\|λ₂\|` | Wang & Roychowdhury 2017 |
+
+**(g) is why the other six are not a coincidence:** each of (a)–(f) is a sensitivity to slow
+amplitude decay, and (g) says that is precisely what `λ₂` measures.
+
+⚠ **AND IT PREDICTS WHERE THE NEXT ONE WILL BE: anywhere a method assumes the non-oscillatory
+modes have died.** That is a search rule, not a summary. It already found one — the
+cyclostationary cost blocker's *remedy* is bounded by the same quantity (Hull & Meyer's cheap
+construction fails because the impulse response rings), so even the escape route from a cost
+problem is door (e).
+
+**Consequence for planning:** the failures below are not a collection of unrelated sharp edges
+to be patched one at a time. Any item whose gate passes on van der Pol at `μ = 1` has been
+tested at `|λ₂| = 8.5e-4` — six orders from where a real LC oscillator sits — and has therefore
+not been tested at all in the regime that matters.
+
+---
+
 ## A. Capabilities — unbuilt, entry points known
 
 ⚠ **These are not five independent choices.** A1 → A3 is a dependency chain (A3 consumes
