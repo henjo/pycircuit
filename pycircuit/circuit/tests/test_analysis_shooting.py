@@ -5278,3 +5278,152 @@ def test_a_fast_oscillator_has_a_small_Q():
     assert info['Q'] < 1.0, \
         'plain van der Pol reports Q = %.3f; it restores amplitude in ' \
         'well under a cycle' % info['Q']
+
+
+def _vdp_with_noise(psd=1e-6, mu=1.0):
+    """van der Pol with a stationary white current source at its core.
+
+    `i=0` so the orbit is untouched; only `CY` changes. This is the exact
+    configuration the Monte Carlo gate measured, which is what lets the
+    closed form be checked against a physical number.
+    """
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    c['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+    return c
+
+
+def _solve_vdp_noise(npts=240, psd=1e-6):
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _vdp_with_noise(psd)
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.6634, timestep=6.6634 / npts, x0=x0,
+                  maxiterations=60)
+    assert pss.converged
+    return cir, pss, PAC(cir, toolkit=circuit.numeric)
+
+
+def test_the_diffusion_constant_matches_the_monte_carlo_measurement():
+    """⚠ THE SCALAR THE WHOLE SPECTRUM IS BUILT ON, against a physical number.
+
+    `c = (1/T) ∫ v₁ᵀ CY v₁ dt`. The A2 gate measured the same quantity a
+    completely different way — Monte Carlo on the full nonlinear circuit,
+    200 realisations, 150 periods, phase read from zero-crossing timing so
+    no PPV appears in the measurement at all — and got `1.5959e-07` for
+    this exact configuration, against `1.5903e-07` predicted.
+
+    So the closed-form spectrum below does not rest on a fresh claim: its
+    one input is already tied to a measurement of the real circuit at
+    better than half a percent.
+    """
+    _cir, pss, pac = _solve_vdp_noise()
+    c = pac.diffusion_constant(pss)
+    assert abs(c - 1.5903e-07) < 0.02 * 1.5903e-07, \
+        'c = %.6e against the 1.5903e-07 this configuration gave when the ' \
+        'Monte Carlo gate ran; the two are the same integral' % c
+
+
+def test_the_lorentzian_conserves_the_carrier_power_exactly():
+    """⚠ THE INVARIANT THAT SEPARATES THIS FROM AN LTV TREATMENT.
+
+    Noise spreads the carrier's power into a line of finite width; it does
+    not create any. `∫ S_i df = 1` exactly, for every harmonic and every
+    `c`. Analyses "based on linear time-invariant or linear time-varying
+    concepts erroneously predict infinite noise power [at the carrier] as
+    well as infinite total integrated power" — so this is the property
+    that says the closed form is doing the nonlinear thing.
+
+    Integrated numerically over the IMPLEMENTED function, not re-derived:
+    a re-derivation would only be checking the algebra against itself.
+    """
+    from scipy.integrate import quad
+    f0 = 150.0
+    for c in (1e-9, 1e-7, 1e-5):
+        for i in (1, 2, 5):
+            tot, err = quad(lambda f: float(PAC.lorentzian(f, c, f0, i)),
+                            -np.inf, np.inf, limit=400)
+            assert abs(tot - 1.0) < 1e-6, \
+                'harmonic %d at c=%g integrates to %.9f, not 1 — the ' \
+                'carrier power is not conserved' % (i, c, tot)
+
+
+def test_the_lineshape_is_lorentzian_where_it_should_be():
+    """Finite at the carrier, `1/f²` far out, and the corner where predicted.
+
+    Three properties, each of which a wrong constant would break
+    differently: the peak is `1/(π² i² f₀² c)`, the far skirt falls as
+    `1/f²` (a RATE, asserted as one), and the half-width is `π i² f₀² c`.
+    """
+    f0, c, i = 150.0, 1e-7, 1
+    peak = float(PAC.lorentzian(0.0, c, f0, i))
+    want = 1.0 / (np.pi ** 2 * i * i * f0 * f0 * c)
+    assert abs(peak / want - 1.0) < 1e-12, \
+        'peak %.6e against the analytic %.6e' % (peak, want)
+
+    ## far out: doubling the offset must quarter the density
+    far = [float(PAC.lorentzian(f, c, f0, i)) for f in (1e5, 2e5, 4e5)]
+    for a, b in zip(far, far[1:]):
+        assert abs(a / b - 4.0) < 0.02, \
+            'the skirt falls %.3fx per doubling, not the 4x of 1/f²' % (a / b)
+
+    ## half-width
+    hw = np.pi * i * i * f0 * f0 * c
+    assert abs(float(PAC.lorentzian(hw, c, f0, i)) / peak - 0.5) < 1e-12
+
+
+def test_higher_harmonics_are_noisier_by_20log10i():
+    """The skirt scales as `i²` and the corner as `i⁴`.
+
+    So harmonic `i` sits `20 log₁₀(i)` dB above the fundamental far from
+    the carrier — 6.02 dB for the second, 9.54 for the third. A designer
+    reads that as "the divider makes it better, the multiplier worse", and
+    it is a free consequence of the closed form rather than a separate
+    calculation.
+    """
+    f0, c = 150.0, 1e-7
+    far = 1e6
+    base = float(PAC.lorentzian(far, c, f0, 1))
+    for i in (2, 3, 5):
+        db = 10.0 * np.log10(float(PAC.lorentzian(far, c, f0, i)) / base)
+        want = 20.0 * np.log10(i)
+        assert abs(db - want) < 0.05, \
+            'harmonic %d is %.3f dB above the fundamental, not %.3f' \
+            % (i, db, want)
+        ## and its corner is i^4 wider
+        hw_i = np.pi * i * i * f0 * f0 * c
+        assert abs(float(PAC.lorentzian(hw_i, c, f0, i))
+                   / float(PAC.lorentzian(0.0, c, f0, i)) - 0.5) < 1e-12
+
+
+def test_the_oscillator_spectrum_is_built_and_refuses_a_driven_circuit():
+    """End to end, and the one circuit class it does not describe."""
+    import warnings
+    _cir, pss, pac = _solve_vdp_noise()
+    offs = np.array([1e-4, 1e-3, 1e-2, 1e-1])
+    Sv, L = pac.oscillator_spectrum(pss, offs, 0, harmonic=1)
+    assert np.all(np.isfinite(Sv)) and np.all(np.diff(Sv) < 0), \
+        'the spectrum should be finite and falling with offset: %s' % Sv
+    assert L[0] > L[-1], 'L(f) should fall with offset'
+    ## far out it is 1/f^2, which in dB is -20 dB/decade
+    slope = (L[-1] - L[-2]) / np.log10(offs[-1] / offs[-2])
+    assert abs(slope + 20.0) < 1.0, \
+        'the far skirt is %.2f dB/decade, not the -20 of 1/f²' % slope
+
+    circuit.default_toolkit = circuit.numeric
+    driven = _adjoint_ladder(3)
+    p2 = PSS(driven, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    with pytest.raises(ValueError, match='FREE-RUNNING'):
+        PAC(driven, toolkit=circuit.numeric).diffusion_constant(p2)

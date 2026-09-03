@@ -22,6 +22,7 @@ Everything here is one object away from the shooting solve:
                   ├── PAC.adjoint_sideband_row()     …at one sideband
                   ├── PAC.pnoise()                   time-averaged output noise
                   ├── PAC.am_pm()                    AM/PM split of a modulation
+                  ├── PAC.oscillator_spectrum()      free-running phase noise, closed form
                   └── PSS.ppv()                      perturbation projection vector
 
 **Nothing forms an operator.** The withdrawn PAC allocated the whole `(N m) × (N m)`
@@ -284,6 +285,44 @@ PM/AM (no free phase to modulate), flat across offsets; an oscillator's PM/AM ra
 ⚠ **Open:** on an *autonomous* circuit the sideband rows come back at ~1e-12 in absolute
 terms. The ratio is right and the driven case is healthy at O(10³) — but the magnitude is
 **not established**. Do not read an oscillator AM/PM magnitude from this yet.
+
+---
+
+## Oscillator phase noise — the closed form
+
+```python
+c        = pac.diffusion_constant(pss)            # seconds; "jitter per second"
+Sv, LdBc = pac.oscillator_spectrum(pss, offsets, output, harmonic=1)
+```
+
+`S_i(f) = i² f₀² c / (π² i⁴ f₀⁴ c² + f²)`, scaled by the harmonic's own power. **No sweep and
+no per-frequency solve** — once the PSS waveform's Fourier coefficients and the scalar `c` are
+known, the spectrum is available at any frequency. Which also means it never meets the
+near-carrier singularity a swept small-signal computation would, and never meets the 1/f
+sweep-grid trap: there is no sweep to place a point on.
+
+| check | result |
+|---|---|
+| `c` vs the A2 gate's Monte Carlo measurement | 1.5903e-07 vs **1.5959e-07** (0.35%) |
+| `∫ S_i df` over the implemented function | **1.000000**, every harmonic and `c` |
+| peak and half-width | analytic to 1e-12 |
+| far skirt | **4.00× per doubling** = 1/f² |
+| harmonic `i` far out | **20·log₁₀(i)** dB, to 0.05 dB |
+
+⚠ **Total power is conserved exactly**, and that is the invariant that separates this from an
+LTV treatment — those "erroneously predict infinite noise power [at the carrier] as well as
+infinite total integrated power". Noise spreads the carrier's power into a line of finite
+width and creates none.
+
+⚠ **This is the only route that is valid below the Lorentzian corner.** A small-signal
+analysis cannot produce `L(f)` there however well conditioned: the excess phase is a Wiener
+process, its spectrum has a singularity at the origin, and the finite value `L` attains comes
+from the **nonlinear** phase-to-voltage map — which is what this form carries. Reporting
+`S_phi` near the carrier instead is the mistake that object invites.
+
+⚠ **White sources only**, where the lineshape is *exact* rather than a two-regime limit. A
+coloured source enters through a different functional of the same PPV — `V_0m = (1/T)∫v₁ᵀB`,
+**linear, no square** — and using the quadratic one for it returns a plausible wrong number.
 
 ---
 

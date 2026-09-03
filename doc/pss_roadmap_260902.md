@@ -695,7 +695,32 @@ our PPV: **|mean|/rms ~ 1e-11** with rms ~0.40, at μ = 0.5 and 1.0. Zero and no
 vector, which is exactly the discrimination the coloured functional needs and the quadratic
 one destroys. Now a test.
 
-### A4e. Oscillator phase noise — NEW; a different output shape, no sweep
+### A4e. Oscillator phase noise — ⚠ CLOSED FORM BUILT 2026-09-03
+
+⚠ **BUILT** — `PAC.diffusion_constant(pss)`, `PAC.lorentzian(...)`,
+`PAC.oscillator_spectrum(pss, offsets, output, harmonic)`.
+
+| check | result |
+|---|---|
+| `c` vs the A2 gate's **Monte Carlo** measurement | 1.5903e-07 vs **1.5959e-07** (0.35%) |
+| `∫ S_i df` over the implemented function | **1.000000** for every harmonic and `c` |
+| peak, half-width | analytic to 1e-12 |
+| far skirt | **4.00× per doubling** = 1/f² |
+| harmonic `i` far out | **20·log₁₀(i)** dB, to 0.05 dB |
+
+⚠ **The one input is already tied to a physical measurement.** `c` is the same integral the
+A2 gate measured a completely different way — Monte Carlo on the full nonlinear circuit, phase
+from zero-crossing timing, no PPV anywhere in it. So the closed form does not rest on a fresh
+claim.
+
+⚠ **Total power conservation is the invariant that matters**, and it is asserted by integrating
+the *implemented* function rather than re-deriving the algebra: noise spreads the carrier's
+power into a line of finite width and creates none. LTV treatments "erroneously predict
+infinite noise power … as well as infinite total integrated power", so this is the property
+that says the closed form is doing the nonlinear thing.
+
+**White sources only, where the lineshape is EXACT rather than a two-regime limit** — which is
+also all `pnoise` supports.
 
 ⚠ **NOT A SWEEP, AND NOT pnoise's SHAPE.** Demir 2002 (68)+(69): once the PSS waveform's
 Fourier coefficients `X_i`, the single scalar `c_w`, and one `V_0m` per coloured source are
