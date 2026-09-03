@@ -1875,10 +1875,36 @@ Constant across six decades on the left; on the right `|Δφ|` is a **constant �
 of `ε`** — a perturbation of *any* size gives the same finite jump, because an infinitesimal
 change flips which step the reset lands in and a whole modulus propagates.
 
-⚠ **SO A6'S REAL PROBLEM IS EVENT LOCALISATION, NOT SALTATION.** The machinery exists —
-`_WrapEvents.next_event` predicts the crossing — and the question is whether a fixed-grid
-traversal uses it. Two separate defects, and **the second is the dangerous one**: the monodromy
-is wrong when the reset is grid-aligned, *and* the PSS reports convergence there.
+⚠ **SO A6'S REAL PROBLEM IS EVENT LOCALISATION, NOT SALTATION.** `shooting.py` contains **no
+reference to `next_event`** — the consumer is `transient.py` alone. So the transient breaks its
+steps at events and the PSS traversal does not.
+
+⚠⚠ **BUT "AND THE PSS REPORTS CONVERGENCE THERE" WAS WRONG, and the correction matters more
+than the claim.** It warns, loudly, three times over on this fixture:
+
+* *"Local truncation error reaches **4.58e+05 times tolerance** accumulated over the period"* —
+  the LTE check already catches the under-resolved wrap;
+* *"the returned waveform **IS STILL A FULL RESULT** — it is the last iterate, not a periodic
+  steady state — so a reader who does not check `converged` gets an array that looks like an
+  answer and is not"*;
+* and a third that caught a defect in **my own fixture** — see below.
+
+So the existing machinery does guard this. The gap is that the grid cannot *break* at the wrap,
+not that the failure is silent.
+
+⚠⚠⚠ **AND THE THIRD WARNING FOUND A FIXTURE DEFECT: the divider fixture is solved as AUTONOMOUS
+at 2× the fundamental.** *"this autonomous solve returned a period that is a MULTIPLE of the
+fundamental … the fundamental is about 5.0e-4 s and the returned 1e-3 s traverses it about 2.0
+times."* `VS` is DC-only, so there is no periodic drive and PSS infers autonomy — the same trap
+as the MOS amp at `va = 0`.
+
+**What that does and does not invalidate.** The monodromy-vs-finite-difference **rate** (2.00×)
+is an internal consistency of one traversal — same grid, same period on both sides — so it
+stands. What it does invalidate is the separate comparison of the PSS *solution* against a
+settled adaptive transient: those were a `k·T` orbit and a `T` orbit, i.e. different objects,
+and the 1e-2 "error" measured there is not evidence of anything. ⚠ **A fixture running at
+4.58e+05× its LTE tolerance is not one to draw quantitative conclusions from without saying
+so**, and the earlier entry did not say so.
 
 ⚠ **What the dead zone IS still worth to this roadmap:** an unmitigated loop, or one whose
 offset is too small, genuinely does sit where the linearisation describes a disconnected
