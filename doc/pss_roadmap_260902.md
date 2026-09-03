@@ -954,6 +954,12 @@ and −2.2%, departing at −15.1% vs −17.7% where the first-order expansion g
 `λ₂` bias itself grows with `Q`** — −7.0e-3 at `Q = 3.18` against −1.11e-2 at `Q = 15.92` for the
 same 100 subintervals — so the `Q` error grows **superlinearly**: 6.9× for a 5× in `Q`.
 
+⚠⚠ **AND THIS IS A GENUINE ASYMMETRY BETWEEN THE TWO BRANCHES, NEW TO THIS RECORD: HB DOES NOT
+HAVE THE PROBLEM.** Harmonic balance has **no timestep history to break at an interval
+boundary**, so the forced low-order restarts do not exist there and no `λ₂` bias is injected. So
+the GPU-parallelism argument is *cleaner on the HB side than on the shooting side* — which is the
+first thing in this record that favours HB over shooting on anything but sparsity.
+
 ⚠ **So parallel shooting has THREE costs, not one: memory, the lost nonlinearity-hiding, and a
 systematic `λ₂` bias amplified by `Q`.** The parallel-in-time and GPU-shooting papers filed here
 as "parallelisation, not correctness" were **mis-filed** — they are parallelisation *at a
@@ -1862,6 +1868,49 @@ with a Δ-Σ divider is outside both shooting and HB** — its period is "so lar
 shooting or the harmonic balance methods are inapplicable" — and must go time-domain, where a
 measured numerical noise floor in commercial simulators becomes the binding constraint. Worth
 saying before fractional-N is promised.
+
+### B6. Floquet multipliers from the GMRES basis — **candidate, gate PARTIALLY RUN 2026-09-03**
+
+García, Romero & Acha (IEEE Trans. Power Systems 37(1), 2022) determine periodic-orbit
+stability *"by computing the Floquet multipliers using **Ritz values and the Hessenberg
+matrix**"* of the GMRES that already solved the Newton correction. **We build that Hessenberg
+matrix every shooting-Newton solve.** Ritz values `θᵢ` of `I − M` map back as `λᵢ = 1 − θᵢ`, so
+the multipliers are free: **no eigendecomposition, no monodromy formed** — which also sidesteps
+the eigenvector-selection problem Demir & Roychowdhury 2003 retire the monodromy method over.
+(They add a Givens-rotation QR of `H` worth up to 50% more, and report up to **8×** against the
+standard Poincaré-map method on a 118-node system.)
+
+⚠ **THE MAPPING IS VERIFIED ON OUR REAL MONODROMIES** — machine precision at `k` well below the
+full dimension:
+
+| fixture | true spectrum | k=2 err(λ₂) | k=3 | k=4 |
+|---|---|---|---|---|
+| Q=0.12 | {1, 2.9e-4, 0, 0} | 3.88e-04 | 1.3e-14 | 7.9e-16 |
+| Q=15.9 | {1, 0.939, 0, 0} | 6.69e-02 | 3.7e-15 | 3.7e-15 |
+| Q=63.7 | {1, 0.984, 0, 0} | 1.71e-02 | 3.2e-14 | 1.1e-15 |
+| slow τ/T=1e4 (n=6) | {1, 0.9999, 8.6e-4, 0,0,0} | 1.16e-04 | 1.04e-04 | 2.2e-15 |
+
+⚠⚠ **BUT THE CLAIMED `Q`-IMPROVEMENT DOES NOT REPRODUCE HERE, AND THE REASON IS SHAPE 0c.** The
+docs session measured `λ₂`'s Ritz error *improving* with `Q` on a 40-dimensional synthetic
+monodromy with a damped **bulk** of 38 eigenvalues in `U(0, 0.35)`. Their mechanism is
+**separation**: at low `Q`, `λ₂` is buried in the bulk and Arnoldi cannot pick it out; at high
+`Q` it is pulled away and becomes isolated.
+
+**Our fixtures have no bulk.** The spectrum is `{1, λ₂, 0, 0}`, so `λ₂` is *always* isolated and
+the mechanism cannot operate. At `k = 2` we measure the **opposite** direction — and that has its
+own explanation: with no bulk to hide in, a high-`Q` `λ₂ ≈ 1` instead competes with **`λ₁ = 1`**
+for the same Krylov direction. **That is door (a), numerical distinguishability, appearing inside
+the Arnoldi basis.**
+
+⚠ **So the synthesis is more informative than either measurement: whether the Ritz route improves
+or degrades with `Q` depends on WHAT `λ₂` is competing with.** Against a damped bulk it improves
+(separation grows); against `λ₁ = 1` it degrades (distinguishability shrinks). A real circuit has
+both — a bulk of fast modes *and* `λ₁ = 1` — so **the gate must be run on a circuit with a
+genuine damped bulk before this is adopted**, and neither of our fixtures qualifies. Not their
+result refuted; **untestable on what we have**, which is exactly §D 0c.
+
+**Gate to run:** a circuit with ≥10 states and a spread of fast modes; compare truncated Ritz
+values against `_spectral_report` at low and high `Q`. Cheap — the mapping is already verified.
 
 ### A5. Envelope-following — last
 
