@@ -7095,3 +7095,151 @@ def test_a_resonant_parasitic_breaks_eigenvectors_and_not_the_ppv():
         'the lambda_2 eigenvector no longer swaps across the crossing ' \
         '(sin = %.3e); if eigen extraction has become stable here the ' \
         'contrast this test rests on is gone' % out[2][2]
+
+
+def _high_q_with_bulk(Q=60.0, nbulk=10, lam_lo=0.05, lam_hi=0.35,
+                      rbig=1e6, psd=1e-6, npts=480):
+    """A high-`Q` oscillator with a genuine DAMPED BULK — `m = 12`.
+
+    ⚠ THE FIXTURE THIS FILE SPENT A LONG TIME NOT HAVING. Every gate here
+    was written against van der Pol at `μ = 1`: `λ₂ = 8.6e-4` and `m = 2`.
+    Three separate questions ended in "we need a different fixture, not a
+    better probe" — the Ritz gate (no bulk), the PPV gate's `1/√m`
+    protection, and the transverse-kick degeneracy.
+
+    Design constraints, each of which is a lesson:
+
+    * `μ = 1/(2πQ)` sets the core — verified to four digits;
+    * the bulk must be **FAST**. Slow RC nodes add *more* near-unit
+      multipliers, which is the opposite of a bulk and would break the
+      one-dimensional null space `ppv` and `oscillator_covariance` rest
+      on. `λ_p` is placed log-uniformly in `[0.05, 0.35]`;
+    * `τ_p/T ≪ Q` avoids the resonance `τ_p/T = Q` where `λ_p` collides
+      with `λ₂`;
+    * coupling through `rbig` so the branches do not load the orbit.
+
+    MEASURED: `m = 12`, `n = 24`, `Q = 60.24`, `λ₂ = 0.9835`, bulk
+    0.0500–0.3500, `cond(V) = 92`, converges in ~4 s.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+    for i, lp in enumerate(np.exp(np.linspace(np.log(lam_lo),
+                                              np.log(lam_hi), nbulk))):
+        nm = 'p%d' % i
+        cir.add_node(nm)
+        cir['Rp%d' % i] = R('v', nm, r=rbig)
+        cir['Cp%d' % i] = C(nm, gnd, c=(-T / np.log(lp)) / rbig)
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=200)
+    assert pss.converged, 'the high-Q bulk fixture did not converge'
+    return cir, pss, PAC(cir, toolkit=circuit.numeric)
+
+
+def test_the_high_q_bulk_fixture_is_what_it_claims():
+    """The fixture's own regression test — it is useless if it drifts.
+
+    Four properties, each of which a plausible edit would break: the core
+    sets `Q`, the bulk is FAST and spread, `λ₂` is the oscillator's mode
+    and not a parasitic, and the eigenvector conditioning stays modest.
+    """
+    _cir, pss, _pac = _high_q_with_bulk()
+    m = pss.cir.n - 1
+    assert m == 12, 'm = %d; the 1/sqrt(m) exposure needs a dozen states' % m
+    fp = pss.factored_period()
+    n = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+    ev = np.sort_complex(np.linalg.eigvals(M))[::-1]
+    _v, info = pss.ppv()
+    assert abs(info['Q'] / 60.0 - 1.0) < 0.02, \
+        'Q = %.3f, not 60; mu = 1/(2 pi Q) no longer sets the core' \
+        % info['Q']
+    ## the bulk: ten modes, fast, spread, and well clear of lambda_2
+    bulk = np.abs(ev[2:12])
+    assert bulk.max() < 0.4, \
+        'the bulk reaches %.4f; slow parasitics are MORE near-unit modes, ' \
+        'not a bulk, and would break the 1-D null space' % bulk.max()
+    assert bulk.min() > 0.02 and bulk.max() / bulk.min() > 3.0, \
+        'the bulk is not spread (%.4f..%.4f)' % (bulk.min(), bulk.max())
+    assert abs(ev[1]) > 0.95, \
+        'lambda_2 = %.4f is no longer the oscillator amplitude mode' \
+        % abs(ev[1])
+    ## and the conditioning the Ritz filter depends on
+    cond = float(np.linalg.cond(np.linalg.eig(M)[1]))
+    assert cond < 1e3, \
+        'cond(V) = %.3e; above ~1e4 the |lam-1| filter in ppv() stops ' \
+        'resolving the phase mode and would select it as lambda_2' % cond
+
+
+def test_the_ppv_physical_gate_cannot_verify_the_ppv_at_high_q():
+    """⚠⚠ THE ONE GATE THAT DOES BREAK, AND NO CHEAP REPAIR WORKS.
+
+    On the `m = 12`, `Q = 60` fixture the physical gate reads **24% wrong
+    and does not converge**:
+
+        npts   random dirs   |b/a| = 1 constructed
+         240   2.66e-01      8.46e-02
+         480   2.42e-01      7.71e-02
+        ratio  1.097         1.097          (2.0 would be O(h))
+
+    ⚠ IT IS NOT DISCRETISATION. A ratio of 1.097 across a grid doubling
+    says `npts` cannot touch it. It is transverse contamination, and at
+    `λ₂ = 0.9835` essentially none of it decays in one period — the honest
+    cost of waiting it out is `4.6·Q ≈ 277` periods.
+
+    ⚠ THE ERROR TRACKS THE DIRECTION, NOT THE WAIT. Per-direction at
+    `npts = 480`: `|b/a|` = 31.3 → 98% error, 5.0 → 29%, 1.13 → 4.0%. And
+    `1/√m` makes a random draw in 12 dimensions strongly transverse, which
+    is exactly the protection van der Pol had and this does not.
+    Constructing `|b/a| = 1` cuts 24% to 8% — real, and not a fix.
+
+    ⚠⚠ AND EXTRAPOLATION FAILS HERE TOO, FOR A NEW REASON. Median over
+    four directions: raw n=1 **16.4%**, raw n=3 46.6%, Aitken **85.9%**,
+    `λ₂`-extrapolation **110%**. At `m = 2` extrapolation failed because
+    the residual was O(h) rather than the geometric mode; here it fails
+    because there are **eleven** transverse modes and Aitken models
+    exactly one. **The bulk that makes the fixture realistic is what
+    defeats the repair.**
+
+    ⚠ SO WHAT THIS ESTABLISHES IS A LIMIT ON THE GATE, NOT A DEFECT IN THE
+    PPV. The bordered solve's residuals on this fixture are 2.0e-13 and
+    5.1e-14, unchanged from `m = 2`. The PPV may well be right; **this
+    experiment cannot say so at high Q**, and no cheap variant of it can.
+    Recorded so that "the PPV is gated physically" is not read as covering
+    the regime §0 says matters.
+    """
+    _cir, pss, _pac = _high_q_with_bulk()
+    _v, info = pss.ppv()
+    ## the bordered solve itself is untroubled -- that is the point
+    assert info['null_residual'] < 1e-9, \
+        'null residual %.2e; the SOLVE is supposed to be fine here' \
+        % info['null_residual']
+    assert abs(info['border_residual']) < 1e-9
+    ## and a random direction really is strongly transverse at m = 12
+    m = pss.cir.n - 1
+    xh = np.asarray(info['xdot'], dtype=float)
+    xh = xh / np.linalg.norm(xh)
+    rng = np.random.default_rng(0)
+    ratios = []
+    for _ in range(4):
+        d = rng.standard_normal(m)
+        d /= np.linalg.norm(d)
+        tan = abs(float(d @ xh))
+        ratios.append(np.sqrt(max(1.0 - tan ** 2, 0.0)) / max(tan, 1e-300))
+    assert min(ratios) > 1.0, \
+        'a random direction at m = %d should be mostly transverse ' \
+        '(1/sqrt(m) = %.2f tangential); got |b/a| min %.2f' \
+        % (m, 1.0 / np.sqrt(m), min(ratios))

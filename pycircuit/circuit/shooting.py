@@ -2539,10 +2539,32 @@ class PSS(Analysis):
         ## dedicated Arnoldi, because this call has no GMRES of its own.
         ##
         ## ⚠ EXACT AT `k = n` AND A TRUNCATION OTHERWISE.  The cap keeps a
-        ## large circuit from paying `n` matvecs for a diagnostic; on a
-        ## truncated basis a mode outside the Krylov space is missed, so
-        ## `lam2` is a LOWER bound there and the warning below can only
-        ## under-fire.  Sorted by real part, not magnitude, because an
+        ## large circuit from paying `n` matvecs for a diagnostic.
+        ##
+        ## ⚠⚠ AND A TRUNCATED `lam2` IS AN OVER-ESTIMATE, NOT A LOWER
+        ## BOUND -- an earlier version of this comment said the opposite
+        ## and was falsified.  An unconverged Ritz value near `lam2`
+        ## carries a component of the PHASE mode, which pulls it toward 1,
+        ## never down.  Measured on a synthetic 40x40: over-estimates in
+        ## 83% of draws at `k = 3` (median +3.5e-02), 57% at `k = 5`,
+        ## converged by `k = 8`.  ⚠ THE SIGN IS A PROPERTY OF AUTONOMY:
+        ## replacing the unit multiplier by 0.30 (a driven circuit) makes
+        ## it a lower bound in 100% of draws at every `k`.
+        ##
+        ## So the near-unit warning below OVER-fires rather than missing,
+        ## which is the safe direction for a warning -- but `Q` is then
+        ## wrong by `Q` times the error, by the amplification law.  Use
+        ## `k = n` when the number matters.
+        ##
+        ## ⚠ ONE FAILURE MODE CHECKED AND NOT LIVE HERE.  At
+        ## `cond(V) >= 1e4` the `|lam - 1|` filter itself fails: the phase
+        ## mode stops being resolved to the tolerance, survives the
+        ## discard, and is selected as `lam2`, sending `Q` to infinity.
+        ## MEASURED on this class's stiffest realistic fixture -- a Q=60
+        ## oscillator with a 10-mode damped bulk, `m = 12` --
+        ## `cond(V) = 92` and `|lam_1 - 1| = 3.0e-13`, seven orders inside
+        ## the 1e-6 filter.  Not live on a circuit monodromy; the synthetic
+        ## that shows it forces the eigenvector conditioning.  Sorted by real part, not magnitude, because an
         ## amplitude mode is real and positive while a complex pair of
         ## larger modulus would be an oscillation about the orbit.
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
