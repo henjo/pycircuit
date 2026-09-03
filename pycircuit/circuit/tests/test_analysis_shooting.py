@@ -7381,3 +7381,148 @@ def test_the_frequency_shift_gate_converges_at_first_order():
     assert errs[1] < 0.6 * errs[0], \
         'the gate does not converge (%.3e -> %.3e); a residual that does ' \
         'not shrink is a defect, not discretisation' % (errs[0], errs[1])
+
+
+class _ModulatedShot(IS):
+    """Shot noise modulated by the local node voltage — `CY` reads `x`.
+
+    The case `_cy_reduced` refuses and Hull & Meyer's construction is the
+    standard treatment of. Their own worked example is shot noise
+    modulated by the collector current.
+    """
+
+    def CY(self, x, w, epar=None):
+        p = self.iparv.noisePSD * (
+            1.0 + 0.8 * float(np.asarray(x).ravel()[0]))
+        return self.toolkit.array([[p, -p], [-p, p]])
+
+
+def _hm_circuit(source=None, psd=1e-18, per=1e-3):
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir.add_node('b')
+    cir['vs'] = VSin('a', gnd, va=1.0, vac=1.0, freq=1.0 / per)
+    cir['R'] = R('a', 'b', r=1e3)
+    cir['C'] = C('b', gnd, c=1e-7)
+    if source is not None:
+        cir['n'] = source('b', gnd, i=0.0, noisePSD=psd)
+    return cir
+
+
+def _hm_pnoise(cir, freq, modulated, per=1e-3, npts=200):
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / npts, refnode=gnd,
+                  maxiterations=40)
+    assert pss.converged
+    irn = pss.irefnode
+    k = cir.get_node_index('b')
+    k = k - 1 if k > irn else k
+    d = np.zeros(cir.n - 1)
+    d[k] = 1.0
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S, used = pac.pnoise(pss, freq, d, modulated=modulated)
+    return S, used, np.asarray(pss.waveform[1], dtype=float)[k]
+
+
+def test_the_modulated_path_reduces_to_the_stationary_one():
+    """⚠ THE FIRST GATE, AND IT COSTS NOTHING: a constant `CY` must give
+    the same answer through both paths, BIT FOR BIT.
+
+    `pnoise(modulated=True)` replaces `_cy_reduced` — which samples three
+    states and refuses if they differ — with a time-average over the whole
+    orbit. When `CY` does not depend on `x` those are the same matrix, so
+    any discrepancy is in the new quadrature rather than in the physics.
+
+    That matters because the stationary path is gated to **1.000000**
+    against `analysis_ss.Noise`; reducing to it exactly inherits that gate
+    rather than asking for a new one. Measured ratio 1.000000000000 at
+    1e3, 1e4 and 5e4 Hz, with the same sideband count.
+    """
+    cir = _hm_circuit()
+    for f in (1e3, 1e4, 5e4):
+        S0, u0, _x = _hm_pnoise(cir, f, False)
+        S1, u1, _x = _hm_pnoise(cir, f, True)
+        assert len(u0) == len(u1), \
+            'f=%g: the sideband accumulation stopped differently (%d vs ' \
+            '%d), so the two paths are not being compared at the same ' \
+            'truncation' % (f, len(u0), len(u1))
+        assert abs(S1 / S0 - 1.0) < 1e-12, \
+            'f=%g: averaged %.9e against stationary %.9e; with a constant ' \
+            'CY these must agree to round-off or the averaging quadrature ' \
+            'is wrong' % (f, S1, S0)
+
+
+def test_the_modulated_path_accepts_what_the_stationary_one_refuses():
+    """⚠⚠ HULL & MEYER'S CONSTRUCTION, AND THE ROUTE TO MOS pnoise.
+
+    `_cy_reduced` refuses a bias-dependent `CY` — correctly, because the
+    stationary sum would be the wrong model. But **no physically correct
+    MOS noise model has a state-independent `CY`**, so that refusal is in
+    effect a blanket refusal of MOS pnoise. Hull & Meyer's answer is not
+    to refuse: carry the modulation in the **response** rather than in the
+    **sources** — one stationary source per device at the *cycle-averaged*
+    bias, with `H_l` supplying the modulation.
+
+    Okumura's route needs one independent source per timestep interval per
+    device (~25,000 on a real circuit); this needs one. Same physics,
+    `p` times cheaper, and `H_l` was already built.
+
+    ⚠ ASSERTED AS AN IDENTITY, NOT A PLAUSIBILITY. The modulated answer
+    must equal what a *frozen* source at the time-averaged `CY` gives —
+    not merely lie between the frozen extremes. Measured: node b swings
+    −0.847…+0.847 so the `CY` factor spans 0.323…1.677, the frozen answers
+    are 7.478e-15 and 3.887e-14, and the modulated answer is **2.317e-14**
+    — the frozen-at-mean value, which here is also the midpoint because
+    the modulation is linear in a variable whose orbit average is zero.
+
+    ⚠ ITS CONDITION IS CHECKABLE AND IS THE OPPOSITE OF HIGH-Q: *"none of
+    the large-signal state variables may change significantly over the
+    decay time of the impulse response"*, and *"high-Q filters should be
+    avoided, since they cause the impulse response to ring."* So this
+    degrades exactly where `λ₂ → 1` — the same boundary as everything else
+    here, from a fourth direction — which makes the two constructions
+    **complementary**: this one for fast-settling circuits, Okumura's
+    expensive one for the high-Q case that needs it.
+    """
+    modc = _hm_circuit(_ModulatedShot)
+    with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT CY'):
+        _hm_pnoise(modc, 1e4, False)
+
+    S, _u, xs = _hm_pnoise(modc, 1e4, True)
+    assert np.isfinite(S) and S > 0
+
+    lo_fac = 1.0 + 0.8 * float(xs.min())
+    hi_fac = 1.0 + 0.8 * float(xs.max())
+    assert lo_fac > 0.0, 'the modulation drove CY negative; not a PSD'
+    S_lo, _u1, _x1 = _hm_pnoise(_hm_circuit(IS, psd=1e-18 * lo_fac),
+                                1e4, True)
+    S_hi, _u2, _x2 = _hm_pnoise(_hm_circuit(IS, psd=1e-18 * hi_fac),
+                                1e4, True)
+    assert min(S_lo, S_hi) <= S <= max(S_lo, S_hi), \
+        'S = %.4e is outside the frozen bracket [%.4e, %.4e]' \
+        % (S, min(S_lo, S_hi), max(S_lo, S_hi))
+    ## the stronger statement: it IS the frozen-at-mean answer
+    fp = None
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    p2 = PSS(modc, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p2.solve(period=1e-3, timestep=1e-3 / 200, refnode=gnd,
+                 maxiterations=40)
+    fp = p2.factored_period()
+    hs = np.diff(np.asarray(fp.times, dtype=float))
+    n = min(len(hs), xs.size)
+    mean_fac = 1.0 + 0.8 * float((xs[:n] * hs[:n]).sum() / hs[:n].sum())
+    S_mean, _u3, _x3 = _hm_pnoise(_hm_circuit(IS, psd=1e-18 * mean_fac),
+                                  1e4, True)
+    assert abs(S / S_mean - 1.0) < 1e-9, \
+        'modulated %.6e against frozen-at-mean %.6e; the construction is ' \
+        'defined as the cycle-averaged source, so these are the same ' \
+        'quantity and a difference is a quadrature error' % (S, S_mean)

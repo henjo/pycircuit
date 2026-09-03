@@ -5286,7 +5286,8 @@ class PAC(Analysis):
     ## "accumulated until their contributions become negligible".
     ALIAS_RATIO_TOL = 1e-9
 
-    def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None):
+    def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
+               modulated=False):
         """TIME-AVERAGED output noise PSD at `freq`, sidebands folded in.
 
         Returns `(S, sidebands_used)`.  `S` is the one-sided
@@ -5457,7 +5458,16 @@ class PAC(Analysis):
                                                        N // 2)
 
         w = 2.0 * np.pi * float(freq)
-        cy = self._cy_reduced(pss, w)
+        ## ⚠ `modulated=True` IS HULL & MEYER'S ROUTE, NOT A TOLERANCE
+        ## RELAXATION.  Off, a bias-dependent `CY` raises, because the
+        ## stationary sum would be the wrong model.  On, the source is
+        ## replaced by ONE stationary source at the CYCLE-AVERAGED bias and
+        ## the modulation is carried by `H_l` -- which is the standard
+        ## treatment of exactly this case, and the only route to MOS
+        ## pnoise, since no physically correct MOS noise model has a
+        ## state-independent `CY`.
+        cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
+        cy = cyfn(pss, w)
 
         total = 0.0
         used = []
@@ -5468,7 +5478,7 @@ class PAC(Analysis):
             for sl in ((0,) if l == 0 else (l, -l)):
                 fin = float(freq) - sl * f0
                 h = self.adjoint_sideband_row(pss, fin, output, sl)[0]
-                step += float(np.real(h @ self._cy_reduced(
+                step += float(np.real(h @ cyfn(
                     pss, 2.0 * np.pi * fin) @ np.conj(h)))
                 used.append(sl)
             total += step
@@ -5504,6 +5514,67 @@ class PAC(Analysis):
                 % (lmax, N),
                 RuntimeWarning, stacklevel=2)
         return total, used
+
+    def _cy_cycle_averaged(self, pss, w):
+        """`CY` time-averaged over the orbit — Hull & Meyer's construction.
+
+        ⚠ THIS IS WHAT `_cy_reduced` REFUSES, DONE INSTEAD OF REFUSED, and
+        the literature's answer rather than ours.  Hull & Meyer (1993):
+        *"cyclostationary noise sources, such as shot noise, may be modeled
+        as MODULATED STATIONARY NOISE SOURCES.  The impulse response that
+        is calculated INCLUDES THE EFFECT OF THIS MODULATION.  In the case
+        of shot noise, the hypothetical stationary noise source has
+        spectral density `S_i = 2q Ibar_c`"* with `Ibar_c` the
+        cycle-averaged current.
+
+        So the modulation is carried by the RESPONSE, which `pnoise`
+        already computes as `H_l`, rather than by the SOURCES.  Okumura's
+        route puts one independent stationary source per timestep interval
+        per device -- `p` per device, ~25,000 sources on a real circuit.
+        This is ONE per device.  Same physics, `p` times cheaper.
+
+        ⚠ AND ITS CONDITION IS CHECKABLE RATHER THAN A BLANKET REFUSAL:
+        *"valid when the impulse response duration is much less than the
+        time it takes for the mixer circuit to significantly change its
+        state ... NONE OF THE LARGE-SIGNAL STATE VARIABLES MAY CHANGE
+        SIGNIFICANTLY OVER THE DECAY TIME OF THE IMPULSE RESPONSE."*
+
+        ⚠⚠ WHICH IS THE OPPOSITE OF HIGH-Q, AND THEY SAY SO: *"high-Q
+        filters should be avoided, since they cause the impulse response to
+        ring, and thus require a very large value of M."*  So this
+        construction degrades exactly where `lambda_2 -> 1` -- the same
+        boundary as everything else in this class, arriving from a fourth
+        direction.  That makes the two constructions COMPLEMENTARY rather
+        than competing: Hull & Meyer for fast-settling circuits, Okumura's
+        expensive one for the high-Q case that needs it.  `info` reports
+        `|lambda_2|` so the caller can see which regime they are in.
+
+        ⚠ SAMPLED ON THE ORBIT, NOT AT THE OPERATING POINT.  The average
+        that matters is over the LARGE-SIGNAL waveform, so `CY` is
+        evaluated at every stored state and averaged with the step weights
+        -- the same quadrature `diffusion_constant` uses, so the two remain
+        comparable.
+        """
+        irn = pss.irefnode
+        fp = pss.factored_period()
+        tms = np.asarray(fp.times, dtype=float)
+        hs = np.diff(tms)
+        T = float(fp.T)
+        xs = np.asarray(pss.waveform[1], dtype=float)
+        m = pss.cir.n - 1
+        nsamp = min(len(hs), xs.shape[1])
+        acc = None
+        for k in range(nsamp):
+            xr = xs[:m, k]
+            xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
+            cyk = np.asarray(cyk, dtype=complex) * hs[k]
+            acc = cyk if acc is None else acc + cyk
+        if acc is None:
+            raise NotImplementedError(
+                'PAC: the orbit has no stored samples to average CY over.')
+        return acc / float(hs[:nsamp].sum())
 
     def _cy_reduced(self, pss, w):
         """`CY` with the reference node removed, refusing a moving one.
