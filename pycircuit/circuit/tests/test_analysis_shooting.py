@@ -8300,3 +8300,172 @@ def test_the_ppv_is_unchanged_by_the_gmres_swap():
     assert abs(info['Q'] - 16.003453) < 1e-4
     assert info['null_residual'] < 1e-11
     assert abs(info['border_residual']) < 1e-11
+
+
+def _ampm_mixer():
+    """A NONLINEAR driven mixer with three non-reference nodes.
+
+    ⚠ A LINEAR CIRCUIT IS USELESS HERE and the first attempt used one. An
+    LTI circuit does no mixing, so the carrier has no sidebands and both
+    modulation indices come out at ~1e-12 — noise, against which any
+    invariance claim is noise-over-noise. The nonlinearity is what makes
+    the operating point genuinely time-varying.
+    """
+    cir = SubCircuit()
+    for nn in ('a', 'b', 'c'):
+        cir.add_node(nn)
+    cir['vs'] = VSin('a', gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+    cir['R1'] = R('a', 'b', r=1e4)
+    cir['D'] = Diode('b', gnd)
+    cir['C1'] = C('b', gnd, c=1e-12)
+    cir['R2'] = R('b', 'c', r=1e4)
+    cir['C2'] = C('c', gnd, c=1e-12)
+    return cir
+
+
+def _ampm_at(refname, fm=5e4, npts=200):
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _ampm_mixer()
+    rn = gnd if refname == 'gnd' else cir.get_node(refname)
+    pss = PSS(cir, method='gear', reltol=1e-12, irefnode=rn)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / npts, refnode=rn,
+                  maxiterations=60)
+    assert pss.converged, refname
+    irn = pss.irefnode
+    m = cir.n - 1
+
+    def red(nm):
+        k = cir.get_node_index(nm)
+        return None if k == irn else (k - 1 if k > irn else k)
+
+    def vec(p, q):
+        v = np.zeros(m)
+        for nm, sg in ((p, 1.0), (q, -1.0)):
+            i = red(nm)
+            if i is not None:
+                v[i] += sg
+        return v
+
+    out = vec('b', 'c')
+    src = vec('c', 'b')
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        am, pm = pac.am_pm(pss, fm, out, carrier=1)
+        car = pac.carrier_phasor(pss, out, 1)
+    am = np.asarray(am).ravel()
+    pm = np.asarray(pm).ravel()
+    return complex(np.sum(am * src)), complex(np.sum(pm * src)), complex(car)
+
+
+def test_am_pm_accepts_a_direction_not_only_a_node_index():
+    """⚠ `am_pm` COULD NOT EXPRESS A DIFFERENTIAL OUTPUT AT ALL, and that
+    was an API asymmetry with a real consequence.
+
+    `pnoise`, `adjoint_transfer_row` and `adjoint_sideband_row` all take a
+    direction vector `d`. `am_pm` and `carrier_phasor` did `int(output)`
+    and took a node index. So a differential observable — `v(b) − v(c)` —
+    was not expressible, and for an oscillator the output of interest is
+    very often differential.
+
+    Fixed by `_output_waveform_row`, which accepts either. The integer
+    form still works, so callers naming a node are unaffected; this pins
+    both, and pins that they agree where they overlap.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _ampm_mixer()
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 200, refnode=gnd,
+                  maxiterations=60)
+    assert pss.converged
+    irn = pss.irefnode
+    kb = cir.get_node_index('b')
+    kb = kb - 1 if kb > irn else kb
+    pac = PAC(cir, toolkit=circuit.numeric)
+
+    ## the integer form still works and agrees with the equivalent vector
+    e_b = np.zeros(cir.n - 1)
+    e_b[kb] = 1.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        c_int = pac.carrier_phasor(pss, kb, 1)
+        c_vec = pac.carrier_phasor(pss, e_b, 1)
+    assert abs(c_int - c_vec) <= 1e-12 * abs(c_int), \
+        'the index and single-entry-vector forms disagree (%r vs %r)' \
+        % (c_int, c_vec)
+
+    ## and a differential output is now expressible AND different
+    kc = cir.get_node_index('c')
+    kc = kc - 1 if kc > irn else kc
+    diff = np.zeros(cir.n - 1)
+    diff[kb], diff[kc] = 1.0, -1.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        c_diff = pac.carrier_phasor(pss, diff, 1)
+        am, pm = pac.am_pm(pss, 5e4, diff, carrier=1)
+    assert abs(c_diff - c_int) > 1e-3 * abs(c_int), \
+        'the differential carrier equals the single-ended one, so this ' \
+        'fixture does not exercise the new path'
+    assert np.asarray(am).size == cir.n - 1
+    assert np.all(np.isfinite(np.asarray(am)))
+
+
+def test_am_pm_is_invariant_under_a_change_of_reference_node():
+    """⚠⚠ KÄRTNER §3.2 — the property an AM/PM split must have, and what
+    this test does and does NOT establish.
+
+    Under a linear change of state variables the Floquet basis transforms
+    as `u' = Au`, `v'ᵀ = vᵀA⁻¹`, and Kärtner obtains *"the same equation
+    for the time shift θ(t) … therefore the separation in amplitude and
+    phase is **independent of the co-ordinate system used** … this is by
+    no means a trivial result, since there are **arbitrarily many other
+    definitions of amplitude and phase which seem to be more illustrative
+    but do not have this invariance**, and therefore a change of
+    co-ordinates also **transforms a part of phase noise into amplitude
+    noise**."*
+
+    A change of reference node is such a transformation — a genuine shear,
+    not a permutation — and the split of a *differential* observable comes
+    out invariant. Measured across `gnd`, `a` and `c`:
+
+        |C₁| identical to 4e-16,  m_am to 1.5e-12,  m_pm to 1.2e-10
+
+    with `m_am ≈ 28.3` and `m_pm ≈ 1.45`, so these are real numbers rather
+    than agreement between two zeros.
+
+    ⚠⚠ WHAT IT DOES NOT ESTABLISH, STATED BECAUSE THE CITATION INVITES THE
+    STRONGER READING. The sidebands of a *fixed physical observable* are
+    themselves coordinate-free, so **any** function of them would pass
+    this — including the plausible-but-wrong definitions Kärtner warns
+    about. What this pins is that the IMPLEMENTATION handles the reference
+    row correctly: `_output_waveform_row`'s reinsertion, the reduced-index
+    mapping, and the direction contraction. That is worth holding and it
+    is not Kärtner's theorem.
+
+    Discriminating among AM/PM *definitions* needs a different experiment
+    — one that transforms the state basis rather than the observable's
+    representation — and is not built.
+    """
+    res = {}
+    for rn in ('gnd', 'a', 'c'):
+        res[rn] = _ampm_at(rn)
+
+    base = res['gnd']
+    assert abs(base[0]) > 1.0 and abs(base[1]) > 0.1, \
+        'the modulation indices are ~0 (%r), so this fixture has stopped ' \
+        'being nonlinear and the invariance below would be noise against ' \
+        'noise' % (base,)
+    for rn in ('a', 'c'):
+        for j, nm, tol in ((0, 'm_am', 1e-9), (1, 'm_pm', 1e-7),
+                           (2, 'C1', 1e-12)):
+            rel = abs(res[rn][j] - base[j]) / abs(base[j])
+            assert rel < tol, \
+                'refnode %s moved %s by %.3e relative; the split of a ' \
+                'differential observable must not depend on which row was ' \
+                'eliminated' % (rn, nm, rel)

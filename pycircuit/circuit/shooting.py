@@ -6768,6 +6768,39 @@ class PAC(Analysis):
         b = np.asarray(b, dtype=complex)
         return a + np.conj(b), a - np.conj(b)
 
+    def _output_waveform_row(self, pss, output):
+        """The steady-state waveform of `output`, as an index OR a direction.
+
+        ⚠ THE REST OF THIS CLASS TAKES A DIRECTION VECTOR AND THIS PAIR
+        TOOK AN INTEGER, which is not a style difference -- it meant
+        `am_pm` and `carrier_phasor` could not express a DIFFERENTIAL
+        output at all.  `pnoise`, `adjoint_transfer_row` and
+        `adjoint_sideband_row` all accept `d`; these did `int(output)`.
+        For an oscillator the output of interest is very often
+        differential, and for the coordinate-invariance property an AM/PM
+        split has to have (Kaertner 1990 section 3.2) a
+        reference-independent observable is the whole point.
+
+        An integer is still accepted, so callers that name a node keep
+        working; an array is contracted against the full waveform with the
+        reference row reinserted.
+        """
+        if getattr(pss, 'waveform', None) is None:
+            raise RuntimeError(
+                'PAC: the PSS has no stored waveform -- call solve() first.')
+        _times, X = pss.waveform
+        Xf = np.asarray(X, dtype=float)
+        irn = pss.irefnode
+        d = np.asarray(output)
+        if d.ndim == 0:
+            k = int(d)
+            return Xf[k if k < irn else k + 1]
+        row = np.zeros(Xf.shape[1], dtype=float)
+        for i, wgt in enumerate(np.asarray(d, dtype=float)):
+            if wgt != 0.0:
+                row = row + wgt * Xf[i if i < irn else i + 1]
+        return row
+
     def carrier_phasor(self, pss, output, carrier=1):
         """The `carrier`-th Fourier coefficient of the steady-state output.
 
@@ -6776,13 +6809,8 @@ class PAC(Analysis):
         for a phasor, since folding discards the phase the AM/PM split is
         made of.
         """
-        if getattr(pss, 'waveform', None) is None:
-            raise RuntimeError(
-                'PAC: the PSS has no stored waveform -- call solve() first.')
-        times, X = pss.waveform
-        irn = pss.irefnode
-        k = int(output)
-        row = np.asarray(X, dtype=float)[k if k < irn else k + 1]
+        times, _X = pss.waveform
+        row = self._output_waveform_row(pss, output)
         t = np.asarray(times, dtype=float)[:-1]
         v = row[:len(t)]
         w0 = 2.0 * np.pi / float(pss.period)
@@ -6816,10 +6844,7 @@ class PAC(Analysis):
         ## circuit does not produce still has a phasor of ~1e-16 rather
         ## than exactly 0, and dividing by it turns "there is no carrier
         ## here" into an enormous, confident modulation index.
-        times, X = pss.waveform
-        irn = pss.irefnode
-        k = int(output)
-        row = np.asarray(X, dtype=float)[k if k < irn else k + 1]
+        row = self._output_waveform_row(pss, output)
         scale = float(np.max(np.abs(row)))
         if abs(C) <= 1e-9 * max(scale, 1e-300):
             raise ValueError(
