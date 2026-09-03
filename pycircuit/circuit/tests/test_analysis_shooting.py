@@ -6506,7 +6506,11 @@ def test_a_flicker_source_gives_a_one_over_f_cubed_skirt():
     """
     _cir, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True,
                              fref=1.0 / 6.66)
-    offs = np.logspace(-6, -1, 26)
+    ## ⚠ STARTS AT 1e-5, NOT 1e-6. The first version of this test swept to
+    ## 1e-6 Hz, where `2 f S_phi = 3.10` -- the skirt was carrying three
+    ## times the carrier's total power. `phase_psd` now refuses there; the
+    ## test was wrong, not the refusal. See the power-bound test below.
+    offs = np.logspace(-5, -1, 26)
     S = pac.phase_psd(pss, offs)
     slope = np.diff(np.log10(S)) / np.diff(np.log10(offs))
     assert slope[0] < -2.9, \
@@ -6530,3 +6534,72 @@ def test_a_flicker_source_gives_a_one_over_f_cubed_skirt():
         'a white source gave slopes in [%.4f, %.4f]; it must be exactly ' \
         '1/f^2 everywhere or the 1/f^3 above is not evidence' \
         % (sl2.min(), sl2.max())
+
+
+def test_the_phase_psd_refuses_a_skirt_carrying_more_than_unit_power():
+    """⚠ A SECOND FLOOR, INDEPENDENT OF THE LORENTZIAN CORNER — and for a
+    coloured source it is the binding one by 306×.
+
+    The normalised lineshape integrates to 1, and the integral over one box
+    of width `df` on each side is a lower bound on it, so
+
+        2·df·S_φ(df) ≤ 1
+
+    is NECESSARY for the linearised skirt to be consistent with unit power.
+    Vanassche, Gielen & Sansen (2003) §6 derive the same statement for a
+    `1/f` input and reduce it to `df_c ≥ ε·f₀·√(2·f_1f)`; the form asserted
+    here needs no assumption about the source's colour.
+
+    ⚠ IT WAS A LIVE DEFECT, NOT A HYPOTHETICAL. The first version of
+    `test_a_flicker_source_gives_a_one_over_f_cubed_skirt` swept to 1e-6 Hz
+    where `2 f S_φ = 3.10` — three times the carrier's total power — and
+    every assertion in it passed. The Lorentzian corner sat at 8.2e-09 Hz,
+    **306× too permissive**, because it is built from `c` alone and knows
+    nothing about a `Γ(f)` that grows as the offset falls.
+
+    ⚠ AND IT IS A LOWER BOUND ON THE BREAKDOWN, NOT THE BREAKDOWN. On
+    Vanassche's own example the observed flattening is at ~300 Hz, 3× the
+    bound. So this refuses what is definitely invalid and admits a band
+    that is already suspect — deliberately, because refusing at 3× would be
+    fitting a threshold to a single example.
+    """
+    _cir, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, fref=1.0 / 6.66)
+    with pytest.raises(ValueError, match='times the TOTAL power'):
+        pac.phase_psd(pss, np.logspace(-6, -1, 26))
+    ## and the two floors are genuinely different numbers
+    c = pac.diffusion_constant(pss)
+    corner = np.pi * (1.0 / float(pss.period)) ** 2 * c
+    ok = pac.phase_psd(pss, np.logspace(-5, -1, 26))
+    assert np.all(2.0 * np.logspace(-5, -1, 26) * ok < 1.0)
+    assert corner < 1e-7, \
+        'the Lorentzian corner is %.3e; if it had risen to meet the power ' \
+        'bound the two floors would no longer be independent' % corner
+
+
+def test_the_power_bound_reproduces_vanassches_worked_example():
+    """`df_c ≥ ε·f₀·√(2·f_1f)` — their closed form, from ours.
+
+    Their §6 substitutes the traditional characteristic
+    `S(df) ≈ ε²(f₀²/df²)S_n(df)` into the normalisation `∫S = 1` and bounds
+    the integral below by one box each side, giving
+    `1 ≥ 2ε²(f₀²/df_c)S_n(df_c)`. With `S_n = f_1f/df` that is
+    `df_c ≥ ε·f₀·√(2·f_1f)`.
+
+    ⚠ ASSERTED AS AN IDENTITY BETWEEN TWO FORMS, not as a transcription.
+    `2·f·S_φ ≤ 1` is the general statement; their result is its `1/f`
+    special case, and the two must agree exactly rather than approximately.
+    At `ε² = 1e-19`, `f₀ = 1 GHz`, `f_1f = 50 kHz` the paper says "≥ 100 Hz"
+    and this gives 100.000 Hz. Their observed flattening is ~300 Hz, which
+    is the factor-of-three headroom the docstring warns about.
+    """
+    eps2, f0, f1f = 1e-19, 1e9, 50e3
+    ## the general form: 2 f S_phi(f) = 1 with S_phi = f0^2 eps^2 f1f / f^3
+    general = np.sqrt(2.0 * f0 ** 2 * eps2 * f1f)
+    ## their closed form
+    theirs = np.sqrt(eps2) * f0 * np.sqrt(2.0 * f1f)
+    assert abs(general / theirs - 1.0) < 1e-12, \
+        'the general power bound %.6g and Vanassche\'s closed form %.6g ' \
+        'are not the same statement' % (general, theirs)
+    assert abs(theirs - 100.0) < 1e-9, \
+        'their worked example gives %.6f Hz against the ">= 100 Hz" ' \
+        'printed in the paper' % theirs

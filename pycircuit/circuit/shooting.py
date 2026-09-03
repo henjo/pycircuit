@@ -6079,7 +6079,53 @@ class PAC(Analysis):
                 'nonlinear phase-to-voltage map: use oscillator_spectrum().'
                 % (float(offs.min()), corner, i))
         gam = self.coloured_diffusion(pss, offs)
-        return (i ** 2) * (f0 ** 2) * (c + gam) / offs ** 2
+        sphi = (i ** 2) * (f0 ** 2) * (c + gam) / offs ** 2
+
+        ## ⚠ POWER CONSERVATION AS A SECOND, INDEPENDENT FLOOR -- and for a
+        ## COLOURED source it is the binding one, by orders.  The
+        ## normalised lineshape integrates to 1, and the integral over one
+        ## box of width `df` on each side is a lower bound on it, so
+        ##
+        ##     2 df S_phi(df) <= 1
+        ##
+        ## is NECESSARY for the linearised skirt to be consistent with
+        ## unit power.  Vanassche, Gielen & Sansen (2003) derive the same
+        ## statement for a 1/f input and reduce it to
+        ## `df_c >= eps f0 sqrt(2 f_1f)`; the form here needs no
+        ## assumption about the source's colour, and REPRODUCES their
+        ## worked example exactly -- 100.000 Hz against their ">= 100 Hz"
+        ## at `eps^2 = 1e-19`, `f0 = 1 GHz`, `f_1f = 50 kHz`.
+        ##
+        ## ⚠ THE LORENTZIAN CORNER ABOVE DOES NOT CATCH THIS.  It is built
+        ## from `c` alone, so it knows nothing about a `Gamma(f)` that
+        ## grows as the offset falls.  MEASURED on this class's own
+        ## flicker fixture: the power bound bites at 2.5e-06 Hz while the
+        ## Lorentzian corner sits at 8.2e-09 Hz -- 306x too permissive,
+        ## and the swept spectrum was carrying 3.10x unit power at the
+        ## bottom of the range before this check existed.
+        ##
+        ## ⚠ IT IS A LOWER BOUND ON THE BREAKDOWN, NOT THE BREAKDOWN.
+        ## Passing it is not a guarantee: on Vanassche's own example the
+        ## observed flattening sits at ~300 Hz, 3x the bound.  So this
+        ## refuses what is definitely invalid and admits a band that is
+        ## already suspect -- deliberately, because refusing at 3x would
+        ## be fitting a threshold to one example.
+        power = 2.0 * offs * sphi
+        bad = power >= 1.0
+        if np.any(bad):
+            k = int(np.argmax(bad))
+            raise ValueError(
+                'PAC.phase_psd: at offset %.6g Hz the linearised skirt '
+                'already carries %.3f times the TOTAL power of the '
+                'carrier (2 f S_phi >= 1), so it has broken down there -- '
+                'a normalised spectrum integrates to 1. This bound is '
+                'independent of the Lorentzian corner (%.6g Hz here) and '
+                'for a coloured source it binds far earlier, because '
+                'Gamma(f) grows as the offset falls. Sweep above it, or '
+                'use oscillator_spectrum() for the lineshape. Note the '
+                'TRUE breakdown is higher still: this is a lower bound.'
+                % (float(offs[k]), float(power[k]), corner))
+        return sphi
 
     @staticmethod
     def lorentzian(offsets, c, f0, harmonic=1):

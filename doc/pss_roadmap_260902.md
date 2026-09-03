@@ -1180,6 +1180,50 @@ there the excess phase is a Wiener process with a singular spectrum, and the fin
 real lineshape attains comes from the **nonlinear** phase-to-voltage map, which
 `oscillator_spectrum` carries and this does not.
 
+⚠⚠ **A SECOND FLOOR, ADDED 2026-09-03, AND IT CAUGHT A LIVE DEFECT IN THE TEST ABOVE.** The
+normalised lineshape integrates to 1, and one box of width `df` each side is a lower bound on
+that integral, so
+
+```
+2 · df · S_φ(df)  ≤  1
+```
+
+is **necessary** for the linearised skirt. Vanassche, Gielen & Sansen (2003) §6 derive the same
+statement for a `1/f` input and reduce it to `df_c ≥ ε·f₀·√(2·f_1f)`; the form asserted here
+needs **no assumption about the source's colour** and reproduces their worked example exactly —
+**100.000 Hz** against their *"≥ 100 Hz"*.
+
+⚠ **The Lorentzian corner does not catch it, by 306×.** It is built from `c` alone and knows
+nothing about a `Γ(f)` that grows as the offset falls. The first version of the `1/f³` test
+swept to 1e-6 Hz where **`2f·S_φ = 3.10`** — three times the carrier's total power — and every
+assertion in it passed. Two independent floors, and for a coloured source the *new* one binds.
+
+| | value on the flicker fixture |
+|---|---|
+| Lorentzian corner (white only) | 8.2e-09 Hz |
+| **power bound (colour-aware)** | **2.5e-06 Hz** |
+
+⚠ **It is a LOWER BOUND on the breakdown, not the breakdown.** On Vanassche's own example the
+observed flattening is at ~300 Hz, **3× the bound**. So it refuses what is definitely invalid
+and admits a band that is already suspect — deliberately, since refusing at 3× would be fitting
+a threshold to one example.
+
+⚠ **AND THE NEAR-CARRIER FLATTENING NEVER GOES AWAY.** Below the bound the real spectrum
+flattens to a DC level with a steep edge, and the position of that edge is set by `γ`, the
+low-frequency cutoff of the input `1/f` PSD — the postulate Demir 2002 makes and Demir 2006
+replaces with a continuum. Vanassche: *"the DC-level keeps dropping in a manner that becomes
+proportional to `|ln γ|` while the corner frequency **increases** like `|ln γ|`"*. Over four
+decades of `γ` (5 kHz → 0.5 Hz) `|ln γ|` moves only 8.52 → 0.69. **So pushing the cutoff
+arbitrarily low does not remove the flattening; it moves it logarithmically** — the quantitative
+form of "`1/f` has no valid stationary model without a cutoff". Note the direction is
+counter-intuitive: *as `γ` falls the corner RISES* while the DC level drops.
+
+⚠ **And this is why the paper exists:** Demir's two asymptotes are, in its §1's words,
+*"claimed to hold for both white and colored input noise"* — asserted for coloured rather than
+derived for it. Our far-skirt 4.00×-per-doubling measurement is untouched (their own scope:
+*"for large frequency offsets, the phase noise spectrum assumes the well-known 1/f³–1/f²
+characteristic"*); this is strictly near-carrier.
+
 **Still open from this entry:** the sweep-grid trap (a cluster near each harmonic, never *on*
 one), the bias-modulated physical trap (which genuinely does belong among the circuit
 variables, unlike a synthesised filter), and Mahmutoglu & Demir's whitening under switched bias
