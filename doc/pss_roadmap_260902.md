@@ -2028,12 +2028,33 @@ comes from.
    factored traversal, so an analysis reading them after a matrix-free solve would rebuild an
    operator for a different trajectory, silently.
 
+⚠⚠ **AND THE STRUCTURAL REASON, WHICH IS STRONGER THAN ANY OF THE FOUR ABOVE AND WAS FOUND
+LAST.** Even on the matrix-free path, *which operator GMRES solves depends on the case*:
+
+| case | matrix-free operator | Ritz values give |
+|---|---|---|
+| **driven** | `v ↦ v − α·M v` — plain **`I − M`** | `λ = 1 − θ`, the multipliers directly ✓ |
+| **autonomous** | `[v; s] ↦ [(I−M)v − s·dφ/dT ; v_k]` — **bordered** | eigenvalues of a bordered operator, **not** `1 − λᵢ` |
+
+**The two halves do not meet.** Where the operator is clean (driven) we do not need the
+multipliers — `ppv()` refuses driven circuits, and `Q`, `λ₂` and the PPV are all oscillator
+quantities. Where we *need* them (autonomous) the operator is bordered, **and the bordering
+exists precisely to remove the `λ = 1` singularity** — i.e. to destroy the spectrum one would be
+trying to read.
+
+That is a structural mismatch rather than a cost argument, and it survives every improvement to
+the cost side. ⚠ An earlier statement of this omitted the driven exception and claimed the
+bordering blanket-wide; the driven operator really is plain `I − M`.
+
+⚠ **Undoing the bordering analytically** to recover `I − M`'s spectrum from the bordered `H` is
+possible in principle, more work than the 12 matvecs it saves, and error-prone in the one place
+where a wrong `λ₂` is amplified by `Q`.
+
 ⚠ **What would re-open it:** a hand-written Arnoldi-GMRES for the Newton would give `H` for
-free *and* retire `_gmres_checked`, which exists because scipy reports `info = 4` (lucky
-breakdown) on small systems it has already solved — an exact answer turned into a
-`RuntimeError`, which it did for AM/PM at small offsets. **That is a correctness-and-clarity
-argument, not a speed one**, and it is the version worth costing if the Newton is ever touched
-for another reason.
+free *and* retire `_gmres_checked`. ✅ **That half is now BUILT** (`0c9f0fe`): `_arnoldi_gmres`
+keeps `H` and judges by residual, and is swapped into `_gmres_checked` and `ppv()`'s two
+bordered solves. So "scipy does not expose `H`" is no longer a reason — the remaining ones,
+especially the structural mismatch above, are.
 
 ### A5. Envelope-following — last
 
