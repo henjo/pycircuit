@@ -4911,6 +4911,84 @@ class PSS(Analysis):
         
         return InternalResultDict({'tpss': tpss, 'fpss': fpss})
 
+class SidebandResponse(object):
+    """Every input band that lands on ONE output frequency.
+
+    ⚠ THE POINT OF THIS OBJECT IS THAT PAC'S ANSWER IS NOT ONE NUMBER.
+    Kundert: *"for a single output frequency there may be many transfer
+    functions from a single input"*.  Conversion gain is one entry; image
+    rejection, LO feedthrough and supply rejection are others, and a
+    caller who takes a single coefficient and calls it "the gain" has
+    silently picked one of them.
+
+    ⚠⚠ AND THE BANDS SIT AT DIFFERENT INPUT FREQUENCIES, WHICH IS THE
+    THING THAT IS EASY TO GET WRONG.  `adjoint_sideband_row` is indexed by
+    the INPUT frequency: a source at `f` reaches the output at
+    `f + l f0` through sideband `l`.  Fixing the OUTPUT instead means each
+    sideband is fed from its own input band, `f_in = f_out - l f0`.  So
+    image rejection is NOT `H_l` against `H_-l` at one input frequency --
+    it is two different input bands mapping onto one output, and computing
+    it the first way gives a plausible number for a different quantity.
+
+    Attributes: `f_out`, `f0`, `sidebands`, `inputs` (the `f_in` per
+    sideband) and `rows` (`(len(sidebands), m)`, source-indexed).
+    """
+
+    __slots__ = ('f_out', 'f0', 'sidebands', 'inputs', 'rows')
+
+    def __init__(self, f_out, f0, sidebands, inputs, rows):
+        self.f_out = float(f_out)
+        self.f0 = float(f0)
+        self.sidebands = list(sidebands)
+        self.inputs = list(inputs)
+        self.rows = np.asarray(rows)
+
+    def _index(self, l):
+        try:
+            return self.sidebands.index(int(l))
+        except ValueError:
+            raise KeyError(
+                'sideband %r was not computed; this response carries %r'
+                % (l, self.sidebands))
+
+    def input_frequency(self, l):
+        """The input band feeding sideband `l`: `f_out - l f0`."""
+        return self.inputs[self._index(l)]
+
+    def transfer(self, l, source):
+        """The complex coefficient from `source` at `f_in(l)` to `f_out`."""
+        return complex(self.rows[self._index(l)][int(source)])
+
+    def gain_db(self, l, source):
+        """`20 log10 |H_l|` -- one band's conversion gain, named as such."""
+        mag = abs(self.transfer(l, source))
+        if mag == 0.0:
+            return -np.inf
+        return 20.0 * np.log10(mag)
+
+    def rejection_db(self, wanted, other, source):
+        """How far `other` sits below `wanted`, in dB.
+
+        ⚠ WHICH REJECTION THIS IS DEPENDS ENTIRELY ON WHICH TWO SIDEBANDS
+        ARE NAMED, and the method refuses to guess.  Image rejection is
+        the wanted band against the one mirrored about the LO; LO
+        feedthrough is the wanted band against `l` such that `f_in = 0`.
+        Naming them at the call site is the difference between a number
+        and a labelled number.
+        """
+        w = abs(self.transfer(wanted, source))
+        o = abs(self.transfer(other, source))
+        if o == 0.0:
+            return np.inf
+        if w == 0.0:
+            return -np.inf
+        return 20.0 * np.log10(w / o)
+
+    def __repr__(self):
+        return ('SidebandResponse(f_out=%g, f0=%g, sidebands=%r)'
+                % (self.f_out, self.f0, self.sidebands))
+
+
 class PAC(Analysis):
     """Small-signal analysis over a periodic operating point, matrix-free.
 
@@ -5285,6 +5363,40 @@ class PAC(Analysis):
     ## total, before the accumulation stops.  Okumura et al.: powers are
     ## "accumulated until their contributions become negligible".
     ALIAS_RATIO_TOL = 1e-9
+
+    def mixer_response(self, pss, f_out, output, sidebands=(-1, 0, 1)):
+        """Every input band landing on `f_out` — a `SidebandResponse`.
+
+        For each `l`, the transfer from a source at `f_in = f_out - l f0`
+        to the output at `f_out`, which is one
+        `adjoint_sideband_row` per sideband because each has its own input
+        frequency.  Cost is `len(sidebands)` rows.
+
+        ⚠ A NEGATIVE INPUT BAND IS REFUSED RATHER THAN FOLDED.  For
+        `f_out < l f0` the input frequency comes out negative; physically
+        that band is the conjugate of `|f_in|`, and quietly taking the
+        absolute value would return the right magnitude attached to the
+        wrong label -- exactly the mislabelling this object exists to
+        prevent.  Ask for the sidebands whose input bands exist.
+        """
+        self._check_circuit(pss)
+        f0 = 1.0 / float(pss.period)
+        ls = [int(l) for l in sidebands]
+        ins, rows = [], []
+        for l in ls:
+            f_in = float(f_out) - l * f0
+            if f_in < 0.0:
+                raise ValueError(
+                    'PAC.mixer_response: sideband %d would be fed from '
+                    '%.12g Hz, which is negative. That band is the '
+                    'conjugate of %.12g Hz, and returning it under the '
+                    'label %d would attach a right magnitude to a wrong '
+                    'name. Request sidebands whose input bands exist, or '
+                    'move f_out.' % (l, f_in, abs(f_in), l))
+            row = self.adjoint_sideband_row(pss, f_in, output, sidebands=l)
+            ins.append(f_in)
+            rows.append(np.asarray(row).reshape(-1))
+        return SidebandResponse(f_out, f0, ls, ins, np.array(rows))
 
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
                modulated=False):

@@ -8017,3 +8017,128 @@ def test_the_mos_flicker_term_shows_a_one_over_f_corner_in_pnoise():
         'high-offset slope is %.4f; above the corner the thermal term ' \
         'must dominate and the spectrum flatten' % slopes[-1]
     assert slopes[0] < slopes[-1], 'the corner is not ordered'
+
+
+def test_the_sideband_response_matches_the_analytic_cos2_coefficients():
+    """⚠⚠ PAC'S ANSWER IS INDEXED BY SIDEBAND, and every entry is known here.
+
+    Kundert: *"for a single output frequency there may be many transfer
+    functions from a single input"*. `SidebandResponse` carries all of
+    them; a caller who takes one coefficient and calls it "the gain" has
+    silently picked one.
+
+    On the `cos²` mixer every entry is analytic — the transconductance's
+    Fourier coefficients are `H₀ = ½`, `H_±2 = ¼`, and **`H_±1 = 0`**:
+
+        l    f_in (Hz)   |H|/gain    expected
+        −2      4500.0   0.25000000    0.25
+        −1      3500.0   0.00000000    0.00
+        +0      2500.0   0.50000000    0.50
+        +1      1500.0   0.00000000    0.00
+        +2       500.0   0.25000000    0.25
+
+    ⚠ THE ZEROS ARE THE DISCRIMINATING PART. A sideband index off by one
+    would move weight onto `l = ±1`, and the magnitudes alone would still
+    look like a plausible mixer. `rejection_db(0, 2)` comes out at
+    **6.0206 dB = 20·log₁₀(2)** exactly, and the `±2` pair is symmetric to
+    1e-15.
+
+    ⚠⚠ AND EACH SIDEBAND IS FED FROM ITS OWN INPUT BAND — `f_in = f_out −
+    l·f₀`, five different frequencies for one output. That is why image
+    rejection is not `H_l` against `H_−l` at a single input: computing it
+    that way gives a plausible number for a different quantity.
+    """
+    _cir, pss, pac, d, gain2 = _cos2_mixer()
+    cir = _cir
+    g = np.sqrt(gain2)
+    irn = pss.irefnode
+    src = cir.get_node_index('vin')
+    src = src - 1 if src > irn else src
+
+    r = pac.mixer_response(pss, 2500.0, d, sidebands=(-2, -1, 0, 1, 2))
+    assert r.sidebands == [-2, -1, 0, 1, 2]
+    f0 = 1.0 / float(pss.period)
+    for l in r.sidebands:
+        assert abs(r.input_frequency(l) - (2500.0 - l * f0)) < 1e-9, \
+            'sideband %d is fed from %.6g Hz, not f_out - l*f0' \
+            % (l, r.input_frequency(l))
+
+    expect = {0: 0.5, 2: 0.25, -2: 0.25, 1: 0.0, -1: 0.0}
+    for l, want in expect.items():
+        got = abs(r.transfer(l, src)) / g
+        if want == 0.0:
+            assert got < 1e-9, \
+                'sideband %d should be a NULL for a cos^2 transconductance ' \
+                'and reads %.3e; weight there means the sideband index is ' \
+                'off' % (l, got)
+        else:
+            assert abs(got - want) < 1e-6, \
+                'sideband %d reads %.8f against the analytic %.4f' \
+                % (l, got, want)
+
+    assert abs(r.rejection_db(0, 2, src) - 20.0 * np.log10(2.0)) < 1e-6
+    assert abs(r.rejection_db(2, -2, src)) < 1e-9, \
+        'the +-2 pair is not symmetric (%.3e dB)' % r.rejection_db(2, -2, src)
+    assert r.rejection_db(0, 1, src) > 100.0, \
+        'rejection against a null should be enormous, not %.3f' \
+        % r.rejection_db(0, 1, src)
+
+
+def test_the_sideband_row_is_indexed_by_SOURCE_not_by_the_output_direction():
+    """⚠⚠ THE MISLABELLING THIS OBJECT EXISTS TO PREVENT, COMMITTED WHILE
+    BUILDING IT — so it is pinned rather than merely remembered.
+
+    `adjoint_sideband_row` returns a row over **sources**. Probing it at
+    the index where the OUTPUT direction peaks returns the direct path
+    from a current injected at the output node — a correct answer to a
+    different question, and on this circuit a very convincing one:
+
+        source index 1 (`vin`, through the mixer):  l=0 → ½·gain, l=±2 → ¼·gain
+        source index 2 (`out`, direct through Rout): l=0 → 1·gain, l=±2 → ~0
+
+    Read at index 2 the mixer looks like it has **no** sideband response
+    at all and unity conversion gain. Every number is right; the column is
+    wrong. Nothing in the shapes disagrees, because both are length-`m`
+    rows of plausible magnitudes.
+
+    That is why `SidebandResponse.transfer` takes the source explicitly
+    and has no default: there is no sensible one, and the convenient
+    guess is the output direction.
+    """
+    cir, pss, pac, d, gain2 = _cos2_mixer()
+    g = np.sqrt(gain2)
+    irn = pss.irefnode
+    i_in = cir.get_node_index('vin')
+    i_in = i_in - 1 if i_in > irn else i_in
+    i_out = cir.get_node_index('out')
+    i_out = i_out - 1 if i_out > irn else i_out
+    assert i_in != i_out
+    assert int(np.argmax(np.abs(d))) == i_out, \
+        'the output direction no longer peaks at the output node, so the ' \
+        'confusion this test documents is not reproducible'
+
+    rows = np.asarray(pac.adjoint_sideband_row(pss, 500.0, d,
+                                               sidebands=(0, 2)))
+    thru = np.abs(rows[:, i_in]) / g
+    direct = np.abs(rows[:, i_out]) / g
+    assert abs(thru[0] - 0.5) < 1e-6 and abs(thru[1] - 0.25) < 1e-6, \
+        'the mixer path no longer reads 1/2 and 1/4 (%s)' % thru
+    assert abs(direct[0] - 1.0) < 1e-6 and direct[1] < 1e-9, \
+        'the direct output path no longer reads 1 and 0 (%s); the two ' \
+        'columns must stay distinguishable or this test proves nothing' \
+        % direct
+
+
+def test_mixer_response_refuses_a_negative_input_band():
+    """A sideband whose input band would be negative is refused, not folded.
+
+    For `f_out < l·f₀` the input frequency comes out negative. That band
+    is the conjugate of `|f_in|`, so taking the absolute value quietly
+    would return a right magnitude under a wrong label — the same class of
+    error as reading the wrong column, and equally invisible.
+    """
+    _cir, pss, pac, d, _g = _cos2_mixer()
+    ok = pac.mixer_response(pss, 2500.0, d, sidebands=(1,))
+    assert ok.input_frequency(1) > 0
+    with pytest.raises(ValueError, match='which is negative'):
+        pac.mixer_response(pss, 300.0, d, sidebands=(1,))
