@@ -1933,7 +1933,7 @@ shooting or the harmonic balance methods are inapplicable" — and must go time-
 measured numerical noise floor in commercial simulators becomes the binding constraint. Worth
 saying before fractional-N is promised.
 
-### B6. Floquet multipliers from the GMRES basis — **candidate, gate PARTIALLY RUN 2026-09-03**
+### B6. Floquet multipliers from the GMRES basis — ⚠ **HALF BUILT, HALF CLOSED 2026-09-03**
 
 García, Romero & Acha (IEEE Trans. Power Systems 37(1), 2022) determine periodic-orbit
 stability *"by computing the Floquet multipliers using **Ritz values and the Hessenberg
@@ -2002,6 +2002,38 @@ is not the designed quantity but the incidental one.
 
 **Gate remaining:** confirm on a real circuit with ≥10 states — the synthetic settles the
 mechanism, not the applicability. Cheap; the mapping is already verified above.
+
+#### B6 outcome: the Ritz values are IN, reusing the Newton's basis is OUT
+
+✅ **The valuable half shipped** (`fef3d60`): `ppv()` now takes `λ₂` from **Arnoldi Ritz values**
+instead of a deflated power iteration — machine precision even at exact degeneracy, at `k`
+matvecs instead of 30. That was the accuracy win, and it is independent of where the basis
+comes from.
+
+⚠ **The remaining half — reusing the Newton's Hessenberg matrix — is closed, on measurement:**
+
+1. **The default Newton has no GMRES at all.** `solve(matrix_free=False)` is the default and
+   factors the Jacobian directly. Instrumenting the `m = 12` bulk fixture counted **zero** inner
+   GMRES matvecs. García's route presupposes a Krylov shooting-Newton; ours is dense.
+2. **Where there is one, the saving is 12 matvecs** — 27% of `ppv()` but only **~1.5%** of a
+   PSS-plus-`ppv` workflow (Arnoldi 0.077 s against PSS 4.17 s + `ppv` 0.29 s), and *shrinking*
+   on the large circuits where `matrix_free` is actually worth using, because the PSS dominates
+   more there.
+3. **scipy's `gmres` does not expose `H`**, so realising it means replacing the core Newton's
+   inner solve — the highest-risk change available — for that 1.5%.
+4. ⚠ **And nothing depends on the choice.** `factored_period()` re-traverses at the *converged*
+   solution, so `λ₂`, `Q` and the PPV are **bit-identical** under `matrix_free=True` and
+   `False`. Now pinned by `test_the_ppv_is_invariant_to_the_newtons_inner_solver`, because it is
+   a fragile property: the class docstring records that `Jtvec`/`Cvec` are written by *neither*
+   factored traversal, so an analysis reading them after a matrix-free solve would rebuild an
+   operator for a different trajectory, silently.
+
+⚠ **What would re-open it:** a hand-written Arnoldi-GMRES for the Newton would give `H` for
+free *and* retire `_gmres_checked`, which exists because scipy reports `info = 4` (lucky
+breakdown) on small systems it has already solved — an exact answer turned into a
+`RuntimeError`, which it did for AM/PM at small offsets. **That is a correctness-and-clarity
+argument, not a speed one**, and it is the version worth costing if the Newton is ever touched
+for another reason.
 
 ### A5. Envelope-following — last
 

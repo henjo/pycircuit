@@ -8142,3 +8142,67 @@ def test_mixer_response_refuses_a_negative_input_band():
     assert ok.input_frequency(1) > 0
     with pytest.raises(ValueError, match='which is negative'):
         pac.mixer_response(pss, 300.0, d, sidebands=(1,))
+
+
+def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
+    """⚠ THE PROPERTY THAT MAKES B6 UNNECESSARY, pinned so it cannot regress.
+
+    García, Romero & Acha get the Floquet multipliers from the Hessenberg
+    matrix their shooting-Newton's GMRES already built. We adopted the
+    **Ritz values** (`fef3d60`) and kept a small dedicated Arnoldi rather
+    than reusing the Newton's basis — and the reason is measured, not
+    assumed:
+
+    ⚠ THE DEFAULT NEWTON HAS NO GMRES AT ALL. `solve(matrix_free=False)`
+    is the default and factors the Jacobian directly, so there is no
+    Hessenberg matrix to reuse. Instrumenting the bulk fixture's solve
+    counted **zero** inner GMRES matvecs.
+
+    ⚠ AND WHERE THERE IS ONE, THE SAVING IS 12 MATVECS — measured at 27%
+    of `ppv()` but only **~1.5%** of a PSS-plus-`ppv` workflow (Arnoldi
+    0.077 s against PSS 4.17 s + `ppv` 0.29 s on the `m = 12` fixture),
+    shrinking further on the large circuits where `matrix_free` is
+    actually worth using, because the PSS dominates more there. Realising
+    it means replacing scipy's `gmres` in the core Newton — the
+    highest-risk change available — for that.
+
+    ⚠⚠ AND NOTHING DEPENDS ON THE CHOICE, WHICH IS WHAT THIS TEST HOLDS.
+    `factored_period()` re-traverses at the CONVERGED solution, so the
+    multipliers, `Q` and the PPV come out **bit-identical** either way.
+    That is a real design property and a fragile one: the class docstring
+    records that `Jtvec`/`Cvec` are written by neither factored traversal,
+    so an analysis reading them after a matrix-free solve would rebuild an
+    operator for a different trajectory, silently. The re-traversal is
+    what keeps that from mattering here.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    out = {}
+    for mf in (False, True):
+        cir = _vdp_with_noise(1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+                      maxiterations=60, matrix_free=mf)
+        assert pss.converged
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            v, info = pss.ppv()
+        out[mf] = (np.asarray(v).copy(), info['second_multiplier'],
+                   info['Q'], info['null_residual'])
+
+    v0, l0, q0, r0 = out[False]
+    v1, l1, q1, r1 = out[True]
+    assert l0 == l1, \
+        'lambda_2 differs between the dense and matrix-free Newton ' \
+        '(%.12g vs %.12g); factored_period() is supposed to re-traverse ' \
+        'at the converged solution, so the inner solver cannot matter' \
+        % (l0, l1)
+    assert q0 == q1
+    assert np.array_equal(v0, v1), \
+        'the PPV differs between inner solvers; the largest component ' \
+        'gap is %.3e' % float(np.max(np.abs(v0 - v1)))
+    assert r0 < 1e-9 and r1 < 1e-9
