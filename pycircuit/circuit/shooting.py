@@ -5523,6 +5523,130 @@ class PAC(Analysis):
                 % (what, info, r / scale))
         return x
 
+    def covariance(self, pss, samples=False):
+        """The periodic (cyclostationary) state covariance — DRIVEN circuits.
+
+        Returns `K0`, the covariance at `t = 0`; with `samples=True`,
+        `(K0, [K_j])`, the covariance at every step, which is the
+        time-varying statistic this exists to produce.
+
+        The noise covariance obeys a Lyapunov recursion alongside the
+        trajectory, `K_{j+1} = A_j K_j A_jᵀ + Q_j`, so over one period
+        `K_N = M K_0 Mᵀ + K_1`.  Periodicity closes it:
+
+            (I - M ⊗ M) vec(K_0) = vec(K_1)
+
+        ⚠ ONE LINEAR SOLVE, NO NEWTON.  The Lyapunov equation is LINEAR in
+        `K`, so shooting on it is exact in a single step — unlike the
+        trajectory it rides on.  The monodromy of the covariance system is
+        the KRONECKER SQUARE of the circuit's, so its multipliers are the
+        pairwise products `lambda_i lambda_j`.
+
+        ⚠ AND THAT IS WHY IT REFUSES AN OSCILLATOR.  There `lambda_1 = 1`
+        gives `lambda_1^2 = 1`, so `I - M ⊗ M` is exactly as singular as
+        `I - M` — measured 3.1e-11 against 3.8e-11 — and the covariance
+        does not settle, it GROWS.  Variance linear in `t` is a random
+        walk, which is phase diffusion, which is the linewidth.  Demir 2002
+        gives the physical counterpart: an oscillator's output noise is
+        STATIONARY, not cyclostationary, because "noisy autonomous systems
+        cannot provide a perfect time reference".  There is no
+        cyclostationary object there to compute, and `oscillator_spectrum`
+        is the right route instead.
+
+        ⚠ `CY/2` IS THE ONE-SIDED-TO-TWO-SIDED CONVERSION AND IT IS NOT
+        COSMETIC.  `CY` is a one-sided density (a resistor's `4kT/R`), so
+        the per-step injection is `Q_j = Jf_j^-1 (CY_j / 2h_j) Jf_j^-T`.
+        MEASURED against `kT/C` — exact, famously independent of `R` — on
+        an RC circuit, with and without the half:
+
+            npts        100      200      400      800
+            CY          1.861    1.928    1.963    1.981
+            CY/2        0.931    0.964    0.982    0.991
+
+        The full-`CY` column converges to 2 and the halved one to 1, so the
+        factor is settled by the measurement rather than by argument.  The
+        residual halves per grid doubling — O(h), first order, which a
+        piecewise-constant approximation to white noise is.
+
+        ⚠ AND THE GRID MUST RESOLVE THE NOISE BANDWIDTH, which is a real
+        precondition rather than an accuracy note.  The first attempt at
+        that gate read 0.517 because the RC pole at 159 kHz sat ABOVE the
+        grid's 100 kHz Nyquist: the discrete system genuinely does not
+        carry the noise the continuous one does.  A `kT/C` that comes back
+        low is the grid, not the code.
+
+        ⚠ COST: the solve has `(2m)^2` unknowns and is dense here, so it is
+        `O(m^4)`.  Small circuits only until that is replaced.
+        """
+        self._check_circuit(pss)
+        if getattr(pss, 'autonomous', False):
+            raise ValueError(
+                'PAC.covariance: an OSCILLATOR has no periodic covariance. '
+                'Its unit multiplier squares to one, so I - M kron M is '
+                'singular and the covariance grows without bound rather '
+                'than settling -- that growth IS the phase diffusion, and '
+                'its output noise is stationary rather than '
+                'cyclostationary. Use oscillator_spectrum().')
+        fp = pss.factored_period()
+        if fp.kind != 'solved_history':
+            raise NotImplementedError(
+                'PAC.covariance: the per-step maps are rebuilt from the '
+                "solved-history factors. Re-solve with method='gear'.")
+        m = pss.cir.n - 1
+        n = fp.width
+        hs = np.diff(np.asarray(fp.times, dtype=float))
+        cy = np.real(self._cy_reduced(pss, 2.0 * np.pi / float(fp.T)))
+
+        ## the C ring as the forward recursion sees it -- see the replays
+        cs0, cs1, ring = [], [], list(fp.opening)
+        for _lu, C_new, _a, _b in fp.steps:
+            cs0.append(ring[0])
+            cs1.append(ring[1])
+            ring = [C_new, ring[0]]
+
+        def step_map(k):
+            lu, _Cn, alphas, b = fp.steps[k]
+            if b:
+                raise NotImplementedError(
+                    'PAC.covariance: derived for a b = 0 companion (Gear-2).')
+            A = np.zeros((n, n))
+            for j in range(n):
+                p0 = np.zeros(m)
+                p1 = np.zeros(m)
+                (p0 if j < m else p1)[j if j < m else j - m] = 1.0
+                A[:m, j] = -lu.solve(alphas[1] * (cs0[k] @ p0)
+                                     + alphas[2] * (cs1[k] @ p1))
+                A[m:, j] = p0
+            return A
+
+        As, Qs = [], []
+        for k, (lu, _Cn, _a, _b) in enumerate(fp.steps):
+            ## Q = Jf^-1 (CY / 2h) Jf^-T, symmetrised against round-off
+            half = cy / (2.0 * hs[k])
+            left = np.column_stack([lu.solve(half[:, j]) for j in range(m)])
+            Q1 = np.column_stack([lu.solve(left[j, :]) for j in range(m)]).T
+            Q = np.zeros((n, n))
+            Q[:m, :m] = 0.5 * (Q1 + Q1.T)
+            Qs.append(Q)
+            As.append(step_map(k))
+
+        K = np.zeros((n, n))
+        for A, Q in zip(As, Qs):
+            K = A @ K @ A.T + Q
+        K1 = K
+
+        M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        S = np.eye(n * n) - np.kron(M, M)
+        K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
+        K0 = 0.5 * (K0 + K0.T)
+        if not samples:
+            return K0
+        seq, K = [K0], K0
+        for A, Q in zip(As, Qs):
+            K = A @ K @ A.T + Q
+            seq.append(0.5 * (K + K.T))
+        return K0, seq
+
     def diffusion_constant(self, pss):
         """`c` — the phase diffusion constant, in seconds.
 

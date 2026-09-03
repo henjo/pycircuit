@@ -5535,3 +5535,135 @@ def test_the_deflated_solve_works_transposed_too():
     assert rel < 1e-7, \
         'the transposed deflated solve disagrees with a dense transposed ' \
         'solve by %.3e; the borders are probably not swapped' % rel
+
+
+def _rc_noisy(Cval=1e-7, Rval=1e3, per=1e-3):
+    """An RC lowpass with a noisy resistor, driven so a PSS exists.
+
+    Linear, so its linearisation is time-invariant and the covariance is
+    constant — and its capacitor-voltage variance is the exact `kT/C`,
+    famously independent of `R`.
+    """
+    c = SubCircuit()
+    c.add_node('a')
+    c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=1.0, vac=1.0, freq=1.0 / per)
+    c['R'] = R('a', 'b', r=Rval)
+    c['C'] = C('b', gnd, c=Cval)
+    return c
+
+
+def _cov_ratio(npts, Cval=1e-7, per=1e-3):
+    import warnings
+    from pycircuit.circuit.constants import kboltzmann
+    circuit.default_toolkit = circuit.numeric
+    cir = _rc_noisy(Cval=Cval, per=per)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / npts, maxiterations=40)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    K0 = pac.covariance(pss)
+    irn = pss.irefnode
+    k = cir.get_node_index(cir.get_node('b'))
+    k = k - 1 if k > irn else k
+    T = float(circuit.defaultepar.T)
+    return K0[k, k] / (kboltzmann * T / Cval), K0
+
+
+def test_the_periodic_covariance_converges_to_kTC():
+    """⚠ AN EXACT, FAMOUS, INDEPENDENT ANSWER: `Var(v_C) = kT/C`.
+
+    Independent of `R`, which makes it a strong check — nothing about the
+    resistor, the drive or the grid should appear in it. The covariance
+    here is built from per-step Lyapunov accumulation and one Kronecker
+    solve, and shares no machinery with the closed form it is checked
+    against.
+
+    ⚠ THE ASSERTION IS THE RATE. Measured 0.931 / 0.964 / 0.982 / 0.991 at
+    100 / 200 / 400 / 800 points — the error halving each doubling, which
+    is the O(h) a piecewise-constant approximation to white noise gives.
+    A wrong constant would sit at a fixed offset and never move; this is
+    what distinguishes the two.
+
+    ⚠ AND IT SETTLED A FACTOR OF TWO BY MEASUREMENT. With the full `CY` the
+    same sequence converges to 2.0, not 1.0 — so `CY` is a ONE-SIDED
+    density and the per-step injection carries `CY/2`. Argument alone
+    would not have decided it; the two candidate conventions differ by
+    exactly the factor the test resolves.
+    """
+    rs = [_cov_ratio(n)[0] for n in (100, 200, 400)]
+    assert rs[-1] > 0.95, \
+        'the covariance is %.4f of kT/C at 400 points; it should be ' \
+        'approaching 1' % rs[-1]
+    errs = [abs(1.0 - r) for r in rs]
+    for a, b in zip(errs, errs[1:]):
+        assert 1.6 < a / b < 2.6, \
+            'the error falls %.2fx per doubling (%s), not the ~2x of O(h). ' \
+            'A wrong CONSTANT would not move at all' % (a / b, errs)
+
+
+def test_the_covariance_grid_must_resolve_the_noise_bandwidth():
+    """⚠ A PRECONDITION, NOT AN ACCURACY NOTE — and it cost a wrong reading.
+
+    The first attempt at the gate above came back at 0.517 and looked like
+    a factor-of-two bug. It was not: the RC pole sat at 159 kHz while the
+    grid's Nyquist was 100 kHz, so the DISCRETE system genuinely does not
+    carry the noise the continuous one does. `kT/C` requires integrating
+    past the pole.
+
+    Reproduced here deliberately: the same circuit with the pole above
+    Nyquist reads far low, and moving the pole below it recovers the
+    answer. A `kT/C` that comes back low is the grid, not the code.
+    """
+    ## pole at 159 kHz, Nyquist at 100 kHz — under-resolved
+    under, _K = _cov_ratio(200, Cval=1e-9)
+    ## pole at 1.6 kHz, Nyquist at 100 kHz — resolved
+    ok, _K2 = _cov_ratio(200, Cval=1e-7)
+    assert under < 0.7, \
+        'the under-resolved case reads %.4f; it is supposed to be visibly ' \
+        'low, or this test is not demonstrating the precondition' % under
+    assert ok > 0.95, 'the resolved case reads %.4f' % ok
+
+
+def test_the_covariance_refuses_an_oscillator():
+    """`I − M⊗M` is singular there, and that is the physics.
+
+    The unit multiplier squares to one, the covariance grows without bound
+    rather than settling, and that growth IS the phase diffusion. An
+    oscillator's output noise is stationary, not cyclostationary — there is
+    no object here to compute, so it refuses and names the right route.
+    """
+    _cir, pss = _solve_slow(None)
+    with pytest.raises(ValueError, match='no periodic covariance'):
+        PAC(pss.cir, toolkit=circuit.numeric).covariance(pss)
+
+
+def test_the_covariance_samples_are_periodic_and_positive():
+    """The time-varying statistic itself: `K(t)` over one period.
+
+    Two structural properties that a wrong recursion breaks differently —
+    it must return to itself after a period (that is what the Kronecker
+    solve enforces), and every `K_j` must be a positive-semidefinite
+    covariance, which nothing in the solve guarantees a priori.
+    """
+    _r, _K = _cov_ratio(100)
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _rc_noisy()
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
+    K0, seq = PAC(cir, toolkit=circuit.numeric).covariance(pss, samples=True)
+
+    rel = np.linalg.norm(seq[-1] - K0) / max(np.linalg.norm(K0), 1e-300)
+    assert rel < 1e-8, \
+        'K(T) differs from K(0) by %.3e -- the solve is supposed to ' \
+        'enforce exactly that periodicity' % rel
+    for j, K in enumerate(seq):
+        w = np.linalg.eigvalsh(K)
+        assert w.min() > -1e-12 * max(abs(w).max(), 1e-300), \
+            'K at step %d has eigenvalue %.3e; a covariance cannot be ' \
+            'negative definite' % (j, w.min())
