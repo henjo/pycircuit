@@ -162,6 +162,43 @@ components have died (the second multiplier is 8.6e-4 per period)"*. At `Q = 16`
 this is the shared-instrument shape (§D 0b) wearing a reassuring number. Its agreement says
 nothing about `λ₂` accuracy.
 
+### 0b. Which gates the high-Q fixture actually re-tests — measured 2026-09-03
+
+The exposure recorded above ("every gate that passes on van der Pol at `μ = 1` was tested at
+`|λ₂| = 8.6e-4`") is real but **narrower than it reads**, and the difference is worth stating
+before anyone spends time re-running the suite at high `Q`.
+
+⚠⚠ **MOST OF THE OSCILLATOR-NOISE GATES ARE INSENSITIVE TO `Q` BY CONSTRUCTION.** Run on the
+`m = 12`, `Q = 60` fixture and on van der Pol at `μ = 1`, they agree **to every printed digit**:
+
+| gate | `Q = 0.12` | `Q = 60` |
+|---|---|---|
+| `∫S df`, harmonics 1/2/3 | 0.99993570 / 0.99998154 / 0.99998720 | **identical** |
+| far skirt per doubling | 4.000000 | **identical** |
+| harmonic 3 vs 1 | 9.5424 dB | **identical** |
+| `phase_psd` vs `lorentzian` | 1.000e-06 | **identical** |
+
+They are self-consistency checks on the **closed-form** `lorentzian`, which knows the circuit
+only through the scalar `c`. Re-running them at high `Q` establishes nothing — the fixture never
+enters them.
+
+⚠ **The `Q`-sensitive gates are the ones that touch the CIRCUIT, and those are done:** Ritz
+(err 3.5e-12 at `k = m`), `λ₂`/`Q` convergence (the amplification ratio 60 reappearing),
+`oscillator_covariance` (`d/T` vs `c` = 0.999603), A4d's zero pattern (`Γ/c` = 4.9e-27), the PPV
+physical gate (**breaks**, 24%, and cannot be repaired), and the frequency-shift gate (**1.000006
+at Q = 75**).
+
+⚠⚠ **WHAT REMAINS EXPOSED, precisely:** `diffusion_constant`'s **absolute scale** at high `Q`.
+It is anchored by a nonlinear Monte Carlo at `μ = 1` only. At `Q = 60` the only cross-check is
+`oscillator_covariance`'s `d/T`, which **shares the monodromy** — so it rules out a defect in
+either route and not a defect common to both. The frequency-shift gate anchors `⟨v⟩` (the *DC*
+functional) at `Q = 75`; it does not anchor `c` (the *quadratic* one).
+
+**So the honest statement is one sentence, not the blanket one:** every *shape* result holds at
+any `Q` because it never sees `Q`; every *circuit* result has been re-run; and one *scale* — `c`
+— rests at high `Q` on a check that shares an instrument. A Monte Carlo at `Q = 60` would close
+it, at 4.6·Q ≈ 280 periods per realisation.
+
 **Consequence for planning:** the failures below are not a collection of unrelated sharp edges
 to be patched one at a time. Any item whose gate passes on van der Pol at `μ = 1` has been
 tested at `|λ₂| = 8.5e-4` — six orders from where a real LC oscillator sits — and has therefore
