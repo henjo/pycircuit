@@ -6972,3 +6972,126 @@ def test_the_compact_mos_models_have_no_noise_model_at_all():
             'bias-dependent refusal is now REACHABLE from a real device, ' \
             'and whether that CY reads x decides whether pnoise works on ' \
             'MOS circuits at all' % (name, worst)
+
+
+def _vdp_with_parasitic(Q, tau_over_T, npts=480):
+    """A high-`Q` van der Pol with one parasitic RC node at a chosen `tau/T`.
+
+    Lets a parasitic multiplier be swept THROUGH the oscillatory one:
+    `lambda_p = exp(-T/tau_p)` equals `lambda_2 = exp(-1/Q)` exactly when
+    `tau_p/T = Q`. A resonance between a designed quantity and an
+    incidental one.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir.add_node('w')
+    rbig = 1e6
+    cir['Rs'] = R('v', 'w', r=rbig)
+    cir['Cs'] = C('w', gnd, c=tau_over_T * T / rbig)
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=150)
+    assert pss.converged, 'Q=%r tau/T=%r' % (Q, tau_over_T)
+    return cir, pss
+
+
+def test_a_resonant_parasitic_breaks_eigenvectors_and_not_the_ppv():
+    """⚠⚠ THE BORDERED SOLVE EARNS ITS COST HERE, MEASURED.
+
+    A parasitic multiplier `λ_p = exp(−T/τ_p)` equals `λ₂ = exp(−1/Q)`
+    exactly when `τ_p/T = Q` — **a resonance between a quantity the
+    designer chooses and one they do not**. At `Q = 16`, `τ_p/T = 16`
+    gives `λ₂ = 0.939432` against `λ_p = 0.939410`: degenerate to five
+    digits.
+
+    Swept through it:
+
+        τ_p/T    PPV drift    λ₂ eigenvector drift   cond(V)
+          1      2.1e-08      0                       4.7
+          8      2.6e-08      0.0251                  4.9
+         15      3.0e-08      0.0254                  7.5
+         16      3.3e-08      0.0254                 25.7   ← resonance
+         17      3.0e-08      0.99967                 4.5   ← 90° SWAP
+         32      3.0e-08      0.99967                10.8
+
+    ⚠ **The λ₂ eigenvector swaps by 90° across the crossing and the PPV
+    does not move at all** — flat at 3e-08 through resonance, with the
+    border and null residuals unchanged at 1.8e-13 / 7.0e-13.
+
+    ⚠⚠ AND THE REASON IS THE ONE THAT MAKES THE DISTINCTION USEFUL: the
+    degeneracy is between `λ₂` and `λ_p`, **neither of which is 1**. The
+    PPV is the left null vector of `I − M`, i.e. the `λ₁ = 1` object,
+    which stays SIMPLE throughout. So a degeneracy among the *other*
+    multipliers cannot touch it.
+
+    ⚠ THAT IS NOT DEMIR & ROYCHOWDHURY'S OBJECTION, AND CONFLATING THEM
+    WOULD MIS-SCOPE BOTH. Theirs is `λ₂ → λ₁ = 1` — the HIGH-Q case,
+    where the phase mode itself becomes indistinguishable, which is what
+    `PPV_SECOND_MULTIPLIER_WARN` guards. This is a different degeneracy
+    with a different victim: it breaks any eigen-based extraction of `λ₂`
+    and leaves the phase mode alone.
+
+    Two conclusions, both worth having separately: an eigendecomposition
+    route to the PPV would be unreliable here for a reason the *residual*
+    cannot see, and the bordered solve is immune by construction rather
+    than by luck.
+    """
+    ref_v = None
+    ref_u2 = None
+    out = []
+    for tau in (1.0, 16.0, 32.0):
+        _cir, pss = _vdp_with_parasitic(16.0, tau)
+        fp = pss.factored_period()
+        n = fp.width
+        M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        w, V = np.linalg.eig(M)
+        order = np.argsort(-np.abs(w))
+        w, V = w[order], V[:, order]
+        v, info = pss.ppv()
+        vv = np.real(v) / np.linalg.norm(v)
+        u2 = np.real(V[:, 1])
+        u2 = u2 / np.linalg.norm(u2)
+        if ref_v is None:
+            ref_v, ref_u2 = vv.copy(), u2.copy()
+
+        def sin_angle(a, b):
+            c = abs(float(a @ b))
+            return np.sqrt(max(1.0 - c ** 2, 0.0))
+
+        out.append((tau, sin_angle(vv, ref_v), sin_angle(u2, ref_u2),
+                    abs(w[1] - w[2]), info['null_residual'],
+                    abs(info['border_residual'])))
+
+    for tau, dv, du, gap, nres, bres in out:
+        assert dv < 1e-6, \
+            'tau/T = %g moved the PPV by sin = %.3e; the phase mode is ' \
+            'supposed to be untouched by a lambda_2/lambda_p degeneracy ' \
+            'because neither of them is 1' % (tau, dv)
+        assert nres < 1e-9 and bres < 1e-9, \
+            'tau/T = %g degraded the bordered solve (null %.2e, border ' \
+            '%.2e); it is supposed to be immune by construction' \
+            % (tau, nres, bres)
+    ## the resonance really is a near-degeneracy, and it really does move
+    ## the eigenvector -- otherwise the test above proves nothing
+    gaps = {t: g for t, _dv, _du, g, _n, _b in out}
+    assert gaps[16.0] < 1e-3, \
+        'tau/T = 16 no longer puts lambda_p on top of lambda_2 (gap ' \
+        '%.3e), so this fixture has stopped testing the resonance' \
+        % gaps[16.0]
+    assert gaps[1.0] > 0.1 and gaps[32.0] > 0.01
+    assert out[2][2] > 0.5, \
+        'the lambda_2 eigenvector no longer swaps across the crossing ' \
+        '(sin = %.3e); if eigen extraction has become stable here the ' \
+        'contrast this test rests on is gone' % out[2][2]
