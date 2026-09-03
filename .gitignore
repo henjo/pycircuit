@@ -19,3 +19,6 @@ doc/build/
 
 # graphify knowledge graph (regenerate with: graphify update .)
 graphify-out/
+
+# Claude Code local settings (graphify PreToolUse hooks)
+.claude/settings.local.json

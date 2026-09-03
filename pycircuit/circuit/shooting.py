@@ -3635,19 +3635,47 @@ class PSS(Analysis):
         ## fix a period map that is not a function of `x_0`.  The honest
         ## answers are to admit the delay state into the unknowns (a
         ## different analysis) or to refuse; this refuses.
+        ##
+        ## ⚠ AND THE SCOPE OF THAT REFUSAL IS THE ELEMENT, NOT THE CLASS.
+        ## Two things look alike and are not.  KUNDERT'S HIDDEN STATE is a
+        ## behavioural model carrying internal state the simulator does not
+        ## know about -- genuinely broken, and SpectreRF "outlaws [them]
+        ## outright".  A DISTRIBUTED COMPONENT has a KNOWN
+        ## infinite-dimensional structure described by frequency-dependent
+        ## Y/Z/S parameters, and is tractable: "the convolution operation is
+        ## diagonalized by the Fourier transform", so the component is
+        ## applied spectrally while the STATE stays finite and lumped
+        ## (Yang & Phillips, DAC 2002), and an autonomous time-domain
+        ## steady-state solve with transmission lines and exact period
+        ## derivatives exists independently.
+        ##
+        ## `TLine` here trips the first test because of HOW IT IS
+        ## IMPLEMENTED -- a `history` buffer filled by `accept_step` -- not
+        ## because a transmission line is unshootable.  The flag is opt-in
+        ## per element (`Circuit.hidden_state` defaults False), so nothing
+        ## refuses distributed components as a class, and an element that
+        ## declared its state properly would pass.  Cited, not verified
+        ## here.
         _hidden = self.cir.hidden_state_elements()
         if _hidden:
             raise NotImplementedError(
-                'PSS: this circuit carries HIDDEN STATE -- %s -- and a '
-                'shooting analysis cannot solve it. The period map must be '
-                'a function of x_0 alone, and these elements stamp from '
-                'state that lives outside x and is filled by accept_step, '
-                'which only a forward transient calls. Left alone the '
-                'answer would be silently wrong rather than slow: an empty '
-                'TLine history stamps the line as a DC short and the solve '
-                'reports converged. Use Transient for this circuit; making '
-                'it shootable means admitting the delay state into the '
-                'unknowns, which is a different analysis.'
+                'PSS: these elements carry HIDDEN STATE -- %s -- so THIS '
+                'formulation cannot solve this circuit. The period map must '
+                'be a function of x_0 alone, and they stamp from state that '
+                'lives outside x and is filled by accept_step, which only a '
+                'forward transient calls. Left alone the answer would be '
+                'silently wrong rather than slow: an empty TLine history '
+                'stamps the line as a DC short and the solve reports '
+                'converged. Use Transient for this circuit. ⚠ This is a '
+                'limit of the ELEMENT as implemented here, not of shooting '
+                'or of distributed components as a class: a component with '
+                'a KNOWN frequency-domain description (a transmission line, '
+                'an S-parameter block) is tractable in a time-domain '
+                'steady-state solve by either admitting the delay state '
+                'into the unknowns, or applying the component spectrally -- '
+                'the Fourier transform diagonalises the convolution, so its '
+                'action becomes a multiply by Y/Z/S while the state stays '
+                'finite. Both are different analyses than this one.'
                 % ', '.join(sorted(_hidden)))
 
         self.period = period
