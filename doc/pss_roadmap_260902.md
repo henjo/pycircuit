@@ -1382,10 +1382,33 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    and 33 is a spread between two entries — three different normalisations, one of which was
    compared to the other two. Measured properly: `|C_ij − C_ji| = 4.97 fF` against
    `Cox = 15.35 fF` → **0.324 = 32× McAndrew's 0.01**, not 44×. `Cox` anchored *outside* the
-   `C()` code by the model's own geometry (`ε_ox W L / tox` = 15.70 fF, **2.24%** away). The
-   direction of the conclusion survives — **his 1% is a floor for the ideal long-channel case,
-   not a typical value** — but the magnitude was 37% wrong. *The normalisation is where every
-   error in this campaign has lived.*
+   `C()` code by the model's own geometry (`ε_ox W L / tox` = 15.70 fF, **2.2%** away).
+
+   ⚠⚠ **AND FIXING THE DENOMINATOR DID NOT FIX THE COMPARISON — THE CONDITIONS WERE ALSO
+   MISMATCHED, WHICH IS A DIFFERENT DEFECT WITH A DIFFERENT REPAIR.** McAndrew's bound is
+   stated at **`VDS = 0`**, under his eq. (2), derived there. The 4.97 fF is a worst case over
+   a box *containing saturation*, where Ward-Dutton partition makes `Cgd`/`Cdg` asymmetric **by
+   design**. At his condition:
+
+   | | nonreciprocity / `Cox` | × his 0.01 |
+   |---|---|---|
+   | `Vds = 0`, worst over `Vg` | 0.844% | **0.84 — under the bound** |
+   | `Vds = 1.2`, `Vg = 1.2` | 31.7% | 31.7 |
+
+   monotone in `Vds`: 0.47, 1.63, 3.77, 9.47, 20.9, 30.6, 31.7 at `Vds` = 0 … 1.2.
+
+   ⚠ **So his 1% is VERIFIED, not contradicted, and the "floor for the ideal case, not a
+   typical value" written here one commit ago was wrong.** A real compact model gated to 1.3e-6
+   against a compiled PSP103 satisfies his bound at his stated condition to within a factor of
+   **1.2**. The 32× is a statement about **saturation** — what this gate cares about, and not a
+   claim about the paper.
+
+   ⚠ **Useful corollary: the nonreciprocity is essentially CREATED by `Vds` (68× growth), so a
+   DC-biased fixture is a weak transpose gate and a swinging one is a strong one.**
+
+   ⚠ *The normalisation is where every error in this campaign has lived* — and this one had a
+   **conditions** defect underneath it that survived the normalisation fix entirely. See shape
+   0e.
 
    ⚠ **The fixture's sensitivity is LINEAR in the asymmetry, not thresholded** — 0.6667×asym
    across four decades, so at McAndrew's own 1% the error is still 1e-2 against a 4e-16 floor.
@@ -1396,6 +1419,15 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    ⚠ **The earlier "max|C − Cᵀ| = 0 across the element library" was scoped to the DISCRETE
    library and used as though it covered the tree.** The compact models were never in that
    sweep. Shape 0 again, on my own measurement.
+
+0e. **A comparison whose CONDITIONS do not match, which survives fixing the normalisation.**
+   Distinct repair: a normalisation defect is fixed by finding the comparable *denominator*; a
+   conditions defect is still there afterwards, because you can make a number comparable in its
+   denominator and still have measured it in a regime the bound was never asserted for. ⚠ The
+   check is not "what is this divided by" but **"under what conditions was the thing I am
+   comparing against asserted"**. Instance: quoting a worst-over-bias-box nonreciprocity against
+   McAndrew's at-`VDS = 0` bound — and doing it *in the message correcting the denominator*, so
+   the correction itself carried an over-claim.
 
 0b. **A measurement that shares the assumption under test.** `diffusion_constant`'s Monte
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965

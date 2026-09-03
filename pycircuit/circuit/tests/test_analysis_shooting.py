@@ -6115,17 +6115,34 @@ def test_the_transposed_replay_gate_cannot_see_a_dropped_transpose():
     AND THE FIRST ATTEMPT USED A DIFFERENT ONE. McAndrew's figure is a
     nonreciprocity over `Cox` (`|C_ij − C_ji| ≲ 0.01·Cox`); the 0.44 this
     once quoted was a ratio to `max|C|`, and 33 is a spread between two
-    entries — three different denominators. Measured properly:
+    entries — three different denominators. `Cox` is anchored OUTSIDE the
+    `C()` code by the model's own geometry: `eps_ox W L / tox` with
+    `W = L = 1e-6`, `tox = 2.2e-9` gives 15.70 fF, 2.2% from the measured
+    max `Cgg`.
 
-        |C_ij - C_ji|  = 4.97 fF   (worst over Vg, Vd in [0, 1.2])
-        Cox            = 15.35 fF  (max Cgg, Vds = 0)
-        ratio          = 0.324     =  32x McAndrew's 0.01
+    ⚠⚠ AND FIXING THE DENOMINATOR DID NOT FIX THE COMPARISON, BECAUSE THE
+    CONDITIONS WERE ALSO MISMATCHED. McAndrew's bound is stated at
+    `VDS = 0`, under his eq. (2), which is derived there. The 4.97 fF
+    above is a WORST CASE over `Vg, Vd in [0, 1.2]` — a box containing
+    saturation, where Ward-Dutton partition makes `Cgd`/`Cdg` asymmetric
+    BY DESIGN. Measured at his condition instead:
 
-    and `Cox` is anchored OUTSIDE the `C()` code by the model's own
-    geometry: `eps_ox W L / tox` with `W = L = 1e-6`, `tox = 2.2e-9` gives
-    15.70 fF, 2.24% from the measured value. So the conclusion holds --
-    McAndrew's 1% is a floor for the IDEAL long-channel case, not a
-    typical value -- but at 32x, not the 44x first written down.
+        Vds = 0, worst over Vg      0.844% of Cox   =  0.84x his 0.01
+        Vds = 1.2, Vg = 1.2        31.66% of Cox    = 31.66x
+
+    with the growth monotone in `Vds` — 0.47, 1.63, 3.77, 9.47, 20.9,
+    30.6, 31.7 (× 0.01) at `Vds` = 0, 0.05, 0.1, 0.2, 0.4, 0.8, 1.2.
+
+    ⚠ SO HIS 1% IS VERIFIED, NOT CONTRADICTED, and the earlier note here
+    claiming it was "a floor for the ideal case, not a typical value" was
+    wrong. A real compact model, gated to 1.3e-6 against a compiled
+    PSP103, satisfies his bound at his stated condition to within a factor
+    of 1.2. The 32x is a statement about SATURATION — which is what this
+    gate cares about, and not a claim about the paper.
+
+    ⚠ THE NONRECIPROCITY IS ESSENTIALLY CREATED BY `Vds`: 68x growth from
+    `Vds = 0` to `Vds = 1.2`. That is why a DC-biased fixture would be a
+    weak transpose gate and a swinging one is a strong one.
 
     ⚠ A SYMMETRIC `C` MAKES THIS A TOTAL BLIND SPOT RATHER THAN A WEAK
     PROBE. `C = Cᵀ` means no perturbation direction, random or designed,
@@ -6214,6 +6231,26 @@ def test_the_compact_mos_models_really_are_transcapacitive():
     assert 25.0 < nonrecip / cgg / 0.01 < 40.0, \
         'nonreciprocity is %.1fx McAndrew 1%% of Cox; the recorded 32x ' \
         'no longer describes this model' % (nonrecip / cgg / 0.01)
+
+    ## ⚠ AND THE SAME QUANTITY AT McANDREW'S OWN CONDITION, `Vds = 0`,
+    ## which is where his bound is stated and where it HOLDS. Pinned
+    ## separately from the saturation figure on purpose: they are two
+    ## different claims and conflating them is what produced a wrong
+    ## reading of the paper.
+    at_vds0 = 0.0
+    for vg in np.linspace(0.0, 1.2, 13):
+        Cm = np.asarray(inst.C(np.array([0.0, vg, 0.0, 0.0])), dtype=float)
+        at_vds0 = max(at_vds0, float(np.max(np.abs(Cm - Cm.T))))
+    assert at_vds0 / cgg < 0.01, \
+        'at Vds = 0 the nonreciprocity is %.4f of Cox, above McAndrew 1%% ' \
+        'where he states it. That would be the STRONGER claim -- his ' \
+        'bound failing for a real compact model -- and it needs saying ' \
+        'so, not silently absorbing into the saturation figure'\
+        % (at_vds0 / cgg)
+    assert nonrecip / at_vds0 > 20.0, \
+        'the nonreciprocity is no longer created by Vds (ratio %.1f); the ' \
+        'transpose gate depends on the fixture SWINGING, not on its DC ' \
+        'bias' % (nonrecip / at_vds0)
 
 
 def test_the_transcap_fixtures_sensitivity_is_linear_not_thresholded():
