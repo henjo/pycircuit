@@ -691,12 +691,38 @@ keeps Itô/Stratonovich out of reach. Relaxing it for MOS makes the interpretati
 Markov chain, not a small perturbation of a large signal, and the same paper calls the state
 dependence *nonlinear*. The tell stays: a discrepancy in a **mean** but not a variance.
 
-⚠⚠ **MEASURED GAP: `PspMosLongChannel.CY` IS IDENTICALLY ZERO.** The transcapacitance is
-modelled (non-reciprocal at 32× McAndrew's bound in saturation) and **the noise is not modelled
-at all** — so a MOS circuit here is noiseless, and every noise result in this document comes
-from discrete `IS`/`VS`/`R` sources. That is the precondition for two separate things: any real
-`pnoise` on a MOS circuit, and the *reachability* of the refusal below. Pinned, so a noise model
-landing fails loudly rather than being noticed later.
+⚠⚠ **CORRECTED 2026-09-03: `PspMosLongChannel` HAS NOISE. The earlier "identically zero" here
+was measured on a DEFAULT-CONSTRUCTED ELEMENT.** The model declares
+`white_noise(mult·n_sid) + flicker_noise(mult·n_sfl, ef)` at `compact.py:834`; what is zero is
+`fnt` and `nfa`, because *"an element built without a card is noiseless"* (`compact.py:1049`).
+With `fnt = 1` the element grows a noise branch (`n`: 4 → 5) and `CY` is nonzero, **exactly
+white**, and **bias-dependent**.
+
+⚠ **§D shape 0c, and the fixture was a constructor call.** Every sweep read `CY = 0` and the
+conclusion drawn was that the feature did not exist. The model's own docstring lists the noise
+under *"Since built, and no longer absent"* and warns two paragraphs later that *"a stale gap
+note is worse than none: it is trusted like a measurement and it is not one."* **The note was
+current; the reader was not.**
+
+⚠⚠ **SO THE BIAS-DEPENDENT REFUSAL IS REACHABLE FROM A REAL DEVICE TODAY**, and
+`modulated=True` is the route past it. MOS pnoise is no longer waiting on a device model.
+
+⚠⚠⚠ **AND THE NOISE HAS AN EXTERNAL ANCHOR — THERMODYNAMICS.** At `Vds = 0` a MOSFET is in
+equilibrium, so the fluctuation-dissipation theorem fixes `S_id = 4kT·g_ds` with **no model
+freedom**. Measured at `fnt = 1`, `T = 300 K`:
+
+| `Vg` | `g_ds` | `CY[0,0]` | `4kT·g_ds` | ratio |
+|---|---|---|---|---|
+| 0.40 | 5.221e-05 | 8.895e-25 | 8.649e-25 | 1.0283 |
+| 0.80 | 2.180e-04 | 3.691e-24 | 3.612e-24 | 1.0218 |
+| 1.20 | 3.392e-04 | 5.711e-24 | 5.620e-24 | 1.0161 |
+| 1.50 | 3.919e-04 | 6.579e-24 | 6.492e-24 | 1.0134 |
+
+**Satisfied to 1.3–2.8%**, and the residual is **structural rather than scatter** — it has a
+sign and falls monotonically with `Vg`. ⚠ **Deliberately not tuned:** `fnt` is an exact linear
+scale (0.509293 / 1.018586 / 2.037172 at `fnt` = 0.5/1/2), so `fnt = 0.98175` would make the
+ratio read 1.000000 and would be **fitting a physical constant to a discrepancy we do not
+understand**. This is the MOS analogue of `kT/C`.
 
 ⚠ **STATIONARY SOURCES ONLY, AND IT CHECKS RATHER THAN ASSUMES.** A bias-dependent `CY`
 makes the sources cyclostationary; the windows' Fourier coefficients then correlate the

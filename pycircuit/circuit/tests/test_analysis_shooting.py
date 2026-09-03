@@ -6942,36 +6942,133 @@ def test_multiplicative_noise_is_refused_on_every_path():
             call()
 
 
-def test_the_compact_mos_models_have_no_noise_model_at_all():
-    """⚠ A GAP WORTH STATING: `PspMosLongChannel.CY` is IDENTICALLY ZERO.
+def test_the_compact_mos_noise_is_off_without_a_card_not_absent():
+    """⚠⚠ THIS TEST USED TO ASSERT "no noise model at all". THAT WAS WRONG.
 
-    The transcapacitance is modelled (and non-reciprocal at 32× McAndrew's
-    bound in saturation), but the noise is not modelled at all — so a MOS
-    circuit in this tree is noiseless, and every noise result above comes
-    from discrete `IS`/`VS`/`R` sources.
+    `PspMosLongChannel` has channel thermal and flicker noise, declared at
+    `compact.py:834` as `white_noise(mult·n_sid) + flicker_noise(mult·n_sfl,
+    ef)`. What is zero is the COEFFICIENTS: `fnt = 0`, `nfa = 0` by
+    default, and `compact.py:1049` says why — *"`fnt = 0` switches the
+    thermal term off … an element built without a card is noiseless."*
 
-    Pinned because it is the precondition for two separate things: any
-    real `pnoise` on a MOS circuit, and the reachability of the
-    bias-dependent-`CY` refusal above. If a noise model lands, that
-    refusal stops being unreachable and this test should fail loudly
-    rather than the change being noticed later.
+    ⚠ SO THE EARLIER MEASUREMENT WAS OF A DEFAULT-CONSTRUCTED INSTANCE AND
+    THE CLAIM WAS ABOUT THE MODEL. Every sweep read `CY = 0` because the
+    element had no card, and the conclusion drawn was that the feature did
+    not exist. §D shape 0c: the fixture could not express the thing under
+    test, and the fixture was a constructor call.
+
+    ⚠ THE MODEL'S OWN DOCSTRING SAID SO — it lists "channel thermal and
+    flicker noise" under *"Since built, and no longer absent"*, and warns
+    two paragraphs later that *"a stale gap note is worse than none: it is
+    trusted like a measurement and it is not one."* The note was current;
+    the reader was not.
+
+    With `fnt = 1` the element grows a noise branch (`n` goes 4 → 5) and
+    `CY` is nonzero, white, and state-dependent.
     """
     from pycircuit.circuit import compact
     circuit.default_toolkit = circuit.numeric
-    for name in ('PspMosLongChannel', 'PspPmosLongChannel'):
-        cls = getattr(compact, name)
-        inst = cls(*cls.terminals)
-        worst = 0.0
-        for vg in np.linspace(0.0, 1.2, 5):
-            for vd in np.linspace(0.0, 1.2, 5):
-                cy = np.asarray(inst.CY(np.array([vd, vg, 0.0, 0.0]),
-                                        2.0 * np.pi * 1e9), dtype=float)
-                worst = max(worst, float(np.max(np.abs(cy))))
-        assert worst == 0.0, \
-            '%s now has a nonzero CY (max %.3e). Good -- but the ' \
-            'bias-dependent refusal is now REACHABLE from a real device, ' \
-            'and whether that CY reads x decides whether pnoise works on ' \
-            'MOS circuits at all' % (name, worst)
+    cls = compact.PspMosLongChannel
+
+    bare = cls(*cls.terminals)
+    assert bare.iparv.fnt == 0.0 and bare.iparv.nfa == 0.0, \
+        'the noise coefficients are no longer zero by default, so ' \
+        '"an element built without a card is noiseless" has changed'
+    assert bare.n == 4
+    for vg in (0.4, 1.2):
+        cy = np.asarray(bare.CY(np.array([0.0, vg, 0.0, 0.0]),
+                                2.0 * np.pi * 1e6), dtype=float)
+        assert float(np.max(np.abs(cy))) == 0.0
+
+    noisy = cls(*cls.terminals, fnt=1.0)
+    assert noisy.n == 5, \
+        'enabling fnt no longer adds the noise branch (n = %d)' % noisy.n
+    vals = []
+    for vd in (0.0, 0.6, 1.2):
+        x = np.zeros(noisy.n)
+        x[0], x[1] = vd, 1.0
+        vals.append(float(np.asarray(
+            noisy.CY(x, 2.0 * np.pi * 1e6), dtype=float)[0, 0]))
+    assert min(vals) > 0.0, 'CY is still zero with fnt = 1'
+    assert max(vals) / min(vals) > 1.2, \
+        'CY no longer depends on the bias (%s); a state-independent MOS ' \
+        'noise model would be the physically wrong one, and would also ' \
+        'make pnoise(modulated=True) unnecessary' % vals
+
+
+def test_the_mos_thermal_noise_satisfies_the_fluctuation_dissipation_theorem():
+    """⚠⚠ THE EXTERNAL ANCHOR FOR A COMPACT MODEL'S NOISE — thermodynamics.
+
+    At `Vds = 0` a MOSFET is in thermal equilibrium: it dissipates nothing
+    and the fluctuation-dissipation theorem fixes its current noise
+    completely,
+
+        S_id  =  4 k T g_ds ,    g_ds = ∂I_d/∂V_d
+
+    with **no model freedom whatever**. Any noise model that misses this
+    is wrong regardless of what it does elsewhere, and one that hits it has
+    its absolute scale anchored to thermodynamics rather than to a fit.
+    This is the MOS analogue of `kT/C`.
+
+    MEASURED at `fnt = 1`, `Vds = 0`, `T = 300 K`:
+
+        Vg     g_ds (S)       CY[0,0]        4kT·g_ds       ratio
+        0.40   5.220648e-05   8.894646e-25   8.649459e-25   1.028347
+        0.80   2.180318e-04   3.690935e-24   3.612305e-24   1.021767
+        1.20   3.392372e-04   5.711105e-24   5.620411e-24   1.016137
+        1.50   3.918655e-04   6.579492e-24   6.492344e-24   1.013423
+
+    ⚠ SATISFIED TO 1.3–2.8%, AND THE RESIDUAL IS STRUCTURAL RATHER THAN
+    SCATTER: it has a sign and falls monotonically with `Vg`. That is a
+    property of PSP's channel-integrated `n_sid` against the ideal
+    `4kT·g_ds`, not a normalisation to tune.
+
+    ⚠⚠ AND IT IS DELIBERATELY NOT TUNED. `fnt` is an exact linear scale on
+    the thermal PSD — measured 0.509293 / 1.018586 / 2.037172 at
+    `fnt` = 0.5/1/2 — so setting `fnt = 0.98175` would make this test read
+    1.000000 and would be **fitting a physical constant to a discrepancy
+    we do not understand**. The tolerance is 5%, chosen to admit the
+    measured residual and to catch a factor.
+
+    Also asserted: the thermal term is exactly WHITE (identical at 1e3,
+    1e6, 1e9 Hz with the flicker coefficient off), which is what makes
+    `4kT·g_ds` the right comparison at any frequency.
+    """
+    from pycircuit.circuit import compact
+    circuit.default_toolkit = circuit.numeric
+    K_B = 1.380649e-23
+    T = 300.0
+    inst = compact.PspMosLongChannel(
+        *compact.PspMosLongChannel.terminals, fnt=1.0)
+    n = inst.n
+
+    ## white: no frequency dependence with the flicker coefficient off
+    x = np.zeros(n)
+    x[1] = 1.0
+    vals = [float(np.asarray(inst.CY(x, 2.0 * np.pi * f), dtype=float)[0, 0])
+            for f in (1e3, 1e6, 1e9)]
+    assert max(vals) == min(vals), \
+        'the thermal term is not white across 1e3..1e9 Hz (%s)' % vals
+
+    ratios = []
+    for vg in (0.4, 0.8, 1.2, 1.5):
+        x = np.zeros(n)
+        x[0], x[1] = 0.0, vg
+        gds = float(np.asarray(inst.G(x), dtype=float)[0, 0])
+        sid = float(np.asarray(inst.CY(x, 2.0 * np.pi * 1e6),
+                               dtype=float)[0, 0])
+        assert gds > 0.0
+        ratios.append(sid / (4.0 * K_B * T * gds))
+    for vg, r in zip((0.4, 0.8, 1.2, 1.5), ratios):
+        assert abs(r - 1.0) < 0.05, \
+            'at Vg = %.2f, Vds = 0 the model gives S_id = %.4f x 4kT g_ds. ' \
+            'In equilibrium that ratio is fixed by thermodynamics; a ' \
+            'deviation this size is a defect in the noise model, not a ' \
+            'modelling choice' % (vg, r)
+    ## the residual is structural: monotone in Vg, not scatter
+    assert ratios == sorted(ratios, reverse=True), \
+        'the FDT residual %s is no longer monotone in Vg, so it has ' \
+        'stopped being the systematic effect this test documents' % ratios
 
 
 def _vdp_with_parasitic(Q, tau_over_T, npts=480):

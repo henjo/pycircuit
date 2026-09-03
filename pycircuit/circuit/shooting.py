@@ -5588,9 +5588,14 @@ class PAC(Analysis):
         and the discrete library's does not.
 
         ⚠⚠ AND ITS SCOPE IS WIDER THAN "AN UNUSUAL CASE" -- IT IS A
-        BLANKET REFUSAL OF MOS pnoise, currently invisible only because
-        `compact.PspMosLongChannel.CY` is IDENTICALLY ZERO so nothing
-        reaches it.  There is no physically correct MOS noise model whose
+        BLANKET REFUSAL OF MOS pnoise.  ⚠ AN EARLIER VERSION OF THIS NOTE
+        SAID IT WAS UNREACHABLE BECAUSE `PspMosLongChannel.CY` IS
+        IDENTICALLY ZERO.  That was measured on a DEFAULT-CONSTRUCTED
+        element: the model has channel thermal and flicker noise, and
+        `fnt = 0` by default because "an element built without a card is
+        noiseless".  With `fnt = 1` it is nonzero, white, and
+        bias-dependent -- so the refusal is REACHABLE from a real device
+        today, and `modulated=True` is the route past it.  There is no physically correct MOS noise model whose
         `CY` is state-independent: thermal channel noise is
         `4kT gamma g_d0` with `g_d0` bias-dependent, flicker goes as
         `I_D^AF`, gate shot noise as `2qI_G`, and Mahmutoglu & Demir
