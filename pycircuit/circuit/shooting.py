@@ -3569,6 +3569,7 @@ class PSS(Analysis):
         ## in reach.
         self._period_state = None
         self._factored_period_cache = None
+        self.waveform = None
 
         n = self.cir.n
         dt = timestep
@@ -4592,6 +4593,15 @@ class PSS(Analysis):
                                       sweep_values=times, sweep_label='time', 
                                       sweep_unit='s')
 
+        ## ⚠ KEPT FOR THE CARRIER PHASOR, which AM/PM needs and which
+        ## `fpss` below cannot supply: `freq_analysis` returns an RMS,
+        ## energy-folded, positive-frequency spectrum -- right for
+        ## reporting and wrong for a phasor, because folding destroys the
+        ## phase relationship between a carrier and its sidebands, which is
+        ## the entire content of an AM/PM decomposition.
+        self.waveform = (np.asarray(times, dtype=float),
+                         np.asarray(X, dtype=float))
+
         freqs, FX = freq_analysis(X[:,:-1], times[:-1])
         
         fpss = analysis.CircuitResult(self.cir, x=FX, xdot=None,
@@ -4844,14 +4854,7 @@ class PAC(Analysis):
         tol = (self.KRYLOV_FACTOR * pss.par.reltol if recycle_tol is None
                else recycle_tol)
         A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
-        xa, info = spla.gmres(A, d, rtol=max(tol, 1e-14),
-                              restart=min(n, 50), maxiter=min(n, 200))
-        if info != 0:
-            raise RuntimeError(
-                'PAC: the adjoint solve did not converge (info=%r). '
-                '(I - alpha M^T) is singular exactly where (I - alpha M) '
-                'is, so this is the same near-neutral-orbit condition the '
-                'forward solve reports.' % info)
+        xa = self._gmres_checked(A, d, max(tol, 1e-14), 'the adjoint solve')
         self.matvecs = count[0]
         return alpha * pss._forced_replay_transposed(fp, freq, xa)
 
@@ -4960,12 +4963,8 @@ class PAC(Analysis):
                 fp.opening, fp.steps, np.zeros(n, dtype=complex),
                 collect=True, inject=inject)
             forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
-            z, info = spla.gmres(A, g, rtol=tol, restart=min(n, 50),
-                                 maxiter=min(n, 200))
-            if info != 0:
-                raise RuntimeError(
-                    'PAC: the adjoint solve did not converge at sideband '
-                    '%d (info=%r).' % (l, info))
+            z = self._gmres_checked(A, g, tol,
+                                    'the adjoint solve at sideband %d' % l)
             rows[li] = forced + alpha * pss._forced_replay_transposed(
                 fp, freq, z)
         self.matvecs = count[0]
@@ -5272,6 +5271,135 @@ class PAC(Analysis):
                 'return. Ask off-harmonic, or ask for the phase quantity '
                 'instead (PSS.ppv()).' % (what, float(freq), round(r), f0))
 
+    @staticmethod
+    def _gmres_checked(A, b, rtol, what):
+        """GMRES, judged by its RESIDUAL rather than by its status flag.
+
+        ⚠ SCIPY REPORTS BREAKDOWN ON SYSTEMS IT HAS ALREADY SOLVED.  These
+        operators are `2m x 2m` and often tiny, so the Krylov space is
+        exhausted in a handful of steps; the next vector is then numerically
+        zero, which is a LUCKY breakdown -- the solution is exact -- and it
+        comes back as `info = 4` all the same.  Trusting the flag turns an
+        exact answer into a `RuntimeError`, which is what it did for AM/PM
+        at small offsets.
+
+        So the residual decides.  A genuine failure still fails, and it
+        fails with the residual quoted, because the real cause near a
+        harmonic is that the operator is nearly singular there and no
+        tolerance will fix it.
+        """
+        import scipy.sparse.linalg as spla
+        n = b.shape[0]
+        x, info = spla.gmres(A, b, rtol=rtol, restart=min(n, 50),
+                             maxiter=min(n, 200))
+        r = float(np.linalg.norm(b - A.matvec(x)))
+        scale = max(float(np.linalg.norm(b)), 1e-300)
+        if r / scale > max(1e3 * rtol, 1e-8):
+            raise RuntimeError(
+                'PAC: %s did not converge (info=%r, relative residual '
+                '%.3e). Near a harmonic of the oscillator this operator is '
+                'genuinely near-singular and a smaller tolerance will not '
+                'help -- move the offset, or ask for the phase quantity.'
+                % (what, info, r / scale))
+        return x
+
+    @staticmethod
+    def am_pm_indices(a, b):
+        """Split a sideband pair into AM and PM modulation indices.
+
+        `a` and `b` are the upper and lower sideband amplitudes, each
+        already divided by the carrier phasor.  Returns `(m_am, m_pm)`.
+
+        THE WHOLE THING IS ONE CONJUGATE.  Write the complex envelope's
+        deviation as `a e^{j w_m t} + b e^{-j w_m t}`.  The two sidebands
+        COUNTER-ROTATE about the carrier phasor, so the sum traces an
+        ellipse; the component ALONG the carrier is amplitude modulation
+        and the component PERPENDICULAR to it is phase modulation.
+
+          - pure AM keeps the envelope on the carrier's axis, which forces
+            `d = conj(d)` for all `t`, i.e. `a = conj(b)`;
+          - pure PM keeps it perpendicular, `d = -conj(d)`, i.e.
+            `a = -conj(b)`.
+
+        so `m_am = a + conj(b)` and `m_pm = a - conj(b)` -- each vanishing
+        exactly when the other case holds.  No new solve: this is a change
+        of basis on transfer functions `adjoint_sideband_row` already
+        returns.
+
+        ⚠ `conj(b)`, NOT `b`.  Using `a +- b` looks equally plausible and
+        is wrong for any modulation whose sidebands are not real relative
+        to the carrier -- it would report a rotating ellipse as pure AM.
+        The conjugate is what makes the lower sideband counter-rotate.
+        """
+        a = np.asarray(a, dtype=complex)
+        b = np.asarray(b, dtype=complex)
+        return a + np.conj(b), a - np.conj(b)
+
+    def carrier_phasor(self, pss, output, carrier=1):
+        """The `carrier`-th Fourier coefficient of the steady-state output.
+
+        Computed here rather than taken from `fpss`, whose spectrum is RMS
+        and energy-folded -- correct for reporting a magnitude and useless
+        for a phasor, since folding discards the phase the AM/PM split is
+        made of.
+        """
+        if getattr(pss, 'waveform', None) is None:
+            raise RuntimeError(
+                'PAC: the PSS has no stored waveform -- call solve() first.')
+        times, X = pss.waveform
+        irn = pss.irefnode
+        k = int(output)
+        row = np.asarray(X, dtype=float)[k if k < irn else k + 1]
+        t = np.asarray(times, dtype=float)[:-1]
+        v = row[:len(t)]
+        w0 = 2.0 * np.pi / float(pss.period)
+        return complex(np.sum(v * np.exp(-1j * carrier * w0 * t)) / len(t))
+
+    def am_pm(self, pss, freq, output, carrier=1):
+        """AM and PM modulation indices at `carrier`, per noise/signal source.
+
+        Returns `(m_am, m_pm)`, each a row of length `m`: the modulation a
+        unit source at reduced coordinate `i`, driven at `freq`, imposes on
+        the `carrier`-th harmonic of the output.
+
+        ⚠ TWO SOLVES AT ±freq, NOT ONE.  The upper sideband of harmonic `i`
+        sits at `i f0 + freq` and the lower at `i f0 - freq`; with the
+        convention that an input at `f` produces output at `f + l f0`,
+        those are `H_i(freq)` and `H_i(-freq)`.  They are NOT conjugates of
+        each other -- that would hold for an LTI circuit, and the whole
+        point of an LPTV analysis is that it does not.  Taking one and
+        conjugating it would silently force `m_pm = 0` or `m_am = 0`
+        depending on which.
+
+        ⚠ AND AN OSCILLATOR IS ALMOST PURE PM NEAR ITS CARRIER, which is
+        the physical check: the phase response to a perturbation goes as
+        `1/w_m` while the amplitude response stays bounded, so
+        `|m_pm|/|m_am|` grows without bound as `freq -> 0`.  A
+        decomposition that got the conjugate wrong gives a bounded ratio
+        instead.
+        """
+        C = self.carrier_phasor(pss, output, carrier)
+        ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
+        ## circuit does not produce still has a phasor of ~1e-16 rather
+        ## than exactly 0, and dividing by it turns "there is no carrier
+        ## here" into an enormous, confident modulation index.
+        times, X = pss.waveform
+        irn = pss.irefnode
+        k = int(output)
+        row = np.asarray(X, dtype=float)[k if k < irn else k + 1]
+        scale = float(np.max(np.abs(row)))
+        if abs(C) <= 1e-9 * max(scale, 1e-300):
+            raise ValueError(
+                'PAC.am_pm: the output carries no component at harmonic %d '
+                '(|C| = %.3e against a signal scale of %.3e), so there is '
+                'no carrier to modulate and AM/PM are not defined. Dividing '
+                'by it would report a huge modulation of nothing. Pick a '
+                'harmonic the circuit actually produces.'
+                % (carrier, abs(C), scale))
+        upper = self.adjoint_sideband_row(pss, freq, output, carrier)[0]
+        lower = self.adjoint_sideband_row(pss, -freq, output, carrier)[0]
+        return self.am_pm_indices(upper / C, lower / C)
+
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""
         return lambda v: np.asarray(v) - alpha * fp.matvec(v)
@@ -5290,17 +5418,7 @@ class PAC(Analysis):
                 return _op(v)
 
             A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
-            y, info = spla.gmres(A, b, rtol=tol, restart=min(n, 50),
-                                 maxiter=min(n, 200))
-            if info != 0:
-                raise RuntimeError(
-                    'PAC: GMRES did not converge on the m x m system '
-                    '(info=%r). The operating point is converged, so this is '
-                    'the small-signal solve, not the PSS -- (I - alpha M) is '
-                    'near-singular when a Floquet multiplier sits at '
-                    'exp(2j pi f T), i.e. the circuit is being driven at a '
-                    'frequency where the orbit is neutrally stable.' % info)
-            ys.append(y)
+            ys.append(self._gmres_checked(A, b, tol, 'the m x m solve'))
         return ys, count[0]
 
     def _solve_subspace(self, fp, alphas, rhs, tol):

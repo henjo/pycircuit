@@ -587,7 +587,45 @@ framing here implied it was the safe choice everywhere; it is the opposite.
 
 Calibration: phase noise on bipolar resonant oscillators predictable "to within 2 dB".
 
-**Gate:** none needed for AM/PM — it is a basis change on tested output. The others are
+⚠ **AM/PM IS BUILT 2026-09-03** — `PAC.am_pm(pss, freq, output, carrier)`, with
+`am_pm_indices` and `carrier_phasor`. No new solve: the sidebands come from
+`adjoint_sideband_row` at `±freq`, and the split is one conjugate —
+`m_am = a + conj(b)`, `m_pm = a − conj(b)`.
+
+⚠ **THE CONJUGATE IS THE WHOLE THING, and `a ± b` looks equally plausible.** The sidebands
+*counter-rotate* about the carrier, so their sum traces an ellipse; pure AM forces
+`a = conj(b)`, pure PM `a = −conj(b)`. Drop the conjugate and the split still returns two
+numbers, reporting a rotating ellipse as pure AM. Pinned by a test asserting the naive form
+does **not** vanish where the correct one does.
+
+⚠ **AND THE TWO SIDEBANDS ARE NOT CONJUGATES OF EACH OTHER** — that holds for an LTI circuit,
+and an LPTV analysis exists because it does not. Conjugating one solve instead of taking two
+would force `m_pm = 0` or `m_am = 0` depending on which.
+
+| check | result |
+|---|---|
+| pure AM → PM index; pure PM → AM index | **exactly 0** |
+| diode detector (driven), \|m_pm\|/\|m_am\| | **0.005** — no free phase to modulate |
+| …across offsets 0.3 / 0.1 / 0.03 f₀ | flat to 1.2× |
+| oscillator PM/AM ratio vs offset | **3.90× / 3.91×** per 4× — the `1/ω_m` divergence |
+
+⚠ **OPEN, AND NOT CLAIMED AS WORKING:** on the *autonomous* circuit the sideband rows come
+back at ~1e-12 in absolute terms. The PM/AM *ratio* is right and the driven case is healthy
+at O(10³), so the decomposition and the driven path are sound — but why the autonomous rows
+are that small is **not established**. Do not read an oscillator AM/PM magnitude from this
+until it is.
+
+⚠ **A GMRES ROBUSTNESS FIX CAME OUT OF IT.** SciPy reports breakdown (`info=4`) on these
+small operators where it has already solved them — the Krylov space is exhausted in a few
+steps and the next vector is numerically zero, a *lucky* breakdown. Trusting the flag turned
+exact answers into `RuntimeError` at small offsets. All PAC solves now judge by **residual**;
+a genuine failure still fails and quotes it, because near a harmonic the operator really is
+near-singular and no tolerance helps.
+
+**Still unbuilt:** the AM/PM *noise* split, which needs the sideband **correlation** rather
+than a transfer pair, and carries the free LTI invariant (AM = PM exactly).
+
+**Gate:** none needed for AM/PM — it was a basis change on tested output. The others are
 interface decisions, not measurements.
 
 ### A4c. Time-varying noise statistics — NEW 2026-09-02

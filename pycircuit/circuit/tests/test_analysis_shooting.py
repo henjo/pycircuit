@@ -5123,3 +5123,102 @@ def test_pac_refuses_an_operating_point_from_another_circuit():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         pac_same.adjoint_sideband_row(pss, 700.0, 1, 0)
+
+
+def test_the_am_pm_split_is_exact_and_the_conjugate_is_load_bearing():
+    """⚠ ONE CONJUGATE SEPARATES AM FROM PM, and `a ± b` looks just as right.
+
+    The two sidebands COUNTER-ROTATE about the carrier phasor, so the sum
+    traces an ellipse: the component along the carrier is amplitude
+    modulation, perpendicular is phase modulation. Pure AM keeps the
+    envelope on the carrier's axis, forcing `a = conj(b)`; pure PM keeps it
+    perpendicular, `a = −conj(b)`. Hence `m_am = a + conj(b)` and
+    `m_pm = a − conj(b)`, each vanishing exactly when the other case holds.
+
+    ⚠ WITHOUT THE CONJUGATE the split still produces two numbers and they
+    are wrong for any modulation whose sidebands are not real relative to
+    the carrier — it reports a rotating ellipse as pure AM. This test pins
+    that by checking the naive form does NOT vanish where the correct one
+    does, so a "simplification" back to `a ± b` fails here rather than in
+    somebody's phase-noise number.
+    """
+    rng = np.random.default_rng(0)
+    for _ in range(5):
+        a = complex(rng.standard_normal(), rng.standard_normal())
+
+        m_am, m_pm = PAC.am_pm_indices(a, np.conj(a))        # pure AM
+        assert abs(m_pm) < 1e-14 * max(abs(m_am), 1.0), \
+            'pure AM leaked %.3e into the PM index' % abs(m_pm)
+        m_am2, m_pm2 = PAC.am_pm_indices(a, -np.conj(a))     # pure PM
+        assert abs(m_am2) < 1e-14 * max(abs(m_pm2), 1.0), \
+            'pure PM leaked %.3e into the AM index' % abs(m_am2)
+
+    ## a case where the naive split is unambiguously wrong: pure AM with a
+    ## complex modulation phase. `a + b` is then NOT zero-PM.
+    a = complex(0.3, 0.7)
+    b = np.conj(a)                       # pure AM by construction
+    _m_am, m_pm = PAC.am_pm_indices(a, b)
+    assert abs(m_pm) < 1e-14
+    assert abs(a - b) > 0.5, \
+        'the naive `a - b` should be far from zero on this pure-AM case, ' \
+        'which is exactly why the conjugate cannot be dropped'
+
+
+def test_am_pm_on_a_driven_mixer_is_predominantly_am():
+    """A diode detector converts amplitude to amplitude; it has no free phase.
+
+    So the modulation a small signal imposes on the carrier should come out
+    overwhelmingly AM — measured `|m_pm|/|m_am| = 0.005` — and should be
+    stable across modulation offsets, since neither index has a `1/f`
+    mechanism behind it here. (An oscillator is the opposite case: its
+    phase response goes as `1/ω_m`, so PM dominates near the carrier.)
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _diode_mixer()
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 120, maxiterations=40)
+    assert pss.converged
+    irn = pss.irefnode
+    k = cir.get_node_index(2)
+    k = k - 1 if k > irn else k
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / pss.period
+
+    ## the carrier has to exist before it can be modulated
+    C1 = pac.carrier_phasor(pss, k, 1)
+    assert abs(C1) > 1e-3, 'no fundamental at the output (%s)' % C1
+
+    ratios = []
+    for r in (0.3, 0.1, 0.03):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            am, pm = pac.am_pm(pss, r * f0, k, 1)
+        i = int(np.argmax(np.abs(am)))
+        assert abs(am[i]) > 1.0, \
+            'the AM index is %.3e -- nothing is being modulated' % abs(am[i])
+        ratios.append(abs(pm[i]) / abs(am[i]))
+
+    assert max(ratios) < 0.05, \
+        'a diode detector came out %.4f PM/AM; it has no free phase to ' \
+        'modulate' % max(ratios)
+    assert max(ratios) / min(ratios) < 1.2, \
+        'the PM/AM ratio moved %.2fx across offsets (%s); neither index has ' \
+        'a 1/f mechanism here, so it should be flat' \
+        % (max(ratios) / min(ratios), ratios)
+
+
+def test_am_pm_refuses_a_harmonic_with_no_carrier():
+    """AM/PM of nothing is not a small number, it is undefined."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder(3)
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with pytest.raises(ValueError, match='no component at harmonic'):
+        pac.am_pm(pss, 137.0, 1, carrier=57)     # far above anything present
