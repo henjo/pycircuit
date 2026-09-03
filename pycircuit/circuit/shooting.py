@@ -2498,7 +2498,18 @@ class PSS(Analysis):
         ## Demir's Remark 3.1 reads `v_1^T C u_1 = 1`; the vector this
         ## bordered solve returns behaves as `C^T v_1` -- it is contracted
         ## with a state perturbation directly -- so the two statements agree
-        ## about different objects.  ⚠ TREATING THEM AS THE SAME OBJECT WAS
+        ## about different objects.
+        ##
+        ## ⚠ AND THAT IS NOT A QUIRK OF THIS FORMULATION, WHICH THIS
+        ## COMMENT USED TO IMPLY.  The conserved pairing propagates to
+        ## `M^T (C(0)^T v_1) = C(0)^T v_1`, so the left eigenvector of the
+        ## STATE-SPACE monodromy simply IS `C(0)^T v_1` -- for ANY `C`,
+        ## symmetric or not, and whatever the augmentation.  MEASURED on a
+        ## limit cycle with a constant NON-SYMMETRIC `C`: alignment with
+        ## `C(0)^T v_1` is 1.000000000000 against 0.9657 for `v_1` itself,
+        ## and bordering with `xdot(0)` reproduces Demir's normalisation
+        ## exactly while bordering with `C(0) xdot(0)` gives 0.805.
+        ## (Derived and measured by the docs session, 2026-09-04.)  ⚠ TREATING THEM AS THE SAME OBJECT WAS
         ## MEASURED WRONG: predicting a state jump's phase shift as
         ## `v^T C delta` gives residuals of 0.36/0.40/0.42 that GROW with
         ## refinement and per-direction ratios scattering from -0.44 to
@@ -5904,7 +5915,11 @@ class PAC(Analysis):
                     'device at the CYCLE-AVERAGED current, with the '
                     'modulation carried by the impulse response, valid '
                     'while no large-signal state variable changes much '
-                    'over the impulse response decay time. Not built.'
+                    'over the impulse response decay time. ⚠ THAT ROUTE '
+                    'IS BUILT: pass modulated=True to use it. It is a '
+                    'MODEL CHOICE with the validity condition above, not '
+                    'a tolerance relaxation, which is why it is opt-in '
+                    'and why this refusal is the default.'
                     % drift)
         return mats[0]
 

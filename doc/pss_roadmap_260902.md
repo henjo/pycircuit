@@ -113,8 +113,36 @@ predicted 3.183 / 7.958 / 15.92 / 63.66 against measured 3.182 / 7.959 / 15.92 /
 Available as `_vdp_at_Q(Q)`.
 
 ⚠ **Two costs.** The period seed must be `2π/√(1−μ²/4)` with `reltol = 1e-12`, or the shooting
-solve becomes the thing under test. And *transient* settling to 1% takes **≈ 4.6·Q periods** —
-460 at `Q = 100` — which is door (e) taxing the **test harness** rather than the circuit.
+solve becomes the thing under test. And *transient* settling to 1% takes **≈ 5.4·Q periods** —
+door (e) taxing the **test harness** rather than the circuit.
+
+⚠⚠ **A "5.4·Q" CORRECTION WAS PROPOSED, REPRODUCED HERE, AND THEN RETRACTED BY BOTH SESSIONS.
+4.6·Q IS RIGHT.** The claim was a transient-growth prefactor `C ≈ 2.1–2.3` in `‖M^k‖ ~ C λ₂^k`,
+making 1% settling `Q(ln 100 + ln C)`. Two sessions measured `C` at 2.101 / 2.201 / 2.314 and
+both read it as a property of the circuits. **It is a property of the deflation.**
+
+| fixture | `λ₂` | `‖PMP‖` | argmax_k | monotone | `‖PMP‖/λ₂` | `‖P‖` |
+|---|---|---|---|---|---|---|
+| vdP Q=16 | 0.939426 | 2.1013 | **1** | yes | 2.2368 | **2.236** |
+| vdP Q=64 | 0.984505 | 2.2014 | **1** | yes | 2.2360 | **2.236** |
+| bulk m=12 | 0.983536 | 2.3143 | **1** | yes | 2.3530 | **3.050** |
+
+⚠ **There is no hump.** `argmax_k = 1` and the sequence is monotone from `k = 1`, so the "peak"
+is just `‖PMP‖` — and it equals `λ₂·‖P‖` to four digits. The spectral projector used to remove
+the phase mode is **oblique**, and its norm is the whole prefactor: `‖PMP^k‖ = λ₂^k‖P‖`
+identically.
+
+**So the measured 1.18 ratio is exactly `ln‖P‖`.** A criterion `‖PAP‖ < 0.01` needs
+`λ₂^k < 0.01/‖P‖`, i.e. `k = Q(ln 100 + ln 2.236) = 5.41·Q`. **The physical decay is exactly
+`λ₂^k` and 1% settling is `Q·ln 100 = 4.6·Q`.**
+
+⚠ **The non-normality objection to `λ₂` is not small — it is ABSENT.** No transient growth
+exists on these monodromies. `λ₂` is the right quantity and the rate is exactly `λ₂^k`.
+
+⚠ **Practice, since a prefactor can be reintroduced by any norm:** measure a **residual**, not a
+period count, and if a period count is unavoidable, write down the norm beside it. A basis change
+(scaling the current block by 1e3) moves the apparent prefactor 1.81 → 8.37 without touching the
+spectrum.
 
 ⚠⚠ **AND THEN THE MEASUREMENT SAID OTHERWISE — the gate is NOT badly broken, and the protection
 is ACCIDENTAL.** Measured with a *generic* perturbation direction (both components), which is
@@ -2151,6 +2179,27 @@ is not the designed quantity but the incidental one.
 **Gate remaining:** confirm on a real circuit with ≥10 states — the synthetic settles the
 mechanism, not the applicability. Cheap; the mapping is already verified above.
 
+#### B6-note. Matrix-free shooting at high `Q` has a TOLERANCE FLOOR — bisected 2026-09-04
+
+Two sessions measured `matrix_free=True` on `_vdp_at_Q` and got opposite answers — "cost
+saturates with `Q` at 28–35 matvecs" against "fails above `Q ≈ 3`". **Both are right; the
+variable is `reltol`, and the circuit was identical.**
+
+| `Q` | `reltol = 1e-9` | `reltol = 1e-12` |
+|---|---|---|
+| 3.18 | 28, converged | 28–39, converged |
+| 16 | 28–35, converged | **126, FAILED** |
+| 64 | 28–35, converged | **126–127, FAILED** |
+
+⚠ **The failure is not an outer-iteration budget** — `maxiterations` 150 and 600 both give
+exactly 126 matvecs. The inner GMRES exhausts its own restarts.
+
+⚠⚠ **So the honest statement is neither "saturates" nor "fails": matrix-free shooting at high
+`Q` has an ATTAINABLE-TOLERANCE FLOOR set by `λ₂`.** Below it the cost is flat in `Q`; demand
+more accuracy and it stops converging. That is door (b) — conditioning — quantified, and it is
+the first measurement in this record of what `λ₂ → 1` costs the *solver* rather than the
+*answer*.
+
 #### B6 outcome: the Ritz values are IN, reusing the Newton's basis is OUT
 
 ✅ **The valuable half shipped** (`fef3d60`): `ppv()` now takes `λ₂` from **Arnoldi Ritz values**
@@ -2437,6 +2486,19 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    comparing against asserted"**. Instance: quoting a worst-over-bias-box nonreciprocity against
    McAndrew's at-`VDS = 0` bound — and doing it *in the message correcting the denominator*, so
    the correction itself carried an over-claim.
+
+0f. **"Bounded" and "already bounded" are different claims** — an asymptotic property used as
+   if it held from `t = 0`. ⚠ **Instance, mine, 2026-09-04:** designing a high-`Q` Monte Carlo
+   to *skip* settling by fitting the **slope** of `Var(θ)` vs `n`, reasoning from
+   `oscillator_covariance`'s own split that the transverse part is **bounded** (`K_orb`) while
+   only the phase random-walks — so the un-decayed transverse would fall into the *intercept*.
+   The argument is sound and the conclusion is false: `K_orb` is reached only after
+   `~1/(1−λ₂²) ≈ 30` periods, and **the approach to it is monotone growth**, so during the ramp
+   the transverse contribution is not a constant offset but **a second slope**. Measured:
+   `Var/n` climbing 3.9e-11 → 3.1e-10 → 3.3e-9 over 40 periods, linear-fit residual **16% of the
+   range**. ⚠ **The settling is what establishes the split; it cannot be used to avoid the
+   settling.** The tell is free and was ignored: a slope fitted through a curve has a residual,
+   and the residual was reported in the same table as the answer.
 
 0b. **A measurement that shares the assumption under test.** `diffusion_constant`'s Monte
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
