@@ -3152,14 +3152,76 @@ since it was written. `oscillator_spectrum` refuses through it (its Lorentzian i
 only, by its own docstring).
 
 ⚠ **WHAT IS STILL OPEN HERE (not built):** the orbital term `S_yy(ω)` for a coloured source
-(`orbital_correlation` refuses colour); and a pnoise DEFICIT — on the `0.3u²` core with a WHITE
-source `pnoise/P_c·(Δf/f₀)²` sits **14% BELOW** `c` at `Δf/f₀ = 1e-3…1e-5` (flat) and 51% below at
-`1e-2`, where symmetric vdp shows 16% ABOVE at `1e-2` and equality below. A shoulder adds; it cannot
-put `pnoise` under the phase floor. Candidates, none tested: T&B's correlation term negative there
-(only its `τ = 0` value is forced to zero), the phase-only reference `|X₁|²f₀²c/Δf²` wrong when
-harmonics are strong (`|V₂|/|V₁| = 0.33`), or `T/400` on a non-sinusoidal orbit. The peer's
-position test for the excess (peak at `f/f₀ = 1/(2πQ_λ)`, moving as `1/Q_λ`) is the right instrument
-for the vdp EXCESS and is queued; it cannot explain a deficit and must not be credited with one.
+(`orbital_correlation` refuses colour). The "14% pnoise deficit" recorded here on 2026-09-04 was
+**`c`, not `pnoise`** — the Gear pair's first block is a first-order PPV; see §0l below. The peer's
+position test for the vdp EXCESS at `Δf/f₀ = 1e-2` (peak at `f/f₀ = 1/(2πQ_λ)`) is still queued.
+
+#### §0l. The Gear pair's FIRST BLOCK is a first-order PPV — ⚠⚠ **FOUND AND FIXED 2026-09-05**; `c` was 16.6% high on a non-isochronous oscillator and every fixture before it was blind
+
+**How it was found.** The "14% deficit" of `pnoise` under `c` on `vdp + 0.3u²` (bias-sensitive:
+period 6.28 → 6.73, `c` 100× van der Pol's). Partitioned by KNOBS before theory:
+
+    grid 400/800/1600:  pn/c 0.855 / 0.924 / 0.961    c 6.264 / 5.800 / 5.581e-6    pnoise 5.355 / 5.361 / 5.363e-6
+    fundamental share of P_carrier 0.9555 (reference-bug hypothesis: out)
+    Q 4/8/16/32 at 400 pts: deficit 8 / 15 / 26 / 47%  (∝ Q_λ)
+    Euler: c and pnoise agree to <1% at every grid  (Gear-specific)
+
+**The reference has no shooting code in it.** The fixture is an explicit ODE; DOP853 at `1e-12`
+gives the orbit (period 6.730654; the shooting periods extrapolate to it at second order), the exact
+monodromy by the variational equations, its left null vector normalised `v·f = 1`, `v(t)` by
+transport: **`c_true = 5.3703e-06`**. `pnoise` at 400 points: 5.355e-06. `c`: 16.6 / 8.0 / 3.9 / 1.9
+/ 1.0% high at 400…6400 — clean first order. ⚠ Two kick instruments disagreed with the adjoint first
+and BOTH were mine (§D 0j, twice): one subtracted a record-dependent mean before finding zero
+crossings (the kicked record spans a non-integer number of periods); the other started the transient
+off the orbit, where a non-isochronous oscillator's start-up relaxation shifts the phase by ~0.15 T.
+Rebuilt on an exact Poincaré section, the kick matches the adjoint to `1e-4` at 11 of 16 phases (the
+rest give exactly one period per kick — an event-count artefact, recognisable on sight).
+
+**Mechanism, then measured.** Gear-2's adjoint state is the pair `(w1, w2) = (∂φ/∂x_k, ∂φ/∂x_{k−1})`.
+`w1` alone answers a perturbation of `x_k` with `x_{k−1}` HELD — an inconsistent history, resolved
+through the parasitic root `1/3`. Pair biorthogonality makes `w1 ⟂ (u₂,k − u₂,k−1/3)`, i.e. orthogonal
+to the amplitude direction ROTATED by `O(h)`; `v·ẋ = 1` then amplifies the rotation by `|v||ẋ|`,
+which is the near-cancellation a non-isochronous oscillator has (`|v||ẋ| ≈ 12` here, `≈ 1` on van
+der Pol). The physical functional is
+
+    v(t_k) = w1 + Φ(t_{k−1}, t_k)ᵀ w2 = w1 + (C_{k−1} + h G)ᵀ z,   z = −α₂ t_k   (w2 = Cᵀz exactly)
+
+differential rows of `z` only (algebraic multipliers are `O(1/h)`, the decomposition is non-unique
+there, and with them in a DC probe flipped sign). **The invariant `v(t)·ẋ(t) = 1` ALONG THE ORBIT is
+the test**: first block std `2.7e-2` (mean 1.12), consistent `8e-5`. `c`: `1.8e-3` at 400, `8e-5` at
+1600 — second order. Van der Pol unchanged to `1e-4`: its two rows are in quadrature, so the rotation
+averaged out of `⟨v²⟩` — every fixture before this one shared the claim's assumption (§D 0b).
+
+⚠ **THE DC CONTENT — a decision taken by measurement, and an open mechanism.** The consistent object
+is second order pointwise, but its `O(h²)` pointwise errors do not cancel in the mean: an absolute
+floor of `~1e-5 |v|`. The raw block's orbit integral matches a same-grid DC-injection probe to `1e-5`
+on the divider fixture (node row, true mean `4e-6 |v|`: below the floor, so the consistent object had
+the wrong SIGN at 480 points) — but on the bias fixture's INDUCTOR row (DC voltage in series with L,
+`dT/dV = 16.20` by a second-order re-solve) the raw block reads 17.49 / 16.83 / 16.51 at
+400/800/1600, first order, 8% off, while the consistent object's invariant pins its mean in every row
+to `~1e-5 |v|`. Stitching the raw mean into the consistent object was TRIED and broke the invariant by
+±0.3. So `samples` is one object, second order everywhere; the raw pair is kept as
+`info['samples_pair']`, and the three structural DC gates read it through `_raw_pair_integrals`, with
+the consistent object held within its measured floor beside them. **The inductor-row 8% was the same
+defect** — the review session asked for exactly this partition, and with the consistent object the
+inductor-row integral reads 16.176 / 16.187 / 16.190 against the re-solved 16.193 / 16.200 / 16.202
+(1.0e-3 → 7e-4, both second order). **What remains unexplained is only why the RAW block's integral is
+exact to 1e-5 on the divider's node rows** where the true mean is `4e-6 |v|` — recorded as a
+row-specific identity, not a rule. Also structural: the consistent object is ZERO on the algebraic
+COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full suite's Demir-(24) gate
+caught it, the targeted subset had not).
+
+**Also fixed on the way, from the peer sessions:** `_cy_reduced`'s third probe was the ZERO VECTOR (on
+the orbit by accident; a DC-clocked LTI RC was refused as cyclostationary — Spectre comparison
+suite, 2026-09-05), now the stored mid-period state, with a test; the "7% error" note on the `v·q`
+normalisation was `|v·q| − 1`, not the error (`v·q = −1.0696` against `v·ẋ = 1`: a factor 2.07 and
+the opposite sign — review audit). The exact vdp `c` at `Q = 8` is `6.250850e-08` (scipy adjoint);
+the consistent object is `+2.9e-5` from it, the swept-noise path `−1.4e-4`, and that bound now says so.
+
+**Still open from the Spectre suite:** per-step `CY` in `_lyapunov_pieces` (a switch's `kT/C` is
+outside the covariance's FORMULATION, not its accuracy); `modulated=True` fails in proportion to
+modulation depth (16× at `goff/gon = 1e-6`, Hull & Meyer's own condition violated by six orders) —
+a factor, not a percentage, and the docstring should say so.
 
 ### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
 
