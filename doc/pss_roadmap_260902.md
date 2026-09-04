@@ -43,7 +43,11 @@ the docs session, whose equations `pdftotext` drops, so they were read as an ima
   (AM-to-PM coupling × noise amplitude), checked against an exact Fokker–Planck solution: exact at
   `v = 0`, *"still good"* at `v·ε = 0.1265`, *"less favourable"* at `0.3162`, clearly degraded by
   `0.9487`. **A circuit can be low-`Q` and still break this**, which no amount of attention to
-  `λ₂` would predict.
+  `λ₂` would predict. ⚠ **AND IT IS A BOUNDARY ON OUR METHOD, NOT ON OSCILLATOR NOISE** — Bonnin
+  2015, *"Amplitude and Phase Dynamics of Noisy Oscillators"*, gives amplitude and phase SDEs whose
+  validity is *"not limited to the weak noise limit"*, with closed forms for the expected angular
+  frequency, amplitude and amplitude variance (cited, not verified here). So `|α̇| ≪ 1` bounds the
+  Floquet/PPV family; it is not a hard physical wall, and should not be recorded as one.
 
   **(ii) `λ₂` DOES NOT ORDER THE ORBITAL CONTRIBUTIONS.** From the same paper's HBT results: six
   orders of magnitude separate two Floquet exponents, and the corresponding orbital-noise
@@ -4359,7 +4363,17 @@ for **high-Q oscillators**, since its magnitude is … an increasing function of
 **The ingredients are things we already compute or nearly do:** the PPV **is** the adjoint Floquet
 eigenvector for the zero exponent; `ppv()` already returns `|λ₂| = exp(T·μ₂)`, the next Floquet
 exponent; and the PSS waveform's Fourier coefficients are already consumed by
-`oscillator_spectrum`. *"Cost is a few more Floquet pairs, not a sweep."*
+`oscillator_spectrum`.
+
+⚠⚠ **"COST IS A FEW MORE FLOQUET PAIRS" WAS RELAYED WITHOUT CHECKING AND IS WRONG — corrected
+2026-09-04.** Traversa & Bonani, IET CDS 2011, state the requirement flatly: the orbital and
+correlation terms *"require the availability of **ALL** the direct and adjoint Floquet
+eigenvectors"*. ✅ **What rescues it is their TCAD 2013 paper, not an assumption**: a chosen number
+of exponents and both eigenvector sets, for the linearisation of **index-1 DAEs** around a limit
+cycle — our formulation — with the error *"proved to tend to zero along with the ratio between the
+norms of the neglected and retained rows"*. So truncation is legitimate **with that computable
+bound, and only through that method**. `floquet_modes` now defaults to every non-null mode and
+says so; a caller who truncates owes the norm ratio as the gate.
 
 ⚠ **THEIR OWN WARNING, AND IT CONSTRAINS OUR OUTPUT LAYER:** orbital contributions are
 **asymmetric about the carrier**, so a symmetric single-sideband report **cannot carry them** —

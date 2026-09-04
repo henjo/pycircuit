@@ -3022,8 +3022,16 @@ class PSS(Analysis):
         then `v[:m] . delta`.  `info` carries both border residuals, the
         null residual, `q` and the scaled tangent.
 
-        ⚠ AN AUGMENTED SOLVE, NOT AN EIGENVECTOR, and the difference is the
-        whole content of the 2003 paper.  Demir's 2000 method SELECTED the
+        ⚠ AN AUGMENTED SOLVE, NOT AN EIGENVECTOR.  ⚠ ATTRIBUTION CORRECTED
+        2026-09-04: the idea ORIGINATES in Demir, Long & Roychowdhury,
+        ICCAD 2000 ("Computing Phase Noise Eigenfunctions Directly from
+        Steady-State Jacobian Matrices" -- "a single linear solution of the
+        oscillator's ... steady-state Jacobian matrix ... dispenses with the
+        need to select the correct one eigenfunction"), with the 2001
+        companion carrying it to HB/shooting matrices and noting the
+        selection heuristic is worst "for high-Q oscillators".  The 2003
+        paper is the fuller procedure and the source of the quote below,
+        not the origin.  Demir's IJCTA 2000 method SELECTED the
         right eigenvector by its inner product against `C(0) xdot(0)` --
         measured 0.2 against 1e-5, 1e-7, 2e-5 on a Colpitts.  His 2003
         paper rejects that: "no guarantee that any of the candidate
@@ -3666,10 +3674,32 @@ class PSS(Analysis):
     ## direction, not a mode -- see `floquet_modes`
     FLOQUET_NULL_TOL = 1e-12
 
-    def floquet_modes(self, pss_unused=None, nmodes=2, fp=None):
+    def floquet_modes(self, pss_unused=None, nmodes=None, fp=None):
         """The Floquet pairs `(λ_l, μ_l, p_l(t), q_l(t))` — A9's prerequisite.
 
-        Returns a list of dicts, one per mode, ordered by `|λ|` descending:
+        Returns a list of dicts, one per mode, ordered by `|λ|` descending.
+        `nmodes=None` returns EVERY non-null mode, and that default is the
+        requirement rather than a convenience:
+
+        ⚠⚠ ALL OF THEM ARE REQUIRED, BY THE SOURCE. Traversa & Bonani, IET
+        CDS 2011: "The calculation of orbital fluctuations and of the
+        phase-orbital correlation within Floquet-based noise analysis of
+        autonomous systems requires the availability of ALL the direct and
+        adjoint Floquet eigenvectors associated with the noiseless limit
+        cycle."  (Cited, not verified here; relayed from the paper.)  An
+        earlier cost estimate for A9 -- "a few more Floquet pairs" -- was
+        relayed without checking it against that sentence, and is wrong.
+
+        ⚠ TRUNCATION IS LEGITIMATE ONLY WITH A BOUND. Traversa & Bonani,
+        TCAD 2013, compute a CHOSEN number of exponents and both
+        eigenvector sets for the linearisation of index-1 DAEs around a
+        limit cycle -- this formulation -- with the error "proved to tend
+        to zero along with the ratio between the norms of the NEGLECTED
+        AND RETAINED ROWS".  So passing `nmodes` is allowed, but a caller
+        who does owes that ratio as the gate; this routine does not
+        compute it.  The dense route below returns everything anyway, so
+        at the sizes it serves the question does not arise.
+
 
             lam    the Floquet MULTIPLIER, eigenvalue of the monodromy
             mu     the Floquet EXPONENT, `log(λ)/T` (complex)
