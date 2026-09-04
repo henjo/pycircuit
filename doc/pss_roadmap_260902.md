@@ -1204,8 +1204,41 @@ that row to full precision **given `u`**, and is capped by `u`'s own accuracy.
 **Gourary CANNOT replace the bordered solve at `Δω = 0` — it hands back a zero row there.** Both
 use the left null vector; one supplies an exact ROW, the other closes a RANK DEFICIENCY.
 
-✅⚠ **APPLICABILITY MEASURED 2026-09-04 — WE DO HAVE A SMALL-OFFSET BREAKDOWN, ABOUT SIX DECADES
-BELOW THE CARRIER.** `phase_psd` is a CLOSED FORM built from `c` and never touches `J(Δω)`, so A7's
+⚠⚠⚠ **RETRACTED WITHIN THE HOUR — I MEASURED THE WRONG QUANTITY. THE NEAR-CARRIER PATH HAS NO
+BREAKDOWN AT ALL.** Kundert §3.5 (eq. 15) says the small-signal analysis predicts noise **RISING**
+as `Δf → 0` from the carrier. My sweep showed it **FALLING**, and I did not notice that the sign
+contradicted the physics. Re-measured at `f = f0 + Δf`, which is the regime Gourary's "distorted
+PSD curves at small offset" and Kundert's window are both about:
+
+    Δf/f0     pnoise at f0+Δf   S·Δf²             vs c·f0²
+    1e-4      1.251561e-01      3.168626e-09      2.001392
+    1e-5      1.248996e+01      3.162131e-09      1.997289
+    1e-6      1.249021e+03      3.162194e-09      1.997329
+    1e-7      1.249026e+05      3.162208e-09      1.997338
+    1e-8      1.249027e+07      3.162209e-09      1.997339
+    1e-9      1.249027e+09      3.162209e-09      1.997339
+
+**`S·Δf²` is constant to SEVEN DIGITS over five decades, down to `Δf/f0 = 1e-9`. There is no
+breakdown.** What I swept before was `f = f0·10⁻ᵏ` — **BASEBAND**, a different quantity, at signal
+levels of `~1e-18` against `~1e+3` near the carrier.
+
+⚠⚠ **SO THE BASEBAND FLOOR IS REAL AND IRRELEVANT.** The invariance study below (reltol, npts, Q,
+noisePSD) is a correct measurement of a quantity nobody reads, and its identification with
+Gourary's problem — and with "the edge of the practically relevant range" — was **wrong**. Phase
+noise is quoted at offsets FROM the carrier, which is the column above.
+
+⚠ **THE SHAPE IS §D 0j AGAIN, AND THIS IS THE FIFTH TIME TODAY:** a clean power law breaking at a
+sharp point is convincing enough that I did not ask whether the probe was pointed at the quantity
+in question. **`pnoise(pss, f, 0)` at `f ≪ f0` is not the near-carrier noise.** The instrument was
+sound and aimed elsewhere.
+
+**WHAT SURVIVES:** Gourary was never assessed (that stands, and the reason stands); it addresses a
+real numerical mechanism; and **we do not appear to suffer from it** — the deflated route carries
+the pole analytically and holds seven digits at `Δf/f0 = 1e-9`. ⚠ One loose end worth its own
+look: the ratio to `c·f0²` sits at **1.997339**, i.e. a factor of two, which is the same
+one-sided/two-sided family that §0g already caught once.
+
+~~APPLICABILITY MEASURED 2026-09-04 — WE DO HAVE A SMALL-OFFSET BREAKDOWN~~ (superseded): `phase_psd` is a CLOSED FORM built from `c` and never touches `J(Δω)`, so A7's
 analytic pole-carrying is not the path at issue. The path that IS is **`pnoise` on an autonomous
 circuit** → `_deflated_solve`. Swept on `_vdp_at_Q`-style fixture, `f0 = 0.159114371`:
 
