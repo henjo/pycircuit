@@ -2882,7 +2882,7 @@ keeps `H` and judges by residual, and is swapped into `_gmres_checked` and `ppv(
 bordered solves. So "scipy does not expose `H`" is no longer a reason — the remaining ones,
 especially the structural mismatch above, are.
 
-### B7. Adaptive time stepping in the inner transient — REQUESTED 2026-09-04
+### B7. Adaptive time stepping in the inner transient — ⚠ **GATE RUN 2026-09-04, IT FAILS; SPLIT IN TWO**
 
 `PSS` builds a **fixed** grid with `_period_grid(T, npts, fracs)` and traverses it; the
 `Transient` it is built on is adaptive and breaks its steps at events. So the shooting solve
@@ -2897,10 +2897,56 @@ consequence on a wrapping `Idtmod`: `LTE 4.58e+05 ×` tolerance, and a monodromy
 monodromy is a product of per-step maps, and `factored_period()` re-traverses at the converged
 solution: if the grid moves between traversals the map is not the one the Newton converged on.
 So an adaptive scheme has to be *frozen* after the first pass, or made a function of the state
-only. **Gate before building:** does a frozen-after-first-pass grid still satisfy the LTE bound
-on the wrapping fixture, and does `M` stay reproducible between `solve()` and
-`factored_period()`? The second question is already pinned by
-`test_the_ppv_is_invariant_to_the_newtons_inner_solver`.
+only.
+
+---
+
+⚠⚠ **THE GATE WAS RUN 2026-09-04 AND IT FAILS. The entry above is left as written because what it
+got wrong is the useful part.**
+
+**FIRST, MOST OF THE MECHANISM ALREADY EXISTS AND THE ENTRY DID NOT SAY SO.** `PSS.solve(grid=…)`
+already takes non-uniform step FRACTIONS and freezes them, and `benchmarks/pss_lte_grid.py`
+already derives such a grid from an adaptive `Transient` — measured on van der Pol at `μ = 100` to
+converge on 1105 steps where 1105 uniform steps do not, and to beat a 20000-point uniform grid
+(−47.3 ppm against −60.6). So "shooting throws away step control it already owns" is only half
+true: the *consumption* side is shipped, and what is missing is the *derivation* being automatic.
+
+⚠⚠ **AND ON THE WRAPPING FIXTURE THE DERIVED GRID DOES NOT HELP — MEASURED:**
+
+    grid                    steps   max LTE (× tol)   at t/T
+    uniform                   500      4.83e+05       0.348697
+    uniform                  1428      1.67e+05       0.346181
+    transient-derived        1429      2.64e+05       0.348172
+
+**The derived grid is WORSE than the uniform grid of the same count.** So the premise — that
+adaptive stepping fixes this fixture — is falsified, and B7 cannot be justified on it.
+
+⚠ **THE LTE PEAK IS AT THE RESET, ON EVERY GRID.** With `ic = 0.31` and the integral advancing
+2.0 per period the wraps are at `t/T = 0.345` and `0.845`; all three peaks sit at ≈ 0.348. The
+number being reported is the **discontinuity**, and no step size makes a discontinuity's local
+truncation error small — which is C5's finding ("a discrete map has no undefined instant")
+arriving from the LTE side.
+
+⚠⚠⚠ **AND THE STRUCTURAL REASON A FROZEN GRID CANNOT CARRY AN EVENT.** `Idtmod.next_event` is a
+LINEAR PREDICTION FROM THE LAST ACCEPTED POINT, returning `inf` before the first step — measured
+on a fresh instance: `inf` at every `t`. It is meaningful only *during* a traversal. Measured
+during one, the transient lands NEAR the resets but never on them (gaps 0.3%–23% of the local
+step), and its own docstring says that is by design: it "only needs to BRACKET the corner".
+
+**So a grid derived from a past traversal cannot represent an event whose time depends on the
+state — because the event time MOVES as the Newton iterates.** Freezing the grid and localising
+events are in direct tension. That is the reproducibility problem the entry named, now with a
+mechanism instead of a worry, and it means the two halves of B7 are **not one item**:
+
+  * **B7a — automatic grid derivation for STIFF SMOOTH problems.** Justified, cheap, and already
+    demonstrated: promote `lte_grid` from a benchmark to shipped API. The vdp `μ = 100` numbers
+    are the gate and they already pass.
+  * **B7b — event localisation under shooting.** NOT solved by a frozen adaptive grid, and the
+    measurements above say so. It needs the event time to be an unknown the Newton solves for, or
+    a formulation where the reset is a state-dependent map rather than a grid feature. That is a
+    different and much larger item, and it is A6's defect proper.
+
+**Recommendation: build B7a, and re-file B7b against A6 rather than here.**
 
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
 
