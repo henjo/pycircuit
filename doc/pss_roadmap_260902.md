@@ -4034,6 +4034,41 @@ floor and Gourary's direct route would lift the cap; if it falls with refinement
 to gain."* It fell at the textbook rate. A plateau was the falsifiable outcome and it did not
 occur.
 
+### B16. Does the manufactured opener cap λ₂'s ORDER on an INDEX-1 circuit? — ⚠ **OPEN, AND MY CHECK WAS INVALID**, 2026-09-04
+
+⚠⚠ **A CLAIM AGAINST THE SHIPPED `x0_unknown` DEFAULT, NOT YET VERIFIED HERE.** A peer session
+reports that on a plain **index-1** series RLC (`Q = 100`, `trap`), against the *exact discrete*
+trapezoidal multiplier `|(2+sh)/(2−sh)|^N`, `λ₂` converges at **h² with five consecutive ratios of
+4.00** under `x0_unknown=True`, while the default is erratic and **below first order**. If that
+holds, the benefit of `x0_unknown` is **not confined to index-2 circuits** and B1's shipped
+topology-keyed default is too narrow for monodromy accuracy. They also report a **crossover near
+N ≈ 1600** that reconciles it with the opposing Q=20 resonator measurement in B1 — coarse grids
+favour the manufactured opener, fine grids favour `x0_unknown` — which would make it a *trade with
+a measured crossover* rather than a winner.
+
+❌ **MY ATTEMPT TO VERIFY IT IS INVALID AND IS RECORDED AS SUCH RATHER THAN AS A REFUTATION.** I
+measured a flat `3.09e-02` relative error with **ratio exactly 1.00 across five doublings, and
+identical for both flag settings** — which is the signature of a mis-specified reference, not of a
+measurement: the computed `λ₂` *is* moving (0.939244 → 0.939105) while the reference is a constant
+that does not match it. ⚠ **The measured value is `exp(−2π/Q)` where my reference was `exp(−π/Q)`
+— a clean factor of two in the exponent.** Cause found: my fixture wrote `R('a','b')`,
+`L('b',gnd)`, `C('b',gnd)`, putting **L and C both to ground, in parallel** — so the `Q = ω₀L/R`
+I used is the series formula applied to a parallel topology. **§D 0q in my own hands: right
+formula, wrong object.**
+
+⚠ **SO NOTHING IS SETTLED EITHER WAY, and the item is open rather than closed in either
+direction.** What it needs is a correctly-built series RLC and the *discrete* reference; the
+question matters because it bears directly on a **shipped default**.
+
+⚠ **AND THE PEER'S OWN ROUTE TO IT IS WORTH COPYING.** They first reported this as a `~1e-5` floor
+in the monodromy, then **retracted it**: three independent instruments they built to localise it
+(a hand-rolled trapezoidal product, an ideal-product-with-Euler-opener, a matrix-norm comparison)
+**all failed the same way** — a raw step-map product leaves the DAE's algebraic modes at magnitude
+1 where this tree's monodromy projects them to zero (trapezoidal maps a zero-`C` row by exactly
+−1, which is §0k's finding again). What finally worked used **no reference of theirs at all** —
+only this tree's own flag, toggled, against a closed form. **When three independent instruments
+disagree with the subject, suspect the instruments.**
+
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
 Requested 2026-09-04; it is in. All three `fsolve` calls pass `line_search=True`, and
