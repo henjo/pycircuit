@@ -992,6 +992,45 @@ to contain it.
 
 ---
 
+### 0k. ⚠⚠ **TRAPEZOIDAL RETURNS EXACTLY 2× ON AN L-I CUTSET'S ALGEBRAIC ROW** — 2026-09-04
+
+Found by the docs session, reproduced independently here. An `ISin` forcing an inductor to ground
+is an L-I cutset with a **closed form**: the source fixes `i = I sin(ωt)`, so `v1 = L di/dt` has
+amplitude `ω L I` and no integrator is needed for the answer. Against it:
+
+    method   N = 100      400          1600         converged
+    trap     2.000672     2.000041     2.000003     False
+    euler    0.999832     0.999990     0.999999     False
+    gear     1.001341     1.000083     1.000005     True
+
+⚠⚠ **TRAPEZOIDAL CONVERGES TO EXACTLY TWO, NOT SLOWLY TO ONE.** A fixed factor is invisible to a
+step-size study — the sequence looks beautifully converged — which is why it took a CLOSED FORM to
+see. Only the **algebraic** row splits: the inductor current is right to `4.8e-07` for all three
+methods, so this is a formulation defect and not an accuracy one.
+
+⚠ **`PSS`'s DEFAULT METHOD IS `trap`.** The mitigation is that `converged` reports `False` — so it
+is not silent. But it reports `False` for **euler too**, which is accurate to `1e-6`, so **the flag
+does not discriminate**, and a reader who discounts it gets a stable, confident 2×.
+
+⚠⚠ **THIS IS WHERE B11 PAYS OFF CONCRETELY.** `topological_index` identifies the circuit as an L-I
+cutset **from the netlist alone, before any solve**, and names the offending elements — so the risk
+can be stated in advance rather than discovered. That is the "better refusal message" B11 was built
+for, realised on a real case.
+
+**PINNED** by `test_trapezoidal_returns_exactly_twice_the_algebraic_row_on_an_L_I_cutset`, which
+asserts against the closed form, checks that the differential row is right for all three methods,
+and checks that the factor is ALREADY 2 at 100 points — a shrinking factor would make it an
+accuracy problem instead.
+
+⚠ **NOT FIXED, AND NOT DIAGNOSED.** Why trapezoidal doubles an algebraic row is not established
+here. It belongs with the `(-1)^n` family (C1: trapezoidal maps `null(C)` by exactly −1, four
+designs dead on it), and the factor 2 on a row with no `C` is suggestive, but that is a hypothesis
+and is recorded as one. **Whether to warn on `trap` + L-I cutset is a shipped-behaviour change and
+has not been made.**
+
+
+---
+
 ## A. Capabilities — unbuilt, entry points known
 
 ⚠ **These are not five independent choices.** A1 → A3 is a dependency chain (A3 consumes

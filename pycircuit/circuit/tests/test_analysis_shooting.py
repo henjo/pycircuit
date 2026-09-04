@@ -9554,3 +9554,95 @@ def test_v_loops_and_i_cutsets_are_reported_as_ILL_POSED_not_as_index_2():
     assert not info3['ill_posed'], \
         'a plain RC ladder must not be flagged ill-posed: %r / %r' \
         % (info3['v_loop'], info3['i_cutset'])
+
+
+def test_trapezoidal_returns_exactly_twice_the_algebraic_row_on_an_L_I_cutset():
+    """⚠⚠ THE DEFAULT METHOD IS WRONG BY A FACTOR OF TWO HERE, AND NO
+    STEP-SIZE STUDY REVEALS IT.
+
+    An `ISin` forcing an inductor to ground is an L-I cutset with a CLOSED
+    FORM: the source fixes `i = I sin(wt)`, so `v1 = L di/dt` has amplitude
+    `w L I` and no integrator is needed for the answer.
+
+    Measured against it:
+
+        trap    N=100/400/1600   2.000672  2.000041  2.000003   converged=False
+        euler                    0.999832  0.999990  0.999999   converged=False
+        gear                     1.001341  1.000083  1.000005   converged=True
+
+    ⚠ TRAPEZOIDAL CONVERGES TO EXACTLY TWO, not slowly to one. A fixed factor
+    is invisible to refinement -- the sequence looks beautifully converged --
+    which is why this is pinned against a CLOSED FORM rather than against a
+    finer grid. Only the ALGEBRAIC row splits: the inductor current is right
+    to 4.8e-07 for all three methods.
+
+    ⚠ `converged` DOES report False for trap, so this is not silent. But it
+    reports False for EULER TOO, which is accurate to 1e-6 -- so the flag does
+    not discriminate, and a reader who discounts it gets a stable, confident
+    2x. `PSS`'s default method is `trap`.
+
+    ⚠⚠ AND `topological_index` IDENTIFIES THIS CIRCUIT FROM THE NETLIST
+    ALONE, which is what makes the diagnostic worth having: the risk can be
+    named before the solve, with the offending elements.
+    """
+    import warnings
+    from pycircuit.circuit.shooting import topological_index
+    from pycircuit.circuit.elements import ISin
+    circuit.default_toolkit = circuit.numeric
+    freq, ia, ll = 1.0, 1.0, 1e-3
+    per = 1.0 / freq
+    exact = 2 * np.pi * freq * ll * ia
+
+    def build():
+        c = SubCircuit()
+        c.add_node('1')
+        c['is'] = ISin(gnd, '1', ia=ia, freq=freq)
+        c['l'] = L('1', gnd, L=ll)
+        return c
+
+    ## the netlist alone says this is an L-I cutset, before any solve
+    idx, info = topological_index(build())
+    assert idx == 2 and set(info['cutset']) == {'is', 'l'}, \
+        'the cutset must be identified from topology: %r / %r' % (idx, info)
+    assert not info['ill_posed'], \
+        'an L-I cutset is index 2, not structurally singular'
+
+    def amplitude(method, npts):
+        cir = build()
+        pss = PSS(cir, method=method, reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=per, timestep=per / npts,
+                      x0=np.zeros(cir.n - 1), maxiterations=60)
+        X = np.asarray(pss.waveform[1], dtype=float)
+        names = [str(nd) for nd in cir.nodes]
+        v1 = float(np.max(np.abs(X[names.index('1')])))
+        il = float(np.max(np.abs(X[-1])))
+        return v1 / exact, abs(il / ia - 1.0), pss.converged
+
+    ## ⚠ 400 points, not 1600: the ratios are already 2.000041 / 0.999990 /
+    ## 1.000083 there, and 1600 costs 74 s against 15 s for nothing this test
+    ## asserts.  The FIXED FACTOR is the claim, not the last digit of it.
+    r_trap, e_trap, _c1 = amplitude('trap', 400)
+    r_eul, e_eul, _c2 = amplitude('euler', 400)
+    r_gear, e_gear, _c3 = amplitude('gear', 400)
+
+    assert abs(r_trap - 2.0) < 1e-3, \
+        'trapezoidal is expected to give EXACTLY twice the closed form on ' \
+        'this cutset; got %.6f' % r_trap
+    assert abs(r_eul - 1.0) < 1e-3, 'euler should be right; got %.6f' % r_eul
+    assert abs(r_gear - 1.0) < 1e-3, 'gear should be right; got %.6f' % r_gear
+
+    ## ⚠ and the DIFFERENTIAL row is right for all three -- only the
+    ## algebraic one splits, which is what makes this a formulation defect
+    ## rather than an accuracy one
+    for nm, err in (('trap', e_trap), ('euler', e_eul), ('gear', e_gear)):
+        assert err < 1e-4, \
+            '%s: the inductor CURRENT must be right (it is a differential ' \
+            'row); relative error %.2e' % (nm, err)
+
+    ## the factor must not shrink with refinement -- that is the whole point
+    r_coarse, _e, _c = amplitude('trap', 100)
+    assert abs(r_coarse - 2.0) < 1e-2, \
+        'the 2x must already be there at 100 points; a shrinking factor ' \
+        'would make this an accuracy problem instead. Got %.6f' % r_coarse
