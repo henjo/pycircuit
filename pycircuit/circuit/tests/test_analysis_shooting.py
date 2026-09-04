@@ -11020,3 +11020,188 @@ def test_orbital_correlation_is_gated_three_ways():
     assert relAC < 5e-2, \
         'shape residual against the Lyapunov cycle-mean is %.3e; 3%% is the ' \
         'recorded OPEN residual, bounded at 5%% here rather than tuned' % relAC
+
+
+def _driven_rlc_for_lyapunov(method, npts=200):
+    from pycircuit.circuit.elements import VSin
+    circuit.default_toolkit = circuit.numeric
+    Lv, Cv, Rs = 1e-3, 1e-9, 10.0
+    per = 2.0 * np.pi * np.sqrt(Lv * Cv)
+    c = SubCircuit()
+    c.add_node('a')
+    c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+    c['r'] = R('a', 'b', r=Rs)
+    c['l'] = L('b', gnd, L=Lv)
+    c['c1'] = C('b', gnd, c=Cv)
+    c['n'] = IS('b', gnd, i=0.0, noisePSD=1e-18)
+    import warnings
+    pss = PSS(c, method=method, reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / npts, x0=np.zeros(c.n - 1),
+                  maxiterations=100, x0_unknown=False)
+    assert pss.converged
+    return c, pss
+
+
+def test_plain_lyapunov_pieces_are_tied_to_the_shipped_monodromy():
+    """The per-step maps of the PLAIN path, and the one gate that ties them
+    to something already trusted: their product must BE `fp.matvec`.
+
+    Euler's step state is `x` alone (`b = 0`), so the product is the
+    monodromy directly. Trapezoidal's is the pair `(x, iq)`; the product
+    applied to `(x, 0)` — the companion re-seeded, as the solve does —
+    and read out on `x` must equal `fp.matvec` too. Gear is the control.
+
+    ⚠ THE UN-RESET TRAP PAIR IS SINGULAR, measured: carrying `iq` across
+    the period boundary puts a marginal `(−1)ⁿ` mode in `I − M⊗M`
+    (`LinAlgError`), the obstruction this file records for every
+    formulation that keeps the companion across a period. The period map
+    re-seeds it, and that is what the tie below checks.
+    """
+    for method in ('euler', 'trap', 'gear'):
+        cir, pss = _driven_rlc_for_lyapunov(method)
+        pac = PAC(cir)
+        fp = pss.factored_period()
+        m = cir.n - 1
+        As, Qs, K1, M, mm, n = pac._lyapunov_pieces(pss, 'covariance')
+        Mfp = np.column_stack([np.asarray(fp.matvec(e), float)
+                               for e in np.eye(fp.width)])
+        P = np.eye(n)
+        for A in As:
+            P = A @ P
+        got = P if n == fp.width else P[:m, :m]
+        tie = float(np.linalg.norm(got - Mfp)) / float(np.linalg.norm(Mfp))
+        assert tie < 1e-10, \
+            '%s: the product of the per-step maps differs from fp.matvec ' \
+            'by %.3e -- the Lyapunov pieces describe a different map from ' \
+            'the one the solve converged on' % (method, tie)
+        assert np.all(np.isfinite(K1)) and np.trace(K1) > 0.0, \
+            '%s: the one-period noise accumulation is not positive' % method
+        ## and the driven Kronecker solve must be NON-singular
+        K0 = pac.covariance(pss)
+        assert np.all(np.isfinite(K0))
+
+
+def test_plain_covariance_reaches_kTC_like_gear_does():
+    """`covariance` under euler and trap, against `kT/C` — a reference no
+    integrator can influence.
+
+    ⚠ THE FIXTURE MUST NOT DOUBLE-COUNT, and the first version did:
+    adding an explicit `IS(noisePSD=4kT/R)` beside a resistor that already
+    carries thermal noise made EVERY method read 2.0 kT/C (euler 1.939,
+    gear 1.911 at 1600 points) — predicted before it was read, as the
+    signature of double-counting rather than of any method, and it was.
+    With the resistor's own noise only, every method converges on 1.0.
+    """
+    import warnings
+    from pycircuit.circuit.elements import VSin
+    circuit.default_toolkit = circuit.numeric
+    kT = 1.380649e-23 * 300.0
+    Rv, Cc = 1e3, 1e-9
+    per = 100.0 * Rv * Cc
+
+    def rc():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1e-3, freq=1.0 / per)
+        c['r'] = R('a', 'b', r=Rv)
+        c['c1'] = C('b', gnd, c=Cc)
+        return c
+
+    for method in ('euler', 'trap'):
+        ratios = []
+        for npts in (400, 1600):
+            cir = rc()
+            pss = PSS(cir, method=method, reltol=1e-11)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=per, timestep=per / npts,
+                          x0=np.zeros(cir.n - 1), maxiterations=100,
+                          x0_unknown=False)
+            assert pss.converged
+            K0 = PAC(cir).covariance(pss)
+            ib = [str(nd) for nd in cir.nodes].index('b')
+            ratios.append(float(K0[ib, ib]) / (kT / Cc))
+        assert ratios[-1] > 0.95 and ratios[-1] < 1.05, \
+            '%s: covariance is %.4f of kT/C at 1600 points' % (method, ratios[-1])
+        assert abs(ratios[-1] - 1.0) < abs(ratios[0] - 1.0), \
+            '%s: not converging toward kT/C (%s)' % (method, ratios)
+
+
+def test_trap_plain_oscillator_covariance_refuses_with_the_reason():
+    """The one plain surface still refused, and it says why: the trap pair
+    map is `2m x 2m` and `ppv()`'s border vectors are width `m`."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='trap', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+    assert pss.converged
+    with pytest.raises(NotImplementedError, match='pair'):
+        PAC(cir).oscillator_covariance(pss)
+
+
+def test_the_orbital_residual_is_NOT_the_pair_artefact():
+    """A9's open 3 % shape residual, re-attributed by the plain-path wiring.
+
+    On euler-plain — `n = m`, no pair, nothing to slice — `orbital_
+    correlation` against the cycle-mean transverse Lyapunov covariance
+    gives magnitude 0.99993 and a shape residual of 2.4–2.7 %, flat
+    between 1600 and 3200 points. So the residual is neither the pair
+    slice (falsified here) nor discretisation. It stays open, bounded,
+    with the phase–orbital correlation term recorded as the untested
+    candidate.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='euler', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 1600, x0=np.array([2.0, 0.0]),
+                  maxiterations=400)
+    assert pss.converged
+    assert pss.factored_period().width == cir.n - 1, 'expected n = m'
+    pac = PAC(cir)
+    m = cir.n - 1
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Rm, _ = pac.orbital_correlation(pss)
+        Kf, d, info = pac.oscillator_covariance(pss, samples=True)
+    Ps = [np.asarray(P, float)[:m, :m] for P in info['orbital_samples']]
+    G = [np.asarray(g, float)[:m, :m] for g in info['growth_samples']]
+    ts = np.asarray(info['times'], float)[:len(Ps)]
+    Tp = float(pss.period)
+    Pm = np.mean(np.stack([Ps[j] - (ts[j] / Tp) * G[j]
+                           for j in range(len(Ps))]), axis=0)
+    ratio = float(np.linalg.norm(Rm)) / float(np.linalg.norm(Pm))
+    rel = float(np.linalg.norm(Rm - Pm)) / float(np.linalg.norm(Pm))
+    assert abs(ratio - 1.0) < 2e-3, \
+        'magnitude against the euler-plain Lyapunov cycle-mean is %.6f' % ratio
+    assert rel < 5e-2, 'shape residual %.3e; the recorded open value is 2.4-2.7%%' % rel
+    assert rel > 5e-3, \
+        'the shape residual has DROPPED to %.3e on a fixture where it was ' \
+        '2.4%%; if it is now gone, find what changed before deleting the ' \
+        'open item -- it may have been the correlation term after all' % rel

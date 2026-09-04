@@ -7111,10 +7111,7 @@ class PAC(Analysis):
         """
         fp = pss.factored_period()
         if fp.kind != 'solved_history':
-            raise NotImplementedError(
-                'PAC.%s: the per-step maps are rebuilt from the '
-                "solved-history factors. Re-solve with method='gear'."
-                % what)
+            return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1
         n = fp.width
         hs = np.diff(np.asarray(fp.times, dtype=float))
@@ -7157,6 +7154,126 @@ class PAC(Analysis):
         for A, Q in zip(As, Qs):
             K = A @ K @ A.T + Q
         M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
+        return As, Qs, K, M, m, n
+
+    def _lyapunov_pieces_plain(self, pss, fp, what):
+        """`_lyapunov_pieces` for the PLAIN path — the one-step companions.
+
+        ⚠ THE PER-STEP STATE DEPENDS ON THE METHOD, and that is the whole
+        content of this routine.  `_monodromy_matvec_plain` writes every
+        one-step companion as
+
+            S    = a1 C_{k-1} x_{k-1} + b iq_{k-1}
+            x_k  = -K S,           K = Jf_k^-1
+            iq_k = a0 C_k x_k + S
+
+        **Euler** (`b = 0`): `iq` never re-enters, the state is `x` alone,
+        `A_k = -a1 K C_{k-1}` is `m x m`, and nothing downstream changes --
+        `n = m`, `M = fp.matvec`, and `ppv()`'s width-`m` vectors border
+        it directly.
+
+        **Trapezoidal** (`b = -1`): `iq` DOES re-enter, so the per-step
+        state is the PAIR `(x, iq)`, `A_k` is `2m x 2m`, and the noise --
+        which enters the KCL rows and reaches `x_k` through `K` -- reaches
+        `iq_k` through `a0 C_k K` as well:
+
+            G_k = [ K ; a0 C_k K ],     Q_k = G_k (CY/2h_k) G_k^T
+
+        The period map on that pair is the plain product of the `A_k`
+        with NO re-seeding of `iq` at the boundary.  ⚠ THAT IS A DIFFERENT
+        OBJECT FROM `fp.matvec`, deliberately: the shooting SOLVE re-seeds
+        the companion at each period start (the manufactured opener, B16),
+        but the discretised noisy system does not, and the covariance is
+        a property of the latter.  The tie between the two is exact and is
+        the gate: the pair product applied to `(x, 0)` and read out on `x`
+        IS `fp.matvec`.
+
+        ⚠ `oscillator_covariance` IS REFUSED FOR TRAP-PLAIN, with the
+        reason: it borders `I - M kron M` with `ppv()`'s null vectors,
+        which are width `m` on the plain path, and the pair map is
+        `2m x 2m`.  The pair's own null vectors would be needed, with a
+        normalisation this record has been burned on twice today
+        (`floquet_modes`' state-block scale, `ppv()`'s `v . xdot`).
+        Named rather than approximated; euler-plain and gear both work.
+        """
+        m = pss.cir.n - 1
+        hs = np.diff(np.asarray(fp.times, dtype=float))
+        cy = np.real(self._cy_reduced(pss, 2.0 * np.pi / float(fp.T)))
+        C_open = np.asarray(fp.opening[0], dtype=float)
+        prevC = [C_open] + [np.asarray(st[1], dtype=float)
+                            for st in fp.steps[:-1]]
+        bs = {bool(st[3]) for st in fp.steps}
+        if len(bs) != 1:
+            raise NotImplementedError(
+                'PAC.%s: the plain period mixes b = 0 and b != 0 steps, '
+                'which have different per-step states.' % what)
+        pair = bs.pop()
+        if pair and what == 'oscillator_covariance':
+            raise NotImplementedError(
+                'PAC.oscillator_covariance: the trapezoidal plain path\'s '
+                'per-step state is the pair (x, iq), so its period map is '
+                '2m x 2m, and the bordered solve needs THAT map\'s null '
+                "vectors -- ppv()'s are width m. Not built (see "
+                '_lyapunov_pieces_plain). Use method=\'euler\' for a plain '
+                "width-m reference, or method='gear'.")
+        n = 2 * m if pair else m
+        As, Qs = [], []
+        for k, (lu, C_new, alphas, b) in enumerate(fp.steps):
+            Ck = np.asarray(C_new, dtype=float)
+            Cp = prevC[k]
+            A = np.zeros((n, n))
+            for j in range(n):
+                e = np.zeros(n)
+                e[j] = 1.0
+                p0, p1 = e[:m], (e[m:] if pair else None)
+                S = alphas[1] * (Cp @ p0)
+                if pair:
+                    S = S + b * p1
+                x = -np.asarray(lu.solve(S), dtype=float)
+                A[:m, j] = x
+                if pair:
+                    A[m:, j] = alphas[0] * (Ck @ x) + S
+            ## noise: K (CY/2h) K^T on the state block, built the same way
+            ## as the solved-history route so the two cannot drift apart
+            half = cy / (2.0 * hs[k])
+            left = np.column_stack([lu.solve(half[:, j]) for j in range(m)])
+            Q1 = np.column_stack([lu.solve(left[j, :]) for j in range(m)]).T
+            Q1 = 0.5 * (Q1 + Q1.T)
+            Q = np.zeros((n, n))
+            Q[:m, :m] = Q1
+            if pair:
+                Bk = alphas[0] * Ck
+                Q[:m, m:] = Q1 @ Bk.T
+                Q[m:, :m] = Bk @ Q1
+                Q[m:, m:] = Bk @ Q1 @ Bk.T
+                Q = 0.5 * (Q + Q.T)
+            As.append(A)
+            Qs.append(Q)
+        K = np.zeros((n, n))
+        for A, Q in zip(As, Qs):
+            K = A @ K @ A.T + Q
+        if pair:
+            ## ⚠ THE PERIOD MAP RE-SEEDS THE COMPANION, AND THAT IS
+            ## LOAD-BEARING.  The plain product of the A_k carries `iq`
+            ## across the boundary, and its `I - M kron M` is SINGULAR:
+            ## trapezoidal maps an algebraic row's companion by exactly -1
+            ## per step, so the un-reset pair carries a marginal mode --
+            ## the `(-1)^n` obstruction this file records for every
+            ## formulation that keeps `iq` across a period (measured here:
+            ## LinAlgError on a driven RLC).  The shooting solve is
+            ## well-posed because the manufactured opener re-seeds `iq` at
+            ## zero; the covariance's period map must do the same.  With
+            ## `iq` zeroed at the start, the x->x block of the product IS
+            ## `fp.matvec` (tied to 1e-12 above), and the map on the pair
+            ## is the product applied to `(x, 0)`.
+            Mp = np.eye(n)
+            for A in As:
+                Mp = A @ Mp
+            M = np.zeros((n, n))
+            M[:, :m] = Mp[:, :m]
+        else:
+            M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                                 for e in np.eye(n)])
         return As, Qs, K, M, m, n
 
     def covariance(self, pss, samples=False):
@@ -7498,12 +7615,20 @@ class PAC(Analysis):
         isotropic, which is a rotating radial direction averaged over a
         cycle, not a disagreement.
 
-        ❌ OPEN: a 3 % SHAPE residual against the Lyapunov reference,
+        ❌ OPEN: a 2-3 % SHAPE residual against the Lyapunov reference,
         while the two modal routes agree with each other to 3.5e-4.  Not
         a factor (the scalar-fit residual is unchanged by the scale fix).
-        Attributed, not proven, to the reference being the PAIR covariance
-        under gear sliced to its state block; the clean comparison needs
-        the plain-path Lyapunov solve, which is still gear-only.
+        ⚠ NOT THE PAIR ARTEFACT -- an earlier version of this note said
+        so, and the plain-path Lyapunov wiring FALSIFIED it: on euler-plain
+        with n = m and no pair at all the residual is 2.4-2.7 %, flat
+        between 1600 and 3200 points, so it is neither the pair slice nor
+        discretisation.  A candidate that fits its size and the theory,
+        UNTESTED: eq (22)'s `l >= 2` sum is the pure orbital term, and
+        Theorem 4.1's total adds the PHASE-ORBITAL CORRELATION `S_corr`
+        (their eqs 18/20, `D_lhj`), whose tau = 0 value the Lyapunov
+        covariance contains and this sum excludes -- reported by the
+        authors as small, with a sign.  The test that would settle it is
+        assembling `D_lhj` and adding its tau = 0 contribution.
         """
         H = self.ORBITAL_HARMONICS if H is None else int(H)
         modes = pss.floquet_modes(pss)
