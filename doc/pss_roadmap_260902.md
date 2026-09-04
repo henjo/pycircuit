@@ -1152,6 +1152,67 @@ that `x0_unknown` fixes both parities with a consistent `v(0)`, and that gear wa
 
 ---
 
+### 0l. Gourary ECCTD 2007 — ⚠ **WE NEVER ASSESSED IT, AND A GENERALISATION IS WHY** — 2026-09-04
+
+Andreas asked why we had not implemented Gourary, Rusakov, Ulyanov, Zharov, Gullapalli & Mulvaney,
+*"A numerical technique for time domain noise analysis of oscillators"*, ECCTD 2007. **The answer
+is that we never assessed it.**
+
+⚠⚠ **THE RECORD DISMISSES THE AUTHOR WHOLESALE.** C7 rejects *adaptive preconditioning for PAC* as
+harmonic balance solving a problem we do not have — sound for C7 — and the B-note explains *"why
+all five Gourary papers are about HB"*. **This one is TIME-DOMAIN and says so in its title.** A
+blanket claim about a body of work, never measured, used to close a line of inquiry: the same
+shape as the MPE and commercial-stepping provenance errors, and it cost us a paper that speaks
+directly to A7.
+
+**What the paper addresses**, verbatim: *"numerical difficulties arise because
+`J(0) = Φ(T) − I` is singular for oscillator circuits. The singularity of `J(0)` can lead to
+ill-conditioning of `J(Δω)` … and subsequently to **distorted PSD curves**."* Its fix uses
+`J(Δω) = J(0) + I(1 − e^{jΔωT})` and the LEFT null vector `u` of `J(0)` to substitute the exact
+row `uᵀJ(Δω) = (1 − e^{jΔωT}) uᵀ`.
+
+⚠⚠⚠ **AND IT IS NOT A COMPETITOR TO OUR BORDERED SOLVE — MEASURED BY THE DOCS SESSION ON OUR OWN
+`_vdp_at_Q(15.92, 400)` MONODROMY.** Because `uᵀΦ(T) = uᵀ`, the substituted row is a **linear
+combination of `J`'s own rows**, so the substitution is left-multiplication by an invertible `E`
+and `E J x = E f` is **exactly the same system** — same solution set, same dimension, same
+singularities. It **selects nothing**. Bordering adds a row AND a column, changes the dimension to
+`n+1`, and is nonsingular at `Δω = 0` because it picks one solution from a one-parameter family.
+
+     Δω        ‖uᵀJ − (1−e)uᵀ‖   rel        cond(J)     cond(Gourary)   min row norm
+     1e-01        1.1579e-12    1.87e-12   8.588e+00     8.117e+00      6.181e-01
+     1e-05        1.1580e-12    1.84e-08   7.954e+04     7.576e+04      6.284e-05
+     1e-09        1.1580e-12    1.84e-04   7.954e+08     7.576e+08      6.284e-09
+     0            1.1580e-12    1.00e+00   4.318e+12     3.069e+17      0.000e+00
+
+**(1)** the identity is exact — the residual is `1.158e-12` at every `Δω`, which is `u`'s own null
+residual and nothing else; **(2)** `cond(Gourary)` tracks `cond(J)` (7576 against 7954, ~5%) and
+grows as `1/Δω` just the same — **NO REGULARISATION**; **(3)** ⚠ **at `Δω = 0` the substituted row
+is identically zero** and the condition number goes from `4.3e12` to `3.1e17` — **worse**. It makes
+the singularity structural and visible rather than curing it.
+
+⚠ **WHAT IT ACTUALLY BUYS (inference from that table, not directly measured):** forming
+`uᵀJ = uᵀM − e uᵀ` is a difference of two `O(1)` quantities giving an `O(Δω)` result, so it costs
+about `log10(1/Δω)` digits — nine of them at `Δω = 1e-9`. Substituting the closed form recovers
+that row to full precision **given `u`**, and is capped by `u`'s own accuracy.
+
+**SO THE DIVISION OF LABOUR IS CLEAN, and it decides where each belongs:**
+
+  * **Gourary is for `Δω ≠ 0`**, where `J` is nonsingular in exact arithmetic and the only problem
+    is CONDITIONING — cheap, keeps dimension `n`, needs no normalisation;
+  * **bordering is for `Δω = 0`**, where the singularity is genuine and a solution must be chosen.
+
+**Gourary CANNOT replace the bordered solve at `Δω = 0` — it hands back a zero row there.** Both
+use the left null vector; one supplies an exact ROW, the other closes a RANK DEFICIENCY.
+
+⚠ **THE OPEN QUESTION IS APPLICABILITY AND IT IS UNMEASURED.** If A7's recorded weakness is
+ill-conditioning of `J(Δω)` at small offset, Gourary addresses it and our bordered solve does not.
+If it is `J(0)` singular, ours addresses it and Gourary does not. **Whether our PAC sweep actually
+loses those digits at small offset — A7 already carries the harmonic pole analytically — has not
+been measured here.** That is one experiment, not a reading.
+
+
+---
+
 ## A. Capabilities — unbuilt, entry points known
 
 ⚠ **These are not five independent choices.** A1 → A3 is a dependency chain (A3 consumes
