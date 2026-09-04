@@ -9523,9 +9523,14 @@ def test_v_loops_and_i_cutsets_are_reported_as_ILL_POSED_not_as_index_2():
     c['vs1'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
     c['vs2'] = VSin('a', gnd, va=2.0, freq=1.0 / per)
     c['r'] = R('a', gnd, r=1e3)
-    _idx, info = topological_index(c)
+    idx, info = topological_index(c)
     assert info['ill_posed'], 'two parallel voltage sources form a V loop'
     assert info['v_loop'], 'the offending source must be named'
+    ## ⚠ and there is NO index to report -- the DAE index presumes a solvable
+    ## system, and returning 2 here would point at the solver
+    assert idx is None, 'an ill-posed netlist must not be given an index'
+    assert not info['loop'] and not info['cutset'], \
+        'a pure-V loop must not be reported as a C-V loop: %r' % (info['loop'],)
 
     ## a node reachable only through current sources -- an I-only cutset
     c2 = SubCircuit()
@@ -9533,8 +9538,9 @@ def test_v_loops_and_i_cutsets_are_reported_as_ILL_POSED_not_as_index_2():
     c2['is1'] = IS(gnd, 'a', i=1e-3)
     c2['is2'] = IS('a', 'b', i=1e-3)
     c2['r'] = R('b', gnd, r=1e3)
-    _i2, info2 = topological_index(c2)
+    i2, info2 = topological_index(c2)
     assert info2['ill_posed'], 'node a is isolated by current sources'
+    assert i2 is None
     assert set(info2['i_cutset']) >= {'is1', 'is2'}, \
         'both current sources bound the cutset; got %r' % (info2['i_cutset'],)
 

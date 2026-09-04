@@ -3452,16 +3452,35 @@ netlist/matrix-level checks with no solver in them. The index criterion is gated
 computation on the MNA matrices (`C`'s null basis `N`, then the rank of `NᵀGN`) over **seven**
 topologies, and agrees on all of them.
 
-⚠⚠ **AND THE GATE OVERTURNED THE RELAYED THEORY ON C-ONLY LOOPS.** The quote said C-only loops
+✅ **THE C-ONLY-LOOP DISAGREEMENT IS RESOLVED, AND THE PAPER AGREES WITH THE MEASUREMENT.** The
+docs session went back to the source: the sentence they relayed is from p.144, comparing against
+their reference [10], and its second half says which formulation it is about — *"C-only loops have
+to be added ... SINCE THE CURRENTS THROUGH C-ONLY LOOPS BELONG TO THE NETWORK VARIABLES WHEREAS
+THESE CURRENTS ARE EXCLUDED IN MNA FORMULATIONS"*. **"In this case" is [10]'s formulation, which
+carries capacitor currents as unknowns; MNA excludes them, which is exactly why MNA does not need
+them added.** And the paper states it independently a page after Theorem 2.2: *"loops containing
+only capacitances are EXCLUDED under point 4, whereas cutsets containing only inductances are
+INCLUDED under point 3."*
+
+⚠⚠ **THE CRITERION IS NOT SYMMETRIC, AND THAT ASYMMETRY IS NOW THE THING TO GET RIGHT.** A C-V
+loop requires a voltage source; an L-I cutset does NOT require a current source — **L-only cutsets
+count**. This implementation removes all `L` and `I` branches when testing connectivity, so
+L-only cutsets are detected; the C-V search closes only on a voltage source, so C-only loops are
+not. **Both halves match the paper.** So there is no split to record after all — the measurement
+and the theory agree, and what disagreed was a relayed causal clause with its sign inverted.
+
+⚠ **The grounded capacitor ring remains the cleanest demonstration:** `det C ≠ 0`, so it is not
+index 2 and not even a DAE.
+
+⚠⚠ **AND THE ORIGINAL DISAGREEMENT WAS STILL WORTH HAVING.** The quote said C-only loops
 must be counted as C-V loops; a first version did, and disagreed with the measurement on **three
 separate C-only topologies** — a grounded ring, a floating triangle, and the triangle with every
 node resistively grounded, all measuring **index 1**. The arithmetic is checkable by hand: a
 grounded ring has `det C = c1c2 + c1c3 + c2c3 ≠ 0`, so it is not even a DAE; a floating triangle
 has `C` singular (its Laplacian) but `NᵀGN = (1/R)/3 ≠ 0`, so the constraint is uniquely solvable.
 **A C-only loop makes `C` singular WITHOUT making the index 2** — index 2 needs a VOLTAGE SOURCE
-fixing the loop. Either the quote describes a formulation whose variables differ from ours (its own
-wording turns on which currents are variables) or it was misapplied in relay; it has not been read
-here. **The measurement on this code is what shipped.**
+fixing the loop. ✅ **CONFIRMED AGAINST THE PAPER, above:** the quote describes a formulation whose
+variables differ from ours, exactly as the measurement implied.
 
 ⚠ **A UNION-FIND SUBTLETY THAT WOULD HAVE SHIPPED SILENTLY.** The first fix discarded any loop
 found to contain no voltage source — wrong on a netlist carrying BOTH a C-only loop and a C-V
@@ -3474,8 +3493,23 @@ the loop is guaranteed to contain one. **Gated by a fixture carrying both**, whi
 INDEX 2.** A loop of voltage sources over-determines KVL and a cutset of current sources
 over-determines KCL: the MNA system is **structurally singular** and has no solution at all,
 barring an exact cancellation. Calling that "index 2" would send a reader hunting a solver problem
-when the netlist is the error. Reported as `info['ill_posed']` with the offending elements, while
-`index` keeps its own meaning.
+when the netlist is the error. Reported as `info['ill_posed']` with the offending elements, and **`index` comes
+back `None`** — the DAE index presumes a solvable system, so there is no honest value to give.
+
+⚠ **ASKING WHETHER THE CHECK WAS THERE IMPROVED IT TWICE, WHICH IS WORTH RECORDING BECAUSE THE
+FIRST VERSION *DID* PASS ITS TEST.** Demonstrating it rather than asserting it exposed two
+defects the gate had not:
+
+  * **the V loop named only its CLOSING source**, not the loop. On three sources in a ring that
+    points at one and leaves the reader to find the other two — the opposite of the localisation
+    the criterion exists for. Now shares the C-V loop's path reconstruction and names all three.
+  * **and it reported `index = 2` with a "C-V loop" containing no capacitor.** A pure-V loop
+    closes on a source, so the C-V search claimed it. Both symptoms point a reader at the SOLVER
+    when the NETLIST is the error, which is precisely what this split exists to prevent.
+
+    3 sources in a loop    index=None  ill_posed=True   V LOOP: v3, v2, v1
+    I-only cutset          index=None  ill_posed=True   I CUTSET: i1, i2
+    well-posed RC          index=1     ill_posed=False
 
 ⚠ **AND ONE FAILURE WAS IN MY REFERENCE, NOT THE CRITERION.** The first full run had `cv_loop`
 disagreeing — criterion 2, reference 1 — because the reference guarded with `s2.max() > 0` and

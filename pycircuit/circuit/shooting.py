@@ -297,7 +297,8 @@ def topological_index(cir):
     cancellation.  The index criterion presumes a well-posed network.  Calling
     those "index 2" would send a reader hunting a solver problem instead of a
     netlist error, so they come back as `info['v_loop']`, `info['i_cutset']`
-    and `info['ill_posed']` while `index` keeps its own meaning.
+    and `info['ill_posed']` — and **`index` is then `None`**, because the DAE
+    index presumes a solvable system and there is no honest value to give.
 
     `info['unclassified']` lists elements outside the covered class —
     controlled sources above all, which the theorem excludes.  When it is
@@ -368,11 +369,15 @@ def topological_index(cir):
     cv = ([nm for nm in cir.elements if kinds[nm] == 'C']
           + [nm for nm in cir.elements if kinds[nm] == 'V'])
     _p, closing, tree, _f = forest(cv, only_close_on='V')
-    loop = []
-    if closing is not None:
-        ## walk the spanning forest for the path joining the closing
-        ## element's endpoints -- that path plus the closing element IS the
-        ## loop, which is the localisation the criterion exists for
+    def close_the_loop(closing, tree):
+        """The closing element plus the forest path joining its endpoints.
+
+        That path IS the loop, and naming it is the localisation the whole
+        criterion exists for -- "the opportunity to LOCALIZE critical element
+        modellings", in the authors' words.
+        """
+        if closing is None:
+            return []
         adj = {}
         for nm in tree:
             a, b = terms[nm][0], terms[nm][1]
@@ -393,7 +398,9 @@ def topological_index(cir):
             u, nm = seen[node]
             path.append(nm)
             node = u
-        loop = [closing] + list(reversed(path))
+        return [closing] + list(reversed(path))
+
+    loop = close_the_loop(closing, tree)
 
     ## ---- L-I cutset ----------------------------------------------------
     ## An L-I cutset exists exactly when deleting every L and I branch
@@ -432,9 +439,12 @@ def topological_index(cir):
     ## a higher index.  The index criterion presumes a well-posed network, so
     ## these are reported separately -- calling them "index 2" would send a
     ## reader looking for a solver problem instead of a netlist error.
-    _pv, v_close, _vt, _vf = forest(
+    ## ⚠ the V loop is localised the SAME way as the C-V loop -- naming only
+    ## the closing source would point at one of three parallel sources and
+    ## leave the reader to find the rest, which is the opposite of the point.
+    _pv, v_close, v_tree, _vf = forest(
         [nm for nm in cir.elements if kinds[nm] == 'V'], only_close_on='V')
-    v_loop = [v_close] if v_close is not None else []
+    v_loop = close_the_loop(v_close, v_tree)
     i_only = [nm for nm in cir.elements if kinds[nm] == 'I']
     i_cutset = []
     if i_only:
@@ -444,10 +454,25 @@ def topological_index(cir):
             i_cutset = [nm for nm in i_only if len(terms[nm]) >= 2
                         and rfind_i(terms[nm][0]) != rfind_i(terms[nm][1])]
 
+    ## ⚠⚠ AN ILL-POSED NETLIST HAS NO INDEX, AND REPORTING ONE IS WORSE THAN
+    ## REPORTING NOTHING.  The DAE index presumes a solvable system; a V loop
+    ## or an I cutset makes MNA structurally singular, so `index` comes back
+    ## `None`.  A first version returned 2 here and ALSO mislabelled the
+    ## offending set -- a loop of three voltage sources was reported as a
+    ## "C-V loop" containing no capacitor, because the C-V search unions
+    ## capacitors then sources and a pure-V loop closes on a source.  Both
+    ## symptoms point a reader at the solver when the netlist is the error,
+    ## which is precisely what this split exists to prevent.
+    if v_loop or i_cutset:
+        return None, {'loop': [], 'cutset': [],
+                      'v_loop': v_loop, 'i_cutset': i_cutset,
+                      'ill_posed': True,
+                      'kinds': kinds, 'unclassified': unclassified,
+                      'provisional': bool(unclassified)}
     index = 2 if (loop or cutset) else 1
     return index, {'loop': loop, 'cutset': cutset,
-                   'v_loop': v_loop, 'i_cutset': i_cutset,
-                   'ill_posed': bool(v_loop or i_cutset),
+                   'v_loop': [], 'i_cutset': [],
+                   'ill_posed': False,
                    'kinds': kinds, 'unclassified': unclassified,
                    'provisional': bool(unclassified)}
 
