@@ -180,18 +180,30 @@ class FactoredPeriod(object):
             return self._pss._monodromy_matvec(self.opening, self.steps, v)
         return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
 
-    def matvec_transposed(self, v):
+    def matvec_transposed(self, v, collect=False, inject=None):
         """`M^T v` -- see `_monodromy_matvec_transposed{,_plain}`.
 
         ⚠ B8: the PLAIN path now has one too, for the ONE-STEP companions.
         It used to refuse outright, which made every adjoint surface --
         `ppv`, PAC, `pnoise`, `covariance` -- Gear-2 only.
+
+        ⚠ `collect` AND `inject` FORWARD TO BOTH, which is what lets the
+        callers stop naming a map. They used to reach past this method to
+        `_monodromy_matvec_transposed` DIRECTLY, so B8 shipped without
+        reaching any of them -- the machinery existed and every surface
+        still refused. A caller that goes through here gets whichever
+        recursion its `kind` calls for and cannot acquire a Gear-2
+        assumption by accident.
+
+        ⚠ THE COLLECTED STATE HAS THE MAP'S OWN WIDTH: `2m` for the pair,
+        `m` for the plain one. `st[:m]` is the differential block under
+        both, which is the slice every consumer wants.
         """
         if self.kind == 'solved_history':
             return self._pss._monodromy_matvec_transposed(
-                self.opening, self.steps, v)
+                self.opening, self.steps, v, collect=collect, inject=inject)
         return self._pss._monodromy_matvec_transposed_plain(
-            self.opening, self.steps, v)
+            self.opening, self.steps, v, collect=collect, inject=inject)
 
 
 
@@ -2485,7 +2497,8 @@ class PSS(Analysis):
             Cs = [C_new, Cs[0]]
         return Px[0]
 
-    def _monodromy_matvec_transposed_plain(self, opening, steps, v):
+    def _monodromy_matvec_transposed_plain(self, opening, steps, v,
+                                           collect=False, inject=None):
         """`M^T v` for the PLAIN path — the one-step companions (B8).
 
         The forward recursion `_step_sensitivity` implements is
@@ -2534,19 +2547,31 @@ class PSS(Analysis):
         m = self.cir.n - 1
         C_open, _a_open, _b_open = opening
         v = np.asarray(v)
-        if np.iscomplexobj(v):
-            return (self._monodromy_matvec_transposed_plain(opening, steps, v.real)
-                    + 1j * self._monodromy_matvec_transposed_plain(
-                        opening, steps, v.imag))
+        inj = None if inject is None else [np.asarray(z) for z in inject]
+        if np.iscomplexobj(v) or (
+                inj is not None and any(np.iscomplexobj(z) for z in inj)):
+            ii = (None, None) if inj is None else (
+                [z.real for z in inj], [z.imag for z in inj])
+            re = self._monodromy_matvec_transposed_plain(
+                opening, steps, np.asarray(v).real, collect, ii[0])
+            im = self._monodromy_matvec_transposed_plain(
+                opening, steps, np.asarray(v).imag, collect, ii[1])
+            if collect:
+                return (re[0] + 1j * im[0],
+                        [a + 1j * b for a, b in zip(re[1], im[1])],
+                        [a + 1j * b for a, b in zip(re[2], im[2])])
+            return re + 1j * im
         v = v.astype(float)
         if not steps:
-            return v.copy()
+            return (v.copy(), [], []) if collect else v.copy()
         ## `C_{n-1}` for each step: the previous step's `C_new`, or the
         ## opening capacitance for the first
         prevC = [C_open] + [np.asarray(st[1]) for st in steps[:-1]]
 
         w1 = v.copy()
         w2 = np.zeros(m)
+        ts = []
+        states = []
         for j in range(len(steps) - 1, -1, -1):
             lu, C_new, alphas, b = steps[j]
             if len(alphas) != 2:
@@ -2563,10 +2588,30 @@ class PSS(Analysis):
                     'PSS: this linear solver cannot solve transposed, so the '
                     'monodromy transpose cannot be replayed. Use DenseSolver '
                     'or SuperLUSolver.')
+            if collect:
+                ts.append(t)
             r = (w2 - t) if b else (-t)
             Cp = np.asarray(prevC[j])
             w1 = alphas[1] * (Cp.T @ r)
             w2 = (b * r) if b else np.zeros(m)
+            if inj is not None:
+                w1 = w1 + inj[j]
+            if collect:
+                ## ⚠ THE PLAIN ADJOINT STATE IS WIDTH `m`, NOT `2m`.  The
+                ## solved-history replay collects `concat(w1, w2)` because
+                ## its state IS the pair; here `w2` is the companion term
+                ## `Pq`, not a second state block, and `v(s_j)` is `w1`
+                ## alone.  Callers slice `st[:m]`, which is the whole
+                ## vector here and the first block there -- the same
+                ## quantity under both maps, which is what lets `ppv`
+                ## consume either without knowing which it has.
+                states.append(w1.copy())
+        if collect:
+            ## reversed so `ts[j]`/`states[j]` line up with `steps[j]`,
+            ## matching `_monodromy_matvec_transposed`'s contract
+            ts.reverse()
+            states.reverse()
+            return w1, ts, states
         return w1
 
     def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
@@ -3020,11 +3065,12 @@ class PSS(Analysis):
         """
         import scipy.sparse.linalg as spla
         fp = self.factored_period()
-        if fp.kind != 'solved_history':
-            raise NotImplementedError(
-                'PSS.ppv: the augmented solve needs the transposed replay, '
-                "which is implemented for the solved-history map only. "
-                "Re-solve with method='gear'. (method=%r.)" % self.par.method)
+        ## ⚠ NO LONGER GEAR-ONLY (B8). The refusal that stood here said the
+        ## transposed replay was "implemented for the solved-history map
+        ## only"; since `_monodromy_matvec_transposed_plain` shipped that
+        ## sentence is false, and every call below goes through
+        ## `fp.matvec_transposed`/`fp.matvec` so the map's kind is the
+        ## dispatcher's business rather than this method's.
         if not self.autonomous:
             raise ValueError(
                 'PSS.ppv: a perturbation projection vector describes the '
@@ -3052,8 +3098,7 @@ class PSS(Analysis):
         def _mv(z):
             z = np.asarray(z)
             v_, y_ = z[:n], z[n]
-            top = v_ - self._monodromy_matvec_transposed(
-                fp.opening, fp.steps, v_) + y_ * qp
+            top = v_ - fp.matvec_transposed(v_) + y_ * qp
             return np.concatenate((top, [float(qp @ v_)]))
 
         rtol = max(self.par.reltol * 1e-2 if tol is None else tol, 1e-14)
@@ -3074,8 +3119,7 @@ class PSS(Analysis):
                 'tangent is nearly orthogonal to the null direction the '
                 'bordering is poor.' % relres)
         v, y = z[:n], float(z[n])
-        resid = float(np.linalg.norm(
-            v - self._monodromy_matvec_transposed(fp.opening, fp.steps, v)))
+        resid = float(np.linalg.norm(v - fp.matvec_transposed(v)))
 
         ## ⚠ THE SCALE NEEDS THE TANGENT, so the RIGHT null vector is solved
         ## for too -- by the same bordering, not by an eigendecomposition,
@@ -3084,8 +3128,7 @@ class PSS(Analysis):
         def _mvf(zz):
             zz = np.asarray(zz)
             u_, yy = zz[:n], zz[n]
-            top = u_ - self._monodromy_matvec(
-                fp.opening, fp.steps, u_) + yy * qp
+            top = u_ - fp.matvec(u_) + yy * qp
             return np.concatenate((top, [float(qp @ u_)]))
 
         Af = spla.LinearOperator((n + 1, n + 1), matvec=_mvf, dtype=float)
@@ -3165,8 +3208,7 @@ class PSS(Analysis):
         ## an integral over the orbit.  `Phi(T,s)^T v(T) = v(s)`, and the
         ## reverse replay computes exactly that sequence on its way to the
         ## answer -- it was being discarded.
-        _end, _ts, states = self._monodromy_matvec_transposed(
-            fp.opening, fp.steps, v, collect=True)
+        _end, _ts, states = fp.matvec_transposed(v, collect=True)
         ## ⚠ AND FILL EVERY SAMPLE TOO, at ITS OWN operating point, because
         ## `G` is state-dependent and the algebraic entries are a pointwise
         ## function of the differential ones.  Done here rather than by
@@ -3338,8 +3380,7 @@ class PSS(Analysis):
             _Qb = [_q0]
             _H = np.zeros((kk + 1, kk))
             for _j in range(kk):
-                _wj = _Qb[_j] - np.asarray(self._monodromy_matvec(
-                    fp.opening, fp.steps, _Qb[_j]))
+                _wj = _Qb[_j] - np.asarray(fp.matvec(_Qb[_j]))
                 for _i in range(_j + 1):
                     _H[_i, _j] = float(_Qb[_i] @ _wj)
                     _wj = _wj - _H[_i, _j] * _Qb[_i]
@@ -3472,10 +3513,16 @@ class PSS(Analysis):
         `_monodromy_matvec_transposed` -- so this is that pass plus a
         weighted sum, with no second recursion to keep in step.
 
-        ⚠ SOLVED-HISTORY ONLY, because the reverse pass is.  See there.
+        ⚠ NO LONGER SOLVED-HISTORY ONLY (B8).  This said "because the
+        reverse pass is", which was true when written and is not now: the
+        plain path has its own reverse recursion, so the dispatch belongs
+        to `FactoredPeriod` and this reads `ts` from whichever map it was
+        handed.  `ts[j]` is the transposed solve at step `j` under BOTH
+        recursions -- that is the quantity the identity below needs, and
+        it is what makes this method map-agnostic rather than merely
+        permitted.
         """
-        _end, ts, _states = self._monodromy_matvec_transposed(
-            fp.opening, fp.steps, xa, collect=True)
+        _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
         for tvec, t in zip(ts, fp.times[1:]):
@@ -5978,16 +6025,14 @@ class PAC(Analysis):
         than a seed at the end. That extension is the next piece of A3, and
         it is not built.
 
-        ⚠ SOLVED-HISTORY ONLY (`method='gear'`), because the reverse replay
-        is; a one-step method needs its own reverse recursion.
+        ⚠ WAS SOLVED-HISTORY ONLY until B8 gave the one-step companions
+        their own reverse recursion; it now runs under every method.
         """
         import scipy.sparse.linalg as spla
+        ## ⚠ NO LONGER GEAR-ONLY (B8): the transposed replay exists for the
+        ## one-step companions too, and every use below goes through
+        ## `fp.matvec_transposed`.
         fp = pss.factored_period()
-        if fp.kind != 'solved_history':
-            raise NotImplementedError(
-                'PAC: the adjoint row needs the transposed replay, which is '
-                "implemented for the solved-history map only. Re-solve with "
-                "method='gear'. (PSS used %r.)" % pss.par.method)
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the adjoint row')
         m = pss.cir.n - 1
@@ -6045,15 +6090,11 @@ class PAC(Analysis):
         `m` forward driven solves: 9.2e-16 / 3.3e-16 / 1.3e-15 at
         `l = 0 / 1 / -2`.
 
-        ⚠ SOLVED-HISTORY ONLY (`method='gear'`), like the reverse pass.
+        ⚠ WAS SOLVED-HISTORY ONLY, like the reverse pass; B8 lifted both.
         """
         import scipy.sparse.linalg as spla
+        ## ⚠ NO LONGER GEAR-ONLY (B8) -- see the adjoint row.
         fp = pss.factored_period()
-        if fp.kind != 'solved_history':
-            raise NotImplementedError(
-                'PAC: the sideband row needs the transposed replay, which '
-                "is implemented for the solved-history map only. Re-solve "
-                "with method='gear'. (PSS used %r.)" % pss.par.method)
 
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the sideband row')
@@ -6115,9 +6156,8 @@ class PAC(Analysis):
             inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
                                      * float(freq)) * tms[:N]) / N)[:, None]
                       * d[None, :])
-            g, ts, _st = pss._monodromy_matvec_transposed(
-                fp.opening, fp.steps, np.zeros(n, dtype=complex),
-                collect=True, inject=inject)
+            g, ts, _st = fp.matvec_transposed(
+                np.zeros(n, dtype=complex), collect=True, inject=inject)
             forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
             ## ⚠ ON AN OSCILLATOR THIS OPERATOR IS SINGULAR AT EVERY
             ## HARMONIC and near-singular around them, which is exactly

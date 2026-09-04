@@ -4106,11 +4106,20 @@ def test_the_adjoint_row_is_m_forward_solves_in_one():
         'of sources' % (adjoint_matvecs, fwd_matvecs[0], m)
 
 
-def test_the_adjoint_row_refuses_the_plain_path():
-    """It needs the reverse replay, which is Gear-2 only.
+def test_the_adjoint_row_no_longer_refuses_the_plain_path():
+    """⚠ THIS TEST USED TO ASSERT THE OPPOSITE, and the inversion is the
+    record rather than a slip.
 
-    Refused in words rather than reaching for `alphas[2]` on a one-step
-    companion, which is what it used to do one frame deeper.
+    It read: *"It needs the reverse replay, which is Gear-2 only"*, and
+    demanded a `NotImplementedError` matching `solved-history`. That was
+    true when written. B8 gave the one-step companions their own reverse
+    recursion and then WIRED IT THROUGH, so the refusal is gone and the
+    row must now compute -- on the same fixture, under the same method,
+    where it previously raised.
+
+    Kept as an inverted assertion rather than deleted: a deleted test
+    leaves no evidence the capability was ever absent, and this one
+    dates the change.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -4121,8 +4130,15 @@ def test_the_adjoint_row_refuses_the_plain_path():
         warnings.simplefilter('ignore')
         pss.solve(period=per, timestep=per / 120, maxiterations=40)
     assert pss.converged
-    with pytest.raises(NotImplementedError, match='solved-history'):
-        PAC(cir, toolkit=circuit.numeric).adjoint_transfer_row(pss, 700.0, 1)
+    row = np.asarray(PAC(cir, toolkit=circuit.numeric)
+                     .adjoint_transfer_row(pss, 700.0, 1))
+    assert row.shape == (cir.n - 1,), \
+        'the adjoint row has the wrong width on the plain path: %r' \
+        % (row.shape,)
+    assert np.all(np.isfinite(row)), 'the plain adjoint row is not finite'
+    assert float(np.max(np.abs(row))) > 0.0, \
+        'the plain adjoint row came back all zeros, which is what a ' \
+        'silently skipped reverse pass would produce'
 
 
 def _sideband_forward(pss, fp, freq, k, l, N, alpha, A):
@@ -10133,3 +10149,166 @@ def test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV():
                 'to record is gone' % (ev, eu, eps)
     finally:
         pss.ppv = orig
+
+
+def _vdp_ppv_method(method, npts, Q=8.0):
+    """The same van der Pol under a named integrator, converged."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method=method, reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                  maxiterations=200)
+    assert pss.converged, '%s/%d did not converge' % (method, npts)
+    return cir, pss
+
+
+def test_ppv_runs_under_every_integrator_and_agrees_with_gear():
+    """⚠ B8 WIRED THROUGH. Building the plain transposed replay was not
+    enough: `ppv` reached past `FactoredPeriod` to
+    `_monodromy_matvec_transposed` DIRECTLY and refused on `fp.kind`, so
+    the machinery shipped and every adjoint surface still said
+    "re-solve with method='gear'". The refusal is gone and the calls go
+    through the dispatcher.
+
+    ⚠⚠ COMPARE `v[:m]`, NOT `v`. The solved-history map's state is the
+    PAIR, so `ppv` returns `2m` components under gear and `m` under a
+    one-step method. `norm(v)` therefore compares DIFFERENT OBJECTS across
+    methods and shows a spurious 5% disagreement that converges cleanly on
+    both sides — which is what makes it dangerous rather than obvious.
+    `v[:m]` is the differential block under both.
+
+    Measured: `|v[:m]|` → 0.500008 (gear/800) against 0.500811 (trap/800),
+    and the phase diffusion constant `c` agrees at `O(h²)` — trap against
+    gear 7.0e-2, 1.7e-2, 4.1e-3 at 200/400/800, ratios 4.2 and 4.1.
+    """
+    m = None
+    vs, cs = {}, {}
+    for method in ('gear', 'trap'):
+        for npts in (200, 400, 800):
+            cir, pss = _vdp_ppv_method(method, npts)
+            m = cir.n - 1
+            v, _info = pss.ppv()
+            v = np.asarray(v, dtype=float)
+            vs[(method, npts)] = float(np.linalg.norm(v[:m]))
+            cs[(method, npts)] = float(PAC(cir).diffusion_constant(pss))
+
+    ## The differential block CONVERGES to gear's; the FULL vector would
+    ## not, and that is a width artifact rather than a defect.
+    ##
+    ## ⚠ ASSERTED AS A RATE, NOT A BOUND. The first version demanded
+    ## 5e-3 at every grid and failed at 400 points with 7.65e-3 — where
+    ## widening the bound would have hidden the only interesting fact,
+    ## which is that the gap is second order: 7.65e-3 then 1.61e-3, ratio
+    ## 4.8. A constant offset between the two maps would pass a loose
+    ## bound and fail this.
+    rel = [abs(vs[('trap', n)] - vs[('gear', n)]) / vs[('gear', n)]
+           for n in (200, 400, 800)]
+    assert rel[2] < 3e-3, \
+        'trap and gear disagree on |v[:m]| by %.3e at the finest grid' \
+        % rel[2]
+    assert 2.5 < rel[1] / rel[2] < 8.0, \
+        'the |v[:m]| gap is not closing at O(h^2) (%s); a gap that stops ' \
+        'shrinking is two different objects, not two discretisations of ' \
+        'one' % (['%.3e' % r for r in rel],)
+
+    ## and `c` -- the physical quantity -- converges to gear at O(h^2)
+    ref = cs[('gear', 800)]
+    e = [abs(cs[('trap', n)] - ref) / abs(ref) for n in (200, 400, 800)]
+    assert e[2] < 1e-2, \
+        'trap\'s diffusion constant is %.3e off gear at 800 points' % e[2]
+    for a, b in zip(e, e[1:]):
+        assert 2.5 < a / b < 6.0, \
+            'c is not converging at O(h^2) across methods (%s, ratios ' \
+            '%.2f); if the rate has changed the two maps are no longer ' \
+            'discretising the same object' % (e, a / b)
+
+
+def test_the_pac_adjoint_surfaces_run_under_every_integrator():
+    """⚠ The other two refusals B8 left standing: `adjoint_transfer_row`
+    and `adjoint_sideband_row` both keyed on `fp.kind` and both said the
+    transposed replay was "implemented for the solved-history map only" —
+    a sentence that stopped being true when the plain recursion shipped.
+
+    Both consume the reverse pass through `collect=True` and `inject=`,
+    so the plain replay had to grow those too; `_forced_replay_transposed`
+    reads `ts[j]`, which is the transposed solve at step `j` under BOTH
+    recursions.
+
+    Measured against gear on a driven RLC (relative, at 200 then 400
+    points):
+
+        trap   adjoint 7.5e-05 -> 3.8e-05    sideband 2.1e-06 -> 1.2e-06
+        euler  adjoint 1.7e-04 -> 8.6e-05    sideband 1.7e-04 -> 8.6e-05
+
+    ⚠ `trap` converging at `O(h)` rather than `O(h²)` is NOT a defect here
+    and not a surprise: the manufacturing step costs PAC an order already,
+    which `test_pac_order_is_lost_to_the_manufacturing_step` pins
+    independently with `x0_unknown` as the switch.
+    """
+    import warnings
+    from pycircuit.circuit.elements import VSin
+    circuit.default_toolkit = circuit.numeric
+    Lv, Cv, Rs = 1e-3, 1e-9, 10.0
+    per = 2.0 * np.pi * np.sqrt(Lv * Cv)
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['r'] = R('a', 'b', r=Rs)
+        c['l'] = L('b', gnd, L=Lv)
+        c['c1'] = C('b', gnd, c=Cv)
+        c['n'] = IS('b', gnd, i=0.0, noisePSD=1e-18)
+        return c
+
+    freq = 0.31 / per
+    got = {}
+    for method in ('gear', 'trap', 'euler'):
+        for npts in (200, 400):
+            cir = build()
+            pss = PSS(cir, method=method, reltol=1e-11)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=per, timestep=per / npts,
+                          x0=np.zeros(cir.n - 1), maxiterations=100,
+                          x0_unknown=False)
+            assert pss.converged
+            ob = [str(nd) for nd in cir.nodes].index('b')
+            pac = PAC(cir)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                ar = pac.adjoint_transfer_row(pss, freq, ob)
+                sr = pac.adjoint_sideband_row(pss, freq, ob, sidebands=0)
+            got[(method, npts)] = (float(np.linalg.norm(ar)),
+                                   float(np.linalg.norm(sr)))
+
+    for npts in (200, 400):
+        g = got[('gear', npts)]
+        for method in ('trap', 'euler'):
+            r = got[(method, npts)]
+            for k, name in ((0, 'adjoint'), (1, 'sideband')):
+                rel = abs(r[k] - g[k]) / abs(g[k])
+                assert rel < 1e-3, \
+                    '%s/%d: the %s row disagrees with gear by %.3e' \
+                    % (method, npts, name, rel)
+
+    ## and it must IMPROVE with refinement, or the agreement above is
+    ## accidental rather than convergent
+    for method in ('trap', 'euler'):
+        a = abs(got[(method, 200)][0] - got[('gear', 200)][0])
+        b = abs(got[(method, 400)][0] - got[('gear', 400)][0])
+        assert b < a, \
+            '%s: the adjoint row does not converge toward gear ' \
+            '(%.3e then %.3e)' % (method, a, b)
