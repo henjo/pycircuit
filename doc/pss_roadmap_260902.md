@@ -2948,6 +2948,56 @@ mechanism instead of a worry, and it means the two halves of B7 are **not one it
 
 **Recommendation: build B7a, and re-file B7b against A6 rather than here.**
 
+---
+
+⚠⚠⚠ **CORRECTED SAME DAY BY ANDREAS, AND THE CORRECTION GOES TO THE CENTRAL POINT.** From
+practice with commercial SPICE PSS engines: **they do not use a fixed grid at all.** The stepping
+is controlled entirely by the inner transient, and **the last step is placed on the period
+boundary**. Checked against the code, and it holds:
+
+  * **The shooting Newton never needed a reproducible grid.** `_traverse` and
+    `_traverse_solved_history` return the endpoint AND the sensitivity `P = dx/d(x_0, x_{-1})`
+    **from one walk**. So `φ` and `M` already come from the *same* traversal and are consistent
+    with each other on whatever steps that traversal took — which is exactly the commercial
+    arrangement. The reproducibility requirement recorded above comes only from
+    `factored_period()` re-traversing SEPARATELY for the stored factors, and a deterministic step
+    controller is "a function of the state only" — the escape clause the original entry already
+    allowed and I did not follow up.
+  * **What the frozen grid actually buys is the PERIOD COLUMN, and only under one construction.**
+    Fractions exist so that `h_i = fr_i · T` and hence `dh_i/dT = h_i/T`, which the autonomous
+    period column differentiates through (see the comment at `_traverse`: "Every step scales
+    together (`h = T/(N-1)`), so `dh/dT = …`"). That is the whole reason the grid must be a
+    fraction list rather than a step list.
+
+⚠⚠ **AND ANDREAS'S "LAST STEP ON THE PERIODIC BORDER" IS PRECISELY THE CONSTRUCTION THAT REMOVES
+IT.** Let the transient step freely and truncate the final step to land on `T`. Then
+`dh_i/dT = 0` for every interior step and `dh_N/dT = 1`, so the period column comes from the LAST
+STEP ALONE and tends to `ẋ(T) = f(x(T))` — Aprille & Trick's exact continuous statement, with no
+assumption about how steps scale. ⚠ It is also arguably the *better* derivative: spreading `δT`
+proportionally over every step perturbs the trajectory in a way the physical period change does
+not.
+
+**So B7 should be rebuilt on the commercial formulation rather than on frozen fractions**, and the
+"direct tension between freezing and event localisation" recorded above dissolves — because
+nothing needs freezing. What survives from the gate above is still true and still useful:
+
+  * the derived-grid experiment's LTE numbers (a **frozen** grid derived from a past traversal
+    does not help, and is worse than uniform at equal count) — that measures the frozen approach,
+    which is the one being replaced;
+  * the LTE peak sitting at the reset on every grid, so the number reported there is the
+    discontinuity;
+  * `next_event` being a prediction from the last accepted point, meaningful only DURING a
+    traversal — which under the commercial scheme is exactly where it now WOULD be consulted,
+    so this stops being an obstruction and becomes the mechanism.
+
+**REVISED PLAN — B7c, superseding B7a and B7b:** drive the period with the inner transient's own
+step control; force the closing step onto `T`; take the period column from that step alone. Gates,
+in order: (1) the autonomous period column against the proportional-scaling one on a smooth
+fixture, where both are valid and must agree; (2) `M` from `factored_period()` against `M` from
+the solving traversal, which the deterministic controller should make reproducible; (3) the
+wrapping fixture's LTE, which is the case the frozen grid could not fix; (4) van der Pol at
+`μ = 100`, which must not regress.
+
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
 
 ⚠ **The shooting SOLVE already supports every integrator that exists.** `integrator.py` defines
