@@ -4714,12 +4714,26 @@ which validates the transcription of eq (22), the **two-sided `CY/2`** conventio
 the `kT/C`-calibrated Monte Carlo injection `Var(i) = CY/(2h)` already in the record), and the
 renormalisation, together.
 
+✅ **SHIPPED as `PAC.orbital_correlation(pss, H)` → `(R, C_lhj)`**, gated by
+`test_orbital_correlation_is_gated_three_ways`, which builds the definition-route integral inside
+the test as the independent check. **Stationary white sources only — and that is a scoping
+DECISION, not a gap: coloured noise is deferred by Andreas (2026-09-04, "we will add coloured
+noise later").** With `CY` constant the `Λ̃` products collapse to `Ṽᵀ CY Ṽ*` and `B` is never
+needed; a coloured source breaks that collapse and needs `B(t)` per source, which is the shape of
+that later work.
+
 ❌ **OPEN, NOT TUNED: a 3 % SHAPE residual** between the two modal routes (which agree with each
 other to 3.5e-4) and the Lyapunov reference — the scalar-fit residual is 2.98e-2 before and after
 the fix, so it is not a factor. Attributed, **not proven**, to the reference being the **pair**
 covariance on gear sliced to its state block. The clean comparison needs the **plain-path**
 Lyapunov solve — `_lyapunov_pieces` is still gear-only, the one adjoint surface B8's wiring did
-not reach. That is the next precondition, not a tolerance to widen.
+not reach. That is the next precondition, not a tolerance to widen. ⚠ **One named thing to RULE OUT for
+that residual, offered by the docs session as a search term and explicitly NOT as a hypothesis:**
+Traversa & Bonani 2013's *"Floquet eigenvalue split set"* — replicas of the true exponents shifted
+in imaginary part by integer multiples of the fundamental. If a pair formulation sliced to its
+state block admitted a replica alongside the physical mode, it would produce a shape error at the
+correct magnitude, which is the signature seen. Nobody has checked whether gear's pair map does
+this; it is recorded so the thing has a name, not because anyone believes it yet.
 
 ⚠ **AN EARLIER VERSION OF THIS ENTRY CONCLUDED "the link holds in the clamping regime and is void
 in the soft-compressing one".** That is correct about the tank-`Q` route and **generalised too
@@ -5490,6 +5504,29 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    ✅ The rule: a claim that arrives from another session is a POINTER to a source, not a
    finding; it is recorded with "cited, not verified here" until someone reads the page, and it
    is not written into code or a docstring caveat before that.
+
+0t. ⚠⚠ **A PERIODICITY GATE IS A NECESSARY CONDITION ONLY — it is blind to ANY error that
+   returns to its starting value.** Two failures today, from different mechanisms, passed
+   periodicity while being wrong everywhere in between. §0k: trapezoidal returned **exactly 2×**
+   on an L-I cutset with `converged=True` and a periodicity residual of **1e-13**, because the
+   ripple `v_n = V[cos(ωt_n) − (−1)ⁿ]` closes on itself over an even step count. A9 step 3:
+   `floquet_modes` carried a state-block scale of `q(0)ᵀp(0) = 1.324`, **constant around the
+   cycle**, invariant under the flow, and `p(T) = p(0)` held to 3e-15 — periodicity is
+   scale-free. ✅ `p(T) = p(0)` constrains the endpoints of a trajectory with many degrees of
+   freedom; it can never be sufficient. **Every periodicity assertion needs a companion that
+   fixes the scale or the interior** — `qᵀp = 1` around the cycle in one case, a closed-form
+   amplitude in the other. Both sessions reached for the same repair independently after being
+   burned, which is some evidence it is the right one. (Named by the docs session, from the
+   "scale-free" observation.)
+
+0u. ✅ **BUILD THE THIRD ROUTE SO THAT AGREEMENT BETWEEN THE FIRST TWO CANNOT BE
+   SELF-CONFIRMING.** The shared-instrument trap (§D 0r, the B16 reference) used constructively:
+   in A9 step 3 the modal sum and a definition-route integral agreed to 3.5e-4 while BOTH
+   disagreed with the Lyapunov reference by 1.75×. Two formulas agreeing is not evidence when
+   they share an input — but two formulas agreeing while a third disagrees ISOLATES the fault to
+   the shared input rather than to either formula, which is what found the scale defect. The
+   third route was built for that purpose, not for extra confidence. **When two routes agree,
+   ask what they share; when a third disagrees, the shared thing is the suspect.**
 
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
