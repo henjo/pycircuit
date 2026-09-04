@@ -992,42 +992,87 @@ to contain it.
 
 ---
 
-### 0k. ⚠⚠ **TRAPEZOIDAL RETURNS EXACTLY 2× ON AN L-I CUTSET'S ALGEBRAIC ROW** — 2026-09-04
+### 0k. ⚠⚠ **AN INCONSISTENT OPENING STEP MAKES TRAPEZOIDAL RETURN EXACTLY 2×** — 2026-09-04
 
-Found by the docs session, reproduced independently here. An `ISin` forcing an inductor to ground
-is an L-I cutset with a **closed form**: the source fixes `i = I sin(ωt)`, so `v1 = L di/dt` has
-amplitude `ω L I` and no integrator is needed for the answer. Against it:
+⚠⚠⚠ **CORRECTED WITHIN THE HOUR, AND THE CORRECTION IS THE IMPORTANT PART. An earlier version of
+this entry — and the commit that shipped it — said "`converged` reports `False`, so this is not
+silent". THAT WAS MEASURED ON ODD-STEP GRIDS ONLY AND IS WRONG.** `timestep = per/N` gives `N`
+points and `N−1` STEPS, and on an **even** number of steps the 2× answer is **converged AND
+periodic to 1e-13**:
 
-    method   N = 100      400          1600         converged
-    trap     2.000672     2.000041     2.000003     False
-    euler    0.999832     0.999990     0.999999     False
-    gear     1.001341     1.000083     1.000005     True
+    method  pts  steps  parity  converged   |v1|/exact   |v(T)−v(0)|/V
+    trap    100    99   odd      False        2.000672      2.0e+00
+    trap    101   100   even     TRUE         2.000658      2.7e-13
+    trap    400   399   odd      False        2.000041      2.0e+00
+    trap    401   400   even     TRUE         2.000041      1.3e-12
 
-⚠⚠ **TRAPEZOIDAL CONVERGES TO EXACTLY TWO, NOT SLOWLY TO ONE.** A fixed factor is invisible to a
-step-size study — the sequence looks beautifully converged — which is why it took a CLOSED FORM to
-see. Only the **algebraic** row splits: the inductor current is right to `4.8e-07` for all three
-methods, so this is a formulation defect and not an accuracy one.
+**The flag does not merely fail to discriminate — on half the grids it AFFIRMS the wrong answer**,
+and a periodicity residual and a refinement study pass alongside it. Whether a caller is warned
+depends on the **parity of the point count**, which nobody would think to vary.
 
-⚠ **`PSS`'s DEFAULT METHOD IS `trap`.** The mitigation is that `converged` reports `False` — so it
-is not silent. But it reports `False` for **euler too**, which is accurate to `1e-6`, so **the flag
-does not discriminate**, and a reader who discounts it gets a stable, confident 2×.
+⚠⚠ **THE MECHANISM IS AN INCONSISTENT INITIAL VALUE, NOT A BAD MODE** — diagnosed by the docs
+session, verified here. The samples are exactly
 
-⚠⚠ **THIS IS WHERE B11 PAYS OFF CONCRETELY.** `topological_index` identifies the circuit as an L-I
-cutset **from the netlist alone, before any solve**, and names the offending elements — so the risk
-can be stated in advance rather than discovered. That is the "better refusal message" B11 was built
-for, realised on a real case.
+    v_n = V ( cos(ω t_n) − (−1)^n )
 
-**PINNED** by `test_trapezoidal_returns_exactly_twice_the_algebraic_row_on_an_L_I_cutset`, which
-asserts against the closed form, checks that the differential row is right for all three methods,
-and checks that the factor is ALREADY 2 at 100 points — a shrinking factor would make it an
-accuracy problem instead.
+so the **smooth part is right** (second order) and a unit ripple rides on it, doubling
+peak-to-peak. The index-2 constraint FIXES `v(0) = ωLI`, but the plain path **manufactures** `x(0)`
+from the entering state with one order-dropped step and starts the algebraic variable at **zero** —
+an error of exactly `−V`. What each method does with that seed is its stability function at the
+algebraic limit `|sh| → ∞`:
 
-⚠ **NOT FIXED, AND NOT DIAGNOSED.** Why trapezoidal doubles an algebraic row is not established
-here. It belongs with the `(-1)^n` family (C1: trapezoidal maps `null(C)` by exactly −1, four
-designs dead on it), and the factor 2 on a row with no `C` is suggestive, but that is a hypothesis
-and is recorded as one. **Whether to warn on `trap` + L-I cutset is a shipped-behaviour change and
-has not been made.**
+    trap    (2+sh)/(2−sh) → −1    marginally stable: carried FOREVER at constant amplitude
+    euler   1/(1−sh)      →  0    L-stable: killed in one step
+    gear-2                →  1/3  killed in a few
 
+That predicts the whole table, **including why the ripple is exactly `V`** rather than an arbitrary
+null-space coefficient: it is pinned by `v[0] = 0`. ⚠ And it makes **Euler's `False` HONEST** — it
+damps the seed within the period, so its endpoints genuinely differ by that one seed and
+`|v(T)−v(0)|/V = 1.0` exactly. Not a false alarm.
+
+✅✅ **AND `x0_unknown=True` FIXES IT AT EVERY PARITY — the remedy is a SHIPPED OPTION.** Measured:
+
+    trap + x0_unknown   1.001343  1.001316  1.000083  1.000082   converged, residual 0.0, v(0)/V ≈ 1
+    euler + x0_unknown  0.999832  0.999342  0.999990  0.999959   converged, residual 0.0
+
+Because it makes `x(0)` a genuine unknown instead of manufacturing it — **which is exactly why
+Gear-2 was never affected**: its solved-history path already solves for `x(0)`, and it starts
+consistent (`v(0)/V = 1.00134`).
+
+⚠ **SO THE CLAIM NARROWS PROPERLY.** Not "trapezoidal is unusable on index-2" but **"the
+manufactured opening step is inconsistent on index-2, and `x0_unknown=True` removes it"**. That is
+a second and stronger reason for **B1** (`x0_unknown` as the default), which until now rested only
+on non-uniform grids.
+
+⚠ **NOT MADE: a shipped-behaviour change.** Defaulting `x0_unknown` on a detected index-2 netlist
+is the obvious move and `topological_index` already localises exactly where — but it is a default
+change and has not been taken.
+
+✅✅ **AND THE CHAIN IS NOW CLOSED AT SOURCE LEVEL** — the one link neither session had read. In
+`_traverse`:
+
+    if open_at_x0:                                    # x0_unknown=True
+        x = copy(x_in);  x0 = copy(x_in)              # the caller's unknown IS x_0
+    else:
+        x = self.solve_timestep(x_in, times[0], hs[0])   # ← MANUFACTURED
+        x0 = copy(x)
+
+On the default path `x(0)` is one order-dropped Euler step off the entering state. **On this
+cutset that step cannot produce the right answer, and the arithmetic says exactly why.** The branch
+row gives `v1 = L (i_L(0) − i_L(−h)) / h`; the seed has `i_L(−h) = 0`, and the source contributes
+`i_s(0) = I sin(0) = 0`, **so both terms vanish and `v1(0) = 0`** while the exact value is
+`ωLI = V`. **The seed error is exactly `−V`, which is why the ripple amplitude is exactly `V`
+rather than an arbitrary null-space coefficient.** Measurement, stability argument and source now
+agree, and nothing in the diagnosis rests on a relayed claim.
+
+⚠ **AND IT SHOWS WHY THE FIXTURE IS NOT SPECIAL.** Any index-2 netlist whose algebraic variable is
+fixed by a *derivative* of the input has this: the manufactured step differences a seed that has no
+history, so it returns zero where the constraint demands a nonzero value. `topological_index`
+detects exactly that class.
+
+**PINNED** by `test_the_manufactured_opening_step_is_INCONSISTENT_on_an_L_I_cutset`, which asserts
+the EVEN-step case is converged-and-wrong (the dangerous one), that the odd-step case fails loudly,
+that `x0_unknown` fixes both parities with a consistent `v(0)`, and that gear was never affected.
 
 ---
 

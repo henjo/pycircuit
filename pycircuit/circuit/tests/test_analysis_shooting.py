@@ -9556,34 +9556,47 @@ def test_v_loops_and_i_cutsets_are_reported_as_ILL_POSED_not_as_index_2():
         % (info3['v_loop'], info3['i_cutset'])
 
 
-def test_trapezoidal_returns_exactly_twice_the_algebraic_row_on_an_L_I_cutset():
-    """⚠⚠ THE DEFAULT METHOD IS WRONG BY A FACTOR OF TWO HERE, AND NO
-    STEP-SIZE STUDY REVEALS IT.
+def test_the_manufactured_opening_step_is_INCONSISTENT_on_an_L_I_cutset():
+    """⚠⚠ THE DEFAULT METHOD RETURNS EXACTLY 2x, AND ON HALF THE GRIDS IT
+    REPORTS SUCCESS WHILE DOING SO.
 
     An `ISin` forcing an inductor to ground is an L-I cutset with a CLOSED
-    FORM: the source fixes `i = I sin(wt)`, so `v1 = L di/dt` has amplitude
-    `w L I` and no integrator is needed for the answer.
+    FORM: the source fixes `i = I sin(wt)`, so `|v1| = w L I` needs no
+    integrator. Measured (`timestep = per/N` gives N points and N-1 STEPS):
 
-    Measured against it:
+        method  pts  steps  parity  converged   |v1|/exact   |v(T)-v(0)|/V
+        trap    100    99   odd      False        2.000672      2.0e+00
+        trap    101   100   even     TRUE         2.000658      2.7e-13
+        trap    400   399   odd      False        2.000041      2.0e+00
+        trap    401   400   even     TRUE         2.000041      1.3e-12
 
-        trap    N=100/400/1600   2.000672  2.000041  2.000003   converged=False
-        euler                    0.999832  0.999990  0.999999   converged=False
-        gear                     1.001341  1.000083  1.000005   converged=True
+    ⚠⚠⚠ ON AN EVEN NUMBER OF STEPS THE 2x IS CONVERGED **AND** PERIODIC TO
+    1e-13. The flag does not merely fail to discriminate -- it AFFIRMS the
+    wrong answer. Whether a caller is warned depends on the parity of the
+    point count, which nobody would think to vary. An earlier version of this
+    record said "converged reports False, so this is not silent"; that was
+    measured on odd-step grids only and is WRONG.
 
-    ⚠ TRAPEZOIDAL CONVERGES TO EXACTLY TWO, not slowly to one. A fixed factor
-    is invisible to refinement -- the sequence looks beautifully converged --
-    which is why this is pinned against a CLOSED FORM rather than against a
-    finer grid. Only the ALGEBRAIC row splits: the inductor current is right
-    to 4.8e-07 for all three methods.
+    ⚠ THE MECHANISM IS AN INCONSISTENT INITIAL VALUE, NOT A BAD MODE. The
+    samples are exactly `v_n = V (cos(w t_n) - (-1)^n)`: the smooth part is
+    RIGHT and a unit ripple rides on it, so peak-to-peak doubles. The index-2
+    constraint FIXES `v(0) = wLI`, but the plain path MANUFACTURES `x(0)`
+    from the entering state with one order-dropped step and starts the
+    algebraic variable at ZERO -- an error of exactly `-V`. What each method
+    then does with that seed is its stability function at the algebraic limit
+    `|sh| -> inf`: trap `(2+sh)/(2-sh) -> -1` carries it forever at constant
+    amplitude, Euler `1/(1-sh) -> 0` kills it in one step, Gear-2 `-> 1/3` in
+    a few. That predicts the whole table, and predicts the ripple amplitude
+    is EXACTLY `V` rather than an arbitrary null-space coefficient.
 
-    ⚠ `converged` DOES report False for trap, so this is not silent. But it
-    reports False for EULER TOO, which is accurate to 1e-6 -- so the flag does
-    not discriminate, and a reader who discounts it gets a stable, confident
-    2x. `PSS`'s default method is `trap`.
+    ⚠ SO EULER'S `False` IS HONEST, not a false alarm: it damps the seed
+    within the period, so its endpoints genuinely differ by that one seed and
+    `|v(T)-v(0)|/V = 1.0` exactly.
 
-    ⚠⚠ AND `topological_index` IDENTIFIES THIS CIRCUIT FROM THE NETLIST
-    ALONE, which is what makes the diagnostic worth having: the risk can be
-    named before the solve, with the offending elements.
+    ✅ AND `x0_unknown=True` FIXES IT AT EVERY PARITY, because it makes
+    `x(0)` a genuine unknown instead of manufacturing it -- which is why
+    Gear-2, whose solved-history path already solves for `x(0)`, was never
+    affected. This is a second and stronger reason for B1.
     """
     import warnings
     from pycircuit.circuit.shooting import topological_index
@@ -9600,49 +9613,60 @@ def test_trapezoidal_returns_exactly_twice_the_algebraic_row_on_an_L_I_cutset():
         c['l'] = L('1', gnd, L=ll)
         return c
 
-    ## the netlist alone says this is an L-I cutset, before any solve
+    ## the netlist alone says L-I cutset, before any solve -- which is what
+    ## makes the risk stateable in advance
     idx, info = topological_index(build())
-    assert idx == 2 and set(info['cutset']) == {'is', 'l'}, \
-        'the cutset must be identified from topology: %r / %r' % (idx, info)
-    assert not info['ill_posed'], \
-        'an L-I cutset is index 2, not structurally singular'
+    assert idx == 2 and set(info['cutset']) == {'is', 'l'}
+    assert not info['ill_posed']
 
-    def amplitude(method, npts):
+    def run(method, npts, x0_unknown=False):
         cir = build()
         pss = PSS(cir, method=method, reltol=1e-10)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             pss.solve(period=per, timestep=per / npts,
-                      x0=np.zeros(cir.n - 1), maxiterations=60)
+                      x0=np.zeros(cir.n - 1), maxiterations=60,
+                      x0_unknown=x0_unknown)
         X = np.asarray(pss.waveform[1], dtype=float)
-        names = [str(nd) for nd in cir.nodes]
-        v1 = float(np.max(np.abs(X[names.index('1')])))
-        il = float(np.max(np.abs(X[-1])))
-        return v1 / exact, abs(il / ia - 1.0), pss.converged
+        row = X[[str(nd) for nd in cir.nodes].index('1')]
+        return (float(np.max(np.abs(row))) / exact, pss.converged,
+                abs(float(row[-1]) - float(row[0])) / exact,
+                float(row[0]) / exact)
 
-    ## ⚠ 400 points, not 1600: the ratios are already 2.000041 / 0.999990 /
-    ## 1.000083 there, and 1600 costs 74 s against 15 s for nothing this test
-    ## asserts.  The FIXED FACTOR is the claim, not the last digit of it.
-    r_trap, e_trap, _c1 = amplitude('trap', 400)
-    r_eul, e_eul, _c2 = amplitude('euler', 400)
-    r_gear, e_gear, _c3 = amplitude('gear', 400)
+    ## ⚠ THE DANGEROUS CASE: an EVEN number of steps (401 points).
+    r, conv, pres, v0 = run('trap', 401)
+    assert abs(r - 2.0) < 1e-3, 'expected exactly 2x; got %.6f' % r
+    assert conv, \
+        'the point of this test is that the 2x is REPORTED AS CONVERGED on ' \
+        'an even number of steps'
+    assert pres < 1e-9, \
+        'and periodic to machine precision, so a residual check passes too; ' \
+        'got %.2e' % pres
+    assert abs(v0) < 1e-3, \
+        'the algebraic variable starts at ZERO, which is inconsistent -- the ' \
+        'constraint fixes it at wLI; got v(0)/exact = %.5f' % v0
 
-    assert abs(r_trap - 2.0) < 1e-3, \
-        'trapezoidal is expected to give EXACTLY twice the closed form on ' \
-        'this cutset; got %.6f' % r_trap
-    assert abs(r_eul - 1.0) < 1e-3, 'euler should be right; got %.6f' % r_eul
-    assert abs(r_gear - 1.0) < 1e-3, 'gear should be right; got %.6f' % r_gear
+    ## ⚠ and the odd-step grid DOES report failure, which is why the defect
+    ## hid: whether you are warned depends on the parity of the point count
+    _r2, conv2, pres2, _v2 = run('trap', 400)
+    assert not conv2 and pres2 > 0.5, \
+        'the odd-step grid should fail loudly (%r, %.2e)' % (conv2, pres2)
 
-    ## ⚠ and the DIFFERENTIAL row is right for all three -- only the
-    ## algebraic one splits, which is what makes this a formulation defect
-    ## rather than an accuracy one
-    for nm, err in (('trap', e_trap), ('euler', e_eul), ('gear', e_gear)):
-        assert err < 1e-4, \
-            '%s: the inductor CURRENT must be right (it is a differential ' \
-            'row); relative error %.2e' % (nm, err)
+    ## ✅ x0_unknown=True fixes it at BOTH parities
+    for npts in (400, 401):
+        rf, convf, presf, v0f = run('trap', npts, x0_unknown=True)
+        assert abs(rf - 1.0) < 1e-2, \
+            'x0_unknown must give the closed form at %d points; got %.6f' \
+            % (npts, rf)
+        assert convf and presf < 1e-9, \
+            'and must converge periodically (%r, %.2e)' % (convf, presf)
+        assert abs(abs(v0f) - 1.0) < 1e-2, \
+            'with a CONSISTENT v(0) = wLI; got %.5f' % v0f
 
-    ## the factor must not shrink with refinement -- that is the whole point
-    r_coarse, _e, _c = amplitude('trap', 100)
-    assert abs(r_coarse - 2.0) < 1e-2, \
-        'the 2x must already be there at 100 points; a shrinking factor ' \
-        'would make this an accuracy problem instead. Got %.6f' % r_coarse
+    ## gear was never affected -- its solved-history path solves for x(0)
+    rg, convg, presg, v0g = run('gear', 401)
+    assert abs(rg - 1.0) < 1e-2 and convg and presg < 1e-9
+    assert abs(abs(v0g) - 1.0) < 1e-2, \
+        'gear starts consistent already; got %.5f' % v0g
+
+
