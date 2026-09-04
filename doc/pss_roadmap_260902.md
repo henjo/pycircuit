@@ -4021,6 +4021,13 @@ the **one forced replay per frequency** outside it, which recycling cannot touch
 this sweep must target the replays, not the linear solve. Filing "add Krylov recycling" as an
 optimisation would have been work with a 1.0× ceiling.
 
+⚠ **CITATION ORDER, corrected 2026-09-04 from the docs session's audit:** the recycling was relayed
+this afternoon as an unexplored route sourced to Gourary's multi-RHS paper. It is older and
+closer than that — **Telichevesky, Kundert & White, DAC 1996** already carries it, and this
+record's own reading log has the mechanism: *"β = α(f_new)/α(f_old), γ = 1 − β converts a matvec
+between frequencies — a nearly exact fit for a shooting sweep."* DAC'96 is the primary; Gourary
+DATE 2003 is the paper that *names* the structural property (`A′ = I`) the recycling exploits.
+
 ⚠ **AND IT IS A LOSS ON SHORT SWEEPS:** at `K = 4` recycling costs *more* wall clock than solving
 each (0.149 against 0.106) despite fewer matvecs — the dense least-squares over the shared basis
 dominates. The win needs roughly `K ≥ 8`. Not an argument against the default, but the reason the
@@ -5539,6 +5546,11 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    page put the condition somewhere neither the relay nor the reconstruction had considered.
    ✅ The rule: a claim that arrives from another session is a POINTER to a source, not a
    finding; it is recorded with "cited, not verified here" until someone reads the page, and it
+   is not written into code or a docstring caveat before that. ⚠ **And the read-vs-cited audit
+   must report its NULLS**: the docs session's pass found three load-bearing relay-only citations
+   AND one (Ngoya 1995) that came back verbatim faithful to a row written without reading him. An
+   audit that reports only its hits is not an audit; the clean result is what licenses trusting
+   the rows it did not flag.
    is not written into code or a docstring caveat before that.
 
 0t. ⚠⚠ **A PERIODICITY GATE IS A NECESSARY CONDITION ONLY — it is blind to ANY error that
