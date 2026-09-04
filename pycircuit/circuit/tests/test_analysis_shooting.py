@@ -10833,3 +10833,75 @@ def test_floquet_modes_are_genuinely_periodic():
     many = pss.floquet_modes(pss, nmodes=10)
     assert all(abs(md['lam']) > 1e-12 for md in many), \
         'a null (annihilated algebraic) multiplier was returned as a mode'
+
+
+def test_the_orbital_covariance_resolves_onto_the_floquet_modes():
+    """A9 step 2: `K_orb` resolved onto the Floquet directions.
+
+    The two routes we already own meet here — `oscillator_covariance`
+    gets `K_orb` from a bordered Kronecker solve, `floquet_modes` gets the
+    eigen-directions from the monodromy — and Traversa & Bonani's eq (22)
+    sums over exactly these mode pairs.
+
+    ⚠⚠ **THE RECONSTRUCTION CANNOT BE EXACT, AND THAT IS STRUCTURAL, NOT A
+    TOLERANCE.** A DAE monodromy has annihilated (null) directions, which
+    `floquet_modes` drops; on this fixture that leaves **2 modes against a
+    4-wide covariance**, so `U cw U†` is rank ≤ 2 and `K_orb` is not.
+    Measured residual 1.9e-3 relative — the part of `K_orb` living in the
+    slaved algebraic directions. ⚠ Asserting machine precision here would
+    be asserting that a rank-2 object equals a rank-4 one; the honest
+    gates are the ones below.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+    assert pss.converged
+
+    pac = PAC(cir)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cw, modes, K = pac.orbital_mode_weights(pss)
+    U = np.column_stack([m['u0'] for m in modes])
+    V = np.column_stack([m['v0'] for m in modes])
+
+    ## 1. the basis is biorthonormal -- everything else rests on it
+    bio = float(np.max(np.abs(V.conj().T @ U - np.eye(len(modes)))))
+    assert bio < 1e-10, \
+        'the Floquet basis is not biorthonormal (max|V^H U - I| = %.3e), ' \
+        'so the projection weights are not what they claim to be' % bio
+
+    ## 2. ⚠ THE PHASE MODE CARRIES ESSENTIALLY NO ORBITAL WEIGHT. This is
+    ## what `oscillator_covariance`'s split MEANS -- the along-orbit
+    ## growth `n d uu^T` has been removed, so what remains should not sit
+    ## on the phase direction. Measured 1.56e-19 against 1.26e-05.
+    assert abs(cw[0, 0]) < 1e-8 * abs(cw[1, 1]), \
+        'the phase mode carries orbital weight %.3e against the amplitude ' \
+        'mode\'s %.3e. `oscillator_covariance` is supposed to have taken ' \
+        'the along-orbit growth out, so a large value here means the ' \
+        'split leaked' % (abs(cw[0, 0]), abs(cw[1, 1]))
+
+    ## 3. and the AMPLITUDE mode accounts for the covariance
+    rec = U @ cw @ U.conj().T
+    rel = float(np.linalg.norm(rec - K)) / float(np.linalg.norm(K))
+    assert rel < 1e-2, \
+        'the retained modes capture only %.3f of K_orb; if this has grown, ' \
+        'the covariance has significant support outside the non-null ' \
+        'Floquet directions and a modal orbital spectrum would be ' \
+        'incomplete' % (1.0 - rel)
+    assert abs(abs(cw[1, 1]) / np.linalg.norm(K) - 1.0) < 5e-2, \
+        'the amplitude mode no longer accounts for the orbital covariance ' \
+        '(weight %.3e against ||K_orb|| %.3e)' \
+        % (abs(cw[1, 1]), np.linalg.norm(K))

@@ -7318,6 +7318,49 @@ class PAC(Analysis):
                                        dtype=float)
         return K_orb, d, info
 
+    def orbital_mode_weights(self, pss, nmodes=None):
+        """`K_orb` resolved onto the Floquet modes — A9's second step.
+
+        Returns `(cw, modes, K_orb)` with `cw[k, k'] = v_k† K_orb v_k'`,
+        the weight of each pair of Floquet directions in the bounded
+        (orbital) part of the state covariance.
+
+        ⚠ **THIS IS THE BRIDGE BETWEEN THE TWO ROUTES WE ALREADY OWN.**
+        `oscillator_covariance` gets `K_orb` from a bordered Kronecker
+        solve; `floquet_modes` gets the eigen-directions from the
+        monodromy. Traversa & Bonani's eq (22) sums over exactly these
+        mode pairs, so resolving the covariance we already trust onto the
+        modes is the step that connects them — and, unlike the spectrum
+        itself, it has an **exact identity** to check against:
+
+            Σ_{k,k'} cw[k,k'] · u_k u_{k'}†  =  K_orb
+
+        because `(u, v)` are biorthonormal. A wrong pairing, a wrong
+        normalisation, or a dropped mode all break that reconstruction
+        while leaving every individual eigenvector residual clean.
+
+        ⚠ **THE PHASE MODE IS INCLUDED AND ITS WEIGHT SHOULD BE SMALL, NOT
+        ZERO.** `K_orb` is the part of the covariance that stays bounded,
+        with the along-orbit growth `n·d·uuᵀ` already removed — so the
+        `k = k' = 1` entry is what the split left behind rather than a
+        quantity that must vanish. Reading it as an error is a
+        misinterpretation of `oscillator_covariance`'s own contract.
+
+        ⚠ **NOT THE SPECTRUM.** `S_yy` additionally needs the Fourier
+        coefficients of the periodic parts (`floquet_modes` returns them
+        as `p`/`q`) and the resolvent `1/(i(j−j')ω₀ − μ_l' − μ_l*)` of
+        eq (22), and the OUTPUT spectrum then needs a layer that can carry
+        contributions asymmetric about the carrier. Those are not built.
+        """
+        K_orb, _d, _info = self.oscillator_covariance(pss)
+        K = np.asarray(K_orb, dtype=float)
+        n = K.shape[0]
+        modes = pss.floquet_modes(pss, nmodes=(n if nmodes is None
+                                               else int(nmodes)))
+        V = np.column_stack([m['v0'] for m in modes])
+        cw = V.conj().T @ K @ V
+        return cw, modes, K
+
     def diffusion_constant(self, pss):
         """`c` — the phase diffusion constant, in seconds.
 
