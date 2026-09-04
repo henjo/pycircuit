@@ -3758,6 +3758,26 @@ class PSS(Analysis):
         honest for the sizes this is useful at and wrong to hide at larger
         ones: an Arnoldi route would return Ritz VECTORS rather than only
         the Ritz values `ppv()` currently keeps, and is the extension.
+
+        ⚠⚠ AND THAT EXTENSION CONVERGES TO THE PHYSICAL MODE *LAST*, WORSE
+        AS Q RISES -- a structural fact, not a measurement (Garcia, Romero
+        & Acha 2022, read firsthand by the docs session).  Arnoldi resolves
+        the LARGEST-magnitude eigenvalues first; the Ritz route works on
+        `A = I - M` and recovers `lam = 1 - theta`, so the physical
+        `lam_2 -> 1` maps to `theta_2 -> 0`, the SMALLEST, while the fast
+        parasitic modes (`lam ~ 0`) sit at `theta ~ 1` and are resolved
+        first.  The separation to resolve is `1/theta_2 ~ Q_lambda`: 3.7,
+        16.4, 64.5, 128.5 at `Q_lambda` = 3.18, 15.9, 64, 128.  The
+        difficulty scales with the very quantity being measured.  ⚠ This
+        is a DIFFERENT Krylov problem from B13's, which measured GMRES
+        iterations for the bordered SOLVE `(I - M) w = b` and found them
+        independent of Q -- solving a system and extracting its smallest
+        eigenvalue are not the same question, and B13 says nothing about
+        the second.  The paper is a sound source for the method and was
+        validated on power networks, not RF oscillators, so it reports no
+        evidence either way about the high-Q regime; and it states that a
+        truncated run "cannot compute ALL the Floquet multipliers" -- which
+        is the requirement eq (22) carries (IET CDS 2011, above).
         """
         fp = pss_unused.factored_period() if fp is None else fp
         n = fp.width
