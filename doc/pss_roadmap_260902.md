@@ -3038,7 +3038,45 @@ wrapping fixture's LTE, which is the case the frozen grid could not fix; (4) van
 
 ---
 
-✅⚠ **GATE 1 RUN 2026-09-04 — IT PASSES, AND MORE STRONGLY THAN IT ASKED.** The gate was "both
+⚠⚠⚠ **RETRACTED 2026-09-04, SAME DAY, BY BUILDING IT. GATES 1 AND 4 BELOW ARE WRONG — THE ERROR
+WAS IN MY FINITE-DIFFERENCE INSTRUMENT, NOT IN THE SHIPPED COLUMN.** Read them for the method and
+not for the conclusion.
+
+Implementing the closing-step column made the analytic derivative available on BOTH conventions,
+and comparing all four against the same reference says:
+
+    npts   ana_prop     ana_close    fd_prop      fd_close     (relative to ẋ)
+     120   1.359e-05    2.270e-07    8.395e-03    8.794e-08
+     240   3.430e-06    1.357e-08    4.183e-03    3.004e-07
+     480   8.579e-07    7.813e-10    2.087e-03    3.132e-07
+
+**`ana_prop` — the SHIPPED column — converges at ~`O(h²)` and is small.** The `O(h)` sequence
+gates 1 and 4 reported is `fd_prop`, MY finite-difference construction, which is `O(h)` wrong on
+its own. Rebuilding the grid at `T + δT` also moves the MANUFACTURED OPENING STEP, and that
+artefact is what was being measured. Gate 4's "4.2% relative on the stiff grid" comes from the
+same instrument and falls with it.
+
+⚠⚠ **§D SHAPE 0j — I COMPARED TWO INSTRUMENTS AND BLAMED THE SUBJECT.** Both columns were taken
+by finite difference "off the SAME `_traverse`, so the comparison is between the two STEP
+CONVENTIONS and nothing else" — which was true and beside the point, because one of the two FDs
+was wrong. **The analytic column the code already computes was available the whole time via
+`want_dT=True`, and checking either FD against it would have caught this in one line.** When a
+measurement says a shipped implementation is wrong, validate the instrument against that
+implementation before believing it.
+
+⚠ **WHAT SURVIVES.** The closing-step column is BUILT and verified against its own finite
+difference to `5.6e-07`, flat across grids — that is FD truncation noise, so the implementation is
+correct. It is behind `_period_column = 'closing'`, **default unchanged**. But its JUSTIFICATION
+is gone: `ana_close` looks better than `ana_prop` above (7.8e-10 against 8.6e-7 at 480 points),
+and **that ranking is NOT established** — the reference is a centred difference of the discrete
+waveform whose own accuracy is nowhere near `1e-9`, so agreement at that level means the two share
+a construction rather than that one is nearer the truth. **A reference accurate enough to rank
+them is the missing piece, and B7c should not be built further until there is one.**
+
+---
+
+✅⚠ **GATE 1 RUN 2026-09-04 — IT PASSES, AND MORE STRONGLY THAN IT ASKED.** ⚠ **(RETRACTED — see
+above.)** The gate was "both
 constructions are valid on a smooth orbit, so they must agree". They do not merely agree: **they
 differ by `O(h)`, and the shipped one is the one that is wrong.**
 
@@ -3154,7 +3192,9 @@ NOT the wrapping fixture.**
 
 ---
 
-✅✅ **GATE 4 RUN 2026-09-04 — PASSES, AND GATE 1's RESULT IS AMPLIFIED ON THE STIFF CASE.** The
+✅✅ **GATE 4 RUN 2026-09-04 — PASSES, AND GATE 1's RESULT IS AMPLIFIED ON THE STIFF CASE.**
+⚠⚠ **(RETRACTED — the 4.2% is my finite-difference instrument, not the convention. See the
+retraction at the head of gate 1.)** The
 regression risk was the opposite regime from gate 1: van der Pol at `μ = 100` on its LTE-chosen
 grid, **step ratio 16438×**, where the proportional convention scales every UNEQUAL step while the
 closing-step one moves only the last. If the closing-step column were ever going to be the worse
@@ -3497,6 +3537,16 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the
    measurement assumes before trusting what it confirms.**
+
+0j. **Comparing two instruments and blaming the subject.** B7c's gates 1 and 4 took BOTH period
+   columns by finite difference "off the same `_traverse`, so the comparison is between the two
+   conventions and nothing else" — true, and beside the point, because one of the two finite
+   differences was itself `O(h)` wrong. That produced a confident, twice-committed claim that a
+   shipped Jacobian column was `O(h)` (later 4.2%) wrong; **it is not, it converges at `O(h²)`**.
+   ⚠ **The analytic column the code already computed was one keyword away (`want_dT=True`) the
+   whole time.** When a measurement says a shipped implementation is wrong, VALIDATE THE
+   INSTRUMENT AGAINST THAT IMPLEMENTATION before believing it — the implementation is the cheaper
+   thing to check, and it is the one with a track record.
 
 0i. **A fixture in which the WRONG QUANTITY IS NUMERICALLY INDISTINGUISHABLE FROM THE RIGHT ONE.**
    Four instances in two days, and every one passed every gate that existed at the time: unit

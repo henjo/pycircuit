@@ -9190,3 +9190,87 @@ def test_the_orbital_covariance_reaches_kTC_when_the_mode_is_RESOLVED():
     assert kyy3 / (kT / 2e-5) < 0.4, \
         'an UNRESOLVED mode must NOT reach kT/C, or this test shows nothing; ' \
         'got ratio %.6f' % (kyy3 / (kT / 2e-5))
+
+
+def test_the_closing_step_period_column_matches_its_own_derivative():
+    """⚠ The `'closing'` period column, pinned to what it CLAIMS and no more.
+
+    `_period_column = 'closing'` implements the convention commercial PSS
+    engines use: the inner transient owns the steps and the LAST one is
+    placed on the period boundary, so `dh_i/dT = 0` inside and
+    `dh_N/dT = 1` at the close. It uses `residual_dh`, THE PARTIAL, rather
+    than `residual_dT` -- the total is 3/2 of the partial for Gear-2
+    precisely because it assumes every step scales, and here only one step's
+    `h` moves.
+
+    ⚠⚠ THIS TEST DOES NOT CLAIM THE CONVENTION IS BETTER. An earlier
+    measurement said the shipped proportional column was `O(h)` wrong; that
+    was RETRACTED -- the `O(h)` was in the finite-difference instrument, and
+    the shipped column converges at `O(h^2)` (roadmap section D shape 0j).
+    What is asserted here is only that the analytic `'closing'` column
+    agrees with a finite difference of the SAME convention, and that
+    selecting it does not disturb the default.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    Q, a = 8.0, 0.25
+    mu = 1.0 / (2 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                       + a * mu * (u ** 2 - 2.0))
+    cir.add_node('x')
+    cir['L'] = L('v', 'x', L=1.0)
+    cir['Rs'] = R('x', gnd, r=0.2 * mu)
+    pss = PSS(cir, method='trap', reltol=1e-12)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=2 * np.pi, timestep=2 * np.pi / 240, x0=x0,
+                  maxiterations=250)
+    assert pss.converged
+    _s, x0s, _xm1, times, hs, T, _xu = pss._period_state
+    xin = np.asarray(x0s, dtype=float).ravel()
+    assert pss._period_column == 'proportional', \
+        'the default convention must be unchanged'
+
+    def endpoint(Tv, t_, h_):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            o = pss._traverse(xin, Tv, t_, h_, want_dT=False)
+        return np.asarray(o[1], dtype=float)
+
+    def analytic(mode):
+        pss._period_column = mode
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                o = pss._traverse(xin, T, times, hs, want_dT=True)
+        finally:
+            pss._period_column = 'proportional'
+        return np.asarray(o[3], dtype=float).ravel()
+
+    ## the finite difference of the SAME convention: only the closing step
+    ## lengthens, and it is hs[len(times) - 2] reaching times[-1]
+    base = endpoint(T, times, hs)
+    dT = T * 1e-7
+    tl = np.array(times, dtype=float).copy()
+    tl[-1] = T + dT
+    hl = np.array(hs, dtype=float).copy()
+    hl[len(times) - 2] = hl[len(times) - 2] + dT
+    fd_close = (endpoint(T + dT, tl, hl) - base) / dT
+
+    ana_close = analytic('closing')
+    scale = max(float(np.linalg.norm(fd_close)), 1e-30)
+    assert np.linalg.norm(ana_close - fd_close) / scale < 1e-5, \
+        'the analytic closing column must match a finite difference of the ' \
+        'same convention; got %.3e relative' \
+        % (np.linalg.norm(ana_close - fd_close) / scale)
+
+    ## and the two conventions must actually DIFFER, or the flag does nothing
+    ana_prop = analytic('proportional')
+    assert np.linalg.norm(ana_prop - ana_close) / scale > 1e-9, \
+        'the two conventions produced the same column, so the flag is inert'

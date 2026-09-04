@@ -1283,6 +1283,17 @@ class PSS(Analysis):
         ## per timestep is not worth paying on the fixed-period path.
         self._want_dfdh = False
         self._dfdT = None
+        ## ⚠ WHICH PERIOD-COLUMN CONVENTION `want_dT` USES.  'proportional'
+        ## is the shipped one: every step scales with `T`, `dh_i/dT = h_i/T`.
+        ## 'closing' is the commercial one Andreas described -- the inner
+        ## transient owns the steps and the LAST one is placed on the period
+        ## boundary, so `dh_i/dT = 0` inside and `dh_N/dT = 1` at the close.
+        ## MEASURED (roadmap B7c gates 1 and 4): the proportional column is
+        ## `O(h)` wrong on a smooth uniform grid and 4.2% RELATIVE wrong on
+        ## van der Pol at `mu = 100` (step ratio 16438x), where 'closing' is
+        ## 46x closer.  Default unchanged pending the rest of B7c.
+        self._period_column = 'proportional'
+        self._dfdh = None
         self._want_lte = False
         ## The caller's step fractions, or None for the uniform grid.  Read
         ## by the autonomous closures, which rebuild the grid at the current
@@ -3631,7 +3642,14 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros_like(Pt[0])
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdT).ravel() / T
+                if self._period_column == 'closing':
+                    ## only the CLOSING step's length depends on `T`, and it
+                    ## does so with `dh/dT = 1` -- so the term appears once,
+                    ## undivided, on the last step and nowhere else.
+                    if _j == len(times) - 2:
+                        St = St + np.asarray(self._dfdh).ravel()
+                else:
+                    St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -self.toolkit.linearsolver(Jf, St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -3795,8 +3813,18 @@ class PSS(Analysis):
             ## were never wrong: their coefficients depend on `h_n` alone,
             ## so the partial IS the total, which is why only Gear-2 was
             ## hit.  See `Integrator.companion_dT`.
-            (self._dfdT,) = remove_row_col(
-                (tr.residual_dT(x_full, dt),), irefnode, toolkit)
+            if self._period_column == 'closing':
+                ## ⚠ `residual_dh`, THE PARTIAL, NOT `residual_dT`.  The
+                ## note above explains why the total is 3/2 of the partial
+                ## for Gear-2: `residual_dT` accounts for EVERY step scaling
+                ## with `T`.  Under the closing-step convention only ONE
+                ## step's `h` moves, so the partial IS the derivative and
+                ## the 3/2 would be exactly the error.
+                (self._dfdh,) = remove_row_col(
+                    (tr.residual_dh(x_full, t, dt),), irefnode, toolkit)
+            else:
+                (self._dfdT,) = remove_row_col(
+                    (tr.residual_dT(x_full, dt),), irefnode, toolkit)
         ## Measured, not controlled: the grid is the caller's, so nothing can
         ## act on this.  Also before the push, for the same reason.
         if self._want_lte:
