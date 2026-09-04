@@ -942,7 +942,47 @@ of Demir's `Φ = U D V C` — but **homogeneous only**: no variation-of-constant
 Winkler's constructive route for the algebraic part is `x = Px + Qx = u + v̂(u,t)` with a
 pseudo-inverse `A⁻ = D(I−R)`, `A⁻A = P`. So the measured Γ stands as the empirical object.
 
-✅⚠⚠ **THE COVARIANCE ITEM IS CLOSED AS OPEN — AND IT IS OPEN IN THE LITERATURE, NOT IN OUR
+✅✅ **AND IT IS NOW CLOSED AS *CORRECT BEHAVIOUR, EXPLAINED* — THE DIVERGENCE IS THE ANSWER, AND
+ITS EXPONENT IS A DIAGNOSTIC. 2026-09-04.** Alabert & Ferrante (arXiv math/0507159v2, 2006), relayed:
+in Kronecker canonical form each nilpotent block of size `q` returns its algebraic variables as
+`⟨v_j, φ⟩ = Σ_{k=j..q} ⟨c_k, φ^(k−j)⟩` — **the `j`-th algebraic variable carries the `(k−j)`-th
+DERIVATIVE of its input.** Their Theorem 4.4: the law is absolutely continuous, but only against a
+test function of order `r`, the nilpotency index. **The solution exists and is well behaved as a
+GENERALISED PROCESS, with no pointwise value at all.**
+
+⚠⚠ **SO THE QUANTITY A COVARIANCE ROUTINE ASKS FOR DOES NOT EXIST**, and no refinement produces
+it. §0j's measurement was not failing to converge on a number; **there is no number.**
+
+**AND THE PREDICTED SIGNATURE IS MEASURED HERE.** Discretising at step `h` tests white noise
+against a bump of width `h`, so `Var ∝ 1/h` when the noise reaches an algebraic row directly and
+`1/h³` one nilpotent level up. On the series-loss tank:
+
+    npts   K_orb[x,x]        ratio
+     120   6.231932e-22
+     240   1.252673e-21      2.0101
+     480   2.511196e-21      2.0047
+     960   5.028027e-21      2.0022
+
+**Exactly 2× per doubling — `1/h`, not `1/h³`** — so the noise reaches an algebraic row **directly**,
+which is what a resistor injecting into node `x`'s KCL should do. ⚠ **An unbounded number becomes a
+diagnostic that reports the structure of the netlist.**
+
+⚠ **MY FIRST "CONTROL" WAS NOT A CONTROL, and its failure is §0j's result rather than a
+contradiction.** Adding a parasitic capacitor at `x` gave ratios 2.0101 / 2.0047 / 2.0022 —
+**identical to four digits** — because `τ = rs·C_par = 8e-8 s` against `h = 6.5e-3 s` is
+`τ/h ≈ 1e-5`: the capacitor is INVISIBLE at that step, so the node is still effectively algebraic.
+The genuine differential control is §0j's own — a resolvable `τ/h ≈ 153` converges to `kT/C` at
+0.995. **The two together bracket it: algebraic diverges at `1/h`, resolved-differential
+converges.**
+
+⚠⚠ **THE GAP, FLAGGED AS THE RELAY FLAGGED IT.** Alabert & Ferrante assume **CONSTANT**
+coefficients. A shooting linearisation is periodically TIME-VARYING, so this settles the LTI
+special case and ours follows **by analogy**. Römisch & Winkler's `im B ⊆ im C` is the
+time-varying condition and its classification is still the unanswered "future work". The analogy
+is strong enough to explain the measurement and to predict the exponent — which it did, to three
+digits — and it is **not a theorem about our system.**
+
+✅⚠⚠ **THE COVARIANCE ITEM WAS CLOSED AS OPEN — AND IT IS OPEN IN THE LITERATURE, NOT IN OUR
 READING.** Römisch & Winkler, "Stochastic DAEs in Circuit Simulation" (ISNM 146:303–318,
 Birkhäuser 2003), relayed verbatim, gives the condition a **circuit-topological** form:
 
