@@ -842,6 +842,44 @@ silently. That is a property of sampling a periodic steady state, not a bug, but
 And Γ itself: measured, passing both its gates, and **absent from the phase equation**, so `c` is
 unaffected — which was the question that mattered for §0g.
 
+✅⚠⚠ **THE ACQUISITION LANDED AND IT GIVES A PRECONDITION, NOT Γ — AND OUR FIXTURE VIOLATES IT.**
+Winkler 2004 (JCAM 163:435–463) **Definition 2**, relayed verbatim: an SDAE is **index 1** when
+"the noise sources do not appear in the constraints", i.e. `im G ⊆ im A` — in our notation
+
+    im B  ⊆  im C          the noise input must lie in the image of the capacitance matrix
+
+and otherwise it is an SDAE **WITH DIRECT NOISE**, outside the class the theory covers.
+⚠ **This is checkable on any netlist from matrices we already build**: `CY = B Bᵀ`, so
+`im B = im CY`, and the test is the residual of projecting `CY`'s columns onto `im C`. Measured:
+
+    fixture                  rank C   max|resid|/|CY|   verdict
+    parallel loss             2/2       0.000e+00       index-1 SDAE
+    _vdp_at_Q (IS at node v)  2/2       0.000e+00       index-1 SDAE
+    series loss               2/3       1.000e+00       *** DIRECT NOISE ***
+    series + parasitic C      3/3       0.000e+00       index-1 SDAE
+
+⚠⚠⚠ **AND IT COMPLETES §0j.** The series-loss tank — the fixture that produced §0d's exact zero
+and §0j's missing `kT/C` — is an SDAE **with direct noise**. White noise applied to a variable
+determined by a CONSTRAINT rather than an integrator is filtered by nothing, so **that node has no
+finite variance for `K_orb` to report** — not a missing term and not a resolution artefact. Adding
+a parasitic capacitor moves the circuit back INTO the class (row 4), which is exactly the case
+§0j's `τ/h` study measured and where `kT/C` duly appears. **Two answers, two regimes, and the
+fixtures separate them cleanly:** the `τ/h` result explains the DIFFERENTIAL parasitic case; this
+explains the ALGEBRAIC case it started from.
+
+⚠ **WHAT IT DOES NOT OVERTURN.** `diffusion_constant` on the series fixture still agrees with the
+equivalent parallel circuit to 0.999973 and with the Lyapunov route — so the PHASE diffusion is
+well defined even where the state covariance is not, and §0d's fill stands. Winkler's condition
+bears on the covariance, not on `c`. **Proposed gate, not yet built:** assert `im B ⊆ im C` and
+WARN on the covariance paths, naming the class rather than a symptom — cheap, and the same shape
+as the refusals already in `_cy_reduced`.
+
+⚠ **AND THE PROJECTOR MACHINERY IS NOW AVAILABLE BUT STILL DOES NOT CONSTRUCT Γ.** Lamour, März &
+Winkler 1998 (JMAA 217:372–394) eq (2.5) gives `X(t) = P_can(t) U(t) P(0)` — the structural home
+of Demir's `Φ = U D V C` — but **homogeneous only**: no variation-of-constants, no input response.
+Winkler's constructive route for the algebraic part is `x = Px + Qx = u + v̂(u,t)` with a
+pseudo-inverse `A⁻ = D(I−R)`, `A⁻A = P`. So the measured Γ stands as the empirical object.
+
 ⚠ **THE ONE STANDING OPEN ITEM FROM THIS ARC IS AN ACQUISITION, NOT A SEARCH.** Getting Γ
 *properly* — a construction rather than the `h → 0` measurement above — needs März, Lamour or
 Tischendorf, or a DAE-numerics text. None is among the 339 papers, because DAE projector theory is
