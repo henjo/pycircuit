@@ -3661,6 +3661,139 @@ class PSS(Analysis):
         self._factored_period_cache = fp
         return fp
 
+    FLOQUET_DENSE_LIMIT = 400
+    ## below this a multiplier is an annihilated algebraic
+    ## direction, not a mode -- see `floquet_modes`
+    FLOQUET_NULL_TOL = 1e-12
+
+    def floquet_modes(self, pss_unused=None, nmodes=2, fp=None):
+        """The Floquet pairs `(λ_l, μ_l, p_l(t), q_l(t))` — A9's prerequisite.
+
+        Returns a list of dicts, one per mode, ordered by `|λ|` descending:
+
+            lam    the Floquet MULTIPLIER, eigenvalue of the monodromy
+            mu     the Floquet EXPONENT, `log(λ)/T` (complex)
+            u0,v0  right and left eigenvectors at `t = 0`, biorthonormal
+                   (`v_k† u_l = δ_kl`)
+            p      `p_l(t_j) = Φ(t_j,0) u_l(0) · exp(−μ_l t_j)` — the
+                   T-PERIODIC part, sampled on the PSS grid
+            q      the adjoint counterpart from the reverse replay
+            times  the grid `p` and `q` are sampled on
+
+        ⚠⚠ **WHY THIS EXISTS: `S_yy` NEEDS THE EIGENVECTORS OVER THE
+        PERIOD, NOT JUST THE EXPONENTS.** Traversa & Bonani (TCAS-I 2011)
+        Lemma 3.5 makes the orbital spectrum a sum of Lorentzians centred
+        at `jω₀ + Im{μ_l}` with half-width `|Re{μ_l}| + ½h²ω₀²c`, weighted
+        by `C_lhj` (their eq 22) — and `C_lhj` is built from the FOURIER
+        COEFFICIENTS of `u_l(t)` and of `v_l(t)ᵀ B(t)`. Their own text is
+        explicit that the exponents alone do not order the result: *"a
+        major role in the C and D coefficients is also played by the
+        Floquet eigenvectors, which could determine large orbital
+        fluctuations contributions even when the Floquet exponents are not
+        near to zero."* So `|λ₂|` — the only mode information this class
+        used to expose — is not sufficient, by the source's own statement.
+
+        ⚠ THE PERIODIC PART IS THE OUTPUT, NOT `Φ(t,0)u(0)`. Floquet's
+        theorem says the solution is `p_l(t)exp(μ_l t)` with `p_l`
+        T-periodic; the raw propagated vector is not periodic and its
+        Fourier series is not the one eq (22) wants. Dividing out
+        `exp(μ_l t)` is what makes `p_l(T) = p_l(0)` — which is also the
+        gate below, and the only check here that needs no reference.
+
+        ⚠ DENSE, AND REFUSED ABOVE `FLOQUET_DENSE_LIMIT`. The monodromy is
+        assembled column by column (`n` matvecs) and diagonalised. That is
+        honest for the sizes this is useful at and wrong to hide at larger
+        ones: an Arnoldi route would return Ritz VECTORS rather than only
+        the Ritz values `ppv()` currently keeps, and is the extension.
+        """
+        fp = pss_unused.factored_period() if fp is None else fp
+        n = fp.width
+        T = float(fp.T)
+        if n > self.FLOQUET_DENSE_LIMIT:
+            raise NotImplementedError(
+                'PSS.floquet_modes: the monodromy is assembled densely and '
+                'this one is %d wide, past the %d limit. The extension is '
+                'an Arnoldi that keeps its Ritz VECTORS -- ppv() already '
+                'builds the basis and discards them.'
+                % (n, self.FLOQUET_DENSE_LIMIT))
+
+        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                             for e in np.eye(n)])
+        lam, U = np.linalg.eig(M)
+        lam_l, V = np.linalg.eig(M.T)
+
+        order = np.argsort(-np.abs(lam))
+        lam, U = lam[order], U[:, order]
+        ## pair each right eigenvalue with its left partner by value
+        pair = []
+        used = set()
+        for k in range(len(lam)):
+            d = np.abs(lam_l - lam[k])
+            for j in np.argsort(d):
+                if j not in used:
+                    used.add(int(j))
+                    pair.append(int(j))
+                    break
+        V = V[:, pair]
+
+        times = np.asarray(fp.times, dtype=float)
+        out = []
+        ## ⚠ NULL MODES ARE DROPPED, NOT RETURNED WITH A BAD RESIDUAL. A
+        ## DAE's monodromy has exact zeros (the algebraic directions the
+        ## step map annihilates); their "eigenvectors" are arbitrary, the
+        ## exponent `log(0)` does not exist, and the periodic part comes
+        ## back as noise -- measured, residual 0.56 and periodicity 8.9
+        ## against 1e-15 for the physical pair. Returning them invites a
+        ## caller to average over a mode that means nothing.
+        keep = [k for k in range(n) if abs(lam[k]) > self.FLOQUET_NULL_TOL]
+        for k in keep[:int(nmodes)]:
+            lk = complex(lam[k])
+            uk, vk = U[:, k].astype(complex), V[:, k].astype(complex)
+            nrm = complex(np.vdot(vk, uk))
+            if abs(nrm) < 1e-30:
+                raise ValueError(
+                    'PSS.floquet_modes: mode %d has left and right '
+                    'eigenvectors orthogonal to each other (v.u = %.3e), so '
+                    'it cannot be biorthonormalised. That happens at a '
+                    'defective eigenvalue -- two multipliers have collided.'
+                    % (k, abs(nrm)))
+            vk = vk / np.conj(nrm)                     ## v_k† u_k = 1
+            muk = np.log(lk) / T
+
+            ## ⚠ EVERYTHING BELOW IS THE WIDTH-`m` STATE BLOCK, NOT THE
+            ## WIDTH-`n` MAP INPUT. Under a solved-history map `n = 2m`
+            ## and the second block is the history term, not a second
+            ## state; the replays collect `m`-wide states either way, and
+            ## `u_l(t)` in eq (22) is a state-space function. Mixing the
+            ## two is a shape error that surfaces three frames away.
+            m = self.cir.n - 1
+
+            ## forward: Phi(t_j,0) u_k(0), by an UNFORCED driven replay
+            zero = np.zeros(m)
+            _end, fwd = self._forced_replay(fp, 0.0, zero, y0=uk, collect=True)
+            traj = ([np.asarray(uk, dtype=complex)[:m]]
+                    + [np.asarray(z, dtype=complex).ravel()[:m] for z in fwd])
+            tt = times[:len(traj)]
+            traj = traj[:len(tt)]
+            p = np.column_stack([traj[j] * np.exp(-muk * tt[j])
+                                 for j in range(len(traj))])
+
+            ## adjoint: Phi(T,s_j)^T v_k(T) -- B8 made this available under
+            ## every integrator, not only the solved-history one
+            _e2, _ts, st = fp.matvec_transposed(vk, collect=True)
+            qtraj = ([np.asarray(z, dtype=complex).ravel()[:m] for z in st]
+                     + [np.asarray(vk, dtype=complex)[:m]])
+            ts2 = times[:len(qtraj)]
+            qtraj = qtraj[:len(ts2)]
+            q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
+                                 for j in range(len(qtraj))])
+
+            out.append({'lam': lk, 'mu': muk, 'u0': uk, 'v0': vk,
+                        'p': p, 'q': q, 'times': tt,
+                        'residual': float(np.linalg.norm(M @ uk - lk * uk)
+                                          / max(abs(lk), 1e-300))})
+        return out
+
     def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
         """One period of the LINEARISED circuit, driven at `freq`.
 

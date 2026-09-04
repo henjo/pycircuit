@@ -10760,3 +10760,76 @@ def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
         'the skirt estimate does not converge toward diffusion_constant ' \
         'as the offset enters Kundert\'s window (%.9e at 1e-3, %.9e at ' \
         '1e-4, against %.9e)' % (got[1e-3], got[1e-4], cA)
+
+
+def test_floquet_modes_are_genuinely_periodic():
+    """A9's prerequisite: the Floquet pairs, with the periodic part.
+
+    ⚠⚠ **`|λ₂|` ALONE IS NOT ENOUGH FOR THE ORBITAL SPECTRUM, BY THE
+    SOURCE'S OWN STATEMENT.** Traversa & Bonani (TCAS-I 2011) make `S_yy`
+    a sum of Lorentzians weighted by `C_lhj` (their eq 22), which is built
+    from the **Fourier coefficients of `u_l(t)` and `v_l(t)ᵀB(t)`** — and
+    their §III says in terms that *"a major role in the C and D
+    coefficients is also played by the Floquet eigenvectors, which could
+    determine large orbital fluctuations contributions even when the
+    Floquet exponents are not near to zero."* So the exponents do not
+    order the result and the eigenvectors are not optional.
+
+    ⚠ THE GATE IS FLOQUET'S THEOREM ITSELF, which needs no reference:
+    the solution is `p_l(t)·exp(μ_l t)` with `p_l` **T-periodic**, so
+    `p_l(T) = p_l(0)`. That holds only if `λ_l`, `μ_l = log(λ_l)/T` and
+    the propagation are all consistent — a wrong multiplier breaks it
+    even when the eigenvector residual is clean.
+
+    Measured on van der Pol: periodicity 2.8e-15 (the unit mode) and
+    5.9e-15 (the amplitude mode), with eigenvector residuals 9.2e-16 and
+    4.0e-16.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+    assert pss.converged
+
+    modes = pss.floquet_modes(pss, nmodes=2)
+    assert len(modes) == 2, 'expected two non-null modes, got %d' % len(modes)
+
+    ## the phase mode is the unit multiplier, and it must come first
+    assert abs(abs(modes[0]['lam']) - 1.0) < 1e-9, \
+        'the leading multiplier is %.12f, not 1 — an autonomous ' \
+        'oscillator must carry the phase mode' % abs(modes[0]['lam'])
+    ## and the second is the amplitude mode, strictly inside
+    assert abs(modes[1]['lam']) < 1.0 - 1e-6, \
+        'the second multiplier is not inside the unit circle (%.12f)' \
+        % abs(modes[1]['lam'])
+
+    for k, md in enumerate(modes):
+        assert md['residual'] < 1e-10, \
+            'mode %d eigenvector residual %.3e' % (k, md['residual'])
+        P = md['p']
+        per = float(np.linalg.norm(P[:, -1] - P[:, 0])) \
+            / max(float(np.linalg.norm(P[:, 0])), 1e-300)
+        assert per < 1e-9, \
+            'mode %d: p(T) differs from p(0) by %.3e, so the propagated ' \
+            'vector is NOT Floquet-periodic. Either the multiplier, the ' \
+            'exponent log(lam)/T, or the propagation disagrees with the ' \
+            'other two — this is the check that catches a wrong lambda ' \
+            'even when the eigenvector residual is clean' % (k, per)
+
+    ## ⚠ AND THE NULL MODES MUST BE ABSENT. A DAE monodromy has exact
+    ## zeros; asked for more modes than exist, it must not pad with them.
+    many = pss.floquet_modes(pss, nmodes=10)
+    assert all(abs(md['lam']) > 1e-12 for md in many), \
+        'a null (annihilated algebraic) multiplier was returned as a mode'
