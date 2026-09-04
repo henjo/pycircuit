@@ -9104,3 +9104,89 @@ def test_the_algebraic_fill_is_identified_not_merely_validated():
     assert worst_flipped / scale > 1e-3, \
         'the constraint must REJECT the opposite sign, or it identifies ' \
         'nothing; it gave %.3e' % (worst_flipped / scale)
+
+
+def _tank_with_rc_probe(rpar, cpar, npts=480):
+    """The lossy tank with a weakly-coupled noisy RC branch hung off node `x`.
+
+    `R_par` is large against the tank's impedance so the branch does not load
+    the oscillator, and `tau = R_par*C_par` is chosen rather than inherited --
+    which is the whole point, because what follows is a statement about
+    `tau/h`, not about `C`.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    Q = 8.0
+    mu = 1.0 / (2 * np.pi * Q)
+    rs = 0.2 * mu
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir.add_node('x')
+    cir['L'] = L('v', 'x', L=1.0)
+    cir['Rs'] = R('x', gnd, r=rs)
+    cir.add_node('y')
+    cir['Rpar'] = R('x', 'y', r=rpar)
+    cir['Cpar'] = C('y', gnd, c=cpar)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    T0 = 2 * np.pi
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / npts, x0=x0, maxiterations=250)
+    assert pss.converged, 'rpar=%r cpar=%r' % (rpar, cpar)
+    names = [str(nd) for nd in cir.nodes]
+    iy = names.index('y')
+    iy = iy if iy < pss.irefnode else iy - 1
+    K, _d, _i = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(pss)
+    return float(np.asarray(K, dtype=float)[iy, iy]), T0 / npts
+
+
+def test_the_orbital_covariance_reaches_kTC_when_the_mode_is_RESOLVED():
+    """⚠ `K_orb` DOES carry `kT/C` — what it cannot carry is an UNRESOLVED mode.
+
+    This started as a suspected third defect: adding a parasitic capacitor at
+    the algebraic node left `K_orb` flat over three decades of `C_par` and a
+    factor ~1e6 BELOW `kT/C_par`. The explanation is not a missing term. That
+    node's time constant was `rs*C_par ~ 4e-9 s` against a timestep of
+    `0.013 s` -- **six orders faster than the grid**, and a mode the
+    discretisation cannot represent cannot reach its equilibrium.
+
+    ⚠⚠ THE DISCRIMINATOR IS THAT THE RATIO DEPENDS ON `tau/h` AND NOT ON `C`.
+    At fixed `tau/h` it is identical across three decades of `C_par` -- so
+    this is a resolution statement, not a scaling defect. Measured:
+
+        tau/h = 152.79  ->  0.995110
+        tau/h =  15.28  ->  0.953586
+        tau/h =   1.53  ->  0.688971
+        tau/h =   0.15  ->  0.214472
+        tau/h =   0.02  ->  0.029182
+
+    Monotone, and tending to `tau/h` itself once the mode is well below the
+    grid. `kT/C` is an EXTERNAL anchor -- the same one that settled the
+    `CY/2` convention -- so the top of that table is a real gate.
+    """
+    kT = 1.38e-23 * 300.0
+    ## resolved: tau/h ~ 153
+    kyy, h = _tank_with_rc_probe(rpar=1e5, cpar=2e-5)
+    tau_over_h = (1e5 * 2e-5) / h
+    assert tau_over_h > 100.0, 'this case must be well resolved; got %.1f' % tau_over_h
+    assert abs(kyy / (kT / 2e-5) - 1.0) < 1e-2, \
+        'a RESOLVED parasitic mode must reach kT/C: got %.6e against %.6e' \
+        % (kyy, kT / 2e-5)
+
+    ## the same tau/h at a different C -- the ratio must not move
+    kyy2, _h = _tank_with_rc_probe(rpar=1e6, cpar=2e-6)
+    r1 = kyy / (kT / 2e-5)
+    r2 = kyy2 / (kT / 2e-6)
+    assert abs(r2 / r1 - 1.0) < 1e-3, \
+        'at fixed tau/h the ratio must be independent of C -- that is what ' \
+        'makes this a RESOLUTION statement; got %.6f vs %.6f' % (r1, r2)
+
+    ## unresolved: tau/h ~ 0.15, and the equilibrium must be largely absent
+    kyy3, _h = _tank_with_rc_probe(rpar=1e2, cpar=2e-5)
+    assert kyy3 / (kT / 2e-5) < 0.4, \
+        'an UNRESOLVED mode must NOT reach kT/C, or this test shows nothing; ' \
+        'got ratio %.6f' % (kyy3 / (kT / 2e-5))

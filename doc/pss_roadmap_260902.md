@@ -801,11 +801,52 @@ capacitor at node `x` makes the node differential (`algebraic rows []`) but leav
 against a `kT/C_par` of 4.14e-18 … 4.14e-15. **Flat over three decades, and a factor ~1e6 BELOW
 `kT/C_par`.** So the parasitic node's thermal equilibrium does not appear in `K_orb` at all.
 
-That is either a third defect or a property of what `K_orb` is defined to be, and **it is recorded
-as an open question rather than resolved**, because the honest answer needs the definition
-checked and this was not what was authorised. What IS settled: Γ exists, is measured, passes both
-its gates, and is **absent from the phase equation**, so `c` is unaffected — which was the
-question that mattered for §0g.
+✅✅ **RESOLVED, AND THERE IS NO THIRD DEFECT.** The docs session supplied the definition —
+Demir eq (68): mode 1 is the phase and modes `2..m` are where `z` lives, with **no**
+"orbit-coupled only" clause — so a parasitic mode *should* be in `K_orb`, and their proposed
+explanation was that the node lacked a thermal bath. ⚠ **That did not fit: node `x` already has
+`Rs` across it, noisy at `4kT/r`.** The actual explanation is arithmetic:
+`rs·C_par = 4e-9 s` against a timestep of `0.013 s` — **the parasitic mode is SIX ORDERS faster
+than the grid**, and a mode the discretisation cannot represent cannot reach its equilibrium.
+
+Tested by hanging a weakly-coupled RC branch off the tank with `τ = R_par·C_par` **chosen** rather
+than inherited:
+
+    tau/h = 152.79  ->  0.995110      <- kT/C to 0.5%
+    tau/h =  15.28  ->  0.953586
+    tau/h =   1.53  ->  0.688971
+    tau/h =   0.15  ->  0.214472
+    tau/h =   0.02  ->  0.029182
+
+⚠⚠ **AND THE DISCRIMINATOR IS THAT IT DEPENDS ON `τ/h` AND NOT ON `C`:** at fixed `τ/h` the ratio
+is **0.953586 identically across three decades of `C_par`**. A missing-term defect would scale
+with something; a resolution limit is a pure function of `τ/h`, and that is what it is. So
+`oscillator_covariance` reaches the `kT/C` external anchor — the same one that settled the `CY/2`
+convention — whenever the mode is resolved, and degrades monotonically toward `τ/h` when it is
+not. **Pinned by `test_the_orbital_covariance_reaches_kTC_when_the_mode_is_RESOLVED`**, which
+asserts all three: the anchor, the `C`-independence, and that an unresolved mode does NOT reach it.
+
+⚠ **TWO WRONG EXPLANATIONS DIED BEFORE THE RIGHT ONE, and that is the record worth keeping.**
+Mine — an algebraic node has no state, hence no bandwidth limit, hence no finite variance — was
+falsified by adding `C_par`. The docs session's — the node has no thermal bath — did not fit,
+because node `x` already carries `Rs` at `4kT/r`. **Both would have closed the question**, and both
+were argued as fitting the numbers. The arithmetic that decided it (`4e-9 s` against `0.013 s`) was
+checkable before either was written.
+
+⚠ **What this does NOT license.** It is a statement about a mode the grid resolves. A real
+circuit's parasitics sit far below any PSS timestep — the original `rs·C_par` case is the typical
+one, not the exotic one — so `K_orb` will routinely omit their thermal equilibrium, correctly and
+silently. That is a property of sampling a periodic steady state, not a bug, but a caller reading
+`K_orb` as "the" state covariance should know it contains only what the grid can see.
+
+And Γ itself: measured, passing both its gates, and **absent from the phase equation**, so `c` is
+unaffected — which was the question that mattered for §0g.
+
+⚠ **THE ONE STANDING OPEN ITEM FROM THIS ARC IS AN ACQUISITION, NOT A SEARCH.** Getting Γ
+*properly* — a construction rather than the `h → 0` measurement above — needs März, Lamour or
+Tischendorf, or a DAE-numerics text. None is among the 339 papers, because DAE projector theory is
+not circuit literature. Recorded so nobody spends another pass searching what is already known not
+to contain it.
 
 
 ---
@@ -3177,9 +3218,14 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    to §0e's quadrature study alike; unit amplitude hides a **scale** error; a time vector read as a
    node voltage hid a **units** error (the docs session got `A = 6.66`, the period, and a plausible
    ratio of 7.10); and a single series resistor hid a **sign**, because `|∫v₀|` and `|r∫v_branch|`
-   agreed to 1.5e-4 there. **Sweep the units, not just the regime — and ask whether the fixture can
-   express the wrong answer.** (Statement sharpened by the docs session, 2026-09-04; shape 0h is
-   the sign case of it.)
+   agreed to 1.5e-4 there. **Sweep the units, not just the regime.** ⚠⚠ **AND THE RULE IS
+   CONSTRUCTIVE, NOT A POST-HOC CHECK.** "Could the answer have come out otherwise?" is applied
+   after the fact and is easy to answer wrongly; **BUILD THE FIXTURE SO IT CAN EXPRESS THE WRONG
+   ANSWER** is a design applied before. §0j's `K_orb` case is the worked example: sweeping `C` at
+   FIXED `τ/h` killed two competing explanations at once, because a missing term must scale with
+   something and a resolution limit cannot — a discrimination no amount of agreement between
+   references could have produced. (Sharpened with the docs session, 2026-09-04; shape 0h is the
+   sign case of it.)
 
 0h. **A fixture where the candidate answers are numerically degenerate.** The single
    series-resistor tank makes `|∫v₀|` and `|r∫v_branch|` agree to 1.5e-4, so a prediction that
