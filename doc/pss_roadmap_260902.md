@@ -4459,13 +4459,42 @@ by a peer session reading the table, not by the session that produced it.)
 energy `Q` — a per-period decay. ⚠ **Neither converts an oscillator's `info['Q']` into anything
 about its tank**, because the measurement above shows no such information is present.
 
-❌ **STILL OPEN, and now open on the source's own authority:** the `Q` in Traversa & Bonani's
-*"orbital noise … an increasing function of the Q factor"* is an **oscillator** `Q`, and **nobody
-has read which `Q` they mean.** Given the three-regime table above that is no longer a pedantic
-question: ⚠ **if they mean the TANK `Q`, then `info['Q']` is not an unconverted prior for it — it
-is the WRONG OBJECT, and the link is void rather than merely needing a constant.** Marked
-**PROVISIONAL**. ✅ Closing it is a **page read, not a measurement** — the cheapest open item in
-this document.
+✅✅ **CLOSED 2026-09-04 BY READING THE PAPER — AND THE ANSWER IS "IT DEPENDS ON THE REGIME",
+WHICH IS WHY THE TAXONOMY ABOVE IS THE THING THAT SETTLES IT.**
+
+Read from the IJMWT companion (`02-oscillator-noise-jitter/`, extracted with `pdftotext -layout`;
+these passages are in the body text, not the dropped-font equations):
+
+> *"This circuit was chosen since it can be shown to be equivalent [6] to a parallel RLC circuit
+> with a **Q factor corresponding to the Q coefficient** in Fig. 6: this allows for a simple
+> modulation of the Q value to study its impact on orbital noise."*
+> Fig. 7 caption: *"Floquet exponent μ₂ … as a function of the **Q factor of the equivalent RLC
+> circuit**."*
+
+⚠ **SO THEIR `Q` IS THE TANK `Q`** — the component-set RLC quality factor, not a settling count.
+On the bare reading that would make `info['Q']` the wrong object and the link void.
+
+✅⚠ **BUT THEIR CIRCUIT IS IN THE CLAMPING REGIME, WHERE THE TWO ARE PROPORTIONAL.** Their inverter
+is *"approximated by the input–output relation `v_out = tanh(2a·v_in)`, where `a` is a parameter
+representing the slope"*, run at **`a = 23`** — slope 46, a hard clamp. That is **row three of the
+taxonomy above**, measured here at ratio π with `Q_λ = 1/(πα) ∝ Q_d`. And they say exactly this:
+*"a high-Q oscillator is characterized by at least a second Floquet exponent near to zero, which
+in turn should result into a larger amplitude noise component"* — which is `Q_λ ∝ Q_d`, the
+clamping relation, not a general one.
+
+**THE RESOLUTION, and it is sharper than either "valid" or "void":**
+
+| core | is `info['Q']` a prior for T&B's `Q`? |
+|---|---|
+| **amplitude-clamping** (theirs) | ✅ **yes, up to the factor π** — `Q_λ = 1/(πα)` tracks the tank |
+| **soft-compressing** (cubic) | ❌ **no — void, not unconverted.** `Q_λ = 1/(2π(g−α))` carries *no* tank information, measured bit-identical across an 8× sweep |
+| **passive** | n/a — not an oscillator |
+
+⚠⚠ **SO THE CLAIM DOES NOT TRANSFER BY ITSELF, AND THE TAXONOMY IS THE PRECONDITION FOR USING
+IT.** T&B's own scope line says as much — *"at least for the **second-order oscillator considered
+in this study**, an increasing function of the Q factor"* — and their study's core is a clamp.
+✅ **A designer's crystal oscillator with a hard-limiting sustaining amplifier is in their regime;
+a soft-compressing transistor core is not.**
 
 **The table, read for what it can support:** van der Pol at `μ = 1/(2πQ_target)`, 400 points,
 gear:
