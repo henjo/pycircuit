@@ -4375,6 +4375,35 @@ norms of the neglected and retained rows"*. So truncation is legitimate **with t
 bound, and only through that method**. `floquet_modes` now defaults to every non-null mode and
 says so; a caller who truncates owes the norm ratio as the gate.
 
+⚠ **THE BOUND, READ FROM TCAD 2013 (relayed; cited not verified here).** Their construction keeps
+the first `m` rows of a matrix `R(t)` and neglects the last `n − m`, with small parameter
+`ε = |smallest diagonal element KEPT| / |largest NEGLECTED|`, and *"both δμ_k and δũ_k tend to
+zero **linearly** with ε → 0 … the error induced on the FEs and eigenvectors by the approximation
+of R is at worst of the same order as the system approximation itself."* First order in `ε`, same
+constant for exponents and eigenvectors.
+
+⚠⚠ **THE DIRECTION IS THE OPPOSITE OF THE INTUITIVE ONE.** *"The larger the absolute value of the
+neglected FEs, the smaller the error induced on the calculated FEs."* You drop the **fast** modes,
+not the small ones, and accuracy improves the faster the dropped ones are. The step-2 residual
+explanation — that it is the DAE's slaved algebraic directions — is exactly consistent: those are
+the infinitely-fast end, which is the safe end to drop. That explanation was right; this is its
+quantitative form.
+
+⚠⚠ **CONSEQUENCE FOR THE API: `m` IS AN OUTPUT, NOT AN INPUT.** The paper does not take the
+retained count as a parameter; it tests the condition per time sample and *"proceeds by changing
+the m value to guarantee that the condition is met"*. So the principled form of `nmodes` is
+*"the ε you will tolerate"*, with the routine returning however many modes that needs — possibly
+differing between time points on one orbit. `nmodes=None` returning everything is the right safe
+default; the ε-driven form is what makes truncation **legitimate** rather than merely permitted.
+
+❌ **THE OPEN HALF, NOT SKIPPED:** `R(t)` is **not our monodromy and not `K_orb`**. It is a
+specific object reached after *"a normalization procedure should be applied"* to the linearised
+system, because *"the procedure is based on the estimation of the rank of matrix C(t)"*. The
+ratio is between diagonal elements of **that** matrix in **their** normalisation. Transferring the
+bound to `orbital_mode_weights`'s reconstruction needs the mapping established first, and it has
+not been. The hand-set `1e-2` in the step-2 test stays until it is — replacing it with an `ε`
+computed on the wrong matrix would be §D 0q again.
+
 ⚠ **THEIR OWN WARNING, AND IT CONSTRAINS OUR OUTPUT LAYER:** orbital contributions are
 **asymmetric about the carrier**, so a symmetric single-sideband report **cannot carry them** —
 see A4b. And *"the identification of the oscillator classes mostly impacted by this effect is not
