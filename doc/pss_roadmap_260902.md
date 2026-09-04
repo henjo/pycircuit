@@ -3068,6 +3068,52 @@ moves it by that much — but it must be MEASURED here rather than assumed bound
 codebase's convergence test does not currently expect it. **Gate 3 should report the residual at
 `x_0*` under a re-derived grid, alongside the wrapping fixture's LTE.**
 
+---
+
+⚠✅ **GATE 3 RUN 2026-09-04 — BOTH PARTS ANSWERED, AND THEY POINT OPPOSITE WAYS.**
+
+**(A) THE PHASE HYPOTHESIS WAS RIGHT AND IT DOES NOT RESCUE THE WRAPPING FIXTURE.** The failed B7
+gate derived its grid from a free-running transient window whose phase was arbitrary — finest
+steps at relative 0.0 and 0.5 while the resets are at 0.345 and 0.845. Deriving at the CONVERGED
+`x_0` fixes that by construction: the six finest steps land at `t/T = 0.3443`, on the first reset,
+at a step ratio of **417199×**. And the LTE barely moves:
+
+    uniform 1428      max_lte = 4.1377e+04   at t/T = 0.346181
+    derived at x_0*   max_lte = 3.8970e+04   at t/T = 0.845054   (1743 steps)
+
+**6%, and THE PEAK RELOCATED TO THE OTHER RESET.** Refine one reset to a step ratio of four
+hundred thousand and the peak simply appears at the second one, at the same magnitude. ⚠ **That is
+the signature of a discontinuity, not of under-resolution**, and it closes the question the
+earlier gate left ambiguous: the wrapping fixture's LTE is irreducible by stepping, however the
+steps are chosen. B7c must NOT be justified on it, and A6's item should say so.
+
+**(B) RE-DERIVING THE GRID REOPENS THE RESIDUAL, AND THAT BOUNDS WHAT "CONVERGED" CAN MEAN.**
+
+    own grid    ( 480 steps)   ||x_end − x(0)|| = 2.6990e-15   rel 1.5e-15
+    re-derived  (4909 steps)   ||x_end − x(0)|| = 1.6009e-04   rel 8.9e-05
+    solve reltol = 1e-12
+
+Machine zero on the grid the solve used, `8.9e-05` on a finer one. ⚠ **The right reading is that
+this measures the SOLVE'S DISCRETISATION ERROR, not a defect** — the 480-step trapezoidal answer
+is accurate to ~1e-4, and the finer grid exposes it. But the consequence for B7c is concrete:
+**with an adaptive grid the achievable residual is bounded by the difference between grids, not by
+`reltol`**, so the Newton must stop at that floor rather than chase 1e-12. That is exactly how
+commercial adaptive PSS behaves, and it is now measured here rather than assumed.
+
+⚠ **A number NOT to quote from this run:** `||phi_own − phi_rederived|| = 2.3304e-02` looks like
+the grid dependence and is mostly the OPENING STEP — the two grids manufacture `x(0)` with
+different first steps. The residual above is the meaningful figure.
+
+⚠ **AND THE FIXTURE TRAP THAT PRODUCED A FALSE 2.3e-02 RESIDUAL FIRST TIME.**
+`_period_state[1]` is the MANUFACTURED `x(0)`, not the solved unknown `x_in`. Feeding it back to
+`_traverse` as an input manufactures a SECOND opening step, so the "residual" came out at
+`h·|ẋ| = (2π/480)·1.79 = 0.0234` — which is what was measured, to three digits. A converged solve
+showing a 1e-2 residual should have been read as a fixture error immediately; the arithmetic
+identifying it took one line.
+
+**GATE 3 VERDICT: B7c's justification is gate 1 (the `O(h)` period column) and gate 2 (determinism),
+NOT the wrapping fixture. Gate 4 remains.**
+
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
 
 ⚠ **The shooting SOLVE already supports every integrator that exists.** `integrator.py` defines
