@@ -10930,3 +10930,93 @@ def test_the_orbital_covariance_resolves_onto_the_floquet_modes():
         'the amplitude mode no longer accounts for the orbital covariance ' \
         '(weight %.3e against ||K_orb|| %.3e)' \
         % (abs(cw[1, 1]), np.linalg.norm(K))
+
+
+def test_orbital_correlation_is_gated_three_ways():
+    """A9 step 3: eq (22)'s `C_lhj`, with eq (23) as the gate.
+
+    Three routes to `R_yy(0)`, the stationary transverse covariance:
+      A. `orbital_correlation` — the modal Fourier sum, eq (22).
+      B. the DEFINITION — a 1-D Lyapunov integral along the single orbital
+         mode, no Fourier machinery, built here from the same modes.
+      C. `oscillator_covariance`'s samples, cycle-averaged with the
+         along-orbit growth removed — shares nothing with A or B.
+
+    ⚠ A ≈ B to 1e-3 says the transcription of eq (22) is right. A ≈ C says
+    the modes and `CY/2` are right. It was C failing by 1.75× — while A
+    and B agreed — that isolated a scale defect to the shared input and
+    found `floquet_modes` mis-normalising the state block.
+
+    ❌ The 3 % shape residual against C is OPEN and bounded here at 5 %,
+    not tuned away; the clean comparison needs the plain-path Lyapunov
+    solve, which is still gear-only.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+    assert pss.converged
+    pac = PAC(cir)
+    m = cir.n - 1
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        R4, _ = pac.orbital_correlation(pss, H=4)
+        R, Cc = pac.orbital_correlation(pss, H=32)
+        Kf, d, info = pac.oscillator_covariance(pss, samples=True)
+        modes = pss.floquet_modes(pss)
+    assert np.linalg.norm(R - R.T) < 1e-12 * np.linalg.norm(R), 'R not symmetric'
+    assert np.linalg.norm(R - R4) < 1e-6 * np.linalg.norm(R), \
+        'the harmonic sum has not converged by H=4 on van der Pol (%.3e)' \
+        % (np.linalg.norm(R - R4) / np.linalg.norm(R))
+
+    ## B: the definition. Single real orbital mode.
+    orb = [k for k, md in enumerate(modes) if abs(abs(md['lam']) - 1.0) > 1e-6]
+    assert len(orb) == 1
+    md = modes[orb[0]]
+    assert abs(np.imag(md['mu'])) < 1e-12
+    mu2 = float(np.real(md['mu']))
+    P2 = np.real(md['p'][:, :-1]); Q2 = np.real(md['q'][:, :-1])
+    Nn = P2.shape[1]; Tp = float(pss.period); h = Tp / Nn
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
+    g = np.array([Q2[:, k] @ CY2 @ Q2[:, k] for k in range(Nn)])
+    nper = max(int(np.ceil(-40.0 / (2 * mu2 * Tp))), 1)
+    taus = np.arange(0, nper * Nn) * h
+    wts = np.exp(2 * mu2 * taus) * h
+    sig2 = np.array([float(np.sum(wts * g[(k - np.arange(0, nper * Nn)) % Nn]))
+                     for k in range(Nn)])
+    Rdef = np.mean(np.stack([sig2[k] * np.outer(P2[:, k], P2[:, k])
+                             for k in range(Nn)]), axis=0)
+    relAB = np.linalg.norm(R - Rdef) / np.linalg.norm(Rdef)
+    assert relAB < 2e-3, \
+        'eq (22) sum and the definition integral disagree by %.3e; they ' \
+        'share only the modes, so this is the transcription' % relAB
+
+    ## C: cycle-mean transverse Lyapunov covariance
+    Ps = [np.asarray(P, float)[:m, :m] for P in info['orbital_samples']]
+    G = [np.asarray(gg, float)[:m, :m] for gg in info['growth_samples']]
+    ts = np.asarray(info['times'], float)[:len(Ps)]
+    Pm = np.mean(np.stack([Ps[j] - (ts[j] / Tp) * G[j] for j in range(len(Ps))]), axis=0)
+    ratio = np.linalg.norm(R) / np.linalg.norm(Pm)
+    relAC = np.linalg.norm(R - Pm) / np.linalg.norm(Pm)
+    assert abs(ratio - 1.0) < 1e-2, \
+        'magnitude against the Lyapunov cycle-mean is %.6f, not ~1; a clean ' \
+        'factor here is a convention (one-sided CY, or the state-block ' \
+        'normalisation this test was written to catch)' % ratio
+    assert relAC < 5e-2, \
+        'shape residual against the Lyapunov cycle-mean is %.3e; 3%% is the ' \
+        'recorded OPEN residual, bounded at 5%% here rather than tuned' % relAC

@@ -7437,6 +7437,102 @@ class PAC(Analysis):
         cw = V.conj().T @ K @ V
         return cw, modes, K
 
+    ORBITAL_HARMONICS = 32
+
+    def orbital_correlation(self, pss, H=None):
+        """`R_yy(0)` and the `C_lhj` of Traversa & Bonani eq (22) — A9 step 3.
+
+        Returns `(R, C)`.  `R` is the STATIONARY transverse (orbital)
+        state covariance, `m x m` real symmetric — eq (23),
+        `R = Σ_{l≥2,h,j} C_lhj`.  `C` maps `(l, h, j)` to the `m x m`
+        complex coefficient, over every non-null orbital mode `l ≥ 2` and
+        harmonics `|h|, |j|, |j'| ≤ H`.  `H` defaults to
+        `ORBITAL_HARMONICS`; van der Pol converges by `H = 4`, and a
+        strongly non-sinusoidal orbit needs more — check by raising it.
+
+        ⚠ STATIONARY WHITE SOURCES ONLY, and that is what makes it
+        computable without `B`.  Eq (22) needs the Fourier coefficients
+        of `v_l(t)^T B(t)`; with `CY = B B^T` constant those products
+        collapse to `V~_{l'k}^T CY V~*_{lk'}`, so the noise enters only
+        through the reduced `CY` that `_cy_reduced` already refuses to
+        hand over when it is bias-dependent.
+
+        ⚠ `CY/2`, NOT `CY`.  The library's `CY` is one-sided; eq (22)
+        integrates `B B^T` as a two-sided intensity.  Consistent with the
+        `kT/C`-calibrated Monte Carlo injection `Var(i) = CY/(2h)` in this
+        file's record, and confirmed here by three routes agreeing.
+
+        ⚠⚠ GATED THREE WAYS, because a modal sum transcribed from an image
+        of an equation is exactly the object this record distrusts.  On
+        van der Pol under gear: (i) this sum against `R_yy(0)` evaluated
+        from its DEFINITION as a 1-D Lyapunov integral along the orbital
+        mode, no Fourier machinery — agree to 3.5e-4; (ii) both against
+        the CYCLE-MEAN transverse part of `oscillator_covariance`'s
+        samples (`P(t_j) - (t_j/T)·growth_samples[j]`), which shares no
+        machinery with either — magnitude to < 1e-3.  That third route is
+        what found the state-block scale defect in `floquet_modes`.
+
+        ⚠ THE REFERENCE IS THE CYCLE MEAN, NOT `K_orb(0)`.  Lemma 3.5's
+        `R∞_yy` depends on `τ` only — the stationary part.  At `t = 0`
+        van der Pol's amplitude direction is pure-v while this is
+        isotropic, which is a rotating radial direction averaged over a
+        cycle, not a disagreement.
+
+        ❌ OPEN: a 3 % SHAPE residual against the Lyapunov reference,
+        while the two modal routes agree with each other to 3.5e-4.  Not
+        a factor (the scalar-fit residual is unchanged by the scale fix).
+        Attributed, not proven, to the reference being the PAIR covariance
+        under gear sliced to its state block; the clean comparison needs
+        the plain-path Lyapunov solve, which is still gear-only.
+        """
+        H = self.ORBITAL_HARMONICS if H is None else int(H)
+        modes = pss.floquet_modes(pss)
+        m = self.cir.n - 1
+        Tp = float(pss.period)
+        w0 = 2.0 * np.pi / Tp
+        CY2 = 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0)))
+        orb = [k for k, md in enumerate(modes)
+               if abs(abs(md['lam']) - 1.0) > 1e-6]
+        if not orb:
+            raise ValueError(
+                'PAC.orbital_correlation: no orbital mode -- every non-null '
+                'multiplier sits on the unit circle.')
+
+        def fcoef(P):
+            X = np.asarray(P)[:, :-1]
+            N = X.shape[1]
+            return np.fft.fft(X, axis=1) / N, N
+
+        U, V, N = {}, {}, None
+        for k in orb:
+            U[k], N = fcoef(modes[k]['p'])
+            V[k], _ = fcoef(modes[k]['q'])
+        H = min(H, N // 2 - 1)
+        hs = np.arange(-H, H + 1)
+        idx = lambda k: k % N
+
+        C = {}
+        R = np.zeros((m, m), dtype=complex)
+        for l in orb:
+            mul = modes[l]['mu']
+            for lp in orb:
+                mulp = modes[lp]['mu']
+                for j in hs:
+                    Ulj = U[l][:, idx(j)]
+                    ## the Lambda products for every (h, j') at once
+                    Vl_hj = V[l][:, idx(hs - j)]              # m x nh  (h - j)
+                    for jp in hs:
+                        res = 1.0 / (1j * (j - jp) * w0 - mulp - np.conj(mul))
+                        outer = res * np.outer(U[lp][:, idx(jp)], np.conj(Ulj))
+                        Vlp_hjp = V[lp][:, idx(hs - jp)]      # m x nh  (h - j')
+                        sc = np.einsum('ih,ik,kh->h', Vlp_hjp, CY2, np.conj(Vl_hj))
+                        for hi, h in enumerate(hs):
+                            term = sc[hi] * outer
+                            key = (l, int(h), int(j))
+                            C[key] = C.get(key, 0.0) + term
+                            R += term
+        return np.real(R), C
+
     def diffusion_constant(self, pss):
         """`c` — the phase diffusion constant, in seconds.
 
