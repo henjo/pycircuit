@@ -10666,3 +10666,97 @@ def test_lte_grid_refuses_what_it_cannot_derive():
         pss.lte_grid(period=0.0)
     with pytest.raises(ValueError, match='tstab must not be negative'):
         pss.lte_grid(period=1.0, tstab=-1.0)
+
+
+def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
+    """⚠ TWO INDEPENDENT CODE PATHS TO ONE PHYSICAL CONSTANT.
+
+    This is the cross-check Kundert actually describes (*Introduction to
+    RF Simulation*, p. 11–12), which is NOT a second corner formula. He
+    gives the corner as `fΔ = cπf₀²` — identical to `phase_psd`'s — and
+    says the small-signal sweep *"does not show the roll off"* but that
+    *"it is possible to use (15) to determine fΔ"*, i.e. fit `c` from the
+    far `1/Δf²` skirt and apply the same formula. So the independently
+    checkable object is **`c`**, not the corner.
+
+    The two routes share the PSS and the noise sources and nothing else:
+
+      A. `diffusion_constant()` — the PPV contracted against `CY`.
+      B. the swept `pnoise` skirt, normalised to carrier power, via
+         `L(Δf) = c f₀²/Δf²`.
+
+    Measured, van der Pol at 1600 points:
+
+        Δf/f₀      c from the skirt
+        1e-2       7.510951726e-08    ← outside the valid window
+        3e-3       6.381291626e-08
+        1e-3       6.263389371e-08
+        3e-4       6.251214799e-08
+        1e-4       6.250576334e-08    ←→ 6.250576786e-08 from path A
+
+    ⚠⚠ **THE ESTIMATOR MUST BE THE LIMIT, NOT AN AVERAGE.** A first
+    version of this took the median across all five offsets and reported
+    the two paths agreeing to 0.2 % — which is not a measurement of the
+    disagreement, it is a measurement of how many invalid offsets were
+    included. Kundert states the window as `fΔ ≪ Δf ≪ f₀`; the outermost
+    point here is 20 % high because it is outside it, not because either
+    path is wrong.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 600, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+    assert pss.converged
+
+    pac = PAC(cir)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cA = float(pac.diffusion_constant(pss))
+    f0 = 1.0 / pss.period
+
+    ## carrier power in the fundamental, from the PSS waveform's own DFT.
+    ## ⚠ `A²/2`, the CARRIER POWER -- not a PSD convention; see the entry
+    ## on the "factor of two" that this normalisation once looked like.
+    X = np.asarray(pss.waveform[1], dtype=float)[0][:-1]
+    A1 = 2.0 * np.abs(np.fft.rfft(X)[1]) / len(X)
+    Pc = 0.5 * A1 * A1
+    assert abs(Pc - 2.0) < 1e-3, \
+        'van der Pol amplitude 2 gives carrier power 2; got %.6f' % Pc
+
+    ob = [str(nd) for nd in cir.nodes].index('v')
+    got = {}
+    for k in (1e-3, 1e-4):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S, _ = pac.pnoise(pss, f0 * (1.0 + k), ob)
+        df = k * f0
+        got[k] = float(np.real(S)) / Pc * df * df / (f0 * f0)
+
+    ## deep in the skirt the two paths must agree tightly
+    rel = abs(got[1e-4] - cA) / cA
+    assert rel < 1e-4, \
+        'the swept-noise `c` (%.9e) and diffusion_constant (%.9e) disagree ' \
+        'by %.3e at Delta f/f0 = 1e-4. These are independent paths -- the ' \
+        'PPV quadratic form against adjoint sideband propagation -- so a ' \
+        'disagreement is a normalisation error in one of them, which is ' \
+        'the class of defect a kT/C reference once caught in `c` itself' \
+        % (got[1e-4], cA, rel)
+
+    ## ⚠ AND IT MUST IMPROVE AS THE WINDOW IS ENTERED, which is what says
+    ## the residual is the window rather than a constant offset
+    assert abs(got[1e-4] - cA) < abs(got[1e-3] - cA), \
+        'the skirt estimate does not converge toward diffusion_constant ' \
+        'as the offset enters Kundert\'s window (%.9e at 1e-3, %.9e at ' \
+        '1e-4, against %.9e)' % (got[1e-3], got[1e-4], cA)

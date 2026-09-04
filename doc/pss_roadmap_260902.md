@@ -4571,10 +4571,55 @@ above is second order, so the measurement confirms it exactly where the theory s
 ✅ **AN INDEPENDENT CHECK ON SOMETHING WE ALREADY SHIP.** Kundert, *Introduction to RF
 Simulation* §3.5, gives the swept small-signal result's validity window as `f_Δ ≪ Δf ≪ f₀`,
 states it is in error below it, and shows **how to obtain `f_Δ` from the swept result itself**.
-`PAC.phase_psd` currently *predicts* the corner in closed form — `f_h = π i² f₀² c`,
-`shooting.py:7419` — and **refuses** below it. That prediction has never been checked against
-anything. Reading the corner off a sweep is a reference the closed form cannot influence, which
-is the one kind of check this campaign trusts. **Cheap, and unrun.**
+`PAC.phase_psd` predicts the corner in closed form — `f_h = π i² f₀² c`, `shooting.py:7419` — and
+**refuses** below it.
+
+⚠⚠ **AN EARLIER VERSION OF THIS PARAGRAPH SAID THAT PREDICTION "HAS NEVER BEEN CHECKED AGAINST
+ANYTHING". THAT WAS WRONG — checked 2026-09-04 by reading the tests rather than assuming.** Three
+gates already stand:
+
+  * `test_the_lorentzian_conserves_the_carrier_power_exactly` — `∫S_i df = 1` to 1e-6, integrated
+    **numerically over the implemented function** (not re-derived) for 3 values of `c` × 3
+    harmonics. This is Kundert's own eq (19) invariant.
+  * `test_the_lineshape_is_lorentzian_where_it_should_be` — peak `1/(π²i²f₀²c)`, the `1/f²` skirt
+    asserted **as a rate**, and the half-width `π i² f₀² c`. ⚠ That half-width assertion is
+    algebra against the same algebra, so it is self-consistency rather than an external check.
+  * `c` itself is gated against a **Monte Carlo**, with a `kT/C` reference recorded as having
+    caught a factor-of-two that a same-assumption Monte Carlo had confirmed.
+
+✅ **AND THE CLOSED FORM AGREES WITH KUNDERT'S, READ FROM THE SOURCE** (`07-shooting-methods/`,
+*Introduction to RF Simulation and its Application*, p. 11): *"The corner frequency fΔ is known as
+the **linewidth** of the oscillator and is given by **fΔ = cπfo²**"* — identical to ours at the
+fundamental, and our `i²` is the `i`-th harmonic's scaling.
+
+⚠ **WHAT KUNDERT'S "GET IT FROM THE SWEEP" ACTUALLY IS, which is not what it was relayed as.** He
+does not give a separate corner formula. He says the small-signal analysis *"does not show the
+roll off"* but that *"it is possible to use (15) to determine fΔ"* — i.e. **fit `c` from the far
+`1/Δf²` skirt of the swept result and apply the same formula.** So the genuinely independent
+check is not on the corner formula but on **`c` itself, by two code paths**: the swept noise path
+against `diffusion_constant()`. ✅ **THAT was the unrun item, and it is now RUN — the two paths agree to seven figures.**
+
+    Δf/f₀      c from the swept skirt        c from diffusion_constant()
+    1e-2       7.510951726e-08               ← outside Kundert's window
+    3e-3       6.381291626e-08
+    1e-3       6.263389371e-08
+    3e-4       6.251214799e-08
+    1e-4       6.250576334e-08          ←→   6.250576786e-08
+
+The routes share the PSS and the noise sources and **nothing else** — path A contracts the PPV
+against `CY`; path B propagates sidebands through the adjoint rows and normalises to carrier
+power. Agreement at `Δf/f₀ = 1e-4` is **7e-8 relative**. ✅ And `P_carrier = 2.000009` against the
+analytic `A²/2 = 2`, which independently re-confirms the carrier-power normalisation from §0i.
+
+⚠⚠ **THE ESTIMATOR HAD TO BE THE LIMIT, NOT AN AVERAGE — AND THE FIRST VERSION GOT THAT WRONG.**
+Taking the *median* across all five offsets reported the two paths agreeing to 0.2 %, which is not
+a measurement of their disagreement but of **how many invalid offsets were included**. Kundert
+states the window as `fΔ ≪ Δf ≪ f₀`; the outermost point is 20 % high because it is outside it.
+**An average over a validity boundary reports the boundary, not the quantity.**
+
+Pinned by `test_c_agrees_between_the_ppv_form_and_the_swept_noise_path`, which asserts both the
+tight agreement inside the window and that it *improves* as the window is entered — the second
+being what distinguishes a window effect from a constant offset.
 
 ⚠ **WE ARE NOT EXPOSED TO §10 OF THE CITATION MAP.** It warns that a crossfade weight,
 `√(1.5 − |f|/W)` band edges and a Lorentzian cap are implementation choices with **no literature**
