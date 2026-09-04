@@ -66,7 +66,7 @@ from seven sides**, and they enter through structurally different doors:
 |---|---|---|
 | (a) | **numerical distinguishability** — `λ₁ = 1` cannot be separated from `λ₂ ≈ 1`, so eigen-based PPV extraction fails | **Demir & Sangiovanni-Vincentelli 1998, Table 6.4 — a REPORTED failure**, the stated motivation for Demir, Long & Roychowdhury 2000; 2003 is the fuller procedure |
 | (b) | **conditioning** — the bordered Jacobian degrades; `σ_min` tracks `T/τ` over six decades | Lai DAC 2006; measured here |
-| (c) | **truncation validity** — the single-mode reduction needs `\|exp(η_i)\| ≪ 1` | Demir 1998 (6.72) — ⚠ **the SAME condition as (a), seen from the other side**: the book says (6.72) holds for "most" oscillators and defers the exceptions to its high-Q crowding discussion, which is (a). One condition: an approximation that stops holding, and an algorithm that stops working |
+| (c) | **truncation validity** — the single-mode reduction needs `\|exp(η_i)\| ≪ 1` | Demir 1998 (6.72) — ⚠ **the SAME condition as (a), seen from the other side**: the book says (6.72) holds for "most" oscillators and defers the exceptions to its high-Q crowding discussion, which is (a). One condition: an approximation that stops holding, and an algorithm that stops working. ⚠⚠ **AND IT IS THE SAME NUMBER, NOT JUST THE SAME CONDITION**: `η_i` is the exponent times the period, so `exp(η_i)` **is** `λ_i` and (6.72) reads `\|λ₂\| ≪ 1` — the settling `Q` itself. Reading "≪ 1" as 0.05 puts the bound at **`Q_λ < 0.334`**. Our ordinary gates (`Q_λ = 0.14`) sit inside it; **the entire high-Q programme does not** — `\|λ₂\| = 0.730` at `Q_λ = 3.18`, `0.9845` at 64. So the closed-form single-mode variance has **no justification anywhere in the high-Q sweep**. ❌ **Which shipped surface rests on (6.72) is NOT identified in the tree** — no function cites it — and naming one by guess would be §D 0q; identifying it is the precondition for a docstring caveat |
 | (d) | **theory validity** — two multipliers at 1 means no asymptotic phase; the PPV is undefined | Demir 2006 |
 | (e) | **settling and ringing** — long `tstab`, ringing impulse response, large `M` | SpectreRF; Hull & Meyer; the probe methods |
 | (f) | **method-dependence of the value** — backward Euler biases `λ₂` low, so `Q` is method-dependent | measured, docs session |
@@ -4988,6 +4988,20 @@ unremedied except by `x0_unknown`, which costs the waveform (see above). ✅ **W
 move this is understanding why `k = 1` converges as a contraction and `k = 2` does not** — the
 frame error the record names, with the true `dF/dx_in` singular. That is an analysis item, not a
 build.
+
+⚠ **NARROWED 2026-09-04 (docs session, measured):** the obvious mechanism — `dx(0)/dx_in = A_eu^k`
+becoming ill-conditioned with `k` — is **refuted**. On the series RLC, cond over the non-null
+directions is 1.60 / 2.04 / 2.67 at `k` = 1/2/3 (100 pts) and 1.43 / 1.47 / 1.52 (400 pts), with
+**rank 2 at every `k`**. The algebraic directions are annihilated by ONE Euler step and no more
+annihilated by two, so the singularity of `dF/dx_in` is *identical* for `k = 1` and `k = 2`.
+Whatever separates them is **not** rank and **not** the conditioning of the pre-image map.
+
+⚠ **AND THE CORPUS DOES NOT REACH IT** — looked for, not assumed. Estévez Schwarz & Tischendorf
+2000 characterise which `x(0)` are *consistent* and defer initialisation to three Humboldt
+technical reports we do not hold. The closest title in existence to this question is
+**März & Rodríguez Santiesteban, "Analyzing the stability behaviour of DAE solutions and their
+approximations", TR 99-2, Humboldt-Universität Berlin, 1999** — an acquisition, not a search, if
+this becomes worth chasing.
 
 ⚠ **Two instrument errors in this attempt, both mine, both from the record's own list:** a
 `pkill -f "pre_b[.]py"` that killed its own launcher because the *other* lines of the same command
