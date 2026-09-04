@@ -3799,7 +3799,11 @@ class PSS(Analysis):
         ## against 1e-15 for the physical pair. Returning them invites a
         ## caller to average over a mode that means nothing.
         keep = [k for k in range(n) if abs(lam[k]) > self.FLOQUET_NULL_TOL]
-        for k in keep[:int(nmodes)]:
+        ## ⚠ `None` means ALL non-null modes -- the default since the IET CDS
+        ## 2011 correction -- and it used to fall into `int(None)` here because
+        ## the only test passed a number. A default nobody exercises is not a
+        ## default.
+        for k in (keep if nmodes is None else keep[:int(nmodes)]):
             lk = complex(lam[k])
             uk, vk = U[:, k].astype(complex), V[:, k].astype(complex)
             nrm = complex(np.vdot(vk, uk))

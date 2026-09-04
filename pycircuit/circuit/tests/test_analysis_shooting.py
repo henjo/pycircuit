@@ -10803,6 +10803,12 @@ def test_floquet_modes_are_genuinely_periodic():
                   maxiterations=300)
     assert pss.converged
 
+    ## ⚠ THE DEFAULT PATH FIRST. `nmodes=None` returns every non-null mode
+    ## and is the documented default; it raised `int(None)` for an hour
+    ## because this test only ever passed a number.
+    modes = pss.floquet_modes(pss)
+    assert len(modes) == 2, \
+        'the default (all non-null modes) returned %d, expected 2' % len(modes)
     modes = pss.floquet_modes(pss, nmodes=2)
     assert len(modes) == 2, 'expected two non-null modes, got %d' % len(modes)
 
