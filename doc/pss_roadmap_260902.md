@@ -3111,6 +3111,56 @@ variables, unlike a synthesised filter), and Mahmutoglu & Demir's whitening unde
 **the error grows without bound as the offset decreases**. `_Flicker` is a test-only element;
 no shipped source is coloured yet.
 
+#### A4d-fold. The phase diffusion is folded PER HARMONIC — ✅ **BUILT 2026-09-04**; `c + Γ` is retired
+
+`phase_psd` computed `S_φ = i²f₀²(c + Γ(f))/f²`, with `c` reading `CY` at ONE frequency (`2π/T`) as if
+it held at every harmonic and `Γ` the `l = 0` term at the offset. The correct object is the fold per
+harmonic, each read at its own **source-side** frequency — what `pnoise` has done since A3:
+
+    c(f) = Σ_l V_lᴴ (CY(2π|f − l f₀|)/2) V_l,      V_l = Fourier coefficients of the equation-row PPV
+
+`PAC.coloured_diffusion_resolved` is that sum; `phase_psd` uses it. Pinned three ways:
+
+* **Parseval at round-off.** With `CY` constant the sum IS `c`, and with the same step-weighted
+  quadrature the discrete identity holds to **4e-16** (asserted at 1e-12). That equality pins the
+  transform's normalisation — the one thing a Fourier fold gets wrong silently (by `N`, `T`, `2π`).
+* **`pnoise/P_carrier`** on a Lorentzian-coloured van der Pol (`τ = 0.3T`): 1.8e-3 at `Δf/f₀ = 1e-3`,
+  2.6e-4 at `1e-4` — the SAME residual as the white control row, so it is the sideband
+  discretisation, not the colour.
+* **The double count, on the one fixture that can see it.** `Γ` is exactly the `l = 0` term, so
+  `c + Γ − c_res == Γ` to round-off. On van der Pol that is `1e-22·c` and proves nothing. On
+  `_lc_osc(a=0.25, rs=0.2)` `Γ/c = 4e-3`, so the retired form was **0.4% high for a WHITE source**
+  there; the test asserts `Γ/c > 1e-3` first so the identity is not proved on a zero (§D 0m).
+
+⚠ **WHY NO FIXTURE COULD SHOW IT, measured not argued.** Two "asymmetric" cores were built to expose
+the double count: `0.25μ(u² − 2)` (`|V₀|/|V₁| = 2.8e-4`) and `0.3u²` (`0.77` by norm, period 6.28 →
+6.73 — genuinely bias-sensitive). `Γ` was `1e-27` on BOTH. The `0.77` was the **inductor-current row**:
+an inductor to ground shorts the tank node at DC, so a `u²` term moves the PPV's DC component into
+`i_L`'s row, which an `IS` at the node never contracts. A flicker source at the tank node of ANY LC
+core cannot upconvert through `l = 0`, whatever the core does — the same structural identity
+`test_coloured_upconversion_needs_asymmetry_AND_loss` records, met again from the other side. A third
+attempt (series `R` after `L`, `0.3u²`) collapsed to `T = 0` with symmetry 1.000 and ratio exactly
+2.0 — the constant-PPV limit, a vacuous fixture. §D 0b, three times in one afternoon.
+
+⚠ **THE CORNER IS THE WHITE LORENTZIAN'S, and the first build got that wrong.** Taking the folded
+value nearest the carrier as `c` for `f_h = πi²f₀²c` put a `1/f` source's corner ABOVE the offsets
+and in front of the power bound — the floor that actually binds for colour — and the existing flicker
+test caught it on the first run. `_white_diffusion_at(pss, w)` is the split-out white functional at
+one frequency; `phase_psd` reads it at the carrier for the corner as it always did, and
+`diffusion_constant` is now that call behind a refusal of colour — the refusal its docstring claimed
+since it was written. `oscillator_spectrum` refuses through it (its Lorentzian is exact for white
+only, by its own docstring).
+
+⚠ **WHAT IS STILL OPEN HERE (not built):** the orbital term `S_yy(ω)` for a coloured source
+(`orbital_correlation` refuses colour); and a pnoise DEFICIT — on the `0.3u²` core with a WHITE
+source `pnoise/P_c·(Δf/f₀)²` sits **14% BELOW** `c` at `Δf/f₀ = 1e-3…1e-5` (flat) and 51% below at
+`1e-2`, where symmetric vdp shows 16% ABOVE at `1e-2` and equality below. A shoulder adds; it cannot
+put `pnoise` under the phase floor. Candidates, none tested: T&B's correlation term negative there
+(only its `τ = 0` value is forced to zero), the phase-only reference `|X₁|²f₀²c/Δf²` wrong when
+harmonics are strong (`|V₂|/|V₁| = 0.33`), or `T/400` on a non-sinusoidal orbit. The peer's
+position test for the excess (peak at `f/f₀ = 1/(2πQ_λ)`, moving as `1/Q_λ`) is the right instrument
+for the vdp EXCESS and is queued; it cannot explain a deficit and must not be credited with one.
+
 ### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
 
 Directive: *"we will need driven oscillators for pll analysis"*. Recorded now while the
@@ -4109,6 +4159,22 @@ floor and Gourary's direct route would lift the cap; if it falls with refinement
 to gain."* It fell at the textbook rate. A plateau was the falsifiable outcome and it did not
 occur.
 
+#### B15-obreshkov. If Obreshkov/Gourary is ever built — ⚠ DE-RISKED BY THE REVIEW SESSION 2026-09-04, recorded so it is not re-derived
+
+From the peer session, verified by exact rational arithmetic and an order check on all five methods:
+Gourary's (10) coefficients in closed form are `a_i = (−1)^i (l+m−i)!/(l+m)! · m!/(i!(m−i)!)`,
+`b_i = (l+m−i)!/(l+m)! · l!/(i!(l−i)!)`; `l=0,m=1` gives backward Euler and `l=m=1` trapezoid.
+**Table 1's fifth row is a typo** (`l=0, m=2` prints `a₁ = 1`; Taylor forces `−1`, and the printed
+value does not converge at any `h`). **Every `a₁` is negative**, so the Jacobian block
+`C − a₁hG − a₂h²G′v̇` is a positive addition (`C + hG/2` at order 4) — anyone carrying `C + hG/2`
+from the trapezoidal companion will "correct" the source's minus and be wrong twice. (17), (18),
+(19), (22) all carry the minus form; an earlier claim that the paper was sign-inconsistent between
+(17) and (22) is retracted by its author. The sensitivity right-hand side `p₁` carries BOTH the
+incoming state and the incoming DERIVATIVE sensitivity (`−b₂hG(vₙ)·h dv̇ₙ/dv₀`); dropping the second
+corrupts the monodromy while Newton still converges. And (22) drops the `G′`, `C′` terms of (20)/(21)
+deliberately — an inexact Newton, fine, and an APPROXIMATE monodromy, not fine when `λ₂` is the
+quantity under study.
+
 ### B16. The manufactured opener DOES cap λ₂'s order on an INDEX-1 circuit — ⚠⚠ **CONFIRMED 2026-09-04, AFTER TWO WRONG REFUTATIONS OF MY OWN**
 
 ⚠⚠⚠ **THE SHIPPED `x0_unknown` DEFAULT IS TOO NARROW FOR MONODROMY ACCURACY.** It keys off
@@ -4169,6 +4235,40 @@ ARITHMETIC.**
 the requested `npts`** — `t = pss.waveform[0]; N = len(t) − 1; h = per/N` — so the exponent and
 the step are consistent by construction. The script now also asserts `h·N == T` and that `h`
 matches the waveform's actual first step before using either.
+
+#### B16-review. Two corrections from the review session and a measured order gap at INDEX 1 — ⚠⚠ 2026-09-04, DECISION FOR THE USER
+
+* **März's norm is `C¹_N`, not `C¹`.** The "close in `C¹`" quote is his index-1 passage (p. 271);
+  the index-2 result is Theorem 4.5 (pp. 284–285), stated in `‖x‖ = ‖x‖_∞ + ‖(Px)′‖_∞` — derivative
+  closeness on the **P-projected (differential) component only**. The pre-roll test as first stated
+  (`‖ẋ_manufactured(0) − ẋ_orbit(0)‖` vs `k`) measures the wrong object; **project first**. And März
+  explicitly permits an INCONSISTENT `x₀` ("no need for `x₀` to satisfy the second equation … but
+  also the hidden constraint"), so "the pre-image is off the constraint manifold" is not a mechanism
+  he licenses. Sharper prediction: `‖P(ẋ − ẋ_orbit)‖` grows with `k` while the value distance need
+  not; if it is flat in `k` the `C¹_N` story is dead and constraint violation cannot replace it.
+* **"Circuit MNA is Form-B-shaped" is the reviewer's inference, not Bereza's**; the thesis never
+  mentions MNA. Bereza also does not flag index 2 as a known gap — he says only that his guarantees
+  cover two index-1 forms. Nothing on either side predicts a state/monodromy gap FROM THE INDEX.
+* **The `li_plus_rc` "refutation branch" is STRUCK — it was confounded.** That topology auto-enables
+  `x0_unknown`, so trap's monodromy there was repaired before the comparison started. Held at
+  `x0_unknown=False` it gives `5.053e-04, 1.253e-04, order 1.01` — bit-identical to plain RC.
+* ⚠⚠ **The gap is measured on an ORDINARY INDEX-1 RC, on the default method**, against the exact
+  pencil monodromy and the analytic RC transfer function (`VSin − R(1e4) − C(1e-6)`, trapezoidal):
+
+        x0_unknown        state order   monodromy order   state err@100   mono err@100
+        False (default)    2.01/2.00      1.01/1.00         3.36e-04        5.05e-04
+        True               2.01/2.00      2.01/2.00         2.15e-02        5.01e-07
+
+  Second-order state, FIRST-order monodromy; trap's monodromy is 10× WORSE than backward Euler's
+  (`5.05e-05`). `x0_unknown=True` restores order 2 and a thousandfold at `N = 100` — at a **64× state
+  cost**, which is why the unconditional default failed 13 tests (B1) and why "enable regardless of
+  topology" is already measured as not free. Gear is immune (solved history, no opener) and refuses
+  the flag with the reason. **The index has nothing to do with it; the manufactured opener does.**
+
+**The decision, the user's:** for a one-step method, either enable `x0_unknown` whenever a
+monodromy is REPORTED (`floquet_modes`, `ppv`, `info['Q']`, the Floquet paths) and keep the state
+path as it is, or state plainly that `λ₂` from a manufactured opener is first-order. Today the number
+looks like a second-order method's output and is not one.
 
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
