@@ -4412,6 +4412,39 @@ is a pure function of the reporting threshold —
 ⚠ **W&R's 5 % lands within 4.9 % of the threshold that would make the two coincide, which is why
 their agreement READS as an identity and is not one.**
 
+✅⚠ **THREE CASES, NOT TWO — AND THE THIRD RETURNS TO π FOR A REASON.** The ratio is a property of
+the **core's compression**, not of the formulation. All three measured or derived-then-measured
+here:
+
+| core | `Q_λ` | `Q_d/Q_λ` |
+|---|---|---|
+| **passive** resonator | `Q_d/π` | **π** |
+| **soft-compressing** (cubic) | `1/(2π(g − α))` | `2π(g − α)/α` — a **design quantity** |
+| **amplitude-clamping** (hard limiter) | `1/(πα)` | **π**, drive-independent |
+
+**The clamping case was relayed as an assertion and is now derived and measured.** A hard
+limiter's describing function is `N(A) = 4a/(πA)`; at equilibrium `4a/(πA) = α`, so
+`dN/dA = 4a/(πA²) = α/A` and the amplitude rate is `(A/2)(α/A) = α/2` — **independent of the
+drive `a`**, because the equilibrium condition pins the slope. Over one period `exp(−πα)`, giving
+`Q_λ = 1/(πα)` and ratio π.
+
+    G      a      k·A     info['Q']    pred 1/(πG)   Q_d/Q_λ
+    0.02   0.02    25.4   15.935730     15.915494    3.13760
+    0.02   0.04    50.9   15.920465     15.915494    3.14061
+    0.02   0.08   101.9   15.916669     15.915494    3.14136
+    0.01   0.02    50.9   31.841200     31.830989    3.14059
+    0.04   0.04    25.4    7.966809      7.957747    3.13802
+    0.08   0.08    25.5    3.981092      3.978874    3.13984
+
+⚠ **THE APPROACH TO π IS MONOTONE IN CLAMP HARDNESS** — 3.1376 → 3.1406 → 3.14136 as `k·A` goes
+25 → 51 → 102 — which confirms the *mechanism* and not merely the number, since the derivation
+assumes a hard limiter. And `info['Q']` tracks `1/(πG)` while **ignoring `a`**: the exact opposite
+dependence from the cubic core, where it tracked `1/(2π(a − G))` and ignored `G`.
+
+⚠⚠ **SO "MULTIPLY BY π" IS RIGHT FOR TWO OF THE THREE AND WRONG FOR THE ONE IN BETWEEN**, which is
+the soft-compressing core most transistor oscillators actually are. A constant that holds at both
+ends and fails in the middle is the worst possible shape for a rule of thumb.
+
 ⚠⚠ **TWO CONSTANTS, NOT INTERCHANGEABLE.** `ln(20) = 2.9957` converts between the `1/e` and 5 %
 **reporting conventions** — a choice. `π` converts a **passive** resonator's settling `Q` to its
 energy `Q` — a per-period decay. ⚠ **Neither converts an oscillator's `info['Q']` into anything
