@@ -4235,6 +4235,10 @@ numerical one**, and Gourary's Obreshkov single-step orders 1–4 carry no histo
 objection has a published way round it. **Nothing here recommends building that** — it records
 that the argument we were leaning on is weaker than it read.
 
+⚠ **AND `info['Q']` DOES NOT REPORT A CRYSTAL'S DATASHEET `Q`** — see A9: it is the settling
+rate `1/(2π(a − G))`, measured bit-identical across an 8× sweep of the component-set tank `Q`. A
+designer reading `info['Q']` and expecting the motional `Q` gets an unrelated number.
+
 **Not tested:** a real motional-arm + `C₀` model with a sustaining amplifier; startup; and
 loaded-vs-unloaded `Q`. The fixture is a van der Pol at `μ = 1/(2πQ)`, which isolates `Q` and is
 second order — see A9 on why second order is where a resonator `Q` is unambiguous.
@@ -4331,15 +4335,73 @@ phase-only spectrum reads FAR from the carrier** — one number doing two jobs, 
 the resonator's. I predicted these were **different objects** and recorded the identification as
 unverified.
 
-✅⚠ **MEASURED 2026-09-04, AND THE PREDICTION WAS WRONG — THEY AGREE.** Van der Pol at
-`μ = 1/(2πQ_target)`, 400 points, gear:
+⚠⚠⚠ **AN EARLIER VERSION OF THIS ENTRY SAID "MEASURED — THEY AGREE" AND THAT OVERCLAIMED. THE
+FIXTURE CANNOT TEST THE IDENTIFICATION, BECAUSE BOTH SIDES COME FROM THE SAME `μ`.** For van der
+Pol the amplitude envelope decays as `exp(−μT)` with `T = 2π`, so setting `μ = 1/(2πQ_target)`
+gives `|λ₂| = exp(−1/Q_target)` and therefore `Q = −1/ln|λ₂| = Q_target` **identically**. Pure van
+der Pol's linear part is undamped — it has **no independent resonator `Q`** to compare against.
+
+✅ **WHAT THE RUN DOES ESTABLISH, which is worth having:** `ppv()` computes the settling count it
+claims to, to 0.1 %, and the ratio landing at 1.00 rather than `ln(20) = 3.00` pins its threshold
+convention as `1/e` **from data** rather than from reading the source. ❌ **What it does NOT
+establish is "settling `Q` = resonator `Q`"** — §D shape 2, a number compared against itself.
+
+⚠⚠⚠ **AND THE FIXTURE THAT CAN TEST IT SAYS `info['Q']` IS *NOT* THE UNLOADED RESONATOR `Q`.
+MEASURED 2026-09-04.** Parallel `LC` tank, `L = C = 1`, with the two knobs **separated**: a linear
+conductance `G` sets the **unloaded tank** `Q = 1/G`, and a nonlinear negative conductance `a`
+supplies the loss back, so the amplitude relaxation goes as `(a − G)`.
+
+**Hold the settling rate fixed at `a − G = 0.02` and sweep the tank `Q` across 8×:**
+
+    G          0.010     0.020     0.040     0.080
+    Q_res     100.0      50.0      25.0      12.5
+    info['Q']   7.958163  7.958163  7.958163  7.958163
+
+⚠ **BIT-IDENTICAL TO SEVEN DIGITS.** It does not move with the resonator `Q` at all. And holding
+`Q_res = 50` while varying `a` moves it freely — 7.958 → 2.652 → 1.134. Across every row
+`Q·(a − G) = 0.1592 = 1/(2π)`, so **`info['Q'] = 1/(2π(a − G))` exactly**: the settling rate, and
+nothing else.
+
+✅ **THE PRACTICAL STATEMENT, and it matters for A10:** a crystal's datasheet `Q` is the **unloaded
+motional** `Q`, and **`info['Q']` will not report it**. Do not read one and expect the other.
+
+⚠ **WHAT THIS DOES NOT SETTLE, stated so the result is not over-read.** In a self-sustained
+oscillator the active device cancels the loss, so the *unloaded tank* `Q` is not obviously the
+"energy `Q`" Wang & Roychowdhury mean. This measurement decisively separates `info['Q']` from the
+**component-set unloaded** `Q`; it does not adjudicate their claim about the energy `Q`, which
+would need their definition implemented independently.
+
+**The table, read for what it can support:** van der Pol at `μ = 1/(2πQ_target)`, 400 points,
+gear:
 
     Q_target      2.0        8.0       32.0      128.0      512.0
     info['Q']   1.998794   8.001725  32.017759 128.222454 515.346075
     ratio        0.9994     1.0002    1.0006     1.0017     1.0065
 
-⚠ **The ratio DRIFTS MONOTONICALLY UPWARD** — 0.65 % high at `Q = 512` — so it is close, not
-exact, and the error grows with `Q`. Do not use it as an identity at high `Q` without re-checking.
+⚠ **The ratio DRIFTS MONOTONICALLY UPWARD** — 0.65 % high at `Q = 512`. ⚠ **AND THE OBVIOUS
+READING OF THAT DRIFT IS ALSO WRONG.** It is not the identification degrading; it is the
+**formula's conditioning**. `Q = −1/ln|λ₂|` has `dQ/Q = Q·ε` for a fixed *absolute* error `ε` in
+`|λ₂|`, and `|λ₂| → 1` as `Q` rises. Inverting the table for the implied `ε`:
+
+    Q_target        2         8        32       128       512
+    implied ε   1.83e-04  2.38e-05  1.68e-05  1.35e-05  1.27e-05
+
+**Essentially constant from `Q = 32` upward**, while the relative error in `Q` grows linearly in
+`Q`. So the quantity to distrust at crystal `Q` is **`|λ₂|`**, and `Q` merely inherits its error
+multiplied by `Q`. (Diagnosis relayed by a peer session; the inversion is arithmetic on the table
+above.)
+
+✅ **CONFIRMED BY REFINEMENT AT FIXED `Q = 512`** — the test that separates "conditioning" from
+"breakdown". The drift **falls with `h`**, so it is discretisation in `|λ₂|` being magnified and
+the formula is sound:
+
+    npts        400        800       1600       3200
+    rel err   6.54e-03   8.27e-04   1.08e-04   1.48e-05
+    implied ε 1.28e-05   1.62e-06   2.11e-07   2.88e-08
+
+⚠ The rate is ≈ 7.9/7.7/7.3 per doubling rather than the 4 a second-order method would give on a
+generic functional — recorded as measured and **not explained here**; `|λ₂|` may converge faster
+than the trajectory does. Do not build on the rate without accounting for it.
 
 **The supporting paper is also in the library** (cited, not verified here): T. Wang and
 J. Roychowdhury, *"Rigorous Q Factor Formulation and Characterization for Nonlinear Oscillators"*,
