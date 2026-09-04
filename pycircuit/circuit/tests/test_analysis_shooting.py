@@ -10834,6 +10834,25 @@ def test_floquet_modes_are_genuinely_periodic():
             'other two — this is the check that catches a wrong lambda ' \
             'even when the eigenvector residual is clean' % (k, per)
 
+    ## ⚠⚠ AND THE STATE-BLOCK PAIR MUST BE BIORTHONORMAL, which the
+    ## periodicity check above CANNOT see (it is scale-free). Under gear
+    ## the width-n normalisation left q(0)^T p(0) = 1.324 on the width-m
+    ## block, and the orbital covariance built from these parts was too
+    ## large by exactly 1.324^2 against two independent routes.
+    for k, md in enumerate(modes):
+        c = complex(np.vdot(md['q'][:, 0], md['p'][:, 0]))
+        assert abs(c - 1.0) < 1e-9, \
+            'mode %d: q(0)^T p(0) = %.6f%+.6fj on the state block, not 1 -- ' \
+            'any covariance assembled from these parts is off by |c|^2' \
+            % (k, c.real, c.imag)
+        ## and the invariant must hold AROUND the cycle, not only at t = 0
+        Pm_, Qm_ = md['p'], md['q']
+        cyc = [abs(complex(np.vdot(Qm_[:, j], Pm_[:, j])) - 1.0)
+               for j in range(0, Pm_.shape[1], max(1, Pm_.shape[1] // 8))]
+        assert max(cyc) < 1e-3, \
+            'mode %d: q(t)^T p(t) drifts from 1 around the cycle by %.3e' \
+            % (k, max(cyc))
+
     ## ⚠ AND THE NULL MODES MUST BE ABSENT. A DAE monodromy has exact
     ## zeros; asked for more modes than exist, it must not pad with them.
     many = pss.floquet_modes(pss, nmodes=10)

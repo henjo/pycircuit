@@ -3845,8 +3845,27 @@ class PSS(Analysis):
             q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
                                  for j in range(len(qtraj))])
 
+            ## ⚠⚠ RENORMALISE ON THE STATE BLOCK. `v_k` was biorthonormalised
+            ## against `u_k` at the map's FULL width `n`; under a
+            ## solved-history map that is the pair `[x_n; x_{n-1}]`, and the
+            ## width-`m` state block then carries `q(0)^T p(0) = c0 != 1`.
+            ## MEASURED on van der Pol under gear: c0 = 1.324143, constant
+            ## around the cycle to four digits -- and the orbital covariance
+            ## assembled from these parts came out too large by EXACTLY
+            ## c0^2 = 1.7535 against two independent routes, because `q`
+            ## enters it quadratically. The periodicity gate p(T) = p(0)
+            ## cannot see this: periodicity is scale-free. On the plain path
+            ## n = m and c0 = 1, so this is a no-op there. The adjoint takes
+            ## the scale (the right vector is the physical direction).
+            c0 = complex(np.vdot(q[:, 0], p[:, 0]))
+            if abs(c0) < 1e-30:
+                raise ValueError(
+                    'PSS.floquet_modes: mode %d has q(0)^T p(0) = %.3e on the '
+                    'state block, so it cannot be biorthonormalised there.'
+                    % (k, abs(c0)))
+            q = q / np.conj(c0)
             out.append({'lam': lk, 'mu': muk, 'u0': uk, 'v0': vk,
-                        'p': p, 'q': q, 'times': tt,
+                        'p': p, 'q': q, 'times': tt, 'c0': c0,
                         'residual': float(np.linalg.norm(M @ uk - lk * uk)
                                           / max(abs(lk), 1e-300))})
         return out
