@@ -3039,6 +3039,35 @@ the finding. `ppv()` is gear-only so the first run died on `method='trap'`; then
 it reaches `times[-1]`. With the wrong entry modified the last-step column came back ≈ 0 and
 briefly looked like a falsification of the whole construction.
 
+---
+
+✅ **GATE 2 RUN 2026-09-04 — PASSES ON BOTH HALVES, and it removes the last stated obstruction.**
+
+    (a) factored_period() replay vs the solving traversal, on the STORED grid
+        trap  (plain)           max|ΔM| = 3.442e-15   relative 3.4e-15
+        gear  (solved_history)  max|ΔM| = 8.091e-15   relative 5.4e-15
+
+    (b) adaptive grid determinism, re-derived from the SAME state
+        2292 steps both runs    max|t1 − t2| = 0.000e+00   BIT-IDENTICAL
+        (4908 steps at reltol 1e-10, so it is a function of tolerance too)
+
+**(a)** the replay is faithful to round-off — not bit-identical, because the summation order
+differs, but at machine precision. **(b)** the adaptive controller is **bit-deterministic** given
+the same state and tolerance. So "a deterministic step controller is a function of the state only"
+is no longer an assumption: at the converged `x_0`, `factored_period()` would regenerate exactly
+the grid the solve used.
+
+⚠⚠ **BUT THERE IS A CONSEQUENCE GATE 3 MUST MEASURE, AND IT IS NOT A DEFECT — IT IS WHAT AN
+ADAPTIVE PSS MEANS.** `factored_period()` re-traverses at the CONVERGED `x_0`, while the Newton's
+last iterate traversed from `x_0^(k)`. With a fixed grid those give the same map. With an adaptive
+one they need not: **the converged solution satisfies periodicity on the grid THAT traversal
+chose**, so a re-traversal from a slightly different state can pick a slightly different grid and
+the residual reappears at the size of the local error. That is the accepted behaviour of every
+commercial adaptive PSS — the solution is accurate to the transient tolerance and re-integration
+moves it by that much — but it must be MEASURED here rather than assumed bounded, because this
+codebase's convergence test does not currently expect it. **Gate 3 should report the residual at
+`x_0*` under a re-derived grid, alongside the wrapping fixture's LTE.**
+
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
 
 ⚠ **The shooting SOLVE already supports every integrator that exists.** `integrator.py` defines
