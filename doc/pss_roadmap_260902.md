@@ -1212,6 +1212,45 @@ inferred from any characterisation of Gourary's method. **We do not appear to ne
 conclusion survives the retraction of a premise it did not use is worth noticing rather than
 assuming.
 
+✅⚠⚠ **ALL NINETEEN NOW READ BY THE DOCS SESSION. THE REGULARISATION IS A FAMILY OF THREE, AND ONE
+OF THEM IS THE PAC CASE.** Cited, not measured here:
+
+  * *"A Numerical Technique for Time Domain Noise Analysis of Oscillators"* — the shooting/PPV case,
+    the one Andreas asked about;
+  * ⚠⚠ *"New numerical technique for cyclostationary noise analysis of oscillators"* — **THE SAME
+    TRANSFORMATION APPLIED TO THE PAC FREQUENCY-CONVERSION SYSTEM.** That is **our** harmonic
+    singularity, the one `_deflated_solve` handles;
+  * *"A New Simulation Technique for Periodic Small-Signal Analysis"* — Krylov specialised to PAC
+    under FREQUENCY SWEEPING, i.e. the multi-RHS recycling idea aimed straight at a PAC sweep, which
+    is where B6 left matvec counts open.
+
+**Of these, only the cyclostationary one looks capable of changing a design decision, and it would
+need measuring against our bordered solve before anyone believes it.** Our own near-carrier
+measurement (seven digits at `Δf/f0 = 1e-9`) says we are not currently hurting.
+
+⚠⚠ **AND ONE CLAIM AGAINST OUR RECORD IS DECLINED, BECAUSE IT DESCRIBES A DIFFERENT DOCUMENT.**
+The docs session reports that "our document says higher order is unattractive because the
+variational recursion must carry extra history per level", and that Obreshkov single-step order-4
+voids it. **This roadmap says the opposite** (§B-note): *"the cost is not of parallelism but of
+parallelising a method with HISTORY, so a ONE-STEP high-order method pays none of it"*, citing
+Chebyshev-IRK for exactly that property. Our recorded objection to adopting one is **specific and
+different**: every adjoint path refuses anything but `gear`, so it costs the whole A1–A4d surface —
+an ARCHITECTURE cost, which is B8. **Accepting the correction would have replaced a correct
+objection with a wrong one.** Second time today a relayed correction did not apply (after MPE).
+
+⚠ **THE PAPER IS STILL USEFUL THOUGH, AND FOR B8 SPECIFICALLY:** *"The Periodic Steady-State
+Analysis Based on Single-Step High Order Integration Methods"* supplies the SENSITIVITY-MATRIX
+formulas shooting needs, for **charge-oriented** equations, with single-step Obreshkov formulas of
+orders 1–4. **B8's whole cost is deriving a reverse recursion for a one-step companion** — this is
+material for exactly that, and it should be read before that work starts rather than after.
+
+⚠ **A defect worth knowing if a phase macromodel is ever built here:** Gourary et al. state that
+Floquet phase macromodel "variations prevent the determination of the DC solution of the
+macromodel differential equation, which in turn prevents its application to standard small-signal,
+stability, and noise analyses near the DC operating point"; their smoothed form removes the
+oscillatory terms and, for an LC oscillator under sinusoidal excitation, **reduces to ADLER'S
+EQUATION** — a closed-form check of the same species as §0g's oracle.
+
 ⚠ **AND THE GENERALISATION IS WORSE THAN RECORDED: there are NINETEEN Gourary-authored papers in
 the library and only about SIX are HB.** The rest include time-domain oscillator noise,
 cyclostationary noise, PSS by single-step high-order (Obreshkov) integration with sensitivity-matrix
