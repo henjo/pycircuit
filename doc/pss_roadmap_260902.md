@@ -222,6 +222,12 @@ It is anchored by a nonlinear Monte Carlo at `μ = 1` only. At `Q = 60` the only
 either route and not a defect common to both. The frequency-shift gate anchors `⟨v⟩` (the *DC*
 functional) at `Q = 75`; it does not anchor `c` (the *quadratic* one).
 
+⚠⚠ **AND THE NARROWED CHECK FOUND A DEFECT — see §0d.** `CY` is exact, but `c` comes back
+**exactly 0.0** for an oscillator whose only noise is its series tank loss, because the PPV's
+entry for a purely algebraic node row is structurally zero. Three independent confirmations and a
+validated correction are in §0d; no shipped test is numerically wrong, and the fix is not applied
+yet because it moves `ppv()`'s normalisation by an amount no existing gate can resolve.
+
 ⚠ **NARROWED 2026-09-04 by §0c below.** The state-localised frequency-shift probe anchors `v₀`
 **pointwise** at `Q = 8` and `Q = 30`, to between 0.015% and 0.13%, against an instrument that
 shares no code with the adjoint replay. So the PPV is no longer the suspect: what is still
@@ -342,6 +348,83 @@ scale", and it is checkable without a Monte Carlo.
 and the grid has to be fine enough that the `O(h)` term dominates the `O(h²)` one. At `Q = 8`
 that is 480/960; at `Q = 30` it is 960/1920. This is a *gate*, not something to run in the suite
 at every `Q`.
+
+---
+
+### 0d. The assembly check found a DEFECT — ⚠ **noise on an ALGEBRAIC row is dropped** — 2026-09-04
+
+§0c narrowed the last open scale question to `diffusion_constant`'s **assembly**: with `v₀`
+anchored pointwise, all that was left in `c = (1/T) ∫ vᵀ (CY/2) v dt` was `CY` and the
+quadrature. Checking them found something else.
+
+**`CY` is exact.** For a fixture whose only noisy element is one resistor, `_cy_reduced` returns
+`4kT/r` at `T = 300 K` to every printed digit, on exactly one entry — the reduced row of the node
+the resistor is on — and zero elsewhere, at `Q = 8` and `Q = 30`. That piece is clean and needs no
+further work.
+
+⚠⚠ **AND THEN `c` CAME BACK AS EXACTLY 0.0 FOR A MANIFESTLY NOISY OSCILLATOR.** The PPV's entry
+for a purely **algebraic** node row is structurally zero, and that is precisely where a series
+loss resistor's noise current lands. The two facts meet in the contraction and the answer is
+silently zero — no warning, no exception.
+
+**MEASURED, THREE INDEPENDENT WAYS**, on a van der Pol tank whose only noisy element is its loss,
+drawn two equivalent ways: `series` puts it in the inductor branch (node `x` has no capacitance,
+so its KCL row is algebraic); `parallel` puts `Rp = L/(C·Rs)` across the capacitor (a
+differential row). The two are matched to `3e-6` in amplitude and `1e-5` in `Q`:
+
+    Q     c series (shipped)   c parallel (shipped)   d/T series (Lyapunov)   corrected series
+     8    0.000000000e+00      5.147901730e-24        5.147855204e-24         5.147858663e-24
+    30    0.000000000e+00      1.372766117e-24        1.372650093e-24         1.372755969e-24
+
+  * **the equivalent circuit** — the same physics on a differential row gives a nonzero `c`;
+  * **`oscillator_covariance`** — a SHIPPED function reaching `CY` through the Lyapunov
+    recursion rather than the PPV gets it right, `d/T` matching the corrected value to `7e-7`;
+  * **a direct phase-sensitivity measurement** — injecting a DC current at the algebraic node
+    shifts the period by `+1.937090e-06` per amp while the PPV predicts `0`.
+
+⚠ **THE MECHANISM, AND WHY THE PPV IS NOT SIMPLY WRONG.** The differential rows agree with the
+measurement to `1.5e-5`. An algebraic row's perturbation reaches the dynamics through the
+**constraint**: eliminating `v_x = r(i_L + b)` puts `−r·b` into the inductor's row, so the true
+sensitivity to that row is `−r` times the BRANCH row's. Measured: `−r·∫v_branch dt =
++1.937064e-06` against `+1.937090e-06`. The vector carries zero where that belongs, so the
+generic fill-in is `v_A = −(J_AAᵀ)^{-1} J_DAᵀ v_D`.
+
+⚠ **SCOPE, MEASURED RATHER THAN ASSUMED — `pnoise` IS NOT AFFECTED.** On a driven linear circuit
+whose only noise is a series R at an algebraic node, `pnoise` agrees with `analysis_ss.Noise` to
+**1.000000**, and so does the parallel form. The drop is specific to the **PPV path** —
+`diffusion_constant` and whatever else contracts `CY` against `ppv()` — not to the adjoint
+transfer machinery in general.
+
+⚠ **WHY NO GATE CAUGHT IT.** `_vdp_at_Q`, the high-`Q` fixture, takes its noise from
+`IS('v', gnd, noisePSD=…)` — a differential row. `_lc_osc(rs=…)` does have the series resistor,
+but it also adds an explicit `IS` at node `v` at `psd = 1e-6` against the resistor's `4kT/0.2 ≈
+8.3e-20`, so the dropped term is **14 orders down** and invisible. The `d/T` vs `c` gate that
+would have caught it runs on the fixture that cannot show it. **No shipped test is numerically
+wrong; the gap was in fixture placement, not in any assertion.**
+
+**PINNED BY THREE TESTS** — `test_the_ppv_carries_no_sensitivity_on_an_algebraic_row` (the
+mechanism and the `−r` fold), `test_the_algebraic_row_correction_matches_the_lyapunov_route` (the
+correction against BOTH references), and a **strict xfail**,
+`test_diffusion_constant_should_not_depend_on_where_the_loss_is_drawn`, which turns into a
+failure the moment the fix lands.
+
+⚠⚠ **THE FIX IS NOT OBVIOUSLY FREE AND THAT IS WHY IT IS NOT APPLIED HERE.** Filling in `v_A`
+changes `v` on rows that enter `ppv()`'s normalisation, and the normalisation is what 21 gated
+results rest on. **MEASURED on this fixture rather than estimated:** `max|v_A| = 2.22e-03`
+against `max|ẋ_A| = 7.12e-03`, giving a shift to `v·ẋ` of **7.92e-06 in the mean and 1.58e-05 at
+the peak**. For comparison `⟨v·ẋ⟩` is currently **0.999978** — already `2.2e-5` off unity, the
+same order — and the differential rows agree with the DC probe to `1.5e-5`. **So no existing
+number can tell whether the normalisation already accounts for it**, and the fix has to carry its
+own before/after check. Two routes:
+
+  * **fill `v_A` in `ppv()`** — correct at the source, a user reading `ppv()` stops getting a
+    wrong sensitivity, and every consumer inherits it. Cost: re-run every PPV-derived gate and
+    show the ones without algebraic rows are bit-unchanged.
+  * **fold in the contraction** (`diffusion_constant`, `colour_projection`) — no normalisation
+    risk, but leaves `ppv()` returning a vector that is wrong for anyone who reads it directly,
+    which is exactly how this was found.
+
+**Recommendation: the first, gated by a bit-for-bit check on the algebraic-row-free fixtures.**
 
 ---
 

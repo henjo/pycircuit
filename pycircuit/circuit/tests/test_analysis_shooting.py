@@ -8730,3 +8730,164 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         'on a grid-aligned reset |dphi| should be ~constant in eps (a ' \
         'DISCONTINUITY, not a derivative); it spread %.1fx over four ' \
         'decades of eps: %s' % (spread, norms)
+
+
+def _loss_osc(kind, Q=8.0, npts=480, a=0.0, idc_node=None, idc=0.0,
+              period=None):
+    """A van der Pol tank whose ONLY noisy element is its loss resistor.
+
+    ⚠ THE TWO FORMS ARE THE SAME PHYSICS AND DIFFERENT MNA ROWS, which is
+    the whole point of the pair.  `series` puts the loss in the inductor
+    branch, so node `x` has no capacitance and its KCL row is PURELY
+    ALGEBRAIC -- and that is where the resistor's noise current lands.
+    `parallel` puts the equivalent loss `Rp = L/(C*Rs)` across the
+    capacitor, a DIFFERENTIAL row.  For a high-`Q` tank the two agree to
+    `O(1/Q^2)`, and they are matched here to 3e-6 in amplitude.
+
+    A series loss resistor is not an exotic topology -- it is where a real
+    inductor's loss physically sits.
+
+    `a` adds the even term. A LINEAR functional of the PPV -- which is what
+    a DC injection measures -- vanishes by half-wave symmetry without it,
+    while the QUADRATIC one does not care; so the sensitivity test needs it
+    and the `c` comparison does not.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2 * np.pi * Q)
+    rs = 0.2 * mu
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                       + a * mu * (u ** 2 - 2.0))
+    if kind == 'series':
+        cir.add_node('x')
+        cir['L'] = L('v', 'x', L=1.0)
+        cir['Rs'] = R('x', gnd, r=rs)
+    else:
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['Rp'] = R('v', gnd, r=1.0 / rs)
+    ## ⚠ a DC current keeps the circuit AUTONOMOUS, so the period stays an
+    ## unknown -- a time-varying source would make it driven and there
+    ## would be no `dT` to measure at all (roadmap section 0c)
+    if idc_node is not None:
+        cir['Idc'] = IS(idc_node, gnd, i=idc)
+    T = 2 * np.pi if period is None else float(period)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=250)
+    assert pss.converged, '%s did not converge' % kind
+    return cir, pss, PAC(cir, toolkit=circuit.numeric), rs
+
+
+def test_the_ppv_carries_no_sensitivity_on_an_algebraic_row():
+    """⚠ MEASURED: the PPV's entry for a purely algebraic node row is ZERO,
+    and the true phase sensitivity to a perturbation there is NOT.
+
+    The PPV entry for a row IS the phase sensitivity to a perturbation
+    entering that row, so this is checkable directly: inject a DC current
+    at the algebraic node and measure `dT/di` against `integral v_j dt`.
+
+    The reading is not that the PPV is wrong everywhere -- the DIFFERENTIAL
+    rows agree with the measurement to 1.5e-5.  It is that an algebraic
+    row's perturbation reaches the dynamics through the CONSTRAINT rather
+    than through its own row: eliminating `v_x = r*(i_L + b)` puts `-r*b`
+    into the inductor's row, so the true sensitivity is `-r` times the
+    BRANCH row's, and the returned vector carries zero where that belongs.
+    """
+    cir, pss, _pac, rs = _loss_osc('series', Q=8.0, npts=480, a=0.25)
+    _v, info = pss.ppv()
+    m = cir.n - 1
+    S = np.asarray(info['samples'])[:, :m]
+    h = np.diff(np.asarray(info['times'], dtype=float))
+    n = len(h)
+    ints = [float((S[:n, j] * h).sum()) for j in range(m)]
+    ## reduced row 1 is node `x` -- the algebraic one, and the only noisy row
+    assert ints[1] == 0.0, \
+        'row 1 (node x) should be the structurally zero entry; got %r' % ints[1]
+    assert abs(ints[2]) > 1e-6, \
+        'the branch row must be nonzero for this test to discriminate'
+
+    ## measure it: a DC current at node x, which is autonomous-preserving
+    def measure(node, amp):
+        _c2, p2, _pac2, _r2 = _loss_osc('series', Q=8.0, npts=480, a=0.25,
+                                        idc_node=node, idc=amp,
+                                        period=float(pss.period))
+        return (float(p2.period) - float(pss.period)) / amp
+
+    at_x = measure('x', 1e-4)
+    assert abs(at_x) > 1e-8, \
+        'the PPV says a perturbation at the algebraic node cannot shift the ' \
+        'period; the measurement says dT/di = %.6e' % at_x
+    ## and it is exactly what the constraint predicts: -r times the branch row
+    pred = -rs * ints[2]
+    assert abs(at_x / pred - 1.0) < 1e-3, \
+        'the algebraic row folds into the branch row with coefficient -r: ' \
+        'predicted %.9e, measured %.9e' % (pred, at_x)
+
+
+def test_the_algebraic_row_correction_matches_the_lyapunov_route():
+    """⚠ `diffusion_constant` returns EXACTLY ZERO for an oscillator whose
+    only noise is its series tank loss, and `oscillator_covariance` does not.
+
+    Two shipped functions reach `CY` by different routes -- one through the
+    PPV, one through the Lyapunov recursion -- and they disagree by the
+    whole answer. The existing `d/T` vs `c` gate never saw it because it
+    runs on `_vdp_at_Q`, whose noise is an `IS` at node `v`: a DIFFERENTIAL
+    row. Move the same physical loss onto an ALGEBRAIC row and the PPV
+    route drops it silently.
+
+    Folding the algebraic row into the branch row the way the constraint
+    does -- weight `-r` -- recovers it, and this pins that correction
+    against BOTH independent references.
+    """
+    cs, ps, pacs, rs = _loss_osc('series', Q=8.0, npts=480)
+    cp, pp, pacp, _rp = _loss_osc('parallel', Q=8.0, npts=480)
+
+    c_series = pacs.diffusion_constant(ps)
+    c_parallel = pacp.diffusion_constant(pp)
+    assert c_series == 0.0, \
+        'the defect this test records is an exact zero; got %r' % c_series
+    assert c_parallel > 0.0
+
+    _K, d, _info = pacs.oscillator_covariance(ps)
+    dT = d / float(ps.period)
+    assert dT > 0.0, 'the Lyapunov route must see the noise the PPV route drops'
+
+    ## the correction: row 1's injection acts as `-r` on the branch row
+    m = cs.n - 1
+    _v, info = ps.ppv()
+    S = np.asarray(info['samples'])[:, :m]
+    h = np.diff(np.asarray(info['times'], dtype=float))
+    n = len(h)
+    cy = np.real(pacs._cy_reduced(ps, 2 * np.pi / float(ps.period)))
+    fix = float((0.5 * cy[1, 1] * (rs * S[:n, 2]) ** 2 * h).sum()
+                / float(ps.period))
+
+    assert abs(fix / dT - 1.0) < 5e-3, \
+        'the corrected contraction should reproduce the Lyapunov route: ' \
+        'fix %.9e, d/T %.9e' % (fix, dT)
+    assert abs(fix / c_parallel - 1.0) < 5e-3, \
+        'and the equivalent parallel-loss circuit: fix %.9e, c_par %.9e' \
+        % (fix, c_parallel)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    'diffusion_constant contracts CY against a PPV whose algebraic-row '
+    'entries are structurally zero, so noise entering a purely algebraic '
+    'node row is dropped. See '
+    'test_the_algebraic_row_correction_matches_the_lyapunov_route for the '
+    'validated correction. Remove this marker when it is applied.'))
+def test_diffusion_constant_should_not_depend_on_where_the_loss_is_drawn():
+    """The same physical loss, two equivalent representations, one answer."""
+    _cs, ps, pacs, _rs = _loss_osc('series', Q=8.0, npts=480)
+    _cp, pp, pacp, _rp = _loss_osc('parallel', Q=8.0, npts=480)
+    c_series = pacs.diffusion_constant(ps)
+    c_parallel = pacp.diffusion_constant(pp)
+    assert abs(c_series / c_parallel - 1.0) < 5e-3, \
+        'series %.9e vs parallel %.9e' % (c_series, c_parallel)
