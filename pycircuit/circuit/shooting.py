@@ -3271,9 +3271,12 @@ class PSS(Analysis):
         xdot = u[:m] * (float(q @ Cu) / denom)
 
         ## ⚠ NORMALISED BY `v . xdot = 1`, WHICH IS NOT WHAT `v . q = 1`
-        ## GIVES, and the difference is not cosmetic -- measured 0.93 apart
-        ## on van der Pol, i.e. a 7% error in every phase-noise number
-        ## downstream.  The defining property is that displacing the state
+        ## GIVES, and the difference is not cosmetic: on `_vdp_ppv(400)`
+        ## `v . xdot = 1.0` against `v . q = -1.0696` -- a factor 2.07 AND
+        ## the opposite sign (an earlier version of this note said "7%",
+        ## which was the |v . q| - 1 residual and not the error; corrected
+        ## by the review session's audit, 2026-09-04).  The defining
+        ## property is that displacing the state
         ## ALONG the orbit by `eps xdot` advances the phase by `eps`, so
         ## `v . xdot = 1` is the normalisation a state perturbation sees.
         ## Demir's Remark 3.1 reads `v_1^T C u_1 = 1`; the vector this
@@ -3325,6 +3328,105 @@ class PSS(Analysis):
         ## reverse replay computes exactly that sequence on its way to the
         ## answer -- it was being discarded.
         _end, _ts, states = fp.matvec_transposed(v, collect=True)
+        states_pair = [np.array(st, dtype=float, copy=True) for st in states]
+        _Xf = np.asarray(self.waveform[1], dtype=float)
+        ## ⚠⚠ THE PAIR'S FIRST BLOCK IS NOT THE PPV, AND THE ERROR IS FIRST
+        ## ORDER AND GROWS WITH Q.  For Gear-2 the adjoint state is the pair
+        ## `(w1, w2) = (dphi/dx_k, dphi/dx_{k-1})`, and `w1` alone is the
+        ## response to a perturbation of `x_k` WITH `x_{k-1}` HELD -- an
+        ## inconsistent history, which the two-step method resolves through
+        ## its parasitic root.  A physical state perturbation moves both:
+        ## `dx_{k-1} = Phi(t_{k-1}, t_k) dx_k`, so the phase functional is
+        ##
+        ##     v(t_k) = w1 + Phi(t_{k-1}, t_k)^T w2,   Phi ~ I - h J + O(h^2)
+        ##
+        ## and with `w2 = C_{k-1}^T z` (`z = -a2 t_k`, exact by the
+        ## recursion) that is `w1 + (C_{k-1} + h G)^T z` -- no inverse of
+        ## `C`, so it holds for a DAE.  Equivalently `w1` is orthogonal to
+        ## the amplitude eigenvector's first block, which is the true
+        ## amplitude direction ROTATED by `O(h)`; `v . xdot = 1` then
+        ## amplifies that rotation by `|v||xdot|`, the near-cancellation a
+        ## non-isochronous oscillator has (its PPV grows with `Q_lambda`).
+        ## MEASURED against the exact continuous adjoint (DOP853 at 1e-12,
+        ## no shooting code in the reference) on `vdp + 0.3 u^2`, whose
+        ## `c` is 100x van der Pol's: the first block gave `c` 16.6 / 8.0 /
+        ## 3.9 / 1.9 / 1.0% high at 400..6400 points -- clean first order
+        ## -- and violated `v(t) . xdot(t) = 1` along the orbit by 12%
+        ## (std 2.7e-2).  This contraction holds the invariant to 8e-5 and
+        ## gives `c` to 1.8e-3 at 400 and 8e-5 at 1600, second order.  On
+        ## van der Pol both agree to 1e-4: the two rows are in quadrature
+        ## there, so the rotation averaged out of `<v^2>` -- the fixture
+        ## shared the claim's assumption (failure shape 0b), and `pnoise`,
+        ## which contracts in PAIR space, was right all along and 14%
+        ## below `c` on the fixture that could see it.
+        ## The seed's scale is `w1(0) . xdot = 1`; the consistent object
+        ## is renormalised ONCE by its own `v(0) . xdot`, which is why the
+        ## per-step invariant is the test and not the definition.
+        if (fp.kind == 'solved_history' and len(states) > 0
+                and len(states[0]) == 2 * m):
+            _cs1, _ring = [], list(fp.opening)
+            for _lu, _Cn, _al, _b in fp.steps:
+                _cs1.append(_ring[1])
+                _ring = [_Cn, _ring[0]]
+            _hs = np.diff(np.asarray(fp.times, dtype=float))
+            _vphys = []
+            for _j, st in enumerate(states):
+                _lu, _Cn, _al, _b = fp.steps[_j]
+                _z = -_al[2] * np.asarray(_ts[_j], dtype=float)
+                ## ⚠ DIFFERENTIAL ROWS ONLY.  `w2 = C^T z` does not see the
+                ## algebraic rows of `z` (their rows of `C` are zero), so
+                ## the decomposition is non-unique there, and those
+                ## multipliers are O(1/h): `h G^T z` would carry an O(1)
+                ## component along the constraint normal into the
+                ## differential entries.  The consistent propagation
+                ## `C_D dx_{k-1} = (C_D + h G_D) dx_k` involves only the
+                ## differential equations, which is the choice that makes
+                ## it unique.  Measured: with the algebraic rows in, a DC
+                ## injection probe on a series-loss tank flipped sign.
+                if _alg_rows:
+                    _z[np.asarray(_alg_rows, dtype=int)] = 0.0
+                _xj = _Xf[:, _j if _j < _Xf.shape[1] else -1]
+                _Gj, = remove_row_col(
+                    (np.asarray(self.cir.G(_xj), dtype=float),),
+                    self.irefnode, self.toolkit)
+                _Gj = np.asarray(_Gj, dtype=float)
+                _vp_j = st[:m] + (np.asarray(_cs1[_j], dtype=float)
+                                  + _hs[_j] * _Gj).T @ _z
+                ## ⚠ AND ZERO ON THE ALGEBRAIC COLUMNS, as `C^T v_1` is:
+                ## the state functional contracts a perturbation ON the
+                ## constraint manifold, whose algebraic components are
+                ## slaved, and `h G^T z` would otherwise leave 4e-3 there
+                ## (caught by the full suite's Demir-(24) gate).  The
+                ## equation-row conversion never reads these entries.
+                if _alg_cols:
+                    _vp_j[np.asarray(_alg_cols, dtype=int)] = 0.0
+                _vphys.append(_vp_j)
+            _scale = float(_vphys[0] @ xdot)
+            if _scale == 0.0:
+                raise ValueError(
+                    'PSS.ppv: the pair-consistent adjoint is orthogonal to '
+                    'the orbit tangent at t = 0.')
+            ## ⚠ AND ITS DC CONTENT IS THE CONSISTENT OBJECT'S TOO -- taking
+            ## the mean from the raw block was TRIED AND MEASURED WRONG.
+            ## The raw block's orbit integral reproduces a same-grid
+            ## DC-injection probe to 1e-5 on the divider fixture (node row,
+            ## true mean 4e-6 |v|), where the consistent object's O(h^2)
+            ## pointwise errors leave an absolute floor of ~1e-5 |v| --
+            ## the wrong sign at 480 points.  But on the bias-sensitive
+            ## fixture's INDUCTOR row (a DC voltage in series with L, true
+            ## dT/dV = 16.20 by a second-order re-solve) the raw block
+            ## reads 17.49 / 16.83 / 16.51 at 400/800/1600 -- first order,
+            ## 8% off -- while the consistent object holds `v . xdot = 1`
+            ## to 8e-5 along the orbit, which pins its mean in EVERY row to
+            ## ~1e-5 |v|.  Stitching the raw mean in broke that invariant
+            ## by +-0.3.  So the raw block's DC exactness is row- or
+            ## fixture-specific (mechanism open, recorded in the roadmap),
+            ## and `samples` is one object, second order everywhere, with a
+            ## ~1e-5 |v| absolute floor on its mean.  The raw pair is kept
+            ## as `samples_pair` for the structural gates that live on its
+            ## discrete identities.
+            states = [np.concatenate((vp / _scale, st[m:] / _scale))
+                      for vp, st in zip(_vphys, states)]
         ## ⚠ AND FILL EVERY SAMPLE TOO, at ITS OWN operating point, because
         ## `G` is state-dependent and the algebraic entries are a pointwise
         ## function of the differential ones.  Done here rather than by
@@ -3340,7 +3442,6 @@ class PSS(Analysis):
         ## `C`, eq 42 and the phase equation 44 bare), so naming both is
         ## the fix; converting one into the other would have silently
         ## changed what `ppv()` returns.
-        _Xf = np.asarray(self.waveform[1], dtype=float)
         _eq = [self._equation_row_ppv(
                    st[:m], _Xf[:, _sj if _sj < _Xf.shape[1] else -1],
                    _alg_rows, _alg_cols)
@@ -3604,6 +3705,7 @@ class PSS(Analysis):
                 ## `samples` is `C^T v_1` (a state perturbation's
                 ## sensitivity); this is `v_1` (an equation-row input's).
                 ## A noise current injected into a KCL row is the latter.
+                'samples_pair': np.asarray(states_pair),
                 'samples_eq': np.asarray(_eq),
                 'v_eq': _v_eq,
                 'times': np.asarray(fp.times, dtype=float)}
@@ -6931,7 +7033,15 @@ class PAC(Analysis):
         """
         irn = pss.irefnode
         fp = pss.factored_period()
-        states = [np.zeros(pss.cir.n - 1),
+        ## ⚠ THREE STATES ON THE ORBIT -- the first used to be the ZERO
+        ## VECTOR, which is on the orbit only by accident, and a linear
+        ## time-invariant RC held by a DC clock was refused as
+        ## cyclostationary because a switch model read `goff` at v(ck) = 0
+        ## (found by the Spectre comparison suite, 2026-09-05).  The third
+        ## probe is now the stored state half a period in.
+        _W = np.asarray(pss.waveform[1], dtype=float)
+        _mid = np.delete(_W[:, _W.shape[1] // 2], irn, axis=0)
+        states = [np.asarray(_mid, dtype=float).ravel()[:pss.cir.n - 1],
                   np.asarray(fp.x_last, dtype=float).ravel(),
                   np.asarray(fp.x_prev, dtype=float).ravel()[:pss.cir.n - 1]]
         mats = []

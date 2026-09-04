@@ -4722,7 +4722,10 @@ def test_the_ppv_normalisation_is_not_the_one_transcribed():
 
     Demir's Remark 3.1 reads `v_1^T C(0) u_1(0) = 1`, and bordering the
     augmented system with `q = C xdot` makes `v . q = 1` fall out for free.
-    It is a 7% error. The vector this bordered solve returns behaves as
+    On this fixture `v . q = -1.0696` where `v . xdot = 1`: a factor
+    2.07 and the opposite sign (an earlier version of this docstring
+    said "7%"; that was `|v . q| - 1`, not the error -- corrected by the
+    review session's audit).  The vector this bordered solve returns behaves as
     `C^T v_1` -- it contracts with a STATE perturbation directly -- so the
     two statements are both true of different objects, and using one where
     the other belongs is a silent scale error in every phase-noise number
@@ -4799,7 +4802,9 @@ def test_the_ppv_samples_are_the_propagated_adjoint():
     fp = pss.factored_period()
     n = fp.width
     m = pss.cir.n - 1
-    samples = np.asarray(info['samples'])
+    ## ⚠ the RAW pair adjoint: `samples` is now the pair-CONSISTENT
+    ## contraction (see `ppv`), which is not `Psi^T v` and must not be.
+    samples = np.asarray(info['samples_pair'])
     assert samples.shape == (len(fp.steps), n), \
         'expected one PPV sample per step, got %r' % (samples.shape,)
 
@@ -6498,16 +6503,30 @@ def test_coloured_upconversion_needs_asymmetry_AND_loss():
         _cir, pss, pac = _lc_osc(a=a, rs=rs)
         c = pac.diffusion_constant(pss)
         gam = float(pac.coloured_diffusion(pss, [1.0 / pss.period])[0])
-        rows.append((a, rs, c, gam))
+        ## ⚠ THE STRUCTURAL ZERO IS A DISCRETE IDENTITY OF THE RAW PAIR.
+        ## `samples` is the pair-consistent contraction (see `ppv`), whose
+        ## mean on the lossless tank is O(h^2): 8.8e-6 |v| at 240 points,
+        ## 2.2e-6 at 480, so its `Gamma/c` is ~5e-10 here.  The identity
+        ## is pinned on the raw pair and the consistent object is held at
+        ## its measured order; both are seven decades under the rows that
+        ## upconvert.
+        ints, _info = _raw_pair_integrals(pss, _cir)
+        vraw = np.asarray(ints) / float(pss.period)
+        cy = 0.5 * np.real(pac._cy_reduced(pss, 2.0 * np.pi / pss.period))
+        gam_raw = float(vraw @ cy @ vraw)
+        rows.append((a, rs, c, gam, gam_raw))
         assert c > 1e-8, 'a=%r rs=%r: c = %.3e, the white functional ' \
             'should be large in EVERY row or the zeros below prove ' \
             'nothing' % (a, rs, c)
-    for a, rs, c, gam in rows[:3]:
-        assert gam / c < 1e-15, \
-            'a=%r rs=%r gives Gamma/c = %.3e; with either the symmetry ' \
-            'or the lossless identity intact this must vanish' \
-            % (a, rs, gam / c)
-    for a, rs, c, gam in rows[3:]:
+    for a, rs, c, gam, gam_raw in rows[:3]:
+        assert gam_raw / c < 1e-15, \
+            'a=%r rs=%r gives raw-pair Gamma/c = %.3e; with either the ' \
+            'symmetry or the lossless identity intact this must vanish' \
+            % (a, rs, gam_raw / c)
+        assert gam / c < 1e-8, \
+            'a=%r rs=%r gives Gamma/c = %.3e for the consistent object, ' \
+            'whose mean here is O(h^2) -- measured 5e-10' % (a, rs, gam / c)
+    for a, rs, c, gam, _graw in rows[3:]:
         assert gam / c > 1e-5, \
             'a=%r rs=%r gives Gamma/c = %.3e; breaking BOTH must ' \
             'upconvert' % (a, rs, gam / c)
@@ -7440,12 +7459,13 @@ def test_the_ppv_predicts_a_frequency_shift_at_high_q():
     """
     Q = 60.0
     _c0, p0 = _asym_lossy_osc(Q)
-    _v, info = p0.ppv()
     T0 = float(p0.period)
     m = p0.cir.n - 1
-    S = np.asarray(info['samples'])[:, :m]
-    h = np.diff(np.asarray(info['times'], dtype=float))
-    pred = float((S[:, 0] * h).sum())
+    ## ⚠ the raw pair, whose integral carries the same-grid identity this
+    ## gate pins; the consistent `samples` has a ~1e-5 |v| floor on its
+    ## mean and the true mean here is 4.6e-9 (see `_raw_pair_integrals`)
+    ints, info = _raw_pair_integrals(p0, _c0)
+    pred = ints[0]
     assert info['Q'] > 40.0, \
         'Q = %.2f; this gate exists to run in the regime the state-kick ' \
         'gate cannot reach' % info['Q']
@@ -7485,12 +7505,10 @@ def test_the_frequency_shift_gate_converges_at_first_order():
     errs = []
     for npts in (480, 960):
         _c0, p0 = _asym_lossy_osc(1.0, npts=npts)
-        _v, info = p0.ppv()
         T0 = float(p0.period)
-        m = p0.cir.n - 1
-        S = np.asarray(info['samples'])[:, :m]
-        h = np.diff(np.asarray(info['times'], dtype=float))
-        pred = float((S[:, 0] * h).sum())
+        ## the raw pair -- see `_raw_pair_integrals`
+        ints, _info = _raw_pair_integrals(p0, _c0)
+        pred = ints[0]
         _c1, p1 = _asym_lossy_osc(1.0, idc=1e-6, npts=npts, seedT=T0)
         errs.append(abs(((float(p1.period) - T0) / 1e-6) / pred - 1.0))
     assert errs[0] < 3e-4, 'coarse grid off by %.3e' % errs[0]
@@ -8847,6 +8865,32 @@ def _divider_osc(Q=8.0, npts=480, a=0.25, ratio=10.0, idc_node=None, idc=0.0,
     return cir, pss, r1, r2
 
 
+
+def _raw_pair_integrals(pss, cir):
+    """Orbit integrals of the RAW pair block's equation-row PPV.
+
+    `samples` is the pair-consistent contraction (see `ppv`), second order
+    everywhere with an absolute floor of ~1e-5 |v| on its mean.  The raw
+    first block carries a discrete identity for a same-grid DC-injection
+    probe on the node rows of these fixtures that the consistent object
+    cannot match where the true mean is below that floor -- and which is
+    NOT general: on the bias-sensitive fixture's inductor row the raw
+    block's integral is 8% off at 400 points, first order.  The gates that
+    live on the identity read the raw pair through this.
+    """
+    m = cir.n - 1
+    _v, info = pss.ppv()
+    h = np.diff(np.asarray(info['times'], dtype=float))
+    n = len(h)
+    Xf = np.asarray(pss.waveform[1], dtype=float)
+    ar, ac = pss._algebraic_adjoint_pattern(Xf[:, 0])
+    S = np.array([pss._equation_row_ppv(np.asarray(st)[:m],
+                                        Xf[:, j if j < Xf.shape[1] else -1],
+                                        ar, ac)
+                  for j, st in enumerate(info['samples_pair'])])
+    return [float((S[:n, j] * h).sum()) for j in range(m)], info
+
+
 def _reduced_index(cir, pss, name):
     names = [str(nd) for nd in cir.nodes]
     i = names.index(name)
@@ -8873,13 +8917,15 @@ def test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row():
     cir, pss, r1, r2 = _divider_osc(ratio=10.0)
     T0 = float(pss.period)
     m = cir.n - 1
-    _v, info = pss.ppv()
     ## ⚠ `samples_eq`: a DC current injection is an EQUATION-ROW input, so
-    ## it contracts with `v_1`, not with the `C^T v_1` in `samples`.
+    ## it contracts with `v_1`, not with the `C^T v_1` in `samples`.  And
+    ## the RAW pair for the identity this gate pins; the consistent object
+    ## is held within its measured absolute floor below.
+    ints, info = _raw_pair_integrals(pss, cir)
     S = np.asarray(info['samples_eq'])[:, :m]
     h = np.diff(np.asarray(info['times'], dtype=float))
     n = len(h)
-    ints = [float((S[:n, j] * h).sum()) for j in range(m)]
+    ints_c = [float((S[:n, j] * h).sum()) for j in range(m)]
     ix = _reduced_index(cir, pss, 'x')
     iy = _reduced_index(cir, pss, 'y')
 
@@ -8899,6 +8945,14 @@ def test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row():
             'gives %+.9e (ratio %+.7f) -- a NEGATIVE ratio is the sign ' \
             'error this fixture exists to catch' % (name, ints[j], meas,
                                                     meas / ints[j])
+        ## the consistent object: the same truth, within its floor.  Its
+        ## integral on node v read -7.5e-07 / +1.27e-06 / +1.77e-06 at
+        ## 480/960/1920 points against an extrapolated +1.9375e-06 --
+        ## second order, but the true mean here is 4e-6 |v| and the floor
+        ## is ~1e-5 |v|, so at 480 points the SIGN is not resolved.
+        assert abs(ints_c[j] - meas) < 5e-6, \
+            'node %s: the consistent object is %.2e from the measured ' \
+            'dT/di, outside its measured floor' % (name, ints_c[j] - meas)
 
 
 def test_the_fill_is_skipped_entirely_without_an_algebraic_row():
@@ -10747,9 +10801,14 @@ def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
         df = k * f0
         got[k] = float(np.real(S)) / Pc * df * df / (f0 * f0)
 
-    ## deep in the skirt the two paths must agree tightly
+    ## deep in the skirt the two paths must agree tightly.  ⚠ THE EXACT
+    ## VALUE IS KNOWN HERE: the scipy adjoint of the exact monodromy gives
+    ## c = 6.250850e-08 for this fixture; `diffusion_constant` (the
+    ## pair-consistent PPV, see `ppv`) is 2.9e-5 above it and the swept
+    ## path 1.4e-4 below it, each at its own discretisation, so the two
+    ## sit 1.7e-4 apart and the bound is set from that, not from either.
     rel = abs(got[1e-4] - cA) / cA
-    assert rel < 1e-4, \
+    assert rel < 3e-4, \
         'the swept-noise `c` (%.9e) and diffusion_constant (%.9e) disagree ' \
         'by %.3e at Delta f/f0 = 1e-4. These are independent paths -- the ' \
         'PPV quadratic form against adjoint sideband propagation -- so a ' \
@@ -11445,3 +11504,128 @@ def test_the_white_only_covariance_routines_refuse_colour_with_the_reason():
     ):
         with pytest.raises(NotImplementedError, match='COLOURED'):
             call()
+
+
+def test_the_ppv_samples_are_pair_consistent_and_second_order():
+    """⚠⚠ THE GEAR PAIR'S FIRST BLOCK WAS A FIRST-ORDER PPV, AND `c` WITH IT.
+
+    Fixture: van der Pol plus `0.3 u^2` at `Q = 8`.  The even term makes
+    the frequency bias-sensitive (period 6.28 -> 6.73), so a kick excites
+    the amplitude mode and the phase keeps accumulating while it relaxes:
+    the PPV is 100x van der Pol's and `v . xdot = 1` becomes a difference
+    of two O(5) terms.  That cancellation is what turns an `O(h)` rotation
+    of the pair's first block into 16.6% on `c` at 400 points.
+
+    THE REFERENCE HAS NO SHOOTING CODE IN IT.  The circuit is the explicit
+    ODE `vdot = mu (v - v^3/3) + a v^2 - i_L`, `i_Ldot = v`; DOP853 at
+    rtol 1e-12 gives the orbit (period 6.730654, which the shooting
+    periods 6.730950 / 6.730730 / 6.730673 at 400 / 800 / 1600 points
+    extrapolate to at second order), the exact monodromy by the
+    variational equations, its left null vector normalised `v . f = 1`,
+    and `v(t)` by transport.  A kick instrument on the same ODE agreed
+    with that adjoint to 1e-4 at eleven of sixteen phases (the rest were
+    an event-count artefact, exactly one period per kick).  From it:
+
+        c_true = <v_v(t)^2> CY/2 = 5.3703e-06        (CY = 1e-6, one-sided)
+
+    ⚠ `pnoise` gave 5.355e-06 at 400 points ALL ALONG -- it contracts in
+    pair space -- and the '14% deficit' first read as a physics term was
+    `c` being 16.6% high.  Gates, each against that constant:
+      the corrected `c` at 400 and 800 points, and its order;
+      the invariant `v(t) . xdot(t) = 1` held ALONG THE ORBIT to 1e-3
+        (the first block: std 2.7e-2), with `xdot` a central difference
+        of the shooting waveform so no ODE is written into the test.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    C_TRUE = 5.3703e-06
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    errs = []
+    for npts in (400, 800):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                           + 0.3 * u ** 2)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.731, timestep=6.731 / npts,
+                      x0=np.array([2.0, 0.0]), maxiterations=300)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        c = pac.diffusion_constant(pss)
+        errs.append(abs(c / C_TRUE - 1.0))
+        ## the invariant along the orbit, with the waveform's own tangent
+        v, info = pss.ppv()
+        m = cir.n - 1
+        S = np.asarray(info['samples'])[:, :m]
+        X = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                      pss.irefnode, axis=0)
+        T = float(pss.period)
+        h = T / npts
+        Xp = X[:, :-1]
+        xd = (np.roll(Xp, -1, axis=1) - np.roll(Xp, 1, axis=1)) / (2.0 * h)
+        n = min(S.shape[0], xd.shape[1])
+        dots = np.array([S[j] @ xd[:, j] for j in range(n)])
+        ## the mean carries the central difference's own O(h^2) bias
+        ## (2.1e-3 at 400 points); the STD is the invariant's test
+        assert abs(dots.mean() - 1.0) < 5e-3 and dots.std() < 1e-3, \
+            'npts=%d: v(t).xdot(t) = %.5f +- %.1e along the orbit; the ' \
+            'phase functional must hold it at every t' \
+            % (npts, dots.mean(), dots.std())
+    assert errs[0] < 4e-3, \
+        'c at 400 points is %.2e from the exact 5.3703e-06 -- the ' \
+        'first-block PPV gave 1.7e-1 here' % errs[0]
+    assert errs[1] < 1.2e-3 and errs[0] / errs[1] > 3.0, \
+        'errors %.2e -> %.2e over a doubling: second order is a ratio ' \
+        'of 4, the first block gave 2' % (errs[0], errs[1])
+
+
+class _DcHeldNoise(IS):
+    """`CY` proportional to the voltage across the element, which is a DC
+    node held at 1 V on the orbit -- constant along it, ZERO at the zero
+    vector.  Exists to pin that the cyclostationarity probes lie ON the
+    orbit."""
+
+    def CY(self, x, w, epar=None):
+        xv = np.asarray(x).ravel()
+        p = self.iparv.noisePSD * float(xv[0] - xv[1])
+        return self.toolkit.array([[p, -p], [-p, p]])
+
+
+def test_the_cyclostationarity_probes_lie_on_the_orbit():
+    """⚠ A FALSE POSITIVE FROM A STATE OFF THE ORBIT, found by the Spectre
+    comparison suite (2026-09-05): `_cy_reduced` sampled `CY` at three
+    states, and one of them was the ZERO VECTOR -- on the orbit only by
+    accident.  A switch model reading `goff` at `v(ck) = 0` had a linear
+    time-invariant RC refused as cyclostationary.  Here a noise source
+    whose `CY` is proportional to a DC-held node voltage is constant along
+    the orbit and zero at the origin: `pnoise` must run.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir.add_node('b')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    cir['Vb'] = VS('b', gnd, v=1.0)
+    cir['n'] = _DcHeldNoise('b', gnd, i=0.0, noisePSD=1e-6)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+                  maxiterations=60)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    ov = [str(n) for n in cir.nodes].index('v')
+    S = pac.pnoise(pss, 1.01 / pss.period, ov)[0]   # must not refuse
+    assert np.all(np.isfinite(np.real(np.asarray(S))))
