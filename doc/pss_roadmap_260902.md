@@ -4404,6 +4404,55 @@ bound to `orbital_mode_weights`'s reconstruction needs the mapping established f
 not been. The hand-set `1e-2` in the step-2 test stays until it is — replacing it with an `ε`
 computed on the wrong matrix would be §D 0q again.
 
+✅ **THE MAPPING IS NOW ESTABLISHED (relayed from the paper read as an image; NOT run).** `R(t)`
+is the R factor of a **QR factorisation with column pivoting of the capacitance matrix** `C(t)`,
+`C(t) = Q(t)R(t)Eᵀ` (their eq 3), after **row normalisation**. The recipe, with the three details
+that are not optional:
+
+  1. ⚠⚠ **NORMALISE ROWS FIRST OR THE DIAGONAL COMPARISON IS MEANINGLESS.** Each row of the
+     linearised system is divided by the row norm of `S(t) = [dC/dt − A(t), (1/T)C(t)]` (eq 7),
+     `‖S_j‖ = √((1/T) max_k ∫₀ᵀ S²_{jk} dt)` (eq 8), *"guaranteeing that all the vectors
+     corresponding to the n discretized equations are versors"*. MNA rows carry wildly different
+     physical scales; without this the diagonals compare a current row against a voltage row.
+  2. **`E` is constant, from the FIRST sample.** *"The same E matrix is used for all time steps."*
+     Re-pivoting per sample breaks their eq (4).
+  3. The diagonal test proxies a row test because pivoted QR puts each row's largest element on
+     the diagonal.
+
+⚠⚠⚠ **EQUATION (9) IS THE REVERSE OF THE PAPER'S OWN PROSE, AND THIS WOULD HAVE BEEN IMPLEMENTED
+BACKWARDS FROM THE PROSE.** The prose says *"the ratio between the smallest diagonal element kept
+and the largest neglected"*. Equation (9), read as an image:
+
+    max_{t∈]0,T]} |R_{m+1,m+1}(t)|   ≪   min_{t∈]0,T]} |R_{m,m}(t)|
+
+So the **neglected** diagonal is the **small** one and the kept one is the large one —
+`ε = max_t|R_{m+1,m+1}| / min_t|R_{m,m}|`, **neglected in the numerator, and a worst case over the
+whole period on both sides**, not per-timepoint. A formula transcribed from the prose has the
+grouping inverted. (§D 0m's pre-commitment rule, applied to a citation: name what the equation
+says before accepting what the sentence about it says.)
+
+**The identically-zero tail of `R(t)` is the nullspace of `C(t)`** — *"the last n − ρ rows of R(t)
+are identically zero … correspondence between the nullspace of C(t) and the infinite FEs"*. That
+is a **first, exact** reduction, separate from and prior to the approximate truncation `ε`
+governs.
+
+⚠ **SCOPE: THE METHOD ASSUMES INDEX 1** — *"according to the assumption of index-1 DAE, the rank ρ
+of C(t) is time independent."* It does not cover the L-I cutset circuits of §0k. They also flag
+that constant rank *"does not necessarily imply that the entire nullspace of C(t) is time
+independent"*, which their method handles and their ref [16] does not.
+
+⚠⚠ **A MAPPING SUBTLETY OF OURS THAT STILL BLOCKS BUILDING IT, found while recording this.** The
+"null modes" `floquet_modes` drops on the **gear** path are **not** `C(t)`'s nullspace. Van der
+Pol's `C` is 2×2 and full rank (capacitor voltage and inductor current are both differential), yet
+the gear monodromy is 4-wide with two exact zeros — those are the **solved-history pair's**
+artefacts, not infinite Floquet exponents of the DAE. On the plain (`trap`) path `n = m` and van
+der Pol has no null modes at all. So the paper's *"structural zeros = nullspace of C"*
+identification maps onto the **plain** monodromy directly and onto the **gear** one only after the
+pair structure is accounted for. ✅ **Precondition before any `ε` is trusted: on a fixture with a
+genuine algebraic node (a resistive-only node, so `C` really is rank-deficient), check that the
+identically-zero tail of `R(t)` has exactly the rank the netlist predicts, on the plain path
+first.** The peer session that supplied the recipe recommends the same gate and has not run it.
+
 ⚠ **THEIR OWN WARNING, AND IT CONSTRAINS OUR OUTPUT LAYER:** orbital contributions are
 **asymmetric about the carrier**, so a symmetric single-sideband report **cannot carry them** —
 see A4b. And *"the identification of the oscillator classes mostly impacted by this effect is not
