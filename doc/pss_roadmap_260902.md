@@ -4121,6 +4121,83 @@ disagreeing — criterion 2, reference 1 — because the reference guarded with 
 `NᵀGN` for that fixture is **identically zero**, which is the MOST singular case rather than the
 least. Shape 0j again, one day later: **the instrument was wrong, not the subject.**
 
+### A8. Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
+
+⚠ **FROM A REAL CIRCUIT, NOT FROM THE LITERATURE.** Andreas put the case up: a free-running
+oscillator followed by several inverter buffers, output taken at the **last inverter**, the
+inverters fed from a **noisy LDO**.
+
+⚠⚠ **AND HIS CORRECTION IS WHAT MAKES THIS A SMALL ITEM.** The first reading of it reached for
+envelope-following and MPDE on time-scale grounds. That was wrong: the LDO is characterised
+separately and injected as a **supply-node noise source**, and inverter delays are a few percent
+of the period, so this is **one ordinary autonomous PSS over osc + buffers at a few hundred
+points**. No multirate anything. It moved from *"needs machinery we do not have"* to **"needs an
+analysis we do not have, on a netlist we can already solve."**
+
+**THE TWO JITTER MECHANISMS ARE PHYSICALLY DIFFERENT AND ONLY ONE IS COVERED:**
+
+| mechanism | source | status |
+|---|---|---|
+| **Accumulating** (random walk) | the oscillator's own noise; supply *pushing* on the core | ✅ **covered exactly** — this is `c`, which already reads as **jitter per second** |
+| **Additive** (white) | the buffer chain's own thermal noise; the LDO modulating each inverter's **delay**, displacing each edge independently | ❌ **not computed anywhere** |
+
+The second is the number a clock designer actually wants at the last inverter. It does **not**
+accumulate and it does **not** appear in `c`.
+
+**THE RIGHT OBJECT IS A SAMPLED / TIME-DOMAIN NOISE ANALYSIS** — noise evaluated at the
+**threshold crossings** rather than averaged over the cycle. SpectreRF exposes this as
+`noisetype=timedomain`.
+
+⚠ **AND THE SPECTRAL `pnoise` DOES NOT SUBSTITUTE, BY OUR OWN DOCSTRING.** `PAC.pnoise` records
+the boundary in terms — *"an oscillator drives a limiter … the same is true when an oscillator
+drives a mixer"* — with the test being **whether anything downstream can track the PSD's
+variation over the cycle**. A switching inverter samples at its crossing instant, so it **can**.
+That is the same fact that makes the sampled analysis the *correct* object rather than a
+convenience: **the physical circuit samples, so the analysis must sample.**
+
+✅ **IT UNIFIES WITH SOMETHING ALREADY OPEN, AND THAT IS THE STRONGEST ARGUMENT FOR SCOPING IT.**
+The far-out noise floor — where our PM-only spectrum keeps falling at 20 dB/decade while a real
+oscillator **flattens** — is set by exactly this additive buffer noise. **Both gaps are one
+missing object, not two.** Worth knowing before either is scoped separately.
+
+**REFERENCE, CITED NOT VERIFIED HERE** (relayed by the docs session; nobody in this repo has read
+the paper): Demir, Liu & Sangiovanni-Vincentelli, *"Time-Domain Non-Monte Carlo Noise Simulation
+for Nonlinear Dynamic Circuits with Arbitrary Excitations"*, **TCAD 15:493 (1996)** — Demir's own,
+from *before* the PPV theory. Built on SDE theory; reported to return *"the noise variances and
+covariances of circuit variables **as a function of time**"* and *"noise correlations between
+circuit variables at **different time points**"* — precisely what a time-averaged PSD throws away
+and a sampling stage consumes. Non-Monte-Carlo, and reported to need **no steady state**
+(*"any nonlinear dynamic circuit with any kind of excitation which can be simulated by the
+transient analysis routine"*), so it would cover the buffer chain and the oscillator in one
+analysis. ⚠ If this is ever scoped, that is the starting point rather than a fresh derivation.
+
+⚠⚠ **A GATE WARNING THAT MUST BE HONOURED BEFORE ANY OF IT IS BELIEVED.** Brambilla et al.,
+*"Effects of numerical noise floor on the accuracy of time domain noise analysis in circuit
+simulators"* (cited, not verified here): time-domain noise analyses implemented by *extending*
+linear multistep formulas, or by *introducing sampled versions of noise generators*, are
+*"often affected by a **relevant numerical noise floor hiding the effects of noise sources**"*.
+**The floor we would be chasing can be manufactured by the method chasing it.** So any gate for
+this item needs a **control that measures the floor with the sources OFF** — section D shape 0m
+in its sharpest form, since a spurious floor is exactly a clean number with no mechanism
+predicting it.
+
+⚠ **AND WE ALREADY CARRY A SECOND WARNING ABOUT THIS CLASS OF ANALYSIS**, in `PAC.pnoise`'s
+docstring: Gourary et al. name the symptom as *"the standard time domain noise analysis yields
+FLAT PSD CURVES OR CURVES WITH UNEXPECTED SLOPE NEAR THE OSCILLATION FREQUENCY"* — the
+`Φ(T) − I` singularity showing through. The same note records that a published removal exists
+*in a time-domain form written for shooting*, using the PPV as the null vector, and is not built.
+**Two independent warnings that a naive time-domain noise analysis produces plausible-looking
+wrong curves.** Neither is a reason not to build it; both are reasons the gate comes first.
+
+**ABSENCE VERIFIED HERE** (2026-09-04, not taken on report): nothing in `pycircuit/` implements
+this. The only occurrences of "jitter" outside tests are `elements_hdl.py`'s `idtmod` docstrings
+and `shooting.py`'s two uses, both of which are `c` described as jitter per second. There is no
+`noisetype`, no sampled-noise generator, and no crossing-time statistic.
+
+**Status: RECORDED, NOT REQUESTED.** No cost estimate has been made, and the item is written down
+because the use case is **ordinary rather than exotic** and arrived from a circuit somebody
+actually wants to build.
+
 ### A5. Envelope-following — last
 
 Linaro et al. (OJCAS 2020) apply EFM to the *variational* problem, with a
