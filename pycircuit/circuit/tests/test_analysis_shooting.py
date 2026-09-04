@@ -6671,8 +6671,11 @@ def test_the_phase_psd_refuses_a_skirt_carrying_more_than_unit_power():
     _cir, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, fref=1.0 / 6.66)
     with pytest.raises(ValueError, match='times the TOTAL power'):
         pac.phase_psd(pss, np.logspace(-6, -1, 26))
-    ## and the two floors are genuinely different numbers
-    c = pac.diffusion_constant(pss)
+    ## and the two floors are genuinely different numbers.  ⚠ The corner
+    ## is built from the WHITE functional read at the carrier -- which is
+    ## what `diffusion_constant` silently returned for this 1/f source
+    ## until it started refusing colour, as its docstring always said.
+    c = pac._white_diffusion_at(pss, 2.0 * np.pi / float(pss.period))
     corner = np.pi * (1.0 / float(pss.period)) ** 2 * c
     ok = pac.phase_psd(pss, np.logspace(-5, -1, 26))
     assert np.all(2.0 * np.logspace(-5, -1, 26) * ok < 1.0)
@@ -11245,3 +11248,200 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
     assert rel_p < rel_g / 10.0, \
         'projecting did not remove most of the residual (%.3e -> %.3e)' \
         % (rel_g, rel_p)
+
+
+## ---------------------------------------------------------------------------
+## COLOURED SOURCES -- an element that has colour, and the fold that reads it
+## ---------------------------------------------------------------------------
+
+def test_the_IS_colour_is_the_named_shape():
+    """`noiseTau` is white noise through an RC, `noiseFc` a flicker corner.
+
+    Checked at the element, against the closed forms, so that every gate
+    below tests the FOLD and not the source's algebra.  The Lorentzian is
+    exactly realisable in-netlist and that realisation is the reference
+    for the folds; flicker is not (Demir 1996: one state per decade), and
+    it returns the white value at `w = 0` rather than infinity.
+    """
+    circuit.default_toolkit = circuit.numeric
+    P, tau, fc = 1e-6, 0.3, 50.0
+    lor = IS('a', gnd, i=0.0, noisePSD=P, noiseTau=tau)
+    fl = IS('a', gnd, i=0.0, noisePSD=P, noiseFc=fc)
+    white = IS('a', gnd, i=0.0, noisePSD=P)
+    x = np.zeros(2)
+    for w in (0.0, 1.0, 10.0, 1e3):
+        assert np.allclose(white.CY(x, w), P * np.array([[1, -1], [-1, 1]]))
+        assert np.allclose(lor.CY(x, w)[0, 0], P / (1.0 + (w * tau) ** 2),
+                           rtol=1e-14)
+        assert np.allclose(lor.CY(x, -w), lor.CY(x, w)), 'colour is even in w'
+    assert np.allclose(fl.CY(x, 0.0)[0, 0], P), 'white at DC, not infinite'
+    for w in (1.0, 10.0, 1e3):
+        assert np.allclose(fl.CY(x, w)[0, 0], P * (1.0 + 2.0 * np.pi * fc / w),
+                           rtol=1e-14)
+
+
+def _coloured_vdp(kind, Q=8.0, npts=400):
+    """The same physical noise two ways: `IS(noiseTau)` on the tank node,
+    or a white `IS` through an RC into a linear `BSource` on that node.
+    `P = g^2 Pw Rf^2`, `tau = Rf Cf`, chosen at `tau ~ 0.3 T` so that the
+    source-side and output-side frequencies differ by a visible factor.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    Rf, Cf, g, Pw = 1.0, 0.3 * T, 1e-2, 1e-4
+    P = g * g * Pw * Rf * Rf
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    if kind == 'coloured':
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=P, noiseTau=Rf * Cf)
+    elif kind == 'filtered':
+        c.add_node('f')
+        c['nw'] = IS('f', gnd, i=0.0, noisePSD=Pw)
+        c['rf'] = R('f', gnd, r=Rf)
+        c['cf'] = C('f', gnd, c=Cf)
+        c['gm'] = BSource('f', gnd, gnd, 'v', i_func=lambda u, _g=g: _g * u)
+    else:
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=P)
+    pss = PSS(c, method='gear', reltol=1e-12)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
+    assert pss.converged
+    ov = [str(n) for n in c.nodes].index('v')
+    return c, pss, PAC(c, toolkit=circuit.numeric), ov
+
+
+def _carrier_power(pss, ov):
+    X = np.asarray(pss.waveform[1], dtype=float)[ov][:-1]
+    A1 = 2.0 * abs(np.fft.rfft(X)[1]) / len(X)
+    return 0.5 * A1 * A1
+
+
+def test_the_coloured_source_agrees_with_its_own_realisation():
+    """⚠ THE GATE FOR EVERY COLOURED PATH: the same physics built two ways.
+
+    An `IS(noiseTau)` on the tank node and a white `IS` filtered through
+    an RC into a linear `BSource` are ONE noise, and `pnoise` must not
+    know which it was given.  The filter stays out of the PSS (the periods
+    agree to ten digits -- A4d's 1.2e-14 reconfirmed) and the sidebands
+    agree to 1.3e-4 at three offsets, with the source-side frequency a
+    visible `1/(1 + (2 pi f tau)^2)` away from the output-side one.
+    """
+    res = {}
+    for kind in ('coloured', 'filtered'):
+        _c, pss, pac, ov = _coloured_vdp(kind)
+        f0 = 1.0 / float(pss.period)
+        res[kind] = (float(pss.period),
+                     [float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov)[0]))
+                      for k in (1e-2, 1e-3, 1e-4)])
+    assert abs(res['coloured'][0] - res['filtered'][0]) < 1e-9 * res['coloured'][0], \
+        'the filter changed the PSS: it must stay out of it'
+    for a, b in zip(res['coloured'][1], res['filtered'][1]):
+        assert abs(a / b - 1.0) < 1e-3, \
+            'coloured %.6e vs filtered %.6e: the element and its ' \
+            'realisation disagree' % (a, b)
+
+
+def test_the_harmonic_resolved_fold_is_exactly_c_for_white():
+    """PARSEVAL, ASSERTED AT ROUND-OFF: `sum_l V_l^H (CY/2) V_l = c`.
+
+    With `CY` constant the per-harmonic fold is the time average of the
+    same quadratic form, and with the SAME step-weighted quadrature the
+    discrete identity is exact -- which is what pins the transform's
+    normalisation, the one thing a Fourier fold can silently get wrong
+    by `N`, `T`, or `2 pi`.
+
+    ⚠ AND THE DOUBLE COUNT IS MEASURED ON THE ONE FIXTURE THAT HAS IT.
+    `Gamma` is exactly the `l = 0` term, so `c + Gamma - c_res == Gamma`
+    to round-off -- on van der Pol that is `1e-22 c` and proves nothing
+    (the inductor shorts the tank node at DC, so its PPV averages to zero
+    whatever the core does: the fixture shared the claim's assumption,
+    §D 0b).  `_lc_osc(a=0.25, rs=0.2)` breaks both the symmetry and the
+    lossless identity and carries `Gamma/c = 4e-3`, so there the retired
+    `c + Gamma` form is 0.4% high for a WHITE source, and this test would
+    have failed against it.
+    """
+    for a, rs, floor in ((0.0, 0.0, None), (0.25, 0.2, 1e-3)):
+        _cir, pss, pac = _lc_osc(a=a, rs=rs)
+        f0 = 1.0 / float(pss.period)
+        c = pac.diffusion_constant(pss)
+        offs = np.array([1e-3, 1e-4, 3e-2]) * f0
+        cres = pac.coloured_diffusion_resolved(pss, offs)
+        assert np.all(np.abs(cres / c - 1.0) < 1e-12), \
+            'a=%r rs=%r: the fold is %s against c = %.6e -- Parseval ' \
+            'fails, so the transform normalisation is wrong' \
+            % (a, rs, cres, c)
+        gam = pac.coloured_diffusion(pss, offs)
+        assert np.all(np.abs((c + gam - cres) - gam) < 1e-12 * c), \
+            'c + Gamma - c_res is not Gamma: the l = 0 term is not what ' \
+            'Gamma computes'
+        if floor is not None:
+            assert np.all(gam / c > floor), \
+                'a=%r rs=%r: Gamma/c = %s -- the fixture cannot see the ' \
+                'double count, so the assertion above is vacuous' \
+                % (a, rs, gam / c)
+
+
+def test_a_coloured_source_folds_per_harmonic_and_agrees_with_pnoise():
+    """`phase_psd` on a coloured source is `pnoise/P_carrier`, per harmonic.
+
+    `pnoise` folds `CY` at the source-side frequency `f - l f_0` for each
+    sideband (A3's design), so it is the reference the resolved fold must
+    meet -- and it does, to 2e-3 at `df/f0 = 1e-3` and 3e-4 at `1e-4`,
+    the same agreement the WHITE source shows (the control row), which
+    says the residual is the sideband discretisation and not the colour.
+
+    The white-only routines now REFUSE the coloured source with the
+    reason, instead of folding `CY` at one frequency and returning a
+    plausible number: `diffusion_constant`, and `oscillator_spectrum`
+    through it (its closed form is exact for white only, by its own
+    docstring).
+    """
+    for kind, tol in (('white', 3e-3), ('coloured', 3e-3)):
+        _c, pss, pac, ov = _coloured_vdp(kind)
+        f0 = 1.0 / float(pss.period)
+        Pc = _carrier_power(pss, ov)
+        ks = (1e-3, 1e-4)
+        offs = np.array(ks) * f0
+        sphi = pac.phase_psd(pss, offs)
+        for k, o, s in zip(ks, offs, sphi):
+            pn = float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov)[0])) / Pc
+            assert abs(s / pn - 1.0) < tol, \
+                '%s df/f0=%g: phase_psd %.6e vs pnoise/Pc %.6e' \
+                % (kind, k, s, pn)
+        if kind == 'coloured':
+            with pytest.raises(NotImplementedError, match='COLOURED'):
+                pac.diffusion_constant(pss)
+            with pytest.raises(NotImplementedError, match='COLOURED'):
+                pac.oscillator_spectrum(pss, offs, ov)
+        else:
+            c = pac.diffusion_constant(pss)
+            assert np.allclose(sphi, (f0 ** 2) * c / offs ** 2, rtol=1e-12), \
+                'for white the spectrum is the Lorentzian skirt in c exactly'
+
+
+def test_the_white_only_covariance_routines_refuse_colour_with_the_reason():
+    """⚠ A ROUTINE THAT FOLDS `CY` AT ONE FREQUENCY MUST SAY SO.
+
+    `oscillator_covariance`, `covariance` (both through `_lyapunov_pieces`)
+    and `orbital_correlation` read `CY` at `2 pi / T` as if it held at
+    every frequency.  On a coloured source that returns a plausible
+    number -- the shape A4d itself names -- so they refuse, and the
+    refusal is the same test `_refuse_coloured` applies everywhere: `CY`
+    at `w0` against `CY` at `10 w0`.
+    """
+    _c, pss, pac, _ov = _coloured_vdp('coloured', npts=240)
+    for name, call in (
+            ('oscillator_covariance', lambda: pac.oscillator_covariance(pss)),
+            ('orbital_correlation', lambda: pac.orbital_correlation(pss)),
+    ):
+        with pytest.raises(NotImplementedError, match='COLOURED'):
+            call()

@@ -7759,11 +7759,28 @@ class PAC(Analysis):
         while projecting onto the tangent makes positive mean ADVANCED.
         """
         self._check_circuit(pss)
+        self._refuse_coloured(pss, 'diffusion_constant')
+        self._refuse_driven(pss, 'diffusion_constant')
+        return self._white_diffusion_at(pss, 2.0 * np.pi / float(pss.period))
+
+    def _refuse_driven(self, pss, what):
         if not getattr(pss, 'autonomous', False):
             raise ValueError(
-                'PAC.diffusion_constant: phase diffusion is a property of a '
+                'PAC.%s: phase diffusion is a property of a '
                 "FREE-RUNNING oscillator. A driven circuit's phase is its "
-                "source's, and its noise is pnoise's problem, not this one.")
+                "source's, and its noise is pnoise's problem, not this one."
+                % what)
+
+    def _white_diffusion_at(self, pss, w):
+        """`(1/T) integral v_1^T (CY(w)/2) v_1 dt` with `CY` FROZEN at `w`.
+
+        The white functional at one frequency, with no refusal: it is `c`
+        when the source is white, and for a coloured source it is the
+        value `diffusion_constant` used to return silently.  `phase_psd`
+        reads it at the carrier for the Lorentzian CORNER, which is a
+        white-noise construct whatever the source's colour; the spectrum
+        itself comes from `coloured_diffusion_resolved`.
+        """
         v, info = pss.ppv()
         m = pss.cir.n - 1
         ## ⚠ `samples_eq`, NOT `samples`.  `CY` is an EQUATION-ROW
@@ -7774,7 +7791,7 @@ class PAC(Analysis):
         tms = np.asarray(info['times'], dtype=float)
         h = np.diff(tms)
         T = float(pss.period)
-        cy = self._cy_reduced(pss, 2.0 * np.pi / T)
+        cy = self._cy_reduced(pss, float(w))
         ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`), and
         ## these two functions disagreed about it until a Monte Carlo was
@@ -7893,10 +7910,74 @@ class PAC(Analysis):
             out.append(float(vbar @ (0.5 * cy) @ vbar))
         return np.asarray(out)
 
+    def coloured_diffusion_resolved(self, pss, freqs, harmonics=None):
+        """`c(f) = sum_l V_l^H (CY(2 pi |f - l f_0|)/2) V_l` — the fold PER HARMONIC.
+
+        `V_l` are the Fourier coefficients of the equation-row PPV `v_1(t)`
+        (the rows `diffusion_constant` contracts), so a source's density is
+        read at the SOURCE-SIDE frequency `f - l f_0` for each harmonic it
+        folds through -- which is what `pnoise` has done from the start and
+        what a coloured source requires.  Returns an array over `freqs`.
+
+        ⚠ THIS IS THE OBJECT `c + Gamma(f)` STOOD IN FOR, and the stand-in
+        is wrong in two ways that the fixture could not show: `c` reads
+        `CY` at ONE frequency (`2 pi / T`) as if it held at every harmonic,
+        and `Gamma` is exactly the `l = 0` term of this sum, so `c + Gamma`
+        counts `l = 0` twice.  Neither was visible on van der Pol, whose
+        PPV at the tank node averages to zero (`|V_0|/|V_1| = 5e-13`: the
+        inductor shorts the node at DC, so no core can bias it) -- the
+        fixture shared the claim's assumption, failure shape 0b.
+
+        EXACT FOR WHITE, BY PARSEVAL: with `CY` constant the sum is
+        `(1/T) integral v_1^T (CY/2) v_1 dt = c`, and the discrete version
+        with the grid's step weights reproduces `diffusion_constant` to
+        round-off -- that equality pins the transform's normalisation, and
+        it is asserted.  For a DC-centred colour (Lorentzian, flicker) and
+        `f << f_0` the `l != 0` terms read `CY(l f_0)` to `O(f/f_0)`, so
+        the sum differs from `c + Gamma` only where `V_0` is not small.
+
+        `harmonics` caps `|l|`; by default every harmonic carrying more
+        than 1e-14 of the PPV's energy is kept, which is all of them that
+        can move the sum at double precision.
+        """
+        self._check_circuit(pss)
+        self._refuse_driven(pss, 'coloured_diffusion_resolved')
+        m = pss.cir.n - 1
+        v0, info = pss.ppv()
+        S = np.asarray(info['samples_eq'], dtype=float)[:, :m]
+        tms = np.asarray(info['times'], dtype=float)
+        n = S.shape[0]
+        T = float(pss.period)
+        ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES: one sample per
+        ## step, weighted by that step, so that Parseval closes exactly.
+        t = tms[1:1 + n]
+        h = np.diff(np.concatenate(([tms[0]], t)))
+        w0 = 2.0 * np.pi / T
+        L = n // 2 if harmonics is None else int(harmonics)
+        ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
+        E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :]          # (nl, n)
+        V = (E @ S) / T                                               # (nl, m)
+        energy = np.sum(np.abs(V) ** 2, axis=1)
+        keep = energy > 1e-14 * energy.sum()
+        ls, V = ls[keep], V[keep]
+        out = []
+        for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
+            tot = 0.0
+            for l, vl in zip(ls, V):
+                cy = np.real(self._cy_reduced(pss, 2.0 * np.pi * abs(float(f) - l / T)))
+                tot += float(np.real(np.conj(vl) @ (0.5 * cy) @ vl))
+            out.append(tot)
+        return np.asarray(out)
+
     def phase_psd(self, pss, offsets, harmonic=1):
         """`S_phi(f)` in rad^2/Hz at `offsets` from harmonic `i` — white AND coloured.
 
-            S_phi,i(f) = i^2 f_0^2 (c + Gamma(f)) / f^2
+            S_phi,i(f) = i^2 f_0^2 c(f) / f^2,   c(f) = sum_l V_l^H (CY(f - l f_0)/2) V_l
+
+        `c(f)` is `coloured_diffusion_resolved`: the phase diffusion with
+        each harmonic's colour read at its own source-side frequency.  For
+        a white source it is `c` exactly; the earlier `c + Gamma(f)` form
+        counted the `l = 0` term twice and is retired.
 
         ⚠ THE CONVENTION IS PINNED BY `oscillator_spectrum`, NOT ARGUED.
         `lorentzian`'s far skirt is `i^2 f_0^2 c / f^2` exactly, and that
@@ -7939,12 +8020,19 @@ class PAC(Analysis):
         i = int(harmonic)
         if i < 1:
             raise ValueError('PAC.phase_psd: harmonic must be >= 1.')
-        c = self.diffusion_constant(pss)
         offs = np.atleast_1d(np.asarray(offsets, dtype=float))
         if np.any(offs <= 0.0):
             raise ValueError(
                 'PAC.phase_psd: offsets must be positive; S_phi diverges '
                 'at zero offset and that divergence is physical.')
+        cres = self.coloured_diffusion_resolved(pss, offs)
+        ## ⚠ THE CORNER IS THE WHITE LORENTZIAN'S, read at the carrier as it
+        ## always was.  For a coloured source `f_h = pi i^2 f0^2 c` is not a
+        ## lineshape parameter at all -- there is no Lorentzian -- and
+        ## taking the folded value nearest the carrier instead put a 1/f
+        ## source's corner ABOVE the offsets, in front of the power bound
+        ## below, which is the floor that actually binds for colour.
+        c = self._white_diffusion_at(pss, 2.0 * np.pi * f0)
         ## The i-th harmonic's Lorentzian half-width.  `S_i(f) =
         ## i^2 f0^2 c / (pi^2 i^4 f0^4 c^2 + f^2)` is a Lorentzian in `f`
         ## whose denominator is `f_h^2 + f^2`, so `f_h = pi i^2 f0^2 c`.
@@ -7958,8 +8046,7 @@ class PAC(Analysis):
                 'finite value the LINESHAPE attains there comes from the '
                 'nonlinear phase-to-voltage map: use oscillator_spectrum().'
                 % (float(offs.min()), corner, i))
-        gam = self.coloured_diffusion(pss, offs)
-        sphi = (i ** 2) * (f0 ** 2) * (c + gam) / offs ** 2
+        sphi = (i ** 2) * (f0 ** 2) * cres / offs ** 2
 
         ## ⚠ POWER CONSERVATION AS A SECOND, INDEPENDENT FLOOR -- and for a
         ## COLOURED source it is the binding one, by orders.  The
@@ -8012,7 +8099,7 @@ class PAC(Analysis):
             offs, np.logspace(np.log10(offs.min() / 1e3),
                               np.log10(offs.max()), 32))))
         sprobe = ((i ** 2) * (f0 ** 2)
-                  * (c + self.coloured_diffusion(pss, probe)) / probe ** 2)
+                  * self.coloured_diffusion_resolved(pss, probe) / probe ** 2)
         if np.any(np.diff(sprobe) > 1e-12 * np.abs(sprobe[:-1])):
             k = int(np.argmax(np.diff(sprobe) > 0)) + 1
             raise ValueError(
