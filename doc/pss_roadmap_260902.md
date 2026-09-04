@@ -4445,14 +4445,27 @@ dependence from the cubic core, where it tracked `1/(2π(a − G))` and ignored 
 the soft-compressing core most transistor oscillators actually are. A constant that holds at both
 ends and fails in the middle is the worst possible shape for a rule of thumb.
 
+⚠⚠⚠ **AND THE SOFT-COMPRESSING SWEEP CONTAINS A COINCIDENCE POINT WHERE THE WRONG RULE IS EXACTLY
+RIGHT.** `2π(a − G)/G = π` when `a = 1.5G`, which at `a − G = 0.02` is `G = 0.040` — **the third
+row of the measured table above**. There `Q_res/info['Q'] = 25.0/7.958163 = 3.14142` against
+`π = 3.14159`, agreeing to 5e-5. ⚠ **A SINGLE-POINT CHECK AT THAT ROW WOULD HAVE CONFIRMED π AND
+CLOSED THE QUESTION WRONGLY**, and the row was in the sweep by accident rather than design.
+**The sweep is what carries this result, not the fixture** — spot-checking a proposed constant at
+one operating point cannot distinguish "constant" from "passes through that value here". (Spotted
+by a peer session reading the table, not by the session that produced it.)
+
 ⚠⚠ **TWO CONSTANTS, NOT INTERCHANGEABLE.** `ln(20) = 2.9957` converts between the `1/e` and 5 %
 **reporting conventions** — a choice. `π` converts a **passive** resonator's settling `Q` to its
 energy `Q` — a per-period decay. ⚠ **Neither converts an oscillator's `info['Q']` into anything
 about its tank**, because the measurement above shows no such information is present.
 
 ❌ **STILL OPEN, and now open on the source's own authority:** the `Q` in Traversa & Bonani's
-*"orbital noise … an increasing function of the Q factor"* is an **oscillator** `Q`, and which
-oscillator `Q` they mean is not established here. `info['Q']` cannot yet be used as that prior.
+*"orbital noise … an increasing function of the Q factor"* is an **oscillator** `Q`, and **nobody
+has read which `Q` they mean.** Given the three-regime table above that is no longer a pedantic
+question: ⚠ **if they mean the TANK `Q`, then `info['Q']` is not an unconverted prior for it — it
+is the WRONG OBJECT, and the link is void rather than merely needing a constant.** Marked
+**PROVISIONAL**. ✅ Closing it is a **page read, not a measurement** — the cheapest open item in
+this document.
 
 **The table, read for what it can support:** van der Pol at `μ = 1/(2πQ_target)`, 400 points,
 gear:
@@ -5045,6 +5058,20 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    succeeds while every search for its subject fails. ⚠ The tell available in advance: **a
    citation whose title does not match the claim it is attached to.** Check the title against
    the claim, not just the claim against the source.
+
+0q. ⚠⚠ **A RIGHT FORMULA ON THE WRONG OBJECT — AND CHECKING THE ARITHMETIC CATCHES NONE OF IT.**
+   Across a four-session exchange on one question (does `ppv()`'s `Q` equal a designer's `Q`),
+   **every single reversal was a SCOPE error, not an arithmetic one.** `π` was exact — for a
+   passive resonator, applied to an oscillator. Wang & Roychowdhury's containment was real — for
+   linear systems, quoted about oscillators. A van der Pol fixture measured its own `μ` back. The
+   describing-function slope was right — for a hard limiter, generalised to a cubic. **Four
+   times, right formula, wrong object.** ⚠ Recomputing any of them would have confirmed them.
+   The check that works is naming the object a derivation is *about* and asking whether the thing
+   in front of you is that object — and the cheap version is to **sweep rather than spot-check**,
+   because a wrong constant can pass through the right value at one operating point (see A9's
+   coincidence at `a = 1.5G`). ⚠ **Corollary for advice: "the algebra says it will reproduce X,
+   don't bother measuring" is this shape at its most expensive**, because it spends someone
+   else's time and removes the check that would have caught it.
 
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
