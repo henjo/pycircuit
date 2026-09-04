@@ -4365,11 +4365,31 @@ nothing else.
 ✅ **THE PRACTICAL STATEMENT, and it matters for A10:** a crystal's datasheet `Q` is the **unloaded
 motional** `Q`, and **`info['Q']` will not report it**. Do not read one and expect the other.
 
-⚠ **WHAT THIS DOES NOT SETTLE, stated so the result is not over-read.** In a self-sustained
-oscillator the active device cancels the loss, so the *unloaded tank* `Q` is not obviously the
-"energy `Q`" Wang & Roychowdhury mean. This measurement decisively separates `info['Q']` from the
-**component-set unloaded** `Q`; it does not adjudicate their claim about the energy `Q`, which
-would need their definition implemented independently.
+⚠⚠ **AND IT RESOLVES A CONFLICT WITH A PEER RESULT THAT LOOKS LIKE A CONTRADICTION AND IS NOT.**
+A peer session measured a **PASSIVE** resonator and found `Q_d / Q_λ → π` to six digits, concluding
+the two quantities are *proportional with constant π* and that building an LC fixture "would
+reproduce π — I would spend the time elsewhere". **Both results are correct; they are different
+systems**, and the distinction is the whole point:
+
+| system | amplitude decay per period | settling `Q` |
+|---|---|---|
+| **passive** resonator | `exp(−ω₀T/2Q_d) = exp(−π/Q_d)` | `Q_d/π` — **proportional to the tank `Q`** |
+| **self-sustained** oscillator | set by the NET `(a − G)`, the active device having cancelled the loss | `1/(2π(a−G))` — **independent of the tank `Q`** |
+
+Their π against the measurement above: at `Q_res` = 50 / 100 / 12.5 it predicts `info['Q']` =
+15.9 / 31.8 / 3.98, and the measured value is **7.958 in all three**. ⚠ **π does not fit once the
+circuit oscillates** — the prediction varies 8× where the measurement is flat.
+
+⚠⚠ **AND THE OSCILLATOR CASE IS THE ONE THAT MATTERS, because every circuit PSS analyses is
+self-sustained.** So the π conversion must NOT be applied to compare `info['Q']` against a
+datasheet `Q`: it is right for a passive tank and wrong for the oscillator built around it. Taking
+the peer's advice to skip the fixture would have shipped that conversion.
+
+⚠ **WHAT REMAINS UNSETTLED, stated so this is not over-read either.** This separates `info['Q']`
+from the **component-set unloaded** `Q` for an oscillator, decisively. It does not adjudicate Wang
+& Roychowdhury's claim about the **energy** `Q`, which would need their definition implemented
+independently — and in a self-sustained oscillator the energy `Q` is not obviously the unloaded
+tank's.
 
 **The table, read for what it can support:** van der Pol at `μ = 1/(2πQ_target)`, 400 points,
 gear:
