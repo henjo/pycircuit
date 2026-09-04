@@ -5410,6 +5410,23 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    `npts`**, so the exponent and the step cannot disagree — and assert `h·N == T` before using
    either.
 
+0s. ⚠⚠ **A RELAYED CLAIM HAS NO AUTHOR PRESENT TO FEEL UNEASY ABOUT IT.** Three times today a
+   sentence arrived from another session, correct-sounding and sourced, and was wrong in scope:
+   "a few more Floquet pairs, not a sweep" (the requirement is ALL eigenvectors — IET CDS 2011);
+   "PAC currently refuses the Gourary transformation" (it implements the same identity by
+   bordering — B12); and "the closed-form variance has no justification anywhere in the high-Q
+   programme" (true of the book's (6.72) derivation, false of the tree — §0 row (c)). The first
+   reached shipped code as `nmodes=2`. ⚠ **Relayed claims and derived claims fail the same way
+   (§D 0q) but are FOUND differently.** A derived claim carries its author's unease about the
+   step they were unsure of; a relayed one arrives finished, with the unease stripped off in
+   transit, and repetition by a second session reads as corroboration when it is only
+   propagation. The two that were caught were caught by the same act: **refusing to write the
+   relayed sentence into the tree until the source page was read** — and in the (6.72) case the
+   page put the condition somewhere neither the relay nor the reconstruction had considered.
+   ✅ The rule: a claim that arrives from another session is a POINTER to a source, not a
+   finding; it is recorded with "cited, not verified here" until someone reads the page, and it
+   is not written into code or a docstring caveat before that.
+
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
 concurrent run moved readings 25-30% on the *same* configuration.
