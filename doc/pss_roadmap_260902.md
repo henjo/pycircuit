@@ -4034,64 +4034,53 @@ floor and Gourary's direct route would lift the cap; if it falls with refinement
 to gain."* It fell at the textbook rate. A plateau was the falsifiable outcome and it did not
 occur.
 
-### B16. Does the manufactured opener cap λ₂'s ORDER on an INDEX-1 circuit? — ⚠ **NOT REPRODUCED**, 2026-09-04
+### B16. The manufactured opener DOES cap λ₂'s order on an INDEX-1 circuit — ⚠⚠ **CONFIRMED 2026-09-04, AFTER TWO WRONG REFUTATIONS OF MY OWN**
 
-⚠⚠ **A CLAIM AGAINST THE SHIPPED `x0_unknown` DEFAULT, NOT YET VERIFIED HERE.** A peer session
-reports that on a plain **index-1** series RLC (`Q = 100`, `trap`), against the *exact discrete*
-trapezoidal multiplier `|(2+sh)/(2−sh)|^N`, `λ₂` converges at **h² with five consecutive ratios of
-4.00** under `x0_unknown=True`, while the default is erratic and **below first order**. If that
-holds, the benefit of `x0_unknown` is **not confined to index-2 circuits** and B1's shipped
-topology-keyed default is too narrow for monodromy accuracy. They also report a **crossover near
-N ≈ 1600** that reconciles it with the opposing Q=20 resonator measurement in B1 — coarse grids
-favour the manufactured opener, fine grids favour `x0_unknown` — which would make it a *trade with
-a measured crossover* rather than a winner.
+⚠⚠⚠ **THE SHIPPED `x0_unknown` DEFAULT IS TOO NARROW FOR MONODROMY ACCURACY.** It keys off
+topology (on when the criterion proves index 2). This circuit is **index 1** — a plain series RLC,
+no C-V loop, no L-I cutset — and on the manufactured opener its `λ₂` does not converge at the
+method's order.
 
-❌ **MY ATTEMPT TO VERIFY IT IS INVALID AND IS RECORDED AS SUCH RATHER THAN AS A REFUTATION.** I
-measured a flat `3.09e-02` relative error with **ratio exactly 1.00 across five doublings, and
-identical for both flag settings** — which is the signature of a mis-specified reference, not of a
-measurement: the computed `λ₂` *is* moving (0.939244 → 0.939105) while the reference is a constant
-that does not match it. ⚠ **The measured value is `exp(−2π/Q)` where my reference was `exp(−π/Q)`
-— a clean factor of two in the exponent.** Cause found: my fixture wrote `R('a','b')`,
-`L('b',gnd)`, `C('b',gnd)`, putting **L and C both to ground, in parallel** — so the `Q = ω₀L/R`
-I used is the series formula applied to a parallel topology. **§D 0q in my own hands: right
-formula, wrong object.**
+**Series loop `vs → R → L → C → gnd`, `Q = 100`, `trap`, reference `|(2+sh)/(2−sh)|^N`:**
 
-✅ **RE-RUN ON A CORRECTLY-BUILT SERIES LOOP (`vs → R → L → C → gnd`), AND THE CLAIM DOES NOT
-REPRODUCE.** With the topology fixed, `|λ₂|` lands on `exp(−π/Q) = 0.969072` instead of its
-square, so the factor-of-two is gone and the instrument is measuring the right object:
+    N       discrete ref     default      rel err    ratio    x0_unknown   rel err    ratio
+    199     0.969080011709  0.969035749  4.568e-05    —       0.968597471  4.979e-04    —
+    399     0.969074313510  0.969082426  8.371e-06   5.46     0.968954201  1.239e-04   4.02
+    799     0.969072896947  0.969084458  1.193e-05   0.70     0.969042938  3.091e-05   4.01
+    1599    0.969072543820  0.969080193  7.894e-06   1.51     0.969065063  7.720e-06   4.00
+    3199    0.969072455665  0.969076747  4.428e-06   1.78     0.969070587  1.929e-06   4.00
 
-    N       discrete ref     default      rel err    ratio   x0_unknown   rel err    ratio
-    199     0.969232133     0.969035749  2.026e-04    —      0.968597471  6.548e-04    —
-    399     0.969150413     0.969082426  7.015e-05   2.89    0.968954201  2.025e-04   3.23
-    799     0.969110951     0.969084458  2.734e-05   2.57    0.969042938  7.018e-05   2.88
-    1599    0.969091571     0.969080193  1.174e-05   2.33    0.969065063  2.735e-05   2.57
-    3199    0.969081970     0.969076747  5.389e-06   2.18    0.969070587  1.175e-05   2.33
+✅ **`x0_unknown` GIVES TEXTBOOK `h²` — FOUR CONSECUTIVE RATIOS OF 4.00. The default is erratic
+and below first order.** Independently obtained by two sessions, matching to every digit.
 
-⚠⚠ **BOTH CONVERGE — NO FLOOR, AND NEITHER IS BELOW FIRST ORDER.** The **default is uniformly
-~2× BETTER at every `N`**, including at `N = 3199`, well past the `N ≈ 1600` crossover the claim
-predicts would reverse it.
+✅ **AND THE CROSSOVER IS REAL, so this is a TRADE and not a winner.** The default is 10× better
+at `N = 199`, level at `N = 1599`, and beaten at `N = 3199`. Coarse grids favour the manufactured
+opener; fine grids favour `x0_unknown`, which is **the only one that converges at the method's
+order**. This reconciles with B1's opposing `Q = 20` resonator measurement rather than
+contradicting it — they sit on opposite sides of the crossover.
 
-✅ **AND THERE IS A CLEAN STRUCTURAL RELATIONSHIP THAT EXPLAINS THE WHOLE COLUMN:** `x0_unknown`
-at `N` is almost exactly the default at `N/2` — 2.025e-04 against 2.026e-04, 7.018e-05 against
-7.015e-05, 2.735e-05 against 2.734e-05, three coincidences to four digits. **`x0_unknown` behaves
-exactly like the default at half the resolution**, which is the in-period Euler opener costing one
-refinement — consistent with B1's independent resonator measurement rather than in tension with it.
+⚠ **THE CONSEQUENCE FOR B1:** the topology-keyed default is defensible for *waveform accuracy on
+coarse grids* and **wrong for `λ₂` accuracy on fine ones**. If a caller wants monodromy accuracy,
+the **crossover** is the number that should drive the choice, not the index.
 
-⚠ **WHAT IS STILL NOT SETTLED, so this is not over-read:** neither column reaches a clean `h²`
-(ratios 2.18–3.23, drifting *downward* in both), which suggests the **reference** carries its own
-`O(h)` term rather than either solve failing. So this refutes *"the default is erratic and below
-first order"* on this fixture and does **not** establish the convergence order of either. ✅ The
-question that matters for B1 — whether the shipped topology-keyed default is harmed on an index-1
-circuit — is answered **no** on this fixture.
+⚠⚠⚠ **I REFUTED THIS TWICE AND WAS WRONG BOTH TIMES. BOTH WERE INSTRUMENT ERRORS, AND NEITHER WAS
+ARITHMETIC.**
 
-⚠ **AND THE PEER'S OWN ROUTE TO IT IS WORTH COPYING.** They first reported this as a `~1e-5` floor
-in the monodromy, then **retracted it**: three independent instruments they built to localise it
-(a hand-rolled trapezoidal product, an ideal-product-with-Euler-opener, a matrix-norm comparison)
-**all failed the same way** — a raw step-map product leaves the DAE's algebraic modes at magnitude
-1 where this tree's monodromy projects them to zero (trapezoidal maps a zero-`C` row by exactly
-−1, which is §0k's finding again). What finally worked used **no reference of theirs at all** —
-only this tree's own flag, toggled, against a closed form. **When three independent instruments
-disagree with the subject, suspect the instruments.**
+  1. **Wrong topology.** `R('a','b')`, `L('b',gnd)`, `C('c',gnd)` put L and C **both to ground, in
+     parallel**, and I applied the *series* `Q = ω₀L/R`. Signature: a flat `3.09e-02` with ratio
+     **exactly 1.00** across five doublings, identical for both flags. Caught by the reflex — a
+     result too clean to be real.
+  2. ⚠ **The `npts`-versus-steps off-by-one, FOR THE THIRD TIME TODAY.** I set `h = T/npts` and
+     raised it to the power `N = npts − 1`, so the reference covered `T·N/(N+1)` — **one step
+     short of a period**. That injected an `O(h)` error into the *reference*, larger than the
+     effect under test: it flattened both columns, hid the h² convergence, and manufactured the
+     "default is 2× better at every N" and "`x0_unknown` at N equals default at N/2" relationships
+     I reported. **Both were artefacts of the reference, not properties of the solver.**
+
+✅ **THE FIX THAT MAKES IT UNREPEATABLE: take `N` and `h` FROM THE RETURNED WAVEFORM, never from
+the requested `npts`** — `t = pss.waveform[0]; N = len(t) − 1; h = per/N` — so the exponent and
+the step are consistent by construction. The script now also asserts `h·N == T` and that `h`
+matches the waveform's actual first step before using either.
 
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
@@ -5230,6 +5219,18 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    coincidence at `a = 1.5G`). ⚠ **Corollary for advice: "the algebra says it will reproduce X,
    don't bother measuring" is this shape at its most expensive**, because it spends someone
    else's time and removes the check that would have caught it.
+
+0r. ⚠⚠⚠ **THE `npts`-VERSUS-STEPS OFF-BY-ONE — THREE TIMES IN ONE DAY, IN THREE DIFFERENT
+   PLACES.** `timestep = per/npts` yields `npts` POINTS and `npts − 1` STEPS, spaced
+   `per/(npts−1)`. It appeared as the parity confusion in §0k, as the "converged=False is not
+   silent" error, and in B16 as a REFERENCE built with `h = T/npts` raised to the power
+   `npts − 1`. ⚠ **The B16 instance is the instructive one because the error was in the
+   INSTRUMENT, not the subject**: an `O(h)` term one step of period wide, larger than the effect
+   under test, which flattened the convergence being measured and manufactured two plausible
+   relationships that were then reported as findings. ✅ **The fix is structural, not vigilance:
+   take the step count and the step size FROM THE RETURNED WAVEFORM, never from the requested
+   `npts`**, so the exponent and the step cannot disagree — and assert `h·N == T` before using
+   either.
 
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
