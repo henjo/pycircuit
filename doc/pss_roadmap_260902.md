@@ -222,6 +222,12 @@ It is anchored by a nonlinear Monte Carlo at `μ = 1` only. At `Q = 60` the only
 either route and not a defect common to both. The frequency-shift gate anchors `⟨v⟩` (the *DC*
 functional) at `Q = 75`; it does not anchor `c` (the *quadratic* one).
 
+⚠ **NARROWED 2026-09-04 by §0c below.** The state-localised frequency-shift probe anchors `v₀`
+**pointwise** at `Q = 8` and `Q = 30`, to between 0.015% and 0.13%, against an instrument that
+shares no code with the adjoint replay. So the PPV is no longer the suspect: what is still
+unanchored at high `Q` is `diffusion_constant`'s **assembly** — the quadrature and the `B CY Bᵀ`
+contraction — which is a far smaller surface than "the absolute scale" and needs no Monte Carlo.
+
 **So the honest statement is one sentence, not the blanket one:** every *shape* result holds at
 any `Q` because it never sees `Q`; every *circuit* result has been re-run; and one *scale* — `c`
 — rests at high `Q` on a check that shares an instrument. A Monte Carlo at `Q = 60` would close
@@ -231,6 +237,111 @@ it, at 4.6·Q ≈ 280 periods per realisation.
 to be patched one at a time. Any item whose gate passes on van der Pol at `μ = 1` has been
 tested at `|λ₂| = 8.5e-4` — six orders from where a real LC oscillator sits — and has therefore
 not been tested at all in the regime that matters.
+
+---
+
+### 0c. The windowed PPV probe — ⚠ **the time-localised form is IMPOSSIBLE**, the state-localised form works — 2026-09-04
+
+§0b leaves one thing exposed: `diffusion_constant`'s **absolute scale** at high `Q`. The
+frequency-shift gate anchors `⟨v⟩`, the *DC* functional, at `Q = 75`; `c` is the *quadratic* one,
+and a quadratic functional is only anchored if the PPV is anchored **pointwise**. So the natural
+next instrument is a windowed version of the same gate: inject over a window rather than over the
+whole period, and compare `ΔT/A` against `∫ w(t) v₀(t) dt`.
+
+⚠⚠ **THE OBVIOUS CONSTRUCTION — A SOURCE LOCALISED IN TIME — CANNOT WORK, AND NOT FOR A
+NUMERICAL REASON.** A window in `t` has a period of its own, so the circuit stops being
+autonomous. Measured on the `Q = 1` fixture with a `C¹` periodic raised-cosine bump at
+`A = 1e-6`:
+
+    unforced:  converged=True   autonomous=True    T0 = 6.298385479
+               |λ| = [1, 0.4482, 0]      min|1 − λ| = 1.108e-11
+    bumped:    converged=False  autonomous=FALSE   period = 6.298385479  (Δ = 0.0 EXACTLY)
+
+Two independent obstructions, and either alone is fatal:
+
+  * **the period stops being an unknown.** PSS infers a driven problem and solves at the period
+    it was handed, so `ΔT ≡ 0` *by construction* — the quantity the probe exists to measure is
+    defined away. The `Δ = 0.0` above is exact, not small.
+  * **the Newton has no Jacobian.** A driven solve's Jacobian is `M − I`, and the *unforced* `M`
+    carries `λ₁ = 1` to `1.1e-11` — the phase mode. At `reltol = 1e-12` the solve cannot
+    converge, and at `A = 1e-6` the forced `M` is still that singular.
+
+Physically this is **injection locking**: a perturbation periodic at the free-running period pulls
+the *phase* and leaves the *frequency* alone. The locked phase satisfies `∫ v₀(t+φ)w(t) dt = 0`,
+which pins the **zeros** of the PPV correlation and says nothing about its scale — so even the
+converged version of this experiment would not do the job it was built for.
+
+**WHAT WORKS INSTEAD: LOCALISE IN THE STATE, NOT IN TIME.** A source `i = A·g(v)` is autonomous —
+the period stays an unknown — and because the orbit passes through each `v` at known phases it is
+localised in phase all the same. Built as a second `BSource` on the same node; note
+`terminals = ('inp','inn','outp','outn')`, so `v_ctrl = +v`.
+
+⚠ **The control comes free and is the reason to trust the rest:** `g ≡ 1` is the DC gate, and it
+reproduces it to `1.1e-4` (`Q = 1`) and `2e-5` (`Q = 8`), fixing the sign convention at **−1**.
+
+⚠⚠ **AND THE DISAGREEMENT THAT LOOKED LIKE A DEFECT IS MY QUADRATURE, WHICH ONLY A REFINEMENT
+STUDY COULD SAY.** The bumps missed by 4–8% at `Q = 1` and by up to 32% at `Q = 8`, with
+`lin(A/2) ≈ 1.000` ruling out nonlinearity. Refining 16× at `Q = 8`:
+
+    npts     predicted        measured        ratio
+     240   +6.582886e-03   -4.061242e-03   -0.61694
+     480   +5.341411e-03   -4.075562e-03   -0.76301
+     960   +4.717965e-03   -4.076759e-03   -0.86409
+    1920   +4.406292e-03   -4.076873e-03   -0.92524
+    3840   +4.250592e-03   -4.076954e-03   -0.95915
+
+**The measured column moves 0.4% and the predicted column moves 55%.** The PSS is converged and
+the prediction integral is first order — rate 0.87. Same shape at `Q = 30`, so it is not a
+high-`Q` effect.
+
+⚠ **TWO PLAUSIBLE CAUSES, BOTH FALSIFIED BY THEIR OWN DIAGNOSTIC**, which is worth recording
+because each was convincing enough to have been written up as fact:
+
+  * **a fixed fractional sample association.** `samples` has 479 rows for 480 times, so a sample
+    indexes an *interval*; pairing it with the left and the right endpoint **brackets** the
+    measurement, so the truth is interior. But the `θ` that would land exactly on `−1` DRIFTS —
+    0.67166, 0.67635, 0.68596, 0.70517, 0.74358 — so there is no fixed offset to correct.
+  * **an oscillatory `O(h)` component in `v₀`**, which would cancel in a whole-period integral
+    and not against a narrow weight. The zig-zag measure decays 4.016×, 4.008×, 4.004×, 4.002×
+    per doubling — **exactly `O(h²)`**, which is ordinary curvature. There is no saw.
+
+**§D SHAPE 0g — A CONTROL THAT IS A WHOLE-PERIOD INTEGRAL IS BLIND TO ANY ERROR THAT INTEGRATES
+TO ZERO.** The DC gate agrees to `1e-4` while the localised functional is 32% out, and both read
+the same `v₀`. An `O(h)` *time shift* of the PPV is invisible to `∫ v₀ dt` — exactly — and is
+first order in every localised functional. So passing the DC gate was never evidence that the
+pointwise PPV was accurate, and the roadmap's own sentence "the frequency-shift gate anchors
+`⟨v⟩` … it does not anchor `c`" was more literally true than intended.
+
+**THE INSTRUMENT IS USABLE ONCE BOTH ERRORS ARE EXTRAPOLATED AWAY.** The prediction's error is a
+clean `O(h)` and the measurement's a clean `O(A)`; Richardson in `h` alone leaves a *stable*
+0.44%, which is exactly the size `lin(A/2) = 1.00218` predicts. Extrapolating both —
+`pred₀ = 2·pred(h/2) − pred(h)`, `meas₀ = 2·meas(A/2) − meas(A)`:
+
+    Q     v*        pred_0          meas_0          ratio      grids
+     8    -1.0733   +4.094979e-03   -4.093816e-03   -0.99972   480/960
+     8    -0.3577   +3.576679e-03   -3.576144e-03   -0.99985
+     8    +1.0733   -2.616944e-03   +2.613608e-03   -0.99873
+    30    -1.0733   +1.092002e-03   -1.091794e-03   -0.99981   960/1920
+    30    -0.3578   +9.535700e-04   -9.537214e-04   -1.00016
+    30    +1.0733   -6.973740e-04   +6.971334e-04   -0.99965
+
+⚠ **Six independent localised functionals of `v₀`, at three phases and two `Q`, agreeing to
+between 0.015% and 0.13%** — against a measurement that shares no code with the adjoint replay.
+That is a *pointwise* anchor, which is what `c` needs and what `∫ v₀ dt` could never give. The
+`Q = 30` column is the one that matters: it is the regime §0b says is untested, and the agreement
+does not degrade there.
+
+⚠⚠ **WHAT THIS DOES AND DOES NOT CLOSE.** It anchors `v₀` **pointwise** at `Q = 30` against an
+independent instrument. It does **not** measure `c`, which is a *quadratic* functional of `v₀`
+against `CY`. So the exposure in §0b narrows rather than closes: the PPV is no longer the
+suspect, and what remains unanchored at high `Q` is `diffusion_constant`'s **assembly** — the
+quadrature and the `B CY Bᵀ` contraction. That is a much smaller surface than "the absolute
+scale", and it is checkable without a Monte Carlo.
+
+**⚠ THE COST IS THE POINT, THOUGH: four PSS solves per functional** (two grids × two amplitudes),
+and the grid has to be fine enough that the `O(h)` term dominates the `O(h²)` one. At `Q = 8`
+that is 480/960; at `Q = 30` it is 960/1920. This is a *gate*, not something to run in the suite
+at every `Q`.
 
 ---
 
@@ -2560,6 +2671,13 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the
    measurement assumes before trusting what it confirms.**
+
+0g. **A control that is a whole-period integral, guarding a pointwise quantity.** The DC
+   frequency-shift gate agrees to `1e-4` while a *localised* functional of the same `v₀` is 32%
+   out. An `O(h)` error that integrates to zero over the period — a time shift is exactly one —
+   is **invisible** to `∫ v₀ dt` and first order in every windowed functional. **A control is
+   only evidence for the functional it actually is;** passing an integral gate says nothing
+   about the integrand.
 
 0. **A result asserted outside the regime the claim is about.** A4's criterion tested on an
    autonomous circuit when the paper says non-autonomous; the A2 gate's window set to 2–4 time
