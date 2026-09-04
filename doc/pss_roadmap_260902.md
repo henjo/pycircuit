@@ -4447,9 +4447,12 @@ ends and fails in the middle is the worst possible shape for a rule of thumb.
 
 ⚠⚠⚠ **AND THE SOFT-COMPRESSING SWEEP CONTAINS A COINCIDENCE POINT WHERE THE WRONG RULE IS EXACTLY
 RIGHT.** `2π(a − G)/G = π` when `a = 1.5G`, which at `a − G = 0.02` is `G = 0.040` — **the third
-row of the measured table above**. There `Q_res/info['Q'] = 25.0/7.958163 = 3.14142` against
-`π = 3.14159`, agreeing to 5e-5. ⚠ **A SINGLE-POINT CHECK AT THAT ROW WOULD HAVE CONFIRMED π AND
-CLOSED THE QUESTION WRONGLY**, and the row was in the sweep by accident rather than design.
+row of the measured table above**. ⚠⚠ **AND THE COINCIDENCE IS ALGEBRAICALLY EXACT, NOT APPROXIMATE:** at `a = 1.5G` both
+expressions are literally `25/π` — `Q_res/π = (1/0.04)/π` and `1/(2π(a−G)) = 1/(0.04π)`. The
+*measured* 3.14142 against `π = 3.14159` differs only by the grid's own error. ⚠ **A SINGLE-POINT
+CHECK AT THAT ROW WOULD NOT HAVE RETURNED A PLAUSIBLE WRONG ANSWER — IT WOULD HAVE RETURNED AN
+EXACT ONE**, and the row was in the sweep by accident rather than design. The general form:
+**a law that matches at one point has been tested at one point.**
 **The sweep is what carries this result, not the fixture** — spot-checking a proposed constant at
 one operating point cannot distinguish "constant" from "passes through that value here". (Spotted
 by a peer session reading the table, not by the session that produced it.)
@@ -4482,19 +4485,41 @@ taxonomy above**, measured here at ratio π with `Q_λ = 1/(πα) ∝ Q_d`. And 
 in turn should result into a larger amplitude noise component"* — which is `Q_λ ∝ Q_d`, the
 clamping relation, not a general one.
 
-**THE RESOLUTION, and it is sharper than either "valid" or "void":**
+✅✅⚠ **AND THERE IS A DIRECT ROUTE THAT NEEDS NO TANK `Q` AT ALL, WHICH IS BETTER THAN THE
+REGIME ARGUMENT AND SUPERSEDES IT.** T&B's *knob* is the tank `Q`; their *stated mechanism* is the
+multiplier:
 
-| core | is `info['Q']` a prior for T&B's `Q`? |
+> *"a high-Q oscillator is characterized by at least a **second Floquet exponent near to zero**,
+> which in turn should result into a larger amplitude noise component."*
+
+Since `λ₂ = exp(μ₂T)`, **`info['Q'] = −1/ln|λ₂| = −1/(μ₂T)`** — so a large settling `Q` **IS**
+`μ₂` near zero. Not a proxy for their mechanism: **the same quantity as their mechanism**, up to
+the period. Verified against the measured table: at `Q_target = 8`, `|λ₂| = 0.8825206810` gives
+`−1/ln|λ₂| = 8.0014` against `info['Q'] = 8.001725`.
+
+✅ **So `info['Q']` is a legitimate and DIRECT prior on orbital noise, in EVERY regime, and no tank
+`Q` is needed at any point.** The regime taxonomy governs the *tank-`Q`* route only.
+
+**THE DIRECTION TABLE — this is what the fixture actually bought:**
+
+| direction | verdict |
 |---|---|
-| **amplitude-clamping** (theirs) | ✅ **yes, up to the factor π** — `Q_λ = 1/(πα)` tracks the tank |
-| **soft-compressing** (cubic) | ❌ **no — void, not unconverted.** `Q_λ = 1/(2π(g−α))` carries *no* tank information, measured bit-identical across an 8× sweep |
-| **passive** | n/a — not an oscillator |
+| settling `Q` → *"`μ₂` is near zero, expect larger orbital noise"* | ✅ **SOUND** — their own mechanism, and an identity |
+| settling `Q` → tank `Q` | ❌ **VOID** — measured bit-identical across an 8× sweep |
+| tank `Q` → orbital noise | ⚠ holds in Tow-Thomas, **not in general** — needs the clamping regime |
 
-⚠⚠ **SO THE CLAIM DOES NOT TRANSFER BY ITSELF, AND THE TAXONOMY IS THE PRECONDITION FOR USING
-IT.** T&B's own scope line says as much — *"at least for the **second-order oscillator considered
-in this study**, an increasing function of the Q factor"* — and their study's core is a clamp.
-✅ **A designer's crystal oscillator with a hard-limiting sustaining amplifier is in their regime;
-a soft-compressing transistor core is not.**
+⚠⚠ **THE FIXTURE DID NOT KILL THE LINK. IT KILLED THE WRONG DIRECTION OF IT** — which is the one
+that had been written down, and the one that would have been used silently.
+
+⚠ **ONE THING TO KEEP MARKED:** T&B *show* `Q → μ₂` (Fig. 7) and `Q → noise` (Figs 8–10, at 1, 10
+and 100 Hz offsets). That `μ₂ → noise` holds *independently of `Q`* is an **inference from their
+data plus their stated mechanism**, not something they isolate. Their fixture *"has two state
+variables, therefore only two Floquet exponents"*, so it is genuinely the second-order case their
+own caveat names.
+
+⚠ **AN EARLIER VERSION OF THIS ENTRY CONCLUDED "the link holds in the clamping regime and is void
+in the soft-compressing one".** That is correct about the tank-`Q` route and **generalised too
+far** — it treated the only route it had found as the only route there is.
 
 **The table, read for what it can support:** van der Pol at `μ = 1/(2πQ_target)`, 400 points,
 gear:
