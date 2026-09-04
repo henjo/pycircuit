@@ -1204,7 +1204,37 @@ that row to full precision **given `u`**, and is capped by `u`'s own accuracy.
 **Gourary CANNOT replace the bordered solve at `Δω = 0` — it hands back a zero row there.** Both
 use the left null vector; one supplies an exact ROW, the other closes a RANK DEFICIENCY.
 
-⚠ **THE OPEN QUESTION IS APPLICABILITY AND IT IS UNMEASURED.** If A7's recorded weakness is
+✅⚠ **APPLICABILITY MEASURED 2026-09-04 — WE DO HAVE A SMALL-OFFSET BREAKDOWN, ABOUT SIX DECADES
+BELOW THE CARRIER.** `phase_psd` is a CLOSED FORM built from `c` and never touches `J(Δω)`, so A7's
+analytic pole-carrying is not the path at issue. The path that IS is **`pnoise` on an autonomous
+circuit** → `_deflated_solve`. Swept on `_vdp_at_Q`-style fixture, `f0 = 0.159114371`:
+
+    f/f0      pnoise S(f)       S(f)·f²
+    1e-2      1.000041e-10      2.531841e-16
+    1e-3      9.998426e-13      2.531340e-20
+    1e-4      9.998406e-15      2.531335e-24
+    1e-5      9.998478e-17      2.531353e-28     ← clean power law, mantissa 2.5313 to 5 digits
+    1e-6      1.071931e-18      2.713848e-32     ← breaks
+    1e-7      7.204088e-18      1.823887e-33
+    1e-8      7.143311e-16      1.808499e-33     ← RISING
+    1e-9      7.215805e-14      1.826853e-33
+
+`S ∝ f²` holds to **five digits** down to `f/f0 ≈ 1e-5`, then breaks, and below that the values
+**rise** — the signature of round-off dominating rather than underflow (1e-18 is nowhere near
+denormal).
+
+⚠⚠ **AND IT LANDS AT THE EDGE OF THE PRACTICALLY RELEVANT RANGE, WHICH IS WHY IT MATTERS.** Phase
+noise is quoted at 1 kHz–10 MHz offsets from a GHz carrier, i.e. `1e-6` to `1e-2` relative. **The
+breakdown begins exactly where the useful range ends.** Not academic.
+
+⚠ **WHAT IS NOT ESTABLISHED: CAUSATION.** The breakdown is CONSISTENT with Gourary's mechanism —
+`log10(1/Δω)` digits lost forming `uᵀM − e uᵀ` predicts trouble around six decades — but it has
+NOT been isolated from other error sources. A discriminating experiment would move the breakdown
+offset with the conditioning (sweep `Q`, or `reltol`) and check it tracks; that has not been run.
+**So: we have the symptom, at a relevant offset, and the attribution is an inference.**
+
+⚠ **THE ORIGINAL QUESTION IS ANSWERED EITHER WAY.** Gourary was not "considered and rejected"; it
+was never assessed, and the thing it fixes turns out to be something we measurably have. If A7's recorded weakness is
 ill-conditioning of `J(Δω)` at small offset, Gourary addresses it and our bordered solve does not.
 If it is `J(0)` singular, ours addresses it and Gourary does not. **Whether our PAC sweep actually
 loses those digits at small offset — A7 already carries the harmonic pole analytically — has not
