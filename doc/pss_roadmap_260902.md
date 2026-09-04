@@ -1044,9 +1044,45 @@ manufactured opening step is inconsistent on index-2, and `x0_unknown=True` remo
 a second and stronger reason for **B1** (`x0_unknown` as the default), which until now rested only
 on non-uniform grids.
 
-⚠ **NOT MADE: a shipped-behaviour change.** Defaulting `x0_unknown` on a detected index-2 netlist
-is the obvious move and `topological_index` already localises exactly where — but it is a default
-change and has not been taken.
+✅✅ **THE DEFAULT CHANGE IS MADE, AND IT IS CONDITIONAL — 2026-09-04.** `x0_unknown` now defaults
+to `None`, meaning *decide from the topology*: switched ON for a netlist the criterion **proves** is
+index 2, left OFF otherwise.
+
+    L-I cutset  DEFAULT            1.000082   v(0)/V 0.99996   warns, naming the cutset
+    L-I cutset  x0_unknown=False   2.000041   v(0)/V 0.00000   honoured, silent
+    index-1 RC  DEFAULT            untouched, `_open_at_x0` False, no warning
+
+⚠⚠ **IT IS NOT A NEW GLOBAL DEFAULT, AND THE REASON IS MEASURED IN `x0_unknown`'s OWN DOCSTRING.**
+Trapezoidal still needs an L-stable opener, so switching it on moves the Euler step INSIDE the
+period, degrading the ORBIT rather than just the opening — on a `Q = 20` resonator against its
+analytic 20 V peak, `x0_unknown` gives **19.76939 against the default's 20.01273** at 100 points.
+**Turning it on everywhere would trade a real defect on a few circuits for a real regression on
+most.** B1's unconditional form is still open and still needs its own case.
+
+**Three refusals, each deliberate:** an explicit `True`/`False` is honoured untouched; a two-step
+method is left alone (its solved-history path already solves for `x(0)`); and ⚠⚠ **a PROVISIONAL
+verdict does NOT trigger it — a REFUSAL ON THE THEORY, not caution.** Estevez Schwarz &
+Tischendorf's closing page gives up BOTH halves of the criterion for controlled sources: *"if
+arbitrary controlling elements for the controlled sources are considered then THE INDEX OF THE
+NETWORK EQUATIONS MAY DEPEND ON THE PARAMETERS"*, and *"if controlled sources are allowed to form
+a part of L-I cutsets or C-V loops then IT IS POSSIBLE TO BE CONFRONTED WITH HIGHER INDEX (> 2)
+PROBLEMS"*. **So `provisional` is not a lower-confidence index-2 verdict — it is not an index-2
+verdict at all**, and neither the premise ("the criterion proves index 2") nor the remedy's
+justification (`x0_unknown` fixes an inconsistent opening step *on an index-2 algebraic row*)
+survives. If the true index is 3 the remedy is not known to apply and would mask a worse problem
+while reporting a fix. Same for a structurally singular netlist. It **warns** when it fires,
+naming the loop or cutset.
+
+⚠ **AND `topological_index`'s OWN DOCSTRING CLAIMED TOO MUCH — "the DAE index from the netlist
+alone", shipped this morning, is FALSE in exactly the controlled-source case.** Corrected to "from
+the netlist, WITHIN A STATED CLASS", with both quotes. **The criterion is decidable from topology
+only inside its class; outside it, the index can depend on element VALUES.**
+
+⚠ **AND IT BROKE TWO TESTS THAT WERE RIGHT TO BREAK.** `_resolve_x0_unknown` runs BEFORE `solve`
+validates its arguments, so a bad `method` reached `_solves_history()` and came back as
+`KeyError: 'bogus'` instead of the `ValueError('method must be …')` the caller is owed. **A
+defaulting helper has no business changing which exception an invalid call raises**; it is now
+best-effort and cannot raise. Pinned by an assertion in the new test.
 
 ✅✅ **AND THE CHAIN IS NOW CLOSED AT SOURCE LEVEL** — the one link neither session had read. In
 `_traverse`:

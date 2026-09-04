@@ -237,7 +237,21 @@ def noise_enters_constraints(C_reduced, CY_reduced, tol=1e-12):
 
 
 def topological_index(cir):
-    """`(index, info)` — the DAE index from the netlist alone.
+    """`(index, info)` — the DAE index from the netlist, WITHIN A STATED CLASS.
+
+    ⚠⚠ NOT "FROM THE NETLIST ALONE", WHICH AN EARLIER VERSION OF THIS LINE
+    CLAIMED AND WHICH IS FALSE FOR CONTROLLED SOURCES.  Estevez Schwarz &
+    Tischendorf close the paper by giving up BOTH halves of the criterion for
+    that case: "if arbitrary controlling elements for the controlled sources
+    are considered then THE INDEX OF THE NETWORK EQUATIONS MAY DEPEND ON THE
+    PARAMETERS", and "if controlled sources are allowed to form a part of L-I
+    cutsets or C-V loops then IT IS POSSIBLE TO BE CONFRONTED WITH HIGHER
+    INDEX (> 2) PROBLEMS".
+
+    So `provisional` is NOT a lower-confidence index-2 verdict — **it is not
+    an index-2 verdict at all.**  Two independent failures at once: the index
+    is no longer bounded by 2, and it is no longer a function of the topology
+    at all, because it can turn on element VALUES.
 
     Estevez Schwarz & Tischendorf (IJCTA 28(2):131–162, 2000): for a
     nonlinear time-independent network **without controlled sources**, and
@@ -1735,6 +1749,76 @@ class PSS(Analysis):
                 'seed dependence.'
                 % (T, seed_period), RuntimeWarning, stacklevel=3)
         return z, info, ier, mesg
+
+    def _resolve_x0_unknown(self, requested):
+        """`x0_unknown`, defaulted from the circuit's TOPOLOGY when not given.
+
+        ⚠⚠ WHY THIS IS CONDITIONAL AND NOT A NEW GLOBAL DEFAULT. `x0_unknown`
+        is NOT free: trapezoidal still needs an L-stable opener, so switching
+        it on moves the Euler step INSIDE the period, where it degrades the
+        ORBIT rather than just the opening. Measured on a `Q = 20` resonator
+        against its analytic 20 V peak, `x0_unknown` is WORSE --
+        20.01273 against 19.76939 at 100 points, 20.02208 against 19.96123 at
+        200. Turning it on everywhere would trade a real defect on a few
+        circuits for a real regression on most.
+
+        ⚠ ON AN INDEX-2 NETLIST THE TRADE REVERSES, and not marginally. The
+        manufactured opening step is INCONSISTENT there: the constraint fixes
+        the algebraic variable at a value the step cannot produce, so
+        trapezoidal returns EXACTLY 2x on an L-I cutset -- and on an even
+        number of steps reports `converged` and a periodicity residual of
+        1e-13 while doing it. See the roadmap's section 0k. `x0_unknown`
+        removes it at every parity because `x(0)` becomes a genuine unknown.
+
+        Three refusals, each deliberate:
+
+          * **an explicit `True`/`False` is honoured untouched** -- this only
+            fills in `None`;
+          * **a two-step method is left alone**, because its solved-history
+            formulation already solves for `x(0)` and was never affected;
+          * ⚠⚠ **a PROVISIONAL verdict does not trigger it, and that is a
+            REFUSAL ON THE THEORY RATHER THAN CAUTION.** With a controlled
+            source in the loop or cutset the index is not bounded by 2 and
+            need not be a function of the topology at all (see
+            `topological_index`).  So the premise "the criterion PROVES index
+            2, therefore switch" is unavailable — and so is the REMEDY's
+            justification, because `x0_unknown` fixes an inconsistent opening
+            step on an INDEX-2 algebraic row.  **If the true index is 3 the
+            remedy is not known to apply, and switching it on would mask a
+            worse problem while reporting a fix.**  Leaving a known defect
+            visible is the better failure mode.  The same goes for a
+            structurally singular netlist, which has no index at all.
+
+        Warns when it fires, because a silently different formulation is the
+        kind of thing that makes a later measurement inexplicable.
+        """
+        if requested is not None:
+            return bool(requested)
+        ## ⚠ EVERYTHING BELOW IS BEST-EFFORT AND MUST NEVER RAISE.  This runs
+        ## BEFORE `solve` validates its own arguments, so a bad `method` was
+        ## reaching `_solves_history` and coming back as `KeyError: 'bogus'`
+        ## instead of the `ValueError('method must be ...')` the caller is
+        ## owed -- two tests caught exactly that.  A defaulting helper has no
+        ## business changing which exception an invalid call raises.
+        try:
+            if self._solves_history():
+                return False
+            idx, info = topological_index(self.cir)
+        except Exception:
+            return False
+        if idx != 2 or info['provisional'] or info['ill_posed']:
+            return False
+        where = (('C-V loop: ' + ', '.join(info['loop'])) if info['loop']
+                 else ('L-I cutset: ' + ', '.join(info['cutset'])))
+        warnings.warn(
+            'PSS: this netlist is index 2 (%s), where the manufactured '
+            'opening step is INCONSISTENT -- it starts an algebraic variable '
+            'at a value the constraint forbids, and trapezoidal carries that '
+            'seed forever (exactly 2x on an L-I cutset, reported as CONVERGED '
+            'on an even number of steps). Solving for x_0 directly instead; '
+            'pass x0_unknown=False to override.' % where,
+            RuntimeWarning, stacklevel=3)
+        return True
 
     def _period_grid(self, period, npts, grid):
         """`(times, hs)` for one period -- uniform, or a caller's own grid.
@@ -4211,7 +4295,7 @@ class PSS(Analysis):
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
-              x0_unknown=False, tstab=None):
+              x0_unknown=None, tstab=None):
         """Solve for the periodic steady state.
 
         `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
@@ -4286,6 +4370,13 @@ class PSS(Analysis):
 
         See `benchmarks/pss_warm_start.py` for the probe that failed and the
         counts that decided the interface.
+
+        ⚠ `x0_unknown` DEFAULTS TO `None`, WHICH MEANS "DECIDE FROM THE
+        TOPOLOGY": it is switched ON automatically for a netlist the index
+        criterion proves is index 2, where the manufactured opening step is
+        inconsistent, and left OFF otherwise -- because it is not free (see
+        the measured regression below). An explicit `True` or `False` is
+        honoured untouched. See `_resolve_x0_unknown`.
 
         `x0_unknown` solves for `x_0` itself instead of for `x_in`, the
         pre-image of a manufactured opening step.  The plain path's default
@@ -4479,6 +4570,10 @@ class PSS(Analysis):
         ## ⚠ the flag must be set BEFORE the grid is built, because
         ## `_period_grid` consults it to decide whether to subdivide a
         ## coarse opening step -- see the note there.
+        ## ⚠ `None` means "decide from the topology" -- see
+        ## `_resolve_x0_unknown`.  Resolved to a concrete bool HERE, before
+        ## anything reads it, so every downstream use sees one value.
+        x0_unknown = self._resolve_x0_unknown(x0_unknown)
         self._open_at_x0 = bool(x0_unknown)
         times, hs = self._period_grid(period, int(period / dt), grid)
         npts = len(times)

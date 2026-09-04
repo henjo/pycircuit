@@ -9670,3 +9670,85 @@ def test_the_manufactured_opening_step_is_INCONSISTENT_on_an_L_I_cutset():
         'gear starts consistent already; got %.5f' % v0g
 
 
+def test_x0_unknown_defaults_from_the_topology_and_only_where_it_is_proved():
+    """⚠ `x0_unknown=None` means "decide from the topology", and the
+    CONDITIONALITY is the design, not a hedge.
+
+    ⚠⚠ IT IS NOT A NEW GLOBAL DEFAULT, because `x0_unknown` is NOT FREE.
+    Trapezoidal still needs an L-stable opener, so switching it on moves the
+    Euler step INSIDE the period, where it degrades the ORBIT rather than
+    just the opening -- measured on a `Q = 20` resonator against its analytic
+    20 V peak at 20.01273 (default) against 19.76939 (`x0_unknown`) at 100
+    points. Turning it on everywhere would trade a real defect on a few
+    circuits for a real regression on most.
+
+    On an index-2 netlist the trade reverses: the manufactured opening step
+    is INCONSISTENT there, and trapezoidal carries the seed forever.
+    """
+    import warnings
+    from pycircuit.circuit.elements import ISin, VSin
+    circuit.default_toolkit = circuit.numeric
+    freq, ia, ll = 1.0, 1.0, 1e-3
+    per = 1.0 / freq
+    exact = 2 * np.pi * freq * ll * ia
+
+    def cutset():
+        c = SubCircuit()
+        c.add_node('1')
+        c['is'] = ISin(gnd, '1', ia=ia, freq=freq)
+        c['l'] = L('1', gnd, L=ll)
+        return c
+
+    def solve_it(cir, npts, **kw):
+        pss = PSS(cir, method='trap', reltol=1e-10)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            pss.solve(period=per, timestep=per / npts,
+                      x0=np.zeros(cir.n - 1), maxiterations=60, **kw)
+        fired = any('index 2' in str(x.message) for x in w)
+        return pss, fired
+
+    ## the DEFAULT now gives the closed form and says why
+    cir = cutset()
+    pss, fired = solve_it(cir, 401)
+    row = np.asarray(pss.waveform[1], dtype=float)[
+        [str(nd) for nd in cir.nodes].index('1')]
+    assert abs(float(np.max(np.abs(row))) / exact - 1.0) < 1e-2, \
+        'the default must now give the closed form on an index-2 netlist'
+    assert abs(abs(float(row[0]) / exact) - 1.0) < 1e-2, \
+        'and a CONSISTENT v(0)'
+    assert fired, 'and must say so -- a silently different formulation is ' \
+                  'what makes a later measurement inexplicable'
+    assert pss._open_at_x0 is True
+
+    ## ⚠ an explicit False is HONOURED, defect and all -- the escape hatch
+    ## has to actually work or the default is a trap of its own
+    cir2 = cutset()
+    pss2, fired2 = solve_it(cir2, 401, x0_unknown=False)
+    row2 = np.asarray(pss2.waveform[1], dtype=float)[
+        [str(nd) for nd in cir2.nodes].index('1')]
+    assert abs(float(np.max(np.abs(row2))) / exact - 2.0) < 1e-2, \
+        'x0_unknown=False must be honoured untouched'
+    assert not fired2, 'and must not warn about a choice the caller made'
+
+    ## ⚠⚠ and an INDEX-1 circuit must be left completely alone, or the
+    ## measured regression above is inflicted on every ordinary netlist
+    c3 = SubCircuit()
+    c3.add_node('a')
+    c3.add_node('b')
+    c3['vs'] = VSin('a', gnd, va=1.0, freq=freq)
+    c3['r'] = R('a', 'b', r=1e3)
+    c3['c1'] = C('b', gnd, c=1e-4)
+    pss3, fired3 = solve_it(c3, 200)
+    assert not fired3 and pss3._open_at_x0 is False, \
+        'an index-1 netlist must keep the shipped formulation'
+
+    ## ⚠ and a bad `method` must still raise the ValueError the caller is
+    ## owed -- the defaulting helper runs BEFORE argument validation and
+    ## must never change which exception an invalid call produces
+    c4 = cutset()
+    p4 = PSS(c4, method='bogus')
+    with pytest.raises(ValueError):
+        p4.solve(period=per, timestep=per / 50, x0=np.zeros(c4.n - 1))
+
+
