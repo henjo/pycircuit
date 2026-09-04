@@ -3112,7 +3112,44 @@ showing a 1e-2 residual should have been read as a fixture error immediately; th
 identifying it took one line.
 
 **GATE 3 VERDICT: B7c's justification is gate 1 (the `O(h)` period column) and gate 2 (determinism),
-NOT the wrapping fixture. Gate 4 remains.**
+NOT the wrapping fixture.**
+
+---
+
+✅✅ **GATE 4 RUN 2026-09-04 — PASSES, AND GATE 1's RESULT IS AMPLIFIED ON THE STIFF CASE.** The
+regression risk was the opposite regime from gate 1: van der Pol at `μ = 100` on its LTE-chosen
+grid, **step ratio 16438×**, where the proportional convention scales every UNEQUAL step while the
+closing-step one moves only the last. If the closing-step column were ever going to be the worse
+choice, it would be here.
+
+    uniform,  1105 steps                    NoConvergenceError   ← benchmark reproduced
+    LTE grid, 1105 steps   T = 162.830391669
+        |prop − ẋ| = 8.0500e-02    relative 4.238e-02
+        |last − ẋ| = 1.7595e-03    relative 9.263e-04
+
+**The two conventions differ by 4.2% RELATIVE on the stiff grid, and the closing-step column is
+46× closer to the solution's own derivative.** On the smooth uniform grid of gate 1 the gap was
+`O(h)` and shrinking; here it is a percentage-level error in a Jacobian column. That is the
+expected direction — at a 16438× ratio, scaling every step is a very different perturbation from
+extending the last — and it means the proportional convention is worst exactly where the
+non-uniform grids B7c exists to enable put it.
+
+⚠ **WHAT RESTS ON WHAT, because the reference is weaker here than in gate 1.** `ẋ` is a centred
+difference about `t = 0`, and on a grid with a 16438× ratio the spacing either side of `t = 0` is
+NOT symmetric, so the reference's own accuracy is not established. What gate 4 establishes on its
+own is that **the two conventions differ by 4.2%**; WHICH of them is right rests on gate 1, where
+the grid was uniform, the reference sound, and `prop` converged to `last` at a clean `O(h)`. Quote
+the 46× as indicative, and the 4.2% divergence as the measured fact.
+
+⚠ **And the regression baseline is intact:** uniform at 1105 steps still fails to converge while
+the LTE grid at 1105 succeeds, which is the benchmark's headline and the thing gate 4 was there to
+protect.
+
+**ALL FOUR GATES ARE NOW RUN.** B7c is justified by gates 1 and 4 (the period column is `O(h)` on
+smooth grids and 4.2% wrong on stiff ones) and made safe by gate 2 (bit-deterministic
+regeneration). Gate 3 removed the wrapping fixture from its justification and bounded what
+"converged" can mean under an adaptive grid. **Build order: the closing-step period column first —
+it is a self-contained correctness fix that needs none of the adaptive machinery.**
 
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
 
