@@ -4147,11 +4147,24 @@ and the two spectra are **summed**, not crossfaded:
 with *"evidence of its relevance for **high-Q oscillators**"* — **our regime**, and directly
 relevant to the crystal question (A10), not an aside.
 
-✅⚠ **AND IT IS A SMALLER BUILD THAN "PHASE + ORBITAL + CORRELATION" IMPLIES.** On their 5 GHz HBT
-example (HB, 30 harmonics): *"the correlation spectrum is **negligible**, while orbital noise
-becomes the dominant term for frequencies away from the harmonics"*. So the full spectrum is
-**two terms added**, and the phase–orbital cross term can be dropped. That is materially less
-than the three-term object this gap was described as needing.
+✅⚠ **AND IT IS PROBABLY A SMALLER BUILD THAN "PHASE + ORBITAL + CORRELATION" IMPLIES.** On the
+paper's own worked example: *"the correlation spectrum is **negligible**, while orbital noise
+becomes the dominant term for frequencies away from the harmonics"*. So the usable form looks
+like **two terms added**, with the phase–orbital cross term dropped — materially less than the
+three-term object this gap was described as needing.
+
+⚠⚠ **TREAT THAT AS A DEFAULT TO TRY FIRST, NOT A THEOREM. It is ONE measured circuit**, and the
+relaying session says so explicitly. ⚠ **AND THE TWO SESSIONS THAT RELAYED IT DESCRIBE THAT
+CIRCUIT DIFFERENTLY** — one as a 5 GHz HBT example, the other as a 1 GHz Colpitts InGaP/GaAs
+Gummel-Poon with transistor shot noise only. Since **neither of us has read the paper**, the
+frequency and topology are recorded as UNKNOWN rather than picking one. The negligible-correlation
+claim itself is what both agree on; the example it rests on is not established here.
+
+⚠ **AND THERE ARE TWO Traversa & Bonani 2011 PAPERS**, which is how the confusion is most likely
+to have arisen. The THEORY is in the TCAS-I paper; the MOTIVATION is in a companion — *Int. J.
+Microwave and Wireless Technologies* 3(1):11–18, 2011, which carries the title used above. The
+companion's conclusion is the one that matters for us: orbital noise *"becomes more significant
+for **high-Q oscillators**, since its magnitude is … an increasing function of the Q factor"*.
 
 **The ingredients are things we already compute or nearly do:** the PPV **is** the adjoint Floquet
 eigenvector for the zero exponent; `ppv()` already returns `|λ₂| = exp(T·μ₂)`, the next Floquet
@@ -4163,6 +4176,15 @@ exponent; and the PSS waveform's Fourier coefficients are already consumed by
 see A4b. And *"the identification of the oscillator classes mostly impacted by this effect is not
 an easy task"*: high-Q is a candidate, but eigenvector magnitudes matter as much as exponents.
 **Do not present it as strictly better than what we ship without measuring it.**
+
+✅ **A FREE PRIOR WE MAY ALREADY RETURN, AND IT NEEDS CHECKING BEFORE IT IS USED.** If orbital
+noise magnitude increases with `Q`, then a `Q` already in hand is also a prior on **how badly a
+phase-only spectrum reads FAR from the carrier** — one number doing two jobs, no new machinery.
+`ppv()` does return `info['Q']`. ⚠ **But its `Q` is built from the second Floquet multiplier
+(`Q = log(threshold)/log|λ₂|`), which is a SETTLING count in periods, and the `Q` in "high-Q
+oscillator" is the resonator's.** They are related on a van der Pol and are not obviously the
+same object in general. **Measure the identification before leaning on it** — this is exactly the
+shape §D 0g warns about, a quantity that is right in one frame carried into another.
 
 ✅ **AN INDEPENDENT CHECK ON SOMETHING WE ALREADY SHIP.** Kundert, *Introduction to RF
 Simulation* §3.5, gives the swept small-signal result's validity window as `f_Δ ≪ Δf ≪ f₀`,
@@ -4303,8 +4325,13 @@ missing.**
 ⚠ Three things stack up for this one topology, and they are independent: (1) no guard; (2)
 `pnoise`'s own docstring names *"an oscillator drives a limiter"* as its incompleteness case, and
 an inverter samples at its threshold crossing so it CAN track the PSD's variation, which is the
-stated test; (3) the far-out floor never appears. **A guard, or at minimum a warning, is the
-cheap half of this item and does not wait on the analysis being built.**
+stated test; (3) the far-out floor never appears. ⚠⚠ **AN EARLIER VERSION OF THIS PARAGRAPH RECOMMENDED ADDING A GUARD. RETRACTED.**
+`adjoint_sideband_row` — `pnoise`'s own solve path — **explicitly branches on `pss.autonomous`**
+and routes to `_deflated_solve`, so oscillator support there is deliberate and documented, and
+the `1/Δf²` above is *correct* phase noise. The docstring line quoted above is about the
+**state-covariance** route (`I − M⊗M` singular), which `pnoise` does not take. What stands is
+that the answer is **incomplete**, which is a property of the whole PM-only framework (A9) and
+not of this function — so the fix is A9, not an annotation here.
 
 **Status: RECORDED, NOT REQUESTED.** No cost estimate has been made, and the item is written down
 because the use case is **ordinary rather than exotic** and arrived from a circuit somebody
