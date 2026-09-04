@@ -4921,7 +4921,49 @@ is unresolved, not refuted.**
 
 ## B. Formulation decisions — measured, awaiting a call
 
-### B1. Make `x0_unknown` the default on non-uniform grids — ⚠ **MEASURED 2026-09-04: DO NOT**
+### B1. Make `x0_unknown` the default — ⚠⚠ **TRIED UNCONDITIONALLY 2026-09-04 ON B16's EVIDENCE, FAILED THE SUITE, REVERTED**
+
+⚠⚠⚠ **THE UNCONDITIONAL DEFAULT WAS BUILT, MEASURED, AND REVERTED WITHOUT COMMITTING. THE RECORD
+OF WHY IS THE DELIVERABLE.** On B16's evidence (the manufactured opener caps `λ₂` at a floor on an
+index-1 circuit; `x0_unknown` converges at `h²`) the recommendation was: unconditional
+`x0_unknown=True` for `trap`/`euler`. It was implemented, the topology test inverted, and both
+motivating fixtures re-measured under the new default — they behaved exactly as predicted
+(resonator 19.76939 = explicit `True`; RLC `λ₂` ratios 4.02/4.01/4.00/4.00). **Then the full suite
+returned 13 failures**, and they were not thirteen tests pinning the old default:
+
+  * **5 — the known coarse-grid cost, on tests that assert against it**: 19.756 V against 20 V, and
+    the `euler < gear < trap` damping order broken because the in-period Euler step makes trap
+    *more* damped than gear.
+  * **4 — the Newton got better and the tolerance tests lost their lever**: residual 1.8e-15 in 3
+    iterations regardless of `reltol`. The old path was a contraction; the new one is a true
+    Newton. A premise loss, not a defect.
+  * ⚠⚠ **4 — regressions the two fixtures did not predict, and one is disqualifying on its face:
+    `trap` recovers only 69.6 % of the analytic amplitude (13.92 V against 20)** in
+    `test_backward_euler_damps_the_limit_cycle_and_trapezoidal_does_not`. That is not a 1.2 %
+    coarse-grid cost. Also a 4.7e-4 orbit-radius error on an autonomous `trap` solve (bound 1e-4),
+    and the `Idtmod` grid-aligned reset losing its discontinuity signature (10⁴× spread where it
+    should be constant) — the event interaction B7 already warned the in-period step has.
+
+**VERDICT: the trade is not "a small visible cost for a silent floor". On grids real tests use,
+`x0_unknown` costs up to 30 % of the waveform amplitude.** B16's finding stands — the manufactured
+opener does cap `λ₂`'s order — but this remedy is the wrong one to ship as a default. Reverted;
+the topology-keyed default remains.
+
+⚠ **THE SHAPE, FOR §D: A DEFAULT CHANGED ON THE TWO FIXTURES THAT MOTIVATED IT, NOT ON THE ONES
+THAT WOULD FALSIFY IT.** Both re-measurements passed *because they were the same measurements*.
+The suite is the falsifier, and it was run — which is the only reason this is a record rather
+than a regression.
+
+✅ **THE LIVE ALTERNATIVE, FROM ANDREAS: START THE TRAVERSAL TWO STEPS EARLY.** Prime the multistep
+method with its low-order opening steps *before* `t = 0` (run the period two steps longer), so the
+period map `[0, T]` is taken entirely with full-order steps and the opener's order-drop is
+excluded from it — **without moving an Euler step inside the period**, which is what costs the
+amplitude. It targets B16's floor by a different mechanism from `x0_unknown` and may keep the
+coarse-grid waveform. ⚠ It does **not** obviously address §0k's index-2 *inconsistency* (an
+algebraic variable seeded at a forbidden value is carried forever by trap wherever the period
+starts), so the two remedies may be complementary rather than alternatives. **Unbuilt, unmeasured;
+the next candidate.**
+
 
 Shipped as an option. The evidence says it wins exactly there and loses on uniform grids:
 
