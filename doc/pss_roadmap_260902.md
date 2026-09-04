@@ -3771,7 +3771,30 @@ regeneration). Gate 3 removed the wrapping fixture from its justification and bo
 "converged" can mean under an adaptive grid. **Build order: the closing-step period column first —
 it is a self-contained correctness fix that needs none of the adaptive machinery.**
 
-### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
+### B8. All integration methods in PAC, pnoise and the adjoint paths — ⚠ **BUILT 2026-09-04**
+
+✅✅ **THE PLAIN TRANSPOSED REPLAY SHIPPED** as `_monodromy_matvec_transposed_plain`, so
+`matvec_transposed` now dispatches on kind instead of refusing. The reverse recursion is derived
+separately for the two one-step companions: euler (`b = 0`) has one term, trapezoidal (`b = -1`)
+keeps the pair `(P, Pq)` — a *different* pair from Gear-2's `(P_n, P_{n-1})`, which is why the
+solved-history replay could not be reused — and collapses to **one transposed solve per step**
+through a shared bracket, the same cost as gear.
+
+Gated against the FORWARD replay transposed densely, with **gear as a harness control**:
+
+    driven  euler/120  1.16e-13   trap/120  3.90e-13   gear/120  1.46e-13
+    driven  euler/240  5.40e-13   trap/240  1.45e-12   gear/240  7.92e-13
+    vdp                trap/120  2.89e-15   gear/120  1.04e-15
+
+⚠ **TWO TEST BUGS FOUND ON THE WAY IN, BOTH OF WHICH PASSED FIRST.** See §D shape 0m. The
+driven fixture was `Q ~ 1e-3`, so the monodromy decayed to numerical zero and the check compared
+zero against zero, reporting **1.9e-46 and printing OK**. And the autonomous assertion demanded
+`|λ| ≈ 1` to 5e-3 and failed at 0.992007 — *the test* was wrong, not the code: `M` itself carries
+that deficit at 120 points on a `Q = 8` cycle, and measured rather than loosened it converges at
+`O(h²)` (7.99e-3 → 1.87e-3, ratio 4.3, gear exact).
+
+The original entry follows.
+
 
 ⚠ **The shooting SOLVE already supports every integrator that exists.** `integrator.py` defines
 exactly three — `EulerIntegrator`, `TrapezoidalIntegrator`, `Gear2Integrator` — and
@@ -3792,6 +3815,78 @@ adoption would need (see the parallel-shooting entry), so the two should be cost
 ⚠ **And there is a reason to want it beyond completeness:** `trap` is one-step, so a `trap`
 adjoint would pay none of the parallel-shooting low-order-restart bias, and `x0_unknown=True`
 exists precisely for the one-step path. Today that path cannot produce a PPV.
+
+### B12. Gourary's regularisation against our bordered solve — ⚠ **MEASURED 2026-09-04; IT IS THE SAME METHOD, AND ADOPTING IT WOULD BE A REGRESSION**
+
+The one item in the Gourary corpus that could have changed a design decision, so it was measured
+rather than filed. *M. M. Gourary et al., "A numerical technique for time domain noise analysis of
+oscillators", ECCTD 2007, 1002–1005.*
+
+**The method.** Both schemes exploit the *same* identity, `vᵀ(I − αM) = (1 − α)vᵀ`, where `v` is
+the PPV and `α = exp(−2πjfT)` vanishes to 1 at every harmonic. Gourary **substitutes the constant
+row `vᵀ`** for one equation and moves the vanishing factor to that RHS entry. We **border**, and
+carry the pole analytically as `y = w + s·u/(1 − α)`.
+
+**Near-carrier sweep (`f₀ + Δf`, van der Pol at `Q = 15.92`, 400 points):**
+
+    Δf/f₀     cond(plain)   cond(bordered)  cond(gourary)   |y_bord − y_gour|/|y|
+    1e-01      8.59e+00       1.57e+01        9.35e+00          3.22e-13
+    1e-03      7.95e+02       8.25e+01        7.57e+01          4.16e-13
+    1e-06      7.95e+05       8.29e+01        7.61e+01          4.15e-13
+    1e-09      7.95e+08       8.29e+01        7.61e+01          4.15e-13
+    1e-12      7.82e+11       8.29e+01        7.61e+01          4.15e-13
+
+⚠⚠ **THE TWO ANSWERS AGREE TO 4.15e-13 AT EVERY OFFSET, FLAT.** Gourary is not a better
+regularisation; it is the *same* regularisation with the pole parked somewhere else. Its 9 %
+edge on `cond` (76.1 against 82.9) is noise.
+
+⚠⚠ **AND IT FAILS AT AN EXACT HARMONIC EXACTLY AS WE DO.** Its matrix stays at cond 76.1 at
+`α = 1` — which is what makes the published claim *look* stronger — but its RHS entry is
+`(vᵀb)/(1 − α)`, a division by zero. The flat condition number describes the matrix, not the
+solve. Ours divides by zero in `s·u/(1 − α)`. Same pole, same place, different clothing.
+
+**Two ways it is WORSE, neither visible in a condition number:**
+
+⚠ **1. IT HAS A FREE PARAMETER AND WE DO NOT.** The method replaces *one* equation, and the paper
+fixes which by fiat ("the equation corresponding to the output node"). Measured over every
+possible row, against the bordered answer:
+
+    n = 4    best 4.15e-13   worst 7.46e-10
+    n = 10   best 1.19e-12   worst 5.04e-02
+    n = 16   best 6.85e-13   worst 5.48e-02
+
+**Ten orders of magnitude on a choice the paper makes by convention.** `argmax|v|` happens to land
+near the best row, but that is a heuristic nobody derived and it is not the paper's rule.
+
+⚠⚠ **2. IT IS SENSITIVE TO `v`; WE ARE IMMUNE TO IT.** This is the finding worth keeping, and it
+is a property of *our* code that had not been stated. Measured **through the shipped
+`_deflated_solve`**, not through a reimplementation of it:
+
+    perturbation   border ROW (v)    border COLUMN (u)    gourary (v)
+      1e-08          9.2e-15             9.0e-09           3.2e-08
+      1e-04          2.7e-14             1.0e-04           4.2e-04
+      1e-02          3.1e-15             7.8e-03           3.3e-02
+
+For `α ≠ 1` the system `(I − αM)y = b` is **nonsingular**, so `y` is already determined by `b`;
+the border row only picks a well-conditioned route to it, and *any* `v` not orthogonal to the null
+direction gives the same answer. Gourary **replaces an equation** with `v`, so an error in `v`
+corrupts the system itself and passes straight through.
+
+✅ **THE OPERATIONAL CONSEQUENCE, WHICH IS THE REAL DELIVERABLE:** PAC's accuracy is capped by the
+**orbit tangent `u`**, which enters the reconstruction, and **not by the PPV `v`**. Tightening
+`ppv()`'s tolerance to improve a PAC result optimises the wrong vector. Pinned by
+`test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV`.
+
+⚠ **PRIORS, STATED BEFORE THE RUN AND SCORED AFTER.** Mine: "Gourary wins on conditioning and that
+does not make it better, because they exploit the same identity" — **held**. The docs session's:
+"Gourary holds accuracy closer to the carrier, both hit a null-vector floor at the same Δf" —
+**falsified in both halves**: they are identical near the carrier, and only *one* vector caps
+either method, `u` for ours and `v` for Gourary. The shared-floor hypothesis was the reasonable
+guess and the measurement did not support it.
+
+**VERDICT: do not adopt.** The bordered solve stays. This is the first item from that corpus
+measured against what we already have, and what it establishes is that the published method is
+our method with an extra free parameter and a vector sensitivity we do not have.
 
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
@@ -4250,6 +4345,34 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    check and the saltation falsifier are rate assertions for this reason.
 4. **Two things each tested alone.** `x0_unknown` x `matrix_free` crashed on a line written
    in the same commit as the feature.
+
+0m. ⚠⚠ **A DEGENERATE FIXTURE, WHICH AGREES WITH ANYTHING AND REPORTS OK.** B8's driven gate
+   used `R = 1k` with `L = 1mH`, `C = 1nF` — `Q ~ 1e-3`, so the monodromy decayed to numerical
+   zero over the period. The gate compared the zero matrix against the zero matrix, divided by
+   `1e-30`, and printed **relative agreement of 1.9e-46, verdict OK**. A clean measurement of
+   nothing. ⚠ **THE TELL WAS THAT THE NUMBER WAS TOO GOOD** — but "suspect a clean residual" is
+   the wrong rule, because `1e-15` on a float64 algebraic identity is clean *and correct*, and
+   that rule would have thrown away the same gate's real result. The right form is a
+   **pre-commitment**: *name the number the arithmetic predicts before accepting the number it
+   produced.* Nothing predicts `1e-46`. Every gate that divides by a scale must now assert that
+   scale is non-degenerate.
+
+0n. ⚠ **A FAILING ASSERTION WIDENED INSTEAD OF EXPLAINED.** B8's autonomous test demanded the
+   transposed map's dominant multiplier be `1.0` to `5e-3` and failed at `0.992007`. The
+   instinct is to loosen the bound. Measured instead: **`M` itself carries that deficit** — 120
+   points on a `Q = 8` limit cycle is a coarse grid — and it converges at `O(h²)` (7.99e-3 →
+   1.87e-3, ratio 4.3, gear exact to 0). The assertion is now against the *forward* map's
+   spectrum plus that rate, which is a stronger test than the one intended. **When an assertion
+   fails, find the true value before widening the bound**; a loosened tolerance would have
+   hidden a second-order effect behind a green light. This is 0m pointed at the failing
+   direction rather than the passing one.
+
+0o. ⚠ **CREDIT MISASSIGNED *AWAY* FROM ONESELF, WHICH DESTROYS THE RECORD JUST AS EFFECTIVELY.**
+   Told a peer "I have not reproduced your parity numbers and will not represent them as mine"
+   — while §0k of this document already carried the full table, measured here, hours earlier,
+   including the correction to my own earlier wrong claim. Guarding hard against claiming
+   another session's work produced the mirror error. **Check the record before disclaiming, not
+   only before claiming.**
 
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a

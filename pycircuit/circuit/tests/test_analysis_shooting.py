@@ -10025,3 +10025,111 @@ def test_the_plain_transposed_replay_refuses_a_multistep_companion():
         pss._monodromy_matvec_transposed_plain(fp.opening, forged,
                                                np.ones(fp.width))
     assert 'ONE-STEP' in str(exc.value)
+
+
+def _osc_for_deflation(Q=15.92, npts=400):
+    """A van der Pol at a known `Q`, converged, for the deflated solve."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                  maxiterations=200)
+    assert pss.converged
+    return cir, pss
+
+
+def test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV():
+    """⚠⚠ THE BORDER ROW'S ACCURACY DOES NOT ENTER THE ANSWER. The border
+    COLUMN'S DOES, linearly. That asymmetry is not obvious and it decides
+    where effort belongs.
+
+    The natural reading of a bordered solve is that it "consumes the null
+    vectors", so its accuracy is capped by how well they are known. That
+    reading is HALF WRONG, and the half matters:
+
+      - `v` (the PPV) enters only as the constraint row `v^T w = 0`. For
+        `alpha != 1` the system `(I - alpha M) y = b` is NONSINGULAR, so
+        `y` is already determined by `b` alone; the border merely picks a
+        well-conditioned route to it. Any `v` not orthogonal to the null
+        direction gives the SAME `y`.
+      - `u` (the orbit tangent) enters the RECONSTRUCTION,
+        `y = w + s u / (1 - alpha)`. An error there is an error in the
+        answer, and it passes straight through.
+
+    Measured through the shipped `_deflated_solve` (relative move in `y`):
+
+        perturbation   border ROW (v)    border COLUMN (u)
+          1e-10          2.9e-14             7.7e-11
+          1e-08          9.2e-15             9.0e-09
+          1e-06          1.6e-15             1.1e-06
+          1e-04          2.7e-14             1.0e-04
+          1e-02          3.1e-15             7.8e-03
+
+    ⚠ SO A MORE ACCURATE PPV BUYS NOTHING HERE, and a more accurate orbit
+    tangent buys everything. Anyone tempted to tighten `ppv()`'s tolerance
+    to improve a PAC result is optimising the wrong vector.
+    """
+    _cir, pss = _osc_for_deflation()
+    fp = pss.factored_period()
+    n = fp.width
+    pac = PAC(_cir)
+    rng = np.random.default_rng(1)
+    b = rng.standard_normal(n).astype(complex)
+    ## one part in 1e6 off the carrier -- near, but not AT, the harmonic
+    alpha = np.exp(-2j * np.pi * (1.0 + 1e-6))
+
+    true_v, true_info = pss.ppv()
+    true_v = np.asarray(true_v, float)
+    true_u = np.asarray(true_info['tangent_pair'], float)
+    ref = pac._deflated_solve(pss, alpha, b)
+    scale = float(np.linalg.norm(ref))
+    assert scale > 1.0, \
+        'the deflated answer is ~zero (%.3e), so the comparisons below ' \
+        'would be vacuous' % scale
+
+    orig = pss.ppv
+    try:
+        for eps in (1e-8, 1e-4, 1e-2):
+            d1 = rng.standard_normal(n)
+            d1 /= np.linalg.norm(d1)
+            d2 = rng.standard_normal(n)
+            d2 /= np.linalg.norm(d2)
+            vp = true_v + eps * np.linalg.norm(true_v) * d1
+            up = true_u + eps * np.linalg.norm(true_u) * d2
+
+            pss.ppv = lambda *a, **k: (vp, dict(true_info,
+                                                tangent_pair=true_u))
+            ev = float(np.linalg.norm(
+                pac._deflated_solve(pss, alpha, b) - ref)) / scale
+            pss.ppv = lambda *a, **k: (true_v, dict(true_info,
+                                                    tangent_pair=up))
+            eu = float(np.linalg.norm(
+                pac._deflated_solve(pss, alpha, b) - ref)) / scale
+            pss.ppv = orig
+
+            assert ev < 1e-11, \
+                'the border ROW now changes the answer (%.3e at eps=%.0e). ' \
+                'If that is real, the deflated solve has stopped being a ' \
+                'reformulation of a nonsingular system and the PPV\'s ' \
+                'accuracy has become load-bearing' % (ev, eps)
+            assert eu > 0.05 * eps, \
+                'the border COLUMN no longer propagates linearly (%.3e at ' \
+                'eps=%.0e); the tangent is supposed to enter the ' \
+                'reconstruction directly' % (eu, eps)
+            assert eu > 1e3 * max(ev, 1e-16), \
+                'the two vectors now matter comparably (row %.3e against ' \
+                'column %.3e at eps=%.0e); the asymmetry this test exists ' \
+                'to record is gone' % (ev, eu, eps)
+    finally:
+        pss.ppv = orig
