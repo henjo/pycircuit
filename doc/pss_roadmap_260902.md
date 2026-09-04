@@ -4287,6 +4287,25 @@ numerical one**, and Gourary's Obreshkov single-step orders 1–4 carry no histo
 objection has a published way round it. **Nothing here recommends building that** — it records
 that the argument we were leaning on is weaker than it read.
 
+⚠⚠ **A SECOND, STRUCTURAL ARGUMENT FOR A SINGLE-STEP HIGH-ORDER METHOD, from Kundert, White &
+Sangiovanni-Vincentelli 1990 §4.2.5 on PARALLEL shooting** (read firsthand by the docs session):
+*"At each step a high-order integration method needs the history of the solution over several past
+time-steps. **This history cannot extend beyond a shooting interval boundary.** … When an interval
+contains only a few time-points, high order methods lose their advantage because of the large
+percentage of time-steps taken with the low order methods."* A single-step method carries no
+history, so **full order is available on the first step of every subinterval** — the penalty
+does not arise. That is an incompatibility, not an error-constant comparison, and it is the
+stronger of the two arguments. ✅ The same section says parallel shooting *"increases the region
+of convergence … as the number of subintervals increases"* (unstable modes cannot grow far over a
+short interval) — the high-Q seeding basin attacked by shortening the interval rather than by
+homotopy. **The two compose**: parallel shooting enlarges the basin but wastes high order; a
+single-step high-order method restores the order without history. If the opener is ever fixed
+(B16) and Obreshkov revisited, the parallel case is where it pays most. ✅ **And the recorded
+"forced low-order restarts bias `λ₂`, −15.1 %" emulation is the one reconstruction in this
+document the source CONFIRMS** — the passage above is its mechanism, stated in the foundational
+text. Acquisition pointers, absent from the corpus: `skelboe80`, `smith87` (extrapolation
+shooting); `keller68`, `keller76`, `stoer80` (multiple shooting).
+
 ⚠ **AND `info['Q']` DOES NOT REPORT A CRYSTAL'S DATASHEET `Q`** — see A9: it is the settling
 rate `1/(2π(a − G))`, measured bit-identical across an 8× sweep of the component-set tank `Q`. A
 designer reading `info['Q']` and expecting the motional `Q` gets an unrelated number.
@@ -4656,6 +4675,51 @@ and 100 Hz offsets). That `μ₂ → noise` holds *independently of `Q`* is an *
 data plus their stated mechanism**, not something they isolate. Their fixture *"has two state
 variables, therefore only two Floquet exponents"*, so it is genuinely the second-order case their
 own caveat names.
+
+### A9 step 3 — `C_lhj` assembled and GATED three ways; a defect in step 1 found on the way — 2026-09-04
+
+**The gate.** Eq (23): `Σ_{l≥2,h,j} C_lhj = R∞_yy(0)`, the stationary transverse covariance. The
+reference is `oscillator_covariance`'s Lyapunov solve, which shares nothing with the modal sum.
+Prototyped in the scratchpad first; nothing shipped until the identity held.
+
+⚠ **THE REFERENCE HAD TO BE THE CYCLE-MEAN, NOT `K_orb(0)`.** Lemma 3.5's `R∞_yy` "depends on τ
+only" — it is the *stationary part*, i.e. the cycle average. `K_orb(0)` on van der Pol is all on
+the voltage (at `t = 0` the orbit sits at `[2, 0]`, so the amplitude direction is pure-v) while
+the modal sum is isotropic — which is exactly a rotating radial direction averaged over a cycle.
+Comparing to `t = 0` was the wrong time reference. The per-sample transverse part is
+`P(t_j) − (t_j/T)·growth_samples[j]`; with the along-orbit growth removed the transverse trace is
+**flat around the cycle** (6.275–6.293e-6), and its cycle mean is isotropic at exactly half the
+radial variance. That is the reference.
+
+⚠⚠ **THE GATE FAILED BY 1.75×, AND LOCALISING IT FOUND A REAL DEFECT IN `floquet_modes`.** A
+**third route** — `R∞_yy(0)` from its definition, a 1-D Lyapunov integral along the single orbital
+mode with **no Fourier sum** — matched eq (22)'s sum to **3.5e-4**, isolating the discrepancy to a
+*shared input*. It was the adjoint's scale: `v_k` was biorthonormalised on the width-`n` **pair**
+vectors, then sliced to the width-`m` state block, leaving `q(0)ᵀp(0) = 1.324143` there — constant
+around the cycle to four digits (the invariant is preserved by the flow, which is itself a check)
+— and `q` enters the covariance quadratically: `1/c₀² × 1.7535 = 1.0001`. **The periodicity gate
+`p(T) = p(0)` could not see it: periodicity is scale-free.** Fixed by renormalising `q` on the
+state block (a no-op on the plain path, where `n = m`); the test now asserts `q(t)ᵀp(t) = 1`
+around the cycle. ⚠ I named the number before reading it — `c₀ ≈ 0.755` — and got the
+**direction** wrong (`c₀ = 1.324`); the mechanism was right. The pre-commitment still did its job
+once the sign of the guess was corrected.
+
+✅ **AFTER THE FIX, THREE ROUTES AGREE IN MAGNITUDE TO < 1e-3:**
+
+    eq (22) modal sum  vs  cycle-mean Lyapunov   ratio 0.99976
+    definition integral vs  cycle-mean Lyapunov   ratio 1.00008
+    definition integral vs  eq (22) modal sum     ratio 1.00031, residual 3.5e-4
+
+which validates the transcription of eq (22), the **two-sided `CY/2`** convention (consistent with
+the `kT/C`-calibrated Monte Carlo injection `Var(i) = CY/(2h)` already in the record), and the
+renormalisation, together.
+
+❌ **OPEN, NOT TUNED: a 3 % SHAPE residual** between the two modal routes (which agree with each
+other to 3.5e-4) and the Lyapunov reference — the scalar-fit residual is 2.98e-2 before and after
+the fix, so it is not a factor. Attributed, **not proven**, to the reference being the **pair**
+covariance on gear sliced to its state block. The clean comparison needs the **plain-path**
+Lyapunov solve — `_lyapunov_pieces` is still gear-only, the one adjoint surface B8's wiring did
+not reach. That is the next precondition, not a tolerance to widen.
 
 ⚠ **AN EARLIER VERSION OF THIS ENTRY CONCLUDED "the link holds in the clamping regime and is void
 in the soft-compressing one".** That is correct about the tank-`Q` route and **generalised too
