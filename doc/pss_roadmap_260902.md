@@ -414,6 +414,11 @@ wrong; the gap was in fixture placement, not in any assertion.**
 on the pattern), and `test_diffusion_constant_sees_noise_on_an_algebraic_row` (series against
 parallel, cross-checked against the Lyapunov route).
 
+⚠⚠ **FRAMING CORRECTED IN §0h — THIS AND §0g ARE ONE DEFECT.** The algebraic entries are zero
+because `ppv()` returns `Cᵀ v_1` and `Cᵀ` annihilates the algebraic-state columns; the fill below
+is an empirical reconstruction of half of `v_1`. It stands and it is gated, but read §0h for the
+mechanism before building on it.
+
 ✅ **FIXED 2026-09-04 in `ppv()` itself**, by `_algebraic_adjoint_pattern` and
 `_algebraic_adjoint_fill`. Results: `c` series/parallel **0.999973** at `Q = 8` and **0.999984**
 at `Q = 30`; the PPV route and the Lyapunov route now agree; and the DC-injection probe reads
@@ -488,6 +493,11 @@ measurements now stand in its place, none sharing an instrument with the others:
   * **the quadrature is third order** and converged to `~1e-4` relative at the shipped 480
     points, per the table above.
 
+⚠ **AND ONE AXIS WAS STILL UNSWEPT, which §0g found the next day: every fixture here uses
+`C = 1 F`, so none of this says anything about the capacitance scale — and `diffusion_constant` is
+wrong by `C²`.** What closes below is the `Q`-dependence and the quadrature, which is what §0b
+asked about; it is not a statement about dimensional correctness.
+
 **So the absolute scale is anchored end to end, at high `Q`, with no Monte Carlo** — which is what
 §0b asked for and priced at 280 periods per realisation. The series and parallel routes agree to
 `0.9999916` at `npts = 960`.
@@ -546,6 +556,138 @@ published counterpart *with a remedy* (Lai & Roychowdhury 2006 DAC, DCO gated ca
 ⚠ **The pattern the docs session named is worth keeping:** four of the first ten papers are primary
 sources for results one session or the other derived from scratch. The improvement is that the
 reading is now arriving **before** the implementation commits rather than after.
+
+
+---
+
+### 0g. The external oracle — ✅ **BUILT**, and it found a SECOND PPV defect — 2026-09-04
+
+The docs session supplied Ghanta, Li & Roychowdhury 2004 ASP-DAC **Lemma 5.2**, for an LC
+oscillator with an ODD-symmetric `i-v` and a sinusoidal steady state:
+
+    c = (N²/2) (L/C) / A²
+
+This is the first check on `c` that shares **nothing** with our monodromy — §0b's standing
+complaint that "the PPV physical gate cannot verify the PPV at high `Q`".
+
+⚠⚠ **THE SWEEP IS THE TEST, NOT THE CONSTANT — AND THAT IS WHERE IT BROKE.** The docs session
+measured ratio 0.50003 constant over 40× in `Q` and read the residual factor 2 as a
+one-sided/two-sided convention. That reading is right, but `Q` barely moves `A`, `L` or `C`, so
+their sweep pins a **scale factor** — and a scale factor is exactly what a PSD convention looks
+like. ⚠ **A factor of two against an external reference is also the precise shape that already bit
+this campaign once** (full `CY` vs `CY/2`, which only `kT/C` could see), so it was settled rather
+than labelled. Sweeping `L` and `C` **independently** tests the functional form:
+
+    C     L     c (PPV route)   d/T (Lyapunov)   c/(d/T)      d/T ÷ Lemma 5.2
+    0.1   1     6.250857e-09    6.248771e-07     0.010003     0.499840
+    1     1     6.250857e-08    6.248771e-08     1.000334     0.499840
+    10    1     6.250860e-07    6.248764e-09     100.033536   0.499839
+    1     0.1   6.250854e-09    6.248769e-09     1.000334     0.499840
+    1     10    6.250862e-07    6.248767e-07     1.000335     0.499839
+
+⚠⚠⚠ **`oscillator_covariance` MATCHES THE ORACLE AT 0.49984 ACROSS 100× IN `C` AND 100× IN `L`,
+AND `diffusion_constant` IS WRONG BY EXACTLY `C²`.** Varying `L` is fine in both; varying `C` is
+not. That asymmetry is the whole diagnosis, and it is the same shape as §0d — two shipped routes
+to one number, the Lyapunov one right and the PPV one wrong.
+
+⚠ **CONFIRMED INDEPENDENTLY BY §0c's INSTRUMENT.** The state-localised bump probe measures a
+LINEAR functional of `v₀` against a real period shift. Over the same `C` sweep the measured shift
+is essentially constant (−1.53e-03, −1.52e-03, −1.49e-03) while the prediction `∫v₀·g dt` scales
+as `C`: ratios **9.337, 0.9287, 0.0912** — `1/C` over two decades. So the error is in `v₀`
+itself, not in the quadratic assembly.
+
+**THE MECHANISM IS IN `ppv()`'s OWN DOCSTRING.** It records that "the vector this bordered solve
+returns behaves as `Cᵀ v₁`" and that it "is contracted with a state perturbation directly". But
+`CY` is an **equation-row** covariance — a current injected into a KCL row — and Demir's
+`c = (1/T) ∫ v₁ᵀ B Bᵀ v₁ dt` uses `v₁`, not `Cᵀ v₁`. An impulse `b` in the equation rows produces
+a state jump `C⁻¹ b`, so the sensitivity to `b` is `C⁻ᵀ v`, and contracting `v` instead
+over-counts by `C` — squared, in a quadratic functional. **Exactly the measured `C²`.**
+
+⚠⚠ **WHY NOTHING CAUGHT IT: EVERY FIXTURE IN THIS CAMPAIGN USES `C = 1 F`.** `_vdp_at_Q`,
+`_lc_osc`, `_loss_osc`, the high-`Q` recipe — all of them. At `C = 1` the factor is 1 and the
+`kT/C` anchor, the Monte Carlo, §0c's pointwise gate and §0e's quadrature study all pass while
+saying nothing about it. **A dimensionless fixture cannot test a dimensional error.** New §D
+shape 0i.
+
+**NOT FIXED HERE, and the reason is specific rather than caution.** The correction is `C⁻ᵀ v`
+where `C` is **singular** — that is the whole index-1 structure, and it is the same algebraic-row
+territory where §0d's sign came out wrong when derived from scratch. The docs session has named
+the reference that settles it: **Demir 2000, "Floquet Theory and Non-Linear Perturbation Analysis
+for Oscillators with Differential-Algebraic Equations", IJCTA 28:163–185** — §2.2, §3.2, §3.4 and
+**Remark 3.1** for the orthogonality/biorthogonality conditions, with Traversa & Bonani 2011's
+`Vᵀ C U = [[I,0],[0,0]]` as the block form. Requested; the fix waits on it.
+
+**PINNED BY TWO TESTS:** `test_the_lyapunov_route_matches_an_analytic_external_oracle` (passing —
+the oracle itself, asserted as a CONSTANT ratio across `L` and `C`, not as a value) and
+`test_diffusion_constant_should_not_depend_on_the_capacitance_scale` (**strict xfail**).
+
+⚠ **AND THE ORACLE'S OWN PRECONDITION IS ASSERTED**, because it is easy to lose: the lemma needs a
+SINUSOIDAL orbit and an ODD-symmetric nonlinearity. `rms/peak` is checked at 0.70785 against
+0.70711. ⚠ `_lc_osc` is the WRONG fixture for it — its `i_func` coefficient is 1.0, so the orbit
+is strongly non-sinusoidal, and its `a` breaks the odd symmetry the lemma requires; the docs
+session measured the ratio drifting 0.646 / 0.768 / 1.029 there. `a` sweeps the right parameter on
+the wrong operating point.
+
+
+---
+
+### 0h. ⚠⚠ **§0d AND §0g ARE ONE DEFECT** — the primary source, and a correction to my own framing — 2026-09-04
+
+The docs session supplied Demir 2000 (IJCTA 28:163–185) verbatim, and it collapses two findings
+into one. **Relayed, not verified here.**
+
+**THE CONTRACTION CONVENTION, BOTH FORMS ON ONE PAGE.** For a STATE initial condition, eq (41)
+carries `v_iᵀ(0) C(0) x(0)` — **with `C`**. For an EQUATION-ROW input `b`, eq (42) carries
+`v_iᵀ(s) b(s)` and the phase equation (44) reads `dα/dt = v_1ᵀ(t+α) B(x_s) b(t)` — **bare `v_1`,
+no `C`**. Demir's DAE form is `q(x) + g(x) + B(x)b(t) = 0`, so `B(x)b(t)` **is** an equation-row
+input: our `CY` case exactly. So `c = (1/T)∫ v_1ᵀ B Bᵀ v_1 dt` takes `v_1`, and §0g's `C²`
+diagnosis is confirmed by the primary source rather than by measurement alone.
+
+⚠⚠⚠ **AND THAT MAKES §0d THE SAME DEFECT, WHICH I DID NOT SEE.** `ppv()` returns `Cᵀ v_1`.
+`(Cᵀ v_1)_i` is the `i`-th COLUMN of `C` dotted with `v_1` — and the algebraic-state columns of
+`C` are **zero by definition** (measured on the series fixture: "zero COLUMNS of C: [1]"). So:
+
+  * on **differential** rows `Cᵀ` multiplies by the capacitance → a factor `C`, squared in `c`
+    → §0g's `C²`;
+  * on **algebraic** rows `Cᵀ` **annihilates** → exactly `0.0` → §0d.
+
+**One cause, two symptoms.** §0d's record calls the algebraic entries "slaved to the differential
+ones and left at zero", which is true but is not the mechanism: they are zero *because `Cᵀ`
+annihilates that column*. The fill built there is an empirical reconstruction of half of `v_1`,
+and it stands — it was gated against three independent references — but its framing was wrong and
+is corrected here rather than in place, so the sequence of understanding stays readable.
+
+⚠⚠ **DO NOT INVERT `C` — THE PRACTICAL POINT.** `C` is singular; that is the whole index-1
+structure. Demir's adjoint, eq (24), is
+
+    Cᵀ(t) (d/dt) y  −  Gᵀ(t) y  =  0
+
+with `Cᵀ` a **multiplier on `dy/dt`, never inverted**, and the paper flags the trap in its own
+sentence: "the time derivative operates on `y` only, NOT on the product `Cᵀ(t)y`, in contrast with
+Equation (19)". ⚠ **That asymmetry is the sign I got wrong deriving §0d from scratch.** The fix is
+to OBTAIN `v_1` — integrate (24) backwards, or re-pose the border so the returned object is `v_1`
+— not to undo a `Cᵀ` through a singular matrix.
+
+⚠ **A TERM WE MAY NOT HAVE.** Eq (42) also carries `Γ(t) b(t)`, a `T`-periodic matrix of rank
+`n − m` with `Γ(t) C(t)[u_1…u_m] = 0` — the **instantaneous, non-propagating** response to an
+equation-row input, living exactly on the algebraic rows. Our quadratic functional assembles only
+the propagating sum. ⚠ **Open question worth stating plainly: is §0d's fill actually `v_1`'s
+algebraic entries, or is it `Γ` in disguise?** It was validated by outcome (three references) and
+not by identification, so the two are not yet distinguished. Whether it matters depends on whether
+noise enters rows where `Γ` is nonzero — which for a series-loss tank it does.
+
+**AND ONE SENTENCE SETTLES A THING WE MEASURED.** §3.5, verbatim: "`v_i(0)` are NOT the
+eigenvectors of the transposed monodromy matrix `Φ(T,0)ᵀ`." `v_1` is an eigenvector of the
+ADJOINT system's monodromy `Ψ(T,0)`, and §3.4 gives
+`Ψ(t,s) = Vᵀ(t) D(s−t) Uᵀ(s) Cᵀ(s) ≠ Φᵀ(s,t)` — "NOT simply given by `Φᵀ(s,t)` ... as it was the
+case for ODEs". The docs session's measurement — the left eigenvector of `M` aligns with
+`C(0)ᵀv_1` to 1.000000000000 and with `v_1` to 0.9657 — **is that sentence**. Also: the
+`Φ = U D V C` factorisation is eq (37), **Demir 2000**, not Traversa & Bonani 2011.
+
+**Consequence for the fix:** it is now one change, not two, and it has a derivation rather than a
+fitted sign. It is still not applied — re-posing the border is a change to the most-gated function
+in this campaign, and §0d's fill will need re-deriving (or retiring) inside it rather than beside
+it.
 
 
 ---
@@ -2909,6 +3051,12 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the
    measurement assumes before trusting what it confirms.**
+
+0i. **A dimensionless fixture cannot test a dimensional error.** Every oscillator fixture in this
+   campaign uses `C = 1 F` and `L = 1 H`, so a missing `C⁻ᵀ` in the `CY` contraction was exactly 1
+   and invisible — to `kT/C`, to the Monte Carlo, to §0c's pointwise gate and to §0e's quadrature
+   study alike. It took an external oracle with `L` and `C` as free parameters to see it.
+   **Sweep the units, not just the regime.**
 
 0h. **A fixture where the candidate answers are numerically degenerate.** The single
    series-resistor tank makes `|∫v₀|` and `|r∫v_branch|` agree to 1.5e-4, so a prediction that

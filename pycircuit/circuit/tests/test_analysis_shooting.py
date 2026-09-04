@@ -8928,3 +8928,94 @@ def test_diffusion_constant_sees_noise_on_an_algebraic_row():
     assert abs(c_series / dT - 1.0) < 5e-3, \
         'the PPV route and the Lyapunov route must now agree: c %.9e, ' \
         'd/T %.9e' % (c_series, dT)
+
+
+def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
+    """An LC tank matching Ghanta, Li & Roychowdhury 2004 Lemma 5.2's premises.
+
+    ODD-symmetric `i-v` (no even term) and a near-sinusoidal orbit, which the
+    lemma requires: `rms/peak` comes out 0.70785 against 0.70711 for a pure
+    sinusoid. `mu` is scaled with `C*w0` so `Q` means the same thing as `L`
+    and `C` move.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    w0 = 1.0 / np.sqrt(ll * cc)
+    mu = cc * w0 / (2 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=cc)
+    cir['L'] = L('v', gnd, L=ll)
+    cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    T = 2 * np.pi / w0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=250)
+    assert pss.converged, 'C=%r L=%r did not converge' % (cc, ll)
+    ## ⚠ waveform is (times, states): [0] is the TIME vector, [1] the states
+    X = np.asarray(pss.waveform[1], dtype=float)
+    row = X[0 if 0 < pss.irefnode else 1]
+    amp = float(np.max(np.abs(row)))
+    rms_pk = float(np.sqrt(np.mean(row ** 2)) / amp)
+    lemma = (psd / 2.0) * (ll / cc) / amp ** 2
+    return cir, pss, PAC(cir, toolkit=circuit.numeric), amp, rms_pk, lemma
+
+
+def test_the_lyapunov_route_matches_an_analytic_external_oracle():
+    """⚠ THE FIRST FULLY EXTERNAL ORACLE FOR THE PHASE DIFFUSION CONSTANT.
+
+    Ghanta, Li & Roychowdhury 2004 ASP-DAC Lemma 5.2, for an LC oscillator
+    with an odd-symmetric `i-v` and a sinusoidal steady state:
+
+        c = (N^2 / 2) (L / C) / A^2
+
+    Every other check this codebase has on `c` is internal or shares the
+    monodromy. This one shares nothing.
+
+    ⚠ THE SWEEP IS THE TEST, NOT THE CONSTANT. A single operating point
+    fixes only a scale factor, and a scale factor is exactly what a
+    one-sided/two-sided PSD convention looks like. Sweeping `L` and `C`
+    INDEPENDENTLY tests the functional form: `L/C` over four decades, at a
+    constant ratio.
+
+    The residual factor is 1/2 -- the one-sided/two-sided convention that
+    `kT/C` already settled for this codebase -- so the assertion is that the
+    ratio is CONSTANT and equal to that, not that it is 1.
+    """
+    ratios = []
+    for cc, ll in ((0.1, 1.0), (1.0, 1.0), (10.0, 1.0), (1.0, 0.1), (1.0, 10.0)):
+        _cir, pss, pac, _amp, rms_pk, lemma = _ghanta_tank(cc=cc, ll=ll)
+        assert abs(rms_pk - 0.70711) < 2e-3, \
+            'the lemma presumes a SINUSOIDAL orbit; rms/peak came out %.5f' % rms_pk
+        _K, d, _info = pac.oscillator_covariance(pss)
+        ratios.append((d / float(pss.period)) / lemma)
+    lo, hi = min(ratios), max(ratios)
+    assert abs(hi / lo - 1.0) < 1e-3, \
+        'the ratio to the analytic oracle must be CONSTANT across L and C; ' \
+        'it ranged %.6f to %.6f' % (lo, hi)
+    assert abs(lo - 0.5) < 5e-3, \
+        'and equal to the one-sided/two-sided half; got %.6f' % lo
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    'diffusion_constant contracts CY -- an EQUATION-ROW current covariance -- '
+    'against ppv()\'s v, which its own docstring says "behaves as C^T v_1" '
+    'while Demir\'s formula uses v_1. The two differ by C, so c is wrong by '
+    'C^2 and every fixture in this campaign uses C = 1 F. Measured against '
+    'both oscillator_covariance and the Ghanta oracle. Remove when fixed.'))
+def test_diffusion_constant_should_not_depend_on_the_capacitance_scale():
+    """The same oscillator, C scaled 100x, against the Lyapunov route."""
+    out = []
+    for cc in (0.1, 1.0, 10.0):
+        _cir, pss, pac, _amp, _rp, _lemma = _ghanta_tank(cc=cc, ll=1.0)
+        _K, d, _info = pac.oscillator_covariance(pss)
+        out.append(pac.diffusion_constant(pss) / (d / float(pss.period)))
+    lo, hi = min(out), max(out)
+    assert abs(hi / lo - 1.0) < 1e-2, \
+        'the PPV route and the Lyapunov route must agree at every C; the ' \
+        'ratio ran %.6f to %.6f (a factor of %.1f, i.e. C^2)' \
+        % (lo, hi, hi / lo)
