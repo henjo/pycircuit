@@ -2998,6 +2998,47 @@ the solving traversal, which the deterministic controller should make reproducib
 wrapping fixture's LTE, which is the case the frozen grid could not fix; (4) van der Pol at
 `μ = 100`, which must not regress.
 
+---
+
+✅⚠ **GATE 1 RUN 2026-09-04 — IT PASSES, AND MORE STRONGLY THAN IT ASKED.** The gate was "both
+constructions are valid on a smooth orbit, so they must agree". They do not merely agree: **they
+differ by `O(h)`, and the shipped one is the one that is wrong.**
+
+Both period columns taken by finite difference off the SAME `_traverse`, so the comparison is
+between the two STEP CONVENTIONS and nothing else. `ẋ` is a centred difference of the converged
+waveform about `t = 0` (at a periodic solution `ẋ(T) = ẋ(0)`):
+
+    npts   |prop − ẋ|      |last − ẋ|      |prop − last|
+     120   1.500319e-02    1.571766e-07    1.500321e-02
+     240   7.480561e-03    5.371494e-07    7.480558e-03
+     480   3.733940e-03    5.602383e-07    3.733939e-03
+     960   1.865252e-03    5.617951e-07    1.865252e-03
+
+⚠⚠ **THE PROPORTIONAL COLUMN IS FIRST ORDER.** `|prop − ẋ|` halves cleanly per doubling — 1.50e-2,
+7.48e-3, 3.73e-3, 1.87e-3 — while `|last − ẋ|` sits at ~5.6e-07 and stops improving, which is the
+REFERENCE's floor and not the column's. And `|prop − last|` equals `|prop − ẋ|` to six digits, so
+the discrepancy is entirely in `prop`.
+
+**So the shipped autonomous period column carries an `O(h)` error that the closing-step
+construction does not.** That is a stronger reason to build B7c than the adaptive stepping was:
+it is a correctness improvement to the autonomous Newton's Jacobian, independent of whether the
+grid ever adapts.
+
+⚠ **WHAT THE MEASUREMENT DOES AND DOES NOT ESTABLISH.** The reference is a centred difference of
+the DISCRETE solution, so what is pinned is that the two conventions disagree at `O(h)` and that
+the closing-step one agrees with the solution's own derivative. That is the right target: the
+Newton solves the DISCRETE equations, so its period column should be the discrete map's
+derivative, which is exactly what the closing-step convention computes exactly and the
+proportional one approximates. It is NOT a comparison against continuous truth, and it should not
+be quoted as one.
+
+⚠ **AND MY FIRST TWO ATTEMPTS AT THIS MEASUREMENT WERE WRONG**, both in the fixture rather than
+the finding. `ppv()` is gear-only so the first run died on `method='trap'`; then I modified
+`hs[-1]`, which is not the closing step — the walk is
+`for _j, t in enumerate(times[1:]): dt = hs[_j]`, so the closing step is `hs[len(times) − 2]` and
+it reaches `times[-1]`. With the wrong entry modified the last-step column came back ≈ 0 and
+briefly looked like a falsification of the whole construction.
+
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
 
 ⚠ **The shooting SOLVE already supports every integrator that exists.** `integrator.py` defines
