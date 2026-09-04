@@ -1084,6 +1084,15 @@ depends on the **parity of the point count**, which nobody would think to vary.
 ⚠⚠ **THE MECHANISM IS AN INCONSISTENT INITIAL VALUE, NOT A BAD MODE** — diagnosed by the docs
 session, verified here. The samples are exactly
 
+✅ **AND A 1975 SOURCE SAYS THE 2× IS DISCRETISATION-ONLY** (Trick, Colon & Fan, TCAS 1975,
+sensitivities w.r.t. initial conditions — i.e. the monodromy — read firsthand by the docs
+session): on a degenerate network *"these additional dependencies are higher order dependencies
+which result in derivatives of distributions which **do not affect the 0+ initial conditions**"*,
+with their Appendix II deriving the same for Newton applied to oscillators. So nothing about
+index-2 structure itself produces the 2×; it is entirely the discretisation inventing an
+inconsistent `v(0)`. A stronger statement than "index 2 is where the opener is inconsistent", and
+the one to make.
+
     v_n = V ( cos(ω t_n) − (−1)^n )
 
 so the **smooth part is right** (second order) and a unit ripple rides on it, doubling
@@ -3973,6 +3982,20 @@ closes.
 (width 64), i.e. approaching `n/2`, where a direct solve wins regardless. The result says `Q` is
 free, not that the matrix-free route is unconditionally cheap.
 
+⚠⚠ **AND A SECOND SCOPE LIMIT, FROM A SOURCE READ AFTER THIS WAS MEASURED:** this entry measured
+GMRES for the bordered **SOLVE** `(I − M)w = b`. It says **nothing** about Krylov **eigenvalue
+extraction**, which is a different problem with the opposite property. Garcia, Romero & Acha 2022
+(the Ritz-route source, read firsthand by the docs session): Arnoldi resolves the largest-magnitude
+eigenvalues first, the Ritz route works on `I − M` with `λ = 1 − θ`, so the physical `λ₂ → 1` is
+`θ₂ → 0` — **the smallest, resolved LAST** — with separation `1/θ₂ ≈ Q_λ` (3.7 / 16.4 / 64.5 /
+128.5 at `Q_λ` = 3.18 / 15.9 / 64 / 128). The difficulty of the *eigen* problem scales with the
+quantity being measured, exactly where the *solve* was shown free. ✅ This also explains why
+`ppv()`'s Ritz selection — "the second-smallest Ritz value of `I − M`" — is the paper's own
+construction and not the patch it was filed as. ⚠ Two independent structural arguments (this and
+Mei & Roychowdhury's imperfect-cancellation one) now point the same way on Krylov *extraction* at
+high Q; neither is a measurement. The paper validates on power networks, not RF, so it reports no
+evidence about the high-Q regime either way.
+
 ### B14. Krylov recycling across the PAC sweep — ✅ **ALREADY BUILT; MEASURED 2026-09-04**
 
 Raised as an open question ("does multi-RHS recycling cut the PAC-sweep matvec counts?"). It is
@@ -4062,6 +4085,19 @@ at `N = 199`, level at `N = 1599`, and beaten at `N = 3199`. Coarse grids favour
 opener; fine grids favour `x0_unknown`, which is **the only one that converges at the method's
 order**. This reconciles with B1's opposing `Q = 20` resonator measurement rather than
 contradicting it — they sit on opposite sides of the crossover.
+
+⚠⚠ **A REFRAME FROM THE READING RECORD, WITH ITS TENSION KEPT (docs session, 2026-09-04):**
+Aprille & Trick's driven-case paper, as this record filed it months ago, has *"the unknown is
+`x(0)` itself; **no manufactured opening step**. The identity seed is canonical *because* `x₀` is
+the unknown."* So `x0_unknown` is not a repair for an index-2 defect — it is the **return to the
+source formulation**, and the manufactured opener is the **departure**; B16 measures what the
+departure costs everywhere, not only on the topologies the criterion detects. ⚠ **But the tension
+is real and this record already carries the other half:** the manufacturing step *"is not
+scaffolding to be removed; it is what makes trapezoidal's shooting problem well-posed"* — three
+reformulations without it excited the `(−1)ⁿ` companion mode. A&T's formulation had no multistep
+companion current to seed. Both statements stand; their conflict is the opener problem itself,
+and neither the `x0_unknown` default (30 % amplitude cost) nor the pre-roll (no convergence)
+resolved it today.
 
 ⚠ **THE CONSEQUENCE FOR B1:** the topology-keyed default is defensible for *waveform accuracy on
 coarse grids* and **wrong for `λ₂` accuracy on fine ones**. If a caller wants monodromy accuracy,
