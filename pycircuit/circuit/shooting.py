@@ -7361,6 +7361,16 @@ class PAC(Analysis):
         (orbital) part of the covariance at `t = 0`; `d` is the growth per
         period along the orbit tangent, so
 
+        ⚠ "BOUNDED" IS NOT "TRANSVERSE".  `K_orb` has the SECULAR growth
+        removed and still contains the phase direction's bounded
+        within-period variance.  Demir's orbital deviation `y` is the
+        OBLIQUE projection `v_1^T y = 0`, so the transverse covariance is
+        `Pi K_orb Pi^T` with `Pi = I - u v^T/(v^T u)` -- which is what
+        `orbital_correlation`'s eq (23) sum equals (to 1e-4), and what
+        `K_orb` itself does NOT equal (2-6 %, falling as 1/Q).  Read
+        `K_orb` as the bounded part; project it if you want `R_yy(0)`.
+        See `orbital_correlation`.
+
             K(t_0 + n T) = K_orb + n d u u^T
 
         exactly, for every integer `n`, with `u` the pair-space tangent
@@ -7615,20 +7625,21 @@ class PAC(Analysis):
         isotropic, which is a rotating radial direction averaged over a
         cycle, not a disagreement.
 
-        ❌ OPEN: a 2-3 % SHAPE residual against the Lyapunov reference,
-        while the two modal routes agree with each other to 3.5e-4.  Not
-        a factor (the scalar-fit residual is unchanged by the scale fix).
-        ⚠ NOT THE PAIR ARTEFACT -- an earlier version of this note said
-        so, and the plain-path Lyapunov wiring FALSIFIED it: on euler-plain
-        with n = m and no pair at all the residual is 2.4-2.7 %, flat
-        between 1600 and 3200 points, so it is neither the pair slice nor
-        discretisation.  A candidate that fits its size and the theory,
-        UNTESTED: eq (22)'s `l >= 2` sum is the pure orbital term, and
-        Theorem 4.1's total adds the PHASE-ORBITAL CORRELATION `S_corr`
-        (their eqs 18/20, `D_lhj`), whose tau = 0 value the Lyapunov
-        covariance contains and this sum excludes -- reported by the
-        authors as small, with a sign.  The test that would settle it is
-        assembling `D_lhj` and adding its tau = 0 contribution.
+        ✅ THE 2-3 % SHAPE RESIDUAL WAS THE REFERENCE, NOT THIS SUM -- closed
+        2026-09-04.  Subtracting only the SECULAR growth `(t/T) d u u^T`
+        from the Lyapunov samples leaves the phase direction's BOUNDED
+        within-period variance, which eq (22)'s `l >= 2` sum correctly
+        excludes.  Demir's `y` is defined by the OBLIQUE projection
+        `v_1^T y = 0`; project the samples with `Pi = I - u v^T/(v^T u)`
+        and the three-way agreement is 5.9e-4 / 6.0e-4 / 3.1e-4 / 1.5e-4
+        at Q = 4 / 8 / 16 / 32 (euler-plain, n = m), improving with
+        refinement -- quadrature.  The old residual fell as 1/Q_lambda
+        (5.4 / 2.4 / 1.2 / 0.6 %), which is orbital variance ~ Q against a
+        constant phase-bounded part: the same fact, seen from the sweep.
+        ⚠ A candidate recorded earlier -- the phase-orbital CORRELATION's
+        tau = 0 value -- was DISPROVED from eq (18a) before it was built:
+        at tau = 0 its brace is {1 - 1} = 0 identically, and (23) states
+        R_yy(0) = sum C_lhj alone.  Named so nobody rebuilds it.
         """
         H = self.ORBITAL_HARMONICS if H is None else int(H)
         modes = pss.floquet_modes(pss)

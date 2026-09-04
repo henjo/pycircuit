@@ -11006,20 +11006,38 @@ def test_orbital_correlation_is_gated_three_ways():
         'eq (22) sum and the definition integral disagree by %.3e; they ' \
         'share only the modes, so this is the transcription' % relAB
 
-    ## C: cycle-mean transverse Lyapunov covariance
+    ## C: cycle-mean TRANSVERSE Lyapunov covariance -- the OBLIQUE projection
+    ## Pi K Pi^T with Pi = I - u v^T/(v^T u), which is Demir's v1^T y = 0.
+    ## ⚠ Subtracting only the secular growth is NOT the transverse part: it
+    ## leaves the phase direction's bounded within-period variance and read
+    ## 2-6 % against this sum, falling as 1/Q. That was the reference being
+    ## the wrong object, and it cost an afternoon.
     Ps = [np.asarray(P, float)[:m, :m] for P in info['orbital_samples']]
     G = [np.asarray(gg, float)[:m, :m] for gg in info['growth_samples']]
-    ts = np.asarray(info['times'], float)[:len(Ps)]
-    Pm = np.mean(np.stack([Ps[j] - (ts[j] / Tp) * G[j] for j in range(len(Ps))]), axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        v0, pinfo = pss.ppv()
+    vs = [np.asarray(v0, float)[:m]] + [np.asarray(sv, float)[:m]
+                                       for sv in pinfo['samples']]
+    proj = []
+    for j in range(min(len(Ps), len(vs))):
+        w, Uj = np.linalg.eigh(G[j])
+        uj = Uj[:, np.argmax(w)] * np.sqrt(max(float(w.max()), 0.0))
+        den = float(vs[j] @ uj)
+        if abs(den) < 1e-300:
+            continue
+        Pi = np.eye(m) - np.outer(uj, vs[j]) / den
+        proj.append(Pi @ Ps[j] @ Pi.T)
+    Pm = np.mean(np.stack(proj), axis=0)
     ratio = np.linalg.norm(R) / np.linalg.norm(Pm)
     relAC = np.linalg.norm(R - Pm) / np.linalg.norm(Pm)
-    assert abs(ratio - 1.0) < 1e-2, \
-        'magnitude against the Lyapunov cycle-mean is %.6f, not ~1; a clean ' \
-        'factor here is a convention (one-sided CY, or the state-block ' \
-        'normalisation this test was written to catch)' % ratio
-    assert relAC < 5e-2, \
-        'shape residual against the Lyapunov cycle-mean is %.3e; 3%% is the ' \
-        'recorded OPEN residual, bounded at 5%% here rather than tuned' % relAC
+    assert abs(ratio - 1.0) < 2e-3, \
+        'magnitude against the projected Lyapunov cycle-mean is %.6f' % ratio
+    assert relAC < 3e-3, \
+        'the eq (22) sum disagrees with the obliquely-projected Lyapunov ' \
+        'covariance by %.3e (expected ~1e-4 quadrature). If this has grown ' \
+        'to a few percent, the projection has been dropped and the phase ' \
+        'direction\'s bounded variance is back in the reference' % relAC
 
 
 def _driven_rlc_for_lyapunov(method, npts=200):
@@ -11155,16 +11173,19 @@ def test_trap_plain_oscillator_covariance_refuses_with_the_reason():
         PAC(cir).oscillator_covariance(pss)
 
 
-def test_the_orbital_residual_is_NOT_the_pair_artefact():
-    """A9's open 3 % shape residual, re-attributed by the plain-path wiring.
+def test_the_orbital_residual_was_the_reference_not_the_sum():
+    """A9's 2-3 % residual, CLOSED by the plain-path wiring, in two steps.
 
-    On euler-plain — `n = m`, no pair, nothing to slice — `orbital_
-    correlation` against the cycle-mean transverse Lyapunov covariance
-    gives magnitude 0.99993 and a shape residual of 2.4–2.7 %, flat
-    between 1600 and 3200 points. So the residual is neither the pair
-    slice (falsified here) nor discretisation. It stays open, bounded,
-    with the phase–orbital correlation term recorded as the untested
-    candidate.
+    First the wiring falsified the pair-artefact story: on euler-plain,
+    `n = m`, no pair, the residual against the growth-subtracted Lyapunov
+    cycle-mean is still 2.4 %. Then the correct reference removed it: the
+    transverse covariance is the OBLIQUE projection `Pi K Pi^T`, Demir's
+    `v1^T y = 0`, and against THAT the eq (22) sum agrees to ~6e-4.
+
+    ⚠ THE SIGNATURE THAT NAMED IT: the growth-subtracted residual falls as
+    1/Q_lambda (5.4 / 2.4 / 1.2 / 0.6 % at Q = 4 / 8 / 16 / 32) -- orbital
+    variance ~ Q against a CONSTANT phase-direction bounded part. Neither
+    "physics" (which would grow with Q) nor "numerical" (flat).
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -11190,18 +11211,37 @@ def test_the_orbital_residual_is_NOT_the_pair_artefact():
         warnings.simplefilter('ignore')
         Rm, _ = pac.orbital_correlation(pss)
         Kf, d, info = pac.oscillator_covariance(pss, samples=True)
+        v0, pinfo = pss.ppv()
     Ps = [np.asarray(P, float)[:m, :m] for P in info['orbital_samples']]
     G = [np.asarray(g, float)[:m, :m] for g in info['growth_samples']]
     ts = np.asarray(info['times'], float)[:len(Ps)]
     Tp = float(pss.period)
-    Pm = np.mean(np.stack([Ps[j] - (ts[j] / Tp) * G[j]
+    ## the WRONG reference, kept as the documented signature
+    Pg = np.mean(np.stack([Ps[j] - (ts[j] / Tp) * G[j]
                            for j in range(len(Ps))]), axis=0)
-    ratio = float(np.linalg.norm(Rm)) / float(np.linalg.norm(Pm))
-    rel = float(np.linalg.norm(Rm - Pm)) / float(np.linalg.norm(Pm))
-    assert abs(ratio - 1.0) < 2e-3, \
-        'magnitude against the euler-plain Lyapunov cycle-mean is %.6f' % ratio
-    assert rel < 5e-2, 'shape residual %.3e; the recorded open value is 2.4-2.7%%' % rel
-    assert rel > 5e-3, \
-        'the shape residual has DROPPED to %.3e on a fixture where it was ' \
-        '2.4%%; if it is now gone, find what changed before deleting the ' \
-        'open item -- it may have been the correlation term after all' % rel
+    rel_g = float(np.linalg.norm(Rm - Pg)) / float(np.linalg.norm(Pg))
+    ## the RIGHT reference
+    vs = [np.asarray(v0, float)[:m]] + [np.asarray(sv, float)[:m]
+                                       for sv in pinfo['samples']]
+    proj = []
+    for j in range(min(len(Ps), len(vs))):
+        w, Uj = np.linalg.eigh(G[j])
+        uj = Uj[:, np.argmax(w)] * np.sqrt(max(float(w.max()), 0.0))
+        den = float(vs[j] @ uj)
+        if abs(den) < 1e-300:
+            continue
+        Pi = np.eye(m) - np.outer(uj, vs[j]) / den
+        proj.append(Pi @ Ps[j] @ Pi.T)
+    Pp = np.mean(np.stack(proj), axis=0)
+    rel_p = float(np.linalg.norm(Rm - Pp)) / float(np.linalg.norm(Pp))
+    assert rel_p < 3e-3, \
+        'against the obliquely-projected reference the sum is off by %.3e; ' \
+        'expected ~6e-4' % rel_p
+    assert 1e-2 < rel_g < 5e-2, \
+        'the growth-subtracted reference reads %.3e off; it is supposed to ' \
+        'be 2.4%% here -- the phase direction\'s bounded variance. If it has ' \
+        'vanished, oscillator_covariance\'s split changed; if it has grown, ' \
+        'so did that variance' % rel_g
+    assert rel_p < rel_g / 10.0, \
+        'projecting did not remove most of the residual (%.3e -> %.3e)' \
+        % (rel_g, rel_p)
