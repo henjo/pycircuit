@@ -2253,6 +2253,62 @@ keeps `H` and judges by residual, and is swapped into `_gmres_checked` and `ppv(
 bordered solves. So "scipy does not expose `H`" is no longer a reason — the remaining ones,
 especially the structural mismatch above, are.
 
+### B7. Adaptive time stepping in the inner transient — REQUESTED 2026-09-04
+
+`PSS` builds a **fixed** grid with `_period_grid(T, npts, fracs)` and traverses it; the
+`Transient` it is built on is adaptive and breaks its steps at events. So the shooting solve
+throws away step control it already owns.
+
+⚠ **THIS IS THE SAME ITEM AS A6's REAL DEFECT, ARRIVING FROM THE OTHER SIDE.** `shooting.py`
+contains **no reference to `next_event`** — the only consumer is `transient.py`. Measured
+consequence on a wrapping `Idtmod`: `LTE 4.58e+05 ×` tolerance, and a monodromy that is
+*discontinuous* when the reset lands on a grid point (`|Δφ|` constant in `ε` over four decades).
+
+⚠ **The hard part is not the stepping, it is that shooting needs a REPRODUCIBLE grid.** The
+monodromy is a product of per-step maps, and `factored_period()` re-traverses at the converged
+solution: if the grid moves between traversals the map is not the one the Newton converged on.
+So an adaptive scheme has to be *frozen* after the first pass, or made a function of the state
+only. **Gate before building:** does a frozen-after-first-pass grid still satisfy the LTE bound
+on the wrapping fixture, and does `M` stay reproducible between `solve()` and
+`factored_period()`? The second question is already pinned by
+`test_the_ppv_is_invariant_to_the_newtons_inner_solver`.
+
+### B8. All integration methods in PAC, pnoise and the adjoint paths — REQUESTED 2026-09-04
+
+⚠ **The shooting SOLVE already supports every integrator that exists.** `integrator.py` defines
+exactly three — `EulerIntegrator`, `TrapezoidalIntegrator`, `Gear2Integrator` — and
+`PSS.solve` accepts `'euler'`, `'trap'`/`'trapezoidal'`, `'gear'`/`'gear2'`. So the request is
+already satisfied there, and the gap is one level up.
+
+**The gap is the ADJOINT surface, which is Gear-2 only.** `factored_period().matvec_transposed`,
+`ppv`, `_forced_replay_transposed`, `covariance`, `oscillator_covariance` and `_lyapunov_pieces`
+all require the solved-history factors and refuse otherwise. So **PAC, pnoise, the PPV and every
+noise result are `method='gear'` only** — `euler` and `trap` reach the PSS and stop there.
+
+⚠ **What it costs to lift:** the transposed replay is *derived* for a two-step companion with
+`b = 0` — the docstring states the pair map and its transpose explicitly, and raises for
+`len(alphas) < 3` and for `b != 0`. A one-step method needs **its own reverse recursion**, not a
+special case of this one. That is the whole of the work, and it is the same recursion an IRK
+adoption would need (see the parallel-shooting entry), so the two should be costed together.
+
+⚠ **And there is a reason to want it beyond completeness:** `trap` is one-step, so a `trap`
+adjoint would pay none of the parallel-shooting low-order-restart bias, and `x0_unknown=True`
+exists precisely for the one-step path. Today that path cannot produce a PPV.
+
+### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
+
+Requested 2026-09-04; it is in. All three `fsolve` calls pass `line_search=True`, and
+`shooting.py` carries the rationale: *"the outer Newton is damped, which it was not … a departure
+from standard practice rather than a neutral choice: Brachtendorf et al. describe 'shooting,
+finite difference, or harmonic balance techniques in conjunction with a DAMPED NEWTON METHOD' as
+what is widely employed for limit cycles. The full step is still tried first and kept whenever it
+improves the residual, so a solve that was converging is unchanged; the halving only runs where
+the undamped iteration would have moved uphill."*
+
+⚠ **What is NOT damped is the INNER solve**, and that is where the high-`Q` failure lives: see
+the B6-note tolerance floor, where `matrix_free=True` at `reltol = 1e-12` exhausts the inner
+GMRES restarts at `Q ≥ 16` with exactly 126 matvecs regardless of the outer budget.
+
 ### A5. Envelope-following — last
 
 Linaro et al. (OJCAS 2020) apply EFM to the *variational* problem, with a
