@@ -64,9 +64,9 @@ from seven sides**, and they enter through structurally different doors:
 
 | | door | source |
 |---|---|---|
-| (a) | **numerical distinguishability** — `λ₁ = 1` cannot be separated from `λ₂ ≈ 1`, so eigen-based PPV extraction fails | Demir & Roychowdhury 2003 |
+| (a) | **numerical distinguishability** — `λ₁ = 1` cannot be separated from `λ₂ ≈ 1`, so eigen-based PPV extraction fails | **Demir & Sangiovanni-Vincentelli 1998, Table 6.4 — a REPORTED failure**, the stated motivation for Demir, Long & Roychowdhury 2000; 2003 is the fuller procedure |
 | (b) | **conditioning** — the bordered Jacobian degrades; `σ_min` tracks `T/τ` over six decades | Lai DAC 2006; measured here |
-| (c) | **truncation validity** — the single-mode reduction needs `\|exp(η_i)\| ≪ 1` | Demir 1998 (6.72) |
+| (c) | **truncation validity** — the single-mode reduction needs `\|exp(η_i)\| ≪ 1` | Demir 1998 (6.72) — ⚠ **the SAME condition as (a), seen from the other side**: the book says (6.72) holds for "most" oscillators and defers the exceptions to its high-Q crowding discussion, which is (a). One condition: an approximation that stops holding, and an algorithm that stops working |
 | (d) | **theory validity** — two multipliers at 1 means no asymptotic phase; the PPV is undefined | Demir 2006 |
 | (e) | **settling and ringing** — long `tstab`, ringing impulse response, large `M` | SpectreRF; Hull & Meyer; the probe methods |
 | (f) | **method-dependence of the value** — backward Euler biases `λ₂` low, so `Q` is method-dependent | measured, docs session |

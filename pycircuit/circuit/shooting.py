@@ -3022,7 +3022,30 @@ class PSS(Analysis):
         then `v[:m] . delta`.  `info` carries both border residuals, the
         null residual, `q` and the scaled tangent.
 
-        ⚠ AN AUGMENTED SOLVE, NOT AN EIGENVECTOR.  ⚠ ATTRIBUTION CORRECTED
+        ⚠ AN AUGMENTED SOLVE, NOT AN EIGENVECTOR -- AND IT IS THE FIX FOR A
+        NAMED FAILURE OUR OWN FIXTURES SIT INSIDE.  Demir &
+        Sangiovanni-Vincentelli, 1998 (the book, read firsthand by the docs
+        session 2026-09-04), report the eigenvector route BREAKING on a
+        high-Q circuit, with a table of the crowded eigenvalues (their
+        Table 6.4): "Since this circuit is a high-Q one, Phi(T,0) has
+        eigenvalues with magnitudes close to 1 other than the one which is
+        supposed to be equal to 1 ... Because of numerical errors, we can
+        not identify the eigenvalue that is supposed to be equal to 1 ...
+        so it is not feasible to identify the correct" one.  Not
+        ill-conditioned there -- INFEASIBLE.  That reported failure is the
+        stated motivation for the single-solve method two years later, so
+        the lineage is firsthand end to end: 1998 selection fails at high
+        Q; 2000 the single linear solve; 2001 "particularly useful for
+        high-Q oscillators"; 2003 the fuller procedure.  ⚠ It also changes
+        what the second-multiplier warning below MEANS: not "this result is
+        degrading" but "you are in the regime this method was invented to
+        escape".  And the same book's eq (6.72), `|exp(eta_i)| << 1`, is
+        the closed-form variance's validity condition -- the book says it
+        "is satisfied for 'most' oscillator circuits" and defers the rest
+        to the high-Q discussion above, so that condition and the crowding
+        are ONE condition seen from two sides.
+
+        ⚠ ATTRIBUTION CORRECTED
         2026-09-04: the idea ORIGINATES in Demir, Long & Roychowdhury,
         ICCAD 2000 ("Computing Phase Noise Eigenfunctions Directly from
         Steady-State Jacobian Matrices" -- "a single linear solution of the
