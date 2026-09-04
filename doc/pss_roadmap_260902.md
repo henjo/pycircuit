@@ -4789,6 +4789,27 @@ adds the **phase–orbital correlation** `S_corr` (eqs 18/20, `D_lhj`), whose `�
 Lyapunov covariance contains and this sum excludes — reported by the authors as small, with a
 sign. The test that settles it is assembling `D_lhj` and adding its `τ = 0` contribution.
 
+✅✅ **CLOSED THE SAME EVENING: THE RESIDUAL WAS THE REFERENCE, NOT THE SUM.** Two things arrived
+together. The docs session **disproved the correlation candidate from the equation** before it
+was built: at `τ = 0` eq (18a)'s brace is `{exp[0] − exp[0]} = 0` identically, for every `l, h, j`,
+and (23) states `R_yy(0) = Σ C_lhj` alone — there is no correlation term in a `τ = 0` covariance.
+And the remaining suspect was the reference: subtracting only the **secular** growth
+`(t/T)·d·uuᵀ` leaves the phase direction's **bounded within-period variance**, which the `l ≥ 2`
+sum correctly excludes. Demir's `y` is the **oblique projection** `v₁ᵀy = 0`. Prediction named
+before running: projecting the samples with `Π = I − uvᵀ/(vᵀu)` drops the residual to quadrature
+(~1e-3). Measured, euler-plain, `n = m`:
+
+    Q_λ            4.44      9.97     19.94     39.87
+    growth-subtracted   5.37e-2   2.39e-2   1.20e-2   5.99e-3     ← falls as 1/Q_λ
+    oblique-projected   5.9e-4    6.0e-4    3.1e-4    1.5e-4     ← quadrature, improving
+
+✅ **Three routes now agree to ~1e-4**, and the peer's Q-sweep discriminator — physics grows with
+`Q`, numerics is flat — returned a *third* outcome, **1/Q**, which is the same fact: orbital
+variance `∝ Q_λ` (`C_lhj ∼ 1/μ₂`) against a constant phase-bounded part. ⚠ `K_orb` is
+**bounded, not transverse**: read it as the bounded part, and project it if `R_yy(0)` is wanted
+(docstring updated). The tests now compare against the projected reference at 3e-3 and keep the
+growth-subtracted 2.4 % as the documented signature.
+
 **What the wiring is.** Euler (`b = 0`): step state `x` alone, `n = m`, consumers untouched.
 Trapezoidal (`b = −1`): step state is the pair `(x, iq)`, the maps are `2m × 2m`, the noise
 reaches `iq` through `a₀C_kK` as well as `x` through `K`. ⚠⚠ **The un-reset trap pair is
