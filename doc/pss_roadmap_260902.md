@@ -225,8 +225,8 @@ functional) at `Q = 75`; it does not anchor `c` (the *quadratic* one).
 ⚠⚠ **AND THE NARROWED CHECK FOUND A DEFECT — see §0d.** `CY` is exact, but `c` comes back
 **exactly 0.0** for an oscillator whose only noise is its series tank loss, because the PPV's
 entry for a purely algebraic node row is structurally zero. Three independent confirmations and a
-validated correction are in §0d; no shipped test is numerically wrong, and the fix is not applied
-yet because it moves `ppv()`'s normalisation by an amount no existing gate can resolve.
+validated correction are in §0d, and it is **FIXED** — `c` series/parallel now agrees to 0.999973
+at `Q = 8`, with every existing PPV number bit-for-bit unchanged.
 
 ⚠ **NARROWED 2026-09-04 by §0c below.** The state-localised frequency-shift probe anchors `v₀`
 **pointwise** at `Q = 8` and `Q = 30`, to between 0.015% and 0.13%, against an instrument that
@@ -385,9 +385,10 @@ differential row). The two are matched to `3e-6` in amplitude and `1e-5` in `Q`:
 ⚠ **THE MECHANISM, AND WHY THE PPV IS NOT SIMPLY WRONG.** The differential rows agree with the
 measurement to `1.5e-5`. An algebraic row's perturbation reaches the dynamics through the
 **constraint**: eliminating `v_x = r(i_L + b)` puts `−r·b` into the inductor's row, so the true
-sensitivity to that row is `−r` times the BRANCH row's. Measured: `−r·∫v_branch dt =
-+1.937064e-06` against `+1.937090e-06`. The vector carries zero where that belongs, so the
-generic fill-in is `v_A = −(J_AAᵀ)^{-1} J_DAᵀ v_D`.
+sensitivity to that row is proportional to the BRANCH row's. Measured: `|r·∫v_branch dt| =
+1.937064e-06` against `1.937090e-06`. The vector carries zero where that belongs, so the generic
+fill-in is `v_A = (G[A,Z]ᵀ)^{-1} G[D,Z]ᵀ v_D` — ⚠ **whose SIGN this fixture cannot settle**, for
+the reason shape 0h below records; the divider does.
 
 ⚠ **SCOPE, MEASURED RATHER THAN ASSUMED — `pnoise` IS NOT AFFECTED.** On a driven linear circuit
 whose only noise is a series R at an algebraic node, `pnoise` agrees with `analysis_ss.Noise` to
@@ -402,29 +403,49 @@ but it also adds an explicit `IS` at node `v` at `psd = 1e-6` against the resist
 would have caught it runs on the fixture that cannot show it. **No shipped test is numerically
 wrong; the gap was in fixture placement, not in any assertion.**
 
-**PINNED BY THREE TESTS** — `test_the_ppv_carries_no_sensitivity_on_an_algebraic_row` (the
-mechanism and the `−r` fold), `test_the_algebraic_row_correction_matches_the_lyapunov_route` (the
-correction against BOTH references), and a **strict xfail**,
-`test_diffusion_constant_should_not_depend_on_where_the_loss_is_drawn`, which turns into a
-failure the moment the fix lands.
+**PINNED BY THREE TESTS** — `test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row`
+(the divider's topology-fixed ratio, and every row on one convention),
+`test_the_fill_is_skipped_entirely_without_an_algebraic_row` (the bit-for-bit guarantee, asserted
+on the pattern), and `test_diffusion_constant_sees_noise_on_an_algebraic_row` (series against
+parallel, cross-checked against the Lyapunov route).
 
-⚠⚠ **THE FIX IS NOT OBVIOUSLY FREE AND THAT IS WHY IT IS NOT APPLIED HERE.** Filling in `v_A`
-changes `v` on rows that enter `ppv()`'s normalisation, and the normalisation is what 21 gated
-results rest on. **MEASURED on this fixture rather than estimated:** `max|v_A| = 2.22e-03`
-against `max|ẋ_A| = 7.12e-03`, giving a shift to `v·ẋ` of **7.92e-06 in the mean and 1.58e-05 at
-the peak**. For comparison `⟨v·ẋ⟩` is currently **0.999978** — already `2.2e-5` off unity, the
-same order — and the differential rows agree with the DC probe to `1.5e-5`. **So no existing
-number can tell whether the normalisation already accounts for it**, and the fix has to carry its
-own before/after check. Two routes:
+✅ **FIXED 2026-09-04 in `ppv()` itself**, by `_algebraic_adjoint_pattern` and
+`_algebraic_adjoint_fill`. Results: `c` series/parallel **0.999973** at `Q = 8` and **0.999984**
+at `Q = 30`; the PPV route and the Lyapunov route now agree; and the DC-injection probe reads
+**+0.9999849** (differential row), **+0.9999982** and **+0.9998744** (the two algebraic rows).
 
-  * **fill `v_A` in `ppv()`** — correct at the source, a user reading `ppv()` stops getting a
-    wrong sensitivity, and every consumer inherits it. Cost: re-run every PPV-derived gate and
-    show the ones without algebraic rows are bit-unchanged.
-  * **fold in the contraction** (`diffusion_constant`, `colour_projection`) — no normalisation
-    risk, but leaves `ppv()` returning a vector that is wrong for anyone who reads it directly,
-    which is exactly how this was found.
+⚠ **THE NORMALISATION QUESTION DISSOLVED RATHER THAN BEING PAID.** The worry was that filling
+`v_A` moves `v·ẋ`. It does — by a measured 1.58e-05 — but it **should not be allowed to**, and
+the reason is structural: `v·ẋ = 1` is about a **state** perturbation, and a state perturbation
+of a DAE lies **on** the constraint manifold, its algebraic components determined by its
+differential ones rather than free. The algebraic entries of `v` answer a different question — the
+sensitivity to a perturbation of an **equation row**, which is exactly what a noise current
+injected into an algebraic KCL row is. So the normalisation line is untouched and **every PPV
+number on every circuit is bit-for-bit what it was**, which is the guarantee the fix was gated on.
+`test_the_fill_is_skipped_entirely_without_an_algebraic_row` asserts it on the PATTERN, because an
+empty pattern means `ppv()` runs exactly the lines it ran before.
 
-**Recommendation: the first, gated by a bit-for-bit check on the algebraic-row-free fixtures.**
+⚠⚠ **AND FILLING IN THE WRONG PLACE WAS MEASURED WORSE, WHICH IS THE PART WORTH KEEPING.** The
+first implementation filled `v` before the normalisation — which also made it the **replay's
+seed**. The DC probe went from 0.9999849 to **0.9992364**: the algebraic components are SLAVED,
+so propagating them through the step map corrupts the differential ones. There is nothing to
+propagate; they are a pointwise function of the differential entries, and the fill belongs
+**after** the replay, applied to each sample at its own operating point.
+
+⚠⚠⚠ **§D SHAPE 0h — A FIXTURE WHERE THE CANDIDATE ANSWERS ARE NUMERICALLY DEGENERATE.** The
+sign of the fill could NOT be settled on the single-series-resistor tank: there
+`|∫v₀| = 1.9371e-06` and `|r∫v_branch| = 1.9374e-06` agree to `1.5e-4`, so a prediction matching
+in magnitude matches for **either sign**, and the agreement I first recorded as a confirmation was
+no evidence at all. **A RESISTIVE DIVIDER breaks the degeneracy:** two algebraic nodes fold into
+the branch row with `(r1 + r2)` and `r2`, so the topology fixes the RATIO of their entries —
+measured **10.000000** against a chosen 10.000000. The magnitude is then structural and only the
+overall sign is measured, fixed by requiring algebraic and differential rows to share one
+convention. **Before trusting a sign, check that the fixture can express the wrong one.**
+
+⚠ **INDEX > 1 IS REFUSED, NOT GUESSED.** When the algebraic equations and algebraic states differ
+in count, or the block `G[A, Z]` is singular, the entries are left at zero and a `RuntimeWarning`
+says the noise entering those rows is under-counted. That is §B4's territory and a guess there
+would be worse than a known zero.
 
 ---
 
@@ -2754,6 +2775,13 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    Carlo used the same one-sided-as-two-sided injection as the code, so it agreed to 0.9965
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the
    measurement assumes before trusting what it confirms.**
+
+0h. **A fixture where the candidate answers are numerically degenerate.** The single
+   series-resistor tank makes `|∫v₀|` and `|r∫v_branch|` agree to 1.5e-4, so a prediction that
+   matched in magnitude matched for EITHER SIGN — and the match was recorded as a confirmation
+   before a divider fixture, whose two algebraic nodes must stand in a topology-fixed ratio of
+   10.000000, showed the sign was inverted. **Before trusting a sign, check the fixture can
+   express the wrong one.**
 
 0g. **A control that is a whole-period integral, guarding a pointwise quantity.** The DC
    frequency-shift gate agrees to `1e-4` while a *localised* functional of the same `v₀` is 32%

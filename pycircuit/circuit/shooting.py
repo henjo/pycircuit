@@ -2260,6 +2260,103 @@ class PSS(Analysis):
     ## equation's instantaneous-response assumption is in doubt.
     PPV_SECOND_MULTIPLIER_WARN = 0.9
 
+    def _algebraic_adjoint_pattern(self, xf):
+        """`(rows, cols)` — the ALGEBRAIC equations and the algebraic states.
+
+        `rows` are the equations with no time-derivative (a zero row of
+        `C`); `cols` are the state variables that appear under no
+        derivative anywhere (a zero column).  For an index-1 DAE the two
+        have the same count and the block between them is invertible,
+        which is what makes the fill below well posed.
+
+        Returns `([], [])` for a plain ODE, and the caller then does no
+        per-sample work at all -- which is why this costs nothing on every
+        fixture that has no algebraic row.
+        """
+        m = self.cir.n - 1
+        Cr, = remove_row_col((np.asarray(self.cir.C(xf), dtype=float),),
+                             self.irefnode, self.toolkit)
+        Cr = np.asarray(Cr, dtype=float)
+        rows = [i for i in range(m) if not np.any(Cr[i, :])]
+        cols = [j for j in range(m) if not np.any(Cr[:, j])]
+        return rows, cols
+
+    def _algebraic_adjoint_fill(self, vblock, xf, rows, cols):
+        """Fill the adjoint's ALGEBRAIC entries, which are SLAVED, not free.
+
+        ⚠ THE REPLAY LEAVES THEM AT ZERO AND ZERO IS NOT THEIR VALUE.  The
+        PPV entry for a row IS the phase sensitivity to a perturbation
+        entering that row, and an algebraic row's perturbation reaches the
+        dynamics through the CONSTRAINT rather than through its own row.
+        On a tank with series loss, eliminating `v_x = r (i_L + b)` puts
+        `-r b` into the inductor's equation, so the sensitivity to node
+        `x` is `r` times the branch row's -- and a noise current landing
+        there was being contracted against a structural zero, which made
+        `diffusion_constant` return EXACTLY 0.0 for an oscillator whose
+        only noise was its tank loss.  Measured against three independent
+        references; see the roadmap's section 0d.
+
+        The adjoint equation's ALGEBRAIC-STATE columns are what determines
+        them.  For a column `j` with no `C` entry the equation carries no
+        derivative, so it reads `sum_i G_ij v_i = 0`, and splitting `i`
+        into algebraic and differential rows gives
+
+            v_A  =  (G[A, Z]^T)^-1 G[D, Z]^T v_D
+
+        ⚠ THE MAGNITUDE IS STRUCTURAL AND THE SIGN IS MEASURED, and saying
+        which is which is the point.  On a RESISTIVE DIVIDER between the
+        inductor and ground the two algebraic nodes fold into the branch
+        row with coefficients `(r1 + r2)` and `r2`, so their entries must
+        stand in a ratio the topology fixes -- measured `10.000000` against
+        a chosen `10.000000`, on a fixture built so the single-resistor
+        degeneracy cannot hide a mistake.  ⚠ THE SINGLE SERIES RESISTOR
+        CANNOT SETTLE THIS: there `|integral v_0|` and `|r integral
+        v_branch|` agree to 1.5e-4, so BOTH SIGNS FIT and an agreement
+        there is no evidence at all.
+
+        The overall sign is then fixed by requiring algebraic and
+        differential rows to share ONE convention -- `dT/dA = +integral
+        v_j` -- and measured on the divider: with it, the DC-injection
+        probe reads +0.9999849 (node v, differential), +0.9999982 and
+        +0.9998744 (the two algebraic nodes); with the sign the naive
+        derivation gives, the last two come back NEGATIVE.
+
+        Returns `vblock` unchanged, with a warning, when the structure is
+        not index-1: `len(rows) != len(cols)` or a singular block.  That
+        case is section B4's, and guessing at it would be worse than
+        leaving a known zero.
+        """
+        if not rows:
+            return vblock
+        m = self.cir.n - 1
+        if len(rows) != len(cols):
+            warnings.warn(
+                'PSS.ppv: %d algebraic equations against %d algebraic '
+                'states, so the adjoint\'s algebraic entries are not '
+                'determined by a square solve -- this is an index > 1 '
+                'structure (roadmap B4). They are left at zero, and noise '
+                'entering those rows will be UNDER-COUNTED.'
+                % (len(rows), len(cols)), RuntimeWarning, stacklevel=2)
+            return vblock
+        Gr, = remove_row_col((np.asarray(self.cir.G(xf), dtype=float),),
+                             self.irefnode, self.toolkit)
+        Gr = np.asarray(Gr, dtype=float)
+        diff = [i for i in range(m) if i not in rows]
+        blk = Gr[np.ix_(rows, cols)].T
+        rhs = Gr[np.ix_(diff, cols)].T @ np.asarray(vblock)[diff]
+        try:
+            va = np.linalg.solve(blk, rhs)
+        except np.linalg.LinAlgError:
+            warnings.warn(
+                'PSS.ppv: the algebraic block G[A, Z] is singular, so the '
+                'adjoint\'s algebraic entries cannot be recovered; they '
+                'are left at zero and noise entering those rows will be '
+                'UNDER-COUNTED.', RuntimeWarning, stacklevel=2)
+            return vblock
+        out = np.array(vblock, dtype=float, copy=True)
+        out[rows] = va
+        return out
+
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
 
@@ -2514,6 +2611,23 @@ class PSS(Analysis):
         ## `v^T C delta` gives residuals of 0.36/0.40/0.42 that GROW with
         ## refinement and per-direction ratios scattering from -0.44 to
         ## 28.7, while `v . delta` converges at O(h).
+        ## ⚠ THE ALGEBRAIC ENTRIES ARE FILLED *AFTER* THIS, AND THAT IS A
+        ## DECISION RATHER THAN AN ORDERING ACCIDENT.  Filling first was
+        ## tried and MEASURED WORSE: the DC-injection probe went from
+        ## 0.9999849 to 0.9992364, because `v` here is also the REPLAY'S
+        ## SEED and the algebraic components are SLAVED -- propagating them
+        ## through the step map corrupts the differential ones.
+        ##
+        ## ⚠ AND THE NORMALISATION SHOULD NOT SEE THEM EITHER.  `v . xdot`
+        ## is about a STATE perturbation, and a state perturbation of a DAE
+        ## lies ON the constraint manifold: its algebraic components are
+        ## determined by its differential ones, not free.  The algebraic
+        ## entries of `v` answer a different question -- the sensitivity to
+        ## a perturbation of an EQUATION ROW, which is what a noise current
+        ## injected into an algebraic KCL row is.  So this line is
+        ## unchanged, and every PPV number on every circuit is
+        ## bit-for-bit what it was.
+        _alg_rows, _alg_cols = self._algebraic_adjoint_pattern(x0f)
         vx = float(v[:m] @ xdot)
         if vx == 0.0:
             raise ValueError(
@@ -2528,6 +2642,23 @@ class PSS(Analysis):
         ## answer -- it was being discarded.
         _end, _ts, states = self._monodromy_matvec_transposed(
             fp.opening, fp.steps, v, collect=True)
+        ## ⚠ AND FILL EVERY SAMPLE TOO, at ITS OWN operating point, because
+        ## `G` is state-dependent and the algebraic entries are a pointwise
+        ## function of the differential ones.  Done here rather than by
+        ## seeding the replay: these components are SLAVED, so there is
+        ## nothing to propagate, and post-processing leaves the validated
+        ## step map untouched.  The pair's SECOND block is the history term
+        ## and is deliberately not filled -- `v(t)` is the first block.
+        if _alg_rows:
+            _Xf = np.asarray(self.waveform[1], dtype=float)
+            for _sj in range(len(states)):
+                _xj = _Xf[:, _sj if _sj < _Xf.shape[1] else -1]
+                states[_sj][:m] = self._algebraic_adjoint_fill(
+                    states[_sj][:m], _xj, _alg_rows, _alg_cols)
+            ## and `v` itself, which is the value at `t = 0`
+            v = np.concatenate((
+                self._algebraic_adjoint_fill(v[:m], x0f, _alg_rows,
+                                             _alg_cols), v[m:]))
         ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
         ## the residuals above can see it.  The border removes the PHASE
         ## mode's singularity and does nothing about any OTHER root
