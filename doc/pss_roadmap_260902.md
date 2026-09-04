@@ -649,6 +649,40 @@ fell and then GREW again with refinement. Deterministic-dominated at usable step
 `ε²h^{1/2}` as the floor. ⚠ The pairing only works because the unexplained measurement was written
 down in the form it came out rather than smoothed.
 
+⚠⚠ **CORRECTED 2026-09-04, SAME DAY — TWO WAYS, AND THE ATTRIBUTION ABOVE IS AT BEST
+INCOMPLETE.**
+
+**(i) THE EXPONENT THAT APPLIES TO OUR ESTIMATOR IS THE MEAN ONE, NOT THE MEAN-SQUARE ONE.**
+Sickenberger, Weinmüller & Winkler (ASC Report 17/2007, "Local Error Estimates … Part II — SDEs
+and SDAEs with Small Noise") give a **half-order gap**:
+
+    ‖E(L_i | F_{t_{i-2}})‖_L2 = O(h^{γ+1})     consistency in the MEAN
+    ‖L_i‖_L2                  = O(h^{γ+1/2})   consistency in the MEAN-SQUARE
+
+We fit the **slope of `Var(θ)`**, which is an EXPECTATION, so it converges at the **mean** rate —
+the deterministic order — not the mean-square rate that gives strong order 1/2. **The `ε²h^{1/2}`
+floor applies to PATHS, not to the fitted slope.** ⚠ Anyone sizing a burn-in or a step against the
+strong exponent would be using the wrong one.
+
+**(ii) AND THE TWO-SIDED OPTIMUM PROBABLY HAS A BETTER EXPLANATION THAN THE ERROR BOUND.**
+Römisch, Sickenberger & Winkler ("Simultaneous Step-size and Path Control") is not about the local
+error at all — it is about tuning the **number of Monte-Carlo paths**: *"our aim in tuning the
+number of paths is to balance the LOCAL ERROR and the SAMPLING ERROR"*, with a per-time-point
+tolerance and a path count that varies over time. **Our Monte Carlo runs a FIXED path count and a
+fixed burn-in.** Refining `npts` while the sampling error dominates buys nothing; adding paths
+while the local error dominates buys nothing either. **The two-sided optimum in `npts` is one half
+of that trade with the other half held fixed** — which explains the shape better than the error
+bound alone, and means the bound above should not be quoted as "the" explanation.
+
+⚠ **Recorded, not acted on.** Both are relayed and unverified here, and neither changes a shipped
+number; they change what a future Monte-Carlo campaign should be designed against.
+
+⚠ Also from the same design: *"we concentrate on two-step schemes, since the higher numerical
+effort for higher deterministic order pays off ONLY IF THE NOISE IS VERY SMALL"* — which bears on
+any future IRK adoption (B8's companion), and their stated motivation is ours: small noise in
+circuit simulation, "where especially the BDF and the trapezoidal rule have proven valuable in the
+deterministic case".
+
 ⚠ **AND THE ORACLE'S OWN PRECONDITION IS ASSERTED**, because it is easy to lose: the lemma needs a
 SINUSOIDAL orbit and an ODD-symmetric nonlinearity. `rms/peak` is checked at 0.70785 against
 0.70711. ⚠ `_lc_osc` is the WRONG fixture for it — its `i_func` coefficient is 1.0, so the orbit
