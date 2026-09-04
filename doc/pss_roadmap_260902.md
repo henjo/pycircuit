@@ -2807,6 +2807,47 @@ this is cheap insurance.
 
 ### A4d. Coloured noise — ⚠ **BUILT 2026-09-03**; it did cost nothing structural
 
+✅⚠ **2026-09-04 (late): THE FOLD FINALLY HAS A SOURCE TO RUN ON, AND IT IS GATED.** Every library
+`CY(x, w)` ignored `w` — no coloured element existed — so A4d's fold had only ever been exercised
+on a white source treated as if coloured. `IS` now takes `noiseTau` (Lorentzian,
+`psd/(1+(wτ)²)` — exactly white noise through an RC, hence realisable in-netlist) and `noiseFc`
+(flicker corner `1 + 2πf_c/|w|`, not realisable by a finite filter; returns the white value at
+`w = 0` rather than infinity). **Gate:** the coloured element against the SAME noise realised as
+a white `IS` → RC → linear `BSource` into the node — two representations of one physics —
+
+    driven RLC (linear):   coloured vs filtered agree to 1e-5; both track the LTI closed form
+                           |Z(f)|²·psd/(1+(2πfτ)²) to 0.2–1.0 % (200-point discretisation of the
+                           sideband transfer, identical in both)
+    van der Pol, τ=0.3T:   coloured vs filtered agree to 1.3e-4 at Δf/f₀ = 1e-2, 1e-3, 1e-4;
+                           PSS periods identical to ten digits (the filter stays out — reconfirmed)
+
+✅ **`pnoise` was correct for colour from the start**: it folds `CY` at the **source-side**
+frequency `f − l·f₀` per sideband (A3's design), so a coloured source needs nothing there.
+
+⚠⚠ **`phase_psd`'s `c + Γ(f)` IS NOT THE COLOURED FOLD, and the reason it passed is a fixture
+accident.** `diffusion_constant` reads `CY` at ONE frequency (`ω₀`); `Γ` is the `l = 0` term
+(square of the mean) at `Δf`. The correct coloured phase diffusion is **per harmonic**:
+`c_res(Δf) = Σ_l |V_l|²·CY(Δf − l f₀)/2` — which is what `pnoise` does. Measured on the
+Lorentzian-coloured van der Pol at `Δf/f₀ = 1e-3, 1e-4`: `pnoise`-derived, `phase_psd`, `c`, and
+`c_res` all agree to ≤ 2e-3 — **because van der Pol's PPV is dominated by `l = ±1`, so the
+source-side frequency is ≈ `f₀`, the one frequency `c` reads.** A non-sinusoidal oscillator (strong
+`|l| ≥ 2`) or a flicker source (the `l = 0` term at `Δf` dominates) separates them, and `c + Γ`
+double-counts `l = 0` (at `ω₀` and at `Δf`). White: `Γ` is 22 orders down, harmless. ✅ **The
+build: the harmonic-resolved fold, exact, reducing to `c` for white and containing `Γ` as its
+`l = 0` term; `phase_psd` uses it alone; `diffusion_constant` refuses colour, as its docstring
+already claims but `_cy_reduced` never enforced.** `_lyapunov_pieces` and `orbital_correlation`
+now refuse a coloured source with the reason (they fold `CY` at one frequency; A4d's "plausible
+number, not an error" shape). ⚠ Orbital colour — eq (22) with `CY(ω)` — is NOT built; the
+collapse to `Ṽᵀ CY Ṽ*` is lost and each term needs a frequency integral.
+
+⚠ **AND A RE-READING OF THIS AFTERNOON'S CORNER CHECK.** At `Δf/f₀ = 1e-2`, `pnoise` exceeds every
+phase-only route by 16 % — the same excess the corner check showed (7.51e-8 against 6.25e-8) and
+filed as "outside Kundert's window". `1e-2·f₀ ≪ f₀` is inside the window. The better reading is
+**the orbital term**: on a Q = 8 van der Pol the amplitude mode's Lorentzian has half-width
+`|μ₂|/2π ≈ 0.02 f₀`, peaking exactly there, and `pnoise` is the full sideband transfer — phase
+AND orbital — while `phase_psd`, `c` and `c_res` are phase only. **That is the far-out floor A9
+exists for, seen at 1e-2.** Candidate, with `S_yy(ω)` as its test; not asserted.
+
 ⚠ **THE FILTER DOES NOT ENTER THE PSS.** Demir 1996 synthesises 1/f from white sources
 through a Lorentzian network because Itô theory admits only white driving noise — "we can not
 express a flicker noise source in terms of the standard white Gaussian noise process" — at
@@ -5226,6 +5267,32 @@ worse — then the index-2 defect lives in the state solve alone. Every measurem
 covers the **state** only. If real, it locates the 2× in sensitivity propagation — a different fix
 from re-seeding. ⚠ The fixture needs *both* a state reference and a monodromy reference on an
 index-2 circuit; not built.
+
+✅✅ **THE MONODROMY REFERENCE EXISTS AND NEEDS NO INTEGRATION (docs session, 2026-09-04 late).**
+For a linear constant-coefficient circuit the variational system is the pencil `(C, G)`:
+`eig(M) = {exp(T·μᵢ): μᵢ a finite generalised eigenvalue of −Gv = μCv} ∪ {exactly 0 on the
+nilpotent block}` — by the Weierstrass–Kronecker form, **valid at index 2 identically to index 1**
+(a higher index only enlarges the nilpotent block). Computed with `scipy.linalg.ordqz(−G, C)`,
+which never forms `C⁻¹`. A genuinely external instrument.
+
+⚠⚠ **AND IT SAYS THE L-I CUTSET ALONE HAS NO MONODROMY AT ALL** — `n = 2`, `rank(C) = 1`, zero
+finite eigenvalues, `exact |eig(M)| = [0, 0]`: every mode is algebraic. The state has dynamics
+because the source drives it, but the homogeneous variational system has no non-trivial solution.
+All three methods return `[0, 0]` and "agree" trivially. **The fixture had nothing to reference**,
+which is why one could not be built for it. The fixture that has both — index 2 *plus* a
+differential mode — is `li_plus_rc` (`I` in series with `L`; an independent `V → R → C` with
+`τ = T` so `μT = −1`): `exact |eig(M)| = [e⁻¹, 0, 0, 0, 0]`, and against it all three methods hit
+textbook order — gear 2.02/2.00, trap 2.01/2.00, euler 1.00/1.00. ✅ **That is the REFUTATION branch
+of the Bereza prediction on this fixture** — with the stated caveat that here the index-2
+constraint and the differential mode sit in separate branches; a fixture where the same branch
+carries both is the harder test and is not built.
+
+⚠ **AN UNEXPLAINED OBSERVATION, flagged so nobody builds on it:** on the plain index-1 RC control
+(`V → R → C`, same values) **trapezoidal converges at order 1**, agreeing with euler to four digits
+(0.36974 / 0.36973 against exact 0.36788) — while the SAME branch inside `li_plus_rc` gives trap a
+clean order 2. Not a top-k truncation artefact (3×3, clean spectrum). The trap/euler agreement
+points at the opening step dominating, consistent with B16 — **but untested, and recorded as an
+open observation about the tree, not a result.**
 
 ⚠ **Two instrument errors in this attempt, both mine, both from the record's own list:** a
 `pkill -f "pre_b[.]py"` that killed its own launcher because the *other* lines of the same command
