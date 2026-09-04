@@ -4194,6 +4194,47 @@ this. The only occurrences of "jitter" outside tests are `elements_hdl.py`'s `id
 and `shooting.py`'s two uses, both of which are `c` described as jitter per second. There is no
 `noisetype`, no sampled-noise generator, and no crossing-time statistic.
 
+⚠⚠ **MEASURED 2026-09-04 ON THE ACTUAL CHAIN — `pnoise` RUNS, RETURNS PLAUSIBLE NUMBERS, AND THE
+ADDITIVE MECHANISM IS ABSENT FROM THEM.** Asked whether *unseparated* total output noise is
+available for this circuit, since that is the simpler-sounding request. It is available and it is
+the wrong number, which is worse than it being unavailable.
+
+Built the topology — van der Pol core, three `tanh` transconductance buffers into RC loads, each
+buffer carrying its own noise source, output at the last one. `m = 5`, converged, **`autonomous =
+True`** (the buffers do NOT make it driven — the oscillator makes the whole netlist autonomous).
+
+`PAC.pnoise(pss, f0(1+Δf/f0), output)` at the last buffer:
+
+    Δf/f₀      1e-1       1e-2       1e-3       1e-4       1e-5
+    S        2.218e-05  1.472e-03  1.250e-01  1.250e+01  1.250e+03
+
+⚠ **AND THE CONTROL — the buffers' own sources ALONE, oscillator source off:**
+
+    Δf/f₀      1e-1       1e-2       1e-3       1e-4       1e-5
+    S        1.578e-43  1.516e-41  1.519e-39  1.517e-37  1.517e-35
+    ratio         96.0      100.2       99.9      100.0
+
+⚠⚠ **THE BUFFERS' THERMAL NOISE COMES BACK AS A `1/Δf²` PHASE TAIL AND NEVER FLATTENS.** `pnoise`
+represents it only through its **orbit-perturbing** effect on the oscillator's phase. The
+**additive** mechanism — each inverter's delay modulated independently, displacing edges *without
+accumulating* — is not in the number at all. There is no flat floor because the object that
+produces one does not exist. (The ~38-decade gap between the two columns is an artifact of the
+source magnitudes chosen for the fixture; the **shape** is the finding, and shape is
+magnitude-independent.)
+
+⚠ **AND THERE IS NO AUTONOMOUS GUARD.** `pnoise` carries its oscillator refusal in the DOCSTRING
+ONLY — *"an oscillator is not this function's problem at all"* — and nothing in the body enforces
+it. It computes, on an autonomous circuit, and returns a smooth Lorentzian at every offset. The
+near-carrier `1/Δf²` is real physics, which is exactly what makes the result unfalsifiable by
+inspection: **a designer reading this number has no signal that the mechanism they care about is
+missing.**
+
+⚠ Three things stack up for this one topology, and they are independent: (1) no guard; (2)
+`pnoise`'s own docstring names *"an oscillator drives a limiter"* as its incompleteness case, and
+an inverter samples at its threshold crossing so it CAN track the PSD's variation, which is the
+stated test; (3) the far-out floor never appears. **A guard, or at minimum a warning, is the
+cheap half of this item and does not wait on the analysis being built.**
+
 **Status: RECORDED, NOT REQUESTED.** No cost estimate has been made, and the item is written down
 because the use case is **ordinary rather than exotic** and arrived from a circuit somebody
 actually wants to build.
