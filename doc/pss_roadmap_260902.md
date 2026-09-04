@@ -1171,8 +1171,59 @@ ill-conditioning of `J(Δω)` … and subsequently to **distorted PSD curves**."
 `J(Δω) = J(0) + I(1 − e^{jΔωT})` and the LEFT null vector `u` of `J(0)` to substitute the exact
 row `uᵀJ(Δω) = (1 − e^{jΔωT}) uᵀ`.
 
-⚠⚠⚠ **AND IT IS NOT A COMPETITOR TO OUR BORDERED SOLVE — MEASURED BY THE DOCS SESSION ON OUR OWN
-`_vdp_at_Q(15.92, 400)` MONODROMY.** Because `uᵀΦ(T) = uᵀ`, the substituted row is a **linear
+⚠⚠⚠ **RETRACTED — THE ANALYSIS BELOW IS WRONG, AND SO IS EVERY CONCLUSION I DREW FROM IT.** The
+docs session obtained the paper and found they had measured a **RECONSTRUCTION** of the method
+built from my own one-line description, not the method. The reconstruction substituted the row
+`(1 − e^{jΔωT}) uᵀ`, which vanishes at `Δω = 0` — hence "zero row", "no regularisation", and the
+"division of labour" conclusion. **The paper DIVIDES THAT FACTOR OUT.** The substituted row is the
+CONSTANT `uᵀ`, and the vanishing factor moves to the right-hand side as an explicit scalar:
+
+    uᵀ γ = (uᵀ ρ) / (1 − e^{jΔωT})
+
+`uᵀ` does not vanish. Re-measured on the same `_vdp_at_Q(15.92, 400)` monodromy:
+
+    Δω      cond(J)        cond(Gourary as published)   min row norm
+    1e-01   8.588e+00           8.264e+00                  0.962
+    1e-03   7.954e+02           8.039e+01                  0.623
+    1e-05   7.954e+04           8.079e+01                  0.623
+    1e-09   7.954e+08           8.079e+01                  0.623
+    0       4.318e+12           8.079e+01                  0.623
+
+⚠⚠ **THE CONDITION NUMBER IS FLAT AT ~80.8 THROUGH `Δω = 0`, against `4.3e12` untransformed —
+seven orders at `Δω = 1e-9`. It IS a genuine regularisation and it WORKS AT `Δω = 0`.** The
+abstract's claim is exactly right, and my "it hands back a zero row there, so it could never
+replace the bordered solve" was wrong.
+
+**THE CORRECTED COMPARISON.** Both are regularisations built on the null vector and they are much
+closer than recorded. Bordering augments to `(n+1)×(n+1)`, adding an unknown and a normalisation.
+Gourary stays `n×n`, replaces one equation with `uᵀ`, and puts the vanishing factor on the RHS in
+closed form. For `Δω ≠ 0` the swap is an exact rescaling of an equation the system already
+implies; **at `Δω = 0` it is the continuous extension of that equation, supplying precisely the
+information the singular system was missing.** The RHS divergence is not a defect — it is the
+phase term's genuine `1/Δω²` PSD, isolated into one closed-form scalar instead of being extracted
+from an ill-conditioned solve.
+
+⚠ **WHAT SURVIVES OF THE OLD ANALYSIS:** the identity itself, and that accuracy is capped by `u`'s
+own residual (the `1.158e-12` floor, unchanged across every `Δω`). Nothing else.
+
+⚠⚠ **AND THE APPLICABILITY CONCLUSION IS UNAFFECTED, BECAUSE IT NEVER RESTED ON THIS.** Our
+near-carrier path holds `S·Δf²` to seven digits down to `Δf/f0 = 1e-9` — measured directly, not
+inferred from any characterisation of Gourary's method. **We do not appear to need it.** That a
+conclusion survives the retraction of a premise it did not use is worth noticing rather than
+assuming.
+
+⚠ **AND THE GENERALISATION IS WORSE THAN RECORDED: there are NINETEEN Gourary-authored papers in
+the library and only about SIX are HB.** The rest include time-domain oscillator noise,
+cyclostationary noise, PSS by single-step high-order (Obreshkov) integration with sensitivity-matrix
+formulas, periodic small-signal analysis with Krylov under frequency sweeping, oscillator phase and
+frequency transfer functions, stability for large analog circuits, and a PLL/jitter line.
+
+---
+
+**SUPERSEDED ANALYSIS, kept because the failure shape is the useful part:**
+
+⚠⚠⚠ ~~AND IT IS NOT A COMPETITOR TO OUR BORDERED SOLVE — MEASURED BY THE DOCS SESSION ON OUR OWN
+`_vdp_at_Q(15.92, 400)` MONODROMY.~~ Because `uᵀΦ(T) = uᵀ`, the substituted row is a **linear
 combination of `J`'s own rows**, so the substitution is left-multiplication by an invertible `E`
 and `E J x = E f` is **exactly the same system** — same solution set, same dimension, same
 singularities. It **selects nothing**. Bordering adds a row AND a column, changes the dimension to
@@ -1195,7 +1246,7 @@ the singularity structural and visible rather than curing it.
 about `log10(1/Δω)` digits — nine of them at `Δω = 1e-9`. Substituting the closed form recovers
 that row to full precision **given `u`**, and is capped by `u`'s own accuracy.
 
-**SO THE DIVISION OF LABOUR IS CLEAN, and it decides where each belongs:**
+**~~SO THE DIVISION OF LABOUR IS CLEAN~~ (VOID — it works at `Δω = 0`):**
 
   * **Gourary is for `Δω ≠ 0`**, where `J` is nonsingular in exact arithmetic and the only problem
     is CONDITIONING — cheap, keeps dimension `n`, needs no normalisation;
