@@ -9019,3 +9019,79 @@ def test_diffusion_constant_should_not_depend_on_the_capacitance_scale():
         'the PPV route and the Lyapunov route must agree at every C; the ' \
         'ratio ran %.6f to %.6f (a factor of %.1f, i.e. C^2)' \
         % (lo, hi, hi / lo)
+
+
+def test_the_algebraic_fill_is_identified_not_merely_validated():
+    """⚠⚠ IDENTIFICATION, WHICH THREE AGREEING REFERENCES ARE NOT.
+
+    The algebraic fill was gated by OUTCOME -- an equivalent circuit, the
+    Lyapunov route, and a DC probe all agreed. That leaves open what the
+    filled entries ARE. Demir 2000's adjoint, eq (24), settles it:
+
+        C^T(t) dy/dt - G^T(t) y = 0
+
+    ⚠ THE DERIVATIVE IS ON `y` ALONE, NOT ON THE PRODUCT `C^T y` -- the
+    contrast Demir flags against his eq (19), and the asymmetry that made a
+    from-scratch derivation of this fill come out sign-inverted.
+
+    Row `i` of that system is `(column i of C)^T ydot = (column i of G)^T y`.
+    For an ALGEBRAIC state the column of `C` is zero, the left side vanishes,
+    and the row degenerates to a POINTWISE CONSTRAINT with no time
+    derivative in it at all:
+
+        (column i of G)^T v_1(t) = 0        for every algebraic i, every t
+
+    ⚠⚠ AND THE TEST IS ON `v_1`, WHILE `ppv()` RETURNS `C^T v_1`. On this
+    fixture `C = diag(1, 0, -L)`: the INDUCTOR BRANCH ROW CARRIES `-L`, so
+    reading the returned vector as `v_1` flips that row. That is exactly why
+    the fill's sign had to be flipped against a measurement -- the
+    derivation and the measurement were describing different vectors, and
+    both were right.
+
+    Measured: the constraint holds at 0.0 EXACTLY once the differential rows
+    are divided by their `C` entries, and is violated at O(1) both by the
+    raw vector and by the opposite sign. So this discriminates, and it goes
+    through none of the three outcome references.
+    """
+    from pycircuit.circuit.analysis import remove_row_col
+    cir, pss, _pac, _rs = _loss_osc('series', Q=8.0, npts=480, a=0.25)
+    m = cir.n - 1
+    irn = pss.irefnode
+    _v, info = pss.ppv()
+    S = np.asarray(info['samples'])[:, :m]
+    X = np.asarray(pss.waveform[1], dtype=float)
+
+    def mats(xf):
+        Cr, Gr = remove_row_col((np.asarray(cir.C(xf), dtype=float),
+                                 np.asarray(cir.G(xf), dtype=float)),
+                                irn, pss.toolkit)
+        return np.asarray(Cr, dtype=float), np.asarray(Gr, dtype=float)
+
+    Cr0, _G0 = mats(X[:, 0])
+    rows = [i for i in range(m) if not np.any(Cr0[i, :])]
+    cols = [j for j in range(m) if not np.any(Cr0[:, j])]
+    diff = [i for i in range(m) if i not in rows]
+    assert rows and cols, 'this fixture must have an algebraic row to test'
+    ## the branch row's C entry is negative -- the whole point of the sign
+    assert Cr0[diff[-1], diff[-1]] < 0.0
+
+    scale = float(np.max(np.abs(S)))
+    worst = worst_flipped = 0.0
+    for k in range(0, S.shape[0], max(1, S.shape[0] // 8)):
+        _Ck, Gk = mats(X[:, k])
+        v1 = S[k].copy()
+        for i in diff:
+            v1[i] = S[k][i] / _Ck[i, i]
+        flipped = v1.copy()
+        for i in rows:
+            flipped[i] = -v1[i]
+        worst = max(worst, float(np.linalg.norm(Gk[:, cols].T @ v1)))
+        worst_flipped = max(worst_flipped,
+                            float(np.linalg.norm(Gk[:, cols].T @ flipped)))
+    assert worst / scale < 1e-12, \
+        "Demir (24)'s algebraic rows are a pointwise constraint on v_1; the " \
+        'fill violates it by %.3e (scaled)' % (worst / scale)
+    ## and it discriminates -- the opposite sign is not merely worse, it is O(1)
+    assert worst_flipped / scale > 1e-3, \
+        'the constraint must REJECT the opposite sign, or it identifies ' \
+        'nothing; it gave %.3e' % (worst_flipped / scale)

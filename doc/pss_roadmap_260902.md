@@ -668,13 +668,58 @@ Equation (19)". ⚠ **That asymmetry is the sign I got wrong deriving §0d from 
 to OBTAIN `v_1` — integrate (24) backwards, or re-pose the border so the returned object is `v_1`
 — not to undo a `Cᵀ` through a singular matrix.
 
-⚠ **A TERM WE MAY NOT HAVE.** Eq (42) also carries `Γ(t) b(t)`, a `T`-periodic matrix of rank
-`n − m` with `Γ(t) C(t)[u_1…u_m] = 0` — the **instantaneous, non-propagating** response to an
-equation-row input, living exactly on the algebraic rows. Our quadratic functional assembles only
-the propagating sum. ⚠ **Open question worth stating plainly: is §0d's fill actually `v_1`'s
-algebraic entries, or is it `Γ` in disguise?** It was validated by outcome (three references) and
-not by identification, so the two are not yet distinguished. Whether it matters depends on whether
-noise enters rows where `Γ` is nonzero — which for a series-loss tank it does.
+✅✅ **THE FILL IS IDENTIFIED, NOT MERELY VALIDATED — AND THE SIGN IS NOW DERIVED.** The open
+question above ("is the fill `v_1`'s algebraic entries, or `Γ` in disguise?") is **answered**, by
+a test that goes through none of the three outcome references. Write eq (24) componentwise: row
+`i` is `(col i of C)ᵀ ẏ = (col i of G)ᵀ y`, and for an ALGEBRAIC state the column of `C` is zero,
+so the left side vanishes and the row degenerates to a **pointwise constraint with no time
+derivative in it at all**:
+
+    (col i of G)ᵀ v_1(t) = 0        for every algebraic i, at every t
+
+MEASURED on the series fixture, at nine times over the period, scaled by `max|v|`:
+
+    v_1 = C⁻ᵀ v on the differential rows   ->  0.0000e+00   EXACTLY
+    the returned vector read as v_1        ->  1.9870e+00
+    the same with the fill's sign flipped  ->  1.9870e+00
+
+**Machine zero, and both alternatives are O(1) out** — so it discriminates rather than merely
+tolerates. Three things fall out at once:
+
+  * **the fill IS `v_1`'s algebraic entries.** `Γ` is not in the phase equation at all (the docs
+    session checked: every occurrence of `Γ` is in §3.3, and §4's perturbation analysis contains
+    none; `Γ` lives in the ORBITAL deviation `z`, which decays when the perturbation is removed).
+    ⚠ **The caveat stands for `oscillator_covariance`**, which computes the FULL state covariance
+    including the orbital part — `Γ` can contribute there, and a series-loss tank injects exactly
+    where `Γ` is nonzero. Clean for `c`; not assumed clean for the covariance.
+    ⚠⚠ **NO SOURCE IN THE LIBRARY CONSTRUCTS `Γ`** — the docs session checked Traversa & Bonani
+    2011 (no hits), Demir 2006 and Demir & Sangiovanni-Vincentelli 1998 (hits are "instantaneous
+    frequency" and "instantaneous spectral density", different things). Eq (40) fixes its null
+    space and rank and leaves its action on the complement free. **So "we cannot bound that term"
+    is the correct position against this library, and it is written down rather than left
+    implicit.** ⚠ **BUT IT IS MEASURABLE FROM ITS DEFINING ROLE, WHICH IS THE NEXT CHEAP ITEM:**
+    `Γ(t)b(t)` IS the instantaneous non-propagating part of the response, so applying an impulsive
+    `b = e_j` and reading the state jump at `t⁺` gives `Γ(t)e_j`; `n` applications give the matrix
+    column by column and `T`-periodicity gives every other `t`. It comes with two acceptance gates
+    from eq (40) — `rank Γ(t) = n − m`, and `Γ(t) C(t) u_i(t) = 0` for `i = 1..m` — so a measured
+    `Γ` that fails either is a bad measurement rather than a bad theory. **That is the same
+    identity-not-agreement shape that worked above**, and it would turn the covariance caveat into
+    a bound or a defect without needing a source.
+  * **THE EMPIRICALLY-FLIPPED SIGN WAS DERIVED AFTER ALL.** `C = diag(1, 0, −L)` on this fixture:
+    the INDUCTOR BRANCH ROW CARRIES `−L`, so reading `v = Cᵀv_1` as `v_1` negates that row — and
+    the term in the fill is dominated by the branch. The derivation and the measurement were
+    describing **different vectors**, and both were right. That is a better outcome than either
+    "the derivation was wrong" or "the measurement was noisy", and it is why §D shape 0h wants the
+    fixture to be able to express the wrong answer.
+  * **`v = Cᵀ v_1` IS CONFIRMED TO MACHINE PRECISION**, which is §0h's whole claim, established
+    here independently of the `C`-sweep that suggested it.
+
+⚠ **AND IT HANDS US THE FIX WITHOUT INVERTING A SINGULAR MATRIX.** `C⁻ᵀ` is applied only to the
+DIFFERENTIAL block, which is invertible by construction; the algebraic entries come from the fill.
+So the recipe is complete and gated: `v_1 = C[D,D]⁻ᵀ v_D` on differential rows, the fill on
+algebraic ones, with the constraint above as the acceptance test. ⚠ **Existing gates would not
+move:** every fixture puts its noise on a row with `C = 1 F`, so `c` is unchanged there — which is
+also, exactly, why the defect survived.
 
 **AND ONE SENTENCE SETTLES A THING WE MEASURED.** §3.5, verbatim: "`v_i(0)` are NOT the
 eigenvectors of the transposed monodromy matrix `Φ(T,0)ᵀ`." `v_1` is an eigenvector of the
@@ -3052,11 +3097,16 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    while both were 2× wrong; only `kT/C`, external to both, could see it. **Ask what the
    measurement assumes before trusting what it confirms.**
 
-0i. **A dimensionless fixture cannot test a dimensional error.** Every oscillator fixture in this
-   campaign uses `C = 1 F` and `L = 1 H`, so a missing `C⁻ᵀ` in the `CY` contraction was exactly 1
-   and invisible — to `kT/C`, to the Monte Carlo, to §0c's pointwise gate and to §0e's quadrature
-   study alike. It took an external oracle with `L` and `C` as free parameters to see it.
-   **Sweep the units, not just the regime.**
+0i. **A fixture in which the WRONG QUANTITY IS NUMERICALLY INDISTINGUISHABLE FROM THE RIGHT ONE.**
+   Four instances in two days, and every one passed every gate that existed at the time: unit
+   component values (`C = 1 F`, `L = 1 H`) hid a **dimensional** error — a missing `C` in the `CY`
+   contraction was exactly 1, invisible to `kT/C`, to the Monte Carlo, to §0c's pointwise gate and
+   to §0e's quadrature study alike; unit amplitude hides a **scale** error; a time vector read as a
+   node voltage hid a **units** error (the docs session got `A = 6.66`, the period, and a plausible
+   ratio of 7.10); and a single series resistor hid a **sign**, because `|∫v₀|` and `|r∫v_branch|`
+   agreed to 1.5e-4 there. **Sweep the units, not just the regime — and ask whether the fixture can
+   express the wrong answer.** (Statement sharpened by the docs session, 2026-09-04; shape 0h is
+   the sign case of it.)
 
 0h. **A fixture where the candidate answers are numerically degenerate.** The single
    series-resistor tank makes `|∫v₀|` and `|r∫v_branch|` agree to 1.5e-4, so a prediction that
