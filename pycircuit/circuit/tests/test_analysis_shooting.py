@@ -9833,3 +9833,195 @@ def test_pnoise_is_phase_psd_times_the_CARRIER_POWER_not_a_psd_convention():
         'convention would be CONSTANT' % (expect, moved)
     assert moved > 4.0, \
         'and it must move enough to be unmistakable; got %.4f' % moved
+
+
+def _resonant_driven(npts, method, Lv=1e-3, Cv=1e-9, Rs=10.0):
+    """A DRIVEN RLC, lightly damped and driven ON resonance.
+
+    ⚠ THE DAMPING IS THE POINT OF THE FIXTURE, and the first version of it
+    got this wrong in a way that PASSED. With `Rs = 1k` against this `L`
+    and `C` the quality factor is `~1e-3`, so the monodromy decays to
+    numerical ZERO over one period — and a transpose check then compares
+    the zero matrix against the zero matrix and agrees to `1.9e-46`. The
+    tell was that the number was too good: a real comparison of a real
+    quantity does not come back at `1e-46`. At `Rs = 10` the dominant
+    multiplier is `≈ 0.94`, so `M` is `O(1)` and the check has something
+    to fail on.
+    """
+    import warnings
+    from pycircuit.circuit.elements import VSin
+    circuit.default_toolkit = circuit.numeric
+    T = 2.0 * np.pi * np.sqrt(Lv * Cv)
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir.add_node('b')
+    cir['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / T)
+    cir['r'] = R('a', 'b', r=Rs)
+    cir['l'] = L('b', gnd, L=Lv)
+    cir['c1'] = C('b', gnd, c=Cv)
+    pss = PSS(cir, method=method, reltol=1e-11)
+    with warnings.catch_warnings():
+        ## the LTE advisory fires here -- this fixture is a transpose
+        ## check, not an accuracy one, and the grid is deliberately coarse
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                  maxiterations=250, x0_unknown=False)
+    assert pss.converged
+    return cir, pss
+
+
+def test_the_plain_transposed_replay_matches_a_dense_transpose():
+    """B8: `M^T v` on the PLAIN path, against `M` built column by column.
+
+    ⚠ THIS IS A FROM-SCRATCH ADJOINT DERIVATION, and the last one in this
+    file came out SIGN-INVERTED (roadmap §0h) because the derivative in
+    Demir's eq (24) acts on `y` alone and not on the product `C^T y`. So
+    the reference is not another derivation: it is the FORWARD replay,
+    transposed densely. If the two disagree the new recursion is wrong,
+    full stop.
+
+    ⚠ GEAR IS THE CONTROL, not a subject. It goes through the
+    solved-history path that shipped long before this, so a disagreement
+    on gear means the HARNESS is broken rather than the new code — which
+    is the distinction that makes a green result on euler and trap worth
+    anything.
+
+    ⚠ BOTH BRANCHES ARE EXERCISED. Euler has `b = 0`, so `Pq` never
+    re-enters and the recursion has ONE term; trapezoidal has `b = -1`,
+    the pair `(P, Pq)` stays coupled, and the two solves collapse into one
+    through a shared bracket. Testing only trap would leave the simpler
+    branch unrun, and it is the branch every adjoint surface reaches
+    first.
+    """
+    worst = {}
+    for method in ('euler', 'trap', 'gear'):
+        for npts in (120, 240):
+            _cir, pss = _resonant_driven(npts, method)
+            fp = pss.factored_period()
+            n = fp.width
+            Mf = np.column_stack([np.asarray(fp.matvec(e), float)
+                                  for e in np.eye(n)])
+            Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), float)
+                                  for e in np.eye(n)])
+            scale = float(np.max(np.abs(Mf)))
+            ## a reference that decayed to nothing agrees with anything
+            assert scale > 1e-3, \
+                '%s/%d: ||M|| = %.3e, so this fixture has become ' \
+                'degenerate and the comparison below is VACUOUS -- the ' \
+                'damping must be light enough to leave a monodromy' \
+                % (method, npts, scale)
+            rel = float(np.max(np.abs(Mt - Mf.T))) / scale
+            worst[(method, npts)] = rel
+            assert rel < 1e-9, \
+                '%s/%d: the transposed replay disagrees with the dense ' \
+                'transpose of the forward one by %.3e (relative). A sign ' \
+                'or an index in the reverse recursion is wrong.' \
+                % (method, npts, rel)
+    ## and the multipliers must actually be O(1), so the agreement above is
+    ## a statement about a real map
+    assert max(worst.values()) < 1e-9, worst
+
+
+def test_the_plain_transposed_replay_carries_the_autonomous_multiplier():
+    """The same check on an AUTONOMOUS oscillator, where `M` has `λ₁ = 1`.
+
+    The driven fixture above is a contraction; an oscillator is not, and
+    the unit multiplier along the trajectory is what every PPV and phase-
+    noise surface actually reads out of the transpose. A recursion can be
+    right on a decaying map and wrong on this one.
+
+    ⚠ EULER IS ABSENT ON PURPOSE and is not a gap in coverage: at these
+    grids it does not converge on a `Q = 8` van der Pol at all, which is a
+    property of a first-order method on a limit cycle and not of the
+    adjoint. It is covered on the driven fixture above, where it converges.
+    """
+    ## built inline rather than through a shared fixture: this needs the
+    ## SAME circuit under two methods, and `_vdp_at_Q` pins gear
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    lam = {}
+    for method in ('trap', 'gear'):
+        for npts in (120, 240):
+            cir = SubCircuit()
+            cir.add_node('v')
+            cir['C'] = C('v', gnd, c=1.0)
+            cir['B'] = BSource('v', gnd, gnd, 'v',
+                               i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                               + 0.25 * mu * (u ** 2 - 2.0))
+            cir.add_node('x')
+            cir['L'] = L('v', 'x', L=1.0)
+            cir['Rs'] = R('x', gnd, r=0.2 * mu)
+            pss = PSS(cir, method=method, reltol=1e-12)
+            z = np.zeros(cir.n - 1)
+            z[0] = 2.0
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=2 * np.pi, timestep=2 * np.pi / npts, x0=z,
+                          maxiterations=250, x0_unknown=False)
+            assert pss.converged
+            fp = pss.factored_period()
+            n = fp.width
+            Mf = np.column_stack([np.asarray(fp.matvec(e), float)
+                                  for e in np.eye(n)])
+            Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), float)
+                                  for e in np.eye(n)])
+            scale = float(np.max(np.abs(Mf)))
+            rel = float(np.max(np.abs(Mt - Mf.T))) / scale
+            assert rel < 1e-9, \
+                '%s/%d: autonomous transpose disagrees by %.3e' \
+                % (method, npts, rel)
+            ## `M^T` must carry the unit multiplier too -- it is the
+            ## same spectrum, and it is the one the phase surfaces read.
+            ##
+            ## ⚠ AGAINST THE FORWARD MAP, NOT AGAINST 1.0. The first
+            ## version of this asserted `|λ| ≈ 1` to 5e-3 and FAILED at
+            ## trap/120 with 0.992007 -- and the failure was the test's,
+            ## not the code's: `M` itself carries that deficit, because
+            ## 120 points on a `Q = 8` limit cycle is a coarse grid. What
+            ## the transpose owes us is the FORWARD map's spectrum,
+            ## whatever the grid made of it.
+            lf = float(np.sort(np.abs(np.linalg.eigvals(Mf)))[-1])
+            lt = float(np.sort(np.abs(np.linalg.eigvals(Mt)))[-1])
+            lam[(method, npts)] = lf
+            assert abs(lf - lt) < 1e-10, \
+                '%s/%d: the transposed map has a different dominant ' \
+                'multiplier from the forward one (%.12f vs %.12f) -- ' \
+                'a transpose cannot change the spectrum' \
+                % (method, npts, lt, lf)
+
+    ## and the deficit is the DISCRETISATION converging, which is what
+    ## licenses reading it as the grid rather than as a defect: trap is
+    ## second-order, so halving `h` must quarter the distance to 1, and
+    ## gear reaches it outright.
+    e120 = abs(lam[('trap', 120)] - 1.0)
+    e240 = abs(lam[('trap', 240)] - 1.0)
+    assert 3.0 < e120 / e240 < 6.0, \
+        'trap\'s unit-multiplier deficit is not converging at O(h^2) ' \
+        '(%.3e then %.3e, ratio %.2f); if it has stopped converging the ' \
+        'deficit is no longer the grid and this reading is wrong' \
+        % (e120, e240, e120 / e240)
+    assert abs(lam[('gear', 240)] - 1.0) < 1e-9, \
+        'gear used to reach the unit multiplier exactly (%.12f)' \
+        % lam[('gear', 240)]
+
+
+def test_the_plain_transposed_replay_refuses_a_multistep_companion():
+    """It is DERIVED for a one-step companion, and says so rather than
+    quietly returning a wrong vector.
+
+    The reverse recursion assumes `S` has a single history term. A
+    multistep method on the plain path has more, and the arithmetic below
+    would silently drop them — which is precisely the class of defect
+    this session spent the day finding by measurement. So it raises.
+    """
+    _cir, pss = _resonant_driven(120, 'trap')
+    fp = pss.factored_period()
+    ## forge a step with three alpha coefficients
+    lu, C_new, alphas, b = fp.steps[0]
+    forged = list(fp.steps)
+    forged[0] = (lu, C_new, (alphas[0], alphas[1], 0.0), b)
+    with pytest.raises(NotImplementedError) as exc:
+        pss._monodromy_matvec_transposed_plain(fp.opening, forged,
+                                               np.ones(fp.width))
+    assert 'ONE-STEP' in str(exc.value)

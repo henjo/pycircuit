@@ -181,13 +181,16 @@ class FactoredPeriod(object):
         return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
 
     def matvec_transposed(self, v):
-        """`M^T v` -- solved-history only; see `_monodromy_matvec_transposed`."""
-        if self.kind != 'solved_history':
-            raise NotImplementedError(
-                'PSS: the transposed replay is implemented for the '
-                'solved-history map only, and this period was traversed on '
-                "the plain path (method=%r)." % self._pss.par.method)
-        return self._pss._monodromy_matvec_transposed(
+        """`M^T v` -- see `_monodromy_matvec_transposed{,_plain}`.
+
+        ⚠ B8: the PLAIN path now has one too, for the ONE-STEP companions.
+        It used to refuse outright, which made every adjoint surface --
+        `ppv`, PAC, `pnoise`, `covariance` -- Gear-2 only.
+        """
+        if self.kind == 'solved_history':
+            return self._pss._monodromy_matvec_transposed(
+                self.opening, self.steps, v)
+        return self._pss._monodromy_matvec_transposed_plain(
             self.opening, self.steps, v)
 
 
@@ -2481,6 +2484,90 @@ class PSS(Analysis):
             Px = [Px_new, Px[0]]
             Cs = [C_new, Cs[0]]
         return Px[0]
+
+    def _monodromy_matvec_transposed_plain(self, opening, steps, v):
+        """`M^T v` for the PLAIN path — the one-step companions (B8).
+
+        The forward recursion `_step_sensitivity` implements is
+
+            S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
+            P_n  = -K S,          K = Jf_n^-1
+            Pq_n = a_0 C_n P_n + S
+
+        and for a ONE-STEP companion the sum has a single term, so the two
+        shipped one-step methods transpose differently and both are cheap:
+
+        **Euler** (`b = 0`): `Pq` never re-enters, the map is
+        `P_n = -a_1 K C_{n-1} P_{n-1}`, and the transpose is one term:
+
+            w <- -a_1 C_{n-1}^T K^T w
+
+        **Trapezoidal** (`b = -1`): `Pq` DOES re-enter, so the state is the
+        pair `(P, Pq)` — but a DIFFERENT pair from Gear-2's `(P_n, P_{n-1})`,
+        which is why the solved-history replay cannot be reused. Writing
+        `S = a_1 C_{n-1} P_{n-1} + b Pq_{n-1}`,
+
+            P_n  = -K S,        Pq_n = (I - a_0 C_n K) S
+
+        so the transpose acting on `(w1, w2)` shares one bracket
+
+            r = w2 - K^T (w1 + a_0 C_n^T w2)
+            (w1, w2) <- (a_1 C_{n-1}^T r,  b r)
+
+        ⚠ ONE TRANSPOSED SOLVE PER STEP, the same cost as Gear-2 — the naive
+        arrangement takes two (`K^T w1` and `K^T C_n^T w2` separately) and
+        the factorisation above avoids it.
+
+        ⚠⚠ `Pq` OPENS AT ZERO, which the forward plain replay documents as
+        the load-bearing half: `_traverse` opens `Pq` right after the
+        MANUFACTURING step, which is order-dropped to Euler where `b = 0`.
+        So the seed enters through `P` alone and the backward pass reads its
+        answer out of `w1`.
+
+        ⚠ DERIVED HERE AND GATED AGAINST A DENSE REFERENCE, because a
+        from-scratch adjoint derivation in this file has come out
+        sign-inverted before (roadmap §0h): the asymmetry between "the
+        derivative acts on the product `C x`" and "on `y` alone" is easy to
+        carry over wrongly. The test builds `M` column by column from the
+        FORWARD replay and compares `M^T`.
+        """
+        m = self.cir.n - 1
+        C_open, _a_open, _b_open = opening
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return (self._monodromy_matvec_transposed_plain(opening, steps, v.real)
+                    + 1j * self._monodromy_matvec_transposed_plain(
+                        opening, steps, v.imag))
+        v = v.astype(float)
+        if not steps:
+            return v.copy()
+        ## `C_{n-1}` for each step: the previous step's `C_new`, or the
+        ## opening capacitance for the first
+        prevC = [C_open] + [np.asarray(st[1]) for st in steps[:-1]]
+
+        w1 = v.copy()
+        w2 = np.zeros(m)
+        for j in range(len(steps) - 1, -1, -1):
+            lu, C_new, alphas, b = steps[j]
+            if len(alphas) != 2:
+                raise NotImplementedError(
+                    'PSS: the plain transposed replay is derived for a '
+                    'ONE-STEP companion (two alpha coefficients) and this '
+                    'step has %d. A multistep method on the plain path needs '
+                    'its own reverse recursion.' % len(alphas))
+            Cn = np.asarray(C_new)
+            rhs = w1 + (alphas[0] * (Cn.T @ w2) if b else np.zeros(m))
+            t = lu.solve_transposed(rhs)
+            if t is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so the '
+                    'monodromy transpose cannot be replayed. Use DenseSolver '
+                    'or SuperLUSolver.')
+            r = (w2 - t) if b else (-t)
+            Cp = np.asarray(prevC[j])
+            w1 = alphas[1] * (Cp.T @ r)
+            w2 = (b * r) if b else np.zeros(m)
+        return w1
 
     def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
                                      inject=None):
