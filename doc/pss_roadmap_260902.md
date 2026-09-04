@@ -3975,6 +3975,38 @@ ratio must be read on matvecs against sweep length rather than on one timing.
 Pinned by `test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length`, which asserts the
 *contrast* (unrecycled scales with `K`, recycled does not) rather than absolute counts.
 
+### B15. Is the orbit tangent losing accuracy in the bordered solve? — ✅ **MEASURED 2026-09-04: NO. THE B12 FOLLOW-UP IS CLOSED WITH NOTHING TO GAIN**
+
+B12 measured that PAC's accuracy is capped **linearly by the orbit tangent `u`** and is immune to
+the PPV `v`. Gourary (ECCTD 2007 §III.A) states the null vector needs no special algorithm because
+`u = dx/dt|_{t=T}`. That suggested an obvious improvement: get `u` from the DAE directly instead
+of from the bordered GMRES solve in `ppv()`, and lift the cap. **It was recorded as the
+highest-value follow-up available.**
+
+**REFERENCE THAT SHARES NO MACHINERY WITH THE SOLVE:** spectral (FFT) differentiation of the
+converged periodic waveform. Exponentially accurate for a smooth periodic function on a uniform
+grid, and it touches neither the monodromy, nor the border, nor GMRES.
+
+    npts     |xdot| shipped      rel gap vs FFT      ratio
+     200      1.999199347         3.360e-04            —
+     400      1.999904917         8.313e-05          4.04
+     800      1.999991761         2.067e-05          4.02
+    1600      2.000002554         5.154e-06          4.01
+
+⚠⚠ **EXACTLY `O(h²)`, WITH NO PLATEAU. The bordered Krylov solve is NOT a floor** — the tangent is
+already as accurate as the trajectory it is taken from permits. (`|xdot| → 2.000003`, van der Pol's
+own amplitude, is the free sanity check.)
+
+✅ **SO THE PROPOSED IMPROVEMENT BUYS NOTHING, and that is the deliverable.** `dx/dt` taken
+directly would differentiate **the same discrete trajectory** and inherit the same `O(h²)`. The
+B12 cap is real, but it is the *trajectory's* accuracy showing through `u`, not the solve's.
+**To improve PAC's accuracy, refine the grid or raise the order — not the tangent extraction.**
+
+⚠ **THE PREDICTION WAS STATED FIRST AND HELD:** *"if the gap plateaus, the bordered solve is the
+floor and Gourary's direct route would lift the cap; if it falls with refinement, there is nothing
+to gain."* It fell at the textbook rate. A plateau was the falsifiable outcome and it did not
+occur.
+
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
 Requested 2026-09-04; it is in. All three `fsolve` calls pass `line_search=True`, and
@@ -4153,12 +4185,20 @@ becomes the dominant term for frequencies away from the harmonics"*. So the usab
 like **two terms added**, with the phase–orbital cross term dropped — materially less than the
 three-term object this gap was described as needing.
 
-⚠⚠ **TREAT THAT AS A DEFAULT TO TRY FIRST, NOT A THEOREM. It is ONE measured circuit**, and the
-relaying session says so explicitly. ⚠ **AND THE TWO SESSIONS THAT RELAYED IT DESCRIBE THAT
-CIRCUIT DIFFERENTLY** — one as a 5 GHz HBT example, the other as a 1 GHz Colpitts InGaP/GaAs
-Gummel-Poon with transistor shot noise only. Since **neither of us has read the paper**, the
-frequency and topology are recorded as UNKNOWN rather than picking one. The negligible-correlation
-claim itself is what both agree on; the example it rests on is not established here.
+⚠ **THE APPARENT 1 GHz / 5 GHz CONTRADICTION RESOLVED, AND THE RESOLUTION STRENGTHENS THE CLAIM.**
+Two sessions described the worked example differently and I recorded both as UNKNOWN. Read from
+the PDFs, **both were right about different papers**: the **IJMWT companion** is an InGaP/GaAs HBT
+Gummel-Poon at **5 GHz, HB with 30 harmonics**; the **TCAS-I theory paper** is a Colpitts with the
+same device model at **1 GHz, HB with 300 harmonics**. ⚠ **Quote the frequency and the harmonic
+count together — the pair is what identifies which paper is meant.**
+
+✅ **AND THE NEGLIGIBLE-CORRELATION RESULT IS REPORTED INDEPENDENTLY IN BOTH, ON TWO DIFFERENT
+CIRCUITS** — TCAS-I: *"the correlation between phase and orbital noise (99), on the other hand, is
+negligible"*; IJMWT: *"We found that the correlation spectrum is negligible, while orbital noise
+becomes the dominant term for frequencies away from the harmonics."* Two circuits, not one.
+
+⚠⚠ **STILL A DEFAULT TO TRY FIRST, NOT A LICENCE TO DROP THE TERM.** Same two authors on related
+designs, so two circuits is not two independent confirmations.
 
 ⚠ **AND THERE ARE TWO Traversa & Bonani 2011 PAPERS**, which is how the confusion is most likely
 to have arisen. The THEORY is in the TCAS-I paper; the MOTIVATION is in a companion — *Int. J.
@@ -4180,11 +4220,35 @@ an easy task"*: high-Q is a candidate, but eigenvector magnitudes matter as much
 ✅ **A FREE PRIOR WE MAY ALREADY RETURN, AND IT NEEDS CHECKING BEFORE IT IS USED.** If orbital
 noise magnitude increases with `Q`, then a `Q` already in hand is also a prior on **how badly a
 phase-only spectrum reads FAR from the carrier** — one number doing two jobs, no new machinery.
-`ppv()` does return `info['Q']`. ⚠ **But its `Q` is built from the second Floquet multiplier
-(`Q = log(threshold)/log|λ₂|`), which is a SETTLING count in periods, and the `Q` in "high-Q
-oscillator" is the resonator's.** They are related on a van der Pol and are not obviously the
-same object in general. **Measure the identification before leaning on it** — this is exactly the
-shape §D 0g warns about, a quantity that is right in one frame carried into another.
+`ppv()` does return `info['Q']`, built from the second Floquet multiplier as
+`log(threshold)/log|λ₂|` — a SETTLING count in periods, where the `Q` in "high-Q oscillator" is
+the resonator's. I predicted these were **different objects** and recorded the identification as
+unverified.
+
+✅⚠ **MEASURED 2026-09-04, AND THE PREDICTION WAS WRONG — THEY AGREE.** Van der Pol at
+`μ = 1/(2πQ_target)`, 400 points, gear:
+
+    Q_target      2.0        8.0       32.0      128.0      512.0
+    info['Q']   1.998794   8.001725  32.017759 128.222454 515.346075
+    ratio        0.9994     1.0002    1.0006     1.0017     1.0065
+
+⚠ **The ratio DRIFTS MONOTONICALLY UPWARD** — 0.65 % high at `Q = 512` — so it is close, not
+exact, and the error grows with `Q`. Do not use it as an identity at high `Q` without re-checking.
+
+**The supporting paper is also in the library** (cited, not verified here): T. Wang and
+J. Roychowdhury, *"Rigorous Q Factor Formulation and Characterization for Nonlinear Oscillators"*,
+arXiv:1710.02015, `09-phase-macromodels-and-prc/`. It defines `Q` from exactly the object `ppv()`
+computes and argues it **is** the energy `Q` rather than a correlate.
+
+⚠ **TWO CAVEATS, EITHER OF WHICH PRODUCES A PLAUSIBLE WRONG ANSWER.** (a) **The threshold
+convention differs by ≈ 3**: `ppv()` reports cycles to `1/e`, Wang & Roychowdhury to 5 %, and
+`ln(20) = 3.00`. The measurement above lands at ratio ≈ 1 rather than ≈ 3, which independently
+confirms `ppv()` uses the `1/e` convention — compare across conventions without that factor and a
+threefold disagreement looks like a bug. (b) **Traversa & Bonani's own claim is narrower than it
+sounds**: *"at least for the second-order oscillator considered in this study, an increasing
+function of the Q factor"*. Second order is where a resonator `Q` is unambiguous — and the fixture
+above is second order, so the measurement confirms it exactly where the theory says it holds and
+**not one step further**.
 
 ✅ **AN INDEPENDENT CHECK ON SOMETHING WE ALREADY SHIP.** Kundert, *Introduction to RF
 Simulation* §3.5, gives the swept small-signal result's validity window as `f_Δ ≪ Δf ≪ f₀`,
