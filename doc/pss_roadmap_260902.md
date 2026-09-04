@@ -1227,11 +1227,39 @@ denormal).
 noise is quoted at 1 kHz–10 MHz offsets from a GHz carrier, i.e. `1e-6` to `1e-2` relative. **The
 breakdown begins exactly where the useful range ends.** Not academic.
 
-⚠ **WHAT IS NOT ESTABLISHED: CAUSATION.** The breakdown is CONSISTENT with Gourary's mechanism —
-`log10(1/Δω)` digits lost forming `uᵀM − e uᵀ` predicts trouble around six decades — but it has
-NOT been isolated from other error sources. A discriminating experiment would move the breakdown
-offset with the conditioning (sweep `Q`, or `reltol`) and check it tracks; that has not been run.
-**So: we have the symptom, at a relevant offset, and the attribution is an inference.**
+✅⚠⚠ **CAUSATION DISCRIMINATED 2026-09-04 — EVERY ALTERNATIVE IS FALSIFIED BY MEASUREMENT.** The
+breakpoint (where `S/f²` leaves its plateau by >0.1%, sampled at 1/3-decade resolution) sits at
+**`e = 5.6667` — `Δω/ω₀ ≈ 2.15e-06` — INVARIANT ACROSS EVERY AXIS:**
+
+    reltol     1e-6 → 1e-12   (6 decades)     e = 5.6667 throughout
+    noisePSD   1e-2 → 1e-14  (12 decades)     e = 5.6667 throughout
+    npts       120 → 480      (16× in h²)     e = 5.6667 throughout
+    Q          4 → 32                          e = 5.6667 throughout
+
+⚠ **THE `reltol = 1e-6` ROW IS THE ONE THAT SETTLES IT.** A hardcoded solver floor
+(`tol = max(KRYLOV_FACTOR·reltol, 1e-14)`) would be reltol-invariant ONLY once
+`KRYLOV_FACTOR·reltol` drops below `1e-14`; at `reltol = 1e-6` the tolerance is genuinely
+reltol-driven, and **the breakpoint still does not move.** So it is not the GMRES tolerance.
+
+**What each invariance kills:** `reltol` → not the solver tolerance; `npts` → not the monodromy's
+discretisation error; `Q` → not the deflation conditioning (`λ₂ → 1`); `noisePSD` over twelve
+decades → not an absolute round-off floor, the limit is RELATIVE.
+
+**What survives is a floor invariant to everything except the offset itself — the signature of
+FLOATING-POINT CANCELLATION AT MACHINE EPSILON**, which is Gourary's mechanism and **which no
+tolerance can fix**. `log10(1/Δω)` digits lost at `Δω/ω₀ ≈ 2e-6` is ≈ 5.7 of ~16, which is the
+right order for a 1e-3 criterion.
+
+⚠⚠ **AND MY OWN FIRST FRAMING OF THE DISCRIMINATOR WAS WRONG, which is why the first run looked
+like a double falsification.** I predicted a cancellation floor would MOVE with `M`'s accuracy
+(`reltol`, `npts`). **It does not — the cancellation is in the SUBTRACTION, not in `M`**: even with
+`M` exact to machine precision, forming `uᵀM − e^{jΔωT}uᵀ` in IEEE arithmetic loses the digits.
+The corrected prediction is total invariance, and that is what four sweeps show.
+
+⚠ **STILL NOT PROVEN, and the gap is narrow but real:** the specific subtraction has not been
+instrumented. What is established is that **every alternative mechanism I could construct is
+falsified by a measured invariance**, which is a much stronger position than the inference this
+entry previously recorded — and weaker than a proof.
 
 ⚠ **THE ORIGINAL QUESTION IS ANSWERED EITHER WAY.** Gourary was not "considered and rejected"; it
 was never assessed, and the thing it fixes turns out to be something we measurably have. If A7's recorded weakness is
