@@ -222,6 +222,11 @@ It is anchored by a nonlinear Monte Carlo at `μ = 1` only. At `Q = 60` the only
 either route and not a defect common to both. The frequency-shift gate anchors `⟨v⟩` (the *DC*
 functional) at `Q = 75`; it does not anchor `c` (the *quadratic* one).
 
+✅✅ **CLOSED 2026-09-04 — see §0e.** `CY` is exact, `v₀` is anchored **pointwise** at `Q = 8`
+and `Q = 30`, and the quadrature converges at **third order** (converged to `~1e-4` at the shipped
+480 points). Three measurements, no shared instrument, no Monte Carlo. The paragraph below is kept
+as written because the route to closing it is the useful part.
+
 ⚠⚠ **AND THE NARROWED CHECK FOUND A DEFECT — see §0d.** `CY` is exact, but `c` comes back
 **exactly 0.0** for an oscillator whose only noise is its series tank loss, because the PPV's
 entry for a purely algebraic node row is structurally zero. Three independent confirmations and a
@@ -446,6 +451,102 @@ convention. **Before trusting a sign, check that the fixture can express the wro
 in count, or the block `G[A, Z]` is singular, the entries are left at zero and a `RuntimeWarning`
 says the noise entering those rows is under-counted. That is §B4's territory and a guess there
 would be worse than a known zero.
+
+---
+
+### 0e. The quadrature — ✅ **§0b's EXPOSURE IS CLOSED** — 2026-09-04
+
+The half of the assembly check that §0d's defect interrupted. `asm2` died on a `ZeroDivisionError`
+at its first row **because `c` was zero** — the defect was hiding inside the measurement meant to
+audit it — so `c`'s convergence order was never taken. With the fix in, it is.
+
+⚠ **§0c MADE A FALSIFIABLE PREDICTION HERE AND IT HELD.** The PPV's pointwise error behaves like
+an `O(h)` TIME SHIFT, and a shift is *exactly* invisible to a whole-period integral — so `c`, a
+whole-period integral, had to converge at **second order or better** even though every localised
+functional of the same `v₀` converges at first. A first-order result would have meant the shipped
+value was wrong by percents and would have falsified that reading. Measured:
+
+    fixture      Q     orders (per doubling)        c at npts = 960
+    parallel      8    3.00, 3.57, 1.97             5.147901730e-24
+    parallel     30    2.98, 2.93, 3.00             1.372766117e-24
+    series        8    3.14, 5.11, (floor)          5.147858663e-24
+    series       30    2.99, 2.97, 3.16             1.372755969e-24
+
+**Third order**, at both `Q` and in both topologies. ⚠ **AND IT FLOORS**, which is worth stating
+rather than hiding: past `npts ≈ 960` the differences reach `~1e-28` absolute (`~2e-5` relative)
+and the order estimate goes to `−1.00` and `nan` at `Q = 8`. That is the solver's own noise, not
+the rule — so refining past ~960 points buys nothing, and the *reported* order beyond that point
+is meaningless.
+
+⚠⚠ **WHAT THIS CLOSES.** §0b has carried "`diffusion_constant`'s **absolute scale** at high `Q`"
+as the one open scale question since 2026-09-03, wanting a 280-period Monte Carlo. Three
+measurements now stand in its place, none sharing an instrument with the others:
+
+  * **`CY` is exact** — `4kT/r` at 300 K to every printed digit, right row, zero elsewhere (§0d);
+  * **`v₀` is anchored POINTWISE** at `Q = 8` and `Q = 30` to 0.015–0.13%, against a
+    frequency-shift instrument that shares no code with the adjoint replay (§0c);
+  * **the quadrature is third order** and converged to `~1e-4` relative at the shipped 480
+    points, per the table above.
+
+**So the absolute scale is anchored end to end, at high `Q`, with no Monte Carlo** — which is what
+§0b asked for and priced at 280 periods per realisation. The series and parallel routes agree to
+`0.9999916` at `npts = 960`.
+
+---
+
+### 0f. Reading from the docs session, 2026-09-04 — ⚠ **RELAYED, NOT VERIFIED HERE**
+
+Four findings arrived from the docs session against ~60 new papers. Recorded because two bear on
+shipped code, with the standing caveat this file already uses for that channel: **the quotations
+are relayed and have not been checked against the sources from here.**
+
+⚠⚠ **1. KRYLOV MAKES THE DEFLATION WORSE — AND IT CORROBORATES A NUMBER WE MEASURED.** Mei &
+Roychowdhury 2007 TCAD are quoted saying partial Floquet decomposition via **Krylov subspace
+methods**, "while substantially faster, EXACERBATE THE IMPERFECT-CANCELLATION ISSUE". That is not
+a new claim to us — it is the **published explanation for the tolerance floor B6 measured**:
+`matrix_free=True` at `reltol = 1e-12` exhausts the inner GMRES restarts at `Q ≥ 16` with exactly
+126 matvecs, while `1e-9` converges in 28–35, flat in `Q`. Two sessions had a fixture disagreement
+over whether that was an artefact; on this reading the two fixtures sit on either side of a
+**known boundary**, which is a better explanation than either fixture being wrong. ⚠ It does not
+change the shipped default (`matrix_free` is off) and it does not need a code change; it needs to
+be in B6 so the floor is not re-litigated as a bug.
+
+⚠ **2. A NAMED LIMIT ON A7.** The same paper is quoted proving the singularity as its Lemma 2.1 —
+`J(s)` loses rank by one at **every** `s = j k ω₀`, i.e. at DC and every harmonic, which is what
+both sessions derived independently — and then saying deflation only **AMELIORATES** it. A7's
+`b79b458` carries the harmonic pole analytically, which is deflation, so it inherits a documented
+residual weakness. Their remedy is a different formulation (GeMPDE with augmenting phase
+conditions); two other published routes are named, least squares with no phase condition and the
+probe. **No change proposed** — recorded so the weakness is known rather than discovered.
+
+⚠⚠ **3. C2 DOES NOT COVER LSOAC, AND CHECKING SAID SO MORE SHARPLY THAN THE QUESTION DID.** The
+docs session asked whether `96a06ac`'s rejection might have been of a different method. Checked:
+`96a06ac` rejects the **Poincaré / orthogonality phase ROW** against the frozen-coordinate pin,
+recorded as **C2**. Mei & Roychowdhury 2006 DATE (LSOAC) is quoted as removing phase conditions
+**entirely** — minimum-norm least squares on the underdetermined system, motivated by "the use of
+phase condition equations can cause various numerical artifacts". ⚠ **So C2 is correctly scoped
+and stays closed**; the finding is not that a rejection needs reopening but that **LSOAC was never
+considered at all** — `grep` finds no mention of least squares or LSOAC anywhere in this file. It
+is now B10, open, so the two are not confused again.
+
+⚠ **4. AN EXTERNAL PPV ORACLE, ON A FIXTURE THAT ALREADY EXISTS — THE MOST ACTIONABLE ITEM.**
+Ghanta, Li & Roychowdhury 2004 ASP-DAC are cited as giving **analytical** PPV expressions for
+generic LC oscillators, with **symmetry** in the negative-resistance mechanism giving "particularly
+simple forms". `_lc_osc(a=…)` sweeps exactly that symmetry — `a` breaks the nonlinearity's
+half-wave symmetry — so the fixture for it is already built and already used. This is the standing
+gap §0b names: the PPV physical gate cannot verify the PPV at high `Q`, and every check we have is
+internal or shares the monodromy. **An analytical PPV would be the first fully external oracle.**
+Blocked only on the expressions themselves, which are not in the relayed message.
+
+Two smaller ones, no action implied: the idealised 3-stage ring's `{1, φ⁻⁶, φ⁻¹²}` is published
+(Srivastava & Roychowdhury 2007 TCAS, golden mean "central to our exact analytical phase model") —
+**cite rather than re-derive**; and the `τ_p/T` semantic failure recorded in `ppv`'s `Q` note has a
+published counterpart *with a remedy* (Lai & Roychowdhury 2006 DAC, DCO gated capacitors, hierarchical HB).
+
+⚠ **The pattern the docs session named is worth keeping:** four of the first ten papers are primary
+sources for results one session or the other derived from scratch. The improvement is that the
+reading is now arriving **before** the implementation commits rather than after.
+
 
 ---
 
@@ -2272,6 +2373,11 @@ the free-running frequency for `ω₀`.
 
 ### A7. Near-carrier oscillator noise — ⚠ BUILT 2026-09-03
 
+⚠ **A NAMED RESIDUAL WEAKNESS — see §0f item 2.** Carrying the harmonic pole analytically is
+DEFLATION, and Mei & Roychowdhury's Lemma 2.1 is relayed as proving the singularity at every
+harmonic and then saying deflation only **ameliorates** it. Known, not fixed, no change proposed.
+
+
 ⚠ **`Φ(T) − I` IS SINGULAR FOR AN OSCILLATOR, AND ITS NULL VECTOR IS THE PPV.** So a
 near-carrier noise computation is ill-conditioned *by construction* — the thing being computed
 is the thing that breaks the matrix.
@@ -2325,6 +2431,13 @@ measured numerical noise floor in commercial simulators becomes the binding cons
 saying before fractional-N is promised.
 
 ### B6. Floquet multipliers from the GMRES basis — ⚠ **HALF BUILT, HALF CLOSED 2026-09-03**
+
+⚠⚠ **THE TOLERANCE FLOOR HAS A PUBLISHED EXPLANATION — see §0f item 1.** Mei & Roychowdhury 2007
+are relayed as saying Krylov partial decomposition **exacerbates** the imperfect cancellation that
+deflation leaves. That is the floor measured below (`reltol = 1e-12` exhausting the inner restarts
+at `Q ≥ 16`, 126 matvecs, against 28–35 flat in `Q` at `1e-9`) — **not a bug, a known boundary**.
+Do not re-litigate it as one.
+
 
 García, Romero & Acha (IEEE Trans. Power Systems 37(1), 2022) determine periodic-orbit
 stability *"by computing the Floquet multipliers using **Ritz values and the Hessenberg
@@ -2524,6 +2637,27 @@ the undamped iteration would have moved uphill."*
 the B6-note tolerance floor, where `matrix_free=True` at `reltol = 1e-12` exhausts the inner
 GMRES restarts at `Q ≥ 16` with exactly 126 matvecs regardless of the outer budget.
 
+### B10. LSOAC — least squares with NO phase condition — NEW 2026-09-04, unbuilt
+
+Mei & Roychowdhury 2006 DATE, relayed by the docs session: resolve the phase ambiguity by taking
+**minimum-norm** solutions of the underdetermined system — a particular solution, then subtract the
+null-space component — rather than adding a phase equation at all.
+
+⚠ **THIS IS NOT WHAT C2 REJECTED, AND THE DISTINCTION IS THE ENTRY.** C2 tested one phase ROW
+against another (orthogonality against the frozen-coordinate pin) and found the pin canonical and
+the alternative 704× worse aligned when "fixed". LSOAC removes the row. Its stated motivation is
+that phase conditions "cause various numerical artifacts" and that good ones "are not easy" to
+choose — which is a claim about the whole family C2 lives in, not about which member wins.
+
+⚠ **AND IT CONNECTS TO B3.** C3 already records that "A&T avoid it by having no phase equation at
+all (see B3)", so this codebase has met the no-phase-condition idea once before, from Aprille &
+Trick. B10 and B3 should be read together and probably costed together.
+
+**Gate before building:** does the minimum-norm solve reproduce the shipped `λ₂` and `Q` on the
+`m = 12` bulk fixture, and does it survive `λ₂ → 1` better than the pin — measured on the same
+`Q`-sweep that produced B6's tolerance floor? If it is merely equivalent, it is not worth the
+second formulation.
+
 ### A5. Envelope-following — last
 
 Linaro et al. (OJCAS 2020) apply EFM to the *variational* problem, with a
@@ -2642,7 +2776,7 @@ Each of these cost real time. They are recorded so the next reader spends none.
 | # | Item | Why it is closed |
 |---|---|---|
 | C1 | **Trapezoidal exact-Jacobian reformulation** | Four designs dead on the same `(-1)^n` mode. It is a **theorem**: trapezoidal is A-stable but not L-stable, maps `null(C)` by exactly −1, so any period map `A_trap^K` without an L-stable opener is singular at even K. Verified: `m − rank(C)` modes at −1, exactly. |
-| C2 | **Poincaré / orthogonality phase row** | Tested and rejected. 2–6x conditioning edge that shrinks with refinement and never decides an outcome. The `argmax` rule is canonical (A&T Step 3) and compares units *on purpose* — normalising picks a row **704x worse aligned**. |
+| C2 | **Poincaré / orthogonality phase row** | Tested and rejected. 2–6x conditioning edge that shrinks with refinement and never decides an outcome. The `argmax` rule is canonical (A&T Step 3) and compares units *on purpose* — normalising picks a row **704x worse aligned**. ⚠ **SCOPE: this is one phase ROW against another. It does NOT cover removing the phase condition entirely** — that is LSOAC, which was never considered here and is now **B10**. |
 | C3 | **Per-iteration phase re-selection** | Built and reverted: it **regressed the working case** (on-orbit seed went converged → not). Structural — pinning the iterate's own value makes the residual identically zero, so the row constrains only the step. A&T avoid it by having no phase equation at all (see B3). |
 | C4 | **Index-2 detect-and-refuse** | Would reject working circuits: `index > 1` is **not predictive** (all three methods converge on an LI-cutset), and gear is not the workaround (fails on 2 of 4). Failures are loud, not silent. |
 | C5 | **Saltation correction for switching** | **Falsified.** The monodromy–FD gap falls at exactly 2.00x per doubling = O(h) discretisation, not the O(1) a missing correction leaves. PSS's monodromy is the derivative of the *discrete* map, which has no undefined instant. |
