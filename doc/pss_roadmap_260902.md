@@ -4385,11 +4385,41 @@ self-sustained.** So the π conversion must NOT be applied to compare `info['Q']
 datasheet `Q`: it is right for a passive tank and wrong for the oscillator built around it. Taking
 the peer's advice to skip the fixture would have shipped that conversion.
 
-⚠ **WHAT REMAINS UNSETTLED, stated so this is not over-read either.** This separates `info['Q']`
-from the **component-set unloaded** `Q` for an oscillator, decisively. It does not adjudicate Wang
-& Roychowdhury's claim about the **energy** `Q`, which would need their definition implemented
-independently — and in a self-sustained oscillator the energy `Q` is not obviously the unloaded
-tank's.
+✅⚠ **AND WANG & ROYCHOWDHURY SAY THE SAME THING, IN TERMS — SO THERE IS NO CLAIM LEFT TO
+ADJUDICATE.** An earlier version of this entry recorded that they *"argue it IS the energy `Q`"*
+and left the question open pending their definition. That attribution was wrong. From their p. 2
+(relayed verbatim by a peer session that went back to the paper; *cited, not verified here*):
+
+> *"While the frequency- and energy-based definitions of `Q` for second-order linear resonators
+> are equivalent, **different `Q` definitions for oscillators are not**."*
+> *"We emphasize that the proposed `Q` factor formulation is indeed **different** and more
+> suitable for characterizing amplitude stability."*
+> *"the widely-used energy-based `Q` formulation in (2) for **linear** systems is in fact just a
+> special case of our definition (4), with the amplitude-stable state being the zero state."*
+
+⚠ **The containment runs the OTHER WAY from how it was first recorded:** the classical energy `Q`
+is a *special case of theirs for linear systems*, and **for oscillators they state the definitions
+diverge deliberately.** So the measurement above is not in tension with the paper — it is what the
+paper predicts.
+
+**THE THRESHOLD ALGEBRA, exact, for the passive case only:** `Q_th = −Q_d·ln(th)/π`, so the ratio
+is a pure function of the reporting threshold —
+
+    threshold  1/e     = 0.367879   →   Q_d/Q = 3.141593    ← ours
+    threshold  0.05                 →   Q_d/Q = 1.048689    ← Wang & Roychowdhury's
+    threshold  e^(−π)  = 0.043214   →   Q_d/Q = 1.000000    ← would make them identical
+
+⚠ **W&R's 5 % lands within 4.9 % of the threshold that would make the two coincide, which is why
+their agreement READS as an identity and is not one.**
+
+⚠⚠ **TWO CONSTANTS, NOT INTERCHANGEABLE.** `ln(20) = 2.9957` converts between the `1/e` and 5 %
+**reporting conventions** — a choice. `π` converts a **passive** resonator's settling `Q` to its
+energy `Q` — a per-period decay. ⚠ **Neither converts an oscillator's `info['Q']` into anything
+about its tank**, because the measurement above shows no such information is present.
+
+❌ **STILL OPEN, and now open on the source's own authority:** the `Q` in Traversa & Bonani's
+*"orbital noise … an increasing function of the Q factor"* is an **oscillator** `Q`, and which
+oscillator `Q` they mean is not established here. `info['Q']` cannot yet be used as that prior.
 
 **The table, read for what it can support:** van der Pol at `μ = 1/(2πQ_target)`, 400 points,
 gear:
