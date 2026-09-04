@@ -4121,6 +4121,77 @@ disagreeing — criterion 2, reference 1 — because the reference guarded with 
 `NᵀGN` for that fixture is **identically zero**, which is the MOST singular case rather than the
 least. Shape 0j again, one day later: **the instrument was wrong, not the subject.**
 
+### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
+
+⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
+CORRECTION IS THE ENTRY.** It was reported as "nobody computes the far-out floor / the AM half is
+unbuilt anywhere". The correct statement is: **we do not compute it, and a fifteen-year-old
+principled method sits in our own `~/docs`.**
+
+**F. L. Traversa and F. Bonani, "Including orbital fluctuations in the noise spectrum of
+autonomous circuits", IEEE TCAS-I, 2011** — in `02-oscillator-noise-jitter/` under exactly that
+title. ⚠ **Cited, not verified here**: nobody in this repo has read the paper. Arrived
+independently from two sessions on the same afternoon, which is the only reason it is recorded
+this firmly.
+
+**The decomposition is the gap, verbatim:**
+
+    x(t) = x_s(t + a(t)) + y(t)        a = phase,  y = orbital (amplitude)
+
+and the two spectra are **summed**, not crossfaded:
+
+> *"although the dominant component near to the oscillator frequency f₀ (and to its harmonics
+> k f₀) is phase noise, **orbital fluctuations become the stronger contribution at large offset
+> frequencies**"*
+
+with *"evidence of its relevance for **high-Q oscillators**"* — **our regime**, and directly
+relevant to the crystal question (A10), not an aside.
+
+✅⚠ **AND IT IS A SMALLER BUILD THAN "PHASE + ORBITAL + CORRELATION" IMPLIES.** On their 5 GHz HBT
+example (HB, 30 harmonics): *"the correlation spectrum is **negligible**, while orbital noise
+becomes the dominant term for frequencies away from the harmonics"*. So the full spectrum is
+**two terms added**, and the phase–orbital cross term can be dropped. That is materially less
+than the three-term object this gap was described as needing.
+
+**The ingredients are things we already compute or nearly do:** the PPV **is** the adjoint Floquet
+eigenvector for the zero exponent; `ppv()` already returns `|λ₂| = exp(T·μ₂)`, the next Floquet
+exponent; and the PSS waveform's Fourier coefficients are already consumed by
+`oscillator_spectrum`. *"Cost is a few more Floquet pairs, not a sweep."*
+
+⚠ **THEIR OWN WARNING, AND IT CONSTRAINS OUR OUTPUT LAYER:** orbital contributions are
+**asymmetric about the carrier**, so a symmetric single-sideband report **cannot carry them** —
+see A4b. And *"the identification of the oscillator classes mostly impacted by this effect is not
+an easy task"*: high-Q is a candidate, but eigenvector magnitudes matter as much as exponents.
+**Do not present it as strictly better than what we ship without measuring it.**
+
+✅ **AN INDEPENDENT CHECK ON SOMETHING WE ALREADY SHIP.** Kundert, *Introduction to RF
+Simulation* §3.5, gives the swept small-signal result's validity window as `f_Δ ≪ Δf ≪ f₀`,
+states it is in error below it, and shows **how to obtain `f_Δ` from the swept result itself**.
+`PAC.phase_psd` currently *predicts* the corner in closed form — `f_h = π i² f₀² c`,
+`shooting.py:7419` — and **refuses** below it. That prediction has never been checked against
+anything. Reading the corner off a sweep is a reference the closed form cannot influence, which
+is the one kind of check this campaign trusts. **Cheap, and unrun.**
+
+⚠ **WE ARE NOT EXPOSED TO §10 OF THE CITATION MAP.** It warns that a crossfade weight,
+`√(1.5 − |f|/W)` band edges and a Lorentzian cap are implementation choices with **no literature**
+behind them. Checked: **`shooting.py` contains no crossfade, blend or band-edge construct at
+all.** What it has is the corner *refusal* above — a switch with a stated validity window, which
+is exactly what Demir §X.C and Kundert (15) support. Nothing to disown here.
+
+⚠⚠ **THE FAILURE SHAPE THAT HID IT — §D 0p.** The paper was in the library, had been **opened**,
+and was **cited for a different claim it does not own** (the `Φ = U·D·V·C` state-transition
+factorisation, which belongs to Demir 2000 eq (37)). Its *actual subject* was then reported as an
+open gap hours later. **Reading a paper for one claim and filing it under that claim is how a
+library loses a result it already contains.** The tell available in advance: a citation whose
+title does not match the claim it is attached to.
+
+⚠ **METADATA, so nobody trusts the wrong field.** The Gourary regularisation cluster is three
+papers — **DATE 2003** (periodic small-signal), **ECCTD 2007 pp. 1002–1005** (time-domain
+oscillator noise, measured and rejected as B12), and **37th EuMC Munich, October 2007**
+(cyclostationary). Their filenames carry no author or venue, against the library convention, and
+the EuMC paper's embedded PDF metadata is **placeholder junk dated 1999** — do not read the date
+off the file.
+
 ### A8. Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
 
 ⚠ **FROM A REAL CIRCUIT, NOT FROM THE LITERATURE.** Andreas put the case up: a free-running
@@ -4622,6 +4693,16 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    including the correction to my own earlier wrong claim. Guarding hard against claiming
    another session's work produced the mirror error. **Check the record before disclaiming, not
    only before claiming.**
+
+0p. ⚠⚠ **A PAPER READ FOR ONE CLAIM AND FILED UNDER THAT CLAIM.** Traversa & Bonani 2011 was
+   in the library, had been opened, and was cited for the `Φ = U·D·V·C` factorisation — a claim
+   it does not own (that is Demir 2000 eq (37)). Its **actual subject**, the orbital half of the
+   oscillator spectrum, was then reported as an open gap with "no published answer" hours later,
+   by two sessions independently. **A library loses a result it already contains this way, and
+   the loss is invisible** — the paper is present, indexed and cited, so every search for it
+   succeeds while every search for its subject fails. ⚠ The tell available in advance: **a
+   citation whose title does not match the claim it is attached to.** Check the title against
+   the claim, not just the claim against the source.
 
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
