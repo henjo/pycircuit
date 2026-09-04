@@ -4034,7 +4034,7 @@ floor and Gourary's direct route would lift the cap; if it falls with refinement
 to gain."* It fell at the textbook rate. A plateau was the falsifiable outcome and it did not
 occur.
 
-### B16. Does the manufactured opener cap λ₂'s ORDER on an INDEX-1 circuit? — ⚠ **OPEN, AND MY CHECK WAS INVALID**, 2026-09-04
+### B16. Does the manufactured opener cap λ₂'s ORDER on an INDEX-1 circuit? — ⚠ **NOT REPRODUCED**, 2026-09-04
 
 ⚠⚠ **A CLAIM AGAINST THE SHIPPED `x0_unknown` DEFAULT, NOT YET VERIFIED HERE.** A peer session
 reports that on a plain **index-1** series RLC (`Q = 100`, `trap`), against the *exact discrete*
@@ -4056,9 +4056,33 @@ that does not match it. ⚠ **The measured value is `exp(−2π/Q)` where my ref
 I used is the series formula applied to a parallel topology. **§D 0q in my own hands: right
 formula, wrong object.**
 
-⚠ **SO NOTHING IS SETTLED EITHER WAY, and the item is open rather than closed in either
-direction.** What it needs is a correctly-built series RLC and the *discrete* reference; the
-question matters because it bears directly on a **shipped default**.
+✅ **RE-RUN ON A CORRECTLY-BUILT SERIES LOOP (`vs → R → L → C → gnd`), AND THE CLAIM DOES NOT
+REPRODUCE.** With the topology fixed, `|λ₂|` lands on `exp(−π/Q) = 0.969072` instead of its
+square, so the factor-of-two is gone and the instrument is measuring the right object:
+
+    N       discrete ref     default      rel err    ratio   x0_unknown   rel err    ratio
+    199     0.969232133     0.969035749  2.026e-04    —      0.968597471  6.548e-04    —
+    399     0.969150413     0.969082426  7.015e-05   2.89    0.968954201  2.025e-04   3.23
+    799     0.969110951     0.969084458  2.734e-05   2.57    0.969042938  7.018e-05   2.88
+    1599    0.969091571     0.969080193  1.174e-05   2.33    0.969065063  2.735e-05   2.57
+    3199    0.969081970     0.969076747  5.389e-06   2.18    0.969070587  1.175e-05   2.33
+
+⚠⚠ **BOTH CONVERGE — NO FLOOR, AND NEITHER IS BELOW FIRST ORDER.** The **default is uniformly
+~2× BETTER at every `N`**, including at `N = 3199`, well past the `N ≈ 1600` crossover the claim
+predicts would reverse it.
+
+✅ **AND THERE IS A CLEAN STRUCTURAL RELATIONSHIP THAT EXPLAINS THE WHOLE COLUMN:** `x0_unknown`
+at `N` is almost exactly the default at `N/2` — 2.025e-04 against 2.026e-04, 7.018e-05 against
+7.015e-05, 2.735e-05 against 2.734e-05, three coincidences to four digits. **`x0_unknown` behaves
+exactly like the default at half the resolution**, which is the in-period Euler opener costing one
+refinement — consistent with B1's independent resonator measurement rather than in tension with it.
+
+⚠ **WHAT IS STILL NOT SETTLED, so this is not over-read:** neither column reaches a clean `h²`
+(ratios 2.18–3.23, drifting *downward* in both), which suggests the **reference** carries its own
+`O(h)` term rather than either solve failing. So this refutes *"the default is erratic and below
+first order"* on this fixture and does **not** establish the convergence order of either. ✅ The
+question that matters for B1 — whether the shipped topology-keyed default is harmed on an index-1
+circuit — is answered **no** on this fixture.
 
 ⚠ **AND THE PEER'S OWN ROUTE TO IT IS WORTH COPYING.** They first reported this as a `~1e-5` floor
 in the monodromy, then **retracted it**: three independent instruments they built to localise it
