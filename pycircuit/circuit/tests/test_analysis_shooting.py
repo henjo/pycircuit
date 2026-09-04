@@ -9752,3 +9752,84 @@ def test_x0_unknown_defaults_from_the_topology_and_only_where_it_is_proved():
         p4.solve(period=per, timestep=per / 50, x0=np.zeros(c4.n - 1))
 
 
+def test_pnoise_is_phase_psd_times_the_CARRIER_POWER_not_a_psd_convention():
+    """⚠⚠ THE "FACTOR OF TWO" BETWEEN `pnoise` AND `c f0^2/df^2` IS `A^2/2`,
+    AND VAN DER POL MAKES IT LOOK LIKE A CONVENTION.
+
+    Kundert section 3.5 eq (15): `L(df) = c f0^2 / df^2` for
+    `f_delta << df << f0`. Our `phase_psd` matches that EXACTLY. But `pnoise`
+    returns OUTPUT VOLTAGE noise, V^2/Hz, not phase noise, rad^2/Hz -- and
+    the conversion is the CARRIER POWER `A^2/2`.
+
+    ⚠ VAN DER POL'S AMPLITUDE IS 2, SO `A^2/2 = 2`, numerically
+    indistinguishable from the one-sided/two-sided factor that section 0g
+    caught for real. It was recorded as "a loose end, the same factor-of-two
+    family". It is not: it is a fixture coincidence, section D shape 0i.
+
+    Measured across a 36x range of carrier power -- the ratio MOVES with
+    amplitude, which is what a convention factor could not do:
+
+        A        A^2/2      pnoise/(c f0^2/df^2)   /(A^2/2)   phase_psd/L
+        0.9998   0.49975    0.499334               0.999164   1.00000000
+        1.9995   1.99901    1.997338               0.999164   1.00000000
+        3.9990   7.99604    7.989351               0.999164   1.00000000
+        5.9985   17.99108   17.976041              0.999164   1.00000000
+
+    and the residual 0.999164 is DISCRETISATION, converging to 1 as the grid
+    refines: 0.995796 / 0.999164 / 0.999870 / 1.000012 at npts = 120 / 240 /
+    480 / 960. Nothing is left unexplained.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    Q = 8.0
+    mu = 1.0 / (2 * np.pi * Q)
+
+    def run(sscale, npts):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u, _s=sscale: mu * (u - u ** 3 / (3.0 * _s * _s)))
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0 * sscale
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=2 * np.pi, timestep=2 * np.pi / npts, x0=x0,
+                      maxiterations=250)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        f0 = 1.0 / float(pss.period)
+        cc = pac.diffusion_constant(pss)
+        X = np.asarray(pss.waveform[1], dtype=float)
+        amp = float(np.max(np.abs(X[0 if 0 < pss.irefnode else 1])))
+        df = f0 * 1e-6
+        S_pn, _sb = pac.pnoise(pss, f0 + df, 0)
+        S_ph = float(np.asarray(pac.phase_psd(pss, np.array([df]))).ravel()[0])
+        kundert = cc * f0 * f0 / (df * df)
+        return amp, S_pn, S_ph, kundert
+
+    ## ⚠ phase_psd IS Kundert eq (15), exactly, at both amplitudes
+    for sscale in (0.5, 2.0):
+        amp, S_pn, S_ph, kundert = run(sscale, 480)
+        assert abs(S_ph / kundert - 1.0) < 1e-9, \
+            'phase_psd must equal c f0^2/df^2 exactly; got %.9f at A=%.4f' \
+            % (S_ph / kundert, amp)
+        ## and pnoise is that times the CARRIER POWER
+        assert abs((S_pn / kundert) / (amp * amp / 2) - 1.0) < 5e-3, \
+            'pnoise/(c f0^2/df^2) must be A^2/2; got %.6f against %.6f' \
+            % (S_pn / kundert, amp * amp / 2)
+
+    ## ⚠⚠ AND THE RATIO MUST MOVE WITH AMPLITUDE, or this test cannot tell a
+    ## carrier power from a PSD convention -- which is the whole point
+    a_lo, pn_lo, _p, k_lo = run(0.5, 480)
+    a_hi, pn_hi, _p2, k_hi = run(2.0, 480)
+    moved = (pn_hi / k_hi) / (pn_lo / k_lo)
+    expect = (a_hi * a_hi) / (a_lo * a_lo)
+    assert abs(moved / expect - 1.0) < 1e-2, \
+        'the ratio must scale as A^2 (%.4f expected, %.4f seen) -- a PSD ' \
+        'convention would be CONSTANT' % (expect, moved)
+    assert moved > 4.0, \
+        'and it must move enough to be unmistakable; got %.4f' % moved

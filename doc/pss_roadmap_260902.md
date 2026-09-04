@@ -1324,9 +1324,30 @@ sound and aimed elsewhere.
 
 **WHAT SURVIVES:** Gourary was never assessed (that stands, and the reason stands); it addresses a
 real numerical mechanism; and **we do not appear to suffer from it** — the deflated route carries
-the pole analytically and holds seven digits at `Δf/f0 = 1e-9`. ⚠ One loose end worth its own
-look: the ratio to `c·f0²` sits at **1.997339**, i.e. a factor of two, which is the same
-one-sided/two-sided family that §0g already caught once.
+the pole analytically and holds seven digits at `Δf/f0 = 1e-9`. ✅⚠⚠ **AND THE "LOOSE END" IS CLOSED — IT WAS NEVER A FACTOR OF TWO.** I recorded the ratio
+`1.997339` as "the same one-sided/two-sided family §0g already caught once". **It is `A²/2`, the
+CARRIER POWER**, and van der Pol's amplitude is 2, so `A²/2 = 1.999` — numerically
+indistinguishable from a PSD convention. **§D shape 0i, in my own record, one entry after naming
+it.**
+
+`pnoise` returns OUTPUT VOLTAGE noise (V²/Hz); `c f0²/Δf²` is a PHASE PSD (rad²/Hz); the
+conversion between them is the carrier power. Measured over a 36× range of `A²/2` — **the ratio
+MOVES, which a convention factor could not do:**
+
+    A        A²/2       pnoise/(c f0²/Δf²)   ÷(A²/2)     phase_psd/L
+    0.9998   0.49975    0.499334             0.999164    1.00000000
+    1.9995   1.99901    1.997338             0.999164    1.00000000
+    3.9990   7.99604    7.989351             0.999164    1.00000000
+    5.9985   17.99108   17.976041            0.999164    1.00000000
+
+⚠ **`phase_psd` EQUALS KUNDERT eq (15) EXACTLY** — `1.00000000` at every amplitude — so there was
+never a convention error to find. And the residual `0.999164` is **discretisation**, converging to
+1 as the grid refines: `0.995796 / 0.999164 / 0.999870 / 1.000012` at `npts = 120/240/480/960`.
+**Nothing is left unexplained**, which is the standard §0g's own lesson demands.
+
+**PINNED** by `test_pnoise_is_phase_psd_times_the_CARRIER_POWER_not_a_psd_convention`, which
+asserts the equality with Kundert at two amplitudes AND that the ratio **scales as `A²`** — a test
+that would pass on a constant factor is exactly the test that preserved the last one.
 
 ~~APPLICABILITY MEASURED 2026-09-04 — WE DO HAVE A SMALL-OFFSET BREAKDOWN~~ (superseded): `phase_psd` is a CLOSED FORM built from `c` and never touches `J(Δω)`, so A7's
 analytic pole-carrying is not the path at issue. The path that IS is **`pnoise` on an autonomous
