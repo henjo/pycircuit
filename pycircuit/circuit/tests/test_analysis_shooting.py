@@ -8965,7 +8965,22 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     row = X[0 if 0 < pss.irefnode else 1]
     amp = float(np.max(np.abs(row)))
     rms_pk = float(np.sqrt(np.mean(row ** 2)) / amp)
-    lemma = (psd / 2.0) * (ll / cc) / amp ** 2
+    ## ⚠⚠ `psd / 2` TWICE, AND THE SECOND ONE IS THE POINT.  `noisePSD` and
+    ## `_cy_reduced` are ONE-SIDED (a resistor's `4kT/R`, measured against
+    ## the analytic value to every printed digit), while Ghanta's `N^2` is a
+    ## TWO-SIDED density -- Winkler, Oberwolfach Report 18/2006 p.1160 gives
+    ## Nyquist as `I_th = sqrt(2kT/R) xi(t)`, which is `2kT/R` two-sided and
+    ## is exactly what `diffusion_constant` contracts (`cy/2`).  So the
+    ## one-sided `psd` must be halved BEFORE entering the lemma.
+    ##
+    ## ⚠ Feeding the one-sided value gave a ratio that was CONSTANT at
+    ## 0.49984 across 100x in `C` and 100x in `L` -- a perfect-looking gate
+    ## that would have preserved the error forever while passing.  Halving
+    ## it gives 0.99968 with no free parameter.  This campaign has already
+    ## lost time to one factor of two that only `kT/C` could see, which is
+    ## why the conversion is named here rather than absorbed.
+    n_sq_two_sided = psd / 2.0
+    lemma = (n_sq_two_sided / 2.0) * (ll / cc) / amp ** 2
     return cir, pss, PAC(cir, toolkit=circuit.numeric), amp, rms_pk, lemma
 
 
@@ -8986,9 +9001,15 @@ def test_the_lyapunov_route_matches_an_analytic_external_oracle():
     INDEPENDENTLY tests the functional form: `L/C` over four decades, at a
     constant ratio.
 
-    The residual factor is 1/2 -- the one-sided/two-sided convention that
-    `kT/C` already settled for this codebase -- so the assertion is that the
-    ratio is CONSTANT and equal to that, not that it is 1.
+    ⚠ THE RATIO IS 1, NOT 1/2, ONCE THE PSD CONVENTION IS MATCHED. An
+    earlier version of this gate fed the ONE-SIDED `noisePSD` into a lemma
+    whose `N^2` is TWO-SIDED and asserted "constant at ~0.5" -- which passed,
+    across four decades of `L/C`, while quietly carrying a factor of two.
+    Winkler (Oberwolfach Report 18/2006 p.1160) gives Nyquist as
+    `I_th = sqrt(2kT/R) xi(t)`, i.e. `2kT/R` TWO-SIDED, which is exactly the
+    `cy/2` that `diffusion_constant` contracts. With the conversion made the
+    ratio is 0.99968 with no free parameter, and the assertion is that it is
+    ONE.
     """
     ratios = []
     for cc, ll in ((0.1, 1.0), (1.0, 1.0), (10.0, 1.0), (1.0, 0.1), (1.0, 10.0)):
@@ -9001,8 +9022,9 @@ def test_the_lyapunov_route_matches_an_analytic_external_oracle():
     assert abs(hi / lo - 1.0) < 1e-3, \
         'the ratio to the analytic oracle must be CONSTANT across L and C; ' \
         'it ranged %.6f to %.6f' % (lo, hi)
-    assert abs(lo - 0.5) < 5e-3, \
-        'and equal to the one-sided/two-sided half; got %.6f' % lo
+    assert abs(lo - 1.0) < 5e-3, \
+        'and equal to ONE once the two-sided PSD convention is matched ' \
+        '(Winkler, Oberwolfach 18/2006 p.1160); got %.6f' % lo
 
 
 def test_diffusion_constant_should_not_depend_on_the_capacitance_scale():

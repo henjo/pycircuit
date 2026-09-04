@@ -621,6 +621,34 @@ for Oscillators with Differential-Algebraic Equations", IJCTA 28:163–185** —
 the oracle itself, asserted as a CONSTANT ratio across `L` and `C`, not as a value) and
 `test_diffusion_constant_should_not_depend_on_the_capacitance_scale` (**strict xfail**).
 
+✅⚠⚠ **THE FACTOR OF TWO IS NOW CITED, AND THE ORACLE IS EXACT — 2026-09-04.** Winkler
+(Oberwolfach Report 18/2006 p.1160, relayed) states Nyquist as `I_th = √(2kT/R) ξ(t)`, i.e.
+`2kT/R` **TWO-SIDED** — which is exactly the `cy/2` that `diffusion_constant` contracts, since
+`_cy_reduced` returns the ONE-SIDED `4kT/R` (measured against the analytic value to every printed
+digit in §0d). So Ghanta's `N²` is two-sided and the gate had been feeding it a **one-sided**
+`noisePSD`, double-counting by exactly the factor observed. Halving it:
+
+    0.49984 × 2 = 0.99968        with no free parameter
+
+**The gate now asserts ONE**, with the conversion named as `n_sq_two_sided` and the citation
+beside it rather than absorbed.
+
+⚠⚠ **AND THE OLD FORM OF THIS GATE IS ITS OWN LESSON.** "Assert the ratio is CONSTANT and equal to
+0.5" **passed**, across four decades of `L/C` and two decades of `Q`, while carrying a factor of
+two — because a constant wrong factor is exactly what a convention mismatch looks like, and
+asserting constancy tests everything about the functional form and nothing about the scale. This
+campaign had already lost time to one factor of two that only `kT/C` could see. **A gate that
+tolerates an unexplained constant preserves it forever while reporting success.**
+
+⚠ **ALSO FILED, next to the Monte-Carlo measurement it explains:** Sickenberger & Winkler (PAMM
+2007) simulate noisy oscillators directly as SDAEs with **stochastic analogues of BDF2 and the
+trapezoidal rule** — the same two integrators shipped here — and give the error bound
+`O(h² + εh + ε²h^{1/2})` for small noise `ε`. That is the theory for a shape measured empirically
+and recorded without explanation: a **two-sided optimum in `npts`**, where the Monte-Carlo error
+fell and then GREW again with refinement. Deterministic-dominated at usable step sizes, with
+`ε²h^{1/2}` as the floor. ⚠ The pairing only works because the unexplained measurement was written
+down in the form it came out rather than smoothed.
+
 ⚠ **AND THE ORACLE'S OWN PRECONDITION IS ASSERTED**, because it is easy to lose: the lemma needs a
 SINUSOIDAL orbit and an ODD-symmetric nonlinearity. `rms/peak` is checked at 0.70785 against
 0.70711. ⚠ `_lc_osc` is the WRONG fixture for it — its `i_func` coefficient is 1.0, so the orbit
@@ -2988,10 +3016,18 @@ mechanism instead of a worry, and it means the two halves of B7 are **not one it
 
 ---
 
-⚠⚠⚠ **CORRECTED SAME DAY BY ANDREAS, AND THE CORRECTION GOES TO THE CENTRAL POINT.** From
-practice with commercial SPICE PSS engines: **they do not use a fixed grid at all.** The stepping
-is controlled entirely by the inner transient, and **the last step is placed on the period
-boundary**. Checked against the code, and it holds:
+⚠⚠⚠ **A DESIGN HYPOTHESIS FROM ANDREAS, AND IT GOES TO THE CENTRAL POINT.** ⚠ **PROVENANCE
+CORRECTED 2026-09-04 — AN EARLIER VERSION OF THIS PARAGRAPH PRESENTED IT AS ESTABLISHED
+COMMERCIAL PRACTICE ("from practice with commercial SPICE PSS engines: they do not use a fixed
+grid at all"). ANDREAS HAS SINCE SAID PLAINLY THAT IT IS A GUESS — Spectre's source is not
+visible, so what it does inside is not knowable from outside.** The hypothesis is that the
+stepping is controlled entirely by the inner transient with **the last step placed on the period
+boundary**; it is a plausible design from an experienced user, and it is **NOT** an appeal to
+authority about any shipping tool.
+
+⚠⚠ **THE HYPOTHESIS'S PROVENANCE AND ITS TECHNICAL CONTENT ARE SEPARATE, AND THE SECOND SURVIVES
+INTACT** — everything below was checked against THIS codebase and holds regardless of what any
+commercial tool does:
 
   * **The shooting Newton never needed a reproducible grid.** `_traverse` and
     `_traverse_solved_history` return the endpoint AND the sensitivity `P = dx/d(x_0, x_{-1})`
@@ -3015,7 +3051,7 @@ assumption about how steps scale. ⚠ It is also arguably the *better* derivativ
 proportionally over every step perturbs the trajectory in a way the physical period change does
 not.
 
-**So B7 should be rebuilt on the commercial formulation rather than on frozen fractions**, and the
+**So B7 should be rebuilt on the closing-step formulation rather than on frozen fractions**, and the
 "direct tension between freezing and event localisation" recorded above dissolves — because
 nothing needs freezing. What survives from the gate above is still true and still useful:
 
@@ -3028,7 +3064,15 @@ nothing needs freezing. What survives from the gate above is still true and stil
     traversal — which under the commercial scheme is exactly where it now WOULD be consulted,
     so this stops being an obstruction and becomes the mechanism.
 
-**REVISED PLAN — B7c, superseding B7a and B7b:** drive the period with the inner transient's own
+⚠⚠ **STANDING VERDICT AFTER THE RETRACTION AND THE PROVENANCE CORRECTION (2026-09-04):** the
+closing-step design is a **hypothesis with no demonstrated advantage**. Its claimed advantage
+(gates 1 and 4) was my own finite-difference artefact and is withdrawn; its appeal to commercial
+practice is a guess and is withdrawn too. What remains is a built, tested, opt-in implementation
+and gate 2's determinism result. **That is a reasonable place to stop until there is a reference
+accurate enough to rank the two period columns** — and building further on either the retracted
+measurement or the guessed provenance would be building on nothing.
+
+**ORIGINAL PLAN — B7c, superseding B7a and B7b:** drive the period with the inner transient's own
 step control; force the closing step onto `T`; take the period column from that step alone. Gates,
 in order: (1) the autonomous period column against the proportional-scaling one on a smooth
 fixture, where both are valid and must agree; (2) `M` from `factored_period()` against `M` from
@@ -3286,6 +3330,46 @@ Trick. B10 and B3 should be read together and probably costed together.
 `Q`-sweep that produced B6's tolerance floor? If it is merely equivalent, it is not worth the
 second formulation.
 
+### B11. The index is DECIDABLE FROM TOPOLOGY — a diagnostic, not a refusal — NEW 2026-09-04
+
+Estevez Schwarz & Tischendorf (IJCTA 28(2):131–162, 2000), relayed by the docs session:
+
+    the index of the DAE is 2 IF AND ONLY IF the network contains a C-V loop or an L-I cutset;
+    otherwise the index is 1
+
+for nonlinear time-independent networks without controlled sources, "assuming the positive
+definiteness of the Jacobians of the element-characterizing functions", and extended in their
+ref [26] to RLCTG networks (independent sources, resistive/capacitive/inductive subnetworks,
+ideal transformers, gyrators).
+
+⚠⚠ **THIS DOES NOT REOPEN C4, AND SAYING WHY IS THE POINT.** C4 closed *index-2
+detect-and-refuse* because `index > 1` **is not predictive**: all three methods converge on an
+LI-cutset and Gear-2 fails on 2 of 4. That finding is untouched. What the criterion changes is
+that **the INDEX never needed measuring — it is decidable**, while **which INTEGRATOR converges
+still does**. Knowing the index exactly and still not knowing which method to use is a *sharper*
+result than not knowing either, and it retires the sloppier reading ("no method generalises across
+index-2 topologies; measure per circuit") that conflated the two.
+
+⚠ **WHAT IS WORTH BUILDING IS THE DIAGNOSTIC, BECAUSE THE CRITERION IS LOCAL.** The authors'
+stated design goal is exactly this codebase's refusal-message problem: topological criteria "that
+can be checked very fast", based on "LOCAL assumptions, i.e. we want to provide the opportunity to
+LOCALIZE critical element modellings", motivated by circuits of ~1e7 elements where "it is often
+difficult to find the circuit configurations that lead to numerical difficulties". So a failing
+solve could say **WHICH elements form the offending loop or cutset** instead of "index > 1". That
+is graph work on the netlist — no matrices, no solve — and it is a strictly better error message
+than anything currently in the tree.
+
+⚠ **AND ONE CASE WE MAY NOT COVER.** *"C-only loops have to be added to the class of C-V loops
+since the currents through C-only loops belong to the network variables whereas these currents are
+excluded in MNA formulations."* **A pure capacitor loop with no voltage source in it is index 2
+and does not look like it.** The three shipped fixtures are named in the theory — CV-loop and
+V-across-C are both C-V loops (the second the degenerate case), LI-cutset is an L-I cutset — but a
+C-only loop is a fourth case and is not among them.
+
+**Gate before building:** does the topological test agree with the measured index on all three
+existing fixtures, and does it flag a newly built C-only loop that no current check catches?
+Cheap, and it needs no solver.
+
 ### A5. Envelope-following — last
 
 Linaro et al. (OJCAS 2020) apply EFM to the *variational* problem, with a
@@ -3406,7 +3490,7 @@ Each of these cost real time. They are recorded so the next reader spends none.
 | C1 | **Trapezoidal exact-Jacobian reformulation** | Four designs dead on the same `(-1)^n` mode. It is a **theorem**: trapezoidal is A-stable but not L-stable, maps `null(C)` by exactly −1, so any period map `A_trap^K` without an L-stable opener is singular at even K. Verified: `m − rank(C)` modes at −1, exactly. |
 | C2 | **Poincaré / orthogonality phase row** | Tested and rejected. 2–6x conditioning edge that shrinks with refinement and never decides an outcome. The `argmax` rule is canonical (A&T Step 3) and compares units *on purpose* — normalising picks a row **704x worse aligned**. ⚠ **SCOPE: this is one phase ROW against another. It does NOT cover removing the phase condition entirely** — that is LSOAC, which was never considered here and is now **B10**. |
 | C3 | **Per-iteration phase re-selection** | Built and reverted: it **regressed the working case** (on-orbit seed went converged → not). Structural — pinning the iterate's own value makes the residual identically zero, so the row constrains only the step. A&T avoid it by having no phase equation at all (see B3). |
-| C4 | **Index-2 detect-and-refuse** | Would reject working circuits: `index > 1` is **not predictive** (all three methods converge on an LI-cutset), and gear is not the workaround (fails on 2 of 4). Failures are loud, not silent. |
+| C4 | **Index-2 detect-and-refuse** | Would reject working circuits: `index > 1` is **not predictive** (all three methods converge on an LI-cutset), and gear is not the workaround (fails on 2 of 4). Failures are loud, not silent. ⚠ **STILL CLOSED after B11:** the index turns out to be *decidable* from topology, which changes nothing here — deciding it was never the obstacle, and it still does not predict convergence. B11 proposes a DIAGNOSTIC that names the offending loop or cutset, not a refusal. |
 | C5 | **Saltation correction for switching** | **Falsified.** The monodromy–FD gap falls at exactly 2.00x per doubling = O(h) discretisation, not the O(1) a missing correction leaves. PSS's monodromy is the derivative of the *discrete* map, which has no undefined instant. |
 | C6 | **Reusing the inner Newton's factorisation** | Does not exist to reuse — `StandardNewton` factors and discards. A retained one would be `J(x_k)`, not the converged `J(x_{k+1})`: already measured at median 5.5e-9 and rejected as an approximation. |
 | C7 | **Gourary adaptive preconditioning for PAC** | Harmonic balance. His own introduction says the shooting case was already solved by Telichevesky et al., because `A' = I` there — which is our case. Solves a problem we do not have. |
