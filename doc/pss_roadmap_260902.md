@@ -4810,6 +4810,20 @@ variance `∝ Q_λ` (`C_lhj ∼ 1/μ₂`) against a constant phase-bounded part.
 (docstring updated). The tests now compare against the projected reference at 3e-3 and keep the
 growth-subtracted 2.4 % as the documented signature.
 
+⚠ **THE 1/Q LAW IS AN INVARIANT, checked by the docs session rather than taken:** `r · Q_λ` =
+0.2384 / 0.2383 / 0.2393 / 0.2388 — **constant to 0.4 % of its mean over a 9× range in `Q`**, fitted
+exponent −0.9988. The exponent is safe; **the constant is vdp-specific until a second oscillator
+family is run**, and the number should not be read as meaning anything before that. (The projected
+column fits −0.645, which is a floor, not a law — correctly not quoted as one.) The projector
+algebra was also checked independently: `‖Πu‖ = 2e-16`, `‖vᵀΠ‖ = 7e-16`, `‖Π² − Π‖ = 2e-15`.
+
+⚠ **AND A CORRECTION TO HOW THE SWEEP WAS CREDITED, which is §D 0v.** It was recorded as "returning
+a third outcome". That is the test's error, not a bonus: it offered *grows with Q → physics, flat →
+numerical* on a **ratio** whose numerator and denominator scale differently — a dimensionless
+residual can *fall* while the physics it measures *grows*. Read literally, "falling" is neither
+outcome and the honest conclusion would have been "the test does not apply"; the right answer was
+reached only because the projection had already found it from the inside.
+
 **What the wiring is.** Euler (`b = 0`): step state `x` alone, `n = m`, consumers untouched.
 Trapezoidal (`b = −1`): step state is the pair `(x, iq)`, the maps are `2m × 2m`, the noise
 reaches `iq` through `a₀C_kK` as well as `x` through `K`. ⚠⚠ **The un-reset trap pair is
@@ -5197,6 +5211,21 @@ those, and one of them answered a question declared unanswerable. **The index is
 thing.** Two more surfaced from the same blind spot, unassessed: Selting & Zheng 1997 (stability
 of self-excited oscillating circuits, J. Comp. Appl. Math. 82) and a 2020 Russian paper on
 adaptive stepping for oscillatory circuits (DOI 10.31114/2078-7707-2020-3-28-34).
+
+⚠⚠ **AN INDEX-2 GAP IN THE SENSITIVITY SYSTEM — HYPOTHESIS WITH ITS TEST, UNTESTED (docs session,
+from Bereza, *Identification of Non-Linear DAEs*, KTH licentiate 2024, filed as `FULLTEXT01.pdf`).**
+Propositions 3.1/3.2: for an **index-1** DAE of two common forms (circuit MNA is the second), the
+forward sensitivity system `F_ẋ ẋ_θ + F_x x_θ + F_θ = 0` **is also index 1**, and concatenations
+stay index 1. That is the licence — assumed everywhere in this tree, justified nowhere until now —
+to propagate monodromy columns with the same integrator, order and step control as the state.
+**The guarantee covers index 1 only.** On the index-2 configurations (L-I cutset, C-V loop) *nothing
+guarantees the sensitivity system inherits the nominal index*. ✅ **Prediction:** if the sensitivity
+index exceeds the nominal one there, the **monodromy rows lose convergence order FASTER than the
+state rows** on the same fixture. **Refutation:** they degrade together, or the monodromy is no
+worse — then the index-2 defect lives in the state solve alone. Every measurement so far (§0k, B16)
+covers the **state** only. If real, it locates the 2× in sensitivity propagation — a different fix
+from re-seeding. ⚠ The fixture needs *both* a state reference and a monodromy reference on an
+index-2 circuit; not built.
 
 ⚠ **Two instrument errors in this attempt, both mine, both from the record's own list:** a
 `pkill -f "pre_b[.]py"` that killed its own launcher because the *other* lines of the same command
@@ -5649,6 +5678,15 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    the shared input rather than to either formula, which is what found the scale defect. The
    third route was built for that purpose, not for extra confidence. **When two routes agree,
    ask what they share; when a third disagrees, the shared thing is the suspect.**
+
+0v. ⚠⚠ **REFUTATION CONDITIONS MUST PARTITION THE OUTCOMES.** A9's Q-sweep discriminator offered
+   *grows with Q → physics, flat → numerical* for a **ratio** whose numerator and denominator
+   scale differently. The measurement did neither — it **fell** as 1/Q — and read literally the
+   test did not apply. The right conclusion came from a different route (the projection), not
+   from the test. Naming falsifiers in advance (§D 0m) is worth something only if the named
+   outcomes exhaust the space; a two-outcome test on a three-outcome quantity licenses nothing,
+   and a "third outcome" is the test's failure, not a bonus. (Named by the docs session, of its
+   own test.)
 
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
