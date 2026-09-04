@@ -1835,6 +1835,91 @@ class PSS(Analysis):
             RuntimeWarning, stacklevel=3)
         return True
 
+    def lte_grid(self, period, x0=None, refnode=gnd, tstab=None,
+                 reltol=None, timestep=None):
+        """Step FRACTIONS for `solve(grid=...)`, derived from an adaptive run.
+
+        B7a.  A transient adapts because it cannot see the future; PSS
+        re-solves the SAME interval over and over, so it can be handed a
+        grid that was chosen well ONCE and then frozen.  This is the
+        derivation side; `_period_grid` is the consumption side and has
+        been shipped since item 5.
+
+        Returns `(fracs, seed)` -- the accepted steps of one settled
+        period as fractions summing to 1, and the state at the start of
+        that window, ready to pass straight back in:
+
+            fracs, seed = pss.lte_grid(period=T)
+            pss.solve(period=T, grid=fracs, x0=seed)
+
+        MEASURED on van der Pol at `mu = 100`
+        (`benchmarks/pss_lte_grid.py`, the gate this was promoted from):
+        1105 derived steps converge where 1105 UNIFORM steps do not, and
+        beat a 20000-point uniform grid -- 18x fewer points and -47.3 ppm
+        against -60.6.
+
+        ⚠⚠ IT IS FOR STIFF SMOOTH PROBLEMS AND NOT FOR EVENTS, and that
+        boundary is measured rather than cautionary.  On a wrapping
+        `Idtmod` the derived grid is WORSE than a uniform grid of the same
+        count -- max LTE 2.64e+05 against 1.67e+05 times tolerance at
+        ~1429 steps -- because the LTE peak sits at the RESET on every
+        grid, and no step size makes a discontinuity's local truncation
+        error small.  The event half of B7 is a different item: it needs
+        the event time to be an unknown the Newton solves for, because a
+        grid frozen from a PAST traversal cannot represent an event whose
+        time MOVES as the Newton iterates.
+
+        ⚠ FRACTIONS, NOT TIMES, and that is load-bearing rather than a
+        convenience.  An autonomous period is an unknown, so every step
+        must scale with `T` or `dh/dT = h/T` -- the identity the period
+        column rests on -- stops holding.  See `_period_grid`.
+
+        `tstab` is how long to run before the window is taken; it defaults
+        to 200 periods, which is a settling heuristic and not a
+        convergence criterion.  ⚠ A RUN THAT HAS NOT SETTLED YIELDS A GRID
+        FOR THE WRONG TRAJECTORY, silently -- the fractions will still sum
+        to 1 and `solve` will still accept them.  Pass a longer `tstab`,
+        or seed `x0` on the orbit, when the answer matters.
+        """
+        import warnings as _warnings
+        from pycircuit.circuit.transient import Transient
+        T = float(period)
+        if not T > 0.0:
+            raise ValueError('lte_grid: period must be positive, got %g' % T)
+        tstab = 200.0 * T if tstab is None else float(tstab)
+        if tstab < 0.0:
+            raise ValueError('lte_grid: tstab must not be negative, got %g'
+                             % tstab)
+        rt = self.par.reltol if reltol is None else float(reltol)
+        h0 = (T / 200.0) if timestep is None else float(timestep)
+
+        tr = Transient(self.cir, toolkit=self.toolkit, reltol=rt)
+        with _warnings.catch_warnings():
+            _warnings.simplefilter('ignore')
+            res = tr.solve(refnode=refnode, tend=tstab + T, timestep=h0,
+                           x0=x0)
+        t = np.asarray(res.sweep_values, dtype=float).ravel()
+        xs = np.asarray(res.x, dtype=float)
+        ## a settled window of exactly one period, taken from the END
+        j0 = int(np.searchsorted(t, t[-1] - T))
+        win_t, win_x = t[j0:], xs[:, j0:]
+        if len(win_t) < 3:
+            raise RuntimeError(
+                'lte_grid: the adaptive run put only %d points in the last '
+                'period, which is not a grid. Either the transient took '
+                'steps larger than the period (raise tstab or lower '
+                'timestep) or the period given is wrong.' % len(win_t))
+        hs = np.diff(win_t)
+        total = float(hs.sum())
+        if total <= 0.0:
+            raise RuntimeError('lte_grid: the derived window has zero span.')
+        fr = hs / total
+        ## the seed is the state at the window's start, with the reference
+        ## row removed -- the shape `solve(x0=...)` takes
+        iref = self.cir.get_node_index(refnode)
+        seed = np.concatenate((win_x[:iref, 0], win_x[iref + 1:, 0]))
+        return fr, seed
+
     def _period_grid(self, period, npts, grid):
         """`(times, hs)` for one period -- uniform, or a caller's own grid.
 

@@ -10312,3 +10312,357 @@ def test_the_pac_adjoint_surfaces_run_under_every_integrator():
         assert b < a, \
             '%s: the adjoint row does not converge toward gear ' \
             '(%.3e then %.3e)' % (method, a, b)
+
+
+def _osc_with_ladder(Q, nladder, nslow, npts=200):
+    """A van der Pol at a target `Q` with an RC ladder whose first `nslow`
+    sections have time constants STRADDLING the period.
+
+    ⚠ THE STRADDLE IS THE WHOLE FIXTURE. A ladder whose sections all decay
+    inside one step adds states without adding modes near the unit circle:
+    it raises `m` and leaves the spectrum one cluster. That is what makes
+    `nslow` and `m` separable here, and separating them is the point --
+    the first version of this measurement confounded them and reported a
+    flat iteration count at every `(Q, m)`.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    tper = 2.0 * np.pi
+    mu = 1.0 / (2.0 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    prev = 'v'
+    for j in range(nladder):
+        nd = 'p%d' % j
+        cir.add_node(nd)
+        tau = (tper * 10.0 ** (-1.0 + 2.0 * j / max(nslow - 1, 1))
+               if j < nslow else tper * 1e-4)
+        cir['r%d' % j] = R(prev, nd, r=1e3)
+        cir['c%d' % j] = C(nd, gnd, c=tau / 1e3)
+        prev = nd
+    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=200)
+    assert pss.converged, 'Q=%g/nslow=%d did not converge' % (Q, nslow)
+    return cir, pss
+
+
+def _bordered_gmres_iterations(pss):
+    """GMRES iterations for the bordered `(I - M) w = b` on an oscillator."""
+    import warnings
+    import scipy.sparse.linalg as spla
+    fp = pss.factored_period()
+    n = fp.width
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        v_, info = pss.ppv()
+    v = np.asarray(v_, dtype=float)
+    u = np.asarray(info['tangent_pair'], dtype=float)
+
+    def mv(z):
+        z = np.asarray(z)
+        w, s = z[:n], z[n]
+        return np.concatenate((w - np.asarray(fp.matvec(w)) + s * u,
+                               [float(v @ w)]))
+
+    A = spla.LinearOperator((n + 1, n + 1), matvec=mv, dtype=float)
+    rng = np.random.default_rng(0)
+    b = np.concatenate((rng.standard_normal(n), [0.0]))
+    its = [0]
+    spla.gmres(A, b, rtol=1e-10, restart=min(n + 1, 200), maxiter=50,
+               callback=lambda *a: its.__setitem__(0, its[0] + 1),
+               callback_type='pr_norm')
+    return its[0]
+
+
+def test_krylov_cost_ignores_Q_and_tracks_the_SLOW_NODE_COUNT():
+    """⚠⚠ THE HIGH-Q WORRY IS FALSIFIED, AND THE REAL DRIVER IS SOMETHING
+    ELSE.
+
+    The open question was whether a matrix-free shooting solve collapses
+    at high `Q`: the multipliers crowd the unit circle, so `I - M` has its
+    spectrum crowding zero, and GMRES was expected to need `O(m)`
+    iterations exactly where large `m` makes matrix-free worth having.
+
+    Measured at FIXED `m = 32`, sweeping the number of ladder sections
+    whose time constant straddles the period:
+
+        nslow      0    4    8   14   22   30
+        Q =   8    4    8   11   16   23   29
+        Q = 256    5    8   11   17   23   30
+
+    ⚠ A 32x CHANGE IN `Q` MOVES THE COUNT BY AT MOST ONE. Iterations
+    track `nslow` -- roughly `1 + nslow` -- and ignore both `Q` and `m`.
+    Krylov iteration count is set by the number of DISTINCT eigenvalue
+    clusters, which is a spectral-spread property, not by conditioning,
+    which is what `Q` controls.
+
+    ⚠ SO THE OPERATIONAL RULE INVERTS: matrix-free is SAFE on a high-Q
+    oscillator and degrades on a circuit with many SLOW NODES, at any `Q`.
+    A designer's high-Q tank costs nothing here; a bias network with a
+    dozen long time constants costs linearly.
+
+    ⚠ AND `|lambda| > 0.9` IS A POOR PROXY for the driver -- it counted
+    1/2/2/3/4/5 across that sweep while iterations went 4/8/11/16/23/29.
+    The count of near-unit multipliers above a threshold is not the same
+    as the number of distinct clusters, and only the latter predicts.
+    """
+    ## m = 16 and a coarser grid than the sweep above: the CONTRAST is
+    ## what is being pinned, not the absolute counts
+    its = {}
+    for Q in (8.0, 256.0):
+        for nslow in (0, 14):
+            _cir, pss = _osc_with_ladder(Q, 14, nslow)
+            its[(Q, nslow)] = _bordered_gmres_iterations(pss)
+
+    ## 1. slow nodes cost, and cost a lot
+    for Q in (8.0, 256.0):
+        assert its[(Q, 14)] > 2 * its[(Q, 0)], \
+            'Q=%g: a fully slow ladder (%d iterations) no longer costs ' \
+            'materially more than a fully fast one (%d) at the same m -- ' \
+            'the fixture has stopped separating the two' \
+            % (Q, its[(Q, 14)], its[(Q, 0)])
+
+    ## 2. ⚠ AND Q DOES NOT. This is the falsification, and it is the
+    ## assertion that would break if the high-Q worry were real.
+    for nslow in (0, 14):
+        d = abs(its[(8.0, nslow)] - its[(256.0, nslow)])
+        assert d <= 3, \
+            'at nslow=%d the iteration count moved by %d across a 32x ' \
+            'change in Q (%d against %d). Krylov cost is supposed to be ' \
+            'insensitive to Q; if that has changed, the matrix-free route ' \
+            'is no longer safe on high-Q oscillators and the roadmap\'s ' \
+            'conclusion needs re-measuring' \
+            % (nslow, d, its[(8.0, nslow)], its[(256.0, nslow)])
+
+
+def test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length():
+    """⚠ THE RECYCLING IS BUILT AND DEFAULT-ON; THIS PINS WHAT IT BUYS.
+
+    `_solve_subspace` shares one Krylov basis across the whole sweep, on
+    Telichevesky's Theorem 1: `A(alpha) = I - alpha M`, so
+    `span{r, Ar, A^2 r, ...} = span{r, Mr, M^2 r, ...}` for EVERY alpha.
+    The basis is frequency-independent; each frequency then costs a small
+    dense least-squares over it.
+
+    Measured against `recycle=False` on a driven RLC with an RC ladder:
+
+        m    K    mv recycle   mv each   ratio    t recyc   t each
+        4    4         5          12      2.4x     0.149     0.106
+        4   64         5         192     38.4x     0.787     1.702
+       18    4         8          24      3.0x     0.270     0.179
+       18   64        10         384     38.4x     0.974     2.862
+
+    ⚠⚠ MATVECS ARE FLAT IN `K` AND THE WALL CLOCK IS NOT -- 38x against
+    2.9x. That gap is the useful part: the Krylov solve has already been
+    removed from the sweep's cost, and what remains is the ONE FORCED
+    REPLAY PER FREQUENCY outside it, which recycling cannot touch. Anyone
+    optimising this sweep further should go after the replays, not the
+    linear solve.
+
+    ⚠ AND IT IS A LOSS ON SHORT SWEEPS: at `K = 4` recycling costs MORE
+    wall clock than solving each (0.149 against 0.106) despite using
+    fewer matvecs, because the dense least-squares over the shared basis
+    dominates. The win needs roughly `K >= 8`. That is not an argument
+    against the default -- a 4-point PAC sweep is not where time goes --
+    but it is why the ratio must be read on matvecs and length, not on a
+    single timing.
+    """
+    import warnings
+    from pycircuit.circuit.elements import VSin
+    circuit.default_toolkit = circuit.numeric
+    Lv, Cv, Rs = 1e-3, 1e-9, 10.0
+    per = 2.0 * np.pi * np.sqrt(Lv * Cv)
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['r'] = R('a', 'b', r=Rs)
+        c['l'] = L('b', gnd, L=Lv)
+        c['c1'] = C('b', gnd, c=Cv)
+        return c
+
+    cir = build()
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 200,
+                  x0=np.zeros(cir.n - 1), maxiterations=100,
+                  x0_unknown=False)
+    assert pss.converged
+
+    seen = {}
+    for K in (4, 32):
+        freqs = np.linspace(0.05, 0.45, K) / per
+        out = {}
+        for flag in (True, False):
+            pac = PAC(cir)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = pac.solve(pss, freqs, recycle=flag)
+            out[flag] = (pac.matvecs, np.asarray(res.x))
+        ## the two routes must agree -- recycling minimises the TRUE
+        ## residual over the shared span, so it is never the worse answer
+        a, b = out[True][1], out[False][1]
+        scale = float(np.max(np.abs(b)))
+        rel = float(np.max(np.abs(a - b))) / max(scale, 1e-300)
+        assert rel < 1e-9, \
+            'K=%d: recycling changed the answer by %.3e' % (K, rel)
+        seen[K] = (out[True][0], out[False][0])
+
+    ## ⚠ THE UNRECYCLED COUNT MUST SCALE WITH THE SWEEP AND THE RECYCLED
+    ## ONE MUST NOT. That contrast is the claim; an absolute count is a
+    ## machine and tolerance detail.
+    r4, e4 = seen[4]
+    r32, e32 = seen[32]
+    assert e32 > 6 * e4, \
+        'solving each frequency no longer scales with sweep length ' \
+        '(%d at K=4, %d at K=32)' % (e4, e32)
+    assert r32 < 3 * r4, \
+        'the recycled basis is no longer shared across the sweep -- its ' \
+        'matvec count grew from %d to %d when the sweep grew 8x, which ' \
+        'means the frequency-independence of the Krylov space has been ' \
+        'lost' % (r4, r32)
+    assert e32 > 5 * r32, \
+        'recycling no longer saves matvecs at K=32 (%d against %d)' \
+        % (e32, r32)
+
+
+def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
+    """B7a: the DERIVATION side, promoted from `benchmarks/pss_lte_grid.py`.
+
+    `_period_grid` has consumed caller-supplied step fractions since item
+    5; what was missing was deriving them. `PSS.lte_grid` runs an adaptive
+    transient, takes the accepted steps of one settled period, and returns
+    them as fractions plus the state that starts the window — so the pair
+    feeds straight back in:
+
+        fracs, seed = pss.lte_grid(period=T)
+        pss.solve(period=T, grid=fracs, x0=seed)
+
+    ⚠ FRACTIONS, NOT TIMES. An autonomous period is an unknown, so every
+    step must scale with `T` or `dh/dT = h/T` — the identity the period
+    column rests on — stops holding.
+
+    ⚠⚠ AND THIS IS FOR STIFF SMOOTH PROBLEMS, NOT EVENTS. On a wrapping
+    `Idtmod` the derived grid is measurably WORSE than a uniform grid of
+    the same count (max LTE 2.64e+05 against 1.67e+05 times tolerance),
+    because the LTE peak sits at the RESET on every grid and no step size
+    makes a discontinuity's truncation error small. That half of B7 needs
+    the event time to be a Newton unknown and is filed against A6.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu, T = 4.0, 11.0
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        return cir
+
+    cir = vdp()
+    pss = PSS(cir, method='gear', reltol=1e-6)
+    x0 = np.zeros(cir.n)
+    x0[cir.get_node_index('v')] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        fr, seed = pss.lte_grid(period=T, x0=x0, tstab=12 * T, reltol=1e-5)
+
+    ## it is a grid: positive fractions of exactly one period
+    assert fr.ndim == 1 and len(fr) > 10
+    assert np.all(fr > 0.0)
+    assert abs(float(fr.sum()) - 1.0) < 1e-12, \
+        'the fractions must sum to exactly one period; got %.15f' \
+        % float(fr.sum())
+
+    ## ⚠ AND IT IS GENUINELY NON-UNIFORM, which is the only reason to
+    ## derive one. A uniform result would mean the transient never
+    ## adapted and the whole exercise bought nothing -- measured spreads
+    ## of 4x here and 170x at mu=10.
+    spread = float(fr.max() / fr.min())
+    assert spread > 2.0, \
+        'the derived grid is essentially uniform (max/min = %.2f), so ' \
+        'the adaptive run contributed nothing' % spread
+
+    ## and `solve` takes it, on a FRESH circuit, reaching the same period
+    ## a uniform grid of the same count reaches
+    p2 = PSS(vdp(), method='gear', reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p2.solve(period=T, grid=fr, x0=seed, maxiterations=60)
+    assert p2.converged, 'the derived grid did not converge'
+
+    p3 = PSS(vdp(), method='gear', reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p3.solve(period=T, timestep=T / len(fr), x0=seed, maxiterations=60)
+    assert p3.converged
+
+    ## ⚠ AGAINST A FINE REFERENCE, NOT AGAINST EACH OTHER. The first
+    ## version of this demanded the two periods agree to 1e-4 and failed
+    ## at 2.5e-3 -- and the demand was WRONG, not merely tight: the two
+    ## grids are supposed to differ, that is the entire point of deriving
+    ## one. What they must both do is bracket the true period.
+    ##
+    ## Measured at mu = 4 with 174 steps, against a 3000-point run
+    ## (gear is second order, so that reference is ~300x finer than the
+    ## grids under test -- ample, and it keeps this test under 30s):
+    ##     derived 1.214e-03      uniform 1.282e-03
+    ## -- the derived grid is BETTER, but only by 5%, because mu = 4 is
+    ## not stiff enough to separate them. The headline win (converging
+    ## where the same count of uniform steps does NOT, and beating a
+    ## 20000-point grid at 18x fewer points) is at mu = 100 in
+    ## `benchmarks/pss_lte_grid.py`, which is far too slow for this suite.
+    ## So this asserts NOT-WORSE, which is what is cheaply checkable here.
+    pf = PSS(vdp(), method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pf.solve(period=T, timestep=T / 3000, x0=seed, maxiterations=60)
+    assert pf.converged
+    e_der = abs(p2.period - pf.period) / pf.period
+    e_uni = abs(p3.period - pf.period) / pf.period
+    assert e_der < 5e-3 and e_uni < 5e-3, \
+        'neither grid is resolving the period (derived %.3e, uniform ' \
+        '%.3e); the reference or the fixture has moved' % (e_der, e_uni)
+    assert e_der < 1.5 * e_uni, \
+        'the DERIVED grid is now materially worse than a uniform grid of ' \
+        'the same step count (%.3e against %.3e). Adapting the steps is ' \
+        'supposed to be free or better on a smooth stiff problem; if it ' \
+        'has become a cost the derivation is picking the wrong window' \
+        % (e_der, e_uni)
+
+
+def test_lte_grid_refuses_what_it_cannot_derive():
+    """The two ways to hand it something that is not a period.
+
+    A bad period is refused in words rather than returning a grid for the
+    wrong interval, which `solve` would accept without complaint — the
+    fractions sum to 1 whatever window they came from.
+    """
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    pss = PSS(cir, method='gear', reltol=1e-6)
+    with pytest.raises(ValueError, match='period must be positive'):
+        pss.lte_grid(period=0.0)
+    with pytest.raises(ValueError, match='tstab must not be negative'):
+        pss.lte_grid(period=1.0, tstab=-1.0)

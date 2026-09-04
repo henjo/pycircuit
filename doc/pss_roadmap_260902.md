@@ -3502,9 +3502,14 @@ state — because the event time MOVES as the Newton iterates.** Freezing the gr
 events are in direct tension. That is the reproducibility problem the entry named, now with a
 mechanism instead of a worry, and it means the two halves of B7 are **not one item**:
 
-  * **B7a — automatic grid derivation for STIFF SMOOTH problems.** Justified, cheap, and already
-    demonstrated: promote `lte_grid` from a benchmark to shipped API. The vdp `μ = 100` numbers
-    are the gate and they already pass.
+  * **B7a — automatic grid derivation for STIFF SMOOTH problems.** ✅ **BUILT 2026-09-04** as
+    `PSS.lte_grid(period, ...)`, returning `(fracs, seed)` ready for `solve(grid=…, x0=…)`.
+    The `μ = 100` gate was re-run before promoting and still holds: **1105 LTE-chosen steps
+    converge at −47.3 ppm where 1105 UNIFORM steps do not converge at all**, for `trap` and
+    `gear` alike. Step spread on that grid is 16438×. Pinned by
+    `test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts`, which asserts the
+    fractions sum to one period, are genuinely non-uniform, and are not WORSE than a uniform
+    grid of the same count against a fine reference.
   * **B7b — event localisation under shooting.** NOT solved by a frozen adaptive grid, and the
     measurements above say so. It needs the event time to be an unknown the Newton solves for, or
     a formulation where the reset is a state-dependent map rather than a grid feature. That is a
@@ -3888,6 +3893,88 @@ guess and the measurement did not support it.
 measured against what we already have, and what it establishes is that the published method is
 our method with an extra free parameter and a vector sensitivity we do not have.
 
+### B13. Krylov cost at high Q above m=12 — ✅ **MEASURED 2026-09-04; THE WORRY IS FALSIFIED AND THE REAL DRIVER IS SLOW NODES**
+
+The binding gap for the matrix-free question: every existing benchmark varies `m` at **one** `Q`,
+and the concern was the *pairing* — at high `Q` the multipliers crowd the unit circle, so `I − M`
+crowds zero, and GMRES was expected to need `O(m)` iterations exactly where large `m` makes
+matrix-free worth having.
+
+**Fixture.** A van der Pol at a target `Q` plus an RC ladder whose first `nslow` sections have time
+constants **straddling the period**. ⚠ The straddle is the whole fixture: a ladder that decays
+inside one step raises `m` without adding modes near the unit circle, which is what makes `nslow`
+and `m` separable. Bordered `(I − M)w = b`, GMRES at `rtol = 1e-10`.
+
+**Fixed `m = 32`, sweeping only `nslow`:**
+
+    nslow      0    4    8   14   22   30
+    Q =   8    4    8   11   16   23   29
+    Q = 256    5    8   11   17   23   30
+
+⚠⚠ **A 32× CHANGE IN `Q` MOVES THE ITERATION COUNT BY AT MOST ONE.** Iterations track `nslow`
+(roughly `1 + nslow`) and ignore `Q` entirely, and ignore `m` — which is held fixed here.
+
+**Why:** Krylov iteration count is set by the number of **distinct eigenvalue clusters**, a
+spectral-spread property. `Q` controls *conditioning*, which is a different thing, and the
+oscillator contributes **one** mode near 1 however high `Q` goes. Slow nodes each contribute
+another.
+
+✅ **THE OPERATIONAL RULE INVERTS.** Matrix-free is **safe on a high-Q oscillator** — the case
+everyone worried about — and degrades on a circuit with **many slow nodes**, at any `Q`. A
+designer's high-Q tank costs nothing; a bias network with a dozen long time constants costs
+linearly. Pinned by `test_krylov_cost_ignores_Q_and_tracks_the_SLOW_NODE_COUNT`.
+
+⚠ **`|λ| > 0.9` IS A POOR PROXY** and was nearly reported as the driver: it counted 1/2/2/3/4/5
+across that sweep while iterations went 4/8/11/16/23/29. A threshold count of near-unit
+multipliers is not the number of distinct clusters, and only the latter predicts.
+
+⚠ **THE FIRST FIXTURE MEASURED THE WRONG OBJECT AND IS KEPT AS THE CONTROL.** Its ladder ran `τ`
+from 1e-2 down to 1e-9 against a period of `2π`, so every added mode decayed inside one step:
+**4 iterations at every `(Q, m)` across `Q` = 8…1024 and `m` = 8…32**. Uniform, with nothing
+predicting uniformity. That run is the `nslow = 0` column — at `m = 32` iterations go **4 → 33**
+purely by making the ladder slow, which is the cleanest separation in the whole measurement.
+
+⚠ **BOUNDARY: `Q = 1024` WITH A FULLY SLOW LADDER DOES NOT CONVERGE** at 400 points. That is the
+shooting solve failing, not the Krylov solve, and it is a different limit from the one this entry
+closes.
+
+⚠ **A CAVEAT ON SCOPE, since it bounds what this licenses:** iterations reach 29–33 at `m = 32`
+(width 64), i.e. approaching `n/2`, where a direct solve wins regardless. The result says `Q` is
+free, not that the matrix-free route is unconditionally cheap.
+
+### B14. Krylov recycling across the PAC sweep — ✅ **ALREADY BUILT; MEASURED 2026-09-04**
+
+Raised as an open question ("does multi-RHS recycling cut the PAC-sweep matvec counts?"). It is
+not unbuilt: `_solve_subspace` has shared one Krylov basis across the sweep since PAC landed, and
+`recycle=True` is the default. What was never measured is **what it buys**.
+
+The identity it rests on is Telichevesky's Theorem 1: `A(α) = I − αM`, so
+`span{r, Ar, A²r, …} = span{r, Mr, M²r, …}` for **every** `α`. The basis is frequency-independent;
+each frequency then costs a small dense least-squares over it.
+
+**Measured against `recycle=False`, driven RLC with an RC ladder:**
+
+    m    K    mv recycle   mv each   ratio    t recyc   t each    max rel Δy
+    4    4         5          12      2.4×     0.149     0.106      3.7e-13
+    4   16         5          48      9.6×     0.275     0.423      3.7e-13
+    4   64         5         192     38.4×     0.787     1.702      5.1e-13
+   18    4         8          24      3.0×     0.270     0.179      3.7e-14
+   18   64        10         384     38.4×     0.974     2.862      3.3e-13
+
+⚠⚠ **MATVECS ARE FLAT IN `K`; THE WALL CLOCK IS NOT — 38.4× against 2.9×.** That gap is the real
+finding. The Krylov solve has **already been removed** from the sweep's cost, and what remains is
+the **one forced replay per frequency** outside it, which recycling cannot touch. Further work on
+this sweep must target the replays, not the linear solve. Filing "add Krylov recycling" as an
+optimisation would have been work with a 1.0× ceiling.
+
+⚠ **AND IT IS A LOSS ON SHORT SWEEPS:** at `K = 4` recycling costs *more* wall clock than solving
+each (0.149 against 0.106) despite fewer matvecs — the dense least-squares over the shared basis
+dominates. The win needs roughly `K ≥ 8`. Not an argument against the default, but the reason the
+ratio must be read on matvecs against sweep length rather than on one timing.
+
+Pinned by `test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length`, which asserts the
+*contrast* (unrecycled scales with `K`, recycled does not) rather than absolute counts.
+
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
 Requested 2026-09-04; it is in. All three `fsolve` calls pass `line_search=True`, and
@@ -4051,7 +4138,7 @@ is unresolved, not refuted.**
 
 ## B. Formulation decisions — measured, awaiting a call
 
-### B1. Make `x0_unknown` the default on non-uniform grids
+### B1. Make `x0_unknown` the default on non-uniform grids — ⚠ **MEASURED 2026-09-04: DO NOT**
 
 Shipped as an option. The evidence says it wins exactly there and loses on uniform grids:
 
@@ -4064,6 +4151,50 @@ Shipped as an option. The evidence says it wins exactly there and loses on unifo
 **Gate:** a rule that picks correctly without the caller knowing. "Non-uniform" is not
 quite it — the gain came from the formulation making the opening-step *subdivision*
 unnecessary, so the real predictor is whether the grid opens coarse.
+
+---
+
+⚠⚠ **THE GATE WAS RUN 2026-09-04. "OPENS COARSE" IS FALSIFIED AS A PREDICTOR, AND THE
+RECOMMENDATION IS TO LEAVE THE DEFAULT ALONE.**
+
+**Driven**, Q=20 resonator, grid graded geometrically so it opens coarse while staying inside
+the `1 + √2` zero-stability bound (absolute error against the analytic 20 V):
+
+    h0/mean    1.00    1.39    2.01    2.55    3.49    4.59
+    default   0.0127  0.0148  0.0075  0.0073  0.0417  0.1247
+    x0_unk    0.2306  0.4376  0.9156  1.4459  2.5582  4.0442
+
+⚠ `x0_unknown` loses at **every** grading and loses **monotonically more** as the grid opens
+coarser — the OPPOSITE of the predicted direction.
+
+**Autonomous**, van der Pol on its own `lte_grid`, period error in ppm against a fine reference:
+
+    μ        1        4       10
+    default  1.4    101.0      0.5
+    x0_unk  21.9    109.5    108.8
+
+⚠ It loses there too, at every `μ` tried. (`gear` returns the documented "nothing to change"
+refusal, since its solved-history path already solves for `x₀`.)
+
+⚠⚠ **AND THE ONE RECORDED WIN DOES NOT SUPPORT THE CHANGE, BECAUSE IT IS NOT ABOUT THIS FLAG.**
+Re-running `benchmarks/pss_lte_grid.py` reproduces **−47.3 ppm**, but that is the **LTE GRID**
+beating uniform — where 1105 uniform steps *do not converge at all* — measured through the
+benchmark's own hand-rolled Newton. The `−73.8` it is contrasted against is the same grid with
+the opening-step SUBDIVISION, which is a different knob. So the table above entangles a grid
+change and a formulation change, and the formulation half is unsupported.
+
+✅ **RECOMMENDATION: DO NOT make `x0_unknown` a grid-driven default.** Keep the conditional
+**topology**-driven default (index-2 → on), which rests on the L-I cutset measurement in §0k and
+is the only regime where the flag is measured to win. ⚠ A caller with a specific reason can still
+pass it explicitly — that is what an option is for.
+
+⚠ **ONE HARNESS TRAP WORTH THE RECORD.** The first version of the driven sweep put the entire
+opening ratio into step one, giving `h₀/h₁` of 10 and 100 — far outside the `1 + √2` bound that
+this file's own `test_a_grid_that_outruns_zero_stability_says_so` documents. It was therefore
+measuring the integrator's silent **demotion to Euler**, not the formulation, and one grid
+returned `nan`. Geometric grading spreads the same overall opening across every step and stays
+inside the bound by construction. **A grid is an instrument, and an invalid grid measures the
+integrator instead of the thing under test.**
 
 ### B2. theta = 1/2 + Ch — the fifth trapezoidal design
 
