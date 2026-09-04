@@ -4778,6 +4778,37 @@ state block admitted a replica alongside the physical mode, it would produce a s
 correct magnitude, which is the signature seen. Nobody has checked whether gear's pair map does
 this; it is recorded so the thing has a name, not because anyone believes it yet.
 
+✅⚠ **THE PLAIN-PATH LYAPUNOV SOLVE IS NOW WIRED (2026-09-04, `_lyapunov_pieces_plain`), AND IT
+FALSIFIES THE ATTRIBUTION ABOVE.** On **euler-plain** — `n = m`, no pair, nothing to slice —
+`orbital_correlation` against the cycle-mean transverse Lyapunov covariance gives magnitude
+**0.99993** and a shape residual of **2.4–2.7 %, flat between 1600 and 3200 points**. So the
+residual is neither the pair slice nor discretisation. It stays open, bounded at 5 % in the
+test with a floor asserting it has not silently vanished. **Candidate, UNTESTED, that fits its
+size and the theory:** eq (22)'s `l ≥ 2` sum is the *pure orbital* term; Theorem 4.1's total
+adds the **phase–orbital correlation** `S_corr` (eqs 18/20, `D_lhj`), whose `τ = 0` value the
+Lyapunov covariance contains and this sum excludes — reported by the authors as small, with a
+sign. The test that settles it is assembling `D_lhj` and adding its `τ = 0` contribution.
+
+**What the wiring is.** Euler (`b = 0`): step state `x` alone, `n = m`, consumers untouched.
+Trapezoidal (`b = −1`): step state is the pair `(x, iq)`, the maps are `2m × 2m`, the noise
+reaches `iq` through `a₀C_kK` as well as `x` through `K`. ⚠⚠ **The un-reset trap pair is
+SINGULAR, measured** — carrying `iq` across the boundary puts a marginal `(−1)ⁿ` mode in
+`I − M⊗M` (`LinAlgError` on a driven RLC): the obstruction this document records for **every**
+formulation that keeps the companion across a period, met for the fourth time, from the
+covariance side. The period map re-seeds `iq` (`M = (ΠA)·diag(I, 0)`), as the solve does. **Tie
+gate:** the product of the per-step maps reproduces `fp.matvec` to 0 (euler), 1e-12 (trap, on
+`(x, 0)` read out on `x`), 0 (gear). **`kT/C` gate:** `covariance` under euler and trap converges
+on 1.0 exactly as gear does (0.969 / 0.969 / 0.955 at 1600 points). ❌ `oscillator_covariance`
+is **refused for trap-plain with its reason**: it borders with `ppv()`'s width-`m` vectors and the
+trap pair map is `2m × 2m`; the pair's own null vectors would be needed, with a normalisation
+this record was burned on twice today. Euler-plain and gear both work.
+
+⚠ **A FIXTURE CATCH, PREDICTED BEFORE IT WAS READ.** The first `kT/C` gate read **2.0** under
+every method. The prediction — "if `R` already carries thermal noise, an explicit
+`IS(noisePSD = 4kT/R)` beside it double-counts, and gear will read 2.0 on the same fixture too"
+— held exactly: with `IS` all three → 2.0 (1.939 / 1.939 / 1.911), with `R` alone all three →
+1.0. The code was right; the fixture was mine.
+
 ⚠ **AN EARLIER VERSION OF THIS ENTRY CONCLUDED "the link holds in the clamping regime and is void
 in the soft-compressing one".** That is correct about the tank-`Q` route and **generalised too
 far** — it treated the only route it had found as the only route there is.
@@ -5123,6 +5154,28 @@ technical reports we do not hold. The closest title in existence to this questio
 **März & Rodríguez Santiesteban, "Analyzing the stability behaviour of DAE solutions and their
 approximations", TR 99-2, Humboldt-Universität Berlin, 1999** — an acquisition, not a search, if
 this becomes worth chasing.
+
+⚠⚠ **RETRACTED BY THE DOCS SESSION THE SAME EVENING: THE CORPUS DOES REACH IT.** We hold
+**R. März, "On linear differential-algebraic equations and linearizations", Applied Numerical
+Mathematics 18 (1995) 267–292** — filed under a mangled DOI with no author or title, which is why
+a filename-keyed audit missed it. Its abstract: linearizations of **nonlinear index-2** systems,
+*"the local convergence of the **Newton–Kantorovich method (quasilinearization)** result
+immediately … this applies also to fully implicit index-1 systems whose leading nullspace is
+allowed to vary with all its arguments."* Newton–Kantorovich on a boundary value problem is the
+framework shooting lives in. ⚠ **AND IT NAMES A NORM:** convergence *"with any initial guess
+`x₀` being close enough to `x_*` in **C¹**"* — the guess's **derivative** must be close, not only
+its value. ✅ **A HYPOTHESIS WITH ITS TEST ATTACHED, marked as such:** if the `C¹` ball is what
+separates `k = 1` from `k ≥ 2`, then the discriminating measurement is not `x(0)` but
+`‖ẋ_manufactured(0) − ẋ_orbit(0)‖` as a function of `k` — it should degrade where convergence
+does. If it is flat while convergence fails, the `C¹` story is wrong. It also fits the shape the
+conditioning measurement could not: settling 2–5 % off in a consistent direction is what falling
+outside a local-convergence ball looks like, which is a failure of the *initial guess*, not of
+the Jacobian. **Unrun.** ⚠ The general lesson: ~30 files in the library carry no author or title
+(DOIs, arXiv ids, `selting1997.pdf`, `2763.pdf`); an index keyed on filenames is blind to exactly
+those, and one of them answered a question declared unanswerable. **The index is not the
+thing.** Two more surfaced from the same blind spot, unassessed: Selting & Zheng 1997 (stability
+of self-excited oscillating circuits, J. Comp. Appl. Math. 82) and a 2020 Russian paper on
+adaptive stepping for oscillatory circuits (DOI 10.31114/2078-7707-2020-3-28-34).
 
 ⚠ **Two instrument errors in this attempt, both mine, both from the record's own list:** a
 `pkill -f "pre_b[.]py"` that killed its own launcher because the *other* lines of the same command
