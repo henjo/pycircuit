@@ -7093,6 +7093,32 @@ class PAC(Analysis):
                 % (what, info, r / scale))
         return x
 
+    def _refuse_coloured(self, pss, what):
+        """Refuse a coloured source where the machinery assumes WHITE.
+
+        ⚠ THE TRAP IS THAT NOTHING ELSE WOULD OBJECT. The Lyapunov
+        recursion, `diffusion_constant` and eq (22)'s collapse all read
+        `CY` at ONE frequency and treat it as the noise intensity at every
+        frequency; a coloured source folded that way returns a plausible
+        number, not an error (A4d names exactly this shape). Detected by
+        evaluating the reduced `CY` at two frequencies -- colour is
+        frequency dependence, bias dependence is what `_cy_reduced`
+        refuses separately.
+        """
+        w1 = 2.0 * np.pi / float(pss.period)
+        c1 = np.asarray(self._cy_reduced(pss, w1), dtype=complex)
+        c2 = np.asarray(self._cy_reduced(pss, 10.0 * w1), dtype=complex)
+        sc = max(float(np.max(np.abs(c1))), 1e-300)
+        if float(np.max(np.abs(c1 - c2))) > 1e-9 * sc:
+            raise NotImplementedError(
+                'PAC.%s: a noise source in this circuit is COLOURED (its CY '
+                'differs between w0 and 10 w0), and this routine assumes '
+                'white sources -- it would fold CY at one frequency as if '
+                'it held at every frequency and return a plausible wrong '
+                'number. Use the frequency-resolved surfaces (pnoise, '
+                'phase_psd/coloured_diffusion), or the white-through-filter '
+                'form of the source.' % what)
+
     def _lyapunov_pieces(self, pss, what):
         """The per-step maps, injections and one-period accumulation.
 
@@ -7109,6 +7135,7 @@ class PAC(Analysis):
         `diffusion_constant` and `covariance` once did over exactly this
         factor of two.
         """
+        self._refuse_coloured(pss, what)
         fp = pss.factored_period()
         if fp.kind != 'solved_history':
             return self._lyapunov_pieces_plain(pss, fp, what)
@@ -7641,6 +7668,7 @@ class PAC(Analysis):
         at tau = 0 its brace is {1 - 1} = 0 identically, and (23) states
         R_yy(0) = sum C_lhj alone.  Named so nobody rebuilds it.
         """
+        self._refuse_coloured(pss, 'orbital_correlation')
         H = self.ORBITAL_HARMONICS if H is None else int(H)
         modes = pss.floquet_modes(pss)
         m = self.cir.n - 1

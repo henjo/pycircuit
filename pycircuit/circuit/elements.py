@@ -379,7 +379,29 @@ class IS(Circuit):
                             unit='deg', default=0),
                   Parameter(name='noisePSD', 
                             desc='Current noise power spectral density', 
-                            unit='A^2/Hz', default=0.0)]
+                            unit='A^2/Hz', default=0.0),
+                  ## ⚠ COLOUR. The library's CY has always taken `w` and
+                  ## ignored it; every source was white, so the coloured
+                  ## fold in shooting.py (A4d) had nothing to run on. Two
+                  ## shapes, both multiplying noisePSD:
+                  ##   noiseTau > 0 : Lorentzian  1 / (1 + (w tau)^2) -- the
+                  ##                  spectrum of WHITE noise through an RC of
+                  ##                  time constant tau, so it is realisable
+                  ##                  in-netlist and that realisation is the
+                  ##                  gate for every coloured path.
+                  ##   noiseFc  > 0 : flicker     1 + 2 pi fc / |w|  -- a corner
+                  ##                  at fc, NOT realisable by a finite filter
+                  ##                  (Demir 1996: one state per decade). At
+                  ##                  w = 0 the white value is returned rather
+                  ##                  than infinity; a caller asking for the
+                  ##                  DC value of a 1/f source has asked the
+                  ##                  wrong question.
+                  Parameter(name='noiseTau',
+                            desc='Lorentzian colour time constant (0 = white)',
+                            unit='s', default=0.0),
+                  Parameter(name='noiseFc',
+                            desc='Flicker corner frequency (0 = none)',
+                            unit='Hz', default=0.0)]
     terminals = ('plus', 'minus')
     function = func.TimeFunction()
 
@@ -407,8 +429,15 @@ class IS(Circuit):
         return self.toolkit.inf
 
     def CY(self, x, w, epar=defaultepar):
-        return  self.toolkit.array([[self.iparv.noisePSD, -self.iparv.noisePSD],
-                                    [-self.iparv.noisePSD, self.iparv.noisePSD]])
+        psd = self.iparv.noisePSD
+        tau = self.iparv.noiseTau
+        fc = self.iparv.noiseFc
+        wa = abs(w)
+        if tau > 0.0:
+            psd = psd / (1.0 + (wa * tau) ** 2)
+        if fc > 0.0 and wa > 0.0:
+            psd = psd * (1.0 + 2.0 * self.toolkit.pi * fc / wa)
+        return self.toolkit.array([[psd, -psd], [-psd, psd]])
 
 class ISin(IS):
     """ Independent sinus current source
