@@ -8855,7 +8855,9 @@ def test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row():
     T0 = float(pss.period)
     m = cir.n - 1
     _v, info = pss.ppv()
-    S = np.asarray(info['samples'])[:, :m]
+    ## ⚠ `samples_eq`: a DC current injection is an EQUATION-ROW input, so
+    ## it contracts with `v_1`, not with the `C^T v_1` in `samples`.
+    S = np.asarray(info['samples_eq'])[:, :m]
     h = np.diff(np.asarray(info['times'], dtype=float))
     n = len(h)
     ints = [float((S[:n, j] * h).sum()) for j in range(m)]
@@ -8881,12 +8883,14 @@ def test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row():
 
 
 def test_the_fill_is_skipped_entirely_without_an_algebraic_row():
-    """⚠ The guarantee that made this fix safe to apply: a circuit with no
-    algebraic row does no per-sample work and is bit-for-bit unchanged.
+    """The algebraic pattern gates the FILL; the `C^-T` conversion is not
+    gated by it and runs regardless.
 
-    Asserted on the PATTERN rather than on a value, because the pattern is
-    what gates the code path -- an empty one means `ppv()` runs exactly the
-    lines it ran before.
+    ⚠ THAT DISTINCTION IS THE C^2 FIX. An earlier version skipped all
+    per-sample work when there were no algebraic rows, which was right for
+    the fill and WRONG for the conversion: a plain ODE circuit still needs
+    `C^-T` whenever its capacitance is not 1 F. The pattern is asserted
+    here because it still decides whether the fill runs.
     """
     cir, pss, _pac, _rs = _loss_osc('parallel', Q=8.0, npts=240)
     x0f = np.asarray(pss.waveform[1], dtype=float)[:, 0]
@@ -9001,14 +9005,16 @@ def test_the_lyapunov_route_matches_an_analytic_external_oracle():
         'and equal to the one-sided/two-sided half; got %.6f' % lo
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'diffusion_constant contracts CY -- an EQUATION-ROW current covariance -- '
-    'against ppv()\'s v, which its own docstring says "behaves as C^T v_1" '
-    'while Demir\'s formula uses v_1. The two differ by C, so c is wrong by '
-    'C^2 and every fixture in this campaign uses C = 1 F. Measured against '
-    'both oscillator_covariance and the Ghanta oracle. Remove when fixed.'))
 def test_diffusion_constant_should_not_depend_on_the_capacitance_scale():
-    """The same oscillator, C scaled 100x, against the Lyapunov route."""
+    """⚠ `diffusion_constant` WAS WRONG BY EXACTLY `C^2`, and this is the sweep
+    that found it -- against `oscillator_covariance`, which reaches `CY`
+    through the Lyapunov recursion and never touches the PPV.
+
+    The cause was contracting `CY`, an EQUATION-ROW covariance, against
+    `samples` (`C^T v_1`) instead of `samples_eq` (`v_1`). Nothing caught it
+    because every other fixture in this file uses `C = 1 F`, where the
+    factor is exactly 1 -- section D shape 0i.
+    """
     out = []
     for cc in (0.1, 1.0, 10.0):
         _cir, pss, pac, _amp, _rp, _lemma = _ghanta_tank(cc=cc, ll=1.0)
@@ -9058,7 +9064,9 @@ def test_the_algebraic_fill_is_identified_not_merely_validated():
     m = cir.n - 1
     irn = pss.irefnode
     _v, info = pss.ppv()
-    S = np.asarray(info['samples'])[:, :m]
+    ## `samples_eq` IS `v_1` -- no reconstruction needed any more
+    S = np.asarray(info['samples_eq'])[:, :m]
+    Sv = np.asarray(info['samples'])[:, :m]
     X = np.asarray(pss.waveform[1], dtype=float)
 
     def mats(xf):
@@ -9074,14 +9082,15 @@ def test_the_algebraic_fill_is_identified_not_merely_validated():
     assert rows and cols, 'this fixture must have an algebraic row to test'
     ## the branch row's C entry is negative -- the whole point of the sign
     assert Cr0[diff[-1], diff[-1]] < 0.0
+    ## and `samples` must still be the STATE vector, structurally zero there
+    assert np.max(np.abs(Sv[:, rows])) == 0.0, \
+        'samples must remain C^T v_1, which annihilates the algebraic columns'
 
     scale = float(np.max(np.abs(S)))
     worst = worst_flipped = 0.0
     for k in range(0, S.shape[0], max(1, S.shape[0] // 8)):
         _Ck, Gk = mats(X[:, k])
-        v1 = S[k].copy()
-        for i in diff:
-            v1[i] = S[k][i] / _Ck[i, i]
+        v1 = S[k]
         flipped = v1.copy()
         for i in rows:
             flipped[i] = -v1[i]

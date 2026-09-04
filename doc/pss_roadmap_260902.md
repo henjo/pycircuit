@@ -737,6 +737,79 @@ it.
 
 ---
 
+### 0j. The `C²` fix APPLIED, and Γ MEASURED — 2026-09-04
+
+Andreas authorised both. **`c` now agrees with the Lyapunov route at every `C`:** the ratio is
+1.000334 / 1.000334 / 1.000335 across `C` = 0.1, 1, 10 and 1.000334 / 1.000335 across `L` = 0.1,
+10, where it had been 0.010003 / 1.000334 / 100.033536.
+
+⚠⚠ **THE FIX IS TWO NAMED OBJECTS, NOT A CONVERSION — AND THAT IS A DESIGN DECISION, NOT THE
+SOURCE'S.** Demir carries ONE vector and TWO contraction rules: eq (41), a state initial
+condition, with `C`; eq (42) and the phase equation (44), an equation-row input, bare. This
+implementation stores TWO vectors instead: `info['samples']` stays `Cᵀ v_1`, and
+`info['samples_eq']` is the new `v_1`, produced by `_equation_row_ppv`. `diffusion_constant` and
+`colour_projection` now read the latter.
+
+  * **Why not convert:** `ppv()`'s return value is what a STATE perturbation contracts with, which
+    is what its docstring promises AND what an in-repo measurement already established —
+    predicting a state jump as `vᵀCδ` gives residuals of 0.36/0.40/0.42 that GROW with refinement
+    while `v·δ` converges at `O(h)`. Converting would have silently changed a shipped, measured
+    contract. Every existing gate keeps its anchor.
+  * ⚠ **The cost of the choice, stated because it is real:** a caller can now pick the wrong
+    array. Demir's one-vector-two-rules formulation has no such failure mode. Mitigated by naming
+    and by a pointed comment at each contraction site; not eliminated.
+  * ⚠ **`C` IS NEVER INVERTED.** The solve is on `C[D, NZ]ᵀ` — differential equations against
+    non-algebraic states — which is square and invertible by construction. The algebraic entries
+    come from the eq (24) constraint, which now carries the DERIVED sign because it acts on `v_1`.
+
+⚠ **AND THE "SKIP WHEN THERE ARE NO ALGEBRAIC ROWS" SHORTCUT HAD TO GO**, which is the whole `C²`
+lesson in one line: that shortcut was right for the FILL and wrong for the CONVERSION. A plain
+ODE circuit with no algebraic row at all still needs `C⁻ᵀ` whenever its capacitance is not 1 F.
+
+---
+
+**Γ MEASURED — both eq (40) gates pass.** No source in the collection constructs it: the docs
+session ran a full pass over **339 PDFs** for Drazin, spectral/index-1 projector, projector chain,
+consistent initialisation, perturbation index, algebraic jump, jump condition, non-propagating,
+impulse response of a DAE, and algebraic variables + covariance — **one hit, a false positive**
+(Demir & Sangiovanni-Vincentelli 1998 p.75, "instantaneous jumps ... at the times of the
+instantaneous carrier crossings", which is Poisson shot noise). ⚠ **Worth recording as a scoping
+fact: DAE projector theory is not circuit literature, so it is not in this collection, and
+obtaining Γ properly would be an ACQUISITION rather than another search.**
+
+So it was measured off the solver's own matrices. Eq (42) has `Γ(t)b(t)` proportional to `b` at
+the SAME INSTANT, so Γ is the `h → 0` limit of the step operator:
+
+    Γ(t) = lim_{h→0} (C(t)/h + G(t))⁻¹
+
+Converges first order (differences 9.0e-04, 9.0e-05, 9.0e-06, 9.0e-07, 9.0e-08 per decade) to a
+single nonzero entry, `Γ[x,x] = 0.003978874`, which is `G[A,Z]⁻¹` — **exactly the series
+resistance `r`**. Gates: rank → 1 = `n − m`; `|Γ C u|` → 1.788e-08, falling linearly in `h`.
+
+⚠⚠ **AND A DIMENSIONAL SLIP OF MINE, RECORDED BECAUSE IT IS SHAPE 0i AGAIN.** I first compared
+`Γ (CY/2) Γᵀ = 3.294507e-23` (which is exactly `2kTr`, so it looked right) against `K_orb[x,x]`
+and reported a ratio of 76. **The comparison is invalid:** Γ is in ohms and `CY` in A²/Hz, so
+`Γ CY Γᵀ` is a **PSD in V²/Hz**, while `K_orb` is a **variance in V²**. Two quantities that are
+numerically comparable and dimensionally not — the same failure shape as `C = 1 F` hiding a
+missing capacitance.
+
+**⚠ THE COVARIANCE CAVEAT IS NOT CLOSED, AND IT NOW HAS A SHARPER OPEN QUESTION.** My hypothesis
+was that an algebraic node, having no state, has no bandwidth limit, so its variance is not finite
+and there is nothing for `K_orb` to carry. **Testing it FALSIFIED it:** adding a parasitic
+capacitor at node `x` makes the node differential (`algebraic rows []`) but leaves `K_orb[x,x]`
+*unchanged* — 2.508914e-21, 2.510968e-21, 2.511174e-21, 2.511194e-21 for `C_par` = 1e-3 … 1e-6,
+against a `kT/C_par` of 4.14e-18 … 4.14e-15. **Flat over three decades, and a factor ~1e6 BELOW
+`kT/C_par`.** So the parasitic node's thermal equilibrium does not appear in `K_orb` at all.
+
+That is either a third defect or a property of what `K_orb` is defined to be, and **it is recorded
+as an open question rather than resolved**, because the honest answer needs the definition
+checked and this was not what was authorised. What IS settled: Γ exists, is measured, passes both
+its gates, and is **absent from the phase equation**, so `c` is unaffected — which was the
+question that mattered for §0g.
+
+
+---
+
 ## A. Capabilities — unbuilt, entry points known
 
 ⚠ **These are not five independent choices.** A1 → A3 is a dependency chain (A3 consumes

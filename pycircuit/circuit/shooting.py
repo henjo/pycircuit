@@ -2281,6 +2281,55 @@ class PSS(Analysis):
         cols = [j for j in range(m) if not np.any(Cr[:, j])]
         return rows, cols
 
+    def _equation_row_ppv(self, vblock, xf, rows, cols):
+        """`v_1` — the adjoint contracted with an EQUATION-ROW input.
+
+        ⚠⚠ THERE ARE TWO ADJOINT VECTORS AND CONFLATING THEM WAS A DEFECT.
+        Demir 2000 puts both conventions on one page: a STATE initial
+        condition contracts as `v_1^T(0) C(0) x(0)` (eq 41, WITH `C`), while
+        an EQUATION-ROW input contracts as `v_1^T(s) b(s)` (eq 42, and the
+        phase equation 44, BARE).  `ppv()` returns `C^T v_1`, which is the
+        right object for a state perturbation and is documented as such.
+        `CY` is an equation-row covariance -- a current injected into a KCL
+        row -- so `diffusion_constant` and `colour_projection` need `v_1`,
+        and this produces it.
+
+        ⚠ ONE DEFECT, TWO SYMPTOMS, both measured.  `(C^T v_1)_j` is COLUMN
+        `j` of `C` dotted with `v_1`, so on DIFFERENTIAL states `C^T`
+        multiplies by the capacitance -- `diffusion_constant` was wrong by
+        `C^2`, ratios 0.010003 / 1.000334 / 100.033536 over a 100x sweep --
+        and on ALGEBRAIC states `C^T` ANNIHILATES, so `c` came back EXACTLY
+        0.0 for an oscillator whose only noise was its series tank loss.
+        Neither was visible because every fixture here uses `C = 1 F`.
+
+        ⚠⚠ AND `C` IS NEVER INVERTED.  The solve is on `C[D, NZ]^T`, the
+        block between the DIFFERENTIAL equations and the NON-algebraic
+        states, which is square and invertible by construction; the
+        singular `C` as a whole is not touched.  The algebraic entries come
+        from the constraint below instead.
+        """
+        m = self.cir.n - 1
+        Cr, = remove_row_col((np.asarray(self.cir.C(xf), dtype=float),),
+                             self.irefnode, self.toolkit)
+        Cr = np.asarray(Cr, dtype=float)
+        diff = [i for i in range(m) if i not in rows]
+        nz = [j for j in range(m) if j not in cols]
+        out = np.zeros(m, dtype=float)
+        blkC = Cr[np.ix_(diff, nz)].T
+        try:
+            out[diff] = np.linalg.solve(blkC, np.asarray(vblock)[nz])
+        except np.linalg.LinAlgError:
+            warnings.warn(
+                'PSS.ppv: the differential block C[D, NZ] is singular, so '
+                'the equation-row adjoint cannot be recovered; falling back '
+                'to the state-perturbation vector, which is wrong by a '
+                'factor of the capacitance in any CY contraction.',
+                RuntimeWarning, stacklevel=2)
+            return np.array(vblock, dtype=float, copy=True)
+        if not rows:
+            return out
+        return self._algebraic_adjoint_fill(out, xf, rows, cols)
+
     def _algebraic_adjoint_fill(self, vblock, xf, rows, cols):
         """Fill the adjoint's ALGEBRAIC entries, which are SLAVED, not free.
 
@@ -2343,7 +2392,15 @@ class PSS(Analysis):
         Gr = np.asarray(Gr, dtype=float)
         diff = [i for i in range(m) if i not in rows]
         blk = Gr[np.ix_(rows, cols)].T
-        rhs = Gr[np.ix_(diff, cols)].T @ np.asarray(vblock)[diff]
+        ## ⚠ THE SIGN IS NOW THE DERIVED ONE, because this acts on `v_1`.
+        ## It was FLIPPED while this fill acted on `C^T v_1`: on that
+        ## fixture `C = diag(1, 0, -L)`, the INDUCTOR BRANCH ROW CARRIES
+        ## `-L`, and the term below is dominated by that branch -- so
+        ## reading `C^T v_1` as `v_1` negated it.  The derivation and the
+        ## measurement were describing DIFFERENT VECTORS and both were
+        ## right.  Pinned by the eq (24) constraint, which returns
+        ## 0.0000e+00 exactly here and 1.9870e+00 for either alternative.
+        rhs = -(Gr[np.ix_(diff, cols)].T @ np.asarray(vblock)[diff])
         try:
             va = np.linalg.solve(blk, rhs)
         except np.linalg.LinAlgError:
@@ -2649,16 +2706,20 @@ class PSS(Analysis):
         ## nothing to propagate, and post-processing leaves the validated
         ## step map untouched.  The pair's SECOND block is the history term
         ## and is deliberately not filled -- `v(t)` is the first block.
-        if _alg_rows:
-            _Xf = np.asarray(self.waveform[1], dtype=float)
-            for _sj in range(len(states)):
-                _xj = _Xf[:, _sj if _sj < _Xf.shape[1] else -1]
-                states[_sj][:m] = self._algebraic_adjoint_fill(
-                    states[_sj][:m], _xj, _alg_rows, _alg_cols)
-            ## and `v` itself, which is the value at `t = 0`
-            v = np.concatenate((
-                self._algebraic_adjoint_fill(v[:m], x0f, _alg_rows,
-                                             _alg_cols), v[m:]))
+        ## ⚠⚠ THE EQUATION-ROW ADJOINT IS A SECOND OBJECT, NOT A CORRECTION
+        ## TO THE FIRST.  `states` and `v` stay exactly what they were --
+        ## `C^T v_1`, the vector a STATE perturbation contracts with, which
+        ## is what this method documents and what every existing gate
+        ## measures.  Demir gives both conventions on one page (eq 41 with
+        ## `C`, eq 42 and the phase equation 44 bare), so naming both is
+        ## the fix; converting one into the other would have silently
+        ## changed what `ppv()` returns.
+        _Xf = np.asarray(self.waveform[1], dtype=float)
+        _eq = [self._equation_row_ppv(
+                   st[:m], _Xf[:, _sj if _sj < _Xf.shape[1] else -1],
+                   _alg_rows, _alg_cols)
+               for _sj, st in enumerate(states)]
+        _v_eq = self._equation_row_ppv(v[:m], x0f, _alg_rows, _alg_cols)
         ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
         ## the residuals above can see it.  The border removes the PHASE
         ## mode's singularity and does nothing about any OTHER root
@@ -2914,6 +2975,12 @@ class PSS(Analysis):
                 'second_multiplier': lam2,
                 'q': q, 'xdot': xdot, 'tangent_pair': u,
                 'samples': np.asarray(states),
+                ## ⚠ `samples_eq` IS THE ONE TO CONTRACT `CY` AGAINST.
+                ## `samples` is `C^T v_1` (a state perturbation's
+                ## sensitivity); this is `v_1` (an equation-row input's).
+                ## A noise current injected into a KCL row is the latter.
+                'samples_eq': np.asarray(_eq),
+                'v_eq': _v_eq,
                 'times': np.asarray(fp.times, dtype=float)}
         return v, info
 
@@ -6546,7 +6613,11 @@ class PAC(Analysis):
                 "source's, and its noise is pnoise's problem, not this one.")
         v, info = pss.ppv()
         m = pss.cir.n - 1
-        S = np.asarray(info['samples'])[:, :m]
+        ## ⚠ `samples_eq`, NOT `samples`.  `CY` is an EQUATION-ROW
+        ## covariance and `samples` is `C^T v_1`; contracting it here made
+        ## `c` wrong by `C^2` on the differential rows and exactly zero on
+        ## the algebraic ones.  See `_equation_row_ppv`.
+        S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
         h = np.diff(tms)
         T = float(pss.period)
@@ -6626,7 +6697,10 @@ class PAC(Analysis):
                 "A driven circuit's phase is its source's.")
         _v, info = pss.ppv()
         m = pss.cir.n - 1
-        S = np.asarray(info['samples'])[:, :m]
+        ## ⚠ the EQUATION-ROW adjoint, for the same reason
+        ## `diffusion_constant` uses it: a coloured source is an
+        ## equation-row input too.
+        S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
         h = np.diff(tms)
         T = float(pss.period)
