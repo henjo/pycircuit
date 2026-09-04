@@ -4961,8 +4961,38 @@ excluded from it — **without moving an Euler step inside the period**, which i
 amplitude. It targets B16's floor by a different mechanism from `x0_unknown` and may keep the
 coarse-grid waveform. ⚠ It does **not** obviously address §0k's index-2 *inconsistency* (an
 algebraic variable seeded at a forbidden value is carried forever by trap wherever the period
-starts), so the two remedies may be complementary rather than alternatives. **Unbuilt, unmeasured;
-the next candidate.**
+starts), so the two remedies may be complementary rather than alternatives.
+
+⚠⚠⚠ **BUILT AND MEASURED 2026-09-04 — IT NEVER CONVERGES FOR `k ≥ 2`. REVERTED.** Implemented as
+an opt-in `preroll=k` on the plain path: `k` order-dropped Euler priming steps at
+`t = −(k−1)h … 0`, then the period, with the sensitivity seeded at `x₀` exactly as today.
+
+  * ✅ **`k = 1` reproduces the default TO EVERY DIGIT on both fixtures** — resonator peak
+    `20.0127317714`, B16 `λ₂` errors `4.568e-05 / 8.371e-06 / 1.193e-05 / 7.894e-06 / 4.428e-06` —
+    which is the built-in gate that says the plumbing is right.
+  * ❌ **`k = 2` and `k = 3` never converge**: resonator at 100, 101 and 200 points (so not the
+    `(−1)ᴺ` parity obstruction), RLC at every `N` tried. The non-converged waveforms sit at
+    20.44 / 21.04 V — wrong in a consistent direction, not noise.
+
+⚠ **THE MECHANISM IS NOT ESTABLISHED, and a wrong one was nearly recorded.** I first attributed
+the failure to the last priming step being a *trap* step and seeding `Pq` with trap's
+coefficients. Then a "second variant" with all-Euler priming returned **bit-identical** numbers —
+because `solve_timestep`'s `iq_last` already defaults to `None`, so every priming step was an
+Euler restart in *both* runs and the "variant" was the same code. The identical number is what
+caught it. So the priming steps were Euler all along, the trap-seed explanation is **wrong**, and
+what stands is only the record's own statement: the plain path's fixed-point iteration depends on
+`x₀` being **exactly one** Euler step from the unknown, and the reason is not yet understood here.
+
+**VERDICT:** the "start earlier" family is closed as a remedy for B16's floor. The floor remains
+unremedied except by `x0_unknown`, which costs the waveform (see above). ✅ **What would actually
+move this is understanding why `k = 1` converges as a contraction and `k = 2` does not** — the
+frame error the record names, with the true `dF/dx_in` singular. That is an analysis item, not a
+build.
+
+⚠ **Two instrument errors in this attempt, both mine, both from the record's own list:** a
+`pkill -f "pre_b[.]py"` that killed its own launcher because the *other* lines of the same command
+mentioned `pre_b.py` (the self-matching trap in this campaign's notes, third time); and the
+non-variant above. Neither reached a conclusion; both cost a run.
 
 
 Shipped as an option. The evidence says it wins exactly there and loses on uniform grids:
