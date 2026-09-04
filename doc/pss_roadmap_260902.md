@@ -28,6 +28,33 @@ The link is not an analogy. Wang & Roychowdhury (2017): `Q = log(threshold)/log|
 (`shooting.py:2558`). A high-Q oscillator is *defined* by slow amplitude decay, and slow
 amplitude decay *is* the second multiplier approaching one.
 
+⚠⚠⚠ **AND `Q` IS NOT THE ONLY AXIS — TWO BOUNDS ON THIS SECTION ITSELF, ADDED 2026-09-04.**
+Everything below is organised on `Q ↔ λ₂`. That organisation is sound for what it covers and is
+**not complete**, and a reader who takes it as complete will look for every problem along one
+axis. Both bounds are *cited, not measured here* — read from Traversa & Bonani TCAS-I 2011 p. 5 by
+the docs session, whose equations `pdftotext` drops, so they were read as an image.
+
+  **(i) A SECOND, ORTHOGONAL AXIS ON WHICH THE FRAMEWORK ITSELF DEGRADES.** The phase
+  decomposition assumes `|α̇(t)| ≪ 1` — *"the decomposition proposed here, **as well as the theory
+  in ([1], p. 661)**, is based on the assumption that |α̇(t)| ≪ 1"*, where [1] is **Demir, Mehrotra
+  & Roychowdhury**. So the assumption sits under *everything* we compute — the PPV, `c`, the
+  Lorentzian — and it is stated by a third party about Demir's paper rather than by Demir.
+  ⚠ **IT IS INDEXED BY AM-TO-PM CONVERSION, NOT BY `Q`.** Their controlling group is `v·ε`
+  (AM-to-PM coupling × noise amplitude), checked against an exact Fokker–Planck solution: exact at
+  `v = 0`, *"still good"* at `v·ε = 0.1265`, *"less favourable"* at `0.3162`, clearly degraded by
+  `0.9487`. **A circuit can be low-`Q` and still break this**, which no amount of attention to
+  `λ₂` would predict.
+
+  **(ii) `λ₂` DOES NOT ORDER THE ORBITAL CONTRIBUTIONS.** From the same paper's HBT results: six
+  orders of magnitude separate two Floquet exponents, and the corresponding orbital-noise
+  contributions are **not** in that ratio — *"far from the oscillator harmonics, the contribution
+  of [the smaller one] is dominant … this clearly shows that **also the eigenvectors may give an
+  important contribution** to the orbital noise spectrum, which might also dominate over the
+  [exponent] factor"*. ⚠ **So for the FAR-OUT spectrum a `λ₂`-only view is insufficient by
+  construction** (A9): eigenvector magnitudes can outrank exponents. This does not weaken any
+  near-carrier item below — those really are one edge — but it does mean **`λ₂` is not a
+  sufficient statistic for the far skirt.**
+
 ⚠ **So the seven places this quantity appears are not seven findings. They are one edge seen
 from seven sides**, and they enter through structurally different doors:
 
@@ -4153,6 +4180,65 @@ disagreeing — criterion 2, reference 1 — because the reference guarded with 
 `NᵀGN` for that fixture is **identically zero**, which is the MOST singular case rather than the
 least. Shape 0j again, one day later: **the instrument was wrong, not the subject.**
 
+### A10. Crystal oscillators (Q ≥ 10⁴) — ✅ **MEASURED 2026-09-04. THE BINDING LIMIT IS FREQUENCY ACCURACY, NOT Q**
+
+Asked what it takes to support a crystal: `Q > 10⁴` for the motional arm, loaded lower by the
+circuit but still far above anything previously tested here.
+
+**Three things were candidates. Two are fine and the third is the whole answer.**
+
+✅ **KRYLOV COST — FINE, and already settled by B13**: a 32× change in `Q` moves the GMRES count by
+at most one. Iterations track the SLOW-NODE count, not `Q`. Loading the crystal only helps.
+
+✅ **CONVERGENCE AND THE PPV AT `Q = 10⁴` — FINE.** Both methods converge, `ppv()` works, and
+`|λ₂| = 0.99991` matches the analytic `exp(−μT) = 0.99990` to five digits.
+
+⚠⚠ **AND `Q = 10⁵` IS NOT A CEILING EITHER — AN EARLIER READING HERE WAS WRONG.** A single
+400-point run failed to converge at `Q = 10⁵` and was reported as a Q limit. It is a **GRID**
+limit: at 1600 points both methods converge, and at 6400 `trap` reaches **0.0803 ppm**. Nothing
+in the range tested shows a `Q` ceiling.
+
+    Q = 1e5   400 pts    1600 pts            6400 pts
+    gear      False      True  5.1468 ppm    True  0.3214 ppm
+    trap      False      True  1.2867 ppm    True  0.0803 ppm
+
+❌ **WHAT ACTUALLY BINDS: THE INTEGRATOR'S WARPING ERROR, AND IT IS INDEPENDENT OF `Q`.** Period
+error at `Q = 10⁴`:
+
+    method   400 pts    800 pts   1600 pts   3200 pts    rate
+    gear     82.652     20.613     5.1468     1.2859    4.01, 4.00, 4.00
+    trap     20.665      5.1533    1.2867     0.32146   4.01, 4.01, 4.00
+
+⚠ **EXACTLY `O(h²)`, and `trap` is EXACTLY 4× BETTER THAN `gear` AT EVERY GRID** (82.652/20.665,
+20.613/5.1533, 5.1468/1.2867, 1.2859/0.32146 — all 4.00). So `trap` ≡ `gear` at **half the
+points**, which is a clean constant-factor statement rather than a trend. ⚠ And the error is
+**constant across four decades of `Q`** (82.5 / 82.7 / 82.7 ppm at `Q` = 10², 10³, 10⁴), which is
+what identifies it as the integrator rather than the physics.
+
+**COST OF ppb, WHICH IS THE SPEC A CRYSTAL IS WRITTEN TO.** Second order, so from `trap`'s
+0.0803 ppm at 6400 points, 1 ppb needs `√80.3 ≈ 9×` more — **≈ 57,000 points per period**; `gear`
+needs **≈ 115,000**. Expensive but not absurd for a single period, and **refinement does get
+there** — an earlier reading here implied it could not.
+
+⚠ **THIS IS THE "WARPING ERROR" THE LITERATURE NAMES, and it is the one place our recorded
+objection to higher-order methods is weak.** Brachtendorf-adjacent: Brambilla & Storti-Gajani,
+TCAS-I 50:904 (2003) (*cited, not verified here*) characterise integration-induced `λ₂` bias as
+*"equivalent to a perturbation of the eigenvalues of the linearized ordinary differential
+problem"*, usually negligible — *"nevertheless an exception … is found when simulating
+**high-quality factor circuits** where even very small warping errors can lead to qualitatively
+wrong solutions"* — and conclude that *"higher order linear multistep methods, while characterized
+by weaker stability properties, introduce **less** of a warping error and are **well suited** to
+the simulation of high-quality factor circuits."*
+
+⚠ **Our objection to higher order is a COST argument** (carrying variational history), **not a
+numerical one**, and Gourary's Obreshkov single-step orders 1–4 carry no history at all. So the
+objection has a published way round it. **Nothing here recommends building that** — it records
+that the argument we were leaning on is weaker than it read.
+
+**Not tested:** a real motional-arm + `C₀` model with a sustaining amplifier; startup; and
+loaded-vs-unloaded `Q`. The fixture is a van der Pol at `μ = 1/(2πQ)`, which isolates `Q` and is
+second order — see A9 on why second order is where a resonator `Q` is unambiguous.
+
 ### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
 
 ⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
@@ -4200,6 +4286,18 @@ becomes the dominant term for frequencies away from the harmonics."* Two circuit
 ⚠⚠ **STILL A DEFAULT TO TRY FIRST, NOT A LICENCE TO DROP THE TERM.** Same two authors on related
 designs, so two circuits is not two independent confirmations.
 
+✅⚠ **BUT THE CROSS TERM HAS A KNOWN SIGN, WHICH IS A BETTER STATEMENT THAN "NEGLIGIBLE"** (cited,
+not measured here; read from p. 5 as an image): *"the approximate full normalized spectrum is
+**lower** than the phase noise contribution, thus showing that **the correlation between the phase
+and orbital deviations can decrease the total noise**. This effect is not present for `v = 0`,
+since in this case the correlation spectrum is zero."*
+
+So the cross term is **identically zero when there is no AM-to-PM coupling**, and when present it
+**reduces** the total. ✅ **Dropping it therefore OVERESTIMATES noise — conservative for a design
+margin, and wrong in a KNOWN DIRECTION against measurement.** That converts a two-term
+implementation from "safe on one circuit" to "safe to ship with a documented bias", which is a
+materially stronger position to build from.
+
 ⚠ **AND THERE ARE TWO Traversa & Bonani 2011 PAPERS**, which is how the confusion is most likely
 to have arisen. The THEORY is in the TCAS-I paper; the MOTIVATION is in a companion — *Int. J.
 Microwave and Wireless Technologies* 3(1):11–18, 2011, which carries the title used above. The
@@ -4217,7 +4315,15 @@ see A4b. And *"the identification of the oscillator classes mostly impacted by t
 an easy task"*: high-Q is a candidate, but eigenvector magnitudes matter as much as exponents.
 **Do not present it as strictly better than what we ship without measuring it.**
 
-✅ **A FREE PRIOR WE MAY ALREADY RETURN, AND IT NEEDS CHECKING BEFORE IT IS USED.** If orbital
+⚠⚠ **A FREE PRIOR WE ALREADY RETURN — AND IT IS WEAKER THAN THIS ENTRY FIRST CLAIMED.** The
+measurement below stands (`info['Q']` *is* the resonator `Q`), but the **use** proposed for it does
+not follow: the same paper reports that `λ₂` does **not order the orbital contributions** —
+eigenvector magnitudes can outrank exponents by more than the exponents differ (see §0 bound (ii)).
+⚠ **So a `Q` in hand is NOT a sufficient prior on the far-out spectrum**, which is exactly what it
+was proposed for. It remains a correct statement about settling and about the near-carrier items;
+it is not the one-number-two-jobs shortcut it looked like an hour ago.
+
+✅ **THE IDENTIFICATION ITSELF, MEASURED.** If orbital
 noise magnitude increases with `Q`, then a `Q` already in hand is also a prior on **how badly a
 phase-only spectrum reads FAR from the carrier** — one number doing two jobs, no new machinery.
 `ppv()` does return `info['Q']`, built from the second Floquet multiplier as
