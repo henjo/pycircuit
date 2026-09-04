@@ -9296,3 +9296,255 @@ def test_the_closing_step_period_column_matches_its_own_derivative():
     ana_prop = analytic('proportional')
     assert np.linalg.norm(ana_prop - ana_close) / scale > 1e-9, \
         'the two conventions produced the same column, so the flag is inert'
+
+
+def _measured_index(cir):
+    """The index by direct computation: `N^T G N` singular for `N` a null
+    basis of `C` means index 2. The reference the topological criterion is
+    gated against, and the one that overruled a relayed quote."""
+    from pycircuit.circuit.analysis import remove_row_col
+    n = cir.n
+    Cm = np.asarray(cir.C(np.zeros(n)), dtype=float)
+    Gm = np.asarray(cir.G(np.zeros(n)), dtype=float)
+    irn = cir.get_node_index(gnd)
+    Cr, Gr = remove_row_col((Cm, Gm), irn, circuit.numeric)
+    Cr = np.asarray(Cr, dtype=float)
+    Gr = np.asarray(Gr, dtype=float)
+    _u, sv, vt = np.linalg.svd(Cr)
+    tol = max(Cr.shape) * np.finfo(float).eps * (sv[0] if len(sv) else 1.0)
+    if not np.any(sv <= tol):
+        return 1
+    N = vt[sv <= tol].T
+    s2 = np.linalg.svd(N.T @ Gr @ N, compute_uv=False)
+    if not len(s2):
+        return 1
+    ## ⚠ `N^T G N` IDENTICALLY ZERO IS THE MOST SINGULAR CASE, NOT THE LEAST.
+    ## A first version guarded with `s2.max() > 0` and so returned 1 for the
+    ## cv_loop fixture, whose block IS zero -- the reference disagreeing with
+    ## the criterion because the REFERENCE was wrong.
+    if s2.max() == 0.0:
+        return 2
+    return 2 if s2.min() / s2.max() < 1e-10 else 1
+
+
+def _index_fixtures():
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+    out = {}
+
+    def cv():
+        c = SubCircuit(); c.add_node('a'); c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['c1'] = C('a', 'b', c=1e-9); c['c2'] = C('b', gnd, c=1e-9)
+        c['r'] = R('b', gnd, r=1e9)
+        return c
+    out['cv_loop'] = (cv, 2, 'loop')
+
+    def vac():
+        c = SubCircuit(); c.add_node('a')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['c1'] = C('a', gnd, c=1e-9); c['r'] = R('a', gnd, r=1e9)
+        return c
+    out['v_across_c'] = (vac, 2, 'loop')
+
+    def lic():
+        c = SubCircuit(); c.add_node('a'); c.add_node('b')
+        c['is'] = IS(gnd, 'a', i=1e-3); c['l1'] = L('a', 'b', L=1e-3)
+        c['c1'] = C('b', gnd, c=1e-9); c['r'] = R('b', gnd, r=1e3)
+        return c
+    out['li_cutset'] = (lic, 2, 'cutset')
+
+    def conly():
+        """⚠ a C-ONLY loop: relayed theory says index 2, MEASUREMENT says 1."""
+        c = SubCircuit()
+        for nn in ('a', 'b', 'cc'):
+            c.add_node(nn)
+        c['c1'] = C('a', 'b', c=1e-9); c['c2'] = C('b', 'cc', c=1e-9)
+        c['c3'] = C('cc', 'a', c=1e-9); c['r'] = R('a', gnd, r=1e6)
+        return c
+    out['c_only_loop'] = (conly, 1, None)
+
+    def both():
+        """⚠ a C-only loop AND a C-V loop, which catches a union-find that
+        reports only the first closing edge."""
+        c = SubCircuit()
+        for nn in ('a', 'b', 'cc', 'd'):
+            c.add_node(nn)
+        c['c1'] = C('a', 'b', c=1e-9); c['c2'] = C('b', 'cc', c=1e-9)
+        c['c3'] = C('cc', 'a', c=1e-9)
+        c['vs'] = VSin('d', gnd, va=1.0, freq=1.0 / per)
+        c['c4'] = C('d', gnd, c=1e-9)
+        c['r'] = R('a', gnd, r=1e6); c['r2'] = R('d', gnd, r=1e6)
+        return c
+    out['both_loops'] = (both, 2, 'loop')
+
+    def i1rc():
+        c = SubCircuit(); c.add_node('a'); c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['r'] = R('a', 'b', r=1e3); c['c1'] = C('b', gnd, c=1e-9)
+        return c
+    out['index1_rc'] = (i1rc, 1, None)
+
+    def i1rlc():
+        c = SubCircuit(); c.add_node('a'); c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['r1'] = R('a', 'b', r=1e3); c['l1'] = L('a', 'b', L=1e-3)
+        c['c1'] = C('b', gnd, c=1e-9)
+        return c
+    out['index1_rlc'] = (i1rlc, 1, None)
+    return out
+
+
+def test_the_topological_index_agrees_with_the_measured_one():
+    """⚠ Estevez Schwarz & Tischendorf's criterion, gated against a direct
+    computation on the MNA matrices.
+
+    Index 2 IFF a C-V loop or an L-I cutset. ⚠⚠ IT IS A DIAGNOSTIC, NOT A
+    REFUSAL -- C4 stays closed, because `index > 1` is not predictive of
+    convergence. What this buys is that a failure can NAME the offending
+    elements, which is the criterion's own design goal.
+
+    ⚠⚠⚠ AND C-ONLY LOOPS ARE EXCLUDED HERE AGAINST THE RELAYED QUOTE. A
+    first version counted them and disagreed with the measurement on three
+    separate C-only topologies. The arithmetic is checkable: a grounded
+    capacitor ring has `det C = c1 c2 + c1 c3 + c2 c3 != 0`, not even a DAE;
+    a floating triangle has `C` singular but `N^T G N = (1/R)/3 != 0`, so the
+    constraint is uniquely solvable and the index is 1. A C-only loop makes
+    `C` singular WITHOUT making the index 2.
+    """
+    from pycircuit.circuit.shooting import topological_index
+    for name, (build, expect, where) in _index_fixtures().items():
+        cir = build()
+        idx, info = topological_index(cir)
+        assert idx == _measured_index(cir), \
+            '%s: topological index %d against a measured %d' \
+            % (name, idx, _measured_index(cir))
+        assert idx == expect, '%s: expected index %d, got %d' % (name, expect, idx)
+        if where == 'loop':
+            assert info['loop'], '%s: index 2 with no loop named' % name
+            assert any(info['kinds'][nm] == 'V' for nm in info['loop']), \
+                '%s: a C-V loop must contain a voltage source; got %r' \
+                % (name, info['loop'])
+        elif where == 'cutset':
+            assert info['cutset'], '%s: index 2 with no cutset named' % name
+        else:
+            assert not info['loop'] and not info['cutset'], \
+                '%s: index 1 but something was named: %r / %r' \
+                % (name, info['loop'], info['cutset'])
+
+
+def test_the_index_criterion_localises_and_flags_what_it_cannot_classify():
+    """The criterion's whole point is LOCALISATION, and its honesty is the
+    `provisional` flag.
+
+    ⚠ The theorem excludes CONTROLLED SOURCES, so a netlist carrying one
+    gets an answer WITH a caveat rather than silence -- a named assumption
+    beats a withheld verdict.
+    """
+    from pycircuit.circuit.shooting import topological_index
+    circuit.default_toolkit = circuit.numeric
+    fx = _index_fixtures()
+    cir = fx['both_loops'][0]()
+    _idx, info = topological_index(cir)
+    ## the C-V loop is on node d -- vs with c4 -- NOT the a/b/cc triangle
+    assert set(info['loop']) == {'vs', 'c4'}, \
+        'the loop must be localised to the offending elements; got %r' \
+        % (info['loop'],)
+    assert not info['provisional'] and not info['unclassified']
+
+    ## and a controlled source makes the verdict provisional
+    mu = 1.0 / (2 * np.pi * 8.0)
+    c2 = SubCircuit()
+    c2.add_node('v')
+    c2['C'] = C('v', gnd, c=1.0)
+    c2['L'] = L('v', gnd, L=1.0)
+    c2['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    _i2, info2 = topological_index(c2)
+    assert info2['provisional'], 'a controlled source must be flagged'
+    assert any('BSource' in u for u in info2['unclassified'])
+
+
+def test_noise_in_the_constraints_is_detected():
+    """⚠ Winkler's index-1 SDAE precondition, `im B subset im C`.
+
+    A resistor's noise injected at a node with no capacitance puts noise
+    into a CONSTRAINT row, which makes the circuit an SDAE WITH DIRECT NOISE
+    -- outside the class the theory covers, and the reason that node has no
+    finite variance for `K_orb` to report (roadmap section 0j).
+    """
+    from pycircuit.circuit.shooting import noise_enters_constraints
+    from pycircuit.circuit.analysis import remove_row_col
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def check(kind):
+        cir, pss, pac, _rs = _loss_osc(kind, Q=8.0, npts=240)
+        cy = np.real(pac._cy_reduced(pss, 2 * np.pi / float(pss.period)))
+        X = np.asarray(pss.waveform[1], dtype=float)
+        Cr, = remove_row_col((np.asarray(cir.C(X[:, 0]), dtype=float),),
+                             pss.irefnode, pss.toolkit)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return noise_enters_constraints(np.asarray(Cr, dtype=float), cy)
+
+    bad_p, res_p = check('parallel')
+    bad_s, res_s = check('series')
+    assert not bad_p, \
+        'the parallel-loss tank puts its noise on a differential row; ' \
+        'residual %.3e' % res_p
+    assert bad_s, \
+        'the series-loss tank puts its noise on an ALGEBRAIC row and must ' \
+        'be flagged; residual %.3e' % res_s
+    assert res_s > 0.5, \
+        'the violation is total, not marginal -- the whole CY column lies ' \
+        'outside im C; got %.3e' % res_s
+
+
+def test_v_loops_and_i_cutsets_are_reported_as_ILL_POSED_not_as_index_2():
+    """⚠ A DIFFERENT CATEGORY, and the distinction is the point.
+
+    A loop of voltage sources over-determines KVL; a cutset of current
+    sources over-determines KCL. Either way the MNA system is STRUCTURALLY
+    SINGULAR and has no solution at all, barring an exact cancellation --
+    it does not have a higher index. The index criterion presumes a
+    well-posed network.
+
+    Reporting these as "index 2" would send a reader hunting a solver
+    problem when the netlist is the error, so they come back separately and
+    `index` keeps its own meaning.
+    """
+    from pycircuit.circuit.shooting import topological_index
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    ## two voltage sources in parallel -- a V-only loop
+    c = SubCircuit()
+    c.add_node('a')
+    c['vs1'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+    c['vs2'] = VSin('a', gnd, va=2.0, freq=1.0 / per)
+    c['r'] = R('a', gnd, r=1e3)
+    _idx, info = topological_index(c)
+    assert info['ill_posed'], 'two parallel voltage sources form a V loop'
+    assert info['v_loop'], 'the offending source must be named'
+
+    ## a node reachable only through current sources -- an I-only cutset
+    c2 = SubCircuit()
+    c2.add_node('a'); c2.add_node('b')
+    c2['is1'] = IS(gnd, 'a', i=1e-3)
+    c2['is2'] = IS('a', 'b', i=1e-3)
+    c2['r'] = R('b', gnd, r=1e3)
+    _i2, info2 = topological_index(c2)
+    assert info2['ill_posed'], 'node a is isolated by current sources'
+    assert set(info2['i_cutset']) >= {'is1', 'is2'}, \
+        'both current sources bound the cutset; got %r' % (info2['i_cutset'],)
+
+    ## and a well-posed netlist must NOT be flagged, or this shows nothing
+    c3 = SubCircuit()
+    c3.add_node('a'); c3.add_node('b')
+    c3['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+    c3['r'] = R('a', 'b', r=1e3)
+    c3['c1'] = C('b', gnd, c=1e-9)
+    _i3, info3 = topological_index(c3)
+    assert not info3['ill_posed'], \
+        'a plain RC ladder must not be flagged ill-posed: %r / %r' \
+        % (info3['v_loop'], info3['i_cutset'])

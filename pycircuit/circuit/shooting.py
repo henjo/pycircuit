@@ -191,6 +191,267 @@ class FactoredPeriod(object):
             self.opening, self.steps, v)
 
 
+
+## Element classes the topological index criterion recognises.  Anything not
+## listed makes the answer PROVISIONAL rather than wrong -- see
+## `topological_index`, which reports what it could not classify.
+_TI_CAPACITIVE = ('C',)
+_TI_VOLTAGE = ('VS', 'VSin', 'VPulse', 'VSquare')
+_TI_INDUCTIVE = ('L',)
+_TI_CURRENT = ('IS', 'ISin', 'IPulse', 'ISquare')
+_TI_RESISTIVE = ('R', 'G', 'Gyrator', 'Transformer')
+
+
+def noise_enters_constraints(C_reduced, CY_reduced, tol=1e-12):
+    """`(bad, residual)` — Winkler's index-1 SDAE precondition, `im B ⊆ im C`.
+
+    Winkler (JCAM 163:435–463, 2004) Definition 2: an SDAE is **index 1**
+    when "the noise sources do not appear in the constraints", `im G ⊆ im A`
+    — in circuit terms, the noise input must lie in the image of the
+    capacitance matrix.  Otherwise it is an SDAE **WITH DIRECT NOISE**, which
+    is outside the class that theory covers.
+
+    ⚠ `CY = B B^T`, so `im B = im CY` and no factorisation is needed: project
+    `CY`'s columns onto `im C` and look at the residual.
+
+    ⚠⚠ WHAT IT MEANS WHEN IT FAILS, MEASURED (roadmap §0j).  White noise
+    applied to a variable fixed by a CONSTRAINT rather than by an integrator
+    is filtered by nothing, so **that node has no finite variance** — not a
+    missing term and not a discretisation artefact.  A series tank-loss
+    resistor with no capacitance at its node fails this; adding a parasitic
+    capacitor moves the circuit back into the class.
+
+    ⚠ The PHASE is a different question and is NOT covered by this: `c` on
+    the failing fixture still agrees with an equivalent parallel-loss circuit
+    to 0.999973 and with the Lyapunov route.  So this bears on the
+    COVARIANCE, not on `diffusion_constant`.
+    """
+    Cr = np.asarray(C_reduced, dtype=float)
+    Cy = np.real(np.asarray(CY_reduced))
+    scale = float(np.max(np.abs(Cy))) if Cy.size else 0.0
+    if scale == 0.0:
+        return False, 0.0
+    sol, *_ = np.linalg.lstsq(Cr, Cy, rcond=None)
+    resid = float(np.max(np.abs(Cy - Cr @ sol))) / scale
+    return resid > tol, resid
+
+
+def topological_index(cir):
+    """`(index, info)` — the DAE index from the netlist alone.
+
+    Estevez Schwarz & Tischendorf (IJCTA 28(2):131–162, 2000): for a
+    nonlinear time-independent network **without controlled sources**, and
+    assuming positive-definite element Jacobians,
+
+        the index is 2 IF AND ONLY IF the network contains a C-V loop or an
+        L-I cutset; otherwise it is 1.
+
+    ⚠⚠ C-ONLY LOOPS ARE *NOT* COUNTED HERE, AGAINST THE RELAYED QUOTE, AND
+    THE MEASUREMENT IS WHY.  The paper is quoted as saying "C-only loops have
+    to be added to the class of C-V loops since the currents through C-only
+    loops belong to the network variables whereas these currents are excluded
+    in MNA formulations", and a first version of this function counted them.
+    **Measured against a direct computation on our own MNA matrices — `C`'s
+    null basis `N`, then the rank of `N^T G N` — all three C-only topologies
+    come out INDEX 1:**
+
+        capacitor ring touching ground     topological 2, measured 1
+        floating capacitor triangle        topological 2, measured 1
+        the same with every node grounded  topological 2, measured 1
+
+    and the arithmetic is checkable by hand.  For the grounded ring
+    `C = [[c1+c3, -c1], [-c1, c1+c2]]` has determinant
+    `c1 c2 + c1 c3 + c2 c3 != 0` — NOT SINGULAR, so the system is not even a
+    DAE.  For the floating triangle `C` IS singular (it is the triangle's
+    Laplacian, null vector all-ones) but `N^T G N = (1/R)/3 != 0`, so the
+    constraint is uniquely solvable and the index is 1.
+
+    **A C-only loop makes `C` singular WITHOUT making the index 2; index 2
+    needs a VOLTAGE SOURCE fixing the loop.**  Either the quote describes a
+    formulation whose variables differ from ours (its own wording turns on
+    which currents are variables), or it was misapplied in relay — it has not
+    been read here.  ⚠ What is certain is the measurement on THIS code, so
+    the loop test requires at least one voltage source, and the disagreement
+    is recorded rather than split.
+
+    ⚠⚠ THIS IS A DIAGNOSTIC, NOT A REFUSAL, AND THE DIFFERENCE IS MEASURED.
+    Roadmap C4 closed index-2 detect-and-refuse because `index > 1` is NOT
+    PREDICTIVE: all three integrators converge on an L-I cutset and Gear-2
+    fails on 2 of 4 index-2 topologies.  Deciding the index was never the
+    obstacle — knowing it exactly and still not knowing which method to use
+    is the actual state of things.  What this buys is a BETTER MESSAGE when
+    something does fail.
+
+    ⚠ WHICH IS WHY IT LOCALISES.  The authors' stated design goal is
+    "topological criteria that can be checked very fast ... based on LOCAL
+    assumptions, i.e. we want to provide the opportunity to LOCALIZE
+    critical element modellings", for networks of ~1e7 elements where "it is
+    often difficult to find the circuit configurations that lead to
+    numerical difficulties".  So `info['loop']` and `info['cutset']` name the
+    ELEMENTS, not just the verdict.
+
+    ⚠ **V-ONLY LOOPS AND I-ONLY CUTSETS ARE REPORTED SEPARATELY, AND THEY ARE
+    NOT INDEX 2.**  A loop of voltage sources over-determines KVL and a cutset
+    of current sources over-determines KCL, so the MNA system is
+    STRUCTURALLY SINGULAR — it has no solution at all, barring an exact
+    cancellation.  The index criterion presumes a well-posed network.  Calling
+    those "index 2" would send a reader hunting a solver problem instead of a
+    netlist error, so they come back as `info['v_loop']`, `info['i_cutset']`
+    and `info['ill_posed']` while `index` keeps its own meaning.
+
+    `info['unclassified']` lists elements outside the covered class —
+    controlled sources above all, which the theorem excludes.  When it is
+    non-empty the verdict is PROVISIONAL and `info['provisional']` is True;
+    the criterion is reported rather than withheld, because a named
+    assumption beats a silent refusal.
+    """
+    nodes = list(cir.nodes)
+    nn = len(nodes)
+    nmap = cir.elementnodemap
+    kinds, terms, unclassified = {}, {}, []
+    for name in cir.elements:
+        el = cir[name]
+        cls = type(el).__name__
+        idx = [int(i) for i in np.asarray(nmap[name]).ravel() if int(i) < nn]
+        terms[name] = sorted(set(idx))
+        if cls in _TI_CAPACITIVE:
+            kinds[name] = 'C'
+        elif cls in _TI_VOLTAGE:
+            kinds[name] = 'V'
+        elif cls in _TI_INDUCTIVE:
+            kinds[name] = 'L'
+        elif cls in _TI_CURRENT:
+            kinds[name] = 'I'
+        elif cls in _TI_RESISTIVE:
+            kinds[name] = 'R'
+        else:
+            kinds[name] = '?'
+            unclassified.append('%s (%s)' % (name, cls))
+
+    def forest(names, only_close_on=None):
+        """Union-find over `names`; returns (parent, closing edge, tree, find).
+
+        `only_close_on` restricts which KIND may be reported as the closing
+        element: a cycle closed by anything else is skipped rather than
+        reported, so the caller gets a loop guaranteed to contain that kind.
+        """
+        par = list(range(nn))
+
+        def find(a):
+            while par[a] != a:
+                par[a] = par[par[a]]
+                a = par[a]
+            return a
+        closing = None
+        tree = []
+        for nm in names:
+            t = terms[nm]
+            if len(t) < 2:
+                continue
+            ra, rb = find(t[0]), find(t[1])
+            if ra == rb:
+                if closing is None and (only_close_on is None
+                                        or kinds[nm] == only_close_on):
+                    closing = nm
+            else:
+                par[ra] = rb
+                tree.append(nm)
+        return par, closing, tree, find
+
+    ## ---- C-V loop (C-only loops included by construction) --------------
+    ## ⚠ CAPACITORS FIRST, THEN SOURCES ONE AT A TIME, so the closing
+    ## element is ALWAYS a voltage source.  A first version searched C and V
+    ## together and discarded any loop that turned out to have no `V` in it
+    ## -- which is wrong on a netlist carrying BOTH a C-only loop and a C-V
+    ## loop, because union-find returns only the FIRST closing edge and the
+    ## C-only one can close first, hiding the real one.
+    cv = ([nm for nm in cir.elements if kinds[nm] == 'C']
+          + [nm for nm in cir.elements if kinds[nm] == 'V'])
+    _p, closing, tree, _f = forest(cv, only_close_on='V')
+    loop = []
+    if closing is not None:
+        ## walk the spanning forest for the path joining the closing
+        ## element's endpoints -- that path plus the closing element IS the
+        ## loop, which is the localisation the criterion exists for
+        adj = {}
+        for nm in tree:
+            a, b = terms[nm][0], terms[nm][1]
+            adj.setdefault(a, []).append((b, nm))
+            adj.setdefault(b, []).append((a, nm))
+        src, dst = terms[closing][0], terms[closing][1]
+        seen, stack = {src: None}, [src]
+        while stack:
+            u = stack.pop()
+            if u == dst:
+                break
+            for v, nm in adj.get(u, ()):
+                if v not in seen:
+                    seen[v] = (u, nm)
+                    stack.append(v)
+        node, path = dst, []
+        while seen.get(node):
+            u, nm = seen[node]
+            path.append(nm)
+            node = u
+        loop = [closing] + list(reversed(path))
+
+    ## ---- L-I cutset ----------------------------------------------------
+    ## An L-I cutset exists exactly when deleting every L and I branch
+    ## disconnects something the full network joins.
+    def components(names):
+        par = list(range(nn))
+
+        def find(a):
+            while par[a] != a:
+                par[a] = par[par[a]]
+                a = par[a]
+            return a
+        for nm in names:
+            t = terms[nm]
+            if len(t) >= 2:
+                par[find(t[0])] = find(t[1])
+        return {find(i) for i in range(nn)}, find
+
+    allnm = list(cir.elements)
+    full, _ = components(allnm)
+    kept = [nm for nm in allnm if kinds[nm] not in ('L', 'I')]
+    reduced, rfind = components(kept)
+    cutset = []
+    if len(reduced) > len(full):
+        ## the L/I branches that bridge two different reduced components are
+        ## the offending ones
+        cutset = [nm for nm in allnm if kinds[nm] in ('L', 'I')
+                  and len(terms[nm]) >= 2
+                  and rfind(terms[nm][0]) != rfind(terms[nm][1])]
+
+    ## ---- V-only loops and I-only cutsets: NOT index 2, ILL-POSED --------
+    ## ⚠ ANDREAS ASKED FOR THIS AND IT IS A DIFFERENT CATEGORY.  A loop of
+    ## voltage sources over-determines KVL and a cutset of current sources
+    ## over-determines KCL: the MNA system is STRUCTURALLY SINGULAR and has
+    ## no solution at all (barring an exact cancellation), rather than having
+    ## a higher index.  The index criterion presumes a well-posed network, so
+    ## these are reported separately -- calling them "index 2" would send a
+    ## reader looking for a solver problem instead of a netlist error.
+    _pv, v_close, _vt, _vf = forest(
+        [nm for nm in cir.elements if kinds[nm] == 'V'], only_close_on='V')
+    v_loop = [v_close] if v_close is not None else []
+    i_only = [nm for nm in cir.elements if kinds[nm] == 'I']
+    i_cutset = []
+    if i_only:
+        kept_i = [nm for nm in allnm if kinds[nm] != 'I']
+        red_i, rfind_i = components(kept_i)
+        if len(red_i) > len(full):
+            i_cutset = [nm for nm in i_only if len(terms[nm]) >= 2
+                        and rfind_i(terms[nm][0]) != rfind_i(terms[nm][1])]
+
+    index = 2 if (loop or cutset) else 1
+    return index, {'loop': loop, 'cutset': cutset,
+                   'v_loop': v_loop, 'i_cutset': i_cutset,
+                   'ill_posed': bool(v_loop or i_cutset),
+                   'kinds': kinds, 'unclassified': unclassified,
+                   'provisional': bool(unclassified)}
+
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
 

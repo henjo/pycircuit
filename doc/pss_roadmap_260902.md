@@ -942,6 +942,47 @@ of Demir's `Φ = U D V C` — but **homogeneous only**: no variation-of-constant
 Winkler's constructive route for the algebraic part is `x = Px + Qx = u + v̂(u,t)` with a
 pseudo-inverse `A⁻ = D(I−R)`, `A⁻A = P`. So the measured Γ stands as the empirical object.
 
+✅⚠⚠ **THE COVARIANCE ITEM IS CLOSED AS OPEN — AND IT IS OPEN IN THE LITERATURE, NOT IN OUR
+READING.** Römisch & Winkler, "Stochastic DAEs in Circuit Simulation" (ISNM 146:303–318,
+Birkhäuser 2003), relayed verbatim, gives the condition a **circuit-topological** form:
+
+    im G(x,t) ⊆ im A   ⟺   THERE ARE ALWAYS CAPACITANCES IN PARALLEL TO A NOISE SOURCE
+
+and calls it *"quite restrictive in the actual noise modelling"* — i.e. real noise models routinely
+violate it. Our series tank-loss resistor has no capacitance across it, so it violates the
+condition **structurally, not by an accident of the fixture**.
+
+⚠⚠⚠ **AND THE NEXT SENTENCE SETTLES WHY THE ITEM STAYS OPEN.** Verbatim: *"one can also handle
+many situations where this condition is violated. Often noisy constraints are only needed for the
+determination of algebraic solution components that DO NOT INTERACT WITH THE DYNAMICAL ONES.
+FUTURE WORK SHOULD BE DIRECTED TO A CLASSIFICATION OF SUCH SITUATIONS."* **As of 2003 the
+classification of when a violated constraint is benign is EXPLICITLY OPEN WORK, by the authors who
+defined the condition.** So "unbounded, measurement pending" was the correct entry and it is not a
+gap in our reading — there is no result to have found. The practical read is that our case is very
+likely the benign one (a series-loss resistor determines a branch current that does not feed back
+into the tank dynamics), and **"very likely" is the strongest statement the literature supports** —
+which is exactly why measuring Γ was the right move and why the `τ/h` result stands on its own.
+
+⚠⚠ **BUT THE TOPOLOGICAL PHRASING IS LOOSE, AND TAKEN LITERALLY IT OVER-FLAGS — MEASURED BEFORE
+IMPLEMENTING IT.** "Capacitances in parallel to a noise source" reads as a capacitor across the
+SAME node pair. Tested against the authoritative matrix test:
+
+    R from x to gnd, no capacitance at x            bad=True    residual 1.000e+00
+    R from x to gnd, capacitor AT x   (strict)      bad=False   residual 0.000e+00
+    R from x to y, capacitors to gnd on BOTH        bad=False   residual 0.000e+00   ← no cap ACROSS it
+
+**The third circuit has no capacitor in parallel with the resistor and satisfies the condition
+anyway**, because grounded capacitors on both terminals already put the injection direction
+`e_x − e_y` inside `im C`. So a strict topological test would report a violation the matrices deny.
+⚠ **This is the C-only-loop trap a second time in one day** — a relayed phrasing that, taken
+literally, disagrees with a direct computation — and it was caught the same way, by measuring
+before building. **The matrix test stays authoritative; what the topological form buys is
+LOCALISATION, not a second verdict.**
+
+⚠ Also there: §5 is transient noise simulation of a **ring-oscillator** model with drift-implicit
+Euler, with trapezoidal and Milstein variants discussed — the nearest thing in the collection to a
+reference implementation of the path-wise route.
+
 ⚠ **THE ONE STANDING OPEN ITEM FROM THIS ARC IS AN ACQUISITION, NOT A SEARCH.** Getting Γ
 *properly* — a construction rather than the `h → 0` measurement above — needs März, Lamour or
 Tischendorf, or a DAE-numerics text. None is among the 339 papers, because DAE projector theory is
@@ -3364,7 +3405,7 @@ Trick. B10 and B3 should be read together and probably costed together.
 `Q`-sweep that produced B6's tolerance floor? If it is merely equivalent, it is not worth the
 second formulation.
 
-### B11. The index is DECIDABLE FROM TOPOLOGY — a diagnostic, not a refusal — NEW 2026-09-04
+### B11. The index is DECIDABLE FROM TOPOLOGY — ✅ **BUILT 2026-09-04**, a diagnostic, not a refusal
 
 Estevez Schwarz & Tischendorf (IJCTA 28(2):131–162, 2000), relayed by the docs session:
 
@@ -3403,6 +3444,43 @@ C-only loop is a fourth case and is not among them.
 **Gate before building:** does the topological test agree with the measured index on all three
 existing fixtures, and does it flag a newly built C-only loop that no current check catches?
 Cheap, and it needs no solver.
+
+---
+
+✅ **BUILT 2026-09-04 — `topological_index(cir)` and `noise_enters_constraints(C, CY)`.** Both are
+netlist/matrix-level checks with no solver in them. The index criterion is gated against a DIRECT
+computation on the MNA matrices (`C`'s null basis `N`, then the rank of `NᵀGN`) over **seven**
+topologies, and agrees on all of them.
+
+⚠⚠ **AND THE GATE OVERTURNED THE RELAYED THEORY ON C-ONLY LOOPS.** The quote said C-only loops
+must be counted as C-V loops; a first version did, and disagreed with the measurement on **three
+separate C-only topologies** — a grounded ring, a floating triangle, and the triangle with every
+node resistively grounded, all measuring **index 1**. The arithmetic is checkable by hand: a
+grounded ring has `det C = c1c2 + c1c3 + c2c3 ≠ 0`, so it is not even a DAE; a floating triangle
+has `C` singular (its Laplacian) but `NᵀGN = (1/R)/3 ≠ 0`, so the constraint is uniquely solvable.
+**A C-only loop makes `C` singular WITHOUT making the index 2** — index 2 needs a VOLTAGE SOURCE
+fixing the loop. Either the quote describes a formulation whose variables differ from ours (its own
+wording turns on which currents are variables) or it was misapplied in relay; it has not been read
+here. **The measurement on this code is what shipped.**
+
+⚠ **A UNION-FIND SUBTLETY THAT WOULD HAVE SHIPPED SILENTLY.** The first fix discarded any loop
+found to contain no voltage source — wrong on a netlist carrying BOTH a C-only loop and a C-V
+loop, since union-find reports only the FIRST closing edge and the C-only one can close first,
+hiding the real one. Restructured to union capacitors first and close only on a voltage source, so
+the loop is guaranteed to contain one. **Gated by a fixture carrying both**, which correctly names
+`vs, c4` and not the `a/b/cc` triangle.
+
+⚠⚠ **V-ONLY LOOPS AND I-ONLY CUTSETS ARE A DIFFERENT CATEGORY — ANDREAS ASKED, AND THEY ARE NOT
+INDEX 2.** A loop of voltage sources over-determines KVL and a cutset of current sources
+over-determines KCL: the MNA system is **structurally singular** and has no solution at all,
+barring an exact cancellation. Calling that "index 2" would send a reader hunting a solver problem
+when the netlist is the error. Reported as `info['ill_posed']` with the offending elements, while
+`index` keeps its own meaning.
+
+⚠ **AND ONE FAILURE WAS IN MY REFERENCE, NOT THE CRITERION.** The first full run had `cv_loop`
+disagreeing — criterion 2, reference 1 — because the reference guarded with `s2.max() > 0` and
+`NᵀGN` for that fixture is **identically zero**, which is the MOST singular case rather than the
+least. Shape 0j again, one day later: **the instrument was wrong, not the subject.**
 
 ### A5. Envelope-following — last
 
