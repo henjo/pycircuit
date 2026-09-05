@@ -7084,6 +7084,28 @@ class PAC(Analysis):
     def _cy_cycle_averaged(self, pss, w):
         """`CY` time-averaged over the orbit — Hull & Meyer's construction.
 
+        ⚠⚠ VALID FOR GENTLE MODULATION ONLY, AND IT FAILS AS A FACTOR, NOT A
+        PERCENTAGE.  Measured by the Spectre comparison suite (2026-09-05)
+        on a series switch + shunt capacitor, `pnoise` at 10 kHz against
+        Spectre, swept over the modulation depth `goff/gon`:
+
+            goff/gon   1        1e-1     1e-2     1e-3     1e-6
+            ratio      1.000    4.33     13.2     15.7     16.0
+
+        The 1.000 at the top is what makes the 16 readable: with no
+        modulation the cycle average IS the value.  The mechanism is not
+        subtle -- the averaged source injects `4kT <g>` (about half the
+        on-state current noise) for the WHOLE period, including the hold
+        phase, where the node it injects into is 1 Gohm in parallel with
+        100 pF; Hull & Meyer's own condition ("none of the large-signal
+        state variables may change significantly over the decay time of
+        the impulse response") fails there by six orders (100 ns closed,
+        0.1 s open).  So this route is for a mixer's `gm`, a bias-
+        dependent shot noise -- not for a switch.  ⚠ A switch's noise IS
+        reachable exactly: `covariance` and `oscillator_covariance`
+        evaluate `CY` at every step and need no averaging (the switched
+        capacitor's held variance reads `kT/C` to 1e-4 there).
+
         ⚠ THIS IS WHAT `_cy_reduced` REFUSES, DONE INSTEAD OF REFUSED, and
         the literature's answer rather than ours.  Hull & Meyer (1993):
         *"cyclostationary noise sources, such as shot noise, may be modeled
@@ -7255,6 +7277,20 @@ class PAC(Analysis):
     ## division by zero and the response is genuinely unbounded.  So the
     ## guard now excludes only what has no finite answer, not what was
     ## merely hard to compute.
+    def _cy_at(self, pss, w, xr):
+        """`CY` at ONE reduced state `xr`, reference row/column removed, with
+        NO cyclostationarity check -- for the routes that evaluate the
+        source at every step and therefore model a modulated source
+        exactly (`covariance`, `oscillator_covariance`).  The stationary
+        sum in `pnoise` cannot, which is why `_cy_reduced` refuses there.
+        """
+        irn = pss.irefnode
+        xr = np.asarray(xr, dtype=float).ravel()[:pss.cir.n - 1]
+        xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+        cy = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+        (cy,) = remove_row_col((cy,), irn, pss.toolkit)
+        return np.asarray(cy, dtype=complex)
+
     HARMONIC_GUARD = 1e-12
 
     def _check_circuit(self, pss):
@@ -7378,8 +7414,14 @@ class PAC(Analysis):
         refuses separately.
         """
         w1 = 2.0 * np.pi / float(pss.period)
-        c1 = np.asarray(self._cy_reduced(pss, w1), dtype=complex)
-        c2 = np.asarray(self._cy_reduced(pss, 10.0 * w1), dtype=complex)
+        ## ⚠ ONE state, two frequencies: the colour question is separable
+        ## from the bias question, and asking it through `_cy_reduced`
+        ## refused every MODULATED source before the covariance routes
+        ## (which evaluate `CY` per step and handle modulation exactly)
+        ## could reach it.
+        _xl = np.asarray(pss.factored_period().x_last, dtype=float).ravel()
+        c1 = self._cy_at(pss, w1, _xl)
+        c2 = self._cy_at(pss, 10.0 * w1, _xl)
         sc = max(float(np.max(np.abs(c1))), 1e-300)
         if float(np.max(np.abs(c1 - c2))) > 1e-9 * sc:
             raise NotImplementedError(
@@ -7414,7 +7456,23 @@ class PAC(Analysis):
         m = pss.cir.n - 1
         n = fp.width
         hs = np.diff(np.asarray(fp.times, dtype=float))
-        cy = np.real(self._cy_reduced(pss, 2.0 * np.pi / float(fp.T)))
+        ## ⚠ `CY` PER STEP, AT THE STEP'S OWN STATE -- not one `CY` for the
+        ## period.  The Lyapunov accumulation was already per step; hoisting
+        ## a single `CY` out of it put a MODULATED source (a switch's
+        ## `4kT g(t)`, a MOS channel's `4kT gamma gd0(t)`) outside the
+        ## formulation rather than outside the accuracy, and the
+        ## cyclostationarity refusal in `_cy_reduced` then closed the door
+        ## on exactly the circuits whose noise is the point (found by the
+        ## Spectre comparison suite, 2026-09-05).  Evaluated at the state
+        ## the step's companion was factored at (the implicit step's own
+        ## solution); the colour refusal still applies -- colour is a
+        ## different axis.
+        w0 = 2.0 * np.pi / float(fp.T)
+        _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                       pss.irefnode, axis=0)
+        cys = [np.real(self._cy_at(pss, w0,
+                                   _W[:, min(k + 1, _W.shape[1] - 1)]))
+               for k in range(len(fp.steps))]
 
         ## the C ring as the forward recursion sees it -- see the replays
         cs0, cs1, ring = [], [], list(fp.opening)
@@ -7441,7 +7499,7 @@ class PAC(Analysis):
         As, Qs = [], []
         for k, (lu, _Cn, _a, _b) in enumerate(fp.steps):
             ## Q = Jf^-1 (CY / 2h) Jf^-T, symmetrised against round-off
-            half = cy / (2.0 * hs[k])
+            half = cys[k] / (2.0 * hs[k])
             left = np.column_stack([lu.solve(half[:, j]) for j in range(m)])
             Q1 = np.column_stack([lu.solve(left[j, :]) for j in range(m)]).T
             Q = np.zeros((n, n))
@@ -7497,7 +7555,23 @@ class PAC(Analysis):
         """
         m = pss.cir.n - 1
         hs = np.diff(np.asarray(fp.times, dtype=float))
-        cy = np.real(self._cy_reduced(pss, 2.0 * np.pi / float(fp.T)))
+        ## ⚠ `CY` PER STEP, AT THE STEP'S OWN STATE -- not one `CY` for the
+        ## period.  The Lyapunov accumulation was already per step; hoisting
+        ## a single `CY` out of it put a MODULATED source (a switch's
+        ## `4kT g(t)`, a MOS channel's `4kT gamma gd0(t)`) outside the
+        ## formulation rather than outside the accuracy, and the
+        ## cyclostationarity refusal in `_cy_reduced` then closed the door
+        ## on exactly the circuits whose noise is the point (found by the
+        ## Spectre comparison suite, 2026-09-05).  Evaluated at the state
+        ## the step's companion was factored at (the implicit step's own
+        ## solution); the colour refusal still applies -- colour is a
+        ## different axis.
+        w0 = 2.0 * np.pi / float(fp.T)
+        _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                       pss.irefnode, axis=0)
+        cys = [np.real(self._cy_at(pss, w0,
+                                   _W[:, min(k + 1, _W.shape[1] - 1)]))
+               for k in range(len(fp.steps))]
         C_open = np.asarray(fp.opening[0], dtype=float)
         prevC = [C_open] + [np.asarray(st[1], dtype=float)
                             for st in fp.steps[:-1]]
@@ -7534,7 +7608,7 @@ class PAC(Analysis):
                     A[m:, j] = alphas[0] * (Ck @ x) + S
             ## noise: K (CY/2h) K^T on the state block, built the same way
             ## as the solved-history route so the two cannot drift apart
-            half = cy / (2.0 * hs[k])
+            half = cys[k] / (2.0 * hs[k])
             left = np.column_stack([lu.solve(half[:, j]) for j in range(m)])
             Q1 = np.column_stack([lu.solve(left[j, :]) for j in range(m)]).T
             Q1 = 0.5 * (Q1 + Q1.T)

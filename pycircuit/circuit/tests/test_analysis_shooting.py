@@ -1,5 +1,7 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import *
+from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                   Parameter as _HdlParameter, white_noise)
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -6969,8 +6971,6 @@ def test_multiplicative_noise_is_refused_on_every_path():
     ## every noise path funnels through `_cy_reduced`, so every one refuses
     for name, call in (
             ('diffusion_constant', lambda: pac.diffusion_constant(pss)),
-            ('oscillator_covariance',
-             lambda: pac.oscillator_covariance(pss)),
             ('coloured_diffusion',
              lambda: pac.coloured_diffusion(pss, [1.0 / pss.period])),
             ('oscillator_spectrum',
@@ -6978,6 +6978,12 @@ def test_multiplicative_noise_is_refused_on_every_path():
     ):
         with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT CY'):
             call()
+    ## ⚠ NOT `oscillator_covariance` ANY MORE (2026-09-05): the covariance
+    ## routes evaluate `CY` at every step, so a modulated source is inside
+    ## their formulation and they RUN -- see `_lyapunov_pieces` and the
+    ## switched-capacitor gate below.
+    K, _d, _info = pac.oscillator_covariance(pss)
+    assert np.all(np.isfinite(np.asarray(K, dtype=float)))
 
 
 def test_the_compact_mos_noise_is_off_without_a_card_not_absent():
@@ -12062,3 +12068,104 @@ def test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s():
             assert abs(ratio / (1.5 * s) - 1.0) < 2e-4, \
                 '%s row %d: mean(raw)/mean(consistent) = %.6f against ' \
                 '1.5 s = %.6f' % (name, j, ratio, 1.5 * s)
+
+
+class _SwitchHdl(Behavioural):
+    """The Spectre comparison suite's `pcswitch`, line for line:
+    `g = goff + (gon - goff) * (1 + tanh((V(cp,cn) - vth)/vs))/2`,
+    `I(p,n) <+ g V(p,n) + white_noise(4 kb T g)`.  `kb` and `temp` are
+    parameters so nothing hides in a constant.  The noise is
+    CYCLOSTATIONARY by construction."""
+    terminals = ('p', 'n', 'cp', 'cn')
+    instparams = [
+        _HdlParameter(name='gon', desc='Closed conductance', unit='S',
+                      default=1e-3),
+        _HdlParameter(name='goff', desc='Open conductance', unit='S',
+                      default=1e-9),
+        _HdlParameter(name='vth', desc='Gate threshold', unit='V',
+                      default=0.0),
+        _HdlParameter(name='vs', desc='Softening', unit='V', default=50e-3),
+        _HdlParameter(name='temp', desc='Noise temperature', unit='K',
+                      default=300.0),
+        _HdlParameter(name='kb', desc='Boltzmann constant', unit='J/K',
+                      default=1.38e-23)]
+
+    @staticmethod
+    def analog(p, n, cp, cn):
+        import sympy
+        b = Branch(p, n)
+        ctrl = Branch(cp, cn)
+        s = (1 + sympy.tanh((ctrl.V - vth) / vs)) / 2          # noqa: F821
+        g = goff + (gon - goff) * s                            # noqa: F821
+        return (Contribution(b.I, g * b.V),
+                Contribution(b.I, white_noise(4 * kb * temp * g)))  # noqa
+
+
+def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
+    """✅ THE SPECTRE SUITE'S FINDING 2, CLOSED: `covariance` evaluated one
+    `CY` for the whole period, so a switch's `4kT g(t)` was outside its
+    FORMULATION (the accumulation was already per step), and the
+    cyclostationarity refusal in `_cy_reduced` closed the door on the
+    smallest circuit with `kT/C` noise.  With `CY` per step at the step's
+    own state, the sample-and-hold (`Ron = 1k`, `Roff = 1G`, `C = 100 pF`,
+    `f = 100 kHz`, the suite's fixture to the parameter) gives, over the
+    period:
+
+        points     200      400      800      1600
+        hold       0.9920   0.9987   0.9998   1.0000     x kT/C   (second order)
+        track      0.7398   0.8467   0.9157   0.9556     x kT/C   (the known O(h/tau))
+
+    Spectre's sampled pnoise reads 0.99999 x kT/C at every instant of the
+    hold phase.  The tracking phase sits at the covariance's O(h/tau)
+    floor, IDENTICAL to the switch-held-closed control (no clock swing) at
+    every grid -- that floor is a separate, recorded item and not this
+    one.  Gated on the hold-phase mean and the control identity at 400
+    points, and on the hold phase's order.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
+    ktc = kb * temp / cval
+    T = 1.0 / fclk
+
+    def build(vth, vck):
+        cir = SubCircuit()
+        cir.add_node('in')
+        cir.add_node('out')
+        cir.add_node('ck')
+        cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+        cir['Vck'] = VSin('ck', gnd, vo=0.0, va=vck, freq=fclk, phase=90.0)
+        cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                               vth=vth, vs=50e-3, temp=temp, kb=kb)
+        cir['C0'] = C('out', gnd, c=cval)
+        return cir
+
+    def run(vth, vck, npts):
+        cir = build(vth, vck)
+        pss = PSS(cir, method='gear', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                      maxiterations=100)
+        assert pss.converged
+        io = [str(n) for n in cir.nodes if str(n) != 'gnd!'].index('out')
+        K0, Ks = PAC(cir, toolkit=circuit.numeric).covariance(pss,
+                                                              samples=True)
+        v = np.array([np.asarray(k, dtype=float)[io, io] for k in Ks]) / ktc
+        tt = np.linspace(0.0, T, len(v), endpoint=False)
+        hold = v[(tt > 0.3 * T) & (tt < 0.45 * T)].mean()
+        track = v[tt < 0.2 * T].mean()
+        return float(np.asarray(K0, dtype=float)[io, io]) / ktc, hold, track
+    k0_sw, hold4, track4 = run(0.0, 1.0, 400)
+    k0_ctrl, _h, track_ctrl = run(-1.0, 0.0, 400)
+    assert abs(hold4 - 1.0) < 3e-3, \
+        'held variance %.4f x kT/C at 400 points; Spectre samples 0.99999' \
+        % hold4
+    assert abs(track4 / track_ctrl - 1.0) < 1e-6, \
+        'the tracking phase (%.4f) must sit on the control (%.4f): the same ' \
+        'O(h/tau) floor' % (track4, track_ctrl)
+    assert abs(k0_sw / k0_ctrl - 1.0) < 1e-6
+    _k, hold8, _t = run(0.0, 1.0, 800)
+    assert abs(hold8 - 1.0) < 8e-4 and (1.0 - hold4) / (1.0 - hold8) > 3.0, \
+        'the held variance must converge at second order: %.2e -> %.2e' \
+        % (1.0 - hold4, 1.0 - hold8)
