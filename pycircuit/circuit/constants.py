@@ -8,7 +8,7 @@ Physical constants
 
 ## ⚠ SI 2019 exact values (k and q are DEFINED since the 2019 revision).
 ## They were 1.38e-23 (4.7e-4 low) and 1.602e-19 (1.1e-4 low) until
-## 2026-09-05, which the Spectre comparison suite had to carry as
+## 2026-09-05, which an external reference-simulator cross-check had to carry as
 ## PARAMETERS on both sides of every noise test to keep the tools from
 ## disagreeing over a constant.  `eps0` is CODATA 2018 (it was 8.8542e-12,
 ## 1.4e-6 shy).  ⚠ The COMPACT MODELS keep their own permittivity

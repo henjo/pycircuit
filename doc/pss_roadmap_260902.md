@@ -3304,13 +3304,13 @@ COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full 
 caught it, the targeted subset had not).
 
 **Also fixed on the way, from the peer sessions:** `_cy_reduced`'s third probe was the ZERO VECTOR (on
-the orbit by accident; a DC-clocked LTI RC was refused as cyclostationary — Spectre comparison
+the orbit by accident; a DC-clocked LTI RC was refused as cyclostationary — a reference-simulator cross-check
 suite, 2026-09-05), now the stored mid-period state, with a test; the "7% error" note on the `v·q`
 normalisation was `|v·q| − 1`, not the error (`v·q = −1.0696` against `v·ẋ = 1`: a factor 2.07 and
 the opposite sign — review audit). The exact vdp `c` at `Q = 8` is `6.250850e-08` (scipy adjoint);
 the consistent object is `+2.9e-5` from it, the swept-noise path `−1.4e-4`, and that bound now says so.
 
-✅ **The Spectre-suite items are CLOSED (2026-09-05).** `CY` is now evaluated per step at the step's own
+✅ **The reference cross-check items are CLOSED (2026-09-05).** `CY` is now evaluated per step at the step's own
 state on both Lyapunov paths (`PAC._cy_at`, no cyclostationarity check — the covariance routes model a
 modulated source exactly; `pnoise`'s stationary sum still refuses it, as it must), and
 `_refuse_coloured` asks its colour question at one state and two frequencies instead of through
@@ -3318,18 +3318,18 @@ modulated source exactly; `pnoise`'s stationary sum still refuses it, as it must
 suite's sample-and-hold to the parameter, covariance over the period in units of `kT/C`:
 
     points   200      400      800      1600
-    hold     0.9920   0.9987   0.9998   1.0000     second order — Spectre's sampled pnoise: 0.99999
+    hold     0.9920   0.9987   0.9998   1.0000     second order — a reference simulator's sampled pnoise: 0.99999
     track    0.7398   0.8467   0.9157   0.9556     the covariance's known O(h/τ), identical to the control
 
 The held variance is `kT/C` to `1e-4`; the tracking phase sits on the switch-held-closed control at
 every grid, so that floor is the separate item it always was. `modulated=True` now says it is for gentle
 modulation and fails as a factor, with the suite's table (1.000 / 4.33 / 13.2 / 15.7 / 16.0 over
 `goff/gon = 1…1e-6`). Tests: `test_a_switched_capacitor_holds_kTC_with_per_step_CY`; the refusal test
-no longer lists `oscillator_covariance`. **Verified by the suite against Spectre's `noisetype=timedomain`
+no longer lists `oscillator_covariance`. **Verified against a reference simulator's sampled (time-domain) noise
 at matched instants, the whole PROFILE and not only the held number: 0.99878 track, 0.99915 edge, 0.99999
 hold** — the transition is what only a per-step `CY` can produce. Two things it corrected in the prose:
 the held variance converges at BETTER than second order (6.3× / 7.7× / 13.3× per doubling, the last
-against Spectre's own floor), and **the tracked variance is 0.957 `kT/C`, not `kT/C`** — a sinusoidal
+against the reference's own floor), and **the tracked variance is 0.957 `kT/C`, not `kT/C`** — a sinusoidal
 clock holds the switch at full `gon` only instantaneously, so the capacitor is never in equilibrium
 with `Ron`; both tools agree independently, which is worth more than a round number.
 
@@ -3356,11 +3356,11 @@ with `Ron`; both tools agree independently, which is worth more than a round num
   `freqs=[…]` fails on ANY circuit with a `TypeError` (arrays work) — a pre-existing API quirk, recorded,
   not changed.
 * **`oscillator_spectrum`'s `S_v` is exactly 0.5000× a one-sided PSD** (`|X₁|² = A²/4` against the
-  carrier power `A²/2`; Spectre, four decades). `L_dBc` unaffected. Wording fixed, scale kept: a return
+  carrier power `A²/2`; a reference simulator, four decades). `L_dBc` unaffected. Wording fixed, scale kept: a return
   value callers may already divide by `|X₁|²`.
-* **From the same doc, confirmations worth keeping:** Spectre's own PPV agrees in scale to 6e-5 and in
+* **From the same doc, confirmations worth keeping:** a reference simulator's own PPV agrees in scale to 6e-5 and in
   shape to 2.5e-3 with `ppv()` — the `v·ẋ(0) = 1` normalisation settled from outside the project, after
-  the pair-consistent contraction landed; `diffusion_constant` reproduces Spectre's swept pnoise to four
+  the pair-consistent contraction landed; `diffusion_constant` reproduces a reference simulator's swept pnoise to four
   digits and `L_dBc` to 0.001 dB over three decades. **High Q is the LIMITING, not the tank loss:** `λ₂ =
   exp(−3bA²T/4C)` has no `g_l` in it, and at `λ₂ = 0.53 / 0.9 / 0.99` the PPV machinery does not degrade
   (multiplier to five digits against the describing function) — what shrinks is the validity window of
@@ -3373,7 +3373,7 @@ with `Ron`; both tools agree independently, which is worth more than a round num
 * ✅ **`tnom` and Boltzmann's constant, FIXED 2026-09-05 on the user's instruction.** `tnom` on all six HDL
   library models now defaults to the ambient (`float(defaultepar.T)` = 300 K) instead of 300.15 K, so a
   default-constructed device is no longer temperature-scaled by 4.9e-4; `kboltzmann` is the SI-2019 exact
-  1.380649e-23 (it was 1.38e-23, 4.7e-4 low — the constant the Spectre suite had to carry as a
+  1.380649e-23 (it was 1.38e-23, 4.7e-4 low — the constant an external reference had to carry as a
   parameter on both sides of every noise test). What moved in the tests, each with its reason in place:
   five compile-record digests (the explain text carries the default), the library3 reference helpers'
   own 300.15 assumption, the 59.5 mV/decade literal (59.53 with the exact `k`), the diode
@@ -3385,7 +3385,7 @@ with `Ron`; both tools agree independently, which is worth more than a round num
   constant-fold `k` and `q` at compile time, and the cache (13 511 objects) was keyed on source and
   library versions only — so after the change a model read one thermal voltage while the tree's constant
   said another, and only the limiting gate, which reads `VT` back from the compiled spec, noticed (it
-  passed with the cache disabled). The physical constants are now in the key. The Spectre session names
+  passed with the cache disabled). The physical constants are now in the key. The cross-check analysis names
   the general form, and it belongs next to §D's Monte-Carlo lesson: a cached artefact keyed on source
   but not on the physical constants is a measurement built on the convention under test — it inherits
   the assumption and confirms it — and the gate that caught it did so for the same reason `kT/C` caught
@@ -3897,7 +3897,7 @@ mechanism instead of a worry, and it means the two halves of B7 are **not one it
 ⚠⚠⚠ **A DESIGN HYPOTHESIS FROM ANDREAS, AND IT GOES TO THE CENTRAL POINT.** ⚠ **PROVENANCE
 CORRECTED 2026-09-04 — AN EARLIER VERSION OF THIS PARAGRAPH PRESENTED IT AS ESTABLISHED
 COMMERCIAL PRACTICE ("from practice with commercial SPICE PSS engines: they do not use a fixed
-grid at all"). ANDREAS HAS SINCE SAID PLAINLY THAT IT IS A GUESS — Spectre's source is not
+grid at all"). ANDREAS HAS SINCE SAID PLAINLY THAT IT IS A GUESS — the commercial simulator's source is not
 visible, so what it does inside is not knowable from outside.** The hypothesis is that the
 stepping is controlled entirely by the inner transient with **the last step placed on the period
 boundary**; it is a plausible design from an experienced user, and it is **NOT** an appeal to
@@ -4536,7 +4536,7 @@ the bias fixture now reads `Q_λ = 5.9094` and `c` to `1.7e-3` at 400 points wit
 the trap oscillator covariance, which used to refuse with its reason, runs through the twin and matches
 a direct Gear-2 solve to `1e-6`. An orbit too poor to seed the twin (Euler at 400 points: period 5% off,
 amplitude 55% off) gets a `RuntimeError` with the reason. Driven circuits are unaffected: their plain
-path is what the Spectre comparison validated to six digits, and B16's first-order `λ₂` there is
+path is what the reference cross-check validated to six digits, and B16's first-order `λ₂` there is
 recorded above as a known property of the manufactured opener, not repaired.
 
 #### B16-preroll. A COMPUTABLE criterion for when a pre-roll may hand over to shooting — relayed 2026-09-05 at the user's request; ✅ **RUN the same day, results below**
@@ -5459,7 +5459,7 @@ The second is the number a clock designer actually wants at the last inverter. I
 accumulate and it does **not** appear in `c`.
 
 **THE RIGHT OBJECT IS A SAMPLED / TIME-DOMAIN NOISE ANALYSIS** — noise evaluated at the
-**threshold crossings** rather than averaged over the cycle. SpectreRF exposes this as
+**threshold crossings** rather than averaged over the cycle. A commercial RF simulator exposes this as
 `noisetype=timedomain`.
 
 ⚠ **AND THE SPECTRAL `pnoise` DOES NOT SUBSTITUTE, BY OUR OWN DOCSTRING.** `PAC.pnoise` records

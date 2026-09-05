@@ -11698,8 +11698,8 @@ class _DcHeldNoise(IS):
 
 
 def test_the_cyclostationarity_probes_lie_on_the_orbit():
-    """⚠ A FALSE POSITIVE FROM A STATE OFF THE ORBIT, found by the Spectre
-    comparison suite (2026-09-05): `_cy_reduced` sampled `CY` at three
+    """⚠ A FALSE POSITIVE FROM A STATE OFF THE ORBIT, found by an external
+    reference-simulator cross-check (2026-09-05): `_cy_reduced` sampled `CY` at three
     states, and one of them was the ZERO VECTOR -- on the orbit only by
     accident.  A switch model reading `goff` at `v(ck) = 0` had a linear
     time-invariant RC refused as cyclostationary.  Here a noise source
@@ -12072,7 +12072,7 @@ def test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s():
 
 
 class _SwitchHdl(Behavioural):
-    """The Spectre comparison suite's `pcswitch`, line for line:
+    """A behavioural switch mirroring a Verilog-A `pcswitch`, line for line:
     `g = goff + (gon - goff) * (1 + tanh((V(cp,cn) - vth)/vs))/2`,
     `I(p,n) <+ g V(p,n) + white_noise(4 kb T g)`.  `kb` and `temp` are
     parameters so nothing hides in a constant.  The noise is
@@ -12103,7 +12103,7 @@ class _SwitchHdl(Behavioural):
 
 
 def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
-    """✅ THE SPECTRE SUITE'S FINDING 2, CLOSED: `covariance` evaluated one
+    """✅ AN EXTERNAL CROSS-CHECK'S FINDING, CLOSED: `covariance` evaluated one
     `CY` for the whole period, so a switch's `4kT g(t)` was outside its
     FORMULATION (the accumulation was already per step), and the
     cyclostationarity refusal in `_cy_reduced` closed the door on the
@@ -12116,7 +12116,7 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
         hold       0.9920   0.9987   0.9998   1.0000     x kT/C   (second order)
         track      0.7398   0.8467   0.9157   0.9556     x kT/C   (the known O(h/tau))
 
-    Spectre's sampled pnoise reads 0.99999 x kT/C at every instant of the
+    A reference simulator's sampled pnoise reads 0.99999 x kT/C at every instant of the
     hold phase.  The tracking phase sits at the covariance's O(h/tau)
     floor, IDENTICAL to the switch-held-closed control (no clock swing) at
     every grid -- that floor is a separate, recorded item and not this
@@ -12160,7 +12160,7 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
     k0_sw, hold4, track4 = run(0.0, 1.0, 400)
     k0_ctrl, _h, track_ctrl = run(-1.0, 0.0, 400)
     assert abs(hold4 - 1.0) < 3e-3, \
-        'held variance %.4f x kT/C at 400 points; Spectre samples 0.99999' \
+        'held variance %.4f x kT/C at 400 points; the reference samples 0.99999' \
         % hold4
     assert abs(track4 / track_ctrl - 1.0) < 1e-6, \
         'the tracking phase (%.4f) must sit on the control (%.4f): the same ' \
@@ -12173,8 +12173,8 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
 
 
 def test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_the_fold():
-    """✅ TWO REPORTING DEFECTS IN `PAC.solve`'S TAIL, found by the Spectre
-    comparison suite (2026-09-05), neither in the solve.  (a) The DFT was
+    """✅ TWO REPORTING DEFECTS IN `PAC.solve`'S TAIL, found by an external
+    reference-simulator cross-check (2026-09-05), neither in the solve.  (a) The DFT was
     taken over `fp.times`, `[0, T]` INCLUSIVE, so the last sample repeated
     the first and `dt = T/(N-1)` put the sidebands at `f0 (N-1)/N`:
     109 500 / 89 500 Hz for 110 000 / 90 000 at N = 200 (measured before

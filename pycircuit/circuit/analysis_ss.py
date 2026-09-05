@@ -506,7 +506,7 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
     ## scalar entries, so a frequency-DEPENDENT `CY` -- a coloured source,
     ## every compact model's flicker term -- handed the whole sweep array
     ## broke here for any sweep longer than one point (found by the
-    ## Spectre comparison suite, 2026-09-05).  A sweep re-evaluates `CY`
+    ## reference-simulator cross-check, 2026-09-05).  A sweep re-evaluates `CY`
     ## per frequency where it is consumed (`Noise.solve`); this one is the
     ## representative at the first frequency, for callers that never
     ## sweep it.

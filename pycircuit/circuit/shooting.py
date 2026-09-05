@@ -6559,7 +6559,7 @@ class PAC(Analysis):
             ## sideband set, exactly as the withdrawn body intended
             tms = np.asarray(fp.times, dtype=float)[:len(y)]
             v = y * np.exp(-2j * np.pi * f * tms)[:, None]
-            ## ⚠ TWO REPORTING DEFECTS, FOUND BY THE SPECTRE COMPARISON SUITE
+            ## ⚠ TWO REPORTING DEFECTS, FOUND BY AN EXTERNAL REFERENCE CROSS-CHECK
             ## (2026-09-05), neither in the solve.  (a) `fp.times` spans
             ## `[0, T]` INCLUSIVE, so the last sample repeats the first on a
             ## T-periodic `v` (|v[0] - v[-1]| / |v[0]| = 7e-18 measured) and
@@ -7111,9 +7111,9 @@ class PAC(Analysis):
         """`CY` time-averaged over the orbit — Hull & Meyer's construction.
 
         ⚠⚠ VALID FOR GENTLE MODULATION ONLY, AND IT FAILS AS A FACTOR, NOT A
-        PERCENTAGE.  Measured by the Spectre comparison suite (2026-09-05)
+        PERCENTAGE.  Measured by an external reference-simulator cross-check (2026-09-05)
         on a series switch + shunt capacitor, `pnoise` at 10 kHz against
-        Spectre, swept over the modulation depth `goff/gon`:
+        a reference simulator, swept over the modulation depth `goff/gon`:
 
             goff/gon   1        1e-1     1e-2     1e-3     1e-6
             ratio      1.000    4.33     13.2     15.7     16.0
@@ -7247,7 +7247,7 @@ class PAC(Analysis):
         ## VECTOR, which is on the orbit only by accident, and a linear
         ## time-invariant RC held by a DC clock was refused as
         ## cyclostationary because a switch model read `goff` at v(ck) = 0
-        ## (found by the Spectre comparison suite, 2026-09-05).  The third
+        ## (found by an external reference-simulator cross-check, 2026-09-05).  The third
         ## probe is now the stored state half a period in.
         _W = np.asarray(pss.waveform[1], dtype=float)
         _mid = np.delete(_W[:, _W.shape[1] // 2], irn, axis=0)
@@ -7489,7 +7489,7 @@ class PAC(Analysis):
         ## formulation rather than outside the accuracy, and the
         ## cyclostationarity refusal in `_cy_reduced` then closed the door
         ## on exactly the circuits whose noise is the point (found by the
-        ## Spectre comparison suite, 2026-09-05).  Evaluated at the state
+        ## reference-simulator cross-check, 2026-09-05).  Evaluated at the state
         ## the step's companion was factored at (the implicit step's own
         ## solution); the colour refusal still applies -- colour is a
         ## different axis.
@@ -7588,7 +7588,7 @@ class PAC(Analysis):
         ## formulation rather than outside the accuracy, and the
         ## cyclostationarity refusal in `_cy_reduced` then closed the door
         ## on exactly the circuits whose noise is the point (found by the
-        ## Spectre comparison suite, 2026-09-05).  Evaluated at the state
+        ## reference-simulator cross-check, 2026-09-05).  Evaluated at the state
         ## the step's companion was factored at (the implicit step's own
         ## solution); the colour refusal still applies -- colour is a
         ## different axis.
@@ -7683,7 +7683,7 @@ class PAC(Analysis):
         reads `kT/C` to 1e-4 at 1600 points and converges at better than
         second order, while the TRACKING phase sits at this routine's
         O(h/tau) floor -- 4% out at 800 points where the held value is
-        already 1.6e-4 -- and both agree with Spectre's sampled pnoise at
+        already 1.6e-4 -- and both agree with a reference simulator's sampled pnoise at
         matched instants to 1e-3 (0.99878 track, 0.99915 edge, 0.99999
         hold).  The tracked variance is 0.957 kT/C, NOT kT/C: a sinusoidal
         clock holds the switch at full `gon` only instantaneously, so the
@@ -8553,7 +8553,7 @@ class PAC(Analysis):
         `|X_1|^2 = A^2/4`, the carrier PHASOR's square -- which is HALF the
         carrier power `A^2/2` a one-sided PSD carries, so `S_v` is exactly
         0.5000x a one-sided PSD of the output voltage (measured against
-        Spectre at every offset over four decades, 2026-09-05).  `L_dBc`
+        a reference simulator at every offset over four decades, 2026-09-05).  `L_dBc`
         is unaffected, `|X_1|^2` dividing out of the ratio; the absolute
         V^2/Hz matters to anyone integrating `S_v` to a power, and the
         scale is kept rather than doubled because it is a return value
