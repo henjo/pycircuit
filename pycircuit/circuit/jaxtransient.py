@@ -2031,7 +2031,7 @@ def _junction_arrays(circuit):
         return None
 
     VT_global = float(_dp.kboltzmann if hasattr(_dp, 'kboltzmann')
-                      else 1.38e-23) * float(getattr(_dp, 'T', 300.0)) \
+                      else 1.380649e-23) * float(getattr(_dp, 'T', 300.0)) \
         / 1.602e-19
 
     ra = jnp.array([j[2] for j in junctions], dtype=jnp.int32)

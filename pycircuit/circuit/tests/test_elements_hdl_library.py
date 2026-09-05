@@ -263,8 +263,11 @@ class TestSpiceDiodeSeriesResistance(object):
         for rs, area in ((1.5, 1.0), (1.5, 4.0), (12.0, 1.0)):
             ## Baseline at the SAME area: area moves the junction
             ## voltage too, and only the rs difference is under test.
+            ## rtol 1e-8, not 1e-9: the junction's own logarithmic shift
+            ## between the two solves is 3.7e-9 of the drop with the exact
+            ## Boltzmann constant (it sat just under 1e-9 with 1.38e-23).
             assert_allclose(solve(rs, area) - solve(0.0, area),
-                            0.1 * rs / area, rtol=1e-9)
+                            0.1 * rs / area, rtol=1e-8)
 
 
 ## ======================================================================

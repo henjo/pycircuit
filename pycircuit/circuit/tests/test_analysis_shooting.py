@@ -9276,7 +9276,8 @@ def test_the_orbital_covariance_reaches_kTC_when_the_mode_is_RESOLVED():
     grid. `kT/C` is an EXTERNAL anchor -- the same one that settled the
     `CY/2` convention -- so the top of that table is a real gate.
     """
-    kT = 1.38e-23 * 300.0
+    from pycircuit.circuit.constants import kboltzmann
+    kT = kboltzmann * 300.0
     ## resolved: tau/h ~ 153
     kyy, h = _tank_with_rc_probe(rpar=1e5, cpar=2e-5)
     tau_over_h = (1e5 * 2e-5) / h

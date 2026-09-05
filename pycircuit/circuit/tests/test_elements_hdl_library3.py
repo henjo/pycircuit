@@ -151,7 +151,7 @@ def _gp_reference(vbe, vbc, T=None, IS=1e-16, bf=100.0, nf=1.0, vaf=0.0,
                   rc=0.0, cje=0.0, vje=0.75, mje=0.33, tf=0.0, xtf=0.0,
                   vtf=0.0, itf=0.0, cjc=0.0, vjc=0.75, mjc=0.33,
                   xcjc=1.0, tr=0.0, fc=0.5, xtb=0.0, eg=1.11, xti=3.0,
-                  kf=0.0, af=1.0, area=1.0, tnom=300.15):
+                  kf=0.0, af=1.0, area=1.0, tnom=None):
     """The Gummel-Poon model in plain numpy, from the textbook.
 
     Takes the two INTERNAL junction voltages (behind ``rb``/``re``/``rc``)
@@ -161,6 +161,9 @@ def _gp_reference(vbe, vbc, T=None, IS=1e-16, bf=100.0, nf=1.0, vaf=0.0,
     the compiled model is evidence about the model and not about a
     shared habit.
     """
+    ## ⚠ the model's `tnom` defaults to the AMBIENT since 2026-09-05 (it was
+    ## 300.15 K against `defaultepar.T = 300`); the reference follows it
+    tnom = _T0 if tnom is None else tnom
     T = _T0 if T is None else T
     vt = _KB * T / _QE
     trat = T / tnom
@@ -1397,7 +1400,7 @@ def _ekv_vp(vgb, card, T=None):
     """
     T = _T0 if T is None else T
     phi = _ekv_phi(card, T)
-    vto = card['vto'] - card.get('tcv', 0.0) * (T - card.get('tnom', 300.15))
+    vto = card['vto'] - card.get('tcv', 0.0) * (T - card.get('tnom', _T0))
     g = card['gamma']
     vgp = vgb - vto + phi + g * math.sqrt(phi)
     if vgp > 0.0:
@@ -1407,7 +1410,7 @@ def _ekv_vp(vgb, card, T=None):
 
 def _ekv_phi(card, T=None):
     T = _T0 if T is None else T
-    tnom = card.get('tnom', 300.15)
+    tnom = card.get('tnom', _T0)
     trat = T / tnom
     egt = 1.16 - 7.02e-4 * T ** 2 / (T + 1108.0)
     egn = 1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0)
@@ -1458,7 +1461,10 @@ def test_ekv_weak_inversion_is_exponential_with_the_slope_factor():
         assert_allclose(swing_at(ideal, vg), math.log(10.0) * _UT,
                         rtol=1e-4)
     ## The textbook number, at 300 K: 59.5 mV per decade.
-    assert_allclose(math.log(10.0) * _UT, 0.059505, rtol=1e-4)
+    ## 59.53 mV/decade with the exact Boltzmann constant (SI 2019) and the
+    ## tree's `qelectron = 1.602e-19`; it read 0.059505 with k = 1.38e-23
+    ## until 2026-09-05, and would read 0.059526 with the exact charge too.
+    assert_allclose(math.log(10.0) * _UT, 0.059533, rtol=1e-4)
     ## and it IS weak inversion: picoamps, twelve decades below the
     ## strong-inversion current at 3 V.
     assert _ids(ideal, 1.0, -0.05) < 1e-11
@@ -1897,13 +1903,30 @@ def test_ekv_flicker_noise_is_one_over_f():
     ## difference of 0.0 into -1.26e-25 against an analytic -1.28e-25 --
     ## 1.5% agreement where there was none at all -- and the entries are
     ## reported UNRESOLVED rather than either FAILED or silently passed.
-    ('accumulation', EKV, [1.0, -3.0, 0.0, 0.0], False),
+    ## ⚠ 2026-09-05: with the EXACT Boltzmann constant the accumulation
+    ## card's ~1e-25 F entries move clear of their quantisation and
+    ## RESOLVE (at noise level, under the stated floor below) where with
+    ## k = 1.38e-23 they had reported 'roundoff'; the seam now reports
+    ## 'kink' alone.  The round-off branch keeps its coverage in
+    ## test_elements_hdl_library4/5.
+    ('accumulation', EKV, [1.0, -3.0, 0.0, 0.0], True),
     ('ideal device', EKV_IDEAL, [2.0, 2.0, 0.0, 0.0], True),
     ('ideal at the seam', EKV_IDEAL, [1.0, -0.2, 0.0, 0.0], False),
 ])
 def test_ekv_jacobians_by_finite_differences(name, card, x, resolved):
     el = _mk(eh.EkvNmosHdl, 'd', 'g', 's', 'b', **card)
-    res = check_jacobians(el, np.array(x, dtype=float), rtol=3e-5)
+    ## ⚠ an absolute floor of 1e-24 (F, S) for the UNRESOLVED cards: at
+    ## accumulation every capacitance entry is ~1e-25 F -- six decades under
+    ## any physical one -- and a 3e-5 relative comparison of two numbers
+    ## that are both numerically zero measures rounding, not the model
+    ## (it flipped from passing to 2.5% off when the Boltzmann constant
+    ## moved by 4.7e-4, 2026-09-05); the seam's entries that used to be
+    ## classed round-off sit at the same level.  The ordinary bias keeps
+    ## the default.
+    res = check_jacobians(el, np.array(x, dtype=float), rtol=3e-5,
+                          atol=(1e-24 if name in ('accumulation',
+                                                  'ideal at the seam')
+                                else None))
     assert res.ok, '%s\n%s' % (name, res)
     ## `ok` alone would be satisfied by an instrument that gave up
     ## everywhere, so the two states are pinned separately: every
@@ -1911,7 +1934,7 @@ def test_ekv_jacobians_by_finite_differences(name, card, x, resolved):
     ## must report themselves unresolved rather than pass quietly.
     assert res.resolved is resolved, '%s\n%s' % (name, res)
     if not resolved:
-        assert all(u.reason == 'roundoff' for u in res.unresolved), \
+        assert {u.reason for u in res.unresolved} <= {'roundoff', 'kink'}, \
             '%s\n%s' % (name, res)
 
 

@@ -917,7 +917,9 @@ def test_p21_batched_dc_operating_point():
                 gnd,
                 override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},
                 tend=1e-7, timestep=1e-9)
-        for lane, bias in ((0, 4.366854), (1, 4.384664)):
+        ## re-pinned 2026-09-05 with the exact Boltzmann constant (the bias
+        ## point moves by 6.7e-5)
+        for lane, bias in ((0, 4.366561), (1, 4.384377)):
             v = np.asarray(res2[lane].v('b'), float).reshape(-1)
             assert v[0] == pytest.approx(bias, abs=1e-4), (lane, v[0])
 

@@ -449,7 +449,9 @@ def test_the_ekv_diff_pair_from_twenty_volts():
         ## PCNR converges here since sec. 34.  Asserted, not merely
         ## recorded -- otherwise a regression back to [F, F] would pass.
         assert pc1[0] is not None and pc2[0] is not None, (vin, row)
-        assert pc1[0] < 20, (vin, row)
+        ## 24 at one input with the exact Boltzmann constant (all < 20 with
+        ## 1.38e-23, 2026-09-05); the budget is 200 and the claim is convergence
+        assert pc1[0] < 30, (vin, row)
         for its, tail in (pl1, pl2, pc1, pc2):
             if its is not None:
                 assert_allclose(tail, ref, rtol=1e-4)

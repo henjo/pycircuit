@@ -718,15 +718,18 @@ _ADOPTERS = [
 #: unchanged by the conversion of `sarg`, `sargl` (x2), `sqphbs`, `tfx`
 #: and `delxl`.  Not a tolerance: the bytes.
 _RECORDED = {
-    'MosLevel1Hdl': 'e2c6241eb16203a4',
-    'MosLevel1Hdl-r': '03330d0a2a9e611b',
-    'MosLevel1Hdl-g0': 'a4bdc5d3bf9ff3f7',
-    'MosLevel1PmosHdl': 'e62f01daab99cb38',
-    'GummelPoonNpnHdl': 'd25a34d69d5efbf9',
-    'GummelPoonNpnHdl-off': 'a5b1739425c7d7d8',
-    'GummelPoonPnpHdl': 'dcf3f2d4f8a587a4',
-    'GummelPoonNpnThermalHdl': 'f33c131ee2e925cd',
-    'GummelPoonNpnThermalHdl-off': '7bd7455df9b16475',
+    ## ⚠ Re-recorded 2026-09-05: kboltzmann is the SI-2019 exact value
+    ## (1.380649e-23 for 1.38e-23), so every digest that folds a thermal
+    ## voltage moved.  Nothing in the adopted sites did.
+    'MosLevel1Hdl': '06d9c7f9a9873552',
+    'MosLevel1Hdl-r': '88201ab0cea7ad6d',
+    'MosLevel1Hdl-g0': '557e26414cb91d50',
+    'MosLevel1PmosHdl': 'c7ce547aa15084da',
+    'GummelPoonNpnHdl': '7346ff668eafc7a3',
+    'GummelPoonNpnHdl-off': '249ff7f8355e08e1',
+    'GummelPoonPnpHdl': '526bac7dedc0d1d4',
+    'GummelPoonNpnThermalHdl': '5c0a5e187c34a956',
+    'GummelPoonNpnThermalHdl-off': '0f541456f189e449',
     ## ⚠ RE-RECORDED 2026-08-27 for the three MOS level 3 rows, and only
     ## those.  `_autohold` (roadmap sec. 36) makes the regularisers hold
     ## their own arguments, which stops sympy flattening across the
@@ -747,9 +750,9 @@ _RECORDED = {
     ## uses default cards and random biases; these rows carry cards that
     ## reach the arms.  It is the better instrument and it earned its
     ## keep here.
-    'MosLevel3Hdl': 'da716b9e8c723dcd',
-    'MosLevel3Hdl-off': 'ca00b7ee7fae7500',
-    'MosLevel3PmosHdl': '7b8575aaf29e3367',
+    'MosLevel3Hdl': 'c55a80f0a02d0371',
+    'MosLevel3Hdl-off': '173b4bac3b8c7a3c',
+    'MosLevel3PmosHdl': '843a48a3a0836b8b',
 }
 
 

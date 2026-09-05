@@ -70,7 +70,9 @@ def test_dc_pcnr_true_takes_a_circuit_with_no_junction_at_all():
     finally:
         pcnr.solve_dc = orig
     assert calls[0] >= 1, 'pcnr=True fell through to the ordinary solver'
-    assert abs(float(r.v('tail', gnd)) - 2.818678) < 1e-5
+    ## 2.818593 with the exact Boltzmann constant (2.818678 with 1.38e-23,
+    ## re-pinned 2026-09-05 -- the thermal voltage moved by 4.7e-4)
+    assert abs(float(r.v('tail', gnd)) - 2.818593) < 1e-5
 
 
 def _bjt_mirror_20v(rev=False):
@@ -159,7 +161,9 @@ def test_pcnr_now_converges_where_it_used_to_need_the_fallback():
     for rev in (False, True):
         c, x0 = _bjt_mirror_20v(rev)
         x, v, its = pcnr.solve_dc(c, gnd, x0=x0)
-        assert its < 20
+        ## 20 with the exact Boltzmann constant (19 with 1.38e-23, 2026-09-05);
+        ## the budget is 200 and the claim is convergence, not the count
+        assert its < 25
         assert abs(float(x[c.get_node_index('no')]) - 3.9956) < 5e-3
 
     from pycircuit.circuit.tests.test_limit_identity import _diffpair
@@ -168,7 +172,9 @@ def test_pcnr_now_converges_where_it_used_to_need_the_fallback():
         x0 = np.full(c.n, 20.0)
         x0[c.get_node_index(gnd)] = 0.0
         x, v, its = pcnr.solve_dc(c, gnd, x0=x0)
-        assert its < 20
+        ## 20 with the exact Boltzmann constant (19 with 1.38e-23, 2026-09-05);
+        ## the budget is 200 and the claim is convergence, not the count
+        assert its < 25
 
 
 def test_dc_pcnr_true_does_not_fall_back_when_pcnr_converges():

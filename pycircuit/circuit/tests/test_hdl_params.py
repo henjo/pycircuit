@@ -594,6 +594,18 @@ _DIO = dict(IS=3e-15, rs=1.7, n=1.05, tt=4e-9, cjo=2e-12, vj=0.7, m=0.4,
 #: recorded from cb99b18's `elements_hdl` -- the `_with_params` /
 #: nineteen-argument spelling -- with the cache disabled.
 _RECORDED = [
+    ## (second pass, exact filter) 2026-09-05: the EXPLAIN digests of every model with a
+    ## `tnom` parameter, because `tnom` now defaults to the AMBIENT
+    ## (`defaultepar.T = 300`) instead of 300.15 K -- both numbers
+    ## pycircuit's own, a 4.9e-4 temperature scaling nobody asked for.
+    ## Point digests: see the run log in the commit; the cards that set
+    ## `tnom` explicitly are bit-identical.
+    ## ⚠ Re-recorded 2026-09-05: the EXPLAIN digests of every model with a
+    ## `tnom` parameter, because `tnom` now defaults to the AMBIENT
+    ## (`defaultepar.T = 300`) instead of 300.15 K -- both numbers
+    ## pycircuit's own, a 4.9e-4 temperature scaling nobody asked for.
+    ## Point digests: see the run log in the commit; the cards that set
+    ## `tnom` explicitly are bit-identical.
     ## ⚠ Re-recorded again 2026-08-27 (roadmap sec. 43) for the thermal
     ## node and the diode's series branch becoming probes.  Same story
     ## as below: EXPLAIN text only, POINT digests untouched, and
@@ -611,14 +623,14 @@ _RECORDED = [
     ## relative difference exactly 0.000e+00.  An identity probe applies
     ## no law, so it must not move a number, and it did not.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['4d746c561ac7b430', '924f3d39a2c404df', '5ea1b16f597dd226'],
-     '3b86779394634e8e'),
+     ['404b1b43644ab019', 'fd1d32fcef2b2625', 'a80c577cf7113b3f'],
+     'cc7a5d55eb18dcdb'),
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['2c024addadbe4ba4', '38dfed3011c5a3f5', 'e21e0a40a85e01bf'],
-     '2cdbb30b8f2ec50d'),
+     ['6b5d52c2048f4191', '133a4abaebb71458', 'ea3c4901d2b5edf2'],
+     'ea3dd3bb2ff59547'),
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
-     ['d2bcfb160947baec', 'fde3cc1f8ae9d6db', '943ddcd06908762d'],
-     '651b1d49cd49caf9'),
+     ['2520fabcba40f3bc', 'e5b6f84311dc1ec3', '140c1901be974ce6'],
+     '04fe9f439e083182'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
     ## hold their own arguments, so the chain carries more named
@@ -634,14 +646,14 @@ _RECORDED = [
     ## Old explain digests: DiodeSpiceHdl 4faadd376cafc95a,
     ## DiodeSpiceThermalHdl b2230da8487...dbfb58d3a752 (see git).
     ('DiodeSpiceHdl', _DIO, ('a', 'c'), 3,
-     ['eadd075b306b20e0', 'ac934e5f1d3b6a30', 'de1b14f3dc3cb89c'],
-     '149445302b3077ef'),
+     ['5732d6b5a453ada3', 'b3db910310ad59eb', '0189f63b719733f6'],
+     '03a9e667bf35048a'),
     ## Old: points b2230da8487a876f / cda54034e9a55933 / 8361dbfb58d3a752,
     ## explain 0dcf03f6b937d283.  Moved by 1.213e-15 relative -- see the
     ## note above.
     ('DiodeSpiceThermalHdl', _DIO, ('a', 'c', 'th', 'tha'), 5,
-     ['2779caa138b9b423', 'a630e803c927764a', '5452a4a0006fbacb'],
-     'f2ec390e8b1e6ad9'),
+     ['363087fe5b498922', '4dfb47c5c03c2c44', 'eec46bcbf69fc68a'],
+     'dec8b822c1c94665'),
 ]
 
 

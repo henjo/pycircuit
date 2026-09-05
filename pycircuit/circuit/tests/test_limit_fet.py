@@ -12,6 +12,7 @@ was worked out BY HAND from that C, branch by branch, and the derivation
 is written next to the number -- not captured from this implementation's
 own output, which would only prove it is self-consistent.
 """
+import math
 import numpy as np
 from numpy.testing import assert_allclose
 import pytest
@@ -607,7 +608,15 @@ def test_limit_pnj_is_unchanged_by_the_limit_spec_restructure(ISv):
                                np.array([vold + shift, shift]))
                 want = _pnjlim(vnew, vold, VT, ISv, numeric)
                 assert out[1] == shift          # the plus terminal moves
-                assert out[0] == shift + want, (vold, vnew, ISv)
+                ## ⚠ to 2 ulp, not bit-identical: `limit()` runs in the C
+                ## backend and `vtf` is the Python fold, and with the exact
+                ## Boltzmann constant (2026-09-05) their `k T / q` differ by
+                ## one ulp where with 1.38e-23 they had rounded alike.  The
+                ## claim -- the dispatch and the write-back -- is intact at
+                ## that level; a real error is 1e-4 or larger.
+                assert math.isclose(out[0], shift + want, rel_tol=4.5e-16,
+                                    abs_tol=0.0), (vold, vnew, ISv, out[0],
+                                                   shift + want)
                 limited += (want != vnew)
     ## Not vacuous: `IS = 0` is the "no junction" pass-through and is
     ## expected to move nothing; every other card must actually limit.
@@ -836,7 +845,9 @@ def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
         x, its[which] = _plain_newton(c)
         ## Every variant that converges must converge to the SAME point:
         ## a limiter moves the path, never the solution.
-        assert_allclose(x[c.get_node_index('mid')], 1.2031737, rtol=1e-6)
+        ## 1.2031752 with the exact Boltzmann constant (1.2031737 with
+        ## 1.38e-23; re-pinned 2026-09-05)
+        assert_allclose(x[c.get_node_index('mid')], 1.2031752, rtol=1e-6)
 
     ## `fetlim` alone is now the cheapest rescue, by a wide margin.
     assert its['fet'] < its['vds'] / 3.0, its

@@ -153,6 +153,12 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
 ## anyone writes.  It is now a readability choice, not a workaround.
 ## ---------------------------------------------------------------------
 from pycircuit.circuit.hdl import vt as _vt
+## ⚠ `tnom` defaults to the AMBIENT the circuit is simulated at, so a device
+## built without a card is not temperature-scaled by a difference nobody asked
+## for.  It was 300.15 K against `defaultepar.T = 300` until 2026-09-05 --
+## both numbers pycircuit's own -- a 4.9e-4 scaling that survives review.
+## `tnom` is KELVIN here, where every SPICE card is Celsius.
+from pycircuit.circuit.circuit import defaultepar as _defaultepar
 from pycircuit.circuit.hdl import var as _var
 ## `expl`, not `limexp`, and the reason is measured rather than
 ## stylistic.  `limexp` is deliberately NOT both-arms-safe: its discarded
@@ -569,7 +575,7 @@ class RThermalHdl(Behavioural):
                   Parameter(name='tc2', desc='Quadratic tempco',
                             unit='1/K^2', default=0.0),
                   Parameter(name='tnom', desc='Parameter measurement '
-                            'temperature', unit='K', default=300.15)] \
+                            'temperature', unit='K', default=float(_defaultepar.T))] \
         + _thermal_params()
 
     @staticmethod
@@ -627,7 +633,7 @@ def _spice_diode_params():
         Parameter(name='area', desc='Area scaling factor', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=300.15),
+                  unit='K', default=float(_defaultepar.T)),
     ]
 
 
@@ -1584,7 +1590,7 @@ def _spice_bjt_params():
         Parameter(name='area', desc='Area scaling factor', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=300.15),
+                  unit='K', default=float(_defaultepar.T)),
     ]
 
 
@@ -2125,7 +2131,7 @@ def _ekv_params():
         Parameter(name='ef', desc='Flicker-noise frequency exponent',
                   unit='', default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=300.15),
+                  unit='K', default=float(_defaultepar.T)),
     ]
 
 
@@ -2551,7 +2557,7 @@ def _mos1_params():
         Parameter(name='af', desc='Flicker-noise exponent', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=300.15),
+                  unit='K', default=float(_defaultepar.T)),
     ]
 
 
@@ -3754,7 +3760,7 @@ def _mos3_params():
         Parameter(name='af', desc='Flicker-noise exponent', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=300.15),
+                  unit='K', default=float(_defaultepar.T)),
     ]
 
 

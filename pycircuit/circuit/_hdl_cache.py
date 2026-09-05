@@ -387,8 +387,21 @@ def key_for(cls):
     import numpy
     import sympy
     from pycircuit.circuit import hdl as _hdl_mod
+    ## ⚠ THE PHYSICAL CONSTANTS ARE PART OF THE KEY.  `vt()` and every
+    ## noise density constant-fold `kboltzmann` and `qelectron` at
+    ## compile time; a cache keyed on source and versions alone served
+    ## 13 511 stale objects with k = 1.38e-23 folded in after the
+    ## constant was corrected (2026-09-05) -- a model reading one thermal
+    ## voltage while the tree's constant said another, and the limiting
+    ## gate was the only thing that noticed.
+    from pycircuit.circuit import constants as _pc
+    consts = tuple(sorted((n, repr(float(getattr(_pc, n))))
+                          for n in dir(_pc)
+                          if not n.startswith('_')
+                          and isinstance(getattr(_pc, n), (int, float))))
     parts = [
         'format=%d' % CACHE_FORMAT,
+        'constants=%r' % (consts,),
         'compiler=%s' % comp,
         'sympy=%s' % sympy.__version__,
         'numpy=%s' % numpy.__version__,
