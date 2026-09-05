@@ -6425,3 +6425,20 @@ T8. **The noise-injection surfaces fall back to Gear-2 (`_lyapunov_host`), and a
    process at all. Plan: project -> Van Loan on the differential subspace (2nd order) -> use with
    trbdf2's discrete `A_n`; validate against Van Loan-exact (matrix, per step) + kT/C + Monte Carlo.
    Scalar-RC Van Loan already verified 2nd order (0.9938/0.9987/0.9996 at h=0.5/0.2/0.1).
+
+T8a. **When the trbdf2 Lyapunov IS built, one more test — and it is invisible to the obvious three**
+   (docs session, MEASURED). If a noise source enters an ALGEBRAIC constraint (violating Winkler's
+   `im A_N subset im A_C` -- e.g. a thermal-noise source between two nodes with no capacitance on
+   either), the covariance's ALGEBRAIC entries diverge as EXACTLY 1/h (the nilpotent block
+   differentiates white noise; discretised white noise has variance S/h). ⚠ The DIFFERENTIAL entries
+   (the `P_xx` a kT/C test reads) stay perfectly healthy -- measured P_xx -> 0.5 correctly while
+   P_yy doubles every step-halving. So per-step Van Loan (run on the projected system), kT/C, AND
+   Monte Carlo are ALL blind to it (they look at differential entries; the MC shares the defect).
+   The test: a fixture that violates `im A_N subset im A_C` must REFUSE (a cheap incidence-matrix
+   rank check, pre-integration), or the runtime detector is refinement again (run h and h/2, assert
+   no covariance entry doubles). ⚠ This makes the differential-subspace PROJECTION load-bearing, not
+   a formality: Demir's capacitive-node-only propagation never forms an algebraic-node covariance
+   and is structurally immune -- the projected route inherits that. This fixture is what catches a
+   later "simplification" to the full MNA state; nothing else in the stack would.
+   (Refinement is now the general instrument for THREE failure shapes in this arc: opener divergence,
+   spurious twin orbit, and noise-on-a-constraint.)
