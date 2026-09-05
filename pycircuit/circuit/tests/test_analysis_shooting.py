@@ -11253,16 +11253,15 @@ def test_plain_covariance_reaches_kTC_like_gear_does():
             '%s: not converging toward kT/C (%s)' % (method, ratios)
 
 
-def test_trap_oscillator_covariance_goes_through_the_gear_twin():
-    """⚠ THIS USED TO ASSERT A REFUSAL, and the refusal is now the NATIVE
-    path's alone.  `oscillator_covariance` borders with `ppv()`'s width-m
-    vectors and the trap pair map is `2m x 2m`, so on the trap-plain
-    factorisation it refuses with the reason -- and under the B16
-    decision (see `PSS.monodromy_twin`) an autonomous circuit solved with
-    trapezoidal hands its monodromy to a Gear-2 twin on the same grid, so
-    the default path RUNS and agrees with a direct Gear-2 solve of the
-    same circuit to Newton tolerance: the twin re-converges the same
-    discrete orbit.  `pss.monodromy = 'native'` still refuses.
+def test_trap_oscillator_covariance_goes_through_the_twin_default_trbdf2():
+    """trap hands `oscillator_covariance` to the monodromy twin -- TR-BDF2 by
+    default now, Gear-2 selectable -- and the twin re-converges the SAME
+    discrete orbit, so trap+twin matches a direct solve of the twin's method.
+
+    ⚠ The NATIVE path still refuses: `oscillator_covariance` borders with
+    `ppv()`'s width-m vectors and the trap plain factorisation's pair map is
+    `2m x 2m`, so `pss.monodromy = 'native'` raises with the reason. The twin
+    is what makes the default path run at all.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -11277,26 +11276,44 @@ def test_trap_oscillator_covariance_goes_through_the_gear_twin():
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         return cir
     T = 6.6634
-    res = {}
-    for method in ('trap', 'gear'):
+
+    def solve(method, x0, mono=None):
         cir = build()
         pss = PSS(cir, method=method, reltol=1e-12)
+        if mono is not None:
+            pss.monodromy = mono
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+            pss.solve(period=T, timestep=T / 400, x0=np.asarray(x0),
                       maxiterations=100)
         assert pss.converged
-        res[method] = (pss, np.asarray(PAC(cir).oscillator_covariance(pss)[0],
-                                       dtype=float))
-    Kt, Kg = res['trap'][1], res['gear'][1]
-    assert np.linalg.norm(Kt - Kg) / np.linalg.norm(Kg) < 1e-6, \
-        'the twin and a direct Gear-2 solve differ by %.2e on the ' \
-        'oscillator covariance; they converge the same discrete orbit' \
-        % (np.linalg.norm(Kt - Kg) / np.linalg.norm(Kg))
-    ## the state is the method's own: trap's period, not the twin's
-    tp = res['trap'][0]
+        return pss, np.asarray(PAC(cir).oscillator_covariance(pss)[0],
+                               dtype=float)
+
+    ## default: trap hands off to the TR-BDF2 twin.  Compared to a direct
+    ## TR-BDF2 solve SEEDED FROM TRAP'S OWN x0 -- the covariance at t=0 is a
+    ## point on the orbit, so the two must be at the SAME PHASE to compare
+    ## (seeding both elsewhere differs by O(h^2) of phase, ~1e-3 here, which
+    ## is the orbit's covariance variation, not an error).
+    tp, Kt = solve('trap', np.array([2.0, 0.0]))
+    x0t = np.asarray(tp._period_state[1], dtype=float)
+    _pd, Kd = solve('trbdf2', x0t)
+    assert np.linalg.norm(Kt - Kd) / np.linalg.norm(Kd) < 1e-6, \
+        'the default trap twin and a direct TR-BDF2 solve from the same ' \
+        'seed differ by %.2e; the twin must re-converge the same orbit and ' \
+        'injection' % (np.linalg.norm(Kt - Kd) / np.linalg.norm(Kd))
+    ## the twin exists and is TR-BDF2 by default
     assert tp.monodromy_twin() is not tp
-    assert abs(float(tp.period) - float(tp.monodromy_twin().period)) > 0.0
+    assert tp.monodromy_twin().par.method == 'trbdf2'
+
+    ## gear is selectable and matches a direct Gear-2 solve from the same seed
+    _pg, Kg = solve('trap', np.array([2.0, 0.0]), mono='gear')
+    x0g = np.asarray(_pg._period_state[1], dtype=float)
+    _pdg, Kdg = solve('gear', x0g)
+    assert np.linalg.norm(Kg - Kdg) / np.linalg.norm(Kdg) < 1e-6, \
+        'monodromy=gear should match a direct Gear-2 solve from the same seed'
+
+    ## native still refuses (the pair map)
     tp.monodromy = 'native'
     with pytest.raises(NotImplementedError, match='pair'):
         PAC(tp.cir).oscillator_covariance(tp)
@@ -12752,3 +12769,67 @@ def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator
     et200, eg200 = errs(200)
     assert et200 <= eg200 * 1.5, \
         'trbdf2 %.2e vs gear %.2e at N=200' % (et200, eg200)
+
+
+def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
+    """pnoise is NATIVE over TR-BDF2 -- the two-stage sideband fold.
+
+    A TR-BDF2 step injects the source at THREE abscissae, which the ordinary
+    one-injection-per-step fold cannot represent (it gave 1e11 error and 99
+    spurious sidebands).  The two-vector fold (`_sideband_forced_trbdf2`)
+    carries the source coupling through both stages and is verified against
+    forward driven solves to machine precision.  Two end-to-end checks:
+
+    (1) LINEAR divider: no conversion, so the fold must collapse to l=0 and
+        pnoise must reduce to the AC noise analysis (a different analysis, no
+        period) -- to a few ppb, and stop on the ratio test, not the grid.
+    (2) DIODE MIXER (converting): sidebands carry most of the noise; TR-BDF2
+        must fold them and land on the Gear-2 answer (both compute the same
+        physical noise), within the discretisation gap.
+    """
+    import warnings
+    from pycircuit.circuit.analysis_ss import Noise
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) linear divider vs the AC-noise reference
+    per, fout = 1e-3, 700.0
+    cir = _divider()
+    ref = complex(Noise(cir, inputsrc='vs',
+                        outputnodes=(cir.get_node('net2'), gnd)
+                        ).solve(fout)['Svnout']).real
+    cir = _divider()
+    pss = PSS(cir, method='trbdf2', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 200, maxiterations=40)
+    k = cir.get_node_index(cir.get_node('net2'))
+    k = k - 1 if k > pss.irefnode else k
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S, used = pac.pnoise(pss, fout, k)
+    assert abs(S - ref) / ref < 1e-6, \
+        'trbdf2 pnoise disagrees with AC noise by %.2e on a LINEAR circuit' \
+        % (abs(S - ref) / ref)
+    assert pac.alias_stop == 'ratio', \
+        'a linear circuit folds nothing; trbdf2 must stop on the ratio test'
+
+    ## (2) diode mixer: trbdf2 folds and lands on gear
+    def mix(method):
+        c = _diode_mixer()
+        p = PSS(c, method=method, reltol=1e-11)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
+        kk = c.get_node_index(2)
+        kk = kk - 1 if kk > p.irefnode else kk
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            s, u = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
+        return s, max(abs(np.asarray(u)))
+    Sg, _lg = mix('gear')
+    St, lt = mix('trbdf2')
+    assert lt > 5, 'trbdf2 pnoise did not fold sidebands on the mixer (max l=%d)' % lt
+    assert abs(St / Sg - 1.0) < 5e-3, \
+        'trbdf2 pnoise %.4e vs gear %.4e on the mixer -- they should agree' \
+        % (St, Sg)

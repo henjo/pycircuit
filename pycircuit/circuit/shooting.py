@@ -59,6 +59,20 @@ def _complex_solve(lu, b):
     return lu.solve(b)
 
 
+def _complex_solve_transposed(lu, b):
+    """`lu.solve_transposed(b)` for complex `b` against a REAL factorisation --
+    two transposed back-substitutions.  `None` if the solver cannot
+    transpose (mirrors `solve_transposed`)."""
+    b = np.asarray(b)
+    if np.iscomplexobj(b):
+        re = lu.solve_transposed(b.real)
+        im = lu.solve_transposed(b.imag)
+        if re is None or im is None:
+            return None
+        return re + 1j * im
+    return lu.solve_transposed(b)
+
+
 
 def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     """GMRES that keeps its Hessenberg matrix and judges its own residual.
@@ -4129,18 +4143,102 @@ class PSS(Analysis):
         permitted.
         """
         if fp.kind == 'trbdf2':
-            raise NotImplementedError(
-                "PAC adjoint sideband is not built for TR-BDF2: its fold "
-                "injects the source at one time per step, but a two-stage "
-                "step injects at three abscissae. Use method='gear'/'trap' "
-                "for driven PAC/pnoise; the Lyapunov covariance works over "
-                "TR-BDF2.")
+            return self._forced_replay_transposed_trbdf2(fp, freq, xa)
         _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
         for tvec, t in zip(ts, fp.times[1:]):
             acc = acc - np.exp(jw * float(t)) * np.asarray(tvec)
         return acc
+
+    def _forced_replay_transposed_trbdf2(self, fp, freq, xa):
+        """`W^T xa` for TR-BDF2 -- the CHAINED two-stage adjoint (no output
+        injection), the closure term of the sideband row and the whole of
+        `adjoint_transfer_row`.
+
+        Per step, with `t3 = K2^-T w` (the BDF2 stage) and
+        `p = K1^-T (C1^T t3)` (the TR stage, fed by the BDF2 costate through
+        `P3^T = A1 C1^T`), the source couples through BOTH stages:
+
+            t_{n+1} (BDF2, weight a33 h):     -a33 h  z
+            t_n, t_n+gamma h (TR, gamma h/2): -(gamma h/2)(e^{jw t_n}
+                                               + e^{jw(t_n+gamma h)}) A1 p
+
+        and the costate propagates back by the monodromy transpose
+        `w <- A1 B1^T p + A0 Cn^T t3`.  ⚠ THE `A1 p` FEED IS THE POINT: a
+        one-solve transpose carries only `t3` and drops the stage-3 costate
+        reaching stage 2.  Dual-consistent with the forward replay to
+        1.8e-16 (`<lam, J du> == <J^T lam, du>`), and the injected sibling
+        `_sideband_forced_trbdf2` matches forward driven solves to machine
+        precision.
+        """
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        gm = TRBDF2Integrator.GAMMA
+        a33 = TRBDF2Integrator.STAGE_DIAG
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        w = np.asarray(xa, dtype=complex).ravel().copy()
+        acc = np.zeros(m, dtype=complex)
+        tms = np.asarray(fp.times, dtype=float)
+        for j in range(len(fp.steps) - 1, -1, -1):
+            lu1, B1, lu2, C1, Cn, A1, A0 = fp.steps[j]
+            ts = tms[j]; te = tms[j + 1]; h = te - ts; t1 = ts + gm * h
+            t3 = _complex_solve_transposed(lu2, w)
+            if t3 is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so the '
+                    'TR-BDF2 forced adjoint cannot be replayed. Use '
+                    'DenseSolver or SuperLUSolver.')
+            p = _complex_solve_transposed(lu1, C1.T @ t3)
+            acc = acc - a33 * h * np.exp(jw * te) * t3
+            acc = acc - (gm * h / 2.0) * (np.exp(jw * ts)
+                                          + np.exp(jw * t1)) * (A1 * p)
+            w = A1 * (B1.T @ p) + A0 * (Cn.T @ t3)
+        return acc
+
+    def _sideband_forced_trbdf2(self, fp, freq, l, d):
+        """The forced (source-injected) part of the TR-BDF2 sideband row for
+        sideband `l`, and the final costate `g` for the closure.
+
+        The reverse pass injects the OUTPUT functional `d` (weighted by
+        `exp(-j(l w0 + w) t_n)/N`) at each step and reads the SOURCE coupling
+        through both stages at every step -- the two-vector fold
+        (`_forced_replay_transposed_trbdf2` without the injection).  ⚠ The
+        injection is added AFTER the step's costate update, so the output at
+        step `n` couples to the source at steps `< n` (causality); reading
+        the coupling BEFORE it, and folding the TR stage's two abscissae
+        with `e^{jw t_n} + e^{jw(t_n+gamma h)}`, is what makes this match `m`
+        forward driven solves to machine precision.  Returns `(forced, g)`.
+        """
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        gm = TRBDF2Integrator.GAMMA
+        a33 = TRBDF2Integrator.STAGE_DIAG
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        T = float(fp.T)
+        w0 = 2.0 * np.pi / T
+        N = len(fp.steps)
+        tms = np.asarray(fp.times, dtype=float)
+        d = np.asarray(d, dtype=complex).ravel()
+        lam = np.zeros(m, dtype=complex)
+        forced = np.zeros(m, dtype=complex)
+        for j in range(N - 1, -1, -1):
+            lu1, B1, lu2, C1, Cn, A1, A0 = fp.steps[j]
+            ts = tms[j]; te = tms[j + 1]; h = te - ts; t1 = ts + gm * h
+            t3 = _complex_solve_transposed(lu2, lam)
+            if t3 is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so the '
+                    'TR-BDF2 sideband adjoint cannot be replayed. Use '
+                    'DenseSolver or SuperLUSolver.')
+            p = _complex_solve_transposed(lu1, C1.T @ t3)
+            forced = forced - a33 * h * np.exp(jw * te) * t3
+            forced = forced - (gm * h / 2.0) * (np.exp(jw * ts)
+                                                + np.exp(jw * t1)) * (A1 * p)
+            lam = A1 * (B1.T @ p) + A0 * (Cn.T @ t3)
+            lam = lam + np.exp(-1j * (float(l) * w0
+                                      + 2.0 * np.pi * float(freq)) * ts) / N * d
+        return forced, lam
 
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
@@ -4327,22 +4425,14 @@ class PSS(Analysis):
         """Host for the ADJOINT SIDEBAND noise surface (`pnoise`, via
         `adjoint_sideband_row`).
 
-        ⚠ THE TR-BDF2 SIDEBAND FOLD IS NOT BUILT.  The forced replay and its
-        chained transpose ARE built and dual-consistent
-        (`_forced_replay{,_transposed}_trbdf2`), but `adjoint_sideband_row`'s
-        forced part is `-sum_j phase[j] ts[j]` -- ONE source-injection time
-        per step (the endpoint) -- and a TR-BDF2 step injects the source at
-        THREE abscissae (`t_n`, `t_n+gamma h`, `t_{n+1}`) with three phases,
-        which that fold cannot represent.  So `pnoise` over a TR-BDF2 Floquet
-        source falls back to a Gear-2 twin on the same orbit (correct), until
-        the fold is extended to the two-stage injection.  The Lyapunov
-        covariance (`_lyapunov_host`) and the eigenvalue/PPV surfaces keep
-        TR-BDF2.
+        The two-stage sideband fold IS built for TR-BDF2
+        (`_sideband_forced_trbdf2`, the two-vector injected reverse pass that
+        carries the source coupling through both stages), so this is the
+        monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
+        use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
+        Gear-2 twin if asked.
         """
-        tw = self.monodromy_twin()
-        if tw.factored_period().kind == 'trbdf2':
-            return self._solve_twin('gear')
-        return tw
+        return self.monodromy_twin()
 
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
@@ -4709,6 +4799,19 @@ class PSS(Analysis):
         end = (np.concatenate((Px[0], Px[1])) if fp.kind == 'solved_history'
                else Px[0])
         return end, ys
+
+    ## How hard GMRES is asked to solve, relative to the shooting tolerance.
+    ## An inexact Newton only needs the step accurate enough not to spoil the
+    ## outer convergence; measured k is 2-12 on circuits whose `I - M`
+    ## clusters at 1 (the fast modes decay over a period, leaving the slow
+    ## ones), so k tracks the number of SLOW MODES, not m.
+    KRYLOV_TOLERANCE_FACTOR = 1e-2
+    ## ⚠ THE BUDGET IS A CHOICE AND SCIPY'S UNITS ARE A TRAP: `maxiter` counts
+    ## RESTART CYCLES, not matvecs, so the pair multiplies. 200 x 20 is far
+    ## more than a clustered system needs; a circuit that exceeds it does not
+    ## cluster, and the answer is the dense path, not a bigger budget.
+    KRYLOV_RESTART = 200
+    KRYLOV_MAX_CYCLES = 20
 
     def _matrix_free_solve(self, z0, times, hs, abstol, xtol, reltol,
                            maxiter):
@@ -7338,12 +7441,19 @@ class PAC(Analysis):
             ## and it AGREES with a forward reference written the same way,
             ## so only a check against a circuit whose answer is known
             ## independently catches it.
-            inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
-                                     * float(freq)) * tms[:N]) / N)[:, None]
-                      * d[None, :])
-            g, ts, _st = fp.matvec_transposed(
-                np.zeros(n, dtype=complex), collect=True, inject=inject)
-            forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
+            if fp.kind == 'trbdf2':
+                ## the source couples through BOTH stages at three abscissae,
+                ## which the one-injection-per-step fold below cannot carry;
+                ## the two-vector fold does it (verified vs forward driven
+                ## solves to machine precision) -- see `_sideband_forced_trbdf2`
+                forced, g = pss._sideband_forced_trbdf2(fp, freq, l, d)
+            else:
+                inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
+                                         * float(freq)) * tms[:N]) / N)[:, None]
+                          * d[None, :])
+                g, ts, _st = fp.matvec_transposed(
+                    np.zeros(n, dtype=complex), collect=True, inject=inject)
+                forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
             ## ⚠ ON AN OSCILLATOR THIS OPERATOR IS SINGULAR AT EVERY
             ## HARMONIC and near-singular around them, which is exactly
             ## where phase noise is measured.  The deflated route borders

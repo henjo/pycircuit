@@ -6473,3 +6473,37 @@ T10. **pnoise native over TR-BDF2 is QUEUED, not shipped -- the sideband FOLD is
    stage-1 feed `A1 p`), gated on the dual-consistency test against `m` forward driven solves. The
    forced replays are the validated building blocks; only the fold's one-time-per-step assumption
    needs lifting.
+
+## pnoise native over TR-BDF2 -- the two-stage sideband fold, 2026-09-05
+
+T11. **pnoise is now NATIVE over TR-BDF2** (the "advanced substantial extension", requested).
+   The blocker was `adjoint_sideband_row`'s forced fold `-sum_j phase[j] ts[j]` -- one source-
+   injection time per step -- while a two-stage step injects at THREE abscissae. The fix is the
+   TWO-VECTOR fold (`_sideband_forced_trbdf2` + `_forced_replay_transposed_trbdf2`): the reverse
+   pass reads the source coupling through BOTH stages per step --
+
+       t3 = K2^-T lam ;  p = K1^-T (C1^T t3) ;  t2 = A1 p
+       forced -= a33 h e^{jw t_{n+1}} t3
+       forced -= (gamma h/2)(e^{jw t_n} + e^{jw(t_n+gamma h)}) t2
+       lam <- A1 B1^T p + A0 Cn^T t3          # monodromy transpose
+       lam <- lam + e^{-j(l w0 + w) t_n}/N d   # output injection, AFTER the update
+
+   ⚠ THE INJECT ORDER IS LOAD-BEARING: the output injection is added AFTER the step's costate
+   update (so the output at step n couples to sources at steps < n -- causality), and the source
+   coupling is read BEFORE it. With the inject added first the fold was 4.8-52% wrong; with the
+   correct order it matches `m` forward driven solves on the diode mixer to MACHINE PRECISION
+   (1.5e-16 .. 1.1e-15 over l = 0/1/-2/3). The peer independently validated the same two-vector
+   fold on an LPTV system (4.49e-16; endpoint-only 42% wrong), and the (1+e^{jw gamma h})/2 shape
+   is the two TR abscissae combining into one per-sideband constant.
+
+   ⚠ TWO GATES, TWO LEVELS (peer): the CHAINED TRANSPOSE is exact at the STEP level
+   (`<lam, J du> == <J^T lam, du>`, dual-consistent to 1.8e-16) while the FOLD was still 42% wrong
+   -- passing the step-level test says nothing about the fold, so both are kept. End-to-end:
+   trbdf2 pnoise reduces to the AC-noise analysis on the linear divider (rel err 1.2e-9, better
+   than gear's 2.7e-8, stops on the ratio test) and folds on the diode mixer to match gear within
+   0.01% (79 sidebands). `_adjoint_host` now returns the monodromy twin (no gear fallback);
+   `adjoint_transfer_row` also works over TR-BDF2 as a bonus (single-instant, the W^T alone).
+
+   Still refusing over TR-BDF2: the FORWARD `_forced_replay` (PAC.solve forward) -- its forward
+   fold has the same three-abscissa structure and is not yet validated; out of scope for pnoise,
+   which needs only the reverse path.
