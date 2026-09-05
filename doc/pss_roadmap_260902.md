@@ -3286,8 +3286,20 @@ instrument was mis-set", worth one seed check before recording an empty cell. Th
 pencil identity stands as the closed-form reason the complement is exact where it exists, and
 Weierstrass giving the finite spectrum untouched at index 2 (`ordqz` on `li_plus_rc` / `cv_plus_rc`)
 remains the linear reference for driven circuits. The fill's per-sample warning is now one per `ppv`
-call. **What is still open is only the raw block's `3e-11` exactness on the divider's
-node rows.** Also structural: the consistent object is ZERO on the algebraic
+call. ✅ **And the raw block's
+`3e-11` "exactness" on the divider's node rows is CLOSED (2026-09-05): it was a units mix.** The raw
+block is the consistent object plus an `O(h)` rotation, and on every row with a resolvable mean the
+rotation's DC content follows a SCALE law: `mean(raw) = 1.5 s · mean(consistent)`, `s` the
+pair-consistency scale read off the stored second blocks (`w2` unscaled against `w2/s`), exactly 2/3 for
+an isochronous pair. Verified to five digits: bias core inductor row 1.081098 vs `1.5 s = 1.08110`
+(`s = 0.7207` — the 8%); series-loss tank 0.99858 / 0.99842 vs 0.99842; divider inductor row 1.000143
+vs 1.00014. On the divider `s − 2/3 = 9e-5`, so the raw block's RELATIVE DC error is 1.4e-4, and on a
+node-`v` mean of 3e-7 that is 4e-11 ABSOLUTE — recorded earlier as an exactness because one number was
+absolute and the other relative to `|v|` (the review session's shape 0i, on my side this time). The
+consistent object's DC error is ADDITIVE (~1e-6 |v|, the `h Gᵀz` mean) and the raw block's is
+MULTIPLICATIVE (`1.5 s − 1`), which is why the raw pair remains the better DC estimator on a tiny-mean
+row and the three structural DC gates keep reading it — now for a stated reason. Test:
+`test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s`. **Nothing in §0l is open.** Also structural: the consistent object is ZERO on the algebraic
 COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full suite's Demir-(24) gate
 caught it, the targeted subset had not).
 
