@@ -3439,11 +3439,13 @@ class PSS(Analysis):
                                 'state and falls back to the full G -- the '
                                 'PPV samples can then be FIRST order in the '
                                 'step, as they are for the algebraic fill. '
-                                'Measured 8e-5 and second order on a van der '
-                                'Pol with its inductor split (rows in '
-                                'quadrature, so that fixture cannot see the '
-                                'dropped term); unmeasured on an index-2 '
-                                'fixture that could.',
+                                'Priced on the fixture that can see the '
+                                'dropped term (a non-isochronous core with '
+                                'its inductor split, and the same core with '
+                                'a C-V loop through a bias rail): within 3e-4 '
+                                'of the index-1 object and second order on '
+                                'both, so at index 2 this fallback is the '
+                                'whole answer.',
                                 RuntimeWarning, stacklevel=2)
                         _Gred = _Gj[np.ix_(_D, _NZ)]
                     _corr = np.zeros(m)

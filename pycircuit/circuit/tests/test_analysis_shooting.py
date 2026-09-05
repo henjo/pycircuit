@@ -11696,45 +11696,76 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
     2.  An L-I cutset (the tank inductor split through a node that sees
     only inductors) is an autonomous index-2 oscillator that `PSS` solves;
     `ppv` must run, warn ONCE with the reason, and return finite samples.
-    ⚠ THE COST OF THE FALLBACK IS UNMEASURED WHERE IT COULD SHOW: this
-    fixture is van der Pol with its inductor split, and against the exact
-    scipy adjoint (`c_true = 8.045797e-08` at `mu = 1`) the fallback gives
-    `c/c_true` 0.99945 / 0.99986 / 0.99997 at 240/480/960 points --
-    second order, indistinguishable from plain van der Pol (0.99953 /
-    0.99988 / 0.99997) -- because its rows are in quadrature and the
-    dropped pair-consistency term averages out, exactly as it did on every
-    fixture before the non-isochronous one (§D 0b).  Boundary named
-    by the review session from the pencil (2026-09-05): `eig(-G_red,
-    C[D,NZ])` equals the finite generalised eigenvalues of `(C, G)` to
-    1e-12 on the series-loss tank, and the reduction is undefined on
-    `li_plus_rc` and `cv_plus_rc`.
+    ⚠ AND THE FALLBACK IS PRICED WHERE IT CAN BE SEEN.  The core is the
+    bias-sensitive one (`vdp + 0.3 u^2`, rows NOT in quadrature -- the
+    fixture on which the first-order PPV was visible at all) with its
+    tank inductor split, so the ODE and its exact `c_true = 5.3703e-06`
+    are unchanged and the topology is index 2.  Against the index-1
+    consistent object (0.99825 / 0.99957 / 0.99992 at 400/800/1600) the
+    fallback gives 0.99822 / 0.99956 / 0.99991: second order, below 1e-5
+    and below the discretisation error at every grid.  The OTHER index-2
+    topology, a C-V loop (the tank capacitance split between ground and a
+    DC bias rail), gives 0.99853 / 0.99964 / 0.99993 -- also second order,
+    within 3e-4 of the index-1 object and six times under its own error.
+    So the guard is the whole answer at index 2, both topologies, and the
+    projector-chain construction comes off the roadmap (the review
+    session's partition, 2026-09-05; a split of plain van der Pol had been
+    blind to it, its rows being in quadrature).  Boundary named by the
+    review session from the pencil: `eig(-G_red, C[D,NZ])` equals the
+    finite generalised eigenvalues of `(C, G)` to 1e-12 on the series-loss
+    tank, and the reduction is undefined on `li_plus_rc` and `cv_plus_rc`.
     """
     import warnings
     from pycircuit.circuit.shooting import topological_index
     circuit.default_toolkit = circuit.numeric
-    cir = SubCircuit()
-    cir.add_node('v')
-    cir.add_node('w')
-    cir['C'] = C('v', gnd, c=1.0)
-    cir['L1'] = L('v', 'w', L=0.5)
-    cir['L2'] = L('w', gnd, L=0.5)
-    cir['B'] = BSource('v', gnd, gnd, 'v',
-                       i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
-    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
-    assert topological_index(cir)[0] == 2
-    pss = PSS(cir, method='gear', reltol=1e-12)
-    x0 = np.zeros(cir.n - 1)
-    x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        pss.solve(period=6.66, timestep=6.66 / 240, x0=x0, maxiterations=200)
-    assert pss.converged
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('always')
-        _v, info = pss.ppv()
-    mine = [x for x in w if 'index > 1' in str(x.message)]
-    assert len(mine) == 1, \
-        'the consistent propagation must warn exactly once at index 2; ' \
-        'got %d' % len(mine)
-    assert np.all(np.isfinite(info['samples']))
-    assert np.isfinite(PAC(cir, toolkit=circuit.numeric).diffusion_constant(pss))
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    for topology in ('L-I cutset', 'C-V loop'):
+        cir = SubCircuit()
+        cir.add_node('v')
+        if topology == 'L-I cutset':
+            cir.add_node('w')
+            cir['C'] = C('v', gnd, c=1.0)
+            cir['L1'] = L('v', 'w', L=0.5)
+            cir['L2'] = L('w', gnd, L=0.5)
+        else:
+            ## the tank capacitance split between ground and a DC bias
+            ## rail: the loop v-C-gnd-Vb-b-C1-v is capacitors closed by a
+            ## voltage source, and AC-wise C || C1 = 1 leaves the ODE alone
+            cir.add_node('b')
+            cir['C'] = C('v', gnd, c=0.5)
+            cir['C1'] = C('v', 'b', c=0.5)
+            cir['Vb'] = VS('b', gnd, v=1.0)
+            cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                           + 0.3 * u ** 2)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        assert topological_index(cir)[0] == 2, topology
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        m = cir.n - 1
+        x0 = np.zeros(m)
+        x0[0] = 2.0
+        if topology == 'C-V loop':
+            ## ⚠ seed the bias node AT its source: seeded at 0 V against a
+            ## 1 V source the shooting Newton did not converge at any grid,
+            ## and the cell read "empty" until the seed was fixed
+            x0[[str(n) for n in cir.nodes][:m].index('b')] = 1.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.731, timestep=6.731 / 400, x0=x0,
+                      maxiterations=300)
+        assert pss.converged, topology
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            _v, info = pss.ppv()
+        mine = [x for x in w if 'index > 1' in str(x.message)]
+        assert len(mine) == 1, \
+            '%s: the consistent propagation must warn exactly once at ' \
+            'index 2; got %d' % (topology, len(mine))
+        assert np.all(np.isfinite(info['samples']))
+        c = PAC(cir, toolkit=circuit.numeric).diffusion_constant(pss)
+        assert abs(c / 5.3703e-06 - 1.0) < 3e-3, \
+            '%s: the index-2 fallback gives c %.2e from the exact ' \
+            '5.3703e-06 on the fixture that can see the dropped term; the ' \
+            'index-1 object gives 1.8e-3 here' \
+            % (topology, abs(c / 5.3703e-06 - 1.0))
