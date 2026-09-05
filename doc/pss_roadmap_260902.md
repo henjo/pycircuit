@@ -3153,8 +3153,17 @@ only, by its own docstring).
 
 ⚠ **WHAT IS STILL OPEN HERE (not built):** the orbital term `S_yy(ω)` for a coloured source
 (`orbital_correlation` refuses colour). The "14% pnoise deficit" recorded here on 2026-09-04 was
-**`c`, not `pnoise`** — the Gear pair's first block is a first-order PPV; see §0l below. The peer's
-position test for the vdp EXCESS at `Δf/f₀ = 1e-2` (peak at `f/f₀ = 1/(2πQ_λ)`) is still queued.
+**`c`, not `pnoise`** — the Gear pair's first block is a first-order PPV; see §0l below. ✅ **The vdp
+EXCESS is the amplitude mode, pinned by its POSITION (2026-09-05).** `E(Δf) = pnoise/(P_c f₀² c/Δf²) − 1`
+is a STEP (a Lorentzian AM sideband over the `1/Δf²` PM part), not a peak; its half-rise corner moves as
+`Q_λ^−1.03` over Q = 4…32. A step alone misfits (rms 0.05–0.13, corner 1.4× `f₀/(2πQ_λ)`); a step PLUS a
+term linear in `Δf/f₀` fits to rms 0.003 with the corner at 1.12 / 1.06 / 1.04 / 1.02× the prediction
+(→ 1 with Q), `E_∞ = 1.01` at every Q (AM = PM far out), and a **Q-independent linear coefficient 1.74 /
+1.81 / 1.83 / 1.84** — a `1/Δf` piece of the spectrum, the shape T&B's phase-orbital correlation term
+carries. **Attributed by shape and Q-scaling only; T&B (26) is not evaluated here.** Test:
+`test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode`. (An instrument note: the reference
+`c` here is the pair-consistent PPV's; before §0l it was 3e-4 high on this fixture, invisible at this
+level.)
 
 #### §0l. The Gear pair's FIRST BLOCK is a first-order PPV — ⚠⚠ **FOUND AND FIXED 2026-09-05**; `c` was 16.6% high on a non-isochronous oscillator and every fixture before it was blind
 
