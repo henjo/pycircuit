@@ -3206,8 +3206,18 @@ the consistent object held within its measured floor beside them. **The inductor
 defect** — the review session asked for exactly this partition, and with the consistent object the
 inductor-row integral reads 16.176 / 16.187 / 16.190 against the re-solved 16.193 / 16.200 / 16.202
 (1.0e-3 → 7e-4, both second order). **What remains unexplained is only why the RAW block's integral is
-exact to 1e-5 on the divider's node rows** where the true mean is `4e-6 |v|` — recorded as a
-row-specific identity, not a rule. Also structural: the consistent object is ZERO on the algebraic
+exact to 3e-11 ABSOLUTE on the divider's node rows** where the true mean is `4e-6 |v|` (the consistent
+object is `2.7e-6` off there) — recorded as a row-specific identity, not a rule. ⚠ **And the review
+session's follow-up partition (a node row with a REAL mean) gave a third answer, 2026-09-05:** on the
+asymmetric core with series tank loss (`_lc_osc(0.25, 0.2)` topology, node-`v` mean 0.216 = 44% of the
+rms), raw and consistent AGREE to `2e-4` and BOTH sit below the re-solved `dT/di` by `6.9e-4 / 3.7e-4 /
+1.9e-4` at 240/480/960 points — **first order, common to both objects** — while the re-solve itself
+converges at second order (0.216029 → 0.215976). So (i) the three structural DC gates do not separate
+the two objects on any row where the mean is resolvable — they pin the identities they name, not the
+object; (ii) there is an `O(h)` DC error in `samples_eq` on this DAE fixture that the ODE fixtures do
+not show (the bias fixture's inductor row flattened at `7e-4` with no trend). Candidate, untested: the
+algebraic fill / equation-row conversion reads `G` at the sample's own state, and an O(h) misalignment
+in a state-dependent conversion is an O(h) error in the converted rows. **OPEN.** Also structural: the consistent object is ZERO on the algebraic
 COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full suite's Demir-(24) gate
 caught it, the targeted subset had not).
 
