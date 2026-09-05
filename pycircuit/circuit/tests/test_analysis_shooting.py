@@ -12904,6 +12904,63 @@ def test_trbdf2_covariance_converges_to_kTC_at_second_order():
         'gear %.2e vs trbdf2 %.2e' % (gear0, errs[0])
 
 
+def test_radau_covariance_converges_to_kTC_faster_than_second_order():
+    """Radau IIA(3)'s covariance converges to the exact `kT/C` FASTER than
+    second order -- the payoff of pairing an exact injection with an order-5
+    transition.
+
+    The per-step injection `Q_n` is the SAME DAE-projected Van Loan integral
+    TR-BDF2 uses -- the exact continuous per-step covariance, method-
+    independent.  On this LTI RC fixture the operating point is constant, so
+    that injection is exact and the ONLY discretisation error left in the
+    Lyapunov recursion `K = A K A^T + Q` is the transition `A_n`'s departure
+    from `exp(A h)`: O(h^2) for TR-BDF2, O(h^5) for Radau.  So Radau's
+    covariance falls far faster than TR-BDF2's ~4x per doubling -- measured
+    ~30x -- and reaches `kT/C` to ~1e-9 at 100 points.
+
+    ⚠ THE RATE IS SET BY THE TRANSITION, NOT THE INJECTION, ON AN LTI ORBIT.
+    On a time-varying orbit the injection's single-point linearisation per
+    step would become the bottleneck and the rate would drop back toward the
+    injection's order; this fixture isolates the transition, which is the
+    point of the comparison with TR-BDF2 on the identical fixture.  The
+    assertion is still the RATE and the closeness, never machine zero (a
+    stationary fit that hit kT/C exactly would corrupt the transient
+    covariance -- see `test_trbdf2_covariance_converges_to_kTC`).
+    """
+    import warnings
+    from pycircuit.circuit.constants import kboltzmann
+    circuit.default_toolkit = circuit.numeric
+
+    def ratio(npts, method, Cval=1e-7, per=1e-3):
+        cir = _rc_noisy(Cval=Cval, per=per)
+        pss = PSS(cir, method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=per, timestep=per / npts, maxiterations=40)
+        assert pss.converged
+        K0 = PAC(cir).covariance(pss)
+        irn = pss.irefnode
+        k = cir.get_node_index(cir.get_node('b'))
+        k = k - 1 if k > irn else k
+        T = float(circuit.defaultepar.T)
+        return K0[k, k] / (kboltzmann * T / Cval)
+
+    errs = [abs(1.0 - ratio(n, 'radau')) for n in (100, 200, 400)]
+    ## faster than second order: each doubling cuts the error by far more than
+    ## the ~4x of O(h^2) (the exact injection lets the order-5 transition show)
+    for a, b in zip(errs, errs[1:]):
+        assert a / b > 8.0, \
+            'radau covariance falls only %.2fx per doubling (%s); the exact ' \
+            'injection + order-5 transition should beat O(h^2)' % (a / b, errs)
+    ## and it is already at the monodromy floor at the coarsest grid
+    assert errs[0] < 1e-6, errs
+    ## far closer than gear's first-order injection at the same grid
+    gear0 = abs(1.0 - ratio(100, 'gear'))
+    assert gear0 / errs[0] > 20.0, \
+        'radau covariance should be >20x closer than gear at 100 pts; ' \
+        'gear %.2e vs radau %.2e' % (gear0, errs[0])
+
+
 def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator():
     """The fake-damping measurement behind defaulting the twin to TR-BDF2.
 

@@ -8539,6 +8539,12 @@ class PAC(Analysis):
             ## (no Gear-2 fallback, no stochastic stage weights) -- see
             ## `_lyapunov_pieces_trbdf2` and `_vanloan_step_injection`.
             return self._lyapunov_pieces_trbdf2(pss, fp, what)
+        if fp.kind == 'radau':
+            ## Radau's own injection: the SAME exact Van Loan integral (it is
+            ## the continuous per-step covariance, method-independent), with
+            ## the coupled Radau per-step map as A_n -- see
+            ## `_lyapunov_pieces_radau`.
+            return self._lyapunov_pieces_radau(pss, fp, what)
         if fp.kind != 'solved_history':
             return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1
@@ -8849,6 +8855,50 @@ class PAC(Analysis):
             CYn = self._cy_at(pss, w0, xk)
             A_k = np.column_stack([
                 np.asarray(pss._monodromy_matvec_trbdf2([step], e), dtype=float)
+                for e in np.eye(m)])
+            As.append(A_k)
+            Qs.append(self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
+        K = np.zeros((n, n))
+        for A_k, Q_k in zip(As, Qs):
+            K = A_k @ K @ A_k.T + Q_k
+        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                             for e in np.eye(n)])
+        return As, Qs, K, M, m, n
+
+    def _lyapunov_pieces_radau(self, pss, fp, what):
+        """`_lyapunov_pieces` for a Radau IIA(3) Floquet source.
+
+        Identical in structure to `_lyapunov_pieces_trbdf2`: the per-step
+        injection `Q_n` is the DAE-projected VAN LOAN integral at that step's
+        operating point (`_vanloan_step_injection`), which is the EXACT
+        continuous per-step covariance and so is the same object for every
+        integrator; only the per-step transition `A_n` differs -- here the
+        coupled Radau step map (dense, `m x m`, via
+        `_monodromy_matvec_radau` one step at a time).  State width `m`, so
+        `n = m`.
+
+        ⚠ THE INJECTION IS EXACT, THE METHOD SETS ONLY THE PROPAGATION.  The
+        covariance still converges to the stationary target (kT/C on an RC)
+        at the injection's O(h^2), not at Radau's O(h^5): Van Loan already
+        integrates the step exactly, so refining the grid gains on the
+        recursion's discretisation of a continuous Lyapunov flow, which the
+        higher-order transition does not change.
+        """
+        self._refuse_coloured(pss, what)
+        m = pss.cir.n - 1
+        n = m
+        hs = np.diff(np.asarray(fp.times, dtype=float))
+        w0 = 2.0 * np.pi / float(fp.T)
+        _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                       pss.irefnode, axis=0)
+        As, Qs = [], []
+        for k, step in enumerate(fp.steps):
+            xk = _W[:, min(k + 1, _W.shape[1] - 1)]
+            Cn = np.asarray(pss._C_at(xk), dtype=float)
+            Gn = np.asarray(pss._G_at(xk), dtype=float)
+            CYn = self._cy_at(pss, w0, xk)
+            A_k = np.column_stack([
+                np.asarray(pss._monodromy_matvec_radau([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
             Qs.append(self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
