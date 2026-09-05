@@ -2336,8 +2336,138 @@ class Transient(Analysis):
             self._trbdf2_est = self.toolkit.insert(Est_r, iref, 0.0)
         return Y2, None, J, None
 
+    def _solve_timestep_radau(self, x0, t, provided_function=None):
+        """One Radau IIA(3) step: the three collocation stages solved as ONE
+        coupled ``3n`` Newton system.  Fully implicit -- no explicit first
+        stage, no per-stage one-LU shortcut -- and stiffly accurate, so the
+        step IS the last stage (``x_{n+1} = Y_3``, ``c_3 == 1``).  Self-starting
+        (the only past state is ``x0``), so no history ring is read.
+
+        The stage system in the charge formulation ``q'(x) = -(i(x) + u(t))`` is
+
+            F_i(Y) = q(Y_i) - q(x_n) - h sum_j A_ij K_j = 0,   K_j = -(i(Y_j)+u(t_j))
+
+        with block Jacobian ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)`` --
+        exactly ``(I3 (x) C + h A (x) G)`` in the linear case.  This is the
+        correct coupled solve; the ``A^{-1}``-eigenbasis transform (1 real + 1
+        complex LU) is the efficiency follow-up documented on
+        :class:`RadauIIA3Integrator`, needing the complex ``klu_z_*`` binding.
+
+        When ``_radau_want_est`` is set (by :meth:`_run_radau_adaptive`) it also
+        leaves the filtered embedded 5(3) error estimate in ``_radau_est``.
+        Returns ``(x, None, J, None)`` like `solve_timestep`, with ``J`` the
+        last-stage operator, and leaves ``_iq``/``_q_cache`` set so the history
+        push after the step is consistent.
+        """
+        integ = self.base_integrator
+        Amat = np.array(integ.A, dtype=float)
+        cvec = np.array(integ.C, dtype=float)
+        h = self._dt
+        tn = t - h
+        epar = self.epar
+        ana = self.par.analysis
+        tk = self.toolkit
+        iref = self.irefnode
+        arr = lambda v: tk.array(v, dtype=float)
+
+        def src(tt):
+            u = arr(self.cir.u(tt, epar, analysis=ana))
+            if provided_function is not None:
+                u = u + provided_function(tt)
+            return u
+
+        def red(v):
+            ## reduce a full n-vector to the (n-1) reference-removed space
+            return np.concatenate((np.asarray(v)[:iref], np.asarray(v)[iref + 1:]))
+
+        xn = x0
+        qn = arr(self.cir.q(xn, epar))
+        qn_r = red(qn)
+        tstage = [tn + cvec[i] * h for i in range(3)]
+
+        ## Stage values, initialised at the previous solution.  Solved in the
+        ## reference-removed space of dimension m = n-1 per stage; the coupled
+        ## system is 3m.  Newton to the transient tolerances.
+        Y = [np.array(xn, dtype=float) for _ in range(3)]
+        m = qn_r.shape[0]
+        reltol = self.par.reltol
+        abstol = float(self.par.vabstol)
+        maxit = int(self.par.maxiter)
+        converged = False
+        for _ in range(maxit):
+            qi, Ki, Ci, Gi = [], [], [], []
+            for j in range(3):
+                qi.append(arr(self.cir.q(Y[j], epar)))
+                Ki.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
+                Ci.append(arr(self.cir.C(Y[j], epar)))
+                Gi.append(arr(self.cir.G(Y[j], epar)))
+            ## residual blocks (reduced) and dense 3m x 3m Jacobian
+            R = np.empty(3 * m)
+            Jbig = np.zeros((3 * m, 3 * m))
+            for i in range(3):
+                Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
+                R[i * m:(i + 1) * m] = red(Fi)
+                for j in range(3):
+                    if i == j:
+                        blk = Ci[i] + h * Amat[i, j] * Gi[j]
+                    else:
+                        blk = h * Amat[i, j] * Gi[j]
+                    (blk_r,) = remove_row_col((blk,), iref, tk)
+                    Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = np.asarray(blk_r)
+            dY = np.linalg.solve(Jbig, -R)
+            scale = 0.0
+            for i in range(3):
+                di = dY[i * m:(i + 1) * m]
+                Y[i] = Y[i] + tk.insert(di, iref, 0.0)
+                scale = max(scale, np.max(np.abs(di)))
+            ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
+            if scale <= reltol * ynorm + abstol:
+                converged = True
+                break
+        if not converged:
+            from pycircuit.circuit.nrsolver import NoConvergenceError
+            raise NoConvergenceError(
+                'Radau IIA(3) coupled stage Newton did not converge')
+
+        Y1, Y2, Y3 = Y
+        xnp1 = Y3  ## stiff accuracy: x_{n+1} == last stage
+
+        ## Downstream state the accepted-step machinery reads (mirrors the
+        ## TR-BDF2 step).  `_iq` is the charge derivative at the accepted point.
+        qY3 = self.cir.q(Y3, epar)
+        self._q_cache = (Y3, qY3)
+        self._iq = -(arr(self.cir.i(Y3, epar)) + src(t))
+        C3 = arr(self.cir.C(Y3, epar))
+        G3 = arr(self.cir.G(Y3, epar))
+        a33 = Amat[2, 2]
+        self._Cmat = C3
+        self._Geq = a33 * h * G3
+        self._effective_method = 'RadauIIA3Integrator'
+        self._companion_coeffs = None
+        ## Stage values kept for the shooting monodromy, which needs all three.
+        self._radau_Y = (Y1, Y2, Y3)
+        J = C3 + a33 * h * G3
+
+        ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner 1996, IV.8 /
+        ## 1999 err formula), gated so the fixed-step path pays nothing.  A
+        ## lower-order embedded solution yhat differs from y_{n+1} by a
+        ## combination of the stage derivatives; the difference is filtered
+        ## through a real stage operator (M - h*gamma0*J)^{-1} -- here the same
+        ## real factor the cost transform uses -- so the estimate stays bounded
+        ## as the stiff eigenvalues run to -inf (an unfiltered estimate would
+        ## grow and force the controller to crawl through the transient the
+        ## method exists to step over).  Built and validated in a later gate;
+        ## the fixed-step path never sets the flag.
+        if getattr(self, '_radau_want_est', False):
+            self._radau_est = self._radau_error_estimate(
+                xn, Y, tstage, h, J, src, arr)
+        return Y3, None, J, None
+
     def solve_timestep(self, x0, t, provided_function=None):
-        from pycircuit.circuit.integrator import TRBDF2Integrator
+        from pycircuit.circuit.integrator import TRBDF2Integrator, RadauIIA3Integrator
+        if isinstance(self.base_integrator, RadauIIA3Integrator):
+            ## Three-stage fully-implicit: its own coupled stage solve.
+            return self._solve_timestep_radau(x0, t, provided_function)
         if isinstance(self.base_integrator, TRBDF2Integrator):
             ## Two-stage DIRK: its own step, not the single-companion path.
             ## PCNR is a DC-junction Newton strategy and is not combined with

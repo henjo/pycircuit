@@ -799,3 +799,74 @@ def test_trbdf2_matches_the_analytic_rc_step_at_second_order():
     ## the tight run resolves the analytic step to a few ppm of full scale
     assert e_tight < 1e-4, \
         'adaptive TR-BDF2 at reltol=1e-6 is %.2e from analytic' % e_tight
+
+
+def test_radau_iia3_tableau_is_order5_stiffly_accurate():
+    """Gate G1: the Radau IIA(3) tableau constants satisfy every identity the
+    method is built on, checked against the reference relations (not against a
+    transcribed copy of the numbers).
+
+    order 5 (B(1..5)), stage order 3 (C(1..3)), stiff accuracy (b == last row,
+    c3 == 1), det A == 1/60 (the DAE-invertibility hypothesis of H&W VI.2 Thm
+    2.3), and L-stability R(inf) == 1 - b^T A^{-1} 1 == 0.
+    """
+    from pycircuit.circuit.integrator import RadauIIA3Integrator as Rk
+    A = np.array(Rk.A); b = np.array(Rk.B); c = np.array(Rk.C)
+    assert np.allclose(A @ np.ones(3), c), 'row sums must equal c'
+    assert abs(np.linalg.det(A) - 1.0 / 60.0) < 1e-14, 'det A must be 1/60'
+    assert np.allclose(b, A[2]) and c[2] == 1.0, 'must be stiffly accurate'
+    for k in range(1, 6):
+        assert abs(b @ (c ** (k - 1)) - 1.0 / k) < 1e-13, 'B(%d) fails' % k
+    for k in range(1, 4):
+        assert np.max(np.abs(A @ (c ** (k - 1)) - c ** k / k)) < 1e-13, \
+            'C(%d) (stage order) fails' % k
+    Ai = np.linalg.inv(A)
+    assert abs(1.0 - b @ Ai @ np.ones(3)) < 1e-13, 'R(inf) must be 0 (L-stable)'
+    ## the stored cost-transform eigenvalues match eig(A^{-1})
+    ev = sorted(np.linalg.eigvals(Ai), key=lambda z: abs(z.imag))
+    assert abs(ev[0].real - Rk.GAMMA_REAL) < 1e-12 and abs(ev[0].imag) < 1e-12
+    pair = [z for z in ev if abs(z.imag) > 1e-9][0]
+    assert abs(pair.real - Rk.ALPHA) < 1e-12 and abs(abs(pair.imag) - Rk.BETA) < 1e-12
+
+
+def test_radau_matches_the_analytic_rc_step_at_fifth_order():
+    """Radau IIA(3) integrates a driven RC to its analytic step response at
+    FIFTH order, through the real Transient loop (gate: order 5 vs the exact
+    solution).
+
+    RC low-pass, V=1 through R=1e4 into C=1e-6 (tau = 1e-2 s), from rest:
+    v_C(t) = 1 - exp(-t/tau).  Radau IIA(3) is self-starting and one-step (its
+    three stages are coupled into one 3n solve), so there is no manufactured
+    opener and no history ring to seed.  A coarse grid keeps the error above
+    the machine floor so the O(h^5) rate is visible.
+    """
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+    tau, tend = 1e-2, 3e-2
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['vs'] = VS('a', gnd, v=1.0)
+        c['R'] = R('a', 'b', r=1e4)
+        c['C'] = C('b', gnd, c=1e-6)
+        return c
+
+    analytic = 1.0 - np.exp(-tend / tau)
+    errs = []
+    for N in (4, 8, 16, 32):
+        c = build()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=RadauIIA3Integrator())
+        res = tr.solve(tend=tend, timestep=tend / N, x0=np.zeros(c.n),
+                       fixed_timestep=True)
+        v = np.asarray(res.v('b'), dtype=float).reshape(-1)[-1]
+        errs.append(abs(v - analytic))
+    assert errs[-1] < 1e-9, \
+        'Radau IIA(3) is %.2e from the analytic RC step at 32 points' % errs[-1]
+    ## fifth order: each doubling cuts the error by ~32 (accept > 20 to leave
+    ## headroom for the higher-order remainder at these coarse grids)
+    for i in range(1, len(errs)):
+        assert errs[i - 1] / errs[i] > 20.0, \
+            'Radau IIA(3) order is not 5: errors %s' % errs

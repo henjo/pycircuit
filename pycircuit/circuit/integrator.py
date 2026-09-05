@@ -756,3 +756,113 @@ class TRBDF2Integrator(Integrator):
             'embedded 2(3) estimate is computed in '
             'Transient._solve_timestep_trbdf2 and consumed by '
             '_run_trbdf2_adaptive, which is the adaptive path for this method.')
+
+
+class RadauIIA3Integrator(Integrator):
+    """Radau IIA, 3 stages: the order-5, L-stable, stiffly-accurate collocation
+    method on the two Radau points and the endpoint.
+
+    Where TR-BDF2 earns its place by the failure modes it lacks, Radau IIA(3)
+    earns its place by *coverage and accuracy*:
+
+    * **Order 5, stage order 3.**  Five times the classical order of the LMMs
+      and of TR-BDF2, and -- crucially for a DAE -- stage order 3, so the
+      algebraic (index-1) components do not suffer the order reduction that
+      collapses a DIRK to its stage order on the constraint manifold.
+    * **The only candidate covered on a DAE.**  ``det A = 1/60 != 0`` makes the
+      stage system invertible, which is exactly the hypothesis of Hairer &
+      Wanner VI.2 Thm 2.3 (convergence on index-1 DAEs).  A method with a
+      singular ``A`` (any explicit-first-stage DIRK, TR-BDF2 included) is not
+      covered by that theorem on the algebraic block.
+    * **L-stable, stiffly accurate.**  ``R(inf) = 1 - b^T A^{-1} 1 = 0`` and the
+      last stage IS the step (``b == A[-1, :]``, ``c[-1] == 1``), so the
+      numerical solution lands ON the constraint manifold each step.
+
+    The price is that it is FULLY implicit: the three stages are coupled into
+    one ``3n`` system, with no explicit first stage to unlock and no
+    per-stage one-LU shortcut.  The Transient loop therefore runs it through a
+    dedicated coupled solve (``_solve_timestep_radau``), not through the
+    single-companion ``compute_derivatives`` path.
+
+    COST TRANSFORM (documented; the coupled solve is the default).  The ``3n``
+    Newton system ``(I3 (x) C/h + A (x) G) dY = -F`` block-diagonalises through
+    the eigendecomposition of ``A^{-1}``:  its spectrum is one real eigenvalue
+    ``GAMMA_REAL`` and one complex pair ``ALPHA +- i BETA`` (stored below).  In
+    the eigenbasis the coupled solve becomes one real factorisation of
+    ``(GAMMA_REAL/h) C + G`` plus one complex factorisation of
+    ``((ALPHA + i BETA)/h) C + G`` -- 1 real + 1 complex LU instead of a dense
+    ``3n`` solve.  Realising that win on the sparse backend needs the complex
+    ``klu_z_*`` binding; until then the coupled real solve is correct (and, for
+    the small circuits here, cheap), and the transform is an efficiency
+    follow-up rather than a correctness requirement.
+
+    ⚠ CONVENTION: ``c = [2/5 - sqrt(6)/10, 2/5 + sqrt(6)/10, 1]`` (the two
+    interior Radau points and the endpoint) with ``b`` equal to the LAST row of
+    ``A`` (stiff accuracy).  This is the IIA family (right Radau, endpoint
+    included), NOT IA (left Radau, ``c1 = 0``); do not swap the abscissae.
+    """
+
+    #: Classical order (B(5) holds; C(3) gives stage order 3).
+    ORDER = 5
+    #: Number of coupled stages.
+    STAGES = 3
+
+    _S6 = math.sqrt(6.0)
+    #: Abscissae: two interior Radau points and the stiffly-accurate endpoint.
+    C = (2.0 / 5.0 - _S6 / 10.0, 2.0 / 5.0 + _S6 / 10.0, 1.0)
+    #: The 3x3 collocation matrix ``A`` (rows sum to ``C``; ``det A = 1/60``).
+    A = (
+        (11.0 / 45.0 - 7.0 * _S6 / 360.0,
+         37.0 / 225.0 - 169.0 * _S6 / 1800.0,
+         -2.0 / 225.0 + _S6 / 75.0),
+        (37.0 / 225.0 + 169.0 * _S6 / 1800.0,
+         11.0 / 45.0 + 7.0 * _S6 / 360.0,
+         -2.0 / 225.0 - _S6 / 75.0),
+        (4.0 / 9.0 - _S6 / 36.0,
+         4.0 / 9.0 + _S6 / 36.0,
+         1.0 / 9.0),
+    )
+    #: Step weights = last row of ``A`` (stiff accuracy).
+    B = A[2]
+    #: Eigenvalues of ``A^{-1}`` for the cost transform: one real, one pair.
+    GAMMA_REAL = 3.6378342527444960
+    ALPHA = 2.6810828736277523
+    BETA = 3.0504301992474105
+
+    def __init__(self):
+        pass
+
+    def get_required_history(self) -> int:
+        ## Self-starting collocation: the only past state is ``x_n`` itself,
+        ## already carried by the loop as the previous solution.
+        return 1
+
+    def check_order_drop(self, h_curr, h_last, is_first_step):
+        ## A one-step collocation method carries no zero-stability step-ratio
+        ## limit across a step change -- nothing to drop to.
+        return self
+
+    def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last,
+                            h_last, is_first_step, toolkit):
+        raise NotImplementedError(
+            'Radau IIA(3) is a three-stage fully-implicit method; the Transient '
+            'loop runs it via _solve_timestep_radau (one coupled 3n Newton '
+            'solve), not through the single-companion compute_derivatives.')
+
+    def companion_coefficients(self, h_curr, h_last):
+        raise NotImplementedError(
+            'Radau IIA(3) states no linear-multistep companion; its stages are '
+            'coupled through the collocation matrix A, not a scalar companion.')
+
+    def companion_dT(self, q_curr, q_last, h_curr, h_last):
+        raise NotImplementedError(
+            'Radau IIA(3) states no companion coefficients, so the Euler-theorem '
+            'd(iq)/dT shared by the LMMs does not apply.')
+
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last,
+                    is_first_step, toolkit, h_last2=None):
+        raise NotImplementedError(
+            'Radau IIA(3) states no linear-multistep companion, so the LMM '
+            'divided-difference compute_lte does not apply. Its embedded 5(3) '
+            'estimate is computed in Transient._solve_timestep_radau and '
+            'consumed by _run_radau_adaptive.')
