@@ -6282,8 +6282,37 @@ T2. **The shooting monodromy is its own map, `m x m`, no opener, no pair** (this
    goes first. Verified against the pencil in scratch BEFORE the formal test (the "wrong integrator
    gives plausible wrong numbers" trap).
 
-T3. **Open: the adjoint transpose and the adaptive estimator.** `matvec_transposed` on a
-   `kind='trbdf2'` FactoredPeriod refuses loudly rather than fall through to the plain one-step
-   transpose (the wrong map), so `ppv`/`pnoise`/PAC over TR-BDF2 are not yet available. The
-   embedded 2(3) estimator with the `(I - h d J) Est = est` fix (matrix already factored), FSAL,
-   K=1/2, and step control -- Hosea & Shampine -- is the next increment.
+T3. **Adaptive step control from the embedded 2(3) estimate** (this increment). The estimator
+   coefficients were DERIVED, not quoted (the corpus has nothing on TR-BDF2): Taylor-matching the
+   combination `est_raw = h (c0 f_n + c1 f_gamma + c2 f_{n+1})` to the order-2 solution's leading
+   local truncation error gives `c0 = (1-sqrt2)/3`, `c1 = 1/3`, `c2 = -(2-sqrt2)/3` and the
+   principal LTE coefficient `(4-3sqrt2)/6`. Verified against the analytic LTE of `y' = a y`:
+   `est/true -> 1` as `h -> 0`.
+
+   ⚠ THE RAW ESTIMATE IS A TRAP ON STIFF MODES, and the scalar `C=1` check HID a second trap. For
+   `a h -> -inf` the raw `est_raw` grows like `|a h|` while the true error is damped to zero by
+   L-stability -- a naive `||est_raw||` forces the controller to crawl through exactly the stiff
+   transient the method exists to step over. H&S filter it through the stage matrix once. And the
+   filter is `(C + a33 h G) Est = est_raw`, NOT `= C est_raw`: `est_raw` is in CHARGE units
+   (`h dq/dt`), the mass matrix `C` maps state to charge, so the STATE error is `C^-1 est_raw` and
+   the stiff replacement is `(C + a33 h G)^-1`. The extra `C` multiply (which the scalar `C=1`
+   test could not see) left the estimate in charge units and 7 orders too small on a real circuit
+   -- caught by checking the stored estimate against the true one-step error on an RC network,
+   where `est/true -> 1` only after the `C` was removed.
+
+   Delivered as a dedicated driver `Transient._run_trbdf2_adaptive`, reached for the non-fixed
+   grid; the LMM controller path is untouched. Error per step, order 2:
+   `err = rms(Est_i/(reltol|x_i| + atol_i))`, accept at `err <= 1`,
+   `dt_next = dt clip(0.9 err^(-1/3), K, 1/K)` with `K = 1/2`. No `_push_history` (a DIRK reads no
+   charge rings; only `accept_step` for stateful elements). `compute_lte` STILL raises -- it is the
+   LMM divided-difference interface, which a stage method does not fit; the estimate is a stage
+   combination computed in `_solve_timestep_trbdf2` and consumed by the driver. Verified: tighter
+   reltol spends more steps and lands closer to analytic; and the adaptive waveform on a driven
+   2-node RC matches a tight DOP853 reference to 8e-6 relative.
+
+T4. **Still open: the adjoint transpose.** `matvec_transposed` on a `kind='trbdf2'` FactoredPeriod
+   refuses loudly rather than fall through to the plain one-step transpose (the wrong map), so
+   `ppv`/`pnoise`/PAC over TR-BDF2 are not yet available. And `method='trbdf2'` in `PSS.solve`
+   (the dense shooting Newton) is still not wired -- the Newton propagates through
+   `companion_coefficients`, which the DIRK lacks; the monodromy is delivered via
+   `factored_period_trbdf2` about an externally converged orbit.

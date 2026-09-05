@@ -739,8 +739,8 @@ def test_trbdf2_matches_the_analytic_rc_step_at_second_order():
     RC low-pass, V=1 through R=1e4 into C=1e-6 (tau = 1e-2 s), from rest:
     v_C(t) = 1 - exp(-t/tau).  TR-BDF2 is self-starting and one-step, so
     there is no manufactured opener and no history ring to seed.  Fixed
-    step; the embedded estimator is not built and the method refuses a
-    non-fixed grid (asserted below).
+    step here; the adaptive path (the embedded 2(3) estimator driving step
+    control) is exercised at the end.
     """
     from pycircuit.circuit.elements import VS
     from pycircuit.circuit.integrator import TRBDF2Integrator
@@ -772,10 +772,30 @@ def test_trbdf2_matches_the_analytic_rc_step_at_second_order():
     assert errs[0] / errs[1] > 3.5 and errs[1] / errs[2] > 3.5, \
         'TR-BDF2 order is not 2: errors %s' % errs
 
-    ## and it refuses a non-fixed grid rather than running its unbuilt
-    ## estimator
-    import pytest
-    with pytest.raises(NotImplementedError, match='FIXED STEP'):
-        Transient(build(), toolkit=circuit.numeric,
-                  integrator=TRBDF2Integrator()).solve(
-                      tend=tend, timestep=1e-5, x0=np.zeros(build().n))
+    ## ADAPTIVE: the embedded 2(3) estimate (Hosea & Shampine 1996) drives
+    ## step control, so a tighter reltol spends more steps and lands closer
+    ## to the analytic value -- the estimator is asymptotically exact (its
+    ## ratio to the true local error -> 1), so error control actually binds.
+    ## a longer horizon (5 tau) so the transient is fully resolved and the
+    ## error controller actually binds -- over `tend`=1e-3 << tau the step
+    ## rides the max-step cap and tolerance changes nothing.
+    tend_a = 5e-2
+    analytic_a = 1.0 - np.exp(-tend_a / tau)
+
+    def run_adaptive(rtol):
+        c = build()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=TRBDF2Integrator(), reltol=rtol, uic=True)
+        res = tr.solve(tend=tend_a, timestep=tend_a / 20)
+        v = np.asarray(res.v('b'), dtype=float).reshape(-1)[-1]
+        return abs(v - analytic_a), res.statistics.accepted_steps
+
+    e_loose, n_loose = run_adaptive(1e-3)
+    e_tight, n_tight = run_adaptive(1e-6)
+    assert n_tight > n_loose, \
+        'tighter reltol must spend more steps: %d vs %d' % (n_tight, n_loose)
+    assert e_tight < e_loose, \
+        'tighter reltol must land closer: %.2e vs %.2e' % (e_tight, e_loose)
+    ## the tight run resolves the analytic step to a few ppm of full scale
+    assert e_tight < 1e-4, \
+        'adaptive TR-BDF2 at reltol=1e-6 is %.2e from analytic' % e_tight

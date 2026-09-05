@@ -2225,11 +2225,13 @@ class Transient(Analysis):
         (``a22 == a33``).  Self-starting -- the only past state is ``x0``,
         the previous accepted solution -- so no history ring is read.
 
-        Fixed step only; `_solve` refuses a non-fixed grid for this method
-        because its embedded estimator is not built.  Returns
-        ``(x, None, J, None)`` like `solve_timestep`, with ``J`` the stage-2
-        Jacobian the downstream expects, and leaves ``_iq``/``_q_cache`` set
-        so the history push after the step is consistent.
+        When ``_trbdf2_want_est`` is set (by the adaptive driver
+        :meth:`_run_trbdf2_adaptive`) it also leaves the filtered embedded
+        2(3) error estimate in ``_trbdf2_est``; the fixed-step path does not
+        set the flag and pays nothing for it.  Returns ``(x, None, J, None)``
+        like `solve_timestep`, with ``J`` the stage-2 Jacobian the
+        downstream expects, and leaves ``_iq``/``_q_cache`` set so the
+        history push after the step is consistent.
         """
         integ = self.base_integrator
         g = integ.GAMMA
@@ -2287,6 +2289,51 @@ class Transient(Analysis):
         ## Stage 1 kept for the shooting monodromy, which needs Y1.
         self._trbdf2_Y1 = Y1
         J = Cm2 + a33 * h * Gm2
+
+        ## THE EMBEDDED 2(3) ERROR ESTIMATE (Hosea and Shampine 1996), gated
+        ## so the fixed-step path pays nothing for it.  The three stage
+        ## derivatives `f = dq/dt = -(i + src)` at `x_n`, the internal stage
+        ## `Y1`, and `x_{n+1}` combine into
+        ##
+        ##     est_raw = h (c0 f_n + c1 f_gamma + c2 f_{n+1})
+        ##
+        ## with c0 = (1 - sqrt2)/3, c1 = 1/3, c2 = -(2 - sqrt2)/3 -- the
+        ## coefficients that make est_raw the leading local truncation error
+        ## (4 - 3 sqrt2)/6 * h^3 y''' of the order-2 solution (derived by
+        ## Taylor matching, verified against the analytic LTE of y' = a y:
+        ## ratio -> 1 as h -> 0).
+        ##
+        ## WARN THE RAW ESTIMATE IS A TRAP ON STIFF MODES.  For a h -> -inf
+        ## est_raw GROWS like |a h| while the true error is damped to zero by
+        ## L-stability -- a naive norm would force the controller to crawl
+        ## through exactly the stiff transient the method exists to step over.
+        ## H and S filter it through the stage matrix once:
+        ##
+        ##     (C + a33 h G) Est = C est_raw
+        ##
+        ## the SAME operator already factored for stage 2, so the filter is
+        ## one back-substitution.  Verified bounded as a h -> -inf where the
+        ## naive estimate grows without limit.  Solved in the reduced space
+        ## (the full stage matrix is singular on the reference row).
+        if getattr(self, '_trbdf2_want_est', False):
+            _s = 2.0 ** 0.5
+            fn = dqn
+            fg = -(arr(self.cir.i(Y1, epar)) + src(t1))
+            fnp1 = self._iq
+            est_raw = h * (((1.0 - _s) / 3.0) * fn
+                           + (1.0 / 3.0) * fg
+                           + (-(2.0 - _s) / 3.0) * fnp1)
+            ## est_raw is in CHARGE units (h * dq/dt); the mass matrix C
+            ## maps state to charge, so the STATE error is C^-1 est_raw, and
+            ## the stiff filter replaces C^-1 with the stage operator inverse
+            ## (C + a33 h G)^-1.  NO extra C multiply -- that would leave the
+            ## estimate in charge units (the trap the scalar C=1 check hid).
+            iref = self.irefnode
+            (Jr,) = remove_row_col((J,), iref, self.toolkit)
+            er_r = self.toolkit.concatenate(
+                (est_raw[:iref], est_raw[iref + 1:]))
+            Est_r = self.toolkit.linearsolver(Jr, er_r)
+            self._trbdf2_est = self.toolkit.insert(Est_r, iref, 0.0)
         return Y2, None, J, None
 
     def solve_timestep(self, x0, t, provided_function=None):
@@ -2424,12 +2471,6 @@ class Transient(Analysis):
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         from pycircuit.circuit.integrator import TRBDF2Integrator
-        if isinstance(getattr(self.par, 'integrator', None), TRBDF2Integrator) \
-                and not fixed_timestep:
-            raise NotImplementedError(
-                'TRBDF2Integrator runs FIXED STEP only for now -- its embedded '
-                'error estimator (Hosea & Shampine 1996) is not built and must '
-                'not be guessed. Pass fixed_timestep=True.')
         ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
         ## request: PCNR can decline for the whole run (no device
         ## declares a probe) or fail on individual timesteps and fall
@@ -2665,6 +2706,17 @@ class Transient(Analysis):
         ## criterion with it.
         abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
                                           self.par.lte_iabstol * ones_branches))
+
+        ## TR-BDF2 adaptive: its own loop, driven by the embedded 2(3)
+        ## estimate, reached only for the non-fixed grid (fixed step runs
+        ## the ordinary loop below, which dispatches the two-stage step).
+        ## `_begin_run` above has set `base_integrator`, so the type check
+        ## is safe here.
+        if isinstance(self.base_integrator, TRBDF2Integrator) \
+                and not fixed_timestep:
+            return self._run_trbdf2_adaptive(
+                x, n, X, timelist, tend, dt, max_step, abstol,
+                provided_function, _t_run_start)
 
         was_break_step = False
         while t < tend:
@@ -3037,6 +3089,98 @@ class Transient(Analysis):
         ## caller who kept only the waveform can still ask what produced it.
         self.result.statistics = self.statistics
 
+        return self.result
+
+
+    def _run_trbdf2_adaptive(self, x, n, X, timelist, tend, dt, max_step,
+                             abstol, provided_function, _t_run_start):
+        """Adaptive TR-BDF2, driven by the embedded 2(3) estimate.
+
+        TR-BDF2 is self-starting: each step reads only the accepted `x`, so
+        this is its OWN loop rather than the LMM controller path -- that
+        path estimates the LTE through `Integrator.compute_lte`, which a
+        two-stage DIRK does not have.  The estimate here is the filtered
+        `_trbdf2_est` the step leaves behind (see `_solve_timestep_trbdf2`).
+
+        Error per step, order 2: `err = rms(Est_i / (reltol|x_i| + atol_i))`
+        over the non-reference rows, accept at `err <= 1`, and
+        `dt_next = dt * clip(0.9 * err^(-1/3), K, 1/K)` with `K = 1/2` -- the
+        `1/(order+1) = 1/3` exponent, 0.9 safety, and a per-step growth/shrink
+        clamp so one anomalous estimate cannot swing the step size wildly.
+        A non-convergent Newton halves the step and retries.
+
+        ⚠ NO `_push_history`.  The LMM loop rolls the charge rings that a
+        multistep companion reads back; TR-BDF2 reads none of them, so the
+        only accepted-step bookkeeping is `accept_step` for elements that
+        carry their own state.  Rolling the rings here would be dead work at
+        best and, for a stateful element, a second uncommanded advance.
+        """
+        tk = self.toolkit
+        iref = self.irefnode
+        reltol = self.par.reltol
+        minstep = self.par.minstep
+        SAFETY, K, ORDER = 0.9, 0.5, 2
+        keep = [i for i in range(n) if i != iref]
+        abstol = tk.array(abstol)
+        self._trbdf2_want_est = True
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        MAX_REJECT = 12
+        t = 0.0
+        try:
+            while t < tend:
+                dt = min(dt, max_step, tend - t)
+                reject = 0
+                while True:
+                    self._dt = dt
+                    try:
+                        xnew, _f, _J, _ = self.solve_timestep(
+                            x, t + dt, provided_function=provided_function)
+                    except NoConvergenceError:
+                        self.statistics.rejected_steps += 1
+                        reject += 1
+                        dt = 0.5 * dt
+                        if dt < minstep:
+                            raise
+                        continue
+                    est = tk.array(self._trbdf2_est)
+                    wt = reltol * tk.abs(xnew) + abstol
+                    ek = tk.array([est[i] / wt[i] for i in keep])
+                    err = float((tk.sum(ek * ek) / len(keep)) ** 0.5)
+                    if err <= 1.0 or reject >= MAX_REJECT or dt <= minstep:
+                        break
+                    self.statistics.rejected_steps += 1
+                    reject += 1
+                    dt = dt * max(K, SAFETY * err ** (-1.0 / (ORDER + 1)))
+                ## accept
+                t = t + dt
+                x = xnew
+                X.append(copy(x))
+                timelist.append(t)
+                self.statistics.accepted_steps += 1
+                self.statistics._note_step(dt)
+                if hasattr(self.cir, 'accept_step'):
+                    self.cir.accept_step(t, x, self.epar)
+                ## propose the next step from the same estimate
+                grow = SAFETY * (err if err > 1e-16 else 1e-16) ** (
+                    -1.0 / (ORDER + 1))
+                dt = dt * min(1.0 / K, max(K, grow))
+        finally:
+            self._trbdf2_want_est = False
+
+        X = tk.array(X).T
+        timelist = tk.array([0.0] + timelist)
+        self.statistics.total_seconds = time.perf_counter() - _t_run_start
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=timelist,
+                                    sweep_label='time', sweep_unit='s')
+        outputstep = self.par.outputstep
+        if outputstep is not None:
+            _grid, _Xg = resample_uniform(self.result.sweep_values,
+                                          self.result.x, step=outputstep)
+            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
+                                        sweep_values=_grid,
+                                        sweep_label='time', sweep_unit='s')
+        self.result.statistics = self.statistics
         return self.result
 
 

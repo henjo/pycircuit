@@ -641,12 +641,17 @@ class TRBDF2Integrator(Integrator):
     monodromy directly from the two stage linearisations rather than from
     :meth:`companion_coefficients`.  Those three methods therefore raise here.
 
-    ⚠ FIXED STEP ONLY for now.  The embedded third-order error estimator
-    (Hosea & Shampine 1996) and the step controller are deliberately not
-    built -- their coefficients are a design choice this codebase does not yet
-    hold the source for, and guessing an integration constant is exactly what
-    this module warns against.  :meth:`check_order_drop` returns ``self`` (no
-    ratio limit to enforce) and :meth:`compute_lte` raises.
+    ⚠ ADAPTIVE, but NOT through this class's LMM interface.  The embedded
+    2(3) estimate (Hosea & Shampine 1996) is computed inside
+    :meth:`Transient._solve_timestep_trbdf2` from the three stage
+    derivatives and filtered once through the stage matrix, and a dedicated
+    driver :meth:`Transient._run_trbdf2_adaptive` runs step control on it.
+    :meth:`compute_lte` STILL raises: it is the LMM controller's
+    divided-difference interface, which a two-stage DIRK does not fit -- the
+    estimate is a stage combination, not a companion difference.  The
+    estimator coefficients were DERIVED (Taylor matching) and verified
+    against the analytic local error, not quoted.  :meth:`check_order_drop`
+    returns ``self`` (a one-step method has no ratio limit to enforce).
 
     THE TABLEAU, derived not quoted (the corpus has nothing on TR-BDF2).
     ``gamma`` is fixed by the ONE-LU condition, not by accuracy: the trapezoid
@@ -703,6 +708,8 @@ class TRBDF2Integrator(Integrator):
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last,
                     is_first_step, toolkit, h_last2=None):
         raise NotImplementedError(
-            'TR-BDF2 runs fixed-step only for now: its embedded error '
-            "estimator (Hosea & Shampine 1996) is not built and must not be "
-            'guessed. Use fixed_timestep=True.')
+            'TR-BDF2 states no linear-multistep companion, so the LMM '
+            'controller\'s divided-difference compute_lte does not apply. Its '
+            'embedded 2(3) estimate is computed in '
+            'Transient._solve_timestep_trbdf2 and consumed by '
+            '_run_trbdf2_adaptive, which is the adaptive path for this method.')
