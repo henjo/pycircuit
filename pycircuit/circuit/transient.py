@@ -2353,11 +2353,13 @@ class Transient(Analysis):
         complex LU) is the efficiency follow-up documented on
         :class:`RadauIIA3Integrator`, needing the complex ``klu_z_*`` binding.
 
-        When ``_radau_want_est`` is set (by :meth:`_run_radau_adaptive`) it also
-        leaves the filtered embedded 5(3) error estimate in ``_radau_est``.
-        Returns ``(x, None, J, None)`` like `solve_timestep`, with ``J`` the
-        last-stage operator, and leaves ``_iq``/``_q_cache`` set so the history
-        push after the step is consistent.
+        Fixed-step only: adaptive step control would need the embedded 5(3)
+        estimate, which is the one deferred TR-BDF2-parity piece (see the note
+        at the end of this method); ``_solve`` refuses the adaptive grid for
+        Radau rather than fall into the LMM controller.  Returns
+        ``(x, None, J, None)`` like `solve_timestep`, with ``J`` the last-stage
+        operator, and leaves ``_iq``/``_q_cache`` set so the history push after
+        the step is consistent.
         """
         integ = self.base_integrator
         Amat = np.array(integ.A, dtype=float)
@@ -2461,19 +2463,28 @@ class Transient(Analysis):
         self._radau_Y = (Y1, Y2, Y3)
         J = C3 + a33 * h * G3
 
-        ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner 1996, IV.8 /
-        ## 1999 err formula), gated so the fixed-step path pays nothing.  A
-        ## lower-order embedded solution yhat differs from y_{n+1} by a
-        ## combination of the stage derivatives; the difference is filtered
-        ## through a real stage operator (M - h*gamma0*J)^{-1} -- here the same
-        ## real factor the cost transform uses -- so the estimate stays bounded
-        ## as the stiff eigenvalues run to -inf (an unfiltered estimate would
-        ## grow and force the controller to crawl through the transient the
-        ## method exists to step over).  Built and validated in a later gate;
-        ## the fixed-step path never sets the flag.
+        ## THE EMBEDDED 5(3) ERROR ESTIMATE is the one TR-BDF2-parity piece not
+        ## built.  Hairer & Wanner's Radau5 estimator forms a lower-order
+        ## embedded solution `yhat` from the stage derivatives plus a
+        ## fictitious explicit stage `f(y0)`, filtered by the real factor
+        ## `(gamma_r/h C + G)^{-1}` for stiff robustness.  The FILTER is known
+        ## (it is the transform's real factor); the EMBEDDED WEIGHTS are a
+        ## specific published constant (the radau5 `dd` vector) with a free
+        ## parameter fixed for L-stability, and reconstructing them from memory
+        ## risks shipping a wrong instrument -- so this is deferred rather than
+        ## guessed, and would be added the same way TR-BDF2's 2(3) estimate was:
+        ## derive, then VALIDATE the estimate/true-LTE ratio -> 1 and the
+        ## adaptive-reltol gate before trusting it.  The fixed-step path never
+        ## sets the flag, so it pays nothing; the whole PSS stack (monodromy,
+        ## the shooting Newton, phase noise, covariance, pnoise) rides on the
+        ## fixed grid and is complete.
         if getattr(self, '_radau_want_est', False):
-            self._radau_est = self._radau_error_estimate(
-                xn, Y, tstage, h, J, src, arr)
+            raise NotImplementedError(
+                'Radau IIA(3) adaptive step control is not built: its embedded '
+                '5(3) error estimate (the radau5 dd weights) is the one '
+                'TR-BDF2-parity piece deferred rather than reconstructed '
+                'unvalidated. Run Radau fixed-step (fixed_timestep=True), or '
+                'use TR-BDF2 for an adaptive stage method.')
         return Y3, None, J, None
 
     def solve_timestep(self, x0, t, provided_function=None):
@@ -2860,6 +2871,21 @@ class Transient(Analysis):
             return self._run_trbdf2_adaptive(
                 x, n, X, timelist, tend, dt, max_step, abstol,
                 provided_function, _t_run_start)
+
+        ## Radau IIA(3): fixed-step only for now.  Its coupled stage step is
+        ## built and validated across the whole PSS stack (which runs on an
+        ## imposed grid), but the embedded 5(3) estimate that would drive step
+        ## control is the one deferred piece (see `_solve_timestep_radau`), so
+        ## refuse the adaptive grid clearly rather than fall into the LMM
+        ## controller, whose divided-difference LTE Radau does not provide.
+        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        if isinstance(self.base_integrator, RadauIIA3Integrator) \
+                and not fixed_timestep:
+            raise NotImplementedError(
+                'Radau IIA(3) adaptive step control is not built (its embedded '
+                '5(3) estimate is deferred). Pass fixed_timestep=True to run '
+                'Radau on the caller\'s grid, or use TR-BDF2 for an adaptive '
+                'stage method.')
 
         was_break_step = False
         while t < tend:
