@@ -3215,9 +3215,21 @@ rms), raw and consistent AGREE to `2e-4` and BOTH sit below the re-solved `dT/di
 converges at second order (0.216029 → 0.215976). So (i) the three structural DC gates do not separate
 the two objects on any row where the mean is resolvable — they pin the identities they name, not the
 object; (ii) there is an `O(h)` DC error in `samples_eq` on this DAE fixture that the ODE fixtures do
-not show (the bias fixture's inductor row flattened at `7e-4` with no trend). Candidate, untested: the
-algebraic fill / equation-row conversion reads `G` at the sample's own state, and an O(h) misalignment
-in a state-dependent conversion is an O(h) error in the converted rows. **OPEN.** Also structural: the consistent object is ZERO on the algebraic
+not show (the bias fixture's inductor row flattened at `7e-4` with no trend). ✅ **CLOSED the same
+day, and the candidate was wrong.** The review session asked for a LINEAR-DAE cell to separate
+state-dependence from structure; that cell is empty here (`ppv` is autonomous-only and a linear
+autonomous DAE has no limit cycle) — but the fixture's algebraic block of `G` is CONSTANT by inspection,
+which killed the state-dependence candidate without a run. The exact reference (the DAE reduced to an
+ODE, `x = R·i_L` eliminated; scipy adjoint: `c_true = 1.204953e-07`, `⟨v_v⟩ = 3.137167e-02`) then showed
+EVERYTHING on that fixture was first order — `c/c_true` 0.9940 / 0.9971 / 0.9986, the invariant
+drifting at `1.1e-3` — not a DC property. The tangent scale was ruled out (an exact differential-block
+solve for `ẋ` gives the same `v(0)·ẋ` to `1e-5`). The mechanism: the consistent propagation treated the
+algebraic state as a free coordinate and then zeroed it; on a DAE it is SLAVED, and its coupling into
+the differential propagation is `O(h)`. The right object is the Schur complement `G[D,NZ] − G[D,Z]
+G[A,Z]⁻¹ G[A,NZ]` — the same elimination the algebraic fill performs for the rows. With it `c` is `2.7e-4
+/ 7e-5 / 2e-5` from exact, the mean `8.6e-4 / 2e-4 / 5e-5`, the drift `4.3e-4 / 1.1e-4 / 2.7e-5`: second
+order on all three. Test: `test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too`. **What is still
+open is only the raw block's `3e-11` exactness on the divider's node rows.** Also structural: the consistent object is ZERO on the algebraic
 COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full suite's Demir-(24) gate
 caught it, the targeted subset had not).
 
