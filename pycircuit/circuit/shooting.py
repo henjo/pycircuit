@@ -6559,8 +6559,34 @@ class PAC(Analysis):
             ## sideband set, exactly as the withdrawn body intended
             tms = np.asarray(fp.times, dtype=float)[:len(y)]
             v = y * np.exp(-2j * np.pi * f * tms)[:, None]
+            ## ⚠ TWO REPORTING DEFECTS, FOUND BY THE SPECTRE COMPARISON SUITE
+            ## (2026-09-05), neither in the solve.  (a) `fp.times` spans
+            ## `[0, T]` INCLUSIVE, so the last sample repeats the first on a
+            ## T-periodic `v` (|v[0] - v[-1]| / |v[0]| = 7e-18 measured) and
+            ## the DFT's `dt = T/(N-1)` put the sidebands at `f0 (N-1)/N`:
+            ## 99 500 Hz for 100 000 at N = 200 -- and cost an ORDER, O(h)
+            ## for O(h^2), 68x at 800 points.  `PSS.solve` already drops
+            ## the endpoint one function away; this did not.  Guarded on
+            ## the window rather than sliced blind, since the plain path's
+            ## `[:len(y)]` need not be inclusive.  (b) `|sb + f|` folded a
+            ## NEGATIVE sideband frequency to positive and left the
+            ## coefficient alone; the physical response there is the
+            ## CONJUGATE.  Uncorrected, `l = -1` was 166% off and did not
+            ## converge under refinement; conjugated it lands on its
+            ## positive twin's error to three digits (4.873e-3 / 4.877e-3).
+            ## Both defects are invisible on a circuit whose `v(t)` is
+            ## constant over the period -- every earlier PAC gate.
+            if len(tms) > 1 and np.isclose(tms[-1] - tms[0], T,
+                                           rtol=1e-9, atol=0.0):
+                v, tms = v[:-1], tms[:-1]
             sb, V = freq_analysis(v, tms, axis=0)
-            outfreq.extend((np.abs(sb + f)).tolist())
+            fs = np.asarray(sb, dtype=float) + f
+            V = np.asarray(V)
+            neg = fs < 0.0
+            if np.any(neg):
+                V = V.copy()
+                V[neg] = np.conj(V[neg])
+            outfreq.extend(np.abs(fs).tolist())
             outV.extend(V.tolist())
 
         order = np.argsort(np.asarray(outfreq))
@@ -7652,6 +7678,18 @@ class PAC(Analysis):
     def covariance(self, pss, samples=False):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
 
+        ⚠ A GRID CHOSEN FOR `kT/C` IS NOT A GRID FOR THE PROFILE.  With
+        `CY` per step (2026-09-05) a switched capacitor's HELD variance
+        reads `kT/C` to 1e-4 at 1600 points and converges at better than
+        second order, while the TRACKING phase sits at this routine's
+        O(h/tau) floor -- 4% out at 800 points where the held value is
+        already 1.6e-4 -- and both agree with Spectre's sampled pnoise at
+        matched instants to 1e-3 (0.99878 track, 0.99915 edge, 0.99999
+        hold).  The tracked variance is 0.957 kT/C, NOT kT/C: a sinusoidal
+        clock holds the switch at full `gon` only instantaneously, so the
+        capacitor is never in equilibrium with `Ron`; both tools agree on
+        that independently.
+
         Returns `K0`, the covariance at `t = 0`; with `samples=True`,
         `(K0, [K_j])`, the covariance at every step, which is the
         time-varying statistic this exists to produce.
@@ -8511,7 +8549,16 @@ class PAC(Analysis):
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
 
-        Returns `(S_v, L_dBc)`.  `S_v` is the one-sided PSD of the output
+        Returns `(S_v, L_dBc)`.  ⚠ `S_v` is the Lorentzian lineshape scaled by
+        `|X_1|^2 = A^2/4`, the carrier PHASOR's square -- which is HALF the
+        carrier power `A^2/2` a one-sided PSD carries, so `S_v` is exactly
+        0.5000x a one-sided PSD of the output voltage (measured against
+        Spectre at every offset over four decades, 2026-09-05).  `L_dBc`
+        is unaffected, `|X_1|^2` dividing out of the ratio; the absolute
+        V^2/Hz matters to anyone integrating `S_v` to a power, and the
+        scale is kept rather than doubled because it is a return value
+        that callers may already divide by `|X_1|^2` themselves.  `S_v`
+        was documented as the one-sided PSD of the output
         voltage; `L_dBc` is that normalised to the harmonic's own power,
         in dBc/Hz.
 

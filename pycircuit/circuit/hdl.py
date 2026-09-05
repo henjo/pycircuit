@@ -6087,7 +6087,25 @@ class BehaviouralMeta(type):
 
         def CY(self, x, w=0, epar=defaultepar):
             f_hz = np.abs(w) / (2 * np.pi)
-            return np.asarray(funcs['CY'](x, *_args_of(self, epar), f_hz))
+            raw = funcs['CY'](x, *_args_of(self, epar), f_hz)
+            ## ⚠ RAGGED UNDER AN ARRAY FREQUENCY, FOUND BY THE SPECTRE
+            ## COMPARISON SUITE (2026-09-05): a flicker entry comes out
+            ## array-valued in `f_hz` while the thermal entries stay scalar
+            ## -- at `kf = 0`, the default, too, since the term is emitted
+            ## unconditionally -- and `np.asarray` of that mixed matrix
+            ## raises "inhomogeneous shape".  `SSAnalysis` hands `CY` the
+            ## whole frequency array, so `AC(cir).solve(freqs=[1.0])`
+            ## failed on every compact model while `freqs=1.0` worked.
+            ## Broadcast every entry to the common shape, as a handwritten
+            ## `CY` with an array `psd` does by construction.
+            try:
+                return np.asarray(raw)
+            except ValueError:
+                rows = [[np.asarray(e) for e in r] for r in raw]
+                shape = np.broadcast_shapes(*[e.shape for r in rows
+                                              for e in r])
+                return np.asarray([[np.broadcast_to(e, shape) for e in r]
+                                   for r in rows])
 
         def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
             if analysis == 'ac':

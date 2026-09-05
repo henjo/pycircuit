@@ -12169,3 +12169,61 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
     assert abs(hold8 - 1.0) < 8e-4 and (1.0 - hold4) / (1.0 - hold8) > 3.0, \
         'the held variance must converge at second order: %.2e -> %.2e' \
         % (1.0 - hold4, 1.0 - hold8)
+
+
+def test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_the_fold():
+    """✅ TWO REPORTING DEFECTS IN `PAC.solve`'S TAIL, found by the Spectre
+    comparison suite (2026-09-05), neither in the solve.  (a) The DFT was
+    taken over `fp.times`, `[0, T]` INCLUSIVE, so the last sample repeated
+    the first and `dt = T/(N-1)` put the sidebands at `f0 (N-1)/N`:
+    109 500 / 89 500 Hz for 110 000 / 90 000 at N = 200 (measured before
+    the fix: 109 500 / 109 750 / 109 875 at 200 / 400 / 800).  It cost an
+    order, O(h) for O(h^2).  (b) `|sb + f|` folded a negative sideband
+    frequency to positive and left the coefficient alone; the physical
+    response there is the CONJUGATE.  Both were invisible on every
+    earlier PAC gate, whose `v(t)` is constant over the period (a
+    constant's DFT is exact for any window): it takes a CONVERTING
+    circuit -- the switched capacitor -- to see them.  The proof is the
+    adjoint: `adjoint_sideband_row` never calls `freq_analysis`, and after
+    the fix the reported coefficients equal `H_l . u_ac` to 1e-15 at
+    every grid, with `l = -1` the conjugate of `H_{-1} . u_ac`.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    fclk, fin, T = 100e3, 10e3, 1e-5
+    cir = SubCircuit()
+    cir.add_node('in')
+    cir.add_node('out')
+    cir.add_node('ck')
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0, vac=1.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                           vth=0.0, vs=50e-3)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 200, x0=np.zeros(cir.n - 1),
+                  maxiterations=100)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    res = pac.solve(pss, freqs=[fin])
+    fout = np.asarray(res.sweep_values, dtype=float)
+    X = np.asarray(res.x)
+    io = [str(n) for n in cir.nodes].index('out')
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), pss.irefnode,
+                             circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io,
+                                            sidebands=[0, 1, -1]))
+    for li, l in enumerate((0, 1, -1)):
+        f_phys = abs(fin + l * fclk)
+        k = int(np.argmin(np.abs(fout - f_phys)))
+        assert abs(fout[k] - f_phys) < 1e-6 * fclk, \
+            'sideband l=%d reported at %.1f Hz, not %.1f' % (l, fout[k], f_phys)
+        x = complex(X[io, k])
+        h = complex(H[li] @ u_ac)
+        if fin + l * fclk < 0:
+            h = np.conj(h)
+        assert abs(x - h) < 1e-12 * abs(h), \
+            'sideband l=%d: reported %r against the adjoint %r' % (l, x, h)

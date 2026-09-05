@@ -406,11 +406,19 @@ class Noise(SSAnalysis):
             # Calculate the reciprocal G and C matrices
             Yreciprocal = G.T + s*C.T
 
+            ## ⚠ `CY` AT THIS frequency: a coloured source or a compact
+            ## model's flicker term is a function of `s`, and one `CY` for
+            ## the whole sweep was the value at its first point.
+            if tk.symbolic:
+                CYs = CY
+            else:
+                CYs = self.cir.CY(x, tk.imag(s), self.epar)
+                (CYs,) = remove_row_col((CYs,), irefnode, tk)
             ## Transimpedances from a current in each node to the output, and the
             ## output noise PSD zm^T CY conj(zm).  Dispatched to the toolkit so a
             ## polynomial toolkit can keep it as a single shared-denominator
             ## rational instead of a swelling sum of divided rationals.
-            zm, xn2out = tk.noise_psd(Yreciprocal, u, CY, s)
+            zm, xn2out = tk.noise_psd(Yreciprocal, u, CYs, s)
 
             ## Etract gain
             gain = None
@@ -494,7 +502,21 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
 
     G = cir.G(x, epar)
     C = cir.C(x, epar)
-    CY = cir.CY(x, toolkit.imag(ss), epar)
+    ## ⚠ `CY` AT ONE SCALAR FREQUENCY.  The assembly (`_scatter_2d`) takes
+    ## scalar entries, so a frequency-DEPENDENT `CY` -- a coloured source,
+    ## every compact model's flicker term -- handed the whole sweep array
+    ## broke here for any sweep longer than one point (found by the
+    ## Spectre comparison suite, 2026-09-05).  A sweep re-evaluates `CY`
+    ## per frequency where it is consumed (`Noise.solve`); this one is the
+    ## representative at the first frequency, for callers that never
+    ## sweep it.
+    _w = toolkit.imag(ss)
+    try:
+        _w0 = _w if toolkit.symbolic else (
+            _w if np.ndim(_w) == 0 else np.asarray(_w).ravel()[0])
+    except Exception:
+        _w0 = _w
+    CY = cir.CY(x, _w0, epar)
 
     ## Allow for custom stimuli, mainly used by other analyses
     if u is None:
