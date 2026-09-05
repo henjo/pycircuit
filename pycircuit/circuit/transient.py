@@ -2280,6 +2280,10 @@ class Transient(Analysis):
         self._Cmat = Cm2
         self._Geq = a33 * h * Gm2
         self._effective_method = 'TRBDF2Integrator'
+        ## No LMM companion coefficients exist for a two-stage DIRK; set None
+        ## so a caller reading `_companion_coeffs` after the step gets a
+        ## defined absence rather than a stale pair from an earlier method.
+        self._companion_coeffs = None
         ## Stage 1 kept for the shooting monodromy, which needs Y1.
         self._trbdf2_Y1 = Y1
         J = Cm2 + a33 * h * Gm2

@@ -178,6 +178,8 @@ class FactoredPeriod(object):
         """`M v`, real or complex, replaying the stored factors."""
         if self.kind == 'solved_history':
             return self._pss._monodromy_matvec(self.opening, self.steps, v)
+        if self.kind == 'trbdf2':
+            return self._pss._monodromy_matvec_trbdf2(self.steps, v)
         return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
 
     def matvec_transposed(self, v, collect=False, inject=None):
@@ -202,6 +204,18 @@ class FactoredPeriod(object):
         if self.kind == 'solved_history':
             return self._pss._monodromy_matvec_transposed(
                 self.opening, self.steps, v, collect=collect, inject=inject)
+        if self.kind == 'trbdf2':
+            ## The TR-BDF2 adjoint is a follow-up, not this increment: the
+            ## forward monodromy (the Floquet spectrum) is what "monodromy
+            ## first" delivers.  Refuse loudly rather than fall through to
+            ## the plain one-step transpose, whose companion recursion is
+            ## the WRONG map for a two-stage DIRK -- silently returning a
+            ## Gear-2-shaped adjoint is exactly the accident this method was
+            ## rewritten to prevent.
+            raise NotImplementedError(
+                'TR-BDF2 monodromy transpose (the adjoint surface for ppv/'
+                'pnoise) is not built yet; the forward matvec and its Floquet '
+                'spectrum are. Use method="gear"/"trap" for adjoint analyses.')
         return self._pss._monodromy_matvec_transposed_plain(
             self.opening, self.steps, v, collect=collect, inject=inject)
 
@@ -1693,11 +1707,13 @@ class PSS(Analysis):
         from pycircuit.circuit.integrator import (EulerIntegrator,
                                                   TrapezoidalIntegrator,
                                                   Gear2Integrator)
+        from pycircuit.circuit.integrator import TRBDF2Integrator
         return {'euler': EulerIntegrator,
                 'trap': TrapezoidalIntegrator,
                 'trapezoidal': TrapezoidalIntegrator,
                 'gear': Gear2Integrator,
-                'gear2': Gear2Integrator}[method]()
+                'gear2': Gear2Integrator,
+                'trbdf2': TRBDF2Integrator}[method]()
 
     ## Below this fraction of the seed, a solved period is the trivial
     ## root rather than an orbit.  Deliberately loose: a real fundamental
@@ -2707,6 +2723,103 @@ class PSS(Analysis):
             states.reverse()
             return w1, ts, states
         return w1
+
+    def _traverse_factored_trbdf2(self, x0_in, times, hs):
+        """One period under TR-BDF2, kept factored -- the m x m monodromy of
+        a SELF-STARTING one-step method.
+
+        ⚠ THIS IS NOT THE ONE-STEP PLAIN PATH WITH A DIFFERENT COMPANION.
+        The LMM paths (`_traverse_factored{,_plain}`) build the monodromy
+        from `_step_sensitivity`'s companion recursion
+        `S = sum_k a_k C_{n-k} P_{n-k} + b Pq`, which is the derivative of a
+        LINEAR-MULTISTEP update.  TR-BDF2 is a two-stage DIRK; its step is a
+        TR sub-step to the internal stage `Y1` at `t_n + gamma h` followed
+        by a BDF2-shaped stage to `Y2 = x_{n+1}`, and its per-step Jacobian
+        is a COMPOSITION of two implicit solves, not a companion sum.  So it
+        gets its own traversal and its own matvec, and reuses only the
+        factorisation and the reduced `(C, G)` evaluators.
+
+        ⚠ NO OPENER, NO PAIR.  The plain LMM monodromy is first-order
+        accurate on the LIMIT CYCLE despite trapezoidal being a
+        second-order method, because its opening manufacturing step is
+        order-dropped to Euler and that seam sits inside the period map (see
+        `_traverse_factored_plain`).  TR-BDF2 is self-starting: every step,
+        including the first, is the full two-stage method reading only
+        `x_n`.  There is no order-dropped opening and no `2m` solved-history
+        pair -- the map is `m x m` and second-order all the way round.  That
+        is the whole reason to carry a DIRK monodromy at all.
+
+        Differentiating the two stage residuals with respect to the entering
+        `x_n` (`C = dq/dx`, `G = di/dx`, both at the point named):
+
+            [C1 + (g h/2) G1] dY1 = [Cn - (g h/2) Gn] dxn
+            [C2 + a33 h G2]   dY2 = A1 C1 dY1 + A0 Cn dxn
+
+        so the per-step map stores `(lu1, B1, lu2, C1, Cn, A1, A0)` with
+        `lu1 = LU(C1 + (g h/2) G1)`, `B1 = Cn - (g h/2) Gn`,
+        `lu2 = LU(C2 + a33 h G2)`.  `C1` is at the internal stage `Y1`,
+        `Cn`/`Gn` at `x_n`, `C2`/`G2` at `x_{n+1}` -- three linearisation
+        points, which is why `_G_at` exists rather than the stored `Geq`.
+        Verified against the pencil `exp(mu T)` to eight figures on a linear
+        RC network in scratch before shipping (the "wrong integrator gives
+        plausible wrong numbers" trap).
+        """
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        tr = self._transient()
+        self._want_dfdh = False
+        self._want_lte = False
+        ## `_begin_run` (reached through `_begin_period`) is what SETS
+        ## `base_integrator`, so the check reads it AFTER the reset, not
+        ## before -- a fresh `Transient` has no integrator attribute yet.
+        self._begin_period(x0_in)
+        integ = tr.base_integrator
+        if not isinstance(integ, TRBDF2Integrator):
+            raise ValueError('_traverse_factored_trbdf2 needs a TR-BDF2 '
+                             'inner integrator, got %r' % (integ,))
+        g = integ.GAMMA
+        A1, A0, a33 = integ.A1, integ.A0, integ.STAGE_DIAG
+        iref = self.irefnode
+        x = copy(x0_in)
+        steps = []
+        for _j, t in enumerate(times[1:]):
+            h = hs[min(_j, len(hs) - 1)]
+            xn = x
+            x = copy(self.solve_timestep(xn, t, h))
+            Y1f = tr._trbdf2_Y1
+            Y1 = self.toolkit.concatenate((Y1f[:iref], Y1f[iref + 1:]))
+            Cn = np.asarray(self._C_at(xn))
+            Gn = np.asarray(self._G_at(xn))
+            C1 = np.asarray(self._C_at(Y1))
+            G1 = np.asarray(self._G_at(Y1))
+            C2 = np.asarray(self._C_at(x))
+            G2 = np.asarray(self._G_at(x))
+            lu1 = self._factorise(C1 + (g * h / 2.0) * G1)
+            lu2 = self._factorise(C2 + a33 * h * G2)
+            B1 = Cn - (g * h / 2.0) * Gn
+            steps.append((lu1, B1, lu2, C1, Cn, A1, A0))
+        self._want_dfdh = False
+        return steps, x
+
+    def _monodromy_matvec_trbdf2(self, steps, v):
+        """`M v` for the TR-BDF2 map, replaying the stored two-stage factors.
+
+        One column through the period: for each step, solve the TR stage for
+        `dY1`, then the BDF2 stage for `dY2`, and carry `dY2` forward as the
+        entering direction of the next step.  Real map (real `C`, `G`), so a
+        complex `v` splits into two real replays exactly, the same guard the
+        LMM matvecs use -- casting a complex `v` to float would silently
+        drop its imaginary part and return a wrong answer, not an error.
+        """
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return (self._monodromy_matvec_trbdf2(steps, v.real)
+                    + 1j * self._monodromy_matvec_trbdf2(steps, v.imag))
+        w = v.astype(float)
+        for lu1, B1, lu2, C1, Cn, A1, A0 in steps:
+            dY1 = lu1.solve(B1 @ w)
+            rhs = A1 * (C1 @ dY1) + A0 * (Cn @ w)
+            w = lu2.solve(rhs)
+        return w
 
     def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
                                      inject=None):
@@ -3950,6 +4063,48 @@ class PSS(Analysis):
         self._factored_period_cache = fp
         return fp
 
+    def factored_period_trbdf2(self, x0, T, npts):
+        """The TR-BDF2 factored period map about a periodic point `x0`.
+
+        Unlike `factored_period`, this takes the orbit's entering state and
+        period EXPLICITLY and integrates them under TR-BDF2 on a uniform
+        `npts`-step grid, returning the `m x m` monodromy as a
+        `FactoredPeriod(kind='trbdf2')`.  It is a monodromy builder, not a
+        solver: the caller supplies a converged `x0` (from a `PSS.solve`
+        under any method, or a known analytic orbit), and this linearises
+        the TR-BDF2 period map about it.
+
+        ⚠ WHY EXPLICIT, NOT A `method='trbdf2'` SOLVE.  The dense shooting
+        Newton in `solve` propagates its Jacobian through
+        `Integrator.companion_coefficients`, which a two-stage DIRK does not
+        have (`TRBDF2Integrator` raises for it by design).  Wiring TR-BDF2
+        into that Newton is a separate, larger change; the monodromy -- the
+        Floquet spectrum, which is what a DIRK's self-starting property buys
+        over trapezoidal's order-dropped opener -- stands on its own and is
+        delivered first.
+
+        ⚠ SELF-STARTING, SO NO TWIN.  `factored_period` delegates to
+        `monodromy_twin` because a one-step LMM's own monodromy is
+        first-order on a limit cycle.  TR-BDF2 has no order-dropped opening
+        step, so its monodromy is second-order without a Gear-2 twin -- the
+        point of the method here.  This does not consult `monodromy_twin`.
+        """
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        x0 = np.asarray(x0, dtype=float)
+        if x0.shape[0] == self.cir.n:
+            ## a full-size state was handed in -- reduce it
+            x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
+        times = np.linspace(0.0, float(T), int(npts) + 1)
+        hs = np.diff(times)
+        tr_saved = getattr(self, '_tran', None)
+        self._tran = self._new_transient(TRBDF2Integrator())
+        try:
+            steps, x_last = self._traverse_factored_trbdf2(x0, times, hs)
+        finally:
+            self._tran = tr_saved
+        return FactoredPeriod('trbdf2', None, steps, x_last, None,
+                              self, times=times, T=float(T))
+
     FLOQUET_DENSE_LIMIT = 400
     ## below this a multiplier is an annihilated algebraic
     ## direction, not a mode -- see `floquet_modes`
@@ -4596,6 +4751,23 @@ class PSS(Analysis):
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
 
+    def _G_at(self, x_reduced):
+        """The reduced conductance `di/dx` at a point, without taking a step.
+
+        The companion to `_C_at`.  The one-step-method monodromy needs the
+        PHYSICAL `(C, G)` at each stage point -- not the companion
+        `Geq = a h G` the accepted step happens to store -- because a
+        two-stage DIRK linearises `q` and `i` at THREE distinct points per
+        step (`x_n`, the internal stage, and `x_{n+1}`), each with its own
+        stage coefficient.  Recovering a physical `G` from a single stored
+        `Geq` would divide out only one of those coefficients and mislabel
+        the other two.
+        """
+        tr = self._transient()
+        G = tr.cir.G(self._insert_refnode(x_reduced), tr.epar)
+        (G,) = remove_row_col((G,), self.irefnode, self.toolkit)
+        return G
+
     def _traverse(self, x_in, T, times, hs, want_dT, open_at_x0=False):
         """One pass over the period, with the sensitivities accumulated.
 
@@ -4772,10 +4944,6 @@ class PSS(Analysis):
         meaning.
         """
         if getattr(self, '_tran', None) is None:
-            from pycircuit.circuit.transient import Transient
-            from pycircuit.circuit.integrator import (EulerIntegrator,
-                                                      TrapezoidalIntegrator,
-                                                      Gear2Integrator)
             ## ⚠ A MAPPING, not an if/else on 'euler'.  Written as
             ## `EulerIntegrator() if method == 'euler' else Trapezoidal...`
             ## it silently ran trapezoidal for every other name -- caught
@@ -4783,30 +4951,43 @@ class PSS(Analysis):
             ## trap's to the last digit.  This class has already paid once
             ## for a `method` that selected nothing; a dict raises KeyError
             ## on a name nobody wired.
-            integ = self._integrator_for(self.par.method)
-            self._tran = Transient(
-                self.cir, toolkit=self.toolkit, integrator=integ,
-                reltol=self.par.reltol, iabstol=self.par.iabstol,
-                vabstol=self.par.vabstol, maxiter=self.par.maxiter,
-                analysis=self.par.analysis,
-                lte_vabstol=self.par.lte_vabstol,
-                lte_iabstol=self.par.lte_iabstol,
-                TRTOL=self.par.TRTOL, relref=self.par.relref,
-                ## ⚠ THE SOLVER STRATEGIES GO THROUGH TOO, and they used not
-                ## to.  `nrsolver`, `linearsolver` and `scaler` are declared
-                ## on the base `Analysis`, so `PSS(cir, linearsolver=...)`
-                ## has always been ACCEPTED -- and then dropped here, with
-                ## the inner `Transient` resolving to `DenseSolver` /
-                ## `StandardNewton` whatever the caller asked for.  That is
-                ## the third time this class has taken a parameter it never
-                ## read (`method` declared and never read; `analysis='PSS'`
-                ## matching nothing), and the same shape each time: accepted
-                ## at the constructor, silently discarded at the boundary.
-                nrsolver=self.par.nrsolver,
-                linearsolver=self.par.linearsolver,
-                scaler=self.par.scaler)
-            self._tran.irefnode = self.irefnode
+            self._tran = self._new_transient(
+                self._integrator_for(self.par.method))
         return self._tran
+
+    def _new_transient(self, integ):
+        """A `Transient` on this circuit driven by `integ`, with every
+        strategy and tolerance PSS was given handed through.
+
+        Extracted so the TR-BDF2 monodromy can build a transient on a
+        DIFFERENT integrator than `self.par.method` without duplicating the
+        pass-through -- and so the pass-through cannot drift between the two
+        call sites.
+
+        ⚠ THE SOLVER STRATEGIES GO THROUGH TOO, and they used not to.
+        `nrsolver`, `linearsolver` and `scaler` are declared on the base
+        `Analysis`, so `PSS(cir, linearsolver=...)` has always been ACCEPTED
+        -- and then dropped here, with the inner `Transient` resolving to
+        `DenseSolver`/`StandardNewton` whatever the caller asked for.  That
+        was the third time this class took a parameter it never read
+        (`method` declared and never read; `analysis='PSS'` matching
+        nothing), and the same shape each time: accepted at the constructor,
+        silently discarded at the boundary.
+        """
+        from pycircuit.circuit.transient import Transient
+        tr = Transient(
+            self.cir, toolkit=self.toolkit, integrator=integ,
+            reltol=self.par.reltol, iabstol=self.par.iabstol,
+            vabstol=self.par.vabstol, maxiter=self.par.maxiter,
+            analysis=self.par.analysis,
+            lte_vabstol=self.par.lte_vabstol,
+            lte_iabstol=self.par.lte_iabstol,
+            TRTOL=self.par.TRTOL, relref=self.par.relref,
+            nrsolver=self.par.nrsolver,
+            linearsolver=self.par.linearsolver,
+            scaler=self.par.scaler)
+        tr.irefnode = self.irefnode
+        return tr
 
     def _begin_period(self, x_reduced):
         """Start one traversal of the period from a clean integrator state.

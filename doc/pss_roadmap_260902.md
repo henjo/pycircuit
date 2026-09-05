@@ -6235,3 +6235,55 @@ session's report.
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
 concurrent run moved readings 25-30% on the *same* configuration.
+
+---
+
+## TR-BDF2 (a two-stage DIRK alongside the LMM tree), 2026-09-05
+
+The integrator tree was three linear multistep methods (Euler, trapezoidal, Gear-2). TR-BDF2
+is the first STAGE method: a trapezoid sub-step to an internal stage at `t_n + gamma h`
+(`gamma = 2 - sqrt(2)`), then a BDF2-shaped stage to `x_{n+1}`, two Newton solves sharing one
+factorisation (`a22 == a33`). L-stable, order 2, self-starting.
+
+T1. **Fixed-step transient first** (committed 1318db9). `TRBDF2Integrator` is NOT an LMM and
+   the ABC's companion-recursion contract does not fit it: `compute_derivatives`,
+   `companion_coefficients`, `companion_dT`, `compute_lte` all raise with reasons rather than
+   return a plausible-but-wrong LMM companion. The step lives in `Transient._solve_timestep_trbdf2`,
+   dispatched by an `isinstance` check; `_solve` refuses a non-fixed grid (the embedded 2(3)
+   estimator is item T3, not built). Verified order 2 on the analytic RC step.
+
+T2. **The shooting monodromy is its own map, `m x m`, no opener, no pair** (this increment).
+   ⚠ THE ONE-STEP PLAIN PATH IS THE WRONG TEMPLATE. `_step_sensitivity`'s recursion
+   `S = sum_k a_k C_{n-k} P_{n-k} + b Pq` differentiates a LINEAR-MULTISTEP update; a two-stage
+   DIRK's per-step Jacobian is a COMPOSITION of two implicit solves, not a companion sum.
+   Differentiating the two stage residuals w.r.t. the entering `x_n`:
+
+       [C1 + (g h/2) G1] dY1 = [Cn - (g h/2) Gn] dxn
+       [C2 + a33 h G2]   dY2 = A1 C1 dY1 + A0 Cn dxn
+
+   so the step stores `(lu1, B1, lu2, C1, Cn, A1, A0)` and the matvec is two back-substitutions.
+   THREE linearisation points per step (`x_n`, the internal stage `Y1`, `x_{n+1}`), each with its
+   own stage coefficient -- which is why `_G_at` had to exist: recovering a physical `G` from the
+   accepted step's stored `Geq = a h G` divides out one coefficient and mislabels the other two.
+
+   ⚠ WHY THIS EARNS ITS KEEP. Trapezoidal is a second-order method whose SHOOTING monodromy is
+   FIRST-order on a limit cycle: its opening manufacturing step is order-dropped to Euler and that
+   seam sits inside the period map (see `_traverse_factored_plain`, `monodromy_twin`, the B16
+   decision). TR-BDF2 is self-starting -- every step, first included, is the full two-stage method
+   reading only `x_n` -- so there is no opener seam and the monodromy stays second-order without a
+   Gear-2 twin. Measured against the pencil `exp(mu T)` on a source-free RC network: eigenvalue
+   error falls at ratio ~4.0 per grid doubling (100/200/400 pts), and the full monodromy matrix
+   matches `expm(A T)` in the 2-norm at the same ratio. A first-order map would halve, not quarter.
+
+   ⚠ DELIVERED AS `factored_period_trbdf2(x0, T, npts)`, NOT `method='trbdf2'` in `solve`. The
+   dense shooting Newton propagates its Jacobian through `companion_coefficients`, which the DIRK
+   does not have; wiring TR-BDF2 into that Newton is a separate, larger change. The monodromy --
+   the Floquet spectrum, which is the whole reason to carry a DIRK here -- stands on its own and
+   goes first. Verified against the pencil in scratch BEFORE the formal test (the "wrong integrator
+   gives plausible wrong numbers" trap).
+
+T3. **Open: the adjoint transpose and the adaptive estimator.** `matvec_transposed` on a
+   `kind='trbdf2'` FactoredPeriod refuses loudly rather than fall through to the plain one-step
+   transpose (the wrong map), so `ppv`/`pnoise`/PAC over TR-BDF2 are not yet available. The
+   embedded 2(3) estimator with the `(I - h d J) Est = est` fix (matrix already factored), FSAL,
+   K=1/2, and step control -- Hosea & Shampine -- is the next increment.

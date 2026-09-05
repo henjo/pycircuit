@@ -12367,3 +12367,71 @@ def test_the_sideband_gate_rejects_the_endpoint_and_the_unconjugated_fold():
     assert abs(unconj - np.conj(unconj)) > 1e-3 * abs(unconj), \
         'l=-1 has a real-only coefficient here, so the conjugate mutation ' \
         'is invisible on this fixture -- pick one with a phase'
+
+
+def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
+    """TR-BDF2's `m x m` monodromy is second-order on the exact Floquet
+    spectrum, and self-starting -- no order-dropped opener seam.
+
+    On a source-free RC network the period map is the homogeneous flow
+    `exp(A T)` with `A = -C^-1 G` (reduced), whose eigenvalues are known in
+    closed form from the pencil `(C, G)`.  `PSS.factored_period_trbdf2`
+    builds the TR-BDF2 monodromy as a factored replay; densifying it and
+    comparing its eigenvalues to `exp(mu T)` checks BOTH that the map is the
+    right one and that its error falls as `O(h^2)`.
+
+    ⚠ THE POINT IS THE ORDER, NOT MERELY THE MATCH.  Trapezoidal is a
+    second-order method whose SHOOTING monodromy is first-order on a limit
+    cycle, because its opening manufacturing step is order-dropped to Euler
+    and that seam lives inside the period map (see `_traverse_factored_plain`
+    and `monodromy_twin`).  TR-BDF2 is a self-starting one-step DIRK: every
+    step, including the first, is the full two-stage method, so there is no
+    opener and the monodromy stays second-order.  The error-ratio assertion
+    is what distinguishes the two -- a first-order map would halve, not
+    quarter, per grid doubling.
+    """
+    circuit.default_toolkit = circuit.numeric
+
+    cir = SubCircuit()
+    cir['R1'] = R(1, 2, r=1e4)
+    cir['R2'] = R(2, gnd, r=2e4)
+    cir['C1'] = C(1, gnd, c=1e-8)
+    cir['C2'] = C(2, gnd, c=3e-8)
+
+    pss = PSS(cir)
+    m = cir.n - 1
+    x0 = np.zeros(m)                      # linear: monodromy is x0-independent
+    Cr = np.asarray(pss._C_at(x0))
+    Gr = np.asarray(pss._G_at(x0))
+    A = -np.linalg.solve(Cr, Gr)
+    mu = np.linalg.eigvals(A)
+    T = 5e-4
+    exact = np.sort(np.exp(mu * T).real)
+
+    def dense_M(fp):
+        M = np.zeros((m, m))
+        for k in range(m):
+            e = np.zeros(m); e[k] = 1.0
+            M[:, k] = fp.matvec(e)
+        return M
+
+    errs = {}
+    for npts in (100, 200, 400):
+        fp = pss.factored_period_trbdf2(x0, T, npts)
+        assert fp.kind == 'trbdf2'
+        assert fp.width == m
+        lam = np.sort(np.linalg.eigvals(dense_M(fp)).real)
+        errs[npts] = float(np.max(np.abs(lam - exact)))
+
+    ## second order: each doubling quarters the error (allow margin)
+    assert errs[100] / errs[200] > 3.5, errs
+    assert errs[200] / errs[400] > 3.5, errs
+    ## and the absolute error is already small at the coarsest grid
+    assert errs[100] < 1e-5, errs
+
+    ## the adjoint surface is a deliberate follow-up: refuse loudly rather
+    ## than fall through to the plain one-step transpose (the WRONG map for
+    ## a two-stage DIRK)
+    fp = pss.factored_period_trbdf2(x0, T, 100)
+    with pytest.raises(NotImplementedError, match='TR-BDF2'):
+        fp.matvec_transposed(np.ones(m))
