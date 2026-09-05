@@ -3234,16 +3234,27 @@ not exist at index ≥ 2 (L-I cutset, C-V loop); the review session showed from 
 exists it is the exact reduced generator (`eig(−G_red, C[D,NZ])` = the finite generalised eigenvalues
 of `(C, G)` to `1e-12`) and that it is undefined on `li_plus_rc` / `cv_plus_rc`. The propagation now
 warns once with the reason and falls back to the full `G` (first order there, as the fill already is),
-pinned on an autonomous L-I-cutset oscillator that `PSS` solves. **The fallback's cost is measured
-where it can be, and that is not where it matters:** against the exact adjoint (that oscillator is van
-der Pol with its inductor split; `c_true = 8.045797e-08` at `μ = 1`) it gives `c/c_true` 0.99945 /
-0.99986 / 0.99997 at 240/480/960 — second order, indistinguishable from plain van der Pol — because the
-fixture's rows are in quadrature and the dropped term averages out (§D 0b, again). A non-isochronous
-index-2 oscillator would price it; none is built. The review session notes that Weierstrass does not
-care about index — `ordqz` returns the finite spectrum of `li_plus_rc` / `cv_plus_rc` untouched — so a
-LINEAR index-2 reference exists for driven circuits, and that März 1995 (on disk) is the projector-chain
-construction for the nonlinear case, pointed at, not recommended. The fill's per-sample warning is now
-one per `ppv` call. **What is still open is only the raw block's `3e-11` exactness on the divider's
+pinned on autonomous index-2 oscillators that `PSS` solves. **The fallback is PRICED on the fixtures
+that can see the dropped term** — the non-isochronous core (rows not in quadrature) with each index-2
+topology added, so the ODE and its exact `c_true = 5.3703e-06` are unchanged:
+
+    index-1 consistent object            c/c_true  0.99825 / 0.99957 / 0.99992   (400/800/1600)
+    L-I cutset (tank inductor split)               0.99822 / 0.99956 / 0.99991
+    C-V loop (tank cap split to a bias rail)       0.99853 / 0.99964 / 0.99993
+
+second order on all three, the fallback within `3e-4` of the index-1 object and under its own
+discretisation error at every grid. **The guard is the whole answer at index 2, both topologies, and
+the März projector chain comes off the roadmap.** (An earlier attempt on plain van der Pol with its
+inductor split read 8e-5 and was BLIND — an inert added structure with rows in quadrature can prove
+harmlessness and nothing else; the review session named that limitation and both halves of the pricing
+fixture.) ⚠ The C-V loop cell first read EMPTY — `NoConvergenceError` at every grid — because the seed
+held the bias node at 0 V against a 1 V source; seeded at the source value it converges everywhere with
+the index-1 periods to all digits. A fourth partition outcome: "the cell reads empty because the
+instrument was mis-set", worth one seed check before recording an empty cell. The review session's
+pencil identity stands as the closed-form reason the complement is exact where it exists, and
+Weierstrass giving the finite spectrum untouched at index 2 (`ordqz` on `li_plus_rc` / `cv_plus_rc`)
+remains the linear reference for driven circuits. The fill's per-sample warning is now one per `ppv`
+call. **What is still open is only the raw block's `3e-11` exactness on the divider's
 node rows.** Also structural: the consistent object is ZERO on the algebraic
 COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full suite's Demir-(24) gate
 caught it, the targeted subset had not).
