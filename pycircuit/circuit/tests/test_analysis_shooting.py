@@ -11862,3 +11862,83 @@ def test_B16_the_oscillator_monodromy_is_gear_s_whatever_the_state_method():
     _c3, p3 = solve('euler')
     with pytest.raises(RuntimeError, match='did not converge'):
         p3.ppv()
+
+
+def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
+    """✅ A9's open question, closed by a POSITION test (2026-09-05).
+
+    `pnoise` exceeds the phase-only prediction `P_c f0^2 c / df^2` by 16%
+    at `df/f0 = 1e-2` on van der Pol at Q = 8, and the question was what
+    the excess is.  The review session proposed testing its POSITION
+    rather than its size: the amplitude mode's sideband is a Lorentzian of
+    half-width `f0/(2 pi Q_lambda)` and the phase part is `1/df^2`, so
+    their ratio `E(df)` is a STEP with its half-rise at that corner,
+    moving as `1/Q_lambda`, saturating where AM equals PM (E = 1).
+
+    Measured over Q = 4..32 (an 8x range): the corner moves as
+    `Q_lambda^-1.03`; a Lorentzian step ALONE fits badly (rms 0.05-0.13,
+    corner 1.4x off), a step PLUS a term linear in `df/f0` fits to rms
+    0.003 with the corner at 1.02-1.12x the prediction (converging to 1
+    with Q), `E_inf = 1.01`, and a Q-INDEPENDENT linear coefficient of
+    1.74 / 1.81 / 1.83 / 1.84.  A term linear in `df` against a `1/df^2`
+    part is a `1/df` piece of the spectrum -- the shape Traversa &
+    Bonani's phase-orbital correlation term carries.  That attribution is
+    by shape and Q-scaling only, not derived: recorded as such.
+
+    Gated at Q = 8 and Q = 32 on the two-term fit: the corner within 20%
+    of `f0/(2 pi Q_lambda)`, `E_inf` within 10% of 1, and the corner ratio
+    between the two Q values within 15% of the `1/Q_lambda` prediction.
+    """
+    import warnings
+    from scipy.optimize import least_squares
+    circuit.default_toolkit = circuit.numeric
+    ks = np.logspace(-3, -0.5, 14)
+    out = {}
+    for Q in (8.0, 32.0):
+        mu = 1.0 / (2.0 * np.pi * Q)
+        T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+        npts = 400 if Q < 16 else 800
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                      maxiterations=300)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        f0 = 1.0 / float(pss.period)
+        ov = [str(n) for n in cir.nodes].index('v')
+        c = float(pac.diffusion_constant(pss))
+        Ql = float(pss.ppv()[1]['Q'])
+        X = np.asarray(pss.waveform[1], dtype=float)[ov][:-1]
+        A1 = 2.0 * abs(np.fft.rfft(X)[1]) / len(X)
+        Pc = 0.5 * A1 * A1
+        E = np.array([float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov)[0]))
+                      / Pc * k * k / c - 1.0 for k in ks])
+        pred = 1.0 / (2.0 * np.pi * Ql)
+        fit = least_squares(
+            lambda q: q[0] * ks ** 2 / (ks ** 2 + q[1] ** 2) + q[2] * ks - E,
+            x0=[1.0, pred, 0.5], bounds=([0, 1e-5, -10], [10, 1, 10]))
+        Einf, kc, b = fit.x
+        rms = float(np.sqrt(np.mean(fit.fun ** 2)))
+        assert rms < 0.02, 'Q=%g: the step-plus-linear form misfits E by ' \
+            'rms %.3f' % (Q, rms)
+        assert abs(kc / pred - 1.0) < 0.2, \
+            'Q=%g: the corner sits at %.2fx f0/(2 pi Q_lambda); the ' \
+            'excess is not the amplitude mode' % (Q, kc / pred)
+        assert abs(Einf - 1.0) < 0.1, \
+            'Q=%g: the excess saturates at %.2f, not at AM = PM' % (Q, Einf)
+        out[Q] = (Ql, kc, b)
+    r = (out[8.0][1] / out[32.0][1]) / (out[32.0][0] / out[8.0][0])
+    assert abs(r - 1.0) < 0.15, \
+        'the corner moved by %.2fx the 1/Q_lambda prediction between Q = 8 ' \
+        'and Q = 32' % r
+    assert abs(out[8.0][2] / out[32.0][2] - 1.0) < 0.1, \
+        'the linear term is not Q-independent: %.2f vs %.2f' \
+        % (out[8.0][2], out[32.0][2])
