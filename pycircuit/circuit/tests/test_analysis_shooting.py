@@ -784,18 +784,20 @@ def test_pss_method_selection_cannot_fall_through_silently():
     """
     from pycircuit.circuit.integrator import (EulerIntegrator,
                                               TrapezoidalIntegrator,
-                                              Gear2Integrator, TRBDF2Integrator)
+                                              Gear2Integrator, TRBDF2Integrator,
+                                              RadauIIA3Integrator)
     circuit.default_toolkit = circuit.numeric
     want = {'euler': EulerIntegrator, 'trap': TrapezoidalIntegrator,
             'trapezoidal': TrapezoidalIntegrator,
             'gear': Gear2Integrator, 'gear2': Gear2Integrator,
-            'trbdf2': TRBDF2Integrator}
+            'trbdf2': TRBDF2Integrator, 'radau': RadauIIA3Integrator}
     for name, cls in want.items():
         tr = PSS(_q20_rlc(), method=name)._transient()
         assert isinstance(tr.par.integrator, cls), \
             'method=%r selected %s' % (name, type(tr.par.integrator).__name__)
 
-    with pytest.raises(ValueError, match="'euler', 'trap', 'gear' or 'trbdf2'"):
+    with pytest.raises(ValueError,
+                       match="'euler', 'trap', 'gear', 'trbdf2' or 'radau'"):
         PSS(_q20_rlc(), method='bdf3').solve(period=1e-3, timestep=1e-5,
                                              maxiterations=2)
 

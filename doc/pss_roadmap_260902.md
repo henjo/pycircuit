@@ -6507,3 +6507,86 @@ T11. **pnoise is now NATIVE over TR-BDF2** (the "advanced substantial extension"
    Still refusing over TR-BDF2: the FORWARD `_forced_replay` (PAC.solve forward) -- its forward
    fold has the same three-abscissa structure and is not yet validated; out of scope for pnoise,
    which needs only the reverse path.
+
+---
+
+## Radau IIA(3) across the PSS stack — order 5, fully implicit, 2026-09-06
+
+Radau IIA 3-stage added the way TR-BDF2 was, one validated commit at a time. Where
+TR-BDF2 earns its place by the failure modes it lacks (order 2, but no opener seam, no
+`(-1)^n` mode, no step-ratio limit), Radau earns its place by **coverage and accuracy**:
+order 5, stage order 3, L-stable, stiffly accurate, and `det A = 1/60 != 0` — the one
+candidate the H&W VI.2 Thm 2.3 index-1 DAE convergence result actually covers (a singular
+`A`, any explicit-first-stage DIRK included, is not).
+
+**The tableau (gate R1).** `c = [2/5 - √6/10, 2/5 + √6/10, 1]` (the two interior Radau
+points and the stiffly-accurate endpoint), `A` the 3×3 collocation matrix, `b` = last row
+of `A`. Constants DERIVED from √6 in the class, not transcribed, and self-checked against
+the reference relations: row sums == c, det A == 1/60, B(1..5) (order 5), C(1..3) (stage
+order 3), R(∞) == 1 - bᵀA⁻¹1 == 0 (L-stable), stiff accuracy (b == A[-1], c₃ == 1), and
+eig(A⁻¹) == the stored cost-transform eigenvalues (one real γ_r = 3.6378, one pair
+α±iβ = 2.6811 ± 3.0504i). All to machine precision.
+
+**The step is FULLY IMPLICIT — one coupled 3n solve, no DIRK shortcut.** The three stages
+couple into ` J_block[i][j] = δ_ij C(Y_i) + h A_ij G(Y_j)` (= `I₃⊗C + h A⊗G` in the linear
+case); `x_{n+1} == Y₃` by stiff accuracy. `Transient._solve_timestep_radau` solves it with
+a dense coupled Newton. The `A⁻¹`-eigenbasis transform (1 real + 1 complex LU, needing the
+complex `klu_z_*` binding) is the documented EFFICIENCY follow-up — the coupled real solve
+is correct and, for the small circuits here, cheap. Gate: order 5 on the analytic RC step
+through the real loop — ratios 30.6/31.1/31.5 → 32 per doubling.
+
+⚠ **LIMITING IS LOAD-BEARING, and the pnoise cross-check is what found it.** The hand-rolled
+coupled Newton first shipped WITHOUT junction limiting (TR-BDF2 gets it free — each stage
+runs through `self._newton`). Without it the diode Newton overshoots the exponential and
+settles on a spurious near-linear solution: a diode mixer came out a PURE SINUSOID
+(H0,H2,H3 ~1e-16 against the reference's 0.39/0.18/0.046), and it reported `converged`.
+Found ONLY because pnoise was validated against gear (a reference the Radau path cannot
+influence) rather than self-consistency — the sideband rows for l≠0 were ~1e-12 and even
+agreed with a brute-force forward of the SAME (wrong) discrete model. Fixed by
+`cir.limit(Y_trial, Y_prev)` per stage per iteration; Radau transient then matches gear's
+rectified spectrum to the digit. The lesson is §0j again: a self-consistent instrument
+(adjoint == transpose of my own forward) proves nothing about physical correctness.
+
+**The factored shooting monodromy (gate R2).** `_traverse_factored_radau` stores one dense
+`3m×3m` factor + `Cn` per step; the matvec stacks `[Cn v; Cn v; Cn v]`, solves, and reads
+the third `m`-block. Self-starting, so the map is `m×m` and order-5 round the whole period
+— no opener, no solved-history pair. `_monodromy_matvec_transposed_radau` gives
+`Cnᵀ(p₁+p₂+p₃)` with `p = J⁻ᵀ[0;0;w]`; `ts[j]` keeps the full `3m` coupled solve for the
+fold. Gate (same source-free RC as the TR-BDF2 pencil test): eigenvalues vs `exp(μT)` —
+1.5e-9 at 25 pts, ratios 31.3/31.6 → 32, and the adjoint is the exact transpose (4.6e-16).
+
+**`method='radau'` in the dense shooting Newton (gate R3).** `_traverse_radau` propagates
+the dense monodromy `P` and, for the free-period system, the period column `Pt = dx/dT`
+from d/dT of the stage residuals (`h_j = frac_j T`). `func_radau`/`func_autonomous_radau`
+mirror the TR-BDF2 pair. `_companion_reach`, the method whitelist, `x0_unknown` forcing,
+`_want_lte`, and `monodromy_twin`'s self-sufficient set all learn `'radau'` (a self-starting
+method reads its own native map, no twin). Gates: dense `P` vs FD 1.4e-7 and `Pt` vs FD
+2.4e-5 on van der Pol (the dT column checked before use — §0j, wrong twice before); driven
+RC PSS fundamental matches AC to <1e-3 and spectral radius to exp(-T/τ) at 1e-6; autonomous
+van der Pol converges to gear's period to <1e-3 with a unit multiplier.
+
+**The whole small-signal stack rides on the factored map, without a twin.**
+- ppv/diffusion/oscillator_spectrum: the dense width-m stage map gets its spectrum by m
+  matvecs + eigvals (the Arnoldi mis-resolves the unit-root cluster), and the coupled forced
+  adjoint `_forced_replay_transposed_radau` (W^T xa) carries the source through all three
+  stages — `acc += -h Σ_k exp(jw t_{n,k}) Σ_i A_ik p_i`, verified EXACT by dual consistency
+  `<xa, W u> == <Wᵀxa, u>` to 7.7e-16. Gate: c and the lineshape match gear on van der Pol.
+- covariance/oscillator_covariance: `_lyapunov_pieces_radau` reuses the SAME
+  `_vanloan_step_injection` (the exact continuous per-step Van Loan integral is
+  method-independent); only the transition A_n changes. On an LTI RC the injection is exact,
+  so the covariance error is the transition's order — O(h²) for TR-BDF2, O(h⁵) for Radau:
+  measured ~30x per doubling, ~1e-9 at 100 pts, >20x closer than gear.
+- pnoise: `_sideband_forced_radau` is the coupled three-vector fold (no `A⊗B` shortcut),
+  the injected sibling of the forced adjoint; injection AFTER the costate update (causality).
+  Gate: linear divider == AC-noise to <1e-6 (stops on the ratio test); diode mixer folds >5
+  sidebands and lands on gear to <5e-3.
+
+**The one deferred parity piece: adaptive step control.** The embedded 5(3) estimate needs
+the radau5 `dd` weights (a published constant with a free parameter fixed for L-stability);
+the FILTER is known (the transform's real factor) but reconstructing the weights from memory
+risks shipping a wrong instrument, which §0j forbids. DEFERRED, not guessed:
+`_solve_timestep_radau` raises under the (never-set) want-est guard, and `_solve` refuses the
+adaptive grid for Radau (fixed_timestep=True, or TR-BDF2). It would be built the way
+TR-BDF2's 2(3) estimate was — derive, then validate the estimate/true-LTE ratio → 1 and the
+adaptive-reltol gate — before it is trusted. Also still deferred (shared with TR-BDF2): the
+FORWARD `_forced_replay` (PAC.solve forward), out of scope for pnoise's reverse path.
