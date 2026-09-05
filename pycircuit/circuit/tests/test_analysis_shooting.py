@@ -11688,3 +11688,46 @@ def test_the_cyclostationarity_probes_lie_on_the_orbit():
     ov = [str(n) for n in cir.nodes].index('v')
     S = pac.pnoise(pss, 1.01 / pss.period, ov)[0]   # must not refuse
     assert np.all(np.isfinite(np.real(np.asarray(S))))
+
+
+def test_the_consistent_propagation_names_its_index_2_boundary():
+    """⚠ `G[A,Z]` NONSINGULAR *IS* THE INDEX-1 CONDITION, so the Schur
+    complement in the pair-consistent propagation does not exist at index
+    2.  An L-I cutset (the tank inductor split through a node that sees
+    only inductors) is an autonomous index-2 oscillator that `PSS` solves;
+    `ppv` must run, warn ONCE with the reason, and return finite samples --
+    first order there, as the algebraic fill already is.  Boundary named
+    by the review session from the pencil (2026-09-05): `eig(-G_red,
+    C[D,NZ])` equals the finite generalised eigenvalues of `(C, G)` to
+    1e-12 on the series-loss tank, and the reduction is undefined on
+    `li_plus_rc` and `cv_plus_rc`.
+    """
+    import warnings
+    from pycircuit.circuit.shooting import topological_index
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir.add_node('w')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L1'] = L('v', 'w', L=0.5)
+    cir['L2'] = L('w', gnd, L=0.5)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    assert topological_index(cir)[0] == 2
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(cir.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.66, timestep=6.66 / 240, x0=x0, maxiterations=200)
+    assert pss.converged
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        _v, info = pss.ppv()
+    mine = [x for x in w if 'index > 1' in str(x.message)]
+    assert len(mine) == 1, \
+        'the consistent propagation must warn exactly once at index 2; ' \
+        'got %d' % len(mine)
+    assert np.all(np.isfinite(info['samples']))
+    assert np.isfinite(PAC(cir, toolkit=circuit.numeric).diffusion_constant(pss))

@@ -3411,9 +3411,36 @@ class PSS(Analysis):
                                   dtype=int)
                     _NZ = np.array([j for j in range(m) if j not in _alg_cols],
                                    dtype=int)
-                    _Gred = (_Gj[np.ix_(_D, _NZ)]
-                             - _Gj[np.ix_(_D, _Zc)] @ np.linalg.solve(
-                                 _Gj[np.ix_(_A, _Zc)], _Gj[np.ix_(_A, _NZ)]))
+                    ## ⚠ AND `G[A,Z]` NONSINGULAR *IS* THE INDEX-1 CONDITION.
+                    ## At index >= 2 (an L-I cutset, a C-V loop) it is
+                    ## singular by definition and the algebraic variables
+                    ## come from a differentiation, not a solve; the
+                    ## complement does not exist.  Same shape as the fill
+                    ## above: warn once with the reason and fall back to
+                    ## the full-`G` propagation, which is then first order.
+                    ## (Boundary named by the review session from the
+                    ## pencil: `eig(-G_red, C[D,NZ])` equals the finite
+                    ## generalised eigenvalues of `(C, G)` to 1e-12 on the
+                    ## series-loss tank, and the reduction is undefined on
+                    ## `li_plus_rc` and `cv_plus_rc`.)
+                    try:
+                        if len(_alg_rows) != len(_alg_cols):
+                            raise np.linalg.LinAlgError('not square')
+                        _Gred = (_Gj[np.ix_(_D, _NZ)]
+                                 - _Gj[np.ix_(_D, _Zc)] @ np.linalg.solve(
+                                     _Gj[np.ix_(_A, _Zc)], _Gj[np.ix_(_A, _NZ)]))
+                    except np.linalg.LinAlgError:
+                        if _j == 0:
+                            warnings.warn(
+                                'PSS.ppv: the algebraic block G[A,Z] is '
+                                'singular (index > 1: an L-I cutset or a '
+                                'C-V loop), so the pair-consistent '
+                                'propagation cannot eliminate the algebraic '
+                                'state and falls back to the full G -- the '
+                                'PPV samples are then FIRST order in the '
+                                'step, as they are for the algebraic fill.',
+                                RuntimeWarning, stacklevel=2)
+                        _Gred = _Gj[np.ix_(_D, _NZ)]
                     _corr = np.zeros(m)
                     _corr[_NZ] = (_Cj[np.ix_(_D, _NZ)]
                                   + _hs[_j] * _Gred).T @ _z[_D]
