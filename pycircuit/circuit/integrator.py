@@ -661,31 +661,43 @@ class TRBDF2Integrator(Integrator):
     matrix (``a22 == a33``): one factorisation per step, two solves.  Stiffly
     accurate by construction (``b`` is the last row of ``A``), so ``R(inf)=0``.
 
-    ⚠ ONE QUADRATIC, REACHED FROM THREE DIFFERENT REQUIREMENTS -- so
+    ⚠ ONE QUADRATIC, REACHED FROM FOUR DIFFERENT REQUIREMENTS -- so
     ``gamma`` is not merely a cost constant.  Writing
     ``Q(gamma) = gamma^2 - 4 gamma + 2`` (whose root in ``(0,1)`` is
-    ``2 - sqrt(2)``), the following all reduce to ``Q`` (verified
-    symbolically, and the framing corrected 2026-09-05: these are the SAME
-    quadratic, not independent conditions):
+    ``2 - sqrt(2)``), each of the following is ``Q`` TIMES A FACTOR THAT
+    DOES NOT VANISH ON ``(0,1)`` -- which is the load-bearing statement,
+    because it makes ``Q = 0`` the ONLY solution of each, not merely one
+    (verified symbolically here; the constants below are the factors'
+    values at the root):
 
-      * the ONE-LU condition ``a33 - gamma/2 = Q / (2(gamma-2))`` -- zero iff
-        ``Q = 0``;
+      * the ONE-LU condition ``a33 - gamma/2 = Q / (2(2-gamma))`` -- zero iff
+        ``Q = 0`` (factor 0.354);
       * BANK et al. 1985 (eq. 38) give the principal truncation coefficient
         ``C(gamma) = (-3 gamma^2 + 4 gamma - 2)/(12(2-gamma))``, whose
-        derivative is ``Q / (4 (2-gamma)^2)`` -- extremal iff ``Q = 0``, and
-        ``C(2-sqrt2) = 2/3 - sqrt(2)/2 ~ -0.0404`` equals the embedded
-        estimator's leading coefficient ``(4 - 3 sqrt2)/6`` (this file's own
-        derivation, reached independently);
+        derivative is ``Q / (4 (2-gamma)^2)`` -- extremal iff ``Q = 0``
+        (factor 0.125) -- and ``C(2-sqrt2) = 2/3 - sqrt(2)/2 ~ -0.0404``
+        equals the embedded estimator's leading coefficient
+        ``(4 - 3 sqrt2)/6`` (this file's own derivation, reached
+        independently);
       * ROSENBROCK 1963 (Comput. J. 5(4), eq. 29) fixes the equal stage
         diagonal ``d = gamma/2`` by ``d^2 - 2d + 1/2 = 0``, which is
-        ``Q/4 = 0``.
+        ``Q/4 = 0``;
+      * the RADIUS OF ABSOLUTE MONOTONICITY ``R(A,b) = 2(2-gamma) /
+        (1 + (1-gamma)^2)`` (Bonaventura & Della Rocca 2015) has derivative
+        ``2 Q / (1 + (1-gamma)^2)^2`` -- extremal iff ``Q = 0`` (factor
+        1.457) -- and is MAXIMISED there at ``1 + sqrt(2) ~ 2.414``, against
+        trapezoid's ``2`` and backward Euler's ``inf``.  Verified here from
+        the Kraaijevanger 1991 definition directly (validated on CN = 2 and
+        BE = inf first); it means TR-BDF2 tolerates a ~21% larger step than
+        trapezoidal before monotonicity/positivity/TVD can fail.
 
-    Three structurally unrelated requirements -- one LU, minimal truncation,
-    L-stability of a linearly implicit process -- landing on one quadratic
-    is a strong reason to trust the constant, stronger than any one alone.
-    (TR-BDF2 is L-stable for EVERY gamma -- ``R(inf) = 0`` identically -- so
-    L-stability alone selects nothing; it is the equal-diagonal condition
-    within Rosenbrock's family that gives ``Q``.)
+    Four structurally unrelated requirements -- one LU, minimal truncation,
+    L-stability of a linearly implicit process, maximal monotonicity radius
+    -- all extremal at the one quadratic is a strong reason to trust the
+    constant, stronger than any one alone.  (TR-BDF2 is L-stable for EVERY
+    gamma -- ``R(inf) = 0`` identically -- so L-stability alone selects
+    nothing; it is the equal-diagonal condition within Rosenbrock's family
+    that gives ``Q``.)
 
     ⚠ CONVENTION: this is BANK / HOSEA & SHAMPINE's ``gamma`` (the stage
     ABSCISSA ``c2 = 2 - sqrt(2) ~ 0.586``), NOT Kennedy & Carpenter's or

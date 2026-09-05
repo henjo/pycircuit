@@ -6367,10 +6367,15 @@ T6. **Still open: the DRIVEN forced surfaces.** `covariance`, `pnoise`, and PAC'
    two-stage forward forced replay is the remaining derivation. Autonomous noise (the oscillator
    case, T5) is unaffected and complete.
 
-   ⚠ THE `gamma` CONSTANT: one quadratic `Q(gamma) = gamma^2 - 4gamma + 2`, reached from three
-   different requirements (verified symbolically; the docs session's first "three independent legs"
-   framing was corrected -- they are the SAME quadratic). The one-LU condition is `Q=0`; Bank
-   eq.38's truncation `dC/dgamma` numerator is `Q`; Rosenbrock 1963's equal-diagonal L-stability
-   condition `d^2-2d+1/2` (d=gamma/2) is `Q/4`. TR-BDF2 is L-stable for EVERY gamma
-   (`R(inf)=0` identically), so L-stability alone selects nothing -- the equal-diagonal condition
-   is what gives Q. All in the integrator docstring.
+   ⚠ THE `gamma` CONSTANT: one quadratic `Q(gamma) = gamma^2 - 4gamma + 2`, reached from FOUR
+   different requirements (verified symbolically here; the docs session's first "three independent
+   legs" framing was corrected -- they are the SAME quadratic, each `Q` times a factor NONVANISHING
+   on (0,1), which is what makes `Q=0` the ONLY solution not merely one): one-LU
+   `a33-gamma/2 = Q/(2(2-gamma))` (a one-char sign fix vs the first ad159a2 docstring); Bank eq.38
+   `dC/dgamma = Q/(4(2-gamma)^2)`; Rosenbrock 1963 `d^2-2d+1/2 = Q/4` (d=gamma/2); and the radius of
+   absolute monotonicity `R(A,b)=2(2-gamma)/(1+(1-gamma)^2)` (Bonaventura & Della Rocca 2015),
+   `dR/dgamma = 2Q/(1+(1-gamma)^2)^2`, MAX `1+sqrt2` at the root -- verified here from the
+   Kraaijevanger 1991 definition (validated on CN=2, BE=inf first); TR-BDF2 tolerates a ~21% larger
+   step than trapezoid before monotonicity/positivity/TVD can fail. TR-BDF2 is L-stable for EVERY
+   gamma (`R(inf)=0` identically), so L-stability alone selects nothing. All in the integrator
+   docstring.
