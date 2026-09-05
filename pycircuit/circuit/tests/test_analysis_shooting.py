@@ -12815,6 +12815,43 @@ def test_phase_noise_stack_works_over_trbdf2():
     assert np.max(np.abs(L_t - L_g)) < 0.05, (L_t, L_g)
 
 
+def test_phase_noise_stack_works_over_radau():
+    """ppv, the diffusion constant, and the oscillator spectrum all run over
+    the Radau IIA(3) monodromy and agree with Gear-2.
+
+    The autonomous phase-noise surfaces ride on the PPV, which rides on the
+    monodromy transpose and the coupled forced adjoint
+    (`_forced_replay_transposed_radau`) -- so a correct three-stage adjoint
+    makes the whole stack available without a Gear-2 twin.  On van der Pol
+    with a white source the diffusion constant `c` and the lineshape must
+    match the Gear-2 numbers (Radau is order 5, gear order 2, so they agree
+    to the coarser of the two).
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def solve(method):
+        cir = _vdp_with_noise(1e-6)
+        m = cir.n - 1
+        pss = PSS(cir, method=method, reltol=1e-12)
+        x0 = np.zeros(m); x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+                      maxiterations=60)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        c = pac.diffusion_constant(pss)
+        _Sv, L = pac.oscillator_spectrum(pss, [1e-2, 1e-1, 1.0], 0,
+                                         harmonic=1)
+        return c, np.asarray(L, dtype=float)
+
+    c_g, L_g = solve('gear')
+    c_r, L_r = solve('radau')
+    assert abs(c_r - c_g) < 1e-2 * c_g, (c_r, c_g)
+    assert np.max(np.abs(L_r - L_g)) < 0.05, (L_r, L_g)
+
+
 def test_trbdf2_covariance_converges_to_kTC_at_second_order():
     """TR-BDF2's OWN per-step injection (DAE-projected Van Loan) makes the
     covariance converge to the exact `kT/C` at SECOND order -- against

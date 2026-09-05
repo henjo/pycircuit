@@ -4194,8 +4194,8 @@ class PSS(Analysis):
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
         lam2 = 0.0
         kk = int(min(n, self.PPV_RITZ_BASIS))
-        if fp.kind == 'trbdf2':
-            ## ⚠ THE DIRK MAP IS DENSE AND WIDTH `m`, so its exact spectrum
+        if fp.kind in ('trbdf2', 'radau'):
+            ## ⚠ THE STAGE MAP IS DENSE AND WIDTH `m`, so its exact spectrum
             ## is cheap -- and the Arnoldi below resolves it BADLY here.
             ## `I - M` has `M`'s annihilated modes clustered at eigenvalue 1
             ## and the physical unit root also at 1 after `1 - theta`;
@@ -4371,6 +4371,8 @@ class PSS(Analysis):
         """
         if fp.kind == 'trbdf2':
             return self._forced_replay_transposed_trbdf2(fp, freq, xa)
+        if fp.kind == 'radau':
+            return self._forced_replay_transposed_radau(fp, freq, xa)
         _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
@@ -4421,6 +4423,56 @@ class PSS(Analysis):
             acc = acc - (gm * h / 2.0) * (np.exp(jw * ts)
                                           + np.exp(jw * t1)) * (A1 * p)
             w = A1 * (B1.T @ p) + A0 * (Cn.T @ t3)
+        return acc
+
+    def _forced_replay_transposed_radau(self, fp, freq, xa):
+        """`W^T xa` for Radau IIA(3) -- the COUPLED three-stage adjoint (no
+        output injection), the source-coupling sibling of
+        `_monodromy_matvec_transposed_radau`.
+
+        A source at frequency `freq` enters stage `k` (abscissa
+        ``t_{j,k} = t_j + c_k h``) through ``K_k = -(i + u)``, so the forward
+        source RHS of the coupled step is ``S_i = -h sum_k A_ik du_k`` with
+        ``du_k = exp(jw t_{j,k})``.  The endpoint reads block 3, so the
+        adjoint of one step's source-to-endpoint sensitivity is, with
+        ``p = J^{-T} [0; 0; w]`` (the same coupled transposed solve the
+        monodromy transpose takes),
+
+            acc += -h sum_k exp(jw t_{j,k}) (A_1k p_1 + A_2k p_2 + A_3k p_3)
+
+        and the costate propagates back by ``w <- Cn^T (p_1 + p_2 + p_3)``.
+        ⚠ NO TWO-VECTOR SHORTCUT: the source couples through all three stages
+        with the full ``A (x) B`` weighting, so all three `m`-blocks of `p`
+        are read (a DIRK's ``A1 p`` feed is the two-stage special case of
+        this).  Dual-consistent with the forward replay and matched to
+        forward driven solves; the injected sibling is
+        `_sideband_forced_radau`.
+        """
+        import scipy.linalg as sla
+        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        Amat = np.array(RadauIIA3Integrator.A, dtype=float)
+        cvec = np.array(RadauIIA3Integrator.C, dtype=float)
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        w = np.asarray(xa, dtype=complex).ravel().copy()
+        acc = np.zeros(m, dtype=complex)
+        tms = np.asarray(fp.times, dtype=float)
+
+        def csolveT(lu, b):
+            return (sla.lu_solve(lu, b.real, trans=1)
+                    + 1j * sla.lu_solve(lu, b.imag, trans=1))
+
+        for j in range(len(fp.steps) - 1, -1, -1):
+            lu, Cn, mm = fp.steps[j]
+            ts = tms[j]; te = tms[j + 1]; h = te - ts
+            b3 = np.concatenate([np.zeros(m), np.zeros(m), w])
+            p = csolveT(lu, b3)
+            p1, p2, p3 = p[0:m], p[m:2 * m], p[2 * m:3 * m]
+            for k in range(3):
+                tk = ts + cvec[k] * h
+                coup = Amat[0, k] * p1 + Amat[1, k] * p2 + Amat[2, k] * p3
+                acc = acc - h * np.exp(jw * tk) * coup
+            w = Cn.T @ (p1 + p2 + p3)
         return acc
 
     def _sideband_forced_trbdf2(self, fp, freq, l, d):
