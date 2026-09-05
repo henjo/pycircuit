@@ -3164,11 +3164,15 @@ correlation term is ARGUED AGAINST by the scaling, the review session's own cons
 coefficient goes as `D_lhj = 1/O(μ_l) ∝ Q_λ`, and in `E` it is divided by the phase part `∝ c`; `c` on van
 der Pol is exactly flat in Q (6.2537 / 6.2515 / 6.2514 / 6.2504e-8 over Q = 4…32, slope −0.000), so a
 correlation-term coefficient would scale as `Q_λ` and the measured one does not. And the term persists
-to `Δf = 0.3 f₀`, fifteen corners out, where a phase×amplitude cross term would fall as `1/Δf²`. **What
-the `1/Δf` piece is — Q-independent, coefficient 1.8, present to `0.3 f₀` — is OPEN.** Candidates
-untested: a first-order-in-`Δf/f₀` asymmetry of the LTV sideband (the `l = 2` fold's transfer, the tank
-away from resonance), or the phase-only reference `P_c f₀² c/Δf²` itself being the leading term of a
-series in `Δf/f₀`. Test:
+to `Δf = 0.3 f₀`, fifteen corners out, where a phase×amplitude cross term would fall as `1/Δf²`. ✅ **It
+is the TANK'S OWN FIRST-ORDER ASYMMETRY, found by the review session's parity test and then derived.**
+On the LOWER sideband the coefficient flips sign (upper +1.809 / +1.842, lower −2.197 / −2.162 at Q = 8 /
+32): odd in `Δf`, so an asymmetry of the response, which a correction to the even phase-only reference
+cannot produce. Its odd part is 2.003 / 2.002, and 2 is closed form: `|Z|² ∝ ω²/(ω² − ω₀²)² =
+(1/4k²)(1 + k + …)` at `ω = ω₀(1 + k)` — the upper sideband is `(1 + Δf/f₀)` stronger than the symmetric
+leading term, the lower weaker — and with the far-out total twice the phase part (`E_∞ = 1`) the
+coefficient in `E` is 2. Q-independent because the tank's asymmetry does not know `μ`. **What is still
+open is only the even remainder, −0.19 and Q-independent** — small, unnamed. Test:
 `test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode`. (An instrument note: the reference
 `c` here is the pair-consistent PPV's; before §0l it was 3e-4 high on this fixture, invisible at this
 level.)
