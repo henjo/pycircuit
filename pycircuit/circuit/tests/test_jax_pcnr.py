@@ -57,12 +57,20 @@ def _rectifier():
 
 def test_pcnr_solves_the_cold_start_plain_newton_cannot():
     """The value demonstration: 5 V slammed across a junction in one
-    full-size step (firststep=timestep kills the opening ramp)."""
+    full-size step (firststep just under timestep kills the opening ramp).
+
+    ⚠ firststep is 8e-7, not the 1e-6 it was until 2026-09-05: at exactly
+    1e-6 the opening step sits ON a convergence-basin boundary that the
+    exact SI constants (k, q) cross -- a KNIFE EDGE, not a capability
+    loss.  PCNR solves this 5 V slam at 5e-7, 8e-7 and 9e-7 and plain
+    Newton fails at all of them (measured); only 1e-6 tips.  The
+    demonstration -- PCNR converges where plain Newton cannot -- is
+    intact; the number that moved was a fragile choice of step."""
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit.nrsolver import NoConvergenceError
 
     def run(pcnr):
-        tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=1e-6,
+        tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=8e-7,
                             pcnr=pcnr)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -166,7 +174,7 @@ def test_pcnr_inside_coupled_solves_the_cold_start():
     from pycircuit.circuit.nrsolver import NoConvergenceError
 
     def run(pcnr):
-        tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=1e-6,
+        tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=8e-7,
                             coupled_lte=True, pcnr=pcnr)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')

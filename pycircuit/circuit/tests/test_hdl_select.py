@@ -666,7 +666,7 @@ def test_the_clamp_appears_in_the_generated_source():
 ## ----------------------------------------------------------------------
 ## The adopted sites: byte identity against the commit before `select`.
 
-_T0 = 300.15
+_T0 = 27.0     # Celsius, as on the card (was 300.15 K until 2026-09-05)
 _BJT = dict(IS=2e-15, bf=150.0, br=4.0, nf=1.02, nr=1.05, vaf=80.0, var=12.0,
             ikf=0.05, ikr=0.01, ise=3e-14, ne=1.6, isc=1e-13, nc=1.8,
             rb=120.0, rbm=20.0, re=0.8, rc=2.5, cje=1.2e-12, vje=0.75,
@@ -719,17 +719,18 @@ _ADOPTERS = [
 #: and `delxl`.  Not a tolerance: the bytes.
 _RECORDED = {
     ## ⚠ Re-recorded 2026-09-05: kboltzmann is the SI-2019 exact value
-    ## (1.380649e-23 for 1.38e-23), so every digest that folds a thermal
-    ## voltage moved.  Nothing in the adopted sites did.
-    'MosLevel1Hdl': '06d9c7f9a9873552',
-    'MosLevel1Hdl-r': '88201ab0cea7ad6d',
-    'MosLevel1Hdl-g0': '557e26414cb91d50',
-    'MosLevel1PmosHdl': 'c7ce547aa15084da',
-    'GummelPoonNpnHdl': '7346ff668eafc7a3',
-    'GummelPoonNpnHdl-off': '249ff7f8355e08e1',
-    'GummelPoonPnpHdl': '526bac7dedc0d1d4',
-    'GummelPoonNpnThermalHdl': '5c0a5e187c34a956',
-    'GummelPoonNpnThermalHdl-off': '0f541456f189e449',
+    ## (1.380649e-23 for 1.38e-23), then `qelectron` exact and `tnom` in
+    ## Celsius the same day, so every digest that folds a thermal voltage
+    ## moved twice.  Nothing in the adopted sites did.
+    'MosLevel1Hdl': 'c9b24d8be1d82050',
+    'MosLevel1Hdl-r': '5d9d7e0cfecdaf92',
+    'MosLevel1Hdl-g0': 'a9d6ac9679d6b5a6',
+    'MosLevel1PmosHdl': '9561ff85c79736e3',
+    'GummelPoonNpnHdl': '94a7e4f235b0d30e',
+    'GummelPoonNpnHdl-off': 'f46f8a0319d4e2ec',
+    'GummelPoonPnpHdl': '4c859124c16eb656',
+    'GummelPoonNpnThermalHdl': '40c018ac36158f12',
+    'GummelPoonNpnThermalHdl-off': '1260c6834076c152',
     ## ⚠ RE-RECORDED 2026-08-27 for the three MOS level 3 rows, and only
     ## those.  `_autohold` (roadmap sec. 36) makes the regularisers hold
     ## their own arguments, which stops sympy flattening across the
@@ -750,9 +751,9 @@ _RECORDED = {
     ## uses default cards and random biases; these rows carry cards that
     ## reach the arms.  It is the better instrument and it earned its
     ## keep here.
-    'MosLevel3Hdl': 'c55a80f0a02d0371',
-    'MosLevel3Hdl-off': '173b4bac3b8c7a3c',
-    'MosLevel3PmosHdl': '843a48a3a0836b8b',
+    'MosLevel3Hdl': '66aa2816e445085f',
+    'MosLevel3Hdl-off': '4a09bd8f9c1d064f',
+    'MosLevel3PmosHdl': 'da78d912c13583b9',
 }
 
 

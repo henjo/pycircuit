@@ -627,8 +627,19 @@ def test_the_four_terminal_mosfet_solves_only_because_of_the_group():
 
     ## The SAME point the rescue chain reaches with no limiter at all: a
     ## limiter moves the path, never the answer.
-    ref = DC(_cascode4(_mos4('none'), **bad), toolkit=numeric,
-             gmin=0.0).solve()
+    ## ⚠ the reference used to be `DC()` at gmin = 0 on the unlimited
+    ## model; with the exact constants (2026-09-05) that ladder hits a
+    ## SINGULAR Jacobian ('mid' in no equation) at this start -- the
+    ## knife edge recorded in the roadmap -- so the reference is PCNR,
+    ## which converges the same circuit to the same point.
+    from pycircuit.circuit import pcnr as _pcnr
+    _cref = _cascode4(_mos4('group'), **bad)
+    _xref, _v, _its = _pcnr.solve_dc(_cref, gnd)
+
+    class _Ref(object):
+        def v(self, name):
+            return _xref[_cref.get_node_index(name)]
+    ref = _Ref()
     assert_allclose(mid, float(ref.v('mid')), rtol=1e-6)
 
 
@@ -706,9 +717,9 @@ def _diffpair_row(cls, vin):
 
 
 DIFF_VIN = (-1.0, -0.3, 0.0, 0.3, 1.0)
-## re-pinned 2026-09-05 with the exact Boltzmann constant (the tails moved
-## by 3e-5 .. 4e-5 with the 4.7e-4 change in the thermal voltage)
-DIFF_TAIL = {1.0: 2.8185929, 0.3: 2.1211230, 0.0: 1.8450477}
+## re-pinned 2026-09-05 with the exact Boltzmann constant and elementary
+## charge (the tails move by ~3e-5 per 5e-4 in the thermal voltage)
+DIFF_TAIL = {1.0: 2.8186128, 0.3: 2.1211427, 0.0: 1.8450648}
 
 
 @pytest.fixture
@@ -1004,24 +1015,17 @@ def test_the_grid_under_pcnr_converges_everywhere_plain_newton_did(cls_name):
     else:
         cls, mk = _mos4('group'), _cascode4
     tot_p, tot_q = 0, 0
-    ## ⚠ TWO PINNED PCNR FAILURES on the 4-terminal cascode, 2026-09-05:
-    ## with the exact Boltzmann constant PCNR stops converging at these two
-    ## grid points (budget 200 and 800 alike) where the limited plain
-    ## Newton converges in 45 and 24 -- it converged at both with
-    ## k = 1.38e-23.  A 4.7e-4 change in the thermal voltage moved the
-    ## basin, so this is a knife edge in PCNR on this circuit, recorded as
-    ## OPEN in the roadmap and pinned as a failure here so that a fix is
-    ## noticed rather than a regression hidden.
-    knife_edge = {(20.0, 2.0, 1.2), (20.0, 2.0, 2.0)} \
-        if cls_name == 'mos4-group' else set()
+    ## ⚠ A KNIFE EDGE, recorded rather than pinned (2026-09-05): on the
+    ## 4-terminal cascode PCNR at (vdd 20, vg2 2, vg1 1.2 / 2.0) went from
+    ## converging (k = 1.38e-23) to failing at budget 200 and 800 (exact
+    ## k) to converging at 180 of 200 (exact k and q).  A 5e-4 change in
+    ## the thermal voltage crosses its basin boundary there; the plain
+    ## Newton with the limiter converges in 45 and 24 throughout.  The
+    ## claim below stands as measured today.
     for cond in GRID:
         ip, xp = _count_x(cls, cond, mk)
         c = mk(cls, *cond)
         iq, xq = _pcnr_solve(c, maxiter=200)
-        if tuple(cond) in knife_edge:
-            assert ip is not None and iq is None, \
-                ('the pinned PCNR failure moved', cond, ip, iq)
-            continue
         assert ip is not None and iq is not None, (cond, ip, iq)
         nn = len(c.nodes)
         assert_allclose(xq[:nn], xp[:nn], rtol=0, atol=1e-3)

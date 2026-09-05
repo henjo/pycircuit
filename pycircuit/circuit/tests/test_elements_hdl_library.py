@@ -55,7 +55,7 @@ Q = numeric.qelectron
 ## (`differentiable-numerics`: "use CARD parameters, not defaults").
 CARD = dict(IS=1.2e-14, rs=1.5, n=1.06, tt=4e-9, cjo=2.3e-12, vj=0.78,
             m=0.42, eg=1.11, xti=3.0, fc=0.5, bv=45.0, ibv=5e-6,
-            kf=0.0, af=1.0, area=1.0, tnom=300.15)
+            kf=0.0, af=1.0, area=1.0, tnom=27.0)      # Celsius, as on a card
 
 
 def _epar(T):
@@ -66,14 +66,18 @@ def _epar(T):
 
 def _ref(v, T=300.0, IS=1e-14, rs=0.0, n=1.0, tt=0.0, cjo=0.0, vj=1.0,
          m=0.5, eg=1.11, xti=3.0, fc=0.5, bv=1e30, ibv=1e-3, kf=0.0,
-         af=1.0, area=1.0, tnom=300.15):
+         af=1.0, area=1.0, tnom=27.0):
     """SPICE level-1 junction, transcribed in numpy from Massobrio &
     Antognetti, *Semiconductor Device Modeling with SPICE*, ch. 1.
+
+    `tnom` is CELSIUS, as on the card the model and this reference share
+    (2026-09-05); the physics below is in Kelvin.
 
     Returns ``(i, q)`` at the JUNCTION voltage ``v`` (i.e. after the
     series resistance), so `rs` is accepted and ignored.
     """
     vt = K * T / Q
+    tnom = tnom + 273.15
     tr = T / tnom
     egT = 1.16 - 7.02e-4 * T ** 2 / (T + 1108.0)
     egn = 1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0)
@@ -157,7 +161,7 @@ class TestSpiceDiodeCurrent(object):
         so the current is exactly ``area*IS*(exp(v/(n*Vt)) - 1)`` with
         the CARD's IS -- a number this test computes from first
         principles."""
-        el, p = _diode(tnom=300.0, area=2.0)
+        el, p = _diode(tnom=26.85, area=2.0)
         ep = _epar(300.0)
         vt = K * 300.0 / Q
         for v in (0.1, 0.3, 0.5, 0.65, 0.75):
@@ -166,7 +170,7 @@ class TestSpiceDiodeCurrent(object):
             assert_allclose(i, want, rtol=1e-11)
 
     def test_reverse_current_saturates_at_minus_area_times_is(self):
-        el, p = _diode(tnom=300.0, area=3.0, bv=1e30)
+        el, p = _diode(tnom=26.85, area=3.0, bv=1e30)
         ep = _epar(300.0)
         ## Deep enough that exp(v/nVt) is below the tolerance: at -0.5 V
         ## it is still 1.2e-8, which is the diode, not an error.
@@ -178,7 +182,7 @@ class TestSpiceDiodeCurrent(object):
         """The defining property of the additive breakdown term, and the
         reason it was written additively: at ``v = -bv`` the exponent is
         zero, so the current is ``-area*(IS + ibv)`` on the nose."""
-        el, p = _diode(tnom=300.0, bv=45.0, ibv=5e-6, area=1.7)
+        el, p = _diode(tnom=26.85, bv=45.0, ibv=5e-6, area=1.7)
         ep = _epar(300.0)
         i = _at(el, -p['bv'], ep)[0][0]
         assert_allclose(i, -1.7 * (p['IS'] + p['ibv']), rtol=1e-9)
@@ -188,7 +192,7 @@ class TestSpiceDiodeCurrent(object):
         ``n*Vt`` -- SPICE's breakdown region uses the un-idealised
         thermal voltage.  Ten times the current one ``ln(10)*Vt`` further
         down."""
-        el, _ = _diode(tnom=300.0, bv=45.0, ibv=5e-6, n=1.06)
+        el, _ = _diode(tnom=26.85, bv=45.0, ibv=5e-6, n=1.06)
         ep = _epar(300.0)
         vt = K * 300.0 / Q
         i1 = _at(el, -45.0, ep)[0][0]
@@ -198,7 +202,7 @@ class TestSpiceDiodeCurrent(object):
     def test_no_breakdown_by_default(self):
         """SPICE's BV default is "none", spelled 1e30 V here.  The
         breakdown term must contribute nothing at any usable bias."""
-        el, p = _diode(tnom=300.0, bv=1e30)
+        el, p = _diode(tnom=26.85, bv=1e30)
         ep = _epar(300.0)
         for v in (-100.0, -1000.0):
             assert_allclose(_at(el, v, ep)[0][0], -p['IS'], rtol=1e-9)
@@ -282,7 +286,7 @@ class TestSpiceDiodeCharge(object):
         definition; tt contributes ``tt*dIf/dv``, which at zero bias is
         ``tt*IS/(n*Vt)`` -- femtofarads against picofarads, so it is
         subtracted rather than tolerated."""
-        el, p = _diode(tnom=300.0, area=2.5)
+        el, p = _diode(tnom=26.85, area=2.5)
         ep = _epar(300.0)
         cc = _at(el, 0.0, ep)[3][0, 0]
         vt = K * 300.0 / Q
@@ -293,7 +297,7 @@ class TestSpiceDiodeCharge(object):
         """``C(v) = cj0/(1 - v/vj)^m`` -- the textbook result, which the
         model does NOT contain: the model states a charge, and this test
         differentiates it numerically to recover the capacitance."""
-        el, p = _diode(tnom=300.0, tt=0.0)
+        el, p = _diode(tnom=26.85, tt=0.0)
         ep = _epar(300.0)
         vt = K * 300.0 / Q
         for v in (-5.0, -1.0, -0.2, 0.0, 0.2, 0.35):
@@ -309,7 +313,7 @@ class TestSpiceDiodeCharge(object):
         and its slope must be continuous there.  Checked by approaching
         the seam from both sides -- an assertion that fails if either
         arm's constants are wrong, which they were once."""
-        el, p = _diode(tnom=300.0, tt=0.0)
+        el, p = _diode(tnom=26.85, tt=0.0)
         ep = _epar(300.0)
         vjT, m, fc = p['vj'], p['m'], p['fc']
         seam = fc * vjT
@@ -332,7 +336,7 @@ class TestSpiceDiodeCharge(object):
         """The linearised arm's slope is ``cj0*m/(vj*(1-fc)^(1+m))`` --
         a constant SPICE fixes so that C keeps rising smoothly.  Again
         recovered by differentiating the model's charge."""
-        el, p = _diode(tnom=300.0, tt=0.0)
+        el, p = _diode(tnom=26.85, tt=0.0)
         ep = _epar(300.0)
         h = 1e-6
 
@@ -350,8 +354,8 @@ class TestSpiceDiodeCharge(object):
         exactly ``tt*I_fwd``, and I_fwd is the forward term alone -- the
         breakdown term deliberately carries no transit time."""
         ep = _epar(300.0)
-        a, p = _diode(tnom=300.0, tt=0.0)
-        b, _ = _diode(tnom=300.0, tt=7e-9)
+        a, p = _diode(tnom=26.85, tt=0.0)
+        b, _ = _diode(tnom=26.85, tt=7e-9)
         vt = K * 300.0 / Q
         for v in (0.4, 0.6, 0.7):
             dq = _at(b, v, ep)[1][0] - _at(a, v, ep)[1][0]
@@ -378,7 +382,7 @@ class TestSpiceDiodeNoise(object):
         """Schottky's result, which the model states and this test
         recomputes from the solved current -- both signs of bias, since
         the PSD must stay positive where the current is negative."""
-        el, _ = _diode(tnom=300.0, area=2.0)
+        el, _ = _diode(tnom=26.85, area=2.0)
         ep = _epar(300.0)
         for v in (0.6, 0.4, 0.0, -1.0):
             i = _at(el, v, ep)[0][0]
@@ -392,7 +396,7 @@ class TestSpiceDiodeNoise(object):
             assert_allclose(cy[1, 1], cy[0, 0], rtol=1e-12)
 
     def test_flicker_noise_has_the_one_over_f_shape(self):
-        el, p = _diode(tnom=300.0, kf=1e-16, af=1.0)
+        el, p = _diode(tnom=26.85, kf=1e-16, af=1.0)
         ep = _epar(300.0)
         x = np.array([0.6, 0.0])
         i = _at(el, 0.6, ep)[0][0]
@@ -407,7 +411,7 @@ class TestSpiceDiodeNoise(object):
         x = np.array([0.6, 0.0])
         out = []
         for area in (1.0, 4.0):
-            el, _ = _diode(tnom=300.0, kf=1e-16, af=1.4, area=area)
+            el, _ = _diode(tnom=26.85, kf=1e-16, af=1.4, area=area)
             i = _at(el, 0.6, ep)[0][0]
             cy = np.asarray(el.CY(x, 2 * np.pi * 10.0, ep), float)[0, 0]
             out.append((cy - 2 * Q * abs(i)) / (1e-16 * abs(i) ** 1.4 / 10.0))
@@ -448,7 +452,7 @@ class TestSpiceDiodeTemperature(object):
         formulae are.  It catches a sign error or a swapped T/tnom that
         a transcription test cannot, because the transcription would
         carry the same error."""
-        el, p = _diode(tnom=311.0, tt=0.0)
+        el, p = _diode(tnom=311.0 - 273.15, tt=0.0)     # 311 K, as Celsius on the card
         ep = _epar(311.0)
         vt = K * 311.0 / Q
         i = _at(el, 0.5, ep)[0][0]
@@ -468,7 +472,7 @@ class TestSpiceDiodeTemperature(object):
             ep = _epar(T)
             vt = K * T / Q
             i = _at(el, 0.4, ep)[0][0]
-            tr = T / p['tnom']
+            tr = T / (p['tnom'] + 273.15)      # the card is Celsius
             isT = p['IS'] * np.exp((tr - 1) * p['eg'] / (p['n'] * vt)
                                    + p['xti'] / p['n'] * np.log(tr))
             assert_allclose(i, isT * (np.exp(0.4 / (p['n'] * vt)) - 1),
@@ -640,7 +644,7 @@ class TestNoFloatingPointGarbage(object):
         d = _mk(eh.DiodeSpiceThermalHdl, 'a', 'b', 't', 'ta',
                 **dict(CARD, rth=250.0, cth=1e-3))
         r = _mk(eh.RThermalHdl, 'p', 'm', 't', 'ta', r=1e3, tc1=2e-3,
-                tc2=1e-6, tnom=300.0, rth=100.0, cth=1e-3)
+                tc2=1e-6, tnom=26.85, rth=100.0, cth=1e-3)
         ep = _epar(300.0)
         with warnings.catch_warnings():
             _quiet()
@@ -688,7 +692,7 @@ class TestSelfHeating(object):
         p, th = c.add_node('p'), c.add_node('th')
         c['V1'] = VS(p, gnd, v=3.0)
         c['R1'] = eh.RThermalHdl(p, gnd, th, gnd, r=250.0, tc1=0.0,
-                                 tnom=300.0, rth=40.0)
+                                 tnom=26.85, rth=40.0)
         c.update_iparv()
         res = DC(c, toolkit=numeric, epar=_epar(300.0)).solve()
         assert_allclose(float(res.v(th, gnd)), 40.0 * 3.0 ** 2 / 250.0,
@@ -704,7 +708,7 @@ class TestSelfHeating(object):
         p, th = c.add_node('p'), c.add_node('th')
         c['V1'] = VS(p, gnd, v=v)
         c['R1'] = eh.RThermalHdl(p, gnd, th, gnd, r=r, tc1=tc1,
-                                 tnom=300.0, rth=rth)
+                                 tnom=26.85, rth=rth)
         c.update_iparv()
         res = DC(c, toolkit=numeric, epar=_epar(300.0)).solve()
         b = rth * v * v / r
@@ -724,7 +728,7 @@ class TestSelfHeating(object):
         p, th = c.add_node('p'), c.add_node('th')
         c['V1'] = VS(p, gnd, v=v)
         c['R1'] = eh.RThermalHdl(p, gnd, th, gnd, r=r, tc1=tc1,
-                                 tnom=300.0, rth=rth)
+                                 tnom=26.85, rth=rth)
         c.update_iparv()
         res = DC(c, toolkit=numeric, epar=_epar(300.0)).solve()
         b = rth * v * v / r
@@ -745,7 +749,7 @@ class TestSelfHeating(object):
         p, th = c.add_node('p'), c.add_node('th')
         c['V1'] = VS(p, gnd, v=3.0)
         c['R1'] = eh.RThermalHdl(p, gnd, th, gnd, r=250.0, tc1=1e-3,
-                                 tnom=300.0, rth=0.0)
+                                 tnom=26.85, rth=0.0)
         c.update_iparv()
         res = DC(c, toolkit=numeric, epar=_epar(300.0)).solve()
         assert_allclose(float(res.v(th, gnd)), 0.0, atol=1e-12)
@@ -761,7 +765,7 @@ class TestSelfHeating(object):
         p, th = c.add_node('p'), c.add_node('th')
         c['V1'] = VS(p, gnd, v=v)
         c['R1'] = eh.RThermalHdl(p, gnd, th, gnd, r=r, tc1=0.0,
-                                 tnom=300.0, rth=rth, cth=cth)
+                                 tnom=26.85, rth=rth, cth=cth)
         c.update_iparv()
         from pycircuit.circuit.integrator import EulerIntegrator
         t, y = _tran(c, th, tend=5.0, dt=2e-3, uic=True,
@@ -790,7 +794,7 @@ class TestSelfHeating(object):
         p, th = c.add_node('p'), c.add_node('th')
         c['V1'] = VS(p, gnd, v=v)
         c['R1'] = eh.RThermalHdl(p, gnd, th, gnd, r=r, tc1=0.0,
-                                 tnom=300.0, rth=rth)
+                                 tnom=26.85, rth=rth)
         c['Rpkg'] = R(th, gnd, r=rext)
         c['Cpkg'] = C(th, gnd, c=1e-3)
         c.update_iparv()
@@ -809,10 +813,10 @@ class TestSelfHeating(object):
         c['V1'] = VS(p1, gnd, v=2.0)
         c['V2'] = VS(p2, gnd, v=3.0)
         c['Ra'] = eh.RThermalHdl(p1, gnd, th, gnd, r=1e3, tc1=0.0,
-                                 tnom=300.0, rth=rth)
+                                 tnom=26.85, rth=rth)
         ## The second device's own rth is collapsed away; it only heats.
         c['Rb'] = eh.RThermalHdl(p2, gnd, th, gnd, r=2e3, tc1=0.0,
-                                 tnom=300.0, rth=0.0)
+                                 tnom=26.85, rth=0.0)
         c.update_iparv()
         res = DC(c, toolkit=numeric, epar=_epar(300.0)).solve()
         ## Rb's own thermal branch is a zero-volt source, which SHORTS
@@ -830,9 +834,9 @@ class TestSelfHeating(object):
         c['V1'] = VS(p1, gnd, v=2.0)
         c['V2'] = VS(p2, gnd, v=3.0)
         c['Ra'] = eh.RThermalHdl(p1, gnd, th, gnd, r=1e3, tc1=0.0,
-                                 tnom=300.0, rth=200.0)
+                                 tnom=26.85, rth=200.0)
         c['Rb'] = eh.RThermalHdl(p2, gnd, th, gnd, r=2e3, tc1=0.0,
-                                 tnom=300.0, rth=600.0)
+                                 tnom=26.85, rth=600.0)
         c.update_iparv()
         res = DC(c, toolkit=numeric, epar=_epar(300.0)).solve()
         ptot = 2.0 ** 2 / 1e3 + 3.0 ** 2 / 2e3
@@ -987,7 +991,7 @@ class TestInCircuit(object):
         a, b, th = c.add_node('a'), c.add_node('b'), c.add_node('th')
         c['V1'] = VS(a, gnd, v=5.0)
         c['R1'] = eh.RThermalHdl(a, b, th, gnd, r=100.0, tc1=2e-3,
-                                 tnom=300.0, rth=60.0)
+                                 tnom=26.85, rth=60.0)
         c['D1'] = eh.DiodeSpiceThermalHdl(b, gnd, th, gnd,
                                           **dict(CARD, rth=0.0))
         c.update_iparv()

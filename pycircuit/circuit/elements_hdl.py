@@ -153,12 +153,25 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
 ## anyone writes.  It is now a readability choice, not a workaround.
 ## ---------------------------------------------------------------------
 from pycircuit.circuit.hdl import vt as _vt
-## ⚠ `tnom` defaults to the AMBIENT the circuit is simulated at, so a device
-## built without a card is not temperature-scaled by a difference nobody asked
-## for.  It was 300.15 K against `defaultepar.T = 300` until 2026-09-05 --
-## both numbers pycircuit's own -- a 4.9e-4 scaling that survives review.
-## `tnom` is KELVIN here, where every SPICE card is Celsius.
+## ⚠ `tnom` IS CELSIUS ON THE CARD AND KELVIN INSIDE, translated ONCE at the
+## boundary by `_tnom_k` -- the SPICE convention (TNOM=27), and the one PSP
+## already follows (`psp_scaling`: `tkr = 273.15 + tr`).  A transcribed
+## `TNOM=27` used to be read as 27 K and returned 1.9e92 A without a
+## warning.  Its default is the AMBIENT the circuit is simulated at
+## (`defaultepar.T - 273.15` = 26.85 C), so a device built without a card
+## is not temperature-scaled by a difference nobody asked for (it was
+## 300.15 K against a 300 K ambient until 2026-09-05).  Every temperature
+## expression in the models -- `T/tnom`, `kT/q`, the gap -- sees Kelvin only.
 from pycircuit.circuit.circuit import defaultepar as _defaultepar
+_ZERO_C = 273.15
+
+
+def _tnom_k(tnom_c):
+    """The card's Celsius `tnom` as Kelvin -- the one translation."""
+    return tnom_c + _ZERO_C
+
+
+_TNOM_DEFAULT_C = round(float(_defaultepar.T) - _ZERO_C, 6)   # 26.85 C for a 300 K ambient
 from pycircuit.circuit.hdl import var as _var
 ## `expl`, not `limexp`, and the reason is measured rather than
 ## stylistic.  `limexp` is deliberately NOT both-arms-safe: its discarded
@@ -575,14 +588,14 @@ class RThermalHdl(Behavioural):
                   Parameter(name='tc2', desc='Quadratic tempco',
                             unit='1/K^2', default=0.0),
                   Parameter(name='tnom', desc='Parameter measurement '
-                            'temperature', unit='K', default=float(_defaultepar.T))] \
+                            'temperature', unit='C', default=_TNOM_DEFAULT_C)] \
         + _thermal_params()
 
     @staticmethod
     def analog(plus, minus, th, tha):
         heat = SelfHeating(th, tha, rth, cth)                      # noqa
         b = Branch(plus, minus)
-        rT = _rtemp(r, tc1, tc2, _var(heat.T - tnom, 'dtnom'))     # noqa
+        rT = _rtemp(r, tc1, tc2, _var(heat.T - _tnom_k(tnom), 'dtnom'))     # noqa
         i = _var(b.V / rT, 'i')
         return (Contribution(b.I, i),) + heat.dissipate(b.V * i)
 
@@ -633,7 +646,7 @@ def _spice_diode_params():
         Parameter(name='area', desc='Area scaling factor', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=float(_defaultepar.T)),
+                  unit='C', default=_TNOM_DEFAULT_C),
     ]
 
 
@@ -681,10 +694,10 @@ def _spice_diode(p, a, c, T, junction=None):
 
     ## -- temperature path ----------------------------------------------
     vtT = _var(_vt(T), 'vtT')
-    tr = _var(T / p.tnom, 'tratio')
+    tr = _var(T / _tnom_k(p.tnom), 'tratio')
     ltr = _var(sympy.log(tr), 'ltratio')
     egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
-    egn = _var(1.16 - 7.02e-4 * p.tnom ** 2 / (p.tnom + 1108.0), 'egtnom')
+    egn = _var(1.16 - 7.02e-4 * _tnom_k(p.tnom) ** 2 / (_tnom_k(p.tnom) + 1108.0), 'egtnom')
     ## `expl`, not `exp`.  The argument is bounded ABOVE by
     ## `eg*q/(n*k*tnom)` (~43 for a silicon card at n=1), so on any
     ## sensible card the two are identical; `expl` costs nothing and
@@ -692,7 +705,7 @@ def _spice_diode(p, a, c, T, junction=None):
     isT = _var(p.IS * _expl((tr - 1) * p.eg / (p.n * vtT)
                             + p.xti / p.n * ltr), 'isT')
     vjT = _var(p.vj * tr - 3 * vtT * ltr - egn * tr + egT, 'vjT')
-    cjT = _var(p.cjo * (1 + p.m * (4e-4 * (T - p.tnom) - (vjT / p.vj - 1))),
+    cjT = _var(p.cjo * (1 + p.m * (4e-4 * (T - _tnom_k(p.tnom)) - (vjT / p.vj - 1))),
                'cjT')
 
     ## -- static current ------------------------------------------------
@@ -1590,7 +1603,7 @@ def _spice_bjt_params():
         Parameter(name='area', desc='Area scaling factor', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=float(_defaultepar.T)),
+                  unit='C', default=_TNOM_DEFAULT_C),
     ]
 
 
@@ -1675,7 +1688,7 @@ def _gp_core(p, T, npn, c, b, e):
 
     ## -- temperature ------------------------------------------------
     vtT = _var(_vt(T), 'vtT')
-    trat = _var(T / p.tnom, 'trat')
+    trat = _var(T / _tnom_k(p.tnom), 'trat')
     ltr = _var(sympy.log(trat), 'ltrat')
     ## SPICE's `factlog`, `bjttemp.c`: one exponent shared by the
     ## transport current and (scaled by 1/NE, 1/NC) the two leakage
@@ -1697,16 +1710,16 @@ def _gp_core(p, T, npn, c, b, e):
     ## Junction potentials and capacitances: the diode's path, per
     ## junction.  `egn` is the gap at tnom, `egT` at T.
     egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
-    egn = _var(1.16 - 7.02e-4 * p.tnom ** 2 / (p.tnom + 1108.0),
+    egn = _var(1.16 - 7.02e-4 * _tnom_k(p.tnom) ** 2 / (_tnom_k(p.tnom) + 1108.0),
                'egtnom')
     vjeT = _var(p.vje * trat - 3.0 * vtT * ltr
                 - egn * trat + egT, 'vjeT')
     vjcT = _var(p.vjc * trat - 3.0 * vtT * ltr
                 - egn * trat + egT, 'vjcT')
-    cjeT = _var(p.area * p.cje * (1.0 + p.mje * (4e-4 * (T - p.tnom)
+    cjeT = _var(p.area * p.cje * (1.0 + p.mje * (4e-4 * (T - _tnom_k(p.tnom))
                                            - (vjeT / p.vje - 1.0))),
                 'cjeT')
-    cjcT = _var(p.area * p.cjc * (1.0 + p.mjc * (4e-4 * (T - p.tnom)
+    cjcT = _var(p.area * p.cjc * (1.0 + p.mjc * (4e-4 * (T - _tnom_k(p.tnom))
                                            - (vjcT / p.vjc - 1.0))),
                 'cjcT')
 
@@ -2131,7 +2144,7 @@ def _ekv_params():
         Parameter(name='ef', desc='Flicker-noise frequency exponent',
                   unit='', default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=float(_defaultepar.T)),
+                  unit='C', default=_TNOM_DEFAULT_C),
     ]
 
 
@@ -2207,12 +2220,12 @@ def _ekv_analog(T, nmos):
 
         ## -- temperature (EKV 2.6, section "Temperature effects") ------
         ut = _var(_vt(T), 'ut')
-        trat = _var(T / tnom, 'trat')                              # noqa
+        trat = _var(T / _tnom_k(tnom), 'trat')                              # noqa
         ltr = _var(sympy.log(trat), 'ltrat')
         egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
-        egn = _var(1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0),   # noqa
+        egn = _var(1.16 - 7.02e-4 * _tnom_k(tnom) ** 2 / (_tnom_k(tnom) + 1108.0),   # noqa
                    'egtnom')
-        vtoT = _var(vto - tcv * (T - tnom), 'vtoT')                # noqa
+        vtoT = _var(vto - tcv * (T - _tnom_k(tnom)), 'vtoT')                # noqa
         ## `safe_pow` with the base floored relative to the ratio's own
         ## scale: `trat` is a temperature ratio and cannot legitimately
         ## be below 1e-3 (0.3 K), and `bex` is negative on every real
@@ -2557,7 +2570,7 @@ def _mos1_params():
         Parameter(name='af', desc='Flicker-noise exponent', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=float(_defaultepar.T)),
+                  unit='C', default=_TNOM_DEFAULT_C),
     ]
 
 
@@ -2671,7 +2684,7 @@ def _mos1_analog(T, nmos, limiting='group'):
         ## be finite at `nsub = 0` (the default): the root of zero is
         ## zero, and the logarithm is floored at 1 so it returns zero
         ## rather than -inf.
-        vtn = _var(_KB * tnom / _QE, 'vtnom')                      # noqa
+        vtn = _var(_KB * _tnom_k(tnom) / _QE, 'vtnom')                      # noqa
         nsm3 = _var(_maxc(nsub, 0.0) * 1e6, 'nsm3')                # noqa
         gd = _var(sympy.sqrt(2.0 * _QE * _EPSSI * nsm3) / cox, 'gamd')
         phid = _var(2.0 * vtn * sympy.log(_maxc(nsm3 / (_NI_CM3 * 1e6),
@@ -2687,10 +2700,10 @@ def _mos1_analog(T, nmos, limiting='group'):
 
         ## -- temperature (ngspice `mos1temp.c`) ------------------------
         vtT = _var(_vt(T), 'vtT')
-        trat = _var(T / tnom, 'trat')                              # noqa
+        trat = _var(T / _tnom_k(tnom), 'trat')                              # noqa
         ltr = _var(sympy.log(trat), 'ltrat')
         egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
-        egn = _var(1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0),   # noqa
+        egn = _var(1.16 - 7.02e-4 * _tnom_k(tnom) ** 2 / (_tnom_k(tnom) + 1108.0),   # noqa
                    'egtnom')
         ## The built-in potentials move exactly as the diode's `vjT` does.
         phiT = _var(_maxc(phz * trat - 3.0 * vtT * ltr
@@ -2714,7 +2727,7 @@ def _mos1_analog(T, nmos, limiting='group'):
         ## The junction capacitances' temperature factors, the diode's,
         ## one per grading coefficient because SPICE scales the bottom
         ## and the sidewall with their own.
-        tshift = _var(4e-4 * (T - tnom) - (pbT / pb - 1.0), 'tshift')  # noqa
+        tshift = _var(4e-4 * (T - _tnom_k(tnom)) - (pbT / pb - 1.0), 'tshift')  # noqa
         cfacb = _var(1.0 + mj * tshift, 'cfacb')                   # noqa
         cfacw = _var(1.0 + mjsw * tshift, 'cfacw')                 # noqa
 
@@ -3760,7 +3773,7 @@ def _mos3_params():
         Parameter(name='af', desc='Flicker-noise exponent', unit='',
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
-                  unit='K', default=float(_defaultepar.T)),
+                  unit='C', default=_TNOM_DEFAULT_C),
     ]
 
 
@@ -3941,7 +3954,7 @@ def _mos3_analog(T, nmos):
         leff = _var(_maxc(p.l - 2.0 * p.ld, 1e-9), 'leff')
         weff = _var(_maxc(p.w - 2.0 * p.wd, 1e-9), 'weff')
         cox = _var(_EPSOX / _maxc(p.tox, 1e-12), 'cox')
-        vtn = _var(_KB * p.tnom / _QE, 'vtnom')
+        vtn = _var(_KB * _tnom_k(p.tnom) / _QE, 'vtnom')
         nsm3 = _var(_maxc(p.nsub, 0.0) * 1e6, 'nsm3')
         gd = _var(sympy.sqrt(2.0 * _QE * _EPSSI * nsm3) / cox, 'gamd')
         phid = _var(2.0 * vtn * sympy.log(_maxc(nsm3 / (_NI_CM3 * 1e6),
@@ -3969,10 +3982,10 @@ def _mos3_analog(T, nmos):
 
         ## -- temperature (`mos3temp.c`) ------------------------------
         vtT = _var(_vt(T), 'vtT')
-        trat = _var(T / p.tnom, 'trat')
+        trat = _var(T / _tnom_k(p.tnom), 'trat')
         ltr = _var(sympy.log(trat), 'ltrat')
         egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
-        egn = _var(1.16 - 7.02e-4 * p.tnom ** 2 / (p.tnom + 1108.0),
+        egn = _var(1.16 - 7.02e-4 * _tnom_k(p.tnom) ** 2 / (_tnom_k(p.tnom) + 1108.0),
                    'egtnom')
         phiT = _var(_maxc(phz * trat - 3.0 * vtT * ltr
                           - egn * trat + egT, 0.1), 'phiT')
@@ -3989,7 +4002,7 @@ def _mos3_analog(T, nmos):
         kpT = _var(kp0 * ratio4, 'kpT')
         u0T = _var(p.u0 * ratio4, 'u0T')
         factlog = _var(-egT / vtT + egn / vtn, 'factlog')
-        tshift = _var(4e-4 * (T - p.tnom) - (pbT / p.pb - 1.0), 'tshift')
+        tshift = _var(4e-4 * (T - _tnom_k(p.tnom)) - (pbT / p.pb - 1.0), 'tshift')
         cfacb = _var(1.0 + p.mj * tshift, 'cfacb')
         cfacw = _var(1.0 + p.mjsw * tshift, 'cfacw')
         isbd = _var(_maxc(sympy.Piecewise((p.js * p.ad, p.js * p.ad > 0.0),

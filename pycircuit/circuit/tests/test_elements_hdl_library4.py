@@ -71,6 +71,7 @@ from pycircuit.circuit.hdl import (Behavioural, Node, TEMP, check_jacobians,
 _KB = float(KBOLTZMANN)
 _QE = float(QELECTRON)
 _T0 = float(defaultepar.T)
+_T0C = _T0 - 273.15     # the same temperature as a card writes it (Celsius)
 _UT = _KB * _T0 / _QE
 
 
@@ -108,7 +109,7 @@ NMOS = dict(vto=0.75, kp=8e-5, gamma=0.55, phi=0.70, lambd=0.03,
             IS=1e-14, pb=0.85, cj=3e-4, cjsw=3e-10, mj=0.5, mjsw=0.33,
             fc=0.5, js=0.0, ad=1.6e-10, asrc=1.6e-10, pd=4.6e-5, ps=4.6e-5,
             rd=0.0, rs=0.0, rsh=0.0, nrd=2.0, nrs=2.0,
-            kf=1e-27, af=1.0, tnom=_T0)
+            kf=1e-27, af=1.0, tnom=_T0C)
 
 #: The same card with the two parasitic resistances on, so that the
 #: internal nodes and their collapse are both exercised.
@@ -119,7 +120,7 @@ NMOS_R = dict(NMOS, rsh=25.0)
 #: square-law asymptote tests use -- see `differentiable-numerics`, "the
 #: dangerous value can be a PARAMETER".
 NMOS_IDEAL = dict(vto=0.75, kp=8e-5, gamma=0.0, phi=0.70, lambd=0.0,
-                  w=20e-6, l=2e-6, tnom=_T0)
+                  w=20e-6, l=2e-6, tnom=_T0C)
 
 
 def _m1_ref(vd, vg, vs, vb, card):
@@ -389,7 +390,7 @@ def test_level1_gamma_and_phi_are_derived_from_nsub_and_tox_when_absent():
     assert 0.2 < gam_d < 0.5 and 0.5 < phi_d < 0.9, (gam_d, phi_d)
 
     base = dict(vto=0.75, kp=8e-5, lambd=0.0, tox=tox, nsub=nsub,
-                w=20e-6, l=2e-6, tnom=_T0)
+                w=20e-6, l=2e-6, tnom=_T0C)
     beta = base['kp'] * base['w'] / base['l']
 
     def vth_of(el, vsb):
@@ -891,7 +892,7 @@ def test_level1_temperature_path_moves_the_threshold_and_the_mobility():
     ## threshold by 2.6 uV -- correct physics, and not what this test is
     ## about.  Measured, not assumed: with the default card the
     ## assertions below fail by exactly that.
-    card = dict(NMOS_IDEAL, tnom=300.0, IS=0.0, js=0.0)
+    card = dict(NMOS_IDEAL, tnom=26.85, IS=0.0, js=0.0)
     el = _mk(eh.MosLevel1Hdl, 'd', 'g', 's', 'b', **card)
 
     def epar_at(T):
@@ -1454,7 +1455,7 @@ def test_what_the_hdl_opamp_does_and_does_not_take_over_from_macromodels():
 #: `test_elements_hdl_library3.py`, and the one thing this batch adds is
 #: the thermal node.
 NPN_TH = dict(IS=1e-16, bf=100.0, nf=1.0, nr=1.0, br=1.0, eg=1.11,
-              xti=3.0, tnom=300.0)
+              xti=3.0, tnom=26.85)
 
 TH_VBE, TH_VCE = 0.7, 5.0
 
@@ -1470,7 +1471,7 @@ def _gp_power(dT, vbe=TH_VBE, vce=TH_VCE, card=NPN_TH):
     """
     T = _T0 + dT
     vt = _KB * T / _QE
-    tr = T / card['tnom']
+    tr = T / (card['tnom'] + 273.15)      # the card is Celsius
     isT = card['IS'] * math.exp((tr - 1.0) * card['eg'] / vt
                                 + card['xti'] * math.log(tr))
     ifwd = isT * (math.exp(vbe / (card['nf'] * vt)) - 1.0)
@@ -1547,7 +1548,7 @@ def test_thermal_bjt_at_rth_zero_is_the_isothermal_bjt():
                 ne=1.6, br=3.0, nr=1.0, var=20.0, ikr=5e-3, isc=1e-14,
                 nc=1.9, cje=2e-13, vje=0.72, mje=0.35, cjc=1.2e-13,
                 vjc=0.6, mjc=0.4, xcjc=0.6, tf=3e-11, tr=1e-9, fc=0.5,
-                rb=30.0, rbm=8.0, re=1.0, rc=15.0, tnom=_T0)
+                rb=30.0, rbm=8.0, re=1.0, rc=15.0, tnom=_T0C)
 
     def solve(cls, **kw):
         c = SubCircuit()

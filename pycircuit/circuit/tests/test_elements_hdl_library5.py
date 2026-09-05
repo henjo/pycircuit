@@ -62,6 +62,7 @@ from pycircuit.utilities.param import Parameter
 _KB = float(KBOLTZMANN)
 _QE = float(QELECTRON)
 _T0 = float(defaultepar.T)
+_T0C = _T0 - 273.15     # the same temperature as a card writes it (Celsius)
 _UT = _KB * _T0 / _QE
 _EPSOX = 3.9 * 8.854187817e-12
 _EPSSI = 11.7 * 8.854187817e-12
@@ -356,7 +357,7 @@ def test_charge_pump_up_and_down_currents():
 #: series resistance and a finite shunt.  ``resp`` scaled so that
 #: ``V(opt) = 1`` (one sun) gives ``Iph = 0.4 A``.  ``tnom`` is the
 #: ambient, so the temperature path is the identity here.
-CELL = dict(IS=2e-9, n=1.3, rs=0.02, rsh=50.0, resp=0.4, tnom=_T0)
+CELL = dict(IS=2e-9, n=1.3, rs=0.02, rsh=50.0, resp=0.4, tnom=_T0C)
 
 
 def _cell_iv(v, sun, card=CELL):
@@ -399,7 +400,7 @@ def test_photodiode_dark_is_the_spice_diode():
         c = SubCircuit()
         c['vs'] = VS('a', gnd, v=v)
         c['D'] = eh.DiodeSpiceHdl('a', gnd, IS=2e-9, n=1.3, rs=0.02,
-                                  tnom=_T0)
+                                  tnom=_T0C)
         ref = float(_dc(c).i('vs.plus'))
         got = _cell_current(v, 0.0, dict(CELL, rsh=1e30))
         assert_allclose(got, ref, rtol=1e-12, atol=1e-30)
@@ -459,7 +460,7 @@ def test_led_output_is_linear_in_current_above_threshold():
         c = SubCircuit()
         c['is'] = ISRC(gnd, 'a', i=i)
         c['X'] = eh.LedHdl('a', gnd, 'opt', gnd, IS=1e-18, n=2.0, eta=eta,
-                           ith=ith, tnom=_T0)
+                           ith=ith, tnom=_T0C)
         c['R'] = R('opt', gnd, r=1e6)
         got.append(float(_dc(c).v('opt')))
     assert got[0] == 0.0 and got[1] == 0.0
@@ -477,9 +478,9 @@ def test_optocoupler_current_transfer_ratio_is_resp_times_eta():
     c = SubCircuit()
     c['is'] = ISRC(gnd, 'a', i=iled)
     c['L'] = eh.LedHdl('a', gnd, 'opt', gnd, IS=1e-18, n=2.0, eta=eta,
-                       tnom=_T0)
+                       tnom=_T0C)
     c['P'] = eh.PhotodiodeHdl('pa', gnd, 'opt', gnd, IS=1e-12, n=1.0,
-                              resp=resp, tnom=_T0)
+                              resp=resp, tnom=_T0C)
     c['vs'] = VS('pa', gnd, v=0.0)          # short circuit
     r = _dc(c)
     assert_allclose(float(r.i('vs.plus')), resp * eta * iled, rtol=1e-9)
@@ -787,13 +788,13 @@ def test_mesfet_limiter_declarations_are_what_the_docstrings_say():
 #: level 3's bulk-charge triode term has ``fbody = 0`` and its ``vdsat``
 #: is ``vgs - vth``, which is Shichman-Hodges exactly.
 COINCIDE = dict(vto=0.75, kp=8e-5, gamma=0.0, phi=0.70, w=20e-6, l=2e-6,
-                tnom=_T0)
+                tnom=_T0C)
 
 #: Every knob on, at values a 1 um process card would carry.  ``as`` is
 #: SPICE's own spelling.
 FULL = dict(vto=0.7, u0=500.0, tox=2e-8, nsub=1e16, xj=3e-7, nfs=1e11,
             eta=0.05, delta=0.5, theta=0.1, vmax=1e5, kappa=0.3,
-            w=10e-6, l=1e-6, ld=0.05e-6, tnom=_T0,
+            w=10e-6, l=1e-6, ld=0.05e-6, tnom=_T0C,
             IS=1e-14, cj=3e-4, cjsw=3e-10, ad=1.6e-11, pd=1.2e-5,
             ps=1.2e-5, cgso=3.5e-10, cgdo=2.5e-10, cgbo=2.0e-10)
 FULL['as'] = 1.6e-11

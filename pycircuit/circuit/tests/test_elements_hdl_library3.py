@@ -1400,7 +1400,7 @@ def _ekv_vp(vgb, card, T=None):
     """
     T = _T0 if T is None else T
     phi = _ekv_phi(card, T)
-    vto = card['vto'] - card.get('tcv', 0.0) * (T - card.get('tnom', _T0))
+    vto = card['vto'] - card.get('tcv', 0.0) * (T - (card.get('tnom', _T0 - 273.15) + 273.15))
     g = card['gamma']
     vgp = vgb - vto + phi + g * math.sqrt(phi)
     if vgp > 0.0:
@@ -1410,7 +1410,7 @@ def _ekv_vp(vgb, card, T=None):
 
 def _ekv_phi(card, T=None):
     T = _T0 if T is None else T
-    tnom = card.get('tnom', _T0)
+    tnom = (card.get('tnom', _T0 - 273.15) + 273.15)
     trat = T / tnom
     egt = 1.16 - 7.02e-4 * T ** 2 / (T + 1108.0)
     egn = 1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0)
@@ -1461,10 +1461,10 @@ def test_ekv_weak_inversion_is_exponential_with_the_slope_factor():
         assert_allclose(swing_at(ideal, vg), math.log(10.0) * _UT,
                         rtol=1e-4)
     ## The textbook number, at 300 K: 59.5 mV per decade.
-    ## 59.53 mV/decade with the exact Boltzmann constant (SI 2019) and the
-    ## tree's `qelectron = 1.602e-19`; it read 0.059505 with k = 1.38e-23
-    ## until 2026-09-05, and would read 0.059526 with the exact charge too.
-    assert_allclose(math.log(10.0) * _UT, 0.059533, rtol=1e-4)
+    ## 59.526 mV/decade with the exact Boltzmann constant and elementary
+    ## charge (SI 2019); it read 0.059505 with k = 1.38e-23 and
+    ## q = 1.602e-19 until 2026-09-05.
+    assert_allclose(math.log(10.0) * _UT, 0.059526, rtol=1e-4)
     ## and it IS weak inversion: picoamps, twelve decades below the
     ## strong-inversion current at 3 V.
     assert _ids(ideal, 1.0, -0.05) < 1e-11
@@ -2395,12 +2395,15 @@ def _ekv_analog_unlimited():
         bdb, bgb = Branch(d, b), Branch(g, b)
         T = TEMP
         ut = var(vt(T), 'ut')
-        trat = var(T / tnom, 'trat')                                # noqa
+        ## ⚠ the model takes `tnom` in Celsius since 2026-09-05; this
+        ## private mirror of the EKV analog must translate it the same way
+        tnom_k = tnom + 273.15                                      # noqa
+        trat = var(T / tnom_k, 'trat')                             # noqa
         ltr = var(sympy.log(trat), 'ltrat')
         egT = var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
-        egn = var(1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0),     # noqa
+        egn = var(1.16 - 7.02e-4 * tnom_k ** 2 / (tnom_k + 1108.0),  # noqa
                   'egtnom')
-        vtoT = var(vto - tcv * (T - tnom), 'vtoT')                  # noqa
+        vtoT = var(vto - tcv * (T - tnom_k), 'vtoT')                # noqa
         kpT = var(kp * safe_pow(trat, bex, lo=1e-3), 'kpT')         # noqa
         phiT = var(phi * trat - 3.0 * ut * ltr - egn * trat + egT,  # noqa
                    'phiT')
@@ -2460,7 +2463,7 @@ def test_ekv_temperature_path_moves_threshold_and_mobility():
     than by reading the parameter back.
     """
     from pycircuit.circuit.circuit import ParameterDict
-    card = dict(EKV_IDEAL, tcv=1.5e-3, bex=-1.5, tnom=300.0)
+    card = dict(EKV_IDEAL, tcv=1.5e-3, bex=-1.5, tnom=26.85)    # 300 K, Celsius on the card
     el = _mk(eh.EkvNmosHdl, 'd', 'g', 's', 'b', **card)
 
     def epar_at(T):
