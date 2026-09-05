@@ -11585,6 +11585,65 @@ def test_the_ppv_samples_are_pair_consistent_and_second_order():
         'of 4, the first block gave 2' % (errs[0], errs[1])
 
 
+def test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too():
+    """⚠ THE ALGEBRAIC STATE'S SLAVED COUPLING IS O(h), AND THE FIRST BUILD
+    DROPPED IT.  Series-loss tank (node `x` between `L` and `R` is
+    algebraic) with an asymmetric core, so the node-`v` PPV has a real
+    mean (44% of its rms).  The exact reference is the reduced ODE
+    `vdot = i_B(v) - i_L`, `L i_Ldot = v - R i_L` under the scipy adjoint:
+
+        c_true = 1.204953e-07     <v_v> = +3.137167e-02
+
+    With the full `G` in the consistent propagation `c` was 0.60 / 0.29 /
+    0.15% low at 240/480/960 points and the mean 0.37 / 0.16 / 0.08% low
+    -- first order, on BOTH the raw and consistent objects, which is what
+    sent the review session looking for a linear-DAE cell (empty here:
+    `ppv` is autonomous-only).  With the Schur complement `G[D,NZ] -
+    G[D,Z] G[A,Z]^-1 G[A,NZ]`: 2.7e-4 / 7e-5 / 2e-5 and 8.6e-4 / 2e-4 /
+    5e-5.  Gates at 240 and 480 points on both, and on the order.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    C_TRUE, MEAN_TRUE = 1.204953e-07, 3.137167e-02
+    errs_c, errs_m = [], []
+    for npts in (240, 480):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir.add_node('x')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', 'x', L=1.0)
+        cir['Rs'] = R('x', gnd, r=0.2)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: 1.0 * (u - u ** 3 / 3.0)
+                           + 0.25 * (u ** 2 - 2.0))
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        m = cir.n - 1
+        x0 = np.zeros(m)
+        x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.66, timestep=6.66 / npts, x0=x0,
+                      maxiterations=200)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        errs_c.append(abs(pac.diffusion_constant(pss) / C_TRUE - 1.0))
+        _v, info = pss.ppv()
+        S = np.asarray(info['samples_eq'])[:, :m]
+        h = np.diff(np.asarray(info['times'], dtype=float))
+        mean = float((S[:len(h), 0] * h).sum()) / float(pss.period)
+        errs_m.append(abs(mean / MEAN_TRUE - 1.0))
+    assert errs_c[0] < 6e-4 and errs_c[1] < 2e-4, \
+        'c is %.2e / %.2e from the exact 1.204953e-07; the full-G ' \
+        'propagation gave 6.0e-3 / 2.9e-3' % tuple(errs_c)
+    assert errs_c[0] / errs_c[1] > 3.0, \
+        'c errors %.2e -> %.2e: not second order' % tuple(errs_c)
+    assert errs_m[0] < 2e-3 and errs_m[1] < 5e-4 and errs_m[0] / errs_m[1] > 3.0, \
+        'the node-v mean is %.2e / %.2e from +3.137167e-02, or not ' \
+        'second order; the full-G propagation gave 3.7e-3 / 1.6e-3' \
+        % tuple(errs_m)
+
+
 class _DcHeldNoise(IS):
     """`CY` proportional to the voltage across the element, which is a DC
     node held at 1 V on the orbit -- constant along it, ZERO at the zero

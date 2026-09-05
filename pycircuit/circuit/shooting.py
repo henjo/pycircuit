@@ -3390,8 +3390,36 @@ class PSS(Analysis):
                     (np.asarray(self.cir.G(_xj), dtype=float),),
                     self.irefnode, self.toolkit)
                 _Gj = np.asarray(_Gj, dtype=float)
-                _vp_j = st[:m] + (np.asarray(_cs1[_j], dtype=float)
-                                  + _hs[_j] * _Gj).T @ _z
+                _Cj = np.asarray(_cs1[_j], dtype=float)
+                if _alg_rows:
+                    ## ⚠ ON A DAE THE ALGEBRAIC STATE IS SLAVED, AND ITS
+                    ## COUPLING INTO THE DIFFERENTIAL PROPAGATION IS O(h).
+                    ## A consistent perturbation propagates as
+                    ## `C_D dx_{k-1} = (C_D + h G_red) dx_k` on the
+                    ## differential states, with `G_red` the Schur
+                    ## complement `G[D,NZ] - G[D,Z] G[A,Z]^-1 G[A,NZ]`.
+                    ## With the full `G` instead, the series-loss tank had
+                    ## `c` 0.6 / 0.3 / 0.15% low at 240/480/960 points
+                    ## (first order) and the invariant drifting at 1.1e-3;
+                    ## with the complement `c` is 2.7e-4 / 7e-5 / 2e-5 from
+                    ## the exact reduced-ODE value and the drift 4e-4 /
+                    ## 1.1e-4 / 2.7e-5 -- second order (found through the
+                    ## review session's linear-DAE partition, 2026-09-05).
+                    _A = np.asarray(_alg_rows, dtype=int)
+                    _Zc = np.asarray(_alg_cols, dtype=int)
+                    _D = np.array([i for i in range(m) if i not in _alg_rows],
+                                  dtype=int)
+                    _NZ = np.array([j for j in range(m) if j not in _alg_cols],
+                                   dtype=int)
+                    _Gred = (_Gj[np.ix_(_D, _NZ)]
+                             - _Gj[np.ix_(_D, _Zc)] @ np.linalg.solve(
+                                 _Gj[np.ix_(_A, _Zc)], _Gj[np.ix_(_A, _NZ)]))
+                    _corr = np.zeros(m)
+                    _corr[_NZ] = (_Cj[np.ix_(_D, _NZ)]
+                                  + _hs[_j] * _Gred).T @ _z[_D]
+                    _vp_j = st[:m] + _corr
+                else:
+                    _vp_j = st[:m] + (_Cj + _hs[_j] * _Gj).T @ _z
                 ## ⚠ AND ZERO ON THE ALGEBRAIC COLUMNS, as `C^T v_1` is:
                 ## the state functional contracts a perturbation ON the
                 ## constraint manifold, whose algebraic components are
