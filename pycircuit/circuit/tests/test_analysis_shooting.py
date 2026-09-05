@@ -11881,9 +11881,12 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
     0.003 with the corner at 1.02-1.12x the prediction (converging to 1
     with Q), `E_inf = 1.01`, and a Q-INDEPENDENT linear coefficient of
     1.74 / 1.81 / 1.83 / 1.84.  A term linear in `df` against a `1/df^2`
-    part is a `1/df` piece of the spectrum -- the shape Traversa &
-    Bonani's phase-orbital correlation term carries.  That attribution is
-    by shape and Q-scaling only, not derived: recorded as such.
+    part is a `1/df` piece of the spectrum.  ⚠ It is NOT Traversa &
+    Bonani's correlation term in the naive reading: that coefficient goes
+    as `Q_lambda / c`, `c` is exactly flat in Q here (slope -0.000), so it
+    would scale as `Q_lambda` and the measured one is flat; and it persists
+    to `df = 0.3 f0`, fifteen corners out.  What it is is OPEN; this test
+    pins its existence, size and Q-independence, not its origin.
 
     Gated at Q = 8 and Q = 32 on the two-term fit: the corner within 20%
     of `f0/(2 pi Q_lambda)`, `E_inf` within 10% of 1, and the corner ratio

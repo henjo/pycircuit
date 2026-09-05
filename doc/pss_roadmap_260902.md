@@ -3159,8 +3159,16 @@ is a STEP (a Lorentzian AM sideband over the `1/Δf²` PM part), not a peak; its
 `Q_λ^−1.03` over Q = 4…32. A step alone misfits (rms 0.05–0.13, corner 1.4× `f₀/(2πQ_λ)`); a step PLUS a
 term linear in `Δf/f₀` fits to rms 0.003 with the corner at 1.12 / 1.06 / 1.04 / 1.02× the prediction
 (→ 1 with Q), `E_∞ = 1.01` at every Q (AM = PM far out), and a **Q-independent linear coefficient 1.74 /
-1.81 / 1.83 / 1.84** — a `1/Δf` piece of the spectrum, the shape T&B's phase-orbital correlation term
-carries. **Attributed by shape and Q-scaling only; T&B (26) is not evaluated here.** Test:
+1.81 / 1.83 / 1.84** — a `1/Δf` piece of the spectrum. ⚠ **Its attribution to T&B's phase-orbital
+correlation term is ARGUED AGAINST by the scaling, the review session's own constraint:** that term's
+coefficient goes as `D_lhj = 1/O(μ_l) ∝ Q_λ`, and in `E` it is divided by the phase part `∝ c`; `c` on van
+der Pol is exactly flat in Q (6.2537 / 6.2515 / 6.2514 / 6.2504e-8 over Q = 4…32, slope −0.000), so a
+correlation-term coefficient would scale as `Q_λ` and the measured one does not. And the term persists
+to `Δf = 0.3 f₀`, fifteen corners out, where a phase×amplitude cross term would fall as `1/Δf²`. **What
+the `1/Δf` piece is — Q-independent, coefficient 1.8, present to `0.3 f₀` — is OPEN.** Candidates
+untested: a first-order-in-`Δf/f₀` asymmetry of the LTV sideband (the `l = 2` fold's transfer, the tank
+away from resonance), or the phase-only reference `P_c f₀² c/Δf²` itself being the leading term of a
+series in `Δf/f₀`. Test:
 `test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode`. (An instrument note: the reference
 `c` here is the pair-consistent PPV's; before §0l it was 3e-4 high on this fixture, invisible at this
 level.)
