@@ -3325,7 +3325,56 @@ The held variance is `kT/C` to `1e-4`; the tracking phase sits on the switch-hel
 every grid, so that floor is the separate item it always was. `modulated=True` now says it is for gentle
 modulation and fails as a factor, with the suite's table (1.000 / 4.33 / 13.2 / 15.7 / 16.0 over
 `goff/gon = 1…1e-6`). Tests: `test_a_switched_capacitor_holds_kTC_with_per_step_CY`; the refusal test
-no longer lists `oscillator_covariance`.
+no longer lists `oscillator_covariance`. **Verified by the suite against Spectre's `noisetype=timedomain`
+at matched instants, the whole PROFILE and not only the held number: 0.99878 track, 0.99915 edge, 0.99999
+hold** — the transition is what only a per-step `CY` can produce. Two things it corrected in the prose:
+the held variance converges at BETTER than second order (6.3× / 7.7× / 13.3× per doubling, the last
+against Spectre's own floor), and **the tracked variance is 0.957 `kT/C`, not `kT/C`** — a sinusoidal
+clock holds the switch at full `gon` only instantaneously, so the capacitor is never in equilibrium
+with `Ron`; both tools agree independently, which is worth more than a round number.
+
+**The suite's three further findings, 2026-09-05, all acted on:**
+
+* **`PAC.solve` reported its sidebands wrongly — two defects, neither in the solve (FIXED).** (a) The
+  DFT ran over `fp.times`, `[0, T]` INCLUSIVE, so the endpoint repeated the first sample and `dt =
+  T/(N−1)` put the sidebands at `f₀(N−1)/N`: 109 500 / 89 500 Hz for 110 000 / 90 000 at N = 200
+  (109 875 at 800), costing an ORDER (O(h) for O(h²), 68× at 800 points). (b) `|sb + f|` folded a negative
+  sideband frequency to positive with the coefficient untouched; the physical response there is the
+  CONJUGATE (uncorrected, `l = −1` was 166% off and did not converge). After the fix the reported
+  coefficients equal `adjoint_sideband_row · u_ac` to `1e-15` at every grid with `l = −1` the conjugate —
+  the adjoint never calls `freq_analysis`, so it is the proof, and it exonerates the solve. ⚠ Both were
+  invisible to every earlier PAC gate: their `v(t)` is CONSTANT over the period (5.6e-16 variation) and a
+  constant's DFT is exact for any window — §D 0b, a fixture that could not express the defect. The gate
+  now runs on the switched capacitor.
+* **A frequency-dependent `CY` could not be swept (FIXED, two layers).** The generated `CY` came out
+  RAGGED under an array frequency (a flicker entry array-valued, thermal entries scalar — at `kf = 0`
+  too, the term being emitted unconditionally), and on top of that the small-signal analysis handed `CY`
+  the whole sweep while the assembly takes scalar entries — which blocked a handwritten coloured `IS`
+  just the same. The generated `CY` now broadcasts; `Noise` evaluates `CY` per frequency;
+  `dc_steady_state` builds its representative at the first frequency. A coloured `IS` and a level-1 MOS
+  sweep to exactly the per-frequency values; three compact models return `(n, n, nf)`. The LIST form
+  `freqs=[…]` fails on ANY circuit with a `TypeError` (arrays work) — a pre-existing API quirk, recorded,
+  not changed.
+* **`oscillator_spectrum`'s `S_v` is exactly 0.5000× a one-sided PSD** (`|X₁|² = A²/4` against the
+  carrier power `A²/2`; Spectre, four decades). `L_dBc` unaffected. Wording fixed, scale kept: a return
+  value callers may already divide by `|X₁|²`.
+* **From the same doc, confirmations worth keeping:** Spectre's own PPV agrees in scale to 6e-5 and in
+  shape to 2.5e-3 with `ppv()` — the `v·ẋ(0) = 1` normalisation settled from outside the project, after
+  the pair-consistent contraction landed; `diffusion_constant` reproduces Spectre's swept pnoise to four
+  digits and `L_dBc` to 0.001 dB over three decades. **High Q is the LIMITING, not the tank loss:** `λ₂ =
+  exp(−3bA²T/4C)` has no `g_l` in it, and at `λ₂ = 0.53 / 0.9 / 0.99` the PPV machinery does not degrade
+  (multiplier to five digits against the describing function) — what shrinks is the validity window of
+  a phase-only spectrum, collapsing onto one curve in `f/f_amp` with `f_amp = −ln λ₂/(2πT)` (−0.03 dB at
+  `f_amp/10`, −0.4 dB at `f_amp/3`). `null_residual` stays flat at 1e-9 across it and tells a caller
+  nothing; `σ_min` is not in `info`. And a converged autonomous PSS needs a grid that grows with `λ₂`: at
+  0.99, 400 and 800 points burn their budget and fail where 1600 converges faster than either, `reltol`
+  does nothing, and `pss.converged` is the only thing separating a stall from a solution — the failure
+  message sends users to the one knob that provably does not help. **Open, not built.**
+* **`tnom` (MOS_LEVEL1 (a), (b)) — a DECISION FOR THE USER, not changed:** the level-1 model's `tnom`
+  defaults to 300.15 K while `defaultepar.T` is 300 K, so a default-constructed device is
+  temperature-scaled by 4.9e-4 nobody asked for — both numbers pycircuit's own; and `tnom` is KELVIN where
+  every SPICE card is CELSIUS, so a transcribed `TNOM=27` returns `1.9e92` A with no warning. The model
+  itself matches Spectre's built-in mos1 to 3.7e-15.
 
 ### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
 
