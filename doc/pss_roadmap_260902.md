@@ -3228,8 +3228,14 @@ algebraic state as a free coordinate and then zeroed it; on a DAE it is SLAVED, 
 the differential propagation is `O(h)`. The right object is the Schur complement `G[D,NZ] − G[D,Z]
 G[A,Z]⁻¹ G[A,NZ]` — the same elimination the algebraic fill performs for the rows. With it `c` is `2.7e-4
 / 7e-5 / 2e-5` from exact, the mean `8.6e-4 / 2e-4 / 5e-5`, the drift `4.3e-4 / 1.1e-4 / 2.7e-5`: second
-order on all three. Test: `test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too`. **What is still
-open is only the raw block's `3e-11` exactness on the divider's node rows.** Also structural: the consistent object is ZERO on the algebraic
+order on all three. Test: `test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too`. ⚠ **Its
+boundary is sharp and named:** `G[A,Z]` nonsingular IS the index-1 condition, so the complement does
+not exist at index ≥ 2 (L-I cutset, C-V loop); the review session showed from the pencil that where it
+exists it is the exact reduced generator (`eig(−G_red, C[D,NZ])` = the finite generalised eigenvalues
+of `(C, G)` to `1e-12`) and that it is undefined on `li_plus_rc` / `cv_plus_rc`. The propagation now
+warns once with the reason and falls back to the full `G` (first order there, as the fill already is),
+pinned on an autonomous L-I-cutset oscillator that `PSS` solves. **What is still open is only the raw
+block's `3e-11` exactness on the divider's node rows.** Also structural: the consistent object is ZERO on the algebraic
 COLUMNS, as `Cᵀv₁` is (the `hGᵀz` term would leave `4e-3` there; the full suite's Demir-(24) gate
 caught it, the targeted subset had not).
 
