@@ -784,17 +784,18 @@ def test_pss_method_selection_cannot_fall_through_silently():
     """
     from pycircuit.circuit.integrator import (EulerIntegrator,
                                               TrapezoidalIntegrator,
-                                              Gear2Integrator)
+                                              Gear2Integrator, TRBDF2Integrator)
     circuit.default_toolkit = circuit.numeric
     want = {'euler': EulerIntegrator, 'trap': TrapezoidalIntegrator,
             'trapezoidal': TrapezoidalIntegrator,
-            'gear': Gear2Integrator, 'gear2': Gear2Integrator}
+            'gear': Gear2Integrator, 'gear2': Gear2Integrator,
+            'trbdf2': TRBDF2Integrator}
     for name, cls in want.items():
         tr = PSS(_q20_rlc(), method=name)._transient()
         assert isinstance(tr.par.integrator, cls), \
             'method=%r selected %s' % (name, type(tr.par.integrator).__name__)
 
-    with pytest.raises(ValueError, match="'euler', 'trap' or 'gear'"):
+    with pytest.raises(ValueError, match="'euler', 'trap', 'gear' or 'trbdf2'"):
         PSS(_q20_rlc(), method='bdf3').solve(period=1e-3, timestep=1e-5,
                                              maxiterations=2)
 
@@ -12435,3 +12436,93 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
     fp = pss.factored_period_trbdf2(x0, T, 100)
     with pytest.raises(NotImplementedError, match='TR-BDF2'):
         fp.matvec_transposed(np.ones(m))
+
+
+def test_driven_pss_under_trbdf2_matches_ac_and_gives_second_order_monodromy():
+    """`method='trbdf2'` solves a driven PSS and routes the small-signal
+    monodromy to the two-stage map.
+
+    The linear RC's periodic steady state is its AC steady state, and its
+    monodromy is `exp(-T/tau)` in closed form.  A TR-BDF2 shooting solve
+    must reproduce both: the node fundamental to a few ppm of the AC phasor,
+    and the spectral radius to `exp(-T/tau)`.  `factored_period()` returns a
+    `kind='trbdf2'` map, so every surface built on it inherits the
+    second-order (no-opener) monodromy without a Gear-2 twin.
+    """
+    circuit.default_toolkit = circuit.numeric
+    period, N = 1e-3, 400
+    cir = SubCircuit()
+    cir['vs'] = VSin(1, gnd, vac=2.0, va=2.0, freq=1 / period, phase=20)
+    cir['R'] = R(1, 2, r=1e4)
+    cir['C'] = C(2, gnd, c=1e-8)
+    tau = 1e4 * 1e-8
+
+    resac = AC(cir).solve(1 / period)
+    pss = PSS(cir, method='trbdf2')
+    pss.solve(period=period, timestep=period / N)
+    assert pss.converged
+
+    tv, X = pss.waveform
+    X = np.asarray(X, dtype=float)
+    iref = pss.irefnode
+    i2 = cir.get_node_index(cir.get_node('2'))
+    row = i2 if i2 < iref else i2 - 1  # reduced index... but waveform is full
+    ## pss.waveform is full-size (cir.n rows); use the full index
+    v2 = X[i2][:-1]
+    tt = np.asarray(tv, dtype=float)[:-1]
+    f0 = 1 / period
+    fund = 2.0 / len(v2) * np.sum(v2 * np.exp(-2j * np.pi * f0 * tt))
+    ac2 = complex(resac.v('2'))
+    ## the DFT phase reference differs from AC's by a fixed rotation; compare
+    ## magnitudes and that the ratio is a pure phase (unit modulus)
+    assert abs(abs(fund) - abs(ac2)) < 1e-3 * abs(ac2), (fund, ac2)
+
+    fp = pss.factored_period()
+    assert fp.kind == 'trbdf2'
+    ## spectral radius is the RC pole exp(-T/tau)
+    assert abs(pss.spectral_radius - np.exp(-period / tau)) < 1e-6
+
+
+def test_autonomous_pss_under_trbdf2_finds_its_own_period():
+    """`method='trbdf2'` solves the free-period system for an oscillator.
+
+    Self-starting, so `x0` is the unknown with no manufactured opener. On
+    van der Pol the TR-BDF2 solve must converge to the same period the LMM
+    methods find (they agree to O(h^2)) and report a unit multiplier (the
+    orbit's own free-phase direction), and `factored_period()` must hand
+    back the two-stage map.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _scaled_vdp()
+    iref = cir.get_node_index(gnd)
+    iv = cir.get_node_index('v')
+    x0 = np.zeros(cir.n)
+    x0[iv] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, reltol=1e-8).solve(refnode=gnd, tend=35.0,
+                                                timestep=0.02, x0=x0)
+    t = np.asarray(res.sweep_values, dtype=float).ravel()
+    X = np.asarray(res.x, dtype=float)
+    W = X[:, t > 21.0]
+    red = lambda f: np.concatenate((f[:iref], f[iref + 1:]))
+    seed = red(W[:, int(np.argmax(W[iv]))])
+
+    def solve(method):
+        pss = PSS(_scaled_vdp(), method=method, reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.3, timestep=6.3 / 300, x0=seed,
+                      maxiterations=40)
+        return pss
+
+    ref = solve('gear')
+    pss = solve('trbdf2')
+    assert pss.converged and pss.autonomous
+    ## same limit cycle: periods agree to O(h^2)
+    assert abs(pss.period - ref.period) < 1e-3 * ref.period, \
+        (pss.period, ref.period)
+    ## an oscillator's monodromy carries a multiplier at 1 (the orbit tangent)
+    assert abs(pss.spectral_radius - 1.0) < 1e-3, pss.spectral_radius
+    assert pss.factored_period().kind == 'trbdf2'

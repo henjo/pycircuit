@@ -6310,9 +6310,37 @@ T3. **Adaptive step control from the embedded 2(3) estimate** (this increment). 
    reltol spends more steps and lands closer to analytic; and the adaptive waveform on a driven
    2-node RC matches a tight DOP853 reference to 8e-6 relative.
 
-T4. **Still open: the adjoint transpose.** `matvec_transposed` on a `kind='trbdf2'` FactoredPeriod
-   refuses loudly rather than fall through to the plain one-step transpose (the wrong map), so
-   `ppv`/`pnoise`/PAC over TR-BDF2 are not yet available. And `method='trbdf2'` in `PSS.solve`
-   (the dense shooting Newton) is still not wired -- the Newton propagates through
-   `companion_coefficients`, which the DIRK lacks; the monodromy is delivered via
-   `factored_period_trbdf2` about an externally converged orbit.
+T4. **`method='trbdf2'` in the shooting Newton** (this increment). The dense Newton needs the
+   monodromy, not `companion_coefficients`, so TR-BDF2 gets its own dense traversal
+   `_traverse_trbdf2` (the same per-step two-stage map as the factored one, accumulated into a
+   full `m x m` `P`, plus a period column `Pt` for the autonomous case). Both were
+   FINITE-DIFFERENCE checked before use (roadmap 0j: the dT column has been got wrong here twice):
+   `M` vs FD to 7e-12, `Pt` vs central FD to its truncation floor. Wiring:
+   `_companion_reach` returns 1 for the DIRK (never solves-history); `x0_unknown` is forced True
+   (self-starting, no manufacturing step); `func_trbdf2` (driven, `F = x0 - phi(x0)`,
+   `J = I - M`) and `func_autonomous_trbdf2` (free period, with the `Pt` column and a phase row);
+   `factored_period()` routes to the two-stage map; the replay skips the LMM seam/interior LTE
+   (which does not apply to a self-starting method); and `monodromy_twin` EXEMPTS trbdf2 -- the
+   twin exists to give a first-order one-step LMM a second-order monodromy, and the DIRK's native
+   one is already second-order, so a Gear-2 twin would be pure cost and would hide its spectrum.
+   Verified: driven RC matches the AC steady state and reports `rho = exp(-T/tau)` exactly;
+   autonomous van der Pol converges to the LMM period (to O(h^2)) with a unit multiplier. Matrix-
+   free trbdf2 shooting refuses (the monodromy is a dense two-stage product).
+
+   ⚠ AN EXTERNAL CROSS-CHECK (docs session, from Bank 1985 + Hosea & Shampine + Kennedy &
+   Carpenter, read firsthand) landed while this was built and CONFIRMED the constants
+   independently: `gamma = 2 - sqrt(2)` is BOTH the one-LU condition AND the truncation-error
+   optimum (Bank eq. 38, `C(gamma) = (-3g^2+4g-2)/(12(2-g))` minimised there at `~ -0.0404` =
+   this file's derived estimator coefficient `(4-3sqrt2)/6`); and there is a factor-of-two
+   convention trap in `gamma` between Bank/Hosea (the abscissa, our value) and Kennedy & Carpenter
+   (its half). Both now noted in the integrator docstring. Index-2: HLR Theorem 5.9's no-order-
+   reduction guarantee does NOT apply to TR-BDF2 (its `A` is singular -- the ESDIRK zero first
+   row), but the docs session MEASURED full order 2 on a Hessenberg index-2 problem anyway, so no
+   gate is written either way.
+
+T5. **Still open: the adjoint transpose.** `matvec_transposed` on a `kind='trbdf2'` FactoredPeriod
+   refuses loudly rather than fall through to the plain one-step transpose (the wrong map), so the
+   noise/sideband surfaces that need the per-step adjoint (`pnoise`, PAC's collected `ts`) over
+   TR-BDF2 are not yet available. The pure `M^T` matvec and the `collect=True` per-step
+   `ts`/`states` for a two-stage method are the remaining derivation; the PPV LEFT eigenvector
+   needs only the pure `M^T`, so it is the first sub-step when this resumes.

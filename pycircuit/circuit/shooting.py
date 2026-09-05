@@ -2079,7 +2079,14 @@ class PSS(Analysis):
         integrator rather than inferred from `method`, so a fourth method
         arrives with the right answer instead of the default one.
         """
+        from pycircuit.circuit.integrator import TRBDF2Integrator
         integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        if isinstance(integ, TRBDF2Integrator):
+            ## Self-starting one-step DIRK: it reads only `x_n`, so it never
+            ## needs the entering history as an unknown -- reach 1.  Asking
+            ## it for `companion_coefficients` (which it refuses) would be the
+            ## wrong question.
+            return 1
         alphas, _b = integ.companion_coefficients(1.0, 1.0)
         return len(alphas) - 1
 
@@ -2820,6 +2827,94 @@ class PSS(Analysis):
             rhs = A1 * (C1 @ dY1) + A0 * (Cn @ w)
             w = lu2.solve(rhs)
         return w
+
+    def _i_at(self, x_reduced):
+        """The reduced resistive current `i(x)` at a point.  For an
+        AUTONOMOUS circuit `dq/dt = -i(x)` (no source term), which is the
+        stage derivative the TR-BDF2 period column needs."""
+        tr = self._transient()
+        i = tr.cir.i(self._insert_refnode(x_reduced), tr.epar)
+        iref = self.irefnode
+        return self.toolkit.concatenate((i[:iref], i[iref + 1:]))
+
+    def _traverse_trbdf2(self, x_in, T, times, hs, want_dT=False):
+        """One period under TR-BDF2 with the DENSE sensitivities -- the
+        shooting Newton's monodromy for a two-stage DIRK.
+
+        The matrix-free `_traverse_factored_trbdf2` stores each step's
+        factors for a matvec; this instead propagates the full `m x m`
+        monodromy `P = dx/dx0` (and, with `want_dT`, the period column
+        `Pt = dx/dT`) so the ordinary dense Newton in `solve` can use
+        `J = I - M`.  Same per-step map, accumulated densely:
+
+            dY1 = K1^-1 (B1 P),   P <- K2^-1 (A1 C1 dY1 + A0 Cn P)
+
+        with `K1 = C1 + (g h/2) G1`, `B1 = Cn - (g h/2) Gn`,
+        `K2 = C2 + a33 h G2`, evaluated at `x_n`, the internal stage `Y1`,
+        and `x_{n+1}`.
+
+        ⚠ SELF-STARTING: `x_in` IS `x_0`, stepped `N` times to `x_end`.
+        There is no manufacturing step and no order-dropped opener, so `M`
+        is second-order round the whole period -- the property the LMM
+        plain path cannot have (its opener is Euler).
+
+        ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY BECAUSE THE CIRCUIT IS
+        AUTONOMOUS.  With `T` an unknown the grid rebuilds as `h_j = frac_j
+        T`, so every step scales and `dh_j/dT = h_j/T`.  For an autonomous
+        circuit the stage derivative is `f = -i(x)` with NO explicit time
+        dependence, so scaling `T` moves only the step sizes, not the
+        source evaluations -- the same fact that makes the LMM period
+        column a partial-is-total on Euler/trap.  Differentiating the two
+        stages w.r.t. `T` (through both `dx_n/dT` and the explicit `dh`):
+
+            Pt1 = K1^-1 ( B1 Pt + (g/2)(f_{Y1}+f_n)(h/T) )
+            Pt  = K2^-1 ( A1 C1 Pt1 + A0 Cn Pt + a33 f_{Y2}(h/T) )
+
+        with `f_x = -i(x)`.  Finite-difference checked before use (the dT
+        column has been got wrong in this file twice -- roadmap 0j).
+        """
+        toolkit = self.toolkit
+        m = self.cir.n - 1
+        self._want_dfdh = False
+        self._want_lte = False
+        self._begin_period(x_in)
+        integ = self._transient().base_integrator
+        g = integ.GAMMA
+        A1c, A0c, a33 = integ.A1, integ.A0, integ.STAGE_DIAG
+        iref = self.irefnode
+        Tf = float(T)
+        x = copy(x_in)
+        x0 = copy(x_in)
+        P = np.asarray(toolkit.eye(m), dtype=float)
+        Pt = np.zeros(m)
+        for _j, t in enumerate(times[1:]):
+            h = hs[min(_j, len(hs) - 1)]
+            xn = x
+            x = copy(self.solve_timestep(xn, t, h))
+            Y1f = self._transient()._trbdf2_Y1
+            Y1 = toolkit.concatenate((Y1f[:iref], Y1f[iref + 1:]))
+            Cn = np.asarray(self._C_at(xn)); Gn = np.asarray(self._G_at(xn))
+            C1 = np.asarray(self._C_at(Y1)); G1 = np.asarray(self._G_at(Y1))
+            C2 = np.asarray(self._C_at(x));  G2 = np.asarray(self._G_at(x))
+            s = g * h / 2.0
+            K1 = C1 + s * G1
+            K2 = C2 + a33 * h * G2
+            B1 = Cn - s * Gn
+            dY1 = np.linalg.solve(K1, B1 @ P)
+            P = np.linalg.solve(K2, A1c * (C1 @ dY1) + A0c * (Cn @ P))
+            if want_dT:
+                fn = -np.asarray(self._i_at(xn))
+                fY1 = -np.asarray(self._i_at(Y1))
+                fY2 = -np.asarray(self._i_at(x))
+                r1 = B1 @ Pt + (g / 2.0) * (fY1 + fn) * (h / Tf)
+                Pt1 = np.linalg.solve(K1, r1)
+                r2 = A1c * (C1 @ Pt1) + A0c * (Cn @ Pt) + a33 * fY2 * (h / Tf)
+                Pt = np.linalg.solve(K2, r2)
+        self._want_dfdh = False
+        self._monodromy = P
+        if want_dT:
+            return x0, x, P, Pt
+        return x0, x, P, None
 
     def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
                                      inject=None):
@@ -3971,8 +4066,19 @@ class PSS(Analysis):
         this one's by O(h^2); its orbit is re-converged, not copied.
         """
         if (getattr(self, 'monodromy', 'gear') != 'gear'
-                or getattr(self.par, 'method', 'euler') == 'gear'
+                or getattr(self.par, 'method', 'euler') in ('gear', 'trbdf2')
                 or not getattr(self, 'autonomous', False)):
+            ## ⚠ TR-BDF2 IS ONE-STEP BUT NOT FIRST-ORDER HERE.  This twin
+            ## exists because a one-step LMM's monodromy is first-order on a
+            ## limit cycle -- its opening manufacturing step is dropped to
+            ## Euler and that seam sits in the period map.  TR-BDF2 is
+            ## self-starting: no manufactured opener, so its native
+            ## monodromy is already second-order (verified against the
+            ## pencil).  Building a Gear-2 twin for it would REPLACE a
+            ## second-order map with another second-order map on a
+            ## re-converged orbit -- pure cost, and it would hide the DIRK's
+            ## own spectrum behind Gear-2's.  So trbdf2 keeps its own, like
+            ## gear does.
             return self
         if self._monodromy_twin is not None:
             return self._monodromy_twin
@@ -4048,6 +4154,13 @@ class PSS(Analysis):
             return self._factored_period_cache
 
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
+        if getattr(self.par, 'method', None) == 'trbdf2':
+            ## The DIRK has its own factored map (no opener, no pair); route
+            ## to it so every small-signal surface that reads
+            ## `factored_period()` gets the second-order monodromy.
+            fp = self.factored_period_trbdf2(x0, T, len(times) - 1)
+            self._factored_period_cache = fp
+            return fp
         if solved:
             C0, steps, x_last, x_prev = self._traverse_factored(
                 x0, xm1, times, hs, T=T)
@@ -5467,6 +5580,13 @@ class PSS(Analysis):
         ## `_resolve_x0_unknown`.  Resolved to a concrete bool HERE, before
         ## anything reads it, so every downstream use sees one value.
         x0_unknown = self._resolve_x0_unknown(x0_unknown)
+        if getattr(self.par, 'method', 'euler') == 'trbdf2':
+            ## TR-BDF2 is self-starting: `x_in` IS `x_0`, there is no
+            ## manufacturing step to differentiate `x_0` back through, so the
+            ## unknown is always `x_0` itself.  Forcing it here makes the
+            ## phase pin and every open-at-x0 branch consistent for the DIRK
+            ## without the topology heuristic having to know about it.
+            x0_unknown = True
         self._open_at_x0 = bool(x0_unknown)
         times, hs = self._period_grid(period, int(period / dt), grid)
         npts = len(times)
@@ -5695,9 +5815,11 @@ class PSS(Analysis):
         ## `ValueError` this raises.  Two tests caught it, both written for
         ## the class's earlier fall-through defects.
         method = getattr(self.par, 'method', 'euler')
-        if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2'):
+        if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2',
+                          'trbdf2'):
             raise ValueError(
-                "method must be 'euler', 'trap' or 'gear', not %r" % (method,))
+                "method must be 'euler', 'trap', 'gear' or 'trbdf2', not %r"
+                % (method,))
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,
@@ -5875,6 +5997,42 @@ class PSS(Analysis):
             F[2 * m] = np.asarray(x0_in)[phase_k] - phase_pin
             return F, J
 
+        def func_trbdf2(x):
+            """Driven fixed-period residual and Jacobian for TR-BDF2.
+
+            `x` IS `x_0` (self-starting), so `F = x_0 - phi(x_0)` and
+            `J = I - M` with `M` the dense two-stage monodromy from
+            `_traverse_trbdf2`.  No manufacturing step, no solved history.
+            """
+            x0, x_end, Mx, _Mt = self._traverse_trbdf2(
+                x, period, times, hs, want_dT=False)
+            D = np.asarray(toolkit.eye(n - 1))
+            return np.asarray(x0) - np.asarray(x_end), D - alpha * Mx
+
+        def func_autonomous_trbdf2(z):
+            """Free-period residual and Jacobian for TR-BDF2.
+
+            Unknowns `(x0, T)`; `F = [x0 - phi_T(x0), x0[k] - pinned]`,
+            `J = [[I - M, -dphi/dT], [e_k^T, 0]]`.  The period column
+            `dphi/dT` comes from `_traverse_trbdf2(want_dT=True)`, which is
+            tractable because the circuit is autonomous (scaling `T` moves
+            only the step sizes, not any source evaluation).
+            """
+            x_in, T = z[:-1], float(z[-1])
+            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
+            x0, x_end, Mx, Mt = self._traverse_trbdf2(
+                x_in, T, tms, hs_T, want_dT=True)
+            m = n - 1
+            D = np.asarray(toolkit.eye(m))
+            J = np.zeros((m + 1, m + 1))
+            J[:m, :m] = D - alpha * Mx
+            J[:m, m] = -np.asarray(Mt).ravel()
+            J[m, phase_k] = 1.0
+            F = np.zeros(m + 1)
+            F[:m] = np.asarray(x0) - np.asarray(x_end)
+            F[m] = np.asarray(x0)[phase_k] - phase_pin
+            return F, J
+
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
         ## amps on branch rows -- so its absolute floor is the `xtol` flavour
@@ -5930,7 +6088,31 @@ class PSS(Analysis):
         ## undamped iteration would have moved uphill.
 
         ## Find periodic steady state x-vector
-        if self.autonomous and solved_history:
+        if method == 'trbdf2':
+            ## The two-stage DIRK: its own dense monodromy, never
+            ## solved-history, always self-starting (x0 is the unknown).
+            if matrix_free:
+                raise NotImplementedError(
+                    'PSS: matrix-free shooting is not built for TR-BDF2; its '
+                    'monodromy is a dense two-stage product. Drop '
+                    'matrix_free, or use a one-step LMM.')
+            if self.autonomous:
+                xa = np.asarray(x, dtype=float)
+                z0 = np.concatenate((xa, [period]))
+                abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
+                xtol_z = np.concatenate((_tol, [1e-15 * period]))
+                z_ss, _info, _ier, _mesg = self._free_period_solve(
+                    func_autonomous_trbdf2, z0, abstol_z, xtol_z,
+                    _shoot_reltol, maxiterations, period)
+                x0_ss = z_ss[:-1]
+                self.period = period = float(z_ss[-1])
+                times, hs = self._period_grid(period, npts, self._grid_fracs)
+            else:
+                x0_ss, _info, _ier, _mesg = analysis.fsolve(
+                    func_trbdf2, x, maxiter=maxiterations,
+                    reltol=_shoot_reltol, abstol=_tol, xtol=_tol,
+                    toolkit=self.toolkit, full_output=True, line_search=True)
+        elif self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
             ## rule as the plain autonomous system: the two state blocks
             ## take the solution-unit tolerance, and the row that adds a
@@ -6264,7 +6446,12 @@ class PSS(Analysis):
         ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
         ## the period's, not something an earlier shooting iteration saw.
         tr._lte_probe = None
-        self._want_lte = True
+        ## TR-BDF2 has no LMM divided-difference LTE (compute_lte refuses),
+        ## and the seam/interior split is a property of a manufactured
+        ## opener it does not have -- so the replay collects no per-step LTE
+        ## for it, and the three LTE figures below report None (honestly:
+        ## the diagnostic does not apply to a self-starting DIRK).
+        self._want_lte = (method != 'trbdf2')
         lte_seen = []
         for t, dt in walk:
             x = self.solve_timestep(X[-1], t, dt)

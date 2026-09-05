@@ -654,13 +654,28 @@ class TRBDF2Integrator(Integrator):
     returns ``self`` (a one-step method has no ratio limit to enforce).
 
     THE TABLEAU, derived not quoted (the corpus has nothing on TR-BDF2).
-    ``gamma`` is fixed by the ONE-LU condition, not by accuracy: the trapezoid
-    stage diagonal ``gamma/2`` equals the BDF2 stage diagonal
-    ``(1-gamma)/(2-gamma)`` iff ``gamma^2 - 4 gamma + 2 = 0``, i.e.
-    ``gamma = 2 - sqrt(2)``.  Then the two stage Jacobians
-    ``C + (gamma*h/2) G`` and ``C + a33*h G`` are the same matrix
-    (``a22 == a33``): one factorisation per step, two solves.  Stiffly
+    ``gamma`` is fixed by the ONE-LU condition: the trapezoid stage diagonal
+    ``gamma/2`` equals the BDF2 stage diagonal ``(1-gamma)/(2-gamma)`` iff
+    ``gamma^2 - 4 gamma + 2 = 0``, i.e. ``gamma = 2 - sqrt(2)``.  Then the two
+    stage Jacobians ``C + (gamma*h/2) G`` and ``C + a33*h G`` are the same
+    matrix (``a22 == a33``): one factorisation per step, two solves.  Stiffly
     accurate by construction (``b`` is the last row of ``A``), so ``R(inf)=0``.
+
+    ⚠ THE SAME ``gamma`` IS ALSO THE ACCURACY OPTIMUM, so it is not merely a
+    cost constant.  Bank et al. 1985 (eq. 38) give the principal truncation
+    coefficient of a TR step followed by a BDF2 step as
+    ``C(gamma) = (-3 gamma^2 + 4 gamma - 2) / (12 (2-gamma))``, minimised on
+    ``(0, 1]`` exactly at ``gamma = 2 - sqrt(2)`` with
+    ``C = 2/3 - sqrt(2)/2 ~ -0.0404``.  That is the same number the embedded
+    estimator's leading coefficient ``(4 - 3 sqrt2)/6`` works out to (this
+    file's own derivation, reached independently) -- two optimality
+    properties, one root.
+
+    ⚠ CONVENTION: this is BANK / HOSEA & SHAMPINE's ``gamma`` (the stage
+    ABSCISSA ``c2 = 2 - sqrt(2) ~ 0.586``), NOT Kennedy & Carpenter's, whose
+    ``gamma`` is this one halved (``= a22 = 0.293``, our ``STAGE_DIAG``).
+    Same method, symbol differing by exactly 2; do not "correct" the value
+    against the other paper.
     """
 
     ORDER = 2
