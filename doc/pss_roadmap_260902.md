@@ -3159,7 +3159,11 @@ position test for the vdp EXCESS at `Δf/f₀ = 1e-2` (peak at `f/f₀ = 1/(2πQ
 #### §0l. The Gear pair's FIRST BLOCK is a first-order PPV — ⚠⚠ **FOUND AND FIXED 2026-09-05**; `c` was 16.6% high on a non-isochronous oscillator and every fixture before it was blind
 
 **How it was found.** The "14% deficit" of `pnoise` under `c` on `vdp + 0.3u²` (bias-sensitive:
-period 6.28 → 6.73, `c` 100× van der Pol's). Partitioned by KNOBS before theory:
+period 6.28 → 6.73, `c` 100× van der Pol's). ⚠ **This core is now load-bearing in several gates and has
+an amplitude VALIDITY RANGE:** its `0.3u²` term overwhelms the `μ = 0.02` cubic at large excursions, so
+under a strong drive or a far-off seed the pre-roll leaves the basin (measured in B16-preroll: `|u|`
+1.8 → 92 in three periods under a 0.3 A drive). On its own limit cycle (amplitude 2.2) it is fine; do
+not use it as a driven or large-signal fixture. Partitioned by KNOBS before theory:
 
     grid 400/800/1600:  pn/c 0.855 / 0.924 / 0.961    c 6.264 / 5.800 / 5.581e-6    pnoise 5.355 / 5.361 / 5.363e-6
     fundamental share of P_carrier 0.9555 (reference-bug hypothesis: out)
