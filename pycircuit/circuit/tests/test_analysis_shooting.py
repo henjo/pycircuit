@@ -8870,13 +8870,20 @@ def _raw_pair_integrals(pss, cir):
     """Orbit integrals of the RAW pair block's equation-row PPV.
 
     `samples` is the pair-consistent contraction (see `ppv`), second order
-    everywhere with an absolute floor of ~1e-5 |v| on its mean.  The raw
-    first block carries a discrete identity for a same-grid DC-injection
-    probe on the node rows of these fixtures that the consistent object
-    cannot match where the true mean is below that floor -- and which is
-    NOT general: on the bias-sensitive fixture's inductor row the raw
-    block's integral is 8% off at 400 points, first order.  The gates that
-    live on the identity read the raw pair through this.
+    everywhere with an ADDITIVE floor of ~1e-6 |v| on its mean (the
+    `h G^T z` term's own mean).  The raw first block's DC content is the
+    consistent one's times `1.5 s`, `s` the pair-consistency scale
+    (exactly 2/3 for an isochronous pair): a MULTIPLICATIVE error of
+    `1.5 s - 1`, which is +8.1% on the bias-sensitive core (`s = 0.7207`),
+    -0.16% on the series-loss tank, +0.014% on the divider -- and on a row
+    whose true mean is 4e-6 |v|, as the divider's node v, 0.014% of it is
+    4e-11 absolute, which is why the raw block read as "exact to 3e-11"
+    there while the consistent object's additive floor exceeded the
+    signal.  So on a TINY-mean row the raw block is the better DC
+    estimator (its error scales with the signal), and the gates that live
+    on the same-grid DC identity read it through this; on a row with a
+    real mean the consistent object is (second order, no scale error).
+    Measured 2026-09-05; see `test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s`.
     """
     m = cir.n - 1
     _v, info = pss.ppv()
@@ -11976,3 +11983,82 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
     assert abs(out[8.0][2] / out[32.0][2] - 1.0) < 0.1, \
         'the linear term is not Q-independent: %.2f vs %.2f' \
         % (out[8.0][2], out[32.0][2])
+
+
+def test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s():
+    """✅ THE LAST RESIDUE OF §0l, CLOSED: the raw pair block's DC content is
+    the consistent object's times `1.5 s`, with `s` the pair-consistency
+    scale read off the stored second blocks (`samples_pair[:, m:] = w2`,
+    `samples[:, m:] = w2 / s`).  `s = 2/3` exactly for an isochronous pair
+    (`w2 = -w1/3`), so the raw block's DC error `1.5 s - 1` is +8.1% on the
+    bias-sensitive core (`s = 0.7207`) and +0.014% on the divider -- and
+    the divider's node-v mean is 4e-6 |v|, so 0.014% of it is the 4e-11
+    absolute that had been recorded as an unexplained exactness.  A units
+    mix (absolute on one side, relative on the other), the review
+    session's shape 0i.  Pinned on the bias core's inductor row and the
+    series-loss tank's two rows: `mean(raw)/mean(consistent) = 1.5 s` to
+    2e-4.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def bias():
+        mu = 1.0 / (2.0 * np.pi * 8.0)
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                           + 0.3 * u ** 2)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.731, timestep=6.731 / 400,
+                      x0=np.array([2.0, 0.0]), maxiterations=300)
+        return cir, pss, [1]
+
+    def lossy():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir.add_node('x')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', 'x', L=1.0)
+        cir['Rs'] = R('x', gnd, r=0.2)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: 1.0 * (u - u ** 3 / 3.0)
+                           + 0.25 * (u ** 2 - 2.0))
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.66, timestep=6.66 / 480, x0=x0,
+                      maxiterations=200)
+        return cir, pss, [0, 2]
+    expect_s = {'bias': 0.7207, 'lossy': 0.6656}
+    for name, build in (('bias', bias), ('lossy', lossy)):
+        cir, pss, rows = build()
+        assert pss.converged
+        m = cir.n - 1
+        _v, info = pss.ppv()
+        h = np.diff(np.asarray(info['times'], dtype=float))
+        n = len(h)
+        T = float(pss.period)
+        Sp = np.asarray(info['samples_pair'], dtype=float)[:n]
+        Sc = np.asarray(info['samples'], dtype=float)[:n]
+        w2r, w2c = Sp[:, m:], Sc[:, m:]
+        mask = np.abs(w2c) > 1e-3 * np.abs(w2c).max()
+        s = float(np.median(w2r[mask] / w2c[mask]))
+        assert abs(s - expect_s[name]) < 2e-3, \
+            '%s: pair-consistency scale s = %.4f, expected %.4f' \
+            % (name, s, expect_s[name])
+        mr = (Sp[:, :m] * h[:, None]).sum(0) / T
+        mc = (Sc[:, :m] * h[:, None]).sum(0) / T
+        for j in rows:
+            ratio = mr[j] / mc[j]
+            assert abs(ratio / (1.5 * s) - 1.0) < 2e-4, \
+                '%s row %d: mean(raw)/mean(consistent) = %.6f against ' \
+                '1.5 s = %.6f' % (name, j, ratio, 1.5 * s)
