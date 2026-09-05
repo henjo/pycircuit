@@ -2418,8 +2418,21 @@ class Transient(Analysis):
             scale = 0.0
             for i in range(3):
                 di = dY[i * m:(i + 1) * m]
-                Y[i] = Y[i] + tk.insert(di, iref, 0.0)
-                scale = max(scale, np.max(np.abs(di)))
+                ## ⚠ LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION.  Without
+                ## it the coupled Newton on a diode overshoots the exponential
+                ## and settles on a spurious near-linear solution (the diode
+                ## never clamps, so a mixer produces a pure sinusoid with no
+                ## harmonics -- measured).  TR-BDF2 gets this for free by
+                ## running each stage through `self._newton` (which limits);
+                ## this hand-rolled coupled solve must limit each stage itself,
+                ## against the stage's previous iterate, exactly as
+                ## `cir.limit` is applied in the single-stage paths.
+                Y_prev = Y[i]
+                Y_trial = Y_prev + tk.insert(di, iref, 0.0)
+                Y_new = self.cir.limit(Y_trial, Y_prev, epar)
+                Y[i] = Y_new
+                step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
+                scale = max(scale, np.max(np.abs(step_i)))
             ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
             if scale <= reltol * ynorm + abstol:
                 converged = True

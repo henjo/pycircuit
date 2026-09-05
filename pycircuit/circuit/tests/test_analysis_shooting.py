@@ -13095,3 +13095,67 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
     assert abs(St / Sg - 1.0) < 5e-3, \
         'trbdf2 pnoise %.4e vs gear %.4e on the mixer -- they should agree' \
         % (St, Sg)
+
+
+def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
+    """pnoise is NATIVE over Radau IIA(3) -- the coupled three-vector sideband
+    fold.
+
+    A Radau step injects the source at THREE abscissae through the full
+    ``A (x) B`` coupling (no two-vector shortcut), which
+    `_sideband_forced_radau` carries through all three stages.  Same two
+    end-to-end checks as the TR-BDF2 pnoise test:
+
+    (1) LINEAR divider: no conversion, so the fold collapses to l=0 and pnoise
+        reduces to the AC noise analysis to a few ppb, stopping on the ratio
+        test, not the grid.
+    (2) DIODE MIXER (converting): sidebands carry most of the noise; Radau
+        folds them and lands on the Gear-2 answer within the discretisation
+        gap.
+    """
+    import warnings
+    from pycircuit.circuit.analysis_ss import Noise
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) linear divider vs the AC-noise reference
+    per, fout = 1e-3, 700.0
+    cir = _divider()
+    ref = complex(Noise(cir, inputsrc='vs',
+                        outputnodes=(cir.get_node('net2'), gnd)
+                        ).solve(fout)['Svnout']).real
+    cir = _divider()
+    pss = PSS(cir, method='radau', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=per, timestep=per / 200, maxiterations=40)
+    k = cir.get_node_index(cir.get_node('net2'))
+    k = k - 1 if k > pss.irefnode else k
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S, used = pac.pnoise(pss, fout, k)
+    assert abs(S - ref) / ref < 1e-6, \
+        'radau pnoise disagrees with AC noise by %.2e on a LINEAR circuit' \
+        % (abs(S - ref) / ref)
+    assert pac.alias_stop == 'ratio', \
+        'a linear circuit folds nothing; radau must stop on the ratio test'
+
+    ## (2) diode mixer: radau folds and lands on gear
+    def mix(method):
+        c = _diode_mixer()
+        p = PSS(c, method=method, reltol=1e-11)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
+        kk = c.get_node_index(2)
+        kk = kk - 1 if kk > p.irefnode else kk
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            s, u = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
+        return s, max(abs(np.asarray(u)))
+    Sg, _lg = mix('gear')
+    Sr, lr = mix('radau')
+    assert lr > 5, 'radau pnoise did not fold sidebands on the mixer (max l=%d)' % lr
+    assert abs(Sr / Sg - 1.0) < 5e-3, \
+        'radau pnoise %.4e vs gear %.4e on the mixer -- they should agree' \
+        % (Sr, Sg)

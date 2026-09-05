@@ -4519,6 +4519,55 @@ class PSS(Analysis):
                                       + 2.0 * np.pi * float(freq)) * ts) / N * d
         return forced, lam
 
+    def _sideband_forced_radau(self, fp, freq, l, d):
+        """The forced (source-injected) part of the Radau IIA(3) sideband row
+        for sideband `l`, and the final costate `g` for the closure.
+
+        The three-vector analogue of `_sideband_forced_trbdf2`: the reverse
+        pass injects the OUTPUT functional `d` (weighted by
+        `exp(-j(l w0 + w) t_n)/N`) at each step and reads the SOURCE coupling
+        through ALL THREE stages at every step -- the coupled fold
+        (`_forced_replay_transposed_radau` with the injection added).  ⚠ The
+        injection is added AFTER the step's costate update, so the output at
+        step `n` couples to the source at steps `< n` (causality); the
+        accepted trajectory state at `t_n` IS the entering state `x_n` of step
+        `n`, so `d` couples at `t_n` (`ts`) exactly as in the TR-BDF2 fold.
+        The source coupling folds the three abscissae with
+        `sum_k exp(jw t_{n,k}) sum_i A_ik p_i` -- there is no two-vector
+        shortcut (`A (x) B`).  Returns `(forced, g)`.
+        """
+        import scipy.linalg as sla
+        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        Amat = np.array(RadauIIA3Integrator.A, dtype=float)
+        cvec = np.array(RadauIIA3Integrator.C, dtype=float)
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        T = float(fp.T)
+        w0 = 2.0 * np.pi / T
+        N = len(fp.steps)
+        tms = np.asarray(fp.times, dtype=float)
+        d = np.asarray(d, dtype=complex).ravel()
+        lam = np.zeros(m, dtype=complex)
+        forced = np.zeros(m, dtype=complex)
+
+        def csolveT(lu, b):
+            return (sla.lu_solve(lu, b.real, trans=1)
+                    + 1j * sla.lu_solve(lu, b.imag, trans=1))
+
+        for j in range(N - 1, -1, -1):
+            lu, Cn, mm = fp.steps[j]
+            ts = tms[j]; te = tms[j + 1]; h = te - ts
+            p = csolveT(lu, np.concatenate([np.zeros(m), np.zeros(m), lam]))
+            p1, p2, p3 = p[0:m], p[m:2 * m], p[2 * m:3 * m]
+            for k in range(3):
+                tk = ts + cvec[k] * h
+                coup = Amat[0, k] * p1 + Amat[1, k] * p2 + Amat[2, k] * p3
+                forced = forced - h * np.exp(jw * tk) * coup
+            lam = Cn.T @ (p1 + p2 + p3)
+            lam = lam + np.exp(-1j * (float(l) * w0
+                                      + 2.0 * np.pi * float(freq)) * ts) / N * d
+        return forced, lam
+
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
 
@@ -7807,6 +7856,11 @@ class PAC(Analysis):
                 ## the two-vector fold does it (verified vs forward driven
                 ## solves to machine precision) -- see `_sideband_forced_trbdf2`
                 forced, g = pss._sideband_forced_trbdf2(fp, freq, l, d)
+            elif fp.kind == 'radau':
+                ## the source couples through ALL THREE stages (A (x) B), which
+                ## needs the coupled three-vector fold -- see
+                ## `_sideband_forced_radau`
+                forced, g = pss._sideband_forced_radau(fp, freq, l, d)
             else:
                 inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
                                          * float(freq)) * tms[:N]) / N)[:, None]
