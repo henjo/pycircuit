@@ -1642,13 +1642,24 @@ class PSS(Analysis):
         self._period_state = None
         self._factored_period_cache = None
         ## ⚠ WHICH MONODROMY THE OSCILLATOR SURFACES READ -- see
-        ## `monodromy_twin`.  'gear' (default): an autonomous circuit solved
-        ## with a one-step method hands its PPV, Floquet modes and factored
-        ## period to a Gear-2 twin on the same grid.  'native': the
-        ## method's own plain factorisation, kept for the gates that
-        ## measure it.
-        self.monodromy = 'gear'
+        ## `monodromy_twin`.  Selects the method that supplies the PPV,
+        ## Floquet modes and factored period when a one-step LMM (trap/euler)
+        ## solved an autonomous circuit, whose OWN monodromy is first-order
+        ## on a limit cycle (the opener seam).  'trbdf2' (DEFAULT): a TR-BDF2
+        ## twin on the same grid -- self-starting, no opener, measured 12-32x
+        ## more accurate on lambda2 than the Gear-2 twin at practical step
+        ## counts (see `monodromy_twin`).  'gear': the former default, a
+        ## Gear-2 twin, kept selectable.  'native': the run's OWN plain
+        ## factorisation.  ⚠ 'native' UNDER A ONE-STEP METHOD IS THE WORST OF
+        ## THE THREE, not an "exact, no twin" escape: trapezoidal's own
+        ## monodromy is FIRST order on a limit cycle and its `Q` DIVERGES
+        ## under refinement (11.1 / 28.4 / 63.9 vs an exact 5.9083), euler's
+        ## likewise -- it is for the gates that measure that defect, not for
+        ## results.  gear and trbdf2 runs are self-sufficient (second-order
+        ## native monodromy) and ignore this -- they never twin.
+        self.monodromy = 'trbdf2'
         self._monodromy_twin = None
+        self._twins = {}
         self._solve_kwargs = {}
         ## Set to None by `solve` on the tstab path only -- see there.
         self.tstab_state = None
@@ -4139,10 +4150,44 @@ class PSS(Analysis):
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
 
-        `self` under Gear-2, for a driven circuit, or when
-        `self.monodromy == 'native'`.  Otherwise a Gear-2 `PSS` of the same
-        circuit, solved once on the SAME grid from this orbit's converged
-        state (a few warm Newton iterations), and cached.
+        `self` for a driven circuit, when `self.monodromy == 'native'`, or
+        when this run's own method already carries a second-order monodromy
+        (`gear`/`trbdf2`).  Otherwise (an autonomous circuit solved with a
+        one-step LMM, trap or euler) a twin `PSS` of the same circuit under
+        the method `self.monodromy` names, solved once on the SAME grid from
+        this orbit's converged state and cached.
+
+        ⚠⚠ THE TWIN DEFAULTS TO TR-BDF2, MEASURED (2026-09-05), and Gear-2
+        is one setting away, not retired.  The twin exists because trap's
+        and euler's own monodromy is unusable on a limit cycle: trap's
+        diverges with refinement (B16, below) and euler's is first order.
+        Both TR-BDF2 and Gear-2 give a clean second-order twin, but TR-BDF2
+        is more accurate on `lambda2` -- measured against exact references
+        (`exp(A T)` on a linear oscillator; Abel's `exp(mu integral(1-v^2))`
+        on van der Pol) it is 12-32x better at practical step counts, and
+        the advantage GROWS with Q and with coarser grids -- the regime a
+        real oscillator PSS sits in.  At Q=100 and 50 points/period the
+        Gear-2 twin misreads Q by 22%, the TR-BDF2 twin by 0.27%.  The gap
+        is a coarse-grid/high-Q effect, not a fixed factor: refine the grid
+        or drop Q and both fall to the ordinary O(h^2) floor where the
+        difference is single digits and can even favour Gear-2.  So
+        `monodromy = 'trbdf2'` is the default, `'gear'` restores the former
+        twin, `'native'` reads the run's own.
+
+        ⚠⚠ THE B16 DECISION, TAKEN ON A MEASUREMENT (2026-09-05).  On the
+        bias-sensitive oscillator (`vdp + 0.3 u^2`, exact `Q_lambda =
+        5.908`, `c_true = 5.3703e-06`) trapezoidal's monodromy is unusable
+        with EITHER opener: the default reads `Q_lambda` 11.1 / 28.4 / 63.9
+        at 400/800/1600 points and DIVERGES with refinement, and
+        `x0_unknown=True` reads 3086 / 12228 / 48699 -- a spurious
+        multiplier at 1 (the one-step companion's parasitic mode), while
+        the state and period are second order either way.  So "the most
+        accurate" is not a choice between openers: the STATE keeps the
+        method you asked for, and every monodromy-derived quantity -- `Q`,
+        the PPV and everything built on it, the Floquet modes, the
+        phase-noise surfaces -- comes from the twin on the same orbit.  The
+        twin's period differs from this one's by O(h^2); its orbit is
+        re-converged, not copied.
 
         ⚠⚠ THE B16 DECISION, TAKEN ON A MEASUREMENT (2026-09-05).  On the
         bias-sensitive oscillator (`vdp + 0.3 u^2`, exact `Q_lambda =
@@ -4159,29 +4204,47 @@ class PSS(Analysis):
         from Gear-2 on the same orbit.  The twin's period differs from
         this one's by O(h^2); its orbit is re-converged, not copied.
         """
-        if (getattr(self, 'monodromy', 'gear') != 'gear'
-                or getattr(self.par, 'method', 'euler') in ('gear', 'trbdf2')
+        mono = getattr(self, 'monodromy', 'trbdf2')
+        if mono not in ('trbdf2', 'gear', 'native'):
+            raise ValueError(
+                "PSS.monodromy must be 'trbdf2', 'gear' or 'native', not %r"
+                % (mono,))
+        if (mono == 'native'
+                or getattr(self.par, 'method', 'euler') in ('gear', 'gear2',
+                                                            'trbdf2')
                 or not getattr(self, 'autonomous', False)):
-            ## ⚠ TR-BDF2 IS ONE-STEP BUT NOT FIRST-ORDER HERE.  This twin
-            ## exists because a one-step LMM's monodromy is first-order on a
-            ## limit cycle -- its opening manufacturing step is dropped to
-            ## Euler and that seam sits in the period map.  TR-BDF2 is
-            ## self-starting: no manufactured opener, so its native
-            ## monodromy is already second-order (verified against the
-            ## pencil).  Building a Gear-2 twin for it would REPLACE a
-            ## second-order map with another second-order map on a
-            ## re-converged orbit -- pure cost, and it would hide the DIRK's
-            ## own spectrum behind Gear-2's.  So trbdf2 keeps its own, like
-            ## gear does.
+            ## ⚠ gear AND trbdf2 ARE SELF-SUFFICIENT.  This twin exists only
+            ## because a one-step LMM's monodromy is first-order on a limit
+            ## cycle -- its opening manufacturing step is dropped to Euler
+            ## and that seam sits in the period map.  Gear-2 and TR-BDF2 both
+            ## carry a second-order native monodromy (TR-BDF2 self-starting,
+            ## no opener; verified against the pencil), so twinning them would
+            ## REPLACE one second-order map with another on a re-converged
+            ## orbit -- pure cost -- and would hide the run's own spectrum.
+            ## They read `native` regardless of `monodromy`; the knob governs
+            ## which twin trap/euler borrow.
             return self
-        if self._monodromy_twin is not None:
-            return self._monodromy_twin
         if getattr(self, '_period_state', None) is None or not self.converged:
             return self
+        twin = self._solve_twin(mono)
+        self._monodromy_twin = twin
+        return twin
+
+    def _solve_twin(self, method):
+        """A converged twin `PSS` of this circuit under `method`, re-solved
+        once on the SAME grid from this orbit's converged state, cached per
+        method.  The shared machinery behind `monodromy_twin` (which picks
+        the method by `self.monodromy`) and `_lyapunov_host` (which forces
+        `gear`, because the noise-injection surfaces cannot use a TR-BDF2
+        twin yet).  Raises if the re-solve does not converge.
+        """
+        cache = self._twins
+        if method in cache:
+            return cache[method]
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
         kw = dict(self._solve_kwargs)
         twin = PSS(self.cir, toolkit=self.toolkit, irefnode=None,
-                   method='gear', reltol=self.par.reltol,
+                   method=method, reltol=self.par.reltol,
                    iabstol=self.par.iabstol, vabstol=self.par.vabstol)
         hs = np.asarray(hs, dtype=float)
         ## the same grid: its fractions when it is not uniform, else the
@@ -4203,15 +4266,73 @@ class PSS(Analysis):
             _ok = False
         if not _ok:
             raise RuntimeError(
-                'PSS.monodromy_twin: the Gear-2 re-solve from the converged '
+                'PSS.monodromy_twin: the %s re-solve from the converged '
                 '%s orbit did not converge, so no second-order monodromy is '
-                'available; set pss.monodromy = "native" to read the '
-                "one-step method's own (first-order, and on an oscillator "
-                'its second multiplier is not the physical one).'
-                % getattr(self.par, 'method', '?'))
+                'available; try pss.monodromy = "gear" (the other twin) or '
+                '"native" to read the one-step method\'s own (first-order, '
+                'and on an oscillator its second multiplier is not the '
+                'physical one).'
+                % (method, getattr(self.par, 'method', '?')))
+
+        ## ⚠⚠ THE TWIN MUST HAVE CONVERGED TO THE SAME ORBIT IT WAS SEEDED
+        ## ON, and a MORE ROBUST twin makes this check load-bearing rather
+        ## than paranoid.  Measured: from a poor seed (euler at 400 pts, its
+        ## orbit 55% off) the Gear-2 twin fails to converge -- LOUD -- but
+        ## the TR-BDF2 twin, being more robust, CONVERGES to a SPURIOUS limit
+        ## cycle and reports `Q = 1.97` against the exact 5.91 with no error.
+        ## Improving the method degraded safety: the failure moved from a
+        ## refusal to a plausible wrong number.  So the twin's converged
+        ## orbit is checked against the seed it was handed: two convergent
+        ## methods on the SAME limit cycle agree on period and entering state
+        ## to O(h^p) -- measured 6e-6 / 1e-4 (trbdf2) and 3e-5 / 2e-2 (gear)
+        ## on a good seed -- while the spurious jump above sits at 2.17 /
+        ## 0.91.  The 0.25 gate is ~12x above the worst good case and ~3.6x
+        ## below the spurious one; it is set from the (universal, tiny)
+        ## good-case agreement, not the (fixture-dependent) failure size, so
+        ## it transfers.  The definitive test is refinement (a spurious orbit
+        ## does not survive h/2); this cheap consistency check is the
+        ## conservative stand-in -- it REFUSES a too-poor seed rather than
+        ## risk trusting it, which is the safe direction.
+        Th = float(T)
+        dT = abs(float(twin.period) - Th) / max(abs(Th), 1e-30)
+        x0t = np.asarray(twin._period_state[1],
+                         dtype=float)[:self.cir.n - 1]
+        dx = (float(np.linalg.norm(x0t - x0r))
+              / (float(np.linalg.norm(x0r)) + 1e-30))
+        if dT > 0.25 or dx > 0.25:
+            raise RuntimeError(
+                'PSS.monodromy_twin: the %s twin converged to a DIFFERENT '
+                'orbit than the seeding %s orbit (period Delta = %.2e, state '
+                'Delta = %.2e, gate 0.25): that orbit is too poor to seed a '
+                'monodromy twin -- the free-period Newton reached a spurious '
+                'limit cycle.  Refine the grid so the %s state is a good '
+                'seed, or set pss.monodromy = "native" to read the run\'s own '
+                '(defective) monodromy rather than a wrong number.'
+                % (method, getattr(self.par, 'method', '?'), dT, dx,
+                   getattr(self.par, 'method', '?')))
         twin.monodromy = 'native'
-        self._monodromy_twin = twin
+        cache[method] = twin
         return twin
+
+    def _lyapunov_host(self):
+        """The `PSS` the Lyapunov noise surfaces (`covariance`,
+        `oscillator_covariance`, `pnoise`) read.
+
+        ⚠ THESE NEED THE PER-STEP INJECTION `Q_j`, WHICH TR-BDF2 DOES NOT
+        YET PROVIDE.  A source injected into a two-stage step enters BOTH
+        stages, so its noise covariance is a two-stage quantity the LMM
+        single-companion replay does not carry (see `_lyapunov_pieces`).  So
+        when this run's Floquet source is a TR-BDF2 map -- the default under
+        `monodromy = 'trbdf2'`, or a TR-BDF2 host -- the noise-covariance
+        surfaces fall back to a GEAR-2 twin on the same orbit, exactly the
+        twin they used before TR-BDF2 became the default.  The eigenvalue
+        and PPV surfaces (`Q`, `ppv`, `floquet_modes`, `diffusion_constant`,
+        `oscillator_spectrum`) keep the TR-BDF2 map; only the injection
+        surfaces need this.  A gear/solved-history host is returned as-is.
+        """
+        if self.factored_period().kind == 'trbdf2':
+            return self._solve_twin('gear')
+        return self
 
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
@@ -5569,6 +5690,7 @@ class PSS(Analysis):
         self._solve_kwargs = dict(refnode=refnode, maxiterations=maxiterations,
                                   matrix_free=matrix_free, tstab=tstab)
         self._monodromy_twin = None
+        self._twins = {}
         ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
         ## `TLine.history` is filled by `cir.accept_step`, which the
         ## TRANSIENT calls at every accepted step and which this analysis
@@ -7453,6 +7575,10 @@ class PAC(Analysis):
         here.)
         """
         self._check_circuit(pss)
+        ## the source-injection surfaces use the gear twin when the Floquet
+        ## source is TR-BDF2 (its two-stage Q_j is not built) -- see
+        ## `_lyapunov_host`
+        pss = pss._lyapunov_host()
         fp = pss.factored_period()
         m = pss.cir.n - 1
         N = len(fp.steps)
@@ -8233,6 +8359,10 @@ class PAC(Analysis):
                 'cyclostationary. Use oscillator_covariance() for the '
                 'split into a bounded orbital part and that growth, or '
                 'oscillator_spectrum() for the lineshape it produces.')
+        ## the source-injection surfaces use the gear twin when the Floquet
+        ## source is TR-BDF2 (its two-stage Q_j is not built) -- see
+        ## `_lyapunov_host`
+        pss = pss._lyapunov_host()
         As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
         S = np.eye(n * n) - np.kron(M, M)
         K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
@@ -8362,6 +8492,11 @@ class PAC(Analysis):
                 'orbit. A driven circuit has neither -- its covariance '
                 'settles, and I - M kron M is nonsingular. Use '
                 'covariance().')
+        ## the source-injection surfaces use the gear twin when the Floquet
+        ## source is TR-BDF2 (its two-stage Q_j is not built).  Swapped BEFORE
+        ## both the Lyapunov pieces and `ppv` below, so the bordering keeps
+        ## them on one host -- see `_lyapunov_host`.
+        pss = pss._lyapunov_host()
         As, Qs, K1, M, m, n = self._lyapunov_pieces(
             pss, 'oscillator_covariance')
 

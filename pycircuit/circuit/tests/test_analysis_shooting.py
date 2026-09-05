@@ -11850,7 +11850,7 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
             % (topology, abs(c / 5.3703e-06 - 1.0))
 
 
-def test_B16_the_oscillator_monodromy_is_gear_s_whatever_the_state_method():
+def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
     """⚠⚠ THE B16 DECISION, PINNED ON THE FIXTURE THAT SHOWED IT (2026-09-05).
 
     Bias-sensitive core, exact `Q_lambda = 5.9083` and `c_true = 5.3703e-06`
@@ -11859,12 +11859,20 @@ def test_B16_the_oscillator_monodromy_is_gear_s_whatever_the_state_method():
     with the default (diverging under refinement), 3086 / 12228 / 48699
     with `x0_unknown=True` (a spurious multiplier at 1) -- while its state
     and period are second order.  So "the most accurate" is per quantity:
-    the state keeps the method asked for, the monodromy comes from a Gear-2
-    twin on the same grid (`PSS.monodromy_twin`).  Gates: under trap the
-    default `ppv` reports Gear's `Q` and a second-order `c`; the native
-    path still shows the defect; the state is untouched; and a one-step
-    orbit too poor to seed the twin (Euler at 400 points: period 5% off,
-    amplitude 55% off) gets the error with the reason, not a number.
+    the state keeps the method asked for, the monodromy comes from a TWIN
+    on the same grid (`PSS.monodromy_twin`).
+
+    ⚠ THE TWIN DEFAULTS TO TR-BDF2 (2026-09-05), Gear-2 selectable.  On THIS
+    fixture the TR-BDF2 twin is measurably closer to the exact than the
+    Gear-2 twin: `Q` 5.90845 (err 2.6e-5) vs 5.90942 (err 1.9e-4), and `c`
+    err 1.4e-4 vs 1.7e-3 -- roughly an order on both, the eigenvalue AND the
+    PPV-based `c`.  Gates: under trap the default `ppv` reports the TR-BDF2
+    twin's `Q`/`c` (tighter than Gear's, asserted); `monodromy = 'gear'`
+    restores the Gear-2 twin (also asserted, so the option is live); the
+    native path still shows trapezoidal's own defect; the state is
+    untouched; and a one-step orbit too poor to seed the twin (Euler at 400
+    points: period 5% off, amplitude 55% off) gets the error with the
+    reason, not a number.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -11894,24 +11902,49 @@ def test_B16_the_oscillator_monodromy_is_gear_s_whatever_the_state_method():
     T_state = float(pss.period)
     _v, info = pss.ppv()
     c = PAC(cir).diffusion_constant(pss)
-    assert info['monodromy_method'] == 'gear'
-    assert abs(info['Q'] / 5.9094 - 1.0) < 3e-4, \
-        'trap reports Q = %.4f; Gear on this grid gives 5.9094 (exact ' \
-        '5.9083)' % info['Q']
-    assert abs(c / 5.3703e-06 - 1.0) < 3e-3, \
-        'trap reports c %.2e from the exact; the twin gives 1.8e-3' \
-        % abs(c / 5.3703e-06 - 1.0)
+    ## the DEFAULT twin is TR-BDF2, and it reads Q/c CLOSER to the exact
+    ## than the Gear-2 twin does on this fixture -- the tolerances below are
+    ## tight enough that the Gear-2 twin's numbers (err 1.9e-4 / 1.7e-3)
+    ## would FAIL them, so they encode the improvement, not just the value.
+    assert info['monodromy_method'] == 'trbdf2'
+    assert abs(info['Q'] / 5.9083 - 1.0) < 1e-4, \
+        'trap+trbdf2-twin reports Q = %.5f against exact 5.9083 (err %.1e); ' \
+        'the Gear-2 twin gives 5.90942, err 1.9e-4' \
+        % (info['Q'], abs(info['Q'] / 5.9083 - 1.0))
+    assert abs(c / 5.3703e-06 - 1.0) < 5e-4, \
+        'trap+trbdf2-twin reports c %.2e from the true; the Gear-2 twin ' \
+        'gives 1.7e-3' % abs(c / 5.3703e-06 - 1.0)
     assert float(pss.period) == T_state, 'the state must not move'
     assert np.asarray(pss.waveform[1]).shape == \
         np.asarray(pss.monodromy_twin().waveform[1]).shape
+
+    ## Gear-2 is one setting away, not retired: the same run under
+    ## `monodromy = 'gear'` uses the Gear-2 twin and reports its (slightly
+    ## less accurate) numbers, confirming the option is live.
+    cir_g, pss_g = solve('trap')
+    pss_g.monodromy = 'gear'
+    _vg, info_g = pss_g.ppv()
+    assert info_g['monodromy_method'] == 'gear'
+    assert abs(info_g['Q'] / 5.9094 - 1.0) < 3e-4, \
+        'gear twin should read 5.9094 here; got %.5f' % info_g['Q']
     ## the native path: the defect, pinned so it is not rediscovered
     pss.monodromy = 'native'
     _v2, info2 = pss.ppv()
     assert info2['monodromy_method'] == 'trap' and info2['Q'] > 10.0, \
         "trap's own second multiplier read Q = %.3f; it was 11.1 here" \
         % info2['Q']
-    ## Euler at this grid cannot seed the twin: the error, with the reason
+    ## Euler at this grid (orbit 55% off) is too poor to seed a twin, and
+    ## the two twins fail it DIFFERENTLY -- which is why the orbit-consistency
+    ## guard is load-bearing.  The default TR-BDF2 twin is robust enough to
+    ## CONVERGE from the poor seed, but to a SPURIOUS limit cycle (Q = 1.97
+    ## against the exact 5.91); the guard catches that its orbit departs from
+    ## the seed and refuses, rather than returning the wrong number.  The
+    ## Gear-2 twin instead fails earlier, by not converging at all.  Both are
+    ## loud; neither returns a plausible wrong Q.
     _c3, p3 = solve('euler')
+    with pytest.raises(RuntimeError, match='spurious|too poor to seed'):
+        p3.ppv()
+    p3.monodromy = 'gear'
     with pytest.raises(RuntimeError, match='did not converge'):
         p3.ppv()
 
@@ -12597,27 +12630,111 @@ def test_phase_noise_stack_works_over_trbdf2():
     assert np.max(np.abs(L_t - L_g)) < 0.05, (L_t, L_g)
 
 
-def test_trbdf2_driven_noise_surfaces_refuse_cleanly():
-    """The DRIVEN forced surfaces (covariance/pnoise/PAC sideband) are not
-    built for TR-BDF2 and must refuse loudly, not return a plausible wrong
-    number.
+def test_trbdf2_driven_noise_surfaces_fall_back_to_the_gear_twin():
+    """The DRIVEN noise-injection surfaces (covariance/pnoise) do not have a
+    TR-BDF2 per-step Q_j yet, so they fall back to a GEAR-2 twin rather than
+    refuse or return a wrong number -- `_lyapunov_host`.
 
-    A source injected into a two-stage step enters BOTH stages, so the
-    per-step forced response and its noise covariance are two-stage
-    quantities the LMM single-companion replay does not represent. Rather
-    than fall through to the wrong shape, each refuses.
+    A source injected into a two-stage step enters BOTH stages, so its noise
+    covariance is a two-stage quantity the LMM single-companion replay does
+    not carry.  Until that injection is built, a TR-BDF2 host's covariance is
+    computed on a Gear-2 twin of the same orbit, so it MATCHES a direct
+    Gear-2 run.  (The eigenvalue/PPV surfaces keep the TR-BDF2 map; only the
+    injection falls back.)
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
+
+    def build():
+        cir = SubCircuit()
+        cir['vs'] = VSin(1, gnd, vac=1.0, va=1.0, freq=1e3, phase=0)
+        cir['R'] = R(1, 2, r=1e4)
+        cir['C'] = C(2, gnd, c=1e-8)
+        cir['n'] = IS(2, gnd, i=0.0, noisePSD=1e-9)
+        return cir
+    K = {}
+    for method in ('trbdf2', 'gear'):
+        cir = build()
+        pss = PSS(cir, method=method, reltol=1e-11)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-3 / 200)
+        K[method] = np.asarray(PAC(cir).covariance(pss), dtype=float)
+    ## the TR-BDF2 host's covariance came through the Gear-2 twin, so it is
+    ## the Gear-2 covariance to solver tolerance
+    rel = np.linalg.norm(K['trbdf2'] - K['gear']) / np.linalg.norm(K['gear'])
+    assert rel < 1e-6, \
+        'driven trbdf2 covariance should equal the gear fallback; rel %.2e' \
+        % rel
+
+
+def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator():
+    """The fake-damping measurement behind defaulting the twin to TR-BDF2.
+
+    On a source-free damped LC -- a LINEAR oscillator -- the exact period map
+    is `exp(A T)` with `A = -C^-1 G`, so its multiplier `lambda = exp(-alpha T)`
+    and `Q_lambda` are known in closed form, no reference simulator needed.
+    Both methods approximate it, but Gear-2 (BDF2) adds numerical damping to
+    the weakly-damped mode -- Dharmaraja's caveat -- biasing `lambda2`, and
+    the bias is worst at coarse grids and high Q (the amplification law
+    `dQ/Q = Q_lambda dlambda2/lambda2`).  TR-BDF2 carries far less of it.
+
+    Deterministic and cheap: no ODE integration, no PSS solve.  TR-BDF2's
+    monodromy is the SHIPPING one (`factored_period_trbdf2`); Gear-2's is the
+    BDF2 companion on the same reduced pencil, which is exactly the
+    `solved_history` pair map a Gear-2 PSS forms on a linear system.
+
+    ⚠ THE ADVANTAGE IS REGIME-DEPENDENT, NOT A FIXED FACTOR.  At Q ~ 16 and
+    50 points/period TR-BDF2 is ~26x closer to the exact `Q`; refine to 200
+    points and both approach the O(h^2) floor where the gap shrinks to ~2x.
+    That is the true shape of the result -- large where a real oscillator PSS
+    sits (coarse grid, high Q), small on a fine grid -- and is why the twin
+    is a DEFAULT rather than the only option.
+    """
+    circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
-    cir['vs'] = VSin(1, gnd, vac=1.0, va=1.0, freq=1e3, phase=0)
-    cir['R'] = R(1, 2, r=1e4); cir['C'] = C(2, gnd, c=1e-8)
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['R'] = R('v', gnd, r=50.0)          # parallel R -> complex pole pair
     pss = PSS(cir, method='trbdf2')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        pss.solve(period=1e-3, timestep=1e-3 / 200)
-    pac = PAC(cir, toolkit=circuit.numeric)
-    with pytest.raises(NotImplementedError, match='TR-BDF2'):
-        pac.covariance(pss)
-    with pytest.raises(NotImplementedError, match='TR-BDF2'):
-        pac.pnoise(pss, 1e2, 0)
+    m = cir.n - 1
+    Cr = np.asarray(pss._C_at(np.zeros(m)))
+    Gr = np.asarray(pss._G_at(np.zeros(m)))
+    A = -np.linalg.solve(Cr, Gr)
+    ev = np.linalg.eigvals(A)
+    w = float(np.max(np.abs(ev.imag)))
+    alpha = float(-np.mean(ev.real))
+    T = 2.0 * np.pi / w
+    Q_exact = -1.0 / np.log(np.exp(-alpha * T))
+
+    def bdf2_companion(h):
+        Minv = np.linalg.inv(np.eye(m) - (2.0 / 3.0) * h * A)
+        return np.block([[Minv @ ((4.0 / 3.0) * np.eye(m)),
+                          Minv @ ((-1.0 / 3.0) * np.eye(m))],
+                         [np.eye(m), np.zeros((m, m))]])
+
+    def Q_of(lam):
+        return -1.0 / np.log(lam)
+
+    def errs(N):
+        h = T / N
+        fp = pss.factored_period_trbdf2(np.zeros(m), T, N)
+        Mt = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                              for e in np.eye(m)])
+        lam_t = float(np.max(np.abs(np.linalg.eigvals(Mt))))
+        Mg = np.linalg.matrix_power(bdf2_companion(h), N)
+        lam_g = float(np.max(np.abs(np.linalg.eigvals(Mg))))
+        return (abs(Q_of(lam_t) - Q_exact) / Q_exact,
+                abs(Q_of(lam_g) - Q_exact) / Q_exact)
+
+    ## Q ~ 16 here; at 50 points/period TR-BDF2 is an order-plus better
+    et50, eg50 = errs(50)
+    assert et50 < 5e-3, 'trbdf2 Q error %.2e at N=50' % et50
+    assert eg50 > 1e-2, 'gear Q error %.2e at N=50 (expected the bias)' % eg50
+    assert eg50 / et50 > 5.0, \
+        'trbdf2 should be >5x better than gear at N=50; got %.1fx' \
+        % (eg50 / et50)
+    ## and TR-BDF2 is never worse than gear on this axis at the coarse grid
+    et200, eg200 = errs(200)
+    assert et200 <= eg200 * 1.5, \
+        'trbdf2 %.2e vs gear %.2e at N=200' % (et200, eg200)
