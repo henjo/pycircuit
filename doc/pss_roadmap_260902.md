@@ -3310,10 +3310,22 @@ normalisation was `|v·q| − 1`, not the error (`v·q = −1.0696` against `v·
 the opposite sign — review audit). The exact vdp `c` at `Q = 8` is `6.250850e-08` (scipy adjoint);
 the consistent object is `+2.9e-5` from it, the swept-noise path `−1.4e-4`, and that bound now says so.
 
-**Still open from the Spectre suite:** per-step `CY` in `_lyapunov_pieces` (a switch's `kT/C` is
-outside the covariance's FORMULATION, not its accuracy); `modulated=True` fails in proportion to
-modulation depth (16× at `goff/gon = 1e-6`, Hull & Meyer's own condition violated by six orders) —
-a factor, not a percentage, and the docstring should say so.
+✅ **The Spectre-suite items are CLOSED (2026-09-05).** `CY` is now evaluated per step at the step's own
+state on both Lyapunov paths (`PAC._cy_at`, no cyclostationarity check — the covariance routes model a
+modulated source exactly; `pnoise`'s stationary sum still refuses it, as it must), and
+`_refuse_coloured` asks its colour question at one state and two frequencies instead of through
+`_cy_reduced`, which had refused every modulated source before the covariance could reach it. On the
+suite's sample-and-hold to the parameter, covariance over the period in units of `kT/C`:
+
+    points   200      400      800      1600
+    hold     0.9920   0.9987   0.9998   1.0000     second order — Spectre's sampled pnoise: 0.99999
+    track    0.7398   0.8467   0.9157   0.9556     the covariance's known O(h/τ), identical to the control
+
+The held variance is `kT/C` to `1e-4`; the tracking phase sits on the switch-held-closed control at
+every grid, so that floor is the separate item it always was. `modulated=True` now says it is for gentle
+modulation and fails as a factor, with the suite's table (1.000 / 4.33 / 13.2 / 15.7 / 16.0 over
+`goff/gon = 1…1e-6`). Tests: `test_a_switched_capacitor_holds_kTC_with_per_step_CY`; the refusal test
+no longer lists `oscillator_covariance`.
 
 ### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
 
