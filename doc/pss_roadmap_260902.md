@@ -4380,6 +4380,54 @@ monodromy is REPORTED (`floquet_modes`, `ppv`, `info['Q']`, the Floquet paths) a
 path as it is, or state plainly that `λ₂` from a manufactured opener is first-order. Today the number
 looks like a second-order method's output and is not one.
 
+#### B16-decision. ✅ **DECIDED AND BUILT 2026-09-05: the oscillator monodromy is Gear-2's, whatever method solved the state**
+
+The user's instruction was "select the most accurate". Measured on the fixture that shows the gap
+(`vdp + 0.3u²`, exact `Q_λ = 5.9083`, `c_true = 5.3703e-06`), the choice the question offered does not
+exist — trapezoidal's own monodromy is unusable with EITHER opener:
+
+    trap, default opener    Q_λ  11.1 / 28.4 / 63.9   at 400/800/1600   c/c_true 0.936 / 0.968 / 0.984
+    trap, x0_unknown=True   Q_λ  3086 / 12228 / 48699                    c/c_true 1.022 / 1.011 / 1.006
+    gear                    Q_λ  5.9094 / 5.9086 / 5.9084               c/c_true 0.998 / 0.9996 / 0.9999
+    (trap's period and state are second order both ways: 1.2e-5 / 2.9e-6 / 6.7e-7)
+
+The default opener's second multiplier DIVERGES toward 1 under refinement and `x0_unknown` puts a
+spurious multiplier AT 1 — the one-step companion's parasitic mode, not the amplitude mode. So "most
+accurate" is per quantity: **the state keeps the method asked for; every monodromy-derived quantity
+comes from Gear-2 on the same orbit.** `PSS.monodromy_twin()` re-converges a Gear-2 `PSS` on the same
+grid from the converged state (cached, a few warm iterations); `factored_period`, `ppv` and
+`floquet_modes` delegate to it for an autonomous circuit under a one-step method; `pss.monodromy =
+'native'` keeps the method's own factorisation for the gates that measure the plain path. Under trap
+the bias fixture now reads `Q_λ = 5.9094` and `c` to `1.7e-3` at 400 points with its period untouched;
+the trap oscillator covariance, which used to refuse with its reason, runs through the twin and matches
+a direct Gear-2 solve to `1e-6`. An orbit too poor to seed the twin (Euler at 400 points: period 5% off,
+amplitude 55% off) gets a `RuntimeError` with the reason. Driven circuits are unaffected: their plain
+path is what the Spectre comparison validated to six digits, and B16's first-order `λ₂` there is
+recorded above as a known property of the manufactured opener, not repaired.
+
+#### B16-preroll. A COMPUTABLE criterion for when a pre-roll may hand over to shooting — relayed 2026-09-05 at the user's request, NOT YET RUN
+
+De Luca, Bolcato & Schilders, "Proper Initial Solution to Start Periodic Steady-State-Based Methods",
+IEEE TCAS-I 2019 (doi:10.1109/TCSI.2018.2874570; on disk under 07-shooting-methods). Instead of testing
+closeness to the unknown `x*`, test the LINEARITY of the shooting error `u_k = x_k − φ(x_k)` during the
+pre-integration: freeze `J_φ` at a candidate `k̂`, predict `u_{k+1} = J_φ(x_k̂) u_k` (their eq. 12),
+measure `ũ_{k+1} = x_{k+1} − φ(x_{k+1})` (13), accept when `|u − ũ|_j ≤ ε_rel |u_k̂,j| + ε_abs` for all
+`j` (16) on `n_iter` consecutive periods; a failure re-freezes `J_φ`. Their Algorithm 1 for `J_φ u` is
+`FactoredPeriod.matvec` verbatim, so on this side it is the existing matvec pointed at the pre-roll,
+running alongside the integration. Settings: four preliminary periods before checking, `n_iter = 7`,
+`ε_rel = 1e-2`, `ε_abs = 1e-3`; found `k̂ = 4` on an RLC, an LNA at `n = 21` and an industrial LNA at
+`n = 607`, matching manual tuning. Two caveats of theirs: the LTE degrades `J_φ` and the detector
+(constrain `h`; their Fig. 3 is the noise floor arriving earlier with `h` unconstrained), and a
+finite-difference `J_φ u` must reuse the same time points and method. ⚠ **Scope: the paper is
+NON-AUTONOMOUS only** — known `T`, and `J_φ` without a unit multiplier. For an oscillator `u_k` converges
+onto the phase direction rather than to zero. The review session's suggested adaptation, UNTESTED: apply
+(16) to the phase-projected error `Π u_k`, `Π = I − u v₁ᵀ/(v₁ᵀu)` (the oblique projector A9 built), so
+the amplitude part's linearity is what is detected. If `Π u_k` fails (16) deep into a converged
+pre-roll the adaptation is wrong and the criterion is a driven-circuit tool — check the setup before
+recording that (§D 0w). Sits beside März (the theorem, in the `C¹_N` norm, needing the distance to `x*`)
+as the detector that never mentions `x*`, and replaces the guessed number of pre-roll periods Kundert
+describes and the paper opens by criticising.
+
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
 Requested 2026-09-04; it is in. All three `fsolve` calls pass `line_search=True`, and
