@@ -11881,16 +11881,27 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
     0.003 with the corner at 1.02-1.12x the prediction (converging to 1
     with Q), `E_inf = 1.01`, and a Q-INDEPENDENT linear coefficient of
     1.74 / 1.81 / 1.83 / 1.84.  A term linear in `df` against a `1/df^2`
-    part is a `1/df` piece of the spectrum.  ⚠ It is NOT Traversa &
-    Bonani's correlation term in the naive reading: that coefficient goes
-    as `Q_lambda / c`, `c` is exactly flat in Q here (slope -0.000), so it
-    would scale as `Q_lambda` and the measured one is flat; and it persists
-    to `df = 0.3 f0`, fifteen corners out.  What it is is OPEN; this test
-    pins its existence, size and Q-independence, not its origin.
+    part is a `1/df` piece of the spectrum.  It is NOT Traversa & Bonani's
+    correlation term: that coefficient goes as `Q_lambda / c`, `c` is
+    exactly flat in Q here (slope -0.000), so it would scale as
+    `Q_lambda`; and it persists to `df = 0.3 f0`, fifteen corners out,
+    where a cross term saturates.  ✅ IT IS THE TANK'S OWN FIRST-ORDER
+    ASYMMETRY, found by the review session's parity test: on the LOWER
+    sideband the coefficient FLIPS SIGN (upper +1.81 / +1.84, lower -2.20
+    / -2.16 at Q = 8 / 32), so it is odd in `df` -- an asymmetry of the
+    response, which a correction to the even phase-only reference could
+    not produce.  Its odd part is 2.003 / 2.002, and 2 is what the tank
+    gives: `|Z|^2 ~ w^2/(w^2 - w0^2)^2 = (1/4k^2)(1+k)^2/(1+k/2)^2 =
+    (1/4k^2)(1 + k + ...)` at `w = w0 (1+k)`, and with the far-out total
+    twice the phase part (`E_inf = 1`) the linear coefficient is `2 x 1`.
+    Derived, not fitted.  The even remainder, -0.19 and Q-independent, is
+    the small piece still open.
 
     Gated at Q = 8 and Q = 32 on the two-term fit: the corner within 20%
-    of `f0/(2 pi Q_lambda)`, `E_inf` within 10% of 1, and the corner ratio
-    between the two Q values within 15% of the `1/Q_lambda` prediction.
+    of `f0/(2 pi Q_lambda)`, `E_inf` within 10% of 1, the corner ratio
+    between the two Q values within 15% of the `1/Q_lambda` prediction,
+    and at Q = 8 the lower sideband's linear coefficient of the opposite
+    sign with the odd part within 5% of the tank's 2.
     """
     import warnings
     from scipy.optimize import least_squares
@@ -11929,6 +11940,23 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
             lambda q: q[0] * ks ** 2 / (ks ** 2 + q[1] ** 2) + q[2] * ks - E,
             x0=[1.0, pred, 0.5], bounds=([0, 1e-5, -10], [10, 1, 10]))
         Einf, kc, b = fit.x
+        if Q == 8.0:
+            ## the parity test: the LOWER sideband
+            El = np.array([float(np.real(pac.pnoise(pss, f0 * (1.0 - k),
+                                                    ov)[0]))
+                           / Pc * k * k / c - 1.0 for k in ks])
+            fl = least_squares(
+                lambda q: q[0] * ks ** 2 / (ks ** 2 + q[1] ** 2)
+                + q[2] * ks - El,
+                x0=[1.0, pred, -0.5], bounds=([0, 1e-5, -10], [10, 1, 10]))
+            bl = fl.x[2]
+            assert bl < 0.0 < b, \
+                'the linear term must be ODD in df: upper %+.2f, lower ' \
+                '%+.2f' % (b, bl)
+            odd = 0.5 * (b - bl)
+            assert abs(odd / 2.0 - 1.0) < 0.05, \
+                "the odd part is %.3f; the tank's w^2/(w^2-w0^2)^2 gives 2" \
+                % odd
         rms = float(np.sqrt(np.mean(fit.fun ** 2)))
         assert rms < 0.02, 'Q=%g: the step-plus-linear form misfits E by ' \
             'rms %.3f' % (Q, rms)
