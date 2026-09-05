@@ -72,8 +72,15 @@ class Integrator(ABC):
     Abstract Base Class for Transient Numerical Integration Strategies.
     
     This interface isolates all mathematical discretization for time-stepping.
-    By subclassing Integrator, new methods (like Gear-3 or TRBDF2) can be added 
-    without modifying the core Transient solvers.
+    By subclassing Integrator, a LINEAR-MULTISTEP method (Gear-3, say) can be
+    added without modifying the core Transient solvers: it states its
+    companion recursion and the loop drives it through `compute_derivatives`.
+    ⚠ A STAGE method cannot -- TRBDF2 (2026-09-05) has two implicit stages,
+    not a companion recursion, and needed a dedicated two-stage step in the
+    Transient loop (`_solve_timestep_trbdf2`) and its own m x m shooting
+    monodromy; its `compute_derivatives`/`companion_coefficients`/`companion_dT`
+    raise.  The ABC still fits it structurally (order, history, order-drop),
+    just not the single-companion time step.
     """
     
     @abstractmethod
@@ -613,3 +620,89 @@ class Gear2Integrator(Integrator):
         lte = -(1.0 / 3.0) * h1 * (h1 + h2) * dd2_g
 
         return lte, 3.0  # p=3.0 is order+1 (the estimate itself scales with h^2)
+
+
+class TRBDF2Integrator(Integrator):
+    """TR-BDF2: a trapezoid stage over ``gamma*h`` then a BDF2 stage over ``h``.
+
+    A one-step, self-starting, L-stable, order-2 DIRK.  It is here for three
+    failure modes it does NOT have rather than for accuracy (it is order 2,
+    like trapezoidal and Gear-2): no manufactured opening step (so a shooting
+    monodromy is not seeded at first order), no ``(-1)^n`` companion mode, and
+    no zero-stability step-ratio limit (a frozen non-uniform grid carries no
+    ``ZERO_STABILITY_RATIO`` penalty).
+
+    ⚠ IT IS NOT A LINEAR-MULTISTEP METHOD, so it does not fit the
+    companion-recursion shape the rest of this module and the ABC are built
+    around: there is no ``iq_n = sum_k alphas[k] q_{n-k}`` -- there are STAGES.
+    The Transient loop runs it through :meth:`Transient._solve_timestep_trbdf2`
+    (two Newton solves sharing ONE factorisation, because ``a22 == a33``), not
+    through :meth:`compute_derivatives`, and shooting builds its ``m x m``
+    monodromy directly from the two stage linearisations rather than from
+    :meth:`companion_coefficients`.  Those three methods therefore raise here.
+
+    ⚠ FIXED STEP ONLY for now.  The embedded third-order error estimator
+    (Hosea & Shampine 1996) and the step controller are deliberately not
+    built -- their coefficients are a design choice this codebase does not yet
+    hold the source for, and guessing an integration constant is exactly what
+    this module warns against.  :meth:`check_order_drop` returns ``self`` (no
+    ratio limit to enforce) and :meth:`compute_lte` raises.
+
+    THE TABLEAU, derived not quoted (the corpus has nothing on TR-BDF2).
+    ``gamma`` is fixed by the ONE-LU condition, not by accuracy: the trapezoid
+    stage diagonal ``gamma/2`` equals the BDF2 stage diagonal
+    ``(1-gamma)/(2-gamma)`` iff ``gamma^2 - 4 gamma + 2 = 0``, i.e.
+    ``gamma = 2 - sqrt(2)``.  Then the two stage Jacobians
+    ``C + (gamma*h/2) G`` and ``C + a33*h G`` are the same matrix
+    (``a22 == a33``): one factorisation per step, two solves.  Stiffly
+    accurate by construction (``b`` is the last row of ``A``), so ``R(inf)=0``.
+    """
+
+    ORDER = 2
+
+    #: ``gamma = 2 - sqrt(2)``, from the one-LU condition ``g^2 - 4g + 2 = 0``.
+    GAMMA = 2.0 - math.sqrt(2.0)
+    #: The two stage diagonals, equal by the gamma condition: ``a22 == a33``.
+    STAGE_DIAG = 1.0 - math.sqrt(2.0) / 2.0
+    #: BDF2 stage weights on ``q(Y1)`` and ``q(xn)``; ``A1 + A0 == 1``.
+    A1 = 0.5 + math.sqrt(2.0) / 2.0
+    A0 = 0.5 - math.sqrt(2.0) / 2.0
+
+    def __init__(self):
+        pass
+
+    def get_required_history(self) -> int:
+        ## Self-starting and one-step: the only past state is ``x_n`` itself,
+        ## which the loop already carries as the previous solution.
+        return 1
+
+    def check_order_drop(self, h_curr, h_last, is_first_step):
+        ## No zero-stability ratio limit -- a one-step method cannot lose it
+        ## across a step change -- so nothing to drop to.
+        return self
+
+    def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last,
+                            h_last, is_first_step, toolkit):
+        raise NotImplementedError(
+            'TR-BDF2 is a two-stage method; the Transient loop runs it via '
+            '_solve_timestep_trbdf2 (two Newton solves, one factorisation), '
+            'not through the single-companion compute_derivatives.')
+
+    def companion_coefficients(self, h_curr, h_last):
+        raise NotImplementedError(
+            'TR-BDF2 has stages, not a linear-multistep companion recursion, '
+            'so it states no (alphas, b); shooting builds its m x m monodromy '
+            'from the two stage linearisations directly.')
+
+    def companion_dT(self, q_curr, q_last, h_curr, h_last):
+        raise NotImplementedError(
+            'TR-BDF2 states no companion coefficients, so the Euler-theorem '
+            'd(iq)/dT shared by the LMMs does not apply; the autonomous '
+            'shooting dT for a stage method is not yet built.')
+
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last,
+                    is_first_step, toolkit, h_last2=None):
+        raise NotImplementedError(
+            'TR-BDF2 runs fixed-step only for now: its embedded error '
+            "estimator (Hosea & Shampine 1996) is not built and must not be "
+            'guessed. Use fixed_timestep=True.')

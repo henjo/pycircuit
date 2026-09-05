@@ -2219,7 +2219,79 @@ class Transient(Analysis):
             'PCNR did not converge at t=%g after %d iterations'
             % (t, self.par.maxiter))
 
+    def _solve_timestep_trbdf2(self, x0, t, provided_function=None):
+        """One TR-BDF2 step: a trapezoid stage over ``gamma*h`` then a BDF2
+        stage over ``h``, two Newton solves that share ONE factorisation
+        (``a22 == a33``).  Self-starting -- the only past state is ``x0``,
+        the previous accepted solution -- so no history ring is read.
+
+        Fixed step only; `_solve` refuses a non-fixed grid for this method
+        because its embedded estimator is not built.  Returns
+        ``(x, None, J, None)`` like `solve_timestep`, with ``J`` the stage-2
+        Jacobian the downstream expects, and leaves ``_iq``/``_q_cache`` set
+        so the history push after the step is consistent.
+        """
+        integ = self.base_integrator
+        g = integ.GAMMA
+        A1, A0, a33 = integ.A1, integ.A0, integ.STAGE_DIAG
+        h = self._dt
+        tn = t - h
+        epar = self.epar
+        ana = self.par.analysis
+        tk = self.toolkit
+        arr = lambda v: tk.array(v, dtype=float)
+
+        def src(tt):
+            u = arr(self.cir.u(tt, epar, analysis=ana))
+            if provided_function is not None:
+                u = u + provided_function(tt)
+            return u
+
+        xn = x0
+        qn = arr(self.cir.q(xn, epar))
+        dqn = -(arr(self.cir.i(xn, epar)) + src(tn))
+        t1 = tn + g * h
+
+        def func1(x):
+            dqx = -(arr(self.cir.i(x, epar)) + src(t1))
+            f = arr(self.cir.q(x, epar)) - qn - (g * h / 2.0) * (dqx + dqn)
+            J = arr(self.cir.C(x, epar)) + (g * h / 2.0) * arr(self.cir.G(x, epar))
+            return f, J
+        Y1 = self._newton(func1, xn)
+        q1 = arr(self.cir.q(Y1, epar))
+
+        def func2(x):
+            dqx = -(arr(self.cir.i(x, epar)) + src(t))
+            f = arr(self.cir.q(x, epar)) - A1 * q1 - A0 * qn - a33 * h * dqx
+            J = arr(self.cir.C(x, epar)) + a33 * h * arr(self.cir.G(x, epar))
+            return f, J
+        Y2 = self._newton(func2, Y1)
+
+        ## Downstream state the accepted-step machinery reads.  `_iq` is the
+        ## charge derivative at the accepted point (what the companion
+        ## current approximates); `_q_cache` feeds `_q_at`.  The controller
+        ## is skipped under fixed_timestep, so no companion coefficients or
+        ## LTE are needed.
+        qY2 = self.cir.q(Y2, epar)
+        self._q_cache = (Y2, qY2)
+        self._iq = -(arr(self.cir.i(Y2, epar)) + src(t))
+        Cm2 = arr(self.cir.C(Y2, epar))
+        Gm2 = arr(self.cir.G(Y2, epar))
+        self._Cmat = Cm2
+        self._Geq = a33 * h * Gm2
+        self._effective_method = 'TRBDF2Integrator'
+        ## Stage 1 kept for the shooting monodromy, which needs Y1.
+        self._trbdf2_Y1 = Y1
+        J = Cm2 + a33 * h * Gm2
+        return Y2, None, J, None
+
     def solve_timestep(self, x0, t, provided_function=None):
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        if isinstance(self.base_integrator, TRBDF2Integrator):
+            ## Two-stage DIRK: its own step, not the single-companion path.
+            ## PCNR is a DC-junction Newton strategy and is not combined with
+            ## the stages here; TR-BDF2 runs the ordinary stage Newton.
+            return self._solve_timestep_trbdf2(x0, t, provided_function)
         ## STAGE 13 -- the PCNR path, when asked for and when the circuit has a
         ## device that participates.  A circuit with no PCNR junction falls
         ## through: there is nothing for the method to do, and refusing would be
@@ -2347,6 +2419,13 @@ class Transient(Analysis):
                                fixed_timestep, coupled_lte)
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        if isinstance(getattr(self.par, 'integrator', None), TRBDF2Integrator) \
+                and not fixed_timestep:
+            raise NotImplementedError(
+                'TRBDF2Integrator runs FIXED STEP only for now -- its embedded '
+                'error estimator (Hosea & Shampine 1996) is not built and must '
+                'not be guessed. Pass fixed_timestep=True.')
         ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
         ## request: PCNR can decline for the whole run (no device
         ## declares a probe) or fail on individual timesteps and fall

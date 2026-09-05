@@ -730,3 +730,52 @@ def test_companion_conductance_is_exposed_beside_the_companion_current():
     assert np.allclose(np.asarray(tran._Geq, dtype=float), C_end / step,
                        rtol=1e-9, atol=0.0), \
         'the stored companion conductance is not the integrator´s C/h'
+
+
+def test_trbdf2_matches_the_analytic_rc_step_at_second_order():
+    """TR-BDF2 (two-stage DIRK) integrates a driven RC to its analytic step
+    response at second order, through the real Transient loop.
+
+    RC low-pass, V=1 through R=1e4 into C=1e-6 (tau = 1e-2 s), from rest:
+    v_C(t) = 1 - exp(-t/tau).  TR-BDF2 is self-starting and one-step, so
+    there is no manufactured opener and no history ring to seed.  Fixed
+    step; the embedded estimator is not built and the method refuses a
+    non-fixed grid (asserted below).
+    """
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    circuit.default_toolkit = circuit.numeric
+    tau, tend = 1e-2, 1e-3
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VS('a', gnd, v=1.0)
+        c['R'] = R('a', 'b', r=1e4)
+        c['C'] = C('b', gnd, c=1e-6)
+        return c
+
+    analytic = 1.0 - np.exp(-tend / tau)
+    errs = []
+    for N in (100, 200, 400):
+        c = build()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=TRBDF2Integrator())
+        res = tr.solve(tend=tend, timestep=tend / N, x0=np.zeros(c.n),
+                       fixed_timestep=True)
+        v = np.asarray(res.v('b'), dtype=float).reshape(-1)[-1]
+        errs.append(abs(v - analytic))
+    assert errs[-1] < 1e-8, \
+        'TR-BDF2 is %.2e from the analytic RC step at 400 points' % errs[-1]
+    ## second order: each doubling cuts the error by ~4
+    assert errs[0] / errs[1] > 3.5 and errs[1] / errs[2] > 3.5, \
+        'TR-BDF2 order is not 2: errors %s' % errs
+
+    ## and it refuses a non-fixed grid rather than running its unbuilt
+    ## estimator
+    import pytest
+    with pytest.raises(NotImplementedError, match='FIXED STEP'):
+        Transient(build(), toolkit=circuit.numeric,
+                  integrator=TRBDF2Integrator()).solve(
+                      tend=tend, timestep=1e-5, x0=np.zeros(build().n))
