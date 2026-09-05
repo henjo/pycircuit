@@ -6568,6 +6568,12 @@ def test_gamma_never_exceeds_c_at_the_same_density():
         _cir, pss, pac = _lc_osc(a=a, rs=rs)
         c = pac.diffusion_constant(pss)
         gam = float(pac.coloured_diffusion(pss, [1.0 / pss.period])[0])
+        ## ⚠ PRECONDITION (2026-09-05): the inequality gam <= c is
+        ## satisfied vacuously by two near-zeros, so pin c away from zero
+        ## first -- otherwise a degenerate fixture would pass it.
+        assert c > 1e-8, \
+            'a=%r rs=%r: c = %.3e is at the floor; the inequality below ' \
+            'would be two zeros agreeing' % (a, rs, c)
         assert gam <= c * (1.0 + 1e-12), \
             'a=%r rs=%r: Gamma = %.6e exceeds c = %.6e, which is ' \
             'arithmetically impossible at one CY — the two functionals ' \

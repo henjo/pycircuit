@@ -3202,10 +3202,19 @@ Four guards adopted after the self-confirming-measurement review, all internal (
   stale-constant divergence is now a test, not luck. (The cache key already includes the physical
   constants since 7f5cf33; a rough timing shows a cache HIT costs ~0.44s against a ~0.68s cold compile,
   so a two-level key-on-generated-source scheme is not obviously worth it — A3 is the closure.)
-* **Precondition asserts (B1), adopted as convention.** Every gate should assert its precondition
-  (this circuit converts, the variance varies, the fold has a phase); the tests above and this
-  session's PAC/switched-cap gates already do. A full retrofit-audit of the shooting file is a
-  separate pass, not done here.
+* **Precondition asserts (B1), adopted as convention, and the FULL AUDIT done (2026-09-05).** Every
+  gate should assert its precondition (this circuit converts, the variance varies, the fold has a
+  phase). The whole of `test_analysis_shooting.py` was audited -- 212 tests: a mechanical triage
+  flagged 13 with an assertion but no obvious guard signal and 1 with no assertion at all; hand-reading
+  all 14 found the file thoroughly guarded already, in forms a text search does not see -- two-sided
+  brackets (`trap > 0.9 Q` with `euler < 0.5 Q`), exact structural equalities (`companion_reach ==`,
+  algebraic-row counts), closed-form identities (the Lorentzian integrates to 1; the `20 log10 i` law),
+  two-branch detectors with a magnitude floor (`not bad_p and bad_s and res_s > 0.5`), explicit notes
+  (`algebraic > 0`, `abs(a-b) > 0.5` for the conjugate), and `assert_array_equal` (the no-assert one).
+  The single marginal gate -- `test_gamma_never_exceeds_c_at_the_same_density`, an inequality two
+  near-zeros would satisfy -- got a `c > 1e-8` precondition. Plus the three periodic gates from the
+  blind-to review (§ committed 68a8d8e). The peer's read of the periodic third generalised: the file
+  practises the habit widely.
 
 The general lesson, next to §D: a measurement that shares an assumption with the thing it measures
 confirms it at full precision — a cached artefact keyed on source but not constants, a Monte Carlo in
