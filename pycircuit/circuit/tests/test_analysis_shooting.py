@@ -12490,6 +12490,63 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
     assert np.linalg.norm(Mt - Mf.T) < 1e-12
 
 
+def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
+    """Radau IIA(3)'s `m x m` monodromy is FIFTH-order on the exact Floquet
+    spectrum, and self-starting -- no order-dropped opener seam.
+
+    Same source-free RC network as the TR-BDF2 pencil test: the period map is
+    the homogeneous flow `exp(A T)` with `A = -C^-1 G` (reduced).
+    `PSS.factored_period_radau` builds the coupled Radau monodromy as a
+    factored replay (one `3m x 3m` factor per step, reading the third block by
+    stiff accuracy); densifying it and comparing eigenvalues to `exp(mu T)`
+    checks BOTH that the map is the right one and that the error falls as
+    `O(h^5)` -- 32x per grid doubling, not the 4x of a second-order map.
+    """
+    circuit.default_toolkit = circuit.numeric
+
+    cir = SubCircuit()
+    cir['R1'] = R(1, 2, r=1e4)
+    cir['R2'] = R(2, gnd, r=2e4)
+    cir['C1'] = C(1, gnd, c=1e-8)
+    cir['C2'] = C(2, gnd, c=3e-8)
+
+    pss = PSS(cir)
+    m = cir.n - 1
+    x0 = np.zeros(m)                      # linear: monodromy is x0-independent
+    Cr = np.asarray(pss._C_at(x0))
+    Gr = np.asarray(pss._G_at(x0))
+    A = -np.linalg.solve(Cr, Gr)
+    mu = np.linalg.eigvals(A)
+    T = 5e-4
+    exact = np.sort(np.exp(mu * T).real)
+
+    def dense_M(fp):
+        return np.column_stack([fp.matvec(e) for e in np.eye(m)])
+
+    errs = {}
+    for npts in (25, 50, 100):
+        fp = pss.factored_period_radau(x0, T, npts)
+        assert fp.kind == 'radau'
+        assert fp.width == m
+        lam = np.sort(np.linalg.eigvals(dense_M(fp)).real)
+        errs[npts] = float(np.max(np.abs(lam - exact)))
+
+    ## fifth order: each doubling cuts the error by ~32 (allow margin for the
+    ## higher-order remainder)
+    assert errs[25] / errs[50] > 20.0, errs
+    assert errs[50] / errs[100] > 20.0, errs
+    ## and the absolute error is tiny already at the coarsest grid
+    assert errs[25] < 1e-7, errs
+
+    ## the adjoint is the exact transpose of the coupled forward map
+    fp = pss.factored_period_radau(x0, T, 50)
+    Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                          for e in np.eye(m)])
+    Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
+                          for e in np.eye(m)])
+    assert np.linalg.norm(Mt - Mf.T) < 1e-12
+
+
 def test_driven_pss_under_trbdf2_matches_ac_and_gives_second_order_monodromy():
     """`method='trbdf2'` solves a driven PSS and routes the small-signal
     monodromy to the two-stage map.
