@@ -546,6 +546,31 @@ def test_level1_channel_noise_hits_the_nyquist_and_two_thirds_limits():
     ## one formula twice.
     assert abs(sid(x0) / sid(xs) - 1.0) > 0.2
 
+    ## ⚠ CHANNEL-LENGTH MODULATION (2026-09-05): with lambda > 0 the same
+    ## `clm = 1 + lambda*|Vds|` that shortens the channel for the current
+    ## multiplies the noise, so the saturation limit is `(2/3)*4*k*T*gm`
+    ## with `gm` CARRYING CLM (the model's own G), while Nyquist at Vds = 0
+    ## is untouched because clm = 1 there.
+    elc = _mk(eh.MosLevel1Hdl, 'd', 'g', 's', 'b',
+              **dict(NMOS, kf=0.0, lambd=0.05))
+
+    def sidc(x, f=1e3):
+        return float(np.real(np.asarray(
+            elc.CY(np.array(x), 2 * np.pi * f))[0, 0]))
+    gds_c = float(elc.G(np.array(x0))[0, 0])
+    assert_allclose(sidc(x0), 4.0 * _KB * _T0 * gds_c, rtol=1e-6)
+    gm_c = float(elc.G(np.array(xs))[0, 1])
+    assert_allclose(sidc(xs), 2.0 / 3.0 * 4.0 * _KB * _T0 * gm_c, rtol=1e-9)
+    ## and CLM actually moved the saturation noise: the lambda>0 device is
+    ## noisier there than the lambda=0 one, by exactly clm = 1 + lambda*Vds
+    assert sidc(xs) > sid(xs), \
+        'CLM did not raise the saturation channel noise (%.3e vs %.3e)' \
+        % (sidc(xs), sid(xs))
+    clm = 1.0 + 0.05 * 5.0
+    assert abs(sidc(xs) / sid(xs) / clm - 1.0) < 1e-6, \
+        'the CLM factor on the noise is %.4f, not 1 + lambda*Vds = %.4f' \
+        % (sidc(xs) / sid(xs), clm)
+
 
 def test_level1_flicker_noise_is_one_over_f_and_scales_with_the_card():
     """``kf*Id^af/(Cox*Leff^2*f)``, checked as a SLOPE in frequency and a
