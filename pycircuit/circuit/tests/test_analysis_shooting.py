@@ -11894,8 +11894,11 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
     gives: `|Z|^2 ~ w^2/(w^2 - w0^2)^2 = (1/4k^2)(1+k)^2/(1+k/2)^2 =
     (1/4k^2)(1 + k + ...)` at `w = w0 (1+k)`, and with the far-out total
     twice the phase part (`E_inf = 1`) the linear coefficient is `2 x 1`.
-    Derived, not fitted.  The even remainder, -0.19 and Q-independent, is
-    the small piece still open.
+    Derived, not fitted.  The even remainder (-0.19) is NOT a term: under a
+    window sweep the odd part stays at 2.00 in every window and model-free
+    `(E+ - E-)/2k` reads 1.99-2.00, while the even coefficient drifts with
+    the window (-0.19 -> -0.32) -- absorbed step curvature plus the tank's
+    even -k^2/4.  Nothing here is open.
 
     Gated at Q = 8 and Q = 32 on the two-term fit: the corner within 20%
     of `f0/(2 pi Q_lambda)`, `E_inf` within 10% of 1, the corner ratio

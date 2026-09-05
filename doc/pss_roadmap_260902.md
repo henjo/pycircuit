@@ -3171,8 +3171,15 @@ On the LOWER sideband the coefficient flips sign (upper +1.809 / +1.842, lower �
 cannot produce. Its odd part is 2.003 / 2.002, and 2 is closed form: `|Z|² ∝ ω²/(ω² − ω₀²)² =
 (1/4k²)(1 + k + …)` at `ω = ω₀(1 + k)` — the upper sideband is `(1 + Δf/f₀)` stronger than the symmetric
 leading term, the lower weaker — and with the far-out total twice the phase part (`E_∞ = 1`) the
-coefficient in `E` is 2. Q-independent because the tank's asymmetry does not know `μ`. **What is still
-open is only the even remainder, −0.19 and Q-independent** — small, unnamed. Test:
+coefficient in `E` is 2. Q-independent because the tank's asymmetry does not know `μ`. **And the even
+remainder is not a term** — the review session's window sweep: with the fit window's lower edge moved
+from `Δf/f₀ = 0.001` to 0.15 the odd part stays 2.002 / 2.018 / 2.010 / 2.004 / 1.998 (Q = 8) and
+2.003…1.994 (Q = 32), and model-free `(E₊ − E₋)/2k` reads 1.988–1.998 at the outer points, while the
+"even" coefficient drifts −0.19 → −0.32 and drags `E_∞` and the corner with it: absorbed step curvature
+(a step and a line are not orthogonal on a finite window) plus the tank's own even `−k²/4`, and an even
+term linear in `|Δf|` would have been non-analytic at `Δf = 0` anyway. **The excess is fully explained:
+the amplitude mode's Lorentzian step plus the resonator's `(1 ± Δf/f₀)` detuning asymmetry showing
+through a symmetric reference. Nothing open here.** Test:
 `test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode`. (An instrument note: the reference
 `c` here is the pair-consistent PPV's; before §0l it was 3e-4 high on this fixture, invisible at this
 level.)
