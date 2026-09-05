@@ -10033,6 +10033,7 @@ def test_the_plain_transposed_replay_carries_the_autonomous_multiplier():
                 pss.solve(period=2 * np.pi, timestep=2 * np.pi / npts, x0=z,
                           maxiterations=250, x0_unknown=False)
             assert pss.converged
+            pss.monodromy = 'native'   # the PLAIN replay is the object under test
             fp = pss.factored_period()
             n = fp.width
             Mf = np.column_stack([np.asarray(fp.matvec(e), float)
@@ -10227,6 +10228,7 @@ def _vdp_ppv_method(method, npts, Q=8.0):
         pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                   maxiterations=200)
     assert pss.converged, '%s/%d did not converge' % (method, npts)
+    pss.monodromy = 'native'   # its callers measure the native plain path
     return cir, pss
 
 
@@ -11211,29 +11213,53 @@ def test_plain_covariance_reaches_kTC_like_gear_does():
             '%s: not converging toward kT/C (%s)' % (method, ratios)
 
 
-def test_trap_plain_oscillator_covariance_refuses_with_the_reason():
-    """The one plain surface still refused, and it says why: the trap pair
-    map is `2m x 2m` and `ppv()`'s border vectors are width `m`."""
+def test_trap_oscillator_covariance_goes_through_the_gear_twin():
+    """⚠ THIS USED TO ASSERT A REFUSAL, and the refusal is now the NATIVE
+    path's alone.  `oscillator_covariance` borders with `ppv()`'s width-m
+    vectors and the trap pair map is `2m x 2m`, so on the trap-plain
+    factorisation it refuses with the reason -- and under the B16
+    decision (see `PSS.monodromy_twin`) an autonomous circuit solved with
+    trapezoidal hands its monodromy to a Gear-2 twin on the same grid, so
+    the default path RUNS and agrees with a direct Gear-2 solve of the
+    same circuit to Newton tolerance: the twin re-converges the same
+    discrete orbit.  `pss.monodromy = 'native'` still refuses.
+    """
     import warnings
     circuit.default_toolkit = circuit.numeric
-    mu = 1.0 / (2.0 * np.pi * 8.0)
-    cir = SubCircuit()
-    cir.add_node('v')
-    cir['C'] = C('v', gnd, c=1.0)
-    cir['L'] = L('v', gnd, L=1.0)
-    cir['B'] = BSource('v', gnd, gnd, 'v',
-                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
-    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
-    T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
-    pss = PSS(cir, method='trap', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
-                  maxiterations=300)
-    assert pss.converged
-    with pytest.raises(NotImplementedError, match='pair'):
-        PAC(cir).oscillator_covariance(pss)
 
+    def build():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    T = 6.6634
+    res = {}
+    for method in ('trap', 'gear'):
+        cir = build()
+        pss = PSS(cir, method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                      maxiterations=100)
+        assert pss.converged
+        res[method] = (pss, np.asarray(PAC(cir).oscillator_covariance(pss)[0],
+                                       dtype=float))
+    Kt, Kg = res['trap'][1], res['gear'][1]
+    assert np.linalg.norm(Kt - Kg) / np.linalg.norm(Kg) < 1e-6, \
+        'the twin and a direct Gear-2 solve differ by %.2e on the ' \
+        'oscillator covariance; they converge the same discrete orbit' \
+        % (np.linalg.norm(Kt - Kg) / np.linalg.norm(Kg))
+    ## the state is the method's own: trap's period, not the twin's
+    tp = res['trap'][0]
+    assert tp.monodromy_twin() is not tp
+    assert abs(float(tp.period) - float(tp.monodromy_twin().period)) > 0.0
+    tp.monodromy = 'native'
+    with pytest.raises(NotImplementedError, match='pair'):
+        PAC(tp.cir).oscillator_covariance(tp)
 
 def test_the_orbital_residual_was_the_reference_not_the_sum():
     """A9's 2-3 % residual, CLOSED by the plain-path wiring, in two steps.
@@ -11266,6 +11292,7 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
         pss.solve(period=T, timestep=T / 1600, x0=np.array([2.0, 0.0]),
                   maxiterations=400)
     assert pss.converged
+    pss.monodromy = 'native'   # this test measures the one-step method's OWN monodromy
     assert pss.factored_period().width == cir.n - 1, 'expected n = m'
     pac = PAC(cir)
     m = cir.n - 1
@@ -11769,3 +11796,69 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
             '5.3703e-06 on the fixture that can see the dropped term; the ' \
             'index-1 object gives 1.8e-3 here' \
             % (topology, abs(c / 5.3703e-06 - 1.0))
+
+
+def test_B16_the_oscillator_monodromy_is_gear_s_whatever_the_state_method():
+    """⚠⚠ THE B16 DECISION, PINNED ON THE FIXTURE THAT SHOWED IT (2026-09-05).
+
+    Bias-sensitive core, exact `Q_lambda = 5.9083` and `c_true = 5.3703e-06`
+    (scipy adjoint of the ODE).  Trapezoidal's OWN monodromy is unusable
+    with either opener -- `Q` 11.1 / 28.4 / 63.9 at 400/800/1600 points
+    with the default (diverging under refinement), 3086 / 12228 / 48699
+    with `x0_unknown=True` (a spurious multiplier at 1) -- while its state
+    and period are second order.  So "the most accurate" is per quantity:
+    the state keeps the method asked for, the monodromy comes from a Gear-2
+    twin on the same grid (`PSS.monodromy_twin`).  Gates: under trap the
+    default `ppv` reports Gear's `Q` and a second-order `c`; the native
+    path still shows the defect; the state is untouched; and a one-step
+    orbit too poor to seed the twin (Euler at 400 points: period 5% off,
+    amplitude 55% off) gets the error with the reason, not a number.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+
+    def build():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                           + 0.3 * u ** 2)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+
+    def solve(method):
+        cir = build()
+        pss = PSS(cir, method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.731, timestep=6.731 / 400,
+                      x0=np.array([2.0, 0.0]), maxiterations=300)
+        assert pss.converged
+        return cir, pss
+    cir, pss = solve('trap')
+    T_state = float(pss.period)
+    _v, info = pss.ppv()
+    c = PAC(cir).diffusion_constant(pss)
+    assert info['monodromy_method'] == 'gear'
+    assert abs(info['Q'] / 5.9094 - 1.0) < 3e-4, \
+        'trap reports Q = %.4f; Gear on this grid gives 5.9094 (exact ' \
+        '5.9083)' % info['Q']
+    assert abs(c / 5.3703e-06 - 1.0) < 3e-3, \
+        'trap reports c %.2e from the exact; the twin gives 1.8e-3' \
+        % abs(c / 5.3703e-06 - 1.0)
+    assert float(pss.period) == T_state, 'the state must not move'
+    assert np.asarray(pss.waveform[1]).shape == \
+        np.asarray(pss.monodromy_twin().waveform[1]).shape
+    ## the native path: the defect, pinned so it is not rediscovered
+    pss.monodromy = 'native'
+    _v2, info2 = pss.ppv()
+    assert info2['monodromy_method'] == 'trap' and info2['Q'] > 10.0, \
+        "trap's own second multiplier read Q = %.3f; it was 11.1 here" \
+        % info2['Q']
+    ## Euler at this grid cannot seed the twin: the error, with the reason
+    _c3, p3 = solve('euler')
+    with pytest.raises(RuntimeError, match='did not converge'):
+        p3.ppv()

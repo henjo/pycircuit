@@ -1636,6 +1636,15 @@ class PSS(Analysis):
         ## cannot leave a previous solution's state readable as this one's.
         self._period_state = None
         self._factored_period_cache = None
+        ## ⚠ WHICH MONODROMY THE OSCILLATOR SURFACES READ -- see
+        ## `monodromy_twin`.  'gear' (default): an autonomous circuit solved
+        ## with a one-step method hands its PPV, Floquet modes and factored
+        ## period to a Gear-2 twin on the same grid.  'native': the
+        ## method's own plain factorisation, kept for the gates that
+        ## measure it.
+        self.monodromy = 'gear'
+        self._monodromy_twin = None
+        self._solve_kwargs = {}
         ## Set to None by `solve` on the tstab path only -- see there.
         self.tstab_state = None
 
@@ -3179,6 +3188,9 @@ class PSS(Analysis):
         u(t) = 0` and `dq/dt = C xdot`, so `q = -(i(x_0) + u(0))` -- two
         evaluations at the converged solution, no derivative anywhere.
         """
+        _tw = self.monodromy_twin()
+        if _tw is not self:
+            return _tw.ppv(tol)
         import scipy.sparse.linalg as spla
         fp = self.factored_period()
         ## ⚠ NO LONGER GEAR-ONLY (B8). The refusal that stood here said the
@@ -3780,6 +3792,7 @@ class PSS(Analysis):
                 ## sensitivity); this is `v_1` (an equation-row input's).
                 ## A noise current injected into a KCL row is the latter.
                 'samples_pair': np.asarray(states_pair),
+                'monodromy_method': getattr(self.par, 'method', '?'),
                 'samples_eq': np.asarray(_eq),
                 'v_eq': _v_eq,
                 'times': np.asarray(fp.times, dtype=float)}
@@ -3821,6 +3834,72 @@ class PSS(Analysis):
             acc = acc - np.exp(jw * float(t)) * np.asarray(tvec)
         return acc
 
+    def monodromy_twin(self):
+        """The `PSS` whose monodromy the oscillator surfaces read.
+
+        `self` under Gear-2, for a driven circuit, or when
+        `self.monodromy == 'native'`.  Otherwise a Gear-2 `PSS` of the same
+        circuit, solved once on the SAME grid from this orbit's converged
+        state (a few warm Newton iterations), and cached.
+
+        ⚠⚠ THE B16 DECISION, TAKEN ON A MEASUREMENT (2026-09-05).  On the
+        bias-sensitive oscillator (`vdp + 0.3 u^2`, exact `Q_lambda =
+        5.908`, `c_true = 5.3703e-06`) trapezoidal's monodromy is unusable
+        with EITHER opener: the default reads `Q_lambda` 11.1 / 28.4 / 63.9
+        at 400/800/1600 points and DIVERGES with refinement, and
+        `x0_unknown=True` reads 3086 / 12228 / 48699 -- a spurious
+        multiplier at 1 (the one-step companion's parasitic mode), while
+        the state and period are second order either way.  Gear-2 reads
+        5.9094 / 5.9086 / 5.9084.  So "the most accurate" is not a choice
+        between openers: the STATE keeps the method you asked for, and
+        every monodromy-derived quantity -- `Q`, the PPV and everything
+        built on it, the Floquet modes, the phase-noise surfaces -- comes
+        from Gear-2 on the same orbit.  The twin's period differs from
+        this one's by O(h^2); its orbit is re-converged, not copied.
+        """
+        if (getattr(self, 'monodromy', 'gear') != 'gear'
+                or getattr(self.par, 'method', 'euler') == 'gear'
+                or not getattr(self, 'autonomous', False)):
+            return self
+        if self._monodromy_twin is not None:
+            return self._monodromy_twin
+        if getattr(self, '_period_state', None) is None or not self.converged:
+            return self
+        solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
+        kw = dict(self._solve_kwargs)
+        twin = PSS(self.cir, toolkit=self.toolkit, irefnode=None,
+                   method='gear', reltol=self.par.reltol,
+                   iabstol=self.par.iabstol, vabstol=self.par.vabstol)
+        hs = np.asarray(hs, dtype=float)
+        ## the same grid: its fractions when it is not uniform, else the
+        ## uniform step (a one-step plain state can carry an `hs` whose
+        ## sum is a trial period, so the fractions are the safe object)
+        nonuniform = float(hs.max() / hs.min()) > 1.0 + 1e-9
+        grid = (hs / float(hs.sum())) if nonuniform else None
+        x0r = np.asarray(x0, dtype=float)[:self.cir.n - 1]
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                twin.solve(refnode=kw.get('refnode', gnd), period=float(T),
+                           x0=x0r, timestep=float(T) / len(hs), grid=grid,
+                           maxiterations=max(int(kw.get('maxiterations',
+                                                        20)), 20),
+                           matrix_free=bool(kw.get('matrix_free', False)))
+            _ok = bool(twin.converged)
+        except NoConvergenceError:
+            _ok = False
+        if not _ok:
+            raise RuntimeError(
+                'PSS.monodromy_twin: the Gear-2 re-solve from the converged '
+                '%s orbit did not converge, so no second-order monodromy is '
+                'available; set pss.monodromy = "native" to read the '
+                "one-step method's own (first-order, and on an oscillator "
+                'its second multiplier is not the physical one).'
+                % getattr(self.par, 'method', '?'))
+        twin.monodromy = 'native'
+        self._monodromy_twin = twin
+        return twin
+
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
@@ -3838,6 +3917,9 @@ class PSS(Analysis):
         the third figure, of exactly the kind a converged answer absorbs
         without complaint.
         """
+        _tw = self.monodromy_twin()
+        if _tw is not self:
+            return _tw.factored_period()
         if getattr(self, '_period_state', None) is None:
             raise RuntimeError(
                 'PSS: no period to factor -- call solve() first. '
@@ -3955,6 +4037,9 @@ class PSS(Analysis):
         truncated run "cannot compute ALL the Floquet multipliers" -- which
         is the requirement eq (22) carries (IET CDS 2011, above).
         """
+        _tw = self.monodromy_twin()
+        if _tw is not self:
+            return _tw.floquet_modes(pss_unused, nmodes, fp)
         fp = pss_unused.factored_period() if fp is None else fp
         n = fp.width
         T = float(fp.T)
@@ -5083,6 +5168,9 @@ class PSS(Analysis):
         the dense path to <= 2e-16, and both autonomous ones reproduce the
         period exactly.
         """
+        self._solve_kwargs = dict(refnode=refnode, maxiterations=maxiterations,
+                                  matrix_free=matrix_free, tstab=tstab)
+        self._monodromy_twin = None
         ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
         ## `TLine.history` is filled by `cir.accept_step`, which the
         ## TRANSIENT calls at every accepted step and which this analysis
