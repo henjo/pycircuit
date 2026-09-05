@@ -139,7 +139,7 @@ class Branch():
 gnd = Node("gnd", isglobal=True)
 
 defaultepar = ParameterDict(
-    Parameter("T", "Temperature", unit="K", default = 300),
+    Parameter("T", "Temperature", unit="K", default = 300.15),   # 27 C, the SPICE/standard nominal (was 300)
     ## Present so devices have a defined value even when evaluated outside an
     ## analysis.  `Analysis.__init__` overwrites it on its own epar copy; devices
     ## previously fell through to a hard-coded 1e-12 in each of three places when

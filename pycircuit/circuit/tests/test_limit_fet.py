@@ -847,7 +847,7 @@ def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
         ## a limiter moves the path, never the solution.
         ## 1.2031752 with the exact Boltzmann constant (1.2031737 with
         ## 1.38e-23; re-pinned 2026-09-05)
-        assert_allclose(x[c.get_node_index('mid')], 1.2031749, rtol=1e-6)
+        assert_allclose(x[c.get_node_index('mid')], 1.2031764, rtol=1e-6)
 
     ## `fetlim` alone is now the cheapest rescue, by a wide margin.
     assert its['fet'] < its['vds'] / 3.0, its

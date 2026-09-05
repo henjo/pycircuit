@@ -25,6 +25,7 @@ a much weaker test.
 """
 
 import numpy as np
+from pycircuit.circuit.circuit import defaultepar
 import pytest
 import sympy
 
@@ -162,11 +163,22 @@ def test_taylor_coefficients_of_a_diode():
     d = Diode(1, 2, toolkit=symbolic, IS=sympy.Symbol('IS', positive=True))
     b, c = taylor_coefficients(d, [0, 0])
 
-    VT = symbolic.kboltzmann * 300 / symbolic.qelectron
+    VT = symbolic.kboltzmann * float(defaultepar.T) / symbolic.qelectron
     IS = sympy.Symbol('IS', positive=True)
 
-    assert _equal(sympy.simplify(b), IS / (2 * VT ** 2))
-    assert _equal(sympy.simplify(c), IS / (6 * VT ** 3))
+    ## ⚠ NUMERIC compare, not exact symbolic (2026-09-05): with the ambient
+    ## an integer 300 K both sides were exact Rationals and `_equal` held
+    ## bit-for-bit; at 300.15 K the temperature is a Float and the two code
+    ## paths (the analysis and this reference) differ by an ULP, so exact
+    ## `simplify(a - b) == 0` no longer applies.  The claim -- b, c are the
+    ## Taylor coefficients IS/(2 VT^2), IS/(6 VT^3) -- is a 1e-9 numeric
+    ## identity once the symbols carry values.
+    subs = {symbolic.kboltzmann: 1.380649e-23,
+            symbolic.qelectron: 1.602176634e-19, IS: 1.0}
+    for got, want in ((b, IS / (2 * VT ** 2)), (c, IS / (6 * VT ** 3))):
+        gv = float(sympy.simplify(got).subs(subs))
+        wv = float(sympy.sympify(want).subs(subs))
+        assert abs(gv / wv - 1.0) < 1e-9, (gv, wv)
 
 
 def test_numeric_taylor_coefficients_agree_with_symbolic():
@@ -182,7 +194,7 @@ def test_numeric_taylor_coefficients_agree_with_symbolic():
     b_num, c_num = taylor_coefficients(
         Diode(1, 2, toolkit=numeric, IS=IS_val), [0.0, 0.0])
 
-    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    VT = numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
     b_exact = IS_val / (2 * VT ** 2)
     c_exact = IS_val / (6 * VT ** 3)
 
@@ -928,7 +940,7 @@ def test_taylor_coefficients_track_the_operating_point():
     from pycircuit.circuit.elements import Diode
 
     d = Diode(1, 2, toolkit=numeric, IS=_OP_IS)
-    VT_model = numeric.kboltzmann * 300 / numeric.qelectron
+    VT_model = numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
     v_correct = _diode_operating_point(include_resistor=True)
 
     b_biased, c_biased = taylor_coefficients(d, [v_correct, 0.0])
@@ -1505,7 +1517,7 @@ import math as _math
 
 def _diode_taylor(highest_power):
     """Taylor coefficients of the biased diode, quadratic term upward."""
-    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    VT = numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
     v0 = brentq_operating_point()
     IS_eff = 1e-13 * np.exp(v0 / VT)
     return [IS_eff / (_math.factorial(n) * VT ** n)
@@ -1514,12 +1526,12 @@ def _diode_taylor(highest_power):
 
 def brentq_operating_point():
     from scipy.optimize import brentq
-    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    VT = numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
     return brentq(lambda v: v / 1e3 + 1e-13 * np.expm1(v / VT) - 1e-3, 0, 1)
 
 
 def _diode_graded_hd(drive, max_power):
-    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    VT = numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
     v0 = brentq_operating_point()
     alpha = (1e-13 / VT) * np.exp(v0 / VT)
     w0 = 2 * np.pi * 1e4
@@ -1685,7 +1697,7 @@ def test_mimo_contains_scalar_exactly():
     the grading is what is under test and it is indexed by both.
     """
     IS_D = 1e-13
-    VT = numeric.kboltzmann*300/numeric.qelectron
+    VT = numeric.kboltzmann*float(defaultepar.T)/numeric.qelectron
     Ib, Rl, Cl, f0 = 1e-3, 1e3, 1e-9, 1e4
     v0 = brentq(lambda v: v/Rl + IS_D*np.expm1(v/VT) - Ib, 0, 1)
     ISe = IS_D*np.exp(v0/VT)
@@ -1714,7 +1726,7 @@ def test_mimo_carries_independent_problems_side_by_side():
     A 1x1 check cannot catch a driver that accidentally sums right-hand sides
     across nodes before solving, because there is only one.
     """
-    VT = numeric.kboltzmann*300/numeric.qelectron
+    VT = numeric.kboltzmann*float(defaultepar.T)/numeric.qelectron
     w0 = 2*np.pi*1e4
     r1 = lambda s: 1.0/(1e-3 + s*1e-9 + 0.016)
     r2 = lambda s: 1.0/(5e-4 + s*1e-9 + 0.016)

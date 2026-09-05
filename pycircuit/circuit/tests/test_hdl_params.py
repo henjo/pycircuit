@@ -600,6 +600,12 @@ _RECORDED = [
     ## pycircuit's own, a 4.9e-4 temperature scaling nobody asked for.
     ## Point digests: see the run log in the commit; the cards that set
     ## `tnom` explicitly are bit-identical.
+    ## ⚠ Re-recorded 2026-09-05 (kboltzmann and qelectron exact; tnom in Celsius): the EXPLAIN digests of every model with a
+    ## `tnom` parameter, because `tnom` now defaults to the AMBIENT
+    ## (`defaultepar.T = 300`) instead of 300.15 K -- both numbers
+    ## pycircuit's own, a 4.9e-4 temperature scaling nobody asked for.
+    ## Point digests: see the run log in the commit; the cards that set
+    ## `tnom` explicitly are bit-identical.
     ## (second pass, exact filter) 2026-09-05: the EXPLAIN digests of every model with a
     ## `tnom` parameter, because `tnom` now defaults to the AMBIENT
     ## (`defaultepar.T = 300`) instead of 300.15 K -- both numbers
@@ -629,13 +635,13 @@ _RECORDED = [
     ## relative difference exactly 0.000e+00.  An identity probe applies
     ## no law, so it must not move a number, and it did not.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['d86aea0b7e400e9b', 'f01f76f4534107e1', '2c3813479997d10a'],
+     ['6d6a5a0d2d06161b', 'a0ac7ee494c8ecc7', '35e7afcbb3b7e370'],
      'c5bd4ef41193ba0f'),
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['7cd0422eb197ebd1', '5f311448efbd6c7d', '54859e16c18f6680'],
+     ['c3ed303997f1392e', '21e88b90474a46ad', '21439709d3b32cd6'],
      'f47a8c22e23dbb57'),
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
-     ['3d6a473d61cd20ec', '3ce137ad0c8ef3d3', 'f6e679795122b3c2'],
+     ['fe1b458d8329968c', '3455c501ca26160e', 'd500ccf7379c575b'],
      'd498f022d01f0c10'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
@@ -652,13 +658,13 @@ _RECORDED = [
     ## Old explain digests: DiodeSpiceHdl 4faadd376cafc95a,
     ## DiodeSpiceThermalHdl b2230da8487...dbfb58d3a752 (see git).
     ('DiodeSpiceHdl', _DIO, ('a', 'c'), 3,
-     ['131d10cef21aa68e', 'ef5b240f8f341611', '691c85116e23fa93'],
+     ['8e1ceb0656630b6a', 'cf492a8cebc0fd2e', 'd94a839a65f0c877'],
      '7f32ae944ed6839e'),
     ## Old: points b2230da8487a876f / cda54034e9a55933 / 8361dbfb58d3a752,
     ## explain 0dcf03f6b937d283.  Moved by 1.213e-15 relative -- see the
     ## note above.
     ('DiodeSpiceThermalHdl', _DIO, ('a', 'c', 'th', 'tha'), 5,
-     ['1e300c6ee65296ce', '3fe6e28e43167e99', '9fd68d0670d295d1'],
+     ['304cd81bdc921677', '5436b44b35812ab8', 'c55e46b8b22ded83'],
      '1a44be911a0da312'),
 ]
 

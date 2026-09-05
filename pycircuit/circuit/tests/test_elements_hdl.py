@@ -12,6 +12,7 @@ Two proof styles, per hdl.md:
 """
 
 import numpy as np
+from pycircuit.circuit.circuit import defaultepar
 import pytest
 from numpy.testing import assert_allclose
 
@@ -609,7 +610,7 @@ def test_limexp_inside_an_element_and_in_circuit():
     v = float(res.v('b'))
     ## Physical forward drop, and it must satisfy the diode equation.
     assert 0.5 < v < 0.8, v
-    VT = numeric.kboltzmann * 300.0 / numeric.qelectron
+    VT = numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
     assert_allclose(1e-13 * (np.exp(v / VT) - 1), (5.0 - v) / 1e3, rtol=1e-6)
 
 

@@ -722,15 +722,15 @@ _RECORDED = {
     ## (1.380649e-23 for 1.38e-23), then `qelectron` exact and `tnom` in
     ## Celsius the same day, so every digest that folds a thermal voltage
     ## moved twice.  Nothing in the adopted sites did.
-    'MosLevel1Hdl': 'c9b24d8be1d82050',
-    'MosLevel1Hdl-r': '5d9d7e0cfecdaf92',
-    'MosLevel1Hdl-g0': 'a9d6ac9679d6b5a6',
-    'MosLevel1PmosHdl': '9561ff85c79736e3',
-    'GummelPoonNpnHdl': '94a7e4f235b0d30e',
-    'GummelPoonNpnHdl-off': 'f46f8a0319d4e2ec',
-    'GummelPoonPnpHdl': '4c859124c16eb656',
-    'GummelPoonNpnThermalHdl': '40c018ac36158f12',
-    'GummelPoonNpnThermalHdl-off': '1260c6834076c152',
+    'MosLevel1Hdl': '275bb49bc132afd1',
+    'MosLevel1Hdl-r': 'ce4c800a74fb348f',
+    'MosLevel1Hdl-g0': 'a407ac6af5a7e7e9',
+    'MosLevel1PmosHdl': 'fd4f1f41fb4d2587',
+    'GummelPoonNpnHdl': 'b8f2981a979cffca',
+    'GummelPoonNpnHdl-off': 'c410a2703cec8200',
+    'GummelPoonPnpHdl': '5e16039ceb22ec01',
+    'GummelPoonNpnThermalHdl': 'a204d7c7c84114ee',
+    'GummelPoonNpnThermalHdl-off': 'ced67134cc2ea251',
     ## ⚠ RE-RECORDED 2026-08-27 for the three MOS level 3 rows, and only
     ## those.  `_autohold` (roadmap sec. 36) makes the regularisers hold
     ## their own arguments, which stops sympy flattening across the
@@ -751,9 +751,9 @@ _RECORDED = {
     ## uses default cards and random biases; these rows carry cards that
     ## reach the arms.  It is the better instrument and it earned its
     ## keep here.
-    'MosLevel3Hdl': '66aa2816e445085f',
-    'MosLevel3Hdl-off': '4a09bd8f9c1d064f',
-    'MosLevel3PmosHdl': 'da78d912c13583b9',
+    'MosLevel3Hdl': '08f5db0c5ce6120e',
+    'MosLevel3Hdl-off': '69fb6b2a0f231fea',
+    'MosLevel3PmosHdl': '0fd72689c1818781',
 }
 
 

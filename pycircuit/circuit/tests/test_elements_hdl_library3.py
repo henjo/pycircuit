@@ -1461,10 +1461,9 @@ def test_ekv_weak_inversion_is_exponential_with_the_slope_factor():
         assert_allclose(swing_at(ideal, vg), math.log(10.0) * _UT,
                         rtol=1e-4)
     ## The textbook number, at 300 K: 59.5 mV per decade.
-    ## 59.526 mV/decade with the exact Boltzmann constant and elementary
-    ## charge (SI 2019); it read 0.059505 with k = 1.38e-23 and
-    ## q = 1.602e-19 until 2026-09-05.
-    assert_allclose(math.log(10.0) * _UT, 0.059526, rtol=1e-4)
+    ## 59.556 mV/decade at the 300.15 K ambient with the exact SI 2019 k
+    ## and q; it read 0.059526 at 300 K and 0.059505 with the old k, q.
+    assert_allclose(math.log(10.0) * _UT, 0.059556, rtol=1e-4)
     ## and it IS weak inversion: picoamps, twelve decades below the
     ## strong-inversion current at 3 V.
     assert _ids(ideal, 1.0, -0.05) < 1e-11

@@ -25,6 +25,7 @@ diode alone.  Neither raised anything; both produced plausible wrong numbers.
 """
 
 import numpy as np
+from pycircuit.circuit.circuit import defaultepar
 import pytest
 from scipy.optimize import brentq
 
@@ -50,7 +51,7 @@ def _thermal_voltage():
     Not the round 25 mV: the difference is 3%, which exp() turns into a
     2.2x error in the Taylor coefficients and looks exactly like a defect.
     """
-    return numeric.kboltzmann * 300 / numeric.qelectron
+    return numeric.kboltzmann * float(defaultepar.T) / numeric.qelectron
 
 
 def _operating_point():

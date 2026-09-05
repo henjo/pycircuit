@@ -72,7 +72,7 @@ def test_dc_pcnr_true_takes_a_circuit_with_no_junction_at_all():
     assert calls[0] >= 1, 'pcnr=True fell through to the ordinary solver'
     ## 2.818593 with the exact Boltzmann constant (2.818678 with 1.38e-23,
     ## re-pinned 2026-09-05 -- the thermal voltage moved by 4.7e-4)
-    assert abs(float(r.v('tail', gnd)) - 2.818613) < 1e-5
+    assert abs(float(r.v('tail', gnd)) - 2.818523) < 1e-5
 
 
 def _bjt_mirror_20v(rev=False):

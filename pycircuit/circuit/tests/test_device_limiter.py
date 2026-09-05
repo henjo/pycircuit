@@ -717,9 +717,9 @@ def _diffpair_row(cls, vin):
 
 
 DIFF_VIN = (-1.0, -0.3, 0.0, 0.3, 1.0)
-## re-pinned 2026-09-05 with the exact Boltzmann constant and elementary
-## charge (the tails move by ~3e-5 per 5e-4 in the thermal voltage)
-DIFF_TAIL = {1.0: 2.8186128, 0.3: 2.1211427, 0.0: 1.8450648}
+## re-pinned 2026-09-05: exact SI k, q AND the 300.15 K ambient (the tails
+## move by ~1e-4 per 5e-4 in the thermal voltage)
+DIFF_TAIL = {1.0: 2.8185227, 0.3: 2.1210534, 0.0: 1.8449873}
 
 
 @pytest.fixture
