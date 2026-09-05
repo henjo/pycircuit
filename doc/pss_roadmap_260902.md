@@ -4405,7 +4405,7 @@ amplitude 55% off) gets a `RuntimeError` with the reason. Driven circuits are un
 path is what the Spectre comparison validated to six digits, and B16's first-order `λ₂` there is
 recorded above as a known property of the manufactured opener, not repaired.
 
-#### B16-preroll. A COMPUTABLE criterion for when a pre-roll may hand over to shooting — relayed 2026-09-05 at the user's request, NOT YET RUN
+#### B16-preroll. A COMPUTABLE criterion for when a pre-roll may hand over to shooting — relayed 2026-09-05 at the user's request; ✅ **RUN the same day, results below**
 
 De Luca, Bolcato & Schilders, "Proper Initial Solution to Start Periodic Steady-State-Based Methods",
 IEEE TCAS-I 2019 (doi:10.1109/TCSI.2018.2874570; on disk under 07-shooting-methods). Instead of testing
@@ -4427,6 +4427,40 @@ pre-roll the adaptation is wrong and the criterion is a driven-circuit tool — 
 recording that (§D 0w). Sits beside März (the theorem, in the `C¹_N` norm, needing the distance to `x*`)
 as the detector that never mentions `x*`, and replaces the guessed number of pre-roll periods Kundert
 describes and the paper opens by criticising.
+
+**RUN 2026-09-05, with pycircuit's own one-period map** (`_traverse_factored` gives both `φ(x)` and the
+factored steps, so `J_φ u` is `FactoredPeriod.matvec` on the pre-roll state — the paper's Algorithm 1
+verbatim; pair state under Gear-2, 400 points, their settings `ε_rel = 1e-2`, `ε_abs = 1e-3`, `n_iter =
+7`, four preliminary periods; Algorithm 2's re-freeze on failure). Ground truth per period: does a
+shooting Newton from that state converge in ≤ 6 iterations.
+
+    fixture                                      detector fires at k     Newton converges from k
+    DRIVEN, the paper's setting (stable lossy       raw 15  orth 15  obl 15          3
+      nonlinear tank, 5% off resonance, seed 3 V)
+    AUTONOMOUS, period guess 7e-6 off, seed 0.1 V   raw 81  orth 10  obl 66         48
+    AUTONOMOUS, period guess 2.5% off               none in 90 periods              marginal (yes/no alternating)
+
+Three findings. (i) **On its own ground the criterion works as advertised and is CONSERVATIVE**: it never
+fired early, and fired twelve periods after the Newton could already have converged — a sufficient
+condition, not a sharp one (their `k̂ = 4` on an RLC is under their `h` and tolerances, not a property
+of the test). (ii) **The orthogonal-tangent adaptation is UNSAFE for an oscillator**: it fired at `k = 10`
+with the amplitude at 0.15 V, thirty-eight periods before a Newton could converge — because the error
+recursion IS linear there, around the unstable equilibrium the pre-roll is leaving. Linearity of `u_k`
+detects linearity of whatever the local dynamics are, and the paper's implicit premise (a unique
+attractor being approached) is what an oscillator started near its equilibrium violates. (iii) The
+oblique projector built from the FROZEN Jacobian's own near-unit multiplier pair — which needs no `x*`
+and no converged PPV, and which is only armed when `J_φ` actually has a multiplier within 0.3 of 1 —
+fires at 66 against a truth of 48: late, but never false; the arming condition is what saves it. With
+the period guess 2.5% off nothing fires: `u_k` is dominated by the phase slip `(T_guess − T*) ẋ`, and the
+frozen Jacobian never carries a near-unit multiplier away from the orbit. So for oscillators the
+usable form is "`J_φ` has a near-unit multiplier AND the obliquely projected error recursion is linear",
+and it costs a dense eigen-pair of the frozen map — fine at `2m = 4`, a Krylov job at size. ⚠ **An
+instrument failure on the way, caught by 0w before it was recorded:** the first driven control was the
+bias-sensitive CORE under a 0.3 A drive, and its pre-roll blew up (`|u|` 1.8 → 92 in three periods); the
+traversal was checked against an independent transient (`φ(x*) − x*` at `1e-16`) and cleared, and the
+cause was the fixture — that core's `0.3u²` term overwhelms its `μ = 0.02` cubic at large excursions —
+not the instrument. Not built into the tree: the criterion is a pre-roll policy, and the pre-roll
+opener itself (the user's two-steps-back idea) is still the open B16 build.
 
 ### B9. Outer damped Newton — ✅ **ALREADY BUILT**, recorded so it is not re-requested
 
