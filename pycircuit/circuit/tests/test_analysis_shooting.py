@@ -3805,6 +3805,21 @@ def test_pac_agrees_with_the_ac_analysis_on_a_linear_circuit():
     assert rel < 1e-4, \
         'PAC disagrees with the AC analysis by %.3e on a LINEAR circuit, ' \
         'where the two are solving the same problem by different routes' % rel
+    ## ⚠ PRECONDITION / BLIND TO (2026-09-05): AC is the right reference
+    ## only because this circuit does NOT convert -- the l=1 sideband must
+    ## be ~0 here, and asserting it says so.  It also means this gate
+    ## CANNOT see the sideband decomposition; the converting-circuit gates
+    ## that do are `test_pac_reports_sidebands_at_the_right_frequencies_`
+    ## `and_conjugates_the_fold` and `test_a_switched_capacitor_holds_kTC_`
+    ## `with_per_step_CY`.
+    _pac = PAC(_pss.cir, toolkit=circuit.numeric)
+    _oc = [str(n) for n in _pss.cir.nodes].index('c')
+    _H = np.asarray(_pac.adjoint_sideband_row(_pss, 700.0, _oc,
+                                              sidebands=[0, 1]))
+    assert np.linalg.norm(_H[1]) < 1e-6 * np.linalg.norm(_H[0]), \
+        'the l=1 sideband is %.3e of l=0 on a circuit that must not ' \
+        'convert; AC is not the right reference if it does' \
+        % (np.linalg.norm(_H[1]) / np.linalg.norm(_H[0]))
 
 
 @pytest.mark.parametrize('method,x0_unknown,expect', [
@@ -3840,6 +3855,10 @@ def test_pac_order_is_lost_to_the_manufacturing_step(method, x0_unknown,
     WAVEFORM converges at ~4.2x per doubling on this circuit with or
     without the manufacturing step.
     """
+    ## ⚠ BLIND TO (2026-09-05): the linear resonator of `_pac_circuit`
+    ## does not convert, so this gate measures ORDER, never the sideband
+    ## decomposition -- for that see the converting-circuit gates named in
+    ## `test_pac_agrees_with_the_ac_analysis_on_a_linear_circuit`.
     r1, _ = _pac_vs_ac(method, 250, x0_unknown=x0_unknown)
     r2, _ = _pac_vs_ac(method, 500, x0_unknown=x0_unknown)
     ratio = r1 / r2
@@ -11725,6 +11744,18 @@ def test_the_cyclostationarity_probes_lie_on_the_orbit():
         pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
                   maxiterations=60)
     assert pss.converged
+    ## ⚠ PRECONDITION (the property that makes this a test of the fix,
+    ## 2026-09-05): `_DcHeldNoise`'s CY must actually DIFFER between the
+    ## origin and the orbit.  If it ever stopped being state-dependent, CY
+    ## would be constant everywhere, probe placement could not matter, and
+    ## the gate below would pass while testing nothing.
+    probe = _DcHeldNoise('b', gnd, i=0.0, noisePSD=1e-6)
+    cy_zero = abs(np.asarray(probe.CY(np.zeros(2), 0.0))[0, 0])
+    cy_orbit = abs(np.asarray(probe.CY(np.array([1.0, 0.0]), 0.0))[0, 0])
+    assert cy_orbit > 1e3 * (cy_zero + 1e-300), \
+        'the fixture is not state-dependent (CY %.3e at the origin vs ' \
+        '%.3e on the orbit); probe placement cannot matter and the gate ' \
+        'is vacuous' % (cy_zero, cy_orbit)
     pac = PAC(cir, toolkit=circuit.numeric)
     ov = [str(n) for n in cir.nodes].index('v')
     S = pac.pnoise(pss, 1.01 / pss.period, ov)[0]   # must not refuse
