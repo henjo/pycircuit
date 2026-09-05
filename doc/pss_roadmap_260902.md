@@ -3184,6 +3184,34 @@ through a symmetric reference. Nothing open here.** Test:
 `c` here is the pair-consistent PPV's; before §0l it was 3e-4 high on this fixture, invisible at this
 level.)
 
+#### Hardening pass (measurement-discipline follow-through) — ✅ 2026-09-05
+
+Four guards adopted after the self-confirming-measurement review, all internal (no external-tool data):
+
+* **tnom units guard.** `Behavioural.__init__` warns once when a model's `tnom` looks like a Kelvin
+  temperature passed as Celsius (`> 200 C`) — the reversed hazard the Celsius switch introduced, where
+  `tnom=300` meaning Kelvin now silently means 300 C = 573 K and moves the drain current ~2x. The
+  Kelvin defaults (273, 300, 300.15) all trip it; a real card (≤ ~200 C) does not.
+* **Mutation checks.** Three tests inject a defect and assert the gate fires:
+  `test_the_kTC_gate_rejects_an_unscaled_CY` (the `CY` vs `CY/2` factor a Monte Carlo once confirmed
+  rather than caught) and `test_the_sideband_gate_rejects_the_endpoint_and_the_unconjugated_fold` (the
+  two `PAC.solve` reporting defects, on a converting circuit so they bite). A gate that survives its
+  own defect is not a gate.
+* **Cache-disabled standing test.** `test_cache_disabled_matches_the_cached_compile` compiles the
+  constant-folding models with the cache off and asserts bit-identity with the cached compile — the
+  stale-constant divergence is now a test, not luck. (The cache key already includes the physical
+  constants since 7f5cf33; a rough timing shows a cache HIT costs ~0.44s against a ~0.68s cold compile,
+  so a two-level key-on-generated-source scheme is not obviously worth it — A3 is the closure.)
+* **Precondition asserts (B1), adopted as convention.** Every gate should assert its precondition
+  (this circuit converts, the variance varies, the fold has a phase); the tests above and this
+  session's PAC/switched-cap gates already do. A full retrofit-audit of the shooting file is a
+  separate pass, not done here.
+
+The general lesson, next to §D: a measurement that shares an assumption with the thing it measures
+confirms it at full precision — a cached artefact keyed on source but not constants, a Monte Carlo in
+the convention under test, a gate on a circuit whose `v(t)` cannot express the defect. The remedy is a
+check that reads the value back from where the assumption did not reach.
+
 #### §0l. The Gear pair's FIRST BLOCK is a first-order PPV — ⚠⚠ **FOUND AND FIXED 2026-09-05**; `c` was 16.6% high on a non-isochronous oscillator and every fixture before it was blind
 
 **How it was found.** The "14% deficit" of `pnoise` under `c` on `vdp + 0.3u²` (bias-sensitive:

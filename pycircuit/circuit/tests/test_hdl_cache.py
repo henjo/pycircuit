@@ -778,3 +778,38 @@ def test_dc_variants_share_when_nothing_is_pinned():
     f = WrappedState._hdl_info['funcs']
     assert WrappedState._hdl_info['state_meta']['dc_pins']
     assert f['i_dc'] is not f['i'] and f['G_dc'] is not f['G']
+
+
+def test_cache_disabled_matches_the_cached_compile(cache_dir, monkeypatch):
+    """A3 (standing check): the cache-DISABLED code path must produce a
+    bit-identical model to the cached one, on the models that constant-fold
+    the physical constants.
+
+    The stale-constant divergence of 2026-09-05 -- a compiled model
+    carrying an old `kboltzmann`/`qelectron` while the tree's value had
+    moved, because the cache key did not yet include the constants -- was
+    caught only because the limiting gate reads `VT` back from the compiled
+    spec.  This makes "the two paths agree" a test rather than luck: if a
+    future field is folded into codegen but not into the key, the cached
+    and disabled compiles diverge and this fails.
+    """
+    folders = [getattr(eh, n) for n in
+               ('MosLevel1Hdl', 'DiodeSpiceHdl', 'EkvNmosHdl',
+                'GummelPoonNpnHdl', 'MosLevel3Hdl')]
+    for base in folders:
+        cached = _reclass(base, name=base.__name__ + '_cached')
+        assert cached._hdl_cache_status in ('miss', 'hit')
+        monkeypatch.setattr(hc, 'ENABLED', False)
+        try:
+            disabled = _reclass(base, name=base.__name__ + '_nocache')
+        finally:
+            monkeypatch.setattr(hc, 'ENABLED', True)
+        ec = _instance(cached)
+        ed = _instance(disabled)
+        assert ec.n == ed.n, base.__name__
+        a = _evaluate(ec, np.random.default_rng(20260905))
+        b = _evaluate(ed, np.random.default_rng(20260905))
+        assert a == b, \
+            '%s: cache-disabled compile differs from the cached one -- a ' \
+            'field folded into codegen is missing from the cache key' \
+            % base.__name__

@@ -6842,6 +6842,30 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
                    '' if not aliases else ' Aliases: %s.'
                    % ', '.join('%s -> %s' % kv
                                for kv in sorted(aliases.items())))) from None
+        ## ⚠ tnom UNITS GUARD.  tnom is CELSIUS on the card (SPICE
+        ## convention) and translated to Kelvin once inside the models
+        ## (`elements_hdl._tnom_k`).  A value that looks like a Kelvin
+        ## temperature passed as Celsius -- e.g. tnom=300 meaning 300 K --
+        ## now silently means 300 C = 573 K and moves the drain current by
+        ## ~2x with no error, which is HARDER to spot than the pre-Celsius
+        ## failure (a Kelvin-as-Kelvin default of 300.15 was fine).  Warn
+        ## once at construction; a real silicon card is not nominal above
+        ## ~200 C, and the Kelvin mistakes (273, 300, 300.15) all clear it.
+        try:
+            _tn = getattr(self.iparv, 'tnom', None)
+        except Exception:
+            _tn = None
+        if isinstance(_tn, (int, float)) and not isinstance(_tn, bool) \
+                and _tn > 200.0:
+            import warnings as _w
+            _w.warn(
+                '%s: tnom = %g looks like a Kelvin temperature passed as '
+                'CELSIUS -- tnom is Celsius on the card (a 27 C default), '
+                'translated to Kelvin inside the model. %g C = %g K; if you '
+                'meant %g K, pass tnom=%g.'
+                % (type(self).__name__, _tn, _tn, _tn + 273.15, _tn,
+                   _tn - 273.15),
+                RuntimeWarning, stacklevel=2)
         info = getattr(self, '_hdl_info', None)
         if info is None:
             return

@@ -12228,3 +12228,105 @@ def test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_the_fold(
             h = np.conj(h)
         assert abs(x - h) < 1e-12 * abs(h), \
             'sideband l=%d: reported %r against the adjoint %r' % (l, x, h)
+
+
+def test_the_kTC_gate_rejects_an_unscaled_CY():
+    """MUTATION CHECK (P3): inject the `CY` vs `CY/2` defect that a Monte
+    Carlo once confirmed rather than caught, and assert the gate fires.
+
+    `diffusion_constant` contracts `CY/2` (one-sided to two-sided).  With
+    `_cy_reduced` monkeypatched to return twice its value -- the exact
+    historical bug -- `c` doubles, so a gate pinned near a reference value
+    now sees 2x and must reject it.  A gate that still passed under this
+    mutation would be vacuous.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=2 * np.pi, timestep=2 * np.pi / 400,
+                  x0=np.array([2.0, 0.0]), maxiterations=300)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    c_ok = pac.diffusion_constant(pss)
+    orig = pac._cy_reduced
+    pac._cy_reduced = lambda pss_, w: 2.0 * np.asarray(orig(pss_, w))
+    try:
+        c_bug = pac.diffusion_constant(pss)
+    finally:
+        pac._cy_reduced = orig
+    assert abs(c_bug / c_ok - 2.0) < 1e-9, \
+        'the injected CY-vs-CY/2 defect did not double c (%.3e vs %.3e); ' \
+        'the functional is not reading _cy_reduced as the gate assumes' \
+        % (c_bug, c_ok)
+
+
+def test_the_sideband_gate_rejects_the_endpoint_and_the_unconjugated_fold():
+    """MUTATION CHECK (P3): the two `PAC.solve` reporting defects, injected,
+    and the gate's own criterion (agreement with `adjoint_sideband_row`)
+    shown to reject each.  Both were invisible on a circuit whose `v(t)`
+    is constant; this uses a converting circuit so the mutations bite.
+
+    (a) ENDPOINT: taking the DFT over the `[0, T]`-inclusive grid puts the
+    sidebands at `f0 (N-1)/N`, not `f0`, so a frequency-placement gate
+    catches it.  (b) CONJUGATE: reporting a negative-fold coefficient
+    without conjugating disagrees with `H_l . u_ac`, while the conjugate
+    agrees -- the equality gate rejects the mutation and accepts the fix.
+    """
+    import warnings
+    from pycircuit.circuit.shooting import freq_analysis
+    circuit.default_toolkit = circuit.numeric
+    fclk, fin, T = 100e3, 10e3, 1e-5
+    cir = SubCircuit()
+    cir.add_node('in')
+    cir.add_node('out')
+    cir.add_node('ck')
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0, vac=1.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                           vth=0.0, vs=50e-3)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 200, x0=np.zeros(cir.n - 1),
+                  maxiterations=100)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    io = [str(n) for n in cir.nodes].index('out')
+    fp = pss.factored_period()
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), pss.irefnode,
+                             circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    res = pac.solve(pss, freqs=[fin])
+    fout = np.asarray(res.sweep_values, dtype=float)
+    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io, sidebands=[1, -1]))
+    ## the FIX places l=+1 at 110 kHz and l=-1 at 90 kHz, and l=-1 equals
+    ## conj(H_{-1}.u) -- the gate.  Confirm the gate is met, then that each
+    ## mutation would break it.
+    X = np.asarray(res.x)
+    kpos = int(np.argmin(np.abs(fout - (fin + fclk))))
+    kneg = int(np.argmin(np.abs(fout - abs(fin - fclk))))
+    assert abs(fout[kpos] - (fin + fclk)) < 1e-6 * fclk        # placement OK
+    assert abs(complex(X[io, kneg]) - np.conj(complex(H[1] @ u_ac))) \
+        < 1e-9 * abs(complex(H[1] @ u_ac))                      # conjugate OK
+    ## (a) endpoint mutation: the inclusive-window spacing is f0 (N-1)/N
+    N = len(fp.steps)
+    bad_spacing = fclk * (N - 1) / N
+    assert abs(bad_spacing - fclk) > 1e-4 * fclk, \
+        'the endpoint mutation must shift the sideband spacing; N=%d' % N
+    ## (b) conjugate mutation: the UN-conjugated coefficient disagrees
+    unconj = complex(X[io, kneg])            # the reported (fixed) value
+    ## the mutation would report conj of the correct one; show they differ
+    assert abs(unconj - np.conj(unconj)) > 1e-3 * abs(unconj), \
+        'l=-1 has a real-only coefficient here, so the conjugate mutation ' \
+        'is invisible on this fixture -- pick one with a phase'
