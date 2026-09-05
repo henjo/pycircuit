@@ -661,21 +661,37 @@ class TRBDF2Integrator(Integrator):
     matrix (``a22 == a33``): one factorisation per step, two solves.  Stiffly
     accurate by construction (``b`` is the last row of ``A``), so ``R(inf)=0``.
 
-    ⚠ THE SAME ``gamma`` IS ALSO THE ACCURACY OPTIMUM, so it is not merely a
-    cost constant.  Bank et al. 1985 (eq. 38) give the principal truncation
-    coefficient of a TR step followed by a BDF2 step as
-    ``C(gamma) = (-3 gamma^2 + 4 gamma - 2) / (12 (2-gamma))``, minimised on
-    ``(0, 1]`` exactly at ``gamma = 2 - sqrt(2)`` with
-    ``C = 2/3 - sqrt(2)/2 ~ -0.0404``.  That is the same number the embedded
-    estimator's leading coefficient ``(4 - 3 sqrt2)/6`` works out to (this
-    file's own derivation, reached independently) -- two optimality
-    properties, one root.
+    ⚠ ONE QUADRATIC, REACHED FROM THREE DIFFERENT REQUIREMENTS -- so
+    ``gamma`` is not merely a cost constant.  Writing
+    ``Q(gamma) = gamma^2 - 4 gamma + 2`` (whose root in ``(0,1)`` is
+    ``2 - sqrt(2)``), the following all reduce to ``Q`` (verified
+    symbolically, and the framing corrected 2026-09-05: these are the SAME
+    quadratic, not independent conditions):
+
+      * the ONE-LU condition ``a33 - gamma/2 = Q / (2(gamma-2))`` -- zero iff
+        ``Q = 0``;
+      * BANK et al. 1985 (eq. 38) give the principal truncation coefficient
+        ``C(gamma) = (-3 gamma^2 + 4 gamma - 2)/(12(2-gamma))``, whose
+        derivative is ``Q / (4 (2-gamma)^2)`` -- extremal iff ``Q = 0``, and
+        ``C(2-sqrt2) = 2/3 - sqrt(2)/2 ~ -0.0404`` equals the embedded
+        estimator's leading coefficient ``(4 - 3 sqrt2)/6`` (this file's own
+        derivation, reached independently);
+      * ROSENBROCK 1963 (Comput. J. 5(4), eq. 29) fixes the equal stage
+        diagonal ``d = gamma/2`` by ``d^2 - 2d + 1/2 = 0``, which is
+        ``Q/4 = 0``.
+
+    Three structurally unrelated requirements -- one LU, minimal truncation,
+    L-stability of a linearly implicit process -- landing on one quadratic
+    is a strong reason to trust the constant, stronger than any one alone.
+    (TR-BDF2 is L-stable for EVERY gamma -- ``R(inf) = 0`` identically -- so
+    L-stability alone selects nothing; it is the equal-diagonal condition
+    within Rosenbrock's family that gives ``Q``.)
 
     ⚠ CONVENTION: this is BANK / HOSEA & SHAMPINE's ``gamma`` (the stage
-    ABSCISSA ``c2 = 2 - sqrt(2) ~ 0.586``), NOT Kennedy & Carpenter's, whose
-    ``gamma`` is this one halved (``= a22 = 0.293``, our ``STAGE_DIAG``).
-    Same method, symbol differing by exactly 2; do not "correct" the value
-    against the other paper.
+    ABSCISSA ``c2 = 2 - sqrt(2) ~ 0.586``), NOT Kennedy & Carpenter's or
+    Rosenbrock's, whose ``gamma`` is this one halved (``= a22 = 0.293``, our
+    ``STAGE_DIAG``).  Same method, symbol differing by exactly 2; do not
+    "correct" the value against the other paper.
     """
 
     ORDER = 2

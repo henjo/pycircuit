@@ -205,17 +205,8 @@ class FactoredPeriod(object):
             return self._pss._monodromy_matvec_transposed(
                 self.opening, self.steps, v, collect=collect, inject=inject)
         if self.kind == 'trbdf2':
-            ## The TR-BDF2 adjoint is a follow-up, not this increment: the
-            ## forward monodromy (the Floquet spectrum) is what "monodromy
-            ## first" delivers.  Refuse loudly rather than fall through to
-            ## the plain one-step transpose, whose companion recursion is
-            ## the WRONG map for a two-stage DIRK -- silently returning a
-            ## Gear-2-shaped adjoint is exactly the accident this method was
-            ## rewritten to prevent.
-            raise NotImplementedError(
-                'TR-BDF2 monodromy transpose (the adjoint surface for ppv/'
-                'pnoise) is not built yet; the forward matvec and its Floquet '
-                'spectrum are. Use method="gear"/"trap" for adjoint analyses.')
+            return self._pss._monodromy_matvec_transposed_trbdf2(
+                self.steps, v, collect=collect, inject=inject)
         return self._pss._monodromy_matvec_transposed_plain(
             self.opening, self.steps, v, collect=collect, inject=inject)
 
@@ -2787,11 +2778,13 @@ class PSS(Analysis):
         A1, A0, a33 = integ.A1, integ.A0, integ.STAGE_DIAG
         iref = self.irefnode
         x = copy(x0_in)
+        x_prev = copy(x0_in)
         steps = []
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
+            x_prev = xn
             Y1f = tr._trbdf2_Y1
             Y1 = self.toolkit.concatenate((Y1f[:iref], Y1f[iref + 1:]))
             Cn = np.asarray(self._C_at(xn))
@@ -2805,7 +2798,7 @@ class PSS(Analysis):
             B1 = Cn - (g * h / 2.0) * Gn
             steps.append((lu1, B1, lu2, C1, Cn, A1, A0))
         self._want_dfdh = False
-        return steps, x
+        return steps, x, x_prev
 
     def _monodromy_matvec_trbdf2(self, steps, v):
         """`M v` for the TR-BDF2 map, replaying the stored two-stage factors.
@@ -2826,6 +2819,75 @@ class PSS(Analysis):
             dY1 = lu1.solve(B1 @ w)
             rhs = A1 * (C1 @ dY1) + A0 * (Cn @ w)
             w = lu2.solve(rhs)
+        return w
+
+    def _monodromy_matvec_transposed_trbdf2(self, steps, v, collect=False,
+                                            inject=None):
+        """`M^T v` for the TR-BDF2 map -- the adjoint of the two-stage
+        product, replayed in reverse step order.
+
+        The forward step is `M_j = K2 (A1 C1 K1 B1 + A0 Cn)` with
+        `K1 = lu1^-1`, `K2 = lu2^-1`, so its transpose acting on `w` is
+
+            z = K2^T w
+            M_j^T w = A1 B1^T (K1^T (C1^T z)) + A0 Cn^T z
+
+        -- one transposed solve per stage, the same two the forward matvec
+        takes.  `M = M_{N-1} ... M_0`, so `M^T = M_0^T ... M_{N-1}^T` and the
+        loop runs from the LAST step to the first.
+
+        With `collect`, returns `(w, ts, states)` where `states[j]` is the
+        adjoint state after step `j` -- `v(t_j) = Phi(T, t_j)^T v(T)`, the
+        PPV over the period that `ppv` reads -- and `ts[j]` is the stage-2
+        transposed solve `K2^T` at that step.  Width `m` (no pair), so
+        `states[j]` is used directly, without the solved-history pair
+        reconstruction.
+
+        ⚠ `ts[j]` IS THE STAGE-2 ADJOINT SOLVE, NOT A FULL FORCED-INJECTION
+        COUPLING.  A source injected at step `j` enters a two-stage step
+        through BOTH stages (`src(t1)` and `src(t)`), so the sideband/forced
+        surfaces (`PAC.adjoint_sideband_row`, `pnoise`) need a matching
+        two-stage FORWARD forced replay that is not built yet -- `ppv`,
+        which reads only `states`, does not.
+        """
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            ii = (None, None) if inject is None else (
+                np.real(inject), np.imag(inject))
+            re = self._monodromy_matvec_transposed_trbdf2(
+                steps, v.real, collect, ii[0])
+            im = self._monodromy_matvec_transposed_trbdf2(
+                steps, v.imag, collect, ii[1])
+            if collect:
+                return (re[0] + 1j * im[0],
+                        [a + 1j * b for a, b in zip(re[1], im[1])],
+                        [a + 1j * b for a, b in zip(re[2], im[2])])
+            return re + 1j * im
+        v = v.astype(float)
+        if not steps:
+            return (v.copy(), [], []) if collect else v.copy()
+        w = v.copy()
+        ts = []
+        states = []
+        for j in range(len(steps) - 1, -1, -1):
+            lu1, B1, lu2, C1, Cn, A1, A0 = steps[j]
+            z = lu2.solve_transposed(w)
+            if z is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so the '
+                    'TR-BDF2 monodromy transpose cannot be replayed. Use '
+                    'DenseSolver or SuperLUSolver.')
+            p = lu1.solve_transposed(C1.T @ z)
+            w = A1 * (B1.T @ p) + A0 * (Cn.T @ z)
+            if inject is not None:
+                w = w + inject[j]
+            if collect:
+                ts.append(z)
+                states.append(w.copy())
+        if collect:
+            ts.reverse()
+            states.reverse()
+            return w, ts, states
         return w
 
     def _i_at(self, x_reduced):
@@ -3879,7 +3941,26 @@ class PSS(Analysis):
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
         lam2 = 0.0
         kk = int(min(n, self.PPV_RITZ_BASIS))
-        if kk >= 2:
+        if fp.kind == 'trbdf2':
+            ## ⚠ THE DIRK MAP IS DENSE AND WIDTH `m`, so its exact spectrum
+            ## is cheap -- and the Arnoldi below resolves it BADLY here.
+            ## `I - M` has `M`'s annihilated modes clustered at eigenvalue 1
+            ## and the physical unit root also at 1 after `1 - theta`;
+            ## measured, the Arnoldi left the unit root at `1 - 1.5e-6`, past
+            ## the `1e-6` deflation, so it reported the ORBIT TANGENT as the
+            ## second multiplier and `Q ~ 6e5`.  Forming `M` by `m` matvecs
+            ## and taking its eigenvalues directly gives the unit root to
+            ## machine precision (it deflates cleanly) and the true second
+            ## multiplier -- 8.59e-4 on van der Pol, matching Gear-2's
+            ## 8.58e-4.  Gear/solved-history keep the matrix-free Arnoldi,
+            ## byte-for-byte, so no existing spectrum moves.
+            _Md = np.column_stack([np.asarray(fp.matvec(_e), dtype=float)
+                                   for _e in np.eye(n)])
+            _lams = np.linalg.eigvals(_Md)
+            _keep = np.real(_lams)[np.abs(_lams - 1.0) > 1e-6]
+            if _keep.size:
+                lam2 = float(max(np.max(_keep), 0.0))
+        elif kk >= 2:
             ## ⚠ EVERY LOCAL HERE IS UNDERSCORED ON PURPOSE.  The first
             ## version of this block used `q` for the Arnoldi start
             ## vector, silently overwriting `C(0) xdot(0)` -- which is
@@ -4035,6 +4116,19 @@ class PSS(Analysis):
         it is what makes this method map-agnostic rather than merely
         permitted.
         """
+        if fp.kind == 'trbdf2':
+            ## ⚠ THE COLLECTED `ts` IS THE STAGE-2 ADJOINT SOLVE ONLY.  A
+            ## source injected at a sample time enters a two-stage step
+            ## through BOTH stages, so the sideband coupling is not this one
+            ## solve -- summing it would return a PLAUSIBLE WRONG number, the
+            ## trap this class refuses elsewhere.  The two-stage forced
+            ## adjoint is the same follow-up as the forward `_forced_replay`.
+            raise NotImplementedError(
+                'PAC adjoint sideband is not built for TR-BDF2: a source '
+                'injected into a two-stage step couples through both stages, '
+                'not the single stage-2 solve the collected `ts` carries. Use '
+                "method='gear'/'trap' for driven PAC/pnoise; the autonomous "
+                'phase-noise stack works over TR-BDF2.')
         _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
@@ -4212,10 +4306,11 @@ class PSS(Analysis):
         tr_saved = getattr(self, '_tran', None)
         self._tran = self._new_transient(TRBDF2Integrator())
         try:
-            steps, x_last = self._traverse_factored_trbdf2(x0, times, hs)
+            steps, x_last, x_prev = self._traverse_factored_trbdf2(
+                x0, times, hs)
         finally:
             self._tran = tr_saved
-        return FactoredPeriod('trbdf2', None, steps, x_last, None,
+        return FactoredPeriod('trbdf2', None, steps, x_last, x_prev,
                               self, times=times, T=float(T))
 
     FLOQUET_DENSE_LIMIT = 400
@@ -4436,6 +4531,15 @@ class PSS(Analysis):
         factored once; a complex right-hand side costs two back-substitutions
         against those same factors.  See the note in `_monodromy_matvec`.
         """
+        if fp.kind == 'trbdf2':
+            raise NotImplementedError(
+                "TR-BDF2 driven forced replay (PAC/pnoise) is not built: a "
+                "source injected into a two-stage step enters BOTH stages, so "
+                "the per-step forced response is a two-stage quantity, not the "
+                "single-companion injection the LMM replay uses. The "
+                "AUTONOMOUS phase-noise stack (ppv, diffusion_constant, "
+                "oscillator_spectrum) works over TR-BDF2; for driven "
+                "PAC/pnoise use method='gear' or 'trap'.")
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
@@ -7845,6 +7949,14 @@ class PAC(Analysis):
         """
         self._refuse_coloured(pss, what)
         fp = pss.factored_period()
+        if fp.kind == 'trbdf2':
+            raise NotImplementedError(
+                "TR-BDF2 driven noise covariance (covariance/pnoise) is not "
+                "built: the per-step noise injection Q_j of a two-stage step "
+                "enters both stages, not the single-companion LMM form. The "
+                "AUTONOMOUS phase-noise stack (ppv, diffusion_constant, "
+                "oscillator_spectrum) works over TR-BDF2; for driven "
+                "covariance/pnoise use method='gear' or 'trap'.")
         if fp.kind != 'solved_history':
             return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1

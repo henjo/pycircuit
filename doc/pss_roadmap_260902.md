@@ -6338,9 +6338,39 @@ T4. **`method='trbdf2'` in the shooting Newton** (this increment). The dense New
    row), but the docs session MEASURED full order 2 on a Hessenberg index-2 problem anyway, so no
    gate is written either way.
 
-T5. **Still open: the adjoint transpose.** `matvec_transposed` on a `kind='trbdf2'` FactoredPeriod
-   refuses loudly rather than fall through to the plain one-step transpose (the wrong map), so the
-   noise/sideband surfaces that need the per-step adjoint (`pnoise`, PAC's collected `ts`) over
-   TR-BDF2 are not yet available. The pure `M^T` matvec and the `collect=True` per-step
-   `ts`/`states` for a two-stage method are the remaining derivation; the PPV LEFT eigenvector
-   needs only the pure `M^T`, so it is the first sub-step when this resumes.
+T5. **The adjoint transpose, and the whole AUTONOMOUS phase-noise stack** (this increment).
+   `_monodromy_matvec_transposed_trbdf2` gives `M^T v` -- the transpose of the two-stage product,
+   replayed in reverse step order (`M_j^T w = A1 B1^T K1^T C1^T z + A0 Cn^T z`, `z = K2^T w`) --
+   plus `collect=True` returning width-`m` per-step `states` (`v(t_j) = Phi(T,t_j)^T v(T)`, no
+   pair). Verified: `M^T` equals the dense `(M)^T` to 1.3e-15, complex splits into two real
+   replays.
+
+   ⚠ THAT UNLOCKS MORE THAN THE EIGENVECTOR. `ppv` reads only `states` (it discards `ts`), and
+   its per-period PPV needs no pair reconstruction for a width-`m` map -- so `ppv`,
+   `diffusion_constant`, and `oscillator_spectrum` ALL run over TR-BDF2, matching Gear-2: PPV
+   vector to 3.5e-4, `Q` 0.1417 vs 0.1416, `c = 8.045e-08` vs `8.042e-08` on the noisy van der
+   Pol, lineshape to 0.002 dBc across three decades. No Gear-2 twin -- the DIRK's native
+   second-order monodromy carries it.
+
+   ⚠ ONE `ppv` FIX WAS NEEDED. `ppv`'s `Q`/second-multiplier came from a matrix-free Arnoldi on
+   `I - M`; on the small width-`m` DIRK map its clustered near-null spectrum left the unit root at
+   `1 - 1.5e-6`, past the `1e-6` deflation, so it reported the ORBIT TANGENT as the second
+   multiplier (`Q ~ 6e5`). The DIRK map is dense and small, so its exact eigenvalues are cheap:
+   for `kind='trbdf2'` `ppv` now eigen-solves the densified `M` directly (deflates cleanly,
+   `lam2 = 8.59e-4`). Gear/solved-history keep the Arnoldi byte-for-byte.
+
+T6. **Still open: the DRIVEN forced surfaces.** `covariance`, `pnoise`, and PAC's adjoint sideband
+   REFUSE loudly for TR-BDF2 (clear `NotImplementedError`, not a tuple-shape crash and not a
+   plausible wrong number). A source injected into a two-stage step enters BOTH stages, so the
+   per-step forced response and its noise covariance `Q_j` are two-stage quantities the LMM
+   single-companion replay (`_forced_replay`, `_lyapunov_pieces`) does not represent -- a matching
+   two-stage forward forced replay is the remaining derivation. Autonomous noise (the oscillator
+   case, T5) is unaffected and complete.
+
+   ⚠ THE `gamma` CONSTANT: one quadratic `Q(gamma) = gamma^2 - 4gamma + 2`, reached from three
+   different requirements (verified symbolically; the docs session's first "three independent legs"
+   framing was corrected -- they are the SAME quadratic). The one-LU condition is `Q=0`; Bank
+   eq.38's truncation `dC/dgamma` numerator is `Q`; Rosenbrock 1963's equal-diagonal L-stability
+   condition `d^2-2d+1/2` (d=gamma/2) is `Q/4`. TR-BDF2 is L-stable for EVERY gamma
+   (`R(inf)=0` identically), so L-stability alone selects nothing -- the equal-diagonal condition
+   is what gives Q. All in the integrator docstring.

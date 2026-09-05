@@ -12430,12 +12430,14 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
     ## and the absolute error is already small at the coarsest grid
     assert errs[100] < 1e-5, errs
 
-    ## the adjoint surface is a deliberate follow-up: refuse loudly rather
-    ## than fall through to the plain one-step transpose (the WRONG map for
-    ## a two-stage DIRK)
+    ## the adjoint is the exact transpose of the forward map (built as a
+    ## dedicated test elsewhere; sanity-checked here on one grid)
     fp = pss.factored_period_trbdf2(x0, T, 100)
-    with pytest.raises(NotImplementedError, match='TR-BDF2'):
-        fp.matvec_transposed(np.ones(m))
+    Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                          for e in np.eye(m)])
+    Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
+                          for e in np.eye(m)])
+    assert np.linalg.norm(Mt - Mf.T) < 1e-12
 
 
 def test_driven_pss_under_trbdf2_matches_ac_and_gives_second_order_monodromy():
@@ -12526,3 +12528,96 @@ def test_autonomous_pss_under_trbdf2_finds_its_own_period():
     ## an oscillator's monodromy carries a multiplier at 1 (the orbit tangent)
     assert abs(pss.spectral_radius - 1.0) < 1e-3, pss.spectral_radius
     assert pss.factored_period().kind == 'trbdf2'
+
+
+def test_trbdf2_monodromy_transpose_matches_the_dense_transpose():
+    """The TR-BDF2 adjoint `M^T` is the exact transpose of the forward map.
+
+    Built column by column from the forward matvec and from
+    `matvec_transposed`, the two must agree to machine precision; and a
+    complex input must split into two real replays (the real map's property
+    every adjoint surface relies on).
+    """
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir['R1'] = R(1, 2, r=1e4); cir['R2'] = R(2, gnd, r=2e4)
+    cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
+    pss = PSS(cir, method='trbdf2')
+    m = cir.n - 1
+    fp = pss.factored_period_trbdf2(np.zeros(m), 5e-4, 50)
+    M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                         for e in np.eye(m)])
+    MT = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
+                          for e in np.eye(m)])
+    assert np.linalg.norm(MT - M.T) < 1e-12, np.linalg.norm(MT - M.T)
+    ## collect returns width-m states (no pair) and a consistent endpoint
+    v = np.arange(1.0, m + 1.0)
+    end, ts, states = fp.matvec_transposed(v, collect=True)
+    assert np.allclose(end, fp.matvec_transposed(v))
+    assert len(states) == len(fp.steps) and len(states[0]) == m
+    ## complex linearity
+    vc = v + 1j * v[::-1]
+    assert np.allclose(fp.matvec_transposed(vc),
+                       fp.matvec_transposed(vc.real)
+                       + 1j * fp.matvec_transposed(vc.imag))
+
+
+def test_phase_noise_stack_works_over_trbdf2():
+    """ppv, the diffusion constant, and the oscillator spectrum all run over
+    the TR-BDF2 monodromy and agree with Gear-2.
+
+    The autonomous phase-noise surfaces ride on the PPV, which rides on the
+    monodromy transpose -- so a correct two-stage adjoint makes the whole
+    stack available without a Gear-2 twin. On van der Pol with a white
+    source the diffusion constant `c` and the lineshape must match the
+    Gear-2 numbers to O(h^2).
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def solve(method):
+        cir = _vdp_with_noise(1e-6)
+        m = cir.n - 1
+        pss = PSS(cir, method=method, reltol=1e-12)
+        x0 = np.zeros(m); x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+                      maxiterations=60)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        c = pac.diffusion_constant(pss)
+        _Sv, L = pac.oscillator_spectrum(pss, [1e-2, 1e-1, 1.0], 0,
+                                         harmonic=1)
+        return c, np.asarray(L, dtype=float)
+
+    c_g, L_g = solve('gear')
+    c_t, L_t = solve('trbdf2')
+    assert abs(c_t - c_g) < 1e-2 * c_g, (c_t, c_g)
+    assert np.max(np.abs(L_t - L_g)) < 0.05, (L_t, L_g)
+
+
+def test_trbdf2_driven_noise_surfaces_refuse_cleanly():
+    """The DRIVEN forced surfaces (covariance/pnoise/PAC sideband) are not
+    built for TR-BDF2 and must refuse loudly, not return a plausible wrong
+    number.
+
+    A source injected into a two-stage step enters BOTH stages, so the
+    per-step forced response and its noise covariance are two-stage
+    quantities the LMM single-companion replay does not represent. Rather
+    than fall through to the wrong shape, each refuses.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir['vs'] = VSin(1, gnd, vac=1.0, va=1.0, freq=1e3, phase=0)
+    cir['R'] = R(1, 2, r=1e4); cir['C'] = C(2, gnd, c=1e-8)
+    pss = PSS(cir, method='trbdf2')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 200)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with pytest.raises(NotImplementedError, match='TR-BDF2'):
+        pac.covariance(pss)
+    with pytest.raises(NotImplementedError, match='TR-BDF2'):
+        pac.pnoise(pss, 1e2, 0)
