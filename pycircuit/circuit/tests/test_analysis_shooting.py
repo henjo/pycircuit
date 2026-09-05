@@ -11695,8 +11695,15 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
     complement in the pair-consistent propagation does not exist at index
     2.  An L-I cutset (the tank inductor split through a node that sees
     only inductors) is an autonomous index-2 oscillator that `PSS` solves;
-    `ppv` must run, warn ONCE with the reason, and return finite samples --
-    first order there, as the algebraic fill already is.  Boundary named
+    `ppv` must run, warn ONCE with the reason, and return finite samples.
+    ⚠ THE COST OF THE FALLBACK IS UNMEASURED WHERE IT COULD SHOW: this
+    fixture is van der Pol with its inductor split, and against the exact
+    scipy adjoint (`c_true = 8.045797e-08` at `mu = 1`) the fallback gives
+    `c/c_true` 0.99945 / 0.99986 / 0.99997 at 240/480/960 points --
+    second order, indistinguishable from plain van der Pol (0.99953 /
+    0.99988 / 0.99997) -- because its rows are in quadrature and the
+    dropped pair-consistency term averages out, exactly as it did on every
+    fixture before the non-isochronous one (§D 0b).  Boundary named
     by the review session from the pencil (2026-09-05): `eig(-G_red,
     C[D,NZ])` equals the finite generalised eigenvalues of `(C, G)` to
     1e-12 on the series-loss tank, and the reduction is undefined on

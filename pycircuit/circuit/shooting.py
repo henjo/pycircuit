@@ -3437,8 +3437,13 @@ class PSS(Analysis):
                                 'C-V loop), so the pair-consistent '
                                 'propagation cannot eliminate the algebraic '
                                 'state and falls back to the full G -- the '
-                                'PPV samples are then FIRST order in the '
-                                'step, as they are for the algebraic fill.',
+                                'PPV samples can then be FIRST order in the '
+                                'step, as they are for the algebraic fill. '
+                                'Measured 8e-5 and second order on a van der '
+                                'Pol with its inductor split (rows in '
+                                'quadrature, so that fixture cannot see the '
+                                'dropped term); unmeasured on an index-2 '
+                                'fixture that could.',
                                 RuntimeWarning, stacklevel=2)
                         _Gred = _Gj[np.ix_(_D, _NZ)]
                     _corr = np.zeros(m)
@@ -3497,10 +3502,22 @@ class PSS(Analysis):
         ## `C`, eq 42 and the phase equation 44 bare), so naming both is
         ## the fix; converting one into the other would have silently
         ## changed what `ppv()` returns.
-        _eq = [self._equation_row_ppv(
-                   st[:m], _Xf[:, _sj if _sj < _Xf.shape[1] else -1],
-                   _alg_rows, _alg_cols)
-               for _sj, st in enumerate(states)]
+        ## ⚠ ONE WARNING PER CALL, NOT ONE PER SAMPLE: the fill warns when
+        ## `G[A,Z]` is singular, and at index 2 it is singular at every
+        ## sample -- 240 identical warnings for one call, which trains a
+        ## reader to filter this module's warnings and miss a real one.
+        with warnings.catch_warnings(record=True) as _caught:
+            warnings.simplefilter('always')
+            _eq = [self._equation_row_ppv(
+                       st[:m], _Xf[:, _sj if _sj < _Xf.shape[1] else -1],
+                       _alg_rows, _alg_cols)
+                   for _sj, st in enumerate(states)]
+        _seen = set()
+        for _w in _caught:
+            _key = (str(_w.message), _w.category)
+            if _key not in _seen:
+                _seen.add(_key)
+                warnings.warn(str(_w.message), _w.category, stacklevel=2)
         _v_eq = self._equation_row_ppv(v[:m], x0f, _alg_rows, _alg_cols)
         ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
         ## the residuals above can see it.  The border removes the PHASE
