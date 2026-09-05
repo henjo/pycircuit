@@ -6442,3 +6442,34 @@ T8a. **When the trbdf2 Lyapunov IS built, one more test — and it is invisible 
    later "simplification" to the full MNA state; nothing else in the stack would.
    (Refinement is now the general instrument for THREE failure shapes in this arc: opener divergence,
    spurious twin orbit, and noise-on-a-constraint.)
+
+## TR-BDF2 Lyapunov covariance built; pnoise sideband fold queued, 2026-09-05
+
+T9. **The TR-BDF2 per-step injection is BUILT (`covariance`/`oscillator_covariance` native)** --
+   the deterministic DAE-projected Van Loan integral, no stochastic stage weights (additive noise
+   -> Levy areas vanish). `_vanloan_step_injection`: split the reduced `(C,G)` into differential
+   (capacitive) and algebraic rows, Schur-complement the algebraic ones out, route the algebraic-row
+   noise into the differential rows through the same elimination (`R_proj`), Van Loan on the
+   differential subspace (`expm([[-A,D],[0,A^T]] h)`), embed back. `_lyapunov_pieces_trbdf2` pairs it
+   with the dense two-stage step map `A_n`. VALIDATED: converges to kT/C at SECOND order on R||C
+   (ODE) and VS-R-C (DAE) -- 3.8e-4 at 100 pts vs Gear-2's 6.9e-2 (~180x, and 2nd order vs gear's
+   1st). ⚠ The assertion is the RATE (~4x/doubling), NOT machine precision -- a machine-zero kT/C
+   would mean a method-consistent `Q=P(1-A^2)` fudge that corrupts the transient covariance (peer
+   trap). `_lyapunov_host` now returns the monodromy twin (trbdf2 by default; gear selectable);
+   Winkler's `im A_N subset im A_C` handled structurally by the projection (immune to the 1/h
+   algebraic divergence -- it never forms an algebraic-node covariance).
+
+T10. **pnoise native over TR-BDF2 is QUEUED, not shipped -- the sideband FOLD is the blocker, and it
+   was measured.** The forward forced replay and its CHAINED two-stage transpose were built and are
+   dual-consistent to 1.8e-16 (`<lam, J du> == <J^T lam, du>`, exact on the rectangular operator).
+   BUT `adjoint_sideband_row`'s forced part is `-sum_j phase[j] ts[j]` -- ONE source-injection time
+   per step (the endpoint) -- while a two-stage step injects the source at THREE abscissae
+   (`t_n`, `t_n+gamma h`, `t_{n+1}`) with three phases, which that fold cannot represent. Shipped it
+   naively: measured 1.25e11 relative error on the linear divider (99 spurious sidebands) vs the
+   AC-noise reference -- so it was reverted rather than shipped. pnoise over a TR-BDF2 Floquet source
+   now falls back to a GEAR-2 twin (`_adjoint_host`), correct (rel err 2.65e-8, matches gear). The
+   remaining piece: extend `adjoint_sideband_row`'s forced fold to inject at the three stage
+   abscissae with their phases (the per-step collect must carry the stage-2 solve `z` AND the
+   stage-1 feed `A1 p`), gated on the dual-consistency test against `m` forward driven solves. The
+   forced replays are the validated building blocks; only the fold's one-time-per-step assumption
+   needs lifting.

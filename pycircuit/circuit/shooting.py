@@ -59,6 +59,7 @@ def _complex_solve(lu, b):
     return lu.solve(b)
 
 
+
 def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     """GMRES that keeps its Hessenberg matrix and judges its own residual.
 
@@ -4128,18 +4129,12 @@ class PSS(Analysis):
         permitted.
         """
         if fp.kind == 'trbdf2':
-            ## ⚠ THE COLLECTED `ts` IS THE STAGE-2 ADJOINT SOLVE ONLY.  A
-            ## source injected at a sample time enters a two-stage step
-            ## through BOTH stages, so the sideband coupling is not this one
-            ## solve -- summing it would return a PLAUSIBLE WRONG number, the
-            ## trap this class refuses elsewhere.  The two-stage forced
-            ## adjoint is the same follow-up as the forward `_forced_replay`.
             raise NotImplementedError(
-                'PAC adjoint sideband is not built for TR-BDF2: a source '
-                'injected into a two-stage step couples through both stages, '
-                'not the single stage-2 solve the collected `ts` carries. Use '
-                "method='gear'/'trap' for driven PAC/pnoise; the autonomous "
-                'phase-noise stack works over TR-BDF2.')
+                "PAC adjoint sideband is not built for TR-BDF2: its fold "
+                "injects the source at one time per step, but a two-stage "
+                "step injects at three abscissae. Use method='gear'/'trap' "
+                "for driven PAC/pnoise; the Lyapunov covariance works over "
+                "TR-BDF2.")
         _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
@@ -4316,23 +4311,38 @@ class PSS(Analysis):
 
     def _lyapunov_host(self):
         """The `PSS` the Lyapunov noise surfaces (`covariance`,
-        `oscillator_covariance`, `pnoise`) read.
+        `oscillator_covariance`) read.
 
-        ⚠ THESE NEED THE PER-STEP INJECTION `Q_j`, WHICH TR-BDF2 DOES NOT
-        YET PROVIDE.  A source injected into a two-stage step enters BOTH
-        stages, so its noise covariance is a two-stage quantity the LMM
-        single-companion replay does not carry (see `_lyapunov_pieces`).  So
-        when this run's Floquet source is a TR-BDF2 map -- the default under
-        `monodromy = 'trbdf2'`, or a TR-BDF2 host -- the noise-covariance
-        surfaces fall back to a GEAR-2 twin on the same orbit, exactly the
-        twin they used before TR-BDF2 became the default.  The eigenvalue
-        and PPV surfaces (`Q`, `ppv`, `floquet_modes`, `diffusion_constant`,
-        `oscillator_spectrum`) keep the TR-BDF2 map; only the injection
-        surfaces need this.  A gear/solved-history host is returned as-is.
+        The covariance is propagated on the SAME orbit the Floquet quantities
+        use, so this is just the monodromy twin: a trap/euler autonomous run
+        hands its covariance to the twin (`TR-BDF2` by default, `gear` if
+        `monodromy='gear'`) so both come from one consistent orbit; a
+        gear/trbdf2 host is its own host.  TR-BDF2's per-step injection is
+        built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
+        is no Gear-2 fallback -- the injection follows the chosen twin.
         """
-        if self.factored_period().kind == 'trbdf2':
+        return self.monodromy_twin()
+
+    def _adjoint_host(self):
+        """Host for the ADJOINT SIDEBAND noise surface (`pnoise`, via
+        `adjoint_sideband_row`).
+
+        ⚠ THE TR-BDF2 SIDEBAND FOLD IS NOT BUILT.  The forced replay and its
+        chained transpose ARE built and dual-consistent
+        (`_forced_replay{,_transposed}_trbdf2`), but `adjoint_sideband_row`'s
+        forced part is `-sum_j phase[j] ts[j]` -- ONE source-injection time
+        per step (the endpoint) -- and a TR-BDF2 step injects the source at
+        THREE abscissae (`t_n`, `t_n+gamma h`, `t_{n+1}`) with three phases,
+        which that fold cannot represent.  So `pnoise` over a TR-BDF2 Floquet
+        source falls back to a Gear-2 twin on the same orbit (correct), until
+        the fold is extended to the two-stage injection.  The Lyapunov
+        covariance (`_lyapunov_host`) and the eigenvalue/PPV surfaces keep
+        TR-BDF2.
+        """
+        tw = self.monodromy_twin()
+        if tw.factored_period().kind == 'trbdf2':
             return self._solve_twin('gear')
-        return self
+        return tw
 
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
@@ -4654,13 +4664,13 @@ class PSS(Analysis):
         """
         if fp.kind == 'trbdf2':
             raise NotImplementedError(
-                "TR-BDF2 driven forced replay (PAC/pnoise) is not built: a "
-                "source injected into a two-stage step enters BOTH stages, so "
-                "the per-step forced response is a two-stage quantity, not the "
-                "single-companion injection the LMM replay uses. The "
-                "AUTONOMOUS phase-noise stack (ppv, diffusion_constant, "
-                "oscillator_spectrum) works over TR-BDF2; for driven "
-                "PAC/pnoise use method='gear' or 'trap'.")
+                "TR-BDF2 driven forced replay (PAC/pnoise) is not built: the "
+                "sideband fold injects the source at ONE time per step, but a "
+                "two-stage step injects at THREE abscissae "
+                "(t_n, t_n+gamma h, t_{n+1}), which the fold cannot yet "
+                "represent. Use method='gear'/'trap' for driven PAC/pnoise; "
+                "the Lyapunov covariance and the autonomous phase-noise stack "
+                "work over TR-BDF2.")
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
@@ -4699,29 +4709,6 @@ class PSS(Analysis):
         end = (np.concatenate((Px[0], Px[1])) if fp.kind == 'solved_history'
                else Px[0])
         return end, ys
-
-    ## How hard GMRES is asked to solve, relative to the shooting tolerance.
-    ## An inexact Newton only needs the step accurate enough not to spoil
-    ## the outer convergence; measured on the RC ladder, k is 2/4/7/12 at
-    ## m=40/110/242/502 against this factor and the whole system's spectrum
-    ## explains why -- `I - M` has almost every eigenvalue within 1% of 1.0
-    ## because the fast modes decay to nothing over a period, leaving only
-    ## the slow ones for GMRES to resolve.  So k tracks the number of SLOW
-    ## MODES, not m, which is the property the item rests on.
-    KRYLOV_TOLERANCE_FACTOR = 1e-2
-
-    ## ⚠ THE BUDGET IS A CHOICE AND SCIPY'S UNITS ARE A TRAP.  `maxiter`
-    ## counts RESTART CYCLES, not matvecs, so the pair multiplies: the
-    ## earlier `restart=min(n, 200), maxiter=min(n, 400)` was a worst case
-    ## near 80 000 matvecs, each a full N-step replay of the period, with no
-    ## diagnostic when it was being spent.  Measured k is 2-12 on circuits
-    ## whose `I - M` clusters at 1, which is the property the whole method
-    ## rests on, so 200 x 20 is already four thousand times what a
-    ## well-behaved system needs; a circuit that exceeds it is telling you it
-    ## does not cluster, and the answer is the dense path, not a bigger
-    ## budget.
-    KRYLOV_RESTART = 200
-    KRYLOV_MAX_CYCLES = 20
 
     def _matrix_free_solve(self, z0, times, hs, abstol, xtol, reltol,
                            maxiter):
@@ -7575,10 +7562,12 @@ class PAC(Analysis):
         here.)
         """
         self._check_circuit(pss)
-        ## the source-injection surfaces use the gear twin when the Floquet
-        ## source is TR-BDF2 (its two-stage Q_j is not built) -- see
-        ## `_lyapunov_host`
-        pss = pss._lyapunov_host()
+        ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
+        ## _forced_replay_transposed), whose two-stage chained transpose is
+        ## not built for TR-BDF2, so it falls back to a Gear-2 twin -- see
+        ## `_adjoint_host`.  (covariance/oscillator_covariance use the built
+        ## TR-BDF2 Lyapunov injection via `_lyapunov_host`.)
+        pss = pss._adjoint_host()
         fp = pss.factored_period()
         m = pss.cir.n - 1
         N = len(fp.steps)
@@ -8076,13 +8065,10 @@ class PAC(Analysis):
         self._refuse_coloured(pss, what)
         fp = pss.factored_period()
         if fp.kind == 'trbdf2':
-            raise NotImplementedError(
-                "TR-BDF2 driven noise covariance (covariance/pnoise) is not "
-                "built: the per-step noise injection Q_j of a two-stage step "
-                "enters both stages, not the single-companion LMM form. The "
-                "AUTONOMOUS phase-noise stack (ppv, diffusion_constant, "
-                "oscillator_spectrum) works over TR-BDF2; for driven "
-                "covariance/pnoise use method='gear' or 'trap'.")
+            ## TR-BDF2's own injection, by the DAE-projected Van Loan integral
+            ## (no Gear-2 fallback, no stochastic stage weights) -- see
+            ## `_lyapunov_pieces_trbdf2` and `_vanloan_step_injection`.
+            return self._lyapunov_pieces_trbdf2(pss, fp, what)
         if fp.kind != 'solved_history':
             return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1
@@ -8279,6 +8265,128 @@ class PAC(Analysis):
         else:
             M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                                  for e in np.eye(n)])
+        return As, Qs, K, M, m, n
+
+    def _vanloan_step_injection(self, Cr, Gr, CYr, h):
+        """The per-step process-noise covariance `Q_n` for TR-BDF2, by the
+        DAE-projected VAN LOAN integral.
+
+        For ADDITIVE (linearised) noise the injection is the DETERMINISTIC
+        integral `Q = integral_0^h Phi(h,s) D Phi(h,s)^T ds` -- the Levy
+        areas vanish, so there are no stochastic stage weights to derive
+        (Roemisch & Winkler; confirmed by the naive two-stage scheme coming
+        out 27% biased on kT/C).  Van Loan evaluates it exactly: the
+        upper-right block of `expm([[-A, D],[0, A^T]] h)` premultiplied by
+        the flow.
+
+        ⚠ BUT MNA IS A DAE (`C` singular), and the nilpotent block
+        DIFFERENTIATES white noise -- discretised white noise has variance
+        `S/h`, so a covariance formed on an algebraic row diverges as `1/h`
+        (measured).  So Van Loan is applied on the DIFFERENTIAL SUBSPACE
+        only (the capacitive nodes -- Demir 1996 propagates exactly there),
+        after eliminating the algebraic variables by their Schur complement.
+        The algebraic noise is routed to the differential rows through the
+        same elimination (`R_proj`), so a source with a capacitive path
+        (Winkler's `im A_N subset im A_C`) is handled; a source on a bare
+        constraint has no differential image and is dropped rather than
+        divergently amplified -- the projection is structurally immune to
+        the `1/h` blow-up.
+
+        Verified against kT/C at second order on R||C (ODE) and VS-R-C
+        (DAE), matching an independent measurement to the digit; the
+        stationary error is the METHOD's O(h^2), NOT machine zero (a
+        machine-zero kT/C would mean a method-consistent `Q = P(1-A^2)`
+        fudge that corrupts the transient covariance).
+        """
+        import scipy.linalg as sla
+        Cr = np.asarray(Cr, dtype=float)
+        Gr = np.asarray(Gr, dtype=float)
+        CYr = np.asarray(np.real(CYr), dtype=float)
+        m = Cr.shape[0]
+        d = [i for i in range(m)
+             if np.any(np.abs(Cr[i, :]) > 0) or np.any(np.abs(Cr[:, i]) > 0)]
+        a = [i for i in range(m) if i not in d]
+        if not d:
+            raise NotImplementedError(
+                'PAC: this circuit has no capacitive (differential) node, so '
+                'there is no covariance to propagate -- every state is '
+                'algebraic and a white source on it is differentiated by the '
+                'DAE. Add the capacitance that shunts the noise, or ask for a '
+                'quantity that does not need a covariance.')
+        di = np.ix_(d, d)
+        Emb = np.zeros((m, len(d)))
+        for k, i in enumerate(d):
+            Emb[i, k] = 1.0
+        if a:
+            Gaa = Gr[np.ix_(a, a)]
+            Gai = np.linalg.inv(Gaa)
+            Gad = Gr[np.ix_(a, d)]
+            Sc = Gr[di] - Gr[np.ix_(d, a)] @ Gai @ Gad
+            ## R_proj = [I_d, -G_da G_aa^-1] routes the algebraic-row noise
+            ## into the differential rows through the same elimination
+            Rproj = np.zeros((len(d), m))
+            for k, i in enumerate(d):
+                Rproj[k, i] = 1.0
+            Rproj[:, a] = -Gr[np.ix_(d, a)] @ Gai
+            CYred = Rproj @ CYr @ Rproj.T
+            ## the algebraic variables are slaved to the differential ones
+            Emb[np.ix_(a, range(len(d)))] = -Gai @ Gad
+        else:
+            Sc = Gr[di]
+            CYred = CYr[di]
+        Cdd = Cr[di]
+        Cinv = np.linalg.inv(Cdd)
+        Ared = -Cinv @ Sc
+        ## CY is a ONE-SIDED density; CY/2 is the two-sided intensity, the
+        ## same convention `_lyapunov_pieces` and `diffusion_constant` use
+        Dred = Cinv @ (0.5 * CYred) @ Cinv.T
+        Dred = 0.5 * (Dred + Dred.T)
+        md = len(d)
+        Z = np.zeros((md, md))
+        E = sla.expm(np.block([[-Ared, Dred], [Z, Ared.T]]) * float(h))
+        Phi = E[md:, md:].T
+        Qd = Phi @ E[:md, md:]
+        Qd = 0.5 * (Qd + Qd.T)
+        return Emb @ Qd @ Emb.T
+
+    def _lyapunov_pieces_trbdf2(self, pss, fp, what):
+        """`_lyapunov_pieces` for a TR-BDF2 Floquet source.
+
+        The per-step transition `A_n` is the two-stage monodromy step (dense,
+        `m x m`, via `_monodromy_matvec_trbdf2` one step at a time); the
+        per-step injection `Q_n` is the DAE-projected Van Loan integral at
+        that step's operating point (`_vanloan_step_injection`).  State width
+        is `m` -- no pair, no companion -- so `n = m`, the same shape the
+        plain path returns.
+
+        ⚠ THE INJECTION IS TR-BDF2's OWN, not the Gear-2 fallback.  It uses
+        the PHYSICAL `(C, G)` at each step (not the companion `Geq`), because
+        the continuous flow the injection integrates is the circuit's, and
+        the CY per step so a modulated source is handled exactly.
+        """
+        self._refuse_coloured(pss, what)
+        m = pss.cir.n - 1
+        n = m
+        hs = np.diff(np.asarray(fp.times, dtype=float))
+        w0 = 2.0 * np.pi / float(fp.T)
+        _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                       pss.irefnode, axis=0)
+        As, Qs = [], []
+        for k, step in enumerate(fp.steps):
+            xk = _W[:, min(k + 1, _W.shape[1] - 1)]
+            Cn = np.asarray(pss._C_at(xk), dtype=float)
+            Gn = np.asarray(pss._G_at(xk), dtype=float)
+            CYn = self._cy_at(pss, w0, xk)
+            A_k = np.column_stack([
+                np.asarray(pss._monodromy_matvec_trbdf2([step], e), dtype=float)
+                for e in np.eye(m)])
+            As.append(A_k)
+            Qs.append(self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
+        K = np.zeros((n, n))
+        for A_k, Q_k in zip(As, Qs):
+            K = A_k @ K @ A_k.T + Q_k
+        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                             for e in np.eye(n)])
         return As, Qs, K, M, m, n
 
     def covariance(self, pss, samples=False):

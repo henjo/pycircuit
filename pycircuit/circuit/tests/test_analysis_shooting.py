@@ -12630,42 +12630,56 @@ def test_phase_noise_stack_works_over_trbdf2():
     assert np.max(np.abs(L_t - L_g)) < 0.05, (L_t, L_g)
 
 
-def test_trbdf2_driven_noise_surfaces_fall_back_to_the_gear_twin():
-    """The DRIVEN noise-injection surfaces (covariance/pnoise) do not have a
-    TR-BDF2 per-step Q_j yet, so they fall back to a GEAR-2 twin rather than
-    refuse or return a wrong number -- `_lyapunov_host`.
+def test_trbdf2_covariance_converges_to_kTC_at_second_order():
+    """TR-BDF2's OWN per-step injection (DAE-projected Van Loan) makes the
+    covariance converge to the exact `kT/C` at SECOND order -- against
+    Gear-2's first.
 
-    A source injected into a two-stage step enters BOTH stages, so its noise
-    covariance is a two-stage quantity the LMM single-companion replay does
-    not carry.  Until that injection is built, a TR-BDF2 host's covariance is
-    computed on a Gear-2 twin of the same orbit, so it MATCHES a direct
-    Gear-2 run.  (The eigenvalue/PPV surfaces keep the TR-BDF2 map; only the
-    injection falls back.)
+    `Var(v_C) = kT/C` is exact and independent of R (see
+    `test_the_periodic_covariance_converges_to_kTC`).  Gear-2's covariance
+    reaches it at O(h) (a piecewise-constant white-noise injection); the
+    TR-BDF2 Van Loan injection reaches it at O(h^2), so at a coarse grid it
+    is more than two orders closer -- 3.8e-4 vs 6.9e-2 at 100 points here.
+    This is the injection surface's payoff, the same direction as the
+    monodromy/PPV gains.
+
+    ⚠ THE ASSERTION IS THE RATE (~4x per doubling), NOT machine precision.
+    A machine-zero kT/C would mean a method-consistent `Q = P(1 - A^2)`
+    fudge that makes the stationary observable exact by absorbing the
+    method's error -- and gives the WRONG transient covariance.  The error
+    must be O(h^2) and DECREASING, which is what pins the injection as the
+    exact per-step integral rather than a stationary fit.
     """
     import warnings
+    from pycircuit.circuit.constants import kboltzmann
     circuit.default_toolkit = circuit.numeric
 
-    def build():
-        cir = SubCircuit()
-        cir['vs'] = VSin(1, gnd, vac=1.0, va=1.0, freq=1e3, phase=0)
-        cir['R'] = R(1, 2, r=1e4)
-        cir['C'] = C(2, gnd, c=1e-8)
-        cir['n'] = IS(2, gnd, i=0.0, noisePSD=1e-9)
-        return cir
-    K = {}
-    for method in ('trbdf2', 'gear'):
-        cir = build()
-        pss = PSS(cir, method=method, reltol=1e-11)
+    def ratio(npts, method, Cval=1e-7, per=1e-3):
+        cir = _rc_noisy(Cval=Cval, per=per)
+        pss = PSS(cir, method=method, reltol=1e-12)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            pss.solve(period=1e-3, timestep=1e-3 / 200)
-        K[method] = np.asarray(PAC(cir).covariance(pss), dtype=float)
-    ## the TR-BDF2 host's covariance came through the Gear-2 twin, so it is
-    ## the Gear-2 covariance to solver tolerance
-    rel = np.linalg.norm(K['trbdf2'] - K['gear']) / np.linalg.norm(K['gear'])
-    assert rel < 1e-6, \
-        'driven trbdf2 covariance should equal the gear fallback; rel %.2e' \
-        % rel
+            pss.solve(period=per, timestep=per / npts, maxiterations=40)
+        assert pss.converged
+        K0 = PAC(cir).covariance(pss)
+        irn = pss.irefnode
+        k = cir.get_node_index(cir.get_node('b'))
+        k = k - 1 if k > irn else k
+        T = float(circuit.defaultepar.T)
+        return K0[k, k] / (kboltzmann * T / Cval)
+
+    errs = [abs(1.0 - ratio(n, 'trbdf2')) for n in (100, 200, 400)]
+    ## second order: ~4x per doubling (allow a band)
+    for a, b in zip(errs, errs[1:]):
+        assert 3.2 < a / b < 5.0, \
+            'trbdf2 covariance falls %.2fx per doubling (%s), not the ~4x ' \
+            'of O(h^2)' % (a / b, errs)
+    ## and it is already tight at the coarsest grid, far better than gear's
+    assert errs[0] < 2e-3, errs
+    gear0 = abs(1.0 - ratio(100, 'gear'))
+    assert gear0 / errs[0] > 20.0, \
+        'trbdf2 covariance should be >20x closer than gear at 100 pts; ' \
+        'gear %.2e vs trbdf2 %.2e' % (gear0, errs[0])
 
 
 def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator():
