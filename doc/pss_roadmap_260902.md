@@ -6379,3 +6379,49 @@ T6. **Still open: the DRIVEN forced surfaces.** `covariance`, `pnoise`, and PAC'
    step than trapezoid before monotonicity/positivity/TVD can fail. TR-BDF2 is L-stable for EVERY
    gamma (`R(inf)=0` identically), so L-stability alone selects nothing. All in the integrator
    docstring.
+
+## TR-BDF2 as the default Floquet twin, 2026-09-05
+
+T7. **`monodromy_twin` defaults to TR-BDF2, Gear-2 selectable** (committed bf6f891). The twin that
+   supplies a one-step LMM's (trap/euler) Floquet/PPV/phase-noise quantities was always Gear-2;
+   it now defaults to TR-BDF2. Measured against exact references: on a source-free damped LC
+   (`exp(A T)`) and van der Pol (Abel's `exp(mu integral(1-v^2))`), TR-BDF2's lambda2/Q error is
+   1-2 orders smaller than Gear-2's in the hard regime (coarse grid, high Q) -- 22% vs 0.27% at
+   Q=100/N=50 -- and on the asymmetric `vdp+0.3u^2` fixture the advantage carries to the PPV-based
+   `c` (1.4e-4 vs 1.7e-3) against the scipy-adjoint exact. Regime-dependent, not a fixed factor;
+   at a fine grid or low Q both reach the O(h^2) floor. `pss.monodromy in {'trbdf2','gear','native'}`;
+   twin-build factored into `_solve_twin(method)`, cached per method.
+
+   ⚠⚠ IMPROVING ROBUSTNESS DEGRADED SAFETY -- the guard is the fix, and it is the review's most
+   repeated finding arriving from the OPPOSITE direction. From a poor seed (euler at 400 pts, orbit
+   55% off) the Gear-2 twin failed LOUDLY ('did not converge') but the more robust TR-BDF2 twin
+   CONVERGED to a SPURIOUS limit cycle and reported Q=1.97 vs exact 5.91 with no error. `_solve_twin`
+   now checks the twin's converged orbit against its seed (period + entering state); two convergent
+   methods on one limit cycle agree to O(h^p) (measured 6e-6/1e-4 good vs 2.17/0.91 spurious), and
+   the 0.25 gate -- set from the universal good-case agreement, not the fixture-dependent failure
+   size -- refuses a too-poor seed. Keeping Gear-2 gives a fail-loud cross-check on the fail-silent
+   default. Definitive test is refinement (spurious orbit fails h/2); this is the conservative
+   stand-in.
+
+T8. **The noise-injection surfaces fall back to Gear-2 (`_lyapunov_host`), and a real TR-BDF2 Q_j is
+   QUEUED, not guessed.** covariance/pnoise/PAC-sideband need the per-step injection `Q_j`; a source
+   in a two-stage step enters BOTH stages, so `Q_j` is a two-stage quantity. Until it is built, a
+   TR-BDF2 Floquet source routes these surfaces to a Gear-2 twin of the same orbit (correct,
+   validated). ⚠ MEASURED: the naive two-stage injection is WRONG BY ~27% (an O(1) bias, not
+   asymptotic) on the scalar RC vs kT/C -- `Q = W1^2 S gamma h + W2^2 S (1-gamma)h` converges to
+   1.268 kT/C, not kT/C. Building the stochastic DIRK stage weights by analogy misses the BDF2
+   stage's previous-Wiener-increment coupling (Denk/Sickenberger/Winkler; the weight is
+   `kappa^2/(2kappa+1)` = the deterministic parasitic root = ZERO_STABILITY_RATIO at
+   kappa=1+sqrt2). So it is NOT good to inject yet (the user's own condition: "queue it as soon as
+   you think it good").
+
+   THE CORRECT ROUTE (peer research, firsthand): for ADDITIVE linearised noise the Lévy areas
+   vanish and `Q_n = integral_0^h Phi(h,s) (CY/2) Phi(h,s)^T ds` is a DETERMINISTIC integral with
+   an exact VAN LOAN oracle (exponentiate `[[-A, D],[0, A^T]] h`). ⚠ But MNA is a DAE (E singular);
+   the nilpotent block differentiates white noise, so Van Loan must be applied AFTER projecting to
+   the differential subspace (the "inherent regular SDE"; Demir 1996 propagates covariance exactly
+   there -- "nodes connected to a capacitor"). Winkler's noise-free-constraint `im A_N subset im A_C`
+   (a capacitive path in parallel with every noise source) is what keeps the covariance an ordinary
+   process at all. Plan: project -> Van Loan on the differential subspace (2nd order) -> use with
+   trbdf2's discrete `A_n`; validate against Van Loan-exact (matrix, per step) + kT/C + Monte Carlo.
+   Scalar-RC Van Loan already verified 2nd order (0.9938/0.9987/0.9996 at h=0.5/0.2/0.1).
