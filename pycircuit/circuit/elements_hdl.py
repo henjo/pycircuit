@@ -2875,44 +2875,40 @@ def _mos1_analog(T, nmos, limiting='group'):
 
         ## -- noise -------------------------------------------------------
         ## Channel thermal noise from the Klaassen-Prins integral for a
-        ## square-law channel,
+        ## square-law channel, as the LINEAR CHORD between its two
+        ## textbook limits,
         ##
-        ##     S = (8/3)*k*T*beta*(vgt^2 + vgt*vgtd + vgtd^2)/(vgt + vgtd)
+        ##     S = (8/3)*k*T*beta*clm*(vgt + vgtd/2)
         ##
-        ## which has both textbook limits built in and neither pasted on:
-        ## at `Vds = 0` (vgt = vgtd) it is `4*k*T*beta*vgt`, which is
-        ## `4*k*T*gds` exactly (Nyquist), and in saturation (vgtd = 0) it
-        ## is `(2/3)*4*k*T*beta*vgt`.
+        ## which has both limits built in and neither pasted on: at
+        ## `Vds = 0` (vgtd = vgt) it is `4*k*T*beta*vgt` = `4*k*T*gds`
+        ## exactly (Nyquist), and in saturation (vgtd = 0) it is
+        ## `(2/3)*4*k*T*beta*vgt`.  No `safe_div`: the chord is linear, so
+        ## cutoff (`vgt = vgtd = 0`) gives 0 with no 0/0.
         ##
-        ## ⚠ CHANNEL-LENGTH MODULATION, 2026-09-05.  The current carries
+        ## ⚠ THE CHORD, NOT THE INTEGRAL (2026-09-05, at Andreas's
+        ## instruction).  The Klaassen-Prins integral for this channel is
+        ## `(vgt^2 + vgt*vgtd + vgtd^2)/(vgt + vgtd)`, and the chord
+        ## `vgt + vgtd/2` is the straight line between its two endpoints --
+        ## the SAME two limits above.  The integral is the physical
+        ## derivation; the chord is what a widely-used reference simulator
+        ## computes in the triode interior, and this model now matches it
+        ## there (the two forms agree at both limits and differ by at most
+        ## ~7.7% near `Vds/Vgt = 0.6`, which is the whole of the
+        ## difference).  The integral was in place until this date; it is
+        ## kept in this note because both forms are correct at the limits
+        ## and only the interior distinguishes them.
+        ##
+        ## ⚠ CHANNEL-LENGTH MODULATION.  The current carries
         ## `clm = 1 + lambda*|Vds|` (channel shortening, `L_eff = L/clm`);
-        ## the SAME geometric factor multiplies the noise integral, so the
-        ## saturation limit becomes `(2/3)*4*k*T*gm` with `gm` carrying CLM
-        ## rather than the CLM-free `gm0`.  It is applied to the WHOLE
-        ## Klaassen-Prins expression, not in a saturation-only branch, for
-        ## two reasons that are correctness, not taste: `clm = 1` at
-        ## `Vds = 0`, so the Nyquist limit `4*k*T*gds` is preserved exactly
-        ## (the device is in equilibrium there and fluctuation-dissipation
-        ## forbids any other value); and one expression has no
-        ## discontinuity at the saturation edge, which a region split would
-        ## introduce -- a step a switch sweeps through on every turn-off and
-        ## the shooting machinery would differentiate.  Both limits are
-        ## asserted in the tests.  `safe_div` because a device in cutoff has
-        ## `vgt = vgtd = 0` and the ratio is 0/0 there, where the noise is
-        ## zero anyway.
-        ##
-        ## ⚠ THE INTEGRAL, NOT THE CHORD.  The two textbook limits above --
-        ## `1.5*beta*vgt` at Vds = 0 and `beta*vgt` in saturation -- are
-        ## also the two ends of the straight line `beta*(vgt + vgtd/2)`,
-        ## which some simulators use in place of the integral.  The two
-        ## forms share BOTH endpoints and differ only in the interior, by
-        ## at most ~7.7% near `Vds/Vgt = 0.6`; this is the Klaassen-Prins
-        ## integral (the physical derivation), not the linear chord (an
-        ## interpolation between endpoints it already reproduces).  A
-        ## reader comparing against a tool that chose the chord sees the
-        ## difference there and nowhere at the limits.
-        gn = _var(_safe_div(vgt * vgt + vgt * vgtd + vgtd * vgtd,
-                            vgt + vgtd), 'gn')
+        ## the SAME factor multiplies the noise, so the saturation limit
+        ## is `(2/3)*4*k*T*gm` with `gm` carrying CLM.  Applied to the
+        ## WHOLE expression, not a saturation-only branch: `clm = 1` at
+        ## `Vds = 0` so Nyquist is preserved exactly (equilibrium,
+        ## fluctuation-dissipation), and one expression has no
+        ## discontinuity at the saturation edge for a switch to sweep
+        ## through.  Both limits are asserted in the tests.
+        gn = _var(vgt + vgtd / 2.0, 'gn')
         noise = (
             Contribution(bds.I, _white_noise(8.0 / 3.0 * _KB * T
                                              * beta * clm * gn)),
