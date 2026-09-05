@@ -5965,6 +5965,20 @@ Sixteen claims were overturned across this campaign. Four shapes account for mos
    and a "third outcome" is the test's failure, not a bonus. (Named by the docs session, of its
    own test.)
 
+0w. ⚠⚠ **A NULL RECORDED AS A RESULT.** The measurement does not run — a non-convergence, a crash, an
+empty result set — and its SILENCE is written down as a value. The C-V-loop cell of the index-2 pricing
+(§0l, 2026-09-05) read `NoConvergenceError` at every grid, and the standing advice was "record rather
+than retry"; the cause was the seed (a bias node held at 0 V against a 1 V source), and correctly seeded
+the cell gave the answer that closed the question. Following the advice literally would have filed a
+false negative in the direction that closes an open question. The instrument declining to report is not
+the quantity being absent, and the two look identical in a table. Repair: name the null as its own
+branch when the outcomes are named, and attach to it what must be checked before it counts — seeds,
+operating point, whether the code path is reachable on that fixture at all. "Record rather than retry"
+governs MEASURED VALUES; it must never be applied to FAILURES TO MEASURE. Sits beside 0b, not inside it:
+0b is an instrument that runs and lies (repair: an external reference), 0w one that does not run and
+whose silence is read as a value (repair: a setup check). Named by the review session from this
+session's report.
+
 **And one about measurement itself:** this machine runs more than one agent. Check
 `ps -eo pid,pcpu,args --sort=-pcpu` and `uptime` before trusting any wall-clock ratio — a
 concurrent run moved readings 25-30% on the *same* configuration.
