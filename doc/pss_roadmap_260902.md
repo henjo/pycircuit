@@ -3370,11 +3370,40 @@ with `Ron`; both tools agree independently, which is worth more than a round num
   0.99, 400 and 800 points burn their budget and fail where 1600 converges faster than either, `reltol`
   does nothing, and `pss.converged` is the only thing separating a stall from a solution — the failure
   message sends users to the one knob that provably does not help. **Open, not built.**
-* **`tnom` (MOS_LEVEL1 (a), (b)) — a DECISION FOR THE USER, not changed:** the level-1 model's `tnom`
-  defaults to 300.15 K while `defaultepar.T` is 300 K, so a default-constructed device is
-  temperature-scaled by 4.9e-4 nobody asked for — both numbers pycircuit's own; and `tnom` is KELVIN where
-  every SPICE card is CELSIUS, so a transcribed `TNOM=27` returns `1.9e92` A with no warning. The model
-  itself matches Spectre's built-in mos1 to 3.7e-15.
+* ✅ **`tnom` and Boltzmann's constant, FIXED 2026-09-05 on the user's instruction.** `tnom` on all six HDL
+  library models now defaults to the ambient (`float(defaultepar.T)` = 300 K) instead of 300.15 K, so a
+  default-constructed device is no longer temperature-scaled by 4.9e-4; `kboltzmann` is the SI-2019 exact
+  1.380649e-23 (it was 1.38e-23, 4.7e-4 low — the constant the Spectre suite had to carry as a
+  parameter on both sides of every noise test). What moved in the tests, each with its reason in place:
+  five compile-record digests (the explain text carries the default), the library3 reference helpers'
+  own 300.15 assumption, the 59.5 mV/decade literal (59.53 with the exact `k`), the diode
+  series-resistance gate's `rtol` (the junction's log shift is 3.7e-9 of the drop now), and the EKV
+  accumulation/seam cards, whose ~1e-25 F entries moved clear of their quantisation and now resolve at
+  noise level under an explicit 1e-24 floor (the round-off branch keeps its coverage in library4/5) —
+  a reminder that a classification boundary measured in units of a physical constant moves with it.
+  ⚠ **And the HDL compile cache did not know about constants:** `vt()` and every noise density
+  constant-fold `k` and `q` at compile time, and the cache (13 511 objects) was keyed on source and
+  library versions only — so after the change a model read one thermal voltage while the tree's constant
+  said another, and only the limiting gate, which reads `VT` back from the compiled spec, noticed (it
+  passed with the cache disabled). The physical constants are now in the key. The Spectre session names
+  the general form, and it belongs next to §D's Monte-Carlo lesson: a cached artefact keyed on source
+  but not on the physical constants is a measurement built on the convention under test — it inherits
+  the assumption and confirms it — and the gate that caught it did so for the same reason `kT/C` caught
+  the `CY/2` factor: it read the value back from somewhere the assumption had not propagated to. Further re-pins with their
+  reasons: twelve adoption digests, the limiting gate to two ulp (the C backend and the Python fold now
+  round `kT/q` differently), a PCNR tail-node literal, a batched-DC bias pair, a limiter write-back to an
+  ulp, and four iteration-count pins that sat on 19 and read 20 or 24 against a budget of 200. ⚠⚠ **And
+  three convergence-basin knife edges, exposed by a 4.7e-4 change in the thermal voltage and recorded
+  as OPEN solver items, not repaired:** (i) `DC()`'s ladder now hits a SINGULAR Jacobian ('tail' in no
+  equation) on the unlimited differential pair at `vin = 0.3` and `1.0` from its default start (the test
+  that used it as a reference now uses PCNR); (ii) PCNR stops converging at two of the 48 cascode grid
+  points on the 4-terminal level-1 model (`vdd = 20`, `vg2 = 2`, `vg1 = 1.2` and `2.0`; budget 200 and 800
+  alike) where the limited plain Newton converges in 45 and 24 — pinned as failures in the test so a fix is
+  noticed; (iii) the circuit-level forest at `vin = +1.0` flipped from failing to converging in 18. None of
+  these is the constant's fault; each is a basin boundary that a 5e-4 perturbation crosses.
+  ⚠ **Still open, two decisions:** `qelectron = 1.602e-19` is the same class of number (1.1e-4 from the
+  exact 1.602176634e-19) and was NOT changed — with it exact the slope reads 59.526 mV/decade; and `tnom`
+  stays KELVIN where every SPICE card is Celsius (a transcribed `TNOM=27` returns `1.9e92` A silently).
 
 ### A6. Driven oscillators and PLLs — REQUESTED 2026-09-03
 
