@@ -3156,6 +3156,81 @@ class PSS(Analysis):
             return x0, x, P, Pt
         return x0, x, P, None
 
+    def _traverse_radau(self, x_in, T, times, hs, want_dT=False):
+        """One period under Radau IIA(3) with the DENSE sensitivities -- the
+        shooting Newton's monodromy for the fully-implicit collocation method.
+
+        The coupled analogue of `_traverse_trbdf2`.  Each step propagates the
+        full `m x m` monodromy `P = dx/dx0` (and, with `want_dT`, the period
+        column `Pt = dx/dT`) through the `3m x 3m` coupled stage operator
+        ``J_block[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)``:
+
+            J_block (dY/dx0) = [Cn P; Cn P; Cn P],   P <- (dY/dx0)_3
+
+        -- the monodromy is the third `m`-block by stiff accuracy
+        (``x_{n+1} == Y_3``).  Self-starting: `x_in` IS `x_0`, so there is no
+        opener seam and `M` is order-5 round the whole period.
+
+        ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY BECAUSE THE CIRCUIT IS
+        AUTONOMOUS.  With `T` unknown the grid rebuilds as ``h_j = frac_j T``,
+        so ``dh_j/dT = h_j/T`` and the stage derivative ``K_j = -i(Y_j)`` has
+        no explicit time dependence.  Differentiating the stage residuals
+        ``F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`` w.r.t. `T`:
+
+            J_block (dY/dT) = [Cn Pt + (h/T) sum_j A_ij K_j]_i,   Pt <- (dY/dT)_3
+
+        Finite-difference checked before use (the dT column has been got wrong
+        in this file twice -- roadmap 0j).
+        """
+        import scipy.linalg as sla
+        toolkit = self.toolkit
+        m = self.cir.n - 1
+        self._want_dfdh = False
+        self._want_lte = False
+        self._begin_period(x_in)
+        integ = self._transient().base_integrator
+        Amat = np.array(integ.A, dtype=float)
+        iref = self.irefnode
+        Tf = float(T)
+        x = copy(x_in)
+        x0 = copy(x_in)
+        P = np.asarray(toolkit.eye(m), dtype=float)
+        Pt = np.zeros(m)
+        for _j, t in enumerate(times[1:]):
+            h = hs[min(_j, len(hs) - 1)]
+            xn = x
+            x = copy(self.solve_timestep(xn, t, h))
+            Yf = self._transient()._radau_Y
+            Ys = [toolkit.concatenate((yf[:iref], yf[iref + 1:])) for yf in Yf]
+            Cn = np.asarray(self._C_at(xn))
+            Cs = [np.asarray(self._C_at(y)) for y in Ys]
+            Gs = [np.asarray(self._G_at(y)) for y in Ys]
+            Jb = np.zeros((3 * m, 3 * m))
+            for i in range(3):
+                for jj in range(3):
+                    blk = h * Amat[i, jj] * Gs[jj]
+                    if i == jj:
+                        blk = Cs[i] + blk
+                    Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
+            lu = sla.lu_factor(Jb)
+            CnP = Cn @ P
+            Z = sla.lu_solve(lu, np.vstack([CnP, CnP, CnP]))
+            P = Z[2 * m:3 * m, :]
+            if want_dT:
+                Ks = [-np.asarray(self._i_at(y)) for y in Ys]
+                rhs = np.zeros(3 * m)
+                CnPt = Cn @ Pt
+                for i in range(3):
+                    Si = sum(Amat[i, jj] * Ks[jj] for jj in range(3))
+                    rhs[i * m:(i + 1) * m] = CnPt + (h / Tf) * Si
+                Zt = sla.lu_solve(lu, rhs)
+                Pt = Zt[2 * m:3 * m]
+        self._want_dfdh = False
+        self._monodromy = P
+        if want_dT:
+            return x0, x, P, Pt
+        return x0, x, P, None
+
     def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
                                      inject=None):
         """`M^T v` -- the same stored steps, REPLAYED BACKWARDS.
@@ -4456,18 +4531,19 @@ class PSS(Analysis):
                 % (mono,))
         if (mono == 'native'
                 or getattr(self.par, 'method', 'euler') in ('gear', 'gear2',
-                                                            'trbdf2')
+                                                            'trbdf2', 'radau')
                 or not getattr(self, 'autonomous', False)):
-            ## ⚠ gear AND trbdf2 ARE SELF-SUFFICIENT.  This twin exists only
-            ## because a one-step LMM's monodromy is first-order on a limit
-            ## cycle -- its opening manufacturing step is dropped to Euler
-            ## and that seam sits in the period map.  Gear-2 and TR-BDF2 both
-            ## carry a second-order native monodromy (TR-BDF2 self-starting,
-            ## no opener; verified against the pencil), so twinning them would
-            ## REPLACE one second-order map with another on a re-converged
-            ## orbit -- pure cost -- and would hide the run's own spectrum.
-            ## They read `native` regardless of `monodromy`; the knob governs
-            ## which twin trap/euler borrow.
+            ## ⚠ gear, trbdf2 AND radau ARE SELF-SUFFICIENT.  This twin exists
+            ## only because a one-step LMM's monodromy is first-order on a
+            ## limit cycle -- its opening manufacturing step is dropped to
+            ## Euler and that seam sits in the period map.  Gear-2 carries a
+            ## second-order native monodromy, and the self-starting stage
+            ## methods (TR-BDF2 order 2, Radau IIA(3) order 5) have no opener
+            ## at all (both verified against the pencil), so twinning any of
+            ## them would REPLACE their own native map with another on a
+            ## re-converged orbit -- pure cost -- and would hide the run's own
+            ## spectrum.  They read `native` regardless of `monodromy`; the
+            ## knob governs which twin trap/euler borrow.
             return self
         if getattr(self, '_period_state', None) is None or not self.converged:
             return self
@@ -6086,12 +6162,13 @@ class PSS(Analysis):
         ## `_resolve_x0_unknown`.  Resolved to a concrete bool HERE, before
         ## anything reads it, so every downstream use sees one value.
         x0_unknown = self._resolve_x0_unknown(x0_unknown)
-        if getattr(self.par, 'method', 'euler') == 'trbdf2':
-            ## TR-BDF2 is self-starting: `x_in` IS `x_0`, there is no
-            ## manufacturing step to differentiate `x_0` back through, so the
-            ## unknown is always `x_0` itself.  Forcing it here makes the
-            ## phase pin and every open-at-x0 branch consistent for the DIRK
-            ## without the topology heuristic having to know about it.
+        if getattr(self.par, 'method', 'euler') in ('trbdf2', 'radau'):
+            ## Self-starting stage methods (TR-BDF2, Radau IIA(3)): `x_in` IS
+            ## `x_0`, there is no manufacturing step to differentiate `x_0`
+            ## back through, so the unknown is always `x_0` itself.  Forcing it
+            ## here makes the phase pin and every open-at-x0 branch consistent
+            ## for the stage method without the topology heuristic having to
+            ## know about it.
             x0_unknown = True
         self._open_at_x0 = bool(x0_unknown)
         times, hs = self._period_grid(period, int(period / dt), grid)
@@ -6322,10 +6399,10 @@ class PSS(Analysis):
         ## the class's earlier fall-through defects.
         method = getattr(self.par, 'method', 'euler')
         if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2',
-                          'trbdf2'):
+                          'trbdf2', 'radau'):
             raise ValueError(
-                "method must be 'euler', 'trap', 'gear' or 'trbdf2', not %r"
-                % (method,))
+                "method must be 'euler', 'trap', 'gear', 'trbdf2' or 'radau', "
+                "not %r" % (method,))
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,
@@ -6539,6 +6616,41 @@ class PSS(Analysis):
             F[m] = np.asarray(x0)[phase_k] - phase_pin
             return F, J
 
+        def func_radau(x):
+            """Driven fixed-period residual and Jacobian for Radau IIA(3).
+
+            `x` IS `x_0` (self-starting), so `F = x_0 - phi(x_0)` and
+            `J = I - M` with `M` the dense coupled monodromy from
+            `_traverse_radau`.  No manufacturing step, no solved history.
+            """
+            x0, x_end, Mx, _Mt = self._traverse_radau(
+                x, period, times, hs, want_dT=False)
+            D = np.asarray(toolkit.eye(n - 1))
+            return np.asarray(x0) - np.asarray(x_end), D - alpha * Mx
+
+        def func_autonomous_radau(z):
+            """Free-period residual and Jacobian for Radau IIA(3).
+
+            Unknowns `(x0, T)`; `F = [x0 - phi_T(x0), x0[k] - pinned]`,
+            `J = [[I - M, -dphi/dT], [e_k^T, 0]]`.  The period column
+            `dphi/dT` comes from `_traverse_radau(want_dT=True)`, tractable
+            because the circuit is autonomous.
+            """
+            x_in, T = z[:-1], float(z[-1])
+            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
+            x0, x_end, Mx, Mt = self._traverse_radau(
+                x_in, T, tms, hs_T, want_dT=True)
+            m = n - 1
+            D = np.asarray(toolkit.eye(m))
+            J = np.zeros((m + 1, m + 1))
+            J[:m, :m] = D - alpha * Mx
+            J[:m, m] = -np.asarray(Mt).ravel()
+            J[m, phase_k] = 1.0
+            F = np.zeros(m + 1)
+            F[:m] = np.asarray(x0) - np.asarray(x_end)
+            F[m] = np.asarray(x0)[phase_k] - phase_pin
+            return F, J
+
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
         ## amps on branch rows -- so its absolute floor is the `xtol` flavour
@@ -6594,28 +6706,33 @@ class PSS(Analysis):
         ## undamped iteration would have moved uphill.
 
         ## Find periodic steady state x-vector
-        if method == 'trbdf2':
-            ## The two-stage DIRK: its own dense monodromy, never
+        if method in ('trbdf2', 'radau'):
+            ## The self-starting stage methods (two-stage DIRK, three-stage
+            ## fully-implicit Radau): their own dense monodromy, never
             ## solved-history, always self-starting (x0 is the unknown).
+            _fdr = func_radau if method == 'radau' else func_trbdf2
+            _fda = (func_autonomous_radau if method == 'radau'
+                    else func_autonomous_trbdf2)
+            _label = 'Radau IIA(3)' if method == 'radau' else 'TR-BDF2'
             if matrix_free:
                 raise NotImplementedError(
-                    'PSS: matrix-free shooting is not built for TR-BDF2; its '
-                    'monodromy is a dense two-stage product. Drop '
-                    'matrix_free, or use a one-step LMM.')
+                    'PSS: matrix-free shooting is not built for %s; its '
+                    'monodromy is a dense stage product. Drop '
+                    'matrix_free, or use a one-step LMM.' % _label)
             if self.autonomous:
                 xa = np.asarray(x, dtype=float)
                 z0 = np.concatenate((xa, [period]))
                 abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
                 xtol_z = np.concatenate((_tol, [1e-15 * period]))
                 z_ss, _info, _ier, _mesg = self._free_period_solve(
-                    func_autonomous_trbdf2, z0, abstol_z, xtol_z,
+                    _fda, z0, abstol_z, xtol_z,
                     _shoot_reltol, maxiterations, period)
                 x0_ss = z_ss[:-1]
                 self.period = period = float(z_ss[-1])
                 times, hs = self._period_grid(period, npts, self._grid_fracs)
             else:
                 x0_ss, _info, _ier, _mesg = analysis.fsolve(
-                    func_trbdf2, x, maxiter=maxiterations,
+                    _fdr, x, maxiter=maxiterations,
                     reltol=_shoot_reltol, abstol=_tol, xtol=_tol,
                     toolkit=self.toolkit, full_output=True, line_search=True)
         elif self.autonomous and solved_history:
@@ -6952,12 +7069,13 @@ class PSS(Analysis):
         ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
         ## the period's, not something an earlier shooting iteration saw.
         tr._lte_probe = None
-        ## TR-BDF2 has no LMM divided-difference LTE (compute_lte refuses),
-        ## and the seam/interior split is a property of a manufactured
-        ## opener it does not have -- so the replay collects no per-step LTE
-        ## for it, and the three LTE figures below report None (honestly:
-        ## the diagnostic does not apply to a self-starting DIRK).
-        self._want_lte = (method != 'trbdf2')
+        ## The self-starting stage methods (TR-BDF2, Radau IIA(3)) have no LMM
+        ## divided-difference LTE (compute_lte refuses), and the seam/interior
+        ## split is a property of a manufactured opener they do not have -- so
+        ## the replay collects no per-step LTE for them, and the three LTE
+        ## figures below report None (honestly: the diagnostic does not apply
+        ## to a self-starting stage method).
+        self._want_lte = method not in ('trbdf2', 'radau')
         lte_seen = []
         for t, dt in walk:
             x = self.solve_timestep(X[-1], t, dt)

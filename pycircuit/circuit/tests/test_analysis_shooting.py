@@ -12637,6 +12637,117 @@ def test_autonomous_pss_under_trbdf2_finds_its_own_period():
     assert pss.factored_period().kind == 'trbdf2'
 
 
+def test_driven_pss_under_radau_matches_ac_and_gives_fifth_order_monodromy():
+    """`method='radau'` solves a driven PSS through the dense coupled Newton
+    and routes the small-signal monodromy to the Radau map.
+
+    The linear RC's periodic steady state is its AC steady state, and its
+    monodromy is `exp(-T/tau)` in closed form.  A Radau IIA(3) shooting solve
+    must reproduce both: the node fundamental to a few ppm of the AC phasor,
+    and the spectral radius to `exp(-T/tau)`.  `factored_period()` returns a
+    `kind='radau'` map, so every surface built on it inherits the order-5
+    (no-opener) monodromy without a Gear-2 twin.
+    """
+    circuit.default_toolkit = circuit.numeric
+    period, N = 1e-3, 100
+    cir = SubCircuit()
+    cir['vs'] = VSin(1, gnd, vac=2.0, va=2.0, freq=1 / period, phase=20)
+    cir['R'] = R(1, 2, r=1e4)
+    cir['C'] = C(2, gnd, c=1e-8)
+    tau = 1e4 * 1e-8
+
+    resac = AC(cir).solve(1 / period)
+    pss = PSS(cir, method='radau')
+    pss.solve(period=period, timestep=period / N)
+    assert pss.converged
+
+    tv, X = pss.waveform
+    X = np.asarray(X, dtype=float)
+    i2 = cir.get_node_index(cir.get_node('2'))
+    v2 = X[i2][:-1]
+    tt = np.asarray(tv, dtype=float)[:-1]
+    f0 = 1 / period
+    fund = 2.0 / len(v2) * np.sum(v2 * np.exp(-2j * np.pi * f0 * tt))
+    ac2 = complex(resac.v('2'))
+    assert abs(abs(fund) - abs(ac2)) < 1e-3 * abs(ac2), (fund, ac2)
+
+    fp = pss.factored_period()
+    assert fp.kind == 'radau'
+    assert abs(pss.spectral_radius - np.exp(-period / tau)) < 1e-6
+
+
+def test_autonomous_pss_under_radau_finds_its_own_period():
+    """`method='radau'` solves the free-period system for an oscillator.
+
+    Self-starting (its three stages coupled into one 3n solve), so `x0` is
+    the unknown with no manufactured opener.  On van der Pol the Radau solve
+    must converge to the same period the LMM methods find, report a unit
+    multiplier (the orbit's own free-phase direction), and `factored_period()`
+    must hand back the coupled Radau map.  The period column `dphi/dT` that
+    the free-period Newton needs is finite-difference checked in the build.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _scaled_vdp()
+    iref = cir.get_node_index(gnd)
+    iv = cir.get_node_index('v')
+    x0 = np.zeros(cir.n)
+    x0[iv] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, reltol=1e-8).solve(refnode=gnd, tend=35.0,
+                                                timestep=0.02, x0=x0)
+    t = np.asarray(res.sweep_values, dtype=float).ravel()
+    X = np.asarray(res.x, dtype=float)
+    W = X[:, t > 21.0]
+    red = lambda f: np.concatenate((f[:iref], f[iref + 1:]))
+    seed = red(W[:, int(np.argmax(W[iv]))])
+
+    def solve(method):
+        pss = PSS(_scaled_vdp(), method=method, reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=6.3, timestep=6.3 / 300, x0=seed,
+                      maxiterations=40)
+        return pss
+
+    ref = solve('gear')
+    pss = solve('radau')
+    assert pss.converged and pss.autonomous
+    ## same limit cycle: periods agree (Radau is order 5, gear order 2, so
+    ## they agree to the coarser of the two)
+    assert abs(pss.period - ref.period) < 1e-3 * ref.period, \
+        (pss.period, ref.period)
+    assert abs(pss.spectral_radius - 1.0) < 1e-3, pss.spectral_radius
+    assert pss.factored_period().kind == 'radau'
+
+
+def test_radau_monodromy_transpose_matches_the_dense_transpose():
+    """The Radau IIA(3) adjoint `M^T` is the exact transpose of the coupled
+    forward map, built column by column from the forward matvec and from
+    `matvec_transposed`; and a complex input splits into two real replays."""
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir['R1'] = R(1, 2, r=1e4); cir['R2'] = R(2, gnd, r=2e4)
+    cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
+    pss = PSS(cir, method='radau')
+    m = cir.n - 1
+    fp = pss.factored_period_radau(np.zeros(m), 5e-4, 50)
+    M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                         for e in np.eye(m)])
+    MT = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
+                          for e in np.eye(m)])
+    assert np.linalg.norm(MT - M.T) < 1e-12, np.linalg.norm(MT - M.T)
+    end, ts, states = fp.matvec_transposed(np.arange(1.0, m + 1.0), collect=True)
+    assert np.allclose(end, fp.matvec_transposed(np.arange(1.0, m + 1.0)))
+    assert len(states) == len(fp.steps) and len(states[0]) == m
+    v = np.arange(1.0, m + 1.0)
+    vc = v + 1j * v[::-1]
+    assert np.allclose(fp.matvec_transposed(vc),
+                       fp.matvec_transposed(vc.real)
+                       + 1j * fp.matvec_transposed(vc.imag))
+
+
 def test_trbdf2_monodromy_transpose_matches_the_dense_transpose():
     """The TR-BDF2 adjoint `M^T` is the exact transpose of the forward map.
 
