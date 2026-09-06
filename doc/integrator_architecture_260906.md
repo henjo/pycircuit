@@ -402,45 +402,51 @@ varying the device's prior `_vlim` before evaluating at a fixed point moves PCNR
 traversal only BY LOCALITY. Monodromy numbers are identical either way, and the suite cost nothing
 measurable (269.8 s vs 274.6 s).
 
-### The PCNR coupled path's rescue rung: a capacitance across the limited junction
+### The PCNR coupled path has no ladder — deliberately, with the design recorded
 
-Shipped as INSURANCE. ⚠⚠ **The mechanism is measured; a rescuing case is not.** Read this before
-trusting it.
+A continuation rung was built for the PCNR coupled solve three times (gshunt, junction-gmin, and a
+junction capacitance) and removed each time. The design is kept here so a fourth attempt starts from
+the evidence instead of repeating it. The path instead **falls back** to the device-limiting coupled
+solve, which does carry a ladder.
 
-The rung is a capacitance across each limited junction, anchored at the last accepted state:
-`g (v_j − v_j,n)` on the branch, `g` on the two-node incidence pattern — the backward-Euler form of
-`C = g·h·a_ii` in parallel with the junction, and pseudo-transient continuation's rung applied to the
-one branch that matters.
+**The design, if it is ever needed.** A capacitance across the limited junction, anchored at the last
+accepted state: the two-node incidence stamp `JunctionGminSteppingNewton` uses, but carrying
+`g (v_j − v_j,n)` instead of `g v_j` — the backward-Euler form of `C = g·h·a_ii` in parallel with the
+junction. It rides `pcnr.augmented_system`'s existing `u_extra`/`J_extra` hooks, so it needs no new
+plumbing and the Schur reduction carries it by construction. Two rules that cost measurements:
 
-**Why this quantity.** PCNR's failure is that the MNA step moves the junction branch voltage ~359 V
-in one iteration while `refine`/pnjlim advances `v_lim` by ~0.3 V, so `g_lim` — which *is*
-`v_lim − (x[ra] − x[rb])` — stays enormous, the Schur system linearises at a junction voltage
-inconsistent with the nodes, and the state diverges (ynorm 359 → 4.6e17). You cannot speed the
-limiter up; you can slow down what it has to follow.
+- ⚠ **Across the junction, not on every row.** `g·eye(n)` also anchors a voltage source's
+  BRANCH-CURRENT row, where `g(i − i_n)` is a conductance applied to a current unknown. Measured at
+  equal strength, the two-node stamp held the reappearing junction gap to **50 V** where the
+  whole-diagonal one let it snap back to **359 V**.
+- ⚠ **The schedule must start above the circuit's own conductance** (`‖G(x_n)‖∞`). A first attempt
+  marched `g ≤ 1 S` against a 10 mΩ (100 S) source and never bit.
 
-⚠ **ACROSS THE JUNCTION, NOT ON EVERY ROW — the first version was wrong.** `g·eye(n)` anchors every
-unknown, including a voltage source's BRANCH-CURRENT row, where `g(i − i_n)` is a conductance applied
-to a current unknown. Measured at equal rung strength, the two-node stamp holds the reappearing gap
-to **50 V** where the whole-diagonal one let it snap back to **359 V**.
+**It works as a mechanism**: with the anchor present the strong rungs converge in two iterations with
+`|g_lim| = 0`.
 
-**Measured, mechanism:** with the anchor present the strong rungs converge in TWO iterations with
-`|g_lim| = 0`. **Not measured: any circuit it rescues.** Every attempt to build one starved
-`maxiter`, and ⚠ **that stressor cannot validate ANY ladder** — a ladder must end with a PURE solve of
-the original system (P22), so a starved budget defeats the final rung whatever the deformation. The
-gshunt and junction-gmin rungs were rejected on evidence from that same broken instrument, which is
-worth remembering if this is revisited.
+⚠⚠ **Why it is not built.** No circuit is known where PCNR fails at a normal iteration budget.
+PCNR's one documented failure — the BJT mirror of `test_dc_pcnr.py` from a uniform 20 V start — was
+fixed at its source by **limiting the seed** (`pcnr.v_lim_init`; +20 V went `LinAlgError → 8
+iterations`), and that docstring already recorded that a continuation could never have fixed it:
 
-Two things bound the risk: the schedule starts a couple of decades above `‖G(x_n)‖∞` (the first
-attempt marched `g ≤ 1 S` against a 100 S source and never bit), and `max_rungs` is capped below the
-default because a ladder that cannot win still pays for every rung — an earlier version turned a
-0.02 s failure into a >136 s one. A rescue must not convert "fails fast" into "hangs". A healthy
-circuit pays nothing: 0 rungs, 0 fallbacks, and PCNR still equals device limiting to 5e-18.
-Test: `test_the_pcnr_junction_capacitance_rung_is_wired_and_shaped_right` (pins the stamp shape and
-the healthy-circuit cost; verified to fail against the whole-diagonal version).
+> "No ladder around the solve could help, because every rung began by building the same Jacobian at
+> the same unlimited seed."
 
-⚠ **THE WAY TO STRENGTHEN THIS IS TO FIND A CIRCUIT WHERE PCNR FAILS AT A NORMAL ITERATION BUDGET.**
-That would fit the schedule, which is currently reasoned rather than measured, and would validate the
-gshunt ladder on the device-limiting path, which carries the same unexercised trigger.
+Re-measured: that mirror solves at DC with `pcnr_status='used'`, and driven as a transient (pulsed
+0→5 V, rise times to 1 ps, steps to 1 ps, radau and trbdf2, PCNR on and off) every combination
+converges with 0 rungs and 0 fallbacks. Transient also suppresses the mode structurally — PCNR fails
+on a far-off *initial guess*, and every transient step starts from the last accepted state.
+
+**The trigger to watch for**, if this is revisited: a PCNR stage failure whose `g_lim` stays large
+while the MNA state diverges (signature: `|g_lim|` in the hundreds of volts, `ynorm` running to
+1e17) on a circuit at a DEFAULT `maxiter`. ⚠ **Do not validate a candidate by starving `maxiter`** —
+a ladder must end with a pure solve of the original system, so a starved budget defeats the final
+rung whatever the deformation. Two of the three rungs were rejected on evidence from exactly that
+broken instrument, and the third was accepted on it before this was understood.
+
+⚠ **And read `pcnr.py`'s own docstrings first.** They answered this question before any of it was
+built.
 
 ### Remaining gaps (honest)
 
