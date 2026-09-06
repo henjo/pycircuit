@@ -6150,6 +6150,154 @@ class PSS(Analysis):
         return x, J
 
 
+    def find_initial_solution(self, period, x0=None, npts=60, method=None,
+                              eps_rel_lin=1e-2, eps_abs_lin=1e-3, n_iter=7,
+                              max_periods=200, zeta=1e-7):
+        """A PROPER initial solution to start shooting from, by pre-integrating
+        until the fixed-point iteration has entered its LINEAR region.
+
+        De Luca, Bolcato & Schilders, *Proper Initial Solution to Start Periodic
+        Steady-State-Based Methods*, IEEE TCAS-I 2019 -- their Algorithm 2.  The
+        paper is in `~/docs/07-shooting-methods/`.
+
+        Shooting-Newton needs a start inside its contraction region, and the
+        usual remedy is to GUESS a number of pre-integration periods; if the
+        guess is wrong the solve diverges and the guess is repeated with no clue
+        for the next one.  This detects the handoff point instead, from
+        quantities the integration already produces.
+
+        ⚠ WHAT THE CRITERION COMPARES -- AND WHAT IT IS NOT.  It is NOT "the
+        iterate stopped moving" and NOT "a carried probe settled": this project
+        measured that guess and it moves the WRONG WAY (drift 1.4e-2 while the
+        solve still fails, 1.2e-1 once it succeeds -- `benchmarks/
+        pss_warm_start.py`), because a settled probe only says the Jacobian
+        stopped changing, which is equally true at an equilibrium.  The paper
+        compares TWO SEQUENCES: the LINEAR prediction of the next shooting error
+        against the one the ACTUAL nonlinear integration produces.  They agree
+        only where the fixed-point map really has become linear, which is
+        exactly the region a Newton-type method needs::
+
+            u_k         = x_k - phi(x_k)                        (eq. 4)
+            u_{k+1}     = J_phi(x_khat) u_k                     (eq. 12)
+            utilde_{k+1} = x_{k+1} - phi(x_{k+1})               (eq. 13)
+
+        accepted, componentwise, when (eq. 16)::
+
+            |u_{k+1,j} - utilde_{k+1,j}| <= eps_rel_lin |u_{khat,j}| + eps_abs_lin
+
+        holds for ``n_iter`` CONSECUTIVE iterations (the paper's defaults, used
+        for every experiment in it: ``eps_rel_lin=1e-2``, ``eps_abs_lin=1e-3``,
+        ``n_iter=7``).  The scale on the right is the shooting error at the
+        DETECTION index ``khat``, not at the current one.  A failed check resets
+        the run AND re-freezes ``J_phi`` at the new index, which is why ``khat``
+        can move.
+
+        ⚠ NON-AUTONOMOUS ONLY, AND THAT IS THE PAPER'S SCOPE, NOT AN OVERSIGHT
+        HERE.  Its title, abstract and index terms all say non-autonomous, and
+        the reason bites: for a FORCED circuit the DC point is not a fixed point
+        of the period map, so "the map became linear" can only mean the orbit.
+        For an AUTONOMOUS oscillator the equilibrium IS a fixed point of the
+        period map and the map is linear in a neighbourhood of it, so this
+        criterion will happily certify the trivial root -- which is precisely the
+        van der Pol failure recorded in `benchmarks/pss_warm_start.py`.  **That
+        case is NOT solved by this method and must not be handed to it.**
+
+        ``J_phi(x_khat) u`` is taken by the paper's own alternative, the
+        directional derivative of eq. (15),
+        ``[phi(x + zeta u) - phi(x)] / zeta``, rather than by its Alg. 1
+        left-product.  Both are in the paper; this one costs one extra period
+        integration per iteration and buys freedom from the opening-frame
+        question (which state a stored factorisation is the derivative *about*),
+        a distinction that has already cost this file one wrong answer.
+
+        Returns ``(x, info)``: the reduced state to start shooting from -- the
+        paper's line 21, "the last computed x_k" -- and a dict with ``khat``,
+        ``periods``, ``found`` and the per-period ``history``.  ``found=False``
+        means ``max_periods`` ran out with no linear region; the returned ``x``
+        is then simply the last iterate and carries no promise.
+        """
+        T = float(period)
+        n = self.cir.n
+        iref = self.irefnode
+        m = n - 1
+        npts = int(npts)
+        if npts < 1:
+            raise ValueError('find_initial_solution: npts must be >= 1, got %r'
+                             % (npts,))
+        if n_iter < 1:
+            raise ValueError('find_initial_solution: n_iter must be >= 1')
+        times = np.linspace(0.0, T, npts + 1)
+        hs = np.diff(times)
+        integ = method if method is not None else getattr(self.par, 'method',
+                                                          'euler')
+
+        def phi(xr):
+            """One period of the inner transient from `xr` -- the map the
+            shooting residual is built on, run on a fixed uniform grid."""
+            tr_saved = getattr(self, '_tran', None)
+            self._tran = self._new_transient(self._integrator_for(integ))
+            try:
+                self._want_dfdh = False
+                self._want_lte = False
+                self._begin_period(np.asarray(xr, dtype=float))
+                x = copy(np.asarray(xr, dtype=float))
+                for j, t in enumerate(times[1:]):
+                    x = copy(self.solve_timestep(x, t, hs[j]))
+                return np.asarray(x, dtype=float).ravel()
+            finally:
+                self._tran = tr_saved
+
+        if x0 is None:
+            x = np.zeros(m)
+        else:
+            x = np.asarray(x0, dtype=float).ravel()
+            if x.shape[0] == n:
+                x = np.concatenate((x[:iref], x[iref + 1:]))
+
+        phi_x = phi(x)
+        k = 0
+        i_iter = 0
+        khat = 0
+        x_khat = x.copy()
+        phi_khat = phi_x.copy()
+        u = x - phi_x
+        u_khat = u.copy()
+        history = []
+        found = False
+        while k < int(max_periods):
+            if i_iter == 0:
+                ## re-freeze the linear generator at the current index (Alg. 2
+                ## lines 4-8): khat moves whenever the run of successes breaks.
+                khat = k
+                x_khat = x.copy()
+                phi_khat = phi_x.copy()
+                u = x - phi_x
+                u_khat = u.copy()
+            x_next = phi_x
+            phi_next = phi(x_next)
+            u_tilde_next = x_next - phi_next            ## eq. (13)
+            ## eq. (12) via the paper's eq. (15) directional derivative, with
+            ## the step scaled to the iterate so `zeta` is a RELATIVE size.
+            un = float(np.linalg.norm(u))
+            if un <= 0.0:
+                u_next = np.zeros(m)
+            else:
+                z = zeta * max(float(np.linalg.norm(x_khat)), 1.0) / un
+                u_next = (phi(x_khat + z * u) - phi_khat) / z
+            gap = np.abs(u_next - u_tilde_next)
+            ok = bool(np.all(gap <= eps_rel_lin * np.abs(u_khat) + eps_abs_lin))
+            k += 1
+            i_iter = i_iter + 1 if ok else 0
+            history.append({'k': k, 'khat': khat, 'ok': ok, 'run': i_iter,
+                            'gap': float(np.max(gap)),
+                            'shooting_error': float(np.max(np.abs(u_tilde_next)))})
+            x, phi_x, u = x_next, phi_next, u_next
+            if i_iter >= int(n_iter):
+                found = True
+                break
+        return x, {'khat': khat, 'periods': k, 'found': found,
+                   'history': history}
+
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
               x0_unknown=None, tstab=None):

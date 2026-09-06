@@ -13427,3 +13427,102 @@ def test_monodromy_matches_a_finite_difference_of_the_period_map():
             'derivative of its own period map by %.3e (was 1.6e-3 with the ' \
             'shared-_vlim defect; the FD noise floor here is ~1e-9)' \
             % (method, fp.kind, rel)
+
+
+def test_warm_start_finds_the_linear_region_and_the_handoff_works():
+    """`PSS.find_initial_solution` -- De Luca, Bolcato & Schilders (TCAS-I 2019)
+    Algorithm 2: pre-integrate until the fixed-point iteration has entered its
+    LINEAR region, then hand the iterate to shooting.
+
+    Three things are pinned, and the first is a number PREDICTED BEFORE IT WAS
+    MEASURED rather than read off the code:
+
+    1. ON A LINEAR CIRCUIT THE ANSWER IS FORCED.  `phi` is affine, so
+       `J_phi(x_khat) u` is EXACT for every `khat` and the linear prediction
+       equals the actual shooting error to roundoff.  So the check must pass on
+       the very first iteration and stop after exactly `n_iter` of them:
+       `khat == 0` and `periods == n_iter`.  The paper says the same of its own
+       RLC ("we expect the linear region to be found at the first iteration");
+       its reported `khat = 4` is four preliminary integrations it performs for
+       implementation reasons, not detection.  The circuit here IS the paper's:
+       R = 1 ohm, L = 20 mH, C = 2 uF, T = 1.256 ms, 9 sin -- Q = 100, i.e. the
+       slow-settling case that motivates a warm start at all.
+
+    2. THE CRITERION MUST DISCRIMINATE, or it proves nothing.  A criterion that
+       always answered "linear" would give `khat == 0` on every circuit, linear
+       or not, and still pass check 1.  So on a NONLINEAR circuit the first
+       check is required to FAIL -- the run resets and `khat` moves off 0 --
+       which is only meaningful because the same code returns `khat == 0` on the
+       linear one.
+
+    3. THE HANDOFF MUST EARN ITS PLACE: shooting that does NOT converge from a
+       cold start must converge from the returned iterate, at the same
+       iteration budget.  Otherwise the detector is correct and useless.
+
+    ⚠ NON-AUTONOMOUS ONLY -- see `find_initial_solution`.  For an autonomous
+    oscillator the equilibrium is a fixed point of the period map and the map is
+    linear around it, so this criterion certifies the TRIVIAL ROOT; the van der
+    Pol case in `benchmarks/pss_warm_start.py` is outside the paper's scope and
+    is deliberately not tested here as if it were solved.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+    T = 1.256e-3
+    N_ITER = 7
+
+    def rlc(diode):
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=9.0, freq=1.0 / T)
+        c['R'] = R(1, 2, r=1.0)
+        c['L'] = L(2, 3, L=2e-2)
+        c['C'] = C(3, gnd, c=2e-6)
+        if diode:
+            c['D'] = Diode(3, gnd)
+        return c
+
+    ## (1) linear: the answer is forced by phi being affine
+    pss = PSS(rlc(False), method='euler', reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _x, info = pss.find_initial_solution(period=T, npts=200,
+                                             n_iter=N_ITER, max_periods=60)
+    assert info['found'], 'linear circuit: no linear region found at all'
+    assert info['khat'] == 0 and info['periods'] == N_ITER, \
+        'a linear phi makes the linear generator EXACT, so the region must be ' \
+        'found immediately: expected khat=0, periods=%d, got khat=%d, ' \
+        'periods=%d' % (N_ITER, info['khat'], info['periods'])
+
+    ## (2) nonlinear: the criterion must REFUSE the first iterate, or (1) is
+    ## satisfied by a criterion that never says no
+    pssd = PSS(rlc(True), method='euler', reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        xw, infod = pssd.find_initial_solution(period=T, npts=200,
+                                               n_iter=N_ITER, max_periods=80)
+    assert infod['found'], 'nonlinear circuit: no linear region found'
+    assert not infod['history'][0]['ok'] and infod['khat'] > 0, \
+        'the criterion did not discriminate: it accepted the FIRST iterate of ' \
+        'a nonlinear circuit (khat=%d), so khat==0 on the linear one means ' \
+        'nothing' % infod['khat']
+    ## and the gap must actually collapse, not merely dip under a loose bound
+    assert infod['history'][0]['gap'] > 100.0 * infod['history'][-1]['gap'], \
+        'the linear-region gap did not collapse: %.3e -> %.3e' \
+        % (infod['history'][0]['gap'], infod['history'][-1]['gap'])
+
+    ## (3) the handoff has to be worth taking
+    def solves_from(x0):
+        p = PSS(rlc(True), method='euler', reltol=1e-9)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                p.solve(period=T, timestep=T / 200, x0=x0, maxiterations=8)
+            return bool(p.converged)
+        except Exception:
+            return False
+    assert not solves_from(None), \
+        'the cold start now converges, so this circuit no longer demonstrates ' \
+        'anything about the warm start -- pick a harder one'
+    assert solves_from(xw), \
+        'shooting did not converge from the warm-start iterate, which is the ' \
+        'whole point of finding it'
