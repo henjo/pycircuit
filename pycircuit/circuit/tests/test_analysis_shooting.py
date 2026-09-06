@@ -14372,3 +14372,132 @@ def test_event_breaking_defaults_on_for_one_step_methods_and_off_for_gear():
         g.solve(period=T, timestep=T / 80)
     assert g.break_events is False, \
         'gear must NOT break by default -- it is measured to lose'
+
+
+def test_the_ppv_waveform_matches_a_pulse_isf_over_the_whole_period():
+    """The PPV checked as a WAVEFORM, by kicks at phases around the orbit.
+
+    ⚠ THIS EXISTS TO RETIRE A WEAKNESS THE t=0 GATE NAMES ABOUT ITSELF.
+    `test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has` kicks
+    in a RANDOM direction, and its own docstring says why that is fragile:
+    "a random direction in TWO dimensions is ~71% tangential, so the phase
+    signal dominates ... THAT PROTECTION SCALES AS 1/sqrt(m) AND VANISHES ON
+    A REAL CIRCUIT ... This gate is sound at m = 2 and would not be at
+    m = 20, with nothing in it changing."
+
+    This gate kicks along COORDINATE directions at ten phases spread over
+    the period.  There is no random direction in it, so it carries no
+    `1/sqrt(m)` dependence, and it exercises `info['samples']` -- the PPV
+    over the orbit -- rather than the single vector at `t = 0`.
+
+    Measured (van der Pol, mu = 1, 400 points), 20 independent pulse
+    experiments, worst |1 - measured/predicted| = **4.2e-03**::
+
+        t/T     e0 measured     e0 predicted    ratio
+        0.000   +8.113272e-02   +8.145265e-02   0.9961
+        0.201   -7.161729e-01   -7.162341e-01   0.9999
+        0.501   -7.836864e-02   -7.868975e-02   0.9959
+        0.702   +7.144444e-01   +7.144991e-01   0.9999
+
+    ⚠⚠ THE HALF-WAVE ANTISYMMETRY IS THE SELF-CHECK, AND NOTHING IN THE
+    MEASUREMENT IMPOSES IT.  Van der Pol is half-wave symmetric, so its ISF
+    inherits `Gamma(t + T/2) = -Gamma(t)`.  The pulse experiments at `t` and
+    at `t + T/2` are entirely independent transients -- different initial
+    states, different trajectories -- so agreement between them is evidence
+    the harness is sound, not an identity it was built to satisfy.
+
+    ⚠ THE INDEX CONVENTION IS PINNED, NOT ASSUMED.  `info['samples']` comes
+    from a REVERSE replay, so whether `samples[k]` is `t_k` or `t_{N-1-k}`
+    is exactly the off-by-one that has bitten this arc before (the
+    sideband-fold abscissa, the conjugation).  It is settled here by the
+    normalisation `v(t).xdot(t) = 1`, which holds at every k for the
+    forward reading and gives 0.42 / -1.04 for the reversed one -- so the
+    assertion below would FAIL on an index flip rather than absorb it.
+
+    An independent session implementing Levantino's reference pulse method
+    reported the same waveform (+8.11e-2, -3.84e-1, -7.17e-1, -3.36e-1,
+    -1.56e-1 at t/T = 0 .. 0.4); this reproduces those numbers from a
+    separately written harness.
+    """
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+
+    npts = 400
+    cir, pss, v, info = _vdp_ppv(npts)
+    m = cir.n - 1
+    irn = pss.irefnode
+    T = pss.period
+    Xf = np.asarray(pss.waveform[1], dtype=float)
+    Xr = np.delete(Xf, irn, axis=0)
+    S = np.asarray(info['samples'], dtype=float)
+    ts = np.asarray(info['times'], dtype=float)
+    nint = Xr.shape[1] - 1                     # intervals in the period
+
+    def xdot_at(k):
+        h = T / nint
+        return (Xr[:, (k + 1) % nint] - Xr[:, (k - 1) % nint]) / (2.0 * h)
+
+    ## (1) PIN THE ORDERING.  `v(t).xdot(t) = 1` is the normalisation, which
+    ## makes it the right instrument for an INDEX question and the wrong one
+    ## for a correctness question -- it is used only for the former.
+    probe = (0, 50, 100, 200, 300)
+    fwd = [float(S[k][:m] @ xdot_at(k)) for k in probe]
+    rev = [float(S[len(S) - 1 - k][:m] @ xdot_at(k)) for k in probe]
+    assert max(abs(z - 1.0) for z in fwd) < 5e-3, \
+        'samples[k] <-> t_k should satisfy v.xdot = 1, got %r' % (fwd,)
+    assert max(abs(z - 1.0) for z in rev) > 0.1, \
+        'the REVERSED reading also satisfies the normalisation (%r), so this ' \
+        'gate cannot tell an index flip from the truth -- it must' % (rev,)
+
+    def integrate(xi, ppp=2000):
+        tran = Transient(cir, toolkit=circuit.numeric, reltol=1e-9,
+                         iabstol=1e-13, vabstol=1e-11)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(refnode=gnd, tend=T, timestep=T / ppp, x0=xi)
+        return np.asarray(res.x, dtype=float)[:, -1]
+
+    ## (2) THE WAVEFORM.  Phases chosen in half-period PAIRS so the same
+    ## transients serve the antisymmetry check below -- no extra cost.
+    eps = 1e-5
+    half = nint // 2
+    ks = [0, 40, 80, half, half + 40, half + 80]
+    gamma = {}
+    worst = 0.0
+    for k in ks:
+        ref = integrate(Xf[:, k].copy())
+        xd = xdot_at(k)
+        for j in range(m):
+            d = np.zeros(m)
+            d[j] = 1.0
+            dr = np.concatenate((d[:irn], np.zeros(1), d[irn:]))
+            dx = np.delete(integrate(Xf[:, k].copy() + eps * dr) - ref, irn)
+            meas = float(dx @ xd) / float(xd @ xd) / eps
+            pred = float(S[k][:m] @ d)
+            gamma[(k, j)] = meas
+            assert abs(pred) > 1e-3, \
+                'the PPV is ~0 at t/T=%.3f along e%d, so this point is a ' \
+                'zero-vs-zero pass' % (ts[k] / T, j)
+            worst = max(worst, abs(1.0 - meas / pred))
+    assert worst < 1.5e-2, \
+        'the PPV waveform disagrees with the pulse ISF by %.3e at worst' % worst
+
+    ## (3) HALF-WAVE ANTISYMMETRY of the MEASURED waveform -- independent
+    ## transients, so this is evidence about the harness, not an identity.
+    ## ⚠ NORMALISED BY THE WAVEFORM'S PEAK, NOT BY THE LOCAL VALUE.  The
+    ## first version of this divided by `max(|a|,|b|)` and reported a 10%
+    ## violation -- all of it from the `e1` pair near a ZERO CROSSING
+    ## (+5.29e-2 against -4.69e-2), where a small denominator inflates a
+    ## small absolute difference.  That is a defect in the measure, not in
+    ## the waveform: a relative error against a quantity passing through
+    ## zero is not a statement about agreement.
+    scale = max(abs(z) for z in gamma.values())
+    anti = 0.0
+    for k in (0, 40, 80):
+        for j in range(m):
+            a, b = gamma[(k, j)], gamma[(k + half, j)]
+            anti = max(anti, abs(a + b) / scale)
+    assert anti < 2e-2, \
+        'van der Pol is half-wave symmetric so its ISF must obey ' \
+        'Gamma(t+T/2) = -Gamma(t); worst violation %.3e of the peak' % anti

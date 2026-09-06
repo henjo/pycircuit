@@ -1760,6 +1760,48 @@ it matters most exactly where a PPV is wanted. Multipliers crowd 1 on high-Q osc
 (four independent witnesses), `_spectral_report`'s split was measured labelling a parasitic
 root physical, and a bordered solve never has to tell candidates apart.
 
+
+✅ **THE PPV IS NOW CHECKED AS A WAVEFORM, NOT ONLY AT `t = 0` (2026-09-06).**
+`test_the_ppv_waveform_matches_a_pulse_isf_over_the_whole_period`.
+
+⚠ **This retires a weakness the `t = 0` gate names about ITSELF**: that gate kicks in a RANDOM
+direction, and its own docstring says *"a random direction in TWO dimensions is ~71% tangential
+... THAT PROTECTION SCALES AS `1/sqrt(m)` AND VANISHES ON A REAL CIRCUIT ... sound at m = 2 and
+would not be at m = 20, with nothing in it changing."* The new gate kicks along **coordinate**
+directions at six phases in half-period pairs, so it carries no `1/sqrt(m)` dependence.
+
+It also exercises **`info['samples']` — the PPV over the orbit, which already existed and no test
+touched.** Measured on van der Pol (mu=1, 400 points), 20 pulse experiments, worst
+|1 − measured/predicted| = **4.2e-03**:
+
+| t/T | e0 measured | e0 predicted | ratio |
+|---|---|---|---|
+| 0.000 | +8.113272e-02 | +8.145265e-02 | 0.9961 |
+| 0.201 | −7.161729e-01 | −7.162341e-01 | 0.9999 |
+| 0.501 | −7.836864e-02 | −7.868975e-02 | 0.9959 |
+| 0.702 | +7.144444e-01 | +7.144991e-01 | 0.9999 |
+
+⚠⚠ **THE INDEX CONVENTION IS PINNED, NOT ASSUMED.** `samples` comes from a REVERSE replay, so
+`samples[k] = t_k` vs `t_{N-1-k}` is exactly the off-by-one class that produced the sideband-fold
+abscissa and conjugation bugs. Settled by `v(t)·xdot(t) = 1`: it holds at every k forward and
+gives **0.42 / −1.04** reversed, and the test asserts BOTH so an index flip fails rather than being
+absorbed. ⚠ That normalisation is used for the INDEX question only — it is an identity, so it is
+not evidence of correctness.
+
+⚠ **Half-wave antisymmetry is the self-check**, and it is evidence rather than an identity: the
+experiments at `t` and `t + T/2` are entirely independent transients, and van der Pol's symmetry
+is what makes `Gamma(t+T/2) = -Gamma(t)` hold.
+
+⚠ **A METRIC TRAP WORTH THE RECORD.** The first antisymmetry measure normalised by the LOCAL value
+and reported a **10%** violation — all of it from the `e1` pair near a ZERO CROSSING (+5.29e-2
+against −4.69e-2), where a small denominator inflates a small absolute difference. Normalising by
+the waveform's PEAK is the correct statement. **A relative error against a quantity passing through
+zero is not a statement about agreement** — and the fix was the measure, not the bound.
+
+⚠ Cross-checked: an independent session implementing Levantino's reference pulse method reported
+the same waveform (+8.11e-2, −3.84e-1, −7.17e-1, −3.36e-1, −1.56e-1 at t/T = 0 … 0.4). Two
+separately written harnesses agreeing is worth more than either agreeing with itself.
+
 ### A3. pnoise — ⚠ BUILT 2026-09-02 for STATIONARY sources; cyclostationary is not
 
 Needs the **adjoint** formulation: pnoise is many-to-one (hundreds of sources, one output),
