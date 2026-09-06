@@ -213,3 +213,56 @@ monodromy/folds/Lyapunov must be **structure-aware**, exactly like the transient
 duplication — it is required by the DAE. "One coupled implementation for both" is refuted by
 the singular explicit-stage block. The right unification is structure-aware with two generic
 families, not one.
+
+---
+
+## Refactor COMPLETE — steps 1–5 landed, ESDIRK4(3)6 proves it (2026-09-06)
+
+All five steps done and green. A new integrator is now tableau-only.
+
+- **Steps 1–2** (transient side): `RungeKuttaIntegrator` base + polymorphic predicates;
+  one tableau-driven, structure-aware transient step (`_solve_timestep_rk` → DIRK-sequential
+  or FULL-coupled); one adaptive driver. Bespoke TR-BDF2 step/driver deleted.
+- **Step 3a** (FULL family): the Radau coupled shooting routines made tableau- and s-generic
+  (`_*_full`, `kind='full'`). Any new **fully-implicit** method (Gauss, Lobatto IIIC, higher
+  Radau) is now tableau-only.
+- **Step 3b** (DIRK family): a new generic **s-stage sequential** shooting family (`_*_dirk`,
+  `kind='dirk'`) — monodromy (factored/dense/matvec/transpose), forward/adjoint/sideband
+  folds, Lyapunov. TR-BDF2 moved onto it; its bespoke shooting routines (9 methods + 2 nested
+  funcs) deleted. Any new **DIRK/ESDIRK** of any stage count is now tableau-only.
+- **Step 3c** (dispatch): `FactoredPeriod.kind ∈ {'plain','solved_history','full','dirk'}`;
+  every surface routes by STRUCTURE (`is_fully_implicit()`), never by method name.
+- **Test vehicle**: `ESDIRK43Integrator` (KenCarp4, s=6, order 4) — added as **only a Butcher
+  tableau** — reaches order 4 through the untouched generic transient step AND the generic
+  s-stage DIRK shooting family (monodromy ratios →16 vs `exp(μT)`, adjoint exact). That an
+  s=6 method works with zero method-specific code is the proof the abstraction is right.
+
+### The obstruction, sharpened (measured, with docs-0d)
+
+Routing every stage method through the FULL coupled monodromy is **wrong on a DAE**, and the
+reason is stronger than "the transform needs `det A ≠ 0`". Measured, coupled diagonal block,
+n=4:
+
+| | | block(1,1) rank | cond(K) |
+|---|---|---|---|
+| ODE (M=I) | ESDIRK | 4/4 | 1.11 |
+| | Radau | 4/4 | 1.13 |
+| DAE (M=C, rank 3/4) | **ESDIRK** | **3/4** | **9.25e15** (singular) |
+| | Radau | 4/4 | 3.07e2 |
+
+With `a11 = 0` the diagonal block is `M − h·a11·J = M`, singular exactly when the problem is a
+DAE. So an ESDIRK's coupled system is **not formable at all** on a DAE — eliminating the
+explicit stages sequentially is not an optimisation, it is the **only formulation that
+exists**. The two-family split (FULL coupled ⇔ `det A ≠ 0`; DIRK sequential otherwise) is thus
+the **only correct partition**, and the discriminant is exactly `det A`. `cond = 1.11` on the
+ODE — DAE-specific, the same place everything else in this stack comes apart.
+
+### Still not wired for stage methods (honest gaps)
+
+- **PCNR** (the device-level `limit()` replacement in the per-step Newton) — `solve_timestep`
+  dispatches RK before the PCNR branch, so stage methods use `cir.limit`, never PCNR. Wiring
+  PCNR into each stage's Newton is real, separate work.
+- **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
+  (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
+- **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK
+  sequential path keeps its efficient one-LU structure.
