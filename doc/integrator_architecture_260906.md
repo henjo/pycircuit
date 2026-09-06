@@ -257,17 +257,28 @@ exists**. The two-family split (FULL coupled ⇔ `det A ≠ 0`; DIRK sequential 
 the **only correct partition**, and the discriminant is exactly `det A`. `cond = 1.11` on the
 ODE — DAE-specific, the same place everything else in this stack comes apart.
 
-### Still not wired for stage methods (honest gaps)
+### PCNR wired for the DIRK stage methods (transient AND shooting)
 
-⚠ These are **standalone-transient** gaps as much as shooting ones — the RK methods are a
-first-class choice for a plain `Transient(cir, integrator=...)` run (adaptive via the embedded
-estimate), so a feature missing here is missing in ordinary transient simulation too.
+⚠ Standalone transient is a first-class use of the RK methods, so per-step features matter
+there, not only in shooting. **PCNR** (the junction-continuation limiting, `Aadithya et al.`) is
+now the per-stage limiting for the DIRK/ESDIRK path (`_rk_stage_pcnr`): each implicit stage's
+residual recasts as the DC-flow form `i(Y) + iq_eff + u = 0` (`iq_eff = (q − target)/(h·a_ii)`),
+so `pcnr.augmented_system`/`predict`/`refine` apply unchanged, with a `limit(x,x)` at
+convergence to sync the devices' `_vlim` for the downstream `K`/`J`. It is NOT a separate
+shooting feature — PCNR lives in `solve_timestep`, which shooting's inner transient also drives,
+so forwarding a `pcnr` Parameter from `PSS` reaches it there too (the review's PCNR-in-shooting
+gap, 1-for-4, is now 2-for-4). Verified: TR-BDF2 / ESDIRK4(3)6 with `pcnr=True` match device
+limiting to machine precision (2.8e-17 / 7.5e-17) in transient, and PSS matches to 7e-18 with
+identical spectral radius.
 
-- **PCNR** (the device-level `limit()` replacement in the per-step Newton) — `solve_timestep`
-  dispatches RK before the PCNR branch, so stage methods use `cir.limit`, never PCNR, even in a
-  plain transient of a hard-junction circuit. Wiring PCNR into each stage's Newton is real,
-  separate work.
+### Remaining gaps (honest)
+
+- **PCNR on the FULL coupled (Radau) path** — not built. PCNR-per-stage assumes the sequential
+  DC-flow recast; the coupled `sm` system would need PCNR augmenting all stages at once. Radau
+  with `pcnr=True` currently falls to the coupled path's limiting.
 - **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
   (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
 - **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK
   sequential path keeps its efficient one-LU structure.
+- **Continuation rescue / breakpoints** still do not reach shooting — armed only in
+  `Transient.solve`, which PSS never calls (it drives `solve_timestep` on its own frozen grid).
