@@ -324,8 +324,53 @@ moved from bin 2, a non-harmonic bin that only rang on the old bug's artifacts, 
 real 2nd harmonic). The PCNR-in-shooting scoreboard is now 3-for-4 (LMM, DIRK, FULL all carry
 PCNR through `solve_timestep`).
 
+### The same shared-`_vlim` defect was in the MONODROMY — found, measured, fixed
+
+The transient fix above named a *class* of bug, so the monodromy was checked for it rather than
+assumed clean. It had it. `_C_at`/`_G_at` — which feed **every** period-map builder (LMM
+`_traverse_factored*`, FULL `_traverse_factored_full`, DIRK `_traverse_factored_dirk`, plus forced
+replay, sidebands and the Lyapunov/noise paths) — called `cir.C`/`cir.G` with no limiting sync,
+while the monodromy evaluates them at `x_n` **and every stage**. The step's solve leaves `_vlim`
+at the last stage, so the period map linearised the junction at the wrong voltage.
+
+**Measured against a finite difference of the discrete period map** — a reference this code cannot
+influence — on a diode fed through a series resistor:
+
+| | as-is | `_vlim` synced |
+|---|---|---|
+| Radau, va=15 | 1.65e-03 | 3.0e-09 |
+| Radau, va=5 | 7.2e-06 | 1.1e-10 |
+| TR-BDF2, va=15 | 9.1e-04 | 4.2e-09 |
+| TR-BDF2, va=5 | 5.1e-06 | 3.5e-10 |
+
+⚠ **The error was told from FD noise by a δ-sweep: it stayed FLAT at 1.6533e-03 across four
+decades of the FD step (1e-4 … 1e-8).** FD noise makes a V (truncation ∝ δ² down, roundoff ∝ 1/δ
+up); a fixed plateau is a real error. It also scaled with how hard the junction was driven and
+vanished when it was off — consistent with the mechanism and with nothing else.
+
+⚠ **Two degenerate regimes made this check vacuous first, and both were hit.** A fast RC drove the
+whole monodromy to ~0 (multiplier 1e-51: a 0-vs-0 comparison that passes regardless — the
+zero-vs-zero gate again); and a bare diode either never conducted (the capacitor shunts the node,
+so the multiplier is exactly the diode-off `exp(-T/RC)` and the junction is absent from the answer)
+or conducted so hard it shorted the node and the multiplier collapsed to 0. **Name the number the
+arithmetic predicts first.** The fix was to bound the junction conductance with a series resistor:
+off → `exp(-1)` = 0.368, fully on → `exp(-2)` = 0.135, solution in between. The regression test
+asserts the junction is loading, so it cannot silently decay into a vacuous check.
+
+Fix: `_sync_limit_at`, called by `_C_at`/`_G_at`. Regression: shooting 241 pass / 1 skip unchanged
+(294 s vs 266 s — ~10% for the extra `limit()` calls, the price of a correct Jacobian). Test:
+`test_monodromy_matches_a_finite_difference_of_the_period_map`, **verified to fail (1.653e-03) with
+the fix neutered** — a test that passes both ways would prove nothing.
+
 ### Remaining gaps (honest)
 
+- ⚠ **`trap`'s monodromy is off by ~8.5e-3 against the same FD reference — ON A PURELY LINEAR
+  CIRCUIT** (no junction at all), so it is NOT this defect and NOT limiting-related; `radau` sits at
+  1e-10 on the same circuit. It is structural, in the trapezoidal period map's opening/history seam.
+  This is a FOURTH independent finding pointing at the recorded fix — *make `x_0` the unknown* — and
+  the cleanest one yet, because a linear circuit removes every other explanation. `gear` could not
+  be checked with this harness: as a multistep method its period map carries pair history (width
+  `2m`), so the FD needs the pair state, not `x0` alone. Both are follow-up work, not folded in here.
 - **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
   (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
 - **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK

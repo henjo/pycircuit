@@ -13293,3 +13293,109 @@ def test_pcnr_reaches_the_shooting_inner_transient_over_a_stage_method():
         'PCNR and limiting must reach the same shooting orbit'
     assert abs(p_pcnr.spectral_radius - p_lim.spectral_radius) \
         < 1e-6 * abs(p_lim.spectral_radius) + 1e-12
+
+
+def test_monodromy_matches_a_finite_difference_of_the_period_map():
+    """The analytic monodromy must equal the DERIVATIVE OF THE DISCRETE PERIOD
+    MAP it claims to be -- checked against a central finite difference of that
+    very map, a reference this code cannot influence.
+
+    ⚠ THIS IS THE TEST THAT CAUGHT THE SHARED-`_vlim` DEFECT.  A junction
+    device's `i`/`G` are read at its stored `_vlim`, and there is only ONE
+    `_vlim` per device -- while the monodromy evaluates `C`/`G` at SEVERAL
+    distinct points per step (`x_n` and every stage).  Whatever the step's solve
+    left behind (the LAST stage) was used for all of them, so the period map
+    linearised the junction at the wrong voltage.  Measured error before the
+    `_sync_limit_at` fix in `_C_at`/`_G_at`: 1.65e-3 (Radau) / 9.1e-4 (TR-BDF2)
+    relative, FLAT across four decades of the FD step -- a fixed error, not FD
+    noise, which is exactly how it was told apart.  Everything downstream of the
+    monodromy rests on this: Floquet multipliers, the PSS Jacobian, the PPV and
+    the cyclostationary noise.
+
+    ⚠ THE CIRCUIT IS CHOSEN SO THE JUNCTION IS ACTUALLY IN THE ANSWER, and the
+    test asserts that.  Two degenerate regimes make this check vacuous and both
+    were hit while building it:
+      - a fast RC (tau << T) drives the whole monodromy to ~0, so the comparison
+        is 0-vs-0 and passes no matter what (the multiplier came out ~1e-51);
+      - a bare diode either never conducts (the capacitor shunts the node, so
+        the multiplier is exactly the diode-off `exp(-T/RC)` and the junction
+        contributes nothing) or conducts so hard it shorts the node and the
+        multiplier collapses to 0 again.
+    So the diode is fed through a series resistor, which BOUNDS its conductance:
+    off gives `exp(-T/RC)` = 0.368, fully on gives `exp(-2)` = 0.135, and the
+    solution sits between -- non-degenerate AND junction-dependent.  The
+    `junction is loading` assertion below is what keeps it that way.
+    """
+    import warnings
+    from copy import copy
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+
+    def build(va):
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, vac=1.0, va=va, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e3)
+        c['Rd'] = R(2, 3, r=1e3)      # bounds the junction conductance
+        c['D'] = Diode(3, gnd)
+        c['C'] = C(2, gnd, c=1e-9)    # tau = R*C = T, so the map is not ~0
+        return c
+
+    def period_map(pss, x0r, times, hs, method):
+        """Forward-integrate the DISCRETE period map on the same grid."""
+        tr_saved = getattr(pss, '_tran', None)
+        pss._tran = pss._new_transient(pss._integrator_for(method))
+        try:
+            pss._want_dfdh = False
+            pss._want_lte = False
+            pss._begin_period(np.asarray(x0r, float))
+            x = copy(np.asarray(x0r, float))
+            for j, t in enumerate(times[1:]):
+                x = copy(pss.solve_timestep(x, t, hs[min(j, len(hs) - 1)]))
+            return np.asarray(x, float).ravel()
+        finally:
+            pss._tran = tr_saved
+
+    off = np.exp(-1.0)     # the diode-OFF multiplier, exp(-T/RC)
+    for method in ('radau', 'trbdf2'):
+        va = 15.0
+        pss = PSS(build(va), method=method, reltol=1e-13)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-6, timestep=1e-6 / 60, maxiterations=60)
+        assert pss.converged, '%s: PSS did not converge' % method
+        fp = pss.factored_period()
+        m = fp.width
+        iref = pss.irefnode
+        x0 = np.asarray(pss._period_state[1], float).ravel()
+        if x0.shape[0] == pss.cir.n:
+            x0 = np.concatenate((x0[:iref], x0[iref + 1:]))
+        times = np.asarray(fp.times, float)
+        hs = np.diff(times)
+
+        ## x0 really is the periodic point, so the map being differentiated is
+        ## the one the monodromy is about.
+        per = np.max(np.abs(period_map(pss, x0, times, hs, method) - x0))
+        assert per < 1e-12, '%s: x0 is not periodic (%.2e)' % (method, per)
+
+        Man = np.column_stack([np.asarray(fp.matvec(np.eye(m)[:, k]),
+                                          float).ravel() for k in range(m)])
+        d = 1e-6
+        Mfd = np.zeros((m, m))
+        for k in range(m):
+            e = np.zeros(m)
+            e[k] = d
+            Mfd[:, k] = (period_map(pss, x0 + e, times, hs, method)
+                         - period_map(pss, x0 - e, times, hs, method)) / (2 * d)
+
+        ## the junction must actually be in the answer, or this proves nothing
+        lam = np.max(np.abs(np.linalg.eigvals(Mfd)))
+        assert abs(lam - off) / off > 0.05, \
+            '%s: the junction is not loading the monodromy (|lambda|=%.5f vs ' \
+            'diode-off %.5f) -- the test would be vacuous' % (method, lam, off)
+
+        rel = np.linalg.norm(Man - Mfd) / np.linalg.norm(Mfd)
+        assert rel < 1e-7, \
+            '%s: analytic monodromy disagrees with the finite-difference ' \
+            'derivative of its own period map by %.3e (was 1.6e-3 with the ' \
+            'shared-_vlim defect; the FD noise floor here is ~1e-9)' \
+            % (method, rel)

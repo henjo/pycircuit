@@ -5628,10 +5628,38 @@ class PSS(Analysis):
         self._history_is_solved = True
         return tr
 
+    def _sync_limit_at(self, x_full):
+        """Put every limiting device's internal state AT ``x_full``.
+
+        ⚠ EVALUATING "AT A POINT" REQUIRES THE DEVICE LIMITING STATE TO BE AT
+        THAT POINT.  A junction device's `i`/`G` are read at its stored `_vlim`,
+        not at the vector handed in, and there is only ONE `_vlim` per device --
+        while the monodromy evaluates `C`/`G` at SEVERAL distinct points per step
+        (`x_n` and every stage).  Whatever the last step's solve happened to
+        leave behind (the LAST stage) was therefore used for all of them, so the
+        period map linearised the junction at the wrong voltage.
+
+        Measured against a finite-difference derivative of the discrete period
+        map (a reference this code cannot influence) on a diode loaded through a
+        series resistor: the analytic monodromy was off by a FIXED 1.65e-3
+        (Radau) / 9.1e-4 (TR-BDF2) relative -- flat across four decades of the
+        FD step, so a genuine error and not FD noise -- and the error grew with
+        how hard the junction was driven, vanishing when it was off.  With this
+        sync the same comparison lands at ~3e-9, the FD noise floor.
+
+        `limit(x, x)` sets `_vlim` to `x`'s own branch voltage at zero delta, so
+        it moves the state without perturbing the point.  Same defect and same
+        remedy as the coupled stage solve in `Transient._rk_step_coupled`.
+        """
+        tr = self._transient()
+        tr.cir.limit(x_full, x_full, tr.epar)
+
     def _C_at(self, x_reduced):
         """The reduced capacitance at a point, without taking a step."""
         tr = self._transient()
-        C = tr.cir.C(self._insert_refnode(x_reduced), tr.epar)
+        xf = self._insert_refnode(x_reduced)
+        self._sync_limit_at(xf)
+        C = tr.cir.C(xf, tr.epar)
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
 
@@ -5646,9 +5674,14 @@ class PSS(Analysis):
         stage coefficient.  Recovering a physical `G` from a single stored
         `Geq` would divide out only one of those coefficients and mislabel
         the other two.
+
+        ⚠ Like `_C_at`, this syncs the device limiting state to the point first
+        -- see `_sync_limit_at` for the measurement that forced it.
         """
         tr = self._transient()
-        G = tr.cir.G(self._insert_refnode(x_reduced), tr.epar)
+        xf = self._insert_refnode(x_reduced)
+        self._sync_limit_at(xf)
+        G = tr.cir.G(xf, tr.epar)
         (G,) = remove_row_col((G,), self.irefnode, self.toolkit)
         return G
 
