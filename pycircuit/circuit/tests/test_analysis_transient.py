@@ -1259,3 +1259,85 @@ def test_pcnr_coupled_radau_solves_the_collocation_exactly():
     assert abs(np.mean(v2)) > 1e-2, \
         'Radau PCNR lost the diode nonlinearity (DC offset %.2e)' \
         % abs(np.mean(v2))
+
+
+def test_the_continuation_rescue_reaches_the_full_coupled_path():
+    """The continuation rescue -- `_solve`'s last resort once the step has shrunk
+    to `minstep` -- must reach the FULL coupled stage solve, not just the paths
+    that go through `self._newton`.
+
+    ⚠ IT USED NOT TO, AND THE FAILURE THEN LIED ABOUT IT.  `_continuation_rescue`
+    is read inside `_newton`, which the coupled `sm` solve does not use, so
+    arming the flag on a fully-implicit method did nothing -- measured, with the
+    flag set over a 40-step run, TR-BDF2 wrapped the rescue solver 80 times and
+    Radau 0 -- while `_solve` still reported that the "gmin/gshunt/
+    pseudo-transient continuation could not rescue the point".
+
+    ⚠ AND `self._newton` COULD NOT SIMPLY BE REUSED: it is MNA-SIZED (it reduces
+    an `n`-vector at `irefnode`, limits a full `n`-vector, and carries
+    per-MNA-row tolerances and row names), so a `3m` block system cannot be
+    handed to it; and its device-limiting route would reintroduce the
+    shared-`_vlim` hazard across simultaneous stages.  The coupled path
+    therefore carries its own gshunt ladder, with the shunt entering as a
+    CONDUCTANCE IN THE DEVICE CURRENT (`i + g x`, `G + g I`) rather than as
+    `F + g x` on a residual that is in CHARGE units.
+
+    The exercise below forces a failure with a tight iteration budget rather
+    than waiting for a natural one: on this 6-diode slam the coupled Newton
+    cannot converge in 3 iterations, so the step fails outright without the
+    rescue and converges with it.  (No circuit has yet been found that defeats
+    the coupled Newton at a normal budget -- 16 parallel diodes behind 10 mOhm
+    under a 500 V slam at 10 GHz, down to two points per period, all converge.)
+    """
+    from pycircuit.circuit.integrator import (RadauIIA3Integrator,
+                                              TRBDF2Integrator)
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def slam():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=400.0, freq=5e9)
+        c['R'] = R(1, 2, r=1e-2)
+        for k in range(6):
+            c['D%d' % k] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-16)
+        return c
+
+    def run(rescue, maxiter):
+        c = slam()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=RadauIIA3Integrator(), reltol=1e-9,
+                       maxiter=maxiter)
+        tr._continuation_rescue = rescue
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tr.solve(tend=4e-10, timestep=1e-10, x0=np.zeros(c.n),
+                         fixed_timestep=True)
+            return True, tr.statistics.gmin_rescues
+        except (NoConvergenceError, RuntimeError):
+            return False, tr.statistics.gmin_rescues
+
+    ok_cold, _ = run(False, 3)
+    assert not ok_cold, \
+        'the coupled Newton now converges at 3 iterations, so this case no ' \
+        'longer exercises the rescue -- tighten it or pick a harder circuit'
+    ok_warm, rescues = run(True, 3)
+    assert ok_warm and rescues > 0, \
+        'the armed continuation rescue did not save the coupled step ' \
+        '(solved=%s, gshunt rescues=%d)' % (ok_warm, rescues)
+
+    ## a budget the plain Newton can meet must NOT invoke the ladder at all
+    ok, rescues = run(True, 8)
+    assert ok and rescues == 0, \
+        'the rescue fired on a step the plain Newton can solve (%d rescues)' \
+        % rescues
+
+    ## and the diagnostic predicate must track which paths really carry it
+    for integ, honours in ((TRBDF2Integrator, True),
+                           (RadauIIA3Integrator, True)):
+        tr = Transient(slam(), toolkit=circuit.numeric, integrator=integ())
+        tr.base_integrator = integ()
+        assert tr._honours_continuation_rescue() is honours

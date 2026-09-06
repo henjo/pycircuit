@@ -695,6 +695,43 @@ class Transient(Analysis):
     ## import it from there instead.
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
+    def _honours_continuation_rescue(self):
+        """Whether THIS step path actually applies `_continuation_rescue`.
+
+        `_solve` arms the flag once the step has shrunk to `minstep`, as the
+        last resort before it gives up.  Three paths honour it and one does not:
+
+        * the LMM companions and the DIRK/ESDIRK stages solve through
+          :meth:`_newton`, which reads the flag and wraps the rescue ladder
+          around the circuit Newton;
+        * the FULL coupled stage solve carries its OWN gshunt ladder (see
+          `_rk_step_coupled`), because `_newton` is MNA-SIZED -- it reduces an
+          `n`-vector at `irefnode`, limits a full `n`-vector, and carries
+          per-MNA-row tolerances and row names -- so a `3m` block system cannot
+          be handed to it;
+        * ⚠ the PCNR variant of the coupled solve does NOT: its Newton is the
+          junction-continuation one and has no shunt rung, so arming the flag
+          with `pcnr=True` on a fully-implicit method changes nothing.
+
+        ⚠ MEASURED, not read off the code: with the flag set over a 40-step run
+        TR-BDF2 wraps the rescue solver 80 times (two implicit stages a step)
+        and the coupled path 0 -- it uses `_adaptive_conductance_ladder`
+        directly rather than `_rescue_solver`.  The ladder itself is exercised:
+        on a 6-diode slam that the coupled Newton cannot solve in 3 iterations,
+        the step fails outright without the rescue and converges with it
+        (2 gshunt rescues).
+
+        Used only to keep the failure DIAGNOSTIC in `_solve` honest -- it used
+        to report that a continuation "could not rescue the point" on a path
+        where none had been attempted.
+        """
+        integ = getattr(self, 'base_integrator', None)
+        if integ is None:
+            return True
+        if integ.is_stage_method() and integ.is_fully_implicit():
+            return not self._rk_use_pcnr()
+        return True
+
     def _newton(self, func, x0):
         abstol = self._newton_abstol_vector()
         xtol = self._newton_xtol_vector()
@@ -2679,77 +2716,120 @@ class Transient(Analysis):
         ## Stage values, initialised at the previous solution.  Solved in the
         ## reference-removed space of dimension m = n-1 per stage; the coupled
         ## system is 3m.  Newton to the transient tolerances.
-        Y = [np.array(xn, dtype=float) for _ in range(3)]
         m = qn_r.shape[0]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
-        converged = False
-        for _ in range(maxit):
-            qi, Ki, Ci, Gi = [], [], [], []
-            for j in range(3):
-                ## ⚠ SYNC the device limiting state to THIS stage before reading
-                ## its i/q/C/G.  The three stages are solved SIMULTANEOUSLY but
-                ## share ONE device `_vlim`, and the step-limit call below leaves
-                ## it at the LAST stage.  Without this re-sync, `cir.i(Y[j])` /
-                ## `cir.G(Y[j])` for j<2 linearise the junction at another
-                ## stage's voltage (`Diode.i` reads `_vlim`), so the coupled
-                ## Newton converges cleanly to the root of a WRONG residual --
-                ## node error 8.5e-5, true stage residual 3e-16 vs 1e-28, and it
-                ## does NOT tighten with `reltol` because the residual itself is
-                ## off.  `limit(Y[j],Y[j])` restores stage j's `_vlim` at zero
-                ## delta (the same value its own step-limit left), so each stage
-                ## is evaluated at its own voltage.  The step-limit (overshoot
-                ## protection) below is untouched.  The sequential DIRK path
-                ## never hits this: each stage owns `_vlim` for the duration of
-                ## its `self._newton`.  With the fix the coupled Newton reaches
-                ## the exact collocation root (== PCNR / a limiting-free Newton)
-                ## in ~2 iterations instead of 5.
-                self.cir.limit(Y[j], Y[j], epar)
-                qi.append(arr(self.cir.q(Y[j], epar)))
-                Ki.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
-                Ci.append(arr(self.cir.C(Y[j], epar)))
-                Gi.append(arr(self.cir.G(Y[j], epar)))
-            ## residual blocks (reduced) and dense 3m x 3m Jacobian
-            R = np.empty(3 * m)
-            Jbig = np.zeros((3 * m, 3 * m))
-            for i in range(3):
-                Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
-                R[i * m:(i + 1) * m] = red(Fi)
+
+        def _stage_newton(seed, gshunt=0.0):
+            """The coupled `3m` Newton, optionally with a node-to-ground shunt.
+
+            ⚠ THE SHUNT ENTERS AS A CONDUCTANCE IN THE DEVICE CURRENT, not as
+            `F + g x` on the residual.  This residual is in CHARGE units
+            (`q - q_n - h sum A K`) and its Jacobian is `C + h A G`, so adding a
+            conductance straight to either is dimensionally wrong -- `g` has to
+            arrive where `G` does.  Adding it to `i` and to `G` is also what
+            makes the deformed problem a real circuit (every node shunted to
+            ground by `g`), so the ladder tracks a physical branch.
+            """
+            Y = [np.array(y, dtype=float) for y in seed]
+            converged = False
+            for _ in range(maxit):
+                qi, Ki, Ci, Gi = [], [], [], []
                 for j in range(3):
-                    if i == j:
-                        blk = Ci[i] + h * Amat[i, j] * Gi[j]
-                    else:
-                        blk = h * Amat[i, j] * Gi[j]
-                    (blk_r,) = remove_row_col((blk,), iref, tk)
-                    Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = np.asarray(blk_r)
-            dY = np.linalg.solve(Jbig, -R)
-            scale = 0.0
-            for i in range(3):
-                di = dY[i * m:(i + 1) * m]
-                ## ⚠ LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION.  Without
-                ## it the coupled Newton on a diode overshoots the exponential
-                ## and settles on a spurious near-linear solution (the diode
-                ## never clamps, so a mixer produces a pure sinusoid with no
-                ## harmonics -- measured).  TR-BDF2 gets this for free by
-                ## running each stage through `self._newton` (which limits);
-                ## this hand-rolled coupled solve must limit each stage itself,
-                ## against the stage's previous iterate, exactly as
-                ## `cir.limit` is applied in the single-stage paths.
-                Y_prev = Y[i]
-                Y_trial = Y_prev + tk.insert(di, iref, 0.0)
-                Y_new = self.cir.limit(Y_trial, Y_prev, epar)
-                Y[i] = Y_new
-                step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
-                scale = max(scale, np.max(np.abs(step_i)))
-            ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
-            if scale <= reltol * ynorm + abstol:
-                converged = True
-                break
-        if not converged:
-            from pycircuit.circuit.nrsolver import NoConvergenceError
-            raise NoConvergenceError(
-                'Radau IIA(3) coupled stage Newton did not converge')
+                    ## SYNC the device limiting state to THIS stage before
+                    ## reading its i/q/C/G.  The three stages are solved
+                    ## SIMULTANEOUSLY but share ONE device `_vlim`, and the
+                    ## step-limit below leaves it at the LAST stage.  Without
+                    ## this re-sync, `cir.i(Y[j])`/`cir.G(Y[j])` for j<2
+                    ## linearise the junction at another stage's voltage
+                    ## (`Diode.i` reads `_vlim`), so the coupled Newton
+                    ## converges cleanly to the root of a WRONG residual -- node
+                    ## error 8.5e-5, true stage residual 3e-16 vs 1e-28, not
+                    ## tightening with `reltol` because the residual is off.
+                    ## `limit(Y[j],Y[j])` restores stage j's `_vlim` at zero
+                    ## delta.  The sequential DIRK path never hits this: each
+                    ## stage owns `_vlim` for its own `self._newton`.
+                    self.cir.limit(Y[j], Y[j], epar)
+                    qi.append(arr(self.cir.q(Y[j], epar)))
+                    i_j = arr(self.cir.i(Y[j], epar))
+                    G_j = arr(self.cir.G(Y[j], epar))
+                    if gshunt:
+                        i_j = i_j + gshunt * np.asarray(Y[j], dtype=float)
+                        G_j = G_j + gshunt * np.eye(np.asarray(G_j).shape[0])
+                    Ki.append(-(i_j + src(tstage[j])))
+                    Ci.append(arr(self.cir.C(Y[j], epar)))
+                    Gi.append(G_j)
+                ## residual blocks (reduced) and dense 3m x 3m Jacobian
+                R = np.empty(3 * m)
+                Jbig = np.zeros((3 * m, 3 * m))
+                for i in range(3):
+                    Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j]
+                                              for j in range(3))
+                    R[i * m:(i + 1) * m] = red(Fi)
+                    for j in range(3):
+                        if i == j:
+                            blk = Ci[i] + h * Amat[i, j] * Gi[j]
+                        else:
+                            blk = h * Amat[i, j] * Gi[j]
+                        (blk_r,) = remove_row_col((blk,), iref, tk)
+                        Jbig[i * m:(i + 1) * m,
+                             j * m:(j + 1) * m] = np.asarray(blk_r)
+                dY = np.linalg.solve(Jbig, -R)
+                scale = 0.0
+                for i in range(3):
+                    di = dY[i * m:(i + 1) * m]
+                    ## LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION.
+                    ## Without it the coupled Newton on a diode overshoots the
+                    ## exponential and settles on a spurious near-linear
+                    ## solution (a mixer produces a pure sinusoid with no
+                    ## harmonics -- measured).
+                    Y_prev = Y[i]
+                    Y_trial = Y_prev + tk.insert(di, iref, 0.0)
+                    Y_new = self.cir.limit(Y_trial, Y_prev, epar)
+                    Y[i] = Y_new
+                    step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
+                    scale = max(scale, np.max(np.abs(step_i)))
+                ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
+                if scale <= reltol * ynorm + abstol:
+                    converged = True
+                    break
+            if not converged:
+                from pycircuit.circuit.nrsolver import NoConvergenceError
+                raise NoConvergenceError(
+                    'Radau IIA(3) coupled stage Newton did not converge'
+                    + ('' if not gshunt else ' at gshunt=%g S' % gshunt))
+            return Y
+
+        from pycircuit.circuit.nrsolver import (NoConvergenceError,
+                                                _adaptive_conductance_ladder)
+        seed0 = [np.array(xn, dtype=float) for _ in range(3)]
+        try:
+            Y = _stage_newton(seed0)
+        except NoConvergenceError:
+            ## ⚠ THE CONTINUATION RESCUE REACHES THE COUPLED PATH TOO.  It is
+            ## armed by `_solve` once the step has shrunk to `minstep`, and that
+            ## arming used to do NOTHING here -- `_continuation_rescue` is read
+            ## inside `self._newton`, which the coupled `sm` solve does not go
+            ## through (measured: with the flag set over a 40-step run TR-BDF2
+            ## wrapped the rescue solver 80 times and Radau 0).  So the last
+            ## resort before `_solve` gives up was silently absent on every
+            ## fully-implicit method, and the failure then claimed a ladder had
+            ## been tried when none had.
+            ##
+            ## Only the gshunt rung is offered: it is the one deformation that
+            ## is structure-free (every node to ground through `g`, entering
+            ## exactly where `G` does), so it needs no MNA row map and no
+            ## per-stage junction bookkeeping.  Rungs march in exponent space
+            ## and ONLY A PURE SOLVE IS RETURNED -- see
+            ## `_adaptive_conductance_ladder`.
+            if not getattr(self, '_continuation_rescue', False):
+                raise
+            Y = _adaptive_conductance_ladder(
+                lambda seed, g: _stage_newton(seed, g),
+                lambda seed: _stage_newton(seed, 0.0),
+                seed0, label='coupled-stage gshunt stepping')
+            self.statistics.gmin_rescues += 1
 
         Y1, Y2, Y3 = Y
         xnp1 = Y3  ## stiff accuracy: x_{n+1} == last stage
@@ -3550,12 +3630,32 @@ class Transient(Analysis):
                             time.perf_counter() - _t0
                         self.statistics.gmin_rescues += 1
                     except NoConvergenceError as e:
+                        ## ⚠ SAY WHICH OF THE TWO THINGS HAPPENED.  The rescue
+                        ## flag is read by `self._newton`, so only the paths
+                        ## that solve through it -- the LMM companions and the
+                        ## DIRK/ESDIRK stages -- actually apply the ladder.  The
+                        ## FULL coupled stage solve is a hand-rolled Newton on
+                        ## the `sm` system and never reads the flag, so on a
+                        ## fully-implicit method NO continuation was attempted
+                        ## and reporting that one "could not rescue the point"
+                        ## sends the reader to debug a ladder that never ran.
+                        if self._honours_continuation_rescue():
+                            _why = ('and the gmin/gshunt/pseudo-transient '
+                                    'continuation could not rescue the point')
+                        else:
+                            _why = ('and NO continuation was attempted: the '
+                                    'continuation rescue is only wired into '
+                                    'the solves that go through the circuit '
+                                    'Newton, which the FULL coupled stage '
+                                    'solve of a fully-implicit method (%s) '
+                                    'does not. Try a DIRK/ESDIRK method '
+                                    '(trbdf2, esdirk43) or an LMM (gear, trap) '
+                                    'if this point needs the ladder'
+                                    % type(self.base_integrator).__name__)
                         raise RuntimeError(
                             'Transient solver failed to converge: timestep '
-                            'shrank below %gs at t=%s, and the gmin/gshunt/'
-                            'pseudo-transient continuation could not rescue '
-                            'the point: %s'
-                            % (self.par.minstep, t, e))
+                            'shrank below %gs at t=%s, %s: %s'
+                            % (self.par.minstep, t, _why, e))
                     finally:
                         self._continuation_rescue = False
                 else:

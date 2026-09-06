@@ -409,6 +409,40 @@ measurable (269.8 s vs 274.6 s).
   stated caveat), so the capacitance cannot join. Neutering that sync alone leaves the FD test
   passing — this diode's charge does not read `_vlim` — so it is kept as correct-in-principle
   insurance for a device whose charge does, and should be treated as unverified until one is used.
+### The continuation rescue now reaches the FULL coupled path
+
+`_solve` arms `_continuation_rescue` once the step has shrunk to `minstep`, as the last resort
+before it gives up. That arming used to do **nothing** on a fully-implicit method: the flag is read
+inside `Transient._newton`, which the coupled `sm` solve does not go through. Measured with the flag
+set over a 40-step run — **TR-BDF2 wrapped the rescue solver 80 times, Radau 0** — and `_solve` then
+reported that the "gmin/gshunt/pseudo-transient continuation could not rescue the point" for a
+ladder that had never run.
+
+⚠ **`self._newton` could NOT simply be reused, and that refuted the original plan.** It is
+MNA-SIZED: it reduces an `n`-vector at `irefnode`, its limiter calls `cir.limit` on a full
+`n`-vector, and `abstol`/`xtol`/`row_names` are per-MNA-row — a `3m` block system cannot be handed
+to it. Its device-limiting route would also reintroduce the shared-`_vlim` hazard across
+simultaneous stages fixed earlier in this document.
+
+So the coupled path carries its **own** gshunt ladder (`_stage_newton(seed, gshunt)` +
+`_adaptive_conductance_ladder`). Only the gshunt rung is offered: it is the one deformation that is
+structure-free — every node to ground through `g` — so it needs no MNA row map and no per-stage
+junction bookkeeping. ⚠ **The shunt enters as a CONDUCTANCE IN THE DEVICE CURRENT** (`i + g x`,
+`G + g I`), not as `F + g x` on the residual: this residual is in CHARGE units with Jacobian
+`C + h A G`, so `g` has to arrive where `G` does or it is dimensionally wrong.
+
+**Exercised, not merely wired.** On a 6-diode 400 V slam at 5 GHz the coupled Newton cannot converge
+in 3 iterations: the step fails outright without the rescue and converges **with 2 gshunt rescues**
+with it, while an 8-iteration budget fires the ladder 0 times. Test:
+`test_the_continuation_rescue_reaches_the_full_coupled_path`.
+
+⚠ **Still open:** the PCNR variant of the coupled solve has no shunt rung, so arming the flag with
+`pcnr=True` on a fully-implicit method still changes nothing. `_honours_continuation_rescue`
+reports that honestly and the `_solve` diagnostic follows it. And no circuit has yet been found that
+defeats the coupled Newton at a NORMAL iteration budget — 16 parallel diodes behind 10 mΩ under a
+500 V slam at 10 GHz, down to two points per period, all converge — so the ladder is insurance whose
+natural trigger is still unobserved.
+
 - **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
   (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
 - **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK
