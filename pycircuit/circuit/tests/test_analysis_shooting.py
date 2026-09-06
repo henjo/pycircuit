@@ -12556,7 +12556,7 @@ def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
 
     Same source-free RC network as the TR-BDF2 pencil test: the period map is
     the homogeneous flow `exp(A T)` with `A = -C^-1 G` (reduced).
-    `PSS.factored_period_radau` builds the coupled Radau monodromy as a
+    `PSS.factored_period_full` builds the coupled Radau monodromy as a
     factored replay (one `3m x 3m` factor per step, reading the third block by
     stiff accuracy); densifying it and comparing eigenvalues to `exp(mu T)`
     checks BOTH that the map is the right one and that the error falls as
@@ -12585,8 +12585,8 @@ def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
 
     errs = {}
     for npts in (25, 50, 100):
-        fp = pss.factored_period_radau(x0, T, npts)
-        assert fp.kind == 'radau'
+        fp = pss.factored_period_full(x0, T, npts, method='radau')
+        assert fp.kind == 'full'
         assert fp.width == m
         lam = np.sort(np.linalg.eigvals(dense_M(fp)).real)
         errs[npts] = float(np.max(np.abs(lam - exact)))
@@ -12599,7 +12599,7 @@ def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
     assert errs[25] < 1e-7, errs
 
     ## the adjoint is the exact transpose of the coupled forward map
-    fp = pss.factored_period_radau(x0, T, 50)
+    fp = pss.factored_period_full(x0, T, 50, method='radau')
     Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                           for e in np.eye(m)])
     Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -12732,7 +12732,7 @@ def test_driven_pss_under_radau_matches_ac_and_gives_fifth_order_monodromy():
     assert abs(abs(fund) - abs(ac2)) < 1e-3 * abs(ac2), (fund, ac2)
 
     fp = pss.factored_period()
-    assert fp.kind == 'radau'
+    assert fp.kind == 'full'
     assert abs(pss.spectral_radius - np.exp(-period / tau)) < 1e-6
 
 
@@ -12779,7 +12779,7 @@ def test_autonomous_pss_under_radau_finds_its_own_period():
     assert abs(pss.period - ref.period) < 1e-3 * ref.period, \
         (pss.period, ref.period)
     assert abs(pss.spectral_radius - 1.0) < 1e-3, pss.spectral_radius
-    assert pss.factored_period().kind == 'radau'
+    assert pss.factored_period().kind == 'full'
 
 
 def test_radau_monodromy_transpose_matches_the_dense_transpose():
@@ -12792,7 +12792,7 @@ def test_radau_monodromy_transpose_matches_the_dense_transpose():
     cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
     pss = PSS(cir, method='radau')
     m = cir.n - 1
-    fp = pss.factored_period_radau(np.zeros(m), 5e-4, 50)
+    fp = pss.factored_period_full(np.zeros(m), 5e-4, 50)
     M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                          for e in np.eye(m)])
     MT = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)

@@ -195,8 +195,8 @@ class FactoredPeriod(object):
             return self._pss._monodromy_matvec(self.opening, self.steps, v)
         if self.kind == 'trbdf2':
             return self._pss._monodromy_matvec_trbdf2(self.steps, v)
-        if self.kind == 'radau':
-            return self._pss._monodromy_matvec_radau(self.steps, v)
+        if self.kind == 'full':
+            return self._pss._monodromy_matvec_full(self.steps, v)
         return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
 
     def matvec_transposed(self, v, collect=False, inject=None):
@@ -224,8 +224,8 @@ class FactoredPeriod(object):
         if self.kind == 'trbdf2':
             return self._pss._monodromy_matvec_transposed_trbdf2(
                 self.steps, v, collect=collect, inject=inject)
-        if self.kind == 'radau':
-            return self._pss._monodromy_matvec_transposed_radau(
+        if self.kind == 'full':
+            return self._pss._monodromy_matvec_transposed_full(
                 self.steps, v, collect=collect, inject=inject)
         return self._pss._monodromy_matvec_transposed_plain(
             self.opening, self.steps, v, collect=collect, inject=inject)
@@ -2931,7 +2931,7 @@ class PSS(Analysis):
             return w, ts, states
         return w
 
-    def _traverse_factored_radau(self, x0_in, times, hs):
+    def _traverse_factored_full(self, x0_in, times, hs):
         """One period under Radau IIA(3), kept factored -- the `m x m`
         monodromy of a SELF-STARTING fully-implicit collocation method.
 
@@ -2960,16 +2960,17 @@ class PSS(Analysis):
         efficiency follow-up documented on `RadauIIA3Integrator`.
         """
         import scipy.linalg as sla
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        from pycircuit.circuit.integrator import RungeKuttaIntegrator
         tr = self._transient()
         self._want_dfdh = False
         self._want_lte = False
         self._begin_period(x0_in)
         integ = tr.base_integrator
-        if not isinstance(integ, RadauIIA3Integrator):
-            raise ValueError('_traverse_factored_radau needs a Radau IIA(3) '
+        if not isinstance(integ, RungeKuttaIntegrator):
+            raise ValueError('_traverse_factored_full needs a Runge-Kutta stage '
                              'inner integrator, got %r' % (integ,))
         Amat = np.array(integ.A, dtype=float)
+        s = Amat.shape[0]
         iref = self.irefnode
         x = copy(x0_in)
         x_prev = copy(x0_in)
@@ -2986,9 +2987,9 @@ class PSS(Analysis):
             m = Cn.shape[0]
             Cs = [np.asarray(self._C_at(y)) for y in Ys]
             Gs = [np.asarray(self._G_at(y)) for y in Ys]
-            Jb = np.zeros((3 * m, 3 * m))
-            for i in range(3):
-                for jj in range(3):
+            Jb = np.zeros((s * m, s * m))
+            for i in range(s):
+                for jj in range(s):
                     blk = h * Amat[i, jj] * Gs[jj]
                     if i == jj:
                         blk = Cs[i] + blk
@@ -2998,7 +2999,7 @@ class PSS(Analysis):
         self._want_dfdh = False
         return steps, x, x_prev
 
-    def _monodromy_matvec_radau(self, steps, v):
+    def _monodromy_matvec_full(self, steps, v):
         """`M v` for the Radau IIA(3) map, replaying the stored coupled
         factors.  Each step: stack the entering direction into the coupled
         RHS ``[Cn v; Cn v; Cn v]``, solve the `3m x 3m` system, and carry the
@@ -3009,16 +3010,17 @@ class PSS(Analysis):
         import scipy.linalg as sla
         v = np.asarray(v)
         if np.iscomplexobj(v):
-            return (self._monodromy_matvec_radau(steps, v.real)
-                    + 1j * self._monodromy_matvec_radau(steps, v.imag))
+            return (self._monodromy_matvec_full(steps, v.real)
+                    + 1j * self._monodromy_matvec_full(steps, v.imag))
         w = v.astype(float)
         for lu, Cn, m in steps:
+            s = lu[0].shape[0] // m
             cw = Cn @ w
-            Z = sla.lu_solve(lu, np.concatenate([cw, cw, cw]))
-            w = Z[2 * m:3 * m]
+            Z = sla.lu_solve(lu, np.concatenate([cw] * s))
+            w = Z[(s - 1) * m:s * m]
         return w
 
-    def _monodromy_matvec_transposed_radau(self, steps, v, collect=False,
+    def _monodromy_matvec_transposed_full(self, steps, v, collect=False,
                                            inject=None):
         """`M^T v` for the Radau IIA(3) map -- the adjoint of the coupled
         step, replayed in reverse step order.
@@ -3043,9 +3045,9 @@ class PSS(Analysis):
         if np.iscomplexobj(v):
             ii = (None, None) if inject is None else (
                 np.real(inject), np.imag(inject))
-            re = self._monodromy_matvec_transposed_radau(
+            re = self._monodromy_matvec_transposed_full(
                 steps, v.real, collect, ii[0])
-            im = self._monodromy_matvec_transposed_radau(
+            im = self._monodromy_matvec_transposed_full(
                 steps, v.imag, collect, ii[1])
             if collect:
                 return (re[0] + 1j * im[0],
@@ -3060,9 +3062,10 @@ class PSS(Analysis):
         states = []
         for j in range(len(steps) - 1, -1, -1):
             lu, Cn, m = steps[j]
-            b3 = np.concatenate([np.zeros(m), np.zeros(m), w])
+            s = lu[0].shape[0] // m
+            b3 = np.concatenate([np.zeros(m)] * (s - 1) + [w])
             p = sla.lu_solve(lu, b3, trans=1)
-            w = Cn.T @ (p[0:m] + p[m:2 * m] + p[2 * m:3 * m])
+            w = Cn.T @ sum(p[k * m:(k + 1) * m] for k in range(s))
             if inject is not None:
                 w = w + inject[j]
             if collect:
@@ -3162,7 +3165,7 @@ class PSS(Analysis):
             return x0, x, P, Pt
         return x0, x, P, None
 
-    def _traverse_radau(self, x_in, T, times, hs, want_dT=False):
+    def _traverse_full(self, x_in, T, times, hs, want_dT=False):
         """One period under Radau IIA(3) with the DENSE sensitivities -- the
         shooting Newton's monodromy for the fully-implicit collocation method.
 
@@ -3196,6 +3199,7 @@ class PSS(Analysis):
         self._begin_period(x_in)
         integ = self._transient().base_integrator
         Amat = np.array(integ.A, dtype=float)
+        s = Amat.shape[0]
         iref = self.irefnode
         Tf = float(T)
         x = copy(x_in)
@@ -3211,26 +3215,26 @@ class PSS(Analysis):
             Cn = np.asarray(self._C_at(xn))
             Cs = [np.asarray(self._C_at(y)) for y in Ys]
             Gs = [np.asarray(self._G_at(y)) for y in Ys]
-            Jb = np.zeros((3 * m, 3 * m))
-            for i in range(3):
-                for jj in range(3):
+            Jb = np.zeros((s * m, s * m))
+            for i in range(s):
+                for jj in range(s):
                     blk = h * Amat[i, jj] * Gs[jj]
                     if i == jj:
                         blk = Cs[i] + blk
                     Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
             lu = sla.lu_factor(Jb)
             CnP = Cn @ P
-            Z = sla.lu_solve(lu, np.vstack([CnP, CnP, CnP]))
-            P = Z[2 * m:3 * m, :]
+            Z = sla.lu_solve(lu, np.vstack([CnP] * s))
+            P = Z[(s - 1) * m:s * m, :]
             if want_dT:
                 Ks = [-np.asarray(self._i_at(y)) for y in Ys]
-                rhs = np.zeros(3 * m)
+                rhs = np.zeros(s * m)
                 CnPt = Cn @ Pt
-                for i in range(3):
-                    Si = sum(Amat[i, jj] * Ks[jj] for jj in range(3))
+                for i in range(s):
+                    Si = sum(Amat[i, jj] * Ks[jj] for jj in range(s))
                     rhs[i * m:(i + 1) * m] = CnPt + (h / Tf) * Si
                 Zt = sla.lu_solve(lu, rhs)
-                Pt = Zt[2 * m:3 * m]
+                Pt = Zt[(s - 1) * m:s * m]
         self._want_dfdh = False
         self._monodromy = P
         if want_dT:
@@ -4200,7 +4204,7 @@ class PSS(Analysis):
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
         lam2 = 0.0
         kk = int(min(n, self.PPV_RITZ_BASIS))
-        if fp.kind in ('trbdf2', 'radau'):
+        if fp.kind in ('trbdf2', 'full'):
             ## ⚠ THE STAGE MAP IS DENSE AND WIDTH `m`, so its exact spectrum
             ## is cheap -- and the Arnoldi below resolves it BADLY here.
             ## `I - M` has `M`'s annihilated modes clustered at eigenvalue 1
@@ -4377,8 +4381,8 @@ class PSS(Analysis):
         """
         if fp.kind == 'trbdf2':
             return self._forced_replay_transposed_trbdf2(fp, freq, xa)
-        if fp.kind == 'radau':
-            return self._forced_replay_transposed_radau(fp, freq, xa)
+        if fp.kind == 'full':
+            return self._forced_replay_transposed_full(fp, freq, xa)
         _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
@@ -4431,10 +4435,10 @@ class PSS(Analysis):
             w = A1 * (B1.T @ p) + A0 * (Cn.T @ t3)
         return acc
 
-    def _forced_replay_transposed_radau(self, fp, freq, xa):
+    def _forced_replay_transposed_full(self, fp, freq, xa):
         """`W^T xa` for Radau IIA(3) -- the COUPLED three-stage adjoint (no
         output injection), the source-coupling sibling of
-        `_monodromy_matvec_transposed_radau`.
+        `_monodromy_matvec_transposed_full`.
 
         A source at frequency `freq` enters stage `k` (abscissa
         ``t_{j,k} = t_j + c_k h``) through ``K_k = -(i + u)``, so the forward
@@ -4452,12 +4456,12 @@ class PSS(Analysis):
         are read (a DIRK's ``A1 p`` feed is the two-stage special case of
         this).  Dual-consistent with the forward replay and matched to
         forward driven solves; the injected sibling is
-        `_sideband_forced_radau`.
+        `_sideband_forced_full`.
         """
         import scipy.linalg as sla
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
-        Amat = np.array(RadauIIA3Integrator.A, dtype=float)
-        cvec = np.array(RadauIIA3Integrator.C, dtype=float)
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        Amat, _Bw, cvec = integ.butcher()
+        s = Amat.shape[0]
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         w = np.asarray(xa, dtype=complex).ravel().copy()
@@ -4471,14 +4475,14 @@ class PSS(Analysis):
         for j in range(len(fp.steps) - 1, -1, -1):
             lu, Cn, mm = fp.steps[j]
             ts = tms[j]; te = tms[j + 1]; h = te - ts
-            b3 = np.concatenate([np.zeros(m), np.zeros(m), w])
+            b3 = np.concatenate([np.zeros(m)] * (s - 1) + [w])
             p = csolveT(lu, b3)
-            p1, p2, p3 = p[0:m], p[m:2 * m], p[2 * m:3 * m]
-            for k in range(3):
+            pb = [p[i * m:(i + 1) * m] for i in range(s)]
+            for k in range(s):
                 tk = ts + cvec[k] * h
-                coup = Amat[0, k] * p1 + Amat[1, k] * p2 + Amat[2, k] * p3
+                coup = sum(Amat[i, k] * pb[i] for i in range(s))
                 acc = acc - h * np.exp(jw * tk) * coup
-            w = Cn.T @ (p1 + p2 + p3)
+            w = Cn.T @ sum(pb)
         return acc
 
     def _sideband_forced_trbdf2(self, fp, freq, l, d):
@@ -4525,7 +4529,7 @@ class PSS(Analysis):
                                       + 2.0 * np.pi * float(freq)) * ts) / N * d
         return forced, lam
 
-    def _sideband_forced_radau(self, fp, freq, l, d):
+    def _sideband_forced_full(self, fp, freq, l, d):
         """The forced (source-injected) part of the Radau IIA(3) sideband row
         for sideband `l`, and the final costate `g` for the closure.
 
@@ -4533,7 +4537,7 @@ class PSS(Analysis):
         pass injects the OUTPUT functional `d` (weighted by
         `exp(-j(l w0 + w) t_n)/N`) at each step and reads the SOURCE coupling
         through ALL THREE stages at every step -- the coupled fold
-        (`_forced_replay_transposed_radau` with the injection added).  ⚠ The
+        (`_forced_replay_transposed_full` with the injection added).  ⚠ The
         injection is added AFTER the step's costate update, so the output at
         step `n` couples to the source at steps `< n` (causality); the
         accepted trajectory state at `t_n` IS the entering state `x_n` of step
@@ -4543,9 +4547,9 @@ class PSS(Analysis):
         shortcut (`A (x) B`).  Returns `(forced, g)`.
         """
         import scipy.linalg as sla
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
-        Amat = np.array(RadauIIA3Integrator.A, dtype=float)
-        cvec = np.array(RadauIIA3Integrator.C, dtype=float)
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        Amat, _Bw, cvec = integ.butcher()
+        s = Amat.shape[0]
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         T = float(fp.T)
@@ -4563,13 +4567,13 @@ class PSS(Analysis):
         for j in range(N - 1, -1, -1):
             lu, Cn, mm = fp.steps[j]
             ts = tms[j]; te = tms[j + 1]; h = te - ts
-            p = csolveT(lu, np.concatenate([np.zeros(m), np.zeros(m), lam]))
-            p1, p2, p3 = p[0:m], p[m:2 * m], p[2 * m:3 * m]
-            for k in range(3):
+            p = csolveT(lu, np.concatenate([np.zeros(m)] * (s - 1) + [lam]))
+            pb = [p[i * m:(i + 1) * m] for i in range(s)]
+            for k in range(s):
                 tk = ts + cvec[k] * h
-                coup = Amat[0, k] * p1 + Amat[1, k] * p2 + Amat[2, k] * p3
+                coup = sum(Amat[i, k] * pb[i] for i in range(s))
                 forced = forced - h * np.exp(jw * tk) * coup
-            lam = Cn.T @ (p1 + p2 + p3)
+            lam = Cn.T @ sum(pb)
             lam = lam + np.exp(-1j * (float(l) * w0
                                       + 2.0 * np.pi * float(freq)) * ts) / N * d
         return forced, lam
@@ -4804,18 +4808,21 @@ class PSS(Analysis):
             return self._factored_period_cache
 
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
-        if getattr(self.par, 'method', None) == 'trbdf2':
-            ## The DIRK has its own factored map (no opener, no pair); route
-            ## to it so every small-signal surface that reads
-            ## `factored_period()` gets the second-order monodromy.
-            fp = self.factored_period_trbdf2(x0, T, len(times) - 1)
-            self._factored_period_cache = fp
-            return fp
-        if getattr(self.par, 'method', None) == 'radau':
-            ## The fully-implicit Radau has its own coupled factored map (no
-            ## opener, no pair, one 3m x 3m factor per step); route to it so
-            ## every small-signal surface gets the order-5 monodromy.
-            fp = self.factored_period_radau(x0, T, len(times) - 1)
+        _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        if _integ.is_stage_method():
+            ## A self-starting stage method has its own factored map (no opener,
+            ## no pair).  Route BY STRUCTURE: a fully-implicit tableau to the
+            ## coupled builder, a lower-triangular one (DIRK/ESDIRK) to the
+            ## sequential builder -- the coupled block is singular on a DAE for
+            ## an explicit first stage, so the two cannot share a path.  A new
+            ## method of either family reaches the right builder with no edit
+            ## here.
+            if _integ.is_fully_implicit():
+                fp = self.factored_period_full(x0, T, len(times) - 1)
+            else:
+                ## DIRK/ESDIRK -- bespoke TR-BDF2 builder for now; Phase 3b
+                ## replaces this with the generic s-stage sequential family.
+                fp = self.factored_period_trbdf2(x0, T, len(times) - 1)
             self._factored_period_cache = fp
             return fp
         if solved:
@@ -4876,35 +4883,41 @@ class PSS(Analysis):
         return FactoredPeriod('trbdf2', None, steps, x_last, x_prev,
                               self, times=times, T=float(T))
 
-    def factored_period_radau(self, x0, T, npts):
-        """The Radau IIA(3) factored period map about a periodic point `x0`.
+    def factored_period_full(self, x0, T, npts, method=None):
+        """The factored period map of ANY FULLY-IMPLICIT (FULL) stage method
+        about a periodic point `x0` -- the tableau-generic coupled monodromy.
 
-        The Radau analogue of :meth:`factored_period_trbdf2`.  Integrates the
-        orbit under Radau IIA(3) on a uniform `npts`-step grid and returns the
-        `m x m` monodromy as a `FactoredPeriod(kind='radau')`.  Each step is a
-        COUPLED three-stage solve, so the stored per-step object is one
-        `3m x 3m` factorisation plus the entering capacitance `Cn`, and the
-        matvec reads the third `m`-block of the coupled solution
-        (`x_{n+1} == Y_3`, stiff accuracy).
+        Integrates the orbit under the stage method (`method`, or the PSS's
+        own) on a uniform `npts`-step grid and returns the `m x m` monodromy as
+        a `FactoredPeriod(kind='full')`.  Each step is the COUPLED `sm x sm`
+        stage solve; the stored per-step object is one factorisation plus the
+        entering capacitance `Cn`, and the matvec reads the LAST `m`-block of the
+        coupled solution (`x_{n+1} == Y_s`, stiff accuracy).  Radau IIA(3) is
+        the first member; any Gauss/Lobatto/higher-Radau tableau reuses this.
 
-        ⚠ SELF-STARTING, SO NO TWIN.  Like TR-BDF2, Radau has no order-dropped
-        opening step -- its monodromy is high-order without a Gear-2 twin --
-        so this does not consult `monodromy_twin`.
+        ⚠ FULLY-IMPLICIT ONLY.  A DIRK/ESDIRK (lower-triangular `A`, explicit
+        first stage) must NOT come here: its coupled block `[0][0] = C` is
+        singular on a DAE -- it takes the sequential `factored_period_dirk`
+        path instead.  `factored_period` routes by structure.
+
+        ⚠ SELF-STARTING, SO NO TWIN.  No order-dropped opener, so this does not
+        consult `monodromy_twin`.
         """
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        if method is None:
+            method = getattr(self.par, 'method', 'euler')
         x0 = np.asarray(x0, dtype=float)
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
         times = np.linspace(0.0, float(T), int(npts) + 1)
         hs = np.diff(times)
         tr_saved = getattr(self, '_tran', None)
-        self._tran = self._new_transient(RadauIIA3Integrator())
+        self._tran = self._new_transient(self._integrator_for(method))
         try:
-            steps, x_last, x_prev = self._traverse_factored_radau(
+            steps, x_last, x_prev = self._traverse_factored_full(
                 x0, times, hs)
         finally:
             self._tran = tr_saved
-        return FactoredPeriod('radau', None, steps, x_last, x_prev,
+        return FactoredPeriod('full', None, steps, x_last, x_prev,
                               self, times=times, T=float(T))
 
     FLOQUET_DENSE_LIMIT = 400
@@ -5108,9 +5121,9 @@ class PSS(Analysis):
                                           / max(abs(lk), 1e-300))})
         return out
 
-    def _forced_replay_radau(self, fp, freq, u_ac, y0=None, collect=False):
+    def _forced_replay_full(self, fp, freq, u_ac, y0=None, collect=False):
         """One driven period under Radau IIA(3) -- the FORWARD coupled replay,
-        the transpose of :meth:`_forced_replay_transposed_radau`.
+        the transpose of :meth:`_forced_replay_transposed_full`.
 
         Each step maps the entering state and the source to the endpoint by the
         coupled stage solve: with the source at frequency `freq` entering stage
@@ -5126,9 +5139,9 @@ class PSS(Analysis):
         two back-substitutions.
         """
         import scipy.linalg as sla
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
-        Amat = np.array(RadauIIA3Integrator.A, dtype=float)
-        cvec = np.array(RadauIIA3Integrator.C, dtype=float)
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        Amat, _Bw, cvec = integ.butcher()
+        s = Amat.shape[0]
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
@@ -5143,13 +5156,13 @@ class PSS(Analysis):
         for j, (lu, Cn, _mm) in enumerate(fp.steps):
             ts = tms[j]; te = tms[j + 1]; h = te - ts
             cw = Cn @ y
-            rhs = np.concatenate([cw, cw, cw]).astype(complex)
-            for i in range(3):
+            rhs = np.concatenate([cw] * s).astype(complex)
+            for i in range(s):
                 srci = -h * sum(Amat[i, k] * u_ac * np.exp(jw * (ts + cvec[k] * h))
-                                for k in range(3))
+                                for k in range(s))
                 rhs[i * m:(i + 1) * m] += srci
             Z = csolve(lu, rhs)
-            y = Z[2 * m:3 * m]
+            y = Z[(s - 1) * m:s * m]
             if collect:
                 ys.append(y.copy())
         return y, ys
@@ -5212,8 +5225,8 @@ class PSS(Analysis):
         """
         if fp.kind == 'trbdf2':
             return self._forced_replay_trbdf2(fp, freq, u_ac, y0, collect)
-        if fp.kind == 'radau':
-            return self._forced_replay_radau(fp, freq, u_ac, y0, collect)
+        if fp.kind == 'full':
+            return self._forced_replay_full(fp, freq, u_ac, y0, collect)
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
@@ -6803,29 +6816,29 @@ class PSS(Analysis):
             F[m] = np.asarray(x0)[phase_k] - phase_pin
             return F, J
 
-        def func_radau(x):
+        def func_full(x):
             """Driven fixed-period residual and Jacobian for Radau IIA(3).
 
             `x` IS `x_0` (self-starting), so `F = x_0 - phi(x_0)` and
             `J = I - M` with `M` the dense coupled monodromy from
-            `_traverse_radau`.  No manufacturing step, no solved history.
+            `_traverse_full`.  No manufacturing step, no solved history.
             """
-            x0, x_end, Mx, _Mt = self._traverse_radau(
+            x0, x_end, Mx, _Mt = self._traverse_full(
                 x, period, times, hs, want_dT=False)
             D = np.asarray(toolkit.eye(n - 1))
             return np.asarray(x0) - np.asarray(x_end), D - alpha * Mx
 
-        def func_autonomous_radau(z):
+        def func_autonomous_full(z):
             """Free-period residual and Jacobian for Radau IIA(3).
 
             Unknowns `(x0, T)`; `F = [x0 - phi_T(x0), x0[k] - pinned]`,
             `J = [[I - M, -dphi/dT], [e_k^T, 0]]`.  The period column
-            `dphi/dT` comes from `_traverse_radau(want_dT=True)`, tractable
+            `dphi/dT` comes from `_traverse_full(want_dT=True)`, tractable
             because the circuit is autonomous.
             """
             x_in, T = z[:-1], float(z[-1])
             tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            x0, x_end, Mx, Mt = self._traverse_radau(
+            x0, x_end, Mx, Mt = self._traverse_full(
                 x_in, T, tms, hs_T, want_dT=True)
             m = n - 1
             D = np.asarray(toolkit.eye(m))
@@ -6893,14 +6906,16 @@ class PSS(Analysis):
         ## undamped iteration would have moved uphill.
 
         ## Find periodic steady state x-vector
-        if method in ('trbdf2', 'radau'):
-            ## The self-starting stage methods (two-stage DIRK, three-stage
-            ## fully-implicit Radau): their own dense monodromy, never
-            ## solved-history, always self-starting (x0 is the unknown).
-            _fdr = func_radau if method == 'radau' else func_trbdf2
-            _fda = (func_autonomous_radau if method == 'radau'
-                    else func_autonomous_trbdf2)
-            _label = 'Radau IIA(3)' if method == 'radau' else 'TR-BDF2'
+        if self._integrator_for(method).is_stage_method():
+            ## A self-starting stage method: its own dense monodromy, never
+            ## solved-history, always self-starting (x0 is the unknown).  Route
+            ## BY STRUCTURE -- fully-implicit uses the coupled dense traverse
+            ## (`func_full`), a DIRK/ESDIRK the sequential bespoke one
+            ## (`func_trbdf2`, generalised in Phase 3b).
+            _fully = self._integrator_for(method).is_fully_implicit()
+            _fdr = func_full if _fully else func_trbdf2
+            _fda = func_autonomous_full if _fully else func_autonomous_trbdf2
+            _label = method
             if matrix_free:
                 raise NotImplementedError(
                     'PSS: matrix-free shooting is not built for %s; its '
@@ -7942,11 +7957,11 @@ class PAC(Analysis):
                 ## the two-vector fold does it (verified vs forward driven
                 ## solves to machine precision) -- see `_sideband_forced_trbdf2`
                 forced, g = pss._sideband_forced_trbdf2(fp, freq, l, d)
-            elif fp.kind == 'radau':
+            elif fp.kind == 'full':
                 ## the source couples through ALL THREE stages (A (x) B), which
                 ## needs the coupled three-vector fold -- see
-                ## `_sideband_forced_radau`
-                forced, g = pss._sideband_forced_radau(fp, freq, l, d)
+                ## `_sideband_forced_full`
+                forced, g = pss._sideband_forced_full(fp, freq, l, d)
             else:
                 inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
                                          * float(freq)) * tms[:N]) / N)[:, None]
@@ -8679,12 +8694,12 @@ class PAC(Analysis):
             ## (no Gear-2 fallback, no stochastic stage weights) -- see
             ## `_lyapunov_pieces_trbdf2` and `_vanloan_step_injection`.
             return self._lyapunov_pieces_trbdf2(pss, fp, what)
-        if fp.kind == 'radau':
+        if fp.kind == 'full':
             ## Radau's own injection: the SAME exact Van Loan integral (it is
             ## the continuous per-step covariance, method-independent), with
             ## the coupled Radau per-step map as A_n -- see
-            ## `_lyapunov_pieces_radau`.
-            return self._lyapunov_pieces_radau(pss, fp, what)
+            ## `_lyapunov_pieces_full`.
+            return self._lyapunov_pieces_full(pss, fp, what)
         if fp.kind != 'solved_history':
             return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1
@@ -9005,7 +9020,7 @@ class PAC(Analysis):
                              for e in np.eye(n)])
         return As, Qs, K, M, m, n
 
-    def _lyapunov_pieces_radau(self, pss, fp, what):
+    def _lyapunov_pieces_full(self, pss, fp, what):
         """`_lyapunov_pieces` for a Radau IIA(3) Floquet source.
 
         Identical in structure to `_lyapunov_pieces_trbdf2`: the per-step
@@ -9014,7 +9029,7 @@ class PAC(Analysis):
         continuous per-step covariance and so is the same object for every
         integrator; only the per-step transition `A_n` differs -- here the
         coupled Radau step map (dense, `m x m`, via
-        `_monodromy_matvec_radau` one step at a time).  State width `m`, so
+        `_monodromy_matvec_full` one step at a time).  State width `m`, so
         `n = m`.
 
         ⚠ THE INJECTION IS EXACT, THE METHOD SETS ONLY THE PROPAGATION.  The
@@ -9038,7 +9053,7 @@ class PAC(Analysis):
             Gn = np.asarray(pss._G_at(xk), dtype=float)
             CYn = self._cy_at(pss, w0, xk)
             A_k = np.column_stack([
-                np.asarray(pss._monodromy_matvec_radau([step], e), dtype=float)
+                np.asarray(pss._monodromy_matvec_full([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
             Qs.append(self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
