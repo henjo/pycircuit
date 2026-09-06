@@ -6511,6 +6511,81 @@ class PSS(Analysis):
         return x, {'khat': khat, 'periods': k, 'found': found,
                    'history': history}
 
+    ## No fold until a solve collects one -- `_fold_periodic` is then the
+    ## identity, which is exactly right for every circuit without a folding
+    ## state and for any caller that reaches a residual outside `solve`.
+    _periodic_fold = []
+
+    def _collect_periodic_fold(self):
+        """`[(reduced_row, modulus)]` for every state defined up to `n*modulus`.
+
+        `Circuit.periodic_states()` reports GLOBAL rows; the shooting residual
+        lives in reduced coordinates, so each is mapped through the same
+        `irefnode` deletion the stamps use.  A declared row that IS the
+        reference node has no reduced coordinate and is dropped.
+
+        The offset is deliberately discarded: a DIFFERENCE of two states on a
+        periodic row is defined up to `n*modulus` whatever window each state
+        was folded into, so only the modulus enters.
+        """
+        cir = self.cir
+        if not hasattr(cir, 'periodic_states'):
+            return []
+        try:
+            declared = cir.periodic_states()
+        except Exception:
+            ## A late-bound modulus that cannot be resolved is not a reason to
+            ## refuse the solve -- it is a reason not to fold.
+            return []
+        iref = self.irefnode
+        out = []
+        for row, modulus, _offset in declared or []:
+            row = int(row)
+            m = float(modulus)
+            if row == iref or not np.isfinite(m) or m <= 0.0:
+                continue
+            out.append((row if row < iref else row - 1, m))
+        return out
+
+    def _fold_periodic(self, F):
+        """Fold a shooting residual's periodic rows into `[-m/2, m/2)`.
+
+        ⚠ THIS IS WHAT MAKES THE PERIOD MAP'S FIXED-POINT PROBLEM WELL POSED
+        FOR A FOLDING STATE, and it belongs in the RESIDUAL rather than in the
+        traversal.  `Idtmod`'s state is defined only up to `n*modulus` -- it
+        says so itself through `periodic_states()`, and the transient engine
+        already uses that declaration to keep the state bounded by exact gauge
+        translations.  Shooting did not: it asked for `x_0 - phi(x_0) == 0`
+        literally, which on a folding row demands the SAME REPRESENTATIVE, not
+        the same state.  An orbit that closes after advancing exactly one
+        modulus -- the normal case for a phase -- then has NO root at all, and
+        near the fold the raw difference jumps by a whole modulus while the
+        state moves infinitesimally.
+
+        Measured (see `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_
+        not_on_the_grid`): that jump is grid-INDEPENDENT -- 1.414214e+09 at
+        seven different grids, with the wrap on a node and off it alike -- so
+        it is not an event-localisation defect and no refinement of the time
+        grid can reach it.  It is the output map, and the output map is what
+        this folds.
+
+        ⚠ THE JACOBIAN IS DELIBERATELY NOT TOUCHED.  `d/dx0` of
+        `wrap(x0 - phi(x0))` equals `d/dx0 (x0 - phi(x0))` almost everywhere --
+        the wrap has unit slope between its jumps -- so `D - alpha*Mx` is
+        already the right derivative of the folded residual.  The fold moves
+        the residual onto the branch the Jacobian was always describing; that
+        is the whole reason this is a local change and not surgery on the six
+        traversal loops.
+        """
+        rows = self._periodic_fold
+        if not rows:
+            return F
+        F = np.asarray(F, dtype=float).copy()
+        for r, m in rows:
+            if r < F.shape[0]:
+                F[r] -= m * np.round(F[r] / m)
+        return F
+
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
               x0_unknown=None, tstab=None):
@@ -6812,6 +6887,10 @@ class PSS(Analysis):
         ## read by `_period_grid`, which is called from the residual
         ## closures and so cannot take it as an argument
         self._open_at_x0 = bool(x0_unknown)
+        ## The fold gauge, collected once per solve (late-bound moduli are
+        ## resolved by now).  See `_fold_periodic` for why the residual needs
+        ## it and the Jacobian does not.
+        self._periodic_fold = self._collect_periodic_fold()
         alpha = 1
 
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
@@ -7093,7 +7172,7 @@ class PSS(Analysis):
                                                 want_dT=False,
                                                 open_at_x0=x0_unknown)
             D = np.asarray(toolkit.eye(n - 1))
-            return x0 - x_end, D - alpha * Mx
+            return self._fold_periodic(x0 - x_end), D - alpha * Mx
 
         def func_solved_history(z):
             """Residual and Jacobian when the entering history is an unknown.
@@ -7122,8 +7201,9 @@ class PSS(Analysis):
             J[:m, m:] = -alpha * P_last[:, m:]
             J[m:, :m] = -alpha * P_prev[:, :m]
             J[m:, m:] = D - alpha * P_prev[:, m:]
-            F = np.concatenate((np.asarray(x0_in) - np.asarray(x_last),
-                                np.asarray(xm1_in) - np.asarray(x_prev)))
+            F = np.concatenate((
+                self._fold_periodic(np.asarray(x0_in) - np.asarray(x_last)),
+                self._fold_periodic(np.asarray(xm1_in) - np.asarray(x_prev))))
             return F, J
 
         def func_autonomous(z):
@@ -7158,7 +7238,7 @@ class PSS(Analysis):
             J[:m, m] = -np.asarray(Mt).ravel()
             J[m, phase_k] = 1.0
             F = np.zeros(m + 1)
-            F[:m] = x0 - x_end
+            F[:m] = self._fold_periodic(x0 - x_end)
             F[m] = x0[phase_k] - phase_pin
             return F, J
         
@@ -7224,7 +7304,8 @@ class PSS(Analysis):
             x0, x_end, Mx, _Mt = self._traverse_full(
                 x, period, times, hs, want_dT=False)
             D = np.asarray(toolkit.eye(n - 1))
-            return np.asarray(x0) - np.asarray(x_end), D - alpha * Mx
+            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
+                    D - alpha * Mx)
 
         def func_autonomous_full(z):
             """Free-period residual and Jacobian for Radau IIA(3).
@@ -7245,7 +7326,7 @@ class PSS(Analysis):
             J[:m, m] = -np.asarray(Mt).ravel()
             J[m, phase_k] = 1.0
             F = np.zeros(m + 1)
-            F[:m] = np.asarray(x0) - np.asarray(x_end)
+            F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
             F[m] = np.asarray(x0)[phase_k] - phase_pin
             return F, J
 
@@ -7256,7 +7337,8 @@ class PSS(Analysis):
             x0, x_end, Mx, _Mt = self._traverse_dirk(
                 x, period, times, hs, want_dT=False)
             D = np.asarray(toolkit.eye(n - 1))
-            return np.asarray(x0) - np.asarray(x_end), D - alpha * Mx
+            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
+                    D - alpha * Mx)
 
         def func_autonomous_dirk(z):
             """Free-period residual/Jacobian for a DIRK/ESDIRK method; the
@@ -7272,7 +7354,7 @@ class PSS(Analysis):
             J[:m, m] = -np.asarray(Mt).ravel()
             J[m, phase_k] = 1.0
             F = np.zeros(m + 1)
-            F[:m] = np.asarray(x0) - np.asarray(x_end)
+            F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
             F[m] = np.asarray(x0)[phase_k] - phase_pin
             return F, J
 

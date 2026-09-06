@@ -14000,3 +14000,184 @@ def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid():
     hi = phi(+1e-12 * d, g)[idt]
     assert abs(abs(hi - lo) - 1.0) < 1e-6, \
         'expected exactly one modulus across the fold, got %.6e' % abs(hi - lo)
+
+
+def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else_alone():
+    """`x_0 - phi(x_0) == 0` is the WRONG condition on a state that is only
+    defined up to `n*modulus`, and the circuit already says which states those
+    are.
+
+    `Idtmod` declares its integral row through `periodic_states()` -- the same
+    declaration `Transient` uses for its gauge shift -- but `shooting.py` did
+    not consume it, exactly as it did not consume `next_event`.  So shooting
+    asked a folding row for the SAME REPRESENTATIVE rather than the same state:
+    an orbit that closes after advancing one modulus had no root at all, and
+    near the fold the raw difference jumped a whole modulus while the state
+    moved infinitesimally.
+
+    This is the residual-side repair, and it is the RIGHT instrument because
+    the defect was measured to be in the output map, not the time grid --
+    see `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid`,
+    where the jump is identical across seven grids.
+
+    What is asserted, and what is deliberately NOT:
+
+    * the gauge is collected and mapped to REDUCED rows (offset discarded --
+      a DIFFERENCE is defined up to n*modulus whatever window each state sits
+      in);
+    * a circuit with no folding state gets an empty gauge and a bit-identical
+      solution, so this cannot perturb the rest of the suite;
+    * on a folding orbit the fold FIRES with a full-modulus correction and
+      turns a LinAlgError into a converged, genuine orbit;
+    * ⚠ it does NOT fix a free-running phase's singular `I - M`.  A DC-driven
+      integrator has monodromy eigenvalue exactly 1 on its phase row, so at a
+      rate of a whole number of moduli EVERY x_0 is a solution and the
+      fixed-period Jacobian is singular *correctly* -- the problem is
+      underdetermined, and locking it needs feedback (a PLL), not a residual
+      change.  Asserted here so the fold is not credited with more than it does.
+    """
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-3
+
+    def folding(rate):
+        c = SubCircuit()
+        c['vin'] = VS('in', gnd, v=rate / T)
+        c['X'] = Idtmod('in', gnd, 'o', gnd, modulus=1.0, ic=0.31)
+        c['Ro'] = R('o', gnd, r=1e6)
+        return c
+
+    ## (1) The gauge: global row -> reduced row, offset dropped.
+    c = folding(0.5)
+    declared = c.periodic_states()
+    assert len(declared) == 1 and declared[0][1] == 1.0, \
+        'the fixture stopped declaring a periodic state: %r' % (declared,)
+    grow = int(declared[0][0])
+    p = PSS(folding(0.5))
+    gauge = p._collect_periodic_fold()
+    iref = p.irefnode
+    assert gauge == [(grow if grow < iref else grow - 1, 1.0)], \
+        'gauge %r does not map global row %d through irefnode %d' \
+        % (gauge, grow, iref)
+
+    ## (2) The fold itself: into [-m/2, m/2), identity well inside it.
+    p._periodic_fold = gauge
+    r = gauge[0][0]
+    probe = np.zeros(p.cir.n - 1)
+    probe[r] = 1.0
+    assert abs(p._fold_periodic(probe)[r]) < 1e-12, \
+        'a full modulus must fold to zero -- that is the whole point'
+    probe[r] = 0.25
+    assert abs(p._fold_periodic(probe)[r] - 0.25) < 1e-15, \
+        'the fold must be the identity away from the boundary'
+    probe[r] = -1.75
+    assert abs(p._fold_periodic(probe)[r] - 0.25) < 1e-12, \
+        'the fold must reach the nearest representative, not just one modulus'
+
+    ## (3) A circuit with no folding state is untouched, bit for bit.
+    def plain():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+    assert plain().periodic_states() == []
+    assert PSS(plain())._collect_periodic_fold() == []
+    got, conv = [], []
+    for fold in (False, True):
+        q = PSS(plain(), method='gear')
+        if not fold:
+            q._collect_periodic_fold = lambda: []
+        res = q.solve(period=1e-6, timestep=1e-6 / 400)
+        got.append(np.asarray(q._period_state[1], dtype=float).ravel())
+        conv.append(bool(q.converged))
+    ## ⚠ Comparing two solves that BOTH failed would make this vacuous -- a
+    ## pair of identical non-answers is still identical.
+    assert all(conv), 'the invariance check needs converged solves, got %r' % conv
+    assert np.array_equal(got[0], got[1]), \
+        'the fold perturbed a circuit that declares no periodic state ' \
+        '(||d|| = %.3e)' % np.linalg.norm(got[1] - got[0])
+
+    ## (4) On a folding orbit it fires, and what it converges to is real.
+    ## rate = 0.5 moduli per seed period: the orbit closes only after TWO,
+    ## which is precisely the closure the unfolded residual cannot express.
+    import warnings as _w
+    from numpy.linalg import LinAlgError
+
+    def attempt(fold):
+        q = PSS(folding(0.5), method='trap')
+        if not fold:
+            q._collect_periodic_fold = lambda: []
+        hits = {'n': 0, 'max': 0.0}
+        orig = q._fold_periodic
+
+        def spy(F):
+            G = orig(F)
+            d = np.max(np.abs(np.asarray(F, dtype=float).ravel()
+                              - np.asarray(G, dtype=float).ravel()))
+            if d > 1e-9:
+                hits['n'] += 1
+                hits['max'] = max(hits['max'], d)
+            return G
+        q._fold_periodic = spy
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=T, timestep=T / 300)
+        return q, hits
+
+    with pytest.raises(LinAlgError):
+        attempt(False)
+
+    q, hits = attempt(True)
+    assert hits['n'] >= 1 and abs(hits['max'] - 1.0) < 1e-6, \
+        'the fold did not fire a full-modulus correction (%r) -- then it is ' \
+        'not what rescued this solve' % (hits,)
+
+    ## ⚠ Converged is not solved.  Re-traverse from the solution and require
+    ## the OPENED state (not the raw unknown, whose algebraic entries are
+    ## free) to return to itself on EVERY row.
+    solved, x_in, xm1, times, hs, Tp, x0u = q._period_state
+    x0, x_end, _Mx, _Mt = q._traverse(np.asarray(x_in, dtype=float).ravel(),
+                                      Tp, times, hs, want_dT=False,
+                                      open_at_x0=x0u)
+    gap = np.max(np.abs(np.asarray(x0, dtype=float).ravel()
+                        - np.asarray(x_end, dtype=float).ravel()))
+    assert gap < 1e-10, \
+        'the folded residual converged to a point that is NOT an orbit ' \
+        '(max row gap %.3e) -- a fold that admits spurious roots is worse ' \
+        'than no fold' % gap
+    assert abs(Tp / T - 2.0) < 1e-6, \
+        'expected the orbit to close after two seed periods, got T/T0 = %.6f' \
+        % (Tp / T)
+
+    ## (5) The limit of the claim, asserted rather than asserted-about: the
+    ## phase row is a MARGINAL mode.  Perturbing it moves the endpoint by
+    ## exactly the same amount, so the period map's derivative along it is 1
+    ## and `I - M` is singular there by construction.  That is why a driven
+    ## fixed-period solve on a free-running integrator is underdetermined, and
+    ## no residual fold can or should change it.
+    from copy import copy as _copy
+    probe = PSS(folding(0.5), method='gear')
+    probe._tran = probe._new_transient(probe._integrator_for('gear'))
+    probe._want_dfdh = False
+    probe._want_lte = False
+    tt = np.linspace(0, T, 401)
+
+    def endpoint(v):
+        probe._begin_period(np.asarray(v, dtype=float))
+        x = _copy(np.asarray(v, dtype=float))
+        steps = np.diff(tt)
+        for j, t in enumerate(tt[1:]):
+            x = _copy(probe.solve_timestep(x, t, steps[j]))
+        return np.asarray(x, dtype=float).ravel()
+
+    base = np.zeros(probe.cir.n - 1)
+    base[r] = 0.2                     # off the fold boundary
+    d = np.zeros(probe.cir.n - 1)
+    d[r] = 1.0
+    eps = 1e-7
+    slope = (endpoint(base + eps * d) - endpoint(base))[r] / eps
+    assert abs(slope - 1.0) < 1e-5, \
+        'the phase row should be marginal (dx_end/dx_0 == 1 on it), got ' \
+        '%.9f -- if this ever stops being 1 the underdetermination argument ' \
+        'above needs rewriting' % slope

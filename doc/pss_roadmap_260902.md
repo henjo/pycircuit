@@ -3671,6 +3671,52 @@ the base point at `x_0 = 0`, which sits EXACTLY on the fold — a degenerate poi
 something else entirely. Moving the base off the boundary is what exposed the real structure.
 Test: `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid`.
 
+✅ **THE RESIDUAL-SIDE FIX IS BUILT (2026-09-06) as `PSS._fold_periodic`.**
+
+The circuit already declares which states are defined only up to `n*modulus` — `Idtmod` does it
+through **`periodic_states()`**, the same declaration `Transient` uses for its gauge shift. And
+**`shooting.py` did not consume it**, exactly as it did not consume `next_event`: the residual
+asked a folding row for the SAME REPRESENTATIVE rather than the same state. So an orbit that
+closes after advancing one modulus had **no root at all**.
+
+`_collect_periodic_fold()` maps each declaration to a REDUCED row (the offset is discarded — a
+DIFFERENCE is defined up to `n*modulus` whatever window each state sits in), and `_fold_periodic`
+folds those rows of `x_0 - φ(x_0)` into `[-m/2, m/2)`. Applied at **all eight** residual builders
+(driven/autonomous × plain/solved-history/full/dirk).
+
+⚠ **THE JACOBIAN IS DELIBERATELY UNTOUCHED.** `d/dx₀ wrap(x₀ - φ(x₀))` equals `d/dx₀ (x₀ - φ(x₀))`
+almost everywhere — the wrap has unit slope between its jumps — so `D - alpha*Mx` was already the
+right derivative. The fold moves the residual onto the branch the Jacobian always described. That
+is why this is ~40 lines and not surgery on six traversal loops.
+
+Measured, on an `Idtmod` advancing 0.5 modulus per seed period (closes only after two):
+
+| | unfolded residual | folded |
+|---|---|---|
+| `method='trap'` | **LinAlgError** (free-period Jacobian singular) | **converged, T = 2×seed** |
+| fold corrections fired | — | 1, of magnitude **1.000** (a full modulus) |
+| re-traversed orbit gap | — | **< 1e-10 on every row** |
+
+⚠ **Converged is not solved, so the orbit is re-traversed and checked.** The first check appeared
+to show a row off by exactly 1.0 — that was the harness comparing the RAW unknown `x_in`, whose
+algebraic entries are free, against a properly solved `x_end`. Against the OPENED state every row
+returns to itself at 1e-15. *Compare what the residual compares.*
+
+⚠ **A circuit that declares no periodic state is bit-identical** (empty gauge, `np.array_equal`
+on a converged gear solve), so this cannot perturb the rest of the suite.
+
+⚠⚠ **WHAT THE FOLD DOES NOT DO, asserted so it is not credited with more.** A free-running
+integrator's phase row is a **marginal mode** — measured `dx_end/dx_0 = 1.000000` along it — so
+`I - M` is singular there by construction. At a rate of a whole number of moduli EVERY `x_0` is a
+solution and a driven fixed-period solve is **correctly** underdetermined; locking it needs
+feedback (a PLL), which is A6's own subject. The fold repairs the residual's *value*, not the
+Jacobian's *rank*.
+
+⚠ **Separately observed, NOT fixed, and not caused by this:** `method='gear'` on that same
+autonomous fixture converges to **T = 5.4e-18** — a collapsed period trivially satisfying
+periodicity — identically with and without the fold. Filed as its own defect.
+Test: `test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else_alone`.
+
 ⚠⚠ **BUT "AND THE PSS REPORTS CONVERGENCE THERE" WAS WRONG, and the correction matters more
 than the claim.** It warns, loudly, three times over on this fixture:
 
