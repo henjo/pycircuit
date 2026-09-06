@@ -2477,10 +2477,10 @@ class Transient(Analysis):
         self._companion_coeffs = None
         J = Cm + a_last * h * Gm
         if getattr(self, '_rk_want_est', False):
-            self._rk_est = self._rk_dirk_estimate(Y, K, h, J, arr)
+            self._rk_est = self._rk_dirk_estimate(K, h, J)
         return xnp1, None, J, None
 
-    def _rk_dirk_estimate(self, Y, K, h, J, arr):
+    def _rk_dirk_estimate(self, K, h, J):
         """The filtered embedded error estimate for a DIRK step, in STATE units.
 
         ``est_raw = h sum_i dk_i K_i`` (the method's embedded weights

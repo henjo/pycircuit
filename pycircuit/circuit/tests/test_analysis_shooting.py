@@ -14267,3 +14267,105 @@ def test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged():
     assert found[T0][1] is False, 'a seed at half the fundamental should not converge'
     assert found[1.5 * T0][1] is True and found[2.0 * T0][1] is True, \
         'seeds at and above the fundamental should find it: %r' % (found,)
+
+
+def test_event_breaking_defaults_on_for_one_step_methods_and_off_for_gear():
+    """The default is decided by the METHOD, and the split is measured.
+
+    Landing a source's discontinuities on grid points HELPS a one-step method
+    and HURTS Gear-2 -- same circuit, same step count::
+
+        method               uniform     + events    jittered, no events
+        gear   (multistep)   8.23e-03    1.29e-02    1.24e-02    lost 7 of 9
+        trap   (one-step)    4.98e-03    3.15e-03    6.82e-03    lost 0 of 9
+        radau  (one-step)                1.02-1.89x gain         lost 0 of 9
+
+    ⚠ THE JITTERED COLUMN IS THE CONTROL THAT MAKES THIS A CAUSE AND NOT A
+    CORRELATION.  A grid of the same step COUNT and comparable non-uniformity,
+    with the events deliberately NOT landed, hurts gear just as much as the
+    event grid does.  So gear's loss is NON-UNIFORMITY ITSELF, not a defect in
+    `event_grid` -- a multistep companion's coefficients depend on the
+    step-size RATIO, so a uniform grid is its best case.  `trap` pays that cost
+    too and the alignment is worth more than the cost.
+
+    ⚠ Three attempts at that measurement were discarded before one was
+    trusted: the first compared `x0` on a circuit whose RC settles inside the
+    period (errors of 1e-33 -- a zero-vs-zero) and "showed" 15-37x gains; the
+    second compared the raw `x_in`, whose algebraic entries are free, and
+    "showed" losses in 16 of 18 rows.  The third validated the instrument
+    first -- reference converged at 4x per doubling, uniform error reaching
+    gear-2's asymptotic 3.95x, self-bias 5e-6 against errors of 1e-3 -- and
+    only then compared.  The tell in attempt two was a NON-MONOTONIC error
+    column.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+
+    def pulsed():
+        c = SubCircuit()
+        c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=0.0125 * T,
+                         tr=T * 0.02, tf=T * 0.02, pw=T * 0.4, per=T)
+        c['R'] = R(1, 2, r=1e3)
+        c['C'] = C(2, gnd, c=3e-10)
+        return c
+
+    ## (1) The predicate is the method's own `companion_reach`, not a name.
+    expect = {'euler': True, 'trap': True, 'gear': False,
+              'radau': True, 'trbdf2': True}
+    for meth, want in expect.items():
+        p = PSS(pulsed(), method=meth)
+        got = p._resolve_break_events(None)
+        reach = int(p._integrator_for(meth).companion_reach())
+        assert got is want, \
+            '%s (companion_reach=%d) defaulted break_events=%r, wanted %r' \
+            % (meth, reach, got, want)
+        assert (reach == 1) is want, \
+            '%s: the predicate and the expectation disagree' % meth
+
+    ## (2) An explicit value is honoured in both directions.
+    assert PSS(pulsed(), method='gear')._resolve_break_events(True) is True
+    assert PSS(pulsed(), method='trap')._resolve_break_events(False) is False
+
+    ## (3) ⚠ A circuit whose sources declare no discontinuity must be
+    ## BIT-IDENTICAL either way, or this default silently moves every solve in
+    ## the suite.  `event_grid` rebuilds a uniform grid from `linspace` even
+    ## when it finds nothing, and that differs from `_period_grid`'s in the
+    ## last bit -- which is why `solve` only swaps the grid when an event
+    ## actually exists.
+    def smooth():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+    assert PSS(smooth()).event_grid(T, npts=40) is not None
+    same = []
+    for be in (False, True):
+        q = PSS(smooth(), method='trap')
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=T, timestep=T / 200, break_events=be)
+        same.append(np.asarray(q._period_state[1], dtype=float).ravel())
+        assert q.event_times == [], \
+            'the smooth fixture grew an event: %r' % (q.event_times,)
+    assert np.array_equal(same[0], same[1]), \
+        'break_events perturbed an event-free circuit (||d|| = %.3e)' \
+        % np.linalg.norm(same[1] - same[0])
+
+    ## (4) And on a circuit that DOES have events the default must actually
+    ## bite -- the events are found and the grid grows.
+    p = PSS(pulsed(), method='trap')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 80)
+    assert p.break_events is True and len(p.event_times) >= 3, \
+        'trap should have broken at the pulse edges, got break_events=%r ' \
+        'events=%r' % (p.break_events, p.event_times)
+    g = PSS(pulsed(), method='gear')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        g.solve(period=T, timestep=T / 80)
+    assert g.break_events is False, \
+        'gear must NOT break by default -- it is measured to lose'

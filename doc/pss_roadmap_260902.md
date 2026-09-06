@@ -3611,7 +3611,63 @@ lesson B7c's separation rule encodes.
 
 ⚠ **It is a HELPER in the `lte_grid`/`refine_grid` idiom, not a default change.** Making event
 breaking automatic would alter step selection for every PSS solve in the suite; that is a separate
-decision and has not been taken.
+decision, and it is **NOW TAKEN — the answer is NO, not globally (measured 2026-09-06).**
+
+✅ **DECISION TAKEN AND BUILT (2026-09-06): default it on for ONE-STEP methods only; never
+for `gear`.** `solve(break_events=None)` resolves from the method via
+`_resolve_break_events`; an explicit `True`/`False` is honoured untouched. The predicate is
+**`companion_reach() == 1`** — the method's OWN statement of how many charges back its
+companion reads, which is exactly the property that makes step ratios matter, and
+`RungeKuttaIntegrator` already names the mechanism: *"a one-step method carries no
+zero-stability step-ratio limit"*. Asked of the method, never inferred from a name.
+
+⚠ **The grid is swapped ONLY when `event_times` is non-empty.** `event_grid` rebuilds a
+uniform grid from `linspace` even when it finds nothing, and that differs from
+`_period_grid`'s in the LAST BIT — enough to move every event-free solve in the suite for
+nothing. Touching it only when an event exists keeps those circuits **bit-identical**
+(`np.array_equal`), the same guarantee `_fold_periodic` gives a circuit with no periodic
+state. Full suite: **3080 passed**, +1.4% wall time (646.78 s against 637.85 s) with two
+tests added — the default costs nothing measurable.
+Test: `test_event_breaking_defaults_on_for_one_step_methods_and_off_for_gear`.
+
+The measured split it rests on:
+it is a property of the INTEGRATOR, not of the circuit:
+
+| method | | uniform | + events | **jittered, events NOT landed** |
+|---|---|---|---|---|
+| `gear` (multistep) | lost **7 of 9** | 8.23e-03 | 1.29e-02 | **1.24e-02** |
+| `trap` (one-step) | lost **0 of 9** | 4.98e-03 | 3.15e-03 | **6.82e-03** |
+| `radau` (one-step) | lost **0 of 9** | — | 1.02–1.89x gain | — |
+
+⚠⚠ **THE JITTERED COLUMN IS THE CONTROL THAT MAKES THIS A CAUSE AND NOT A CORRELATION.** A grid
+of the same step COUNT, comparably non-uniform, with the events deliberately **not** landed, hurts
+`gear` just as much as the event grid does (1.24e-2 against 1.29e-2). **So `gear`'s loss is
+NON-UNIFORMITY ITSELF, not a defect in `event_grid`** — a multistep method's coefficients depend
+on the step-size RATIO, so a uniform grid is its best case and any insertion is a real cost.
+`trap` pays that cost too (jittered 6.82e-3 against uniform 4.98e-3) but the event alignment is
+worth **more** than the cost, so it nets out at 1.6–2.9x ahead.
+
+Two competing effects with a crossover, which is also why `gear` GAINS at npts=40 (1.64x, 2.78x)
+and loses from npts=80 on: coarse enough and the event error dominates; refine and the step-ratio
+penalty takes over.
+
+⚠ **This argues against defaulting it on for the method the code itself recommends.** The
+non-convergence warning tells users to *"use `method='gear'`, whose solved-history formulation has
+an exact Jacobian and converges quadratically"* — so a global default would degrade precisely the
+path users are steered onto.
+
+⚠ **THE RECORDED 3–27x GAINS ABOVE ARE NOT REPRODUCED.** This reconstruction gets 1.6–2.9x for
+`trap` and a LOSS for `gear`. The fixture parameters behind the original table were not recorded
+(RC time constant, pulse widths, the error metric), so the two are not comparable and the older
+row is left standing rather than overwritten. What is asserted here is what a VALIDATED instrument
+measures: reference converged at 4x per doubling, uniform error reaching gear-2's asymptotic 3.95x,
+reference self-bias 5e-6 against errors of 1e-3.
+
+⚠ **Two earlier attempts at this measurement were discarded, both from unvalidated metrics** —
+the first compared `x0` on a circuit whose RC settles within a period (errors of **1e-33**, a
+zero-vs-zero), the second compared the raw `x_in` whose algebraic entries are free. Both produced
+confident, opposite, wrong answers. **Validate the instrument — order, reference convergence,
+self-bias — BEFORE reading a comparison.**
 
 ⚠⚠ **AND ONLY THE TIME-DRIVEN HALF IS SOLVED.** `next_event(t)` is parameterised by time, so a
 source's edges can be walked out once and placed — which is why this needed no change to the six

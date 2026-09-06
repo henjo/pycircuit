@@ -1864,6 +1864,44 @@ class PSS(Analysis):
                 % (T, seed_period), RuntimeWarning, stacklevel=3)
         return z, info, ier, mesg
 
+    def _resolve_break_events(self, requested):
+        """`break_events`, defaulted from the METHOD when not given.
+
+        ⚠⚠ THIS IS ON FOR ONE-STEP METHODS AND OFF FOR A MULTISTEP ONE, AND
+        THE SPLIT IS MEASURED RATHER THAN ASSUMED.  Landing a source's
+        discontinuities on grid points helps a one-step method and HURTS
+        Gear-2, on the same circuit, at the same step count:
+
+            method               uniform     + events   jittered, no events
+            gear   (multistep)   8.23e-03    1.29e-02   1.24e-02   lost 7 of 9
+            trap   (one-step)    4.98e-03    3.15e-03   6.82e-03   lost 0 of 9
+            radau  (one-step)    --          1.02-1.89x gain       lost 0 of 9
+
+        ⚠ **The jittered column is the control that makes this a cause.**  A
+        grid of the same step COUNT and comparable non-uniformity, with the
+        events deliberately NOT landed, hurts gear just as much as the event
+        grid does (1.24e-2 against 1.29e-2).  So gear's loss is NON-UNIFORMITY
+        ITSELF, not a defect in `event_grid`: a multistep method's companion
+        coefficients depend on the step-size RATIO, so a uniform grid is its
+        best case and any insertion is a real cost.  `trap` pays that cost too
+        (jittered 6.82e-3 against uniform 4.98e-3) and the event alignment is
+        worth MORE than the cost, so it nets out ahead.
+
+        The predicate is `companion_reach() == 1` -- the method's own statement
+        of how many charges back its companion reads, which is exactly the
+        property that makes step ratios matter.  `RungeKuttaIntegrator` says
+        the mechanism in its own words: *"a one-step method carries no
+        zero-stability step-ratio limit"*.  Asked of the method, never inferred
+        from a name.
+
+        ⚠ An explicit `True`/`False` is honoured untouched; this only fills in
+        `None`.
+        """
+        if requested is not None:
+            return bool(requested)
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        return int(integ.companion_reach()) == 1
+
     def _resolve_x0_unknown(self, requested):
         """`x0_unknown`, defaulted from the circuit's TOPOLOGY when not given.
 
@@ -1958,11 +1996,19 @@ class PSS(Analysis):
         placed.  A STATE-DEPENDENT reset -- `Idtmod`'s wrap -- cannot: its
         `next_event` is a linear prediction from the last accepted point and
         returns `inf` before a traversal has started, so there is nothing to walk.
-        That case is genuinely harder and the roadmap says why: the wrap time
-        MOVES as the Newton iterates, so it has to become an unknown the Newton
-        solves for rather than a feature of any grid.  On a grid point that map
-        is discontinuous by `|dphi| ~ 8.2e-3 INDEPENDENT of the perturbation`,
-        so do not expect this to help there -- it will not.
+        ⚠ THE REASON RECORDED HERE WAS WRONG, AND IS CORRECTED (2026-09-06).
+        This used to say the wrap time "has to become an unknown the Newton
+        solves for", citing a map "discontinuous by |dphi| ~ 8.2e-3 on a grid
+        point".  Measured: that jump is **grid-INDEPENDENT** -- 1.414214e+09
+        at seven different grids, with the wrap ON a node and OFF it alike,
+        and unchanged when the exact wrap times are added to the grid.  A
+        quantity that does not move when the grid moves is not a grid
+        artefact.  The real defect was the fold at the period ENDPOINT, in the
+        OUTPUT map, and it is fixed in the RESIDUAL by `_fold_periodic`.
+        The conclusion for THIS method is unchanged and now for the right
+        reason: a state-dependent reset is not a grid feature, so `event_grid`
+        does not help it -- but nor does it need the traversal surgery that
+        sentence implied.
 
         ⚠ AND THIS IS NOT SALTATION.  Saltation was measured and falsified twice
         for this codebase (a switched conductance, a discontinuous injection and
@@ -6538,6 +6584,11 @@ class PSS(Analysis):
         return x, {'khat': khat, 'periods': k, 'found': found,
                    'history': history}
 
+    ## Set by `solve`; declared here so a caller may read them on a PSS that
+    ## has not solved yet, and so `event_times` is never a stale leftover.
+    break_events = False
+    event_times = []
+
     ## No fold until a solve collects one -- `_fold_periodic` is then the
     ## identity, which is exactly right for every circuit without a folding
     ## state and for any caller that reaches a residual outside `solve`.
@@ -6615,8 +6666,15 @@ class PSS(Analysis):
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
-              x0_unknown=None, tstab=None):
+              x0_unknown=None, tstab=None, break_events=None):
         """Solve for the periodic steady state.
+
+        `break_events` lands the circuit's source discontinuities on grid
+        points (`event_grid`).  `None` -- the default -- decides from the
+        METHOD: on for a one-step method, off for a multistep one, because it
+        HELPS the first and HURTS the second.  See `_resolve_break_events` for
+        the measurement and the control that pins the cause.  A circuit whose
+        sources declare no discontinuity is untouched bit-for-bit either way.
 
         `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
         period, summing to 1, used in place of the uniform `timestep` grid.
@@ -6907,6 +6965,23 @@ class PSS(Analysis):
             ## open-at-x0 branch consistent without a name check here.
             x0_unknown = True
         self._open_at_x0 = bool(x0_unknown)
+        ## Break the traversal's steps at the source discontinuities, when the
+        ## method is one whose accuracy that helps -- see `_resolve_break_events`
+        ## for the measurement, and `event_grid` for the snap that keeps it from
+        ## manufacturing slivers.
+        self.break_events = self._resolve_break_events(break_events)
+        if self.break_events:
+            _ev = (self.event_grid(period, grid=grid) if grid is not None
+                   else self.event_grid(period, npts=int(period / dt)))
+            ## ⚠ ONLY replace the grid when there ARE events.  `event_grid`
+            ## rebuilds a uniform grid from `linspace` even when it finds none,
+            ## and that differs from `_period_grid`'s own in the last bit --
+            ## enough to move every event-free solve in the suite for nothing.
+            ## Touching the grid only when an event exists keeps every circuit
+            ## without one BIT-IDENTICAL, the same guarantee `_fold_periodic`
+            ## gives a circuit with no periodic state.
+            if self.event_times:
+                grid = _ev
         times, hs = self._period_grid(period, int(period / dt), grid)
         npts = len(times)
         self._grid_fracs = (None if grid is None
