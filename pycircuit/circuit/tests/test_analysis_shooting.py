@@ -14501,3 +14501,121 @@ def test_the_ppv_waveform_matches_a_pulse_isf_over_the_whole_period():
     assert anti < 2e-2, \
         'van der Pol is half-wave symmetric so its ISF must obey ' \
         'Gamma(t+T/2) = -Gamma(t); worst violation %.3e of the peak' % anti
+
+
+@pytest.mark.slow
+def test_probe_shooting_finds_the_orbit_and_screens_for_instability():
+    """B5 built: Bizzarri's probe, and the 2x2 power-flow screen.
+
+    A periodic voltage source across a node, with `(A, f)` solved so the
+    probe's OWN fundamental current vanishes -- at which point it sources
+    nothing and can be removed.  The probe makes the circuit NON-AUTONOMOUS,
+    so the period is known, there is no phase condition, and no `T = 0`
+    trivial root to fall into.
+
+    ⚠ IT IS NOT A CONVERGENCE AID.  The paper's own flagship high-Q Pierce
+    example was solved with "conventional SH" and a tentative inductor
+    current, not the probe.  What it buys is the sweep -- unstable cycles,
+    coexisting solutions, a stability screen.
+
+    ⚠⚠ WHAT IT COSTS, MEASURED, AND IT IS INHERENT RATHER THAN A DEFECT.
+    A single-tone probe forces a SINUSOID.  A non-sinusoidal orbit cannot
+    null the probe's whole current, only its FUNDAMENTAL, so what this
+    returns is the first-harmonic-balance (describing-function) solution.
+    On van der Pol the error is clean and QUADRATIC in harmonic content::
+
+        mu     autonomous f   probe f     df/f        THD      df/f / THD^2
+        0.10   0.159053       0.159134    +5.06e-04   0.0112       4.05
+        0.30   0.158304       0.159134    +5.24e-03   0.0361       4.02
+        1.00   0.150229       0.159134    +5.93e-02   0.1192       4.17
+
+    ⚠ AND THE PROBE FREQUENCY IS THE SAME AT EVERY `mu` -- 0.159134, which
+    is the LC resonance `1/(2 pi sqrt(LC))`.  That is not a bug either:
+    `mu (u - u^3/3)` is odd and memoryless, so its describing function is
+    purely REAL and shifts no phase, and first-harmonic balance therefore
+    MUST land on the linear resonance.  The true frequency moves away from
+    it as harmonics grow.  A gate that only checked "the probe converged"
+    would have accepted a 5.9% frequency error at `mu = 1` without noticing.
+
+    ⚠⚠ PROBE PLACEMENT IS CIRCUIT-SPECIFIC, AND ITS FAILURE IS NOT A SOLVER
+    FAILURE.  Across van der Pol's only node with no series resistance, the
+    inductor's DC current is unconstrained once `v` is forced, so a whole
+    family satisfies periodicity and the shooting Jacobian is SINGULAR.
+    Measured: periodicity error 2.11e-15 -- already a periodic solution --
+    reported as `converged = False`.  `degenerate_placement` names that
+    pairing instead of leaving a correct answer labelled non-convergent.
+    """
+    import warnings as _w
+    from pycircuit.circuit.shooting import ProbeShooting
+    circuit.default_toolkit = circuit.numeric
+
+    def vdp(mu, rs):
+        def build():
+            c = SubCircuit()
+            c.add_node('v')
+            c['C'] = C('v', gnd, c=1.0)
+            if rs > 0:
+                c.add_node('x')
+                c['RL'] = R('v', 'x', r=rs)
+                c['L'] = L('x', gnd, L=1.0)
+            else:
+                c['L'] = L('v', gnd, L=1.0)
+            c['B'] = BSource('v', gnd, gnd, 'v',
+                             i_func=lambda u: mu * (u - u ** 3 / 3.0))
+            return c
+        return build
+
+    f_lc = 1.0 / (2.0 * np.pi)
+
+    ## (1) THE DEGENERATE PLACEMENT, detected as such.
+    bad = ProbeShooting(vdp(1.0, 0.0), 'v', npts=200)
+    deg, perr, conv = bad.degenerate_placement(2.0, f_lc)
+    assert deg and not conv and perr < 1e-10, \
+        'a placement leaving the inductor DC free should read degenerate ' \
+        '(got degenerate=%r periodicity=%.2e converged=%r)' % (deg, perr, conv)
+    ok = ProbeShooting(vdp(1.0, 1e-2), 'v', npts=200)
+    deg2, _p2, conv2 = ok.degenerate_placement(2.0, f_lc)
+    assert conv2 and not deg2, \
+        'a series resistance removes the free mode, so this must converge'
+
+    ## (2) NEARLY SINUSOIDAL: the probe must agree with the AUTONOMOUS solve,
+    ## which is the only correctness evidence here -- converging to something
+    ## proves nothing.
+    mu = 0.1
+    ref = PSS(vdp(mu, 1e-2)(), method='gear', reltol=1e-11)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        ref.solve(period=6.6634, timestep=6.6634 / 300,
+                  x0=np.array([2.0, 0.0, 0.0]), maxiterations=60)
+    assert ref.converged, 'the autonomous reference did not converge'
+    Xa = np.asarray(ref.waveform[1], dtype=float)
+    f_ref = 1.0 / ref.period
+    amp_ref = 0.5 * (Xa[0].max() - Xa[0].min())
+
+    ps = ProbeShooting(vdp(mu, 1e-2), 'v', npts=300)
+    A, f, info = ps.solve(amp_ref, f_ref, tol=1e-8, maxiter=12)
+    assert info['converged'], 'the probe solve did not converge: %r' % (info,)
+    assert abs(A - amp_ref) / amp_ref < 5e-3, \
+        'probe amplitude %.6f against autonomous %.6f' % (A, amp_ref)
+    assert abs(f - f_ref) / f_ref < 5e-3, \
+        'probe frequency %.6f against autonomous %.6f' % (f, f_ref)
+
+    ## (3) ⚠ AND THE FIRST-HARMONIC LIMIT IS ASSERTED, not left implicit: the
+    ## probe lands on the LC resonance because the nonlinearity is odd and
+    ## memoryless.  If this ever stops holding, the accuracy law above is
+    ## wrong and the docstring must be re-measured.
+    assert abs(f - f_lc) / f_lc < 2e-3, \
+        'the probe should sit on the LC resonance %.6f for an odd memoryless ' \
+        'nonlinearity, got %.6f' % (f_lc, f)
+
+    ## (4) THE POWER-FLOW SCREEN on a circuit known stable.  ⚠ ONE-DIRECTIONAL:
+    ## only `P > 0 => unstable` is proven, so a non-positive P means NOT
+    ## DETECTED, never "stable".  Asserting the reverse would be asserting
+    ## something the authors explicitly say is unproven.
+    P, pinfo = ps.power_flow(A, f)
+    assert not pinfo['unstable'], \
+        'the power-flow screen flagged a stable van der Pol as unstable ' \
+        '(P = %.6e)' % P
+    assert pinfo['symmetric_part'].shape == (2, 2)
+    assert np.allclose(pinfo['symmetric_part'], pinfo['symmetric_part'].T), \
+        'the screen contracts the SYMMETRIC part, so it must be symmetric'

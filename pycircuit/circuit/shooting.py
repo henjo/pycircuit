@@ -8200,6 +8200,203 @@ class SidebandResponse(object):
                 % (self.f_out, self.f0, self.sidebands))
 
 
+class ProbeShooting:
+    """Bizzarri's probe-based shooting -- oscillator amplitude and frequency
+    from a DRIVEN solve, plus the 2x2 power-flow instability screen.
+
+    A periodic voltage source of amplitude ``A`` and frequency ``f`` is placed
+    across ``node``, and ``(A, f)`` is solved so that the probe's OWN CURRENT
+    vanishes.  At that point the probe sources nothing and can be removed
+    without changing the steady state, so it is the oscillator's own solution.
+
+    WHY IT IS WORTH HAVING, AND WHAT IT IS NOT FOR.  The probe makes the
+    circuit NON-AUTONOMOUS: the period is known (``1/f``), so there is no phase
+    condition, no free-period unknown, and no ``T = 0`` trivial root for a seed
+    below the fundamental to fall into.
+
+    ⚠ IT IS NOT A CONVERGENCE AID, AND THE PAPER SAYS SO ITSELF.  On its own
+    flagship high-Q Pierce example the authors report *"it is easy to assign a
+    tentative current to the Ls inductor ... and obtain convergence in a few
+    iterations (we did this with conventional SH)"* -- they did not use the
+    probe for it.  So basic convergence on a crystal costs one sensible ``ic``,
+    not this.  What this buys is the SWEEP: unstable limit cycles, coexisting
+    solutions, and a stability screen, which a plain autonomous solve cannot
+    reach because it can only land on stable ones.
+
+    ⚠⚠ PROBE PLACEMENT IS CIRCUIT-SPECIFIC, AND THE FAILURE IS NOT A SOLVER
+    FAILURE.  Forcing a node fixes every state the source reaches -- and any
+    state it does NOT reach whose DC level is then unconstrained makes the
+    shooting Jacobian SINGULAR, because a whole family of solutions satisfies
+    periodicity.  Measured on van der Pol with the probe across its only node:
+    ``x(T) - x(0)`` came back at **2.1e-15** -- already periodic to machine
+    precision -- while the solve reported ``converged = False``, because the
+    inductor's DC current is free once ``v`` is forced (``i_L(T) - i_L(0)`` is
+    the integral of ``v`` over a period, which vanishes for ANY ``i_L(0)``).
+    A series resistance of even ``1e-3`` removes the free mode and the same
+    solve converges.  :meth:`degenerate_placement` reports that case as what it
+    is instead of leaving a correct answer labelled non-convergent.
+    """
+
+    def __init__(self, factory, node, refnode=gnd, method='gear',
+                 reltol=1e-10, npts=300, maxiterations=30, phase=90.0):
+        """`factory()` must return a FRESH circuit WITHOUT the probe.
+
+        A factory rather than a circuit because every evaluation needs the
+        probe at a different amplitude and frequency, and rebuilding is the one
+        way to be sure no element parameter is left over from the last solve --
+        the same reason the limiting work in this file rebuilds rather than
+        re-uses (a stale `_vlim` is exactly that bug).
+        """
+        self.factory = factory
+        self.node = node
+        self.refnode = refnode
+        self.method = method
+        self.reltol = float(reltol)
+        self.npts = int(npts)
+        self.maxiterations = int(maxiterations)
+        self.phase = float(phase)
+        self.evaluations = 0
+
+    def _build(self, A, f):
+        ## imported here rather than at module scope: `elements` imports
+        ## from this package, so a top-level import would be circular.
+        from pycircuit.circuit.elements import VSin
+        cir = self.factory()
+        cir['__probe'] = VSin(self.node, self.refnode, va=float(A),
+                              freq=float(f), phase=self.phase)
+        return cir
+
+    def _probe_row(self, cir):
+        """The global row of the probe's branch current."""
+        rows = cir.elementnodemap['__probe']
+        el = cir['__probe']
+        if len(el.branches) != 1:
+            raise ValueError(
+                'ProbeShooting expects the probe to carry exactly one branch, '
+                'this one carries %d.' % len(el.branches))
+        return int(rows[-1])
+
+    def probe_current(self, A, f):
+        """The FUNDAMENTAL phasor of the probe's branch current at `(A, f)`.
+
+        Returns `(I1, pss)`.  `I1 == 0` is the oscillation condition.
+        """
+        import warnings as _w
+        cir = self._build(A, f)
+        row = self._probe_row(cir)
+        pss = PSS(cir, method=self.method, reltol=self.reltol)
+        T = 1.0 / float(f)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / self.npts,
+                      maxiterations=self.maxiterations)
+        self.evaluations += 1
+        X = np.asarray(pss.waveform[1], dtype=float)
+        ## ⚠ DROP THE DUPLICATE ENDPOINT.  `waveform` carries t=0 and t=T, which
+        ## are the same point on a periodic solution; leaving both in weights it
+        ## twice and biases every bin.
+        i_probe = X[row, :-1]
+        N = i_probe.shape[0]
+        k = np.arange(N)
+        I1 = (2.0 / N) * np.sum(i_probe * np.exp(-2j * np.pi * k / N))
+        return complex(I1), pss
+
+    def degenerate_placement(self, A, f, tol=1e-10):
+        """`(is_degenerate, periodicity_error, converged)` for this placement.
+
+        ⚠ A placement that leaves some state's DC level unconstrained gives a
+        SINGULAR shooting Jacobian: every member of a one-parameter family
+        satisfies periodicity, so the solve cannot converge even though what it
+        returns is already a periodic solution.  The signature is exactly that
+        pairing -- a tiny periodicity error with `converged = False` -- and
+        reporting it is the difference between "your probe is in the wrong
+        place" and an unexplained non-convergence.
+        """
+        import warnings as _w
+        cir = self._build(A, f)
+        pss = PSS(cir, method=self.method, reltol=self.reltol)
+        T = 1.0 / float(f)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / self.npts,
+                      maxiterations=self.maxiterations)
+        X = np.asarray(pss.waveform[1], dtype=float)
+        perr = float(np.max(np.abs(X[:, -1] - X[:, 0])))
+        return (perr < tol and not pss.converged), perr, bool(pss.converged)
+
+    def solve(self, amp0, freq0, tol=1e-9, maxiter=20, damp=1.0,
+              rel_step=1e-4):
+        """Newton on `(A, f)` driving the probe current to zero.
+
+        Returns `(A, f, info)`.  Two residual components -- the real and
+        imaginary parts of the probe's fundamental current -- and two unknowns,
+        with a finite-difference 2x2 Jacobian, so each iteration costs THREE
+        driven PSS solves.
+        """
+        A, f = float(amp0), float(freq0)
+        hist = []
+        for it in range(int(maxiter)):
+            I0, _p = self.probe_current(A, f)
+            r = np.array([I0.real, I0.imag], dtype=float)
+            hist.append((A, f, float(np.linalg.norm(r))))
+            if np.linalg.norm(r) < tol:
+                return A, f, {'iterations': it, 'residual': float(np.linalg.norm(r)),
+                              'history': hist, 'converged': True,
+                              'evaluations': self.evaluations}
+            dA = rel_step * max(abs(A), 1e-12)
+            df = rel_step * max(abs(f), 1e-12)
+            IA, _ = self.probe_current(A + dA, f)
+            IF, _ = self.probe_current(A, f + df)
+            J = np.array([[(IA.real - I0.real) / dA, (IF.real - I0.real) / df],
+                          [(IA.imag - I0.imag) / dA, (IF.imag - I0.imag) / df]])
+            if abs(np.linalg.det(J)) < 1e-300:
+                raise np.linalg.LinAlgError(
+                    'ProbeShooting: the 2x2 probe Jacobian is singular at '
+                    'A=%.6g f=%.6g. Either the probe is placed where it cannot '
+                    'see the oscillation, or the placement leaves a state '
+                    'undetermined -- check `degenerate_placement`.' % (A, f))
+            step = np.linalg.solve(J, -r)
+            A += damp * step[0]
+            f += damp * step[1]
+        return A, f, {'iterations': maxiter, 'residual': float(np.linalg.norm(r)),
+                      'history': hist, 'converged': False,
+                      'evaluations': self.evaluations}
+
+    def power_flow(self, A, f, rel_step=1e-4):
+        """The 2x2 power-flow screen `P = dv_R dy_R + dv_I dy_I`.
+
+        ⚠⚠ ONE-DIRECTIONAL, AND THAT IS THE AUTHORS' OWN STATEMENT, NOT A
+        CAVEAT ADDED HERE.  Only `P > 0 => unstable` is proven; they say the
+        converse and `P < 0 => stable` "have not been proven", only tested.  So
+        this is a cheap INSTABILITY DETECTOR and never a replacement for
+        `_spectral_report` -- a non-positive `P` means "not detected", not
+        "stable".
+
+        Returns `(P_max, info)` where `P_max` is the largest value over
+        perturbation directions, i.e. the largest eigenvalue of the symmetric
+        part of `dY/dV`.  It skips the eigenvalue computation of the system
+        Jacobian, which is the whole point of the construction.
+        """
+        Y0, _ = self.probe_current(A, f)
+        Y0 = Y0 / A
+        dv = rel_step * max(abs(A), 1e-12)
+        ## dV along the REAL axis is an amplitude perturbation; along the
+        ## imaginary axis it is a phase one, which for a probe at fixed
+        ## frequency is what the second column means.
+        Yr, _ = self.probe_current(A + dv, f)
+        Yr = Yr / (A + dv)
+        ph = dv / max(abs(A), 1e-12)
+        Yi, _ = self.probe_current(A, f * (1.0 + ph / (2.0 * np.pi)))
+        Yi = Yi / A
+        dYdV = np.array([[(Yr.real - Y0.real) / dv, (Yi.real - Y0.real) / dv],
+                         [(Yr.imag - Y0.imag) / dv, (Yi.imag - Y0.imag) / dv]])
+        sym = 0.5 * (dYdV + dYdV.T)
+        eig = np.linalg.eigvalsh(sym)
+        return float(np.max(eig)), {'dYdV': dYdV, 'symmetric_part': sym,
+                                    'eigenvalues': eig, 'Y0': Y0,
+                                    'unstable': bool(np.max(eig) > 0.0)}
+
+
 class PAC(Analysis):
     """Small-signal analysis over a periodic operating point, matrix-free.
 

@@ -6388,6 +6388,59 @@ proven", only tested. A cheap *instability* detector, not a replacement for
 **Gate:** only if unstable cycles or multiple coexisting solutions are actually wanted.
 Not for seeding.
 
+✅✅ **BUILT 2026-09-06 as `ProbeShooting`.** Suite 3083 passed.
+Test: `test_probe_shooting_finds_the_orbit_and_screens_for_instability`.
+
+⚠⚠ **AND THE SINGLE-TONE PROBE IS A DESCRIBING-FUNCTION SOLVE, NOT THE ORBIT — MEASURED.** A
+one-tone probe forces a SINUSOID, so a non-sinusoidal orbit can only null the probe's
+FUNDAMENTAL current. The error is clean and QUADRATIC in harmonic content:
+
+| mu | autonomous f | probe f | df/f | THD | df/f ÷ THD² |
+|---|---|---|---|---|---|
+| 0.10 | 0.159053 | 0.159134 | +5.06e-04 | 0.0112 | 4.05 |
+| 0.30 | 0.158304 | 0.159134 | +5.24e-03 | 0.0361 | 4.02 |
+| 1.00 | 0.150229 | 0.159134 | **+5.93e-02** | 0.1192 | 4.17 |
+
+⚠ **The probe frequency is IDENTICAL at every mu — 0.159134, the LC resonance.** `mu(u - u³/3)`
+is odd and memoryless, so its describing function is purely REAL and shifts no phase; first-harmonic
+balance MUST land on the linear resonance. **A gate checking only "the probe converged" would have
+accepted a 5.9% frequency error.** Comparing against the AUTONOMOUS solve is what exposed it.
+
+✅ **THE MULTI-HARMONIC PROBE FIXES IT — K tones in SERIES, 2K unknowns against 2K equations
+(φ₁ is the time origin), i.e. harmonic balance with a shooting inner solve:**
+
+| K | f | df/f | note |
+|---|---|---|---|
+| 1 | 0.159134 | +5.93e-02 | |
+| 2 | 0.159134 | +5.93e-02 | **A₂ = 2.3e-13 — no change at all** |
+| 3 | 0.150172 | **−3.77e-04** | **157x better**, A₃ = −0.2504 |
+
+⚠⚠ **K=2 BUYS NOTHING BECAUSE THE EVEN HARMONICS DO NOT EXIST.** Van der Pol is HALF-WAVE
+SYMMETRIC, so only odd harmonics are present — the useful sequence is K = 1, 3, 5 … **This is the
+same symmetry the PPV waveform gate uses** (`Gamma(t+T/2) = -Gamma(t)`), reached from an unrelated
+direction.
+
+⚠ **PROBE PLACEMENT FAILURE IS NOT SOLVER FAILURE.** Across van der Pol's only node with no series
+resistance the inductor's DC current is unconstrained once `v` is forced, so a family satisfies
+periodicity and the shooting Jacobian is SINGULAR: periodicity error **2.11e-15** — already a
+periodic solution — reported as `converged = False`. `degenerate_placement` names that pairing.
+⚠ My first explanation was inductor DRIFT, and it was WRONG: drift would give a residual falling
+with `h`, and it is 1e-17 at every grid.
+
+⚠ **The power-flow screen is asserted ONE-DIRECTIONALLY.** Only `P > 0 => unstable` is proven; the
+test asserts a stable circuit is not flagged and deliberately does NOT assert the converse, which
+the authors say plainly is untested.
+
+⚠ **Harness trap worth the record: a ZERO-AMPLITUDE voltage source is a SHORT, not an absent
+source.** Building the autonomous reference as a zero-amplitude probe grounds the node and gives a
+"reference" frequency for a different circuit.
+
+**COST, and it is the open item:** 2K+1 PSS solves per Newton iteration — affordable at K=3, not at
+K=20. Three routes, unbuilt: (a) `∂I/∂V_k` IS the periodic small-signal admittance, which PAC
+computes from ONE factorised PSS — that alone takes 2K+1 solves to ~2; (b) prune the even harmonics
+on a half-wave-symmetric circuit, measured above to be pure waste; (c) warm-start each FD column
+from the base solution.
+
 ---
 
 ## C. Closed — do not re-open without new evidence
