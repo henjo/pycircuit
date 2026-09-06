@@ -6435,11 +6435,85 @@ the authors say plainly is untested.
 source.** Building the autonomous reference as a zero-amplitude probe grounds the node and gives a
 "reference" frequency for a different circuit.
 
-**COST, and it is the open item:** 2K+1 PSS solves per Newton iteration — affordable at K=3, not at
-K=20. Three routes, unbuilt: (a) `∂I/∂V_k` IS the periodic small-signal admittance, which PAC
-computes from ONE factorised PSS — that alone takes 2K+1 solves to ~2; (b) prune the even harmonics
-on a half-wave-symmetric circuit, measured above to be pure waste; (c) warm-start each FD column
-from the base solution.
+✅✅ **COST: CLOSED 2026-09-06/07.** It was `2K+1` PSS solves per Newton iteration. Now one
+nonlinear solve plus `K` LINEAR PAC solves, `solve_multitone(use_pac=True)`:
+
+| K | route | f | df/f | solves | wall |
+|---|---|---|---|---|---|
+| 2 | FD | 0.159124 | +5.921e-02 | 16 | 14.2 s |
+| 2 | **PAC** | 0.159124 | +5.921e-02 | **9** | 13.7 s |
+| 3 | FD | 0.150167 | −4.099e-04 | 43 | 40.6 s |
+| 3 | **PAC** | 0.150167 | −4.099e-04 | **19** | 29.8 s |
+
+Identical frequency to every printed digit; **2.3x fewer solves at K=3**, and the gain GROWS with
+K because FD is `O(2K)` nonlinear against one nonlinear plus `O(K)` linear.
+
+⚠⚠ **FOUR DEFECTS STOOD BETWEEN "PAC HAS THE RIGHT QUANTITY" AND A WORKING JACOBIAN, and every
+one was found from a STRUCTURED discrepancy rather than by fitting a constant** — which is the
+only reason none of them was papered over:
+
+| symptom | cause |
+|---|---|
+| ratios of exactly **1, 2, 3** at K = 1, 2, 3 | **`VS.vac` DEFAULTS TO 1**, so every probe in the series chain was excited at once and, sharing one branch current, contributed K times |
+| summing the folded pair CANCELLED; taking the larger HALVED | the two entries at each harmonic **subtract** |
+| sign-only error at m=3, magnitude right | `PAC.solve` folds the sideband index away, so the pair's array ORDER is not stable across harmonics |
+| solve diverged to `f = 0.0348` while the Jacobian validated at 1e-04 | **a missing CHAIN RULE** — Jacobian is `d(I)/d(V)`, unknowns are `(A, φ)` in degrees |
+
+⚠⚠⚠ **THE ORDERING HEURISTIC IS THE CAUTIONARY ONE.** Ordering the folded pair by magnitude passed
+at the solution (**1.6e-05**) and failed at the Newton's starting point (**1.763**) — a heuristic
+that passes its gate and then fails in use, which is worse than one that fails outright. Replaced
+by exciting at `j·f₀ + δ`, which separates the pair in FREQUENCY (direct at `m·f₀ + δ`, image at
+`m·f₀ − δ`), so the rule is **derived rather than guessed**.
+
+⚠ **AND THE CHAIN-RULE DEFECT IS WHY `use_pac` RE-VALIDATES INSIDE THE SOLVE**, at the Newton's own
+starting point, rather than trusting a standalone check: a correct Jacobian and a broken solve
+coexisted, and only in-situ validation caught it. The validation gate is default-ON and RAISES —
+a wrong Jacobian does not announce itself, it converges to the wrong orbit.
+
+⚠ **Per-column PSS solves eliminated**: `vac` is read only under `analysis='ac'` and never enters
+the transient residual, so it cannot move the operating point. Rebuilding per column recomputed the
+same orbit K times and made the "cheap" Jacobian **3.6x SLOWER** than FD at K=2 before this was
+found.
+
+✅ **The other two cheap wins, both measured:** warm-starting the FD columns is **1.60x** (2.09 s →
+1.31 s, answers agreeing to 3e-15) and carries no assumption about the circuit; even-harmonic
+pruning is **`even_harmonic_content`, a MEASUREMENT, never an assumption** — see the falsifier
+entry below.
+
+⚠⚠⚠ **EVEN-HARMONIC PRUNING DOES NOT GENERALISE, AND THE FAILURE IS SILENT.** On van der Pol the
+even tones look like free savings — `K=2` returns `A₂ = 2.3e-13` and a frequency identical to
+`K=1` in every digit. That holds ONLY for a HALF-WAVE SYMMETRIC circuit. Adding an even term
+`β u²` to the same nonlinearity:
+
+| β | H2/H1 | H3/H1 | H4/H1 |
+|---|---|---|---|
+| 0.00 | **7.080e-16** | 1.168e-01 | 2.710e-16 |
+| 0.05 | 2.649e-02 | 1.162e-01 | 9.239e-03 |
+| 0.20 | **1.058e-01** | 1.068e-01 | 3.600e-02 |
+| 0.50 | **2.613e-01** | 5.994e-02 | 7.610e-02 |
+
+At β = 0.20 the second harmonic EQUALS the third; at β = 0.50 it is **4x larger**, so pruning would
+discard the biggest correction after the fundamental. And β = 0.05 already gives 2.6% — there is no
+margin to judge by eye.
+
+⚠⚠ **BOTH TONE SETS CONVERGE, so convergence does not distinguish them:**
+
+| tones | f | df/f | converged |
+|---|---|---|---|
+| [1, 2, 3] | 0.148753 | +3.60e-03 | True |
+| [1, 3] | 0.150172 | **+1.32e-02** | **True** |
+
+⚠⚠⚠ **AND `0.150172` IS THE SYMMETRIC CIRCUIT'S OWN ANSWER, to every printed digit.** Dropping the
+even tones does not merely lose accuracy — it makes the probe **STRUCTURALLY BLIND to β**, so it
+returns the orbit of a DIFFERENT CIRCUIT and reports success. That is why `even_harmonic_content`
+measures and `tones` has no clever default.
+Test: `test_even_harmonic_pruning_must_be_measured_and_never_assumed`.
+
+⚠ **A metric trap from the same day, worth carrying:** the first half-wave-antisymmetry measure in
+the PPV waveform gate normalised by the LOCAL value and reported a 10% violation — all of it from a
+pair near a ZERO CROSSING. **A relative error against a quantity passing through zero is not a
+statement about agreement**; normalise by the waveform's PEAK. The fix was the MEASURE, not the
+bound.
 
 ---
 
@@ -6781,6 +6855,46 @@ session's report.
 concurrent run moved readings 25-30% on the *same* configuration.
 
 ---
+
+
+0k. **A HEURISTIC THAT PASSES ITS GATE AND THEN FAILS IN USE** — worse than one that fails
+   outright, because the gate certifies it. Ordering PAC's folded sideband pair by magnitude
+   validated at the SOLUTION (`1.6e-05`) and failed at the Newton's STARTING POINT (`1.763`).
+   ⚠ **Validate a derivative WHERE IT IS USED, not where it is convenient** — a Jacobian is used
+   away from the solution by definition. Fixed by removing the guess entirely: exciting at
+   `j·f₀ + δ` separates the pair in FREQUENCY, so the term is identified rather than ordered.
+
+0l. **A CORRECT DERIVATIVE COEXISTING WITH A BROKEN SOLVE.** `pac_jacobian` validated at `1e-04`
+   while the solve using it diverged to `f = 0.0348` against `0.1502` — the Jacobian is
+   `d(I)/d(V)` and the unknowns are `(A, φ)` in degrees, so a **CHAIN RULE was missing**. No
+   amount of validating the object in isolation finds this; only re-validating IN SITU does, which
+   is why `use_pac` re-checks at the Newton's own starting point rather than trusting an earlier
+   standalone pass.
+
+0x. **CALIBRATING AN "INDEPENDENT" ROUTE AGAINST THE ONE IT REPLACES.** The PAC/FD ratio looked
+   like a constant (`−0.5`); applying it would have made `K=1` pass while `K=2` and `K=3` were
+   silently wrong by exactly 2× and 3×, with the error absorbed into the fitted constant. The
+   conventions were pinned against an ANALYTIC fixture instead — a resistor where `dI/dV = 1/R`.
+   ⚠ Same shape as the PPV biorthogonality check, which verifies transcription and not
+   correctness.
+
+0y. **STRUCTURED DISCREPANCIES NAME THEIR CAUSE; FITTED CONSTANTS HIDE IT.** Ratios of exactly
+   1, 2, 3 at `K = 1, 2, 3` said *every source is contributing* (`VS.vac` DEFAULTS TO 1). A
+   sign-only error with correct magnitude said *ordering*. A uniform `0.5` said *a term is
+   missing*. Each named a mechanism. **When a discrepancy has structure, read it — do not scale
+   it away.**
+
+0z. **A RELATIVE ERROR AGAINST A QUANTITY PASSING THROUGH ZERO IS NOT A STATEMENT ABOUT
+   AGREEMENT.** The PPV waveform gate's first half-wave-antisymmetry measure normalised by the
+   LOCAL value and reported a 10% violation — all of it from one pair near a ZERO CROSSING.
+   Normalising by the waveform's PEAK is the correct statement. ⚠ **The fix was the MEASURE, not
+   the bound**, and the bound was nearly widened first.
+
+0aa. **AN OPTIMISATION THAT IS VALID ON THE FIXTURE AND NOT IN GENERAL.** Even-harmonic pruning
+   looks free on van der Pol (`A₂ = 2.3e-13`) because that circuit is HALF-WAVE SYMMETRIC. On an
+   asymmetric one it converges — cleanly, with no warning — to **a different circuit's orbit**.
+   ⚠ **The tell was asking whether it generalises BEFORE shipping it as a default**, and the
+   answer needed a measurement (`even_harmonic_content`), not an inspection.
 
 ## TR-BDF2 (a two-stage DIRK alongside the LMM tree), 2026-09-05
 

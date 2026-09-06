@@ -996,6 +996,34 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
     gamma -- ``R(inf) = 0`` identically -- so L-stability alone selects
     nothing; it is the equal-diagonal condition within Rosenbrock's family
     that gives ``Q``.)
+    ⚠⚠ THAT PARENTHESIS IS TRUE OF **THIS** FAMILY AND THE CANONICAL
+    REFERENCE PRINTS THE OPPOSITE SENTENCE, so read them together before
+    concluding either is wrong.  Hosea & Shampine (Appl. Numer. Math. 20
+    (1996) 21-37, p.4) give
+
+        R2(z) = [Q z^2 + 4(1-gamma) z + 4] / (2 - gamma z)^2  ->  Q / gamma^2
+
+    and conclude "The method is L-stable ONLY IF gamma^2 - 4 gamma + 2 = 0".
+    The tell is their DENOMINATOR: ``(2 - gamma z)^2`` means BOTH implicit
+    stages carry the diagonal ``gamma/2``, so the one-LU condition is a
+    HYPOTHESIS of their family rather than a conclusion.  Two families::
+
+        family                            a33           R(inf)          Q=0 from
+        exact BDF2 stage (THIS one)   (1-g)/(2-g)   0, identically      one-LU
+        Hosea & Shampine (equal diag)     g/2           Q/g^2        L-stability
+
+    and the bridge is the one-LU expression already written above --
+    ``a33 - gamma/2 = Q / (2(2-gamma))``, verified here to 1.1e-16 -- so the
+    two COINCIDE EXACTLY AT ``Q = 0``, which is where this tableau sits.  Both
+    sentences are correct about their own family, and the widespread secondary
+    claim that "gamma = 2 - sqrt(2) is chosen for L-stability" holds only
+    INSIDE the already-one-LU-constrained family.
+
+    ⚠ HOW THIS WAS CHECKED, because the first check was worthless: building
+    both tableaux with ``b`` equal to the last row of ``A`` imposes STIFF
+    ACCURACY on both, which forces ``R(inf) = 0`` by theorem whatever the
+    diagonal is -- the instrument then decides the answer.  The bridge identity
+    avoids the stability function entirely, and is what actually settles it.
 
     ⚠ CONVENTION: this is BANK / HOSEA & SHAMPINE's ``gamma`` (the stage
     ABSCISSA ``c2 = 2 - sqrt(2) ~ 0.586``), NOT Kennedy & Carpenter's or

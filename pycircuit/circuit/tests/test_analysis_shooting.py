@@ -14619,3 +14619,193 @@ def test_probe_shooting_finds_the_orbit_and_screens_for_instability():
     assert pinfo['symmetric_part'].shape == (2, 2)
     assert np.allclose(pinfo['symmetric_part'], pinfo['symmetric_part'].T), \
         'the screen contracts the SYMMETRIC part, so it must be symmetric'
+
+
+@pytest.mark.slow
+def test_even_harmonic_pruning_must_be_measured_and_never_assumed():
+    """⚠⚠ THE CHEAP OPTIMISATION THAT SILENTLY RETURNS THE WRONG ORBIT.
+
+    A multi-tone probe costs `2K+1` PSS solves an iteration, and on van der
+    Pol the even tones look like pure waste: `K=2` returns `A_2 = 2.3e-13` and
+    a frequency identical to `K=1` in every printed digit.  It is tempting to
+    drop them.
+
+    **THAT HOLDS ONLY FOR A HALF-WAVE SYMMETRIC CIRCUIT.**  Add an even term
+    `beta u^2` to the same nonlinearity and the even content is real::
+
+        beta    H2/H1       H3/H1       H4/H1
+        0.00    7.080e-16   1.168e-01   2.710e-16   <- symmetric
+        0.05    2.649e-02   1.162e-01   9.239e-03
+        0.20    1.058e-01   1.068e-01   3.600e-02   <- H2 EQUALS H3
+        0.50    2.613e-01   5.994e-02   7.610e-02   <- H2 is 4x H3
+
+    ⚠⚠ AND THE FAILURE IS SILENT.  On the asymmetric circuit (autonomous
+    `f = 0.148220`) BOTH tone sets converge::
+
+        tones       f           df/f        converged
+        [1, 2, 3]   0.148753    +3.60e-03   True
+        [1, 3]      0.150172    +1.32e-02   True      <- 3.7x worse
+
+    ⚠⚠⚠ AND `0.150172` IS THE SYMMETRIC CIRCUIT'S OWN ANSWER, to every
+    printed digit.  Dropping the even tones does not merely lose accuracy --
+    it makes the probe STRUCTURALLY BLIND to `beta`, so it returns the orbit
+    of a different circuit and reports convergence.  That is why
+    `even_harmonic_content` measures instead of assuming, and why `tones` has
+    no clever default.
+    """
+    import warnings as _w
+    from pycircuit.circuit.shooting import ProbeShooting
+    circuit.default_toolkit = circuit.numeric
+    RS = 1e-2
+
+    def fac(beta):
+        def build():
+            c = SubCircuit()
+            c.add_node('v')
+            c.add_node('x')
+            c['C'] = C('v', gnd, c=1.0)
+            c['RL'] = R('v', 'x', r=RS)
+            c['L'] = L('x', gnd, L=1.0)
+            c['B'] = BSource('v', gnd, gnd, 'v',
+                             i_func=lambda u, b=beta: (u - u ** 3 / 3.0) + b * u ** 2)
+            return c
+        return build
+
+    f_lc = 1.0 / (2.0 * np.pi)
+
+    ## (1) THE MEASUREMENT MUST SEPARATE THE CASES, or the design is unusable.
+    sym, _m = ProbeShooting(fac(0.0), 'v', npts=200).even_harmonic_content(f_lc)
+    asym, _m2 = ProbeShooting(fac(0.2), 'v', npts=200).even_harmonic_content(f_lc)
+    assert sym < 1e-10, \
+        'the symmetric circuit should show no even content, got %.3e' % sym
+    assert asym > 1e-2, \
+        'the asymmetric circuit must show even content or the falsifier below ' \
+        'proves nothing, got %.3e' % asym
+    assert asym / max(sym, 1e-300) > 1e6, \
+        'the measure must SEPARATE the cases, not merely order them'
+
+    ## (2) THE SILENT FAILURE, asserted: pruning converges to a worse answer.
+    ref = PSS(fac(0.2)(), method='gear', reltol=1e-11)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        ref.solve(period=6.6634, timestep=6.6634 / 300,
+                  x0=np.array([2.0, 0.0, 0.0]), maxiterations=60)
+    assert ref.converged
+    f_ref = 1.0 / ref.period
+
+    got = {}
+    for tones in ([1, 2, 3], [1, 3]):
+        ps = ProbeShooting(fac(0.2), 'v', npts=250, tones=tones)
+        f, amps, ph, info = ps.solve_multitone(
+            f_lc, [2.0] + [0.05] * (len(tones) - 1), tol=1e-7, maxiter=12)
+        got[tuple(tones)] = (f, info['converged'], abs(f - f_ref) / f_ref)
+
+    full = got[(1, 2, 3)]
+    pruned = got[(1, 3)]
+    assert full[1] and pruned[1], \
+        'both must CONVERGE -- the point is that convergence does not ' \
+        'distinguish them: %r' % (got,)
+    assert full[2] < pruned[2], \
+        'including the even tone must be more accurate on an asymmetric ' \
+        'circuit: full %.3e against pruned %.3e' % (full[2], pruned[2])
+    assert pruned[2] / full[2] > 2.0, \
+        'the pruning penalty should be substantial, got only %.2fx' \
+        % (pruned[2] / full[2])
+
+
+@pytest.mark.slow
+def test_the_pac_probe_jacobian_agrees_with_finite_difference_and_is_cheaper():
+    """`dI/dV` from K LINEAR PAC solves instead of 2K nonlinear ones.
+
+    Measured on van der Pol, same fixture as the multitone solve::
+
+        K  route   f          df/f        solves   wall
+        2  FD      0.159124   +5.921e-02    16      14.2s
+        2  PAC     0.159124   +5.921e-02     9      13.7s
+        3  FD      0.150167   -4.099e-04    43      40.6s
+        3  PAC     0.150167   -4.099e-04    19      29.8s
+
+    Identical frequency to every printed digit, 2.3x fewer solves at K=3, and
+    the gain GROWS with K because FD is O(2K) nonlinear solves against one
+    nonlinear plus O(K) linear.
+
+    ⚠⚠ FOUR DEFECTS STOOD BETWEEN "PAC HAS THE RIGHT QUANTITY" AND A WORKING
+    JACOBIAN, and every one was found by a STRUCTURED discrepancy rather than
+    by fitting a constant -- which is why none of them was papered over:
+
+      * ratios of exactly 1, 2, 3 at K = 1, 2, 3  ->  `VS.vac` DEFAULTS TO 1,
+        so every probe in the series chain was excited at once and, sharing one
+        branch current, contributed K times over;
+      * summing the folded pair CANCELLED and taking the larger HALVED  ->  the
+        two entries at each harmonic SUBTRACT;
+      * a sign-only error at m=3 with correct magnitude  ->  `PAC.solve` folds
+        the sideband index away, so the pair's array ORDER is not stable across
+        harmonics.  Ordering by magnitude passed at the solution (1.6e-05) and
+        FAILED at the Newton's start (1.763): a heuristic that passes its gate
+        and then fails in use.  Fixed by exciting at `j*f0 + delta`, which
+        separates the pair in FREQUENCY -- direct at `m*f0 + delta`, image at
+        `m*f0 - delta` -- so the rule is derived, not guessed;
+      * the solve diverging to f = 0.0348 while `pac_jacobian` validated at
+        1e-04  ->  a CHAIN RULE was missing.  The Jacobian is
+        `d(Re I, Im I)/d(Re V, Im V)`; the unknowns are `(A, phi)` in degrees.
+        A correct derivative wired to the wrong variables.
+
+    ⚠ The last one is the reason `use_pac` re-validates at the Newton's OWN
+    starting point rather than trusting a standalone check: a correct Jacobian
+    and a broken solve coexisted, and only validating in situ caught it.
+    """
+    import warnings as _w
+    from pycircuit.circuit.shooting import ProbeShooting
+    circuit.default_toolkit = circuit.numeric
+
+    def fac():
+        def build():
+            c = SubCircuit()
+            c.add_node('v')
+            c.add_node('x')
+            c['C'] = C('v', gnd, c=1.0)
+            c['RL'] = R('v', 'x', r=1e-2)
+            c['L'] = L('x', gnd, L=1.0)
+            c['B'] = BSource('v', gnd, gnd, 'v',
+                             i_func=lambda u: (u - u ** 3 / 3.0))
+            return c
+        return build
+
+    f_lc = 1.0 / (2.0 * np.pi)
+
+    ## (1) It validates AT the solution and AWAY from it.  The second is the
+    ## case the magnitude-ordering heuristic failed, so it is the one that
+    ## matters -- a Jacobian is used away from the solution by definition.
+    for amps, where in (([2.0, 0.0, -0.25], 'solution'),
+                        ([2.0, 0.05, 0.05], 'Newton start')):
+        ps = ProbeShooting(fac(), 'v', npts=300, harmonics=3)
+        J, info = ps.pac_jacobian(f_lc, amps, [90.0] * 3, validate=True)
+        assert info['validated'], where
+        assert info['validation_reldiff'] < 1e-3, \
+            'PAC vs FD at the %s: %.3e' % (where, info['validation_reldiff'])
+        assert J.shape == (6, 6)
+
+    ## (2) ⚠ THE OFF-DIAGONALS ARE THE ONLY ENTRIES THAT TEST THE SIDEBAND MAP.
+    ## At K=1 there are none (m = j, so k = 0), which is exactly why a passing
+    ## K=1 check missed the `vac` defect for three iterations of debugging.
+    ps1 = ProbeShooting(fac(), 'v', npts=250, harmonics=1)
+    J1, i1 = ps1.pac_jacobian(f_lc, [1.99], [90.0], validate=True)
+    assert i1['validated'] and J1.shape == (2, 2)
+
+    ## (3) END TO END: the PAC route must reach the SAME orbit as FD, since a
+    ## faster wrong answer is worthless.
+    got = {}
+    for use_pac in (False, True):
+        ps = ProbeShooting(fac(), 'v', npts=300, harmonics=3)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            f, amps, ph, info = ps.solve_multitone(
+                f_lc, [2.0, 0.05, 0.05], tol=1e-7, maxiter=12, use_pac=use_pac)
+        assert info['converged'], 'use_pac=%s did not converge' % use_pac
+        got[use_pac] = (f, info['evaluations'])
+    f_fd, n_fd = got[False]
+    f_pac, n_pac = got[True]
+    assert abs(f_pac - f_fd) / f_fd < 1e-6, \
+        'the PAC route found a different orbit: %.8f against %.8f' % (f_pac, f_fd)
+    assert n_pac < n_fd, \
+        'the PAC route must cost fewer solves, got %d against %d' % (n_pac, n_fd)
