@@ -12486,7 +12486,7 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
 
     On a source-free RC network the period map is the homogeneous flow
     `exp(A T)` with `A = -C^-1 G` (reduced), whose eigenvalues are known in
-    closed form from the pencil `(C, G)`.  `PSS.factored_period_trbdf2`
+    closed form from the pencil `(C, G)`.  `PSS.factored_period_dirk`
     builds the TR-BDF2 monodromy as a factored replay; densifying it and
     comparing its eigenvalues to `exp(mu T)` checks BOTH that the map is the
     right one and that its error falls as `O(h^2)`.
@@ -12528,8 +12528,8 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
 
     errs = {}
     for npts in (100, 200, 400):
-        fp = pss.factored_period_trbdf2(x0, T, npts)
-        assert fp.kind == 'trbdf2'
+        fp = pss.factored_period_dirk(x0, T, npts, method='trbdf2')
+        assert fp.kind == 'dirk'
         assert fp.width == m
         lam = np.sort(np.linalg.eigvals(dense_M(fp)).real)
         errs[npts] = float(np.max(np.abs(lam - exact)))
@@ -12542,7 +12542,7 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
 
     ## the adjoint is the exact transpose of the forward map (built as a
     ## dedicated test elsewhere; sanity-checked here on one grid)
-    fp = pss.factored_period_trbdf2(x0, T, 100)
+    fp = pss.factored_period_dirk(x0, T, 100, method='trbdf2')
     Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                           for e in np.eye(m)])
     Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -12647,7 +12647,7 @@ def test_driven_pss_under_trbdf2_matches_ac_and_gives_second_order_monodromy():
     assert abs(abs(fund) - abs(ac2)) < 1e-3 * abs(ac2), (fund, ac2)
 
     fp = pss.factored_period()
-    assert fp.kind == 'trbdf2'
+    assert fp.kind == 'dirk'
     ## spectral radius is the RC pole exp(-T/tau)
     assert abs(pss.spectral_radius - np.exp(-period / tau)) < 1e-6
 
@@ -12694,7 +12694,7 @@ def test_autonomous_pss_under_trbdf2_finds_its_own_period():
         (pss.period, ref.period)
     ## an oscillator's monodromy carries a multiplier at 1 (the orbit tangent)
     assert abs(pss.spectral_radius - 1.0) < 1e-3, pss.spectral_radius
-    assert pss.factored_period().kind == 'trbdf2'
+    assert pss.factored_period().kind == 'dirk'
 
 
 def test_driven_pss_under_radau_matches_ac_and_gives_fifth_order_monodromy():
@@ -12822,7 +12822,7 @@ def test_trbdf2_monodromy_transpose_matches_the_dense_transpose():
     cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
     pss = PSS(cir, method='trbdf2')
     m = cir.n - 1
-    fp = pss.factored_period_trbdf2(np.zeros(m), 5e-4, 50)
+    fp = pss.factored_period_dirk(np.zeros(m), 5e-4, 50)
     M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                          for e in np.eye(m)])
     MT = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -13033,7 +13033,7 @@ def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator
     `dQ/Q = Q_lambda dlambda2/lambda2`).  TR-BDF2 carries far less of it.
 
     Deterministic and cheap: no ODE integration, no PSS solve.  TR-BDF2's
-    monodromy is the SHIPPING one (`factored_period_trbdf2`); Gear-2's is the
+    monodromy is the SHIPPING one (`factored_period_dirk`); Gear-2's is the
     BDF2 companion on the same reduced pencil, which is exactly the
     `solved_history` pair map a Gear-2 PSS forms on a linear system.
 
@@ -13071,7 +13071,7 @@ def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator
 
     def errs(N):
         h = T / N
-        fp = pss.factored_period_trbdf2(np.zeros(m), T, N)
+        fp = pss.factored_period_dirk(np.zeros(m), T, N)
         Mt = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                               for e in np.eye(m)])
         lam_t = float(np.max(np.abs(np.linalg.eigvals(Mt))))
