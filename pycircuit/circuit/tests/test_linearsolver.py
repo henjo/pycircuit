@@ -287,3 +287,45 @@ def test_autosolver_picks_by_size_measured_end_to_end():
     s_big.solve(big_A, np.ones(big), numeric)
     assert isinstance(s_big._choice, KLUSolver), \
         'AutoSolver should prefer KLU at n=%d, chose %r' % (big, s_big._choice)
+
+
+def _complex_klu_or_skip():
+    from pycircuit.circuit.linearsolver import ComplexKLUSolver
+    try:
+        return ComplexKLUSolver()
+    except ImportError as e:
+        pytest.skip('libklu not available: %s' % e)
+
+
+def test_complex_klu_solves_correctly():
+    """ComplexKLUSolver (klu_z_*) matches a dense complex solve.
+
+    The enabling dependency for the Radau IIA(3) cost transform: the coupled
+    stage solve needs one complex factorisation ``((alpha+i beta)/h) C + G``.
+    Right answer first.
+    """
+    k = _complex_klu_or_skip()
+    rng = np.random.default_rng(3)
+    n = 40
+    A = (np.diag(5.0 + 3.0j + rng.random(n))
+         + np.diag((-1.0 - 0.5j) * np.ones(n - 1), 1)
+         + np.diag((-1.0 + 0.2j) * np.ones(n - 1), -1))
+    b = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    x = k.solve(A, b)
+    assert np.abs(A.dot(x) - b).max() < 1e-10
+    assert np.linalg.norm(x - np.linalg.solve(A, b)) < 1e-10
+
+
+def test_complex_klu_reuses_the_ordering_across_solves():
+    """analyze once, klu_z_refactor thereafter -- asserted on the counters."""
+    k = _complex_klu_or_skip()
+    A = np.array([[5. + 2j, -1., 0.],
+                  [-1., 5. + 2j, -1.],
+                  [0., -1., 5. + 2j]])
+    b = np.ones(3, dtype=complex)
+    for scale in (1.0, 2.0 + 0.1j, 3.0, 4.0 - 0.2j):
+        x = k.solve(A * scale, b)
+        assert np.abs((A * scale).dot(x) - b).max() < 1e-10
+    assert k.analyses == 1, 'the ordering was recomputed: %r' % k
+    assert k.factors == 1, 'a full factorisation was redone: %r' % k
+    assert k.refactors == 3, 'the refactor path was not taken: %r' % k

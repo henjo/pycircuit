@@ -364,6 +364,156 @@ class KLUSolver(LinearSolver):
                    self.residual_fallbacks))
 
 
+class ComplexKLUSolver(object):
+    """SuiteSparse KLU for COMPLEX systems, through the ``klu_z_*`` family.
+
+    The complex sibling of :class:`KLUSolver`, and the enabling dependency for
+    the Radau IIA(3) cost transform: the coupled ``3m`` stage solve
+    block-diagonalises through ``eig(A^{-1})`` into one REAL factorisation of
+    ``(gamma_r/h) C + G`` and one COMPLEX factorisation of
+    ``((alpha + i beta)/h) C + G`` (its conjugate is free), replacing an
+    ``O((3m)^3)`` dense solve with two sparse ones.  Without a complex sparse
+    LU the transform has no home and a real-only fallback throws the whole
+    advantage away (the peer's item C); this provides it.
+
+    ⚠ SuiteSparse's ``klu_analyze`` is PATTERN-ONLY and shared with the real
+    path -- the symbolic ordering does not depend on the values being real or
+    complex -- so only ``klu_z_factor``/``klu_z_refactor``/``klu_z_solve`` are
+    complex.  KLU's packed-complex layout is ``[re0, im0, re1, im1, ...]``,
+    which is exactly how numpy stores ``complex128``, so the values marshal by
+    ``arr.view(float64)`` with no copy or interleave.  Not a `LinearSolver`
+    subclass: that ABC's contract is real (`factor`/transpose semantics tuned
+    for the shooting replays), and this solves complex systems for the Radau
+    transform only.
+    """
+
+    REFACTOR_RESIDUAL_TOL = 1e-8
+
+    def __init__(self, libname='libklu.so.2'):
+        import ctypes
+        import numpy
+        try:
+            lib = ctypes.CDLL(libname)
+        except OSError as e:
+            raise ImportError(
+                'ComplexKLUSolver needs SuiteSparse KLU (%s); install libklu / '
+                'libsuitesparse' % libname) from e
+        try:
+            import scipy.sparse as _sp
+        except ImportError as e:                              # pragma: no cover
+            raise ImportError('ComplexKLUSolver needs scipy.sparse') from e
+        self._ct = ctypes
+        self._np = numpy
+        self._sp = _sp
+        self._lib = lib
+        c_int_p = ctypes.POINTER(ctypes.c_int)
+        c_dbl_p = ctypes.POINTER(ctypes.c_double)
+        for nm, argt, rest in (
+                ('klu_defaults', [ctypes.c_void_p], ctypes.c_int),
+                ('klu_analyze', [ctypes.c_int, c_int_p, c_int_p, ctypes.c_void_p],
+                 ctypes.c_void_p),
+                ('klu_z_factor', [c_int_p, c_int_p, c_dbl_p, ctypes.c_void_p,
+                                  ctypes.c_void_p], ctypes.c_void_p),
+                ('klu_z_refactor', [c_int_p, c_int_p, c_dbl_p, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+                ('klu_z_solve', [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                 ctypes.c_int, c_dbl_p, ctypes.c_void_p],
+                 ctypes.c_int)):
+            f = getattr(lib, nm)
+            f.argtypes = argt
+            f.restype = rest
+        self._common = ctypes.create_string_buffer(4096)
+        if not lib.klu_defaults(ctypes.byref(self._common)):
+            raise ImportError('klu_defaults failed; the KLU library looks unusable')
+        self._pattern = None
+        self._symbolic = None
+        self._numeric = None
+        self.analyses = 0
+        self.factors = 0
+        self.refactors = 0
+        self.residual_fallbacks = 0
+
+    def _ptr(self, arr, ctype):
+        return arr.ctypes.data_as(self._ct.POINTER(ctype))
+
+    def solve(self, A, b):
+        """Solve the complex system ``A x = b`` and return ``x`` (complex).
+
+        Reuses the symbolic ordering across calls with the same sparsity
+        pattern (``klu_z_refactor``), falling back to a full ``klu_z_factor``
+        when the residual shows the reused pivots have gone bad -- the same
+        validated-not-trusted rule :class:`KLUSolver` uses.
+        """
+        numpy = self._np
+        ctypes = self._ct
+        ## accept either a dense array or a scipy.sparse matrix
+        Acsc = self._sp.csc_matrix(A).astype(numpy.complex128)
+        n = Acsc.shape[0]
+        Ap = numpy.ascontiguousarray(Acsc.indptr, dtype=numpy.int32)
+        Ai = numpy.ascontiguousarray(Acsc.indices, dtype=numpy.int32)
+        ## packed complex: view the complex128 data as 2*nnz interleaved doubles
+        Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.complex128).view(numpy.float64)
+        rhs = numpy.ascontiguousarray(numpy.asarray(b, dtype=numpy.complex128).ravel())
+
+        key = (n, Ap.tobytes(), Ai.tobytes())
+        reused = key == self._pattern and self._symbolic and self._numeric
+        if not reused:
+            self._symbolic = self._lib.klu_analyze(
+                n, self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+                ctypes.byref(self._common))
+            self.analyses += 1
+            if not self._symbolic:
+                raise numpy.linalg.LinAlgError('klu_analyze failed (singular structure?)')
+            self._numeric = self._lib.klu_z_factor(
+                self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+                self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
+                ctypes.byref(self._common))
+            self.factors += 1
+            if not self._numeric:
+                raise numpy.linalg.LinAlgError('Singular matrix')
+            self._pattern = key
+        else:
+            ok = self._lib.klu_z_refactor(
+                self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+                self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
+                ctypes.c_void_p(self._numeric), ctypes.byref(self._common))
+            self.refactors += 1
+            if not ok:
+                raise numpy.linalg.LinAlgError('Singular matrix')
+
+        x = rhs.copy()
+        xv = x.view(numpy.float64)
+        if not self._lib.klu_z_solve(
+                ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric),
+                n, 1, self._ptr(xv, ctypes.c_double), ctypes.byref(self._common)):
+            raise numpy.linalg.LinAlgError('klu_z_solve failed')
+
+        if reused:
+            scale = max(float(numpy.abs(rhs).max()), 1e-300)
+            resid = float(numpy.abs(Acsc.dot(x) - rhs).max()) / scale
+            if not (resid <= self.REFACTOR_RESIDUAL_TOL):
+                self.residual_fallbacks += 1
+                self._numeric = self._lib.klu_z_factor(
+                    self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+                    self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
+                    ctypes.byref(self._common))
+                self.factors += 1
+                if not self._numeric:
+                    raise numpy.linalg.LinAlgError('Singular matrix')
+                x = rhs.copy()
+                xv = x.view(numpy.float64)
+                if not self._lib.klu_z_solve(
+                        ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric),
+                        n, 1, self._ptr(xv, ctypes.c_double), ctypes.byref(self._common)):
+                    raise numpy.linalg.LinAlgError('klu_z_solve failed')
+        return x
+
+    def __repr__(self):
+        return ('ComplexKLUSolver(analyses=%d, factors=%d, refactors=%d, '
+                'fallbacks=%d)' % (self.analyses, self.factors, self.refactors,
+                                   self.residual_fallbacks))
+
+
 ## Below this many unknowns the sparse path cannot repay its own setup, and
 ## measuring the fill is not worth the pass over the matrix.  Chosen from the
 ## measured table (see the module docstring): at n=61 the win is 1.16x, which is
