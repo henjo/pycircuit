@@ -2881,9 +2881,10 @@ class PSS(Analysis):
         ⚠ `ts[j]` IS THE STAGE-2 ADJOINT SOLVE, NOT A FULL FORCED-INJECTION
         COUPLING.  A source injected at step `j` enters a two-stage step
         through BOTH stages (`src(t1)` and `src(t)`), so the sideband/forced
-        surfaces (`PAC.adjoint_sideband_row`, `pnoise`) need a matching
-        two-stage FORWARD forced replay that is not built yet -- `ppv`,
-        which reads only `states`, does not.
+        surfaces read the two-stage coupling through the dedicated folds
+        (`_sideband_forced_trbdf2`, `_forced_replay_transposed_trbdf2`, and the
+        FORWARD `_forced_replay_trbdf2`) rather than `ts[j]`; `ppv`, which reads
+        only `states`, does not.
         """
         v = np.asarray(v)
         if np.iscomplexobj(v):
@@ -5102,6 +5103,91 @@ class PSS(Analysis):
                                           / max(abs(lk), 1e-300))})
         return out
 
+    def _forced_replay_radau(self, fp, freq, u_ac, y0=None, collect=False):
+        """One driven period under Radau IIA(3) -- the FORWARD coupled replay,
+        the transpose of :meth:`_forced_replay_transposed_radau`.
+
+        Each step maps the entering state and the source to the endpoint by the
+        coupled stage solve: with the source at frequency `freq` entering stage
+        `k` (abscissa ``t_{n,k} = t_n + c_k h``),
+
+            rhs_i = C_n y_n - h sum_k A_ik u exp(jw t_{n,k})
+            y_{n+1} = (J_block^{-1} rhs)_3            (stiff accuracy)
+
+        so ``y_end = M y0 + w(freq)`` by linearity, the superposition PAC
+        relies on.  ⚠ THE SOURCE COUPLING IS THE SAME ``-h sum_k A_ik exp(...)``
+        the adjoint reads, so the two are exact transposes (dual-consistent to
+        machine precision); a real ``J_block`` factor takes a complex rhs as
+        two back-substitutions.
+        """
+        import scipy.linalg as sla
+        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        Amat = np.array(RadauIIA3Integrator.A, dtype=float)
+        cvec = np.array(RadauIIA3Integrator.C, dtype=float)
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
+        tms = np.asarray(fp.times, dtype=float)
+        y = (np.zeros(m, dtype=complex) if y0 is None
+             else np.asarray(y0, dtype=complex).ravel().copy())
+
+        def csolve(lu, b):
+            return (sla.lu_solve(lu, b.real) + 1j * sla.lu_solve(lu, b.imag))
+
+        ys = []
+        for j, (lu, Cn, _mm) in enumerate(fp.steps):
+            ts = tms[j]; te = tms[j + 1]; h = te - ts
+            cw = Cn @ y
+            rhs = np.concatenate([cw, cw, cw]).astype(complex)
+            for i in range(3):
+                srci = -h * sum(Amat[i, k] * u_ac * np.exp(jw * (ts + cvec[k] * h))
+                                for k in range(3))
+                rhs[i * m:(i + 1) * m] += srci
+            Z = csolve(lu, rhs)
+            y = Z[2 * m:3 * m]
+            if collect:
+                ys.append(y.copy())
+        return y, ys
+
+    def _forced_replay_trbdf2(self, fp, freq, u_ac, y0=None, collect=False):
+        """One driven period under TR-BDF2 -- the FORWARD two-stage replay, the
+        transpose of :meth:`_forced_replay_transposed_trbdf2`.
+
+        The source enters the TR stage at ``t_n`` and ``t_n + gamma h``
+        (trapezoidal, weight ``gamma h/2``) and the BDF2 stage at ``t_{n+1}``
+        (weight ``a33 h``):
+
+            dY1     = K1^{-1} ( B1 y_n + (gamma h/2)(u e^{jw t_n} + u e^{jw t1}) )
+            y_{n+1} = K2^{-1} ( A1 C1 dY1 + A0 C_n y_n + a33 h u e^{jw t_{n+1}} )
+
+        so ``y_end = M y0 + w(freq)`` by linearity.  Same source weights the
+        adjoint reads, so the two are exact transposes.
+        """
+        from pycircuit.circuit.integrator import TRBDF2Integrator
+        gm = TRBDF2Integrator.GAMMA
+        a33 = TRBDF2Integrator.STAGE_DIAG
+        m = self.cir.n - 1
+        jw = 2j * np.pi * float(freq)
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
+        tms = np.asarray(fp.times, dtype=float)
+        w = (np.zeros(m, dtype=complex) if y0 is None
+             else np.asarray(y0, dtype=complex).ravel().copy())
+        ys = []
+        for j, (lu1, B1, lu2, C1, Cn, A1, A0) in enumerate(fp.steps):
+            ts = tms[j]; te = tms[j + 1]; h = te - ts; t1 = ts + gm * h
+            ## source enters K = -(i + u) with a MINUS, the sign that makes this
+            ## the exact transpose of `_forced_replay_transposed_trbdf2`
+            ## (dual-consistent to machine precision; a + would flip the whole
+            ## driven response)
+            s1 = -(gm * h / 2.0) * (u_ac * np.exp(jw * ts)
+                                    + u_ac * np.exp(jw * t1))
+            dY1 = _complex_solve(lu1, B1 @ w + s1)
+            rhs = A1 * (C1 @ dY1) + A0 * (Cn @ w) - a33 * h * u_ac * np.exp(jw * te)
+            w = _complex_solve(lu2, rhs)
+            if collect:
+                ys.append(w.copy())
+        return w, ys
+
     def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
         """One period of the LINEARISED circuit, driven at `freq`.
 
@@ -5120,14 +5206,9 @@ class PSS(Analysis):
         against those same factors.  See the note in `_monodromy_matvec`.
         """
         if fp.kind == 'trbdf2':
-            raise NotImplementedError(
-                "TR-BDF2 driven forced replay (PAC/pnoise) is not built: the "
-                "sideband fold injects the source at ONE time per step, but a "
-                "two-stage step injects at THREE abscissae "
-                "(t_n, t_n+gamma h, t_{n+1}), which the fold cannot yet "
-                "represent. Use method='gear'/'trap' for driven PAC/pnoise; "
-                "the Lyapunov covariance and the autonomous phase-noise stack "
-                "work over TR-BDF2.")
+            return self._forced_replay_trbdf2(fp, freq, u_ac, y0, collect)
+        if fp.kind == 'radau':
+            return self._forced_replay_radau(fp, freq, u_ac, y0, collect)
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()

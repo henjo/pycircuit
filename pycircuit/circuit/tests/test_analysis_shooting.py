@@ -3825,6 +3825,59 @@ def test_pac_agrees_with_the_ac_analysis_on_a_linear_circuit():
         % (np.linalg.norm(_H[1]) / np.linalg.norm(_H[0]))
 
 
+@pytest.mark.parametrize('method,tol', [('trbdf2', 1e-4), ('radau', 1e-9)])
+def test_pac_forward_replay_works_over_the_stage_methods(method, tol):
+    """The FORWARD driven replay (PAC.solve) runs over the self-starting stage
+    methods and agrees with the AC analysis on a linear circuit.
+
+    The forward path was the last TR-BDF2/Radau deferral: a stage step injects
+    the source at THREE abscissae (``A (x) B``), which the LMM one-injection
+    fold cannot carry.  ``_forced_replay_{trbdf2,radau}`` carry it -- the exact
+    transpose of the (already-shipped) adjoint fold.  On a linear circuit PAC
+    must reduce to AC, a reference the shooting path cannot influence; Radau
+    (order 5) reaches it far tighter than TR-BDF2 (order 2) at the same grid.
+    """
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rel, _pss = _pac_vs_ac(method, 200)
+    assert rel < tol, \
+        '%s PAC disagrees with AC by %.3e on a LINEAR circuit' % (method, rel)
+
+
+@pytest.mark.parametrize('method', ['trbdf2', 'radau'])
+def test_forward_replay_is_the_exact_transpose_of_the_adjoint(method):
+    """``<xa, W u> == <W^T xa, u>`` to machine precision for the stage methods.
+
+    The forward driven replay ``_forced_replay`` and the adjoint
+    ``_forced_replay_transposed`` are built from the SAME per-step source
+    coupling, so they must be exact transposes -- the step-level identity that
+    pins the sign convention (a flipped source term negates the whole driven
+    response, which this catches while an end-to-end magnitude check might
+    not).  Checked on a converting diode mixer, where every abscissa carries a
+    non-trivial coupling.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _diode_mixer()
+    pss = PSS(cir, method=method, reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
+    fp = pss.factored_period()
+    m = cir.n - 1
+    rng = np.random.default_rng(1)
+    u = rng.standard_normal(m) + 1j * rng.standard_normal(m)
+    xa = rng.standard_normal(m) + 1j * rng.standard_normal(m)
+    Wu, _ = pss._forced_replay(fp, 3e5, u, y0=np.zeros(m))
+    WTxa = pss._forced_replay_transposed(fp, 3e5, xa)
+    lhs = xa @ Wu
+    rhs = WTxa @ u
+    assert abs(lhs - rhs) / abs(lhs) < 1e-12, \
+        '%s forward replay is not the transpose of the adjoint: %.2e' \
+        % (method, abs(lhs - rhs) / abs(lhs))
+
+
 @pytest.mark.parametrize('method,x0_unknown,expect', [
     ('trap', False, 'first'),
     ('trap', True, 'second'),
