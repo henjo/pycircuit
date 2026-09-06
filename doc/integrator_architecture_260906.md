@@ -402,6 +402,46 @@ varying the device's prior `_vlim` before evaluating at a fixed point moves PCNR
 traversal only BY LOCALITY. Monodromy numbers are identical either way, and the suite cost nothing
 measurable (269.8 s vs 274.6 s).
 
+### The PCNR coupled path's rescue rung: a capacitance across the limited junction
+
+Shipped as INSURANCE. ⚠⚠ **The mechanism is measured; a rescuing case is not.** Read this before
+trusting it.
+
+The rung is a capacitance across each limited junction, anchored at the last accepted state:
+`g (v_j − v_j,n)` on the branch, `g` on the two-node incidence pattern — the backward-Euler form of
+`C = g·h·a_ii` in parallel with the junction, and pseudo-transient continuation's rung applied to the
+one branch that matters.
+
+**Why this quantity.** PCNR's failure is that the MNA step moves the junction branch voltage ~359 V
+in one iteration while `refine`/pnjlim advances `v_lim` by ~0.3 V, so `g_lim` — which *is*
+`v_lim − (x[ra] − x[rb])` — stays enormous, the Schur system linearises at a junction voltage
+inconsistent with the nodes, and the state diverges (ynorm 359 → 4.6e17). You cannot speed the
+limiter up; you can slow down what it has to follow.
+
+⚠ **ACROSS THE JUNCTION, NOT ON EVERY ROW — the first version was wrong.** `g·eye(n)` anchors every
+unknown, including a voltage source's BRANCH-CURRENT row, where `g(i − i_n)` is a conductance applied
+to a current unknown. Measured at equal rung strength, the two-node stamp holds the reappearing gap
+to **50 V** where the whole-diagonal one let it snap back to **359 V**.
+
+**Measured, mechanism:** with the anchor present the strong rungs converge in TWO iterations with
+`|g_lim| = 0`. **Not measured: any circuit it rescues.** Every attempt to build one starved
+`maxiter`, and ⚠ **that stressor cannot validate ANY ladder** — a ladder must end with a PURE solve of
+the original system (P22), so a starved budget defeats the final rung whatever the deformation. The
+gshunt and junction-gmin rungs were rejected on evidence from that same broken instrument, which is
+worth remembering if this is revisited.
+
+Two things bound the risk: the schedule starts a couple of decades above `‖G(x_n)‖∞` (the first
+attempt marched `g ≤ 1 S` against a 100 S source and never bit), and `max_rungs` is capped below the
+default because a ladder that cannot win still pays for every rung — an earlier version turned a
+0.02 s failure into a >136 s one. A rescue must not convert "fails fast" into "hangs". A healthy
+circuit pays nothing: 0 rungs, 0 fallbacks, and PCNR still equals device limiting to 5e-18.
+Test: `test_the_pcnr_junction_capacitance_rung_is_wired_and_shaped_right` (pins the stamp shape and
+the healthy-circuit cost; verified to fail against the whole-diagonal version).
+
+⚠ **THE WAY TO STRENGTHEN THIS IS TO FIND A CIRCUIT WHERE PCNR FAILS AT A NORMAL ITERATION BUDGET.**
+That would fit the schedule, which is currently reasoned rather than measured, and would validate the
+gshunt ladder on the device-limiting path, which carries the same unexercised trigger.
+
 ### Remaining gaps (honest)
 
 - ⚠ **`_C_at` keeps `_sync_limit_at` and is NOT pinned by a test.** PCNR re-stamps `i`/`G` at

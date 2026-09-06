@@ -2500,6 +2500,44 @@ class Transient(Analysis):
         Est_r = tk.linearsolver(Jr, er_r)
         return tk.insert(Est_r, iref, 0.0)
 
+    def _junction_cap_stamp(self, x_full, xn_full, g):
+        """``(u_extra, J_extra)`` for a CAPACITANCE across each limited junction.
+
+        The two-node stamp `JunctionGminSteppingNewton` uses, but anchored at the
+        LAST ACCEPTED STATE instead of at zero: the branch carries
+        ``g (v_j - v_j,n)`` rather than ``g v_j``, which is the backward-Euler
+        form of a capacitance ``C = g h a_ii`` in parallel with the junction.  A
+        fatter junction capacitance is a physical deformation of a real device,
+        so the homotopy tracks a physical branch -- the argument the junction
+        gmin ladder already rests on.
+
+        ⚠ ACROSS THE JUNCTION, NOT ON EVERY ROW, and that is not a refinement.
+        An earlier attempt used ``g * eye(n)``, which puts the anchor on EVERY
+        unknown -- including a voltage source's BRANCH-CURRENT row, where
+        ``g (i - i_n)`` is a conductance applied to a current unknown and is
+        simply dimensionally wrong.  Damping the junction is also what the
+        failure asks for: `g_lim` IS ``v_lim - (x[ra] - x[rb])``, so the branch
+        voltage is the one quantity the limiter has to track.  Measured at equal
+        rung strength, the two-node stamp holds the reappearing gap to 50 V
+        where the whole-diagonal one let it snap back to 359 V.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+        n = self.cir.n
+        u = np.zeros(n)
+        J = np.zeros((n, n))
+        xf = np.asarray(x_full, dtype=float)
+        xnf = np.asarray(xn_full, dtype=float)
+        for _inst, _el, ra, rb in _pcnr.pcnr_junctions(self.cir):
+            dv = (float(xf[ra]) - float(xf[rb])) \
+                - (float(xnf[ra]) - float(xnf[rb]))
+            u[ra] += g * dv
+            u[rb] -= g * dv
+            J[ra, ra] += g
+            J[ra, rb] -= g
+            J[rb, ra] -= g
+            J[rb, rb] += g
+        return u, J
+
     def _rk_step_coupled_pcnr(self, x0, t, provided_function=None):
         """The coupled Radau IIA(3) step with PCNR as the limiting, IN EVERY
         STAGE, instead of per-device ``cir.limit``.
@@ -2559,85 +2597,152 @@ class Transient(Analysis):
         ## per-stage state that stands in for each device's internal `_vlim`;
         ## seeded (and limited) from the stage guess, exactly like the DC and
         ## single-stage paths.
-        Y = [np.array(xn, dtype=float) for _ in range(3)]
-        v_lim = [_pcnr.v_lim_init(junctions, Y[j]) for j in range(3)]
         m = qn_r.shape[0]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
-        converged = False
-        for _ in range(maxit):
-            qi, Ki, Ci, Geff, glim = [], [], [], [], []
-            for j in range(3):
-                qi.append(arr(self.cir.q(Y[j], epar)))
-                Ci.append(arr(self.cir.C(Y[j], epar)))
-                ## EFFECTIVE i/G at the stage's limiting voltages: the augmented
-                ## junction system Schur-reduced onto the MNA size.  With
-                ## `u_extra=0`/`J_extra=0` these are the plain effective `i`/`G`
-                ## (the companion stays in q and A, not folded in as a DC-flow
-                ## source the way the sequential DIRK stage PCNR does it).
-                g_mna, g_lim, J_mm, _J_ml, _J_lm, didv = _pcnr.augmented_system(
-                    self.cir, Y[j], v_lim[j], junctions, epar,
-                    u_extra=0.0, dense_blocks=False, J_extra=0.0)
-                ## ⚠ THE RESIDUAL CURRENT IS `g_mna`, NOT the Schur RHS
-                ## `f_eff`.  `augmented_system` STAMPS the junction current at
-                ## `v_lim` into `g_mna` (via `dev.stamp`), so `g_mna` is the
-                ## PHYSICAL MNA current with junctions at `v_lim` -- exactly
-                ## `cir.i` once `v_lim` == the branch voltage.  `f_eff =
-                ## g_mna - J_ml g_lim` folds the junction current into the
-                ## Newton-STEP right-hand side instead, where it VANISHES as
-                ## `g_lim -> 0`; using it as the residual dropped the junction
-                ## current at convergence and converged the coupled Newton to a
-                ## neighbouring, wrong root (measured: step-1 node error 8.5e-5,
-                ## true stage residual 4e-14 vs 8e-25 for device limiting).  Only
-                ## `G_eff = J_eff` (the Schur-reduced Jacobian) is taken here;
-                ## the junction is eliminated from the step by the correct phase
-                ## (`dx_lim_of` + `refine`) below.
-                _f_eff, G_eff = _pcnr.schur_reduce(
-                    g_mna, g_lim, J_mm, junctions=junctions, didv=didv)
-                Ki.append(-(np.asarray(g_mna, dtype=float) + src(tstage[j])))
-                Geff.append(np.asarray(G_eff, dtype=float))
-                glim.append(g_lim)
-            ## residual blocks (reduced) and dense 3m x 3m Jacobian -- identical
-            ## to _rk_step_coupled with i_eff/G_eff in place of cir.i/cir.G.
-            R = np.empty(3 * m)
-            Jbig = np.zeros((3 * m, 3 * m))
-            for i in range(3):
-                Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
-                R[i * m:(i + 1) * m] = red(Fi)
+
+        def _stage_newton_pcnr(seed, gcap=0.0):
+            """The coupled PCNR Newton, optionally with a junction capacitance.
+
+            ⚠ MECHANISM MEASURED, NO RESCUING CASE KNOWN -- see the ladder below.
+            """
+            Y = [np.array(y, dtype=float) for y in seed]
+            v_lim = [_pcnr.v_lim_init(junctions, Y[j]) for j in range(3)]
+            converged = False
+            for _ in range(maxit):
+                qi, Ki, Ci, Geff, glim = [], [], [], [], []
                 for j in range(3):
-                    if i == j:
-                        blk = Ci[i] + h * Amat[i, j] * Geff[j]
+                    qi.append(arr(self.cir.q(Y[j], epar)))
+                    Ci.append(arr(self.cir.C(Y[j], epar)))
+                    ## EFFECTIVE i/G at the stage's limiting voltages: the augmented
+                    ## junction system Schur-reduced onto the MNA size.  With
+                    ## `u_extra=0`/`J_extra=0` these are the plain effective `i`/`G`
+                    ## (the companion stays in q and A, not folded in as a DC-flow
+                    ## source the way the sequential DIRK stage PCNR does it).
+                    if gcap:
+                        _ue, _Je = self._junction_cap_stamp(Y[j], xn, gcap)
                     else:
-                        blk = h * Amat[i, j] * Geff[j]
-                    (blk_r,) = remove_row_col((blk,), iref, tk)
-                    Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = np.asarray(blk_r)
-            dY = np.linalg.solve(Jbig, -R)
-            scale = 0.0
-            lim_ok = True
-            for i in range(3):
-                di = dY[i * m:(i + 1) * m]
-                di_full = np.asarray(tk.insert(di, iref, 0.0))
-                ## The correct phase: dx_lim from THIS stage's g_lim and the
-                ## coupled dx_MNA, then each device limits only its own probes
-                ## (refine).  No `cir.limit` anywhere -- PCNR IS the limiting.
-                dx_lim = _pcnr.dx_lim_of(junctions, glim[i], di_full)
-                Y_prev = Y[i]
-                v_new = _pcnr.refine(junctions, v_lim[i], v_lim[i] + dx_lim,
-                                     epar, x_old=Y_prev)
-                if not _pcnr.lim_converged(glim[i], v_new, reltol,
-                                           self.par.vabstol):
-                    lim_ok = False
-                Y[i] = Y_prev + di_full
-                v_lim[i] = v_new
-                scale = max(scale, np.max(np.abs(di)))
-            ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
-            if lim_ok and scale <= reltol * ynorm + abstol:
-                converged = True
-                break
-        if not converged:
-            raise NoConvergenceError(
-                'Radau IIA(3) coupled PCNR stage Newton did not converge')
+                        _ue, _Je = 0.0, 0.0
+                    g_mna, g_lim, J_mm, _J_ml, _J_lm, didv = _pcnr.augmented_system(
+                        self.cir, Y[j], v_lim[j], junctions, epar,
+                        u_extra=_ue, dense_blocks=False, J_extra=_Je)
+                    ## ⚠ THE RESIDUAL CURRENT IS `g_mna`, NOT the Schur RHS
+                    ## `f_eff`.  `augmented_system` STAMPS the junction current at
+                    ## `v_lim` into `g_mna` (via `dev.stamp`), so `g_mna` is the
+                    ## PHYSICAL MNA current with junctions at `v_lim` -- exactly
+                    ## `cir.i` once `v_lim` == the branch voltage.  `f_eff =
+                    ## g_mna - J_ml g_lim` folds the junction current into the
+                    ## Newton-STEP right-hand side instead, where it VANISHES as
+                    ## `g_lim -> 0`; using it as the residual dropped the junction
+                    ## current at convergence and converged the coupled Newton to a
+                    ## neighbouring, wrong root (measured: step-1 node error 8.5e-5,
+                    ## true stage residual 4e-14 vs 8e-25 for device limiting).  Only
+                    ## `G_eff = J_eff` (the Schur-reduced Jacobian) is taken here;
+                    ## the junction is eliminated from the step by the correct phase
+                    ## (`dx_lim_of` + `refine`) below.
+                    _f_eff, G_eff = _pcnr.schur_reduce(
+                        g_mna, g_lim, J_mm, junctions=junctions, didv=didv)
+                    Ki.append(-(np.asarray(g_mna, dtype=float) + src(tstage[j])))
+                    Geff.append(np.asarray(G_eff, dtype=float))
+                    glim.append(g_lim)
+                ## residual blocks (reduced) and dense 3m x 3m Jacobian -- identical
+                ## to _rk_step_coupled with i_eff/G_eff in place of cir.i/cir.G.
+                R = np.empty(3 * m)
+                Jbig = np.zeros((3 * m, 3 * m))
+                for i in range(3):
+                    Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
+                    R[i * m:(i + 1) * m] = red(Fi)
+                    for j in range(3):
+                        if i == j:
+                            blk = Ci[i] + h * Amat[i, j] * Geff[j]
+                        else:
+                            blk = h * Amat[i, j] * Geff[j]
+                        (blk_r,) = remove_row_col((blk,), iref, tk)
+                        Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = np.asarray(blk_r)
+                dY = np.linalg.solve(Jbig, -R)
+                scale = 0.0
+                lim_ok = True
+                for i in range(3):
+                    di = dY[i * m:(i + 1) * m]
+                    di_full = np.asarray(tk.insert(di, iref, 0.0))
+                    ## The correct phase: dx_lim from THIS stage's g_lim and the
+                    ## coupled dx_MNA, then each device limits only its own probes
+                    ## (refine).  No `cir.limit` anywhere -- PCNR IS the limiting.
+                    dx_lim = _pcnr.dx_lim_of(junctions, glim[i], di_full)
+                    Y_prev = Y[i]
+                    v_new = _pcnr.refine(junctions, v_lim[i], v_lim[i] + dx_lim,
+                                         epar, x_old=Y_prev)
+                    if not _pcnr.lim_converged(glim[i], v_new, reltol,
+                                               self.par.vabstol):
+                        lim_ok = False
+                    Y[i] = Y_prev + di_full
+                    v_lim[i] = v_new
+                    scale = max(scale, np.max(np.abs(di)))
+                ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
+                if lim_ok and scale <= reltol * ynorm + abstol:
+                    converged = True
+                    break
+            if not converged:
+                raise NoConvergenceError(
+                    'Radau IIA(3) coupled PCNR stage Newton did not converge'
+                    + ('' if not gcap
+                       else ' at junction C-anchor g=%g S' % gcap))
+            return Y
+
+        from pycircuit.circuit.nrsolver import _adaptive_conductance_ladder
+        seed0 = [np.array(xn, dtype=float) for _ in range(3)]
+        try:
+            Y = _stage_newton_pcnr(seed0)
+        except NoConvergenceError:
+            ## ⚠⚠ SHIPPED AS INSURANCE: THE MECHANISM IS MEASURED, A RESCUING
+            ## CASE IS NOT.  Read this before trusting it.
+            ##
+            ## What IS measured.  A capacitance across the limited junction
+            ## bounds the one quantity the limiter has to track.  PCNR's failure
+            ## mode is that the MNA step moves the junction branch voltage
+            ## ~359 V in one iteration while `refine`/pnjlim advances `v_lim` by
+            ## ~0.3 V, so `g_lim` stays enormous, the Schur system linearises at
+            ## a junction voltage inconsistent with the nodes, and the state
+            ## diverges (ynorm 359 -> 4.6e17).  With this anchor the strong
+            ## rungs converge in TWO iterations with `|g_lim| = 0`, and at the
+            ## rung where a whole-diagonal anchor let the gap snap back to
+            ## 359 V, the two-node stamp holds it to 50 V.
+            ##
+            ## What is NOT measured: any circuit this actually rescues.  Every
+            ## attempt to build one starved `maxiter`, and THAT STRESSOR CANNOT
+            ## VALIDATE ANY LADDER -- a ladder must end with a PURE solve of the
+            ## original system (the P22 rule), so a starved budget defeats the
+            ## final rung whatever the deformation.  The gshunt and junction
+            ## gmin rungs were rejected on evidence from that same broken
+            ## instrument, which is worth remembering if this is revisited.
+            ##
+            ## So: no circuit is known where PCNR fails at a NORMAL iteration
+            ## budget.  Until one is, this is untriggered insurance, and the
+            ## honest way to strengthen it is to FIND THAT CIRCUIT -- which
+            ## would also fix the schedule below, currently reasoned rather than
+            ## fitted, and would validate the gshunt ladder on the
+            ## device-limiting path, which has the same unexercised trigger.
+            if not getattr(self, '_continuation_rescue', False):
+                raise
+            ## The anchor has to DOMINATE the circuit's own conductance or it
+            ## holds nothing: the first attempt marched g <= 1 S against a
+            ## 10 mOhm (100 S) source and never bit.  Start a couple of decades
+            ## above what the stage Jacobian actually shows.
+            _gscale = max(1.0, float(np.max(np.abs(
+                np.asarray(self.cir.G(xn, epar), dtype=float)))))
+            _e0 = np.log10(_gscale) + 2.0
+            ## `max_rungs` is CAPPED BELOW THE DEFAULT on purpose: a ladder that
+            ## cannot win still pays for every rung, and an earlier version
+            ## turned a 0.02 s failure into a >136 s one.  A rescue must not
+            ## convert "fails fast" into "hangs".
+            Y = _adaptive_conductance_ladder(
+                lambda seed, g: _stage_newton_pcnr(seed, g),
+                lambda seed: _stage_newton_pcnr(seed, 0.0),
+                seed0, e_start=_e0, e_max=_e0 + 3.0, e_end=-12.0,
+                max_rungs=30,
+                label='coupled PCNR junction-capacitance stepping')
+            self.statistics.gmin_rescues += 1
 
         ## SYNC each device's internal `_vlim` to the converged solution: PCNR
         ## never called `cir.limit`, so the downstream `i`/`G`/`C` (the K, the

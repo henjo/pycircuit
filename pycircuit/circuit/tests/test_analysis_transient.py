@@ -1435,3 +1435,95 @@ def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
         assert tr.pcnr_fallbacks == 0 and tr.pcnr_status == 'used', \
             '%s: PCNR fell back on a healthy circuit (%d fallbacks, status %r)' \
             % (integ.__name__, tr.pcnr_fallbacks, tr.pcnr_status)
+
+
+def test_the_pcnr_junction_capacitance_rung_is_wired_and_shaped_right():
+    """The coupled PCNR path's continuation rung: a CAPACITANCE across each
+    limited junction, anchored at the last accepted state.
+
+    ⚠⚠ THIS TEST PINS THE STAMP AND THE WIRING, NOT A RESCUE, and that is the
+    honest limit of what is known.  The MECHANISM is measured -- with the anchor
+    present the strong rungs converge in two iterations with `|g_lim| = 0`, and
+    at the rung where a whole-diagonal anchor let the junction gap snap back to
+    359 V the two-node stamp held it to 50 V -- but NO CIRCUIT IS KNOWN THAT IT
+    RESCUES.  Every attempt to build one starved `maxiter`, and that stressor
+    cannot validate any ladder: a ladder must end with a PURE solve of the
+    original system, so a starved budget defeats the final rung whatever the
+    deformation.  If a real failing circuit is ever found, assert the rescue
+    here and this test becomes the weaker half of a stronger one.
+
+    What IS pinned:
+
+    1. THE STAMP'S SHAPE -- the defect that made the first version wrong.  It
+       must touch ONLY the two nodes of each junction.  A first attempt used
+       `g * eye(n)`, which anchors every unknown including a voltage source's
+       BRANCH-CURRENT row, where `g (i - i_n)` is a conductance applied to a
+       current unknown and is dimensionally meaningless.
+    2. NORMAL OPERATION IS UNTOUCHED -- no rungs, no fallbacks, and PCNR still
+       agrees with device limiting to machine precision.  A rescue that costs
+       anything on a healthy circuit is not a rescue.
+    """
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    from pycircuit.circuit.elements import Diode
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def mixer():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    ## (1) the stamp touches the junction's two rows and NOTHING else
+    c = mixer()
+    tr = Transient(c, toolkit=circuit.numeric,
+                   integrator=RadauIIA3Integrator(), pcnr=True)
+    tr.irefnode = c.get_node_index(gnd)
+    x = np.zeros(c.n)
+    x[c.get_node_index(2)] = 0.7
+    u, J = tr._junction_cap_stamp(x, np.zeros(c.n), 1.0)
+    live = {c.get_node_index(2), c.get_node_index(gnd)}
+    touched = {k for k in range(c.n) if abs(u[k]) > 0}
+    assert touched <= live, \
+        'the junction capacitance stamped rows %s outside the junction %s -- ' \
+        'an anchor on a branch-current row is a conductance on a current ' \
+        'unknown' % (sorted(touched - live), sorted(live))
+    for a in range(c.n):
+        for b in range(c.n):
+            if abs(J[a, b]) > 0:
+                assert a in live and b in live, \
+                    'J entry (%d,%d) is outside the junction rows %s' \
+                    % (a, b, sorted(live))
+    ## and it is a real incidence stamp: rows sum to zero across the branch
+    assert abs(J[c.get_node_index(2), c.get_node_index(2)]
+               + J[c.get_node_index(2), c.get_node_index(gnd)]) < 1e-30, \
+        'the stamp is not a two-node incidence pattern (its row does not ' \
+        'sum to zero), so it is not a capacitance ACROSS the junction'
+    ## zero anchor must be exactly inert
+    u0, J0 = tr._junction_cap_stamp(x, np.zeros(c.n), 0.0)
+    assert not np.any(u0) and not np.any(J0), 'g=0 is not inert'
+
+    ## (2) a healthy circuit pays nothing and the answer does not move
+    res = {}
+    for pcnr in (False, True):
+        c = mixer()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=RadauIIA3Integrator(), reltol=1e-12,
+                       pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res[pcnr] = np.asarray(
+                tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
+                         fixed_timestep=True).x)
+        if pcnr:
+            assert tr.statistics.gmin_rescues == 0 and tr.pcnr_fallbacks == 0 \
+                and tr.pcnr_status == 'used', \
+                'the rung or the fallback fired on a healthy circuit ' \
+                '(rungs=%d, fallbacks=%d, status=%r)' \
+                % (tr.statistics.gmin_rescues, tr.pcnr_fallbacks,
+                   tr.pcnr_status)
+    rel = np.linalg.norm(res[True] - res[False]) / np.linalg.norm(res[False])
+    assert rel < 1e-12, \
+        'adding the rung moved the healthy-circuit answer by %.2e' % rel
