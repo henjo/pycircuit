@@ -159,3 +159,57 @@ where the dispatch count actually falls. Each is independently shippable.
   `det A = 1/60`); an explicit-first-stage method (`A` singular) uses the sequential path
   only. The base should expose this so a new tableau selects the right machinery instead of
   failing obscurely.
+
+---
+
+## Implementation log — steps 1–2 landed; a step-3 obstruction, measured (2026-09-06)
+
+**Steps 1–2 are done and green** (280 passed on the transient+shooting files):
+
+- **Step 1** — `RungeKuttaIntegrator` base carrying the Butcher tableau `(A,B,C)` +
+  `stage_structure()` (ESDIRK/SDIRK/DIRK/FULL); the four polymorphic predicates on the
+  `Integrator` base (`is_stage_method`, `companion_reach`, `carries_own_monodromy`,
+  `needs_x0_unknown`); the pure-predicate dispatch sites (`_companion_reach`,
+  `monodromy_twin`'s self-sufficient set, the `x0_unknown` forcing, `_want_lte`) rewired to
+  ask the method. `_integrator_for` is the one validated method→class map.
+- **Step 2** — ONE tableau-driven transient step, `_solve_timestep_rk`, structure-aware:
+  DIRK/ESDIRK → `_rk_step_dirk` (stage by stage via `self._newton`); FULL → `_rk_step_coupled`
+  (the dense/transform path). One adaptive driver `_run_rk_adaptive`
+  (`1/(EMBEDDED_ORDER+1)` exponent). The bespoke `_solve_timestep_trbdf2` and
+  `_run_trbdf2_adaptive` deleted (~210 lines). Gate: generic step bit-identical to bespoke on
+  the mixer, 4e-14 on van der Pol.
+
+**Step 3 obstruction — ROUTING DIRK THROUGH THE COUPLED MONODROMY IS WRONG ON A DAE, and
+the suite proved it.** The first step-3 attempt routed *every* stage method through the
+fully-implicit coupled monodromy (the Radau routines, which are tableau-generic). It failed
+8 shooting tests with `Singular matrix, diagonal … is exactly zero`. The cause is structural,
+not a bug: a lower-triangular tableau with an **explicit first stage** (ESDIRK — TR-BDF2 has
+`A[0,0]=0`, `c0=0`) gives a coupled block `J_block[0][0] = C(Y_0) + h·A[0,0]·G = C` alone,
+which is **singular on any circuit with an algebraic variable** (a voltage-source branch
+current, an inductor cutset — i.e. almost every circuit). Radau (fully implicit, `det A =
+1/60 ≠ 0`, no explicit stage) has no such block, which is why it works coupled and TR-BDF2
+does not. The transient step never hit this because it *already* solves DIRK sequentially
+(`_rk_step_dirk`) — only the shooting monodromy attempt routed DIRK through the coupled solve.
+Reverted to the green step-2 state.
+
+**Corrected step 3–5 plan (structure-aware, two families — the honest design):** the shooting
+monodromy/folds/Lyapunov must be **structure-aware**, exactly like the transient step:
+
+- **FULL family** (fully-implicit — Radau) — the coupled `sm×sm` solve. The current Radau
+  shooting routines already read the tableau, so making them `_rk_full_*` and dispatching FULL
+  methods to them makes **any new fully-implicit method (Gauss, Lobatto IIIC, higher Radau)
+  free** — low risk, high value.
+- **DIRK family** (lower-triangular — TR-BDF2) — a SEQUENTIAL per-stage monodromy that
+  eliminates explicit stages (`Y_0 = x_n`, `dY_0/dx_n = I`) and forward-substitutes the
+  implicit stages, so no singular block ever forms. TR-BDF2's existing two-stage shooting
+  routines ARE this family at `s=2` implicit stages; generalising them to s-stage sequential
+  makes a future ESDIRK free. This is the larger, more delicate piece.
+- **Dispatch** collapses from method-NAME (`kind=='trbdf2'`/`'radau'`) to STRUCTURE
+  (`kind∈{'dirk','full'}` or `integ.stage_structure()`): still two arms per site, but a new
+  method reuses the arm its structure selects instead of adding a name — which is the actual
+  "next integrator is cheap" win.
+
+⚠ THE LESSON (0j again): the shooting stack's DIRK-vs-fully-implicit split is not incidental
+duplication — it is required by the DAE. "One coupled implementation for both" is refuted by
+the singular explicit-stage block. The right unification is structure-aware with two generic
+families, not one.
