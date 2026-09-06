@@ -1730,7 +1730,8 @@ class PSS(Analysis):
                                                   TrapezoidalIntegrator,
                                                   Gear2Integrator)
         from pycircuit.circuit.integrator import (TRBDF2Integrator,
-                                                  RadauIIA3Integrator)
+                                                  RadauIIA3Integrator,
+                                                  ESDIRK43Integrator)
         ## THE single method -> integrator map, and the one place method names
         ## are validated: an unknown name raises the ValueError here rather than
         ## a KeyError three frames down.  The polymorphic predicates
@@ -1743,13 +1744,14 @@ class PSS(Analysis):
                  'gear': Gear2Integrator,
                  'gear2': Gear2Integrator,
                  'trbdf2': TRBDF2Integrator,
-                 'radau': RadauIIA3Integrator}
+                 'radau': RadauIIA3Integrator,
+                 'esdirk43': ESDIRK43Integrator}
         try:
             return table[method]()
         except KeyError:
             raise ValueError(
-                "method must be 'euler', 'trap', 'gear', 'trbdf2' or 'radau', "
-                "not %r" % (method,))
+                "method must be 'euler', 'trap', 'gear', 'trbdf2', 'radau' "
+                "or 'esdirk43', not %r" % (method,))
 
     ## Below this fraction of the seed, a solved period is the trivial
     ## root rather than an orbit.  Deliberately loose: a real fundamental
@@ -6578,10 +6580,10 @@ class PSS(Analysis):
         ## the class's earlier fall-through defects.
         method = getattr(self.par, 'method', 'euler')
         if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2',
-                          'trbdf2', 'radau'):
+                          'trbdf2', 'radau', 'esdirk43'):
             raise ValueError(
-                "method must be 'euler', 'trap', 'gear', 'trbdf2' or 'radau', "
-                "not %r" % (method,))
+                "method must be 'euler', 'trap', 'gear', 'trbdf2', 'radau' "
+                "or 'esdirk43', not %r" % (method,))
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,

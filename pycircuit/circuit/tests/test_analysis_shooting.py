@@ -785,19 +785,21 @@ def test_pss_method_selection_cannot_fall_through_silently():
     from pycircuit.circuit.integrator import (EulerIntegrator,
                                               TrapezoidalIntegrator,
                                               Gear2Integrator, TRBDF2Integrator,
-                                              RadauIIA3Integrator)
+                                              RadauIIA3Integrator,
+                                              ESDIRK43Integrator)
     circuit.default_toolkit = circuit.numeric
     want = {'euler': EulerIntegrator, 'trap': TrapezoidalIntegrator,
             'trapezoidal': TrapezoidalIntegrator,
             'gear': Gear2Integrator, 'gear2': Gear2Integrator,
-            'trbdf2': TRBDF2Integrator, 'radau': RadauIIA3Integrator}
+            'trbdf2': TRBDF2Integrator, 'radau': RadauIIA3Integrator,
+            'esdirk43': ESDIRK43Integrator}
     for name, cls in want.items():
         tr = PSS(_q20_rlc(), method=name)._transient()
         assert isinstance(tr.par.integrator, cls), \
             'method=%r selected %s' % (name, type(tr.par.integrator).__name__)
 
     with pytest.raises(ValueError,
-                       match="'euler', 'trap', 'gear', 'trbdf2' or 'radau'"):
+                       match="'euler', 'trap', 'gear', 'trbdf2', 'radau'"):
         PSS(_q20_rlc(), method='bdf3').solve(period=1e-3, timestep=1e-5,
                                              maxiterations=2)
 
@@ -13219,3 +13221,43 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
     assert abs(Sr / Sg - 1.0) < 5e-3, \
         'radau pnoise %.4e vs gear %.4e on the mixer -- they should agree' \
         % (Sr, Sg)
+
+
+def test_esdirk43_monodromy_order4_through_the_generic_dirk_family():
+    """ESDIRK4(3)6 -- a NEW DIRK method, tableau-only -- gets a correct order-4
+    shooting monodromy through the GENERIC s-stage DIRK-sequential family, at
+    s=6 stages (TR-BDF2 is s=3).  This is the check that the DIRK-family
+    generalisation is real: no ESDIRK-specific shooting code exists.
+
+    On the source-free RC network the period map is `exp(A T)`; the densified
+    `kind='dirk'` monodromy must match `exp(mu T)` at O(h^4) -- 16x per grid
+    doubling -- and its adjoint must be the exact transpose.
+    """
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir['R1'] = R(1, 2, r=1e4); cir['R2'] = R(2, gnd, r=2e4)
+    cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
+    pss = PSS(cir)
+    m = cir.n - 1
+    x0 = np.zeros(m)
+    Cr = np.asarray(pss._C_at(x0)); Gr = np.asarray(pss._G_at(x0))
+    A = -np.linalg.solve(Cr, Gr)
+    T = 5e-4
+    exact = np.sort(np.exp(np.linalg.eigvals(A) * T).real)
+    errs = {}
+    for npts in (25, 50, 100):
+        fp = pss.factored_period_dirk(x0, T, npts, method='esdirk43')
+        assert fp.kind == 'dirk'
+        M = np.column_stack([fp.matvec(e) for e in np.eye(m)])
+        errs[npts] = float(np.max(np.abs(np.sort(np.linalg.eigvals(M).real)
+                                         - exact)))
+    ## fourth order: ~16x per doubling
+    assert errs[25] / errs[50] > 10.0, errs
+    assert errs[50] / errs[100] > 10.0, errs
+    assert errs[25] < 1e-6, errs
+    ## adjoint is the exact transpose
+    fp = pss.factored_period_dirk(x0, T, 50, method='esdirk43')
+    Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float) for e in np.eye(m)])
+    Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
+                          for e in np.eye(m)])
+    assert np.linalg.norm(Mt - Mf.T) < 1e-12

@@ -749,6 +749,26 @@ class RungeKuttaIntegrator(Integrator):
     def is_fully_implicit(self) -> bool:
         return self.stage_structure() == self.FULL
 
+    ## The two remaining abstract LMM methods: a stage method has no
+    ## single-companion time step and no divided-difference LTE, so it refuses
+    ## both here ONCE for every subclass -- a new RK method needs only its
+    ## tableau, not a repeat of these.
+    def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last,
+                            h_last, is_first_step, toolkit):
+        raise NotImplementedError(
+            '%s is a Runge-Kutta stage method; the Transient loop runs it via '
+            'the generic _solve_timestep_rk (one coupled or sequential stage '
+            'solve), not through the single-companion compute_derivatives.'
+            % type(self).__name__)
+
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last,
+                    is_first_step, toolkit, h_last2=None):
+        raise NotImplementedError(
+            '%s states no linear-multistep companion, so the LMM '
+            'divided-difference compute_lte does not apply; its embedded '
+            'estimate is computed in the generic RK step and consumed by '
+            '_run_rk_adaptive.' % type(self).__name__)
+
 
 class TRBDF2Integrator(RungeKuttaIntegrator):
     """TR-BDF2: a trapezoid stage over ``gamma*h`` then a BDF2 stage over ``h``.
@@ -1021,3 +1041,59 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
             'divided-difference compute_lte does not apply. Its embedded 5(3) '
             'estimate is computed in Transient._solve_timestep_radau and '
             'consumed by _run_radau_adaptive.')
+
+
+class ESDIRK43Integrator(RungeKuttaIntegrator):
+    """ESDIRK4(3)6L[2]SA -- Kennedy & Carpenter's 6-stage, order-4, L-stable,
+    stiffly-accurate ESDIRK (the "KenCarp4" scheme), with its embedded order-3
+    estimate.
+
+    ⚠ THIS IS A TEST VEHICLE, and its whole point is that adding it took ONLY
+    the Butcher tableau below -- no new transient step, no new shooting
+    monodromy, no new noise or forced-fold code.  It exercises the generic
+    Runge-Kutta machinery at ``s = 6`` stages (against TR-BDF2's 3 and Radau's
+    3), which is the check that the s-stage generalisation of the DIRK-sequential
+    family is real and not tuned to a stage count.
+
+    ⚠ LOWER-TRIANGULAR with an EXPLICIT first stage and a CONSTANT implicit
+    diagonal ``gamma = 1/4`` (``stage_structure() == 'esdirk'``): it takes the
+    sequential DIRK path, never the coupled/transform one -- ``A`` is singular
+    (the explicit first stage), so it lacks the Butcher-Bickart transform and
+    the H&W index-1 DAE theorem that Radau's ``det A != 0`` buys.  ESDIRK buys
+    its cheapness from the triangular constant-diagonal structure instead (one
+    shared factorisation per step), which is a different bargain.
+    """
+
+    ORDER = 4
+    EMBEDDED_ORDER = 3
+    STAGES = 6
+
+    _g = 1.0 / 4.0
+    #: Butcher matrix (6x6, lower-triangular, ESDIRK: explicit first stage,
+    #: a_ii = 1/4 for i >= 1).  Kennedy & Carpenter 2003, ARK4(3)6L[2]SA.
+    A = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (1.0 / 4.0, 1.0 / 4.0, 0.0, 0.0, 0.0, 0.0),
+        (8611.0 / 62500.0, -1743.0 / 31250.0, 1.0 / 4.0, 0.0, 0.0, 0.0),
+        (5012029.0 / 34652500.0, -654441.0 / 2922500.0, 174375.0 / 388108.0,
+         1.0 / 4.0, 0.0, 0.0),
+        (15267082809.0 / 155376265600.0, -71443401.0 / 120774400.0,
+         730878875.0 / 902184768.0, 2285395.0 / 8070912.0, 1.0 / 4.0, 0.0),
+        (82889.0 / 524892.0, 0.0, 15625.0 / 83664.0, 69875.0 / 102672.0,
+         -2260.0 / 8211.0, 1.0 / 4.0),
+    )
+    #: step weights = last row of A (stiffly accurate).
+    B = A[5]
+    #: node abscissae (rows of A sum to these).
+    C = (0.0, 1.0 / 2.0, 83.0 / 250.0, 31.0 / 50.0, 17.0 / 20.0, 1.0)
+    #: order-3 embedded weights ``b_hat``.
+    B_HAT = (4586570599.0 / 29645900160.0, 0.0, 178811875.0 / 945068544.0,
+             814220225.0 / 1159782912.0, -3700637.0 / 11593932.0,
+             61727.0 / 225920.0)
+    #: embedded estimate weights on the stage derivatives: ``b_hat - b``, so
+    #: ``yhat - y = h sum_i (b_hat_i - b_i) K_i`` (read by the generic DIRK
+    #: step's error estimate).
+    EMBEDDED_DK = tuple(bh - b for bh, b in zip(B_HAT, B))
+
+    def __init__(self):
+        pass

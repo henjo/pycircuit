@@ -1004,3 +1004,54 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
     Vh = np.fft.rfft(v2) / len(v2)
     assert abs(Vh[0]) > 1e-3 and abs(Vh[2]) > 1e-3, \
         'radau transform lost the mixer harmonics: %s' % np.abs(Vh[:4])
+
+
+def test_esdirk43_is_a_tableau_only_order4_dirk():
+    """ESDIRK4(3)6 (KenCarp4) -- the refactor's test vehicle: a NEW DIRK method
+    added as tableau-only runs at its proper order 4 through the generic RK
+    machinery, exercising it at s=6 stages (TR-BDF2 and Radau are s=3).
+
+    Gate G1: the tableau satisfies order 4 (B(1..4)), NOT order 5 (B(5)!=0),
+    embedded order 3 (B_hat(1..3)), stiff accuracy, and the ESDIRK structure
+    (explicit first stage, constant implicit diagonal 1/4).  Then the real
+    transient loop integrates the RC step at fourth order (32x... no, 16x per
+    doubling), with NO method-specific transient code -- it flows through
+    `_solve_timestep_rk` -> `_rk_step_dirk` untouched.
+    """
+    from pycircuit.circuit.integrator import ESDIRK43Integrator
+    from pycircuit.circuit.elements import VS
+    circuit.default_toolkit = circuit.numeric
+    e = ESDIRK43Integrator()
+    _A, _B, _c = e.butcher()
+    assert e.stage_structure() == 'esdirk' and e.is_stiffly_accurate()
+    assert e.stages == 6 and e.ORDER == 4 and e.EMBEDDED_ORDER == 3
+    for k in range(1, 5):
+        assert abs(_B @ (_c ** (k - 1)) - 1.0 / k) < 1e-13, 'B(%d) fails' % k
+    assert abs(_B @ (_c ** 4) - 1.0 / 5) > 1e-4, 'must NOT be order 5'
+    _Bh = np.array(e.B_HAT)
+    for k in range(1, 4):
+        assert abs(_Bh @ (_c ** (k - 1)) - 1.0 / k) < 1e-13, 'B_hat(%d) fails' % k
+    assert abs(_Bh @ (_c ** 3) - 1.0 / 4) > 1e-5, 'embedded must be order 3'
+
+    tau, tend = 1e-2, 3e-2
+
+    def build():
+        c = SubCircuit(); c.add_node('a'); c.add_node('b')
+        c['vs'] = VS('a', gnd, v=1.0)
+        c['R'] = R('a', 'b', r=1e4); c['C'] = C('b', gnd, c=1e-6)
+        return c
+    analytic = 1.0 - np.exp(-tend / tau)
+    errs = []
+    for N in (4, 8, 16, 32):
+        c = build()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=ESDIRK43Integrator())
+        res = tr.solve(tend=tend, timestep=tend / N, x0=np.zeros(c.n),
+                       fixed_timestep=True)
+        errs.append(abs(np.asarray(res.v('b'), dtype=float).reshape(-1)[-1]
+                        - analytic))
+    assert errs[-1] < 1e-7, errs
+    ## fourth order: ~16x per doubling (accept > 10 for higher-order remainder)
+    for i in range(1, len(errs)):
+        assert errs[i - 1] / errs[i] > 10.0, \
+            'ESDIRK4(3)6 order is not 4: %s' % errs
