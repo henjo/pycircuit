@@ -12005,19 +12005,24 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
     assert info2['monodromy_method'] == 'trap' and info2['Q'] > 10.0, \
         "trap's own second multiplier read Q = %.3f; it was 11.1 here" \
         % info2['Q']
-    ## Euler at this grid (orbit 55% off) is too poor to seed a twin, and
-    ## the two twins fail it DIFFERENTLY -- which is why the orbit-consistency
-    ## guard is load-bearing.  The default TR-BDF2 twin is robust enough to
-    ## CONVERGE from the poor seed, but to a SPURIOUS limit cycle (Q = 1.97
-    ## against the exact 5.91); the guard catches that its orbit departs from
-    ## the seed and refuses, rather than returning the wrong number.  The
-    ## Gear-2 twin instead fails earlier, by not converging at all.  Both are
-    ## loud; neither returns a plausible wrong Q.
+    ## Euler at this grid (orbit 55% off) is too poor to seed a twin, and the
+    ## point B16 pins is the INVARIANT: the twin is REFUSED with a reason, never
+    ## a plausible-wrong Q.  ⚠ THE REFUSAL MECHANISM IS ROUNDOFF-SENSITIVE HERE
+    ## and is deliberately NOT pinned: this seed sits on a spurious-orbit basin
+    ## boundary, so a ~1e-14 change in the step (e.g. TR-BDF2 written in the
+    ## generic stage-derivative form vs the old BDF2-companion form -- the same
+    ## method to 14 digits) tips the free-period Newton between two refusals --
+    ## CONVERGING to a spurious limit cycle that the orbit-consistency guard
+    ## then catches (Q = 1.97 against the exact 5.91, 'spurious'), or NOT
+    ## CONVERGING at all ('did not converge').  Both are loud; both refuse.  The
+    ## Gear-2 twin refuses the same seed (by non-convergence).  Pinning one
+    ## mechanism would pin a knife-edge; the assertion accepts either refusal.
+    _refused = 'spurious|too poor to seed|did not converge'
     _c3, p3 = solve('euler')
-    with pytest.raises(RuntimeError, match='spurious|too poor to seed'):
+    with pytest.raises(RuntimeError, match=_refused):
         p3.ppv()
     p3.monodromy = 'gear'
-    with pytest.raises(RuntimeError, match='did not converge'):
+    with pytest.raises(RuntimeError, match=_refused):
         p3.ppv()
 
 

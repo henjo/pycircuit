@@ -2219,23 +2219,56 @@ class Transient(Analysis):
             'PCNR did not converge at t=%g after %d iterations'
             % (t, self.par.maxiter))
 
-    def _solve_timestep_trbdf2(self, x0, t, provided_function=None):
-        """One TR-BDF2 step: a trapezoid stage over ``gamma*h`` then a BDF2
-        stage over ``h``, two Newton solves that share ONE factorisation
-        (``a22 == a33``).  Self-starting -- the only past state is ``x0``,
-        the previous accepted solution -- so no history ring is read.
+    def _solve_timestep_rk(self, x0, t, provided_function=None):
+        """One step of ANY Runge-Kutta method, driven by its Butcher tableau --
+        the single entry point that replaces the per-method stage steps.
 
-        When ``_trbdf2_want_est`` is set (by the adaptive driver
-        :meth:`_run_trbdf2_adaptive`) it also leaves the filtered embedded
-        2(3) error estimate in ``_trbdf2_est``; the fixed-step path does not
-        set the flag and pays nothing for it.  Returns ``(x, None, J, None)``
-        like `solve_timestep`, with ``J`` the stage-2 Jacobian the
-        downstream expects, and leaves ``_iq``/``_q_cache`` set so the
-        history push after the step is consistent.
+        Structure-aware (``integ.stage_structure()``):
+
+        * a lower-triangular tableau (DIRK / SDIRK / ESDIRK -- TR-BDF2) is solved
+          stage by stage, each an ``m x m`` Newton through :meth:`_newton` (so
+          limiting, the nrsolver and the continuation rescue come for free) --
+          :meth:`_rk_step_dirk`;
+        * a fully-implicit tableau (FULL -- Radau) is solved coupled, dense
+          ``3m`` or the ``eig(A^-1)`` cost transform when opted in --
+          :meth:`_rk_step_coupled`.
+
+        Stiffly-accurate only for now (``x_{n+1}`` == last stage); both shipped
+        stage methods are.  Every path leaves the stage record in ``_rk_Y`` /
+        ``_rk_K`` for the shooting monodromy and, when ``_rk_want_est`` is set,
+        the filtered embedded estimate in ``_rk_est``.
         """
         integ = self.base_integrator
-        g = integ.GAMMA
-        A1, A0, a33 = integ.A1, integ.A0, integ.STAGE_DIAG
+        if not integ.is_stiffly_accurate():
+            raise NotImplementedError(
+                'RK step: only stiffly-accurate tableaux are wired (x_{n+1} == '
+                'last stage); a non-stiffly-accurate method needs the extra '
+                'final-weight solve, not built.')
+        if integ.stage_structure() == integ.FULL:
+            return self._rk_step_coupled(x0, t, provided_function)
+        return self._rk_step_dirk(x0, t, provided_function)
+
+    def _rk_step_dirk(self, x0, t, provided_function=None):
+        """One step of a lower-triangular (DIRK/SDIRK/ESDIRK) RK method, solved
+        stage by stage from the Butcher tableau.
+
+        For stage ``i`` the residual in the charge formulation is
+        ``q(Y_i) - [q(x_n) + h sum_{j<i} A_ij K_j] - h A_ii K_i(Y_i) = 0`` with
+        ``K_j = -(i(Y_j) + u(t_n + c_j h))`` -- one ``m x m`` Newton via
+        :meth:`_newton` (limiting included).  An explicit first stage
+        (``A[0]==0``, ``c0==0``) is just ``Y_0 = x_n``.  Stiffly accurate, so
+        ``x_{n+1} = Y_{s-1}``.
+
+        ⚠ THIS IS THE GENERIC FORM OF THE OLD `_solve_timestep_trbdf2`.  For
+        TR-BDF2's ESDIRK tableau the two implicit stages share the diagonal
+        ``d = STAGE_DIAG`` (the one-LU property), and the stage form is
+        algebraically identical to the old TR + BDF2-companion writing
+        (verified before the bespoke step was removed).  Any SDIRK/ESDIRK to
+        come reuses this untouched.
+        """
+        integ = self.base_integrator
+        A, B, C = integ.butcher()
+        s = A.shape[0]
         h = self._dt
         tn = t - h
         epar = self.epar
@@ -2251,92 +2284,74 @@ class Transient(Analysis):
 
         xn = x0
         qn = arr(self.cir.q(xn, epar))
-        dqn = -(arr(self.cir.i(xn, epar)) + src(tn))
-        t1 = tn + g * h
+        tstage = [tn + C[i] * h for i in range(s)]
+        Y = [None] * s
+        K = [None] * s
+        for i in range(s):
+            target = qn + h * sum(A[i, j] * K[j] for j in range(i)) \
+                if i > 0 else qn
+            aii = A[i, i]
+            if abs(aii) < 1e-14:
+                ## explicit stage; for the usual explicit FIRST stage (c0==0)
+                ## this is x_n exactly, else solve q(Y_i) = target.
+                if i == 0:
+                    Y[i] = np.array(xn, dtype=float)
+                else:
+                    def func_e(x, _tgt=target):
+                        f = arr(self.cir.q(x, epar)) - _tgt
+                        J = arr(self.cir.C(x, epar))
+                        return f, J
+                    Y[i] = self._newton(func_e, xn)
+            else:
+                ti = tstage[i]
+                def func_i(x, _tgt=target, _aii=aii, _ti=ti):
+                    Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
+                    f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
+                    J = arr(self.cir.C(x, epar)) + h * _aii * arr(self.cir.G(x, epar))
+                    return f, J
+                guess = Y[i - 1] if i > 0 else xn
+                Y[i] = self._newton(func_i, guess)
+            K[i] = -(arr(self.cir.i(Y[i], epar)) + src(tstage[i]))
 
-        def func1(x):
-            dqx = -(arr(self.cir.i(x, epar)) + src(t1))
-            f = arr(self.cir.q(x, epar)) - qn - (g * h / 2.0) * (dqx + dqn)
-            J = arr(self.cir.C(x, epar)) + (g * h / 2.0) * arr(self.cir.G(x, epar))
-            return f, J
-        Y1 = self._newton(func1, xn)
-        q1 = arr(self.cir.q(Y1, epar))
-
-        def func2(x):
-            dqx = -(arr(self.cir.i(x, epar)) + src(t))
-            f = arr(self.cir.q(x, epar)) - A1 * q1 - A0 * qn - a33 * h * dqx
-            J = arr(self.cir.C(x, epar)) + a33 * h * arr(self.cir.G(x, epar))
-            return f, J
-        Y2 = self._newton(func2, Y1)
-
-        ## Downstream state the accepted-step machinery reads.  `_iq` is the
-        ## charge derivative at the accepted point (what the companion
-        ## current approximates); `_q_cache` feeds `_q_at`.  The controller
-        ## is skipped under fixed_timestep, so no companion coefficients or
-        ## LTE are needed.
-        qY2 = self.cir.q(Y2, epar)
-        self._q_cache = (Y2, qY2)
-        self._iq = -(arr(self.cir.i(Y2, epar)) + src(t))
-        Cm2 = arr(self.cir.C(Y2, epar))
-        Gm2 = arr(self.cir.G(Y2, epar))
-        self._Cmat = Cm2
-        self._Geq = a33 * h * Gm2
-        self._effective_method = 'TRBDF2Integrator'
-        ## No LMM companion coefficients exist for a two-stage DIRK; set None
-        ## so a caller reading `_companion_coeffs` after the step gets a
-        ## defined absence rather than a stale pair from an earlier method.
+        xnp1 = Y[s - 1]  ## stiff accuracy
+        self._rk_Y = list(Y)
+        self._rk_K = list(K)
+        qY = self.cir.q(xnp1, epar)
+        self._q_cache = (xnp1, qY)
+        self._iq = -(arr(self.cir.i(xnp1, epar)) + src(t))
+        Cm = arr(self.cir.C(xnp1, epar))
+        Gm = arr(self.cir.G(xnp1, epar))
+        a_last = A[s - 1, s - 1]
+        self._Cmat = Cm
+        self._Geq = a_last * h * Gm
+        self._effective_method = type(integ).__name__
         self._companion_coeffs = None
-        ## Stage 1 kept for the shooting monodromy, which needs Y1.
-        self._trbdf2_Y1 = Y1
-        J = Cm2 + a33 * h * Gm2
+        J = Cm + a_last * h * Gm
+        if getattr(self, '_rk_want_est', False):
+            self._rk_est = self._rk_dirk_estimate(Y, K, h, J, arr)
+        return xnp1, None, J, None
 
-        ## THE EMBEDDED 2(3) ERROR ESTIMATE (Hosea and Shampine 1996), gated
-        ## so the fixed-step path pays nothing for it.  The three stage
-        ## derivatives `f = dq/dt = -(i + src)` at `x_n`, the internal stage
-        ## `Y1`, and `x_{n+1}` combine into
-        ##
-        ##     est_raw = h (c0 f_n + c1 f_gamma + c2 f_{n+1})
-        ##
-        ## with c0 = (1 - sqrt2)/3, c1 = 1/3, c2 = -(2 - sqrt2)/3 -- the
-        ## coefficients that make est_raw the leading local truncation error
-        ## (4 - 3 sqrt2)/6 * h^3 y''' of the order-2 solution (derived by
-        ## Taylor matching, verified against the analytic LTE of y' = a y:
-        ## ratio -> 1 as h -> 0).
-        ##
-        ## WARN THE RAW ESTIMATE IS A TRAP ON STIFF MODES.  For a h -> -inf
-        ## est_raw GROWS like |a h| while the true error is damped to zero by
-        ## L-stability -- a naive norm would force the controller to crawl
-        ## through exactly the stiff transient the method exists to step over.
-        ## H and S filter it through the stage matrix once:
-        ##
-        ##     (C + a33 h G) Est = C est_raw
-        ##
-        ## the SAME operator already factored for stage 2, so the filter is
-        ## one back-substitution.  Verified bounded as a h -> -inf where the
-        ## naive estimate grows without limit.  Solved in the reduced space
-        ## (the full stage matrix is singular on the reference row).
-        if getattr(self, '_trbdf2_want_est', False):
-            _s = 2.0 ** 0.5
-            fn = dqn
-            fg = -(arr(self.cir.i(Y1, epar)) + src(t1))
-            fnp1 = self._iq
-            est_raw = h * (((1.0 - _s) / 3.0) * fn
-                           + (1.0 / 3.0) * fg
-                           + (-(2.0 - _s) / 3.0) * fnp1)
-            ## est_raw is in CHARGE units (h * dq/dt); the mass matrix C
-            ## maps state to charge, so the STATE error is C^-1 est_raw, and
-            ## the stiff filter replaces C^-1 with the stage operator inverse
-            ## (C + a33 h G)^-1.  NO extra C multiply -- that would leave the
-            ## estimate in charge units (the trap the scalar C=1 check hid).
-            iref = self.irefnode
-            (Jr,) = remove_row_col((J,), iref, self.toolkit)
-            er_r = self.toolkit.concatenate(
-                (est_raw[:iref], est_raw[iref + 1:]))
-            Est_r = self.toolkit.linearsolver(Jr, er_r)
-            self._trbdf2_est = self.toolkit.insert(Est_r, iref, 0.0)
-        return Y2, None, J, None
+    def _rk_dirk_estimate(self, Y, K, h, J, arr):
+        """The filtered embedded error estimate for a DIRK step, in STATE units.
 
-    def _solve_timestep_radau(self, x0, t, provided_function=None):
+        ``est_raw = h sum_i dk_i K_i`` (the method's embedded weights
+        ``integ.EMBEDDED_DK`` on the stage derivatives -- for TR-BDF2 the
+        Hosea & Shampine 2(3) coefficients), then filtered through the last
+        stage operator ``(C + a_last h G)^{-1}`` -- the same factor the step's
+        final stage used, so the estimate is one back-substitution and stays
+        bounded on a stiff mode (an unfiltered ``est_raw`` grows like ``|a h|``
+        while the true error is L-damped to zero)."""
+        integ = self.base_integrator
+        dk = integ.EMBEDDED_DK
+        iref = self.irefnode
+        tk = self.toolkit
+        est_raw = h * sum(dk[i] * np.asarray(K[i]) for i in range(len(dk)))
+        (Jr,) = remove_row_col((J,), iref, tk)
+        er_r = tk.concatenate((est_raw[:iref], est_raw[iref + 1:]))
+        Est_r = tk.linearsolver(Jr, er_r)
+        return tk.insert(Est_r, iref, 0.0)
+
+    def _rk_step_coupled(self, x0, t, provided_function=None):
         """One Radau IIA(3) step: the three collocation stages solved as ONE
         coupled ``3n`` Newton system.  Fully implicit -- no explicit first
         stage, no per-stage one-LU shortcut -- and stiffly accurate, so the
@@ -2354,14 +2369,14 @@ class Transient(Analysis):
         ⚠ THE COST TRANSFORM is the fast path, opt-in via ``radau_transform``
         (or ``self._radau_use_transform``).  It block-diagonalises the coupled
         system through ``eig(A^{-1})`` into one REAL and one COMPLEX `m x m`
-        solve (see :meth:`_solve_timestep_radau_transformed`) -- an
+        solve (see :meth:`_rk_step_transformed`) -- an
         ``O((3m)^3)`` dense solve becomes two sparse ones.  It is SIMPLIFIED
         Newton (one Jacobian per step), so on a strongly nonlinear step it can
         fail to converge; then this falls back to the dense full-Newton path
         below, so the answer is never wrong, only occasionally slower.
 
-        When ``_radau_want_est`` is set (by :meth:`_run_radau_adaptive`) it also
-        leaves the filtered embedded 5(3) error estimate in ``_radau_est`` (see
+        When ``_rk_want_est`` is set (by :meth:`_run_rk_adaptive`) it also
+        leaves the filtered embedded 5(3) error estimate in ``_rk_est`` (see
         :meth:`_radau_error_estimate`); the fixed-step path does not set the flag
         and pays nothing for it.  Returns ``(x, None, J, None)`` like
         `solve_timestep`, with ``J`` the last-stage operator, and leaves
@@ -2371,7 +2386,7 @@ class Transient(Analysis):
                    getattr(self.par, 'radau_transform', False)):
             from pycircuit.circuit.nrsolver import NoConvergenceError
             try:
-                return self._solve_timestep_radau_transformed(
+                return self._rk_step_transformed(
                     x0, t, provided_function)
             except NoConvergenceError:
                 ## simplified Newton stalled on this (nonlinear) step -- fall
@@ -2478,14 +2493,14 @@ class Transient(Analysis):
         self._effective_method = 'RadauIIA3Integrator'
         self._companion_coeffs = None
         ## Stage values kept for the shooting monodromy, which needs all three.
-        self._radau_Y = (Y1, Y2, Y3)
+        self._rk_Y = [Y1, Y2, Y3]
         J = C3 + a33 * h * G3
 
         ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner Vol II, IV.8, the
         ## radau5 estimator), gated so the fixed-step path pays nothing.  See
         ## :meth:`_radau_error_estimate` for the construction and its gates.
-        if getattr(self, '_radau_want_est', False):
-            self._radau_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
+        if getattr(self, '_rk_want_est', False):
+            self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
 
     def _radau_error_estimate(self, xn, Y, tn, h, src, arr):
@@ -2617,7 +2632,7 @@ class Transient(Analysis):
         dY = [V[i, 0].real * w0 + 2.0 * np.real(V[i, 1] * w1) for i in range(3)]
         return np.concatenate(dY)
 
-    def _solve_timestep_radau_transformed(self, x0, t, provided_function=None):
+    def _rk_step_transformed(self, x0, t, provided_function=None):
         """One Radau IIA(3) step by the COST TRANSFORM -- simplified Newton
         (one Jacobian, evaluated at ``x_n``) with each iteration's coupled
         solve done through the ``A^{-1}`` eigenbasis: one real and one complex
@@ -2627,8 +2642,8 @@ class Transient(Analysis):
 
         Raises ``NoConvergenceError`` if the frozen Jacobian does not carry the
         iteration to tolerance in ``maxiter`` steps -- the caller
-        (:meth:`_solve_timestep_radau`) then falls back to the dense
-        full-Newton solve.  Sets the same downstream state (``_radau_Y``,
+        (:meth:`_rk_step_coupled`) then falls back to the dense
+        full-Newton solve.  Sets the same downstream state (``_rk_Y``,
         ``_iq``, ``_q_cache``, ...) so every consumer is identical to the dense
         path."""
         from pycircuit.circuit.nrsolver import NoConvergenceError
@@ -2708,22 +2723,20 @@ class Transient(Analysis):
         self._Geq = a33 * h * G3
         self._effective_method = 'RadauIIA3Integrator'
         self._companion_coeffs = None
-        self._radau_Y = (Y1, Y2, Y3)
+        self._rk_Y = [Y1, Y2, Y3]
         J = C3 + a33 * h * G3
-        if getattr(self, '_radau_want_est', False):
-            self._radau_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
+        if getattr(self, '_rk_want_est', False):
+            self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
 
     def solve_timestep(self, x0, t, provided_function=None):
-        from pycircuit.circuit.integrator import TRBDF2Integrator, RadauIIA3Integrator
-        if isinstance(self.base_integrator, RadauIIA3Integrator):
-            ## Three-stage fully-implicit: its own coupled stage solve.
-            return self._solve_timestep_radau(x0, t, provided_function)
-        if isinstance(self.base_integrator, TRBDF2Integrator):
-            ## Two-stage DIRK: its own step, not the single-companion path.
-            ## PCNR is a DC-junction Newton strategy and is not combined with
-            ## the stages here; TR-BDF2 runs the ordinary stage Newton.
-            return self._solve_timestep_trbdf2(x0, t, provided_function)
+        from pycircuit.circuit.integrator import RungeKuttaIntegrator
+        if isinstance(self.base_integrator, RungeKuttaIntegrator):
+            ## ANY Runge-Kutta method: the one tableau-driven stage step, which
+            ## picks the DIRK-sequential or fully-implicit-coupled path from the
+            ## tableau's structure.  PCNR is a DC-junction Newton strategy and is
+            ## not combined with the stages here.
+            return self._solve_timestep_rk(x0, t, provided_function)
         ## STAGE 13 -- the PCNR path, when asked for and when the circuit has a
         ## device that participates.  A circuit with no PCNR junction falls
         ## through: there is nothing for the method to do, and refusing would be
@@ -3088,26 +3101,15 @@ class Transient(Analysis):
         abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
                                           self.par.lte_iabstol * ones_branches))
 
-        ## TR-BDF2 adaptive: its own loop, driven by the embedded 2(3)
-        ## estimate, reached only for the non-fixed grid (fixed step runs
-        ## the ordinary loop below, which dispatches the two-stage step).
-        ## `_begin_run` above has set `base_integrator`, so the type check
-        ## is safe here.
-        if isinstance(self.base_integrator, TRBDF2Integrator) \
+        ## Runge-Kutta adaptive: the one self-starting loop, driven by the
+        ## method's embedded estimate, reached only for the non-fixed grid
+        ## (fixed step runs the ordinary loop below, which dispatches the stage
+        ## step).  A stage method has no LMM divided-difference LTE, so it never
+        ## uses the controller below.  `_begin_run` has set `base_integrator`.
+        from pycircuit.circuit.integrator import RungeKuttaIntegrator
+        if isinstance(self.base_integrator, RungeKuttaIntegrator) \
                 and not fixed_timestep:
-            return self._run_trbdf2_adaptive(
-                x, n, X, timelist, tend, dt, max_step, abstol,
-                provided_function, _t_run_start)
-
-        ## Radau IIA(3) adaptive: its own loop, driven by the embedded 5(3)
-        ## estimate, reached only for the non-fixed grid (fixed step runs the
-        ## ordinary loop below, which dispatches the coupled stage step).  Like
-        ## TR-BDF2 it is self-starting, so it does not use the LMM controller's
-        ## divided-difference LTE (which Radau does not provide).
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
-        if isinstance(self.base_integrator, RadauIIA3Integrator) \
-                and not fixed_timestep:
-            return self._run_radau_adaptive(
+            return self._run_rk_adaptive(
                 x, n, X, timelist, tend, dt, max_step, abstol,
                 provided_function, _t_run_start)
 
@@ -3485,37 +3487,29 @@ class Transient(Analysis):
         return self.result
 
 
-    def _run_trbdf2_adaptive(self, x, n, X, timelist, tend, dt, max_step,
-                             abstol, provided_function, _t_run_start):
-        """Adaptive TR-BDF2, driven by the embedded 2(3) estimate.
+    def _run_rk_adaptive(self, x, n, X, timelist, tend, dt, max_step,
+                         abstol, provided_function, _t_run_start):
+        """Adaptive loop for ANY Runge-Kutta method, driven by its embedded
+        estimate -- the one driver that replaced the per-method ones.
 
-        TR-BDF2 is self-starting: each step reads only the accepted `x`, so
-        this is its OWN loop rather than the LMM controller path -- that
-        path estimates the LTE through `Integrator.compute_lte`, which a
-        two-stage DIRK does not have.  The estimate here is the filtered
-        `_trbdf2_est` the step leaves behind (see `_solve_timestep_trbdf2`).
-
-        Error per step, order 2: `err = rms(Est_i / (reltol|x_i| + atol_i))`
-        over the non-reference rows, accept at `err <= 1`, and
-        `dt_next = dt * clip(0.9 * err^(-1/3), K, 1/K)` with `K = 1/2` -- the
-        `1/(order+1) = 1/3` exponent, 0.9 safety, and a per-step growth/shrink
-        clamp so one anomalous estimate cannot swing the step size wildly.
-        A non-convergent Newton halves the step and retries.
-
-        ⚠ NO `_push_history`.  The LMM loop rolls the charge rings that a
-        multistep companion reads back; TR-BDF2 reads none of them, so the
-        only accepted-step bookkeeping is `accept_step` for elements that
-        carry their own state.  Rolling the rings here would be dead work at
-        best and, for a stateful element, a second uncommanded advance.
+        Self-starting, so its own loop rather than the LMM controller (a stage
+        method has no divided-difference LTE).  The per-step estimate is the
+        filtered ``_rk_est`` the step leaves; the step exponent is
+        ``1/(EMBEDDED_ORDER+1)`` read from the method (TR-BDF2 2(3) -> 1/3,
+        Radau 5(3) -> 1/4).  Accept at ``err <= 1``, halve on a non-convergent
+        Newton, and clamp per-step growth/shrink so one anomalous estimate
+        cannot swing the step wildly.  No ``_push_history``: a stage method
+        reads no charge rings.
         """
         tk = self.toolkit
         iref = self.irefnode
         reltol = self.par.reltol
         minstep = self.par.minstep
-        SAFETY, K, ORDER = 0.9, 0.5, 2
+        SAFETY, K = 0.9, 0.5
+        ORDER = int(self.base_integrator.EMBEDDED_ORDER)
         keep = [i for i in range(n) if i != iref]
         abstol = tk.array(abstol)
-        self._trbdf2_want_est = True
+        self._rk_want_est = True
         from pycircuit.circuit.nrsolver import NoConvergenceError
         MAX_REJECT = 12
         t = 0.0
@@ -3535,7 +3529,7 @@ class Transient(Analysis):
                         if dt < minstep:
                             raise
                         continue
-                    est = tk.array(self._trbdf2_est)
+                    est = tk.array(self._rk_est)
                     wt = reltol * tk.abs(xnew) + abstol
                     ek = tk.array([est[i] / wt[i] for i in keep])
                     err = float((tk.sum(ek * ek) / len(keep)) ** 0.5)
@@ -3558,89 +3552,7 @@ class Transient(Analysis):
                     -1.0 / (ORDER + 1))
                 dt = dt * min(1.0 / K, max(K, grow))
         finally:
-            self._trbdf2_want_est = False
-
-        X = tk.array(X).T
-        timelist = tk.array([0.0] + timelist)
-        self.statistics.total_seconds = time.perf_counter() - _t_run_start
-        self.result = CircuitResult(self.cir, x=X, xdot=None,
-                                    sweep_values=timelist,
-                                    sweep_label='time', sweep_unit='s')
-        outputstep = self.par.outputstep
-        if outputstep is not None:
-            _grid, _Xg = resample_uniform(self.result.sweep_values,
-                                          self.result.x, step=outputstep)
-            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
-                                        sweep_values=_grid,
-                                        sweep_label='time', sweep_unit='s')
-        self.result.statistics = self.statistics
-        return self.result
-
-    def _run_radau_adaptive(self, x, n, X, timelist, tend, dt, max_step,
-                            abstol, provided_function, _t_run_start):
-        """Adaptive Radau IIA(3), driven by the embedded 5(3) estimate.
-
-        The Radau analogue of :meth:`_run_trbdf2_adaptive`: self-starting, so
-        its own loop rather than the LMM controller (Radau has no
-        divided-difference LTE).  The per-step estimate is the filtered
-        ``_radau_est`` the step leaves (see :meth:`_radau_error_estimate`); it
-        is the order-3 embedded, so the step exponent is ``1/(3+1) = 1/4``
-        (the peer's ``1/4``).  Accept at ``err <= 1``, halve on a
-        non-convergent Newton, and clamp per-step growth/shrink so one
-        anomalous estimate cannot swing the step wildly.  No ``_push_history``:
-        Radau reads no charge rings.
-        """
-        tk = self.toolkit
-        iref = self.irefnode
-        reltol = self.par.reltol
-        minstep = self.par.minstep
-        SAFETY, K, ORDER = 0.9, 0.5, 3
-        keep = [i for i in range(n) if i != iref]
-        abstol = tk.array(abstol)
-        self._radau_want_est = True
-        from pycircuit.circuit.nrsolver import NoConvergenceError
-        MAX_REJECT = 12
-        t = 0.0
-        try:
-            while t < tend:
-                dt = min(dt, max_step, tend - t)
-                reject = 0
-                while True:
-                    self._dt = dt
-                    try:
-                        xnew, _f, _J, _ = self.solve_timestep(
-                            x, t + dt, provided_function=provided_function)
-                    except NoConvergenceError:
-                        self.statistics.rejected_steps += 1
-                        reject += 1
-                        dt = 0.5 * dt
-                        if dt < minstep:
-                            raise
-                        continue
-                    est = tk.array(self._radau_est)
-                    wt = reltol * tk.abs(xnew) + abstol
-                    ek = tk.array([est[i] / wt[i] for i in keep])
-                    err = float((tk.sum(ek * ek) / len(keep)) ** 0.5)
-                    if err <= 1.0 or reject >= MAX_REJECT or dt <= minstep:
-                        break
-                    self.statistics.rejected_steps += 1
-                    reject += 1
-                    dt = dt * max(K, SAFETY * err ** (-1.0 / (ORDER + 1)))
-                ## accept
-                t = t + dt
-                x = xnew
-                X.append(copy(x))
-                timelist.append(t)
-                self.statistics.accepted_steps += 1
-                self.statistics._note_step(dt)
-                if hasattr(self.cir, 'accept_step'):
-                    self.cir.accept_step(t, x, self.epar)
-                ## propose the next step from the same estimate
-                grow = SAFETY * (err if err > 1e-16 else 1e-16) ** (
-                    -1.0 / (ORDER + 1))
-                dt = dt * min(1.0 / K, max(K, grow))
-        finally:
-            self._radau_want_est = False
+            self._rk_want_est = False
 
         X = tk.array(X).T
         timelist = tk.array([0.0] + timelist)

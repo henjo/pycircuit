@@ -908,11 +908,11 @@ def test_radau_embedded_estimate_is_order_three_and_drives_step_control():
         tr = Transient(c, toolkit=circuit.numeric,
                        integrator=RadauIIA3Integrator())
         tr._begin_run(np.zeros(c.n), c.n)
-        tr._radau_want_est = True
+        tr._rk_want_est = True
         tr._dt = h
         tr.solve_timestep(np.zeros(c.n), h)
         ib = c.get_node_index('b')
-        ests.append(abs(float(np.asarray(tr._radau_est, dtype=float)[ib])))
+        ests.append(abs(float(np.asarray(tr._rk_est, dtype=float)[ib])))
     ## asymptotic ratio -> 16 (h^4); require the finest > 10 to separate it
     ## cleanly from an order-2 (h^3, ratio 8) construction
     assert ests[-2] / ests[-1] > 10.0, \

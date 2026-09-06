@@ -77,7 +77,7 @@ class Integrator(ABC):
     companion recursion and the loop drives it through `compute_derivatives`.
     ⚠ A STAGE method cannot -- TRBDF2 (2026-09-05) has two implicit stages,
     not a companion recursion, and needed a dedicated two-stage step in the
-    Transient loop (`_solve_timestep_trbdf2`) and its own m x m shooting
+    Transient loop (the generic `_solve_timestep_rk`) and its own m x m shooting
     monodromy; its `compute_derivatives`/`companion_coefficients`/`companion_dT`
     raise.  The ABC still fits it structurally (order, history, order-drop),
     just not the single-companion time step.
@@ -763,7 +763,7 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
     ⚠ IT IS NOT A LINEAR-MULTISTEP METHOD, so it does not fit the
     companion-recursion shape the rest of this module and the ABC are built
     around: there is no ``iq_n = sum_k alphas[k] q_{n-k}`` -- there are STAGES.
-    The Transient loop runs it through :meth:`Transient._solve_timestep_trbdf2`
+    The Transient loop runs it through :meth:`Transient._solve_timestep_rk`
     (two Newton solves sharing ONE factorisation, because ``a22 == a33``), not
     through :meth:`compute_derivatives`, and shooting builds its ``m x m``
     monodromy directly from the two stage linearisations rather than from
@@ -771,9 +771,9 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
 
     ⚠ ADAPTIVE, but NOT through this class's LMM interface.  The embedded
     2(3) estimate (Hosea & Shampine 1996) is computed inside
-    :meth:`Transient._solve_timestep_trbdf2` from the three stage
+    :meth:`Transient._solve_timestep_rk` from the three stage
     derivatives and filtered once through the stage matrix, and a dedicated
-    driver :meth:`Transient._run_trbdf2_adaptive` runs step control on it.
+    driver :meth:`Transient._run_rk_adaptive` runs step control on it.
     :meth:`compute_lte` STILL raises: it is the LMM controller's
     divided-difference interface, which a two-stage DIRK does not fit -- the
     estimate is a stage combination, not a companion difference.  The
@@ -835,6 +835,15 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
     """
 
     ORDER = 2
+    #: order of the embedded estimate, so the adaptive controller uses the
+    #: ``1/(EMBEDDED_ORDER+1)`` step exponent (2(3) pair -> 1/3).
+    EMBEDDED_ORDER = 2
+    #: embedded 2(3) weights on the three stage derivatives (Hosea & Shampine
+    #: 1996): ``est_raw = h (c0 K0 + c1 K1 + c2 K2)`` is the leading LTE of the
+    #: order-2 solution.  Read by the generic DIRK step's error estimate.
+    EMBEDDED_DK = ((1.0 - math.sqrt(2.0)) / 3.0,
+                   1.0 / 3.0,
+                   -(2.0 - math.sqrt(2.0)) / 3.0)
 
     #: ``gamma = 2 - sqrt(2)``, from the one-LU condition ``g^2 - 4g + 2 = 0``.
     GAMMA = 2.0 - math.sqrt(2.0)
@@ -877,8 +886,8 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
                             h_last, is_first_step, toolkit):
         raise NotImplementedError(
             'TR-BDF2 is a two-stage method; the Transient loop runs it via '
-            '_solve_timestep_trbdf2 (two Newton solves, one factorisation), '
-            'not through the single-companion compute_derivatives.')
+            'the generic RK stage step _solve_timestep_rk, not through the '
+            'single-companion compute_derivatives.')
 
     def companion_coefficients(self, h_curr, h_last):
         raise NotImplementedError(
@@ -897,9 +906,9 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
         raise NotImplementedError(
             'TR-BDF2 states no linear-multistep companion, so the LMM '
             'controller\'s divided-difference compute_lte does not apply. Its '
-            'embedded 2(3) estimate is computed in '
-            'Transient._solve_timestep_trbdf2 and consumed by '
-            '_run_trbdf2_adaptive, which is the adaptive path for this method.')
+            'embedded 2(3) estimate is computed in the generic RK step and '
+            'consumed by Transient._run_rk_adaptive, the adaptive path for '
+            'every stage method.')
 
 
 class RadauIIA3Integrator(RungeKuttaIntegrator):
@@ -948,6 +957,8 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
 
     #: Classical order (B(5) holds; C(3) gives stage order 3).
     ORDER = 5
+    #: order of the embedded 5(3) estimate -> ``1/4`` adaptive step exponent.
+    EMBEDDED_ORDER = 3
     #: Number of coupled stages.
     STAGES = 3
 

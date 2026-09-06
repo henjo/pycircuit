@@ -2825,7 +2825,7 @@ class PSS(Analysis):
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
             x_prev = xn
-            Y1f = tr._trbdf2_Y1
+            Y1f = tr._rk_Y[1]
             Y1 = self.toolkit.concatenate((Y1f[:iref], Y1f[iref + 1:]))
             Cn = np.asarray(self._C_at(xn))
             Gn = np.asarray(self._G_at(xn))
@@ -2979,7 +2979,7 @@ class PSS(Analysis):
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
             x_prev = xn
-            Yf = tr._radau_Y
+            Yf = tr._rk_Y
             Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
                   for yf in Yf]
             Cn = np.asarray(self._C_at(xn))
@@ -3137,7 +3137,7 @@ class PSS(Analysis):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
-            Y1f = self._transient()._trbdf2_Y1
+            Y1f = self._transient()._rk_Y[1]
             Y1 = toolkit.concatenate((Y1f[:iref], Y1f[iref + 1:]))
             Cn = np.asarray(self._C_at(xn)); Gn = np.asarray(self._G_at(xn))
             C1 = np.asarray(self._C_at(Y1)); G1 = np.asarray(self._G_at(Y1))
@@ -3206,7 +3206,7 @@ class PSS(Analysis):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
-            Yf = self._transient()._radau_Y
+            Yf = self._transient()._rk_Y
             Ys = [toolkit.concatenate((yf[:iref], yf[iref + 1:])) for yf in Yf]
             Cn = np.asarray(self._C_at(xn))
             Cs = [np.asarray(self._C_at(y)) for y in Ys]
