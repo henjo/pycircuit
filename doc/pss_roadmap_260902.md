@@ -3594,6 +3594,34 @@ change flips which step the reset lands in and a whole modulus propagates.
 reference to `next_event`** — the consumer is `transient.py` alone. So the transient breaks its
 steps at events and the PSS traversal does not.
 
+✅ **HALF OF THAT IS BUILT 2026-09-06 as `PSS.event_grid(period, npts=... | grid=...)`**, which
+returns step fractions with every event in the period landed ON a grid point. Measured on an RC
+driven by a `VPulse`, against a 4000-point reference, a 40-step uniform grid versus the same grid
+with its 3-4 event times landed:
+
+    edge offset    uniform      + events     gain
+    td = 0         6.787e-03    8.032e-04    8.4x
+    td = 0.0125T   5.720e-03    2.099e-04     27x
+    td = 0.0092T   2.483e-03    7.910e-04    3.1x
+
+⚠ **THE SNAP IS WHAT KEEPS IT SAFE:** an event near an existing point MOVES that point onto it
+rather than inserting a second beside it, so no sliver is created (smallest resulting step: 8% of a
+uniform one). Inserting unconditionally is how a merge acquires arbitrarily small steps — the same
+lesson B7c's separation rule encodes.
+
+⚠ **It is a HELPER in the `lte_grid`/`refine_grid` idiom, not a default change.** Making event
+breaking automatic would alter step selection for every PSS solve in the suite; that is a separate
+decision and has not been taken.
+
+⚠⚠ **AND ONLY THE TIME-DRIVEN HALF IS SOLVED.** `next_event(t)` is parameterised by time, so a
+source's edges can be walked out once and placed — which is why this needed no change to the six
+traversal loops, and is identical to shortening steps in flight for those events. A STATE-DEPENDENT
+reset cannot be: `Idtmod.next_event` is a linear prediction from the last accepted point and returns
+`inf` before a traversal starts, and its wrap time MOVES as the Newton iterates. **That half remains
+exactly as described below — it needs the event time to become an unknown the Newton solves for**,
+and `event_grid` will not help it.
+Test: `test_event_grid_lands_the_period_on_its_event_times`.
+
 ⚠⚠ **BUT "AND THE PSS REPORTS CONVERGENCE THERE" WAS WRONG, and the correction matters more
 than the claim.** It warns, loudly, three times over on this fixture:
 
