@@ -13881,3 +13881,122 @@ def test_event_grid_lands_the_period_on_its_event_times():
     if not p2.event_times:
         assert np.allclose(got, base, rtol=0, atol=1e-15), \
             'a circuit with no events had its grid altered'
+
+
+def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid():
+    """Where an `Idtmod` wrap falls RELATIVE TO THE GRID does not matter; where
+    the FINAL state falls relative to the fold is the whole story.
+
+    ⚠ THIS TEST EXISTS TO RECORD A FALSIFICATION.  The roadmap (A6) recorded
+    that the period map is "genuinely discontinuous" when the reset lands ON a
+    grid point -- `|dphi|` a constant 8.2e-3 independent of eps at npts=1200
+    against a smooth 1.732 at npts=600 -- and reasoned that "an infinitesimal
+    change flips which step the reset lands in and a whole modulus propagates".
+    On that reading the remedy was to make the event time an unknown the Newton
+    solves for, inside the transient engine, and to split each monodromy step
+    into two composed sub-step maps.  That is expensive surgery, so it was
+    priced with a falsifier first: does landing the wrap EXACTLY remove the
+    jump?
+
+    It does not, and the premise does not survive either:
+
+    * The jump is **grid-independent**.  Measured at npts 250/500/600/1000/
+      1200/2000/2400 with the wrap at node 86.25 (off), 345.00 (exactly on),
+      and five others: `||dphi||/eps` is 1.414214e+09 at EVERY ONE, to all
+      printed digits.  A quantity that does not move when the grid moves is not
+      a grid artefact.
+    * Adding the exact wrap times to the grid leaves it at 1.414214e+09.
+    * A dense scan of 60 base offsets across (0.001, 0.499), at npts 600 and
+      1200 -- every one of which places the wrap on an integer node -- found
+      **zero** jumps and **zero** disagreements between the two grids.
+    * The one base that jumps is the one where the final state sits on the
+      fold: `phi_idt(T)` steps from -0.000000000000 to -0.999999999999 as the
+      offset crosses zero.  That is the modulus, applied at t = T.
+
+    So the discontinuity set of the period map is `{x0 : phi(x0) lands on a
+    fold boundary}` -- a measure-zero set fixed by the OUTPUT map, which no
+    refinement of the time grid can move.  Event localisation is the wrong
+    instrument for it; the right one is to stop differencing across the fold
+    (carry the unfolded phase, or take the shooting residual modulo the
+    modulus).  A6's time-driven half stands as built -- `event_grid` is
+    measured to help real sources -- but its state-dependent half is NOT the
+    item this record claimed, and the traversal surgery is not justified by it.
+
+    ⚠ Caveat kept deliberately: the recorded fixture was not reproduced
+    exactly.  Its smooth column reads 1.732 = sqrt(3) where this one reads
+    sqrt(2), so the recorded circuit had a third responding coordinate that
+    this one does not.  What is asserted here is what THIS fixture measures.
+    """
+    from copy import copy
+    circuit.default_toolkit = circuit.numeric
+
+    T, IC, RATE = 1e-3, 0.31, 2.0
+
+    def build():
+        c = SubCircuit()
+        c['vin'] = VS('in', gnd, v=RATE / T)
+        c['X'] = Idtmod('in', gnd, 'o', gnd, modulus=1.0, ic=IC)
+        c['Ro'] = R('o', gnd, r=1e6)
+        return c
+
+    n = build().n
+    idt = 1                       # reduced coord of 'X.idt_node'
+
+    def phi(x0r, times):
+        p = PSS(build(), method='gear', reltol=1e-11)
+        p._tran = p._new_transient(p._integrator_for('gear'))
+        p._want_dfdh = False
+        p._want_lte = False
+        p._begin_period(np.asarray(x0r, dtype=float))
+        x = copy(np.asarray(x0r, dtype=float))
+        hs = np.diff(times)
+        for j, t in enumerate(times[1:]):
+            x = copy(p.solve_timestep(x, t, hs[j]))
+        return np.asarray(x, dtype=float).ravel()
+
+    d = np.zeros(n - 1)
+    d[idt] = 1.0
+    eps = 1e-9
+
+    ## The perturbation direction must actually drive the map, or every number
+    ## below is a zero-vs-zero pass.
+    g = np.linspace(0, T, 1201)
+    base = phi(0.20 * d, g)
+    assert np.linalg.norm(phi(0.20 * d + eps * d, g) - base) / eps > 1.0, \
+        'the idt state does not propagate -- the fixture proves nothing'
+
+    ## (1) ON a grid node is not special.  Every offset here puts the first
+    ## wrap at t/T = (1 - IC - b)/RATE, i.e. exactly on a node of a 1200-point
+    ## grid, and every one is smooth.
+    for b in (0.05, 0.10, 0.20, 0.35, 0.45):
+        r = np.linalg.norm(phi(b * d + eps * d, g) - phi(b * d, g)) / eps
+        assert abs((1 - IC - b) / RATE * 1200 - round((1 - IC - b) / RATE * 1200)) < 1e-9, \
+            'b=%g does not place the wrap on a node -- the premise is untested' % b
+        assert r < 10.0, \
+            'wrap on node %d: expected a smooth map, got ||dphi||/eps = %.4e' \
+            % (round((1 - IC - b) / RATE * 1200), r)
+
+    ## (2) The jump is at the ENDPOINT fold, and it does not care about the grid.
+    ratios = []
+    for npts in (250, 600, 1000, 1200):
+        gg = np.linspace(0, T, npts + 1)
+        ratios.append(np.linalg.norm(phi(eps * d, gg) - phi(np.zeros(n - 1), gg)) / eps)
+    assert min(ratios) > 1e8, \
+        'the endpoint fold should jump on every grid, got %s' % ratios
+    assert max(ratios) - min(ratios) < 1e-3 * max(ratios), \
+        'the jump moved with the grid (%s) -- it WOULD then be a grid artefact ' \
+        'and A6\'s recorded reading would stand' % ratios
+
+    ## (3) Landing the wrap exactly -- the falsifier -- does not help.
+    wraps = [(k - IC) / RATE * T for k in (1, 2) if 0.0 < (k - IC) / RATE < 1.0]
+    ge = np.unique(np.r_[np.linspace(0, T, 1201), wraps])
+    r_exact = np.linalg.norm(phi(eps * d, ge) - phi(np.zeros(n - 1), ge)) / eps
+    assert r_exact > 1e8, \
+        'exact event placement removed the jump (%.4e) -- if this ever fires, ' \
+        'the traversal surgery IS justified and this record must be reopened' % r_exact
+
+    ## (4) The mechanism, asserted rather than described: a whole modulus at t=T.
+    lo = phi(-1e-12 * d, g)[idt]
+    hi = phi(+1e-12 * d, g)[idt]
+    assert abs(abs(hi - lo) - 1.0) < 1e-6, \
+        'expected exactly one modulus across the fold, got %.6e' % abs(hi - lo)

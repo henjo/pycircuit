@@ -3622,6 +3622,55 @@ exactly as described below — it needs the event time to become an unknown the 
 and `event_grid` will not help it.
 Test: `test_event_grid_lands_the_period_on_its_event_times`.
 
+⚠⚠⚠ **FALSIFIED 2026-09-06 — THE STATE-DEPENDENT HALF IS NOT AN EVENT-LOCALISATION
+ITEM, AND THE TRAVERSAL SURGERY IT IMPLIED IS NOT JUSTIFIED.**
+
+The surgery this record implied is expensive: the event time becomes an unknown the Newton
+solves for inside the transient engine, and shooting's monodromy — which stores one
+factorisation per grid step — must compose two sub-step maps wherever a step is split. So it
+was priced with a falsifier first: **does landing the wrap EXACTLY remove the jump?**
+
+**It does not, and the premise does not survive either.**
+
+| what was varied | result |
+|---|---|
+| npts 250 / 500 / 600 / 1000 / 1200 / 2000 / 2400 | `\|\|dφ\|\|/ε` = **1.414214e+09 at every one**, all printed digits |
+|  wrap at node 86.25 (**off**) vs 345.00 (**exactly on**) | no difference whatsoever |
+| exact wrap times added to the grid | **1.414214e+09** — unchanged |
+| 60 base offsets across (0.001, 0.499), npts 600 **and** 1200 | **0 jumps, 0 disagreements** between the grids |
+
+⚠ **A quantity that does not move when the grid moves is not a grid artefact.** The recorded
+mechanism — "an infinitesimal change flips which step the reset lands in and a whole modulus
+propagates" — is not what is happening. The modulus does propagate; which step the reset lands
+in is irrelevant to it.
+
+**What is actually happening** is the fold at the period ENDPOINT. Measured across the one base
+that jumps:
+
+    b = -1e-12   φ_idt(T) = -0.000000000001
+    b = +1e-12   φ_idt(T) = -0.999999999999
+
+So the discontinuity set of the period map is `{x_0 : φ(x_0) lands on a fold boundary}` — a
+measure-zero set fixed by the **output map**, which no refinement of the time grid can move. The
+right instrument is to stop differencing ACROSS the fold: carry the unfolded phase as the
+shooting unknown, or take the residual modulo the modulus (the standard treatment for a
+phase-like state). That is a small, local change to the residual — not surgery on six traversal
+loops — and it is now the open item in place of the one above.
+
+⚠ **Caveat kept deliberately: the recorded fixture was NOT reproduced exactly.** Its smooth
+column reads 1.732 = √3 where this reconstruction reads √2, so the recorded circuit had a third
+responding coordinate this one does not. What is asserted is what the controlled fixture
+measures; the recorded numbers are not explained, only unreproduced.
+
+⚠ **The time-driven half stands as built** — `event_grid`'s 3-27x gains on a `VPulse`-driven RC
+are measured against a 4000-point reference and are unaffected by any of this.
+
+⚠ Method note for [[measurement-discipline-pss]]: the first reconstruction of this fixture put
+the base point at `x_0 = 0`, which sits EXACTLY on the fold — a degenerate point that reports
+`|dφ|` = 1 for every ε and every grid, and would have "confirmed" the jump while measuring
+something else entirely. Moving the base off the boundary is what exposed the real structure.
+Test: `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid`.
+
 ⚠⚠ **BUT "AND THE PSS REPORTS CONVERGENCE THERE" WAS WRONG, and the correction matters more
 than the claim.** It warns, loudly, three times over on this fixture:
 
