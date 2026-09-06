@@ -999,11 +999,19 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
     assert np.linalg.norm(xd2 - xt2) / max(np.linalg.norm(xd2), 1e-30) < 1e-9, \
         'radau transform disagrees with the dense solve on the diode mixer'
     ## the mixer's harmonics must be present (the transform is not silently
-    ## dropping the nonlinearity the way the un-limited Newton once did)
+    ## dropping the nonlinearity the way the un-limited Newton once did).  The
+    ## window is 3 drive periods over 160 samples, so bin k sits at k*333 kHz:
+    ## DC is bin 0, the 1 MHz fundamental is bin 3, the 2 MHz second harmonic is
+    ## bin 6.  ⚠ This once checked bin 2 (667 kHz, a NON-harmonic bin) and passed
+    ## only on the coupled-limiting bug's artifacts -- the old solve step-halved
+    ## here and left spurious inter-harmonic content; the corrected solve (dense,
+    ## transform and PCNR now agree bit-for-bit) puts the nonlinearity where the
+    ## physics does, DC + a strong second harmonic, with the non-harmonic bins
+    ## near zero.
     v2 = xt2[mixer().get_node_index(2)][-160:]
     Vh = np.fft.rfft(v2) / len(v2)
-    assert abs(Vh[0]) > 1e-3 and abs(Vh[2]) > 1e-3, \
-        'radau transform lost the mixer harmonics: %s' % np.abs(Vh[:4])
+    assert abs(Vh[0]) > 1e-3 and abs(Vh[6]) > 1e-3, \
+        'radau transform lost the mixer harmonics: %s' % np.abs(Vh[:8])
 
 
 def test_esdirk43_is_a_tableau_only_order4_dirk():
@@ -1109,3 +1117,145 @@ def test_pcnr_is_the_stage_method_limiting_and_matches_device_limiting():
     dc = abs(np.mean(v2))
     assert dc > 1e-2, \
         'PCNR lost the diode nonlinearity (DC offset %.2e, junction idle)' % dc
+
+
+def test_pcnr_coupled_radau_solves_the_collocation_exactly():
+    """Both coupled Radau IIA(3) paths -- PCNR and device limiting -- must solve
+    the exact collocation stage equations, reaching the TRUE root of
+
+        F_i(Y) = q(Y_i) - q(x_n) - h sum_j A_ij K_j = 0,  K_j = -(i(Y_j)+u(t_j))
+
+    to machine precision IN EVERY STEP.  Radau's three collocation stages are one
+    COUPLED ``3m`` Newton (no explicit first stage, no sequential DIRK shortcut).
+
+    ⚠ THE REFERENCE IS AN INDEPENDENT LIMITING-FREE NEWTON, not device `limit()`
+    -- a third code path (dense Newton on cir.i/cir.G with `_vlim := branch` each
+    iterate), shared with neither the PCNR nor the coupled-limiting step, so it
+    cannot rubber-stamp either.  This test both validates PCNR AND pins the
+    coupled-limiting `_vlim` re-sync fix:
+
+    - PCNR limits jointly through the augmented junction continuation (an explicit
+      per-stage `v_lim`), so it always reached the true root (~1e-16).
+    - Coupled device limiting shares ONE device `_vlim` across the three
+      simultaneous stages.  Before the fix, the per-stage step-limit left `_vlim`
+      at the last stage, so `cir.i(Y[j])`/`cir.G(Y[j])` for j<2 linearised the
+      junction at the wrong voltage and the coupled Newton converged CLEANLY
+      (residual ~1e-28 in its own terms) to the root of a WRONG residual -- node
+      error ~8.5e-5, true stage residual ~3e-16, not tightening with reltol, and
+      spurious 4x step-halving on the hard drive.  Re-syncing `_vlim` to each
+      stage before reading its i/q/C/G fixes it (and converges in ~2 Newton
+      iterations instead of 5); both paths now match this reference bit-for-bit.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def mixer(va):
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=va, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    def true_newton_step(va, x0, t, A, cvec, h, ep, ana, iref):
+        """Solve the Radau stage system by a plain dense Newton on cir.i/cir.G,
+        re-syncing each junction's limiting voltage to its branch voltage before
+        every evaluation so the diode is the UNLIMITED device law -- the exact
+        collocation root, independent of both the PCNR and the coupled-limiting
+        code paths."""
+        cc = mixer(va)
+        n = cc.n
+        m = n - 1
+
+        def red(v):
+            v = np.asarray(v).ravel()
+            return np.delete(v, iref)
+
+        def ins(vr):
+            out = np.zeros(n)
+            out[:iref] = vr[:iref]
+            out[iref + 1:] = vr[iref:]
+            return out
+
+        qn = np.asarray(cc.q(x0, ep), float).ravel()
+        Y = [np.array(x0, float) for _ in range(3)]
+        for _ in range(100):
+            qi = [np.asarray(cc.q(Y[j], ep), float).ravel() for j in range(3)]
+            Ki, Gi, Ci = [], [], []
+            for j in range(3):
+                cc.limit(Y[j], Y[j], ep)   # _vlim := branch(Y_j): unlimited law
+                uj = np.asarray(cc.u(t - h + cvec[j] * h, ep, analysis=ana),
+                                float).ravel()
+                Ki.append(-(np.asarray(cc.i(Y[j], ep), float).ravel() + uj))
+                Gi.append(np.asarray(cc.G(Y[j], ep), float))
+                Ci.append(np.asarray(cc.C(Y[j], ep), float))
+            Rv = np.empty(3 * m)
+            J = np.zeros((3 * m, 3 * m))
+            for i in range(3):
+                Fi = qi[i] - qn - h * sum(A[i, j] * Ki[j] for j in range(3))
+                Rv[i * m:(i + 1) * m] = red(Fi)
+                for j in range(3):
+                    blk = (Ci[i] if i == j else 0.0 * Ci[i]) + h * A[i, j] * Gi[j]
+                    J[i * m:(i + 1) * m, j * m:(j + 1) * m] = \
+                        np.delete(np.delete(blk, iref, 0), iref, 1)
+            dY = np.linalg.solve(J, -Rv)
+            for i in range(3):
+                Y[i] = Y[i] + ins(dY[i * m:(i + 1) * m])
+            if np.max(np.abs(dY)) < 1e-14:
+                break
+        return Y[2]   # stiffly accurate: x_{n+1} == last stage
+
+    ## Across a gentle and a hard drive, every accepted step of BOTH the coupled
+    ## PCNR path (`pcnr=True`) AND the coupled device-limiting path (`pcnr=False`)
+    ## must equal the limiting-free collocation root to machine precision.  The
+    ## limiting path only earns this after the per-stage `_vlim` re-sync fix in
+    ## `_rk_step_coupled`: the three stages share one device `_vlim`, and before
+    ## the fix stages 0/1 linearised the junction at another stage's voltage, so
+    ## the coupled Newton converged cleanly to a WRONG residual's root (node
+    ## error ~8.5e-5, and it also spuriously step-halved on the hard drive).
+    for pcnr in (True, False):
+        for va in (0.3, 0.8, 2.0):
+            c = mixer(va)
+            tr = Transient(c, toolkit=circuit.numeric,
+                           integrator=RadauIIA3Integrator(), reltol=1e-12,
+                           pcnr=pcnr)
+            worst = [0.0]
+            step = (tr._rk_step_coupled_pcnr if pcnr else tr._rk_step_coupled)
+
+            def checked(x0, t, pf=None, _s=step, _tr=tr, _va=va, _w=worst):
+                y = _s(x0, t, pf)
+                A = np.array(_tr.base_integrator.A, dtype=float)
+                cvec = np.array(_tr.base_integrator.C, dtype=float)
+                yt = true_newton_step(_va, np.asarray(x0, float), t, A, cvec,
+                                      _tr._dt, _tr.epar, _tr.par.analysis,
+                                      _tr.irefnode)
+                _w[0] = max(_w[0], float(np.max(np.abs(np.asarray(y[0]).ravel()
+                                                       - yt.ravel()))))
+                return y
+            if pcnr:
+                tr._rk_step_coupled_pcnr = checked
+            else:
+                tr._rk_step_coupled = checked
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
+                         fixed_timestep=True)
+            assert worst[0] < 1e-12, \
+                'coupled Radau (pcnr=%s) did not reach the collocation root at ' \
+                'va=%.1f: worst per-step error %.2e' % (pcnr, va, worst[0])
+
+    ## and it must actually rectify -- the diode conducts under joint junction
+    ## continuation, building a DC offset a non-conducting junction would not.
+    c = mixer(2.0)
+    tr = Transient(c, toolkit=circuit.numeric,
+                   integrator=RadauIIA3Integrator(), reltol=1e-10, pcnr=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
+                       fixed_timestep=True)
+    v2 = np.asarray(res.x)[c.get_node_index(2)][-160:]
+    assert abs(np.mean(v2)) > 1e-2, \
+        'Radau PCNR lost the diode nonlinearity (DC offset %.2e)' \
+        % abs(np.mean(v2))

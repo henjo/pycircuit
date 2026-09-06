@@ -2435,6 +2435,171 @@ class Transient(Analysis):
         Est_r = tk.linearsolver(Jr, er_r)
         return tk.insert(Est_r, iref, 0.0)
 
+    def _rk_step_coupled_pcnr(self, x0, t, provided_function=None):
+        """The coupled Radau IIA(3) step with PCNR as the limiting, IN EVERY
+        STAGE, instead of per-device ``cir.limit``.
+
+        Structurally identical to :meth:`_rk_step_coupled` -- the SAME coupled
+        ``3m`` Newton on ``F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`` -- but the
+        stage residual current and Jacobian are the JUNCTION-CONTINUATION
+        effective ones.  For each stage ``j`` an augmented system is built at the
+        device limiting voltages ``v_lim[j]`` and Schur-reduced onto the MNA
+        size, giving ``i_eff_j``/``G_eff_j`` (:func:`pcnr.schur_reduce`, with
+        ``u_extra=0`` so it is the plain effective ``i``/``G``, the companion
+        living in ``q`` and ``A`` as in the non-PCNR coupled step).  These
+        replace ``cir.i``/``cir.G`` in the identical assembly, so
+        ``K_j = -(i_eff_j + u(t_j))`` and ``J[i][j] = delta_ij C + h A_ij
+        G_eff_j``.  The coupled solve delivers each stage's ``dx_MNA``; the
+        limiting voltages advance by the paper's correct phase (``dx_lim`` from
+        :func:`pcnr.dx_lim_of` on the coupled ``dx_MNA``, then
+        :func:`pcnr.refine`), never by ``cir.limit``.
+
+        At convergence ``v_lim`` equals the junction voltage, so
+        ``i_eff``/``G_eff`` equal ``cir.i``/``cir.G`` and the accepted point is
+        bit-identical to what device limiting reaches on a single-junction stage
+        -- while PARALLEL junctions on one branch, which per-device limiting
+        cannot resolve (they fight over the shared branch voltage, order-
+        dependently), are limited JOINTLY here.  Same return and side-effect
+        contract as :meth:`_rk_step_coupled`.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        junctions = _pcnr.pcnr_devices(self.cir)
+        integ = self.base_integrator
+        Amat = np.array(integ.A, dtype=float)
+        cvec = np.array(integ.C, dtype=float)
+        h = self._dt
+        tn = t - h
+        epar = self.epar
+        ana = self.par.analysis
+        tk = self.toolkit
+        iref = self.irefnode
+        arr = lambda v: tk.array(v, dtype=float)
+
+        def src(tt):
+            u = arr(self.cir.u(tt, epar, analysis=ana))
+            if provided_function is not None:
+                u = u + provided_function(tt)
+            return u
+
+        def red(v):
+            return np.concatenate((np.asarray(v)[:iref], np.asarray(v)[iref + 1:]))
+
+        xn = x0
+        qn = arr(self.cir.q(xn, epar))
+        qn_r = red(qn)
+        tstage = [tn + cvec[i] * h for i in range(3)]
+
+        ## Stage values and their PCNR limiting voltages.  `v_lim[j]` is the
+        ## per-stage state that stands in for each device's internal `_vlim`;
+        ## seeded (and limited) from the stage guess, exactly like the DC and
+        ## single-stage paths.
+        Y = [np.array(xn, dtype=float) for _ in range(3)]
+        v_lim = [_pcnr.v_lim_init(junctions, Y[j]) for j in range(3)]
+        m = qn_r.shape[0]
+        reltol = self.par.reltol
+        abstol = float(self.par.vabstol)
+        maxit = int(self.par.maxiter)
+        converged = False
+        for _ in range(maxit):
+            qi, Ki, Ci, Geff, glim = [], [], [], [], []
+            for j in range(3):
+                qi.append(arr(self.cir.q(Y[j], epar)))
+                Ci.append(arr(self.cir.C(Y[j], epar)))
+                ## EFFECTIVE i/G at the stage's limiting voltages: the augmented
+                ## junction system Schur-reduced onto the MNA size.  With
+                ## `u_extra=0`/`J_extra=0` these are the plain effective `i`/`G`
+                ## (the companion stays in q and A, not folded in as a DC-flow
+                ## source the way the sequential DIRK stage PCNR does it).
+                g_mna, g_lim, J_mm, _J_ml, _J_lm, didv = _pcnr.augmented_system(
+                    self.cir, Y[j], v_lim[j], junctions, epar,
+                    u_extra=0.0, dense_blocks=False, J_extra=0.0)
+                ## ⚠ THE RESIDUAL CURRENT IS `g_mna`, NOT the Schur RHS
+                ## `f_eff`.  `augmented_system` STAMPS the junction current at
+                ## `v_lim` into `g_mna` (via `dev.stamp`), so `g_mna` is the
+                ## PHYSICAL MNA current with junctions at `v_lim` -- exactly
+                ## `cir.i` once `v_lim` == the branch voltage.  `f_eff =
+                ## g_mna - J_ml g_lim` folds the junction current into the
+                ## Newton-STEP right-hand side instead, where it VANISHES as
+                ## `g_lim -> 0`; using it as the residual dropped the junction
+                ## current at convergence and converged the coupled Newton to a
+                ## neighbouring, wrong root (measured: step-1 node error 8.5e-5,
+                ## true stage residual 4e-14 vs 8e-25 for device limiting).  Only
+                ## `G_eff = J_eff` (the Schur-reduced Jacobian) is taken here;
+                ## the junction is eliminated from the step by the correct phase
+                ## (`dx_lim_of` + `refine`) below.
+                _f_eff, G_eff = _pcnr.schur_reduce(
+                    g_mna, g_lim, J_mm, junctions=junctions, didv=didv)
+                Ki.append(-(np.asarray(g_mna, dtype=float) + src(tstage[j])))
+                Geff.append(np.asarray(G_eff, dtype=float))
+                glim.append(g_lim)
+            ## residual blocks (reduced) and dense 3m x 3m Jacobian -- identical
+            ## to _rk_step_coupled with i_eff/G_eff in place of cir.i/cir.G.
+            R = np.empty(3 * m)
+            Jbig = np.zeros((3 * m, 3 * m))
+            for i in range(3):
+                Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
+                R[i * m:(i + 1) * m] = red(Fi)
+                for j in range(3):
+                    if i == j:
+                        blk = Ci[i] + h * Amat[i, j] * Geff[j]
+                    else:
+                        blk = h * Amat[i, j] * Geff[j]
+                    (blk_r,) = remove_row_col((blk,), iref, tk)
+                    Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = np.asarray(blk_r)
+            dY = np.linalg.solve(Jbig, -R)
+            scale = 0.0
+            lim_ok = True
+            for i in range(3):
+                di = dY[i * m:(i + 1) * m]
+                di_full = np.asarray(tk.insert(di, iref, 0.0))
+                ## The correct phase: dx_lim from THIS stage's g_lim and the
+                ## coupled dx_MNA, then each device limits only its own probes
+                ## (refine).  No `cir.limit` anywhere -- PCNR IS the limiting.
+                dx_lim = _pcnr.dx_lim_of(junctions, glim[i], di_full)
+                Y_prev = Y[i]
+                v_new = _pcnr.refine(junctions, v_lim[i], v_lim[i] + dx_lim,
+                                     epar, x_old=Y_prev)
+                if not _pcnr.lim_converged(glim[i], v_new, reltol,
+                                           self.par.vabstol):
+                    lim_ok = False
+                Y[i] = Y_prev + di_full
+                v_lim[i] = v_new
+                scale = max(scale, np.max(np.abs(di)))
+            ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
+            if lim_ok and scale <= reltol * ynorm + abstol:
+                converged = True
+                break
+        if not converged:
+            raise NoConvergenceError(
+                'Radau IIA(3) coupled PCNR stage Newton did not converge')
+
+        ## SYNC each device's internal `_vlim` to the converged solution: PCNR
+        ## never called `cir.limit`, so the downstream `i`/`G`/`C` (the K, the
+        ## returned J, the estimate) would otherwise linearise at a stale
+        ## `_vlim`.  At convergence the junction voltage IS the node voltage, so
+        ## `limit(Y, Y)` sets `_vlim` to it at zero delta (see _rk_stage_pcnr).
+        for j in range(3):
+            self.cir.limit(Y[j], Y[j], epar)
+
+        Y1, Y2, Y3 = Y
+        ## Downstream state -- identical to _rk_step_coupled.
+        qY3 = self.cir.q(Y3, epar)
+        self._q_cache = (Y3, qY3)
+        self._iq = -(arr(self.cir.i(Y3, epar)) + src(t))
+        C3 = arr(self.cir.C(Y3, epar))
+        G3 = arr(self.cir.G(Y3, epar))
+        a33 = Amat[2, 2]
+        self._Cmat = C3
+        self._Geq = a33 * h * G3
+        self._effective_method = 'RadauIIA3Integrator'
+        self._companion_coeffs = None
+        self._rk_Y = [Y1, Y2, Y3]
+        J = C3 + a33 * h * G3
+        if getattr(self, '_rk_want_est', False):
+            self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
+        return Y3, None, J, None
+
     def _rk_step_coupled(self, x0, t, provided_function=None):
         """One Radau IIA(3) step: the three collocation stages solved as ONE
         coupled ``3n`` Newton system.  Fully implicit -- no explicit first
@@ -2478,6 +2643,13 @@ class Transient(Analysis):
                 ## correctness reference and always converges here.
                 self._radau_transform_fallbacks = getattr(
                     self, '_radau_transform_fallbacks', 0) + 1
+        if self._rk_use_pcnr():
+            ## PCNR is the first-class limiting here too: the coupled solve keeps
+            ## its structure but limits every junction, IN EVERY STAGE, by the
+            ## joint continuation instead of per-device `cir.limit` -- which is
+            ## the case device limiting cannot handle (parallel junctions on one
+            ## branch fight over the shared voltage).  See _rk_step_coupled_pcnr.
+            return self._rk_step_coupled_pcnr(x0, t, provided_function)
         integ = self.base_integrator
         Amat = np.array(integ.A, dtype=float)
         cvec = np.array(integ.C, dtype=float)
@@ -2516,6 +2688,24 @@ class Transient(Analysis):
         for _ in range(maxit):
             qi, Ki, Ci, Gi = [], [], [], []
             for j in range(3):
+                ## ⚠ SYNC the device limiting state to THIS stage before reading
+                ## its i/q/C/G.  The three stages are solved SIMULTANEOUSLY but
+                ## share ONE device `_vlim`, and the step-limit call below leaves
+                ## it at the LAST stage.  Without this re-sync, `cir.i(Y[j])` /
+                ## `cir.G(Y[j])` for j<2 linearise the junction at another
+                ## stage's voltage (`Diode.i` reads `_vlim`), so the coupled
+                ## Newton converges cleanly to the root of a WRONG residual --
+                ## node error 8.5e-5, true stage residual 3e-16 vs 1e-28, and it
+                ## does NOT tighten with `reltol` because the residual itself is
+                ## off.  `limit(Y[j],Y[j])` restores stage j's `_vlim` at zero
+                ## delta (the same value its own step-limit left), so each stage
+                ## is evaluated at its own voltage.  The step-limit (overshoot
+                ## protection) below is untouched.  The sequential DIRK path
+                ## never hits this: each stage owns `_vlim` for the duration of
+                ## its `self._newton`.  With the fix the coupled Newton reaches
+                ## the exact collocation root (== PCNR / a limiting-free Newton)
+                ## in ~2 iterations instead of 5.
+                self.cir.limit(Y[j], Y[j], epar)
                 qi.append(arr(self.cir.q(Y[j], epar)))
                 Ki.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
                 Ci.append(arr(self.cir.C(Y[j], epar)))
@@ -2771,12 +2961,22 @@ class Transient(Analysis):
         maxit = int(self.par.maxiter)
         converged = False
         for _ in range(maxit):
+            ## per-stage limiting sync + single evaluation of q/i per stage.
+            ## The three stages share ONE device `_vlim`; without re-syncing to
+            ## each stage before reading its q/i, stages 0/1 linearise the
+            ## junction at another stage's voltage (`Diode.i` reads `_vlim`) and
+            ## the transform converges to a wrong root -- disagreeing with the
+            ## dense path it must match.  Same fix as :meth:`_rk_step_coupled`.
+            ## (This also computes each stage's `q`/`K` ONCE, not 3x.)
+            qi_all, Ki_all = [], []
+            for j in range(3):
+                self.cir.limit(Y[j], Y[j], epar)
+                qi_all.append(arr(self.cir.q(Y[j], epar)))
+                Ki_all.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
             R = np.empty(3 * m)
             for i in range(3):
-                qi = arr(self.cir.q(Y[i], epar))
-                Ki = [-(arr(self.cir.i(Y[j], epar)) + src(tstage[j]))
-                      for j in range(3)]
-                Fi = qi - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
+                Fi = qi_all[i] - qn - h * sum(
+                    Amat[i, j] * Ki_all[j] for j in range(3))
                 R[i * m:(i + 1) * m] = red(Fi)
             dY = self._radau_transform_solve(R, Cr, Gr, h)
             scale = 0.0

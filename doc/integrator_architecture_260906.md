@@ -271,11 +271,61 @@ gap, 1-for-4, is now 2-for-4). Verified: TR-BDF2 / ESDIRK4(3)6 with `pcnr=True` 
 limiting to machine precision (2.8e-17 / 7.5e-17) in transient, and PSS matches to 7e-18 with
 identical spectral radius.
 
+### PCNR wired for the FULL coupled (Radau) path — and it is *more accurate* than device limiting
+
+`_rk_step_coupled_pcnr` closes the last PCNR gap: PCNR is now the first-class per-step limiting
+for the fully-implicit coupled path too, gated behind `_rk_use_pcnr()` in `_rk_step_coupled`
+(alongside the cost-transform branch). The coupled `3m` Newton keeps its exact structure; only
+the per-stage residual current and Jacobian change. For each stage `j`, `pcnr.augmented_system`
+builds the junction system at the stage's limiting voltages `v_lim[j]` and `pcnr.schur_reduce`
+reduces it onto the MNA size:
+
+- **residual current** = `g_mna` (the augmented MNA residual, which STAMPS the junction current
+  at `v_lim` via `dev.stamp` — the *physical* current, `== cir.i` once `v_lim` == branch);
+- **Jacobian block** = `δ_ij C + h A_ij G_eff`, `G_eff = J_eff` from the Schur reduction;
+- the junction is eliminated from the coupled step by the correct phase (`dx_lim_of` on the
+  coupled `dx_MNA`, then `refine`) — no `cir.limit` during the solve, one `limit(Y,Y)` sync per
+  stage at convergence for the downstream `i`/`G`/estimate.
+
+⚠ **THE ONE TRAP (0j, measured):** the residual current is `g_mna`, **not** the Schur RHS
+`f_eff = g_mna − J_ml g_lim`. `f_eff` folds the junction current into the Newton *step*
+right-hand side, where it VANISHES as `g_lim → 0`; using it as the residual dropped the junction
+current at convergence and converged to a neighbouring wrong root (step-1 node error 8.5e-5).
+
+⚠ **THE FINDING (thesis confirmed) — and a real bug in the DEFAULT coupled path it exposed.**
+Validated NOT against device limiting but against an independent limiting-free coupled Newton
+(`_vlim := branch` each iterate — a third code path, shared with neither PCNR nor the
+coupled-limiting step, so it can rubber-stamp neither). **Radau PCNR reaches that exact
+collocation root to 1e-16 at every step** (va = 0.3 / 0.8 / 2.0). The DEFAULT coupled limiting
+path did **not** — and the reason was a genuine bug, not a tolerance:
+
+> **The three collocation stages are solved simultaneously but share ONE device `_vlim`.** The
+> per-stage step-limit (`cir.limit(Y_trial, Y_prev)`) leaves `_vlim` at the LAST stage; the next
+> residual assembly then reads `cir.i(Y[j])`/`cir.G(Y[j])` for stages 0/1 at *another stage's*
+> junction voltage (`Diode.i` reads `_vlim`). So the coupled Newton converged **cleanly** — its
+> own residual to ~1e-28, limiting never even clamping — to the root of a **wrong** residual:
+> node error ~8.5e-5, true stage residual ~3e-16, NOT tightening with `reltol` (the residual
+> itself is off), and a spurious 4× step-halve on the hard drive. My first hypothesis (exit on
+> the *limited* step) was **wrong** — instrumentation showed raw step == limited step every
+> iteration; the culprit is the shared `_vlim`. The sequential DIRK/LMM paths never hit it: each
+> stage owns `_vlim` for the duration of its own `self._newton`.
+
+**The fix** (`_rk_step_coupled` and `_rk_step_transformed`): re-sync `_vlim` to each stage
+(`cir.limit(Y[j], Y[j])`, zero delta) before reading its `i/q/C/G`. Both coupled paths now reach
+the exact collocation root (== PCNR == the limiting-free Newton, bit-for-bit), converge in ~2
+Newton iterations instead of 5, and no longer spuriously step-halve. **Measured net win: the
+shooting suite dropped from 373 s to 266 s (~29% faster) with 241 pass / 1 skip unchanged.** PCNR
+needed no such fix — it carries an explicit per-stage `v_lim`, which is exactly why it was
+already correct and is the structurally right way to limit a coupled multi-stage solve (the
+user's thesis, now with a concrete bug to show for it). Tests:
+`test_pcnr_coupled_radau_solves_the_collocation_exactly` (both paths vs the limiting-free
+reference) and `test_radau_cost_transform_matches_the_dense_coupled_solve` (its harmonic check
+moved from bin 2, a non-harmonic bin that only rang on the old bug's artifacts, to bin 6, the
+real 2nd harmonic). The PCNR-in-shooting scoreboard is now 3-for-4 (LMM, DIRK, FULL all carry
+PCNR through `solve_timestep`).
+
 ### Remaining gaps (honest)
 
-- **PCNR on the FULL coupled (Radau) path** — not built. PCNR-per-stage assumes the sequential
-  DC-flow recast; the coupled `sm` system would need PCNR augmenting all stages at once. Radau
-  with `pcnr=True` currently falls to the coupled path's limiting.
 - **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
   (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
 - **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK
