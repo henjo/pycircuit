@@ -3988,6 +3988,83 @@ mechanism instead of a worry, and it means the two halves of B7 are **not one it
 
 ---
 
+⚠⚠ **B7c — MONOTONE GRID REFINEMENT ACROSS SHOOTING ITERATIONS. ANDREAS'S PROPOSAL, MEASURED
+2026-09-06. THE TWO-STAGE FORM WORKS; THE FROM-SCRATCH FORM COSTS 3x FOR NOTHING; AND THE CASE
+THAT WOULD JUSTIFY IT OVER B7a COULD NOT BE BUILT.**
+
+The proposal: do not freeze the grid at the first iteration. Let each shooting iteration ADD the
+points it needs to hold LTE at tolerance, keeping the previous iteration's points, so the step
+controller keeps working and the grid only grows. ⚠ With the constraint that a new point may not
+be placed too close to an existing one -- that creates arbitrarily small steps and its own
+numerical trouble. All numbers below: van der Pol at `mu = 100`, `gear`, `reltol = 1e-7`, one
+fixture, one seed.
+
+**1. The naive form -- union whole grids -- is WORSE THAN USELESS.** Merging each iterate's
+independently-derived grid gives **5.21x** the points AND degrades accuracy (+619 ppm against the
+solution grid's -3.8 ppm), because the merged spacing becomes wildly uneven. More points in the
+wrong distribution is worse than fewer well-placed ones.
+
+**2. ⚠ AND A WARMUP DOES NOT FIX IT — the mechanism is not what I predicted.** I expected a bad
+early iterate to pin points, which a warmup removes. Measured with post-warmup iterates that are
+SHRINKING perturbations (3e-2 -> 0) of the settled point, the union still bloats **3.6x - 5.2x**.
+The per-iterate grids are nearly the same SIZE (1238, 1209, 1185, 1169, 1137) but their points
+barely coincide: **a tiny perturbation of `x_0` shifts every step boundary slightly, so the union
+is close to a SUM.** Adaptive step POSITIONS are not stable under small state perturbations, and
+that is warmup-proof.
+
+**3. The TARGETED form -- add only where the current grid is coarser than the controller asks --
+preserves accuracy** (-2.3 to -4.1 ppm) but still costs **3.0x - 3.2x**. `gamma`, the tolerated
+coarseness before subdividing, is a weak knob: 1.5 -> 5.0 buys only 3.24x -> 2.79x and starts
+costing accuracy at 5.
+
+**4. ⚠⚠ THE TWO-STAGE FORM IS THE ONE THAT WORKS (Andreas's follow-up): solve on a fixed grid
+FIRST, then refine.** Because the iterates are then already at the solution, the refinement
+criterion stops firing and the grid REACHES A FIXED POINT:
+
+    stage 0 (decimated fixed grid)   569 pts   +424.8 ppm
+    after one refinement            1407 pts    +18.2 ppm
+    stage 2                         1411 pts    +18.2 ppm   (+4 points)
+    stage 3                         1415 pts    +18.2 ppm   (+4 points)
+    (the solution's own grid        1137 pts     -3.8 ppm)
+
+**1.24x the solution's grid, and a 23x accuracy recovery in one pass.** That is the whole
+difference from the from-scratch form, and it is exactly the "start after a warmup" insight taken
+to its conclusion.
+
+**5. It cannot improve a grid that is already good.** From a B7a-quality grid: 1137 pts at
+-3.81 ppm -> 1153 pts at -3.98 ppm. It adds ~16 points and drifts marginally worse. So this is a
+REPAIR MECHANISM FOR AN UNDER-RESOLVED GRID, not a replacement for `lte_grid`.
+
+⚠ **THE REMAINING GAP AND WHY IT IS STRUCTURAL.** Refined-from-decimated lands at +18.2 ppm where
+the solution's own grid gets -3.8, because the scheme can only SUBDIVIDE -- never move or remove a
+point -- so it inherits the starting grid's placement. Closing that needs COARSENING, which breaks
+the monotonicity that buys reproducibility for `factored_period()`. A real trade, not an oversight.
+
+⚠⚠ **THE CASE THAT WOULD JUSTIFY THIS OVER B7a COULD NOT BE CONSTRUCTED, AND THE FAILURE IS
+INFORMATIVE.** B7a derives a grid once from a settled run and freezes it; the scheme above only
+wins where the SOLUTION's stiff regions are not where the WARMUP's were. Attempted: a high-Q tank
+(Q = 100, envelope 32 periods) with a diode clamp, warmed up for only 3 periods so the diode is
+still OFF (0.449 V) while the steady state conducts each cycle (0.549 V). Measured against a
+4259-point reference, the warmup-derived grid (250 pts, rel err **1.540e-3**) is barely worse than
+the settled-derived one (260 pts, **1.482e-3**) -- a 4% difference. The diode CLAMPS the tank, so
+the two states stay qualitatively similar and the controller places points similarly.
+
+⚠ **And the obstacle looks structural, not a failure of imagination.** What makes a warmup-derived
+grid wrong is a SLOW MODE (the warmup has not settled) -- and a slow mode is precisely what drives
+`|lambda_2| -> 1`, i.e. what makes the PSS solve itself hard (section 0's organising fact). The
+condition that motivates the feature and the condition that breaks the solver are the same
+condition.
+
+**Recommendation: do NOT adopt this in place of `lte_grid`.** It is worth building only as an
+explicit repair path -- "I have a grid I suspect is too coarse, improve it" -- where its measured
+behaviour (converges, 1.24x, 23x recovery) is exactly right. ⚠ And if it is built, use the TARGETED
+rule with the separation radius scaled to the CANDIDATE's own intended step: scaling it to the
+existing grid's local gap was tried and admitted only 33 of 1158 points on a coarse grid, producing
+grids that did not converge at all.
+
+
+---
+
 ⚠⚠⚠ **A DESIGN HYPOTHESIS FROM ANDREAS, AND IT GOES TO THE CENTRAL POINT.** ⚠ **PROVENANCE
 CORRECTED 2026-09-04 — AN EARLIER VERSION OF THIS PARAGRAPH PRESENTED IT AS ESTABLISHED
 COMMERCIAL PRACTICE ("from practice with commercial SPICE PSS engines: they do not use a fixed
