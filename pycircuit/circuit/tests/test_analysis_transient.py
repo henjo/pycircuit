@@ -1341,3 +1341,97 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
         tr = Transient(slam(), toolkit=circuit.numeric, integrator=integ())
         tr.base_integrator = integ()
         assert tr._honours_continuation_rescue() is honours
+
+
+def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
+    """A circuit bad enough to need the rescue must actually GET it -- on the
+    DEFAULT adaptive path, with and without PCNR.
+
+    ⚠ IT DID NOT, AND THE REASON WAS THE DRIVER, NOT THE LADDER.  Adaptive
+    stepping routes every Runge-Kutta method to `_run_rk_adaptive`, not through
+    `_solve`'s loop, and that driver used to halve to `minstep` and then bare
+    `raise` -- `_continuation_rescue` appeared 0 times in it against 3 times in
+    `_solve`.  So the ladder `_rk_step_coupled` carries could only ever fire
+    under `fixed_timestep=True`: validated through a door users do not come
+    through.  `_run_rk_adaptive` now arms the chain at `minstep` first.
+
+    ⚠ AND PCNR REACHES IT BY FALLING BACK, not by carrying its own ladder.  A
+    gshunt rung and a junction-gmin rung were both built for the PCNR coupled
+    solve and MEASURED not to rescue it: PCNR's bottleneck is the junction
+    limiter's SLEW (`max|g_lim|` crawling from 359 V while the MNA state
+    diverged), and no deformation of the circuit accelerates that.  So the PCNR
+    paths fall back to the device-limiting solve that does carry a ladder --
+    the same fallback the LMM step and DC have always done.
+
+    The assertion is on the ERROR MESSAGE rather than on success: at this
+    iteration budget nothing can solve the step, and the thing under test is
+    whether a continuation was ATTEMPTED.  A bare stage-Newton message means the
+    ladder was never reached; naming the ladder means it ran and lost.
+    """
+    from pycircuit.circuit.integrator import (RadauIIA3Integrator,
+                                              TRBDF2Integrator)
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    import warnings, logging
+    circuit.default_toolkit = circuit.numeric
+
+    def slam():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=400.0, freq=5e9)
+        c['R'] = R(1, 2, r=1e-2)
+        for k in range(6):
+            c['D%d' % k] = Diode(2, gnd)       # PARALLEL junctions
+        c['C'] = C(2, gnd, c=1e-16)
+        return c
+
+    for integ in (RadauIIA3Integrator, TRBDF2Integrator):
+        for pcnr in (False, True):
+            c = slam()
+            tr = Transient(c, toolkit=circuit.numeric, integrator=integ(),
+                           reltol=1e-9, maxiter=3, pcnr=pcnr)
+            tr.par.minstep = 2.5e-11
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    logging.disable(logging.WARNING)
+                    tr.solve(tend=2e-10, timestep=1e-10, x0=np.zeros(c.n))
+                msg = None
+            except NoConvergenceError as exc:
+                msg = str(exc)
+            finally:
+                logging.disable(logging.NOTSET)
+            if msg is None:
+                continue                      # solved outright: nothing to prove
+            assert 'minstep' in msg and 'continuation' in msg, \
+                '%s pcnr=%s: the step failed WITHOUT reaching the ladder -- ' \
+                'the adaptive driver raised before arming the rescue. Got: %s' \
+                % (integ.__name__, pcnr, msg[:200])
+            assert 'NO continuation was attempted' not in msg, \
+                '%s pcnr=%s: the rescue was armed but this path cannot apply ' \
+                'it. Got: %s' % (integ.__name__, pcnr, msg[:200])
+            if pcnr:
+                assert tr.pcnr_fallbacks > 0 and tr.pcnr_status != 'used', \
+                    '%s: PCNR failed but never fell back, so it never reached ' \
+                    'the ladder the fallback path carries' % integ.__name__
+
+    ## ⚠ AND A HEALTHY CIRCUIT MUST NOT FALL BACK -- a fallback that fires in
+    ## normal operation would be PCNR silently degrading to the limiting it was
+    ## chosen over, which on parallel junctions is a different answer.
+    def mixer():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+    for integ in (RadauIIA3Integrator, TRBDF2Integrator):
+        c = mixer()
+        tr = Transient(c, toolkit=circuit.numeric, integrator=integ(),
+                       reltol=1e-12, pcnr=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
+                     fixed_timestep=True)
+        assert tr.pcnr_fallbacks == 0 and tr.pcnr_status == 'used', \
+            '%s: PCNR fell back on a healthy circuit (%d fallbacks, status %r)' \
+            % (integ.__name__, tr.pcnr_fallbacks, tr.pcnr_status)

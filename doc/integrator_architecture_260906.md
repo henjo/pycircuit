@@ -409,6 +409,61 @@ measurable (269.8 s vs 274.6 s).
   stated caveat), so the capacitance cannot join. Neutering that sync alone leaves the FD test
   passing — this diode's charge does not read `_vlim` — so it is kept as correct-in-principle
   insurance for a device whose charge does, and should be treated as unverified until one is used.
+### The continuation rescue: reaching it at all, and what PCNR does when it needs one
+
+`_solve` arms `_continuation_rescue` at `minstep` as the last resort before giving up. Two things
+stood between a bad circuit and that ladder, and the second was much larger than the first.
+
+**(a) The coupled `sm` solve had no ladder.** `_continuation_rescue` is read inside
+`Transient._newton`, which the coupled solve does not go through — measured, flag armed over a
+40-step run: **TR-BDF2 wrapped the rescue solver 80 times, Radau 0**. ⚠ `self._newton` could NOT be
+reused: it is MNA-SIZED (reduces an `n`-vector at `irefnode`, limits a full `n`-vector, per-MNA-row
+tolerances and row names), so a `3m` block system cannot be handed to it, and its device-limiting
+route would reintroduce the shared-`_vlim` hazard fixed above. So the coupled path carries its own
+**gshunt** ladder. ⚠ The shunt enters as a CONDUCTANCE IN THE DEVICE CURRENT (`i + g x`, `G + g I`),
+not as `F + g x`: this residual is in CHARGE units with Jacobian `C + h A G`, so `g` must arrive
+where `G` does. Exercised: a 6-diode 400 V slam at 5 GHz fails outright at a 3-iteration budget and
+converges with **2 gshunt rescues**; an 8-iteration budget fires it 0 times.
+
+**(b) ⚠⚠ THE LADDER WAS UNREACHABLE ON THE DEFAULT PATH ANYWAY.** Adaptive stepping routes every
+Runge–Kutta method to `_run_rk_adaptive`, not through `_solve`'s loop, and that driver halved to
+`minstep` and then bare-`raise`d — `_continuation_rescue` appeared **0 times in it against 3 times
+in `_solve`**. So (a) had been validated through `fixed_timestep=True`, a door users do not come
+through, and *no* stage method — Radau, TR-BDF2, ESDIRK, PCNR or not — could reach a continuation in
+normal operation. `_run_rk_adaptive` now arms the chain at `minstep` before giving up.
+
+**(c) PCNR reaches the ladder by FALLING BACK, not by carrying one.** A gshunt rung and a
+junction-gmin rung were both built for the PCNR coupled solve and **measured not to rescue it**:
+instrumenting the failure shows `max|g_lim|` — the junction limiting residual — crawling from 359 V
+while the MNA state diverges to 4.6e17. PCNR's bottleneck is the junction limiter's **slew rate**,
+which no deformation of the circuit accelerates; and wiring the ladder anyway turned a 0.02 s
+failure into a >136 s one (60 rungs at every halving level). So both PCNR stage paths now fall back
+to the device-limiting solve that does carry a ladder — the same fallback the LMM step and DC have
+always done on a PCNR failure. Measured on the default adaptive path, all four combinations now
+attempt a real continuation (`pcnr=False` directly; `pcnr=True` after 3 and 2 fallbacks).
+
+⚠ **The fallback is not free, and the code says so.** The two limitings agree at the root (0.0 /
+5e-18 relative on a single junction), so a fallback step is not a different answer — EXCEPT on
+PARALLEL junctions on one branch, which is the case PCNR exists for and which per-device limiting
+resolves order-dependently. The warning detects duplicate junction pairs and states it. Normal
+operation does not fall back at all (0 fallbacks, `pcnr_status='used'`).
+
+⚠ **A live defect this surfaced:** `pcnr_solves`/`pcnr_fallbacks`/`pcnr_status` were initialised
+only in `_solve`, which **shooting never calls** — it drives `solve_timestep` directly. The stage
+fallback tripped over it at once (`AttributeError`), and the LMM PCNR path carried the identical
+latent bug and had simply never been reached that way. Now initialised in `__init__`, with
+`_solve`'s per-analysis reset kept. Tests:
+`test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path` (verified to fail both when
+the driver bare-raises and when the PCNR fallback is removed) and
+`test_the_continuation_rescue_reaches_the_full_coupled_path`.
+
+### Remaining gaps (honest)
+
+- ⚠ **`_C_at` keeps `_sync_limit_at` and is NOT pinned by a test.** PCNR re-stamps `i`/`G` at
+  `v_lim` but leaves `q` alone (`pcnr.py` treats the algebraic equations; diffusion charge is its
+  stated caveat), so the capacitance cannot join. Neutering that sync alone leaves the FD test
+  passing — this diode's charge does not read `_vlim` — so it is kept as correct-in-principle
+  insurance for a device whose charge does, and should be treated as unverified until one is used.
 ### The continuation rescue now reaches the FULL coupled path
 
 `_solve` arms `_continuation_rescue` once the step has shrunk to `minstep`, as the last resort

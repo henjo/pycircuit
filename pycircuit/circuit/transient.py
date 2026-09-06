@@ -636,6 +636,20 @@ class Transient(Analysis):
         ## which makes the two agree by coincidence rather than by construction.
         super(Transient, self).__init__(cir, toolkit=toolkit, **kvargs)
 
+        ## ⚠ PCNR BOOKKEEPING IS INITIALISED HERE, NOT ONLY IN `_solve`.
+        ## `_solve` resets these per analysis, which is right -- but SHOOTING
+        ## never calls `_solve`: it drives `solve_timestep` directly on its own
+        ## grid, so a transient built for it reached the PCNR paths with the
+        ## attributes absent.  The stage-method fallback tripped over it
+        ## immediately (`AttributeError: 'Transient' object has no attribute
+        ## 'pcnr_solves'`); the LMM path carried the same latent bug and had
+        ## simply never been reached that way.  Defining them at construction
+        ## makes every entry point safe, and `_solve`'s reset still gives each
+        ## analysis a clean count.
+        self.pcnr_solves = 0
+        self.pcnr_fallbacks = 0
+        self.pcnr_status = 'off'
+
         ## THE REFERENCE NODE IS `self.irefnode`, SET HERE AND NOWHERE ELSE
         ## SPONTANEOUSLY -- `solve()` overwrites it from its `refnode`
         ## argument.  It used to be set only inside `_solve`, which is the
@@ -696,40 +710,32 @@ class Transient(Analysis):
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
     def _honours_continuation_rescue(self):
-        """Whether THIS step path actually applies `_continuation_rescue`.
+        """Whether THIS step path can actually reach the continuation ladder.
 
-        `_solve` arms the flag once the step has shrunk to `minstep`, as the
-        last resort before it gives up.  Three paths honour it and one does not:
+        `_solve` and `_run_rk_adaptive` both arm `_continuation_rescue` once the
+        step has shrunk to `minstep`, as the last resort before giving up.  Every
+        path now reaches a ladder, by one of three routes:
 
         * the LMM companions and the DIRK/ESDIRK stages solve through
-          :meth:`_newton`, which reads the flag and wraps the rescue ladder
-          around the circuit Newton;
-        * the FULL coupled stage solve carries its OWN gshunt ladder (see
-          `_rk_step_coupled`), because `_newton` is MNA-SIZED -- it reduces an
-          `n`-vector at `irefnode`, limits a full `n`-vector, and carries
-          per-MNA-row tolerances and row names -- so a `3m` block system cannot
-          be handed to it;
-        * ⚠ the PCNR variant of the coupled solve does NOT: its Newton is the
-          junction-continuation one and has no shunt rung, so arming the flag
-          with `pcnr=True` on a fully-implicit method changes nothing.
+          :meth:`_newton`, which reads the flag and wraps the rescue chain;
+        * the FULL coupled stage solve carries its OWN gshunt ladder, because
+          `_newton` is MNA-SIZED (it reduces an `n`-vector at `irefnode`, limits a
+          full `n`-vector, and carries per-MNA-row tolerances) and cannot take a
+          `3m` block system;
+        * the PCNR variants of both stage paths have no ladder of their own -- a
+          gshunt one and a junction-gmin one were built and MEASURED not to
+          rescue them, because PCNR's bottleneck is the junction limiter's slew
+          and no deformation of the circuit accelerates that -- so they FALL BACK
+          to the device-limiting solve that does carry one, exactly as the LMM
+          step and DC have always done on a PCNR failure.
 
-        ⚠ MEASURED, not read off the code: with the flag set over a 40-step run
-        TR-BDF2 wraps the rescue solver 80 times (two implicit stages a step)
-        and the coupled path 0 -- it uses `_adaptive_conductance_ladder`
-        directly rather than `_rescue_solver`.  The ladder itself is exercised:
-        on a 6-diode slam that the coupled Newton cannot solve in 3 iterations,
-        the step fails outright without the rescue and converges with it
-        (2 gshunt rescues).
-
-        Used only to keep the failure DIAGNOSTIC in `_solve` honest -- it used
-        to report that a continuation "could not rescue the point" on a path
-        where none had been attempted.
+        So this is `True` today for everything.  It is kept, and the caller keeps
+        its branch, because the honest-diagnostic bug it was written for is easy
+        to reintroduce: `_solve` used to report that a continuation "could not
+        rescue the point" on a path where none had been attempted.  A new step
+        path that reaches neither a ladder nor a fallback should return `False`
+        here rather than inherit a message that claims a rescue it never tried.
         """
-        integ = getattr(self, 'base_integrator', None)
-        if integ is None:
-            return True
-        if integ.is_stage_method() and integ.is_fully_implicit():
-            return not self._rk_use_pcnr()
         return True
 
     def _newton(self, func, x0):
@@ -2416,15 +2422,37 @@ class Transient(Analysis):
             else:
                 ti = tstage[i]
                 guess = Y[i - 1] if i > 0 else xn
+                _pcnr_ok = False
                 if self._rk_use_pcnr():
                     ## PCNR is the first-class per-step limiting: each implicit
                     ## stage is a DC-flow solve `i(Y_i) + iq_eff + u = 0` with
                     ## `iq_eff = (q(Y_i) - target)/(h a_ii)`, so it takes the same
                     ## augmented junction-continuation the LMM step uses -- see
                     ## `_rk_stage_pcnr`.  Flows to shooting too (same solve).
-                    Y[i] = self._rk_stage_pcnr(target, aii, h, ti, guess,
-                                               provided_function)
-                else:
+                    ##
+                    ## ⚠ AND IT FALLS BACK PER STAGE, as the LMM step and the
+                    ## coupled step do: `_rk_stage_pcnr` has no continuation
+                    ## ladder, but `self._newton` below does, so a stage that
+                    ## PCNR cannot solve is handed to the limiting solve that
+                    ## carries the rescue rather than ending the transient.
+                    from pycircuit.circuit.nrsolver import NoConvergenceError \
+                        as _NCE
+                    try:
+                        Y[i] = self._rk_stage_pcnr(target, aii, h, ti, guess,
+                                                   provided_function)
+                        _pcnr_ok = True
+                        self.pcnr_solves += 1
+                        self.pcnr_status = ('used' if not self.pcnr_fallbacks
+                                            else 'partial')
+                    except _NCE as _exc:
+                        logging.warning(
+                            'transient pcnr=True: stage PCNR failed at t=%g '
+                            '(%s); device limiting for this stage',
+                            ti, str(_exc)[:80])
+                        self.pcnr_fallbacks += 1
+                        self.pcnr_status = ('partial' if self.pcnr_solves
+                                            else 'fell-back')
+                if not _pcnr_ok:
                     def func_i(x, _tgt=target, _aii=aii, _ti=ti):
                         Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
                         f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
@@ -2668,9 +2696,9 @@ class Transient(Analysis):
         `solve_timestep`, with ``J`` the last-stage operator, and leaves
         ``_iq``/``_q_cache`` set so the history push after the step is consistent.
         """
+        from pycircuit.circuit.nrsolver import NoConvergenceError
         if getattr(self, '_radau_use_transform',
                    getattr(self.par, 'radau_transform', False)):
-            from pycircuit.circuit.nrsolver import NoConvergenceError
             try:
                 return self._rk_step_transformed(
                     x0, t, provided_function)
@@ -2686,7 +2714,45 @@ class Transient(Analysis):
             ## joint continuation instead of per-device `cir.limit` -- which is
             ## the case device limiting cannot handle (parallel junctions on one
             ## branch fight over the shared voltage).  See _rk_step_coupled_pcnr.
-            return self._rk_step_coupled_pcnr(x0, t, provided_function)
+            ##
+            ## ⚠ AND IT FALLS BACK, exactly as the LMM step does (and DC before
+            ## it): a PCNR failure on ONE step drops to the device-limiting
+            ## coupled solve below rather than ending the transient.  That is
+            ## what answers "what happens on a circuit bad enough to need the
+            ## ladder?" -- the PCNR Newton has no continuation ladder of its own
+            ## (a gshunt one and a junction-gmin one were both built and MEASURED
+            ## not to rescue it: its bottleneck is the junction limiter's slew,
+            ## which no deformation of the circuit accelerates), but the path it
+            ## falls back to HAS one.  So the rescue is reached by falling back
+            ## to the limiting that carries it, not by duplicating a ladder that
+            ## does not work here.
+            ##
+            ## ⚠ THE TWO LIMITINGS AGREE AT THE ROOT (measured 0.0 / 5e-18 rel on
+            ## a single junction), so a fallback step is not a different answer
+            ## -- EXCEPT where PCNR was load-bearing: PARALLEL junctions on one
+            ## branch, which per-device limiting resolves order-dependently.
+            ## The warning says so, because that is the one case where a silent
+            ## fallback would hand back a subtly different orbit.
+            try:
+                out = self._rk_step_coupled_pcnr(x0, t, provided_function)
+                self.pcnr_solves += 1
+                self.pcnr_status = ('used' if not self.pcnr_fallbacks
+                                    else 'partial')
+                return out
+            except NoConvergenceError as exc:
+                from pycircuit.circuit import pcnr as _pcnr_mod
+                _pairs = [(ra, rb) for _i, _e, ra, rb
+                          in _pcnr_mod.pcnr_junctions(self.cir)]
+                _parallel = len(_pairs) != len(set(_pairs))
+                logging.warning(
+                    'transient pcnr=True: coupled PCNR failed at t=%g (%s); '
+                    'device limiting for this step%s', t, str(exc)[:80],
+                    ' -- ⚠ THIS CIRCUIT HAS PARALLEL JUNCTIONS ON ONE BRANCH, '
+                    'which is the case PCNR exists for; the fallback resolves '
+                    'them order-dependently' if _parallel else '')
+                self.pcnr_fallbacks += 1
+                self.pcnr_status = ('partial' if self.pcnr_solves
+                                    else 'fell-back')
         integ = self.base_integrator
         Amat = np.array(integ.A, dtype=float)
         cvec = np.array(integ.C, dtype=float)
@@ -3909,13 +3975,51 @@ class Transient(Analysis):
                     try:
                         xnew, _f, _J, _ = self.solve_timestep(
                             x, t + dt, provided_function=provided_function)
-                    except NoConvergenceError:
+                    except NoConvergenceError as _exc:
                         self.statistics.rejected_steps += 1
                         reject += 1
                         dt = 0.5 * dt
-                        if dt < minstep:
+                        if dt >= minstep:
+                            continue
+                        ## ⚠ THE LAST RESORT, MIRRORING `_solve`.  This driver
+                        ## used to `raise` here, and that made the continuation
+                        ## rescue UNREACHABLE FOR EVERY STAGE METHOD on the
+                        ## DEFAULT path: adaptive stepping routes Runge-Kutta
+                        ## methods here instead of through `_solve`'s loop, and
+                        ## `_continuation_rescue` appeared 0 times in this
+                        ## function against 3 times there.  So the ladder that
+                        ## `_rk_step_coupled` carries could only ever fire under
+                        ## `fixed_timestep=True` -- validated through a door
+                        ## users do not come through.  Re-solve the point at
+                        ## `minstep` with the chain armed before giving up.
+                        if getattr(self, '_continuation_rescue', False):
                             raise
-                        continue
+                        dt = minstep
+                        self._dt = dt
+                        self._continuation_rescue = True
+                        try:
+                            xnew, _f, _J, _ = self.solve_timestep(
+                                x, t + dt,
+                                provided_function=provided_function)
+                            self.statistics.gmin_rescues += 1
+                        except NoConvergenceError as _exc2:
+                            ## Say which of the two happened -- see
+                            ## `_honours_continuation_rescue`.
+                            if self._honours_continuation_rescue():
+                                _why = ('and the continuation rescue could not '
+                                        'solve it either')
+                            else:
+                                _why = ('and NO continuation was attempted: the '
+                                        'rescue is not wired into this step '
+                                        'path (%s with pcnr=%s)'
+                                        % (type(self.base_integrator).__name__,
+                                           self._rk_use_pcnr()))
+                            raise NoConvergenceError(
+                                'transient: the step at t=%.6g s did not '
+                                'converge down to minstep=%.6g s, %s: %s'
+                                % (t, minstep, _why, _exc2)) from _exc2
+                        finally:
+                            self._continuation_rescue = False
                     est = tk.array(self._rk_est)
                     wt = reltol * tk.abs(xnew) + abstol
                     ek = tk.array([est[i] / wt[i] for i in keep])
