@@ -2248,6 +2248,80 @@ class Transient(Analysis):
             return self._rk_step_coupled(x0, t, provided_function)
         return self._rk_step_dirk(x0, t, provided_function)
 
+    def _rk_use_pcnr(self):
+        """Whether the per-stage solve should use PCNR (the first-class
+        junction-continuation limiting) rather than device `limit()` -- true
+        when ``pcnr`` is asked for and the circuit has a participating device."""
+        if not self.par.pcnr:
+            return False
+        from pycircuit.circuit import pcnr as _pcnr
+        return bool(_pcnr.pcnr_devices(self.cir))
+
+    def _rk_stage_pcnr(self, target, aii, h, ti, guess, provided_function=None):
+        """Solve ONE implicit RK stage by PCNR instead of device limiting.
+
+        The stage residual ``q(Y) - target - h a_ii K(Y) = 0`` (``K = -(i+u)``)
+        divided by ``h a_ii`` is the DC-flow form PCNR solves,
+        ``i(Y) + iq_eff + u = 0`` with the EFFECTIVE companion
+
+            iq_eff = (q(Y) - target) / (h a_ii),   Geq_eff = C(Y) / (h a_ii)
+
+        so the same augmented junction-continuation the LMM step uses
+        (`pcnr.augmented_system`/`predict`/`refine`) applies unchanged, with
+        the stage's ``iq_eff``/``Geq_eff`` in place of the multistep companion.
+        Returns the converged full-size stage value ``Y``; raises
+        `NoConvergenceError` if PCNR does not converge (the caller does not fall
+        back -- PCNR is the chosen limiting)."""
+        from pycircuit.circuit import pcnr as _pcnr
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        junctions = _pcnr.pcnr_devices(self.cir)
+        iref = self.irefnode
+        tk = self.toolkit
+        epar = self.epar
+        ana = self.par.analysis
+        scale = h * aii
+        target = np.asarray(target, dtype=float)
+        x = tk.array(guess, dtype=float).copy()
+        v_lim = _pcnr.v_lim_init(junctions, x)
+        xtol = self._newton_xtol_vector()
+        reltol = self.par.reltol
+        for _it in range(int(self.par.maxiter)):
+            q = np.asarray(self.cir.q(x, epar), dtype=float)
+            C = self.cir.C(x, epar)
+            iq_eff = (q - target) / scale
+            Geq_eff = np.asarray(C, dtype=float) / scale
+            u = np.asarray(self.cir.u(ti, epar, analysis=ana), dtype=float)
+            if provided_function is not None:
+                u = u + np.asarray(provided_function(ti), dtype=float)
+            g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
+                self.cir, x, v_lim, junctions, epar,
+                u_extra=iq_eff + u, dense_blocks=False, J_extra=Geq_eff)
+            dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
+                                           iref, junctions=junctions, didv=didv)
+            x_new = x + dx_mna
+            x_new[iref] = 0.0
+            v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, epar,
+                                 x_old=x)
+            lim_ok = _pcnr.lim_converged(g_lim, v_new, reltol, self.par.vabstol)
+            done = lim_ok and bool(tk.alltrue(
+                abs(dx_mna) < reltol * abs(x_new) + xtol))
+            x, v_lim = x_new, v_new
+            if done:
+                ## SYNC the devices' internal limiting voltage to the converged
+                ## solution.  PCNR never calls `cir.limit`, so each junction's
+                ## `_vlim` is left stale -- and the caller's downstream
+                ## `i(Y)`/`G(Y)`/`C(Y)` (the stage derivative K, the returned J,
+                ## the estimate) linearise there.  At convergence the junction
+                ## voltage IS the node voltage, so `limit(x, x)` sets `_vlim`
+                ## to it (zero delta) without altering the solution -- the one
+                ## limit() call PCNR needs, purely to make the device state
+                ## consistent for what reads it next.
+                self.cir.limit(x, x, epar)
+                return x
+        raise NoConvergenceError(
+            'Radau/DIRK stage PCNR did not converge at t=%g after %d iterations'
+            % (ti, self.par.maxiter))
+
     def _rk_step_dirk(self, x0, t, provided_function=None):
         """One step of a lower-triangular (DIRK/SDIRK/ESDIRK) RK method, solved
         stage by stage from the Butcher tableau.
@@ -2304,13 +2378,23 @@ class Transient(Analysis):
                     Y[i] = self._newton(func_e, xn)
             else:
                 ti = tstage[i]
-                def func_i(x, _tgt=target, _aii=aii, _ti=ti):
-                    Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
-                    f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
-                    J = arr(self.cir.C(x, epar)) + h * _aii * arr(self.cir.G(x, epar))
-                    return f, J
                 guess = Y[i - 1] if i > 0 else xn
-                Y[i] = self._newton(func_i, guess)
+                if self._rk_use_pcnr():
+                    ## PCNR is the first-class per-step limiting: each implicit
+                    ## stage is a DC-flow solve `i(Y_i) + iq_eff + u = 0` with
+                    ## `iq_eff = (q(Y_i) - target)/(h a_ii)`, so it takes the same
+                    ## augmented junction-continuation the LMM step uses -- see
+                    ## `_rk_stage_pcnr`.  Flows to shooting too (same solve).
+                    Y[i] = self._rk_stage_pcnr(target, aii, h, ti, guess,
+                                               provided_function)
+                else:
+                    def func_i(x, _tgt=target, _aii=aii, _ti=ti):
+                        Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
+                        f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
+                        J = arr(self.cir.C(x, epar)) \
+                            + h * _aii * arr(self.cir.G(x, epar))
+                        return f, J
+                    Y[i] = self._newton(func_i, guess)
             K[i] = -(arr(self.cir.i(Y[i], epar)) + src(tstage[i]))
 
         xnp1 = Y[s - 1]  ## stiff accuracy
@@ -2734,8 +2818,11 @@ class Transient(Analysis):
         if isinstance(self.base_integrator, RungeKuttaIntegrator):
             ## ANY Runge-Kutta method: the one tableau-driven stage step, which
             ## picks the DIRK-sequential or fully-implicit-coupled path from the
-            ## tableau's structure.  PCNR is a DC-junction Newton strategy and is
-            ## not combined with the stages here.
+            ## tableau's structure.  PCNR (when `par.pcnr`) is the per-stage
+            ## limiting on the DIRK-sequential path -- see `_rk_stage_pcnr`; it
+            ## flows to shooting too, since the inner transient calls this same
+            ## method.  (The FULL coupled path still limits; PCNR-on-coupled is
+            ## a follow-up.)
             return self._solve_timestep_rk(x0, t, provided_function)
         ## STAGE 13 -- the PCNR path, when asked for and when the circuit has a
         ## device that participates.  A circuit with no PCNR junction falls

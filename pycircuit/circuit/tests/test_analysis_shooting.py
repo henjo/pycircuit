@@ -13261,3 +13261,35 @@ def test_esdirk43_monodromy_order4_through_the_generic_dirk_family():
     Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
                           for e in np.eye(m)])
     assert np.linalg.norm(Mt - Mf.T) < 1e-12
+
+
+def test_pcnr_reaches_the_shooting_inner_transient_over_a_stage_method():
+    """PCNR now reaches SHOOTING too: PSS forwards `pcnr` to its inner
+    transient, and the per-step PCNR lives in `solve_timestep` (which PSS
+    drives), so a stage-method PSS with pcnr=True limits its junctions by the
+    continuation and reaches the SAME periodic orbit device limiting does.
+
+    Closes half the external review's 1-for-4 (limiting reached, PCNR did not):
+    PCNR is now 2-for-4 (rescue/breakpoints still need Transient.solve, which
+    PSS does not call).
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def solve(pcnr):
+        c = _diode_mixer()
+        p = PSS(c, method='trbdf2', reltol=1e-11, pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
+        assert p.converged
+        return p
+
+    p_lim = solve(False)
+    p_pcnr = solve(True)
+    X0 = np.asarray(p_lim.waveform[1], dtype=float)
+    X1 = np.asarray(p_pcnr.waveform[1], dtype=float)
+    assert np.linalg.norm(X0 - X1) / np.linalg.norm(X0) < 1e-9, \
+        'PCNR and limiting must reach the same shooting orbit'
+    assert abs(p_pcnr.spectral_radius - p_lim.spectral_radius) \
+        < 1e-6 * abs(p_lim.spectral_radius) + 1e-12

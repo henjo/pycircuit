@@ -1566,9 +1566,18 @@ class PSS(Analysis):
          Parameter(name='vabstol', 
                    desc='Absolute voltage error tolerance', unit='V', 
                    default=1e-12),
-         Parameter(name='maxiter', 
-                   desc='Maximum number of iterations', unit='', 
+         Parameter(name='maxiter',
+                   desc='Maximum number of iterations', unit='',
                    default=100),
+         ## Forwarded to the inner Transient so PCNR (the junction-continuation
+         ## limiting) reaches the shooting per-step solve too -- it lives in
+         ## `Transient.solve_timestep`, which PSS DOES call, so no per-accepted-
+         ## step machinery is needed (unlike breakpoints / continuation rescue,
+         ## which are armed in `Transient.solve` and stay out of reach).
+         Parameter(name='pcnr',
+                   desc='Use Predictor/Corrector Newton-Raphson instead of '
+                        'limiting in the inner transient; off by default',
+                   unit='', default=False),
          ## `reltol` MEANS THE SAME THING IN EVERY ANALYSIS: the relative
          ## tolerance of the transient solution.  It is applied to the
          ## per-timestep Newton here exactly as `Transient` applies it, and
@@ -5800,18 +5809,19 @@ class PSS(Analysis):
         the copy and brings what came with it: the limiting machinery, PCNR,
         breakpoint order drops, and the continuation rescue.
 
-        ⚠ THAT LIST IS 1-FOR-4 AS SHIPPED, and an external review counted it
-        (2026-09-02).  Verified here: LIMITING does reach -- `cir.limit` is
-        called on the inner Newton and the rectifier measurably conducts,
-        which is the defect that motivated driving `Transient` at all.  The
-        other three do not.  `PSS(cir, pcnr=True)` raises `KeyError` because
-        this class declares no `pcnr` Parameter; the continuation rescue
-        (`_rescue_solver`) and breakpoints (`cir.next_event`) are armed only
-        inside `Transient.solve`, which PSS never calls -- it drives
-        `solve_timestep` directly, and imposes its own grid, so a breakpoint
-        has nothing to move.  The same structural fact behind the TLine
-        refusal above: what `Transient.solve` does per accepted step, PSS
-        does not do at all.
+        ⚠ THAT LIST WAS 1-FOR-4 AS SHIPPED (external review, 2026-09-02); it is
+        now 2-FOR-4.  LIMITING reaches -- `cir.limit` is called on the inner
+        Newton and the rectifier measurably conducts.  PCNR now reaches too:
+        `PSS(cir, pcnr=True)` is a declared Parameter forwarded to the inner
+        `Transient` above, and PCNR lives in `Transient.solve_timestep` (the
+        LMM `_solve_timestep_pcnr` and, for stage methods, `_rk_stage_pcnr`),
+        which PSS DOES call -- so it needs no per-accepted-step machinery.  The
+        remaining two still do not: the continuation rescue (`_rescue_solver`)
+        and breakpoints (`cir.next_event`) are armed only inside
+        `Transient.solve`, which PSS never calls -- it drives `solve_timestep`
+        directly on its own frozen grid, so a breakpoint has nothing to move.
+        The same structural fact behind the TLine refusal above: what
+        `Transient.solve` does per accepted step, PSS does not do at all.
 
         The tolerances are handed over unchanged, which is the point of
         `newton_tolerance_vectors`: `reltol`/`iabstol`/`vabstol` mean the
@@ -5860,7 +5870,8 @@ class PSS(Analysis):
             TRTOL=self.par.TRTOL, relref=self.par.relref,
             nrsolver=self.par.nrsolver,
             linearsolver=self.par.linearsolver,
-            scaler=self.par.scaler)
+            scaler=self.par.scaler,
+            pcnr=self.par.pcnr)
         tr.irefnode = self.irefnode
         return tr
 

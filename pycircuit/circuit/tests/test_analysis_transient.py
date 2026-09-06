@@ -1055,3 +1055,57 @@ def test_esdirk43_is_a_tableau_only_order4_dirk():
     for i in range(1, len(errs)):
         assert errs[i - 1] / errs[i] > 10.0, \
             'ESDIRK4(3)6 order is not 4: %s' % errs
+
+
+def test_pcnr_is_the_stage_method_limiting_and_matches_device_limiting():
+    """PCNR is now the first-class per-step limiting for STAGE methods too, not
+    only the LMM companions -- and it must reach the SAME solution device
+    `limit()` does (both solve the same stage equations), only via the junction
+    continuation.  On a diode mixer, TR-BDF2 and ESDIRK4(3)6 with pcnr=True
+    match their limiting runs to machine precision.
+
+    ⚠ This exercises `_rk_stage_pcnr`: each implicit stage's residual
+    `q(Y)-target-h a_ii K(Y)=0` recast as the DC-flow form `i(Y)+iq_eff+u=0`
+    (iq_eff=(q-target)/(h a_ii)), solved by the same augmented junction
+    continuation the LMM step uses, with a limit(x,x) at convergence to sync
+    the devices' _vlim for the downstream K/J.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import (TRBDF2Integrator,
+                                              ESDIRK43Integrator)
+    circuit.default_toolkit = circuit.numeric
+
+    def mixer():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    def run(integ, pcnr):
+        c = mixer()
+        tr = Transient(c, toolkit=circuit.numeric, integrator=integ,
+                       reltol=1e-10, pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        return np.asarray(res.x, dtype=float)
+
+    for integ in (TRBDF2Integrator, ESDIRK43Integrator):
+        x_lim = run(integ(), False)
+        x_pcnr = run(integ(), True)
+        rel = np.linalg.norm(x_lim - x_pcnr) / np.linalg.norm(x_lim)
+        assert rel < 1e-10, \
+            '%s: PCNR and limiting must reach the same solution, got %.2e' \
+            % (integ.__name__, rel)
+    ## and the mixer must actually rectify under PCNR (the diode conducts) --
+    ## a non-conducting junction would leave node 2 swinging symmetrically with
+    ## ~zero DC; rectification builds a substantial DC offset.
+    xp = run(TRBDF2Integrator(), True)
+    v2 = xp[mixer().get_node_index(2)][-160:]
+    dc = abs(np.mean(v2))
+    assert dc > 1e-2, \
+        'PCNR lost the diode nonlinearity (DC offset %.2e, junction idle)' % dc
