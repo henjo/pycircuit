@@ -8259,6 +8259,13 @@ class PAC(Analysis):
             rows.append(np.asarray(row).reshape(-1))
         return SidebandResponse(f_out, f0, ls, ins, np.array(rows))
 
+    ## ⚠ THE FOLD BELOW IS FOR DRIVEN CIRCUITS.  It is a frequency-conversion
+    ## computation and is complete for one; for an AUTONOMOUS oscillator it is
+    ## structurally incomplete -- the near-carrier phase-noise skirt is not a
+    ## conversion effect (Rizzoli, Mastri & Masotti, MTT 42-807, 1994).  Free-
+    ## running phase noise goes through the Floquet/PPV stack instead; see
+    ## `oscillator_spectrum` for why the two cannot be unified and why the wrong
+    ## one still returns a plausible number.
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
                modulated=False):
         """TIME-AVERAGED output noise PSD at `freq`, sidebands folded in.
@@ -10170,6 +10177,29 @@ class PAC(Analysis):
 
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
+
+        ⚠⚠ THIS DOES NOT GO THROUGH `pnoise`'s SIDEBAND FOLD, AND IT CANNOT.
+        The fold is a FREQUENCY-CONVERSION computation, and for a driven circuit
+        -- a mixer, the diode-mixer fold case -- that is complete.  For an
+        AUTONOMOUS oscillator it is structurally incomplete, and what it omits is
+        exactly the near-carrier phase-noise skirt this method returns.  Rizzoli,
+        Mastri & Masotti (IEEE MTT 42-807, 1994) state it directly: frequency
+        conversion alone is insufficient for autonomous circuits, because the
+        noise-induced FREQUENCY MODULATION OF THE CARRIER at low offsets is not a
+        frequency-conversion effect.  (Quotation via a peer session's reading of
+        the paper, not verified against the text here.)
+
+        So the two stacks -- the Floquet/PPV one (`ppv`, `diffusion_constant`,
+        this method) and the sideband fold (`pnoise`) -- ARE NOT TWO
+        IMPLEMENTATIONS OF ONE QUANTITY, and unifying them is not a
+        simplification waiting to be made.  ⚠ THE HAZARD IS THAT THE WRONG ONE
+        STILL RETURNS A NUMBER: deriving oscillator phase noise from the fold
+        alone would produce a spectrum -- the conversion terms are real and
+        non-zero -- just one missing the dominant contribution near the carrier.
+        A plausible wrong answer, which is the failure shape this whole area
+        keeps generating.  That is the completeness argument for the split; the
+        efficiency argument (Floquet is cheaper) is the weaker one and was for a
+        long time the only one written down.
 
         Returns `(S_v, L_dBc)`.  ⚠ `S_v` is the Lorentzian lineshape scaled by
         `|X_1|^2 = A^2/4`, the carrier PHASOR's square -- which is HALF the
