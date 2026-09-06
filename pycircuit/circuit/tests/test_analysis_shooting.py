@@ -13696,3 +13696,101 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
     assert abs(good - naive) > 1e-3 * abs(good), \
         'the conjugate in `a + conj(b)` made no difference here, so this ' \
         'circuit cannot pin it -- pick one whose sidebands actually rotate'
+
+
+def test_refine_grid_repairs_an_under_resolved_grid_and_reaches_a_fixed_point():
+    """B7c: `PSS.refine_grid` repairs a grid that is too coarse, given a solution
+    already solved on it.
+
+    ⚠ SOLVE FIRST, THEN REFINE -- the order is the design, not a convenience.
+    Refining at every shooting iteration instead costs 2.7x-5.2x the points for
+    no accuracy gain, and a warmup does NOT fix that: with iterates that are
+    shrinking perturbations of the settled point the per-iterate grids match in
+    SIZE but their points barely coincide, because a tiny perturbation of `x_0`
+    shifts every step boundary.  Once the solve has converged the iterates stop
+    moving and the grid settles, which is what makes this converge.
+
+    ⚠⚠ AND THE SEPARATION CONSTANT IS NOT PORTABLE BETWEEN THE TWO RULES -- this
+    test exists partly because it was transplanted once and silently did
+    nothing.  `delta = 1` is the knee for a UNION rule (merging whole per-iterate
+    grids).  For the SUBDIVISION rule here the inserted points already sit about
+    one WANTED step apart, so demanding a full step of clearance refuses almost
+    all of them: `delta = 1` recovered +424.8 -> +423.5 ppm, i.e. nothing.  Check
+    3 pins that difference so the constant cannot drift back.
+    """
+    import sys, warnings
+    sys.path.insert(0, 'benchmarks')
+    from pss_stiff_autonomous import (van_der_pol, van_der_pol_seed,
+                                      VDP_PERIOD)
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+    T = VDP_PERIOD
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        seed = van_der_pol_seed()
+    cir = van_der_pol()
+    iref = cir.get_node_index(gnd)
+    full = np.concatenate((seed[:iref], [0.0], seed[iref:]))
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = Transient(van_der_pol(), reltol=1e-7).solve(
+            refnode=gnd, tend=T, timestep=T / 200, x0=full)
+    t = np.asarray(r.sweep_values, float).ravel()
+    g = np.clip((t - t[0]) / (t[-1] - t[0]), 0.0, 1.0)
+    ## a deliberately under-resolved grid: every other point
+    dec = np.unique(np.r_[g[::2], 1.0])
+
+    def solve(fr, x0r):
+        p = PSS(van_der_pol(), method='gear', reltol=1e-7)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=T, grid=list(fr), x0=x0r, maxiterations=40)
+        return p
+
+    fr = list(np.diff(dec))
+    p = solve(fr, seed)
+    err0 = abs(1e6 * (p.period - T) / T)
+    assert p.converged and err0 > 100.0, \
+        'the decimated grid was meant to converge but be BAD (%.1f ppm); it no ' \
+        'longer demonstrates anything to repair' % err0
+
+    ## 1. one pass must recover most of that error
+    x0r = np.asarray(p._period_state[1], float).ravel()
+    fr1 = p.refine_grid(fr, x0r, period=T)
+    p1 = solve(fr1, x0r)
+    err1 = abs(1e6 * (p1.period - T) / T)
+    assert p1.converged and err1 < err0 / 10.0, \
+        'refining the under-resolved grid recovered %.1f -> %.1f ppm, which is ' \
+        'less than the 10x this is for' % (err0, err1)
+
+    ## 2. and it must then REACH A FIXED POINT rather than growing without end
+    x1 = np.asarray(p1._period_state[1], float).ravel()
+    fr2 = p1.refine_grid(fr1, x1, period=T)
+    growth = (len(fr2) - len(fr1)) / float(len(fr1))
+    assert growth < 0.02, \
+        'the grid is still growing %.1f%% a stage after the error settled, so ' \
+        'it has no fixed point' % (100.0 * growth)
+    p2 = solve(fr2, x1)
+    err2 = abs(1e6 * (p2.period - T) / T)
+    assert abs(err2 - err1) < 0.1 * err1, \
+        'the error moved %.1f -> %.1f ppm after the grid had settled' \
+        % (err1, err2)
+
+    ## 3. THE TRANSPLANT HAZARD: the union rule's delta=1 is inert here
+    fr_d1 = p.refine_grid(fr, x0r, period=T, delta=1.0)
+    added_default = len(fr1) - len(fr)
+    added_d1 = len(fr_d1) - len(fr)
+    assert added_d1 < 0.1 * added_default, \
+        'delta=1 added %d points against the default rule\'s %d -- the two ' \
+        'rules\' separation constants have converged, and one of them is wrong' \
+        % (added_d1, added_default)
+
+    ## 4. the input really is FRACTIONS, and says so when it is not
+    try:
+        p.refine_grid(list(dec), x0r, period=T)     # points, not fractions
+    except ValueError as exc:
+        assert 'sum to 1' in str(exc)
+    else:
+        raise AssertionError('refine_grid accepted points where it wants '
+                             'fractions')

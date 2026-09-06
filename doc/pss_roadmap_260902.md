@@ -4073,6 +4073,16 @@ grid wrong is a SLOW MODE (the warmup has not settled) -- and a slow mode is pre
 condition that motivates the feature and the condition that breaks the solver are the same
 condition.
 
+✅ **BUILT 2026-09-06 as `PSS.refine_grid(grid, x0, period=...)`** on exactly that basis -- a repair
+path, not a replacement. Pinned by
+`test_refine_grid_repairs_an_under_resolved_grid_and_reaches_a_fixed_point`, which asserts the
+recovery, the fixed point, AND that the union rule's `delta = 1` is inert here (see below).
+⚠ **THE SEPARATION CONSTANT IS NOT PORTABLE BETWEEN THE TWO RULES AND THIS WAS HIT FOR REAL:**
+the method was first written with `delta = 1` from the union sweep and silently did nothing --
+4 points a stage, +424.8 -> +423.5 ppm. In the SUBDIVISION rule the inserted points already sit
+about one WANTED step apart, so a full step of clearance refuses them all. `0.25` is the measured
+value for this rule.
+
 **Recommendation: do NOT adopt this in place of `lte_grid`.** It is worth building only as an
 explicit repair path -- "I have a grid I suspect is too coarse, improve it" -- where its measured
 behaviour (converges, 1.24x, 23x recovery) is exactly right. ⚠ And if it is built, use the TARGETED
