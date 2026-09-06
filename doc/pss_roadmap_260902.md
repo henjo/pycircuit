@@ -4017,6 +4017,24 @@ preserves accuracy** (-2.3 to -4.1 ppm) but still costs **3.0x - 3.2x**. `gamma`
 coarseness before subdividing, is a weak knob: 1.5 -> 5.0 buys only 3.24x -> 2.79x and starts
 costing accuracy at 5.
 
+⚠ **3b. THE SEPARATION RADIUS IS A STRONGER KNOB THAN `gamma`, AND ITS SETTING IS `delta = 1`.**
+Scaled to the CANDIDATE's own intended local step -- "do not add a point if one already sits
+within a full step of the one you wanted" -- swept on the post-warmup union:
+
+    delta   points  growth   period err
+     0.0     5925    5.21x    +619.4      (no rule at all)
+     0.3     4112    3.62x     -28.2
+     0.5     3627    3.19x     +20.6
+     0.7     3361    2.96x      -5.9
+     1.0     3115    2.74x      -9.3      <- the knee
+     1.5     1708    1.50x    +339.6      <- rejects points the solution needs
+
+**`delta = 1` nearly HALVES the bloat at no accuracy cost** (5.21x -> 2.74x, -9.3 ppm against the
+solution grid's -3.8). ⚠ And the knee is sharp: at 1.5 the count falls to 1.50x -- close to the
+two-stage form's 1.24x -- but accuracy collapses by 40x, because the rule has started starving the
+solution's own resolution. **So the count cannot be bought by tightening the rule; the two-stage
+STRUCTURE is what makes 1.24x possible.**
+
 **4. ⚠⚠ THE TWO-STAGE FORM IS THE ONE THAT WORKS (Andreas's follow-up): solve on a fixed grid
 FIRST, then refine.** Because the iterates are then already at the solution, the refinement
 criterion stops firing and the grid REACHES A FIXED POINT:
@@ -4058,9 +4076,9 @@ condition.
 **Recommendation: do NOT adopt this in place of `lte_grid`.** It is worth building only as an
 explicit repair path -- "I have a grid I suspect is too coarse, improve it" -- where its measured
 behaviour (converges, 1.24x, 23x recovery) is exactly right. ⚠ And if it is built, use the TARGETED
-rule with the separation radius scaled to the CANDIDATE's own intended step: scaling it to the
-existing grid's local gap was tried and admitted only 33 of 1158 points on a coarse grid, producing
-grids that did not converge at all.
+rule with the separation radius scaled to the CANDIDATE's own intended step AT `delta = 1` (see 3b):
+scaling it to the existing grid's local gap was tried instead and admitted only 33 of 1158 points on
+a coarse grid, producing grids that did not converge at all.
 
 
 ---
