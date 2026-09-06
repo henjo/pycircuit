@@ -6590,3 +6590,57 @@ adaptive grid for Radau (fixed_timestep=True, or TR-BDF2). It would be built the
 TR-BDF2's 2(3) estimate was — derive, then validate the estimate/true-LTE ratio → 1 and the
 adaptive-reltol gate — before it is trusted. Also still deferred (shared with TR-BDF2): the
 FORWARD `_forced_replay` (PAC.solve forward), out of scope for pnoise's reverse path.
+
+---
+
+## Radau IIA(3): the adaptive 5(3) estimator and the cost transform, 2026-09-06
+
+The two pieces deferred from the first Radau arc, now built and validated.
+
+**The adaptive 5(3) estimator (`_radau_error_estimate` + `_run_radau_adaptive`).**
+Hairer & Wanner's radau5 estimator: a lower-order (order 3) embedded solution differs
+from the order-5 step by a combination of the three stage increments ``Z_i = Y_i - x_n``
+plus a fictitious explicit stage ``f(x_n)``:
+
+    F1  = (dd1 Z1 + dd2 Z2 + dd3 Z3)/h
+    rhs = C(x_n) F1 + f0,     f0 = -(i(x_n) + u(t_n))
+    est = ((gamma_r/h) C(x_n) + G(x_n))^{-1} rhs            (STATE units)
+
+with ``dd1 = -(13+7√6)/3``, ``dd2 = (-13+7√6)/3``, ``dd3 = -1/3`` and ``gamma_r`` the real
+eigenvalue of ``A^{-1}``.  ⚠ THE FILTER (the transform's real factor) is what makes it
+stiff-robust: an unfiltered embedded difference grows like ``|λh|`` on a stiff mode while
+the true error is L-damped to zero; the real-factor inverse maps it back to a bounded state
+error.  The controller uses the ``1/(3+1) = 1/4`` step exponent (the peer's ``1/4``).
+
+⚠ THE dd WEIGHTS WERE VALIDATED, NOT TRUSTED (0j -- the whole reason this was deferred
+rather than guessed last round).  Two references the estimator cannot influence: on a smooth
+RC (VSin, consistent IC) the single-step estimate at the RC node falls as ``h^4`` (ratios
+6.4/13.2/15.1 → 16) -- a wrong lower-order construction would give 8 (``h^3``); and on a
+diode rectifier the accepted-step count rises monotonically as ``reltol`` tightens
+(160/478/1697/4895 over 1e-2..1e-8), so the estimate is steering.
+
+**The cost transform (`ComplexKLUSolver` + `_solve_timestep_radau_transformed`).**  Opt-in
+via ``_radau_use_transform``; the dense coupled ``3n`` solve stays the default and the
+correctness reference.  Multiplying the coupled system by ``(A^{-1} ⊗ I)/h`` and
+diagonalising ``A^{-1} = V diag(λ) V^{-1}`` decouples it into ``(λ_k C/h + G) w_k = rhs_k``:
+the real eigenvalue → one REAL ``m×m`` solve, the complex pair → one COMPLEX solve plus its
+free conjugate.  An ``O((3m)^3)`` dense solve becomes two sparse ones.
+
+- ``ComplexKLUSolver`` binds the ``klu_z_*`` family (``klu_analyze`` is pattern-only and
+  shared with the real path; KLU's packed-complex layout is exactly numpy ``complex128``, so
+  values marshal by ``.view(float64)``).  Validated to 4e-16 vs a dense complex solve, with
+  the analyze-once/refactor-many reuse KLUSolver uses.
+- The transform step is SIMPLIFIED Newton (Jacobian frozen at ``x_n``, full per-stage
+  residual, junction limiting), reusing the two factorisations every iteration.  ⚠ On a
+  strongly nonlinear step the frozen Jacobian can stall; then ``_solve_timestep_radau`` FALLS
+  BACK to the dense full-Newton solve, so the answer is never wrong, only occasionally slower.
+
+Gates: transform == dense to 4.7e-17 on a linear RC ladder (0 fallbacks) and to 2.3e-12 on
+the diode mixer (2 of 160 steps fall back at the diode-switching instants, harmonics
+preserved).  Speedup grows with size: 1.18x at m=202, 1.92x at m=402 (load 0.74, so
+wall-clock is trustworthy) -- the dense ``3m`` solve is cubic, the transform two sparse
+solves, so the gap widens with ``m``.
+
+**Remaining deferrals (shared with TR-BDF2):** the FORWARD ``_forced_replay`` / ``PAC.solve``
+forward, out of scope for pnoise's reverse path.  Radau's parity with TR-BDF2 is otherwise
+complete, two orders higher, and now fast on a large sparse circuit.
