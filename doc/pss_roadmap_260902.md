@@ -2376,7 +2376,35 @@ to 0th order. **It becomes load-bearing the moment anything drives the oscillato
 locking, a PLL in lock, coupled oscillators. That is exactly A6, so A6 must use the exact form
 and cannot inherit the linearisation the stationary path is allowed.
 
-### A4. Warm start — ⚠ SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
+### A4. Warm start — ✅ **CLOSED 2026-09-06: the automatic criterion is BUILT**
+
+⚠ **This heading's "what remains" is now done.** `PSS.find_initial_solution` implements De Luca,
+Bolcato & Schilders Algorithm 2 (commit `a7887cb`). Two things this record had wrong:
+
+- **The paper was NOT unacquired.** It is at
+  `~/docs/07-shooting-methods/DeLuca-Bolcato-Schilders-2019-...pdf`. Verify a blocker before
+  repeating it.
+- **The criterion is not "Algorithm 1 is `_monodromy_matvec`" alone.** Alg. 1 is only the
+  Jacobian-vector product. The CRITERION (eqs. 11–13, 16) compares TWO sequences — the LINEAR
+  prediction `u_{k+1} = J_phi(x_khat) u_k` against the ACTUAL `utilde_{k+1} = x_{k+1} -
+  phi(x_{k+1})` — accepted componentwise for `n_iter` CONSECUTIVE iterations. The guess this
+  project had made ("carry a probe and watch it settle") was the wrong SHAPE, not a wrong
+  constant: a settled probe only says the Jacobian stopped changing, which is equally true at an
+  equilibrium.
+
+Measured: the paper's own RLC (Q=100) gives `khat=0, periods=7` — forced, because an affine phi
+makes the linear generator exact; the same tank with a diode refuses the first iterate and finds
+the region at 8 periods; and shooting that does NOT converge cold converges from the returned
+iterate.
+
+⚠⚠ **NON-AUTONOMOUS ONLY, which is the paper's scope.** For an autonomous oscillator the
+equilibrium IS a fixed point of the period map and the map is linear around it, so the criterion
+certifies the TRIVIAL ROOT — the van der Pol case in `benchmarks/pss_warm_start.py` is NOT solved
+by this and must not be handed to it. That case remains open and belongs with B5.
+
+--- original heading kept below for the record ---
+
+### A4 (original). Warm start — SHIPPED 2026-09-02 as `tstab=`; the *automatic* criterion is what remains
 
 De Luca, Bolcato & Schilders (2019, TCAS-I) frame our exact situation: "none of the works
 in the literature addresses the relevant problem of automatically identifying such a proper
