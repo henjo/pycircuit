@@ -1907,6 +1907,94 @@ class PSS(Analysis):
             RuntimeWarning, stacklevel=3)
         return True
 
+    def event_grid(self, period, npts=None, grid=None, min_sep=0.05):
+        """A step grid with the circuit's EVENT TIMES landed on exactly.
+
+        A6/B7b.  `Transient` breaks its steps at `cir.next_event`; the PSS
+        traversal does not, so a pulse edge inside a step is integrated straight
+        through.  This returns step FRACTIONS for `solve(grid=...)` with each
+        event in the period placed ON a grid point -- by SNAPPING the nearest
+        point onto it when one is close, and INSERTING otherwise, so no
+        arbitrarily small step is ever created (the B7c lesson).
+
+        Measured on an RC driven by a `VPulse`, against a 4000-point reference,
+        a 40-step uniform grid versus the same grid with its 3-4 event times
+        landed on::
+
+            edge offset   uniform      + events        gain
+            td = 0        6.787e-03    8.032e-04       8.5x
+            td = 0.0125T  5.720e-03    2.099e-04        27x
+            td = 0.0092T  2.483e-03    7.910e-04       3.1x
+
+        ⚠ TIME-DRIVEN EVENTS ONLY, AND THE LIMIT IS STRUCTURAL.  `next_event(t)`
+        is parameterised by time, so a source's edges can be walked out once and
+        placed.  A STATE-DEPENDENT reset -- `Idtmod`'s wrap -- cannot: its
+        `next_event` is a linear prediction from the last accepted point and
+        returns `inf` before a traversal has started, so there is nothing to walk.
+        That case is genuinely harder and the roadmap says why: the wrap time
+        MOVES as the Newton iterates, so it has to become an unknown the Newton
+        solves for rather than a feature of any grid.  On a grid point that map
+        is discontinuous by `|dphi| ~ 8.2e-3 INDEPENDENT of the perturbation`,
+        so do not expect this to help there -- it will not.
+
+        ⚠ AND THIS IS NOT SALTATION.  Saltation was measured and falsified twice
+        for this codebase (a switched conductance, a discontinuous injection and
+        an `Idtmod` wrap all give a monodromy-vs-FD gap falling at 2.00x per
+        doubling, i.e. O(h)); each step already uses its own `Jf`/`C`, which
+        describe whichever side of the switch that step is on.  The problem was
+        only ever that the grid could not BREAK at the event.
+        """
+        T = float(period)
+        if not T > 0.0:
+            raise ValueError('event_grid: period must be positive, got %g' % T)
+        if grid is not None:
+            fr = np.asarray(grid, dtype=float).ravel()
+            tot = float(np.sum(fr))
+            if not np.isclose(tot, 1.0, rtol=0, atol=1e-9):
+                raise ValueError('event_grid: `grid` fractions must sum to 1, '
+                                 'they sum to %.12g' % tot)
+            pts = np.concatenate(([0.0], np.cumsum(fr)))
+            pts[-1] = 1.0
+        else:
+            if npts is None:
+                raise ValueError('event_grid: give either `npts` or `grid`')
+            pts = np.linspace(0.0, 1.0, int(npts) + 1)
+
+        ## walk the events across one period
+        ev = []
+        t = 0.0
+        for _ in range(10 * len(pts) + 100):
+            e = float(self.cir.next_event(t))
+            if not np.isfinite(e) or e >= T * (1.0 - 1e-15):
+                break
+            if e > T * 1e-15:
+                ev.append(e / T)
+            if e <= t:
+                break
+            t = e
+        self.event_times = list(ev)
+        if not ev:
+            return list(np.diff(pts))
+
+        for f in ev:
+            j = int(np.argmin(np.abs(pts - f)))
+            if j == 0 or j == len(pts) - 1:
+                ## never move an endpoint: the period boundary is not ours
+                k = 1 if j == 0 else len(pts) - 2
+                h = abs(pts[k] - pts[j])
+                if abs(pts[k] - f) < min_sep * h:
+                    pts[k] = f
+                    continue
+            else:
+                h = min(pts[j] - pts[j - 1], pts[j + 1] - pts[j])
+                if abs(pts[j] - f) < min_sep * h:
+                    pts[j] = f          ## SNAP -- no tiny step created
+                    continue
+            pts = np.append(pts, f)
+            pts = np.sort(pts)
+        pts = np.unique(pts)
+        return list(np.diff(pts))
+
     def refine_grid(self, grid, x0, period=None, refnode=gnd, gamma=2.0,
                     delta=0.25, reltol=None, timestep=None):
         """REPAIR an under-resolved step grid, given a solution solved on it.

@@ -13794,3 +13794,90 @@ def test_refine_grid_repairs_an_under_resolved_grid_and_reaches_a_fixed_point():
     else:
         raise AssertionError('refine_grid accepted points where it wants '
                              'fractions')
+
+
+def test_event_grid_lands_the_period_on_its_event_times():
+    """A6/B7b: `PSS.event_grid` puts the circuit's event times ON grid points.
+
+    `Transient` breaks its steps at `cir.next_event`; the PSS traversal does not,
+    so a pulse edge inside a step is integrated straight through. Landing the
+    edges costs 3-4 points out of 40 and buys up to 27x accuracy.
+
+    ⚠ THE SNAP IS WHY THERE ARE NO SLIVERS. An event near an existing point MOVES
+    that point onto it rather than inserting a second one beside it; inserting
+    unconditionally is how a merge acquires arbitrarily small steps, which is the
+    same lesson `refine_grid`'s separation rule encodes. Check 3 pins it.
+
+    ⚠ AND THIS IS NOT SALTATION, which was measured and falsified twice for this
+    codebase -- a switched conductance, a discontinuous injection and an
+    `Idtmod` wrap all give a monodromy-vs-FD gap falling at 2.00x per doubling,
+    i.e. O(h). Each step already uses its own `Jf`/`C`, describing whichever side
+    of the switch it is on. The defect was only ever that the grid could not
+    BREAK at the event.
+
+    ⚠ TIME-DRIVEN EVENTS ONLY. A state-dependent reset cannot be walked out in
+    advance (`Idtmod.next_event` is a linear prediction from the last accepted
+    point and is `inf` before a traversal starts), and its wrap time MOVES as the
+    Newton iterates. That case needs the event time to become a Newton unknown
+    and is deliberately out of scope here.
+    """
+    import warnings
+    from pycircuit.circuit.elements import VPulse
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    N = 40
+
+    def cir(td):
+        c = SubCircuit()
+        c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=td, tr=T / 500,
+                         tf=T / 500, pw=T / 2, per=T)
+        c['R'] = R(1, 2, r=1e3)
+        c['C'] = C(2, gnd, c=1e-9)
+        return c
+
+    def solve(fr, cr):
+        p = PSS(cr, method='gear', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=T, grid=list(fr), maxiterations=40)
+        return np.asarray(p._period_state[1], float).ravel()
+
+    td = 0.5 / N * T                      # edges deliberately between points
+    uni = list(np.diff(np.linspace(0.0, 1.0, N + 1)))
+    ref = solve(list(np.diff(np.linspace(0.0, 1.0, 4001))), cir(td))
+    den = max(np.max(np.abs(ref)), 1e-30)
+    err_uni = np.max(np.abs(solve(uni, cir(td)) - ref)) / den
+
+    p = PSS(cir(td), method='gear', reltol=1e-10)
+    eg = p.event_grid(T, npts=N)
+    err_ev = np.max(np.abs(solve(eg, cir(td)) - ref)) / den
+
+    ## 1. the events are actually ON the grid
+    pts = np.concatenate(([0.0], np.cumsum(np.asarray(eg))))
+    assert p.event_times, 'no events were found on a VPulse-driven circuit'
+    for f in p.event_times:
+        assert np.min(np.abs(pts - f)) < 1e-12, \
+            'event at %.9f of the period is not on a grid point' % f
+
+    ## 2. and landing them is worth doing
+    assert err_ev < err_uni / 3.0, \
+        'landing the edges gave %.3e against the uniform grid\'s %.3e, which ' \
+        'is less than the 3x this costs points for' % (err_ev, err_uni)
+
+    ## 3. NO SLIVERS -- the snap must keep every step a real fraction of one
+    h_uni = 1.0 / N
+    assert min(eg) > 0.02 * h_uni, \
+        'the smallest step is %.3e, i.e. %.1f%% of a uniform step -- the snap ' \
+        'is not preventing slivers' % (min(eg), 100.0 * min(eg) / h_uni)
+
+    ## 4. a circuit with no events is left exactly alone
+    c2 = SubCircuit()
+    c2['vs'] = VSin(1, gnd, va=1.0, freq=1.0 / T)
+    c2['R'] = R(1, 2, r=1e3)
+    c2['C'] = C(2, gnd, c=1e-9)
+    p2 = PSS(c2, method='gear', reltol=1e-10)
+    base = list(np.diff(np.linspace(0.0, 1.0, 11)))
+    got = p2.event_grid(T, grid=base)
+    if not p2.event_times:
+        assert np.allclose(got, base, rtol=0, atol=1e-15), \
+            'a circuit with no events had its grid altered'
