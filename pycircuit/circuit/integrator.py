@@ -4,6 +4,8 @@ from pycircuit.circuit._lte_kernels import (bdf2_alphas, bdf2_companion,
                                             bdf2_derivative,
                                             euler_companion,
                                             trapezoidal_companion,
+                                            theta_companion,
+                                            theta_companion_dh,
                                             second_divided_difference,
                                             third_divided_difference as _tdd,
                                             ## STAGE 12B -- d(iq)/dh, the
@@ -110,6 +112,25 @@ class Integrator(ABC):
         order and they take a twin."""
         return self.is_stage_method() or self.companion_reach() >= 2
 
+    def needs_consistent_iq0(self) -> bool:
+        """Whether the run must SEED ``iq_{-1}`` from the DAE instead of zero.
+
+        Every method here is opened by an L-stable Euler step, which reads no
+        past current -- so the ring may start at zero and nothing notices.  A
+        method that refuses that opener (:class:`ThetaIntegrator`) reads
+        ``iq_{-1}`` on its very first step, and a zero there is simply wrong.
+
+        ⚠ MEASURED, because the failure is quiet: with the zero seed the
+        biased theta-method converges at FIRST order (0.97) with ~100x
+        trapezoidal's error, since trapezoidal's own homogeneous mode is
+        undamped and carries the seed error forever.  Seeding
+        ``iq = -(i(x_0) + u(t_0))`` -- the DAE's own statement of ``dq/dt`` --
+        restores EXACTLY order 2.00.
+
+        Default False so no existing method changes by a bit.
+        """
+        return False
+
     def needs_x0_unknown(self) -> bool:
         """Whether the shooting solve must carry `x_0` as the unknown -- the
         self-starting stage methods, which have no manufactured opening step to
@@ -200,7 +221,7 @@ class Integrator(ABC):
             acc = acc + alphas[k] * q_last[k - 1]
         return -acc
 
-    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+    def companion_dh(self, q_curr, q_last, h_curr, h_last, iq_last=None):
         """``d(iq)/dh`` at fixed solution -- the integrator half of Fang's ``p``.
 
         STAGE 12B.  Not abstract: an integrator that does not implement it simply
@@ -292,7 +313,11 @@ class EulerIntegrator(Integrator):
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
         return euler_companion(q_curr, C_curr, q_last[0], h_curr)
 
-    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+    def companion_dh(self, q_curr, q_last, h_curr, h_last, _iq_last=None):
+        ## `_iq_last` is accepted and unread: only ThetaIntegrator's theta
+        ## depends on `h`, so only it needs the past current here.  Named
+        ## with the leading underscore this file already uses for a
+        ## deliberately unread argument (see `_h_last`).
         return euler_companion_dh(q_curr, q_last[0], h_curr)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
@@ -368,7 +393,11 @@ class TrapezoidalIntegrator(Integrator):
         ## two in binary floating point, so this is bit-identical, not merely equal.
         return trapezoidal_companion(q_curr, C_curr, q_last[0], iq_last[0], h_curr)
 
-    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+    def companion_dh(self, q_curr, q_last, h_curr, h_last, _iq_last=None):
+        ## `_iq_last` is accepted and unread: only ThetaIntegrator's theta
+        ## depends on `h`, so only it needs the past current here.  Named
+        ## with the leading underscore this file already uses for a
+        ## deliberately unread argument (see `_h_last`).
         return trapezoidal_companion_dh(q_curr, q_last[0], h_curr)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
@@ -447,6 +476,123 @@ class TrapezoidalIntegrator(Integrator):
         dd2 = (gn_1 - gn_2) / h_last
         lte = -(1.0/3.0) * h_curr**2 * (dd1 - dd2) / (h_curr + h_last)
         return lte, 3.0  # p=3.0 for Trapezoidal
+
+
+class ThetaIntegrator(TrapezoidalIntegrator):
+    """Theta-method with ``theta = 1/2 + C h`` -- Houben's biased trapezoidal.
+
+    THE POINT IS THE OPENING STEP IT DOES NOT NEED.  Trapezoidal is A-stable
+    but not L-stable and maps ``null(C)`` by EXACTLY ``-1``, so ``A_trap^K`` is
+    singular at even ``K`` (roadmap C1, a theorem).  Every other method here
+    works around that by ANNIHILATING the mode with an L-stable Euler opening
+    step -- and that opening step is what caps ``lambda_2``'s order (B16), and
+    what ``x0_unknown`` moves INSIDE the period at a cost of up to 30% of the
+    waveform amplitude (B1, built and reverted).
+
+    Biasing ``theta`` off ``1/2`` DAMPS the mode instead of annihilating it:
+    ``null(C)`` maps by ``-(1-theta)/theta``, of modulus ``< 1`` for any
+    ``theta > 1/2``.  So :meth:`check_order_drop` deliberately does NOT hand
+    back an Euler opener -- this class exists in order not to need one, and
+    inheriting trapezoidal's opener would defeat the whole design.
+
+    ``C`` is a RATE, not a ratio: ``theta - 1/2 = C h`` shrinks with the step,
+    which is what keeps the method second order.  The local error picks up a
+    ``-C h^3 q''`` term beside trapezoidal's own third-order one, so both are
+    third order locally and second globally.
+
+    HOUBEN GIVES A TWO-SIDED CONSTRAINT ON C AND NO RECIPE.  Measured on the
+    Q=20 resonator (``benchmarks/pss_b2_theta_gate.py``, analytic peak 20 V,
+    K=200 steps per period)::
+
+        C      theta          peak       error     null|mode|^K   rcond(I-A^K)
+        0      0.500000000    SINGULAR   --        1.000e+00      0.0e+00
+        1e3    0.500031416    20.02011   +0.0201   9.752e-01      4.4e-03
+        1e4    0.500314159    20.01301   +0.0130   7.778e-01      4.6e-03 <-knee
+        1e5    0.503141593    19.94223   -0.0578   8.100e-02      4.3e-03
+        1e6    0.531415927    19.26150   -0.7385   1.176e-11      3.7e-03
+
+    ``rcond`` SATURATES at ``C ~ 1e4`` and then DEGRADES while the amplitude
+    keeps paying, so more bias buys no conditioning at all.  That knee is the
+    recipe, and :attr:`DEFAULT_C` sits on it.
+
+    ``C = 0`` is EXACTLY trapezoidal -- same coefficients, same arithmetic --
+    and the suite uses that as its plumbing gate.  It is not a useful setting:
+    at ``C = 0`` the opener this class refuses to take is the one it needs.
+    """
+
+    ORDER = 2
+
+    ## On the measured knee: conditioning has saturated and the amplitude has
+    ## not yet begun to pay (0.07% of the peak).  A rate in 1/s, since
+    ## `theta - 1/2 = C h`.
+    DEFAULT_C = 1e4
+
+    def __init__(self, cbias=None):
+        super().__init__()
+        self.cbias = float(self.DEFAULT_C if cbias is None else cbias)
+
+    def theta_at(self, h):
+        """``theta = 1/2 + C h``, capped at 1.
+
+        The cap matters on a huge step: past ``theta = 1`` this is no longer a
+        theta-method at all, and ``theta = 1`` is backward Euler, which is the
+        right thing to degrade to.
+        """
+        return min(0.5 + self.cbias * float(h), 1.0)
+
+    def needs_x0_unknown(self) -> bool:
+        ## ⚠⚠ MEASURED, AND IT IS NOT OPTIONAL.  `x0_unknown=False` MANUFACTURES
+        ## an opening step, which is exactly the thing this method refuses to
+        ## take -- so the manufactured point is inconsistent with the first
+        ## theta step that reads it.  On the Q=20 resonator (analytic 20 V):
+        ##
+        ##     x0_unknown=False   peak 13.13455   converged=False
+        ##     x0_unknown=True    peak 20.01524   converged=True
+        ##
+        ## The second matches the linear gate's prediction of 20.013, which was
+        ## computed on a period map with NO opening step -- i.e. exactly
+        ## `x0_unknown=True` semantics.  Declaring it here means `solve` turns it
+        ## on for this method the same way it does for the stage methods, rather
+        ## than a caller having to know.
+        return True
+
+    def needs_consistent_iq0(self) -> bool:
+        ## ⚠ THE PREREQUISITE THE LINEAR GATE COULD NOT SEE.  B2's gate solved
+        ## the periodic state in closed form, so it never had an opening step
+        ## and never exercised the seed.  Refusing the Euler opener means this
+        ## method reads `iq_{-1}` on its first step, where the run seeds zero:
+        ## measured, that alone costs a full order (0.97 against 2.00).
+        return True
+
+    def check_order_drop(self, h_curr, h_last, is_first_step):
+        ## DELIBERATELY NOT trapezoidal's `if is_first_step: EulerIntegrator()`.
+        ## The Euler opener is exactly what this design removes; taking it would
+        ## reintroduce B16's floor and leave the class with no purpose.  The
+        ## bias damps null(C) on its own, from the first step onward.
+        return self
+
+    def companion_coefficients(self, h_curr, _h_last):
+        th = self.theta_at(h_curr)
+        return (1.0 / (th * h_curr), -1.0 / (th * h_curr)), -(1.0 - th) / th
+
+    def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last,
+                            h_last, is_first_step, toolkit):
+        return theta_companion(q_curr, C_curr, q_last[0], iq_last[0], h_curr,
+                               self.theta_at(h_curr))
+
+    def companion_dh(self, q_curr, q_last, h_curr, h_last, iq_last=None):
+        ## Needs `iq_last`, unlike every sibling: `theta` itself depends on `h`,
+        ## so the stored past current carries an h-derivative through it.  With
+        ## `iq_last` absent the term is dropped, which is correct only at
+        ## `cbias = 0` -- say so rather than return a quietly wrong `p`.
+        if iq_last is None and self.cbias != 0.0:
+            raise NotImplementedError(
+                'ThetaIntegrator.companion_dh needs iq_last when cbias != 0: '
+                'theta = 1/2 + C h depends on h, so d(iq)/dh carries a term in '
+                'the stored past current. The caller passed none.')
+        iq_prev = 0.0 if iq_last is None else iq_last[0]
+        return theta_companion_dh(q_curr, q_last[0], iq_prev, h_curr,
+                                  self.theta_at(h_curr), self.cbias)
 
 
 class Gear2Integrator(Integrator):
@@ -564,7 +710,11 @@ class Gear2Integrator(Integrator):
         return bdf2_companion(q_curr, C_curr, q_last[0], q_last[1],
                               h_curr, h_last)
 
-    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+    def companion_dh(self, q_curr, q_last, h_curr, h_last, _iq_last=None):
+        ## `_iq_last` is accepted and unread: only ThetaIntegrator's theta
+        ## depends on `h`, so only it needs the past current here.  Named
+        ## with the leading underscore this file already uses for a
+        ## deliberately unread argument (see `_h_last`).
         return bdf2_companion_dh(q_curr, q_last[0], q_last[1], h_curr, h_last)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,

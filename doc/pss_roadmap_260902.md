@@ -6249,6 +6249,41 @@ was a live default. B1 is reverted and B16's floor is unremedied, so B2 is not a
 shipped default — **it is the surviving candidate**, and the one that removes the opening step
 rather than moving an Euler step inside the period.
 
+✅✅ **BUILT 2026-09-06 as `ThetaIntegrator`, `method='theta'`.** Suite 3081 passed.
+
+**And building it found TWO PREREQUISITES THE GATE COULD NOT SEE** — the gate solved the periodic
+state in closed form, so it had neither an opening step nor a seeded history, and was silent about
+both:
+
+1. ⚠⚠ **A consistent `iq_{-1}`.** Refusing the Euler opener means the method reads the past
+   current on its FIRST step, where the run seeds **zero**. Measured on an RC step against the
+   analytic response, that alone costs a full order: **0.97** against **2.00** once seeded with
+   `iq = -(i(x_0) + u(t_0))`, the DAE's own statement of `dq/dt`. Wired behind
+   `Integrator.needs_consistent_iq0()` (default `False`) so no existing method changes by a bit.
+2. ⚠⚠ **`x0_unknown` must be ON.** `False` MANUFACTURES an opening step — exactly what this method
+   refuses — so the manufactured point is inconsistent with the first theta step that reads it:
+   peak **13.13455, `converged=False`** against **20.01524 converged** with `True`. The method
+   declares `needs_x0_unknown()`, so `solve` switches it on as it already does for the stage
+   methods.
+
+**End to end on the Q=20 resonator (analytic 20 V):** K=100 → 19.98407, K=200 → **20.01524**
+(the gate predicted **20.013**), K=400 → 20.02255.
+
+⚠ **Two things measured and DELIBERATELY NOT changed**, recorded so the dead ends are not re-walked:
+`carries_own_monodromy=True` gives **bit-identical** peaks at K=200 and 400 — not earned, left
+inherited; and theta's LTE alarm is **not theta-specific** — trap reports 5.37e+06/1.34e+06 times
+tolerance where theta reports 4.79e+06/1.19e+06 on the same grids, i.e. slightly **lower**. I
+nearly "fixed" the second before checking trap.
+
+⚠ **OPEN: convergence cost is characterised but not addressed.** K=400 needs ~150 Newton
+iterations where 40 suffices for trap; the peak is right at every K. Before `theta` is a
+recommendable default rather than an available method, that wants explaining.
+
+⚠ **The plumbing gate that makes the rest trustworthy:** at `C = 0` theta reproduces trapezoidal
+coefficient for coefficient, and with a forced Euler opener it matches trap's RC errors to every
+digit (4.046e-06 / 1.201e-06 / 3.251e-07).
+Test: `test_theta_integrator_removes_the_opener_it_was_built_to_remove`.
+
 
 ### B3. The Aprille & Trick substitution formulation
 

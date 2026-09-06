@@ -1435,3 +1435,115 @@ def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
         assert tr.pcnr_fallbacks == 0 and tr.pcnr_status == 'used', \
             '%s: PCNR fell back on a healthy circuit (%d fallbacks, status %r)' \
             % (integ.__name__, tr.pcnr_fallbacks, tr.pcnr_status)
+
+
+def test_theta_integrator_removes_the_opener_it_was_built_to_remove():
+    """B2 implemented: theta = 1/2 + C h, the trapezoidal that needs no opener.
+
+    Trapezoidal is A-stable but not L-stable and maps `null(C)` by EXACTLY -1,
+    so `A_trap^K` is singular at even K (roadmap C1, a theorem).  Every other
+    method here works around it by ANNIHILATING the mode with an L-stable Euler
+    opening step -- and that opener is what caps lambda_2's order (B16), and
+    what `x0_unknown` moves inside the period at up to 30% of the waveform
+    amplitude (B1, reverted).  Biasing theta DAMPS the mode instead:
+    `-(1-theta)/theta`, modulus < 1 for any theta > 1/2.
+
+    ⚠⚠ TWO PREREQUISITES THE LINEAR GATE COULD NOT SEE, both found by building
+    it.  The gate (`benchmarks/pss_b2_theta_gate.py`) solved the periodic state
+    in closed form, so it had no opening step and no seeded history -- it could
+    not exercise either:
+
+      1. **A consistent `iq_{-1}`.**  Refusing the Euler opener means the method
+         reads the past current on its FIRST step, where the run seeds ZERO.
+         Measured on an RC step against the analytic response, that alone costs
+         a full order: 0.97 with the zero seed against 2.00 with
+         `iq = -(i(x_0) + u(t_0))`, the DAE's own statement of dq/dt.
+      2. **`x0_unknown`.**  `False` MANUFACTURES an opening step -- exactly the
+         thing this method refuses -- so the manufactured point is inconsistent
+         with the first theta step that reads it: peak 13.13455 and
+         `converged=False`, against 20.01524 converged with `True`.  The method
+         declares it, so `solve` switches it on the way it does for the stage
+         methods.
+
+    ⚠ Two things measured and deliberately NOT changed, so the record shows the
+    dead ends too: `carries_own_monodromy=True` gives bit-identical peaks at
+    K=200 and 400 (no benefit, left inherited), and theta's LTE alarm is NOT
+    theta-specific -- trap reports 5.37e+06/1.34e+06 times tolerance where theta
+    reports 4.79e+06/1.19e+06 on the same grids, i.e. slightly LOWER.
+    """
+    from pycircuit.circuit.integrator import (ThetaIntegrator,
+                                              TrapezoidalIntegrator,
+                                              EulerIntegrator)
+    from pycircuit.circuit.elements import VS, R, C, SubCircuit, gnd
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) PLUMBING GATE: at C = 0 this IS trapezoidal, coefficient for
+    ## coefficient.  If this ever drifts, nothing below means anything.
+    th0, tr = ThetaIntegrator(cbias=0.0), TrapezoidalIntegrator()
+    for h in (1e-9, 1e-6, 3.14e-8):
+        a_t, b_t = th0.companion_coefficients(h, h)
+        a_r, b_r = tr.companion_coefficients(h, h)
+        assert a_t == a_r and b_t == b_r, \
+            'theta(C=0) != trapezoidal at h=%g: %r vs %r' % (h, (a_t, b_t), (a_r, b_r))
+    assert th0.companion_reach() == tr.companion_reach() == 1
+
+    ## (2) THE DESIGN: no Euler opener, and the mode is damped rather than
+    ## annihilated.  `-(1-theta)/theta` is exactly -1 at C=0 and inside the
+    ## unit circle for any C > 0 -- that IS the whole mechanism.
+    assert isinstance(th0.check_order_drop(1e-8, 1e-8, True), ThetaIntegrator), \
+        'theta took an Euler opener -- that is the thing it exists to remove'
+    assert isinstance(tr.check_order_drop(1e-8, 1e-8, True), EulerIntegrator), \
+        'the fixture assumes trapezoidal DOES open with Euler'
+    h = 3.14e-8
+    _a, b0 = ThetaIntegrator(cbias=0.0).companion_coefficients(h, h)
+    _a, bC = ThetaIntegrator(cbias=1e4).companion_coefficients(h, h)
+    assert abs(b0 + 1.0) < 1e-15, 'C=0 must sit exactly on the (-1)^n mode'
+    assert abs(bC) < 1.0 and abs(bC + 1.0) > 1e-9, \
+        'the bias must move the mode strictly inside the unit circle, got %r' % bC
+
+    ## (3) It declares both prerequisites, so a caller need not know them.
+    assert ThetaIntegrator().needs_consistent_iq0() is True
+    assert ThetaIntegrator().needs_x0_unknown() is True
+    assert tr.needs_consistent_iq0() is False, \
+        'the seed change must not reach any existing method'
+    assert tr.needs_x0_unknown() is False
+
+    ## (4) SECOND ORDER against an analytic reference, and the seed is what
+    ## buys it.  RC step response, v(t) = V(1 - exp(-t/RC)).
+    import numpy as _np
+    Rv, Cv, V = 1e3, 1e-9, 1.0
+    tau = Rv * Cv
+    tend = 5 * tau
+
+    def rc():
+        c = SubCircuit()
+        c['vs'] = VS(1, gnd, v=V)
+        c['R'] = R(1, 2, r=Rv)
+        c['C'] = C(2, gnd, c=Cv)
+        return c
+
+    class ZeroSeed(ThetaIntegrator):
+        """theta with the OLD zero `iq` ring -- the prerequisite, negated."""
+        def needs_consistent_iq0(self):
+            return False
+
+    def order_of(mk):
+        errs = []
+        for N in (50, 100, 200):
+            c = rc()
+            tr_ = Transient(c, toolkit=circuit.numeric, integrator=mk(),
+                            reltol=1e-12)
+            res = tr_.solve(tend=tend, timestep=tend / N,
+                            x0=_np.zeros(c.n), fixed_timestep=True)
+            t = _np.asarray(res.v(2).x, dtype=float).ravel()
+            y = _np.asarray(res.v(2).y, dtype=float).ravel()
+            errs.append(abs(y[-1] - V * (1 - _np.exp(-t[-1] / tau))))
+        return _np.log2(errs[0] / errs[1]), _np.log2(errs[1] / errs[2]), errs
+
+    o1, o2, e = order_of(lambda: ThetaIntegrator(cbias=1e4))
+    assert 1.85 < o1 < 2.15 and 1.85 < o2 < 2.15, \
+        'theta must be second order, got %.2f then %.2f (errors %r)' % (o1, o2, e)
+    z1, z2, ze = order_of(lambda: ZeroSeed(cbias=1e4))
+    assert z1 < 1.4, \
+        'the zero seed should cost about a full order -- if it no longer does, ' \
+        'the consistent-iq0 machinery may be unnecessary (got %.2f, %r)' % (z1, ze)

@@ -959,6 +959,16 @@ class Transient(Analysis):
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
+        ## ⚠ A ZERO `iq` RING IS ONLY SAFE FOR A METHOD OPENED BY EULER, which
+        ## reads no past current.  A method that refuses that opener reads it on
+        ## step one, and zero is wrong there -- measured at a full order of
+        ## accuracy (see `Integrator.needs_consistent_iq0`).  Asked of the
+        ## method, so every existing integrator keeps the zero ring exactly.
+        if self.base_integrator.needs_consistent_iq0():
+            t0 = float(getattr(self.epar, 't', 0.0) or 0.0)
+            iq0 = -(np.asarray(self.cir.i(x, self.epar), dtype=float)
+                    + np.asarray(self.cir.u(t0, analysis='tran'), dtype=float))
+            self._iqlast = self.toolkit.array([iq0 for _ in range(hist_len)])
         self._dt_last = None
         self._dt_last2 = None
         ## Excursion-check running maxima are per-run state too.
@@ -2111,7 +2121,8 @@ class Transient(Analysis):
             h = self._dt
         q = self._q_at(x)
         h_last = self._dt_last if self._dt_last is not None else h
-        d_iq = self.active_integrator.companion_dh(q, self._qlast, h, h_last)
+        d_iq = self.active_integrator.companion_dh(q, self._qlast, h, h_last,
+                                                   self._iqlast)
         d_u = self.cir.dudt(t, self.epar, analysis=self.par.analysis)
         return self.toolkit.array(d_iq, dtype=float) + \
             self.toolkit.array(d_u, dtype=float)

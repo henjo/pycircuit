@@ -1741,6 +1741,7 @@ class PSS(Analysis):
     def _integrator_for(cls, method):
         from pycircuit.circuit.integrator import (EulerIntegrator,
                                                   TrapezoidalIntegrator,
+                                                  ThetaIntegrator,
                                                   Gear2Integrator)
         from pycircuit.circuit.integrator import (TRBDF2Integrator,
                                                   RadauIIA3Integrator,
@@ -1754,6 +1755,10 @@ class PSS(Analysis):
         table = {'euler': EulerIntegrator,
                  'trap': TrapezoidalIntegrator,
                  'trapezoidal': TrapezoidalIntegrator,
+                 ## `theta` is trapezoidal biased by `C h` -- see
+                 ## `ThetaIntegrator`. It takes the L-stable opener OUT, which
+                 ## is the one thing the other one-step LMMs cannot do.
+                 'theta': ThetaIntegrator,
                  'gear': Gear2Integrator,
                  'gear2': Gear2Integrator,
                  'trbdf2': TRBDF2Integrator,
@@ -1763,8 +1768,8 @@ class PSS(Analysis):
             return table[method]()
         except KeyError:
             raise ValueError(
-                "method must be 'euler', 'trap', 'gear', 'trbdf2', 'radau' "
-                "or 'esdirk43', not %r" % (method,))
+                "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
+                "'radau' or 'esdirk43', not %r" % (method,))
 
     ## Below this fraction of the seed, a solved period is the trivial
     ## root rather than an orbit.  Deliberately loose: a real fundamental
@@ -7213,11 +7218,11 @@ class PSS(Analysis):
         ## `ValueError` this raises.  Two tests caught it, both written for
         ## the class's earlier fall-through defects.
         method = getattr(self.par, 'method', 'euler')
-        if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2',
-                          'trbdf2', 'radau', 'esdirk43'):
+        if method not in ('euler', 'trap', 'trapezoidal', 'theta', 'gear',
+                          'gear2', 'trbdf2', 'radau', 'esdirk43'):
             raise ValueError(
-                "method must be 'euler', 'trap', 'gear', 'trbdf2', 'radau' "
-                "or 'esdirk43', not %r" % (method,))
+                "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
+                "'radau' or 'esdirk43', not %r" % (method,))
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,

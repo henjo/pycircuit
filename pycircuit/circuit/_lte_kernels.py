@@ -138,6 +138,43 @@ def trapezoidal_companion(q_curr, C_curr, q_prev, iq_prev, h):
     return 2.0 * (q_curr - q_prev) / h - iq_prev, 2.0 * C_curr / h
 
 
+def theta_companion(q_curr, C_curr, q_prev, iq_prev, h, theta):
+    """Theta-method companion current and equivalent conductance.
+
+    From ``(q_n - q_{n-1})/h = theta iq_n + (1-theta) iq_{n-1}``::
+
+        iq_n = (q_n - q_{n-1})/(theta h) - ((1-theta)/theta) iq_{n-1}
+
+    At ``theta = 1/2`` this IS :func:`trapezoidal_companion` -- the homogeneous
+    mode is ``-(1-theta)/theta = -1``, the undamped ``(-1)^n``.  For
+    ``theta > 1/2`` that mode has modulus ``(1-theta)/theta < 1``, which is the
+    whole point of the design (roadmap B2): it damps ``null(C)`` instead of
+    needing an L-stable opening step to annihilate it.
+    """
+    th = theta * h
+    return ((q_curr - q_prev) / th - ((1.0 - theta) / theta) * iq_prev,
+            C_curr / th)
+
+
+def theta_companion_dh(q_curr, q_prev, iq_prev, h, theta, cbias):
+    """``d/dh`` of :func:`theta_companion` WITH ``theta = 1/2 + cbias h``.
+
+    ⚠ ``theta`` ITSELF DEPENDS ON ``h``, so this is not the trapezoidal form
+    with a constant substituted -- both terms contribute::
+
+        d/dh [(dq)/(theta h)]        = -dq (1/2 + 2 c h) / (theta h)^2
+        d/dh [-((1-theta)/theta)]    = +c / theta^2
+
+    using ``d(theta h)/dh = 1/2 + 2 c h`` and
+    ``d/dh[(1-theta)/theta] = -c/theta^2``.  At ``cbias = 0`` the second term
+    vanishes and the first collapses to ``-2 dq/h^2`` --
+    :func:`trapezoidal_companion_dh` exactly.
+    """
+    th = theta * h
+    return (-(q_curr - q_prev) * (0.5 + 2.0 * cbias * h) / (th * th)
+            + (cbias / (theta * theta)) * iq_prev)
+
+
 def second_divided_difference(g_n, g_nm1, g_nm2, h1, h2):
     """Second divided difference of the companion current: ``q'''/2``.
 
