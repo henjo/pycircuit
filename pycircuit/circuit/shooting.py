@@ -5675,15 +5675,63 @@ class PSS(Analysis):
         `Geq` would divide out only one of those coefficients and mislabel
         the other two.
 
-        ⚠ Like `_C_at`, this syncs the device limiting state to the point first
-        -- see `_sync_limit_at` for the measurement that forced it.
+        ⚠ THIS GOES THROUGH PCNR WHEN THERE ARE JUNCTIONS, and the reason is
+        STATELESSNESS, not accuracy.  `pcnr.augmented_system` + `schur_reduce`
+        build `G` from an explicitly-passed `v_lim` instead of from the device's
+        stored one, so the answer depends on the POINT ALONE.  The `limit(x, x)`
+        route `_C_at` still uses does not: `limit` clamps relative to the STORED
+        `_vlim`, so it lands on the true point only when the previous evaluation
+        was already nearby.  Measured, varying the prior `_vlim` before
+        evaluating at a fixed point: PCNR's `J_eff` moves by 0.0, the limit-sync
+        `G` by up to 15.15.  It was right in the traversal only BY LOCALITY
+        (steps are small, so the prior state is always close) -- the same
+        accident `_begin_period` warns about when it insists the period map be a
+        function of `x0` alone, applied to its linearisation.
+
+        Numerically this changes NOTHING today: against a finite difference of
+        the discrete period map both routes give the same monodromy to every
+        printed digit (3.025e-09 radau / 2.358e-09 trbdf2, identical either
+        way).  It removes a latent order-dependence, and it is what lets the
+        transient and the monodromy share ONE limiting.
+
+        ⚠ `_C_at` CANNOT JOIN: PCNR re-stamps `i`/`G` at `v_lim` but leaves `q`
+        alone (`pcnr.py` treats the algebraic equations; diffusion charge is its
+        stated caveat), so the capacitance keeps the limit-sync.
         """
         tr = self._transient()
         xf = self._insert_refnode(x_reduced)
-        self._sync_limit_at(xf)
-        G = tr.cir.G(xf, tr.epar)
+        junctions = self._pcnr_junctions()
+        if not junctions:
+            ## no junction devices: nothing limits, so the plain read IS the
+            ## physical G and PCNR would only add an assembly for no reason.
+            self._sync_limit_at(xf)
+            G = tr.cir.G(xf, tr.epar)
+        else:
+            from pycircuit.circuit import pcnr as _pcnr
+            xfa = np.asarray(xf, dtype=float)
+            v_lim = _pcnr.v_lim_init(junctions, xfa)
+            g_mna, g_lim, J_mm, _J_ml, _J_lm, didv = _pcnr.augmented_system(
+                tr.cir, xfa, v_lim, junctions, tr.epar,
+                u_extra=0.0, dense_blocks=False, J_extra=0.0)
+            _f_eff, G = _pcnr.schur_reduce(
+                g_mna, g_lim, J_mm, junctions=junctions, didv=didv)
+            G = np.asarray(G)
         (G,) = remove_row_col((G,), self.irefnode, self.toolkit)
         return G
+
+    def _pcnr_junctions(self):
+        """The circuit's PCNR-participating devices, found once and cached.
+
+        `pcnr_devices` walks every element and rebuilds the node map, which is
+        far too much to repeat inside `_G_at` -- the monodromy calls it once per
+        stage per step per traversal.
+        """
+        junc = getattr(self, '_pcnr_junctions_cache', None)
+        if junc is None:
+            from pycircuit.circuit import pcnr as _pcnr
+            junc = _pcnr.pcnr_devices(self.cir)
+            self._pcnr_junctions_cache = junc
+        return junc
 
     def _traverse(self, x_in, T, times, hs, want_dT, open_at_x0=False):
         """One pass over the period, with the sensitivities accumulated.

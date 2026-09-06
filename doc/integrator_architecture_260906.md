@@ -362,15 +362,53 @@ Fix: `_sync_limit_at`, called by `_C_at`/`_G_at`. Regression: shooting 241 pass 
 `test_monodromy_matches_a_finite_difference_of_the_period_map`, **verified to fail (1.653e-03) with
 the fix neutered** — a test that passes both ways would prove nothing.
 
+### ⚠ RETRACTION — the "`trap` is off by 8.5e-3" finding does not exist
+
+An earlier revision of this document recorded, as a remaining gap, that `trap`'s monodromy was off
+by ~8.5e-3 against the FD reference on a purely linear circuit, and called it a FOURTH independent
+pointer at *make `x_0` the unknown*. **That was wrong, and the error was mine: I compared against a
+reference I had not shown to be the right map.**
+
+With a MANUFACTURED opening (`x0_unknown=False`, the default for a one-step method) the shooting
+unknown is `x_in`, but the monodromy is about the POST-manufacturing state. My forward map started
+at `x_in` and skipped the manufacturing step, so it was a **different map** — its periodicity error
+was **5.13**. I had checked periodicity for `radau`/`trbdf2` and not for `trap`, and the unchecked
+case is the one that bit. Re-measured in the formulation whose map IS a function of the state,
+`trap` with `x0_unknown=True` gives periodicity 4.4e-16 and **RELDIFF 4.4e-10** — correct.
+
+The rule this cost: **assert the reference map is periodic at the solution BEFORE reading anything
+into a disagreement.** That assertion is now in the test, with this episode named in its docstring.
+It also means the `x_0`-as-unknown case gained nothing here; the three prior findings stand alone.
+
+### All four period-map families now FD-verified, and `_G_at` shares PCNR's limiting
+
+`gear` — never checked before — is the multistep **2m PAIR** map (`solved_history`), seeded by
+`_install_history(x0, xm1, hs[0], h_prev=hs[-1])`, with `matvec` layout
+`v = (v_0, v_{-1}) -> (P_last v, P_prev v)`. Extending the harness to perturb the pair closes it.
+Measured against the FD reference, junction active:
+
+| family | method | RELDIFF |
+|---|---|---|
+| `solved_history` | gear | 4.3e-09 |
+| `plain` | trap (`x0_unknown=True`) | 4.4e-10 |
+| `full` | radau | 3.0e-09 |
+| `dirk` | trbdf2 | 2.4e-09 |
+
+`_G_at` now builds `G` through `pcnr.augmented_system` + `schur_reduce` from an explicitly passed
+`v_lim` whenever the circuit has junctions (`_pcnr_junctions()` caches the device scan), so the
+transient and the monodromy share ONE limiting. **What that buys is statelessness, not accuracy:**
+varying the device's prior `_vlim` before evaluating at a fixed point moves PCNR's `J_eff` by
+**0.0** and the `limit(x,x)` route's `G` by up to **15.15** — the old route was right in the
+traversal only BY LOCALITY. Monodromy numbers are identical either way, and the suite cost nothing
+measurable (269.8 s vs 274.6 s).
+
 ### Remaining gaps (honest)
 
-- ⚠ **`trap`'s monodromy is off by ~8.5e-3 against the same FD reference — ON A PURELY LINEAR
-  CIRCUIT** (no junction at all), so it is NOT this defect and NOT limiting-related; `radau` sits at
-  1e-10 on the same circuit. It is structural, in the trapezoidal period map's opening/history seam.
-  This is a FOURTH independent finding pointing at the recorded fix — *make `x_0` the unknown* — and
-  the cleanest one yet, because a linear circuit removes every other explanation. `gear` could not
-  be checked with this harness: as a multistep method its period map carries pair history (width
-  `2m`), so the FD needs the pair state, not `x0` alone. Both are follow-up work, not folded in here.
+- ⚠ **`_C_at` keeps `_sync_limit_at` and is NOT pinned by a test.** PCNR re-stamps `i`/`G` at
+  `v_lim` but leaves `q` alone (`pcnr.py` treats the algebraic equations; diffusion charge is its
+  stated caveat), so the capacitance cannot join. Neutering that sync alone leaves the FD test
+  passing — this diode's charge does not read `_vlim` — so it is kept as correct-in-principle
+  insurance for a device whose charge does, and should be treated as unverified until one is used.
 - **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
   (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
 - **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK
