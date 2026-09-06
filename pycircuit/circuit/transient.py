@@ -2353,13 +2353,12 @@ class Transient(Analysis):
         complex LU) is the efficiency follow-up documented on
         :class:`RadauIIA3Integrator`, needing the complex ``klu_z_*`` binding.
 
-        Fixed-step only: adaptive step control would need the embedded 5(3)
-        estimate, which is the one deferred TR-BDF2-parity piece (see the note
-        at the end of this method); ``_solve`` refuses the adaptive grid for
-        Radau rather than fall into the LMM controller.  Returns
-        ``(x, None, J, None)`` like `solve_timestep`, with ``J`` the last-stage
-        operator, and leaves ``_iq``/``_q_cache`` set so the history push after
-        the step is consistent.
+        When ``_radau_want_est`` is set (by :meth:`_run_radau_adaptive`) it also
+        leaves the filtered embedded 5(3) error estimate in ``_radau_est`` (see
+        :meth:`_radau_error_estimate`); the fixed-step path does not set the flag
+        and pays nothing for it.  Returns ``(x, None, J, None)`` like
+        `solve_timestep`, with ``J`` the last-stage operator, and leaves
+        ``_iq``/``_q_cache`` set so the history push after the step is consistent.
         """
         integ = self.base_integrator
         Amat = np.array(integ.A, dtype=float)
@@ -2463,29 +2462,67 @@ class Transient(Analysis):
         self._radau_Y = (Y1, Y2, Y3)
         J = C3 + a33 * h * G3
 
-        ## THE EMBEDDED 5(3) ERROR ESTIMATE is the one TR-BDF2-parity piece not
-        ## built.  Hairer & Wanner's Radau5 estimator forms a lower-order
-        ## embedded solution `yhat` from the stage derivatives plus a
-        ## fictitious explicit stage `f(y0)`, filtered by the real factor
-        ## `(gamma_r/h C + G)^{-1}` for stiff robustness.  The FILTER is known
-        ## (it is the transform's real factor); the EMBEDDED WEIGHTS are a
-        ## specific published constant (the radau5 `dd` vector) with a free
-        ## parameter fixed for L-stability, and reconstructing them from memory
-        ## risks shipping a wrong instrument -- so this is deferred rather than
-        ## guessed, and would be added the same way TR-BDF2's 2(3) estimate was:
-        ## derive, then VALIDATE the estimate/true-LTE ratio -> 1 and the
-        ## adaptive-reltol gate before trusting it.  The fixed-step path never
-        ## sets the flag, so it pays nothing; the whole PSS stack (monodromy,
-        ## the shooting Newton, phase noise, covariance, pnoise) rides on the
-        ## fixed grid and is complete.
+        ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner Vol II, IV.8, the
+        ## radau5 estimator), gated so the fixed-step path pays nothing.  See
+        ## :meth:`_radau_error_estimate` for the construction and its gates.
         if getattr(self, '_radau_want_est', False):
-            raise NotImplementedError(
-                'Radau IIA(3) adaptive step control is not built: its embedded '
-                '5(3) error estimate (the radau5 dd weights) is the one '
-                'TR-BDF2-parity piece deferred rather than reconstructed '
-                'unvalidated. Run Radau fixed-step (fixed_timestep=True), or '
-                'use TR-BDF2 for an adaptive stage method.')
+            self._radau_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
+
+    def _radau_error_estimate(self, xn, Y, tn, h, src, arr):
+        """The filtered embedded 5(3) error estimate for one Radau IIA(3) step
+        (Hairer & Wanner Vol II, IV.8 -- the radau5 estimator), in STATE units.
+
+        A lower-order (order 3) embedded solution ``yhat`` differs from the
+        order-5 step by a combination of the three stage INCREMENTS
+        ``Z_i = Y_i - x_n`` plus a fictitious explicit stage ``f(x_n)``:
+
+            F1  = (dd1 Z1 + dd2 Z2 + dd3 Z3) / h            (state/time)
+            rhs = C(x_n) F1 + f0,   f0 = -(i(x_n) + u(t_n)) (charge-rate)
+            est = ((gamma_r/h) C(x_n) + G(x_n))^{-1} rhs     (state)
+
+        with the radau5 constants ``dd1 = -(13+7 sqrt6)/3``,
+        ``dd2 = (-13+7 sqrt6)/3``, ``dd3 = -1/3`` and ``gamma_r`` the real
+        eigenvalue of ``A^{-1}`` (``RadauIIA3Integrator.GAMMA_REAL``).
+
+        ⚠ THE FILTER IS WHAT MAKES IT STIFF-ROBUST, and it is the SAME real
+        factor the cost transform uses.  An unfiltered embedded difference
+        grows like ``|lambda h|`` on a stiff mode while the true error is
+        damped to zero by L-stability, forcing the controller to crawl through
+        exactly the transient the method exists to step over; the real-factor
+        inverse maps it back to a bounded state error.  Solved in the
+        reference-removed space (the full factor is singular on that row).
+
+        ⚠ THE dd WEIGHTS WERE VALIDATED, NOT TRUSTED (roadmap 0j).  On the
+        smooth RC the estimate scales as ``h^4`` (the order-3 embedded), and
+        the adaptive controller it drives spends more steps and lands closer
+        as ``reltol`` tightens -- both measured before this shipped.
+        """
+        import math
+        integ = self.base_integrator
+        gamma_r = integ.GAMMA_REAL
+        s6 = math.sqrt(6.0)
+        dd1 = -(13.0 + 7.0 * s6) / 3.0
+        dd2 = (-13.0 + 7.0 * s6) / 3.0
+        dd3 = -1.0 / 3.0
+        epar = self.epar
+        iref = self.irefnode
+        tk = self.toolkit
+        Y1, Y2, Y3 = Y
+        xn = np.asarray(xn, dtype=float)
+        Z1 = np.asarray(Y1, dtype=float) - xn
+        Z2 = np.asarray(Y2, dtype=float) - xn
+        Z3 = np.asarray(Y3, dtype=float) - xn
+        F1 = (dd1 * Z1 + dd2 * Z2 + dd3 * Z3) / h
+        Cn = arr(self.cir.C(xn, epar))
+        Gn = arr(self.cir.G(xn, epar))
+        f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
+        rhs = np.asarray(Cn @ F1) + np.asarray(f0)
+        real_factor = (gamma_r / h) * np.asarray(Cn) + np.asarray(Gn)
+        (Rf,) = remove_row_col((real_factor,), iref, tk)
+        rhs_r = tk.concatenate((rhs[:iref], rhs[iref + 1:]))
+        est_r = self.toolkit.linearsolver(Rf, rhs_r)
+        return self.toolkit.insert(est_r, iref, 0.0)
 
     def solve_timestep(self, x0, t, provided_function=None):
         from pycircuit.circuit.integrator import TRBDF2Integrator, RadauIIA3Integrator
@@ -2872,20 +2909,17 @@ class Transient(Analysis):
                 x, n, X, timelist, tend, dt, max_step, abstol,
                 provided_function, _t_run_start)
 
-        ## Radau IIA(3): fixed-step only for now.  Its coupled stage step is
-        ## built and validated across the whole PSS stack (which runs on an
-        ## imposed grid), but the embedded 5(3) estimate that would drive step
-        ## control is the one deferred piece (see `_solve_timestep_radau`), so
-        ## refuse the adaptive grid clearly rather than fall into the LMM
-        ## controller, whose divided-difference LTE Radau does not provide.
+        ## Radau IIA(3) adaptive: its own loop, driven by the embedded 5(3)
+        ## estimate, reached only for the non-fixed grid (fixed step runs the
+        ## ordinary loop below, which dispatches the coupled stage step).  Like
+        ## TR-BDF2 it is self-starting, so it does not use the LMM controller's
+        ## divided-difference LTE (which Radau does not provide).
         from pycircuit.circuit.integrator import RadauIIA3Integrator
         if isinstance(self.base_integrator, RadauIIA3Integrator) \
                 and not fixed_timestep:
-            raise NotImplementedError(
-                'Radau IIA(3) adaptive step control is not built (its embedded '
-                '5(3) estimate is deferred). Pass fixed_timestep=True to run '
-                'Radau on the caller\'s grid, or use TR-BDF2 for an adaptive '
-                'stage method.')
+            return self._run_radau_adaptive(
+                x, n, X, timelist, tend, dt, max_step, abstol,
+                provided_function, _t_run_start)
 
         was_break_step = False
         while t < tend:
@@ -3335,6 +3369,88 @@ class Transient(Analysis):
                 dt = dt * min(1.0 / K, max(K, grow))
         finally:
             self._trbdf2_want_est = False
+
+        X = tk.array(X).T
+        timelist = tk.array([0.0] + timelist)
+        self.statistics.total_seconds = time.perf_counter() - _t_run_start
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=timelist,
+                                    sweep_label='time', sweep_unit='s')
+        outputstep = self.par.outputstep
+        if outputstep is not None:
+            _grid, _Xg = resample_uniform(self.result.sweep_values,
+                                          self.result.x, step=outputstep)
+            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
+                                        sweep_values=_grid,
+                                        sweep_label='time', sweep_unit='s')
+        self.result.statistics = self.statistics
+        return self.result
+
+    def _run_radau_adaptive(self, x, n, X, timelist, tend, dt, max_step,
+                            abstol, provided_function, _t_run_start):
+        """Adaptive Radau IIA(3), driven by the embedded 5(3) estimate.
+
+        The Radau analogue of :meth:`_run_trbdf2_adaptive`: self-starting, so
+        its own loop rather than the LMM controller (Radau has no
+        divided-difference LTE).  The per-step estimate is the filtered
+        ``_radau_est`` the step leaves (see :meth:`_radau_error_estimate`); it
+        is the order-3 embedded, so the step exponent is ``1/(3+1) = 1/4``
+        (the peer's ``1/4``).  Accept at ``err <= 1``, halve on a
+        non-convergent Newton, and clamp per-step growth/shrink so one
+        anomalous estimate cannot swing the step wildly.  No ``_push_history``:
+        Radau reads no charge rings.
+        """
+        tk = self.toolkit
+        iref = self.irefnode
+        reltol = self.par.reltol
+        minstep = self.par.minstep
+        SAFETY, K, ORDER = 0.9, 0.5, 3
+        keep = [i for i in range(n) if i != iref]
+        abstol = tk.array(abstol)
+        self._radau_want_est = True
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        MAX_REJECT = 12
+        t = 0.0
+        try:
+            while t < tend:
+                dt = min(dt, max_step, tend - t)
+                reject = 0
+                while True:
+                    self._dt = dt
+                    try:
+                        xnew, _f, _J, _ = self.solve_timestep(
+                            x, t + dt, provided_function=provided_function)
+                    except NoConvergenceError:
+                        self.statistics.rejected_steps += 1
+                        reject += 1
+                        dt = 0.5 * dt
+                        if dt < minstep:
+                            raise
+                        continue
+                    est = tk.array(self._radau_est)
+                    wt = reltol * tk.abs(xnew) + abstol
+                    ek = tk.array([est[i] / wt[i] for i in keep])
+                    err = float((tk.sum(ek * ek) / len(keep)) ** 0.5)
+                    if err <= 1.0 or reject >= MAX_REJECT or dt <= minstep:
+                        break
+                    self.statistics.rejected_steps += 1
+                    reject += 1
+                    dt = dt * max(K, SAFETY * err ** (-1.0 / (ORDER + 1)))
+                ## accept
+                t = t + dt
+                x = xnew
+                X.append(copy(x))
+                timelist.append(t)
+                self.statistics.accepted_steps += 1
+                self.statistics._note_step(dt)
+                if hasattr(self.cir, 'accept_step'):
+                    self.cir.accept_step(t, x, self.epar)
+                ## propose the next step from the same estimate
+                grow = SAFETY * (err if err > 1e-16 else 1e-16) ** (
+                    -1.0 / (ORDER + 1))
+                dt = dt * min(1.0 / K, max(K, grow))
+        finally:
+            self._radau_want_est = False
 
         X = tk.array(X).T
         timelist = tk.array([0.0] + timelist)

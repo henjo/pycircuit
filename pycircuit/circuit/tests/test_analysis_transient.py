@@ -870,3 +870,73 @@ def test_radau_matches_the_analytic_rc_step_at_fifth_order():
     for i in range(1, len(errs)):
         assert errs[i - 1] / errs[i] > 20.0, \
             'Radau IIA(3) order is not 5: errors %s' % errs
+
+
+def test_radau_embedded_estimate_is_order_three_and_drives_step_control():
+    """The embedded 5(3) estimate is a well-formed order-3 estimate (its
+    magnitude falls as O(h^4)) and it drives adaptive step control.
+
+    Two independent references, neither of which the estimator can influence:
+
+    (1) ORDER OF THE ESTIMATE.  On a smooth RC driven by a sinusoid (a
+        consistent initial condition, so no opening transient contaminates the
+        first step) the single-step estimate at the capacitive node falls as
+        `h^4` -- ratio -> 16 per halving.  This is what validates the radau5
+        `dd` weights: a wrong lower-order construction would fall as `h^3`
+        (ratio 8) or slower.  A step source from rest is deliberately NOT used
+        -- its 0->V jump at the source node is a real inconsistency the
+        estimate correctly flags, which would mask the order.
+
+    (2) STEP CONTROL BINDS.  On a diode rectifier (nonlinear, so accuracy
+        actually costs steps) the accepted-step count rises monotonically as
+        `reltol` tightens across six decades -- the estimate is steering.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) the estimate falls as h^4 on a smooth RC (consistent IC at rest)
+    def rc():
+        c = SubCircuit(); c.add_node('a'); c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=200.0)
+        c['R'] = R('a', 'b', r=1e4); c['C'] = C('b', gnd, c=1e-6)
+        return c
+    ests = []
+    for h in (1e-3, 5e-4, 2.5e-4, 1.25e-4):
+        c = rc()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=RadauIIA3Integrator())
+        tr._begin_run(np.zeros(c.n), c.n)
+        tr._radau_want_est = True
+        tr._dt = h
+        tr.solve_timestep(np.zeros(c.n), h)
+        ib = c.get_node_index('b')
+        ests.append(abs(float(np.asarray(tr._radau_est, dtype=float)[ib])))
+    ## asymptotic ratio -> 16 (h^4); require the finest > 10 to separate it
+    ## cleanly from an order-2 (h^3, ratio 8) construction
+    assert ests[-2] / ests[-1] > 10.0, \
+        'radau embedded estimate is not O(h^4): %s' % ests
+
+    ## (2) step control binds on a nonlinear circuit
+    def rectifier():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    def nsteps(rtol):
+        c = rectifier()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=RadauIIA3Integrator(), reltol=rtol)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=5e-6, timestep=5e-6 / 50, x0=np.zeros(c.n))
+        return res.statistics.accepted_steps
+
+    counts = [nsteps(rt) for rt in (1e-2, 1e-4, 1e-6)]
+    for a, b in zip(counts, counts[1:]):
+        assert b > a, \
+            'radau accepted-step count must rise as reltol tightens: %s' % counts
