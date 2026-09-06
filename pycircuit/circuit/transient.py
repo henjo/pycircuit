@@ -2348,10 +2348,17 @@ class Transient(Analysis):
             F_i(Y) = q(Y_i) - q(x_n) - h sum_j A_ij K_j = 0,   K_j = -(i(Y_j)+u(t_j))
 
         with block Jacobian ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)`` --
-        exactly ``(I3 (x) C + h A (x) G)`` in the linear case.  This is the
-        correct coupled solve; the ``A^{-1}``-eigenbasis transform (1 real + 1
-        complex LU) is the efficiency follow-up documented on
-        :class:`RadauIIA3Integrator`, needing the complex ``klu_z_*`` binding.
+        exactly ``(I3 (x) C + h A (x) G)`` in the linear case.  This dense
+        coupled solve is the DEFAULT and the correctness reference.
+
+        ⚠ THE COST TRANSFORM is the fast path, opt-in via ``radau_transform``
+        (or ``self._radau_use_transform``).  It block-diagonalises the coupled
+        system through ``eig(A^{-1})`` into one REAL and one COMPLEX `m x m`
+        solve (see :meth:`_solve_timestep_radau_transformed`) -- an
+        ``O((3m)^3)`` dense solve becomes two sparse ones.  It is SIMPLIFIED
+        Newton (one Jacobian per step), so on a strongly nonlinear step it can
+        fail to converge; then this falls back to the dense full-Newton path
+        below, so the answer is never wrong, only occasionally slower.
 
         When ``_radau_want_est`` is set (by :meth:`_run_radau_adaptive`) it also
         leaves the filtered embedded 5(3) error estimate in ``_radau_est`` (see
@@ -2360,6 +2367,18 @@ class Transient(Analysis):
         `solve_timestep`, with ``J`` the last-stage operator, and leaves
         ``_iq``/``_q_cache`` set so the history push after the step is consistent.
         """
+        if getattr(self, '_radau_use_transform',
+                   getattr(self.par, 'radau_transform', False)):
+            from pycircuit.circuit.nrsolver import NoConvergenceError
+            try:
+                return self._solve_timestep_radau_transformed(
+                    x0, t, provided_function)
+            except NoConvergenceError:
+                ## simplified Newton stalled on this (nonlinear) step -- fall
+                ## through to the dense full-Newton solve, which is the
+                ## correctness reference and always converges here.
+                self._radau_transform_fallbacks = getattr(
+                    self, '_radau_transform_fallbacks', 0) + 1
         integ = self.base_integrator
         Amat = np.array(integ.A, dtype=float)
         cvec = np.array(integ.C, dtype=float)
@@ -2523,6 +2542,177 @@ class Transient(Analysis):
         rhs_r = tk.concatenate((rhs[:iref], rhs[iref + 1:]))
         est_r = self.toolkit.linearsolver(Rf, rhs_r)
         return self.toolkit.insert(est_r, iref, 0.0)
+
+    def _radau_transform_matrices(self):
+        """``(lam, V, Tinv)`` for the Radau cost transform, cached.
+
+        ``A^{-1} = V diag(lam) V^{-1}`` with the eigenvalues ORDERED as
+        ``[gamma_r (real), alpha + i beta, alpha - i beta]`` -- the real one
+        first, then the pair with positive imaginary part, then its conjugate.
+        Since ``A`` is real, ``V[:,0]`` is real and ``V[:,1] = conj(V[:,2])``,
+        so the conjugate stage is free and the transform advances with one real
+        and one complex ``m x m`` solve.
+        """
+        cached = getattr(self, '_radau_Tmats', None)
+        if cached is not None:
+            return cached
+        A = np.array(self.base_integrator.A, dtype=float)
+        Ainv = np.linalg.inv(A)
+        lam, V = np.linalg.eig(Ainv)
+        order = np.argsort(np.abs(lam.imag))
+        ir = order[0]
+        rest = [i for i in range(3) if i != ir]
+        ip = rest[0] if lam[rest[0]].imag > 0 else rest[1]
+        ic = rest[1] if ip == rest[0] else rest[0]
+        idx = [ir, ip, ic]
+        lam = lam[idx]
+        V = V[:, idx]
+        Tinv = np.linalg.inv(V)
+        cached = (lam, V, Tinv)
+        self._radau_Tmats = cached
+        return cached
+
+    def _radau_complex_solve(self, A, b):
+        """Solve the complex system ``A x = b`` for the transform's complex
+        stage, through :class:`ComplexKLUSolver` (cached) with a dense fallback
+        when libklu is absent."""
+        zs = getattr(self, '_radau_zsolver', 'unset')
+        if zs == 'unset':
+            try:
+                from pycircuit.circuit.linearsolver import ComplexKLUSolver
+                zs = ComplexKLUSolver()
+            except ImportError:
+                zs = None
+            self._radau_zsolver = zs
+        if zs is not None:
+            return zs.solve(A, b)
+        return np.linalg.solve(np.asarray(A, dtype=complex), np.asarray(b))
+
+    def _radau_transform_solve(self, R3, Cr, Gr, h):
+        """One transformed coupled solve: ``dY = (I3 (x) C + h A (x) G)^{-1}
+        (-R3)`` via the ``A^{-1}`` eigenbasis, returning the reduced ``3m``
+        update.
+
+        Multiplying the coupled system by ``(A^{-1} (x) I)/h`` and
+        diagonalising ``A^{-1} = V Lam V^{-1}`` decouples it into
+        ``(lam_k C/h + G) w_k = rhs_k`` with
+        ``rhs = -(Lam V^{-1} (x) I)/h R3``.  The real ``k=0`` block is a real
+        solve; the ``k=1`` block a complex solve; ``k=2`` is its conjugate
+        (free).  Then ``dY_i = V[i,0] w0 + 2 Re(V[i,1] w1)`` (real)."""
+        lam, V, Tinv = self._radau_transform_matrices()
+        m = Cr.shape[0]
+        R3 = np.asarray(R3, dtype=float)
+        F = (R3[0:m], R3[m:2 * m], R3[2 * m:3 * m])
+        P = (np.diag(lam) @ Tinv) / h
+        rhs0 = -(P[0, 0] * F[0] + P[0, 1] * F[1] + P[0, 2] * F[2])
+        rhs1 = -(P[1, 0] * F[0] + P[1, 1] * F[1] + P[1, 2] * F[2])
+        Cr = np.asarray(Cr, dtype=float)
+        Gr = np.asarray(Gr, dtype=float)
+        real_factor = (lam[0].real / h) * Cr + Gr
+        w0 = np.asarray(self._get_linearsolver().solve(
+            real_factor, np.real(rhs0), self.toolkit), dtype=float)
+        comp_factor = (lam[1] / h) * Cr + Gr
+        w1 = np.asarray(self._radau_complex_solve(comp_factor, rhs1),
+                        dtype=complex)
+        dY = [V[i, 0].real * w0 + 2.0 * np.real(V[i, 1] * w1) for i in range(3)]
+        return np.concatenate(dY)
+
+    def _solve_timestep_radau_transformed(self, x0, t, provided_function=None):
+        """One Radau IIA(3) step by the COST TRANSFORM -- simplified Newton
+        (one Jacobian, evaluated at ``x_n``) with each iteration's coupled
+        solve done through the ``A^{-1}`` eigenbasis: one real and one complex
+        ``m x m`` solve (:meth:`_radau_transform_solve`) instead of a dense
+        ``3m`` factorisation.  The residual is the FULL per-stage residual, so
+        the root is the same as the dense path; only the Jacobian is frozen.
+
+        Raises ``NoConvergenceError`` if the frozen Jacobian does not carry the
+        iteration to tolerance in ``maxiter`` steps -- the caller
+        (:meth:`_solve_timestep_radau`) then falls back to the dense
+        full-Newton solve.  Sets the same downstream state (``_radau_Y``,
+        ``_iq``, ``_q_cache``, ...) so every consumer is identical to the dense
+        path."""
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        integ = self.base_integrator
+        Amat = np.array(integ.A, dtype=float)
+        cvec = np.array(integ.C, dtype=float)
+        h = self._dt
+        tn = t - h
+        epar = self.epar
+        ana = self.par.analysis
+        tk = self.toolkit
+        iref = self.irefnode
+        arr = lambda v: tk.array(v, dtype=float)
+
+        def src(tt):
+            u = arr(self.cir.u(tt, epar, analysis=ana))
+            if provided_function is not None:
+                u = u + provided_function(tt)
+            return u
+
+        def red(v):
+            return np.concatenate((np.asarray(v)[:iref], np.asarray(v)[iref + 1:]))
+
+        xn = x0
+        qn = arr(self.cir.q(xn, epar))
+        tstage = [tn + cvec[i] * h for i in range(3)]
+
+        ## the FROZEN Jacobian pieces, at x_n, reduced -- the whole point:
+        ## factored implicitly once per step and reused every iteration
+        Cn = arr(self.cir.C(xn, epar))
+        Gn = arr(self.cir.G(xn, epar))
+        (Cr,) = remove_row_col((Cn,), iref, tk)
+        (Gr,) = remove_row_col((Gn,), iref, tk)
+        Cr = np.asarray(Cr, dtype=float)
+        Gr = np.asarray(Gr, dtype=float)
+
+        Y = [np.array(xn, dtype=float) for _ in range(3)]
+        m = Cr.shape[0]
+        reltol = self.par.reltol
+        abstol = float(self.par.vabstol)
+        maxit = int(self.par.maxiter)
+        converged = False
+        for _ in range(maxit):
+            R = np.empty(3 * m)
+            for i in range(3):
+                qi = arr(self.cir.q(Y[i], epar))
+                Ki = [-(arr(self.cir.i(Y[j], epar)) + src(tstage[j]))
+                      for j in range(3)]
+                Fi = qi - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
+                R[i * m:(i + 1) * m] = red(Fi)
+            dY = self._radau_transform_solve(R, Cr, Gr, h)
+            scale = 0.0
+            for i in range(3):
+                di = dY[i * m:(i + 1) * m]
+                Y_prev = Y[i]
+                Y_trial = Y_prev + tk.insert(di, iref, 0.0)
+                Y_new = self.cir.limit(Y_trial, Y_prev, epar)
+                Y[i] = Y_new
+                step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
+                scale = max(scale, np.max(np.abs(step_i)))
+            ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
+            if scale <= reltol * ynorm + abstol:
+                converged = True
+                break
+        if not converged:
+            raise NoConvergenceError(
+                'Radau IIA(3) transform (simplified Newton) did not converge')
+
+        Y1, Y2, Y3 = Y
+        qY3 = self.cir.q(Y3, epar)
+        self._q_cache = (Y3, qY3)
+        self._iq = -(arr(self.cir.i(Y3, epar)) + src(t))
+        C3 = arr(self.cir.C(Y3, epar))
+        G3 = arr(self.cir.G(Y3, epar))
+        a33 = Amat[2, 2]
+        self._Cmat = C3
+        self._Geq = a33 * h * G3
+        self._effective_method = 'RadauIIA3Integrator'
+        self._companion_coeffs = None
+        self._radau_Y = (Y1, Y2, Y3)
+        J = C3 + a33 * h * G3
+        if getattr(self, '_radau_want_est', False):
+            self._radau_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
+        return Y3, None, J, None
 
     def solve_timestep(self, x0, t, provided_function=None):
         from pycircuit.circuit.integrator import TRBDF2Integrator, RadauIIA3Integrator

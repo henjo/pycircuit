@@ -940,3 +940,67 @@ def test_radau_embedded_estimate_is_order_three_and_drives_step_control():
     for a, b in zip(counts, counts[1:]):
         assert b > a, \
             'radau accepted-step count must rise as reltol tightens: %s' % counts
+
+
+def test_radau_cost_transform_matches_the_dense_coupled_solve():
+    """The Radau cost transform (opt-in) gives the SAME step as the dense
+    coupled solve -- machine precision on a linear circuit, Newton tolerance on
+    a nonlinear one -- and falls back to the dense full-Newton path when its
+    simplified Newton stalls.
+
+    The transform block-diagonalises the coupled 3m solve through eig(A^{-1})
+    into one real and one complex m x m solve (via ComplexKLUSolver when libklu
+    is present, else a dense complex fallback), so an O((3m)^3) dense solve
+    becomes two sparse ones.  It is only an efficiency path: it must not change
+    the answer, which is what this pins.
+    """
+    import warnings
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+
+    def run(build, transform, tend, dt):
+        c = build()
+        tr = Transient(c, toolkit=circuit.numeric,
+                       integrator=RadauIIA3Integrator(), reltol=1e-10)
+        tr._radau_use_transform = transform
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=tend, timestep=dt, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        return (np.asarray(res.x, dtype=float),
+                getattr(tr, '_radau_transform_fallbacks', 0))
+
+    ## (1) linear RC ladder: the two paths agree to machine precision, and the
+    ## simplified Newton never has to fall back (constant Jacobian)
+    def ladder():
+        c = SubCircuit(); c['vs'] = VSin('n0', gnd, va=1.0, freq=1e3)
+        for k in range(6):
+            c['R%d' % k] = R('n%d' % k, 'n%d' % (k + 1), r=1e3)
+            c['C%d' % k] = C('n%d' % (k + 1), gnd, c=1e-9)
+        return c
+    xd, _ = run(ladder, False, 2e-4, 2e-4 / 20)
+    xt, fb = run(ladder, True, 2e-4, 2e-4 / 20)
+    assert np.linalg.norm(xd - xt) / np.linalg.norm(xd) < 1e-12, \
+        'radau transform disagrees with the dense solve on a linear circuit'
+    assert fb == 0, 'the linear step should never fall back: %d' % fb
+
+    ## (2) diode mixer: nonlinear, so some steps' simplified Newton stalls and
+    ## falls back -- the answer must still match the dense path to Newton tol
+    def mixer():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+    xd2, _ = run(mixer, False, 3e-6, 3e-6 / 160)
+    xt2, fb2 = run(mixer, True, 3e-6, 3e-6 / 160)
+    assert np.linalg.norm(xd2 - xt2) / max(np.linalg.norm(xd2), 1e-30) < 1e-9, \
+        'radau transform disagrees with the dense solve on the diode mixer'
+    ## the mixer's harmonics must be present (the transform is not silently
+    ## dropping the nonlinearity the way the un-limited Newton once did)
+    v2 = xt2[mixer().get_node_index(2)][-160:]
+    Vh = np.fft.rfft(v2) / len(v2)
+    assert abs(Vh[0]) > 1e-3 and abs(Vh[2]) > 1e-3, \
+        'radau transform lost the mixer harmonics: %s' % np.abs(Vh[:4])
