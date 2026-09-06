@@ -2577,8 +2577,37 @@ exact answers into `RuntimeError` at small offsets. All PAC solves now judge by 
 a genuine failure still fails and quotes it, because near a harmonic the operator really is
 near-singular and no tolerance helps.
 
-**Still unbuilt:** the AM/PM *noise* split, which needs the sideband **correlation** rather
-than a transfer pair, and carries the free LTI invariant (AM = PM exactly).
+⚠ **THE AM/PM NOISE SPLIT IS BUILT 2026-09-06** — `PAC.am_pm_noise(pss, freq, output, carrier)`,
+returning `(S_am, S_pm, bands)`. It is NOT `|m_am|^2` from `am_pm`: that is the transfer pair for
+a deterministic input, and noise asks whether the two sidebands are CORRELATED.
+
+**The band bookkeeping is the derivation.** `adjoint_sideband_row(pss, g, output, l)` is the
+coefficient at output `g + l f0` for a unit source at `g`, so a REAL noise band whose positive
+component is at `g = freq + p f0` reaches the UPPER output at `+g` through `l = carrier - p` and
+the LOWER at `-g` through `l = carrier + p` (a real process has `N(-g) = conj(N(g))`, and that
+shared realisation IS the correlation). Contributions from one band combine coherently, different
+`p` sum in power. ⚠ `am_pm` is exactly the `p = 0` term of this sum.
+
+⚠ **THE GATE IS AN IDENTITY, NOT A TOLERANCE.** `pnoise` at the upper sideband folds precisely
+those bands and at the lower precisely their negatives, so
+`S_am + S_pm == pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)` exactly (no cross term
+survives `|a+c|^2 + |a-c|^2`). Measured residual **9.0e-3 -> 3.3e-11** as the sideband count goes
+4 -> 64 — it converges away, which a wrong pairing would not.
+
+⚠⚠ **AND THE IDENTITY ALONE IS NOT A SUFFICIENT GATE**: returning HALF the total in each of AM and
+PM satisfies it exactly while computing nothing. The test therefore also requires the split to be
+NON-DEGENERATE (measured `S_pm/S_am = 1.42`), since equal AM and PM is precisely the
+uncorrelated-sideband answer. Both that neuter and a wrong band pairing are verified to fail.
+
+⚠ **The "free LTI invariant (AM = PM exactly)" recorded here is NOT what gates it.** It is the
+statement about narrowband noise through a time-INVARIANT system; a circuit with a periodic
+operating point has no such limit to take on this path, so the identity above is the gate that was
+actually available. Test:
+`test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity`.
+
+⚠ The autonomous caveat above applies unchanged: on a free-running oscillator the sideband rows
+come back at ~1e-12 for reasons not established, so do not read an oscillator AM/PM MAGNITUDE from
+this. The driven case is what it is built and gated for.
 
 **Gate:** none needed for AM/PM — it was a basis change on tested output. The others are
 interface decisions, not measurements.

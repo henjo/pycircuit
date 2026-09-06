@@ -13600,3 +13600,99 @@ def test_no_limiter_in_the_tree_has_a_charge_that_reads_its_limiting_state():
     assert dC == 0.0 and dq == 0.0, \
         'a limiter whose CHARGE reads its stored state now exists (dC=%.2e, ' \
         'dq=%.2e) -- `_C_at` needs its `_sync_limit_at` back' % (dC, dq)
+
+
+def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
+    """`PAC.am_pm_noise` splits output noise into AM and PM parts.
+
+    ⚠ THE GATE IS AN IDENTITY, NOT A TOLERANCE.  `pnoise` at the upper sideband
+    folds exactly the bands `g = freq + p f0`, and at the lower exactly their
+    negatives, so
+
+        S_am + S_pm  ==  pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)
+
+    because `|a+c|^2 + |a-c|^2 = 2|a|^2 + 2|c|^2` leaves no cross term.  A
+    pairing error in the band bookkeeping -- which sideband index reaches which
+    output at which sign of `g` -- breaks it.  Measured: the residual falls
+    9.0e-3 -> 3.3e-11 as the sideband count goes 4 -> 64, i.e. it is TRUNCATION
+    and converges away, which a wrong pairing would not do.
+
+    ⚠⚠ THE IDENTITY ALONE IS NOT ENOUGH, AND THAT IS THE POINT OF CHECK 3.  An
+    implementation that simply returned HALF the total in each of AM and PM
+    would satisfy it exactly while computing nothing.  So the split is also
+    required to be NON-DEGENERATE: the whole content of an AM/PM decomposition
+    is that the two are unequal, which happens only because the periodic
+    operating point CORRELATES the two sidebands.  Uncorrelated sidebands carry
+    equal AM and PM -- the classical LTI result -- so `S_pm == S_am` is exactly
+    the answer that would mean the correlation had been lost.
+
+    ⚠ AND CHECK 4 PINS THE CONJUGATE.  The split is `a ± conj(b)`, not `a ± b`:
+    the sidebands counter-rotate about the carrier.  Dropping the conjugate
+    still returns two positive numbers, so only a test that computes the naive
+    form and finds it DIFFERENT keeps that from rotting.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+
+    def mixer():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    cir = mixer()
+    T = 1e-6
+    f0 = 1.0 / T
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 200, maxiterations=40)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    off = 0.13 * f0
+
+    def residual(L):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, carrier=1,
+                                            maxsidebands=L)
+            up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
+            lo, _ = pac.pnoise(pss, f0 - off, 2, maxsidebands=L)
+        return abs((S_am + S_pm) - (up + lo)) / (up + lo), S_am, S_pm
+
+    ## 1. the identity holds once the sideband sum has converged
+    r64, S_am, S_pm = residual(64)
+    assert r64 < 1e-9, \
+        'S_am + S_pm does not equal the noise in the sideband pair it splits ' \
+        '(relative residual %.3e) -- the band pairing is wrong' % r64
+
+    ## 2. and the residual at low sideband counts is TRUNCATION: it must fall.
+    ##    A pairing error leaves a residual that does not converge away.
+    r8, _, _ = residual(8)
+    assert r8 > r64 * 100.0, \
+        'the low-order residual (%.3e) is not larger than the converged one ' \
+        '(%.3e), so the agreement is not the convergence it should be' \
+        % (r8, r64)
+
+    ## 3. NON-DEGENERATE: returning half the total in each would pass (1) exactly
+    assert S_am > 0.0 and S_pm > 0.0
+    ratio = S_pm / S_am
+    assert abs(ratio - 1.0) > 0.1, \
+        'AM and PM came out equal (ratio %.4f), which is the uncorrelated-' \
+        'sideband answer -- either the correlation was lost or the split is ' \
+        'returning half the total twice' % ratio
+
+    ## 4. the CONJUGATE is load-bearing: the naive `a +- b` must differ
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        a = pac.adjoint_sideband_row(pss, off, 2, 1)[0]
+        b = pac.adjoint_sideband_row(pss, -off, 2, 1)[0]
+        cy = pac._cy_reduced(pss, 2.0 * np.pi * off)
+    good = float(np.real((a + np.conj(b)) @ cy @ np.conj(a + np.conj(b))))
+    naive = float(np.real((a + b) @ cy @ np.conj(a + b)))
+    assert abs(good - naive) > 1e-3 * abs(good), \
+        'the conjugate in `a + conj(b)` made no difference here, so this ' \
+        'circuit cannot pin it -- pick one whose sidebands actually rotate'

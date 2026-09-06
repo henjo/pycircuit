@@ -10363,6 +10363,82 @@ class PAC(Analysis):
         lower = self.adjoint_sideband_row(pss, -freq, output, carrier)[0]
         return self.am_pm_indices(upper / C, lower / C)
 
+    def am_pm_noise(self, pss, freq, output, carrier=1, maxsidebands=None,
+                    modulated=False):
+        """Output NOISE split into its AM and PM parts at `freq` from `carrier`.
+
+        Returns `(S_am, S_pm, bands_used)`.  The two add to the noise in the
+        pair of sidebands they decompose -- see the identity below -- and are in
+        the same units as :meth:`pnoise`.
+
+        ⚠ THIS NEEDS THE SIDEBAND *CORRELATION*, WHICH IS WHY IT IS NOT
+        `|m_am|^2` FROM :meth:`am_pm`.  That method is the TRANSFER pair for a
+        deterministic input; noise asks a different question, because whether
+        the upper and lower sidebands are CORRELATED is exactly what decides the
+        split.  Uncorrelated sidebands carry equal AM and PM -- the classical
+        result for narrowband noise through an LTI system -- and it is the
+        periodic operating point that correlates them.
+
+        THE BAND BOOKKEEPING, which is the whole of the derivation and the one
+        place a sign error would produce a plausible wrong answer.
+        `adjoint_sideband_row(pss, g, output, l)` is the coefficient at output
+        `g + l f0` for a unit source at `g`.  The two output sidebands sit at
+        `carrier*f0 ± freq`, so a REAL noise band whose positive-frequency
+        component is at `g = freq + p f0` reaches
+
+            the UPPER output at `+g` through sideband `l = carrier - p`,
+            the LOWER output at `-g` through sideband `l = carrier + p`,
+
+        the second because a real process has `N(-g) = conj(N(g))` -- and that
+        shared realisation IS the correlation.  Both contributions come from ONE
+        band, so they are combined coherently; different `p` are different
+        bands and are summed in power.  :meth:`am_pm` is exactly the `p = 0`
+        term of this sum.
+
+        The split per band is the same conjugate one :meth:`am_pm_indices`
+        makes, `a + conj(b)` and `a - conj(b)` -- ⚠ the CONJUGATE, not `a ± b`:
+        the sidebands counter-rotate about the carrier, and dropping it reports
+        a rotating ellipse as pure AM.
+
+        ⚠ THE GATE IS AN IDENTITY, NOT A TOLERANCE.  `pnoise` at the upper
+        sideband folds precisely the bands `g = freq + p f0`, and at the lower
+        precisely their negatives, so with the factor of one half below
+
+            S_am + S_pm  ==  pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)
+
+        exactly, because `|a+c|^2 + |a-c|^2 = 2|a|^2 + 2|c|^2` leaves no cross
+        term.  A pairing error breaks it, which is what the test asserts.
+
+        ⚠ AND THE AUTONOMOUS CAVEAT OF `am_pm` APPLIES HERE UNCHANGED: on a
+        free-running oscillator the sideband rows come back at ~1e-12 in
+        absolute terms for reasons that are not established, so do not read an
+        oscillator AM/PM *magnitude* from this.  The driven case is the one this
+        is built and gated for.
+        """
+        self._check_circuit(pss)
+        pss = pss._adjoint_host()
+        fp = pss.factored_period()
+        N = len(fp.steps)
+        f0 = 1.0 / float(fp.T)
+        lmax = N // 2 if maxsidebands is None else min(int(maxsidebands),
+                                                       N // 2)
+        cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
+        k = int(carrier)
+        S_am = 0.0
+        S_pm = 0.0
+        bands = []
+        for p in range(-lmax, lmax + 1):
+            g = float(freq) + p * f0
+            a = self.adjoint_sideband_row(pss, g, output, k - p)[0]
+            b = self.adjoint_sideband_row(pss, -g, output, k + p)[0]
+            cy = cyfn(pss, 2.0 * np.pi * g)
+            m_am = a + np.conj(b)
+            m_pm = a - np.conj(b)
+            S_am += 0.5 * float(np.real(m_am @ cy @ np.conj(m_am)))
+            S_pm += 0.5 * float(np.real(m_pm @ cy @ np.conj(m_pm)))
+            bands.append(p)
+        return S_am, S_pm, bands
+
     def _deflated_solve(self, pss, alpha, b, transposed=False, tol=None):
         """`(I - alpha M) y = b` on an OSCILLATOR, with the pole taken out.
 
