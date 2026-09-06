@@ -259,9 +259,14 @@ ODE — DAE-specific, the same place everything else in this stack comes apart.
 
 ### Still not wired for stage methods (honest gaps)
 
+⚠ These are **standalone-transient** gaps as much as shooting ones — the RK methods are a
+first-class choice for a plain `Transient(cir, integrator=...)` run (adaptive via the embedded
+estimate), so a feature missing here is missing in ordinary transient simulation too.
+
 - **PCNR** (the device-level `limit()` replacement in the per-step Newton) — `solve_timestep`
-  dispatches RK before the PCNR branch, so stage methods use `cir.limit`, never PCNR. Wiring
-  PCNR into each stage's Newton is real, separate work.
+  dispatches RK before the PCNR branch, so stage methods use `cir.limit`, never PCNR, even in a
+  plain transient of a hard-junction circuit. Wiring PCNR into each stage's Newton is real,
+  separate work.
 - **The FULL coupled path** uses a hand-rolled Newton (limiting only), not the full nrsolver
   (line-search/continuation-rescue) the DIRK stages get via `self._newton`.
 - **The cost transform** stays opt-in (simplified Newton, falls back to dense); the DIRK
