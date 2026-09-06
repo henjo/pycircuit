@@ -6209,6 +6209,47 @@ the physical oscillation over a period, large enough to kill the DAE modes.
 **Gate:** the same falsifier that killed the fourth design — `sigma_min(I - A_theta^K)` at
 **even** K, plus the Q=20 peak against 20 V. Ten lines. Run it before writing anything.
 
+✅✅ **GATE RUN 2026-09-06 — IT PASSES, AND IT PRODUCES THE RECIPE HOUBEN DOES NOT GIVE.**
+`benchmarks/pss_b2_theta_gate.py`.
+
+**First, C1's theorem reproduced**, because a gate that cannot see the known defect proves
+nothing: at θ=½ the `null(C)` modes sit at **exactly −1.000000** (2 of them, `m − rank(C) = 2`)
+and `rcond(I − A^K)` is **exactly 0.0** at K = 200 and 400 — while K = 199/201/401 give a healthy
+**3.1e-03**. ⚠ The obstruction is **parity-specific**, which is the theorem seen from the other
+side.
+
+**Then the bias.** θ = ½ + Ch maps `null(C)` to `−(1−θ)/θ`, matching the numerical eigenvalues to
+every printed digit. On the Q=20 resonator (analytic peak 20 V, K = 200):
+
+| C | θ | peak | error | null(C) \|mode\|^K | rcond(I − A^K) |
+|---|---|---|---|---|---|
+| 0 | 0.500000000 | **SINGULAR** | — | 1.000e+00 | **0.0e+00** |
+| 1e3 | 0.500031416 | 20.02011 | +0.0201 | 9.752e-01 | 4.4e-03 |
+| 1e4 | 0.500314159 | 20.01301 | **+0.0130** | 7.778e-01 | **4.6e-03** ← knee |
+| 1e5 | 0.503141593 | 19.94223 | −0.0578 | 8.100e-02 | 4.3e-03 |
+| 1e6 | 0.531415927 | 19.26150 | −0.7385 | 1.176e-11 | 3.7e-03 |
+
+⚠⚠ **`rcond` SATURATES at C ≈ 1e4 AND THEN DEGRADES while the amplitude keeps paying — so more
+bias buys no conditioning.** That knee is the two-sided constraint Houben states without a recipe,
+located by measurement. **C ≈ 1e3–1e4 costs 0.07% of the peak** — against the **30%**
+(13.92 V of 20) that got `x0_unknown` reverted, i.e. ~400x cheaper for the same obstruction.
+
+⚠ **Instrument validated against a reference it cannot influence** (the lesson from B7c's three
+discarded metrics): at θ = 0.5 and odd K the closed form agrees with the **shipped trapezoidal
+PSS** to **1.47e-07** at K = 401. The larger 1.17e-04 at K = 201 is the shipped code's opening-step
+manufacturing, absent from the closed form, and it converges away with K.
+
+⚠ **WHAT THIS DOES NOT SHOW.** It is linear, on one fixture, with a closed-form θ-method — it says
+the obstruction dissolves and the amplitude survives, which is exactly what the gate was for and
+exactly what killed design four. It says **nothing** about a nonlinear circuit or the shipped
+integrator. Implementation is a separate call, now an informed one.
+
+⚠ **And it revises this entry's own framing.** "Only worth it alongside B1" was written when B1
+was a live default. B1 is reverted and B16's floor is unremedied, so B2 is not a companion to a
+shipped default — **it is the surviving candidate**, and the one that removes the opening step
+rather than moving an Euler step inside the period.
+
+
 ### B3. The Aprille & Trick substitution formulation
 
 Their unknown vector *substitutes* the period for the pinned coordinate —
