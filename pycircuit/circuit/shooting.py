@@ -1731,13 +1731,25 @@ class PSS(Analysis):
                                                   Gear2Integrator)
         from pycircuit.circuit.integrator import (TRBDF2Integrator,
                                                   RadauIIA3Integrator)
-        return {'euler': EulerIntegrator,
-                'trap': TrapezoidalIntegrator,
-                'trapezoidal': TrapezoidalIntegrator,
-                'gear': Gear2Integrator,
-                'gear2': Gear2Integrator,
-                'trbdf2': TRBDF2Integrator,
-                'radau': RadauIIA3Integrator}[method]()
+        ## THE single method -> integrator map, and the one place method names
+        ## are validated: an unknown name raises the ValueError here rather than
+        ## a KeyError three frames down.  The polymorphic predicates
+        ## (`_companion_reach`, `needs_x0_unknown`, ...) call this before the
+        ## solve()-level whitelist runs, so the validation must live where the
+        ## lookup does.
+        table = {'euler': EulerIntegrator,
+                 'trap': TrapezoidalIntegrator,
+                 'trapezoidal': TrapezoidalIntegrator,
+                 'gear': Gear2Integrator,
+                 'gear2': Gear2Integrator,
+                 'trbdf2': TRBDF2Integrator,
+                 'radau': RadauIIA3Integrator}
+        try:
+            return table[method]()
+        except KeyError:
+            raise ValueError(
+                "method must be 'euler', 'trap', 'gear', 'trbdf2' or 'radau', "
+                "not %r" % (method,))
 
     ## Below this fraction of the seed, a solved period is the trivial
     ## root rather than an orbit.  Deliberately loose: a real fundamental
@@ -2103,18 +2115,11 @@ class PSS(Analysis):
         integrator rather than inferred from `method`, so a fourth method
         arrives with the right answer instead of the default one.
         """
-        from pycircuit.circuit.integrator import (TRBDF2Integrator,
-                                                  RadauIIA3Integrator)
+        ## Polymorphic: the method answers.  A stage method returns 1 (self
+        ## starting, reads only x_n); an LMM computes it from its companion
+        ## coefficients.  No isinstance/name branch to extend per method.
         integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        if isinstance(integ, (TRBDF2Integrator, RadauIIA3Integrator)):
-            ## Self-starting one-step stage methods (two-stage DIRK, three-stage
-            ## fully-implicit Radau): they read only `x_n`, so they never need
-            ## the entering history as an unknown -- reach 1.  Asking them for
-            ## `companion_coefficients` (which they refuse) would be the wrong
-            ## question.
-            return 1
-        alphas, _b = integ.companion_coefficients(1.0, 1.0)
-        return len(alphas) - 1
+        return integ.companion_reach()
 
     def _solves_history(self):
         """Whether the period map needs the entering history as an unknown.
@@ -4631,21 +4636,21 @@ class PSS(Analysis):
             raise ValueError(
                 "PSS.monodromy must be 'trbdf2', 'gear' or 'native', not %r"
                 % (mono,))
+        _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
         if (mono == 'native'
-                or getattr(self.par, 'method', 'euler') in ('gear', 'gear2',
-                                                            'trbdf2', 'radau')
+                or _integ.carries_own_monodromy()
                 or not getattr(self, 'autonomous', False)):
-            ## ⚠ gear, trbdf2 AND radau ARE SELF-SUFFICIENT.  This twin exists
-            ## only because a one-step LMM's monodromy is first-order on a
-            ## limit cycle -- its opening manufacturing step is dropped to
-            ## Euler and that seam sits in the period map.  Gear-2 carries a
-            ## second-order native monodromy, and the self-starting stage
-            ## methods (TR-BDF2 order 2, Radau IIA(3) order 5) have no opener
-            ## at all (both verified against the pencil), so twinning any of
-            ## them would REPLACE their own native map with another on a
-            ## re-converged orbit -- pure cost -- and would hide the run's own
-            ## spectrum.  They read `native` regardless of `monodromy`; the
-            ## knob governs which twin trap/euler borrow.
+            ## ⚠ SELF-SUFFICIENT METHODS TAKE NO TWIN, and the method says which
+            ## it is (`carries_own_monodromy`): Gear-2 (a second-order native
+            ## companion monodromy) and every stage method (TR-BDF2, Radau -- no
+            ## opener seam, verified against the pencil).  This twin exists only
+            ## because a one-step LMM's monodromy is first-order on a limit
+            ## cycle (its manufactured opener is dropped to Euler and that seam
+            ## sits in the period map); twinning a self-sufficient method would
+            ## replace its own map with another on a re-converged orbit -- pure
+            ## cost -- and hide the run's own spectrum.  They read `native`
+            ## regardless of `monodromy`; the knob governs which twin trap/euler
+            ## borrow.
             return self
         if getattr(self, '_period_state', None) is None or not self.converged:
             return self
@@ -6344,13 +6349,13 @@ class PSS(Analysis):
         ## `_resolve_x0_unknown`.  Resolved to a concrete bool HERE, before
         ## anything reads it, so every downstream use sees one value.
         x0_unknown = self._resolve_x0_unknown(x0_unknown)
-        if getattr(self.par, 'method', 'euler') in ('trbdf2', 'radau'):
-            ## Self-starting stage methods (TR-BDF2, Radau IIA(3)): `x_in` IS
-            ## `x_0`, there is no manufacturing step to differentiate `x_0`
-            ## back through, so the unknown is always `x_0` itself.  Forcing it
-            ## here makes the phase pin and every open-at-x0 branch consistent
-            ## for the stage method without the topology heuristic having to
-            ## know about it.
+        if self._integrator_for(getattr(self.par, 'method', 'euler')
+                                ).needs_x0_unknown():
+            ## Self-starting stage methods: `x_in` IS `x_0`, there is no
+            ## manufacturing step to differentiate `x_0` back through, so the
+            ## unknown is always `x_0` itself.  The method says so
+            ## (`needs_x0_unknown`), which keeps the phase pin and every
+            ## open-at-x0 branch consistent without a name check here.
             x0_unknown = True
         self._open_at_x0 = bool(x0_unknown)
         times, hs = self._period_grid(period, int(period / dt), grid)
@@ -7251,13 +7256,13 @@ class PSS(Analysis):
         ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
         ## the period's, not something an earlier shooting iteration saw.
         tr._lte_probe = None
-        ## The self-starting stage methods (TR-BDF2, Radau IIA(3)) have no LMM
-        ## divided-difference LTE (compute_lte refuses), and the seam/interior
-        ## split is a property of a manufactured opener they do not have -- so
-        ## the replay collects no per-step LTE for them, and the three LTE
-        ## figures below report None (honestly: the diagnostic does not apply
-        ## to a self-starting stage method).
-        self._want_lte = method not in ('trbdf2', 'radau')
+        ## A stage method has no LMM divided-difference LTE (compute_lte
+        ## refuses), and the seam/interior split is a property of a manufactured
+        ## opener it does not have -- so the replay collects no per-step LTE for
+        ## it, and the three LTE figures below report None (honestly: the
+        ## diagnostic does not apply to a self-starting stage method).  The
+        ## method says which it is.
+        self._want_lte = not self._integrator_for(method).is_stage_method()
         lte_seen = []
         for t, dt in walk:
             x = self.solve_timestep(X[-1], t, dt)

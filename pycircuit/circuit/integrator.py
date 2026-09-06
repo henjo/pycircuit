@@ -82,7 +82,40 @@ class Integrator(ABC):
     raise.  The ABC still fits it structurally (order, history, order-drop),
     just not the single-companion time step.
     """
-    
+
+    ## --- CAPABILITY QUERIES (polymorphic dispatch) ---
+    ## The shooting/transient stacks used to branch on `isinstance(...)` and
+    ## method-name strings at ~35 sites; these let a caller ask the METHOD
+    ## instead, so a new integrator arrives with the right answers rather than
+    ## needing an edit at each site.  See doc/integrator_architecture_260906.md.
+
+    def is_stage_method(self) -> bool:
+        """True for a Runge-Kutta / stage method, False for a linear-multistep
+        companion method.  The single predicate the shooting stack branches on
+        to pick the stage machinery over the LMM machinery."""
+        return False
+
+    def companion_reach(self) -> int:
+        """How many charges back this method's companion reads (Euler/trap 1,
+        Gear-2 2) -- decides whether the shooting solve needs the entering
+        history as an unknown.  Asked of the method, not inferred from a name."""
+        alphas, _b = self.companion_coefficients(1.0, 1.0)
+        return len(alphas) - 1
+
+    def carries_own_monodromy(self) -> bool:
+        """Whether this method's own period map is already second-order (or
+        higher) on a limit cycle, so `monodromy_twin` need not borrow one:
+        Gear-2 (reach 2) and every stage method (no opener seam).  The one-step
+        LMMs (trap/euler) return False -- their native monodromy is first
+        order and they take a twin."""
+        return self.is_stage_method() or self.companion_reach() >= 2
+
+    def needs_x0_unknown(self) -> bool:
+        """Whether the shooting solve must carry `x_0` as the unknown -- the
+        self-starting stage methods, which have no manufactured opening step to
+        differentiate `x_0` back through."""
+        return self.is_stage_method()
+
     @abstractmethod
     def get_required_history(self) -> int:
         """
@@ -622,7 +655,102 @@ class Gear2Integrator(Integrator):
         return lte, 3.0  # p=3.0 is order+1 (the estimate itself scales with h^2)
 
 
-class TRBDF2Integrator(Integrator):
+class RungeKuttaIntegrator(Integrator):
+    """Base for one-step Runge-Kutta (stage) methods, carrying the Butcher
+    tableau as the single source of truth.
+
+    A concrete method supplies three class attributes -- ``A`` (the ``s x s``
+    Butcher matrix), ``B`` (the ``s`` step weights) and ``C`` (the ``s`` node
+    abscissae) -- and OPTIONALLY the embedded-estimator data.  Everything the
+    transient loop and the shooting stack need for a stage method (the coupled
+    stage step, the monodromy, the forward/adjoint source folds, the Lyapunov
+    injection, the cost transform, the embedded error estimate) is a function of
+    that tableau, so it is written ONCE against this base rather than re-derived
+    per method.  See ``doc/integrator_architecture_260906.md``.
+
+    The one-step, self-starting contract is answered here for every subclass:
+    ``get_required_history() == 1``, ``companion_reach() == 1``,
+    ``is_stage_method() == True``, and the linear-multistep companion methods
+    (``companion_coefficients``/``companion_dT``/``compute_lte``/
+    ``compute_derivatives``) inherit the base's refusal -- a stage method has no
+    companion recursion.
+    """
+
+    #: structure tags returned by :meth:`stage_structure`
+    FULL = 'full'
+    DIRK = 'dirk'
+    SDIRK = 'sdirk'
+    ESDIRK = 'esdirk'
+
+    def is_stage_method(self) -> bool:
+        return True
+
+    def get_required_history(self) -> int:
+        ## self-starting: the only past state is x_n, already carried by the loop
+        return 1
+
+    def companion_reach(self) -> int:
+        return 1
+
+    def check_order_drop(self, h_curr, h_last, is_first_step):
+        ## a one-step method carries no zero-stability step-ratio limit
+        return self
+
+    def butcher(self):
+        """``(A, B, C)`` as float ndarrays, cached."""
+        cache = getattr(self, '_butcher_cache', None)
+        if cache is None:
+            import numpy as np
+            cache = (np.array(self.A, dtype=float),
+                     np.array(self.B, dtype=float),
+                     np.array(self.C, dtype=float))
+            self._butcher_cache = cache
+        return cache
+
+    @property
+    def stages(self) -> int:
+        import numpy as np
+        return int(np.array(self.C).shape[0])
+
+    def is_stiffly_accurate(self) -> bool:
+        """``b == last row of A`` and ``c[-1] == 1`` -- the step lands ON the
+        constraint manifold, so ``x_{n+1}`` is the last stage."""
+        import numpy as np
+        A, B, C = self.butcher()
+        return bool(np.allclose(B, A[-1]) and abs(C[-1] - 1.0) < 1e-14)
+
+    def is_explicit_first_stage(self) -> bool:
+        import numpy as np
+        A, _B, _C = self.butcher()
+        return bool(np.allclose(A[0], 0.0))
+
+    def stage_structure(self):
+        """Classify the tableau so the solver picks the cheapest correct path:
+        ``ESDIRK`` (lower-triangular, explicit first stage, equal remaining
+        diagonals -> one shared factorisation), ``SDIRK`` (lower-triangular,
+        all diagonals equal), ``DIRK`` (lower-triangular), or ``FULL`` (fully
+        implicit -> coupled solve or the eig(A^-1) cost transform)."""
+        import numpy as np
+        A, _B, _C = self.butcher()
+        s = A.shape[0]
+        lower = np.allclose(np.triu(A, 1), 0.0)
+        if not lower:
+            return self.FULL
+        diag = np.diag(A)
+        expl0 = abs(diag[0]) < 1e-14
+        impl = diag[1:] if expl0 else diag
+        equal = impl.size > 0 and np.allclose(impl, impl[0]) and impl[0] != 0.0
+        if expl0 and equal:
+            return self.ESDIRK
+        if equal:
+            return self.SDIRK
+        return self.DIRK
+
+    def is_fully_implicit(self) -> bool:
+        return self.stage_structure() == self.FULL
+
+
+class TRBDF2Integrator(RungeKuttaIntegrator):
     """TR-BDF2: a trapezoid stage over ``gamma*h`` then a BDF2 stage over ``h``.
 
     A one-step, self-starting, L-stable, order-2 DIRK.  It is here for three
@@ -716,6 +844,22 @@ class TRBDF2Integrator(Integrator):
     A1 = 0.5 + math.sqrt(2.0) / 2.0
     A0 = 0.5 - math.sqrt(2.0) / 2.0
 
+    ## THE BUTCHER TABLEAU (3-stage ESDIRK form): an explicit first stage
+    ## (``Y1 = x_n``, ``c1 = 0``) then the two implicit stages with equal
+    ## diagonal ``d = STAGE_DIAG`` -- the trapezoid stage at ``c2 = 2d = gamma``
+    ## and the stiffly-accurate BDF2 stage at ``c3 = 1``.  ``w = sqrt(2)/4`` are
+    ## the outer weights (``2w + d == 1``).  Equal implicit diagonals ->
+    ## ``stage_structure() == 'esdirk'`` -> one shared factorisation, which is
+    ## exactly the one-LU property stated above.  This is the same method as the
+    ## ``(GAMMA, A1, A0, STAGE_DIAG)`` companion form; both are kept until the
+    ## generic RK step (which reads the tableau) replaces the bespoke step.
+    _W = math.sqrt(2.0) / 4.0
+    A = ((0.0, 0.0, 0.0),
+         (STAGE_DIAG, STAGE_DIAG, 0.0),
+         (_W, _W, STAGE_DIAG))
+    B = (_W, _W, STAGE_DIAG)
+    C = (0.0, GAMMA, 1.0)
+
     def __init__(self):
         pass
 
@@ -758,7 +902,7 @@ class TRBDF2Integrator(Integrator):
             '_run_trbdf2_adaptive, which is the adaptive path for this method.')
 
 
-class RadauIIA3Integrator(Integrator):
+class RadauIIA3Integrator(RungeKuttaIntegrator):
     """Radau IIA, 3 stages: the order-5, L-stable, stiffly-accurate collocation
     method on the two Radau points and the endpoint.
 
