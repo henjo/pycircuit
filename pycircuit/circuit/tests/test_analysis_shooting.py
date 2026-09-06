@@ -14809,3 +14809,138 @@ def test_the_pac_probe_jacobian_agrees_with_finite_difference_and_is_cheaper():
         'the PAC route found a different orbit: %.8f against %.8f' % (f_pac, f_fd)
     assert n_pac < n_fd, \
         'the PAC route must cost fewer solves, got %d against %d' % (n_pac, n_fd)
+
+
+@pytest.mark.slow
+def test_radau_keeps_order_on_differential_and_loses_two_on_algebraic_index2():
+    """On an INDEX-2 MNA, Radau IIA(3) holds classical order in the
+    DIFFERENTIAL components and drops to 3 in the ALGEBRAIC ones.
+
+    Hairer, Lubich & Roche (LNM 1409, 1989) sec. 5, Thm 5.9: with `det A != 0`
+    and stiff accuracy -- exactly the pair Radau IIA(3) has -- "there is NO
+    ORDER REDUCTION IN THE Y-COMPONENT", while the z-component estimate "is in
+    general optimal", i.e. NOT improved.  Measured here, capacitor-loop
+    fixture, analytic reference::
+
+        npts   err(differential)   ord     err(algebraic)   ord
+           5   2.4738e-04          --      1.1349e-07       --
+          10   4.4801e-06         5.79     1.3163e-08      3.11
+          20   1.0875e-07         5.36     1.4153e-09      3.22
+          40   3.0134e-09         5.17     1.6408e-10      3.11
+          80   8.8831e-11         5.08     1.9753e-11      3.05
+         160   2.6968e-12         5.04     2.4232e-12      3.03
+
+    ⚠⚠ WHY THIS TEST EXISTS: **outcome (b) looks exactly like a tableau bug
+    and is not one.**  A reviewer measuring only the algebraic component would
+    see Radau IIA(3) -- order 5 -- converging at 3 and open a defect against
+    the tableau.  The reduction is the DAE INDEX.  Splitting the error by
+    subspace is what makes the two distinguishable.
+
+    ⚠ THREE WAYS THIS MEASUREMENT CAN LIE, all closed here rather than argued:
+
+      * **the circuit might not be index 2**, in which case both components
+        sit at classical order and the test says nothing.  Asserted first, via
+        `sigma_min/sigma_max` of `N^T G N` on a null basis of `C`;
+      * **the reference might be wrong**, which shows up as a CONSTANT error
+        and reads as "order 0".  The first attempt did exactly that -- 1.5747
+        at every npts -- because `analysis='ac'` gave a phasor in the COSINE
+        convention while `VSin` drives a SINE, and `vac` is a separate
+        parameter defaulting to 1.  ⚠ The residual check that passed it,
+        `|C jwX + G X + U| = 6e-22`, only verified the LINEAR SOLVE.  The
+        phasor is now derived from the time function the transient actually
+        integrates, and validated against `C xdot + G x + u(t)`;
+      * **the sweep might be floor-limited**, which also reads as order 0.
+        The first fixture had `tau = 1 s` against a 1 ms period -- nearly
+        quasi-static -- so the differential error started at 1.9e-12, already
+        at the floor, and flattened.  `tau ~ PER/10` puts the coarsest point
+        at 2.5e-04, eight decades above it.
+
+    ⚠ The fixture is LINEAR and NOISELESS by choice.  A noisy sweep has three
+    regimes -- deterministic-dominated ~2, noise-dominated 1/2, floor-limited 0
+    -- so refining `h` makes the observed order WORSE and no order statement
+    is meaningful without measuring the floor first.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+    w = 2 * np.pi / per
+
+    def cv_loop():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['c1'] = C('a', 'b', c=1e-9)
+        c['c2'] = C('b', gnd, c=1e-9)
+        c['r'] = R('b', gnd, r=1e5)
+        return c
+
+    cir = cv_loop()
+    n = cir.n
+    iref = cir.get_node_index(gnd)
+    keep = [i for i in range(n) if i != iref]
+    Cm = np.asarray(cir.C(np.zeros(n)), dtype=float)[np.ix_(keep, keep)]
+    Gm = np.asarray(cir.G(np.zeros(n)), dtype=float)[np.ix_(keep, keep)]
+    m = len(keep)
+
+    ## (1) it must BE index 2, or both components sit at classical order and
+    ## the measurement is vacuous
+    _U, sv, Vt = np.linalg.svd(Cm)
+    d = int(np.sum(sv > m * sv[0] * np.finfo(float).eps))
+    N = Vt[d:].T
+    s2 = np.linalg.svd(N.T @ Gm @ N, compute_uv=False)
+    assert float(s2[-1] / max(s2[0], 1e-300)) < 1e-10, \
+        'the fixture is not index 2, so an order split would prove nothing'
+    Vdiff, Valg = Vt[:d].T, Vt[d:].T
+    assert Vdiff.shape[1] >= 1 and Valg.shape[1] >= 1
+
+    ## (2) the reference, from the SOURCE FUNCTION the transient integrates
+    NS = 2048
+    ts = np.arange(NS) * per / NS
+    Us = np.array([np.asarray(cir.u(t, analysis='tran'),
+                              dtype=float)[keep] for t in ts])
+    Uph = (2.0 / NS) * np.sum(Us * np.exp(-1j * w * ts)[:, None], axis=0)
+    X = np.linalg.solve(Gm + 1j * w * Cm, -Uph)
+
+    def x_exact(t):
+        return np.real(X * np.exp(1j * w * t))
+
+    ## ⚠ validated in the TIME DOMAIN, not against the system it was built from
+    chk = 0.0
+    for t in (0.0, per * 0.137, per * 0.41, per * 0.76):
+        xd = np.real(1j * w * X * np.exp(1j * w * t))
+        ut = np.asarray(cir.u(t, analysis='tran'), dtype=float)[keep]
+        chk = max(chk, float(np.max(np.abs(Cm @ xd + Gm @ x_exact(t) + ut))))
+    assert chk < 1e-12, 'the analytic reference does not satisfy the ODE: %.3e' % chk
+
+    ## (3) the sweep
+    errs = []
+    for npts in (5, 10, 20, 40, 80):
+        p = PSS(cv_loop(), method='radau', reltol=1e-13)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=per, timestep=per / npts, maxiterations=40)
+        assert p.converged, 'radau did not converge at npts=%d' % npts
+        t = np.asarray(p.waveform[0], dtype=float)
+        Xr = np.asarray(p.waveform[1], dtype=float)[keep, :]
+        E = np.array([Xr[:, k] - x_exact(t[k]) for k in range(len(t))])
+        errs.append((float(np.max(np.abs(E @ Vdiff))),
+                     float(np.max(np.abs(E @ Valg)))))
+
+    ## ⚠ the coarsest point must be FAR above the floor, or the orders below
+    ## are measuring roundoff.  This is the check the first fixture failed.
+    assert errs[0][0] > 1e-6, \
+        'the differential error starts at %.3e -- too close to the floor for ' \
+        'the sweep to resolve an order' % errs[0][0]
+
+    od = [np.log2(errs[i][0] / errs[i + 1][0]) for i in range(len(errs) - 1)]
+    oa = [np.log2(errs[i][1] / errs[i + 1][1]) for i in range(len(errs) - 1)]
+    assert od[-1] > 4.5, \
+        'the DIFFERENTIAL components should keep classical order (~5), got ' \
+        '%.2f (all: %s)' % (od[-1], ['%.2f' % z for z in od])
+    assert 2.6 < oa[-1] < 3.5, \
+        'the ALGEBRAIC components should drop to ~3, got %.2f (all: %s)' \
+        % (oa[-1], ['%.2f' % z for z in oa])
+    assert od[-1] - oa[-1] > 1.5, \
+        'the whole point is the SPLIT: differential %.2f against algebraic ' \
+        '%.2f' % (od[-1], oa[-1])

@@ -6535,6 +6535,64 @@ Each of these cost real time. They are recorded so the next reader spends none.
 
 ---
 
+## Radau IIA(3) on an INDEX-2 MNA: the order SPLITS by component — measured 2026-09-07
+
+**Differential components keep classical order 5; algebraic components drop to 3.** Capacitor-loop
+fixture (`c1` in a loop with `c2`, `rank(C) = 2` of `m = 3`), analytic reference, `method='radau'`:
+
+| npts | err(differential) | ord | err(algebraic) | ord |
+|---|---|---|---|---|
+| 5 | 2.4738e-04 | — | 1.1349e-07 | — |
+| 10 | 4.4801e-06 | 5.79 | 1.3163e-08 | 3.11 |
+| 20 | 1.0875e-07 | 5.36 | 1.4153e-09 | 3.22 |
+| 40 | 3.0134e-09 | 5.17 | 1.6408e-10 | 3.11 |
+| 80 | 8.8831e-11 | **5.08** | 1.9753e-11 | 3.05 |
+| 160 | 2.6968e-12 | **5.04** | 2.4232e-12 | **3.03** |
+
+This is Hairer, Lubich & Roche (LNM 1409, 1989) Thm 5.9 on an MNA circuit: with `det A != 0` AND
+stiff accuracy — exactly the pair Radau IIA(3) has — *"there is NO ORDER REDUCTION IN THE
+Y-COMPONENT"*, while the z-component estimate *"is in general optimal"*, i.e. not improved.
+⚠ **That is a FIFTH job for `det A != 0`, and unlike the other four it is specifically an index-2
+statement.** The z-component order was not available from the source (Table 2.1 not in the
+excerpt); **3 is measured here, not quoted.**
+
+⚠⚠ **THE REASON THIS IS WORTH A TEST: OUTCOME (b) LOOKS EXACTLY LIKE A TABLEAU BUG AND IS NOT
+ONE.** Anyone measuring only the algebraic component sees an order-5 method converging at 3 and
+opens a defect against a correct tableau. **Splitting the error by subspace is what separates the
+DAE index from the method.**
+
+⚠⚠⚠ **BOTH OF MY FIRST TWO ATTEMPTS PRODUCED THE SAME SYMPTOM — A CONSTANT ERROR READING AS
+"ORDER 0" — AND NEITHER WAS THE METHOD:**
+
+1. **A wrong reference.** `analysis='ac'` gives a phasor in the COSINE convention while `VSin`
+   drives a SINE, and `vac` is a SEPARATE parameter defaulting to 1. Error 1.5747 at every npts.
+   ⚠ **The residual check that passed it — `|C jwX + G X + U| = 6e-22` — only verified the LINEAR
+   SOLVE**, not that `U` matched the source the transient integrates. The phasor is now derived
+   from that source function and validated against `C xdot + G x + u(t)`.
+2. **A floor-limited sweep.** With `tau = 1 s` against a 1 ms period the response is nearly
+   quasi-static: the differential error started at **1.9e-12**, already at the floor, and
+   flattened (orders −0.69, −0.16, −0.06). `tau ~ PER/10` puts the coarsest point at 2.5e-04,
+   eight decades clear.
+
+⚠ **The tell in both cases was MAGNITUDE, not slope**: 1.5747 on a unit-amplitude circuit is the
+size of the SIGNAL, not of a discretisation error. A method that had genuinely lost all order
+would still shrink with `h`.
+
+⚠ **The fixture is LINEAR and NOISELESS by choice.** A noisy sweep has three regimes —
+deterministic-dominated ~2, noise-dominated 1/2 (asymptotic strong order for BDF2/trapezoidal on
+SDAEs), floor-limited 0 — so refining `h` makes the observed order WORSE, and an order-2 result is
+evidence of being in the FIRST regime rather than of the method's order. No order statement is
+meaningful without the floor measured first.
+Test: `test_radau_keeps_order_on_differential_and_loses_two_on_algebraic_index2`.
+
+⚠ **OPEN, and this result is its baseline:** general linear methods are claimed to be diagonally
+implicit AND high stage order, hence *"no order reduction for the index-2 components"* (Voigtmann,
+Oberwolfach Report 18/2006). If that holds it dominates both ESDIRK (cheap, stage order 2) and
+Radau IIA(3) (stage order 3, one real + one complex LU) on the axis this table measures. ⚠ It is a
+WORKSHOP ABSTRACT — cited, not verified — and the RK order conditions are only a SUBSET of the GLM
+ones, so it carries more order conditions, multivalue storage and a startup problem. **Recorded as
+the survey's missing option, not as a build.**
+
 ## D. How these items keep failing — the shapes worth checking for
 
 Sixteen claims were overturned across this campaign. Four shapes account for most:
