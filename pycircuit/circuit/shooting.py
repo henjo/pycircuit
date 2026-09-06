@@ -1157,8 +1157,12 @@ class PSS(Analysis):
         there and the phase condition constrains `x0`, not the period.  So
         any seed below the fundamental is drawn to it.
 
-        Neither outcome was silent -- the collapse reports
-        `converged = False` and the exception is loud -- but neither named
+        Neither outcome is silent -- the collapse reports
+        `converged = False` (⚠ since 2026-09-06: it previously reported
+        `converged = True`, because `T = 0` is a REGULAR root that `fsolve`
+        reaches cleanly and reports success on; `_free_period_solve` now
+        demotes `ier` when it detects the collapse) and the exception is
+        loud -- but neither named
         its cause, and the generic non-convergence advice ("raise
         maxiterations") is actively wrong for it: no number of iterations
         reaches a fundamental from below.  `_free_period_solve` now names
@@ -1785,8 +1789,10 @@ class PSS(Analysis):
         trapezoidal raised a bare `LinAlgError` from three seeds of five as
         its Jacobian went singular on the way down.
 
-        Neither outcome was a silent wrong answer -- the collapse reports
-        `converged = False` and the exception is loud -- but both told the
+        Neither outcome is a silent wrong answer -- the collapse reports
+        `converged = False` (⚠ ENFORCED HERE, by demoting `ier`; asserting it
+        in prose was not enough -- see the note at the demotion) and the
+        exception is loud -- but both told the
         user nothing about the cause, and the generic non-convergence
         advice ("raise maxiterations") is wrong for it: no number of
         iterations reaches a fundamental from below.
@@ -1817,6 +1823,27 @@ class PSS(Analysis):
         T = float(z[-1])
         if not np.isfinite(T) or abs(T) < self.DEGENERATE_PERIOD_FACTOR * abs(
                 seed_period):
+            ## ⚠⚠ THE COLLAPSE MUST BE DEMOTED HERE, and for two turns of this
+            ## record it was not.  The docstrings above and on `solve` both
+            ## asserted "the collapse reports `converged = False`" -- and
+            ## NOTHING ENFORCED IT.  `self.converged` is `(_ier == 1)` and
+            ## nothing else, while `T = 0` is a REGULAR root: the solver
+            ## reaches it cleanly and reports success, so Gear-2 returned
+            ## `T = 5.42e-18` with `converged = True` on a circuit with no
+            ## orbit in it.  The warning fired correctly the whole time, which
+            ## is exactly what made this survive -- a reader who checks the
+            ## documented flag instead of catching warnings got `True`.
+            ##
+            ## Demoting `ier` rather than assigning `self.converged` is
+            ## deliberate: all three autonomous call sites already feed this
+            ## return value into `self.converged`, so one demotion covers the
+            ## plain, solved-history and matrix-free paths, and any future
+            ## path inherits it by construction.  `ier = 5` is `fsolve`'s
+            ## "not making good progress" code -- the closest existing
+            ## meaning, and already handled everywhere `ier` is read.
+            ier = 5
+            mesg = ('collapsed onto the trivial root T = %.6g s from a seed '
+                    'of %.6g s' % (T, seed_period))
             warnings.warn(
                 'PSS: this autonomous solve collapsed onto the TRIVIAL root, '
                 'returning a period of %.6g s from a seed of %.6g s. `T = 0` '

@@ -14181,3 +14181,89 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
         'the phase row should be marginal (dx_end/dx_0 == 1 on it), got ' \
         '%.9f -- if this ever stops being 1 the underdetermination argument ' \
         'above needs rewriting' % slope
+
+
+def test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged():
+    """⚠ THE MODULE ASSERTED THIS IN PROSE FOR TWO TURNS OF THE RECORD AND
+    NOTHING ENFORCED IT.
+
+    `_free_period_solve`'s docstring and `solve`'s both said "the collapse
+    reports `converged = False`".  It did not.  `self.converged` is
+    `(_ier == 1)` and nothing else, and `T = 0` is a REGULAR root of every
+    autonomous shooting system -- `x0 - phi_T(x0)` vanishes identically there
+    and the phase condition constrains `x0`, not the period -- so `fsolve`
+    reaches it cleanly and reports SUCCESS.  Measured: Gear-2 returned
+    `T = 5.42e-18` with `converged = True` on a circuit with no orbit in it.
+
+    ⚠ The trivial-root warning fired correctly the whole time, and that is
+    what let this survive: a reader who checks the documented flag rather than
+    catching warnings got `True`.  A correct diagnostic beside a wrong status
+    flag is worse than no diagnostic, because the flag is the machine-readable
+    one.
+
+    The fix demotes `ier` inside `_free_period_solve`, so all three autonomous
+    call sites -- plain, solved-history and matrix-free -- inherit it, and so
+    does any path added later.
+
+    ⚠ WHAT IS NOT FIXED, AND CANNOT BE HERE: the collapse itself.  It is a
+    property of the formulation, not of a method or a circuit, and the seed
+    sweep below is the evidence -- at and above the fundamental both methods
+    find the orbit, below it they do not, and no iteration count reaches a
+    fundamental from below.  The remedy is the seed (or the PROBE technique,
+    which widens the basin rather than removing the dependence).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 1e-3
+
+    def folding():
+        c = SubCircuit()
+        ## 0.5 modulus per T0, so the true fundamental is 2*T0.
+        c['vin'] = VS('in', gnd, v=0.5 / T0)
+        c['X'] = Idtmod('in', gnd, 'o', gnd, modulus=1.0, ic=0.31)
+        c['Ro'] = R('o', gnd, r=1e6)
+        return c
+
+    ## (1) A seed below the fundamental collapses -- and must SAY so, in the
+    ## flag as well as the warning.
+    p = PSS(folding(), method='gear')
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        p.solve(period=T0, timestep=T0 / 300)
+    Tp = float(p._period_state[5])
+    assert abs(Tp) < p.DEGENERATE_PERIOD_FACTOR * T0, \
+        'the fixture stopped collapsing (T = %.6g) -- it no longer tests ' \
+        'what it is named for' % Tp
+    assert any('TRIVIAL root' in str(c.message) for c in caught), \
+        'the collapse warning stopped firing'
+    assert p.converged is False, \
+        'a solve that collapsed onto T = %.6g reported converged = %r -- ' \
+        'this is the defect: the documented flag says the non-orbit is an ' \
+        'answer' % (Tp, p.converged)
+
+    ## (2) ⚠ AND A GENUINE SOLVE MUST STILL REPORT True, or the "fix" is just
+    ## a flag wired to False.
+    q = PSS(folding(), method='gear')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=2 * T0, timestep=2 * T0 / 300)
+    assert q.converged is True, \
+        'the demotion leaked into a healthy autonomous solve'
+    assert abs(float(q._period_state[5]) / (2 * T0) - 1.0) < 1e-6, \
+        'expected the fundamental 2*T0, got %.6g' % q._period_state[5]
+
+    ## (3) The seed sweep that shows the collapse is the FORMULATION, so the
+    ## docstring's "not fixable here" is measured rather than asserted.
+    found = {}
+    for seed in (T0, 1.5 * T0, 2.0 * T0):
+        r = PSS(folding(), method='gear')
+        try:
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                r.solve(period=seed, timestep=seed / 300)
+            found[seed] = (float(r._period_state[5]), bool(r.converged))
+        except np.linalg.LinAlgError:
+            found[seed] = (float('nan'), False)
+    assert found[T0][1] is False, 'a seed at half the fundamental should not converge'
+    assert found[1.5 * T0][1] is True and found[2.0 * T0][1] is True, \
+        'seeds at and above the fundamental should find it: %r' % (found,)

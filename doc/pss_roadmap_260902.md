@@ -3712,9 +3712,41 @@ solution and a driven fixed-period solve is **correctly** underdetermined; locki
 feedback (a PLL), which is A6's own subject. The fold repairs the residual's *value*, not the
 Jacobian's *rank*.
 
-⚠ **Separately observed, NOT fixed, and not caused by this:** `method='gear'` on that same
-autonomous fixture converges to **T = 5.4e-18** — a collapsed period trivially satisfying
-periodicity — identically with and without the fold. Filed as its own defect.
+✅ **The `gear` collapse filed here is FIXED (2026-09-06) — and the defect was the STATUS FLAG,
+not the collapse.**
+
+⚠⚠ **THE MODULE HAD ASSERTED THE FIX IN PROSE FOR TWO TURNS OF THIS RECORD AND NOTHING ENFORCED
+IT.** Both `_free_period_solve`'s docstring and `solve`'s said *"the collapse reports
+`converged = False`"*. It did not. `self.converged` is `(_ier == 1)` and nothing else, and `T = 0`
+is a **REGULAR root** — `x_0 - φ_T(x_0)` vanishes identically there and the phase condition
+constrains `x_0`, not the period — so `fsolve` reaches it cleanly and reports **success**.
+Measured: Gear-2 returned `T = 5.42e-18` with **`converged = True`** on a circuit with no orbit
+in it.
+
+⚠ **The trivial-root warning fired correctly the whole time, and that is what let this survive.**
+A reader who checks the documented flag rather than catching warnings got `True`. **A correct
+diagnostic beside a wrong status flag is worse than no diagnostic**, because the flag is the
+machine-readable one.
+
+The fix demotes `ier` to 5 inside `_free_period_solve`, so all three autonomous call sites —
+plain, solved-history and matrix-free — inherit it, as does any path added later. Both false
+prose claims are corrected in place rather than deleted.
+
+⚠ **THE COLLAPSE ITSELF IS NOT FIXED, AND NOT FIXABLE HERE.** It is a property of the
+formulation. Measured seed sweep against the true fundamental 2e-3:
+
+| seed | gear | trap |
+|---|---|---|
+| 0.5e-3 | T = 2.8e-17, **not converged** | LinAlgError |
+| 1.0e-3 | T = 5.4e-18, **not converged** | T = 2e-3 ✓ |
+| 1.5e-3 | T = 2e-3 ✓ | T = 2e-3 ✓ |
+| 2.0e-3 | T = 2e-3 ✓ | T = 2e-3 ✓ |
+| 4.0e-3 | T = 4e-3 (the `k*T` harmonic, documented) | T = 4e-3 |
+
+At and above ~0.75x the fundamental both methods find it; below, neither does, and **no iteration
+count reaches a fundamental from below**. The remedy is the seed — or the PROBE technique, which
+widens the basin rather than removing the dependence.
+Test: `test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged`.
 Test: `test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else_alone`.
 
 ⚠⚠ **BUT "AND THE PSS REPORTS CONVERGENCE THERE" WAS WRONG, and the correction matters more
