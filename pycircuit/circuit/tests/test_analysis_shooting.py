@@ -13526,3 +13526,77 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
     assert solves_from(xw), \
         'shooting did not converge from the warm-start iterate, which is the ' \
         'whole point of finding it'
+
+
+def test_no_limiter_in_the_tree_has_a_charge_that_reads_its_limiting_state():
+    """`_C_at` carries NO limiting sync, and this is the measurement that says
+    it may not need one.
+
+    `_G_at` must sync: a junction's `i`/`G` are read at the device's stored
+    `_vlim`, which is what the shared-`_vlim` monodromy defect was about.  CHARGE
+    is a different question, and the answer across this tree is that no device's
+    `C`/`q` reads that state:
+
+      * `elements.Diode` is the ONLY stateful limiter (it keeps `_vlim`);
+      * `Semiconductor` (BJT/JFET/ZenerDiode/Varactor) limits STATE-FREE by
+        construction, as its own docstring says;
+      * `compact.PspMosLongChannel` likewise returns a limited copy;
+      * the hdl devices keep no `_vlim` (it is a code-generation local).
+
+    So the only device that COULD show the effect is the plain `Diode`, and it
+    does not.
+
+    ⚠ THE CONTROL IS THE POINT OF THIS TEST.  `dC = 0` on its own is worthless:
+    it is equally what you get if `limit()` did nothing at all, which is exactly
+    what happened when this was first probed with two hdl devices that do not
+    respond to `cir.limit` (`dG = di = 0`, a vacuous pass).  So the assertion
+    below REQUIRES the conductance to move -- proving the limiting really was
+    live -- before it accepts that the charge did not.
+
+    If a stateful limiter whose charge DOES read its state is ever added, this
+    test fails and `_C_at` needs its sync back.
+    """
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+    ep = circuit.defaultepar.copy()
+
+    def build():
+        c = SubCircuit()
+        c['vs'] = VS(1, gnd, v=0.0)
+        c['R'] = R(1, 2, r=1e3)
+        c['D'] = Diode(2, gnd)
+        return c
+
+    c1 = build()
+    k = c1.get_node_index(2)
+    x = np.zeros(c1.n)
+    x[k] = 0.75                      # the junction well into conduction
+    C0 = np.asarray(c1.C(x, ep), dtype=float).copy()
+    q0 = np.asarray(c1.q(x, ep), dtype=float).copy()
+    G0 = np.asarray(c1.G(x, ep), dtype=float).copy()
+    i0 = np.asarray(c1.i(x, ep), dtype=float).copy()
+
+    ## the same point, but with the device's limiting state left far away
+    c2 = build()
+    xs = np.zeros(c2.n)
+    xs[c2.get_node_index(2)] = 0.05
+    c2.limit(xs, xs, ep)
+    C1 = np.asarray(c2.C(x, ep), dtype=float)
+    q1 = np.asarray(c2.q(x, ep), dtype=float)
+    G1 = np.asarray(c2.G(x, ep), dtype=float)
+    i1 = np.asarray(c2.i(x, ep), dtype=float)
+
+    ## CONTROL FIRST: the limiting must actually have taken effect, or a null
+    ## result below means nothing at all.
+    dG = float(np.max(np.abs(G1 - G0)))
+    di = float(np.max(np.abs(i1 - i0)))
+    assert dG > 1.0 and di > 1e-3, \
+        'the control failed: moving the stored limiting state changed G by ' \
+        '%.2e and i by %.2e, so `limit()` did nothing here and the charge ' \
+        'result below would be vacuous' % (dG, di)
+
+    dC = float(np.max(np.abs(C1 - C0)))
+    dq = float(np.max(np.abs(q1 - q0)))
+    assert dC == 0.0 and dq == 0.0, \
+        'a limiter whose CHARGE reads its stored state now exists (dC=%.2e, ' \
+        'dq=%.2e) -- `_C_at` needs its `_sync_limit_at` back' % (dC, dq)

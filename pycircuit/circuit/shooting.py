@@ -5655,10 +5655,32 @@ class PSS(Analysis):
         tr.cir.limit(x_full, x_full, tr.epar)
 
     def _C_at(self, x_reduced):
-        """The reduced capacitance at a point, without taking a step."""
+        """The reduced capacitance at a point, without taking a step.
+
+        ⚠ NO LIMITING SYNC HERE, AND THAT IS MEASURED, NOT ASSUMED.  `_G_at`
+        needs the device limiting state to be at the point it is evaluating,
+        because a junction's `i`/`G` are read at the stored `_vlim`.  CHARGE IS
+        NOT: surveyed across every limiter in the tree,
+
+          * `elements.Diode` is the only STATEFUL one (it keeps `_vlim`), and
+            its `C`/`q` do not read it -- with the stored state moved far from
+            the evaluation point, `dC = dq = 0` while the control `dG = 15.2`
+            and `di = 3.9e-1` confirm the limiting was live;
+          * `Semiconductor` (BJT/JFET/ZenerDiode/Varactor) limits STATE-FREE by
+            construction -- "Return a limited copy of `x` -- STATE-FREE, and
+            that is the point";
+          * `compact.PspMosLongChannel` likewise returns a limited copy;
+          * the hdl devices keep no `_vlim` at all (it is a codegen local).
+
+        So there is no device whose capacitance a sync could correct.  A sync
+        was carried here for a while as "correct in principle" insurance and was
+        never exercised by any test -- this tree's own rule is that unexercised
+        machinery is a liability.  ⚠ If a stateful limiter whose CHARGE reads its
+        state is ever added, this is where the sync goes back; `_sync_limit_at`
+        is kept for that, and for `_G_at`'s no-junction path.
+        """
         tr = self._transient()
         xf = self._insert_refnode(x_reduced)
-        self._sync_limit_at(xf)
         C = tr.cir.C(xf, tr.epar)
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
