@@ -8366,6 +8366,22 @@ concurrent run moved readings 25-30% on the *same* configuration.
    a decoration. (Same family as 0t/0b and "measuring a RECONSTRUCTION", now with a procedure
    attached rather than a warning.)
 
+0ae. ⚠⚠ **A FINDING THAT LANDS EXACTLY WHERE THE THEORY PERMITS ONE IS THE MOST DANGEROUS KIND.**
+The first stage-level table showed Radau's stage 2 leaving the exact hull by 4–5 % at every grid —
+the `R(A,b) = 0` signature the peer had just predicted, on the fixture where Kraaijevanger says it
+is permitted, in the stage with the negative tableau entry. Every part of the story fit. It was an
+edge convention: the `c = 1` stage of the step ending at the falling edge was evaluated at `T/2`
+where the input function already returned the post-edge value. What saved it was naming the
+prediction BEFORE the rerun ("convention → drops sharply; tableau → persists"), and the number went
+to 0.0000. **The better a result fits the theory you are holding, the more the instrument needs a
+control that could contradict it** — a fit is not a check. ⚠ The peer's own note, recorded the
+way round they asked: the stage check was THEIR suggestion, the 5 % appeared on the check they had
+just proposed, and the seductive part was exactly that it confirmed a hypothesis someone had just
+supplied; the value came from the pre-registration, not from the idea. (Same night: "outside [0, 1]" was a
+true bound that could not fire, and an output-only check on an L-stable method confirms a property
+none of them lack — three instrument failures on one measurement, each caught only because a
+control was pre-registered.)
+
 0ad. **"THE INSTRUMENT SAYS NOTHING" CAN BE AS WRONG AS "THE INSTRUMENT PROVES IT".** This file
    recorded `null_residual` as *"flat … and tells a caller nothing"* while an outside document
    presented the same flat number as proof of robustness. **Both were wrong**, and one injection
@@ -9382,11 +9398,132 @@ is the suspect, not `im D(t)`. The `im D(t)` fixture this tree does not yet have
 `ISwitch`) in series with a capacitor, and it would be the first thing to run if B-stability is ever
 leaned on for a switching circuit.
 
+⚠ **The charge-storing diode already exists in the tests** (peer, after grepping this tree —
+`test_pcnr_charge.py` defines `DiodeWithCj`, the A1 element with a `cj` parameter), **and it still
+would not break `im D(t)`, which is the useful part:** a junction capacitance scales a FIXED
+structure — `cj` varies with voltage, so `D(t)` varies in magnitude, but its image space is unchanged
+while `cj ≠ 0`. `im D(t)` changes only on a RANK DROP. Three fixtures, in the order to run them if
+this is ever picked up (none tonight):
+
+1. **`VSwitch` + `C`** — genuine structure change, condition broken; unambiguous, and the positive
+   control for the failure mode.
+2. **`DiodeWithCj` peak detector** — `im D` constant however hard `cj` swings; the negative control
+   that should NOT fail.
+3. **A varactor at deep reverse bias** — `im D` FORMALLY constant but numerically near-rank-deficient;
+   the "strong stepsize restrictions" would be expected as gradual degradation rather than a clean
+   failure. **The case a binary `im D` check passes and the solver still suffers** — the one to
+   measure before trusting a structural test.
+
 ⚠ **§D shape, from the edit that first wrote this paragraph:** an unquoted shell heredoc carrying
 Python source with backticks in its strings let the shell EXECUTE every backtick span and splice the
 empty result back — the file "wrote OK", the syntax check passed, and every `code` span in the
 inserted text was silently gone. Caught by diffing for a token that had to be there. Quote the
 heredoc, always; and grep the written text for a token that must survive.
+
+#### ✅ THE LADDER MEASUREMENT (2026-09-08): no absolute-monotonicity violation observed, at OUTPUT or STAGE level — after three instrument failures, each caught by a control
+
+**Fixture, Kraaijevanger's own linear setting:** a 3-section RC ladder (`τ = 1e-3, 1e-2, 1`) driven by
+an exact 0/1 square wave, so every node's exact response is monotone between the edges; `h/τ_fast`
+runs from 50 (20 points) to 0.5 (2000). Positive control: trap (`R(∞) = −1`) must ring at
+`h ≫ τ_fast`; the hand recursion at `h = 5τ` gives `x = 0, 0.714, 1.122, 0.948, 1.022` (peer
+reproduced both hand values independently). Second fixture: a diode peak detector — a nonlinear
+CONDUCTANCE fixture (see the `im D(t)` note: this `Diode` has no charge).
+
+⚠⚠ **Three instrument failures before a number could be read, each caught by a named control:**
+
+1. **The pre-registered metric could not fire.** "Worst excursion outside `[0, 1]`" used the
+   SOURCE's bound; the fast node lives in `[0.15, 0.85]` (loaded by `R2`), so trap's 12–43 % ring
+   of the LOCAL swing (visible in the samples: 0.805 → 0.754 → 0.829) never left `[0, 1]`. Every
+   method printed 0.00 at every grid. **A true-but-loose bound is a dead instrument** — the control
+   was pre-registered ("if trap shows no violation the metric is dead") and it did its job.
+   Replaced by TV excess `(TV − 2·swing)/(2·swing)`, tight by construction.
+2. **An output-only check is blind to `R(A,b)` on this fixture** (peer): on a linear problem whose
+   stiffness is one fast decaying mode, L-stability alone (`R(∞) = 0`) annihilates the ring at the
+   step output, so "the four L-stable methods show nothing" is expected from a property none of
+   them lack. Kraaijevanger's radius is a STAGE-level condition (`A ≥ 0`), so the `R = 0` signature
+   is a stage value leaving the hull while `x_{n+1}` lands inside. On a linear ODE the method IS its
+   tableau, so the coded `A`/`B` of `TRBDF2Integrator`, `ESDIRK43Integrator`, `RadauIIA3Integrator`
+   (imported, not retyped) were replayed in numpy against the exact periodic solution (matrix
+   exponentials), every stage value inspected against each node's exact range.
+3. **The first stage table showed radau's stage 2 leaving the hull by 4–5 % at EVERY grid — and it
+   was my edge convention.** The worst stage sat in the step ENDING at the falling edge, whose
+   `c = 1` stage is evaluated exactly at `T/2`, where the input function already returned the
+   post-edge value: the collocation polynomial was being forced with the wrong input inside a
+   pre-edge step. Prediction named before the rerun: if the excursion is the convention's it drops
+   sharply under the left limit (an edge belongs to the step that FOLLOWS it); if the tableau's it
+   persists. **It went to 0.0000 at every grid.** ⚠ Had the prediction not been named, a 5 %
+   "R = 0 signature exactly where the theory permits one" would have been filed as a finding.
+
+**The table (numpy replay of the coded tableaux; `out / stg / tv` = worst output excursion / worst
+STAGE excursion outside the exact per-node hull, in units of that node's swing / TV excess of the
+outputs; `h/τ_fast` = 1000/npts):**
+
+| method | 20 | 50 | 100 | 200 | 500 | 1000 | 2000 |
+|---|---|---|---|---|---|---|---|
+| trap (CN, `R = 2`) — **control** | 0.01/0.01/**0.42** | 0.02/0.02/**0.57** | 0/0/**0.49** | 0/0/**0.32** | 0/0/**0.12** | 0/0/0 | 0/0/0 |
+| backward Euler (`R = ∞`) | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 |
+| trbdf2 (`R = 1 + √2`) | 0/0/0 | 0/0/0.02 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 |
+| esdirk43 (`R = 0`) | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 |
+| **radau (`R = 0`, the default)** | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 |
+
+**Reading, with the label that travels with it:** the control fires (trap rings 42–57 % at
+`h ≥ 5τ`, vanishing at `h ≤ τ` as `R = 2` predicts — `h_FE = τ_fast/2`, so `R·h_FE ≈ 1.2e-3`, i.e.
+830 points, and the ring is gone by 1000), and **no stage of any L-stable method left the exact
+hull on this fixture at any step size from `h = 50τ` down to `h = τ/2`, and no output did either.**
+TR-BDF2's one 0.02 TV excess at 50 points (`h = 20τ`, far outside its `2.414·h_FE` guarantee) is
+the only non-zero among the four, and it is permitted. This is the honest record the peer asked
+for: *"no violation on the setting where the theory says one is permitted"* — an ABSOLUTE
+MONOTONICITY statement about this linear fixture, silent on B-stability, silent on the `im D(t)`
+conditional, and silent on nonlinear stage overshoot into a device's steep region (the mechanism
+by which `R = 0` would bite in a circuit: a stage value evaluated where a diode's conductance is
+1e6× larger). `R = 0` remains a theorem; on Kraaijevanger's own linear setting it did not
+present.
+
+**The stack's own PSS run, same fixture, TV excess of the step outputs** (event breaking on and off
+made no difference for trap — the edges sit on grid points either way):
+
+| method | 20 | 50 | 100 | 200 | 500 | 1000 | 2000 |
+|---|---|---|---|---|---|---|---|
+| trap | nc | nc | nc | **0.324** | **0.115** | 0 | 0 |
+| gear | 8.5e-04 | 6.7e-03 | 3.7e-03 | 0 | 0 | 0 | 0 |
+| trbdf2 | 5.9e-02 | 3.5e-02 | 0 | 0 | 2.6e-03 | 0 | 0 |
+| esdirk43 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| **radau** | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Trap's stack numbers (0.324, 0.115) reproduce the bare-tableau replay (0.32, 0.12) to two digits,
+so the stack runs the tableau it says it does; trap does not converge at all above `h = 10τ`.
+Radau and esdirk43 are zero at every grid in the stack as in the replay. ⚠ Two rows the replay
+does not cover or does not match: **gear** (multistep, no stage replay) shows a small ring at
+`h ≥ 10τ` — BDF2 is not SSP, permitted; and **trbdf2 shows 3–6 % at `h ≥ 20τ` where the bare
+tableau showed 0–2 %** — both far outside its `2.414·h_FE` guarantee, so no theorem is touched,
+but the excess over the replay is unexplained (the stack's L-stable period opener or its event
+handling of the edge step are the candidates) and is recorded rather than chased. The peak
+detector (nonlinear conductance, node `c`) is clean to 1e-14 for every method at every grid.
+
+✅ **The instrument is validated against theory, not merely moved** (peer): CN's ring vanishes by
+1000 points where `R = 2` puts it (830), TR-BDF2's single 0.02 sits at `h = 20τ` outside its
+2.414, BE shows nothing anywhere — three methods with known radii, three consistent placements.
+That is what makes the radau/esdirk null worth something.
+
+⚠⚠ **THE NONLINEAR CAVEAT HAS A FORMULA, AND IT IS A FIXTURE DESIGN** (peer, from Bonaventura
+§2.3 eq 2.13 — Kraaijevanger's circle condition):
+
+    ‖ f(t, ũ) − f(t, u) + ρ (ũ − u) ‖  ≤  ρ ‖ ũ − u ‖
+
+`R(A,b)` governs monotonicity for problems satisfying this with parameter `ρ`, and the admissible
+step is `h ≤ R · h_FE` with `h_FE = 1/ρ`. **`ρ` is the steepest local slope of the vector field.**
+For a diode in conduction `ρ` is enormous and `R/ρ` is tiny: with `R > 0` (TR-BDF2) a safe step
+exists but shrinks as `1/ρ`; with `R = 0` (radau, esdirk43) there is no safe step at ANY `ρ` — the
+guarantee is empty, which is what `R = 0` means, and precisely why a linear fixture cannot exhibit
+it. **The fixture, pre-registrable, not built:** a nonlinear element with a KNOWN, TUNABLE `ρ` (an
+exponential or `tanh` conductance with a steepness parameter), so the predicted boundary `R/ρ` can
+be swept exactly as CN's `R = 2` boundary was on the ladder. Pre-registration: **TR-BDF2 violates
+above `R/ρ` and not below, with the boundary MOVING as `1/ρ` when `ρ` is swept; radau and esdirk43
+violate at every `ρ` with no boundary; BE never violates.** If TR-BDF2's boundary does not move
+with `ρ`, the metric is measuring something else and that is known at once. Without a tunable `ρ`
+a nonlinear fixture is another unfalsifiable null — the trap the `[0, 1]` metric already walked
+into. The travelling label gains its last clause: silent on nonlinear overshoot — *testable, with
+`ρ` as the knob, whenever someone wants it.*
 
 ### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
 
