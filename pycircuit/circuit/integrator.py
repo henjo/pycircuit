@@ -562,6 +562,18 @@ class ThetaIntegrator(TrapezoidalIntegrator):
         ## and never exercised the seed.  Refusing the Euler opener means this
         ## method reads `iq_{-1}` on its first step, where the run seeds zero:
         ## measured, that alone costs a full order (0.97 against 2.00).
+        ##
+        ## ⚠⚠ AND IT IS A JACOBIAN STATEMENT AS WELL AS AN ACCURACY ONE.  The
+        ## seed `-(i(x_0) + u(t_0))` is a FUNCTION OF `x_0`, so any Jacobian
+        ## taken with respect to `x_0` -- the shooting monodromy above all --
+        ## carries `d(iq_0)/d(x_0) = -G(x_0)`.  `shooting.py` seeded that at
+        ## ZERO for every method (nothing before this one formed a companion
+        ## current at `x_0`), which ANNIHILATED `null(C)` in the monodromy:
+        ## the L-stable opener this class exists to remove, reintroduced in
+        ## the derivative.  Cost 99 shooting evaluations against trap's 3 on a
+        ## LINEAR circuit, where an exact Newton must land in one step; the
+        ## answer was unchanged throughout.  See `PSS._pq_seed_at_x0`.  A NEW
+        ## METHOD THAT RETURNS TRUE HERE INHERITS THAT FIX AND NEEDS NOTHING.
         return True
 
     def check_order_drop(self, h_curr, h_last, is_first_step):

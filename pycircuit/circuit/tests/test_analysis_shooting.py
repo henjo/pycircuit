@@ -13382,7 +13382,14 @@ def test_monodromy_matches_a_finite_difference_of_the_period_map():
     ## gear's solved-history map needs no x0_unknown (and refuses it); the
     ## one-step methods are checked in the formulation whose map IS a function
     ## of the state, which is what makes the FD reference the right map.
+    ## ⚠ `theta` IS HERE FOR A REASON THE OTHERS ARE NOT.  Its opening seeds a
+    ## CONSISTENT `iq_{-1}` that depends on `x_0`, so its monodromy carries a
+    ## term (`-G(x_0)`) that no other method's does -- and the FD of the period
+    ## map is the only reference that sees it, because dropping the term costs
+    ## iterations and not accuracy.  See
+    ## `test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed`.
     for method, kw in (('gear', {}), ('trap', {'x0_unknown': True}),
+                       ('theta', {'x0_unknown': True}),
                        ('radau', {}), ('trbdf2', {})):
         pss = PSS(build(15.0), method=method, reltol=1e-13)
         with warnings.catch_warnings():
@@ -15048,3 +15055,250 @@ def test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance()
     assert abs(got[0] - got[1]) / abs(got[0]) < 1e-12, \
         'c/psd should be constant BY CONSTRUCTION -- if it is not, the ' \
         'quadratic form has acquired a psd dependence it should not have'
+
+
+def _b2_resonator():
+    """The B2 gate's Q = 20 resonator -- `benchmarks/pss_b2_theta_gate.py`.
+
+    NOT `_q20_rlc`, and the difference is load-bearing: `theta - 1/2 = C h`,
+    so with `ThetaIntegrator.DEFAULT_C` fixed at 1e4 the bias a period carries
+    is `C T`, and these two fixtures differ in `T` by 159x.  Every recorded B2
+    number (peak 20.01524 at K = 200, `|mode|^K = 0.7778`) belongs to this one.
+    """
+    from pycircuit.circuit.elements import VSin
+    circuit.default_toolkit = circuit.numeric
+    Lv, Cv, Q = 1e-3, 1e-9, 20.0
+    f0 = 1.0 / (2 * np.pi * np.sqrt(Lv * Cv))
+    cir = SubCircuit()
+    cir.add_node('n1'); cir.add_node('n2')
+    cir['vs'] = VSin(gnd, 'n1', va=1.0, freq=f0)
+    cir['L'] = L('n1', 'n2', L=Lv)
+    cir['C'] = C('n2', gnd, c=Cv)
+    cir['R'] = R('n1', 'n2', r=Q * np.sqrt(Lv / Cv))
+    return cir, 1.0 / f0
+
+
+def _shooting_evaluations(method, K, T, **kw):
+    """Run the B2 resonator and return (peak, evaluation count, func, points).
+
+    Counts calls to the SHOOTING residual, which is what a Newton iteration
+    costs here -- one traversal of the period plus one monodromy.
+    """
+    import warnings as _w
+    import pycircuit.circuit.analysis as _an
+    pts, box, orig = [], {}, _an.fsolve
+
+    def spy(f, x0, *a, **kwa):
+        if 'PSS.solve' not in f.__qualname__:
+            return orig(f, x0, *a, **kwa)
+        box['f'] = f
+
+        def logged(x, *aa):
+            pts.append(np.array(x, float))
+            return f(x, *aa)
+        logged.__qualname__ = f.__qualname__
+        return orig(logged, x0, *a, **kwa)
+
+    circuit.default_toolkit = circuit.numeric
+    _an.fsolve = spy
+    try:
+        cir, _T = _b2_resonator()
+        pss = PSS(cir, method=method, reltol=1e-3)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = pss.solve(period=T, timestep=T / K, maxiterations=200, **kw)
+    finally:
+        _an.fsolve = orig
+    assert pss.converged, '%s at K=%d did not converge' % (method, K)
+    peak = float(np.max(np.abs(np.asarray(res['tpss'].v('n2'), float).ravel())))
+    return peak, len(pts), box['f'], pts
+
+
+def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
+    """B2's one open item, closed: it was a MISSING CHAIN RULE, not the method.
+
+    B2 shipped `theta` as an available method rather than a recommendable one
+    because it wanted far more shooting iterations than `trap` at the same K,
+    with the right peak at every K.  That cost is not a property of the theta
+    method.  It is one term.
+
+    ⚠ THE RECORDED FIGURE WAS "~150 at K = 400 against trap's 40"; re-measured
+    here on the B2 gate resonator it is 99 against trap's 3, so the number is
+    restated rather than quoted.  The 40 in the old record is `_pss_lte`'s
+    `maxiterations`, not a count.
+
+    `theta` refuses the L-stable opener, so it READS `iq_{-1}` on its first
+    step, where `Transient._begin_run` seeds `-(i(x_0) + u(t_0))` -- a FUNCTION
+    OF THE UNKNOWN (`Integrator.needs_consistent_iq0`).  Every `open_at_x0`
+    branch in `shooting.py` seeded `d(iq_0)/d(x_0) = 0` and said so in the same
+    words, "no companion current has been formed yet" -- true of every method
+    written before this one.  Dropping `-G(x_0)` did not perturb the monodromy
+    slightly: it ANNIHILATED `null(C)`, which is precisely what an L-stable
+    Euler opener does, i.e. the one thing this method exists not to do.
+
+    ⚠⚠ THE ANSWER WAS NEVER WRONG, WHICH IS WHY NOTHING CAUGHT IT.  The
+    residual is the residual; only the Newton DIRECTION was wrong, so the solve
+    still landed on the same orbit and every peak in the B2 record is
+    reproduced here to the digit.  A test that compares an amplitude cannot see
+    this class of defect at all -- so this one checks the JACOBIAN and the
+    ITERATION COUNT.
+
+    ⚠ THE GATE IS THAT A LINEAR CIRCUIT FORCES THE ANSWER.  `phi` is affine in
+    `x_0`, so an EXACT shooting Newton lands in one step, whatever the method,
+    whatever the grid.  Residual evaluations on this fixture:
+
+        trap,  x0_unknown=True       3 /  3 /  3    at K = 100 / 200 / 400
+        theta, before                9 / 64 / 99
+        theta, after                 3 /  3 /  3
+
+    ⚠ AND `trap` WITH `x0_unknown=False` TAKES 7 / 6 / 77 HERE, so "many
+    evaluations" is not by itself a theta symptom -- the manufactured-opening
+    formulation has an inexact Jacobian BY CONSTRUCTION and `_traverse` says so
+    in as many words.  It is not a control for this defect; the control is the
+    SAME formulation under a different method, which is the row above it.
+
+    ⚠ THE JACOBIAN CHECK IS DELTA-SWEPT because that is how a real error is
+    told from FD noise: noise makes a V in delta (truncation down, roundoff
+    up), a real error sits FLAT.  Before the fix the relative disagreement was
+    6.344 at every delta from 1e-3 to 1e-8; after it, ~1.4e-10.
+    """
+    from pycircuit.circuit.shooting import PSS as _PSS
+    cir, T = _b2_resonator()
+
+    ## (1) The peaks are UNCHANGED -- the B2 record, to the digit.
+    recorded = {100: 19.98407, 200: 20.01524, 400: 20.02255}
+    counts = {}
+    for K in (100, 200, 400):
+        peak, n_theta, f_theta, pts = _shooting_evaluations('theta', K, T)
+        assert abs(peak - recorded[K]) < 5e-5, \
+            'theta at K=%d moved off the B2 record: %.5f vs %.5f. The seed ' \
+            'fixes the JACOBIAN and must not touch the residual.' \
+            % (K, peak, recorded[K])
+        _pk, n_trap, _f, _p = _shooting_evaluations('trap', K, T,
+                                                    x0_unknown=True)
+        counts[K] = (n_theta, n_trap)
+        ## (2) One Newton step on a linear circuit, and `trap` says what that
+        ## costs in this harness (a seed evaluation, the step, the check).
+        assert n_theta == n_trap, \
+            'theta took %d residual evaluations at K=%d where trap in the ' \
+            'SAME formulation took %d. On a linear circuit phi is affine, so ' \
+            'an exact Newton lands in one step -- a gap here is a Jacobian ' \
+            'claim, not a conditioning one.' % (n_theta, K, n_trap)
+        assert n_theta <= 4, \
+            'even trap needs %d evaluations at K=%d, so the harness is no ' \
+            'longer measuring a one-step Newton and the comparison above is ' \
+            'vacuous' % (n_theta, K)
+
+    ## (3) THE JACOBIAN ITSELF, delta-swept against an FD of its own residual.
+    _pk, _n, func, pts = _shooting_evaluations('theta', 200, T)
+    for label, x in (('the seed', pts[0]), ('the solution', pts[-1])):
+        x = np.asarray(x, float)
+        F0, J = func(x.copy())
+        J = np.asarray(J, float)
+        scale = max(float(np.max(np.abs(x))), 1.0)
+        rels = []
+        for d in (1e-3, 1e-4, 1e-5, 1e-6):
+            dd = d * scale
+            Jfd = np.empty_like(J)
+            for j in range(len(x)):
+                xp = x.copy(); xp[j] += dd
+                xm = x.copy(); xm[j] -= dd
+                Jfd[:, j] = (np.asarray(func(xp)[0], float)
+                             - np.asarray(func(xm)[0], float)) / (2 * dd)
+            rels.append(float(np.max(np.abs(J - Jfd)))
+                        / max(float(np.max(np.abs(Jfd))), 1e-30))
+        assert max(rels) < 1e-7, \
+            'theta at %s: the analytic shooting Jacobian disagrees with a ' \
+            'finite difference of its own residual by %.3e (delta sweep %s). ' \
+            'FLAT across decades means a real term is missing, not FD noise; ' \
+            'it was 6.344 with d(iq_0)/d(x_0) dropped.' \
+            % (label, max(rels), ['%.2e' % r for r in rels])
+
+    ## (4) AND THE MODE THAT WAS LOST IS THE ONE THE METHOD EXISTS FOR.  With
+    ## the seed dropped, `I - M` carries 1 on `null(C)` -- the signature of an
+    ## L-stable opener -- instead of `1 - (-(1-theta)/theta)^K = 1.7778`.
+    _pk, _n, func_t, pts_t = _shooting_evaluations('theta', 200, T)
+    _F, J_ok = func_t(np.asarray(pts_t[-1], float))
+    saved = _PSS._pq_seed_at_x0
+    try:
+        _PSS._pq_seed_at_x0 = lambda self, x: None
+        peak_n, n_neutered, func_n, pts_n = _shooting_evaluations('theta',
+                                                                  200, T)
+        _F, J_bad = func_n(np.asarray(pts_n[-1], float))
+    finally:
+        _PSS._pq_seed_at_x0 = saved
+    J_ok = np.asarray(J_ok, float); J_bad = np.asarray(J_bad, float)
+    dropped = float(np.max(np.abs(np.diag(J_ok) - np.diag(J_bad))))
+    mode = 0.7778                      # ((1-theta)/theta)^K, K even -> positive
+    assert abs(dropped - mode) < 5e-3, \
+        'the neutered Jacobian should differ from the correct one by exactly ' \
+        'the null(C) multiplier %.4f on the diagonal, and differs by %.4f -- ' \
+        'so this test is no longer pinning the mechanism it names' \
+        % (mode, dropped)
+    assert n_neutered > 4 * counts[200][1], \
+        'NEUTER CHECK: with d(iq_0)/d(x_0) dropped the solve took %d ' \
+        'evaluations, not the 64 on record -- if the defect no longer costs ' \
+        'iterations then this test has stopped guarding anything' \
+        % n_neutered
+    assert abs(peak_n - recorded[200]) < 5e-5, \
+        'and the neutered run must still reach the SAME peak (%.5f vs %.5f) ' \
+        '-- the point of the whole test is that the answer was never wrong' \
+        % (peak_n, recorded[200])
+
+    ## (5) THE OTHER TWO PATHS THAT OPEN AT `x_0`, and the mode itself.  The
+    ## FACTORED matvec and its reverse replay carry the same seed, so the
+    ## monodromy they build must show the DAMPED null(C) mode this method
+    ## exists to produce -- `((1-theta)/theta)^K`, positive at even K, which
+    ## `ThetaIntegrator`'s own table gives as 7.778e-01 at C = 1e4.  Before the
+    ## fix that eigenvalue was 0: annihilated, exactly as an Euler opener does.
+    import warnings as _w
+    cir2, _T = _b2_resonator()
+    pss2 = PSS(cir2, method='theta', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss2.solve(period=T, timestep=T / 200, maxiterations=60)
+    fp = pss2.factored_period()
+    assert fp.kind == 'plain', fp.kind
+    w = fp.width
+    Mf = np.column_stack([np.asarray(fp.matvec(e), float) for e in np.eye(w)])
+    Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), float)
+                          for e in np.eye(w)])
+    rel = float(np.max(np.abs(Mt - Mf.T))) / float(np.max(np.abs(Mf)))
+    assert rel < 1e-9, \
+        'theta: the reverse replay disagrees with the transpose of the ' \
+        'forward one by %.3e -- the seed enters the adjoint as ' \
+        '`pq_open^T w2` at the CLOSE of the backward pass, and dropping it ' \
+        'there is invisible to the forward check' % rel
+    lam = np.sort(np.abs(np.linalg.eigvals(Mf)))
+    mode_k = 0.777768                  # ((1-theta)/theta)^K at C=1e4, K=200
+    assert abs(lam[0] - mode_k) < 1e-4, \
+        'the smallest multiplier is %.6f, not the damped null(C) mode %.6f. ' \
+        'That mode IS the method: with the seed dropped it comes back as 0 ' \
+        '(annihilated, i.e. an L-stable opener), which is the thing theta ' \
+        'exists not to do.' % (lam[0], mode_k)
+    decay = float(np.exp(-np.pi / 20.0))
+    assert abs(lam[-1] - decay) < 1e-3, \
+        'and the PHYSICAL pair must still be exp(-pi/Q) = %.6f, not %.6f -- ' \
+        'otherwise the seed has moved the circuit and not just the opening' \
+        % (decay, lam[-1])
+
+    ## (6) AND THE FOURTH PATH, which the widened `opening` tuple found:
+    ## PAC's `_forced_replay` opens `Pq` the same way, and it must carry the
+    ## SAME seed as the monodromy it superposes with -- `y_end = M y0 + w` is
+    ## what lets PAC solve an `m x m` system instead of an `(N m) x (N m)`
+    ## one, and a seed in one and not the other breaks it silently.
+    m = pss2.cir.n - 1
+    u_ac = np.zeros(m); u_ac[0] = 1.0
+    fac = 0.37 / T
+    w_zero, _ = pss2._forced_replay(fp, fac, u_ac, y0=None)
+    rng = np.random.default_rng(0)
+    worst = 0.0
+    for _k in range(3):
+        y0 = rng.standard_normal(m) + 1j * rng.standard_normal(m)
+        y1, _ = pss2._forced_replay(fp, fac, u_ac, y0=y0)
+        worst = max(worst, float(np.max(np.abs(y1 - (Mf @ y0 + w_zero))))
+                    / max(float(np.max(np.abs(y1))), 1e-30))
+    assert worst < 1e-9, \
+        'theta: the forced replay is not `M y0 + w` (%.3e). The seed must be ' \
+        'in BOTH or PAC superposes a driven response onto a different map.' \
+        % worst

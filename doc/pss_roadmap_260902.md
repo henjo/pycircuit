@@ -6317,9 +6317,84 @@ inherited; and theta's LTE alarm is **not theta-specific** — trap reports 5.37
 tolerance where theta reports 4.79e+06/1.19e+06 on the same grids, i.e. slightly **lower**. I
 nearly "fixed" the second before checking trap.
 
-⚠ **OPEN: convergence cost is characterised but not addressed.** K=400 needs ~150 Newton
-iterations where 40 suffices for trap; the peak is right at every K. Before `theta` is a
-recommendable default rather than an available method, that wants explaining.
+✅✅ **CLOSED 2026-09-07 — A MISSING CHAIN RULE IN THE SHOOTING JACOBIAN, not a property of the
+method.** Re-measured on the B2 gate resonator (`benchmarks/pss_b2_theta_gate.py`'s fixture, NOT
+`_q20_rlc` — `theta - 1/2 = C h`, so the two differ in `C T` by 159x and only the first reproduces
+the recorded peaks): `theta` took **9 / 64 / 99** residual evaluations at K = 100 / 200 / 400 where
+`trap` in the **same formulation** (`x0_unknown=True`) took **3 / 3 / 3**. The old record's "~150
+against trap's 40" restated: 40 was `_pss_lte`'s `maxiterations`, not a count.
+
+**THE GATE THAT TURNED IT FROM A CONDITIONING STORY INTO A FALSIFIABLE CLAIM, in one line: on a
+LINEAR circuit `phi` is affine in `x_0`, so an EXACT shooting Newton lands in ONE step.** `trap`
+did. `theta` did not. That is a Jacobian statement, and a Jacobian can be measured.
+
+**The term.** `theta` refuses the L-stable opener, so it reads `iq_{-1}` on its first step, where
+`Transient._begin_run` seeds `iq_0 = -(i(x_0) + u(t_0))` — **a function of the unknown**
+(`needs_consistent_iq0`, B2's own prerequisite #1). Every `open_at_x0` branch in `shooting.py`
+seeded `d(iq_0)/d(x_0) = 0`, each with the same comment — *"no companion current has been formed
+yet"* — which was true of every method written before this one. Dropping `-G(x_0)` did not perturb
+the monodromy slightly: it **ANNIHILATED `null(C)`**, which is precisely what an L-stable Euler
+opener does. The Jacobian was claiming the opener the method exists to remove.
+
+Delta-swept against a finite difference of the shooting residual — FLAT at 6.344 across six decades
+of delta, so a real missing term and not FD noise — relative error **6.344 → 1.4e-10**, evaluations
+**99 → 3**. The monodromy now carries `((1-theta)/theta)^K = 0.7778` (`ThetaIntegrator`'s own
+table) beside the physical `exp(-pi/Q) = 0.8546` pair, where it used to carry a zero.
+
+⚠⚠ **THE ANSWER WAS NEVER WRONG, WHICH IS EXACTLY WHY NOTHING CAUGHT IT.** The residual is the
+residual; only the Newton DIRECTION was wrong, so the solve landed on the same orbit and every peak
+in the B2 record (19.98407 / 20.01524 / 20.02255) reproduces to the digit with the term and without
+it. **No test that compares an amplitude can see this class of defect.** On a NONLINEAR fixture it
+is not merely slow: with the term dropped, `theta` does not converge at all in 60 iterations on the
+diode monodromy fixture — so the linear circuit was the KINDER measurement, and the one that made
+the mechanism legible.
+
+⚠ **THE CONTROL, because "many iterations" is not by itself a theta symptom:** `trap` with
+`x0_unknown=False` takes **7 / 6 / 77** on the same fixture. That formulation has an inexact
+Jacobian BY CONSTRUCTION and `_traverse` says so in as many words. Comparing `theta` against
+`trap`'s DEFAULT — which is what the original observation did — compares two changes at once; the
+control is the same formulation under a different method.
+
+**Fixed** in `PSS._pq_seed_at_x0`, consumed by all FOUR paths that open at `x_0`: the dense
+`_traverse`, the factored matvec (`opening` grew a fourth element rather than the seed being read
+off `self` — a matrix-free replay happens after the run), the reverse replay, where it closes the
+backward pass as `pq_open^T w2` and is invisible to a forward-only check, and **PAC's
+`_forced_replay`, which the widened tuple found for me**: five tests failed on the unpack, and the
+forced replay must carry the SAME seed as the monodromy or `y_end = M y0 + w` stops holding
+(verified for `theta` at 3.8e-11). Returns `None` for
+every method that does not declare `needs_consistent_iq0`, so nothing else moves a bit.
+Tests: `test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed` (verified to fail on the
+neuter: 9 evaluations at K=100 against trap's 3), and `theta` added to
+`test_monodromy_matches_a_finite_difference_of_the_period_map`.
+
+**`theta` is now a method whose shooting Newton converges like every other one's.**
+
+⚠⚠ **TWO THINGS THE SAME MEASUREMENT SURFACED, FLAGGED AND DELIBERATELY NOT ACTED ON.**
+
+1. **`DEFAULT_C = 1e4` IS NOT A RECIPE — IT IS `C T = 0.0628` MEASURED ON ONE PERIOD, stored as a
+   RATE.** `null(C)` is damped over a period by `((1-theta)/theta)^K ≈ exp(-4 C T)`, a function of
+   `C T` and not of `C`, and the knee the B2 gate located is a statement about `rcond(I - A^K)` —
+   i.e. about that product. The gate's fixture has `T = 6.283e-6`; `_q20_rlc` has `T = 1e-3`, 159x
+   more, so the same `C` gives 159x the bias. **Measured on `_q20_rlc` (analytic 20 V), predicted
+   before it was run:**
+
+   | K | trap | C=1e4 (CT=10) | C=1e3 (CT=1) | C=62.8 (CT=0.0628) |
+   |---|---|---|---|---|
+   | 100 | 19.98967 | **15.91117** | 19.49008 | 19.95755 |
+   | 200 | 19.99811 | **18.80471** | 19.87200 | 19.99015 |
+   | 400 | 19.99957 | **19.68875** | 19.96805 | 19.99759 |
+
+   At the calibrated `C T` theta tracks trap to 0.04%; at the shipped default on a 1 kHz circuit it
+   is **20% low at K = 100 and silently converged**. The knee is real; the number carrying it is
+   not dimensionless. A period-normalised default (`C = 0.0628 / T`) would transfer — but the
+   integrator does not see `T`, only `h`, so this is a plumbing change, and it moves every recorded
+   theta number. **Not taken here: it needs its own gate (high Q, nonlinear) rather than a
+   one-liner.**
+
+2. **`cbias` IS UNREACHABLE THROUGH `PSS`.** `_integrator_for` builds `table[method]()`, so
+   `method='theta'` always takes `DEFAULT_C`. A standalone `Transient(cir,
+   integrator=ThetaIntegrator(cbias=...))` can set it; a shooting run cannot. Given (1), that is
+   the knob a user would most need.
 
 ⚠ **The plumbing gate that makes the rest trustworthy:** at `C = 0` theta reproduces trapezoidal
 coefficient for coefficient, and with a forced Euler opener it matches trap's RC errors to every

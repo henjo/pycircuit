@@ -581,12 +581,48 @@ opener would reintroduce B16's floor and leave the class with no purpose.
 ⚠ **Plumbing gate:** at `C = 0` theta reproduces trapezoidal coefficient-for-coefficient, and with
 a forced Euler opener matches trap's RC errors to every digit (4.046e-06 / 1.201e-06 / 3.251e-07).
 
-⚠ **OPEN:** K=400 needs ~150 Newton iterations where trap needs 40. The peak is right at every K,
-but until that is explained `theta` is an AVAILABLE method, not a recommendable default.
+✅ **CLOSED 2026-09-07 — it was a MISSING CHAIN RULE in the SHOOTING JACOBIAN, not the method.**
+Re-measured on the B2 gate resonator, `theta` took 9 / 64 / 99 residual evaluations at
+K = 100 / 200 / 400 where `trap` in the SAME formulation (`x0_unknown=True`) took 3 / 3 / 3.
+
+**On a linear circuit `phi` is affine in `x_0`, so an exact shooting Newton lands in ONE step** —
+whatever the method, whatever the grid. That is the gate the B2 record never applied, and it turns
+"an unexplained conditioning cost" into a falsifiable Jacobian claim in one line.
+
+`theta` refuses the opener, so it reads `iq_{-1}` on its first step, where `Transient._begin_run`
+seeds `-(i(x_0) + u(t_0))` — **a function of the unknown**. Every `open_at_x0` branch in
+`shooting.py` seeded `d(iq_0)/d(x_0) = 0` with the same comment, *"no companion current has been
+formed yet"* — true of every method written before this one. Dropping `-G(x_0)` did not perturb the
+monodromy slightly: it **annihilated `null(C)`**, which is exactly what an L-stable Euler opener
+does — the one thing this method exists not to do. Delta-swept against a finite difference of the
+shooting residual (FLAT over six decades, so a real term and not FD noise): relative error
+**6.344 → 1.4e-10**, evaluations **99 → 3**, and the monodromy now carries the damped mode
+`((1-theta)/theta)^K = 0.7778` beside the physical `exp(-pi/Q) = 0.8546` pair where it used to
+carry a zero.
+
+⚠⚠ **THE ANSWER WAS NEVER WRONG, WHICH IS WHY NOTHING CAUGHT IT.** The residual is the residual;
+only the Newton direction moved. Every peak in the B2 record reproduces to the digit with and
+without the term. **No test that compares an amplitude can see this class of defect** — and on a
+NONLINEAR fixture it is not merely slow: with the term dropped, `theta` fails to converge at all in
+60 iterations on the diode monodromy fixture.
+
+Fixed in `PSS._pq_seed_at_x0`, consumed by all FOUR `open_at_x0` paths (dense `_traverse`, the
+factored matvec, the reverse replay — where it closes the backward pass as `pq_open^T w2` and is
+invisible to a forward-only check — and PAC's `_forced_replay`, which the widened `opening` tuple
+found: the forced replay must carry the same seed as the monodromy it superposes with, or
+`y_end = M y0 + w` stops holding). `None` for every method that does not declare
+`needs_consistent_iq0`, so nothing else moves a bit.
+Test: `test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed`, plus `theta` added to
+`test_monodromy_matches_a_finite_difference_of_the_period_map`.
+
+⚠ **The control that keeps this honest:** `trap` with `x0_unknown=False` takes 7 / 6 / 77 on the
+same fixture, so "many evaluations" is not by itself a theta symptom. That formulation has an
+inexact Jacobian BY CONSTRUCTION and `_traverse` says so; it is a known cost, not this defect.
 
 **So the refactor's claim survives, narrowed to what it actually said:** a new *RK* method is
 tableau-only. A new *LMM* is not, and the cost is whatever framework assumption it violates — here,
-the universal one that every method opens with an L-stable step.
+the universal one that every method opens with an L-stable step. **And that assumption was not only
+in the transient: it was written into the monodromy too, in three places.**
 
 ---
 

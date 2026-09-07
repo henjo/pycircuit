@@ -2860,6 +2860,13 @@ class PSS(Analysis):
         ## seed `Pq` at zero, which is what `_traverse` does there, and
         ## `a_open` is unused in consequence.
         a_open, b_open = ((None, 0.0) if open_at_x0 else self._coeffs)
+        ## ⚠ AND THE ONE THING `b_open = 0` DOES NOT COVER: a method that
+        ## SEEDS a consistent `iq_{-1}` has formed a companion current at
+        ## `x_0` after all, and it depends on `x_0`.  Carried in `opening`
+        ## rather than read off `self` because a matrix-free replay happens
+        ## after the run -- the same reason `steps` stores its coefficients.
+        ## `None` for every other method, which keeps them bit-identical.
+        pq_open = self._pq_seed_at_x0(x_in) if open_at_x0 else None
         Pt = [np.zeros(m), np.zeros(m)]
         Pqt = np.zeros(m)
         Cs = [C_open, C_open]
@@ -2884,13 +2891,13 @@ class PSS(Analysis):
                 Pt = [Pt_new, Pt[0]]
             Cs = [C_new, Cs[0]]
         self._want_dfdh = False
-        return ((C_open, a_open, b_open), steps, x0, x,
+        return ((C_open, a_open, b_open, pq_open), steps, x0, x,
                 (Pt[0] if want_dT else None))
 
     def _monodromy_matvec_plain(self, opening, steps, v):
         """`M v` for the plain path, one column through the stored steps."""
         m = self.cir.n - 1
-        C_open, a_open, b_open = opening
+        C_open, a_open, b_open, pq_open = opening
         ## ⚠ COMPLEX `v` IS TWO REAL REPLAYS, NOT A COMPLEX FACTORISATION.
         ## `Jf` and `C` are real, so `M` is a REAL linear map and
         ## `M(a + ib) = Ma + i Mb` exactly.  PAC needs complex products
@@ -2917,6 +2924,10 @@ class PSS(Analysis):
         ## Using the loop's pair instead makes it non-zero and the matvec
         ## 100% wrong for `trap`; this is the half that is load-bearing.
         Pq = a_open[0] * (C_open @ v) if b_open else np.zeros(m)
+        ## the consistent-`iq_0` seed, applied to this column -- see
+        ## `_pq_seed_at_x0`.  `None` leaves the zero above untouched.
+        if pq_open is not None:
+            Pq = Pq + pq_open @ v
         for lu, C_new, alphas, b in steps:
             Px_new, Pq = self._step_sensitivity(
                 Px, Cs, Pq, None, C_new,
@@ -2973,7 +2984,7 @@ class PSS(Analysis):
         FORWARD replay and compares `M^T`.
         """
         m = self.cir.n - 1
-        C_open, _a_open, _b_open = opening
+        C_open, _a_open, _b_open, pq_open = opening
         v = np.asarray(v)
         inj = None if inject is None else [np.asarray(z) for z in inject]
         if np.iscomplexobj(v) or (
@@ -2992,6 +3003,12 @@ class PSS(Analysis):
         v = v.astype(float)
         if not steps:
             return (v.copy(), [], []) if collect else v.copy()
+        ## ⚠ `w2` IS THE ADJOINT OF `Pq_0`, AND IT IS ONLY DISCARDABLE WHEN
+        ## `Pq_0` DOES NOT DEPEND ON THE SEED.  The forward map opens at
+        ## `P_0 = v`, `Pq_0 = pq_open v`, so the transpose closes at
+        ## `w1 + pq_open^T w2` -- see `_pq_seed_at_x0`.  With `pq_open` None
+        ## (every method but `theta`) the second term is absent and this
+        ## returns `w1` exactly as it always did.
         ## `C_{n-1}` for each step: the previous step's `C_new`, or the
         ## opening capacitance for the first
         prevC = [C_open] + [np.asarray(st[1]) for st in steps[:-1]]
@@ -3034,6 +3051,8 @@ class PSS(Analysis):
                 ## quantity under both maps, which is what lets `ppv`
                 ## consume either without knowing which it has.
                 states.append(w1.copy())
+        if pq_open is not None:
+            w1 = w1 + pq_open.T @ w2
         if collect:
             ## reversed so `ts[j]`/`states[j]` line up with `steps[j]`,
             ## matching `_monodromy_matvec_transposed`'s contract
@@ -5499,7 +5518,7 @@ class PSS(Analysis):
             Cs = list(fp.opening)
             Pq = np.zeros(m, dtype=complex)
         else:
-            C_open, a_open, b_open = fp.opening
+            C_open, a_open, b_open, pq_open = fp.opening
             v = (np.zeros(m, dtype=complex) if y0 is None
                  else np.asarray(y0, dtype=complex).ravel().copy())
             Px = [v.copy(), v.copy()]
@@ -5508,6 +5527,15 @@ class PSS(Analysis):
             ## the note there; using the loop's makes it wrong for `trap`
             Pq = (a_open[0] * (C_open @ v) if b_open
                   else np.zeros(m, dtype=complex))
+            ## ⚠ AND THE CONSISTENT-`iq_0` SEED, for the same reason and by
+            ## the same term: `y0` perturbs `x_0`, and a method that seeds
+            ## `iq_0 = -(i(x_0) + u(t_0))` carries that perturbation into the
+            ## companion current before the first step.  `None` for every
+            ## method that does not declare `needs_consistent_iq0`.  See
+            ## `_pq_seed_at_x0`; THE FORCED REPLAY MUST MATCH THE MONODROMY
+            ## it superposes with, or `y_end = M y0 + w` stops holding.
+            if pq_open is not None:
+                Pq = Pq + pq_open @ v
 
         ys = []
         for (lu, C_new, alphas, b), t in zip(fp.steps, fp.times[1:]):
@@ -6010,6 +6038,42 @@ class PSS(Analysis):
         (G,) = remove_row_col((G,), self.irefnode, self.toolkit)
         return G
 
+    def _pq_seed_at_x0(self, x_reduced):
+        """``d(iq_0)/d(x_0)`` when the method SEEDS a consistent companion current.
+
+        ⚠⚠ THE CHAIN RULE THE `open_at_x0` PATH ASSUMED AWAY.  Every branch
+        that opens at `x_0` seeds `Pq = 0` and says so in the same words --
+        "no companion current has been formed yet".  That was true of every
+        method in this tree until `theta`, which refuses the L-stable opener
+        and therefore READS `iq_{-1}` on its first step: `_begin_run` seeds it
+        at ``iq_0 = -(i(x_0) + u(t_0))``, the DAE's own `dq/dt`, and that is a
+        FUNCTION OF `x_0`.  Differentiating it gives `-G(x_0)`, and dropping
+        that term is not a small error -- it is the whole `null(C)` mode.
+
+        Measured on the B2 gate resonator at `K = 200`, against a
+        finite-difference of the shooting residual (delta-swept over six
+        decades, FLAT, so a real error and not FD noise): the analytic
+        monodromy mapped `null(C)` to ZERO -- exactly what an L-stable Euler
+        opener would do -- where the true map multiplies it by `-0.7778`,
+        which is `(-(1-theta)/theta)^K` from `ThetaIntegrator`'s own table.
+        Relative Jacobian error 6.344; with this seed, 1.4e-10.
+
+        The cost of that was NOT a wrong answer -- the residual is what it is,
+        so the solve still lands on the right orbit -- but the Newton lost its
+        quadratic step: on a LINEAR circuit an exact shooting Newton converges
+        in ONE iteration (`trap` with `x0_unknown` takes 3 evaluations at every
+        `K`), and `theta` was taking 9 / 64 / 99 at `K = 100 / 200 / 400`.
+
+        `None` -- the default for every method that does NOT declare
+        `needs_consistent_iq0` -- means the zero seed is exact, and those
+        methods stay bit-identical.
+        """
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        if not integ.needs_consistent_iq0():
+            return None
+        ## `u(t_0)` carries no `x`, so only `i` contributes: `d(-i)/dx = -G`.
+        return -np.asarray(self._G_at(x_reduced), dtype=float)
+
     def _pcnr_junctions(self):
         """The circuit's PCNR-participating devices, found once and cached.
 
@@ -6084,7 +6148,14 @@ class PSS(Analysis):
             ## zero because no companion current has been formed yet: the
             ## opening step has not been taken.  That is the whole reason
             ## this path has an exact Jacobian and the other does not.
-            Pq = np.zeros((n - 1, n - 1))
+            ##
+            ## ⚠ UNLESS THE METHOD SEEDS ONE.  `theta` refuses the opener and
+            ## so reads `iq_{-1}` on step one, where `_begin_run` puts
+            ## `-(i(x_0) + u(t_0))` -- a function of the unknown.  See
+            ## `_pq_seed_at_x0`; `None` there restores the zero seed exactly.
+            Pq = self._pq_seed_at_x0(x_in)
+            if Pq is None:
+                Pq = np.zeros((n - 1, n - 1))
         else:
             a_first, b_first = self._coeffs
             Pq = (a_first[0] * Cs[0] if b_first else np.zeros((n - 1, n - 1)))
