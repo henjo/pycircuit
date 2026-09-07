@@ -6014,6 +6014,50 @@ not of this function — so the fix is A9, not an annotation here.
 because the use case is **ordinary rather than exotic** and arrived from a circuit somebody
 actually wants to build.
 
+### Ag. Standing `gmin` insertion, as an OPTION defaulting to 0/off — ⛔ DECIDED 2026-09-07, not built
+
+**Andreas's decision (2026-09-07): we will need standing `gmin` insertion at some point, to support
+real circuits with parasitics. It must be an OPTION and must default to 0/off. For now: documented,
+recorded here, not implemented.**
+
+**Where it came from.** The commercial-simulator parity set (§5c) notes that the other tool inserts
+`gmin = 1e-12 S` across every nonlinear junction **by default** and we insert none. On a 1 GΩ hold
+node that is a ~0.1% leak, so any cross-tool comparison on a high-impedance node — a sampled `kT/C`
+hold, a switched-capacitor bucket, an oscillator tank — compares two different circuits until the
+standing conductance is disabled on the other side. ⚠ Unlike the `√2` and `k_B` conventions in §3,
+**this one changes the ANSWER, not the units.**
+
+⚠⚠ **THE NAME IS ALREADY TAKEN, BY SOMETHING ELSE, AT THE SAME VALUE.** `DC` has a `gmin`
+parameter defaulting to **1e-12** — the same word and the same number — and it is **not** this:
+
+| | `DC(gmin=…)` today | a standing `gmin` |
+|---|---|---|
+| placed | to **ground** from each node row | **across** each nonlinear junction |
+| when | only after the chain raises `SingularMatrix` (a rescue) | unconditionally, every solve |
+| in the answer | **no** — the returned point normally comes from a final `gmin = 0` solve | **yes**, by definition |
+
+So *"gmin is 1e-12 on both sides"* is a **false reconciliation**, and the collision is now recorded
+at the parameter itself (`dcanalysis.py`) so nobody settles the question by reading the default.
+⚠ **It must not be built by widening that parameter** — a rescue anchor and a standing shunt want
+opposite behaviour at the end of a solve.
+
+**Entry points, which are the reason this is cheap.** The junction topology already exists and is
+already described as the gmin target: `pcnr.pcnr_junction_pairs` is documented as *"the GMIN-TARGET
+view"*, and `dcanalysis._jrows` / `jaxtransient._gmin_junction_rows` already build the scatter rows
+for the stepping ladders — including the rule that a gmin belongs across **both bulk junctions** of
+a MOSFET and never across a FET's `vgs` (that would be a gate leak). **The missing piece is not
+topology, it is a standing stamp.**
+
+⚠ **GATE IT ON REACH, BEFORE ANYTHING ELSE.** The failure mode to check for is a standing `gmin`
+that reaches the **DC operating point only**. That would move the bias and leave `AC`, `noise` and
+the whole PSS/shooting stack linearising a circuit that no longer matches it — an inconsistency
+strictly worse than having no `gmin` at all, and one that would show up as a small, plausible,
+hard-to-attribute error. The gate is: insert a known conductance, and confirm the SAME conductance
+appears in `G` for `DC`, `AC`, `Noise` and `PSS` on one circuit. ⚠ And with the default at 0 the
+whole feature is invisible to every existing test, so **the gate has to be written to turn it on** —
+otherwise it ships untested by construction (§D 0ab: a suite that only runs where the defect cannot
+exist).
+
 ### A5. Envelope-following — last
 
 Linaro et al. (OJCAS 2020) apply EFM to the *variational* problem, with a

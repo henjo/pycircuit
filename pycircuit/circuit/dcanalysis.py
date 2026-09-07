@@ -98,9 +98,36 @@ class DC(Analysis):
                   ##
                   ## `gmin=0` disables it and restores the pre-12.3 behaviour
                   ## exactly.
+                  ##
+                  ## ⚠⚠ THIS IS NOT SPICE'S STANDING `gmin`, DESPITE THE NAME
+                  ## AND THE VALUE.  A commercial simulator inserts
+                  ## `gmin = 1e-12 S` ACROSS EVERY NONLINEAR JUNCTION, in every
+                  ## solve, and leaves it there.  Ours is a RESCUE ANCHOR:
+                  ##
+                  ##   - to GROUND from each node row, not ACROSS a junction;
+                  ##   - engaged only after the chain has raised
+                  ##     `SingularMatrix`, not unconditionally;
+                  ##   - and absent from the returned answer, which normally
+                  ##     comes from a final `gmin = 0` solve.
+                  ##
+                  ## ⚠ The two carry the SAME NAME and the SAME 1e-12, so
+                  ## "gmin is 1e-12 on both sides" is a false reconciliation.
+                  ## The difference is worth ~0.1% on a 1 GOhm hold node, and
+                  ## unlike the `sqrt(2)` and `k_B` conventions recorded
+                  ## elsewhere it changes the ANSWER rather than the units --
+                  ## so a cross-tool comparison on any high-impedance node
+                  ## (a sampled `kT/C` hold, a switched-capacitor bucket, an
+                  ## oscillator tank) is comparing two different circuits until
+                  ## the standing conductance is disabled on the other side.
+                  ##
+                  ## A real standing-`gmin` option is a ROADMAP ITEM (A.g),
+                  ## wanted for parasitic-realistic circuits and DECIDED to
+                  ## default to 0/off when it lands.  It is not this parameter
+                  ## and must not be built by widening this one.
                   Parameter(name='gmin',
                             desc='Conductance to ground added to every node row '
-                                 'to rescue a numerically empty row; 0 disables',
+                                 'to rescue a numerically empty row; 0 disables. '
+                                 'NOT SPICE standing gmin -- see the note above',
                             unit='S', default=1e-12),
                   Parameter(name='bypass',
                             desc='Enable device model bypassing', unit='',
