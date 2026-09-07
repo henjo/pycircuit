@@ -4675,6 +4675,40 @@ Smooth ODEs and DAEs"*, ASC Report 16/2007, TU Wien (Part I). `q find` returns o
 citation of it. ⚠ Cited, not read; **do not treat B7's question as answered until Part I is on
 disk and the defect-correction estimator is checked against an accumulating period error** — the
 same measurement this file already has for the LTE estimators (fact (a)), on the same fixture.
+
+✅✅ **PART I LANDED AND READ (peer `docs-46`, same night) — B7's ANSWER IS "THE CLASS, NOT OUR
+ESTIMATORS."** Section 1, verbatim: *"Our ideas originate from the well-known principle of Defect
+Correction which can be utilized to estimate LOCAL AND GLOBAL errors of discretization schemes."*
+The mechanism, in their words: *"Compute a simple, basic approximation and form its defect w.r.t.
+the given ODE via a piecewise interpolant. This defect is used to define an auxiliary, neighboring
+problem whose exact solution is known. Solving the neighboring problem with the basic discretization
+scheme yields a global error estimate."* Because the neighbouring problem's exact solution is known
+BY CONSTRUCTION, `p_Γ − R_Γ p` is a COMPUTABLE global error, and the two problems being close, it
+estimates the unknown global error of the original. **Warping is an accumulated phase error —
+global by definition — which is why a per-step LTE cannot see it (fact (a)); IDeC estimates the
+global error directly.** So an estimator that can see warping exists, and the blindness is a
+property of LOCAL estimation as such, not of the estimators this tree happens to have. Their
+motivation is ours: *"We are especially motivated by applications in electrical circuit simulation,
+where the models often contain data with poor smoothness."*
+
+⚠ **And it would remove the analytic reference** — the expensive part of every order measurement
+tonight. Warping here is established by grid refinement against a hand-built analytic reference
+(A10's 400/800/1600/3200 sweep). IDeC gives a global error estimate AT ONE GRID, with the reference
+supplied by the neighbouring problem's known solution: no per-fixture analytic solution, no
+refinement sweep. (`PSS.grid_error` is the refinement instrument; this would be its one-grid
+alternative.)
+
+⚠ **Honest limits, none checked yet:** (1) the paper's own contribution is the LOCAL estimate
+adapted to moderate smoothness — the global-error use is the classical IDeC background it builds
+on, and whether the global variant survives the low-smoothness adaptation is the first thing to
+verify; (2) IDeC needs a piecewise interpolant of the computed solution — available on a PSS grid,
+but its order and assumed smoothness are exactly what "moderately smooth" is about; (3) **scope is
+ODEs and index-1 DAEs; index-2 is not claimed**, which matters given where the fixtures went
+tonight; (4) cost is about one extra solve of a neighbouring problem with the same scheme — cheap
+against a four-point sweep, not free. **Status: B7's answer at the level of "an instrument of the
+right class exists and is documented", NOT a build recommendation.** The gate before any build is
+the one already named above: run the IDeC global estimate against the accumulating period error on
+the fixture fact (a) used, and see whether it reports the warping the LTE could not.
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — ⚠ **BUILT 2026-09-04**
 
 ✅✅ **THE PLAIN TRANSPOSED REPLAY SHIPPED** as `_monodromy_matvec_transposed_plain`, so
