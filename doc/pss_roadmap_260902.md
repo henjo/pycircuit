@@ -7045,7 +7045,24 @@ mistake for λ₂. And **the boundary does not move under a tighter score**: at 
 the verdicts are identical (nslow 8 → 6e-14, 11 → 1.5e-06, 12/13/14 → 1.03 / 17.0 / 0.75). The pass
 cells are *exact*, not merely within 2x.
 
-**The two real fixes, both already in the tree in some form, NEITHER BUILT:**
+✅✅ **BUILT 2026-09-07 — THE DENSE ROUTE IS NOW THE DEFAULT BELOW `FLOQUET_DENSE_LIMIT`.** `ppv`
+took the exact spectrum only for `dirk`/`full`, on an argument that was never stage-specific; it now
+takes it whenever `n ≤ FLOQUET_DENSE_LIMIT` (and still unconditionally for `dirk`/`full`, where the
+alternative is not slower but wrong). No threshold, no basis size, no selection ambiguity. `info`
+gained `second_multiplier_route` (`'dense'` / `'arnoldi'`) so a caller can tell an exact spectrum
+from a truncated estimate without re-deriving the rule.
+
+⚠ **AND THE TRUNCATED PATH THAT REMAINS NOW SAYS WHAT IT IS.** Above the limit the Arnoldi is all
+there is — and that is exactly where it is least trustworthy, since a big circuit is the one likely
+to carry many slow nodes (Lai's DCO: >500 equations). It now warns, naming the basis size, the
+measured 4x–19x error, and the fact that raising `PPV_RITZ_BASIS` is *not* the fix.
+
+Test: `test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it` — the same test that used to
+pin the gap, rewritten to assert the fix, with the old failure reproduced as its **neuter** (lower
+`FLOQUET_DENSE_LIMIT` below `n` and all three wrong values come back, both signs and the `λ₂ > 1`
+case).
+
+**The two candidate fixes as they stood, the second still open above the limit:**
 * **the dense route** — `n` matvecs and `eigvals`, exactly what `ppv` already does for `dirk`/`full`.
   It costs about 2x the `k` that works, is exact, and has no threshold. The obvious default while
   `n` is modest.

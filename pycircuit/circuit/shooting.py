@@ -4749,7 +4749,41 @@ class PSS(Analysis):
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
         lam2 = 0.0
         kk = int(min(n, self.PPV_RITZ_BASIS))
-        if fp.kind in ('dirk', 'full'):
+        ## ⚠⚠ DENSE WHENEVER IT IS AFFORDABLE, AND THAT IS NOW THE DEFAULT
+        ## RATHER THAN A STAGE-METHOD CARVE-OUT.  Forming `M` by `n` matvecs
+        ## and taking its exact spectrum has no threshold, no basis size and
+        ## no selection ambiguity; the truncated Arnoldi below has all three.
+        ##
+        ## It used to run only for `dirk`/`full`, on the argument quoted
+        ## below -- and that argument was never stage-specific.  MEASURED
+        ## 2026-09-07 on `_osc_with_ladder(16, 14, nslow)` (`gear`, so the
+        ## Arnoldi path), against this same dense spectrum, scored in the GAP
+        ## because `Q ~ 1/(1 - lam2)`::
+        ##
+        ##     nslow   dense lam2     k=12 Arnoldi   gap ratio   Q dense/Arn
+        ##      <=11   0.995706203    0.995706197      1.000       232 / 232
+        ##        12   0.996324417    1.000114048     -0.031       271 / inf
+        ##        13   0.996818781    0.942674586     18.020       313 / 16.9
+        ##        14   0.997220139    0.999318472      0.245       359 / 1467
+        ##
+        ## Not one-signed, so the Cauchy lower bound recorded above does not
+        ## hold on a circuit monodromy (it is stated for a NORMAL `M`, and
+        ## this is not one); and at `nslow = 12` it reports `lam2 > 1`, a
+        ## spurious UNSTABLE multiplier, which `Q` turns into `inf`.
+        ##
+        ## ⚠ RAISING `PPV_RITZ_BASIS` IS NOT THE FIX AND WAS MEASURED NOT TO
+        ## BE: `k = 16` is exact on that fixture and fails on a longer
+        ## ladder (20/20 -> 0.279, 26/26 -> 0.410), because the basis has to
+        ## grow with the problem.  A constant cannot.
+        ##
+        ## ⚠ `FLOQUET_DENSE_LIMIT` is the same cap `floquet_modes` applies to
+        ## the same assembly, so the two agree about what "affordable" means.
+        ## `dirk`/`full` keep the dense route ABOVE it as well: there it is
+        ## expensive, but the alternative is not slower, it is WRONG, and
+        ## those paths have never had the truncated one.
+        _dense_ok = (fp.kind in ('dirk', 'full')
+                     or n <= self.FLOQUET_DENSE_LIMIT)
+        if _dense_ok:
             ## ⚠ THE STAGE MAP IS DENSE AND WIDTH `m`, so its exact spectrum
             ## is cheap -- and the Arnoldi below resolves it BADLY here.
             ## `I - M` has `M`'s annihilated modes clustered at eigenvalue 1
@@ -4760,8 +4794,7 @@ class PSS(Analysis):
             ## and taking its eigenvalues directly gives the unit root to
             ## machine precision (it deflates cleanly) and the true second
             ## multiplier -- 8.59e-4 on van der Pol, matching Gear-2's
-            ## 8.58e-4.  Gear/solved-history keep the matrix-free Arnoldi,
-            ## byte-for-byte, so no existing spectrum moves.
+            ## 8.58e-4.
             _Md = np.column_stack([np.asarray(fp.matvec(_e), dtype=float)
                                    for _e in np.eye(n)])
             _lams = np.linalg.eigvals(_Md)
@@ -4795,6 +4828,24 @@ class PSS(Analysis):
             keep = np.real(lams)[np.abs(lams - 1.0) > 1e-6]
             if keep.size:
                 lam2 = float(max(np.max(keep), 0.0))
+            ## ⚠⚠ AND SAY SO.  This branch now runs ONLY where the dense
+            ## spectrum is unaffordable, which is exactly where the
+            ## truncation is least trustworthy -- a big circuit is the one
+            ## likely to carry the many slow nodes that break the selection.
+            ## Silence here would be a truncated estimate wearing the same
+            ## name as an exact one.
+            warnings.warn(
+                'PSS.ppv: n = %d exceeds FLOQUET_DENSE_LIMIT = %d, so '
+                "`second_multiplier` (%.6f) and `Q` come from a TRUNCATED "
+                'Arnoldi of basis %d, not from the spectrum. Measured on a '
+                'ladder oscillator, that estimate is wrong by 4x-19x once '
+                'the slow-node count reaches the basis size, in BOTH '
+                'directions, and can return a multiplier above 1. Treat '
+                'both as indicative. The fix is a per-pair Ritz residual '
+                'gate (roadmap); raising PPV_RITZ_BASIS is measured NOT to '
+                'be one, because the basis has to grow with the problem.'
+                % (n, self.FLOQUET_DENSE_LIMIT, lam2, kk),
+                RuntimeWarning, stacklevel=2)
         if lam2 > self.PPV_SECOND_MULTIPLIER_WARN:
             warnings.warn(
                 'PSS.ppv: a SECOND Floquet multiplier sits at %.6f, near '
@@ -4882,6 +4933,11 @@ class PSS(Analysis):
                 'Q': Q,
                 'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
                 'second_multiplier': lam2,
+                ## Which route produced it, so a caller can tell an exact
+                ## spectrum from a truncated estimate without re-deriving
+                ## the rule.  See the branch above.
+                'second_multiplier_route': ('dense' if _dense_ok
+                                            else 'arnoldi'),
                 'q': q, 'xdot': xdot, 'tangent_pair': u,
                 'samples': np.asarray(states),
                 ## ⚠ `samples_eq` IS THE ONE TO CONTRACT `CY` AGAINST.
