@@ -5280,6 +5280,55 @@ designer reading `info['Q']` and expecting the motional `Q` gets an unrelated nu
 loaded-vs-unloaded `Q`. The fixture is a van der Pol at `μ = 1/(2πQ)`, which isolates `Q` and is
 second order — see A9 on why second order is where a resonator `Q` is unambiguous.
 
+#### ✅ A10's warping reference VERIFIED — relayed 2026-09-07 by a peer holding the paper, with two facts this section lacked
+
+⚠ Relayed by `docs-46` from **Brambilla & Storti-Gajani, TCAS-I 50(7):904, 2003** — the reference
+marked "cited, not verified here". All three quoted claims are verbatim from the abstract,
+including the one flagged as weakening this section's objection to higher-order methods.
+
+**(a) Warping error is INVISIBLE to LTE.** Verbatim: they study *"how the error introduced at each
+integration time step accumulates in the integration process, without being reported by
+conventional estimates of the local truncation error (LTE)"*. ⚠ Bears directly on **B7**: an
+LTE-driven step controller cannot see a period error it does not measure, so adaptive stepping
+will not fix this one.
+
+**(b) The paper's dilemma does not bind this tree.** Its tension is "higher-order LMM ⇒ weaker
+stability" (Dahlquist). But, verbatim: *"the Dahlquist barrier does not hold for the class of the
+implicit Runge-Kutta methods."* This tree has `RadauIIA3Integrator` (order 5, L-stable, stiffly
+accurate) and `ESDIRK43Integrator`. The trade they are forced into is one we do not have to make.
+
+**And A10 already measured their object without connecting the two.** *"WHAT ACTUALLY BINDS: THE
+INTEGRATOR'S WARPING ERROR, AND IT IS INDEPENDENT OF Q"* — their word — at rate exactly O(h²),
+trap exactly 4× gear at every grid, error constant across four decades of Q. **Both gear and trap
+are order 2 and the measured rate is 2.** The paper's claim is that the exponent improves with
+order. **That sweep has never been run on an order-4 or order-5 path.**
+
+**Arithmetic, not a result** (assumption stated: warping follows classical order `p`) — from trap's
+0.0803 ppm at 6400 points, 1 ppb needs `80.3^(1/p)` more points:
+
+| method | order | factor | ~pts/period |
+|---|---|---|---|
+| trap / gear | 2 | 8.96× | ~57 000 (A10's figure) |
+| ESDIRK43 | 4 | 2.99× | ~19 200 |
+| Radau IIA(3) | 5 | 2.40× | ~15 400 |
+
+Points are not cost: Radau couples three stages into one `3m×3m` solve; the ESDIRK shares one LU
+across stages. 19 200 four-stage steps against 57 000 one-stage steps is roughly parity in
+back-substitutions but ~3× fewer factorisations — favours the ESDIRK, arithmetic only.
+
+**⚠⚠ THE PREDICTION PARTITIONS — one sweep, three outcomes, and the third refutes the reason for
+doing any of it.** Their claim is about LINEAR MULTISTEP methods; that warping follows the
+*classical* order of a Runge-Kutta method is not established by the paper, and Radau's *stage*
+order is 3, exactly where DAE order reduction bites (this file measured a 5/3 split on index-2).
+Re-run A10's period-error-vs-h sweep on the Radau and ESDIRK paths:
+
+* **rate ~4–5** → warping follows classical order; ppb cost falls ~3×; the exit is real.
+* **rate ~3** → it follows STAGE order on our DAE fixtures; smaller win, and it identifies order
+  reduction rather than warping as the limit.
+* **rate ~2** → warping is not an order phenomenon; the recommendation does not transfer from LMM
+  to RK, and A10's 57 000-point figure stands for every method we have.
+
+Same fixture, same sweep, `method=` changed. Run 2026-09-07, result below.
 ### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
 
 ⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
@@ -9058,3 +9107,108 @@ and it is exactly what probe v5 measures — **on the textbook control first** (
 prediction and the hostile fixture does not, the difference is the fixture's `Q_eff ≈ 32` or its
 asymmetry leaving the averaging regime — physics, recorded. If the control misses too, the
 instrument or the prediction is wrong and nothing about the hostile fixture can be read.
+
+### 5. Probe v5, the CONTROL: the averaging prediction is EXACT on the textbook case
+
+Plain van der Pol, `C = L = 1`, `a = 0`, `I_inj = 0.2·mu·A`, continuation along the locked branch
+in 0.1× steps of the **named** prediction `Δω_lock = I_inj/(2CA)` (3.166e-04 Hz, 0.199 % of `f₀`):
+
+| × prediction | amplitude | `|λ|` |
+|---|---|---|
+| 0.0 | 2.176 V | 0.98858 |
+| 0.5 | 2.151 V | 0.98997 |
+| 0.9 | 2.069 V | 0.99462 |
+| **1.0** | **2.002 V** | **0.99856** |
+| 1.1 | — | lost |
+
+**The locked branch is tracked to exactly 1.00× the prediction and lost at 1.10×**, with `|λ|`
+rising smoothly toward 1 and the amplitude collapsing toward the free-running value — the
+saddle-node on the invariant circle, presenting exactly as it should. ✅ **Instrument and prediction
+both validated on the case where averaging is textbook**, before either is pointed at the hostile
+fixture. This is the number the A6 gate is built on.
+
+⚠ Two process notes, because they cost turns: the sweep script was OOM-killed **twice** on this
+shared box before it ran (see the shared-box memory — split the halves, `python -u`, `gc.collect`,
+sample RSS); and a syntax slip of mine (a `del` between an `if` and its `elif`) cost one more run.
+`ast.parse` after every scripted edit from now on.
+
+### 6. The HOSTILE fixture: the locked branch survives to EXACTLY 2.00× the averaging prediction
+
+Same instrument, same `I_inj = 0.2·mu·A`, `C = 4`, `L = 1/4`, `a = 0.30`; prediction
+`I_inj/(2CA)` = 7.916e-05 Hz (0.050 % of `f₀`):
+
+| × prediction | amplitude | `|λ|` |
+|---|---|---|
+| 0.0 | 2.112 V | 0.99375 |
+| 0.6 | 2.055 V | **0.99340** (the minimum) |
+| 1.0 | 2.009 V | 0.99358 |
+| 1.5 | 1.938 V | 0.99463 |
+| **2.0** | **1.828 V** | **0.99841** |
+| 2.1 | — | lost |
+
+**Tracked to 2.00×, lost at 2.10× — against 1.00× / 1.10× on the control.** And a qualitative
+difference: `|λ|` **dips** to 0.99340 at 0.6× before rising, where the control rose monotonically —
+the lock strengthens slightly before it weakens.
+
+⚠⚠ **A factor of exactly two is a WARNING, not a result.** "The fixture is outside averaging's
+validity" (`Q_eff ≈ 32`, the asymmetry) would give a messy number. A clean 2 smells like a
+**C-dependence in the prediction that the control cannot see**: at `C = 1`, `I/(2CA)` is
+indistinguishable from `I/(2√C·A)` or any other power — §D 0c, this time on the *prediction* rather
+than the code. One sweep discriminates: **symmetric vdP at `C = 4`, `a = 0`.** If it reads 2.0×, the
+factor is `C` and the derivation is wrong; if 1.0×, the factor is the asymmetry and it is physics
+to record. **Not decided until that runs**, and the hostile gate is not written until it is.
+
+⚠ Process: this half was **OOM-killed** after its last useful line (the 2.10× failure) — the fourth
+kill of the evening — but ran unbuffered, so nothing was lost. The RSS sampler still caught a shell
+(4 MB flat), so whether these sweeps balloon is *still* unmeasured; the discriminator self-reports
+`getrusage` per step to settle it.
+
+### 7. DECIDED: the factor of two is the asymmetry — and the mechanism is the PPV fundamental
+
+**The discriminator.** Symmetric van der Pol at `C = 4`, `a = 0`: locked branch tracked to
+**exactly 1.00×**, lost at 1.10× — identical to the `C = 1` control. So `I/(2CA)` carries the right
+C-dependence and the derivation stands. The hostile fixture's 2.00× is the `0.30·u²` asymmetry.
+**Physics, not my formula** — and it took a fixture the control could not distinguish to say so.
+
+**The mechanism, by an independent route.** The lock range is the injection times the PPV's
+fundamental per unit *current*, `|Γ₁|/C`:
+
+| fixture | `|Γ₁|/C` | `1/(2CA)` | ratio | `|Γ₂|/|Γ₁|` |
+|---|---|---|---|---|
+| control `C = 1` | 0.2500 | 0.2500 | **1.000** | 1e-4 |
+| symmetric `C = 4` | 0.0625 | 0.0625 | **1.000** | 1e-4 |
+| hostile `C = 4`, `a = 0.30` | 0.1147 | 0.0623 | **1.835** | **0.10** |
+
+Four digits on both symmetric fixtures with no fit — **the averaging result IS the PPV
+fundamental**, which ties A6 to A2 (the PPV) through a route that shares nothing with the lock
+sweep. On the hostile fixture the PPV predicts 1.83× against the sweep's 2.0–2.1×: a ~10 % gap,
+and its likely cause sits in the last column — the hostile orbit's PPV has a **second harmonic at
+10 % of its fundamental** where the symmetric orbits have 1e-4. A first-order phase prediction on
+an orbit with that much second-harmonic sensitivity should miss by about that much. **Attributed,
+not proven**; the hostile gate's bound admits it.
+
+**Two gates, both on numbers named before measurement:**
+`test_injection_locking_range_matches_averaging_on_the_textbook_control` (1.00×, `|λ|` rising to
+the saddle-node) and `test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundamental`
+(2.0×, PPV fundamental 1.83×, second harmonic present only on the asymmetric orbit).
+
+⚠ **The OOM question, answered by data:** self-reported RSS was **flat at 258–259 MB** for an
+entire sweep. These processes do not balloon. All four kills tonight were external bursts on the
+shared box; "run sweeps alone" was superstition and is withdrawn (two of mine add 260 MB against
+15 GB free). Recorded in the shared-box memory.
+
+**What A6 now has:** a locking-range instrument (Floquet stability under continuation, not
+convergence, not a fixed seed), a Q-free prediction validated on two symmetric fixtures, the
+asymmetric case explained by its own PPV, and the whole thing built on the fixture that can fail.
+**What it does not have:** the unlocked quasi-periodic spectrum (Armand's one-sided ladder), which
+is beyond shooting and waits for envelope-following (A5); and PLL-specific machinery (PFD, divider)
+— the event-localisation half is `event_grid`, built 2026-09-06.
+
+⚠ **Gate cost, and a deliberate coarsening.** The control gate passed — in **11 minutes**, at 0.1×
+continuation steps (≈15 forced PSS solves at 400 points, each with a dense monodromy). Two such
+gates would add ~20 minutes to a suite this project already runs at ~17. Both gates now use
+**0.2× steps**. That is not a tolerance change: the edge is reported as the *last locked* multiple,
+so the coarser grid rounds it down by at most one step, and every bound (1.00 ± 0.15; 1.8–2.2) was
+set with that in mind. The 0.1× numbers stand in the record above as the measurement; the gates
+assert them at half the cost. If they still dominate the suite, the next lever is 200 points per
+period, which changes the physics slightly and would need the numbers re-measured — not taken.

@@ -16941,3 +16941,218 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         'transform; 2.98e-01 without it). If this is large, the replayed ' \
         'adjoint is being used as q again' % relAC
 
+
+
+def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400):
+    """Continuation along the LOCKED branch of a driven oscillator; returns
+    the last multiple of the named averaging prediction at which the branch
+    is still stable, plus the trace.  A6's instrument.
+
+    ⚠ NOT convergence: a forced circuit always has a periodic solution at the
+    drive period, so the shooting converges on both sides of the lock edge --
+    outside it merely lands on the UNSTABLE suppressed branch (amplitude
+    ~0.4 V, |lam| ~1.015 on the hostile fixture).  Lock is a Floquet
+    stability boundary: the forced orbit's dominant multiplier reaching 1.
+    ⚠ NOT a fixed seed either: it hops branches (locked / non-convergent /
+    suppressed).  Seed each step from the previous LOCKED orbit.
+    """
+    import warnings as _w
+    from pycircuit.circuit.elements import ISin
+    circuit.default_toolkit = circuit.numeric
+    ## 0.2x steps: 0.1x cost 11 min per gate; the edge is reported as the
+    ## last LOCKED multiple, so the coarser grid only rounds it down by at
+    ## most one step, inside every bound below.
+    steps = np.arange(0.0, 2.01, 0.2) if steps is None else steps
+
+    def amp(cir, p):
+        iv = cir.get_node_index('v')
+        W = np.asarray(p.waveform[1], dtype=float)
+        return (W[iv].max() - W[iv].min()) / 2
+
+    def dom(p):
+        fp = p.factored_period()
+        M = np.column_stack([np.asarray(fp.matvec(e), float).ravel()
+                             for e in np.eye(fp.width)])
+        return float(np.max(np.abs(np.linalg.eigvals(M))))
+
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        cir0, cval, mu = cir_fn(0.0, None)
+        T0 = 2.0 * np.pi * np.sqrt(cval * cir0['L'].ipar.L)
+        p = PSS(cir0, method='gear', reltol=1e-11)
+        p.solve(period=T0, timestep=T0 / npts, x0=np.array([2.0, 0.0]),
+                maxiterations=400)
+        f0 = 1.0 / float(p.period)
+        A = amp(cir0, p)
+    iinj = ratio * mu * A
+    ## THE PREDICTION, NAMED: averaging the vdP equation gives
+    ## dphi/dt = dw - (I/(2 C A)) sin(phi), so the lock half-range is
+    ## I/(2 C A) rad/s.  No Q in it -- Adler's Q and I_osc both collapse.
+    pred_hz = iinj / (2.0 * cval * A) / (2.0 * np.pi)
+
+    seed, last, trace = None, None, []
+    for r in steps:
+        finj = f0 + r * pred_hz
+        cir, _, _ = cir_fn(iinj, finj)
+        pp = PSS(cir, method='gear', reltol=1e-9)
+        x0 = np.array([2.0, 0.0]) if seed is None else seed
+        try:
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                pp.solve(period=1.0 / finj, timestep=1.0 / finj / npts, x0=x0,
+                         maxiterations=200, x0_unknown=False)
+            lam, am = dom(pp), amp(cir, pp)
+            locked = lam < 1.0 and am > 0.6 * A
+            trace.append((float(r), am, lam, locked))
+            if locked:
+                seed = np.delete(np.asarray(pp.waveform[1], float)[:, 0],
+                                 pp.irefnode)
+                last = float(r)
+            elif last is not None:
+                break
+        except Exception:
+            trace.append((float(r), np.nan, np.nan, False))
+            if last is not None and r > last + 0.35:
+                break
+    return last, pred_hz, f0, trace
+
+
+def _vdp_injected(cval=1.0, lval=1.0, a=0.0, Q=8.0):
+    from pycircuit.circuit.elements import ISin
+    mu = 1.0 / (2.0 * np.pi * Q)
+
+    def build(iinj, finj):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=cval)
+        cir['L'] = L('v', gnd, L=lval)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + a * u * u)
+        if iinj > 0:
+            cir['inj'] = ISin('v', gnd, ia=iinj, freq=finj)
+        return cir, cval, mu
+    return build
+
+
+def test_injection_locking_range_matches_averaging_on_the_textbook_control():
+    """A6, first gate: the locking range of a driven van der Pol, read as the
+    Floquet stability edge of the forced orbit under continuation, against
+    the averaging prediction `dw_lock = I_inj / (2 C A)` -- NAMED before it
+    was measured.
+
+    Plain van der Pol, C = L = 1, a = 0, I_inj = 0.2 mu A.  Measured
+    2026-09-07: the locked branch is tracked to exactly 1.00x the prediction
+    (|lam| 0.98858 -> 0.99856, amplitude 2.176 -> 2.002 V) and lost at 1.10x.
+    The saddle-node on the invariant circle, presenting as it should.
+
+    ⚠⚠ THREE THINGS THIS TEST IS BUILT NOT TO DO, each of which produced a
+    plausible wrong answer on the way here:
+      * read lock from CONVERGENCE -- every detuning converges;
+      * sweep from a FIXED seed -- it hops branches;
+      * use a Q-based Adler formula -- three Q conventions for this circuit
+        (32 / ~100 / ~201) give predictions 6x apart, and the measured edge
+        sat near one of them by accident.  The averaging form has no Q.
+    And my first injection scale used the TANK current (200x the
+    negative-resistance current), a 10x overdrive that gave a smooth,
+    monotone, wrong curve.
+
+    This is the CONTROL: averaging is textbook here.  The hostile fixture
+    (asymmetric, non-unit-reactance) is gated separately against the number
+    this one validates.
+    """
+    last, pred_hz, f0, trace = _injection_lock_edge(_vdp_injected())
+    assert last is not None, 'no locked branch found at all: %r' % (trace[:3],)
+    assert 0.85 <= last <= 1.15, \
+        'locked branch tracked to %.2fx the averaging prediction ' \
+        '(I_inj/(2CA) = %.4e Hz, %.3f%% of f0); measured 1.00x. Trace: %r' % (
+            last, pred_hz, 100 * pred_hz / f0,
+            [(r, round(am, 3), round(lm, 5), lk) for r, am, lm, lk in trace])
+    ## and the multiplier must have RISEN toward 1 along the branch -- the
+    ## signature of the saddle-node, not of a branch that merely stopped
+    lams = [lm for r, am, lm, lk in trace if lk]
+    assert lams[-1] > lams[0] and lams[-1] > 0.995, \
+        '|lam| along the locked branch went %.5f -> %.5f; it must rise ' \
+        'toward 1 at the edge' % (lams[0], lams[-1])
+
+
+def test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundamental():
+    """A6, second gate: the hostile fixture locks over TWICE the averaging
+    range, and the reason is measured by an independent route.
+
+    Same instrument as the control gate.  On the hostile fixture (van der Pol
+    + 0.30 u^2, C = 4, L = 1/4) the locked branch is tracked to 2.00x the
+    averaging prediction I_inj/(2CA) and lost at 2.10x (measured 2026-09-07),
+    where the control and a SYMMETRIC C = 4 fixture both give exactly 1.00x.
+    So the factor is the ASYMMETRY, not a C-dependence in the prediction --
+    the symmetric C = 4 discriminator is what ruled that out, and it was run
+    because a clean factor of two on a fixture the control cannot distinguish
+    is a warning, not a result.
+
+    ⚠⚠ THE MECHANISM, BY AN INDEPENDENT ROUTE.  The lock range is the
+    injection times the PPV's FUNDAMENTAL per unit current, |Gamma_1|/C:
+
+        control C=1        0.2500 / 1  =  0.0625 ... = 1/(2CA)   exactly
+        symmetric C=4      0.2500 / 4  =  0.0625     = 1/(2CA)   exactly
+        HOSTILE C=4        0.4588 / 4  =  0.1147     = 1.83x
+
+    Four digits on both symmetric fixtures with no fit -- the averaging
+    result IS the PPV fundamental, tying A6 to A2.  On the hostile fixture the
+    PPV predicts 1.83x against the sweep's 2.0-2.1x: a ~10% gap, and the
+    hostile PPV's SECOND harmonic is 10% of its fundamental (|G2|/|G1| = 0.10,
+    against 1e-4 on both symmetric orbits).  A first-order phase prediction on
+    an orbit with that much second-harmonic sensitivity should miss by about
+    that much.  Attributed, not proven; the bound below admits it.
+    """
+    last, pred_hz, f0, trace = _injection_lock_edge(
+        _vdp_injected(cval=4.0, lval=0.25, a=0.30),
+        steps=np.arange(0.0, 2.61, 0.2))
+    assert last is not None, 'no locked branch found: %r' % (trace[:3],)
+    assert 1.8 <= last <= 2.2, \
+        'hostile locked branch tracked to %.2fx the averaging prediction; ' \
+        'measured 2.00x (lost at 2.10x). Trace: %r' % (
+            last, [(r, round(am, 3), round(lm, 5), lk) for r, am, lm, lk in trace])
+
+    ## the PPV fundamental, per unit current, on the same three fixtures
+    import warnings as _w
+
+    def gamma1(cval, lval, a):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=cval)
+        cir['L'] = L('v', gnd, L=lval)
+        mu = 1.0 / (2.0 * np.pi * 8.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + a * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        T0 = 2.0 * np.pi * np.sqrt(cval * lval)
+        p = PSS(cir, method='gear', reltol=1e-11)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 400, x0=np.array([2.0, 0.0]),
+                    maxiterations=400)
+            v0, info = p.ppv()
+        iv = cir.get_node_index('v')
+        ivr = iv if iv < p.irefnode else iv - 1
+        g = np.array([np.asarray(v0, float)[ivr]]
+                     + [np.asarray(s_, float)[ivr] for s_ in info['samples']])[:-1]
+        G = np.fft.rfft(g) / len(g)
+        W = np.asarray(p.waveform[1], float)[iv]
+        A = (W.max() - W.min()) / 2
+        return abs(G[1]) / cval, abs(G[2]) / abs(G[1]), 1.0 / (2.0 * cval * A)
+
+    g_c, h_c, pred_c = gamma1(1.0, 1.0, 0.0)
+    g_s, h_s, pred_s = gamma1(4.0, 0.25, 0.0)
+    g_h, h_h, pred_h = gamma1(4.0, 0.25, 0.30)
+    ## 1. on BOTH symmetric fixtures the PPV fundamental IS 1/(2CA)
+    for lbl, g, pr in (('control', g_c, pred_c), ('symmetric C=4', g_s, pred_s)):
+        assert abs(g / pr - 1.0) < 2e-3, \
+            '%s: |Gamma_1|/C = %.6f against 1/(2CA) = %.6f' % (lbl, g, pr)
+    ## 2. on the hostile fixture it is ~1.8x, and that is the lock-range factor
+    ratio_ppv = g_h / pred_h
+    assert 1.7 <= ratio_ppv <= 2.0, \
+        'hostile PPV fundamental is %.3fx 1/(2CA); measured 1.83x' % ratio_ppv
+    ## 3. and the asymmetry is visible where it should be: a second-harmonic
+    ##    PPV component the symmetric orbits do not have
+    assert h_h > 0.05 and h_c < 1e-3 and h_s < 1e-3, \
+        '|Gamma_2|/|Gamma_1|: control %.1e, symmetric C=4 %.1e, hostile %.3f' % (
+            h_c, h_s, h_h)
