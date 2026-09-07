@@ -8833,3 +8833,107 @@ transposed-matvec variant. Now one recursive `_cx_collect`. Nothing had ever exe
 ⚠ **Scope limit, recorded not hidden:** `C⁻ᵀ` is `pinv` per sample, so a singular reduced `C`
 (index-2, algebraic rows) yields the minimum-norm algebraic components of `q` — which is a choice,
 not a solution. Every gate fixture is index-1 with nonsingular `C`.
+
+
+## The hostile fixture — an oscillator that is neither symmetric nor unit-reactance, 2026-09-07
+
+**Built: `_hostile_oscillator()` in `test_analysis_shooting.py`** — van der Pol + `0.30·u²`, `c = 4`,
+`L = 1/4`. Measured half-wave asymmetry **0.100**, `|λ₂| = 0.969`, adjoint separation
+`|cos(q₁, q₂)| = 0.70`. `_a9_vdp` gained an `a=` knob so the symmetry is a parameter, not a
+property of the file. **The fixture self-checks both properties and refuses to run without them**,
+so it cannot be quietly tuned back to the blind one.
+
+### Why — the day's pattern, made structural
+
+Every oscillator fixture in the repo was van der Pol with `c = L = 1`, half-wave symmetric,
+starting at `[2, 0]` where the adjoint is axis-aligned. Three coincidences. On 2026-09-07 they hid
+**two** defects in `floquet_modes` from **every** gate in the file — including A9's three-way gate,
+a good gate that caught a different adjoint defect the same week — while the orbital covariance sat
+**81× low** on any asymmetric orbit. Three times that day a control overturned a result about to be
+reported, and each time the fault was the fixture.
+
+### ⚠⚠ The mutation check, which is the entry — MEASURED, not argued
+
+With the `C⁻ᵀ` transform in `floquet_modes` disabled:
+
+| gate | fixture | result under the mutation |
+|---|---|---|
+| `test_the_three_way_orbital_gate_holds_on_the_hostile_fixture` | hostile | **RED**, `relAC` = 2.98e-01 |
+| `test_orbital_correlation_is_gated_three_ways` (the original) | symmetric vdP | **GREEN**, blind |
+
+Same defect, same routes, same tolerance class. One fixture sees it, the other cannot. **That is the
+difference between a gate and a decoration**, and it is now asserted on the fixture that can fail.
+
+With the fix in: `relAC` **1.6e-02 → 8.1e-03** at 400 → 800 points (O(h), the adjoint-replay
+residual documented at `_warn_if_orbit_is_asymmetric`); `relAB` 9.1e-05. Bound set at 2× the
+400-point measurement.
+
+⚠ **A second configuration, `c = 0.25`, does not solve, and lifting the seed does not rescue it** —
+period seeds of 1.05× and 1.10× still hit a singular free-period Jacobian, and 1.20× fails to
+converge at all. With `μ_eff = mu/C = 4·mu` and the `0.30·u²` term the orbit is far from the
+`[2, 0]` seed, so this is a seeding/basin problem for that configuration, not a defect. **The
+hostile fixture is the `c = 4` configuration alone**; it carries both properties, which is what was
+needed. A low-`C` hostile variant would need its own seed (a short transient, per the solver's own
+message) and is not worth chasing until something requires it.
+
+**What this protects:** everything downstream that is oscillator work — A6 driven oscillators/PLL
+first among them — would otherwise have been validated on the same blind circuit.
+
+
+## A6 — first probes, 2026-09-07: two design facts established before anything is built
+
+Started on the **hostile fixture** (the whole point of building it). Nothing shipped yet; two facts
+that decide the design are measured, and one normalisation error of mine is recorded so it is not
+made twice.
+
+### ⚠⚠ 1. Convergence is NOT a lock detector
+
+Forced PSS at the injection period, sweeping the injection frequency to **2× Adler's predicted
+range: every point converged.** That is not a lock range, it is a property of forced systems — a
+periodic solution at the drive period always exists; outside the lock range it is merely
+**unstable**. So lock is a **Floquet stability** boundary: a multiplier of the forced orbit
+crossing the unit circle (the saddle-node on the invariant circle). That is machinery this branch
+already has and spent the day hardening. Probe v2 confirmed the instrument: the forced orbit has
+**no unit multiplier** (the phase mode is captured — locked), dominant `|λ| = 0.8986`, rising
+monotonically toward 1 with detuning. The right direction, and a usable edge detector.
+
+### ⚠ 2. Adler's `I_osc` is the negative-resistance current, NOT the tank current — 200× apart here
+
+My first "5 % injection" used `I_tank = ω₀CA = 8 A` as the reference. Adler's `I_osc` is the
+oscillator's own restoring current, `≈ mu·A = 0.04 A`. So 0.4 A was a **10× overdrive**: the
+amplitude read 3.97 V against a free-running 2.01 V (real, not a row slip — confirmed by node name),
+the true lock range at that injection is ~16 % of `f₀`, and the sweep covered 0.39 % of it — which
+is exactly why `|λ|` sat at 0.90–0.91, deep in lock. **A normalisation error that produces a
+smooth, monotone, plausible curve** — the failure shape this file names most often.
+
+### What A6's first build therefore is
+
+**Injection locking range**, read as the detuning at which the forced orbit's dominant Floquet
+multiplier reaches 1, gated against Adler `Δω = (ω₀/2Q)·(I_inj/I_osc)` with `I_osc = mu·A`, on the
+hostile fixture. Adler's unlocked quasi-periodic spectrum (Armand 1969's one-sided ladder) is beyond
+shooting and waits for envelope-following (A5); the locked regime does not. ⚠ On this fixture
+`Q_eff ≈ 32`, so the range is narrow (0.31 % of `f₀` at a 0.2 injection ratio) — the gate needs a
+fine sweep near the edge, and raising the injection to widen it walks out of Adler's validity.
+Probe v3 is the corrected sweep.
+
+### 3. Probe v3 (corrected normalisation): the BRANCH STRUCTURE, and why a fixed seed cannot find the edge
+
+`I_inj = 0.2·mu·A`, sweeping 0 → 3× Adler from the same seed `[2, 0]`:
+
+| × Adler | amplitude | dominant `|λ|` | what it is |
+|---|---|---|---|
+| 0.0 | 2.11 V | **0.9937** | the locked orbit — stable, weakly (small injection) |
+| 0.5, 0.8 | — | — | **shooting fails to converge** |
+| 0.9 → 3.0 | **0.40 V** | **1.0145** | the UNSTABLE forced solution, oscillator suppressed |
+
+So the instrument separates the branches cleanly (0.994 vs 1.015, amplitude 2.1 vs 0.4) — but a
+fixed seed **hops** them: locked near `f₀`, nothing in 0.5–0.8×, then the suppressed branch. The
+edge Adler puts at 1.0× lies inside the gap where neither branch is reached from that seed. ⚠ The
+amplitude at `f₀` is 2.11 V against a free-running 2.01 V — the injection is now genuinely small,
+confirming fact 2 above.
+
+**Therefore the instrument needs CONTINUATION in `f_inj`:** seed each step from the previous
+*locked* orbit's `x(0)` and track the stable branch until its multiplier reaches 1 (the saddle-node
+on the invariant circle). That is probe v4. ⚠ Continuation is also what makes the measurement
+honest — a locking range read from a fixed seed would report whichever branch the Newton happened
+to land on, converged and plausible.

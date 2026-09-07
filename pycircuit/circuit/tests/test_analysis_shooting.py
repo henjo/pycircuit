@@ -16632,9 +16632,16 @@ def test_the_default_method_is_radau_and_it_takes_no_monodromy_twin():
         'a twin was solved and cached: %r' % (list(pss._twins),)
 
 
-def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0):
-    """van der Pol with the reactances as KNOBS — the unit-reactance default
-    is exactly what hid the fixture dependence below."""
+def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0, a=0.0):
+    """van der Pol with the reactances AND the half-wave symmetry as KNOBS.
+
+    The unit-reactance, symmetric default is exactly what hid two defects on
+    2026-09-07: the `q^T p` normalisation (needs `C != 1` to show) and the
+    replayed adjoint being `C^T q` (needs an ASYMMETRIC orbit to show).  `a`
+    adds `a*u^2` to the nonlinearity and breaks the symmetry; `cval`/`lval`
+    move the reactances at fixed `w0` when `lval = 1/cval`.
+    See `_hostile_oscillator` for the configuration that has BOTH.
+    """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
@@ -16643,7 +16650,7 @@ def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0):
     cir['C'] = C('v', gnd, c=cval)
     cir['L'] = L('v', gnd, L=lval)
     cir['B'] = BSource('v', gnd, gnd, 'v',
-                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0) + a * u * u)
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
     w0 = 1.0 / np.sqrt(cval * lval)
     T = 2.0 * np.pi / w0 / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
@@ -16808,3 +16815,129 @@ def test_floquet_modes_runs_under_the_stage_methods_and_conserves_qCp():
             assert max(cyc) < 5e-2, \
                 '%s mode %d: q^T C p drifts by %.3e around the cycle' % (
                     method, k, max(cyc))
+
+
+def _hostile_oscillator(npts=400):
+    """THE fixture that is neither half-wave symmetric nor unit-reactance.
+
+    ⚠⚠ WHY THIS EXISTS.  Every oscillator fixture in this file was van der
+    Pol with `c = L = 1`, half-wave symmetric, starting at `[2, 0]` where the
+    adjoint is axis-aligned.  Three coincidences, and on 2026-09-07 they hid
+    two defects in `floquet_modes` from every gate in this file -- including
+    A9's three-way gate, which is a good gate and caught a different adjoint
+    defect the same week:
+
+      * `q^T p = 1` where the DAE conserves `q^T C p` -- invisible when `C` is
+        the identity up to sign;
+      * the replayed adjoint is `C^T q`, used as `q` -- invisible when the
+        seed is axis-aligned so `C^T q` is parallel to `q`.
+
+    Together they put the orbital covariance 81x LOW on an asymmetric orbit
+    against a Monte Carlo, while every test stayed green.
+
+    `a = 0.30`, `c = 4`, `L = 1/4`: measured half-wave asymmetry 0.100,
+    `|lam2| = 0.969`, adjoint separation `|cos(q_1, q_2)| = 0.70`.  Both
+    properties, and the self-checks below refuse a fixture that has lost
+    either, so it cannot be quietly tuned back to the blind one.
+    """
+    cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.30)
+    if npts != 400:
+        import warnings as _w
+        T = float(pss.period)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                      maxiterations=400)
+        assert pss.converged
+    ## self-checks: the fixture must actually BE hostile
+    W = np.delete(np.asarray(pss.waveform[1], dtype=float), pss.irefnode,
+                  axis=0)[0]
+    half = len(W) // 2
+    asym = float(np.max(np.abs(W[:half] + W[half:2 * half]))) / float(
+        np.max(np.abs(W)))
+    assert asym > 0.05, \
+        'the "hostile" fixture has half-wave asymmetry %.3f; it must be ' \
+        'asymmetric or it cannot see the C^T q defect' % asym
+    x0r = np.delete(np.asarray(pss.waveform[1], dtype=float)[:, 0],
+                    pss.irefnode)
+    Cm = np.asarray(pss._C_at(x0r), dtype=float)
+    assert np.max(np.abs(np.abs(np.diag(Cm)) - 1.0)) > 0.5, \
+        'the "hostile" fixture has unit reactances (diag C = %r); it must ' \
+        'not, or it cannot see the q^T p normalisation defect' % (
+            np.diag(Cm).tolist(),)
+    return cir, pss
+
+
+def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
+    """A9's three-way gate, on the fixture it was blind without.
+
+    Same three routes as `test_orbital_correlation_is_gated_three_ways` --
+    eq (22), the definition integral, and the obliquely-projected Lyapunov
+    cycle-mean -- on `_hostile_oscillator`.  On the symmetric unit-reactance
+    fixture that gate passed at 0.3 % THROUGH two defects that put the
+    answer 81x off elsewhere.  Here, with the fixes in, measured:
+
+        npts   relAB (eq22 vs definition)   relAC (eq22 vs Lyapunov)
+         400        9.1e-05                     1.6e-02
+         800        4.6e-05                     8.1e-03
+
+    `relAC` halves per doubling: the O(h) residual of the adjoint replay on
+    an asymmetric orbit, documented at `_warn_if_orbit_is_asymmetric`.  The
+    bound is 2x the 400-point measurement.  ⚠ Reverting the `C^-T` transform
+    in `floquet_modes` takes `relAC` here to 2.98e-01 and this test RED
+    (MEASURED, by doing exactly that) -- while the symmetric gate stays GREEN
+    under the same mutation, blind -- which
+    is the whole point: a fixture on which the defect is visible.
+    """
+    import warnings as _w
+    cir, pss = _hostile_oscillator()
+    pac = PAC(cir)
+    m = cir.n - 1
+    Tp = float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
+        R, _ = pac.orbital_correlation(pss, H=8)
+        modes = pss.floquet_modes(pss)
+        v0, info = pss.ppv()
+        Kf, d, ci = pac.oscillator_covariance(pss, samples=True)
+
+    ## route B: the definition integral
+    md = [x for x in modes if abs(abs(x['lam']) - 1.0) > 1e-6][0]
+    mu2 = float(np.real(md['mu']))
+    P2 = np.real(md['p'][:, :-1]); Q2 = np.real(md['q'][:, :-1])
+    Nn = P2.shape[1]; h = Tp / Nn
+    g = np.array([Q2[:, k] @ CY2 @ Q2[:, k] for k in range(Nn)])
+    nper = max(int(np.ceil(-40.0 / (2 * mu2 * Tp))), 1)
+    taus = np.arange(0, nper * Nn) * h
+    wts = np.exp(2 * mu2 * taus) * h
+    s2 = np.array([float(np.sum(wts * g[(k - np.arange(0, nper * Nn)) % Nn]))
+                   for k in range(Nn)])
+    Rdef = np.mean(np.stack([s2[k] * np.outer(P2[:, k], P2[:, k])
+                             for k in range(Nn)]), axis=0)
+    relAB = np.linalg.norm(R - Rdef) / np.linalg.norm(Rdef)
+    assert relAB < 1e-3, 'eq (22) vs the definition integral: %.3e' % relAB
+
+    ## route C: obliquely-projected Lyapunov cycle-mean
+    Ps = [np.asarray(x, float)[:m, :m] for x in ci['orbital_samples']]
+    G = [np.asarray(x, float)[:m, :m] for x in ci['growth_samples']]
+    vs = [np.asarray(v0, float)[:m]] + [np.asarray(sv, float)[:m]
+                                        for sv in info['samples']]
+    proj = []
+    for j in range(min(len(Ps), len(vs))):
+        w, U = np.linalg.eigh(G[j])
+        uj = U[:, np.argmax(w)] * np.sqrt(max(float(w.max()), 0.0))
+        den = float(vs[j] @ uj)
+        if abs(den) < 1e-300:
+            continue
+        Pi = np.eye(m) - np.outer(uj, vs[j]) / den
+        proj.append(Pi @ Ps[j] @ Pi.T)
+    Pm = np.mean(np.stack(proj), axis=0)
+    relAC = np.linalg.norm(R - Pm) / np.linalg.norm(Pm)
+    assert relAC < 3.2e-2, \
+        'eq (22) disagrees with the Lyapunov reference by %.3e on the ' \
+        'hostile fixture (measured 1.6e-02 at 400 points with the C^-T ' \
+        'transform; 2.98e-01 without it). If this is large, the replayed ' \
+        'adjoint is being used as q again' % relAC
+
