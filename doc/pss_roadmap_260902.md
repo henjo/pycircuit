@@ -5566,6 +5566,83 @@ over four decades of THD), so its figure *does* transfer, and Radau's advantage 
 ~13× to ~5× as the orbit hardens. **The rate is a Radau number; the point count depends on the
 orbit, and both now say which.** ⚠ Held back until this ran, on the peer's argument, and the hold
 was justified: the headline figure was fixture-specific.
+
+#### ✅ A10's scope check on an INDEX-2 oscillator — the RK rates HOLD, and Theorem 5 does not bind the period (2026-09-07, measured)
+
+The question this section left open: does *"1 ppb at ~80 points"* hold where real circuits live —
+on an index-2 DAE, where this file's own 5/3 split (Radau: differential 5, algebraic 3) and
+Voigtmann's `min(p, q)` could pull the period back toward stage order. **Fixture:** the same van
+der Pol tank (`Q = 10⁴`, `μ = 1/(2πQ)`) with a C–V loop hung on it — `c1 = 0.1` from the tank node
+to a node `b` that an ideal `VS(v=0)` pins, with `c2 = 1` across the source. ⚠ **Index asserted
+before any rate was read**, by the repo's own criterion: rank `C` = 3 of 4, null dimension 1,
+`σ_min/σ_max(NᵀGN) = 0` → **index 2** (the source current is `c1·dv/dt`, a derivative of a
+differential variable — exactly the algebraic component that takes the order drop). Reference:
+radau at 3200 points, `reltol = 1e-14`, `T_ref = 6.5898603450` (seed `2π/√1.1`, converged).
+Period error in ppm against `T_ref`, rate per doubling (log₂ in parentheses):
+
+| method | 50 | 100 | 200 | 400 | 800 | rates |
+|---|---|---|---|---|---|---|
+| gear | — | — | — | 82.65 | 20.61 | 4.00 (2.00) |
+| trap | — | — | 83.08 | 20.67 | 5.153 | 4.0 (2.01) / 4.0 (2.00) |
+| esdirk43 | 0.2287 | 1.373e-02 | 8.411e-04 | 5.204e-05 | 3.236e-06 | 16.7 / 16.3 / 16.2 / 16.1 (4.06 → 4.01) |
+| radau | 1.057e-04 | 1.555e-06 | 2.318e-08 | 1.348e-10 | 4.043e-10 | **68.0 (6.09) / 67.1 (6.07)** / floor / floor |
+
+**Verdict: the rates transfer to index-2 unchanged.** Gear and trap are the control at exactly
+order 2 (4.00, 4.01), the ESDIRK converges onto 16 from above (4.06 → 4.01, the same signature as
+the index-1 sweep), and **Radau is 68× per doubling — order 6.1 — the same number the index-1
+fixture gave (68–82×)**, nowhere near the 8× that stage order 3 would print. The 400- and 800-point
+entries sit on the reference's own floor (`1.3e-10` / `4.0e-10` ppm against a 3200-point reference;
+the 172× and 0.3× "rates" are floor arithmetic, not order). **Theorem 5's `min(p, q) = 3` is a bound
+on the *algebraic* variable — here the source current — and the period is a functional of the
+*differential* state, which HLR Thm 5.9 keeps at the classical order.** ✅ Sourced without HLR89
+(peer `docs-46`, same evening): Hairer & Wanner, *Solving ODEs II* §VI.7 (on disk), p. 516,
+verbatim — *"global error of the y-component is `O(h^{q+1})`, and that of the z-component is
+`O(h^q)` (where `q` denotes the stage order of the method)"* — and the reason both stage methods
+EXCEED the `y` bound (esdirk43 measured 4.08 against `q+1 = 3`, radau 5.08 against 4) is on the
+same pages: *"For collocation methods which are NOT stiffly accurate it is possible to prove
+superconvergence … if the method is combined with a certain projection"* — the stiffly accurate
+ones (Radau IIA `c_s = 1`; K&C's `…L[2]SA`) get classical order on `y` without one. The algebraic
+column matches stage order exactly (2.04 / 3.05). The A10 figures survive where real circuits live:
+
+| | index-1 (A10 sweep) | index-2 (this) |
+|---|---|---|
+| Radau at 50 pts | 1.2e-04 ppm | 1.06e-04 ppm |
+| Radau, 1 ppb at | ~30–80 pts (orbit-dependent) | **< 50 pts** (0.1 ppb at 50) |
+| ESDIRK at 200 pts | 8.6e-04 ppm | 8.4e-04 ppm |
+| ESDIRK, 1 ppb at | ~400 pts | ~400 pts |
+
+⚠ Scope, stated: one index-2 mechanism (a C–V loop pinned by an ideal source, the commonest one in
+MNA), one nearly-harmonic orbit, one `Q`. The THD dependence of the "~30" figure measured on index-1
+is not re-measured here. A circuit whose *period* is set by an algebraic variable — a relaxation
+oscillator timed by a source current — is the case this measurement does not cover, and there the
+5/3 split would be expected to reach the period.
+
+⚠⚠ **A second result, kept SEPARATE because it is a convergence-DOMAIN effect, not an order effect**
+(the peer's insistence, and right): the dashes in the table are **shooting solves that did not
+converge** — gear at 50/100/200 and trap at 50/100 points on this fixture, at `maxiterations = 400`.
+Both stage methods converge at 50. ⚠ The sentence "which the index-1 fixture did not show" was
+said to the peer before the index-1 sweep had ever run gear or trap below 400 points — withdrawn,
+and the control run instead (same `Q`, seed, `reltol = 1e-14`, `maxiterations = 400`, index-1 tank
+alone):
+
+| | 50 | 100 | 200 |
+|---|---|---|---|
+| index-1 gear | ✗ (1.0e+06 ppm) | ✗ (1365 ppm) | ✗ (336 ppm) |
+| index-1 trap | ✗ (1430 ppm) | ✗ (343 ppm) | ✓ 83.9 ppm |
+| index-2 gear | ✗ | ✗ | ✗ |
+| index-2 trap | ✗ | ✗ | ✓ 83.1 ppm |
+
+**The pattern is identical on index-1. The index does not enter.** What it is: the two order-2
+LMMs do not certify a free-period shooting solve at `reltol = 1e-14` below 200 (trap) / 400 (gear)
+points per period at `Q = 10⁴`, while both stage methods certify at 50. ⚠ The returned periods of
+the *uncertified* trap solves follow `h²` onto the certified one (343 → 83.9 predicts 336 at 100),
+so the iteration reached the neighbourhood of the answer and failed the certificate, not the
+problem — a convergence-DOMAIN statement about the order-2 LMM period maps at this tolerance and
+`Q`, and, as the peer noted, a distinction between the two LMMs (trap certifies at 200, gear does
+not) before the stage methods enter. The *cause* is not measured here: whether it is the
+`1 − λ₂ ≈ 1/Q` contraction meeting an `h²`-limited period map, gear's history seam under a moving
+period, or the tolerance being unattainable on a coarse LMM grid, is a separate question, and this
+paragraph names it rather than answering it. The index-2 table's dashes read accordingly.
 ### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
 
 ⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
@@ -7270,7 +7347,15 @@ the survey's missing option, not as a build.**
 this file's measured index-2 table, three for three:** trbdf2 `p=2, q=2 → min 2` (measured 2.04);
 esdirk43 `p=4, q=2 → 2` (2.04); radau `p=5, q=3 → 3` (3.05). The rule *"differential order = p,
 algebraic order = q"* — reached by measurement after this file's own correction of the `det A ≠ 0`
-reading — **is** the theorem's `min(p,q)`, with the algebraic component binding. (2) **"No order
+reading — **is** the theorem's `min(p,q)`, with the algebraic component binding. ⚠⚠ **SOFTENED
+BY ITS AUTHOR THE SAME NIGHT — the three-for-three does NOT discriminate.** All three comparisons
+are against the ALGEBRAIC column, and on all three methods `q ≤ p`, so `min(p,q) = q` — and Hairer &
+Wanner's classical component split (§VI.7 p. 516: `y` at `O(h^{q+1})`, `z` at `O(h^q)`) predicts
+exactly the same three numbers. The fit is real; it is *consistent with both*, not a confirmation
+of Theorem 5 specifically. And the split is the BETTER statement for this file: `min(p,q)` alone
+would cap radau's whole solution at 3, while the period was measured at order 6.1 on index-2 (A10)
+— the split says a differential functional of a stiffly accurate method keeps classical order,
+which is what happened. (2) **"No order
 reduction" means precisely `q ≥ p`.** That is the whole content of "high stage order" and the exact
 condition under which a diagonally implicit GLM dominates esdirk43 (`q=2`) and radau (`q=3`) on the
 axis the table measures; the survey's "an order-3 GLM does not beat Radau IIA(3)" now carries it.
@@ -9170,6 +9255,30 @@ theorems are RK theorems. GLMs are a different class, and Voigtmann's claim is o
 implicit methods with high stage order are possible"*; whether a GLM can carry high stage order AND
 a positive radius is answered by nothing on disk. Third time tonight the GLM route is the only
 unexplored exit: order (Theorem 5), the DIRK stage-order cap, and now contractivity.
+
+### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
+
+Peer `docs-46`, after the contractivity chain closed: the GLM exit has an authoritative DAE source,
+and it is the SAME book already missing for a different question. Lamour, März & Tischendorf's
+table of contents (the 27 pages of front matter on disk, of ~650) lists **§5.2.3, §5.3.3, §5.5.3
+"General linear method" (pp. 350/355/369)** — GLMs *applied to DAEs*, exactly the open question's
+setting — and the earlier gap `lamour-index-from-circuit-topology` (B11's source) already needed
+**§10.2.2.2–3 near p. 482** from the same volume. Four items, three of them the same question from
+different angles — *can a diagonally implicit multivalue method escape the RK barriers closed
+tonight?* — and the fourth is B7:
+
+| source | what it answers |
+|---|---|
+| Lamour, März & Tischendorf, *DAEs: A Projector Based Analysis* — §5.2.3, §5.3.3, §5.5.3 | the GLM-on-DAE exit: high stage order AND a positive monotonicity radius, on a DAE |
+| same book, §10.2.2.2–3 (p. 482) | `lamour-index-from-circuit-topology` — B11's topological index rests on front matter alone |
+| W. Wright, *General linear methods with inherent Runge-Kutta stability*, PhD, Auckland 2003 | the concrete GLM tableau and its stage order (line ~7298: abstract only on disk) |
+| S. Voigtmann, *General Linear Methods for Integrated Circuit Design*, PhD, Humboldt | the full Nordsieck order conditions behind Theorem 5 |
+| Sickenberger, Weinmüller & Winkler, ASC Report 16/2007 (Part I) | B7: whether defect-correction local error estimates see an accumulating period error |
+
+**Decision recorded with the list: no more corpus time on the GLM question until one of these
+lands.** Everything reachable from disk has been extracted — Theorem 5's `min(p, q)`, the DIRK
+stage-order cap, the contractivity/stage-order incompatibility. None is obtainable by either
+session; the list is surfaced to Andreas, who can.
 
 ### ⚠⚠ The green suite was WEAK evidence, and that is the part worth keeping
 
