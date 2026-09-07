@@ -4543,10 +4543,23 @@ class PSS(Analysis):
         ## `sigma_min` at `tau/T = 10` is ~4.5e-02 -- healthy.  The PPV has
         ## no large entries there and nothing is splitting into two nearly
         ## cancelling components.  Lai's own case is a gated-capacitor
-        ## tuning bank whose off-caps have RC "larger than 1 second" at
-        ## 3.15 GHz, i.e. `tau/T ~ 3e9` -- eight orders from what was
+        ## tuning bank (226 MOSFETs, 3.15 GHz) whose off-caps have RC
+        ## exceeding ~1 s, i.e. `tau/T ~ 3e9` -- eight orders from what was
         ## tested.  A null result at 10 is what the mechanism PREDICTS, not
         ## evidence against it.
+        ##
+        ## ⚠ PROVENANCE, CORRECTED 2026-09-07: this used to render "larger
+        ## than 1 second" AS A QUOTATION.  It is not one.  The source is
+        ## Lai, "Frequency-Aware PPV" (Cadence, [L08]), whose PDF is NOT on
+        ## disk -- only our own reading of it
+        ## (`~/docs/pycircuit-frequency-aware-ppv.md`), where the sentence is
+        ## a PARAPHRASE ("their RC constants exceed 1 s") and not one of that
+        ## file's marked quotations.  A peer session reports the original
+        ## says "larger than 1" with NO UNIT; that cannot be checked here,
+        ## so the unit is an inference either way.  Seconds is the natural
+        ## reading and the `tau/T ~ 3e9` above follows from it, so nothing
+        ## downstream moves -- but a paraphrase two documents deep must not
+        ## wear quotation marks.
         ##
         ## ⚠ SO THE HONEST RECORD IS: not reproduced at `tau/T = 10`, which
         ## is outside the regime where the mechanism predicts an effect;
@@ -4671,6 +4684,19 @@ class PSS(Analysis):
         ##
         ## `k ~ n/2` and rising, against a DENSE route that costs `n` and needs
         ## no threshold at all.
+        ##
+        ## ⚠⚠ BUT THE DENSE ROUTE IS OUT ON THE CIRCUITS THAT MOTIVATE THIS.
+        ## `FLOQUET_DENSE_LIMIT = 400`, and the published cases are LARGER:
+        ## Lai's 64-gated-capacitor DCO is "about 200 transistors, and the
+        ## system size is more than 500 ... We have trouble to apply direct
+        ## harmonic balance in this case due to memory issue" (DAC 2006
+        ## p.1021, verified on disk), and [L08]'s tuning oscillator is 813.
+        ## So dense is the right default only in the `n <= 400` band this
+        ## class already draws, and the RITZ-RESIDUAL gate is what the large
+        ## end needs.  ⚠ And a 64-element bank with any realistic fraction
+        ## off is an order of magnitude past the >= 3 clusters that break
+        ## `k = 12` -- i.e. the extension AT ITS CURRENT BASIS SIZE would
+        ## fail on exactly the circuits it exists for.
         ## THE DIAGNOSTIC THAT SEPARATES THEM CLEANLY IS THE PER-PAIR RITZ
         ## RESIDUAL `|h_{k+1,k}| |y_i[last]|`, free from `H`: 1.0e-02 at
         ## k=8, 2.1e-03 at k=12 (both wrong), 1.5e-16 at k=16 (right), and

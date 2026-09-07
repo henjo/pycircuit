@@ -7031,6 +7031,24 @@ the fixture above and **fails on a longer ladder**, because the required `k` gro
   It costs about 2x the `k` that works, is exact, and has no threshold. The obvious default while
   `n` is modest.
 
+  ⚠⚠ **BUT IT IS OUT ON THE CIRCUITS THAT MOTIVATE THE ARNOLDI.** `FLOQUET_DENSE_LIMIT = 400`, and
+  the published cases are larger: Lai's 64-gated-capacitor DCO is *"about 200 transistors, and the
+  system size is more than 500 … We have trouble to apply direct harmonic balance in this case due
+  to memory issue"* (DAC 2006 p.1021, **verified on disk**), and [L08]'s tuning oscillator is 813
+  equations. So the dense route is the right default only inside the `n ≤ 400` band this class
+  already draws, and **the residual gate is what the large end needs**. ⚠ Worse for the status quo:
+  a 64-element bank with any realistic fraction off is an order of magnitude past the ≥3 clusters
+  that break `k = 12` — so the extension **at its current basis size would fail on exactly the
+  circuits it exists for**. (That the bank is 64 is Lai's; how many are off in a given tuning code
+  is not stated — the inference is ours.)
+
+  ⚠ **AND A FOURTH OPTION NEITHER LINEAR-ALGEBRA FIX COVERS, WHICH IS LAI'S OWN: HIERARCHY.**
+  *"The hierarchical method does not has this problem, since it has the nature to isolate the bad
+  conditioning subcircuit from the top level"* (p.1021, verified) — a top level of size 44 with
+  several subcircuits instead of one 500+ system. An **architectural** answer to a conditioning
+  problem, chosen by the people who hit it at production scale. Recorded because this whole thread
+  has been about linear algebra.
+
   ⚠⚠ **AND THE PAPER `ppv()` IMPLEMENTS ALREADY CAUTIONED AGAINST THE OTHER ROUTE, IN 2003.**
   Demir & Roychowdhury, TCAD 22(2) p.189 — **verified verbatim on disk**
   (`~/docs/2003-TCAD-Demir-Roychowdhury.pdf`), not relayed: *"variants of the monodromy matrix
