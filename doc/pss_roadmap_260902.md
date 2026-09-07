@@ -7126,7 +7126,33 @@ load-bearing and not decoration.
   circuits it exists for**. (That the bank is 64 is Lai's; how many are off in a given tuning code
   is not stated — the inference is ours.)
 
-  ⚠ **AND A FOURTH OPTION NEITHER LINEAR-ALGEBRA FIX COVERS, WHICH IS LAI'S OWN: HIERARCHY.**
+  ⛔ **DECIDED 2026-09-07 (Andreas): HIERARCHY IS SKIPPED UNTIL AN HB IMPLEMENTATION UNBLOCKS IT.**
+  Not a judgement on the method — it is the right answer to the underlying conditioning, and the
+  only one of the three that removes the cause rather than working around it. It is **blocked on a
+  prerequisite we do not have**: Lai's construction is harmonic-balance throughout (§2.2 adopts the
+  frequency domain explicitly *"to overcome the difficulty of the time domain method"*, and the
+  macromodel, the equivalence proof and the interface Jacobians are all in Fourier coefficients),
+  while this tree has **no HB engine** — only B5's multi-harmonic probe with a *shooting* inner
+  solve. A second obstacle sits behind it: `SubCircuit.G` stamps every element into one flat MNA
+  matrix, so we have hierarchy as bookkeeping and none of it as solving structure.
+
+  **The order when it is unblocked**, and the first step is cheap:
+  1. an HB engine (the prerequisite);
+  2. the **symbolic-stamp** interface on `SubCircuit` — an n-terminal block that stamps into the
+     parent MNA as a primitive does (Xu, Shi & Li ASP-DAC 2011), which `doc/ddd_conclusions.md`
+     §4.5 already identifies as the formulation that fits how `SubCircuit` composes;
+  3. ⚠ **and before any solver work, the gate**: condense one gated-capacitor block onto its
+     terminals and check the near-unit cluster actually leaves the top-level spectrum. Lai's claim
+     is that it does (*"the large RC poles … are completely eliminated, since they are moved to a
+     different hierarchical block"*), but that is measured on an HB Jacobian and **has not been
+     shown to transfer to a shooting monodromy**. A bad partition gives back the conditioning you
+     were escaping.
+
+  ⚠ **Nothing in the `lam2` work waits on this.** The dense route and the Ritz gate are built and
+  neither needed hierarchy; the gate says when `lam2` is untrustworthy, hierarchy would make it
+  trustworthy more often. Different jobs.
+
+  ⚠ **AND THE OPTION ITSELF, WHICH NEITHER LINEAR-ALGEBRA FIX COVERS — LAI'S OWN: HIERARCHY.**
   *"The hierarchical method does not has this problem, since it has the nature to isolate the bad
   conditioning subcircuit from the top level"* (p.1021, verified) — a top level of size 44 with
   several subcircuits instead of one 500+ system. An **architectural** answer to a conditioning
