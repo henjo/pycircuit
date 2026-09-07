@@ -16516,3 +16516,63 @@ def test_the_phase_only_spectrum_warns_above_the_amplitude_pole():
     assert fires(10.0 * f_amp), \
         'did NOT warn a decade above f_amp (%.4g Hz), where a commercial ' \
         'simulator measures several dB of excess' % f_amp
+
+
+def test_the_default_method_is_radau_and_it_takes_no_monodromy_twin():
+    """The DEFAULT itself, pinned — because almost nothing else exercises it.
+
+    ⚠⚠ When the default moved from `trap` to `radau` (owner decision,
+    2026-09-07) the full suite passed unchanged, 3099 tests, first run. That
+    is WEAK EVIDENCE, not a good sign: **215 of the 230 `PSS(` constructions
+    in this suite pass `method=` explicitly**, so only ~15 sites touch the
+    default at all and most of those are topology checks that never solve.
+    A default nothing exercises can be changed to anything without a red test
+    — the §D 0ab shape, inverted. This test exercises it deliberately.
+
+    Two facts, both of which were established by READING the code first and
+    are asserted here because reading is not measuring:
+
+    1. The default is `radau`. Chosen because the floor of this stack is
+       discretisation and grows linearly in `Q` (gear `~1.8e-05 Q`, radau
+       `~7.0e-12 Q` at 240 points), and — the part that decides it — `trap`'s
+       error CHANGES SIGN near `Q = 100`, so `grid_error` must refuse it there;
+       its two-grid difference under-states the true error by up to 300x. A
+       default whose error cannot be estimated is a poor default.
+
+    2. An autonomous run under the default takes **no TR-BDF2 twin**.
+       `monodromy_twin` returns `self` for any method that
+       `carries_own_monodromy`, and every stage method does. Had Radau been
+       missing from that set, every autonomous solve would have quietly
+       spawned a SECOND PSS and read `lambda_2` from an order-2 map while the
+       native one is order 5 — more cost for a worse answer, and nothing would
+       have failed.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 0.5 * (u - u ** 3 / 3.0))
+
+    pss = PSS(cir)
+    assert pss.par.method == 'radau', \
+        'the default method is %r; the 2026-09-07 decision is radau' % (
+            pss.par.method,)
+
+    T0 = 2.0 * np.pi
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
+                  maxiterations=80)
+    assert pss.converged, 'the default method did not converge on van der Pol'
+
+    ## ⚠ `is pss` — not merely "a PSS with the same answer". The whole point
+    ## is that NO second solve happens.
+    assert pss.monodromy_twin() is pss, \
+        'the default spawned a monodromy twin; a stage method must read its ' \
+        'own map (see carries_own_monodromy)'
+    assert not pss._twins, \
+        'a twin was solved and cached: %r' % (list(pss._twins),)

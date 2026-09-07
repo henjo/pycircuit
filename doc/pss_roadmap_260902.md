@@ -8530,3 +8530,61 @@ that `radau` should be the default, which is a cost/robustness trade-off nobody 
 and `grid_error` is exactly the instrument for pricing it. `grid_error` also cannot see an error both
 grids share (a wrong stamp, a wrong convention): a small `rel_change` says the grid is fine enough,
 never that the answer is right.
+
+
+## The PSS default method is `radau` — owner decision 2026-09-07, and it is PRICED
+
+**Decision (Andreas, 2026-09-07): `radau` is the default `method` for `PSS`, changed from `trap`.**
+This closes the actionable half of the high-Q floor arc: `grid_error` was built to price exactly
+this trade-off, and it did.
+
+### Why, beyond "more accurate"
+
+The floor of this stack is discretisation and grows linearly in `Q` (`~1.8e-05·Q` gear,
+`~7.0e-12·Q` radau at 240 points). But the argument that decides it is not the accuracy number —
+it is that **`trap`'s error changes sign near `Q = 100`**, so `grid_error` has to *refuse* it there:
+its two-grid difference under-states the true error by up to **300×**. A default whose error you
+cannot estimate is a poor default independent of how accurate it is. `trap` also fails to improve
+monotonically across that region — 2.913e-06 at 240 points, **4.061e-06 at 480**.
+
+### The cost, measured — and my first reading of it was an artifact
+
+Relative error in `c` against the analytic high-Q reference, total wall-clock (solve + `c`):
+
+| | trap 480 pts | radau 60 pts |
+|---|---|---|
+| Q ≈ 100 | 4.061e-06, 6.747 s | **7.599e-07, 0.908 s** |
+| Q ≈ 500 | 9.230e-06, 12.434 s | **3.802e-06, 0.633 s** |
+
+**Radau at sixty points beats trap at four hundred and eighty, on both axes at once.**
+
+⚠ The first pass showed radau faster at *every* grid point, which is not credible for a 3-stage
+fully implicit method, so it was decomposed rather than quoted:
+
+| method | npts | solve | `c`-eval | twin |
+|---|---|---|---|---|
+| trap | 120 | 1.519 s | 1.255 s | **trbdf2** |
+| trap | 480 | 2.586 s | 4.161 s | **trbdf2** |
+| radau | 120 | 1.088 s | 0.187 s | none |
+| radau | 480 | **3.538 s** | 0.737 s | none |
+
+**Radau's pure solve IS more expensive at a fine grid**, exactly as theory says. What made it look
+free was that `trap` is not self-sufficient: an autonomous run must solve a **second, TR-BDF2 PSS**
+for its monodromy, and that twin was inside my timer. The honest statement is: *per step at a fine
+grid radau costs ~1.4×; per oscillator answer it is cheaper, because trap pays for a whole extra
+solve; per unit of accuracy it is not close.*
+
+### ⚠⚠ The green suite was WEAK evidence, and that is the part worth keeping
+
+The full suite passed **unchanged, 3099 tests, on the first run** after the default changed. That is
+not reassurance: **215 of the 230 `PSS(` constructions in the suite pass `method=` explicitly**, so
+only ~15 sites touch the default and most of those never solve. **A default that nothing exercises
+can be changed to anything without a red test** — §D 0ab, inverted: not a suite running where the
+defect cannot exist, but a suite that does not run where the change lives.
+`test_the_default_method_is_radau_and_it_takes_no_monodromy_twin` now exercises it deliberately.
+
+⚠ **The interaction that would have been silent.** `monodromy_twin` returns `self` only for methods
+that `carries_own_monodromy`. Had Radau been missing from that set, every autonomous solve under the
+new default would have quietly spawned a second PSS and read `λ₂` from an **order-2** twin while its
+own map is **order 5** — more cost for a worse answer, with nothing failing. It is in the set; that
+was checked by reading before the change and is now asserted, because reading is not measuring.

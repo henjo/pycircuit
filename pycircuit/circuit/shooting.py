@@ -1629,11 +1629,63 @@ class PSS(Analysis):
                         '1 holds the shooting solve to the same relative '
                         'tolerance as the transient, larger relaxes it',
                    unit='', default=1.0),
+         ## ⚠⚠ THE DEFAULT IS `radau` (owner decision, 2026-09-07), CHANGED
+         ## FROM `trap`.  The floor of this stack is DISCRETISATION and it
+         ## grows LINEARLY IN Q; at 240 points per period the relative error
+         ## in the diffusion constant against the analytic high-Q reference is
+         ##
+         ##     Q      gear        trap        radau
+         ##      100   1.79e-03    1.49e-06    6.97e-10
+         ##      500   9.02e-03    1.04e-04    3.48e-09
+         ##     1000   1.82e-02    2.36e-04    6.97e-09
+         ##
+         ## `trap` is not merely less accurate than `radau` here -- its error
+         ## CHANGES SIGN near Q = 100, which is why it fits no clean law in
+         ## that table and why `grid_error` has to refuse it (its two-grid
+         ## difference under-states the true error by up to 300x there).  A
+         ## default whose error estimate cannot be trusted is a poor default.
+         ## `radau` is order 5, self-starting (no manufactured opener, so no
+         ## seam in the period map), L-stable, and carries its own monodromy,
+         ## so an autonomous run takes NO TR-BDF2 twin and reads its own
+         ## spectrum -- see `monodromy_twin` and `carries_own_monodromy`.
+         ##
+         ## ⚠ It IS more expensive per step at a fine grid (3-stage fully
+         ## implicit, through the 1-real/1-complex transform): PURE SOLVE time
+         ## on van der Pol at Q=100, 480 points, is 3.538 s against trap's
+         ## 2.586 s.  At a coarse grid it is cheaper (1.088 vs 1.519 at 120),
+         ## the shooting Newton needing fewer iterations without an opener
+         ## seam in the period map.
+         ##
+         ## ⚠⚠ BUT FOR ANY OSCILLATOR SURFACE THE TWIN DOMINATES, AND THAT IS
+         ## WHAT SETTLES THE COST QUESTION.  `trap` is not self-sufficient: an
+         ## autonomous run must solve a SECOND, TR-BDF2 PSS for its monodromy
+         ## (`monodromy_twin`), and `radau` carries its own.  Measured
+         ## `diffusion_constant` cost, which pays for that twin:
+         ##
+         ##     npts   trap solve / c-eval   radau solve / c-eval
+         ##      120     1.519 / 1.255         1.088 / 0.187   (no twin)
+         ##      480     2.586 / 4.161         3.538 / 0.737   (no twin)
+         ##
+         ## ⚠ AND AT EQUAL ACCURACY IT IS NOT CLOSE.  Relative error in `c`
+         ## against the analytic high-Q reference, with total wall-clock:
+         ##
+         ##     Q~100   trap  480 pts  4.061e-06   6.747 s
+         ##             radau  60 pts  7.599e-07   0.908 s
+         ##     Q~500   trap  480 pts  9.230e-06  12.434 s
+         ##             radau  60 pts  3.802e-06   0.633 s
+         ##
+         ## Radau at SIXTY points beats trap at four hundred and eighty, on
+         ## both axes at once.  ⚠ Note also `trap` at Q~100 going 2.913e-06 at
+         ## 240 to 4.061e-06 at 480 -- it does not even improve monotonically
+         ## here, which is the sign change again.
+         ##
+         ## `trap` remains one argument away for a cheap coarse answer.
          Parameter(name='method',
-                   desc="Integration method for the inner transient: 'trap' "
-                        "(default), 'euler', or 'gear' (BDF-2)",
+                   desc="Integration method for the inner transient: 'radau' "
+                        "(default, order 5), 'trbdf2', 'theta', 'gear' "
+                        "(BDF-2), 'trap' or 'euler'",
                    unit='',
-                   default="trap")]        
+                   default="radau")]        
 
     
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
