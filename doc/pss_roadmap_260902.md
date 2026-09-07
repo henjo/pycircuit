@@ -6957,6 +6957,13 @@ extremum); `c` is the clean one there.
 lands on the analytic limit to 1e-3 of the physical term. The warning's second half — the
 instantaneous phase equation over-estimating phase noise — is a separate, still-open limitation.
 
+⚠⚠ **TWO Q CONVENTIONS ALREADY COEXIST IN THE TEST FILE AND THEY DIFFER BY π.** `_q20_rlc`'s
+docstring defines Q by `|λ₂| = exp(−π/Q)` (Q=20 → 0.8546); `_osc_with_ladder` sets
+`μ = 1/(2πQ)`, i.e. `|λ₂| = exp(−1/Q)`. So `_osc_with_ladder(Q=60)` is `|λ₂| = 0.98347`, which is
+**Q = 188 under the other convention**. Everything in this section uses the resonator one
+(`Q = π/(−ln|λ₂|)`), so "Q = 1000" here is `|λ₂| = 0.99686`. **Check which Q a quoted number means
+before comparing two measurements in this tree.**
+
 Test: `test_the_diffusion_constant_at_high_q_has_an_analytic_reference`.
 
 ## D. How these items keep failing — the shapes worth checking for
