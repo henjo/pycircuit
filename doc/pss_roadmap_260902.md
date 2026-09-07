@@ -5643,6 +5643,33 @@ not) before the stage methods enter. The *cause* is not measured here: whether i
 `1 − λ₂ ≈ 1/Q` contraction meeting an `h²`-limited period map, gear's history seam under a moving
 period, or the tolerance being unattainable on a coarse LMM grid, is a separate question, and this
 paragraph names it rather than answering it. The index-2 table's dashes read accordingly.
+
+#### ⚠ Scope note — the ONE alternative to "raise the order" on the warping axis, on disk and unread (peer `docs-46`, 2026-09-07)
+
+Ober-Blöbaum, Tao, Cheng, Owhadi & Marsden, *"Variational integrators for electric circuits"*,
+arXiv:1103.1859 (2011), 35 pp + a 34-page talk. Structure-preserving integration: a discrete
+Hamilton's principle gives discrete Euler–Lagrange equations; the integrators are *"symplectic and
+momentum-preserving and have an excellent long-time energy behavior"*, with three circuit obstacles
+handled — external forcing through controlled sources and resistors, the KCL/KVL constraints, and a
+*degenerate Lagrangian* that *"dependent on the discretization … can be canceled for the discrete
+variational scheme"*. The abstract's claim that lands on THIS section: *"a comparison to BDF methods
+… shows that even for simple LCR circuits, a better energy behavior and FREQUENCY SPECTRUM
+PRESERVATION can be observed using the developed variational integrator."* Frequency-spectrum
+preservation is the warping axis exactly. Tonight's answer to warping was accuracy (order:
+140×/700×); this proposes a different mechanism — the frequency right by *structure* rather than by
+accuracy — and a high-`Q` tank, nearly conservative, where energy drift is what corrupts long-time
+frequency, is the textbook case for symplectic methods.
+
+⚠⚠ **The caveat that decides whether it transfers, and it is serious:** variational integrators
+live on conservative or forced-Lagrangian systems. A self-sustaining oscillator is dissipative by
+construction — the limit cycle exists because gain balances loss, and there is no energy to
+preserve. The symplectic argument applies to the TANK (which sets the frequency), not to the
+OSCILLATOR (which sets the amplitude); whether the guarantee survives their forced/dissipative
+extension (Lagrange–d'Alembert) on a circuit with an active element is not answered by the abstract
+and is the first thing to check. ⚠ Symplectic and monotone are different guarantees — do not assume
+one buys the other. **Not worth reading now; worth reading if the warping axis is reopened.** It is
+the only alternative mechanism that has surfaced, it comes with a published BDF comparison on LCR
+circuits, and it is on disk.
 ### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
 
 ⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
