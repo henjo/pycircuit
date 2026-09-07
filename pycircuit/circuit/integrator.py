@@ -1231,9 +1231,29 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     negative entry is the theorem showing its face and no better
     collocation tableau exists to look for.  Chained with Voigtmann's
     Theorem 5 (index-2 convergence order = min(p, q)): on an index-2
-    circuit a method can carry a contractivity guarantee OR order above 2,
-    never both -- a Runge-Kutta limitation, not a DIRK one, binding Radau
-    exactly as hard as ESDIRK.  TR-BDF2 sits at the corner (stage order 2,
+    circuit a method can carry an ABSOLUTE-MONOTONICITY guarantee OR order
+    above 2, never both -- a Runge-Kutta limitation, not a DIRK one, binding
+    Radau exactly as hard as ESDIRK.
+    ⚠⚠ BUT "CONTRACTIVITY" IS TWO DIFFERENT GUARANTEES, and this method
+    HAS the other one unconditionally (peer correction, same night, from
+    Hairer & Wanner Thm 12.9 p.210 -- on disk all along -- and Lamour Ch.6
+    §6.1): "The methods Gauss, Radau IA, Radau IIA and Lobatto IIIC are
+    algebraically stable and therefore also B-stable."  B-stability is
+    contraction of a one-sided-Lipschitz flow in an inner-product norm,
+    with NO stepsize restriction ("B-stable Runge-Kutta methods reflect
+    contractivity devoid of stepsize restrictions", Lamour) -- the natural
+    notion for a DISSIPATIVE circuit of passive elements.  Absolute
+    monotonicity (Kraaijevanger, SSP) protects componentwise positivity /
+    TVD / bounds and needs ``A >= 0``, hence stage order <= 2.  Each method
+    here has exactly one: Radau IIA(3) is B-stable with ``R(A, b) = 0``;
+    TR-BDF2 has ``R = 1 + sqrt(2)`` and is NOT algebraically stable (Kennedy
+    & Carpenter: a DIRK may have algebraic stability OR stage order two,
+    not both).  So the default is BETTER protected than the paragraph above
+    reads, on the notion that matters most for circuits; the ``R = 0`` gap
+    is the narrower componentwise one.  A componentwise-bounds measurement
+    (an RC ladder under a square wave) tests ONLY absolute monotonicity: a
+    violation there does not contradict B-stability, and a clean result
+    does not establish it.  TR-BDF2 sits at the corner (stage order 2,
     ``R = 1 + sqrt(2)``) and its explicit first stage is the zero row the
     theorem requires -- checked on the coded ``A``: row 0 is the only zero
     row and ``A >= 0`` holds; Radau IIA(3) has no zero row and ``A >= 0``

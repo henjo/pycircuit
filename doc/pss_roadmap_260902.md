@@ -9270,7 +9270,9 @@ have a positive radius** — there is nothing better to go looking for. With Voi
 
     positive radius  ⇒  q ≤ 2  ⇒  index-2 convergence order ≤ 2
 
-**On an index-2 circuit: a contractivity guarantee, or order above 2, never both.** A Runge-Kutta
+**On an index-2 circuit: an ABSOLUTE-MONOTONICITY guarantee, or order above 2, never both** (⚠ the
+sentence originally read "a contractivity guarantee" — withdrawn by its author the same night as too
+broad; see the B-stability correction below). A Runge-Kutta
 limitation, not a DIRK one; it binds Radau exactly as hard as ESDIRK. TR-BDF2 sits at the corner —
 stage order 2, `R = 1 + √2`, and its explicit first stage is exactly the zero row Thm 2.2 requires.
 ✅ Checked on the coded tableaux as a free validation of the whole computation: TR-BDF2 `A ≥ 0` with
@@ -9282,6 +9284,40 @@ theorems are RK theorems. GLMs are a different class, and Voigtmann's claim is o
 implicit methods with high stage order are possible"*; whether a GLM can carry high stage order AND
 a positive radius is answered by nothing on disk. Third time tonight the GLM route is the only
 unexplored exit: order (Theorem 5), the DIRK stage-order cap, and now contractivity.
+
+#### ⚠⚠ CORRECTION, before the ladder is read: "contractivity" was TWO guarantees, and Radau HAS the other one unconditionally
+
+Peer `docs-46`, from Lamour Ch. 6 *"Stability issues"* (supplied by Andreas) and **Hairer & Wanner
+Theorem 12.9, p. 210 — on disk all along**: *"The methods Gauss, Radau IA, Radau IIA and Lobatto
+IIIC are algebraically stable and therefore also B-stable."* Lamour §6.1: *"so-called B-stable
+Runge-Kutta methods reflect contractivity devoid of stepsize restrictions"* — their contractivity is
+Definition 6.1's one-sided-Lipschitz / inner-product notion, the natural one for dissipative
+systems. The two notions are different and complementary:
+
+| guarantee | protects | needs | Radau IIA(3) | TR-BDF2 |
+|---|---|---|---|---|
+| **absolute monotonicity** (Kraaijevanger, SSP) | componentwise positivity, TVD, bounds | `A ≥ 0` ⇒ stage order ≤ 2 | `R = 0` | `R = 1 + √2` |
+| **B-stability / algebraic stability** | contraction of a one-sided-Lipschitz flow, inner-product norm, NO step restriction | algebraic stability | **YES** (Thm 12.9) | no — K&C: a DIRK has algebraic stability OR stage order 2, not both |
+
+**Each method has exactly one.** The `A ≥ 0 ⇒ q ≤ 2` barrier is exact but bounds ONLY the first;
+nothing bars a high-stage-order method from the second, and Radau has it. **For the default this is
+better protection than the section above reads, on the notion that matters most for circuits:** a
+circuit of passive elements is dissipative, one-sided Lipschitz in the relevant norm is its natural
+setting, and B-stability is exactly that guarantee with no step restriction. The `R = 0` result bites
+on componentwise positivity/TVD, which is narrower.
+
+⚠⚠ **How the pending ladder measurement must be read:** an RC ladder under a 0/1 square wave with a
+componentwise-`[0, 1]` exact solution tests ABSOLUTE MONOTONICITY — the notion Radau provably lacks
+— not B-stability. A violation there does NOT contradict B-stability; no violation does NOT
+establish it. The instrument is right for the `R = 0` gap and silent on the other guarantee, and
+that distinction travels with the result. What survives unchanged: `R > 0 ⇒ A ≥ 0 ⇒ q ≤ 2`, Radau's
+`R = 0` forced by theorem, TR-BDF2 at the corner with its explicit stage as the required zero row.
+
+⚠ **§D shape, from the edit that first wrote this paragraph:** an unquoted shell heredoc carrying
+Python source with backticks in its strings let the shell EXECUTE every backtick span and splice the
+empty result back — the file "wrote OK", the syntax check passed, and every `code` span in the
+inserted text was silently gone. Caught by diffing for a token that had to be there. Quote the
+heredoc, always; and grep the written text for a token that must survive.
 
 ### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
 
