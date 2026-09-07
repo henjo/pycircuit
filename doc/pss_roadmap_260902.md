@@ -8718,3 +8718,58 @@ mismatch away, and the definition-route integral inside
 it may be masked there too. Until then: `orbital_correlation` agrees with an INDEPENDENT Lyapunov
 reference at three `C` values to 0.4 %, so the Fourier path is self-consistent with whatever the
 convention is, but the convention itself is undocumented and unverified.
+
+
+## A9 — the Monte Carlo, and a conclusion I had to reverse within the hour
+
+**SETTLED 2026-09-07: `orbital_correlation` is wrong by 81× on an asymmetric orbit;
+`oscillator_covariance` is right.** ⚠⚠ **This REVERSES the section committed an hour earlier**
+(`bafe7d4`), which accused the Lyapunov route. The wrong commit message stays in history; the code
+note is corrected and says so explicitly.
+
+**The decisive third route** — direct SDE simulation of the variational system (trapezoidal, the
+calibrated `Var(i) = CY/(2h)` injection, phase projected out every step), sharing **no** Lyapunov
+solve and **no** modal sum:
+
+| a | MC | modal | Lyapunov | MC/modal | MC/Lyap |
+|---|---|---|---|---|---|
+| 0.00 | 4.3629e-06 | 4.4515e-06 | 4.4437e-06 | 0.980 | 0.982 |
+| 0.30 | 2.9992e-04 | 3.6913e-06 | 2.9986e-04 | **81.25** | **1.0002** |
+
+`a = 0` is the **control**: both routes agree there, so the MC had a known answer to hit, and hit
+it to 2 %. Only then does `a = 0.30` adjudicate.
+
+### ⚠⚠ The argument that misled me — kept, because it was plausible
+
+*"`|λ₂|` falls with asymmetry, so relaxation is faster, so the transverse variance should shrink"* —
+and the modal route shrank while the Lyapunov route grew 67×, which I read as the modal route being
+physical. **It is invalid.** Asymmetry changes the **mode shapes**, so the noise projected onto the
+orbital direction grows and the variance rises *despite* faster relaxation. **A physical argument
+is not a measurement** — this file's own rule, and I broke it, then wrote it into a commit.
+
+### ⚠ Two errors in my own simulator, both caught by the CONTROL, not by inspection
+
+* **Forward Euler on a marginally-stable phase mode.** `(1 + h²ω²)^(n/2) ≈ e¹⁵` over 1.2e5 steps —
+  a **1.9e8** variance error. Choosing an unstable integrator to measure a marginally-stable mode.
+* **Projecting only at sample time.** The phase component random-walks unbounded, so the projection
+  then reads the cancellation residue of two huge nearly-equal vectors. Demir's decomposition
+  separates them for exactly this reason.
+
+Fixed with a trapezoidal propagator and per-step projection. **The a = 0 control is what made both
+findable** — without a case where the answer was already known, both would have passed as data.
+
+### Shipped, and what is still open
+
+`orbital_correlation` warns above half-wave asymmetry **0.02** (`ORBITAL_ASYMMETRY_LIMIT`,
+`_orbit_asymmetry`), quoting the measured degradation (5.2 % at 0.067, 71 % at 0.201, 99 % at 0.406)
+and pointing callers at `oscillator_covariance`.
+⚠ **`orbital_spectrum` inherits this** for asymmetric orbits. **A9's three-way gate cannot see it** —
+van der Pol is half-wave symmetric, where all three routes agree. Same shape as the `C²`
+biorthonormalisation defect found the same day.
+❌ **Root cause in eq (22) NOT identified.** Harmonic truncation is excluded (flat from `H = 4` to
+`H = 128`). Now cheap to chase: a known-good reference and an 81× signal.
+
+⚠⚠ **The pattern of the day, stated once.** Three separate times a control overturned a result I
+was about to report, and each time the fault was the FIXTURE or my INSTRUMENT, not the code under
+test. **Van der Pol's half-wave symmetry and unit reactances make whole defect classes invisible,
+and nearly every fixture in this repo is built on that circuit.**
