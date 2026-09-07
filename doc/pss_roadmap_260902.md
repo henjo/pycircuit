@@ -7163,6 +7163,40 @@ circuits, same structural answer. **`FLOQUET_DENSE_LIMIT` is the requirement, no
 ⚠ **THE MISTAKE WORTH KEEPING: I READ THREE THRESHOLD CROSSINGS AS A CURVE.** `m@1e-1 = 1` looked
 like concentration and was an artefact of the range starting below the threshold. Print the curve.
 
+### ⚠⚠ AND THE FLOOR ITSELF IS THE LARGER FINDING — A9's BASIS OMITS THE ANNIHILATED MODES
+
+The 1.8e-03 above was recorded as the instrument's noise. It is not noise: it is **what the modes
+the basis leaves out are carrying**, and how large that is depends entirely on **where the noise
+enters**. Measured on `_osc_with_ladder`'s circuit at `nslow = 4`, moving one current source and
+changing nothing else:
+
+| injected at | ‖K_orb‖ | reconstruction residual |
+|---|---|---|
+| the oscillator node | 2.70e-05 | 1.80e-03 (0.18%) |
+| a **slow** ladder node | 3.94e-01 | 3.56e-01 (36%) |
+| a **fast** ladder node | 6.87e+02 | **9.996e-01 (99.96%)** |
+| a faster one | 3.33e+03 | **9.999e-01 (99.99%)** |
+
+**When the injection lands in a fast branch the non-null modes capture essentially nothing of the
+covariance.** The annihilated modes are killed by the period map, so they reach the stationary
+covariance only through the `j = 0` term — but that term is not small when the noise is injected
+there, **and that is where device noise actually is**: every resistor in a bias or tuning network.
+
+⚠ **So `orbital_mode_weights`' suite gate (`rel < 1e-2`) holds because its fixture injects at the
+oscillator node** — a property of the fixture, not of the method. Labelled in place, and pinned by
+`test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace`.
+
+⚠ **AND IT MAKES THE RECONSTRUCTION RESIDUAL A DETECTOR, NOT A TRUNCATION BOUND.** It catches a
+dropped NON-NULL mode well — which is what the docstring claims for it — but it **saturates** at the
+floor the null modes carry, so it cannot certify a truncation below that floor however many modes
+are kept. (A peer session had offered it as A9's missing truncation bound and withdrew that on the
+same measurement; theirs read 69% on a different oscillator. Mechanism transfers, magnitude does
+not, and the two denominators do not count the same modes.)
+
+**Consequence for A9: a modal orbital spectrum on this basis is complete only for noise entering the
+slow subspace, which is the minority case.** That is a scope limit on the method, not a bug, and it
+is now recorded next to the code rather than inferred from a green test.
+
 ## D. How these items keep failing — the shapes worth checking for
 
 Sixteen claims were overturned across this campaign. Four shapes account for most:

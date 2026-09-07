@@ -11085,6 +11085,13 @@ def test_the_orbital_covariance_resolves_onto_the_floquet_modes():
     ## 3. and the AMPLITUDE mode accounts for the covariance
     rec = U @ cw @ U.conj().T
     rel = float(np.linalg.norm(rec - K)) / float(np.linalg.norm(K))
+    ## ⚠⚠ AND THIS BOUND IS A PROPERTY OF WHERE THIS FIXTURE PUTS ITS NOISE,
+    ## NOT OF THE METHOD.  The basis omits the ANNIHILATED modes, and on the
+    ## same circuit noised in a FAST branch instead of at the oscillator node
+    ## they carry 99.96% of `K_orb` -- see
+    ## `test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace`.
+    ## Read this as "the sibling fixture injects into the slow subspace", not
+    ## as "the non-null modes account for the covariance".
     assert rel < 1e-2, \
         'the retained modes capture only %.3f of K_orb; if this has grown, ' \
         'the covariance has significant support outside the non-null ' \
@@ -15896,3 +15903,125 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
         'the per-pair Ritz residual no longer separates right (%.2e) from ' \
         'wrong (%r); then the roadmap\'s recommendation for n > ' \
         'FLOQUET_DENSE_LIMIT needs re-measuring' % (res_ok, res_bad)
+
+
+@pytest.mark.slow
+def test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace():
+    """⚠⚠ A9's modal basis OMITS the annihilated modes, and they can carry ~all of it.
+
+    `orbital_mode_weights` resolves `K_orb` onto the NON-NULL Floquet
+    directions, so `Σ cw[k,k'] u_k u_k'^H` reproduces only the part of the
+    covariance living on them.  The sibling test asserts that residual is
+    `< 1e-2` and reads it as "the retained modes account for the covariance".
+
+    **That holds because its fixture injects at the OSCILLATOR node.**  Move
+    one current source and nothing else, on `_osc_with_ladder`'s circuit at
+    `nslow = 4`::
+
+        injected at            ||K_orb||    reconstruction residual
+        the oscillator node    2.70e-05     1.80e-03   (0.18%)
+        a SLOW ladder node     3.94e-01     3.56e-01   (36%)
+        a FAST ladder node     6.87e+02     9.996e-01  (99.96%)
+        a faster one           3.33e+03     9.999e-01  (99.99%)
+
+    The annihilated modes are killed by the period map, so they reach the
+    stationary covariance only through the `j = 0` term — but that term is not
+    small when the noise is injected there, **and that is where device noise
+    actually is**: every resistor in a bias or tuning network.  So a modal
+    orbital spectrum built on this basis is complete only for noise entering
+    the slow subspace, which is the minority case rather than the normal one.
+
+    ⚠ AND IT MAKES THE RECONSTRUCTION RESIDUAL A DETECTOR, NOT A BOUND.  It
+    catches a dropped NON-NULL mode well — which is what `orbital_mode_weights`
+    claims for it — but it SATURATES at the floor the null modes carry, so it
+    cannot certify a truncation below that floor however many modes are kept.
+
+    ⚠ Independently reproduced by a peer session on a different oscillator with
+    a different `K_orb` construction (69% there).  The mechanism transfers; the
+    magnitude does not, and neither denominator counts the same modes.
+
+    This test exists so the sibling's `rel < 1e-2` is never read as a property
+    of the method.  It is a property of where that fixture puts its noise.
+    """
+    import warnings as _w
+    from pycircuit.circuit.elements import IS as _IS
+    circuit.default_toolkit = circuit.numeric
+
+    def build(noise_node, nslow=4, nladder=14, Q=16.0, npts=200):
+        tper = 2.0 * np.pi
+        mu = 1.0 / (2.0 * np.pi * Q)
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        prev = 'v'
+        for j in range(nladder):
+            nd = 'p%d' % j
+            cir.add_node(nd)
+            tau = (tper * 10.0 ** (-1.0 + 2.0 * j / max(nslow - 1, 1))
+                   if j < nslow else tper * 1e-4)
+            cir['r%d' % j] = R(prev, nd, r=1e3)
+            cir['c%d' % j] = C(nd, gnd, c=tau / 1e3)
+            prev = nd
+        cir['n'] = _IS(noise_node, gnd, i=0.0, noisePSD=1e-6)
+        T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+        pss = PSS(cir, method='gear', reltol=1e-11)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=200)
+        assert pss.converged, 'noise at %s did not converge' % noise_node
+        return cir, pss
+
+    def floor_of(node):
+        cir, pss = build(node)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            cw, modes, K = PAC(cir).orbital_mode_weights(pss)
+        cw = np.asarray(cw)
+        U = np.column_stack([m['u0'] for m in modes])
+        rec = U @ cw @ U.conj().T
+        return (float(np.linalg.norm(rec - K)) / float(np.linalg.norm(K)),
+                float(np.linalg.norm(K)), U.shape[1])
+
+    osc, nK_osc, nmodes = floor_of('v')
+    slow, _nK_s, _m = floor_of('p0')
+    fast, nK_f, _m = floor_of('p6')
+
+    ## (1) THE SIBLING'S CASE, reproduced -- if this is not small the contrast
+    ## below has nothing to contrast against.
+    assert osc < 1e-2, \
+        'injecting at the oscillator node used to leave only 1.8e-03 outside ' \
+        'the non-null basis and now leaves %.3e; the sibling test\'s reading ' \
+        'rests on this' % osc
+
+    ## (2) ⚠ AND IT IS THE INJECTION POINT THAT DECIDES IT.  Two orders between
+    ## the same circuit noised in two places.
+    assert fast > 0.9, \
+        'noise in a FAST ladder branch should leave ~all of K_orb outside the ' \
+        'non-null basis (0.9996 on record) and leaves %.4f. If this has ' \
+        'fallen, the annihilated modes have stopped carrying the covariance ' \
+        'and A9\'s basis is more complete than recorded -- re-measure before ' \
+        'relying on it.' % fast
+    assert slow > 10.0 * osc, \
+        'even a SLOW ladder node should be far worse than the oscillator ' \
+        'node (0.356 against 0.0018); got %.4f against %.4f' % (slow, osc)
+    assert fast / osc > 100.0, \
+        'the whole finding is the SPREAD across injection points: %.4f vs ' \
+        '%.4f is only %.1fx' % (fast, osc, fast / osc)
+
+    ## (3) VACUITY GUARD: the basis must actually be a truncation here, or a
+    ## large residual would mean something else entirely.
+    fp = build('v')[1].factored_period()
+    assert nmodes < fp.width, \
+        'the mode basis (%d) is not a truncation of the map (%d), so a ' \
+        'reconstruction residual cannot be about omitted modes' \
+        % (nmodes, fp.width)
+    assert nK_f > nK_osc, \
+        'injecting into a small fast capacitor should give a much LARGER ' \
+        'covariance (6.9e+02 against 2.7e-05); got %.3e against %.3e -- if ' \
+        'not, the source is not landing where this test thinks' \
+        % (nK_f, nK_osc)

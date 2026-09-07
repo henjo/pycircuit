@@ -10894,6 +10894,40 @@ class PAC(Analysis):
     def orbital_mode_weights(self, pss, nmodes=None):
         """`K_orb` resolved onto the Floquet modes — A9's second step.
 
+        ⚠⚠⚠ READ THIS FIRST: THE BASIS OMITS THE ANNIHILATED MODES, AND WHAT
+        THEY CARRY IS A FLOOR NOTHING BELOW CAN GO UNDER.  `floquet_modes`
+        returns the NON-NULL directions, so `sum cw[k,k'] u_k u_k'^H` reproduces
+        only the part of `K_orb` that lives on them.  How much that is depends
+        entirely on WHERE THE NOISE ENTERS -- measured on `_osc_with_ladder`'s
+        circuit at `nslow = 4`, moving one current source and changing nothing
+        else::
+
+            injected at            ||K_orb||    reconstruction residual
+            the oscillator node    2.70e-05     1.80e-03   (0.18%)
+            a SLOW ladder node     3.94e-01     3.56e-01   (36%)
+            a FAST ladder node     6.87e+02     9.996e-01  (99.96%)
+            a faster one           3.33e+03     9.999e-01  (99.99%)
+
+        **When the injection lands in a fast branch the non-null modes capture
+        essentially NOTHING of the covariance.**  The annihilated modes are
+        killed by the period map, so they enter the stationary covariance only
+        through the `j = 0` term -- but that term is not small when the noise
+        is injected there, and THAT IS WHERE DEVICE NOISE ACTUALLY IS: every
+        resistor in a bias or tuning network.
+
+        ⚠ SO A MODAL ORBITAL SPECTRUM BUILT ON THIS BASIS IS COMPLETE ONLY FOR
+        NOISE THAT ENTERS THE SLOW SUBSPACE, and the suite's own gate on this
+        (`rel < 1e-2`) holds because its fixture injects at the oscillator
+        node.  That is a property of the fixture, not of the method.
+
+        ⚠ AND THE RESIDUAL IS A DETECTOR, NOT A TRUNCATION BOUND.  It catches a
+        DROPPED NON-NULL MODE well -- which is what the note below claims for
+        it -- but it SATURATES at the floor above, so it cannot certify a
+        truncation below whatever the null modes carry, however many modes are
+        kept.  Independently reproduced by a peer session on a different
+        oscillator with a different `K_orb` route (69% there, mechanism
+        identical, magnitude not transferable).
+
         Returns `(cw, modes, K_orb)` with `cw[k, k'] = v_k† K_orb v_k'`,
         the weight of each pair of Floquet directions in the bounded
         (orbital) part of the state covariance.
