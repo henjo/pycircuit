@@ -4548,18 +4548,32 @@ class PSS(Analysis):
         ## tested.  A null result at 10 is what the mechanism PREDICTS, not
         ## evidence against it.
         ##
-        ## ⚠ PROVENANCE, CORRECTED 2026-09-07: this used to render "larger
-        ## than 1 second" AS A QUOTATION.  It is not one.  The source is
-        ## Lai, "Frequency-Aware PPV" (Cadence, [L08]), whose PDF is NOT on
-        ## disk -- only our own reading of it
-        ## (`~/docs/pycircuit-frequency-aware-ppv.md`), where the sentence is
-        ## a PARAPHRASE ("their RC constants exceed 1 s") and not one of that
-        ## file's marked quotations.  A peer session reports the original
-        ## says "larger than 1" with NO UNIT; that cannot be checked here,
-        ## so the unit is an inference either way.  Seconds is the natural
-        ## reading and the `tau/T ~ 3e9` above follows from it, so nothing
-        ## downstream moves -- but a paraphrase two documents deep must not
-        ## wear quotation marks.
+        ## ⚠⚠ PROVENANCE, AND THE CHAIN IS NOW FULLY TRACED -- A UNIT WAS
+        ## MANUFACTURED IN TWO STEPS.  This used to render "larger than 1
+        ## second" AS A QUOTATION.  The primary source IS on disk, at
+        ## `~/docs/09-phase-macromodels-and-prc/Lai-2008-Frequency-Aware
+        ## PPV ... (Cadence).pdf`, and p.4 reads, verbatim:
+        ##
+        ##     "Since the RC time constants of the "off" gated capacitors is
+        ##      very large (LARGER THAN 1), it is safe to assume that these
+        ##      gates have very small contribution to the total phase noise
+        ##      when offset frequency is reasonably large."
+        ##
+        ## **NO UNIT.**  Our own reading of the paper
+        ## (`~/docs/pycircuit-frequency-aware-ppv.md`) paraphrased it as
+        ## "their RC constants exceed 1 s" -- ADDING the unit, and unmarked,
+        ## beside that file's properly marked quotations.  This comment then
+        ## promoted the paraphrase to a QUOTATION, carrying the added unit
+        ## with it.  Two steps, each small, and the result was a quoted unit
+        ## the source does not contain.
+        ##
+        ## ⚠ Seconds remains the natural reading (the `tau/T ~ 3e9` above
+        ## follows from it and nothing downstream moves), but it is OURS and
+        ## is marked as such.  ⚠⚠ AND THE FIRST VERSION OF THIS CORRECTION
+        ## SAID THE PDF WAS "NOT ON DISK AT ALL" -- it is, in a
+        ## SUBDIRECTORY, and the search that missed it looked only at the
+        ## top level of `~/docs`.  Search a library recursively before
+        ## reporting a source missing.
         ##
         ## ⚠ SO THE HONEST RECORD IS: not reproduced at `tau/T = 10`, which
         ## is outside the regime where the mechanism predicts an effect;
@@ -4684,6 +4698,20 @@ class PSS(Analysis):
         ##
         ## `k ~ n/2` and rising, against a DENSE route that costs `n` and needs
         ## no threshold at all.
+        ##
+        ## ⚠⚠ BUT `k ~ n/2` IS AN ARTEFACT OF THIS FIXTURE, AND THE FIXTURE
+        ## CANNOT SEE IT.  `_osc_with_ladder` sets `nslow = nladder`, so `n`
+        ## and the slow-mode count move together here and no measurement on
+        ## it can separate "k tracks n" from "k tracks nslow".  A peer
+        ## session's synthetic CAN separate them and reports `k_min` rising
+        ## with `nslow` and FLAT under a doubling of `n` at fixed `nslow`
+        ## (24->24, 24->16, 48->48, 48->48).  If that transfers, the rule is
+        ## **cost tracks the SLOW-MODE COUNT, not the system size** -- a
+        ## large fast circuit is cheap and a small one with a big tuning
+        ## bank is not, which also says Lai's 813-equation oscillator is
+        ## expensive because of the BANK and not the 813.  Recorded with
+        ## that provenance: measured on a synthetic, consistent with
+        ## everything measured here, and NOT separable on this fixture.
         ##
         ## ⚠⚠ BUT THE DENSE ROUTE IS OUT ON THE CIRCUITS THAT MOTIVATE THIS.
         ## `FLOQUET_DENSE_LIMIT = 400`, and the published cases are LARGER:

@@ -7026,6 +7026,25 @@ the fixture above and **fails on a longer ladder**, because the required `k` gro
 
 `k ≈ n/2` and rising. **So raising the constant would pass the new test and ship the same defect.**
 
+⚠⚠ **BUT `k ≈ n/2` IS AN ARTEFACT OF THIS FIXTURE AND THE FIXTURE CANNOT SEE IT.** `_osc_with_ladder`
+sets `nslow = nladder`, so `n` and the slow-mode count move together and no measurement on it can
+separate "k tracks n" from "k tracks nslow". A peer session's synthetic *can* separate them and
+reports `k_min` rising with `nslow` and **flat under a doubling of `n` at fixed `nslow`**
+(24→24, 24→16, 48→48, 48→48). If that transfers, the rule is **cost tracks the SLOW-MODE COUNT, not
+the system size** — a large fast circuit is cheap, a small one with a big tuning bank is not, and
+Lai's 813-equation oscillator is expensive because of the BANK rather than the 813. Recorded with
+that provenance: synthetic, consistent with everything measured here, not separable on our fixture.
+
+⚠ **AND MY OWN SCORING WAS CHECKED RATHER THAN ASSUMED**, after the peer found their `>2x` gap
+criterion permissive (their slow modes sit at ratio 1.35, so a factor of 2 spans several modes and
+selecting a NEIGHBOUR passed — their test got *easier* as `nslow` grew). It does not bite here, for
+two independent reasons. **The gap spectrum is not crowded:** the second gap is 5.7e-02 against a
+top gap of ~3e-03 — 13–21x apart, because this ladder spreads time constants over decades where
+theirs are 35% apart — so exactly ONE gap sits within 2x of the largest and there is no neighbour to
+mistake for λ₂. And **the boundary does not move under a tighter score**: at 5% relative gap error
+the verdicts are identical (nslow 8 → 6e-14, 11 → 1.5e-06, 12/13/14 → 1.03 / 17.0 / 0.75). The pass
+cells are *exact*, not merely within 2x.
+
 **The two real fixes, both already in the tree in some form, NEITHER BUILT:**
 * **the dense route** — `n` matvecs and `eigvals`, exactly what `ppv` already does for `dirk`/`full`.
   It costs about 2x the `k` that works, is exact, and has no threshold. The obvious default while
@@ -7071,6 +7090,39 @@ the fixture above and **fails on a longer ladder**, because the required `k` gro
 Test: `test_the_ppv_arnoldi_loses_lam2_when_slow_nodes_crowd_the_unit_root`, which pins the
 DIAGNOSIS rather than the wrong numbers and **is verified to flip when the gap is fixed** (raising
 `PPV_RITZ_BASIS` to 16 makes it fail, with a message saying what to do next).
+
+### Can a Krylov route ever replace the dense assembly? — the concentration curve, measured
+
+A Krylov space of dimension `k` yields at most `k` Ritz pairs, so "all modes" costs `k = n`, which
+**is** the dense cost. A matrix-free eigensolve beats dense only when `k ≪ n`, so the `n ≤ 400` cap
+can be lifted only if the orbital mode weight CONCENTRATES. Instrument: this tree's own
+reconstruction identity `Σ cw[k,k'] u_k u_k'^H = K_orb`, whose truncation residual **is** the
+truncation error — and `K_orb` comes from the bordered Kronecker solve, which uses no modes at all,
+so it is an external reference rather than a self-check.
+
+⚠ **FIRST, THE INSTRUMENT'S OWN FLOOR, because a target below it is unreachable in principle.**
+`orbital_mode_weights` already returns only the NON-NULL modes — **2 of a 32-wide map at
+`nslow = 0`, 16 of 32 at `nslow = 14`** — and with *all* of them kept the identity closes to
+**1.8e-03**, not to roundoff. So "residual < 1e-3", the threshold originally proposed, is below the
+noise of the measurement.
+
+⚠⚠ **AND THE ORDERING DECIDES THE ANSWER — which was the peer's own flagged weakness, and it is
+the whole result.** At `nslow = 14` (map width 32, 16 non-null modes):
+
+| ordering | m @ 1e-1 | m @ 1e-2 | m @ floor (1.8e-3) |
+|---|---|---|---|
+| by `\|diag(cw)\|` | 1 (0.03 of n) | **16 (0.50 of n)** | **16 (0.50 of n)** |
+| by contribution norm | 1 (0.03 of n) | 16 (0.50 of n) | 16 (0.50 of n) |
+| by `\|cw\|` **row sum** | 1 (0.03 of n) | **4 (0.12 of n)** | **7 (0.22 of n)** |
+
+**One mode carries 90% of the covariance** under every ordering. But at 1e-2, sorting by own-weight
+needs *all sixteen* while sorting by **row sum** needs **four**. `cw` is a full matrix, so a mode
+with small own-weight can carry large CROSS terms; `|diag|` cannot see them and row-sum can.
+
+**So the negative conclusion is refuted — but only under the better ordering.** Against the stated
+falsifier (`m/n` below about a half), row-sum reaches the identity's floor at **m/n = 0.22** and 1e-2
+at **0.12**, while `|diag|` sits at 0.50 and would have confirmed "no concentration". A measurement
+whose answer flips on the sort key is a measurement whose sort key has to be reported.
 
 ## D. How these items keep failing — the shapes worth checking for
 
