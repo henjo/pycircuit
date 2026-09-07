@@ -578,6 +578,10 @@ half-wave symmetry — so the fixture for it is already built and already used. 
 gap §0b names: the PPV physical gate cannot verify the PPV at high `Q`, and every check we have is
 internal or shares the monodromy. **An analytical PPV would be the first fully external oracle.**
 Blocked only on the expressions themselves, which are not in the relayed message.
+⚠ **Still true as of 2026-09-07**, despite the commercial-simulator parity data relayed that day
+(see "External parity against a COMMERCIAL SIMULATOR" at the end of this file): those anchors cover
+the FORCED stack (`pss`, `PAC`, Volterra) and an autonomous *period* checked against `tran`. The one
+line that would bear on the PPV does not state which reference it used. This item is unchanged.
 
 Two smaller ones, no action implied: the idealised 3-stage ring's `{1, φ⁻⁶, φ⁻¹²}` is published
 (Srivastava & Roychowdhury 2007 TCAS, golden mean "central to our exact analytical phase model") —
@@ -8038,3 +8042,138 @@ solves, so the gap widens with ``m``.
 **Remaining deferrals (shared with TR-BDF2):** the FORWARD ``_forced_replay`` / ``PAC.solve``
 forward, out of scope for pnoise's reverse path.  Radau's parity with TR-BDF2 is otherwise
 complete, two orders higher, and now fast on a large sparse circuit.
+
+
+## External parity against a COMMERCIAL SIMULATOR — relayed 2026-09-07, verified selectively
+
+**Provenance, because it decides what these numbers are worth.** Two documents in a sibling tree
+(`~/source/pycircuit_genmini/CLAUDE_CODE_DOCUMENTATION_GUIDE.md` and `deep_parity_report.md`) were
+written by a different session that had a **commercial simulator** available and ran ~40 comparison
+scripts against it. No commercial simulator is reachable from this tree, so **none of the parity
+numbers below were reproduced here** — they are recorded as RELAYED, with their source named, and
+they are not evidence until someone re-runs them. What *was* done here is the standing discipline
+(§D): **a claim that arrives from another session is a POINTER to a source, not a finding.** Four
+claims that could be checked against our own code were checked. Two are real defects, one is a
+convention difference confirmed, one is **wrong about this tree**.
+
+### 1. The external anchors — the first non-internal numbers this campaign has had
+
+§0b has carried the same gap all campaign: *"every check we have is internal or shares the
+monodromy."* These narrow it, for the **forced** stack:
+
+| Quantity | Ours | Commercial | Δ |
+|---|---|---|---|
+| PSS shooting, switched-conductance network, vs commercial `pss` | — | — | **20.04 µV RMS (0.0108%)**, phase 0.00° |
+| ...its DC harmonic `H_0` | 0.046246 V | 0.046241 V | 5.06 µV (< 0.01%) |
+| PAC multi-sideband mixer gain, `l = -1` (diode mixer) | 0.29680 | 0.29680 | **Δ = 0.0000 dB**; worst sideband < 0.018 dB |
+| Volterra `HD2`/`HD3` at 20 µA vs commercial `pss` | −39.64 / −77.05 dBc | same | Δ = 0.000 dB |
+| 3-stage ring oscillator period, vs commercial **`tran`** | 1103.57 ps | 1102.92 ps | 0.65 ps (**0.0589%**) |
+
+⚠ **The autonomous anchor is against `tran`, not `pss`** — it is a limit-cycle *period*, checked by
+integrating, not by an independent shooting solve. It does not test the monodromy.
+
+⚠ **The gap §0b names is NOT closed.** It is specifically about the **PPV at high `Q`**, and nothing
+above is a PPV oracle. The one line that would bear on it — *"phase noise agreement below the
+amplitude pole `f_amp`: 0.00 dB to 0.01 dB"* — sits in a list that **mixes analytic and commercial
+references and does not say which this one is**. Provenance must be pinned before it counts;
+unattributed, it is not an oracle. Item 4 of the literature sweep (the Ghanta analytical PPV) stays
+the actionable route.
+
+⚠ **The `λ₂ → 0.533 / 0.900 / 0.990` relative errors (7.58e-4, 2.17e-6, 2.91e-7) are NOT external.**
+They are against the **describing function** `exp(-3bA²T/4C)` — the same analytic reference this
+file already uses, where we recorded agreement to **5** digits and the guide claims **7**. That is a
+reconciliation to do (fixture, amplitude, grid), not a conflict, and certainly not third-party
+confirmation.
+
+### 2. ⚠⚠⚠ The same flat `1e-9` residual, read in OPPOSITE directions
+
+The most valuable thing in either document, and it is a disagreement.
+
+The guide §3.4 lists, under **"Mathematical Property"**: *"Even when `λ₂ = 0.990 - 0.999`, the
+bordered system residual remains at `10⁻⁹`"* — offered as evidence that the bordered PPV solve stays
+accurate as the circuit gets harder. §3.5 repeats it as *"Bordered solve null residual: Flat across
+all cases at 1.3e-9 to 4.2e-9."*
+
+**This file records the identical measurement and reads it as a defect in the instrument:**
+`null_residual` *"stays flat at 1e-9 across it and tells a caller nothing."*
+
+**Flatness cannot be evidence of accuracy.** A residual that does not move as the problem's
+conditioning sweeps two decades is not reporting on the problem — it is reporting on the solve it
+was formed from, which is exactly §D 0t/0b: *an instrument that cannot express the effect returns a
+null that means nothing.* The bordered system is well-conditioned **by construction** (that is the
+point of bordering); its residual therefore measures the border, not `v₁`'s error against the true
+PPV. The two readings are not both available: either the number is diagnostic and it should have
+moved, or it is flat and it is not diagnostic.
+
+**Why this one matters more than a number:** the guide exists to drive **user-facing
+documentation**. Shipping "residual flat at 1e-9 ⇒ robust at `λ₂ = 0.999`" would publish a
+self-confirming measurement as a guarantee. The honest statement of what we know is the Ritz gate
+built 2026-09-07 (`second_multiplier_certified`), which reports on the *quantity it certifies* and
+is allowed to fail.
+
+### 3. Conventions that must be pinned before any cross-tool comparison
+
+Given this file's history of factor-of-two and factor-of-π convention defects, all three are
+recorded whether or not anyone acts on them:
+
+* ⚠⚠ **√2, peak vs RMS.** Our `fpss` Fourier coefficients are **RMS**; the commercial `fd.pss`
+  output is **peak**. Every harmonic comparison carries a √2 unless one side is converted. The
+  relayed switched-cap script names this factor explicitly, so their numbers already account for it
+  — ours would not, by default.
+* **`k_B`, 19.12 ppm.** We use SI-2019 exact `1.380649e-23`; the commercial tool uses CODATA-1986
+  `1.3806226e-23`. Ratio **1.0000191218**, i.e. **+19.12 ppm in every thermal-noise PSD**, and zero
+  effect on gains or on normalised noise. This closes a loose end this file already flagged: a
+  ~20 ppm floor on any absolute noise comparison is **expected and constant**, not a defect. Do not
+  chase it, and do not let a gate tighter than 19.12 ppm be written against a commercial PSD.
+* **MOS Level-1 flicker normalisation — VERIFIED HERE.** `elements_hdl.py:2917` computes
+  `kf*|ids|^af / (cox*leff²)`, commented *"SPICE's flicker normalisation"*; the commercial tool
+  normalises by `cox*W_eff*L_eff`. So the difference is real and is a **deliberate convention
+  choice on our side**, scaling as `L_eff/W_eff`. It is not a bug; it makes flicker PSDs
+  device-geometry-dependently incomparable across the two tools. (The EKV path at `:2401` folds the
+  normalisation into `kf` instead, for a different reason — `cox` defaults to zero there.)
+
+### 4. A relayed claim that is WRONG about this tree
+
+The guide's Area-1 recommendation is to *"document `PSS(method='trbdf2')` as the Default"*. It is
+not. `shooting.py:1636` is `Parameter(name='method', ..., default="trap")`. What **is** `trbdf2` by
+default is the **monodromy twin** (`shooting.py:1706`, `self.monodromy = 'trbdf2'`, per T7) — a
+different knob, chosen for a different reason. Publishing the recommendation as written would
+document a default the code does not have. **This is the fourth time in this campaign that a
+plausible-sounding claim about our own defaults survived only until someone read the `Parameter`
+line.**
+
+### 5. Two element defects verified HERE — outside PSS scope, filed so they are not lost
+
+Both were relayed; both were **measured in this tree** before being written down, and both are real.
+Neither is a PSS/shooting item, so neither is scheduled here — they are recorded because a live
+defect found during a roadmap task should not evaporate with the task.
+
+* ⚠⚠ **`SVCVS` builds its stamps with `dtype=int` (`elements.py:679, 727`; `tk.eye(..., dtype=int)`
+  at 701/717/729) and TRUNCATES every normalised coefficient.** Severity depends on which end of
+  `denominator` the large coefficient sits, which is why it can hide:
+
+  ```
+  den=[2.53e-12, 2.25e-6, 1.0]  (a0 smallest) -> |G| entries [1.0, 8.8933e+05, 3.9526e+11]
+  den=[1.0, 2.25e-6, 2.53e-12]  (a0 largest)  -> |G| entries [1.0]
+  ```
+
+  In the first ordering the coefficients normalise to large numbers and truncation costs ~1e-7
+  relative — invisible. In the second **every denominator coefficient truncates to zero** and the
+  filter silently degenerates. `fractional entries surviving in G: 0` in both. A test written on the
+  first ordering would pass and prove nothing (§D: *a fixture that cannot express the effect*).
+
+* ⚠ **`Transformer` (`elements.py:922`) does not conserve power.** At `n = 2`: `V_in/V_out = 2.0000`
+  ✓, but `|I_out/I_in| = 0.5000` where a lossless transformer needs `n`, giving
+  **`|P_out/P_in| = 0.2500 = 1/n²`** instead of 1. The current stamp uses `n` where it needs `1/n`.
+  ⚠ **The element's own doctest at `elements.py:905-908` PINS the wrong stamp**
+  (`[-1., 1., 2., -2., 0.]`), so the fix necessarily breaks a passing test — which is the only
+  reason the defect has survived. Whoever fixes it must change the doctest **and say why**, or the
+  next reader will "restore" it.
+
+### 6. Independently reproduced, already in this file
+
+Recorded only as corroboration — no action: the two `PAC.solve` fixes (duplicate endpoint dropped
+from the DFT window; `np.conj(V)` for sidebands with `f + l·f₀ < 0`), `modulated=True` (Hull & Meyer
+cycle-averaging) underestimating held `kT/C` by up to **16×** for a fast switch, and A10's finding
+that extreme high-`Q` shooting needs `N ≥ 1600` where an adaptive LTE-controlled integrator does
+not.
