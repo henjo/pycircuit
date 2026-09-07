@@ -5979,12 +5979,43 @@ class PSS(Analysis):
             ## cannot see this: periodicity is scale-free. On the plain path
             ## n = m and c0 = 1, so this is a no-op there. The adjoint takes
             ## the scale (the right vector is the physical direction).
-            c0 = complex(np.vdot(q[:, 0], p[:, 0]))
+            ## ⚠⚠ THE INNER PRODUCT IS `C`-WEIGHTED, AND THE UNWEIGHTED ONE
+            ## WAS WRONG BY A FACTOR OF `C` -- INVISIBLE ON EVERY FIXTURE
+            ## THIS REPO HAD.  The conserved bilinear form of the variational
+            ## DAE is `q(t)^T C(t) p(t)`, not `q(t)^T p(t)`: differentiating
+            ## `G p + d(C p)/dt = 0` against the adjoint gives
+            ## `d/dt [q^T C p] = 0`, so `q^T C p` is the invariant and the
+            ## biorthonormality that eq (22) assumes is `q_k^T C p_l = d_kl`.
+            ##
+            ## ⚠ ON A UNIT-REACTANCE FIXTURE THE TWO ARE THE SAME NUMBER,
+            ## which is exactly why this survived: van der Pol with
+            ## `c = L = 1` gives `q^T C p = 0.9992` against `q^T p = 1`.
+            ## Sweep the capacitance at fixed `w0` and the two separate --
+            ## MEASURED `q^T C p` = 0.2495 / 0.9992 / 3.9982 at
+            ## `C` = 0.25 / 1 / 4, i.e. exactly `C`, while `q^T p` stayed
+            ## pinned at 1.000000.
+            ##
+            ## ⚠⚠ AND `q` ENTERS THE COVARIANCE QUADRATICALLY, so the orbital
+            ## covariance came out too large by exactly `C^2`.  Measured
+            ## against the independent Lyapunov reference before the fix:
+            ## ratio 0.0624 / 1.0001 / 16.043 at those same `C` -- right ONLY
+            ## at `C = 1`, which is the only place A9's three-way gate ever
+            ## ran.  §D 0c, on the very circuit that produced that entry: a
+            ## unit reactance makes `C` the identity and the two inner
+            ## products indistinguishable.
+            ##
+            ## The pair-slicing correction this block was written for is
+            ## subsumed: normalising on `q^T C p` fixes the slice scale and
+            ## the weighting in one step.
+            _x0r = np.delete(np.asarray(self.waveform[1], dtype=float)[:, 0],
+                             self.irefnode)
+            _Cm = np.asarray(self._C_at(_x0r), dtype=float)
+            c0 = complex(np.vdot(q[:, 0], _Cm @ p[:, 0]))
             if abs(c0) < 1e-30:
                 raise ValueError(
-                    'PSS.floquet_modes: mode %d has q(0)^T p(0) = %.3e on the '
-                    'state block, so it cannot be biorthonormalised there.'
-                    % (k, abs(c0)))
+                    'PSS.floquet_modes: mode %d has q(0)^T C p(0) = %.3e on '
+                    'the state block, so it cannot be biorthonormalised '
+                    'there.' % (k, abs(c0)))
             q = q / np.conj(c0)
             out.append({'lam': lk, 'mu': muk, 'u0': uk, 'v0': vk,
                         'p': p, 'q': q, 'times': tt, 'c0': c0,

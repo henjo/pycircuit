@@ -8658,3 +8658,63 @@ physical. **`orbital_spectrum`'s SHAPE is checked against `λ₂`; its AMPLITUDE
 nothing external.** Settling it needs the paper's own worked example (Colpitts, 1 GHz, 300
 harmonics) or a Monte Carlo — not more of the same sweep, which would only re-measure my own
 arithmetic. Until then the far-out floor is a shape with an unvalidated scale.
+
+
+## A9 step 5 — the `C²` orbital covariance defect, found by chasing a retraction
+
+**A REAL DEFECT, fixed 2026-09-07.** `floquet_modes` biorthonormalised the Floquet pair on
+`qᵀp = 1`. The variational DAE's conserved bilinear form is **`qᵀ C p`** — differentiating
+`G p + d(C p)/dt = 0` against the adjoint gives `d/dt[qᵀCp] = 0` — and `q` enters the covariance
+**quadratically**, so every orbital covariance was too large by exactly **`C²`**.
+
+| | `C = 0.25` | `C = 1` | `C = 4` |
+|---|---|---|---|
+| `qᵀCp` (with `qᵀp ≡ 1`) | 0.2495 | 0.9992 | 3.9982 |
+| `R` vs Lyapunov, BEFORE | **0.0624** | 1.0001 | **16.043** |
+| `R` vs Lyapunov, AFTER | **1.0027** | 1.0018 | **1.0036** |
+
+⚠⚠ **It survived because ON A UNIT-REACTANCE FIXTURE THE TWO INNER PRODUCTS ARE THE SAME NUMBER**,
+and every fixture in this repo used `c = L = 1` — including A9's own three-way gate, which is a
+good gate and caught a 1.75× adjoint defect in step 3. §D 0c, for the third time, on the circuit
+that produced that entry.
+
+### How it was found: by chasing a retraction, not by reading code
+
+The chain is the point. `S_orb/S_ph = 0.5` at `f_amp` looked like a law; sweeping `C` gave
+0.500 / 8.002 / 0.031, so **I retracted it as fixture blindness**. The retraction was right on the
+evidence and **wrong about the cause**. Localising the discrepancy piece by piece — the technique
+step 3 used to find its own defect — gave `|X₁|² ∝ C⁰` ✓, `c ∝ C⁻²` ✓, `f_amp ∝ C⁻¹` ✓ against a
+**pre-committed** prediction, and `w ∝ C⁺¹` ✗ where `C⁻¹` was predicted. One piece wrong by `C²`,
+localised to the shared input.
+
+✅ **And with the defect fixed the law is REAL**: measured at each circuit's OWN `f_amp` (it scales
+as `1/C`, and comparing at a shared one was a bug in my first gate), **0.5052 / 0.5010 / 0.5005**
+across a 16× sweep in `C`. The gate now asserts that, which is the assertion that would have caught
+the defect.
+
+### ❌ OPEN, and NOT asserted: the adjoint sample correspondence is unknown
+
+Fixing the weighting exposed a second thing. **`q` is stored in REVERSE time order relative to
+`p`** (it comes from a backward replay) — `q[j]ᵀC p[j]` reads 1.000, −0.022, −1.000, 1.000, −0.999
+around the cycle, while `q[N−1−j]ᵀC p[j]` reads 1.000, 0.990, 0.999, 1.000, 1.000. They agree only
+at `j = 0, N/2, N−1`, and **index 0 is the only place any shipped code looked.**
+
+⚠ **But the reversed pairing is NOT exact either, and it does not converge:**
+
+    npts    mode 0      mode 1
+     200    1.2538e-02  3.1557e-02
+     400    1.1557e-02  3.0786e-02
+     800    1.0835e-02  3.0163e-02
+    1600    1.0429e-02  2.9971e-02
+
+ratios ~1.05 per doubling, not 4 — a **non-zero limit**, so it is not discretisation, and offsets
+of −2…+2 do not improve it. **The exact correspondence is unknown.** Nothing is asserted around the
+cycle: a bound there would be tuned to a number I cannot justify. What IS asserted is the `t = 0`
+normalisation (exact to 1e-9, and what every shipped consumer uses).
+
+⚠ **What would settle it: an ASYMMETRIC orbit.** Van der Pol's half-wave symmetry can average a
+mismatch away, and the definition-route integral inside
+`test_orbital_correlation_is_gated_three_ways` pairs `q[:,k]` with `p[:,k]` at the same index — so
+it may be masked there too. Until then: `orbital_correlation` agrees with an INDEPENDENT Lyapunov
+reference at three `C` values to 0.4 %, so the Fourier path is self-consistent with whatever the
+convention is, but the convention itself is undocumented and unverified.

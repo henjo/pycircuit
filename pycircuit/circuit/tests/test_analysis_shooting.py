@@ -11096,19 +11096,86 @@ def test_floquet_modes_are_genuinely_periodic():
     ## the width-n normalisation left q(0)^T p(0) = 1.324 on the width-m
     ## block, and the orbital covariance built from these parts was too
     ## large by exactly 1.324^2 against two independent routes.
+    ##
+    ## ⚠⚠⚠ THE INNER PRODUCT IS `C`-WEIGHTED, AND THIS ASSERTION USED THE
+    ## UNWEIGHTED ONE UNTIL 2026-09-07.  The variational DAE conserves
+    ## `q(t)^T C(t) p(t)`, not `q(t)^T p(t)`; the two are the SAME NUMBER on
+    ## a unit-reactance fixture, which is every fixture this file had, so the
+    ## error was invisible here and cost a factor of `C^2` in every orbital
+    ## covariance (measured 16.04x too large at `c = 4` against the
+    ## independent Lyapunov reference, and right only at `c = 1`).
+    ## ⚠ On van der Pol the reduced `C` carries a NEGATIVE entry for the
+    ## inductor, so the correctly-normalised modes now read
+    ## `q^T p = -1.001` — the sign is the tell that the old assertion was
+    ## measuring a different bilinear form, not a scale.
+    ## The `c != 1` sweep lives in
+    ## `test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp`;
+    ## this one pins the invariant itself, AROUND THE CYCLE, because
+    ## conservation is the actual claim and `t = 0` alone would not test it.
+    ##
+    ## ⚠⚠⚠ AND `q` IS STORED IN REVERSE TIME ORDER RELATIVE TO `p`, WHICH
+    ## WAS UNDOCUMENTED AND IS MEASURED HERE.  The adjoint comes from a
+    ## BACKWARD replay.  Pairing at the same index gives nonsense --
+    ## `q[j]^T C p[j]` = 1.000, -0.022, -1.000, 1.000, -0.999 across the
+    ## cycle -- while `q[N-1-j]^T C p[j]` = 1.000, 0.990, 0.999, 1.000,
+    ## 1.000 is the conserved invariant.  The two agree only at `j = 0`,
+    ## `N/2` and `N-1` by the orbit's symmetry, and index 0 is the ONLY
+    ## place any shipped code looked, which is why nothing caught it.
+    ##
+    ## ⚠ FLAGGED, NOT RESOLVED: `orbital_correlation` matches an INDEPENDENT
+    ## Lyapunov reference at `c = 0.25/1/4` to 0.4 %, so its Fourier path is
+    ## self-consistent with this storage.  But any consumer that pairs
+    ## `q[:, k]` with `p[:, k]` AT THE SAME k is wrong -- including the
+    ## definition-route integral inside
+    ## `test_orbital_correlation_is_gated_three_ways`, which may be masked
+    ## by van der Pol's half-wave symmetry averaging the mismatch out over
+    ## the cycle.  Whether the reversal is intentional storage or a latent
+    ## defect is OPEN; it needs an ASYMMETRIC orbit to separate.
+    x0r = np.delete(np.asarray(pss.waveform[1], dtype=float)[:, 0],
+                    pss.irefnode)
+    Cm = np.asarray(pss._C_at(x0r), dtype=float)
     for k, md in enumerate(modes):
-        c = complex(np.vdot(md['q'][:, 0], md['p'][:, 0]))
+        c = complex(np.vdot(md['q'][:, 0], Cm @ md['p'][:, 0]))
         assert abs(c - 1.0) < 1e-9, \
-            'mode %d: q(0)^T p(0) = %.6f%+.6fj on the state block, not 1 -- ' \
+            'mode %d: q(0)^T C p(0) = %.6f%+.6fj on the state block, not 1 -- ' \
             'any covariance assembled from these parts is off by |c|^2' \
             % (k, c.real, c.imag)
-        ## and the invariant must hold AROUND the cycle, not only at t = 0
-        Pm_, Qm_ = md['p'], md['q']
-        cyc = [abs(complex(np.vdot(Qm_[:, j], Pm_[:, j])) - 1.0)
-               for j in range(0, Pm_.shape[1], max(1, Pm_.shape[1] // 8))]
-        assert max(cyc) < 1e-3, \
-            'mode %d: q(t)^T p(t) drifts from 1 around the cycle by %.3e' \
-            % (k, max(cyc))
+        ## ⚠⚠ THE AROUND-THE-CYCLE CHECK IS DELIBERATELY NOT ASSERTED, AND
+        ## THE REASON IS AN OPEN FINDING RATHER THAN A TOLERANCE PROBLEM.
+        ## This block used to assert `q[j]^T p[j] = 1` at every sample.  That
+        ## assertion was WRONG TWICE OVER and passed only by coincidence: the
+        ## product is `C`-weighted (unit reactances hid it), and `q` is stored
+        ## in REVERSE time order relative to `p` (a backward replay), so the
+        ## same-index pairing compares vectors from different times.  Measured
+        ## across the cycle: `q[j]^T C p[j]` = 1.000, -0.022, -1.000, 1.000,
+        ## -0.999 -- nonsense -- against `q[N-1-j]^T C p[j]` = 1.000, 0.990,
+        ## 0.999, 1.000, 1.000.  They agree only at `j = 0`, `N/2`, `N-1`,
+        ## and index 0 is the only place any shipped code looked.
+        ##
+        ## ❌ BUT THE REVERSED PAIRING IS NOT EXACT EITHER, AND IT DOES NOT
+        ## CONVERGE.  Spread around the cycle against `npts`:
+        ##
+        ##     npts    mode 0      mode 1
+        ##      200    1.2538e-02  3.1557e-02
+        ##      400    1.1557e-02  3.0786e-02
+        ##      800    1.0835e-02  3.0163e-02
+        ##     1600    1.0429e-02  2.9971e-02
+        ##
+        ## ratios ~1.05 per doubling, not 4 -- it settles on a NON-ZERO
+        ## limit, so this is not discretisation.  Offsets of -2..+2 on the
+        ## reverse index do not improve it either.  So the exact
+        ## correspondence between the adjoint and forward samples is NOT
+        ## `N-1-j`, and is currently unknown.
+        ##
+        ## Nothing is asserted here because a bound would be tuned to a
+        ## number I cannot justify.  ⚠ The `t = 0` normalisation above IS
+        ## exact (1e-9) and is what every shipped consumer uses; and
+        ## `orbital_correlation` validates against an INDEPENDENT Lyapunov
+        ## reference at `c = 0.25/1/4` to 0.4 %, so the Fourier path is
+        ## self-consistent with whatever the convention is.  ⚠ An ASYMMETRIC
+        ## orbit is what would separate "intentional storage" from "latent
+        ## defect" -- van der Pol's half-wave symmetry can average a
+        ## mismatch away.  Recorded as open in the roadmap.
 
     ## ⚠ AND THE NULL MODES MUST BE ABSENT. A DAE monodromy has exact
     ## zeros; asked for more modes than exist, it must not pad with them.
@@ -16616,24 +16683,28 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
     measured excess over our phase-only answer. Two routes, one from a parity
     table and one from this paper's modal sum, landing on one quantity.
 
-    ⚠⚠ AND A HEADLINE I HAD TO RETRACT, WHICH IS WHY THE THIRD ASSERTION
-    EXISTS. On the default fixture `S_orb/S_ph` reads 0.500163 at `f_amp` and
-    0.0099 / 0.99 a decade either side — i.e. `f^2/(f^2 + f_amp^2)`, identical
-    at `Q = 8, 20, 50`. It is tempting to call that a law: *the orbital term
-    reaches half the phase term at f_amp*. **It is not a law. It is the
-    unit-reactance fixture.** Change `C` at fixed `w0`:
+    ⚠⚠ A HEADLINE RETRACTED AND THEN RESTORED, WHICH IS THE WHOLE STORY.
+    `S_orb/S_ph` reads 0.500 at `f_amp` on the default fixture. That looks
+    like a law — *the orbital term reaches half the phase term at f_amp*. It
+    was RETRACTED when sweeping `C` at fixed `w0` gave 0.500 / 8.002 / 0.031
+    at `C` = 1 / 4 / 0.25, a 256x swing, which read as §D 0c fixture
+    blindness.
 
-        C=1.00 L=1.00   ratio at f_amp = 0.500
-        C=4.00 L=0.25   ratio at f_amp = 8.002
-        C=0.25 L=4.00   ratio at f_amp = 0.031
+    ✅ **The retraction was right on the evidence and wrong about the cause,
+    and chasing the cause found a REAL DEFECT.** `floquet_modes`
+    biorthonormalised on `q^T p = 1`; the variational DAE's conserved form is
+    `q^T C p`, and `q` enters the covariance quadratically, so the orbital
+    covariance was too large by exactly `C^2`. Against the independent
+    Lyapunov reference, before: 0.0624 / 1.0001 / 16.043 — right ONLY at
+    `C = 1`, the one place A9's three-way gate ever ran. After the fix:
+    1.0027 / 1.0018 / 1.0036, and `w` scales as `C^-1` as predicted.
 
-    a 256x swing. §D 0c, again, on the same circuit that produced it there.
-    The SHAPE is universal; the AMPLITUDE is not, and the third assertion
-    pins the difference so the retracted claim cannot come back.
-
-    ❌ OPEN: the asymptotic ratio scales as ~`C^2` and nothing here says
-    whether that is physical. `orbital_spectrum`'s shape is checked; its
-    amplitude is validated against NOTHING external.
+    So the law is real; the defect was hiding it. Measured at each circuit's
+    OWN `f_amp` after the fix: **0.5052 / 0.5010 / 0.5005** at
+    `C` = 0.25 / 1 / 4. ⚠ The first version of this test compared both
+    circuits at the `C = 1` circuit's `f_amp` — but `f_amp ~ 1/C`, so it
+    sampled the `C = 4` orbit at four times its own pole and read a
+    difference that was its own bug.
     """
     cir, pss = _a9_vdp()
     pac = PAC(cir)
@@ -16676,18 +16747,31 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
         'the orbital/phase ratio moved by %.3e over a 100x change in source ' \
         'PSD; both are linear in it, so a scaling convention disagrees' % drift
 
-    ## 3. ⚠ THE RATIO AT `f_amp` IS **NOT** A UNIVERSAL 0.5 — asserted so the
-    ##    retracted headline cannot be re-derived from the default fixture.
-    c3, p3 = _a9_vdp(cval=4.0, lval=0.25)
-    pac3 = PAC(c3)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        sp3, _ = pac3.oscillator_spectrum(p3, np.array([f_amp]), 0, harmonic=1)
-        so3 = pac3.orbital_spectrum(p3, np.array([f_amp]), 0, harmonic=1, H=4)
-    r_unit = float(ratios[0][0])
-    r_c4 = float(so3[0] / sp3[0])
-    assert r_c4 / r_unit > 4.0, \
-        'changing C by 4x moved the orbital/phase ratio at f_amp only from ' \
-        '%.4f to %.4f. If this has become fixture-independent, the "half at ' \
-        'f_amp" reading may be a law after all — measure before believing ' \
-        'it' % (r_unit, r_c4)
+    ## 3. ⚠⚠ THE RATIO AT `f_amp` IS 0.5 AND IS FIXTURE-INDEPENDENT — the
+    ##    assertion that would have caught the `C^2` biorthonormalisation
+    ##    defect, and the one the three-way gate could not because it only
+    ##    ever ran at `C = 1`.  Each circuit is evaluated at ITS OWN `f_amp`;
+    ##    `f_amp ~ 1/C`, so a shared one silently samples the wrong offset.
+    seen = []
+    for cval, lval in ((0.25, 4.0), (1.0, 1.0), (4.0, 0.25)):
+        ck, pk = _a9_vdp(cval=cval, lval=lval)
+        pk_pac = PAC(ck)
+        f0k = 1.0 / float(pk.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _vk, ik = pk.ppv()
+            fak = -np.log(float(ik['second_multiplier'])) * f0k / (2.0 * np.pi)
+            spk, _ = pk_pac.oscillator_spectrum(
+                pk, np.array([fak]), 0, harmonic=1)
+            sok = pk_pac.orbital_spectrum(
+                pk, np.array([fak]), 0, harmonic=1, H=4)
+        seen.append(float(sok[0] / spk[0]))
+    for cval, r in zip((0.25, 1.0, 4.0), seen):
+        assert abs(r - 0.5) < 0.02, \
+            'at C=%g the orbital/phase ratio at its own f_amp is %.4f, not ' \
+            '0.5. A C-dependent value here is the signature of the '  \
+            'biorthonormalisation defect: floquet_modes must normalise on ' \
+            'q^T C p, not q^T p' % (cval, r)
+    assert max(seen) / min(seen) < 1.05, \
+        'the ratio at f_amp moved by %.3f across a 16x sweep in C (%r); it ' \
+        'must be fixture-independent' % (max(seen) / min(seen), seen)
