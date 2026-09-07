@@ -7136,10 +7136,32 @@ the whole result.** At `nslow = 14` (map width 32, 16 non-null modes):
 needs *all sixteen* while sorting by **row sum** needs **four**. `cw` is a full matrix, so a mode
 with small own-weight can carry large CROSS terms; `|diag|` cannot see them and row-sum can.
 
-**So the negative conclusion is refuted — but only under the better ordering.** Against the stated
-falsifier (`m/n` below about a half), row-sum reaches the identity's floor at **m/n = 0.22** and 1e-2
-at **0.12**, while `|diag|` sits at 0.50 and would have confirmed "no concentration". A measurement
-whose answer flips on the sort key is a measurement whose sort key has to be reported.
+⚠⚠ **AND THAT READING WAS TOO STRONG — CORRECTED THE SAME DAY, ON THE FULL CURVE RATHER THAN THREE
+THRESHOLD CROSSINGS.** Printing the residual at every `m` (nslow = 14) shows what the table hides:
+
+    |diag|    3.20e-02 3.18e-02 3.16e-02 ... 3.27e-02 (flat to m=15)  1.77e-03 at m=16
+    row sum   3.20e-02 1.46e-02 1.18e-02 8.54e-03 7.44e-03 4.49e-03 2.74e-03 ... 1.77e-03
+
+**The whole curve lives between 3.2e-02 and 1.8e-03 — a dynamic range of 18x.** One mode already
+gives 3.2e-02, so "m@1e-1 = 1" is trivially satisfied and does not mean one mode carries 90%; and
+*all sixteen* only reach 1.8e-03. **There is no regime where a few modes give a SMALL residual under
+any ordering**, because the identity's own floor is 1.8e-03 and a single mode is within 18x of it.
+So the negative conclusion largely **stands**: A9 needs a complete basis, and this is not
+truncatable.
+
+What the ordering does change is real but narrower: `|diag|` is FLAT until the last mode (the
+diagonal has one dominant entry and the rest of `K_orb` sits in CROSS terms, which own-weight
+sorting cannot see), while row-sum descends smoothly and reaches 8.5e-03 at m=4. If 1e-02 is an
+acceptable residual, row-sum buys a real saving; if the floor is wanted, both need essentially
+everything.
+
+⚠ **CONSISTENT WITH AN INDEPENDENT REAL-MONODROMY MEASUREMENT** by the peer session, on a different
+oscillator and with `K_orb` from a deflated discrete-Lyapunov solve rather than our bordered
+Kronecker one: `m/n = 0.97` at 1e-03, with sorted `|diag(cw)|` nearly flat. Two routes, two
+circuits, same structural answer. **`FLOQUET_DENSE_LIMIT` is the requirement, not a limitation.**
+
+⚠ **THE MISTAKE WORTH KEEPING: I READ THREE THRESHOLD CROSSINGS AS A CURVE.** `m@1e-1 = 1` looked
+like concentration and was an artefact of the range starting below the threshold. Print the curve.
 
 ## D. How these items keep failing — the shapes worth checking for
 
