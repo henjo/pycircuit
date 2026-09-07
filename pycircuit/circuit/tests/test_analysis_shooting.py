@@ -15697,3 +15697,228 @@ def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
         'with `_theta_biased` neutered the K=100 peak should be the recorded ' \
         '15.91117 (20%% low), and it is %.5f -- if the defect no longer ' \
         'reproduces, this test guards nothing' % pk_bad
+
+
+def _dense_lam2_of(fp, deflate=1e-6):
+    """`lam2` from the DENSE spectrum of the same operator -- `n` matvecs and
+    `eigvals`, the identical route `PSS.ppv` already takes for `dirk`/`full`,
+    with the identical selection rule.  It cannot be influenced by the Arnoldi
+    it is the reference for."""
+    n = fp.width
+    M = np.column_stack([np.asarray(fp.matvec(e), float).ravel()
+                         for e in np.eye(n)])
+    lams = np.linalg.eigvals(M)
+    keep = np.real(lams)[np.abs(lams - 1.0) > deflate]
+    return (float(max(np.max(keep), 0.0)) if keep.size else 0.0), lams
+
+
+def _arnoldi_lam2_and_ritz_residual(fp, kk, deflate=1e-6):
+    """`PSS.ppv`'s Arnoldi, replicated exactly (same seed, same selection),
+    plus the per-pair Ritz residual `|h_{k+1,k}| |y_i[last]|` for the pair it
+    selects -- which needs no extra matvec and is not currently computed."""
+    n = fp.width
+    kk = int(min(n, kk))
+    rng = np.random.default_rng(12345)
+    q0 = rng.standard_normal(n)
+    q0 = q0 / np.linalg.norm(q0)
+    Qb, H = [q0], np.zeros((kk + 1, kk))
+    for j in range(kk):
+        wj = Qb[j] - np.asarray(fp.matvec(Qb[j]))
+        for i in range(j + 1):
+            H[i, j] = float(Qb[i] @ wj)
+            wj = wj - H[i, j] * Qb[i]
+        H[j + 1, j] = float(np.linalg.norm(wj))
+        if H[j + 1, j] < 1e-13:
+            kk = j + 1
+            break
+        Qb.append(wj / H[j + 1, j])
+    theta, Y = np.linalg.eig(H[:kk, :kk])
+    lams = 1.0 - theta
+    mask = np.abs(lams - 1.0) > deflate
+    if not mask.any():
+        return 0.0, float('nan')
+    lam2 = float(max(np.max(np.real(lams)[mask]), 0.0))
+    idx = int(np.where(mask)[0][int(np.argmax(np.real(lams)[mask]))])
+    res = abs(H[kk, kk - 1]) * abs(Y[kk - 1, idx]) / max(
+        float(np.linalg.norm(Y[:, idx])), 1e-300)
+    return lam2, float(res)
+
+
+@pytest.mark.slow
+def test_the_ppv_arnoldi_loses_lam2_when_slow_nodes_crowd_the_unit_root():
+    """⚠⚠ A KNOWN GAP, MEASURED 2026-09-07 AND NOT YET FIXED.
+
+    `PSS.ppv` reports `info['second_multiplier']` and `info['Q']` from a
+    `k = PPV_RITZ_BASIS = 12` Arnoldi on `I - M`.  Two claims in `ppv` justified
+    that cap, and this test is what overturned both:
+
+      1. *"A truncated `lam2` is a LOWER BOUND, so the near-unit warning can
+         only UNDER-fire"* — Cauchy interlacing, verified in 100% of 200 draws
+         on a synthetic **normal** `M`.  ⚠ The note's own escape clause is
+         load-bearing: **a circuit monodromy is not normal**, and on one the
+         bound fails in BOTH directions.
+      2. *"Not live on a circuit monodromy"* — measured against **eigenvector
+         conditioning** (`cond(V) = 92` on a Q=60 oscillator).  The trigger is
+         a DIFFERENT AXIS: the number of distinct near-unit **clusters**, which
+         `_osc_with_ladder` varies by construction and which
+         `test_matrix_free_cost_tracks_slow_modes_not_Q` already reports
+         reaching ~29 at `nslow = 14`.
+
+    Measured on this file's own fixture, against the dense spectrum of the SAME
+    operator, scored in the GAP because `Q ≈ 1/(1 − lam2)`::
+
+        nslow   dense lam2     k=12 Arnoldi   gap ratio   Q dense / Arnoldi
+         <=11   0.995706203    0.995706197      1.000        232 / 232
+           12   0.996324417    1.000114048     -0.031        271 / inf
+           13   0.996818781    0.942674586     18.020        313 / 16.9
+           14   0.997220139    0.999318472      0.245        359 / 1467
+
+    ⚠ **THE ERROR IS NOT ONE-SIGNED**, which is exactly what claim 1 forbade.
+    And the two failures are different mechanisms: at `nslow = 13` the Arnoldi
+    never resolves `0.99682` and selects the next TRUE eigenvalue down
+    (`0.9427`); at 14 it selects a SPURIOUS Ritz value at `0.99932` that is no
+    eigenvalue at all.  At 12 it returns `lam2 > 1` — a spurious UNSTABLE
+    multiplier, which `Q` reports as `inf`; that one at least is loud.
+
+    ⚠ NOT Q-SPECIFIC: `nslow = 14` fails at Q = 8 / 16 / 256 (gap ratios
+    0.166 / 0.245 / 1.188), matching this file's other finding that Krylov
+    behaviour tracks cluster count and not Q.
+
+    ⚠ **WHAT IT COSTS TODAY: nothing computed, but a diagnostic off by 4x–19x
+    SILENTLY.** `lam2` and `Q` have no non-test consumer — they feed the
+    near-unit warning and the returned `info` — so no waveform, PPV or spectrum
+    moves.  A designer reading `info['Q']` on a bias network with many long time
+    constants does not get that guarantee.
+
+    ⚠ THE FIX IS NOT BUILT AND THERE ARE TWO, both already present in the tree
+    in some form.  `k = 16` is enough here (exact, Ritz residual 1.5e-16) — but
+    `n = 32`, so the DENSE route the `dirk`/`full` branch ALREADY TAKES costs
+    only 2x the `k` that works and needs no threshold at all.  For a large `n`
+    that inverts, and then the discriminator is the per-pair **Ritz residual**
+    `|h_{k+1,k}|·|y_i[last]|` — free from the `H` this code already forms, and
+    measured here to separate right from wrong by thirteen orders.
+
+    This test pins the DIAGNOSIS, not the wrong numbers: the dense route is
+    right, the shipped Arnoldi disagrees, and the residual detects it.  A fix
+    flips exactly one assertion, and its docstring says which.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) THE REFERENCE MUST BE SOUND BEFORE ITS DISAGREEMENT COUNTS.  The
+    ## dense spectrum has to carry a clean unit root, or its own selection rule
+    ## is as ambiguous as the Arnoldi's and the comparison is vacuous.
+    fps = {}
+    for nslow in (11, 12, 13, 14):
+        _cir, pss = _osc_with_ladder(16.0, 14, nslow)
+        fp = pss.factored_period()
+        ld, lams = _dense_lam2_of(fp)
+        unit = float(np.min(np.abs(lams - 1.0)))
+        assert unit < 1e-9, \
+            'nslow=%d: the dense unit root sits at |lam-1| = %.2e, not ' \
+            'decisively inside the 1e-6 deflation -- the REFERENCE is then ' \
+            'as ambiguous as the thing it judges and this test proves ' \
+            'nothing' % (nslow, unit)
+        assert 0.99 < ld < 1.0, \
+            'nslow=%d: dense lam2 = %.6f, so this fixture is no longer in ' \
+            'the near-unit regime the test is about' % (nslow, ld)
+        fps[nslow] = (fp, ld, pss)
+
+    ## (2) AND THE FIXTURE MUST ACTUALLY CROWD THE UNIT ROOT, or there is no
+    ## cluster count to be the trigger.
+    _fp14, _ld14, _p14 = fps[14]
+    _ld, lams14 = _dense_lam2_of(_fp14)
+    above = int(np.sum(np.abs(lams14) > 0.9))
+    assert above >= 4, \
+        'nslow=14 has only %d multipliers above 0.9; the ladder has stopped ' \
+        'manufacturing the crowding this test is about' % above
+
+    ## (3) THE SHIPPED PATH IS RIGHT AT nslow <= 11 AND WRONG AT 12/13/14.
+    ## ⚠ IF A FIX LANDS, THIS IS THE ASSERTION THAT FLIPS -- delete the
+    ## `wrong` branch and require agreement everywhere.
+    fp11, ld11, pss11 = fps[11]
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _v, info11 = pss11.ppv()
+    assert abs(float(info11['second_multiplier']) - ld11) < 1e-7, \
+        'nslow=11 used to AGREE with the dense reference (6e-9); it now ' \
+        'differs by %.2e, so the onset has moved and the table in this ' \
+        "docstring is stale" \
+        % abs(float(info11['second_multiplier']) - ld11)
+
+    wrong = {}
+    for nslow in (12, 13, 14):
+        fp, ld, pss = fps[nslow]
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _v, info = pss.ppv()
+        la = float(info['second_multiplier'])
+        ratio = (1.0 - la) / (1.0 - ld)
+        wrong[nslow] = (la, ld, ratio)
+        assert abs(ratio - 1.0) > 0.5, \
+            'nslow=%d: the shipped Arnoldi now agrees with the dense ' \
+            'reference (gap ratio %.3f). IF THAT IS A FIX, GOOD -- delete ' \
+            'this branch and assert agreement at every nslow, and update ' \
+            "`ppv`'s comment, which currently records this as a known gap." \
+            % (nslow, ratio)
+
+    ## ⚠ AND NOT ONE-SIGNED -- the half that refutes the interlacing claim.
+    assert wrong[13][2] > 1.0 and wrong[14][2] < 1.0, \
+        'the recorded failure is a lower bound at nslow=13 (ratio %.3f) and ' \
+        'an OVER-estimate at 14 (%.3f); both signs are what kills "can only ' \
+        'under-fire"' % (wrong[13][2], wrong[14][2])
+    assert wrong[12][0] > 1.0, \
+        'nslow=12 used to return lam2 = %.9f > 1, a spurious UNSTABLE ' \
+        'multiplier that `Q` reports as inf -- the one loud symptom in the ' \
+        'set' % wrong[12][0]
+
+    ## (4) THE DIAGNOSTIC THAT WOULD HAVE CAUGHT ALL OF IT, and it is free.
+    ## Right answers and wrong ones separate by thirteen orders.
+    res_ok = _arnoldi_lam2_and_ritz_residual(fps[11][0], 12)[1]
+    res_bad = [_arnoldi_lam2_and_ritz_residual(fps[n][0], 12)[1]
+               for n in (12, 13, 14)]
+    assert res_ok < 1e-6, \
+        'the Ritz residual at the last CORRECT nslow is %.2e; a gate at ' \
+        '1e-6 would reject a right answer' % res_ok
+    assert min(res_bad) > 1e-5, \
+        'the Ritz residual fails to flag a wrong lam2 (%r) -- then it is not ' \
+        'the discriminator this docstring recommends' % res_bad
+
+    ## (5) AND IT IS A SIZING PROBLEM: k = 16 is exact on the worst case, so
+    ## the gap is a cap and not a broken recursion.
+    la16, res16 = _arnoldi_lam2_and_ritz_residual(fps[14][0], 16)
+    assert abs(la16 - fps[14][1]) < 1e-9, \
+        'k=16 no longer reproduces the dense lam2 at nslow=14 (%.9f vs ' \
+        '%.9f); then raising k is not the fix this docstring names' \
+        % (la16, fps[14][1])
+    assert res16 < 1e-12, \
+        'and its Ritz residual should be at roundoff (%.2e), which is what ' \
+        'makes the gate diagnostic rather than merely correct' % res16
+
+    ## (6) ⚠⚠ AND RAISING `PPV_RITZ_BASIS` TO 16 WOULD BE FIXTURE-TUNING.
+    ## It fixes every case above and FAILS ON A LONGER LADDER -- the required
+    ## `k` grows with `n`, so a constant tuned here is a constant that passes
+    ## this test and ships the same defect::
+    ##
+    ##     ladder/nslow   n    k=12 ratio   k=16 ratio   k=20 ratio
+    ##        14 / 14     32      0.245        1.000        1.000
+    ##        20 / 20     44      0.277        0.279        1.000
+    ##        26 / 26     56      2.313        0.410        0.265
+    ##
+    ## `k ~ n/2` and rising, against a DENSE route that costs `n` and needs no
+    ## threshold at all -- which is why the recommendation in this docstring is
+    ## the dense branch or the residual gate, and NOT a bigger constant.
+    _c20, p20 = _osc_with_ladder(16.0, 20, 20)
+    fp20 = p20.factored_period()
+    ld20, _l20 = _dense_lam2_of(fp20)
+    la20_16, res20_16 = _arnoldi_lam2_and_ritz_residual(fp20, 16)
+    ratio20 = (1.0 - la20_16) / (1.0 - ld20)
+    assert abs(ratio20 - 1.0) > 0.5, \
+        'k=16 now gets the LONGER ladder right too (gap ratio %.3f). If that ' \
+        'holds at nladder=26 as well then the constant really is enough and ' \
+        'this warning can go; it did not when measured (0.410 there).' \
+        % ratio20
+    assert res20_16 > 1e-5, \
+        'and the Ritz residual must still flag it (%.2e) -- the whole point ' \
+        'is that the residual scales with the problem where a constant does ' \
+        'not' % res20_16

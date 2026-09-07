@@ -4632,15 +4632,64 @@ class PSS(Analysis):
         ## the weak point; deflating the phase mode explicitly with `q`,
         ## which this method already has, would sidestep it.
         ##
-        ## ⚠ ONE FAILURE MODE CHECKED AND NOT LIVE HERE.  At
+        ## ⚠⚠⚠ AND THE ESCAPE CLAUSE IS LOAD-BEARING: A CIRCUIT MONODROMY IS
+        ## NOT NORMAL, AND THE BOUND FAILS ON ONE.  MEASURED 2026-09-07 on
+        ## THIS FILE'S OWN `_osc_with_ladder(Q, 14, nslow)` against the dense
+        ## spectrum of the SAME operator (`n` matvecs, the route the
+        ## `dirk`/`full` branch below already takes), scored in the GAP
+        ## because `Q ~ 1/(1 - lam2)`::
+        ##
+        ##     nslow   dense lam2     k=12 Arnoldi   gap ratio   Q dense/Arnoldi
+        ##      <=11   0.995706203    0.995706197      1.000       232 / 232
+        ##        12   0.996324417    1.000114048     -0.031       271 / inf
+        ##        13   0.996818781    0.942674586     18.020       313 / 16.9
+        ##        14   0.997220139    0.999318472      0.245       359 / 1467
+        ##
+        ## **THE ERROR IS NOT ONE-SIGNED**, so "can only UNDER-fire" does not
+        ## hold here: 13 under-estimates (19x low in `Q`), 12 and 14
+        ## OVER-estimate, and 12 returns `lam2 > 1` -- a spurious UNSTABLE
+        ## multiplier, which `Q` reports as `inf`.  The two failures are
+        ## different: at 13 the Arnoldi never resolves `0.99682` and selects
+        ## the next TRUE eigenvalue down (`0.9427`); at 14 it selects a
+        ## SPURIOUS Ritz value at `0.99932` that is no eigenvalue at all.
+        ##
+        ## ⚠⚠ SO "NOT LIVE ON A CIRCUIT MONODROMY" (below) WAS MEASURED ON THE
+        ## WRONG AXIS.  It was checked against EIGENVECTOR CONDITIONING; the
+        ## trigger here is the number of distinct near-unit CLUSTERS, which
+        ## `_osc_with_ladder` varies BY CONSTRUCTION and which the fixture's
+        ## own test already reports reaching ~29 at `nslow = 14`.  It is not
+        ## Q-specific either: the same `nslow` fails at Q = 8/16/256.
+        ##
+        ## ⚠⚠ IT IS A SIZING PROBLEM, AND RAISING THIS CONSTANT IS THE WRONG
+        ## FIX -- MEASURED.  `k = 16` is exact on the fixture above and FAILS
+        ## on a longer ladder, because the required `k` grows with `n`::
+        ##
+        ##     ladder/nslow   n    k=12 ratio   k=16 ratio   k=20 ratio
+        ##        14 / 14     32      0.245        1.000        1.000
+        ##        20 / 20     44      0.277        0.279        1.000
+        ##        26 / 26     56      2.313        0.410        0.265
+        ##
+        ## `k ~ n/2` and rising, against a DENSE route that costs `n` and needs
+        ## no threshold at all.
+        ## THE DIAGNOSTIC THAT SEPARATES THEM CLEANLY IS THE PER-PAIR RITZ
+        ## RESIDUAL `|h_{k+1,k}| |y_i[last]|`, free from `H`: 1.0e-02 at
+        ## k=8, 2.1e-03 at k=12 (both wrong), 1.5e-16 at k=16 (right), and
+        ## <=3.1e-07 at every `nslow` the shipped path gets right.  Neither
+        ## is built -- see the roadmap; `lam2` and `Q` are REPORTED
+        ## DIAGNOSTICS with no non-test consumer, so nothing computes wrong,
+        ## but a caller reading `info['Q']` on a bias network with many long
+        ## time constants can be off by 4x to 19x, silently.
+        ##
+        ## ⚠ ONE FAILURE MODE CHECKED AND NOT LIVE HERE -- ⚠⚠ SUPERSEDED BY
+        ## THE MEASUREMENT ABOVE, KEPT BECAUSE IT RECORDS WHAT WAS TESTED.  At
         ## `cond(V) >= 1e4` the `|lam - 1|` filter itself fails: the phase
         ## mode stops being resolved to the tolerance, survives the
         ## discard, and is selected as `lam2`, sending `Q` to infinity.
-        ## MEASURED on this class's stiffest realistic fixture -- a Q=60
-        ## oscillator with a 10-mode damped bulk, `m = 12` --
+        ## MEASURED on what was then this class's stiffest realistic fixture
+        ## -- a Q=60 oscillator with a 10-mode damped bulk, `m = 12` --
         ## `cond(V) = 92` and `|lam_1 - 1| = 3.0e-13`, seven orders inside
-        ## the 1e-6 filter.  Not live on a circuit monodromy; the synthetic
-        ## that shows it forces the eigenvector conditioning.  Sorted by real part, not magnitude, because an
+        ## the 1e-6 filter.  That axis is still clean; the CLUSTER-COUNT axis
+        ## is not.  Sorted by real part, not magnitude, because an
         ## amplitude mode is real and positive while a complex pair of
         ## larger modulus would be an oscillation about the orbit.
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])

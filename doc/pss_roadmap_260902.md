@@ -6957,14 +6957,102 @@ extremum); `c` is the clean one there.
 lands on the analytic limit to 1e-3 of the physical term. The warning's second half — the
 instantaneous phase equation over-estimating phase noise — is a separate, still-open limitation.
 
-⚠⚠ **TWO Q CONVENTIONS ALREADY COEXIST IN THE TEST FILE AND THEY DIFFER BY π.** `_q20_rlc`'s
-docstring defines Q by `|λ₂| = exp(−π/Q)` (Q=20 → 0.8546); `_osc_with_ladder` sets
-`μ = 1/(2πQ)`, i.e. `|λ₂| = exp(−1/Q)`. So `_osc_with_ladder(Q=60)` is `|λ₂| = 0.98347`, which is
-**Q = 188 under the other convention**. Everything in this section uses the resonator one
-(`Q = π/(−ln|λ₂|)`), so "Q = 1000" here is `|λ₂| = 0.99686`. **Check which Q a quoted number means
-before comparing two measurements in this tree.**
+⚠⚠ **TWO Q CONVENTIONS ALREADY COEXIST IN THE TEST FILE.** `_q20_rlc`'s docstring defines the
+RESONATOR `Q_d` by `|λ₂| = exp(−π/Q)`; `_osc_with_ladder` sets `μ = 1/(2πQ)`, i.e. the FLOQUET
+cycles-to-1/e `Q_λ = 1/|ln λ₂|` — which is also what `shooting.py:4712` computes and returns as
+`info['Q']`. So `_osc_with_ladder(Q=60)` is `|λ₂| = 0.98347`, **Q_d = 188**.
+
+⚠ **THE FACTOR IS π ONLY ASYMPTOTICALLY.** Derived here and cross-checked against a peer session's
+independent table: a damped second-order oscillator has `ω_d = ω₀√(1 − 1/(4Q_d²))` and `T = 2π/ω_d`,
+so `|λ₂| = exp(−(π/Q_d)/√(1 − 1/(4Q_d²)))` and
+
+    Q_d / Q_λ = π / √(1 − 1/(4 Q_d²))
+
+— 3.14159 at `Q_d = 1000`, 3.14257 at 20 (0.03%, harmless for `_q20_rlc`), **3.24462 at `Q_d = 2`
+(3.3%)**. Everything in this section uses `Q_d`, so "Q = 1000" here is `|λ₂| = 0.99686`. **Check
+which Q a quoted number means before comparing two measurements in this tree**, and use the √
+correction if a fixture is ever run genuinely low-Q.
 
 Test: `test_the_diffusion_constant_at_high_q_has_an_analytic_reference`.
+
+## The PPV's `lambda_2` is wrong when slow nodes crowd the unit root — measured 2026-09-07
+
+**Prompted by a peer session (`docs-46`), which reproduced the failure in a synthetic dense model
+and asked whether this tree's fixtures can exhibit it. They can, and it is live.**
+
+`PSS.ppv` reports `info['second_multiplier']` and `info['Q']` from a `k = PPV_RITZ_BASIS = 12`
+Arnoldi on `I − M`. Two claims in `ppv` justified that cap. **Both are now overturned**, against the
+dense spectrum of the *same* operator (`n` matvecs — the route the `dirk`/`full` branch already
+takes), on this file's own `_osc_with_ladder(Q, 14, nslow)`, scored in the GAP because `Q ≈ 1/(1−λ₂)`:
+
+| nslow | dense λ₂ | k=12 Arnoldi | gap ratio | Q dense / Arnoldi |
+|---|---|---|---|---|
+| ≤11 | 0.995706203 | 0.995706197 | 1.000 | 232 / 232 |
+| 12 | 0.996324417 | **1.000114048** | −0.031 | 271 / **inf** |
+| 13 | 0.996818781 | 0.942674586 | **18.020** | 313 / **16.9** |
+| 14 | 0.997220139 | 0.999318472 | **0.245** | 359 / **1467** |
+
+1. ⚠⚠ **"A truncated `λ₂` is a LOWER BOUND, so the warning can only UNDER-fire"** — Cauchy
+   interlacing, verified in 100% of 200 draws on a synthetic **normal** `M`. The note's own escape
+   clause turned out to be load-bearing: **a circuit monodromy is not normal**, and here the error
+   is **not one-signed** — 13 under-estimates (19x low in Q), 12 and 14 over-estimate.
+2. ⚠⚠ **"Not live on a circuit monodromy"** — measured against **eigenvector conditioning**
+   (`cond(V) = 92`). The trigger is a **different axis**: the number of distinct near-unit
+   **clusters**, which `_osc_with_ladder` varies by construction and which the fixture's own test
+   already reports reaching ~29 at `nslow = 14`. **A cause filed under "ruled out" was ruled out on
+   one axis only.**
+
+**Two different mechanisms, not one.** At `nslow = 13` the Arnoldi never resolves `0.99682` and
+selects the next TRUE eigenvalue down (`0.9427`); at 14 it selects a SPURIOUS Ritz value at
+`0.99932` that is no eigenvalue at all. At 12 it returns `λ₂ > 1` — a spurious UNSTABLE multiplier,
+which `Q` reports as `inf`. **That last one is loud; the other two are silent.**
+
+⚠ **NOT Q-SPECIFIC**: `nslow = 14` fails at Q = 8 / 16 / 256 (gap ratios 0.166 / 0.245 / 1.188),
+matching this file's other finding that Krylov behaviour tracks cluster count and not Q.
+
+✅ **WHAT IT COSTS TODAY: nothing computed, but a diagnostic wrong by 4x–19x, silently.** `λ₂` and
+`Q` have **no non-test consumer** — they feed the near-unit warning and the returned `info` — so no
+waveform, PPV or spectrum moves. A designer reading `info['Q']` on a bias network with many long
+time constants does not get that guarantee.
+
+⚠⚠ **AND THE OBVIOUS FIX IS FIXTURE-TUNING — MEASURED BEFORE IT WAS TAKEN.** `k = 16` is exact on
+the fixture above and **fails on a longer ladder**, because the required `k` grows with `n`:
+
+| ladder/nslow | n | k=12 | k=16 | k=20 |
+|---|---|---|---|---|
+| 14 / 14 | 32 | 0.245 | 1.000 | 1.000 |
+| 20 / 20 | 44 | 0.277 | **0.279** | 1.000 |
+| 26 / 26 | 56 | 2.313 | **0.410** | **0.265** |
+
+`k ≈ n/2` and rising. **So raising the constant would pass the new test and ship the same defect.**
+
+**The two real fixes, both already in the tree in some form, NEITHER BUILT:**
+* **the dense route** — `n` matvecs and `eigvals`, exactly what `ppv` already does for `dirk`/`full`.
+  It costs about 2x the `k` that works, is exact, and has no threshold. The obvious default while
+  `n` is modest.
+
+  ⚠⚠ **AND THE PAPER `ppv()` IMPLEMENTS ALREADY CAUTIONED AGAINST THE OTHER ROUTE, IN 2003.**
+  Demir & Roychowdhury, TCAD 22(2) p.189 — **verified verbatim on disk**
+  (`~/docs/2003-TCAD-Demir-Roychowdhury.pdf`), not relayed: *"variants of the monodromy matrix
+  method, which use ITERATIVE TECHNIQUES FOR EIGENCALCULATIONS, can achieve similarly low
+  computation; however … iterative eigencalculations can FURTHER INCREASE AMBIGUITY in the
+  selection of the oscillatory-mode eigenvalue."* That is exactly the failure measured above — a
+  **selection** failure at `nslow = 13` (the next true eigenvalue down) and a spurious Ritz value at
+  14 — cautioned twenty-three years before it was measured here, in the source this function cites.
+  It does not settle the choice (Nastov's clustering result cuts the other way), but it is on the
+  record now, and it tilts the default toward the dense route.
+* **the per-pair Ritz residual** `|h_{k+1,k}|·|y_i[last]|` — free from the `H` this code already
+  forms, `docs-46`'s proposal. Measured here: 1.0e-02 at k=8, 2.1e-03 at k=12 (both wrong),
+  1.5e-16 at k=16 (right), ≤3.1e-07 at every `nslow` the shipped path gets right, and 1.6e-03 /
+  1.46e-03 on the longer ladders where `k=16` silently fails. **It is the discriminator that scales
+  with the problem where a constant does not.** ⚠ `docs-46` measured the threshold FORM (absolute
+  vs relative) to be irrelevant because the populations are 13 decades apart, but the populations
+  *touch* at ~1e-5, so the robust band is below ~1e-6 and that is what should be documented rather
+  than a magic 1e-8.
+
+Test: `test_the_ppv_arnoldi_loses_lam2_when_slow_nodes_crowd_the_unit_root`, which pins the
+DIAGNOSIS rather than the wrong numbers and **is verified to flip when the gap is fixed** (raising
+`PPV_RITZ_BASIS` to 16 makes it fail, with a message saying what to do next).
 
 ## D. How these items keep failing — the shapes worth checking for
 
