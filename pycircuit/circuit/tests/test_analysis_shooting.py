@@ -14944,3 +14944,107 @@ def test_radau_keeps_order_on_differential_and_loses_two_on_algebraic_index2():
     assert od[-1] - oa[-1] > 1.5, \
         'the whole point is the SPLIT: differential %.2f against algebraic ' \
         '%.2f' % (od[-1], oa[-1])
+
+
+@pytest.mark.slow
+def test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance():
+    """How small a `c` can this stack compute before its own error dominates?
+
+    ⚠⚠ THE PUBLISHED GATE DOES NOT TRANSFER, AND CHECKING THAT FIRST IS THE
+    POINT.  Biggio et al. measure a simulator's numerical noise floor by FFT-ing
+    a NOISELESS oscillator and looking between the harmonics -- whatever is
+    there is the floor.  That assumes SPECTRAL ESTIMATION.  This stack is
+    CLOSED FORM: `oscillator_spectrum` returns a Lorentzian scaled from
+    `c = (1/T) int v^T B B^T v dt`, so a noiseless circuit has `B = 0`, `c = 0`
+    and `L = -inf`.  There is no broadened spectrum to measure.
+
+    ⚠⚠⚠ AND THE OBVIOUS REPLACEMENT IS A GATE THAT CANNOT FAIL.  Sweeping the
+    source PSD and checking `c` tracks it linearly gives `c/psd` constant to
+    **1.7e-16 over 28 decades** -- because `CY ~ psd` factors straight out of
+    the quadratic form.  That is a STRUCTURAL IDENTITY confirming arithmetic,
+    the same family as a zero-vs-zero pass.  **A measurement whose outcome is
+    fixed by the algebra says nothing about the implementation.**
+
+    The numerical error lives in the PPV and the orbit, so the knobs are the
+    GRID and the TOLERANCE.  Measured on the van der Pol noise fixture::
+
+        (1) grid, at reltol 1e-12          (2) tolerance, at npts 240
+        npts   c               rel chg     reltol   c
+          60   7.987354e-08    --          1e-08    8.042025661140e-08
+         120   8.030800e-08    5.41e-03    1e-10    8.042025661200e-08
+         240   8.042026e-08    1.40e-03    1e-12    8.042025661266e-08
+         480   8.044852e-08    3.51e-04    1e-14    8.042025661208e-08
+         960   8.045561e-08    8.81e-05
+
+    **The grid change falls 4x per doubling -- O(h^2) -- and the tolerance does
+    not move `c` at all past ten digits (spread ~1.5e-11).**  So the floor is
+    DISCRETISATION, not the Newton tolerance, and tightening `reltol` to buy
+    phase-noise accuracy buys nothing: refine the grid instead.
+
+    At 240 points the uncertainty is ~4e-04 relative, i.e. **~0.0004 dB** on a
+    reported phase noise -- far below anything that would corrupt a result.  So
+    the concern is real for a spectral-estimation simulator and STRUCTURALLY
+    ABSENT here; the closed-form route buys that.
+
+    ⚠ SCOPE: measured at MODERATE Q (van der Pol, mu = 1).  At high Q the
+    bordered solve's conditioning degrades (`sigma_min` tracks `T/tau`), so `c`'s
+    uncertainty may grow there.  **Untested, and it is exactly the regime the
+    original concern named.**
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    psd = 1e-6
+
+    def vdp():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+        return c
+
+    def cval(npts, reltol):
+        cir = vdp()
+        p = PSS(cir, method='gear', reltol=reltol)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=6.6634, timestep=6.6634 / npts,
+                    x0=np.array([2.0, 0.0]), maxiterations=60)
+        assert p.converged
+        return float(PAC(cir, toolkit=circuit.numeric).diffusion_constant(p))
+
+    ## (1) the grid is the knob that moves it, and it converges at O(h^2)
+    cs = [cval(n, 1e-12) for n in (60, 120, 240, 480)]
+    chg = [abs(cs[i + 1] - cs[i]) / abs(cs[i + 1]) for i in range(len(cs) - 1)]
+    assert chg[0] > chg[1] > chg[2], 'c is not converging with the grid: %r' % chg
+    ratio = chg[1] / chg[2]
+    assert 3.0 < ratio < 5.0, \
+        'the grid error should fall ~4x per doubling (O(h^2)), got %.2f' % ratio
+
+    ## (2) ⚠ the TOLERANCE does not move it -- so `reltol` is the wrong dial for
+    ## phase-noise accuracy, and a caller tightening it is paying for nothing.
+    ct = [cval(240, rt) for rt in (1e-8, 1e-10, 1e-12, 1e-14)]
+    spread = (max(ct) - min(ct)) / abs(np.mean(ct))
+    assert spread < 1e-8, \
+        'reltol moved c by %.3e -- if this ever becomes the limit, the floor ' \
+        'story above changes and the docstring must be re-measured' % spread
+
+    ## (3) ⚠ AND THE STRUCTURAL IDENTITY, ASSERTED SO IT IS NOT MISTAKEN FOR A
+    ## GATE: c is exactly linear in the PSD, so sweeping it proves nothing.
+    cir_a, cir_b = vdp(), vdp()
+    cir_b['n'].ipar.noisePSD = psd * 1e-12
+    cir_b.update_iparv()
+    got = []
+    for cc in (cir_a, cir_b):
+        p = PSS(cc, method='gear', reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=6.6634, timestep=6.6634 / 240,
+                    x0=np.array([2.0, 0.0]), maxiterations=60)
+        got.append(float(PAC(cc, toolkit=circuit.numeric).diffusion_constant(p))
+                   / float(cc['n'].ipar.noisePSD))
+    assert abs(got[0] - got[1]) / abs(got[0]) < 1e-12, \
+        'c/psd should be constant BY CONSTRUCTION -- if it is not, the ' \
+        'quadratic form has acquired a psd dependence it should not have'

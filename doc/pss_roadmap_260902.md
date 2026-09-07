@@ -6749,6 +6749,52 @@ a recommendation.**
 different objects: that is a monodromy invariant, this is transient convergence to steady state.
 Two facts about "Gear order 4" pointing opposite ways, both true.
 
+## The numerical noise floor of THIS stack — measured 2026-09-07
+
+**The floor is DISCRETISATION, not tolerance, and on the reported quantity it is negligible.**
+
+⚠⚠ **THE PUBLISHED GATE DOES NOT TRANSFER, AND ESTABLISHING THAT FIRST WAS THE WHOLE JOB.** Biggio
+et al. measure a simulator's floor by FFT-ing a NOISELESS oscillator and reading whatever sits
+between the harmonics. That presumes SPECTRAL ESTIMATION. This stack is CLOSED FORM —
+`oscillator_spectrum` returns a Lorentzian scaled from `c = (1/T) ∫ vᵀBBᵀv dt` — so a noiseless
+circuit has `B = 0`, `c = 0`, `L = −∞`. **There is no broadened spectrum to measure.**
+
+⚠⚠⚠ **AND THE OBVIOUS REPLACEMENT IS A GATE THAT CANNOT FAIL.** Sweeping the source PSD and
+checking `c` tracks it gives `c/psd` constant to **1.7e-16 over 28 decades** — because `CY ∝ psd`
+factors straight out of the quadratic form. A **STRUCTURAL IDENTITY**, confirming arithmetic. Same
+family as a zero-vs-zero pass and as the PPV biorthogonality check: *a measurement whose outcome is
+fixed by the algebra says nothing about the implementation.* ⚠ It was predicted before running and
+cost one cheap run; the test now asserts it AS an identity so it is not mistaken for a gate later.
+
+**The real knobs are the GRID and the TOLERANCE, because that is where the numerical error lives:**
+
+| npts (reltol 1e-12) | c | rel change | | reltol (npts 240) | c |
+|---|---|---|---|---|---|
+| 60 | 7.987354e-08 | — | | 1e-08 | 8.042025661140e-08 |
+| 120 | 8.030800e-08 | 5.41e-03 | | 1e-10 | 8.042025661200e-08 |
+| 240 | 8.042026e-08 | 1.40e-03 | | 1e-12 | 8.042025661266e-08 |
+| 480 | 8.044852e-08 | 3.51e-04 | | 1e-14 | 8.042025661208e-08 |
+| 960 | 8.045561e-08 | 8.81e-05 | | | |
+
+**The grid change falls 4x per doubling — O(h²) — while the tolerance does not move `c` past ten
+digits (spread ~1.5e-11).** By method at npts 240, deviation from the fine-grid limit: `radau`
+2.9e-05, `trap` 1.1e-04, `gear` 4.4e-04 — ordered by their own accuracy, as they should be.
+
+✅ **CONSEQUENCE FOR CALLERS: `reltol` IS THE WRONG DIAL FOR PHASE-NOISE ACCURACY.** Tightening it
+buys nothing; refine the grid. At 240 points the uncertainty is ~4e-04 relative, i.e. **~0.0004 dB**
+on a reported phase noise.
+
+**So the concern is real for a spectral-estimation simulator and STRUCTURALLY ABSENT here** — a
+concrete thing the closed-form route buys, and the reason the three literatures converging on this
+(Denk's error bound, Biggio's floor, Sickenberger's strong order) do not indict this stack.
+
+⚠⚠ **SCOPE, AND IT IS THE REGIME THE CONCERN NAMED.** Measured at MODERATE Q (van der Pol, μ=1).
+At high Q the bordered solve's conditioning degrades (`σ_min` tracks `T/τ`), so `c`'s uncertainty
+may grow. ⚠ **The sweep itself surfaced `PSS.ppv`'s own warning — "a SECOND Floquet multiplier sits
+at 0.999997"** — i.e. the near-degenerate condition appeared inside this fixture, and the O(h²)
+convergence above held anyway. That is suggestive, not a high-Q measurement: **untested.**
+Test: `test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance`.
+
 ## D. How these items keep failing — the shapes worth checking for
 
 Sixteen claims were overturned across this campaign. Four shapes account for most:
