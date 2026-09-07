@@ -5337,8 +5337,21 @@ unbuilt anywhere". The correct statement is: **we do not compute it, and a fifte
 principled method sits in our own `~/docs`.**
 
 **F. L. Traversa and F. Bonani, "Including orbital fluctuations in the noise spectrum of
-autonomous circuits", IEEE TCAS-I, 2011** — in `02-oscillator-noise-jitter/` under exactly that
-title. ⚠ **Cited, not verified here**: nobody in this repo has read the paper. Arrived
+autonomous circuits"** — in `02-oscillator-noise-jitter/` under exactly that title.
+⚠⚠ **CITATION CORRECTED 2026-09-07 (peer `docs-46`, from the paper):** that title is the
+**EXAMPLES** paper — *Int. J. Microwave and Wireless Technologies* **3(1):11–18, 2011**,
+doi:10.1017/S1759078710000826, 8 pp — **not** IEEE TCAS-I. This line paired the examples paper's
+title with the derivation's venue. The **DERIVATION** is its ref. [7]: Traversa & Bonani,
+*"Oscillator noise: a nonlinear perturbative theory including orbital fluctuations and
+phase-orbital correlation"*, **IEEE TCAS-I 2011**, 13 pp with Appendices A–D — on disk in
+`09-phase-macromodels-and-prc/`, one folder away. The examples paper says so itself: *"We have
+recently extended this treatment by deriving a consistent statistical characterization of the
+entire correlation matrix … [7]. We discuss here some results of the application of this approach
+to a couple of examples."* Lineage: Demir, Mehrotra & Roychowdhury 2000 (phase only) → [7] (adds
+orbital and the phase–orbital correlation) → this paper (what that buys). **A9 wants [7]** — and
+`orbital_correlation`/`orbital_spectrum` cite its Lemma 3.5 and eqs (22)/(23), so the CODE was
+built from the right paper; only this citation line was wrong. The two-paper distinction further
+down this section (1 GHz / 300 harmonics vs 5 GHz / 30) was already correct. ⚠ **Cited, not verified here**: nobody in this repo has read the paper. Arrived
 independently from two sessions on the same afternoon, which is the only reason it is recorded
 this firmly.
 
