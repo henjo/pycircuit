@@ -1253,7 +1253,28 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     is the narrower componentwise one.  A componentwise-bounds measurement
     (an RC ladder under a square wave) tests ONLY absolute monotonicity: a
     violation there does not contradict B-stability, and a clean result
-    does not establish it.  TR-BDF2 sits at the corner (stage order 2,
+    does not establish it.
+    ⚠⚠ AND B-STABILITY IS AN ODE PROPERTY THAT DOES NOT CARRY TO A DAE FOR
+    FREE (peer qualification of the correction above, same night, Lamour
+    Ch.6 §6.2 verbatim): "in general, we cannot expect that algebraically
+    stable Runge-Kutta methods, in particular the implicit Euler method,
+    preserve the decay behavior of the exact DAE solution without strong
+    stepsize restrictions, not even when we restrict the class of DAEs to
+    linear ones.  This depends on how the DAE is formulated."  The
+    condition (their eq 6.16): a properly stated leading term whose
+    ``im D(t)`` -- the IMAGE SPACE of the charge Jacobian, not ``D`` itself
+    -- is independent of ``t``; then the IRK reaches the inherent ODE
+    unchanged and algebraic stability + a contractive DAE give contractivity
+    with no step restriction.  So the default's protection is a THREE-PART
+    CONDITIONAL: B-stable (yes, by theorem) + contractive DAE (a property of
+    the circuit) + constant ``im D(t)`` (a property of the formulation and
+    the circuit -- a smooth nonlinear capacitance of constant rank is fine;
+    a switch, or a device entering/leaving a region where it contributes a
+    state, is what breaks it).  Two of the three are unverified for every
+    fixture in this tree.  ⚠ This tree's ``Diode`` has ``G``/``i`` only, no
+    charge, so a diode peak detector keeps ``im D`` constant by
+    construction and is NOT the structure-change fixture; a ``VSwitch`` in
+    series with a capacitor would be.  TR-BDF2 sits at the corner (stage order 2,
     ``R = 1 + sqrt(2)``) and its explicit first stage is the zero row the
     theorem requires -- checked on the coded ``A``: row 0 is the only zero
     row and ``A >= 0`` holds; Radau IIA(3) has no zero row and ``A >= 0``

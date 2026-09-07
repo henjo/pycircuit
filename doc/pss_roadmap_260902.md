@@ -9347,6 +9347,41 @@ establish it. The instrument is right for the `R = 0` gap and silent on the othe
 that distinction travels with the result. What survives unchanged: `R > 0 ⇒ A ≥ 0 ⇒ q ≤ 2`, Radau's
 `R = 0` forced by theorem, TR-BDF2 at the corner with its explicit stage as the required zero row.
 
+⚠⚠ **QUALIFICATION, same night, before the ladder is written: B-stability is an ODE property and
+does NOT carry to a DAE for free — it needs `im D(t)` independent of `t`.** Lamour Ch. 6 §6.2 (RK
+only; no GLM section, so it cannot answer the GLM-monotonicity question), verbatim: *"Turn back to
+DAEs. As we have seen in Example 5.1, in general, we cannot expect that algebraically stable
+Runge-Kutta methods, in particular the implicit Euler method, preserve the decay behavior of the
+exact DAE solution without strong stepsize restrictions, not even when we restrict the class of
+DAEs to linear ones. This depends on how the DAE is formulated."* Even for linear DAEs, even for
+implicit Euler. The condition is explicit (eq 6.16): *"If the DAE has a properly involved derivative
+formulated in such a way that the image space of `D(t)` is independent of `t`, then … the IRK(DAE)
+applied to the index-1 DAE reaches the IERODE unchanged. If the IRK(DAE) is algebraically stable,
+and the DAE is contractive, then we are sure to reflect the true solution properties."*
+
+    algebraic stability (Radau IIA: yes)
+      + properly stated leading term with im D(t) independent of t
+      + contractive DAE
+      ⇒ contractivity preserved, no stepsize restriction   — drop the middle and: "strong stepsize restrictions"
+
+**The honest status of the radau default is a three-part conditional, not a guarantee:** B-stable
+(by theorem) + contractive DAE (a property of the circuit) + constant `im D(t)` (a property of the
+formulation and the circuit). Two of the three are unverified for any fixture here. ⚠ It is the
+IMAGE SPACE, not `D(t)` itself: a smoothly varying nonlinear capacitance of constant rank and
+structure is fine — "time-varying capacitors would break it" (said in this thread) is slightly too
+strong; what breaks it is a RANK or STRUCTURE change in the charge Jacobian — a switch, or a device
+entering/leaving a region where it contributes a state. Checkable, and adjacent to B11, which
+inspects exactly this structure. ⚠ The peer's own note: the second time in this arc a guarantee
+carried a hypothesis that was not carried with it — a pattern, not a one-off.
+
+⚠ **What that does to the pending fixtures:** this tree's `Diode` element has `G`/`i` only — no
+charge, no junction capacitance — so the peak detector's charge Jacobian is the fixed linear
+capacitor alone and `im D` is constant BY CONSTRUCTION. It is a nonlinear-conductance fixture, not
+the structure-change one; if it violates where the ladder does not, the diode's conductance swing
+is the suspect, not `im D(t)`. The `im D(t)` fixture this tree does not yet have is a `VSwitch` (or
+`ISwitch`) in series with a capacitor, and it would be the first thing to run if B-stability is ever
+leaned on for a switching circuit.
+
 ⚠ **§D shape, from the edit that first wrote this paragraph:** an unquoted shell heredoc carrying
 Python source with backticks in its strings let the shell EXECUTE every backtick span and splice the
 empty result back — the file "wrote OK", the syntax check passed, and every `code` span in the
@@ -9371,7 +9406,16 @@ tonight?* — and the fourth is B7:
 | W. Wright, *General linear methods with inherent Runge-Kutta stability*, PhD, Auckland 2002 | the concrete GLM tableau and its stage order (line ~7298: abstract only on disk) | ✅ **LANDED, 188 pp — see below** |
 | S. Voigtmann, *General Linear Methods for Integrated Circuit Design*, PhD, Humboldt | the full Nordsieck order conditions behind Theorem 5 | ✅ landed, 259 pp, unread |
 | Sickenberger, Weinmüller & Winkler, ASC Report 16/2007 (Part I) | B7: whether defect-correction local error estimates see an accumulating period error | ❌ Part II arrived for the third time; Part I is its ref [19], *"to appear in BIT"* |
-| Butcher & Wright, *Construction of GLMs with RK stability properties*, Numer. Algorithms 36 (2004) | a shorter IRKS source, likely with concrete tableaux | ✅ landed unasked, unread |
+| Butcher & **Jackiewicz** (⚠ not "Butcher & Wright" — the peer's first attribution came from the filename), *Construction of GLMs with RK stability properties*, Numer. Algorithms 36 (2004) | — | ❌ **wrong class**: abstract verbatim *"the construction of EXPLICIT general linear methods of order p and stage order q = p"*, for *"NONSTIFF differential systems"* — bounded stability regions, cannot integrate stiff circuit DAEs. **And redundant**: Wright's thesis appendix already carries concrete IRKS tableaux to 15 digits for orders 2–4 in Nordsieck form (e.g. order 2: `A21 = 0.471407662653622`, `A31 = −0.134639854910322`, `A32 = 0.804212616739007`; only sub-diagonal `A` entries, consistent with lower-triangular structure). **The GLM tableau question needs NO further acquisition** — theory and usable coefficients are both on disk. |
+
+⚠ The stiff / implicit GLM line, named from Butcher & Jackiewicz's reference list so it is on file
+rather than rediscovered — none needed now: Butcher, *"Diagonally-implicit multi-stage integration
+methods"*, ANM 11 (1993) 347–363; Butcher & Jackiewicz, *"Construction of diagonally implicit GLMs
+of type 1 and 2 for ODEs"*, ANM 21 (1996) 385–415, and *"… high order diagonally implicit
+multistage integration methods"*, ANM 27 (1998) 1–12; **Jackiewicz, *"Implementation of DIMSIMs for
+STIFF differential systems"*, ANM 42 (2002) 251–267** (the stiff implementation paper); Butcher &
+Wright, *"The construction of practical general linear methods"*, BIT 43 (2003) 695–721 (the real
+Butcher & Wright, not held).
 
 ✅✅ **WRIGHT READ (peer `docs-46`): THE GLM EXIT IS REAL AND CONSTRUCTIVE ON THE ORDER HALF.**
 Abstract, verbatim: *"The first assumption is that the stage order is equal to the overall order of

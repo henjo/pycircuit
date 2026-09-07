@@ -16956,7 +16956,8 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
 
 
 
-def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400):
+def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400,
+                         maxiterations=40, timing=None):
     """Continuation along the LOCKED branch of a driven oscillator; returns
     the last multiple of the named averaging prediction at which the branch
     is still stable, plus the trace.  A6's instrument.
@@ -16975,6 +16976,16 @@ def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400):
     ## 0.2x steps: 0.1x cost 11 min per gate; the edge is reported as the
     ## last LOCKED multiple, so the coarser grid only rounds it down by at
     ## most one step, inside every bound below.
+    ## ⚠ maxiterations=40, NOT 200 (measured 2026-09-08 after a py-spy dump
+    ## found the hostile gate holding the full suite for 30 CPU-minutes):
+    ## every LOCKED step is seeded from the previous locked orbit and
+    ## converges in 1.6-3.3 s; every step PAST the edge is a solve that
+    ## fails only when the cap is reached, at ~1 s per iteration (a 400-step
+    ## transient plus a 400-step sensitivity traversal each), and the loop
+    ## runs one or two of them by design.  The cap IS the cost of the failed
+    ## steps.  At 40 the hostile gate takes 113 s and returns the same edge
+    ## (2.0x) and the same |lam| trace to five digits; `timing` collects
+    ## (r, seconds, solved) per step for the next time this is asked.
     steps = np.arange(0.0, 2.01, 0.2) if steps is None else steps
 
     def amp(cir, p):
@@ -17009,11 +17020,15 @@ def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400):
         cir, _, _ = cir_fn(iinj, finj)
         pp = PSS(cir, method='gear', reltol=1e-9)
         x0 = np.array([2.0, 0.0]) if seed is None else seed
+        import time as _time
+        _t0 = _time.perf_counter()
         try:
             with _w.catch_warnings():
                 _w.simplefilter('ignore')
                 pp.solve(period=1.0 / finj, timestep=1.0 / finj / npts, x0=x0,
-                         maxiterations=200, x0_unknown=False)
+                         maxiterations=maxiterations, x0_unknown=False)
+            if timing is not None:
+                timing.append((float(r), _time.perf_counter() - _t0, True))
             lam, am = dom(pp), amp(cir, pp)
             locked = lam < 1.0 and am > 0.6 * A
             trace.append((float(r), am, lam, locked))
@@ -17024,6 +17039,8 @@ def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400):
             elif last is not None:
                 break
         except Exception:
+            if timing is not None:
+                timing.append((float(r), _time.perf_counter() - _t0, False))
             trace.append((float(r), np.nan, np.nan, False))
             if last is not None and r > last + 0.35:
                 break
