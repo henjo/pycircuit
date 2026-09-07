@@ -7204,6 +7204,45 @@ on the state. Two independent literatures on one formulation: a mild argument fo
 path staying in it, which the shipped replays already do. ⚠ **Load-bearing now, not decorative:**
 order is what bought the ~140× / ~1900× in A10's re-measurement, so a theorem about whose order
 survives index-2 is a theorem about cost.
+
+⚠⚠ **THE DIRK STAGE-ORDER CAP IS A CLASS THEOREM, FROM THE AUTHORS OF THE METHOD WE SHIP** (peer
+`docs-46`, first result of the corpus-by-object pass: Kennedy & Carpenter, NASA TM 2016-219173,
+*"Diagonally Implicit Runge–Kutta Methods for Ordinary Differential Equations. A Review"*, 162 pp,
+on disk, 4 read). Verbatim, p. 4:
+
+> *"Although DIRK-type methods may be constructed to be stiffly-accurate and L-stable, their
+> stage-order may not exceed two. This fundamentally limits their utility to settings requiring
+> only low to moderate error tolerances… If a stage-order of three or greater is desired, fully
+> implicit Runge-Kutta (FIRK) methods may be considered but are substantially more expensive to
+> implement. Hence, DIRK-type methods represent a line in sand that one crosses only when high
+> stage-order is worth the additional implementation cost or moving to FIRKs or multistage methods
+> with a multistep or multiderivative character."*
+
+**This closes the loop from Theorem 5.** Index-2 convergence is `min(p, q)`; `esdirk43` measures
+algebraic order 2.04 with `q = 2`; and **`q = 2` is the DIRK class maximum.** The measured 2.04 is
+the method *class* speaking, not the fixture:
+
+| class | stage order | solve per step | here |
+|---|---|---|---|
+| DIRK / ESDIRK | **`q ≤ 2`, hard cap** | sequential stages, one LU | `esdirk43` (KenCarp4) — at the ceiling |
+| FIRK | up to `s` | coupled `(sm)×(sm)` | Radau IIA(3), `q = 3` |
+| GLM / multistep-multiderivative | claimed high *with* diagonally implicit `A` | sequential | needs Wright 2003 |
+
+⚠ And Kennedy & Carpenter name the GLM class themselves as the third way out — *"multistage
+methods with a multistep or multiderivative character"* — so the reason the GLM claim is
+interesting is that it proposes escaping a barrier this review states as a hard cap. **Sourced from
+both sides, independently.**
+
+**Consequences, in this file's variables:** on an index-2 circuit `esdirk43` is capped at order 2
+regardless of its classical order 4, and that ceiling is structural — **do not go looking for a
+better ESDIRK.** To exceed 3 on index-2 the options are a larger FIRK (Radau IIA(5), `q = 5`, at
+`(5m)×(5m)`) or the GLM route; **there is no cheap DIRK answer**, now a theorem-backed statement
+rather than an absence of ideas. Design note that belongs next to the ESDIRK: *"with DIRK-type
+methods, one may impart algebraic stability to the method or stage-order two, but not both"* —
+KenCarp4's `q = 2` is bought at the price of algebraic stability. ⚠ The review carries tableaux,
+error estimators, dense output and stage-value predictors — its own complaint is that most
+published schemes omit exactly those; if anything on the ESDIRK path ever needs a reference, it is
+this document.
 ## Three flagged items from the literature sweep — 2026-09-07, none verified here
 
 ⚠ **All three are RELAYED, not measured in this tree.** Recorded so they are on record as known

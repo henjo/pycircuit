@@ -1289,6 +1289,17 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
             'consumed by _run_radau_adaptive.')
 
 
+## ⚠⚠ STAGE ORDER 2 IS THE DIRK CLASS CEILING, NOT THIS TABLEAU'S CHOICE.
+## Kennedy & Carpenter (NASA TM 2016-219173, the authors of KenCarp4), p.4:
+## "their stage-order may not exceed two ... If a stage-order of three or
+## greater is desired, fully implicit Runge-Kutta (FIRK) methods may be
+## considered".  With Voigtmann's Theorem 5 (index-2 convergence = min(p, q))
+## that makes this method's measured algebraic order 2.04 on an index-2 MNA
+## the CLASS maximum: classical order 4, index-2 order 2, structurally.  Do
+## not look for a better ESDIRK; the ways past 2 are a larger FIRK (Radau
+## IIA(5), q = 5) or a GLM.  And "one may impart algebraic stability to the
+## method or stage-order two, but not both" -- q = 2 here is bought at the
+## price of algebraic stability.  Recorded 2026-09-07 from the source on disk.
 class ESDIRK43Integrator(RungeKuttaIntegrator):
     """ESDIRK4(3)6L[2]SA -- Kennedy & Carpenter's 6-stage, order-4, L-stable,
     stiffly-accurate ESDIRK (the "KenCarp4" scheme), with its embedded order-3
