@@ -14993,10 +14993,20 @@ def test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance()
     the concern is real for a spectral-estimation simulator and STRUCTURALLY
     ABSENT here; the closed-form route buys that.
 
-    ⚠ SCOPE: measured at MODERATE Q (van der Pol, mu = 1).  At high Q the
-    bordered solve's conditioning degrades (`sigma_min` tracks `T/tau`), so `c`'s
-    uncertainty may grow there.  **Untested, and it is exactly the regime the
-    original concern named.**
+    ⚠⚠ SCOPE, AND IT WAS NARROWER THAN THIS TEST CLAIMED.  `mu = 1` is not
+    "moderate Q" -- van der Pol's amplitude relaxes at rate `mu`, so
+    `|lambda_2| = exp(-2 pi mu)` and `Q = 1/(2 mu)`: THIS FIXTURE IS Q ~ 0.5.
+    The high-Q measurement it deferred is now
+    `test_the_diffusion_constant_at_high_q_has_an_analytic_reference`, and it
+    changed the conclusion: the grid floor grows LINEARLY IN Q (1.8e-05 Q for
+    gear), so the concern was real -- but it is a METHOD problem, and `radau`
+    is six orders lower at the same grid.
+
+    ⚠ AND THE `3.0 < ratio < 5.0` BELOW IS A `mu = 1` STATEMENT, not a
+    property of `c`.  For every Q >= 5 the ratio is 8 (O(h^3)), because on an
+    autonomous problem the O(h^2) error is a FREQUENCY error and the solve
+    absorbs it into `T` -- measured there.  If this fixture's `mu` ever moves,
+    this assertion moves with it.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -15079,14 +15089,15 @@ def _b2_resonator():
 
 
 def _shooting_evaluations(method, K, T, **kw):
-    """Run the B2 resonator and return (peak, evaluation count, func, points).
+    """Run the B2 resonator; return (peak, n_evaluations, func, points, resid).
 
-    Counts calls to the SHOOTING residual, which is what a Newton iteration
-    costs here -- one traversal of the period plus one monodromy.
+    `resid` is the max-norm of the shooting residual at each evaluation, and it
+    is the quantity that carries the claim -- see the test below for why the
+    COUNT alone is not.
     """
     import warnings as _w
     import pycircuit.circuit.analysis as _an
-    pts, box, orig = [], {}, _an.fsolve
+    pts, resid, box, orig = [], [], {}, _an.fsolve
 
     def spy(f, x0, *a, **kwa):
         if 'PSS.solve' not in f.__qualname__:
@@ -15095,7 +15106,10 @@ def _shooting_evaluations(method, K, T, **kw):
 
         def logged(x, *aa):
             pts.append(np.array(x, float))
-            return f(x, *aa)
+            out = f(x, *aa)
+            F = out[0] if isinstance(out, tuple) else out
+            resid.append(float(np.max(np.abs(np.asarray(F, float)))))
+            return out
         logged.__qualname__ = f.__qualname__
         return orig(logged, x0, *a, **kwa)
 
@@ -15111,7 +15125,7 @@ def _shooting_evaluations(method, K, T, **kw):
         _an.fsolve = orig
     assert pss.converged, '%s at K=%d did not converge' % (method, K)
     peak = float(np.max(np.abs(np.asarray(res['tpss'].v('n2'), float).ravel())))
-    return peak, len(pts), box['f'], pts
+    return peak, len(pts), box['f'], pts, resid
 
 
 def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
@@ -15144,12 +15158,23 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     ITERATION COUNT.
 
     ⚠ THE GATE IS THAT A LINEAR CIRCUIT FORCES THE ANSWER.  `phi` is affine in
-    `x_0`, so an EXACT shooting Newton lands in one step, whatever the method,
-    whatever the grid.  Residual evaluations on this fixture:
+    `x_0`, so an EXACT shooting Newton lands in one step -- whatever the
+    method, whatever the grid.  The residual after ONE step, from a seed at
+    2.9:
 
-        trap,  x0_unknown=True       3 /  3 /  3    at K = 100 / 200 / 400
-        theta, before                9 / 64 / 99
-        theta, after                 3 /  3 /  3
+        trap,  x0_unknown=True    1e-12 .. 1e-11   (the control; always did)
+        theta, before             1.7e-02          and still 4e-07 after 64
+        theta, after              1.9e-14 .. 2e-11
+
+    ⚠⚠ AND THE FIRST VERSION OF THIS TEST ASSERTED ON THE EVALUATION COUNT,
+    WHICH IS A PROXY, AND IT BROKE ON A LAST-BIT CHANGE IN `T`.  The counts
+    really were 9/64/99 before and 3/3/3 after -- but 3 is not robust: once the
+    first step lands at 1.9e-14 the solver is bumping along the ROUNDOFF FLOOR
+    (1.9e-14 -> 3.6e-14 -> 5.3e-14 ...) and whether it stops at 3 evaluations
+    or 7 is decided by where the noise falls, not by the Jacobian.  Changing
+    `theta`'s bias by 0.05% flipped it.  **The contraction is the claim; the
+    count was a symptom.**  A loose count bound is kept only to catch the gross
+    case (64 and climbing).
 
     ⚠ AND `trap` WITH `x0_unknown=False` TAKES 7 / 6 / 77 HERE, so "many
     evaluations" is not by itself a theta symptom -- the manufactured-opening
@@ -15169,28 +15194,36 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     recorded = {100: 19.98407, 200: 20.01524, 400: 20.02255}
     counts = {}
     for K in (100, 200, 400):
-        peak, n_theta, f_theta, pts = _shooting_evaluations('theta', K, T)
+        peak, n_theta, f_theta, pts, rr = _shooting_evaluations('theta', K, T)
         assert abs(peak - recorded[K]) < 5e-5, \
             'theta at K=%d moved off the B2 record: %.5f vs %.5f. The seed ' \
             'fixes the JACOBIAN and must not touch the residual.' \
             % (K, peak, recorded[K])
-        _pk, n_trap, _f, _p = _shooting_evaluations('trap', K, T,
-                                                    x0_unknown=True)
+        _pk, n_trap, _f, _p, rt = _shooting_evaluations('trap', K, T,
+                                                        x0_unknown=True)
         counts[K] = (n_theta, n_trap)
-        ## (2) One Newton step on a linear circuit, and `trap` says what that
-        ## costs in this harness (a seed evaluation, the step, the check).
-        assert n_theta == n_trap, \
-            'theta took %d residual evaluations at K=%d where trap in the ' \
-            'SAME formulation took %d. On a linear circuit phi is affine, so ' \
-            'an exact Newton lands in one step -- a gap here is a Jacobian ' \
-            'claim, not a conditioning one.' % (n_theta, K, n_trap)
-        assert n_theta <= 4, \
-            'even trap needs %d evaluations at K=%d, so the harness is no ' \
-            'longer measuring a one-step Newton and the comparison above is ' \
-            'vacuous' % (n_theta, K)
+        ## (2) ⚠ THE CONTRACTION, NOT THE COUNT -- see the docstring.  One
+        ## Newton step on an affine residual must take it to roundoff, and
+        ## `trap` in the SAME formulation says what roundoff looks like here.
+        drop_t = rr[1] / rr[0]
+        drop_r = rt[1] / rt[0]
+        assert drop_t < 1e-11, \
+            'theta at K=%d: one Newton step cut the residual by only %.3e ' \
+            '(2.9 -> %.3e). On a linear circuit phi is AFFINE, so an exact ' \
+            'Jacobian must reach roundoff in one step; it was 5.9e-03 with ' \
+            'd(iq_0)/d(x_0) dropped.' % (K, drop_t, rr[1])
+        assert drop_r < 1e-11, \
+            'the CONTROL failed: trap dropped only %.3e at K=%d, so this ' \
+            'harness is not measuring a one-step Newton and the theta ' \
+            'assertion above is vacuous' % (drop_r, K)
+        assert n_theta <= 12, \
+            'theta took %d evaluations at K=%d against trap\'s %d -- the ' \
+            'count is only a coarse guard (it was 64 and climbing with the ' \
+            'seed dropped), but 12 is far past bumping along roundoff' \
+            % (n_theta, K, n_trap)
 
     ## (3) THE JACOBIAN ITSELF, delta-swept against an FD of its own residual.
-    _pk, _n, func, pts = _shooting_evaluations('theta', 200, T)
+    _pk, _n, func, pts, _rr = _shooting_evaluations('theta', 200, T)
     for label, x in (('the seed', pts[0]), ('the solution', pts[-1])):
         x = np.asarray(x, float)
         F0, J = func(x.copy())
@@ -15217,13 +15250,13 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     ## (4) AND THE MODE THAT WAS LOST IS THE ONE THE METHOD EXISTS FOR.  With
     ## the seed dropped, `I - M` carries 1 on `null(C)` -- the signature of an
     ## L-stable opener -- instead of `1 - (-(1-theta)/theta)^K = 1.7778`.
-    _pk, _n, func_t, pts_t = _shooting_evaluations('theta', 200, T)
+    _pk, _n, func_t, pts_t, _rr = _shooting_evaluations('theta', 200, T)
     _F, J_ok = func_t(np.asarray(pts_t[-1], float))
     saved = _PSS._pq_seed_at_x0
     try:
         _PSS._pq_seed_at_x0 = lambda self, x: None
-        peak_n, n_neutered, func_n, pts_n = _shooting_evaluations('theta',
-                                                                  200, T)
+        (peak_n, n_neutered, func_n, pts_n,
+         rr_n) = _shooting_evaluations('theta', 200, T)
         _F, J_bad = func_n(np.asarray(pts_n[-1], float))
     finally:
         _PSS._pq_seed_at_x0 = saved
@@ -15235,11 +15268,14 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
         'the null(C) multiplier %.4f on the diagonal, and differs by %.4f -- ' \
         'so this test is no longer pinning the mechanism it names' \
         % (mode, dropped)
+    assert rr_n[1] / rr_n[0] > 1e-4, \
+        'NEUTER CHECK: with d(iq_0)/d(x_0) dropped, one Newton step should ' \
+        'cut the residual by only ~6e-03 and it cut it by %.3e -- if the ' \
+        'defect no longer destroys the contraction then this test has ' \
+        'stopped guarding anything' % (rr_n[1] / rr_n[0])
     assert n_neutered > 4 * counts[200][1], \
-        'NEUTER CHECK: with d(iq_0)/d(x_0) dropped the solve took %d ' \
-        'evaluations, not the 64 on record -- if the defect no longer costs ' \
-        'iterations then this test has stopped guarding anything' \
-        % n_neutered
+        'and it should still COST iterations (64 on record, %d here against ' \
+        "trap's %d)" % (n_neutered, counts[200][1])
     assert abs(peak_n - recorded[200]) < 5e-5, \
         'and the neutered run must still reach the SAME peak (%.5f vs %.5f) ' \
         '-- the point of the whole test is that the answer was never wrong' \
@@ -15302,3 +15338,362 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
         'theta: the forced replay is not `M y0 + w` (%.3e). The seed must be ' \
         'in BOTH or PAC superposes a driven response onto a different map.' \
         % worst
+
+
+@pytest.mark.slow
+def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
+    """The floor AT HIGH Q -- the regime the original concern actually named.
+
+    The sibling test above measures at van der Pol `mu = 1` and records high Q
+    as UNTESTED.  This is that measurement, and it changes three things.
+
+    ⚠⚠ FIRST, `mu = 1` IS NOT MODERATE Q -- IT IS Q ~ 0.5.  van der Pol's
+    amplitude obeys `A' = (mu/2)(A - A^3/4)`, so linearising at `A = 2` gives a
+    relaxation rate `mu` and
+
+        |lambda_2| = exp(-mu T) ~ exp(-2 pi mu),   Q = pi / (-ln|lambda_2|)
+                                                     = 1 / (2 mu).
+
+    THAT PREDICTION IS CHECKED HERE BEFORE ANYTHING RESTS ON IT, because a
+    "high Q" fixture that is not high Q would make everything below vacuous.
+    Measured `|lambda_2|` against `exp(-2 pi mu)`: 0.533079/0.533488 at
+    mu = 0.1, 0.881910/0.881911 at 0.02, 0.969074/0.969072 at 0.005 -- exact
+    where the small-mu theory holds, and visibly WRONG at mu = 1
+    (0.000859 against a predicted 0.001867), which is the right behaviour for
+    an asymptotic prediction and is why mu = 1 cannot be read as high Q.
+    So `mu = 0.005` is **Q = 100**.
+
+    ⚠⚠ SECOND, AT HIGH Q THERE IS AN ANALYTIC ANSWER, so this stops being a
+    self-comparison.  As `mu -> 0` the circuit is a harmonic oscillator with
+    `x = 2 cos t`.  With `v = A cos(theta)` and `w = v' = -A sin(theta)`,
+    `theta = atan2(-w, v)`, so a perturbation of `v` alone moves the phase by
+    `dtheta/dv = w/A^2 = -sin(theta)/A`.  The PPV's v-component is therefore
+    `v1 = -sin(t)/2`, and for a white current source of density `psd` into a
+    1 F capacitor::
+
+        c = <v1^2> psd     = psd/8      [two-sided CY]
+                           = psd/16     [this stack's CY/2 convention]
+                           = 6.25e-08   at psd = 1e-6.
+
+    ⚠ The 1/16 rather than 1/8 IS the `CY/2` convention `diffusion_constant`
+    records, so this doubles as a pin on it.
+
+    **And the approach is O(mu^2), which is what makes the limit usable as a
+    reference rather than a hope.** Measured excess over `psd/16`, radau at 480
+    points::
+
+        mu       c                excess      excess/mu^2
+        0.04     6.253436656e-08   5.4986e-04   0.34366
+        0.02     6.250859322e-08   1.3749e-04   0.34373
+        0.01     6.250214841e-08   3.4374e-05   0.34374
+        0.005    6.250053711e-08   8.5937e-06   0.343748
+
+    A clean power law -- the ratio is 4.00 for every halving -- converging on
+    `11/32 = 0.34375`.  So at Q = 100 the PHYSICS is known to five digits and
+    any deviation beyond it is NUMERICS.  That separation is the whole point.
+
+    ⚠⚠ THIRD, AND THE ACTIONABLE PART: THE CONCERN DOES MATERIALISE -- THE
+    FLOOR GROWS LINEARLY IN Q -- AND IT IS A METHOD PROBLEM, NOT A GRID OR
+    TOLERANCE ONE.  Grid uncertainty in `c` at 240 points per period
+    (240-against-960), and what it is worth on a reported phase noise::
+
+        Q      gear        trap        radau       gear in dB
+         100   1.79e-03    1.49e-06    6.97e-10    0.0078
+         500   9.02e-03    1.04e-04    3.48e-09    0.0392
+        1000   1.82e-02    2.36e-04    6.97e-09    0.0791
+
+    **`gear` and `radau` both scale LINEARLY IN Q** (ratios 5.04/2.02 and
+    5.00/2.00 against Q ratios 5 and 2) -- so `c`'s uncertainty is
+    `~1.8e-05 Q` for gear and `~7.0e-12 Q` for radau, SIX ORDERS apart.  `trap`
+    does not fit a clean law here because its error changes sign near Q = 100,
+    which is recorded rather than fitted.
+
+    So at Q = 1000 the shipped `gear` costs 0.08 dB and by Q = 10000 it would
+    cost roughly 0.7 dB -- the concern was real -- while `radau` is at 7e-08
+    there, i.e. nothing.  **REFINING THE GRID IS THE EXPENSIVE ANSWER AND
+    CHANGING METHOD IS THE FREE ONE.**  `reltol` remains no answer at all: 1e-8
+    to 1e-14 moves `c` by 1.3e-12 at Q = 100, the same non-answer as at mu = 1.
+
+    ⚠⚠ AND THE SIBLING TEST'S `3.0 < ratio < 5.0` IS Q-SPECIFIC, WHICH NOTHING
+    SAID.  `gear` converges at O(h^2) at mu = 1 and at **O(h^3)** for every
+    Q >= 5 (ratio 8.01 at the finest grids, over five doublings).  A 2nd-order
+    method giving 3rd-order answers wants a mechanism, and the one measured
+    here is that ON AN AUTONOMOUS PROBLEM THE PERIOD IS AN UNKNOWN: at Q = 100
+    the solved PERIOD converges at order **2.00** while the waveform and `c`
+    converge at **3.01**.  The O(h^2) term is a FREQUENCY error, and the
+    autonomous solve absorbs it into `T` instead of leaving it in the state.
+    At mu = 1 the orbit is far from harmonic, the h^2 error has a genuine
+    waveform component, and `c` is order 2 again.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    psd = 1e-6
+    T0 = 2.0 * np.pi
+    analytic = psd / 16.0
+
+    def vdp(mu):
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u, _m=mu: _m * (u - u ** 3 / 3.0))
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+        return c
+
+    def run(mu, npts, method='gear', reltol=1e-12):
+        cir = vdp(mu)
+        p = PSS(cir, method=method, reltol=reltol)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = p.solve(period=T0, timestep=T0 / npts,
+                          x0=np.array([2.0, 0.0]), maxiterations=80)
+        assert p.converged, '%s mu=%g npts=%d did not converge' % (method, mu, npts)
+        cval = float(PAC(cir, toolkit=circuit.numeric).diffusion_constant(p))
+        per = float(np.asarray(res['period']).ravel()[0]) if 'period' in res \
+            else float(getattr(p, 'period', np.nan))
+        return cval, per, p
+
+    ## (1) ⚠ THE FIXTURE IS HIGH Q, CHECKED AND NOT ASSUMED.  Without this the
+    ## rest is a measurement of some other regime.
+    c_g = {}
+    per_g = {}
+    for n in (120, 240, 480, 960):
+        c_g[n], per_g[n], p_last = run(0.005, n)
+    fp = p_last.factored_period()
+    lam = np.sort(np.abs(np.linalg.eigvals(np.column_stack(
+        [np.asarray(fp.matvec(e), float).ravel()
+         for e in np.eye(fp.width)]))))[::-1]
+    l2 = float(lam[1])
+    pred = float(np.exp(-2.0 * np.pi * 0.005))
+    assert abs(l2 - pred) < 1e-4, \
+        'the Q knob is not doing what this test claims: |lambda_2| = %.6f ' \
+        'against the predicted exp(-2 pi mu) = %.6f' % (l2, pred)
+    Q = float(np.pi / (-np.log(l2)))
+    assert Q > 90.0, 'Q = %.1f is not the high-Q regime this test is about' % Q
+
+    ## (2) THE ANALYTIC LIMIT, and the mu^2 law that makes it usable.  radau,
+    ## whose own grid error here is six orders below the physics.
+    exc = {}
+    for mu in (0.02, 0.01, 0.005):
+        cv, _per, _p = run(mu, 480, 'radau')
+        exc[mu] = (cv - analytic) / analytic
+        assert exc[mu] > 0, \
+            'mu=%g: c sits BELOW the harmonic limit (%.4e), which the ' \
+            'amplitude correction cannot do' % (mu, exc[mu])
+    for a, b in ((0.02, 0.01), (0.01, 0.005)):
+        r = exc[a] / exc[b]
+        assert abs(r - 4.0) < 0.05, \
+            'the excess over psd/16 should fall 4x per halving of mu (an ' \
+            'O(mu^2) amplitude correction); mu %g -> %g gave %.3f. If this ' \
+            'is not 4 the analytic reference is wrong and every number ' \
+            'below rests on nothing.' % (a, b, r)
+    k = exc[0.005] / 0.005 ** 2
+    assert abs(k - 0.34375) < 2e-3, \
+        'the measured coefficient is %.5f, not the 11/32 on record -- the ' \
+        'limit or the convention has moved' % k
+
+    ## (3) THE SEPARATION THE ANALYTIC LIMIT BUYS: how much of each method's
+    ## deviation is PHYSICS (the mu^2 term) and how much is GRID.
+    phys = k * 0.005 ** 2
+    c_radau, _p, _o = run(0.005, 240, 'radau')
+    dev_radau = abs((c_radau - analytic) / analytic - phys) / phys
+    dev_gear = abs((c_g[240] - analytic) / analytic - phys) / phys
+    assert dev_radau < 1e-3, \
+        "radau's deviation from the analytic limit should be the physical " \
+        'mu^2 term and nothing else; it is off by %.3e of it' % dev_radau
+    assert dev_gear > 100.0, \
+        "gear's 240-point deviation should be dominated by the GRID (it is " \
+        '%.1f times the physical term). If it is not, this fixture no longer ' \
+        'separates the two and (4) below is vacuous.' % dev_gear
+
+    ## (4) THE FLOOR ITSELF -- still negligible at Q = 100, and BOUNDED so a
+    ## regression would show.  ~1.8e-3 relative is ~0.008 dB.
+    floor = abs(c_g[240] - c_g[960]) / abs(c_g[960])
+    assert 1e-4 < floor < 5e-3, \
+        "gear's 240-point grid uncertainty at Q = 100 is %.3e; the record " \
+        'says 1.8e-03 (about 0.008 dB)' % floor
+    spread = dev_gear / max(dev_radau, 1e-30)
+    assert spread > 1e4, \
+        'the whole high-Q finding is that the METHOD dominates: radau should ' \
+        'beat gear by orders here, and the ratio is only %.3g' % spread
+
+    ## (5) `reltol` IS STILL THE WRONG DIAL, checked in the regime the concern
+    ## named rather than only where it was convenient.
+    ct = [run(0.005, 240, 'gear', rt)[0] for rt in (1e-8, 1e-14)]
+    assert abs(ct[0] - ct[1]) / abs(ct[0]) < 1e-9, \
+        'reltol moved c by %.3e at Q = 100 -- if tolerance ever becomes the ' \
+        'limit, the "refine the grid" advice changes' % (
+            abs(ct[0] - ct[1]) / abs(ct[0]))
+
+    ## (6a) ⚠ THE FLOOR GROWS LINEARLY IN Q, AND THE METHOD SETS THE RATE.
+    ## This is the part that says the original concern was real -- and that
+    ## the answer is `radau`, not a finer grid.
+    hi = {}
+    for meth in ('gear', 'radau'):
+        a, _p, _o = run(0.0005, 240, meth)     # Q = 1000
+        b, _p, _o = run(0.0005, 960, meth)
+        hi[meth] = abs(a - b) / abs(b)
+    lo_gear = floor                            # Q = 100, from (4)
+    c_r240, _p, _o = run(0.005, 240, 'radau')
+    c_r960, _p, _o = run(0.005, 960, 'radau')
+    lo_radau = abs(c_r240 - c_r960) / abs(c_r960)
+    for meth, lo in (('gear', lo_gear), ('radau', lo_radau)):
+        r = hi[meth] / lo
+        assert 8.0 < r < 12.0, \
+            '%s: the grid floor should grow LINEARLY in Q (10x from Q=100 to ' \
+            'Q=1000) and grew %.2fx. The recorded rates are ~1.8e-05 Q for ' \
+            'gear and ~7.0e-12 Q for radau.' % (meth, r)
+    assert hi['gear'] / hi['radau'] > 1e5, \
+        'the actionable finding is that the METHOD sets the rate: at Q = 1000 ' \
+        'gear should be ~6 orders worse than radau and is only %.3g times' \
+        % (hi['gear'] / hi['radau'])
+    assert hi['gear'] * 4.3429 < 0.5, \
+        'gear at Q = 1000 and 240 points is worth %.4f dB; the record says ' \
+        '0.079 dB' % (hi['gear'] * 4.3429)
+
+    ## (6b) ⚠ THE ORDER, AND ITS MECHANISM.  `c` is O(h^3) here where the
+    ## sibling test asserts O(h^2) at mu = 1 -- because the O(h^2) term is a
+    ## FREQUENCY error and an autonomous solve absorbs it into `T`.
+    def order(v):
+        d = [abs(v[i + 1] - v[i]) for i in range(len(v) - 1)]
+        return [float(np.log2(d[i] / d[i + 1])) for i in range(len(d) - 1)]
+    oc = order([c_g[n] for n in (120, 240, 480, 960)])
+    oT = order([per_g[n] for n in (120, 240, 480, 960)])
+    assert 2.8 < oc[-1] < 3.3, \
+        'c converges at order %.2f at Q = 100; the record says 3.01, and the ' \
+        "sibling test's 3.0 < ratio < 5.0 is a mu = 1 statement" % oc[-1]
+    assert 1.8 < oT[-1] < 2.2, \
+        'the solved PERIOD converges at order %.2f, not the 2.00 that makes ' \
+        'the absorption story work' % oT[-1]
+    assert oc[-1] - oT[-1] > 0.7, \
+        'the mechanism IS the gap: the state gains an order (%.2f) over the ' \
+        'period (%.2f) because the h^2 error is a frequency error the ' \
+        'autonomous solve takes up. No gap, no explanation.' % (oc[-1], oT[-1])
+
+
+def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
+    """`DEFAULT_C = 1e4` was a FIXTURE CONSTANT, and no caller could override it.
+
+    ⚠⚠ THE DIAL IS `C T`, NOT `C`, AND THAT IS ARITHMETIC.  `theta = 1/2 + C h`
+    damps `null(C)` per step by `-(1-theta)/theta`, so over a period of `K`
+    steps by `((1-theta)/theta)^K ~ exp(-4 C h K) = exp(-4 C T)`.  **`h`
+    cancels.**  What a period delivers depends on the PRODUCT alone -- not on
+    `C`, and not on the step count.  The B2 gate located its knee
+    (`rcond(I - A^K)` saturating) at `C = 1e4` on a fixture with
+    `T = 2 pi x 1e-6`, so the transferable number is `C T = 0.0628`; storing it
+    as a RATE baked in that one period.
+
+    ⚠⚠ AND THE FAILURE IT CAUSED IS THE SILENT KIND.  `_q20_rlc` has
+    `T = 1e-3`, 159x the gate's, so the same `C` gives `C T = 10` and
+    `theta = 0.6` at K = 100.  Against the 20 V analytic peak::
+
+        K     trap       C=1e4 (CT=10)   C=1e3 (CT=1)   C=62.8 (CT=0.0628)
+        100   19.98967   15.91117        19.49008       19.95755
+        200   19.99811   18.80471        19.87200       19.99015
+        400   19.99957   19.68875        19.96805       19.99759
+
+    **20% low at K = 100 and `converged=True`** -- because it DID converge, to
+    its own over-damped discretisation.  That is the third-level failure
+    `test_pss_reports_the_truncation_error_neither_newton_can_see` is named
+    for, and no Newton criterion can see it.
+
+    ⚠ A SECOND, RELATED GAP: `_integrator_for` builds `table[method]()`, so
+    `cbias` was unreachable through `PSS` entirely.  A caller who hit the above
+    had no knob at all.  `theta_ct` is that knob, and it is the DIMENSIONLESS
+    one, so it transfers.
+
+    ⚠ THE SEED PERIOD IS ENOUGH FOR AN AUTONOMOUS RUN, and that is measured
+    rather than hoped: the gate's own table has `rcond` at 4.4e-03 / 4.6e-03 /
+    4.3e-03 across `C T` = 0.0063 / 0.0628 / 0.628 -- FLAT over two decades, so
+    a period that moves a few percent moves nothing that matters.
+    """
+    import warnings as _w
+    from pycircuit.circuit.integrator import ThetaIntegrator
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) THE ARITHMETIC FIRST: at fixed `C T` the per-period damping is the
+    ## same however many steps carry it.  If this fails, `theta_ct` is not the
+    ## right knob and nothing below matters.
+    ct = 0.0628
+    for T in (1e-3, 6.2832e-6):
+        damp = []
+        for K in (50, 400, 3200):
+            h = T / K
+            th = ThetaIntegrator(ct=ct, period=T).theta_at(h)
+            damp.append(((1.0 - th) / th) ** K)
+        assert max(damp) - min(damp) < 1e-3 * max(damp), \
+            'the per-period damping is supposed to be a function of C*T ' \
+            'alone, and over K = 50/400/3200 it moved: %r' % damp
+        assert abs(damp[-1] - np.exp(-4.0 * ct)) < 5e-3, \
+            'and it should be exp(-4 C T) = %.6f, not %.6f' \
+            % (np.exp(-4.0 * ct), damp[-1])
+
+    ## (2) THE CONSTRUCTOR: two spellings of one quantity, and it refuses to
+    ## guess which was meant.
+    assert ThetaIntegrator().cbias == ThetaIntegrator.DEFAULT_C
+    assert abs(ThetaIntegrator(period=1e-3).cbias
+               - ThetaIntegrator.DEFAULT_CT / 1e-3) < 1e-12
+    assert abs(ThetaIntegrator(ct=0.5, period=1e-3).cbias - 500.0) < 1e-9
+    with pytest.raises(ValueError, match='DIMENSIONLESS'):
+        ThetaIntegrator(ct=0.5)
+    with pytest.raises(ValueError, match='not both'):
+        ThetaIntegrator(cbias=1e4, period=1e-3)
+    with pytest.raises(ValueError, match='period must be'):
+        ThetaIntegrator(period=0.0)
+
+    def peak(cir, node, T, K, **kw):
+        p = PSS(cir, method='theta', reltol=1e-3, **kw)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = p.solve(period=T, timestep=T / K, maxiterations=200)
+        assert p.converged
+        return float(np.max(np.abs(
+            np.asarray(res['tpss'].v(node), float).ravel()))), p
+
+    ## (3) THE DEFECT, ON THE FIXTURE THAT SHOWS IT.  `_q20_rlc` is the suite's
+    ## own Q = 20 resonator and its analytic peak is 20 V.
+    for K, want in ((100, 19.95755), (200, 19.99015), (400, 19.99759)):
+        pk, p = peak(_q20_rlc(), 'c', 1e-3, K)
+        assert abs(pk - want) < 5e-5, \
+            'theta on _q20_rlc at K=%d gives %.5f, not the %.5f a ' \
+            'period-normalised bias earns (it was %.2f with the rate)' \
+            % (K, pk, want, {100: 15.91, 200: 18.80, 400: 19.69}[K])
+        assert abs(pk - 20.0) / 20.0 < 3e-3, \
+            'and it must now track the 20 V analytic peak: %.5f' % pk
+        assert abs(p._transient().par.integrator.cbias
+                   - ThetaIntegrator.DEFAULT_CT / 1e-3) < 1e-9
+
+    ## (4) AND IT IS A NO-OP WHERE THE KNEE WAS MEASURED -- the B2 record, to
+    ## the digit.  A fix that moved the calibrated case would be a new bias,
+    ## not a normalisation of the old one.
+    _cir, Tg = _b2_resonator()
+    for K, want in ((100, 19.98407), (200, 20.01524), (400, 20.02255)):
+        pk, _p = peak(_b2_resonator()[0], 'n2', Tg, K)
+        assert abs(pk - want) < 5e-5, \
+            'the B2 gate fixture moved: %.5f vs the recorded %.5f' % (pk, want)
+
+    ## (5) THE KNOB IS LIVE, and it costs what the gate said it costs.
+    got = {}
+    for c in (0.0628, 0.628, 6.28):
+        got[c], p = peak(_q20_rlc(), 'c', 1e-3, 200, theta_ct=c)
+        assert abs(p._transient().par.integrator.cbias - c / 1e-3) < 1e-6, \
+            'theta_ct=%g did not reach the integrator' % c
+    assert got[0.0628] > got[0.628] > got[6.28], \
+        'more bias must cost amplitude monotonically, got %r' % got
+    assert got[0.0628] - got[6.28] > 0.5, \
+        'the knob moved the peak by only %.4f V -- a knob that changes ' \
+        'nothing measurable is not a knob' % (got[0.0628] - got[6.28])
+
+    ## (6) NEUTER CHECK: with the normalisation removed the old defect comes
+    ## straight back, so this test is verified to fail rather than assumed to.
+    saved = PSS._theta_biased
+    try:
+        PSS._theta_biased = lambda self, integ: integ
+        pk_bad, _p = peak(_q20_rlc(), 'c', 1e-3, 100)
+    finally:
+        PSS._theta_biased = saved
+    assert abs(pk_bad - 15.91117) < 5e-5, \
+        'with `_theta_biased` neutered the K=100 peak should be the recorded ' \
+        '15.91117 (20%% low), and it is %.5f -- if the defect no longer ' \
+        'reproduces, this test guards nothing' % pk_bad

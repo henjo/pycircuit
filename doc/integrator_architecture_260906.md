@@ -581,6 +581,18 @@ opener would reintroduce B16's floor and leave the class with no purpose.
 ⚠ **Plumbing gate:** at `C = 0` theta reproduces trapezoidal coefficient-for-coefficient, and with
 a forced Euler opener matches trap's RC errors to every digit (4.046e-06 / 1.201e-06 / 3.251e-07).
 
+✅✅ **`DEFAULT_C = 1e4` WAS A FIXTURE CONSTANT — FIXED 2026-09-07.** `theta − 1/2 = C h` makes `C` a
+rate, but the quantity that decides anything is the DIMENSIONLESS `C·T`: `null(C)` is damped over a
+period by `((1−θ)/θ)^K ≈ exp(−4 C h K) = exp(−4 C T)`, and **`h` cancels**. The B2 gate's knee was
+`C·T = 0.0628` measured on a fixture with `T = 2π×10⁻⁶`; storing it as `C = 1e4` baked in that one
+period. On `_q20_rlc` (`T = 1e-3`, 159x) the same rate gives `θ = 0.6` at K=100 and a peak of
+**15.91 V against 20 V analytic, with `converged=True`** — it did converge, to its own over-damped
+discretisation. `ThetaIntegrator` now carries `DEFAULT_CT` and a `ct` + `period` constructor;
+`PSS` carries a `theta_ct` Parameter and applies it at one choke point (`_new_transient` →
+`_theta_biased`), which also makes the knob reachable — `_integrator_for` builds `table[method]()`,
+so `cbias` was previously unsettable from a shooting run at all. `_q20_rlc` now gives
+19.95755 / 19.99015 / 19.99759, and the B2 gate fixture reproduces its record to the digit.
+
 ✅ **CLOSED 2026-09-07 — it was a MISSING CHAIN RULE in the SHOOTING JACOBIAN, not the method.**
 Re-measured on the B2 gate resonator, `theta` took 9 / 64 / 99 residual evaluations at
 K = 100 / 200 / 400 where `trap` in the SAME formulation (`x0_unknown=True`) took 3 / 3 / 3.

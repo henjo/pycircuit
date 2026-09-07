@@ -522,14 +522,70 @@ class ThetaIntegrator(TrapezoidalIntegrator):
 
     ORDER = 2
 
-    ## On the measured knee: conditioning has saturated and the amplitude has
-    ## not yet begun to pay (0.07% of the peak).  A rate in 1/s, since
-    ## `theta - 1/2 = C h`.
+    ## ⚠⚠ THE DIAL IS `C T`, NOT `C`, AND THAT IS ARITHMETIC RATHER THAN
+    ## TASTE.  `null(C)` is damped per STEP by `-(1-theta)/theta`, so over a
+    ## period of `K` steps by
+    ##
+    ##     ((1-theta)/theta)^K = (1 - 4 C h + O((C h)^2))^K ~ exp(-4 C h K)
+    ##                          = exp(-4 C T),
+    ##
+    ## because `h K = T`.  **`h` CANCELS.**  What a period delivers depends on
+    ## the PRODUCT `C T` alone -- not on `C`, and not on the step count.  The
+    ## knee in the table above is `rcond(I - A^K)` saturating, i.e. a statement
+    ## about that product, and the fixture it was measured on has
+    ## `T = 2 pi x 1e-6 s`, so the knee actually located is
+    ##
+    ##     C T = 1e4 * 6.2832e-6 = 0.0628.
+    ##
+    ## THAT is the transferable number, and it is what `PSS` uses (see
+    ## `PSS._theta_biased` and the `theta_ct` parameter).
+    DEFAULT_CT = 0.0628
+
+    ## ⚠ AND THIS ONE IS THE SAME KNEE EXPRESSED AS A RATE FOR THAT ONE
+    ## PERIOD, so it is right ONLY for a circuit whose period is ~6.3 us.  It
+    ## survives as the fallback for a caller that supplies no time scale --
+    ## a standalone `Transient(cir, integrator=ThetaIntegrator())`, which has
+    ## a `tend` but no period.  MEASURED on `_q20_rlc` (T = 1e-3, i.e. 159x
+    ## the gate's, so `C T = 10`), analytic peak 20 V::
+    ##
+    ##     K     trap       C=1e4 (CT=10)   C=1e3 (CT=1)   C=62.8 (CT=0.0628)
+    ##     100   19.98967   15.91117        19.49008       19.95755
+    ##     200   19.99811   18.80471        19.87200       19.99015
+    ##     400   19.99957   19.68875        19.96805       19.99759
+    ##
+    ## At the calibrated `C T` theta tracks trapezoidal to 0.04%; at this rate
+    ## on a 1 kHz circuit it is 20% low AND REPORTS CONVERGED, because it did
+    ## converge -- to its own over-damped discretisation.  Anything that knows
+    ## a period should pass one.
     DEFAULT_C = 1e4
 
-    def __init__(self, cbias=None):
+    def __init__(self, cbias=None, ct=None, period=None):
+        """`cbias` is a RATE; `ct` + `period` is the dimensionless bias.
+
+        The two spellings set the same quantity (`cbias = ct / period`), so
+        giving both is refused rather than silently resolved -- a caller who
+        passes both does not agree with itself about which one is meant.
+        """
         super().__init__()
-        self.cbias = float(self.DEFAULT_C if cbias is None else cbias)
+        if period is None:
+            if ct is not None:
+                raise ValueError(
+                    'ThetaIntegrator: `ct` is DIMENSIONLESS -- it is the bias '
+                    'a whole PERIOD carries, `C T` -- so it means nothing '
+                    'without `period`. Pass period=, or pass cbias= if a rate '
+                    'in 1/s is really what you have.')
+            self.cbias = float(self.DEFAULT_C if cbias is None else cbias)
+        else:
+            if cbias is not None:
+                raise ValueError(
+                    'ThetaIntegrator: `cbias` (a rate) and `ct` + `period` '
+                    '(the same bias, dimensionless) set ONE quantity two '
+                    'ways; pass one of them, not both.')
+            T = float(period)
+            if not T > 0.0:
+                raise ValueError(
+                    'ThetaIntegrator: period must be > 0, got %r' % (period,))
+            self.cbias = float(self.DEFAULT_CT if ct is None else ct) / T
 
     def theta_at(self, h):
         """``theta = 1/2 + C h``, capped at 1.

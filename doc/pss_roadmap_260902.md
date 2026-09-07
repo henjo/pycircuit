@@ -6387,14 +6387,13 @@ neuter: 9 evaluations at K=100 against trap's 3), and `theta` added to
    At the calibrated `C T` theta tracks trap to 0.04%; at the shipped default on a 1 kHz circuit it
    is **20% low at K = 100 and silently converged**. The knee is real; the number carrying it is
    not dimensionless. A period-normalised default (`C = 0.0628 / T`) would transfer — but the
-   integrator does not see `T`, only `h`, so this is a plumbing change, and it moves every recorded
-   theta number. **Not taken here: it needs its own gate (high Q, nonlinear) rather than a
-   one-liner.**
+   integrator does not see `T`, only `h`, so this is a plumbing change. **TAKEN — see the note
+   above.** `PSS` supplies the period; a standalone `Transient` still has none, so `DEFAULT_C`
+   survives as the fallback there, documented as the fixture constant it is.
 
-2. **`cbias` IS UNREACHABLE THROUGH `PSS`.** `_integrator_for` builds `table[method]()`, so
-   `method='theta'` always takes `DEFAULT_C`. A standalone `Transient(cir,
-   integrator=ThetaIntegrator(cbias=...))` can set it; a shooting run cannot. Given (1), that is
-   the knob a user would most need.
+2. **`cbias` WAS UNREACHABLE THROUGH `PSS`.** `_integrator_for` builds `table[method]()`, so
+   `method='theta'` always took `DEFAULT_C`. **Fixed by the same change**: `PSS(cir,
+   method='theta', theta_ct=...)` sets the DIMENSIONLESS bias — the one that transfers.
 
 ⚠ **The plumbing gate that makes the rest trustworthy:** at `C = 0` theta reproduces trapezoidal
 coefficient for coefficient, and with a forced Euler opener it matches trap's RC errors to every
@@ -6896,12 +6895,69 @@ on a reported phase noise.
 concrete thing the closed-form route buys, and the reason the three literatures converging on this
 (Denk's error bound, Biggio's floor, Sickenberger's strong order) do not indict this stack.
 
-⚠⚠ **SCOPE, AND IT IS THE REGIME THE CONCERN NAMED.** Measured at MODERATE Q (van der Pol, μ=1).
-At high Q the bordered solve's conditioning degrades (`σ_min` tracks `T/τ`), so `c`'s uncertainty
-may grow. ⚠ **The sweep itself surfaced `PSS.ppv`'s own warning — "a SECOND Floquet multiplier sits
-at 0.999997"** — i.e. the near-degenerate condition appeared inside this fixture, and the O(h²)
-convergence above held anyway. That is suggestive, not a high-Q measurement: **untested.**
 Test: `test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance`.
+
+### AT HIGH Q — measured 2026-09-07, and it changes the conclusion
+
+⚠⚠ **FIRST, μ=1 IS NOT "MODERATE Q" — IT IS Q ≈ 0.5.** van der Pol's amplitude relaxes at rate `μ`,
+so `|λ₂| = exp(−2πμ)` and **`Q = 1/(2μ)`**. That prediction was written down before measuring and
+holds exactly where its own assumption does — 0.533079 against 0.533488 at μ=0.1, 0.881910 against
+0.881911 at 0.02, 0.969074 against 0.969072 at 0.005 — and fails visibly at μ=1 (0.000859 against
+0.001867), which is why μ=1 cannot be read as high Q at all. So the recorded measurement covered
+`Q ≈ 0.5` and the concern's regime began three decades away.
+
+✅✅ **SECOND, AT HIGH Q THERE IS AN ANALYTIC ANSWER, so this stops being a self-comparison.** As
+μ→0 the circuit is a harmonic oscillator with `x = 2 cos t`; with `θ = atan2(−v', v)` a perturbation
+of `v` alone moves the phase by `∂θ/∂v = −sin θ/A`, so the PPV's v-component is `v₁ = −sin(t)/2` and
+
+    c = ⟨v₁²⟩ psd = psd/8 [two-sided CY] = **psd/16** [this stack's CY/2] = 6.25e-08 at psd=1e-6.
+
+⚠ The 1/16 rather than 1/8 **is** the `CY/2` convention `diffusion_constant` records, so the limit
+doubles as a pin on it. And the approach is `O(μ²)`, which is what makes the limit usable:
+
+| μ | c (radau, 480 pts) | excess over psd/16 | excess/μ² |
+|---|---|---|---|
+| 0.04 | 6.253436656e-08 | 5.4986e-04 | 0.34366 |
+| 0.02 | 6.250859322e-08 | 1.3749e-04 | 0.34373 |
+| 0.01 | 6.250214841e-08 | 3.4374e-05 | 0.34374 |
+| 0.005 | 6.250053711e-08 | 8.5937e-06 | 0.343748 |
+
+Ratio 4.00 for every halving, converging on **`11/32 = 0.34375`**. So at high Q the PHYSICS is known
+to five digits and anything beyond it is NUMERICS — a separation the μ=1 measurement could not make.
+
+⚠⚠ **THIRD, AND THE ANSWER TO THE ORIGINAL CONCERN: THE FLOOR DOES GROW — LINEARLY IN Q — AND IT IS
+A METHOD PROBLEM, NOT A GRID OR TOLERANCE ONE.** Grid uncertainty in `c` at 240 points per period
+(240-against-960):
+
+| Q | gear | trap | radau | gear, in dB |
+|---|---|---|---|---|
+| 100 | 1.79e-03 | 1.49e-06 | 6.97e-10 | 0.0078 |
+| 500 | 9.02e-03 | 1.04e-04 | 3.48e-09 | 0.0392 |
+| 1000 | 1.82e-02 | 2.36e-04 | 6.97e-09 | 0.0791 |
+
+`gear` and `radau` both scale **linearly in Q** (ratios 5.04/2.02 and 5.00/2.00 against Q ratios 5
+and 2), i.e. `≈1.8e-05·Q` and `≈7.0e-12·Q` — **six orders apart**. `trap` fits no clean law here
+because its error changes sign near Q=100; recorded rather than fitted. So at Q=1000 the shipped
+`gear` costs 0.08 dB and by Q=10⁴ it would cost ~0.7 dB — **the concern was real** — while `radau`
+is at 7e-08 there. **Refining the grid is the expensive answer; changing method is the free one.**
+`reltol` is still no answer at all: 1e-8→1e-14 moves `c` by 1.3e-12 at Q=100.
+
+⚠⚠ **AND THE SIBLING TEST'S `3.0 < ratio < 5.0` WAS A μ=1 STATEMENT THAT NOTHING LABELLED AS ONE.**
+`gear` converges at O(h²) at μ=1 and at **O(h³)** for every Q ≥ 5 (ratio 8.01 at the finest grids,
+five doublings). A 2nd-order method giving 3rd-order answers wanted a mechanism, and the measured
+one is that **on an autonomous problem the period is an unknown**: at Q=100 the solved PERIOD
+converges at order **2.00** while the waveform and `c` converge at **3.01**. The O(h²) term is a
+FREQUENCY error, and the autonomous solve absorbs it into `T` rather than leaving it in the state.
+At μ=1 the orbit is far from harmonic, the h² error has a real waveform component, and `c` is order
+2 again. ⚠ `order(peak)` is a poor probe at μ=1 (2.97 / 0.06 / 2.95 — the sampled maximum of a flat
+extremum); `c` is the clean one there.
+
+⚠ `PSS.ppv`'s own near-unit-multiplier warning fires throughout the high-Q sweep (0.969 at Q=100,
+0.997 at Q=1000) and the conditioning it warns about **does not materialise** in `c`: radau still
+lands on the analytic limit to 1e-3 of the physical term. The warning's second half — the
+instantaneous phase equation over-estimating phase noise — is a separate, still-open limitation.
+
+Test: `test_the_diffusion_constant_at_high_q_has_an_analytic_reference`.
 
 ## D. How these items keep failing — the shapes worth checking for
 

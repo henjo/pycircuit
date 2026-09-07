@@ -1582,6 +1582,19 @@ class PSS(Analysis):
                    desc='Use Predictor/Corrector Newton-Raphson instead of '
                         'limiting in the inner transient; off by default',
                    unit='', default=False),
+         ## ⚠⚠ THE ONE KNOB `method='theta'` HAS, AND IT WAS UNREACHABLE.
+         ## `_integrator_for` builds `table[method]()`, so every shooting run
+         ## took `ThetaIntegrator.DEFAULT_C` -- a RATE, calibrated on ONE
+         ## fixture's period.  The transferable quantity is the DIMENSIONLESS
+         ## `C T` (see `ThetaIntegrator.DEFAULT_CT` for why `h` cancels), so
+         ## that is what this parameter is, and `_theta_biased` turns it into
+         ## the rate THIS period needs.  `None` takes the measured knee.
+         Parameter(name='theta_ct',
+                   desc="method='theta' only: the null(C) damping one PERIOD "
+                        'applies, as the dimensionless product C*T. None '
+                        'takes ThetaIntegrator.DEFAULT_CT (the measured '
+                        'knee). Ignored by every other method.',
+                   unit='', default=None),
          ## `reltol` MEANS THE SAME THING IN EVERY ANALYSIS: the relative
          ## tolerance of the transient solution.  It is applied to the
          ## per-timestep Newton here exactly as `Transient` applies it, and
@@ -6283,6 +6296,40 @@ class PSS(Analysis):
                 self._integrator_for(self.par.method))
         return self._tran
 
+    def _theta_biased(self, integ):
+        """Give a `ThetaIntegrator` the bias THIS period needs, not a fixture's.
+
+        ⚠⚠ `theta - 1/2 = C h` makes `C` a RATE, but the quantity that decides
+        anything is the DIMENSIONLESS product `C T`: `null(C)` is damped over a
+        period by `((1-theta)/theta)^K ~ exp(-4 C h K) = exp(-4 C T)`, and `h`
+        cancels.  So `ThetaIntegrator.DEFAULT_C = 1e4` is not a recipe -- it is
+        the measured knee `C T = 0.0628` divided by ONE fixture's period
+        (6.283e-6 s).  On a circuit 159x slower it is 159x the calibrated bias,
+        and MEASURED on `_q20_rlc` (analytic 20 V) that is a peak of 15.91 at
+        K = 100 -- 20% low, `converged=True`, because it did converge: to its
+        own over-damped discretisation.  See `ThetaIntegrator.DEFAULT_CT`.
+
+        This is where a shooting run stops inheriting that.  `theta_ct` is the
+        dimensionless knob (`None` = the measured knee) and the period is this
+        solve's, so `method='theta'` is now correct on any circuit.
+
+        ⚠ THE SEED PERIOD IS ENOUGH, and that is a measurement not a hope: the
+        gate's own table has `rcond(I - A^K)` at 4.4e-03 / 4.6e-03 / 4.3e-03
+        across `C T` = 0.0063 / 0.0628 / 0.628, i.e. FLAT over two decades.  An
+        autonomous solve moving `T` by a few percent moves the bias by the same
+        few percent, which the knee does not notice.
+
+        Every other method is returned untouched, so nothing else moves a bit.
+        """
+        from pycircuit.circuit.integrator import ThetaIntegrator
+        T = getattr(self, '_theta_period', None)
+        if not isinstance(integ, ThetaIntegrator) or T is None:
+            return integ
+        ct = getattr(self.par, 'theta_ct', None)
+        integ.cbias = float(ThetaIntegrator.DEFAULT_CT if ct is None
+                            else ct) / float(T)
+        return integ
+
     def _new_transient(self, integ):
         """A `Transient` on this circuit driven by `integ`, with every
         strategy and tolerance PSS was given handed through.
@@ -6303,6 +6350,10 @@ class PSS(Analysis):
         silently discarded at the boundary.
         """
         from pycircuit.circuit.transient import Transient
+        ## ⚠ ONE CHOKE POINT for the theta bias, because there are four call
+        ## sites building a transient and a per-site fix would drift.  A no-op
+        ## for every other integrator -- see `_theta_biased`.
+        integ = self._theta_biased(integ)
         tr = Transient(
             self.cir, toolkit=self.toolkit, integrator=integ,
             reltol=self.par.reltol, iabstol=self.par.iabstol,
@@ -7015,6 +7066,19 @@ class PSS(Analysis):
         self._period_state = None
         self._factored_period_cache = None
         self.waveform = None
+
+        ## ⚠ `theta`'s bias is PER-PERIOD (`_theta_biased`), so it must be
+        ## known before anything builds or reuses the inner transient.
+        ## `_new_transient` only runs when there is no cache, so a SECOND
+        ## `solve()` at a different period would otherwise silently keep the
+        ## first one's bias -- re-bias the cached integrator in place rather
+        ## than dropping the cache, which would rebuild a `Transient` per
+        ## solve for every method that does not care.  A no-op for all of
+        ## them (`_theta_biased` type-checks, and tolerates `None`).
+        self._theta_period = float(period)
+        _tr_cached = getattr(self, '_tran', None)
+        if _tr_cached is not None:
+            self._theta_biased(getattr(_tr_cached.par, 'integrator', None))
 
         n = self.cir.n
         dt = timestep
