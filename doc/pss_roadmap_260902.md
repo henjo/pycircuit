@@ -6599,21 +6599,73 @@ Same fixture, same analytic reference, orders at the finest pair (npts 40 -> 80)
 | `trbdf2` | **0** | 2.04 | 5.32e-05 | 2.04 | 1.34e-09 |
 | **`radau`** | **0.01667** | **5.08** | **8.88e-11** | **3.05** | **1.98e-11** |
 
-⚠⚠ **RADAU IS THE ONLY METHOD THAT SHOWS THE SPLIT AT ALL**, and the only one with `det A != 0`.
-Every other method has differential ≈ algebraic. **TR-BDF2 has `det A = 0` EXACTLY** (`a11 = 0`),
-so HLR's hypotheses do not hold for it and it gets no order preservation in the differential
-components — 2.04 in both, against Radau's 5.08.
+⚠⚠⚠ **CORRECTION (same day, by my own follow-up): `det A != 0` IS NOT THE DISCRIMINANT, AND MY
+FIRST READING OF THIS TABLE WAS WRONG.** I wrote that Radau "is the only method that shows the
+split, and the only one with `det A != 0`" — from a sweep that did not include `esdirk43`. Adding
+it refutes that:
 
-⚠ **This is the fifth job for `det A != 0` MEASURED rather than cited.** It was already the exact
-FULL-vs-DIRK monodromy discriminant; it is now also the index-2 order-preservation discriminant, and
-the two are the same number for the same structural reason.
+| method | `det A` | p | q (stage) | differential | algebraic |
+|---|---|---|---|---|---|
+| `trbdf2` | 0 | 2 | 2 | 2.04 | 2.04 |
+| `esdirk43` | **0** | 4 | 2 | **4.08** | **2.04** |
+| `radau` | 0.01667 | 5 | 3 | 5.08 | 3.05 |
 
-**Radau dominates on BOTH components here**: six orders better in the differential (8.9e-11 against
-TR-BDF2's 5.3e-05) and two in the algebraic (2.0e-11 against 1.3e-09). Its *reduced* algebraic order
-of 3 is still above every other method's 2.
+**`esdirk43` has `det A = 0` and STILL preserves its classical order 4 in the differential
+components.** So on this fixture `det A != 0` is not required for differential order preservation;
+HLR's hypothesis is SUFFICIENT and this fixture does not exercise its necessity. `trbdf2` showed no
+split only because `p = q = 2` — there was nothing to reduce.
+
+✅✅ **THE ACTUAL RULE, AND IT IS PREDICTIVE: differential order = `p`, algebraic order = `q`, the
+STAGE ORDER.** Voigtmann's Theorem 5 (OWR 18/2006) gives index-2 convergence as `min(p, q)`;
+computing `q` from each tableau by the simplifying condition `C(q)` and comparing:
+
+| method | p | q | predicted algebraic | MEASURED |
+|---|---|---|---|---|
+| `trbdf2` | 2 | 2 | 2 | **2.04** |
+| `esdirk43` | 4 | 2 | 2 | **2.04** |
+| `radau` | 5 | 3 | 3 | **3.05** |
+
+⚠ **`esdirk43` was a PREDICTION, made from `q = 2` before the sweep was run, and it came back
+2.04.** So the stage-order mechanism is confirmed predictively, not just retrospectively.
+
+**Radau still wins, for a reason now stated correctly**: not `det A`, but STAGE ORDER 3 against
+`esdirk43`'s and `trbdf2`'s 2. Its algebraic error at npts=80 is 2.0e-11 against 5.7e-10 and
+1.3e-09.
 
 ⚠ The LMMs show no reduction only because their classical order is already at or below the reduced
 one — `euler` at 1, the rest at 2. **An absence of order reduction is not evidence of suitability.**
+
+### GLM VERIFICATION — done 2026-09-07: the source is on disk, and the mechanism is Theorem 5
+
+⚠ **The quoted sentence is VERBATIM ACCURATE** (Oberwolfach Report 18/2006, Voigtmann, p. 1156):
+*"diagonally implicit methods with high stage order are possible [9]. Hence, in spite of the
+diagonally implicit structure, there will be no order reduction for the index-2 components."*
+
+✅ **BUT THE ABSTRACT'S OWN THEOREM 5 GIVES THE MECHANISM THE SENTENCE ELIDES**, and it is the more
+useful statement. For a GLM in Nordsieck form with `V` power bounded, `M_inf = V - B A^-1 U`
+nilpotent, and **stiffly accurate**, index-2 convergence is
+
+> **order `min(p, q)`** — `p` the order for implicit index-1, `q` the **STAGE ORDER** for ODEs.
+
+So *"no order reduction at index 2"* is **not a property of being a GLM** — it is the condition
+`q >= p`. That is the same rule that produced our own table above, and it predicted `esdirk43`
+before the sweep ran.
+
+⚠⚠ **THE LOAD-BEARING CLAIM REMAINS UNVERIFIED.** Whether a DIAGONALLY IMPLICIT `A` can carry high
+stage order is cited to **[9] — W. Wright, "General linear methods with inherent Runge-Kutta
+stability", PhD thesis, Auckland 2003 — which is NOT on disk.** The abstract asserts it; it does
+not show it, and gives no concrete tableau.
+
+⚠⚠ **AND THE REFERENCE IMPLEMENTATION DOES NOT DEMONSTRATE THE ADVANTAGE.** The same page:
+GLIMDA *"implements a variable-stepsize, variable-order approach, where methods of order **1, 2 and
+3** are used"*, and is described as *"preliminary"* and *"seems to be competitive"*. **An order-3
+GLM does not beat Radau IIA(3), whose index-2 order is already 3.** To dominate, a GLM would need
+stage order **> 3** with a diagonally implicit `A` — which is exactly the [9] claim, unavailable.
+
+**VERDICT: the option is real and correctly identified, the mechanism is now understood and
+verified against our own measurements, and the case for building it is NOT made by what is on
+disk.** Acquiring Wright 2003 (or Voigtmann's thesis, HU Berlin 2006) with a concrete tableau and
+its stage order is the next step, and it is a reading task rather than a build.
 
 ⚠ **OPEN, and this result is its baseline:** general linear methods are claimed to be diagonally
 implicit AND high stage order, hence *"no order reduction for the index-2 components"* (Voigtmann,
