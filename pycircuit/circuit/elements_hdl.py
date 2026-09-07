@@ -2913,6 +2913,15 @@ def _mos1_analog(T, nmos, limiting='group'):
             Contribution(bds.I, _white_noise(8.0 / 3.0 * _KB * T
                                              * beta * clm * gn)),
             ## SPICE's flicker normalisation, `kf*Id^af/(cox*Leff^2*f)`.
+            ## ⚠ DELIBERATE, AND NOT WHAT EVERY TOOL USES.  A commercial
+            ## simulator normalises the Level-1 flicker source by
+            ## `cox*W_eff*L_eff` (an AREA) rather than `cox*L_eff**2`, so the
+            ## two differ by `L_eff/W_eff` -- a geometry-dependent factor, not
+            ## a constant, so it cannot be absorbed into `kf` across a set of
+            ## devices with different aspect ratios.  Neither is wrong; they
+            ## are different conventions and `kf` is extracted against one of
+            ## them.  Recorded so a cross-tool flicker mismatch is recognised
+            ## rather than chased.
             ## `safe_abs` because a PSD may not be negative and `ids` is
             ## negative for a reversed device.
             Contribution(bds.I, _flicker_noise(

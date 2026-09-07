@@ -15441,6 +15441,133 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
 
 
 @pytest.mark.slow
+def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot():
+    """`PSS.grid_error` VALIDATED against the analytic high-Q reference.
+
+    The floor of this stack is discretisation, it grows linearly in `Q`, and
+    it is a METHOD property -- the sibling test measures `~1.8e-05 Q` for gear
+    against `~7.0e-12 Q` for radau. Shipping a PREDICTOR from those constants
+    would extrapolate a fit across a regime change (gear is `O(h^3)` here and
+    `O(h^2)` at `mu = 1`), so `grid_error` REFINES THE ACTUAL CIRCUIT instead.
+    This test checks the instrument before anyone trusts it.
+
+    Measured at `mu = 0.005` (`Q = 100`), 120 points refined 2x twice, against
+    `c = psd/16 (1 + (11/32) mu^2)`::
+
+        method   observed order   power_law   est rel err   true rel err
+        gear         3.04           True       2.208e-04     2.257e-04
+        trap         6.45           False      (withheld)    4.061e-06
+        radau        5.03           True       2.132e-11     1.076e-11
+
+    `gear` recovers its `O(h^3)` autonomous rate and its estimate lands within
+    **2%** of the true error. `radau` recovers order 5 and over-states by 2x,
+    which is the safe direction.
+
+    ⚠⚠ `trap` IS THE REASON THE VALIDITY CHECK EXISTS. Its error changes sign
+    near `Q = 100`, two terms nearly cancel, and consecutive differences then
+    shrink FASTER than the error: apparent order 6.45, estimate 300x too
+    small, with monotone same-signed deltas and nothing else suspicious. ⚠ A
+    generic `0.5 <= order <= 8` range ACCEPTS it -- that was the first version
+    of this check -- and a sign test does not catch it either (both deltas are
+    negative). Only the CEILING at the method's own order rejects it, because
+    a method cannot converge faster than its order.
+
+    ⚠ And the ceiling needs the `+1.5` allowance: on an autonomous problem the
+    period absorbs the leading frequency error, so `gear` (nominal 2) really
+    does converge at 3.01. Without it the check would reject the shipped
+    default on its own reference fixture.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    psd, T0, mu = 1e-6, 2.0 * np.pi, 0.005
+    ## The `O(mu^2)` term is part of the PHYSICS, not an error: leaving it out
+    ## makes radau's true error read 8.594e-06 at EVERY grid -- a constant,
+    ## which is the tell that the reference and not the method is being
+    ## measured. It cost one wrong reading here before it was noticed.
+    analytic = psd / 16.0 * (1.0 + (11.0 / 32.0) * mu ** 2)
+
+    def vdp():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+        return c
+
+    def measure(method):
+        cir = vdp()
+        p = PSS(cir, method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 120,
+                    x0=np.array([2.0, 0.0]), maxiterations=80)
+            r = p.grid_error(
+                lambda q: float(PAC(cir, toolkit=circuit.numeric)
+                                .diffusion_constant(q)))
+        true = abs(r['values'][-1] - analytic) / analytic
+        return r, true
+
+    ## 1. gear: the order is its own, and the estimate is the true error.
+    r, true = measure('gear')
+    assert r['power_law'], 'gear should follow a power law, order %r' % (
+        r['order'],)
+    assert abs(r['order'] - 3.0) < 0.3, \
+        'gear order is %.2f, the autonomous O(h^3) rate is ~3' % r['order']
+    assert 0.5 < r['rel_error'] / true < 2.0, \
+        'gear estimate %.3e against a true error %.3e' % (
+            r['rel_error'], true)
+
+    ## 2. radau: order 5, and it must not UNDER-state.
+    r_r, true_r = measure('radau')
+    assert r_r['power_law'], 'radau should follow a power law'
+    assert abs(r_r['order'] - 5.0) < 0.3, \
+        'radau order is %.2f, want ~5' % r_r['order']
+    assert r_r['rel_error'] > 0.5 * true_r, \
+        'radau estimate %.3e under-states the true error %.3e' % (
+            r_r['rel_error'], true_r)
+
+    ## 3. And the six-order method gap the whole item rests on.
+    assert r_r['rel_error'] < 1e-5 * r['rel_error'], \
+        'radau %.3e is not far below gear %.3e' % (
+            r_r['rel_error'], r['rel_error'])
+
+    ## 4. trap: the instrument must REFUSE rather than under-state.
+    cir = vdp()
+    p = PSS(cir, method='trap', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T0, timestep=T0 / 120,
+                x0=np.array([2.0, 0.0]), maxiterations=80)
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        r_t = p.grid_error(
+            lambda q: float(PAC(cir, toolkit=circuit.numeric)
+                            .diffusion_constant(q)))
+    assert not r_t['power_law'], \
+        'trap apparent order %r was ACCEPTED; its estimate under-states ' \
+        'the true error by ~300x here' % (r_t['order'],)
+    assert any('single power law' in str(w.message) for w in caught), \
+        'the refusal must warn; got %r' % [str(w.message) for w in caught]
+
+    ## 5. An explicit `grid` cannot be refined by a timestep, and reporting
+    ##    0.0 there would be a confident lie.
+    cir = vdp()
+    p = PSS(cir, method='radau', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T0, timestep=T0 / 120, x0=np.array([2.0, 0.0]),
+                maxiterations=80,
+                grid=np.full(120, 1.0 / 120.0))   ## step FRACTIONS, sum 1
+    try:
+        p.grid_error(lambda q: 1.0)
+    except ValueError as exc:
+        assert 'grid' in str(exc)
+    else:
+        raise AssertionError('grid_error accepted an explicit grid')
+
+
 def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
     """The floor AT HIGH Q -- the regime the original concern actually named.
 
@@ -15490,7 +15617,30 @@ def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
 
     A clean power law -- the ratio is 4.00 for every halving -- converging on
     `11/32 = 0.34375`.  So at Q = 100 the PHYSICS is known to five digits and
-    any deviation beyond it is NUMERICS.  That separation is the whole point.
+    any deviation beyond it is NUMERICS.
+
+    ⚠ THE NEXT TERM IS MEASURED TOO, because without it this reference runs
+    out before radau does.  Residual of radau at 960 points against
+    `psd/16 (1 + (11/32) mu^2)`, divided by `mu^4`::
+
+        mu       offset rel     offset/mu^4
+        0.020    -8.435e-09       -0.0527
+        0.010    -5.259e-10       -0.0526
+        0.005    -3.172e-11       -0.0508
+
+    Constant over a 4x sweep, so the reference extends to
+
+        c = psd/16 (1 + (11/32) mu^2 - 0.0527 mu^4).
+
+    ⚠⚠ THIS MATTERS FOR READING ANY HIGH-ORDER RESULT AGAINST IT.  With only
+    the `mu^2` term, radau's apparent error at `mu = 0.005` reads 3.2e-11 at
+    EVERY grid -- a constant, which looks like a solver floor and is not; it
+    is the REFERENCE's own truncation.  `grid_error` was briefly judged to
+    under-state on exactly that reading (see
+    `test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot`).
+    ⚠ A constant "error" across a grid sweep means the REFERENCE, not the
+    method -- the same tell as the two failed order sweeps in the Radau
+    index-2 record.  That separation is the whole point.
 
     ⚠⚠ THIRD, AND THE ACTIONABLE PART: THE CONCERN DOES MATERIALISE -- THE
     FLOOR GROWS LINEARLY IN Q -- AND IT IS A METHOD PROBLEM, NOT A GRID OR

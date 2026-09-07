@@ -15,6 +15,14 @@ Physical constants
 ## literals (`elements_hdl`: `8.854187817e-12`) -- a model calibration
 ## choice, as PSP carries its own constants in `psp_scaling` -- so this
 ## changes `eps0` for callers that read it, not the device physics.
+## ⚠ SI-2019 EXACT, AND SPICE-DERIVED TOOLS ARE NOT.  SPICE and the
+## commercial simulators built on it carry CODATA-1986,
+## `k_B = 1.3806226e-23`.  The ratio is 1.0000191218, so EVERY thermal-noise
+## PSD compared against such a tool sits +19.12 ppm high, constant and
+## expected; small-signal gains and normalised noise integrations are
+## unaffected.  ⚠ Do not write a noise gate against another simulator's PSD
+## tighter than 19.12 ppm -- it would fail for a reason that is not ours, and
+## do not "fix" this by moving the constant backwards.
 kboltzmann=1.380649e-23   # Boltzmann's constant, exact (SI 2019)
 eps0 = 8.8541878128e-12   # Vacuum permittivity (CODATA 2018)
 epsRSi = 11.7             # Relative permittivity of Si

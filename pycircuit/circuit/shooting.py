@@ -5422,6 +5422,199 @@ class PSS(Analysis):
         """
         return self.monodromy_twin()
 
+    ## Nominal convergence order per `method`, for `grid_error`'s ceiling on
+    ## a plausible OBSERVED order.  Sourced from this file's own measured
+    ## records rather than from the literature: trap/gear/theta second order,
+    ## TR-BDF2 measured at 4.01x/4.01x/4.00x per halving (exact `O(h^2)`),
+    ## Radau IIA(3) at 31.50x/31.74x (`O(h^5)`, theoretical 32), euler first.
+    ## ⚠ An unlisted method falls back to a generic range and the ceiling is
+    ## not applied -- add it here rather than letting it default silently.
+    METHOD_ORDER = {'euler': 1, 'trap': 2, 'gear': 2, 'theta': 2,
+                    'trbdf2': 2, 'radau': 5}
+
+    def grid_error(self, evaluate, refine=2, levels=3, label=None):
+        """How much of a scalar is DISCRETISATION rather than answer.
+
+        Re-solves this circuit on a `refine`x finer grid, with every other
+        argument identical to the original `solve()`, and reports how far
+        `evaluate` moves.  `evaluate` takes a solved `PSS` and returns a
+        float -- `lambda p: PAC(cir).diffusion_constant(p)`, a Floquet
+        multiplier, a harmonic amplitude, the period.
+
+        ⚠⚠ WHY THIS EXISTS RATHER THAN A PER-METHOD FORMULA.  The floor of
+        this stack is DISCRETISATION, it grows LINEARLY IN Q, and it is a
+        METHOD property: measured on the analytic high-Q van der Pol
+        reference, the relative error in the diffusion constant at 240
+        points per period is
+
+            Q      gear        trap        radau
+             100   1.79e-03    1.49e-06    6.97e-10
+             500   9.02e-03    1.04e-04    3.48e-09
+            1000   1.82e-02    2.36e-04    6.97e-09
+
+        i.e. `~1.8e-05 Q` for gear against `~7.0e-12 Q` for radau -- SIX
+        ORDERS at the same cost per step.  Those constants are real but they
+        belong to THAT fixture at THAT grid: `gear` converges at `O(h^3)` on
+        an autonomous problem for `Q >= 5` and at `O(h^2)` at `mu = 1`, so a
+        shipped predictor built from them would extrapolate a fitted constant
+        across a regime change (roadmap D.0y).  Refining the actual circuit
+        measures the actual number instead, and needs no calibration.
+
+        ⚠⚠ WHY THREE GRIDS AND NOT TWO.  With `f_h = f + C h^p`, two grids
+        give `|f_h - f_h/r| = |C| h^p (1 - r^-p)`, which over-states the fine
+        grid's own error `|C|(h/r)^p` by `r^p - 1` -- an upper bound, and a
+        tempting place to stop.  **IT IS NOT SAFE, AND THIS STACK CONTAINS A
+        COUNTEREXAMPLE.**  `trap` on the high-Q van der Pol has an error that
+        CHANGES SIGN near `Q = 100`: two terms of opposite sign cancel, the
+        two-grid difference collapses, and the estimate UNDER-STATES the true
+        error by 3.6x (measured: change 1.15e-06 against a true 4.06e-06 at
+        240 points).  A bound that fails silently where the error is
+        interesting is worse than none.
+
+        So the third grid is not extra confidence, it is the VALIDITY CHECK.
+        From `d1 = |f_h - f_h/r|` and `d2 = |f_h/r - f_h/r^2|`,
+
+            order = log(d1/d2) / log(r)
+
+        is the order the circuit ACTUALLY shows, and it is checked against the
+        single-power-law assumption before the error estimate built on it is
+        offered.  Measured orders on that fixture: `gear` 2.94 (its `O(h^3)`
+        autonomous rate), `radau` ~5, and `trap` failing the check exactly
+        where it cancels.  `error` is then `d2 / (r^order - 1)`, and
+        `power_law=False` means READ `d2` AS A RAW CHANGE AND NOTHING MORE.
+
+        ⚠ AND IT IS AN ESTIMATE OF THE GRID ERROR ONLY.  It cannot see an
+        error both grids share -- a wrong stamp, a wrong tolerance
+        convention, a mis-specified circuit.  A small `rel_change` says the
+        grid is fine enough; it does NOT say the answer is right.  That is
+        the same trap `null_residual_amplification` documents one screen up,
+        and it is worth stating twice.
+
+        `levels=3` (the default) costs two extra solves, at `r` and `r^2`
+        times the points.  `levels=2` is the cheap two-grid difference with
+        no order and no validity check -- use it only where the method's
+        order on this problem is already known.
+
+        Returns a dict with `values` (coarse to finest), `deltas`, `order`,
+        `error` (of the FINEST value), `rel_error`, `power_law`, `refine`
+        and `npts`.
+        """
+        args = getattr(self, '_solve_args', None)
+        if args is None:
+            raise RuntimeError(
+                'PSS.grid_error: call solve() before grid_error() -- the '
+                'refinement repeats THIS solve and there is nothing to '
+                'repeat yet.')
+        refine = int(refine)
+        if refine < 2:
+            raise ValueError(
+                'PSS.grid_error: refine must be >= 2, got %r; a refinement '
+                'that does not refine reports 0.0 and means nothing.'
+                % (refine,))
+
+        levels = int(levels)
+        if levels not in (2, 3):
+            raise ValueError('PSS.grid_error: levels must be 2 or 3, got %r'
+                             % (levels,))
+        ## ⚠ A CALLER-SUPPLIED GRID CANNOT BE REFINED BY A TIMESTEP.  `grid`
+        ## fixes the sample fractions outright, so dividing `timestep` would
+        ## change nothing and this would report a confident 0.0.
+        if args.get('grid') is not None:
+            raise ValueError(
+                'PSS.grid_error: this solve used an explicit `grid`, whose '
+                'fractions fix the samples regardless of `timestep`. The '
+                'refinement would return the same grid and report 0.0 -- '
+                'pass a refined `grid` and compare directly instead.')
+
+        ## Same class, same parameters, same solve arguments -- only the
+        ## timestep changes.  Fresh instances rather than re-solving `self`,
+        ## so the caller's solved state survives the call.
+        kv = {}
+        for _p in self.parameters:
+            try:
+                kv[_p.name] = getattr(self.par, _p.name)
+            except AttributeError:
+                pass
+
+        values = [float(evaluate(self))]
+        for _k in range(1, levels):
+            ## `self.irefnode` is an INDEX; `__init__` wants the node, and
+            ## feeding the index back through `get_node_index` would not
+            ## round-trip.
+            twin = type(self)(self.cir, toolkit=self.toolkit,
+                              irefnode=self.cir.nodes[self.irefnode], **kv)
+            sub = dict(args)
+            sub['timestep'] = args['timestep'] / float(refine ** _k)
+            twin.solve(**sub)
+            if not getattr(twin, 'converged', False):
+                raise RuntimeError(
+                    'PSS.grid_error: the %dx refined solve did not converge, '
+                    'so there is no comparison to report.'
+                    % (refine ** _k,))
+            values.append(float(evaluate(twin)))
+
+        deltas = [abs(values[i + 1] - values[i])
+                  for i in range(len(values) - 1)]
+        _tiny = np.finfo(float).tiny
+        order, power_law = None, None
+        if levels == 3:
+            d1, d2 = deltas
+            ## ⚠ `d2 >= d1` means the sequence is NOT settling: either the
+            ## error is not a single power law (`trap`'s sign change) or the
+            ## finest grid has reached a roundoff floor.  Either way the
+            ## Richardson step below would be arithmetic on noise.
+            _sgn = ((values[1] - values[0]) * (values[2] - values[1]) > 0.0)
+            if d2 > _tiny and d1 > d2:
+                order = float(np.log(d1 / d2) / np.log(float(refine)))
+                ## ⚠⚠ THE CEILING IS THE POINT OF THIS CHECK, AND A GENERIC
+                ## RANGE IS NOT ENOUGH.  A method cannot converge faster than
+                ## its order; an observed order well above it means two error
+                ## terms nearly cancelled at this grid, which makes the
+                ## deltas shrink faster than the error and the estimate
+                ## UNDER-state.  MEASURED: `trap` at 120 points shows an
+                ## apparent order of 6.45 -- monotone, same-signed deltas,
+                ## nothing else suspicious -- while its estimate under-states
+                ## the true error by 300x.  A plain `0.5 <= order <= 8` range
+                ## ACCEPTS that case; the ceiling below rejects it.
+                ## ⚠ The `+ 1.5` allowance is not slack: on an AUTONOMOUS
+                ## problem the period is an unknown that absorbs the leading
+                ## frequency error, so `gear` (nominal 2) genuinely converges
+                ## at 3.01 here.  Without the allowance this would reject the
+                ## shipped default method on its own reference fixture.
+                _nom = self.METHOD_ORDER.get(
+                    str(getattr(self.par, 'method', '')).lower())
+                _hi = 8.0 if _nom is None else (_nom + 1.5)
+                power_law = bool(0.5 <= order <= _hi and _sgn)
+            else:
+                order, power_law = None, False
+            if not power_law:
+                warnings.warn(
+                    'PSS.grid_error: the refinement does not follow a single '
+                    'power law (changes %.3e then %.3e over %dx refinements, '
+                    'implied order %s). The error estimate is WITHHELD -- '
+                    'read the raw change and nothing more. This happens when '
+                    'two error terms of opposite sign cancel at some grid, '
+                    'which makes a two-grid difference UNDER-state the true '
+                    'error, and when the finest grid has hit a roundoff '
+                    'floor.'
+                    % (d1, d2, refine,
+                       ('%.2f' % order) if order is not None else 'none'),
+                    RuntimeWarning, stacklevel=2)
+
+        if power_law:
+            err = deltas[-1] / (float(refine) ** order - 1.0)
+        else:
+            ## No validated order: report the raw change, which is what a
+            ## two-grid call gets and is honest about being unbounded.
+            err = deltas[-1]
+        rel = err / max(abs(values[-1]), _tiny)
+        _npts_c = int(round(args['period'] / args['timestep']))
+        return {'values': values, 'deltas': deltas, 'order': order,
+                'power_law': power_law, 'error': err, 'rel_error': rel,
+                'refine': refine,
+                'npts': [_npts_c * refine ** k for k in range(levels)],
+                'label': label}
+
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
@@ -7376,6 +7569,16 @@ class PSS(Analysis):
         if _tr_cached is not None:
             self._theta_biased(getattr(_tr_cached.par, 'integrator', None))
 
+        ## Everything `grid_error` needs to repeat THIS solve on a finer grid.
+        ## Recorded rather than re-derived so the refinement differs from the
+        ## original in the timestep and in nothing else.
+        self._solve_args = dict(refnode=refnode, period=period, x0=x0,
+                                timestep=timestep,
+                                maxiterations=maxiterations, grid=grid,
+                                matrix_free=matrix_free,
+                                x0_unknown=x0_unknown, tstab=tstab,
+                                break_events=break_events)
+
         n = self.cir.n
         dt = timestep
         if x0 is None:
@@ -8546,7 +8749,17 @@ class PSS(Analysis):
                          np.asarray(X, dtype=float))
 
         freqs, FX = freq_analysis(X[:,:-1], times[:-1])
-        
+
+        ## ⚠ `fpss` IS RMS, AND THE USUAL THING TO COMPARE IT AGAINST IS NOT.
+        ## `freq_analysis` returns an RMS, energy-folded, positive-frequency
+        ## spectrum (see the note above).  A commercial simulator's frequency
+        ## -domain PSS output is conventionally PEAK, so a harmonic read from
+        ## one and compared against the other differs by `sqrt(2)` -- 3.01 dB
+        ## -- with nothing in either result announcing it.  Multiply `fpss`
+        ## by `sqrt(2)` for a peak-convention comparison, or divide theirs.
+        ## Recorded because this campaign has lost time to factor-of-two and
+        ## factor-of-pi convention defects more than once, and a 3 dB offset
+        ## is small enough to be mistaken for a modelling difference.
         fpss = analysis.CircuitResult(self.cir, x=FX, xdot=None,
                                       sweep_values=freqs, sweep_label='freq', 
                                       sweep_unit='Hz')

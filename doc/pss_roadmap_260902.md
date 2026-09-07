@@ -8108,9 +8108,11 @@ the actionable route.
 
 ⚠ **The `λ₂ → 0.533 / 0.900 / 0.990` relative errors (7.58e-4, 2.17e-6, 2.91e-7) are NOT external.**
 They are against the **describing function** `exp(-3bA²T/4C)` — the same analytic reference this
-file already uses, where we recorded agreement to **5** digits and the guide claims **7**. That is a
-reconciliation to do (fixture, amplitude, grid), not a conflict, and certainly not third-party
-confirmation.
+file already uses. ✅ **The "5 vs 7 digits" reconciliation is CLOSED, and not in the guide's
+favour:** `review.md` in the same tree reports *"matches the analytical describing function to
+**5 decimal digits** (0.533084, 0.900002, 0.990000)"* — our number. The guide's "7 significant
+digits" is the outlier, and the two relayed documents contradict each other. Nothing to reconcile;
+nothing external here either.
 
 ### 2. ⚠⚠⚠ The same flat `1e-9` residual, read in OPPOSITE directions
 
@@ -8245,6 +8247,155 @@ Original diagnosis, kept because the ordering dependence is the transferable par
   reason the defect has survived. Whoever fixes it must change the doctest **and say why**, or the
   next reader will "restore" it.
 
+### 5b. "The Cold-Start History Seam Problem" — the figure is OURS, the framing drops the caveat
+
+⚠ **Source note: this comes from a THIRD document, `review.md`, in that same tree, which had not
+been read when the section above was written** (§3.3 of the guide covers the same ground). It has
+still not been read in full — only the passages around this heading. Anything else in it is
+unassessed.
+
+**The claim.** Two-step companions (Gear-2) need an entering history `x_{-1}`; assuming a flat one
+puts an artificial `O(h)` discontinuity at `t=0`, and that seam accounted for **"54% to 73% of the
+total simulation error"**, fixed by the solved-history formulation `(x_0, x_{-1}[, T])`.
+
+**The figure is ours and it reproduces exactly.** It is item 4b's own gate table read as a
+percentage — `1 − solved/plain`:
+
+| points | plain | solved-history | seam share |
+|---|---|---|---|
+| 100 | 2.34e-01 | 1.07e-01 | **54.3%** |
+| 200 | 4.55e-02 | 1.48e-02 | **67.5%** |
+| 400 | 9.92e-03 | 2.65e-03 | **73.3%** |
+
+So the provenance is sound. ⚠ **But it is not a range, it is a TREND, and the direction is the
+point:** the share GROWS under refinement, because the seam is lower-order than the interior error
+it is measured against. Quoted as a flat "54–73%" it reads like a property of the defect; it is
+actually a statement that *the seam dominates more the harder you try*, which is the reason 4b was
+worth building and is exactly what a static range hides.
+
+⚠⚠ **AND THE RELAYED VERSION DROPS 4b's OWN CAVEAT, which is the one that matters.** This file
+records it in the next line of the same table: *"19.89297 is NOT 20 V. The seam is gone; 1.070e-01 V
+of interior discretisation error remains, untouched."* Removing 73% of the error leaves an answer
+that is still wrong, by a term the fix does not touch. **A large improvement RATIO is not a
+correctness claim** — the same shape as the flat-`1e-9`-residual reading in §2, arriving from the
+same document by a different route.
+
+⚠ **One structural claim is not our reason.** The relayed text says Trapezoidal *could not* use
+`(x_0, x_{-1})` because reactive nodes make `∂iq_{-1}/∂x_{-1} = -G` singular. This tree's reason is
+different and is measured: 4b applies the enlargement *"where the COMPANION reaches two charges
+back (`_companion_reach`), which is Gear-2 alone — euler and trapezoidal keep the plain path because
+**their seam measured zero**, and enlarging their system would double the unknowns to fix
+nothing."* An impossibility claim and a measured non-need are not interchangeable, and only the
+second is what the code acts on. ⚠ Related and worth noting: the `-G` term is perfectly usable *as a
+Jacobian block* even where `G` is singular — `_pq_seed_at_x0` carries exactly
+`d(iq_0)/d(x_0) = -G(x_0)` for `theta` and took its shooting Jacobian from 6.344 to 1.4e-10. That
+does not refute the claim (recovering `x_{-1}` is a different operation from stamping `-G`), but it
+does mean "singular `-G`" is not on its own a reason anything is impossible.
+
+✔ **What the relayed text gets right, and `review.md` states more accurately than the guide:**
+TR-BDF2 is self-starting, so no entering history and no opener seam; L-stability kills the `(-1)^n`
+mode that makes `(I − M)` singular over even `N`; and it needs no manufactured Euler opening step,
+so index-2 constraints hold from step 0. All of that is this file's own record (T7, B16). ⚠ And
+`review.md` correctly calls `trbdf2` the default **monodromy twin**, where the guide calls it the
+default *method* — see §4. The two relayed documents disagree with each other, and the one that is
+right is the one that is more specific.
+
+### 5c. `review.md` read in FULL — mostly already ours, two items that are not
+
+⚠ **Correcting my own steer:** having read it, `review.md` is largely a re-statement of material an
+EARLIER docs session already relayed and this file already captured — the `0.5000×` `S_v`
+carrier-power convention, the PPV agreeing in scale to 6e-5 and shape to 2.5e-3, `diffusion_constant`
+reproducing swept pnoise to four digits and `L_dBc` to 0.001 dB are all recorded above (search
+"`oscillator_spectrum`'s `S_v` is exactly 0.5000×"). It is a good document; it is mostly not new.
+✔ Every API it cites (`oscillator_spectrum`, `_cy_at`, `_lyapunov_pieces`, `diffusion_constant`,
+`oscillator_covariance`) exists in this tree, so the relay is grounded in real code rather than
+plausible names.
+
+**Two things are genuinely new:**
+
+* ⚠⚠ **STANDING `gmin`, and it is an interop trap with ZERO prior mention in this file.** A
+  commercial simulator inserts a standing `gmin = 1e-12 S` across nonlinear junctions **by
+  default**; this tree inserts no artificial conductance unless asked (our `gmin` appears only as a
+  PCNR/homotopy device, never as a standing shunt). On a 1 GΩ hold node a 1 pS shunt is a **0.1%**
+  leak, so any cross-tool comparison on a high-impedance node — a sampled `kT/C` hold, a switched-
+  capacitor bucket, an oscillator tank — is comparing two different circuits unless `gmin` is
+  disabled on their side. **This belongs with the `√2` and `k_B` conventions in §3**, and unlike
+  those two it changes the ANSWER rather than the units.
+
+* ⚠ **A row their matrix attributes to a formulation choice is actually the Boltzmann constant.**
+  "MOS Level-1 Channel Noise … `1.000019×` … *Channel noise uses chord formulation matching
+  Spectre*". But `1.380649/1.3806226 = 1.0000191` — the row IS the `k_B` ratio from §3, to every
+  digit shown. So the chord formulation agrees **exactly**, and the residual is the constant. Worth
+  recording because the same 19.12 ppm will keep surfacing in noise comparisons wearing whatever
+  label is nearest, and it has now been mistaken for a model difference once.
+
+### 5d. The last two documents — one VERIFIED DEFECT and one real scope limit
+
+⚠ **There were FIVE documents in that tree, not three.** `extended_comparisons_report.md` and
+`oscillator_math_review.md` were unread when §§1–5c were written. Both have now been read in full.
+The second is mathematical exposition of this tree's own algorithms and contains nothing actionable
+(it does repeat the over-trusting reading of `border_residual` that §2 corrects). The first
+contains two things worth having.
+
+#### ⚠⚠⚠ VERIFIED HERE: `TwoPortAnalysis` cannot take an ARRAY of frequencies
+
+Reported against `analysis_ss.py:256`, `Yreciprocal = G.T + s*C.T`, and **reproduced in this tree**
+on a two-element RC two-port:
+
+```
+scalar  freqs=1e8                 -> OK
+array   freqs=np.array([1e7,...]) -> ValueError: operands could not be broadcast
+                                     together with shapes (3,) (2,2)
+list    freqs=[1e7, 1e8, 1e9]     -> TypeError: can't multiply sequence by non-int
+```
+
+`s` enters as a vector and multiplies an `(m, m)` matrix, so the swept form dies in the stamp
+rather than anywhere a caller would look. ⚠ **This partially contradicts a note already in this
+file** — recorded elsewhere as *"the LIST form `freqs=[…]` fails on ANY circuit with a `TypeError`
+(arrays work)"*. Arrays work **there**; they do **not** work through `TwoPortAnalysis`, so "arrays
+work" is not a property of the frequency argument in general. A per-frequency loop in
+`solve_s` is the fix. **NOT FIXED — outside the PSS/shooting scope, recorded so it is not lost**,
+like the two element defects in §5.
+
+#### ⚠⚠ The phase-only noise window COLLAPSES AS 1/Q — §0's organising fact from an eighth side
+
+`oscillator_spectrum` is a **phase-only** closed form. A commercial simulator's pnoise carries
+amplitude noise too, and the two agree only below the amplitude-relaxation pole. Relayed excess of
+their total over our phase-only prediction:
+
+| offset | `λ₂ = 0.90` (`f_amp` 26.7 kHz) | `λ₂ = 0.99` (`f_amp` 2.55 kHz) |
+|---|---|---|
+| 100 Hz | −0.00 dB | −0.01 dB |
+| 1 kHz | −0.00 dB | **−0.54 dB** |
+| 10 kHz | −0.50 dB | **−2.90 dB** |
+| 100 kHz | −3.11 dB | −3.27 dB |
+
+**The identity behind it is exact, and it is checked here rather than taken:** `f_amp =
+−ln(λ₂)/(2πT)` and `Q_λ = −1/ln(λ₂)`, so
+
+    f_amp = f_0 / (2 pi Q_λ)
+
+reproducing 26671.9 / 2544.2 / 253.3 Hz at `λ₂ = 0.90 / 0.99 / 0.999` by both routes, to every
+digit. **So the region where the phase-only answer is valid shrinks as `1/Q`** — at `λ₂ = 0.999` it
+has collapsed to below ~253 Hz. That is §0 again: the designer's objective is the model's
+validity limit, now from an eighth side.
+
+⚠ **AND IT IS THE OPPOSITE SIGN FROM THE ERROR THIS CODE ALREADY WARNS ABOUT.** `PSS.ppv`'s
+existing warning says the instantaneous phase equation misses slow nodes that FILTER device noise,
+so phase noise is **OVER**-estimated. This is a second, independent mechanism in which the
+phase-only spectrum is **UNDER**-estimated above `f_amp`. Both are live, they are not the same
+effect, and nothing in the code mentions the second. **A caller reading `oscillator_spectrum` above
+`f_0/(2πQ)` is reading a lower bound.**
+
+#### Confirmations
+
+The flicker convention of §3 is pinned harder than we had it: the ratio is exactly
+`W_eff/L_eff = 20.000` on their fixture, and once geometry-normalised the two PSDs agree to
+**0.04%** from 1 Hz to 1 MHz — so it is purely the convention, with no modelling difference behind
+it. ⚠ Minor internal inconsistency across the relayed set, noted only so it is not read as
+evidence: the flat-history perturbation is called `O(h)` in the guide and `O(h^2)` in
+`oscillator_math_review.md`.
+
 ### 6. Independently reproduced, already in this file
 
 Recorded only as corroboration — no action: the two `PAC.solve` fixes (duplicate endpoint dropped
@@ -8252,3 +8403,66 @@ from the DFT window; `np.conj(V)` for sidebands with `f + l·f₀ < 0`), `modula
 cycle-averaging) underestimating held `kT/C` by up to **16×** for a fast switch, and A10's finding
 that extreme high-`Q` shooting needs `N ≥ 1600` where an adaptive LTE-controlled integrator does
 not.
+
+
+## The high-Q floor made READABLE — `PSS.grid_error`, built 2026-09-07
+
+**The item.** The floor of this stack is DISCRETISATION, it grows LINEARLY in `Q`, and it is a
+METHOD property — `~1.8e-05·Q` for gear against `~7.0e-12·Q` for radau at the same grid, six orders.
+The default method is still `trap`, and **nothing told a caller whether the number they were reading
+was signal or grid.** That was the actionable half of the noise-floor measurement and it stayed open.
+
+**What was NOT built, and why.** A predictor from those constants. They are real, but they belong to
+that fixture at that grid: `gear` converges at `O(h³)` on an autonomous problem for `Q ≥ 5` and at
+`O(h²)` at `μ = 1`, so a shipped formula would extrapolate a fitted constant across a regime change
+(§D 0y). **Refining the caller's own circuit measures the actual number and needs no calibration.**
+
+**Built:** `PSS.grid_error(evaluate, refine=2, levels=3)` — re-solves on refined grids with every
+other argument identical, and reports `values`, `deltas`, `order`, `error`, `rel_error` and
+`power_law`. Validated against the analytic high-Q reference at `Q = 100`, 120 points refined twice:
+
+| method | observed order | `power_law` | estimated rel err | true rel err | est/true |
+|---|---|---|---|---|---|
+| gear | 3.04 | True | 2.208e-04 | 2.257e-04 | **0.98** |
+| trap | 6.45 | **False** | *withheld* | 4.061e-06 | — |
+| radau | 5.03 | True | 2.132e-11 | 1.076e-11 | 1.98 |
+
+`gear` recovers its own `O(h³)` autonomous rate and its estimate lands within **2%** of the true
+error; `radau` recovers order 5 and over-states by 2×, the safe direction.
+
+### ⚠⚠ Why it takes THREE grids — a two-grid bound is not safe, and this stack is the counterexample
+
+Two grids give `|f_h − f_{h/r}|`, which over-states the fine grid's error by `r^p − 1` — a genuine
+upper bound, and a tempting place to stop. **It fails silently here.** `trap`'s error changes sign
+near `Q = 100`; two terms nearly cancel, consecutive differences shrink FASTER than the error, and
+the two-grid estimate **under-states by 3.6× at 240 points and by 300× at 120**. So the third grid
+is not extra confidence, it is the validity check: `order = log(d₁/d₂)/log r`, tested before any
+estimate built on it is offered.
+
+⚠ **And a generic `0.5 ≤ order ≤ 8` range ACCEPTS the bad case** — that was the first version. `trap`
+at 120 shows apparent order **6.45** with monotone, same-signed deltas and nothing else suspicious;
+a sign test does not catch it either (both deltas negative). Only a **ceiling at the method's own
+nominal order** rejects it, because a method cannot converge faster than its order.
+⚠ The ceiling needs a `+1.5` allowance, and that allowance is not slack: on an autonomous problem
+the period absorbs the leading frequency error, so `gear` (nominal 2) genuinely converges at 3.01.
+Without it the check rejects the shipped default on its own reference fixture.
+
+### ⚠ The analytic reference gained a term, because it ran out before radau did
+
+Measured residual of radau at 960 points against `psd/16·(1 + (11/32)μ²)`, divided by `μ⁴`:
+**−0.0527, −0.0526, −0.0508** at `μ = 0.02, 0.01, 0.005` — constant over a 4× sweep. So
+
+    c = psd/16 · (1 + (11/32) μ² − 0.0527 μ⁴).
+
+⚠⚠ **Without the `μ⁴` term, radau's apparent error reads 3.2e-11 at EVERY grid** — a constant, which
+looks like a solver floor and is the REFERENCE's own truncation. `grid_error` was briefly judged to
+under-state on exactly that reading. **A constant "error" across a grid sweep indicts the reference,
+not the method** — the same tell as the two failed order sweeps in the Radau index-2 record.
+
+### What is still open
+
+The **default method** is unchanged (`trap`). This item makes the cost *visible*; it does not decide
+that `radau` should be the default, which is a cost/robustness trade-off nobody has priced here —
+and `grid_error` is exactly the instrument for pricing it. `grid_error` also cannot see an error both
+grids share (a wrong stamp, a wrong convention): a small `rel_change` says the grid is fine enough,
+never that the answer is right.
