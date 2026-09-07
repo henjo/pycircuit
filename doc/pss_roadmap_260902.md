@@ -4654,6 +4654,27 @@ Carpenter's DIRK review, whose own complaint is that *"many published schemes do
 estimators, dense output, or stage-value predictors"* and which spends 162 pages on exactly that
 class of concern — if "can a local-error estimator see an accumulating phase error" is settled
 anywhere here, it is there.
+
+⚠⚠ **A BETTER B7 CANDIDATE EXISTS, AND IT IS NOT ON DISK** (peer `docs-46`, 2026-09-07). The object
+map surfaced `Local_error_estimates_for_moderately_smooth_proble.pdf`, which is Sickenberger,
+Weinmüller & Winkler, ASC Report 17/2007 (TU Wien), *"Local Error Estimates for Moderately Smooth
+ODEs and DAEs — Part II: SDEs and SDAEs with Small Noise"*. Its §1, verbatim, describes the missing
+half: *"In the first part of the paper we focused our attention on the local error estimates in
+context of ODEs and index-1 DAEs. We were especially interested in low order linear multi-step
+methods... The error estimation procedure based on the idea of Defect Correction, proved to work
+dependably for the case when the problem data is only moderately smooth."* That is B7's question
+almost exactly — and **defect correction is a different estimator class from the
+extrapolation-based LTE this tree uses**, tested under low smoothness. So the open question — is
+LTE-blindness the class or our estimators — plausibly resolves to *"the estimators"*, but Part I is
+what would settle it, and Part II is not self-contained: *"We will repeatedly refer to results and
+formulas from Part I of this paper and cite formula (s.x) from Part I by (I.s.x)."* Same shape as the
+Wright 2003 / Voigtmann thesis gap.
+
+**ACQUISITION TARGET:** Sickenberger, Weinmüller & Winkler, *"Local Error Estimates for Moderately
+Smooth ODEs and DAEs"*, ASC Report 16/2007, TU Wien (Part I). `q find` returns only Part II's
+citation of it. ⚠ Cited, not read; **do not treat B7's question as answered until Part I is on
+disk and the defect-correction estimator is checked against an accumulating period error** — the
+same measurement this file already has for the LTE estimators (fact (a)), on the same fixture.
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — ⚠ **BUILT 2026-09-04**
 
 ✅✅ **THE PLAIN TRANSPOSED REPLAY SHIPPED** as `_monodromy_matvec_transposed_plain`, so
@@ -6442,6 +6463,26 @@ in circuit simulation that do not satisfy the commutativity condition"*, so a ci
 outside the class the estimates are derived for. Neither checked here. **Relevant only if A8's
 sampling stage is ever built the transient-driven way** (the route the refutation condition above
 names); the covariance-propagation route needs none of it.
+
+⚠⚠⚠ **AND A BOUNDARY THAT STOPS 2026-09-07's ORDER RESULT TRANSFERRING TO A8** (peer `docs-46`, from
+Part II of the same group's report — ASC 17/2007, see B7). The same research line confirms the
+RoWi06 finding from inside: *"Several variable step-size strategies for SDEs were developed during
+the last few years. Most of them are based on path-wise arguments and lead to path-wise different
+step-size sequences."* — Biggio's second mechanism, with this group's programme as the alternative,
+and with our motivation stated as theirs: *"applications with small noise in circuit simulation,
+where especially the BDF and the trapezoidal rule have proven valuable in the deterministic case."*
+Then the boundary, verbatim: *"We concentrate on two-step schemes, since the higher numerical
+effort for higher deterministic order pays off only if the noise is very small."* A10's re-measure
+bought 140× (ESDIRK) to 700× (Radau) — **for the DETERMINISTIC period computation.** In a noisy
+transient the payoff for higher deterministic order disappears unless the noise is very small, so
+**A8's transient-noise route does NOT inherit the order win; an A8 built on "use radau, it is 700×
+better" would import a result from the wrong regime.** Cited, not measured — the same conflation
+class as the borrowed error constant behind the withdrawn ~19 200-point ESDIRK figure in A10 (anchored on trap's `K`) — filed before it can happen rather than after.
+**If A8 is ever scoped the transient-driven way, the integrator choice is decided in the noisy
+regime on its own evidence.** (Cluster status: of the six Sickenberger/Winkler transient-noise items
+on disk, four are discussed in this file; Part II beyond §1 and
+`talk_defense_PhD_dissertation_sickenberger.pdf` are unread — the rest of Part II is stochastic
+two-step estimates, which matter only if A8 is scoped.)
 ### Ag. Standing `gmin` insertion, as an OPTION defaulting to 0/off — ⛔ DECIDED 2026-09-07, not built
 
 **Andreas's decision (2026-09-07): we will need standing `gmin` insertion at some point, to support
