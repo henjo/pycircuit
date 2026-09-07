@@ -1222,6 +1222,25 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     and ``min(A) = -0.59``); computed on the coded ``A``/``B`` of all three
     classes, TR-BDF2 is the ONLY stage method in this file with a positive
     radius (``2.41421``, the closed form to the digit).
+    AND THE ZERO IS STRUCTURAL, NOT AN ACCIDENT OF THE TABLEAU (peer
+    reading of the same paper, same day): Kraaijevanger Thm 8.5 (quoted
+    there as Thm 2.2) -- "any RK with A >= 0 has stage order <= 2; if it
+    equals 2 then A must have a zero row".  ``A >= 0`` is NECESSARY for
+    ``R > 0`` (Thm 4.2), so a positive radius forces stage order <= 2 for
+    EVERY Runge-Kutta method; Radau IIA(3) has stage order 3, so its
+    negative entry is the theorem showing its face and no better
+    collocation tableau exists to look for.  Chained with Voigtmann's
+    Theorem 5 (index-2 convergence order = min(p, q)): on an index-2
+    circuit a method can carry a contractivity guarantee OR order above 2,
+    never both -- a Runge-Kutta limitation, not a DIRK one, binding Radau
+    exactly as hard as ESDIRK.  TR-BDF2 sits at the corner (stage order 2,
+    ``R = 1 + sqrt(2)``) and its explicit first stage is the zero row the
+    theorem requires -- checked on the coded ``A``: row 0 is the only zero
+    row and ``A >= 0`` holds; Radau IIA(3) has no zero row and ``A >= 0``
+    fails.  The one unexplored exit is the GLM class (Voigtmann: "diagonally
+    implicit methods with high stage order are possible"), where
+    Kraaijevanger's RK theorems do not bind -- whether a GLM can carry high
+    stage order AND a positive radius is OPEN here, not hinted.
 
     The price is that it is FULLY implicit: the three stages are coupled into
     one ``3n`` system, with no explicit first stage to unlock and no

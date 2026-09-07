@@ -9142,6 +9142,35 @@ measure it there first**; the documented fallback is TR-BDF2, and Bonaventura & 
 hybrid variants trade order for radius if monotonicity ever becomes a live failure. Recorded in the
 `RadauIIA3Integrator` docstring beside the L-stability bullet it qualifies.
 
+⚠⚠⚠ **THE ZERO IS STRUCTURAL — and chained with Voigtmann it closes a design question** (peer
+`docs-46`, same paper, same evening). Two theorems on the page the premise came from, verbatim:
+
+> Thm 2.1 ([31] Thm 4.2): *"For an irreducible RK `R(A,b) > 0` iff `A ≥ 0`, `b > 0` and
+> `Inc(A²) ≤ Inc(A)`."*
+> Thm 2.2 ([31] Thm 8.5): *"Any RK with `A ≥ 0` has stage order `p̃ ≤ 2`. If `p̃ = 2` then `A` must
+> have a zero row."*
+
+`A ≥ 0` is necessary for `R > 0` and forces stage order ≤ 2 — so **a positive monotonicity radius
+implies stage order ≤ 2 for every Runge-Kutta method.** Radau IIA(3) has stage order 3; its
+`a_23 < 0` is the theorem showing its face, and **no collocation tableau of stage order > 2 can ever
+have a positive radius** — there is nothing better to go looking for. With Voigtmann Theorem 5
+(index-2 order = `min(p, q)`):
+
+    positive radius  ⇒  q ≤ 2  ⇒  index-2 convergence order ≤ 2
+
+**On an index-2 circuit: a contractivity guarantee, or order above 2, never both.** A Runge-Kutta
+limitation, not a DIRK one; it binds Radau exactly as hard as ESDIRK. TR-BDF2 sits at the corner —
+stage order 2, `R = 1 + √2`, and its explicit first stage is exactly the zero row Thm 2.2 requires.
+✅ Checked on the coded tableaux as a free validation of the whole computation: TR-BDF2 `A ≥ 0` with
+row 0 the only zero row; Radau IIA(3) `A ≥ 0` FALSE and no zero row; ESDIRK43 `A ≥ 0` FALSE (its
+zero row 0 is the explicit stage, but the negative `a_32` disqualifies it anyway).
+
+⚠ **The one exit is the one already on the table, and it is OPEN, not hinted.** Kraaijevanger's
+theorems are RK theorems. GLMs are a different class, and Voigtmann's claim is only that *"diagonally
+implicit methods with high stage order are possible"*; whether a GLM can carry high stage order AND
+a positive radius is answered by nothing on disk. Third time tonight the GLM route is the only
+unexplored exit: order (Theorem 5), the DIRK stage-order cap, and now contractivity.
+
 ### ⚠⚠ The green suite was WEAK evidence, and that is the part worth keeping
 
 The full suite passed **unchanged, 3099 tests, on the first run** after the default changed. That is
