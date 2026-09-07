@@ -8337,25 +8337,38 @@ The second is mathematical exposition of this tree's own algorithms and contains
 (it does repeat the over-trusting reading of `border_residual` that §2 corrects). The first
 contains two things worth having.
 
-#### ⚠⚠⚠ VERIFIED HERE: `TwoPortAnalysis` cannot take an ARRAY of frequencies
+#### ✅ FIXED 2026-09-07: `TwoPortAnalysis`'s swept NOISE correlation was one frequency
 
-Reported against `analysis_ss.py:256`, `Yreciprocal = G.T + s*C.T`, and **reproduced in this tree**
-on a two-element RC two-port:
+Reported against `analysis_ss.py:256`, `Yreciprocal = G.T + s*C.T`. Reproduced — and **my first
+diagnosis of it, in this section, was wrong in the way that mattered.** I wrote that
+"`TwoPortAnalysis` cannot take an array of frequencies" after seeing a `ValueError` and checking
+`A11`, which comes from `S`. **`S` is computed by `AC` and sweeps correctly.** The transimpedance
+block that trips is the one building the **noise-wave correlation `CS`**, and I had measured the
+quantity the defect does not touch.
 
-```
-scalar  freqs=1e8                 -> OK
-array   freqs=np.array([1e7,...]) -> ValueError: operands could not be broadcast
-                                     together with shapes (3,) (2,2)
-list    freqs=[1e7, 1e8, 1e9]     -> TypeError: can't multiply sequence by non-int
-```
+What it actually did, on an RC two-port (`m = 2`):
 
-`s` enters as a vector and multiplies an `(m, m)` matrix, so the swept form dies in the stamp
-rather than anywhere a caller would look. ⚠ **This partially contradicts a note already in this
-file** — recorded elsewhere as *"the LIST form `freqs=[…]` fails on ANY circuit with a `TypeError`
-(arrays work)"*. Arrays work **there**; they do **not** work through `TwoPortAnalysis`, so "arrays
-work" is not a property of the frequency argument in general. A per-frequency loop in
-`solve_s` is the fix. **NOT FIXED — outside the PSS/shooting scope, recorded so it is not lost**,
-like the two element defects in §5.
+| `len(freqs)` | behaviour |
+|---|---|
+| 1 | correct |
+| `== m` | **NO ERROR — `CS` came back as the LAST frequency's matrix**, shape `(2,2)`, attached to a fully swept `S` |
+| otherwise | `ValueError: could not be broadcast (N,) (m,m)`, deep in the stamp |
+
+Measured at 1e9/1e11 Hz, the swept `CS` equalled the 1e11 matrix **to every digit**. ⚠⚠ So the
+severity is not "it raises" — it is that **a two-port sweep is usually read for `S`, which was right
+throughout, while the noise correlation was silently one frequency.** Every check that reads `S`
+passes. This is the same failure the SYMBOLIC path in the same function already guards against and
+names (*"silently reduced to the last"*); the numeric path had no guard.
+
+**Fixed** by looping `solve_s` per frequency and assembling `CS` in the object-array layout `S`
+already uses, so `NPortS` and the `T @ CS @ Tᴴ` transforms see one convention; the scalar call keeps
+its plain matrix. Swept now equals per-frequency to 0.0 at all three points.
+`test_the_swept_noise_correlation_is_per_frequency_not_the_last_one` uses **three** frequencies on
+purpose — two would be the silent case and one trivially right, so neither alone catches it — and
+was confirmed to fail against the pre-fix code.
+
+⚠ **It still contradicts a note elsewhere in this file** that "arrays work" for `freqs`: they work
+there, not through this path.
 
 #### ⚠⚠ The phase-only noise window COLLAPSES AS 1/Q — §0's organising fact from an eighth side
 
@@ -8384,8 +8397,15 @@ validity limit, now from an eighth side.
 existing warning says the instantaneous phase equation misses slow nodes that FILTER device noise,
 so phase noise is **OVER**-estimated. This is a second, independent mechanism in which the
 phase-only spectrum is **UNDER**-estimated above `f_amp`. Both are live, they are not the same
-effect, and nothing in the code mentions the second. **A caller reading `oscillator_spectrum` above
-`f_0/(2πQ)` is reading a lower bound.**
+effect. **A caller reading `oscillator_spectrum` above `f_0/(2πQ)` is reading a lower bound.**
+
+✅ **BUILT 2026-09-07:** `oscillator_spectrum` now warns when any requested offset reaches `f_amp`,
+quoting `f_amp`, `λ₂`, and the measured excess. **`λ₂` costs nothing here** — `diffusion_constant`
+already calls `pss.ppv()` on the same path, so it records the multiplier rather than paying for a
+second solve. ⚠ And the warning ties into the Ritz gate: when `second_multiplier_certified` is
+False the text says so, because an uncertified `λ₂` makes `f_amp` uncertain too. Silent below
+`f_amp`, fires above, with the computed pole matching `exp(-2πμ)` analytically
+(`test_the_phase_only_spectrum_warns_above_the_amplitude_pole`).
 
 #### Confirmations
 

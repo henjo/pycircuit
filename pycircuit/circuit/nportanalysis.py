@@ -326,25 +326,64 @@ class TwoPortAnalysis(Analysis):
         
         transimpana = TransimpedanceAnalysis(circuit, toolkit=toolkit, epar=self.epar)
 
-        zmlist = transimpana.solve(freqs, branchlist, refnode=refnode,
-                                   complexfreq=complexfreq)
+        ## ⚠⚠ ONE FREQUENCY AT A TIME, AND THE LOOP IS THE FIX.  `S` above
+        ## comes from `AC`, which sweeps; this block did NOT, because
+        ## `TransimpedanceAnalysis.solve` builds ONE `Yreciprocal = G.T + s*C.T`
+        ## and a vector `s` cannot enter it.  What that produced depended on
+        ## the sweep length against the MNA size `m`, which is why it hid:
+        ##
+        ##     len(freqs) == 1   ->  correct
+        ##     len(freqs) == m   ->  NO ERROR, and `CS` silently came back as
+        ##                           the LAST frequency's matrix, paired with a
+        ##                           fully swept `S`
+        ##     otherwise         ->  ValueError deep in the stamp,
+        ##                           "could not be broadcast (N,) (m,m)"
+        ##
+        ## MEASURED on an RC two-port at 1e9/1e11 Hz: the swept `CS` equalled
+        ## the 1e11 matrix to every digit and had shape (2,2) -- one matrix,
+        ## not two.  ⚠ THE S-PARAMETERS WERE RIGHT THROUGHOUT, so any check
+        ## that reads `S` -- which is what a two-port sweep is usually for --
+        ## passes while the NOISE correlation is wrong.
+        ##
+        ## This is the same failure the symbolic guard above already names
+        ## ("silently reduced to the last"); that path refuses because its
+        ## cofactor solve cannot loop cheaply, and this one loops.
+        _swept = not (np.isscalar(freqs) or np.ndim(freqs) == 0)
+        _flist = np.atleast_1d(np.asarray(freqs))
 
-        T = np.asarray(zmlist) * g0**0.5
-        
-        ## Complex frequency variable
-        if complexfreq:
-            s = freqs
-        else:
-            s = 2j*np.pi*freqs
-
-        ## Calculate CY of circuit
         x = np.zeros(circuit.n)
-        CY = circuit.CY(x, np.imag(s), epar = self.epar)
         irefnode = circuit.get_node_index(refnode)
-        CY, = remove_row_col((CY,), irefnode, self.toolkit)
 
-        ## Calculate noise wave correlation matrix
-        CS = np.asarray(T @ CY @ T.conj().T)
+        _cs_per_freq = []
+        for _f in _flist:
+            zmlist = transimpana.solve(_f, branchlist, refnode=refnode,
+                                       complexfreq=complexfreq)
+
+            T = np.asarray(zmlist) * g0**0.5
+
+            ## Complex frequency variable
+            if complexfreq:
+                _s = _f
+            else:
+                _s = 2j*np.pi*_f
+
+            ## Calculate CY of circuit
+            CY = circuit.CY(x, np.imag(_s), epar = self.epar)
+            CY, = remove_row_col((CY,), irefnode, self.toolkit)
+
+            ## Calculate noise wave correlation matrix
+            _cs_per_freq.append(np.asarray(T @ CY @ T.conj().T))
+
+        if _swept:
+            ## Same layout `S` uses: an (nport, nport) object array whose
+            ## entries are the per-frequency values, so `NPortS` and the
+            ## `T @ CS @ T^H` transforms in `nport.py` see one convention.
+            CS = np.zeros((N, N), dtype=object)
+            for _i in range(N):
+                for _j in range(N):
+                    CS[_i, _j] = np.array([_c[_i, _j] for _c in _cs_per_freq])
+        else:
+            CS = _cs_per_freq[0]
 
         return NPortS(S, CS, z0=1/toolkit.integer(g0), toolkit=toolkit)
 

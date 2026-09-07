@@ -11489,6 +11489,14 @@ class PAC(Analysis):
         itself comes from `coloured_diffusion_resolved`.
         """
         v, info = pss.ppv()
+        ## `lambda_2` is computed here anyway; `oscillator_spectrum` needs it to
+        ## report its own validity limit and a second `ppv()` would be a full
+        ## extra solve.  Recorded, not returned, so this method's signature is
+        ## unchanged -- and read ONLY immediately after a call, which is how
+        ## `oscillator_spectrum` uses it.
+        self._last_second_multiplier = (
+            info.get('second_multiplier'),
+            info.get('second_multiplier_certified'))
         m = pss.cir.n - 1
         ## ⚠ `samples_eq`, NOT `samples`.  `CY` is an EQUATION-ROW
         ## covariance and `samples` is `C^T v_1`; contracting it here made
@@ -11928,12 +11936,84 @@ class PAC(Analysis):
         """
         c = self.diffusion_constant(pss)
         f0 = 1.0 / float(pss.period)
+        self._warn_above_amplitude_pole(offsets, f0)
         X = self.carrier_phasor(pss, output, harmonic)
         Sv = abs(X) ** 2 * self.lorentzian(offsets, c, f0, harmonic)
         with np.errstate(divide='ignore'):
             L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
                                            1e-300))
         return Sv, L
+
+    def _warn_above_amplitude_pole(self, offsets, f0):
+        """⚠ THE PHASE-ONLY SPECTRUM IS A LOWER BOUND ABOVE `f_amp`.
+
+        `oscillator_spectrum` returns the PHASE contribution only.  A real
+        oscillator also carries AMPLITUDE noise, which is suppressed near the
+        carrier because the limit cycle restores the amplitude -- but only at
+        the amplitude-relaxation rate.  Above the pole where that restoring
+        action runs out, amplitude noise stops decaying within a period and
+        adds to the total, so this method UNDER-reports.  Relayed measurement
+        against a commercial simulator's total noise, as excess over the
+        phase-only prediction:
+
+            offset     lam2 = 0.90            lam2 = 0.99
+                       (f_amp 26.7 kHz)       (f_amp 2.55 kHz)
+            100 Hz     -0.00 dB               -0.01 dB
+            1 kHz      -0.00 dB               -0.54 dB
+            10 kHz     -0.50 dB               -2.90 dB
+            100 kHz    -3.11 dB               -3.27 dB
+
+        ⚠⚠ AND THE VALID REGION SHRINKS AS `1/Q`, which makes this section 0
+        again rather than a detail.  With `f_amp = -ln(lam2)/(2 pi T)` and
+        `Q = -1/ln(lam2)`,
+
+            f_amp = f0 / (2 pi Q)
+
+        -- verified both ways at 26671.9 / 2544.2 / 253.3 Hz for
+        `lam2 = 0.90 / 0.99 / 0.999`.  So the better the oscillator, the
+        narrower the band in which its phase-only spectrum is the whole
+        answer; at `lam2 = 0.999` it has collapsed below ~253 Hz.
+
+        ⚠ THIS IS THE OPPOSITE SIGN FROM THE ERROR `PSS.ppv` ALREADY WARNS
+        ABOUT.  That one says the instantaneous phase equation misses slow
+        nodes which FILTER device noise, so phase noise is OVER-estimated.
+        This one is a second, independent mechanism in which the phase-only
+        answer is UNDER-estimated.  Both are live and they are not the same
+        effect.
+        """
+        lam2, certified = getattr(self, '_last_second_multiplier',
+                                  (None, None))
+        if lam2 is None:
+            return
+        lam2 = float(lam2)
+        ## `lam2 <= 0` is a real or overdamped mode with no relaxation pole to
+        ## speak of, and `lam2 >= 1` is not a decaying mode at all -- in both
+        ## cases there is no `f_amp` and inventing one would be worse than
+        ## silence.
+        if not (0.0 < lam2 < 1.0):
+            return
+        ## `f_amp = -ln(lam2)/(2 pi T)` and `T = 1/f0`.
+        f_amp = -np.log(lam2) * float(f0) / (2.0 * np.pi)
+        off = np.atleast_1d(np.asarray(offsets, dtype=float))
+        worst = float(np.max(np.abs(off))) if off.size else 0.0
+        if worst < f_amp:
+            return
+        warnings.warn(
+            'PAC.oscillator_spectrum: this is a PHASE-ONLY spectrum and %g Hz '
+            'is above the amplitude-relaxation pole f_amp = %.4g Hz '
+            '(lambda_2 = %.6f, f_amp = f0/(2*pi*Q)). Above f_amp the '
+            'amplitude noise no longer decays within a period and adds to the '
+            'total, so the value returned here is a LOWER BOUND: measured '
+            'excess of a commercial simulator over the phase-only prediction '
+            'is -0.54 dB at 1 kHz and -2.90 dB at 10 kHz for lambda_2 = 0.99. '
+            '%sThe valid band scales as 1/Q, so it NARROWS as the oscillator '
+            'improves.'
+            % (worst, f_amp, lam2,
+               ('' if certified is not False else
+                'lambda_2 itself is NOT certified here (see '
+                "info['second_multiplier_certified']), so f_amp is uncertain "
+                'too. ')),
+            RuntimeWarning, stacklevel=3)
 
     @staticmethod
     def am_pm_indices(a, b):

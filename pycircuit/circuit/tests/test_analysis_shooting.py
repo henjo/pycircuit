@@ -16446,3 +16446,73 @@ def test_the_truncated_lam2_is_gated_on_its_own_ritz_residual():
                                 'second_multiplier_residual')}
     assert not any('NOT CERTIFIED' in str(c.message) for c in caught), \
         'the dense route must not warn'
+
+
+def test_the_phase_only_spectrum_warns_above_the_amplitude_pole():
+    """`oscillator_spectrum` is a LOWER BOUND above `f_amp`, and now says so.
+
+    The method returns the PHASE contribution only. A real oscillator also has
+    AMPLITUDE noise, suppressed near the carrier because the limit cycle
+    restores the amplitude — but only at the amplitude-relaxation rate. Above
+    that pole the amplitude noise no longer decays within a period and adds to
+    the total, so this method under-reports. Relayed measurement of a
+    commercial simulator's excess over the phase-only prediction: −0.54 dB at
+    1 kHz and −2.90 dB at 10 kHz for `λ₂ = 0.99`.
+
+    ⚠⚠ AND THE VALID BAND SHRINKS AS `1/Q`, which makes this §0 again rather
+    than a detail. With `f_amp = -ln(λ₂)/(2πT)` and `Q = -1/ln(λ₂)`,
+
+        f_amp = f0 / (2 pi Q)
+
+    verified both ways at 26671.9 / 2544.2 / 253.3 Hz for
+    `λ₂ = 0.90 / 0.99 / 0.999`. At `λ₂ = 0.999` the phase-only window has
+    collapsed below ~253 Hz — the better the oscillator, the narrower the band
+    in which this answer is the whole answer.
+
+    ⚠ This is the OPPOSITE SIGN from the error `PSS.ppv` already warns about
+    (slow nodes filtering device noise, phase noise OVER-estimated). Two
+    independent mechanisms; only one was in the code before this.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0, mu, psd = 2.0 * np.pi, 0.005, 1e-6
+
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+
+    pss = PSS(cir, method='radau', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / 240, x0=np.array([2.0, 0.0]),
+                  maxiterations=80)
+    pac = PAC(cir, toolkit=circuit.numeric)
+
+    f0 = 1.0 / float(pss.period)
+    ## van der Pol at small `mu`: `|λ₂| = exp(-2 pi mu)`, checked by the
+    ## sibling high-Q test rather than assumed here.
+    lam2 = float(np.exp(-2.0 * np.pi * mu))
+    f_amp = -np.log(lam2) * f0 / (2.0 * np.pi)
+
+    ## The identity the warning is built on, both ways.
+    Q = -1.0 / np.log(lam2)
+    assert abs(f_amp - f0 / (2.0 * np.pi * Q)) < 1e-12 * f_amp, \
+        'f_amp = f0/(2 pi Q) does not hold: %.6g vs %.6g' % (
+            f_amp, f0 / (2.0 * np.pi * Q))
+
+    def fires(offset):
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter('always')
+            pac.oscillator_spectrum(pss, np.array([offset]), 0)
+        return any('amplitude-relaxation' in str(c.message) for c in caught)
+
+    assert not fires(0.1 * f_amp), \
+        'warned below f_amp (%.4g Hz), where the phase-only answer is the ' \
+        'whole answer' % f_amp
+    assert fires(10.0 * f_amp), \
+        'did NOT warn a decade above f_amp (%.4g Hz), where a commercial ' \
+        'simulator measures several dB of excess' % f_amp
