@@ -6720,8 +6720,41 @@ Placed beside the two results above it:
 ⚠⚠ **So on an index-2 circuit the integrator's ORDER and the phase-noise theory's stated
 FOUNDATION are both outside their scope, and NEITHER failure announces itself.** Nothing is wrong
 today — most MNA circuits are index-1 — but this names the class of circuit that would quietly
-invalidate two layers at once, and we already have the tool that detects the class. **Know the
-index of a fixture rather than discover it.**
+invalidate two layers at once, and we already have the tool that detects the class.
+
+⚠⚠⚠ **CORRECTION (2026-09-07): "KNOW THE INDEX TO CHOOSE A METHOD" IS TOO BROAD, AND OUR OWN C4
+ALREADY SAID SO.** I wrote that sentence relaying a peer summary WITHOUT checking it against this
+file, where **C4** has been closed for exactly this since before the relay: *"`index > 1` is **not
+predictive** (all three methods converge on an LI-cutset), and gear is not the workaround (fails on
+2 of 4)"*. The same statement is in `shooting.py:332`. **Check a relayed claim against your own
+record before recording it** — the refutation was three greps away, in this document.
+
+**The two layers come apart, and only one of them is closed:**
+
+| layer | what the index predicts | status |
+|---|---|---|
+| integrator **CONVERGENCE** | **nothing** — all three methods converge on an L-I cutset; Gear-2 fails on 2 of 4 index-2 topologies | **CLOSED (C4), measured here** |
+| integrator **ORDER** | the algebraic components converge at the STAGE ORDER, not the classical one | **MEASURED 2026-09-07: 5 / 3** |
+| **phase-noise theory** | outside Demir's stated index-1 assumption | **OPEN, untested** |
+
+So knowing the index IS useful — for **accuracy and method choice**, which is what the order table
+above is for — and is NOT useful for predicting whether a solve will converge. Those were conflated
+in the sentence this replaces.
+
+⚠ **The phase-noise layer is the one that stands untouched**, because convergence data says nothing
+about it: on an index-2 fixture the PPV/phase-noise results sit outside the assumption the theory
+was proved under, and unlike a convergence failure **that would not announce itself at all — you
+would get a number**. Whether it is a WRONG number is not answered by Demir's paper and is not
+tested here. Settling it needs a fixture with a genuine C-V loop or L-I cutset AND an independent
+phase-noise reference.
+
+⚠ **And the Lamour/März topological criterion carries a condition that the clean version of the
+quote drops**: with controlled sources in the loops or cutsets *"it is possible to be confronted
+with higher index (> 2) problems"* and the index *"is no longer a function of the topology at all,
+because it can turn on element VALUES."* **Every transistor is a controlled source**, so for a real
+circuit the topological criterion may simply not apply — which is why `topological_index` reports
+PROVISIONAL rather than answering. That qualification was already in this file; the relay omitted
+it.
 
 ### A measured integrator ranking that INVERTS the received default — with its confounders
 
