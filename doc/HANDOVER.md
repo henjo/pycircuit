@@ -6,8 +6,9 @@ this document exists to make the leapfrog thread resumable after it, not to be r
 it.
 
 Everything below is committed. ⚠ **The "unpushed backlog" this paragraph used to describe
-is gone** (2026-09-01): `cna-jax-vectorization` is pushed to its tip, and has been routinely
-since. Merging to master remains the repo owner's call and has NOT been done. Use
+was gone as of 2026-09-01**, when `cna-jax-vectorization` was pushed to its tip. ⚠⚠ **THAT IS NO
+LONGER TRUE — 187 commits were unpushed as of 2026-09-07**, so do not read the sentence above as a
+current statement about the remote. Merging to master remains the repo owner's call and has NOT been done. Use
 `git log --oneline origin/cna-jax-vectorization..HEAD | wc -l` to check the current state
 rather than trusting any count written here.
 

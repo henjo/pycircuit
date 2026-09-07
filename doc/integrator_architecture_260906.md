@@ -550,3 +550,80 @@ natural trigger is still unobserved.
   sequential path keeps its efficient one-LU structure.
 - **Continuation rescue / breakpoints** still do not reach shooting — armed only in
   `Transient.solve`, which PSS never calls (it drives `solve_timestep` on its own frozen grid).
+
+---
+
+## The first addition SINCE the refactor was NOT an RK method — what that cost (2026-09-06/07)
+
+The claim above is *"a new integrator is now tableau-only"*, proved with ESDIRK4(3)6. The next
+integrator added was **`ThetaIntegrator`** (roadmap B2: `theta = 1/2 + C h`, Houben's biased
+trapezoidal), and it tests the claim from the other side: **it is an LMM, not an RK method, so the
+tableau route does not apply to it at all.**
+
+It subclasses `TrapezoidalIntegrator` and needed **two new framework predicates**, both because it
+does something no existing method does — **it refuses the L-stable Euler opener**:
+
+| addition | why | default |
+|---|---|---|
+| `Integrator.needs_consistent_iq0()` | with no Euler opener the method reads `iq_{-1}` on its FIRST step, where `_begin_run` seeds ZERO | `False`, so no existing method moves a bit |
+| `needs_x0_unknown()` returning `True` | `x0_unknown=False` MANUFACTURES an opening step — exactly what this method refuses — so the manufactured point is inconsistent with the first theta step reading it | already existed for stage methods |
+
+⚠⚠ **BOTH WERE INVISIBLE TO THE GATE THAT AUTHORISED THE BUILD.** B2's gate solved the periodic
+state in closed form, so it had neither an opening step nor a seeded history and could not exercise
+either. Measured cost of getting them wrong: the zero `iq` seed costs **a full order** (0.97 against
+2.00 on an RC step against the analytic response), and `x0_unknown=False` gives peak **13.13455 with
+`converged=False`** against **20.01524 converged**. **A linear closed-form gate is silent about what
+it has no room for.**
+
+⚠ `check_order_drop` returns `self` deliberately — inheriting trapezoidal's `EulerIntegrator()`
+opener would reintroduce B16's floor and leave the class with no purpose.
+
+⚠ **Plumbing gate:** at `C = 0` theta reproduces trapezoidal coefficient-for-coefficient, and with
+a forced Euler opener matches trap's RC errors to every digit (4.046e-06 / 1.201e-06 / 3.251e-07).
+
+⚠ **OPEN:** K=400 needs ~150 Newton iterations where trap needs 40. The peak is right at every K,
+but until that is explained `theta` is an AVAILABLE method, not a recommendable default.
+
+**So the refactor's claim survives, narrowed to what it actually said:** a new *RK* method is
+tableau-only. A new *LMM* is not, and the cost is whatever framework assumption it violates — here,
+the universal one that every method opens with an L-stable step.
+
+---
+
+## Choosing an integrator for an INDEX-2 circuit — measured 2026-09-07
+
+**The algebraic components converge at the STAGE ORDER, not the classical order.** Capacitor-loop
+fixture (`rank(C) = 2` of `m = 3`), analytic reference, error split by subspace
+(`range(Cᵀ)` vs `null(C)`):
+
+| method | `det A` | p | q (stage) | differential | algebraic |
+|---|---|---|---|---|---|
+| `euler` | — | 1 | 1 | 0.99 | 1.03 |
+| `trap` | — | 2 | 2 | 1.88 | 2.03 |
+| `theta` | — | 2 | 2 | 2.02 | 2.05 |
+| `gear` | — | 2 | 2 | 2.03 | 2.03 |
+| `trbdf2` | 0 | 2 | 2 | 2.04 | 2.04 |
+| `esdirk43` | **0** | 4 | 2 | **4.08** | **2.04** |
+| **`radau`** | 0.01667 | 5 | 3 | **5.08** | **3.05** |
+
+**Differential order = `p`; algebraic order = `q`.** This is Voigtmann's Theorem 5 (Oberwolfach
+Report 18/2006): index-2 convergence is `min(p, q)`. Stage orders computed from each tableau by the
+simplifying condition `C(q)`. ⚠ **`esdirk43`'s algebraic 2.04 was PREDICTED from `q = 2` before the
+sweep ran** — so the mechanism is confirmed predictively.
+
+⚠⚠ **`det A != 0` IS NOT THE DISCRIMINANT, and a first reading of this table said it was.**
+`esdirk43` has `det A = 0` and still preserves its classical order 4 in the differential components.
+HLR Thm 5.9's hypothesis is SUFFICIENT; this fixture does not test its necessity. `trbdf2` shows no
+split only because `p = q = 2` — nothing to reduce.
+
+⚠ **An absence of order reduction is NOT evidence of suitability**: the LMMs show none only because
+their classical order is already at or below the reduced one.
+
+**RECOMMENDATION: `radau` for an index-2 circuit** — on STAGE ORDER 3 against everything else's 2,
+not on `det A`. Its *reduced* algebraic order still beats every other method's unreduced one, and
+its algebraic error at npts=80 is 2.0e-11 against `esdirk43`'s 5.7e-10 and `trbdf2`'s 1.3e-09.
+
+⚠⚠ **AND THE MEASUREMENT LOOKS EXACTLY LIKE A TABLEAU BUG IF YOU DO NOT SPLIT THE ERROR.** An
+order-5 method converging at 3 invites a defect report against a correct tableau. The reduction is
+the DAE index. See the roadmap section for the two ways this sweep lied before it worked (a
+cosine/sine reference convention, and a floor-limited fixture — both reading as "order 0").
