@@ -49,6 +49,39 @@ the docs session, whose equations `pdftotext` drops, so they were read as an ima
   frequency, amplitude and amplitude variance (cited, not verified here). So `|α̇| ≪ 1` bounds the
   Floquet/PPV family; it is not a hard physical wall, and should not be recorded as one.
 
+⚠ **Bonnin 2015 VERIFIED (peer `docs-46`, arXiv:1503.06603, 15 pp), and the sentence above should be
+SPLIT.** *Null:* the quote is faithful — abstract verbatim: *"The stochastic differential equations
+derived for the amplitude and the phase are rigorous, and their validity is not limited to the weak
+noise limit."* **The inference is strengthened**, from §1 in one line: *"previously proposed models
+are special cases of our description, obtained applying different degrees of approximation."* So
+the Floquet/PPV construction is a special case reached by approximation, and `|α̇| ≪ 1` bounds that
+family rather than being a physical wall — the claim, from the source.
+
+⚠ **But the two halves have different scopes.** The abstract separates them: *"…not limited to the
+weak noise limit. **If the noise intensity is small**, the equations can be efficiently solved using
+asymptotic expansions. Formulas for the expected angular frequency, expected oscillation amplitude
+and amplitude variance are derived using Itô calculus."* Confirmed in the body (p. 9): the closed
+forms are `ε`-expansions to second order, `E[θ̇] = 1 + εE[θ̇₁] + ε²E[θ̇₂]`, `E[R] = εE[R₁] + ε²E[R₂]`.
+**So: the SDEs are general; the CLOSED FORMS are the weak-noise branch.** The escape from `|α̇| ≪ 1`
+is real and rigorous, but beyond weak noise it buys *equations* — SDEs to solve numerically — not
+formulas. The boundary claim stands on the SDEs; the closed forms are weak-noise results.
+
+⚠ **Applicability caveat, the one that would bite here.** The formulation
+(`dX = a(X)dt + εB(X)dW`) is `n`-dimensional, but the worked example is a **Stuart–Landau**
+oscillator — a 2-D normal form. No demonstration at circuit scale. Bonnin's own introduction says
+prior numerical phase-function methods are *"either approximate in nature, or unsuitable for
+oscillators of order higher than the second"* — whether *his* construction escapes that is not
+shown. The *"appropriate basis"* giving *"a partial decoupling between the amplitude and the phase
+dynamics"* is where that cost sits, and he does not price it.
+
+✅ **Free corroboration of A9's premise, from an independent author:** *"Amplitude fluctuations can
+be neglected only if the relaxation to the stable orbit is instantaneous, or at least, if it occurs
+on a time scale much shorter than the typical time for the phase dynamics. Such an assumption is
+often taken more for mathematical convenience than being physically plausible."* And an Itô point
+that matches [7]'s correlation term: *"appropriate correction term should be introduced before
+order reduction, to deal with the possible correlation between stochastic variables and noise
+increments."*
+
   **(ii) `λ₂` DOES NOT ORDER THE ORBITAL CONTRIBUTIONS.** From the same paper's HBT results: six
   orders of magnitude separate two Floquet exponents, and the corresponding orbital-noise
   contributions are **not** in that ratio — *"far from the oscillator harmonics, the contribution
@@ -5360,6 +5393,144 @@ with noise ratios (2.00 / 1.00 / 0.67) — it is at a floor (solver tolerance or
 400 points on, so its rate is *unmeasured*, not "order 5"; and a free-period solve that never left
 the `2π` seed would also print near-zero error. The ESDIRK's cleanly decreasing sequence argues
 against the second, but it is checked directly (`period − seed` printed) rather than argued.
+
+**Stuck-period control — PASSED for the ESDIRK, at full precision.** `Tref − seed = 9.947e-11`, so a
+free-period solve that never left its seed would read a *constant* **1.583e-05 ppm**. Measured:
+
+| pts | error, ppm | `period − seed` | rate |
+|---|---|---|---|
+| 400 | 5.257e-05 | +4.298e-10 | — |
+| 800 | 3.253e-06 | +1.199e-10 | 16.16 |
+| 1600 | 2.023e-07 | +1.007e-10 | 16.08 |
+
+The period **moved** off the seed — by more than `Tref − seed` — and is converging *onto* `Tref`
+(`period − seed → 9.9e-11`), with the error falling **below** the stuck-period signature from 800
+points on. Not stuck; the O(h⁴) rate is genuine. At 1600 points `|T − Tref|/Tref ≈ 2e-13`, i.e. the
+ESDIRK reaches the `reltol = 1e-12` floor at 1600 points per period — and at 3200 it reads
+1.216e-08 ppm, rate **16.64**, still O(h⁴) at 1.2e-14 relative.
+
+**Radau is at the ROUNDOFF floor from 400 points — not the tolerance floor.** Full precision:
+
+| pts | `reltol = 1e-12` | `reltol = 1e-14` | `period − seed` |
+|---|---|---|---|
+| 400 | 5.654e-10 ppm | 5.654e-10 ppm | +9.948e-11 |
+| 800 | 2.827e-10 | **0.000e+00** | +9.947e-11 |
+| 1600 | 2.827e-10 | 2.827e-10 | +9.947e-11 |
+| 3200 | 4.241e-10 | 4.241e-10 | +9.947e-11 |
+
+Those are **5.6e-16 relative — one to three ulps of the double representation of 2π** — and they
+are *identical* at both tolerances, which is the signature of roundoff rather than of `reltol`.
+`period − seed` equals `Tref − seed` (9.947e-11) to the last printed digit: **Radau IIA(3)
+reproduces the exact period to machine precision from 400 points on.** Its rate is unmeasurable at
+≥ 400 points *by construction*, and the noise ratios (2.00 / 1.00 / 0.67) mean nothing. ⚠ "At the
+floor from 400" is a *stronger* statement than the ESDIRK's, and it says the cost question between
+the two RK paths is factorisations per step, not accuracy — the point recorded with the peer's table.
+The peer's suggestion is the right instrument: **fewer points** (25–400), where the error is above
+roundoff and the rate is measurable.
+
+**Radau's rate, measured where it can be: ABOVE classical order, and nowhere near stage order.**
+`reltol = 1e-14`; the ESDIRK run alongside as the control that must reproduce 16×:
+
+| pts | radau, ppm | rate | `period − seed` | esdirk43, ppm | rate |
+|---|---|---|---|---|---|
+| 25 | 9.864e-03 | — | +6.208e-08 | 4.703e+00 | — |
+| 50 | 1.197e-04 | **82.4** | +8.514e-10 | 2.484e-01 | 18.9 |
+| 100 | 1.653e-06 | **72.4** | +1.099e-10 | 1.430e-02 | 17.4 |
+| 200 | 2.431e-08 | **68.0** | +9.962e-11 | 8.582e-04 | 16.7 |
+| 400 | 5.654e-10 | 43.0 (→ roundoff) | +9.948e-11 | 5.257e-05 | 16.3 |
+
+Order 5 would be 32× per doubling; order 6 would be 64×. Radau reads **68–82×** until it rolls into
+the roundoff floor at 400. So on this smooth, nearly-harmonic orbit the *period* — a global
+functional of the solution — converges faster than the method's classical local order, and
+**nothing like the stage order 3** that would have signalled DAE order reduction (outcome b). The
+ESDIRK converges onto 16 from above (18.9 → 16.3), so the instrument holds at this tolerance too.
+Both stuck-period controls pass: `period − seed` starts at 6.2e-08 (Radau) and 3.0e-05 (ESDIRK),
+far above `Tref − seed = 9.9e-11`, and converges onto it.
+
+**The one data point, not a cost:** **Radau meets 1 ppb at ~30 points per period** (0.12 ppb at
+50, 9.9 ppb at 25); the ESDIRK at ~400. Against A10's 57 000 with trap: **~1900× and ~140× fewer
+points.** ⚠ Points are still not cost — Radau's step is one coupled `3m×3m` solve, the ESDIRK's is
+four stages on one LU — but at 30 versus 400 steps the factorisation count favours Radau outright,
+and both are so far below 57 000 that the comparison between them is secondary.
+
+### What this does to A10
+
+**A10's closing conclusion is withdrawn as stated.** *"The binding limit is frequency accuracy, not
+Q"* was measured on two order-2 methods and read as a property of the problem; it was a property of
+the order. With the default method now `radau` (owner decision, 2026-09-07), **the 57 000-point
+figure does not apply to the default path** — that path reaches machine precision on the period at
+400 points and 1 ppb at ~30. What remains true: warping is invisible to LTE (fact (a), so B7's
+adaptive stepping cannot see it), and a user who chooses `trap` or `gear` at high `Q` still pays it.
+⚠ Scope of this measurement: one smooth nearly-harmonic index-1 orbit at `Q = 10⁴`. The hostile
+fixture and an index-2 circuit are the next places to check that the RK rates hold — the 5/3 order
+split this file measured on index-2 is exactly the mechanism that could pull Radau back toward
+stage order there.
+
+⚠ **The partition, sharpened by the peer after the sweep landed — recorded so the "rate ~3" branch
+cannot be misread later.** This file's own index-2 table says *differential* order = classical `p`,
+*algebraic* order = stage `q` (radau 5.08 / 3.05; esdirk43 4.08 / 2.04). The A10 sweep measured the
+ESDIRK at 16× — its **differential** order 4, not its algebraic order 2 — so on this fixture the
+period error is governed by the differential components, *measured*. The prediction for Radau was
+therefore **5, not 3**: a rate near 3 would have meant the period was algebraic-dominated for Radau
+while differential-dominated for the ESDIRK on the *same* fixture — an anomaly to investigate (the
+fixture's index via B11, and which component the period functional weights), not a result to file.
+**Measured 68–82×: consistent with everything, and no anomaly.** ⚠ **And the fixture's INDEX must
+travel with the rate:** A10's van der Pol is **index-1** (reduced `C = diag(1, −1)`, nonsingular),
+so *no* algebraic reduction is available and a rate ≥ classical order is the only consistent
+answer. **This measurement checks the sweep, not Radau's DAE behaviour.** The claim "Radau's
+advantage over the ESDIRK survives order reduction" needs the index-2 fixture, where the 5/3 split
+lives, and is not made here.
+
+⚠⚠ **The 68–82× is NOT collocation superconvergence, and the "~30 points" figure is NOT yet safe
+to publish** (peer, same evening). Radau IIA is a collocation method and its superconvergence at the
+mesh points is order `2s − 1 = 5` for `s = 3` (Hairer & Wanner) — that is what makes it order 5
+rather than 3 in the first place, and it has no further order to give. **68–82× per doubling is
+order 6.1–6.4, above that ceiling**, so the obvious mechanism is excluded — recorded as a negative.
+Two candidates remain, with opposite predictions:
+
+* **(A) pre-asymptotic** — the sequence is heading for 32 and hits the floor first. Evidence
+  against, from the numbers themselves: 82.4 → 72.4 → 68.0 falls 12 % then 6 %, *flattening* near
+  ~65–68 rather than descending toward 32 (the ESDIRK control visibly does descend, 18.9 → 16.3
+  onto 16). Predicts the excess shrinks with **refinement** at fixed harmonic content.
+* **(B) periodic-functional cancellation** — the period is a global functional over one full
+  period of a smooth, nearly-harmonic orbit, and leading local-error terms that are oscillatory in
+  phase largely cancel when integrated over a whole period (the mechanism behind the trapezoidal
+  rule's spectral accuracy on smooth periodic integrands). Predicts the excess shrinks with
+  **harmonic content** at fixed grid.
+
+**The test is one sweep:** hold the grid, raise `μ` on the van der Pol toward a relaxation orbit,
+re-measure the rate against the orbit's harmonic content. If the excess collapses as the orbit
+becomes anharmonic, it is (B) — and then *"Radau meets 1 ppb at ~30 points"* is a
+**nearly-harmonic-orbit number, not a Radau number**: right for crystal work, where orbits are
+nearly harmonic, and wrong for a relaxation or ring oscillator. The **rate** is safe either way;
+the **point count** is the part that may not transfer.
+
+**RESOLVED — it is (B).** Grid held at 25/50/100/200 points, `μ` raised, reference = Radau at 3200
+points; the ESDIRK alongside as the control that must stay flat:
+
+| `μ` | THD | Radau order per doubling | ESDIRK order |
+|---|---|---|---|
+| 1.6e-5 | 2.0e-6 | **6.18 / 6.09 / 6.04** | 4.12 / 4.06 / 4.03 |
+| 1.6e-3 | 2.0e-4 | 6.38 / 6.21 / 6.16 | 4.24 / 4.12 / 4.06 |
+| 1.6e-2 | 2.0e-3 | 6.52 / 6.56 / (7.36, floor) | 4.24 / 4.12 / 4.06 |
+| 0.3 | 3.7e-2 | **5.42 / 5.23 / 5.12** | 4.15 / 4.07 / 4.04 |
+| 1.0 | 1.2e-1 | **5.60 / 5.33 / 5.18** | 4.30 / 4.17 / 4.09 |
+
+**The excess over 5 collapses with harmonic content, at fixed grid** — order ~6.1 on the
+nearly-harmonic orbit, converging onto **5** as THD reaches a few percent. The ESDIRK is flat in
+THD at its order 4. So the "faster than local order" behaviour is **periodic-functional cancellation
+on a nearly-harmonic orbit, a property of the oscillator, not of Radau** — and not pre-asymptotic,
+which would have shrunk with refinement instead.
+
+**What that does to the point count.** On the anharmonic orbit (`μ = 1`, THD 0.12) Radau reads
+0.66 ppm / 13.6 ppb / **0.34 ppb** at 25 / 50 / 100 points: **1 ppb at ~80 points per period**, not
+~30. Still **~700× below** A10's 57 000, so the exit is real regardless of orbit shape — but the
+"~30" is a **nearly-harmonic-orbit number**: right for a crystal, wrong for a relaxation or ring
+oscillator. The ESDIRK's ~400 is unchanged across the sweep (8.4e-04 → 1.05e-03 ppm at 200 points
+over four decades of THD), so its figure *does* transfer, and Radau's advantage over it narrows from
+~13× to ~5× as the orbit hardens. **The rate is a Radau number; the point count depends on the
+orbit, and both now say which.** ⚠ Held back until this ran, on the peer's argument, and the hold
+was justified: the headline figure was fixture-specific.
 ### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
 
 ⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
@@ -5382,7 +5553,7 @@ to a couple of examples."* Lineage: Demir, Mehrotra & Roychowdhury 2000 (phase o
 orbital and the phase–orbital correlation) → this paper (what that buys). **A9 wants [7]** — and
 `orbital_correlation`/`orbital_spectrum` cite its Lemma 3.5 and eqs (22)/(23), so the CODE was
 built from the right paper; only this citation line was wrong. The two-paper distinction further
-down this section (1 GHz / 300 harmonics vs 5 GHz / 30) was already correct. ⚠ **Cited, not verified here**: nobody in this repo has read the paper. Arrived
+down this section (1 GHz / 300 harmonics vs 5 GHz / 30) was already correct. ✅ **Verified 2026-09-07** (peer `docs-46` read both Traversa & Bonani 2011 papers, §§2.111/2.112/2.114; the derivation's provenance and equations are recorded further down this item) — *this line read 'Cited, not verified here: nobody in this repo has read the paper' until then*. Arrived
 independently from two sessions on the same afternoon, which is the only reason it is recorded
 this firmly.
 
@@ -5452,6 +5623,25 @@ cycle — our formulation — with the error *"proved to tend to zero along with
 norms of the neglected and retained rows"*. So truncation is legitimate **with that computable
 bound, and only through that method**. `floquet_modes` now defaults to every non-null mode and
 says so; a caller who truncates owes the norm ratio as the gate.
+
+⚠⚠ **What the TCAD 2013 bound is a bound ON — verified 2026-09-07 (peer `docs-46`, TCAD p. 315 §III),
+nulls first.** *Null 1:* the relay is faithful — both quoted elements verbatim (`ε` = ratio of the
+smallest kept to the largest neglected diagonal element of `R′`; error on FEs and eigenvectors *"at
+worst of the same order as the system approximation itself"*). *Null 2:* this file's scoping —
+truncation legitimate *"with that computable bound, and only through that method"*, `floquet_modes`
+defaulting to every non-null mode — was already right. **The new part:** (a) it bounds a specific
+matrix approximation — eq (16) `R = R′ + εD`, the upper-triangular factor of a QR factorisation
+**with column pivoting** of the normalised system matrix — not a choice of modes; (b) ⚠ the method
+is **harmonic balance** (§IV, NOSTOS), so the route that produces the bound is unreachable here and
+it cannot be imported as a gate; (c) ⚠⚠ **its selection rule points the OPPOSITE way from the same
+authors' noise paper.** This paper: *"the larger the absolute value of the neglected FEs, the
+smaller the error induced on the calculated FEs"* — dropping strongly damped large-`|μ|` modes is
+safe **for the stability / FE question**. [7] §V, same two authors: for **orbital noise** the
+contributions do not order by `|μ|` at all — six orders between `μ₂` and `μ₃` and the noise
+contributions **invert**. Same authors, two papers, opposite answers, because they are different
+objects. **Anything citing this bound to justify truncation inside the orbital-noise sum is a scope
+error** — which is why "only through that method" is the right restriction, and why the `nmodes`
+warning shipped tonight belongs on the noise path independently of whether this bound exists.
 
 ⚠ **THE BOUND, READ FROM TCAD 2013 (relayed; cited not verified here).** Their construction keeps
 the first `m` rows of a matrix `R(t)` and neglects the last `n − m`, with small parameter
@@ -5916,6 +6106,8 @@ than the trajectory does. Do not build on the rate without accounting for it.
 J. Roychowdhury, *"Rigorous Q Factor Formulation and Characterization for Nonlinear Oscillators"*,
 arXiv:1710.02015, `09-phase-macromodels-and-prc/`. It defines `Q` from exactly the object `ppv()`
 computes and argues it **is** the energy `Q` rather than a correlate.
+
+⚠ **STALE TWIN — corrected 2026-09-07 (peer `docs-46`, arXiv:1710.02015 §I, verbatim).** The line above kept an attribution the paper's OTHER citation in this file already retracted. The paper: the linear-resonator energy Q *"is in fact just a special case of our definition in (4), with the amplitude-stable state being the zero state"*, and for oscillators *"the proposed Q factor formulation is indeed different"* — a degenerate special case for linear resonators, explicitly NOT the energy Q for oscillators. ⚠ And their Q is NOT `ppv()`'s object: eq (4), extra energy applied / dissipated per cycle, measured by perturbing the orbit and watching the AMPLITUDE settle — a property of the **non-unit** Floquet modes (`floquet_modes`); `ppv()` returns the phase mode `v₁` at the unit multiplier. Related, not the same; the `Q_d`/`Q_λ` bridge must say which mode it bridges.
 
 ⚠ **TWO CAVEATS, EITHER OF WHICH PRODUCES A PLAUSIBLE WRONG ANSWER.** (a) **The threshold
 convention differs by ≈ 3**: `ppv()` reports cycles to `1/e`, Wang & Roychowdhury to 5 %, and
@@ -6998,6 +7190,20 @@ WORKSHOP ABSTRACT — cited, not verified — and the RK order conditions are on
 ones, so it carries more order conditions, multivalue storage and a startup problem. **Recorded as
 the survey's missing option, not as a build.**
 
+⚠ **Re-read by the peer 2026-09-07 (late), three additions to the above.** (1) **Theorem 5 against
+this file's measured index-2 table, three for three:** trbdf2 `p=2, q=2 → min 2` (measured 2.04);
+esdirk43 `p=4, q=2 → 2` (2.04); radau `p=5, q=3 → 3` (3.05). The rule *"differential order = p,
+algebraic order = q"* — reached by measurement after this file's own correction of the `det A ≠ 0`
+reading — **is** the theorem's `min(p,q)`, with the algebraic component binding. (2) **"No order
+reduction" means precisely `q ≥ p`.** That is the whole content of "high stage order" and the exact
+condition under which a diagonally implicit GLM dominates esdirk43 (`q=2`) and radau (`q=3`) on the
+axis the table measures; the survey's "an order-3 GLM does not beat Radau IIA(3)" now carries it.
+(3) **Voigtmann's eq (1) is `A q̇(x,t) + b(x,t) = 0`** — the charge-based, properly-stated-leading-term
+form, the same one under which Demir's `d/dt(yᵀCx) = 0` holds exactly and fails with the derivative
+on the state. Two independent literatures on one formulation: a mild argument for the variational
+path staying in it, which the shipped replays already do. ⚠ **Load-bearing now, not decorative:**
+order is what bought the ~140× / ~1900× in A10's re-measurement, so a theorem about whose order
+survives index-2 is a theorem about cost.
 ## Three flagged items from the literature sweep — 2026-09-07, none verified here
 
 ⚠ **All three are RELAYED, not measured in this tree.** Recorded so they are on record as known
@@ -9361,3 +9567,68 @@ read a 1e24 "drift" on the case Demir *proves* conserved — `x` aligns with the
 conserved quantity computed as a product of a huge and a tiny factor is not measurable however exact
 the theory.** Our around-the-cycle checks run over ONE period on modes with `|λ₂| ≈ 0.88–0.97`, so
 the growth is modest — but this is the reason not to gate on the invariant over many periods.
+
+⚠⚠ **A THIRD INDEPENDENT SOURCE FOR THE CHARGE-BASED VARIATIONAL FORM** (peer, Wang & Roychowdhury
+arXiv:1710.02015 §III). They model the oscillator as `d/dt q(x) + f(x) = 0` (eq 5), perturb the
+initial condition, and linearise to
+
+    d/dt [ C(t)·Δx(t) ] + G(t)·Δx(t) = 0        (9),   C = ∂q/∂x|ₓₛ,  G = ∂f/∂x|ₓₛ   (10)
+
+— derivative on the **product** `C(t)Δx`, not on `Δx` alone. Same form as Demir's DAE paper and as
+Voigtmann's eq (1). **Three independent literatures, three times the same formulation** — the one
+under which `d/dt(qᵀCp) = 0` holds exactly and fails when the derivative moves to the state. Past
+coincidence now: the charge-based form is the *invariant* one, not an implementation choice, and
+the shipped replays are in it. They also flag the constraint the bordered solve already handles —
+*"the assumption that Δx(t) decays with time is not always true for arbitrary perturbations; there
+are constraints on Δx₀"* — the perturbation must avoid the phase direction.
+
+⚠ **§D shape, from how this was found:** *a retraction applied at one citation and not at its twin.*
+Two lines cited the same paper; one was corrected on 2026-09-03 and the other kept the retracted
+reading for four days. When a claim is withdrawn, grep for every citation of its source, not the
+line it was noticed on.
+
+### 5. Appendix A and §V read (peer): step 6 is one accumulator, `S_corr` can be NEGATIVE, and mode selection by exponent is refuted by a worked example
+
+⚠ Relayed by `docs-46` from [7], Appendix A and §V.
+
+**Step 6's whole new state is one running sum.** Appendix A, eq (37): `α(t₁) = ∫₀^{t₁} v₁ᵀ(r+a)B(r+a)ξ(r)dr`,
+then *"using the Fourier expansion of `v₁ᵀ(t)B(t)` and denoting the corresponding j-th Fourier
+coefficient as `Vᵀ_{1_j}`"* — so **`Vᵀ_{1,0} = (1/T)∫₀ᵀ v₁ᵀ(t)B(t)dt`**, the DC coefficient, nothing
+more. Against `c = (1/T)∫v₁ᵀBBᵀv₁ dt`: `c` averages `(v₁ᵀB)(v₁ᵀB)ᵀ`, `V_{1,0}` averages `v₁ᵀB`
+itself — the same integrand factor, unsquared. One extra accumulator in the loop
+`diffusion_constant` already runs.
+
+⚠ **`S_corr` can be NEGATIVE — which confirms `orbital_spectrum`'s known-sign approximation.** §V,
+verbatim: *"the presence of the correlation terms, in particular, allows for the reduction of the
+total noise spectrum with respect to the phase noise component only"*; Fig. 5 annotates a region
+*"Negative spectrum value"* for `S_corr`. So omitting it **over-predicts** total noise — conservative,
+not neutral. `orbital_spectrum`'s docstring says exactly that (*"dropping it OVER-states noise —
+conservative for a design margin"*); the assumed sign matches the source's figure.
+
+⚠⚠ **"Cannot select modes by exponent" is now QUANTIFIED, from the authors' own circuit.** §V, on
+the Colpitts: *"six orders of magnitude separate `μ₂` and `μ₃`, while the corresponding contribution
+to orbital noise are not in the same ratio. Rather, far from the oscillator harmonics, the
+contribution of `μ₃` is dominant with respect to `μ₂` … the eigenvectors may give an important
+contribution … which might also dominate over the `1/μ_l` factor."* **Six orders of separation in
+the exponent and the ordering of contributions INVERTS.** Any gate of the form "keep the modes with
+smallest `|μ_l|`" is refuted by the source's worked example. Four statements now agree: eq (8)'s
+`Σ_{k=2..n}` (structural), p. 4 (asserted), §V (measured on a real circuit), and this repo's
+concentration sweep (`m/n = 0.97`). **Built on it:** `floquet_modes(nmodes=…)` truncates by `|λ|`
+and its docstring said the caller "owes that ratio as the gate" — it now **warns at the call**
+whenever it drops a non-null mode, quoting §V. Silent truncation is how a consumer inherits missing
+weight without knowing.
+
+**Two shape facts for whoever builds further:** orbital spectra *"may present additive peaks with
+respect to the harmonics of the steady-state in presence of Floquet exponents with non null
+imaginary part"*, and the superposition of components — each Lorentzian individually — *"may result
+into a non strictly Lorentzian frequency shape."* `orbital_spectrum` sums per-mode Lorentzians
+centred at `jω₀ + Im μ_l`, so both are represented; its gate asserts a Lorentzian half-width on the
+`h = 0` term of a **real-`μ`** mode, which is the case where that is correct. A gate asserting a
+Lorentzian *total* would be wrong for the right reason.
+
+**Peer's retraction, recorded because the mechanism is general:** their ~19 200-point ESDIRK figure
+extrapolated from *trap's* error constant at 6400 points — `e = Kh^p` has two parameters, only `p` is
+the method's, and `K` differed by three orders. *"In future I will send the rate and refuse to
+convert it to a cost without one data point from the method itself."* Marking it "arithmetic, not a
+result" was not enough, since the number still anchored the discussion. §D shape: **a labelled
+non-result still anchors.**

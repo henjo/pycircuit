@@ -5948,6 +5948,29 @@ class PSS(Analysis):
         ## against 1e-15 for the physical pair. Returning them invites a
         ## caller to average over a mode that means nothing.
         keep = [k for k in range(n) if abs(lam[k]) > self.FLOQUET_NULL_TOL]
+        if nmodes is not None and int(nmodes) < len(keep):
+            ## ⚠⚠ TRUNCATING BY MULTIPLIER MAGNITUDE IS REFUTED BY THE SOURCE'S
+            ## OWN WORKED EXAMPLE.  Traversa & Bonani TCAS-I 2011 Sec. V, on
+            ## their Colpitts: "six orders of magnitude separate mu_2 and mu_3,
+            ## while the corresponding contribution to orbital noise are not in
+            ## the same ratio.  Rather, far from the oscillator harmonics, the
+            ## contribution of mu_3 is dominant with respect to mu_2".  The
+            ## ordering INVERTS.  Four statements agree: eq (8)'s sum over
+            ## k = 2..n (structural), p.4 (asserted), Sec. V (measured on a
+            ## real circuit), this repo's concentration sweep (m/n = 0.97).
+            ## The caller who truncates owes the dropped weight as a gate;
+            ## this says so at the call rather than only in the docstring.
+            warnings.warn(
+                'PSS.floquet_modes: nmodes=%d keeps %d of %d non-null modes, '
+                'selected by |lambda|. Orbital-noise weight does NOT follow '
+                'multiplier magnitude -- Traversa & Bonani (TCAS-I 2011, '
+                'Sec. V) show the contribution ordering INVERTING across six '
+                'orders in mu on their Colpitts, and this repo measured no '
+                'concentration (m/n = 0.97). A covariance or spectrum built '
+                'from a truncated set is missing weight you have not bounded; '
+                'pass nmodes=None for all modes.'
+                % (int(nmodes), int(nmodes), len(keep)),
+                RuntimeWarning, stacklevel=2)
         ## ⚠ `None` means ALL non-null modes -- the default since the IET CDS
         ## 2011 correction -- and it used to fall into `int(None)` here because
         ## the only test passed a number. A default nobody exercises is not a
