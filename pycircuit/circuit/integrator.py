@@ -1197,6 +1197,32 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
       last stage IS the step (``b == A[-1, :]``, ``c[-1] == 1``), so the
       numerical solution lands ON the constraint manifold each step.
 
+    What it does NOT have (2026-09-07, measured after the method became the
+    ``PSS`` default): a radius of absolute monotonicity.  Kraaijevanger's
+    ``R(A, b)`` -- computed here from the definition, on the SAME script that
+    returns ``2`` for Crank-Nicolson, ``inf`` for backward Euler and
+    ``1 + sqrt(2)`` for TR-BDF2 at every ``gamma`` against Bonaventura &
+    Della Rocca's closed form -- is ``R(A, b) = 0`` for Radau IIA(3), and
+    for Radau IIA(2) too.  The cause is one tableau entry: ``a_23 =
+    -2/225 - sqrt(6)/75 < 0``, and ``R > 0`` requires ``A >= 0`` entrywise
+    (Kraaijevanger 1991), so NO step size, however small, carries a
+    monotonicity / positivity / TVD guarantee under this method; TR-BDF2's
+    ``~21%`` margin over trapezoidal has no Radau counterpart at all.  This
+    is the theorem, not an accident of the tableau: Kraaijevanger's order
+    barrier for unconditional contractivity is ``p <= 1`` (the "Radau IIA"
+    named there as unconditionally contractive is the ONE-stage member,
+    i.e. backward Euler), and conditional contractivity at ``p = 5`` needs
+    ``A >= 0``, which the collocation tableau does not give.  Practical
+    reading: the order win that reaches 1 ppb at 30-80 points per period
+    is bought with LARGE steps, and large steps are exactly where a method
+    with ``R = 0`` may overshoot or go negative on a stiff switching
+    circuit -- nothing in this tree has yet MEASURED such a failure, so
+    this is a recorded absence of a guarantee, not a recorded failure.
+    ``ESDIRK43`` is in the same position (``R = 0``, its ``a_32 = -1743/31250``
+    and ``min(A) = -0.59``); computed on the coded ``A``/``B`` of all three
+    classes, TR-BDF2 is the ONLY stage method in this file with a positive
+    radius (``2.41421``, the closed form to the digit).
+
     The price is that it is FULLY implicit: the three stages are coupled into
     one ``3n`` system, with no explicit first stage to unlock and no
     per-stage one-LU shortcut.  The Transient loop therefore runs it through a

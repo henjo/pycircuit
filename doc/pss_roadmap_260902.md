@@ -9096,6 +9096,52 @@ for its monodromy, and that twin was inside my timer. The honest statement is: *
 grid radau costs ~1.4×; per oscillator answer it is cheaper, because trap pays for a whole extra
 solve; per unit of accuracy it is not close.*
 
+### ⚠⚠ What the default gives up — Radau IIA(3) has NO monotonicity radius (measured 2026-09-07)
+
+Raised by peer `docs-46` from Bonaventura & Della Rocca (arXiv:1510.04303, already cited at
+`integrator.py` for TR-BDF2's `R(A,b)`), quoting Kraaijevanger through it: the order barrier for
+unconditional contractivity is `p ≤ 1` (Thm 2.3), and for conditional contractivity `p ≤ 6`
+implicit (Thm 2.4) — *"step size restrictions on RK of formal order p > 1 are inevitable to preserve
+contractivity."* So the peer asked for the number this file records for TR-BDF2 (`1 + √2`, a ~21 %
+step margin over trapezoidal) and not for radau.
+
+**Computed from the Kraaijevanger definition on the coded tableau, validated first on the file's
+own pair plus one:** CN → `2`, BE → `∞`, TR-BDF2 → `2(2−γ)/(1+(1−γ)²)` to five digits at six values
+of `γ` (`1 + √2` at `2 − √2`). ⚠ That gate earned its keep: my first TR-BDF2 tableau had the wrong
+third row and returned `2 + √2` — the validation, not the Radau number, is what caught it.
+
+| method | `R(A,b)` | why |
+|---|---|---|
+| Radau IIA(2), order 3 | **0** | `a_12 = −1/12 < 0` |
+| Radau IIA(3), order 5 (the default) | **0** | `a_23 = −2/225 − √6/75 ≈ −0.0415 < 0` |
+| ESDIRK43 (K&C 4(3)6L[2]SA) | **0** | `a_32 = −1743/31250`, `min(A) = −0.59` |
+| TR-BDF2 | `1 + √2` | `A ≥ 0`, `b ≥ 0`; the closed form to the digit |
+
+**Zero, not finite.** `R > 0` requires `A ≥ 0` entrywise (Kraaijevanger 1991), and the collocation
+tableau has a negative entry, so **no step size, however small, carries a monotonicity / positivity
+/ TVD guarantee under the new default.** TR-BDF2's 21 % margin has no Radau counterpart, and none
+in ESDIRK43 either — computed on the coded `A`/`B` of all three classes, **TR-BDF2 is the only stage
+method in this tree with a positive radius.** ⚠ I had written "ESDIRK43 (to be computed)" as if it
+would join TR-BDF2; the number says otherwise, and the order-4 method that A10 now recommends for
+its warping rate is as unprotected on this axis as the default.
+
+⚠⚠ **The peer's own near-miss, kept because the grep line inverts the theorem:** the sentence
+*"some first order unconditionally contractive RKs are the implicit Euler, the Radau IA and the
+Radau IIA methods"* names the ONE-STAGE members (which are backward Euler). Read as "Radau is
+unconditionally contractive" it manufactures an argument FOR the default out of the theorem that
+constrains it. Locate by the claim, not by the line that matched — the same shape as the peer's
+`find | head -1` and this file's first-citation attach of the W&R correction.
+
+**What this does and does not say.** It is a recorded ABSENCE of a guarantee, not a recorded
+failure: nothing in this tree has measured radau overshooting or going negative on a stiff
+switching circuit, and every fixture in the radau-default arc is smooth. But the tension is real and
+sharpened by the order result itself — 1 ppb at 30–80 points per period is bought with LARGE steps,
+and large steps are where a method with `R = 0` is unprotected. **If the default is ever leaned on
+for a switching or positivity-constrained circuit (Ag's parasitic circuits are the candidates),
+measure it there first**; the documented fallback is TR-BDF2, and Bonaventura & Della Rocca's
+hybrid variants trade order for radius if monotonicity ever becomes a live failure. Recorded in the
+`RadauIIA3Integrator` docstring beside the L-stability bullet it qualifies.
+
 ### ⚠⚠ The green suite was WEAK evidence, and that is the part worth keeping
 
 The full suite passed **unchanged, 3099 tests, on the first run** after the default changed. That is
