@@ -8773,3 +8773,63 @@ biorthonormalisation defect found the same day.
 was about to report, and each time the fault was the FIXTURE or my INSTRUMENT, not the code under
 test. **Van der Pol's half-wave symmetry and unit reactances make whole defect classes invisible,
 and nearly every fixture in this repo is built on that circuit.**
+
+
+## A9 — ROOT CAUSE FOUND AND FIXED: the replayed adjoint is `Cᵀq`, not `q`
+
+**Fixed 2026-09-07, the same evening the Monte Carlo localised it.** `orbital_correlation` read
+**81× low** on an asymmetric orbit. The cause was in `floquet_modes`: the conserved bilinear form of
+the variational DAE is `wᵀCδ`, so over a period `M_aᵀCM = C`, which makes the **left eigenvector of
+the state monodromy `Cᵀw(0)`** — one factor of `Cᵀ` away from the state-space adjoint `q` that eq
+(22) needs. The transposed replay propagates that object, and every sample was used as `q`
+untransformed. Fix: `q(t) ← C(t)⁻ᵀ · (replayed vector)`, per sample, then the C-weighted
+normalisation from this morning — which was the *right normalisation on the wrong vector*, and could
+fix the scale on symmetric orbits but never the direction.
+
+| | before | after |
+|---|---|---|
+| `|cos(seed, q₂_true)|`, a = 0 / 0.30 | 0.9972 / **0.5738** | **1.0000 / 1.0000** |
+| eq22 / Lyapunov (MC-validated), gear, a = 0.30 | **0.0123** | **1.0595** |
+| eq22 / Lyapunov, gear, a = 0.30, 400 → 800 → 1600 pts | — | 1.0595 → 1.0300 → **1.0151** |
+| eq22 / Lyapunov, a = 0 | 1.0018 | 1.0001 |
+
+The residual halves per doubling — **O(h) discretisation of the adjoint replay, converging to 1**,
+not a defect. The asymmetry warning is kept and now says exactly that.
+
+### Why it was invisible, geometrically
+
+Van der Pol's reduced `C = diag(1, −1)`, and at `t = 0` the orbit sits at `[2, 0]` where the adjoint
+is nearly axis-aligned — so `Cᵀq` and `q` point the same way up to sign (`|cos| = 0.9972`). Off-axis
+on an asymmetric orbit they separate, **and there the two adjoints are nearly parallel
+(`|cos(q₂, q₁)| = 0.997`)**, so the wrong vector is mostly phase adjoint. Unit reactance + symmetric
+orbit + axis-aligned start: three coincidences, every fixture in the repo had all three.
+
+### ⚠⚠ It dissolves this morning's "q is stored in reverse time" finding
+
+With the right vector, `q(t)ᵀCp(t)` is conserved at the **same** index (spread **4.2e-04**) and NOT
+at the reversed one (2.0). `diag(1, −1)` flips one component, and on a half-wave symmetric orbit
+that is exactly the relation between `q(t)` and `q(T−t)` — **a sign flip read as a time reversal.**
+The "non-convergent ~1e-2 residual" of the reversed pairing was the same artifact. The around-the-
+cycle assertion I removed this morning is restored, at the same index, with the reason attached.
+
+### How it was found — the chain, because none of the links was skippable
+
+Retraction (fixture-blind) → C² normalisation defect → asymmetric fixture → 80× disagreement →
+**Monte Carlo** (which reversed my physical argument and named the guilty route) → independent
+deflated modes (route B within 2×, shipped 81×) → the seed itself wrong at t = 0 → **`C⁻ᵀ`**. Two
+dead hypotheses on the way, each killed by measurement: `q` flipping (0.5 %) and pair-slicing
+(radau, no pair, fails identically). ⚠ **Every one of today's four fixes to this item — C², the
+verdict reversal, the seed, the dissolved reversal — came from a control or a reference the code
+could not influence.** None came from reading code.
+
+### Also fixed on the way
+
+`floquet_modes` **crashed under `trbdf2`** for as long as the DIRK transposed-matvec existed —
+`"can't multiply sequence by non-int of type 'complex'"` — because the complex-vector `collect`
+path recombined real/imaginary parts with a flat `a + 1j·b` over a **nested** list of per-stage
+solves (and `None` for the explicit first stage). The same line existed at **four** sites, one per
+transposed-matvec variant. Now one recursive `_cx_collect`. Nothing had ever exercised it.
+
+⚠ **Scope limit, recorded not hidden:** `C⁻ᵀ` is `pinv` per sample, so a singular reduced `C`
+(index-2, algebraic rows) yields the minimum-norm algebraic components of `q` — which is a choice,
+not a solution. Every gate fixture is index-1 with nonsingular `C`.

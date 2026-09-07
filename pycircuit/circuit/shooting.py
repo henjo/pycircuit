@@ -531,6 +531,17 @@ def topological_index(cir):
                    'provisional': bool(unclassified)}
 
 
+def _cx_collect(a, b):
+    """`a + 1j*b` over possibly NESTED lists of arrays (collected adjoint
+    samples; a DIRK nests per-stage solves inside per-step entries)."""
+    if a is None:
+        ## an explicit first stage stores no solve (`D_0 = I`)
+        return None
+    if isinstance(a, (list, tuple)):
+        return type(a)(_cx_collect(x, y) for x, y in zip(a, b))
+    return np.asarray(a) + 1j * np.asarray(b)
+
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
 
@@ -3061,9 +3072,13 @@ class PSS(Analysis):
             im = self._monodromy_matvec_transposed_plain(
                 opening, steps, np.asarray(v).imag, collect, ii[1])
             if collect:
-                return (re[0] + 1j * im[0],
-                        [a + 1j * b for a, b in zip(re[1], im[1])],
-                        [a + 1j * b for a, b in zip(re[2], im[2])])
+                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
+                ## per-stage solves per step), so a flat `a + 1j*b`
+                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
+                ## raised "can't multiply sequence by non-int of type
+                ## 'complex'" for as long as the path existed.  Recurse.
+                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
+                        _cx_collect(re[2], im[2]))
             return re + 1j * im
         v = v.astype(float)
         if not steps:
@@ -3245,9 +3260,13 @@ class PSS(Analysis):
             im = self._monodromy_matvec_transposed_full(
                 steps, v.imag, collect, ii[1])
             if collect:
-                return (re[0] + 1j * im[0],
-                        [a + 1j * b for a, b in zip(re[1], im[1])],
-                        [a + 1j * b for a, b in zip(re[2], im[2])])
+                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
+                ## per-stage solves per step), so a flat `a + 1j*b`
+                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
+                ## raised "can't multiply sequence by non-int of type
+                ## 'complex'" for as long as the path existed.  Recurse.
+                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
+                        _cx_collect(re[2], im[2]))
             return re + 1j * im
         v = v.astype(float)
         if not steps:
@@ -3388,9 +3407,13 @@ class PSS(Analysis):
             im = self._monodromy_matvec_transposed_dirk(
                 steps, v.imag, collect, ii[1])
             if collect:
-                return (re[0] + 1j * im[0],
-                        [a + 1j * b for a, b in zip(re[1], im[1])],
-                        [a + 1j * b for a, b in zip(re[2], im[2])])
+                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
+                ## per-stage solves per step), so a flat `a + 1j*b`
+                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
+                ## raised "can't multiply sequence by non-int of type
+                ## 'complex'" for as long as the path existed.  Recurse.
+                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
+                        _cx_collect(re[2], im[2]))
             return re + 1j * im
         v = v.astype(float)
         if not steps:
@@ -3805,9 +3828,13 @@ class PSS(Analysis):
             im = self._monodromy_matvec_transposed(
                 C0, steps, np.asarray(v).imag, collect, ii)
             if collect:
-                return (re[0] + 1j * im[0],
-                        [a + 1j * b for a, b in zip(re[1], im[1])],
-                        [a + 1j * b for a, b in zip(re[2], im[2])])
+                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
+                ## per-stage solves per step), so a flat `a + 1j*b`
+                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
+                ## raised "can't multiply sequence by non-int of type
+                ## 'complex'" for as long as the path existed.  Recurse.
+                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
+                        _cx_collect(re[2], im[2]))
             return re + 1j * im
         v = v.astype(float)
         w1, w2 = v[:m].copy(), v[m:].copy()
@@ -5966,6 +5993,50 @@ class PSS(Analysis):
             qtraj = qtraj[:len(ts2)]
             q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
                                  for j in range(len(qtraj))])
+
+            ## ⚠⚠⚠ THE REPLAYED VECTOR IS `C^T q`, NOT `q`.  The conserved
+            ## bilinear form of the variational DAE is `w^T C delta`, so over
+            ## a period `M_a^T C M = C`, which makes the LEFT eigenvector of
+            ## the state monodromy `C^T w(0)` -- the adjoint mode in the
+            ## "left-eigenvector coordinates", one factor of `C^T` away from
+            ## the state-space adjoint `q` that eq (22) and every covariance
+            ## here need.  The transposed replay propagates that object, so
+            ## every sample of `q` above is `C(t)^T q_true(t)`.
+            ##
+            ## ⚠ INVISIBLE ON EVERY FIXTURE THIS REPO HAD, for a geometric
+            ## reason: van der Pol's reduced `C` is `diag(1, -1)`, and at
+            ## `t = 0` the orbit sits at `[2, 0]` where the adjoint is nearly
+            ## axis-aligned, so `C^T q` and `q` point the same way up to sign
+            ## (`|cos| = 0.9972`).  On an ASYMMETRIC orbit the seed is off-axis
+            ## and the two separate -- measured `|cos(v_k, q_true)| = 0.5738`
+            ## at `a = 0.30` on van der Pol + `a u^2` -- while the two adjoints
+            ## there are nearly PARALLEL (`|cos(q_2, q_1)| = 0.997`), so the
+            ## wrong vector is mostly phase adjoint.  Result: the orbital
+            ## covariance was 81x LOW against a Monte Carlo (0.0123 of the
+            ## truth), and `|cos(C^-T v_k, q_true)| = 1.0000` at both
+            ## asymmetries.  Applying `C^-T` here takes it to 1.06 of the
+            ## Monte Carlo at `a = 0.30` and 1.0004 at `a = 0`.
+            ##
+            ## ⚠ THIS ALSO DISSOLVES THE "q IS STORED IN REVERSE TIME"
+            ## finding recorded the same day: with the right vector,
+            ## `q(t)^T C p(t)` is conserved at the SAME index (4.2e-04) and
+            ## NOT the reversed one (2.0).  `diag(1, -1)` flips one
+            ## component, which on a half-wave symmetric orbit is exactly the
+            ## relation between `q(t)` and `q(T - t)` -- a sign flip read as a
+            ## time reversal.
+            ##
+            ## ⚠ Per sample, because `C` may depend on the state.  `pinv`
+            ## rather than `inv` so a singular reduced `C` (an index-2 MNA,
+            ## algebraic rows) does not raise; the algebraic components of `q`
+            ## are then the minimum-norm choice, which is a SCOPE LIMIT and
+            ## not a solution -- recorded, not hidden.
+            _Wq = np.delete(np.asarray(self.waveform[1], dtype=float),
+                            self.irefnode, axis=0)
+            _nw = _Wq.shape[1]
+            for _j in range(q.shape[1]):
+                _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
+                                 dtype=float)
+                q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
 
             ## ⚠⚠ RENORMALISE ON THE STATE BLOCK. `v_k` was biorthonormalised
             ## against `u_k` at the map's FULL width `n`; under a
@@ -11488,30 +11559,28 @@ class PAC(Analysis):
         return float(np.max(np.abs(row[:half] + row[half:2 * half]))) / den
 
     def _warn_if_orbit_is_asymmetric(self, pss):
-        """⚠⚠ `orbital_correlation` IS WRONG ON AN ASYMMETRIC ORBIT.
+        """⚠ On a strongly asymmetric orbit the modal sum carries an O(h)
+        discretisation residual that the symmetric fixtures never show.
 
-        Settled 2026-09-07 by a Monte Carlo -- direct SDE simulation of the
-        variational system, sharing no Lyapunov solve and no modal sum.  On
-        van der Pol + `a u^2`:
+        ⚠⚠ THIS WARNING WAS WRITTEN FOR A DEFECT THAT IS NOW FIXED, and kept
+        for the residual.  On 2026-09-07 `orbital_correlation` read 81x LOW
+        against a Monte Carlo on van der Pol + `a u^2` at asymmetry 0.41.
+        The cause was in `floquet_modes`: the replayed adjoint is `C^T q`,
+        not `q`, and was used untransformed -- invisible on a unit-reactance
+        symmetric orbit, catastrophic off-axis where the two adjoints are
+        nearly parallel.  With the `C^-T` transform applied, against the
+        same Monte-Carlo-validated Lyapunov reference at `a = 0.30`:
 
-            asym    relative error of the modal sum
-            0.000   0.3 %      (the CONTROL: MC hits both routes to 2 %)
-            0.067   5.2 %
-            0.201   71 %
-            0.406   99 %       (MC/Lyapunov = 1.0002, MC/modal = 81)
+            npts    eq22 / Lyapunov
+             400       1.0595
+             800       1.0300
+            1600       1.0151
 
-        The Lyapunov route (`oscillator_covariance`) tracks the Monte Carlo to
-        0.02 %; this modal route does not.  ⚠ Harmonic truncation is NOT the
-        cause -- the disagreement is FLAT from `H = 4` to `H = 128`.
-
-        ⚠⚠ A9's three-way gate cannot see this: it runs on van der Pol, whose
-        orbit is half-wave SYMMETRIC, where all three routes agree.  The same
-        shape as the `C^2` biorthonormalisation defect found the same day --
-        a good gate, blind in the one direction that mattered.
-
-        ⚠ The ROOT CAUSE in eq (22) is NOT identified.  Until it is, this and
-        `orbital_spectrum` are trustworthy only on a near-symmetric orbit;
-        `oscillator_covariance` is the validated route for the covariance.
+        halving per doubling -- an `O(h)` DISCRETISATION residual of the
+        adjoint replay, converging to 1, not a defect.  At `a = 0` it is
+        1.0001.  So this warns that the residual is grid-limited on such an
+        orbit and says how to shrink it; it no longer says the answer is
+        wrong, because it is not.
         """
         try:
             asym = self._orbit_asymmetry(pss)
@@ -11521,13 +11590,13 @@ class PAC(Analysis):
             return
         warnings.warn(
             'PAC.orbital_correlation: this orbit has half-wave asymmetry '
-            '%.3f, above the %.2f limit where the modal sum is KNOWN WRONG. '
-            'Measured against a Monte Carlo: 5.2%% error at asymmetry 0.067, '
-            '71%% at 0.201, 99%% at 0.406 (81x low). Harmonic truncation is '
-            'not the cause (flat from H=4 to H=128) and the root cause is not '
-            'identified. Use PAC.oscillator_covariance, which tracks the '
-            'Monte Carlo to 0.02%%, for the orbital covariance on this '
-            'circuit.' % (asym, self.ORBITAL_ASYMMETRY_LIMIT),
+            '%.3f. On such an orbit the modal sum carries an O(h) '
+            'discretisation residual of the adjoint replay that symmetric '
+            'orbits do not show -- measured 6%% high at 400 points per period '
+            'and halving per doubling against a Monte-Carlo-validated '
+            'reference. Refine the grid to tighten it, or use '
+            'PAC.oscillator_covariance (Lyapunov) for the covariance alone.'
+            % (asym,),
             RuntimeWarning, stacklevel=3)
 
     def orbital_correlation(self, pss, H=None):

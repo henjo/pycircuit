@@ -11140,42 +11140,29 @@ def test_floquet_modes_are_genuinely_periodic():
             'mode %d: q(0)^T C p(0) = %.6f%+.6fj on the state block, not 1 -- ' \
             'any covariance assembled from these parts is off by |c|^2' \
             % (k, c.real, c.imag)
-        ## ⚠⚠ THE AROUND-THE-CYCLE CHECK IS DELIBERATELY NOT ASSERTED, AND
-        ## THE REASON IS AN OPEN FINDING RATHER THAN A TOLERANCE PROBLEM.
-        ## This block used to assert `q[j]^T p[j] = 1` at every sample.  That
-        ## assertion was WRONG TWICE OVER and passed only by coincidence: the
-        ## product is `C`-weighted (unit reactances hid it), and `q` is stored
-        ## in REVERSE time order relative to `p` (a backward replay), so the
-        ## same-index pairing compares vectors from different times.  Measured
-        ## across the cycle: `q[j]^T C p[j]` = 1.000, -0.022, -1.000, 1.000,
-        ## -0.999 -- nonsense -- against `q[N-1-j]^T C p[j]` = 1.000, 0.990,
-        ## 0.999, 1.000, 1.000.  They agree only at `j = 0`, `N/2`, `N-1`,
-        ## and index 0 is the only place any shipped code looked.
+        ## ⚠⚠ AROUND THE CYCLE, AT THE SAME INDEX -- RESTORED 2026-09-07 after
+        ## being removed the same day.  This block once asserted
+        ## `q[j]^T p[j] = 1`, which was wrong twice (no `C` weighting; and it
+        ## read a spread of 2.0).  A reversed pairing `q[N-1-j]` then gave
+        ## ~1e-2 that did NOT converge with refinement, and was recorded as
+        ## "q is stored in reverse time order, correspondence unknown".
         ##
-        ## ❌ BUT THE REVERSED PAIRING IS NOT EXACT EITHER, AND IT DOES NOT
-        ## CONVERGE.  Spread around the cycle against `npts`:
-        ##
-        ##     npts    mode 0      mode 1
-        ##      200    1.2538e-02  3.1557e-02
-        ##      400    1.1557e-02  3.0786e-02
-        ##      800    1.0835e-02  3.0163e-02
-        ##     1600    1.0429e-02  2.9971e-02
-        ##
-        ## ratios ~1.05 per doubling, not 4 -- it settles on a NON-ZERO
-        ## limit, so this is not discretisation.  Offsets of -2..+2 on the
-        ## reverse index do not improve it either.  So the exact
-        ## correspondence between the adjoint and forward samples is NOT
-        ## `N-1-j`, and is currently unknown.
-        ##
-        ## Nothing is asserted here because a bound would be tuned to a
-        ## number I cannot justify.  ⚠ The `t = 0` normalisation above IS
-        ## exact (1e-9) and is what every shipped consumer uses; and
-        ## `orbital_correlation` validates against an INDEPENDENT Lyapunov
-        ## reference at `c = 0.25/1/4` to 0.4 %, so the Fourier path is
-        ## self-consistent with whatever the convention is.  ⚠ An ASYMMETRIC
-        ## orbit is what would separate "intentional storage" from "latent
-        ## defect" -- van der Pol's half-wave symmetry can average a
-        ## mismatch away.  Recorded as open in the roadmap.
+        ## ⚠ BOTH READINGS WERE ARTIFACTS OF ONE DEFECT: the replayed adjoint
+        ## was `C^T q`, not `q` (see the `C^-T` block in `floquet_modes`).
+        ## With `C = diag(1, -1)` that flips one component, which on a
+        ## half-wave symmetric orbit is exactly the relation between `q(t)`
+        ## and `q(T - t)` -- a sign flip read as a time reversal.  With the
+        ## right vector the invariant holds at the SAME index (measured
+        ## spread 4.2e-04 on this fixture) and NOT at the reversed one (2.0).
+        Pm_, Qm_ = md['p'], md['q']
+        _nn = min(Pm_.shape[1], Qm_.shape[1])
+        cyc = [abs(complex(np.vdot(Qm_[:, j], Cm @ Pm_[:, j])) - 1.0)
+               for j in range(0, _nn - 1, max(1, _nn // 8))]
+        assert max(cyc) < 5e-3, \
+            'mode %d: q(t)^T C p(t) drifts from 1 around the cycle by %.3e ' \
+            'at the SAME index. If this has regressed to ~2, the replayed ' \
+            'adjoint is being used as q without the C^-T transform again' \
+            % (k, max(cyc))
 
     ## ⚠ AND THE NULL MODES MUST BE ABSENT. A DAE monodromy has exact
     ## zeros; asked for more modes than exist, it must not pad with them.
@@ -16775,3 +16762,49 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
     assert max(seen) / min(seen) < 1.05, \
         'the ratio at f_amp moved by %.3f across a 16x sweep in C (%r); it ' \
         'must be fixture-independent' % (max(seen) / min(seen), seen)
+
+
+def test_floquet_modes_runs_under_the_stage_methods_and_conserves_qCp():
+    """`floquet_modes` CRASHED under trbdf2 for as long as the DIRK transposed
+    matvec existed -- "can't multiply sequence by non-int of type 'complex'".
+
+    The complex-vector `collect` path recombined real and imaginary parts with
+    a flat `a + 1j*b` over a NESTED list of per-stage solves (with `None` for
+    the explicit first stage).  The same line sat at FOUR sites, one per
+    transposed-matvec variant.  Nothing exercised it: every Floquet test in
+    this file used gear.  Fixed 2026-09-07 with one recursive `_cx_collect`.
+
+    This asserts the two stage methods produce modes at all, and that the
+    C-weighted invariant holds at the same index -- the property the `C^-T`
+    fix of the same day restored.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    for method in ('trbdf2', 'radau'):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+        pss = PSS(cir, method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                      maxiterations=300)
+            modes = pss.floquet_modes(pss)      # used to raise under trbdf2
+        assert len(modes) == 2, '%s: expected 2 modes, got %d' % (
+            method, len(modes))
+        x0r = np.delete(np.asarray(pss.waveform[1], dtype=float)[:, 0],
+                        pss.irefnode)
+        Cm = np.asarray(pss._C_at(x0r), dtype=float)
+        for k, md in enumerate(modes):
+            n_ = min(md['p'].shape[1], md['q'].shape[1])
+            cyc = [abs(complex(np.vdot(md['q'][:, j], Cm @ md['p'][:, j])) - 1.0)
+                   for j in range(0, n_ - 1, max(1, n_ // 8))]
+            assert max(cyc) < 5e-2, \
+                '%s mode %d: q^T C p drifts by %.3e around the cycle' % (
+                    method, k, max(cyc))
