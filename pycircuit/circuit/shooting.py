@@ -11132,6 +11132,43 @@ class PAC(Analysis):
             seq.append(0.5 * (K + K.T))
         return K0, seq
 
+    ## ⚠⚠⚠ SCOPE LIMIT MEASURED 2026-09-07: THIS ROUTE DEPARTS FROM PHYSICS
+    ## ON AN ASYMMETRIC ORBIT, AND `orbital_correlation` DOES NOT.  van der
+    ## Pol + `a u^2`, sweeping `a` (orbit asymmetry 0 -> 0.41):
+    ##
+    ##     a      |R| modal    |Lyap| proj  |K_orb raw|  |lam2|    amp
+    ##     0.00   4.4515e-06   4.4437e-06   5.0034e-06   0.882521  2.000
+    ##     0.05   4.4702e-06   4.7152e-06   4.7471e-06   0.881719  2.004
+    ##     0.15   4.9505e-06   1.7371e-05   2.7846e-05   0.874886  2.034
+    ##     0.30   3.6913e-06   2.9986e-04   9.5944e-04   0.844322  2.164
+    ##
+    ## `|lam2|` FALLS (0.883 -> 0.844), so amplitude relaxation gets FASTER
+    ## and the transverse variance should get slightly SMALLER.  The modal
+    ## sum does exactly that (4.45e-06 -> 3.69e-06).  This route grows 67x
+    ## projected and 192x raw.  ⚠ The RAW covariance grows MORE than the
+    ## projected one, so it is not the oblique projection -- it is this
+    ## covariance.
+    ##
+    ## ⚠ FOUR EXPLANATIONS EXCLUDED BY MEASUREMENT, not by argument:
+    ##   * harmonic truncation -- the disagreement is FLAT at 9.877e-01 from
+    ##     `H = 4` to `H = 128`;
+    ##   * the projection's tangent proxy -- `|cos(u, tangent)| = 1.000000`
+    ##     at every asymmetry, against the Floquet phase mode;
+    ##   * the modal decomposition -- `|lam1| = 1.000000`, `lam2` real and
+    ##     well separated, one orbital mode, `p(T)-p(0) ~ 1e-14`,
+    ##     `q^T C p = 1.000000`;
+    ##   * a defect in `orbital_correlation` -- its two internal routes agree
+    ##     to 3.4e-04 independently of `a`.
+    ##
+    ## ⚠⚠ WHAT THIS DOES **NOT** INVALIDATE.  Every use of this function as a
+    ## reference in this file was on a SYMMETRIC orbit, where the two routes
+    ## agree to 0.3 % -- including A9 step 3's three-way gate and the C^2
+    ## biorthonormalisation defect it caught on 2026-09-07.  Those stand.
+    ## ⚠ WHAT IS OPEN: which route is right is NOT settled.  The physical
+    ## argument favours the modal one, but that is an argument, and this file
+    ## does not close items on arguments.  A transient MONTE CARLO of the
+    ## orbital fluctuation is the decisive third route and has not been run.
+    ## Until then, treat this on a strongly asymmetric orbit as unvalidated.
     def oscillator_covariance(self, pss, samples=False):
         """The state covariance of a FREE-RUNNING oscillator, split in two.
 
