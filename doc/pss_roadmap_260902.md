@@ -9267,13 +9267,45 @@ setting — and the earlier gap `lamour-index-from-circuit-topology` (B11's sour
 different angles — *can a diagonally implicit multivalue method escape the RK barriers closed
 tonight?* — and the fourth is B7:
 
-| source | what it answers |
-|---|---|
-| Lamour, März & Tischendorf, *DAEs: A Projector Based Analysis* — §5.2.3, §5.3.3, §5.5.3 | the GLM-on-DAE exit: high stage order AND a positive monotonicity radius, on a DAE |
-| same book, §10.2.2.2–3 (p. 482) | `lamour-index-from-circuit-topology` — B11's topological index rests on front matter alone |
-| W. Wright, *General linear methods with inherent Runge-Kutta stability*, PhD, Auckland 2003 | the concrete GLM tableau and its stage order (line ~7298: abstract only on disk) |
-| S. Voigtmann, *General Linear Methods for Integrated Circuit Design*, PhD, Humboldt | the full Nordsieck order conditions behind Theorem 5 |
-| Sickenberger, Weinmüller & Winkler, ASC Report 16/2007 (Part I) | B7: whether defect-correction local error estimates see an accumulating period error |
+| source | what it answers | status (same night) |
+|---|---|---|
+| Lamour, März & Tischendorf, *DAEs: A Projector Based Analysis* — §5.2.3, §5.3.3, §5.5.3 | the GLM-on-DAE exit: high stage order AND a positive monotonicity radius, on a DAE | ❌ the file that arrived is byte-identical to the 26-page Springer preview already on disk |
+| same book, §10.2.2.2–3 (p. 482) | `lamour-index-from-circuit-topology` — B11's topological index rests on front matter alone | ❌ same file |
+| W. Wright, *General linear methods with inherent Runge-Kutta stability*, PhD, Auckland 2002 | the concrete GLM tableau and its stage order (line ~7298: abstract only on disk) | ✅ **LANDED, 188 pp — see below** |
+| S. Voigtmann, *General Linear Methods for Integrated Circuit Design*, PhD, Humboldt | the full Nordsieck order conditions behind Theorem 5 | ✅ landed, 259 pp, unread |
+| Sickenberger, Weinmüller & Winkler, ASC Report 16/2007 (Part I) | B7: whether defect-correction local error estimates see an accumulating period error | ❌ Part II arrived for the third time; Part I is its ref [19], *"to appear in BIT"* |
+| Butcher & Wright, *Construction of GLMs with RK stability properties*, Numer. Algorithms 36 (2004) | a shorter IRKS source, likely with concrete tableaux | ✅ landed unasked, unread |
+
+✅✅ **WRIGHT READ (peer `docs-46`): THE GLM EXIT IS REAL AND CONSTRUCTIVE ON THE ORDER HALF.**
+Abstract, verbatim: *"The first assumption is that the stage order is equal to the overall order of
+the general linear method. This results in methods which, among other things, are not affected by
+the order reduction phenomenon. The second assumption is that a Nordsieck vector is passed from step
+to step…"* — the IRKS conditions against a doubly companion matrix `X`: `BA = XB`, `BU = XV − VX`,
+`σ(V) = {1, 0}`. So **`q = p` by construction**, the Nordsieck hypothesis of Voigtmann's Theorem 5
+holds, and index-2 convergence is `min(p, q) = p` — no order reduction. The Oberwolfach abstract is
+substantiated at its source. **And the cost claim holds** (§1.4): *"the A matrix should be lower
+triangular so as to obtain the low costs of the diagonally implicit Runge-Kutta methods … the
+nonlinear system can be solved stage by stage sequentially … only one Jacobian evaluation and
+matrix factorisation necessary per integration step if the diagonal elements of A are equal …
+comparable to s steps of the backward differentiation formulae."* Sequential stages, one LU per
+step, stage order = classical order: the combination Kennedy & Carpenter call impossible for RK,
+and no contradiction — these are not RK methods; the Nordsieck vector carried between steps is what
+buys the stage order without a full `A`. Wright names the sub-class for DAEs: methods with *"strong
+stiff accuracy"* are *"the most suitable amongst the IRKS methods for the solution of differential
+algebraic equations."*
+
+❌ **The contractivity half is NOT answered by Wright** — zero hits in 188 pages for monotonicity,
+positivity, SSP or contractivity. Tonight's incompatibility (`A ≥ 0 ⇒ q ≤ 2`) is an RK theorem that
+does not bind these methods, and nothing in Wright says a GLM can have both. Open, needs a
+different source. ⚠ **A FOURTH order concept, new here — STIFF ORDER** (Wright §1.3, from Prothero
+& Robinson and Frank/Schneid/Überhuber): *"when a stiff problem is solved the order achieved by the
+numerical method is not the classical order p but closely related to the stage order q. The stiff
+order is never greater than q − 1."* Distinct from classical `p`, stage `q`, and the index-2
+component split; it caps esdirk43 (`q = 2`) at stiff order 1 and radau (`q = 3`) at 2. **NOT
+reconciled with tonight's measurements** — those are period functionals on a nearly-harmonic orbit,
+not Prothero–Robinson tests — and recorded as a concept to keep separate, not a contradiction. The
+Prothero–Robinson problem is the standard instrument and a small fixture, if reconciliation is ever
+wanted.
 
 **Decision recorded with the list: no more corpus time on the GLM question until one of these
 lands.** Everything reachable from disk has been extracted — Theorem 5's `min(p, q)`, the DIRK
