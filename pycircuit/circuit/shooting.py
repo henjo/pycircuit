@@ -11132,7 +11132,31 @@ class PAC(Analysis):
             seq.append(0.5 * (K + K.T))
         return K0, seq
 
-    ## ⚠⚠⚠ SCOPE LIMIT MEASURED 2026-09-07: THIS ROUTE DEPARTS FROM PHYSICS
+    ## ⚠⚠⚠ THE NOTE THAT WAS HERE ACCUSED THIS ROUTE AND WAS WRONG.  A
+    ## MONTE CARLO SETTLED IT THE OTHER WAY: this route is CORRECT and
+    ## `orbital_correlation` is the one that fails on an asymmetric orbit.
+    ## Direct SDE simulation of the variational system (trapezoidal, the
+    ## calibrated `Var(i) = CY/(2h)` injection, phase projected out every
+    ## step), sharing no Lyapunov solve and no modal sum:
+    ##
+    ##     a      |R| MONTE CARLO  |R| modal    |Lyap| proj   MC/Lyap
+    ##     0.00   4.3629e-06       4.4515e-06   4.4437e-06    0.9818
+    ##     0.30   2.9992e-04       3.6913e-06   2.9986e-04    1.0002
+    ##
+    ## `a = 0` is the CONTROL -- both routes agree there, so the MC had a
+    ## known answer to hit, and it did (2 %).  At `a = 0.30` it lands on this
+    ## route to 0.02 % and is 81x from the modal one.
+    ##
+    ## ⚠⚠ THE ARGUMENT THAT MISLED ME, RECORDED BECAUSE IT WAS PLAUSIBLE:
+    ## `|lam2|` FALLS with asymmetry, so relaxation gets FASTER, so the
+    ## transverse variance "should" shrink -- and the modal route did shrink
+    ## while this one grew 67x.  That reasoning is WRONG: asymmetry changes
+    ## the MODE SHAPES, so the noise projected onto the orbital direction
+    ## grows, and the variance rises DESPITE the faster relaxation.  A
+    ## physical argument is not a measurement.
+    ##
+    ## The original (refuted) note follows for the record:
+    ## ⚠ SUPERSEDED: THIS ROUTE DEPARTS FROM PHYSICS
     ## ON AN ASYMMETRIC ORBIT, AND `orbital_correlation` DOES NOT.  van der
     ## Pol + `a u^2`, sweeping `a` (orbit asymmetry 0 -> 0.41):
     ##
@@ -11440,6 +11464,72 @@ class PAC(Analysis):
 
     ORBITAL_HARMONICS = 32
 
+    ## Half-wave asymmetry above which `orbital_correlation` is known to be
+    ## wrong.  MEASURED (below); 0.02 is a decade inside the smallest
+    ## asymmetry at which the error was already visible.
+    ORBITAL_ASYMMETRY_LIMIT = 0.02
+
+    def _orbit_asymmetry(self, pss):
+        """Half-wave asymmetry of the orbit, in [0, ~1].
+
+        `max|x(t) + x(t + T/2)| / max|x|` on the first state row -- zero for a
+        half-wave symmetric orbit (van der Pol), growing as the orbit
+        distorts.  Cheap: the waveform is already stored.
+        """
+        W = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                      pss.irefnode, axis=0)
+        if W.size == 0 or W.shape[1] < 4:
+            return 0.0
+        row = W[0]
+        half = len(row) // 2
+        den = float(np.max(np.abs(row)))
+        if den <= 0.0:
+            return 0.0
+        return float(np.max(np.abs(row[:half] + row[half:2 * half]))) / den
+
+    def _warn_if_orbit_is_asymmetric(self, pss):
+        """⚠⚠ `orbital_correlation` IS WRONG ON AN ASYMMETRIC ORBIT.
+
+        Settled 2026-09-07 by a Monte Carlo -- direct SDE simulation of the
+        variational system, sharing no Lyapunov solve and no modal sum.  On
+        van der Pol + `a u^2`:
+
+            asym    relative error of the modal sum
+            0.000   0.3 %      (the CONTROL: MC hits both routes to 2 %)
+            0.067   5.2 %
+            0.201   71 %
+            0.406   99 %       (MC/Lyapunov = 1.0002, MC/modal = 81)
+
+        The Lyapunov route (`oscillator_covariance`) tracks the Monte Carlo to
+        0.02 %; this modal route does not.  ⚠ Harmonic truncation is NOT the
+        cause -- the disagreement is FLAT from `H = 4` to `H = 128`.
+
+        ⚠⚠ A9's three-way gate cannot see this: it runs on van der Pol, whose
+        orbit is half-wave SYMMETRIC, where all three routes agree.  The same
+        shape as the `C^2` biorthonormalisation defect found the same day --
+        a good gate, blind in the one direction that mattered.
+
+        ⚠ The ROOT CAUSE in eq (22) is NOT identified.  Until it is, this and
+        `orbital_spectrum` are trustworthy only on a near-symmetric orbit;
+        `oscillator_covariance` is the validated route for the covariance.
+        """
+        try:
+            asym = self._orbit_asymmetry(pss)
+        except Exception:
+            return
+        if asym <= self.ORBITAL_ASYMMETRY_LIMIT:
+            return
+        warnings.warn(
+            'PAC.orbital_correlation: this orbit has half-wave asymmetry '
+            '%.3f, above the %.2f limit where the modal sum is KNOWN WRONG. '
+            'Measured against a Monte Carlo: 5.2%% error at asymmetry 0.067, '
+            '71%% at 0.201, 99%% at 0.406 (81x low). Harmonic truncation is '
+            'not the cause (flat from H=4 to H=128) and the root cause is not '
+            'identified. Use PAC.oscillator_covariance, which tracks the '
+            'Monte Carlo to 0.02%%, for the orbital covariance on this '
+            'circuit.' % (asym, self.ORBITAL_ASYMMETRY_LIMIT),
+            RuntimeWarning, stacklevel=3)
+
     def orbital_correlation(self, pss, H=None):
         """`R_yy(0)` and the `C_lhj` of Traversa & Bonani eq (22) — A9 step 3.
 
@@ -11598,6 +11688,7 @@ class PAC(Analysis):
         `orbital_correlation`, which needs `CY` constant for eq (22)'s
         products to collapse.
         """
+        self._warn_if_orbit_is_asymmetric(pss)
         R, C = self.orbital_correlation(pss, H=H)
         modes = pss.floquet_modes(pss)
         c = float(self.diffusion_constant(pss))
