@@ -3836,11 +3836,106 @@ class PSS(Analysis):
     ## Arnoldi replaced it at machine precision and fewer matvecs.
     PPV_DEFLATION_ITERS = 30
     ## Arnoldi basis size for the second-multiplier estimate.  Exact at
-    ## `k = n`; above that it is a truncation and `lam2` is a lower bound.
+    ## `k = n`; below that it is a truncation and `lam2` is a lower bound
+    ## ONLY for a normal `M` -- see `ppv`, where a circuit monodromy was
+    ## measured to break the bound in both directions.  This is now the
+    ## STARTING basis: `_ritz_second_multiplier` grows it until the pair's
+    ## own Ritz residual certifies it.
     PPV_RITZ_BASIS = 12
+
+    ## ⚠ THE GATE ON A TRUNCATED `lam2`: the SELECTED PAIR's Ritz residual,
+    ## `|h_{k+1,k}| |y_i[last]| / ||y_i||`.  It needs no extra matvec -- both
+    ## factors are already in the `H` this class forms -- and it is the one
+    ## quantity that separates a converged pair from a leaked one.  The
+    ## GMRES-style residual cannot: `_arnoldi_gmres`'s own note says a
+    ## drifted basis "gives multipliers that are wrong in a way the residual
+    ## cannot see", which is true of the SOLVE residual and false of the
+    ## EIGENPAIR one.
+    ##
+    ## MEASURED (`_osc_with_ladder`, k = 12): <= 3.1e-07 at every `nslow`
+    ## the truncated path gets right, and 2.8e-04 / 3.5e-04 / 2.1e-03 at the
+    ## three it gets wrong -- and 1.5e-16 once `k` is large enough to be
+    ## exact.  A peer session's independent sweep puts the two populations
+    ## thirteen decades apart at the median, ⚠ TOUCHING at ~1e-5 (right 90th
+    ## percentile 1.27e-05 against wrong 10th percentile 1.03e-05).  So the
+    ## robust band is BELOW ~1e-6, and that -- not a magic 1e-8 -- is what
+    ## this is set to.
+    PPV_RITZ_RESIDUAL_TOL = 1e-6
+
+    ## ⚠ A COST CEILING, NOT A CORRECTNESS THRESHOLD.  `k` doubles until the
+    ## residual certifies or this is reached; overrunning it produces a
+    ## WARNING and an uncertified number, never a silently wrong one, which
+    ## is what makes an arbitrary-ish constant safe here.
+    ##
+    ## The size is set by what `k` has to reach: measured, `k` tracks the
+    ## SLOW-MODE COUNT and not `n` (this tree's ladder cannot separate the
+    ## two -- it sets `nslow = nladder` -- but a peer's synthetic can, and
+    ## reports `k_min` flat under a doubling of `n` at fixed `nslow`).  The
+    ## largest published case is Lai's 64-gated-capacitor DCO, so 128 leaves
+    ## 2x headroom on it while costing 1/6 of that circuit's `n = 813`.
+    PPV_RITZ_MAX_BASIS = 128
     ## Above this, the bordered extraction is losing digits AND the phase
     ## equation's instantaneous-response assumption is in doubt.
     PPV_SECOND_MULTIPLIER_WARN = 0.9
+
+    def _ritz_second_multiplier(self, fp, kk):
+        """`(lam2, residual)` from a `kk`-dimensional Arnoldi on `I - M`.
+
+        Garcia, Romero & Acha (IEEE Trans. Power Systems 37(1), 2022): the
+        Ritz values of `I - M` map back as `lambda = 1 - theta`.  Returns the
+        selected pair's own RITZ RESIDUAL alongside it,
+        `|h_{k+1,k}| |y_i[last]| / ||y_i||`, which costs nothing -- both
+        factors are already in `H` and its eigenvectors.
+
+        ⚠ `eig`, NOT `eigvals`.  The eigenVECTOR's last component is half the
+        residual, so asking only for the values is what made this estimate
+        uncheckable for as long as it was.
+
+        ⚠ EVERY LOCAL IS UNDERSCORED ON PURPOSE, inherited from when this was
+        inline in `ppv`: the first version used `q` for the Arnoldi start
+        vector, silently overwriting `C(0) xdot(0)` -- returned as
+        `info['q']` and consumed by two tests -- and the suite caught it as a
+        shape mismatch three frames away.
+
+        `residual` is `inf` when no Ritz value survives the deflation, so a
+        caller that gates on it cannot read "nothing found" as "certified".
+        """
+        _n = fp.width
+        kk = int(min(_n, kk))
+        _rng = np.random.default_rng(12345)
+        _q0 = _rng.standard_normal(_n)
+        _q0 = _q0 / np.linalg.norm(_q0)
+        _Qb = [_q0]
+        _H = np.zeros((kk + 1, kk))
+        for _j in range(kk):
+            _wj = _Qb[_j] - np.asarray(fp.matvec(_Qb[_j]))
+            for _i in range(_j + 1):
+                _H[_i, _j] = float(_Qb[_i] @ _wj)
+                _wj = _wj - _H[_i, _j] * _Qb[_i]
+            _H[_j + 1, _j] = float(np.linalg.norm(_wj))
+            if _H[_j + 1, _j] < 1e-13:
+                ## ⚠ AN INVARIANT SUBSPACE: the basis closed on itself, so
+                ## every Ritz pair in it is EXACT and the residual is zero by
+                ## construction rather than by convergence.
+                kk = _j + 1
+                _theta, _Y = np.linalg.eig(_H[:kk, :kk])
+                _lams = 1.0 - _theta
+                _mask = np.abs(_lams - 1.0) > 1e-6
+                if not _mask.any():
+                    return 0.0, float('inf')
+                return float(max(np.max(np.real(_lams)[_mask]), 0.0)), 0.0
+            _Qb.append(_wj / _H[_j + 1, _j])
+        _theta, _Y = np.linalg.eig(_H[:kk, :kk])
+        _lams = 1.0 - _theta
+        ## drop the unit root the border already accounts for
+        _mask = np.abs(_lams - 1.0) > 1e-6
+        if not _mask.any():
+            return 0.0, float('inf')
+        _idx = int(np.where(_mask)[0][int(np.argmax(np.real(_lams)[_mask]))])
+        _lam2 = float(max(np.real(_lams)[_idx], 0.0))
+        _res = (abs(_H[kk, kk - 1]) * abs(_Y[kk - 1, _idx])
+                / max(float(np.linalg.norm(_Y[:, _idx])), 1e-300))
+        return _lam2, float(_res)
 
     def _algebraic_adjoint_pattern(self, xf):
         """`(rows, cols)` — the ALGEBRAIC equations and the algebraic states.
@@ -4748,6 +4843,10 @@ class PSS(Analysis):
         ## larger modulus would be an oscillation about the orbit.
         vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
         lam2 = 0.0
+        ## `_resid`/`_certified` describe how `lam2` was obtained; the
+        ## degenerate `n < 2` fall-through never enters either branch, and
+        ## `lam2 = 0` there is exact rather than estimated.
+        _resid, _certified = 0.0, True
         kk = int(min(n, self.PPV_RITZ_BASIS))
         ## ⚠⚠ DENSE WHENEVER IT IS AFFORDABLE, AND THAT IS NOW THE DEFAULT
         ## RATHER THAN A STAGE-METHOD CARVE-OUT.  Forming `M` by `n` matvecs
@@ -4801,51 +4900,54 @@ class PSS(Analysis):
             _keep = np.real(_lams)[np.abs(_lams - 1.0) > 1e-6]
             if _keep.size:
                 lam2 = float(max(np.max(_keep), 0.0))
+            ## the spectrum is exact, so there is nothing to certify against
+            _resid, _certified = 0.0, True
         elif kk >= 2:
-            ## ⚠ EVERY LOCAL HERE IS UNDERSCORED ON PURPOSE.  The first
-            ## version of this block used `q` for the Arnoldi start
-            ## vector, silently overwriting `C(0) xdot(0)` -- which is
-            ## returned as `info['q']` and consumed by two tests.  The
-            ## suite caught it as a shape mismatch three frames away.
-            _rng = np.random.default_rng(12345)
-            _q0 = _rng.standard_normal(n)
-            _q0 = _q0 / np.linalg.norm(_q0)
-            _Qb = [_q0]
-            _H = np.zeros((kk + 1, kk))
-            for _j in range(kk):
-                _wj = _Qb[_j] - np.asarray(fp.matvec(_Qb[_j]))
-                for _i in range(_j + 1):
-                    _H[_i, _j] = float(_Qb[_i] @ _wj)
-                    _wj = _wj - _H[_i, _j] * _Qb[_i]
-                _H[_j + 1, _j] = float(np.linalg.norm(_wj))
-                if _H[_j + 1, _j] < 1e-13:
-                    kk = _j + 1
+            ## ⚠⚠ THE TRUNCATED PATH, NOW GATED ON THE PAIR'S OWN RITZ
+            ## RESIDUAL AND GROWN UNTIL IT CERTIFIES.  This branch runs only
+            ## where the dense spectrum is unaffordable -- which is exactly
+            ## where the truncation is least trustworthy, since a big circuit
+            ## is the one likely to carry the many slow nodes that break the
+            ## selection.  A fixed basis cannot work here: `k` has to track
+            ## the slow-mode count, so `PPV_RITZ_BASIS = 16` was measured to
+            ## be exact on one ladder and wrong on a longer one.  Doubling
+            ## until the residual certifies is the same rule at every size.
+            ##
+            ## ⚠ THE LOOP TERMINATES ON THREE THINGS and only one of them is
+            ## a threshold: the residual certifying, the basis reaching `n`
+            ## (where the Arnoldi IS the spectrum), or the cost ceiling
+            ## `PPV_RITZ_MAX_BASIS` -- which produces a WARNING and an
+            ## uncertified number, never a silently wrong one.
+            _budget = int(min(n, self.PPV_RITZ_MAX_BASIS))
+            _resid = float('inf')
+            while True:
+                lam2, _resid = self._ritz_second_multiplier(fp, kk)
+                if _resid <= self.PPV_RITZ_RESIDUAL_TOL or kk >= _budget:
                     break
-                _Qb.append(_wj / _H[_j + 1, _j])
-            theta = np.linalg.eigvals(_H[:kk, :kk])
-            lams = 1.0 - theta
-            ## drop the unit root the border already accounts for
-            keep = np.real(lams)[np.abs(lams - 1.0) > 1e-6]
-            if keep.size:
-                lam2 = float(max(np.max(keep), 0.0))
-            ## ⚠⚠ AND SAY SO.  This branch now runs ONLY where the dense
-            ## spectrum is unaffordable, which is exactly where the
-            ## truncation is least trustworthy -- a big circuit is the one
-            ## likely to carry the many slow nodes that break the selection.
-            ## Silence here would be a truncated estimate wearing the same
-            ## name as an exact one.
-            warnings.warn(
-                'PSS.ppv: n = %d exceeds FLOQUET_DENSE_LIMIT = %d, so '
-                "`second_multiplier` (%.6f) and `Q` come from a TRUNCATED "
-                'Arnoldi of basis %d, not from the spectrum. Measured on a '
-                'ladder oscillator, that estimate is wrong by 4x-19x once '
-                'the slow-node count reaches the basis size, in BOTH '
-                'directions, and can return a multiplier above 1. Treat '
-                'both as indicative. The fix is a per-pair Ritz residual '
-                'gate (roadmap); raising PPV_RITZ_BASIS is measured NOT to '
-                'be one, because the basis has to grow with the problem.'
-                % (n, self.FLOQUET_DENSE_LIMIT, lam2, kk),
-                RuntimeWarning, stacklevel=2)
+                kk = int(min(2 * kk, _budget))
+            _certified = _resid <= self.PPV_RITZ_RESIDUAL_TOL
+            if not _certified:
+                ## ⚠ AND IT WARNS ONLY WHEN IT FAILS.  An unconditional
+                ## warning on every truncated call is noise a caller learns
+                ## to ignore, which is worse than none: the point of the gate
+                ## is that silence now MEANS something.
+                warnings.warn(
+                    'PSS.ppv: `second_multiplier` (%.6f) is NOT CERTIFIED. '
+                    'n = %d exceeds FLOQUET_DENSE_LIMIT = %d, so it comes '
+                    'from a truncated Arnoldi, and the selected pair\'s Ritz '
+                    'residual is %.2e against a tolerance of %.0e after '
+                    'growing the basis to %d (ceiling %d). Measured on a '
+                    'ladder oscillator, an uncertified value is wrong by '
+                    '4x-19x, in BOTH directions, and can exceed 1. Treat '
+                    '`second_multiplier` and `Q` as indicative; '
+                    "`info['second_multiplier_certified']` says which. "
+                    'Raising PPV_RITZ_BASIS is measured NOT to be the fix -- '
+                    'the basis has to grow with the slow-mode count, which '
+                    'is what the loop above does; raise PPV_RITZ_MAX_BASIS '
+                    'if the cost is acceptable.'
+                    % (lam2, n, self.FLOQUET_DENSE_LIMIT, _resid,
+                       self.PPV_RITZ_RESIDUAL_TOL, kk, _budget),
+                    RuntimeWarning, stacklevel=2)
         if lam2 > self.PPV_SECOND_MULTIPLIER_WARN:
             warnings.warn(
                 'PSS.ppv: a SECOND Floquet multiplier sits at %.6f, near '
@@ -4938,6 +5040,11 @@ class PSS(Analysis):
                 ## the rule.  See the branch above.
                 'second_multiplier_route': ('dense' if _dense_ok
                                             else 'arnoldi'),
+                ## The selected pair's Ritz residual and whether it cleared
+                ## `PPV_RITZ_RESIDUAL_TOL`.  Exact on the dense route (0.0,
+                ## True).  A caller that reads `Q` should read this too.
+                'second_multiplier_residual': float(_resid),
+                'second_multiplier_certified': bool(_certified),
                 'q': q, 'xdot': xdot, 'tangent_pair': u,
                 'samples': np.asarray(states),
                 ## ⚠ `samples_eq` IS THE ONE TO CONTRACT `CY` AGAINST.

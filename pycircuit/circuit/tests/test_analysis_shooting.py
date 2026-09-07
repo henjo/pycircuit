@@ -15848,8 +15848,15 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
     ## reproduce the recorded failure, or this test no longer guards the
     ## reason the fix exists.  Both signs, and the `lam2 > 1` case.
     saved = PSS.FLOQUET_DENSE_LIMIT
+    saved_max = PSS.PPV_RITZ_MAX_BASIS
     try:
         PSS.FLOQUET_DENSE_LIMIT = 4          # below n = 32, so Arnoldi again
+        ## ⚠ AND THE BASIS MUST BE STARVED TOO, which is itself a result: the
+        ## Ritz-residual gate GROWS `k` until the pair certifies, so the
+        ## truncated path now gets these right on its own and the old defect
+        ## is unreachable without disabling both mechanisms.  See
+        ## `test_the_truncated_lam2_is_gated_on_its_own_ritz_residual`.
+        PSS.PPV_RITZ_MAX_BASIS = 12
         bad = {}
         for nslow in (12, 13, 14):
             fp, ld, pss = fps[nslow]
@@ -15865,6 +15872,7 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
             bad[nslow] = (la, (1.0 - la) / (1.0 - ld))
     finally:
         PSS.FLOQUET_DENSE_LIMIT = saved
+        PSS.PPV_RITZ_MAX_BASIS = saved_max
     for nslow in (12, 13, 14):
         assert abs(bad[nslow][1] - 1.0) > 0.5, \
             'NEUTER: nslow=%d no longer fails on the truncated path (gap ' \
@@ -16025,3 +16033,173 @@ def test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace(
         'covariance (6.9e+02 against 2.7e-05); got %.3e against %.3e -- if ' \
         'not, the source is not landing where this test thinks' \
         % (nK_f, nK_osc)
+
+
+@pytest.mark.slow
+def test_the_truncated_lam2_is_gated_on_its_own_ritz_residual():
+    """Above `FLOQUET_DENSE_LIMIT` a truncated `lam2` must certify itself.
+
+    The dense route closed this below the limit; above it the Arnoldi is all
+    there is, and that is exactly where it is least trustworthy — a big circuit
+    is the one likely to carry the many slow nodes that break the selection
+    (Lai's gated-capacitor DCO: 64 capacitors, >500 equations).
+
+    ⚠ A BIGGER CONSTANT CANNOT BE THE ANSWER, and that is measured, not
+    argued: `k = 16` is exact on `_osc_with_ladder(16, 14, 14)` and wrong on
+    `(16, 20, 20)` and `(16, 26, 26)`, because the basis has to grow with the
+    SLOW-MODE COUNT.  So the basis doubles until the selected pair's own Ritz
+    residual `|h_{k+1,k}|·|y_i[last]|/‖y_i‖` certifies it — the same rule at
+    every size, and free, since both factors are already in `H`.
+
+    ⚠ IT IS THE EIGENPAIR RESIDUAL, NOT THE SOLVE RESIDUAL.  `_arnoldi_gmres`'s
+    own note says a drifted basis "gives multipliers that are wrong in a way
+    the residual cannot see" — true of the GMRES residual, false of this one.
+
+    Measured on the truncated path, forced by lowering the dense limit:
+
+        nslow   dense λ₂       gated λ₂       gap ratio   residual   certified
+          11    0.995706203    0.995706197      1.000     3.12e-07   yes
+          12    0.996324417    0.996324417      1.000     0          yes
+          13    0.996818781    0.996818781      1.000     0          yes
+          14    0.997220139    0.997220139      1.000     4.0e-76    yes
+
+    and with the basis budget starved so it cannot grow, the recorded failures
+    come back **and every one of them is flagged**:
+
+        nslow   gap ratio   residual   certified
+          12      -0.031    2.80e-04     no
+          13      18.020    3.47e-04     no
+          14       0.245    2.08e-03     no
+
+    **Zero false accepts and zero false rejects on this fixture.**  The two
+    populations are 3 orders apart here (3.1e-07 against 2.8e-04); a peer's
+    independent sweep puts their medians 13 decades apart but ⚠ TOUCHING at
+    ~1e-5, which is why `PPV_RITZ_RESIDUAL_TOL` is 1e-6 and not a magic 1e-8.
+
+    ⚠ The residual is a gate on THIS pair, not a truncation bound in general —
+    compare `orbital_mode_weights`, whose reconstruction residual saturates at
+    whatever the omitted null modes carry.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    fps = {}
+    for nslow in (11, 12, 13, 14):
+        _cir, pss = _osc_with_ladder(16.0, 14, nslow)
+        fp = pss.factored_period()
+        ld, _lams = _dense_lam2_of(fp)
+        fps[nslow] = (fp, ld, pss)
+
+    def run_all():
+        out = {}
+        for nslow in (11, 12, 13, 14):
+            fp, ld, pss = fps[nslow]
+            with _w.catch_warnings(record=True) as caught:
+                _w.simplefilter('always')
+                _v, info = pss.ppv()
+            la = float(info['second_multiplier'])
+            out[nslow] = dict(
+                ratio=(1.0 - la) / (1.0 - ld),
+                resid=float(info['second_multiplier_residual']),
+                cert=bool(info['second_multiplier_certified']),
+                route=info['second_multiplier_route'],
+                warned=any('NOT CERTIFIED' in str(c.message) for c in caught))
+        return out
+
+    saved_lim = PSS.FLOQUET_DENSE_LIMIT
+    saved_max = PSS.PPV_RITZ_MAX_BASIS
+    saved_tol = PSS.PPV_RITZ_RESIDUAL_TOL
+    try:
+        ## force the truncated path on a map the dense route would take
+        PSS.FLOQUET_DENSE_LIMIT = 4
+
+        ## (1) WITH ROOM TO GROW: exact everywhere, certified, silent.
+        grown = run_all()
+        for nslow, r in grown.items():
+            assert r['route'] == 'arnoldi', \
+                'nslow=%d did not reach the truncated path' % nslow
+            ## ⚠ A CERTIFIED VALUE IS ACCURATE TO ABOUT ITS RESIDUAL, NOT
+            ## TO MACHINE PRECISION, and the two track: nslow=11 certifies at
+            ## k=12 with residual 3.1e-07 and lands 1.5e-06 out in the gap.
+            ## 12/13/14 come back EXACT because the Krylov space closes on an
+            ## invariant subspace there (residual 0), which is a stronger
+            ## outcome than the gate promises.
+            assert abs(r['ratio'] - 1.0) < 1e-4, \
+                'nslow=%d: the gated Arnoldi should track the spectrum and ' \
+                'the gap ratio is %.6f. A fixed k=12 gave -0.031 / 18.020 / ' \
+                '0.245 at 12/13/14.' % (nslow, r['ratio'])
+            assert abs(r['ratio'] - 1.0) < max(1e3 * r['resid'], 1e-9), \
+                'nslow=%d: gap error %.2e against a certified residual of ' \
+                '%.2e -- the residual is supposed to BOUND the error to ' \
+                'within a few orders, and if it stops doing so the gate is ' \
+                'certifying something it cannot see' \
+                % (nslow, abs(r['ratio'] - 1.0), r['resid'])
+            assert r['cert'] and not r['warned'], \
+                'nslow=%d: a correct value must certify silently (cert=%s, ' \
+                'warned=%s)' % (nslow, r['cert'], r['warned'])
+
+        ## (2) BUDGET STARVED: the recorded failures return, and EVERY one is
+        ## flagged.  This is the half that says the gate detects rather than
+        ## that the growth happens to help.
+        PSS.PPV_RITZ_MAX_BASIS = 12
+        starved = run_all()
+        for nslow, want in ((12, -0.031), (13, 18.020), (14, 0.245)):
+            r = starved[nslow]
+            assert abs(r['ratio'] - want) < 0.02, \
+                'nslow=%d: starved of basis this should reproduce the ' \
+                'recorded gap ratio %.3f and gives %.3f' \
+                % (nslow, want, r['ratio'])
+            assert not r['cert'] and r['warned'], \
+                'NO FALSE ACCEPT is the whole claim: nslow=%d is wrong by ' \
+                '%.3f in the gap and reported certified=%s / warned=%s' \
+                % (nslow, r['ratio'], r['cert'], r['warned'])
+        ## and the one that is RIGHT at k=12 must still certify -- a gate that
+        ## rejected everything would pass the line above and be useless.
+        assert starved[11]['cert'] and abs(starved[11]['ratio'] - 1.0) < 1e-5, \
+            'NO FALSE REJECT: nslow=11 is correct at k=12 (residual 3.1e-07) ' \
+            'and must still certify; got cert=%s ratio=%.6f' \
+            % (starved[11]['cert'], starved[11]['ratio'])
+
+        ## (3) THE RESIDUAL MUST ACTUALLY SEPARATE THEM, or (2) passed for
+        ## some other reason.
+        ok = starved[11]['resid']
+        bad = [starved[k]['resid'] for k in (12, 13, 14)]
+        assert ok < PSS.PPV_RITZ_RESIDUAL_TOL < min(bad), \
+            'the residual no longer brackets the tolerance: right %.2e, ' \
+            'wrong %r, tol %.0e' % (ok, bad, PSS.PPV_RITZ_RESIDUAL_TOL)
+        assert min(bad) / ok > 100.0, \
+            'right and wrong are only %.1fx apart in residual (%.2e vs %.2e); ' \
+            'with that little margin the tolerance is a tuned constant rather ' \
+            'than a separation' % (min(bad) / ok, ok, min(bad))
+
+        ## (4) ⚠ NEUTER THE TOLERANCE: with it wide open the wrong values must
+        ## certify, which is what proves the tolerance is load-bearing and not
+        ## decoration.
+        PSS.PPV_RITZ_RESIDUAL_TOL = 1.0
+        blind = run_all()
+        assert all(blind[k]['cert'] for k in (12, 13, 14)), \
+            'with the tolerance opened to 1.0 the wrong values should sail ' \
+            'through; if they do not, something other than the tolerance is ' \
+            'gating and this test is not measuring what it says'
+        assert abs(blind[14]['ratio'] - 0.245) < 0.02, \
+            'and they should be the SAME wrong values (%.3f)' \
+            % blind[14]['ratio']
+    finally:
+        PSS.FLOQUET_DENSE_LIMIT = saved_lim
+        PSS.PPV_RITZ_MAX_BASIS = saved_max
+        PSS.PPV_RITZ_RESIDUAL_TOL = saved_tol
+
+    ## (5) AND THE DEFAULT PATH IS UNTOUCHED: n = 32 is inside the real limit,
+    ## so this fixture still takes the spectrum and certifies trivially.
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        _v, info = fps[14][2].ppv()
+    assert info['second_multiplier_route'] == 'dense' \
+        and info['second_multiplier_certified'] \
+        and info['second_multiplier_residual'] == 0.0, \
+        'the dense route must report itself exact and certified, got %r' \
+        % {k: info[k] for k in ('second_multiplier_route',
+                                'second_multiplier_certified',
+                                'second_multiplier_residual')}
+    assert not any('NOT CERTIFIED' in str(c.message) for c in caught), \
+        'the dense route must not warn'

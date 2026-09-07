@@ -7058,9 +7058,57 @@ to carry many slow nodes (Lai's DCO: >500 equations). It now warns, naming the b
 measured 4x–19x error, and the fact that raising `PPV_RITZ_BASIS` is *not* the fix.
 
 Test: `test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it` — the same test that used to
-pin the gap, rewritten to assert the fix, with the old failure reproduced as its **neuter** (lower
-`FLOQUET_DENSE_LIMIT` below `n` and all three wrong values come back, both signs and the `λ₂ > 1`
-case).
+pin the gap, rewritten to assert the fix, with the old failure reproduced as its **neuter**.
+⚠ That neuter now has to disable **two** mechanisms (the dense route *and* the basis growth),
+which is itself the result below: the old defect is no longer reachable by one switch.
+
+### ✅✅ AND THE TRUNCATED PATH IS NOW GATED — BUILT 2026-09-07
+
+Above `FLOQUET_DENSE_LIMIT` the Arnoldi is all there is. It now **doubles the basis until the
+selected pair's own Ritz residual certifies it**, and reports what happened:
+`info['second_multiplier_residual']` and `info['second_multiplier_certified']`. Three termination
+conditions and only one is a threshold — the residual clearing `PPV_RITZ_RESIDUAL_TOL`, the basis
+reaching `n` (where the Arnoldi *is* the spectrum), or the cost ceiling `PPV_RITZ_MAX_BASIS`.
+
+⚠ **THE CEILING IS A COST BUDGET, NOT A CORRECTNESS THRESHOLD** — overrunning it produces a
+**warning and an uncertified number, never a silently wrong one**, which is what makes an
+arbitrary-ish constant safe there. Set to 128: `k` tracks the slow-mode count, and the largest
+published case (Lai's 64-capacitor DCO) needs ~64, so 128 is 2× headroom at 1/6 of that circuit's
+`n = 813`.
+
+Measured on the truncated path, forced by lowering the dense limit — **zero false accepts, zero
+false rejects**:
+
+| nslow | dense λ₂ | gated λ₂ | gap ratio | residual | certified |
+|---|---|---|---|---|---|
+| 11 | 0.995706203 | 0.995706197 | 1.000 | 3.12e-07 | yes |
+| 12 | 0.996324417 | 0.996324417 | 1.000 | 0 | yes |
+| 13 | 0.996818781 | 0.996818781 | 1.000 | 0 | yes |
+| 14 | 0.997220139 | 0.997220139 | 1.000 | 4.0e-76 | yes |
+
+and with the budget starved so it cannot grow, the recorded failures return **and every one is
+flagged**: −0.031 / 18.020 / 0.245 at residuals 2.80e-04 / 3.47e-04 / 2.08e-03, all `certified=False`
+and all warned. The right one at k=12 still certifies, so it is not a gate that rejects everything.
+
+⚠ **A certified λ₂ is accurate to about its residual, not to machine precision** — nslow=11
+certifies at k=12 with residual 3.1e-07 and lands 1.5e-06 out in the gap. 12/13/14 come back exact
+because the Krylov space closes on an invariant subspace there, which is more than the gate promises.
+
+⚠ **The warning fires only on failure.** An unconditional warning on every truncated call is noise
+a caller learns to ignore, which is worse than none: the point of a gate is that silence now means
+something.
+
+⚠ `PPV_RITZ_RESIDUAL_TOL = 1e-6`, not a magic 1e-8: the two populations are 3 orders apart on this
+fixture and 13 decades apart at the median on a peer's independent sweep, but they **touch at ~1e-5**
+there, so the robust band is below 1e-6.
+
+⚠ **This is a gate on ONE pair, not a truncation bound.** Contrast `orbital_mode_weights`, whose
+reconstruction residual saturates at whatever the omitted null modes carry and therefore cannot
+certify a truncation at all.
+
+Test: `test_the_truncated_lam2_is_gated_on_its_own_ritz_residual`, with the tolerance itself
+neutered (opened to 1.0) to show the wrong values then sail through — i.e. that the tolerance is
+load-bearing and not decoration.
 
 **The two candidate fixes as they stood, the second still open above the limit:**
 * **the dense route** — `n` matvecs and `eigvals`, exactly what `ppv` already does for `dirk`/`full`.
@@ -7095,8 +7143,8 @@ case).
   14 — cautioned twenty-three years before it was measured here, in the source this function cites.
   It does not settle the choice (Nastov's clustering result cuts the other way), but it is on the
   record now, and it tilts the default toward the dense route.
-* **the per-pair Ritz residual** `|h_{k+1,k}|·|y_i[last]|` — free from the `H` this code already
-  forms, `docs-46`'s proposal. Measured here: 1.0e-02 at k=8, 2.1e-03 at k=12 (both wrong),
+* ✅✅ **the per-pair Ritz residual** `|h_{k+1,k}|·|y_i[last]|/‖y_i‖` — **BUILT 2026-09-07**, free
+  from the `H` this code already forms. Measured here: 1.0e-02 at k=8, 2.1e-03 at k=12 (both wrong),
   1.5e-16 at k=16 (right), ≤3.1e-07 at every `nslow` the shipped path gets right, and 1.6e-03 /
   1.46e-03 on the longer ladders where `k=16` silently fails. **It is the discriminator that scales
   with the problem where a constant does not.** ⚠ `docs-46` measured the threshold FORM (absolute
