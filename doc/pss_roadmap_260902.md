@@ -9596,6 +9596,55 @@ monodromy. Together, the strongest argument on record that **`FLOQUET_DENSE_LIMI
 modes is the REQUIREMENT, not a limitation waiting to be removed.** Eq (8)'s `Σ_{k=2..n}` says the
 same structurally.
 
+⚠⚠ **AND THE DENSE ROUTE HAS A NUMERICAL LIMIT OF ITS OWN, measured by the peer on a synthetic and
+checked here on a fixture** (peer `docs-46`, from Liu, Yu & Tan's periodic-Arnoldi shooting paper —
+itself a NULL for the n > 400 extension: it is a structured basis for the shooting Newton *linear
+solve*, no Ritz vectors for the Floquet modes; its value was the cyclic-block pointer, eq (14),
+Lemma 1). **Forming the monodromy `Φ = A_p⋯A_1` explicitly gives no relative accuracy for any
+multiplier below ≈ `ε · λ_max`.** Peer's construction with an exactly known answer (n = 40, 64
+steps, shared eigenbasis, multipliers 1 → 1e-24):
+
+| true `|λ|` | formed product | rel. error |
+|---|---|---|
+| 8.38e-04 | 8.38e-04 | 1.5e-14 |
+| 5.88e-10 | 5.88e-10 | 1.2e-09 |
+| 4.12e-16 | 4.13e-16 | 1.2e-03 |
+| 3.46e-19 | 1.66e-17 | **47** |
+| 1.00e-24 | 5.43e-18 | **5.4e+06** |
+
+**30 % of the multipliers come back with > 50 % error**, the floor exactly at `ε·λ_max`, and below
+it the product returns ~5e-18 *regardless* of the true value — it **overstates** the fastest modes
+by orders of magnitude. A circuit with any node faster than the period has such multipliers
+routinely: `τ = T/100` gives `λ = e⁻¹⁰⁰ ≈ 4e-44`.
+
+**What this does and does not establish.** It does not establish that A9's answer is wrong: those
+modes are the most strongly damped and `C_lhj ~ 1/O(μ_l)` weights them least. ⚠ **But [7] §V is
+exactly why that reassurance cannot be taken** — six orders in `μ` there with the contributions
+inverting, because the eigenvectors override the `1/μ` factor. The one argument that would dismiss
+this is the one Traversa & Bonani measured to fail. **So "all modes" and "the dense route" may be
+in tension on a fast-node circuit**, and eq (14)'s cyclic-block formulation (and its ref. [14]) is
+the documented way out. **Checked here on a real fixture — CONFIRMED, control first.** Van der Pol with one weakly
+coupled fast RC node (`R = 1e6` to the tank, `C = τ/R`), radau, 400 points; the fast multiplier is
+`exp(−T/τ)` to good approximation under weak coupling, named before the run:
+
+| `τ` | expected `λ_fast` | dense route `λ_min` | ratio |
+|---|---|---|---|
+| `T/20` | 2.061e-09 | 2.062e-09 | **1.00 — agrees** |
+| `T/50` | 1.929e-22 | **3.716e-20** | **193× — WRONG** |
+
+Above the floor the dense route is exact to three digits; below it, it returns ~4e-20 and
+**overstates the true multiplier by two orders.** The peer's synthetic transfers to this code. ⚠
+**And the direction is the bad one for A9:** an overstated `|λ|` reads as *less* damping, so that
+mode's `1/O(μ_l)` weight is *inflated* — **the dense route over-counts exactly the modes it cannot
+resolve.** Whether that moves `R` on a given circuit depends on the eigenvectors, which [7] §V says
+cannot be assumed small. **So on any circuit with a node faster than ~T/40, "all modes" and "form
+`Φ` explicitly" are in tension**, and the fix is structural, not a tolerance: a computation that
+keeps the per-step factors separate — the cyclic-block form (Liu, Yu & Tan eq (14), Lemma 1) or a
+periodic Schur decomposition — which this tree does not have. ⚠ `floquet_modes` should refuse, or
+at least warn, when the formed product's `|λ_min| < ~1e2·ε·λ_max`; not built tonight, recorded as
+the next A9 item after step 6. Every A9 gate fixture so far has `λ_min ≥ 0.84`, far above the
+floor, so nothing measured today is affected.
+
 ### 4. ARBITRATED FROM THE LITERATURE (peer, same evening): `qᵀCp = 1` is Demir's convention at ALL `l`, and both fixes are on his page
 
 ⚠ Relayed by `docs-46` from **Demir, "Phase Noise in Oscillators: DAEs and Colored Noise
