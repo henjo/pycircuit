@@ -5329,6 +5329,37 @@ Re-run A10's period-error-vs-h sweep on the Radau and ESDIRK paths:
   to RK, and A10's 57 000-point figure stands for every method we have.
 
 Same fixture, same sweep, `method=` changed. Run 2026-09-07, result below.
+
+#### RESULT — outcome (a), and stronger than the arithmetic: warping follows CLASSICAL order
+
+Period error at `Q = 10⁴`, ppm, free-period van der Pol, `reltol = 1e-12`:
+
+| method | order | 400 | 800 | 1600 | 3200 | rates per doubling |
+|---|---|---|---|---|---|---|
+| gear | 2 | 83.068 | 20.664 | 5.153 | 1.287 | **4.02 / 4.01 / 4.00** |
+| trap | 2 | 20.769 | 5.166 | 1.288 | 0.322 | **4.02 / 4.01 / 4.01** |
+| trbdf2 | 2 | 10.079 | 2.507 | 0.625 | 0.156 | **4.02 / 4.01 / 4.01** |
+| esdirk43 | 4 | **1e-4** | — | — | — | **16.16 / 16.08 / 16.64** |
+| radau | 5 | at floor | at floor | at floor | at floor | *unmeasured — see below* |
+
+**The control reproduces A10's record**: O(h²) exactly, and trap = **4.00× gear** at every grid
+(83.07/20.77). The order-2 DIRK sits at O(h²) too, 2× better than trap. So the instrument is the
+one A10 used, and the RK rows can be read.
+
+**`esdirk43` converges at 16× per doubling — O(h⁴), its classical order** — and starts from
+**1e-4 ppm = 0.1 ppb at 400 points.** ⚠⚠ **So A10's "≈ 57 000 points per period for 1 ppb" was an
+ORDER-2 artifact.** The peer's arithmetic (assumption: classical order) predicted the ESDIRK would
+need ~19 200 points — a ~3× win. The measurement says the 1 ppb target is met at **~400 points**:
+not 3× fewer, **~140× fewer**. The arithmetic was right about the exponent and wrong about the
+starting point — it extrapolated from trap's 6400-point error rather than from the ESDIRK's own
+400-point error, which is already three orders lower. **Warping is an order phenomenon, the LMM
+recommendation transfers to RK, and the exit is real.**
+
+⚠ Two things NOT yet claimed, pending a full-precision re-run: `radau` prints zero at every grid
+with noise ratios (2.00 / 1.00 / 0.67) — it is at a floor (solver tolerance or roundoff) from
+400 points on, so its rate is *unmeasured*, not "order 5"; and a free-period solve that never left
+the `2π` seed would also print near-zero error. The ESDIRK's cleanly decreasing sequence argues
+against the second, but it is checked directly (`period − seed` printed) rather than argued.
 ### A9. Orbital (AM) noise and the far-out floor — ⚠ **THE PUBLISHED ANSWER IS IN OUR OWN LIBRARY**, 2026-09-04
 
 ⚠⚠ **THIS ITEM WAS SCOPED WRONG TWICE IN ONE DAY, BY TWO SESSIONS INDEPENDENTLY, AND THE
@@ -9284,3 +9315,49 @@ same conclusion the concentration sweep reached numerically (weight does not con
 monodromy. Together, the strongest argument on record that **`FLOQUET_DENSE_LIMIT = 400` with all
 modes is the REQUIREMENT, not a limitation waiting to be removed.** Eq (8)'s `Σ_{k=2..n}` says the
 same structurally.
+
+### 4. ARBITRATED FROM THE LITERATURE (peer, same evening): `qᵀCp = 1` is Demir's convention at ALL `l`, and both fixes are on his page
+
+⚠ Relayed by `docs-46` from **Demir, "Phase Noise in Oscillators: DAEs and Colored Noise
+Sources", p. 2.** Verbatim, Remark 2.1:
+
+    (14)  v_jᵀ(t) C(t) u_i(t) = δ_ij     i, j = 1..m
+    (15)  v_jᵀ(t) C(t) u_i(t) = 0        i = 1..m,  j = m+1..n
+    (16)  v_jᵀ(t) G(t) u_i(t) = 0        i = m+1..n, j = 1..m      (the null space pairs through G)
+
+and eq (11) in matrix form `V C U = [[I_m, 0], [0, 0]]` — rank `m`, which is our `k = n − m` zero
+multipliers. **So `qᵀCp = 1` is the literature's condition at every `l`, not only the `l = 1` that
+[7]'s eq (19) reached.** The conserved form is derived on the page with the adjoint
+`Cᵀy′ − Gᵀy = 0`: `d/dt(yᵀCx) = yᵀGx − yᵀGx = 0`, *"thus yᵀ(t)C(t)x(t) = yᵀ(0)C(0)x(0)"* — the
+same invariant, the same construction. **And the second fix is in his formula:** the adjoint
+transition matrix is *"not simply Φᵀ(s,t) … as it would be for ODEs"*; `Ω(t,s) = Vᵀ(t)D(s−t)Uᵀ(s)Cᵀ(s)`
+and `Φ(T,0) = Σ e^{μ_iT} u_i(0)v_iᵀ(0)C(0)` — the `Cᵀ` the replayed adjoint was missing.
+
+**The `C⁻ᵀ` fix now stands on four legs**: the 81× asymmetric-orbit discrepancy, the Monte Carlo to
+0.02 %, the conserved-form derivation, and Demir's text.
+
+⚠⚠ **ONE CONDITION, and it is not the one I wrote.** Demir's cancellation differentiates the
+**product** `C(t)x(t)` on the forward side while the adjoint differentiates `y` alone, and he flags
+the asymmetry. I stated the forward as `Cδ′ = −Gδ` — derivative on the *state*. With time-varying
+`C` those are different systems. The peer measured it (n = 4, `C(t) = C₀ + C₁ sin t`, forward and
+adjoint integrated together):
+
+| forward form | relative drift of `yᵀCx` |
+|---|---|
+| A: `d/dt(Cx) = −Gx` (Demir's, charge-based) | **1.66e-11** — conserved |
+| B: `Cx′ = −Gx` (derivative on the state) | **2.99e+01** — destroyed |
+| control: constant `C`, A ≡ B | 1.46e-14 |
+
+The control is what makes it a result. **The shipped replays linearise `d/dt q(x)` — charge-based
+— so the code is form A and the invariant holds exactly.** My scratch constructions and my
+derivation wrote form B, which coincides only because every fixture has linear reactances. ⚠ **And
+the around-the-cycle assertion restored tonight evaluated `C(0)` for every sample** — on a varactor
+orbit it would falsely fail. Fixed to `C(t_j)` per sample; on these fixtures the two coincide, which
+is exactly why it passed either way.
+
+⚠ **Harness note from the peer, recorded as a §D shape:** their first cut integrated to `t = 4` and
+read a 1e24 "drift" on the case Demir *proves* conserved — `x` aligns with the growing direction,
+`y` with the decaying one, and `yᵀCx` becomes `~1e24 × ~1e-24`, destroyed by cancellation. **A
+conserved quantity computed as a product of a huge and a tiny factor is not measurable however exact
+the theory.** Our around-the-cycle checks run over ONE period on modes with `|λ₂| ≈ 0.88–0.97`, so
+the growth is modest — but this is the reason not to gate on the invariant over many periods.

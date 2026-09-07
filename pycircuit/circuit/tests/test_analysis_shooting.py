@@ -11154,9 +11154,22 @@ def test_floquet_modes_are_genuinely_periodic():
         ## and `q(T - t)` -- a sign flip read as a time reversal.  With the
         ## right vector the invariant holds at the SAME index (measured
         ## spread 4.2e-04 on this fixture) and NOT at the reversed one (2.0).
+        ## ⚠ `C(t_j)` PER SAMPLE, not `C(0)` for every sample.  Demir (DAEs and
+        ## Colored Noise Sources, Remark 2.1) states the convention as
+        ## `v_j^T(t) C(t) u_i(t) = delta` and derives the invariant for the
+        ## CHARGE-based forward `d/dt(C x) = -G x`; with `C` time-varying
+        ## (a varactor, a forward-biased junction) `C(0)` here would falsely
+        ## fail on an orbit the code handles correctly.  On these linear-
+        ## reactance fixtures the two coincide, which is why it passed either
+        ## way -- the same blindness as everything else today.
         Pm_, Qm_ = md['p'], md['q']
         _nn = min(Pm_.shape[1], Qm_.shape[1])
-        cyc = [abs(complex(np.vdot(Qm_[:, j], Cm @ Pm_[:, j])) - 1.0)
+        _Wc = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                        pss.irefnode, axis=0)
+        cyc = [abs(complex(np.vdot(
+                   Qm_[:, j],
+                   np.asarray(pss._C_at(_Wc[:, min(j, _Wc.shape[1] - 1)]),
+                              dtype=float) @ Pm_[:, j])) - 1.0)
                for j in range(0, _nn - 1, max(1, _nn // 8))]
         assert max(cyc) < 5e-3, \
             'mode %d: q(t)^T C p(t) drifts from 1 around the cycle by %.3e ' \
