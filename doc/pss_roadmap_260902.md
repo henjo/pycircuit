@@ -6077,10 +6077,50 @@ tolerance and step control. If a sources-off control on our own implementation l
 below −120 dBc there, the accumulation mechanism does not apply to our route and the gate is
 discharged.
 
-*Peer's next: Demir, Liu & Sangiovanni-Vincentelli 1996 (TCAD 15:493) — A8's proposed starting
-point, on disk in both the TCAD and ICCAD 1994 versions, unread — to verify the three claims A8
-relays about it (time-varying covariances; correlations across time points; no steady state
-needed).*
+#### ✅ A8's STARTING POINT verified too — and it covers MORE than this item records
+
+⚠ Relayed by the same session (`docs-46`), which holds **Demir, Liu & Sangiovanni-Vincentelli, TCAD
+15(5):493, May 1996** in both the TCAD and the ICCAD 1994 versions. Quotes are the peer's, from the
+paper; not re-read here.
+
+**All three relayed claims are accurate, near-verbatim from the abstract:** *"noise variances and
+covariances of circuit variables as a function of time"*; *"noise correlations between circuit
+variables at different time points can also be calculated"*; and *"any nonlinear dynamic circuit
+with any kind of excitation, which can be simulated by the transient analysis routine in a circuit
+simulator, can be simulated by our noise simulator."*
+
+⚠ **One proviso this item DROPPED, from the same sentence:** *"provided that noise models for the
+devices in the circuit are available."* For A8's LDO-modulated inverter chain that means a
+**flicker model on the supply path**. Their §IV covers shot, thermal and flicker.
+
+⚠⚠ **STRONGER THAN RELAYED — and the peer's own prediction was wrong, recorded as such.** They
+expected a method linearising about a large-signal trajectory to diverge on an autonomous
+oscillator, and said so before reading. The paper, verbatim: *"noise in an oscillator circuit is
+not cyclostationary, hence this method as presented in [4],[7] is not applicable to the
+characterization of phase noise in open-loop oscillators… Our method can calculate the complete
+autocorrelation for the nonstationary noise and can be used for phase noise characterization of
+open-loop oscillators."* The distinction: an **average** spectral density presupposes
+cyclostationarity, and *"noise in an open-loop oscillator is nonstationary, and not
+cyclostationary"*. Because the method never forms an average PSD — it propagates the full
+**two-time autocorrelation** — the autonomous case is inside its scope. **So it spans BOTH rows of
+this item's jitter table, the accumulating and the additive, in one analysis.**
+
+**Their worked example is a CMOS inverter** (the other is a BJT active mixer) — A8's circuit is an
+oscillator followed by inverter buffers; the paper's own example is that stage. It runs *"along
+with the transient simulation over the time interval specified by the user"*, in SPICE nodal
+analysis.
+
+⚠ **INFERRED, NOT STATED BY EITHER PAPER — a hypothesis, not a result.** Demir's method is
+transient-based, the class Biggio et al. (above) indict. But their floor is spurious spectral
+content in a *noiseless deterministic* run, read off the solution's own spectrum, from two named
+routes (extended LMM formulas; *"sampled versions of noise generators"*). Demir is non-Monte-Carlo:
+it propagates a covariance, injects no random generators, and never reads noise off the transient's
+spectrum. So the floor mechanism does not *obviously* corrupt it. The papers are 17 years apart and
+neither cites the other. **The sources-off control is still what settles it, and it is cheap.**
+
+**Net, per the peer:** both A8 references verified, one attribution corrected, the gate quantified,
+and the starting point covers more than the item claims. Nothing in A8's scoping is refuted — **the
+case for A8 is stronger than this section stated.**
 
 ### Ag. Standing `gmin` insertion, as an OPTION defaulting to 0/off — ⛔ DECIDED 2026-09-07, not built
 
