@@ -5957,7 +5957,7 @@ and a sampling stage consumes. Non-Monte-Carlo, and reported to need **no steady
 transient analysis routine"*), so it would cover the buffer chain and the oscillator in one
 analysis. ⚠ If this is ever scoped, that is the starting point rather than a fresh derivation.
 
-⚠⚠ **A GATE WARNING THAT MUST BE HONOURED BEFORE ANY OF IT IS BELIEVED.** Brambilla et al.,
+⚠⚠ **A GATE WARNING THAT MUST BE HONOURED BEFORE ANY OF IT IS BELIEVED.** Biggio, Bizzarri, Brambilla & Storace (IEEE 2013; ⚠ this line said "Brambilla et al." until 2026-09-07 — Brambilla is third author, corrected by a peer session holding the paper; see the verified block at the end of this item),
 *"Effects of numerical noise floor on the accuracy of time domain noise analysis in circuit
 simulators"* (cited, not verified here): time-domain noise analyses implemented by *extending*
 linear multistep formulas, or by *introducing sampled versions of noise generators*, are
@@ -6029,6 +6029,58 @@ not of this function — so the fix is A9, not an annotation here.
 **Status: RECORDED, NOT REQUESTED.** No cost estimate has been made, and the item is written down
 because the use case is **ordinary rather than exotic** and arrived from a circuit somebody
 actually wants to build.
+
+#### ✅ A8's gate reference VERIFIED — relayed 2026-09-07 by a peer session that holds the paper
+
+⚠ **Relayed, from the paper, by a session that read it (`docs-46`); the numbers are CITED from its
+Table I, not measured here.** Stronger than a citation-by-rank, weaker than a measurement.
+
+**Attribution fix.** It is **Biggio, Bizzarri, Brambilla & Storace, IEEE 2013** — this section
+said "Brambilla et al."; Brambilla is third author. The abstract quote is otherwise accurate.
+
+**The proposed control IS the paper's method.** This section says *"any gate needs a control that
+measures the floor with the sources OFF."* The paper, verbatim: *"to determine the noise floor we
+used these algorithms without turning on noise sources."* No justification needed — it is the
+published methodology.
+
+**The floor, from Table I** (sources OFF; magnitude of the Fourier integral at the carrier and at
+10 kHz offset, dBc):
+
+| circuit | carrier | @10 kHz | floor below carrier |
+|---|---|---|---|
+| Lin — linear RC | −20 | −227 | ~207 dB |
+| Nlin — one cubic resistor | −5.2 | −102 / −93 / −196 | 91–191 dB |
+| Van — van der Pol, 500 MHz | +1.3 | −116 / −60 / −71 | **61–117 dB** |
+
+**A single cubic nonlinearity** — which merely *"forces the simulator to perform several iterations
+of the Newton algorithm"* — costs up to **134 dB** of floor. On the oscillator the spread across
+settings of the *same* simulator is **56 dB**. ⚠ **The floor is worst precisely for oscillators.**
+
+**⚠⚠ SCOPE — this decides whether A8 is exposed, and it is NOT.** The mechanism is not noise:
+Newton stops at finite accuracy so `x(t_e)` lands *"in balls with radius determined by the chosen
+accuracy"*, and a variable step means the solution *"changes if different (non uniform) time grids
+are used"* — time is *"warped"*. Their Van case **accumulates this over 50 000 periods.** A8 as
+scoped is **one PSS** over osc+buffers at a few hundred points plus a sampled **linear** analysis
+— one period solved tightly, covariance propagated — so that accumulation **does not transfer**.
+The paper's own motivation confirms the split: it targets circuits that *"do not admit"* a PSS, or
+where the period makes SH/HB *"inapplicable"* (fractional-N PLLs with ΔΣ). A8's circuit admits a
+PSS. **The warning is about the implementation route, not the item.** ⚠ Consistent with this
+file's own finding that Biggio's FFT gate does not transfer to a closed-form stack.
+
+**What WOULD be exposed:** the paper's second class — *"introducing sampled versions of noise
+generators"*, a Monte-Carlo-flavoured sampling step driven through the transient.
+
+**REFUTATION CONDITION, so this is not a verdict:** if A8's sampling stage is implemented with
+random generators driven through the transient rather than by linear covariance propagation from
+the PSS, expect a floor in the **−60 to −120 dBc band at 10 kHz offset, tunable by ~56 dB** via
+tolerance and step control. If a sources-off control on our own implementation lands materially
+below −120 dBc there, the accumulation mechanism does not apply to our route and the gate is
+discharged.
+
+*Peer's next: Demir, Liu & Sangiovanni-Vincentelli 1996 (TCAD 15:493) — A8's proposed starting
+point, on disk in both the TCAD and ICCAD 1994 versions, unread — to verify the three claims A8
+relays about it (time-varying covariances; correlations across time points; no steady state
+needed).*
 
 ### Ag. Standing `gmin` insertion, as an OPTION defaulting to 0/off — ⛔ DECIDED 2026-09-07, not built
 
@@ -8937,3 +8989,32 @@ confirming fact 2 above.
 on the invariant circle). That is probe v4. ⚠ Continuation is also what makes the measurement
 honest — a locking range read from a fixed seed would report whichever branch the Newton happened
 to land on, converged and plausible.
+
+### 4. Probe v4 (continuation) tracks the branch — and exposes that my "Adler" number was unpinned
+
+Continuing along the locked branch in 0.1× steps: amplitude **2.11 → 1.87 V** and `|λ|`
+**0.9937 → 0.9968** over 0–0.3×, both moving the right way toward a saddle-node; the branch is
+**lost at 0.4×**, and the suppressed unstable branch appears from 0.9×. So the edge is near
+0.3–0.4× of the number I called Adler's.
+
+⚠⚠ **But that number was never pinned, and I caught it before comparing.** I had written
+`Δf = (f₀/2Q)(I_inj/I_osc)` with `Q = Q_vdp·C = 32`. For this circuit the **tank** Q is
+`ω₀C/mu ≈ 201`, the Floquet `Q_λ` is ~100, and the three differ by up to 6×. **Three conventions,
+three predictions, and the measured edge sits near one of them by accident** — the trap this file
+records under "two Q conventions differ by π". Picking the one that fits would be fitting.
+
+**The prediction, named before the next measurement, with no Q in it at all.** Averaging the vdP
+equation `v'' − ε(1−v²)v' + ω₀²v = (I/C)cos(ω₁t)` for weak injection gives the phase equation
+`dφ/dt = Δω − (I/(2CA))·sin φ`, so
+
+    Δω_lock = I_inj / (2 C A)        [rad/s]
+
+Adler's Q and `I_osc` are both absorbed: for a vdP they collapse to this. At `I_inj = 0.2·mu·A`,
+`C = 4`, `A = 2.008`: **7.9e-05 Hz = 0.050 % of f₀** — which is **0.16× the number v4 swept
+against**, i.e. the branch v4 tracked to "0.3×" actually survived to **~1.9–2.5×** the averaging
+prediction. That is a real discrepancy, in the direction of *more* lock than averaging predicts,
+and it is exactly what probe v5 measures — **on the textbook control first** (plain vdP, `C = 1`,
+`a = 0`, where averaging is exact), then the hostile fixture. If the control lands on the
+prediction and the hostile fixture does not, the difference is the fixture's `Q_eff ≈ 32` or its
+asymmetry leaving the averaging regime — physics, recorded. If the control misses too, the
+instrument or the prediction is wrong and nothing about the hostile fixture can be read.
