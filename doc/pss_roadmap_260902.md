@@ -9307,6 +9307,45 @@ not Prothero–Robinson tests — and recorded as a concept to keep separate, no
 Prothero–Robinson problem is the standard instrument and a small fixture, if reconciliation is ever
 wanted.
 
+✅✅ **VOIGTMANN READ (peer `docs-46`, 259 pp), three answers — one refines Theorem 5's hypotheses.**
+
+*(a) Stiff accuracy is a STRUCTURAL restriction, for the constraint manifold, not for accuracy.*
+§9.1 verbatim: *"It is a desirable feature for the numerical solution to satisfy `x_{n+1} ∈
+M_0(t_{n+1})` as well. Thus stiffly accurate methods, where `x_{n+1}` coincides with the last stage
+`X_s`, guarantee this situation. We will therefore restrict attention to stiffly accurate general
+linear methods."* — with `M_0(t) = {z ∈ D | b(z,t) ∈ im A(t)}` the manifold the algebraic part
+confines the solution to; the proof of Theorem 9.5: *"assumption (e) ensures that the numerical
+result `x_{n+1} = X_s` coincides with the last stage. Thus the numerical result at `t_{n+1}`
+satisfies the obvious constraint (9.8)."* Without stiff accuracy the numerical solution need not
+satisfy the constraint at all. Two theses (Wright's *"strong stiff accuracy … most suitable … for
+DAEs"*), same requirement, reached separately.
+
+⚠⚠ *Theorem 5's hypotheses were COMPRESSED in the abstract.* The abstract lists *"`V` power bounded
+AND `M_∞` nilpotent"* as co-equal; the thesis separates them: *"Observe that the assumption on
+`M_∞` to be nilpotent is a stronger requirement than in Theorem 8.27. There `M_∞` was assumed to be
+power bounded, but the nilpotency of `M_∞` allows the application of Lemma 8.29 such that `V_0` is
+calculated with order `min(p,q) = p`."* **Nilpotency is strictly stronger than power-boundedness and
+is what buys `min(p, q)`; the weaker hypothesis gives Theorem 8.27, not Theorem 5.** If a candidate
+GLM is ever checked against Theorem 5, **nilpotency of `M_∞ = V − BA⁻¹U` is the condition to verify**,
+not power-boundedness. (The Nordsieck-form sentence at the GLM survey entry above keeps both words; read it
+with this.)
+
+*(b) There is a component separation, but the convergence result is NOT per-component.* Eq (6.13)
+splits `x*(t) = D⁻(t)u(t) + z(t) + w(t)`, *"a clear separation of algebraic and differential
+components"*, with the mechanism: *"`z` … can be calculated by an algebraic relation but in order to
+obtain `w = T z_0*` the component `D z_1* = D z` needs to be differentiated"* — the differentiation
+is where index-2 costs order. But Theorem 9.5 bounds `‖x_{n+1} − x(t_{n+1})‖` as a whole; **no
+per-component order is given.** So `min(p,q)` is the overall, conservative statement and Hairer &
+Wanner's `y: O(h^{q+1})`, `z: O(h^q)` is the finer one — the softening of the three-for-three is now
+right from the source, not from inference.
+
+*(c) Zero hits for monotonicity / positivity / contractivity / SSP in 259 pages*, as in Wright's
+188. **Neither GLM source addresses monotonicity.** The incompatibility is an RK theorem that does
+not bind GLMs, and both documents that would most plausibly have settled the other half are silent.
+That half needs the SSP-for-GLMs literature (Spijker; Ferracina & Spijker; Higueras), not on disk —
+**not added to the acquisition list unless monotonicity goes live**; the RC-ladder measurement
+below decides that better than a paper would.
+
 **Decision recorded with the list: no more corpus time on the GLM question until one of these
 lands.** Everything reachable from disk has been extracted — Theorem 5's `min(p, q)`, the DIRK
 stage-order cap, the contractivity/stage-order incompatibility. None is obtainable by either
