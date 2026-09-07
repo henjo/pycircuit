@@ -9225,3 +9225,62 @@ so the coarser grid rounds it down by at most one step, and every bound (1.00 ±
 set with that in mind. The 0.1× numbers stand in the record above as the measurement; the gates
 assert them at half the cost. If they still dominate the suite, the next lever is 200 points per
 period, which changes the physics slightly and would need the numbers re-measured — not taken.
+
+
+## A9 — the derivation read (peer, 2026-09-07): normalisation is a DAE generalisation, the correlation term needs ONE new object, and the dense route is a REQUIREMENT
+
+⚠ Relayed by `docs-46` from **[7] = Traversa & Bonani, TCAS-I 58(10):2486, Oct 2011, 13 pp** —
+the derivation A9's code was built from. Appendices A–D and §V not yet read by them; nothing below
+depends on those.
+
+### 1. `qᵀCp = 1` is not in tension with [7] — [7] never reaches the DAE case
+
+Their system is a **plain ODE**: eq (9) is `A(t+α) = ∂f/∂x` with no capacitance matrix anywhere,
+and the noise input matrix eq (8) is `G = [v₁ᵀB ; Σ_{k=2..n} u_k v_kᵀ B]`. That second block is a
+resolution of the identity on the non-phase subspace, which requires plain **unweighted**
+`v_kᵀu_j = δ_kj` — correct for `ẋ = f(x)`, inherited from Demir, Mehrotra & Roychowdhury 2000. For
+`Cẋ + g(x) = 0` the adjoint carries `Cᵀ` and the resolution becomes `Σ u_k v_kᵀ C`. **So
+`qᵀCp = 1` is the DAE generalisation of eq (8)'s ODE convention, not a contradiction of it.** The
+paper is silent, and the silence is the honest answer.
+
+**One independent partial check that passes:** their eq (19), `c = (1/T)∫v₁ᵀBBᵀv₁ dt`, is
+character-for-character `diffusion_constant`, validated here against a Monte Carlo and `kT/C`.
+Since `c` scales with `v₁`'s normalisation, that agreement says `v₁` already matches their
+convention. ⚠ **But it pins `l = 1` ONLY** — the `qᵀCp` defect bit at `l ≥ 2`, so this does not
+reach the fixed code. **Literature arbitration of the DAE convention lives in Demir's DAE-form
+papers** ("Phase Noise in Oscillators — DAEs and Colored Noise Sources", on disk); the peer is
+reading it against our convention next. Until then the fix rests on the 81× asymmetric-orbit
+measurement, the Monte Carlo, and the conserved-form derivation `d/dt[qᵀCp] = 0`.
+
+### 2. The phase–orbital correlation term needs ONE new object, and is cheaper than the term built
+
+Theorem 4.1, eq (24): `S_zz = S_xS,xS + S_corr + S_yy + X₀X₀†δ(ω)`. **`S_corr`** — the term
+`orbital_spectrum` drops under its known-sign approximation — is the Fourier transform of
+`R_xS,y + R_y,xS`, in closed form as eq (26) (four terms over `Δ²_lhj(ω)` and `Ξ²_h(ω)`), built from
+eq (20):
+
+    D_lhj = X_h · Vᵀ_{1,0} · Λ*_{l,h−j} · U†_{l,j} · [ i h ω₀ / (−μ*_l − i(h−j)ω₀) ]
+
+Against eq (22)'s `C_lhj`, which carries a **double** sum over `l′, j′`, **`D_lhj` has no sum at
+all.** Ingredients: `X_h` (harmonics of `x_S`, needed for `S_xS,xS` anyway); `Λ*_{l,h−j}` and
+`U†_{l,j}` (the SAME objects `C_lhj` uses); `μ_l`; and **`Vᵀ_{1,0}` — the DC harmonic of `v₁ᵀB`
+(Lemma 3.3, eq 17) — the only new object**, whose integrand `diffusion_constant` already forms.
+**So the piece A9 lacks is one DC Fourier coefficient away.** Its proof is Appendix A (unread).
+⚠ Recorded as **A9 step 6**, not built: the known-sign approximation over-states noise (conservative)
+and the build is small, but it is new scope and waits for a decision.
+
+### 3. [7] corroborates the concentration result INDEPENDENTLY — the dense all-modes route is the requirement
+
+Verbatim, p. 4: *"Equations (20) and (22) show that `C_lhj`, `D_lhj = 1/O(μ_l)`; therefore, the
+contribution of the orbital deviations is expected to be more significant for oscillators whose
+limit cycle is characterized by at least a second Floquet exponent near to zero … this is true for
+the entire class of high-Q oscillators. However … this is not a necessary condition … a major
+role in the C and D coefficients is also played by the Floquet eigenvectors, which could determine
+large orbital fluctuations contributions even when the Floquet exponents are not near to zero."*
+
+A published statement that **modes cannot be selected or truncated by exponent magnitude** — the
+same conclusion the concentration sweep reached numerically (weight does not concentrate,
+`m/n = 0.97`). Two independent routes: their coefficients' structure, and measurement on our
+monodromy. Together, the strongest argument on record that **`FLOQUET_DENSE_LIMIT = 400` with all
+modes is the REQUIREMENT, not a limitation waiting to be removed.** Eq (8)'s `Σ_{k=2..n}` says the
+same structurally.
