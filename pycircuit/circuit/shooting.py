@@ -5034,6 +5034,36 @@ class PSS(Analysis):
                 'tangent_border_residual': yf,
                 'Q': Q,
                 'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
+                ## ⚠ MULTIPLY `null_residual` BY THIS TO GET THE RELATIVE
+                ## ERROR IN `v` THE RESIDUAL CANNOT EXCLUDE.  `null_residual`
+                ## is `||v - M^T v|| / ||v||`, so an error component along the
+                ## `lam2` left-eigendirection enters it scaled by `1 - lam2`
+                ## and is nearly INVISIBLE exactly when `lam2 -> 1`.
+                ## MEASURED on `_vdp_with_slow_node`, injecting a 1% error
+                ## into a converged `v` (floor 4.6e-11):
+                ##
+                ##     lam2        r(random dir)   r(lam2 dir)   0.01*(1-lam2)
+                ##     0.000856      1.65e-02       1.003e-02      9.99e-03
+                ##     0.990049      1.65e-02       9.950e-05      9.95e-05
+                ##     0.999900      1.65e-02       1.000e-06      1.00e-06
+                ##     0.999999      1.65e-02       1.000e-08      1.00e-08
+                ##
+                ## Exact to every digit printed.  A RANDOM error is caught
+                ## nine orders above the floor, so `null_residual` is a real
+                ## gate and this module's assertions on it can fail -- but it
+                ## loses sensitivity in the ONE direction that matters as the
+                ## circuit gets better, which is the opposite of the
+                ## reassurance a flat residual gives.
+                ##
+                ## ⚠⚠ THIS IS WHY A FLAT `null_residual` IS NOT EVIDENCE OF
+                ## ACCURACY.  A residual that does not move while `lam2`
+                ## sweeps toward 1 is not reporting that the answer stayed
+                ## good; the bordered system is well-conditioned BY
+                ## CONSTRUCTION, and the quantity it fails to see is
+                ## precisely the one that grows.  Read the two numbers
+                ## together or neither.
+                'null_residual_amplification': (
+                    1.0 / max(1.0 - lam2, np.finfo(float).eps)),
                 'second_multiplier': lam2,
                 ## Which route produced it, so a caller can tell an exact
                 ## spectrum from a truncated estimate without re-deriving

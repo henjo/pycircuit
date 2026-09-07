@@ -99,8 +99,12 @@ def gen_stamps(toolkit=symbolic):
                         [1,-1,0,0, 0]])
     yield(Nullor(1, gnd, 2, gnd), GNullor, np.zeros((5,5)))
 
-    GTransformer = np.array([[0,0,0, 0,  N],
-                             [0,0,0, 0, -N],
+    ## The primary column is `-1/N`.  It read `N, -N` until 2026-09-07, which
+    ## got the VOLTAGE ratio right and the POWER ratio wrong by `N**2`; this
+    ## fixture pinned the wrong stamp, so it is changed on purpose.  See
+    ## `test_the_ideal_transformer_conserves_power`.
+    GTransformer = np.array([[0,0,0, 0, -1/N],
+                             [0,0,0, 0,  1/N],
                              [0,0,0, 0, 1], 
                              [0,0,0, 0,-1], 
                              [-1,1,N,-N, 0]])
@@ -244,6 +248,95 @@ def test_SVCVS_laplace_d3_n1():
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
     assert sympy.cancel(sympy.expand(res.v(n2,gnd))) == sympy.expand((b0*s*s)/(a0*s*s*s+a1*s*s+a2*s+a3))
+
+def test_the_ideal_transformer_conserves_power():
+    """The winding ratio must appear as `1/n` in the CURRENT stamp.
+
+    The stamp carried `+n` there until 2026-09-07.  That gets the voltage
+    ratio right -- `V_in/V_out = n` comes from the constraint ROW, which was
+    never wrong -- and leaves `|P_out/P_in| = 1/n**2`.  So every check in the
+    voltage domain passed, including this file's own stamp fixture and the
+    element's doctest, both of which pinned the wrong matrix.  Only a POWER
+    balance can see it, which is what this asserts.
+    """
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
+    r_s, r_l = 10.0, 1e3
+    for ratio in (0.5, 1.0, 2.0, 10.0):
+        cir = SubCircuit()
+        src, a, b = cir.add_nodes('src', 'a', 'b')
+        cir['vs'] = VS(src, gnd, v=1.0)
+        cir['rs'] = R(src, a, r=r_s)          ## to MEASURE the primary current
+        cir['t'] = Transformer(a, gnd, b, gnd, n=ratio)
+        cir['rl'] = R(b, gnd, r=r_l)
+        res = DC(cir).solve()
+
+        vs, va = float(res.v(src, gnd)), float(res.v(a, gnd))
+        vb = float(res.v(b, gnd))
+        ## ⚠ BOTH currents are MEASURED from the solved circuit, through the
+        ## series resistors -- never reconstructed from `1/n`.  Computing the
+        ## primary current as `-i_br/n` instead makes this test assert the
+        ## very relation it is supposed to check, and it then PASSES against
+        ## the broken stamp.  It did, on the first attempt.
+        i_in = (vs - va) / r_s
+        i_out = vb / r_l
+        p_in = va * i_in
+        p_out = vb * i_out
+
+        assert abs(va / vb - ratio) < 1e-9, \
+            'n=%g: V_in/V_out is %.6f, want %g' % (ratio, va / vb, ratio)
+        assert abs(p_out / p_in - 1.0) < 1e-9, \
+            'n=%g: P_out/P_in is %.6f, want 1.0 (the old +n stamp gives %g)' \
+            % (ratio, p_out / p_in, 1.0 / ratio ** 2)
+
+
+def test_the_svcvs_keeps_fractional_coefficients_on_the_numeric_toolkit():
+    """`SVCVS` built `G`/`C` with `dtype=int` and TRUNCATED every coefficient.
+
+    Two things kept this alive.  Every other `SVCVS` test in this file runs on
+    the SYMBOLIC toolkit, where an integer container holds sympy objects and
+    cannot truncate -- a fixture that cannot express the effect.  And on the
+    numeric toolkit the damage depends on which end of `denominator` the large
+    coefficient sits: the coefficients are normalised by `den[0]`, so
+    `(tau, 1)` yields `1000.0` (truncates to `1000`, invisible) while a
+    denominator whose leading coefficient is the LARGEST normalises to
+    entries below 1 that all truncate to ZERO, leaving a degenerate filter
+    that still solves and still returns a number.
+
+    So this test uses the second ordering deliberately, and checks the pole
+    lands where the coefficients say -- not merely that some entry is
+    fractional.
+    """
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
+    ## A first-order lowpass `1/(1 + s*tau)` whose NORMALISED denominator
+    ## coefficient is `1/tau = 1e3`... and its reciprocal ordering, where the
+    ## normalised coefficient is `tau = 1e-3` and truncated to zero.
+    tau = 1e-3
+    cir = SubCircuit()
+    n1, n2 = cir.add_nodes('1', '2')
+    cir['vs'] = VS(n1, gnd, vac=1.0)
+    cir['h'] = SVCVS(n1, gnd, n2, gnd,
+                     denominator=(tau, 1.0), numerator=(1.0,))
+
+    f_pole = 1.0 / (2 * np.pi * tau)
+    for f, want in ((f_pole, 1.0 / np.sqrt(2.0)),
+                    (1e4, abs(1.0 / (1.0 + 1j * 2 * np.pi * 1e4 * tau)))):
+        got = abs(complex(AC(cir).solve(freqs=f).v(n2, gnd)))
+        assert abs(got - want) < 1e-4, \
+            '|H| at %.4g Hz is %.6f, want %.6f' % (f, got, want)
+
+    ## The direct statement of the defect, on the ordering that zeroes
+    ## everything: fractional entries must SURVIVE into the stamp.
+    e = SVCVS(0, 1, 2, 3, denominator=[1.0, 2.25e-6, 2.53e-12],
+              numerator=[1.0])
+    G = np.asarray(e.G(np.zeros(e.n)), dtype=float)
+    C = np.asarray(e.C(np.zeros(e.n)), dtype=float)
+    assert (np.abs(G - np.round(G)) > 0).any(), \
+        'every G coefficient truncated to an integer: %r' % (G,)
+    assert G.dtype.kind == 'f' and C.dtype.kind == 'f', \
+        'G/C dtypes are %s/%s, must be floating point' % (G.dtype, C.dtype)
+
 
 def test_Idt_sym():
     """Test integrator element symbolically"""

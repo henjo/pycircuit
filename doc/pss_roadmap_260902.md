@@ -7636,6 +7636,33 @@ concurrent run moved readings 25-30% on the *same* configuration.
    ⚠ **The tell was asking whether it generalises BEFORE shipping it as a default**, and the
    answer needed a measurement (`even_harmonic_content`), not an inspection.
 
+0ab. ⚠⚠ **A TEST SUITE THAT ONLY RUNS IN A DOMAIN WHERE THE DEFECT CANNOT EXIST.** `SVCVS` built its
+   stamps with `dtype=int` and truncated every coefficient, for years, with three tests covering it
+   — **all three on the SYMBOLIC toolkit**, where an integer container holds sympy objects and
+   truncation is impossible. The tests were not weak; they were run in the one domain the bug could
+   not reach. ⚠ **Ask which DOMAIN a suite exercises, not only which cases** — and when an element
+   supports several toolkits, at least one numeric test is not optional. Related to 0c (a fixture
+   whose blind spots were never recorded), but the blindness here is the *execution mode*, not the
+   probe direction.
+
+0ac. ⚠⚠⚠ **RUN A NEW REGRESSION TEST AGAINST THE OLD CODE BEFORE BELIEVING IT.** The first
+   `Transformer` power test **passed against the broken element**: it reconstructed the primary
+   current as `-i_br/n`, the very relation under test, instead of measuring it, so it asserted an
+   identity it had itself imposed. It was caught only by deliberately checking out the pre-fix
+   element and re-running. ⚠ **A regression test that has never failed has never been tested**;
+   reverting the fix for one run costs seconds and is the only thing that distinguishes a gate from
+   a decoration. (Same family as 0t/0b and "measuring a RECONSTRUCTION", now with a procedure
+   attached rather than a warning.)
+
+0ad. **"THE INSTRUMENT SAYS NOTHING" CAN BE AS WRONG AS "THE INSTRUMENT PROVES IT".** This file
+   recorded `null_residual` as *"flat … and tells a caller nothing"* while an outside document
+   presented the same flat number as proof of robustness. **Both were wrong**, and one injection
+   measurement settled it: a random 1% error in `v` moves it nine orders, so it is a real gate; an
+   error along the `λ₂` eigendirection enters scaled by `1 − λ₂`, so what it cannot exclude is
+   `null_residual / (1 − λ₂)`. ⚠ **Dismissing an instrument is a claim about it and needs the same
+   measurement as trusting one** — the useful output was neither verdict but the CONVERSION FACTOR
+   between them, now shipped as `null_residual_amplification`.
+
 ## TR-BDF2 (a two-stage DIRK alongside the LMM tree), 2026-09-05
 
 The integrator tree was three linear multistep methods (Euler, trapezoidal, Gear-2). TR-BDF2
@@ -8111,6 +8138,35 @@ self-confirming measurement as a guarantee. The honest statement of what we know
 built 2026-09-07 (`second_multiplier_certified`), which reports on the *quantity it certifies* and
 is allowed to fail.
 
+#### ⚠ MEASURED 2026-09-07, and it corrects BOTH readings — including ours
+
+The disagreement was settled by injecting a **1% error into a converged `v`** on
+`_vdp_with_slow_node` and reading `null_residual` back (converged floor 4.6e-11):
+
+| `λ₂` | 1% error, RANDOM direction | 1% error, along the `λ₂` left-eigendirection | `0.01·(1 − λ₂)` |
+|---|---|---|---|
+| 0.000856 | 1.65e-02 | 1.003e-02 | 9.99e-03 |
+| 0.990049 | 1.65e-02 | 9.950e-05 | 9.95e-05 |
+| 0.999900 | 1.65e-02 | 1.000e-06 | 1.00e-06 |
+| 0.999999 | 1.65e-02 | 1.000e-08 | 1.00e-08 |
+
+Exact to every digit printed. **Neither reading survives.**
+
+⚠ **Ours was too strong.** A generic error is caught **nine orders above the floor**, so
+`null_residual` *is* a real gate and the six assertions on it in `test_analysis_shooting.py` can
+fail. *"Tells a caller nothing"* is withdrawn — it tells them something, **divided by `1 − λ₂`**.
+
+⚠ **Theirs is still wrong, and wrong in the direction that matters.** `null_residual` is
+`‖v − Mᵀv‖/‖v‖`, so an error along the `λ₂` eigendirection enters it scaled by `1 − λ₂`. The error
+the residual **cannot exclude** is therefore `null_residual / (1 − λ₂)` — a 10³× weakening at
+`λ₂ = 0.999` and 10⁶× at `0.999999`. The instrument goes blind *precisely as the circuit gets
+better*, which is the opposite of the reassurance "remains at 1e-9" conveys.
+
+**Built:** `info['null_residual_amplification'] = 1/(1 − λ₂)`, so a caller can convert one number
+into the other, and `test_the_null_residual_fires_on_a_wrong_ppv_and_says_how_blind_it_is` pins both
+halves — that the gate fires, and that its blindness is exactly `1 − λ₂`. **Read the two numbers
+together or neither.**
+
 ### 3. Conventions that must be pinned before any cross-tool comparison
 
 Given this file's history of factor-of-two and factor-of-π convention defects, all three are
@@ -8142,11 +8198,30 @@ document a default the code does not have. **This is the fourth time in this cam
 plausible-sounding claim about our own defaults survived only until someone read the `Parameter`
 line.**
 
-### 5. Two element defects verified HERE — outside PSS scope, filed so they are not lost
+### 5. Two element defects verified HERE — ✅ BOTH FIXED 2026-09-07
 
-Both were relayed; both were **measured in this tree** before being written down, and both are real.
-Neither is a PSS/shooting item, so neither is scheduled here — they are recorded because a live
-defect found during a roadmap task should not evaporate with the task.
+Both were relayed; both were **measured in this tree** before being written down; both were real;
+both are now fixed with regression tests that were **checked against the old code to confirm they
+fail**. ⚠ **What each one was hiding behind is the part worth keeping** — in both cases a test
+already existed and could not see the defect.
+
+* **`SVCVS`** — `dtype=int` on the `G`/`C` containers (`elements.py:679, 727`) removed; the `eye`
+  blocks stay integer and promote on assignment. ⚠⚠ **It survived because all three existing
+  `SVCVS` tests run on the SYMBOLIC toolkit**, where an integer container holds sympy objects and
+  cannot truncate — a fixture that *cannot express the effect* (§D). The new test is numeric, uses
+  the coefficient ordering that zeroes everything, and checks the **pole lands where the
+  coefficients say**, not merely that some entry is fractional.
+* **`Transformer`** — the primary current column is now `-1/n` (`elements.py:922`). Power ratio
+  measured at **1.000000** for `n = 0.5, 1, 2, 10`, voltage ratio unchanged. ⚠ **Three fixtures
+  pinned the wrong stamp** — the element's doctest, `test_elements.py`'s `GTransformer`, and
+  (implicitly) every voltage-domain check — all changed on purpose, each carrying a note saying so
+  and why, because the next reader would otherwise "restore" them.
+  ⚠⚠ **The first version of the new power test PASSED against the broken element.** It computed
+  the primary current as `-i_br/n` — the very relation under test — instead of measuring it.
+  Rewritten to read **both** currents from the solved circuit through series resistors. *A gate
+  built out of the answer it is checking is not a gate* (§D: measuring a RECONSTRUCTION).
+
+Original diagnosis, kept because the ordering dependence is the transferable part:
 
 * ⚠⚠ **`SVCVS` builds its stamps with `dtype=int` (`elements.py:679, 727`; `tk.eye(..., dtype=int)`
   at 701/717/729) and TRUNCATES every normalised coefficient.** Severity depends on which end of

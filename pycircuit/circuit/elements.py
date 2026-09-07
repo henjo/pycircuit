@@ -676,7 +676,17 @@ class SVCVS(Circuit):
         self.add_nodes(*newnodes)
 
         n = self.n
-        G = tk.zeros((n,n), dtype = int)
+        ## NOT `dtype=int`: `self.num` and `self.den` are the coefficients
+        ## DIVIDED by `den[0]`, so they are float in general and an integer
+        ## container TRUNCATES every one of them on assignment below.  How
+        ## much that costs depends on which end of `denominator` the large
+        ## coefficient sits, which is why it hid for so long: with
+        ## `den=[2.53e-12, 2.25e-6, 1.0]` the normalised coefficients are
+        ## ~1e6 and ~4e11 and truncation is a ~1e-7 relative error, invisible
+        ## in any response plot; REVERSE the same coefficients and every
+        ## normalised denominator entry is < 1 and truncates to ZERO, leaving
+        ## a degenerate filter that still solves and still returns a number.
+        G = tk.zeros((n,n))
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
@@ -724,7 +734,9 @@ class SVCVS(Circuit):
 
         self._G = G
 
-        C = tk.zeros((n,n), dtype=int)
+        ## Float for the same reason as `G` above; the `eye` blocks are
+        ## genuine integer identities and promote on assignment.
+        C = tk.zeros((n,n))
         C[first:first+self.denlen-1, first:first+self.denlen-1] = \
             -1*tk.eye(self.denlen-1, dtype=int)
         self._C = C
@@ -899,11 +911,19 @@ class Transformer(Circuit):
     >>> c['vcvs'].branches
     [Branch(Node('outp'),Node('outn'))]
     >>> c['vcvs'].G(numeric.zeros(4))
-    array([[ 0.,  0.,  0.,  0.,  2.],
-           [ 0.,  0.,  0.,  0., -2.],
-           [ 0.,  0.,  0.,  0.,  1.],
-           [ 0.,  0.,  0.,  0., -1.],
-           [-1.,  1.,  2., -2.,  0.]])
+    array([[ 0. ,  0. ,  0. ,  0. , -0.5],
+           [ 0. ,  0. ,  0. ,  0. ,  0.5],
+           [ 0. ,  0. ,  0. ,  0. ,  1. ],
+           [ 0. ,  0. ,  0. ,  0. , -1. ],
+           [-1. ,  1. ,  2. , -2. ,  0. ]])
+
+    The primary column is `-1/n`, and the `2., -2.` this doctest USED to
+    show there was the bug, not the specification -- it is changed on
+    purpose and must not be "restored".  The old stamp got the voltage
+    ratio right (`V_in/V_out = n`, the constraint row, unchanged) and the
+    power ratio wrong by `n**2`, so every voltage-domain check passed.
+    See the note on the stamp in `update` below, and
+    `test_the_ideal_transformer_conserves_power`.
 
     """
     instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1)]
@@ -916,15 +936,30 @@ class Transformer(Circuit):
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
+        ## The PRIMARY current column is `-1/n`, NOT `+n`.  `i_br` is the
+        ## `outp->outn` branch current, so it IS the secondary current
+        ## (`outp/outn` stamp `+1/-1`), and the constraint row below fixes
+        ## `V_in = n*V_out`.  Losslessness, `V_in*I_in + V_out*I_out = 0`,
+        ## then leaves no freedom: `I_in = -i_br/n`.  Stamping `+n` here
+        ## instead gave `|P_out/P_in| = 1/n**2` -- measured 0.2500 at `n=2`,
+        ## while the voltage ratio came out right, which is why only a
+        ## POWER check finds it.  Written as `-1/n` rather than rescaling
+        ## the secondary column to `-n` so that `i_br` keeps the meaning
+        ## `branches = (Branch(outp, outn),)` declares for it.
+        ## `-1/ratio`, not `-1.0/ratio`: `n` may be a sympy Symbol on the
+        ## symbolic toolkit, where a Python float would contaminate an
+        ## otherwise exact expression.  Integer `1` divides exactly there
+        ## and still yields true division for a numeric `n`.
+        ratio = self.iparv.n
         G = self.toolkit.matrix_from_entries(
             (n,n),
             [
-             (inpindex, branchindex, self.iparv.n),
-             (innindex, branchindex, -self.iparv.n),
+             (inpindex, branchindex, -1 / ratio),
+             (innindex, branchindex, 1 / ratio),
              (outpindex, branchindex, 1),
              (outnindex, branchindex, -1),
-             (branchindex, outpindex, self.iparv.n),
-             (branchindex, outnindex, -self.iparv.n),
+             (branchindex, outpindex, ratio),
+             (branchindex, outnindex, -ratio),
              (branchindex, inpindex, -1),
              (branchindex, innindex, 1),
             ])

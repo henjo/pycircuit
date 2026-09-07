@@ -5102,6 +5102,99 @@ def _solve_slow(tau_over_T):
     return cir, pss
 
 
+def test_the_null_residual_fires_on_a_wrong_ppv_and_says_how_blind_it_is():
+    """A MUTATION check on `null_residual`, plus the bound it actually gives.
+
+    Two sessions have now read the SAME flat `1e-9`/`1e-11` residual in
+    opposite directions -- one as proof the bordered PPV solve stays accurate
+    as `lambda_2 -> 1`, this file as the instrument saying nothing.  Neither
+    is right, and the difference is measurable, so it is measured here rather
+    than argued.
+
+    `null_residual` is `||v - M^T v|| / ||v||`.  Inject a 1% error into the
+    converged `v`:
+
+      * in a RANDOM direction it reads 1.65e-02 against a converged floor of
+        4.6e-11 -- nine orders.  The gate is real and every assertion on it in
+        this file can fail.  That is the half the roadmap had too pessimistic.
+      * along the `lambda_2` LEFT-EIGENDIRECTION it reads `0.01*(1 - lam2)`
+        exactly: 1.003e-02, 9.950e-05, 1.000e-06, 1.000e-08 at
+        `lam2 = 0.000856, 0.990049, 0.999900, 0.999999`.  So the error the
+        residual cannot exclude is `null_residual / (1 - lam2)`, and the
+        blindness grows without bound as the circuit gets better.  That is
+        the half a "residual remains at 1e-9" claim gets wrong.
+
+    `info['null_residual_amplification']` ships the second factor so a caller
+    can convert one number into the other.  Read together or neither.
+    """
+    import warnings
+
+    floor, injected = 4.6e-11, 0.01
+    for tau, lam2_want in ((None, 0.000856), (1e2, 0.990049), (1e4, 0.999900)):
+        cir, pss = _solve_slow(tau)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            v, info = pss.ppv()
+        v = np.asarray(v, dtype=float).ravel()
+        fp = pss.factored_period()
+        n = fp.width
+        v = v[:n]
+
+        ## The left eigenvectors of `M` are the eigenvectors of `M^T`; the
+        ## `lam2` one is the direction the residual is least able to see.
+        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float).ravel()
+                             for e in np.eye(n)])
+        lams, W = np.linalg.eig(M.T)
+        keep = [i for i in range(n) if abs(lams[i] - 1.0) > 1e-6]
+        j = max(keep, key=lambda i: np.real(lams[i]))
+        lam2 = float(np.real(lams[j]))
+        w2 = np.real(W[:, j])
+        w2 = w2 / np.linalg.norm(w2)
+
+        def resid(vv):
+            mv = np.asarray(fp.matvec_transposed(vv), dtype=float).ravel()
+            return (np.linalg.norm(vv - mv)
+                    / max(float(np.linalg.norm(vv)), 1e-300))
+
+        assert abs(lam2 - lam2_want) < 1e-5, \
+            'tau/T=%r: lam2 is %.6f, fixture expects %.6f' % (
+                tau, lam2, lam2_want)
+
+        nv = float(np.linalg.norm(v))
+        rng = np.random.default_rng(7)
+        d = rng.standard_normal(n)
+        d = d / np.linalg.norm(d)
+
+        r_clean = resid(v)
+        r_rand = resid(v + injected * nv * d)
+        r_lam2 = resid(v + injected * nv * w2)
+
+        ## 1. The gate FIRES: a generic error is caught far above the floor.
+        assert r_clean < floor * 10, \
+            'tau/T=%r: converged residual %.3e is above the floor' % (
+                tau, r_clean)
+        assert r_rand > 1e4 * r_clean, \
+            'tau/T=%r: a %g random error moved the residual only %.3e -> ' \
+            '%.3e; the assertions on this key would be decorative' % (
+                tau, injected, r_clean, r_rand)
+
+        ## 2. And it is BLIND by exactly `1 - lam2` in the worst direction.
+        assert abs(r_lam2 / (injected * (1.0 - lam2)) - 1.0) < 0.02, \
+            'tau/T=%r: residual along the lam2 direction is %.3e, the ' \
+            '(1-lam2) scaling predicts %.3e' % (
+                tau, r_lam2, injected * (1.0 - lam2))
+
+        ## 3. The shipped amplification is that factor, so
+        ##    `null_residual * amplification` is the error it cannot exclude.
+        amp = info['null_residual_amplification']
+        assert abs(amp * (1.0 - lam2) - 1.0) < 1e-6, \
+            'tau/T=%r: amplification %.6e does not match 1/(1-lam2) %.6e' % (
+                tau, amp, 1.0 / (1.0 - lam2))
+        assert info['null_residual'] * amp < 1e-4, \
+            'tau/T=%r: the residual admits a relative error of %.3e in v' % (
+                tau, info['null_residual'] * amp)
+
+
 def test_a_slow_node_degrades_the_ppv_border_silently():
     """⚠ THE BORDER FIXES THE PHASE MODE AND NOTHING ELSE.
 
