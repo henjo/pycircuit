@@ -6585,6 +6585,36 @@ evidence of being in the FIRST regime rather than of the method's order. No orde
 meaningful without the floor measured first.
 Test: `test_radau_keeps_order_on_differential_and_loses_two_on_algebraic_index2`.
 
+### ⚠⚠ WHICH METHOD FOR AN INDEX-2 CIRCUIT — measured across the tree, 2026-09-07
+
+**Radau IIA(3), and `det A != 0` is the discriminant — empirically, not just in the hypothesis.**
+Same fixture, same analytic reference, orders at the finest pair (npts 40 -> 80):
+
+| method | `det A` | differential ord | err | algebraic ord | err |
+|---|---|---|---|---|---|
+| `euler` | — | 0.99 | 8.09e-03 | 1.03 | 1.24e-07 |
+| `trap` | — | 1.88 | 6.17e-04 | 2.03 | 6.84e-09 |
+| `theta` | — | 2.02 | 2.08e-03 | 2.05 | 3.14e-08 |
+| `gear` | — | 2.03 | 4.36e-04 | 2.03 | 6.54e-09 |
+| `trbdf2` | **0** | 2.04 | 5.32e-05 | 2.04 | 1.34e-09 |
+| **`radau`** | **0.01667** | **5.08** | **8.88e-11** | **3.05** | **1.98e-11** |
+
+⚠⚠ **RADAU IS THE ONLY METHOD THAT SHOWS THE SPLIT AT ALL**, and the only one with `det A != 0`.
+Every other method has differential ≈ algebraic. **TR-BDF2 has `det A = 0` EXACTLY** (`a11 = 0`),
+so HLR's hypotheses do not hold for it and it gets no order preservation in the differential
+components — 2.04 in both, against Radau's 5.08.
+
+⚠ **This is the fifth job for `det A != 0` MEASURED rather than cited.** It was already the exact
+FULL-vs-DIRK monodromy discriminant; it is now also the index-2 order-preservation discriminant, and
+the two are the same number for the same structural reason.
+
+**Radau dominates on BOTH components here**: six orders better in the differential (8.9e-11 against
+TR-BDF2's 5.3e-05) and two in the algebraic (2.0e-11 against 1.3e-09). Its *reduced* algebraic order
+of 3 is still above every other method's 2.
+
+⚠ The LMMs show no reduction only because their classical order is already at or below the reduced
+one — `euler` at 1, the rest at 2. **An absence of order reduction is not evidence of suitability.**
+
 ⚠ **OPEN, and this result is its baseline:** general linear methods are claimed to be diagonally
 implicit AND high stage order, hence *"no order reduction for the index-2 components"* (Voigtmann,
 Oberwolfach Report 18/2006). If that holds it dominates both ESDIRK (cheap, stage order 2) and
@@ -6592,6 +6622,80 @@ Radau IIA(3) (stage order 3, one real + one complex LU) on the axis this table m
 WORKSHOP ABSTRACT — cited, not verified — and the RK order conditions are only a SUBSET of the GLM
 ones, so it carries more order conditions, multivalue storage and a startup problem. **Recorded as
 the survey's missing option, not as a build.**
+
+## Three flagged items from the literature sweep — 2026-09-07, none verified here
+
+⚠ **All three are RELAYED, not measured in this tree.** Recorded so they are on record as known
+rather than discovered later; each says what would have to be checked before acting.
+
+### ⚠⚠ A THIRD PPV FAILURE MODE, and the bordered solve does NOT fix it
+
+`ppv()` separates two failures: high-Q crowded multipliers (**ill-POSED**, which the augmented
+solve fixes) and the phase equation's instantaneous-response limit. Lai & Roychowdhury 2006 name a
+third and say **both** extraction routes fail on it:
+
+> *"There are two techniques available for PPV extraction: the time domain monodromy matrix method
+> and the AUGMENTED JACOBIAN METHOD in the frequency domain. NEITHER OF THESE IS ROBUST when
+> applied to DCOs featuring banks of digitally switched capacitors ... The root of the problem stems
+> from that 'OFF' CAPACITORS CONTRIBUTE LARGE RC-LIKE TIME CONSTANTS ... DEGRADING THE CONDITIONING
+> OF THE JACOBIAN MATRIX."*
+
+⚠ **The augmented Jacobian route is the one we use**, and the fix for failure (1) is not a fix for
+this. Their remedy is a hierarchical multilevel-Newton decomposition.
+
+⚠ **Scope:** switched-capacitor banks are a DCO feature, outside the standing normal-use scope.
+**What generalises and is worth keeping:** a weakly-coupled node with a very large RC degrades
+Jacobian conditioning enough to hurt the PPV *at that node*, and the symptom appears FIRST as
+Newton trouble in the preceding steady-state solve. **If PSS Newton struggles on a circuit with
+near-off devices, the PPV that follows is suspect even if the PSS eventually converges.**
+⚠ The suggestion that this is the numerical face of our slow-node boundary is explicitly an
+UNVERIFIED guess by its author; do not adopt the identification without testing it.
+
+### ⚠⚠ DEMIR'S DAE PHASE-NOISE THEORY IS INDEX-1 ONLY — and it closes a triangle
+
+Demir 1998, *"Phase Noise in Oscillators: DAEs and Colored Noise Sources"*, p.1: *"WE ASSUME THAT
+THE DAEs WE ARE DEALING WITH ARE INDEX-1."* Reported as: "index-2", "index 2" and "higher index"
+appear nowhere in that paper.
+
+Placed beside the two results above it:
+
+| source | statement | our status |
+|---|---|---|
+| Hairer/Lubich/Roche | at index 2, Radau IIA keeps order in the differential components, not the algebraic | **MEASURED: 5 and 3** |
+| Lamour/Maerz | the index is fixed by circuit TOPOLOGY, readable off the netlist | **BUILT: `topological_index` (B11)** |
+| Demir 1998 | the phase-noise theory assumes index-1 | relayed |
+
+⚠⚠ **So on an index-2 circuit the integrator's ORDER and the phase-noise theory's stated
+FOUNDATION are both outside their scope, and NEITHER failure announces itself.** Nothing is wrong
+today — most MNA circuits are index-1 — but this names the class of circuit that would quietly
+invalidate two layers at once, and we already have the tool that detects the class. **Know the
+index of a fixture rather than discover it.**
+
+### A measured integrator ranking that INVERTS the received default — with its confounders
+
+Suarez, *Analysis and Design of Autonomous Microwave Circuits*, pp. 278-9, divide-by-2 with a
+microstrip line, `fin = 2.178 GHz`, ~100 periods:
+
+| method | outcome | time |
+|---|---|---|
+| backward Euler | **fails** from ~2.9 ns | — |
+| Gear order 2 | **fails** from ~3.2 ns | — |
+| trapezoidal | converges | 30.31 s |
+| Gear order 3 | converges | 23.95 s |
+| Gear order 4 | converges | **16.93 s** |
+
+The low-order, more damped methods FAIL; the higher-order Gears succeed AND run fastest — the
+reverse of *"low order A-stable methods need to be used for stiff circuits"*.
+
+⚠ **Two confounders, both stated by the source:** the ranking is TOLERANCE-DEPENDENT (at 1e-6 V
+trapezoidal and every Gear converge, only backward Euler still fails), and the circuit contains a
+MICROSTRIP LINE characterised to the 30th harmonic, so the failure may belong to the
+distributed-element representation rather than to stiffness. **A data point against a default, not
+a recommendation.**
+
+⚠ **Do NOT conflate with our own result that BDF-4 is unstable on the product invariant** —
+different objects: that is a monodromy invariant, this is transient convergence to steady state.
+Two facts about "Gear order 4" pointing opposite ways, both true.
 
 ## D. How these items keep failing — the shapes worth checking for
 
