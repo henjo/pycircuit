@@ -16576,3 +16576,118 @@ def test_the_default_method_is_radau_and_it_takes_no_monodromy_twin():
         'own map (see carries_own_monodromy)'
     assert not pss._twins, \
         'a twin was solved and cached: %r' % (list(pss._twins),)
+
+
+def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0):
+    """van der Pol with the reactances as KNOBS — the unit-reactance default
+    is exactly what hid the fixture dependence below."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=cval)
+    cir['L'] = L('v', gnd, L=lval)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+    w0 = 1.0 / np.sqrt(cval * lval)
+    T = 2.0 * np.pi / w0 / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+    assert pss.converged
+    return cir, pss
+
+
+def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
+    """A9 step 4: `orbital_spectrum`, and the ONE gate that survived.
+
+    Lemma 3.5 makes the orbital spectrum Lorentzians centred at
+    `j*w0 + Im(mu_l)` with half-width `|Re(mu_l)| + (1/2) h^2 w0^2 c`. The
+    `h = 0` term therefore has half-width exactly
+
+        |Re(mu_2)| / (2 pi) = |ln(lam2)| f0 / (2 pi) = f_amp
+
+    the SAME amplitude-relaxation pole `oscillator_spectrum` warns above, and
+    that pole was derived independently — from a commercial simulator's
+    measured excess over our phase-only answer. Two routes, one from a parity
+    table and one from this paper's modal sum, landing on one quantity.
+
+    ⚠⚠ AND A HEADLINE I HAD TO RETRACT, WHICH IS WHY THE THIRD ASSERTION
+    EXISTS. On the default fixture `S_orb/S_ph` reads 0.500163 at `f_amp` and
+    0.0099 / 0.99 a decade either side — i.e. `f^2/(f^2 + f_amp^2)`, identical
+    at `Q = 8, 20, 50`. It is tempting to call that a law: *the orbital term
+    reaches half the phase term at f_amp*. **It is not a law. It is the
+    unit-reactance fixture.** Change `C` at fixed `w0`:
+
+        C=1.00 L=1.00   ratio at f_amp = 0.500
+        C=4.00 L=0.25   ratio at f_amp = 8.002
+        C=0.25 L=4.00   ratio at f_amp = 0.031
+
+    a 256x swing. §D 0c, again, on the same circuit that produced it there.
+    The SHAPE is universal; the AMPLITUDE is not, and the third assertion
+    pins the difference so the retracted claim cannot come back.
+
+    ❌ OPEN: the asymptotic ratio scales as ~`C^2` and nothing here says
+    whether that is physical. `orbital_spectrum`'s shape is checked; its
+    amplitude is validated against NOTHING external.
+    """
+    cir, pss = _a9_vdp()
+    pac = PAC(cir)
+    f0 = 1.0 / float(pss.period)
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _v, info = pss.ppv()
+    lam2 = float(info['second_multiplier'])
+    f_amp = -np.log(lam2) * f0 / (2.0 * np.pi)
+
+    ## 1. THE SHAPE, tied to lam2. A Lorentzian of half-width `f_amp` is at
+    ##    half its peak exactly `f_amp` away.
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        s_peak = float(pac.orbital_spectrum(
+            pss, np.array([1e-6 * f_amp]), 0, H=4)[0])
+        s_half = float(pac.orbital_spectrum(
+            pss, np.array([f_amp]), 0, H=4)[0])
+    assert abs(s_half / s_peak - 0.5) < 5e-3, \
+        'the orbital line is at %.6f of its peak one f_amp out, not 0.5 — ' \
+        'its half-width is not |Re(mu_2)|/(2 pi)' % (s_half / s_peak)
+
+    ## 2. INVARIANCE UNDER THE NOISE SCALE. Both spectra are linear in the
+    ##    source PSD, so their RATIO must not move; if it does, the one-sided
+    ##    / two-sided conventions have drifted apart between them — which is
+    ##    the defect this file has caught more than once.
+    ratios = []
+    for psd in (1e-6, 1e-4):
+        c2, p2 = _a9_vdp(psd=psd)
+        pac2 = PAC(c2)
+        offs = np.array([f_amp, 100.0 * f_amp])
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            sp, _ = pac2.oscillator_spectrum(p2, offs, 0, harmonic=1)
+            so = pac2.orbital_spectrum(p2, offs, 0, harmonic=1, H=4)
+        ratios.append(np.asarray(so) / np.asarray(sp))
+    drift = float(np.max(np.abs(ratios[0] / ratios[1] - 1.0)))
+    assert drift < 5e-3, \
+        'the orbital/phase ratio moved by %.3e over a 100x change in source ' \
+        'PSD; both are linear in it, so a scaling convention disagrees' % drift
+
+    ## 3. ⚠ THE RATIO AT `f_amp` IS **NOT** A UNIVERSAL 0.5 — asserted so the
+    ##    retracted headline cannot be re-derived from the default fixture.
+    c3, p3 = _a9_vdp(cval=4.0, lval=0.25)
+    pac3 = PAC(c3)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        sp3, _ = pac3.oscillator_spectrum(p3, np.array([f_amp]), 0, harmonic=1)
+        so3 = pac3.orbital_spectrum(p3, np.array([f_amp]), 0, harmonic=1, H=4)
+    r_unit = float(ratios[0][0])
+    r_c4 = float(so3[0] / sp3[0])
+    assert r_c4 / r_unit > 4.0, \
+        'changing C by 4x moved the orbital/phase ratio at f_amp only from ' \
+        '%.4f to %.4f. If this has become fixture-independent, the "half at ' \
+        'f_amp" reading may be a law after all — measure before believing ' \
+        'it' % (r_unit, r_c4)

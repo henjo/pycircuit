@@ -11476,6 +11476,97 @@ class PAC(Analysis):
                             R += term
         return np.real(R), C
 
+    def orbital_spectrum(self, pss, offsets, output, harmonic=1, H=None):
+        """`S_yy` — the ORBITAL (amplitude) noise spectrum. A9 step 4.
+
+        Returns `S` at `harmonic*f0 + offsets`, in the same V^2/Hz scale as
+        `oscillator_spectrum`'s `S_v`, so **the two are summed** — which is
+        what Traversa & Bonani (TCAS-I 2011) say to do:
+
+            x(t) = x_s(t + a(t)) + y(t)      a = phase, y = orbital
+
+        with the phase--orbital CROSS term dropped.  ⚠ That is a documented
+        approximation with a KNOWN SIGN, not an oversight: the paper reports
+        the correlation spectrum negligible on two circuits, and that when
+        present it *decreases* the total.  **Dropping it therefore OVER-states
+        noise** — conservative for a design margin, wrong in a known
+        direction.  It is identically zero with no AM-to-PM coupling.
+
+        **Lemma 3.5**: the orbital spectrum is a sum of Lorentzians centred at
+        `j*w0 + Im(mu_l)` with half-width `|Re(mu_l)| + (1/2) h^2 w0^2 c`,
+        weighted by the `C_lhj` of eq (22).  Every input already exists:
+        `orbital_correlation` returns `C_lhj` (gated three ways), the
+        exponents come from `floquet_modes`, and `c` from
+        `diffusion_constant`.
+
+        ⚠ UNIT CONVERSION, DONE ONCE HERE.  Lemma 3.5's widths are ANGULAR.
+        `(1/2) h^2 w0^2 c` rad/s is `pi h^2 f0^2 c` Hz -- exactly the
+        half-width `lorentzian` already uses for the phase line -- and
+        `|Re(mu_l)|` rad/s is `|Re(mu_l)|/(2 pi)` Hz.  The two half-widths
+        ADD, so an orbital mode's line is the phase line broadened by the
+        mode's own relaxation rate.
+
+        ⚠⚠ AND THAT IS WHY IT MATTERS AT LARGE OFFSET, WHICH IS THE WHOLE
+        POINT OF THE ITEM.  The phase line's width is `pi h^2 f0^2 c`, which
+        for a good oscillator is tiny, so its skirt has fallen as `1/f^2` long
+        before the orbital line -- width `|Re(mu_2)|/(2 pi)`, i.e. the
+        AMPLITUDE RELAXATION RATE -- has even started to roll off.  The
+        crossover therefore sits near
+
+            f_amp = -ln(lam2) f0 / (2 pi) = f0 / (2 pi Q)
+
+        the same pole `oscillator_spectrum` warns about from the other side.
+        ⚠ Those two arrived independently -- one from a commercial
+        simulator's excess over our phase-only answer, one from this paper's
+        modal sum -- and they must land in the same place.  That is the gate
+        (`test_the_orbital_spectrum_crosses_the_phase_spectrum_near_f_amp`),
+        and it is the check that can actually fail.
+
+        ⚠ `output` follows `oscillator_spectrum`: an integer indexes the
+        REDUCED state (the reference row already removed), an array is a
+        weight vector over it.
+
+        ⚠ STATIONARY WHITE SOURCES ONLY -- inherited from
+        `orbital_correlation`, which needs `CY` constant for eq (22)'s
+        products to collapse.
+        """
+        R, C = self.orbital_correlation(pss, H=H)
+        modes = pss.floquet_modes(pss)
+        c = float(self.diffusion_constant(pss))
+        f0 = 1.0 / float(pss.period)
+        m = pss.cir.n - 1
+
+        d = np.asarray(output)
+        if d.ndim == 0:
+            row = np.zeros(m, dtype=float)
+            row[int(d)] = 1.0
+        else:
+            row = np.asarray(d, dtype=float).ravel()[:m]
+
+        f = float(harmonic) * f0 + np.atleast_1d(
+            np.asarray(offsets, dtype=float))
+        S = np.zeros_like(f, dtype=float)
+        for (l, h, j), Clhj in C.items():
+            ## The weight is the output's own share of this term.  It is real
+            ## for the total (`R` is real symmetric); an individual `(l,h,j)`
+            ## can carry a small imaginary part that cancels against its
+            ## conjugate partner, so take the real part per term rather than
+            ## asserting each is real.
+            w = float(np.real(row @ Clhj @ row))
+            if w == 0.0:
+                continue
+            mul = modes[l]['mu']
+            ## Hz, both terms -- see the unit note above.
+            gam = abs(float(np.real(mul))) / (2.0 * np.pi) \
+                + np.pi * float(h) ** 2 * f0 ** 2 * c
+            fc = float(j) * f0 + float(np.imag(mul)) / (2.0 * np.pi)
+            if gam <= 0.0:
+                continue
+            ## Normalised Lorentzian: integrates to 1 over all `f`, so the
+            ## total power is `sum(w) = row^T R row` by construction.
+            S = S + w * (gam / np.pi) / ((f - fc) ** 2 + gam ** 2)
+        return S
+
     def diffusion_constant(self, pss):
         """`c` — the phase diffusion constant, in seconds.
 

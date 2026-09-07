@@ -5688,7 +5688,23 @@ noise later").** With `CY` constant the `Λ̃` products collapse to `Ṽᵀ CY �
 needed; a coloured source breaks that collapse and needs `B(t)` per source, which is the shape of
 that later work.
 
-❌ **OPEN, NOT TUNED: a 3 % SHAPE residual** between the two modal routes (which agree with each
+✅⚠ **CLOSED — AND BOTH HALVES OF THIS ITEM WERE STALE BY 2026-09-07, WHICH IS THE ENTRY.**
+The residual below was recorded as open and blocked; neither survived a check.
+**(a) The blocker.** *"`_lyapunov_pieces` is still gear-only"* — it is not, and had not been for
+long. It dispatches on `fp.kind` across `dirk`, `full` (Radau), `plain` and `solved_history`, and
+`_lyapunov_pieces_plain` landed in `36fb253` on **2026-09-04 — the same day this note was written**.
+**(b) The residual.** The 3 % is gone and the gate now asserts **`relAC < 3e-3`** and passes. The
+cause was not the gear pair-slicing this note attributes it to: it was the REFERENCE being the
+wrong object — subtracting only the secular growth is not the transverse part, it leaves the phase
+direction's bounded within-period variance in, and it *"read 2-6 % … falling as 1/Q"*. The fix was
+the OBLIQUE projection `Π = I − u vᵀ/(vᵀu)`, i.e. Demir's `v₁ᵀ y = 0`.
+⚠⚠ **So an item sat marked OPEN-AND-BLOCKED for three days after both were resolved, with the
+attribution pointing at the wrong cause.** VERIFY A BLOCKER BEFORE REPEATING IT — the third time
+this campaign (the Lai PDF "not on disk", A4's two stale blockers, now this).
+
+**The original note, kept because the wrong attribution is the instructive part:**
+
+❌ ~~OPEN, NOT TUNED: a 3 % SHAPE residual~~ between the two modal routes (which agree with each
 other to 3.5e-4) and the Lyapunov reference — the scalar-fit residual is 2.98e-2 before and after
 the fix, so it is not a factor. Attributed, **not proven**, to the reference being the **pair**
 covariance on gear sliced to its state block. The clean comparison needs the **plain-path**
@@ -8588,3 +8604,57 @@ that `carries_own_monodromy`. Had Radau been missing from that set, every autono
 new default would have quietly spawned a second PSS and read `λ₂` from an **order-2** twin while its
 own map is **order 5** — more cost for a worse answer, with nothing failing. It is in the set; that
 was checked by reading before the change and is now asserted, because reading is not measuring.
+
+
+## A9 step 4 — the orbital SPECTRUM built, and a headline retracted the same day
+
+**Built: `PAC.orbital_spectrum(pss, offsets, output, harmonic, H)`** — Lemma 3.5's sum of
+Lorentzians centred at `jω₀ + Im(μ_l)` with half-width `|Re(μ_l)| + ½h²ω₀²c`, weighted by the
+`C_lhj` that A9 step 3 already gated three ways. Returned in the same V²/Hz scale as
+`oscillator_spectrum`, so **the two are summed**, with the phase–orbital cross term dropped under
+its documented known-sign approximation (it over-states noise — the conservative direction).
+
+⚠ **Both of A9's recorded blockers were STALE and neither was re-derived.** See the correction in
+step 3: `_lyapunov_pieces` stopped being gear-only on `36fb253`, *the same day the note claiming it
+was written*, and the 3 % shape residual was already fixed by the oblique projection — with the
+attribution in the note pointing at the wrong cause. **Third stale blocker of the campaign.**
+
+### The one gate that survived, and it corroborates this morning's `f_amp`
+
+The `h = 0` term's half-width is `|Re(μ₂)|/(2π) = |ln λ₂|·f₀/(2π) = f_amp` — the *same*
+amplitude-relaxation pole `oscillator_spectrum` now warns above, which was derived from a
+**commercial simulator's measured excess** over our phase-only answer. Two routes — a parity table
+and this paper's modal sum — on one quantity. Measured `S_orb(f_amp)/S_orb(0⁺) = 0.500049`.
+Also gated: the orbital/phase ratio is invariant to **2.03e-04** across a 100× change in source
+PSD, which is a real check on the one-sided/two-sided conventions agreeing between the two spectra.
+
+### ⚠⚠ RETRACTED THE SAME DAY: "the orbital term reaches half the phase term at `f_amp`"
+
+On the default fixture `S_orb/S_ph` reads **0.0099 / 0.5002 / 0.9906** at `0.1, 1, 10 × f_amp` —
+exactly `f²/(f² + f_amp²)` — and **identically at `Q = 8, 20, 50`**. That is a very tempting law.
+**It is the unit-reactance fixture, not physics.** Changing `C` at fixed `ω₀`:
+
+| C | L | ratio at `f_amp` | asymptotic ratio |
+|---|---|---|---|
+| 1.00 | 1.00 | 0.500 | 1.98 |
+| 4.00 | 0.25 | **8.002** | 30.79 |
+| 0.25 | 4.00 | **0.031** | 0.125 |
+
+**A 256× swing.** §D 0c — *a unit reactance makes the fixture blind* — on the very circuit that
+produced that entry. ⚠ Two further self-corrections on the way: the "crossover at `f_amp`" gate I
+designed **does not exist** (the ratio asymptotes from below and never crosses, so the reported
+crossings at 10–24 × `f_amp` were the asymptote grazing 1); and my first "asymptote ≈ 1" was simply
+not measured far enough out — at 10⁴ `f_amp` it is ≈2, matching the pre-committed prediction
+`w·f_amp/(|X₁|²·π f₀² c)` in every row (2.00 / 32.0 / 0.125). ⚠ **That last agreement is INTERNAL
+CONSISTENCY ONLY** — it confirms I understand my own code, not that the code is right.
+
+The retraction is now **asserted**, not just written down: the gate requires the ratio to MOVE when
+`C` changes, so the fixture-specific reading cannot be re-derived from the default circuit.
+
+### ❌ OPEN — and it is the honest scope limit
+
+The asymptotic ratio scales as roughly **`C²`**, and nothing measured here says whether that is
+physical. **`orbital_spectrum`'s SHAPE is checked against `λ₂`; its AMPLITUDE is validated against
+nothing external.** Settling it needs the paper's own worked example (Colpitts, 1 GHz, 300
+harmonics) or a Monte Carlo — not more of the same sweep, which would only re-measure my own
+arithmetic. Until then the far-out floor is a shape with an unvalidated scale.
