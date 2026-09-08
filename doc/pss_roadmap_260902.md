@@ -11684,3 +11684,15 @@ running:
 Pinned: `test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multiplier`. Not
 carried: the second-order state-space samples at ω_s (would need `ppv()`'s propagation block, ~300
 lines of float-typed index-aware code, generalised to complex α).
+
+**The gap on the asymmetry knob (peer's one-point test, same night).** The frequency-aware gap against
+`pnoise`'s `S_pm` at r = 1e-3 / 5e-2 / 1e-1: a = 0.1: −2.15 / −4.4 / −9.6 %; 0.25: −0.3 / −2.1 / −7.1;
+0.4: −0.1 / −1.5 / −5.8; 0.6: −1.7 / −2.5 / −5.6. Two parts: a CONSTANT baseline equal to the core's own
+AM fraction (2.15 % vs the control's 2.25 % at a = 0.1) — the phase-mode projection carries it, the
+sideband split does not: definitional, and it grows as `a` falls, as predicted; and an r-dependent part
+above it, −7.5 / −6.8 / −5.7 / −3.9 % at 0.1 f₀ for a = 0.1 / 0.25 / 0.4 / 0.6 — falling slowly with
+asymmetry, OPPOSITE to the DC sum's residual (0.9 → 11.9 %), so the two constructions miss different
+things (peer). What weakens with `a` is the weight of the `k ≥ 1` bands (`|c₀|/|c₁|` 25 → 106), so this
+part lives where those bands set the answer — consistent with the sideband split's PM assignment
+differing from phase-mode projection on the `k ≥ 1` bands. Consistent with, not established: a three-way
+bracketing (`pnoise` between the DC sum and the frequency-aware sum) with no third arbiter.
