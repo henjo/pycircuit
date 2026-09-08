@@ -1620,7 +1620,16 @@ class PSS(Analysis):
     coupled 3n system) against one per step for the others; at the point
     counts above it is cheaper on wall-clock anyway (60 points beat trap's
     480 on both axes, roadmap radau-default section), and `grid_error` /
-    `warping_estimate` price the trade on YOUR circuit.  Index-2: the
+    `warping_estimate` price the trade on YOUR circuit.  AS `n` GROWS
+    (measured 2026-09-08, ladder oscillator, 200 points, same grid for
+    every method): radau/gear on one transient period 3.0 / 3.5 / 3.9 /
+    5.7 at n = 12 / 32 / 102 / 302, and on the whole PSS solve 3.0 / 3.9 /
+    4.2 / 4.2 -- per-step assembly dominates to n ~ 100 and the 3n stage
+    system only starts to show at 300; radau/trbdf2 1.5 -> 2.6; esdirk43
+    is the MOST expensive method at every size (four sequential stage
+    solves), never the cheap alternative.  Absolute: n = 302 at 200 points
+    is 20 s per period and 271 s per PSS solve under radau, 64 s under
+    gear.  Index-2: the
     period keeps classical order under radau (6.1 measured on a smooth
     orbit); the algebraic unknowns converge at the stage order (3) -- and a
     relaxation oscillator whose PERIOD is timed by such a variable (a
@@ -10666,10 +10675,19 @@ class PAC(Analysis):
         CURVES WITH UNEXPECTED SLOPE NEAR THE OSCILLATION FREQUENCY."  If
         oscillator noise ever comes out flat near the carrier, that is the
         singularity -- not the physics, the noise models or the source
-        definitions -- which points at the right layer immediately.  A
-        published removal exists in a time-domain form written for
-        shooting, using that same null vector; it is not built.  (Cited,
-        not verified here.)
+        definitions -- which points at the right layer immediately.  The
+        published removal (Gourary et al., eq. 27/28: replace the output
+        row of J^T by u^T; verified at the source by the docs session,
+        2026-09-08) IS built here as `_deflated_solve`, which borders with
+        BOTH null vectors and is the better conditioned of the two; it is
+        wired into `adjoint_sideband_row` (so into this method) and NOT
+        into `PAC.solve` / `adjoint_transfer_row`, which solve plain
+        outside `HARMONIC_GUARD`.  The plain solve's relative error there
+        is `eta / (2 pi df/f0)` with `eta = |lambda_1 - 1|` the computed
+        unit multiplier's displacement -- measured 1.1e-12 (Q = 16) and
+        1.8e-13 (Q = 100) under radau, so the 100 %-error offset sits
+        orders inside the guard for the default integrator; correct to
+        wire, not urgent, not done.
 
         ⚠ TWO STOPPING RULES, AND THE BOUND IS NOT THE RATIO TEST.  The
         accumulation stops when a sideband pair adds less than `ratio_tol`

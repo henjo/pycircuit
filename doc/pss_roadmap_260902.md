@@ -11372,3 +11372,32 @@ heuristic to stop the estimate vanishing near `x^{(p+1)} = 0`), not a coarse-gri
 scope is LMMs (radau is outside it). **Not built.** The honest instrument for an edge orbit stays
 `warping_estimate(check=True)`: refuse until the half-grid pass agrees, then refine. (The trap
 period error on the relaxation orbit itself: 4046 → 825 → 199 ppm, order 2.3 / 2.05.)
+
+### 8. Radau's cost as `n` grows (item 4, 2026-09-08) — and η, the unit multiplier's displacement, at three Q
+
+Ladder oscillator (Q = 16, four slow sections straddling the period, the rest fast), `reltol = 1e-9`,
+200 points, one machine, idle. One period of plain transient (the integrator's own cost) and the full
+`PSS.solve` from the same seed:
+
+| n | gear tran / PSS | trap | trbdf2 | esdirk43 | radau tran / PSS | radau/gear tran | radau/gear PSS | radau/trbdf2 tran |
+|---|---|---|---|---|---|---|---|---|
+| 12 | 0.21 / 2.5 s | 0.19 / 3.0 | 0.43 / 5.4 | 0.91 / 11.3 | 0.63 / 7.5 | 3.0 | 3.0 | 1.5 |
+| 32 | 0.38 / 4.0 | 0.38 / 5.8 | 0.84 / 10.4 | 1.81 / 21.9 | 1.32 / 15.4 | 3.5 | 3.9 | 1.6 |
+| 102 | 1.06 / 11.8 | 1.06 / 16.8 | 2.36 / 29.4 | 5.06 / 63.8 | 4.16 / 49.3 | 3.9 | 4.2 | 1.8 |
+| 302 | 3.46 / 63.9 | 3.51 / 70.2 | 7.54 / 108 | 16.4 / 253 | 19.9 / 271 | 5.7 | 4.2 | 2.6 |
+
+⚠ **Prediction half wrong.** Named: ~3× at n = 12 rising to ~10× or more at 302 (the 3n dense stage
+solve). Measured: 3.0 → 5.7 on the transient, 3.0 → 4.2 on the solve. Per-step ASSEMBLY (Python)
+dominates to n ≈ 100, and the stage system only starts to show at 302; the PSS ratio flattens
+because the shooting's sensitivity/monodromy assembly is method-independent and grows with n too.
+esdirk43 is the most expensive method at every size (four sequential stage solves), never the
+cheapest alternative to radau. Same period from esdirk43 and radau at every n (−332.04 ppm vs gear),
+trap −249, trbdf2 −292: the gear reference is the one that is off, as the CHOOSING table says.
+
+**η = |λ₁ − 1| (peer, Gourary reading §2.169):** the plain near-carrier PAC solve carries relative
+error `η/(2π·df/f₀)`, and `_deflated_solve` is wired into one of three paths. On `_a10_vdp` under
+radau at 240 points: η = 1.1e-12 (Q = 16), 1.8e-13 (Q = 100), and BELOW THE FLOOR at Q = 10⁴ (1.6e-15; the peer built monodromies with an exactly unit multiplier and `eigvals` reports 1e-16 … 2.4e-15 for them, so that point carries no information) — it FALLS with Q on the two resolvable points,
+and the 100 %-error offset `η/2π` is 1.7e-13 / 2.9e-14 / 2.5e-16 of f₀, orders inside
+`HARMONIC_GUARD = 1e-12`. (The peer's 7e-11 was gear at `reltol = 1e-11`.) So with the default
+integrator the unguarded band does not exist; the wiring of `PAC.solve` and `adjoint_transfer_row`
+through the deflated solve is one branch each and correct to do, not urgent. Not done here.

@@ -25,3 +25,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260908T144408Z,5dcd9cd,pycircuit/circuit/tests/test_analysis_shooting.py no:cacheprovider isf_dc_term,4.8,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_symmetry,4.1
 20260908T145354Z,5dcd9cd,pycircuit 10 no:cacheprovider,557.7,3124,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,247.8
 20260908T152648Z,17879f5,pycircuit 10 no:cacheprovider,506.0,3124,pycircuit/circuit/tests/test_analysis_shooting.py::test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundamental,265.9
+20260908T155522Z,8040d91,pycircuit 10 no:cacheprovider,484.8,3124,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,214.0
+20260908T160424Z,8040d91,pycircuit 10 no:cacheprovider,513.1,3124,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,180.2
