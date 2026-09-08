@@ -398,12 +398,25 @@ today — but the code is already right for it.
 - **A2's slow-node validity boundary** — detected and warned, and the fix is **not justified
   by measurement**: gated at τ/T = 10, the classical PPV is within 20% of a nonlinear Monte
   Carlo (0.8016 against a 0.9965 control). Larger τ/T untested.
-- **Near-carrier oscillator noise** — `Φ(T) − I` is singular there. The published removal is
-  not built; the symptom is a flat or wrong-slope PSD near the carrier.
+- **Near-carrier oscillator noise** — `Φ(T) − I` is singular there. ⚠ CORRECTED 2026-09-08: the
+  published removal (Gourary et al.) IS built as `_deflated_solve`, wired into `adjoint_sideband_row`
+  (so `pnoise`) and NOT into `PAC.solve` / `adjoint_transfer_row`; the plain solve's error there is
+  `η/(2π·df/f₀)` with `η = |λ₁ − 1|` = 1.1e-12 (Q = 16) / 1.8e-13 (Q = 100) under radau — inside
+  `HARMONIC_GUARD`, so correct to wire, not urgent. A FLAT PSD near the carrier is the singularity;
+  a `1/f` slope is the conversion model doing what it should (Rizzoli, roadmap).
 - **Cyclostationary sources** — refused, not supported.
 - **Trapezoidal over long runs** — it has no numerical *damping*, which is a measured result
-  and stands; but a constant-bias error growing as `t²` eventually drags the amplitude error
-  up with it. "No damping" is not "no amplitude error over many periods", and it bears on
-  warm-start length.
+  and stands. ⚠ THE `t²` CLAIM THAT FOLLOWED IS DISPROVED (peer, reproduced here 2026-09-08):
+  on the linear LC (`C = L = 1`, `h = T/100`) the energy error is a CONSTANT OFFSET, −3.9323e-3
+  at 50 and at 200 periods (gear: −4.35e-2 → −1.48e-1, the control that grows; euler saturates).
+  Mechanism: trap on a linear system is the Cayley transform of `hA/2`, orthogonal for skew `A`,
+  so it preserves a quadratic form exactly. What limits a long run is PHASE, linearly and in
+  closed form: `|R(ihω)| = 1`, `arg R = 2 arctan(hω/2)`, relative frequency error `−(hω)²/12`
+  (329 ppm predicted at `T/100`, 334 measured; 0.409 rad after 200 periods, 0.103 after 50).
+  Warm-start length is set by phase drift from `h` alone. Scope: linear LC; a nonlinear limit
+  cycle attracts, so amplitude is MORE protected; a genuine `t²` would need two cascaded
+  integrations of a bias (a floating node or an index-2 pairing), not constructed. ⚠ Harness: a
+  conservation law that should decay is a free non-monotonicity check — the peer's first run
+  scored the all-zero ground row as `i_L` and "recovered" energy at fixed `h`, which is impossible.
 - **Oscillator phase noise / jitter output** — a different shape entirely (closed form in a
   few scalars, no sweep). Not built. ⚠ And `S_phi` must not be reported near the carrier.
