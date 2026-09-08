@@ -4709,6 +4709,73 @@ against a four-point sweep, not free. **Status: B7's answer at the level of "an 
 right class exists and is documented", NOT a build recommendation.** The gate before any build is
 the one already named above: run the IDeC global estimate against the accumulating period error on
 the fixture fact (a) used, and see whether it reports the warping the LTE could not.
+
+#### ✅✅ B7's GATE RUN (2026-09-08): a defect-correction global estimate REPRODUCES THE WARPING TO FOUR DIGITS, at ONE grid, with NO analytic reference — for trap, TR-BDF2, AND the radau default, once the interpolant is of the right degree
+
+**Construction** (numpy prototype, `scratchpad/idec.py` and successors; A10's van der Pol, `Q = 10⁴`,
+ODE form on `(v, i_L)`; coded tableaux for TR-BDF2 and Radau from the classes): (1) the method's
+PERIODIC solution `x_h, T_h` by shooting in `(v₀, T)`; (2) a periodic spline interpolant `p(t)` of
+degree `k`; (3) the defect `d(t) = p′ − f(p)`, `T_h`-periodic; (4) the NEIGHBOURING problem
+`y′ = f(y) + d(t)` from `p(0)`, whose exact solution is `p` by construction, integrated as a
+TRANSIENT with the SAME method at the SAME `h` for 20 periods (B7's setting — deliberately not a
+periodic solve, where the forcing fixes the period and warping cannot present as a period change);
+(5) the phase drift of `y_h` against `p` by projection onto `p′` per period; its slope is the
+estimated period error `δ′`; (6) against the TRUE `δ = T_h − T_ref` (radau at 3200 points). ⚠ The
+first run printed `−1.000`: the sign convention (a longer period makes `y` fall BEHIND `p`), not
+the estimate.
+
+| basic method / interpolant | N=25 | 35 | 50 | 100 | 200 | 400 | 800 |
+|---|---|---|---|---|---|---|---|
+| trap / cubic (k=3) | | | | 0.9996 | 0.9999 | 1.0000 | 1.0000 |
+| trbdf2 / cubic | | | | 0.9999 | 1.0000 | 1.0000 | |
+| **radau / cubic (k=3)** | **0.0000** | **0.0000** | **0.0000** | | | | |
+| radau / quintic (k=5) | 1.0490 | 1.0494 | 1.0495 | | | | |
+| **radau / septic (k=7)** | **1.0001** | **0.9999** | **0.9998** | | | | |
+
+(Entries are `δ′/δ`; radau's grids stop at 50 because its `δ` is 7.5e-10 absolute there and `T_ref`
+carries 12 digits — 1e-12 — so 100 points would sit on the reference's floor.)
+
+**Controls, each named before its run:**
+* **(a) neighbouring problem solved by RADAU instead of trap → `δ′/δ = 0.0000` at N = 100, 200.**
+  The drift is the METHOD's error on the neighbouring problem, not an artifact of `d(t)`. The
+  control the peer weighted most, and it is clean.
+* **(b) LINEAR interpolant (degree 1 < trap's order 2) → 0.032, 2.27, 3.40** — garbage, non-monotone.
+  The interpolant-order wall is real and hard. Mechanism: a degree-1 spline has a discontinuous
+  derivative at the knots, `d` jumps there, and trap samples exactly at the knots.
+* **(c) the peer's fingerprint: `δ′_trap / δ′_trbdf2` against A10's constant 2.061 → 2.0606 / 2.0606 /
+  2.0607 against 2.0612 / 2.0608 / 2.0607.** ⚠ Weighted DOWN by the peer's own second thought,
+  accepted: for trap the construction is near-identity (a cubic-spline defect reproduces trap's own
+  quadrature error of `ẋ`), and the same holds for TR-BDF2, so the ratio of estimates is the ratio
+  of errors nearly by construction — it discriminates against "IDeC reports some unrelated `h²`
+  error" and not against "algebraic identity". Controls (a) and the radau rows are the ones that
+  carry weight.
+
+⚠⚠ **THE RADAU ROWS ARE THE RESULT, and the mechanism is structural.** With a cubic spline the
+estimate is `1e-10` ppm against a true `6e-3` ppm — **zero, not wrong**: Radau IIA(3) is a
+3-stage collocation method, exact on piecewise-cubic solutions aligned with its steps, so a cubic
+spline lies INSIDE its exactness class, the neighbouring problem is solved EXACTLY, and there is
+nothing to estimate. With a quintic (order 6, against radau's measured effective order 6.1 on this
+orbit) the estimate carries a **constant 4.9 % bias at every N** — the peer's third branch,
+"calibration, not validity", reached exactly where the orders tie. With a septic (order 8) it is
+**1.0001 / 0.9999 / 0.9998**. So the classical IDeC requirement holds sharply and has two parts
+here: **the interpolant's degree must exceed the method's stage count (or it sits in the exactness
+class and estimates zero), and its order must exceed the method's effective order (or a constant
+bias remains).** For the default method that means a septic periodic spline.
+
+**What this does to B7.** The status upgrades from *"an instrument of the right class is
+documented"* to **MEASURED: a global error estimate that sees warping exists, is cheap (20
+periods of transient at the working grid, no refinement sweep, no analytic reference), and works
+for the default method.** The per-step LTE's blindness (fact (a)) is the CLASS of local estimation,
+and the way past it is a global estimate of exactly this kind — B7's open question is answered in
+the direction "the estimators, and here is the one that works". ⚠ Limits, all live: numpy
+prototype on a 2-state ODE — not the stack's charge-based DAE, not index-2 (Part I's own scope is
+ODEs and index-1); the fixture is nearly harmonic; the projection onto `p′` assumes the error's
+phase component dominates over 20 periods (true here — amplitude error is contracted by `λ₂`,
+phase is not); the septic interpolant needs ≥ 8 points per period and its own smoothness. **Build
+candidate, NOT built:** a `PSS.warping_estimate()` (or a one-grid branch of `grid_error`) that
+constructs the defect on the stack's own periodic solution and runs the neighbouring transient —
+the defect enters as a time-dependent current source, which the stack can already express. Owner's
+call; it would replace the analytic reference behind every order measurement this week.
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — ⚠ **BUILT 2026-09-04**
 
 ✅✅ **THE PLAIN TRANSPOSED REPLAY SHIPPED** as `_monodromy_matvec_transposed_plain`, so
@@ -5188,6 +5255,33 @@ Trick. B10 and B3 should be read together and probably costed together.
 `m = 12` bulk fixture, and does it survive `λ₂ → 1` better than the pin — measured on the same
 `Q`-sweep that produced B6's tolerance floor? If it is merely equivalent, it is not worth the
 second formulation.
+
+⚠⚠ **PAPER HELD AND READ (peer `docs-46`, 2026-09-08) — the relay above is verbatim accurate, the
+GATE aims at the wrong object, and the documented harm is MPDE-specific. PRIORITY DROPPED.**
+`2006-DATE-Mei-Roychowdhury-LSOAC.pdf`, *"Efficient AC Analysis of Oscillators using Least-Squares
+Methods"*. ✅ The relay: §I verbatim, *"solution techniques to solve underdetermined systems without
+requiring any phase conditions. This resolves the phase ambiguity issue by choosing minimum norm
+solutions, first solving for a particular solution and then subtracting out null space
+components."* ❌ **Object 1 — it is OSCILLATOR AC, not the PSS solve and not `λ₂`.** The unknowns are
+`(Δx, Δω)`: the small-signal response and the frequency shift (§III: *"the unique solution (Δx, Δω)
+obtained by adding constraints (i.e., the phase conditions) are essentially an arbitrary choice,
+leading to unphysical artifacts such as significant non-smoothness"*). `λ₂` is a monodromy
+eigenvalue, not the solution of an underdetermined linear system; the technique replaces the phase
+row in the bordered `I − M` small-signal solve, not in an eigenproblem, so the gate above would pass
+or fail for reasons unrelated to the method. ❌ **Object 2 — the artifact is BIVARIATE, multi-time:**
+§III, *"The smoothness of the BIVARIATE frequency solution is especially important … if the
+bivariate form of frequency variation (Δω) … is not smooth, i.e., there are lots of undulations in
+the MULTI-TIME WAVEFORM, very small time steps must be taken."* That is the MPDE framework, which
+the standing constraint excludes. **What survives:** minimum-norm instead of a phase row is plain
+linear algebra on an underdetermined system, framework-independent, and would apply to the bordered
+PPV solve. **What does not:** the paper's evidence that it MATTERS (4–6× over phase-condition
+methods, 1–3 orders over transient) is measured in the multi-time setting. **A defensible gate, if
+B10 is kept at all:** sweep the perturbation frequency and compare the bordered solve against a
+minimum-norm solve for NON-SMOOTHNESS IN THE RESPONSE (the PAC sweep machinery with recycling
+exists) — not `λ₂`; but absent MPDE the paper gives no reason to expect that non-smoothness, so the
+honest position is **no demonstrated motivation in this use case.** ⚠ For B3: the pairing with
+Aprille & Trick stands (both remove the phase row) but from DIFFERENT systems — A&T from the PSS
+solve, LSOAC from the AC solve — so "costed together" must not become "gated together".
 
 ### B11. The index is DECIDABLE FROM TOPOLOGY — ✅ **BUILT 2026-09-04**, a diagnostic, not a refusal
 
