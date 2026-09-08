@@ -11285,3 +11285,18 @@ split or the band pairing on the autonomous path, and `pnoise` is the trustworth
 only at an offset where `pnoise` is trusted on an oscillator (away from the carrier), and the
 residual should fall with sideband count as the driven case does (9.0e-3 → 3.3e-11 at 4 → 64) or
 the remaining discrepancy is truncation. One parametrisation of an existing gate; Andreas's queue.
+
+**Joined with §3 into one experiment with three legs (peer, same hour), anchored OUTSIDE the tree:**
+the lorentzian closed form is already certified against a commercial simulator at every offset over
+four decades (factor 0.5000 to a one-sided PSD, `shooting.py` lorentzian docstring, 2026-09-05), so
+
+    reference simulator ──(external, 4 decades)──▶ lorentzian ──(Rizzoli overlay, agreement band)──▶ pnoise ──(AM/PM identity)──▶ S_am, S_pm
+
+Each link is a different kind of check (external measurement, model interchangeability, algebraic
+identity) sharing no machinery with the next — the only structure that can localise a common
+factor. Two design consequences: the overlay offsets must lie in the INTERSECTION of the physics
+band (conversion ≈ modulation) and the certified band (where the lorentzian was checked), pinned
+explicitly in the test; and identity first — if it FAILS the defect is in the split and the overlay
+is never needed, only a holding identity forces the second leg. Stated prior for a disagreeing
+overlay: the lorentzian side carries the external certification and `pnoise` does not, so
+"they disagree" is asymmetric, not ambiguous. Not built.
