@@ -10282,8 +10282,14 @@ gates 101 and 89 s — and in collection order they land late in the run and the
 their last recorded duration, longest first (the longest-processing-time heuristic; xdist's load
 scheduler hands out items in collection order, so every worker gets a long test early); unknown
 tests run last; a missing record leaves the order untouched. Verified: the shooting file now
-collects its 180 s test first. ⚠ The gain is MEASURED on the next full run against this record's
-24.5 min, not predicted here; the lower bound is max(193 s, 4201 s / 10) ≈ 7 min plus imbalance.
+collects its 180 s test first. ⚠ **Measured: plain longest-first made NO difference — 24:13 against baselines of 24:33 and
+24:40.** (And "past 96 % at 13.5 minutes" was a misreading of the progress dots, which count
+finished tests: the last 4 % took eleven minutes.) Cause: xdist's load scheduler opens by sending
+each worker a CONSECUTIVE slice of `~len/(4n)` items, so a longest-first list put every long test
+into the first worker's opening slice — the opposite of balance — and only the dispatch after that
+is dynamic. Second version: deal the sorted list round-robin into `n` bins and concatenate, so every
+opening slice carries its share of long tests in descending order. Measured on the next run; the
+lower bound is still max(193 s, 4201 s / 10) ≈ 7 min plus imbalance.
 The per-test reductions (a coarser grid or fewer sweep points on the five tests above 100 s) are a
 separate, per-fixture decision and were not made.
 

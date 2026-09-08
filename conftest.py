@@ -142,3 +142,18 @@ def pytest_collection_modifyitems(session, config, items):
     if not rec:
         return
     items.sort(key=lambda it: -rec.get(it.nodeid, -1.0))
+    ## ⚠ MEASURED 2026-09-08: plain longest-first made NO difference (24:13
+    ## against baselines of 24:33 and 24:40).  xdist's load scheduler opens
+    ## by sending each worker a CONSECUTIVE slice of ~len/(4 n) items, so a
+    ## longest-first list puts every long test into the FIRST worker's
+    ## opening slice -- the opposite of balance -- and only the dispatch
+    ## after that is dynamic.  Interleave: deal the sorted list round-robin
+    ## into n bins and concatenate, so every opening slice carries its
+    ## share of long tests in descending order.  Serial runs are untouched.
+    try:
+        n = int(getattr(config.option, 'numprocesses', 0) or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 1:
+        bins = [items[b::n] for b in range(n)]
+        items[:] = [it for b in bins for it in b]
