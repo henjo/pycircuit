@@ -11344,3 +11344,31 @@ wrong. Pinned: `test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lor
 (Q=100, 28 s) and `test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_symmetry`.
 ⚠ The first pin failed on my own mis-specification (`S_pm` vs `2 S_v`: the split covers the PAIR,
 4 S_v). Both caveats in the docstrings rewritten from "not established" to the mechanism.
+
+### 7. Part I's f-value defect as a warping estimator — GATED AND REFUTED as the edge fix (2026-09-08)
+
+Read at the source (pp. 4–13): eq. 2.13 chooses the auxiliary scheme with the SAME left-hand side
+so the defect is a weighted sum of f-values (needs `x ∈ C^{p+1}`, not the interpolant's higher
+class); for trap (Example 2.7, κ = 1) that is the Milne device `ℓ_i = −(h/12)·Δ²f`, and eq. 1.9's
+perturbed scheme follows the TRUE solution. Built as a scratch estimator: the neighbouring transient
+`C y' + g + p(t) = 0` with `p` the periodic cubic through `−(1/12)(g_{i+1} − 2g_i + g_{i−1})`
+(Remark 2.6's quadratic through three f-values), phase lag of `y` against the base waveform,
+`slope = +(T_h − T_true)` (opposite sign to the spline route, as predicted). Trap base:
+
+| orbit | pts | true (ppm) | f-value route | spline route |
+|---|---|---|---|---|
+| van der Pol Q=100 | 100 | +342.7 | **0.9990** | 0.9997 |
+| van der Pol Q=100 | 200 | +83.9 | **0.9998** | 0.9999 |
+| relaxation A | 200 | −4046 | 0.059 | 0.041 |
+| relaxation A | 400 | −825 | 0.605 | 0.286 |
+| relaxation A | 800 | −199 | **1.287** | 0.634 |
+
+Smooth: reproduces the period error (prediction held). Edge: ⚠ **my prediction (0.3–0.8 at 200,
+> 0.8 at 400) was wrong** — 0.059 at 200, and at 800 it OVERSHOOTS to 1.29 while the spline route is
+still at 0.63. It converges faster with the grid, and it is not monotone, so a reading near 1 at
+some grid is indistinguishable from a wrong one: the same failure class, one grid earlier. The
+paper's own answer for a poorly resolved feature is mesh ADAPTATION (Remark 2.9, eq. 2.21 — a
+heuristic to stop the estimate vanishing near `x^{(p+1)} = 0`), not a coarse-grid estimate; and its
+scope is LMMs (radau is outside it). **Not built.** The honest instrument for an edge orbit stays
+`warping_estimate(check=True)`: refuse until the half-grid pass agrees, then refine. (The trap
+period error on the relaxation orbit itself: 4046 → 825 → 199 ppm, order 2.3 / 2.05.)

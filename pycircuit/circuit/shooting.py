@@ -5978,8 +5978,14 @@ class PSS(Analysis):
         with four orders of margin.  ⚠ The prediction "below 0.5 at 400"
         was wrong (0.72): the ratio approaches 1 as the edge resolves, so
         the tolerance is the gate, not the ratio's distance from 0.  The
-        restructured (f-value) defect is NOT built.  Cost: the check doubles
-        the call (a second `periods`-long transient).
+        restructured (f-value) defect (Part I eq. 2.13; for trap the Milne
+        device) was GATED and REFUTED as the edge fix (2026-09-08): smooth
+        0.9990 / 0.9998, but on the edge orbit 0.06 / 0.61 / 1.29 at 200 /
+        400 / 800 points against the spline route's 0.04 / 0.29 / 0.63 --
+        faster with the grid and NOT monotone, so a reading near 1 is
+        indistinguishable from a wrong one; the paper's own remedy is mesh
+        adaptation.  Not built.  Cost of the check: it doubles the call (a
+        second `periods`-long transient).
         ⚠ Scope and limits.  The period reading needs an AUTONOMOUS solve;
         on a driven circuit the lag is bounded (entrained) and `period_error`
         is returned as None with the per-period lag series still filled.
