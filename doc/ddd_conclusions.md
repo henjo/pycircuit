@@ -883,6 +883,24 @@ unannotated ones are still live.
 3. **Cancellation.** DDD expands a determinant and can generate terms that later
    cancel; GPDD exists precisely because of this. We accept it (§4.7) but should
    watch for it on circuits with dependent sources and nullors.
+   ⚠ **MEASURED 2026-09-08 (docs session, `ddd_cancellation_probe.py`, §2.159) — the
+   stated risk is REVERSED for nullors and SMALL for dependent sources, and only a
+   matched control shows which.** `DDD.cancellation` at k = 6, medians over 12 random
+   element draws, ranges not overlapping: passive ladder **103** (80–136); + an ideal
+   VS branch, no gain, **12.0** (9.2–17.9) — the CONTROL, since every variant also
+   adds a ±1 branch row, a structural change independent of dependence; + VCVS with
+   gain **16.3** (12.2–28.7); + NULLOR **3.02** (2.1–4.6). Dependence isolated from
+   the branch row: VCVS/VS = **1.35×** — the dependent-source worry is directionally
+   right and small, and INVISIBLE without the control, because the same fixture is
+   8.6× better than the passive ladder overall and an uncontrolled comparison reports
+   the opposite sign (the first pass did). The nullor worry is WRONG IN DIRECTION: 34×
+   better than the ladder, and uniquely it does not grow with n (3.4 / 2.9 / 3.5 / 2.5
+   at k = 3..6) where the ladder grows 7.5 → 89. What drives cancellation is the
+   passive COMPOSITE structure — exactly what the docstring says — so the thing to
+   watch is how much of the matrix is composite conductance, maximal in a plain
+   passive ladder, not the dependent sources. Scope: one ladder family, one decade of
+   values; `concentration` moved the same way here (5.8 → 3.9 → 1.7), though the µA741
+   showed the two halves can disagree.
 4. **Python constant factors — and one claim that probably does *not* transfer.**
    All cited runtimes are C/C++ on 1998–2010 hardware. Construction should be fine
    in Python (dict operations plus small arithmetic). But the papers' *numeric
@@ -896,8 +914,25 @@ unannotated ones are still live.
    expectation rather than to chase a win.
 5. **Where numerics enter.** MTDDD's numeric terminals trade exact rationals for
    floating values. Need to decide, per use, whether coefficients stay exact
-   (poles from exact polynomials) or go numeric — this is exactly the trade that
-   bit us in the GiNaC `_ginac_coeffs` gating bug.
+   (poles from exact polynomials) or go numeric — ~~this is exactly the trade that
+   bit us in the GiNaC `_ginac_coeffs` gating bug~~.
+   ⚠ **NOT A SECOND DECISION — it is §8.6's gate with a different `ε` (docs session,
+   §2.160).** A numeric terminal collapses a parameter-free minor to a float, so the
+   coefficient carries a RELATIVE error `ε_terminal`; perturbing exact coefficients by
+   a controlled `ε`, `κ·ε` holds as an upper bound within 3–5× across TWELVE decades
+   of `ε` (n = 6, κ = 450: 1e-16 → 1.12×, 1e-10 → 0.31×, 1e-4 → 0.19×; n = 8, κ =
+   8.5e3: 0.68× … 0.21×), linear throughout. **Rule: go numeric when
+   `κ·ε_terminal < tol`, stay exact otherwise** — and a float terminal has
+   `ε_terminal ≈ ε_machine`, so numeric terminals are nearly FREE; the cost appears
+   only if the collapsed minor is itself ill-conditioned, measurable the same way.
+   ⚠⚠ **The GiNaC bug is NOT this trade, and the sentence above is struck for that
+   reason:** `limit_denominator` ZEROED tiny high-order coefficients (4 poles instead
+   of 15) — a relative error of 1, not of `ε`; on the table `ε = 1e-4` already costs
+   18 % pole error at κ = 8.5e3, and `ε = 1` is total loss. Opposite failure modes: a
+   numeric terminal is a small perturbation the `κ` gate prices exactly; a destroyed
+   coefficient survives no conditioning argument and needs a STRUCTURAL guard (never
+   drop a coefficient), not a tolerance. Filing them as one trade would license the
+   gate to justify a truncation it cannot cover.
 6. **Conditioning of the s-expanded form — a risk to the whole approach, not just
    the implementation.** s-expansion is exact *symbolically*, but the thing we
    ultimately do with it is numeric: evaluate high-degree coefficient polynomials
