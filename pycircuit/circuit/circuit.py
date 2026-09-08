@@ -703,11 +703,20 @@ class Circuit():
             result.append(A)
         return tuple(result)
 
-    def check_kcl(self, x, t=0.0, iq=None, abstol=1e-12):
+    def check_kcl(self, x, t=0.0, iq=None, abstol=1e-12, analysis='tran'):
         """Manually evaluate KCL at each node by summing the currents and ensuring 
         the residual is within < abstol.
+
+        ⚠ `analysis` (2026-09-08): `u(t)` returns ZEROS unless told which
+        analysis is asking -- `VS.u` keeps even its DC value inside the
+        ``analysis in timedomain_analyses`` branch -- so the bare `self.u(t)`
+        this helper carried since it was written checked KCL against a
+        SOURCE-FREE circuit, and on a driven one would have reported the whole
+        source contribution as a residual.  No caller in the tree; found by
+        asking "how many bare `u(t)` calls are there" after one bit
+        `PSS.warping_estimate` (docs session).
         """
-        f = self.i(x) + self.u(t)
+        f = self.i(x) + self.u(t, analysis=analysis)
         if iq is not None:
             f += iq
         # Check only the node rows (len(self.nodes))
@@ -841,6 +850,26 @@ class Circuit():
             ## self.I(x)[terminal_node] + u(t) + sum(dq(x)/dx_k * dx_k/dt) =
             ## self.I(x)[terminal_node] + u(t) + C(x) * dx/dt
 
+            ## ⚠ THE FORMULA ABOVE AND THE TIME-DOMAIN BRANCHES BELOW
+            ## CONTRADICT EACH OTHER, AND IT IS NOT YET DECIDED WHICH CHANGES
+            ## (2026-09-08, measured).  The derivation puts `u(t)` in the sum;
+            ## the non-`linearized` branches call `self.u(t)` with no
+            ## `analysis`, which returns ZEROS (`VS.u` keeps even its DC value
+            ## inside the ``analysis in timedomain_analyses`` branch), so the
+            ## source term is silently absent there while the `linearized`
+            ## branches pass `analysis='ac'` and include it.  Measured on a
+            ## 2 mA source into 1 kOhm at DC: `extract_i(x, 'R1.plus')` =
+            ## -0.002 (the resistor's DEVICE current -- an accident of the
+            ## missing term), `extract_i(x, 'I1.plus')` = 0.0 (neither the
+            ## device current nor I_external).  Under the documented contract
+            ## a top-level node has no outside, so I_external = 0 there and
+            ## the missing flag is a straight bug; under the shipped behaviour
+            ## `CircuitResult.i(term)` promises a device current and the
+            ## formula above is wrong for this branch.  DO NOT "fix" the flag
+            ## here in passing -- it changes `res.i(term)` at every node
+            ## carrying an independent source.  Owner's call; see
+            ## doc/pss_roadmap_260902.md, B7's build note.  `tf_i` uses the
+            ## `linearized` branch and is unaffected either way.
             branch_sign = self.get_terminal_branch(branch_or_term)
 
             if branch_sign is not None:

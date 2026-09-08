@@ -17186,3 +17186,84 @@ def test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundam
     assert h_h > 0.05 and h_c < 1e-3 and h_s < 1e-3, \
         '|Gamma_2|/|Gamma_1|: control %.1e, symmetric C=4 %.1e, hostile %.3f' % (
             h_c, h_s, h_h)
+
+
+def _a10_vdp(Q=1e4):
+    mu = 1.0 / (2.0 * np.pi * Q)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    return cir, mu
+
+
+def test_warping_estimate_reproduces_the_period_error_at_one_grid_with_no_reference():
+    """B7, BUILT 2026-09-08.  `PSS.warping_estimate` -- defect correction on
+    the solve's own grid, no refinement, no analytic reference -- against the
+    true period error `T_h - T_ref`, radau at 800 points as the reference
+    (its own error is at the 1e-10 ppm floor, four orders below the coarsest
+    figure pinned here).
+
+    Pinned, from the stack gate (2026-09-08): trap 1.0002; radau with the
+    septic `IDEC_DEGREE` 1.0003; esdirk43 with its quintic 0.9998; and the
+    EXACTNESS-CLASS ZERO -- radau with a CUBIC estimates 0.0001 of the true
+    error, because a cubic spline lies inside a 3-stage collocation method's
+    exactness class and the neighbouring problem is solved exactly.  That
+    zero is a property, pinned so that a future "helpful" degree change
+    announces itself: the failure it represents is a clean small number.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        cir, _ = _a10_vdp()
+        ref = PSS(cir, method='radau', reltol=1e-14)
+        ref.solve(period=2 * np.pi, timestep=2 * np.pi / 800,
+                  x0=np.array([2.0, 0.0]), maxiterations=400)
+        T_ref = float(ref.period)
+
+        def ratio(method, npts, degree=None):
+            cir, _ = _a10_vdp()
+            p = PSS(cir, method=method, reltol=1e-14)
+            p.solve(period=T_ref, timestep=T_ref / npts,
+                    x0=np.array([2.0, 0.0]), maxiterations=400)
+            delta = float(p.period) - T_ref
+            est = p.warping_estimate(degree=degree)
+            assert est['autonomous'] is True
+            return est['period_error'] / delta, est['degree']
+
+        r, k = ratio('trap', 100)
+        assert k == 3 and abs(r - 1.0) < 5e-3, 'trap/cubic %.4f (measured 1.0002 at 200-400 pts, 0.9996 at 100 in the prototype)' % r
+        r, k = ratio('radau', 50)
+        assert k == 7 and abs(r - 1.0) < 5e-3, 'radau/septic %.4f (measured 1.0003)' % r
+        r, k = ratio('esdirk43', 100)
+        assert k == 5 and abs(r - 1.0) < 5e-3, 'esdirk43/quintic %.4f (measured 0.9998)' % r
+        r, k = ratio('radau', 50, degree=3)
+        assert k == 3 and abs(r) < 1e-2, \
+            'radau/CUBIC %.4f -- must be ~0 (inside the exactness class; measured 0.0001)' % r
+
+
+def test_warping_estimate_refuses_a_period_reading_on_a_driven_circuit():
+    """A forcing at `T` pins the period, so warping cannot present as a period
+    change and the lag against the interpolant is bounded (entrained).  The
+    guard is the `analysis='tran'` flag on `Circuit.u`: without it every
+    source reads as DC and the first gate's driven control came back
+    `autonomous=True` with a 'period error' read off an entrained lag.
+    """
+    import warnings as _w
+    from pycircuit.circuit.elements import ISin
+    circuit.default_toolkit = circuit.numeric
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        cir, mu = _a10_vdp()
+        T = 2 * np.pi
+        cir['inj'] = ISin('v', gnd, ia=0.2 * mu * 2.0, freq=1.0 / T)
+        p = PSS(cir, method='trap', reltol=1e-12)
+        p.solve(period=T, timestep=T / 100, x0=np.array([2.0, 0.0]),
+                maxiterations=200, x0_unknown=False)
+        est = p.warping_estimate(periods=8)
+    assert est['autonomous'] is False
+    assert est['period_error'] is None and est['ppm'] is None
+    assert np.all(np.isfinite(est['lag'])) and len(est['lag']) == 8

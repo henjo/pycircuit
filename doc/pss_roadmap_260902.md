@@ -2691,6 +2691,42 @@ this. The driven case is what it is built and gated for.
 **Gate:** none needed for AM/PM — it was a basis change on tested output. The others are
 interface decisions, not measurements.
 
+#### ✅ A4b's two relays verified at the source — with an elision restored and a SECOND AM = PM statement that gates A9, not the sideband algebra (peer `docs-46`, 2026-09-08)
+
+Both citations check out verbatim (§6.1.2: *"using a change of basis, to recast these transfer
+functions in terms of the AM and PM"*; §6.2.3: *"…can be decomposed into AM and PM noise, but there
+will always be equal amounts of both"*). ⚠ **The elision that carries the WHY**, restored in full:
+*"Linear time-invariant circuits driven by stationary noise sources CAN ONLY PRODUCE ADDITIVE
+NOISE, which can be decomposed into AM and PM noise, but there will always be equal amounts of
+both."* The equality follows BECAUSE the noise is purely additive; for a genuinely LTI circuit the
+two formulations coincide so the test stands, but **the precondition to write down is "additive
+noise", not merely "LTI + stationary"**.
+
+⚠⚠ **The second statement, from the tutorial's oscillator discussion:** *"[linear oscillators have
+no] restoring force and so the amplitude is arbitrary (i.e., they do not have stable orbits). As
+such, linear oscillators exhibit equal amounts of amplitude and phase noise because the amplitude
+noise is not suppressed."* Two invariants, different mechanisms, different fixtures:
+
+| invariant | because | fixture | exercises |
+|---|---|---|---|
+| LTI + stationary ⇒ AM = PM | the noise is purely ADDITIVE | a NON-oscillator | the sideband algebra (A4b) |
+| linear oscillator ⇒ AM = PM | amplitude noise is NOT SUPPRESSED | an OSCILLATOR | `orbital_correlation` / `orbital_spectrum` — A9's objects |
+
+A4b relayed the first; **the second is the one that would gate A9, which has no free analytic check
+at all.** ⚠⚠ **It is a LIMIT POINT, not a fixture — and that is what makes it usable.** A linear
+oscillator has no stable orbit, so its amplitude mode is neutral too: `λ₂ = 1` exactly, a repeated
+unit multiplier; the bordered solve assumes a single one, so the exact fixture would not converge —
+and `λ₂ → 1` is the boundary that breaks every method anyway. **Convert the binary statement into a
+graded one: as the amplitude-restoring nonlinearity is weakened (`λ₂ → 1` from below), the computed
+AM/PM ratio must tend to 1.** A continuum gate on the orbital spectrum, runnable on a fixture family
+already here (`_osc_with_ladder`'s `Q` knob, or `μ → 0` on van der Pol), with the analytic endpoint
+supplied by the literature instead of a hand-built reference — and stronger than a single-point
+check for the reason the monotonicity ladder established: a limit with a MOVING parameter fails
+diagnostically where a single null fails silently (wrong side of 1, or no approach). It also probes
+exactly the high-`Q` regime where the dense-route small-multiplier question lives. **Not a build
+request** — A4b is unbuilt and the AM/PM decomposition is the prerequisite; but if A4b is ever
+costed, its first regression test is analytic rather than golden-value, and it sits on A9's path.
+
 ### A4c. Time-varying noise statistics — ⚠ BUILT 2026-09-03, DRIVEN **and AUTONOMOUS**
 
 The covariance route, and it is a PSS problem the existing machinery already solves. Demir,
@@ -4794,6 +4830,90 @@ components and something nearer the stage order for the algebraic ones. A single
 sit inside the exactness class for one component and not the other — **and the symptom is the same
 silent 0.0000, on one component only, invisible in a scalar phase drift.** If `warping_estimate` is
 built, instrument the estimate PER COMPONENT, not on the period alone.
+
+#### ✅✅ `PSS.warping_estimate` BUILT (2026-09-08, owner's request) — and the stack reproduces the prototype to 3e-4
+
+No new element: `Transient.solve` already takes `provided_function(t)` as an extra source term on
+every integration path, so the neighbouring problem is the circuit plus `−r(t)`, with
+`r = C(p)·p′ + i(p) + u(t)` the interpolant's defect against the circuit's own charge-based
+equations (the chain rule makes `C(p)p′ = d/dt q(p)`, so the charge form is respected — peer
+checked). A fresh inner `Transient` from `_new_transient(self._integrator_for(method))`, fixed
+step at the solve's own grid, `periods` periods; the lag by projection onto `p′`; `IDEC_DEGREE`
+per method (cubic / quintic for esdirk43 / septic for radau). Through the stack, A10's fixture,
+reference radau at 3200 (which the stack put at `6.283185307279`, the numpy prototype's value to
+all twelve digits — the first cross-check of the two harnesses):
+
+| method / degree | pts | true (ppm) | estimate (ppm) | ratio |
+|---|---|---|---|---|
+| trap / cubic | 400 | 20.665 | 20.668 | **1.0002** |
+| trap / cubic | 200 | 83.084 | 83.090 | 1.0002 |
+| radau / septic | 50 | 1.0575e-04 | 1.0579e-04 | **1.0003** |
+| radau / **cubic** | 50 | 1.0575e-04 | 1.35e-08 | **0.0001** (the exactness-class zero, reproduced) |
+| radau / septic | 35 | 9.4686e-04 | 9.4704e-04 | 1.0002 |
+| esdirk43 / quintic | 100 | 1.3730e-02 | 1.3728e-02 | 0.9998 |
+| esdirk43 / septic | 100 | 1.3730e-02 | 1.3730e-02 | 1.0000 |
+| esdirk43 / quintic | 200 | 8.4111e-04 | 8.4111e-04 | 1.0000 |
+| esdirk43 / septic | 200 | 8.4111e-04 | 8.4115e-04 | 1.0001 |
+
+⚠ **The rule is narrower than "degree > stage count", and it was measured rather than argued**
+(peer's flag): ESDIRK43 has SIX stages and is not a collocation method; a quintic fails the
+stage-count clause literally, and quintic and septic AGREE. **The stage-count clause is a
+COLLOCATION property** (the exactness class of a degree-`s` collocation polynomial); for a
+non-collocation method only the order clause is established. Written the other way the rule would
+over-constrain every DIRK ever added — and the failure it guards against is a clean small number,
+which is why the insurance run was worth its 40 s.
+
+⚠⚠ **A defect found by the driven control, fixed:** the first stack gate's driven van der Pol (an
+`ISin` at `1/T`) came back `autonomous=True` with a "period error" of 3.2e-05 s read off an
+entrained lag. `Circuit.u(t)` evaluates its time functions only when told `analysis='tran'`
+(`VS.u`: `elif analysis in timedomain_analyses`); without the flag every source VANISHES — the
+else-branch returns zeros, and even the DC value lives inside the gated branch
+(`timedomain_analyses = ('dc', 'tran')`), so that control ran against a circuit with NO source at
+all, not a DC one (peer's sharpening) — and the same omission sat in the defect itself, harmless on
+an autonomous circuit and wrong on a driven one. Both call sites fixed; the control now returns `autonomous=False`, `period_error=None`, a
+bounded lag series. **The control that "must" fail is the one that found the defect** — the
+autonomous rows were all 1.000 with the bug in place.
+
+⚠ **Two more bare `u(t)` call sites, found by the peer asking "how many are there" rather than "is
+this one fixed":** `Circuit.check_kcl` (time-aware by signature, NO callers in the tree; it checked
+KCL against a source-free circuit — fixed with an `analysis='tran'` argument) and `Circuit.extract_i`
+(LIVE: `CircuitResult.i(term)` in `analysis.py`, and `analysis_ss.py`). ⚠ **`extract_i` is
+MEASURED, not asserted, and left unchanged — it is an owner's call.** A current source of 2 mA into
+a 1 kΩ resistor, DC: `extract_i(x, 'R1.plus') = −0.002` (the resistor's current, correct as a device
+current), `extract_i(x, 'I1.plus') = 0.0` (the source's own terminal, wrong for a device current),
+and `u(0)` without the flag is `[0, 0]` against `[0.002, −0.002]` with `analysis='dc'`. The terminal
+branch's own comment defines the quantity as the current into a SUBCIRCUIT's external terminal —
+the node's KCL sum of everything inside — for which the source term belongs in the sum. On a
+top-level node shared with an independent source the time-domain branch omits the source (bare
+`u(t)` → zeros) and so returns the non-source device sum "by accident", while the `linearized`
+branch passes `analysis='ac'` and returns the full KCL sum (zero at such a node). **Two branches,
+two semantics, and the doctest covers only the branch-current path (`'vs.minus'`).** `tf_i`'s
+`c0 = extract_i(0, 0, linearized=True)` goes through the AC branch and recovers the source term as
+its docstring says, so `analysis_ss` is not affected. ⚠⚠ **Stronger than "two semantics" (peer): the code's own comment PICKS A SIDE, and it is not the
+side the code ships.** The terminal branch's derivation states the quantity as a formula —
+`I_external = self.I(x)[terminal_node] + u(t) + C(x)·dx/dt` — with `u(t)` IN it, and defines
+`I_external` as *"the current coming from outside the circuit going IN to the terminal node"*. At a
+top-level node there is no outside, so under the documented contract `I_external = 0` is the
+CORRECT answer at a source node and today's "device current" is the accident — `R1.plus = −0.002`
+is the accident being useful, `I1.plus = 0.0` is the accident being useless, and neither is
+`I_external`. **So the comment and the behaviour contradict each other, and one of them must
+change.** The owner's question is not "which branch is right" but **which quantity `res.i(term)`
+promises**: `I_external` as documented → `u` belongs, the flag is a straight bug fix, and every
+`res.i` at a source node changes; the device current as shipped → `u` does NOT belong, the
+comment's formula is wrong for this branch, and what changes is the comment plus a test pinning the
+accident deliberately. ⚠ Either way, the class of defect just fixed in `warping_estimate` would
+then have an EXCEPTION, and it has to be discoverable: **a protective comment now sits at the bare
+`u(t)` sites in `extract_i`** saying the omission is measured and undecided and must not be "fixed"
+in passing — otherwise the next person grepping for bare `u(` after a flag bug (exactly what the
+peer did) changes `res.i` everywhere silently. Code behaviour unchanged.
+
+**Status: B7 BUILT.** Pinned by two tests (`test_warping_estimate_reproduces_the_period_error…`,
+which pins the exactness-class ZERO as a property so a "helpful" degree change announces itself;
+`…refuses_a_period_reading_on_a_driven_circuit`). Limits carried from the prototype: the DAE
+per-component caveat (`component_rms` is returned so a caller can look; the phase drift is scalar),
+index-2 outside Part I's scope, ≥ 8 points per period for the septic. **What it replaces:** the
+analytic reference behind every order measurement of the 09-07 campaign and `grid_error`'s
+refinement sweep, for the period — one grid, `periods` periods of transient, no reference.
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — ⚠ **BUILT 2026-09-04**
 
 ✅✅ **THE PLAIN TRANSPOSED REPLAY SHIPPED** as `_monodromy_matvec_transposed_plain`, so

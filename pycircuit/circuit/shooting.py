@@ -5694,6 +5694,167 @@ class PSS(Analysis):
                 'npts': [_npts_c * refine ** k for k in range(levels)],
                 'label': label}
 
+    ## B7: the interpolant degree the defect-correction estimate needs, per
+    ## method.  Two-part rule, MEASURED 2026-09-08 (doc/pss_roadmap_260902.md,
+    ## B7's gate): the interpolant's DEGREE must exceed the method's stage
+    ## count -- a cubic spline lies INSIDE Radau IIA(3)'s collocation
+    ## exactness class (degree s = 3), so the neighbouring problem is solved
+    ## EXACTLY and the estimate is 1e-10 ppm against a true 6e-3 -- and its
+    ## ORDER must exceed the method's effective order, or a constant bias
+    ## remains (a quintic against radau's measured 6.1 left 4.9 % at every
+    ## grid; a septic gave 1.0001 / 0.9999 / 0.9998).  Cubic reproduced trap
+    ## and TR-BDF2 to 0.9996 -> 1.0000.
+    ## ⚠ THE STAGE-COUNT CLAUSE IS A COLLOCATION PROPERTY (peer, measured the
+    ## same day): ESDIRK43 has SIX stages and is not a collocation method, so
+    ## a quintic fails the clause literally -- and quintic and septic AGREE
+    ## through the stack (0.9998 / 1.0000 at 100 pts, 1.0000 / 1.0001 at 200).
+    ## For a non-collocation method only the ORDER clause is established;
+    ## written as "degree > stage count" the rule would over-constrain every
+    ## DIRK ever added.  The failure the clause guards against is SILENT (a
+    ## clean small number), which is why it was measured rather than argued.
+    IDEC_DEGREE = {'euler': 3, 'trap': 3, 'gear': 3, 'theta': 3,
+                   'trbdf2': 3, 'esdirk43': 5, 'radau': 7}
+
+    def warping_estimate(self, periods=20, degree=None):
+        """Estimate THIS solve's period (warping) error at ITS OWN grid, with
+        no reference solution and no refinement -- by defect correction.
+
+        B7's answer, MEASURED (2026-09-08).  A per-step local truncation
+        estimate cannot see an accumulating period error because warping is a
+        GLOBAL error; defect correction (Sickenberger, Weinmueller & Winkler,
+        "Local Error Estimates for Moderately Smooth ODEs and DAEs", Part I,
+        Sec. 1) estimates the global error directly:
+
+          1. p(t)  -- a periodic spline through this solve's own grid values
+                      (`IDEC_DEGREE[method]`, or `degree`);
+          2. r(t)  = C(p) p' + i(p) + u(t)   -- the DEFECT of the interpolant
+                      against the circuit's own equations, T-periodic;
+          3. the NEIGHBOURING problem  d/dt q(y) + i(y) + u(t) - r(t) = 0,
+                      whose exact solution is p by construction, integrated as
+                      a TRANSIENT with the SAME method at the SAME step for
+                      `periods` periods (`Transient.solve` takes `-r` through
+                      `provided_function`, an extra source term on every path);
+          4. the phase lag of y against p, per period, by projection onto p':
+                      tau_k = <p'.(y - p)> / <p'.p'>;  its slope against the
+                      period count is the estimated period error.
+
+        A transient and not a periodic solve, deliberately: a forcing at T
+        fixes the period, and warping cannot present as a period change.
+
+        Measured on A10's van der Pol (Q = 1e4), estimate / true period error
+        (true = T_h - T_ref, radau at 3200 points), numpy prototype:
+
+            trap   / cubic    0.9996  0.9999  1.0000  1.0000   (100..800 pts)
+            trbdf2 / cubic    0.9999  1.0000  1.0000
+            radau  / cubic    0.0000  0.0000  0.0000   (25..50 pts) -- INSIDE the
+                                                       exactness class: see IDEC_DEGREE
+            radau  / quintic  1.0490  1.0494  1.0495   -- a constant bias where the
+                                                       orders tie (6 vs 6.1)
+            radau  / septic   1.0001  0.9999  0.9998
+
+        Controls: with RADAU solving the neighbouring problem of TRAP's defect
+        the estimate is 0.0000 -- the drift is the METHOD's error, not the
+        defect's; a LINEAR interpolant gives 0.03 / 2.3 / 3.4 -- the
+        interpolant-order wall from below.
+
+        Through THIS method (the stack, same fixture, reference radau at 3200
+        points, 2026-09-08): trap 1.0002 at 400 and 200 pts; radau septic
+        1.0003 / 1.0002 at 50 / 35 pts and CUBIC 0.0001 (the exactness-class
+        zero, reproduced); esdirk43 quintic 0.9998 / 1.0000 and septic
+        1.0000 / 1.0001 at 100 / 200 pts -- so for a non-collocation method
+        the order clause alone is established, and the stage-count clause is
+        a collocation property.  ⚠ The first stack gate's driven control came
+        back `autonomous=True`: `Circuit.u(t)` evaluates its time functions
+        only when told `analysis='tran'`, and without it every source
+        VANISHES (zeros, DC value included) -- so that control ran against a
+        circuit with NO source at all; fixed at both call sites; with the
+        flag the driven van der
+        Pol returns `autonomous=False`, `period_error=None`, and a bounded
+        lag series, as it must.
+
+        ⚠ Scope and limits.  The period reading needs an AUTONOMOUS solve;
+        on a driven circuit the lag is bounded (entrained) and `period_error`
+        is returned as None with the per-period lag series still filled.
+        The prototype ran on a 2-state ODE; on a DAE the differential and
+        algebraic components converge at different orders (H&W VI.7), so the
+        interpolant threshold binds per component and a component-wise
+        exactness collapse would be invisible in this scalar phase drift --
+        `component_rms` is returned so a caller can look.  Index-2 is outside
+        Part I's stated scope.  Cost: `periods` periods of transient at the
+        working grid -- no refinement sweep, no analytic reference.
+
+        Returns a dict: `period_error` (s, signed: positive = this solve's
+        period is LONG), `ppm`, `lag` (per-period phase lag, s), `degree`,
+        `periods`, `autonomous`, `component_rms` (RMS of y - p per unknown
+        over the last period, the global error estimate in state space).
+        """
+        import numpy as _np
+        from scipy.interpolate import make_interp_spline
+        if self.waveform is None:
+            raise ValueError('warping_estimate needs a solved PSS -- call solve() first')
+        T = float(self.period)
+        times = _np.asarray(self.waveform[0], dtype=float)
+        X = _np.asarray(self.waveform[1], dtype=float)         # (n, m)
+        if abs(times[-1] - T) > 1e-12 * T:
+            times = _np.r_[times, T]; X = _np.column_stack([X, X[:, 0]])
+        X = X.copy(); X[:, -1] = X[:, 0]                        # close the orbit exactly
+        method = str(self.par.method)
+        k = int(self.IDEC_DEGREE.get(method, 3) if degree is None else degree)
+        if X.shape[1] <= k + 1:
+            raise ValueError('warping_estimate: %d points per period cannot carry a degree-%d '
+                             'periodic spline' % (X.shape[1] - 1, k))
+        p = make_interp_spline(times, X.T, k=k, bc_type='periodic')
+        dp = p.derivative()
+        cir, epar = self.cir, self.epar
+        ## ⚠ `analysis='tran'`, on BOTH calls.  `Circuit.u(t)` evaluates a
+        ## time function only when told which analysis is asking (`VS.u`:
+        ## `elif analysis in timedomain_analyses`); without it every source
+        ## VANISHES -- the else-branch returns zeros, and even the DC value
+        ## lives inside the gated branch (`timedomain_analyses = ('dc',
+        ## 'tran')`).  The first gate's driven control -- an `ISin` on the
+        ## van der Pol -- came back `autonomous=True` for exactly that reason,
+        ## and the defect would have omitted the drive on a driven circuit.
+        _u = lambda t: _np.asarray(cir.u(t, epar, analysis='tran'), dtype=float)
+        u0 = _u(0.0)
+        autonomous = all(_np.allclose(u0, _u(f * T)) for f in (0.37, 0.71))
+
+        def _defect_source(t):
+            tt = t % T
+            x = _np.asarray(p(tt), dtype=float); xd = _np.asarray(dp(tt), dtype=float)
+            r = (_np.asarray(cir.C(x, epar), dtype=float) @ xd
+                 + _np.asarray(cir.i(x, epar), dtype=float) + _u(t))
+            return -r
+
+        n_per = X.shape[1] - 1
+        tr = self._new_transient(self._integrator_for(self.par.method))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=periods * T, x0=X[:, 0].copy(), timestep=T / n_per,
+                           provided_function=_defect_source, fixed_timestep=True)
+        ty = _np.asarray(res.sweep_values, dtype=float)
+        Y = _np.asarray(res.x, dtype=float)                     # (n, steps+1)
+        if Y.shape[0] != X.shape[0]:
+            Y = Y.T
+        P = _np.asarray(p(ty % T), dtype=float).T; dP = _np.asarray(dp(ty % T), dtype=float).T
+        E = Y - P
+        lag = []
+        for j in range(periods):
+            sl = (ty >= j * T - 1e-12 * T) & (ty < (j + 1) * T - 1e-12 * T)
+            num = float(_np.sum(dP[:, sl] * E[:, sl])); den = float(_np.sum(dP[:, sl] ** 2))
+            lag.append(num / den if den > 0 else _np.nan)
+        lag = _np.asarray(lag)
+        ok = _np.isfinite(lag)
+        slope = float(_np.polyfit(_np.arange(periods)[ok], lag[ok], 1)[0]) if ok.sum() >= 2 else _np.nan
+        ## SIGN: a positive lag means y is AHEAD of p; a LONG period makes y
+        ## fall BEHIND, so the period error is minus the slope.
+        period_error = -slope if autonomous else None
+        last = ty >= (periods - 1) * T - 1e-12 * T
+        component_rms = _np.sqrt(_np.mean(E[:, last] ** 2, axis=1))
+        return dict(period_error=period_error,
+                    ppm=(period_error / T * 1e6) if period_error is not None else None,
+                    lag=lag, degree=k, periods=periods, autonomous=autonomous,
+                    component_rms=component_rms)
+
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
