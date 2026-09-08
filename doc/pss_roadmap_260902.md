@@ -11637,7 +11637,10 @@ prediction). ⚠ And NOT the core's own AM (peer's arithmetic): across the sweep
 the control's AM fraction FALLS 12× — opposite directions on one knob — so the converted AM, if conversion
 is the mechanism, is the slow node's. ⚠ The peer's proposed discriminator (scale the source's noise alone;
 conversion quadratic in amplitude) does NOT transfer: `pnoise`, the split and `S_v` are all LINEAR in the
-source PSD by construction, so every ratio here is PSD-independent whatever the mechanism. ⚠ My named
+source PSD by construction, so every ratio here is PSD-independent whatever the mechanism — it WOULD
+apply to a full nonlinear Monte Carlo (the 150 000-period route in the A2 record), where the source
+amplitude is a real knob and conversion is genuinely quadratic in it: a free extra readout if that route
+is ever run for another reason, not a reason to run it (peer, filed as out of scope). ⚠ My named
 "scales as a²" was the wrong shape: saturating. Bounded statement: the harmonic-sum
 model is complete to 1 % for `r ≤ 2e-2` at every asymmetry and to 1 % throughout for weak asymmetry;
 the pin stays at `r ≤ 3.2e-2`. Not pursued further without the frequency-aware PPV.
