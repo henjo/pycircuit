@@ -1576,6 +1576,49 @@ class PSS(Analysis):
     (>= 1, default 1) multiplies it, so by default the shooting solve is
     held to the SAME relative tolerance as the transient, and raising it
     buys fewer shooting iterations for a looser periodic steady state.
+
+    CHOOSING `method`: WHAT EACH ALTERNATIVE GIVES UP (owner decision,
+    2026-09-08: the default is chosen for ACCURACY, not cost -- "we do not
+    want to fool the user; instead they should change integrator and know
+    the impact").  Every entry below is MEASURED in this tree
+    (doc/pss_roadmap_260902.md, A10, the radau-default section and its
+    monotonicity fixtures); nothing is quoted from a textbook order alone.
+
+      method    order   period error   error        above its monotonicity limit
+                        (ppm @ 400pt,  ESTIMABLE    (h_FE = 1/steepest slope)
+                        Q=1e4 vdP)     by refinement
+      radau     5 (6.1  5.7e-10        yes          OUTPUT stays in range at every
+                on a                                step measured; only the STAGES
+                smooth                              leave it, <= 0.3 % of the swing,
+                orbit)                              above ~4 h_FE (the widest
+                                                    practical margin of the four)
+      esdirk43  4       5.3e-05        yes          output in range; stages leave it
+                                                    <= 3 % above ~2.5 h_FE
+      trbdf2    2       10.1           yes          OUTPUT rings above 2.4 h_FE
+      trap      2       20.8           NO -- its    OUTPUT rings above 2 h_FE
+                                       error
+                                       CHANGES SIGN
+                                       near Q~100,
+                                       so a two-grid
+                                       estimate can
+                                       under-state
+                                       it 300x
+      gear      2       83.1           yes          not an RK; a small ring at
+                                                    h >= 10 tau measured; does not
+                                                    CERTIFY a free-period solve at
+                                                    1e-14 below ~400 pts at Q=1e4
+      euler     1       --             yes          never rings; damps the orbit it
+                                                    is asked to find (13 % of the
+                                                    amplitude at 20 pts/period)
+
+    Cost: radau is one real plus one complex factorisation per step (a
+    coupled 3n system) against one per step for the others; at the point
+    counts above it is cheaper on wall-clock anyway (60 points beat trap's
+    480 on both axes, roadmap radau-default section), and `grid_error` /
+    `warping_estimate` price the trade on YOUR circuit.  Index-2: the
+    period keeps classical order under radau (6.1 measured); the algebraic
+    unknowns converge at the stage order (3), which is where a relaxation
+    oscillator timed by an algebraic variable would feel it -- unmeasured.
     """
 
     parameters = Analysis.parameters + \
@@ -1706,8 +1749,12 @@ class PSS(Analysis):
          ## `trap` remains one argument away for a cheap coarse answer.
          Parameter(name='method',
                    desc="Integration method for the inner transient: 'radau' "
-                        "(default, order 5), 'trbdf2', 'theta', 'gear' "
-                        "(BDF-2), 'trap' or 'euler'",
+                        "(default, order 5), 'esdirk43', 'trbdf2', 'theta', "
+                        "'gear' (BDF-2), 'trap' or 'euler'. The default is "
+                        "chosen for ACCURACY; the class docstring's 'CHOOSING "
+                        "method' table states, from measurement, what each "
+                        "alternative gives up in order, error estimability, "
+                        "monotonicity and cost",
                    unit='',
                    default="radau")]        
 
