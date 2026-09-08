@@ -456,6 +456,33 @@ class Noise(SSAnalysis):
                 gain = self.cir.extract_i(zm, plus_term,
                                           refnode=refnode,
                                           refnode_removed=True)
+                ## ⚠ NORMALISE BY THE KVL-ROW ORIENTATION (2026-09-08).  The
+                ## adjoint branch entry is the transfer from the branch ROW,
+                ## and the two element families write that row with
+                ## opposite orientation: classical `VS`/`L` as `V - expr`
+                ## (G[row, plus] = +1), every HDL `Contribution(b.V, ...)`
+                ## AND the classical controlled sources as `expr - V`
+                ## (G[row, plus] = -1).  Measured: `VS` +0.5, `VSinHdl` -0.5
+                ## on the same divider, same forward solution.  The gain a
+                ## user wants is the transfer from the source VALUE, which
+                ## is the row entry times the row's orientation -- read from
+                ## G at the operating point, so it holds for either family
+                ## without either changing its convention.
+                branch, _sgn = self.cir.get_terminal_branch(plus_term)
+                brow = self.cir.get_branch_index(branch)
+                pcol = self.cir.get_node_index(plus_node)
+                Gop = self.cir.G(self.xdcop if getattr(self, 'xdcop', None) is not None
+                                 else self.toolkit.zeros(self.cir.n), self.epar)
+                orient = Gop[brow, pcol]
+                ## An exact INTEGER sign: `orient / abs(orient)` put a float
+                ## 1.0 into the symbolic result (`4.0*R1*T*k` where the
+                ## two-port test expects `4*R1*T*k`).
+                try:
+                    sgn = 1 if float(orient) > 0 else (-1 if float(orient) < 0 else 0)
+                except (TypeError, ValueError):
+                    sgn = 0
+                if sgn:
+                    gain = gain * sgn
             else:
                 gain = self.cir.extract_v(zm, plus_node, minus_node,
                                           refnode=refnode, refnode_removed=True)

@@ -1392,16 +1392,17 @@ def test_noise_gain_dispatches_on_structure_so_an_hdl_source_gets_one():
     g_hdl = Noise(divider(VSinHdl('n1', gnd, vo=0.0, va=1.0, freq=1e3)),
                   inputsrc='vs', outputnodes=('n2', gnd)).solve(1e3)['gain']
     assert g_hdl is not None, 'the HDL source got no gain'
-    ## ⚠ MAGNITUDE, not value: measured 2026-09-08 the HDL gain is -0.5
-    ## against the classical +0.5.  Not a branch-current convention (the DC
-    ## terminal currents agree, -1 mA both) -- it is the KVL ROW sign: the
-    ## HDL compiler emits the branch equation as `-v_p + v_n + V` where
-    ## `VS` writes `v_p - v_n - V`.  Every forward solve is identical; the
-    ## ADJOINT branch entry, which is what the gain reads, flips.  A
-    ## family-wide compiler convention, recorded in the roadmap, not
-    ## changed here; `Svninp` uses |gain|^2 and is unaffected.
-    assert abs(abs(complex(g_hdl)) - abs(complex(g_vs))) < 1e-12
-    assert abs(abs(complex(g_vs)) - 0.5) < 1e-12
+    ## ⚠ VALUE, including sign.  Before the row-orientation normalisation
+    ## in `Noise` (2026-09-08) the HDL gain was -0.5 against the classical
+    ## +0.5: not a branch-current convention (DC terminal currents agree,
+    ## -1 mA both) but the KVL ROW orientation -- classical `VS`/`L` write
+    ## `V - expr`, every HDL `Contribution(b.V, ...)` and the classical
+    ## controlled sources write `expr - V`; every forward solve is
+    ## identical and the ADJOINT branch entry flips.  The gain is now the
+    ## transfer from the source VALUE, read off the row's own orientation
+    ## in G, so both families agree.
+    assert abs(complex(g_hdl) - complex(g_vs)) < 1e-12
+    assert abs(complex(g_vs) - 0.5) < 1e-12
     g_r = Noise(divider(VS('n1', gnd, vac=1.0)), inputsrc='R1',
                 outputnodes=('n2', gnd)).solve(1e3)['gain']
     assert g_r is not None and np.isfinite(complex(g_r))

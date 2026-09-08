@@ -4968,13 +4968,20 @@ input's `plus` terminal means a voltage input (adjoint current through it, `Svni
 current input (adjoint voltage across `plus`/`minus`, `Sininp`); an element with no `plus`/`minus`
 terminals gets `None` with a warning. Widened on purpose: a resistor named as the input returns
 −500 (the adjoint voltage across it — a transfer function, the user's to want). Measured: `VS` +0.5,
-`VSinHdl` **−0.5**, `IS` 1000, `R1` −500. ⚠ **The HDL sign is a KVL-ROW convention, not a gain
-defect:** DC terminal currents agree (−1 mA both, same branch variable), but the HDL compiler emits
-the branch equation as `−v_p + v_n + V` where `VS` writes `v_p − v_n − V` (their `G` rows are
-negatives of each other); every forward solve is identical and the ADJOINT branch entry, which is
-what the gain reads, flips. Family-wide (`Contribution(b.V, …)`), so left alone and pinned on
-magnitude; anything that reads an adjoint branch entry through an HDL voltage source inherits the
-sign. `Svninp` uses `|gain|²` and is unaffected.
+`VSinHdl` **−0.5**, `IS` 1000, `R1` −500. ⚠ **The HDL sign was a KVL-ROW orientation, not a gain
+defect — and measuring the other pairs REVERSED whose convention is the odd one.** DC terminal
+currents agree (−1 mA both, same branch variable), but the branch ROW is written with opposite
+orientation: `VS` and `L` write `V − expr` (`G[row, plus] = +1`); every HDL `Contribution(b.V, …)`
+writes `expr − V` (`G[row, plus] = −1`) — **and so does the classical `VCVS`** (`VCVSHdl` matched
+`VCVS` exactly). So the HDL family is UNIFORM and it is the CLASSICAL family that is split between
+its independent sources/inductor and its controlled sources. Every forward solve is identical; the
+ADJOINT branch entry flips. **Reach, measured:** the PPV of the van der Pol with `L` against `LHdl`
+is identical at the node AND the branch component (+0.00166 / +0.50002 both) — the state-space
+adjoint does not see the row orientation; only a reader of the EQUATION-space adjoint does, and the
+`Noise` gain is the only one in the tree. **Fixed there without touching either convention:** the
+voltage-input gain is multiplied by the row's own orientation, read from `G` at the operating point,
+so `gain` is the transfer from the source VALUE — `VS` +0.5, `VSinHdl` +0.5, the docstring's 0.1
+unchanged; test restored to equality including sign. `Svninp` uses `|gain|²` and never cared.
 
 **Status: B7 BUILT.** Pinned by two tests (`test_warping_estimate_reproduces_the_period_error…`,
 which pins the exactness-class ZERO as a property so a "helpful" degree change announces itself;
@@ -5600,6 +5607,53 @@ defects the gate had not:
 disagreeing — criterion 2, reference 1 — because the reference guarded with `s2.max() > 0` and
 `NᵀGN` for that fixture is **identically zero**, which is the MOST singular case rather than the
 least. Shape 0j again, one day later: **the instrument was wrong, not the subject.**
+
+#### ⚠⚠ Index 3 IS reachable, it is VALUE-dependent, and on every provisional fixture the topological number was 1 — MEASURED 2026-09-08 (peer `docs-46`)
+
+Two instruments sharing only `C` and `G` — InitDAE eq. (8), 1-fullness of `B^[k]` with `Q` the
+projector onto `ker C`, and the Kronecker index of the pencil (nilpotency of `M = (μ₀C + G)⁻¹C`) —
+agreeing on every row. ⚠ **Controls first, and a first version failed them in BOTH directions:** an
+off-by-one in the array size (eq. (5) gives `g^[k]` `k` levels and unknowns `z₁..z_k`, so `B^[k]` is
+square of size `n(k+1)`; with `k+1` levels it returned 2 for an RLC and 1 for an L–I cutset). Then
+5/5 against `topological_index` where that criterion is valid (RLC, RC divider, L–I cutset, C–V loop,
+the C-only grounded ring — **a third confirmation of the C-only result by a different route**), and
+exact on Kronecker-nilpotent pencils of degree 1..5, so it can count above 2 at all.
+
+| probe | gains | topological | true index |
+|---|---|---|---|
+| P1 VCVS inside a C–V loop | g = 0, 0.5, 1, 5 | 1, provisional | 2 |
+| P1 same | **g = 2** | 1, provisional | **3** |
+| P2 CCCS inside an L–I cutset | F ≠ 1 | 1, provisional | 1 |
+| P2 same | **F = 1** | 1, provisional | **singular pencil, no index** |
+| P3 VCVS in a C–V loop, self-controlled | | 1, provisional | 2 |
+| P4 CCVS in a C–V loop, controlled from an L–I branch | | 1, provisional | 2 |
+
+1. **The index-3 surface is NAMED.** P1 is `C1 (v→b)`, `C2 (v→gnd)`, VCVS `b→gnd = g·v`. Index 3
+   exactly on **`g* = 1 + C2/C1`**, verified at six `(C1, C2)` pairs — (1,1)→2, (1,2)→3, (1,3)→4,
+   (2,1)→1.5, (1,0.5)→1.5, (4,1)→1.25 — index 2 off it. Mechanism, hand-checkable: charge into `v`
+   is `C2·v̇ + C1(v̇ − ḃ) = [C2 + C1(1−g)]·v̇`, which vanishes there; the controlled source cancels
+   the node's total capacitance and one more differentiation is needed.
+2. **A simple degeneracy, so the NEIGHBOURHOOD is what bites:** `‖M³‖ = 224·|g − 2|` (ratio converging
+   24160 → … → 223.66, slope exactly 1; 3.2e-14 at `g = 2` against `‖M²‖ = 22.36`). Measure-zero
+   surface, but a gain within 1e-3 of `g*` carries a ~1 % nilpotent tail — any rank tolerance turns
+   "index 3" into a neighbourhood.
+3. **A different failure at one value — the pencil goes SINGULAR.** P2's CCCS at `F = 1` re-injects
+   L1's own current, so `λC + G` has `σ_min = 0` for every `λ` (9.0e-6 at 0.9, 9.5e-9 at 0.99, 0 at 1).
+   `topological_index` says `1, provisional, ill_posed=False` — it cannot see this, because the
+   ill-posed test looks for V-loops and I-cutsets among INDEPENDENT sources.
+
+**For `_resolve_x0_unknown`:** its stated reason was "the index might be 3"; the measured reason is
+stronger — on all four provisional fixtures the topological number is **1, not 2**, wrong by up to
+two, so `idx != 2` short-circuits before `provisional` is consulted. Two independent guards, both
+firing; no code change. **Not established, discount accordingly:** that any of this is reachable
+through the analog blocks people write — the claim is about what the element set PERMITS, which is
+what a refusal has to be justified against. **The offer, priced, not built:** one SVD of an `n(k+1)`
+matrix resolves the provisional case per netlist AND per parameter set (the granularity the
+phenomenon has) and would catch the singular pencil `ill_posed` misses — exact for constant `C`,`G`
+only; on a nonlinear netlist it is the index of the linearisation at one point, and the paper's own
+warning is that controlled sources move the index with the operating point too. Code:
+`~/docs/.corpus/checks/numindex.py`, `dae_index_probe.py` (`--quick` passes); write-up READING-LOG
+§2.150.
 
 ### A10. Crystal oscillators (Q ≥ 10⁴) — ✅ **MEASURED 2026-09-04. THE BINDING LIMIT IS FREQUENCY ACCURACY, NOT Q**
 

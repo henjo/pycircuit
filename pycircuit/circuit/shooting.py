@@ -321,12 +321,25 @@ def topological_index(cir):
     constraint is uniquely solvable and the index is 1.
 
     **A C-only loop makes `C` singular WITHOUT making the index 2; index 2
-    needs a VOLTAGE SOURCE fixing the loop.**  Either the quote describes a
-    formulation whose variables differ from ours (its own wording turns on
-    which currents are variables), or it was misapplied in relay — it has not
-    been read here.  ⚠ What is certain is the measurement on THIS code, so
-    the loop test requires at least one voltage source, and the disagreement
-    is recorded rather than split.
+    needs a VOLTAGE SOURCE fixing the loop.**  ✅ RESOLVED AT THE SOURCE
+    (docs session, 2026-09-08; Estévez Schwarz & Tischendorf, IJCTA 28(2)
+    2000, on disk): the quote is FAITHFUL and describes Chua & Lin's
+    variable set, not MNA.  Their MNA theorem, Thm 4.1 p.141, has no C-only
+    clause -- "the conventional MNA leads to an index-1 DAE if and only if
+    the network contains neither L-I cutsets nor C-V loops.  Otherwise ...
+    index-2" -- which is exactly what this function implements.  The
+    C-only sentence is Remark 4 p.143, comparing with Table 10-3-1 of Chua
+    & Lin (Reference [10], the normal-tree / state-variable formulation),
+    and states its own reason: "in this case, C-only loops have to be
+    added to the class of C-V loops SINCE THE CURRENTS THROUGH C-ONLY LOOPS
+    BELONG TO THE NETWORK VARIABLES WHEREAS THESE CURRENTS ARE EXCLUDED IN
+    MNA FORMULATIONS."  So the measurement above AGREES with the theorem;
+    the loop test requires a voltage source, and nothing is split.  Thm 4.2,
+    immediately below, extends the same conclusions to the CHARGE-ORIENTED
+    MNA -- this tree's formulation, `d/dt q(x) + i(x) + u(t) = 0` -- so the
+    tree is covered by name, under 4.1's hypotheses (positive-definite C, L
+    and conductance matrices, the controlled-source conditions of their
+    Tables I-VI), which this docstring already carries.
 
     ⚠⚠ THIS IS A DIAGNOSTIC, NOT A REFUSAL, AND THE DIFFERENCE IS MEASURED.
     Roadmap C4 closed index-2 detect-and-refuse because `index > 1` is NOT
@@ -2021,6 +2034,39 @@ class PSS(Analysis):
             worse problem while reporting a fix.**  Leaving a known defect
             visible is the better failure mode.  The same goes for a
             structurally singular netlist, which has no index at all.
+
+            ⚠ MEASURED 2026-09-08 (docs session, two instruments sharing
+            only C and G -- InitDAE eq. 8's 1-fullness of the derivative
+            array, and the Kronecker index of the pencil -- 5/5 against
+            `topological_index` where that is valid, exact on nilpotent
+            pencils of degree 1..5): **index 3 IS reachable on this element
+            set, it is VALUE-dependent, and on every provisional fixture
+            `topological_index` returned 1 -- not a low-confidence 2.**  A
+            VCVS of gain `g` inside a C-V loop (C1 v->b, C2 v->gnd, source
+            b->gnd = g*v) is index 3 exactly on `g* = 1 + C2/C1` (six
+            (C1, C2) pairs verified) -- the controlled source cancels the
+            node's total capacitance, `[C2 + C1(1-g)] dv/dt`, and one more
+            differentiation is needed -- and index 2 off it, with
+            `|M^3| = 224 |g - 2|`, so a gain within 1e-3 of `g*` still
+            carries a ~1 % nilpotent tail: the surface is measure-zero, the
+            NEIGHBOURHOOD is what bites.  A CCCS re-injecting an L-I
+            branch's own current at `F = 1` makes the PENCIL SINGULAR (no
+            index at all), and `ill_posed` cannot see it because it looks
+            for V-loops and I-cutsets among INDEPENDENT sources.  So this
+            refusal stands for a second, stronger reason than "the index
+            might be 3": the topological number on those netlists is wrong
+            by up to two, and `idx != 2` short-circuits before `provisional`
+            is consulted -- two independent guards, both firing.  What is
+            NOT established: that any of this is reachable through the
+            analog blocks people write; the claim is about what the element
+            set PERMITS, which is what a refusal has to be justified
+            against.  The numerical test (one SVD of an n(k+1) matrix) is
+            an OFFER, not built: exact for constant C and G only, so on a
+            nonlinear netlist it is the index of the linearisation at one
+            operating point, and controlled sources move the index with the
+            operating point too.  Code and fixtures:
+            `~/docs/.corpus/checks/numindex.py`, `dae_index_probe.py`
+            (`--quick` asserts the surface and both pencil cases).
 
         Warns when it fires, because a silently different formulation is the
         kind of thing that makes a later measurement inexplicable.
