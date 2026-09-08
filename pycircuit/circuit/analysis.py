@@ -80,8 +80,14 @@ def reduced_row_names(cir, irefnode):
 class CircuitResult(IVResultDict, InternalResultDict):
     """Result class for analyses that returns voltages and currents"""
     def __init__(self, circuit, x, xdot = None, 
-                 sweep_values=[], sweep_label='', sweep_unit=''):
+                 sweep_values=None, sweep_label='', sweep_unit=''):
         super().__init__()
+        ## `sweep_values=[]` as a default was ONE list shared by every result
+        ## built without one and stored on self (latent, never mutated in
+        ## the tree -- the docs session's scan, 2026-09-08, after the
+        ## shared-TimeFunction defect of the same shape went live)
+        if sweep_values is None:
+            sweep_values = []
 
         nodes = circuit.nodes
 

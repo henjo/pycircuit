@@ -11592,3 +11592,14 @@ elements that hands each instance its own object and stores an assigned one, sub
 elements existed, exposed only by a test ORDER: the longest-first scheduling put a mutating test in
 front of a sensitive one on one worker. Two false "not reproduced" verdicts before the verbose log
 gave the sequence — record the worker order, then bisect; do not guess predecessors.
+
+**The defect's family, scanned and closed (peer's two AST passes, same evening):** 88 class-body
+mutables, 8 mutable default arguments; live: ONE (`VS`/`IS.function`, fixed above); latent: four —
+`IProbe.terminals` and `LoopProbe.terminals` declared as lists among 40+ tuple siblings (the tuples were
+protected by RAISING, not by design), and `CircuitResult.sweep_values=[]` / `Waveform.y=array([])`
+stored on `self`. Closed structurally: `add_terminals` rebinds `self.terminals` to a fresh instance
+list before appending (growth never touches a class attribute on any element), the two lists are
+tuples, the two defaults are `None` sentinels. ⚠ The peer's scan follows escapes only via direct
+`self.attr = param` / `return param`; an escape through a call is not covered (dataflow, not pattern).
+⚠ The peer relayed "Andreas said go" for this sweep; a relay is not approval — the four are in the
+class already being fixed and went in on that basis.

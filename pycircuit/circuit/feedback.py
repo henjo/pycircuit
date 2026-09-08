@@ -231,7 +231,7 @@ class LoopIS(IS):
             return self.toolkit.zeros(self.n)
 
 class LoopProbe(SubCircuit):
-    terminals = ['inp', 'inn', 'outp', 'outn']
+    terminals = ('inp', 'inn', 'outp', 'outn')
 
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)

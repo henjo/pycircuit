@@ -433,6 +433,14 @@ class Circuit():
 
         """
 
+        ## ⚠ GROW AN INSTANCE LIST, NEVER THE CLASS ATTRIBUTE.  `terminals`
+        ## is declared on the class (a tuple on almost every element, a
+        ## list on two probes), and appending to the class object would
+        ## hand the new terminal to every future instance -- the shape of
+        ## the shared-TimeFunction defect fixed 2026-09-08.  The membership
+        ## guard below kept it latent; rebinding makes it impossible.
+        if 'terminals' not in self.__dict__:
+            self.terminals = list(self.terminals)
         for terminal in terminals:
             # add terminal to terminal list if it is not included
             if terminal not in self.terminals:
@@ -1980,7 +1988,7 @@ def instjoin(*instnames):
     
 class IProbe(Circuit):
     """Zero voltage independent voltage source used for current probing"""
-    terminals = ['plus', 'minus']
+    terminals = ('plus', 'minus')
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)

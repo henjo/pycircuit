@@ -42,10 +42,19 @@ class Waveform(object):
     
     """
 
-    def __init__(self, x=array([],), y=array([]),
+    def __init__(self, x=None, y=None,
                  xlabels=None, ylabel=None,
                  xunits=None, yunit=None):
-        
+        ## `y=array([])` as a default was ONE array shared by every waveform
+        ## built without one and stored on self, mutable in place (latent;
+        ## the docs session's scan, 2026-09-08, after a defect of the same
+        ## shape went live in the elements).  `x` was rebound before
+        ## storage but takes the same sentinel for uniformity.
+        if x is None:
+            x = array([])
+        if y is None:
+            y = array([])
+
         if type(x) is np.ndarray:
             x = [x]
             
