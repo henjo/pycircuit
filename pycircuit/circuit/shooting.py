@@ -12954,6 +12954,22 @@ class PAC(Analysis):
         `|m_pm|/|m_am|` grows without bound as `freq -> 0`.  A
         decomposition that got the conjugate wrong gives a bounded ratio
         instead.
+
+        ⚠ THE ABSOLUTE MAGNITUDE ON AN OSCILLATOR IS SMALL FOR A REASON
+        (established 2026-09-08, the three-leg chain).  These are the p = 0
+        band of `am_pm_noise`: a source at BASEBAND `freq` reaching the
+        carrier sideband.  A baseband current moves the PHASE through the
+        PPV's DC coefficient (Hajimiri-Lee's c_0), and a half-wave-symmetric
+        orbit -- odd nonlinearity, `u(t + T/2) = -u(t)` -- has none, so on
+        such a fixture the rows measure a symmetry zero (6e-9 .. 1e-13,
+        proportional to 1/freq and to mu), the same zero the coloured
+        up-conversion gate records for Gamma.  Breaking the symmetry
+        (`_lc_osc(a)`) lifts |m_pm| at 1e-3 f0 from 1.2e-8 to 46.6 (a =
+        0.05) and 231 (a = 0.25) -- linear in `a`.  The DIRECT rows (source
+        at f0 + freq, sideband 0) agree with `pnoise` at every offset, and
+        the split lands on the externally certified Lorentzian.  So do not
+        read a small `am_pm` on a symmetric oscillator as a defect: it is
+        the 1/f^3 up-conversion coefficient, and it is zero there.
         """
         C = self.carrier_phasor(pss, output, carrier)
         ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
@@ -13020,11 +13036,15 @@ class PAC(Analysis):
         exactly, because `|a+c|^2 + |a-c|^2 = 2|a|^2 + 2|c|^2` leaves no cross
         term.  A pairing error breaks it, which is what the test asserts.
 
-        ⚠ AND THE AUTONOMOUS CAVEAT OF `am_pm` APPLIES HERE UNCHANGED: on a
-        free-running oscillator the sideband rows come back at ~1e-12 in
-        absolute terms for reasons that are not established, so do not read an
-        oscillator AM/PM *magnitude* from this.  The driven case is the one this
-        is built and gated for.
+        ⚠ THE AUTONOMOUS CAVEAT IS RETIRED (three-leg chain, 2026-09-08).  On a
+        free-running oscillator this split sits on the SAME absolute scale as
+        `pnoise` (identity to 1e-12 / 1e-16) and as the externally certified
+        `oscillator_spectrum` (`S_pm = 4 S_v` at every offset: the PM content
+        of the pair IS the Lorentzian, 2 S_v per sideband), with `S_am` rising
+        from ~0 below the AM corner `f0/(4 pi Q)` to `S_pm` above it -- so the
+        pair total is 4 S_v there and 8 S_v far out.  The "~1e-12 rows" were
+        `am_pm`'s p = 0 band on a half-wave-symmetric fixture: a symmetry
+        zero, see `am_pm`.  Oscillator magnitudes from this are trustworthy.
         """
         self._check_circuit(pss)
         pss = pss._adjoint_host()

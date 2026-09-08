@@ -17448,3 +17448,113 @@ def test_warping_estimate_refuses_a_reading_the_interpolant_sets():
     assert est['trusted'] is False and abs(est['check_ratio'] - 1.0) > PSS.WARPING_CHECK_TOL, est['check_ratio']
     assert est['period_error'] is not None
     assert any('interpolant' in str(x.message) for x in w), [str(x.message) for x in w]
+
+
+def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_one_absolute_scale():
+    """2026-09-08 (Andreas: "run the three-leg experiment").  The chain
+
+        reference simulator --(S_v = 0.5000 x one-sided PSD, four decades,
+        2026-09-05)--> lorentzian --(Rizzoli overlay)--> pnoise --(AM/PM
+        identity)--> S_am, S_pm
+
+    has an EXTERNAL anchor at one end and no two links share machinery, so
+    it is the one structure that can localise a common scale factor -- the
+    signature of the "oscillator sideband rows ~1e-12, cause unestablished"
+    caveat.  Measured on the single-cluster van der Pol at Q = 100 (mu =
+    1/(2 pi Q), white 1e-6 A^2/Hz current noise) and on the LC oscillator
+    the modulation stack was certified on:
+
+        f/f0     (up+lo)/(4 S_v)   Q=100    LC mu=1
+        1e-4          1.003                 0.9993
+        1e-3          1.284                 0.9993
+        1e-2          1.974                 0.9992
+        1e-1          1.993                 0.9940
+        identity residual: 1e-16 (Q=100), 2.5e-12 at 64 sidebands and
+        2.8e-9 at 8 (LC) -- truncation, converging away as in the driven case.
+
+    The ratio is 1 below the AM corner f0/(4 pi Q) = 8e-4 f0 (the amplitude
+    mode restores AM, only PM survives, and PM IS the Lorentzian) and 2
+    above it where an LTI tank splits additive noise equally between AM and
+    PM -- the prediction named before running, to the corner's decade.  So
+    pnoise, the split and the externally certified closed form sit on ONE
+    absolute scale and the "~1e-12" symptom is not in the noise split.
+    Pinned: identity < 1e-9; ratio within 2 % of 1 at 1e-4 f0 and within
+    3 % of 2 at 1e-2 and 1e-1 f0; and S_pm alone within 1 % of 4 S_v at
+    every offset -- S_pm is the PM content of the sideband PAIR, 2 S_v per
+    sideband (the PM part is the Lorentzian everywhere, the AM part is what
+    the ratio adds).  ⚠ First written as 2 S_v and failed at 0.997 off:
+    the pair, not one sideband.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir, mu = _a10_vdp(100.0)
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=2 * np.pi, timestep=2 * np.pi / 240,
+                  x0=np.array([2.0, 0.0]), maxiterations=100)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / float(pss.period)
+    ov = [str(n) for n in cir.nodes].index('v')
+    offs = f0 * np.array([1e-4, 1e-2, 1e-1])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
+        rows = []
+        for f in offs:
+            up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=16)
+            lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=16)
+            am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=16)
+            rows.append((float(np.real(up)), float(np.real(lo)),
+                         float(np.real(am)), float(np.real(pm))))
+    for (up, lo, am, pm), sv, f, want in zip(rows, Sv, offs, (1.0, 2.0, 2.0)):
+        assert abs((am + pm) - (up + lo)) / (up + lo) < 1e-9, (f / f0, am + pm, up + lo)
+        ratio = (up + lo) / (4.0 * sv)
+        assert abs(ratio / want - 1.0) < 0.03, \
+            'overlay (up+lo)/(4 S_v) = %.4f at %.0e f0, expected %.0f' % (ratio, f / f0, want)
+        assert abs(pm / (4.0 * sv) - 1.0) < 0.01, (f / f0, pm, 4.0 * sv)
+
+
+def test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_symmetry():
+    """2026-09-08: the "~1e-12 sideband rows on an oscillator, cause not
+    established" caveat, established.  `am_pm(pss, freq, output)` is the
+    p = 0 band of the noise split: a source at BASEBAND `freq` reaching
+    the carrier sideband.  A baseband current moves the oscillator's PHASE
+    through the PPV's DC coefficient (Hajimiri-Lee's c_0, the 1/f^3
+    up-conversion term), and a half-wave-symmetric orbit -- odd
+    nonlinearity, `u(t + T/2) = -u(t)` -- has none: the same symmetry zero
+    the coloured-upconversion gate records for Gamma.  Measured on
+    `_lc_osc`, |m_pm| at 1e-3 f0:  a = 0: 1.24e-08;  a = 0.05: 46.6;
+    a = 0.25: 231 -- a jump of 4e9 on breaking the symmetry, then LINEAR
+    in `a` (470 per unit at both).  The direct p = 1 rows meanwhile agree
+    with pnoise at every offset (1/sqrt 2 of sqrt(S/psd) near the carrier,
+    where the image band carries the other half; 1.000 far out), and the
+    three-leg chain puts the split on the certified Lorentzian's absolute
+    scale, so nothing is small for an unestablished reason: the rows are
+    right, and the symmetric fixture measures a zero.  ⚠ My estimate of
+    the lifted magnitude from a tank-impedance route (1e-2 .. 1e-1) was
+    off by three orders -- the tank shorts the baseband VOLTAGE, but the
+    phase responds to the CURRENT through the PPV.  Anchored at the source
+    (docs session, Hajimiri & Lee 1998): the ISF is defined per injected
+    CHARGE ("amount of excess phase proportional to the ratio of the
+    injected charge"; Fig. 6 is phase shift versus injected charge), so a
+    per-charge sensitivity cannot be priced through a per-volt impedance --
+    the units do not meet.  And the confirming shape here -- break the
+    symmetry, check the lift is LINEAR in the breaking parameter -- is the
+    paper's own linearity verification ("injecting impulses with different
+    areas"), reproduced.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    got = {}
+    for a in (0.0, 0.05, 0.25):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            cir, pss, pac = _lc_osc(a=a, psd=1e-6, npts=240)
+            f0 = 1.0 / float(pss.period)
+            _m_am, m_pm = pac.am_pm(pss, 1e-3 * f0, 0, carrier=1)
+        got[a] = float(np.abs(np.asarray(m_pm)).max())
+    assert got[0.05] / got[0.0] > 1e6, got
+    assert abs((got[0.25] / got[0.05]) / 5.0 - 1.0) < 0.02, got

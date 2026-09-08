@@ -2643,7 +2643,7 @@ would force `m_pm = 0` or `m_am = 0` depending on which.
 | …across offsets 0.3 / 0.1 / 0.03 f₀ | flat to 1.2× |
 | oscillator PM/AM ratio vs offset | **3.90× / 3.91×** per 4× — the `1/ω_m` divergence |
 
-⚠ **OPEN, AND NOT CLAIMED AS WORKING:** on the *autonomous* circuit the sideband rows come
+⚠ **RESOLVED 2026-09-08 (§ the three-leg chain run): a SYMMETRY ZERO, not a defect — the p = 0 baseband rows measure the PPV's DC coefficient, zero on a half-wave-symmetric orbit; the split sits on the certified Lorentzian's absolute scale.** Original text kept: on the *autonomous* circuit the sideband rows come
 back at ~1e-12 in absolute terms. The PM/AM *ratio* is right and the driven case is healthy
 at O(10³), so the decomposition and the driven path are sound — but why the autonomous rows
 are that small is **not established**. Do not read an oscillator AM/PM magnitude from this
@@ -11300,3 +11300,47 @@ explicitly in the test; and identity first — if it FAILS the defect is in the 
 is never needed, only a holding identity forces the second leg. Stated prior for a disagreeing
 overlay: the lorentzian side carries the external certification and `pnoise` does not, so
 "they disagree" is asymmetric, not ambiguous. Not built.
+
+### 6. THE THREE-LEG CHAIN RUN (Andreas: "run the three-leg experiment", 2026-09-08) — all three legs agree, and the "~1e-12 rows" are a symmetry zero
+
+Two fixtures, one white 1e-6 A²/Hz current source each, offsets 1e-4 … 0.3 f₀, 64 sidebands:
+the LC oscillator the modulation stack was certified on (`_lc_osc`, μ = 1) and the single-cluster
+van der Pol at Q = 100 (`_a10_vdp(100)`, μ = 1/(2πQ)). Per offset: `up = pnoise(f₀+f)`,
+`lo = pnoise(f₀−f)`, `S_v` from `oscillator_spectrum` (certified 0.5000× one-sided), `S_am`, `S_pm`
+from `am_pm_noise`. Prediction named before running: identity holds on the oscillator with the
+residual falling with sideband count; overlay `(up+lo)/(4 S_v)` ≈ 1 above the Lorentzian corner,
+rising to 2 far out where an LTI tank splits additive noise equally.
+
+| f/f₀ | LC μ=1: overlay | identity 64 / 8 sb | Q=100: overlay | identity | S_pm/(4 S_v) |
+|---|---|---|---|---|---|
+| 1e-4 | 0.9993 | 2.5e-12 / 2.8e-9 | 1.003 | 3e-16 | 0.999 |
+| 1e-3 | 0.9993 | 2.5e-12 / 2.8e-9 | 1.284 | 2e-16 | 0.999 |
+| 1e-2 | 0.9992 | 2.5e-12 / 2.8e-9 | 1.974 | 0 | 0.999 |
+| 1e-1 | 0.9940 | 2.5e-12 / 3.0e-9 | 1.993 | 1e-16 | 0.996 |
+| 3e-1 | 0.9490 | 2.6e-12 / 4.3e-9 | 1.949 | 0 | 0.99 |
+
+**Leg 1 holds** (truncation converging away as in the driven case; exact on the nearly sinusoidal
+Q=100 orbit, whose higher bands vanish). **Leg 2 holds**: the ratio is 1 below the AM corner
+`f₀/(4πQ)` = 8e-4 f₀ (measured transition 1e-3 … 3e-3 f₀ — the amplitude mode restores AM, only PM
+survives, and PM IS the Lorentzian: `S_pm = 4 S_v` at every offset, 2 S_v per sideband) and 2 above
+it. On the μ=1 fixture the AM corner is at ~f₀/4π = 0.08 f₀ and `S_am` stays ≪ `S_pm` over the
+sweep, so the ratio stays at 1 (0.9993 — the 240-point gear grid) until the tank's own roll-off at
+0.3 f₀. So **`pnoise`, the split and the externally certified closed form sit on ONE absolute
+scale**; nothing in the noise split is 1e-12.
+
+**The symptom localised, and it is physics, not a defect.** The "sideband rows ~1e-12" were the
+deterministic `am_pm` rows — the p = 0 band: a source at BASEBAND `f` reaching the carrier
+sideband via l = 1. Measured on both fixtures they read 6e-9 … 1e-13 (∝ 1/f, ∝ μ), while the
+p = 1 DIRECT rows (source at f₀+f, l = 0) read 2.9e3 at 1e-4 f₀ = `sqrt(up/psd)/√2` near the
+carrier (the image band carries the other half of a phase modulation) and exactly `sqrt(up/psd)`
+far out. A baseband current moves the PHASE through the PPV's DC coefficient (Hajimiri–Lee c₀),
+which a half-wave-symmetric orbit sets to zero — the same zero the coloured-upconversion gate
+records for Γ (2.4e-22 at a = 0). Breaking the symmetry (`_lc_osc(a)`): |m_pm| at 1e-3 f₀ = 1.24e-8
+(a=0) → 46.6 (a=0.05) → 231 (a=0.25): a jump of 4e9, then linear in `a` (470 per unit, both). ⚠ My
+named magnitude for the lifted row (1e-2 … 1e-1, from `Z_L(f)·2a·u·|direct|`) was off by THREE
+ORDERS: the tank shorts the baseband voltage, but the phase responds to the current through v₁ —
+the direction of the prediction (a multi-order jump) held, the mechanism I priced it with was
+wrong. Pinned: `test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_one_absolute_scale`
+(Q=100, 28 s) and `test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_symmetry`.
+⚠ The first pin failed on my own mis-specification (`S_pm` vs `2 S_v`: the split covers the PAIR,
+4 S_v). Both caveats in the docstrings rewritten from "not established" to the mechanism.
