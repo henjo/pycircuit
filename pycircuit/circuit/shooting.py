@@ -1622,7 +1622,10 @@ class PSS(Analysis):
     fixture that isolates it (a comparator on a current sense through a
     capacitor) defeats every integrator's inner step Newton at PSS grids,
     because the sensed companion difference quotient carries a tau/h
-    sensitivity; see the roadmap's radau-default section (2026-09-08).
+    sensitivity -- and the undamped basin is 0.94 h/(k tau), so refining
+    the grid shrinks it in proportion: no grid rescues the class, a damped
+    inner Newton reachable from PSS is the precondition (not yet built);
+    see the roadmap's radau-default section (2026-09-08).
     """
 
     parameters = Analysis.parameters + \

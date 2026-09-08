@@ -10084,6 +10084,25 @@ same day and was fixed there with a line search. **The tree has no damped inner 
 path:** `PseudoTransientNewton` exists (`transient.py:697`) as the rescue ladder armed only inside
 `Transient.solve`, which `PSS` never calls — it drives `solve_timestep` directly on its own grid.
 
+⚠⚠ **The mechanism, MEASURED on a scalar model of one stage (peer, READING-LOG §2.156): the
+undamped basin is EXACTLY inversely proportional to the loop gain, so refinement shrinks it in
+proportion and NO grid rescues the class.** `F(x) = x − x₀ + h·g(x) + tanh(k·(τ/h)·(x − x_th))`,
+the largest radius from which an undamped Newton converges, swept 320× in loop gain at `k = 5, 20,
+80`: `basin = 0.94·h/(k·τ)`, the constant 0.966 / 0.942 / 0.947 / 0.941 / 0.942 / 0.941 across the
+sweep. Three consequences. (1) **The difficulty is unbounded under refinement** — refining normally
+helps a Newton, and here it shrinks the basin in exact proportion, so the failure is worst precisely
+where an order study has to go: on this class an order cannot be read undamped IN PRINCIPLE, not
+in practice. (2) **Damping is the whole blocker:** backtracking on `|F|` gives basin 2.000, the
+entire tested range, at every `h` — so the missing damped inner Newton on the PSS path is not a
+convenience, it is the reason the row is empty. (3) **A criterion:** a predictor landing within `δ`
+of the root needs `k·τ/h < 0.94/δ`, i.e. a MINIMUM usable step `h > k·τ·δ/0.94` — the opposite of
+"small enough `h` converges" — and it generalises past the comparator: ANY nonlinearity whose input
+is a branch current through a capacitor has stage sensitivity `∝ 1/h`; a user writing a
+current-sense comparator meets it. ⚠ Scope: a scalar model that reproduces the named mechanism and
+measures its scaling; it does not prove the circuit fails for that reason. The discriminating test
+on the real circuit, named and NOT run: variant B at 200 and 400 points — the failing Newton's first
+overshoot must DOUBLE when `h` halves.
+
 **Status: OPEN, not "unmeasured".** The order of a period timed by an index-2 algebraic variable is
 still the one gap in the `CHOOSING method` table, and what is now known about it: (i) the fixture
 that isolates it is a circuit a user can write — a comparator on a current sense through a
