@@ -1444,9 +1444,12 @@ class PSS(Analysis):
          observed.  And the cure is not specific to Euler: any L-STABLE
          opening step works, and it rescues exactly `m - rank(C)` modes.
          Corroborated in the literature the review checked: Houben (2003,
-         App. A) biases theta off 1/2 so that "numerical oscillations due to
-         the DAE character are damped out" -- the same mechanism, attributed
-         there to the DAE.
+         App. A) biases theta off 1/2 so that "the numerical oscillations
+         due to the DAE character of the equations are damped out during
+         the 'insensitive time'" (p. 22, verbatim; an earlier rendering here
+         elided three words without an ellipsis, caught by the docs
+         session's quotation audit 2026-09-08) -- the same mechanism,
+         attributed there to the DAE.
 
          Kept from the attempt: `_install_history` now takes the entering
          step size `h_prev` separately.  `x_{-1}` sits one step BEFORE
@@ -4519,7 +4522,15 @@ class PSS(Analysis):
         tau/T = 1e2..1e6 while lambda_2 moves four decades -- it tests
         conditioning, not the filtering of noise that REACHES the phase.
         The fixture owed is a slow node IN the phase path (small Rs, large
-        Cs), with tau/T and coupling as separate knobs.
+        Cs), with tau/T and coupling as separate knobs.  BUILT AND MEASURED
+        the same day: with an asymmetric core AND tank loss (G_0 != 0 needs
+        both) the slow node's PPV entry is DC-dominated (|G0|/|G1| = 30) and
+        the Lorentzian over-states a source behind it by 1000x at 0.1 f0,
+        predicted to four digits from this PPV's harmonics and the RC
+        filter -- so `c` from this PPV is right and the SHAPE above
+        T/(2 pi tau) is what the frequency-aware PPV corrects; see
+        `oscillator_spectrum`.  A2's "gated at tau/T = 10" was a Monte
+        Carlo of `c`, which cannot see it.
 
         ⚠ `q` IS EXACT, NOT DIFFERENCED.  `q = C(0) xdot(0)` looks like it
         needs the orbit's tangent, and differencing the waveform for it
@@ -10642,18 +10653,42 @@ class PAC(Analysis):
         justified because `H(jw,t)` is time-invariant within each one, so
         the sum is INCOHERENT over `m` and coherent only over `k` within a
         single interval.  Nothing there is missing.
-        ⚠ THE ACTUAL BARRIER IS COST, which is a different decision.  The
-        source count is (timepoints per period) x (noisy devices) -- a
-        500-point grid with 50 noisy devices is 25 000 stationary sources
-        -- and the reported noise analysis ran at ~14x the PSS PER
-        FREQUENCY POINT, "because all aliasing components need to be
-        computed".  Whether that is affordable is unmeasured here.
+        ⚠ THE ACTUAL BARRIER IS COST, which is a different decision -- and
+        the cost as first recorded here was OVER-STATED (verified at the
+        source by the docs session, 2026-09-08, Okumura et al. 1993).  The
+        source count is p x (noisy devices) where p is the number of
+        intervals over which "H(jw,t) is time-invariant within each
+        interval" -- set by how fast the transfer varies (their Fig. 2 has
+        FIVE windows; a switching circuit moves fast only at transitions),
+        NOT by the integration grid: the earlier "500-point grid x 50
+        devices = 25 000 sources" tied p to the timestep and was high by
+        (timepoints)/p, an order or two.  The reported noise analysis ran at
+        14.1x the PSS per frequency point (1086 s vs 77 s), "because all
+        aliasing components need to be computed" -- and the NEXT sentence,
+        elided before: "it is expected that this problem can be greatly
+        alleviated using a vectorization technique, because most of the
+        computational power is used to solve linear problems" -- which is
+        the batched JAX path this tree already carries.  Whether that is
+        affordable is unmeasured here.
+        ⚠ AND THE METHOD CANNOT MODEL FLICKER (p. 585, verbatim): "Flicker
+        noise generated under a periodic large signal excitation cannot be
+        modeled as a cyclostationary process by using this method, because
+        it has very long time constants and thus equation (23) does not
+        hold" -- eq. 23 being the uncorrelated-across-intervals assumption.
+        Their fallback is that flicker "may exist as independent noise
+        sources which are practically modeled as stationary random
+        processes".  So the construction covers cyclostationary thermal
+        and shot noise, and NOT one of the three mechanisms `_cy_reduced`
+        names it as the precondition for.
         ⚠ AND ITS AUTHORS LEFT THE PHYSICS OPEN: "it is further necessary
         to discuss the correspondence between the actual physical phenomena
         of noises and this modeling".  The windowed-stationary
         decomposition is a numerical construct, and its fidelity to a real
         device is not settled by its numerical validation.
-        (Cited, not verified here; the boxcar observation is ours.)
+        (Verified at the source 2026-09-08.  The boxcar is the paper's own
+        closed form, R_{m,n} = (h_m/T) Sa(n w_s h_m/2) exp(-j n w_s (tau_{m-1}
+        + h_m/2)), p. 585 -- an earlier line here claimed the observation as
+        ours.)
 
         ⚠ STATIONARY SOURCES ONLY, AND IT CHECKS -- mechanism (1) above.
         Okumura's cyclostationary model windows each source to a single
@@ -10972,7 +11007,13 @@ class PAC(Analysis):
         ⚠ THE ROUTE OUT IS THE CYCLOSTATIONARY CONSTRUCTION, NOT A
         DIFFERENT DEVICE MODEL, and that reorders the roadmap: the
         cyclostationary path is not an enhancement for MOS pnoise, it is
-        the PRECONDITION.  Hull & Meyer (1993) make it affordable -- one
+        the PRECONDITION -- for the thermal and shot mechanisms.  ⚠ NOT
+        for flicker: Okumura's own construction excludes it (p. 585,
+        "cannot be modeled as a cyclostationary process by using this
+        method, because it has very long time constants"; verified at the
+        source 2026-09-08), by the same long-time-constant physics as the
+        trap-rate caveat beside it, and falls back to a stationary flicker
+        source.  Hull & Meyer (1993) make it affordable -- one
         stationary source per device at the cycle-averaged current, with
         the modulation carried by the impulse response `H_l` that A1
         already computes -- and their worked example IS shot noise
@@ -12798,6 +12839,21 @@ class PAC(Analysis):
         near-carrier singularity that a swept small-signal computation
         would, and never meets the 1/f sweep-grid trap — there is no sweep
         to place a point on.
+
+        ⚠⚠ SCOPE: A SOURCE BEHIND A SLOW NODE (A2, resolved 2026-09-08).
+        The Lorentzian uses the DC PPV, so for a noise source that reaches
+        the core through a slow path (RC leg, tau >> T) it holds only
+        BELOW the source's corner `T/(2 pi tau)`; above it the true skirt
+        is this one scaled by the PPV-harmonic-weighted filter
+        `sum_k |G_k|^2 F_k(f) / sum_k |G_k|^2 F_k(0)` (G_k the PPV entry's
+        Fourier coefficients at the source node, F_k the path's transfer at
+        k f0 + f), which is 1/1000 at 0.1 f0 on a one-RC-leg fixture with
+        an asymmetric core AND tank loss (both needed for G_0 != 0; an
+        ideal tank inductor shorts DC).  `c` is still right (the filter
+        removes only high-frequency content); `pnoise` computes the true
+        value at any offset; this method does not, and a Monte Carlo of
+        `c` cannot see it.  Measured against `pnoise` to four digits
+        through the corner (test ..._behind_a_slow_node_...).
 
         ⚠ AND IT IS THE ONLY ROUTE THAT IS VALID BELOW THE CORNER.  A
         small-signal analysis cannot produce `L(f)` there however well

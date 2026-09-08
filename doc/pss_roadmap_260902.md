@@ -11475,3 +11475,89 @@ variable-stepsize variable-order codes, so "GLMs dominate Radau in an adaptive s
 covered by it. The startup problem is real and named: (c) needs the input vector to `O(h^p)`,
 computed by "generalised Runge-Kutta methods taking only the initial value" or built up under
 variable order — solved, at the cost of the extra machinery already objected to. Nothing built.
+
+## A2 RESOLVED: the slow-node range limit of the PPV/Lorentzian model, measured with the slow node in the noise path (Andreas: "start with 1", 2026-09-08)
+
+The 09-03 record had A2 "gated at τ/T = 10 (Monte Carlo 0.8016 vs 0.9965 control), larger untested
+for cost". Both halves of that reading were wrong in instructive ways, and the effect is now measured
+in closed form with existing certified tools — `pnoise` (true conversion PSD at offset) against the
+DC-PPV Lorentzian (`oscillator_spectrum`), the three-leg overlay with the source moved.
+
+**Pass 1 (odd core, `_vdp_with_slow_node` + white IS at `w`): flat at 0.999 at every offset, both
+τ/T.** My closed form `1/(1 + (2πrτ/T)²)` was wrong by 4000× at 0.1 f₀. Peer, before I misread it:
+the odd core makes the orbit half-wave symmetric, the PPV too, and `Γ₀ = 0` at every node — the
+baseband route my formula assumed is a symmetry zero (the same as the AM/PM rows). The noise from
+`w` reaches the phase through `k ≥ 1`, where the RC filter is the constant `F₁ = 1/(1+(2πτ/T)²)`
+= 2.533e-6 — and **`c_w/c_core` measured 2.3e-6**, identical at `Rs = 1e6` and `1e2` (τ alone).
+
+**Pass 2 (0.3·u² core): `Γ₀` STILL zero at `w` (1.5e-12) with `|Γ₂|/|Γ₁| = 0.15`.** Second reason,
+independent of symmetry: the ideal tank inductor shorts DC to ground, so a DC current at any node
+cannot move the frequency. The coloured-upconversion table had it — `Γ` needs asymmetry AND loss.
+But the ratio STEPS UP to a plateau of **1.11**, centred on `r_c = T/(2πτ)` (shifts exactly 10× with
+τ/T), absent for the odd core and for the core-injection control; split: **all PM** (`S_pm/4S_v`
+0.976 → 1.106, `S_am` flat at 0.023). That is the amplitude-mode admixture of the frequency-aware
+PPV (peer, corner at `1 − μ₂`) projected onto the `w` entry: 11 % here, DC-PPV UNDER-stating.
+
+**Pass 3 (a = 0.25 AND tank loss 0.2, the `_lc_osc` pair; `Rs = 1e2`, τ/T = 100, source at `w`):
+`|c₀|/|c₁|` at `w` = 59.2** — the slow node's phase sensitivity is DOMINATED by its DC coefficient.
+Prediction from the PPV's own FFT and the RC filter, no free constant:
+`ratio(r) = (|c₀|² F₀(f) + 2Σ_{k≥1}|c_k|²) / Σ|c_k|²` (two-sided), `F₀ = 1/(1+(2πfτ)²)`. ⚠ **The
+first version filtered the `k ≥ 1` terms TWICE** (the PPV entry at `w` already carries the path's
+transfer at each harmonic, so the filter enters only as `F₀(f)/F₀(0)` on `k = 0`) and doubled
+already-doubled rfft amplitudes: it put the floor at 6e-9 and read the top of the sweep as "1e5 above
+the floor" — the peer's arithmetic caught the wording, the τ sweep (excess ∝ (T/τ)², 92.7× for 10×
+in τ) named the double filtering, and the corrected floor is 5.9e-4 (τ/T = 100) / 0.055 (τ/T = 10),
+which IS the measured plateau. The sideband count (32 → 64) changes nothing to five digits.
+
+| r = f/f₀ | measured `(up+lo)/(4S_v)` | predicted (corrected) | ratio/pred | τ/T = 10: measured / pred |
+|---|---|---|---|---|
+| 1e-4 | 0.9964 | 0.9963 | 1.0001 | 0.99655 / 0.99651 |
+| 1e-3 | 0.7291 | 0.7298 | 0.9991 | — |
+| 3.2e-3 | 0.2124 | 0.2125 | 0.9995 | — |
+| 1e-2 | 0.02683 | 0.02685 | 0.9993 | 0.7460 / 0.7447 |
+| 3.2e-2 | 0.00335 | 0.00328 | 1.021 | 0.2619 / 0.2564 |
+| 1e-1 | 0.00096 | 0.00086 | **1.116** | 0.0899 / 0.0803 (**1.120**) |
+
+Within 2 % at every offset to 3.2e-2 f₀ at both τ/T (corner and floor shifted 10× and 100×), and a
+**+12 % residual at 0.1 f₀, τ-independent, in `S_pm`** — `F₁`'s band variation is exactly `r²` (+0.3 % at
+3.2e-2, +3.1 % at 0.1; peer) and leaves 1.8 % / 8.6 %, which two points cannot fix to an exponent; the
+Lorentzian's dropped `f_h²` term is ruled out on the tree's own 1e-6 number. Surviving candidates, NOT
+tested: the `k = 2` band variation (closed form, no run) and the overlay's narrowband construction itself
+failing at 0.1 f₀ (which would explain the τ-independence). My named "5 % at every r" failed there. **The DC-PPV Lorentzian over-states the slow-node source's skirt by 1000× at 0.1 f₀**
+(1160× by the model) — Lai's sign, Lai's mechanism, on one RC leg; below 3e-2 the two agree to 2 %
+and that is the model-backed part. Controls: source at the core flat at 0.999; a = 0.25 lossless
+`c₀ = 5e-14` → flat (+ the 11 % step); odd core with loss `c₀ = 2.6e-10` → flat. Identity ≤ 2e-12
+in every row.
+
+**What A2 actually is, restated.** `c` (the long-time diffusion) IS right with a slow node: the
+filter removes only high-frequency content, and the ω_s → 0 limit is the DC PPV. So a Monte Carlo of
+`c` — the 09-03 gate — **can never see this effect**; 0.8016 at τ/T = 10 was a null by construction,
+not "outside the regime". What is wrong is the SPECTRUM'S SHAPE: for a source behind a slow node the
+Lorentzian holds only below `T/(2πτ)`, and above it the true skirt is the DC-PPV one scaled by the
+harmonic-weighted filter — the floor `2Σ_{k≥1}|c_k|²/Σ|c_k|²` = 5.9e-4 here, with `|c₁|²/|c₀|²` at `w` carrying the path's `(T/2πτ)²`.
+`pnoise` computes the true value; `oscillator_spectrum` does not, and now says so. ⚠ Three numbers
+coincide at τ/T = 100 and must not be read as one identity (peer): `F₁ = 2.533e-6` (∝ (T/τ)²),
+the admixture plateau 2.29e-6 (∝ T/τ), and `c_w/c_core = 2.3e-6` (= `F₁`); at τ/T = 1e4 they
+separate 90×. ⚠ My first closed form applied the filter to ALL the noise; the harmonic sum applies it
+per band, and the control's "predicted" column in pass 3 is meaningless (the filter is on the `w`
+source, not the `v` one) — the measured control is the flat 0.999.
+
+Pinned: `test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmonics_say`.
+Nothing changes in `pnoise`; `oscillator_spectrum` and `ppv` carry the scope. The frequency-aware
+PPV as an OBJECT (a bordered solve at nonzero ω_s) is still not built — this fixture's answer came
+from the DC PPV's harmonics and a linear filter, which is what a one-RC-leg slow node reduces to.
+
+⚠ **An order-dependent failure seen ONCE (suite 21, 2026-09-08 evening), unresolved:**
+`test_elements.py::test_Idt_tran` (a Gear-2 transient integrating a constant, `y = t`) read
+`y = t + 2h/3` at 40 of 50 points — the BDF-2 coefficient's shape, as if the history were stale — in
+the longest-first ordered suite, and passes alone, in its file, after `test_pcnr.py`, after
+`test_idtmod.py`, and after the one test that monkeypatches `Gear2Integrator.companion_coefficients`
+(restored in `finally`). The integrator default is per instance and the class carries no state.
+Not reproduced (the next suite, run with `-v`, was green); recurrence names the worker's test sequence.
+Localisation from the peer, not a diagnosis: `2h/3` is BDF-2's forcing coefficient `b`, so the error is
+one `b·h·f_n` term present once too often or too few — a source/companion term at ONE step, not the
+history weights (those err in units of `y`); global toolkit leakage is ruled out (conftest's autouse
+fixture resets it); the shape matches the hazard `_begin_run` was written for (a second solve on the
+same object with a stale `_dt_last2`), and the path to look at is anything reaching the integrator
+without `_begin_run` — shooting drives `solve_timestep` directly. Dump `x` at steps 0..3 under both
+orderings when it recurs.

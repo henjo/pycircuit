@@ -397,7 +397,11 @@ today — but the code is already right for it.
 - **Oscillator AM/PM magnitude** — ratio right, absolute rows ~1e-12, cause unestablished.
 - **A2's slow-node validity boundary** — detected and warned, and the fix is **not justified
   by measurement**: gated at τ/T = 10, the classical PPV is within 20% of a nonlinear Monte
-  Carlo (0.8016 against a 0.9965 control). Larger τ/T untested.
+  Carlo (0.8016 against a 0.9965 control). Larger τ/T untested. ⚠ RESOLVED 2026-09-08 (main roadmap,
+  "A2 RESOLVED"): a Monte Carlo of `c` CANNOT see this effect — `c` is right with a slow node; the
+  Lorentzian's SHAPE is wrong above `T/(2πτ)` for a source behind the node, by 1000× at 0.1 f₀ on a
+  one-RC-leg fixture with asymmetry AND tank loss (`Γ₀ ≠ 0` needs both), predicted to four digits from
+  the PPV's harmonics and the RC filter. `pnoise` is right there; `oscillator_spectrum` is not.
 - **Near-carrier oscillator noise** — `Φ(T) − I` is singular there. ⚠ CORRECTED 2026-09-08: the
   published removal (Gourary et al.) IS built as `_deflated_solve`, wired into `adjoint_sideband_row`
   (so `pnoise`) and NOT into `PAC.solve` / `adjoint_transfer_row`; the plain solve's error there is

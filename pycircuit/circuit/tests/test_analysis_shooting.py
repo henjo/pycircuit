@@ -17558,3 +17558,103 @@ def test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_s
         got[a] = float(np.abs(np.asarray(m_pm)).max())
     assert got[0.05] / got[0.0] > 1e6, got
     assert abs((got[0.25] / got[0.05]) / 5.0 - 1.0) < 0.02, got
+
+
+def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmonics_say():
+    """A2 RESOLVED (Andreas, 2026-09-08).  A white current source behind a
+    slow RC node reaches the tank through `1/(1 + j w tau)`.  The DC PPV
+    uses the DC transfer, so the Lorentzian from `c` holds only below the
+    source's corner `T/(2 pi tau)`; above it the true skirt (`pnoise`, the
+    conversion computation) is the DC-PPV one scaled by the PPV-harmonic-
+    weighted filter, with NO free constant:
+
+        ratio(r) = (|c_0|^2 F_0(f) + 2 sum_{k>=1} |c_k|^2) / sum_k |c_k|^2 (two-sided),
+        F_0(f) = 1 / (1 + (2 pi f tau)^2),
+
+    `c_k` the Fourier coefficients of the PPV entry at the source node,
+    which ALREADY carry the path's transfer at k f0 (so the filter enters
+    only as F_0(f)/F_0(0) on k = 0; the k >= 1 terms are the floor, and
+    |c_1|^2/|c_0|^2 at w carries the (T/tau)^2 of the path at f0).
+    Only k = 0 varies over the band, so the effect needs `c_0 != 0`, which
+    needs BOTH an asymmetric core AND tank loss (an ideal tank inductor
+    shorts DC; a half-wave-symmetric orbit has no DC PPV) -- the coloured-
+    upconversion gate's pattern, seen from the transfer side.  Measured
+    (a = 0.25, loss 0.2, tau/T = 100, Rs = 1e2): |c0|/|c1| at w = 59.2,
+    floor 5.9e-4; ratio 0.9964 / 0.7291 / 0.2124 / 0.0268 / 0.00335 at
+    r = 1e-4 / 1e-3 / 3.2e-3 / 1e-2 / 3.2e-2 against 0.9963 / 0.7298 /
+    0.2125 / 0.02685 / 0.00328 predicted (within 2 %); at 0.1 f0 measured
+    0.00096 vs 0.00086, a +12 % residual that is tau-independent and in
+    S_pm, unexplained; the DC-PPV Lorentzian over-states the slow-node
+    source by 1000x there (Lai's sign).  At tau/T = 10 the same sum holds
+    to 2 % up to 3.2e-2 f0 with the corner and floor shifted 10x and 100x.
+    Controls: the source at the core is flat at 0.999; the odd core
+    with loss has G_0 = 2.6e-10 and is flat.  `c` itself is unaffected (the
+    filter removes only high-frequency content), which is why a Monte Carlo
+    of `c` -- the 2026-09-03 gate -- read a null at tau/T = 10.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+    tau_over_T = 100.0
+
+    def build(src, asym, loss):
+        c = SubCircuit()
+        c.add_node('v'); c.add_node('w'); c.add_node('x')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', 'x', L=1.0); c['Rl'] = R('x', gnd, r=loss)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: (u - u ** 3 / 3.0) + asym * (u ** 2 - 2.0))
+        c['Rs'] = R('v', 'w', r=1e2); c['Cs'] = C('w', gnd, c=tau_over_T * T0 / 1e2)
+        c['n'] = IS(src, gnd, i=0.0, noisePSD=1e-6)
+        return c
+
+    def measure(src, asym, loss, rs):
+        cir = build(src, asym, loss)
+        pss = PSS(cir, method='gear', reltol=1e-11)
+        x0 = np.zeros(cir.n - 1); x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+            assert pss.converged
+            pac = PAC(cir, toolkit=circuit.numeric)
+            f0 = 1.0 / float(pss.period)
+            names = [str(n) for n in cir.nodes]; ov = names.index('v'); isrc = names.index(src)
+            _v1, info = pss.ppv()
+            V = np.array([np.asarray(s_, float) for s_ in info['samples']])
+            if abs(V[0] - V[-1]).max() < 1e-9 * abs(V).max():
+                V = V[:-1]
+            ## two-sided POWER per harmonic, |c_-k|^2 + |c_k|^2.  ⚠ The PPV
+            ## entry at the source node ALREADY carries the path's transfer
+            ## at each harmonic, so the RC filter enters ONLY as the ratio
+            ## F_0(f)/F_0(0) on the k = 0 term; the first version applied
+            ## F_k(k f0) to the k >= 1 terms too (filtered twice) and doubled
+            ## already-doubled rfft amplitudes, putting the floor at 6e-9
+            ## instead of 5.9e-4 -- and the top of the sweep then read as
+            ## "1e5 above the floor" (peer's arithmetic caught the wording).
+            G = np.fft.rfft(V[:, isrc]) / V.shape[0]
+            G2 = np.abs(G) ** 2; G2[1:] *= 2.0
+            tau = tau_over_T * T0
+            offs = f0 * np.array(rs)
+            Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
+            out = []
+            for f, sv in zip(offs, Sv):
+                up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32)
+                lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32)
+                F0 = 1.0 / (1.0 + (2 * np.pi * f * tau) ** 2)
+                pred = (G2[0] * F0 + float(np.sum(G2[1:]))) / float(np.sum(G2)) if src == 'w' else 1.0
+                out.append(((float(np.real(up)) + float(np.real(lo))) / (4.0 * sv), pred))
+        return abs(G[0]) / abs(G[1]), out
+
+    rs = (1e-4, 1e-3, 3.16e-3, 1e-2, 3.16e-2)
+    g01, rows = measure('w', 0.25, 0.2, rs)
+    assert g01 > 1.0, 'the slow node\'s PPV entry should be DC-dominated with asymmetry AND loss; |c0|/|c1| = %.3e' % g01
+    for r, (ratio, pred) in zip(rs, rows):
+        assert abs(ratio / pred - 1.0) < 0.03, (r, ratio, pred)
+    assert rows[-1][0] < 0.05, 'the Lorentzian should over-state the slow-node source >= 20x at 1e-2 f0; ratio %.4f' % rows[-1][0]
+    g01_v, rows_v = measure('v', 0.25, 0.2, rs)
+    for r, (ratio, _p) in zip(rs, rows_v):
+        assert abs(ratio - 1.0) < 0.01, ('core-injection control', r, ratio)
+    g01_s, rows_s = measure('w', 0.0, 0.2, rs)
+    assert g01_s < 1e-6, g01_s
+    for r, (ratio, _p) in zip(rs, rows_s):
+        assert abs(ratio - 1.0) < 0.01, ('odd-core control', r, ratio)
