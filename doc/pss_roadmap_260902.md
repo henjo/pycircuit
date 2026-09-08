@@ -11698,7 +11698,12 @@ a convention I knew):** `|c₀|/|c₁|` is an AMPLITUDE ratio, and over the swee
 `k ≥ 1` amplitude to the power 0.45 (endpoints 1.92× against 4.24×), where two linear functionals
 differing would give an exponent of 1. So the story "the sideband split's PM assignment differs from
 phase-mode projection on the `k ≥ 1` bands" does not fit its own scaling; the r-part is a PUZZLE with a
-measured exponent, not a mechanism. Three-way bracketing (`pnoise` between the DC sum and the
+measured exponent, not a mechanism. **Refit on four abscissae (peer's objection that `|c₁|` may be the wrong
+summary): exponents 0.37 / 0.45 against `|c₁|/|c₀|` (LSQ / endpoints), 0.41 / 0.54 against `Σ_{k≥1}|c_k|/|c₀|`,
+0.37 / 0.47 against the quadrature sum, and 0.66 / 0.69 against the `k ≥ 1` POWER SHARE of `S_pm` at
+0.1 f₀ (the natural abscissa for a percentage) — sublinear on every summary, so the withdrawal stands
+on stronger ground.** (Aggregates at a = 0.1 / 0.25 / 0.4 / 0.6: `Σ|c_k|/|c₀|` 0.094 / 0.042 / 0.031 /
+0.028; power share 0.93 / 0.68 / 0.48 / 0.36.) Three-way bracketing (`pnoise` between the DC sum and the
 frequency-aware sum); the only arbiter that instantiates neither construction is the nonlinear Monte
 Carlo (phase from zero-crossing timing, no PPV anywhere in the measurement) — EXPENSIVE (the 150 000-
 period route), not absent; on it the source-amplitude discriminator is valid again, two questions on one
