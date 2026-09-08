@@ -1865,6 +1865,13 @@ class PSS(Analysis):
     ## reached from a seed one decade high is ~0.1 of it, and the trivial
     ## root lands 15 orders down, so nothing sits near this line.
     DEGENERATE_PERIOD_FACTOR = 1e-6
+    ## The equilibrium test above: a returned state whose DC residual is
+    ## within this factor of `iabstol` is an equilibrium, not an orbit.  1e3
+    ## because the shooting Newton's own residual sits at `abstol`, and an
+    ## orbit's DC residual at t = 0 is a CIRCUIT-scale current (measured:
+    ## the van der Pol at 2 V has |i + u| ~ 1 A there against 1e-27 for the
+    ## collapsed state -- 27 orders apart, so the factor is not delicate).
+    TRIVIAL_ORBIT_FACTOR = 1e3
 
     def _free_period_solve(self, func, z0, abstol, xtol, reltol, maxiter,
                            seed_period, solver=None):
@@ -1915,7 +1922,52 @@ class PSS(Analysis):
                 'way to get one.' % (seed_period, exc)) from exc
 
         T = float(z[-1])
-        if not np.isfinite(T) or abs(T) < self.DEGENERATE_PERIOD_FACTOR * abs(
+        ## ⚠⚠ THE SECOND TRIVIAL ROOT, found 2026-09-08 while gating
+        ## `warping_estimate` on an index-2 oscillator: the guard below
+        ## catches `T -> 0`, and an autonomous solve has ANOTHER root that it
+        ## cannot see -- the EQUILIBRIUM, `x(t) = x_dc`, which is periodic at
+        ## EVERY `T`.  Radau seeded 10 % below the fundamental on the
+        ## index-1 van der Pol and on the index-2 fixture returned
+        ## amplitude 0.0000 (state 1e-27) at a period near the seed with
+        ## `converged = True`; trapezoidal on the same seed failed honestly.
+        ## `T` stays finite, so the period test passes, and the periodicity
+        ## residual is exactly zero because the equilibrium IS periodic --
+        ## at every `T`, so it is a whole LINE of roots in `(x0, T)`, not a
+        ## point (peer's sharpening): that is why the residual is exactly
+        ## zero rather than small, why no residual-based guard could have
+        ## caught it, and why the DC residual does in one evaluation.
+        ## The test that sees it is the DC residual of the returned state:
+        ## an orbit has `C x' != 0` somewhere at t = 0, so `i(x) + u` is far
+        ## from zero there; an equilibrium has it at solver tolerance.
+        trivial_orbit = False
+        try:
+            xr = np.asarray(z[:-1], dtype=float)
+            irn = self.irefnode
+            xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            r_dc = (np.asarray(self.cir.i(xf, self.epar), dtype=float).ravel()
+                    + np.asarray(self.cir.u(0.0, self.epar, analysis='dc'),
+                                 dtype=float).ravel())
+            r_dc = np.delete(r_dc, irn)
+            tol = float(getattr(self.par, 'iabstol', 1e-12))
+            trivial_orbit = bool(np.abs(r_dc).max() <= self.TRIVIAL_ORBIT_FACTOR * tol)
+        except Exception:
+            trivial_orbit = False
+        if trivial_orbit:
+            ier = 5
+            mesg = ('collapsed onto the EQUILIBRIUM (a trivial orbit, periodic '
+                    'at every T) at T = %.6g s from a seed of %.6g s' % (T, seed_period))
+            warnings.warn(
+                'PSS: this autonomous solve returned an EQUILIBRIUM, not an '
+                'orbit: the state at t = 0 satisfies the DC equations to '
+                '%.1e (max |i(x) + u|), so the periodicity residual is zero '
+                'at ANY period and the solver reported success at T = %.6g s '
+                'from a seed of %.6g s. The basin of the equilibrium is '
+                'entered from a seed below the fundamental (measured: 10 %% '
+                'low under radau); seed at or above the expected period, or '
+                'from a transient that is already on the orbit. '
+                '`converged` is False.' % (np.abs(r_dc).max(), T, seed_period),
+                RuntimeWarning, stacklevel=3)
+        elif not np.isfinite(T) or abs(T) < self.DEGENERATE_PERIOD_FACTOR * abs(
                 seed_period):
             ## ⚠⚠ THE COLLAPSE MUST BE DEMOTED HERE, and for two turns of this
             ## record it was not.  The docstrings above and on `solve` both
@@ -2049,18 +2101,27 @@ class PSS(Analysis):
             differentiation is needed -- and index 2 off it, with
             `|M^3| = 224 |g - 2|`, so a gain within 1e-3 of `g*` still
             carries a ~1 % nilpotent tail: the surface is measure-zero, the
-            NEIGHBOURHOOD is what bites.  A CCCS re-injecting an L-I
-            branch's own current at `F = 1` makes the PENCIL SINGULAR (no
-            index at all), and `ill_posed` cannot see it because it looks
-            for V-loops and I-cutsets among INDEPENDENT sources.  So this
-            refusal stands for a second, stronger reason than "the index
-            might be 3": the topological number on those netlists is wrong
-            by up to two, and `idx != 2` short-circuits before `provisional`
-            is consulted -- two independent guards, both firing.  What is
-            NOT established: that any of this is reachable through the
-            analog blocks people write; the claim is about what the element
-            set PERMITS, which is what a refusal has to be justified
-            against.  The numerical test (one SVD of an n(k+1) matrix) is
+            NEIGHBOURHOOD is what bites.  ⚠ A CCCS half of the same report
+            was WITHDRAWN by its author the same day: its fixture put the
+            CCCS's ammeter input ACROSS the inductor instead of in series
+            (DC-singular at every gain), and rebuilt correctly the L-I
+            cutset is genuine, `topological_index` says 2 (provisional), the
+            index is 2 at every gain but `F = 1`, and at `F = 1` the row at
+            the output node is all-zero so `_structural_singularity` fires
+            and `GminAnchorNewton` refuses the rescue in as many words --
+            the DC layer catches it loudly; nothing for `ill_posed` to do.
+            So: on the VCVS netlists (P1, its self-controlled and
+            CCVS-controlled variants) the topological number is 1, wrong by
+            two, and `idx != 2` short-circuits before `provisional` is
+            consulted -- two independent guards, both firing; and the
+            emphasis is INVERTED from "the case that fails to solve": **the
+            index-3 netlist DC-solves cleanly and silently at `g*`** (v =
+            1e-3 A x 10 Ohm, b = g v, no warning), while the singular one
+            is loud.  The case to guard against is the one that solves and
+            looks healthy.  What is NOT established: that any of this is
+            reachable through the analog blocks people write; the claim is
+            about what the element set PERMITS, which is what a refusal has
+            to be justified against.  The numerical test (one SVD of an n(k+1) matrix) is
             an OFFER, not built: exact for constant C and G only, so on a
             nonlinear netlist it is the index of the linearisation at one
             operating point, and controlled sources move the index with the
@@ -5832,7 +5893,12 @@ class PSS(Analysis):
         Returns a dict: `period_error` (s, signed: positive = this solve's
         period is LONG), `ppm`, `lag` (per-period phase lag, s), `degree`,
         `periods`, `autonomous`, `component_rms` (RMS of y - p per unknown
-        over the last period, the global error estimate in state space).
+        over the last period, the global error estimate in state space),
+        `lag_components` (periods x unknowns: the same lag per component --
+        every row's slope should equal `period_error`; a row at ~0 while
+        the others agree is the per-component exactness-class collapse the
+        DAE caveat names; a row of NaN is a component with no motion, e.g.
+        a node pinned by a source).
         """
         import numpy as _np
         from scipy.interpolate import make_interp_spline
@@ -5883,12 +5949,24 @@ class PSS(Analysis):
             Y = Y.T
         P = _np.asarray(p(ty % T), dtype=float).T; dP = _np.asarray(dp(ty % T), dtype=float).T
         E = Y - P
-        lag = []
+        lag = []; lag_c = []
         for j in range(periods):
             sl = (ty >= j * T - 1e-12 * T) & (ty < (j + 1) * T - 1e-12 * T)
             num = float(_np.sum(dP[:, sl] * E[:, sl])); den = float(_np.sum(dP[:, sl] ** 2))
             lag.append(num / den if den > 0 else _np.nan)
-        lag = _np.asarray(lag)
+            ## per component: the same projection restricted to one unknown.
+            ## A phase shift moves every component by the same lag, so on a
+            ## healthy estimate every row's slope equals the period error;
+            ## a row reading ~0 while the others read the period error is
+            ## the exactness-class collapse on THAT component (the DAE
+            ## caveat), invisible in the scalar `lag` above.
+            num_c = _np.sum(dP[:, sl] * E[:, sl], axis=1); den_c = _np.sum(dP[:, sl] ** 2, axis=1)
+            ## a RELATIVE threshold: a node pinned by a source has a
+            ## derivative of pure roundoff (measured 1e-32 rms), and
+            ## `den > 0` let it print a ratio of 96 where NaN was meant.
+            with _np.errstate(divide='ignore', invalid='ignore'):
+                lag_c.append(_np.where(den_c > 1e-20 * den_c.max(), num_c / den_c, _np.nan))
+        lag = _np.asarray(lag); lag_c = _np.asarray(lag_c)
         ok = _np.isfinite(lag)
         slope = float(_np.polyfit(_np.arange(periods)[ok], lag[ok], 1)[0]) if ok.sum() >= 2 else _np.nan
         ## SIGN: a positive lag means y is AHEAD of p; a LONG period makes y
@@ -5898,8 +5976,8 @@ class PSS(Analysis):
         component_rms = _np.sqrt(_np.mean(E[:, last] ** 2, axis=1))
         return dict(period_error=period_error,
                     ppm=(period_error / T * 1e6) if period_error is not None else None,
-                    lag=lag, degree=k, periods=periods, autonomous=autonomous,
-                    component_rms=component_rms)
+                    lag=lag, lag_components=lag_c, degree=k, periods=periods,
+                    autonomous=autonomous, component_rms=component_rms)
 
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.

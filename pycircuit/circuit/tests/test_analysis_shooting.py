@@ -17267,3 +17267,38 @@ def test_warping_estimate_refuses_a_period_reading_on_a_driven_circuit():
     assert est['autonomous'] is False
     assert est['period_error'] is None and est['ppm'] is None
     assert np.all(np.isfinite(est['lag'])) and len(est['lag']) == 8
+
+
+def test_an_autonomous_solve_that_returns_an_equilibrium_is_not_converged():
+    """2026-09-08, found while gating `warping_estimate` on an index-2
+    oscillator.  `_free_period_solve` demoted the `T -> 0` root; the
+    EQUILIBRIUM is a second trivial root, periodic at every T, and radau
+    seeded 10 % below the fundamental landed on it -- amplitude 0.0000,
+    state 1e-27, period near the seed, `converged = True`.  Pinned: the low
+    seed reports False with the equilibrium warning; the right seed still
+    reports True with the 2 V orbit; the same low seed under trap fails
+    honestly (it did before, and must keep doing so).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir, _ = _a10_vdp()
+    T0 = 2 * np.pi
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        p = PSS(cir, method='radau', reltol=1e-14)
+        p.solve(period=0.9 * T0, timestep=0.9 * T0 / 200, x0=np.array([2.0, 0.0]),
+                maxiterations=400)
+    W = np.asarray(p.waveform[1], dtype=float)
+    amp = (W[cir.get_node_index('v')].max() - W[cir.get_node_index('v')].min()) / 2
+    assert amp < 1e-6, 'the low seed no longer collapses; the test needs a new basin'
+    assert p.converged is False, 'an equilibrium reported as a converged orbit'
+    assert any('EQUILIBRIUM' in str(r.message) for r in rec), \
+        'the demotion must say why: %r' % [str(r.message)[:60] for r in rec]
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        cir, _ = _a10_vdp()
+        p = PSS(cir, method='radau', reltol=1e-14)
+        p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]), maxiterations=400)
+    W = np.asarray(p.waveform[1], dtype=float)
+    amp = (W[cir.get_node_index('v')].max() - W[cir.get_node_index('v')].min()) / 2
+    assert p.converged is True and abs(amp - 2.0) < 1e-2, (p.converged, amp)

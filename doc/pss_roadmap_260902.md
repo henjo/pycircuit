@@ -4983,6 +4983,64 @@ voltage-input gain is multiplied by the row's own orientation, read from `G` at 
 so `gain` is the transfer from the source VALUE — `VS` +0.5, `VSinHdl` +0.5, the docstring's 0.1
 unchanged; test restored to equality including sign. `Svninp` uses `|gain|²` and never cared.
 
+#### ✅ `warping_estimate` on the INDEX-2 oscillator, PER COMPONENT (2026-09-08) — no collapse on any component, and a defect found on the way
+
+The DAE caveat was that a component could sit inside the method's exactness class and estimate a
+silent zero invisible in the scalar phase drift. `warping_estimate` now returns `lag_components`
+(periods × unknowns, the same projection restricted to one row; a phase shift moves every component
+by the same lag, so every row's slope must equal the period error; a pinned node reads NaN by a
+relative threshold on its derivative — `den > 0` had let the source-pinned node `b` print 96).
+Yesterday's index-2 fixture (van der Pol `Q = 10⁴` + C–V loop pinned by an ideal source; unknowns
+`v`, `b`, `i_L`, `i_vs`, the last the ALGEBRAIC one, `c1·dv/dt`):
+
+| method / degree | pts | true (ppm) | ratio | per component `v` / `i_L` / `i_vs` |
+|---|---|---|---|---|
+| trap / cubic | 200 | 83.084 | 0.9999 | 0.9999 / 0.9999 / 0.9999 |
+| trap / cubic | 400 | 20.665 | 1.0001 | 1.0000 / 1.0003 / 1.0003 |
+| esdirk43 / quintic | 100 | 1.3724e-02 | 1.0003 | 1.0003 / 1.0003 / 1.0003 |
+| **radau / septic** | 50 | 1.1967e-04 | **1.0000** | 1.0000 / 1.0000 / 1.0014 |
+| radau / septic | 70 | 1.3566e-05 | 0.9983 | 0.9983 / 0.9983 / 1.0002 |
+| radau / septic | 100 | 1.65e-06 (reference floor: yesterday's and today's `T_ref` differ by 6 % here) | 1.03 | 1.03 / 1.03 / 1.04 |
+
+| trap / cubic, **ODD grid** | 201 | 82.255 | 1.0002 | 0.9999 / 1.0005 / 1.0005 |
+| trap / cubic, **ODD grid** | 401 | 20.562 | 1.0002 | 1.0000 / 1.0003 / 1.0003 |
+
+⚠ **The odd rows are the peer's control, and they partition:** every trap row above was at an EVEN
+step count, and on a linear driven index-2 fixture of their own (hand-rolled trapezoidal on the
+tree's `C`, `G` against a FREQUENCY-domain reference) the trapezoidal map carries an eigenvalue
+exactly `−1`; an O(h²) error on the algebraic component excited at the start returns times `+1`
+over an even number of steps and cancels, and flips over an odd number and shows — every component
+at machine zero on even grids, the source current at order 2.000 on odd ones, and its index-1 twin
+IDENTICAL, so not an index-2 phenomenon at all (READING-LOG §2.151; not the `x0_unknown` singular
+`A_trap^K`, which is the same `(−1)^N` root with a different consequence). **Here: 201 and 401 points
+read 1.0002 with every component within 5e-4 of the even rows.** The null holds at both parities.
+
+**The algebraic unknown reads the same period error as the differential ones**, to four digits for
+trap at even AND odd grids and for the ESDIRK, and to three for radau at 50 and 70 points (the 100-point row sits at the
+reference's own floor and says nothing): no per-component collapse on this index-2 mechanism, for
+the default method with its septic. ⚠ The radau rows needed a thirteen-digit reference — yesterday's
+ten digits made the 50-point ratio read 1.065 and the 100-point one −0.32, both artifacts of the
+reference, not the estimate. ⚠ Scope as before: one
+index-2 mechanism, one nearly-harmonic orbit; a component-wise collapse would need the interpolant
+inside the exactness class for THAT component, which the septic is not for any of them.
+
+⚠⚠ **A DEFECT FOUND BY THE REFERENCE RUN, fixed:** recomputing `T_ref` to thirteen digits with the
+seed mistyped as `2π/√1.1` (the fundamental is `2π√1.1`, node `b` is pinned so `c1` adds to the
+tank) returned `converged=True` at `T = 5.99051398804969` — fourteen digits, stable across 1600 and
+3200 points — with **amplitude 0.0000 and state 1e-27**: the solve had collapsed onto the
+EQUILIBRIUM. `_free_period_solve`'s guard demotes the `T → 0` root; the equilibrium is a SECOND
+trivial root, periodic at every `T`, so the period stays finite, the periodicity residual is exactly
+zero, and the flag said success. Measured across the probe: radau seeded 10 % low collapses this way
+on the index-1 van der Pol AND the index-2 fixture (`converged=True`, amplitude 0); trap on the same
+seed fails honestly (`False`, amplitude 0.057); gear is confused either way at 200 points. **Fix:**
+the guard now also evaluates the DC residual `i(x) + u` of the returned state at `t = 0` — an orbit
+has `C·x′ ≠ 0` somewhere there (the van der Pol at 2 V: ~1 A), an equilibrium has it at solver
+tolerance (1e-27, 27 orders apart) — and demotes `ier` with its own warning naming the basin.
+Pinned by a test (low seed → `False` with the EQUILIBRIUM warning; right seed → `True`, 2 V; trap
+still fails honestly). ⚠ The memory said "autonomous collapse now really reports converged=False"
+since 09-06; it did — for the root the guard tested. **The second root was found only because a
+mistyped seed produced a fourteen-digit "reference" that disagreed with yesterday's by 10 %.**
+
 **Status: B7 BUILT.** Pinned by two tests (`test_warping_estimate_reproduces_the_period_error…`,
 which pins the exactness-class ZERO as a property so a "helpful" degree change announces itself;
 `…refuses_a_period_reading_on_a_driven_circuit`). Limits carried from the prototype: the DAE
@@ -5623,8 +5681,9 @@ exact on Kronecker-nilpotent pencils of degree 1..5, so it can count above 2 at 
 |---|---|---|---|
 | P1 VCVS inside a C–V loop | g = 0, 0.5, 1, 5 | 1, provisional | 2 |
 | P1 same | **g = 2** | 1, provisional | **3** |
-| P2 CCCS inside an L–I cutset | F ≠ 1 | 1, provisional | 1 |
-| P2 same | **F = 1** | 1, provisional | **singular pencil, no index** |
+| ~~P2 CCCS inside an L–I cutset~~ | ~~F ≠ 1~~ | ~~1, provisional~~ | ~~1~~ — WITHDRAWN, fixture mis-built (see below) |
+| P2 rebuilt (ammeter in SERIES with L1) | F = 0.5 … 2, F ≠ 1 | **2, provisional** | 2 |
+| P2 rebuilt | **F = 1** | 2, provisional | **singular — and the DC layer says so** |
 | P3 VCVS in a C–V loop, self-controlled | | 1, provisional | 2 |
 | P4 CCVS in a C–V loop, controlled from an L–I branch | | 1, provisional | 2 |
 
@@ -5637,19 +5696,34 @@ exact on Kronecker-nilpotent pencils of degree 1..5, so it can count above 2 at 
    24160 → … → 223.66, slope exactly 1; 3.2e-14 at `g = 2` against `‖M²‖ = 22.36`). Measure-zero
    surface, but a gain within 1e-3 of `g*` carries a ~1 % nilpotent tail — any rank tolerance turns
    "index 3" into a neighbourhood.
-3. **A different failure at one value — the pencil goes SINGULAR.** P2's CCCS at `F = 1` re-injects
-   L1's own current, so `λC + G` has `σ_min = 0` for every `λ` (9.0e-6 at 0.9, 9.5e-9 at 0.99, 0 at 1).
-   `topological_index` says `1, provisional, ill_posed=False` — it cannot see this, because the
-   ill-posed test looks for V-loops and I-cutsets among INDEPENDENT sources.
+3. ~~**A different failure at one value — the pencil goes SINGULAR** … `ill_posed` cannot see this~~
+   ⚠ **WITHDRAWN by its author the same day, retraction kept in place.** `CCCS.branches` is the
+   controlling input — an ideal AMMETER, a 0 V branch — and the fixture wired it ACROSS L1 instead
+   of in series, a netlist DC-singular at EVERY gain, so the quoted spectrum was computed on a
+   circuit that cannot be solved at any `F`. Rebuilt correctly (`v –L1– m –ammeter– w`, CCCS output
+   `w→gnd` of `F·i_L1`): DC solves at every `F ≠ 1`, index 2 throughout, `topological_index` returns
+   **2 (provisional)** — the L–I cutset is genuine — and at `F = 1` the row at `w` is all-zero, so
+   `_structural_singularity` fires and `GminAnchorNewton` refuses the rescue in as many words (*"the
+   equation at 'w' constrains nothing … a gmin anchor was tried and REJECTED … that is a manufactured
+   answer, not a rescued one"*). **The DC layer catches it loudly; `ill_posed` not seeing it is not a
+   gap** — it is documented as a test among INDEPENDENT sources. Dropped from B11. ⚠ "Wrong by up to
+   two" holds for P1/P3/P4, which return 1; not for P2.
+4. **What survives is the better half, and it INVERTS the emphasis.** Asking the question the
+   withdrawn fixture never got — does it solve? — of P1: **it DC-solves cleanly at every gain
+   including `g*`** (`v = 0.0100 V`, `b = g·v`, no warning, nothing anomalous). So the index-3
+   netlist is WELL POSED AND SILENT while the singular one is loud; the case worth guarding against
+   is not the one that fails to solve but the one that solves and looks healthy at `g* = 1 + C2/C1`.
+   `dae_index_probe.py` now asserts P1's DC solution and P2's solvability at `F ≠ 1`, precisely
+   because the fixture that was not checked was the wrong one.
 
 **For `_resolve_x0_unknown`:** its stated reason was "the index might be 3"; the measured reason is
-stronger — on all four provisional fixtures the topological number is **1, not 2**, wrong by up to
-two, so `idx != 2` short-circuits before `provisional` is consulted. Two independent guards, both
+stronger — on the three VCVS/CCVS provisional fixtures the topological number is **1, not 2**, wrong
+by two, so `idx != 2` short-circuits before `provisional` is consulted. Two independent guards, both
 firing; no code change. **Not established, discount accordingly:** that any of this is reachable
 through the analog blocks people write — the claim is about what the element set PERMITS, which is
 what a refusal has to be justified against. **The offer, priced, not built:** one SVD of an `n(k+1)`
 matrix resolves the provisional case per netlist AND per parameter set (the granularity the
-phenomenon has) and would catch the singular pencil `ill_posed` misses — exact for constant `C`,`G`
+phenomenon has) — exact for constant `C`,`G`
 only; on a nonlinear netlist it is the index of the linearisation at one point, and the paper's own
 warning is that controlled sources move the index with the operating point too. Code:
 `~/docs/.corpus/checks/numindex.py`, `dae_index_probe.py` (`--quick` passes); write-up READING-LOG
