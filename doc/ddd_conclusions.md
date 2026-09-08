@@ -203,7 +203,18 @@ sparse circuit matrices is the only thing that settles the question — the pape
 figures are on their circuits, and the dense bound guarantees nothing for us. Two
 useful reference lines when plotting: `n·2^(n-1)` above (the dense-matrix optimum,
 which sparse matrices should beat comfortably — if we approach it, sparsity is not
-being exploited) and our SoE op counts alongside (§4.6). The result also settles
+being exploited) and our SoE op counts alongside (§4.6). ⚠ **Measured 2026-09-08 on
+our own matrices (docs session, `ddd_ordering_probe.py`, READING-LOG §2.154): that
+line is NOT safe below n ≈ 5.** The Theorem-1 control passes (5/5, all four orders),
+and then an ordinary RC mesh at n = 3 sits exactly ON the line (12 = 12) while RC
+ladder 3 is within 10 % (29 vs 32) — both sparse and well ordered. The line only
+opens from n ≈ 5, above most unit fixtures, so as an alarm it would mostly report
+false positives. The floor `|DDD| ≥ #nonzero` exists (each symbol needs a vertex;
+Shi's 4×4 attains it) but loosens monotonically — 1.14, 1.33, 1.93, 2.63, 3.33, 4.10
+across n = 3..7 — so it gives NO optimality certificate for `auto` (do not build one).
+What it does give is the alarm's right shape: on the ladder family `|DDD|/#nz` grows
+smoothly at about 0.7 n, and "this circuit deviates above its family's trend" is
+meaningful at every n where "approached an absolute line" is not. The result also settles
 ordering for the dense case, so we need not hunt for a heuristic there.
 
 ### 4.3 The key structural finding: the coefficient / s-expanded form
@@ -820,10 +831,24 @@ rather than assumed.
 
 ## 8. Open questions and risks
 
+⚠ **Status of this list (2026-09-08):** it predates the ordering work now in `ddd.py`,
+which carries `row`, `min-degree`, `markowitz` and `auto`, cites Theorem 1 by name in
+`_select`, and records the index tie-break failure that motivated markowitz. Items
+below are annotated where the code or a measurement has moved past them; the
+unannotated ones are still live.
+
 1. **[VERIFY] Does DDD actually beat SoE for us?** The one published head-to-head
    is on different circuits with a different flavour of SoE. This is the whole
    P0 gate.
-2. **Variable/expansion ordering on our matrices.** Min-degree is a heuristic;
+2. **Variable/expansion ordering on our matrices.** ⚠ MEASURED 2026-09-08 (docs
+   session, on our matrices, Theorem-1 control 5/5): Shi §IV says more than this
+   item credits — *"neither a row-wise nor a column-wise order is necessarily optimal
+   for a sparse matrix"*, his 4×4 at 16 vertices column-wise against 11 optimal, a 45 %
+   spread — and ours agree: `row` wins on RC ladder 3 (27 vs 29) and loses on ladder 5
+   (84 vs 80); no order dominates. `markowitz` LOSES 12 % on the largest fixture (RC
+   ladder 6: row 126, min-degree 126, markowitz 141, auto 119) — the index tie-break
+   cure costs on this family; sweep before it becomes a default anywhere. The
+   original text: Min-degree is a heuristic;
    TCAS-II 2010 only settles the dense case. A bad ordering on a real circuit
    could blow up the vertex count — the main technical risk.
 3. **Cancellation.** DDD expands a determinant and can generate terms that later
