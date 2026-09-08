@@ -10720,8 +10720,49 @@ class PAC(Analysis):
     ## `oscillator_spectrum` for why the two cannot be unified and why the wrong
     ## one still returns a plausible number.
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
-               modulated=False):
+               modulated=False, cyclostationary=False):
         """TIME-AVERAGED output noise PSD at `freq`, sidebands folded in.
+
+        ⚠ `cyclostationary=True` IS THE CONSTRUCTION FOR A BIAS-DEPENDENT
+        `CY` (2026-09-08, on the corrected Okumura reading).  A source whose
+        PSD follows the orbit is white noise `xi` MODULATED by
+        `B(t) = sqrt(CY(x(t)))`, a T-periodic matrix with Fourier
+        coefficients `B_k` -- read off the PSS samples by one DFT, no
+        window count `p` at all (Okumura's windows are a piecewise-constant
+        approximation of exactly this, and their boxcar coefficients its
+        crude version).  `xi`'s band at `g_p = f - p f0` reaches the output
+        at `f` through EVERY modulation harmonic `k` and the sideband row
+        `a_{p-k}` (source at `g_p + k f0`, output at `f`) -- the SAME rows
+        the stationary fold computes -- COHERENTLY over `k` (one white band,
+        one realisation) and incoherently over `p`.  Summing the bands
+        turns the square root into the PSD's OWN harmonics `P_j` (the DFT
+        of `CY(x(t))`, no matrix square root anywhere):
+
+            S(f) = sum_{l,l'} a_l P_{l'-l} a_{l'}^H,
+
+        which is exact on the grid (⚠ the sqrt-modulation form, tried
+        first, left a 2.8e-5 residual tied to the modulation's zero
+        crossings; this form agrees with the stationary side to 9e-16).
+        Constant `CY` gives `P_0 = CY` and nothing else, and the sum
+        collapses to the stationary `sum_l a_l CY a_l^H` -- Okumura's
+        `p = 1` case, pinned to machine precision.  The cost is the
+        stationary fold's (the rows dominate; the double sum is free).
+        A coloured source takes `CY` at the band of row `l` (exact for
+        white).  Like the stationary fold this is a LOWER bound at a
+        sideband cap.
+        ⚠ Coherence is the whole content: `modulated=True` (the cycle-
+        averaged `CY`, Hull & Meyer's stationary equivalent) keeps the
+        power and drops the correlation between sidebands, and the two
+        differ wherever the modulation has harmonics -- measured on a
+        driven multiplier, and the identity against the STATIONARY fold of
+        the same physics written as a white source through a periodically
+        varying gain is the gate (`test_..._cyclostationary_...`).
+        ⚠ FLICKER: computed the same way (a coloured `B^{(p)}`), but
+        Okumura's own construction excludes it (p. 585: "cannot be modeled
+        as a cyclostationary process by using this method, because it has
+        very long time constants") -- the modulated-coloured model is
+        formally the same fold and physically contested; a flicker source
+        with a bias-dependent coefficient gets a number and a warning.
 
         Returns `(S, sidebands_used)`.  `S` is the one-sided
         **time-averaged** PSD at the output, in the same units as
@@ -10940,7 +10981,13 @@ class PAC(Analysis):
         ## treatment of exactly this case, and the only route to MOS
         ## pnoise, since no physically correct MOS noise model has a
         ## state-independent `CY`.
-        cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
+        if cyclostationary:
+            ## the stop rule and the harmonic probes below run on the
+            ## cycle-averaged power (the modulation's B_0 B_0^H); the fold
+            ## itself is the convolution after the rows are gathered
+            cyfn = self._cy_cycle_averaged
+        else:
+            cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         cy = cyfn(pss, w)
 
         ## ⚠⚠ ON A HARMONIC, A SIDEBAND FOLDS THE SOURCES TO DC -- AND
@@ -11006,11 +11053,13 @@ class PAC(Analysis):
         used = []
         quiet = 0
         self.alias_stop = 'bound'
+        rows = {}
         for l in range(0, lmax + 1):
             step = 0.0
             for sl in ((0,) if l == 0 else (l, -l)):
                 fin = float(freq) - sl * f0
                 h = self.adjoint_sideband_row(pss, fin, output, sl)[0]
+                rows[sl] = np.asarray(h, dtype=complex)
                 step += float(np.real(h @ cyfn(
                     pss, 2.0 * np.pi * fin) @ np.conj(h)))
                 used.append(sl)
@@ -11027,6 +11076,8 @@ class PAC(Analysis):
             else:
                 quiet = 0
         self.sidebands_used = used
+        if cyclostationary:
+            total = self._cyclostationary_fold(pss, float(freq), rows)
         ## ⚠ WHICH RULE STOPPED IT IS PART OF THE ANSWER.  Ending on the
         ## ratio test means the series converged; ending on the Nyquist
         ## bound means the grid ran out before the series did, and the
@@ -11047,6 +11098,49 @@ class PAC(Analysis):
                 % (lmax, N),
                 RuntimeWarning, stacklevel=2)
         return total, used
+
+    def _cy_harmonics(self, pss, w):
+        """`P_j`: the Fourier coefficient matrices of `CY(x(t), w)` over the
+        orbit, `(N, n, n)` indexed like `numpy.fft.fftfreq`.  `P_0` is the
+        cycle average; `P_j` with `j != 0` carry the modulation and vanish
+        for a bias-independent source.  No square root: the fold uses the
+        PSD's own harmonics (`a P a^H`), which is exact on the grid, where
+        a sqrt-modulation route (tried first) left a 2.8e-5 residual tied
+        to the modulation's zero crossings."""
+        fp = pss.factored_period()
+        irn = pss.irefnode
+        xs = np.asarray(pss.waveform[1], dtype=float)
+        nsamp = len(fp.steps)
+        Cs = []
+        for k in range(nsamp):
+            xr = np.asarray(xs[:, k], dtype=float).ravel()
+            xf = xr if xr.shape[0] == pss.cir.n else np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
+            Cs.append(np.asarray(cyk, dtype=complex))
+        Cs = np.asarray(Cs, dtype=complex)
+        return np.fft.fft(Cs, axis=0) / Cs.shape[0]
+
+    def _cyclostationary_fold(self, pss, freq, rows):
+        """`S(f) = sum_{l,l'} a_l P_{l'-l} a_{l'}^H` over the gathered
+        sideband rows (`rows[l]` = the row for a source at `f - l f0`,
+        output at `f`), `P` the harmonics of `CY` at the l-th row's band
+        (exact for a white source; a coloured one gets the band of `l`).
+        Verified against the STATIONARY fold of the same physics written
+        as a white source through a periodically varying gain: 9e-16."""
+        f0 = 1.0 / float(pss.period)
+        ls = sorted(rows)
+        cache = {}
+        total = 0.0
+        for l in ls:
+            key = round(abs(freq - l * f0) / f0, 12)
+            if key not in cache:
+                cache[key] = self._cy_harmonics(pss, 2.0 * np.pi * abs(freq - l * f0))
+            P = cache[key]
+            N = P.shape[0]
+            for lp in ls:
+                total += complex(rows[l] @ P[(lp - l) % N] @ np.conj(rows[lp]))
+        return float(np.real(total))
 
     def _cy_cycle_averaged(self, pss, w):
         """`CY` time-averaged over the orbit — Hull & Meyer's construction.
@@ -11225,7 +11319,11 @@ class PAC(Analysis):
                     'and emission rates read the terminal voltages. So '
                     'this is in effect a refusal of MOS pnoise, and the '
                     'route out is the CYCLOSTATIONARY construction rather '
-                    'than a different device model. Hull & Meyer (1993) '
+                    'than a different device model -- BUILT: pass '
+                    'cyclostationary=True (the PSD\'s own harmonics, exact; '
+                    'modulated=True is the cycle average, which drops the '
+                    'sideband correlation and read 0.53 of the truth on a '
+                    'driven multiplier). Hull & Meyer (1993) '
                     'make it affordable -- ONE stationary source per '
                     'device at the CYCLE-AVERAGED current, with the '
                     'modulation carried by the impulse response, valid '

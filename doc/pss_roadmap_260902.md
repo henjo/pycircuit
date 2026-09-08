@@ -11708,3 +11708,34 @@ frequency-aware sum); the only arbiter that instantiates neither construction is
 Carlo (phase from zero-crossing timing, no PPV anywhere in the measurement) — EXPENSIVE (the 150 000-
 period route), not absent; on it the source-amplitude discriminator is valid again, two questions on one
 sweep if it is ever run for another reason.
+
+## The cyclostationary construction BUILT on the corrected Okumura reasons (Andreas, 2026-09-08 night)
+
+`pnoise(..., cyclostationary=True)`. The corrected reasons dissolved the "cost barrier" entirely: a
+bias-dependent source is white noise modulated by `B(t) = √CY(x(t))`, whose harmonics come from the PSS
+samples by one DFT — there is no window count `p` at all (Okumura's windows are a piecewise-constant
+approximation of this, their boxcar coefficients its crude version), and the output at `f` from the
+white band `g_p = f − p f₀` is the convolution `A_p = Σ_k a_{p−k} B_k` over the SAME sideband rows the
+stationary fold already computes. Summing the bands turns the square root into the PSD's own
+harmonics: **`S(f) = Σ_{l,l'} a_l P_{l'−l} a_{l'}ᴴ`**, `P_j` the DFT coefficient matrices of `CY(x(t))`,
+correlated sources included, no matrix square root anywhere, cost = the stationary fold's.
+
+Three gates, named before running:
+1. **Reduction**: constant `CY` → the stationary answer to **4.4e-16** (Okumura's `p = 1`).
+2. **Identity**: the same physics written two ways. A: a stationary white current into `R_n`, then a
+   current-mode multiplier `k₁ V_n V_lo` (the stationary fold through a periodically varying gain —
+   exact), B: an HDL source at the multiplier's output with PSD `(k₁ R_n V_lo(t))²`, cyclostationary;
+   both through a second multiplier into an RC. **9e-16** with the `a P aᴴ` form. ⚠ The first
+   implementation folded `B = √CY` (symmetric root per sample) and read **2.8e-5** — flat in offset, in
+   the sideband count (8/16/32) and in the grid (200/400 points), at reltol 1e-12 too, and present ONLY
+   when the LO crosses zero (7e-16 at `va = 0.2`, 2.8e-5 at `va = 1`). My kink explanation failed the
+   grid test; the P-form (which I first wrote with the conjugate pairing reversed, 0.45 of the truth —
+   the sign convention, caught by printing both) is exact and replaced it. Not diagnosed further: the
+   sqrt route is gone.
+3. **The cycle-averaged route** (`modulated=True`, Hull & Meyer's stationary equivalent) reads **0.533**
+   of the truth on this fixture: the power is right, the correlation between sidebands is gone, and
+   that correlation is the whole content of the construction.
+
+Flicker: computed the same way (a coloured `P` at the band of row `l`), documented as contested by
+Okumura's own eq. 23. The stationary fold still REFUSES a bias-dependent `CY` (pinned), so the user
+chooses the model. Pinned: `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_the_cycle_average_is_not` (4 s).

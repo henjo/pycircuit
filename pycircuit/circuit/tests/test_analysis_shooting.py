@@ -17869,3 +17869,91 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
             Sf = pss.frequency_aware_ppv(f)[1]['samples_pair'][:, iw]
             Pf = float(np.sum(np.abs(np.fft.fft(Sf) / Sf.shape[0]) ** 2))
             assert abs((float(np.real(pm)) / (4.0 * float(Sv[0]))) / (Pf / P0) - 1.0) < tol, (r, pm, Pf / P0)
+
+
+def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_the_cycle_average_is_not():
+    """2026-09-08 (Andreas: "continue with the cyclostationary construction
+    on the corrected Okumura").  `pnoise(cyclostationary=True)` folds a
+    bias-dependent `CY` as white noise modulated by `B(t) = sqrt(CY(x(t)))`:
+    `A_p = sum_k a_{p-k} B_k`, `S = sum_p |A_p|^2`, the modulation's
+    harmonics read off the PSS samples (no window count) and the sideband
+    rows the stationary fold already has.  Three gates:
+      1. REDUCTION: a constant `CY` gives the stationary answer to 1e-12
+         (measured 4.4e-16) -- Okumura's p = 1 case;
+      2. IDENTITY: the same physics written two ways must agree.  A: a
+         stationary white current into R_n, then a current-mode multiplier
+         k1 V_n V_lo (the stationary fold through a periodically varying
+         gain, exact).  B: an HDL source at the multiplier's output with
+         PSD (k1 R_n V_lo(t))^2, cyclostationary.  Both through a second
+         multiplier into an RC.  Measured 9e-16 with the fold in its
+         `a P a^H` form (P the DFT of CY itself).  ⚠ A first version
+         built the fold from `B = sqrt(CY)` and read 2.8e-5, flat in the
+         offset, the sideband count and the grid, and present only when
+         the LO crosses zero (7e-16 at va = 0.2, 2.8e-5 at va = 1); the
+         square-root-free form removed it, so the pin is at 1e-12.
+      3. the cycle-averaged route (`modulated=True`, Hull & Meyer's
+         stationary equivalent) reads 0.533 of the truth here: the power is
+         right and the correlation between sidebands is gone, which is the
+         whole content of the construction.
+    """
+    import warnings
+    from pycircuit.circuit.hdl import Behavioural, Branch, Contribution, white_noise
+    from pycircuit.utilities.param import Parameter
+    circuit.default_toolkit = circuit.numeric
+
+    class Mult(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='gain', unit='A/V^2', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn, a, an, b, bn):
+            return Contribution(Branch(outp, outn).I, p.k * Branch(a, an).V * Branch(b, bn).V)
+
+    class ModNoise(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn, b, bn):
+            return Contribution(Branch(outp, outn).I, white_noise((p.k * Branch(b, bn).V) ** 2))
+
+    T = 1e-6; f0 = 1.0 / T; k1 = 0.5; k2 = 0.3; Rn = 2.0
+
+    def build(kind):
+        c = SubCircuit()
+        for n in ('lo', 'mid', 'out'):
+            c.add_node(n)
+        c['vlo'] = VSin('lo', gnd, va=1.0, vo=0.3, freq=f0)
+        if kind == 'A':
+            c.add_node('n'); c['xi'] = IS('n', gnd, i=0.0, noisePSD=1.0); c['Rn'] = R('n', gnd, r=Rn)
+            c['M1'] = Mult('mid', gnd, 'n', gnd, 'lo', gnd, k=k1)
+        else:
+            c['src'] = ModNoise('mid', gnd, 'lo', gnd, k=k1 * Rn)
+        c['Rm'] = R('mid', gnd, r=1.0)
+        c['M2'] = Mult('out', gnd, 'mid', gnd, 'lo', gnd, k=k2)
+        c['Ro'] = R('out', gnd, r=1.0); c['Co'] = C('out', gnd, c=0.2e-6)
+        return c
+
+    def solve(c):
+        pss = PSS(c, method='gear', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 200, maxiterations=40)
+        assert pss.converged
+        return pss, PAC(c, toolkit=circuit.numeric)
+
+    cA = build('A'); pA, pacA = solve(cA); oA = [str(n) for n in cA.nodes].index('out')
+    cB = build('B'); pB, pacB = solve(cB); oB = [str(n) for n in cB.nodes].index('out')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for f in (0.13 * f0, 1.37 * f0):
+            s_st, _ = pacA.pnoise(pA, f, oA, maxsidebands=16)
+            s_cy, _ = pacA.pnoise(pA, f, oA, maxsidebands=16, cyclostationary=True)
+            assert abs(s_cy / s_st - 1.0) < 1e-12, ('reduction', f / f0, s_st, s_cy)
+            sB, _ = pacB.pnoise(pB, f, oB, maxsidebands=16, cyclostationary=True)
+            assert abs(sB / s_st - 1.0) < 1e-12, ('identity', f / f0, s_st, sB)
+            sBm, _ = pacB.pnoise(pB, f, oB, maxsidebands=16, modulated=True)
+            assert abs(sBm / s_st - 1.0) > 0.3, ('the cycle average should differ by O(1)', sBm / s_st)
+        ## and the stationary fold REFUSES the bias-dependent source, as before
+        with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT'):
+            pacB.pnoise(pB, 0.13 * f0, oB, maxsidebands=16)
