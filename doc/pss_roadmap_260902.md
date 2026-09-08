@@ -11693,6 +11693,13 @@ sideband split does not: definitional, and it grows as `a` falls, as predicted; 
 above it, −7.5 / −6.8 / −5.7 / −3.9 % at 0.1 f₀ for a = 0.1 / 0.25 / 0.4 / 0.6 — falling slowly with
 asymmetry, OPPOSITE to the DC sum's residual (0.9 → 11.9 %), so the two constructions miss different
 things (peer). What weakens with `a` is the weight of the `k ≥ 1` bands (`|c₀|/|c₁|` 25 → 106), so this
-part lives where those bands set the answer — consistent with the sideband split's PM assignment
-differing from phase-mode projection on the `k ≥ 1` bands. Consistent with, not established: a three-way
-bracketing (`pnoise` between the DC sum and the frequency-aware sum) with no third arbiter.
+part lives where those bands set the answer. ⚠ **But NOT "consistent with" (peer's arithmetic, settled by
+a convention I knew):** `|c₀|/|c₁|` is an AMPLITUDE ratio, and over the sweep the r-part scales as the
+`k ≥ 1` amplitude to the power 0.45 (endpoints 1.92× against 4.24×), where two linear functionals
+differing would give an exponent of 1. So the story "the sideband split's PM assignment differs from
+phase-mode projection on the `k ≥ 1` bands" does not fit its own scaling; the r-part is a PUZZLE with a
+measured exponent, not a mechanism. Three-way bracketing (`pnoise` between the DC sum and the
+frequency-aware sum); the only arbiter that instantiates neither construction is the nonlinear Monte
+Carlo (phase from zero-crossing timing, no PPV anywhere in the measurement) — EXPENSIVE (the 150 000-
+period route), not absent; on it the source-amplitude discriminator is valid again, two questions on one
+sweep if it is ever run for another reason.
