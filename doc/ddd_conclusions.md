@@ -205,11 +205,13 @@ useful reference lines when plotting: `n·2^(n-1)` above (the dense-matrix optim
 which sparse matrices should beat comfortably — if we approach it, sparsity is not
 being exploited) and our SoE op counts alongside (§4.6). ⚠ **Measured 2026-09-08 on
 our own matrices (docs session, `ddd_ordering_probe.py`, READING-LOG §2.154): that
-line is NOT safe below n ≈ 5.** The Theorem-1 control passes (5/5, all four orders),
-and then an ordinary RC mesh at n = 3 sits exactly ON the line (12 = 12) while RC
-ladder 3 is within 10 % (29 vs 32) — both sparse and well ordered. The line only
-opens from n ≈ 5, above most unit fixtures, so as an alarm it would mostly report
-false positives. The floor `|DDD| ≥ #nonzero` exists (each symbol needs a vertex;
+line is uninformative at small n for SPARSE matrices — but it is not wrong.** ⚠ Softened
+the same night by its author (§2.157): the "RC mesh at n = 3 exactly ON the line" was
+a DENSE fixture — three nodes fully interconnected, a full 3×3 nodal matrix — so
+`n·2^(n-1) = 12` was the exact optimum and "sparsity is not being exploited" was a
+CORRECT diagnosis, not a false alarm. What survives: the RC LADDER, genuinely sparse,
+sat within 10 % of the line at n = 4 (29 vs 32), so the line cannot discriminate a
+sparse matrix below n ≈ 5; it correctly flags a dense block at any n. The floor `|DDD| ≥ #nonzero` exists (each symbol needs a vertex;
 Shi's 4×4 attains it) but loosens monotonically — 1.14, 1.33, 1.93, 2.63, 3.33, 4.10
 across n = 3..7 — so it gives NO optimality certificate for `auto` (do not build one).
 What it does give is the alarm's right shape: on the ladder family `|DDD|/#nz` grows
@@ -374,7 +376,7 @@ same regime, and conflating them would let us build the wrong thing. Explicitly:
 |---|---|---|
 | Numeric components + symbolic `s` | **Already fast** — `symbolic_poly` (`solve_den`), GiNaC with frequency scaling | Little. Do not justify the project here. |
 | A few symbolic params + numeric rest + `s` | Degrades; GiNaC stalls ~dim 16 on exact rationals | **Most of the win**: numeric terminals (MTDDD) + s-expanded coefficients |
-| Fully symbolic (all R, C symbols) | `symbolic_poly` has **no advantage** *[OURS]*; SoE stays compact but cannot deliver N/D — `to_ratio`/`poly_coeffs` hang for N≥5 *[OURS]* | **The capability gap**: s-expanded coefficients (hence poles/zeros/approximation) where nothing we own can produce them |
+| Fully symbolic (all R, C symbols) | `symbolic_poly` has **no advantage** *[OURS]*; SoE stays compact but cannot deliver N/D — ⚠ corrected 2026-09-08 (§2.158): `to_ratio` is NOT the bottleneck (0.01 s at every size); `cancel` of the inlined expression is the wall, from n = 4 (0.40 s at 3, >120 s at 4), and the unreduced denominator has degree n(n+1)/2 — spurious roots, not a constant factor. Original: `to_ratio`/`poly_coeffs` hang for N≥5 *[OURS]* | **The capability gap**: s-expanded coefficients (hence poles/zeros/approximation) where nothing we own can produce them |
 
 **Conclusion 4.9** — the project's justification differs by regime, so the plan
 must not be evaluated on a single number:
@@ -498,7 +500,7 @@ Each conclusion states its reason; §-references point to the evidence.
    own a representation that does not blow up (§3), so beating sympy proves
    nothing. However, "smaller than SoE" is the wrong single test: SoE is compact
    yet **structurally cannot** produce N/D coefficients for fully-symbolic circuits
-   (`to_ratio`/`poly_coeffs` hang for N≥5 *[OURS]*), so DDD can lose on raw
+   (`cancel` hangs from N = 4 — not `to_ratio`, corrected 2026-09-08, §2.158 *[OURS]*), so DDD can lose on raw
    operation count and still be the right answer because it delivers a capability
    SoE has not got. The gate therefore tests **capability** and **size**
    separately (§7, §4.9).
@@ -563,7 +565,7 @@ argument is not general good practice; it is specific to this project:
   OOM-crashed this box once already;
 - **correctness** against a reference backend on circuits small enough for one;
 - **completion status** — did it finish, or hit a timeout? Several of our backends
-  do not fail, they *hang* (GiNaC past dim 16, `to_ratio` for N≥5), so "did not
+  do not fail, they *hang* (GiNaC past dim 16, `cancel` of the inlined SoE from N = 4 — `to_ratio` itself returns instantly, corrected 2026-09-08), so "did not
   complete within T" is a first-class result, not an error.
 
 **Scope discipline.** This should be a small module plus a live doc page in the
@@ -725,7 +727,7 @@ failing stops the project.**
 
 - **(a) Capability.** Can we obtain s-expanded N/D coefficients at a size where
   our existing machinery cannot? Concretely: **at N ≥ 8 on circuit 1**, where
-  *[OURS]* `to_ratio`/`poly_coeffs` hang and `symbolic_poly` has no advantage. This
+  *[OURS]* `cancel` of the inlined SoE hangs from N = 4 (`to_ratio` is instant — corrected 2026-09-08, §2.158) and `symbolic_poly` has no advantage. This
   is a yes/no, and it is the criterion that actually matters (§4.9). Strictly this
   is settled at P1, so P0 passes (a) by demonstrating a correct flat DDD whose
   vertex count is small enough to make P1 plausible.
@@ -839,7 +841,34 @@ unannotated ones are still live.
 
 1. **[VERIFY] Does DDD actually beat SoE for us?** The one published head-to-head
    is on different circuits with a different flavour of SoE. This is the whole
-   P0 gate.
+   P0 gate. ⚠ **ANSWERED 2026-09-08 (docs session, `ddd_vs_soe_gate.py`, §2.157) — a
+   CRITERION, not a verdict: DDD's entire advantage is sparsity, and it INVERTS on
+   dense blocks at n = 4.** Like-for-like is `|DDD|` (a determinant) against SoE's
+   FORWARD-only assignment count (forward elimination alone gives the determinant;
+   `len(sol.assignments)`, not `len(SoESolution)` which is the unknown count), full
+   solve beside it. RC ladder: `|DDD| = 3n − 1` against SoE forward `5n − 6`, exact
+   at n = 3..11, ratio → 3/5 — **DDD 40 % cheaper at every size**. Dense mesh:
+   `|DDD| = n·2^(n-1)` (Theorem 1, a full matrix) against SoE's O(n³) — equal at
+   n = 4 (32 vs 32), 33 % worse at 5, 92 % worse at 6, unbounded. **So the gate
+   asks "how large is the largest DENSE BLOCK in the matrices we care about?"**,
+   not "is DDD smaller". Reason #1 for distrusting the published head-to-head
+   ("possibly not the same contest") was right and this is the quantity that
+   differs; reason #3 (smaller ≠ more useful) is untouched — this measures cost,
+   not capability; an SoE assignment is not exactly one flop, so the RATIOS carry
+   a factor-of-2 fuzz and the growth rates do not. **The CAPABILITY half (§2.158,
+   `soe_ndratio_wall.py`) is not a contest:** on fully symbolic RC ladders `to_ratio`
+   returns in 0.00–0.01 s at every size — it is NOT the bottleneck (§4.9 corrected
+   below); the wall is `cancel`, at 0.01 s → 0.40 s → >120 s for n = 2, 3, 4, so the
+   gap opens at n = 4, one size earlier than §4.9 said; and the UNREDUCED form is
+   actively wrong, not merely large — `together` gives denominators of degree 3, 6,
+   10, 15 against the true 2, 3, 4, 5, i.e. `n(n+1)/2`, so poles read from it carry
+   1, 3, 6, 10 SPURIOUS roots and there is no "skip the reduction and root-find"
+   escape. The DDD side is free at every size measured (0.00–0.03 s for n = 2..8 via
+   `s_expand(...).eval_coeffs()`), with no cancellation step, because the multiroot
+   diagram keeps one shared graph per power of `s`. **On a fully symbolic matrix
+   nothing we own produces D(s) past n = 3.** Scope: the fully-symbolic regime by
+   construction; says nothing about the semi-symbolic middle, where the argument is
+   scale rather than capability.
 2. **Variable/expansion ordering on our matrices.** ⚠ MEASURED 2026-09-08 (docs
    session, on our matrices, Theorem-1 control 5/5): Shi §IV says more than this
    item credits — *"neither a row-wise nor a column-wise order is necessarily optimal
