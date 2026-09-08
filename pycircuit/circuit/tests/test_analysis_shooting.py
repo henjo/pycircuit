@@ -17479,7 +17479,8 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
     pnoise, the split and the externally certified closed form sit on ONE
     absolute scale and the "~1e-12" symptom is not in the noise split.
     Pinned: identity < 1e-9; ratio within 2 % of 1 at 1e-4 f0 and within
-    3 % of 2 at 1e-2 and 1e-1 f0; and S_pm alone within 1 % of 4 S_v at
+    3 % of 2 at 1e-2 and 1e-1 f0; and the LC fixture the closed form was
+    certified on, overlay 1 within 1 % over three decades (below); and S_pm alone within 1 % of 4 S_v at
     every offset -- S_pm is the PM content of the sideband PAIR, 2 S_v per
     sideband (the PM part is the Lorentzian everywhere, the AM part is what
     the ratio adds).  ⚠ First written as 2 S_v and failed at 0.997 off:
@@ -17515,6 +17516,28 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
         assert abs(ratio / want - 1.0) < 0.03, \
             'overlay (up+lo)/(4 S_v) = %.4f at %.0e f0, expected %.0f' % (ratio, f / f0, want)
         assert abs(pm / (4.0 * sv) - 1.0) < 0.01, (f / f0, pm, 4.0 * sv)
+
+    ## AND ON THE FIXTURE THE MODULATION STACK WAS CERTIFIED ON (Andreas,
+    ## 2026-09-08 evening): the LC oscillator at mu = 1 -- the external
+    ## anchor's own circuit, so the chain's first link is tied to it directly.
+    ## Q = 0.5 puts the AM corner (~0.5 f0) outside the band, so the overlay
+    ## reads 1 throughout: measured 0.9993 / 0.9993 / 0.9992 at 1e-4 / 1e-3 /
+    ## 1e-2 f0, identity 2.5e-12 at 64 sidebands (2.8e-9 at 8).
+    cir, pss, pac = _lc_osc(psd=1e-6, npts=240)
+    f0 = 1.0 / float(pss.period)
+    ov = [str(n) for n in cir.nodes].index('v')
+    offs = f0 * np.array([1e-4, 1e-3, 1e-2])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
+        for f, sv in zip(offs, Sv):
+            up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32)
+            lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32)
+            am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
+            up, lo, am, pm = (float(np.real(x)) for x in (up, lo, am, pm))
+            assert abs((am + pm) - (up + lo)) / (up + lo) < 1e-8, (f / f0, am + pm, up + lo)
+            assert abs((up + lo) / (4.0 * sv) - 1.0) < 0.01, ('LC overlay', f / f0, (up + lo) / (4.0 * sv))
+            assert abs(pm / (4.0 * sv) - 1.0) < 0.01, ('LC S_pm', f / f0, pm, 4.0 * sv)
 
 
 def test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_symmetry():

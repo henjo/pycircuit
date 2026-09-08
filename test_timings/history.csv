@@ -68,3 +68,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260908T183952Z,4ef9b47,no:cacheprovider pycircuit/circuit/circuit.py,0.7,16,pycircuit/circuit/circuit.py::pycircuit.circuit.circuit.Circuit.save_current,0.0
 20260908T184050Z,4ef9b47,no:cacheprovider pycircuit/post,0.8,35,pycircuit/post/cds/test/test_psfasc.py::PSFTests::testPSFasc,0.1
 20260908T185003Z,4ef9b47,pycircuit 10 no:cacheprovider,553.0,3127,pycircuit/circuit/tests/test_analysis_shooting.py::test_injection_locking_range_matches_averaging_on_the_textbook_control,224.7
+20260908T185310Z,c27c85e,pycircuit/circuit/tests/test_analysis_shooting.py no:cacheprovider three_leg_chain,77.8,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_one_absolute_scale,77.0
+20260908T190345Z,c27c85e,pycircuit 10 no:cacheprovider,612.1,3127,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,328.9
