@@ -11730,8 +11730,16 @@ Three gates, named before running:
    the sideband count (8/16/32) and in the grid (200/400 points), at reltol 1e-12 too, and present ONLY
    when the LO crosses zero (7e-16 at `va = 0.2`, 2.8e-5 at `va = 1`). My kink explanation failed the
    grid test; the P-form (which I first wrote with the conjugate pairing reversed, 0.45 of the truth —
-   the sign convention, caught by printing both) is exact and replaced it. Not diagnosed further: the
-   sqrt route is gone.
+   the sign convention, caught by printing both) is exact and replaced it. **Then diagnosed (peer's parity
+   test):** the ratio stop rule kept 7 sidebands (l = 0, ±1, ±2, ±3) at every cap, and the sqrt-form
+   rebuilt in scratch reads −1.6e-4 / **−2.77e-5** / −1.1e-5 / −1.5e-6 / −3.0e-7 at L = 2 / 3 / 4 / 6 / 8 —
+   the retired number to three digits at L = 3. So it WAS the kink: `|V_lo|`'s harmonic tail decays slowly
+   and the convolution's k-window, set by the stop rule and not by the cap or the grid, truncates it;
+   flat in the cap because the cap never bound, flat in the grid because the stop sets the window,
+   present only with a zero crossing because only then is there a tail. My kink explanation had the cause
+   and the wrong knob. The lost-sign candidate is dead: the residual splits even −4.7e-7 / odd +4.6e-7
+   across the pair parity, both and cancelling. The P-form is exact at any window because the PSD's own
+   harmonics decay fast.
 3. **The cycle-averaged route** (`modulated=True`, Hull & Meyer's stationary equivalent) reads **0.533**
    of the truth on this fixture: the power is right, the correlation between sidebands is gone, and
    that correlation is the whole content of the construction.

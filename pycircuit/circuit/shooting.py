@@ -11105,8 +11105,12 @@ class PAC(Analysis):
         cycle average; `P_j` with `j != 0` carry the modulation and vanish
         for a bias-independent source.  No square root: the fold uses the
         PSD's own harmonics (`a P a^H`), which is exact on the grid, where
-        a sqrt-modulation route (tried first) left a 2.8e-5 residual tied
-        to the modulation's zero crossings."""
+        a sqrt-modulation route (tried first) left a 2.8e-5 residual: the
+        square root of a PSD that crosses zero has a kink, its harmonic
+        tail decays slowly, and the convolution's window -- the sidebands
+        the ratio stop kept, 7 here -- truncated it (measured -1.6e-4 /
+        -2.8e-5 / -3e-7 at 5 / 7 / 17 sidebands).  The PSD's harmonics
+        decay fast, so this form is exact at any window."""
         fp = pss.factored_period()
         irn = pss.irefnode
         xs = np.asarray(pss.waveform[1], dtype=float)
