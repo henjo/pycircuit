@@ -5727,7 +5727,9 @@ phenomenon has) — exact for constant `C`,`G`
 only; on a nonlinear netlist it is the index of the linearisation at one point, and the paper's own
 warning is that controlled sources move the index with the operating point too. Code:
 `~/docs/.corpus/checks/numindex.py`, `dae_index_probe.py` (`--quick` passes); write-up READING-LOG
-§2.150.
+§2.150. ⚠ Library layout changed 2026-09-08: `~/docs` root is an inbox, processed papers live in
+topic folders, `_unfiled/` holds the named-and-indexed rest, the DDD/Volterra set is under
+`16-symbolic-analysis-and-distortion/`; old→new in `.corpus/rename_log_20260908.tsv`.
 
 ### A10. Crystal oscillators (Q ≥ 10⁴) — ✅ **MEASURED 2026-09-04. THE BINDING LIMIT IS FREQUENCY ACCURACY, NOT Q**
 
@@ -10023,16 +10025,22 @@ violation, so the true boundary lies between the entry and that grid):**
 | ESDIRK43 | **0** | 3.33 | 2.50 | 2.78 | 2.08 | **STAGES only** (output 0, stage 1e-4…3e-2) |
 | **radau** | **0** | 3.33 | 5.00 | 4.17 | 4.17 | **STAGES only** (output 0, stage 1e-4…3e-3), the widest of the four |
 
-**Reading.** The control holds: BE never, trap and TR-BDF2 at their radii, all moving as `1/ρ`.
-**The pre-registered expectation for the `R = 0` methods — "violate at every ρ with no boundary" —
-is REFUTED in the informative direction:** both have a practical boundary that moves as `1/ρ` like
+**Reading.** ⚠ **The bracketing IS the fixture's calibration, not a side observation** (peer): trap
+lands on 2 and TR-BDF2 on 2.41 — the measured boundaries reproduce the theoretical radii for the
+two methods that have one — and without that the ESDIRK/Radau numbers would just be numbers. BE
+never, all moving as `1/ρ`. **The pre-registered expectation for the `R = 0` methods — "violate at
+every ρ with no boundary", the peer's own prediction, read by its author as REFUTED —** both have a practical boundary that moves as `1/ρ` like
 the others', and radau's (`hρ ≈ 4–5`) is the WIDEST — twice trap's. Above it the `R = 0` signature
 is exactly the one the peer named on the linear ladder and the linear fixture could not show:
 **the OUTPUT stays inside the invariant interval at every step size measured (L-stable, stiffly
 accurate), and only the STAGES leave it**, by 1e-4 to 3e-3 of the swing for radau, up to 3e-2 for
 ESDIRK43, roughly constant in `h` rather than growing. That is the mechanism by which `R = 0` bites
 in a circuit: a stage value evaluated where a device's conductance is steeper than at any point of
-the true solution — here by ≤ 0.3 % of the swing, at steps four times the FE limit. ⚠ One
+the true solution — here by ≤ 0.3 % of the swing, at steps four times the FE limit. **The corrected
+statement (peer): `R = 0` does not cost a boundary, it changes the SIGNATURE. On this fixture the
+method with NO monotonicity radius is more than twice as monotone in practice as the one with a
+positive radius — anyone reading Kraaijevanger's barrier naively gets that backwards, and "Radau is
+unsafe here" would be the wrong summary.** (READING-LOG §2.153.) ⚠ One
 exception in the table: at 6 points (`h = T/6`) the radau and ESDIRK OUTPUTS also overshoot (3e-3,
 4e-2), the only grid where that happens; not chased. Scope: scalar, one nonlinearity, piecewise-
 constant forcing; the stage overshoot's magnitude on a real device is what a circuit fixture would
