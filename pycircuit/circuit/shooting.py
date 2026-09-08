@@ -1618,7 +1618,11 @@ class PSS(Analysis):
     `warping_estimate` price the trade on YOUR circuit.  Index-2: the
     period keeps classical order under radau (6.1 measured); the algebraic
     unknowns converge at the stage order (3), which is where a relaxation
-    oscillator timed by an algebraic variable would feel it -- unmeasured.
+    oscillator timed by an algebraic variable would feel it -- OPEN: the
+    fixture that isolates it (a comparator on a current sense through a
+    capacitor) defeats every integrator's inner step Newton at PSS grids,
+    because the sensed companion difference quotient carries a tau/h
+    sensitivity; see the roadmap's radau-default section (2026-09-08).
     """
 
     parameters = Analysis.parameters + \

@@ -883,6 +883,32 @@ unannotated ones are still live.
    for *interpretation* and approximation, but for *numeric* pole extraction the
    existing factored/numeric paths may remain better, and P1's gate should compare
    pole accuracy, not only coefficient agreement.
+   ⚠ **ANSWERED 2026-09-08 (docs session, `ddd_pole_conditioning.py` /
+   `..._hardcase.py`, READING-LOG §2.155) — and BOTH variables this item names are
+   the wrong ones.** The DDD literature does not answer it; classical numerical
+   analysis does, with a computable a-priori gate: for `p(z) = Σ a_k z^k` with simple
+   root `r`, a relative perturbation `ε` in `a_k` moves the root by
+   `−a_k r^k ε / p′(r)`, so `κ(r) = Σ_k |a_k r^k| / |r p′(r)|` and `log10 κ` is
+   DIGITS LOST. Measured against a 60-digit mpmath reference from the SAME
+   coefficients: on a grounded RC ladder `κ·ε` predicts the float64 pole error within
+   2–4× at every degree 2..10 (span 1e12 → 1e60; error 1.5e-16 → 2.3e-11). **The
+   coefficient span is a red herring** — at degree 2 the span is already 1e12 with a
+   perfect pole; the span is RC time-constant scaling and rescaling `s` removes it.
+   **Degree is not the variable either.** **Clustering is the killer** (Wilkinson): a
+   DEGREE-4 polynomial with four real poles within 1e-4 of each other loses 12.9
+   digits and returns poles wrong in the fourth decimal; 6 poles at 1e-4 lose 20.7,
+   8 lose 28.3. **High Q is SAFE, and `κ` FALLS with Q** (5.3e4 → 1.0e4 as Q goes 1 →
+   1000, 3 LC sections) — the one method in this codebase insensitive to `λ₂ → 1`.
+   The practical clustered case is ordinary: a cascade of N nearly identical stages
+   (ring oscillator, identical gain stages, an RC line with equal sections), and the
+   failure is silent — `np.roots` returns a full set of plausible numbers. **Gate:**
+   compute `κ(r)` per pole from the s-expanded coefficients (a few flops each) and
+   REFUSE the expanded path, falling back to factored/numeric, when `κ·ε ≥ 1` — a
+   valid refusal criterion but NOT an error estimate (6 poles at 1e-4 predicts 1.2e5
+   against a measured 4e-3; a first-order bound stops meaning anything past 1; below
+   1 it is good to a factor of a few). Drop span and degree as alarms; **P1's fixture
+   must be a CLUSTER, not a high-Q pair** — N identical stages already fail at
+   degree 4.
 7. **Memory in Python** (see Stage B). Vertex counts that are unremarkable in C++
    may be costly as Python objects; memory is the likely first casualty of a bad
    ordering.

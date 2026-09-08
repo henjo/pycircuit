@@ -10048,6 +10048,55 @@ add. **For the default:** no output violation at any `hρ ≤ 100` on this fixtu
 guarantee shows up as a bounded stage excursion above `hρ ≈ 4`, where trap's output is already
 ringing.
 
+#### ⚠ The relaxation oscillator timed by an ALGEBRAIC variable — ATTEMPTED 2026-09-08, the isolating fixture defeats the inner Newton on every integrator; the order question stays OPEN with its mechanism named
+
+**Design, with the peer's two corrections.** An op-amp-style relaxation oscillator with a smooth
+`tanh` comparator (gain `k`, output time constant `τ_o` so the switch is a fast differential
+transition, not an algebraic loop), in two variants sharing EVERY element and the same exact period,
+differing only in which MNA unknown the comparator reads. ⚠ The first design read the capacitor
+current through a CCVS ammeter in series with the charging resistor — and the peer caught, before
+the rows, that KCL at that node pins the ammeter current to `(v_o − v_c)/R` EXACTLY at every solved
+step, so variant B would have read a scaled copy of A's error through the same functional: a
+guaranteed null dressed as a refutation. (The same affine relation had just excluded the peer's
+slope confound — threshold crossing converts a component error to a time error by dividing by the
+slope — so both the confound and the experiment died together.) **Rebuilt:** a small `c1` from the
+ramp node to a node `b` pinned by a 0 V branch, whose current is `c1·dv_c/dt` — the index-2
+structure of the 09-07 fixture, where exactly that component converged at stage order 3.05 — read
+in B through the CCVS's own input branch (`s = Rs·c1·dv_c/dt`, `Rs·c1 = R·C_tot` so the exact
+crossing is still `v_c = β·v_o`), the same `c1` and a plain pin in A. Nothing else at `b`, so the
+pin current IS the companion difference quotient. Prediction named: B's period drops toward stage
+order 3 under radau; A stays ≥ 5; trap the control. The peer's mechanism for why this fixture could
+show what two smooth ones could not: a smooth period functional AVERAGES the algebraic component's
+error over the orbit, a threshold crossing reads it POINTWISE at one instant. Third outcome left
+open: both drop equally, and the crossing, not the sensed variable's index, limits the period.
+
+**What happened.** With `k = 50`, `τ_o = τ/50`: the Radau coupled stage Newton fails on BOTH
+variants at 200 and 400 points (A converges at 3200; B fails even there). With a softer edge
+(`k = 20`, `τ_o = τ/20`): **A solves under radau, radau+PCNR, trap and TR-BDF2 at 400 points; B
+fails under ALL four**, in a second or less, `StandardNewton` after 100 iterations for the LMMs and
+the coupled stage Newton for radau. ⚠ The reason is DISCRETE, and it is the mechanism itself: the
+sensed current is the companion difference quotient of `v_c`, so its stage sensitivity to the state
+is `Rs·c1/h = τ/h` — hundreds at these grids — where the continuous `dv_c/dt = (v_o − v_c)/τ` has
+sensitivity 1; a comparator of gain 20 on that signal gives the step Newton a loop sensitivity in the
+thousands, on every method alike. The continuous solution is smooth (`v_o` is a state, `s` is
+continuous); this is Newton robustness, the failure the scalar fixture's stage Newton showed the
+same day and was fixed there with a line search. **The tree has no damped inner Newton on the PSS
+path:** `PseudoTransientNewton` exists (`transient.py:697`) as the rescue ladder armed only inside
+`Transient.solve`, which `PSS` never calls — it drives `solve_timestep` directly on its own grid.
+
+**Status: OPEN, not "unmeasured".** The order of a period timed by an index-2 algebraic variable is
+still the one gap in the `CHOOSING method` table, and what is now known about it: (i) the fixture
+that isolates it is a circuit a user can write — a comparator on a current sense through a
+capacitor — and it defeats every integrator's step Newton at the grids a PSS uses, before any order
+can be read; (ii) the cure is a damped/line-search inner Newton reachable from PSS, or PCNR
+extended to `BSource` (it did not help here); (iii) the peer's per-component null and their
+frequency-domain route both say the smooth period functional does not see the algebraic order —
+the pointwise crossing is the only functional that could, and it has not been measured. ⚠ Also
+for the record: the first run of the degenerate variant B spent **52 CPU-minutes in six
+wall-minutes at 850 % CPU on seven unknowns** — BLAS threads fighting inside a slow shooting Newton
+— a number that reads as "the method is slow" and is not; BLAS pinned to one thread for every
+scratch run since.
+
 ### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
 
 Peer `docs-46`, after the contractivity chain closed: the GLM exit has an authoritative DAE source,
