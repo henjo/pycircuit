@@ -249,6 +249,33 @@ class L(Circuit):
         return self.toolkit.jacobian(self.eval_q_pure, x, {'L': self.iparv.L},
                                      epar, self._C)
 
+
+class _OwnTimeFunction(object):
+    """A per-INSTANCE default `TimeFunction` for the independent sources.
+
+    ⚠ `VS` and `IS` used to carry ``function = func.TimeFunction()`` as a
+    CLASS attribute, so every plain source in a process shared ONE object,
+    and ``src.function.f = ...`` on any of them rewrote the drive of every
+    other.  Found 2026-09-08 when the reordered suite ran a transmission-
+    line test that did exactly that before an integrator test on one
+    worker: the integrator's constant source drove a pulse.  This
+    descriptor hands each instance its own object on first access and
+    stores an assigned one; subclasses that set ``self.function``
+    themselves (VSin, VPulse, ...) are unaffected.
+    """
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        f = obj.__dict__.get('function')
+        if f is None:
+            f = func.TimeFunction()
+            obj.__dict__['function'] = f
+        return f
+
+    def __set__(self, obj, value):
+        obj.__dict__['function'] = value
+
+
 class VS(Circuit):
     """Independent DC voltage source
 
@@ -276,7 +303,7 @@ class VS(Circuit):
                   Parameter(name='noisePSD', 
                             desc='Voltage noise power spectral density', 
                             unit='V^2/Hz', default=0)]
-    function = func.TimeFunction()
+    function = _OwnTimeFunction()
 
     def update(self, subject):
         self._G = self.toolkit.array([[0 ,  0,  1],
@@ -403,7 +430,7 @@ class IS(Circuit):
                             desc='Flicker corner frequency (0 = none)',
                             unit='Hz', default=0.0)]
     terminals = ('plus', 'minus')
-    function = func.TimeFunction()
+    function = _OwnTimeFunction()
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':

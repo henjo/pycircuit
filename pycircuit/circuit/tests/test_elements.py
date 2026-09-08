@@ -555,3 +555,30 @@ def test_every_classical_controlled_source_meets_its_defining_relation_at_dc():
     c['vs'] = VS('s', gnd, v=1.0); c['R1'] = R('s', 'm', r=1e3); c['R2'] = R('m', 'o', r=5e3); c['nul'] = Nullor(gnd, 'm', 'o', gnd)
     r = DC(c).solve()
     assert abs(float(r.v('o')) + 5.0) < 1e-9 and abs(float(r.v('m'))) < 1e-9, 'Nullor as an ideal inverting amplifier: v_out = -R2/R1 v_in, v_- = 0'
+
+
+def test_independent_sources_do_not_share_one_time_function():
+    """2026-09-08.  `VS` and `IS` built without a `function` used to share
+    ONE class-level `TimeFunction` object, so assigning `src.function.f =
+    ...` on any of them rewrote the drive of every plain source built
+    afterwards in the process.  Found when the reordered suite ran
+    test_tline.py::test_tline_transient_pulse (which did exactly that)
+    before test_Idt_tran on one worker: the integrator test's constant
+    source drove a pulse and the integral came out wrong by a constant.
+    Pinned: two sources have distinct function objects, and mutating one
+    leaves the other's `u(t)` alone.
+    """
+    from numpy.testing import assert_allclose
+    from pycircuit.circuit.elements import VS, IS
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    a = VS('a', gnd, v=1.0)
+    b = VS('b', gnd, v=2.0)
+    assert a.function is not b.function
+    ia = IS('a', gnd, i=1.0)
+    ib = IS('b', gnd, i=2.0)
+    assert ia.function is not ib.function and ia.function is not a.function
+    before = np.asarray(b.u(0.5, analysis='tran'), dtype=float).copy()
+    a.function.f = lambda t: 42.0
+    after = np.asarray(b.u(0.5, analysis='tran'), dtype=float)
+    assert_allclose(after, before)
+    assert float(np.abs(np.asarray(a.u(0.5, analysis='tran'), dtype=float)).max()) > 40.0

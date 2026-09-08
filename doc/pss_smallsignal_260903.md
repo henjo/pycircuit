@@ -404,7 +404,7 @@ today — but the code is already right for it.
   the PPV's harmonics and the RC filter. `pnoise` is right there; `oscillator_spectrum` is not.
 - **Near-carrier oscillator noise** — `Φ(T) − I` is singular there. ⚠ CORRECTED 2026-09-08: the
   published removal (Gourary et al.) IS built as `_deflated_solve`, wired into `adjoint_sideband_row`
-  (so `pnoise`) and NOT into `PAC.solve` / `adjoint_transfer_row`; the plain solve's error there is
+  (so `pnoise`) and — since the same evening — into `PAC.solve` / `adjoint_transfer_row` too; the plain solve's error near a harmonic is
   `η/(2π·df/f₀)` with `η = |λ₁ − 1|` = 1.1e-12 (Q = 16) / 1.8e-13 (Q = 100) under radau — inside
   `HARMONIC_GUARD`, so correct to wire, not urgent. A FLAT PSD near the carrier is the singularity;
   a `1/f` slope is the conversion model doing what it should (Rizzoli, roadmap).

@@ -10273,7 +10273,24 @@ class PAC(Analysis):
 
         alphas = [np.exp(-2j * np.pi * f * T) for f in freqs]
         tol = max(pss.par.reltol * self.KRYLOV_FACTOR, 1e-14)
-        if recycle:
+        ## ⚠ ON AN OSCILLATOR THE OPERATOR HAS THE ANSWER'S OWN POLE at every
+        ## harmonic (see `_check_harmonic`), and a plain solve near one
+        ## carries relative error `eta / (2 pi df/f0)`, `eta = |lambda_1 - 1|`
+        ## the computed unit multiplier's displacement -- measured to four
+        ## digits over five decades (docs session, Gourary reading).  The
+        ## deflated route (`_deflated_solve`) borders the pole out and is
+        ## exact there; it was wired into `adjoint_sideband_row` only, and
+        ## this sweep solved plain outside HARMONIC_GUARD (2026-09-08).
+        ## Under the radau default eta ~ 1e-12 puts the unguarded band
+        ## inside the guard, so this is correctness hygiene, not a fix a
+        ## user would see; the subspace recycling across frequencies is
+        ## given up on the autonomous path (one bordered solve per point).
+        self.deflated = bool(getattr(pss, 'autonomous', False))
+        if self.deflated:
+            ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
+                  for a, b in zip(alphas, rhs)]
+            self.matvecs = None
+        elif recycle:
             ys, self.matvecs = self._solve_subspace(fp, alphas, rhs, tol)
         else:
             ys, self.matvecs = self._solve_each(fp, alphas, rhs, tol)
@@ -10388,7 +10405,14 @@ class PAC(Analysis):
         tol = (self.KRYLOV_FACTOR * pss.par.reltol if recycle_tol is None
                else recycle_tol)
         A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
-        xa = self._gmres_checked(A, d, max(tol, 1e-14), 'the adjoint solve')
+        ## the same pole as in `solve` and `adjoint_sideband_row`: deflated
+        ## on an oscillator, plain (and cheaper) on a driven circuit
+        self.deflated = bool(getattr(pss, 'autonomous', False))
+        if self.deflated:
+            xa = self._deflated_solve(pss, alpha, d, transposed=True,
+                                      tol=max(tol, 1e-14))
+        else:
+            xa = self._gmres_checked(A, d, max(tol, 1e-14), 'the adjoint solve')
         self.matvecs = count[0]
         return alpha * pss._forced_replay_transposed(fp, freq, xa)
 
@@ -10728,14 +10752,16 @@ class PAC(Analysis):
         row of J^T by u^T; verified at the source by the docs session,
         2026-09-08) IS built here as `_deflated_solve`, which borders with
         BOTH null vectors and is the better conditioned of the two; it is
-        wired into `adjoint_sideband_row` (so into this method) and NOT
-        into `PAC.solve` / `adjoint_transfer_row`, which solve plain
-        outside `HARMONIC_GUARD`.  The plain solve's relative error there
-        is `eta / (2 pi df/f0)` with `eta = |lambda_1 - 1|` the computed
-        unit multiplier's displacement -- measured 1.1e-12 (Q = 16) and
-        1.8e-13 (Q = 100) under radau, so the 100 %-error offset sits
-        orders inside the guard for the default integrator; correct to
-        wire, not urgent, not done.
+        wired into `adjoint_sideband_row` (so into this method) and, since
+        2026-09-08, into `PAC.solve` and `adjoint_transfer_row` as well
+        (`PAC.deflated` says which route ran).  The plain solve's relative
+        error near a harmonic is `eta / (2 pi df/f0)` with `eta =
+        |lambda_1 - 1|` the computed unit multiplier's displacement --
+        measured 1.1e-12 (Q = 16) and 1.8e-13 (Q = 100) under radau, so
+        under the default integrator the unguarded band sat inside
+        `HARMONIC_GUARD` and the wiring is hygiene; under gear at
+        df/f0 = 1e-10 the plain solve refuses outright (GMRES residual
+        1.7e-6) where the deflated one carries the pole to 1 %.
 
         ⚠ TWO STOPPING RULES, AND THE BOUND IS NOT THE RATIO TEST.  The
         accumulation stops when a sideband pair adds less than `ratio_tol`

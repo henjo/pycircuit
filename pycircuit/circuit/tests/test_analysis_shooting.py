@@ -17658,3 +17658,93 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
     assert g01_s < 1e-6, g01_s
     for r, (ratio, _p) in zip(rs, rows_s):
         assert abs(ratio - 1.0) < 0.01, ('odd-core control', r, ratio)
+
+
+def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_oscillator():
+    """2026-09-08: `_deflated_solve` (the Gourary removal, bordered with
+    both null vectors) was wired into `adjoint_sideband_row` only;
+    `PAC.solve` and `adjoint_transfer_row` solved plain outside
+    `HARMONIC_GUARD`, where the plain solve's relative error is
+    `eta / (2 pi df/f0)` with `eta = |lambda_1 - 1|` (docs session, four
+    digits over five decades).  Now all three take the deflated route on an
+    autonomous circuit and the plain one on a driven circuit.  Pinned: on
+    the van der Pol under gear, with offsets r from the CARRIER (near DC
+    the pole is not excited: the symmetric orbit's PPV has no DC term),
+    (1) the deflated sweep equals the plain solve where the plain one is
+    trustworthy (r = 1e-3, to 1e-6; measured 1.2e-8, the plain GMRES
+    tolerance); (2) the deflated answer carries the physical pole, |y|
+    scaling as 1/r between r = 1e-9 and 1e-10 to 1 %; (3) at r = 1e-10 the plain solve either
+    refuses (measured: GMRES residual 1.7e-6 on the near-singular operator)
+    or differs from it by more than 1e-6 relative; (4) `deflated` is True there and False on
+    the driven mixer, whose result is unchanged.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0); cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)          # the sweep's small-signal source
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.66, timestep=6.66 / 240, x0=np.array([2.0, 0.0]), maxiterations=80)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / float(pss.period)
+    fp = pss.factored_period()
+    T = float(fp.T)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ## the source vector for the sweep, as `solve` forms it (the AC
+        ## vector with the reference row removed)
+        u_ac = np.delete(np.asarray(cir.u(0.0, analysis=pac.par.analysis), dtype=complex).ravel(),
+                         pss.irefnode)
+        def rhs_and_alpha(r):
+            f = r * f0
+            w, _ = pss._forced_replay(fp, f, u_ac)
+            a = np.exp(-2j * np.pi * f * T)
+            return a, a * np.asarray(w)
+        tol = max(pss.par.reltol * pac.KRYLOV_FACTOR, 1e-14)
+        ## ⚠ NEAR THE CARRIER, not near DC: the pole at k = 0 is not
+        ## excited on this half-wave-symmetric orbit (the PPV has no DC
+        ## coefficient), so offsets are taken from f0, where Gamma_1 != 0
+        a, b = rhs_and_alpha(1.0 + 1e-3)
+        y_plain = pac._solve_each(fp, [a], [b], tol)[0][0]
+        y_defl = pac._deflated_solve(pss, a, b, transposed=False, tol=tol)
+        assert np.linalg.norm(y_defl - y_plain) < 1e-6 * np.linalg.norm(y_plain)   # measured 1.2e-8: the plain GMRES tolerance
+        ## the sweep itself now takes that route
+        res = pac.solve(pss, [(1.0 + 1e-3) * f0])
+        assert pac.deflated is True and pac.matvecs is None
+        ## the pole, carried analytically
+        a9, b9 = rhs_and_alpha(1.0 + 1e-9); a10, b10 = rhs_and_alpha(1.0 + 1e-10)
+        y9 = pac._deflated_solve(pss, a9, b9, transposed=False, tol=tol)
+        y10 = pac._deflated_solve(pss, a10, b10, transposed=False, tol=tol)
+        assert abs(np.linalg.norm(y10) / np.linalg.norm(y9) / 10.0 - 1.0) < 0.01
+        ## the plain solve there: measured, it REFUSES (GMRES residual
+        ## 1.7e-6 against a near-singular operator), which is the stronger
+        ## form of "off by eta/(2 pi r)"; either outcome is the point
+        try:
+            y10_plain = pac._solve_each(fp, [a10], [b10], tol)[0][0]
+        except RuntimeError as e:
+            assert 'near-singular' in str(e) or 'did not converge' in str(e), str(e)
+        else:
+            assert np.linalg.norm(y10_plain - y10) > 1e-6 * np.linalg.norm(y10), \
+                'the plain solve should be off by eta/(2 pi r) here'
+        ## the adjoint row takes it too
+        pac.adjoint_transfer_row(pss, (1.0 + 1e-3) * f0, 0)
+        assert pac.deflated is True
+    ## driven: plain route, unchanged
+    from pycircuit.circuit.elements import Diode
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+    c['R'] = R(1, 2, r=1e4); c['D'] = Diode(2, gnd); c['C'] = C(2, gnd, c=1e-12)
+    p2 = PSS(c, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p2.solve(period=1e-6, timestep=1e-6 / 200, maxiterations=40)
+        pac2 = PAC(c, toolkit=circuit.numeric)
+        pac2.solve(p2, [0.13e6])
+        assert pac2.deflated is False and pac2.matvecs is not None
+        pac2.adjoint_transfer_row(p2, 0.13e6, 2)
+        assert pac2.deflated is False

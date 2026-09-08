@@ -11547,7 +11547,7 @@ Nothing changes in `pnoise`; `oscillator_spectrum` and `ppv` carry the scope. Th
 PPV as an OBJECT (a bordered solve at nonzero ω_s) is still not built — this fixture's answer came
 from the DC PPV's harmonics and a linear filter, which is what a one-RC-leg slow node reduces to.
 
-⚠ **An order-dependent failure seen ONCE (suite 21, 2026-09-08 evening), unresolved:**
+⚠ **An order-dependent failure seen ONCE (suite 21, 2026-09-08 evening) — RESOLVED the same evening, see the block after this one:**
 `test_elements.py::test_Idt_tran` (a Gear-2 transient integrating a constant, `y = t`) read
 `y = t + 2h/3` at 40 of 50 points — the BDF-2 coefficient's shape, as if the history were stale — in
 the longest-first ordered suite, and passes alone, in its file, after `test_pcnr.py`, after
@@ -11561,3 +11561,34 @@ fixture resets it); the shape matches the hazard `_begin_run` was written for (a
 same object with a stale `_dt_last2`), and the path to look at is anything reaching the integrator
 without `_begin_run` — shooting drives `solve_timestep` directly. Dump `x` at steps 0..3 under both
 orderings when it recurs.
+
+## `_deflated_solve` wired into all three PAC paths (2026-09-08 evening; item 2 of the list)
+
+`PAC.solve` and `adjoint_transfer_row` now take the bordered route on an autonomous circuit
+(`PAC.deflated = True`, `matvecs = None` since the subspace recycling across frequencies is given up
+there — one bordered solve per point); driven circuits keep the plain, cheaper solve. Pinned on the
+van der Pol under gear with offsets from the CARRIER (⚠ near DC the pole is not excited on this
+half-wave-symmetric orbit — the PPV has no DC coefficient — the same symmetry zero as this afternoon,
+and my first version of the test put the offsets there and read a bounded response): deflated =
+plain to 1.2e-8 at r = 1e-3 (the plain GMRES tolerance), |y| ∝ 1/r between r = 1e-9 and 1e-10 to 1 %,
+and at r = 1e-10 the plain solve REFUSES (GMRES residual 1.7e-6 on the near-singular operator) where
+the deflated one is exact; the driven mixer's route is unchanged. Hygiene under the radau default
+(η inside the guard), a real difference under gear.
+
+
+## The order-dependent Gear-2 failure, found and fixed: every plain `VS`/`IS` shared ONE `TimeFunction` (2026-09-08 evening)
+
+The verbose rerun caught it again (`test_Idtmod_tran`, worker gw9) with its twelve predecessors, the
+sequence reproduced deterministically, and a one-by-one bisection named
+`test_tline.py::test_tline_transient_pulse`: it installs its stimulus by `c['V1'].function.f = pulse`,
+and `function` was a CLASS attribute `func.TimeFunction()` on `VS` and on `IS` — one object for every
+plain source in the process. After that test, every later constant source drove the pulse; the
+integrator tests integrated a pulse plus offset and came out wrong by a constant. (The peer's
+localisation "one forcing term at a step" was the right SHAPE — it was the source term — and its
+`_begin_run` candidate was not the cause.) Fix: a per-instance descriptor (`_OwnTimeFunction`) on both
+elements that hands each instance its own object and stores an assigned one, subclasses that set
+`self.function` untouched; the tline test now installs its own object. Pinned:
+`test_independent_sources_do_not_share_one_time_function`. ⚠ A latent defect for as long as the
+elements existed, exposed only by a test ORDER: the longest-first scheduling put a mutating test in
+front of a sensitive one on one worker. Two false "not reproduced" verdicts before the verbose log
+gave the sequence — record the worker order, then bisect; do not guess predecessors.

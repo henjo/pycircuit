@@ -4,6 +4,7 @@ from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import VS, R, VSin, VSwitch, TLine
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.func import TimeFunction
 
 def test_tline_dc():
     # Test that T-Line behaves correctly at DC
@@ -42,7 +43,13 @@ def test_tline_transient_pulse():
             return 1.0
         return 0.0
         
-    c['V1'].function.f = pulse_func
+    # ⚠ an OWN function object -- `c['V1'].function.f = pulse_func` used to
+    # rewrite the TimeFunction every plain VS/IS shared at class level, so
+    # every later constant source in the process drove this pulse (found
+    # 2026-09-08 when the reordered suite ran this before test_Idt_tran on
+    # one worker; the elements no longer share it, and this test no longer
+    # mutates what it did not create)
+    c['V1'].function = type('_Pulse', (TimeFunction,), {'f': staticmethod(pulse_func)})()
     
     res = tr.solve(tend=3.0, timestep=0.05, x0=np.zeros(c.n))
     
