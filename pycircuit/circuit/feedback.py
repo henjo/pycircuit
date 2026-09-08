@@ -273,7 +273,7 @@ class FeedbackLoopAnalysis(SSAnalysis):
 
         res_vinj = ac_vinj.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq,
-                                 u = self.cir.u(x, analysis='feedback'))
+                                 u = self.cir.u(0.0, analysis='feedback'))   # a TIME, not x (2026-09-08)
 
         self.loopprobe['vinj'].ipar.vac = 0 
         self.loopprobe['iinj'].ipar.iac = 1 
@@ -282,7 +282,7 @@ class FeedbackLoopAnalysis(SSAnalysis):
 
         res_iinj = ac_iinj.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq,
-                                 u = self.cir.u(x, analysis='feedback'))
+                                 u = self.cir.u(0.0, analysis='feedback'))   # a TIME, not x (2026-09-08)
 
         B = res_vinj.i(self.loopprobe_name + '.vinj.plus')
         D = res_vinj.v(self.loopprobe_name + '.inp', self.loopprobe_name + '.inn')

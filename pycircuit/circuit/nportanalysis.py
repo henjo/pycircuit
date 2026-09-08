@@ -281,7 +281,12 @@ class TwoPortAnalysis(Analysis):
 
             ## If symbolic the s-parameters are calculated using co-factors
             if toolkit.symbolic:
-                u_wrefnode = circuit.u(x, analysis='internalac', epar=self.epar)
+                ## `t = 0.0`, NOT `x` (2026-09-08): the first argument of `u`
+                ## is a TIME.  Passing the state vector was harmless for the
+                ## classical sources, which return zeros under 'internalac'
+                ## without looking at `t`, and raised for an HDL source
+                ## (a time function fed a vector).
+                u_wrefnode = circuit.u(0.0, analysis='internalac', epar=self.epar)
                 (u,) = circuit.remove_refnode((u_wrefnode,), refnode)
                 ## Calculate s-parameters using cofactors
                 for k, port in enumerate(self.ports):

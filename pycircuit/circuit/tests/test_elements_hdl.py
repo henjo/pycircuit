@@ -195,8 +195,8 @@ def test_hdl_source_transient():
     el.update_iparv()
     h = 1e-9
     for t0 in (0.0, 1.3e-4):
-        num = (el.u(t0 + h) - el.u(t0 - h)) / (2 * h)
-        assert_allclose(el.dudt(t0), num, rtol=1e-5, atol=1e-4)
+        num = (el.u(t0 + h, analysis='tran') - el.u(t0 - h, analysis='tran')) / (2 * h)
+        assert_allclose(el.dudt(t0, analysis='tran'), num, rtol=1e-5, atol=1e-4)
 
 
 def test_idt_transient_equivalence():
@@ -1321,3 +1321,39 @@ def test_switch_branch_is_refused_clearly():
                 b = Branch(plus, minus)
                 return (Contribution(b.I, g * b.V),      # noqa: F821
                         Contribution(b.V, 0.5))
+
+
+def test_an_hdl_source_is_muted_outside_the_time_domain_like_vs_and_is():
+    """2026-09-08 (owner decision: align with the classical gate).  `VS.u`
+    and `IS.u` return the time-domain term only for `analysis in
+    timedomain_analyses`, the AC phasor for 'ac', and ZEROS otherwise --
+    and the two-port ('internalac'), loop-gain ('feedback') and
+    state-space/noise analyses RELY on the zeros to mute every source but
+    their own.  The HDL `u` used to return its time term for anything but
+    'ac' (measured: 0.1 V at T/4 under 'Noise'), hidden because those
+    call sites passed the state vector as `t` and an HDL time function fed
+    a vector raised.  Pinned: muted under every private name and bare,
+    live under 'tran' and 'dc', and a Noise analysis with an HDL input
+    source now RUNS.
+    """
+    import numpy as np
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import R, VS
+    from pycircuit.circuit.elements_hdl import VSinHdl
+    from pycircuit.circuit.analysis_ss import Noise
+    circuit.default_toolkit = circuit.numeric
+    el = VSinHdl('a', gnd, vo=1.0, va=0.1, freq=1e3)
+    t = 0.25e-3
+    for name in (None, 'Noise', 'internalac', 'feedback', 'ss', 'ac'):
+        assert np.allclose(np.abs(np.asarray(el.u(t, analysis=name))), 0.0), name
+        assert np.allclose(np.abs(np.asarray(el.dudt(t, analysis=name))), 0.0), name
+    for name in ('tran', 'dc'):
+        u = np.asarray(el.u(t, analysis=name), dtype=float)
+        assert abs(abs(u).max() - 0.1) < 1e-12, (name, u)
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir['vs'] = el
+    cir['R'] = R('a', gnd, r=1e3)
+    res = Noise(cir, inputsrc='vs', outputnodes=('a', gnd)).solve(1e3)
+    assert 'Svnout' in res

@@ -424,3 +424,29 @@ def test_get_node():
     out = c.add_node('out')
     c['V1'] = VS(out, gnd)
     assert c.get_node('V1.plus') == out
+
+
+def test_extract_i_at_an_independent_source_terminal_is_the_source_current():
+    """2026-09-08.  `extract_i` derives the terminal current as
+    `i(x) + u(t) + C xdot` at the terminal node -- applied at ELEMENT level,
+    since `SubCircuit.extract_i` hands the terminal to the element with its
+    own slice of x.  The time-domain branches used to call `u(t)` bare,
+    which returns ZEROS, so an independent source's own terminal read 0.0
+    while every other element was unaffected.  Pinned both ways: the
+    resistor's terminal (unchanged) and the source's (was 0.0).
+    """
+    import numpy as np
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import IS, R
+    from pycircuit.circuit.dcanalysis import DC
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir['I1'] = IS('a', gnd, i=2e-3)
+    cir['R1'] = R('a', gnd, r=1e3)
+    x = np.asarray(DC(cir).solve().x, dtype=float)
+    assert abs(float(cir.extract_i(x, 'R1.plus')) - (-2e-3)) < 1e-12
+    assert abs(float(cir.extract_i(x, 'I1.plus')) - (+2e-3)) < 1e-12, \
+        'the source terminal read 0.0 before the analysis flag was passed'
+    assert abs(float(cir.extract_i(x, 'I1.minus')) - (-2e-3)) < 1e-12

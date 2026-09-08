@@ -258,7 +258,7 @@ class TestTermClassification(object):
         e = _mk(cls, IS=1e-6)
         for t in (0.0, 3e-7, 1.1e-6):
             want = 3e-6 * np.sin(2e6 * t)
-            assert np.allclose(np.asarray(e.u(t), float), [want, -want],
+            assert np.allclose(np.asarray(e.u(t, analysis='tran'), float), [want, -want],
                                atol=1e-18)
         assert np.allclose(np.asarray(e.G(np.array([0.5, 0.0])), float), 0.0)
 

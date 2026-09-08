@@ -790,7 +790,7 @@ class Circuit():
     def extract_i(self, x, branch_or_term, xdot = None,
                   refnode = gnd, refnode_removed = False,
                   t = 0,
-                  linearized = False, xdcop = None):
+                  linearized = False, xdcop = None, analysis = 'tran'):
         """Extract branch or terminal current from the given x-vector.
 
         *x* 
@@ -817,6 +817,24 @@ class Circuit():
 
         *xdcop*
            *xcdop* is the DC operation point x-vector if linearized == True
+
+        *analysis*
+           The analysis name the sources are evaluated for when not
+           ``linearized`` (``'tran'`` or ``'dc'``); ``linearized`` always
+           uses ``'ac'``.  ⚠ 2026-09-08: this used to be absent, and a bare
+           ``u(t)`` returns ZEROS, so the time-domain branches below silently
+           omitted every classical source while the derivation above
+           includes it.  ⚠ The derivation is applied at ELEMENT level:
+           `SubCircuit.extract_i` hands ``'R1.plus'`` to R1 itself with R1's
+           slice of `x`, so "outside" is the rest of the circuit and the
+           result is the DEVICE current into that terminal -- for every
+           element.  The missing term therefore mattered exactly where an
+           element's own `u` is its current: an independent source's own
+           terminal.  Measured (2 mA into 1 kOhm at DC): before,
+           ``extract_i(x, 'I1.plus')`` = 0.0 (wrong); after, +0.002 (the
+           2 mA into the source's plus terminal), with ``'R1.plus'`` =
+           -0.002 unchanged.  Branch currents (``'vs.minus'`` below) were
+           never affected.
 
         >>> from pycircuit.circuit.elements import *
         >>> import numpy as np
@@ -850,31 +868,13 @@ class Circuit():
             ## self.I(x)[terminal_node] + u(t) + sum(dq(x)/dx_k * dx_k/dt) =
             ## self.I(x)[terminal_node] + u(t) + C(x) * dx/dt
 
-            ## ⚠ THE FORMULA ABOVE AND THE TIME-DOMAIN BRANCHES BELOW
-            ## CONTRADICT EACH OTHER, AND IT IS NOT YET DECIDED WHICH CHANGES
-            ## (2026-09-08, measured).  The derivation puts `u(t)` in the sum;
-            ## the non-`linearized` branches call `self.u(t)` with no
-            ## `analysis`, which returns ZEROS (`VS.u` keeps even its DC value
-            ## inside the ``analysis in timedomain_analyses`` branch), so the
-            ## source term is silently absent there while the `linearized`
-            ## branches pass `analysis='ac'` and include it.  Measured on a
-            ## 2 mA source into 1 kOhm at DC: `extract_i(x, 'R1.plus')` =
-            ## -0.002 (the resistor's DEVICE current -- an accident of the
-            ## missing term), `extract_i(x, 'I1.plus')` = 0.0 (neither the
-            ## device current nor I_external).  Under the documented contract
-            ## a top-level node has no outside, so I_external = 0 there and
-            ## the missing flag is a straight bug; under the shipped behaviour
-            ## `CircuitResult.i(term)` promises a device current and the
-            ## formula above is wrong for this branch.  DO NOT "fix" the flag
-            ## here in passing -- it changes `res.i(term)` at every node
-            ## carrying an independent source.  Owner's call; see
-            ## doc/pss_roadmap_260902.md, B7's build note.  `tf_i` uses the
-            ## `linearized` branch and is unaffected either way.  The omission
-            ## is ELEMENT-DEPENDENT: classical `VS`/`IS` families return zeros
-            ## without the flag, HDL sources (`BehaviouralMeta.u`) return their
-            ## DC/transient term regardless, `SubCircuit.u` passes the flag
-            ## through -- so on a mixed circuit this branch keeps the HDL
-            ## sources and drops the classical ones.
+            ## RESOLVED 2026-09-08 (owner: align with the derivation): the
+            ## time-domain branches evaluate `u` with `analysis` (default
+            ## 'tran'), so the source term IS in the sum as derived above.
+            ## Before this they called `self.u(t)` bare, which returns zeros
+            ## -- harmless for elements whose `u` is empty, and the WHOLE
+            ## answer for an independent source's own terminal, which read
+            ## 0.0.  See the `analysis` parameter note in the docstring.
             branch_sign = self.get_terminal_branch(branch_or_term)
 
             if branch_sign is not None:
@@ -893,7 +893,7 @@ class Circuit():
                     else:
                         return self.i(x)[terminal_node_index] + \
                             dot(self.C(x)[terminal_node_index], xdot) + \
-                            self.u(t)[terminal_node_index]
+                            self.u(t, analysis = analysis)[terminal_node_index]
                 else:
                     if linearized:
                         return dot(self.G(xdcop)[terminal_node_index], x) + \
@@ -901,7 +901,7 @@ class Circuit():
 
                     else:
                         return self.i(x)[terminal_node_index] + \
-                            self.u(t)[terminal_node_index]
+                            self.u(t, analysis = analysis)[terminal_node_index]
 
         else:
             branch = branch_or_term
@@ -1566,7 +1566,7 @@ class SubCircuit(Circuit):
 
     def extract_i(self, x, branch_or_term, xdot = None,
                   refnode = gnd, refnode_removed = False, 
-                  linearized = False, xdcop = None):
+                  linearized = False, xdcop = None, analysis = 'tran'):
         if type(branch_or_term) is str:
             if self.get_terminal_branch(branch_or_term) is None:
 
@@ -1592,7 +1592,8 @@ class SubCircuit(Circuit):
                                               refnode=refnode,
                                               refnode_removed=refnode_removed,
                                               linearized = linearized, 
-                                              xdcop = xdcop)
+                                              xdcop = xdcop,
+                                              analysis = analysis)
 
 
         return Circuit.extract_i(self, x, branch_or_term, xdot = xdot,

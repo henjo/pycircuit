@@ -520,7 +520,11 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
 
     ## Allow for custom stimuli, mainly used by other analyses
     if u is None:
-        u = cir.u(x, analysis=analysis, epar=epar)
+        ## `0.0`, NOT `x` (2026-09-08): the first argument is a TIME.  The
+        ## sources answering here ('ac' phasors, or a private name's own
+        ## source class) do not depend on it; an HDL source fed the state
+        ## vector as `t` raised before any number came out.
+        u = cir.u(0.0, analysis=analysis, epar=epar)
 
     return G, C, CY, u, x, ss
 

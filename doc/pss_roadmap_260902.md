@@ -4889,8 +4889,12 @@ top-level node shared with an independent source the time-domain branch omits th
 branch passes `analysis='ac'` and returns the full KCL sum (zero at such a node). **Two branches,
 two semantics, and the doctest covers only the branch-current path (`'vs.minus'`).** `tf_i`'s
 `c0 = extract_i(0, 0, linearized=True)` goes through the AC branch and recovers the source term as
-its docstring says, so `analysis_ss` is not affected. ⚠⚠ **Stronger than "two semantics" (peer): the code's own comment PICKS A SIDE, and it is not the
-side the code ships.** The terminal branch's derivation states the quantity as a formula —
+its docstring says, so `analysis_ss` is not affected. ⚠⚠ ~~**Stronger than "two semantics" (peer): the code's own comment PICKS A SIDE, and it is not the
+side the code ships.**~~ **WITHDRAWN the same night by its author — read the RESOLVED paragraph
+below first.** The reading here took `I_external` as a statement about the top-level node; it is a
+statement about the ELEMENT's boundary (`SubCircuit.extract_i` delegates to the element), so the
+comment does NOT pick the side claimed, the shipped device current is the contract, and only the
+source-terminal case was defective. Kept as written so the reversal is visible. Original text: The terminal branch's derivation states the quantity as a formula —
 `I_external = self.I(x)[terminal_node] + u(t) + C(x)·dx/dt` — with `u(t)` IN it, and defines
 `I_external` as *"the current coming from outside the circuit going IN to the terminal node"*. At a
 top-level node there is no outside, so under the documented contract `I_external = 0` is the
@@ -4917,6 +4921,44 @@ passes the flag through, so a bare caller on a mixed circuit gets the HDL source
 classical ones — the case hardest to notice, since some of the drive survives. For `extract_i` this
 means the "device current" accident is itself element-dependent: its time-domain branches see HDL
 sources and drop classical ones.
+
+✅✅ **RESOLVED 2026-09-08 (Andreas: "I think we should align this and hdl.py is correct … Do it")
+— and the measurement reversed which side was correct.** Before acting, the alignment was tried the
+way it was first proposed (classical `VS`/`IS` adopt the HDL default: anything not `'ac'` gets the
+time-domain value), uncommitted, and the callers were enumerated. **The classical zeros are
+load-bearing:** the two-port analysis calls `u` with `'internalac'`, the loop-gain analysis with
+`'feedback'`, the state-space/noise family with their own names — each with a private source class
+(`ISInternal`, `LoopVS`/`LoopIS`) that answers to that name and every other source muted by the
+three-way gate. Aligning classical sources to the HDL default would inject the DC drive into every
+two-port, feedback, noise and state-space solve: the ABM bias-leak the HDL comment itself names.
+And the HDL side, measured at `T/4` on the committed tree: `VSinHdl.u` returned its 0.1 V sine
+under `'Noise'`, `'internalac'`, `'feedback'` and `'ss'` where `VS` returned 0 — **the HDL source
+LEAKS its time term into every small-signal analysis**, hidden only because those three call sites
+passed the STATE VECTOR as `t` (`cir.u(x, analysis=…)`) and an HDL time function fed a vector raised
+a shape error before any number came out (a `Noise` analysis with `VSinHdl` as its input source
+crashed). So *"hdl.py is correct"* did not survive: it gates on `'ac'` alone, the wrong half of the
+gate.
+
+**What was aligned, the other way:** (1) `BehaviouralMeta.u`/`dudt` adopt the classical three-way
+gate — time-domain names get the time term, `'ac'` the AC stimulus, anything else (a bare call
+included) zeros; (2) the three small-signal call sites pass `t = 0.0`, not `x`; (3) `extract_i`
+gains `analysis='tran'` (forwarded through `SubCircuit.extract_i`) and its time-domain branches
+use it. ⚠ **And the `extract_i` reading above is corrected by the same measurement:** the
+derivation is applied at ELEMENT level — `SubCircuit.extract_i` hands `'R1.plus'` to R1 with R1's
+slice of `x`, so "outside" is the rest of the circuit and the result is the DEVICE current into
+that terminal for every element. The missing term mattered exactly where an element's own `u` IS
+its current: an independent source's own terminal. Measured: `I1.plus` 0.0 → **+0.002** (the 2 mA
+into the source), `R1.plus` −0.002 unchanged. "Device current by accident" was wrong; it was a
+device current by design with one term missing, and the peer's "at a top-level node there is no
+outside" was wrong for the same reason. Two tests written to say what they are (`el.u(t,
+analysis='tran')`), three new pinning tests (HDL muted outside the time domain and a `Noise` run
+with an HDL source; the source-terminal current both ways). ⚠ Exposed by the now-completing `Noise`
+run, left for the owner: with an HDL input source the result has NO `gain` — `Noise` picks the
+gain formula by `isinstance(inputsrc, VS)` / `isinstance(inputsrc, IS)` (`analysis_ss.py`, the
+"Etract gain" block), and a `Behavioural` is neither, so both branches are skipped and `gain` stays
+`None`; the noise itself is computed. The dispatch should ask the source what it IS (a voltage
+source declares a `Branch`), not what class it is — a change to which sources `Noise` accepts, so
+not folded in here.
 
 **Status: B7 BUILT.** Pinned by two tests (`test_warping_estimate_reproduces_the_period_error…`,
 which pins the exactness-class ZERO as a property so a "helpful" degree change announces itself;
@@ -9775,6 +9817,32 @@ with `ρ`, the metric is measuring something else and that is known at once. Wit
 a nonlinear fixture is another unfalsifiable null — the trap the `[0, 1]` metric already walked
 into. The travelling label gains its last clause: silent on nonlinear overshoot — *testable, with
 `ρ` as the knob, whenever someone wants it.*
+
+⚠ **Kraaijevanger 1991 IS ON DISK** (peer, 2026-09-08, while filing the loose PDFs by their embedded
+titles): `Kraaijevanger-1991-Contractivity of Runge-Kutta methods.pdf` — in triplicate, under the
+opaque name `kraaijevanger1991.pdf` all along. Every monotonicity statement in this section (Thm
+4.2, Thm 8.5, Definition 2.7, the circle condition) was quoted THROUGH Bonaventura & Della Rocca's
+restatements. **Primary source unread** (the peer's read-detector says otherwise, falsely, because
+the log discusses him via Bonaventura). ✅ **Read at the source the same night (peer): both theorems
+are faithful, no dropped hypothesis, and two corrections.** Thm 4.2 verbatim: *"For irreducible
+coefficient schemes (A,b) we have R(A,b) > 0 if and only if A ≥ 0, b > 0 and Inc(A²) ≤ Inc(A)"* —
+Bonaventura exact, irreducibility included. Thm 8.5 verbatim: *"Let (A,b) be an ARBITRARY
+coefficient scheme with A ≥ 0. Then the stage order p̃ is at most 2. Further, if p̃ = 2 then A has a
+zero row"* — no irreducibility (Thm 8.1 above it says "irreducible"; the contrast is deliberate), so
+"any RK" understates nothing. **Correction 1, attribution:** Thm 8.5 is headed *"(J. C. Butcher;
+private communication 1989)"* — it is BUTCHER's barrier, published in Kraaijevanger's paper; 4.2 is
+Kraaijevanger's. **Correction 2, and it strengthens the zero-row check:** the proof says WHICH row —
+*"Taking i = 1 and q(x) = x − c₁ … the left hand side is nonnegative ONLY IF c₁ = 0. Hence c₁ = 0,
+so that the FIRST row of A must be zero."* The condition is `c₁ = 0`, an EXPLICIT FIRST STAGE — the
+"E" in ESDIRK — the only shape `A ≥ 0` permits at stage order 2. TR-BDF2 sits at the corner by
+construction, not coincidence; ESDIRK43 has the explicit stage (clears the necessary condition) and
+fails `A ≥ 0` on `a_32 < 0`; Radau IIA(3) has neither, its stage order 3 making `A ≥ 0` impossible.
+The coded-tableau check measured Butcher's construction before either reader knew what it was
+testing. Docstring sharpened accordingly: *a positive radius requires `A ≥ 0`, which by Butcher's
+barrier caps stage order at 2 and forces an explicit first stage.* Also surfaced
+by the same filing: Lamour 1998 *"How Floquet Theory Applies to Index 1 DAEs"*, Kennedy 2019 (the
+DIRK review), and the classical set (Dahlquist 1963, Ehle 1973, Butcher 1976, Bickart 1977, Wanner
+1978, Enright 1974).
 
 ### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
 

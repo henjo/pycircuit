@@ -6117,12 +6117,34 @@ class BehaviouralMeta(type):
                     return np.zeros(self.n)
                 return np.asarray(funcs['uac'](*_args_of(self, epar)),
                                   dtype=complex)
+            ## ⚠ THE CLASSICAL THREE-WAY GATE, adopted 2026-09-08 (owner
+            ## decision).  `VS.u`/`IS.u` return the time-domain term ONLY for
+            ## ``analysis in timedomain_analyses`` and ZEROS for anything else
+            ## -- and the small-signal analyses RELY on that: the two-port
+            ## analysis passes 'internalac', the loop-gain analysis
+            ## 'feedback', the state-space / noise family their own names,
+            ## each with a private source class that answers to that name
+            ## and every other source muted.  This method used to return
+            ## the time term for EVERYTHING but 'ac', so an HDL source leaked
+            ## its sine into a noise or two-port solve (measured: 0.1 V at
+            ## T/4 under 'Noise'/'internalac'/'feedback'/'ss', where `VS`
+            ## gave 0) -- hidden only because those call sites passed the
+            ## state vector as `t` and an HDL time function fed a vector
+            ## raised before any number came out.  A bare call (no
+            ## `analysis`) also gets zeros now, as for `VS`: every analysis
+            ## in the tree says what it is, and a caller that does not has
+            ## not said what it wants.
+            if analysis not in circuit.timedomain_analyses:
+                return np.zeros(self.n)
             f = funcs['u_dc'] if has_dc_pins and _dc(epar) \
                 else funcs['u']
             return np.asarray(f(t, *_args_of(self, epar)), dtype=float)
 
         def dudt(self, t=0.0, epar=defaultepar, analysis=None,
                  params_tree=None):
+            ## Same gate as `u`: `VS.dudt` is zero outside the time domain.
+            if analysis not in circuit.timedomain_analyses:
+                return np.zeros(self.n)
             return np.asarray(funcs['dudt'](t, *_args_of(self, epar)),
                               dtype=float)
 

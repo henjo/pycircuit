@@ -1223,11 +1223,19 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     classes, TR-BDF2 is the ONLY stage method in this file with a positive
     radius (``2.41421``, the closed form to the digit).
     AND THE ZERO IS STRUCTURAL, NOT AN ACCIDENT OF THE TABLEAU (peer
-    reading of the same paper, same day): Kraaijevanger Thm 8.5 (quoted
-    there as Thm 2.2) -- "any RK with A >= 0 has stage order <= 2; if it
-    equals 2 then A must have a zero row".  ``A >= 0`` is NECESSARY for
-    ``R > 0`` (Thm 4.2), so a positive radius forces stage order <= 2 for
-    EVERY Runge-Kutta method; Radau IIA(3) has stage order 3, so its
+    reading of the same paper, same day): Thm 8.5 of Kraaijevanger 1991,
+    which is BUTCHER's result (headed "J. C. Butcher; private communication
+    1989" -- checked at the source 2026-09-08, on disk as
+    `Kraaijevanger-1991-Contractivity of Runge-Kutta methods.pdf`): "Let
+    (A,b) be an ARBITRARY coefficient scheme with A >= 0. Then the stage
+    order is at most 2. Further, if it equals 2 then A has a zero row" --
+    no irreducibility needed, and the proof says WHICH row: c1 = 0, an
+    EXPLICIT FIRST STAGE, the only shape A >= 0 permits at stage order 2.
+    ``A >= 0`` is NECESSARY for ``R > 0`` (Thm 4.2, Kraaijevanger's own,
+    verbatim "for irreducible coefficient schemes ... R(A,b) > 0 if and
+    only if A >= 0, b > 0 and Inc(A^2) <= Inc(A)"), so a positive radius
+    forces stage order <= 2 AND an explicit first stage for EVERY
+    Runge-Kutta method; Radau IIA(3) has stage order 3, so its
     negative entry is the theorem showing its face and no better
     collocation tableau exists to look for.  Chained with Voigtmann's
     Theorem 5 (index-2 convergence order = min(p, q)): on an index-2
@@ -1278,7 +1286,10 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     ``R = 1 + sqrt(2)``) and its explicit first stage is the zero row the
     theorem requires -- checked on the coded ``A``: row 0 is the only zero
     row and ``A >= 0`` holds; Radau IIA(3) has no zero row and ``A >= 0``
-    fails.  The one unexplored exit is the GLM class (Voigtmann: "diagonally
+    fails; ESDIRK43 has the explicit stage (clears the NECESSARY condition)
+    and fails ``A >= 0`` on ``a_32 < 0``, so ``R = 0`` anyway.  The check
+    measured Butcher's construction before either reader knew what it was
+    testing: the "zero-row tell" is an explicit-first-stage tell.  The one unexplored exit is the GLM class (Voigtmann: "diagonally
     implicit methods with high stage order are possible"), where
     Kraaijevanger's RK theorems do not bind -- whether a GLM can carry high
     stage order AND a positive radius is OPEN here, not hinted.
