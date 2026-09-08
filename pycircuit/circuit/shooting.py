@@ -5880,10 +5880,11 @@ class PSS(Analysis):
     ## written as "degree > stage count" the rule would over-constrain every
     ## DIRK ever added.  The failure the clause guards against is SILENT (a
     ## clean small number), which is why it was measured rather than argued.
+    WARPING_CHECK_TOL = 0.05     # |half-grid / full-grid - 1| above this: the interpolant sets the reading
     IDEC_DEGREE = {'euler': 3, 'trap': 3, 'gear': 3, 'theta': 3,
                    'trbdf2': 3, 'esdirk43': 5, 'radau': 7}
 
-    def warping_estimate(self, periods=20, degree=None):
+    def warping_estimate(self, periods=20, degree=None, check=True):
         """Estimate THIS solve's period (warping) error at ITS OWN grid, with
         no reference solution and no refinement -- by defect correction.
 
@@ -5965,8 +5966,20 @@ class PSS(Analysis):
         2.13, an extra factor h) -- not a higher-degree interpolant of the
         solution, which is exactly the construction this one uses.  Scope:
         their construction is the LOCAL error of an LMM; whether it
-        transfers to a period functional is unproven.  Neither the gate nor
-        the restructured defect is built.
+        transfers to a period functional is unproven.  THE GATE IS BUILT
+        (2026-09-08, `check=True`): the same pass through every second
+        sample of the same solution, transient still at the solve's step;
+        `check_ratio` = half-grid slope / full-grid slope, `trusted` =
+        within `WARPING_CHECK_TOL` (5 %) of 1, else a warning and the number
+        still returned.  Measured: van der Pol 1.0000 (radau and trap, 50
+        and 100 points); the relaxation orbit 0.0056 / 0.72 at 200 / 400
+        points under radau and 0.41 at 200 under trap -- the cases that
+        read 0.09 / 0.65 of the truth are refused, the smooth case accepted
+        with four orders of margin.  ⚠ The prediction "below 0.5 at 400"
+        was wrong (0.72): the ratio approaches 1 as the edge resolves, so
+        the tolerance is the gate, not the ratio's distance from 0.  The
+        restructured (f-value) defect is NOT built.  Cost: the check doubles
+        the call (a second `periods`-long transient).
         ⚠ Scope and limits.  The period reading needs an AUTONOMOUS solve;
         on a driven circuit the lag is bounded (entrained) and `period_error`
         is returned as None with the per-period lag series still filled.
@@ -5982,6 +5995,8 @@ class PSS(Analysis):
         period is LONG), `ppm`, `lag` (per-period phase lag, s), `degree`,
         `periods`, `autonomous`, `component_rms` (RMS of y - p per unknown
         over the last period, the global error estimate in state space),
+        `check_ratio` and `trusted` (the half-grid self-check above; both
+        None with `check=False` or when a slope is not finite),
         `lag_components` (periods x unknowns: the same lag per component --
         every row's slope should equal `period_error`; a row at ~0 while
         the others agree is the per-component exactness-class collapse the
@@ -6003,8 +6018,6 @@ class PSS(Analysis):
         if X.shape[1] <= k + 1:
             raise ValueError('warping_estimate: %d points per period cannot carry a degree-%d '
                              'periodic spline' % (X.shape[1] - 1, k))
-        p = make_interp_spline(times, X.T, k=k, bc_type='periodic')
-        dp = p.derivative()
         cir, epar = self.cir, self.epar
         ## ⚠ `analysis='tran'`, on BOTH calls.  `Circuit.u(t)` evaluates a
         ## time function only when told which analysis is asking (`VS.u`:
@@ -6017,55 +6030,89 @@ class PSS(Analysis):
         _u = lambda t: _np.asarray(cir.u(t, epar, analysis='tran'), dtype=float)
         u0 = _u(0.0)
         autonomous = all(_np.allclose(u0, _u(f * T)) for f in (0.37, 0.71))
-
-        def _defect_source(t):
-            tt = t % T
-            x = _np.asarray(p(tt), dtype=float); xd = _np.asarray(dp(tt), dtype=float)
-            r = (_np.asarray(cir.C(x, epar), dtype=float) @ xd
-                 + _np.asarray(cir.i(x, epar), dtype=float) + _u(t))
-            return -r
-
         n_per = X.shape[1] - 1
-        tr = self._new_transient(self._integrator_for(self.par.method))
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            res = tr.solve(tend=periods * T, x0=X[:, 0].copy(), timestep=T / n_per,
-                           provided_function=_defect_source, fixed_timestep=True)
-        ty = _np.asarray(res.sweep_values, dtype=float)
-        Y = _np.asarray(res.x, dtype=float)                     # (n, steps+1)
-        if Y.shape[0] != X.shape[0]:
-            Y = Y.T
-        P = _np.asarray(p(ty % T), dtype=float).T; dP = _np.asarray(dp(ty % T), dtype=float).T
-        E = Y - P
-        lag = []; lag_c = []
-        for j in range(periods):
-            sl = (ty >= j * T - 1e-12 * T) & (ty < (j + 1) * T - 1e-12 * T)
-            num = float(_np.sum(dP[:, sl] * E[:, sl])); den = float(_np.sum(dP[:, sl] ** 2))
-            lag.append(num / den if den > 0 else _np.nan)
+
+        def _run(times_i, X_i):
+            """One defect-correction pass: the periodic spline through
+            (times_i, X_i), its defect, the neighbouring transient at the
+            SOLVE's step T/n_per -- the method's error at ITS grid is what is
+            read, and only the interpolant's grid differs between the main
+            pass and the self-check below -- and the per-period lag."""
+            p = make_interp_spline(times_i, X_i.T, k=k, bc_type='periodic')
+            dp = p.derivative()
+            def _defect_source(t):
+                tt = t % T
+                x = _np.asarray(p(tt), dtype=float); xd = _np.asarray(dp(tt), dtype=float)
+                r = (_np.asarray(cir.C(x, epar), dtype=float) @ xd
+                     + _np.asarray(cir.i(x, epar), dtype=float) + _u(t))
+                return -r
+            tr = self._new_transient(self._integrator_for(self.par.method))
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tr.solve(tend=periods * T, x0=X_i[:, 0].copy(), timestep=T / n_per,
+                               provided_function=_defect_source, fixed_timestep=True)
+            ty = _np.asarray(res.sweep_values, dtype=float)
+            Y = _np.asarray(res.x, dtype=float)                     # (n, steps+1)
+            if Y.shape[0] != X_i.shape[0]:
+                Y = Y.T
+            P = _np.asarray(p(ty % T), dtype=float).T; dP = _np.asarray(dp(ty % T), dtype=float).T
+            E = Y - P
+            lag = []; lag_c = []
+            for j in range(periods):
+                sl = (ty >= j * T - 1e-12 * T) & (ty < (j + 1) * T - 1e-12 * T)
+                num = float(_np.sum(dP[:, sl] * E[:, sl])); den = float(_np.sum(dP[:, sl] ** 2))
+                lag.append(num / den if den > 0 else _np.nan)
             ## per component: the same projection restricted to one unknown.
-            ## A phase shift moves every component by the same lag, so on a
-            ## healthy estimate every row's slope equals the period error;
-            ## a row reading ~0 while the others read the period error is
-            ## the exactness-class collapse on THAT component (the DAE
-            ## caveat), invisible in the scalar `lag` above.
-            num_c = _np.sum(dP[:, sl] * E[:, sl], axis=1); den_c = _np.sum(dP[:, sl] ** 2, axis=1)
+                ## A phase shift moves every component by the same lag, so on a
+                ## healthy estimate every row's slope equals the period error;
+                ## a row reading ~0 while the others read the period error is
+                ## the exactness-class collapse on THAT component (the DAE
+                ## caveat), invisible in the scalar `lag` above.
+                num_c = _np.sum(dP[:, sl] * E[:, sl], axis=1); den_c = _np.sum(dP[:, sl] ** 2, axis=1)
             ## a RELATIVE threshold: a node pinned by a source has a
-            ## derivative of pure roundoff (measured 1e-32 rms), and
-            ## `den > 0` let it print a ratio of 96 where NaN was meant.
-            with _np.errstate(divide='ignore', invalid='ignore'):
-                lag_c.append(_np.where(den_c > 1e-20 * den_c.max(), num_c / den_c, _np.nan))
-        lag = _np.asarray(lag); lag_c = _np.asarray(lag_c)
-        ok = _np.isfinite(lag)
-        slope = float(_np.polyfit(_np.arange(periods)[ok], lag[ok], 1)[0]) if ok.sum() >= 2 else _np.nan
+                ## derivative of pure roundoff (measured 1e-32 rms), and
+                ## `den > 0` let it print a ratio of 96 where NaN was meant.
+                with _np.errstate(divide='ignore', invalid='ignore'):
+                    lag_c.append(_np.where(den_c > 1e-20 * den_c.max(), num_c / den_c, _np.nan))
+            lag = _np.asarray(lag); lag_c = _np.asarray(lag_c)
+            ok = _np.isfinite(lag)
+            slope = float(_np.polyfit(_np.arange(periods)[ok], lag[ok], 1)[0]) if ok.sum() >= 2 else _np.nan
+            return slope, lag, lag_c, E, ty
+
+        slope, lag, lag_c, E, ty = _run(times, X)
         ## SIGN: a positive lag means y is AHEAD of p; a LONG period makes y
         ## fall BEHIND, so the period error is minus the slope.
         period_error = -slope if autonomous else None
         last = ty >= (periods - 1) * T - 1e-12 * T
         component_rms = _np.sqrt(_np.mean(E[:, last] ** 2, axis=1))
+        ## THE SELF-DIAGNOSTIC (Part I's "only if", built 2026-09-08): the
+        ## estimate is the method's error only while the interpolant's own
+        ## defect is asymptotically smaller than it, and then it does NOT
+        ## depend on the interpolant: the same pass through EVERY SECOND
+        ## sample of the same solution (the transient still at the solve's
+        ## step) must read the same slope.  Where the interpolation error
+        ## dominates -- an edge a few points wide -- the two passes disagree,
+        ## and the reading is refused (`trusted=False`, a warning) instead
+        ## of returned as a number wrong by a factor nothing announces.
+        check_ratio = None; trusted = None
+        if check:
+            sub = _np.arange(0, n_per + 1, 2)
+            if sub[-1] != n_per:
+                sub = _np.r_[sub, n_per]
+            if len(sub) > k + 1:
+                slope2 = _run(times[sub], X[:, sub])[0]
+                if _np.isfinite(slope) and _np.isfinite(slope2) and slope != 0.0:
+                    check_ratio = float(slope2 / slope)
+                    trusted = bool(abs(check_ratio - 1.0) <= self.WARPING_CHECK_TOL)
+                    if not trusted:
+                        warnings.warn('warping_estimate: the interpolant, not the method, sets '
+                                      'this reading (half-grid pass / full-grid pass = %.3f); '
+                                      'refine the grid until the two agree' % check_ratio)
         return dict(period_error=period_error,
                     ppm=(period_error / T * 1e6) if period_error is not None else None,
                     lag=lag, lag_components=lag_c, degree=k, periods=periods,
-                    autonomous=autonomous, component_rms=component_rms)
+                    autonomous=autonomous, component_rms=component_rms,
+                    check_ratio=check_ratio, trusted=trusted)
 
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
@@ -12659,8 +12706,27 @@ class PAC(Analysis):
         Mastri & Masotti (IEEE MTT 42-807, 1994) state it directly: frequency
         conversion alone is insufficient for autonomous circuits, because the
         noise-induced FREQUENCY MODULATION OF THE CARRIER at low offsets is not a
-        frequency-conversion effect.  (Quotation via a peer session's reading of
-        the paper, not verified against the text here.)
+        frequency-conversion effect (verified at the source 2026-09-08: p. 807,
+        Introduction, verbatim "frequency-conversion techniques alone are not
+        sufficient to solve the noise analysis problem for general autonomous
+        circuits (oscillators). An important further aspect that must be taken
+        into account is the noise-induced frequency modulation of the carrier
+        taking place at low frequency offsets, which is not a
+        frequency-conversion effect").  Their Section III (p. 810) NAMES the
+        two stacks: CONVERSION noise, power exchanged among the sidebands of
+        the unperturbed steady state, "invariably raises as 1/f for f -> 0,
+        which is not consistent with the measured behavior"; MODULATION noise,
+        "a jitter of the oscillatory steady state", proportional to noise power
+        over f^2 so the PSD "raises as 1/f^3 for f -> 0 in agreement with the
+        measured performance"; and the two DECOUPLE exactly at the steady state
+        (M_BH = M_HB = 0).  They also say the two are "usually nearly equal" in
+        an INTERMEDIATE offset band, "so that (20) and (21) are
+        interchangeable" -- a cross-stack agreement test this tree does not yet
+        have (recorded in the roadmap, not built).  ⚠ Their construction is
+        harmonic balance; what transfers is the classification, the two slopes
+        and the interchangeability, none of which need HB.  Diagnostic value:
+        a FLAT PSD near the carrier is neither slope -- it is the Phi(T) - I
+        singularity, not the conversion model being the wrong physics.
 
         So the two stacks -- the Floquet/PPV one (`ppv`, `diffusion_constant`,
         this method) and the sideband fold (`pnoise`) -- ARE NOT TWO

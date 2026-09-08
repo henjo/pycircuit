@@ -7,6 +7,19 @@ file is imported before any test module.
 
 import os
 
+# BLAS THREADS: one per worker.  The suite ran at 24-25 min wall against a
+# 4200 s serial sum -- an ideal of ~7 min at -n 10 -- and reordering the
+# collection (longest first, interleaved) did not move it: the gap was
+# CONTENTION, not scheduling.  Measured 2026-09-08: the dense-linear-algebra
+# tests ran 6x slower inside the suite than alone (B16: 25 s alone, 180 s in
+# the suite) while a Newton-ladder test ran only 1.4x slower.  scipy-openblas
+# opens a thread per core (24 here) in EVERY worker, so 10 workers fight over
+# 240 threads.  Set before numpy loads; `pytest_configure` below also limits
+# any pool already open (threadpoolctl) for the controller process.
+for _var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+             'BLIS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ.setdefault(_var, '1')
+
 # JAX preallocates ~75% of the GPU's memory in each process the first time a
 # device is used.  Under pytest-xdist every worker is a separate process, so on
 # a GPU with modest VRAM all but the first worker fails to obtain memory --
@@ -55,6 +68,16 @@ _TIMINGS = {}
 
 def _is_xdist_worker(config):
     return hasattr(config, 'workerinput')
+
+
+def pytest_configure(config):
+    """Limit BLAS pools already open in this process to one thread (see the
+    environment pin at the top: that covers pools opened AFTER it)."""
+    try:
+        from threadpoolctl import threadpool_limits
+        threadpool_limits(1)
+    except Exception:
+        pass
 
 
 def pytest_sessionstart(session):

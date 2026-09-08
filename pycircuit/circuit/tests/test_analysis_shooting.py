@@ -17391,3 +17391,60 @@ def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():
         v = np.asarray(res.x, dtype=float)[cir.get_node_index('v')]
     assert v.min() >= -1e-9 and v.max() <= 1.0 + 1e-9, \
         'the search pre-empted the ladder: v in [%.4f, %.4f]' % (v.min(), v.max())
+
+
+def test_warping_estimate_refuses_a_reading_the_interpolant_sets():
+    """2026-09-08 (item 3): Part I's "only if" as a self-check.  The
+    defect-correction estimate is the METHOD's error only while the
+    interpolant's own defect is asymptotically smaller, and then it does
+    not depend on the interpolant: the same pass through every second
+    sample of the same solution must read the same slope.  Measured (radau
+    and trap, 50 and 100 points): van der Pol half/full 1.0000; the
+    relaxation orbit with a comparator edge (the case that read 0.09 and
+    0.65 of the truth at 200 and 400 points): 0.0056 at 200 and 0.72 at
+    400 under radau, 0.41 at 200 under trap -- all refused at the 5 %
+    tolerance, the smooth case accepted with four orders of margin.
+    Pinned on the cheap end of each: van der Pol radau at 50 points
+    (trusted, ratio within 1e-3 of 1, the estimate unchanged by the check)
+    and the relaxation orbit under trap at 200 points (trusted False, a
+    warning naming the interpolant, the number still returned).
+    """
+    import warnings
+    import numpy as np
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import R, C, VS, VCVS, BSource
+    from pycircuit.circuit.shooting import PSS
+    circuit.default_toolkit = circuit.numeric
+    cir, _mu = _a10_vdp()
+    p = PSS(cir, method='radau', reltol=1e-12)
+    p.solve(period=2 * np.pi, timestep=2 * np.pi / 50, x0=np.array([2.0, 0.0]), maxiterations=100)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        est = p.warping_estimate(periods=10)
+    assert est['trusted'] is True and abs(est['check_ratio'] - 1.0) < 1e-3, est['check_ratio']
+    plain = p.warping_estimate(periods=10, check=False)
+    assert plain['trusted'] is None and plain['period_error'] == est['period_error']
+    ## the relaxation orbit: a tanh comparator around an RC ramp, edge a few points wide
+    R_ = 1e3; C_ = 1e-6; beta = 0.5; Vsat = 1.0; k = 20.0; c1 = 0.01 * C_
+    tau = R_ * (C_ + c1); T = 2 * tau * np.log((1 + beta) / (1 - beta)); Ro = 1.0
+    cir = SubCircuit()
+    for n in ('vo', 'p', 'c', 'd', 'b'):
+        cir.add_node(n)
+    cir['Ro'] = R('vo', gnd, r=Ro); cir['Co'] = C('vo', gnd, c=(tau / 20) / Ro)
+    cir['cmp'] = BSource('d', gnd, gnd, 'vo', i_func=lambda u: (Vsat / Ro) * np.tanh(k * u))
+    cir['R1'] = R('vo', 'p', r=1e3); cir['R2'] = R('p', gnd, r=1e3)
+    cir['Rc'] = R('vo', 'c', r=R_); cir['Cc'] = C('c', gnd, c=C_); cir['c1'] = C('c', 'b', c=c1)
+    cir['pin'] = VS('b', gnd, v=0.0); cir['sense'] = VCVS('p', 'c', 'd', gnd, g=1.0)
+    x0 = np.zeros(cir.n)
+    x0[cir.get_node_index('vo')] = Vsat; x0[cir.get_node_index('p')] = beta * Vsat; x0[cir.get_node_index('d')] = beta * Vsat
+    x0 = np.delete(x0, cir.get_node_index(gnd))
+    p = PSS(cir, method='trap', reltol=1e-12)
+    p.solve(period=T, timestep=T / 200, x0=x0, maxiterations=100)
+    assert p.converged
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        est = p.warping_estimate(periods=10)
+    assert est['trusted'] is False and abs(est['check_ratio'] - 1.0) > PSS.WARPING_CHECK_TOL, est['check_ratio']
+    assert est['period_error'] is not None
+    assert any('interpolant' in str(x.message) for x in w), [str(x.message) for x in w]

@@ -11131,3 +11131,127 @@ the method's, and `K` differed by three orders. *"In future I will send the rate
 convert it to a cost without one data point from the method itself."* Marking it "arithmetic, not a
 result" was not enough, since the number still anchored the discussion. §D shape: **a labelled
 non-result still anchors.**
+
+## The HDL source audit under the classical gate, and `warping_estimate` learns to refuse (2026-09-08, items 4 and 3)
+
+### 1. Every HDL element, every analysis name: one source, clean
+
+The alignment of the HDL `u`/`dudt` to the classical gate was pinned on `VSinHdl` alone. The audit
+walks every `Behavioural` subclass `elements_hdl` exports (37 classes), instantiates each with
+defaults and evaluates `u` at `t = 0` and `t = T/4` under `'tran'`, `'dc'`, `'ac'`, bare, `'Noise'`,
+`'internalac'`, `'feedback'` and `'ss'`. Result: **`VSinHdl` is the only HDL element with a source
+term**; it reads 1 V under `'tran'` and `'dc'` at `T/4` and zero under every other name and bare
+(the `TIME` grep had also named `GummelPoonNpnHdl`, a comment). No leak, no missing drive. Then the
+drive is shown to reach the two solvers through the names they pass (`DC` → `'dc'`, `Transient` →
+`'tran'`): 1 V + 0.1 V sine through a resistor reads 1.000 at DC and 0.9 … 1.1 in transient.
+Pinned as `test_every_hdl_element_with_a_source_term_obeys_the_classical_gate`, which asserts the
+with-source list is exactly `['VSinHdl']` — a future HDL source announces itself there and must
+pass the gate.
+
+⚠ Instrument slip caught by the test's own failure: the first version read `res.v('a').x[0]` (the
+TIME axis, 0 … 1 ms) for the waveform; the file's own helper uses `.y`. The assertion printed
+(0.0, 0.001) and was fixed before it passed.
+
+### 2. Part I's "only if", built as a half-grid self-check
+
+The estimate is the method's error only while the interpolant's own defect is asymptotically
+smaller than it — and then **it does not depend on the interpolant**. So the check is the same
+pass through every second sample of the same solution, with the neighbouring transient still at the
+solve's step `T/n_per` (the method's error at ITS grid is what is read; only the interpolant's grid
+changes). `check_ratio` = half-grid slope / full-grid slope; `trusted` = within
+`PSS.WARPING_CHECK_TOL` (5 %) of 1; otherwise a warning naming the interpolant and the number still
+returned. `check=False` skips it. Cost: the call doubles (a second `periods`-long transient).
+
+Prediction named before running: van der Pol within 0.01 of 1 at every grid; relaxation orbit A
+below 0.5 at 400 points and further off at 200. Measured:
+
+| orbit | method | pts | estimate (ppm) | half/full | trusted |
+|---|---|---|---|---|---|
+| van der Pol | radau | 50 | +1.20e-04 | 1.0000 | yes |
+| van der Pol | trap | 50 | +1.43e+03 | 1.0000 | yes |
+| van der Pol | radau | 100 | +1.69e-06 | 1.0000 | yes |
+| van der Pol | trap | 100 | +3.42e+02 | 1.0000 | yes |
+| relaxation A | radau | 200 | +3.95 | 0.0056 | refused |
+| relaxation A | radau | 400 | +0.747 | 0.7233 | refused |
+| relaxation A | trap | 200 | −403.5 | 0.4099 | refused |
+| relaxation A | radau | 100 | +3757 (10 periods) / +1783 (6 periods) | 0.029 | refused |
+
+The two cases that read 0.09 and 0.65 of the truth (§ the interpolant limit) are refused; the smooth
+case is accepted with four orders of margin. ⚠ **The magnitude prediction at 400 points was wrong**
+(0.72, not below 0.5): the ratio approaches 1 as the edge resolves, which is what a two-grid
+instrument must do — so the tolerance is the gate, not the ratio's distance from zero, and 5 % is
+set by the smooth case's 1e-4 margin on one side and 0.72 on the other. A reading at 800 points
+would be closer still; whether it crosses 0.95 while the estimate is still wrong is not measured
+(the 400-point reading is 0.65 of the truth at ratio 0.72, so the two move together, as they must
+when both are set by the same interpolation error). ⚠ At 100 points the estimate itself moves by
+2× with the period count (3757 vs 1783 ppm) — the lag series is not linear there, and the check is
+not the only thing that fails.
+
+What is NOT built: Part I's eq. 2.13 f-value-weighted defect (the structural fix for non-smooth
+orbits; transfer to a period functional unproven). Trap at 100 points on the relaxation orbit does
+not even solve (Newton at 100 iterations), so the cheap pin is trap at 200 (4 s); the test also
+pins that `check=False` returns the same `period_error` with `trusted=None`.
+
+### 3. Rizzoli verified at the source, and the cross-stack test it proposes (peer, 2026-09-08; NOT built)
+
+The quotation in the `lorentzian` docstring carried a "not verified against the text" marker since
+the peer relayed it; the peer verified it (MTT 42(5), May 1994, p. 807, Introduction, verbatim) and
+the marker is gone. Section III (p. 810) adds what the tree did not have: the two stacks NAMED —
+**conversion noise** (power exchanged among the sidebands of the unperturbed steady state, rises
+as `1/f` for `f → 0`, "not consistent with the measured behavior") and **modulation noise** (a
+jitter of the steady state, noise power over `f²`, rises as `1/f³` "in agreement with the measured
+performance") — decoupling EXACTLY at the steady state (`M_BH = M_HB = 0`), and "usually nearly
+equal" in an intermediate offset band "so that (20) and (21) are interchangeable".
+
+The test that follows: `pnoise` (conversion) and the `lorentzian` closed form (modulation) on ONE
+oscillator over ONE offset sweep must overlay in the intermediate band. The two paths share no
+machinery, so agreement there is the missing common oracle. Design input from the same reading
+(Figs. 5 and 6, p. 815): the agreement band is **Q-dependent by four decades** — a DRO at
+`Q ≈ 1700` overlays from ~1e2 to 1e6 Hz (conversion departs only below ~60 Hz), the same
+oscillator without the resonator crosses only near 1e4–1e5 Hz with both curves steep. So the
+fixture is HIGH Q, and the criterion is decades of overlay, not a crossing point; low Q is the
+worst choice (a small horizontal error becomes a large vertical one). ⚠ Their figure is one code
+against hardware, so it fixes where the physics agrees, not the numerical tolerance between our two
+paths. ⚠ Diagnostic: a FLAT PSD near the carrier is neither slope — it is the `Φ(T) − I`
+singularity, not the conversion model being the wrong physics; `1/f` there means `pnoise` is doing
+exactly what a conversion computation does. ⚠ Their construction is HB; what transfers is the
+classification, the slopes and the interchangeability.
+
+Standing-assumption flag (peer): "high Q is the hard case" has inverted three times today (κ falls
+with Q for s-expanded pole extraction, §2.155; here high Q is what makes the test possible). Ask per
+method. **Not built — Andreas's queue.**
+
+### 4. The suite's wall is CONTENTION, not scheduling: BLAS threads pinned per worker
+
+Interleaved longest-first collection: 3114 passed in **25:28** against baselines 24:13 / 24:33 /
+24:40 — no gain (and the plain longest-first run had already shown none). The serial sum is 4201 s,
+an ideal of ~7 min at `-n 10`, so ordering was never the gap. The standalone timings say what is:
+
+| test | alone | in the suite | factor |
+|---|---|---|---|
+| B16 twin (trap solve 7.9 s + `ppv` 5.7/2.2/0.3 s + euler 4.9 s ≈ 25 s) | ~25 s | 179 s | ~6–7× |
+| `pss_still_matches_ac` (euler 41.6 s + trap 43.3 s at 1280 pts) | 85 s | 164 s | 2× |
+| thermal runaway (five hopeless DC solves at 27–30 s) | ~140 s | 202 s | 1.4× |
+
+The dense-linear-algebra test suffers most, the Newton-ladder test least: `scipy-openblas` opens a
+thread per core (24) in every worker, ten workers fight over 240 threads. This is the "BLAS thrash"
+already on record for scratch runs (52 CPU-min in 6 wall-min on 7 unknowns), now applied to the
+suite itself. `conftest.py` sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` (and MKL/BLIS/NUMEXPR)
+to 1 before numpy loads and limits any open pool via `threadpoolctl` in `pytest_configure`. The
+pinned run is measuring as this is written (`suite13`).
+
+Per-test reductions made regardless: the thermal runaway test keeps its two endpoint factors
+(1.001 and 100; the three between asserted nothing and cost 85 s). NOT reduced: `pss_still_matches_ac`
+(euler at 640 points reads 0.00338 against 0.00315, outside its 2 % bound — the 1280 is the
+standard, and the 42 s is per-step overhead on a three-unknown circuit, a stepper property); B16
+and the pnoise-excess / hostile-injection tests wait for the pinned measurement before any fixture
+is touched — if the factor was contention, they need no change.
+
+Fixture narrowed (peer, same hour, from `shooting.py`'s own λ₂ record): the Arnoldi `λ₂` miss is
+CLUSTER-driven and Q-independent (same `nslow` fails at Q = 8/16/256), so it is absent by
+construction on a **single-cluster high-Q tank**; only the `Φ(T) − I` conditioning remains, which
+the dense route addresses and would be certified anyway, and only the modulation stack needs it —
+the conversion side uses no `λ₂`. Second naming of the same conflation today: high Q and
+CLUSTERING are correlated in practice and separable in fact (Q a designer's parameter, clustering
+a property of the mode spectrum), with different cures. My "certify the modulation stack first"
+caution stands only as that one bounded step.

@@ -1406,3 +1406,55 @@ def test_noise_gain_dispatches_on_structure_so_an_hdl_source_gets_one():
     g_r = Noise(divider(VS('n1', gnd, vac=1.0)), inputsrc='R1',
                 outputnodes=('n2', gnd)).solve(1e3)['gain']
     assert g_r is not None and np.isfinite(complex(g_r))
+
+
+def test_every_hdl_element_with_a_source_term_obeys_the_classical_gate():
+    """2026-09-08 audit (owner: item 4).  The alignment above was pinned on
+    `VSinHdl` alone; this walks EVERY `Behavioural` subclass the library
+    exports, instantiates it with defaults, and checks the gate the
+    classical `VS`/`IS` set: a source term may appear under 'tran', 'dc'
+    and 'ac' only -- ZEROS bare and under every private analysis name
+    ('Noise', 'internalac', 'feedback', 'ss'), and never under 'dc' but
+    not 'tran' or vice versa.  Measured: `VSinHdl` is the only HDL element
+    with a source term (37 classes, the rest all-zero), so a future HDL
+    source is what this test is for.  Then the drive is shown to REACH the
+    two solvers through the names they pass (`DC` -> 'dc', `Transient` ->
+    'tran'): a 1 V + 0.1 V sine through a resistor reads its offset at DC
+    and its full swing in transient.
+    """
+    import inspect
+    import warnings
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit import elements_hdl
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import R
+    from pycircuit.circuit.elements_hdl import VSinHdl
+    from pycircuit.circuit.hdl import Behavioural
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-3
+    private = (None, 'Noise', 'internalac', 'feedback', 'ss')
+    with_source = []
+    for cname, cls in inspect.getmembers(elements_hdl, inspect.isclass):
+        if not issubclass(cls, Behavioural) or cls.__module__ != elements_hdl.__name__:
+            continue
+        el = cls(*['n%d' % i for i in range(len(cls.terminals))])
+        u = lambda t, a: np.abs(np.asarray(el.u(t, analysis=a) if a is not None else el.u(t), float)).max()
+        vals = {(t, a): u(t, a) for t in (0.0, T / 4) for a in private + ('tran', 'dc', 'ac')}
+        if all(v == 0.0 for v in vals.values()):
+            continue
+        with_source.append(cname)
+        for t in (0.0, T / 4):
+            for a in private:
+                assert vals[(t, a)] == 0.0, (cname, t, a, vals[(t, a)])
+            assert (vals[(t, 'tran')] == 0.0) == (vals[(t, 'dc')] == 0.0), (cname, t, vals)
+    assert with_source == ['VSinHdl'], with_source
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir['vs'] = VSinHdl('a', gnd, vo=1.0, va=0.1, freq=1.0 / T)
+    cir['R'] = R('a', gnd, r=1e3)
+    assert abs(float(DC(cir).solve().v('a')) - 1.0) < 1e-9
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, toolkit=numeric).solve(tend=T, timestep=T / 200, fixed_timestep=True)
+    va = np.asarray(res.v('a').y, float)
+    assert abs(va.max() - 1.1) < 1e-6 and abs(va.min() - 0.9) < 1e-6, (va.min(), va.max())

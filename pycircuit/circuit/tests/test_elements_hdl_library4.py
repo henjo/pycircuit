@@ -1681,10 +1681,14 @@ def test_thermal_runaway_onset_is_where_the_loop_gain_reaches_one():
 
     ## Above: none at all.  Two decades of thermal resistance past the
     ## onset, and the rescue ladder and the gmin anchor do not
-    ## manufacture one -- there is nothing to find.
+    ## manufacture one -- there is nothing to find.  ⚠ Each hopeless solve
+    ## costs the WHOLE ladder (pseudo-transient continuation, then the gmin
+    ## anchor, 100 Newton iterations per rung): 27-30 s apiece, measured
+    ## 2026-09-08.  The claim is the two endpoints; the three factors in
+    ## between (1.05, 1.5, 3.0) cost 85 s and asserted nothing more.
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        for f in (1.001, 1.05, 1.5, 3.0, 100.0):
+        for f in (1.001, 100.0):
             with pytest.raises((SingularMatrix, NoConvergenceError)):
                 DC(_th_circuit(rc * f), toolkit=numeric).solve()
 
