@@ -9988,6 +9988,58 @@ by the same filing: Lamour 1998 *"How Floquet Theory Applies to Index 1 DAEs"*, 
 DIRK review), and the classical set (Dahlquist 1963, Ehle 1973, Butcher 1976, Bickart 1977, Wanner
 1978, Enright 1974).
 
+#### ✅ THE NONLINEAR FIXTURE WITH A TUNABLE STEEPNESS — RUN 2026-09-08: the control holds, and the `R = 0` methods have a PRACTICAL boundary that moves as `1/ρ`, at the STAGES
+
+**Fixture, as pre-registered:** `C v′ = I₀·tanh((u − v)/V₀)`, `u` a 0/1 square wave, `C = 1`,
+`I₀ = 4` (the rails reached inside a half period), `ρ = max|f′| = I₀/(C V₀)` the knob, `V₀ ∈ {0.3,
+0.1, 0.03, 0.01}` → `ρ ∈ {13, 40, 133, 400}`; `h_FE = 1/ρ` (FE preserves `[0, 1]` iff `h ≤
+(1−v)/f(v)`, tightest as `v → 1`). Numpy tableau harness (the coded `A`/`B` of TR-BDF2, ESDIRK43,
+Radau; CN and BE by hand), stages by Newton, the periodic orbit by shooting on `v₀`, grids 4…512.
+Metrics: excursion outside the FE-invariant interval `[0, 1]` at the OUTPUT and at the STAGES, and
+TV excess of the outputs. Boundary `h_b(ρ)` = the largest `h` below which every grid is clean.
+
+⚠⚠ **Three instrument failures first, each caught by the pre-registered control (BE must never
+violate; trap must violate above `2/ρ`):** (1) at `I₀ = 1` the response was SLEW-limited, the exact
+map barely contracts, twelve periods of the adaptive reference from `v = 0.5` never reached the
+periodic orbit, and backward Euler "violated" by 20–60 % of the swing at every grid against a
+reference that was not periodic — *assert the reference map is periodic first* (fixed by shooting
+on the exact map; `I₀ = 4`); (2) the undamped stage Newton OSCILLATED on the saturating `tanh`
+(`F = −1, J ≈ 1` → jump `+1`; `F = +2` → jump back) and after 60 iterations returned garbage that
+the shooting then made a "periodic orbit" of — BE at 4 points printed `[−0.5, 0.5, 1.5, 0.5]`, no
+solution of its own step — exactly what the tree's limiting and PCNR exist for (fixed: backtracking
+line search and a hard residual check that marks a cell `nc`); (3) excursion measured against the
+exact ORBIT's hull, which sits 2e-6 inside `[0, 1]`, turned trap's `1 − 2e-6` into a 3e-7
+"violation" inside its own guarantee — the theorem guarantees the invariant interval, not the
+orbit's hull (fixed). After the three fixes BE is clean at every `ρ` and every grid.
+
+**Boundary `h_b·ρ` (constant across `ρ` = moving as `1/ρ`; the next coarser grid is the first
+violation, so the true boundary lies between the entry and that grid):**
+
+| method | `R(A,b)` | ρ = 13 | 40 | 133 | 400 | what violates above it |
+|---|---|---|---|---|---|---|
+| backward Euler | ∞ | never | never | never | never | — |
+| trap (CN) | 2 | 1.67 | 1.67 | 1.39 | 1.56 | OUTPUT leaves `[0, 1]` and rings (TV) — brackets **2** |
+| TR-BDF2 | 1 + √2 | 3.33 | 1.67 | 2.08 | 2.08 | output and TV — brackets **2.41** |
+| ESDIRK43 | **0** | 3.33 | 2.50 | 2.78 | 2.08 | **STAGES only** (output 0, stage 1e-4…3e-2) |
+| **radau** | **0** | 3.33 | 5.00 | 4.17 | 4.17 | **STAGES only** (output 0, stage 1e-4…3e-3), the widest of the four |
+
+**Reading.** The control holds: BE never, trap and TR-BDF2 at their radii, all moving as `1/ρ`.
+**The pre-registered expectation for the `R = 0` methods — "violate at every ρ with no boundary" —
+is REFUTED in the informative direction:** both have a practical boundary that moves as `1/ρ` like
+the others', and radau's (`hρ ≈ 4–5`) is the WIDEST — twice trap's. Above it the `R = 0` signature
+is exactly the one the peer named on the linear ladder and the linear fixture could not show:
+**the OUTPUT stays inside the invariant interval at every step size measured (L-stable, stiffly
+accurate), and only the STAGES leave it**, by 1e-4 to 3e-3 of the swing for radau, up to 3e-2 for
+ESDIRK43, roughly constant in `h` rather than growing. That is the mechanism by which `R = 0` bites
+in a circuit: a stage value evaluated where a device's conductance is steeper than at any point of
+the true solution — here by ≤ 0.3 % of the swing, at steps four times the FE limit. ⚠ One
+exception in the table: at 6 points (`h = T/6`) the radau and ESDIRK OUTPUTS also overshoot (3e-3,
+4e-2), the only grid where that happens; not chased. Scope: scalar, one nonlinearity, piecewise-
+constant forcing; the stage overshoot's magnitude on a real device is what a circuit fixture would
+add. **For the default:** no output violation at any `hρ ≤ 100` on this fixture; the absence of a
+guarantee shows up as a bounded stage excursion above `hρ ≈ 4`, where trap's output is already
+ringing.
+
 ### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
 
 Peer `docs-46`, after the contractivity chain closed: the GLM exit has an authoritative DAE source,
