@@ -5374,6 +5374,129 @@ class PSS(Analysis):
                 'times': np.asarray(fp.times, dtype=float)}
         return v, info
 
+    def frequency_aware_ppv(self, offset, tol=None):
+        """The PPV at a nonzero modulation frequency (Lai 2008, eq. 24).
+
+        The classical PPV is the left null vector of `I - M^T`, bordered by
+        `q = C(0) xdot(0)`; it is the phase response to a perturbation that
+        is SLOW against every other Floquet mode.  This is the SAME
+        bordered system at `alpha = exp(-j w_s T)`,
+
+            [[I - alpha M^T,  q], [q^T, 0]] [v; y] = [0; 1],
+
+        whose solution `v(w_s)` is the phase sensitivity to a perturbation
+        modulated at `w_s`: at `w_s = 0` it IS `ppv()` (pinned), and away
+        from it the AMPLITUDE mode admixes with weight
+        `(1 - alpha)/(1 - alpha mu_2)` -- zero at DC, rising ten-fold per
+        decade, cornering where `2 pi f_s T = 1 - mu_2` and flat above
+        (docs session, 2026-09-08, on the slow-node fixture; the corner
+        tracks the slow multiplier over two decades).  Verified at the
+        source: Lai's eq. (24) at `w_s = 0` "is the augmented PPV
+        extraction equation", verbatim; his construction is harmonic
+        balance, this is the shooting basis, and the two agree on what the
+        object is.
+
+        Returns `(v, info)`: `v` the pair-space anchor vector (complex);
+        `info['samples_pair']` the T-periodic envelope over the period,
+        `lambda_k exp(+j w_s t_k)` with `lambda` the transposed replay of
+        `v` -- the sideband rows' own convention, so its Fourier
+        coefficient at harmonic `k` is the phase transfer of a source band
+        at `k f0 + f_s` (⚠ FIRST order in the step: the pair-consistent
+        second-order propagation `ppv()` applies to its `samples` is not
+        carried here); `info['admixture']` the norm fraction of `v(w_s)`
+        orthogonal to the DC PPV; `info['corner']` the predicted corner
+        `|1 - mu_2| / (2 pi T)` in Hz; `info['alpha']`; `info['ppv']` the
+        DC object's info.
+
+        ⚠ WHAT IT IS FOR.  A source that reaches the phase through a slow
+        path (an RC leg, tau >> T) is filtered at its own corner, and the
+        DC PPV cannot see that; the harmonic sum built from THIS object's
+        coefficients carries the filter inside `c_k(w_s)` with no explicit
+        model of the path (A2, roadmap).  MEASURED (2026-09-08): the ratio
+        `sum_k |c_k(w_s)|^2 / sum_k |c_k(0)|^2` reproduces `pnoise`'s
+        `S_pm/(4 S_v)` for a source behind the slow node within 0.6 % to
+        r = 1e-2 and 2 % at 5e-2 (a = 0.4, loss 0.2, tau/T = 100), where the
+        DC sum with the filter by hand was 4 % off; at r = 0.1 the two
+        differ by -6 %, unchanged at twice the grid -- a gap between PM by
+        sideband quadrature and phase-mode projection, both 1e-3 of DC
+        there, not resolved.  The slow multiplier's own coefficient
+        (`mode_content[0]`) corners at 1.6e-3 f0 for tau/T = 100 with a
+        plateau of 2.45e-6 (the docs session's 2.29e-6), scaling as
+        T/tau.  ⚠ DO NOT GATE ON `|v|`: with
+        `q^T v = 1` the `1/(1 - alpha)` pole cancels between numerator
+        and denominator and the norm is frequency-flat by construction; a
+        one-percent orthogonal admixture moves it by 5e-5.  The change is a
+        DIRECTION -- read `admixture`, or the per-harmonic coefficients.
+        """
+        import scipy.sparse.linalg as spla
+        v0, info0 = self.ppv(tol)
+        fp = self.factored_period()
+        m = self.cir.n - 1
+        n = fp.width
+        irn = self.irefnode
+        T = float(fp.T)
+        alpha = np.exp(-2j * np.pi * float(offset) * T)
+        q = np.asarray(info0['q'], dtype=float)
+        qp = np.concatenate((q, np.zeros(n - m))).astype(complex)
+
+        def _mv(z):
+            z = np.asarray(z, dtype=complex)
+            v_, y_ = z[:n], z[n]
+            top = v_ - alpha * np.asarray(fp.matvec_transposed(v_), dtype=complex) + y_ * qp
+            return np.concatenate((top, [complex(qp @ v_)]))
+        rtol = max(self.par.reltol * 1e-2 if tol is None else tol, 1e-14)
+        rhs = np.zeros(n + 1, dtype=complex)
+        rhs[n] = 1.0
+        z, relres, _H, _k = _arnoldi_gmres(_mv, rhs, rtol=rtol, maxiter=min(n + 1, 200))
+        if relres > max(1e3 * rtol, 1e-8):
+            raise RuntimeError(
+                'PSS.frequency_aware_ppv: the bordered solve at offset %g did '
+                'not converge (relative residual %.3e).' % (float(offset), relres))
+        v = np.asarray(z[:n], dtype=complex)
+        ## `ppv()`'s own normalisation, `v . xdot(0) = 1` -- the border fixes
+        ## `q^T v = 1` only, and the two differ by a factor AND a sign on
+        ## the van der Pol (measured 2.07 there; -0.94 on the slow-node
+        ## fixture): at alpha = 1 this is what makes the object `ppv()`.
+        xdot = np.asarray(info0['xdot'], dtype=float)
+        vx = complex(v[:m] @ xdot)
+        if vx == 0.0:
+            raise ValueError('PSS.frequency_aware_ppv: v(w_s) is orthogonal to the orbit tangent.')
+        v = v / vx
+        ## the envelope over the period, in the sideband rows' convention
+        _g, _ts, st = fp.matvec_transposed(v, collect=True)
+        st = np.asarray(st, dtype=complex)
+        tms = np.asarray(fp.times, dtype=float)[:st.shape[0]]
+        phase = np.exp(2j * np.pi * float(offset) * tms)
+        samples_pair = st * phase[:, None]
+        ## the admixture: what of v(w_s) is NOT along the DC PPV.  ⚠ This is
+        ## dominated by whichever mode has the largest weight, which on a
+        ## core with a fast amplitude mode is THAT one (weight ~ 2 pi r,
+        ## cornering at r ~ (1 - lambda_2)/2pi ~ 0.16 for the van der Pol),
+        ## so a slow node's own admixture -- 1e-6 to 1e-2 of it -- is
+        ## invisible in the norm.  `mode_content` reads each mode's own
+        ## coefficient (dense route below FLOQUET_DENSE_LIMIT).
+        v0c = np.asarray(v0, dtype=complex)
+        v0n = v0c / np.linalg.norm(v0c)
+        proj = np.vdot(v0n, v) * v0n
+        admixture = float(np.linalg.norm(v - proj) / np.linalg.norm(v))
+        mode_content = None
+        multipliers = None
+        if n <= self.FLOQUET_DENSE_LIMIT:
+            Md = np.column_stack([np.asarray(fp.matvec(e), dtype=float) for e in np.eye(n)])
+            mu, P = np.linalg.eig(Md.T)
+            order = np.argsort(-np.abs(mu))
+            mu, P = mu[order], P[:, order]
+            a = np.linalg.solve(P, v)
+            mode_content = np.abs(a[1:]) / abs(a[0])
+            multipliers = mu
+        mu2 = float(info0.get('second_multiplier', 0.0))
+        info = {'alpha': alpha, 'offset': float(offset), 'admixture': admixture,
+                'mode_content': mode_content, 'multipliers': multipliers,
+                'corner': abs(1.0 - mu2) / (2.0 * np.pi * T), 'second_multiplier': mu2,
+                'samples_pair': samples_pair, 'times': tms, 'residual': float(relres),
+                'ppv': info0}
+        return v, info
+
     def _forced_replay_transposed(self, fp, freq, xa):
         """`W^T xa` -- the transpose of the map `u -> w(freq)`.
 

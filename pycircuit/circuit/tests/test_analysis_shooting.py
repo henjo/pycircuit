@@ -17774,3 +17774,98 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
         assert pac2.deflated is False and pac2.matvecs is not None
         pac2.adjoint_transfer_row(p2, 0.13e6, 2)
         assert pac2.deflated is False
+
+
+def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multiplier():
+    """2026-09-08 night (Andreas: "do the frequency-aware PPV first").
+    `PSS.frequency_aware_ppv(offset)` is `ppv()`'s bordered system at
+    `alpha = exp(-j w_s T)` (Lai 2008 eq. 24, verified: its w_s = 0 point
+    "is the augmented PPV extraction equation").  Three gates, named
+    before running and scored:
+      1. at offset 0 it IS `ppv()`: anchor and pair samples to 1e-12
+         (measured 3e-16) -- after normalising by `v . xdot = 1` as `ppv`
+         does; the border alone left a factor -0.94;
+      2. the SLOW multiplier's own coefficient (dense eigenbasis, the
+         docs session's construction) rises ten-fold per decade below the
+         corner `(1 - mu_2)/(2 pi T)` and plateaus above; corner between
+         1e-3 and 3e-3 at tau/T = 100 (predicted 1.58e-3) and ten times
+         higher at tau/T = 10, plateau 2.45e-6 vs their 2.29e-6 and
+         scaling as T/tau (2.5e-5 at tau/T = 10).  ⚠ The NORM admixture
+         is dominated by the core's fast amplitude mode (linear in r, no
+         corner in band, tau-independent) -- the wrong metric, as they
+         warned; and the first version of this gate printed the THIRD
+         multiplier's coefficient by an index slip;
+      3. application (A2): the ratio of its harmonic powers at w_s to the
+         DC ones, with NO explicit model of the RC path, reproduces
+         pnoise's S_pm/(4 S_v) for a source behind the slow node within
+         0.6 % to r = 1e-2 and 2 % at 5e-2 on the lossy asymmetric fixture
+         (the DC harmonic sum needed the path's filter by hand and was
+         4 % off at 5e-2); at r = 0.1 the two differ by -6 to -7 %, UNCHANGED
+         at 480 points (so not the first-order envelope) -- a gap between
+         PM by sideband quadrature and phase-mode projection where both
+         are 1e-3 of DC, recorded, not resolved.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+
+    def build(tau_over_T, rs, asym, loss, src=None):
+        c = SubCircuit(); c.add_node('v'); c.add_node('w')
+        c['C'] = C('v', gnd, c=1.0)
+        if loss > 0:
+            c.add_node('x'); c['L'] = L('v', 'x', L=1.0); c['Rl'] = R('x', gnd, r=loss)
+        else:
+            c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: (u - u ** 3 / 3.0) + asym * (u ** 2 - 2.0))
+        c['Rs'] = R('v', 'w', r=rs); c['Cs'] = C('w', gnd, c=tau_over_T * T0 / rs)
+        if src:
+            c['n'] = IS(src, gnd, i=0.0, noisePSD=1e-6)
+        return c
+
+    def solve(c):
+        pss = PSS(c, method='gear', reltol=1e-11)
+        x0 = np.zeros(c.n - 1); x0[0] = 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+        assert pss.converged
+        return pss
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ## 1. identity at DC, and 2. the corner, on the odd lossless core
+        for tau_over_T, lo, hi in ((100.0, 1e-3, 3e-3), (10.0, 1e-2, 3e-2)):
+            pss = solve(build(tau_over_T, 1e2, 0.0, 0.0))
+            f0 = 1.0 / float(pss.period)
+            v0, i0 = pss.ppv()
+            vf, inf = pss.frequency_aware_ppv(0.0)
+            assert np.linalg.norm(vf - v0) < 1e-12 * np.linalg.norm(v0)
+            assert np.linalg.norm(inf['samples_pair'] - i0['samples_pair']) < 1e-12 * np.linalg.norm(i0['samples_pair'])
+            rc = inf['corner'] / f0
+            assert lo < rc < hi, (tau_over_T, rc)
+            c = {r: pss.frequency_aware_ppv(r * f0)[1]['mode_content'][0] for r in (1e-5, 1e-4, 1e-1)}
+            assert abs(c[1e-4] / c[1e-5] / 10.0 - 1.0) < 0.02, c        # ten-fold per decade below the corner
+            ## plateau: far below the linear extrapolation (1000x); measured 16x
+            ## at tau/T = 100 and 157x at tau/T = 10 (the corner ten times higher)
+            assert c[1e-1] / c[1e-4] < 300.0, c
+            plateau = c[1e-1]
+            if tau_over_T == 100.0:
+                assert abs(plateau / 2.45e-6 - 1.0) < 0.1, plateau
+                p100 = plateau
+            else:
+                assert abs(plateau / p100 / 10.0 - 1.0) < 0.1, (plateau, p100)   # scales as T/tau
+        ## 3. the application: a source behind the slow node
+        cir = build(100.0, 1e2, 0.4, 0.2, src='w')
+        pss = solve(cir); f0 = 1.0 / float(pss.period)
+        pac = PAC(cir, toolkit=circuit.numeric)
+        names = [str(n) for n in cir.nodes]; ov = names.index('v'); iw = names.index('w')
+        S0 = pss.frequency_aware_ppv(0.0)[1]['samples_pair'][:, iw]
+        P0 = float(np.sum(np.abs(np.fft.fft(S0) / S0.shape[0]) ** 2))
+        for r, tol in ((1e-3, 0.01), (1e-2, 0.01), (5e-2, 0.03)):
+            f = r * f0
+            Sv, _ = pac.oscillator_spectrum(pss, np.array([f]), ov)
+            _am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
+            Sf = pss.frequency_aware_ppv(f)[1]['samples_pair'][:, iw]
+            Pf = float(np.sum(np.abs(np.fft.fft(Sf) / Sf.shape[0]) ** 2))
+            assert abs((float(np.real(pm)) / (4.0 * float(Sv[0]))) / (Pf / P0) - 1.0) < tol, (r, pm, Pf / P0)

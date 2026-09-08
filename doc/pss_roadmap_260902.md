@@ -11644,3 +11644,43 @@ is ever run for another reason, not a reason to run it (peer, filed as out of sc
 "scales as a²" was the wrong shape: saturating. Bounded statement: the harmonic-sum
 model is complete to 1 % for `r ≤ 2e-2` at every asymmetry and to 1 % throughout for weak asymmetry;
 the pin stays at `r ≤ 3.2e-2`. Not pursued further without the frequency-aware PPV.
+
+## The frequency-aware PPV BUILT (Andreas: "do the frequency-aware PPV first", 2026-09-08 night)
+
+`PSS.frequency_aware_ppv(offset)`: `ppv()`'s bordered system at `α = e^{−jω_sT}` (Lai 2008 eq. 24 in
+the shooting basis), returning the anchor vector, the T-periodic envelope over the period
+(`samples_pair`, the transposed replay times `e^{+jω_s t}` — the sideband rows' convention, so its
+k-th Fourier coefficient is the phase transfer of a source band at `k f₀ + f_s`; ⚠ FIRST order in the
+step, `ppv()`'s pair-consistent second-order propagation is not carried), the norm admixture, and,
+below `FLOQUET_DENSE_LIMIT`, every mode's own coefficient in the eigenbasis. Three gates named before
+running:
+
+1. **Identity at DC: 3e-16** — after normalising by `v·ẋ = 1` as `ppv` does; the border alone (`qᵀv = 1`)
+   left the vector at −0.94× (a factor AND a sign; the van der Pol's is 2.07).
+2. **The slow multiplier's coefficient corners at `(1−μ₂)/2πT`**: ×10 per decade below, plateau above;
+   corner between 1e-3 and 3e-3 at τ/T = 100 (predicted 1.58e-3) and ten times higher at τ/T = 10;
+   plateau 2.45e-6 vs the peer's 2.29e-6, and 2.5e-5 at τ/T = 10 — the T/τ scaling. ⚠ Two instrument
+   slips on the way: the NORM admixture is dominated by the core's fast amplitude mode (linear in r to
+   0.14 at r = 0.1, no corner in band, τ-independent) and read as "no corner" — the metric the peer warned
+   against; then `mode_content[1]` printed the THIRD multiplier's coefficient by an index slip and
+   looked the same.
+3. **Application to A2**: `Σ_k |c_k(ω_s)|² / Σ_k |c_k(0)|²` with NO explicit path model reproduces
+   `pnoise`'s `S_pm/(4S_v)` for the source behind the slow node:
+
+| r | a = 0.25: S_pm/4S_v | fw ratio | diff | a = 0.40: S_pm/4S_v | fw ratio | diff |
+|---|---|---|---|---|---|---|
+| 1e-3 | 0.72667 | 0.72908 | −0.3 % | 0.74674 | 0.74720 | −0.1 % |
+| 1e-2 | 0.02673 | 0.02684 | −0.4 % | 0.02901 | 0.02904 | −0.1 % |
+| 5e-2 | 0.00172 | 0.00176 | −2.1 % | 0.00152 | 0.00155 | −1.5 % |
+| 1e-1 | 0.00093 | 0.00100 | −7.1 % | 0.00065 | 0.00069 | −5.8 % |
+
+   Against the DC harmonic sum (filter by hand): 5e-2 improves from +3.7/+4.4 % to −2.1/−1.5 %, and
+   0.1 flips from +7/+12 % to −7/−6 %. ⚠ My named prediction that the 0.1 gap is the first-order
+   envelope FAILED: at 480 points it is −7.3/−5.7 %, unchanged. What is left sits between two
+   DEFINITIONS of "PM" — `am_pm_noise` splits by sideband quadrature, the frequency-aware sum projects
+   on the phase mode, and the two coincide only where the amplitude mode is negligible — at offsets
+   where both are 1e-3 of DC. Recorded, not resolved; no third arbiter in the tree.
+
+Pinned: `test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multiplier`. Not
+carried: the second-order state-space samples at ω_s (would need `ppv()`'s propagation block, ~300
+lines of float-typed index-aware code, generalised to complex α).
