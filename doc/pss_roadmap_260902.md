@@ -10156,6 +10156,38 @@ so B is not a usable period fixture either, and the gap in the `CHOOSING method`
 with one more reason. The relaxation probe's outer failure ("free-period Jacobian singular") is
 consistent with that.
 
+#### ✅ THE STAGE OVERSHOOT ON A REAL DEVICE, THROUGH THE STACK — 2026-09-08: on an exponential diode radau's stages NEVER leave the hull, at any grid; the monotonicity arc's last half is closed in the good direction
+
+**Fixture:** a half-wave peak detector (`VSin` 1 V → 10 Ω → `Diode` → 1 µF ∥ 1 kΩ), a driven PSS,
+radau against TR-BDF2 and trap at 20–320 points per period, reference radau at 3200; radau's three
+collocation stages captured per step by wrapping the coupled step. A conducting diode's `h_FE`
+(`1/ρ`, `ρ ~ I/(nV_T C)`) is minute, so every grid here sits far above the four-`h_FE` boundary the
+scalar fixture found — the overshoot mechanism fully "active" by that criterion. **Prediction named
+before the run:** radau's stages overshoot the reference hull at every grid, by a fraction that does
+not grow with `h`, and its output error stays below TR-BDF2's.
+
+| pts/period | radau rms(v_c) | radau Δmean | **stage > hull** | trbdf2 rms | trap rms |
+|---|---|---|---|---|---|
+| 20 | 2.05e-04 | −8.9e-05 | **0.00** | 2.48e-03 | 5.52e-03 |
+| 40 | 2.92e-06 | +1.8e-06 | **0.00** | 5.16e-04 | 1.05e-03 |
+| 80 | 2.28e-07 | −6.5e-09 | **0.00** | 1.23e-04 | 2.52e-04 |
+| 160 | 1.31e-07 | −6.7e-11 | **0.00** | 3.02e-05 | 6.19e-05 |
+| 320 | 1.58e-07 | −2.2e-12 | 8e-08 (the 3200-point hull's own resolution) | 7.42e-06 | 1.53e-05 |
+
+**The prediction is REFUTED in the informative direction: NO stage excursion at any grid.** The
+anode's stage values stay inside the reference orbit's hull `[−1.0000, 0.9884]` from 20 points per
+period up, and radau's output error is 10× to 170× below TR-BDF2's throughout, its mean-value error
+20× smaller at 20 points (trap's is 45× larger). ⚠ The rms floor at 160–320 points (1.3e-7) is the
+metric's — linear interpolation of the reference onto the coarse grid — not radau's. **Mechanism:**
+the device itself. The scalar fixture's `tanh` current SATURATES, so a stage past the rail costs the
+residual almost nothing and the Newton leaves it there; an exponential junction punishes a stage
+above the true solution with a current the coupled Newton cannot leave in place, and the junction
+limiting inside the stage Newton (*"LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION"*) adds to it.
+The `R = 0` signature, bounded and mild on the tunable-steepness fixture, does not present on the
+device class it was feared for. **What survives of the caveat:** a bounded, saturating nonlinearity
+at steps above four `h_FE` — a soft comparator, a `tanh` limiter — is where radau's stages can sit
+0.3 % past the rail; a junction is not. Scope: one device, one driven circuit, one reference.
+
 #### ⛔ Koopman–Hill for DAEs (Schütz, Bayer & Leine, arXiv 2607.17339) — NOT actionable, recorded so nobody chases it; but its singularity claim validated `floquet_modes` and yields a free index-2 DIMENSION detector (peer `docs-46`, §2.161, 2026-09-08)
 
 **Why not:** the Hill problem for a DAE is the generalised eigenproblem `α A∞ p∞ = H∞ p∞`, and the

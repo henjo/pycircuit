@@ -1590,8 +1590,12 @@ class PSS(Analysis):
       radau     5 (6.1  5.7e-10        yes          OUTPUT stays in range at every
                 on a                                step measured; only the STAGES
                 smooth                              leave it, <= 0.3 % of the swing,
-                orbit)                              above ~4 h_FE (the widest
-                                                    practical margin of the four)
+                orbit)                              above ~4 h_FE on a SATURATING
+                                                    nonlinearity (the widest
+                                                    practical margin of the four);
+                                                    on an exponential DIODE the
+                                                    stages never leave the hull at
+                                                    20-320 pts/period, measured
       esdirk43  4       5.3e-05        yes          output in range; stages leave it
                                                     <= 3 % above ~2.5 h_FE
       trbdf2    2       10.1           yes          OUTPUT rings above 2.4 h_FE
