@@ -568,7 +568,7 @@ asked about; it is not a statement about dimensional correctness.
 
 ---
 
-### 0f. Reading from the docs session, 2026-09-04 — ⚠ **RELAYED, NOT VERIFIED HERE**
+### 0f. Reading from the docs session, 2026-09-04 — ⚠ **RELAYED, NOT VERIFIED HERE** (findings 1 and 2 VERIFIED at the source 2026-09-08 by the peer; finding 2's inference corrected in place)
 
 Four findings arrived from the docs session against ~60 new papers. Recorded because two bear on
 shipped code, with the standing caveat this file already uses for that channel: **the quotations
@@ -587,11 +587,24 @@ be in B6 so the floor is not re-litigated as a bug.
 
 ⚠ **2. A NAMED LIMIT ON A7.** The same paper is quoted proving the singularity as its Lemma 2.1 —
 `J(s)` loses rank by one at **every** `s = j k ω₀`, i.e. at DC and every harmonic, which is what
-both sessions derived independently — and then saying deflation only **AMELIORATES** it. A7's
-`b79b458` carries the harmonic pole analytically, which is deflation, so it inherits a documented
-residual weakness. Their remedy is a different formulation (GeMPDE with augmenting phase
-conditions); two other published routes are named, least squares with no phase condition and the
-probe. **No change proposed** — recorded so the weakness is known rather than discovered.
+both sessions derived independently — and then saying deflation only **AMELIORATES** it. ⚠
+**CORRECTED 2026-09-08 (peer, source on disk, `09-phase-macromodels-and-prc/2007-06-TCAD-Mei-
+Roychowdhury-OAC.pdf`, both quotes verbatim p. 2):** the sentence's SUBJECT is reference [8]'s
+method — "deflate away that part of the input that causes phase variations and, THEN, apply Floquet
+theoretic techniques to compute AMPLITUDE components ... THE METHOD is still susceptible to
+ill-conditioning caused by imperfect numerical cancellation". The residual weakness is cancellation
+in reconstructing amplitude components from a Floquet decomposition. `_deflated_solve` (A7's
+`b79b458`) is not that object: one bordered solve `[[I − αM, u], [vᵀ, 0]]`, `y = w + s·u/(1−α)`,
+`s = (vᵀb)/(vᵀu)` — no decomposition, no reconstruction, nothing differenced. And the tree
+contradicts the inherited-weakness reading twice: its `σ_min` is FLAT at 2.04e-01 from offset 3e-1
+to 1e-9 while the plain operator tracks the offset, and by η it is the ACCURATE member of the pair
+(§ the three-leg block, η law to four digits over five decades). The earlier sentence "inherits a
+documented residual weakness" recorded a weakness this object does not have; it is withdrawn.
+Lemma 2.1 rendered (p. 1064): `J^HB(s)` loses rank by one for all `s = i·j·ω₀` — `i` an integer
+index, `j` the unit (the text layer drops one symbol); it is the HARMONIC-BALANCE Jacobian, and
+`_check_harmonic` reached the same singularity for `I − e^{−jωT}M` in the shooting basis
+independently. Their remedy is a different formulation (GeMPDE with augmenting phase conditions);
+two other published routes are named, least squares with no phase condition and the probe.
 
 ⚠⚠ **3. C2 DOES NOT COVER LSOAC, AND CHECKING SAID SO MORE SHARPLY THAN THE QUESTION DID.** The
 docs session asked whether `96a06ac`'s rejection might have been of a different method. Checked:
@@ -5773,7 +5786,7 @@ there** — an earlier reading here implied it could not.
 
 ⚠ **THIS IS THE "WARPING ERROR" THE LITERATURE NAMES, and it is the one place our recorded
 objection to higher-order methods is weak.** Brachtendorf-adjacent: Brambilla & Storti-Gajani,
-TCAS-I 50:904 (2003) (VERIFIED 2026-09-07 by the docs session — see the warping item's fact (a); this marker was stale until 2026-09-08) characterise integration-induced `λ₂` bias as
+TCAS-I 50:904 (2003) (VERIFIED 2026-09-07 by the docs session — the block "A10's warping reference VERIFIED" ~40 lines BELOW, which carries the three verbatim abstract quotes and facts (a)/(b); this marker was stale until 2026-09-08, and my first pointer landed on a downstream MENTION of the verification rather than the block — peer) characterise integration-induced `λ₂` bias as
 *"equivalent to a perturbation of the eigenvalues of the linearized ordinary differential
 problem"*, usually negligible — *"nevertheless an exception … is found when simulating
 **high-quality factor circuits** where even very small warping errors can lead to qualitatively
