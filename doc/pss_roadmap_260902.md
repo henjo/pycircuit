@@ -4776,6 +4776,24 @@ candidate, NOT built:** a `PSS.warping_estimate()` (or a one-grid branch of `gri
 constructs the defect on the stack's own periodic solution and runs the neighbouring transient —
 the defect enters as a time-dependent current source, which the stack can already express. Owner's
 call; it would replace the analytic reference behind every order measurement this week.
+
+⚠⚠ **The peer's own record of the partition that would have cost the result:** their branch list
+tied *"δ′/δ ≈ 0"* to *"the construction does not transfer past trap; B7's answer is documented but
+only for low-order methods"*. The measured 0.0000 meant the opposite — the interpolant was INSIDE
+the method's exactness class, fixable by one parameter. The remedy they named in the second branch
+(a higher-degree interpolant) was right; the SIGNATURE they attached to it (drifting down with N)
+was wrong, and the zero was attached to the wrong conclusion. **A partition can be right about
+remedies and wrong about signatures**; taken at face value it would have stopped one parameter
+short of the result (§D 0af).
+
+⚠ **Forward caveat for the build, from the peer:** on a DAE the two-part rule plausibly needs a
+third part. Differential and algebraic components converge at different orders (H&W VI.7,
+`y: O(h^{q+1})`, `z: O(h^q)` — the 5.08/3.05 split measured here), so the interpolant requirement
+binds against DIFFERENT thresholds in the same problem: the effective order for the differential
+components and something nearer the stage order for the algebraic ones. A single spline degree can
+sit inside the exactness class for one component and not the other — **and the symptom is the same
+silent 0.0000, on one component only, invisible in a scalar phase drift.** If `warping_estimate` is
+built, instrument the estimate PER COMPONENT, not on the period alone.
 ### B8. All integration methods in PAC, pnoise and the adjoint paths — ⚠ **BUILT 2026-09-04**
 
 ✅✅ **THE PLAIN TRANSPOSED REPLAY SHIPPED** as `_monodromy_matvec_transposed_plain`, so
@@ -8475,6 +8493,14 @@ supplied; the value came from the pre-registration, not from the idea. (Same nig
 true bound that could not fire, and an output-only check on an L-stable method confirms a property
 none of them lack — three instrument failures on one measurement, each caught only because a
 control was pre-registered.)
+
+0af. ⚠⚠ **A PARTITION CAN BE RIGHT ABOUT THE REMEDY AND WRONG ABOUT THE SIGNATURE.** B7's radau
+gate came with three pre-named branches; the one that fired ("δ′/δ = 0.0000") was labelled "does
+not transfer past trap — a dead end", and its true reading was "the interpolant sits inside the
+method's exactness class — raise the degree". The remedy was named in a DIFFERENT branch, attached
+to a signature ("drifts down with N") that never appeared. Read a fired branch's NUMBER against the
+mechanism before accepting its LABEL; a pre-registration constrains what counts as a result, it does
+not diagnose it.
 
 0ad. **"THE INSTRUMENT SAYS NOTHING" CAN BE AS WRONG AS "THE INSTRUMENT PROVES IT".** This file
    recorded `null_residual` as *"flat … and tells a caller nothing"* while an outside document
