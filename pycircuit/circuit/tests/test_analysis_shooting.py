@@ -17606,8 +17606,11 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
     floor 5.9e-4; ratio 0.9964 / 0.7291 / 0.2124 / 0.0268 / 0.00335 at
     r = 1e-4 / 1e-3 / 3.2e-3 / 1e-2 / 3.2e-2 against 0.9963 / 0.7298 /
     0.2125 / 0.02685 / 0.00328 predicted (within 2 %); at 0.1 f0 measured
-    0.00096 vs 0.00086, a +12 % residual that is tau-independent and in
-    S_pm, unexplained; the DC-PPV Lorentzian over-states the slow-node
+    0.00096 vs 0.00086 -- on S_pm with the core control subtracted a
+    residual of 7 % that grows with the asymmetry (0.9 / 7.1 / 11.9 % at
+    a = 0.1 / 0.25 / 0.4), confined to r >= 5e-2 where the k = 0 term has
+    fallen to the k >= 1 floor; candidate AM-to-PM conversion through the
+    asymmetric core, not modelled; the DC-PPV Lorentzian over-states the slow-node
     source by 1000x there (Lai's sign).  At tau/T = 10 the same sum holds
     to 2 % up to 3.2e-2 f0 with the corner and floor shifted 10x and 100x.
     Controls: the source at the core is flat at 0.999; the odd core

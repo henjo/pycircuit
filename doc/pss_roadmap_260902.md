@@ -11607,3 +11607,37 @@ tuples, the two defaults are `None` sentinels. ⚠ The peer's scan follows escap
 `self.attr = param` / `return param`; an escape through a call is not covered (dataflow, not pattern).
 ⚠ The peer relayed "Andreas said go" for this sweep; a relay is not approval — the four are in the
 class already being fixed and went in on that basis.
+
+### The +12 % residual, characterised (Andreas: "start with the residual", 2026-09-08 night)
+
+Restated on the right quantity first: the harmonic sum is PHASE-only, so the comparison is
+`S_pm/(4S_v)`, and the "+12 %" was 8 % PM plus 3 % AM the Lorentzian never carries. The sideband-
+resolved `k ≥ 1` filter (`F(kf₀±f)/F(kf₀)`, the peer's 3 % on the `k ≥ 1` part, ~2 % of the total at
+0.1 f₀) is now in the prediction. Then the asymmetry `a` as the knob, with the core-injection control
+subtracted — ⚠ the control itself sits at a CONSTANT `S_pm/(4S_v)` of 0.9775 / 0.9955 / 0.9982 for
+a = 0.1 / 0.25 / 0.4 at every offset: the asymmetric core's own AM fraction, invisible to a PM-only
+Lorentzian and constant in `r`, so it is a normalisation, not a residual:
+
+| r | a = 0.10 | a = 0.25 | a = 0.40 |
+|---|---|---|---|
+| 1e-2 | 0.0 % | 0.0 % | 0.0 % |
+| 2e-2 | +0.4 % | +0.6 % | +0.6 % |
+| 5e-2 | +1.2 % | +3.7 % | +4.4 % |
+| 1e-1 | +0.9 % | +7.1 % | +11.9 % |
+
+(`|c₀|/|c₁|` at `w` = 24.6 / 59.2 / 87.9; `|c₂|/|c₁|` = 0.058 / 0.145 / 0.235.) Slow-node-specific,
+absent for the weakly asymmetric core, growing with `a` (SATURATING: exponent 2.25 then 1.10 over the two
+intervals — three points, not fitted; peer), and confined
+to `r ≥ 5e-2`, where the `k = 0` term has fallen to the level of the `k ≥ 1` floor — so it is an
+O(1e-4)-of-DC term. The slow-node source's own AM there is of the same order (2–3e-5 of `4S_v`), which
+names the candidate: AM-to-PM conversion of the slow-node's amplitude noise through the asymmetric
+core, a term the harmonic sum has no place for and the frequency-aware PPV object would carry. Not the
+construction (the control is flat to its AM offset), not the `k = 1` or `k = 2` band terms (in the
+prediction). ⚠ And NOT the core's own AM (peer's arithmetic): across the sweep the residual rises 13× while
+the control's AM fraction FALLS 12× — opposite directions on one knob — so the converted AM, if conversion
+is the mechanism, is the slow node's. ⚠ The peer's proposed discriminator (scale the source's noise alone;
+conversion quadratic in amplitude) does NOT transfer: `pnoise`, the split and `S_v` are all LINEAR in the
+source PSD by construction, so every ratio here is PSD-independent whatever the mechanism. ⚠ My named
+"scales as a²" was the wrong shape: saturating. Bounded statement: the harmonic-sum
+model is complete to 1 % for `r ≤ 2e-2` at every asymmetry and to 1 % throughout for weak asymmetry;
+the pin stays at `r ≤ 3.2e-2`. Not pursued further without the frequency-aware PPV.
