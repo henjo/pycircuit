@@ -4960,6 +4960,22 @@ gain formula by `isinstance(inputsrc, VS)` / `isinstance(inputsrc, IS)` (`analys
 source declares a `Branch`), not what class it is — a change to which sources `Noise` accepts, so
 not folded in here.
 
+✅ **DONE 2026-09-08 (Andreas: "Go with the widened case. A user can select what is wanted"):**
+both dispatch sites in `Noise` (the gain formula in `noise_map_function` AND the `result['gain']`
+/ `Svninp`-vs-`Sininp` storing in `solve` — the second was found only because the first fix
+computed the HDL gain and the result still had no key) now use one structural fact: a branch at the
+input's `plus` terminal means a voltage input (adjoint current through it, `Svninp`), otherwise a
+current input (adjoint voltage across `plus`/`minus`, `Sininp`); an element with no `plus`/`minus`
+terminals gets `None` with a warning. Widened on purpose: a resistor named as the input returns
+−500 (the adjoint voltage across it — a transfer function, the user's to want). Measured: `VS` +0.5,
+`VSinHdl` **−0.5**, `IS` 1000, `R1` −500. ⚠ **The HDL sign is a KVL-ROW convention, not a gain
+defect:** DC terminal currents agree (−1 mA both, same branch variable), but the HDL compiler emits
+the branch equation as `−v_p + v_n + V` where `VS` writes `v_p − v_n − V` (their `G` rows are
+negatives of each other); every forward solve is identical and the ADJOINT branch entry, which is
+what the gain reads, flips. Family-wide (`Contribution(b.V, …)`), so left alone and pinned on
+magnitude; anything that reads an adjoint branch entry through an HDL voltage source inherits the
+sign. `Svninp` uses `|gain|²` and is unaffected.
+
 **Status: B7 BUILT.** Pinned by two tests (`test_warping_estimate_reproduces_the_period_error…`,
 which pins the exactness-class ZERO as a property so a "helpful" degree change announces itself;
 `…refuses_a_period_reading_on_a_driven_circuit`). Limits carried from the prototype: the DAE

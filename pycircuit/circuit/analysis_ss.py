@@ -420,20 +420,44 @@ class Noise(SSAnalysis):
             ## rational instead of a swelling sum of divided rationals.
             zm, xn2out = tk.noise_psd(Yreciprocal, u, CYs, s)
 
-            ## Etract gain
+            ## Extract gain.  STRUCTURAL dispatch (owner decision 2026-09-08,
+            ## "go with the widened case"): the input is treated as a
+            ## VOLTAGE source when a branch spans its `plus` terminal -- its
+            ## current is a state, and the gain is the adjoint current
+            ## through it -- and as a CURRENT source otherwise, the gain
+            ## being the adjoint voltage across `plus`/`minus`.  This used to
+            ## be `isinstance(VS)` / `isinstance(IS)`, which left `gain`
+            ## silently None for every HDL source (a `Behavioural` is
+            ## neither) and for anything else named here.  Widened on
+            ## purpose: ANY element with `plus`/`minus` terminals now gets a
+            ## gain -- an HDL VCVS or an inductor included -- so the result
+            ## is a transfer function from that element's branch or node
+            ## pair, and choosing an element that is not the intended
+            ## source is the user's to get right.  An element with no
+            ## `plus`/`minus` terminals gets None, with a warning.
             gain = None
-            if isinstance(self.inputsrc, VS):
-                gain = self.cir.extract_i(zm, 
-                                          instjoin(self.inputsrc_name, 'plus'),
-                                          refnode=refnode, 
+            plus_term = instjoin(self.inputsrc_name, 'plus')
+            minus_term = instjoin(self.inputsrc_name, 'minus')
+            try:
+                ## `get_terminal_branch` / `get_node` resolve 'inst.terminal'
+                ## names themselves (`nodenames` holds NODE names only) and
+                ## raise KeyError for a terminal the element does not have.
+                has_branch = self.cir.get_terminal_branch(plus_term) is not None
+                plus_node = self.cir.get_node(plus_term)
+                minus_node = self.cir.get_node(minus_term)
+            except KeyError:
+                import warnings
+                warnings.warn("Noise: inputsrc %r has no 'plus'/'minus' terminals; "
+                              "gain is None" % (self.inputsrc_name,), RuntimeWarning)
+                self._input_is_voltage = None
+                return xn2out, gain
+            self._input_is_voltage = has_branch
+            if has_branch:
+                gain = self.cir.extract_i(zm, plus_term,
+                                          refnode=refnode,
                                           refnode_removed=True)
-                
-            elif isinstance(self.inputsrc, IS):
-                plus_node = instjoin(self.inputsrc_name, 'plus')
-                minus_node = instjoin(self.inputsrc_name, 'minus')
-                gain = self.cir.extract_v(zm, 
-                                          self.cir.get_node(plus_node), 
-                                          self.cir.get_node(minus_node), 
+            else:
+                gain = self.cir.extract_v(zm, plus_node, minus_node,
                                           refnode=refnode, refnode_removed=True)
             return xn2out, gain
 
@@ -465,14 +489,18 @@ class Noise(SSAnalysis):
         elif self.outputsrc is not None:
             result['Sinout'] = xn2out
 
-        # Calculate the gain from the input voltage source by using the 
-        # transimpedance vector to find the transfer from the branch voltage of
-        # the input source to the output
-        if isinstance(self.inputsrc, VS):
+        # Calculate the gain from the input source by using the transimpedance
+        # vector to find the transfer from the input source to the output.
+        # ⚠ The SAME structural fact `noise_map_function` dispatched on
+        # (2026-09-08): a branch at the input's `plus` terminal means a
+        # VOLTAGE input and the input-referred noise is a voltage PSD;
+        # otherwise a current input.  This used to be a second
+        # `isinstance(VS)`/`isinstance(IS)` -- the first was fixed and the
+        # HDL source's gain was computed and then DROPPED here.
+        if gain is not None and getattr(self, '_input_is_voltage', None) is True:
             result['gain'] = gain
             result['Svninp'] = xn2out / abs(gain)**2
-
-        elif isinstance(self.inputsrc, IS):
+        elif gain is not None and getattr(self, '_input_is_voltage', None) is False:
             result['gain'] = gain
             result['Sininp'] = xn2out / abs(gain)**2
 
