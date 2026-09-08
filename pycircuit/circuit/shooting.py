@@ -5952,6 +5952,21 @@ class PSS(Analysis):
         digits on the van der Pol, index 1 and 2); on an orbit with edges,
         refine until the estimate converges in `periods` and grid, or use
         `grid_error`.
+        ⚠ THE LITERATURE'S ANSWER IS STRUCTURAL, NOT "REFINE" (docs session,
+        Part I p. 9, READING-LOG 2.165).  The gate this instrument should
+        test before returning a number is Part I's own "only if": the
+        estimate is asymptotically correct ONLY IF the interpolant's defect
+        error is o(h^{p+1}) -- asymptotically SMALLER than the truncation
+        error it is meant to reveal; on the comparator edge it is not, and
+        the number is wrong by a factor nothing announces.  And the fix for
+        a non-smooth orbit is to form the defect as a WEIGHTED SUM OF
+        f-VALUES with an auxiliary scheme sharing the base scheme's
+        left-hand side, so the solution terms cancel identically (their eq.
+        2.13, an extra factor h) -- not a higher-degree interpolant of the
+        solution, which is exactly the construction this one uses.  Scope:
+        their construction is the LOCAL error of an LMM; whether it
+        transfers to a period functional is unproven.  Neither the gate nor
+        the restructured defect is built.
         ⚠ Scope and limits.  The period reading needs an AUTONOMOUS solve;
         on a driven circuit the lag is bounded (entrained) and `period_error`
         is returned as None with the per-period lag series still filled.

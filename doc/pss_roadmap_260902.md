@@ -10154,6 +10154,21 @@ the method's, and the estimate is wrong by the same factor in every component. T
 only as good as the interpolant's representation of the waveform, and a relaxation oscillator at
 PSS grids is outside it.** Named check, not built: the interpolant's own defect on a refined grid,
 or the estimate's convergence in `periods`, as a self-diagnostic before the number is trusted.
+⚠⚠ **The paper that scopes the instrument answers this, and its answer is STRUCTURAL** (peer,
+Part I p. 9, §2.165). The gate: *"ℓ_i can be considered as an asymptotically correct estimate for
+l_i ONLY IF `d_i − d_i* = o(h_i^{p+1})`, i.e. if `|d_i − d_i*|` is asymptotically smaller than the
+local truncation error itself"* — the interpolant's defect error against the truncation error, the
+named check with a threshold. The fix: *"the defect STRUCTURED AS A WEIGHTED SUM OF f-VALUES …
+proved advantageous in the case when the solution x is only moderately smooth"* — choose the
+auxiliary scheme with the SAME left-hand side as the base scheme so the solution terms cancel
+identically, `d_i = h_i Σ_j (β_{j,i} − β̄_{j,i}) f(t_{i−j}, x_{i−j})` (their eq. 2.13), *"crucial …
+because it provides an additional factor h_i"*. **The moderate-smoothness robustness comes from the
+defect's STRUCTURE, not from a better interpolant; an estimator whose defect goes through a
+high-degree interpolant OF THE SOLUTION is the construction the paper exists to replace** — which
+is exactly a septic spline on a comparator edge. Free extra for a stiff orbit: scale `l_i` by
+`(I − hβ₀J)⁻¹`, the discrete scheme's own Jacobian, already factorised. ⚠ Scope: their construction
+is an LMM's LOCAL error; transfer to a period functional is unproven; what transfers without
+question is the gate and the diagnosis. Neither built.
 
 **Status: CLOSED for the order question; the `CHOOSING method` caveat is retired.** What was known
 about it on the way: (i) the fixture
