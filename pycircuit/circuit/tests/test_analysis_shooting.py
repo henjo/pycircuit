@@ -17800,10 +17800,14 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
          pnoise's S_pm/(4 S_v) for a source behind the slow node within
          0.6 % to r = 1e-2 and 2 % at 5e-2 on the lossy asymmetric fixture
          (the DC harmonic sum needed the path's filter by hand and was
-         4 % off at 5e-2); at r = 0.1 the two differ by -6 to -7 %, UNCHANGED
-         at 480 points (so not the first-order envelope) -- a gap between
-         PM by sideband quadrature and phase-mode projection where both
-         are 1e-3 of DC, recorded, not resolved.
+         4 % off at 5e-2).  With the PAIR-space envelope the two differed
+         by -6 to -7 % at r = 0.1, unchanged at 480 points, which I read
+         as "not the envelope"; the SECOND-order state-space envelope
+         (`samples`, ppv's own propagation on the complex anchor) moves
+         that to -2 to -3 % and 5e-2 to within 0.7 % -- the pair-space
+         object differs by a consistency correction, not an h-error, so
+         the grid test was blind.  What remains at 0.1 f0 is recorded, not
+         resolved.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -17842,6 +17846,9 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
             vf, inf = pss.frequency_aware_ppv(0.0)
             assert np.linalg.norm(vf - v0) < 1e-12 * np.linalg.norm(v0)
             assert np.linalg.norm(inf['samples_pair'] - i0['samples_pair']) < 1e-12 * np.linalg.norm(i0['samples_pair'])
+            ## the SECOND-order state-space envelope (ppv's own propagation
+            ## on the complex anchor, lifted into _ppv_propagate 2026-09-08)
+            assert np.linalg.norm(inf['samples'] - i0['samples']) < 1e-12 * np.linalg.norm(i0['samples'])
             rc = inf['corner'] / f0
             assert lo < rc < hi, (tau_over_T, rc)
             c = {r: pss.frequency_aware_ppv(r * f0)[1]['mode_content'][0] for r in (1e-5, 1e-4, 1e-1)}
@@ -17860,13 +17867,13 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
         pss = solve(cir); f0 = 1.0 / float(pss.period)
         pac = PAC(cir, toolkit=circuit.numeric)
         names = [str(n) for n in cir.nodes]; ov = names.index('v'); iw = names.index('w')
-        S0 = pss.frequency_aware_ppv(0.0)[1]['samples_pair'][:, iw]
+        S0 = pss.frequency_aware_ppv(0.0)[1]['samples'][:, iw]
         P0 = float(np.sum(np.abs(np.fft.fft(S0) / S0.shape[0]) ** 2))
-        for r, tol in ((1e-3, 0.01), (1e-2, 0.01), (5e-2, 0.03)):
+        for r, tol in ((1e-3, 0.01), (1e-2, 0.01), (5e-2, 0.02), (1e-1, 0.05)):
             f = r * f0
             Sv, _ = pac.oscillator_spectrum(pss, np.array([f]), ov)
             _am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
-            Sf = pss.frequency_aware_ppv(f)[1]['samples_pair'][:, iw]
+            Sf = pss.frequency_aware_ppv(f)[1]['samples'][:, iw]
             Pf = float(np.sum(np.abs(np.fft.fft(Sf) / Sf.shape[0]) ** 2))
             assert abs((float(np.real(pm)) / (4.0 * float(Sv[0]))) / (Pf / P0) - 1.0) < tol, (r, pm, Pf / P0)
 
@@ -17895,6 +17902,11 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
          stationary equivalent) reads 0.533 of the truth here: the power is
          right and the correlation between sidebands is gone, which is the
          whole content of the construction.
+      4. COLOURED (flicker): the band-resolved fold reduces to the
+         stationary fold for a stationary flicker source (4e-16) and
+         matches the stationary fold of the same separable physics for a
+         sign-definite modulation (1e-9 pinned; measured 1.000000); see the
+         block below for what a sign-changing modulation does.
     """
     import warnings
     from pycircuit.circuit.hdl import Behavioural, Branch, Contribution, white_noise
@@ -17957,3 +17969,80 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
         ## and the stationary fold REFUSES the bias-dependent source, as before
         with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT'):
             pacB.pnoise(pB, 0.13 * f0, oB, maxsidebands=16)
+
+    ## COLOURED (the MOS flicker case, the peer's 24x point): the band-
+    ## resolved fold.  Reduction: the stationary flicker source folded
+    ## cyclostationary equals the stationary fold (4e-16).  Identity: a
+    ## stationary flicker source through the multiplier (A) against an HDL
+    ## flicker_noise((k R V_lo)^2, 1) source (B) -- the same SEPARABLE
+    ## physics -- with a SIGN-DEFINITE modulation (va = 0.2, no crossing):
+    ## 1.000000; and with the gain k V_lo^2 at va = 1: 1.000000000.  ⚠ With a
+    ## sign-CHANGING modulation and a coloured source the two are NOT the
+    ## same physics (0.563 / 1.325, grid-independent to six digits at 200 /
+    ## 400 / 800 points): m xi and |m| xi coincide for white noise and
+    ## differ for a coloured one whose correlation spans the sign change --
+    ## Okumura's eq. 23 in concrete form; a PSD cannot carry the sign, so
+    ## the fold (and the HDL model) is the |m| one.  Two defects the
+    ## coloured gates found on the way: the pair index mirrored
+    ## (B_{k+l'-l} for B_{k+l-l'}; 0.49 / 0.17 on the smooth identity,
+    ## invisible to the reduction) and a circular wrap pairing a harmonic
+    ## with the wrong band.
+    from pycircuit.circuit.hdl import flicker_noise
+
+    class ModFlicker(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn, b, bn):
+            return Contribution(Branch(outp, outn).I, flicker_noise((p.k * Branch(b, bn).V) ** 2, 1))
+
+    def build_f(kind, va):
+        c = SubCircuit()
+        for n in ('lo', 'mid', 'out'):
+            c.add_node(n)
+        c['vlo'] = VSin('lo', gnd, va=va, vo=0.3, freq=f0)
+        if kind == 'A':
+            c.add_node('n'); c['xi'] = _Flicker('n', gnd, i=0.0, noisePSD=1.0, fref=1.0); c['Rn'] = R('n', gnd, r=Rn)
+            c['M1'] = Mult('mid', gnd, 'n', gnd, 'lo', gnd, k=k1)
+        else:
+            c['src'] = ModFlicker('mid', gnd, 'lo', gnd, k=k1 * Rn)
+        c['Rm'] = R('mid', gnd, r=1.0)
+        c['M2'] = Mult('out', gnd, 'mid', gnd, 'lo', gnd, k=k2)
+        c['Ro'] = R('out', gnd, r=1.0); c['Co'] = C('out', gnd, c=0.2e-6)
+        return c
+
+    cA = build_f('A', 0.2); pA, pacA = solve(cA); oA = [str(n) for n in cA.nodes].index('out')
+    cB = build_f('B', 0.2); pB, pacB = solve(cB); oB = [str(n) for n in cB.nodes].index('out')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for f in (0.13 * f0, 1.37 * f0):
+            s_st, _ = pacA.pnoise(pA, f, oA, maxsidebands=16)
+            s_cy, _ = pacA.pnoise(pA, f, oA, maxsidebands=16, cyclostationary=True)
+            assert abs(s_cy / s_st - 1.0) < 1e-12, ('coloured reduction', f / f0, s_st, s_cy)
+            sB, _ = pacB.pnoise(pB, f, oB, maxsidebands=16, cyclostationary=True)
+            assert abs(sB / s_st - 1.0) < 1e-9, ('coloured identity, sign-definite modulation', f / f0, s_st, sB)
+    ## and the zero-crossing flicker fixture WARNS (a PSD cannot carry the sign)
+    cB1 = build_f('B', 1.0); pB1, pacB1 = solve(cB1); oB1 = [str(n) for n in cB1.nodes].index('out')
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        pacB1.pnoise(pB1, 0.13 * f0, oB1, maxsidebands=16, cyclostationary=True)
+    assert any('touches zero' in str(x.message) for x in w), [str(x.message)[:80] for x in w]
+    ## and the SIGN-DEFINITE squared gain (k V_lo^2, exact to nine digits)
+    ## does NOT warn: its sqrt(PSD) touches zero smoothly (the order of the
+    ## zero, peer) -- the warning's negative control
+
+    class ModFlicker2(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn, b, bn):
+            return Contribution(Branch(outp, outn).I, flicker_noise((p.k * Branch(b, bn).V ** 2) ** 2, 1))
+
+    cB2 = build_f('B', 1.0); cB2['src'] = ModFlicker2('mid', gnd, 'lo', gnd, k=k1 * Rn)
+    pB2, pacB2 = solve(cB2); oB2 = [str(n) for n in cB2.nodes].index('out')
+    with warnings.catch_warnings(record=True) as w2:
+        warnings.simplefilter('always')
+        pacB2.pnoise(pB2, 0.13 * f0, oB2, maxsidebands=16, cyclostationary=True)
+    assert not any('touches zero' in str(x.message) for x in w2), [str(x.message)[:80] for x in w2]

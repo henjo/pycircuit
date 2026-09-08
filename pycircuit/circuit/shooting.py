@@ -4356,6 +4356,182 @@ class PSS(Analysis):
         out[rows] = va
         return out
 
+    def _ppv_propagate(self, fp, v, m, xdot, alg_rows, alg_cols):
+        """The pair-consistent SECOND-ORDER propagation of an anchor vector
+        `v` over the period (the block `ppv()` applies to its null vector,
+        lifted 2026-09-08 so `frequency_aware_ppv` can run it on a COMPLEX
+        anchor).  Returns `(states, states_pair, ts, Xf)`: `states` the
+        per-step state-space samples (`C^T v`, second order, rescaled by
+        `v . xdot = 1` at the first sample), `states_pair` the raw
+        pair-space replay, `ts` the transposed per-step states, `Xf` the
+        orbit.  Only the `solved_history` (LMM) kind carries the
+        correction; the others return the replay as it is."""
+        _dt = complex if np.iscomplexobj(v) else float
+        _alg_rows, _alg_cols = alg_rows, alg_cols
+        _end, _ts, states = fp.matvec_transposed(v, collect=True)
+        states_pair = [np.array(st, dtype=_dt, copy=True) for st in states]
+        _Xf = np.asarray(self.waveform[1], dtype=float)
+        ## ⚠⚠ THE PAIR'S FIRST BLOCK IS NOT THE PPV, AND THE ERROR IS FIRST
+        ## ORDER AND GROWS WITH Q.  For Gear-2 the adjoint state is the pair
+        ## `(w1, w2) = (dphi/dx_k, dphi/dx_{k-1})`, and `w1` alone is the
+        ## response to a perturbation of `x_k` WITH `x_{k-1}` HELD -- an
+        ## inconsistent history, which the two-step method resolves through
+        ## its parasitic root.  A physical state perturbation moves both:
+        ## `dx_{k-1} = Phi(t_{k-1}, t_k) dx_k`, so the phase functional is
+        ##
+        ##     v(t_k) = w1 + Phi(t_{k-1}, t_k)^T w2,   Phi ~ I - h J + O(h^2)
+        ##
+        ## and with `w2 = C_{k-1}^T z` (`z = -a2 t_k`, exact by the
+        ## recursion) that is `w1 + (C_{k-1} + h G)^T z` -- no inverse of
+        ## `C`, so it holds for a DAE.  Equivalently `w1` is orthogonal to
+        ## the amplitude eigenvector's first block, which is the true
+        ## amplitude direction ROTATED by `O(h)`; `v . xdot = 1` then
+        ## amplifies that rotation by `|v||xdot|`, the near-cancellation a
+        ## non-isochronous oscillator has (its PPV grows with `Q_lambda`).
+        ## MEASURED against the exact continuous adjoint (DOP853 at 1e-12,
+        ## no shooting code in the reference) on `vdp + 0.3 u^2`, whose
+        ## `c` is 100x van der Pol's: the first block gave `c` 16.6 / 8.0 /
+        ## 3.9 / 1.9 / 1.0% high at 400..6400 points -- clean first order
+        ## -- and violated `v(t) . xdot(t) = 1` along the orbit by 12%
+        ## (std 2.7e-2).  This contraction holds the invariant to 8e-5 and
+        ## gives `c` to 1.8e-3 at 400 and 8e-5 at 1600, second order.  On
+        ## van der Pol both agree to 1e-4: the two rows are in quadrature
+        ## there, so the rotation averaged out of `<v^2>` -- the fixture
+        ## shared the claim's assumption (failure shape 0b), and `pnoise`,
+        ## which contracts in PAIR space, was right all along and 14%
+        ## below `c` on the fixture that could see it.
+        ## The seed's scale is `w1(0) . xdot = 1`; the consistent object
+        ## is renormalised ONCE by its own `v(0) . xdot`, which is why the
+        ## per-step invariant is the test and not the definition.
+        if (fp.kind == 'solved_history' and len(states) > 0
+                and len(states[0]) == 2 * m):
+            _cs1, _ring = [], list(fp.opening)
+            for _lu, _Cn, _al, _b in fp.steps:
+                _cs1.append(_ring[1])
+                _ring = [_Cn, _ring[0]]
+            _hs = np.diff(np.asarray(fp.times, dtype=float))
+            _vphys = []
+            for _j, st in enumerate(states):
+                _lu, _Cn, _al, _b = fp.steps[_j]
+                _z = -_al[2] * np.asarray(_ts[_j], dtype=_dt)
+                ## ⚠ DIFFERENTIAL ROWS ONLY.  `w2 = C^T z` does not see the
+                ## algebraic rows of `z` (their rows of `C` are zero), so
+                ## the decomposition is non-unique there, and those
+                ## multipliers are O(1/h): `h G^T z` would carry an O(1)
+                ## component along the constraint normal into the
+                ## differential entries.  The consistent propagation
+                ## `C_D dx_{k-1} = (C_D + h G_D) dx_k` involves only the
+                ## differential equations, which is the choice that makes
+                ## it unique.  Measured: with the algebraic rows in, a DC
+                ## injection probe on a series-loss tank flipped sign.
+                if _alg_rows:
+                    _z[np.asarray(_alg_rows, dtype=int)] = 0.0
+                _xj = _Xf[:, _j if _j < _Xf.shape[1] else -1]
+                _Gj, = remove_row_col(
+                    (np.asarray(self.cir.G(_xj), dtype=float),),
+                    self.irefnode, self.toolkit)
+                _Gj = np.asarray(_Gj, dtype=float)
+                _Cj = np.asarray(_cs1[_j], dtype=float)
+                if _alg_rows:
+                    ## ⚠ ON A DAE THE ALGEBRAIC STATE IS SLAVED, AND ITS
+                    ## COUPLING INTO THE DIFFERENTIAL PROPAGATION IS O(h).
+                    ## A consistent perturbation propagates as
+                    ## `C_D dx_{k-1} = (C_D + h G_red) dx_k` on the
+                    ## differential states, with `G_red` the Schur
+                    ## complement `G[D,NZ] - G[D,Z] G[A,Z]^-1 G[A,NZ]`.
+                    ## With the full `G` instead, the series-loss tank had
+                    ## `c` 0.6 / 0.3 / 0.15% low at 240/480/960 points
+                    ## (first order) and the invariant drifting at 1.1e-3;
+                    ## with the complement `c` is 2.7e-4 / 7e-5 / 2e-5 from
+                    ## the exact reduced-ODE value and the drift 4e-4 /
+                    ## 1.1e-4 / 2.7e-5 -- second order (found through the
+                    ## review session's linear-DAE partition, 2026-09-05).
+                    _A = np.asarray(_alg_rows, dtype=int)
+                    _Zc = np.asarray(_alg_cols, dtype=int)
+                    _D = np.array([i for i in range(m) if i not in _alg_rows],
+                                  dtype=int)
+                    _NZ = np.array([j for j in range(m) if j not in _alg_cols],
+                                   dtype=int)
+                    ## ⚠ AND `G[A,Z]` NONSINGULAR *IS* THE INDEX-1 CONDITION.
+                    ## At index >= 2 (an L-I cutset, a C-V loop) it is
+                    ## singular by definition and the algebraic variables
+                    ## come from a differentiation, not a solve; the
+                    ## complement does not exist.  Same shape as the fill
+                    ## above: warn once with the reason and fall back to
+                    ## the full-`G` propagation, which is then first order.
+                    ## (Boundary named by the review session from the
+                    ## pencil: `eig(-G_red, C[D,NZ])` equals the finite
+                    ## generalised eigenvalues of `(C, G)` to 1e-12 on the
+                    ## series-loss tank, and the reduction is undefined on
+                    ## `li_plus_rc` and `cv_plus_rc`.)
+                    try:
+                        if len(_alg_rows) != len(_alg_cols):
+                            raise np.linalg.LinAlgError('not square')
+                        _Gred = (_Gj[np.ix_(_D, _NZ)]
+                                 - _Gj[np.ix_(_D, _Zc)] @ np.linalg.solve(
+                                     _Gj[np.ix_(_A, _Zc)], _Gj[np.ix_(_A, _NZ)]))
+                    except np.linalg.LinAlgError:
+                        if _j == 0:
+                            warnings.warn(
+                                'PSS.ppv: the algebraic block G[A,Z] is '
+                                'singular (index > 1: an L-I cutset or a '
+                                'C-V loop), so the pair-consistent '
+                                'propagation cannot eliminate the algebraic '
+                                'state and falls back to the full G -- the '
+                                'PPV samples can then be FIRST order in the '
+                                'step, as they are for the algebraic fill. '
+                                'Priced on the fixture that can see the '
+                                'dropped term (a non-isochronous core with '
+                                'its inductor split, and the same core with '
+                                'a C-V loop through a bias rail): within 3e-4 '
+                                'of the index-1 object and second order on '
+                                'both, so at index 2 this fallback is the '
+                                'whole answer.',
+                                RuntimeWarning, stacklevel=2)
+                        _Gred = _Gj[np.ix_(_D, _NZ)]
+                    _corr = np.zeros(m, dtype=_dt)
+                    _corr[_NZ] = (_Cj[np.ix_(_D, _NZ)]
+                                  + _hs[_j] * _Gred).T @ _z[_D]
+                    _vp_j = st[:m] + _corr
+                else:
+                    _vp_j = st[:m] + (_Cj + _hs[_j] * _Gj).T @ _z
+                ## ⚠ AND ZERO ON THE ALGEBRAIC COLUMNS, as `C^T v_1` is:
+                ## the state functional contracts a perturbation ON the
+                ## constraint manifold, whose algebraic components are
+                ## slaved, and `h G^T z` would otherwise leave 4e-3 there
+                ## (caught by the full suite's Demir-(24) gate).  The
+                ## equation-row conversion never reads these entries.
+                if _alg_cols:
+                    _vp_j[np.asarray(_alg_cols, dtype=int)] = 0.0
+                _vphys.append(_vp_j)
+            _scale = (_vphys[0] @ xdot) if _dt is complex else float(_vphys[0] @ xdot)
+            if _scale == 0.0:
+                raise ValueError(
+                    'PSS.ppv: the pair-consistent adjoint is orthogonal to '
+                    'the orbit tangent at t = 0.')
+            ## ⚠ AND ITS DC CONTENT IS THE CONSISTENT OBJECT'S TOO -- taking
+            ## the mean from the raw block was TRIED AND MEASURED WRONG.
+            ## The raw block's orbit integral reproduces a same-grid
+            ## DC-injection probe to 1e-5 on the divider fixture (node row,
+            ## true mean 4e-6 |v|), where the consistent object's O(h^2)
+            ## pointwise errors leave an absolute floor of ~1e-5 |v| --
+            ## the wrong sign at 480 points.  But on the bias-sensitive
+            ## fixture's INDUCTOR row (a DC voltage in series with L, true
+            ## dT/dV = 16.20 by a second-order re-solve) the raw block
+            ## reads 17.49 / 16.83 / 16.51 at 400/800/1600 -- first order,
+            ## 8% off -- while the consistent object holds `v . xdot = 1`
+            ## to 8e-5 along the orbit, which pins its mean in EVERY row to
+            ## ~1e-5 |v|.  Stitching the raw mean in broke that invariant
+            ## by +-0.3.  So the raw block's DC exactness is row- or
+            ## fixture-specific (mechanism open, recorded in the roadmap),
+            ## and `samples` is one object, second order everywhere, with a
+            ## ~1e-5 |v| absolute floor on its mean.  The raw pair is kept
+            ## as `samples_pair` for the structural gates that live on its
+            ## discrete identities.
+            states = [np.concatenate((vp / _scale, st[m:] / _scale))
+                      for vp, st in zip(_vphys, states)]
+        return states, states_pair, _ts, _Xf
+
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
 
@@ -4695,168 +4871,7 @@ class PSS(Analysis):
         ## an integral over the orbit.  `Phi(T,s)^T v(T) = v(s)`, and the
         ## reverse replay computes exactly that sequence on its way to the
         ## answer -- it was being discarded.
-        _end, _ts, states = fp.matvec_transposed(v, collect=True)
-        states_pair = [np.array(st, dtype=float, copy=True) for st in states]
-        _Xf = np.asarray(self.waveform[1], dtype=float)
-        ## ⚠⚠ THE PAIR'S FIRST BLOCK IS NOT THE PPV, AND THE ERROR IS FIRST
-        ## ORDER AND GROWS WITH Q.  For Gear-2 the adjoint state is the pair
-        ## `(w1, w2) = (dphi/dx_k, dphi/dx_{k-1})`, and `w1` alone is the
-        ## response to a perturbation of `x_k` WITH `x_{k-1}` HELD -- an
-        ## inconsistent history, which the two-step method resolves through
-        ## its parasitic root.  A physical state perturbation moves both:
-        ## `dx_{k-1} = Phi(t_{k-1}, t_k) dx_k`, so the phase functional is
-        ##
-        ##     v(t_k) = w1 + Phi(t_{k-1}, t_k)^T w2,   Phi ~ I - h J + O(h^2)
-        ##
-        ## and with `w2 = C_{k-1}^T z` (`z = -a2 t_k`, exact by the
-        ## recursion) that is `w1 + (C_{k-1} + h G)^T z` -- no inverse of
-        ## `C`, so it holds for a DAE.  Equivalently `w1` is orthogonal to
-        ## the amplitude eigenvector's first block, which is the true
-        ## amplitude direction ROTATED by `O(h)`; `v . xdot = 1` then
-        ## amplifies that rotation by `|v||xdot|`, the near-cancellation a
-        ## non-isochronous oscillator has (its PPV grows with `Q_lambda`).
-        ## MEASURED against the exact continuous adjoint (DOP853 at 1e-12,
-        ## no shooting code in the reference) on `vdp + 0.3 u^2`, whose
-        ## `c` is 100x van der Pol's: the first block gave `c` 16.6 / 8.0 /
-        ## 3.9 / 1.9 / 1.0% high at 400..6400 points -- clean first order
-        ## -- and violated `v(t) . xdot(t) = 1` along the orbit by 12%
-        ## (std 2.7e-2).  This contraction holds the invariant to 8e-5 and
-        ## gives `c` to 1.8e-3 at 400 and 8e-5 at 1600, second order.  On
-        ## van der Pol both agree to 1e-4: the two rows are in quadrature
-        ## there, so the rotation averaged out of `<v^2>` -- the fixture
-        ## shared the claim's assumption (failure shape 0b), and `pnoise`,
-        ## which contracts in PAIR space, was right all along and 14%
-        ## below `c` on the fixture that could see it.
-        ## The seed's scale is `w1(0) . xdot = 1`; the consistent object
-        ## is renormalised ONCE by its own `v(0) . xdot`, which is why the
-        ## per-step invariant is the test and not the definition.
-        if (fp.kind == 'solved_history' and len(states) > 0
-                and len(states[0]) == 2 * m):
-            _cs1, _ring = [], list(fp.opening)
-            for _lu, _Cn, _al, _b in fp.steps:
-                _cs1.append(_ring[1])
-                _ring = [_Cn, _ring[0]]
-            _hs = np.diff(np.asarray(fp.times, dtype=float))
-            _vphys = []
-            for _j, st in enumerate(states):
-                _lu, _Cn, _al, _b = fp.steps[_j]
-                _z = -_al[2] * np.asarray(_ts[_j], dtype=float)
-                ## ⚠ DIFFERENTIAL ROWS ONLY.  `w2 = C^T z` does not see the
-                ## algebraic rows of `z` (their rows of `C` are zero), so
-                ## the decomposition is non-unique there, and those
-                ## multipliers are O(1/h): `h G^T z` would carry an O(1)
-                ## component along the constraint normal into the
-                ## differential entries.  The consistent propagation
-                ## `C_D dx_{k-1} = (C_D + h G_D) dx_k` involves only the
-                ## differential equations, which is the choice that makes
-                ## it unique.  Measured: with the algebraic rows in, a DC
-                ## injection probe on a series-loss tank flipped sign.
-                if _alg_rows:
-                    _z[np.asarray(_alg_rows, dtype=int)] = 0.0
-                _xj = _Xf[:, _j if _j < _Xf.shape[1] else -1]
-                _Gj, = remove_row_col(
-                    (np.asarray(self.cir.G(_xj), dtype=float),),
-                    self.irefnode, self.toolkit)
-                _Gj = np.asarray(_Gj, dtype=float)
-                _Cj = np.asarray(_cs1[_j], dtype=float)
-                if _alg_rows:
-                    ## ⚠ ON A DAE THE ALGEBRAIC STATE IS SLAVED, AND ITS
-                    ## COUPLING INTO THE DIFFERENTIAL PROPAGATION IS O(h).
-                    ## A consistent perturbation propagates as
-                    ## `C_D dx_{k-1} = (C_D + h G_red) dx_k` on the
-                    ## differential states, with `G_red` the Schur
-                    ## complement `G[D,NZ] - G[D,Z] G[A,Z]^-1 G[A,NZ]`.
-                    ## With the full `G` instead, the series-loss tank had
-                    ## `c` 0.6 / 0.3 / 0.15% low at 240/480/960 points
-                    ## (first order) and the invariant drifting at 1.1e-3;
-                    ## with the complement `c` is 2.7e-4 / 7e-5 / 2e-5 from
-                    ## the exact reduced-ODE value and the drift 4e-4 /
-                    ## 1.1e-4 / 2.7e-5 -- second order (found through the
-                    ## review session's linear-DAE partition, 2026-09-05).
-                    _A = np.asarray(_alg_rows, dtype=int)
-                    _Zc = np.asarray(_alg_cols, dtype=int)
-                    _D = np.array([i for i in range(m) if i not in _alg_rows],
-                                  dtype=int)
-                    _NZ = np.array([j for j in range(m) if j not in _alg_cols],
-                                   dtype=int)
-                    ## ⚠ AND `G[A,Z]` NONSINGULAR *IS* THE INDEX-1 CONDITION.
-                    ## At index >= 2 (an L-I cutset, a C-V loop) it is
-                    ## singular by definition and the algebraic variables
-                    ## come from a differentiation, not a solve; the
-                    ## complement does not exist.  Same shape as the fill
-                    ## above: warn once with the reason and fall back to
-                    ## the full-`G` propagation, which is then first order.
-                    ## (Boundary named by the review session from the
-                    ## pencil: `eig(-G_red, C[D,NZ])` equals the finite
-                    ## generalised eigenvalues of `(C, G)` to 1e-12 on the
-                    ## series-loss tank, and the reduction is undefined on
-                    ## `li_plus_rc` and `cv_plus_rc`.)
-                    try:
-                        if len(_alg_rows) != len(_alg_cols):
-                            raise np.linalg.LinAlgError('not square')
-                        _Gred = (_Gj[np.ix_(_D, _NZ)]
-                                 - _Gj[np.ix_(_D, _Zc)] @ np.linalg.solve(
-                                     _Gj[np.ix_(_A, _Zc)], _Gj[np.ix_(_A, _NZ)]))
-                    except np.linalg.LinAlgError:
-                        if _j == 0:
-                            warnings.warn(
-                                'PSS.ppv: the algebraic block G[A,Z] is '
-                                'singular (index > 1: an L-I cutset or a '
-                                'C-V loop), so the pair-consistent '
-                                'propagation cannot eliminate the algebraic '
-                                'state and falls back to the full G -- the '
-                                'PPV samples can then be FIRST order in the '
-                                'step, as they are for the algebraic fill. '
-                                'Priced on the fixture that can see the '
-                                'dropped term (a non-isochronous core with '
-                                'its inductor split, and the same core with '
-                                'a C-V loop through a bias rail): within 3e-4 '
-                                'of the index-1 object and second order on '
-                                'both, so at index 2 this fallback is the '
-                                'whole answer.',
-                                RuntimeWarning, stacklevel=2)
-                        _Gred = _Gj[np.ix_(_D, _NZ)]
-                    _corr = np.zeros(m)
-                    _corr[_NZ] = (_Cj[np.ix_(_D, _NZ)]
-                                  + _hs[_j] * _Gred).T @ _z[_D]
-                    _vp_j = st[:m] + _corr
-                else:
-                    _vp_j = st[:m] + (_Cj + _hs[_j] * _Gj).T @ _z
-                ## ⚠ AND ZERO ON THE ALGEBRAIC COLUMNS, as `C^T v_1` is:
-                ## the state functional contracts a perturbation ON the
-                ## constraint manifold, whose algebraic components are
-                ## slaved, and `h G^T z` would otherwise leave 4e-3 there
-                ## (caught by the full suite's Demir-(24) gate).  The
-                ## equation-row conversion never reads these entries.
-                if _alg_cols:
-                    _vp_j[np.asarray(_alg_cols, dtype=int)] = 0.0
-                _vphys.append(_vp_j)
-            _scale = float(_vphys[0] @ xdot)
-            if _scale == 0.0:
-                raise ValueError(
-                    'PSS.ppv: the pair-consistent adjoint is orthogonal to '
-                    'the orbit tangent at t = 0.')
-            ## ⚠ AND ITS DC CONTENT IS THE CONSISTENT OBJECT'S TOO -- taking
-            ## the mean from the raw block was TRIED AND MEASURED WRONG.
-            ## The raw block's orbit integral reproduces a same-grid
-            ## DC-injection probe to 1e-5 on the divider fixture (node row,
-            ## true mean 4e-6 |v|), where the consistent object's O(h^2)
-            ## pointwise errors leave an absolute floor of ~1e-5 |v| --
-            ## the wrong sign at 480 points.  But on the bias-sensitive
-            ## fixture's INDUCTOR row (a DC voltage in series with L, true
-            ## dT/dV = 16.20 by a second-order re-solve) the raw block
-            ## reads 17.49 / 16.83 / 16.51 at 400/800/1600 -- first order,
-            ## 8% off -- while the consistent object holds `v . xdot = 1`
-            ## to 8e-5 along the orbit, which pins its mean in EVERY row to
-            ## ~1e-5 |v|.  Stitching the raw mean in broke that invariant
-            ## by +-0.3.  So the raw block's DC exactness is row- or
-            ## fixture-specific (mechanism open, recorded in the roadmap),
-            ## and `samples` is one object, second order everywhere, with a
-            ## ~1e-5 |v| absolute floor on its mean.  The raw pair is kept
-            ## as `samples_pair` for the structural gates that live on its
-            ## discrete identities.
-            states = [np.concatenate((vp / _scale, st[m:] / _scale))
-                      for vp, st in zip(_vphys, states)]
+        states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols)
         ## ⚠ AND FILL EVERY SAMPLE TOO, at ITS OWN operating point, because
         ## `G` is state-dependent and the algebraic entries are a pointwise
         ## function of the differential ones.  Done here rather than by
@@ -5375,7 +5390,16 @@ class PSS(Analysis):
         return v, info
 
     def frequency_aware_ppv(self, offset, tol=None):
-        """The PPV at a nonzero modulation frequency (Lai 2008, eq. 24).
+        """The PPV at a nonzero modulation frequency (Lai 2008, eq. 23).
+
+        ⚠ EQ. 23, NOT 24 (docs session, 2026-09-09): Lai's eq. 24 drops the
+        AC columns of the Toeplitz block and is justified only "if we are
+        only interested in the transfer functions when w_s is close to
+        DC"; this shooting form has no such truncation -- `I - exp(-j w_s T)
+        M^T` is the exact sampled LPTV adjoint at ANY offset, the monodromy
+        already carrying the full time variation -- so it is eq. 23 for
+        what the object IS, exact for the discretised system, and eq. 24
+        only for the DC-reduction sentence pinned below.
 
         The classical PPV is the left null vector of `I - M^T`, bordered by
         `q = C(0) xdot(0)`; it is the phase response to a perturbation that
@@ -5401,9 +5425,11 @@ class PSS(Analysis):
         `lambda_k exp(+j w_s t_k)` with `lambda` the transposed replay of
         `v` -- the sideband rows' own convention, so its Fourier
         coefficient at harmonic `k` is the phase transfer of a source band
-        at `k f0 + f_s` (⚠ FIRST order in the step: the pair-consistent
-        second-order propagation `ppv()` applies to its `samples` is not
-        carried here); `info['admixture']` the norm fraction of `v(w_s)`
+        at `k f0 + f_s`; `info['samples']` the same in state space
+        (`C^T v`), SECOND order in the step through `ppv()`'s own
+        pair-consistent propagation run on the complex anchor
+        (`_ppv_propagate`, lifted 2026-09-08; at w_s = 0 it is `ppv()`'s
+        `samples`); `info['admixture']` the norm fraction of `v(w_s)`
         orthogonal to the DC PPV; `info['corner']` the predicted corner
         `|1 - mu_2| / (2 pi T)` in Hz; `info['alpha']`; `info['ppv']` the
         DC object's info.
@@ -5449,9 +5475,16 @@ class PSS(Analysis):
         rhs[n] = 1.0
         z, relres, _H, _k = _arnoldi_gmres(_mv, rhs, rtol=rtol, maxiter=min(n + 1, 200))
         if relres > max(1e3 * rtol, 1e-8):
+            ## Lai's own warning about this object: eq. 23 "is very
+            ## difficult to solve using iterative solvers (such as GMRES),
+            ## because the extra columns and rows from the Toeplitz block
+            ## degrade the block diagonal preconditioner" -- a property of
+            ## the formulation, not a defect of the fixture
             raise RuntimeError(
                 'PSS.frequency_aware_ppv: the bordered solve at offset %g did '
-                'not converge (relative residual %.3e).' % (float(offset), relres))
+                'not converge (relative residual %.3e) -- a known property of '
+                'the bordered LPTV adjoint (Lai 2008), not a fixture defect.'
+                % (float(offset), relres))
         v = np.asarray(z[:n], dtype=complex)
         ## `ppv()`'s own normalisation, `v . xdot(0) = 1` -- the border fixes
         ## `q^T v = 1` only, and the two differ by a factor AND a sign on
@@ -5462,12 +5495,19 @@ class PSS(Analysis):
         if vx == 0.0:
             raise ValueError('PSS.frequency_aware_ppv: v(w_s) is orthogonal to the orbit tangent.')
         v = v / vx
-        ## the envelope over the period, in the sideband rows' convention
-        _g, _ts, st = fp.matvec_transposed(v, collect=True)
-        st = np.asarray(st, dtype=complex)
+        ## the envelope over the period, in the sideband rows' convention:
+        ## `ppv()`'s own second-order propagation on the complex anchor
+        ## (lifted into `_ppv_propagate`), then the per-step phase
+        irn = self.irefnode
+        x0r = np.asarray(self._period_state[1], dtype=float).ravel()
+        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        _alg_rows, _alg_cols = self._algebraic_adjoint_pattern(x0f)
+        states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols)
+        st = np.asarray(states_pair, dtype=complex)
         tms = np.asarray(fp.times, dtype=float)[:st.shape[0]]
         phase = np.exp(2j * np.pi * float(offset) * tms)
         samples_pair = st * phase[:, None]
+        samples = np.asarray(states, dtype=complex) * phase[:, None]
         ## the admixture: what of v(w_s) is NOT along the DC PPV.  ⚠ This is
         ## dominated by whichever mode has the largest weight, which on a
         ## core with a fast amplitude mode is THAT one (weight ~ 2 pi r,
@@ -5493,8 +5533,8 @@ class PSS(Analysis):
         info = {'alpha': alpha, 'offset': float(offset), 'admixture': admixture,
                 'mode_content': mode_content, 'multipliers': multipliers,
                 'corner': abs(1.0 - mu2) / (2.0 * np.pi * T), 'second_multiplier': mu2,
-                'samples_pair': samples_pair, 'times': tms, 'residual': float(relres),
-                'ppv': info0}
+                'samples_pair': samples_pair, 'samples': samples, 'times': tms,
+                'residual': float(relres), 'ppv': info0}
         return v, info
 
     def _forced_replay_transposed(self, fp, freq, xa):
@@ -10747,9 +10787,9 @@ class PAC(Analysis):
         collapses to the stationary `sum_l a_l CY a_l^H` -- Okumura's
         `p = 1` case, pinned to machine precision.  The cost is the
         stationary fold's (the rows dominate; the double sum is free).
-        A coloured source takes `CY` at the band of row `l` (exact for
-        white).  Like the stationary fold this is a LOWER bound at a
-        sideband cap.
+        A coloured source is folded band by band (each white band the
+        modulation reaches carries its own `CY`; see `_cyclostationary_fold`).
+        Like the stationary fold this is a LOWER bound at a sideband cap.
         ⚠ Coherence is the whole content: `modulated=True` (the cycle-
         averaged `CY`, Hull & Meyer's stationary equivalent) keeps the
         power and drops the correlation between sidebands, and the two
@@ -10757,12 +10797,21 @@ class PAC(Analysis):
         driven multiplier, and the identity against the STATIONARY fold of
         the same physics written as a white source through a periodically
         varying gain is the gate (`test_..._cyclostationary_...`).
-        ⚠ FLICKER: computed the same way (a coloured `B^{(p)}`), but
-        Okumura's own construction excludes it (p. 585: "cannot be modeled
-        as a cyclostationary process by using this method, because it has
-        very long time constants") -- the modulated-coloured model is
-        formally the same fold and physically contested; a flicker source
-        with a bias-dependent coefficient gets a number and a warning.
+        ⚠ FLICKER, AND WHAT OKUMURA'S EQ. 23 MEANS HERE (measured
+        2026-09-08): a coloured source is folded band by band, and against
+        the stationary fold of the same SEPARABLE physics (a stationary
+        flicker source through a periodically varying gain) it is exact --
+        1.000000 -- as long as the modulation is SIGN-DEFINITE.  When the
+        modulation changes sign the two are DIFFERENT physics (0.56 / 1.33,
+        grid-independent to six digits): for white noise `m xi` and `|m| xi`
+        are one process, for a coloured one whose correlation spans the
+        sign change they are not (`R(t,t') = m(t) m(t') R_c(t-t')` keeps
+        the sign product), and a PSD cannot carry the sign -- so this fold,
+        like the HDL model feeding it, is the `|m|` one.  That is Okumura's
+        "cannot be modeled as a cyclostationary process by using this
+        method, because it has very long time constants" in concrete form.
+        A flicker source with a bias-dependent coefficient gets the `|m|`
+        number, correct when its modulation does not change sign.
 
         Returns `(S, sidebands_used)`.  `S` is the one-sided
         **time-averaged** PSD at the output, in the same units as
@@ -11125,25 +11174,154 @@ class PAC(Analysis):
         Cs = np.asarray(Cs, dtype=complex)
         return np.fft.fft(Cs, axis=0) / Cs.shape[0]
 
+    def _cy_sqrt_harmonics(self, pss, w):
+        """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
+        the orbit, `(N, n, n)`, for the band-resolved (coloured) fold."""
+        fp = pss.factored_period()
+        irn = pss.irefnode
+        xs = np.asarray(pss.waveform[1], dtype=float)
+        nsamp = len(fp.steps)
+        Bs = []
+        for k in range(nsamp):
+            xr = np.asarray(xs[:, k], dtype=float).ravel()
+            xf = xr if xr.shape[0] == pss.cir.n else np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
+            cyk = np.asarray(cyk, dtype=complex)
+            cyk = 0.5 * (cyk + cyk.conj().T)
+            lam, U = np.linalg.eigh(cyk)
+            lam = np.clip(np.real(lam), 0.0, None)
+            Bs.append((U * np.sqrt(lam)[None, :]) @ U.conj().T)
+        Bs = np.asarray(Bs, dtype=complex)
+        return np.fft.fft(Bs, axis=0) / Bs.shape[0]
+
     def _cyclostationary_fold(self, pss, freq, rows):
-        """`S(f) = sum_{l,l'} a_l P_{l'-l} a_{l'}^H` over the gathered
+        """`S(f) = sum_{l,l'} a_l Q_{l,l'} a_{l'}^H` over the gathered
         sideband rows (`rows[l]` = the row for a source at `f - l f0`,
-        output at `f`), `P` the harmonics of `CY` at the l-th row's band
-        (exact for a white source; a coloured one gets the band of `l`).
-        Verified against the STATIONARY fold of the same physics written
-        as a white source through a periodically varying gain: 9e-16."""
+        output at `f`).  WHITE source: `Q_{l,l'} = P_{l'-l}`, the DFT of
+        `CY(x(t))` itself -- no square root, exact on the grid (9e-16
+        against the stationary fold of the same physics).  COLOURED source
+        (`CY` depends on `w`; detected by comparing two bands): the white
+        band `p = l + k` shared by rows `l` and `l'` carries its OWN `CY`,
+        so `Q_{l,l'} = sum_k B_k^{(l+k)} B_{k+l-l'}^{(l+k) H}` with
+        `B^{(p)}` the sqrt-DFT at the band's frequency `|f - p f0|`, summed
+        over ALL `N` modulation harmonics `k` (which is what makes the
+        square root exact here: the 2.8e-5 of the first version came from
+        a window on `k`, not from the root).  ⚠ Measured by the docs
+        session on a flicker source: `||P_0||` differs 24x across the bands
+        the fold sums, so "the band of l" (the first version's shortcut)
+        was a 24x approximation on the case the feature exists for; the
+        band-resolved form is pinned against the stationary fold of a
+        stationary FLICKER source through the same multiplier."""
         f0 = 1.0 / float(pss.period)
         ls = sorted(rows)
-        cache = {}
+        f = float(freq)
+        ## coloured or white?  two bands, same test the stationary path uses
+        w_a = 2.0 * np.pi * abs(f - ls[0] * f0)
+        w_b = 2.0 * np.pi * max(abs(f) * 2.0, f0)
+        Pa = self._cy_harmonics(pss, w_a)
+        Pb = self._cy_harmonics(pss, w_b)
+        coloured = not np.allclose(Pa, Pb, rtol=1e-9, atol=0.0)
         total = 0.0
-        for l in ls:
-            key = round(abs(freq - l * f0) / f0, 12)
-            if key not in cache:
-                cache[key] = self._cy_harmonics(pss, 2.0 * np.pi * abs(freq - l * f0))
-            P = cache[key]
+        if not coloured:
+            P = Pa
             N = P.shape[0]
+            for l in ls:
+                for lp in ls:
+                    total += complex(rows[l] @ P[(lp - l) % N] @ np.conj(rows[lp]))
+            return float(np.real(total))
+        ## band-resolved: every white band the modulation harmonics reach
+        cache = {}
+        Nn = Pa.shape[0]
+        ## ⚠ A SPECIFICATION LIMIT, NOT AN IMPLEMENTATION ONE (docs session,
+        ## 2026-09-08): a coloured source under a modulation that CHANGES
+        ## SIGN is not representable by any fold built from a PSD -- the
+        ## correlation R(t,t') = m(t) m(t') R_c(t-t') keeps the sign product
+        ## and CY cannot carry it -- so this fold, like the HDL model
+        ## feeding it, computes the |m| process (measured 0.56 / 1.33 of
+        ## the signed one on a flicker source through a zero-crossing
+        ## gain, grid-independent; 1.000000000 for a sign-definite gain).
+        ## The sign is invisible here; its NECESSARY condition is a PSD
+        ## that touches zero along the orbit with a KINK in its square
+        ## root, so that is warned on.
+        ## The proxy's threshold: a zero crossing SAMPLED on an N-point grid
+        ## bottoms out near (pi/N)^2 of the maximum (6e-4 at 200 points on
+        ## the gate fixture), while a sign-definite PSD with a ten-fold
+        ## swing sits at 1e-2 -- so 1e-2 separates them here; a heuristic,
+        ## and it is a warning for that reason.
+        Cs0 = np.asarray([np.abs(np.diag(np.fft.ifft(Pa, axis=0)[k])) for k in range(Nn)])
+        dmax = Cs0.max(axis=0)
+        touches = (dmax > 0) & (Cs0.min(axis=0) <= 1e-2 * dmax)
+        ## ⚠ THE ORDER OF THE ZERO (peer): a LINEAR sign crossing m ~ a t
+        ## gives sqrt(PSD) ~ |a t|, a first-derivative KINK; a sign-definite
+        ## quadratic touch m ~ b t^2 gives sqrt(PSD) ~ b t^2, SMOOTH.  The
+        ## circular second difference of sqrt(PSD) is 2|a|h at a kink and
+        ## 2b h^2 where smooth -- both shrink under refinement, the smooth
+        ## one faster -- so a RAW threshold encodes the grid (5e-3 was safe
+        ## at 240 points and a false positive below ~100; peer).  Divided
+        ## by h/T and by the maximum it is a DERIVATIVE JUMP, grid-
+        ## independent at a kink (2|a|T/s_max ~ 4 pi for a sinusoidal
+        ## slope, 12.6 here) and falling as h/T where smooth (~2 (2 pi)^2
+        ## h/T: 0.33 at 240 points, 1.0 at 80, 2.0 at 40), so 3 separates
+        ## them down to ~50 points per period and the separation grows
+        ## with refinement.  Clears the squared-gain case (k V_lo^2, exact
+        ## to nine digits) that the touch test alone flagged.  ⚠ STILL
+        ## NECESSARY, NOT SUFFICIENT, AND THE DETECTOR'S SENSITIVITY RUNS
+        ## INVERSE TO THE EFFECT (peer): the indicator is 12.57 for a
+        ## sinusoidal crossing, 0.24 for sign|sin|^1.5 and 0 for sign|sin|^2
+        ## -- all sign-changing -- while the discrepancy stays O(1):
+        ## MEASURED on the flicker identity with the LO shaped to
+        ## v |v|^(p-1), B/A = 0.187 / 1.895 (p = 1, warned), 0.204 / 1.779
+        ## (p = 1.5, silent), 0.217 / 1.699 (p = 2, silent) at 0.13 / 1.37
+        ## f0.  A quiet warning is therefore not evidence of a small
+        ## discrepancy; the common sinusoidal crossing is caught, the
+        ## shallow ones are not, and they err as much.
+        kinked = np.zeros_like(touches)
+        hT = 1.0 / float(Nn)
+        for jj in np.where(touches)[0]:
+            sq = np.sqrt(Cs0[:, jj])
+            d2 = np.abs(sq - 0.5 * (np.roll(sq, 1) + np.roll(sq, -1)))
+            kinked[jj] = bool(d2.max() / (sq.max() * hT) > 3.0)
+        if bool(np.any(kinked)):
+            warnings.warn(
+                'PAC.pnoise(cyclostationary=True): a COLOURED source whose PSD '
+                'touches zero along the orbit -- if its modulation changes sign '
+                '(a switching gain), no PSD-specified model can represent the '
+                'coloured process (Okumura eq. 23 in concrete form), and this '
+                'fold computes the |m| one (its square root has a first-derivative '
+                'kink at the zero, the signature of a LINEAR sign crossing; a '
+                'necessary condition -- a shallow crossing shows no kink and '
+                'errs MORE): measured 0.56x and 1.33x of the signed '
+                'physics at two offsets on a flicker source through a '
+                'zero-crossing gain -- EITHER direction, the sign of the '
+                'discrepancy is set by the offset, not the mechanism -- and '
+                'exact for a sign-definite one. Only the element knows the sign.',
+                RuntimeWarning, stacklevel=3)
+        def _B(p):
+            key = round(abs(f - p * f0) / f0, 12)
+            if key not in cache:
+                cache[key] = self._cy_sqrt_harmonics(pss, 2.0 * np.pi * abs(f - p * f0))
+            return cache[key]
+        ks = np.fft.fftfreq(Nn, d=1.0 / Nn).astype(int)
+        for l in ls:
             for lp in ls:
-                total += complex(rows[l] @ P[(lp - l) % N] @ np.conj(rows[lp]))
+                Q = np.zeros_like(Pa[0])
+                for k in ks:
+                    ## (B B^H)_j = sum_k B_k B_{k-j}^H: the partner index is
+                    ## k + l - l', NOT k + l' - l -- the mirror was invisible to
+                    ## the constant-modulation reduction (only k = 0 there) and
+                    ## read 0.49 / 0.17 on the smooth-modulation flicker identity.
+                    ## ⚠ NO CIRCULAR WRAP HERE: a partner beyond N/2 would be
+                    ## paired with the wrong BAND (each band carries its own
+                    ## weight), harmless in the white P-form and wrong here --
+                    ## it read 0.56 / 1.33 on the kinked (zero-crossing)
+                    ## modulation whose coefficients reach N/2.
+                    kp = k + l - lp
+                    if abs(kp) > Nn // 2:
+                        continue
+                    Bp = _B(l + k)
+                    Q += Bp[k % Nn] @ Bp[kp % Nn].conj().T
+                total += complex(rows[l] @ Q @ np.conj(rows[lp]))
         return float(np.real(total))
 
     def _cy_cycle_averaged(self, pss, w):

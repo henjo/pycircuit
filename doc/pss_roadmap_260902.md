@@ -11747,3 +11747,101 @@ Three gates, named before running:
 Flicker: computed the same way (a coloured `P` at the band of row `l`), documented as contested by
 Okumura's own eq. 23. The stationary fold still REFUSES a bias-dependent `CY` (pinned), so the user
 chooses the model. Pinned: `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_the_cycle_average_is_not` (4 s).
+
+
+### The second-order envelope for `frequency_aware_ppv` — and it was NOT hygiene (Andreas: "do 3", 2026-09-08 night)
+
+`ppv()`'s pair-consistent propagation is lifted into `_ppv_propagate(fp, v, m, xdot, alg_rows,
+alg_cols)`, dtype-agnostic, and `frequency_aware_ppv` runs it on the complex anchor; `info['samples']`
+is now the second-order state-space envelope (`Cᵀv`), with `samples_pair` kept. Gates: at ω_s = 0 the
+new `samples` equals `ppv()`'s to **1.2e-16** (pair samples 1.1e-16). Then the A2 application redone
+with the state-space object, against `pnoise`'s `S_pm/(4S_v)`:
+
+| r | a = 0.25: S_pm | 2nd-order ratio | 1st-order (pair) | a = 0.40: S_pm | 2nd | 1st |
+|---|---|---|---|---|---|---|
+| 1e-3 | 0.72667 | 0.72908 | 0.72908 | 0.74674 | 0.74719 | 0.74720 |
+| 1e-2 | 0.02673 | 0.02681 | 0.02684 | 0.02901 | 0.02902 | 0.02904 |
+| 5e-2 | 0.00172 | 0.00172 | 0.00176 | 0.00152 | 0.00151 | 0.00155 |
+| 1e-1 | 0.00093 | 0.00091 | 0.00100 | 0.00065 | 0.00063 | 0.00069 |
+
+⚠ **My named prediction ("within 0.5 %, the gap was grid-independent so second order cannot move it")
+FAILED: the second-order object moves the ratio by −2.2 % at 5e-2 and −8.6 % at 0.1 f₀, and it moves it
+TOWARD `pnoise`** — the gap at 0.1 f₀ goes from −7.1/−5.8 % to **−2.2/−3.1 %**, and at 5e-2 from
+−2.1/−1.5 % to **0.0/−0.7 %**. The "grid-independent, therefore not first order" inference was wrong: the
+raw pair-space replay differs from the state-space object by the consistency correction
+`(C + hG)ᵀz`, which is not an h-expansion error and which a grid refinement cannot see. So the
+"puzzle" was mostly the wrong object; **the exponent analysis (0.37 … 0.69) stands on obsolete numbers
+and is withdrawn**, and the peer's "the summary statistic may be wrong" objection is answered from an
+unexpected side — the DATA were the wrong summary, not the abscissa. What remains at 0.1 f₀ is 2–3 %,
+with the AM baseline (−0.45/−0.18 %) inside it; not characterised further. The three-way bracketing
+statement stands with the new numbers; the arbiter is unchanged (the Monte Carlo, next item).
+
+**The coloured (flicker) case, on the peer's 24× measurement (same night).** The shipped shortcut took
+`CY` at the band of row `l`; on a flicker source `‖P₀‖` differs 24× across the bands the fold sums
+(peer), and no gate covered it. The fold is now band-resolved for a coloured source: the white band
+`p = l + k` shared by rows `l` and `l'` carries its own `CY`, `Q_{l,l'} = Σ_k B_k^{(p)} B_{k+l−l'}^{(p)H}`
+with the sqrt-DFT at each band's frequency, over all modulation harmonics; white sources keep the
+`P`-form (detected by comparing two bands). The identity gate IS constructible for the coloured case
+(the peer doubted it): a stationary flicker source through the multiplier and an HDL
+`flicker_noise((kRV_lo)², 1)` source are the same SEPARABLE physics, `PSD(t,f) = (kRV_lo(t))²/f`.
+What the coloured gates found:
+
+| gate | result |
+|---|---|
+| white identity / reduction under the new dispatch | 9e-16 / 2e-16 |
+| coloured reduction (stationary flicker, `cyclostationary=True` vs stationary) | 4.4e-16 |
+| coloured identity, smooth sign-definite modulation (va = 0.2) — first run | **0.49 / 0.17** |
+| … after fixing the mirrored pair index `B_{k+l'−l}` → `B_{k+l−l'}` | **1.000000** |
+| coloured identity, zero-crossing modulation (va = 1), 200 / 400 / 800 points | 0.562915 / 1.325161 at EVERY grid |
+| … with a sign-definite gain `k·V_lo²` at va = 1 | **1.000000000** |
+
+Two defects the coloured gates caught: the pair index mirrored (invisible to the reduction, which has
+only `k = 0`), and a circular wrap that paired a harmonic beyond `N/2` with the wrong band (harmless
+in the white `P`-form, removed here). The zero-crossing result is NOT a defect and not the peer's
+predicted aliasing (grid-independent to six digits): for white noise `m ξ` and `|m| ξ` are one process,
+for a coloured source whose correlation spans a sign change they are not (`R(t,t') = m(t)m(t')R_c(t−t')`
+keeps the sign product), and a PSD cannot carry the sign — the fold, like the HDL model feeding it, is
+the `|m|` model. **That is Okumura's eq. 23 in concrete form**: the modulated-coloured model is exact
+where the modulation is sign-definite and ambiguous where it is not. Pinned (reduction, sign-definite
+identity) in the same test. ⚠ Three named predictions on the way, scored: "identity to 1e-12 with the
+kink" failed (the sign, not the kink); "aliasing moves with the grid" (peer) failed (flat); "sign-definite
+gain closes it" held to nine digits.
+
+**The law, measured (peer's proposal, the flicker EXPONENT as the colour knob since the HDL has no
+Lorentzian source):** zero-crossing modulation (va = 1), PSD `(f_ref/f)^exp` on both sides:
+
+| exp | 0 (white) | 0.25 | 0.5 | 0.75 | 1 (flicker) |
+|---|---|---|---|---|---|
+| B/A at 0.13 f₀ | 1.000000 | 0.863 | 0.737 | 0.635 | 0.563 |
+| B/A at 1.37 f₀ | 1.000000 | 1.051 | 1.123 | 1.216 | 1.325 |
+
+Monotone, continuous from 1 as the correlation lengthens — the mechanism measured, not argued. ⚠ The
+sign of `(ratio − 1)` is fixed across `exp` at each offset and DIFFERS between offsets (below 1 at
+0.13 f₀, above 1 at 1.37 f₀): the pointwise `|m(t)m(t')| ≥ m(t)m(t')` does not fix the direction at the
+output, where the transfer re-weights the straddling pairs (peer's case (a)), so the discrepancy is
+TWO-sided and cannot be bounded as "over-estimates" — the warning says either direction. The peer's
+1/f-divergence caution does not fire: the offset spread grows smoothly with `exp` (0.14 / 0.39 / 0.58 /
+0.76), no jump at `exp = 1`. The fold now WARNS on the necessary condition it can see (a coloured PSD touching zero along the orbit:
+min ≤ 1e-2·max, since a sampled crossing bottoms near (π/N)² of the maximum and a sign-definite PSD
+with a ten-fold swing sits at 1e-2 — a heuristic, hence a warning), naming the `|m|` model and the
+measured factors; it cannot refuse, because the sign lives in the element and a sign-definite gain
+touching zero (`k·V_lo²`) is exact. ⚠ Recorded as a limit of the MODEL CLASS: Okumura's exclusion of
+flicker is not a limitation of his windowing but of any PSD-specified cyclostationary model, so no
+better method built on `CY` fixes it — what would is an element interface carrying the modulation's
+sign. Refined on the peer's point about false positives: the ORDER of the zero separates a linear sign
+crossing (√PSD has a first-derivative kink) from a sign-definite quadratic touch (√PSD smooth). ⚠ A raw
+second-difference threshold (5e-3, my first version) ENCODED THE GRID — both differences shrink under
+refinement, kink as h, touch as h², so it was safe at 240 points and a false positive below ~100 (peer's
+table) — so the indicator is the second difference divided by `h/T` and the maximum: a derivative JUMP,
+grid-independent at a kink (≈ 4π, 12.6 here) and falling as `h/T` where smooth (0.33 at 240 points, 1.0
+at 80); threshold 3, safe to ~50 points and widening with refinement. ⚠ And the detector's sensitivity runs
+INVERSE to the crossing's steepness (peer): with the LO shaped to `v|v|^(p−1)` the indicator is 12.57 / 0.24
+/ 0 at p = 1 / 1.5 / 2 (all sign-changing) — measured on the flicker identity, B/A = 0.187 / 1.895 (p = 1,
+warned), 0.204 / 1.779 (p = 1.5, silent), 0.217 / 1.699 (p = 2, silent) at 0.13 / 1.37 f₀: the discrepancy
+stays O(1), slightly closer to 1 as the crossing flattens (the peer's dwell proxy predicted growth; not
+borne out), while the warning goes quiet. A quiet warning is not evidence of a small discrepancy; the
+docstring says so. Citation fixed on the peer's second review: the object is Lai's eq. 23 (the exact
+sampled LPTV adjoint at any offset), eq. 24 being the near-DC truncation cited only for the pinned DC
+identity; and the GMRES guard now names Lai's own warning about the bordered system. So the squared-gain case no longer warns, and a cubic crossing (sign-changing, no kink) is named
+as what the condition still misses. Pinned: the zero-crossing flicker fixture warns, the squared-gain one
+does not.
