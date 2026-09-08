@@ -1632,7 +1632,13 @@ class PSS(Analysis):
     is the MOST expensive method at every size (four sequential stage
     solves), never the cheap alternative.  Absolute: n = 302 at 200 points
     is 20 s per period and 271 s per PSS solve under radau, 64 s under
-    gear.  Index-2: the
+    gear.  At n = 1002 (transient period only, same grid): gear 26 s,
+    trbdf2 55 s, radau 311 s -- radau/gear 11.8x, radau/trbdf2 5.7x -- so
+    the 3n stage factorisation dominates from a few hundred unknowns and
+    the ratio roughly doubles per 3.3x in n there; above ~300 unknowns
+    the accuracy is bought at an order of magnitude in wall-clock, and
+    trbdf2 (order 2, contractive, R = 1 + sqrt 2) is the alternative to
+    price against `grid_error` on your circuit.  Index-2: the
     period keeps classical order under radau (6.1 measured on a smooth
     orbit); the algebraic unknowns converge at the stage order (3) -- and a
     relaxation oscillator whose PERIOD is timed by such a variable (a

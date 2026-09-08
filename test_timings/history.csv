@@ -70,3 +70,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260908T185003Z,4ef9b47,pycircuit 10 no:cacheprovider,553.0,3127,pycircuit/circuit/tests/test_analysis_shooting.py::test_injection_locking_range_matches_averaging_on_the_textbook_control,224.7
 20260908T185310Z,c27c85e,pycircuit/circuit/tests/test_analysis_shooting.py no:cacheprovider three_leg_chain,77.8,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_one_absolute_scale,77.0
 20260908T190345Z,c27c85e,pycircuit 10 no:cacheprovider,612.1,3127,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,328.9
+20260908T192016Z,ff63d16,pycircuit 10 no:cacheprovider,556.6,3127,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_diffusion_constant_at_high_q_has_an_analytic_reference,251.3

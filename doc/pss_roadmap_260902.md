@@ -11404,7 +11404,11 @@ solve). Measured: 3.0 → 5.7 on the transient, 3.0 → 4.2 on the solve. Per-st
 dominates to n ≈ 100, and the stage system only starts to show at 302; the PSS ratio flattens
 because the shooting's sensitivity/monodromy assembly is method-independent and grows with n too.
 esdirk43 is the most expensive method at every size (four sequential stage solves), never the
-cheapest alternative to radau. Same period from esdirk43 and radau at every n (−332.04 ppm vs gear),
+cheapest alternative to radau. **n = 1002 (Andreas, later the same evening; transient period only,
+idle box): gear 26.3 s, trbdf2 54.6 s, radau 311.5 s — radau/gear 11.8×, radau/trbdf2 5.7×.** The
+prediction named for this point ("~10× if the 3n stage factorisation dominates, ~6 if assembly still
+does") held: the crossover is between 300 and 1000 unknowns and the ratio roughly doubles per 3.3× in
+`n` beyond it. In the CHOOSING table. Same period from esdirk43 and radau at every n (−332.04 ppm vs gear),
 trap −249, trbdf2 −292: the gear reference is the one that is off, as the CHOOSING table says.
 
 **η = |λ₁ − 1| (peer, Gourary reading §2.169):** the plain near-carrier PAC solve carries relative
