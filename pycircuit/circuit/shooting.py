@@ -4506,7 +4506,20 @@ class PSS(Analysis):
         model's range.  The fix is a frequency-aware PPV, which is this
         same bordered system at nonzero `w_s` -- the classical PPV is its
         DC point, and `PAC` already solves at nonzero frequency.  Not
-        built.  (Cited from the docs session, not verified here.)
+        built.  VERIFIED at the source (docs session, 2026-09-08): Lai
+        2008 eq. (24) at `w_s = 0` "is the augmented PPV extraction
+        equation (6) and (7)", verbatim; two scope limits: (24) is a
+        NEAR-DC approximation of (23) (the AC Toeplitz columns dropped,
+        "if we are only interested in ... w_s close to DC"), and (23)
+        "is very difficult to solve using iterative solvers (such as
+        GMRES)" because the border degrades the block preconditioner.
+        ⚠ AND `_vdp_with_slow_node` CANNOT SHOW THE EFFECT AT ANY tau/T:
+        its slow node couples through `Rs = 1e6` against a tank impedance
+        of 1, so its PPV entry is 7.3e-6 of the core's, flat over
+        tau/T = 1e2..1e6 while lambda_2 moves four decades -- it tests
+        conditioning, not the filtering of noise that REACHES the phase.
+        The fixture owed is a slow node IN the phase path (small Rs, large
+        Cs), with tau/T and coupling as separate knobs.
 
         ⚠ `q` IS EXACT, NOT DIFFERENCED.  `q = C(0) xdot(0)` looks like it
         needs the orbit's tangent, and differencing the waveform for it

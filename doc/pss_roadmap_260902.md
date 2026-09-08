@@ -11401,3 +11401,36 @@ and the 100 %-error offset `η/2π` is 1.7e-13 / 2.9e-14 / 2.5e-16 of f₀, orde
 `HARMONIC_GUARD = 1e-12`. (The peer's 7e-11 was gear at `reltol = 1e-11`.) So with the default
 integrator the unguarded band does not exist; the wiring of `PAC.solve` and `adjoint_transfer_row`
 through the deflated solve is one branch each and correct to do, not urgent. Not done here.
+
+### 9. A2's slow-node boundary: the fixture cannot show Lai's effect at ANY tau/T (peer, 2026-09-08; verified marker)
+
+`_vdp_with_slow_node` couples its slow node through `Rs = 1e6` against a tank impedance of 1, so the
+node adds a multiplier at `exp(−T/τ)` and nothing else — the PPV entry at the slow node is
+**7.3e-6 of the core's, flat over τ/T = 1e2 … 1e6** while `λ₂` moves over four decades. It tests
+CONDITIONING (well) and cannot test Lai's mechanism, which is the FILTERING of noise that reaches the
+phase; his case is a gated capacitor bank across the tank, slow AND strongly coupled. So "gated at
+τ/T = 10, larger untested for cost" is the wrong reading: the fixture is outside the regime at every
+τ/T, and the 0.8016 was too. What is owed is a fixture with the slow node IN THE PHASE PATH (small
+`Rs`, large `Cs`; τ/T and coupling as separate knobs), where τ/T = 1e2 may already show it without
+the 150 000-period Monte Carlo. Not built. (Peer's null worth keeping: a frequency-aware PPV swept in
+norm is flat by CONSTRUCTION — with `qᵀv = 1` the `1/(1−α)` pole cancels between numerator and
+denominator — and identical numbers across three fixtures were the tell; the effect lives per node.)
+Marker in `PSS.ppv` upgraded cited → verified: Lai 2008 eq. (24) at `ω_s = 0` is the augmented PPV
+extraction (6)/(7), verbatim; two scope limits the marker did not carry — (24) is a NEAR-DC
+approximation of (23) (the AC Toeplitz columns dropped, "if we are only interested in ... ω_s close
+to DC"), and (23) "is very difficult to solve using iterative solvers (such as GMRES)" because the
+border degrades the block-diagonal preconditioner.
+
+**Same hour, the peer's two follow-ups net out:** the marker's shooting-basis half ("this same
+bordered system at nonzero ω_s", `M → e^{−jω_sT} M`) IS earned — a retraction in between was itself
+wrong. The right metric is the AMPLITUDE-MODE content of `v(ω_s)`, weight `(1−α)/(1−α μ₂)`: zero at
+DC, ×10 per decade, corner at `2πr = 1 − μ₂` (observed 1.58e-3 against predicted 1.584e-3 at
+τ/T = 1e2; tracks 1/τ over two decades), plateau scaling 1e4× with the coupling; the no-slow-node
+control puts the corner at r = 0.16, outside any swept band — Lai's own reason nobody caught it.
+Bounded statement worth keeping: on this fixture the plateau is 2.3e-6 even at `Rs = 1e2`, so the
+correction is real, correctly structured and NEGLIGIBLE here (Lai's case is a 226-MOSFET bank, not
+one RC leg): no change to build priority. The strongly coupled fixture is the existing one with
+`Rs = 1e2` (10 000× the sensitivity at unchanged `λ₂`), and a linear ω_s sweep exposes the mechanism
+without the Monte Carlo. ⚠ **Do not gate on `|v|`** — three passes measured a MAGNITUDE of an object
+whose change is a DIRECTION (a 1 % orthogonal admixture moves a norm by 5e-5), and identical numbers
+across circuits were the tell each time.
