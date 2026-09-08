@@ -1590,12 +1590,13 @@ class PSS(Analysis):
       radau     5 (6.1  5.7e-10        yes          OUTPUT stays in range at every
                 on a                                step measured; only the STAGES
                 smooth                              leave it, <= 0.3 % of the swing,
-                orbit)                              above ~4 h_FE on a SATURATING
-                                                    nonlinearity (the widest
-                                                    practical margin of the four);
-                                                    on an exponential DIODE the
-                                                    stages never leave the hull at
-                                                    20-320 pts/period, measured
+                orbit)                              above ~4 h_FE -- seen ONLY on a
+                                                    scalar square-wave fixture (the
+                                                    widest practical margin of the
+                                                    four); on a driven detector
+                                                    circuit the stages never leave
+                                                    the hull at 20-320 pts/period,
+                                                    with a diode OR a tanh device
       esdirk43  4       5.3e-05        yes          output in range; stages leave it
                                                     <= 3 % above ~2.5 h_FE
       trbdf2    2       10.1           yes          OUTPUT rings above 2.4 h_FE
@@ -1620,16 +1621,18 @@ class PSS(Analysis):
     counts above it is cheaper on wall-clock anyway (60 points beat trap's
     480 on both axes, roadmap radau-default section), and `grid_error` /
     `warping_estimate` price the trade on YOUR circuit.  Index-2: the
-    period keeps classical order under radau (6.1 measured); the algebraic
-    unknowns converge at the stage order (3), which is where a relaxation
-    oscillator timed by an algebraic variable would feel it -- OPEN: the
-    fixture that isolates it (a comparator on a current sense through a
-    capacitor) defeats every integrator's inner step Newton at PSS grids,
-    because the sensed companion difference quotient carries a tau/h
-    sensitivity -- and the undamped basin is 0.94 h/(k tau), so refining
-    the grid shrinks it in proportion: no grid rescues the class, a damped
-    inner Newton reachable from PSS is the precondition (not yet built);
-    see the roadmap's radau-default section (2026-09-08).
+    period keeps classical order under radau (6.1 measured on a smooth
+    orbit); the algebraic unknowns converge at the stage order (3) -- and a
+    relaxation oscillator whose PERIOD is timed by such a variable (a
+    comparator on a current sense through a C-V loop) STILL keeps order 5
+    (5.66 / 5.06 / 5.05 measured, identical errors to its voltage-sensed
+    twin from 400 pts on), so no caveat applies.  ⚠ What that fixture DID
+    show: its inner step Newton fails undamped at every grid (stage
+    sensitivity tau/h, basin 0.94 h/(k tau)) -- hence the line search as
+    the last resort -- and `warping_estimate` reads 0.09-0.65 of the true
+    error on it: the septic interpolant does not resolve a comparator
+    edge, and the estimate is only as good as the interpolant (Part I's
+    "moderately smooth" boundary).  Roadmap, radau-default section.
     """
 
     parameters = Analysis.parameters + \
@@ -5937,6 +5940,18 @@ class PSS(Analysis):
         Pol returns `autonomous=False`, `period_error=None`, and a bounded
         lag series, as it must.
 
+        ⚠⚠ THE INTERPOLANT IS THE LIMIT (measured 2026-09-08): on a
+        relaxation oscillator with a comparator edge a few points wide the
+        estimate reads 0.09 of the true period error at 200 points per
+        period and 0.65 at 400 -- uniformly in every component, so not a
+        collapse: the septic spline does not resolve the edge and the
+        defect is interpolation error, not the method's.  Part I's own
+        scope is "moderately smooth"; a relaxation orbit at PSS grids is
+        outside it, and the number returned is then wrong by a factor that
+        nothing in it announces.  Trust it on smooth orbits (1.000 to four
+        digits on the van der Pol, index 1 and 2); on an orbit with edges,
+        refine until the estimate converges in `periods` and grid, or use
+        `grid_error`.
         ⚠ Scope and limits.  The period reading needs an AUTONOMOUS solve;
         on a driven circuit the lag is bounded (entrained) and `period_error`
         is returned as None with the per-period lag series still filled.

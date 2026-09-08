@@ -5685,7 +5685,7 @@ exact on Kronecker-nilpotent pencils of degree 1..5, so it can count above 2 at 
 | P2 rebuilt (ammeter in SERIES with L1) | F = 0.5 … 2, F ≠ 1 | **2, provisional** | 2 |
 | P2 rebuilt | **F = 1** | 2, provisional | **singular — and the DC layer says so** |
 | P3 VCVS in a C–V loop, self-controlled | | 1, provisional | 2 |
-| P4 CCVS in a C–V loop, controlled from an L–I branch | | 1, provisional | 2 |
+| P4 CCVS in a C–V loop, controlled from an L–I branch | r = 0 … 10 | 1, provisional | 2 (⚠ re-measured on the FIXED CCVS, §2.164: the first row was on the transposed element; verdict unchanged, rank C now 4, both instruments agree at every r) |
 
 1. **The index-3 surface is NAMED.** P1 is `C1 (v→b)`, `C2 (v→gnd)`, VCVS `b→gnd = g·v`. Index 3
    exactly on **`g* = 1 + C2/C1`**, verified at six `(C1, C2)` pairs — (1,1)→2, (1,2)→3, (1,3)→4,
@@ -10103,8 +10103,60 @@ measures its scaling; it does not prove the circuit fails for that reason. The d
 on the real circuit, named and NOT run: variant B at 200 and 400 points — the failing Newton's first
 overshoot must DOUBLE when `h` halves.
 
-**Status: OPEN, not "unmeasured".** The order of a period timed by an index-2 algebraic variable is
-still the one gap in the `CHOOSING method` table, and what is now known about it: (i) the fixture
+⚠⚠⚠ **RESOLVED THE SAME NIGHT, AND NOT THE WAY ANY OF THE ABOVE SAYS: THE SENSOR WAS BROKEN.** The
+classical `CCVS` stamped its transresistance at the INPUT branch's KVL row against the OUTPUT
+current — `v_in = r·i_out`, the output branch a 0 V short — a TRANSPOSED stamp, so the element
+output ZERO volts for any input current (DC probe: 1 mA in, `v(y) = +0.0000`). Variant B's
+comparator therefore saw `d = 0 − v_p`, pure negative feedback, and settled at the equilibrium at
+every grid; its "singular free-period Jacobian" and its "discretely different dynamics" were
+measurements on a disconnected sensor and DISSOLVE. The defect survived because its doctest pinned
+the wrong matrix and the only other test compared two backends' copies of it — the fourth classical
+element found broken this campaign (SVCVS, Transformer, the source gate, now CCVS), each behind a
+test that could not see it. Fixed (row K, column J), doctest corrected, pinned by a measurement
+proven to fail on the old code. **With the working element, variant B oscillates as a transient (9
+flips in 4 periods, like A) and converges under radau, radau+PCNR, trap and TR-BDF2 at 400 points
+with a period agreeing with A's to 2.5e-8** — the two variants share their exact period by
+construction, and now measurably. The period-order sweep is running. ⚠ What survives from the
+detour: the line search (the inner steps of a circuit with `d = −v_p` and a `τ/h`-sensitive
+comparator DID fail undamped, and the basin law explains why), and the lesson — a fixture that
+behaves unlike its twin at EVERY grid is a broken fixture before it is a finding.
+
+✅✅ **THE SWEEP RAN ON THE WORKING FIXTURE, AND THE GAP IS CLOSED: a period timed by an index-2
+algebraic variable keeps CLASSICAL order under radau.** References radau@3200, A and B agreeing to
+8.6e-15 relative (the exact periods coincide by construction, and now measurably). Period error in
+ppm at 100 / 200 / 400 / 800 / 1600 points, rates per doubling (order):
+
+| variant / method | 100 | 200 | 400 | 800 | 1600 | order |
+|---|---|---|---|---|---|---|
+| A (voltage-sensed) trap | — | 4046 | 825 | 199 | 49.4 | 2.29 / 2.05 / 2.01 |
+| A radau | 561 | 43.8 | 1.15 | 0.0416 | 0.00130 | 3.68 / **5.25 / 4.79 / 5.00** |
+| B (current-sensed, INDEX-2 unknown) trap | — | 2782 | 842 | 200 | 49.4 | 1.72 / 2.08 / 2.01 |
+| **B radau** | 1797 | 73.0 | 1.45 | 0.0432 | 0.00130 | 4.62 / **5.66 / 5.06 / 5.05** |
+
+**Order 5 on both, and identical errors from 400 points on** (1.45 vs 1.15 ppm at 400, 0.0432 vs
+0.0416 at 800, 0.00130 vs 0.00130 at 1600). The pre-registered prediction — B drops toward stage
+order 3 because the switching instant is read from a variable converging at `O(h^q)` — is REFUTED:
+the threshold crossing reads the algebraic component POINTWISE, and still the period keeps the
+differential order. So the peer's pointwise-versus-averaged mechanism, which made this the only
+fixture that could show the split, showed that it does not reach the period here either. No
+periodic bonus on a relaxation orbit (5.0, not 6.1 — "the rate is a Radau number, the point count
+depends on the orbit"), and at 100 points radau reads 3.7–4.6, the edge under-resolved. ⚠ Scope:
+one relaxation mechanism, one comparator gain, one C–V-loop sensing; trap's B row at 200 points
+(order 1.7) is the coarsest converged grid, not a trend.
+
+⚠⚠ **And a limitation of `warping_estimate` found beside it:** on this orbit the estimate reads
+**0.090 of the true period error at 200 points and 0.65 at 400**, for A and B alike, UNIFORMLY
+across every moving component (0.090 / 0.090 / 0.091 / 0.090; 0.649 / 0.649 / 0.650 / 0.649) — so
+it is not a component collapse; the septic interpolant does not resolve the comparator edge
+(`τ_o = τ/20`, a few points wide at 200), the defect is dominated by INTERPOLATION error rather than
+the method's, and the estimate is wrong by the same factor in every component. This is Part I's
+"moderately smooth" boundary in practice, and the instrument's own honest scope: **the estimate is
+only as good as the interpolant's representation of the waveform, and a relaxation oscillator at
+PSS grids is outside it.** Named check, not built: the interpolant's own defect on a refined grid,
+or the estimate's convergence in `periods`, as a self-diagnostic before the number is trusted.
+
+**Status: CLOSED for the order question; the `CHOOSING method` caveat is retired.** What was known
+about it on the way: (i) the fixture
 that isolates it is a circuit a user can write — a comparator on a current sense through a
 capacitor — and it defeats every integrator's step Newton at the grids a PSS uses, before any order
 can be read; (ii) the cure is a damped/line-search inner Newton reachable from PSS, or PCNR
@@ -10184,9 +10236,41 @@ residual almost nothing and the Newton leaves it there; an exponential junction 
 above the true solution with a current the coupled Newton cannot leave in place, and the junction
 limiting inside the stage Newton (*"LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION"*) adds to it.
 The `R = 0` signature, bounded and mild on the tunable-steepness fixture, does not present on the
-device class it was feared for. **What survives of the caveat:** a bounded, saturating nonlinearity
-at steps above four `h_FE` — a soft comparator, a `tanh` limiter — is where radau's stages can sit
-0.3 % past the rail; a junction is not. Scope: one device, one driven circuit, one reference.
+device class it was feared for. ~~**What survives of the caveat:** a bounded, saturating nonlinearity at steps above four
+`h_FE` — a soft comparator, a `tanh` limiter — is where radau's stages can sit 0.3 % past the
+rail; a junction is not.~~ ⚠ **NARROWED the same night by the peer's control (§2.163):** the same
+detector topology with a SATURATING `tanh` device in the diode's place (0.1 A, 20 mV), same grids,
+same stage capture, same reference construction — **stage excursion 0.00 at every grid 20–320**,
+radau's output 50× below TR-BDF2's at 20 points. So "saturating versus expansive" is NOT the
+mechanism; the stage overshoot is confined to the scalar square-wave fixture (a capacitor directly
+across the nonlinearity, driven by a 0/1 step landing on a step boundary), and on a circuit with a
+sinusoidal drive and a series resistance neither device shows it. The peer's scalar single-stage
+model was structurally blind to the phenomenon (one implicit stage on a monotone map is
+unconditionally inside the invariant set — stage excursion needs a multi-stage tableau with a
+negative coefficient), and my "exponential forbids it" was an attribution on a comparison that
+changed topology, dimension and capture path at once. **Caveat as it now stands:** radau's stages
+have been seen outside the invariant interval only on the scalar square-wave fixture, ≤ 0.3 %
+above ~4 `h_FE`; on both detector circuits, none. Scope: two devices, one driven topology.
+
+#### ✅ SUITE TIMING RECORDED, AND WHERE THE TIME GOES (Andreas, 2026-09-08: "start recording suite execution time; some tests are extending the suite's duration a lot")
+
+`conftest.py` now writes `test_timings/<utc>_<commit>.json` (every test's call duration, slowest
+first) and appends to `test_timings/history.csv` (timestamp, commit, scope, wall, tests, slowest)
+on every run, controller-side under xdist; `pytest.ini` prints the 20 slowest on every run. **The
+first full record (3118 tests, 24.5 min at `-n 10`, commit `37b4360`) says the wall is set by
+SCHEDULING, not by any one test:** the serial sum of all call durations is **4201 s**, so ten workers
+could finish in ~7 min; fourteen tests exceed a minute and the top 25 are 44 % of the serial total —
+the longest 193.5 s (`test_thermal_runaway_onset…`), then the B16 monodromy twin 180 s, the
+fine-step PSS-vs-AC match 151 s, the pnoise amplitude-mode test 127 s, the two injection-locking
+gates 101 and 89 s — and in collection order they land late in the run and the tail waits on them.
+**Remedy in place, no test changed:** `pytest_collection_modifyitems` sorts the collected items by
+their last recorded duration, longest first (the longest-processing-time heuristic; xdist's load
+scheduler hands out items in collection order, so every worker gets a long test early); unknown
+tests run last; a missing record leaves the order untouched. Verified: the shooting file now
+collects its 180 s test first. ⚠ The gain is MEASURED on the next full run against this record's
+24.5 min, not predicted here; the lower bound is max(193 s, 4201 s / 10) ≈ 7 min plus imbalance.
+The per-test reductions (a coarser grid or fewer sweep points on the five tests above 100 s) are a
+separate, per-fixture decision and were not made.
 
 #### ⛔ Koopman–Hill for DAEs (Schütz, Bayer & Leine, arXiv 2607.17339) — NOT actionable, recorded so nobody chases it; but its singularity claim validated `floquet_modes` and yields a free index-2 DIMENSION detector (peer `docs-46`, §2.161, 2026-09-08)
 

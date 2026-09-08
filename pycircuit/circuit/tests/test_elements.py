@@ -473,3 +473,85 @@ def test_Idtmod_modulo():
 
 if __name__ == '__main__':
     test_nullor_vva()
+
+
+def test_the_ccvs_outputs_its_transresistance_times_the_input_current():
+    """2026-09-08.  `CCVS` stamped its transresistance at (input KVL row,
+    output current column): `v_in = r i_out` with the output branch a 0 V
+    short -- a transposed stamp, so the element output ZERO volts for any
+    input current.  It survived because its doctest pinned the wrong matrix
+    and the only other test compared two backends' copies of it.  Found when
+    a relaxation oscillator sensing its capacitor current through a CCVS
+    never oscillated at any grid.  Pinned by MEASUREMENT: a 1 V source
+    through 1 kOhm into the input branch (1 mA) must give r * 1 mA at the
+    output, and the input branch must be a 0 V ammeter.
+    """
+    import numpy as np
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import VS, R, CCVS
+    from pycircuit.circuit.dcanalysis import DC
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    for n in ('s', 'x', 'y'):
+        c.add_node(n)
+    c['vs'] = VS('s', gnd, v=1.0)
+    c['R'] = R('s', 'x', r=1e3)
+    c['amm'] = CCVS('x', gnd, 'y', gnd, r=2.5e3)
+    c['Ry'] = R('y', gnd, r=1e6)
+    res = DC(c).solve()
+    assert abs(float(res.v('x'))) < 1e-12, 'the input branch must be a 0 V ammeter'
+    assert abs(float(res.v('y')) - 2.5) < 1e-9, \
+        'v(y) = %.4f V for 1 mA through r = 2.5 kOhm (the transposed stamp gave 0.0000)' % float(res.v('y'))
+
+
+def test_every_classical_controlled_source_meets_its_defining_relation_at_dc():
+    """2026-09-08, after the CCVS's transposed stamp: a DC measurement of each
+    controlled source and two-port against the relation that DEFINES it, with
+    an independent stimulus -- not a doctest pinning a matrix, not a backend
+    comparing two copies of the same element.  Signs are asserted where the
+    element's convention is documented by its own doctest, magnitudes
+    everywhere.
+    """
+    import numpy as np
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import (VS, R, VCVS, VCCS, CCCS, CCVS,
+                                            Transformer, Gyrator, Nullor)
+    from pycircuit.circuit.dcanalysis import DC
+    circuit.default_toolkit = circuit.numeric
+
+    def nodes(c, *names):
+        for n in names:
+            c.add_node(n)
+
+    c = SubCircuit(); nodes(c, 'i', 'o')
+    c['vs'] = VS('i', gnd, v=1.0); c['e'] = VCVS('i', gnd, 'o', gnd, g=3.0); c['RL'] = R('o', gnd, r=1e3)
+    assert abs(float(DC(c).solve().v('o')) - 3.0) < 1e-9, 'VCVS: v_out = g v_in'
+
+    c = SubCircuit(); nodes(c, 'i', 'o')
+    c['vs'] = VS('i', gnd, v=1.0); c['g'] = VCCS('i', gnd, 'o', gnd, gm=2e-3); c['RL'] = R('o', gnd, r=1e3)
+    assert abs(abs(float(DC(c).solve().v('o'))) - 2.0) < 1e-9, 'VCCS: |i_out| = gm v_in'
+
+    c = SubCircuit(); nodes(c, 's', 'x', 'o')
+    c['vs'] = VS('s', gnd, v=1.0); c['R'] = R('s', 'x', r=1e3); c['RL'] = R('o', gnd, r=1e3)
+    c['f'] = CCCS('x', gnd, 'o', gnd, F=4.0)
+    r = DC(c).solve()
+    assert abs(float(r.v('x'))) < 1e-9 and abs(abs(float(r.v('o'))) - 4.0) < 1e-9, 'CCCS: input a short, |i_out| = F i_in'
+
+    c = SubCircuit(); nodes(c, 's', 'x', 'o')
+    c['vs'] = VS('s', gnd, v=1.0); c['R'] = R('s', 'x', r=1e3); c['h'] = CCVS('x', gnd, 'o', gnd, r=2.5e3); c['RL'] = R('o', gnd, r=1e6)
+    assert abs(float(DC(c).solve().v('o')) - 2.5) < 1e-9, 'CCVS: v_out = r i_in (was 0.0000 before 2026-09-08)'
+
+    c = SubCircuit(); nodes(c, 'i', 'o')
+    c['vs'] = VS('i', gnd, v=1.0); c['t'] = Transformer('i', gnd, 'o', gnd, n=2.0); c['RL'] = R('o', gnd, r=1e3)
+    assert abs(float(DC(c).solve().v('o')) - 0.5) < 1e-9, 'Transformer: v_out = v_in / n'
+
+    c = SubCircuit(); nodes(c, 'i', 'o')
+    c['vs'] = VS('i', gnd, v=1.0); c['gy'] = Gyrator('i', gnd, 'o', gnd, gm=2e-3); c['RL'] = R('o', gnd, r=1e3)
+    assert abs(abs(float(DC(c).solve().v('o'))) - 2.0) < 1e-9, 'Gyrator: |i_out| = gm v_in'
+
+    c = SubCircuit(); nodes(c, 's', 'm', 'o')
+    c['vs'] = VS('s', gnd, v=1.0); c['R1'] = R('s', 'm', r=1e3); c['R2'] = R('m', 'o', r=5e3); c['nul'] = Nullor(gnd, 'm', 'o', gnd)
+    r = DC(c).solve()
+    assert abs(float(r.v('o')) + 5.0) < 1e-9 and abs(float(r.v('m'))) < 1e-9, 'Nullor as an ideal inverting amplifier: v_out = -R2/R1 v_in, v_- = 0'

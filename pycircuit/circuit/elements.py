@@ -762,8 +762,8 @@ class CCVS(Circuit):
            [ 0.,  0.,  0.,  0., -1.,  0.],
            [ 0.,  0.,  0.,  0.,  0.,  1.],
            [ 0.,  0.,  0.,  0.,  0., -1.],
-           [ 1., -1.,  0.,  0.,  0., -1.],
-           [ 0.,  0.,  1., -1.,  0.,  0.]])
+           [ 1., -1.,  0.,  0.,  0.,  0.],
+           [ 0.,  0.,  1., -1., -1.,  0.]])
 
 
     """
@@ -795,7 +795,17 @@ class CCVS(Circuit):
              (innindex, branchindexJ, -1),
              (branchindexJ, inpindex, 1),
              (branchindexJ, innindex, -1),
-             (branchindexJ, branchindexK, -self.iparv.r),
+             ## ⚠ FIXED 2026-09-08: this entry sat at (J, K) -- the INPUT
+             ## branch's KVL row against the OUTPUT current, `v_in = r i_out`
+             ## with the output a 0 V short -- a TRANSPOSED stamp, so the
+             ## element output zero volts for any input current (measured:
+             ## 1 mA in, 0.0000 V out).  It hid behind a doctest that pinned
+             ## the wrong matrix and a backend-parity test that compared two
+             ## copies of it; found when a relaxation oscillator sensing its
+             ## capacitor current through this element never oscillated.
+             ## The output branch's KVL is `v_out - r i_in = 0`: row K,
+             ## column J.
+             (branchindexK, branchindexJ, -self.iparv.r),
             ])
         self._G = G
 

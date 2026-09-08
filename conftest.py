@@ -100,3 +100,45 @@ def pytest_sessionfinish(session, exitstatus):
             f.write('timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds\n')
         f.write('%s,%s,%s,%.1f,%d,%s,%.1f\n' % (stamp, commit, scope.replace(',', ';'), wall,
                                                len(items), items[0][0], items[0][1]))
+
+
+# ---------------------------------------------------------------------------
+# LONGEST-FIRST COLLECTION ORDER, from the timing record (2026-09-08).
+#
+# The first full record said where the suite's time goes: the serial sum of
+# all call durations was 4201 s, so ten workers could finish in ~7 min, yet
+# the run took 24.5 min -- fourteen tests over a minute, the longest 193 s,
+# landed wherever collection order put them and the tail waited on them.
+# Sorting collected items by their last recorded duration, longest first,
+# is the classic longest-processing-time heuristic: xdist's load scheduler
+# hands out items in collection order, so every worker gets a long test
+# early and the short ones fill the gaps.  Tests with no record run last
+# (they are new, and new tests are usually short).  No test changes; a
+# missing or unreadable record leaves the order untouched.
+# ---------------------------------------------------------------------------
+def _last_full_record(root):
+    outdir = os.path.join(root, 'test_timings')
+    if not os.path.isdir(outdir):
+        return {}
+    best = None
+    for name in sorted(os.listdir(outdir)):
+        if not name.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(outdir, name)) as f:
+                d = _json.load(f)
+        except Exception:
+            continue
+        ## the most recent record that covered the whole package
+        if d.get('tests', 0) >= 1000:
+            best = d
+    return dict(best['durations']) if best else {}
+
+
+def pytest_collection_modifyitems(session, config, items):
+    if _is_xdist_worker(config):
+        return
+    rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
+    if not rec:
+        return
+    items.sort(key=lambda it: -rec.get(it.nodeid, -1.0))

@@ -130,6 +130,8 @@ class AC(SSAnalysis):
 
     Examples:
     
+    >>> from pycircuit.circuit import circuit
+    >>> from numpy import array
     >>> circuit.default_toolkit = symbolic
     >>> from sympy import Symbol, simplify
     >>> c = SubCircuit()
@@ -151,11 +153,11 @@ class AC(SSAnalysis):
     >>> ac = AC(c)
     >>> res = ac.solve(freqs=array([1e6, 2e6]))
     >>> ac.result.v('net1')
-    Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
+    Waveform(array([1000000., 2000000.]), array([1.5+0.j, 1.5+0.j]))
     >>> res.v(n1, gnd)
-    Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
+    Waveform(array([1000000., 2000000.]), array([1.5+0.j, 1.5+0.j]))
     >>> res.i('vs.minus')
-    Waveform(array([ 1000000.,  2000000.]), array([ 0.0015 +9.4248e-06j,  0.0015 +1.8850e-05j]))
+    Waveform(array([1000000., 2000000.]), array([0.0015+9.4248e-06j, 0.0015+1.8850e-05j]))
     
     """
 
@@ -286,6 +288,7 @@ class Noise(SSAnalysis):
     
     Example, calculate input referred noise of a voltage divider:
 
+    >>> from pycircuit.circuit import circuit
     >>> circuit.default_toolkit = numeric
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
@@ -294,10 +297,10 @@ class Noise(SSAnalysis):
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = Noise(c, inputsrc='vs', outputnodes=(n2, gnd)).solve(0)
-    >>> print(res['Svnout'])
-    (1.4904e-17+0j)
-    >>> print(res['Svninp'])
-    (1.4904e-15+0j)
+    >>> print('%.4e' % res['Svnout'].real)
+    1.4918e-17
+    >>> print('%.4e' % res['Svninp'].real)
+    1.4918e-15
     >>> print(res['gain'])
     (0.1+0j)
     
@@ -307,8 +310,8 @@ class Noise(SSAnalysis):
     >>> from sympy import Symbol, simplify
     >>> c = SubCircuit()
     >>> kT = Symbol('kT')
-    >>> R1=Symbol('R1', real=True)
-    >>> R2=Symbol('R2', real=True)
+    >>> R1=Symbol('R1', positive=True)
+    >>> R2=Symbol('R2', positive=True)
     >>> n1,n2 = c.add_nodes('net1', 'net2')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
     >>> c['R1'] = R(n1, n2, r=R1)
@@ -316,9 +319,9 @@ class Noise(SSAnalysis):
     >>> noise = Noise(c, inputsrc='vs', outputnodes=(n2, gnd), toolkit=symbolic)
     >>> res = noise.solve(Symbol('s'), complexfreq=True)
     >>> simplify(res['Svnout'])
-    4*R1*R2*kT/(R1 + R2)
+    4*R1*R2*T*k/(R1 + R2)
     >>> simplify(res['Svninp'])
-    (4*R1*R2*kT + 4*kT*R1**2)/R2
+    4*R1*T*k*(R1 + R2)/R2
     >>> simplify(res['gain'] - R2 / (R1 + R2))
     0
 

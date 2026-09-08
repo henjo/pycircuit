@@ -1,0 +1,12 @@
+timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
+20260908T122427Z,37b4360,pycircuit 10 no:cacheprovider,1473.1,3118,pycircuit/circuit/tests/test_elements_hdl_library4.py::test_thermal_runaway_onset_is_where_the_loop_gain_reaches_one,193.5
+20260908T122609Z,37b4360,pycircuit/circuit/tests/test_elements.py no:cacheprovider defining_relation or ccvs_outputs,0.3,2,pycircuit/circuit/tests/test_elements.py::test_every_classical_controlled_source_meets_its_defining_relation_at_dc,0.0
+20260908T122634Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,0.7,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.AC,0.0
+20260908T122652Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,1.4,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.AC,0.0
+20260908T122735Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,1.0,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.Noise,0.1
+20260908T122751Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC,1.1,1,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.AC,0.0
+20260908T122824Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,1.1,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.Noise,0.1
+20260908T122837Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,1.2,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.Noise,0.2
+20260908T122856Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,1.3,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.Noise,0.1
+20260908T122944Z,37b4360,pycircuit/circuit/analysis_ss.py no:cacheprovider AC or Noise,1.8,2,pycircuit/circuit/analysis_ss.py::pycircuit.circuit.analysis_ss.Noise,0.2
+20260908T125117Z,37b4360,pycircuit 10 no:cacheprovider,1480.8,3120,pycircuit/circuit/tests/test_elements_hdl_library4.py::test_thermal_runaway_onset_is_where_the_loop_gain_reaches_one,230.4
