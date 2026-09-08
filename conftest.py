@@ -29,3 +29,74 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 # backend.  Again setdefault, so running with MPLBACKEND=tkagg to eyeball a
 # plot still works.
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+
+# ---------------------------------------------------------------------------
+# SUITE TIMING RECORD (Andreas, 2026-09-08: "start recording suite execution
+# time; some tests are extending the suite's duration a lot").
+#
+# Every run writes ``test_timings/<utc-timestamp>_<commit>.json`` -- the call
+# duration of every test, sorted slowest first -- and appends one line to
+# ``test_timings/history.csv`` (timestamp, commit, wall seconds, test count,
+# the slowest test and its seconds).  The per-run files are gitignored; the
+# history is meant to be committed so the trend survives.  Under pytest-xdist
+# the controller receives every worker's reports, so the record is complete
+# and the hooks are skipped inside workers.  The one recorded fact that
+# motivated this: a single injection-locking gate held the whole suite at
+# 99 % for 14 minutes (30 CPU-minutes), found only with a root py-spy dump.
+# ---------------------------------------------------------------------------
+import json as _json
+import subprocess as _subprocess
+import time as _time
+from datetime import datetime as _datetime, timezone as _timezone
+
+_TIMINGS = {}
+
+
+def _is_xdist_worker(config):
+    return hasattr(config, 'workerinput')
+
+
+def pytest_sessionstart(session):
+    if _is_xdist_worker(session.config):
+        return
+    session.config._suite_t0 = _time.perf_counter()
+
+
+def pytest_runtest_logreport(report):
+    ## ``call`` only: setup/teardown are not what makes a test slow here.
+    if report.when == 'call':
+        _TIMINGS[report.nodeid] = float(report.duration)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    config = session.config
+    if _is_xdist_worker(config) or not _TIMINGS:
+        return
+    root = os.path.dirname(os.path.abspath(__file__))
+    outdir = os.path.join(root, 'test_timings')
+    os.makedirs(outdir, exist_ok=True)
+    try:
+        commit = _subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'], cwd=root,
+            stderr=_subprocess.DEVNULL).decode().strip()
+    except Exception:
+        commit = 'unknown'
+    stamp = _datetime.now(_timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    wall = _time.perf_counter() - getattr(config, '_suite_t0', _time.perf_counter())
+    items = sorted(_TIMINGS.items(), key=lambda kv: -kv[1])
+    with open(os.path.join(outdir, '%s_%s.json' % (stamp, commit)), 'w') as f:
+        _json.dump({'timestamp': stamp, 'commit': commit, 'wall_seconds': wall,
+                    'tests': len(items),
+                    'args': list(getattr(config, 'invocation_params').args),
+                    'durations': items}, f, indent=1)
+    hist = os.path.join(outdir, 'history.csv')
+    new = not os.path.exists(hist)
+    ## `scope`: the positional arguments, so a subset run is told apart from
+    ## the full suite when reading the history (`pycircuit` = everything).
+    scope = ' '.join(a for a in config.invocation_params.args if not a.startswith('-')) or '.'
+    with open(hist, 'a') as f:
+        if new:
+            f.write('timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds\n')
+        f.write('%s,%s,%s,%.1f,%d,%s,%.1f\n' % (stamp, commit, scope.replace(',', ';'), wall,
+                                               len(items), items[0][0], items[0][1]))

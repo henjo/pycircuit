@@ -10116,6 +10116,80 @@ wall-minutes at 850 % CPU on seven unknowns** — BLAS threads fighting inside a
 — a number that reads as "the method is slow" and is not; BLAS pinned to one thread for every
 scratch run since.
 
+#### ✅ THE LINE SEARCH IN THE INNER STEP NEWTON — BUILT 2026-09-08 (Andreas: "Do 2"), as the LAST RESORT, after three wrong versions each caught by the identity control
+
+**What was built.** The Radau coupled stage Newton (`_rk_step_coupled._stage_newton`) gains a
+`damped` mode — a backtracking line search on `‖R‖₁` with `DampedNewton`'s rule and floor (Armijo
+1e-4, `α ≥ 0.05`), the trial's assembly carried into the next iteration so an accepted full step
+costs nothing — and the LMM/ESDIRK path gains a `DampedNewton` retry in `Transient.solve_timestep`.
+**Both run only after everything the old path tried has failed:** the undamped Newton first, bit
+for bit; then the shunt-conductance ladder where it is armed; the search last. On the shooting
+path, which never arms the ladder (PSS drives `solve_timestep` on its own grid, so an undamped
+failure used to raise straight out), the search is the one retry, opt-in through a
+`_damped_last_resort` flag that `PSS._new_transient` sets — so a plain adaptive transient keeps its
+step sequence unchanged. Pinned by a test: the current-sense relaxation oscillator's inner steps
+now converge under radau and trap (the solve reaches the OUTER free-period Jacobian, a separate
+obstacle), and the tanh charge circuit at `h = 100τ` still gives `v ∈ [0, 1]`.
+
+⚠⚠ **Three wrong versions preceded it, and the peer's control — "a backtrack that never fires is
+the identity, so every converged case must be unchanged" — caught each:**
+
+1. **A blanket search with the convergence test on the damped step's SIZE.** A step damped to the
+   floor is small by construction, so the iteration stopped short of the root: the tanh charge
+   circuit at `h = 100τ` returned `v ∈ [−0.010, 0.986]` where the undamped path gave `[0, 1]`, and
+   two shooting tests moved. Caught by the tanh probe against the stashed old code.
+2. **Requiring an accepted FULL step to terminate.** At the roundoff floor both residual norms are
+   noise, the Armijo test fails by chance, no full step is ever accepted, and every step burns
+   `maxit` iterations at five assemblies each — the probe hung.
+3. **The old test on the full step first, the search as the FIRST retry.** Identity for every case
+   the undamped Newton converged — and STILL `[−0.010, 0.986]` on the tanh circuit, because there
+   the undamped Newton FAILS and the old path recovered it through the shunt ladder's homotopy,
+   which tracks a physical branch; the search pre-empted the ladder and beat it to a spurious root
+   (the coupled stage system at `h = 100τ` has more than one — `a_23 < 0` makes it non-monotone
+   where the scalar map is monotone). **A line search does not choose the physical root; a
+   continuation does.** Hence: last resort, after the ladder.
+
+⚠ Also found on the way: variant B of the relaxation fixture does not oscillate at all as a plain
+transient (`v_o ∈ [0, 1]`, it settles at the equilibrium) while variant A does, although their
+continuous equations coincide — the derivative-sensed comparator behaves differently DISCRETELY;
+so B is not a usable period fixture either, and the gap in the `CHOOSING method` table stays open
+with one more reason. The relaxation probe's outer failure ("free-period Jacobian singular") is
+consistent with that.
+
+#### ⛔ Koopman–Hill for DAEs (Schütz, Bayer & Leine, arXiv 2607.17339) — NOT actionable, recorded so nobody chases it; but its singularity claim validated `floquet_modes` and yields a free index-2 DIMENSION detector (peer `docs-46`, §2.161, 2026-09-08)
+
+**Why not:** the Hill problem for a DAE is the generalised eigenproblem `α A∞ p∞ = H∞ p∞`, and the
+method's economy is that *"the Jacobian of the HBM equations is indeed equal to the truncation of
+the infinite-dimensional Hill matrix"* — if you already run harmonic balance the Hill matrix is the
+Jacobian you have. This tree has no HB engine (15 prose mentions, no code), so adopting it means
+building one to obtain a monodromy radau returns natively: a second engine, the §4.7 objection
+again. Its own boundary is adverse for circuits: *"truncation effects on the Hill matrix are
+especially pronounced if f is NONSMOOTH"* — comparators, switching converters, diode turn-on. It
+dodges eigenvalue SORTING, not truncation.
+
+**But the singularity claim is about the OBJECT:** the DAE evolution involves a Drazin inverse,
+*"rendering the resulting monodromy matrix SINGULAR"* — an invariant however the monodromy is
+computed: `rank(Φ_T)` = the dimension of the differential subspace, and `floquet_modes` returns
+every non-null mode, so `len(modes)` IS that rank. Measured, gear at 400 points, bias-sensitive
+core:
+
+| fixture | index | m | rank C | #modes | rank C − #modes |
+|---|---|---|---|---|---|
+| index-1 tank (pure ODE) | 1 | 2 | 2 | 2 | 0 |
+| index-1 + R node (genuine index-1 DAE) | 1 | 3 | 2 | 2 | 0 |
+| index-2 L–I cutset | 2 | 4 | 3 | 2 | 1 |
+| index-2 C–V loop | 2 | 4 | 3 | 2 | 1 |
+
+(1) The invariant holds EXACTLY at index 1, including `rank C = 2 < m = 3` — the algebraic node is
+genuinely annihilated, not returned as a tiny multiplier; the discretisation carries the structure,
+checked against a source that had no knowledge of it. (2) At index 2 the count is `rank C − 1` on
+both topologies, and that is CORRECT: the hidden constraint removes one further direction beyond
+`ker C`; `#modes = rank(C) − ν₂`. (3) **So `rank(C) − #modes` is a numerical index-2 DIMENSION
+detector built from objects already computed** — 0, 0, 1, 1 against `topological_index`'s 1, 1, 2,
+2 — no topology reasoning, no derivative array. ⚠ It detects the index-2 dimension, not the index:
+it cannot separate 2 from 3 (that is §2.150's 1-fullness test); complementary, and it needs nothing
+built. Scope: four fixtures, one core, one method, one grid; autonomous solves only.
+
 ### ⛔ CONSOLIDATED ACQUISITION LIST (2026-09-07) — the next fact is behind a paywall, not a search
 
 Peer `docs-46`, after the contractivity chain closed: the GLM exit has an authoritative DAE source,

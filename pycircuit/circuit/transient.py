@@ -792,7 +792,43 @@ class Transient(Analysis):
             ## changing the taxonomy is not this stage's job.
             if 'Singular' in str(e) or 'linalgerror' in str(e).lower():
                 raise SingularMatrix(str(e)) from e
-            raise
+            ## ⚠ THE LINE SEARCH, AS A RETRY (owner decision 2026-09-08, "Do 2";
+            ## the coupled Radau path carries the same retry in
+            ## `_rk_step_coupled`).  The default `StandardNewton` has no
+            ## damping, and a nonlinearity fed by a branch current through a
+            ## capacitor cannot be integrated undamped at ANY grid (stage
+            ## sensitivity tau/h, undamped basin 0.94 h/(k tau), READING-LOG
+            ## 2.156).  `DampedNewton` is tried once, from the same seed, only
+            ## after the plain Newton has failed and only when the caller left
+            ## the strategy at its default -- so every step that converged
+            ## before converges to the same numbers, and a caller-chosen
+            ## strategy keeps its own failure.
+            from pycircuit.circuit.nrsolver import StandardNewton, DampedNewton
+            ## Only once the rescue ladder is ARMED (it wraps `solver`, so the
+            ## plain Newton and the ladder have both had their turn) and only
+            ## for the default strategy -- the search is the last resort, for
+            ## the same reason as on the coupled path above.
+            if (getattr(self, '_continuation_rescue', False)
+                    or getattr(self, '_damped_last_resort', False)) \
+                    and self.par.nrsolver is None:
+                try:
+                    x_res, _iters = DampedNewton().solve_system(
+                        x0,
+                        refnode_removed(func, self.irefnode, self.toolkit),
+                        self.toolkit,
+                        self.par.reltol,
+                        abstol,
+                        xtol,
+                        self.par.maxiter,
+                        limiter=limiter_func,
+                        scaler=scaler,
+                        linsolver=linsolver,
+                        row_names=reduced_row_names(self.cir, self.irefnode),
+                    )
+                except NoConvergenceError:
+                    raise e
+            else:
+                raise
         except LinAlgError as e:
             raise SingularMatrix(str(e)) from e
         
@@ -2849,7 +2885,7 @@ class Transient(Analysis):
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
 
-        def _stage_newton(seed, gshunt=0.0):
+        def _stage_newton(seed, gshunt=0.0, damped=False):
             """The coupled `3m` Newton, optionally with a node-to-ground shunt.
 
             ⚠ THE SHUNT ENTERS AS A CONDUCTANCE IN THE DEVICE CURRENT, not as
@@ -2861,8 +2897,9 @@ class Transient(Analysis):
             ground by `g`), so the ladder tracks a physical branch.
             """
             Y = [np.array(y, dtype=float) for y in seed]
-            converged = False
-            for _ in range(maxit):
+
+            def assemble(Y):
+                """Residual and block Jacobian at the stage vector `Y`."""
                 qi, Ki, Ci, Gi = [], [], [], []
                 for j in range(3):
                     ## SYNC the device limiting state to THIS stage before
@@ -2903,24 +2940,84 @@ class Transient(Analysis):
                         (blk_r,) = remove_row_col((blk,), iref, tk)
                         Jbig[i * m:(i + 1) * m,
                              j * m:(j + 1) * m] = np.asarray(blk_r)
+                return R, Jbig
+
+            ## ⚠ BACKTRACKING LINE SEARCH, AS A RETRY (owner decision
+            ## 2026-09-08, "Do 2").  This Newton had no damping at all, and a
+            ## whole class of circuits cannot be integrated undamped at ANY
+            ## grid: a nonlinearity fed by a branch current through a
+            ## capacitor sees the companion difference quotient, whose stage
+            ## sensitivity is tau/h, and the undamped basin is 0.94 h/(k tau)
+            ## (measured on a scalar model of one stage, READING-LOG 2.156) --
+            ## refining the grid SHRINKS it in proportion.  A comparator on a
+            ## current sense through a capacitor failed here at every grid
+            ## tried, on every method; with the retry its steps converge.
+            ## The rule and floor are `DampedNewton`'s (Armijo 1e-4, alpha >=
+            ## 0.05).
+            ## ⚠⚠ WHY A RETRY AND NOT A BLANKET SEARCH: a blanket line search
+            ## CHANGED CONVERGED ANSWERS.  At h = 100 tau on a tanh charge
+            ## circuit the coupled stage system has more than one root (its
+            ## a_23 < 0 makes the coupled equations non-monotone where the
+            ## scalar map is monotone); the undamped-plus-limited path found
+            ## the physical one, v in [0, 1], and the damped path a spurious
+            ## one at v = -0.010, and two shooting tests moved with it.  So
+            ## `damped=False` (the first attempt) is the old algorithm bit
+            ## for bit -- the full step always, the old convergence test on
+            ## it -- and the search is tried only after it has failed, before
+            ## the shunt ladder.  Every case that converged before converges
+            ## to the same numbers; the suite is the control.
+            R, Jbig = assemble(Y)
+            converged = False
+            for _ in range(maxit):
                 dY = np.linalg.solve(Jbig, -R)
-                scale = 0.0
-                for i in range(3):
-                    di = dY[i * m:(i + 1) * m]
-                    ## LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION.
-                    ## Without it the coupled Newton on a diode overshoots the
-                    ## exponential and settles on a spurious near-linear
-                    ## solution (a mixer produces a pure sinusoid with no
-                    ## harmonics -- measured).
-                    Y_prev = Y[i]
-                    Y_trial = Y_prev + tk.insert(di, iref, 0.0)
-                    Y_new = self.cir.limit(Y_trial, Y_prev, epar)
-                    Y[i] = Y_new
-                    step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
-                    scale = max(scale, np.max(np.abs(step_i)))
-                ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
-                if scale <= reltol * ynorm + abstol:
-                    converged = True
+                Rnorm = float(np.sum(np.abs(R)))
+                alpha = 1.0
+                while True:
+                    Y_trial = []
+                    scale = 0.0
+                    for i in range(3):
+                        di = alpha * dY[i * m:(i + 1) * m]
+                        ## LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION.
+                        ## Without it the coupled Newton on a diode overshoots
+                        ## the exponential and settles on a spurious
+                        ## near-linear solution (a mixer produces a pure
+                        ## sinusoid with no harmonics -- measured).
+                        Y_prev = Y[i]
+                        Y_new = self.cir.limit(Y_prev + tk.insert(di, iref, 0.0),
+                                               Y_prev, epar)
+                        Y_trial.append(Y_new)
+                        step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
+                        scale = max(scale, np.max(np.abs(step_i)))
+                    R_t, J_t = assemble(Y_trial)
+                    ## ⚠ THE OLD CONVERGENCE TEST, ON THE FULL STEP, BEFORE
+                    ## THE LINE SEARCH SEES IT.  Two wrong versions preceded
+                    ## this one, both caught by the identity control: testing
+                    ## the size of a DAMPED step let a step at the floor stop
+                    ## the iteration short of the root (a tanh charge circuit
+                    ## at h = 100 tau returned v in [-0.010, 0.986] against
+                    ## the undamped [0, 1]); requiring a full step to pass
+                    ## Armijo hung at the roundoff floor, where both residual
+                    ## norms are noise and the test fails by chance, so no
+                    ## full step was ever accepted and every step burned
+                    ## `maxit` iterations.  A converged full step is accepted
+                    ## here exactly as the undamped Newton accepted it, so
+                    ## every case that converged before converges to the same
+                    ## numbers; the search engages only when the full step is
+                    ## neither small nor residual-reducing.
+                    if alpha == 1.0:
+                        ynorm_t = max(np.max(np.abs(red(Y_trial[i]))) for i in range(3))
+                        if scale <= reltol * ynorm_t + abstol:
+                            converged = True
+                            break
+                    if not damped:
+                        break                      # the undamped Newton: the full step, always
+                    if float(np.sum(np.abs(R_t))) <= Rnorm * (1.0 - 1e-4 * alpha):
+                        break                      # Armijo satisfied
+                    if alpha * 0.5 <= 0.05:
+                        break                      # floor: keep the smallest tried
+                    alpha *= 0.5
+                Y, R, Jbig = Y_trial, R_t, J_t
+                if converged:
                     break
             if not converged:
                 from pycircuit.circuit.nrsolver import NoConvergenceError
@@ -2951,13 +3048,33 @@ class Transient(Analysis):
             ## per-stage junction bookkeeping.  Rungs march in exponent space
             ## and ONLY A PURE SOLVE IS RETURNED -- see
             ## `_adaptive_conductance_ladder`.
+            ##
+            ## ⚠ THE LINE SEARCH IS THE LAST RESORT, AFTER THE LADDER (owner
+            ## decision 2026-09-08, "Do 2").  Tried as the FIRST retry it
+            ## pre-empted the ladder and beat it to a SPURIOUS root on a tanh
+            ## charge circuit at h = 100 tau (v = -0.010 where the ladder's
+            ## homotopy gives the physical [0, 1]); the ladder tracks a
+            ## physical branch and the search does not.  Where no ladder is
+            ## available -- the PSS path never arms one, it drives
+            ## `solve_timestep` on its own grid -- there is nothing to
+            ## pre-empt (an undamped failure used to raise straight out), so
+            ## the search is the one retry there, opt-in through
+            ## `_damped_last_resort`, which PSS sets; a plain adaptive
+            ## transient keeps its step sequence unchanged.
             if not getattr(self, '_continuation_rescue', False):
-                raise
-            Y = _adaptive_conductance_ladder(
-                lambda seed, g: _stage_newton(seed, g),
-                lambda seed: _stage_newton(seed, 0.0),
-                seed0, label='coupled-stage gshunt stepping')
-            self.statistics.gmin_rescues += 1
+                if getattr(self, '_damped_last_resort', False):
+                    Y = _stage_newton(seed0, damped=True)
+                else:
+                    raise
+            else:
+                try:
+                    Y = _adaptive_conductance_ladder(
+                        lambda seed, g: _stage_newton(seed, g),
+                        lambda seed: _stage_newton(seed, 0.0),
+                        seed0, label='coupled-stage gshunt stepping')
+                except NoConvergenceError:
+                    Y = _stage_newton(seed0, damped=True)
+                self.statistics.gmin_rescues += 1
 
         Y1, Y2, Y3 = Y
         xnp1 = Y3  ## stiff accuracy: x_{n+1} == last stage

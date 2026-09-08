@@ -7371,6 +7371,10 @@ class PSS(Analysis):
             linearsolver=self.par.linearsolver,
             scaler=self.par.scaler,
             pcnr=self.par.pcnr)
+        ## The line search as the last resort on the shooting path, which
+        ## never arms the transient's rescue ladder (owner decision
+        ## 2026-09-08, "Do 2"; see `_rk_step_coupled` and `solve_timestep`).
+        tr._damped_last_resort = True
         tr.irefnode = self.irefnode
         return tr
 

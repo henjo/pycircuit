@@ -17302,3 +17302,92 @@ def test_an_autonomous_solve_that_returns_an_equilibrium_is_not_converged():
     W = np.asarray(p.waveform[1], dtype=float)
     amp = (W[cir.get_node_index('v')].max() - W[cir.get_node_index('v')].min()) / 2
     assert p.converged is True and abs(amp - 2.0) < 1e-2, (p.converged, amp)
+
+
+def _current_sense_relaxation_oscillator(k=20.0):
+    """The circuit class that cannot be integrated undamped at ANY grid: a
+    comparator whose input is a branch current through a capacitor.  The
+    sensed current is the companion difference quotient of the ramp voltage,
+    stage sensitivity `tau/h`, undamped basin `0.94 h/(k tau)` (READING-LOG
+    2.156).  Op-amp-style relaxation oscillator, comparator gain `k`, output
+    time constant tau/20, the current sensed through a CCVS whose 0 V input
+    branch pins the far end of a small capacitor from the ramp node.
+    """
+    R_, C_ = 1e3, 1e-6
+    c1 = 0.01 * C_
+    Ctot = C_ + c1
+    tau = R_ * Ctot
+    Ro = 1.0
+    Co = (tau / 20) / Ro
+    Rs = R_ * Ctot / c1
+    cir = SubCircuit()
+    for n in ('vo', 'p', 'c', 'd', 'b', 's'):
+        cir.add_node(n)
+    cir['Ro'] = R('vo', gnd, r=Ro)
+    cir['Co'] = C('vo', gnd, c=Co)
+    cir['cmp'] = BSource('d', gnd, gnd, 'vo',
+                         i_func=lambda u: (1.0 / Ro) * np.tanh(k * u))
+    cir['R1'] = R('vo', 'p', r=1e3)
+    cir['R2'] = R('p', gnd, r=1e3)
+    cir['Rc'] = R('vo', 'c', r=R_)
+    cir['Cc'] = C('c', gnd, c=C_)
+    cir['c1'] = C('c', 'b', c=c1)
+    cir['pin'] = CCVS('b', gnd, 's', gnd, r=Rs)
+    cir['sense'] = VCVS('s', 'p', 'd', gnd, g=1.0)
+    T_ideal = 2 * tau * np.log(3.0)
+    return cir, T_ideal
+
+
+def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():
+    """Owner decision 2026-09-08 ("Do 2"): the inner step Newton on the PSS
+    path had no damping, and a nonlinearity fed by a branch current through
+    a capacitor cannot be integrated undamped at any grid.  Pinned here:
+
+    * the current-sense relaxation oscillator's INNER steps converge under
+      radau and trap -- the solve no longer fails with the stage Newton's
+      `NoConvergenceError`; what it reaches instead is the OUTER free-period
+      Jacobian going singular (a separate, recorded obstacle), so the
+      assertion is on the exception TYPE;
+    * the search is the LAST resort: a tanh charge circuit at h = 100 tau,
+      where the undamped stage Newton fails and the rescue ladder recovers
+      the physical root, still gives v in [0, 1] through the plain
+      transient -- a first-retry line search beat the ladder to v = -0.010.
+    """
+    import warnings as _w
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    circuit.default_toolkit = circuit.numeric
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        for method in ('radau', 'trap'):
+            cir, T = _current_sense_relaxation_oscillator()
+            p = PSS(cir, method=method, reltol=1e-12)
+            x0 = np.zeros(cir.n)
+            x0[cir.get_node_index('vo')] = 1.0
+            x0[cir.get_node_index('p')] = 0.5
+            x0[cir.get_node_index('d')] = 0.5
+            x0 = np.delete(x0, cir.get_node_index(gnd))
+            try:
+                p.solve(period=T, timestep=T / 400, x0=x0, maxiterations=60)
+                reached = 'converged'
+            except NoConvergenceError as e:
+                reached = 'stage Newton: %s' % str(e)[:60]
+            except np.linalg.LinAlgError:
+                reached = 'outer Jacobian'
+            ## `startswith`, not `!=`: the first version compared against the
+            ## bare label and PASSED ON THE OLD CODE (the message carries a
+            ## suffix) -- a regression test that cannot fail before the fix.
+            assert not reached.startswith('stage Newton'), \
+                '%s: the inner step Newton still fails -- %s' % (method, reached)
+        ## the last-resort ordering, on the circuit that exposed a first-retry search
+        cir = SubCircuit()
+        cir.add_node('s'); cir.add_node('v')
+        cir['vs'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=0.0, tr=0.0, tf=0.0, pw=0.5, per=1.0)
+        cir['g'] = BSource('s', 'v', gnd, 'v', i_func=lambda u: 4.0 * np.tanh(u / 0.01))
+        cir['C'] = C('v', gnd, c=1.0)
+        tr = Transient(cir, integrator=RadauIIA3Integrator())
+        res = tr.solve(tend=2.0, timestep=0.25, x0=np.zeros(cir.n), fixed_timestep=True)
+        v = np.asarray(res.x, dtype=float)[cir.get_node_index('v')]
+    assert v.min() >= -1e-9 and v.max() <= 1.0 + 1e-9, \
+        'the search pre-empted the ladder: v in [%.4f, %.4f]' % (v.min(), v.max())
