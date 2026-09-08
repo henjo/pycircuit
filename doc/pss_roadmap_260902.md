@@ -46,7 +46,7 @@ the docs session, whose equations `pdftotext` drops, so they were read as an ima
   `λ₂` would predict. ⚠ **AND IT IS A BOUNDARY ON OUR METHOD, NOT ON OSCILLATOR NOISE** — Bonnin
   2015, *"Amplitude and Phase Dynamics of Noisy Oscillators"*, gives amplitude and phase SDEs whose
   validity is *"not limited to the weak noise limit"*, with closed forms for the expected angular
-  frequency, amplitude and amplitude variance (cited, not verified here). So `|α̇| ≪ 1` bounds the
+  frequency, amplitude and amplitude variance (VERIFIED — see the block three lines down; this marker was stale until 2026-09-08). So `|α̇| ≪ 1` bounds the
   Floquet/PPV family; it is not a hard physical wall, and should not be recorded as one.
 
 ⚠ **Bonnin 2015 VERIFIED (peer `docs-46`, arXiv:1503.06603, 15 pp), and the sentence above should be
@@ -5773,7 +5773,7 @@ there** — an earlier reading here implied it could not.
 
 ⚠ **THIS IS THE "WARPING ERROR" THE LITERATURE NAMES, and it is the one place our recorded
 objection to higher-order methods is weak.** Brachtendorf-adjacent: Brambilla & Storti-Gajani,
-TCAS-I 50:904 (2003) (*cited, not verified here*) characterise integration-induced `λ₂` bias as
+TCAS-I 50:904 (2003) (VERIFIED 2026-09-07 by the docs session — see the warping item's fact (a); this marker was stale until 2026-09-08) characterise integration-induced `λ₂` bias as
 *"equivalent to a perturbation of the eigenvalues of the linearized ordinary differential
 problem"*, usually negligible — *"nevertheless an exception … is found when simulating
 **high-quality factor circuits** where even very small warping errors can lead to qualitatively
@@ -6247,7 +6247,7 @@ objects. **Anything citing this bound to justify truncation inside the orbital-n
 error** — which is why "only through that method" is the right restriction, and why the `nmodes`
 warning shipped tonight belongs on the noise path independently of whether this bound exists.
 
-⚠ **THE BOUND, READ FROM TCAD 2013 (relayed; cited not verified here).** Their construction keeps
+⚠ **THE BOUND, READ FROM TCAD 2013 (VERIFIED 2026-09-07 — the paragraph above, p. 315 §III; this marker was stale until 2026-09-08).** Their construction keeps
 the first `m` rows of a matrix `R(t)` and neglects the last `n − m`, with small parameter
 `ε = |smallest diagonal element KEPT| / |largest NEGLECTED|`, and *"both δμ_k and δũ_k tend to
 zero **linearly** with ε → 0 … the error induced on the FEs and eigenvectors by the approximation
@@ -7831,7 +7831,7 @@ its stage order is the next step, and it is a reading task rather than a build.
 implicit AND high stage order, hence *"no order reduction for the index-2 components"* (Voigtmann,
 Oberwolfach Report 18/2006). If that holds it dominates both ESDIRK (cheap, stage order 2) and
 Radau IIA(3) (stage order 3, one real + one complex LU) on the axis this table measures. ⚠ It is a
-WORKSHOP ABSTRACT — cited, not verified — and the RK order conditions are only a SUBSET of the GLM
+WORKSHOP ABSTRACT — now VERIFIED against Voigtmann's thesis, Theorem 9.5, see the GLM block appended 2026-09-08; both theses are ON DISK (`17-dae-theory-and-index/Voigtmann-2006-...PhD thesis.pdf`, `19-integrator-theory-rk-lmm-glm/Wright-2002-...PhD thesis.pdf`) — and the RK order conditions are only a SUBSET of the GLM
 ones, so it carries more order conditions, multivalue storage and a startup problem. **Recorded as
 the survey's missing option, not as a build.**
 
@@ -11434,3 +11434,31 @@ one RC leg): no change to build priority. The strongly coupled fixture is the ex
 without the Monte Carlo. ⚠ **Do not gate on `|v|`** — three passes measured a MAGNITUDE of an object
 whose change is a DIRECTION (a 1 % orthogonal admixture moves a norm by 5e-5), and identical numbers
 across circuits were the tell each time.
+
+
+## GLM index-2 order: Voigtmann's Theorem 9.5 verified — the measured split IS the theorem from the other side (peer, 2026-09-08)
+
+Both theses the acquisition line asked for were on disk since the filing pass. Theorem 9.5 (thesis
+p. 174, ch. 9, properly stated index-2 DAEs, page rendered): for a regular index-μ DAE
+`A(t)[D(t)x]' + b(x,t) = 0`, μ ∈ {1,2}, with a GLM `M = [A,U,B,V]`, `A` nonsingular, assuming (a) `V`
+power bounded and `M_∞` NILPOTENT, (b) smoothness, (c) initial input vector exact to `O(h^p)`,
+(d) **order `p` for implicit index-1 DAEs AND stage order `q = p` for ODEs**, (e) stiffly accurate —
+then, after `k₀+1` steps, **at constant stepsize**, convergence of order at least `p`. Hypothesis (d)
+is exactly what the RK methods here fail (thesis p. 31: Radau IIA `p = 2s−1`, `q = s`; p. 38: SDIRK
+"restricted to stage order 1", an explicit first stage allows 2, beyond that `c` leaves `[0,1]`):
+
+| method | p | q | q = p? | measured algebraic order (this file, 09-07) |
+|---|---|---|---|---|
+| trbdf2 | 2 | 2 | yes | 2.04 |
+| esdirk43 | 4 | 2 | no | 2.04 |
+| radau | 5 | 3 | no | 3.05 |
+
+So the split table is a law about methods that fail (d), not about index-2 DAEs; a method with
+`q = p` has no reduction. The `min(p,q)` of the abstract's Theorem 5 sits inside this proof and
+collapses to `p` exactly when (d) holds (nilpotency of `M_∞` is what allows the lemma that computes
+`V₀` with `min(p,q) = p`; stronger than the index-1 theorem's power-boundedness). ⚠ **The theorem is
+CONSTANT-STEPSIZE**; Glimda / Glimda++ (ch. 10, 12; `s = r = p` and `s = p+1` stages) are
+variable-stepsize variable-order codes, so "GLMs dominate Radau in an adaptive simulator" is NOT
+covered by it. The startup problem is real and named: (c) needs the input vector to `O(h^p)`,
+computed by "generalised Runge-Kutta methods taking only the initial value" or built up under
+variable order — solved, at the cost of the extra machinery already objected to. Nothing built.

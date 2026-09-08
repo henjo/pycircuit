@@ -1241,7 +1241,13 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     Theorem 5 (index-2 convergence order = min(p, q)): on an index-2
     circuit a method can carry an ABSOLUTE-MONOTONICITY guarantee OR order
     above 2, never both -- a Runge-Kutta limitation, not a DIRK one, binding
-    Radau exactly as hard as ESDIRK.
+    Radau exactly as hard as ESDIRK.  And the split has its theorem
+    (Voigtmann's thesis, Thm 9.5, verified 2026-09-08): a GLM with stage
+    order q = p, nilpotent M_inf, stiffly accurate, keeps full order p on
+    an index-2 DAE at CONSTANT stepsize -- Radau IIA has q = s, p = 2s-1,
+    so it can never meet q = p (measured 5 / 3.05 here); TR-BDF2 (q = p =
+    2) meets it and shows no split (2.04).  The reduction is a property of
+    methods with q < p, not of index-2 as such.
     ⚠⚠ BUT "CONTRACTIVITY" IS TWO DIFFERENT GUARANTEES, and this method
     HAS the other one unconditionally (peer correction, same night, from
     Hairer & Wanner Thm 12.9 p.210 -- on disk all along -- and Lamour Ch.6
