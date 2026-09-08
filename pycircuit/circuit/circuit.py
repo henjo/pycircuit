@@ -869,7 +869,12 @@ class Circuit():
             ## here in passing -- it changes `res.i(term)` at every node
             ## carrying an independent source.  Owner's call; see
             ## doc/pss_roadmap_260902.md, B7's build note.  `tf_i` uses the
-            ## `linearized` branch and is unaffected either way.
+            ## `linearized` branch and is unaffected either way.  The omission
+            ## is ELEMENT-DEPENDENT: classical `VS`/`IS` families return zeros
+            ## without the flag, HDL sources (`BehaviouralMeta.u`) return their
+            ## DC/transient term regardless, `SubCircuit.u` passes the flag
+            ## through -- so on a mixed circuit this branch keeps the HDL
+            ## sources and drops the classical ones.
             branch_sign = self.get_terminal_branch(branch_or_term)
 
             if branch_sign is not None:

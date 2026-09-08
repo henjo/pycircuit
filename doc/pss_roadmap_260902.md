@@ -4907,6 +4907,17 @@ then have an EXCEPTION, and it has to be discoverable: **a protective comment no
 in passing — otherwise the next person grepping for bare `u(` after a flag bug (exactly what the
 peer did) changes `res.i` everywhere silently. Code behaviour unchanged.
 
+⚠ **Not only `VS` (Andreas asked; enumerated 2026-09-08).** Every classical independent source
+vanishes without the flag: `VS` and its subclasses (`VSin`, `VPulse`, `VPWL`, `VExp`, `VAM`,
+`VSFFM`) and `IS` with `ISin` — all gated on `timedomain_analyses = ('dc', 'tran')`, zeros
+otherwise; `TLine` gates its history on `('tran', 'transient', 'time')`. **HDL sources invert the
+default** (`hdl.py`, `BehaviouralMeta.u`): without a flag they return the DC/transient term and only
+`'ac'` switches them to the AC stimulus (deliberately refusing the ABM bias-leak). `SubCircuit.u`
+passes the flag through, so a bare caller on a mixed circuit gets the HDL sources and NOT the
+classical ones — the case hardest to notice, since some of the drive survives. For `extract_i` this
+means the "device current" accident is itself element-dependent: its time-domain branches see HDL
+sources and drop classical ones.
+
 **Status: B7 BUILT.** Pinned by two tests (`test_warping_estimate_reproduces_the_period_error…`,
 which pins the exactness-class ZERO as a property so a "helpful" degree change announces itself;
 `…refuses_a_period_reading_on_a_driven_circuit`). Limits carried from the prototype: the DAE
