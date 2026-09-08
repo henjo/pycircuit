@@ -11255,3 +11255,33 @@ the conversion side uses no `λ₂`. Second naming of the same conflation today:
 CLUSTERING are correlated in practice and separable in fact (Q a designer's parameter, clustering
 a property of the mode spectrum), with different cures. My "certify the modulation stack first"
 caution stands only as that one bounded step.
+
+⚠⚠ **Both "no gain" readings above were of the UNMODIFIED order.** The reorder hook returned early
+on xdist workers — and under xdist only the workers collect, so it never ran; 24:13 and 25:28 were
+measurements of nothing. (The pinned-thread run, 23:58, was therefore also unordered; the pin is
+kept because one thread per worker is right on a 24-thread part, but it is not the gap either.)
+The CPU is a laptop hybrid part (i7-12800HX, 8 P + 8 E cores, 39 % of max clock under load), which
+is the 6× standalone-to-suite factor: the recorded durations are in-suite numbers, so the 7-minute
+ideal from their sum stands and the 24 minutes is idle workers in the tail. Fixed: the hook sorts
+in every process, and `--maxschedchunk=1` stops the scheduler handing out consecutive quarter- and
+half-shares it cannot take back (LPT list scheduling). Measuring as this is written (`suite14`).
+
+**Measured: 3116 passed in 8:37** (`suite14`, `-n 10`, longest-first in every process +
+`--maxschedchunk=1`), against 23:58 the run before with everything else equal. The ideal from the
+serial sum was ~7 min; the remaining 1.5 min is the last long test's own length plus the dynamic
+phase's one-at-a-time round trips. The five >100 s tests need no fixture change now: they open the
+run in parallel instead of closing it.
+
+### 5. AM/PM absolute magnitude — a localising gate proposed by the peer (NOT run)
+
+"Ratio right, absolute rows ~1e-12, cause unestablished" is the signature of a common scale factor.
+The peer ruled out two hypotheses by reading (deflation discards nothing — `_deflated_solve` carries
+the pole analytically, `σ_min` flat at 2.04e-01 over nine decades; AM/PM swap — caught by the
+asymmetric driven-mixer test) and proposes the third: run
+`test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity` (`S_am + S_pm = pnoise(k·f0+f) +
+pnoise(k·f0−f)`, so far DRIVEN only) on the van der Pol. Identity HOLDS with both sides ~1e-12 → the
+factor is upstream of the split (`adjoint_sideband_row` or `pnoise`'s autonomous path); FAILS → the
+split or the band pairing on the autonomous path, and `pnoise` is the trustworthy side. ⚠ Valid
+only at an offset where `pnoise` is trusted on an oscillator (away from the carrier), and the
+residual should fall with sideband count as the driven case does (9.0e-3 → 3.3e-11 at 4 → 64) or
+the remaining discrepancy is truncation. One parametrisation of an existing gate; Andreas's queue.

@@ -159,24 +159,23 @@ def _last_full_record(root):
 
 
 def pytest_collection_modifyitems(session, config, items):
-    if _is_xdist_worker(config):
-        return
+    """Longest first, from the last full-suite record, IN EVERY PROCESS.
+
+    ⚠⚠ MEASURED WRONG TWICE, 2026-09-08: the first version returned early
+    on xdist workers -- and under xdist ONLY the workers collect, so the
+    reorder never ran; the "plain longest-first made no difference" (24:13)
+    and "interleaved made no difference" (25:28) readings were both of the
+    UNMODIFIED order.  Every worker sorts the same list from the same file,
+    so they agree (xdist requires identical collections).
+
+    Pairs with `--maxschedchunk=1` in pytest.ini: xdist's load scheduler
+    otherwise hands each worker a consecutive quarter-share to open and
+    then half-shares of the remainder as it drains, none of which it can
+    take back, so a long test late in a chunk leaves the other workers
+    idle -- the 10-minute tail at 96 % that the record shows.  One test at
+    a time from a longest-first list is LPT list scheduling.
+    """
     rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
     if not rec:
         return
     items.sort(key=lambda it: -rec.get(it.nodeid, -1.0))
-    ## ⚠ MEASURED 2026-09-08: plain longest-first made NO difference (24:13
-    ## against baselines of 24:33 and 24:40).  xdist's load scheduler opens
-    ## by sending each worker a CONSECUTIVE slice of ~len/(4 n) items, so a
-    ## longest-first list puts every long test into the FIRST worker's
-    ## opening slice -- the opposite of balance -- and only the dispatch
-    ## after that is dynamic.  Interleave: deal the sorted list round-robin
-    ## into n bins and concatenate, so every opening slice carries its
-    ## share of long tests in descending order.  Serial runs are untouched.
-    try:
-        n = int(getattr(config.option, 'numprocesses', 0) or 0)
-    except (TypeError, ValueError):
-        n = 0
-    if n > 1:
-        bins = [items[b::n] for b in range(n)]
-        items[:] = [it for b in bins for it in b]

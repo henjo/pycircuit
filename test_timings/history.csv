@@ -19,3 +19,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260908T134643Z,698563c,pycircuit 10 no:cacheprovider,1528.4,3120,pycircuit/circuit/tests/test_elements_hdl_library4.py::test_thermal_runaway_onset_is_where_the_loop_gain_reaches_one,199.3
 20260908T134742Z,698563c,pycircuit/circuit/tests/test_elements.py no:cacheprovider ccvs,0.2,1,pycircuit/circuit/tests/test_elements.py::test_the_ccvs_outputs_its_transresistance_times_the_input_current,0.0
 20260908T141148Z,698563c,pycircuit 10 no:cacheprovider,1438.5,3122,pycircuit/circuit/tests/test_analysis_shooting.py::test_pss_still_matches_the_ac_reference_with_a_fine_step,174.6
+20260908T142300Z,3ba7aa8,pycircuit 10 no:cacheprovider,517.8,3122,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,301.5
