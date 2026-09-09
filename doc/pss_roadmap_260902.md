@@ -10594,7 +10594,7 @@ independent oracle (docs session, 2026-09-09):** a from-scratch variational/adjo
 with an explicit non-unit `C = diag(2, 0.5)`, biorthonormalised as `Q₀ = (C P₀)⁻ᵀ`, gives
 `|qᵀ C p − 1| ≤ 1.3e-13` at eight points around the cycle, off-diagonals 1.6e-14 — the identity holds
 everywhere, no sign structure, nothing to scope. Two false leads the peer eliminated with signatures:
-a transpose slip in the biorthonormalisation puts `|G₀₁| = |G₁₀| = μ/2` exactly with correct diagonals;
+a transpose slip in the biorthonormalisation puts the off-diagonals at a constant × μ (the constant is a normalisation convention — μ/2 in one parameterisation, μ/8 in the oracle's) with the DIAGONALS correct to 1e-16;
 propagating the adjoint WITHOUT the `C` metric gives the right shape and the wrong size (1.000, 0.748,
 0.500, 0.752 around the cycle). The residual that remains here (4.2e-4 at the same index) is not yet
 characterised against the grid. ⚠ The heading is left as it was so the history reads; what follows is
@@ -12235,5 +12235,13 @@ subtracting `g·a_n` moved the core's band ratio UP (1.174 → 1.187) and took t
 below the 1.045 boxcar floor, and its band-limited one to 2.59 — the time-domain fit is dominated by the
 low-frequency, large-variance part of both series. Not evidence either way. The right instrument is the
 band-limited coherence between `D` and `a`, which needs the trajectory kept (the workers save phases only);
-one 3000-period run per fixture, ~10 min. Left here.
+one 3000-period run per fixture, ~10 min. Left here. **The peer's ceiling, recomputed for this orbit's
+harmonic content (2026-09-09, later):** decoupling distortion from damping with a conservative `C(v) = 1 + g v²`
+at fixed `μ = 0.01` (`|λ₂|` 0.94–0.97), the amplitude-to-crossing ceiling is 6.1e-3 at `h₃/h₁ = 0.075` — four
+orders above the near-circular 6e-6, inside the range predicted here, and ~13× short of the slow fixture's
+~8 % on a fixture without a slow node. ⚠ Neither `g_c = 2(h₃/h₁)` nor any scaling of it extrapolates:
+`h₃/h₁` was a proxy for the amplitude mode's NON-RADIALITY, which is the governing quantity (a `C(v)`-weighted
+metric makes the coupling first order), so both sides here scaled the wrong variable and reached the magnitude
+by a route that does not hold. The mechanism is neither excluded nor established; the band-limited coherence is
+the instrument.
 
