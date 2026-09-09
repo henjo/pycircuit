@@ -12614,7 +12614,11 @@ disk (Hairer, Lubich & Roche). The **GLM gap is now precise**: Lamour–März–
 an SSP-for-GLMs source (Spijker; Ferracina & Spijker; Higueras). ⚠ The fix that works on the peer's side: a check
 that asserts each remaining absence is STILL absent, so an acquisition makes it fail and name the file — a
 "recorded so nobody searches again" note cannot be maintained by remembering to retry. This file's markers are
-prose; the same inversion here would be a `doc/` script listing the absences with their expected paths.
+prose; the inversion now exists: **`doc/check_absences.py`** lists the four remaining absences as filename
+regexes over `~/docs` (manifest + tree, 1437 files) paired with five PRESENT controls searched by the same
+mechanism (a control that misses means the search is broken, not the corpus empty — and "Part I" is a prefix
+of "Part II", so the control pattern carries the following word), exits 1 and names the file when a gap fills.
+Run it after any acquisition; a failure is good news.
 
 **The "order-dependent parity test" was not one.** `test_p3_one_floor_one_vocabulary_for_solve_batched` failed
 once in a full run and passed alone; I read the source-context lines of the traceback (the signature asserts) as
@@ -12674,8 +12678,14 @@ peer's fixture `(S_am/S_pm)_slow/(S_am/S_pm)_core` = 0.99786 at every r (both lo
 dead at any ε). On THIS fixture the mix is not near that limit — `S_am/S_pm` at r = 0.10 is 0.059 (core) / 0.069
 (slow) at a = 0 and 0.020 / 0.035 at a = 0.25 — so the effect is ε·0.010 (a = 0) / ε·0.015 (a = 0.25): the demod
 has no first-order AM leak at all (the angle of a complex amplitude), the crossing's measured amplitude-to-crossing
-gain of ~0.6 gives ε ≈ 0.36 → 0.4–0.5 %, a quarter of the residual and the wrong estimator for the larger half.
-Dead here too, by a smaller margin. What the screen leaves: the 2 % is keyed on something whose slow/core
+gain of ~0.6 gives ε ≈ 0.36 → 0.36 % (a = 0) / 0.54 % (a = 0.25) — a quarter to a half of the crossing's residual,
+and with the WRONG SIGN in `a` (the leak grows with `a`, the residual shrinks: subtracting it widens the a-spread
+from 0.40 to 0.58 points), on the estimator that shows the smaller half. Dead here too, by direction as well as
+size. ⚠ Wording (peer): the residual's central values are not flat — demod +1.8 → +2.6 %, crossing +1.1 → +1.5 %
+from a = 0.25 to 0, same sign, inside the ±1 % bars individually and from shared seeds — "inside the bars", not
+"flat". ⚠ The peer's 0.21 % (its S_am/S_pm ≈ 0.99 at both locations) did not transfer because its band sits far
+above its AM corner where AM and PM have converged; this fixture's mix is 0.02–0.07 — check where a third fixture's
+AM corner sits before reusing either number. What the screen leaves: the 2 % is keyed on something whose slow/core
 difference is large — a property of the noise's modal composition at the two locations, not of the orbit or the
 path. Still not chased.
 
