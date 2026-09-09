@@ -12438,3 +12438,17 @@ kick at a = 0.25 and 0.05 (minutes), times the slow mode's in-band power under t
 shares the orbit and monodromy and would localise the miss to the adjoint-and-sideband half if it disagrees, or
 push it upstream of all three constructions if it agrees. Not run; Andreas's call.
 
+**Pre-registered target for candidate 2's measurement (peer, 18:35).** On its own one-node fixture the
+instantaneous slow-mode gains are `g_demod` = −2.9e-5 … −8.8e-6 and `g_cross` = 4.7e-5 … 9.3e-6 for τ/T = 1 … 8,
+with `P_s/P_φ` = 2.0e6, giving a relative excess `g² · P_s/P_φ` of 0.45 % → 0.02 % — FALLING as the node slows —
+against the 6 % needed; the required gain is `√(0.06/2e6)` = 1.7e-4. The product is coupling-invariant (`g ∝ k`,
+`P_s/P_φ ∝ 1/k²`; 0.0019 at k = 1e-3 and 3e-3 alike), so a stronger coupling cannot raise it; only a different
+mode structure can. Verdict rule: `g_inst` ≳ 1.7e-4 closes the mechanism quantitatively; ~3e-5 kills it (30×
+short); between is a partial contributor with the rest for candidate 3. ⚠ Fixture correction for the record:
+the Monte Carlo fixture has ONE slow RC node (Rs = 100, τ/T = 100), not the 18-branch ladder (that was the Aitken
+fixture), so the peer's trend "slower node → smaller excess" applies directly and predicts a small number here;
+`P_s/P_φ` must be computed for this fixture rather than inherited. ⚠ Suggestive, not yet a measurement: this
+fixture's slow-mode kick TAIL read θ/ε = −1.8e-4 at a = 0.05 — the required order — but a tail after 600 periods
+(the mode at 2.4e-3 of its kick) is an asymptotic shift, not the instantaneous response; the first-period reading
+is the measurement. Not run.
+
