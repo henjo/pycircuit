@@ -1457,3 +1457,228 @@ class ESDIRK43Integrator(RungeKuttaIntegrator):
 
     def __init__(self):
         pass
+
+class NordsieckGLMIntegrator(Integrator):
+    """A general linear method in NORDSIECK form with stage order q = p -- the
+    class Voigtmann's Theorem 9.5 covers: on an index-2 DAE at constant
+    stepsize a stiffly accurate GLM with `q = p`, `V` power bounded and
+    `M_inf = V - B A^-1 U` nilpotent converges at full order p in EVERY
+    component (no differential/algebraic split), where Radau IIA(3) reads
+    5 / 3 and ESDIRK43 4 / 2 here (`min(p, q)`, measured 2026-09-07).  The
+    stage matrix `A` is lower triangular with one diagonal, so the s stages
+    are solved sequentially with ONE factorisation per step, as a DIRK --
+    the combination Kennedy & Carpenter prove impossible for a Runge-Kutta
+    method; it is possible here because the r = p + 1 Nordsieck components
+    carried between steps buy the stage order that a full `A` would.
+
+    THE TABLEAU IS `(A, c, B, p)`; `U` and `V` are NOT free.  For a Nordsieck
+    method with stage order q = p (Butcher; Butcher & Wright 2003 eq. 2.4-5)
+
+        U = C - A C K,     V = E - B C K,
+
+    with `C_ik = c_i^k / k!` (s x (p+1)), `K` the shift matrix and
+    `E = exp(K)` the Taylor shift, in the convention `y^[n]_k ~ h^k y^(k)`
+    WITHOUT the 1/k! (measured: with the 1/k! convention the same formulas
+    fail exactness at k = 2).  So order and stage order are structural; what
+    a tableau has to be CHECKED for is stability -- `V` with spectrum
+    {1, 0, ...}, `M_inf` nilpotent (Voigtmann: strictly stronger than power
+    bounded, and what buys `min(p, q) = p`), and `rho(M(z)) <= 1` on the left
+    half-plane -- and stiff accuracy (`B[0] == A[-1]`, `c[-1] == 1`, so the
+    output's first component is the last stage: `x_{n+1} = Y_s`).
+    :meth:`verify` returns all of it; the tests assert it.
+
+    ⚠ THE STARTING VECTOR IS THE MACHINERY THIS CLASS EXISTS FOR.  Theorem
+    9.5's hypothesis (c) needs the input vector `y^[0] = (q, h q', ...,
+    h^p q^(p))` exact to O(h^p) at the first step -- "computed by
+    generalised Runge-Kutta methods taking only the initial value" -- and
+    the Transient provides it (:meth:`Transient._glm_startup`): p substeps of
+    Radau IIA(3) (order 5 >= p) from `x_0` at `h/p`, a degree-p interpolant
+    through the p+1 charge vectors, its scaled derivatives at `t_0`.  The
+    interpolant's k-th derivative is O(h_s^{p+1-k}) accurate, scaled by
+    `h^k` that is O(h^{p+1}) in every component.  The gate runs the method
+    from the EXACT vector and from the computed one and requires the same
+    order.
+
+    ⚠ SCOPE.  Transient only, constant stepsize (the theorem's own scope;
+    a Nordsieck rescale `Q_k <- (h_new/h_old)^k Q_k` is applied if the step
+    changes but no LTE/step controller exists for it); no PSS/shooting
+    period map (a multivalue method's monodromy lives on the r*m Nordsieck
+    state, not built -- `PSS(method=...)` does not offer it); no PCNR stage
+    path; not on the JAX backend.
+    """
+
+    #: overridden by concrete tableaux
+    A = None
+    C_ABSC = None
+    B = None
+    P = None
+
+    def is_stage_method(self) -> bool:
+        return True
+
+    def is_multivalue(self) -> bool:
+        """A Nordsieck vector is carried between steps (r = p + 1 values per
+        unknown); the Transient's GLM path, not the one-step RK path."""
+        return True
+
+    def get_required_history(self) -> int:
+        return 1
+
+    def companion_reach(self) -> int:
+        return 1
+
+    def check_order_drop(self, h_curr, h_last, is_first_step):
+        return self
+
+    def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last,
+                            h_last, is_first_step, toolkit):
+        raise NotImplementedError('a GLM has no companion recursion; the '
+                                  'Transient drives it through _solve_timestep_glm')
+
+    def compute_lte(self, *args, **kwargs):
+        raise NotImplementedError('no LTE estimator for the Nordsieck GLM: '
+                                  'constant stepsize only (Voigtmann Thm 9.5 is '
+                                  'stated at constant stepsize)')
+
+    @staticmethod
+    def _nordsieck_matrices(p):
+        import numpy as np
+        from math import factorial
+        r = p + 1
+        K = np.zeros((r, r))
+        for i in range(r - 1):
+            K[i, i + 1] = 1.0
+        E = np.zeros((r, r))
+        for i in range(r):
+            for j in range(i, r):
+                E[i, j] = 1.0 / factorial(j - i)
+        return K, E
+
+    def tableau(self):
+        """``(A, U, B, V, c, p)`` as float ndarrays, U and V from the order
+        conditions, cached."""
+        cache = getattr(self, '_glm_cache', None)
+        if cache is None:
+            import numpy as np
+            from math import factorial
+            A = np.array(self.A, dtype=float)
+            c = np.array(self.C_ABSC, dtype=float)
+            B = np.array(self.B, dtype=float)
+            p = int(self.P)
+            K, E = self._nordsieck_matrices(p)
+            Cm = np.array([[ck ** k / factorial(k) for k in range(p + 1)] for ck in c])
+            U = Cm - A @ Cm @ K
+            V = E - B @ Cm @ K
+            cache = (A, U, B, V, c, p)
+            self._glm_cache = cache
+        return cache
+
+    @property
+    def stages(self) -> int:
+        import numpy as np
+        return int(np.array(self.C_ABSC).shape[0])
+
+    @property
+    def order(self) -> int:
+        return int(self.P)
+
+    def is_stiffly_accurate(self) -> bool:
+        import numpy as np
+        A, U, B, V, c, p = self.tableau()
+        return bool(np.allclose(B[0], A[-1]) and abs(c[-1] - 1.0) < 1e-12
+                    and np.allclose(V[0], U[-1]))
+
+    def stability_function(self, z):
+        """``M(z) = V + z B (I - z A)^-1 U``; its spectral radius on the left
+        half-plane is the stability question for a GLM."""
+        import numpy as np
+        A, U, B, V, c, p = self.tableau()
+        s = A.shape[0]
+        return V + z * B @ np.linalg.solve(np.eye(s) - z * A, U)
+
+    def M_inf(self):
+        import numpy as np
+        A, U, B, V, c, p = self.tableau()
+        return V - B @ np.linalg.solve(A, U)
+
+    def verify(self):
+        """Everything a tableau must satisfy, measured: polynomial exactness
+        (one step on ``y = t^k`` is exact for ``k <= p`` in output AND stages,
+        and NOT exact at ``k = p + 1``), stiff accuracy, ``eig(V)``,
+        ``rho(M_inf)`` and the nilpotency residual ``|M_inf^r|``, and the worst
+        ``rho(M(z))`` over a left-half-plane grid."""
+        import numpy as np
+        from math import factorial
+        A, U, B, V, c, p = self.tableau()
+        s = A.shape[0]
+        r = p + 1
+        h, t0 = 0.37, 0.21
+        exact = []
+        for k in range(p + 2):
+            def deriv(t, j):
+                return factorial(k) / factorial(k - j) * t ** (k - j) if j <= k else 0.0
+            y_in = np.array([h ** j * deriv(t0, j) for j in range(r)])
+            F = np.zeros(s)
+            Y = np.zeros(s)
+            for i in range(s):
+                F[i] = deriv(t0 + c[i] * h, 1)
+                Y[i] = U[i] @ y_in + h * (A[i] @ F)
+            y_out = V @ y_in + h * (B @ F)
+            y_ex = np.array([h ** j * deriv(t0 + h, j) for j in range(r)])
+            Y_ex = np.array([(t0 + ci * h) ** k for ci in c])
+            exact.append((k, float(np.max(np.abs(y_out - y_ex))),
+                          float(np.max(np.abs(Y - Y_ex)))))
+        grid = [complex(x, y) for x in (-1e-3, -0.1, -1.0, -10.0, -100.0, -1e4)
+                for y in (0.0, 0.5, 2.0, 10.0, 100.0)]
+        rho = max(float(np.max(np.abs(np.linalg.eigvals(self.stability_function(z)))))
+                  for z in grid)
+        Mi = self.M_inf()
+        return {
+            'exactness': exact,
+            'stiffly_accurate': self.is_stiffly_accurate(),
+            'eig_V': np.sort(np.abs(np.linalg.eigvals(V)))[::-1],
+            'rho_M_inf': float(np.max(np.abs(np.linalg.eigvals(Mi)))),
+            'nilpotency_residual': float(np.max(np.abs(np.linalg.matrix_power(Mi, r)))),
+            'rho_lhp': rho,
+        }
+
+
+class GLM2Integrator(NordsieckGLMIntegrator):
+    """p = q = 2, s = r = 3: Wright's printed IRKS method (PhD thesis,
+    Auckland 2002, book p. 99 / PDF p. 111; transcribed by the docs session
+    from the rendered page, 2026-09-09): `lambda = 1/4`, `epsilon = 0`,
+    `c = [1/4, 1/2, 1]`, and in Wright's words "the second method is
+    IMPLICIT and is L-STABLE.  Note that V is rank one which is a desirable
+    property but can only be achieved in a few special cases."
+
+    ⚠ THE PRINTED `U` AND `V` ARE REPRODUCED EXACTLY by this class's order
+    conditions from `(A, c, B)` alone -- `U = [[1, 0, -1/32], [1, 1/12,
+    -1/24], [1, 1/12, -1/24]]`, `V = [[1, 1/12, -1/24], 0, 0]` -- which is
+    the constructor's validation against the author's own matrices.
+    `verify()`: exact to 1e-16 for k <= 2, leading term 0.076 at k = 3;
+    eig(V) = {1, 0, 0}; `M_inf` nilpotent to 1e-15; rho(M(z)) <= 0.999 on
+    the left-half-plane grid; stiffly accurate.
+
+    ⚠ WRIGHT p. 99: "in the Runge-Kutta case stiff accuracy ensures the
+    method has L-stability.  This is NOT the case for IRKS methods.  In
+    order to ensure the method has L-stability the free parameter epsilon
+    must be chosen so that epsilon = 0" -- stiff accuracy alone buys no
+    L-stability here.  And the thesis's Appendix III tableaux of orders 2-5
+    are EXPLICIT (`W = I`, `lambda = 0`) with `epsilon = 1/(p+1)!`: the wrong
+    class for a stiff DAE; this p = 2 method is the only implicit L-stable
+    IRKS tableau printed.  Orders 3-4 in this class have to be CONSTRUCTED
+    (IRKS conditions with `lambda != 0`, `epsilon = 0`); a plain least-squares
+    search over `(A, c, B)` found none A-stable at p >= 3 (roadmap).
+
+    ⚠ A p = 2 method demonstrates the MACHINERY (Nordsieck propagation,
+    the starting vector, no index-2 split), not dominance: TR-BDF2 already
+    has q = p = 2 and a smaller error constant.
+    """
+    P = 2
+    A = [[0.25, 0.0, 0.0],
+         [1.0 / 6.0, 0.25, 0.0],
+         [1.0 / 6.0, 0.5, 0.25]]
+    C_ABSC = [0.25, 0.5, 1.0]
+    B = [[1.0 / 6.0, 0.5, 0.25],
+         [0.0, 0.0, 1.0],
+         [0.0, -2.0, 2.0]]

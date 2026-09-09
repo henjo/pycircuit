@@ -2527,6 +2527,135 @@ class Transient(Analysis):
             self._rk_est = self._rk_dirk_estimate(K, h, J)
         return xnp1, None, J, None
 
+    def _glm_startup(self, tn, x0, h, provided_function=None):
+        """The Nordsieck starting vector ``Q_k = h^k q^(k)(t_n)``, k = 0..p, to
+        O(h^p) -- Voigtmann's Theorem 9.5 hypothesis (c), "computed by
+        generalised Runge-Kutta methods taking only the initial value".
+
+        p substeps of Radau IIA(3) (order 5 >= p) from ``x0`` at ``h_s = h/p``
+        through this Transient's own coupled RK step (so the sources are read
+        at the right absolute time), a degree-p interpolant through the p + 1
+        charge vectors ``q(x(t_n + k h_s))``, and its scaled derivatives at
+        ``t_n``: the interpolant's k-th derivative is O(h_s^{p+1-k}) accurate,
+        times ``h^k`` that is O(h^{p+1}) in every component.  Algebraic rows
+        (``q == 0``) come out identically zero.  ``_glm_startup_override``, if
+        set, replaces this (the gate feeds the EXACT vector through it to
+        show the computed one is not what limits the order).
+        """
+        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        from math import factorial
+        integ = self.base_integrator
+        A, U, B, V, c, p = integ.tableau()
+        override = getattr(self, '_glm_startup_override', None)
+        if override is not None:
+            return np.asarray(override(tn, x0, h), dtype=float)
+        tk = self.toolkit
+        epar = self.epar
+        hs = h / float(p)
+        xs = [np.asarray(x0, dtype=float)]
+        saved = (self.base_integrator, self._dt)
+        try:
+            self.base_integrator = RadauIIA3Integrator()
+            self._dt = hs
+            for k in range(1, p + 1):
+                xk = self._rk_step_coupled(xs[-1], tn + k * hs, provided_function)[0]
+                xs.append(np.asarray(xk, dtype=float))
+        finally:
+            self.base_integrator, self._dt = saved
+        qs = np.array([np.asarray(self.cir.q(x, epar), dtype=float) for x in xs])   # (p+1, n)
+        ## Vandermonde in the scaled variable tau = (t - t_n)/h_s = k: q(tau) = sum_j a_j tau^j
+        Vd = np.array([[float(k) ** j for j in range(p + 1)] for k in range(p + 1)])
+        a = np.linalg.solve(Vd, qs)                       # (p+1, n): a_j in tau
+        ## d^k q / dt^k at t_n = k! a_k / h_s^k ;  Q_k = h^k d^k q/dt^k = (h/h_s)^k k! a_k
+        Q = np.array([(h / hs) ** k * factorial(k) * a[k] for k in range(p + 1)])
+        Q[0] = qs[0]
+        return Q
+
+    def _solve_timestep_glm(self, x0, t, provided_function=None):
+        """One step of a Nordsieck general linear method (:class:`integrator.
+        NordsieckGLMIntegrator`).  In the charge formulation, stage ``i``:
+
+            q(Y_i) = sum_j U_ij Q^[n-1]_j + h sum_{j<=i} A_ij K_j,
+            K_j = -(i(Y_j) + u(t_n + c_j h)),
+
+        an ``m x m`` Newton per stage through :meth:`_newton` (A is lower
+        triangular with one diagonal, so the Jacobian ``C + h a K G`` is the
+        same operator at every stage), then the output
+
+            Q^[n]_k = sum_j V_kj Q^[n-1]_j + h sum_j B_kj K_j,
+
+        with ``x_{n+1} = Y_s`` (stiffly accurate; ``Q^[n]_0 = q(Y_s)`` to
+        rounding).  The Nordsieck state lives in ``self._glm_Q`` with the time
+        and step it was formed at; the first step (or a step that does not
+        continue from the stored time) computes it by :meth:`_glm_startup`,
+        a changed step rescales it (``Q_k <- (h/h_old)^k Q_k``).  Algebraic
+        rows have ``q == 0`` and every stage satisfies their constraint
+        exactly (by induction down the triangular A), so their Nordsieck
+        components stay zero.
+        """
+        integ = self.base_integrator
+        A, U, B, V, c, p = integ.tableau()
+        s = A.shape[0]
+        r = p + 1
+        h = self._dt
+        tn = t - h
+        epar = self.epar
+        ana = self.par.analysis
+        tk = self.toolkit
+        arr = lambda v: tk.array(v, dtype=float)
+
+        def src(tt):
+            u = arr(self.cir.u(tt, epar, analysis=ana))
+            if provided_function is not None:
+                u = u + provided_function(tt)
+            return u
+
+        state = getattr(self, '_glm_Q', None)
+        if state is None or abs(state[1] - tn) > 1e-12 * max(abs(tn), h):
+            Q = self._glm_startup(tn, x0, h, provided_function)
+            self.statistics_glm_startups = getattr(self, 'statistics_glm_startups', 0) + 1
+        else:
+            Q, _t_old, h_old = state
+            if abs(h_old - h) > 1e-14 * h:
+                rho = h / h_old
+                Q = np.array([rho ** k * Q[k] for k in range(r)])
+        xn = np.asarray(x0, dtype=float)
+        tstage = [tn + c[i] * h for i in range(s)]
+        Y = [None] * s
+        K = [None] * s
+        for i in range(s):
+            target = sum(U[i, j] * Q[j] for j in range(r)) \
+                + h * sum(A[i, j] * K[j] for j in range(i))
+            aii = A[i, i]
+            ti = tstage[i]
+            guess = Y[i - 1] if i > 0 else xn
+
+            def func_i(x, _tgt=target, _aii=aii, _ti=ti):
+                Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
+                f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
+                J = arr(self.cir.C(x, epar)) + h * _aii * arr(self.cir.G(x, epar))
+                return f, J
+            Y[i] = self._newton(func_i, guess)
+            K[i] = -(arr(self.cir.i(Y[i], epar)) + src(ti))
+        Qn = np.array([sum(V[k, j] * Q[j] for j in range(r))
+                       + h * sum(B[k, j] * K[j] for j in range(s)) for k in range(r)])
+        xnp1 = Y[s - 1]
+        self._glm_Q = (Qn, t, h)
+        self._rk_Y = list(Y)
+        self._rk_K = list(K)
+        qY = self.cir.q(xnp1, epar)
+        self._q_cache = (xnp1, qY)
+        self._iq = -(arr(self.cir.i(xnp1, epar)) + src(t))
+        Cm = arr(self.cir.C(xnp1, epar))
+        Gm = arr(self.cir.G(xnp1, epar))
+        a_last = A[s - 1, s - 1]
+        self._Cmat = Cm
+        self._Geq = a_last * h * Gm
+        self._effective_method = type(integ).__name__
+        self._companion_coeffs = None
+        J = Cm + a_last * h * Gm
+        return xnp1, None, J, None
+
     def _rk_dirk_estimate(self, K, h, J):
         """The filtered embedded error estimate for a DIRK step, in STATE units.
 
@@ -3340,6 +3469,11 @@ class Transient(Analysis):
 
     def solve_timestep(self, x0, t, provided_function=None):
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
+        if getattr(self.base_integrator, 'is_multivalue', lambda: False)():
+            ## a Nordsieck general linear method: r = p + 1 values per unknown
+            ## carried between steps, DIRK-like sequential stages, a starting
+            ## vector computed at the first step -- see `_solve_timestep_glm`
+            return self._solve_timestep_glm(x0, t, provided_function)
         if isinstance(self.base_integrator, RungeKuttaIntegrator):
             ## ANY Runge-Kutta method: the one tableau-driven stage step, which
             ## picks the DIRK-sequential or fully-implicit-coupled path from the

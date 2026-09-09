@@ -12701,3 +12701,74 @@ here). The core control fits NO smooth law (χ² 12/1 demod, 20–25/1 crossing)
 was right. Closed: the residual stays a ~2 % term of the noisy estimator against its zero-excursion limit, of
 unknown order in the excursion, differing strongly between the two source locations, cancelling in every slope.
 
+## The GLM startup machinery, BUILT (Andreas: "do the GLM startup machinery", 2026-09-09 night)
+
+**What was built.** `integrator.NordsieckGLMIntegrator`: a general linear method in Nordsieck form with stage
+order q = p, `A` lower triangular with one diagonal (sequential DIRK-like stages, one operator per step), stiffly
+accurate, r = p + 1 values per unknown carried between steps. The tableau is `(A, c, B, p)`; `U = C − ACK` and
+`V = E − BCK` are computed from the order conditions (Butcher; Butcher & Wright 2003), so order and stage order
+are structural and `verify()` measures them (one step on `y = tᵏ` exact for k ≤ p in output and stages, not at
+p + 1) together with what a tableau must be CHECKED for: eig(V) = {1, ~0}, `M_∞` nilpotent, ρ(M(z)) ≤ 1 on the left
+half-plane, stiff accuracy. ⚠ The Nordsieck convention is `y_k = hᵏ y⁽ᵏ⁾` WITHOUT 1/k! — with the 1/k! convention
+the same formulas fail exactness at k = 2 (measured before it was read). `Transient._solve_timestep_glm` runs it
+(stage `i`: `q(Y_i) = Σ_j U_ij Q_j + h Σ_{j≤i} A_ij K_j` by the same Newton the DIRK path uses; output
+`Q' = VQ + hBK`; `x_{n+1} = Y_s`; a changed step rescales `Q_k ← ρᵏ Q_k`), and **`Transient._glm_startup` is the
+machinery the item named**: Theorem 9.5's hypothesis (c), the input vector exact to O(hᵖ), by p substeps of Radau
+IIA(3) at h/p through the Transient's own coupled RK step (sources read at the right absolute time), a degree-p
+interpolant through the p + 1 charge vectors, and its scaled derivatives at t₀ — O(hˢ⁺¹⁻ᵏ) per derivative, times
+hᵏ, is O(hᵖ⁺¹) in every component. Algebraic rows (`q ≡ 0`) stay identically zero, and every stage satisfies
+their constraint by induction down the triangular `A`.
+
+**Gate (`test_glm.py`), on the index-2 C–V loop, one period at constant step from the exact periodic state, the
+error split by subspace as the radau order-split test does — the harness reproduces on `Transient` what the PSS
+measured (radau 4.99 / 3.00, TR-BDF2 2.01 / 2.00):**
+
+| method | differential order | algebraic order | split |
+|---|---|---|---|
+| radau (p = 5, q = 3) | 4.99 | 3.00 | 2 |
+| trbdf2 (p = q = 2) | 2.01 | 2.00 | 0 |
+| **GLM2 (p = q = 2), exact starting vector** | 2.01 | 2.01 | 0 |
+| **GLM2, computed starting vector** | 2.00 | 2.01 | 0 |
+
+The computed start matches the exact one to 2 % in error and 0.01 in order, so the starting machinery delivers
+hypothesis (c). ⚠ What this does and does not show: NO split at q = p with sequential stages and a starting
+vector — the mechanism, on the machinery the item asked for; not dominance, since TR-BDF2 already has q = p = 2
+and the GLM2's error constant is 5× worse (a numerical construction with nothing optimised). Dominance over
+Radau's 5 / 3 needs p = q ≥ 4 with the same structure, which is Wright's IRKS construction (doubly companion `X`,
+`BA = XB`, `BU = XV − VX`): my numerical search (least squares over A's sub-diagonal, λ, c, B against the
+stability constraints) found an A-stable, nearly-nilpotent tableau at p = 2 (eig(V) ≈ {1, 1.4e-3}, ρ(M_∞) ≈ 1.5e-3,
+ρ ≤ 0.999 on the grid) and NOT at p = 3 or 4 (ρ = 1.24 at p = 3) — that is what the analytic construction is
+for; a transcription from Wright's examples was requested from the docs session and plugs in as a second class
+with no other change. Scope as documented in the class: Transient only, constant step (Theorem 9.5's own scope),
+no PSS period map (a multivalue monodromy lives on the r·m Nordsieck state), no PCNR stage path, not on JAX.
+
+**Wright's printed tableau, transcribed and validated (docs session + here, same night).** The thesis prints
+exactly ONE implicit L-stable IRKS method — p = q = 2, s = r = 3, λ = 1/4, ε = 0, c = [1/4, 1/2, 1] (book p. 99);
+its Appendix III tableaux of orders 2–5 are EXPLICIT (`W = I`, λ = 0, ε = 1/(p+1)!) and the wrong class for a stiff
+DAE, and p. 99 says stiff accuracy does NOT imply L-stability for IRKS methods (ε = 0 is a separate requirement).
+⚠ So the peer's ledger row "usable coefficients on disk" was wrong at the orders that matter and is corrected;
+orders 3–4, implicit and L-stable, must be CONSTRUCTED from the IRKS conditions with λ ≠ 0, ε = 0. **Validation:**
+this constructor's `U = C − ACK`, `V = E − BCK` from Wright's `(A, c, B)` reproduce his printed `U` and `V` to the
+digit (`[1, 0, −1/32]`, `[1, 1/12, −1/24]`, `V` rank one); eig(V) = {1, 0, 0}, `M_∞` nilpotent to 1e-15, L-stable.
+Shipped as `GLM2Integrator`; the numerical tableau retired. On the harness (exact start / computed start):
+differential 2.9e-3 → 4.9e-5 (orders 1.94 / 1.97 / 1.98), algebraic 2.7e-8 → 5.1e-10 (1.92 / 1.87 / 1.92) — a
+better error constant than TR-BDF2's (3.6e-3, 8.9e-8) on both components; the computed start costs a constant
+factor ~2.4 on the algebraic component and nothing in order (1.90 / 1.98 / 1.99). Suite 3129 pass with the
+numerical constants; the swap to Wright's is constants-only, re-gated by `test_glm.py`. ⚠ Page bookkeeping for
+the thesis (peer): the text layer's page prefix runs 8 behind the PDF page, the PDF 12 ahead of the printed book.
+
+**A null worth its condition (docs session, 2026-09-09 night): MNA's small-step conditioning.** Brambilla,
+Premoli & Storti-Gajani, *"Recasting Modified Nodal Analysis to Improve Reliability in Numerical Circuit
+Simulation"*, TCAS-I 52(3) 2005 (on disk, never cited here; abstract and algorithm sketch read, not the paper):
+"very large conductances in the companion model of capacitors can introduce roundoff errors" at very small steps,
+and the fix is a per-element recombination applied during loading ("must be loaded one element at a time", since
+machine addition is not associative). The period-map Jacobian `C/dt + J` is exactly that case in form. Measured:
+the one parameter is `r = C/(dt·G)` per element; `G` recovers exactly for `r ≤ 1e15` and is lost at `r ≥ 1e16` —
+a hard double-precision cliff. This review's tightest grid sits at `r = 5e-7`, 22 orders from it; ordinary RF
+(1 pF, 1 kΩ, 1 ns) is `r = 1`; even 1 µF against 1 GΩ at 1 ps is 1e15. Exposure needs a time-constant spread
+`τ_RC/dt ≳ 1e16` in one circuit — a converter with an RF section, not an oscillator. If such a circuit ever
+arrives, `r` per element is a one-line load-time check and a warning at `r > 1e13` has three decades of headroom;
+not built. Also from the same drop, a third-party statement of the frame point that bit the C-only-loop
+discussion: the sparse tableau is the formulation "from which one may derive MNA and NA by variable
+elimination", each with its own admissible element class — why Chua & Lin's C-only-loop clause does not bind MNA.
+
