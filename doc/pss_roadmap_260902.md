@@ -12478,3 +12478,50 @@ drift is largest — the peer's direction argument holds on this fixture (at a =
 `w`, decoupled by symmetry; at a = 0.25 it mixes 34 % into the tank). Whatever its size at one `a`, a gain that
 vanishes where the effect peaks cannot carry it.
 
+### Item 3, answered (2026-09-09 19:40): the constructions are right; the drift is the ESTIMATORS' definition of phase
+
+**The route.** A linear construction of a different kind on the Monte Carlo's own discretised system: a small
+real current tone at the source node at `|m + r| f₀`, m = −4…4, r = 0.10, forward fixed-step gear transient (the
+MC's integrator) for 500 periods, the last 100 analysed as driven MINUS an undriven run from the same `x₀` on the
+same grid (the integrator's own phase slip cancels exactly; peer's hole 1). From one run: the output's carrier and
+sidebands at k f₀ ± r f₀ for k = 1, 2, 3 → PM_k = ½|u − conj(l)|²/k² and AM_k (am_pm_noise's own combination;
+peer's hole 2, the k-scaling), and on the same window the demodulated phase and the crossing phase as the MC reads
+them. Summed over the tones (a white source weights every band equally; the m = ±4 terms are 1e-3 of m = ±1, so
+the sum is converged) and compared as slow/core against the constructions at r = 0.10 and the MC's 16-seed double
+ratios. Linear to 4.000 in power when the tone amplitude doubles.
+
+| a | tone PM₁ / S_pm | tone PM₁ / fw | tone demod / S_pm | MC demod / S_pm | tone cross / S_pm | MC cross / S_pm |
+|---|---|---|---|---|---|---|
+| 0.25 | **1.003** | 1.028 | 0.938 | 0.957 | 1.024 | 1.038 |
+| 0.00 | **1.010** | 1.027 | 1.003 | 1.036 | 1.105 | 1.129 |
+
+**Readings.** (1) `pnoise`'s S_pm — the adjoint-and-sideband assembly — agrees with the forward LPTV response's
+PM sidebands to 1 % on both fixtures at both asymmetries: the adjoint half is EXONERATED, and the frequency-aware
+sum sits within its known 2.5–3 % of it. (2) The a-dependence of BOTH estimators' double ratios is reproduced by
+this deterministic linear route: demod 0.938 → 1.003 (+6.5 pp) against the MC's 0.957 → 1.036 (+8 pp); crossing
+1.024 → 1.105 (+8 pp) against 1.038 → 1.129 (+9 pp). So the drift is not physics missing from the constructions
+and not the MC harness: it is the RESPONSE OF THE ESTIMATORS to the linear sideband structure, fixture- and
+a-dependent. Within the tone route the demod reads a given sideband PM with gain 1.92 on the core and 1.80 on the
+slow fixture at a = 0.25 (a 7 % fixture difference) but 1.943 / 1.929 at a = 0 — the one-period boxcar at ω₀ leaks
+the OTHER harmonics' sidebands (sinc(π(1 − r)) ≈ 0.1 in amplitude for the second harmonic's), whose relative AM/PM
+content depends on where the source enters, and the second harmonic is ∝ a. The crossing converts every
+harmonic's sidebands. (3) The PM split itself is harmonic-dependent on this orbit: PM₃/9 over PM₁ = 1.087 core /
+1.053 slow at a = 0.25, 1.069 / 1.027 at a = 0 (k = 2 at a = 0 is 0/0, the vanishing carrier, not a violation) —
+AM–PM mixing through the harmonics, a few percent, fixture-dependent. (4) An a-INDEPENDENT offset of ~+3 % (demod)
+/ +1.5 % (crossing) remains between the noisy MC and this deterministic route; it cancels in every slope and is
+my first guess — the MC's band mean (0.08–0.15) against the point value at r = 0.10 — is REFUTED by the peer's
+measurement (band mean / point value = 0.9991 on a 240-point fixture; `S·r²` is flat to 0.4 % across the band far
+above the AM corner, and the sign is wrong); an excursion-amplitude dependence of the estimator's gain is bounded
+by the single-fixture PSD/4 ratio (0.993 ± 0.013 per factor two) at ~2 %, marginal; the Welch normalisation
+(ENBW, overlap, edge convention) is a labelled guess. Cancels in every slope; not chased.
+
+**So:** "neither construction describes either measured phase across `a`" stands, with the cause found. The
+constructions compute PM by sideband quadrature, which is a property of the LPTV transfer and is right to 1 %;
+"the phase" read by a one-period fundamental demodulation or by zero crossings is a different object on a
+harmonic-rich orbit, and the difference moves with the harmonic content and with where the noise enters. A
+measurement that wants to be compared with `S_pm` has to be the quadrature PM of the FUNDAMENTAL'S sidebands —
+not a demodulated phase (leaks the harmonics' sidebands through the boxcar) and not crossing times (converts all
+of them). Candidate 3 as the peer scoped it (covariance route, "physics upstream of all three") is not needed:
+the forward route shares the orbit and monodromy with the constructions and agrees with them. Machine time for
+the whole item: ~4 min.
+

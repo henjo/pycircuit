@@ -5487,11 +5487,21 @@ class PSS(Analysis):
         coherence).  The common drift of BOTH estimators against BOTH
         linear constructions as a -> 0 is the open object; candidate, a
         second-order amplitude-to-phase conversion the linear theory
-        cannot contain, largest where the slow-node source's first-order
-        phase coupling (its k = 0 coefficient, ~a) vanishes -- it scales
-        as PSD^2 where the linear terms scale as PSD, so a quartered
-        injected PSD quarters the relative excess; a harness or band
-        defect is PSD-flat.  Not run.  ⚠ The
+        cannot contain -- REFUTED the same evening (PSD/4: the slow
+        fixture scales linearly, 0.993 +- 0.013; grid doubling moves the
+        constructions < 0.7 %; band conventions identical).  RESOLVED by a
+        forward tone-transient route on the MC's own discretised system
+        (no adjoint, no sideband assembly): pnoise's S_pm agrees with the
+        forward LPTV PM sidebands to 1 % at both asymmetries, and the
+        estimators' a-dependent double ratios are REPRODUCED by that
+        deterministic linear route (demod 0.938 -> 1.003 against the MC's
+        0.957 -> 1.036).  The drift is the ESTIMATORS: a one-period
+        fundamental demodulation leaks the other harmonics' sidebands
+        through its boxcar (sinc(pi(1-r)) ~ 0.1 for the second harmonic's,
+        which is ~a), zero crossings convert every harmonic's; both read a
+        given sideband PM with a fixture-dependent gain.  This object and
+        S_pm are PM by quadrature of the FUNDAMENTAL'S sidebands; compare
+        them with that, not with a demodulated or crossing phase.  ⚠ The
         premise "a -> 0 makes the definitions coincide" was wrong: the
         asymmetry removes even harmonics only, van der Pol's third stays
         at 9.7 % of the fundamental, and the construction gap GROWS as
