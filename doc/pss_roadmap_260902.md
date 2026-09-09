@@ -11943,3 +11943,57 @@ workers grew at 150 kB/period toward ~3 GB each, 14.5 GB at the end of a five-wo
 free (a peer's process was OOM-killed minutes earlier). Same total data (two 5000-period segments per run),
 6 GB peak, ~2.5 h. Both phase estimators are saved per run, so the low band — where nothing is disputed —
 is the estimators' own control at ~1 %; the verdict is read only if they agree there.
+
+**The restart-free run (10 × 10 000 periods, three waves, 72 min) — read in the fixed order.** Low band,
+the estimators' control: zero-crossing `⟨S_φ r²⟩` = 4.064e-12 ± 4.9 %, demodulated fundamental 4.040e-12 ±
+4.9 % — agreeing to 0.6 % — and both at 0.97 ± 0.05 of `pnoise`'s and the frequency-aware sum's predictions
+through the control's calibration (0.1003): the slow-node physics at low offsets is confirmed by an
+instrument that instantiates neither construction. Disputed band: zero-crossing **1.379e-13 ± 1.0 %**,
+demodulated **1.151e-13 ± 1.2 %** — 20 % apart at 1 % precision each, so by the precondition the verdict
+is WITHHELD. Against `pnoise` (1.340e-13 predicted) the crossing reads +2.9 % and the demodulated −14 %;
+against the frequency-aware sum (1.298e-13) +6 % and −11 %. ⚠ Not yet like for like: the calibration
+factor came from the core's zero-crossing series (the blocked run saved only crossings), so the
+demodulated slow-node number is being read through the other estimator's calibration. The core is
+being rerun with both estimators (4 × 10 000, restart-free): if the 20 % gap appears on the core too it is
+an estimator property (the one-period boxcar's sinc loss, |sinc r|² ≈ 0.955 averaged over the band, is
+one known piece of it; the crossing's sensitivity to the harmonics' noise another) and cancels in the
+double ratio; if not, it belongs to the band and is itself the finding.
+
+### VERDICT (2026-09-09 05:00 UTC): the arbiter arbitrates a definition, not a number
+
+Core rerun with both estimators (4 × 10 000, restart-free): zero-crossing `⟨S_φ r²⟩` 3.672e-8 ± 1.5 %,
+demodulated 3.327e-8 ± 1.4 % in the disputed band; low band 3.147e-8 / 3.137e-8 ± 9 %. The estimator
+gap (crossing / demodulated) is **1.104 on the core and 1.198 on the slow node** in the disputed band,
+1.003 / 1.006 in the low band: 10 % is the orbit's own (the one-period boxcar's sinc loss ≈ 5 %, the
+crossing's sensitivity to the harmonics' noise the rest) and cancels in the double ratio; **9 % belongs to
+where the noise enters** and does not. Double ratios, each estimator calibrated by itself on the core:
+
+| disputed band | vs `pnoise` (S_pm) | vs frequency-aware sum |
+|---|---|---|
+| zero-crossing phase | **1.027 ± 1.8 %** (1.5σ) | 1.061 ± 1.8 % (3.4σ) |
+| demodulated fundamental phase | 0.946 ± 1.9 % (2.8σ) | **0.977 ± 1.9 %** (1.2σ) |
+| low band (both estimators) | 1.13 ± 10.5 % | 1.13 ± 10.5 % |
+
+Each construction is compatible with ONE estimator and rejected by the other: PM by sideband quadrature
+(`pnoise`'s `S_pm`) tracks the zero-crossing phase, the phase-mode projection (the frequency-aware sum)
+tracks the fundamental's demodulated phase. So the 2–3 % between the constructions in the disputed band
+is DEFINITIONAL — two meanings of "the phase" on a harmonic-rich orbit with the noise entering behind a
+slow node — and neither has a numerical defect; no Monte Carlo precision settles it without first choosing
+the definition (the peer's hypothesis, stated before the data). Cost of the answer: two lost launches
+(memory; a block-restart artefact), then 14 restart-free 10 000-period runs, about 2.5 h of machine time.
+⚠ The mapping is the reverse of my first guess (I expected the PPV's rigid phase to be the crossing-like
+object); it is what the data say at 1.2σ / 1.5σ against 2.8σ / 3.4σ, and the core side has n = 4, so the
+association is established at that strength and no more. Item 4 closed; the frequency-aware PPV's
+docstring carries the reading.
+
+**Strength and use (peer, same hour).** With n = 4 on the core the error estimate is itself uncertain by
+~41 %, so the 2.8σ / 3.4σ rejections span 2.0–3.9σ; the weight is in the PATTERN (each construction
+matched by exactly one estimator, crosswise, with a mechanism — fundamental-only versus total-waveform
+timing), reported as consistent-with at this precision. **Hypothesis for what it is FOR:** a spectrum
+analyser at offset f sees the FUNDAMENTAL's sidebands (the second harmonic's sit at 2f₀ ± f), i.e. the
+demodulated-phase object → the frequency-aware sum; a time-interval analyser measures crossings, set by
+the whole waveform → `S_pm`. If it holds: compare `S_pm` against jitter measured on crossings, and the
+frequency-aware sum against a phase-noise plot — ⚠ the NAMING inverts the intuition (`S_pm` sounds like
+the spectrum quantity and tracks the crossing definition). Not measured: the instrument argument is the
+peer's; the test is which estimator converges to which construction as a → 0, where a sinusoidal orbit
+makes the two definitions coincide — the asymmetry sweep with a sharper purpose. Not run.

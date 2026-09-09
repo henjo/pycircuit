@@ -5445,7 +5445,17 @@ class PSS(Analysis):
         DC sum with the filter by hand was 4 % off; at r = 0.1 the two
         differ by -6 %, unchanged at twice the grid -- a gap between PM by
         sideband quadrature and phase-mode projection, both 1e-3 of DC
-        there, not resolved.  The slow multiplier's own coefficient
+        there -- and ARBITRATED (2026-09-09) by a nonlinear Monte Carlo
+        that instantiates neither construction: the fundamental's
+        demodulated phase reads 0.977 +- 0.019 of this sum and 0.946 of
+        `pnoise`'s S_pm, the zero-crossing phase 1.027 of S_pm and 1.061 of
+        this sum, so each construction tracks ONE definition of the phase
+        and the gap between them is definitional, not numerical (n = 4 on
+        the calibration side; consistent-with at that precision).
+        Hypothesis, not measured: a spectrum analyser near f0 sees the
+        fundamental's sidebands and so this object; a time-interval
+        analyser sees crossings and so `pnoise`'s S_pm -- the naming
+        inverts the intuition.  The slow multiplier's own coefficient
         (`mode_content[0]`) corners at 1.6e-3 f0 for tau/T = 100 with a
         plateau of 2.45e-6 (the docs session's 2.29e-6), scaling as
         T/tau.  ⚠ DO NOT GATE ON `|v|`: with
