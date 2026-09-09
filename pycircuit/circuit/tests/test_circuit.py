@@ -450,3 +450,34 @@ def test_extract_i_at_an_independent_source_terminal_is_the_source_current():
     assert abs(float(cir.extract_i(x, 'I1.plus')) - (+2e-3)) < 1e-12, \
         'the source terminal read 0.0 before the analysis flag was passed'
     assert abs(float(cir.extract_i(x, 'I1.minus')) - (-2e-3)) < 1e-12
+
+
+def test_circuit_proxy_forwards_every_argument():
+    """`CircuitProxy.u` raised NameError on every call (`self.device.u(x, epar)`
+    with no `x` in scope) -- latent, since no shipped path calls a proxy's
+    `u` -- and the obvious `x -> t` fix would have made the wrapped SOURCE
+    VANISH silently by dropping `analysis` (docs session, 2026-09-09).  `CY`
+    passed `epar` where the device expects `w`.  So: the proxy's `u` with
+    `analysis='dc'` equals the device's, its bare `u` equals the device's
+    bare `u` (zeros, by the classical gate), and `CY` forwards `w`.
+    """
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.circuit import CircuitProxy, SubCircuit, gnd
+    from pycircuit.circuit.elements import R, IS
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('a')
+    cir['I1'] = IS('a', gnd, i=2e-3, noisePSD=1e-6)
+    cir['R1'] = R('a', gnd, r=1e3)
+    dev = cir['I1']
+    proxy = CircuitProxy(dev, cir, 'I1')
+    x = np.zeros(dev.n)
+    assert np.allclose(np.asarray(proxy.u(0.0, analysis='dc'), float),
+                       np.asarray(dev.u(0.0, analysis='dc'), float))
+    assert np.any(np.asarray(dev.u(0.0, analysis='dc'), float) != 0.0)
+    assert np.allclose(np.asarray(proxy.u(0.0), float), np.asarray(dev.u(0.0), float))
+    for w in (1.0, 1e6):
+        assert np.allclose(np.asarray(proxy.CY(x, w), complex), np.asarray(dev.CY(x, w), complex))
+    assert np.allclose(np.asarray(proxy.G(x), float), np.asarray(dev.G(x), float))
+    assert np.allclose(np.asarray(proxy.i(x), float), np.asarray(dev.i(x), float))
+

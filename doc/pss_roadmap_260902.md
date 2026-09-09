@@ -12648,3 +12648,20 @@ function of `x₀`; what would break is the ASSEMBLY of `dφ/dx₀` as a product
 sensitivity to an interpolated slow value depends on slow states at other times). No multirate integrator exists
 here and none is planned; recorded so whoever builds one checks the monodromy assembly, not the refusal.
 
+**The 4×-noise run (Andreas, 2026-09-09 20:00–21:57; 32 runs, 16 seeds each, a = 0):** slow fixture
+`P(4·PSD)/(4·P(PSD))` = **1.010 ± 0.015** (demod) / 1.015 ± 0.016 (crossing); core control 1.006 ± 0.018 /
+1.008 ± 0.016; low band consistent with 1 at ±6 %. Linear. "The whole 2 % residual is excursion-amplitude
+dependence" predicted 1.06 and is excluded at 3.3σ; the milder trend the PSD/4 run hinted at (1.028) is 1.2σ away,
+not separated; the PSD/4 core control's 1.035 ± 0.017 was noise (now 1.006). **So the ~2 % residual between the noisy
+Monte Carlo and the deterministic tone route is flat in `a`, in the grid and in the band, and its EVEN-order
+excursion dependence is excluded** (quadratic law → 1.0588: demod 3.3σ, crossing 2.7σ). ⚠ Not "flat in noise
+level" (peer's refinement): a LINEAR-in-amplitude law (excess ∝ √PSD → 1.0196) sits 0.6σ / 0.3σ away and a pure
+constant 0.7σ / 0.9σ — the two survivors are 1.3σ apart and neither channel picks a side; a threshold-crossing
+estimator is not symmetric in the excursion, so an odd-order term is not excluded on principle. A joint fit of the
+excess against amplitude over the three noise levels (a factor 4 in amplitude) would separate them better than
+any pairwise step; not done. ⚠ And a global PSD-path normalisation (Welch window power, ENBW, one-/two-sided)
+CANNOT be the residual: it is common to both fixtures and cancels in the slow/core double ratio, so the
+peer's known-amplitude-sinusoid test would not find it — whatever the 2 % is, it differs between the two source
+locations. Recorded as an unexplained ~2 % that cancels in every slope and every conclusion drawn today; not
+chased further. Total machine time on the residual: ~3 h of Monte Carlo and ~10 min of deterministic runs, for a bound.
+

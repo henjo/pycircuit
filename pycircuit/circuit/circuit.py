@@ -1967,13 +1967,32 @@ class CircuitProxy(Circuit):
         if isinstance(parent, SubCircuit) and instance_name is not None:
             self.terminalhook = parent.term_node_map[instance_name]
 
-    def G(self, x, epar=defaultepar, params_tree=None): return self.device.G(x,epar)
-    def C(self, x, epar=defaultepar, params_tree=None): return self.device.C(x,epar)
-    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None): 
-        return self.device.u(x,epar)
-    def i(self, x, epar=defaultepar, params_tree=None): return self.device.i(x,epar)
-    def q(self, x, epar=defaultepar, params_tree=None): return self.device.q(x,epar)
-    def CY(self, x, w, epar=defaultepar): return self.device.CY(x,epar)
+    ## ⚠ Every method forwards EVERY argument.  `u` used to read
+    ## `self.device.u(x, epar)` -- `x` not in scope, a NameError on every
+    ## call, latent because no shipped path calls a proxy's `u` (docs
+    ## session, 2026-09-09, measured) -- and the one-character fix `x -> t`
+    ## would have dropped `analysis`, so the wrapped source would VANISH
+    ## silently (`device.u(t)` is zeros without the flag: the same defect
+    ## fixed at check_kcl and two warping_estimate call sites).  `CY` passed
+    ## `epar` where the device expects `w`.  Pinned by
+    ## test_circuit_proxy_forwards_every_argument.
+    ## `params_tree` is forwarded only when given: element-level methods
+    ## (`IS.u`, ...) do not take it, sub-circuit ones do.
+    @staticmethod
+    def _pt(params_tree):
+        return {} if params_tree is None else {'params_tree': params_tree}
+    def G(self, x, epar=defaultepar, params_tree=None):
+        return self.device.G(x, epar, **self._pt(params_tree))
+    def C(self, x, epar=defaultepar, params_tree=None):
+        return self.device.C(x, epar, **self._pt(params_tree))
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
+        return self.device.u(t, epar, analysis=analysis, **self._pt(params_tree))
+    def i(self, x, epar=defaultepar, params_tree=None):
+        return self.device.i(x, epar, **self._pt(params_tree))
+    def q(self, x, epar=defaultepar, params_tree=None):
+        return self.device.q(x, epar, **self._pt(params_tree))
+    def CY(self, x, w, epar=defaultepar):
+        return self.device.CY(x, w, epar)
 
 def instjoin(*instnames):
     """Return hierarchical instance names from instance name components
