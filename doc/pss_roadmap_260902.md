@@ -12814,4 +12814,11 @@ route ("approach one of §3.7", the Appendix I generator; §3.11 error minimisat
 the next acquisition; the blind search is retired. Machine time on the constructions: ~40 min of 20 cores. What
 stands: the machinery, gated; GLM2 = Wright's exact method; the conditions as measured and confirmed; no implicit
 L-stable q = p method above order 2 in the tree yet.
+Two more facts from the thesis for whoever picks this up (docs session): ε = 0 buys L-stability by GIVING UP the
+zero error constant (p. 165: Appendix III's explicit methods take ε = 1/(p+1)! and "the error constant is zero
+and the method could be interpreted as one higher order"), so an implicit L-stable IRKS at any order has a
+structurally worse error constant than the same-order explicit one — GLM2's leading term 0.076 is the right
+baseline, not the tables; and the existence question decomposes: strong stiff accuracy at p = 3–5 and A-stability
+at p = 3–4 are each demonstrated in the thesis, their CONJUNCTION with λ ≠ 0 is what no printed method above p = 2
+shows and what the stalled runs are failing on.
 
