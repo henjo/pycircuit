@@ -12421,3 +12421,20 @@ sampling agrees to 1e-3. Candidate 1 is dead; candidates 2 (something both phase
 extraction) and 3 (a linear route of a different KIND — covariance propagation with no PPV and no sideband
 assembly, sharing only the orbit and the monodromy: a build) remain, for Andreas.
 
+**Candidate 2 narrowed (peer, 18:25; mechanism added here).** The statistic is a double ratio, so an estimator
+bias `b` cancels unless `b_slow/b_core ≠ 1` AND that ratio varies with `a`. Core and slow share one orbit, so a
+fixture dependence can enter only through the NOISE COMPOSITION — and there is a concrete route: the slow-node
+source excites the slow Floquet mode ~2e6× more strongly than the phase (peer's projection), and both phase
+estimators read a slow-mode displacement as a nonzero instantaneous "phase" even though its asymptotic phase shift
+is zero. In the noisy steady state that reading is `g_inst² · S_slow(f)` on top of the true phase noise: fixture-
+dependent (through the excitation), `a`-dependent (through the orbit's harmonic structure in `g_inst`), linear in
+PSD, grid-flat, and Lorentzian-shaped above the slow mode's corner (0.0016 f₀) so ∝ 1/r² across the band like the
+phase noise itself — it survives every exclusion run today. ⚠ The deterministic kick runs already hold half of it:
+the TAIL reading θ/ε = −1.8e-4 (slow mode, a = 0.05) was filed as PPV leakage, but the INSTANTANEOUS gain (the
+first periods after the kick, before the mode decays) is what this candidate needs, and it was not printed. The
+measurement: from the same kick script, the per-period demod and crossing readings for n = 1…20 after a slow-mode
+kick at a = 0.25 and 0.05 (minutes), times the slow mode's in-band power under the MC's source (the fw-PPV's
+`mode_content` or one covariance solve), against the 6 % drift. Candidate 3 (a covariance route with no PPV)
+shares the orbit and monodromy and would localise the miss to the adjoint-and-sideband half if it disagrees, or
+push it upstream of all three constructions if it agrees. Not run; Andreas's call.
+
