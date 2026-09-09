@@ -12407,3 +12407,17 @@ modulation entering through the slow path (the in-band "scale term" seen in the 
 two `test_examples` failures in this run were my launch's cwd (the example runner uses a relative path); both pass
 alone from the repository.
 
+**Candidate 1 (band conventions) eliminated by inspection (18:15).** Both sides take the unweighted mean of
+`S(r)·r²` over the CLOSED band `r ∈ [0.08, 0.15]`, uniform in `r`: the Monte Carlo over the 351 Welch bins of a
+5000-period segment (`fs` = 1 per period, bins 2e-4 apart), the constructions over `linspace(0.08, 0.15, 15)`.
+Endpoints inclusive on both, no window inside the band on either, absolute normalisation (one-/two-sided, per-Hz)
+cancels in the double ratio. On a smooth spectrum a 15-point uniform mean and a 351-bin mean differ at
+O(h² g''/12g) ≈ 1e-3 — the trapezoid of the MC bins agrees with the bin mean to 2e-4 on all four fixtures. ⚠ The
+15-point mean applied to the NOISY seed-averaged MC spectrum reads 1.07 / 1.01 / 1.10 / 0.99 of the bin mean — that
+is per-bin Welch scatter (in-band max/min 2.3–5 over 351 bins at ~50 effective segments), not a convention
+difference, and it is why the MC side must average bins and the constructions need not. A constant band mismatch
+would cancel in the double ratio anyway; only the in-band SHAPE could carry an `a`-dependence, and the shape
+sampling agrees to 1e-3. Candidate 1 is dead; candidates 2 (something both phase estimators share in the MC's
+extraction) and 3 (a linear route of a different KIND — covariance propagation with no PPV and no sideband
+assembly, sharing only the orbit and the monodromy: a build) remain, for Andreas.
+
