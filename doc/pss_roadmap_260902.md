@@ -101,7 +101,7 @@ from seven sides**, and they enter through structurally different doors:
 | (b) | **conditioning** — the bordered Jacobian degrades; `σ_min` tracks `T/τ` over six decades | Lai DAC 2006; measured here |
 | (c) | **truncation validity** — the single-mode reduction needs `\|exp(η_i)\| ≪ 1` | Demir 1998 (6.72) — ⚠ **the SAME condition as (a), seen from the other side**: the book says (6.72) holds for "most" oscillators and defers the exceptions to its high-Q crowding discussion, which is (a). One condition: an approximation that stops holding, and an algorithm that stops working. ⚠⚠ **AND IT IS THE SAME NUMBER, NOT JUST THE SAME CONDITION**: `η_i` is the exponent times the period, so `exp(η_i)` **is** `λ_i` and (6.72) reads `\|λ₂\| ≪ 1` — the settling `Q` itself. Reading "≪ 1" as 0.05 puts the bound at **`Q_λ < 0.334`**. Our ordinary gates (`Q_λ = 0.14`) sit inside it; **the entire high-Q programme does not** — `\|λ₂\| = 0.730` at `Q_λ = 3.18`, `0.9845` at 64. So the closed-form single-mode variance has **no justification anywhere in the high-Q sweep**. ✅ **RESOLVED BY A PAGE READ (docs session), AND THE ANSWER IS THE OPPOSITE OF THE RECONSTRUCTION THAT WAS REFUSED.** In the book, (6.72) is invoked at exactly one place: to drop the `i = 2..n` terms of the Floquet-basis expansion (6.71) inside the integral (6.69) that gives the `k`-th diagonal entry of `K(t)` — the time-varying variance of a **state variable**. *"When (6.72) is satisfied, the contribution of the terms for i = 2,…,n … will be negligible."* It is **not** invoked for the spectrum, and **not** for the reduction to the phase equation; `c` is *defined* by the phase projection, not approximated by it, and the Lorentzian follows rigorously. My reconstruction — that it attaches to `c` and propagates to the Lorentzian and `oscillator_spectrum` — was **wrong**, and refusing to write it was correct. ⚠ **CHECKED IN THE TREE: NO SHIPPED SURFACE MAKES THE (6.72) APPROXIMATION.** The only state-covariance routines are `covariance` and `oscillator_covariance`, both via `_lyapunov_pieces` on the **full** `I − M⊗M` (`shooting.py:7186`) — an exact bordered Lyapunov solve with no modal truncation. `oscillator_covariance` *keeps* the transverse modes: `K = K_orb + c·t·uuᵀ`, and `orbital_mode_weights` measured the phase-mode weight of `K_orb` at `1.6e-19` with the amplitude mode carrying it. No routine computes a state or node variance from `c` alone; the only `c·T` is `d = cT`, the *phase* variance, which is the rigorous term. **So the honest row is: the book's derivation makes an approximation at high Q that this implementation does not make.** The high-Q programme is outside the *book's* validity for that one equation, and inside ours |
 | (d) | **theory validity** — two multipliers at 1 means no asymptotic phase; the PPV is undefined | Demir 2006 |
-| (e) | **settling and ringing** — long `tstab`, ringing impulse response, large `M` | SpectreRF; Hull & Meyer; the probe methods |
+| (e) | **settling and ringing** — long `tstab`, ringing impulse response, large `M` | A commercial RF simulator; Hull & Meyer; the probe methods |
 | (f) | **method-dependence of the value** — backward Euler biases `λ₂` low, so `Q` is method-dependent | measured, docs session |
 | (g) | **physical identity** — `Q = log(threshold)/log\|λ₂\|` | Wang & Roychowdhury 2017 |
 
@@ -2573,7 +2573,7 @@ problem and neither substitutes for the other, but the cheap half is the `ic`.
 `Transient` from the seed and hands its final state to the shooting solve. Directive:
 *"We need to add warm start as an option. It is in every commercial tool."* An explicit
 option needs no criterion, so it was not blocked on any of the above — and the user's
-field experience is that the automatic version is where the trouble is: *"Spectre has an
+field experience is that the automatic version is where the trouble is: *"[a commercial simulator] has an
 automatic tstab criterion but it does not work properly on circuits with even moderate Q,
 and does not work [on] high Q circuits"* — **opinion, offered as such, not measurement**,
 but pointing the same way as the μ = 0.05 row above. The option is therefore the primary
@@ -3046,7 +3046,7 @@ every `tau` tried.
 ⚠ **AND IN A FREQUENCY-DOMAIN pnoise IT DOES NOT EXIST AT ALL** — which is the path A3 took.
 The Lorentzian network is an artefact of the SDE formulation specifically. No SDE is formed
 here, so nothing needs synthesising: **a coloured source is just a different `S(f)`, folded
-like any other.** SpectreRF confirms by omission (no filter, no augmentation in its Pnoise
+like any other.** A commercial RF simulator confirms by omission (no filter, no augmentation in its Pnoise
 treatment of flicker), and Kundert states the consequence directly — "S_u(f) is generally pink
 or proportional to 1/f. Then S_phi(f) would be proportional to 1/f³ at low frequencies." **A
 slope, not a state.**
@@ -3082,7 +3082,7 @@ opposite sampling failures.
 
 ⚠ **THE REAL 1/f ITEM FOR THIS PATH IS A SWEEP-GRID TRAP, NOT AN ARCHITECTURE.** A 1/f source
 is singular at DC, and folding puts a copy of that singularity at **every harmonic**.
-SpectreRF: "place a cluster of frequencies near each harmonic … but AVOID PUTTING FREQUENCY
+A commercial RF simulator: "place a cluster of frequencies near each harmonic … but AVOID PUTTING FREQUENCY
 POINTS PRECISELY ON THE HARMONICS … you run the risk of generating absurd noise totals because
 a very narrow noise peak artificially has its apparent width greatly magnified … and has its
 amplitude exaggerated by placing a point precisely at the singularity." Plausible-looking
@@ -9541,7 +9541,7 @@ plausible names.
 
 * ⚠ **A row their matrix attributes to a formulation choice is actually the Boltzmann constant.**
   "MOS Level-1 Channel Noise … `1.000019×` … *Channel noise uses chord formulation matching
-  Spectre*". But `1.380649/1.3806226 = 1.0000191` — the row IS the `k_B` ratio from §3, to every
+  a commercial simulator*". But `1.380649/1.3806226 = 1.0000191` — the row IS the `k_B` ratio from §3, to every
   digit shown. So the chord formulation agrees **exactly**, and the residual is the constant. Worth
   recording because the same 19.12 ppm will keep surfacing in noise comparisons wearing whatever
   label is nearest, and it has now been mistaken for a model difference once.
@@ -12361,4 +12361,49 @@ across seeds) is a build, not an afternoon. **Cheaper localisation that remains:
 so the generic discriminator is the noise level itself — every linear term and every harness effect is
 PSD-flat, any nonlinear origin is not; a PSD/4 rerun at a = 0 (16 seeds, ~1.5 h) tests the whole nonlinear class,
 not just the one mechanism the deterministic coefficient killed. Not run; Andreas's call.
+
+**The PSD/4 run at a = 0 (Andreas: "then do 2", 2026-09-09 16:20; 32 runs, both fixtures, 16 seeds).** Reading
+adopted from the docs session, THREE classes and three directions in the measured/predicted ratio as the injected
+PSD falls: linear physics or a MULTIPLICATIVE harness effect (boxcar factor, band definition, calibration) — FLAT;
+any nonlinear origin — FALLS (the excess ∝ PSD); a fixed ADDITIVE floor — RISES (∝ 1/PSD). The demodulated double
+ratio carries the flat-versus-falls read (no grid floor there); the crossing/demod gap at both PSDs carries the
+additive-floor read (the crossing's grid floor is ≤ 0.7 % of its reading at full PSD from the two-grid test, so
+≤ 2.7 % at PSD/4). Result recorded here when in.
+
+**Doc sweeps (Andreas: "do 3").** The product name of the commercial simulator is replaced by "a commercial
+simulator" / "a commercial RF simulator" throughout the package (30 sites, one in `pnoise`'s harmonic error
+message) and the doc sources; two toolchain mentions are left as they are, since they name what the software
+reads or which tools accept Verilog-A (`doc/src/intro.rst`, `doc/src/circuit/hdl.rst`), and the build outputs
+are not edited. The "t²" sweep found nothing left to remove: the only remaining `t²` lines are the record of
+that claim's disproof (`pss_smallsignal_260903.md`) and the correct `Δt²` jitter statement for 1/f noise.
+
+**PSD/4 result (2026-09-09 17:36; 32 runs, 16 seeds each, a = 0; demodulated phase, disputed band):** slow
+fixture 4·P(PSD/4)/P(PSD) = **0.993 ± 0.013** — flat; the nonlinear prediction (0.957, the 6.1 % excess quartering)
+is 2.8σ away and 1.000 is 0.6σ away. Core control 1.035 ± 0.017 (2σ above 1, not separated; recorded, not read —
+a fixed additive floor would RAISE it, but an absolute floor is excluded by the slow fixture, whose level is 1e5
+lower and did not rise). Double ratio quarter/full 0.959 ± 0.020, driven by the core's rise. Crossing: slow
+1.005 ± 0.013, core 1.039 ± 0.014 — the same picture. Low band consistent with 1 at ±7 %. **Reading:** the a = 0
+excess of the measured phase noise over both linear constructions is NOT a nonlinear term; it is in the linear
+domain, so it is either linear physics both constructions miss the same way or a multiplicative effect. Core and
+slow share one orbit at each `a`, so estimator artefacts cancel in the double ratio; what the two constructions
+share with each other and not with the Monte Carlo is their DISCRETISATION (PPV / LPTV rows on the 240-point PSS
+grid against a fixed-step transient's own noise response). Cheap check launched: the constructions' slow/core
+ratio at 480 points against 240, at a = 0 and 0.25 — if it moves by the 5 % the drift needs, the drift is the
+constructions' grid error, and the a-dependence is the harmonic content's (the slow-node source couples through
+`k ≥ 1` terms as `a → 0`).
+
+**Grid check, done (18:00): the constructions do not move.** 240 → 480 points, disputed band: core a = 0.25
+`pnoise` −0.09 %, fw +0.02 %; slow a = 0.25 `pnoise` −0.20 %, fw +0.03 %; slow a = 0 `pnoise` −0.64 %, fw +0.06 %
+(core a = 0 at 480 still computing; three of four pairs suffice). The slow/core ratio of either construction moves
+by < 0.7 % where the drift needs ~5 %. **The grid hypothesis is refuted**, as the docs session's prior said in
+advance (S_pm's grid error 0.16 % at 240 points, with or without a slow node; only S_am is badly unconverged there,
+~43 %, and neither construction's slow/core ratio weights it). With nonlinear (PSD/4) and discretisation (grid)
+both excluded, the common drift of both estimators against both linear constructions as a → 0 is either linear
+physics both constructions miss the same way, or an effect both phase estimators share in the Monte Carlo's
+extraction, or a band/weighting convention that differs between the two sides. Candidates, none proposed as a
+hypothesis: a normalisation exact only in the sinusoidal limit (h₃/h₁ = 0.076 here); the Welch band average of
+`S·r²` against the constructions' pointwise sweep on the same band; the demodulation's response to a phase
+modulation entering through the slow path (the in-band "scale term" seen in the coherence run). Open. ⚠ Suite note:
+two `test_examples` failures in this run were my launch's cwd (the example runner uses a relative path); both pass
+alone from the repository.
 

@@ -345,7 +345,7 @@ class Transient(Analysis):
                    default=1e-12),
          ## P2: same name and default as the JAX backend's Parameter.
          Parameter(name='TRTOL',
-                   desc='LTE tolerance multiplier (Spectre lteratio): the '
+                   desc='LTE tolerance multiplier (lteratio in a commercial simulator): the '
                         'allowed truncation error is this many times the '
                         'Newton-solve tolerance',
                    unit='', default=7.0),
@@ -369,7 +369,7 @@ class Transient(Analysis):
          ##
          ## BACK TO 1e-12, matching `vabstol`, at gate D3-e.  The history is worth
          ## keeping because it is a clean example of a workaround outliving its
-         ## defect.  This was 1e-12; it was raised to 1e-6 (Spectre's `vabstol`,
+         ## defect.  This was 1e-12; it was raised to 1e-6 (a commercial simulator's `vabstol`,
          ## SPICE's VNTOL) because on the 127-unknown leapfrog the timestep
          ## collapsed to 5 ns against a 39 ns cap -- the controller accepts on
          ## max(|lte|/etol) over ALL unknowns, most of that circuit's nodes carry no
@@ -399,7 +399,7 @@ class Transient(Analysis):
                    unit='A',
                    default=1e-12),
          ## What the RELATIVE part of the LTE tolerance is measured against --
-         ## Spectre's parameter of the same name, and Spectre's default.
+         ## A commercial simulator's parameter of the same name, and a commercial simulator's default.
          ##
          ## `pointlocal` is what pycircuit did for its whole history: each unknown
          ## referenced to itself, at this instant.  On a node carrying no signal
@@ -411,7 +411,7 @@ class Transient(Analysis):
          ## 1.49x, i.e. it removes 81% of the excess.
          ##
          ## DECISION D3, SECOND ATTEMPT -- `sigglobal` IS NOW THE DEFAULT, as in
-         ## Spectre.  It was adopted, sent back by gate D3-a, and re-run.
+         ## A commercial simulator.  It was adopted, sent back by gate D3-a, and re-run.
          ##
          ## What sent it back: referencing the tolerance to the largest signal lets
          ## steps grow, and on an estimator carrying the trapezoidal `(-1)^n` mode
@@ -434,7 +434,7 @@ class Transient(Analysis):
          Parameter(name='relref',
                    desc="Reference for the relative LTE tolerance: 'sigglobal' "
                         "(against the largest signal anywhere -- the default, as in "
-                        "Spectre), 'pointlocal' (each unknown against itself, "
+                        "a commercial simulator), 'pointlocal' (each unknown against itself, "
                         "pycircuit's historical behaviour), or 'alllocal' (against "
                         "its own past maximum)",
                    unit='',
@@ -559,7 +559,7 @@ class Transient(Analysis):
          ## agreement (211 vs 210) was partly both backends sitting on the
          ## same cap.  `timestep` now only sets the opening-step scale and
          ## the fixed_timestep grid.
-         ## The Spectre/Mica-class VOLTAGE CHECK: on a purely resistive/
+         ## The commercial-simulator-class VOLTAGE CHECK: on a purely resistive/
          ## algebraic network (a designer exploring an amplifier topology
          ## with Rs and controlled sources, no reactances yet) NO error
          ## estimator has anything to measure -- the charge-based LTE is
@@ -571,8 +571,8 @@ class Transient(Analysis):
          ## not), and is robust where solution-LTE was not: |dv| ~ h*slew is
          ## h-proportional by construction, so it cannot h-cancel.
          Parameter(name='max_dv_step',
-                   desc='Per-step node-voltage excursion bound (the Spectre/'
-                        'Mica-style voltage check), as a FACTOR: the bound '
+                   desc='Per-step node-voltage excursion bound (the commercial-'
+                        'simulator-style voltage check), as a FACTOR: the bound '
                         'is max_dv_step * lte_vabstol (e.g. 2e11 at the '
                         "default 1e-12 bounds steps to 0.2 V); 'auto' "
                         'derives it from sampling theory (points_per_period), so it scales with the '
@@ -1406,11 +1406,11 @@ class Transient(Analysis):
     ## rather than re-derived, so the two paths cannot drift apart on tolerances.
 
     ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in
-    ## Spectre: the LTE estimate is deliberately conservative, so the allowed
+    ## A commercial simulator: the LTE estimate is deliberately conservative, so the allowed
     ## truncation error is this many times the Newton-solve tolerance.
     ## P2 (doc/backend_parity_260821.md): settable at last -- the asymmetry
     ## was REVERSED, JAX declaring `TRTOL` as a Parameter while this side
-    ## hardcoded a class constant, so a user tuning Spectre's `lteratio`
+    ## hardcoded a class constant, so a user tuning a commercial simulator's `lteratio`
     ## could do it on one backend only.  A property rather than the old
     ## class attribute, so every existing `self.LTERATIO` read follows the
     ## Parameter and the two cannot drift.

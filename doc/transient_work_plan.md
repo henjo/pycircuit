@@ -882,9 +882,9 @@ step. **Reconsider if** someone exhibits a circuit where a step is rejected fore
 well-conditioned charge residual *and* stage 6's diagnostic does not identify it — that is
 the observation (D) was reaching for, and none of the five circuits here produces it.
 
-### What Spectre actually does — and the root cause it exposes
+### What a commercial simulator actually does — and the root cause it exposes
 
-Checked 2026-07-30 against the *Spectre Circuit Simulator Reference*, Product Version
+Checked 2026-07-30 against a commercial simulator's *Circuit Simulator Reference*, Product Version
 19.1 (January 2020), transient analysis parameter list, read from a **rendered page 419**
 rather than text extraction. Two entries settle it:
 
@@ -895,12 +895,12 @@ rather than text extraction. Two entries settle it:
 > **39 `lteratio`** — "**Ratio used to compute LTE tolerances from Newton tolerance.** The
 > default is derived from `errpreset`."
 
-So Spectre has **one** tolerance set — `reltol`, `vabstol`, `iabstol` — and derives the LTE
+So a commercial simulator has **one** tolerance set — `reltol`, `vabstol`, `iabstol` — and derives the LTE
 tolerance by *multiplying the Newton tolerance by `lteratio`*. It does **not** carry a
 separate absolute tolerance for the step controller. `lteratio` defaults to **3.5**
 (liberal and moderate `errpreset`) and **10.0** (conservative). pycircuit's `TRTOL = 7.0`
 is structurally the same knob — `etol = TRTOL*(reltol*ref + abstol)` — sitting at an
-unexplained value between Spectre's two.
+unexplained value between a commercial simulator's two.
 
 **`relref` is the parameter pycircuit does not have, and its absence is why `vabstol` was
 raised in the first place.** The four modes differ in what the *relative* term is measured
@@ -916,7 +916,7 @@ the mode in which a node carrying no signal has `reltol*ref -> 0`, so its tolera
 collapses to `abstol` and the controller ends up chasing numerical noise on idle nodes.
 **That is exactly the failure recorded in the `vabstol` comment** ("most of that circuit's
 nodes carry no signal, so etol degenerated to TRTOL*abstol on numerical noise"), and it is
-what raising the absolute tolerance a millionfold was working around. Spectre's default for
+what raising the absolute tolerance a millionfold was working around. A commercial simulator's default for
 every `errpreset` in the shooting table is `sigglobal` — the mode that cannot degenerate
 that way, because a quiet node is referenced to the largest signal in the circuit.
 
@@ -928,16 +928,16 @@ separates it from Newton, which is real progress and fixes a real regression, bu
 where this should end up.
 
 **Amendment to stage 4: add `relref`.** Implement at least `pointlocal` (current behaviour)
-and `sigglobal` (Spectre's default), defaulting to `sigglobal`. **Gate:** with
+and `sigglobal` (a commercial simulator's default), defaulting to `sigglobal`. **Gate:** with
 `relref='sigglobal'`, `lte_vabstol` must be returnable to 1e-12 without the step-count
 collapse that motivated 1e-6 — measured on the leapfrog, which is the circuit that produced
 the original 5.4x. **If that gate passes, delete `lte_vabstol` and `lte_iabstol`** and let
-`lteratio` derive the LTE tolerance from `vabstol`/`iabstol` as Spectre does; the two-set
+`lteratio` derive the LTE tolerance from `vabstol`/`iabstol` as a commercial simulator does; the two-set
 design then has no remaining justification. **Reconsider if** the gate fails, in which case
 the separate set is doing work that `relref` alone cannot, and it stays.
 
 Also worth aligning while there: `TRTOL = 7.0` should be renamed `lteratio`, exposed as a
-Parameter rather than a local, and its value chosen against Spectre's 3.5/10.0 rather than
+Parameter rather than a local, and its value chosen against a commercial simulator's 3.5/10.0 rather than
 left at a number with no recorded derivation.
 
 ### Implementation note: `Eg` is a current, not a charge
@@ -6149,14 +6149,14 @@ all seven `solve_system` signatures at once, so no subclass diverged.
 
 ## 2+.3 — `relref`, the reference for the relative tolerance
 
-The highest-value item of the three and the only one that changes results. Spectre's
+The highest-value item of the three and the only one that changes results. A commercial simulator's
 `relref` selects what the relative term is measured against; pycircuit hard-codes a
 two-point `pointlocal`, which is why a node carrying no signal has its tolerance collapse
-to the absolute floor — and why `lte_vabstol` had to be raised to 1e-6. See the Spectre
+to the absolute floor — and why `lte_vabstol` had to be raised to 1e-6. See the commercial simulator's
 section under 0.3d.
 
 Implement `pointlocal` (current behaviour, for exact backward compatibility) and
-`sigglobal` (Spectre's default: each signal referenced to the maximum over all signals and
+`sigglobal` (a commercial simulator's default: each signal referenced to the maximum over all signals and
 all past time). Default stays `pointlocal` in this item; **changing the default is a
 separate decision** and belongs with stage 4's `lteratio` work.
 
@@ -6327,7 +6327,7 @@ that no longer exists and whose name now raises `TypeError`.
 | 4h `fixed_timestep` | **DONE** `b392ad1` — it now actually fixes the timestep |
 | gear2-classic ratio dependence | **PROMOTED to 4i and resolved with it.** The sweep found the bias far larger than the 3.97x recorded here: **83.06x at r=0.008**, on the shipped default integrator, reachable after three consecutive rejections — the estimator told a collapsing controller the error was 83x worse than it was. |
 | 0.3d `chgtol` guard | **REFUSED** `03c51eb` — "the chgtol guard is NOT built: its own entry measurements refute it". Not open work. |
-| `relref` default / `lteratio` | **DONE** `2a8e0c7` (decision D3, second attempt) — `relref` defaults to `'sigglobal'`, as in Spectre |
+| `relref` default / `lteratio` | **DONE** `2a8e0c7` (decision D3, second attempt) — `relref` defaults to `'sigglobal'`, as in a commercial simulator |
 
 ---
 

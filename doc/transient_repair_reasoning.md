@@ -97,7 +97,7 @@ power of `h`. The third of those is a fast unit test needing no circuit at all.
 **(F) Already fixed, for context.** `e37ddad`: the step controller was handed the
 residual-flavoured tolerance vector (`iabstol` on node rows) but applies it to
 `lte = J^-1 Eg`, which is in solution units — so every node row used 1 pA as a voltage
-tolerance; and `vabstol` defaulted to 1e-12 V against Spectre's and SPICE VNTOL's 1 uV.
+tolerance; and `vabstol` defaulted to 1e-12 V against a commercial simulator's and SPICE VNTOL's 1 uV.
 19x fewer steps, full suite at the 715-test baseline.
 
 ## Scope
@@ -130,7 +130,7 @@ tolerance; and `vabstol` defaulted to 1e-12 V against Spectre's and SPICE VNTOL'
   together would leave neither verified.
   **Reconsider if** the instability turns out to be caused by the engine (e.g. an
   integrator sign error manifesting as a growing mode) rather than by the topology.
-- **Changing the `reltol` default from 1e-4 to Spectre's 1e-3.** Defensible either way,
+- **Changing the `reltol` default from 1e-4 to a commercial simulator's 1e-3.** Defensible either way,
   and unlike `vabstol`'s 1e-12 it is not indefensible, so it is a preference not a bug.
   **Reconsider if** stage 4's monotonicity tests show 1e-4 is being routinely
   overridden, or if suite runtime becomes the binding constraint.

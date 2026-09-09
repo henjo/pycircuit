@@ -252,7 +252,7 @@ precisely than any step that followed it.
 
 .. note::
 
-   ``lte_vabstol`` is an interim measure. Spectre carries a single tolerance set
+   ``lte_vabstol`` is an interim measure. A commercial simulator carries a single tolerance set
    and derives the LTE bound by multiplying it by ``lteratio``; what pycircuit is
    missing is ``relref``, the choice of *reference* for the relative term. Under
    pycircuit's fixed per-node reference, a node carrying no signal has its

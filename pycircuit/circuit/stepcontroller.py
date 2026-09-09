@@ -3,7 +3,7 @@ import warnings
 
 import numpy as np
 
-## Valid values for `relref`, matching Spectre's parameter of the same name.
+## Valid values for `relref`, matching a commercial simulator's parameter of the same name.
 RELREF_MODES = ('pointlocal', 'alllocal', 'sigglobal')
 
 ## STAGE 4b -- the largest factor by which one ACCEPTED step may exceed the one
@@ -37,14 +37,14 @@ class StepController(ABC):
     ##
     ## The tolerance is `lteratio * (reltol*ref + abstol)`.  Until now `ref` was
     ## hard-coded to `max(|x_curr|, |x_last|)` -- each unknown against itself, at
-    ## this instant.  That is Spectre's `pointlocal`, and it has a failure mode that
+    ## this instant.  That is a commercial simulator's `pointlocal`, and it has a failure mode that
     ## is easy to miss: on a node carrying no signal `ref -> 0`, so the tolerance
     ## collapses to `abstol` and the controller starts chasing numerical noise on a
     ## quiet node.  On the leapfrog that alone cut the step size 5.4x, and the fix
     ## applied at the time was to raise the absolute floor a millionfold
     ## (`lte_vabstol` 1e-12 -> 1e-6), which treats the symptom.
     ##
-    ## Spectre's answer is `relref`, and its default is `sigglobal`: measure each
+    ## A commercial simulator's answer is `relref`, and its default is `sigglobal`: measure each
     ## signal against the largest signal anywhere in the circuit, over all past
     ## time, so a quiet node inherits a sane reference instead of degenerating.
     ##
@@ -59,7 +59,7 @@ class StepController(ABC):
     ## every value), where under `pointlocal` the same change costs 8.5-9.2%.  That
     ## difference IS the symptom, and it is what the floor was raised to hide.
     ##
-    ## DEFAULT IS `sigglobal` SINCE DECISION D3's SECOND ATTEMPT, matching Spectre.
+    ## DEFAULT IS `sigglobal` SINCE DECISION D3's SECOND ATTEMPT, matching a commercial simulator.
     ## It was adopted, sent back by its own gate, and re-run once the reason for the
     ## failure was removed -- see the D3 gates in `doc/transient_work_plan.md`.
     relref = 'sigglobal'
@@ -301,7 +301,7 @@ class IntegralController(StepController):
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
 
         # 3. Dynamic per-node tolerance, relaxed by the transient error factor TRTOL.
-        #    TRTOL is the SPICE "transient tolerance" (Spectre calls the equivalent
+        #    TRTOL is the SPICE "transient tolerance" (a commercial simulator calls the equivalent
         #    `lteratio`): the LTE estimate is deliberately conservative, so the
         #    allowed truncation error is TRTOL times the Newton-solve tolerance.
         #    Folding TRTOL into etol makes the accept threshold (err<=1) and the

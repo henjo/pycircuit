@@ -64,7 +64,7 @@ class TransientState(NamedTuple):
     tline_head: Any     # int32 scalar
 
     ## STAGE 9(c) -- the running maximum of |x| over ALL past steps and ALL
-    ## unknowns.  This is Spectre's `sigglobal`, which `Transient` already ships as
+    ## unknowns.  This is a commercial simulator's `sigglobal`, which `Transient` already ships as
     ## its default `relref`, and it is what makes an absolute LTE floor of 1e-12
     ## safe: under `pointlocal` -- each unknown against itself, now -- a node
     ## carrying no signal drives `ref -> 0`, the tolerance collapses to the floor,
@@ -3093,7 +3093,7 @@ class JAXTransient(Analysis):
                   unit='A', default=1e-12),
         Parameter(name='TRTOL',
                   desc='Ratio used to compute LTE tolerances from the Newton '
-                       'tolerance (Spectre calls this lteratio)',
+                       'tolerance (a commercial simulator calls this lteratio)',
                   unit='', default=7.0),
         Parameter(name='maxiter', desc='Maximum number of iterations', unit='',
                   default=100),
@@ -3165,14 +3165,14 @@ class JAXTransient(Analysis):
         ## doubling as the cap made gentle circuits step-cap-limited, where no
         ## tolerance knob could move the run (measured: identical 209-step
         ## rc-vsin runs at reltol 1e-4 and 1e-6).
-        ## The Spectre/Mica-class VOLTAGE CHECK -- see the CPU's Parameter
+        ## The commercial-simulator-class VOLTAGE CHECK -- see the CPU's Parameter
         ## note: on algebraic networks no LTE exists (the charge estimator
         ## is identically zero; P22's mask excludes algebraic rows from the
         ## coupled band), and this bounds the per-step node-voltage change
         ## instead.  |dv| ~ h*slew is h-proportional, so it cannot h-cancel.
         Parameter(name='max_dv_step',
-                  desc='Per-step node-voltage excursion bound (the Spectre/'
-                       'Mica-style voltage check), as a FACTOR: the bound '
+                  desc='Per-step node-voltage excursion bound (the commercial-'
+                       'simulator-style voltage check), as a FACTOR: the bound '
                        'is max_dv_step * lte_vabstol (e.g. 2e11 at the '
                        'default 1e-12 bounds steps to 0.2 V), scaling with the '
                        'tolerance family as the LTE does; factors below 1 '
@@ -3242,7 +3242,7 @@ class JAXTransient(Analysis):
         Parameter(name='relref',
                   desc="Reference for the relative LTE tolerance: 'sigglobal' "
                        "(against the largest signal in the unknown's unit "
-                       "group -- the default, as in Spectre), 'pointlocal' "
+                       "group -- the default, as in a commercial simulator), 'pointlocal' "
                        "(each unknown against itself), or 'alllocal' "
                        "(against its own past maximum)",
                   unit='', default='sigglobal'),

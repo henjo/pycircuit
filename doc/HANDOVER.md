@@ -62,7 +62,7 @@ against which version produced it.
 
 - **Transient tolerance fix** (`e37ddad`): the step controller was handed the
   residual-flavoured tolerance vector where it needed the solution-flavoured one, and
-  `vabstol` defaulted to 1e-12 V against Spectre's 1 uV. 19x fewer steps. **See the open
+  `vabstol` defaulted to 1e-12 V against a commercial simulator's 1 uV. 19x fewer steps. **See the open
   issue in section 5 — this fix has a known side effect.**
 - **Gear2 LTE repair** (`doc/transient_repair_plan.md`, stages 1-5, all gates recorded):
   the `'classic'` estimate computed `q''*h^3` where BDF-2 needs `q'''*h^2`. Independently

@@ -81,7 +81,7 @@ class DC(Analysis):
                   ## ROADMAP 12.3 -- the simulator-level anchor.
                   ##
                   ## SPICE's `GMIN`, and the same number SPICE3, ngspice and
-                  ## Spectre all default to -- and the same number
+                  ## A commercial simulator all default to -- and the same number
                   ## `compact.PspMosLongChannel` already carries privately as
                   ## `GLEAK`, which is the precedent item 12.3 was written to
                   ## generalise.  At one volt it is one picoamp, which is

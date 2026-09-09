@@ -651,7 +651,7 @@ def test_p22_state_row_mask_and_shared_coupled_default():
 
 
 def test_max_dv_step_voltage_check_on_algebraic_networks():
-    """The Spectre/Mica-style voltage check (owner request, follow-on to
+    """The commercial-simulator-style voltage check (owner request, follow-on to
     P22): on a purely resistive/algebraic amplifier network -- the topology-
     exploration scenario, Rs + VCCS driven by a sine, no reactances -- NO
     error estimator has anything to measure, and the default run samples at

@@ -668,7 +668,7 @@ A floating node (capacitor with no DC path to ground) produces:
 NoConvergenceError: Source Stepping failed at lambda=0.0
 ```
 
-Spectre says `Node 'float' has no DC path to ground`. The diagnosis is destroyed by three
+A commercial simulator says `Node 'float' has no DC path to ground`. The diagnosis is destroyed by three
 layers of re-wrapping: `nrsolver.py:42` turns the `LinAlgError` into a
 `NoConvergenceError` that no longer names the row, `:161-162` re-wraps as "Gmin Stepping
 failed", `:197-198` re-wraps that as "Source Stepping failed". **The singular case should

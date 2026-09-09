@@ -1718,7 +1718,7 @@ class PSS(Analysis):
                         'estimate', unit='A', default=1e-12),
          Parameter(name='TRTOL',
                    desc='Truncation error over-estimation factor (SPICE '
-                        'TRTOL / Spectre lteratio)', unit='', default=7.0),
+                        'TRTOL / lteratio in a commercial simulator)', unit='', default=7.0),
          Parameter(name='relref',
                    desc="What the relative LTE tolerance is measured "
                         "against: 'pointlocal', 'alllocal' or 'sigglobal'",
@@ -8192,7 +8192,7 @@ class PSS(Analysis):
         the number is asked for rather than guessed.
 
         ⚠ AND THE COMMERCIAL AUTOMATIC CRITERION IS REPORTED NOT TO SURVIVE
-        Q EITHER.  Spectre does offer one; this tree's user reports from
+        Q EITHER.  A commercial simulator does offer one; this tree's user reports from
         their own practice that it does not work properly on circuits of
         even moderate Q and does not work on high-Q ones.  That is field
         experience and not a measurement, and it is recorded as such --
@@ -8341,7 +8341,7 @@ class PSS(Analysis):
         ## ⚠ AND THE SCOPE OF THAT REFUSAL IS THE ELEMENT, NOT THE CLASS.
         ## Two things look alike and are not.  KUNDERT'S HIDDEN STATE is a
         ## behavioural model carrying internal state the simulator does not
-        ## know about -- genuinely broken, and SpectreRF "outlaws [them]
+        ## know about -- genuinely broken, and a commercial RF simulator "outlaws [them]
         ## outright".  A DISTRIBUTED COMPONENT has a KNOWN
         ## infinite-dimensional structure described by frequency-dependent
         ## Y/Z/S parameters, and is tractable: "the convolution operation is
@@ -10925,7 +10925,7 @@ class PAC(Analysis):
         ⚠ A PRECONDITION FOR THE FIRST COLOURED SOURCE, recorded here
         because it is unreachable today and will be silent when it is not.
         A 1/f source is singular at DC, and folding puts a copy of that
-        singularity at EVERY harmonic.  SpectreRF: "place a cluster of
+        singularity at EVERY harmonic.  A commercial RF simulator: "place a cluster of
         frequencies near each harmonic ... but AVOID PUTTING FREQUENCY
         POINTS PRECISELY ON THE HARMONICS ... you run the risk of
         generating absurd noise totals because a very narrow noise peak
@@ -11008,7 +11008,7 @@ class PAC(Analysis):
         returning a number that is quietly the wrong model.
 
         ⚠ `maxsidebands` IS AN ACCURACY KNOB HERE AND A REPORTING KNOB IN
-        `PAC.solve`, WHICH IS THE OPPOSITE OF HOW IT READS.  SpectreRF's
+        `PAC.solve`, WHICH IS THE OPPOSITE OF HOW IT READS.  A commercial RF simulator's
         own documentation states the inversion (relayed, cited not verified
         here): reducing sidebands "affects only the amount of information
         generated, not its quality.  HOWEVER, NOISE SOURCES GENERATE
@@ -11062,7 +11062,7 @@ class PAC(Analysis):
         ⚠ AND THE TIME-AVERAGE CHOICE MATCHES THE REFERENCE IMPLEMENTATION,
         which is worth recording because it was documented above as a
         deliberate scope decision and could have been the wrong one.
-        SpectreRF Theory on PNoise and QPnoise, both: "THE TIME-AVERAGE of
+        a commercial RF simulator's theory notes on PNoise and QPnoise, both: "THE TIME-AVERAGE of
         the noise at the output of the circuit is computed in the form of a
         spectral density versus frequency."  Same quantity, same
         limitation.  (Relayed from the docs session; cited, not verified
@@ -11148,7 +11148,7 @@ class PAC(Analysis):
                     'DC this circuit\'s CY is not finite. A 1/f term is '
                     'infinite there; a flicker term whose COEFFICIENT IS '
                     'ZERO is 0/0 and gives nan, so disabling flicker does '
-                    'not avoid this. Offset from the harmonic: SpectreRF\'s '
+                    'not avoid this. Offset from the harmonic: a commercial RF simulator\'s '
                     'own advice is to cluster frequencies NEAR each '
                     'harmonic and never place one ON it.'
                     % (float(freq), f0_))
@@ -11159,7 +11159,7 @@ class PAC(Analysis):
         ## gives 1.321766e-16 and `f0 + 0.01` Hz gives 1.350047e-16 -- 2%
         ## high, finite, entirely plausible.  The VALUE is right; a grid
         ## that lands there by accident integrates a spike it never
-        ## resolved.  SpectreRF: "you run the risk of generating absurd
+        ## resolved.  A commercial RF simulator: "you run the risk of generating absurd
         ## noise totals because a very narrow noise peak artificially has
         ## its apparent width greatly magnified".
         elif near < 1e-6 * f0_ and float(freq) > 0.0:
@@ -13133,7 +13133,7 @@ class PAC(Analysis):
         variable per decade", because Ito theory admits only white driving
         noise.  That is an artefact of the SDE formulation.  This path
         never forms an SDE, so a coloured source is just a different
-        `S(f)` -- a SLOPE, NOT A STATE.  SpectreRF confirms by omission:
+        `S(f)` -- a SLOPE, NOT A STATE.  A commercial RF simulator confirms by omission:
         no filter and no augmentation in its treatment of flicker.
 
         ⚠ THE `CY/2` IS THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION THE

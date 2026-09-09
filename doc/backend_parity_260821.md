@@ -81,7 +81,7 @@ the dead-knob scan's kwarg half covers regressions.
 
 The asymmetry is *reversed*: JAX declares `TRTOL` as a Parameter while the CPU
 hardcodes `LTERATIO = 7.0` as a class constant (recently consolidated to one
-definition, but still not settable). A user tuning Spectre's `lteratio` can do it on
+definition, but still not settable). A user tuning a commercial simulator's `lteratio` can do it on
 one backend only — the backend with fewer knobs elsewhere.
 
 **Fix:** CPU `Transient` gains the same `TRTOL` Parameter (default 7.0) feeding
@@ -538,7 +538,7 @@ existing TLine tests before/after, per house rules.
   > agreement re-derived (the old 5% partly rode the artifact; now 11%
   > measured, bounded 20% with both pinned to the analytic).
 - **P23** *(added and executed 2026-08-21, owner request)* — the
-  Spectre/Mica-style **voltage check**, `max_dv_step` on both backends: the
+  commercial-simulator-style **voltage check**, `max_dv_step` on both backends: the
   largest allowed change of any node voltage in one accepted step, None
   (default) disabling it.  The scenario it exists for is the P22 mask's
   honest gap: a purely resistive/algebraic network (a designer exploring an

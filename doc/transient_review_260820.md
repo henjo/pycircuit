@@ -1184,8 +1184,8 @@ brackets clamp it — two facts in two files whose interdependence deserves a se
 the `1e-300` lives.
 
 **SPICE implementation.** The right instincts throughout: charge-based formulation,
-`TRTOL = 7` matching Spectre's `lteratio`, `relref` with `sigglobal` default matching
-Spectre, honest `uic`/`.ic` semantics with the spanning-tree capacitor-IC solve,
+`TRTOL = 7` matching a commercial simulator's `lteratio`, `relref` with `sigglobal` default matching
+A commercial simulator, honest `uic`/`.ic` semantics with the spanning-tree capacitor-IC solve,
 breakpoint truncation with order drop, and `TransientStatistics` better than what most
 commercial tools expose. Gaps a SPICE veteran would notice: **no gmin stamping in the
 transient loop** — a junction turning hard off mid-run can hand `StandardNewton` a singular
