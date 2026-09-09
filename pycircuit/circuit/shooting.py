@@ -11051,11 +11051,24 @@ class PAC(Analysis):
         ## treatment of exactly this case, and the only route to MOS
         ## pnoise, since no physically correct MOS noise model has a
         ## state-independent `CY`.
+        colour = None
         if cyclostationary:
             ## the stop rule and the harmonic probes below run on the
             ## cycle-averaged power (the modulation's B_0 B_0^H); the fold
-            ## itself is the convolution after the rows are gathered
-            cyfn = self._cy_cycle_averaged
+            ## itself is the convolution after the rows are gathered.
+            ## The colour model (see `_cy_colour_model`) is fitted ONCE
+            ## here and serves both: the 34 orbit sweeps of the stop rule
+            ## were 1.1 s of a 4.1 s call after the fold itself was cut.
+            colour = self._cy_colour_model(pss, float(freq), f0)
+            if colour is None:
+                cyfn = self._cy_cycle_averaged
+            else:
+                fp_ = pss.factored_period()
+                hs_ = np.diff(np.asarray(fp_.times, dtype=float))
+                def cyfn(pss_, w_, _m=colour, _h=hs_):
+                    Cs = _m(w_)
+                    ns = min(len(_h), Cs.shape[0])
+                    return np.einsum('k,kij->ij', _h[:ns], Cs[:ns]) / float(_h[:ns].sum())
         else:
             cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         cy = cyfn(pss, w)
@@ -11147,7 +11160,7 @@ class PAC(Analysis):
                 quiet = 0
         self.sidebands_used = used
         if cyclostationary:
-            total = self._cyclostationary_fold(pss, float(freq), rows)
+            total = self._cyclostationary_fold(pss, float(freq), rows, model=colour)
         ## ⚠ WHICH RULE STOPPED IT IS PART OF THE ANSWER.  Ending on the
         ## ratio test means the series converged; ending on the Nyquist
         ## bound means the grid ran out before the series did, and the
@@ -11195,6 +11208,80 @@ class PAC(Analysis):
         Cs = np.asarray(Cs, dtype=complex)
         return np.fft.fft(Cs, axis=0) / Cs.shape[0]
 
+    def _cy_samples(self, pss, w):
+        """`CY(x(t_k), w)` over the orbit, reduced, `(N, n, n)` complex."""
+        fp = pss.factored_period()
+        irn = pss.irefnode
+        xs = np.asarray(pss.waveform[1], dtype=float)
+        nsamp = len(fp.steps)
+        Cs = []
+        for k in range(nsamp):
+            xr = np.asarray(xs[:, k], dtype=float).ravel()
+            xf = xr if xr.shape[0] == pss.cir.n else np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
+            Cs.append(np.asarray(cyk, dtype=complex))
+        return np.asarray(Cs, dtype=complex)
+
+    @staticmethod
+    def _sqrt_harmonics_of(Cs):
+        """The DFT of the symmetric square root of the sampled `CY` (see
+        `_cy_sqrt_harmonics`), for a `(N, n, n)` array already in hand."""
+        Bs = []
+        for cyk in Cs:
+            cyk = 0.5 * (cyk + cyk.conj().T)
+            lam, U = np.linalg.eigh(cyk)
+            lam = np.clip(np.real(lam), 0.0, None)
+            Bs.append((U * np.sqrt(lam)[None, :]) @ U.conj().T)
+        Bs = np.asarray(Bs, dtype=complex)
+        return np.fft.fft(Bs, axis=0) / Bs.shape[0]
+
+    def _cy_colour_model(self, pss, f, f0):
+        """Fit `CY(x(t), w) = A(t) + B(t) (w1/w)^ef` entry by entry from three
+        frequencies and verify at a fourth; return a callable `w -> (N, n, n)`
+        or None when the fit fails anywhere (the caller then evaluates the
+        circuit per band, as before).  The exponent is per entry, found by
+        a bracketed root find on the ratio of differences, so a mix of
+        flicker exponents across sources is fine; a white entry (B = 0)
+        needs no exponent."""
+        from scipy.optimize import brentq
+        f = abs(float(f))
+        ## three to fit, two to verify: one BETWEEN the fit points and one
+        ## at the FAR end of the band range the fold reaches (up to
+        ## ~(N/2 + lmax) f0), so a shape that is not thermal-plus-flicker
+        ## is caught where the model would have been extrapolating
+        ws = [2.0 * np.pi * x for x in (max(f, 1e-3 * f0), 3.0 * f0 + f, 10.0 * f0 + f,
+                                        2.0 * f0 + f, 150.0 * f0 + f)]
+        C1, C2, C3, C4, C5 = (self._cy_samples(pss, w) for w in ws)
+        N, n, _ = C1.shape
+        A = np.zeros_like(C1); B = np.zeros_like(C1); EF = np.zeros((N, n, n))
+        scale = max(float(np.max(np.abs(C1))), 1e-300)
+        w1, w2, w3, w4, w5 = ws
+        for k in range(N):
+            for i in range(n):
+                for j in range(n):
+                    c1, c2, c3 = C1[k, i, j], C2[k, i, j], C3[k, i, j]
+                    if abs(c1 - c2) <= 1e-12 * scale and abs(c2 - c3) <= 1e-12 * scale:
+                        A[k, i, j] = c1
+                        continue
+                    ratio = (c1 - c2) / (c2 - c3)
+                    def g(ef, ratio=ratio):
+                        g1, g2, g3 = 1.0, (w1 / w2) ** ef, (w1 / w3) ** ef
+                        return float(np.real((g1 - g2) / (g2 - g3) - ratio))
+                    try:
+                        ef = brentq(g, 0.05, 4.0, xtol=1e-12)
+                    except ValueError:
+                        return None
+                    g2 = (w1 / w2) ** ef
+                    Bv = (c1 - c2) / (1.0 - g2)
+                    A[k, i, j] = c1 - Bv; B[k, i, j] = Bv; EF[k, i, j] = ef
+        for wv, Cv in ((w4, C4), (w5, C5)):
+            if float(np.max(np.abs(A + B * (w1 / wv) ** EF - Cv))) > 1e-8 * scale:
+                return None
+        def model(w):
+            return A + B * (w1 / float(w)) ** EF
+        return model
+
     def _cy_sqrt_harmonics(self, pss, w):
         """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
         the orbit, `(N, n, n)`, for the band-resolved (coloured) fold."""
@@ -11216,7 +11303,7 @@ class PAC(Analysis):
         Bs = np.asarray(Bs, dtype=complex)
         return np.fft.fft(Bs, axis=0) / Bs.shape[0]
 
-    def _cyclostationary_fold(self, pss, freq, rows):
+    def _cyclostationary_fold(self, pss, freq, rows, model=None):
         """`S(f) = sum_{l,l'} a_l Q_{l,l'} a_{l'}^H` over the gathered
         sideband rows (`rows[l]` = the row for a source at `f - l f0`,
         output at `f`).  WHITE source: `Q_{l,l'} = P_{l'-l}`, the DFT of
@@ -11233,7 +11320,16 @@ class PAC(Analysis):
         the fold sums, so "the band of l" (the first version's shortcut)
         was a 24x approximation on the case the feature exists for; the
         band-resolved form is pinned against the stationary fold of a
-        stationary FLICKER source through the same multiplier."""
+        stationary FLICKER source through the same multiplier.
+
+        COST (2026-09-09): the coloured branch was 6x the white one
+        because of the circuit's `CY` (231 bands x 230 samples), not the
+        algebra.  With the colour model (`_cy_colour_model`, fitted once
+        in `pnoise` and shared with the stop rule) and the pair sum
+        vectorised it is 2.2x the white call and below the cycle average
+        (1.7 s / 0.8 s / 2.0 s on the switched EKV fixture), exact to
+        1e-11 against the per-band evaluation, which remains the fallback
+        for a colour the model does not fit."""
         f0 = 1.0 / float(pss.period)
         ls = sorted(rows)
         f = float(freq)
@@ -11251,9 +11347,21 @@ class PAC(Analysis):
                 for lp in ls:
                     total += complex(rows[l] @ P[(lp - l) % N] @ np.conj(rows[lp]))
             return float(np.real(total))
-        ## band-resolved: every white band the modulation harmonics reach
+        ## band-resolved: every white band the modulation harmonics reach.
+        ## ⚠ THE COST WAS THE CIRCUIT'S CY, NOT THE ALGEBRA (profiled
+        ## 2026-09-09 on a switched EKV stage: 231 bands x 230 samples =
+        ## 53 000 CY evaluations, 7.8 s of a 10.4 s fold; the eigen-
+        ## decompositions 0.85 s).  Every colour in the library is thermal
+        ## plus flicker in 1/f^ef, so THREE evaluations per sample fix each
+        ## entry's shape (A + B (w1/w)^ef, ef by a root find on the ratio of
+        ## differences), a FOURTH frequency verifies the fit to 1e-8, and
+        ## all the bands come from the model with no further circuit
+        ## calls; a source whose colour is not of that shape fails the
+        ## check and gets the full evaluation as before.
         cache = {}
         Nn = Pa.shape[0]
+        if model is None:
+            model = self._cy_colour_model(pss, f, f0)
         ## ⚠ A SPECIFICATION LIMIT, NOT AN IMPLEMENTATION ONE (docs session,
         ## 2026-09-08): a coloured source under a modulation that CHANGES
         ## SIGN is not representable by any fold built from a PSD -- the
@@ -11332,27 +11440,37 @@ class PAC(Analysis):
         def _B(p):
             key = round(abs(f - p * f0) / f0, 12)
             if key not in cache:
-                cache[key] = self._cy_sqrt_harmonics(pss, 2.0 * np.pi * abs(f - p * f0))
+                wp = 2.0 * np.pi * abs(f - p * f0)
+                if model is not None:
+                    cache[key] = self._sqrt_harmonics_of(model(wp))
+                else:
+                    cache[key] = self._cy_sqrt_harmonics(pss, wp)
             return cache[key]
         ks = np.fft.fftfreq(Nn, d=1.0 / Nn).astype(int)
+        ## every band the sum reaches, stacked once: BB[pi, k] = B_k^{(p)}
+        ## with pi = p - pmin.  The (l, l') pair sum is then two fancy
+        ## indexings and one einsum instead of N small products in Python
+        ## (204 000 `_B` calls, 1.9 s of a 2.8 s fold, before).
+        pmin = min(ls) + int(ks.min()); pmax = max(ls) + int(ks.max())
+        BB = np.asarray([_B(p) for p in range(pmin, pmax + 1)], dtype=complex)
         for l in ls:
             for lp in ls:
-                Q = np.zeros_like(Pa[0])
-                for k in ks:
-                    ## (B B^H)_j = sum_k B_k B_{k-j}^H: the partner index is
-                    ## k + l - l', NOT k + l' - l -- the mirror was invisible to
-                    ## the constant-modulation reduction (only k = 0 there) and
-                    ## read 0.49 / 0.17 on the smooth-modulation flicker identity.
-                    ## ⚠ NO CIRCULAR WRAP HERE: a partner beyond N/2 would be
-                    ## paired with the wrong BAND (each band carries its own
-                    ## weight), harmless in the white P-form and wrong here --
-                    ## it read 0.56 / 1.33 on the kinked (zero-crossing)
-                    ## modulation whose coefficients reach N/2.
-                    kp = k + l - lp
-                    if abs(kp) > Nn // 2:
-                        continue
-                    Bp = _B(l + k)
-                    Q += Bp[k % Nn] @ Bp[kp % Nn].conj().T
+                ## (B B^H)_j = sum_k B_k B_{k-j}^H: the partner index is
+                ## k + l - l', NOT k + l' - l -- the mirror was invisible to
+                ## the constant-modulation reduction (only k = 0 there) and
+                ## read 0.49 / 0.17 on the smooth-modulation flicker identity.
+                ## ⚠ NO CIRCULAR WRAP HERE: a partner beyond N/2 would be
+                ## paired with the wrong BAND (each band carries its own
+                ## weight), harmless in the white P-form and wrong here --
+                ## it read 0.56 / 1.33 on the kinked (zero-crossing)
+                ## modulation whose coefficients reach N/2.
+                kp = ks + l - lp
+                ok = np.abs(kp) <= Nn // 2
+                kk, kk2 = ks[ok], kp[ok]
+                pi = (l + kk) - pmin
+                X = BB[pi, kk % Nn]
+                Y = BB[pi, kk2 % Nn]
+                Q = np.einsum('kij,klj->il', X, Y.conj())
                 total += complex(rows[l] @ Q @ np.conj(rows[lp]))
         return float(np.real(total))
 

@@ -11932,7 +11932,7 @@ modulated noise must pass through a periodically varying transfer AFTER modulati
 LO-driven stage, an IF read at a converted frequency). (2) The EKV flicker is `kf|I|^af/f` with no area
 normalisation, so kf = 1e-22 … 1e-18 changed nothing to four digits while still triggering the coloured
 branch (a 3 % term at 1 kHz is colour, and the 1e-9 detection is right to take it) — the cost trap is
-real: a negligible flicker coefficient buys the 6× branch. Scope point recorded in the fold: a DEVICE's
+real: a negligible flicker coefficient buys the 6× branch (retired below, 2026-09-09: 1.3×). Scope point recorded in the fold: a DEVICE's
 own noise has no sign to lose (`√PSD ≥ 0` IS the process), so the sign warning is for signed external
 gain paths only; for intrinsic MOS noise the PSD-specified model is the physics, and Okumura's eq. 23
 objection to flicker is the separate physical question of whether a trap process is modulated coloured
@@ -11997,3 +11997,45 @@ frequency-aware sum against a phase-noise plot — ⚠ the NAMING inverts the in
 the spectrum quantity and tracks the crossing definition). Not measured: the instrument argument is the
 peer's; the test is which estimator converges to which construction as a → 0, where a sinusoidal orbit
 makes the two definitions coincide — the asymmetry sweep with a sharper purpose. Not run.
+
+## The coloured branch's cost (Andreas: "Start the coloured branch's", 2026-09-09)
+
+**Profiled first, on the switched EKV fixture at 0.1 MHz, kf = 1e-13, 16 sidebands.** The coloured call was
+12.7 s; `_cyclostationary_fold` 10.4 s of it; `_cy_sqrt_harmonics` 231 calls (bands) / 8.9 s; `Circuit.CY`
+53 133 calls / 7.8 s (the HDL's `CY` 106 266 calls / 3.8 s); the eigen-decompositions 0.85 s. So the cost was
+THE CIRCUIT'S CY, evaluated 231 bands × 230 samples, not the algebra — the profile decided the fix, and the
+first design (a simultaneous diagonalisation of the thermal and flicker parts to share one `eigh` across
+bands) would have attacked the 0.85 s.
+
+**Three changes, each measured:**
+
+| step | coloured call | note |
+|---|---|---|
+| before | 12.7 s | 53 000 `CY` evaluations |
+| colour model | 5.1 s | 920 `CY` evaluations (4 frequencies × 230 samples) |
+| + vectorised pair sum | 4.1 s | 204 000 Python-level `_B` lookups + 6×6 products → 1089 `einsum`s |
+| + model hoisted into the stop rule | 2.8 s under the profiler, **1.7 s bare** | the 34 orbit sweeps of the cycle-averaged stop rule were 1.1 s |
+
+The cycle-averaged route's own call is 2.0 s and the white cyclostationary call 0.8 s, so the coloured
+branch is now 2.2× the white one and cheaper than the cycle average, from 6×.
+
+**The colour model (`PAC._cy_colour_model`).** Every colour in the library is thermal plus flicker,
+`CY(x, ω) = A(x) + B(x)·(ω₁/ω)^ef`, entry by entry (a mix of exponents across sources is fine; a white entry
+has `B = 0` and needs no exponent). Three evaluations per sample fix the three unknowns — `ef` from a
+bracketed root find on the ratio of differences in [0.05, 4] — and TWO more verify the fit to 1e-8 of the
+largest entry: one between the fit points (2 f₀ + f) and one at the far end of the band range the fold
+reaches (150 f₀ + f), so a shape that is not thermal-plus-flicker is caught where the model would have been
+extrapolating. Any failure returns None and the fold evaluates the circuit per band exactly as before; the
+model is fitted once in `pnoise` and serves the stop rule too. Exactness against the per-band evaluation:
+1.5e-11 / 4.5e-12 / 1.2e-12 relative at 0.1 / 1.3 / 3.7 MHz. The fallback is pinned with a Lorentzian term
+added to the fixture's `CY` (`1e-22/(1 + (f/3 MHz)²)`): the model refuses, the fold agrees with the
+forced per-band evaluation to 1e-12 and differs from the unmodified circuit by more than 1e-3. The flicker
+identity gates (`cyclo_flicker.py`: sign-definite gain 1.000000000 at both offsets, zero-crossing 0.563 /
+1.325 as recorded) and both MOS ratios (0.3758, 0.3189) are unmoved to the printed digits.
+
+Not done, and why: the k-truncation by the coefficients' own decay — on a kinked (zero-crossing) modulation
+the square-root harmonics decay as 1/k², i.e. 1/k⁴ in power, so a 1e-10 truncation keeps every k the grid
+has; it only helps smooth orbits, which are already cheap. The simultaneous-diagonalisation shortcut would
+cut the remaining 1.1 s of 230 × 231 `eigh` calls but requires `A(t)` and `B(t)` to commute, which a source
+with both thermal and flicker terms into the same node satisfies and two sources with different incidence do
+not; with the branch at 1.3× the cycle average it is not worth a second code path.

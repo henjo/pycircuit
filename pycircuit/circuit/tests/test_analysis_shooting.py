@@ -18060,7 +18060,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     3.3 MHz alike (broadband transfers), at the cycle average's cost (the
     white P-form is free); with flicker at ten times thermal (kf = 1e-13,
     the EKV's kf |I|^af / f) 0.319 / 0.436 / 0.379 through the coloured
-    band-resolved branch at ~6x the cost.  The direction: the switch's own
+    band-resolved branch (see the cost note at the end).  The direction: the switch's own
     channel noise is largest exactly when its channel shunts it, so
     avg(|H|^2 PSD) < avg(|H|^2) avg(PSD).  ⚠ A first fixture put the noise
     at the drain of a single stage into an RC load and read cyc/avg =
@@ -18109,3 +18109,44 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     assert abs(ratios[0.0] / 0.376 - 1.0) < 0.02, ratios
     assert abs(ratios[1e-13] / 0.319 - 1.0) < 0.03, ratios
     assert abs(ratios[1e-13] - ratios[0.0]) > 0.03, ratios
+
+    ## THE COLOURED BRANCH'S COST (2026-09-09): the profile said the cost
+    ## was the circuit's CY (53 000 evaluations, 231 bands x 230 samples),
+    ## not the algebra.  `_cy_colour_model` fits A + B (w1/w)^ef per entry
+    ## from three frequencies, verifies at two more, and serves every band
+    ## and the stop rule from the model: 12.7 s -> 1.7 s on this fixture
+    ## (the cycle average's own call is 2.0 s).  Pinned: (i) the model
+    ## route equals the per-band evaluation to 1e-9 -- it was 1.5e-11 --
+    ## and (ii) a colour that is NOT thermal-plus-flicker (a Lorentzian
+    ## term added to the fixture's CY) fails the verification, so the
+    ## fold falls back to evaluating the circuit and still agrees.
+    from pycircuit.circuit import shooting as _sh
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        assert pac._cy_colour_model(pss, 0.1e6, f0) is not None
+        orig = _sh.PAC._cy_colour_model
+        _sh.PAC._cy_colour_model = lambda self, pss_, f_, f0_: None
+        try:
+            sfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
+        finally:
+            _sh.PAC._cy_colour_model = orig
+    assert abs(sc / sfull - 1.0) < 1e-9, (sc, sfull)
+
+    cy_orig = c.CY
+    def cy_lorentz(x, w, **kw):
+        base = np.asarray(cy_orig(x, w, **kw), dtype=complex)
+        n_ = base.shape[0]; bump = np.zeros_like(base)
+        bump[od, od] = 1e-22 / (1.0 + (w / (2.0 * np.pi * 3.0e6)) ** 2)
+        return base + bump
+    c.CY = cy_lorentz
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        assert pac._cy_colour_model(pss, 0.1e6, f0) is None
+        sl, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
+        _sh.PAC._cy_colour_model = lambda self, pss_, f_, f0_: None
+        try:
+            slfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
+        finally:
+            _sh.PAC._cy_colour_model = orig
+    assert abs(sl / slfull - 1.0) < 1e-12, (sl, slfull)
+    assert abs(sl / sc - 1.0) > 1e-3, (sl, sc)
