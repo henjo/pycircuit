@@ -5501,7 +5501,13 @@ class PSS(Analysis):
         which is ~a), zero crossings convert every harmonic's; both read a
         given sideband PM with a fixture-dependent gain.  This object and
         S_pm are PM by quadrature of the FUNDAMENTAL'S sidebands; compare
-        them with that, not with a demodulated or crossing phase.  ⚠ The
+        them with that, not with a demodulated or crossing phase.  ⚠ AND
+        COMPARE BAND WITH BAND: a source behind the slow node has an
+        in-band spectrum that is not 1/r^2 (its slow/core ratio swings
+        1.16 -> 0.87 across 0.08-0.15 f0 at a = 0.25), so a band mean and a
+        point value differ by ~4 % there; a 2 % constant between the noisy
+        Monte Carlo and the deterministic route remains after that, within
+        the excursion-amplitude bound, unresolved.  ⚠ The
         premise "a -> 0 makes the definitions coincide" was wrong: the
         asymmetry removes even harmonics only, van der Pol's third stays
         at 9.7 % of the fundamental, and the construction gap GROWS as
@@ -7117,7 +7123,15 @@ class PSS(Analysis):
         exactly equal to 0 due to the ALGEBRAIC EQUATIONS in the MNA
         formulation".  So the `m - rank(C)` structural zeros are the
         theory's, not an artefact -- which is why `parasitic_roots` comes
-        back identically zero on every MNA circuit tried here.
+        back identically zero on every MNA circuit tried here.  ⚠ AT INDEX
+        1 ONLY (the docs session, checked against the paper 2026-09-09:
+        "We assume that the DAEs we are dealing with are index-1").
+        `rank(C)` is the differential dimension at index 1 and OVERCOUNTS
+        by one per index-2 constraint: measured on `floquet_modes`, an
+        index-1 tank and an index-1 tank + R node give modes = rank(C) = 2,
+        an L-I cutset and a C-V loop give rank(C) = 3 with 2 modes -- the
+        code returns the true count; it is the formula that stops where
+        Demir says it does.
 
         ⚠ AND THE FACTORISATION CARRIES A TRAILING `C(s)` WITH NO ODE
         ANALOGUE (where `C = I` and it disappears).  A DAE monodromy is not

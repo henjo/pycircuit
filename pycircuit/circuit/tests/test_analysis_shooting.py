@@ -18243,3 +18243,138 @@ def test_the_am_corner_is_f0_over_2pi_q_lambda_not_4pi():
         ratio = float(np.real(am) / np.real(pm))
         assert abs(ratio - expect) < 0.01, (u / u_c, ratio, expect)
 
+
+def _a2_tone_fixture(src, asym=0.25, npts=80):
+    """The A2 fixture (van der Pol tank with series loss, a `u^2` asymmetry and
+    one slow RC node, tau/T = 100) with a unit-PSD noise current at `src`
+    ('v' = the tank, 'w' = behind the slow node), converged at `npts`."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+    c = SubCircuit()
+    for n in ('v', 'w', 'x'):
+        c.add_node(n)
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', 'x', L=1.0)
+    c['Rl'] = R('x', gnd, r=0.2)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: (u - u ** 3 / 3.0) + asym * (u ** 2 - 2.0))
+    c['Rs'] = R('v', 'w', r=1e2)
+    c['Cs'] = C('w', gnd, c=100.0 * T0 / 1e2)
+    c['n'] = IS(src, gnd, i=0.0, noisePSD=1e-6)
+    pss = PSS(c, method='gear', reltol=1e-11)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / npts, x0=x0, maxiterations=200)
+    assert pss.converged
+    return c, pss
+
+
+def _forward_tone_pm(c, pss, src, tones, r=0.10, periods=250, window=100, amp=1e-4):
+    """PM by quadrature of the fundamental's sidebands from FORWARD small-signal
+    tone transients on the PSS's own fixed grid: a real current tone at
+    `|m + r| f0` for each `m` in `tones`, driven MINUS an undriven run from the
+    same state (the integrator's phase slip cancels exactly), the carrier from
+    the undriven run and the sidebands `U`, `L` at `f0 (1 +- r)` from the
+    difference over the last `window` periods; `PM = 0.5 |u - conj(l)|^2`
+    with `u = U/C`, `l = L/C` -- `am_pm_noise`'s own combination.  Summed over
+    the tones (a white source weights every band equally).  Shares the orbit
+    and the integrator with `pnoise`; shares neither the adjoint nor the
+    sideband assembly."""
+    import warnings
+    T = float(pss.period)
+    npts = len(pss.factored_period().steps) + 1
+    h = T / (npts - 1)
+    f0 = 1.0 / T
+    isrc = c.get_node_index(src)
+    iv = c.get_node_index('v')
+    nfull = c.n
+    x0 = np.asarray(pss.waveform[1], dtype=float)[:, 0].copy()
+
+    def run(ws):
+        def inject(t):
+            u = np.zeros(nfull)
+            u[isrc] = amp * np.cos(ws * t)
+            return u
+        tr = pss._new_transient(pss._integrator_for('gear'))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=periods * T, x0=x0, timestep=h,
+                           provided_function=inject if ws is not None else None,
+                           fixed_timestep=True)
+        t = np.asarray(res.sweep_values, dtype=float)
+        X = np.asarray(res.x, dtype=float)
+        X = X if X.shape[0] == nfull else X.T
+        return t, X[iv]
+
+    t0, v0 = run(None)
+    N = window * (npts - 1)
+    tw = t0[-N:]
+    vref = v0[-N:]
+
+    def bin_amp(x, freq):
+        return np.sum(x * np.exp(-1j * 2 * np.pi * freq * tw)) * 2.0 / N
+
+    Cc = bin_amp(vref, f0)
+    total = 0.0
+    for m in tones:
+        t, v = run(2 * np.pi * abs(m + r) * f0)
+        dv = v[-N:] - vref
+        u = bin_amp(dv, (1 + r) * f0) / Cc
+        l = bin_amp(dv, (1 - r) * f0) / Cc
+        total += 0.5 * abs(u - np.conj(l)) ** 2
+    return total
+
+
+def test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint():
+    """⚠ THE FIRST EXTERNAL GATE FOR `pnoise`'S AUTONOMOUS PM, and the
+    instrument that RESOLVED a day of Monte Carlo (roadmap, 2026-09-09).
+
+    `pnoise`'s `S_pm` is the adjoint sideband assembly folded over bands
+    and split by quadrature.  A forward small-signal tone transient on the
+    PSS's own grid computes the same LPTV response with no adjoint and no
+    assembly: inject a real current tone at `|m + r| f0` at the source node,
+    subtract the undriven run, read the fundamental's sidebands, combine as
+    `0.5 |u - conj(l)|^2`, sum over the bands the white source occupies.
+    The SOURCE-LOCATION double ratio -- a source behind a slow RC node over a
+    source in the tank -- is normalisation-free and is exactly the quantity
+    a 16-seed Monte Carlo campaign had found drifting 6 % against both
+    linear constructions as the orbit's asymmetry vanished.  This route
+    agreed with `pnoise` to 1.003 / 1.010 at a = 0.25 / 0 (240 points, nine
+    tones) and reproduced the Monte Carlo's drift DETERMINISTICALLY from
+    the estimators' definitions of phase: the drift was the estimators (a
+    one-period fundamental demodulation leaks the other harmonics'
+    sidebands through its boxcar; zero crossings convert every harmonic's),
+    not the constructions.
+
+    Pinned here at 80 points and 250 periods (cost: ~2 min alone; 120
+    points / 400 periods took 7 min and read 0.985 too): the slow-node
+    source with three tones (m = -1, 0, 1; the other bands are 1.5 % of
+    its sum) and the tank source with seven (m = -3..3; its |m| = 2, 3
+    bands are 15 %), against `am_pm_noise` at r = 0.10 with 32 sidebands.
+    Measured 0.9855 / 0.9860 / 0.9864 at 80 / 100 / 120 points (the 1.4 %
+    is the bands left out); asserted within 4 % of 1.  ⚠ The undriven subtraction
+    is not optional: at 240 points the integrator's own period error slips
+    the phase ~6e-3 rad per 100 periods, which leaks the carrier into the
+    sideband bins at the level of the response.  ⚠ Tone m = +1 doubled in
+    amplitude gave 4.000x the power: linear.
+    """
+    import warnings
+    r = 0.10
+    ratio = {}
+    pm_tone = {}
+    for src, tones in (('w', (-1, 0, 1)), ('v', (-3, -2, -1, 0, 1, 2, 3))):
+        c, pss = _a2_tone_fixture(src)
+        pac = PAC(c, toolkit=circuit.numeric)
+        ov = [str(n) for n in c.nodes].index('v')
+        f0 = 1.0 / float(pss.period)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _am, pm, _ = pac.am_pm_noise(pss, r * f0, ov, carrier=1, maxsidebands=32)
+        ratio[src] = float(np.real(pm))
+        pm_tone[src] = _forward_tone_pm(c, pss, src, tones, r=r)
+    double = (pm_tone['w'] / pm_tone['v']) / (ratio['w'] / ratio['v'])
+    assert abs(double - 1.0) < 0.04, (double, pm_tone, ratio)
+

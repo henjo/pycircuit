@@ -12525,3 +12525,51 @@ of them). Candidate 3 as the peer scoped it (covariance route, "physics upstream
 the forward route shares the orbit and monodromy with the constructions and agrees with them. Machine time for
 the whole item: ~4 min.
 
+**`d = rank(C)` is an index-1 identity (docs session, 2026-09-09, checked against Demir 2000).** The paper's mode-
+count sentence and its "eigenvalues exactly equal to 0 due to the algebraic equations" are verbatim, but it also
+says "we assume that the DAEs we are dealing with are index-1", which the `floquet_modes` docstring dropped.
+Measured on four fixtures: index-1 tank and tank + R node give modes = rank(C) = 2; an L–I cutset and a C–V loop
+give rank(C) = 3 with 2 modes — the code returns the true count, `rank(C)` overcounts by one per index-2
+constraint. The live assertion `len(poles) == rank` in the benchmark test is correct today (index-1) and would
+fail as "got k−1" on an index-2 topology edit, reading as a pole-count bug; both sites now carry the qualifier,
+plus the absolute-`matrix_rank`-tol trap (a picofarad capacitor rounded out of the rank). Provenance: the
+extracted text renders `k = n − m` as `k"n!m` (Symbol-font mapping) — grep for the words.
+
+**The forward-tone route is now a test** (`test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint`,
+80 points, 250 periods, 3 + 7 tones, double ratio 0.9855 asserted within 4 % — the 1.4 % is the bands left out of
+the sum, a truncation of the construction, NOT an averaging effect over `r`; the two must not be netted). Cost
+~2 min alone; 120 points / 400 periods took 7 min and read 0.985 too. The first external gate `pnoise`'s
+autonomous PM has had.
+
+### The residual between the noisy Monte Carlo and the deterministic route (Andreas, 2026-09-09 evening)
+
+The tone route at four offsets (r = 0.08, 0.10, 0.12, 0.15; 7–9 tones each; 84 + 37 runs) puts every side on the
+same BAND footing (trapezoid over the offsets, normalised by the band width; a plain mean of four uneven points
+mis-weights the shape by 2–3 %). Slow/core double ratios against the constructions' band means:
+
+| a | tone PM₁ | tone demod | MC demod | tone crossing | MC crossing |
+|---|---|---|---|---|---|
+| 0.25 | 1.007 | 0.939 | 0.957 | 1.027 | 1.038 |
+| 0.00 | 1.014 | 1.010 | 1.036 | 1.112 | 1.129 |
+
+**What the sweep found, first:** on this fixture the slow-node source's in-band spectrum is NOT `1/r²`: its
+slow/core ratio swings 1.156 → 0.867 across the band at a = 0.25 (relative to r = 0.10) and 0.990 → 1.035 at a = 0
+— the `k = 0` term is filtered at the RC corner and the `k ≥ 1` terms are not, and their mix moves across the
+band. The estimators track that shape to 1–2 % (demod 1.167 → 0.851, crossing 1.155 → 0.863). Consequences: (i) a
+band-averaged comparison at a ≠ 0 differs from a point comparison by ~4 % for this source location — larger than
+most gates in this area; the constructions and the MC both average the band uniformly in `r`, so their
+comparison is consistent, but a POINT value (the forward-tone gate at r = 0.10) must not be netted against a band
+mean; (ii) the docs session reproduced the signature on its own one-node fixture (sign flips as the RC corner
+crosses the band, saturates below it, tank rows invariant across a factor 64 in τ) at 0.3 % — coupling strength
+sets the size, the corner sets the sign. **The residual, second:** with the band footing matched it is +1.8 %
+(demod) / +1.1 % (crossing) at a = 0.25 and +2.6 % / +1.5 % at a = 0 — ~2 %, a-independent, and NOT band averaging nor
+the band mean's own quadrature: the docs session pinned every monotone shape that reproduces the plain-mean
+artefact (2–3 %; power law and RC-cornered Lorentzians with the corner at or below the band — where the mechanism
+puts it) and all give a trapezoid error of +0.2 … +0.4 %, common-mode between the MC's and the constructions'
+band means, so the residual is 5–10× above it and the quadrature can only understate it. It is within the excursion-amplitude bound
+from the PSD/4 data (the slow fixture's single-fixture ratio 0.993 ± 0.013 per factor two in variance
+extrapolates to ~1 % ± 2 % between full excursion and the zero-excursion limit the tone route is) at ~1σ, so an
+amplitude dependence of the estimators' gain is the surviving candidate and is untested at this size; a PSD × 4
+run at a = 0 (16 seeds, ~1.5 h) would put it at ~3σ. Left here: a 2 % constant that cancels in every slope and
+sits below what the deterministic instrument resolves.
+

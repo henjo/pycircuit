@@ -242,8 +242,16 @@ def test_leapfrog_has_no_right_half_plane_poles():
     ## two populations by three orders of magnitude at either side.
     poles = poles[np.isfinite(poles)]
     poles = poles[np.abs(poles) < 1e15]
-    assert len(poles) == rank, ('expected rank(C) = %d finite poles, got %d'
-                                % (rank, len(poles)))
+    ## ⚠ AT INDEX 1: rank(C) overcounts the finite poles by one per index-2
+    ## constraint (an L-I cutset, a C-V loop -- measured on the pencil by the
+    ## docs session, 2026-09-09).  This circuit is index-1; a topology edit
+    ## that adds a VS across a capacitor or two inductors in series with no
+    ## other path would fail here as "got k-1", and that is an INDEX change,
+    ## not a pole-count bug.  (And `matrix_rank` with an ABSOLUTE tol rounds
+    ## a picofarad capacitor out of the rank; the default relative tol is
+    ## what makes this count right.)
+    assert len(poles) == rank, ('expected rank(C) = %d finite poles at index 1, '
+                                'got %d' % (rank, len(poles)))
     worst = poles.real.max()
     assert worst < 0, ('%d poles in the right half plane, worst Re = %+.5e'
                        % ((poles.real > 0).sum(), worst))
