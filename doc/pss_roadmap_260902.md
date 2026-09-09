@@ -12689,3 +12689,15 @@ AM corner sits before reusing either number. What the screen leaves: the 2 % is 
 difference is large — a property of the noise's modal composition at the two locations, not of the orbit or the
 path. Still not chased.
 
+**Joint fit of the residual against excursion amplitude (Andreas, 2026-09-09 late; three noise levels, a factor
+4 in amplitude, a = 0, single-fixture ratios so the calibration cancels, disputed band).** Model
+`P(s)/(s·P(1)) = (1 + c₁√s + c₂s)/(1 + c₁ + c₂)`, `s = PSD/PSD₀ ∈ {¼, 1, 4}`, weighted by the per-level errors.
+Slow fixture: linear `c₁` = +0.012 ± 0.010 (demod, 1.2σ; χ² 0.04/1) / +0.006 ± 0.009 (crossing); quadratic
+`c₂` = +0.004 ± 0.004 / +0.004 ± 0.004. Neither is separated from zero, and a linear law carrying the whole 2 %
+(`c₁` = 0.02) is 0.8σ from the fit — amplitude dependence and a constant are NOT distinguished even over a factor
+4 in amplitude; the quadratic-law exclusion of the pairwise reading stands (`c₂` = 0.0094 would be needed, 1.4σ
+here). The core control fits NO smooth law (χ² 12/1 demod, 20–25/1 crossing): its PSD/4 point (1.035 / 1.039) is a
+~3σ outlier against its other two levels — retired from every double ratio, and the earlier "recorded, not read"
+was right. Closed: the residual stays a ~2 % term of the noisy estimator against its zero-excursion limit, of
+unknown order in the excursion, differing strongly between the two source locations, cancelling in every slope.
+
