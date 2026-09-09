@@ -1110,6 +1110,24 @@ Tischendorf, or a DAE-numerics text. None is among the 339 papers, because DAE p
 not circuit literature. Recorded so nobody spends another pass searching what is already known not
 to contain it.
 
+⚠ **STALE, LIFTED 2026-09-09 (docs session):** Lamour, März & Tischendorf IS on disk — ~318 pages, split
+by chapter under `17-dae-theory-and-index/` (57 projector-DAE papers; the corpus is 583 docs, not 339); the
+chapters landed 2026-09-07 23:22 – 09-08 09:24, after both records were written. What it gives, read off the
+rendered pages: **Lemma 3.45** (p.243) states the topological criteria as RANK CONDITIONS on incidence
+matrices — `[A_C A_R A_V]` full row rank iff no L–I cutset; `Q_Cᵀ A_V` full column rank iff no C–V loop — an
+INDEPENDENT ALGEBRAIC ROUTE to `topological_index`'s verdict (which stays authoritative: Estévez Schwarz &
+Tischendorf Thm 4.1/4.2 by union-find), and the shape of a cross-check that would catch a traversal bug a
+second graph algorithm could not. **Theorem 3.47** (p.245): neither cutset nor loop → regular, index ≤ 1, and
+index 0 iff a capacitive path from every node to datum AND no voltage sources (a netlist test for the 0 case
+this repo's source does not give); either → regular index 2; explicit projectors `Q₀` (3.61) onto ker G₀ and
+`Q₁` (3.62) onto ker G₁ in closed form in `A_C, A_V, A_L, C, L` with `Q₁Q₀ = 0` — and Ch. 7 the algorithmic
+construction of admissible projectors. Its hypothesis is this docstring's own caveat: "let all current and
+voltage sources be INDEPENDENT" — two independent sources stop at the same place. ⚠ The mapping to Demir's Γ
+(rank n − m, Γ C uᵢ = 0) is NOT established; the test is the one already named: build a candidate from
+(3.61)/(3.62) on a real MNA circuit and check both properties. ⚠ Method: a "recorded so nobody searches again"
+marker plus a search that fails open (the peer's first grep used BRE alternation inside an ERE and matched a
+literal) is how a filled gap stays invisible — re-check acquisition markers against the disk, not the record.
+
 
 ---
 

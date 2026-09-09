@@ -279,6 +279,16 @@ def noise_enters_constraints(C_reduced, CY_reduced, tol=1e-12):
 def topological_index(cir):
     """`(index, info)` — the DAE index from the netlist, WITHIN A STATED CLASS.
 
+    ⚠ A second source with the same class boundary (docs session, 2026-09-09,
+    from the rendered pages of Lamour, März & Tischendorf): Lemma 3.45 gives
+    the same two criteria as RANK conditions on incidence matrices --
+    `[A_C A_R A_V]` full row rank iff no L-I cutset, `Q_C^T A_V` full column
+    rank iff no C-V loop -- under the same hypothesis, "let all current and
+    voltage sources be independent"; Theorem 3.47 adds the index-0 case
+    (a capacitive path from every node to datum AND no voltage sources) and
+    closed-form projectors (3.61)/(3.62).  The rank form is the shape of a
+    cross-check on this graph traversal, not implemented.
+
     ⚠⚠ NOT "FROM THE NETLIST ALONE", WHICH AN EARLIER VERSION OF THIS LINE
     CLAIMED AND WHICH IS FALSE FOR CONTROLLED SOURCES.  Estevez Schwarz &
     Tischendorf close the paper by giving up BOTH halves of the criterion for
