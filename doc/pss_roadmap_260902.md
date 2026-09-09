@@ -12601,8 +12601,14 @@ Lamour (above) and Part I (row corrected above): **Hill's method** is reachable 
 stability and bifurcation of periodic orbits) and Schuetz, Bayer & Leine 2026 (Koopman-based stability of DAEs,
 which the peer had already read and built a fixture on while its row said nothing on Hill's method existed) carry
 the Hill matrix; it bears on the `floquet_modes` n = 400 cap because a Hill method eigen-decomposes a truncated
-Hill matrix on the harmonic-balance representation and forms NO monodromy — a lead, not a recommendation (cost
-unread, de-aliasing cited second-hand as significant, mechanical-engineering HB rather than MNA). **HLR89** is on
+Hill matrix on the harmonic-balance representation and forms NO monodromy — — ⛔ **CLOSED the same evening by the peer reading the papers:** Koopman–Hill (Schütz, Bayer & Leine 2026)
+"comprises the computation of the monodromy matrix" — it does not sidestep it — and its truncated problem is a
+generalised eigenproblem of dimension `n(2N + 1)`: against the n = 400 dense eig at O(dim³) that is 27× at N = 1,
+1331× at N = 5, 9261× at N = 10, plus "projection multipliers which are an artifact" to separate. Structurally
+worse, both variants. What the papers do carry is index-blindness (index-3 pendulum, switching index over a
+period), which buys nothing here at index ≤ 2, and one fact: the HB Jacobian IS the truncated Hill matrix, so on
+a tree with an HB solve in hand the Hill matrix is a by-product. The n = 400 cap stands as the REQUIREMENT
+(reading-log 2.79/2.82); only architectural routes (Lai's hierarchy, Bond's reduction) attack `n`. **HLR89** is on
 disk (Hairer, Lubich & Roche). The **GLM gap is now precise**: Lamour–März–Tischendorf Ch. 5 (§5.2.3 / 5.3.3 /
 5.5.3) and Ch. 10 for the index sections — not "the book". Still absent, tested: Hegazi & Abidi's Leeson chapter;
 an SSP-for-GLMs source (Spijker; Ferracina & Spijker; Higueras). ⚠ The fix that works on the peer's side: a check
