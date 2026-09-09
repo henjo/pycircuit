@@ -12464,3 +12464,9 @@ asymmetry fixture rather than a `v²` term, so it neither confirms nor refutes. 
 `g_inst` (first periods after a slow-mode kick, both estimators) at a = 0.25, 0.05 and 0 on this fixture. Falling
 toward a = 0 kills the mechanism whatever its size at one `a`; flat or rising keeps it. Minutes; not run.
 
+**The tail hint is withdrawn (18:55).** The peer showed on an exact-PPV fixture that tail and instantaneous gain
+trend TOGETHER in the asymmetry — so a physical tail would be a fair proxy — but this repo's tail is not that
+object: it is linear in ε (θ/ε constant to four digits), i.e. the PPV's O(h) leakage at 240 points, whose a-trend
+is the a-trend of a discretisation error. Dropped from the argument entirely. The three-point `g_inst` measurement
+is the only deciding one; the peer's direction argument stands on its fixture with its transfer unproven.
+
