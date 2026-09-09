@@ -5460,19 +5460,38 @@ class PSS(Analysis):
             0.05   1.122 / 1.149  (+-4 %)        1.004 / 1.027
             0.00   1.134 / 1.162  (+-4 %)        1.027 / 1.052
 
-        The ZERO-CROSSING phase matches NEITHER construction as a -> 0
-        (3.7 sigma above S_pm at a = 0): its excess over the demodulated
-        phase is 1.18-1.22 on the slow fixture and 1.07-1.10 on the core at
-        every a, a source-location term of ~12 % that neither construction
-        contains and the asymmetry does not remove -- candidate mechanism,
-        amplitude-to-crossing conversion through the orbit's shape (a pure
-        scaling moves no zero crossing; an amplitude-MODE displacement
-        does), which a slow-node source excites more.  The DEMODULATED
-        fundamental phase is within 5 % of BOTH constructions at every a,
-        with a residual trend in a (~7 % across the sweep) that neither
-        has; the two constructions differ by 2.5-3 % in the slow/core
-        ratio, below four seeds' precision, so which one the demodulated
-        phase follows is NOT resolved (~16 seeds per point would).  ⚠ The
+        ⚠⚠ AT 16 SEEDS PER POINT (Andreas, same day; +-1.5-1.7 %):
+
+            a      crossing vs S_pm / this sum   demod vs S_pm / this sum
+            0.25   1.038 / 1.072                 0.957 / 0.989
+            0.12   1.085 / 1.113                 0.979 / 1.004
+            0.05   1.117 / 1.143                 1.011 / 1.035
+            0.00   1.129 / 1.156                 1.036 / 1.061
+
+        The statistic is the SLOPE in a, not any one point (the docs
+        session's framing): demod vs this sum -0.27 +- 0.09 per unit a
+        (3.2 sigma), vs S_pm 3.6 sigma; crossing 4.2 / 4.7 sigma.  So the
+        ratio is NOT constant in a at ~3 sigma for the demodulated phase
+        and above 4 for the crossing: NEITHER construction describes
+        EITHER measured phase across the range.  The two constructions
+        track each other to 1 % over the sweep while both estimators --
+        a point sample at a crossing and an average over a period -- drift
+        together, in the same direction, against both.  The a = 0.25
+        agreement of the demodulated phase with this sum is where its
+        curve crosses the sum, not a match.  What the crossing carries
+        beyond that: two thirds of its excess is waveform content beyond
+        0.5 f0 from the carrier (an instantaneous crossing aliases the
+        additive noise a one-period demodulation cannot see), the rest
+        the demod's own boxcar loss (1/sinc^2 = 1.045 at the band centre)
+        plus a common amplitude-to-crossing gain of ~0.6 (band-limited
+        coherence).  The common drift of BOTH estimators against BOTH
+        linear constructions as a -> 0 is the open object; candidate, a
+        second-order amplitude-to-phase conversion the linear theory
+        cannot contain, largest where the slow-node source's first-order
+        phase coupling (its k = 0 coefficient, ~a) vanishes -- it scales
+        as PSD^2 where the linear terms scale as PSD, so a quartered
+        injected PSD quarters the relative excess; a harness or band
+        defect is PSD-flat.  Not run.  ⚠ The
         premise "a -> 0 makes the definitions coincide" was wrong: the
         asymmetry removes even harmonics only, van der Pol's third stays
         at 9.7 % of the fundamental, and the construction gap GROWS as
@@ -13742,7 +13761,14 @@ class PAC(Analysis):
         `pnoise` (identity to 1e-12 / 1e-16) and as the externally certified
         `oscillator_spectrum` (`S_pm = 4 S_v` at every offset: the PM content
         of the pair IS the Lorentzian, 2 S_v per sideband), with `S_am` rising
-        from ~0 below the AM corner `f0/(4 pi Q)` to `S_pm` above it -- so the
+        from ~0 below the AM corner `f0/(2 pi Q_lambda)` to `S_pm` above it
+        (⚠ this line said `f0/(4 pi Q)` until 2026-09-09 -- a factor of two
+        the docs session caught against this very function: the ratio is an
+        exact Lorentzian `u^2/(u_c^2 + u^2)` in `u = offset/f0` with
+        `u_c = 1/(2 pi Q_lambda)`, `Q_lambda = -1/ln|lambda_2|`, half-power
+        0.5007 there and 0.20 at the old corner, at Q = 8 and 16, 240 and
+        480 points; the old formula OVERSTATED the AM content at every
+        offset, 2.5x at its own corner) -- so the
         pair total is 4 S_v there and 8 S_v far out.  The "~1e-12 rows" were
         `am_pm`'s p = 0 band on a half-wave-symmetric fixture: a symmetry
         zero, see `am_pm`.  Oscillator magnitudes from this are trustworthy.

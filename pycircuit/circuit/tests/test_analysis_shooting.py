@@ -17530,7 +17530,9 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
         identity residual: 1e-16 (Q=100), 2.5e-12 at 64 sidebands and
         2.8e-9 at 8 (LC) -- truncation, converging away as in the driven case.
 
-    The ratio is 1 below the AM corner f0/(4 pi Q) = 8e-4 f0 (the amplitude
+    The ratio is 1 below the AM corner f0/(2 pi Q_lambda) = 1.6e-3 f0 (⚠ was
+    written f0/(4 pi Q) = 8e-4 until 2026-09-09 -- the measured transition
+    1e-3 .. 3e-3 f0 already said 2 pi; pinned by the corner test below) (the amplitude
     mode restores AM, only PM survives, and PM IS the Lorentzian) and 2
     above it where an LTI tank splits additive noise equally between AM and
     PM -- the prediction named before running, to the corner's decade.  So
@@ -18208,3 +18210,36 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
             _sh.PAC._cy_colour_model = orig
     assert abs(sl / slfull - 1.0) < 1e-12, (sl, slfull)
     assert abs(sl / sc - 1.0) > 1e-3, (sl, sc)
+
+
+def test_the_am_corner_is_f0_over_2pi_q_lambda_not_4pi():
+    """⚠ A FACTOR OF TWO IN A SHIPPED DOCSTRING, caught by the docs session
+    against `am_pm_noise` itself (2026-09-09) and reproduced here before the
+    text was changed.  `S_am/S_pm` on a free-running oscillator is an exact
+    Lorentzian in `u = offset/f0`,
+
+        S_am/S_pm = u^2 / (u_c^2 + u^2),   u_c = 1/(2 pi Q_lambda),
+
+    with `Q_lambda = -1/ln|lambda_2|` from the monodromy and nothing fitted:
+    0.5007 at `u_c`, 0.2007 at the previously documented `f0/(4 pi Q)`,
+    0.8007 at `2 u_c` (Q = 16, 240 points; Q = 8 the same to 1e-3).  The
+    old corner named a Q twice as high and overstated the in-band AM 2.5x
+    at its own corner.  ⚠ Measure the corner NEAR it: far below, `S_am` is
+    dominated by an O(h^2) grid term that reads like "the AM floor is an
+    artefact" (the peer's near-miss; Richardson gives a finite limit).
+    """
+    from pycircuit.circuit.shooting import PAC
+    cir, pss = _vdp_ppv_method('gear', 240, Q=16.0)[:2]
+    fp = pss.factored_period()
+    M = np.column_stack([fp.matvec(e) for e in np.eye(fp.width)])
+    lam = np.sort(np.abs(np.linalg.eigvals(M)))[::-1]
+    q_lam = -1.0 / np.log(lam[1])
+    f0 = 1.0 / float(pss.period)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    ov = [str(n) for n in cir.nodes].index('v')
+    u_c = 1.0 / (2.0 * np.pi * q_lam)
+    for u, expect in ((0.5 * u_c, 0.2), (u_c, 0.5), (2.0 * u_c, 0.8)):
+        am, pm, _ = pac.am_pm_noise(pss, u * f0, ov, carrier=1, maxsidebands=32)
+        ratio = float(np.real(am) / np.real(pm))
+        assert abs(ratio - expect) < 0.01, (u / u_c, ratio, expect)
+

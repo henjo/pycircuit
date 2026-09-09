@@ -11387,7 +11387,11 @@ rising to 2 far out where an LTI tank splits additive noise equally.
 
 **Leg 1 holds** (truncation converging away as in the driven case; exact on the nearly sinusoidal
 Q=100 orbit, whose higher bands vanish). **Leg 2 holds**: the ratio is 1 below the AM corner
-`f₀/(4πQ)` = 8e-4 f₀ (measured transition 1e-3 … 3e-3 f₀ — the amplitude mode restores AM, only PM
+`f₀/(2πQ_λ)` = 1.6e-3 f₀ (⚠ written `f₀/(4πQ)` = 8e-4 until 2026-09-09; the measured transition 1e-3 … 3e-3 f₀
+already said 2π — the docs session caught the factor against `am_pm_noise` itself: exact Lorentzian
+`u²/(u_c² + u²)`, `u_c = 1/(2πQ_λ)`, 0.5007 at the corner and 0.20 at the old one, pinned by
+`test_the_am_corner_is_f0_over_2pi_q_lambda_not_4pi`; the old formula overstated in-band AM 2.5× at its own
+corner — the amplitude mode restores AM, only PM
 survives, and PM IS the Lorentzian: `S_pm = 4 S_v` at every offset, 2 S_v per sideband) and 2 above
 it. On the μ=1 fixture the AM corner is at ~f₀/4π = 0.08 f₀ and `S_am` stays ≪ `S_pm` over the
 sweep, so the ratio stays at 1 (0.9993 — the 240-point gear grid) until the tank's own roll-off at
@@ -12239,7 +12243,13 @@ one 3000-period run per fixture, ~10 min. Left here. **The peer's ceiling, recom
 harmonic content (2026-09-09, later):** decoupling distortion from damping with a conservative `C(v) = 1 + g v²`
 at fixed `μ = 0.01` (`|λ₂|` 0.94–0.97), the amplitude-to-crossing ceiling is 6.1e-3 at `h₃/h₁ = 0.075` — four
 orders above the near-circular 6e-6, inside the range predicted here, and ~13× short of the slow fixture's
-~8 % on a fixture without a slow node. ⚠ Neither `g_c = 2(h₃/h₁)` nor any scaling of it extrapolates:
+~8 % on a fixture without a slow node. (Peer's later correction, recorded: the "g_c/g_d → 3, opposite signs"
+it had reported is the value at ONE kick phase, the v-peak where this repo sections the orbit; across seven
+phases g_cross is phase-independent (−2.4e-3 ± 6 %) while g_demod swings 3× and changes sign, so the ratio runs
+1.0 to −3.1; the magnitude law |g_c| = 2(h₃/h₁) is the phase-robust statement, and the phase-averaged bound is
+2× smaller still. ⚠ A pair-space eigenvector's first block IS proportional to the state eigenvector for a
+genuine mode; a state-space extraction sectioned a quarter period away presents like a wrong vector — check the
+section point before concluding.) ⚠ Neither `g_c = 2(h₃/h₁)` nor any scaling of it extrapolates:
 `h₃/h₁` was a proxy for the amplitude mode's NON-RADIALITY, which is the governing quantity (a `C(v)`-weighted
 metric makes the coupling first order), so both sides here scaled the wrong variable and reached the magnitude
 by a route that does not hold. The mechanism is neither excluded nor established; the band-limited coherence is
@@ -12264,4 +12274,77 @@ Half of the slow's residual `D` power appears as a positive correlation between 
 itself (in-band `D` power 4.8 % against 7.4 % excess), i.e. a SCALE term: the crossing responds to the in-band
 phase modulation more than the boxcar model of the demod predicts, on the fixture whose phase modulation enters
 through the slow path. Not closed; recorded.
+
+### The 16-seed campaign (Andreas: "do it", 2026-09-09 11:16) — a = 0.25 landed, the rest pre-registered
+
+90 restart-free 10 000-period runs queued 22-wide (a = 0.25 first, then 0.12, 0.05, 0; ~1 h per wave). ⚠ Two
+harness notes: a monitor's shell that launched workers took them down at its timeout (relaunched with `setsid`
+from a plain shell), and the verdict's glob for a = 0.25 swept in the μ-sweep files (`*_a0.25_mu*`) — n = 24
+instead of 16 was the tell; a COUNT catches what a tolerance does not. **a = 0.25 at 16 seeds per fixture,
+disputed band:** crossing vs S_pm 1.038 / vs fw 1.072 (±1.3 %); demod vs S_pm 0.957 / vs fw 0.989 (±1.5 %).
+The demodulated phase follows the frequency-aware sum (0.7σ) and rejects `pnoise`'s S_pm at 2.9σ; the crossing
+rejects both (2.9σ / 5.5σ). Low band 1.02 ± 5.6 % for all four.
+
+**Pre-registered before the other three land (docs session):** the 4-seed sweep's demod-vs-fw ratio ran
+0.985 / 0.999 / 1.027 / 1.052 at a = 0.25 / 0.12 / 0.05 / 0 and the 16-seed a = 0.25 value sits on its first
+point, so the a = 0.25 agreement may be a CROSSING rather than a match. (i) a = 0 comes back ~1.00 ± 1.5 %: the
+drift was noise, demod = fw sum across the range, S_pm is the odd one out. (ii) a = 0 comes back ~1.05 (≥ 3σ):
+the a = 0.25 agreement is where the demod curve crosses the fw sum, NEITHER construction describes the
+demodulated phase across the range, and the object to explain is the trend — "which construction is right" was
+the wrong question. `a` is a property of the circuit, not of a definition, so a right description cannot agree
+at one a and not another. The a = 0.25 result is therefore NOT written up as "demod follows the fw sum" until
+a = 0 is in.
+
+### The 16-seed campaign, complete (2026-09-09 15:43): outcome (ii) — the ratio is not constant in a
+
+90 runs, 4 h 27 min wall. Disputed band, double ratios, 16 seeds per fixture per point (±1.5–1.7 %):
+
+| a | demod vs fw sum | demod vs S_pm | crossing vs fw sum | crossing vs S_pm |
+|---|---|---|---|---|
+| 0.25 | 0.989 | 0.957 | 1.072 | 1.038 |
+| 0.12 | 1.004 | 0.979 | 1.113 | 1.085 |
+| 0.05 | 1.035 | 1.011 | 1.143 | 1.117 |
+| 0.00 | 1.061 | 1.036 | 1.156 | 1.129 |
+
+Every 16-seed point landed on its 4-seed value. **Weighted linear slopes in `a`** (the statistic the docs
+session named; a single point against 1 answers a different question): demod/fw −0.271 ± 0.085 (3.2σ), a = 0
+intercept 1.051 ± 0.013 (3.8σ from 1), χ² flat 11.3 on 3 dof; demod/S_pm −0.301 ± 0.083 (3.6σ); crossing/fw
+−0.341 ± 0.082 (4.2σ), crossing/S_pm −0.374 ± 0.080 (4.7σ), intercepts 10–12σ. Low band: consistent with 1
+throughout. **Reading, as pre-registered:** outcome (ii). The a = 0.25 agreement (0.989) is where the demodulated
+curve CROSSES the fw sum; the ratio is not constant in `a` at ~3σ for the demodulated phase and > 4σ for the
+crossing, and "which construction is right" was the wrong question — the two constructions track each other to
+1 % across the sweep (fw/S_pm slow-over-core 0.968 / 0.975 / 0.977 / 0.976) while BOTH estimators, by unrelated
+mechanisms, drift together against both. Written as "not constant at ~3σ", not as a verdict: 16 seeds was sized
+to separate the constructions at one `a`, and it only just reaches the drift. Seed pricing (peer, √n): 24/point
+→ 3.5σ, 36 → 4.3σ, 64 → 5.7σ. The boxcar as the drift is excluded by arithmetic (its correction moves 0.09 % per
+1 % of f₀; the sweep moves f₀ 3 %). Caveat against the reading: both estimators come from the same trajectories,
+so a trajectory- or band-level defect would move both; only a third path that does not use them separates that.
+
+**Candidate for the common drift, with a discriminator (not run):** both constructions are linear in the noise,
+the Monte Carlo is not. A second-order amplitude-to-phase conversion in the nonlinearity adds to the measured
+phase noise something no linear prediction contains, and its RELATIVE size grows as the slow-node source's
+first-order phase coupling (the k = 0 PPV coefficient ∝ a) shrinks — the direction of the drift. It scales as
+PSD² against the linear terms' PSD: a quartered injected PSD quarters the relative excess, a harness or band
+defect is flat. Cost: a = 0 or 0.05, both fixtures, PSD/4, 16 seeds, ~1.5 h. The coefficient can be measured
+deterministically first (peer's recipe: kick along a non-unit right eigenvector with the tangent projected out by
+the PPV, fit the asymptotic phase shift to ε²); ⚠ the first attempt read a LINEAR-in-ε shift because the
+pair-space eigenvector's state block is not the state eigenvector (PPV·u = 8e-4, not 0) and compared a
+600-period reference tail against a 60-period one — both fixed; result recorded below when in.
+
+**The deterministic coefficient, measured (2026-09-09 15:50): the second-order candidate is REFUTED for the slow
+mode.** Kick along the slow mode's and the amplitude mode's right eigenvectors (state block of the pair-space
+eigenvector with the tangent projected out by the PPV: `PPV·u/|PPV|` = 1e-17), the MC's own fixed-step gear,
+600 / 60 periods, phase from the demodulated fundamental against the unkicked run at the SAME period indices.
+⚠ The response is LINEAR in ε even with `v·u = 0` exactly: θ/ε = −1.813e-4 (slow, a = 0.05) constant to four
+digits, −6.7e-3 / −9.5e-3 (amplitude mode) — the PPV's own O(h) error at 240 points leaks a first-order term of
+that size along the non-unit directions (the waveform gate's 4e-3 is the same object), so a single-ε reading
+measures the PPV's discretisation, not the second order. The second-order coefficient is the ε-SLOPE of θ/ε,
+which a constant leakage cannot touch: C = dθ/dε² ≈ +2.6e-3 (slow mode, a = 0.25), ≈ 4e-6 (slow, a = 0.05),
++4.8e-2 (amplitude, a = 0.25), −1.7e-3 (amplitude, a = 0.05). So the slow mode's second-order conversion FALLS
+~600× from a = 0.25 to 0.05 while the drift GROWS toward a = 0, and the amplitude mode's is on a mode with
+|λ| = 4e-3 (no variance to convert). The candidate cannot carry the common drift; the PSD/4 run is not worth
+spending on it. **The common drift of both estimators against both linear constructions as a → 0 stands
+unexplained.** What would separate a physical drift from a trajectory- or band-level artefact is a third path
+that does not use these trajectories: the peer's variational-SDE route (A9's MC, phase projected every step)
+run at two asymmetries, or an independent integrator for the noisy transient.
 
