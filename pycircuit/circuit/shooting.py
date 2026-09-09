@@ -5445,17 +5445,40 @@ class PSS(Analysis):
         DC sum with the filter by hand was 4 % off; at r = 0.1 the two
         differ by -6 %, unchanged at twice the grid -- a gap between PM by
         sideband quadrature and phase-mode projection, both 1e-3 of DC
-        there -- and ARBITRATED (2026-09-09) by a nonlinear Monte Carlo
-        that instantiates neither construction: the fundamental's
-        demodulated phase reads 0.977 +- 0.019 of this sum and 0.946 of
-        `pnoise`'s S_pm, the zero-crossing phase 1.027 of S_pm and 1.061 of
-        this sum, so each construction tracks ONE definition of the phase
-        and the gap between them is definitional, not numerical (n = 4 on
-        the calibration side; consistent-with at that precision).
-        Hypothesis, not measured: a spectrum analyser near f0 sees the
-        fundamental's sidebands and so this object; a time-interval
-        analyser sees crossings and so `pnoise`'s S_pm -- the naming
-        inverts the intuition.  The slow multiplier's own coefficient
+        there -- and put to a nonlinear Monte Carlo that instantiates
+        neither construction (2026-09-09; 4 seeds x 10 000 periods per
+        point, phase read two ways).  ⚠ A first reading at one asymmetry
+        (a = 0.25) assigned each construction to ONE phase definition
+        crosswise (crossing phase to S_pm at 1.027, demodulated phase to
+        this sum at 0.977, each +-1.8 %); the asymmetry sweep a = 0.25 /
+        0.12 / 0.05 / 0 REPLACED it.  Double ratios (Monte Carlo slow/core
+        over predicted slow/core, each estimator calibrated on the core):
+
+            a      crossing vs S_pm / this sum   demod vs S_pm / this sum
+            0.25   1.032 / 1.066  (+-1.8 %)      0.954 / 0.985
+            0.12   1.093 / 1.121  (+-3.5 %)      0.974 / 0.999
+            0.05   1.122 / 1.149  (+-4 %)        1.004 / 1.027
+            0.00   1.134 / 1.162  (+-4 %)        1.027 / 1.052
+
+        The ZERO-CROSSING phase matches NEITHER construction as a -> 0
+        (3.7 sigma above S_pm at a = 0): its excess over the demodulated
+        phase is 1.18-1.22 on the slow fixture and 1.07-1.10 on the core at
+        every a, a source-location term of ~12 % that neither construction
+        contains and the asymmetry does not remove -- candidate mechanism,
+        amplitude-to-crossing conversion through the orbit's shape (a pure
+        scaling moves no zero crossing; an amplitude-MODE displacement
+        does), which a slow-node source excites more.  The DEMODULATED
+        fundamental phase is within 5 % of BOTH constructions at every a,
+        with a residual trend in a (~7 % across the sweep) that neither
+        has; the two constructions differ by 2.5-3 % in the slow/core
+        ratio, below four seeds' precision, so which one the demodulated
+        phase follows is NOT resolved (~16 seeds per point would).  ⚠ The
+        premise "a -> 0 makes the definitions coincide" was wrong: the
+        asymmetry removes even harmonics only, van der Pol's third stays
+        at 9.7 % of the fundamental, and the construction gap GROWS as
+        a -> 0 (core 1.010 -> 1.055); the sinusoidal limit is mu -> 0.  The
+        instrument hypothesis (spectrum analyser <-> this sum, time-
+        interval analyser <-> S_pm) is refuted in its crossing half.  The slow multiplier's own coefficient
         (`mode_content[0]`) corners at 1.6e-3 f0 for tau/T = 100 with a
         plateau of 2.45e-6 (the docs session's 2.29e-6), scaling as
         T/tau.  ⚠ DO NOT GATE ON `|v|`: with

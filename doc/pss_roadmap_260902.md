@@ -6371,6 +6371,25 @@ claims to, to 0.1 %, and the ratio landing at 1.00 rather than `ln(20) = 3.00` p
 convention as `1/e` **from data** rather than from reading the source. ❌ **What it does NOT
 establish is "settling `Q` = resonator `Q`"** — §D shape 2, a number compared against itself.
 
+⛔ **ANSWERED 2026-09-09 (docs session, measured; relayed here, not reproduced): they are NOT the same
+object, and under the natural design sweep they move in OPPOSITE directions.** Fixture that can test
+it: parallel RLC with an explicit loss `R` and a separate odd cubic negative conductance,
+`C v' = −i − v/R + gm v − a v³`, `L i' = v`, so `R` sets the unloaded tank `Q = R√(C/L)` and `gm − 1/R`
+sets the amplitude settling, separately. (1) Passive control, `gm = 0`: `Q_decay·π/Q_tank = 1.000000`
+at `Q_tank` = 5 / 10 / 50 / 200 — for a resonator the two ARE one object up to the threshold
+convention. (2) Fixed net damping `Δ = gm − 1/R = 0.05`, `R` swept 2 → 200 (tank `Q` 2 → 200):
+`|λ₂| = 0.730330987615` in every row, spread 3e-15 — and provable in one line: `R` and `gm` enter the
+ODE only through `gm − 1/R`, so equal net damping means identical trajectories and identical Floquet
+spectra at any tank `Q`. (3) Fixed `gm`, tank loss varied — the design sweep: `R` = 12 / 15 / 20 / 40 / ∞
+gives `Q_λ` = 9.55 / 4.77 / 3.18 / 2.12 / 1.59. **A better tank gives a SMALLER settling count**, because
+the negative conductance cancels the loss and settling is governed by the residual `gm − 1/R`. So the
+one-number-two-jobs shortcut does not merely lose accuracy: across a fixed-`gm` sweep it gets the SIGN
+wrong. **Not to be built.** Scope: proven for the class where loss and active element enter as a
+difference of linear conductances; (3) is a statement about that sweep, not a law. Also retires the
+loaded-vs-unloaded `Q` ambiguity for this purpose: `info['Q']` reports neither — the residual after
+cancellation, a property of the amplitude mode and of no passive tank. Refutation condition: a fixture
+in this class where tank `Q` and net damping vary independently and `Q_λ` tracks the tank `Q`.
+
 ⚠⚠⚠ **AND THE FIXTURE THAT CAN TEST IT SAYS `info['Q']` IS *NOT* THE UNLOADED RESONATOR `Q`.
 MEASURED 2026-09-04.** Parallel `LC` tank, `L = C = 1`, with the two knobs **separated**: a linear
 conductance `G` sets the **unloaded tank** `Q = 1/G`, and a nonlinear negative conductance `a`
@@ -6848,8 +6867,7 @@ The far-out noise floor — where our PM-only spectrum keeps falling at 20 dB/de
 oscillator **flattens** — is set by exactly this additive buffer noise. **Both gaps are one
 missing object, not two.** Worth knowing before either is scoped separately.
 
-**REFERENCE, CITED NOT VERIFIED HERE** (relayed by the docs session; nobody in this repo has read
-the paper): Demir, Liu & Sangiovanni-Vincentelli, *"Time-Domain Non-Monte Carlo Noise Simulation
+**REFERENCE, relayed by the docs session (verified 2026-09-09, see the block below):** Demir, Liu & Sangiovanni-Vincentelli, *"Time-Domain Non-Monte Carlo Noise Simulation
 for Nonlinear Dynamic Circuits with Arbitrary Excitations"*, **TCAD 15:493 (1996)** — Demir's own,
 from *before* the PPV theory. Built on SDE theory; reported to return *"the noise variances and
 covariances of circuit variables **as a function of time**"* and *"noise correlations between
@@ -6858,6 +6876,25 @@ and a sampling stage consumes. Non-Monte-Carlo, and reported to need **no steady
 (*"any nonlinear dynamic circuit with any kind of excitation which can be simulated by the
 transient analysis routine"*), so it would cover the buffer chain and the oscillator in one
 analysis. ⚠ If this is ever scoped, that is the starting point rather than a fresh derivation.
+
+**VERIFIED 2026-09-09** (docs session, quote-checked against both the TCAD 1996 and the ICCAD 1994
+versions on disk): all four relayed quotes are verbatim, the attribution is right, and the three A8
+claims stand — with ONE caveat the relay did not carry, **Section V:** *"For oscillator circuits, E(0)
+may have eigenvalues with nonnegative real parts. In this case, we set the initial value K_i to 0."*
+That is the stationary-covariance singularity this repo's own `oscillator_covariance` documents (the
+unit multiplier), and the paper's remedy is to ZERO the initial covariance. So the method does cover
+a free-running oscillator, but what it returns for one is a variance **growing from zero** — the phase
+diffusion — not a stationary oscillator noise number. "Covers the buffer chain and the oscillator in
+one analysis" is true; "a steady-state answer for both" is not the reading. Two more things worth
+having: this is the EARLIEST counterpart of the linear white-noise variance growth (1996, two years
+before the PPV theory; the record otherwise cites Demir 2000 / 2002 Lemma VII.1 / 2006), so the
+obstruction was worked around in Demir's own first noise simulator rather than discovered later; and
+the paper's *"open-loop oscillator"* is its own term for FREE-RUNNING (*"an open-loop (free running)
+oscillator circuit has time-invariant excitations and periodic large-signal steady-state
+waveforms"*) — not the driven / open-loop-gain sense — with the scope sentence *"noise in an open-loop
+oscillator is nonstationary, and not cyclostationary."* ⚠ The peer's first quote-check of the Biggio
+line below MISSED on a line-wrap boundary in a two-column scan: a quote-check miss on such scans is
+unresolved, not a refutation.
 
 ⚠⚠ **A GATE WARNING THAT MUST BE HONOURED BEFORE ANY OF IT IS BELIEVED.** Biggio, Bizzarri, Brambilla & Storace (IEEE 2013; ⚠ this line said "Brambilla et al." until 2026-09-07 — Brambilla is third author, corrected by a peer session holding the paper; see the verified block at the end of this item),
 *"Effects of numerical noise floor on the accuracy of time domain noise analysis in circuit
@@ -12039,3 +12076,95 @@ has; it only helps smooth orbits, which are already cheap. The simultaneous-diag
 cut the remaining 1.1 s of 230 × 231 `eigh` calls but requires `A(t)` and `B(t)` to commute, which a source
 with both thermal and flicker terms into the same node satisfies and two sources with different incidence do
 not; with the branch at 1.3× the cycle average it is not worth a second code path.
+
+## The A2 gate's Aitken table is one side of a crossover — measured at m = 20 (docs session, 2026-09-09)
+
+The docs session measured, on a vdP at Q = 15.9 with a 96 % transverse kick, Aitken(1,2,3) beating the raw
+3-period error by ~350× — the opposite sign to the gate's recorded table (`raw n=3 1.623 %, Aitken 3.259 %`)
+— and named the criterion that covers both: **Aitken helps iff the geometric transverse part exceeds the O(h)
+floor**, read before Aitken enters by whether the raw n = 3 error moves with `npts`. The gate's own docstring
+already said its protection is the `1/√m` tangential fraction of a random 2-D kick and "would not be sound at
+m = 20", so the refutation condition was: build it at m ≈ 20 with a mostly-transverse kick.
+
+**Fixture lesson first.** vdP + 18 RC branches off `v` at 50 Ω: the shooting Newton could not converge at any
+grid — not a shooting problem, a LOADING one: 18 × 1/50 S of shunt conductance against the vdP's negative
+0.01 S (`μ = 1/(2πQ)`), so no orbit existed. At 10 kΩ per branch both configurations converge in 3 s. A second
+harness defect caught by the peer's protocol: the first run drew fresh random directions per grid, so the
+`npts` partition compared different kicks; the rng is now reset per grid.
+
+**Result, 'oneslow' (one branch at 100 T, seventeen below 0.1 T; multipliers 1, 0.990, 0.941, then < 1e-4;
+three random kicks at m = 20 are 0.04–0.29 tangential):**
+
+| kick | raw n=3, npts 100 / 200 / 400 | Aitken(1,2,3), 100 / 200 | scored |
+|---|---|---|---|
+| random0 | 0.499 / 0.459 / 0.456 (flat) | 0.178 / 0.052 | Aitken wins 2.8× / 8.8× |
+| random1 | 0.735 / 0.695 / 0.681 (flat) | not geometric / 0.055 | Aitken wins 12.7× |
+| transverse | 1.56 / 1.64 / 1.58 (flat) | 1.34 / 0.084 | Aitken wins 1.2× / 19.5× |
+| random2 | 0.071 / 0.038 / 0.057 (moves) | 0.134 / 0.049 | raw wins |
+| tangent (control) | 8.8e-3 / 2.8e-3 / 7.5e-4 (halves) | 0.18 / 0.12 / 0.09 | raw wins, as predicted |
+
+Every flat row: Aitken wins; the moving row: raw wins; the control: raw wins. The successive-difference
+ratios on the winning rows agree to three digits (0.942/0.942, 0.943/0.943, 0.944/0.944 at npts 200) and read
+the 0.941 multiplier, not the 0.990 one — the slowest mode is barely excited by a kick at `v`. Gains 3×–20×,
+inside the peer's magnitude clause (Aitken annihilates ONE mode; the leftover is the next one, not the floor,
+so the gain is bounded by the spread of the rates — 350× at m = 2 where the leftover IS the floor). **The
+npts = 400 anomaly, RESOLVED:** every non-tangent row went non-geometric there (ratios 0.63 / 1.67 / 0.69 /
+1.03 on random0) with the raw error unchanged. Neither of the peer's two candidates fitted (a period drift
+pulls every ratio toward 1 uniformly; the slow mode pulls them monotonically toward 0.990; these ALTERNATE),
+and the kick-size sweep (5e-6 / 1e-5 / 2e-5) gave a scatter of ~5e-3·pred that was erratic rather than
+scaling as 1/ε. Tightening the TRANSIENT's `reltol` from 1e-9 to 1e-11 made the same row geometric again
+(0.931 / 0.939 / 0.940 / 0.940). So it was the adaptive transient's own endpoint error at its tolerance —
+~2e-9 in state against ε·pred = 1e-6 — showing at the grid where the geometric differences had shrunk to
+meet it. ⚠ The peer's point that I had missed: the tangent control's `|d2−d1|/θ3 = 7e-7` measures the
+reproducibility of a CONSTANT sequence and samples no n-dependent error at all, so a clean control there
+bounds the wrong thing; "not the harness floor" was an inference from an instrument blind to the effect. 'spread' (18 modes a third of a decade apart, top multipliers 0.998 … 0.905): every
+non-tangent row non-geometric at every grid, raw errors 40–200 % and flat — nothing tested, as the peer said
+in advance. Guards adopted from the peer: a row with |d2−d1|/θ3 below 100× the transient tolerance is
+DEGENERATE (Aitken undefined), not a win or a loss; the tangent control must lose for Aitken at every grid
+or the harness is wrong. The gate's docstring now carries the scoping.
+
+## The a → 0 estimator-convergence test (Andreas: "Start 2", 2026-09-09) — the crosswise verdict does not survive
+
+**Design.** The verdict's own open test: sweep the A2 fixture's asymmetry `a` = 0.25 (recorded) / 0.12 / 0.05 / 0,
+core and slow fixtures, 4 seeds × 10 000 restart-free periods each, both phase estimators (zero-crossing,
+demodulated fundamental), both constructions (`pnoise` S_pm, the frequency-aware sum) on the reducer's own
+bands; 24 runs, ~75 min wall at 24 processes (the a = 0 wave was lost once — launched from a monitor's shell
+that was killed at its timeout, taking its children; relaunched with `setsid`). The a = 0.25 references
+reproduce the recorded verdict numbers to the digit.
+
+**The premise was wrong before any worker landed.** "A sinusoidal orbit makes the two definitions coincide"
+assumed `a → 0` gives a sinusoid; it removes the EVEN harmonics only. `|V2/V1|` = 0.156 / 0.075 / 0.031 / 0 but
+`|V3/V1|` = 0.076 / 0.092 / 0.096 / 0.097 (the van der Pol cubic), and the construction gap fw/pnoise in the
+disputed band GROWS as `a → 0`: core 1.010 / 1.027 / 1.042 / 1.055, slow 0.978 / 1.002 / 1.018 / 1.030. The
+sinusoidal limit is `μ → 0` (Q up, run length up). ⚠ A first harmonic-content read gave `|V0/V1|` = 0.008 and
+`|V2/V1|` = 0.003 at `a = 0` on an odd system: the stored waveform has `steps + 1` samples with the endpoint
+repeating `t = 0`, so an FFT over all 240 is off by O(1/N) and "half a period" is 119.5 samples — the check's
+error, not the orbit's (the library's own consumers use `len(fp.steps)`).
+
+**Result (disputed band 0.08–0.15 f₀; double ratio = MC slow/core over predicted slow/core, each estimator
+calibrated on the core):**
+
+| a | crossing vs S_pm | crossing vs fw | demod vs S_pm | demod vs fw | ± |
+|---|---|---|---|---|---|
+| 0.25 | 1.032 | 1.066 | 0.954 | 0.985 | 1.8 % |
+| 0.12 | 1.093 | 1.121 | 0.974 | 0.999 | 3.5 % |
+| 0.05 | 1.122 | 1.149 | 1.004 | 1.027 | 4 % |
+| 0.00 | 1.134 | 1.162 | 1.027 | 1.052 | 4 % |
+
+Estimator gap crossing/demod: slow 1.194 / 1.219 / 1.205 / 1.183, core 1.104 / 1.086 / 1.078 / 1.071. Low band
+(0.008–0.012): every double ratio 1.01–1.15 ± 8–11 %, consistent with 1 for both estimators and both
+constructions, as it should be where the constructions agree.
+
+**Readings.** (1) The zero-crossing phase matches NEITHER construction as `a → 0`, monotonically further from
+both (3.7σ above S_pm at `a = 0`). Its excess over the demodulated phase is ~1.2 on the slow fixture and ~1.08
+on the core at every `a`: a source-location term of ~12 % that neither construction contains and the
+asymmetry does not remove. Candidate mechanism: amplitude-to-crossing conversion through the orbit's shape — a
+pure scaling moves no zero crossing, an amplitude-MODE displacement does, and the slow-node source excites
+that mode more. Not measured as a mechanism. (2) The demodulated fundamental phase is within 5 % of BOTH
+constructions at every `a`, with a residual ~7 % trend across the sweep relative to either that neither has.
+The constructions differ by 2.5–3 % in the slow/core ratio, below four seeds' precision (3.5–4 %), so which
+one it follows is not resolved; ~16 seeds per point (4× the machine time) would. (3) So the 05:00 verdict's
+crosswise assignment (1.5σ / 1.2σ against 2.8σ / 3.4σ at one `a`) does NOT survive: the crossing half of the
+instrument hypothesis ("time-interval analyser ↔ S_pm") is refuted, the spectrum-analyser half is untested at
+this precision. The frequency-aware PPV docstring now carries the table instead of the assignment.
+

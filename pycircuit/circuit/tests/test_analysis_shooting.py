@@ -4675,6 +4675,45 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
     `1/(1 - lambda_2)`, which is `Q`, so it degrades fastest exactly
     where it was supposed to help.
 
+    ⚠⚠ THAT TABLE IS ONE SIDE OF A CROSSOVER, NOT THE GENERAL CASE
+    (the docs session's criterion, 2026-09-09, MEASURED here at m = 20).
+    Aitken helps iff the geometric transverse part of the raw error
+    exceeds the O(h) floor; the partition is read BEFORE Aitken enters,
+    by whether the raw n=3 error moves with `npts`.  This gate sits on
+    the floor-dominated side (a random 2-D kick is ~71 % tangential, the
+    raw error halves per doubling), so Aitken loses.  On the same van
+    der Pol with 18 RC branches (m = 20, one slow branch at 100 T, kicks
+    ~0.2 tangential, scratchpad aitken_m20.py):
+
+        kick        raw n=3 at npts 100/200/400   Aitken(1,2,3)   scored
+        random0     0.499  0.459  0.456  (flat)   0.178  0.052    Aitken wins 2.8x / 8.8x
+        random1     0.735  0.695  0.681  (flat)     --   0.055    Aitken wins 12.7x
+        transverse  1.56   1.64   1.58   (flat)   1.34   0.084    Aitken wins
+        random2     0.071  0.038  0.057  (moves)  0.134  0.049    raw wins
+        tangent     8.8e-3 2.8e-3 7.5e-4 (halves) 0.18   0.12     raw wins (control)
+
+    Flat rows: Aitken wins; the moving row and the tangent control: raw
+    wins.  Rows whose successive-difference ratios differ by more than
+    10 % (18 packed slow modes) are NOT a geometric sequence and test
+    nothing; at npts = 400 every row read that way until the transient's
+    `reltol` went from 1e-9 to 1e-11 -- the adaptive integrator's own
+    endpoint error, ~5e-3 of the signal, once the geometric differences
+    had shrunk to meet it.  ⚠ A constant-sequence control (the tangent)
+    cannot see an n-dependent error, so it does not certify the others.
+    Two floors, two knobs (the docs session's refinement of its own
+    criterion): the PSS grid's O(h), which refining `npts` LOWERS, and
+    the transient's `reltol`, which refining `npts` UNCOVERS.  Before
+    scoring a row non-geometric, `reltol` must sit ~2 decades below the
+    SMALLEST difference extrapolated (in state units, `eps` times the
+    difference), not below the signal: Aitken differences twice and eats
+    two decades of headroom.  Here the differences were ~1e-8 of state
+    against 2e-9 bought by reltol 1e-9 -- under one decade.  Aitken removes ONE
+    mode, so its gain is bounded by the spread of the transverse rates,
+    not by contamination/floor -- 3x to 20x here, 350x at m = 2 where
+    the leftover is the floor.  So "the repairs made it worse" is a fact
+    about THIS gate, and a real circuit's random kick (mostly transverse)
+    is on the other side of the crossover.
+
     ⚠ THE SCALE IS THE ASSERTION, NOT JUST THE DIRECTION. A direction check
     passes for any normalisation, and the normalisation is exactly what was
     in doubt. Measured against the true shift, per doubling of the period
@@ -9203,9 +9242,24 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     """An LC tank matching Ghanta, Li & Roychowdhury 2004 Lemma 5.2's premises.
 
     ODD-symmetric `i-v` (no even term) and a near-sinusoidal orbit, which the
-    lemma requires: `rms/peak` comes out 0.70785 against 0.70711 for a pure
-    sinusoid. `mu` is scaled with `C*w0` so `Q` means the same thing as `L`
-    and `C` move.
+    lemma requires.  `mu` is scaled with `C*w0` so `Q` means the same thing
+    as `L` and `C` move.
+
+    ⚠⚠ THE PREMISE GUARD WAS `rms/peak` AND IT MEASURED THE INTEGRATOR, NOT
+    THE ORBIT (docs session, 2026-09-09, reproduced here).  0.7078470 at
+    480 points is BDF-2 truncation: the true orbit's rms/peak is 0.7071072
+    (DOP853 at 1e-13), a deviation of 2.8e-6 against the 7.4e-4 the guard
+    read -- 265x the physical value, converging at exactly second order
+    (0.70858 / 0.70785 / 0.70748 / 0.70729 at 240 / 480 / 960 / 1920).
+    And the metric is SECOND order in the thing it guards: van der Pol's
+    third harmonic is in quadrature with the fundamental, so it moves the
+    peak only as `h3^2`, and an orbit with h3/h1 = 4.35 % (c 4.3 % off the
+    lemma) passes a 2e-3 rms/peak gate that the assertion below holds to
+    0.03 %.  The guard is now `h3/h1` from an rfft of the orbit's own
+    samples: first order in the premise, grid-independent (1.243e-3 at
+    480 and 960 points alike), no reference.  ⚠ The stored waveform has
+    `steps + 1` samples (the endpoint repeats t = 0); the FFT takes the
+    first `len(fp.steps)`.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -9229,7 +9283,9 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     X = np.asarray(pss.waveform[1], dtype=float)
     row = X[0 if 0 < pss.irefnode else 1]
     amp = float(np.max(np.abs(row)))
-    rms_pk = float(np.sqrt(np.mean(row ** 2)) / amp)
+    ns = len(pss.factored_period().steps)
+    spec = np.abs(np.fft.rfft(row[:ns]))
+    h3_h1 = float(spec[3] / spec[1])
     ## ⚠⚠ `psd / 2` TWICE, AND THE SECOND ONE IS THE POINT.  `noisePSD` and
     ## `_cy_reduced` are ONE-SIDED (a resistor's `4kT/R`, measured against
     ## the analytic value to every printed digit), while Ghanta's `N^2` is a
@@ -9246,7 +9302,7 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     ## why the conversion is named here rather than absorbed.
     n_sq_two_sided = psd / 2.0
     lemma = (n_sq_two_sided / 2.0) * (ll / cc) / amp ** 2
-    return cir, pss, PAC(cir, toolkit=circuit.numeric), amp, rms_pk, lemma
+    return cir, pss, PAC(cir, toolkit=circuit.numeric), amp, h3_h1, lemma
 
 
 def test_the_lyapunov_route_matches_an_analytic_external_oracle():
@@ -9278,9 +9334,11 @@ def test_the_lyapunov_route_matches_an_analytic_external_oracle():
     """
     ratios = []
     for cc, ll in ((0.1, 1.0), (1.0, 1.0), (10.0, 1.0), (1.0, 0.1), (1.0, 10.0)):
-        _cir, pss, pac, _amp, rms_pk, lemma = _ghanta_tank(cc=cc, ll=ll)
-        assert abs(rms_pk - 0.70711) < 2e-3, \
-            'the lemma presumes a SINUSOIDAL orbit; rms/peak came out %.5f' % rms_pk
+        _cir, pss, pac, _amp, h3_h1, lemma = _ghanta_tank(cc=cc, ll=ll)
+        ## ⚠ h3/h1, not rms/peak: see `_ghanta_tank`.  1.243e-3 here; 5e-3
+        ## holds `c` to well under the 0.03 % the assertion below is at.
+        assert h3_h1 < 5e-3, \
+            'the lemma presumes a SINUSOIDAL orbit; h3/h1 came out %.3e' % h3_h1
         _K, d, _info = pac.oscillator_covariance(pss)
         ratios.append((d / float(pss.period)) / lemma)
     lo, hi = min(ratios), max(ratios)
