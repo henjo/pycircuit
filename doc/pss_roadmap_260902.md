@@ -12636,3 +12636,15 @@ that zeroed the estimate; untested. ⚠ Method: the peer's matcher joined "<page
 turned "tend to underestimate" into "tend 13 to underestimate" — a miss that was not explained would have said the
 paper does not contain it.
 
+**Two closures from the docs session (2026-09-09 evening).** (1) The stage-count clause's collocation-specificity
+(esdirk43 quintic/septic 1.000 against radau's cubic collapse to 1e-4) has its mechanism in Part I §1.1: IDeC's
+fixed point "is a certain superconvergent collocation solution", so the exactness class is a collocation object
+by construction — clause added to the `warping_estimate` docstring. (2) A non-finding worth its distinction:
+interpolation inside the monodromy path (the proved parallel-in-time λ₂-bias shape) is already covered where it
+applies — `test_pss_refuses_a_circuit_carrying_hidden_state` (a TLine is silently a short under PSS; refused,
+because a period map that is not a function of `x₀` cannot be made one). ⚠ MULTIRATE IS NOT THAT HAZARD: a
+multirate scheme interpolates latent components WITHIN [0, T] from states of the same evaluation, so `φ` IS a
+function of `x₀`; what would break is the ASSEMBLY of `dφ/dx₀` as a product of one-step Jacobians (a fast step's
+sensitivity to an interpolated slow value depends on slow states at other times). No multirate integrator exists
+here and none is planned; recorded so whoever builds one checks the monodromy assembly, not the refusal.
+

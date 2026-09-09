@@ -6212,7 +6212,13 @@ class PSS(Analysis):
         zero, reproduced); esdirk43 quintic 0.9998 / 1.0000 and septic
         1.0000 / 1.0001 at 100 / 200 pts -- so for a non-collocation method
         the order clause alone is established, and the stage-count clause is
-        a collocation property.  ⚠ The first stack gate's driven control came
+        a collocation property -- and Part I sec 1.1 says why: "one of the
+        most attractive features of the IDeC procedure is, that its fixed
+        point is a certain superconvergent COLLOCATION solution", so the
+        exactness class the stage-count clause guards against is a
+        collocation object by construction (docs session, 2026-09-09; one
+        family at two degrees on one fixture, so a mechanism, not a proof
+        that the clause is harmless in general).  ⚠ The first stack gate's driven control came
         back `autonomous=True`: `Circuit.u(t)` evaluates its time functions
         only when told `analysis='tran'`, and without it every source
         VANISHES (zeros, DC value included) -- so that control ran against a
