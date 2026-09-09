@@ -12252,5 +12252,16 @@ the in-band AM levels predict 5.0 % / 13.6 % — the CORE over-predicts 5.9×, s
 gains that would close the observed excess are `g` = 0.50 (core) / 1.16 (slow). Partition: coherent in-band gains
 near 0.50 / 1.16 close the slow fixture's in-band term on the AM mechanism; near 1.20 / 1.52 mean the AM level is
 wrong and something SUBTRACTS from the crossing in band. Caveat: `g` need not be common to the two fixtures.
-Not run.
+
+**RUN (Andreas: "do it", 2026-09-09; same trajectories, Welch/CSD at 1000-period segments, band 0.08–0.15).**
+Band-limited crossing: core coherent gain **0.58**, coherence² 0.39, AM-explained 1.1 % against 0.6 % observed;
+slow coherent gain **0.64**, coherence² 0.61, AM-explained 2.4 % against 7.4 % observed. Raw crossing (with the
+out-of-band content): gains 0.86 / 1.76, coherence² 0.30 / 0.70 — the unbanded regression's inflation, as the
+peer said. So a COMMON amplitude-to-crossing gain of ~0.6 is real (coherent, the same on both fixtures) and
+closes the core's in-band term near the pre-registered 0.50; on the slow fixture it accounts for a third, and
+the remaining ~5 % is in band, incoherent with the demodulated amplitude — neither branch of the partition.
+Half of the slow's residual `D` power appears as a positive correlation between `D` and the demodulated phase
+itself (in-band `D` power 4.8 % against 7.4 % excess), i.e. a SCALE term: the crossing responds to the in-band
+phase modulation more than the boxcar model of the demod predicts, on the fixture whose phase modulation enters
+through the slow path. Not closed; recorded.
 
