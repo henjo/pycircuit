@@ -12245,3 +12245,12 @@ metric makes the coupling first order), so both sides here scaled the wrong vari
 by a route that does not hold. The mechanism is neither excluded nor established; the band-limited coherence is
 the instrument.
 
+**Pre-registered for the coherence run (docs session, 2026-09-09).** Divide the boxcar out of the band-limited
+rows and the in-band excess the AM term must explain is 0.86 % (core) / 7.94 % (slow); the regression gains with
+the in-band AM levels predict 5.0 % / 13.6 % — the CORE over-predicts 5.9×, so the time-domain gain is inflated
+(it attributes the aliased out-of-band term, which correlates with the demodulated amplitude too, to `a`). The
+gains that would close the observed excess are `g` = 0.50 (core) / 1.16 (slow). Partition: coherent in-band gains
+near 0.50 / 1.16 close the slow fixture's in-band term on the AM mechanism; near 1.20 / 1.52 mean the AM level is
+wrong and something SUBTRACTS from the crossing in band. Caveat: `g` need not be common to the two fixtures.
+Not run.
+
