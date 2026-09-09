@@ -12772,3 +12772,21 @@ not built. Also from the same drop, a third-party statement of the frame point t
 discussion: the sparse tableau is the formulation "from which one may derive MNA and NA by variable
 elimination", each with its own admissible element class — why Chua & Lin's C-only-loop clause does not bind MNA.
 
+**Orders 3–4: the recipe (docs session, from Wright §3.9.2, Table 3.3 and p. 54), and the status.** Wright
+tabulates the A-stable λ intervals (Table 3.3, book p. 80): p = 2 [0.1804, 2.1856], p = 3 [0.2236, 0.5728],
+p = 4 [0.2480, 0.6760], p = 5 [0.1839, 0.3341] — narrow at p ≥ 3, which is why a free search over (A, c, B) misses
+them. The stiffly accurate diagonally implicit sub-class (§3.9.2): s = r = p + 1, `c_{p+1} = 1`, `A_{p+1}ᵀ = B_1ᵀ`
+(the `U/V` half is then automatic), STRICT stiff accuracy `B_2ᵀ = e_{p+1}ᵀ`, `V_2ᵀ = 0` (automatic), `β_p = 0`
+so strict stiff accuracy falls out of the IRKS condition `BA = XB`; ε = 0 for L-stability (stiff accuracy alone
+does NOT give it for IRKS, p. 99). All printed implicit L-stable IRKS methods are p = 2 (pp. 92, 95, 99: λ = 1/2,
+1/2, 1/4) — settled negative; and Wright's history (p. 54): DIMSIMs at order 4 "cannot be solved analytically"
+and needed "sufficiently accurate initial approximations", orders beyond 4 "very sophisticated numerical
+searches" (about DIMSIMs, s = p; IRKS's canonical forms reach order five in his generator, explicit family).
+**Status here:** with λ pinned and the strict rows fixed, a least squares on the stability constraints alone got
+to ρ_lhp = 1.007, eig(V)₂ = 0.017, nilpotency 1e-3 at p = 3, λ = 0.25 — close, not a method. The IRKS conditions
+proper (`BA = XB`, `BU = XV − VX`, `X` doubly companion, which make M(z)'s spectrum {R(z), 0, …} by theorem so
+A-stability is |R(iy)| ≤ 1 and L-stability ε = 0) are the right formulation and are running as a constrained
+least squares (scratchpad `glm_irks.py`, validated first at p = 2 against Wright's tableau); Appendix I (Maple,
+"approach one of §3.7") and §3.11 (local-error minimisation) are the thesis's own route if that stalls. Not yet
+a result.
+
