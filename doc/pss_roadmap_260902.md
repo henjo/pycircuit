@@ -12348,3 +12348,17 @@ unexplained.** What would separate a physical drift from a trajectory- or band-l
 that does not use these trajectories: the peer's variational-SDE route (A9's MC, phase projected every step)
 run at two asymmetries, or an independent integrator for the noisy transient.
 
+**Third path, attempted by the docs session (2026-09-09 evening), half of it:** its from-scratch Floquet PPV
+(own ODE at 1e-12, state-space monodromy, adjoint normalised `v·ẋ = 1`) gives `⟨(PPV·e_v)²⟩` = 0.125000 against
+Ghanta Lemma 4.5's `(√(L/C)/A)²/2` = 0.125000 at zero asymmetry — the LINEAR half independently confirmed at one
+point with no shared code or trajectories. Its Monte Carlo leg FAILED and is not evidence: Euler–Maruyama with a
+phase from `atan2` about the origin read 0.43× the linear value at b = 0 and 163× at b = 0.30 — `atan2` about the
+origin is not a phase once the asymmetry displaces the orbit's centre, and per-period increments miss the
+correlation between increments. ⚠ A drift-shaped artefact from a bad phase definition is exactly what would
+pass for confirmation of the drift; the peer flagged it rather than sending two points. Doing the third path
+properly (crossing-time phase, a stochastic integrator with checked weak order, the cumulative-phase estimator
+across seeds) is a build, not an afternoon. **Cheaper localisation that remains:** the drift is MC-versus-linear,
+so the generic discriminator is the noise level itself — every linear term and every harness effect is
+PSD-flat, any nonlinear origin is not; a PSD/4 rerun at a = 0 (16 seeds, ~1.5 h) tests the whole nonlinear class,
+not just the one mechanism the deterministic coefficient killed. Not run; Andreas's call.
+
