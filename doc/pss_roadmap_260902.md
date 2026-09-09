@@ -10583,7 +10583,23 @@ as `1/C`, and comparing at a shared one was a bug in my first gate), **0.5052 / 
 across a 16× sweep in `C`. The gate now asserts that, which is the assertion that would have caught
 the defect.
 
-### ❌ OPEN, and NOT asserted: the adjoint sample correspondence is unknown
+### ❌ OPEN, and NOT asserted: the adjoint sample correspondence is unknown — ✅ CLOSED THE SAME DAY (stale heading kept)
+
+**Superseded by the A9 root cause below (`floquet_modes` propagated `Cᵀq`, not `q`):** with the right
+vector `q(t)ᵀ C p(t)` is conserved at the SAME index (4.2e-4) and NOT the reversed one (2.0) — the
+"reverse time order" was `diag(1, −1)` flipping one component, which on a half-wave-symmetric orbit is
+exactly the relation between `q(t)` and `q(T − t)`. The non-converging 1e-2 / 3e-2 table below was
+measured on the WRONG vector, so its limit was the metric error, not a convention. **Confirmed by an
+independent oracle (docs session, 2026-09-09):** a from-scratch variational/adjoint pair in `(v, i)`
+with an explicit non-unit `C = diag(2, 0.5)`, biorthonormalised as `Q₀ = (C P₀)⁻ᵀ`, gives
+`|qᵀ C p − 1| ≤ 1.3e-13` at eight points around the cycle, off-diagonals 1.6e-14 — the identity holds
+everywhere, no sign structure, nothing to scope. Two false leads the peer eliminated with signatures:
+a transpose slip in the biorthonormalisation puts `|G₀₁| = |G₁₀| = μ/2` exactly with correct diagonals;
+propagating the adjoint WITHOUT the `C` metric gives the right shape and the wrong size (1.000, 0.748,
+0.500, 0.752 around the cycle). The residual that remains here (4.2e-4 at the same index) is not yet
+characterised against the grid. ⚠ The heading is left as it was so the history reads; what follows is
+the pre-fix record.
+
 
 Fixing the weighting exposed a second thing. **`q` is stored in REVERSE time order relative to
 `p`** (it comes from a backward replay) — `q[j]ᵀC p[j]` reads 1.000, −0.022, −1.000, 1.000, −0.999
@@ -12167,4 +12183,57 @@ one it follows is not resolved; ~16 seeds per point (4× the machine time) would
 crosswise assignment (1.5σ / 1.2σ against 2.8σ / 3.4σ at one `a`) does NOT survive: the crossing half of the
 instrument hypothesis ("time-interval analyser ↔ S_pm") is refuted, the spectrum-analyser half is untested at
 this precision. The frequency-aware PPV docstring now carries the table instead of the assignment.
+
+### Where the crossing estimator's excess lives (2026-09-09, with the docs session) — three instruments, one trajectory
+
+The docs session offered, and refuted by its own measurement, four mechanisms for the crossing phase's 7–22 %
+excess over the demodulated phase (amplitude-mode conversion through the orbit's shape: ceiling `g_c² = 6e-6`
+on a near-circular van der Pol; slow-node conversion: points the WRONG way, a slower node gives a smaller gap;
+an interpolation bias: 20–400× below the physical gain because a near-sinusoid's zero is its inflection point;
+a white grid-timing floor `0.30 (h₃/h₁) h²`: 1e-4 of the in-band phase noise here). Its pre-registered prediction
+for the μ sweep: FLAT. Measured, crossing/demod in the disputed band at `a = 0.25`, 4 seeds × 10 000 periods:
+
+| μ | h₂/h₁ | h₃/h₁ | core | slow |
+|---|---|---|---|---|
+| 1.0 | 0.156 | 0.076 | 1.104 | 1.194 |
+| 0.5 | 0.070 | 0.035 | 1.100 | 1.158 |
+| 0.25 | 0.018 | 0.005 | 1.109 | 1.134 |
+
+Core FLAT (the prediction holds; shape conversion is refuted there), slow declining slowly, nothing like the
+`(h₃/h₁)²` collapse. **The paired detector test says where it lives** (one 3000-period trajectory per fixture,
+same trajectory under five crossing detectors, ratio to the demodulated phase, disputed band / low band):
+
+| detector | core | slow |
+|---|---|---|
+| linear interpolation, 240 pts/period | 1.174 / 1.006 | 1.187 / 1.023 |
+| linear, 120 pts/period | 1.153 / 0.996 | 1.172 / 1.001 |
+| cubic, 240 pts | 1.169 / 1.003 | 1.174 / 1.004 |
+| waveform band-limited to |f − f₀| < 0.5 f₀ first | 1.054 / 1.001 | 1.128 / 1.003 |
+| band-limited to 0.25 f₀ | 1.054 / 1.001 | 1.128 / 1.003 |
+
+Readings. (1) Halving the grid moves the gap 2 %, not 4×: the detector is not reporting its discretisation
+(unlike the `_ghanta_tank` guard the same morning). (2) On the core, two thirds of the excess is waveform
+content beyond 0.5 f₀ from the carrier — the harmonics' own noise sidebands and broadband additive noise, which
+an INSTANTANEOUS crossing converts to timing and a one-period fundamental demodulation cannot see; the
+remainder, 1.054, is the demodulation's own boxcar loss, `1/sinc²(π·0.115) = 1.045` at the band centre, named
+before it was read. Broadband additive noise does not depend on μ — consistent with the flat core row. (3) On
+the slow fixture band-limiting removes only a third; ~8 % sits INSIDE ±0.25 f₀, in the near-carrier sidebands,
+and declines slowly with μ. The regression closure of that in-band term against the demodulated amplitude is
+recorded below when it lands. (4) The low band reads 1.00 for every detector on both fixtures: the excess is a
+band-position effect, a flat additive term against a `1/r²` skirt, growing as `r²` into the disputed band.
+
+**Consequence for the definitions.** "The phase read from zero crossings" is not a cleaner object than the
+demodulated fundamental's: it carries the whole waveform's additive noise, aliased, and the boxcar loss of the
+other is a known constant. Neither construction (`S_pm`, the frequency-aware sum) contains the aliased term,
+so comparing either against a crossing-based jitter measurement needs the band limit stated.
+
+**Closure attempt, NOT established.** Regressing the per-period difference `D_n = φ_cross − φ_demod` on the
+demodulated amplitude deviation `a_n` (same trajectories): gains of order 1 (core 1.20, corr 0.53; slow 1.52,
+corr 0.23), and the in-band AM level is `⟨S_a r²⟩/⟨S_φ r²⟩` = 0.035 (core) / 0.059 (slow) — so a conversion
+gain of order 1 WOULD account for the slow fixture's ~8 % in-band term. But the instrument is not band-resolved:
+subtracting `g·a_n` moved the core's band ratio UP (1.174 → 1.187) and took the slow's raw crossing to 0.999,
+below the 1.045 boxcar floor, and its band-limited one to 2.59 — the time-domain fit is dominated by the
+low-frequency, large-variance part of both series. Not evidence either way. The right instrument is the
+band-limited coherence between `D` and `a`, which needs the trajectory kept (the workers save phases only);
+one 3000-period run per fixture, ~10 min. Left here.
 
