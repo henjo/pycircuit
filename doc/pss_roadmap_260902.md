@@ -12821,4 +12821,14 @@ structurally worse error constant than the same-order explicit one — GLM2's le
 baseline, not the tables; and the existence question decomposes: strong stiff accuracy at p = 3–5 and A-stability
 at p = 3–4 are each demonstrated in the thesis, their CONJUNCTION with λ ≠ 0 is what no printed method above p = 2
 shows and what the stalled runs are failing on.
+**Approach one is a closed form, not a search (docs session, Wright Thm 3.24 / eqs 3.7.6–3.7.10, book pp. 84–85):**
+for a non-confluent method (distinct `c`) there EXISTS `TT = diag(1, T)`, `T` = a permutation times a unit lower
+triangular matrix, with `B̃ = L(TT) D(U(TT) TT⁻¹ Γ TT U(Ω TT)⁻¹) L(Ω TT)⁻¹` — `B` is COMPUTED from the free
+parameters (λ in the band, distinct `c` with `c_{p+1} = 1`, ε = 0, β, and `T`: a finite permutation choice plus
+p(p−1)/2 entries); "once B̃ is known it is easy to construct the rest". The IRKS conditions cut a measure-zero set
+out of `(A, c, B)`, which is what an identical stall from 80 starts looks like. And `V` is a STRUCTURE, not a
+condition: `Ṽ = [[1, ṽᵀ], [0, V̇]]` with `V̇` nilpotent (p. 83) — imposed here now as the polynomial `V̇ᵖ = 0` in place
+of the eigenvalue condition on a nearly defective block (the relaxed p = 4 runs at λ = 0.30 / 0.45 / 0.60 also
+stalled, cost 7–8). Implementing (3.7.8) needs the section's definitions of `δ, Ω, Γ, Ψ, F, W, β(K)` and Lemma 3.22's
+`L, U, D` operators, not yet transcribed; that is the next acquisition if orders 3–4 are wanted.
 
