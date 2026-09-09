@@ -1682,3 +1682,58 @@ class GLM2Integrator(NordsieckGLMIntegrator):
     B = [[1.0 / 6.0, 0.5, 0.25],
          [0.0, 0.0, 1.0],
          [0.0, -2.0, 2.0]]
+
+
+class GLM3Integrator(NordsieckGLMIntegrator):
+    """p = q = 3, s = r = 4, lambda = 1/4, c = [1/4, 1/2, 3/4, 1]: an implicit
+    L-stable IRKS method CONSTRUCTED here (2026-09-09 night; scratchpad
+    glm_irks_v.py), which Wright's thesis does not print -- its Appendix III
+    methods of orders 3-5 are explicit, and its only implicit L-stable
+    printed method is p = 2.
+
+    Construction: A lower triangular with one diagonal lambda pinned inside
+    Wright's A-stability band for p = 3 (Table 3.3: [0.2236, 0.5728]), c
+    distinct with c_s = 1, B row 1 = A row s (stiff accuracy), B row 2 = e_s
+    (STRICT stiff accuracy, Wright 3.9.20), the two IRKS conditions as
+    Wright states them -- BA == XB and BU == XV - VX modulo the first row,
+    X doubly companion (ones on the subdiagonal, free first row and last
+    column) with every eigenvalue lambda -- and, the step that made the
+    search converge where three earlier formulations stalled identically:
+    V's block structure imposed as the POLYNOMIAL condition
+    V = [[1, v~], [0, Vdot]] with Vdot^p = 0 (Wright p. 83), and epsilon = 0
+    as M_inf^r = 0, in place of eigenvalue conditions on nearly defective
+    blocks.  Least squares from random starts reaches cost 1e-29 at
+    lambda = 0.25 and 0.35; the lambda = 1/4 solution is shipped.
+
+    `verify()`: exact for k <= 3 in output and stages, leading term 0.31
+    at k = 4 (nonzero BY DESIGN: epsilon = 0 buys L-stability by giving up
+    the zero error constant the explicit family gets from epsilon =
+    1/(p+1)!); eig(V) = {1, 2e-8, 2e-8, 0} -- ⚠ the pair at 2e-8 is NOT a
+    residual to tighten: a defective matrix's computed eigenvalues scale
+    as eps^(1/k) for a k x k Jordan block, and eps^(1/2) = 1.5e-8, so the
+    pair says Vdot has one 2x2 nilpotent block (Vdot^2 != 0, Vdot^3 = 0,
+    exactly Vdot^p = 0 at p = 3) and is at the precision the problem
+    allows (docs session); the assertion is Vdot^p = 0 itself; M_inf
+    nilpotent to 1e-15 (rho(M_inf) reads 5e-5 for the same reason);
+    rho(M(z)) <= 0.999 on the left-half-plane grid; stiffly accurate.  The
+    abscissae are Wright's canonical [1/(p+1), ..., p/(p+1), 1] to the
+    digit -- reached from a mild prior, so corroboration, not an
+    independent confirmation.  "Not printed in the thesis" is not "not in
+    the literature": Butcher & Jackiewicz and Butcher, Jackiewicz &
+    Mittelmann searched orders up to eight, unchecked here.  On
+    the index-2 C-V loop harness it must read ~3 / ~3 -- Radau IIA(3)'s
+    algebraic order with one factorisation per step -- see test_glm.py.
+    The negative sub-diagonal entries of A are unremarkable for a DIRK: the
+    stage operator is C + h lambda G at every stage regardless.
+    """
+    P = 3
+    A = [[0.25, 0.0, 0.0, 0.0],
+         [0.68406684553831, 0.25, 0.0, 0.0],
+         [-0.760702362017971, -0.912072103185567, 0.25, 0.0],
+         [0.452618362862002, 0.020404634936695, 0.087714237803204, 0.25]]
+    C_ABSC = [0.25, 0.5, 0.75, 1.0]
+    B = [[0.452618362862002, 0.020404634936695, 0.087714237803204, 0.25],
+         [0.0, 0.0, 0.0, 1.0],
+         [-1.740350743005389, -0.651524563704395, -0.375859490000028, 2.292183967795145],
+         [-2.35303269071979, -1.205154632038951, -0.569308396011214, 2.269710408552872]]
+

@@ -12832,3 +12832,36 @@ of the eigenvalue condition on a nearly defective block (the relaxed p = 4 runs 
 stalled, cost 7–8). Implementing (3.7.8) needs the section's definitions of `δ, Ω, Γ, Ψ, F, W, β(K)` and Lemma 3.22's
 `L, U, D` operators, not yet transcribed; that is the next acquisition if orders 3–4 are wanted.
 
+### GLM3 EXISTS: an implicit L-stable q = p = 3 IRKS method, constructed (2026-09-09, late night)
+
+**The stall was the V condition, not T.** Wright p. 83 (docs session): `Ṽ = [[1, ṽᵀ], [0, V̇]]` with `V̇` nilpotent is a
+STRUCTURE; imposing it as the polynomial `V̇ᵖ = 0` (and `V[1:, 0] = 0`, `V[0,0] = 1`) in place of the eigenvalue
+condition on a nearly defective block — and ε = 0 as `M_∞ʳ = 0` — took the p = 3 least squares from an identical
+stall at cost 2 (three formulations, 80 starts each) to **cost 1e-29 at λ = 0.25 and 0.35** in one run; the p = 2
+validation reached 5e-31 the same way. (My search parametrises `B` directly, so Wright's `T` is implicit and free;
+the p. 90 remark that `V` rank one forces `T = I` explains only why the p = 2 case was easy.) Shipped as
+`GLM3Integrator`: λ = 1/4, `c = [1/4, 1/2, 3/4, 1]` (the mild prior pulled them to Wright's canonical abscissae),
+`A` with negative sub-diagonal entries (unremarkable for a DIRK), `verify()`: exact for k ≤ 3 in output and stages,
+leading term 0.31 at k = 4, eig(V) = {1, 2e-8, 2e-8, 0}, `M_∞` nilpotent to 1e-15, ρ ≤ 0.999 on the grid, stiffly
+accurate. **The thesis prints no such method** (all its implicit L-stable IRKS methods are p = 2; its p ≥ 3 tableaux
+are explicit) — the conjunction of A-stability, strict stiff accuracy and λ ≠ 0 above order 2 is, as far as the
+record here goes, new.
+
+**The index-2 harness (C–V loop, one period at constant step from the exact state, error split by subspace):**
+
+| method | LU per step | differential order | algebraic order | algebraic error at 80 pts |
+|---|---|---|---|---|
+| radau (p = 5, q = 3) | coupled 3n (or 1 real + 1 complex) | 4.99 | 3.00 | 1.9e-11 |
+| esdirk43 (p = 4, q = 2) | 1 | 4.00 | 2.00 | 5.6e-10 |
+| **GLM3 (p = q = 3)** | **1** | 3.97 / 3.12 / 2.75 | **2.93 / 3.00 / 3.00** | **7.9e-11** |
+| GLM2 (p = q = 2, Wright) | 1 | 1.97 | 1.92 | 5.1e-10 |
+
+So GLM3 carries Radau's ALGEBRAIC order with one real factorisation per step — 7× more accurate than esdirk43
+on the algebraic component at the same grid, 4× behind radau — and its computed starting vector reproduces the
+exact-start numbers to every printed digit (p Radau substeps at h/p are more than hypothesis (c) needs at
+p = 3). Its differential order reads 3.97 → 2.75 across the sweep: converging to 3 from above (a higher-order
+term dominates the coarse grids), asserted > 2.6 at the finest point; not a floor (radau reaches 9e-11 there).
+⚠ Read with the ε = 0 fact: an implicit L-stable IRKS gives up the zero error constant, so its constants are
+structurally worse than the explicit tables'. p = 4 with the same formulation is running (λ = 0.30 / 0.45 / 0.60);
+that is the tableau that would beat Radau on the algebraic side outright.
+

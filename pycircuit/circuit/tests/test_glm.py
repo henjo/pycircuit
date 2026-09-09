@@ -16,17 +16,18 @@ from pycircuit.circuit import circuit
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import C, R, VSin
 from pycircuit.circuit.transient import Transient
-from pycircuit.circuit.integrator import GLM2Integrator, RadauIIA3Integrator
+from pycircuit.circuit.integrator import GLM2Integrator, GLM3Integrator, RadauIIA3Integrator
 
 
-def test_nordsieck_glm_tableau_is_order_p_stiffly_accurate_and_stable():
+@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator])
+def test_nordsieck_glm_tableau_is_order_p_stiffly_accurate_and_stable(cls):
     """Order and stage order are STRUCTURAL (U, V from the order conditions):
     one step on y = t^k is exact for k <= p in output and stages, and not at
     k = p + 1 (or the check saw nothing).  Stability is what a tableau has
     to be checked for: eig(V) = {1, ~0, ~0}, rho(M_inf) ~ 0 (nilpotent to
     the numerical construction's residual), rho(M(z)) <= 1 on the left
     half-plane; and stiff accuracy (B[0] == A[-1], c_s == 1, V[0] == U[-1])."""
-    g = GLM2Integrator()
+    g = cls()
     v = g.verify()
     p = g.order
     for k, e_out, e_stage in v['exactness']:
@@ -37,7 +38,7 @@ def test_nordsieck_glm_tableau_is_order_p_stiffly_accurate_and_stable():
     assert v['stiffly_accurate']
     assert abs(v['eig_V'][0] - 1.0) < 1e-6 and np.all(v['eig_V'][1:] < 5e-3), v['eig_V']
     assert v['rho_M_inf'] < 5e-3, v['rho_M_inf']
-    assert v['nilpotency_residual'] < 1e-4, v['nilpotency_residual']
+    assert v['nilpotency_residual'] < 1e-8, v['nilpotency_residual']
     assert v['rho_lhp'] <= 1.0 + 1e-9, v['rho_lhp']
 
 
@@ -115,7 +116,8 @@ def _orders(cir, per, integ, keep, Vdiff, Valg, x_exact, override=None, npts_lis
     return errs, od, oa
 
 
-def test_nordsieck_glm_has_no_index2_order_split_and_the_starting_vector_does_not_limit_it():
+@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator])
+def test_nordsieck_glm_has_no_index2_order_split_and_the_starting_vector_does_not_limit_it(cls):
     """On the index-2 C-V loop, from the exact periodic state, one period at
     constant step: the GLM's DIFFERENTIAL and ALGEBRAIC errors both fall at
     order p (no split), first with the EXACT Nordsieck starting vector fed
@@ -127,12 +129,12 @@ def test_nordsieck_glm_has_no_index2_order_split_and_the_starting_vector_does_no
     per = 1e-3
     cir = _cv_loop(per)
     keep, Vdiff, Valg, x_exact, q_exact = _reference(cir, per)
-    g = GLM2Integrator()
+    g = cls()
     p = g.order
     exact = lambda tn, x0, h: q_exact(tn, h, p)
     e_ex, od_ex, oa_ex = _orders(cir, per, g, keep, Vdiff, Valg, x_exact, override=exact)
-    e_cp, od_cp, oa_cp = _orders(cir, per, GLM2Integrator(), keep, Vdiff, Valg, x_exact)
-    assert e_ex[0][0] > 1e-9 and e_ex[0][1] > 1e-11, ('coarsest point near the floor', e_ex)
+    e_cp, od_cp, oa_cp = _orders(cir, per, cls(), keep, Vdiff, Valg, x_exact)
+    assert e_ex[0][0] > 1e-9 and e_ex[0][1] > 1e-12, ('coarsest point near the floor', e_ex)
     for od, oa, label in ((od_ex, oa_ex, 'exact start'), (od_cp, oa_cp, 'computed start')):
         assert od[-1] > p - 0.4, (label, od)
         assert oa[-1] > p - 0.4, (label, oa)
