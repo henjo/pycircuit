@@ -12618,3 +12618,15 @@ already off; one worker occasionally cannot get a cuBLAS handle), the same class
 failure this week. Nothing to bisect. ⚠ Read the tail of a traceback, not the source context pytest prints
 around the frame.
 
+**Part I read through (docs session, 2026-09-09):** motivated verbatim by "applications in electrical circuit
+simulation, where the models often contain data with poor smoothness"; **Remark 2.9** names an UNDERESTIMATE on
+oscillatory solutions near the isolated zeros of `x^(p+1)` (the local-error route of §2; remedy: assume `C^(p+2)`
+and match the next coefficient with an auxiliary scheme). Same sign as `warping_estimate`'s edge underestimate,
+and ruled out for it by the h-scaling (an isolated-zero mechanism is ~h-independent; the edge reading improved
+7.2× for 2× grid) — the interpolation-error attribution stands; the global (Zadunaisky) route's inheritance of
+2.9 is not established either way. Where it would bite: a defect-correction step controller. Cost lead: §1.1's
+cheap variant (high order once, cheap low order twice) is a different substitution from the radau-on-trap control
+that zeroed the estimate; untested. ⚠ Method: the peer's matcher joined "<page>\t<text>" lines on whitespace and
+turned "tend to underestimate" into "tend 13 to underestimate" — a miss that was not explained would have said the
+paper does not contain it.
+

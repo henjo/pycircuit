@@ -6233,6 +6233,31 @@ class PSS(Analysis):
         digits on the van der Pol, index 1 and 2); on an orbit with edges,
         refine until the estimate converges in `periods` and grid, or use
         `grid_error`.
+        ⚠ PART I READ THROUGH (docs session, 2026-09-09): its motivation is
+        this domain -- "we are especially motivated by applications in
+        electrical circuit simulation, where the models often contain data
+        with poor smoothness" -- so "moderately smooth" is the case the
+        paper was built for, not a clause this is outside of.  Its Remark
+        2.9 names a failure with the SAME SIGN as the edge underestimate:
+        the local estimates assume the leading term `c_i h^(p+1) x^(p+1)`
+        does not vanish, and "at least in case of oscillatory solutions,
+        there always exist time points where the derivative x^(p+1)
+        vanishes ... our error estimates will tend to UNDERESTIMATE the
+        true size of the error" (footnote: the third derivative vanishes
+        where the curvature is extremal; remedy: assume C^(p+2) and match
+        the next coefficient with an auxiliary scheme).  That remark is
+        stated for the LOCAL-error route of their section 2; this method is
+        the GLOBAL route of section 1 (Zadunaisky), and whether the global
+        route inherits it is not established.  ⚠ Ruled out here by the
+        h-scaling: Remark 2.9's mechanism is keyed on isolated zeros of
+        x^(p+1), whose aggregate effect is roughly h-INDEPENDENT, while the
+        edge reading improved 7.2x for a 2x grid (0.09 -> 0.65) -- that is
+        interpolation error, as stated above.  Where Remark 2.9 would bite
+        is a step controller built on defect correction; the paper hands
+        the fix.  Cost lead, not worked out: section 1.1's cheap variant
+        runs the high-order method once and a cheap LOW-order method twice
+        (original and neighbouring problem) -- a different substitution
+        from the radau-on-trap's-defect control that zeroed the estimate.
         ⚠ THE LITERATURE'S ANSWER IS STRUCTURAL, NOT "REFINE" (docs session,
         Part I p. 9, READING-LOG 2.165).  The gate this instrument should
         test before returning a number is Part I's own "only if": the
