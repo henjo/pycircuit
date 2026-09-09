@@ -11273,9 +11273,12 @@ class PAC(Analysis):
         ## MEASURED on the flicker identity with the LO shaped to
         ## v |v|^(p-1), B/A = 0.187 / 1.895 (p = 1, warned), 0.204 / 1.779
         ## (p = 1.5, silent), 0.217 / 1.699 (p = 2, silent) at 0.13 / 1.37
-        ## f0.  A quiet warning is therefore not evidence of a small
-        ## discrepancy; the common sinusoidal crossing is caught, the
-        ## shallow ones are not, and they err as much.
+        ## f0; steeper crossings (p = 0.5: 0.161 / 2.046, p = 0.8: 0.175 /
+        ## 1.970) err MORE and are caught.  So detector and effect are
+        ## aligned for p <= 1 and the silent region is exactly p > 1 (the
+        ## crossing flatter than linear): the deviation stays O(1) there
+        ## while the indicator falls by orders.  A quiet warning is
+        ## therefore not evidence of a small discrepancy.
         kinked = np.zeros_like(touches)
         hT = 1.0 / float(Nn)
         for jj in np.where(touches)[0]:

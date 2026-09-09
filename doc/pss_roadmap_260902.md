@@ -11839,9 +11839,54 @@ INVERSE to the crossing's steepness (peer): with the LO shaped to `v|v|^(p−1)`
 / 0 at p = 1 / 1.5 / 2 (all sign-changing) — measured on the flicker identity, B/A = 0.187 / 1.895 (p = 1,
 warned), 0.204 / 1.779 (p = 1.5, silent), 0.217 / 1.699 (p = 2, silent) at 0.13 / 1.37 f₀: the discrepancy
 stays O(1), slightly closer to 1 as the crossing flattens (the peer's dwell proxy predicted growth; not
-borne out), while the warning goes quiet. A quiet warning is not evidence of a small discrepancy; the
+borne out — a COUNT of straddling pairs where the physics is a weighted integral, each pair carrying
+|m| ~ δ^p, which shrinks faster than the count grows; peer's own correction), while the warning goes
+quiet. The other side, p = 0.5 / 0.8: B/A 0.161 / 2.046 and 0.175 / 1.970, both warned — steeper crossings
+err more AND are caught, so detector and effect are aligned for p ≤ 1 and the silent region is exactly
+p > 1, a clean boundary. A quiet warning is not evidence of a small discrepancy; the
 docstring says so. Citation fixed on the peer's second review: the object is Lai's eq. 23 (the exact
 sampled LPTV adjoint at any offset), eq. 24 being the near-DC truncation cited only for the pinned DC
 identity; and the GMRES guard now names Lai's own warning about the bordered system. So the squared-gain case no longer warns, and a cubic crossing (sign-changing, no kink) is named
 as what the condition still misses. Pinned: the zero-crossing flicker fixture warns, the squared-gain one
 does not.
+
+## The Monte Carlo arbiter for the frequency-aware gap (Andreas: "then 4", 2026-09-09)
+
+**What is arbitrated.** With the second-order envelope the frequency-aware harmonic sum and `pnoise`'s
+`S_pm` differ by 2–3 % at 0.1 f₀ on the A2 fixture (a = 0.25 / 0.4, loss 0.2, τ/T = 100, Rs = 1e2,
+source at the slow node) and agree to 0.7 % at 5e-2. The only instrument that instantiates neither
+construction is a nonlinear noisy transient with the phase read from zero-crossing timing: no sideband
+split, no phase-mode projection, no PPV anywhere in the measurement.
+
+**Method.** Worker: the A2 fixture, a white current at the source node injected per step with
+`Var(i) = PSD/(2h)` (the tree's certified injection convention from the diffusion-constant Monte Carlo),
+gear at 240 points, the phase `φ_k = −2π(t_k − kT)/T` from the upward zero crossings of `v` by linear
+interpolation, one sample per period. Reducer: Welch periodogram of `φ` per realisation (sampling rate
+f₀, so `r = f/f₀` directly), band averages of `S_φ·r²` over `r ∈ [0.07, 0.13]` (the disputed band) and
+`[0.008, 0.012]` (where the constructions agree to 0.3 %), standard error across realisations. ⚠ The
+convention factor between the Monte Carlo's `S_φ` and `pnoise`'s `S_pm/(4S_v)` is CALIBRATED on the
+core-injection fixture, where every construction agrees, and only then read on the slow-node one: the
+control fixes the factor, the slow-node run arbitrates. The interpolation error of a crossing time is
+the same every period on the unperturbed waveform (it sits at DC), so it does not enter the band.
+
+**Precision budget.** A 2–3 % gap needs ~0.8 % on the band average: ~1.5e4 segment·bins. Averaging 300
+bins over the band at 5000-period segments needs ~50 segments — 2.5e5 periods, ~6e7 gear steps, about an
+hour on ten workers for each fixture. Pilot first: 10 workers × 2000 periods on the control, to
+measure the noise level of the estimator and the cost per period, before the full run is sized.
+
+**Pilot (10 × 2000 periods on the control, 10 min at 0.3 s/period under ten-way contention):**
+`⟨S_φ r²⟩` = 3.74e-8 ± 4.1 % (r ∈ [0.07, 0.13]) and 3.24e-8 ± 8.4 % ([0.008, 0.012]); the reference
+`⟨S_pm r²⟩` from `pnoise` is 3.66e-7 / 3.68e-7, flat across bands to 0.5 % as a 1/f² skirt must be.
+Monte Carlo / `pnoise` = 0.102 ± 4 % and 0.088 ± 8 %, consistent — the convention factor is real and the
+estimator's error scales as the budget said. Full run launched 2026-09-09 22:52 UTC: five workers per
+fixture × 40 000 periods, both fixtures in parallel (~3.5 h), the disputed band widened to
+r ∈ [0.08, 0.15] at 5000-period segments (the gap is flat across it), for ~±1 % per fixture and ±1.4 % on
+the slow/control ratio — enough to separate 0 from −2.5 % at two sigma; extendable.
+
+⚠ **First full launch lost to memory (1 h 38 in):** each worker stored its whole transient (1.4 GB per
+16 000 periods, growing linearly, ten of them on a 30 GB box) and the watcher was killed for memory
+before they were. Stopped by PID, the worker restructured into 5000-period blocks carrying the last state
+across and keeping only the crossing times (~400 MB per worker); the block boundary verified on crossing
+times straddling it (ordinary noisy spacings, 1.000117 / 0.999961 periods — an earlier "exactly zero"
+at the boundaries was a two-decimal print of 1e-3 values). Relaunched 2026-09-09 ~00:25 UTC. The block
+restart's opener artefact sits at r = 2e-4 and its harmonics, outside the bands at any weight that matters.
