@@ -12470,3 +12470,11 @@ object: it is linear in ε (θ/ε constant to four digits), i.e. the PPV's O(h) 
 is the a-trend of a discretisation error. Dropped from the argument entirely. The three-point `g_inst` measurement
 is the only deciding one; the peer's direction argument stands on its fixture with its transfer unproven.
 
+**Candidate 2 DEAD (Andreas: "do 2 then 3", 19:05).** Instantaneous gain of each estimator to a slow-mode
+displacement (kick along the slow mode's right eigenvector with the tangent projected out, `v·u` = 1e-17; first
+period after the kick; ε = 1e-3 and 2e-3 agree to all printed digits): a = 0.25: demod 0.177, crossing 0.174;
+a = 0.05: 0.038 / 0.036; a = 0: 2.1e-5 / 1.4e-3. The gain falls by two to four orders toward a = 0, where the
+drift is largest — the peer's direction argument holds on this fixture (at a = 0 the slow mode is the bare node
+`w`, decoupled by symmetry; at a = 0.25 it mixes 34 % into the tank). Whatever its size at one `a`, a gain that
+vanishes where the effect peaks cannot carry it.
+
