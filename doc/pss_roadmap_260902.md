@@ -12452,3 +12452,15 @@ fixture's slow-mode kick TAIL read θ/ε = −1.8e-4 at a = 0.05 — the require
 (the mode at 2.4e-3 of its kick) is an asymptotic shift, not the instantaneous response; the first-period reading
 is the measurement. Not run.
 
+**The deciding test for candidate 2 is the a-TREND of the gain, not its magnitude (peer, 18:45, correcting its
+own number).** At τ/T = 100 with a `b·v²` asymmetry, the peer's instantaneous slow-mode gain rises 700× from
+b = 0 (`g_cross` = −7.9e-7) to b = 0.15 (−5.6e-4) and the excess `g² P_s/P_φ` from 1.3e-6 to 3.4e-2 — so its
+earlier "1.7e-4 is out of reach" is withdrawn (an asymmetric orbit reaches it easily), but the DIRECTION is
+fatal on that fixture: the drift is largest at a = 0 where the orbit is odd-symmetric and the conversion
+vanishes (1.3e-6 against +6.1 %, 48 000× short), and at a ≈ 0.25 the mechanism gives ≥ 3.4 % where the drift is
+−1.1 %. ⚠ Against that, this repo's own tail readings ROSE toward small `a` (θ/ε = +3.2e-5 at a = 0.25,
+−1.8e-4 at a = 0.05, the slow mode), the opposite trend — a tail, not the instantaneous gain, and on the device-
+asymmetry fixture rather than a `v²` term, so it neither confirms nor refutes. The measurement that decides:
+`g_inst` (first periods after a slow-mode kick, both estimators) at a = 0.25, 0.05 and 0 on this fixture. Falling
+toward a = 0 kills the mechanism whatever its size at one `a`; flat or rising keeps it. Minutes; not run.
+
