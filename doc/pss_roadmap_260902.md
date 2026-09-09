@@ -12790,3 +12790,16 @@ least squares (scratchpad `glm_irks.py`, validated first at p = 2 against Wright
 "approach one of §3.7") and §3.11 (local-error minimisation) are the thesis's own route if that stalls. Not yet
 a result.
 
+**The IRKS conditions, measured then confirmed (same night).** My first writing of them failed on Wright's own
+p = 2 tableau (cost 3.8 where the method exists) — the validation case did its job — so they were MEASURED on
+it: `X := BAB⁻¹` is doubly companion with ones on the SUBdiagonal, α along the first row and β down the last
+column, every eigenvalue λ (characteristic polynomial `(z − λ)³`); `BA = XB` holds exactly there, and
+`BU − XV + VX` vanishes except in its first row. The docs session then confirmed both from the thesis (book
+pp. 56, 62): Wright's "≡" is equality EXCEPT FOR THE FIRST ROW, and BOTH conditions are congruences, `BA ≡ XB`,
+`BU ≡ XV − VX` — the exact `BA = XB` on the p = 2 method is stronger than required, and imposing it at p ≥ 3
+over-constrains (the runs with it failed at cost 2.9–8.6; the relaxed ones are running). His `X(α, β)`: first row
+`−a₁ … −a_p, −a_{p+1} − b_{p+1}`, last column `−b_p … −b₁` reading DOWN, corner shared; `α(w)`, `β(w)` both with
+constant term 1. The printed `β = [0, 1/4, 1]` is in DESCENDING powers — read as `b₂ = 0, b₁ = 1/4` it is exactly
+the measured last column `[·, 0, −1/4]`; and `σ(X) = {λ}` is a joint polynomial condition on (α, β), (3.4.3),
+not on α alone. With the congruence corrected the p = 2 construction recovers a method (cost 3e-9, L-stable).
+
