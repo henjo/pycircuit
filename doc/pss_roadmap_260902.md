@@ -12665,3 +12665,17 @@ peer's known-amplitude-sinusoid test would not find it — whatever the 2 % is, 
 locations. Recorded as an unexplained ~2 % that cancels in every slope and every conclusion drawn today; not
 chased further. Total machine time on the residual: ~3 h of Monte Carlo and ~10 min of deterministic runs, for a bound.
 
+**The screen for the residual (peer, 2026-09-09 late), and the AM-leak candidate dead on both fixtures.** The
+double-ratio argument is stronger than "a global normalisation cancels": a surviving mechanism of coupling weight
+ε must have a per-fixture value that differs between the two source locations by at least ~2 %/ε — every candidate
+becomes a one-number deterministic test (measure the slow-versus-core difference of the quantity it is keyed on,
+multiply by its plausible weight, compare with 2 %). Applied to an AM leak, `gain = 1 + ε·(S_am/S_pm)`: on the
+peer's fixture `(S_am/S_pm)_slow/(S_am/S_pm)_core` = 0.99786 at every r (both locations near the AM = PM limit;
+dead at any ε). On THIS fixture the mix is not near that limit — `S_am/S_pm` at r = 0.10 is 0.059 (core) / 0.069
+(slow) at a = 0 and 0.020 / 0.035 at a = 0.25 — so the effect is ε·0.010 (a = 0) / ε·0.015 (a = 0.25): the demod
+has no first-order AM leak at all (the angle of a complex amplitude), the crossing's measured amplitude-to-crossing
+gain of ~0.6 gives ε ≈ 0.36 → 0.4–0.5 %, a quarter of the residual and the wrong estimator for the larger half.
+Dead here too, by a smaller margin. What the screen leaves: the 2 % is keyed on something whose slow/core
+difference is large — a property of the noise's modal composition at the two locations, not of the orbit or the
+path. Still not chased.
+
