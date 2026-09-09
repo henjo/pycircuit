@@ -4742,6 +4742,11 @@ Smooth ODEs and DAEs"*, ASC Report 16/2007, TU Wien (Part I). `q find` returns o
 citation of it. ⚠ Cited, not read; **do not treat B7's question as answered until Part I is on
 disk and the defect-correction estimator is checked against an accumulating period error** — the
 same measurement this file already has for the LTE estimators (fact (a)), on the same fixture.
+✅ **SUPERSEDED:** Part I landed (`18-stochastic-integration-and-transient-noise/Sickenberger-2007-…Part I
+ODEs and DAEs.pdf`) and was READ and USED on 2026-09-08 (the f-value defect gate, "Part I p. 9, §2.165",
+eq. 2.13 — see the B7 sections below); the peer's ledger still said "not on disk" until its 2026-09-09
+absence sweep found it. The measurement this marker asked for was done (IDeC reproduces the period error to
+four digits at one grid; `warping_estimate`).
 
 ✅✅ **PART I LANDED AND READ (peer `docs-46`, same night) — B7's ANSWER IS "THE CLASS, NOT OUR
 ESTIMATORS."** Section 1, verbatim: *"Our ideas originate from the well-known principle of Defect
@@ -10412,7 +10417,7 @@ tonight?* — and the fourth is B7:
 | same book, §10.2.2.2–3 (p. 482) | `lamour-index-from-circuit-topology` — B11's topological index rests on front matter alone | ❌ same file |
 | W. Wright, *General linear methods with inherent Runge-Kutta stability*, PhD, Auckland 2002 | the concrete GLM tableau and its stage order (line ~7298: abstract only on disk) | ✅ **LANDED, 188 pp — see below** |
 | S. Voigtmann, *General Linear Methods for Integrated Circuit Design*, PhD, Humboldt | the full Nordsieck order conditions behind Theorem 5 | ✅ landed, 259 pp, unread |
-| Sickenberger, Weinmüller & Winkler, ASC Report 16/2007 (Part I) | B7: whether defect-correction local error estimates see an accumulating period error | ❌ Part II arrived for the third time; Part I is its ref [19], *"to appear in BIT"* |
+| Sickenberger, Weinmüller & Winkler, ASC Report 16/2007 (Part I) | B7: whether defect-correction local error estimates see an accumulating period error | ✅ **LANDED and read (2026-09-08; the peer's absence row was stale until 09-09)** — B7 answered: IDeC reproduces the period error to four digits at one grid; the f-value defect gate refuted as the edge fix |
 | Butcher & **Jackiewicz** (⚠ not "Butcher & Wright" — the peer's first attribution came from the filename), *Construction of GLMs with RK stability properties*, Numer. Algorithms 36 (2004) | — | ❌ **wrong class**: abstract verbatim *"the construction of EXPLICIT general linear methods of order p and stage order q = p"*, for *"NONSTIFF differential systems"* — bounded stability regions, cannot integrate stiff circuit DAEs. **And redundant**: Wright's thesis appendix already carries concrete IRKS tableaux to 15 digits for orders 2–4 in Nordsieck form (e.g. order 2: `A21 = 0.471407662653622`, `A31 = −0.134639854910322`, `A32 = 0.804212616739007`; only sub-diagonal `A` entries, consistent with lower-triangular structure). **The GLM tableau question needs NO further acquisition** — theory and usable coefficients are both on disk. |
 
 ⚠ The stiff / implicit GLM line, named from Butcher & Jackiewicz's reference list so it is on file
@@ -12590,4 +12595,18 @@ extrapolates to ~1 % ± 2 % between full excursion and the zero-excursion limit 
 amplitude dependence of the estimators' gain is the surviving candidate and is untested at this size; a PSD × 4
 run at a = 0 (16 seeds, ~1.5 h) would put it at ~3σ. Left here: a 2 % constant that cancels in every slope and
 sits below what the deterministic instrument resolves.
+
+**Absence markers re-audited against the disk (docs session, 2026-09-09): four of its ten were stale.** Beyond
+Lamour (above) and Part I (row corrected above): **Hill's method** is reachable — Bayer 2025/2026 (Koopman-Hill
+stability and bifurcation of periodic orbits) and Schuetz, Bayer & Leine 2026 (Koopman-based stability of DAEs,
+which the peer had already read and built a fixture on while its row said nothing on Hill's method existed) carry
+the Hill matrix; it bears on the `floquet_modes` n = 400 cap because a Hill method eigen-decomposes a truncated
+Hill matrix on the harmonic-balance representation and forms NO monodromy — a lead, not a recommendation (cost
+unread, de-aliasing cited second-hand as significant, mechanical-engineering HB rather than MNA). **HLR89** is on
+disk (Hairer, Lubich & Roche). The **GLM gap is now precise**: Lamour–März–Tischendorf Ch. 5 (§5.2.3 / 5.3.3 /
+5.5.3) and Ch. 10 for the index sections — not "the book". Still absent, tested: Hegazi & Abidi's Leeson chapter;
+an SSP-for-GLMs source (Spijker; Ferracina & Spijker; Higueras). ⚠ The fix that works on the peer's side: a check
+that asserts each remaining absence is STILL absent, so an acquisition makes it fail and name the file — a
+"recorded so nobody searches again" note cannot be maintained by remembering to retry. This file's markers are
+prose; the same inversion here would be a `doc/` script listing the absences with their expected paths.
 
