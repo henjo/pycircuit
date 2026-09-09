@@ -13837,6 +13837,25 @@ class PAC(Analysis):
         pair total is 4 S_v there and 8 S_v far out.  The "~1e-12 rows" were
         `am_pm`'s p = 0 band on a half-wave-symmetric fixture: a symmetry
         zero, see `am_pm`.  Oscillator magnitudes from this are trustworthy.
+
+        ⚠ WHAT A MEASUREMENT MUST BE TO BE COMPARED WITH `S_pm` (2026-09-09,
+        after a 16-seed Monte Carlo campaign and a deterministic forward
+        tone route; roadmap "Item 3, answered"): `S_pm` is PM BY QUADRATURE
+        OF THE FUNDAMENTAL'S SIDEBANDS.  A "phase" read by a one-period
+        demodulation of the fundamental leaks the other harmonics'
+        sidebands through its boxcar (sinc(pi(1 - r)) ~ 0.1 in amplitude
+        for the second harmonic's, which is ~ the orbit's asymmetry), and
+        a phase read from zero crossings converts EVERY harmonic's
+        sidebands; both drifted 6 % against this quantity as the asymmetry
+        of a harmonic-rich orbit was swept while the forward LPTV response
+        agreed with it to 1 %.  So compare `S_pm` with the fundamental's
+        sideband PM (a spectrum analyser's sidebands around f0, or the
+        forward-tone gate `test_pnoise_oscillator_pm_matches_a_forward_tone_
+        transient_with_no_adjoint`), never with a demodulated or
+        crossing-time phase, and BAND WITH BAND: a source behind a slow node
+        has an in-band spectrum that is not 1/r^2 (its slow/core ratio
+        swings 1.16 -> 0.87 across 0.08-0.15 f0), so a band mean and a
+        point value differ by ~4 % there.
         """
         self._check_circuit(pss)
         pss = pss._adjoint_host()
