@@ -12610,3 +12610,11 @@ that asserts each remaining absence is STILL absent, so an acquisition makes it 
 "recorded so nobody searches again" note cannot be maintained by remembering to retry. This file's markers are
 prose; the same inversion here would be a `doc/` script listing the absences with their expected paths.
 
+**The "order-dependent parity test" was not one.** `test_p3_one_floor_one_vocabulary_for_solve_batched` failed
+once in a full run and passed alone; I read the source-context lines of the traceback (the signature asserts) as
+the failure and called it order-dependent in a commit message. The traceback's tail says `cuBlas allocation
+failure` inside the JAX solve — the known GPU-contention class under xdist (`XLA_PYTHON_CLIENT_PREALLOCATE`
+already off; one worker occasionally cannot get a cuBLAS handle), the same class as every other single JAX
+failure this week. Nothing to bisect. ⚠ Read the tail of a traceback, not the source context pytest prints
+around the frame.
+
