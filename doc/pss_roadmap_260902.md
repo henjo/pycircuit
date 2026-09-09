@@ -12803,3 +12803,15 @@ constant term 1. The printed `β = [0, 1/4, 1]` is in DESCENDING powers — read
 the measured last column `[·, 0, −1/4]`; and `σ(X) = {λ}` is a joint polynomial condition on (α, β), (3.4.3),
 not on α alone. With the congruence corrected the p = 2 construction recovers a method (cost 3e-9, L-stable).
 
+**p = 3 construction: not achieved tonight, and the reason is narrowed.** With the confirmed conditions (both
+congruences, `σ(X) = {λ}`, strict stiff accuracy, ε = 0, |R(iy)| ≤ 1, λ pinned in Table 3.3's band) the p = 2
+case converges to cost 3e-9 from random starts, but p = 3 at λ = 0.25 / 0.35 / 0.50 stalls at cost 2.1–2.5 with
+eig(V)₂ ≈ 0.38 and ρ_lhp ≈ 1.002–1.005 — the same structure each time, from 80 starts, so not a local-minimum
+accident. Either the constraint set as written is inconsistent at p ≥ 3 in a way it is not at p = 2 (a Nordsieck
+normalisation or a V-structure the canonical form supplies), or the blind search needs Wright's constructive
+route ("approach one of §3.7", the Appendix I generator; §3.11 error minimisation), which is what his history
+(p. 54) says the literature needed even at order 4 for the easier DIMSIM class. A transcription of §3.7's steps is
+the next acquisition; the blind search is retired. Machine time on the constructions: ~40 min of 20 cores. What
+stands: the machinery, gated; GLM2 = Wright's exact method; the conditions as measured and confirmed; no implicit
+L-stable q = p method above order 2 in the tree yet.
+
