@@ -92,3 +92,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260908T222936Z,28ef100,pycircuit 10 no:cacheprovider,565.9,3129,pycircuit/circuit/tests/test_analysis_shooting.py::test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundamental,274.2
 20260908T222959Z,28ef100,no:cacheprovider pycircuit/circuit/tests/test_idtmod.py::test_solve_batched_sweeps_modulus,4.4,1,pycircuit/circuit/tests/test_idtmod.py::test_solve_batched_sweeps_modulus,4.4
 20260909T024638Z,53234c2,pycircuit 10 no:cacheprovider,531.3,3129,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode,199.0
+20260909T030926Z,2f3b51a,pycircuit/circuit/tests/test_analysis_shooting.py no:cacheprovider mos_pnoise_runs_through,27.1,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average_overstates_a_switched_stage,26.3
+20260909T032258Z,2f3b51a,pycircuit 8 no:cacheprovider,800.7,3130,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode,431.9

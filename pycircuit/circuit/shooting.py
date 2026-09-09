@@ -10796,7 +10796,18 @@ class PAC(Analysis):
         differ wherever the modulation has harmonics -- measured on a
         driven multiplier, and the identity against the STATIONARY fold of
         the same physics written as a white source through a periodically
-        varying gain is the gate (`test_..._cyclostationary_...`).
+        varying gain is the gate (`test_..._cyclostationary_...`).  ON A
+        MOS (2026-09-09): an EKV stage switched by a 1 MHz LO whose channel
+        noise passes through a second EKV switched by the same LO reads
+        0.376 of the cycle average (thermal, every offset) and 0.32-0.44
+        with flicker at ten times thermal; the switch's own channel noise
+        is largest when its channel shunts it.  ⚠ Noise that reaches the
+        output through a time-INVARIANT transfer (a single stage's drain
+        into an RC load) gives cyc = cycle average to four digits, since
+        only P_0 survives -- the construction shows only where the
+        modulated noise crosses a periodically varying transfer.  Cost:
+        white = the cycle average's; coloured (any frequency-dependent
+        CY, a negligible flicker coefficient included) ~6x.
         ⚠ FLICKER, AND WHAT OKUMURA'S EQ. 23 MEANS HERE (measured
         2026-09-08): a coloured source is folded band by band, and against
         the stationary fold of the same SEPARABLE physics (a stationary
@@ -11243,7 +11254,15 @@ class PAC(Analysis):
         ## gain, grid-independent; 1.000000000 for a sign-definite gain).
         ## The sign is invisible here; its NECESSARY condition is a PSD
         ## that touches zero along the orbit with a KINK in its square
-        ## root, so that is warned on.
+        ## root, so that is warned on.  ⚠ SCOPE (measured on an EKV stage,
+        ## 2026-09-09): a DEVICE's own noise has no sign to lose -- its
+        ## modulation is a physical intensity, sqrt(PSD(x(t))) >= 0 IS the
+        ## process -- so for intrinsic MOS thermal, shot or flicker noise the
+        ## PSD-specified model is the physics and this warning does not
+        ## apply; the ambiguity belongs to noise passing through a SIGNED
+        ## external gain (the multiplier fixtures).  Okumura's eq. 23
+        ## objection to flicker is then the separate, physical question of
+        ## whether a trap process is "modulated coloured noise" at all.
         ## The proxy's threshold: a zero crossing SAMPLED on an N-point grid
         ## bottoms out near (pi/N)^2 of the maximum (6e-4 at 200 points on
         ## the gate fixture), while a sign-definite PSD with a ten-fold

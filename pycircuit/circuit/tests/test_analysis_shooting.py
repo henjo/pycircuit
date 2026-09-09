@@ -18046,3 +18046,66 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
         warnings.simplefilter('always')
         pacB2.pnoise(pB2, 0.13 * f0, oB2, maxsidebands=16, cyclostationary=True)
     assert not any('touches zero' in str(x.message) for x in w2), [str(x.message)[:80] for x in w2]
+
+
+def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average_overstates_a_switched_stage():
+    """ITEM 2 (Andreas, 2026-09-09): MOS pnoise through the construction it
+    was built for.  An EKV NMOS driven by a 1 MHz LO from off to strong
+    inversion (modulated channel noise) into node x, then a second EKV as a
+    pass transistor switched by the same LO into an RC load: the modulated
+    noise passes through a periodically varying transfer AFTER being
+    modulated, which is where the sideband correlation lives.  Measured:
+    the stationary fold REFUSES (bias-dependent CY); thermal-only the
+    cyclostationary fold reads 0.376 of the cycle average at 0.1 / 1.1 /
+    3.3 MHz alike (broadband transfers), at the cycle average's cost (the
+    white P-form is free); with flicker at ten times thermal (kf = 1e-13,
+    the EKV's kf |I|^af / f) 0.319 / 0.436 / 0.379 through the coloured
+    band-resolved branch at ~6x the cost.  The direction: the switch's own
+    channel noise is largest exactly when its channel shunts it, so
+    avg(|H|^2 PSD) < avg(|H|^2) avg(PSD).  ⚠ A first fixture put the noise
+    at the drain of a single stage into an RC load and read cyc/avg =
+    1.000 to four digits at every offset: through a time-INVARIANT
+    transfer only P_0 survives and the construction cannot show -- the
+    fixture, not the fold.  Pinned: refusal; 0.376 within 2 %; the flicker
+    ratio at 0.1 MHz within 3 % of 0.319 and away from the thermal one.
+    """
+    import warnings
+    from pycircuit.circuit import elements_hdl as eh
+    circuit.default_toolkit = circuit.numeric
+    EKV = dict(vto=0.5, gamma=0.7, phi=0.7, kp=1.5e-4, cox=6.9e-3, w=10e-6, l=1e-6)
+    f0 = 1e6; T = 1.0 / f0
+
+    def build(kf):
+        c = SubCircuit()
+        for n in ('g', 'g2', 'x', 'd', 'vdd'):
+            c.add_node(n)
+        c['vdd'] = VS('vdd', gnd, v=2.0)
+        c['vg'] = VSin('g', gnd, vo=0.5, va=0.8, freq=f0)
+        c['vg2'] = VSin('g2', gnd, vo=2.2, va=1.2, freq=f0)
+        card = dict(EKV); card.update(kf=kf, af=1.0)
+        c['m1'] = eh.EkvNmosHdl('x', 'g', gnd, gnd, **card)
+        c['Rx'] = R('vdd', 'x', r=2e3); c['Cx'] = C('x', gnd, c=0.2e-12)
+        c['m2'] = eh.EkvNmosHdl('d', 'g2', 'x', 'x', **card)
+        c['RL'] = R('vdd', 'd', r=5e3); c['CL'] = C('d', gnd, c=1e-12)
+        return c
+
+    ratios = {}
+    for kf in (0.0, 1e-13):
+        c = build(kf)
+        pss = PSS(c, method='gear', reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 200, maxiterations=60)
+        assert pss.converged
+        pac = PAC(c, toolkit=circuit.numeric)
+        od = [str(n) for n in c.nodes].index('d')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT'):
+                pac.pnoise(pss, 0.1e6, od, maxsidebands=16)
+            sm, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, modulated=True)
+            sc, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
+        ratios[kf] = sc / sm
+    assert abs(ratios[0.0] / 0.376 - 1.0) < 0.02, ratios
+    assert abs(ratios[1e-13] / 0.319 - 1.0) < 0.03, ratios
+    assert abs(ratios[1e-13] - ratios[0.0]) > 0.03, ratios

@@ -11890,3 +11890,56 @@ across and keeping only the crossing times (~400 MB per worker); the block bound
 times straddling it (ordinary noisy spacings, 1.000117 / 0.999961 periods — an earlier "exactly zero"
 at the boundaries was a two-decimal print of 1e-3 values). Relaunched 2026-09-09 ~00:25 UTC. The block
 restart's opener artefact sits at r = 2e-4 and its harmonics, outside the bands at any weight that matters.
+
+**The full run (5 + 5 × 40 000 periods, blocked) landed 02:27 UTC, and its slow-node reading was an
+ARTEFACT.** Calibrated on the control (MC/`pnoise` 0.1003 ± 0.6 % in the disputed band, 0.095 ± 4 % in
+the low band, consistent), the slow node read 0.958 ± 2.8 % of `pnoise` in the low band and **1.704 ±
+1 %** in the disputed one — above BOTH constructions by 70 % where they differ by 2 %. A single
+unblocked 3000-period run read 1.08 ± 0.13 there, so the excess was the block restarts: each opener kicks
+the phase by a deterministic −7.64e-5 rad (std 4.3e-6 over 35 boundaries, against 7e-6 noise steps),
+a sawtooth after detrending, FLAT in `S·r²` across every band — 7.7e-14 in the disputed band against a
+signal of 1.3e-13 — negligible on the core (3.7e-8) and dominant on the slow node. ⚠ My note that the
+restart artefact "sits outside the bands" was wrong: a sawtooth's comb is flat in `S·r²`. Subtracting
+it leaves 1.13 / 0.94 in the two bands, ±10 % in opposite directions — the restart also re-settles the
+τ = 100 T node, which no sawtooth models — so the run is rerun restart-free (2 waves × 5 workers × 20 000
+periods, ~1.75 GB each, the memory that forced the blocks), saving the DEMODULATED fundamental phase
+beside the crossing phase (on the single run the crossing read 8 % above the fundamental's phase in the
+disputed band, ±13 %: on an asymmetric orbit a crossing moves with the harmonics' noise too, which the
+carrier-1 split excludes). The core calibration stands.
+
+## Item 2: MOS pnoise through the cyclostationary route (Andreas, 2026-09-09)
+
+An EKV NMOS driven by a 1 MHz LO from off to strong inversion (modulated channel noise, the library's
+Klaassen-Prins thermal + `kf|I|^af/f` flicker), into node `x`, then a second EKV as a pass transistor
+switched by the same LO (bulk tied to its source — with the bulk at ground the body effect kept it off
+and the output sat at 2.000 V, the load resistor's own 8.3e-17 V²/Hz) into a 5 kΩ / 1 pF load; output at
+the drain; `pnoise` at 0.1 / 1.1 / 3.3 MHz:
+
+| route | thermal only | flicker at 10× thermal (kf = 1e-13) | cost |
+|---|---|---|---|
+| stationary | REFUSES (bias-dependent `CY`) | REFUSES | — |
+| cycle-averaged (`modulated=True`) | 1.83e-16 / 1.83e-16 / 1.81e-16 | 4.43e-16 / 2.63e-16 / 1.94e-16 | 1.3 s |
+| **cyclostationary** | 6.89e-17 / 6.88e-17 / 6.83e-17 | 1.41e-16 / 1.15e-16 / 7.35e-17 | 1.3 s (white) / 7.7 s (coloured) |
+| cyc / cycle-avg | **0.376 / 0.376 / 0.376** | **0.319 / 0.436 / 0.379** | |
+
+So on a real device the cycle average OVER-states by 2.7× (thermal): the switch's own channel noise is
+largest exactly when its channel shunts it, `avg(|H|²·PSD) < avg(|H|²)·avg(PSD)`. Thermal costs nothing
+over the cycle average (the white `P`-form); flicker runs the coloured band-resolved branch at ~6× (per-
+band square roots on 200 samples). ⚠ Two lessons from the fixture: (1) a first version put the noise at
+the drain of ONE stage into an RC load and read cyc/avg = 1.000 to four digits at every offset — through a
+time-INVARIANT transfer only `P₀` survives and the construction cannot show, by construction; the
+modulated noise must pass through a periodically varying transfer AFTER modulation (a switch, a second
+LO-driven stage, an IF read at a converted frequency). (2) The EKV flicker is `kf|I|^af/f` with no area
+normalisation, so kf = 1e-22 … 1e-18 changed nothing to four digits while still triggering the coloured
+branch (a 3 % term at 1 kHz is colour, and the 1e-9 detection is right to take it) — the cost trap is
+real: a negligible flicker coefficient buys the 6× branch. Scope point recorded in the fold: a DEVICE's
+own noise has no sign to lose (`√PSD ≥ 0` IS the process), so the sign warning is for signed external
+gain paths only; for intrinsic MOS noise the PSD-specified model is the physics, and Okumura's eq. 23
+objection to flicker is the separate physical question of whether a trap process is modulated coloured
+noise at all. Pinned: `test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average_overstates_a_switched_stage`.
+
+⚠ Relaunched again at 03:22 UTC as THREE waves of 10 000-period runs (4 + 4 + 2 workers): the restart-free
+workers grew at 150 kB/period toward ~3 GB each, 14.5 GB at the end of a five-worker wave on a box with 11 GB
+free (a peer's process was OOM-killed minutes earlier). Same total data (two 5000-period segments per run),
+6 GB peak, ~2.5 h. Both phase estimators are saved per run, so the low band — where nothing is disputed —
+is the estimators' own control at ~1 %; the verdict is read only if they agree there.
