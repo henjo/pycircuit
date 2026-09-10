@@ -996,6 +996,10 @@ class Transient(Analysis):
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
         self._pred_reset()
+        ## the Nordsieck slots are per-RUN too: a second solve() on the same
+        ## object must not read the first run's vector
+        self._glm_Q = None
+        self._glm_Q_at_entry = None
         ## ⚠ A ZERO `iq` RING IS ONLY SAFE FOR A METHOD OPENED BY EULER, which
         ## reads no past current.  A method that refuses that opener reads it on
         ## step one, and zero is wrong there -- measured at a full order of
@@ -2911,19 +2915,38 @@ class Transient(Analysis):
                 u = u + provided_function(tt)
             return u
 
+        ## ⚠⚠ TWO SLOTS, AND THE SECOND ONE IS WHAT MAKES ADAPTIVE STEPPING
+        ## POSSIBLE AT ALL.  `_glm_Q` holds the vector this method last
+        ## PRODUCED, valid at the end of that step; `_glm_Q_at_entry` holds the
+        ## one it last CONSUMED, valid at the start.  A step that the
+        ## controller REJECTS has already overwritten the first, and the retry
+        ## -- which starts from the same `x` at the same `tn`, only with a
+        ## smaller `h` -- then finds no vector valid at `tn` and runs the full
+        ## startup.  MEASURED before this existed: every single step rejected
+        ## once and every step paying a startup (2732 accepted, 2732 rejected,
+        ## 2733 startups on GLM2), 102034 device evaluations against radau's
+        ## 2419 on the same problem -- 42x, and a vicious cycle rather than a
+        ## slow path, because a fresh startup's top component makes the next
+        ## estimate spurious too.
         state = getattr(self, '_glm_Q', None)
-        if state is None or abs(state[1] - tn) > 1e-12 * max(abs(tn), h):
+        entry = getattr(self, '_glm_Q_at_entry', None)
+        Q = None
+        for cand in (state, entry):
+            if cand is not None and abs(cand[1] - tn) <= 1e-12 * max(abs(tn), h):
+                Q, _t_old, h_old = cand
+                if abs(h_old - h) > 1e-14 * h:
+                    rho = h / h_old
+                    Q = np.array([rho ** k * Q[k] for k in range(r)])
+                break
+        started = Q is None
+        if started:
             Q = self._glm_startup(tn, x0, h, provided_function)
             self.statistics_glm_startups = getattr(self, 'statistics_glm_startups', 0) + 1
-        else:
-            Q, _t_old, h_old = state
-            if abs(h_old - h) > 1e-14 * h:
-                rho = h / h_old
-                Q = np.array([rho ** k * Q[k] for k in range(r)])
         xn = np.asarray(x0, dtype=float)
         ## the vector this step ENTERED with -- the shooting traversal reads it
         ## after the first step to learn what the startup produced
         self._glm_Q_in = np.asarray(Q, dtype=float)
+        self._glm_Q_at_entry = (np.array(Q, dtype=float), tn, h)
         tstage = [tn + c[i] * h for i in range(s)]
         pred = self._glm_stage_predictor(h, tn, c)
         Y = [None] * s
@@ -2966,7 +2989,49 @@ class Transient(Analysis):
         self._effective_method = type(integ).__name__
         self._companion_coeffs = None
         J = Cm + a_last * h * Gm
+        if getattr(self, '_rk_want_est', False):
+            if started:
+                ## ⚠ NO ESTIMATE ACROSS A RESTART.  The entering vector came
+                ## from the startup's interpolant, not from a step of this
+                ## method, so `Q_p` is not the same quantity `Qn_p` is and
+                ## their difference is not a local error -- it reads large and
+                ## the controller rejects a step that was fine, which then
+                ## restarts again.  An LMM's first step has no
+                ## divided-difference LTE for the same reason and is treated
+                ## the same way.
+                self._rk_est = np.zeros_like(np.asarray(xnp1, dtype=float))
+            else:
+                self._rk_est = self._glm_error_estimate(Q[p], Qn[p], J)
         return xnp1, None, J, None
+
+    def _glm_error_estimate(self, Qp_in, Qp_out, J):
+        """The local error of one Nordsieck GLM step, in STATE units.
+
+        The top Nordsieck component is ``Q_p = h^p q^(p)`` (this file's
+        convention carries no ``1/k!``), so the change across a step is
+
+            Q_p^[n] - Q_p^[n-1] = h^p (q^(p)(t_n) - q^(p)(t_{n-1}))
+                                ~ h^(p+1) q^(p+1),
+
+        which is the order the local error of a ``p``-th order method has.
+        Both vectors are at THIS step's scale: the entering one was rescaled by
+        ``rho^k`` when the step changed, before the step used it, so no second
+        rescaling belongs here.
+
+        ⚠ FILTERED through the step's own last-stage operator, exactly as
+        :meth:`_rk_dirk_estimate` filters a DIRK's embedded estimate and for
+        the same reason: the raw difference is in CHARGE units and an
+        unfiltered charge residual GROWS like ``|a h|`` on a stiff mode where
+        the true error is L-damped to zero.  One back-substitution, no new
+        factorisation.
+        """
+        iref = self.irefnode
+        tk = self.toolkit
+        raw = np.asarray(Qp_out, dtype=float) - np.asarray(Qp_in, dtype=float)
+        (Jr,) = remove_row_col((J,), iref, tk)
+        raw_r = tk.concatenate((raw[:iref], raw[iref + 1:]))
+        Est_r = tk.linearsolver(Jr, raw_r)
+        return tk.insert(Est_r, iref, 0.0)
 
     def _rk_dirk_estimate(self, K, h, J):
         """The filtered embedded error estimate for a DIRK step, in STATE units.
@@ -4195,8 +4260,17 @@ class Transient(Analysis):
         ## (fixed step runs the ordinary loop below, which dispatches the stage
         ## step).  A stage method has no LMM divided-difference LTE, so it never
         ## uses the controller below.  `_begin_run` has set `base_integrator`.
+        ## ⚠ AND A NORDSIECK GLM TOO.  It is not a Runge-Kutta method, but it
+        ## is self-starting, keeps no charge ring and has no divided-difference
+        ## LTE, so the LMM controller below cannot drive it -- it used to reach
+        ## that loop and die in `get_diff` with `AttributeError:
+        ## active_integrator`.  What it does have is an error estimate of its
+        ## own (`_glm_error_estimate`) delivered through the same `_rk_est`
+        ## slot, so it belongs in the one self-starting loop.
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
-        if isinstance(self.base_integrator, RungeKuttaIntegrator) \
+        if (isinstance(self.base_integrator, RungeKuttaIntegrator)
+                or getattr(self.base_integrator, 'is_multivalue',
+                           lambda: False)()) \
                 and not fixed_timestep:
             return self._run_rk_adaptive(
                 x, n, X, timelist, tend, dt, max_step, abstol,

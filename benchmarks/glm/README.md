@@ -21,3 +21,9 @@ thing: `benchmarks/stage_predictor.py` covers every integrator family.
 ⚠ Two traps these scripts encode, both measured the hard way:
 the Nordsieck convention is `y_k = h^k y^(k)` **without** `1/k!`, and `F` is the exponential of the
 whole product `K(I+λK)⁻¹`, not `exp(K)·(I+λK)⁻¹`.
+
+## Adaptive stepping (2026-09-10)
+
+`glm_adaptive.py` measures the cost and the restart count of the GLM under the step controller, and the
+order on a deliberately non-uniform grid — which is the measurement Voigtmann Thm 9.5 does NOT cover, since
+it is stated at constant stepsize.

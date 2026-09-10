@@ -1499,12 +1499,27 @@ class NordsieckGLMIntegrator(Integrator):
     from the EXACT vector and from the computed one and requires the same
     order.
 
-    ⚠ SCOPE.  Transient only, constant stepsize (the theorem's own scope;
-    a Nordsieck rescale `Q_k <- (h_new/h_old)^k Q_k` is applied if the step
-    changes but no LTE/step controller exists for it); no PSS/shooting
-    period map (a multivalue method's monodromy lives on the r*m Nordsieck
-    state, not built -- `PSS(method=...)` does not offer it); no PCNR stage
-    path; not on the JAX backend.
+    ⚠ SCOPE, and this paragraph has been WRONG TWICE, so read the dates.  The
+    shooting period map on the `r*m` Nordsieck state IS built (`PSS(method=
+    'glm3')` and friends), and so is ADAPTIVE STEPPING (2026-09-10): the
+    estimate is the change in the top Nordsieck component,
+    `Transient._glm_error_estimate`, delivered through the same `_rk_est` slot
+    the Runge-Kutta methods use, with `EMBEDDED_ORDER = p`.
+
+    ⚠⚠ THE THEOREM'S SCOPE IS CONSTANT STEPSIZE AND THE MEASUREMENT IS NOT.
+    Voigtmann Thm 9.5 is stated at constant stepsize, and the variable-step
+    device here is the usual Nordsieck rescale `Q_k <- (h_new/h_old)^k Q_k`,
+    which is exact for the EXACT Nordsieck vector and not obviously so for the
+    computed one.  MEASURED on the index-2 C-V loop over a smoothly
+    non-uniform grid (`h` varying by a factor of 3 across the run), endpoint
+    error against a fine reference: GLM3 2.94 against 2.96 uniform, GLM4 5.59
+    against 4.22, GLM2 2.18 averaged (its column is non-monotone because its
+    error CHANGES SIGN, not because the order drops).  So the order survives a
+    non-uniform grid on this fixture -- but the theorem does not say it must,
+    and a grid with a JUMP in `h` rather than a smooth variation is not what
+    was measured.
+
+    Still not built: no PCNR stage path; not on the JAX backend.
     """
 
     #: overridden by concrete tableaux
@@ -1559,9 +1574,15 @@ class NordsieckGLMIntegrator(Integrator):
                                   'Transient drives it through _solve_timestep_glm')
 
     def compute_lte(self, *args, **kwargs):
-        raise NotImplementedError('no LTE estimator for the Nordsieck GLM: '
-                                  'constant stepsize only (Voigtmann Thm 9.5 is '
-                                  'stated at constant stepsize)')
+        raise NotImplementedError(
+            'a GLM has no divided-difference LTE; its estimate is the change '
+            'in the top Nordsieck component -- Transient._glm_error_estimate')
+
+    @property
+    def EMBEDDED_ORDER(self):
+        """The step exponent is ``1/(EMBEDDED_ORDER+1)``, and this method's
+        estimate is ``O(h^(p+1))`` (the change in ``Q_p``), so this is ``p``."""
+        return self.order
 
     @staticmethod
     def _nordsieck_matrices(p):

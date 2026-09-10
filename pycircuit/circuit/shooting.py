@@ -3689,6 +3689,12 @@ class PSS(Analysis):
         s = A.shape[0]
         x = copy(x_in)
         tr._glm_Q = None                      # force the startup at t = 0
+        ## ⚠ AND THE ENTRY SLOT.  It is keyed by the time the step STARTED
+        ## at, so the previous shooting iteration's first step left one at
+        ## t = 0 -- exactly the time this period's first step asks for.  Left
+        ## behind it is picked up in preference to a fresh startup and the
+        ## period map silently reads the LAST iteration's Nordsieck vector.
+        tr._glm_Q_at_entry = None
         tr._glm_prev = None                   # no stage predictor across the seam
         tr._pred_reset()                      # nor its node history: the period
                                               # seam is a DISCONTINUITY in the

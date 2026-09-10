@@ -13414,3 +13414,72 @@ still predicted, and both halves of that are gated. ⚠ This is the one carve-ou
 structural — a property of the state, not of a fixture.
 
 **Final: 3165 passed, 6 skipped, 3 xfailed.**
+
+## Adaptive step control for the GLM (Andreas: "Add adaptive step control to GLM", 2026-09-10)
+
+The GLM was constant-step only. It now runs under the step controller, through the same `_rk_est` slot the
+Runge-Kutta methods use.
+
+**The estimate.** `Transient._glm_error_estimate`: the change in the TOP Nordsieck component,
+`Q_p^[n] − Q_p^[n−1] = h^p(q^(p)(t_n) − q^(p)(t_{n−1})) ≈ h^{p+1} q^{(p+1)}`, filtered through the step's own
+last-stage operator exactly as `_rk_dirk_estimate` filters a DIRK's embedded estimate — the raw difference is
+in CHARGE units and an unfiltered charge residual grows like `|a h|` on a stiff mode where the true error is
+L-damped to zero. `EMBEDDED_ORDER = p`. Not routed through the LMM controller: a GLM keeps no charge ring and
+has no divided-difference LTE, and it used to reach that loop and die in `get_diff` with `AttributeError:
+active_integrator`.
+
+**⚠⚠ I NAMED THE ORDER THE ARITHMETIC PREDICTS AND THE MEASUREMENT DISAGREED — TWICE, in opposite
+directions.** The raw charge difference does read `h^{p+1}` (slopes 2.98 / 4.01 / 5.01 for p = 2/3/4). The
+FILTERED estimate reads exactly `h^p` (2.01 / 3.05 / 4.07): `J = C + a h G` is singular in `C` on a DAE, so
+`J^{-1}` behaves like `1/h` on the algebraic subspace and costs one order. Before treating that as a GLM
+defect I measured the ESTABLISHED estimators on the same fixture through the same slot:
+
+| method | `EMBEDDED_ORDER` | wanted slope | measured |
+|---|---|---|---|
+| radau | 3 | 4 | 3.18 |
+| TR-BDF2 | 2 | 3 | 1.77 |
+| ESDIRK43 | 3 | 4 | 2.06 |
+| GLM2 / GLM3 / GLM4 | 2 / 3 / 4 | 3 / 4 / 5 | 2.01 / 3.07 / 4.06 |
+
+Every method reads below its declared value on an index-1 DAE, so the GLM sits exactly where radau does and
+`EMBEDDED_ORDER = p` is the consistent choice. **The controller is conservative for all of them.** That is a
+pre-existing property of the filtered estimate, recorded here because I nearly "fixed" the GLM for it.
+
+**⚠⚠ THE STARTUP COUNT IS THE WHOLE ENGINEERING PROBLEM, and it is not an optimisation.** A GLM carries a
+Nordsieck vector between steps, and a step the controller REJECTS has already overwritten it. The retry
+starts at the same `tn` with a smaller `h`, finds no vector valid there, and runs the full startup (`p` Radau
+substeps) — whose top component then makes the next estimate spurious, so it rejects again. Measured, GLM2 at
+reltol 1e-6: **2732 accepted steps, 2732 rejections, 2733 startups, 102034 device evaluations against radau's
+2419 on the same problem** — a livelock, not a slow path. Fixed by a second slot, `_glm_Q_at_entry`, holding
+the vector the last step CONSUMED, and by emitting no estimate at all across a restart (an LMM's first step
+has no LTE for the same reason).
+
+| method | reltol | before | after | steps | rejected | startups |
+|---|---|---|---|---|---|---|
+| glm2 | 1e-6 | 102034 | **32589** | 3048 | 30 | 1 |
+| glm3 | 1e-6 | 20740 | **9574** | 612 | 39 | 1 |
+| glm4 | 1e-6 | 17671 | **8249** | 377 | 72 | 1 |
+| glm4 | 1e-9 | 47626 | **18576** | 927 | 64 | 1 |
+| radau | 1e-9 | — | 6106 | 438 | 105 | — |
+| trbdf2 | 1e-9 | — | 28096 | 3438 | 74 | — |
+
+Same answer as every other method, 6.653e-05 against a fine reference. **glm4 beats TR-BDF2 at reltol 1e-9
+(18576 against 28096) and loses to radau by 3.0×** — consistent with the cost verdict already recorded, which
+this does not overturn.
+
+**⚠⚠ VOIGTMANN Thm 9.5 IS STATED AT CONSTANT STEPSIZE**, so adaptive stepping is outside the result the
+method rests on, and the variable-step device — the Nordsieck rescale `Q_k ← ρ^k Q_k` — is exact for the
+EXACT vector and not obviously so for the computed one. MEASURED on the index-2 C-V loop over a smoothly
+non-uniform grid (`h` varying ~3×), endpoint error against a fine reference, with the uniform grid as its own
+control: **GLM3 2.94 against 2.96, GLM4 5.59 against 4.22, GLM2 2.18 averaged** (its column is non-monotone
+because its error CHANGES SIGN, not because the order drops — the same trap trap has). The `max` over rows
+puts the algebraic component in the number, so this is an index-2 statement: no split under a non-uniform
+grid either. ⚠ What was NOT measured is a grid with a JUMP in `h` rather than a smooth variation.
+
+⚠ The class docstring's SCOPE paragraph has now been wrong twice — it still claimed no shooting period map,
+built days ago, and constant stepsize only. Rewritten with dates.
+
+Gated by `test_a_glm_keeps_its_order_on_a_grid_that_is_not_uniform`, `test_a_glm_runs_adaptively_and_restarts_once`
+(the startup count is the assertion, not the step count) and `test_a_glm_has_no_error_estimate_across_a_restart`.
+All three verified to fail on the code before their fix — the third by restoring the unconditional estimate,
+the first by breaking the rescale exponent to `ρ` (which is how a wrong Nordsieck rescale would look).

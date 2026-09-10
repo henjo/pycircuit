@@ -494,3 +494,147 @@ def test_glm_stage_predictor_declines_a_changed_step_and_a_period_seam():
     ## a record that does not END where this step STARTS declines
     tr._glm_prev = (Yp, np.zeros(4), 1e-5, 5e-5)
     assert tr._glm_stage_predictor(1e-5, 0.0, c) is None
+
+
+## ------------------------------------------------------------------------
+## Adaptive step control
+
+def _march(cls, times, build, reltol=1e-13):
+    """One transient over a PRESCRIBED grid, uniform or not -- the only way to
+    ask what a method's order is on a grid the controller did not choose."""
+    from pycircuit.circuit.dcanalysis import DC
+    cir = build()
+    tr = Transient(cir, integrator=cls(), reltol=reltol)
+    tr.irefnode = cir.get_node_index(gnd)
+    x = np.asarray(DC(cir, refnode=gnd).solve().x, dtype=float).ravel()
+    tr.epar.t = 0.0
+    tr._begin_run(x, cir.n)
+    for j in range(1, len(times)):
+        tr._dt_last = tr._dt if j > 1 else None
+        tr._dt = times[j] - times[j - 1]
+        tr.epar.t = times[j]
+        x, _f, _J, _ = tr.solve_timestep(x, times[j])
+        tr._push_history(x)
+    return np.asarray(x, dtype=float).ravel()
+
+
+def _grid(per, npts, jitter):
+    u = np.linspace(0.0, 1.0, npts + 1)
+    if jitter:
+        u = u + 0.25 * np.sin(2 * np.pi * u) / np.pi      # h varies ~3x
+        u = (u - u[0]) / (u[-1] - u[0])
+    return per * u
+
+
+@pytest.mark.parametrize('cls,name', [(GLM3Integrator, 'glm3'),
+                                      (GLM4Integrator, 'glm4')])
+def test_a_glm_keeps_its_order_on_a_grid_that_is_not_uniform(cls, name):
+    """⚠⚠ VOIGTMANN Thm 9.5 IS STATED AT CONSTANT STEPSIZE, so adaptive
+    stepping is outside the result the whole method rests on and this has to be
+    measured rather than assumed.  The variable-step device is the usual
+    Nordsieck rescale `Q_k <- (h_new/h_old)^k Q_k`, exact for the EXACT vector
+    and not obviously so for the computed one.
+
+    On the index-2 C-V loop over a smoothly non-uniform grid (`h` varying by a
+    factor of ~3), the endpoint error must keep the method's order -- and the
+    UNIFORM grid runs in the same test as the control, so this measures the
+    grid and not the fixture.  ⚠ The `max` over rows is what makes this an
+    index-2 statement: the algebraic component is in it, so a differential /
+    algebraic split would show as a lost order here.
+    """
+    per = 1e-3
+    ref = _march(RadauIIA3Integrator, _grid(per, 6000, False),
+                 lambda: _cv_loop(per))
+
+    def orders(jitter):
+        errs = []
+        for npts in (100, 200, 400, 800):
+            e = _march(cls, _grid(per, npts, jitter), lambda: _cv_loop(per))
+            errs.append(float(np.max(np.abs(e - ref))))
+        return [np.log(errs[i - 1] / errs[i]) / np.log(2)
+                for i in range(1, len(errs))], errs
+
+    uni, e_uni = orders(False)
+    jit, e_jit = orders(True)
+    p = cls().order
+    assert uni[-1] > p - 0.4, (name, uni, e_uni)
+    ## the jittered grid must not cost an order against its own control
+    assert jit[-1] > uni[-1] - 0.5, (name, jit, uni)
+
+
+@pytest.mark.parametrize('cls,name', [(GLM3Integrator, 'glm3'),
+                                      (GLM4Integrator, 'glm4')])
+def test_a_glm_runs_adaptively_and_restarts_once(cls, name):
+    """⚠⚠ THE STARTUP COUNT IS THE GATE, not the step count.  A GLM carries a
+    Nordsieck vector between steps, and a step the controller REJECTS has
+    already overwritten it -- so the retry, which begins at the same `tn` with
+    a smaller `h`, finds nothing valid there and pays a full startup (`p` Radau
+    substeps).  Worse, a fresh startup's top component makes the NEXT estimate
+    spurious, so the run rejects again: MEASURED before the entry slot existed,
+    GLM2 took 2732 accepted steps, 2732 rejections and 2733 startups, at 102034
+    device evaluations against radau's 2419 on the same problem.
+
+    A correct run restarts EXACTLY ONCE -- at `t = 0`, where it must -- and
+    rejects at a rate comparable to the Runge-Kutta methods.  The answer is
+    checked against an independent fine reference, because a method that
+    silently stopped adapting would also restart once.
+    """
+    from pycircuit.circuit.tests.test_stage_predictor import _expg_fixture
+    per = 1e-3
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = Transient(_expg_fixture(per), integrator=RadauIIA3Integrator(),
+                        reltol=1e-13).solve(refnode=gnd, tend=per,
+                                            timestep=per / 6000,
+                                            fixed_timestep=True).v('b')
+        t_ref = np.asarray(ref.x[0], dtype=float)
+        y_ref = np.asarray(ref.y, dtype=float)
+
+        tr = Transient(_expg_fixture(per), integrator=cls(), reltol=1e-9)
+        res = tr.solve(refnode=gnd, tend=per, timestep=per / 200,
+                       fixed_timestep=False)
+    w = res.v('b')
+    t = np.asarray(w.x[0], dtype=float)
+    y = np.asarray(w.y, dtype=float)
+    assert tr.statistics_glm_startups == 1, tr.statistics_glm_startups
+    assert tr.statistics.rejected_steps < 0.25 * tr.statistics.accepted_steps, \
+        (tr.statistics.rejected_steps, tr.statistics.accepted_steps)
+    ## it really adapted: a uniform grid of the same count is not what came out
+    assert np.max(np.diff(t)) > 1.5 * np.min(np.diff(t))
+    assert np.max(np.abs(y - np.interp(t, t_ref, y_ref))) < 1e-3
+
+
+def test_a_glm_has_no_error_estimate_across_a_restart():
+    """The entering Nordsieck vector of a RESTARTED step comes from the
+    startup's interpolant, not from a step of this method, so `Q_p` in and
+    `Q_p` out are not the same quantity and their difference is not a local
+    error -- it reads large, the controller rejects a step that was fine, and
+    the retry restarts again.  An LMM's first step has no divided-difference
+    LTE for the same reason.  Asserted directly: the estimate is exactly zero
+    on the step that restarted and nonzero on the next one."""
+    from pycircuit.circuit.tests.test_stage_predictor import _expg_fixture
+    per = 1e-3
+    cir = _expg_fixture(per)
+    tr = Transient(cir, integrator=GLM3Integrator(), reltol=1e-12)
+    tr._rk_want_est = True
+    seen = []
+    orig = Transient._solve_timestep_glm
+
+    def wrapped(self, x0, t, pf=None):
+        before = getattr(self, 'statistics_glm_startups', 0)
+        out = orig(self, x0, t, pf)
+        after = getattr(self, 'statistics_glm_startups', 0)
+        seen.append((after > before,
+                     float(np.max(np.abs(np.asarray(self._rk_est,
+                                                    dtype=float))))))
+        return out
+    Transient._solve_timestep_glm = wrapped
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr.solve(refnode=gnd, tend=per / 20, timestep=per / 200,
+                     fixed_timestep=True)
+    finally:
+        Transient._solve_timestep_glm = orig
+    assert seen[0][0] and seen[0][1] == 0.0, seen[0]
+    assert not seen[1][0] and seen[1][1] > 0.0, seen[1]
