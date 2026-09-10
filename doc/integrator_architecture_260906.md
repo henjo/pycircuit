@@ -736,3 +736,16 @@ three stages at once, the crudest seed in the codebase and the PSS default — *
 method should be able to say where its next Newton starts. NOT BUILT for the other families and not started
 without an owner decision — the DIRK path takes the same per-stage callable unchanged, the coupled path needs
 one seed per stage BLOCK, and an LMM's analogue is the classical predictor off its own history.
+
+**And then it stopped being a GLM thing (2026-09-10, same day).** The paragraph above said the other families
+were not built and needed an owner decision. They are built. `Transient._predict_state` is one construction
+for all of them, keyed on ABSOLUTE TIMES rather than on a tableau's abscissae — which is what lets it serve an
+adaptive multistep method and a fixed-step GLM from the same code. Measured on the default adaptive path:
+Radau IIA(3) −17.0 %, ESDIRK43 −12.5 %, TR-BDF2 −8.7 %, Gear-2 −19.3 %, trapezoidal −21.2 % device
+evaluations, answer unchanged. See the roadmap for the table, the clamp that makes it safe, the one measured
+regression, and the two defects that only a FIRING RATE could see.
+
+So the fourth predicate is not needed after all: a method does not have to say where its next Newton starts,
+because the question a predictor answers — what is the trajectory at time `t`? — is the same for all of them
+and is answered from recorded history, not from the method. What the method contributes is only which times
+it wants and which of its own stages are already known.

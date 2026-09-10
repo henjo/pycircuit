@@ -14,7 +14,9 @@ the roadmap cites them: a citation that points at a temporary directory is not a
 | `wright_cb.py` | the same with abscissae bounded to [0, 1] — produced the SHIPPED GLM4 tableau |
 | `wright_all.py` | the full 24-permutation sweep with every constraint (3 h 32 min; found no feasible point — the recorded frontier) |
 | `glm_irks.py`, `glm_irks_v.py` | the IRKS-conditioned searches; `_v` (nilpotency as a POLYNOMIAL rather than an eigenvalue condition) is what produced GLM3 |
-| `stage_predictor.py` | the stage predictor's cost measurement — a driven RC with a STATE-FREE exponential, device `i` evaluations and the WORST stage's Newton iterations, with `glm_predictor='none'` as the control. ⚠ `Diode` cannot measure this at all: its `G` linearises around a stored `_vlim`, so an all-zeros seed gives the same iteration histogram as the exact one |
+
+The stage predictor's own measurement moved out of this folder when it stopped being a GLM
+thing: `benchmarks/stage_predictor.py` covers every integrator family.
 
 ⚠ Two traps these scripts encode, both measured the hard way:
 the Nordsieck convention is `y_k = h^k y^(k)` **without** `1/k!`, and `F` is the exponential of the

@@ -8437,7 +8437,20 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
     what keeps that from mattering here.
     """
     import warnings
+    from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
+    ## ⚠ THE STAGE PREDICTOR IS PINNED OFF, and that is a statement about what
+    ## "bit-identical" can mean here.  The re-traversal IS a pure function of
+    ## `x_in` either way -- `_begin_period` resets the predictor's node history
+    ## for exactly that reason -- but the two inner solvers converge to `x_in`
+    ## values that differ in the last ulp, and a predictor's extrapolation
+    ## carries that into the traversal instead of contracting it: measured,
+    ## lambda_2 agrees to 7e-11 relative rather than to the bit.  The design
+    ## property this test names is about the SOLVER, so it is measured on a
+    ## fixed seed; the tolerance-level claim with the predictor on is asserted
+    ## at the end.
+    prev_pred = Transient.stage_predictor
+    Transient.stage_predictor = 'off'
     out = {}
     for mf in (False, True):
         cir = _vdp_with_noise(1e-6)
@@ -8467,6 +8480,31 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
         'the PPV differs between inner solvers; the largest component ' \
         'gap is %.3e' % float(np.max(np.abs(v0 - v1)))
     assert r0 < 1e-9 and r1 < 1e-9
+
+    ## and with the predictor on, where the last ulp of `x_in` is carried
+    ## rather than contracted: still the same answer, to 1e-9 relative
+    Transient.stage_predictor = 'on'
+    try:
+        pred = {}
+        for mf in (False, True):
+            cir = _vdp_with_noise(1e-6)
+            pss = PSS(cir, method='gear', reltol=1e-12)
+            x0 = np.zeros(cir.n - 1)
+            x0[0] = 2.0
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+                          maxiterations=60, matrix_free=mf)
+                v, info = pss.ppv()
+            pred[mf] = (np.asarray(v).copy(), info['second_multiplier'])
+    finally:
+        Transient.stage_predictor = prev_pred
+    assert abs(pred[True][1] - pred[False][1]) < 1e-9 * abs(pred[False][1]), \
+        (pred[True][1], pred[False][1])
+    assert np.max(np.abs(pred[True][0] - pred[False][0])) < \
+        1e-9 * max(float(np.max(np.abs(pred[False][0]))), 1e-30)
+    ## and the predictor did not move the answer either
+    assert abs(pred[False][1] - l0) < 1e-9 * abs(l0), (pred[False][1], l0)
 
 
 def test_the_in_tree_gmres_matches_scipy_and_keeps_its_hessenberg():
@@ -14118,7 +14156,7 @@ def test_event_grid_lands_the_period_on_its_event_times():
             'a circuit with no events had its grid altered'
 
 
-def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid():
+def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid(monkeypatch):
     """Where an `Idtmod` wrap falls RELATIVE TO THE GRID does not matter; where
     the FINAL state falls relative to the fold is the whole story.
 
@@ -14189,6 +14227,20 @@ def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid():
             x = copy(p.solve_timestep(x, t, hs[j]))
         return np.asarray(x, dtype=float).ravel()
 
+    ## ⚠ THE STAGE PREDICTOR IS PINNED OFF, and the reason is this fixture's
+    ## own subject.  The jump measured below IS a fold -- the map is
+    ## DISCONTINUOUS there -- so which side of it a given grid's endpoint lands
+    ## on is decided at the last ulp of the trajectory.  A predictor changes the
+    ## trajectory by about that much (measured, 3e-14 on a converged orbit) and
+    ## one grid of the four then lands the other side: the jump reads 2.000e9
+    ## instead of 2.236e9, both of them jumps, neither of them a grid artefact.
+    ## The QUALITATIVE claim -- every grid jumps -- is re-checked with the
+    ## predictor on at the end, which is the part that is not knife-edge.  ⚠ The
+    ## history of this fixture is that the FIRST one sat exactly ON the fold and
+    ## would have confirmed the opposite story; it is fragile by construction.
+    from pycircuit.circuit.transient import Transient
+    monkeypatch.setattr(Transient, 'stage_predictor', 'off')
+
     d = np.zeros(n - 1)
     d[idt] = 1.0
     eps = 1e-9
@@ -14222,6 +14274,18 @@ def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid():
         'the jump moved with the grid (%s) -- it WOULD then be a grid artefact ' \
         'and A6\'s recorded reading would stand' % ratios
 
+
+    ## and with the predictor on, the qualitative claim: still a jump on every
+    ## grid, still ~1e9 (the modulus over eps), just not comparable digit for
+    ## digit across grids at a discontinuity
+    monkeypatch.setattr(Transient, 'stage_predictor', 'on')
+    on_ratios = []
+    for npts in (250, 600, 1000, 1200):
+        gg = np.linspace(0, T, npts + 1)
+        on_ratios.append(np.linalg.norm(phi(eps * d, gg)
+                                        - phi(np.zeros(n - 1), gg)) / eps)
+    assert min(on_ratios) > 1e8, on_ratios
+    assert max(on_ratios) < 1e10, on_ratios
     ## (3) Landing the wrap exactly -- the falsifier -- does not help.
     wraps = [(k - IC) / RATE * T for k in (1, 2) if 0.0 < (k - IC) / RATE < 1.0]
     ge = np.unique(np.r_[np.linspace(0, T, 1201), wraps])

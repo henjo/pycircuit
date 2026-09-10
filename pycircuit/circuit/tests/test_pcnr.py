@@ -371,7 +371,7 @@ def test_gate_13_6_controller_jacobian_carries_live_diode_conductance():
     assert checked > 20, 'only %d forward-biased points -- test is not exercising it' % checked
 
 
-def test_gate_13_6_pcnr_and_limiting_take_the_same_steps():
+def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     """PCNR and classic limiting must agree -- step for step, not merely closely.
 
     They differ only in the ITERATION PATH; a converged Newton solution is
@@ -379,12 +379,52 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps():
     give equal LTE and hence equal step sequences, so any divergence in step
     count is a defect signature.  Against the gate 13-6 defect this reported
     4.1-6.8x fewer steps for PCNR.
+
+    ⚠ THE STAGE PREDICTOR IS PINNED OFF FOR THE BIT-LEVEL PART, and that is a
+    statement about this gate's subject, not a workaround.  "Independent of the
+    route" holds only up to the Newton's own tolerance, and the two routes were
+    comparable to 1.6e-10 because both seeded from `x_n`.  A predictor seeds
+    from the run's own history, so the two routes' histories inherit their
+    1e-10 difference and the extrapolation compounds it: measured, 1.5e-2 in
+    the output voltage by the end of a 186-step run.  Neither run is worse --
+    both sit 1.4411e-03 from a fine reference, to five digits -- but the step
+    sequences are then no longer comparable digit for digit.  With the
+    predictor ON this asserts what still holds: the same step COUNT, and the
+    same distance from that reference.  `test_stage_predictor.py` is where the
+    predictor itself is gated.
     """
     import warnings
     import numpy as np
     from pycircuit.circuit import gnd, numeric
     from pycircuit.circuit.transient import Transient
 
+    ## ---- with the predictor on: same step count, same accuracy ----------
+    Transient.stage_predictor = 'on'
+    acc = {}
+    for pcnr in (False, True):
+        tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5,
+                         pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=0.01, timestep=1e-4)
+        w = res.v(2, gnd)
+        acc[pcnr] = (tran.statistics.accepted_steps,
+                     np.asarray(w.x, dtype=float).ravel(),
+                     np.asarray(w.y, dtype=float).ravel())
+    assert acc[True][0] == acc[False][0], (acc[True][0], acc[False][0])
+    ref = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rw = ref.solve(tend=0.01, timestep=1e-6).v(2, gnd)
+    tr_ref = np.asarray(rw.x, dtype=float).ravel()
+    y_ref = np.asarray(rw.y, dtype=float).ravel()
+    errs = [float(np.max(np.abs(acc[k][2] - np.interp(acc[k][1], tr_ref,
+                                                      y_ref))))
+            for k in (False, True)]
+    assert abs(errs[0] - errs[1]) < 0.05 * max(errs), errs
+
+    ## ---- and the bit-level claim, on the seed this gate was written for --
+    monkeypatch.setattr(Transient, 'stage_predictor', 'off')
     out = {}
     for pcnr in (False, True):
         tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr)

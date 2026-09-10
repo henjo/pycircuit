@@ -13260,7 +13260,7 @@ in the step's local coordinate) and this step's already-converged ones (at `c_j`
 method's own order. Weights are Lagrange, cached per tableau, so the predictor costs no device evaluation.
 `glm_predictor='none'` restores the old guess as the control.
 
-**Measured** on a driven RC with a state-free exponential (`benchmarks/glm/stage_predictor.py`), device `i`
+**Measured** on a driven RC with a state-free exponential (`benchmarks/stage_predictor.py`), device `i`
 evaluations against the fallback, at 40 and 200 points per period and 0.8 V and 2 V drive: **−12.6 % to
 −28.7 %**, Newton iterations per stage 2.59 → 1.50 at the best point. The answer is unchanged to 6.7e-16
 (glm3) and 3.1e-13 (glm4) — a seed change must not select a different root, and here it does not.
@@ -13301,3 +13301,116 @@ Gated by `test_glm_stage_predictor_cuts_the_newton_work_without_moving_the_answe
 each against the `'none'` control in the same run), `test_glm_stage_predictor_is_exact_on_a_polynomial`
 (structural, no circuit) and `test_glm_stage_predictor_declines_a_changed_step_and_a_period_seam`. All three
 verified to FAIL on the pre-predictor code.
+
+## The stage predictor, every family (Andreas: "Build predictor for all integrators", 2026-09-10)
+
+**Supersedes the previous section's closing paragraph.** It recorded the other families' crude seeds and said
+"NOT DONE, and not started without an owner decision". The decision came; this is the result. There is now
+ONE predictor, `Transient._predict_state`, and the per-tableau GLM construction is gone.
+
+**The construction.** Nodes are `(time, state)` pairs at ABSOLUTE times: accepted steps, the stages that
+produced them, and — on a sequential-stage method — this step's already converged stages. The prediction is
+the polynomial through the `deg + 1` nodes NEAREST the target, `deg` the method's own order capped at 4.
+Keying on absolute time rather than on abscissae is what lets one implementation serve an ADAPTIVE multistep
+method and a fixed-step GLM alike; the per-tableau weights it replaces could not have done that.
+
+| family | seed it replaces | fixed step | adaptive step |
+|---|---|---|---|
+| Radau IIA(3), coupled | `x_n` for all three stages at once | −13.4 % / −2.2 % | **−17.0 % / −15.8 %** |
+| ESDIRK43 | previous stage | −14.7 % / −13.1 % | −12.5 % / −12.4 % |
+| TR-BDF2 | previous stage | −11.3 % / −7.1 % | −8.7 % / −8.9 % |
+| Gear-2 | `x_n`, one solve per step | −18.0 % / **+3.0 %** | −19.3 % / −22.2 % |
+| trapezoidal | `x_n`, one solve per step | −18.3 % / **+3.0 %** | −21.2 % / −22.4 % |
+| GLM3 / GLM4 | previous stage | −15.2 % / −13.6 %, −28.3 % / −12.5 % | (constant step only) |
+
+Device `i` evaluations, at 200 points / 0.8 V and 40 points / 2 V. `benchmarks/stage_predictor.py`.
+The answer is bit-identical on a shared grid (1e-16, and 6e-13 for GLM4's own conditioning); on the adaptive
+path both settings sit at the SAME distance from an independent fine reference, ratio 1.000 to four digits
+for every method.
+
+**⚠ THE ONE MEASURED REGRESSION, stated rather than hidden:** Gear-2 and trapezoidal on a COARSE FIXED grid
+through an exponential knee (40 points, 2 V) cost **+3.0 %** and their worst solve 14 Newton iterations
+against 8. That is a step too large for the dynamics — the case adaptive stepping exists for, and where the
+same predictor takes 22 % off instead. Not carved out: a per-family exception justified by one fixture is
+fixture-tuning.
+
+**⚠⚠ THE CLAMP IS THE FEATURE.** Unclamped, that same case costs **+17 %** and 27 iterations. The bound is
+the LINEAR prediction — from the newest node, moving at the rate the last step moved, the target is
+`ratio × motion` away — times `PRED_CLAMP = 1.5`. Both scales come from the data. Swept: 1.0 / 1.5 / 2.0 /
+3.0 / unbounded gives the coarse Gear-2 case +3.7 / +3.0 / +5.2 / +10.4 / +11.9 % while Radau's adaptive gain
+saturates by 1.5 (−14.0 / −17.0 / −17.0 / −17.0 / −17.0 %). 1.5 is where the gain has arrived and the worst
+case has not started to grow.
+
+**⚠ A SELF-VALIDATION GATE WAS BUILT AND REMOVED.** Refit at the same degree from the nodes one older,
+retrodict the newest node, decline when the miss exceeds a fraction of the step's motion. It is a good idea
+and it does nothing: swept from 0.1 to infinity it moved ONE reading by 0.8 % and every other by zero,
+because it looks BACKWARD and the case it was built for is a knee that has not happened yet. Removed rather
+than kept as a knob.
+
+**TWO DEFECTS THAT NO COST MEASUREMENT COULD HAVE FOUND**, both of which merely make the predictor decline
+in silence — no exception, no wrong answer, just "no gain":
+
+1. **The multistep path recorded no node of its own.** The stage methods get theirs next to `_rk_Y`; without
+   its own line the history never reached two entries. Measured: 200 calls, 0 predictions.
+2. **Duplicate node times made the fit singular**, and they are the NORMAL case: a stiffly accurate method's
+   last stage IS the step it ends, and an ESDIRK's explicit first stage IS the state it starts from, so the
+   within-step nodes routinely repeat a recorded one. 37 % of ESDIRK43's stages silently kept the old seed.
+
+Both are now gated by a FIRING RATE (`test_the_stage_predictor_actually_fires`), which is the only instrument
+that sees them. ⚠ A third of the same kind: the stage-method ADAPTIVE driver deliberately calls no
+`_push_history`, so a predictor promoted only from there is inert on the default path — and RADAU is what
+catches that, because a sequential method still has its own within-step stages to fall back on.
+
+Gated by `pycircuit/circuit/tests/test_stage_predictor.py` (7 families' cost and bit-identical answer, the
+adaptive path, the firing rate, polynomial exactness on a NON-UNIFORM node set, the clamp, and that a
+REJECTED step's stages never become nodes). Every gate verified to fail on the code before its fix.
+
+### What the full suite found (same day)
+
+Four failures, and none of them was the predictor being wrong. They are worth recording because three are
+about what "reproducible" can mean once a seed carries history, and one was a real defect the predictor
+would never have shown on its own.
+
+**(a) A REAL ALIASING DEFECT, caught by a test with the predictor switched OFF.** `np.asarray` on an array
+that is already float64 returns THE SAME OBJECT, so the node history aliased the live state and stage
+vectors — and the periodic gauge shift (`_apply_periodic_shifts`) subtracts `n·modulus` from every live
+history it knows about, so an aliased entry took the shift TWICE and corrupted the accepted state.
+`test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid` failed on it. ⚠ It failed with
+`stage_predictor='off'`, which is the tell: the bookkeeping runs either way, so 'off' is a control for the
+SEED and not for the machinery around it. Fixed by copying.
+
+**(b) PCNR and limiting stopped taking the same steps** — and the gate was right twice over. First it caught
+a genuine asymmetry: the multistep PCNR branch is a separate solve and had not been given the predictor at
+all, so one path was seeded and the other was not. Wired, and it still failed, for a second and different
+reason: "a converged Newton solution is independent of the route" holds only up to the Newton's own
+tolerance, and the two routes were comparable to 1.6e-10 *because both seeded from `x_n`*. Seeded from each
+run's own history, that 1e-10 is inherited and the extrapolation compounds it to 1.5e-02 in the output
+voltage over 186 steps. **Neither run is worse** — both sit 1.4411e-03 from a fine reference, to five
+digits. The gate now asserts the bit-level claim on a fixed seed (which is the code it was written for) and,
+with the predictor on, the same step COUNT and the same distance from that reference.
+
+**(c) The same shape twice more.** `test_the_ppv_is_invariant_to_the_newtons_inner_solver` asserts
+BIT-identical multipliers between the dense and matrix-free Newton; the two converge to `x_in` values that
+differ in the last ulp, and the predictor carries that into the traversal rather than contracting it —
+lambda_2 then agrees to 7e-11 relative instead of to the bit. And the state-fold fixture measures a
+DISCONTINUITY, so which side of it one grid's endpoint lands on is decided at the last ulp: with the
+predictor, one grid of four reads 2.000e9 instead of 2.236e9 — both jumps, neither a grid artefact. Both
+gates keep their exact claim on a fixed seed and add the claim that survives with the predictor on.
+
+⚠ The general lesson, and it is not specific to this feature: **a gate that asserts bit-equality is asserting
+that two paths share a seed.** Three did, none said so, and all three were correct to fail.
+
+Shooting benefits too and was never in doubt: on the van der Pol PPV fixture, 6282 → 5523 device evaluations
+(−12 %), the same orbit to 2.9e-14 and the same `lambda_2` to eight digits.
+
+**(d) AND A FIFTH, on the re-run: a CONVERGENCE failure, which is a different class from the three above.**
+`Idtmod` with the wrap landing exactly ON a grid point — the fixture whose whole point is that the period map
+is genuinely discontinuous there **and the PSS converges anyway** — stopped converging at all. A periodic row
+folds by its modulus, and that fold is a discontinuity in exactly the curve the predictor fits a polynomial
+through. The gauge shift keeps the recorded nodes in one gauge (and `_apply_periodic_shifts` now shifts the
+predictor's nodes with the rest, which it must), but the fold can also fall BETWEEN the newest node and the
+target, and then the fit runs straight across it. Periodic rows now keep the old seed; every other row is
+still predicted, and both halves of that are gated. ⚠ This is the one carve-out in the feature and it is
+structural — a property of the state, not of a fixture.
+
+**Final: 3165 passed, 6 skipped, 3 xfailed.**

@@ -3690,6 +3690,9 @@ class PSS(Analysis):
         x = copy(x_in)
         tr._glm_Q = None                      # force the startup at t = 0
         tr._glm_prev = None                   # no stage predictor across the seam
+        tr._pred_reset()                      # nor its node history: the period
+                                              # seam is a DISCONTINUITY in the
+                                              # trajectory a predictor fits
         steps, xs = [], []
         Q0 = None
         for _j, t in enumerate(times[1:]):

@@ -995,6 +995,7 @@ class Transient(Analysis):
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
+        self._pred_reset()
         ## ⚠ A ZERO `iq` RING IS ONLY SAFE FOR A METHOD OPENED BY EULER, which
         ## reads no past current.  A method that refuses that opener reads it on
         ## step one, and zero is wrong there -- measured at a full order of
@@ -1020,6 +1021,222 @@ class Transient(Analysis):
         ## relative floor depend on what ran before it.
         self._lte_probe = None
 
+    ## ------------------------------------------------------------------
+    ## THE STAGE PREDICTOR (all families)
+    ##
+    ## Every implicit integrator here starts its Newton from a value at the
+    ## WRONG TIME.  MEASURED on a state-free exponential, as a fraction of one
+    ## step's own state motion: coupled Radau IIA(3) 1.00 (`x_n` for all three
+    ## stages at once), ESDIRK43 0.50 and TR-BDF2 0.59 (the previous stage),
+    ## Gear-2 and trapezoidal 1.00 (`x_n`, one solve per step).  The first
+    ## iterations of every solve are then spent travelling `O(h)` rather than
+    ## converging, and the stages ARE the per-step work.
+    ##
+    ## One predictor serves all of them because all of them ask the same
+    ## question: what is the trajectory at time `t`?  Nodes are ABSOLUTE TIMES
+    ## -- accepted states and, on the sequential paths, this step's already
+    ## converged stages -- so a VARIABLE STEP needs no special case, which the
+    ## per-tableau formulation this replaces could not do.
+    ## `'on'` (the default) or `'off'`, the pre-predictor seed, which is the
+    ## control every measurement of this feature is made against
+    stage_predictor = 'on'
+    ## fit order; None means the method's own order, capped at 4
+    stage_predictor_degree = None
+    PRED_HIST_MAX = 8
+    ## how many linear-extrapolation displacements a prediction may take;
+    ## MEASURED across 1.0 / 1.5 / 2.0 / 3.0 / unbounded (see
+    ## `benchmarks/stage_predictor.py`) -- 1.5 is where the gain has
+    ## arrived on every family and the worst case has not yet started to
+    ## grow (Gear-2 on a coarse grid: +3.0% at 1.5, +10.4% at 3.0)
+    PRED_CLAMP = 1.5
+
+    def _pred_reset(self):
+        """Forget the predictor's node history.  The transient start and a
+        shooting period seam, where the trajectory is DISCONTINUOUS and a node
+        from before it is a silently wrong guess, not an error."""
+        self._pred_hist = []
+        self._pred_pending = None
+
+    def _pred_promote(self, x):
+        """Turn the last step's pending record into predictor nodes.
+
+        ⚠ Called from the two ACCEPT sites and nowhere else, so a REJECTED
+        step's stages never become nodes -- they are samples of a trajectory
+        the run then threw away.  The stage-method adaptive driver
+        (:meth:`_run_rk_adaptive`) is the second site and is easy to miss: it
+        deliberately calls no :meth:`_push_history`, because a stage method
+        reads no charge rings, so it accepts without touching any of the other
+        history this class keeps.
+        """
+        pend = getattr(self, '_pred_pending', None)
+        if pend is not None:
+            self._pred_note(pend[0], x, pend[1])
+            self._pred_pending = None
+
+    def _pred_note(self, t, x, stages=()):
+        """Record one accepted point, and the stages that produced it, as
+        predictor nodes.  Called from :meth:`_push_history` -- the single
+        ACCEPT choke point, so a rejected step's stages never become nodes."""
+        h = getattr(self, '_pred_hist', None)
+        if h is None:
+            h = self._pred_hist = []
+        ## ⚠⚠ COPY, DO NOT VIEW.  `np.asarray` on an array that is already
+        ## float64 returns THE SAME OBJECT, so these entries would alias the
+        ## live state and stage vectors -- and the periodic gauge shift
+        ## subtracts `n*modulus` from every live history it knows about, so an
+        ## aliased entry takes the shift TWICE and the accepted state is
+        ## corrupted.  Measured as a real failure of
+        ## `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid`,
+        ## and it failed with the predictor switched OFF -- the bookkeeping
+        ## runs either way, so 'off' is a control for the SEED, not for this.
+        for ts, ys in stages:
+            h.append((float(ts), np.array(ys, dtype=float)))
+        h.append((float(t), np.array(x, dtype=float)))
+        ## keep the newest nodes; ties (a stiffly accurate method's last stage
+        ## IS the step) are harmless, the nearest-node pick drops duplicates
+        h.sort(key=lambda e: e[0])
+        uniq = []
+        for e in h:
+            if uniq and abs(e[0] - uniq[-1][0]) <= 1e-14 * max(abs(e[0]), 1.0):
+                uniq[-1] = e
+            else:
+                uniq.append(e)
+        self._pred_hist = uniq[-self.PRED_HIST_MAX:]
+
+    def _pred_degree(self):
+        """How many nodes the prediction fits.  The method's own order, so the
+        predictor is as accurate as what it is predicting for; capped at 4,
+        which is where the measured gain stops improving."""
+        d = self.stage_predictor_degree
+        if d:
+            return int(d)
+        return min(4, max(1, int(getattr(self.base_integrator, 'order', 2))))
+
+    def _pred_or(self, fallback, ttarget, extra=()):
+        """:meth:`_predict_state`, or ``fallback`` when it declines."""
+        p = self._predict_state(ttarget, extra=extra)
+        return fallback if p is None else p
+
+    def _predict_state(self, ttarget, extra=(), deg=None):
+        """The trajectory at ``ttarget``, from the ``deg + 1`` recorded nodes
+        NEAREST it, or ``None`` when there are too few to fit a line.
+
+        ``extra`` is ``(t, x)`` pairs known only within the current step -- the
+        already converged stages of a sequential method.  They are nodes like
+        any other, and being the nearest ones they are what turns a whole-step
+        extrapolation into a one-stage-gap one.
+
+        ⚠⚠ THE CLAMP IS NOT OPTIONAL, and it is what the two rejected
+        predictors of the GLM measurement lacked.  A polynomial continued past
+        its last node can leave the region the circuit actually visits, and on
+        an exponential device a 3x overshoot is ``exp(3 dV / VT)``: measured,
+        the worst stage then cost 33 Newton iterations against the old seed's
+        6, while the MEAN still improved -- which is how such a heuristic
+        passes its own gate and fails in use.  The prediction is therefore
+        confined COMPONENTWISE to the range its own nodes span, widened by the
+        motion between the two newest.  The scale comes from the data.
+        """
+        if self.stage_predictor == 'off':
+            return None
+        nodes = [(float(tt), np.asarray(xx, dtype=float)) for tt, xx in extra]
+        nodes.extend(getattr(self, '_pred_hist', ()) or ())
+        if len(nodes) < 2:
+            return None
+        if deg is None:
+            deg = self._pred_degree()
+        ## ⚠ DUPLICATE TIMES MAKE THE VANDERMONDE SINGULAR, and they are the
+        ## normal case here, not a corner one: a stiffly accurate method's
+        ## last stage IS the step it ends, and an ESDIRK's explicit first
+        ## stage IS the state it starts from, so `extra` routinely repeats a
+        ## recorded node.  Left in, the solve raises and the predictor
+        ## declines -- measured, 37% of ESDIRK43's stages silently kept the
+        ## old seed.  `extra` is listed first so it wins a tie, being the
+        ## value from the step actually in progress.
+        nodes.sort(key=lambda e: abs(e[0] - ttarget))
+        uniq = []
+        for e in nodes:
+            if not any(abs(e[0] - u[0]) <= 1e-13 * max(abs(e[0]), 1.0)
+                       for u in uniq):
+                uniq.append(e)
+        nodes = uniq
+        if len(nodes) < 2:
+            return None
+        nfit = min(int(deg) + 1, len(nodes))
+        take = nodes[:nfit]
+
+        def _fit(sub, tat):
+            """The polynomial through ``sub`` evaluated at ``tat``, or None.
+
+            Fitted in a coordinate centred on the TARGET and scaled by the node
+            spread: an absolute-time Vandermonde at t ~ 1e-3 with 1e-6 spacing
+            is hopeless, and centring makes the right-hand side exactly e_0.
+            """
+            tv = np.array([e[0] for e in sub], dtype=float)
+            scale = float(np.max(np.abs(tv - tat)))
+            if not np.isfinite(scale) or scale <= 0.0:
+                return None
+            tau = (tv - tat) / scale
+            n = len(tau)
+            rhs = np.zeros(n)
+            rhs[0] = 1.0
+            try:
+                w = np.linalg.solve(np.vander(tau, n, increasing=True).T, rhs)
+            except np.linalg.LinAlgError:
+                return None
+            if not np.all(np.isfinite(w)):
+                return None
+            return w @ np.array([e[1] for e in sub], dtype=float)
+
+        newest = sorted(take, key=lambda e: -e[0])[:2]
+        motion = np.abs(newest[0][1] - newest[1][1]) if len(newest) == 2 \
+            else None
+        if motion is None:
+            return None
+        ## ⚠ A SELF-VALIDATION GATE WAS BUILT HERE AND REMOVED, because it
+        ## changed nothing measurable: refit at the same degree from the nodes
+        ## one older, retrodict the newest node, and decline when the miss
+        ## exceeded a fraction of the step's motion.  Swept over thresholds
+        ## from 0.1 to infinity it moved ONE reading by 0.8% and every other
+        ## by nothing -- because it looks BACKWARD, and the case it was built
+        ## for is a knee that has not happened yet.  What actually bounds the
+        ## damage is the clamp below.
+        pred = _fit(take, ttarget)
+        if pred is None:
+            return None
+        ## ⚠⚠ THE CLAMP, AND IT IS THE WHOLE DIFFERENCE BETWEEN A SPEED-UP AND
+        ## A REGRESSION.  A polynomial continued past its last node can leave
+        ## the region the circuit visits, and on an exponential device a 3x
+        ## overshoot is `exp(3 dV / VT)`.
+        ##
+        ## The bound is the LINEAR prediction: from the newest node, moving at
+        ## the rate the last step moved, the target is `ratio * motion` away.
+        ## A higher-order fit is allowed a multiple of that -- real curvature
+        ## needs the room -- but not an unbounded one.  Both scales come from
+        ## the data: `motion` is the last step's own displacement and `ratio`
+        ## is how far ahead this target is in units of the last step.
+        newest_first = sorted(take, key=lambda e: -e[0])
+        xref = newest_first[0][1]
+        dt_last = abs(newest_first[0][0] - newest_first[1][0])
+        ratio = (abs(ttarget - newest_first[0][0]) / dt_last) if dt_last > 0 \
+            else 1.0
+        w = self.PRED_CLAMP * motion * max(ratio, 1.0)
+        out = np.clip(pred, xref - w, xref + w)
+        ## ⚠⚠ A WRAPPING STATE IS NOT A TRAJECTORY THIS CAN FIT.  A periodic
+        ## row folds by its modulus, and that is a DISCONTINUITY in exactly the
+        ## curve a polynomial is being put through -- the gauge shift keeps the
+        ## recorded nodes in one gauge, but the fold can also fall between the
+        ## newest node and the target, and then the fit runs straight across
+        ## it.  MEASURED as a real failure: on `Idtmod` with the wrap landing
+        ## exactly ON a grid point, where the period map is genuinely
+        ## discontinuous and the PSS is supposed to converge anyway
+        ## (`test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff`),
+        ## predicting these rows stopped the shooting Newton converging at all.
+        ## Those rows keep the old seed -- the newest node's value -- and every
+        ## other row still gets the prediction.
+        for row, _m, _o in (getattr(self, '_periodic_rows', None) or ()):
+            out[row] = xref[row]
+        return out
+
     def _push_history(self, x, X=None):
         """Push one ACCEPTED point onto the integrator's ring buffers.
 
@@ -1037,6 +1254,7 @@ class Transient(Analysis):
             (self.toolkit.array([self._iq]), self._iqlast))[:-1]
         self._qlast = self.toolkit.concatenate(
             (self.toolkit.array([self._q_at(x)]), self._qlast))[:-1]
+        self._pred_promote(x)
         ## AFTER the ring push, so the newest ring entry shares the old gauge
         ## with its elders when the increment lands on all of them.
         if self._periodic_rows:
@@ -1078,6 +1296,12 @@ class Transient(Analysis):
                 for k in range(1, min(3, len(X)) + 1):
                     X[-k][row] -= d
                 self._qlast[:, row] -= d
+                ## the predictor's nodes are a live history like the others;
+                ## shifting them ALL by the same `d` keeps the trajectory it
+                ## fits continuous, which is the only thing a polynomial
+                ## through them reads
+                for _k in range(len(getattr(self, '_pred_hist', ()) or ())):
+                    self._pred_hist[_k][1][row] -= d
                 shifted = True
         if shifted:
             self._q_cache = None
@@ -2215,7 +2439,15 @@ class Transient(Analysis):
 
         junctions = _pcnr.pcnr_devices(self.cir)
         irefnode = self.irefnode
-        x = self.toolkit.array(x0, dtype=float).copy()
+        ## STAGE PREDICTOR -- and it has to be here, not only on the limiting
+        ## path, or the two stop agreeing.  ⚠ MEASURED as a real failure of
+        ## `test_gate_13_6_pcnr_and_limiting_take_the_same_steps`: with the
+        ## predictor on one path only, the two converge to values that differ
+        ## in the last digits, that moves the LTE estimate, and the step
+        ## sequences part company at 5e-7 by the end of the run.  The gate is
+        ## right and the asymmetry was the defect.  It also seeds `v_lim`, and
+        ## limiting the seed is what fixed PCNR's one documented failure.
+        x = self.toolkit.array(self._pred_or(x0, t), dtype=float).copy()
         v_lim = _pcnr.v_lim_init(junctions, x)
 
         xtol = self._newton_xtol_vector()
@@ -2303,6 +2535,9 @@ class Transient(Analysis):
                     self.cir.i(x, self.epar) + iq
                     + self.cir.u(t, self.epar, analysis=self.par.analysis),
                     dtype=float)
+                ## and its own predictor node, exactly as the limiting
+                ## path records one -- symmetry is what gate 13-6 asks for
+                self._pred_pending = (t, ())
                 return x, feval, J, f
 
         raise NoConvergenceError(
@@ -2468,7 +2703,15 @@ class Transient(Analysis):
                     Y[i] = self._newton(func_e, xn)
             else:
                 ti = tstage[i]
-                guess = Y[i - 1] if i > 0 else xn
+                ## STAGE PREDICTOR.  The already converged stages of THIS step
+                ## are the nearest nodes there are, so the polynomial is
+                ## continued by one stage gap rather than a whole step -- the
+                ## property that decides its worst case, not its mean.
+                guess = self._predict_state(
+                    ti, extra=[(tstage[j], Y[j]) for j in range(i)
+                               if Y[j] is not None])
+                if guess is None:
+                    guess = Y[i - 1] if i > 0 else xn
                 _pcnr_ok = False
                 if self._rk_use_pcnr():
                     ## PCNR is the first-class per-step limiting: each implicit
@@ -2511,6 +2754,8 @@ class Transient(Analysis):
 
         xnp1 = Y[s - 1]  ## stiff accuracy
         self._rk_Y = list(Y)
+        ## predictor nodes for the NEXT step; promoted only on accept
+        self._pred_pending = (t, list(zip(tstage, list(Y))))
         self._rk_K = list(K)
         qY = self.cir.q(xnp1, epar)
         self._q_cache = (xnp1, qY)
@@ -2571,132 +2816,61 @@ class Transient(Analysis):
         Q[0] = qs[0]
         return Q
 
-    ## the stage predictor's Lagrange weights, keyed by (abscissae, degree);
-    ## built once per tableau, no device cost
-    _GLM_LOCAL_CACHE = {}
+    def _glm_stage_predictor(self, h, tn, c):
+        """The GLM's view of the shared stage predictor: a callable
+        ``pred(i, Y)`` giving stage ``i``'s starting guess, or ``None``.
 
-    @classmethod
-    def _glm_local_weights(cls, c, deg):
-        """Per-stage weights for the stage predictor: for each stage ``i``, the
-        ``deg + 1`` node values NEAREST ``c_i`` among everything already known
-        when that stage is reached, and the Lagrange weights that evaluate
-        their interpolating polynomial at ``c_i``.
-
-        In the step's local coordinate the known nodes at stage ``i`` are the
-        PREVIOUS step's stages, at ``c_j - 1``, and THIS step's already
-        converged stages, at ``c_j`` for ``j < i``.  Taking the nearest few
-        continues the polynomial past its last node by ONE NODE GAP; the
-        obvious alternative -- fit the previous step's stages and continue a
-        WHOLE STEP -- is what pays for that convenience in its tail (see
-        :meth:`_glm_stage_predictor`).
-
-        Returns one ``(idx_prev, idx_cur, w)`` per stage: ``w`` dotted with the
-        previous step's stages at ``idx_prev`` followed by this step's at
-        ``idx_cur``.  ⚠ ``deg`` is capped by the nodes available, which for
-        stage 0 is the previous step's ``s`` stages alone.
-        """
-        key = (tuple(float(v) for v in c), int(deg))
-        W = cls._GLM_LOCAL_CACHE.get(key)
-        if W is not None:
-            return W
-        cv = [float(v) for v in c]
-        s = len(cv)
-        W = []
-        for i in range(s):
-            nodes = [(cv[j] - 1.0, j, 0) for j in range(s)] \
-                + [(cv[j], j, 1) for j in range(i)]
-            nodes.sort(key=lambda t: abs(t[0] - cv[i]))
-            take = nodes[:min(deg + 1, len(nodes))]
-            tau = np.array([t[0] for t in take], dtype=float)
-            n = len(tau)
-            w = np.linalg.solve(np.vander(tau, n, increasing=True).T,
-                                np.array([cv[i] ** k for k in range(n)]))
-            W.append(([t[1] for t in take if t[2] == 0],
-                      [t[1] for t in take if t[2] == 1],
-                      np.array([w[k] for k in range(n) if take[k][2] == 0]
-                               + [w[k] for k in range(n) if take[k][2] == 1],
-                               dtype=float)))
-        cls._GLM_LOCAL_CACHE[key] = W
-        return W
-
-    def _glm_stage_predictor(self, xn, h, tn, c):
-        """The starting guess for every stage Newton of a GLM step: a callable
-        ``pred(i, Y)`` giving stage ``i``'s guess, or ``None`` to fall back to
-        "the previous stage's converged value".
-
-        The stages ARE this method's per-step cost -- one ``m x m`` Newton
-        each -- so the guess they start from is where that cost is decided.
-        The fallback guess is a value at a DIFFERENT time point, so the first
-        iterations of every stage are spent travelling ``O(h)`` rather than
-        converging.  A predictor closes that distance from information already
-        in hand, at no device evaluation.
-
-        The construction is :meth:`_glm_local_weights`: the polynomial through
-        the ``deg + 1`` nodes nearest ``c_i``, taken from the previous step's
-        stages and this step's converged ones.  ``deg`` defaults to the
-        method's own order (``self.glm_predictor_degree`` overrides).
-        ``self.glm_predictor = 'none'`` restores the old guess -- the control
+        The nodes are :meth:`_predict_state`'s -- accepted states and stages
+        at absolute times -- plus this step's already converged stages, which
+        being the nearest ones are what continues the polynomial by ONE STAGE
+        GAP instead of a whole step.  ``stage_predictor='off'`` restores the
+        old guess (the previous stage's converged value), which is the control
         the gate measures against, not a knob to tune.
 
         ⚠⚠ TWO SIMPLER PREDICTORS WERE BUILT FIRST AND BOTH LOST, on a
         state-free exponential at 40 and 200 points per period
-        (``benchmarks/glm/stage_predictor.py``; device evaluations against the
-        fallback, then the worst seed error, then the worst stage's Newton
+        (``benchmarks/stage_predictor.py``; device evaluations against the
+        old guess, then the worst seed error, then the worst stage's Newton
         iterations):
 
-        ==================  ==============  ============  ==========
+        ==================  ==============  ============  ===========
         predictor           device evals    worst seed    worst iters
-        ==================  ==============  ============  ==========
-        fallback            --              7.5e-02       6
+        ==================  ==============  ============  ===========
+        old guess           --              7.5e-02       6
         ``Y_i^prev + dx``   +0.6% to -6%    2.0e-01       13
         full-step poly      -2% to -18%     7.3e-01       33
         this one            -12% to -29%    7.5e-02       5
-        ==================  ==============  ============  ==========
+        ==================  ==============  ============  ===========
 
-        The shift is barely better than nothing and its tail is WORSE; the
-        full-step polynomial wins on the mean and loses badly on the tail --
-        exactly how a heuristic passes its own gate and then fails in use.
-        The mechanism is structural: the fallback guess is always a value the
-        circuit ACTUALLY ATTAINED, so it can never sit in a device's overflow
-        region, while a polynomial continued a whole step can, and on an
-        exponential a 3x overshoot is ``exp(3 dV / VT)``.  Clamping the
-        overshoot to the range the known states span recovers only half of it
-        (33 iterations -> 13).  Continuing by ONE NODE GAP removes the class:
-        measured, this predictor's worst seed never exceeds the fallback's.
-        ⚠ A ratio test against the step's motion does NOT screen the bad case
-        -- the bad prediction's displacement is 2.98 of the step's motion and
-        the TRUE stage spread reaches 2.98 too.
+        A gate on the MEAN passes all four.  The mechanism is structural: the
+        old guess is always a value the circuit ACTUALLY ATTAINED, so it can
+        never sit in a device's overflow region, while a polynomial continued
+        a whole step can, and on an exponential a 3x overshoot is
+        ``exp(3 dV / VT)``.  ⚠ A ratio test against the step's own motion does
+        NOT screen the bad case -- measured, the bad prediction's displacement
+        is 2.98 of that motion and the TRUE stage spread reaches 2.98 too.
 
-        ⚠ The predictor needs the previous step to have used the SAME ``h``
-        and to have ENDED where this one starts; a changed step moves the
-        stage positions, and the seam of a shooting period has no predecessor
-        at all (``shooting._begin_period`` clears ``_glm_prev`` for exactly
-        that reason).  Both fall back rather than read a stale record.
+        ⚠ The Nordsieck state itself needs a constant step and an unbroken
+        predecessor, so this declines exactly where `_glm_Q` would be rescaled
+        or restarted; the shared predictor is happy with a variable step, the
+        method is not.
         """
-        if getattr(self, 'glm_predictor', 'local') == 'none':
+        if self.stage_predictor == 'off':
             return None
         prev = getattr(self, '_glm_prev', None)
         if prev is None:
             return None
         Yp, xp, hp, tp = prev
-        s = len(c)
-        if len(Yp) != s or abs(hp - h) > 1e-14 * max(h, 1.0) \
+        if len(Yp) != len(c) or abs(hp - h) > 1e-14 * max(h, 1.0) \
                 or abs(tp - tn) > 1e-12 * max(abs(tn), h):
             return None
-        deg = int(getattr(self, 'glm_predictor_degree', None)
-                  or self.base_integrator.order)
-        W = self._glm_local_weights(c, deg)
-        zero = np.zeros_like(np.asarray(xn, dtype=float))
 
-        def _local(i, Y, _W=W, _Yp=Yp, _z=zero):
-            ip, ic, w = _W[i]
-            acc = _z.copy()
-            for k, j in enumerate(ip):
-                acc += w[k] * _Yp[j]
-            for k, j in enumerate(ic):
-                acc += w[len(ip) + k] * np.asarray(Y[j], dtype=float)
-            return acc
-        return _local
+        def _pred(i, Y, _c=c, _h=h, _tn=tn):
+            return self._predict_state(
+                _tn + _c[i] * _h,
+                extra=[(_tn + _c[j] * _h, Y[j]) for j in range(i)
+                       if Y[j] is not None])
+        return _pred
 
     def _solve_timestep_glm(self, x0, t, provided_function=None):
         """One step of a Nordsieck general linear method (:class:`integrator.
@@ -2751,7 +2925,7 @@ class Transient(Analysis):
         ## after the first step to learn what the startup produced
         self._glm_Q_in = np.asarray(Q, dtype=float)
         tstage = [tn + c[i] * h for i in range(s)]
-        pred = self._glm_stage_predictor(xn, h, tn, c)
+        pred = self._glm_stage_predictor(h, tn, c)
         Y = [None] * s
         K = [None] * s
         for i in range(s):
@@ -2759,7 +2933,9 @@ class Transient(Analysis):
                 + h * sum(A[i, j] * K[j] for j in range(i))
             aii = A[i, i]
             ti = tstage[i]
-            guess = pred(i, Y) if pred is not None else (Y[i - 1] if i > 0 else xn)
+            guess = pred(i, Y) if pred is not None else None
+            if guess is None:
+                guess = Y[i - 1] if i > 0 else xn
 
             def func_i(x, _tgt=target, _aii=aii, _ti=ti):
                 Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
@@ -2776,6 +2952,8 @@ class Transient(Analysis):
         self._glm_prev = ([np.asarray(y, dtype=float) for y in Y],
                           np.asarray(xn, dtype=float), float(h), float(t))
         self._rk_Y = list(Y)
+        ## predictor nodes for the NEXT step; promoted only on accept
+        self._pred_pending = (t, list(zip(tstage, list(Y))))
         self._rk_K = list(K)
         qY = self.cir.q(xnp1, epar)
         self._q_cache = (xnp1, qY)
@@ -2869,7 +3047,12 @@ class Transient(Analysis):
         ## per-stage state that stands in for each device's internal `_vlim`;
         ## seeded (and limited) from the stage guess, exactly like the DC and
         ## single-stage paths.
-        Y = [np.array(xn, dtype=float) for _ in range(3)]
+        ## STAGE PREDICTOR -- and here it seeds the LIMITING too: `v_lim_init`
+        ## reads the stage guess, and limiting the seed is what fixed PCNR's
+        ## one documented failure (`pcnr.py`), so a seed nearer the answer is
+        ## the same medicine.
+        Y = [self._pred_or(np.array(xn, dtype=float), tstage[j])
+             for j in range(3)]
         v_lim = [_pcnr.v_lim_init(junctions, Y[j]) for j in range(3)]
         m = qn_r.shape[0]
         reltol = self.par.reltol
@@ -3021,6 +3204,8 @@ class Transient(Analysis):
         self._effective_method = 'RadauIIA3Integrator'
         self._companion_coeffs = None
         self._rk_Y = [Y1, Y2, Y3]
+        ## predictor nodes for the NEXT step; promoted only on accept
+        self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
         J = C3 + a33 * h * G3
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
@@ -3291,7 +3476,14 @@ class Transient(Analysis):
 
         from pycircuit.circuit.nrsolver import (NoConvergenceError,
                                                 _adaptive_conductance_ladder)
-        seed0 = [np.array(xn, dtype=float) for _ in range(3)]
+        ## STAGE PREDICTOR.  ⚠ The coupled solve has no converged stage of its
+        ## own to read -- all three are unknowns of ONE Newton -- so unlike the
+        ## sequential paths this is a whole-step extrapolation, and it is the
+        ## clamp in `_predict_state` that keeps its worst case bounded.  The
+        ## seed it replaces is `x_n` for all three stages, the crudest in this
+        ## file (measured: a full step's motion away, against ESDIRK43's 0.50).
+        seed0 = [self._pred_or(np.array(xn, dtype=float), tstage[i])
+                 for i in range(3)]
         try:
             Y = _stage_newton(seed0)
         except NoConvergenceError:
@@ -3356,6 +3548,8 @@ class Transient(Analysis):
         self._companion_coeffs = None
         ## Stage values kept for the shooting monodromy, which needs all three.
         self._rk_Y = [Y1, Y2, Y3]
+        ## predictor nodes for the NEXT step; promoted only on accept
+        self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
         J = C3 + a33 * h * G3
 
         ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner Vol II, IV.8, the
@@ -3542,7 +3736,12 @@ class Transient(Analysis):
         Cr = np.asarray(Cr, dtype=float)
         Gr = np.asarray(Gr, dtype=float)
 
-        Y = [np.array(xn, dtype=float) for _ in range(3)]
+        ## STAGE PREDICTOR.  ⚠ This path is SIMPLIFIED Newton (one Jacobian per
+        ## step), so it is the one that benefits most from starting near the
+        ## root and the one that most needs the clamp: it has no fresh Jacobian
+        ## to recover from a wild guess, only the dense fallback.
+        Y = [self._pred_or(np.array(xn, dtype=float), tstage[i])
+             for i in range(3)]
         m = Cr.shape[0]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
@@ -3596,6 +3795,8 @@ class Transient(Analysis):
         self._effective_method = 'RadauIIA3Integrator'
         self._companion_coeffs = None
         self._rk_Y = [Y1, Y2, Y3]
+        ## predictor nodes for the NEXT step; promoted only on accept
+        self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
         J = C3 + a33 * h * G3
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
@@ -3721,7 +3922,15 @@ class Transient(Analysis):
             J = self.cir.G(x, self.epar) + Geq
             return None, self.toolkit.array(J, dtype=float)
 
-        x = self._newton(func, x0)
+        ## STAGE PREDICTOR.  A multistep method has no stages, so its analogue
+        ## is the classical one: extrapolate the accepted history to `t`.  The
+        ## seed it replaces is `x_n`, a whole step behind.
+        x = self._newton(func, self._pred_or(x0, t))
+        ## ⚠ AND IT MUST RECORD ITS OWN NODE.  The stage methods get theirs for
+        ## free next to `_rk_Y`; this path has no stages, so without this line
+        ## the history never reaches two entries and the predictor declines
+        ## every step in silence -- measured, 200 calls and 0 predictions.
+        self._pred_pending = (t, ())
         ## The source term does not enter `J`, and `jacobian_only` returns
         ## `f = None` by design, so the reduced evaluation stays correct with
         ## `provided_function` folded into `func` above (F4).
@@ -4483,6 +4692,7 @@ class Transient(Analysis):
                 timelist.append(t)
                 self.statistics.accepted_steps += 1
                 self.statistics._note_step(dt)
+                self._pred_promote(x)
                 if hasattr(self.cir, 'accept_step'):
                     self.cir.accept_step(t, x, self.epar)
                 ## propose the next step from the same estimate
