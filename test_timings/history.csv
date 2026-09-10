@@ -221,3 +221,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260910T115251Z,452ad85,pycircuit 10 no:cacheprovider,614.0,3150,pycircuit/circuit/tests/test_analysis_shooting.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,310.0
 20260910T115505Z,452ad85,pycircuit/circuit/tests/test_analysis_shooting.py no:cacheprovider band_spread or incidence_RANK,273.1,2,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,272.1
 20260910T120825Z,452ad85,pycircuit 10 no:cacheprovider,776.8,3152,pycircuit/circuit/tests/test_analysis_shooting.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,239.6
+20260910T122439Z,deb675d,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.8,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.0
+20260910T123806Z,deb675d,pycircuit 10 no:cacheprovider,661.4,3152,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,343.0

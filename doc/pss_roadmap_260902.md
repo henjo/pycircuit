@@ -4784,7 +4784,7 @@ the fixture fact (a) used, and see whether it reports the warping the LTE could 
 
 #### ✅✅ B7's GATE RUN (2026-09-08): a defect-correction global estimate REPRODUCES THE WARPING TO FOUR DIGITS, at ONE grid, with NO analytic reference — for trap, TR-BDF2, AND the radau default, once the interpolant is of the right degree
 
-**Construction** (numpy prototype, `scratchpad/idec.py` and successors; A10's van der Pol, `Q = 10⁴`,
+**Construction** (numpy prototype, `benchmarks/idec.py` and successors; A10's van der Pol, `Q = 10⁴`,
 ODE form on `(v, i_L)`; coded tableaux for TR-BDF2 and Radau from the classes): (1) the method's
 PERIODIC solution `x_h, T_h` by shooting in `(v₀, T)`; (2) a periodic spline interpolant `p(t)` of
 degree `k`; (3) the defect `d(t) = p′ − f(p)`, `T_h`-periodic; (4) the NEIGHBOURING problem
@@ -12110,7 +12110,7 @@ model is fitted once in `pnoise` and serves the stop rule too. Exactness against
 1.5e-11 / 4.5e-12 / 1.2e-12 relative at 0.1 / 1.3 / 3.7 MHz. The fallback is pinned with a Lorentzian term
 added to the fixture's `CY` (`1e-22/(1 + (f/3 MHz)²)`): the model refuses, the fold agrees with the
 forced per-band evaluation to 1e-12 and differs from the unmodified circuit by more than 1e-3. The flicker
-identity gates (`cyclo_flicker.py`: sign-definite gain 1.000000000 at both offsets, zero-crossing 0.563 /
+identity gates (`benchmarks/cyclo_flicker.py`: sign-definite gain 1.000000000 at both offsets, zero-crossing 0.563 /
 1.325 as recorded) and both MOS ratios (0.3758, 0.3189) are unmoved to the printed digits.
 
 Not done, and why: the k-truncation by the coefficients' own decay — on a kinked (zero-crossing) modulation
@@ -12786,7 +12786,7 @@ searches" (about DIMSIMs, s = p; IRKS's canonical forms reach order five in his 
 to ρ_lhp = 1.007, eig(V)₂ = 0.017, nilpotency 1e-3 at p = 3, λ = 0.25 — close, not a method. The IRKS conditions
 proper (`BA = XB`, `BU = XV − VX`, `X` doubly companion, which make M(z)'s spectrum {R(z), 0, …} by theorem so
 A-stability is |R(iy)| ≤ 1 and L-stability ε = 0) are the right formulation and are running as a constrained
-least squares (scratchpad `glm_irks.py`, validated first at p = 2 against Wright's tableau); Appendix I (Maple,
+least squares (`benchmarks/glm/glm_irks.py`, validated first at p = 2 against Wright's tableau); Appendix I (Maple,
 "approach one of §3.7") and §3.11 (local-error minimisation) are the thesis's own route if that stalls. Not yet
 a result.
 
@@ -12952,7 +12952,7 @@ Remaining scope: `matrix_free` is not wired, and PPV/PAC/pnoise have not been RU
 **Wright's approach one implemented and validated two-thirds of the way (2026-09-10).** The docs session
 transcribed §3.7's definitions (and corrected its own refusal: `F` is ONE object in two forms, `exp(-λK⁻)E exp(λK⁻)
 = exp(K(I+λK)⁻¹)` — ⚠ the exponential of the WHOLE product, which the printed form reads as `exp(K)·(I+λK)⁻¹` if
-taken naively). Implemented in `scratchpad/wright_ctor.py` and checked in the prescribed order:
+taken naively). Implemented in `benchmarks/glm/wright_ctor.py` and checked in the prescribed order:
 
 1. **δ = [1/64, 1/4, 1] exactly** for Wright's p = 2, λ = 1/4, ε = 0 method — the peer's worked target, reproduced
    from the closed forms `δ = [ε + λ M_{p,p}, N_p, …, N_1]`. ✅
@@ -12975,7 +12975,7 @@ p. 73 says `Ã` is strictly lower triangular and `B̃` LOWER triangular, while `
 `B = Ψ B̃` is full. And `Ã` itself comes from the transformed IRKS condition (3.5.9) `B̃Ã = JB̃`, i.e.
 `Ã = B̃⁻¹ J B̃`. **Verified on Wright's printed p = 2, λ = 1/4 method, from the free parameters alone:** `B` to
 9.8e-15, `A` to 5.8e-16, order 2 exact, `eig(V) = {1, 0, 0}`, ρ ≤ 0.999 — the route reproduces a published
-tableau, so it is confirmed rather than believed (`scratchpad/wright_ctor.py`, `wright_full.py`).
+tableau, so it is confirmed rather than believed (`benchmarks/glm/wright_ctor.py`, `wright_full.py`).
 
 **And it reaches p = 4** — with one condition still to add. Choosing λ in Table 3.3's band, canonical abscissae
 and ε = 0, and solving the ONE remaining condition on (β, T) — that `Ã = B̃⁻¹JB̃` come out strictly lower
