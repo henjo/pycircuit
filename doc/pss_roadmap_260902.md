@@ -13018,3 +13018,27 @@ a reason to measure before preferring it to GLM3 on a circuit with sharp sources
 scored RELATIVE to its own scale (the peer's point: an absolute nilpotency floor on a matrix of entries ~2500 is
 as uninformative when too small as when too large).
 
+**The scaling is not forced by the construction (docs session, §3.11, book pp. 101–102).** Wright, verbatim:
+*"One of the advantages of IRKS methods which cannot be overstated is that the methods can be derived using ONLY
+LINEAR OPERATIONS. This makes it possible to search for certain choices of the free parameters which lead to the
+coefficients of the method having small magnitudes. In fact methods where ALL COEFFICIENTS HAVE MAGNITUDE LESS
+THAN OR EQUAL TO ONE can be found for methods of high order."* — and he opens by naming the reason: *"This
+reduces the LOSS OF SIGNIFICANCE that can result when methods have large coefficients."* So GLM4's entries of
+2500 are one member of a family that contains well-scaled ones, and finding them is a search over the free
+parameters, not a different derivation. His §3.11 algorithm (five printed lines: choose the free parameters,
+compute the method, compute the underlying one-step method's independent coefficients, weight them, iterate to
+minimise the weighting) rests on an observation he flags as *"yet to be proved"* — fine for a search, not to be
+asserted.
+
+⚠ **The abscissae are the separate and sharper problem for a CIRCUIT simulator**, and one constraint rather than
+a chapter. A stage at `c > 1` evaluates the device models past the end of the step, further from the operating
+point the Jacobian was formed at — a MOSFET or diode can be pushed across a region boundary — and a
+time-dependent source is then sampled in a DIFFERENT PWL/pulse SEGMENT, not an extrapolation of the same one;
+`c < 0` would ask for data before the step start. `c` is a free parameter (p. 80) and Wright's own canonical
+choice is inside [0, 1], so bounding it costs nothing theoretically. Running now: the same stiffly accurate solve
+with `c` bounded to [0, 1] and a soft pull on `|A|, |B| ≤ 1`. If it converges, GLM4's tableau is replaced by the
+bounded one and the method becomes defensible as a default rather than an option; if it does not, the recorded
+scope stays as it is. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
+it pivoting; it was an abscissa vector built one entry short. Neither of us had examined the failure before
+explaining it.
+
