@@ -13113,10 +13113,22 @@ matters: `radau_transform` is opt-in and was ABSENT, so radau paid the full dens
 still lost 2.4–4.7×. ⚠ With the transform ON radau is one real plus one complex `m` solve ≈ five real
 equivalents — factorisation PARITY with glm4 — so there is no regime where glm4 wins on factorisations either.
 
-**The lever, if anyone wants the gap closed:** the stage initial guess. 23 `i` evaluations per stage says the
-per-stage Newton is starting far from its root; a predictor built from the Nordsieck vector (which carries the
-scaled derivatives, so a Taylor guess at `c_i h` is free) is the obvious candidate and is not built. Recorded
-as an opportunity, not a claim.
+**Two levers, and one of them is already ruled out here.** (a) A FROZEN JACOBIAN: the stage operator
+`C + h λ G` is provably the SAME MATRIX at all five stages (equal diagonal — which is what Wright's λ band is
+FOR), and this tree's radau already uses simplified Newton on its fast path for a weaker reason. ⚠ But it saves
+nothing at this size, and the peer named why: `nrsolver`'s contract is `F, J = eval_FJ(x)` — there is NO
+residual-only path — and the stage residual computes `i`, `q`, `C`, `G` in one call, so freezing the operator
+saves the FACTORISATION and the assembly, not the device evaluation. At `m = 3` that is nearly nothing; on a
+large circuit it is the `m³` term and would matter. (b) THE STAGE INITIAL GUESS: 23 `i` evaluations per stage
+says the per-stage Newton starts far from its root, and the Nordsieck vector carries the scaled derivatives a
+Taylor predictor at `c_i h` needs, for free. That is the only lever that moves the 3.0×, because it saves
+ITERATIONS and therefore device evaluations, which is the `m`-invariant term. Neither is built; recorded as
+opportunities, not claims.
+
+⚠ **Read the `i` counts, not the `G` counts.** radau shows 39.0 `i` against 47.8 `G` per step — more Jacobians
+than residuals, which is not a Newton signature. The excess is the shooting monodromy assembly, which calls
+`_G_at` per stage and never calls `i`; it is method-dependent (3 stages against 5) and is not nonlinear-solve
+work. `i` is the clean measure, and on `i` the ratio is 4648 / 1560 = **2.98×**, which is the number quoted.
 ⚠ The equal-work comparison is only valid up to radau's finest measured cost (2.0 s); beyond that the
 interpolation clamps and says nothing.
 
