@@ -81,6 +81,9 @@ from pycircuit.circuit.integrator import (Gear2Integrator, TRBDF2Integrator,
                                           RadauIIA3Integrator,
                                           GLM3Integrator)
 
+## `zero_order_sweep` needs these; `CubicCap` above already uses the rest
+import sympy  # noqa: F811,E402
+
 warnings.simplefilter('ignore')
 _cc.default_toolkit = numeric
 PER = 1e-3
@@ -250,3 +253,75 @@ if __name__ == '__main__':
                 'CONTROL B: NONLINEAR C > 0, im D STILL time-invariant '
                 '-- separates the rank change from the nonlinearity')
     branch_test(rank_changing, 'im D VIOLATED: rank C drops at V = 0')
+    zero_order_sweep()
+
+
+## ------------------------------------------------------------------------
+## Does the collapse carry DAE content, or only the order of C's zero?
+
+def _cap_of_order(k):
+    """A capacitance with a zero of order `k` at `V = 0`: `C = c0 |V|^k`.
+    `k = 0` is the linear control, `k = 2` is `CubicCap`."""
+    class Cap(Behavioural):
+        instparams = [Parameter(name='c0', desc='c', unit='F', default=1e-6)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            if k == 1:
+                q = c0 * b.V * sympy.Abs(b.V) / 2                # noqa: F821
+            elif k == 2:
+                q = c0 * b.V ** 3 / 3                            # noqa: F821
+            else:
+                q = c0 * b.V * sympy.Abs(b.V) ** k / (k + 1)     # noqa: F821
+            return (Contribution(b.I, ddt(q)),)
+
+    def build(va=1.0):
+        c = SubCircuit()
+        c.add_node('s')
+        c.add_node('a')
+        c['vs'] = VSin('s', gnd, va=va, freq=1.0 / PER)
+        c['rs'] = R('s', 'a', r=1e3)
+        c['cq'] = Cap('a', gnd, c0=1e-6)
+        c['rl'] = R('a', gnd, r=1e4)
+        return c
+    return build
+
+
+def zero_order_sweep():
+    """⚠⚠ THE MEASUREMENT THAT NARROWS THIS FILE'S OWN CONCLUSION.
+
+    docs-46 reduced the collapse to a ONE-NODE SCALAR model with no DAE
+    structure at all and found the exponent set by the ORDER OF THE ZERO of
+    `C`, not by the method's order -- predicting `spread ~ h^p` with `p = 3/2`
+    at `k = 1` and `4/3` at `k = 2`.  If that holds here, the collapse is a
+    property of a vanishing capacitance and carries no index content, and
+    `im D(t)` is the right DESCRIPTION of when it happens without being the
+    MECHANISM.
+
+    MEASURED (N = 200/400/800/1600): TR-BDF2 1.496 -> 1.413 and GLM3 1.527 ->
+    1.411 as `k` goes 1 -> 2, both landing on the prediction at `k = 1` and
+    moving the right way.  ⚠ radau reads 1.611 -> 1.709, noisier and moving
+    the WRONG way with `k`, which is not explained and is recorded rather than
+    fitted.
+    """
+    print('=== the collapse exponent against the order of C\'s zero ===')
+    print('    predicted p: 1.500 at k=1, 1.333 at k=2, method-INDEPENDENT')
+    print('%-8s %-4s %s   fitted p'
+          % ('method', 'k', '  '.join('N=%-9d' % n
+                                      for n in (200, 400, 800, 1600))))
+    for cls, name in ((TRBDF2Integrator, 'trbdf2'),
+                      (RadauIIA3Integrator, 'radau'),
+                      (GLM3Integrator, 'glm3')):
+        for k in (1, 2):
+            build = _cap_of_order(k)
+            sp = []
+            for N in (200, 400, 800, 1600):
+                v = [endpoint(cls, build, N, o)
+                     for o in (0.0, 0.17, 0.31, 0.53, 0.79)]
+                sp.append(max(v) - min(v))
+            ns = np.array([200.0, 400.0, 800.0, 1600.0])
+            p = -np.polyfit(np.log(ns), np.log(np.array(sp)), 1)[0]
+            print('%-8s %-4d %s   %.3f'
+                  % (name, k, '  '.join('%.3e' % x for x in sp), p))
+    print()

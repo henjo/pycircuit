@@ -18773,10 +18773,30 @@ def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(
     one, so the loss is the RANK CHANGE.  ⚠ And `q = c0 V^3/3` is a
     polynomial, so it is not a smoothness failure of the model either.
 
+    ⚠⚠ AND THE ATTRIBUTION IS NARROWER THAN IT LOOKS.  The numbers above are
+    what they are, but this is NOT a DAE or index effect: the same collapse
+    reproduces in a ONE-NODE SCALAR model with no DAE structure (docs-46,
+    relayed), and its exponent is set by the ORDER OF THE ZERO OF `C`, not by
+    the method's order.  MEASURED here on this fixture, fitting `spread ~ h^p`
+    over N = 200/400/800/1600: with `C ~ |V|` (a first-order zero) TR-BDF2
+    reads 1.496 and GLM3 1.527 against a predicted 1.5; with `C ~ V^2` they
+    read 1.413 and 1.411 against a predicted 1.333.  radau is noisier (1.611
+    and 1.709) and moves the wrong way with `k`, which is not explained.  So
+    `im D(t)` is the right DESCRIPTION of when this happens -- rank C drops --
+    without being the mechanism.
+
     ⚠ NOT SHOWN: the spread still shrinks, so this is an ORDER COLLAPSE and
-    not the uniqueness failure the theory points at.  This orbit crosses the
-    boundary transversally at isolated points; solutions AT or ALONG the
-    border are a different case and are not built.
+    not the uniqueness failure the theory points at -- and per Lamour §2.9
+    that is the PUBLISHED SIGNATURE OF A HARMLESS CRITICAL POINT (one "which
+    disappears in smoother settings"), so it is the expected outcome here
+    rather than a falsifier that missed.  ⚠⚠ This probe COULD NOT have seen a
+    uniqueness failure anyway: on a genuine branch point the non-uniqueness
+    becomes multiplicity of roots of the STEP equation, the Newton picks one
+    silently, every grid picks the same one, and the spread over grid offset
+    is exactly zero (relayed, measured by docs-46).  The knob that exposes it
+    is the SOLVER'S INITIAL GUESS.  A real non-uniqueness fixture needs the
+    rank drop AND a REPELLING equilibrium at it -- a negative conductance,
+    which is what an oscillator's active device supplies.  NOT BUILT.
     """
     import os
     import sys

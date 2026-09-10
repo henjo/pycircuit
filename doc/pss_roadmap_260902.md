@@ -13653,3 +13653,47 @@ leaving conduction — gets no benefit from radau's order over gear's, and the G
 the DIRK cap is equally gone. The premise is now stated on both docstrings; this is the measurement behind
 it. Gated by `test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order`, which asserts the
 rank probe first — a fixture that does not exercise the condition is the whole trap.
+
+#### ⚠⚠ CORRECTION, same day: the attribution above is too strong
+
+The MEASUREMENTS in the previous section stand — radau does lose eight orders where `rank C` drops, and the
+nonlinear rank-constant control is unaffected, so it is the rank change and not the nonlinearity. **What does
+not stand is calling it a DAE or index effect.**
+
+docs-46 reduced it to a ONE-NODE SCALAR model with no DAE structure at all — `d/dt q(v) + (v − vs)/R = 0`
+with `q(v) = C0|v|^k v/(k+1)`, so `C = C0|v|^k` has a zero of order `k` — and reproduced the same collapse to
+a common exponent across methods of order 1, 2 and 4 (relayed, not re-derived here). Their prediction:
+`spread ~ h^p` with `p = 4/3` at `k = 2` and `3/2` at `k = 1`, **independent of the method's order**.
+
+MEASURED HERE on our own fixture, fitting `p` over N = 200/400/800/1600:
+
+| method | k = 1 (`C ~ \|V\|`) | k = 2 (the committed fixture) |
+|---|---|---|
+| TR-BDF2 | 1.496 | 1.413 |
+| GLM3 | 1.527 | 1.411 |
+| radau | 1.611 | 1.709 |
+
+TR-BDF2 and GLM3 land on the predicted 1.5 and move the right way with `k`; radau is noisier and moves the
+wrong way, which is not explained. But the structural point survives: **the exponent is set by the order of
+the zero of `C`, not by the method's order**, and it appears without any DAE. So the collapse is a property
+of a vanishing capacitance, and the `im D(t)` hypothesis is the right *description* of when it happens
+(rank C drops) without being the *mechanism*.
+
+**And the theory says this is the expected outcome, not a failed falsifier.** Lamour §2.9 defines critical
+points "which disappear in smoother settings" as HARMLESS, with Examples 2.70/2.71 showing one DAE genuinely
+critical under minimal smoothness and uniquely solvable under more. **Order collapse with uniqueness retained
+is the published signature of a harmless critical point** — which is exactly what the previous section
+measured and flagged as "not the uniqueness failure the theory points at".
+
+**⚠⚠ AND THE PROBE CANNOT SEE UNIQUENESS AT ALL** (relayed, measured by docs-46 on a genuine branch point).
+Starting exactly at `V = 0` with `C = C0V²`, the implicit-Euler step equation `z(C0z²/3h + g) = 0` has THREE
+roots when `g < 0`; the analytic non-uniqueness becomes multiplicity of roots of the STEP equation and the
+Newton picks one silently — every grid picks the same one, and the spread over grid offset is **exactly
+0.0000e+00** at every refinement. The knob that exposes it is the SOLVER'S INITIAL GUESS, not the grid.
+So on a real branch point our probe returns a clean, convincing, wrong null.
+
+⚠ The fixture for genuine non-uniqueness needs TWO ingredients, not one: the rank drop AND a REPELLING
+equilibrium at it (a negative conductance — which is what an oscillator's active device supplies). With a
+passive `R` the equilibrium is attracting and forward uniqueness is safe however badly `C` degenerates, which
+is why our transversal crossing behaved. NOT BUILT.
+
