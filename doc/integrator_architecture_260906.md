@@ -675,3 +675,48 @@ its algebraic error at npts=80 is 2.0e-11 against `esdirk43`'s 5.7e-10 and `trbd
 order-5 method converging at 3 invites a defect report against a correct tableau. The reduction is
 the DAE index. See the roadmap section for the two ways this sweep lied before it worked (a
 cosine/sine reference convention, and a floor-limited fixture — both reading as "order 0").
+
+
+## The THIRD family: multivalue (Nordsieck GLM) — what a non-Runge-Kutta method costs (2026-09-10)
+
+This document's design made the next RUNGE-KUTTA method cheap: state the Butcher tableau, and the stage step,
+the monodromy, the adjoint and the source folds follow. A general linear method is the first integrator that is
+one-step and self-starting but NOT a stage method in that sense, and it is worth recording what it needed, since
+the answer is "three predicates and two builders", not a rewrite.
+
+**What it is.** `NordsieckGLMIntegrator` carries `r = p + 1` values per unknown between steps — the scaled
+derivatives `Q_k = h^k q^(k)` — with a lower-triangular `A` of one diagonal `λ`, stage order `q = p`, and stiff
+accuracy. Concrete tableaux: `GLM2Integrator` (Wright's printed p = 2), `GLM3Integrator` and `GLM4Integrator`
+(constructed here). ⚠ The tableau is `(A, c, B, p)` — `U` and `V` are NOT free, they follow from the order
+conditions `U = C − ACK`, `V = E − BCK`, so `verify()` MEASURES order and stage order rather than trusting them.
+
+**What the architecture had to grow.**
+
+| need | answer |
+|---|---|
+| tell it apart from a stage method | `is_multivalue()`, a third predicate beside `is_stage_method`/`is_fully_implicit` |
+| one step | `Transient._solve_timestep_glm`, dispatched on that predicate before the RK split |
+| the starting vector | `Transient._glm_startup` — p Radau substeps at `h/p` and a degree-p interpolant, which is the convergence theorem's hypothesis (c), not an implementation detail |
+| the period map | `PSS.factored_period_glm` → `FactoredPeriod(kind='glm')`, width `r·m` |
+| its adjoint | `_monodromy_matvec_transposed_glm`, dispatched by `kind` like the others |
+| the shooting Jacobian and the period column | `_traverse_glm`, sharing ONE recursion (`_glm_propagate`) with the monodromy — different seeds, same code |
+
+**The three things that would have been wrong by default, and are the transferable part:**
+
+1. ⚠⚠ **The period map is NOT on `x`.** A multivalue method's map acts on the Nordsieck state, so `fp.width` is
+   `r·m`, and the state-space surfaces (`ppv`, `oscillator_covariance`, PAC/pnoise) want a map on `x`. The two
+   are not related by taking the first block: a state kick perturbs the higher components too. `ppv` did not
+   refuse — it returned a wrong answer that passed its own `v · ẋ = 1` check, because any scaling does. The fix
+   is `carries_own_monodromy() → False`, so the surfaces take a TWIN, which is what `trap` and `euler` already
+   do for the same shape of reason. **A new family should answer that predicate before it is used, not after.**
+2. ⚠ **Widths and conventions.** The transient carries the Nordsieck vector at FULL width (charge rows,
+   reference included) while every sensitivity is on the reduced state; and the Nordsieck convention is
+   `y_k = h^k y^(k)` WITHOUT `1/k!` (the factorial form fails exactness at k = 2 — measured before it was read).
+3. ⚠ **`floquet_modes` works on the wide map anyway**, because its null filter drops the `(r−1)m` multipliers
+   that are the method's own. The MULTIPLIERS transfer; the EIGENVECTORS do not.
+
+**Cost, measured, because the structural argument was wrong.** "One real factorisation per step against Radau's
+coupled `3m` solve" is true of the dense Radau path and buys nothing: glm4 is 2.4–4.7× SLOWER at equal grid, and
+the mechanism is 3.0× the device evaluations per step (five stages each running their own Newton against Radau's
+one coupled system), which is `m`-INVARIANT. See the roadmap. The order result — order `p` in BOTH components on
+an index-2 DAE, where Radau splits `5 / 3` — stands and never rested on the cost story.
