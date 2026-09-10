@@ -1931,7 +1931,8 @@ class PSS(Analysis):
                                                   RadauIIA3Integrator,
                                                   ESDIRK43Integrator,
                                                   GLM2Integrator,
-                                                  GLM3Integrator)
+                                                  GLM3Integrator,
+                                                  GLM4Integrator)
         ## THE single method -> integrator map, and the one place method names
         ## are validated: an unknown name raises the ValueError here rather than
         ## a KeyError three frames down.  The polymorphic predicates
@@ -1955,13 +1956,15 @@ class PSS(Analysis):
                  ## period), and the period map is on the MULTIVALUE state --
                  ## see `factored_period_glm`.
                  'glm2': GLM2Integrator,
-                 'glm3': GLM3Integrator}
+                 'glm3': GLM3Integrator,
+                 'glm4': GLM4Integrator}
         try:
             return table[method]()
         except KeyError:
             raise ValueError(
                 "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
-                "'radau', 'esdirk43', 'glm2' or 'glm3', not %r" % (method,))
+                "'radau', 'esdirk43', 'glm2', 'glm3' or 'glm4', not %r"
+                % (method,))
 
     ## Below this fraction of the seed, a solved period is the trivial
     ## root rather than an orbit.  Deliberately loose: a real fundamental
@@ -9035,10 +9038,11 @@ class PSS(Analysis):
         method = getattr(self.par, 'method', 'euler')
         if method not in ('euler', 'trap', 'trapezoidal', 'theta', 'gear',
                           'gear2', 'trbdf2', 'radau', 'esdirk43',
-                          'glm2', 'glm3'):
+                          'glm2', 'glm3', 'glm4'):
             raise ValueError(
                 "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
-                "'radau', 'esdirk43', 'glm2' or 'glm3', not %r" % (method,))
+                "'radau', 'esdirk43', 'glm2', 'glm3' or 'glm4', not %r"
+                % (method,))
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,

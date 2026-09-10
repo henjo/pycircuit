@@ -16,10 +16,11 @@ from pycircuit.circuit import circuit
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import C, L, R, VSin
 from pycircuit.circuit.transient import Transient
-from pycircuit.circuit.integrator import GLM2Integrator, GLM3Integrator, RadauIIA3Integrator
+from pycircuit.circuit.integrator import (GLM2Integrator, GLM3Integrator,
+                                          GLM4Integrator, RadauIIA3Integrator)
 
 
-@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator])
+@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator, GLM4Integrator])
 def test_nordsieck_glm_tableau_is_order_p_stiffly_accurate_and_stable(cls):
     """Order and stage order are STRUCTURAL (U, V from the order conditions):
     one step on y = t^k is exact for k <= p in output and stages, and not at
@@ -37,8 +38,15 @@ def test_nordsieck_glm_tableau_is_order_p_stiffly_accurate_and_stable(cls):
             assert e_out > 1e-3 and e_stage > 1e-3, (k, e_out, e_stage)
     assert v['stiffly_accurate']
     assert abs(v['eig_V'][0] - 1.0) < 1e-6 and np.all(v['eig_V'][1:] < 5e-3), v['eig_V']
+    ## the pair/triple at eps^(1/k) is a defective block's computed spectrum,
+    ## not a residual to tighten -- the assertion is `Vdot^p = 0` above
     assert v['rho_M_inf'] < 5e-3, v['rho_M_inf']
-    assert v['nilpotency_residual'] < 1e-8, v['nilpotency_residual']
+    ## ⚠ RELATIVE to the tableau's own scale: GLM4's B carries entries of
+    ## order 2500, so an absolute floor here would be meaningless (the docs
+    ## session's point -- a residual that is too small is as uninformative as
+    ## one that is too large).
+    scale = max(float(np.max(np.abs(np.asarray(g.B, dtype=float)))), 1.0)
+    assert v['nilpotency_residual'] < 1e-8 * scale, (v['nilpotency_residual'], scale)
     assert v['rho_lhp'] <= 1.0 + 1e-9, v['rho_lhp']
 
 
@@ -116,7 +124,7 @@ def _orders(cir, per, integ, keep, Vdiff, Valg, x_exact, override=None, npts_lis
     return errs, od, oa
 
 
-@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator])
+@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator, GLM4Integrator])
 def test_nordsieck_glm_has_no_index2_order_split_and_the_starting_vector_does_not_limit_it(cls):
     """On the index-2 C-V loop, from the exact periodic state, one period at
     constant step: the GLM's DIFFERENTIAL and ALGEBRAIC errors both fall at
@@ -315,3 +323,34 @@ def test_the_glm_adjoint_is_the_transpose_of_its_period_map():
     _end, ts, states = fp.matvec_transposed(np.eye(w)[0], collect=True)
     assert len(states) == len(fp.steps) and states[0].shape == (w,)
     assert len(ts[0]) == 4                       # one reverse solve per stage
+
+
+def test_the_order_four_glm_beats_radau_on_the_algebraic_component_at_one_lu_per_step():
+    """⚠⚠ THE POINT OF THE WHOLE GLM ARC, measured.
+
+    On an index-2 DAE Radau IIA(3) splits: classical order 5 in the
+    differential components, 3 in the ALGEBRAIC ones (`min(p, q)` with
+    `q = 3` the stage order).  A `q = p` method has no split -- so an
+    order-4 one should carry order 4 in BOTH, and beat Radau exactly where
+    the reduction bites, at one real factorisation per step against Radau's
+    coupled `3n` solve.
+
+    Driven PSS on the C-V loop, algebraic component, npts 20 / 40 / 80::
+
+        glm4   3.9e-11  2.2e-12  1.3e-13   order 4.07
+        radau  1.4e-09  1.6e-10  2.0e-11   order 3.05
+
+    150x at the finest grid.  ⚠ Radau still wins the DIFFERENTIAL component
+    (order 5 against 4) and its tableau is far better scaled; this test
+    asserts the algebraic claim only, which is the one the theorem makes.
+    """
+    per = 1e-3
+    cir = _cv_loop(per)
+    keep, Vdiff, Valg, x_exact, _q = _reference(cir, per)
+    e_glm = _pss_errors('glm4', per, keep, Vdiff, Valg, x_exact)
+    e_rad = _pss_errors('radau', per, keep, Vdiff, Valg, x_exact)
+    oa_glm = np.log2(e_glm[-2][1] / e_glm[-1][1])
+    oa_rad = np.log2(e_rad[-2][1] / e_rad[-1][1])
+    assert oa_glm > 3.6, (oa_glm, e_glm)
+    assert oa_rad < 3.4, (oa_rad, e_rad)
+    assert e_glm[-1][1] < 0.2 * e_rad[-1][1], (e_glm[-1][1], e_rad[-1][1])

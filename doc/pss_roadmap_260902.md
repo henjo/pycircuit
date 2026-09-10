@@ -12983,7 +12983,38 @@ triangular, i.e. that `A` be diagonally implicit with diagonal λ — gives at p
 (λ = 0.2580)** methods exact to 2e-14 for k ≤ p with a nonzero leading term at p + 1, ρ_lhp ≤ 0.999, `M_∞`
 nilpotent to 1.8e-9. ⚠ **But they are NOT stiffly accurate** (`B` row 1 ≠ `A` row s; the p = 4 `B` also carries
 entries of order 750), and stiff accuracy is Voigtmann's hypothesis (e) and what makes `x_{n+1} = Y_s`. Adding
-§3.9.2's conditions (`β_p = 0`, `B₁ = A_s`, `B₂ = e_s`) with `c` freed did not converge in one pass — the LU in
-(3.7.8) hits zero pivots over parts of that space. So the route is confirmed and what remains is a constrained
-solve inside it, not a new derivation. GLM3, built by the polynomial-nilpotency route, stands as the shipped rung.
+§3.9.2's conditions (`β_p = 0`, `B₁ = A_s`, `B₂ = e_s`) with `c` freed did not converge in one pass.
+
+⚠ **AND THE "ZERO PIVOTS" READING OF THAT WAS MY OWN INDEXING.** The peer pushed back — the permutation in `T`
+is precisely the pivoting freedom that makes (3.7.8)'s LU exist (Lemma 3.23: spectral radius zero iff there is a
+permutation `P` and lower triangular `L` with `Δ(L⁻¹PᵀMPL) = 0`), so a zero pivot is the theorem saying "try
+another `P`", not a conditioning verdict. Checking my own script first found something simpler: the abscissa
+vector was built with `p − 1` free entries instead of `p`, so `C` came out `(p, p+1)` and EVERY evaluation raised
+before the solve ran. One line.
+
+## ✅ GLM4: order 4 in BOTH components, and it beats Radau where the index-2 split bites (2026-09-10)
+
+With that fixed the stiffly accurate construction converges: **p = 4, λ = 0.258**, `Ã` strictly lower triangular to
+3.8e-14, `B₁ = A_s` to 1.4e-12, `B₂ = e_s` to 4.3e-12, exact for k ≤ 4 (1.3e-13) with a leading term at k = 5,
+ρ_lhp ≤ 0.999, `M_∞` nilpotent, `eig(V) = {1, 8.1e-06 ×3, 5e-15}` (the ε^(1/3) signature of a 3×3 defective
+block). Shipped as `GLM4Integrator` / `PSS(method='glm4')`. **Driven PSS on the index-2 C–V loop, ALGEBRAIC
+component:**
+
+| method | LU per step | 20 / 40 / 80 points | order |
+|---|---|---|---|
+| **glm4** | **1** | **3.9e-11 / 2.2e-12 / 1.3e-13** | **4.07** |
+| radau | coupled 3n | 1.4e-09 / 1.6e-10 / 2.0e-11 | 3.05 |
+| glm3 | 1 | 5.9e-09 / 6.8e-10 / 8.2e-11 | 3.06 |
+
+**150× Radau at the finest grid, at a fraction of its per-step cost** — the `q = p` theorem's promise, measured
+end to end on the analysis this tree ships. In the transient the same: algebraic order 4.00 against radau's 3.00.
+⚠ Radau still wins the DIFFERENTIAL component (order 5 against 4), so this is not "GLM4 replaces radau"; it is
+"the algebraic order reduction is gone, and that is where radau was weakest". ⚠⚠ AND THE TABLEAU IS BADLY SCALED:
+`B`'s last rows carry entries of order 2500, `A` one of 16.3, and two abscissae fall OUTSIDE [0, 1] (1.02, 1.219)
+so stages are evaluated past the end of the step — legal for a GLM, unusual, and a source is then sampled outside
+the interval. Nothing in the construction penalises any of that; Wright's §3.11 is a local-error MINIMISATION over
+the same free parameters and is what would produce a well-scaled member of the family. Recorded in the class, and
+a reason to measure before preferring it to GLM3 on a circuit with sharp sources. ⚠ Residuals on this tableau are
+scored RELATIVE to its own scale (the peer's point: an absolute nilpotency floor on a matrix of entries ~2500 is
+as uninformative when too small as when too large).
 

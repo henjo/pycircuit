@@ -1737,3 +1737,46 @@ class GLM3Integrator(NordsieckGLMIntegrator):
          [-1.740350743005389, -0.651524563704395, -0.375859490000028, 2.292183967795145],
          [-2.35303269071979, -1.205154632038951, -0.569308396011214, 2.269710408552872]]
 
+
+class GLM4Integrator(NordsieckGLMIntegrator):
+    """p = q = 4, s = r = 5, lambda = 0.258: an implicit L-stable STIFFLY
+    ACCURATE IRKS method, constructed 2026-09-10 by Wright's own route --
+    `B~` from (3.7.8), `A~ = B~^-1 J B~` from the transformed IRKS condition
+    (3.5.9), back transformed by (3.5.10) `B = Psi B~`, `A = A~ + lambda I`
+    -- with lambda inside Table 3.3's A-stability band for p = 4
+    ([0.2480, 0.6760]), epsilon = 0 for L-stability, beta_p = 0, and the
+    free parameters (beta, c, T) solved against: `A~` strictly lower
+    triangular (so `A` is diagonally implicit with one diagonal), `B` row 1
+    = `A` row s and `B` row 2 = e_s (Wright 3.9.2's stiff and strict stiff
+    accuracy).  The route was CONFIRMED first by reproducing Wright's own
+    printed p = 2 tableau from its free parameters, `B` to 9.8e-15 and `A`
+    to 5.8e-16.
+
+    `verify()`: exact for k <= 4 in output and stages (8.7e-14), leading
+    term at k = 5, stiffly accurate, `M_inf` nilpotent, rho(M(z)) <= 0.999
+    on the left-half-plane grid.
+
+    ⚠⚠ SHIPPED WITH ITS COST STATED, NOT HIDDEN.  This tableau is BADLY
+    SCALED where GLM3 is not: `B`'s last rows carry entries of order 2500
+    and `A` one of 16.3, and two abscissae fall OUTSIDE [0, 1] (c = 1.02,
+    1.219), so stages are evaluated past the end of the step -- legal for a
+    GLM, unusual, and it means a source is sampled outside the interval.
+    Nothing in the construction penalises any of that; Wright's own §3.11 is
+    a local-error MINIMISATION over the same free parameters and is what
+    would produce a well-scaled member of this family.  Measure before
+    preferring it to GLM3 (whose entries are O(1)) -- see the roadmap for
+    what it does on the index-2 harness.
+    """
+    P = 4
+    A = [[0.257999999999964, 2.4e-14, -2e-15, 0, 0],
+         [0.564870762451692, 0.258000000000038, -4e-15, -0, 0],
+         [1.34560224225011, 0.666047468571689, 0.257999999999964, -0, 0],
+         [16.3107364951724, 3.16780281407505, 2.10926422956395, 0.257999999999999, 0],
+         [0.269772522539889, 0.473080891968928, -0.147058351110186, -0.000144572564456, 0.258]]
+    C_ABSC = [0.300205178886892, 0.649410968376505, 1.02000083805522, 1.21884715757804, 1]
+    B = [[0.269772522541268, 0.473080891969201, -0.147058351108903, -0.000144572564508, 0.25799999999891],
+         [1.1e-14, 1.15e-13, 4.284e-12, -2.01e-13, 0.999999999995777],
+         [0.846861278511808, -6.2813760700719, -119.223854966483, 8.10453491963977, 116.554237549972],
+         [4.54227114639227, -22.262710202879, -887.209101857044, 59.9418500909124, 844.987313744587],
+         [-10.1436315808292, -17.757049870211, -2530.23652064246, 170.360031161238, 2387.77727502481]]
+
