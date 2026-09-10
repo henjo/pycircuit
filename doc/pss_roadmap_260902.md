@@ -12865,3 +12865,15 @@ term dominates the coarse grids), asserted > 2.6 at the finest point; not a floo
 structurally worse than the explicit tables'. p = 4 with the same formulation is running (λ = 0.30 / 0.45 / 0.60);
 that is the tableau that would beat Radau on the algebraic side outright.
 
+**p = 4: not reached, and the search is stopped there.** The same formulation that took p = 3 to cost 1e-29 in one
+run was given λ = 0.30 / 0.45 / 0.60 (all inside Table 3.3's [0.2480, 0.6760]) and 80 random starts each — 240
+starts, 50 minutes of wall each, and no start converged (the runs exit on success, so an empty log is the
+negative). At p = 4 the unknowns grow to 10 + 3 + 15 + 10 and the conditions with them, and Wright's own history
+(p. 54) says the analogous order-4 problem needed "sufficiently accurate initial approximations" rather than a
+blind start. So the tree's GLM ladder stops at p = q = 3, which is the useful rung anyway: it already carries
+Radau's ALGEBRAIC order at one factorisation per step, and p = 4 would only add differential order on a
+component where radau is 5. Reaching it needs Wright's constructive route (§3.7's closed form for B), whose
+symbols are defined across ~30 pages with one of them, `F`, meaning three different objects in the same thesis —
+the docs session's judgement, which I share, is that assembling it correctly is reconstructing a chapter rather
+than transcribing a page. Recorded as the boundary; not attempted further.
+
