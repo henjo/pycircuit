@@ -13074,9 +13074,33 @@ the one the sweep produced. Three grids looked like a rate; five showed a transi
 merits: the split that matters is ONE-SIDED — the algebraic component falling below `p` is the index-2
 reduction — and a symmetric bound calls any superconvergence a failure. Kept.
 
-**At 320 points the trade is sharp and stated:** glm4's algebraic error is 1.46e-14 against radau's 3.00e-13
-(20× better, one factorisation per step against a coupled 3n solve), and radau's differential error is 8.31e-14
-against glm4's 2.06e-11 (250× better). Neither dominates; the choice is which component the caller cares about. ⚠⚠ The magnitude problem is untouched and stated in the class: `B`'s last rows carry entries
+**At 320 points the equal-GRID trade:** glm4's algebraic error is 1.46e-14 against radau's 3.00e-13 (20×) and
+radau's differential 8.31e-14 against glm4's 2.06e-11 (250×). ⚠ Both ratios MOVE with refinement, because the
+orders differ (algebraic 4 vs 3, differential 4 vs 5): glm4's algebraic advantage grows and radau's differential
+advantage grows, roughly doubling per grid halving each way. So it is two diverging ratios, not a fixed trade.
+
+⚠⚠ **AND THE COST CLAIM DOES NOT SURVIVE MEASUREMENT — MEASURED 2026-09-10, AT THE PEER'S PROMPTING.** "One real
+factorisation per step against radau's coupled `3n` solve" was asserted structurally and never timed. Timed
+(best of three PSS solves per point, same fixture):
+
+| npts | 20 | 40 | 80 | 160 | 320 |
+|---|---|---|---|---|---|
+| glm4 / radau wall-clock | 1.55 | 3.00 | 4.68 | 2.48 | 2.43 |
+
+**GLM4 is 2.4–4.7× SLOWER than radau at the same grid**, so at equal work radau dominates on BOTH components
+everywhere inside its measured range. The reason is structural and was in plain sight: `s = r = p + 1 = 5`
+sequential `m × m` stage solves against radau's ONE coupled `3m` solve, and on this fixture `m = 3`, where a
+dense `9 × 9` factorisation is trivial and five separate Newtons are not. The per-step argument only pays when
+`m` is large enough that a `3m` factorisation costs ~27× an `m` one — i.e. on a large circuit, not on a
+three-state fixture. ⚠ Untested there, and that is the measurement that would decide whether GLM4 is ever
+preferable in practice; a fixture of a few hundred states with the same index-2 structure is what it needs.
+⚠ The equal-work comparison is only valid up to radau's finest measured cost (2.0 s); beyond that the
+interpolation clamps and says nothing.
+
+**So the honest disposition:** GLM4's ORDER claim stands and is the theorem's — order 4 in both components, no
+index-2 reduction, verified over five grids. Its COST claim is refuted on this fixture and unproven anywhere
+else. It ships as an option whose selling point is accuracy per STEP on the algebraic component, not accuracy
+per second. ⚠⚠ The magnitude problem is untouched and stated in the class: `B`'s last rows carry entries
 of order 3900. §3.11 is the machinery for that, not more restarts. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
 it pivoting; it was an abscissa vector built one entry short. Neither of us had examined the failure before
 explaining it.

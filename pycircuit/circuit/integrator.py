@@ -1763,9 +1763,19 @@ class GLM4Integrator(NordsieckGLMIntegrator):
     superconvergence (a slope cannot exceed the leading term's exponent of
     5, and `epsilon = 0` gives up the zero error constant that would buy a
     higher underlying order).  Do not quote 5.3 as an order.  At 320 points
-    the trade against radau is sharp: algebraic 1.46e-14 against 3.00e-13
-    (20x better, one factorisation per step against a coupled 3n solve),
-    differential 2.06e-11 against 8.31e-14 (radau 250x better).
+    the equal-GRID trade against radau is algebraic 1.46e-14 against
+    3.00e-13 (20x) and differential 2.06e-11 against 8.31e-14 (radau 250x),
+    with both ratios GROWING as the grid refines since the orders differ.
+
+    ⚠⚠ BUT AT EQUAL WORK RADAU DOMINATES, and the "one factorisation per
+    step" argument for this class is REFUTED on that fixture: timed, glm4
+    takes 2.4x-4.7x radau's wall clock at the SAME grid.  `s = r = p + 1`
+    is five sequential `m x m` stage solves against radau's ONE coupled
+    `3m` solve, and at `m = 3` a dense 9x9 factorisation is trivial while
+    five Newtons are not.  The per-step argument can only pay when `m` is
+    large enough that a `3m` factorisation costs ~27x an `m` one -- a large
+    circuit, untested here.  So this method's claim is accuracy per STEP on
+    the algebraic component, not accuracy per second.
 
     ⚠ THE ABSCISSAE ARE INSIDE [0, 1] BY CONSTRUCTION -- c = [0.173, 0.402,
     0.641, 0.794, 1] -- which matters more for a circuit than for a general
