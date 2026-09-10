@@ -12949,3 +12949,24 @@ column's seed was the only place that read it directly, and it broadcast-failed 
 Remaining scope: `matrix_free` is not wired, and PPV/PAC/pnoise have not been RUN over a GLM operating point
 (the adjoint they would replay now exists and is gated).
 
+**Wright's approach one implemented and validated two-thirds of the way (2026-09-10).** The docs session
+transcribed §3.7's definitions (and corrected its own refusal: `F` is ONE object in two forms, `exp(-λK⁻)E exp(λK⁻)
+= exp(K(I+λK)⁻¹)` — ⚠ the exponential of the WHOLE product, which the printed form reads as `exp(K)·(I+λK)⁻¹` if
+taken naively). Implemented in `scratchpad/wright_ctor.py` and checked in the prescribed order:
+
+1. **δ = [1/64, 1/4, 1] exactly** for Wright's p = 2, λ = 1/4, ε = 0 method — the peer's worked target, reproduced
+   from the closed forms `δ = [ε + λ M_{p,p}, N_p, …, N_1]`. ✅
+2. **`N_k` two ways agree**: the closed form against `JF − FJ`'s entries, and Wright's own identity
+   `N_n = M_{n,n} + λ M_{n−1,n−1}` to 6.9e-18. ✅ (The `F` trap is real: the naive reading gives different `N_k`.)
+3. **`B̃` from (3.7.8) is NOT Wright's printed `B`** — and the reason is not an implementation error: `B̃` is lower
+   triangular by construction (the `Δ(·)` operator) while the printed `B` is not, and the printed `B` does not
+   satisfy (3.7.2)'s defining relation `B̃ W⁻¹C β(K) e_{p+1} = δ` (it gives [0.328, 0.75, 1] against δ). So `B̃` is
+   a distinct intermediate and the step Wright compresses to *"once B̃ is known it is easy to construct the rest
+   of the method"* is the one equation not transcribed. ❌ blocked there, one line short of end to end.
+
+⚠ Useful by-products even so: `β(K)e_{p+1} = [b_p … b_1 1]` means the printed β vector IS that product (`K^{p+1}=0`,
+so `b_{p+1}` never enters) — which settles the descending-order reading independently; and `α` enters only through
+`Ψ⁻¹`, which (3.7.6) does not use, so a constructor needs β and λ but not α. Since GLM3 already exists by the
+polynomial-nilpotency route and p = 4 is the only thing this would buy, the closed form stays parked here rather
+than chased for one missing equation.
+
