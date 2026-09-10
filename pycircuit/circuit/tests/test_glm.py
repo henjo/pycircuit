@@ -360,3 +360,79 @@ def test_the_order_four_glm_beats_radau_on_the_algebraic_component_at_one_lu_per
     assert oa_glm > 3.6, (oa_glm, e_glm)
     assert oa_rad < 3.4, (oa_rad, e_rad)
     assert e_glm[-1][1] < 0.2 * e_rad[-1][1], (e_glm[-1][1], e_rad[-1][1])
+
+
+def test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin():
+    """⚠⚠ `ppv` USED TO RETURN A WRONG ANSWER SILENTLY over a GLM orbit, and
+    that is what this gate exists to stop.
+
+    A multivalue method's own period map acts on the NORDSIECK state (width
+    `r*m`), while `ppv`, `oscillator_covariance` and the PAC family all want
+    a map on `x`.  The two are NOT related by taking the first block: a
+    state kick `dx` perturbs the higher Nordsieck components too
+    (`dQ_k = h^k d^k(C dx)/dt^k`).  Measured on van der Pol at Q = 15.9,
+    both naive extractions -- `w[:m]` and `C^T w_0` -- are wrong by 2 % in
+    norm and by 13x in the small component, and `ppv` returned the first
+    of them with no complaint because it renormalised to `v . xdot = 1`,
+    which any scaling satisfies.
+
+    The fix is the machinery `trap` and `euler` already use for the same
+    shape of reason: `carries_own_monodromy()` is False for a multivalue
+    method, so the state-space surfaces take a TR-BDF2 TWIN re-solved on
+    this orbit's own grid.  The orbit stays the GLM's; only the map is
+    borrowed.  Measured here against radau on the same fixture: PPV 4e-4,
+    the phase diffusion constant 1.3e-3, the oscillator spectrum 5e-4.
+    """
+    from pycircuit.circuit.shooting import PSS, PAC
+    from pycircuit.circuit.elements import IS
+    got = {}
+    for method in ('radau', 'glm3'):
+        cir, T0 = _vdp()
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        p = PSS(cir, method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
+                    maxiterations=200)
+        assert p.converged
+        m = cir.n - 1
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            v, _info = p.ppv()
+            _K, d, _i2 = pac.oscillator_covariance(p)
+            Sv, _ = pac.oscillator_spectrum(p, np.array([0.05 / float(p.period)]), 0)
+        got[method] = (np.asarray(v)[:m], d / float(p.period), float(Sv[0]),
+                       p.monodromy_twin())
+    (v_r, c_r, s_r, tw_r), (v_g, c_g, s_g, tw_g) = got['radau'], got['glm3']
+    ## radau's own map is on `x`, so it is its own twin; the GLM borrows one
+    assert tw_r is not None and tw_g is not None
+    assert getattr(tw_g.par, 'method', None) == 'trbdf2', tw_g
+    assert np.max(np.abs(v_g - v_r)) < 3e-3 * np.max(np.abs(v_r)), (v_g, v_r)
+    assert abs(c_g / c_r - 1.0) < 5e-3, (c_g, c_r)
+    assert abs(s_g / s_r - 1.0) < 5e-3, (s_g, s_r)
+
+
+def test_floquet_modes_off_the_nordsieck_map_drops_the_methods_own_multipliers():
+    """`floquet_modes` on a multivalue map: its null filter
+    (`FLOQUET_NULL_TOL`) drops the `(r-1)*m` multipliers that are the
+    METHOD's own -- they sit at zero because `V`'s lower block is nilpotent
+    -- so what comes back is the CIRCUIT's pair, matching radau's to 1e-4
+    on van der Pol.  ⚠ The MULTIPLIERS transfer; the EIGENVECTORS do not,
+    they live in the `r*m` Nordsieck space, which is why the state-space
+    surfaces take a twin instead (see the test above).
+    """
+    from pycircuit.circuit.shooting import PSS
+    lam = {}
+    for method in ('radau', 'glm3'):
+        cir, T0 = _vdp()
+        p = PSS(cir, method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
+                    maxiterations=200)
+        fm = p.floquet_modes(fp=p.factored_period())
+        lam[method] = sorted((abs(x['lam']) for x in fm), reverse=True)
+    assert len(lam['glm3']) == len(lam['radau']) == 2, lam
+    assert abs(lam['glm3'][0] - 1.0) < 1e-5, lam['glm3']
+    assert abs(lam['glm3'][1] / lam['radau'][1] - 1.0) < 1e-3, lam

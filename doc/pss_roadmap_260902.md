@@ -13174,3 +13174,50 @@ magnitude against feasibility as this sweep does. The sweep's own frontier — 4
 accuracy violation — is evidence that well-scaled stiffly accurate members are plausible and that a penalty on
 the feasibility solve is the wrong instrument for finding them, which is what the §3.11 route exists to do.
 Recorded; not attempted.
+
+### ⏸ OPTION FOR LATER, not now (Andreas, 2026-09-10): Wright §3.11's local-error minimisation
+
+The one piece of the GLM story that is understood, sourced and unbuilt. §3.11 (book pp. 101–102) minimises the
+UNDERLYING ONE-STEP METHOD's error coefficients over the free parameters INSIDE the feasible set, where this
+tree's sweep penalised coefficient magnitude AGAINST feasibility and mapped a frontier instead (max |B| 4.2 at a
+1.1e-3 stiff-accuracy violation, against the shipped GLM4's exact stiff accuracy at |B| ~ 3900). Wright asserts
+the target is reachable: *"methods where all coefficients have magnitude less than or equal to one CAN BE FOUND
+for methods of high order"*, findable *"using ONLY LINEAR OPERATIONS"*. What it needs: the generating functions
+`φ(t) = vᵀ(B ξ D₁(t) − R(t))` and `S*(t) = (I − Ṽ)⁻¹(B ξ D₁(t) − R(t))` with `S* M = φ S*`, the five-line
+algorithm (choose free parameters → compute the method → compute the underlying one-step method's independent
+coefficients → weight them → iterate), and Appendix I's Maple generator as the reference implementation.
+⚠ Its reduction in the number of conditions rests on an observation Wright flags as *"yet to be proved"*. ⚠ And
+it buys SCALING, not speed: GLM4's cost verdict is settled independently (2.4–4.7× radau at equal grid, 3.0× the
+device evaluations per step, and even a perfect stage predictor leaves 5/3 by stage count), so this is worth
+doing for numerical quality on a method already chosen, not to make one competitive on time.
+
+## GLM for small-signal, and the adjoint enabled (Andreas, 2026-09-10)
+
+⚠⚠ **`ppv` WAS RETURNING A WRONG ANSWER SILENTLY over a GLM operating point** — found by asking what it does
+rather than whether it runs. It ran and produced a plausible vector; measured against radau on van der Pol at
+Q = 15.9 it was wrong by 2 % in norm and by 13× in the small component (0.0110 against 0.000834). It passed its
+own sanity check because that check is `v · ẋ = 1`, which ANY scaling of a wrong direction satisfies.
+
+**Why the naive routes fail.** A multivalue method's period map acts on the NORDSIECK state (width `r·m`); the
+state-space surfaces want a map on `x`. The two are not related by taking the first block: a state kick `δx` at
+`t = 0` perturbs the HIGHER components too, `δQ_k = h^k dᵏ(C δx)/dtᵏ`. Both candidates were measured and both
+are wrong — `w[:m]` (what `ppv` returned) by 2.03e-2 and `Cᵀw₀` by 2.36e-2. The correct projection needs the
+same linearised startup term the shooting Jacobian drops, and it is not built.
+
+**The fix is the tree's own existing answer:** `carries_own_monodromy()` is False for a multivalue method, so
+the state-space surfaces take a TR-BDF2 TWIN re-solved on this orbit's grid — exactly what `trap` and `euler`
+already do, for the same shape of reason (their own monodromy is not the object the surfaces want). The orbit
+stays the GLM's; only the map is borrowed, and `monodromy_twin` documents it. Measured against radau on the same
+fixture: **PPV 4.4e-4, phase diffusion constant 1.3e-3, oscillator spectrum 4.7e-4** — where the silent answer
+had been 2e-2.
+
+**And `floquet_modes` works directly on the multivalue map**, because its null filter drops the `(r−1)m`
+multipliers that are the method's own (at zero, `V`'s nilpotent block): it returns the circuit's pair,
+1.000000 / 0.939150 against radau's 1.000000 / 0.939043. ⚠ The MULTIPLIERS transfer; the EIGENVECTORS do not —
+they live in the `r·m` space — which is precisely why the state-space surfaces take the twin instead.
+
+⚠ Pre-existing and unrelated, found in passing: `floquet_modes()` with no `fp` argument raises on radau too, so
+it is not a GLM issue; the explicit-`fp` call works on both. Not chased.
+
+Gated by `test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin` and
+`test_floquet_modes_off_the_nordsieck_map_drops_the_methods_own_multipliers`.

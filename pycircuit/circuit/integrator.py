@@ -1521,6 +1521,29 @@ class NordsieckGLMIntegrator(Integrator):
         unknown); the Transient's GLM path, not the one-step RK path."""
         return True
 
+    def carries_own_monodromy(self) -> bool:
+        """False -- and NOT because the map is inaccurate.  This method's own
+        period map acts on the NORDSIECK state (width `r*m`), and every
+        state-space consumer (`ppv`, `floquet_modes`, `oscillator_covariance`,
+        the PAC/pnoise family) wants a map on `x`.  ⚠⚠ THE TWO ARE NOT RELATED
+        BY TAKING THE FIRST BLOCK: a state kick `dx` at `t = 0` perturbs the
+        HIGHER Nordsieck components too (`dQ_k = h^k d^k(C dx)/dt^k`), so
+        neither `w[:m]` nor `C^T w_0` is the state PPV -- MEASURED against
+        radau on van der Pol at Q = 15.9, both are wrong by 2 % in norm and by
+        13x in the small component, and `ppv` used to return the first of them
+        SILENTLY.  Computing the right projection needs the same linearised
+        startup term the shooting Jacobian drops, and it is not built.
+
+        So a multivalue method takes a TWIN for the state-space surfaces --
+        the machinery `trap` and `euler` already use for the same shape of
+        reason (their own monodromy is not the object the surfaces want).  The
+        orbit is this method's; only the map is borrowed, and
+        `PSS.monodromy_twin` documents that.  The method's OWN map stays
+        available and gated through `PSS.factored_period()`
+        (`FactoredPeriod(kind='glm')`), with its adjoint.
+        """
+        return False
+
     def get_required_history(self) -> int:
         return 1
 
