@@ -18721,3 +18721,100 @@ def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
     ## (4) deterministic, to the bit
     _, Tk2, _ = jitter(RadauIIA3Integrator, 0.0)
     assert np.array_equal(Tk1, Tk2)
+
+
+def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order():
+    """⚠⚠ THE `im D(t)` HYPOTHESIS BITES, AND IT COSTS RADAU EIGHT ORDERS.
+
+    Lamour, März & Tischendorf (2013) put one hypothesis under IRK(DAE)
+    convergence (Thm 5.7), GLM convergence at stage order (Thm 5.9 -- what
+    `NordsieckGLMIntegrator` rests on) and contractivity transfer (Thm 6.9):
+    `im D(t)` time-invariant.  It is one term in one equation -- the IERODE's
+    field is `u' = R'(t)u + D(t)omega(u,t)` and the hypothesis exists to kill
+    `R'(t)u`.  For charge-oriented MNA it means `im C(x)` constant along the
+    orbit.
+
+    ⚠ EVERY OTHER FIXTURE IN THIS TREE SATISFIES IT VACUOUSLY.  Measured
+    2026-09-10: on the index-2 C-V loop, the state-free exponential and the van
+    der Pol, `C(x)` is LITERALLY CONSTANT (`max|C(x1) - C(x2)| == 0`), because
+    every reactance in them is linear.  And the bias is not particular to
+    them -- a smoothly varying `C(v) > 0` is rank-1 throughout, so ordinary
+    circuit fixtures cannot exercise the condition either.
+
+    THE INSTRUMENT IS NOT AN ORDER SWEEP.  Example 3.34 / Thm 3.53: what fails
+    at a regularity boundary is UNIQUENESS -- two solutions through a critical
+    point -- not accuracy.  So this integrates through the crossing several
+    times, differing ONLY in where the crossing lands inside a step (the grid
+    is shifted; both endpoints stay pinned), and asks how that spread behaves
+    under refinement.  ⚠ Shifting `tend` instead is an artefact and was this
+    measurement's sixth instrument failure: the runs then end at DIFFERENT
+    TIMES and the spread is `|dV/dt|*h*doffset`, which reads the same for
+    every method and shrinks at `O(h)` for all of them.
+
+    MEASURED, spread at 800 points per period:
+
+    ======  ==========  ==============  ============
+    method  LINEAR C    NONLINEAR C>0   rank C DROPS
+    ======  ==========  ==============  ============
+    gear    3.00e-06    2.93e-06        1.91e-05
+    trbdf2  5.10e-09    7.55e-09        8.63e-06
+    glm3    2.26e-12    3.65e-12        1.46e-05
+    radau   4.44e-16    6.66e-16        9.75e-06
+    ======  ==========  ==============  ============
+
+    On both controls the spread shrinks at the method's own LOCAL order and
+    the methods separate by ten orders; where rank C drops they collapse onto
+    one magnitude and one slow rate.
+
+    ⚠⚠ THE NONLINEAR CONTROL IS WHAT MAKES THAT MEAN ANYTHING -- without it
+    the comparison confounds the rank change with the nonlinearity, since the
+    violating fixture's `C` is nonlinear and the linear control's is not.  A
+    `C(v) > 0` varying 2x across the orbit behaves IDENTICALLY to a constant
+    one, so the loss is the RANK CHANGE.  ⚠ And `q = c0 V^3/3` is a
+    polynomial, so it is not a smoothness failure of the model either.
+
+    ⚠ NOT SHOWN: the spread still shrinks, so this is an ORDER COLLAPSE and
+    not the uniqueness failure the theory points at.  This orbit crosses the
+    boundary transversally at isolated points; solutions AT or ALONG the
+    border are a different case and are not built.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from im_d_falsifier import (rank_changing, constant_rank,
+                                nonlinear_constant_rank, rank_probe, endpoint)
+
+    ## (0) the instrument check: the fixtures must actually differ in rank, or
+    ## nothing below is about the hypothesis at all
+    ranks_bad = [r for _v, _m, r in rank_probe(rank_changing)]
+    ranks_ok = [r for _v, _m, r in rank_probe(nonlinear_constant_rank)]
+    assert min(ranks_bad) == 0 and max(ranks_bad) == 1, ranks_bad
+    assert min(ranks_ok) == max(ranks_ok) == 1, ranks_ok
+
+    def spread(build, npts):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            v = [endpoint(RadauIIA3Integrator, build, npts, off)
+                 for off in (0.0, 0.31, 0.79)]
+        return float(max(v) - min(v))
+
+    ## (1) rank-constant: radau is at its own order, and refining collapses it
+    s_lin = spread(constant_rank, 200)
+    s_nl_200 = spread(nonlinear_constant_rank, 200)
+    s_nl_400 = spread(nonlinear_constant_rank, 400)
+    assert s_nl_200 < 1e-10, s_nl_200
+    assert s_nl_400 < s_nl_200 / 10.0, (s_nl_200, s_nl_400)
+
+    ## (2) the confound control: nonlinearity ALONE costs nothing
+    assert s_nl_200 < 100.0 * max(s_lin, 1e-15), (s_lin, s_nl_200)
+
+    ## (3) rank CHANGING: four orders worse, and the rate is gone
+    s_bad_200 = spread(rank_changing, 200)
+    s_bad_400 = spread(rank_changing, 400)
+    assert s_bad_200 > 1e-6, s_bad_200
+    assert s_bad_200 > 1e4 * s_nl_200, (s_nl_200, s_bad_200)
+    assert s_bad_400 > s_bad_200 / 3.0, (s_bad_200, s_bad_400)

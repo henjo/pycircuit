@@ -292,8 +292,21 @@ def topological_index(cir):
     rank iff no C-V loop -- under the same hypothesis, "let all current and
     voltage sources be independent"; Theorem 3.47 adds the index-0 case
     (a capacitive path from every node to datum AND no voltage sources) and
-    closed-form projectors (3.61)/(3.62).  The rank form is the shape of a
-    cross-check on this graph traversal, not implemented.
+    closed-form projectors (3.61)/(3.62).  ⚠ THIS LINE SAID "not implemented"
+    UNTIL 2026-09-10 AND WAS STALE BY A DAY: the rank form IS implemented, as
+    `test_the_topological_index_agrees_with_an_incidence_RANK_criterion`,
+    which cross-checks this graph traversal on four topologies and makes each
+    condition FAIL on the one it names (an all-pass comparison would prove
+    nothing).
+
+    ⚠ A THIRD SOURCE, corroborating the class boundary below rather than
+    extending it (docs session, 2026-09-10, Lamour, März & Tischendorf
+    Remark 3.49): Theorem 3.48's constant-projector structure "remains valid
+    also for CONTROLLED current and voltage sources IF they do not belong to
+    C-V loops or L-I cutsets and their controlling voltages and currents do
+    not belong to C-V loops or L-I cutsets".  That is the same exclusion the
+    Estevez Schwarz & Tischendorf note below already states, reached from a
+    different book -- it does not widen or narrow what this function claims.
 
     ⚠⚠ NOT "FROM THE NETLIST ALONE", WHICH AN EARLIER VERSION OF THIS LINE
     CLAIMED AND WHICH IS FALSE FOR CONTROLLED SOURCES.  Estevez Schwarz &

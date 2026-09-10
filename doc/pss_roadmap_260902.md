@@ -13601,3 +13601,55 @@ does — which is why the non-uniform-grid measurement exists.
 ⚠ One distinction worth not conflating, since it bears on order work: Thm 5.7 (IRK) is a PERTURBATION bound
 in the local errors; Thm 5.9 (GLM) gives an explicit RATE, `c·h^p` with `p` the stage order. Only the GLM
 statement yields an order.
+
+### The `im D(t)` falsifier: it bites, and it costs radau eight orders (2026-09-10)
+
+The previous section recorded that every fixture in this tree satisfies the `im D(t)` hypothesis VACUOUSLY,
+and left the falsifier open. Run.
+
+**The instrument is not an order sweep**, which is what it was first going to be. Example 3.34 / Thm 3.53 say
+what fails at a regularity boundary is UNIQUENESS — two solutions through a critical point — not accuracy, so
+a convergence metric asks a question with no yes there. The test instead integrates through the crossing
+several times, each run individually legitimate and differing ONLY in where the crossing lands inside a step
+(the grid's interior nodes are shifted; both endpoints stay pinned at 0 and `T`), and asks how that spread
+behaves under refinement.
+
+**The fixture**: `CubicCap`, `q = c0 V³/3`, so `C = c0 V²` VANISHES at `V = 0` — rank C is 1 away from zero
+and 0 at it, and the orbit crosses. It is the first fixture here that exercises the condition at all.
+
+**THE ANSWER**, spread over grid placements at 800 points per period:
+
+| method | LINEAR C | NONLINEAR C>0 | rank C DROPS | rate |
+|---|---|---|---|---|
+| gear | 3.00e-06 | 2.93e-06 | 1.91e-05 | 3.99× → 2.83× |
+| TR-BDF2 | 5.10e-09 | 7.55e-09 | 8.63e-06 | 7.97× → 4.86× |
+| GLM3 | 2.26e-12 | 3.65e-12 | 1.46e-05 | 16.3× → 3.59× |
+| radau | 4.44e-16 | 6.66e-16 | 9.75e-06 | ~exact → 2.64× |
+
+On both controls the spread shrinks at the method's own LOCAL order (`h^(p+1)`: 4× / 8× / 16× per doubling)
+and the four methods separate by **ten orders of magnitude**. Where rank C drops they all collapse onto the
+same magnitude and the same slow rate — **radau loses eight orders and ends up no better than gear.**
+
+**⚠⚠ THE NONLINEAR CONTROL IS WHAT MAKES THAT MEAN ANYTHING.** The violating fixture's `C` is nonlinear and
+the linear control's is not, so an order loss could have been nonlinearity. A `C(v) > 0` varying 2× across
+the orbit behaves IDENTICALLY to a constant one — 3.97× / 7.94× / 16.97× against 3.97× / 7.94× / 16.77× — so
+the loss is the RANK CHANGE. Without that fixture the conclusion would have been unsupported. ⚠ And
+`q = c0 V³/3` is a polynomial, so it is not a smoothness failure of the model either.
+
+**⚠⚠ A SIXTH INSTRUMENT FAILURE, caught by the same tell as the noise floor's four.** The obvious way to shift
+the grid is to shift `tend` by `offset·h` — and then the runs END AT DIFFERENT TIMES, so the spread is
+`|dV/dt|·h·Δoffset`: an `O(h)` quantity that is METHOD-INDEPENDENT. It read 1.7129e-02 / 1.7130e-02 /
+1.7130e-02 / 1.7130e-02 for gear / TR-BDF2 / radau / GLM3 and shrank at exactly 2.00× per doubling for all
+four, order 2 and order 5 alike. Two different integrators agreeing to five significant figures on a quantity
+that is supposed to be their own error.
+
+**⚠ WHAT THIS DOES NOT SHOW.** The spread still SHRINKS on the violated fixture, so this is an ORDER COLLAPSE
+and NOT the uniqueness failure the theory points at. This orbit crosses the boundary TRANSVERSALLY at
+isolated points; Thm 3.53's non-uniqueness concerns solutions AT or ALONG the border, and that case is not
+built.
+
+**What it means for the defaults.** A circuit whose `rank C(x)` changes along the orbit — a switch, a device
+leaving conduction — gets no benefit from radau's order over gear's, and the GLM's stage-order escape from
+the DIRK cap is equally gone. The premise is now stated on both docstrings; this is the measurement behind
+it. Gated by `test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order`, which asserts the
+rank probe first — a fixture that does not exercise the condition is the whole trap.
