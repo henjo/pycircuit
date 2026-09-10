@@ -18952,7 +18952,27 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     Asserted: it fires on the repelling fixture, is silent on the attracting
     control WHOSE `C` DEGENERATES IDENTICALLY (so the two-ingredient
     requirement is what separates them, not the rank drop alone), and does not
-    fire on ordinary circuits.
+    fire on ordinary circuits -- ON EVERY SOLVE PATH, including the COUPLED
+    one, which goes through `_stage_newton` rather than `_newton`.
+
+    ⚠⚠ EXTENDING IT TO THE COUPLED PATH FOUND THREE DEFECTS, ALL MINE, AND THE
+    LAST ONE IS THE INTERESTING ONE:
+
+    * "fired" and "gave a direction" are different answers -- when `C`
+      collapses ENTIRELY the screen returns `(True, None)`, and a
+      `fired = direction` idiom reads that as "did not fire".  Zero screens on
+      the fixture it was written for.
+    * a FIXED-POINT test does not verify a root: if the solve hands its seed
+      back, re-solving from that seed hands it back again and the test passes
+      vacuously.  The BLOCK RESIDUAL is assembled and measured instead.
+    * ⚠⚠ THE PERTURBATION WAS A GAUGE SHIFT.  The coupled path perturbs
+      FULL-WIDTH stage vectors, and a direction of `ones` moves the REFERENCE
+      NODE too -- a common-mode shift the circuit cannot see.  The solve leaves
+      the pinned row alone, the "alternative" differs from the base only there,
+      and its residual is EXACTLY ZERO because it is the same physical
+      solution.  Measured: `alt` came back [0.7071, 0.7071] with `r_alt = 0.0`.
+      FIVE FALSE ALARMS OUT OF FIVE on the attracting control, and a residual
+      check could not catch it because the residual was genuinely zero.
     """
     import os
     import sys
@@ -18960,16 +18980,17 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
-    from pycircuit.circuit.integrator import Gear2Integrator
+    from pycircuit.circuit.integrator import (Gear2Integrator,
+                                              RadauIIA3Integrator)
     sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import build
     from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
                                                              PER)
 
-    def counts(g, npts=5, tend=1.0 / 40):
+    def counts(g, npts=5, tend=1.0 / 40, cls=Gear2Integrator):
         cir = build(g)
-        tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-12)
+        tr = Transient(cir, integrator=cls(), reltol=1e-12)
         tr.irefnode = cir.get_node_index(_gnd)
         x = np.zeros(cir.n)
         tr.epar.t = 0.0
@@ -18987,18 +19008,26 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
         return (getattr(tr, 'branch_screens', 0),
                 getattr(tr, 'branch_points', 0))
 
-    ## (1) the repelling case: the screen fires AND the re-solve finds another
-    ## root, so a real second solution was in hand
-    s_bad, p_bad = counts(-1.0)
-    assert s_bad > 0, s_bad
-    assert p_bad > 0, p_bad
-
-    ## (2) the attracting control has the SAME vanishing C -- so the screen
-    ## fires there too -- and NO second root exists.  That is what says the
-    ## check is testing multiplicity and not merely the rank drop.
-    s_ok, p_ok = counts(1.0)
-    assert s_ok > 0, s_ok
-    assert p_ok == 0, p_ok
+    ## (1)+(2), on EVERY solve path: the multistep one, the two
+    ## DIRK-sequential ones, the GLM stage one, and the COUPLED one -- which
+    ## goes through `_stage_newton` rather than `_newton` and so needed its own
+    ## wiring.  The repelling fixture must fire; the attracting control, whose
+    ## `C` degenerates IDENTICALLY, must not.  Running both on each path is
+    ## what says the check tests MULTIPLICITY and not merely the rank drop.
+    from pycircuit.circuit.integrator import (ESDIRK43Integrator,
+                                              TRBDF2Integrator,
+                                              GLM3Integrator)
+    for cls, name in ((RadauIIA3Integrator, 'radau (coupled)'),
+                      (ESDIRK43Integrator, 'esdirk43'),
+                      (TRBDF2Integrator, 'trbdf2'),
+                      (Gear2Integrator, 'gear'),
+                      (GLM3Integrator, 'glm3')):
+        s_bad, p_bad = counts(-1.0, cls=cls)
+        assert s_bad > 0, (name, s_bad)
+        assert p_bad > 0, (name, p_bad)
+        s_ok, p_ok = counts(1.0, cls=cls)
+        assert s_ok > 0, (name, s_ok)
+        assert p_ok == 0, (name, 'FALSE ALARM', p_ok)
 
     ## (3) an ordinary circuit never even reaches the expensive half
     with warnings.catch_warnings():

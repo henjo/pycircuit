@@ -297,3 +297,6 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260910T210301Z,9c3783b,pycircuit/circuit/tests/test_analysis_shooting.py branch_check_reports,0.4,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise,0.0
 20260910T210309Z,9c3783b,pycircuit/circuit/tests/test_analysis_shooting.py branch_check_reports,0.9,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise,0.1
 20260910T212216Z,9c3783b,pycircuit 10,1139.8,3180,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1032.6
+20260910T212327Z,e0171a5,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.9,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.1
+20260910T213413Z,e0171a5,pycircuit/circuit/tests/test_analysis_shooting.py branch_check_reports,1.4,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise,0.6
+20260910T215723Z,e0171a5,pycircuit 10,1371.8,3180,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1168.7

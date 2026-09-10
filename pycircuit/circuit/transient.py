@@ -872,10 +872,35 @@ class Transient(Analysis):
                         self._newton_xtol_vector_reduced(), self.par.maxiter)
                 except Exception:                              # noqa: BLE001
                     continue
-                if float(np.max(np.abs(np.asarray(alt, dtype=float) - xr))) \
-                        > 1e3 * tol:
-                    return np.asarray(alt, dtype=float)
+                alt = np.asarray(alt, dtype=float)
+                if float(np.max(np.abs(alt - xr))) <= 1e3 * tol:
+                    continue
+                ## ⚠⚠ AND IT MUST ACTUALLY BE A ROOT.  A solver that hands the
+                ## SEED BACK -- converged at iteration zero, or bailed -- looks
+                ## exactly like a second solution to a pure distance test, and
+                ## that is a FALSE ALARM on a default-on diagnostic.  Measured
+                ## on the coupled path before this check existed: the
+                ## "alternative" was 0.7071067811865475 in every component,
+                ## which is precisely the perturbed seed.
+                if not self._branch_is_root(func, alt):
+                    continue
+                return alt
         return None
+
+    def _branch_is_root(self, func, x):
+        """Does `x` satisfy the step residual?  The alternative has to be a
+        SOLUTION, not merely a different vector."""
+        try:
+            F, J = func(x)
+        except Exception:                                      # noqa: BLE001
+            return False
+        F = np.asarray(F, dtype=float)
+        J = np.asarray(J, dtype=float)
+        scale = float(np.max(np.abs(J) @ np.abs(np.asarray(x, dtype=float)))) \
+            if J.size else 0.0
+        return bool(np.all(np.abs(F)
+                           <= self.par.reltol * max(scale, 1.0)
+                           + float(np.max(self._newton_abstol_vector()))))
 
     def _branch_after_solve(self, func, x_res):
         """Screen the converged point, and confirm only if the screen fires.
@@ -920,6 +945,113 @@ class Transient(Analysis):
             ## exist on a hand-driven march, the AttributeError was swallowed,
             ## and the whole check silently did nothing while looking healthy.
             ## So the failure is recorded and announced ONCE.
+            if not getattr(self, '_branch_error', None):
+                self._branch_error = repr(exc)
+                logging.warning('transient: the branch check itself failed '
+                                '(%s); it is disabled for this run and the '
+                                'solve is unaffected', self._branch_error)
+            self.branch_check = 'off'
+
+    def _branch_after_coupled(self, stage_newton, seed0, Y, residual):
+        """The coupled-path branch check: screen every stage, and if any is at
+        a rank drop, re-solve the WHOLE BLOCK from a perturbed seed.
+
+        ⚠ Perturbing one stage is not enough and would be a different question:
+        the three stages are unknowns of ONE Newton, so a second root of the
+        block is what "the step equation had several roots" means here.  The
+        perturbation goes on every stage at once, along the null direction of
+        whichever stage's `C` collapsed.
+        """
+        if getattr(self, 'branch_check', 'on') != 'on':
+            return
+        try:
+            ## ⚠ "FIRED" AND "GAVE A DIRECTION" ARE DIFFERENT ANSWERS, and
+            ## conflating them is why the first version of this read ZERO
+            ## screens on the very fixture it was written for: when `C`
+            ## collapses ENTIRELY the screen returns `(True, None)` -- there is
+            ## no null direction to name because every direction is one -- and
+            ## a `fired = direction` idiom then reads it as "did not fire".
+            fired = False
+            direction = None
+            for Yi in Y:
+                hit, dvec = self._branch_screen(Yi)
+                if hit:
+                    fired, direction = True, dvec
+                    break
+            if not fired:
+                return
+            self._branch_count('branch_screens')
+            ## ⚠⚠ THE PERTURBATION MUST NOT BE A GAUGE SHIFT.  These are
+            ## FULL-WIDTH stage vectors, so a direction of `ones` moves the
+            ## REFERENCE NODE too -- a common-mode shift the circuit cannot
+            ## see.  The solve leaves the pinned row alone and hands it back
+            ## unchanged, the "alternative" differs from the base only in that
+            ## row, and its residual is EXACTLY ZERO because it is the same
+            ## physical solution.  Measured: `alt` came back as
+            ## [0.7071, 0.7071] with `r_alt = 0.0`, and that was 5 false alarms
+            ## out of 5 on the attracting control.  The reference component is
+            ## zeroed, and the fallback direction is not constant.
+            n = len(np.asarray(Y[0], dtype=float))
+            if direction is not None:
+                d = np.asarray(direction, dtype=float).copy()
+            else:
+                d = np.zeros(n)
+                d[(self.irefnode + 1) % n] = 1.0
+            if 0 <= self.irefnode < n:
+                d[self.irefnode] = 0.0
+            dn = float(np.linalg.norm(d))
+            if dn <= 0.0:
+                return
+            d = d / dn
+            scale = max(float(np.max([np.max(np.abs(np.asarray(Yi, dtype=float)))
+                                      for Yi in Y])), 1.0)
+            base = np.array([np.asarray(Yi, dtype=float) for Yi in Y])
+            for mag in (1.0, 0.1):
+                for sign in (1.0, -1.0):
+                    seed = [np.asarray(seed0[i], dtype=float)
+                            + sign * mag * scale * d for i in range(len(seed0))]
+                    try:
+                        alt = stage_newton(seed)
+                    except Exception:                          # noqa: BLE001
+                        continue
+                    altm = np.array([np.asarray(a, dtype=float) for a in alt])
+                    gap = float(np.max(np.abs(altm - base)))
+                    if gap <= 1e3 * self.par.reltol * scale:
+                        continue
+                    ## ⚠⚠ AND IT MUST ACTUALLY BE A ROOT.  `_stage_newton` can
+                    ## hand the SEED BACK, which a pure distance test reads as
+                    ## a second solution -- measured, the "alternative" was
+                    ## 0.7071067811865475 in every component, exactly the
+                    ## perturbed seed, and it produced 5 FALSE ALARMS out of 5
+                    ## on the ATTRACTING control where the solution is unique.
+                    ## ⚠ A FIXED-POINT TEST DOES NOT CATCH THAT: re-solving
+                    ## from a seed the solve hands back returns it again and
+                    ## the test passes vacuously.  So the BLOCK RESIDUAL is
+                    ## assembled and measured -- the alternative has to solve
+                    ## the equations, not merely be a different vector.
+                    try:
+                        r_alt = residual([a.copy() for a in altm])
+                        r_base = residual([b.copy() for b in base])
+                    except Exception:                          # noqa: BLE001
+                        continue
+                    if r_alt > max(1e3 * r_base, 1e-9 * scale):
+                        continue
+                    if True:
+                        self._branch_count('branch_points')
+                        if not getattr(self, '_branch_warned', False):
+                            self._branch_warned = True
+                            logging.warning(
+                                'transient: THE COUPLED STAGE SYSTEM HAD MORE '
+                                'THAN ONE ROOT at t=%.6g s. rank C fell below '
+                                'its structural value at one of the stages, '
+                                'and re-solving the block from a different '
+                                'seed converged to a DIFFERENT solution '
+                                '(largest component differs by %.3g). The '
+                                'answer returned is one of several valid ones. '
+                                'Set branch_check="off" to skip this test.',
+                                float(getattr(self.epar, 't', 0.0) or 0.0), gap)
+                        return
+        except Exception as exc:                               # noqa: BLE001
             if not getattr(self, '_branch_error', None):
                 self._branch_error = repr(exc)
                 logging.warning('transient: the branch check itself failed '
@@ -3812,6 +3944,35 @@ class Transient(Analysis):
                 except NoConvergenceError:
                     Y = _stage_newton(seed0, damped=True)
                 self.statistics.gmin_rescues += 1
+
+        ## BRANCH DETECTION on the COUPLED path.  ⚠ This path does NOT go
+        ## through `self._newton`, so the check wired there reached the LMM,
+        ## DIRK-sequential and GLM stage paths and left the fully-implicit one
+        ## -- which is the PSS default -- unscreened.  Same screen, same
+        ## confirmation, but the solve being re-run is the coupled `3m`
+        ## `_stage_newton` rather than a single-stage residual, so it needs its
+        ## own call: a stage of the block can be at a rank drop while the
+        ## others are not, and it is the BLOCK that has to be re-solved.
+        def _block_residual(Ylist):
+            """`max |F_i|` for the coupled system, assembled from the SAME
+            formula the solve uses: `F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`
+            with `K_j = -(i(Y_j) + u(t_j))`.
+
+            ⚠ This exists because a FIXED-POINT test was not enough: if the
+            solve hands its seed back, re-solving from that seed hands it back
+            again and the fixed-point test passes vacuously.  A residual is a
+            measurement; a fixed point of a broken solve is not.
+            """
+            Ks = [-(arr(self.cir.i(Yj, epar)) + src(tstage[j]))
+                  for j, Yj in enumerate(Ylist)]
+            worst = 0.0
+            for i in range(3):
+                Fi = arr(self.cir.q(Ylist[i], epar)) - qn \
+                    - h * sum(Amat[i, j] * Ks[j] for j in range(3))
+                worst = max(worst, float(np.max(np.abs(np.asarray(Fi)))))
+            return worst
+
+        self._branch_after_coupled(_stage_newton, seed0, Y, _block_residual)
 
         Y1, Y2, Y3 = Y
         xnp1 = Y3  ## stiff accuracy: x_{n+1} == last stage

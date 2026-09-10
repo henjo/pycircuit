@@ -13799,3 +13799,30 @@ seed, which the same `except` ate; it takes the refnode-removed function the sol
 screened. The LMM, DIRK-sequential and GLM stage paths all are.
 
 Gated by `test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise`. Full suite 3174 passed.
+
+#### The coupled path, and three defects extending to it (2026-09-10)
+
+`branch_check` reached the LMM, DIRK-sequential and GLM stage paths through `_newton` and left the
+FULLY-IMPLICIT one — the PSS default — unscreened, because it solves through `_stage_newton`. Now wired.
+All five paths fire on the repelling fixture and are silent on the attracting control: **zero false alarms,
+zero misses.**
+
+Extending it found three defects, all mine, and the third is the one worth carrying:
+
+1. **"Fired" and "gave a direction" are different answers.** When `C` collapses ENTIRELY the screen returns
+   `(True, None)` — there is no null direction to name because every direction is one — and a
+   `fired = direction` idiom reads that as "did not fire". Zero screens on the very fixture it was written for.
+2. **A fixed-point test does not verify a root.** If the solve hands its seed back, re-solving from that seed
+   hands it back again and the test passes vacuously. The BLOCK RESIDUAL is assembled from the same formula
+   the solve uses and measured instead — a residual is a measurement, a fixed point of a broken solve is not.
+3. **⚠⚠ THE PERTURBATION WAS A GAUGE SHIFT.** The coupled path perturbs FULL-WIDTH stage vectors, and a
+   direction of `ones` moves the REFERENCE NODE too — a common-mode shift the circuit cannot see. The solve
+   leaves the pinned row alone and hands it back, the "alternative" differs from the base only in that row,
+   and **its residual is exactly zero because it is the same physical solution.** Measured: `alt` came back as
+   `[0.7071, 0.7071]` with `r_alt = 0.0`. Five false alarms out of five on the attracting control — **and the
+   residual check added for defect 2 could not catch it, because the residual was genuinely zero.** The
+   reference component is now zeroed and the fallback direction is not constant.
+
+⚠ Defect 3 is the same shape as the day's other instrument failures: a quantity that looks like the thing
+being measured, agrees with itself perfectly, and is not it. Here the tell was that the "second solution" was
+numerically equal to the perturbed seed.
