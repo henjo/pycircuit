@@ -12920,3 +12920,32 @@ their adjoint (`matvec_transposed`) is not built for `kind='glm'`. Gated by
 `test_shooting_with_a_glm_keeps_the_algebraic_order_at_one_factorisation_per_step` and
 `test_the_glm_period_map_is_on_the_nordsieck_state_and_carries_the_circuits_multiplier`.
 
+**The adjoint and the free period, same night (Andreas: "Do 2 the 3").**
+
+**Adjoint (`kind='glm'`).** `_monodromy_matvec_transposed_glm` is the reverse-mode transpose of the multivalue
+recursion: per step, `Dbar_i = −h Σ_k B_ki G_iᵀ W_k`, `Pbar_j = Σ_k V_kj W_k`, then stages in REVERSE with
+`rbar_i = K_i^{−T} Dbar_i` feeding `Pbar_j += U_ij rbar_i` and `Dbar_j += −h A_ij G_jᵀ rbar_i`. Checked against
+the DENSE transpose of the forward map — two different recursions, agreeing to **3.5e-18** — plus the adjoint
+identity on random vectors, the complex path, and the `collect` contract (one adjoint state per step at the
+map's own `r·m` width, one reverse solve per stage). ⚠ `inject[j]` lands on the WHOLE Nordsieck state, not on a
+differential block: on a multivalue map that is the injection site.
+
+**Free period.** The refusal is retired. ⚠ A multivalue method has TWO explicit `T` dependences where a
+one-step method has one: the grid's `h = frac·T` inside every step, AND the starting vector's own scaling
+`Q_k = h^k q^(k)`, giving `dQ_k/dT = (k/T) Q_k` as the seed. Both are carried; what is dropped is the Radau
+substeps inside the startup, the same term the driven Jacobian drops. On van der Pol at Q = 15.9, against
+radau's period (6.283224654, converged to the digit at both grids):
+
+| method | 60 points | 120 points | relative error | order |
+|---|---|---|---|---|
+| glm3 | 6.283226014 | 6.283224730 | 2.2e-07 / 1.2e-08 | 4.1 |
+| trbdf2 | 6.286107414 | 6.283933050 | 4.6e-04 / 1.1e-04 | 2.0 |
+
+so the order-3 GLM's period is four orders better than the same-cost TR-BDF2's, and its Floquet pair off the
+Nordsieck map is 1.000000 / 0.939050 against radau's 1.000000 / 0.939043 with the method's own multipliers
+still at zero. ⚠ One defect the driven path had hidden: the transient carries the Nordsieck vector at FULL
+width (charge rows, reference included) and every sensitivity here is on the reduced state — the period
+column's seed was the only place that read it directly, and it broadcast-failed on the first oscillator.
+Remaining scope: `matrix_free` is not wired, and PPV/PAC/pnoise have not been RUN over a GLM operating point
+(the adjoint they would replay now exists and is gated).
+

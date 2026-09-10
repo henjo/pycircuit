@@ -184,3 +184,8 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260909T215730Z,8933ce7,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,1.0,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.9
 20260910T033144Z,05e6f6a,pycircuit/circuit/tests/test_glm.py no:cacheprovider,4.8,7,pycircuit/circuit/tests/test_glm.py::test_shooting_with_a_glm_keeps_the_algebraic_order_at_one_factorisation_per_step,2.9
 20260910T034103Z,05e6f6a,pycircuit 10 no:cacheprovider,529.5,3140,pycircuit/circuit/tests/test_analysis_shooting.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,277.0
+20260910T044543Z,d8dcad3,pycircuit/circuit/tests/test_glm.py no:cacheprovider,5.1,7,pycircuit/circuit/tests/test_glm.py::test_shooting_with_a_glm_keeps_the_algebraic_order_at_one_factorisation_per_step,2.9
+20260910T044745Z,d8dcad3,pycircuit/circuit/tests/test_glm.py no:cacheprovider,12.5,8,pycircuit/circuit/tests/test_glm.py::test_a_glm_finds_the_free_period_and_the_orbits_multipliers,7.0
+20260910T044758Z,d8dcad3,pycircuit/circuit/tests/test_glm.py no:cacheprovider free_period,7.1,1,pycircuit/circuit/tests/test_glm.py::test_a_glm_finds_the_free_period_and_the_orbits_multipliers,7.0
+20260910T044830Z,d8dcad3,pycircuit/circuit/tests/test_glm.py no:cacheprovider,12.5,8,pycircuit/circuit/tests/test_glm.py::test_a_glm_finds_the_free_period_and_the_orbits_multipliers,7.0
+20260910T045720Z,d8dcad3,pycircuit 10 no:cacheprovider,529.9,3141,pycircuit/circuit/tests/test_analysis_shooting.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,273.5

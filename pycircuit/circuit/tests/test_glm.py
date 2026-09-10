@@ -216,21 +216,102 @@ def test_the_glm_period_map_is_on_the_nordsieck_state_and_carries_the_circuits_m
     assert np.all(lam_rad[1:] < 1e-12), lam_rad
 
 
-def test_a_glm_refuses_the_free_period_solve_rather_than_guessing():
-    """No autonomous path: the period column would have to differentiate the
-    startup as well as the steps, and that is not built.  Refused by name."""
-    import pytest as _pytest
-    from pycircuit.circuit.shooting import PSS
-    from pycircuit.circuit.elements import IS
+def _vdp(Q=15.9):
+    from pycircuit.circuit.elements import BSource
     circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2 * np.pi * Q)
     c = SubCircuit()
     c.add_node('v')
     c['C'] = C('v', gnd, c=1.0)
     c['L'] = L('v', gnd, L=1.0)
-    c['I'] = IS('v', gnd, i=0.0)
-    p = PSS(c, method='glm3')
-    p.autonomous = True
-    with _pytest.raises(NotImplementedError, match='free-period'):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            p.solve(period=6.28, timestep=6.28 / 20, x0=np.array([2.0, 0.0]))
+    c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    return c, 2 * np.pi / np.sqrt(1 - mu ** 2 / 4)
+
+
+def test_a_glm_finds_the_free_period_and_the_orbits_multipliers():
+    """The autonomous path: `(x_0, T)` unknown, with the period column from
+    `_traverse_glm(want_dT=True)`.
+
+    ⚠ A MULTIVALUE METHOD HAS TWO EXPLICIT `T` DEPENDENCES, not one: the
+    grid's `h = frac T` inside every step, AND the starting vector's own
+    `Q_k = h^k q^(k)` scaling, `dQ_k/dT = (k/T) Q_k`.  Both are carried; what
+    is dropped is the Radau substeps inside the startup, the same term the
+    driven Jacobian drops.
+
+    Measured on van der Pol at Q = 15.9 against radau's period
+    (6.283224654, converged to the digit at both grids):
+
+        method    60 points        120 points
+        glm3      6.283226014      6.283224730
+        trbdf2    6.286107414      6.283933050
+
+    i.e. RELATIVE period errors 2.2e-07 / 1.2e-08 for glm3 (ratio 17.7, so
+    order ~4.1 in the period) against TR-BDF2's 4.6e-04 / 1.1e-04 -- four
+    orders below the same-cost method at the finer grid -- and its Floquet
+    pair comes back at 1.000000 / 0.939050 against radau's 1.000000 /
+    0.939043.  ⚠ The assertions are on RELATIVE errors; the table above is
+    absolute periods.
+    """
+    from pycircuit.circuit.shooting import PSS
+    _c, T0 = _vdp()
+    per = {}
+    lam_glm = lam_rad = None
+    for method in ('radau', 'glm3', 'trbdf2'):
+        for npts in (60, 120):
+            c, _T = _vdp()
+            p = PSS(c, method=method, reltol=1e-12)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                p.solve(period=T0, timestep=T0 / npts, x0=np.array([2.0, 0.0]),
+                        maxiterations=200)
+            assert p.converged, (method, npts)
+            per[(method, npts)] = float(p.period)
+            if npts == 120 and method in ('glm3', 'radau'):
+                fp = p.factored_period()
+                M = np.column_stack([fp.matvec(e) for e in np.eye(fp.width)])
+                lam = np.sort(np.abs(np.linalg.eigvals(M)))[::-1]
+                if method == 'glm3':
+                    lam_glm = lam
+                else:
+                    lam_rad = lam
+    ref = per[('radau', 120)]
+    e_glm = [abs(per[('glm3', n)] / ref - 1.0) for n in (60, 120)]
+    e_trb = [abs(per[('trbdf2', n)] / ref - 1.0) for n in (60, 120)]
+    assert e_glm[1] < 1e-7, e_glm
+    assert e_glm[0] / e_glm[1] > 8.0, ('the period should converge, not sit', e_glm)
+    assert e_glm[1] < 1e-3 * e_trb[1], (e_glm, e_trb)
+    assert abs(lam_glm[0] - 1.0) < 1e-5, lam_glm[:3]
+    assert abs(lam_glm[1] / lam_rad[1] - 1.0) < 1e-3, (lam_glm[1], lam_rad[1])
+    assert np.all(lam_glm[2:] < 1e-6), lam_glm
+
+
+def test_the_glm_adjoint_is_the_transpose_of_its_period_map():
+    """`matvec_transposed` for `kind='glm'` -- the reverse-mode adjoint of the
+    multivalue recursion, which is what a phase-sensitivity or small-signal
+    surface would replay over a GLM operating point.
+
+    Asserted against the dense transpose of the forward map (built by a
+    different recursion, not by transposing this one), the adjoint identity
+    on random vectors, the complex path, and the `collect` contract (one
+    adjoint state per step, at the map's own `r*m` width).
+    """
+    from pycircuit.circuit.shooting import PSS
+    per = 1e-3
+    p = PSS(_cv_loop(per), method='glm3', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p.solve(period=per, timestep=per / 40, maxiterations=40)
+    fp = p.factored_period()
+    w = fp.width
+    M = np.column_stack([fp.matvec(e) for e in np.eye(w)])
+    MT = np.column_stack([fp.matvec_transposed(e) for e in np.eye(w)])
+    scale = max(float(np.max(np.abs(M))), 1e-300)
+    assert np.max(np.abs(MT - M.T)) < 1e-12 * scale, np.max(np.abs(MT - M.T))
+    rng = np.random.default_rng(0)
+    a, b = rng.standard_normal(w), rng.standard_normal(w)
+    assert abs(float(a @ (MT @ b)) - float((M @ a) @ b)) < 1e-12 * scale
+    z = a + 1j * b
+    assert np.max(np.abs(fp.matvec_transposed(z) - MT @ z)) < 1e-12 * scale
+    _end, ts, states = fp.matvec_transposed(np.eye(w)[0], collect=True)
+    assert len(states) == len(fp.steps) and states[0].shape == (w,)
+    assert len(ts[0]) == 4                       # one reverse solve per stage

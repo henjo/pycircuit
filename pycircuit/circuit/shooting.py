@@ -230,6 +230,9 @@ class FactoredPeriod(object):
         if self.kind == 'dirk':
             return self._pss._monodromy_matvec_transposed_dirk(
                 self.steps, v, collect=collect, inject=inject)
+        if self.kind == 'glm':
+            return self._pss._monodromy_matvec_transposed_glm(
+                self.steps, v, collect=collect, inject=inject)
         return self._pss._monodromy_matvec_transposed_plain(
             self.opening, self.steps, v, collect=collect, inject=inject)
 
@@ -3692,19 +3695,26 @@ class PSS(Analysis):
             Qn = np.asarray(tr._glm_Q[0], dtype=float)
             if Q0 is None:
                 ## the vector the first step actually entered with, i.e. what
-                ## the startup produced from `x_in`
-                Q0 = np.asarray(tr._glm_Q_in, dtype=float)
+                ## the startup produced from `x_in`.  ⚠ REDUCED: the transient
+                ## carries the Nordsieck vector at FULL width (its rows are
+                ## charges, reference row included); every sensitivity here is
+                ## on the reduced state, so the seed must be too.
+                Q0 = np.asarray(tr._glm_Q_in, dtype=float)[:, [i for i in
+                                                               range(self.cir.n)
+                                                               if i != iref]]
             Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
                   for yf in tr._rk_Y]
             Gs = [np.asarray(self._G_at(Ys[i])) for i in range(s)]
             Kfacs = [self._factorise(np.asarray(self._C_at(Ys[i]))
                                      + h * A[i, i] * Gs[i]) for i in range(s)]
-            steps.append((Kfacs, Gs, float(h), A, U, B, V))
+            Ks = [np.asarray(self.toolkit.concatenate((kf[:iref], kf[iref + 1:])),
+                             dtype=float) for kf in tr._rk_K]
+            steps.append((Kfacs, Gs, float(h), A, U, B, V, Ks))
             xs.append(np.asarray(x, dtype=float))
         return steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x
 
     @staticmethod
-    def _glm_propagate(steps, P):
+    def _glm_propagate(steps, P, T=None):
         """The Nordsieck sensitivity recursion, one period.
 
         ``P`` is a list of `r` blocks ``dQ_k/d(unknown)``; each step maps it by
@@ -3716,23 +3726,110 @@ class PSS(Analysis):
         Nordsieck combination ``U P``.  Returns ``(P_out, D_last)``; ``D_last``
         is ``d x_N / d(unknown)`` because the method is stiffly accurate
         (``x_N`` is the last stage).
+
+        With ``T`` given the recursion carries the PERIOD column instead: the
+        grid is ``h_j = frac_j T`` so ``dh/dT = h/T``, and on an autonomous
+        circuit the stage derivatives carry no time of their own, which adds
+        ``(h/T) sum_j A_ij K_j`` to each stage's right-hand side and
+        ``(h/T) sum_i B_ki K_i`` to each output component.
         """
         D = None
-        for Kfacs, Gs, h, A, U, B, V in steps:
+        for Kfacs, Gs, h, A, U, B, V, Ks in steps:
             s = len(Kfacs)
             r = len(P)
             D = [None] * s
             for i in range(s):
                 rhs = sum(U[i, j] * P[j] for j in range(r))
+                if T is not None:
+                    ## the explicit `h = frac T` in the stage: dh/dT = h/T, and
+                    ## for an AUTONOMOUS circuit `K_j = -i(Y_j)` carries no
+                    ## time of its own, so the only new term is the stage sum
+                    rhs = rhs + (h / T) * sum(A[i, j] * Ks[j]
+                                              for j in range(i + 1))
                 for j in range(i):
                     rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
                 D[i] = Kfacs[i].solve(rhs)
             P = [sum(V[k, j] * P[j] for j in range(r))
                  - h * sum(B[k, i] * (Gs[i] @ D[i]) for i in range(s))
+                 + ((h / T) * sum(B[k, i] * Ks[i] for i in range(s))
+                    if T is not None else 0.0)
                  for k in range(r)]
         return P, (D[-1] if D is not None else None)
 
-    def _traverse_glm(self, x_in, T, times, hs):
+    def _monodromy_matvec_transposed_glm(self, steps, v, collect=False,
+                                         inject=None):
+        """`M^T v` on the NORDSIECK state -- the reverse-mode adjoint of
+        :meth:`_glm_propagate`, replayed last step to first.
+
+        Transposing the forward step (`P` the r input blocks, `D` the s stage
+        blocks) gives, per step, with `W` the adjoint of the OUTPUT vector:
+
+            Dbar_i  = -h sum_k B_ki G_i^T W_k
+            Pbar_j  =  sum_k V_kj W_k
+            for i = s-1 .. 0:   rbar_i = K_i^{-T} Dbar_i
+                                Pbar_j += U_ij rbar_i          (all j)
+                                Dbar_j += -h A_ij G_j^T rbar_i (j < i)
+
+        and `W <- Pbar`.  With `collect`, `states[j]` is the adjoint Nordsieck
+        state after step `j` and `ts[j]` its per-stage reverse solves -- the
+        same contract the sequential-stage adjoint returns, so a caller that
+        goes through `FactoredPeriod.matvec_transposed` needs no branch.
+
+        ⚠ `inject[j]` is added to the WHOLE `r*m` state, not to a differential
+        block: on a multivalue map the injection site is the Nordsieck vector.
+        """
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            re = self._monodromy_matvec_transposed_glm(
+                steps, v.real, collect=collect, inject=inject)
+            im = self._monodromy_matvec_transposed_glm(
+                steps, v.imag, collect=collect, inject=inject)
+            if collect:
+                return (re[0] + 1j * im[0],
+                        [[(a + 1j * b) for a, b in zip(x, y)]
+                         for x, y in zip(re[1], im[1])],
+                        [a + 1j * b for a, b in zip(re[2], im[2])])
+            return re + 1j * im
+        v = v.astype(float)
+        if not steps:
+            return (v.copy(), [], []) if collect else v.copy()
+        m = self.cir.n - 1
+        r = v.shape[0] // m
+        W = [v[k * m:(k + 1) * m].copy() for k in range(r)]
+        ts, states = [], []
+        for j in range(len(steps) - 1, -1, -1):
+            Kfacs, Gs, h, A, U, B, V, _Ks = steps[j]
+            s = len(Kfacs)
+            Dbar = [-h * sum(B[k, i] * (Gs[i].T @ W[k]) for k in range(r))
+                    for i in range(s)]
+            Pbar = [sum(V[k, jj] * W[k] for k in range(r)) for jj in range(r)]
+            rbars = [None] * s
+            for i in range(s - 1, -1, -1):
+                rb = Kfacs[i].solve_transposed(Dbar[i])
+                if rb is None:
+                    raise NotImplementedError(
+                        'PSS: this linear solver cannot solve transposed, so '
+                        'the GLM monodromy transpose cannot be replayed. Use '
+                        'DenseSolver or SuperLUSolver.')
+                rbars[i] = rb
+                for jj in range(r):
+                    Pbar[jj] = Pbar[jj] + U[i, jj] * rb
+                for jj in range(i):
+                    Dbar[jj] = Dbar[jj] - h * A[i, jj] * (Gs[jj].T @ rb)
+            W = Pbar
+            if inject is not None:
+                inj = np.asarray(inject[j]).ravel()
+                W = [W[k] + inj[k * m:(k + 1) * m] for k in range(r)]
+            if collect:
+                ts.append(rbars)
+                states.append(np.concatenate([w.copy() for w in W]))
+        if collect:
+            ts.reverse()
+            states.reverse()
+            return np.concatenate(W), ts, states
+        return np.concatenate(W)
+
+    def _traverse_glm(self, x_in, T, times, hs, want_dT=False):
         """One period under a Nordsieck GLM with the shooting sensitivities.
 
         The map shot on is ``x_0 -> x_N``: the Nordsieck vector is built from
@@ -3753,7 +3850,15 @@ class PSS(Analysis):
             + [np.zeros((m, m)) for _ in range(r - 1)]
         _Pout, Mx = self._glm_propagate(steps, P)
         self._glm_last = (steps, xs, Q0, Qend)
-        return np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float), Mx
+        if not want_dT:
+            return np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float), Mx
+        ## the period column.  The startup's own T-dependence enters twice:
+        ## through the SCALING `Q_k = h^k q^(k)` (kept -- `dQ_k/dT = (k/T) Q_k`)
+        ## and through the Radau substeps at `h/p` (dropped, as `Mx`'s is).
+        Pt = [(k / float(T)) * np.asarray(Q0[k], dtype=float) for k in range(r)]
+        _Ptout, Mt = self._glm_propagate(steps, Pt, T=float(T))
+        return (np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float),
+                Mx, np.asarray(Mt).ravel())
 
     def factored_period_glm(self, x0, T, npts, method=None):
         """The factored period map of a Nordsieck GLM about a periodic point.
@@ -9170,6 +9275,29 @@ class PSS(Analysis):
             return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
                     D - alpha * Mx)
 
+        def func_autonomous_glm(z):
+            """Free-period residual/Jacobian for a Nordsieck GLM.  Same shape
+            as the DIRK one; the period column comes from
+            `_traverse_glm(want_dT=True)` and carries the two explicit `T`
+            dependences a multivalue method has -- the grid's `h = frac T` in
+            every step AND the starting vector's own `Q_k = h^k q^(k)` scaling,
+            `dQ_k/dT = (k/T) Q_k`.  ⚠ What it drops is what `Mx` drops: the
+            Radau substeps inside the startup."""
+            x_in, T = z[:-1], float(z[-1])
+            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
+            x0, x_end, Mx, Mt = self._traverse_glm(
+                x_in, T, tms, hs_T, want_dT=True)
+            m = n - 1
+            D = np.asarray(toolkit.eye(m))
+            J = np.zeros((m + 1, m + 1))
+            J[:m, :m] = D - alpha * Mx
+            J[:m, m] = -np.asarray(Mt).ravel()
+            J[m, phase_k] = 1.0
+            F = np.zeros(m + 1)
+            F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
+            F[m] = np.asarray(x0)[phase_k] - phase_pin
+            return F, J
+
         def func_autonomous_dirk(z):
             """Free-period residual/Jacobian for a DIRK/ESDIRK method; the
             period column comes from `_traverse_dirk(want_dT=True)`."""
@@ -9252,14 +9380,8 @@ class PSS(Analysis):
             ## the right one with no edit here.
             _integ_m = self._integrator_for(method)
             if getattr(_integ_m, 'is_multivalue', lambda: False)():
-                if self.autonomous:
-                    raise NotImplementedError(
-                        'PSS: a Nordsieck GLM has no free-period path yet -- '
-                        'the period column would have to differentiate the '
-                        'startup as well as the steps. Driven circuits only; '
-                        'use radau or trbdf2 for an oscillator.')
                 _fdr = func_glm
-                _fda = None
+                _fda = func_autonomous_glm
             else:
                 _fully = _integ_m.is_fully_implicit()
                 _fdr = func_full if _fully else func_dirk
