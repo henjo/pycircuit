@@ -18915,3 +18915,106 @@ def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed
     assert max(ctrl) - min(ctrl) == 0.0, ctrl
     ## and today's predictor picks the same branch as the seed it replaced
     assert abs(on - off) < 1e-9, (off, on)
+
+
+def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
+    """The diagnostic for `test_one_netlist_returns_three_different_solutions_
+    chosen_by_the_newton_seed`: `Transient.branch_check`, default ON.
+
+    THE PROBLEM IT SOLVES.  Where `rank C` drops and the surviving dynamics
+    repel, the step equation has several roots and the Newton takes whichever
+    one its seed is nearest, silently.  There is no way to know a root was
+    non-unique without looking for another one, so the check RE-SOLVES the same
+    step from a perturbed seed -- which is why it needs a screen in front of it.
+
+    ⚠⚠ THE OBVIOUS SCREEN WAS MEASURED AND REJECTED.  A peer session proposed
+    firing on the STEP MATRIX ACQUIRING A NEGATIVE EIGENVALUE (`C/h + G < 0`
+    needs `C` small AND `G` negative, so one number carries both ingredients)
+    and verified it 6/6 against root counts on scalar and 2x2 systems.  On real
+    MNA it fires on EVERYTHING -- measured, `min Re eig(J)` is negative on the
+    index-2 C-V loop (-9.99e-07), the exponential fixture (-9.90e-07) and a van
+    der Pol (-1.00e+00).  Two structural reasons: MNA WITH A VOLTAGE SOURCE IS
+    A SADDLE-POINT SYSTEM, indefinite by construction, and AN OSCILLATOR'S `G`
+    HAS A NEGATIVE EIGENVALUE BY DESIGN with no rank drop anywhere.  4 false
+    fires out of 4 ordinary circuits.
+
+    What is screened instead is the condition itself -- `rank C(x)` below the
+    STRUCTURAL rank, which is "im D(t) is not time-invariant".  ⚠ It must be
+    the structural rank and not a running maximum: on the degenerate branch
+    `C` is identically zero for the whole run, so its rank never "drops", and
+    screening against a running maximum reads QUIET on the very fixture that
+    motivated this.
+
+    ⚠ THE ASYMMETRY IS THE POINT.  The confirmation perturbs by a HEURISTIC
+    magnitude, so it can MISS a second root; when it fires it has an actual
+    second solution in hand.  A warning is evidence, silence is not.
+
+    Asserted: it fires on the repelling fixture, is silent on the attracting
+    control WHOSE `C` DEGENERATES IDENTICALLY (so the two-ingredient
+    requirement is what separates them, not the rank drop alone), and does not
+    fire on ordinary circuits.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.circuit import gnd as _gnd
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import Gear2Integrator
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from branch_selection import build
+    from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
+                                                             PER)
+
+    def counts(g, npts=5, tend=1.0 / 40):
+        cir = build(g)
+        tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-12)
+        tr.irefnode = cir.get_node_index(_gnd)
+        x = np.zeros(cir.n)
+        tr.epar.t = 0.0
+        tr._begin_run(x, cir.n)
+        h = tend / npts
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for j in range(1, npts + 1):
+                tr._dt_last = tr._dt if j > 1 else None
+                tr._dt = h
+                tr.epar.t = j * h
+                x, _f, _J, _ = tr.solve_timestep(x, j * h)
+                tr._push_history(x)
+        assert getattr(tr, '_branch_error', None) is None, tr._branch_error
+        return (getattr(tr, 'branch_screens', 0),
+                getattr(tr, 'branch_points', 0))
+
+    ## (1) the repelling case: the screen fires AND the re-solve finds another
+    ## root, so a real second solution was in hand
+    s_bad, p_bad = counts(-1.0)
+    assert s_bad > 0, s_bad
+    assert p_bad > 0, p_bad
+
+    ## (2) the attracting control has the SAME vanishing C -- so the screen
+    ## fires there too -- and NO second root exists.  That is what says the
+    ## check is testing multiplicity and not merely the rank drop.
+    s_ok, p_ok = counts(1.0)
+    assert s_ok > 0, s_ok
+    assert p_ok == 0, p_ok
+
+    ## (3) an ordinary circuit never even reaches the expensive half
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(_expg_fixture(PER), integrator=Gear2Integrator(),
+                       reltol=1e-10)
+        tr.solve(refnode=_gnd, tend=PER, timestep=PER / 100,
+                 fixed_timestep=True)
+    assert getattr(tr.statistics, 'branch_screens', 0) == 0
+    assert getattr(tr.statistics, 'branch_points', 0) == 0
+
+    ## (4) and it is switchable
+    prev = Transient.branch_check
+    try:
+        Transient.branch_check = 'off'
+        s_off, p_off = counts(-1.0)
+    finally:
+        Transient.branch_check = prev
+    assert s_off == 0 and p_off == 0, (s_off, p_off)

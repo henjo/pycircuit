@@ -13748,3 +13748,54 @@ diagnostic — neither is built, and whether either is worth its cost is an owne
 
 Gated by `test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed`;
 `benchmarks/branch_selection.py` carries the sweep, the attracting control and the engagement check.
+
+### The branch diagnostic: `Transient.branch_check`, DEFAULT ON (Andreas, 2026-09-10)
+
+The previous section left detection as an owner decision and did not make the decision legible. It is a
+cost-versus-silence trade: **there is no way to know a root was non-unique without looking for another one**,
+so detection means re-solving a step from a second seed, and the question is what every simulation pays to
+catch a rare case that otherwise returns a wrong answer with no warning. Andreas: **default on, for now.**
+
+**⚠⚠ THE OBVIOUS SCREEN WAS MEASURED AND REJECTED.** docs-46 proposed firing on the STEP MATRIX ACQUIRING A
+NEGATIVE EIGENVALUE — `C/h + G < 0` needs `C` small AND `G` negative, so one number carries both ingredients —
+and verified it 6/6 against actual root counts on scalar and 2×2 systems, flagging that they could not test it
+on a real MNA matrix. **On real MNA it fires on everything**: `min Re eig(J)` measured at −9.99e-07 on the
+index-2 C-V loop, −9.90e-07 on the exponential fixture, −1.00e+00 on a van der Pol. Two structural reasons,
+both fatal: **MNA with a voltage source is a saddle-point system and is indefinite by construction**, and **an
+oscillator's `G` has a negative eigenvalue by design** with no rank drop anywhere. Four false fires out of
+four ordinary circuits.
+
+**What ships screens the condition itself**: `rank C(x)` below the STRUCTURAL rank — what `C` has at a generic
+operating point. That is "im D(t) is not time-invariant" directly. A structurally zero row (a resistive node,
+a source branch) is not a drop; a capacitance that VANISHES is. ⚠ It must be the *structural* rank and not a
+running maximum: on the degenerate branch `C` is identically zero for the whole run, so its rank never
+"drops", and a running-maximum screen reads QUIET on the very fixture that motivated the work — measured.
+
+**Cost, on circuits with no degeneracy** (the screen's cheap `O(m)` proxy is all that runs):
+
+| circuit | gear | radau | GLM3 |
+|---|---|---|---|
+| exponential | +4.2% | −0.4% | +8.7% |
+| C-V loop | +10.7% | +0.9% | +9.8% |
+
+**Zero extra device evaluations** in every case (`i` counts identical), and zero screens fired.
+
+**Behaviour**: on the repelling fixture it fires and the re-solve finds another root, warning once with the
+time and the size of the discrepancy. On the ATTRACTING control — whose `C` degenerates identically — the
+screen fires and the confirmation finds nothing, which is what says the check tests MULTIPLICITY rather than
+the rank drop alone.
+
+**⚠ THE ASYMMETRY IS THE POINT**: the confirmation perturbs by a heuristic magnitude (the other roots sit
+`O(√h)` away — measured at 0.061 at 800 points, where a seed of 0.1 reached them and 0.01 did not), so it can
+MISS. **A warning is evidence; silence is not.**
+
+⚠ Two defects found while building it, both mine. The blanket `except` that keeps a diagnostic from failing a
+solve **hid its own first bug** — `self.statistics` does not exist on a hand-driven march, the AttributeError
+was swallowed, and the check silently did nothing while looking healthy. It now records and announces the
+failure once and disables itself. And the confirmation was handed the FULL-WIDTH residual with a REDUCED
+seed, which the same `except` ate; it takes the refnode-removed function the solver actually solved.
+
+⚠ NOT COVERED: the coupled Radau path solves its stages through `_stage_newton`, not `_newton`, so it is not
+screened. The LMM, DIRK-sequential and GLM stage paths all are.
+
+Gated by `test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise`. Full suite 3174 passed.

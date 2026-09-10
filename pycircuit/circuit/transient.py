@@ -738,6 +738,212 @@ class Transient(Analysis):
         """
         return True
 
+    ## ------------------------------------------------------------------
+    ## BRANCH DETECTION: did the step equation have more than one root?
+    ##
+    ## At a point where `rank C(x)` DROPS and the surviving dynamics REPEL,
+    ## the DAE's solution is genuinely non-unique (Lamour, März & Tischendorf
+    ## Thm 3.53) -- and numerically that becomes MULTIPLICITY OF ROOTS OF THE
+    ## STEP EQUATION, which the Newton resolves by taking whichever one its
+    ## seed is nearest, silently.  MEASURED (`benchmarks/branch_selection.py`,
+    ## 2026-09-10): one netlist, one grid, one tolerance returns -1.414744, 0
+    ## or +1.414744 depending on the seed alone, with a spread that does NOT
+    ## shrink under refinement.  Both ingredients are needed -- with a passive
+    ## conductance the equilibrium attracts and uniqueness is safe however
+    ## badly `C` degenerates.  A negative conductance is not exotic: it is what
+    ## an oscillator's active device is.
+    ##
+    ## ⚠⚠ THE OBVIOUS SCREEN DOES NOT WORK HERE, and it was measured before it
+    ## was rejected.  A peer session proposed firing on the STEP MATRIX
+    ## ACQUIRING A NEGATIVE EIGENVALUE -- `C/h + G < 0` needs `C` small AND `G`
+    ## negative, so one number carries both ingredients -- and verified it 6/6
+    ## against root counts on scalar and 2x2 systems.  On real MNA it fires on
+    ## EVERYTHING: measured, min Re eig(J) is negative on the index-2 C-V loop
+    ## (-9.99e-07), on the exponential fixture (-9.90e-07) and on a van der Pol
+    ## (-1.00e+00).  Two independent reasons, both structural: MNA WITH A
+    ## VOLTAGE SOURCE IS A SADDLE-POINT SYSTEM and is indefinite by
+    ## construction, and an OSCILLATOR'S `G` HAS A NEGATIVE EIGENVALUE BY
+    ## DESIGN with no rank drop anywhere.  4 false fires out of 4 ordinary
+    ## circuits, so it cannot gate anything.
+    ##
+    ## What is screened instead is the condition itself: `rank C(x)` below the
+    ## STRUCTURAL rank -- what `C` has at a generic operating point.  A
+    ## structurally zero row (a resistive node, a source branch) is not a drop;
+    ## a capacitance that VANISHES is.  That is exactly "im D(t) is not
+    ## time-invariant", and it is quiet on all four circuits above.
+    ##
+    ## ⚠ THE ASYMMETRY IS THE POINT: the confirmation perturbs the seed by a
+    ## HEURISTIC amount, so it can MISS a second root -- but when it fires it
+    ## has an actual second solution in hand and converged to it.  A warning is
+    ## evidence; silence is not.
+    BRANCH_SCREEN_TOL = 1e-9
+
+    def _branch_structural_rank(self):
+        """`rank C` at a GENERIC operating point, computed once per run.
+
+        The comparison has to be against this and not against a running
+        maximum: on the degenerate branch `C` can be identically zero for the
+        whole run, so its rank never "drops" -- it was never up.  Measured:
+        screening against a running maximum reads QUIET on the very fixture
+        that motivated this.
+        """
+        cached = getattr(self, '_branch_rank0', None)
+        if cached is not None:
+            return cached
+        rng = np.random.RandomState(20260910)
+        best = 0
+        scale = 0.0
+        for _ in range(3):
+            xr = rng.uniform(-1.0, 1.0, self.cir.n)
+            try:
+                C = np.asarray(self.cir.C(xr, self.epar), dtype=float)
+            except Exception:                                  # noqa: BLE001
+                self._branch_rank0 = (0, 0.0)
+                return self._branch_rank0
+            if C.size == 0:
+                continue
+            nrm = float(np.max(np.abs(C)))
+            scale = max(scale, nrm)
+            if nrm > 0:
+                sv = np.linalg.svd(C, compute_uv=False)
+                best = max(best, int((sv > self.BRANCH_SCREEN_TOL * nrm).sum()))
+        self._branch_rank0 = (best, scale)
+        return self._branch_rank0
+
+    def _branch_screen(self, x):
+        """`(fired, null_direction)` -- has `rank C(x)` fallen below the
+        structural rank?
+
+        ⚠ The cheap proxy runs first and is what keeps this affordable: an SVD
+        every step would be the same order as the factorisation.  `C`'s
+        sparsity pattern is fixed by topology, so a vanishing reactance shows
+        up as a structurally nonzero DIAGONAL entry collapsing, which is
+        `O(m)` to check.  The SVD only runs when that fires.
+        """
+        r0, scale0 = self._branch_structural_rank()
+        if r0 <= 0 or scale0 <= 0.0:
+            return False, None
+        C = np.asarray(self.cir.C(x, self.epar), dtype=float)
+        if C.size == 0:
+            return False, None
+        d = np.abs(np.diag(C))
+        if float(np.max(np.abs(C))) > self.BRANCH_SCREEN_TOL * scale0 \
+                and float(np.max(d)) > self.BRANCH_SCREEN_TOL * scale0:
+            ## nothing has collapsed at the cheap level
+            if float(np.min(d[d > 0.0]) if np.any(d > 0.0) else 0.0) \
+                    > 1e-6 * scale0:
+                return False, None
+        nrm = float(np.max(np.abs(C)))
+        if nrm <= self.BRANCH_SCREEN_TOL * scale0:
+            return True, None            # C has collapsed entirely
+        U, sv, _Vt = np.linalg.svd(C)
+        r = int((sv > self.BRANCH_SCREEN_TOL * scale0).sum())
+        if r >= r0:
+            return False, None
+        return True, U[:, -1]
+
+    def _branch_confirm(self, func, x_res, direction):
+        """Re-solve the SAME step from a perturbed seed; return the other root
+        if the Newton lands somewhere materially different.
+
+        ⚠ The perturbation magnitude is a HEURISTIC.  The other roots of the
+        step equation sit an `O(sqrt(h))` distance away -- measured on the
+        reference fixture, they are at 0.061 at 800 points per period and a
+        seed of 0.1 reached them while 0.01 did not -- and that distance is not
+        knowable in general, so several magnitudes are tried.  A miss is
+        therefore possible and silence proves nothing; a fire has an actual
+        second solution in hand.
+        """
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        xr = np.asarray(x_res, dtype=float)
+        n = len(xr)
+        if direction is None or len(direction) != n:
+            direction = np.ones(n) / np.sqrt(n)
+        scale = max(float(np.max(np.abs(xr))), 1.0)
+        tol = self.par.reltol * scale
+        for mag in (1.0, 0.1):
+            for sign in (1.0, -1.0):
+                seed = xr + sign * mag * scale * np.asarray(direction,
+                                                            dtype=float)
+                try:
+                    alt, _it = self._get_nrsolver().solve_system(
+                        seed, func, self.toolkit, self.par.reltol,
+                        self._newton_abstol_vector_reduced(),
+                        self._newton_xtol_vector_reduced(), self.par.maxiter)
+                except Exception:                              # noqa: BLE001
+                    continue
+                if float(np.max(np.abs(np.asarray(alt, dtype=float) - xr))) \
+                        > 1e3 * tol:
+                    return np.asarray(alt, dtype=float)
+        return None
+
+    def _branch_after_solve(self, func, x_res):
+        """Screen the converged point, and confirm only if the screen fires.
+
+        ⚠ `x_res` is the REDUCED vector the solver returned; the circuit's
+        `C` wants the full one, so the reference row goes back in before the
+        screen and comes out again for the re-solve.
+        """
+        try:
+            xf = self.toolkit.concatenate(
+                (x_res[:self.irefnode], self.toolkit.array([0.0]),
+                 x_res[self.irefnode:]))
+            fired, direction = self._branch_screen(xf)
+            if not fired:
+                return
+            self._branch_count('branch_screens')
+            if direction is not None:
+                direction = self.toolkit.concatenate(
+                    (direction[:self.irefnode], direction[self.irefnode + 1:]))
+            alt = self._branch_confirm(func, x_res, direction)
+            if alt is None:
+                return
+            self._branch_count('branch_points')
+            t = float(getattr(self.epar, 't', 0.0) or 0.0)
+            if not getattr(self, '_branch_warned', False):
+                self._branch_warned = True
+                logging.warning(
+                    'transient: THE STEP EQUATION HAD MORE THAN ONE ROOT at '
+                    't=%.6g s. rank C fell below its structural value there, '
+                    'and re-solving the same step from a different seed '
+                    'converged to a DIFFERENT solution (largest component '
+                    'differs by %.3g). The answer returned is one of several '
+                    'valid ones and the choice was made by the Newton seed. '
+                    'See branch_points in the statistics; set '
+                    'branch_check="off" to skip this test.',
+                    t, float(np.max(np.abs(alt - np.asarray(x_res,
+                                                            dtype=float)))))
+        except Exception as exc:                               # noqa: BLE001
+            ## ⚠⚠ A DIAGNOSTIC MUST NOT BE ABLE TO FAIL A SOLVE -- it runs
+            ## after the answer is in hand and only reports.  BUT A BARE
+            ## `pass` HERE HID ITS OWN FIRST BUG: `self.statistics` does not
+            ## exist on a hand-driven march, the AttributeError was swallowed,
+            ## and the whole check silently did nothing while looking healthy.
+            ## So the failure is recorded and announced ONCE.
+            if not getattr(self, '_branch_error', None):
+                self._branch_error = repr(exc)
+                logging.warning('transient: the branch check itself failed '
+                                '(%s); it is disabled for this run and the '
+                                'solve is unaffected', self._branch_error)
+            self.branch_check = 'off'
+
+    def _branch_count(self, name):
+        """Count on `statistics` when there is one, on the instance otherwise
+        -- a hand-driven march has no `statistics` object."""
+        stats = getattr(self, 'statistics', None)
+        target = stats if stats is not None else self
+        setattr(target, name, getattr(target, name, 0) + 1)
+
+    def _newton_abstol_vector_reduced(self):
+        a = self._newton_abstol_vector()
+        (a,) = remove_row_col((a,), self.irefnode, self.toolkit)
+        return a
+
+    def _newton_xtol_vector_reduced(self):
+        t = self._newton_xtol_vector()
+        (t,) = remove_row_col((t,), self.irefnode, self.toolkit)
+        return t
+
     def _newton(self, func, x0):
         abstol = self._newton_abstol_vector()
         xtol = self._newton_xtol_vector()
@@ -836,6 +1042,14 @@ class Transient(Analysis):
         stats = getattr(self, 'statistics', None)
         if stats is not None:
             stats.newton_iterations += int(_iters)
+
+        ## BRANCH DETECTION -- the screen is O(m) unless something collapsed
+        if getattr(self, 'branch_check', 'on') == 'on':
+            ## ⚠ the REDUCED function, the one the solver actually solved --
+            ## handing it the full-width `func` with a reduced seed is a
+            ## dimension mismatch that the diagnostic's own except would eat
+            self._branch_after_solve(
+                refnode_removed(func, self.irefnode, self.toolkit), x_res)
 
         x = x_res
         
@@ -1043,6 +1257,9 @@ class Transient(Analysis):
     ## per-tableau formulation this replaces could not do.
     ## `'on'` (the default) or `'off'`, the pre-predictor seed, which is the
     ## control every measurement of this feature is made against
+    ## `'on'` (the default) or `'off'`: after each Newton, test whether the
+    ## step equation had more than one root -- see `_branch_after_solve`
+    branch_check = 'on'
     stage_predictor = 'on'
     ## fit order; None means the method's own order, capped at 4
     stage_predictor_degree = None
