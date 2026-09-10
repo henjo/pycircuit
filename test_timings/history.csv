@@ -288,3 +288,7 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260910T194116Z,f415770,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,1.1,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.9
 20260910T194248Z,f415770,pycircuit 10,1319.5,3178,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1124.3
 20260910T202048Z,0132a81,pycircuit 10,1285.8,3178,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1099.1
+20260910T202833Z,a3a15dd,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,1.3,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.5
+20260910T203117Z,a3a15dd,pycircuit/circuit/tests/test_analysis_shooting.py three_different_solutions,2.6,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed,1.8
+20260910T204109Z,a3a15dd,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,4.0,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,2.4
+20260910T205212Z,a3a15dd,pycircuit 10,1231.4,3179,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1037.6

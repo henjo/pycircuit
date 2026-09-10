@@ -13697,3 +13697,54 @@ equilibrium at it (a negative conductance — which is what an oscillator's acti
 passive `R` the equilibrium is attracting and forward uniqueness is safe however badly `C` degenerates, which
 is why our transversal crossing behaved. NOT BUILT.
 
+
+### Non-uniqueness: one netlist, three answers (Andreas: "Start 2", 2026-09-10)
+
+The previous section left the genuine-non-uniqueness case open, noting our fixture was a HARMLESS critical
+point. Built. **pycircuit will silently return any of three different solutions from the same netlist, the
+same grid and the same tolerance, with the choice made by the Newton's initial guess alone.**
+
+**It takes TWO ingredients, not one** (construction relayed from docs-46, measured here):
+
+* `rank C` DROPS — `C = c0V²` vanishes at `V = 0`;
+* the equilibrium there is **REPELLING** — a NEGATIVE conductance.
+
+With a passive conductance the equilibrium attracts, the field is one-sided Lipschitz, and forward uniqueness
+is safe *however badly* `C` degenerates — which is why the transversal crossing in the previous section
+behaved. A negative conductance is not exotic: **it is what an oscillator's active device supplies.**
+
+`V(t = 1)` starting from `V = 0`, by the seed given to the first step's Newton:
+
+| N | seed −1 | seed −0.1 | seed 0 | seed +0.1 | seed +1 | spread |
+|---|---|---|---|---|---|---|
+| 200 | −1.420240 | −1.420240 | 0.000000 | 1.420240 | 1.420240 | 2.8405 |
+| 800 | −1.416027 | −1.416027 | 0.000000 | 1.416027 | 1.416027 | 2.8321 |
+| 3200 | −1.414744 | −1.414744 | 0.000000 | 1.414744 | 1.414744 | 2.8295 |
+
+**The spread does not shrink** — that is what says non-unique rather than inaccurate. The non-trivial branches
+are exact: `w' = (3w)^(1/3)` integrates to `V(1) = √2 = 1.414214`, against 1.414744 measured. With `g = +1`
+the same sweep returns identically 0.000000 at every seed and every refinement.
+
+**⚠⚠ THE KNOB IS NOT THE GRID, AND THAT INVALIDATES THE OBVIOUS PROBE.** The analytic non-uniqueness becomes
+MULTIPLICITY OF ROOTS OF THE STEP EQUATION — implicit Euler from `v_prev = 0` gives `z(c0z²/3h + g) = 0`,
+three roots when `g < 0`, namely 0 and `±√(−3hg/c0)` — and the nonlinear solver picks one silently, the same
+one on every grid. A grid-refinement or grid-offset probe returns exactly 0.0000e+00 and a clean, convincing,
+wrong null. **The knob is the solver's initial guess.**
+
+**⚠ A REPELLING EQUILIBRIUM CANNOT BE ARRIVED AT** — this measurement's own instrument failure, the seventh
+of the day. The first version drove an orbit "through" the degenerate point with a current source and found
+the predictor made no difference; `min|V|` equalled `|v0|` in every run, so **no orbit ever crossed zero**.
+With `g < 0` the origin repels and a forward trajectory can only LEAVE it. The branch point is reachable only
+by STARTING on it. Caught by asking whether the fixture engaged the condition rather than trusting the null.
+
+**Does the stage predictor shipped today change the choice? No** — gear, TR-BDF2, radau and GLM3 all take the
+trivial branch with it on and off, because the first step from `V = 0` has no history and the predictor
+declines. Worth measuring rather than assuming: that change touched every Newton seed in the tree, and the
+seed is exactly what selects the branch.
+
+⚠ NOT DONE: no detection. The solver has no way to tell a user that the step equation had three roots and it
+took one. Counting roots near a rank drop, or re-solving from a second seed and comparing, would be a
+diagnostic — neither is built, and whether either is worth its cost is an owner decision.
+
+Gated by `test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed`;
+`benchmarks/branch_selection.py` carries the sweep, the attracting control and the engagement check.

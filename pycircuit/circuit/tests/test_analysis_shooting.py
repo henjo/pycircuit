@@ -18838,3 +18838,80 @@ def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(
     assert s_bad_200 > 1e-6, s_bad_200
     assert s_bad_200 > 1e4 * s_nl_200, (s_nl_200, s_bad_200)
     assert s_bad_400 > s_bad_200 / 3.0, (s_bad_200, s_bad_400)
+
+
+def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed():
+    """⚠⚠ ONE NETLIST, ONE GRID, ONE TOLERANCE -- THREE DIFFERENT ANSWERS, and
+    the choice is made SILENTLY by the Newton's initial guess.
+
+    At a critical point of a DAE the solution can be genuinely non-unique
+    (Lamour, März & Tischendorf Thm 3.53: "there are TWO solutions passing
+    through").  `test_violating_the_im_D_hypothesis_...` next door measures a
+    HARMLESS critical point -- order collapses, uniqueness survives.  This one
+    is not harmless, and it needs TWO ingredients rather than one:
+
+    * `rank C` DROPS -- `C = c0 V^2` vanishes at `V = 0`;
+    * the equilibrium there is REPELLING -- a NEGATIVE conductance.
+
+    With a passive conductance the equilibrium attracts, the field is one-sided
+    Lipschitz, and forward uniqueness is safe however badly `C` degenerates.  A
+    negative conductance is not exotic: it is what an oscillator's active
+    device supplies.
+
+    ⚠⚠ THE KNOB IS NOT THE GRID.  The analytic non-uniqueness becomes
+    MULTIPLICITY OF ROOTS OF THE STEP EQUATION -- implicit Euler from
+    `v_prev = 0` gives `z(c0 z^2/3h + g) = 0`, three roots when `g < 0` -- and
+    the solver picks one silently, the SAME one on every grid.  A grid
+    refinement or grid-offset probe returns a clean, convincing, wrong null.
+    (Construction relayed from a peer session; measured here.)
+
+    MEASURED, `V(t=1)` from `V = 0` by the first step's seed: -1.414744, 0, or
+    +1.414744 at N = 3200, spread 2.83 that does NOT shrink (2.8405 / 2.8321 /
+    2.8295 at N = 200/800/3200).  The non-trivial branches are exact --
+    `w' = (3w)^(1/3)` integrates to `V(1) = sqrt(2) = 1.414214`.  With `g = +1`
+    every seed returns identically 0.
+
+    ⚠ A REPELLING EQUILIBRIUM CANNOT BE ARRIVED AT, which is why this starts
+    ON it.  An earlier version drove an orbit "through" the point and found
+    nothing -- on orbits where `min|V|` never fell below `|v0|`, because with
+    `g < 0` the origin repels and a forward trajectory can only leave it.
+
+    ⚠ AND THE STAGE PREDICTOR SHIPPED THE SAME DAY DOES NOT CHANGE THE CHOICE:
+    it changed every Newton seed in this tree, and the seed is what selects the
+    branch, so this is measured rather than assumed.  The first step from
+    `V = 0` has no history, so the predictor declines and falls back.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.integrator import Gear2Integrator, RadauIIA3Integrator
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from branch_selection import march
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ## (1) the repelling case: three distinct branches, and the spread
+        ## does NOT shrink under refinement -- that is what says non-unique
+        ## rather than inaccurate
+        v200 = [march(-1.0, 200, s) for s in (-1.0, 0.0, 1.0)]
+        v800 = [march(-1.0, 800, s) for s in (-1.0, 0.0, 1.0)]
+        ## (2) the attracting control: uniqueness is safe, same degeneracy
+        ctrl = [march(1.0, 200, s) for s in (-1.0, 0.0, 1.0)]
+        ## (3) the predictor shipped today does not change the branch
+        off = march(-1.0, 400, None, 'off', RadauIIA3Integrator)
+        on = march(-1.0, 400, None, 'on', RadauIIA3Integrator)
+
+    s200 = max(v200) - min(v200)
+    s800 = max(v800) - min(v800)
+    assert s200 > 2.0, v200
+    assert s800 > 0.95 * s200, (s200, s800)          # does NOT shrink
+    ## the non-trivial branches are +-sqrt(2), and the middle one is exactly 0
+    assert abs(abs(v800[0]) - np.sqrt(2.0)) < 5e-3, v800
+    assert abs(abs(v800[2]) - np.sqrt(2.0)) < 5e-3, v800
+    assert v800[1] == 0.0, v800
+    ## the control has the SAME vanishing C and is unique anyway
+    assert max(ctrl) - min(ctrl) == 0.0, ctrl
+    ## and today's predictor picks the same branch as the seed it replaced
+    assert abs(on - off) < 1e-9, (off, on)
