@@ -13560,3 +13560,44 @@ Gated by `test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmet
 separation, radau-at-the-arithmetic AND gear-not-at-it, and bit-identical repeatability), verified to fail
 under instrument failures 1 and 3. The full sweep is `benchmarks/noise_floor_sources_off.py`; it costs
 minutes, so only the one comparison the result rests on is in the suite.
+
+### The `im D(t)` premise, and why our fixtures do not test it (2026-09-10)
+
+Relayed from a source reading by docs-46 (Lamour, März & Tischendorf 2013), **checked here where it was
+checkable**. Three results this repo relies on carry the same hypothesis, and it is not three coincidences —
+it is **one term in one equation**. The IERODE's field is `u' = R'(t)u + D(t)ω(u,t)` (eq 4.15); Prop 4.7(3)
+says a time-invariant `im D(t)` gives the simpler ODE, and the proof of Thm 5.7 says outright that
+`R'(t)u*(t)` *vanishes* under that assumption. The hypothesis exists to kill that one term, and it sits under
+IRK(DAE) convergence (5.7), **GLM convergence at stage order (5.9 — what `NordsieckGLMIntegrator` rests on)**
+and contractivity transfer (6.9).
+
+**Example 5.1 is the part that changes what we should write down.** Implicit Euler applied to a DAE in
+STANDARD form induces EXPLICIT Euler on the inner variable — *"the A-stability gets lost when the method is
+applied to a DAE in standard form"* — unstable at `h = 0.0202` against a limit of `0.02`. So **the
+formulation, not the method, decides whether A-stability transfers.** Charge-oriented MNA is a properly
+stated leading term, so this tree is on the right side of it — but that premise was unstated wherever radau's
+default was justified, and **an unstated premise is an unprotected one**: nothing would notice if a
+formulation change moved it. Both docstrings now carry it.
+
+**⚠⚠ AND THE CHECK THAT MATTERS WENT THE OTHER WAY FROM THE RELAY.** "Our fixtures satisfy the hypothesis" is
+true and nearly worthless. MEASURED on the three fixtures behind today's GLM order, stage-predictor and
+noise-floor results — the index-2 C-V loop, the state-free exponential, the van der Pol — `rank C(x)` is
+constant along the orbit, and more than that, **`C(x)` is LITERALLY CONSTANT**: `max|C(x1) − C(x2)| == 0`
+over random `x`, because every reactance in all three is linear. So `im D` is time-invariant TRIVIALLY and
+those results sit inside Thm 5.9's scope **vacuously**. The hypothesis is UNTESTED here, not satisfied in any
+interesting way.
+
+**NOT MEASURED, and it is the falsifier:** whether violating the hypothesis actually costs the GLM its stage
+order in this implementation. That needs a fixture whose `rank C(x)` genuinely CHANGES along the orbit — a
+switch, or a device leaving conduction — not a smoothly varying `C(v) > 0`, which is rank-1 throughout and
+never exercises the condition (docs-46 built exactly that fixture and it found nothing, for this reason).
+
+Thm 5.9's two checkable hypotheses, checked against the shipped tableaux: `det A` = 1.5625e-02 / 3.9063e-03 /
+1.1431e-03 for GLM2/3/4 with condition numbers 6.7 / 49 / 192, so §5.3.3's exclusion of a singular `A` does
+not bite; and `c_s == 1` exactly, so `x_n = X_ns` holds by construction. "Stiffly stable" in that book's own
+sense is NOT checked and is not asserted. ⚠ §5.2.3 restricts to constant stepsizes, exactly as Voigtmann
+does — which is why the non-uniform-grid measurement exists.
+
+⚠ One distinction worth not conflating, since it bears on order work: Thm 5.7 (IRK) is a PERTURBATION bound
+in the local errors; Thm 5.9 (GLM) gives an explicit RATE, `c·h^p` with `p` the stage order. Only the GLM
+statement yields an order.

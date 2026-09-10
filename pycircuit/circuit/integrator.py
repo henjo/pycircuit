@@ -1197,6 +1197,41 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
       last stage IS the step (``b == A[-1, :]``, ``c[-1] == 1``), so the
       numerical solution lands ON the constraint manifold each step.
 
+    ⚠⚠ EVERY STABILITY LINE ABOVE IS A PROPERTY OF THE TABLEAU, AND ON A DAE
+    THAT IS ONLY HALF THE PREMISE.  Lamour, Marz & Tischendorf (2013)
+    Example 5.1: applying the IMPLICIT Euler method to a DAE in STANDARD FORM
+    induces the EXPLICIT Euler method on the inner variable -- "the
+    A-stability gets lost when the method is applied to a DAE in standard
+    form", unstable at ``h = 0.0202`` against a limit of ``0.02`` at
+    ``lambda = -100``.  The formulation, not the method, decides whether
+    A-stability transfers.
+
+    This tree is on the right side of that because charge-oriented MNA IS a
+    properly stated leading term -- but that premise was UNSTATED here until
+    2026-09-10, and an unstated premise is an unprotected one: nothing would
+    notice if a formulation change moved it.  The condition it turns on is
+    ``im D(t)`` time-invariant, which for charge-oriented MNA is ``im C(x)``
+    constant along the orbit; it moves only on a RANK change (a switch, a
+    device leaving conduction), NOT on a smoothly varying ``C(v) > 0``.
+
+    ⚠ THE SAME TERM GOVERNS THE GLM CONVERGENCE RESULT.  Prop 4.7 and the
+    proof of Thm 5.7 make it one term in one equation: the IERODE's field is
+    ``u' = R'(t)u + D(t)omega(u,t)``, and the hypothesis exists to kill
+    ``R'(t)u``.  It is the same premise under IRK(DAE) convergence (5.7), GLM
+    convergence at stage order (5.9, which is what
+    :class:`NordsieckGLMIntegrator` rests on) and contractivity transfer
+    (6.9).  Relayed from a source reading, not verified here.
+
+    ⚠⚠ AND OUR FIXTURES DO NOT EXERCISE IT.  Measured 2026-09-10: on the
+    index-2 C-V loop, the state-free exponential and the van der Pol -- the
+    three fixtures behind the GLM order, stage-predictor and noise-floor
+    results -- ``C(x)`` is not merely constant-rank but LITERALLY CONSTANT
+    (``max|C(x1) - C(x2)| == 0`` over random ``x``), because every reactance
+    in them is linear.  So ``im D`` is time-invariant TRIVIALLY and those
+    results sit inside the theorem's scope VACUOUSLY.  Whether violating the
+    hypothesis actually costs order in this implementation is NOT MEASURED and
+    would need a fixture whose ``rank C(x)`` genuinely changes along the orbit.
+
     What it does NOT have (2026-09-07, measured after the method became the
     ``PSS`` default): a radius of absolute monotonicity.  Kraaijevanger's
     ``R(A, b)`` -- computed here from the definition, on the SAME script that
@@ -1518,6 +1553,25 @@ class NordsieckGLMIntegrator(Integrator):
     non-uniform grid on this fixture -- but the theorem does not say it must,
     and a grid with a JUMP in `h` rather than a smooth variation is not what
     was measured.
+
+    ⚠⚠ AND ONE MORE PREMISE, WHICH IS NOT THE TABLEAU'S.  Lamour, Marz &
+    Tischendorf (2013) Thm 5.9 gives a stiffly stable GLM convergence at
+    STAGE order ``p`` on an index-1 DAE -- which is the escape from the DIRK
+    stage-order cap this class exists for -- but under the hypothesis that
+    ``im D(t)`` is time-invariant.  That is not an incidental condition: it is
+    one term in one equation (the IERODE's field ``u' = R'(t)u +
+    D(t)omega(u,t)``, Prop 4.7), and the same term governs IRK(DAE)
+    convergence and contractivity transfer.  For charge-oriented MNA it means
+    ``im C(x)`` constant along the orbit, which moves only on a RANK change.
+    Thm 5.9's two checkable hypotheses were checked against the shipped
+    tableaux on 2026-09-10: ``det A`` is 1.5625e-02 / 3.9063e-03 / 1.1431e-03
+    for GLM2/3/4 (cond 6.7 / 49 / 192), so 5.3.3's exclusion of singular ``A``
+    does not bite, and ``c_s == 1`` exactly, so ``x_n = X_ns`` holds by
+    construction.  "Stiffly stable" in that book's own sense is NOT checked.
+    ⚠ And 5.2.3 restricts to constant stepsizes, exactly as Voigtmann does --
+    which is why the non-uniform-grid measurement above exists.  See
+    :class:`RadauIIA3Integrator` for why our own fixtures do not exercise the
+    ``im D`` hypothesis at all.
 
     Still not built: no PCNR stage path; not on the JAX backend.
     """
