@@ -14,7 +14,7 @@ import pytest
 
 from pycircuit.circuit import circuit
 from pycircuit.circuit.circuit import SubCircuit, gnd
-from pycircuit.circuit.elements import C, R, VSin
+from pycircuit.circuit.elements import C, L, R, VSin
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.integrator import GLM2Integrator, GLM3Integrator, RadauIIA3Integrator
 
@@ -142,3 +142,95 @@ def test_nordsieck_glm_has_no_index2_order_split_and_the_starting_vector_does_no
     ## the computed start must not cost order or accuracy against the exact one
     assert abs(od_cp[-1] - od_ex[-1]) < 0.3 and abs(oa_cp[-1] - oa_ex[-1]) < 0.3, (od_cp, od_ex, oa_cp, oa_ex)
     assert e_cp[-1][0] < 3.0 * e_ex[-1][0] and e_cp[-1][1] < 3.0 * e_ex[-1][1], (e_cp[-1], e_ex[-1])
+
+
+def _pss_errors(method, per, keep, Vdiff, Valg, x_exact, npts_list=(20, 40, 80)):
+    from pycircuit.circuit.shooting import PSS
+    errs = []
+    for npts in npts_list:
+        p = PSS(_cv_loop(per), method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=per, timestep=per / npts, maxiterations=40)
+        assert p.converged, (method, npts)
+        t = np.asarray(p.waveform[0], dtype=float)
+        X = np.asarray(p.waveform[1], dtype=float)[keep, :]
+        E = np.array([X[:, k] - x_exact(t[k])[keep] for k in range(len(t))])
+        errs.append((float(np.max(np.abs(E @ Vdiff))), float(np.max(np.abs(E @ Valg)))))
+    return errs
+
+
+def test_shooting_with_a_glm_keeps_the_algebraic_order_at_one_factorisation_per_step():
+    """`PSS(method='glm3')` on the index-2 C-V loop: the shooting solve
+    converges and the ALGEBRAIC component holds order 3 -- Radau IIA(3)'s
+    order on this fixture -- with one real factorisation per step, where
+    esdirk43 (also one per step, stage order 2) drops to 2.
+
+    ⚠ The Newton's Jacobian here is APPROXIMATE by construction
+    (`_traverse_glm`: the startup's derivative is dropped) and the residual
+    is not, so the fixed point is the method's own; this test is what says
+    the approximation does not cost the solve.  Measured at npts = 80:
+    glm3 8.2e-11 against esdirk43's 5.7e-10 and radau's 2.0e-11.
+    """
+    per = 1e-3
+    cir = _cv_loop(per)
+    keep, Vdiff, Valg, x_exact, _q = _reference(cir, per)
+    e_glm = _pss_errors('glm3', per, keep, Vdiff, Valg, x_exact)
+    e_esd = _pss_errors('esdirk43', per, keep, Vdiff, Valg, x_exact)
+    oa_glm = np.log2(e_glm[-2][1] / e_glm[-1][1])
+    oa_esd = np.log2(e_esd[-2][1] / e_esd[-1][1])
+    assert oa_glm > 2.6, (oa_glm, e_glm)
+    assert oa_esd < 2.4, (oa_esd, e_esd)
+    assert e_glm[-1][1] < 0.5 * e_esd[-1][1], (e_glm[-1], e_esd[-1])
+
+
+def test_the_glm_period_map_is_on_the_nordsieck_state_and_carries_the_circuits_multiplier():
+    """A multivalue method's period map acts on the whole Nordsieck vector,
+    so `factored_period()` comes back with width `r*m = (p+1)*m`, not `m`.
+    Its spectrum must then be the circuit's `m` multipliers plus `(r-1)*m`
+    of the METHOD's own, which sit at zero because `V`'s lower block is
+    nilpotent -- the same shape as a DAE's structural zeros.
+
+    Measured on the index-2 C-V loop at 40 points: the dominant multiplier
+    is 6.737685e-03 against radau's 6.737685e-03 (six digits, two entirely
+    different maps), and the other eleven are below 1e-18.
+    """
+    from pycircuit.circuit.shooting import PSS
+    per = 1e-3
+    m = _cv_loop(per).n - 1
+    mults = {}
+    for method in ('glm3', 'radau'):
+        p = PSS(_cv_loop(per), method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=per, timestep=per / 40, maxiterations=40)
+        fp = p.factored_period()
+        M = np.column_stack([fp.matvec(e) for e in np.eye(fp.width)])
+        mults[method] = (fp, np.sort(np.abs(np.linalg.eigvals(M)))[::-1])
+    fp_glm, lam_glm = mults['glm3']
+    _fp_r, lam_rad = mults['radau']
+    assert fp_glm.kind == 'glm'
+    assert fp_glm.width == 4 * m, (fp_glm.width, m)      # r = p + 1 = 4
+    assert abs(lam_glm[0] / lam_rad[0] - 1.0) < 1e-4, (lam_glm[0], lam_rad[0])
+    assert np.all(lam_glm[1:] < 1e-12), lam_glm
+    assert np.all(lam_rad[1:] < 1e-12), lam_rad
+
+
+def test_a_glm_refuses_the_free_period_solve_rather_than_guessing():
+    """No autonomous path: the period column would have to differentiate the
+    startup as well as the steps, and that is not built.  Refused by name."""
+    import pytest as _pytest
+    from pycircuit.circuit.shooting import PSS
+    from pycircuit.circuit.elements import IS
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['I'] = IS('v', gnd, i=0.0)
+    p = PSS(c, method='glm3')
+    p.autonomous = True
+    with _pytest.raises(NotImplementedError, match='free-period'):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=6.28, timestep=6.28 / 20, x0=np.array([2.0, 0.0]))

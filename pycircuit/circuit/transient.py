@@ -2620,6 +2620,9 @@ class Transient(Analysis):
                 rho = h / h_old
                 Q = np.array([rho ** k * Q[k] for k in range(r)])
         xn = np.asarray(x0, dtype=float)
+        ## the vector this step ENTERED with -- the shooting traversal reads it
+        ## after the first step to learn what the startup produced
+        self._glm_Q_in = np.asarray(Q, dtype=float)
         tstage = [tn + c[i] * h for i in range(s)]
         Y = [None] * s
         K = [None] * s

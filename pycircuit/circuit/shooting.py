@@ -169,6 +169,7 @@ class FactoredPeriod(object):
 
     __slots__ = ('kind', 'opening', 'steps', 'x_last', 'x_prev', 'width',
                  'times', 'T', 'open_at_x0', '_pss')
+    ## 'glm' is the MULTIVALUE kind: width r*m, see `factored_period_glm`.
 
     def __init__(self, kind, opening, steps, x_last, x_prev, pss,
                  times=None, T=None, open_at_x0=False):
@@ -197,6 +198,8 @@ class FactoredPeriod(object):
             return self._pss._monodromy_matvec_full(self.steps, v)
         if self.kind == 'dirk':
             return self._pss._monodromy_matvec_dirk(self.steps, v)
+        if self.kind == 'glm':
+            return self._pss._monodromy_matvec_glm(self.steps, v)
         return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
 
     def matvec_transposed(self, v, collect=False, inject=None):
@@ -1923,7 +1926,9 @@ class PSS(Analysis):
                                                   Gear2Integrator)
         from pycircuit.circuit.integrator import (TRBDF2Integrator,
                                                   RadauIIA3Integrator,
-                                                  ESDIRK43Integrator)
+                                                  ESDIRK43Integrator,
+                                                  GLM2Integrator,
+                                                  GLM3Integrator)
         ## THE single method -> integrator map, and the one place method names
         ## are validated: an unknown name raises the ValueError here rather than
         ## a KeyError three frames down.  The polymorphic predicates
@@ -1941,13 +1946,19 @@ class PSS(Analysis):
                  'gear2': Gear2Integrator,
                  'trbdf2': TRBDF2Integrator,
                  'radau': RadauIIA3Integrator,
-                 'esdirk43': ESDIRK43Integrator}
+                 'esdirk43': ESDIRK43Integrator,
+                 ## Nordsieck GLMs: stage order = order, one factorisation per
+                 ## step, no index-2 order split.  Driven PSS only (no free
+                 ## period), and the period map is on the MULTIVALUE state --
+                 ## see `factored_period_glm`.
+                 'glm2': GLM2Integrator,
+                 'glm3': GLM3Integrator}
         try:
             return table[method]()
         except KeyError:
             raise ValueError(
                 "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
-                "'radau' or 'esdirk43', not %r" % (method,))
+                "'radau', 'esdirk43', 'glm2' or 'glm3', not %r" % (method,))
 
     ## Below this fraction of the seed, a solved period is the trivial
     ## root rather than an orbit.  Deliberately loose: a real fundamental
@@ -3650,6 +3661,141 @@ class PSS(Analysis):
             states.reverse()
             return w, ts, states
         return w
+
+    def _glm_period_blocks(self, x_in, times, hs):
+        """One period under a Nordsieck GLM, collecting per-step factors.
+
+        Drives `Transient._solve_timestep_glm` with the Nordsieck vector fed in
+        explicitly, so the startup runs ONCE at `t = 0` and every later step
+        continues the multivalue state (no seam inside the period).  Returns
+        ``(steps, xs, Q0, Qend, x_end)`` where each step record is
+        ``(Kfacs, Gs, h, A, U, B, V)``: the stage factors
+        ``K_i = LU(C(Y_i) + h lambda G(Y_i))``, the stage conductances, and the
+        tableau blocks the sensitivity recursion needs.
+        """
+        tr = self._transient()
+        iref = self.irefnode
+        self._want_dfdh = False
+        self._want_lte = False
+        self._begin_period(x_in)          # sets up the transient's integrator
+        integ = tr.base_integrator
+        A, U, B, V, c, p = integ.tableau()
+        s = A.shape[0]
+        x = copy(x_in)
+        tr._glm_Q = None                      # force the startup at t = 0
+        steps, xs = [], []
+        Q0 = None
+        for _j, t in enumerate(times[1:]):
+            h = hs[min(_j, len(hs) - 1)]
+            xn = x
+            x = copy(self.solve_timestep(xn, t, h))
+            Qn = np.asarray(tr._glm_Q[0], dtype=float)
+            if Q0 is None:
+                ## the vector the first step actually entered with, i.e. what
+                ## the startup produced from `x_in`
+                Q0 = np.asarray(tr._glm_Q_in, dtype=float)
+            Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
+                  for yf in tr._rk_Y]
+            Gs = [np.asarray(self._G_at(Ys[i])) for i in range(s)]
+            Kfacs = [self._factorise(np.asarray(self._C_at(Ys[i]))
+                                     + h * A[i, i] * Gs[i]) for i in range(s)]
+            steps.append((Kfacs, Gs, float(h), A, U, B, V))
+            xs.append(np.asarray(x, dtype=float))
+        return steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x
+
+    @staticmethod
+    def _glm_propagate(steps, P):
+        """The Nordsieck sensitivity recursion, one period.
+
+        ``P`` is a list of `r` blocks ``dQ_k/d(unknown)``; each step maps it by
+
+            D_i  = K_i^{-1} ( sum_j U_ij P_j - h sum_{j<i} A_ij G_j D_j )
+            P'_k = sum_j V_kj P_j - h sum_i B_ki G_i D_i
+
+        -- the DIRK recursion with the entering ``C_n`` term replaced by the
+        Nordsieck combination ``U P``.  Returns ``(P_out, D_last)``; ``D_last``
+        is ``d x_N / d(unknown)`` because the method is stiffly accurate
+        (``x_N`` is the last stage).
+        """
+        D = None
+        for Kfacs, Gs, h, A, U, B, V in steps:
+            s = len(Kfacs)
+            r = len(P)
+            D = [None] * s
+            for i in range(s):
+                rhs = sum(U[i, j] * P[j] for j in range(r))
+                for j in range(i):
+                    rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
+                D[i] = Kfacs[i].solve(rhs)
+            P = [sum(V[k, j] * P[j] for j in range(r))
+                 - h * sum(B[k, i] * (Gs[i] @ D[i]) for i in range(s))
+                 for k in range(r)]
+        return P, (D[-1] if D is not None else None)
+
+    def _traverse_glm(self, x_in, T, times, hs):
+        """One period under a Nordsieck GLM with the shooting sensitivities.
+
+        The map shot on is ``x_0 -> x_N``: the Nordsieck vector is built from
+        ``x_0`` by `Transient._glm_startup` at the top of the period and
+        propagated by the method to the end.  ⚠ THE JACOBIAN IS APPROXIMATE
+        BY CONSTRUCTION and the residual is not: only ``dQ_0/dx_0 = C(x_0)``
+        is carried into the recursion, the startup's dependence of the higher
+        Nordsieck components on ``x_0`` (p Radau substeps and an interpolant)
+        is dropped.  So the converged fixed point is the method's own, exactly;
+        what the approximation can cost is Newton iterations.  MEASURED on the
+        index-2 C-V loop: 3 iterations to 1e-12, the same count as radau's
+        exact monodromy on the same fixture (roadmap).
+        """
+        steps, xs, Q0, Qend, x_end = self._glm_period_blocks(x_in, times, hs)
+        m = self.cir.n - 1
+        r = len(Q0)
+        P = [np.asarray(self._C_at(np.asarray(x_in, dtype=float)), dtype=float)] \
+            + [np.zeros((m, m)) for _ in range(r - 1)]
+        _Pout, Mx = self._glm_propagate(steps, P)
+        self._glm_last = (steps, xs, Q0, Qend)
+        return np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float), Mx
+
+    def factored_period_glm(self, x0, T, npts, method=None):
+        """The factored period map of a Nordsieck GLM about a periodic point.
+
+        ⚠ THE MAP IS ON THE NORDSIECK STATE, width ``r*m = (p+1)*m``, not on
+        ``x``: a multivalue method's period map carries the scaled derivatives
+        between steps, so the object that returns to itself is the whole
+        vector and its multipliers are ``r*m`` in number -- ``m`` of them the
+        circuit's, the rest the method's own, clustered at zero because ``V``'s
+        lower block is nilpotent (that is what `verify()` asserts).  A caller
+        reading Floquet data off this map must expect the extra zeros, exactly
+        as it expects the DAE's structural zeros.
+        """
+        if method is None:
+            method = getattr(self.par, 'method', 'euler')
+        x0 = np.asarray(x0, dtype=float)
+        if x0.shape[0] == self.cir.n:
+            x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
+        times = np.linspace(0.0, float(T), int(npts) + 1)
+        hs = np.diff(times)
+        tr_saved = getattr(self, '_tran', None)
+        self._tran = self._new_transient(self._integrator_for(method))
+        try:
+            steps, xs, Q0, Qend, x_end = self._glm_period_blocks(x0, times, hs)
+        finally:
+            self._tran = tr_saved
+        fp = FactoredPeriod('glm', None, steps, x_end, x0, self,
+                            times=times, T=float(T))
+        fp.width = len(Q0) * (self.cir.n - 1)
+        return fp
+
+    def _monodromy_matvec_glm(self, steps, v):
+        """`M v` on the NORDSIECK state (width `r*m`) -- the multivalue replay."""
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return (self._monodromy_matvec_glm(steps, v.real)
+                    + 1j * self._monodromy_matvec_glm(steps, v.imag))
+        m = self.cir.n - 1
+        r = v.shape[0] // m
+        P = [v.astype(float)[k * m:(k + 1) * m].reshape(m, 1) for k in range(r)]
+        Pout, _D = self._glm_propagate(steps, P)
+        return np.concatenate([np.asarray(Pk).ravel() for Pk in Pout])
 
     def _traverse_dirk(self, x_in, T, times, hs, want_dT=False):
         """One period under a lower-triangular (DIRK/ESDIRK) stage method with
@@ -6475,7 +6621,11 @@ class PSS(Analysis):
             ## an explicit first stage, so the two cannot share a path.  A new
             ## method of either family reaches the right builder with no edit
             ## here.
-            if _integ.is_fully_implicit():
+            if getattr(_integ, 'is_multivalue', lambda: False)():
+                ## a Nordsieck GLM: the map is on the MULTIVALUE state, width
+                ## r*m -- see `factored_period_glm`
+                fp = self.factored_period_glm(x0, T, len(times) - 1)
+            elif _integ.is_fully_implicit():
                 fp = self.factored_period_full(x0, T, len(times) - 1)
             else:
                 fp = self.factored_period_dirk(x0, T, len(times) - 1)
@@ -8779,10 +8929,11 @@ class PSS(Analysis):
         ## the class's earlier fall-through defects.
         method = getattr(self.par, 'method', 'euler')
         if method not in ('euler', 'trap', 'trapezoidal', 'theta', 'gear',
-                          'gear2', 'trbdf2', 'radau', 'esdirk43'):
+                          'gear2', 'trbdf2', 'radau', 'esdirk43',
+                          'glm2', 'glm3'):
             raise ValueError(
                 "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
-                "'radau' or 'esdirk43', not %r" % (method,))
+                "'radau', 'esdirk43', 'glm2' or 'glm3', not %r" % (method,))
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy,
@@ -9007,6 +9158,18 @@ class PSS(Analysis):
             return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
                     D - alpha * Mx)
 
+        def func_glm(x):
+            """Driven fixed-period residual/Jacobian for a Nordsieck GLM:
+            `F = x0 - phi(x0)` with `phi` the method's own period map (the
+            startup at the top of the period, then N multivalue steps), and
+            `J = I - M` with `M` the APPROXIMATE monodromy `_traverse_glm`
+            documents -- the residual is exact, the Jacobian drops the
+            startup's derivative."""
+            x0, x_end, Mx = self._traverse_glm(x, period, times, hs)
+            D = np.asarray(toolkit.eye(n - 1))
+            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
+                    D - alpha * Mx)
+
         def func_autonomous_dirk(z):
             """Free-period residual/Jacobian for a DIRK/ESDIRK method; the
             period column comes from `_traverse_dirk(want_dT=True)`."""
@@ -9087,9 +9250,20 @@ class PSS(Analysis):
             ## (`func_full`), a DIRK/ESDIRK the sequential one (`func_dirk`).
             ## Both are tableau-generic; a new method of either family reaches
             ## the right one with no edit here.
-            _fully = self._integrator_for(method).is_fully_implicit()
-            _fdr = func_full if _fully else func_dirk
-            _fda = func_autonomous_full if _fully else func_autonomous_dirk
+            _integ_m = self._integrator_for(method)
+            if getattr(_integ_m, 'is_multivalue', lambda: False)():
+                if self.autonomous:
+                    raise NotImplementedError(
+                        'PSS: a Nordsieck GLM has no free-period path yet -- '
+                        'the period column would have to differentiate the '
+                        'startup as well as the steps. Driven circuits only; '
+                        'use radau or trbdf2 for an oscillator.')
+                _fdr = func_glm
+                _fda = None
+            else:
+                _fully = _integ_m.is_fully_implicit()
+                _fdr = func_full if _fully else func_dirk
+                _fda = func_autonomous_full if _fully else func_autonomous_dirk
             _label = method
             if matrix_free:
                 raise NotImplementedError(

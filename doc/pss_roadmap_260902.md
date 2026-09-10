@@ -12877,3 +12877,46 @@ symbols are defined across ~30 pages with one of them, `F`, meaning three differ
 the docs session's judgement, which I share, is that assembling it correctly is reconstructing a chapter rather
 than transcribing a page. Recorded as the boundary; not attempted further.
 
+## GLM in shooting (Andreas: "Do glm in shooting", 2026-09-10)
+
+`PSS(method='glm2'|'glm3')` now solves, and the period map is on the MULTIVALUE state.
+
+**What was built.** `PSS._glm_period_blocks` drives `Transient._solve_timestep_glm` with the Nordsieck vector
+fed in explicitly, so the startup runs ONCE at the top of the period and every later step continues the
+multivalue state (no seam inside the period), collecting per-step `(K_i factors, G_i, h, A, U, B, V)`.
+`PSS._glm_propagate` is the one sensitivity recursion both consumers share — the DIRK recursion with the
+entering `C_n` term replaced by the Nordsieck combination:
+
+    D_i  = K_i^-1 ( sum_j U_ij P_j - h sum_{j<i} A_ij G_j D_j )
+    P'_k = sum_j V_kj P_j - h sum_i B_ki G_i D_i
+
+with `D_s = dx_N/d(unknown)` by stiff accuracy. Seeded with `P_0 = C(x_0)`, `P_{k>0} = 0` it gives the
+shooting Newton's `m x m` Jacobian (`_traverse_glm`, `func_glm`); seeded with the `r*m` identity it gives the
+method's own period map (`factored_period_glm`, `FactoredPeriod(kind='glm')`, `_monodromy_matvec_glm`).
+⚠ **The Jacobian is approximate and the residual is not:** the startup's dependence of the higher Nordsieck
+components on `x_0` (p Radau substeps and an interpolant) is dropped, so the converged fixed point is the
+method's own exactly and only the iteration count can suffer — measured, it does not.
+
+**Measured on the index-2 C–V loop (driven PSS, error split by subspace, against the analytic solution):**
+
+| method | LU/step | algebraic err at 40 / 80 pts | algebraic order |
+|---|---|---|---|
+| radau | coupled 3n | 1.64e-10 / 1.98e-11 | 3.05 |
+| **glm3** | **1** | **6.82e-10 / 8.19e-11** | **3.06** |
+| esdirk43 | 1 | 2.35e-09 / 5.72e-10 | 2.04 |
+| glm2 | 1 | 4.80e-09 / 1.18e-09 | 2.03 |
+
+So in shooting, as in the transient, GLM3 carries Radau's algebraic order at one factorisation per step and
+is 7× more accurate there than the same-cost esdirk43. **And the multivalue map checks out:** at 40 points
+`factored_period()` returns `kind='glm'`, width `r*m = 12`, whose dominant multiplier is 6.737685e-03 against
+radau's 6.737685e-03 — six digits from two entirely different maps — with the other ELEVEN below 1e-18, the
+method's own multipliers sitting at zero because `V`'s lower block is nilpotent. That is the multivalue
+analogue of the DAE's structural zeros, and it means a Floquet consumer reading this map must expect them.
+
+**Scope, refused rather than guessed:** no free-period (autonomous) path — the period column would have to
+differentiate the startup as well as the steps — so an oscillator still takes radau or trbdf2; `matrix_free`
+is not wired for it; the analysis surfaces (PPV, PAC, pnoise) have not been run on a width-`r*m` map and
+their adjoint (`matvec_transposed`) is not built for `kind='glm'`. Gated by
+`test_shooting_with_a_glm_keeps_the_algebraic_order_at_one_factorisation_per_step` and
+`test_the_glm_period_map_is_on_the_nordsieck_state_and_carries_the_circuits_multiplier`.
+
