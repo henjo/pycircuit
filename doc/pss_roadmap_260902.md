@@ -13035,10 +13035,14 @@ a chapter. A stage at `c > 1` evaluates the device models past the end of the st
 point the Jacobian was formed at — a MOSFET or diode can be pushed across a region boundary — and a
 time-dependent source is then sampled in a DIFFERENT PWL/pulse SEGMENT, not an extrapolation of the same one;
 `c < 0` would ask for data before the step start. `c` is a free parameter (p. 80) and Wright's own canonical
-choice is inside [0, 1], so bounding it costs nothing theoretically. Running now: the same stiffly accurate solve
-with `c` bounded to [0, 1] and a soft pull on `|A|, |B| ≤ 1`. If it converges, GLM4's tableau is replaced by the
-bounded one and the method becomes defensible as a default rather than an option; if it does not, the recorded
-scope stays as it is. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
+choice is inside [0, 1], so bounding it costs nothing theoretically. **Run, and it did NOT converge:** the same stiffly
+accurate solve with `c` bounded to [0, 1] and a soft pull on `|A|, |B| ≤ 1` produced no method in ~65 minutes
+across two configurations (all 24 permutations × 7 λ × 3 starts, and the identity permutation × 4 λ × 12 starts
+with twice the iteration budget); both hit their own timeouts with nothing printed, where the UNBOUNDED solve
+converges in about eight minutes. So bounding the abscissae makes the feasibility problem materially harder, not
+incidentally so — which is consistent with Wright needing §3.11's dedicated minimisation rather than a penalty
+bolted onto the feasibility solve, and it is a reason to reach for that machinery rather than more starts.
+GLM4 keeps the tableau it shipped with, and its scope note stands: an option with its cost stated, not a default. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
 it pivoting; it was an abscissa vector built one entry short. Neither of us had examined the failure before
 explaining it.
 
