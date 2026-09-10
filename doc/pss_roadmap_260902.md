@@ -13140,3 +13140,37 @@ of order 3900. §3.11 is the machinery for that, not more restarts. ⚠ Both ses
 it pivoting; it was an abscissa vector built one entry short. Neither of us had examined the failure before
 explaining it.
 
+## The full 24-permutation sweep, run to completion (Andreas: "let it finish", 2026-09-10)
+
+All 24 permutations × 7 λ × 3 starts, every constraint imposed together (strict stiff accuracy, `Ã` strictly
+lower triangular, `c ∈ [0, 1]`, a soft pull on `|A|, |B| ≤ 1`), no early exit, so the answer is the best over the
+whole space rather than the first thing that converges. **3 h 32 min, 504 solves.** Best point: λ = 0.326,
+permutation (3, 1, 2, 0), cost 1.93e-2 — not feasible (a converged method is ~1e-23). But the cost's COMPOSITION
+is the result:
+
+| condition | residual | verdict |
+|---|---|---|
+| order/stage order 4 (exactness k ≤ 4) | 1.7e-16 | ✅ exact |
+| `Ã` strictly lower triangular (diagonally implicit, one λ) | 1.6e-14 | ✅ |
+| ρ(M(z)) on the left half-plane | 0.999 | ✅ |
+| `M_∞` nilpotent | 1.6e-11 | ✅ |
+| abscissae | c ∈ [0.044, 1.000] | ✅ inside |
+| **coefficient magnitude** | **max\|A\| 2.40, max\|B\| 4.20** | ⚠ vs shipped GLM4's 3900 |
+| **stiff accuracy** `B₁ = A_s`, `B₂ = e_s` | **1.1e-3 / 3.2e-3** | ❌ misses |
+
+**So the conflict is specific and quantified: coefficient magnitude against STIFF ACCURACY.** Everything else —
+order, stability, diagonal implicitness with one λ, bounded abscissae — is met simultaneously and to machine
+precision. Pull the coefficients toward 1 and the best the whole permutation space offers is a method that is
+almost stiffly accurate (`B₁ − A_s` ~ 1e-3) with coefficients of 4.2 instead of 3900; insist on stiff accuracy
+exactly, as the shipped GLM4 does, and the coefficients blow up by three orders. ⚠ "Almost stiffly accurate" is
+NOT usable: `x_{n+1} = Y_s` is then wrong at 1e-3, which is larger than the method's own error at every grid
+measured here, and Voigtmann's hypothesis (e) fails outright. The soft magnitude term is an OBJECTIVE (weight
+0.02) rather than a constraint, so most of the 1.93e-2 is that penalty, not infeasibility — the run maps a
+frontier point rather than proving impossibility.
+
+**What this says for Wright §3.11**, which is the machinery for exactly this trade: it minimises the underlying
+one-step method's error coefficients over the free parameters INSIDE the feasible set, rather than penalising
+magnitude against feasibility as this sweep does. The sweep's own frontier — 4.2 achievable at a 1e-3 stiff
+accuracy violation — is evidence that well-scaled stiffly accurate members are plausible and that a penalty on
+the feasibility solve is the wrong instrument for finding them, which is what the §3.11 route exists to do.
+Recorded; not attempted.
