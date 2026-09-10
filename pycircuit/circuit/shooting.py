@@ -3689,6 +3689,7 @@ class PSS(Analysis):
         s = A.shape[0]
         x = copy(x_in)
         tr._glm_Q = None                      # force the startup at t = 0
+        tr._glm_prev = None                   # no stage predictor across the seam
         steps, xs = [], []
         Q0 = None
         for _j, t in enumerate(times[1:]):

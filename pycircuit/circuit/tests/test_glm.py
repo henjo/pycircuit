@@ -464,3 +464,154 @@ def test_floquet_modes_works_when_called_with_no_arguments(method):
     assert len(no_arg) == len(with_arg) and len(no_arg) >= 2
     for a, b in zip(with_arg, no_arg):
         assert abs(a['lam'] - b['lam']) < 1e-14, (method, a['lam'], b['lam'])
+
+
+## ------------------------------------------------------------------------
+## The stage predictor
+
+def _expg_fixture(per, va=0.8):
+    """A driven RC with a STATE-FREE exponential conductance.
+
+    ⚠ `Diode` cannot measure a stage predictor at all: its `G` linearises
+    around a STORED `_vlim`, so its Newton is seed-blind by construction --
+    measured, an ALL-ZEROS seed gives the same iteration histogram, to the
+    count, as the exact one.  This element's `i` and `G` are both functions
+    of the passed `x`, with no state and no limiting, so the iteration count
+    responds to the seed.
+    """
+    import sympy
+    import pycircuit.circuit.circuit as _cc
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter)
+
+    class ExpG(Behavioural):
+        instparams = [Parameter(name='IS', desc='sat', unit='A',
+                                default=1e-12),
+                      Parameter(name='VT', desc='thermal', unit='V',
+                                default=0.026)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return (Contribution(b.I, IS * (sympy.exp(b.V / VT) - 1)),)  # noqa: F821
+
+    _cc.default_toolkit = numeric
+    c = SubCircuit()
+    c.add_node('a')
+    c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=va, freq=1.0 / per)
+    c['rs'] = R('a', 'b', r=50.0)
+    c['nl'] = ExpG('b', gnd, IS=1e-12, VT=0.026)
+    c['cl'] = C('b', gnd, c=1e-9)
+    c['rl'] = R('b', gnd, r=1e4)
+    return c
+
+
+def _run_counted(cls, mode, per, npts, va=0.8):
+    """One fixed-step transient; returns (device i evaluations, worst seed
+    error, worst stage iteration count, waveform)."""
+    from pycircuit.circuit import nrsolver as NR
+    from pycircuit.circuit import transient as TR
+    log = []
+    solve_orig = NR.StandardNewton.solve_system
+
+    def wrapped(self, x0, eval_FJ, *a, **k):
+        x, it = solve_orig(self, x0, eval_FJ, *a, **k)
+        log.append((float(np.max(np.abs(np.asarray(x0) - np.asarray(x)))), it))
+        return x, it
+    NR.StandardNewton.solve_system = wrapped
+    TR.Transient.glm_predictor = mode
+    n = {'i': 0}
+    cir = _expg_fixture(per, va)
+    fi = cir.i
+    cir.i = lambda *a, **k: (n.__setitem__('i', n['i'] + 1), fi(*a, **k))[1]
+    try:
+        tr = Transient(cir, integrator=cls(), reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(refnode=gnd, tend=per, timestep=per / npts,
+                           fixed_timestep=True)
+    finally:
+        NR.StandardNewton.solve_system = solve_orig
+        TR.Transient.glm_predictor = 'local'
+    return (n['i'], float(np.max([l[0] for l in log])),
+            int(np.max([l[1] for l in log])),
+            np.asarray(res.v('b'), dtype=float))
+
+
+@pytest.mark.parametrize('cls', [GLM3Integrator, GLM4Integrator])
+def test_glm_stage_predictor_cuts_the_newton_work_without_moving_the_answer(cls):
+    """The stage predictor is a COST change and must be nothing else.
+
+    Three properties, each with the pre-predictor behaviour
+    (`glm_predictor='none'`) as its own control in the same run:
+
+    1. FEWER device evaluations.  Measured 13-29% on this fixture; gated at
+       8% so a modest regression still fails.
+    2. The SAME answer.  A seed change must not select a different root --
+       the risk is real on a multi-rooted stage system (the coupled path's
+       line-search note), so this is asserted to rounding, not to a tolerance.
+    3. NO WORSE TAIL.  ⚠ This is the property that rejected the two simpler
+       predictors: "previous stage shifted" and "the previous step's stages
+       continued a whole step" both improved the MEAN and made the worst
+       stage cost 13 and 33 Newton iterations against the fallback's 6.  A
+       gate on the mean alone would have passed both.
+    """
+    per = 1e-3
+    base_i, base_seed, base_it, base_x = _run_counted(cls, 'none', per, 200)
+    pred_i, pred_seed, pred_it, pred_x = _run_counted(cls, 'local', per, 200)
+    assert pred_i < 0.92 * base_i, (pred_i, base_i)
+    assert np.max(np.abs(pred_x - base_x)) < 1e-11 * max(
+        float(np.max(np.abs(base_x))), 1e-3), float(np.max(np.abs(pred_x - base_x)))
+    assert pred_seed <= base_seed * 1.05, (pred_seed, base_seed)
+    assert pred_it <= base_it, (pred_it, base_it)
+
+
+@pytest.mark.parametrize('cls', [GLM2Integrator, GLM3Integrator, GLM4Integrator])
+def test_glm_stage_predictor_is_exact_on_a_polynomial(cls):
+    """STRUCTURAL, no circuit: the predictor interpolates the nodes it is
+    given, so on a trajectory that IS a polynomial of its degree it returns
+    the stage value exactly.  That is what says the weights are a Lagrange
+    evaluation at `c_i` and not an approximation with a fitted constant."""
+    g = cls()
+    A, U, B, V, c, p = g.tableau()
+    s = A.shape[0]
+    deg = g.order
+    W = Transient._glm_local_weights(c, deg)
+    for k in range(deg + 1):
+        ## y(tau) = tau^k in the step's local coordinate; the previous step's
+        ## stages sit at c_j - 1 and this step's at c_j
+        Yp = [np.array([(c[j] - 1.0) ** k]) for j in range(s)]
+        Y = [np.array([c[j] ** k]) for j in range(s)]
+        for i in range(s):
+            ip, ic, w = W[i]
+            got = sum(w[a] * Yp[j] for a, j in enumerate(ip)) \
+                + sum(w[len(ip) + a] * Y[j] for a, j in enumerate(ic))
+            assert abs(float(np.asarray(got).ravel()[0]) - c[i] ** k) < 1e-9, \
+                (cls.__name__, k, i)
+
+
+def test_glm_stage_predictor_declines_a_changed_step_and_a_period_seam():
+    """The predictor reads the PREVIOUS step's stages, which are only at the
+    right places if that step used the same `h` and ended where this one
+    starts.  Both guards are asserted directly, because a stale record is a
+    silently wrong guess, not an error."""
+    tr = Transient(_expg_fixture(1e-3), integrator=GLM3Integrator())
+    A, U, B, V, c, p = GLM3Integrator().tableau()
+    s = A.shape[0]
+    xn = np.zeros(4)
+    tr.base_integrator = GLM3Integrator()
+    ## no predecessor at all -- the state at a period seam
+    tr._glm_prev = None
+    assert tr._glm_stage_predictor(xn, 1e-5, 0.0, c) is None
+    Yp = [np.zeros(4) for _ in range(s)]
+    ## a good record predicts
+    tr._glm_prev = (Yp, np.zeros(4), 1e-5, 0.0)
+    assert tr._glm_stage_predictor(xn, 1e-5, 0.0, c) is not None
+    ## a CHANGED STEP declines
+    tr._glm_prev = (Yp, np.zeros(4), 2e-5, 0.0)
+    assert tr._glm_stage_predictor(xn, 1e-5, 0.0, c) is None
+    ## a record that does not END where this step STARTS declines
+    tr._glm_prev = (Yp, np.zeros(4), 1e-5, 5e-5)
+    assert tr._glm_stage_predictor(xn, 1e-5, 0.0, c) is None

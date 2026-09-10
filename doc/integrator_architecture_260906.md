@@ -720,3 +720,19 @@ coupled `3m` solve" is true of the dense Radau path and buys nothing: glm4 is 2.
 the mechanism is 3.0× the device evaluations per step (five stages each running their own Newton against Radau's
 one coupled system), which is `m`-INVARIANT. See the roadmap. The order result — order `p` in BOTH components on
 an index-2 DAE, where Radau splits `5 / 3` — stands and never rested on the cost story.
+
+**The stage predictor, and the thing it exposes about every OTHER family (2026-09-10).** The cost above is
+sequential stage Newtons, so their starting guess is the cost. Seeding each stage from the polynomial through
+the nodes NEAREST it — the previous step's stages at `c_j − 1`, this step's converged ones at `c_j` — instead
+of from the previous stage's value takes 12.6 % to 28.7 % off the device evaluations at an unchanged answer
+(`Transient._glm_stage_predictor`; the roadmap carries the table and the two predictors that lost on the TAIL
+while winning on the mean). It closes some of the gap to radau and does not overturn the cost verdict: the
+floor from stage count alone is `s / 3`.
+
+What the measurement exposes is that this is not a GLM property. Every implicit integrator here seeds its
+Newton `O(h)` away, as a fraction of one step's own state motion: **coupled Radau IIA(3) 1.00** — `x_n` for all
+three stages at once, the crudest seed in the codebase and the PSS default — **ESDIRK43 0.50**, **TR-BDF2
+0.59**, **Gear-2 and trapezoidal 1.00**. A fourth predicate is arguably missing from the family design: a
+method should be able to say where its next Newton starts. NOT BUILT for the other families and not started
+without an owner decision — the DIRK path takes the same per-stage callable unchanged, the coupled path needs
+one seed per stage BLOCK, and an LMM's analogue is the classical predictor off its own history.

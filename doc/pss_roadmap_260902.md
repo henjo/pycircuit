@@ -13249,3 +13249,55 @@ source MOVED: in the tank spread 1.007 and mean/point 0.9998 — flat, so the tw
 measurement and the shortcut is licensed; behind the slow node spread 1.349 and mean/point 1.038 — a 4 %
 difference, larger than most agreements this file asserts. Call it before comparing a measured band average with
 a computed point value.
+
+## The GLM stage predictor (Andreas: "Do the stage predictor for glm", 2026-09-10)
+
+A GLM step is `s` sequential `m × m` Newtons, one per stage, and the stages are the whole of its per-step
+work — so what those Newtons start from IS the method's cost. The shipped guess was the PREVIOUS STAGE's
+converged value, which is a value at a different time point. `Transient._glm_stage_predictor` replaces it with
+the polynomial through the `deg + 1` nodes NEAREST `c_i`, taken from the previous step's stages (at `c_j − 1`
+in the step's local coordinate) and this step's already-converged ones (at `c_j`, `j < i`); `deg` is the
+method's own order. Weights are Lagrange, cached per tableau, so the predictor costs no device evaluation.
+`glm_predictor='none'` restores the old guess as the control.
+
+**Measured** on a driven RC with a state-free exponential (`benchmarks/glm/stage_predictor.py`), device `i`
+evaluations against the fallback, at 40 and 200 points per period and 0.8 V and 2 V drive: **−12.6 % to
+−28.7 %**, Newton iterations per stage 2.59 → 1.50 at the best point. The answer is unchanged to 6.7e-16
+(glm3) and 3.1e-13 (glm4) — a seed change must not select a different root, and here it does not.
+
+**⚠⚠ TWO SIMPLER PREDICTORS WERE BUILT FIRST AND BOTH LOST ON THE TAIL, NOT THE MEAN.**
+
+| predictor | device evals | worst seed | worst stage's iterations |
+|---|---|---|---|
+| fallback (previous stage) | — | 7.5e-02 | 6 |
+| `Y_i^prev + (x_n − x_{n−1})` | +0.6 % to −6 % | 2.0e-01 | 13 |
+| previous step's stages, continued a WHOLE STEP | −2 % to −18 % | 7.3e-01 | 33 |
+| nearest nodes (shipped) | −12.6 % to −28.7 % | 7.5e-02 | 5 |
+
+A gate on the mean passes all four. The mechanism is structural: the fallback guess is always a value the
+circuit ACTUALLY ATTAINED, so it can never sit in a device's overflow region, while a polynomial continued a
+whole step can — and on an exponential a 3× overshoot is `exp(3 ΔV / V_T)`. Clamping the overshoot to the
+range the known states span recovers only half of it (33 → 13). Continuing by ONE NODE GAP removes the class:
+the shipped predictor's worst seed never exceeds the fallback's on any point measured. ⚠ A ratio test against
+the step's own motion does NOT screen the bad case — the bad prediction's displacement is 2.98 of the step's
+motion and the TRUE stage spread reaches 2.98 as well.
+
+**⚠⚠ `Diode` CANNOT MEASURE A STAGE PREDICTOR AT ALL**, and the first two days of this measurement were spent
+on it. Its `G` linearises around a STORED `_vlim` (the device's own docstring says so, stage 13-2), so its
+Newton is seed-blind by construction: measured, an ALL-ZEROS seed gives the same iteration histogram, to the
+count, as the exact one — `[436, 244, 108]` for both. The index-2 C–V loop fixture is worse still, being
+LINEAR, where a one-step Newton is forced. The instrument has to be a state-free nonlinearity with no
+limiting, which is what `_expg_fixture` is.
+
+**Every other integrator seeds just as crudely** (same fixture, 200 points, seed distance as a fraction of one
+step's state motion): coupled Radau IIA(3) **1.00** — `x_n` for all three stages at once, the crudest in the
+codebase and the PSS default; ESDIRK43 **0.50** and TR-BDF2 **0.59** — previous stage, the same construction
+the GLM had; Gear-2 and trapezoidal **1.00** — `x_n`, one solve per step. The mechanism generalises; only the
+GLM path carries it today. NOT DONE, and not started without an owner decision: the DIRK path is the same
+sequential shape and would take the predictor unchanged, the coupled path needs one seed per stage block
+rather than a per-stage callable, and an LMM's analogue is the classical predictor off its own history.
+
+Gated by `test_glm_stage_predictor_cuts_the_newton_work_without_moving_the_answer` (cost, answer and TAIL,
+each against the `'none'` control in the same run), `test_glm_stage_predictor_is_exact_on_a_polynomial`
+(structural, no circuit) and `test_glm_stage_predictor_declines_a_changed_step_and_a_period_seam`. All three
+verified to FAIL on the pre-predictor code.

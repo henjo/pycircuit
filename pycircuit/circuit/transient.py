@@ -2571,6 +2571,133 @@ class Transient(Analysis):
         Q[0] = qs[0]
         return Q
 
+    ## the stage predictor's Lagrange weights, keyed by (abscissae, degree);
+    ## built once per tableau, no device cost
+    _GLM_LOCAL_CACHE = {}
+
+    @classmethod
+    def _glm_local_weights(cls, c, deg):
+        """Per-stage weights for the stage predictor: for each stage ``i``, the
+        ``deg + 1`` node values NEAREST ``c_i`` among everything already known
+        when that stage is reached, and the Lagrange weights that evaluate
+        their interpolating polynomial at ``c_i``.
+
+        In the step's local coordinate the known nodes at stage ``i`` are the
+        PREVIOUS step's stages, at ``c_j - 1``, and THIS step's already
+        converged stages, at ``c_j`` for ``j < i``.  Taking the nearest few
+        continues the polynomial past its last node by ONE NODE GAP; the
+        obvious alternative -- fit the previous step's stages and continue a
+        WHOLE STEP -- is what pays for that convenience in its tail (see
+        :meth:`_glm_stage_predictor`).
+
+        Returns one ``(idx_prev, idx_cur, w)`` per stage: ``w`` dotted with the
+        previous step's stages at ``idx_prev`` followed by this step's at
+        ``idx_cur``.  ⚠ ``deg`` is capped by the nodes available, which for
+        stage 0 is the previous step's ``s`` stages alone.
+        """
+        key = (tuple(float(v) for v in c), int(deg))
+        W = cls._GLM_LOCAL_CACHE.get(key)
+        if W is not None:
+            return W
+        cv = [float(v) for v in c]
+        s = len(cv)
+        W = []
+        for i in range(s):
+            nodes = [(cv[j] - 1.0, j, 0) for j in range(s)] \
+                + [(cv[j], j, 1) for j in range(i)]
+            nodes.sort(key=lambda t: abs(t[0] - cv[i]))
+            take = nodes[:min(deg + 1, len(nodes))]
+            tau = np.array([t[0] for t in take], dtype=float)
+            n = len(tau)
+            w = np.linalg.solve(np.vander(tau, n, increasing=True).T,
+                                np.array([cv[i] ** k for k in range(n)]))
+            W.append(([t[1] for t in take if t[2] == 0],
+                      [t[1] for t in take if t[2] == 1],
+                      np.array([w[k] for k in range(n) if take[k][2] == 0]
+                               + [w[k] for k in range(n) if take[k][2] == 1],
+                               dtype=float)))
+        cls._GLM_LOCAL_CACHE[key] = W
+        return W
+
+    def _glm_stage_predictor(self, xn, h, tn, c):
+        """The starting guess for every stage Newton of a GLM step: a callable
+        ``pred(i, Y)`` giving stage ``i``'s guess, or ``None`` to fall back to
+        "the previous stage's converged value".
+
+        The stages ARE this method's per-step cost -- one ``m x m`` Newton
+        each -- so the guess they start from is where that cost is decided.
+        The fallback guess is a value at a DIFFERENT time point, so the first
+        iterations of every stage are spent travelling ``O(h)`` rather than
+        converging.  A predictor closes that distance from information already
+        in hand, at no device evaluation.
+
+        The construction is :meth:`_glm_local_weights`: the polynomial through
+        the ``deg + 1`` nodes nearest ``c_i``, taken from the previous step's
+        stages and this step's converged ones.  ``deg`` defaults to the
+        method's own order (``self.glm_predictor_degree`` overrides).
+        ``self.glm_predictor = 'none'`` restores the old guess -- the control
+        the gate measures against, not a knob to tune.
+
+        ⚠⚠ TWO SIMPLER PREDICTORS WERE BUILT FIRST AND BOTH LOST, on a
+        state-free exponential at 40 and 200 points per period
+        (``benchmarks/glm/stage_predictor.py``; device evaluations against the
+        fallback, then the worst seed error, then the worst stage's Newton
+        iterations):
+
+        ==================  ==============  ============  ==========
+        predictor           device evals    worst seed    worst iters
+        ==================  ==============  ============  ==========
+        fallback            --              7.5e-02       6
+        ``Y_i^prev + dx``   +0.6% to -6%    2.0e-01       13
+        full-step poly      -2% to -18%     7.3e-01       33
+        this one            -12% to -29%    7.5e-02       5
+        ==================  ==============  ============  ==========
+
+        The shift is barely better than nothing and its tail is WORSE; the
+        full-step polynomial wins on the mean and loses badly on the tail --
+        exactly how a heuristic passes its own gate and then fails in use.
+        The mechanism is structural: the fallback guess is always a value the
+        circuit ACTUALLY ATTAINED, so it can never sit in a device's overflow
+        region, while a polynomial continued a whole step can, and on an
+        exponential a 3x overshoot is ``exp(3 dV / VT)``.  Clamping the
+        overshoot to the range the known states span recovers only half of it
+        (33 iterations -> 13).  Continuing by ONE NODE GAP removes the class:
+        measured, this predictor's worst seed never exceeds the fallback's.
+        ⚠ A ratio test against the step's motion does NOT screen the bad case
+        -- the bad prediction's displacement is 2.98 of the step's motion and
+        the TRUE stage spread reaches 2.98 too.
+
+        ⚠ The predictor needs the previous step to have used the SAME ``h``
+        and to have ENDED where this one starts; a changed step moves the
+        stage positions, and the seam of a shooting period has no predecessor
+        at all (``shooting._begin_period`` clears ``_glm_prev`` for exactly
+        that reason).  Both fall back rather than read a stale record.
+        """
+        if getattr(self, 'glm_predictor', 'local') == 'none':
+            return None
+        prev = getattr(self, '_glm_prev', None)
+        if prev is None:
+            return None
+        Yp, xp, hp, tp = prev
+        s = len(c)
+        if len(Yp) != s or abs(hp - h) > 1e-14 * max(h, 1.0) \
+                or abs(tp - tn) > 1e-12 * max(abs(tn), h):
+            return None
+        deg = int(getattr(self, 'glm_predictor_degree', None)
+                  or self.base_integrator.order)
+        W = self._glm_local_weights(c, deg)
+        zero = np.zeros_like(np.asarray(xn, dtype=float))
+
+        def _local(i, Y, _W=W, _Yp=Yp, _z=zero):
+            ip, ic, w = _W[i]
+            acc = _z.copy()
+            for k, j in enumerate(ip):
+                acc += w[k] * _Yp[j]
+            for k, j in enumerate(ic):
+                acc += w[len(ip) + k] * np.asarray(Y[j], dtype=float)
+            return acc
+        return _local
+
     def _solve_timestep_glm(self, x0, t, provided_function=None):
         """One step of a Nordsieck general linear method (:class:`integrator.
         NordsieckGLMIntegrator`).  In the charge formulation, stage ``i``:
@@ -2624,6 +2751,7 @@ class Transient(Analysis):
         ## after the first step to learn what the startup produced
         self._glm_Q_in = np.asarray(Q, dtype=float)
         tstage = [tn + c[i] * h for i in range(s)]
+        pred = self._glm_stage_predictor(xn, h, tn, c)
         Y = [None] * s
         K = [None] * s
         for i in range(s):
@@ -2631,7 +2759,7 @@ class Transient(Analysis):
                 + h * sum(A[i, j] * K[j] for j in range(i))
             aii = A[i, i]
             ti = tstage[i]
-            guess = Y[i - 1] if i > 0 else xn
+            guess = pred(i, Y) if pred is not None else (Y[i - 1] if i > 0 else xn)
 
             def func_i(x, _tgt=target, _aii=aii, _ti=ti):
                 Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
@@ -2644,6 +2772,9 @@ class Transient(Analysis):
                        + h * sum(B[k, j] * K[j] for j in range(s)) for k in range(r)])
         xnp1 = Y[s - 1]
         self._glm_Q = (Qn, t, h)
+        ## what the NEXT step's stage predictor extrapolates from
+        self._glm_prev = ([np.asarray(y, dtype=float) for y in Y],
+                          np.asarray(xn, dtype=float), float(h), float(t))
         self._rk_Y = list(Y)
         self._rk_K = list(K)
         qY = self.cir.q(xnp1, epar)
