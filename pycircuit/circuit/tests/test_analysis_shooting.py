@@ -18638,3 +18638,86 @@ def test_band_spread_tells_a_band_mean_from_a_point_value():
     ## and the guard must SEPARATE them, which is the whole point
     assert out['w'][0] > 1.15 * out['v'][0], out
 
+
+
+def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
+    """⚠⚠ THE SOURCES-OFF NOISE FLOOR, measured on THIS tree's construction
+    rather than on the published one.
+
+    Biggio/Bizzarri/Brambilla/Storace 2013 measure the floor by FFT-ing the
+    jitter of a time-domain noise run with the sources off.  That does NOT
+    transfer here: with the sources off, `c` is identically zero and the
+    closed-form PSD is exactly zero -- a structural identity that cannot fail,
+    already recorded in the roadmap as a rejected gate.  What DOES transfer is
+    the underlying object: threshold crossings of a simulated waveform, whose
+    spacing carries the integrator's period error with or without a source.
+
+    So the floor is measured the way a floor is measured on a bench -- inject a
+    KNOWN deterministic perturbation of amplitude `a`, require the estimator to
+    track it with slope 1, then turn it off and read what is left.  The sloped
+    region is what makes this impossible to pass zero-versus-zero.
+
+    Asserted, all measured (van der Pol Q = 15.9, 120 points per period, 100
+    cycles with 80 discarded):
+
+    1. the estimator is LINEAR in the injected perturbation, slope ~1 -- with
+       no sloped region a plateau means nothing;
+    2. radau's floor is far below gear-2's on the SAME grid.  This is
+       docs-46's falsifiable prediction from the paper's order argument, and
+       it holds by 2891x here (5.3e-10 against 2.3e-13);
+    3. radau's floor is at the FLOATING-POINT limit of the time variable --
+       measured 13x `ulp(t)/T0` -- so the order lever does not merely lower
+       this floor, it reaches the bottom of the arithmetic, where no further
+       order or grid refinement can help;
+    4. the floor is DETERMINISTIC, not noise: a repeat run reproduces the
+       period sequence to the bit.  A deterministic period error is a
+       FREQUENCY SHIFT and makes no jitter at all; what makes the variation is
+       the crossing landing somewhere different inside a step each cycle.
+
+    ⚠⚠ FIVE INSTRUMENT FAILURES PRECEDED THESE NUMBERS, four of them caught by
+    one tell -- TWO DIFFERENT INTEGRATORS AGREEING TO FIVE SIGNIFICANT FIGURES
+    on a quantity that is supposed to BE their own error.  They are recorded in
+    `benchmarks/noise_floor_sources_off.py`; the one that survived fixing the
+    other four was the FIXTURE's own settling (tau = 31.8 cycles, and 5 were
+    being discarded).  The full order-and-grid sweep lives in that benchmark
+    because it costs minutes; this pins the instrument that produced it and the
+    one comparison the result rests on.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.integrator import (Gear2Integrator,
+                                              RadauIIA3Integrator)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from noise_floor_sources_off import periods
+
+    NPTS, NCYC, DROP = 120, 100, 80
+
+    def jitter(cls, a):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            Tk, T0, _ = periods(cls, NPTS, a=a, ncyc=NCYC, drop=DROP)
+        return float(np.std(Tk)) / T0, Tk, T0
+
+    ## (1) the instrument is alive and linear
+    j3, _, _ = jitter(RadauIIA3Integrator, 1e-3)
+    j4, _, _ = jitter(RadauIIA3Integrator, 1e-4)
+    slope = np.log(j3 / j4) / np.log(10.0)
+    assert abs(slope - 1.0) < 0.05, (slope, j3, j4)
+
+    ## (2) the order lever, on the same grid.  Measured 2891x; gated at 100x.
+    floor_gear, _, _ = jitter(Gear2Integrator, 0.0)
+    floor_radau, Tk1, T0 = jitter(RadauIIA3Integrator, 0.0)
+    assert floor_radau < floor_gear / 100.0, (floor_gear, floor_radau)
+
+    ## (3) and radau is at the arithmetic, not at its discretisation
+    ulp_rel = float(np.spacing(NCYC * T0)) / T0
+    assert floor_radau < 100.0 * ulp_rel, (floor_radau, ulp_rel)
+    ## gear is NOT -- or (2) would be comparing two representation limits
+    assert floor_gear > 1000.0 * ulp_rel, (floor_gear, ulp_rel)
+
+    ## (4) deterministic, to the bit
+    _, Tk2, _ = jitter(RadauIIA3Integrator, 0.0)
+    assert np.array_equal(Tk1, Tk2)

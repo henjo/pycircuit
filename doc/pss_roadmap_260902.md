@@ -13483,3 +13483,80 @@ Gated by `test_a_glm_keeps_its_order_on_a_grid_that_is_not_uniform`, `test_a_glm
 (the startup count is the assertion, not the step count) and `test_a_glm_has_no_error_estimate_across_a_restart`.
 All three verified to fail on the code before their fix — the third by restoring the unconditional estimate,
 the first by breaking the rescale exponent to `ρ` (which is how a wrong Nordsieck rescale would look).
+
+## The sources-off numerical noise floor (Andreas: "Do the sources-off noise floor control", 2026-09-10)
+
+**This corrects how the roadmap holds the Biggio gate.** It carried Biggio/Bizzarri/Brambilla/Storace 2013 as
+a separate phenomenon from the A10 warping axis. Read at the source (docs-46, READING-LOG 2.272), the paper
+says the opposite: *"the noise floor of the simulator is largely dictated by the warping effect"* and *"when
+the order of the integration method is increased (from 2 to 3) the effects of period warping reduces"*. The
+floor IS the warping error, and ORDER is the paper's own lever against it. The roadmap's demand for a
+sources-off control was right; its expectation of what the control would find was pointing the wrong way.
+
+**The published construction still does not transfer, and that part of the earlier reading stands.** Biggio
+FFTs the jitter of a time-domain noise run with the sources off. With the sources off here, `c` is identically
+zero and the closed-form PSD is exactly zero — a structural identity that cannot fail. What transfers is the
+underlying object: **threshold crossings of a simulated waveform**, whose spacing carries the integrator's
+period error whether or not a source is on. So the floor is measured the way a floor is measured on a bench —
+inject a known deterministic perturbation of amplitude `a`, sweep `a` down, require the estimator to track it
+with slope 1, and read what is left when it is off. **The sloped region is what makes this impossible to pass
+zero-versus-zero.**
+
+**THE ANSWER** (van der Pol Q = 15.9, fixed step, fractional period jitter `J/T0`):
+
+| | 120 pts/period | 240 pts/period |
+|---|---|---|
+| Gear-2 | 5.34e-10 | 1.95e-11 |
+| Radau IIA(3) | 2.40e-14 | 4.23e-14 |
+| ratio | **22271×** | **461×** |
+
+Slope in the injected perturbation is **1.000 over three to five decades** for both methods, so the plateau is
+a floor and not an artefact of a dead instrument. **docs-46's falsifiable prediction holds.**
+
+**AND IT IS STRONGER THAN "THE FLOOR DROPS WITH ORDER".** Radau's floor is at the FLOATING-POINT LIMIT OF THE
+TIME VARIABLE — measured 13× `ulp(t)/T0` — so the order lever does not merely lower the floor, it takes it to
+the bottom of the arithmetic, where no further order or grid refinement can help. Gear's sits 460× to 22000×
+above that, which is its own discretisation. The two are distinguishable, and the test asserts both sides so
+the comparison is not two representation limits being compared with each other.
+
+Confirmed independently by a TIME RESCALE: multiply L and C by 100 (identical dynamics, `T0` 100× longer) and
+every absolute jitter is 100× larger while `J/T0` is **constant to five significant figures** — gear 1.9500e-11
+/ 1.9499e-11 / 1.9498e-11, radau 4.2879e-14 / 4.1347e-14 / 4.2326e-14.
+
+**The floor is not noise.** A repeat run reproduces the period sequence to the bit; the lag-1 autocorrelation
+is 0.8–0.93 and `dT_max/J` is 1.7–2.2 where a Gaussian would give 3–4, with 1 sign change in 113 cycles for
+radau. A deterministic period error is a FREQUENCY SHIFT and makes no jitter at all — what makes the variation
+is the crossing landing somewhere different inside a step each cycle, which is exactly the paper's own
+mechanism (*"the finding of threshold crossing varies h, which in turn impacts on the T value"*).
+
+**⚠⚠ FIVE INSTRUMENT FAILURES PRECEDED EVERY NUMBER ABOVE, AND FOUR WERE CAUGHT BY ONE TELL:** two different
+integrators agreeing to FIVE SIGNIFICANT FIGURES on a quantity that is supposed to BE their own error.
+
+1. **Linear crossing interpolation.** ESDIRK43 and Radau both read 2.9384e-10 at 480 pts, and the floor fell
+   as `h^0.85` rather than `h^4`/`h^5`. It was measuring the straight line drawn between two samples of a
+   curved waveform — a property of the grid, not of the method. Degree-3 interpolant, verified converged
+   against degree 5.
+2. **The analytic reference.** `T0 = 2π/√(1−μ²/4)` is the LINEARISED period; the nonlinear limit cycle differs
+   by `μ²/16` = −3.9348e-05 — and the high-order methods' "period error" sat at exactly that on EVERY grid,
+   which indicts the reference, not them. (The same shape as the `grid_error` μ⁴ finding of 2026-09-07.)
+3. **The fixture's own settling** — the one that survived fixing the other four. Van der Pol's transient decays
+   with τ = 31.8 cycles at this Q, and 5 were being discarded. Radau reads 2.05e-10 dropping 5 and 2.81e-13
+   dropping 150: **a factor of 730, and the wrong one was a smooth, repeatable, autocorrelated drift that
+   looks exactly like a deterministic floor.**
+4. **A sliver step at `tend`** — 4.05e-10 where the grid is 1.309e-02, on a run declared uniform, because
+   `ncyc*T0` and `npts*ncyc*(T0/npts)` are commensurate in exact arithmetic and not in floating point.
+5. **An absolute metric for a relative quantity** (the rescale above).
+
+⚠ ONE ROW REMAINS UNEXPLAINED AND IS NOT FITTED: at 480 points per period every method reads the same
+~2.4e-11. The mechanism is identified — `t = t + dt` has accumulated twice as many roundings, so the
+representation limit has risen above every method's discretisation — but the 88× rise from 48000 to 96000
+accumulations is not accounted for, and trimming the tail did not remove it.
+
+⚠ What this does NOT establish: nothing here says the tree's floor clears −130 dB for a modern VCO. That is
+the paper's absolute claim on their circuit; this is a fractional period jitter on a van der Pol. Converting
+one to the other needs the orbit's own `c`, and is not done.
+
+Gated by `test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic` (linearity, the order
+separation, radau-at-the-arithmetic AND gear-not-at-it, and bit-identical repeatability), verified to fail
+under instrument failures 1 and 3. The full sweep is `benchmarks/noise_floor_sources_off.py`; it costs
+minutes, so only the one comparison the result rests on is in the suite.
