@@ -13049,10 +13049,34 @@ for a circuit means no stage evaluates a device model past the end of the step a
 sampled in a different PWL/pulse segment. Order and stability unchanged (exact for k ≤ 4, ρ ≤ 0.999, `M_∞`
 nilpotent, stiffly accurate); on the driven index-2 PSS the algebraic component reads **1.4e-09 / 6.8e-11 /
 3.9e-12, order 4.13** against radau's 1.4e-09 / 1.6e-10 / 2.0e-11 at 3.05 — 5× at the finest grid — and its
-DIFFERENTIAL component now converges at **5.30**, above its own order, where the previous tableau read 3.97.
-⚠ That superconvergence broke a gate written as `|od − oa| < 0.5`: the split that matters is ONE-SIDED (the
-algebraic component falling below `p` is the index-2 reduction), and a two-sided bound calls superconvergence a
-failure. Corrected. ⚠⚠ The magnitude problem is untouched and stated in the class: `B`'s last rows carry entries
+DIFFERENTIAL component read **5.30** over those three grids, above its own order.
+
+⚠⚠ **THAT 5.30 WAS NOT A RATE, AND THE PEER CAUGHT IT BEFORE IT SHIPPED AS ONE.** A measured slope cannot exceed
+the leading term's own exponent, which is 5 for a method exact through k = 4 — so 5.30 was self-refuting on its
+face. Extending the sweep settles which of the three candidates it was:
+
+| grid | 20 | 40 | 80 | 160 | 320 |
+|---|---|---|---|---|---|
+| glm4 differential | 1.17e-05 | 2.98e-07 | 7.56e-09 | 3.32e-10 | 2.06e-11 |
+| slope | | 5.29 | 5.30 | **4.51** | **4.01** |
+| glm4 algebraic | 1.39e-09 | 6.81e-11 | 3.88e-12 | 2.34e-13 | 1.46e-14 |
+| slope | | 4.35 | 4.13 | 4.05 | **4.00** |
+
+The slope DECAYS to 4.01 — **pre-asymptotic**, not a floor artefact (2e-11 at 320 points is nowhere near
+roundoff, and the sequence is still falling cleanly) and not superconvergence (which ε = 0 gives up by
+construction: the zero error constant is what ε = 1/(p+1)! buys, and L-stability costs it). So GLM4 is order 4
+in BOTH components asymptotically — which is the claim the `q = p` theorem actually makes, and a cleaner result
+than the inflated one. radau over the same five grids is already asymptotic (5.02 / 3.01), which is why its
+numbers did not mislead. ⚠ THE LESSON IS THE TREE'S OWN: name the number the arithmetic allows before accepting
+the one the sweep produced. Three grids looked like a rate; five showed a transient.
+
+⚠ The gate written as `|od − oa| < 0.5` had failed on the inflated slope, and the correction stands on its own
+merits: the split that matters is ONE-SIDED — the algebraic component falling below `p` is the index-2
+reduction — and a symmetric bound calls any superconvergence a failure. Kept.
+
+**At 320 points the trade is sharp and stated:** glm4's algebraic error is 1.46e-14 against radau's 3.00e-13
+(20× better, one factorisation per step against a coupled 3n solve), and radau's differential error is 8.31e-14
+against glm4's 2.06e-11 (250× better). Neither dominates; the choice is which component the caller cares about. ⚠⚠ The magnitude problem is untouched and stated in the class: `B`'s last rows carry entries
 of order 3900. §3.11 is the machinery for that, not more restarts. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
 it pivoting; it was an abscissa vector built one entry short. Neither of us had examined the failure before
 explaining it.

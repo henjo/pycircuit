@@ -1756,6 +1756,17 @@ class GLM4Integrator(NordsieckGLMIntegrator):
     term at k = 5, stiffly accurate, `M_inf` nilpotent, rho(M(z)) <= 0.999
     on the left-half-plane grid.
 
+    ⚠ ORDER 4 IN BOTH COMPONENTS, ASYMPTOTICALLY -- which is the whole
+    claim.  On the driven index-2 PSS over five grids (20 … 320 points) the
+    differential slope reads 5.29, 5.30, 4.51, 4.01 and the algebraic 4.35,
+    4.13, 4.05, 4.00: the 5.3 at the coarse end is PRE-ASYMPTOTIC, not
+    superconvergence (a slope cannot exceed the leading term's exponent of
+    5, and `epsilon = 0` gives up the zero error constant that would buy a
+    higher underlying order).  Do not quote 5.3 as an order.  At 320 points
+    the trade against radau is sharp: algebraic 1.46e-14 against 3.00e-13
+    (20x better, one factorisation per step against a coupled 3n solve),
+    differential 2.06e-11 against 8.31e-14 (radau 250x better).
+
     ⚠ THE ABSCISSAE ARE INSIDE [0, 1] BY CONSTRUCTION -- c = [0.173, 0.402,
     0.641, 0.794, 1] -- which matters more for a circuit than for a general
     ODE code (docs session): a stage at `c > 1` evaluates the device models
