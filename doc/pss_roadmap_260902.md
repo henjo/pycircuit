@@ -12966,7 +12966,24 @@ taken naively). Implemented in `scratchpad/wright_ctor.py` and checked in the pr
 
 ⚠ Useful by-products even so: `β(K)e_{p+1} = [b_p … b_1 1]` means the printed β vector IS that product (`K^{p+1}=0`,
 so `b_{p+1}` never enters) — which settles the descending-order reading independently; and `α` enters only through
-`Ψ⁻¹`, which (3.7.6) does not use, so a constructor needs β and λ but not α. Since GLM3 already exists by the
-polynomial-nilpotency route and p = 4 is the only thing this would buy, the closed form stays parked here rather
-than chased for one missing equation.
+`Ψ⁻¹`, which (3.7.6) does not use, so a constructor needs β and λ but not α.
+
+✅ **CLOSED, END TO END, within the hour.** The missing equation was one page BEFORE (3.7.8), not after: (3.5.10),
+`B̃ = Ψ⁻¹ B W` — the tilde is the TRANSFORMED method, so the back transform is `B = Ψ B̃ W⁻¹`, `A = W(Ã + λI)W⁻¹`,
+and with `W = I` simply `B = Ψ B̃`, `A = Ã + λI`. That also explains the triangularity mismatch exactly: Wright
+p. 73 says `Ã` is strictly lower triangular and `B̃` LOWER triangular, while `Ψ` is unit UPPER triangular, so
+`B = Ψ B̃` is full. And `Ã` itself comes from the transformed IRKS condition (3.5.9) `B̃Ã = JB̃`, i.e.
+`Ã = B̃⁻¹ J B̃`. **Verified on Wright's printed p = 2, λ = 1/4 method, from the free parameters alone:** `B` to
+9.8e-15, `A` to 5.8e-16, order 2 exact, `eig(V) = {1, 0, 0}`, ρ ≤ 0.999 — the route reproduces a published
+tableau, so it is confirmed rather than believed (`scratchpad/wright_ctor.py`, `wright_full.py`).
+
+**And it reaches p = 4** — with one condition still to add. Choosing λ in Table 3.3's band, canonical abscissae
+and ε = 0, and solving the ONE remaining condition on (β, T) — that `Ã = B̃⁻¹JB̃` come out strictly lower
+triangular, i.e. that `A` be diagonally implicit with diagonal λ — gives at p = 3 (λ = 0.2336) and **p = 4
+(λ = 0.2580)** methods exact to 2e-14 for k ≤ p with a nonzero leading term at p + 1, ρ_lhp ≤ 0.999, `M_∞`
+nilpotent to 1.8e-9. ⚠ **But they are NOT stiffly accurate** (`B` row 1 ≠ `A` row s; the p = 4 `B` also carries
+entries of order 750), and stiff accuracy is Voigtmann's hypothesis (e) and what makes `x_{n+1} = Y_s`. Adding
+§3.9.2's conditions (`β_p = 0`, `B₁ = A_s`, `B₂ = e_s`) with `c` freed did not converge in one pass — the LU in
+(3.7.8) hits zero pivots over parts of that space. So the route is confirmed and what remains is a constrained
+solve inside it, not a new derivation. GLM3, built by the polynomial-nilpotency route, stands as the shipped rung.
 
