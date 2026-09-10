@@ -90,7 +90,7 @@ import numpy as np
 
 from pycircuit.circuit import circuit
 from pycircuit.circuit.circuit import SubCircuit, gnd
-from pycircuit.circuit.elements import C, L, BSource, ISin
+from pycircuit.circuit.elements import C, L, BSource, ISin  # noqa: F401
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.integrator import (Gear2Integrator,
                                           TrapezoidalIntegrator,
@@ -315,8 +315,156 @@ def determinism():
 
 
 if __name__ == '__main__':
+    ## the checks FIRST: every number below them is only meaningful if these
+    ## still read the way the docstring says they do
+    instrument_checks()
     order_and_grid()
     amplitude_sweep(Gear2Integrator, 'gear')
     amplitude_sweep(RadauIIA3Integrator, 'radau')
     determinism()
     fixed_vs_adaptive()
+
+
+## ------------------------------------------------------------------------
+## The five instrument checks.  Each one is the measurement that FOUND the
+## corresponding failure in the module docstring; they are kept because the
+## numbers those failures produced are quoted in the roadmap and a claim whose
+## evidence exists only in a shell history is not evidence.
+
+def check_1_interpolant_degree():
+    """FAILURE 1: the crossing interpolant.  With `deg=1`, ESDIRK43 and radau
+    read the SAME floor to five significant figures -- the tell that what is
+    being measured is the grid, not the method.  `deg=3` and `deg=5` agree, so
+    the fit is converged there."""
+    print('=== check 1: the same run read with three interpolants ===')
+    print('%-9s %6s %14s %14s %14s'
+          % ('method', 'npts', 'deg=1 (linear)', 'deg=3', 'deg=5'))
+    for cls, name, p in METHODS:
+        for npts in (120, 480):
+            row = [float(np.std(periods(cls, npts, deg=d)[0]))
+                   for d in (1, 3, 5)]
+            print('%-9s %6d %14.4e %14.4e %14.4e'
+                  % (name, npts, row[0], row[1], row[2]))
+    print()
+
+
+def check_2_the_analytic_reference():
+    """FAILURE 2: `T0 = 2 pi / sqrt(1 - mu^2/4)` is the LINEARISED period.  The
+    high-order methods' "period error" sits at exactly `-mu^2/16` on EVERY
+    grid -- a constant where a discretisation error would converge, which
+    indicts the reference and not the method."""
+    print('=== check 2: mean period against the analytic reference ===')
+    mu = 1.0 / (2 * np.pi * 15.9)
+    print('    mu^2/16 = %.4e  (the nonlinear correction T0 is missing)'
+          % (mu ** 2 / 16 * 2 * np.pi))
+    print('%-9s %6s %14s %14s' % ('method', 'npts', 'mean T - T0', 'J_abs'))
+    for cls, name, p in METHODS:
+        for npts in (120, 480):
+            Tk, T0, _ = periods(cls, npts)
+            print('%-9s %6d %14.4e %14.4e'
+                  % (name, npts, float(np.mean(Tk)) - T0, float(np.std(Tk))))
+    print()
+
+
+def check_3_the_fixtures_settling():
+    """FAILURE 3, THE ONE THAT SURVIVED FIXING THE OTHER FOUR.  Van der Pol's
+    transient decays with `tau = 2/mu`, which is 31.8 CYCLES at Q = 15.9.
+    Discarding 5 leaves the orbit still relaxing, and that relaxation is a
+    smooth, monotone, perfectly repeatable, autocorrelated drift in the period
+    -- indistinguishable by eye from a deterministic numerical floor."""
+    print('=== check 3: J_abs against how many opening cycles are discarded ===')
+    mu = 1.0 / (2 * np.pi * 15.9)
+    cir, T0 = vdp()
+    print('    tau = %.1f cycles' % (2.0 / mu / T0))
+    iv = cir.get_node_index('v')
+    x0 = np.zeros(cir.n)
+    x0[iv] = 2.0
+    tr = Transient(cir, integrator=RadauIIA3Integrator(), reltol=1e-12)
+    res = tr.solve(refnode=gnd, tend=200 * T0, timestep=T0 / 240, x0=x0,
+                   fixed_timestep=True)
+    w = res.v('v')
+    tc = crossings(np.asarray(w.x[0], dtype=float),
+                   np.asarray(w.y, dtype=float), deg=3)
+    print('%8s %14s %8s %7s' % ('drop', 'J_abs', 'dT/J', 'ac(1)'))
+    for d in (5, 20, 50, 100, 150):
+        Tk = np.diff(tc)[d:-2]
+        m, j, dm, r1 = _stats(Tk)
+        print('%8d %14.4e %8.2f %7.3f' % (d, j, dm / j, r1))
+    print()
+
+
+def check_4_grid_uniformity():
+    """FAILURE 4: `ncyc*T0` and `npts*ncyc*(T0/npts)` are commensurate in exact
+    arithmetic and not in floating point, so the driver's final
+    `dt = min(dt, tend - t)` can insert a sliver step onto a grid the caller
+    declared uniform."""
+    print('=== check 4: is the "fixed" grid actually uniform? ===')
+    print('%6s %9s %9s %14s %14s' % ('npts', 'steps', 'samples', 'min dt',
+                                     'max dt'))
+    for npts in (240, 480):
+        cir, T0 = vdp()
+        iv = cir.get_node_index('v')
+        x0 = np.zeros(cir.n)
+        x0[iv] = 2.0
+        tr = Transient(cir, integrator=RadauIIA3Integrator(), reltol=1e-12)
+        res = tr.solve(refnode=gnd, tend=200 * T0, timestep=T0 / npts, x0=x0,
+                       fixed_timestep=True)
+        t = np.asarray(res.v('v').x[0], dtype=float)
+        d = np.diff(t)
+        print('%6d %9d %9d %14.6e %14.6e'
+              % (npts, tr.statistics.accepted_steps, len(t), d.min(), d.max()))
+    print()
+
+
+def check_5_time_rescale():
+    """FAILURE 5: `J_abs` carries the problem's time unit.  Rescale L and C by
+    100 -- identical dynamics, `T0` 100x longer -- and every absolute jitter is
+    100x larger while `J_abs/T0` is constant to FIVE significant figures.  The
+    fractional jitter is the quantity; an absolute one is only meaningful next
+    to its `T0`.
+
+    This is also what shows radau is at the FLOATING-POINT limit of the time
+    variable rather than at its own discretisation: its `J_abs/T0` sits within
+    a decade of `ulp(t)/T0`, and it does not move when the grid does.
+    """
+    from pycircuit.circuit.elements import C as Cap, L as Ind
+
+    def vdp_scaled(s, Q=15.9):
+        mu = 1.0 / (2 * np.pi * Q)
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = Cap('v', gnd, c=s)
+        c['L'] = Ind('v', gnd, L=s)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        return c, s * 2 * np.pi / np.sqrt(1 - mu ** 2 / 4)
+
+    print('=== check 5: time rescale -- J_abs/T0 is the scale-free quantity ===')
+    print('%-6s %7s %10s %12s %12s %12s'
+          % ('method', 'scale', 'T0', 't_max', 'J_abs', 'J_abs/T0'))
+    for cls, name in ((RadauIIA3Integrator, 'radau'), (Gear2Integrator, 'gear')):
+        for s in (1.0, 10.0, 100.0):
+            cir, T0 = vdp_scaled(s)
+            iv = cir.get_node_index('v')
+            x0 = np.zeros(cir.n)
+            x0[iv] = 2.0
+            tr = Transient(cir, integrator=cls(), reltol=1e-12)
+            res = tr.solve(refnode=gnd, tend=200 * T0, timestep=T0 / 240,
+                           x0=x0, fixed_timestep=True)
+            w = res.v('v')
+            tc = crossings(np.asarray(w.x[0], dtype=float),
+                           np.asarray(w.y, dtype=float), deg=3)
+            j = float(np.std(np.diff(tc)[150:-2]))
+            print('%-6s %7.0f %10.2f %12.1f %12.4e %12.4e'
+                  % (name, s, T0, 200 * T0, j, j / T0))
+        print('   ulp(t_max)/T0 at scale 100 = %.3e'
+              % (float(np.spacing(200 * 100 * 6.2832)) / (100 * 6.2832)))
+    print()
+
+
+def instrument_checks():
+    check_1_interpolant_degree()
+    check_2_the_analytic_reference()
+    check_3_the_fixtures_settling()
+    check_4_grid_uniformity()
+    check_5_time_rescale()

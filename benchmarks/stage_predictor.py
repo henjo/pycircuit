@@ -32,6 +32,7 @@ from pycircuit.circuit.integrator import (RadauIIA3Integrator,
                                           TRBDF2Integrator, Gear2Integrator,
                                           TrapezoidalIntegrator,
                                           GLM3Integrator, GLM4Integrator)
+from pycircuit.circuit.transient import Transient  # noqa: F811
 
 warnings.simplefilter('ignore')
 pycircuit.circuit.circuit.default_toolkit = numeric
@@ -148,5 +149,83 @@ def clamp_sweep():
 
 
 if __name__ == '__main__':
+    seed_headroom()
     table()
     clamp_sweep()
+
+
+def seed_headroom():
+    """How far each family's seed sits from the value it converges to, as a
+    FRACTION OF ONE STEP'S OWN STATE MOTION.
+
+    This is the measurement that says a stage predictor was worth building at
+    all, and it is what the roadmap's "every other integrator seeds just as
+    crudely" line is made of.  A fraction near 1 means the Newton starts a
+    whole step behind; near 0.5 means half a step.
+
+    ⚠ The number has to be RELATIVE to the step's motion, or it just measures
+    how fast the circuit is moving.  Measured with the predictor OFF, since
+    the point is what the old seed did.
+    """
+    print('=== seed distance / one step of state motion (predictor OFF) ===')
+    TR.Transient.stage_predictor = 'off'
+    print('%-9s %8s %8s %-34s %s'
+          % ('method', 'i-calls', 'i/step', 'seed', 'median   max'))
+    try:
+        for cls, name, coupled, seed in (
+                (RadauIIA3Integrator, 'radau', True, 'x_n for ALL stages'),
+                (ESDIRK43Integrator, 'esdirk43', False, 'previous stage'),
+                (TRBDF2Integrator, 'trbdf2', False, 'previous stage')):
+            rec = []
+            meth = '_rk_step_coupled' if coupled else '_rk_step_dirk'
+            fn = getattr(Transient, meth)
+
+            def wrapped(self, x0, t, pf=None, _fn=fn, _c=coupled, _r=rec):
+                out = _fn(self, x0, t, pf)
+                Y = getattr(self, '_rk_Y', None)
+                if Y:
+                    xn = np.asarray(x0, dtype=float)
+                    seeds = ([xn] * len(Y) if _c else
+                             [xn] + [np.asarray(Y[j], dtype=float)
+                                     for j in range(len(Y) - 1)])
+                    sd = max(float(np.max(np.abs(np.asarray(Y[i], dtype=float)
+                                                 - seeds[i])))
+                             for i in range(len(Y)))
+                    mv = float(np.max(np.abs(np.asarray(out[0], dtype=float)
+                                             - xn)))
+                    if mv > 0:
+                        _r.append(sd / mv)
+                return out
+            setattr(Transient, meth, wrapped)
+            n = {'i': 0}
+            cir = fixture(0.8)
+            fi = cir.i
+            cir.i = lambda *a, **k: (n.__setitem__('i', n['i'] + 1),
+                                     fi(*a, **k))[1]
+            tr = Transient(cir, integrator=cls(), reltol=1e-9)
+            try:
+                tr.solve(refnode=gnd, tend=PER, timestep=PER / 200,
+                         fixed_timestep=True)
+            finally:
+                setattr(Transient, meth, fn)
+            r = np.array(rec)
+            print('%-9s %8d %8.2f %-34s %.2f     %.2f'
+                  % (name, n['i'], n['i'] / tr.statistics.accepted_steps, seed,
+                     np.median(r), r.max()))
+        ## the multistep family has no stages: its seed IS x_n, one step behind
+        for cls, name in ((Gear2Integrator, 'gear2'),
+                          (TrapezoidalIntegrator, 'trap')):
+            n = {'i': 0}
+            cir = fixture(0.8)
+            fi = cir.i
+            cir.i = lambda *a, **k: (n.__setitem__('i', n['i'] + 1),
+                                     fi(*a, **k))[1]
+            tr = Transient(cir, integrator=cls(), reltol=1e-9)
+            tr.solve(refnode=gnd, tend=PER, timestep=PER / 200,
+                     fixed_timestep=True)
+            print('%-9s %8d %8.2f %-34s 1.00 by definition'
+                  % (name, n['i'], n['i'] / tr.statistics.accepted_steps,
+                     'x_n, one solve per step'))
+    finally:
+        TR.Transient.stage_predictor = 'on'
+    print()
