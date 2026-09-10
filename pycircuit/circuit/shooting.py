@@ -6902,8 +6902,19 @@ class PSS(Analysis):
         """
         _tw = self.monodromy_twin()
         if _tw is not self:
-            return _tw.floquet_modes(pss_unused, nmodes, fp)
-        fp = pss_unused.factored_period() if fp is None else fp
+            ## ⚠ the twin gets `None`, not `pss_unused`: it must read ITS OWN
+            ## factored period, which is the whole reason a twin exists.  An
+            ## explicit `fp` from the caller still wins.
+            return _tw.floquet_modes(None, nmodes, fp)
+        ## ⚠⚠ `pss_unused` IS IGNORED, AS ITS NAME SAYS -- and it used to be
+        ## DEREFERENCED here, so the documented default call `floquet_modes()`
+        ## raised `AttributeError: 'NoneType' object has no attribute
+        ## 'factored_period'` on every method (measured on radau, trap and a
+        ## GLM alike).  Every call site inside this file passes `self`, so
+        ## reading `self` changes no existing answer and makes the no-argument
+        ## call work; the parameter stays in the signature because callers
+        ## pass it positionally.
+        fp = self.factored_period() if fp is None else fp
         n = fp.width
         T = float(fp.T)
         if n > self.FLOQUET_DENSE_LIMIT:
@@ -13764,6 +13775,61 @@ class PAC(Analysis):
         a = (i * i) * f0 * f0 * c
         b = np.pi * (i * i) * f0 * f0 * c
         return a / (b * b + f * f)
+
+    def band_spread(self, pss, output, band, points=9, harmonic=1,
+                    quantity='pnoise', **kw):
+        """How much `S(r)·r²` VARIES across a band — the number that says
+        whether a band mean and a point value are the same measurement.
+
+        Returns `(spread, info)` with `spread = max/min` of `S(r)·r²` over
+        `points` offsets spanning `band = (r_lo, r_hi)` in units of `f0`,
+        and `info` carrying the samples, the band MEAN, the value at the
+        band's midpoint, and their ratio.
+
+        ⚠⚠ WHY THIS EXISTS.  Far above the AM corner both AM and PM fall as
+        `1/r²`, so `S·r²` is flat and a band mean IS a point value — that is
+        the case every gate in this tree was written on, and it makes the
+        distinction invisible.  It is NOT general: MEASURED 2026-09-09, a
+        source behind a slow RC node has an in-band spectrum that is not
+        `1/r²` at all (its `k = 0` term is filtered at the RC corner while the
+        `k >= 1` terms are not, and their mix moves across the band), and its
+        slow/core ratio swings 1.16 -> 0.87 across `0.08 … 0.15 f0` — so a
+        band mean and a point value differ by ~4 % there, which is larger
+        than most of the agreements this file asserts.  A comparison that
+        takes a band mean on one side and a point value on the other is then
+        measuring the convention, not the physics.
+
+        ⚠ So: call this before comparing a measured band-averaged number
+        against a computed point value, or vice versa.  A spread near 1
+        licenses the shortcut; anything else says put both sides on the same
+        footing.  `quantity` selects the surface (`'pnoise'`, `'S_pm'`,
+        `'S_am'`, `'oscillator_spectrum'`); `**kw` is forwarded to it.
+        """
+        import numpy as _np
+        f0 = 1.0 / float(pss.period)
+        rs = _np.linspace(float(band[0]), float(band[1]), int(points))
+        vals = []
+        for r in rs:
+            f = float(r) * f0
+            if quantity == 'oscillator_spectrum':
+                Sv, _i = self.oscillator_spectrum(pss, _np.array([f]), output,
+                                                  harmonic=harmonic)
+                v = float(_np.real(Sv[0]))
+            elif quantity in ('S_pm', 'S_am'):
+                am, pm, _b = self.am_pm_noise(pss, f, output, carrier=harmonic,
+                                              **kw)
+                v = float(_np.real(pm if quantity == 'S_pm' else am))
+            else:
+                v = float(_np.real(self.pnoise(pss, f, output, **kw)[0]))
+            vals.append(v * float(r) ** 2)
+        vals = _np.asarray(vals, dtype=float)
+        lo = float(_np.min(_np.abs(vals)))
+        spread = float(_np.max(_np.abs(vals)) / lo) if lo > 0.0 else _np.inf
+        mean = float(_np.mean(vals))
+        mid = float(_np.interp(0.5 * (rs[0] + rs[-1]), rs, vals))
+        return spread, {'offsets': rs, 'values': vals, 'band_mean': mean,
+                        'midpoint': mid,
+                        'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
 
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.

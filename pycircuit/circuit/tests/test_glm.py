@@ -436,3 +436,31 @@ def test_floquet_modes_off_the_nordsieck_map_drops_the_methods_own_multipliers()
     assert len(lam['glm3']) == len(lam['radau']) == 2, lam
     assert abs(lam['glm3'][0] - 1.0) < 1e-5, lam['glm3']
     assert abs(lam['glm3'][1] / lam['radau'][1] - 1.0) < 1e-3, lam
+
+
+@pytest.mark.parametrize('method', ['trap', 'gear', 'radau', 'glm3'])
+def test_floquet_modes_works_when_called_with_no_arguments(method):
+    """⚠ `PSS.floquet_modes()` -- its own documented default call -- used to
+    raise `AttributeError: 'NoneType' object has no attribute
+    'factored_period'` on EVERY method, because the body dereferenced the
+    first parameter, which is named `pss_unused` and defaults to `None`.
+    Every call site inside the package passes `self`, so nothing was
+    failing in the suite and the defect only showed when a caller believed
+    the signature.  Reading `self` instead changes no existing answer:
+    asserted here by running both forms and requiring bit-identical
+    multipliers, across a twin-taking method (trap, glm3), a method that is
+    its own twin (gear, radau), and both map kinds.
+    """
+    from pycircuit.circuit.shooting import PSS
+    cir, T0 = _vdp()
+    p = PSS(cir, method=method, reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
+                maxiterations=200)
+    assert p.converged
+    with_arg = p.floquet_modes(p)
+    no_arg = p.floquet_modes()
+    assert len(no_arg) == len(with_arg) and len(no_arg) >= 2
+    for a, b in zip(with_arg, no_arg):
+        assert abs(a['lam'] - b['lam']) < 1e-14, (method, a['lam'], b['lam'])

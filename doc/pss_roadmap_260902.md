@@ -13221,3 +13221,31 @@ it is not a GLM issue; the explicit-`fp` call works on both. Not chased.
 
 Gated by `test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin` and
 `test_floquet_modes_off_the_nordsieck_map_drops_the_methods_own_multipliers`.
+
+## Three follow-ups (Andreas: "start with 2 in parallel then 3", 2026-09-10)
+
+**(a) `PSS.floquet_modes()` raised on its own default call, on EVERY method.** The body dereferenced the first
+parameter — which is named `pss_unused` and defaults to `None` — so `p.floquet_modes()` gave
+`AttributeError: 'NoneType' object has no attribute 'factored_period'` on radau, trap, gear and a GLM alike.
+Nothing in the suite failed because every internal call site passes `self`; the defect only appears to a caller
+who believes the signature. Fixed by reading `self`, which changes no existing answer — pinned by running both
+forms and requiring BIT-IDENTICAL multipliers across a twin-taking method (trap, glm3), a method that is its own
+twin (gear, radau), and both map kinds. ⚠ A second defect I hypothesised underneath it — that the twin
+delegation passes the ORIGINAL's map, defeating the twin — is NOT supported: measured on trap, the twin path
+already returns the twin's multipliers. The delegation now passes `None` so the twin reads its own map
+explicitly, which is what it always did in effect.
+
+**(b) The index verdict has a second, algebraically independent route.** Lemma 3.45's RANK conditions on
+incidence matrices (`[A_C A_R A_V]` full row rank ⟺ no L–I cutset; `Q_Cᵀ A_V` full column rank ⟺ no C–V loop)
+now cross-check `topological_index`'s union-find on four topologies, and each condition is made to FAIL on the
+one it names — an all-pass comparison would prove nothing. ⚠ Writing it caught its own trap: an EMPTY `Q_C`
+(when `A_C` has full row rank) makes the column-rank condition FAIL, not pass, because a matrix with no rows
+cannot have full column rank; the natural `if QC.size: … else: True` guard inverted exactly the C–V loop the
+check exists to catch, and it read index 1 on that fixture until measured.
+
+**(c) `PAC.band_spread` makes the band-versus-point convention visible where it is used.** Returns
+`max/min` of `S(r)·r²` across a band plus the band mean against the midpoint value. On ONE orbit with the noise
+source MOVED: in the tank spread 1.007 and mean/point 0.9998 — flat, so the two conventions are the same
+measurement and the shortcut is licensed; behind the slow node spread 1.349 and mean/point 1.038 — a 4 %
+difference, larger than most agreements this file asserts. Call it before comparing a measured band average with
+a computed point value.

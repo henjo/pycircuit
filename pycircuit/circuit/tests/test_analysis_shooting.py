@@ -18378,3 +18378,199 @@ def test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint()
     double = (pm_tone['w'] / pm_tone['v']) / (ratio['w'] / ratio['v'])
     assert abs(double - 1.0) < 0.04, (double, pm_tone, ratio)
 
+
+def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
+    """A SECOND, ALGEBRAICALLY INDEPENDENT route to the same verdict.
+
+    `topological_index` implements Estevez Schwarz & Tischendorf by UNION-FIND
+    on the netlist graph.  Lamour, Marz & Tischendorf's Lemma 3.45 (p. 243,
+    relayed by the docs session, 2026-09-09) states the same two criteria as
+    RANK CONDITIONS on incidence matrices:
+
+        [A_C A_R A_V] has full ROW rank   iff no cutset of inductances and
+                                              current sources only
+        Q_C^T A_V   has full COLUMN rank  iff no loop of capacitances and
+                                              voltage sources with at least
+                                              one voltage source
+
+    with `Q_C` a basis of `ker(A_C^T)`.  ⚠ THE POINT IS THE INDEPENDENCE: a
+    second graph algorithm could share a traversal bug with the first, and
+    linear algebra over the incidence matrices cannot.  Both routes are run
+    on four topologies and each rank condition is made to FAIL on the one it
+    is meant to catch -- an all-pass comparison would prove nothing.
+
+    ⚠ The rank route is a CHECK, not a replacement: `topological_index` stays
+    authoritative (it names the offending elements, which a rank cannot), and
+    both rest on the same hypothesis -- Theorem 3.47's "let all current and
+    voltage sources be INDEPENDENT", which is this tree's controlled-source
+    caveat reached from a second source.
+    """
+    from pycircuit.circuit import shooting as _sh
+    circuit.default_toolkit = circuit.numeric
+
+    def incidence(cir):
+        nodes = list(cir.nodes)
+        nn = len(nodes)
+        iref = cir.get_node_index(gnd)
+        keep = [i for i in range(nn) if i != iref]
+        pos = {n: k for k, n in enumerate(keep)}
+        nmap = cir.elementnodemap
+        cols = {'C': [], 'L': [], 'V': [], 'I': [], 'R': []}
+        for name in cir.elements:
+            cls = type(cir[name]).__name__
+            kind = ('C' if cls in _sh._TI_CAPACITIVE else
+                    'V' if cls in _sh._TI_VOLTAGE else
+                    'L' if cls in _sh._TI_INDUCTIVE else
+                    'I' if cls in _sh._TI_CURRENT else
+                    'R' if cls in _sh._TI_RESISTIVE else '?')
+            if kind == '?':
+                continue
+            idx = sorted(set(int(i) for i in np.asarray(nmap[name]).ravel()
+                             if int(i) < nn))
+            ends = [i for i in idx if i != iref]
+            col = np.zeros(len(keep))
+            if len(ends) == 2:
+                col[pos[ends[0]]] = 1.0
+                col[pos[ends[1]]] = -1.0
+            elif len(ends) == 1:
+                col[pos[ends[0]]] = 1.0
+            else:
+                continue
+            cols[kind].append(col)
+        return ({k: (np.array(v).T if v else np.zeros((len(keep), 0)))
+                 for k, v in cols.items()}, len(keep))
+
+    def rank_index(cir):
+        A, m = incidence(cir)
+        CRV = np.hstack([A['C'], A['R'], A['V']])
+        no_cutset = int(np.linalg.matrix_rank(CRV)) == m if CRV.size else m == 0
+        if A['C'].size:
+            _u, sv, vt = np.linalg.svd(A['C'].T, full_matrices=True)
+            rk = int(np.sum(sv > max(A['C'].shape) * sv[0] * np.finfo(float).eps))
+            QC = vt[rk:].T
+        else:
+            QC = np.eye(m)
+        ## ⚠ AN EMPTY `Q_C` MAKES THE CONDITION FAIL, NOT PASS.  When `A_C`
+        ## has full row rank there is no kernel, `Q_C` is `m x 0`, and
+        ## `Q_C^T A_V` is `0 x nV`: a matrix with no rows cannot have full
+        ## COLUMN rank unless it has no columns either.  Guarding with
+        ## `if QC.size: ... else: no_loop = True` inverts exactly the C-V
+        ## loop this is meant to catch -- measured, it returned index 1 on
+        ## the C-V fixture.
+        M = QC.T @ A['V']
+        no_loop = (M.shape[1] == 0) or (int(np.linalg.matrix_rank(M)) == M.shape[1])
+        return (1 if (no_cutset and no_loop) else 2), no_cutset, no_loop
+
+    def tank():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        return c
+
+    def tank_rc():
+        c = tank()
+        c.add_node('w')
+        c['Rs'] = R('v', 'w', r=100.0)
+        c['Cs'] = C('w', gnd, c=1e-3)
+        return c
+
+    def li_cutset():
+        c = SubCircuit()
+        c.add_node('v')
+        c.add_node('w')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L1'] = L('v', 'w', L=0.5)
+        c['L2'] = L('w', gnd, L=0.5)
+        return c
+
+    def cv_loop():
+        c = SubCircuit()
+        c.add_node('v')
+        c.add_node('b')
+        c['C'] = C('v', gnd, c=0.5)
+        c['C1'] = C('v', 'b', c=0.5)
+        c['Vb'] = VS('b', gnd, v=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        return c
+
+    seen = {}
+    for label, build in (('tank', tank), ('tank+RC', tank_rc),
+                         ('L-I cutset', li_cutset), ('C-V loop', cv_loop)):
+        cir = build()
+        traversal, _info = topological_index(cir)
+        rank, no_cutset, no_loop = rank_index(cir)
+        assert traversal == rank, (label, traversal, rank)
+        seen[label] = (rank, no_cutset, no_loop)
+    ## the two index-1 topologies pass BOTH conditions
+    assert seen['tank'] == (1, True, True) and seen['tank+RC'] == (1, True, True), seen
+    ## and each index-2 one fails exactly the condition named for it -- without
+    ## this the agreement above could be four passes of a criterion that never
+    ## fires
+    assert seen['L-I cutset'] == (2, False, True), seen['L-I cutset']
+    assert seen['C-V loop'] == (2, True, False), seen['C-V loop']
+
+
+def test_band_spread_tells_a_band_mean_from_a_point_value():
+    """`PAC.band_spread` -- the guard for the convention that cost this
+    review a day.
+
+    Far above the AM corner `S(r)·r²` is flat, so a band mean IS a point
+    value and the distinction is invisible; that is the case every earlier
+    gate here was written on.  It is not general.  A source behind a slow RC
+    node has an in-band spectrum that is NOT `1/r²` (its `k = 0` term is
+    filtered at the RC corner while the `k >= 1` terms are not), and the two
+    conventions then differ by percents -- which is larger than most of the
+    agreements this file asserts, so a comparison that takes a band mean on
+    one side and a point value on the other measures the convention.
+
+    Asserted on ONE orbit with the noise source MOVED, so nothing but the
+    source location differs: in the tank the spread is ~1.01 and the band
+    mean matches the midpoint to 0.02 %; behind the slow node the spread is
+    ~1.35 and they differ by ~4 %.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+
+    def fixture(src):
+        c = SubCircuit()
+        for n in ('v', 'w', 'x'):
+            c.add_node(n)
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', 'x', L=1.0)
+        c['Rl'] = R('x', gnd, r=0.2)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+        c['Rs'] = R('v', 'w', r=1e2)
+        c['Cs'] = C('w', gnd, c=100.0 * T0 / 1e2)
+        c['n'] = IS(src, gnd, i=0.0, noisePSD=1e-6)
+        return c
+
+    out = {}
+    for src in ('v', 'w'):
+        cir = fixture(src)
+        pss = PSS(cir, method='gear', reltol=1e-11)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        ov = [str(n) for n in cir.nodes].index('v')
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            spread, info = pac.band_spread(pss, ov, (0.08, 0.15), points=5,
+                                           quantity='S_pm', maxsidebands=32)
+        out[src] = (spread, info['mean_over_point'])
+    ## the tank source: flat, so the two conventions agree and the shortcut
+    ## is licensed
+    assert out['v'][0] < 1.05, out['v']
+    assert abs(out['v'][1] - 1.0) < 5e-3, out['v']
+    ## behind the slow node: NOT flat, and the conventions differ by percents
+    assert out['w'][0] > 1.2, out['w']
+    assert abs(out['w'][1] - 1.0) > 0.02, out['w']
+    ## and the guard must SEPARATE them, which is the whole point
+    assert out['w'][0] > 1.15 * out['v'][0], out
+
