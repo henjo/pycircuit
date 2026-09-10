@@ -13090,10 +13090,33 @@ factorisation per step against radau's coupled `3n` solve" was asserted structur
 **GLM4 is 2.4–4.7× SLOWER than radau at the same grid**, so at equal work radau dominates on BOTH components
 everywhere inside its measured range. The reason is structural and was in plain sight: `s = r = p + 1 = 5`
 sequential `m × m` stage solves against radau's ONE coupled `3m` solve, and on this fixture `m = 3`, where a
-dense `9 × 9` factorisation is trivial and five separate Newtons are not. The per-step argument only pays when
-`m` is large enough that a `3m` factorisation costs ~27× an `m` one — i.e. on a large circuit, not on a
-three-state fixture. ⚠ Untested there, and that is the measurement that would decide whether GLM4 is ever
-preferable in practice; a fixture of a few hundred states with the same index-2 structure is what it needs.
+dense `9 × 9` factorisation is trivial and five separate Newtons are not. ⚠⚠ **AND THAT EXPLANATION IS WRONG — WITHDRAWN THE SAME HOUR.** The peer's
+arithmetic: dense LU is ~n³/3, so five `m` solves against one `3m` solve is 5m³/3 against 27m³/3 at EVERY `m`,
+including 3. The ratio is SCALE-INVARIANT; there is no threshold where the per-step argument "starts to pay",
+and on flops alone glm4 should already have been 5.4× cheaper at m = 3. So "m was too small" cannot be the
+mechanism, and a large-circuit run would not have decided anything.
+
+**What the mechanism actually is, measured by counting device evaluations** (same fixture, 40 points, `i`/`G`
+calls instrumented):
+
+| method | `i` per step | `G` per step |
+|---|---|---|
+| radau | 39.0 | 47.8 |
+| glm4 | 116.2 | 111.3 |
+
+**GLM4 does 3.0× radau's nonlinear work per step** — not the 1.67× its stage count (5 against 3) predicts,
+because each of its five stages runs its OWN Newton loop to convergence from the previous stage's value, while
+radau solves all three stages as one coupled system. That is `m`-INVARIANT: device evaluations grow with the
+circuit but the RATIO does not, and on a circuit with expensive compact models it dominates outright (this
+tree's PSP figure is ~21 400 interpreted calls per Jacobian). ⚠ And the timing was fair to glm4 in the way that
+matters: `radau_transform` is opt-in and was ABSENT, so radau paid the full dense `3m` coupled solve and glm4
+still lost 2.4–4.7×. ⚠ With the transform ON radau is one real plus one complex `m` solve ≈ five real
+equivalents — factorisation PARITY with glm4 — so there is no regime where glm4 wins on factorisations either.
+
+**The lever, if anyone wants the gap closed:** the stage initial guess. 23 `i` evaluations per stage says the
+per-stage Newton is starting far from its root; a predictor built from the Nordsieck vector (which carries the
+scaled derivatives, so a Taylor guess at `c_i h` is free) is the obvious candidate and is not built. Recorded
+as an opportunity, not a claim.
 ⚠ The equal-work comparison is only valid up to radau's finest measured cost (2.0 s); beyond that the
 interpolation clamps and says nothing.
 

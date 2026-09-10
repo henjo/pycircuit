@@ -1772,10 +1772,23 @@ class GLM4Integrator(NordsieckGLMIntegrator):
     takes 2.4x-4.7x radau's wall clock at the SAME grid.  `s = r = p + 1`
     is five sequential `m x m` stage solves against radau's ONE coupled
     `3m` solve, and at `m = 3` a dense 9x9 factorisation is trivial while
-    five Newtons are not.  The per-step argument can only pay when `m` is
-    large enough that a `3m` factorisation costs ~27x an `m` one -- a large
-    circuit, untested here.  So this method's claim is accuracy per STEP on
-    the algebraic component, not accuracy per second.
+    five Newtons are not.  ⚠ THAT EXPLANATION IS WRONG AND IS WITHDRAWN:
+    dense LU is ~n^3/3, so five `m` solves against one `3m` solve is the
+    same ratio at EVERY `m` -- there is no size threshold, and on flops
+    alone glm4 should have been cheaper at m = 3.  MEASURED mechanism
+    (device-evaluation counts, 40 points): glm4 116.2 `i` calls per step
+    against radau's 39.0, i.e. 3.0x the nonlinear work -- more than its
+    stage-count ratio of 5/3, because each of its five stages runs its OWN
+    Newton to convergence while radau solves three stages as one coupled
+    system.  That ratio does not shrink with circuit size and dominates on
+    a circuit with expensive compact models.  (The timing was fair: radau's
+    opt-in cost transform was OFF, so it paid the full dense 3m solve and
+    glm4 still lost; with it ON radau is ~five real m-solve equivalents,
+    factorisation parity.)  The lever, unbuilt, is the STAGE INITIAL GUESS:
+    23 `i` evaluations per stage says the per-stage Newton starts far from
+    its root, and the Nordsieck vector carries the scaled derivatives a
+    Taylor predictor would need.  So this method's claim is accuracy per
+    STEP on the algebraic component, not accuracy per second.
 
     ⚠ THE ABSCISSAE ARE INSIDE [0, 1] BY CONSTRUCTION -- c = [0.173, 0.402,
     0.641, 0.794, 1] -- which matters more for a circuit than for a general
