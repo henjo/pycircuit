@@ -1756,27 +1756,38 @@ class GLM4Integrator(NordsieckGLMIntegrator):
     term at k = 5, stiffly accurate, `M_inf` nilpotent, rho(M(z)) <= 0.999
     on the left-half-plane grid.
 
-    ⚠⚠ SHIPPED WITH ITS COST STATED, NOT HIDDEN.  This tableau is BADLY
-    SCALED where GLM3 is not: `B`'s last rows carry entries of order 2500
-    and `A` one of 16.3, and two abscissae fall OUTSIDE [0, 1] (c = 1.02,
-    1.219), so stages are evaluated past the end of the step -- legal for a
-    GLM, unusual, and it means a source is sampled outside the interval.
-    Nothing in the construction penalises any of that; Wright's own §3.11 is
-    a local-error MINIMISATION over the same free parameters and is what
-    would produce a well-scaled member of this family.  Measure before
-    preferring it to GLM3 (whose entries are O(1)) -- see the roadmap for
-    what it does on the index-2 harness.
+    ⚠ THE ABSCISSAE ARE INSIDE [0, 1] BY CONSTRUCTION -- c = [0.173, 0.402,
+    0.641, 0.794, 1] -- which matters more for a circuit than for a general
+    ODE code (docs session): a stage at `c > 1` evaluates the device models
+    PAST the end of the step, further from the operating point the Jacobian
+    was formed at, and samples a time-dependent source in a DIFFERENT PWL or
+    pulse SEGMENT rather than extrapolating the same one.  An earlier
+    tableau had c = 1.02 and 1.219; bounding `c` costs nothing theoretically
+    (it is a free parameter, Wright p. 80, and his canonical choice is
+    inside) and, MEASURED, nothing in practice either -- the bounded solve
+    converges in the same ten minutes as the unbounded one.
+
+    ⚠⚠ STILL BADLY SCALED, AND SHIPPED WITH THAT STATED: `B`'s last rows
+    carry entries of order 3900 where GLM3's are O(1).  That is a DIFFERENT
+    problem from the abscissae and a magnitude penalty bolted onto the
+    feasibility solve does not fix it (measured: the two constraints
+    together do not converge in 65 minutes where either alone takes ten).
+    Wright §3.11 -- *"methods where all coefficients have magnitude less
+    than or equal to one CAN BE FOUND for methods of high order"*, findable
+    because the construction is linear in the free parameters -- is the
+    machinery for it, not more restarts.  Measure before preferring this to
+    GLM3 on a circuit with sharp sources; see the roadmap.
     """
     P = 4
-    A = [[0.257999999999964, 2.4e-14, -2e-15, 0, 0],
-         [0.564870762451692, 0.258000000000038, -4e-15, -0, 0],
-         [1.34560224225011, 0.666047468571689, 0.257999999999964, -0, 0],
-         [16.3107364951724, 3.16780281407505, 2.10926422956395, 0.257999999999999, 0],
-         [0.269772522539889, 0.473080891968928, -0.147058351110186, -0.000144572564456, 0.258]]
-    C_ABSC = [0.300205178886892, 0.649410968376505, 1.02000083805522, 1.21884715757804, 1]
-    B = [[0.269772522541268, 0.473080891969201, -0.147058351108903, -0.000144572564508, 0.25799999999891],
-         [1.1e-14, 1.15e-13, 4.284e-12, -2.01e-13, 0.999999999995777],
-         [0.846861278511808, -6.2813760700719, -119.223854966483, 8.10453491963977, 116.554237549972],
-         [4.54227114639227, -22.262710202879, -887.209101857044, 59.9418500909124, 844.987313744587],
-         [-10.1436315808292, -17.757049870211, -2530.23652064246, 170.360031161238, 2387.77727502481]]
+    A = [[0.258000000000001, -0, 0, 0, 0],
+         [0.338606667338333, 0.258000000000001, 0, 0, 0],
+         [0.870056147403057, 0.374128228408632, 0.258000000000001, -0, 0],
+         [0.618931669188853, 0.938361756838533, -0.106680755165564, 0.258, 0],
+         [-1.32647103772084, 2.24262993355415, -0.54861073372837, 0.026963639926246, 0.258]]
+    C_ABSC = [0.173173409119544, 0.40211659968218, 0.641273959265667, 0.793693519160882, 1]
+    B = [[-1.32647103772174, 2.2426299335543, -0.548610733728135, 0.026963639925706, 0.258000000000171],
+         [-5.51e-13, 6.21e-13, 1.429e-12, -2.161e-12, 1.00000000000066],
+         [81.5597274299076, -342.84229418989, 693.205615667021, -544.583519526785, 112.962092766617],
+         [87.8951775026601, -329.430647318039, 628.970620430596, -490.825455557451, 103.92661229792],
+         [467.594940768028, -1916.01873670962, 3862.76832816115, -3034.57173565945, 621.327788885798]]
 

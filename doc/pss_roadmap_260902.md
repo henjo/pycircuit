@@ -13035,14 +13035,25 @@ a chapter. A stage at `c > 1` evaluates the device models past the end of the st
 point the Jacobian was formed at — a MOSFET or diode can be pushed across a region boundary — and a
 time-dependent source is then sampled in a DIFFERENT PWL/pulse SEGMENT, not an extrapolation of the same one;
 `c < 0` would ask for data before the step start. `c` is a free parameter (p. 80) and Wright's own canonical
-choice is inside [0, 1], so bounding it costs nothing theoretically. **Run, and it did NOT converge:** the same stiffly
-accurate solve with `c` bounded to [0, 1] and a soft pull on `|A|, |B| ≤ 1` produced no method in ~65 minutes
-across two configurations (all 24 permutations × 7 λ × 3 starts, and the identity permutation × 4 λ × 12 starts
-with twice the iteration budget); both hit their own timeouts with nothing printed, where the UNBOUNDED solve
-converges in about eight minutes. So bounding the abscissae makes the feasibility problem materially harder, not
-incidentally so — which is consistent with Wright needing §3.11's dedicated minimisation rather than a penalty
-bolted onto the feasibility solve, and it is a reason to reach for that machinery rather than more starts.
-GLM4 keeps the tableau it shipped with, and its scope note stands: an option with its cost stated, not a default. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
+choice is inside [0, 1], so bounding it costs nothing theoretically. **Two-factor change, scored as one — and separating them
+reversed the reading.** The first run bounded `c` to [0, 1] AND pulled `|A|, |B| ≤ 1`, and produced nothing in
+~65 minutes across two configurations (24 permutations × 7 λ × 3 starts, then the identity permutation × 4 λ ×
+12 starts at double budget) where the unconstrained solve takes ten. I wrote that up as "bounding the abscissae
+is materially harder". ⚠ The peer objected that this convicts the CONJUNCTION, not the bound, and named the
+refutation condition; run separately, **`c` bounded alone converges in the same ten minutes** (cost 9.1e-24,
+λ = 0.258, stiff accuracy to 9e-13). So the magnitude penalty was the binding constraint, the abscissa bound is
+as cheap as claimed, and my conclusion had been drawn on a confound.
+
+✅ **GLM4's tableau is now the c-bounded one**: `c = [0.173, 0.402, 0.641, 0.794, 1]`, all inside [0, 1], which
+for a circuit means no stage evaluates a device model past the end of the step and no time-dependent source is
+sampled in a different PWL/pulse segment. Order and stability unchanged (exact for k ≤ 4, ρ ≤ 0.999, `M_∞`
+nilpotent, stiffly accurate); on the driven index-2 PSS the algebraic component reads **1.4e-09 / 6.8e-11 /
+3.9e-12, order 4.13** against radau's 1.4e-09 / 1.6e-10 / 2.0e-11 at 3.05 — 5× at the finest grid — and its
+DIFFERENTIAL component now converges at **5.30**, above its own order, where the previous tableau read 3.97.
+⚠ That superconvergence broke a gate written as `|od − oa| < 0.5`: the split that matters is ONE-SIDED (the
+algebraic component falling below `p` is the index-2 reduction), and a two-sided bound calls superconvergence a
+failure. Corrected. ⚠⚠ The magnitude problem is untouched and stated in the class: `B`'s last rows carry entries
+of order 3900. §3.11 is the machinery for that, not more restarts. ⚠ Both sessions mis-diagnosed the earlier stall — I called it conditioning, the peer called
 it pivoting; it was an abscissa vector built one entry short. Neither of us had examined the failure before
 explaining it.
 
