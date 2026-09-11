@@ -582,3 +582,103 @@ def test_independent_sources_do_not_share_one_time_function():
     after = np.asarray(b.u(0.5, analysis='tran'), dtype=float)
     assert_allclose(after, before)
     assert float(np.abs(np.asarray(a.u(0.5, analysis='tran'), dtype=float)).max()) > 40.0
+
+
+def test_every_element_carrying_state_either_declares_it_or_is_on_this_list():
+    """⚠⚠ A NEGATIVE CLAIM CANNOT BE MADE PROVISIONALLY, and `hidden_state`
+    is the worst-placed one in the tree: the class default is `False`, so an
+    element that carries hidden state and never declares it claims it does
+    NOT, and nothing anywhere knows the claim was never checked.
+
+    The consequence is recorded on `Circuit.hidden_state` itself and is not
+    small: on a quarter-wave `TLine`, PSS returned `converged = True`,
+    `spectral_radius = 0.0` and an amplitude of 0.999969 where a transient
+    gives 0.244201 -- an answer that looks healthy and is wrong by 4x.
+
+    Unlike `topological_index`'s index-0 rung (fixed 2026-09-11 by reading the
+    absence off the MNA dimension), THIS absence cannot be established from
+    complete data: whether a stamp reads state that is not in `x` is not
+    decidable from the netlist.  So the remedy is the other one available --
+    MAKE THE IGNORANCE LOUD.  Any element admitting it carries state, by
+    defining one of the state protocols, must either declare `hidden_state`
+    or appear below WITH A REASON.  A new element that does neither fails
+    here instead of silently claiming an absence.
+
+    ⚠ THIS LIST IS NOT A SUPPRESSION.  Each entry was checked, and two of them
+    measured:
+
+      SubCircuit        recursion only; `hidden_state_elements` recurses, so a
+                        child's declaration propagates and the container needs
+                        none of its own.
+      ComparatorHdl     store `_hdl_cross` in `accept_step`.  Its ONLY reader
+      DividerHdl        is `next_event` (hdl.py) -- it never reaches a stamp,
+                        which is the documented safe category: a shooting
+                        analysis ignores `next_event` because it imposes its
+                        own grid.
+      Diode             `_vlim` is Newton LIMITING scaffolding.  ⚠⚠ MEASURED
+                        AND NOT CLEAN: `|G(x)|` moves by 3.6e+02 after a
+                        `limit()` call, so `G` is NOT a pure function of `x`.
+                        What makes it safe is per-call-site, not per-element --
+                        the shooting path routes `_G_at` through PCNR, measured
+                        prior-`_vlim` sensitivity 0.0 against 15.15 before.
+                        Declaring `hidden_state` here would make PSS refuse
+                        every diode circuit, so the defence stays at the call
+                        sites -- WHICH MEANS A NEW SITE EVALUATING `cir.G(x)`
+                        OUTSIDE A CONVERGED SOLVE INHERITS THE BUG.
+      _IdtBase          their state is IN `x` -- measured: `Idtmod` adds one
+      Idtmod            unknown beyond its nodes, and `state_ic` seeds exactly
+      IdtmodCircular    that unknown.  State in the solution vector is not
+      IdtmodHdl         hidden by definition: an analysis that owns `x` owns
+      IdtmodQuadrature  it.
+      MemristorHdl
+      VcoHdl
+    """
+    import inspect
+    import pkgutil
+    import importlib
+    import pycircuit.circuit as _pkg
+    from pycircuit.circuit.circuit import Circuit
+
+    protocols = ('accept_step', 'reset_state', 'state_ic', 'periodic_states')
+    allowed = {
+        'ComparatorHdl', 'Diode', 'DividerHdl', 'Idtmod', 'IdtmodCircular',
+        'IdtmodHdl', 'IdtmodQuadrature', 'MemristorHdl', 'SubCircuit',
+        'VcoHdl', '_IdtBase',
+    }
+
+    seen = {}
+    for mod_info in pkgutil.iter_modules(_pkg.__path__):
+        if mod_info.name.startswith('test'):
+            continue
+        try:
+            mod = importlib.import_module('pycircuit.circuit.' + mod_info.name)
+        except Exception:                                      # noqa: BLE001
+            continue
+        for obj in vars(mod).values():
+            if (inspect.isclass(obj) and issubclass(obj, Circuit)
+                    and obj is not Circuit):
+                seen[obj.__name__] = obj
+
+    ## the sweep has to actually see the tree, or an empty result passes
+    assert len(seen) > 50, ('the class sweep found almost nothing -- it is '
+                            'the sweep that is broken, not the tree', len(seen))
+    assert 'TLine' in seen and seen['TLine'].hidden_state, \
+        'TLine is the one element that DOES declare hidden_state; if this ' \
+        'stops holding the gate is testing nothing'
+
+    undeclared = {nm for nm, cls in seen.items()
+                  if any(p in cls.__dict__ for p in protocols)
+                  and not getattr(cls, 'hidden_state', False)}
+
+    new = undeclared - allowed
+    assert not new, (
+        'these elements carry state and neither declare `hidden_state` nor '
+        'appear on the checked list: %s.  Either set `hidden_state = True` '
+        '(and accept that analyses will refuse the element) or add it with a '
+        'REASON -- an absence that nobody checked is the failure mode this '
+        'gate exists for.' % sorted(new))
+
+    gone = allowed - undeclared
+    assert not gone, (
+        'these are on the checked list but no longer carry state: %s.  A '
+        'stale allow-list entry silently widens the exemption.' % sorted(gone))

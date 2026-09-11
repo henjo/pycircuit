@@ -683,6 +683,14 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
                            decades=8, flat_tol=1e-2, floor_k=1e3):
     """`(sigma, info)` — how well conditioned the circuit's ALGEBRAIC block is.
 
+    ⚠ IT LINEARISES AT `x`, AND `G(x)` IS NOT ALWAYS A PURE FUNCTION OF `x`.
+    An element carrying Newton LIMITING state stamps from solver history as
+    well: measured on `Diode`, `|G(x)|` moves by 3.6e+02 after a `limit()`
+    call.  On a diode fixture the verdict and `sigma` here were UNMOVED to
+    2.2e-16, because the diode sat in the differential part -- but that is one
+    circuit, not a guarantee.  For a reading that cannot depend on solver
+    history, pass a converged `x` or reset the circuit's state first.
+
     `sigma` is `sigma_min(d g_2 / d y)`, the smallest singular value of the
     block that Bächle 2007 Thm 2.26 requires to have a BOUNDED INVERSE before
     a stiffly accurate method with `R(inf) = 0` is entitled to its classical
