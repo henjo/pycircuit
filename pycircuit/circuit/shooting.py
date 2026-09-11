@@ -618,7 +618,49 @@ def topological_index(cir):
     ## differential, not algebraic.  The van der Pol is exactly that shape and
     ## the rank cross-check agrees.
     cap_to_datum = None
-    if index == 1 and not any(kinds[nm] == 'V' for nm in cir.elements):
+    ## ⚠⚠ A NEGATIVE CLAIM CANNOT BE MADE PROVISIONALLY, and that is why
+    ## `not unclassified` is a condition of this rung and not of the others.
+    ## Theorem 3.47's index-0 test asserts an ABSENCE -- a capacitive path from
+    ## every node to datum AND NO VOLTAGE SOURCES.  An element outside the
+    ## covered class is classified `'?'`, so `kinds[nm] == 'V'` is FALSE for it
+    ## and the absence test passes VACUOUSLY.  A `VCVS` is exactly that: a
+    ## voltage source this classifier does not recognise.
+    ## ⚠ MEASURED 2026-09-11, and this rung shipped WITH the defect that
+    ## morning: on the documented P1 fixture (a VCVS of gain `g` inside a C-V
+    ## loop, index 2 off `g* = 1 + C2/C1` and index 3 on it) this returned
+    ## INDEX 0 at every gain, where the docstring above records that every
+    ## provisional fixture returned 1.  `algebraic_conditioning` says the
+    ## algebraic block is SINGULAR at every gain, i.e. index >= 2, and it is
+    ## right.
+    ## The other criteria survive `unclassified` because they assert
+    ## PRESENCE -- "I found a C-V loop" stands whatever else is in the netlist,
+    ## and `provisional` then says only that there may be MORE.  An absence
+    ## cannot be established from a partial reading at all.
+    ##
+    ## ⚠⚠ BUT "BLOCK ON ANY UNCLASSIFIED ELEMENT" IS TOO STRICT, and the van
+    ## der Pol fixture is the proof: its nonlinear conductance is unclassified
+    ## and it is GENUINELY INDEX 0 (recorded 2026-09-10, after a clamp-at-zero
+    ## was reverted for exactly that reason).  Blocking there trades a vacuous
+    ## TRUE for an avoidable FALSE.
+    ##
+    ## The absence can be established from COMPLETE data instead of a partial
+    ## reading, which is the actual requirement.  A voltage source -- of any
+    ## kind, recognised or not -- contributes a BRANCH-CURRENT unknown to MNA;
+    ## a VCCS, a current source or a nonlinear conductance does not.  Measured:
+    ## VS 1, VCVS 1, L 1, VCCS 0, IS 0, R 0.  So `cir.n - len(cir.nodes)` is
+    ## the total branch-unknown count, `V` and `L` are the classified elements
+    ## that carry one, and any EXCESS is an unclassified element that could be
+    ## a voltage source.  No excess means no unrecognised voltage source can
+    ## exist -- established from the MNA dimension, which is complete.
+    ## ⚠ An unclassified element carrying a branch unknown that is NOT a
+    ## voltage source (a transformer, an ammeter) blocks the rung too, so this
+    ## reports 1 where 0 is true.  Conservative, and `provisional` already
+    ## says the reading is partial; an absence asserted wrongly is the failure
+    ## that has no floor.
+    branch_unknowns = cir.n - len(cir.nodes)
+    accounted = sum(1 for nm in cir.elements if kinds[nm] in ('V', 'L'))
+    if (index == 1 and branch_unknowns <= accounted
+            and not any(kinds[nm] == 'V' for nm in cir.elements)):
         _pc, _cc, _ct, cfind = forest(
             [nm for nm in cir.elements if kinds[nm] == 'C'])
         try:
@@ -702,6 +744,17 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
                              against :func:`topological_index`.
       ``no-algebraic-block`` `C` is nonsingular, so there is nothing to condition
                              (the ratio grows like `1/h`; the ODE case).
+                             ⚠ This is an ABSENCE claim, and absence claims
+                             cannot be made from a PARTIAL reading -- that is
+                             what broke `topological_index`'s index-0 rung,
+                             whose "no voltage sources" test passed vacuously
+                             on an element it could not classify.  This one is
+                             safe for a reason worth stating rather than
+                             assuming: it is established from the ASSEMBLED
+                             `C` by SVD against a relative tolerance, so there
+                             is no classifier and nothing can be outside its
+                             covered class.  Complete data, not a partial
+                             reading.
       ``no-window``          `C` is too ill-conditioned for a plateau to exist
                              between the turn and the roundoff floor.
 
@@ -2564,6 +2617,7 @@ class PSS(Analysis):
         except Exception:
             return False
         if idx != 2 or info['provisional'] or info['ill_posed']:
+            self._warn_if_the_block_disagrees(idx, info)
             return False
         where = (('C-V loop: ' + ', '.join(info['loop'])) if info['loop']
                  else ('L-I cutset: ' + ', '.join(info['cutset'])))
@@ -2576,6 +2630,63 @@ class PSS(Analysis):
             'pass x0_unknown=False to override.' % where,
             RuntimeWarning, stacklevel=3)
         return True
+
+    def _warn_if_the_block_disagrees(self, idx, info):
+        """Say so when the TOPOLOGICAL index reads below 2 and the NUMERIC
+        algebraic block says otherwise.  Never raises, never changes behaviour.
+
+        ⚠⚠ THE CASE THIS EXISTS FOR IS THE ONE THAT SOLVES AND LOOKS HEALTHY.
+        `_resolve_x0_unknown`'s own notes record it: the index-3 VCVS netlist
+        "DC-solves cleanly and silently at `g*` ... no warning", while a
+        structurally singular one is loud.  A netlist the classifier cannot
+        read is declined HERE in silence, and the user is told nothing.
+
+        MEASURED 2026-09-11 on that documented P1 fixture (a VCVS of gain `g`
+        inside a C-V loop, index 2 off `g* = 1 + C2/C1` and index 3 on it):
+        `topological_index` reads 1 (provisional -- the VCVS is outside its
+        covered class), and :func:`algebraic_conditioning` reads the algebraic
+        block as SINGULAR at every gain, which is index >= 2.  The two
+        instruments disagree and the numeric one is right.  That disagreement
+        is the whole signal, and it is free here: this path has already
+        decided to decline.
+
+        ⚠ NOT A BEHAVIOUR CHANGE, DELIBERATELY.  `x0_unknown` stays off.  The
+        remedy is justified for index 2 and NOT known to apply at index 3, and
+        switching it on would mask a worse problem while reporting a fix --
+        the reasoning in `_resolve_x0_unknown` above, unchanged.  This says
+        what was seen and names the explicit override; it does not take it.
+        """
+        try:
+            if idx is None or idx >= 2:
+                return
+            _sigma, ac = algebraic_conditioning(self.cir)
+            if ac.get('verdict') != 'singular':
+                return
+            extra = ''
+            if info.get('unclassified'):
+                extra = (' %d element(s) are outside the classifier\'s covered '
+                         'class (%s), so the topological reading is partial.'
+                         % (len(info['unclassified']),
+                            ', '.join(info['unclassified'][:4])))
+            warnings.warn(
+                'PSS: the topological index reads %s for this netlist, but its '
+                'ALGEBRAIC BLOCK is numerically SINGULAR '
+                '(sigma_min(d g_2/d y) = 0), which means index >= 2.%s A '
+                'circuit like this solves cleanly and reports nothing, so the '
+                'disagreement is the only signal you get. If it has a C-V loop '
+                'or an L-I cutset through an element the classifier does not '
+                'recognise, the manufactured opening step may be INCONSISTENT; '
+                'pass x0_unknown=True explicitly to apply the index-2 remedy, '
+                'having checked that the index really is 2 and not 3 -- the '
+                'remedy is not known to apply at index 3.'
+                % (idx, extra), RuntimeWarning, stacklevel=4)
+        except Exception:                                      # noqa: BLE001
+            ## ⚠ Best-effort, like everything else on this path: a DIAGNOSTIC
+            ## that raises inside a defaulting helper would change which
+            ## exception an invalid call reports, which is the defect the
+            ## comment above records.  The gates call the helper DIRECTLY so a
+            ## bug in it cannot hide behind this.
+            return
 
     def event_grid(self, period, npts=None, grid=None, min_sep=0.05):
         """A step grid with the circuit's EVENT TIMES landed on exactly.

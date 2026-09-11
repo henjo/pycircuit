@@ -9705,9 +9705,27 @@ def _measured_index(cir):
     ## A first version guarded with `s2.max() > 0` and so returned 1 for the
     ## cv_loop fixture, whose block IS zero -- the reference disagreeing with
     ## the criterion because the REFERENCE was wrong.
-    if s2.max() == 0.0:
-        return 2
-    return 2 if s2.min() / s2.max() < 1e-10 else 1
+    ##
+    ## ⚠⚠ AND THE SECOND VERSION WAS BLIND WHENEVER `dim(ker C) == 1`, which
+    ## is the commonest case.  It read `s2.min()/s2.max() < 1e-10`, and for a
+    ## ONE-dimensional null space that ratio is IDENTICALLY 1 -- so the test
+    ## could only ever fire on an EXACTLY zero block.  On a circuit whose
+    ## algebraic block is 1e-20 it returned 1.  Blind, not trigger-happy, and
+    ## no fixture here has a 1-D near-singular block so nothing failed.
+    ##
+    ## The fix needs an EXTERNAL scale, because a single singular value has no
+    ## internal one to compare against.  `N^T G N` and `G` are both
+    ## conductances and `N` is orthonormal, so `s2.min() <= tol * ||G||` is
+    ## dimensionless AND free of the capacitance unit -- which is the property
+    ## that matters, since an absolute tolerance here would give a false
+    ## index-2 window widening as `1/||C||`.  Same reasoning as
+    ## `algebraic_conditioning`, arrived at independently and kept inline: this
+    ## is the reference the topological criterion is gated against, and a
+    ## reference that calls shipped code is not independent of it.
+    gscale = float(np.linalg.norm(Gr, 2))
+    if gscale == 0.0:
+        return 1
+    return 2 if float(s2.min()) <= 1e-10 * gscale else 1
 
 
 def _index_fixtures():
@@ -19748,3 +19766,140 @@ def test_algebraic_conditioning_resolves_a_crossing_rank_C_cannot_see():
     assert _limit(flat_tol=1e0, decades=30) == 2e-8
     assert _limit(floor_k=1.0, decades=30) == 2e-8
     assert _limit(flat_tol=1e0, floor_k=1.0, decades=30) == 2e-9
+
+
+def _p1_vcvs_in_a_cv_loop(g, c1=1e-9, c2=2e-9):
+    """The documented P1 fixture: a VCVS of gain `g` inside a C-V loop.
+    Index 2 off `g* = 1 + c2/c1` and index 3 on it, and it DC-solves cleanly
+    and silently at every gain.  `topological_index` cannot classify the VCVS."""
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('v')
+    c.add_node('b')
+    c['i'] = IS(gnd, 'v', i=1e-3)
+    c['r'] = R('v', gnd, r=10.0)
+    c['c1'] = C('v', 'b', c=c1)
+    c['c2'] = C('v', gnd, c=c2)
+    c['e'] = VCVS('v', gnd, 'b', gnd, g=g)
+    return c
+
+
+def test_the_index_0_rung_refuses_to_fire_on_an_unclassified_element():
+    """⚠⚠ A NEGATIVE CLAIM CANNOT BE MADE PROVISIONALLY.
+
+    Theorem 3.47's index-0 test asserts an ABSENCE -- a capacitive path from
+    every node to datum AND NO VOLTAGE SOURCES.  An element outside the
+    classifier's covered class is `'?'`, so `kinds[nm] == 'V'` is FALSE for it
+    and the absence test passes VACUOUSLY.  A VCVS is exactly that: a voltage
+    source the classifier does not recognise.
+
+    The rung shipped WITH this defect on 2026-09-11 and returned INDEX 0 for
+    the P1 fixture at every gain -- a circuit that is index 2 or 3.  The
+    docstring of `_resolve_x0_unknown` records that every provisional fixture
+    returned 1, which is what this restores.
+
+    The other criteria need no such guard because they assert PRESENCE: "I
+    found a C-V loop" stands whatever else is in the netlist, and `provisional`
+    then says only that there may be more.  An absence cannot be established
+    from a partial reading at all.
+    """
+    for g in (0.0, 2.999, 3.0, 4.0):
+        idx, info = topological_index(_p1_vcvs_in_a_cv_loop(g))
+        assert info['provisional'], g
+        assert idx == 1, ('index-0 rung fired on an unclassified voltage '
+                          'source', g, idx)
+
+    ## ⚠ AND THE FIX MUST NOT BE "NEVER RETURN 0" -- the rung still fires
+    ## where it should, on a netlist the classifier reads completely.
+    tank = SubCircuit()
+    tank.add_node('v')
+    tank['C'] = C('v', gnd, c=1.0)
+    tank['L'] = L('v', gnd, L=1.0)
+    idx, info = topological_index(tank)
+    assert idx == 0 and not info['unclassified'], (idx, info['unclassified'])
+
+
+def test_the_reference_index_sees_a_ONE_DIMENSIONAL_near_singular_block():
+    """⚠⚠ `_measured_index` was BLIND whenever `dim(ker C) == 1`.
+
+    It tested `s2.min()/s2.max() < 1e-10`, and for a ONE-dimensional null
+    space that ratio is IDENTICALLY 1 -- so it could only ever fire on an
+    EXACTLY zero block, and returned 1 for a block of 1e-20.  No fixture here
+    had a 1-D near-singular block, so nothing failed and nothing caught it.
+
+    The fix needs an EXTERNAL scale: `s2.min() <= tol * ||G||`, dimensionless
+    and free of the capacitance unit, since an absolute tolerance would give a
+    false index-2 window widening as `1/||C||`.
+    """
+    ## the null space really is one-dimensional -- that is what made it blind
+    cir = _e5_circuit(2e-14)
+    Cm = np.asarray(cir.C(np.zeros(cir.n), defaultepar), dtype=float)
+    from pycircuit.circuit.analysis import remove_row_col
+    import pycircuit.circuit.analysis as _an
+    Cm, = remove_row_col((Cm,), cir.get_node_index(gnd), _an.numeric)
+    Cm = np.asarray(Cm, dtype=float)
+    sv = np.linalg.svd(Cm, compute_uv=False)
+    tol = max(Cm.shape) * np.finfo(float).eps * sv[0]
+    assert int(np.sum(sv <= tol)) == 1, sv
+
+    assert _measured_index(_e5_circuit(2e-14)) == 2
+    assert _measured_index(_e5_circuit(0.0)) == 2
+    ## and a healthy block still reads 1 -- the fix is not "always 2"
+    assert _measured_index(_e5_circuit(2e-3)) == 1
+
+
+def test_pss_warns_when_the_numeric_block_disagrees_with_the_topological_index():
+    """The consumer: say so when the two instruments disagree and the netlist
+    would otherwise solve cleanly and report nothing.
+
+    ⚠⚠ THE CONTROL IS THE WHOLE TEST.  A warning that fires whenever the
+    reading is PROVISIONAL would be noise -- most provisional netlists are
+    perfectly ordinary.  It must fire on a provisional netlist whose block is
+    SINGULAR and stay silent on a provisional netlist whose block is not.
+
+    ⚠ A first version of that control put a VCVS across a capacitor and
+    expected silence.  That is a C-V LOOP: the fixture was genuinely index 2
+    and the warning was right.  A VCCS is the correct control -- it adds no
+    branch equation, so it makes the reading provisional without changing the
+    index.
+    """
+    def _warned(cir):
+        p = PSS(cir)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            resolved = p._resolve_x0_unknown(None)
+            hits = [str(w.message) for w in caught
+                    if 'ALGEBRAIC BLOCK' in str(w.message)]
+        ## never a behaviour change -- the remedy is not known to apply at
+        ## index 3, so this reports and does not act
+        assert resolved is False, resolved
+        return hits
+
+    for g in (2.999, 3.0):
+        hits = _warned(_p1_vcvs_in_a_cv_loop(g))
+        assert len(hits) == 1, (g, hits)
+        assert 'index >= 2' in hits[0] and 'x0_unknown=True' in hits[0]
+
+    per = 1e-3
+
+    def base():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=0.8, freq=1.0 / per)
+        c['rs'] = R('a', 'b', r=50.0)
+        c['cl'] = C('b', gnd, c=1e-9)
+        c['rl'] = R('b', gnd, r=1e4)
+        return c
+
+    ## a plain, fully classified, well-conditioned netlist
+    assert _warned(base()) == []
+
+    ## ⚠ THE CONTROL THAT MATTERS: PROVISIONAL, and still silent
+    c = base()
+    c.add_node('d')
+    c['g'] = VCCS('b', gnd, 'd', gnd, gm=1e-3)
+    c['rd'] = R('d', gnd, r=1e3)
+    c['cd'] = C('d', gnd, c=1e-9)
+    assert topological_index(c)[1]['provisional'], 'control is not provisional'
+    assert _warned(c) == []
