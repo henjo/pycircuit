@@ -43,8 +43,15 @@ Then:
   * LOCAL: `|e|` is exactly zero from step `n0 + mu` on.
   * PROPAGATED: it survives `mu` steps and still scales as `h^-(mu-1)`.
 
-⚠⚠⚠ THIS MEASUREMENT DID NOT COME OFF, AND THE FILE IS KEPT FOR THAT REASON.
-ITS OWN INSTRUMENT-ALIVE CHECK FAILS: `|e|` at the injection step reads
+⚠⚠⚠ ANSWERED 2026-09-11, AND THE ANSWER IS LOCAL.  See
+:func:`locality_below_the_turn`.  The three failed attempts below are kept
+because the two things that were wrong are the whole difficulty, and both were
+invisible while only one was fixed: the injection has to go in a direction
+`||J^-1||` ACTUALLY AMPLIFIES, and it has to be probed BELOW the `||C||/||G||`
+turn.  Fixing either alone still reads nothing.
+
+THE OLD TEXT, KEPT AS THE RECORD OF THE DEAD ENDS.
+ITS OWN INSTRUMENT-ALIVE CHECK FAILED: `|e|` at the injection step reads
 EXACTLY the injected `delta` at every grid, amplification exponent +0.00 where
 the theorem wants -1 at index 2.  The `h^-(mu-1)` amplification is not
 reproduced here, so the "exactly zero after mu steps" readings below prove
@@ -347,3 +354,104 @@ def sigma_min_index(build, label, known_index, decades=22, per_decade=1):
           % ('', ' '.join('%+.3f' % v for v in asym), idx_meas, known_index,
              'MATCH' if abs(idx_meas - known_index) < 0.5 else 'NO'))
     return asym
+
+
+def locality_below_the_turn(build, label, mu, delta=1e-9, nsteps=8):
+    """Is the `1/h` amplification LOCAL or PROPAGATED?  ANSWERED: local.
+
+    Two things had to be right at once, and fixing either alone still reads
+    nothing:
+
+    * the defect must go in a direction `||J^-1||` ACTUALLY AMPLIFIES -- the
+      left singular vector of `J` for `sigma_min`.  A defect in that
+      operator's nullspace is amplified by exactly nothing and `|e| = delta`
+      is then the CORRECT answer, which is what the earlier attempts measured;
+    * and it must be injected BELOW the `||C||/||G||` turn.  Above it the
+      reactive term is negligible, `J` is effectively resistive, and there is
+      no amplification anywhere to find.
+
+    MEASURED, `delta = 1e-9` injected at one step through `provided_function`
+    (a defect in the residual, which is the theorem's `q_ni`), differenced
+    against the undisturbed run of the same discretisation:
+
+        C-V loop, index 2
+          h        sigma_min    |e| at n0    e(n0+1)    e(n0+2..)
+          1e-11    1.999e-02    5.001e-08    5.00e-08   5.00e-14
+          1e-12    2.000e-03    5.000e-07    5.00e-07   5.02e-16
+          1e-13    2.000e-04    5.000e-06    5.00e-06   5.25e-18
+          amplification exponent -1.00, -1.00   (Prop 8.10 wants -1 at mu=2)
+
+        ExpG, index 1
+          1e-11    9.901e-01    7.178e-10    1.41e-13   1.41e-13
+          1e-12    9.901e-01    7.178e-10    1.42e-14   1.42e-14
+          1e-13    9.901e-01    7.178e-10    1.42e-15   1.42e-15
+          amplification exponent -0.00, -0.00   (wants 0 at mu=1)
+
+    THE INSTRUMENT IS ALIVE -- the index-2 amplification is `delta/h` to two
+    decimal places, and the index-1 fixture is correctly flat.
+
+    AND THE ANSWER IS LOCAL.  The amplified error lives for `mu` steps and
+    what remains after is `O(h*delta)`: the index-2 tail reads 5.00e-14,
+    5.02e-16, 5.25e-18 as `h` goes 1e-11, 1e-12, 1e-13 -- SHRINKING with
+    refinement, not persisting.  The index-1 defect is gone after one step.
+    That is section 8.4 note (6) confirmed on this tree rather than cited:
+    "the errors (1/h^i)delta_l are LOCAL; they are not propagated".
+
+    ⚠ The arm of note (6) that covers a variable-coefficient nonlinear MNA is
+    the index-2 one, and the margin to the propagating index-3 case is one
+    index level.  Nothing here tests index 3.
+    """
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.analysis import remove_row_col
+    from pycircuit.circuit.dcanalysis import DC as _DC
+
+    def run(h, kick_at=None, kick=None):
+        cir = build()
+        tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-13)
+        tr.irefnode = cir.get_node_index(gnd)
+        x = np.asarray(_DC(cir, refnode=gnd).solve().x, dtype=float).ravel()
+        tr.epar.t = 0.0
+        tr._begin_run(x, cir.n)
+        xs = [x.copy()]
+        zero = np.zeros(cir.n)
+        for j in range(1, nsteps + 1):
+            tr._dt_last = tr._dt if j > 1 else None
+            tr._dt = h
+            tr.epar.t = j * h
+            pf = ((lambda _t, _k=np.asarray(kick, dtype=float): _k)
+                  if (kick_at is not None and j == kick_at)
+                  else (lambda _t, _z=zero: _z))
+            x, _f, _J, _ = tr.solve_timestep(x, j * h, provided_function=pf)
+            tr._push_history(x)
+            xs.append(np.asarray(x, dtype=float).copy())
+        return np.array(xs), tr, cir
+
+    print('  %s' % label)
+    print('     %-9s %12s %12s   %s'
+          % ('h', 'sigma_min', '|e| at n0', 'tail'))
+    amps, tails = [], []
+    n0 = nsteps // 2
+    for h in (1e-11, 1e-12, 1e-13):
+        base, tr, cir = run(h)
+        C = np.asarray(cir.C(base[n0], defaultepar), dtype=float)
+        G = np.asarray(cir.G(base[n0], defaultepar), dtype=float)
+        (Jr,) = remove_row_col((C / h + G,), tr.irefnode, tr.toolkit)
+        U, sv, _Vt = np.linalg.svd(np.asarray(Jr, dtype=float))
+        u = U[:, -1]
+        d = np.concatenate((u[:tr.irefnode], [0.0], u[tr.irefnode:]))
+        pert, _t, _c = run(h, kick_at=n0, kick=delta * d)
+        e = np.max(np.abs(pert - base), axis=1)
+        amps.append(float(e[n0]))
+        tails.append(float(e[n0 + mu]))
+        print('     %-9.0e %12.4e %12.4e   %s'
+              % (h, sv.min(), e[n0],
+                 '  '.join('%.2e' % v for v in e[n0 + 1:n0 + 5])))
+    sl = [-np.log(amps[i] / amps[i - 1]) / np.log(10.0)
+          for i in range(1, len(amps))]
+    ts = [-np.log(tails[i] / tails[i - 1]) / np.log(10.0)
+          for i in range(1, len(tails))]
+    print('     amplification %s (want %+d)   tail after mu=%d steps %s'
+          % (' '.join('%+.2f' % v for v in sl), -(mu - 1), mu,
+             ' '.join('%+.2f' % v for v in ts)))
+    print()
+    return sl, ts

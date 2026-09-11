@@ -14076,3 +14076,43 @@ nothing; the cross-check for that rung is a different instrument, `σ_min(C)`.
 
 That is two floored references in this tree, both found in one afternoon, and the second only because adding
 the missing rung made the first one disagree.
+
+### The defect-locality question: ANSWERED — the amplification is LOCAL (2026-09-11)
+
+Open since the adaptive-GLM work: the filtered local-error estimate reads one order below its declared
+`EMBEDDED_ORDER + 1` on a DAE, because `J⁻¹` behaves like `1/h` on the algebraic subspace. Whether that
+matters depends entirely on whether the amplified part PROPAGATES. §8.4 note (6) says it does not at index ≤ 2
+with a properly stated leading term. **Measured here rather than cited.**
+
+**⚠⚠ TWO THINGS HAD TO BE RIGHT AT ONCE**, and fixing either alone still reads nothing — which is why three
+earlier attempts failed:
+
+* the defect must go in a direction `‖J⁻¹‖` **actually amplifies**, the left singular vector of `J` for
+  `σ_min`. A defect in that operator's nullspace is amplified by exactly nothing, and `|e| = δ` is then the
+  CORRECT answer — which is what the earlier attempts were measuring;
+* and it must be probed **below the `‖C‖/‖G‖` turn**. Above it the reactive term is negligible, `J` is
+  effectively resistive, and there is no amplification anywhere to find.
+
+`δ = 1e-9` injected at one step through `provided_function` (a defect in the residual — the theorem's `q_ni`),
+differenced against the undisturbed run of the same discretisation:
+
+| fixture | amplification at n0 | tail after μ steps |
+|---|---|---|
+| C-V loop (μ=2) | **−1.00, −1.00** | +2.00, +1.98 → shrinks as `h²` |
+| ExpG (μ=1) | −0.00, −0.00 | +1.00, +1.00 → shrinks as `h` |
+
+**The instrument-alive half is the amplification column**: the index-2 fixture amplifies as `δ/h` to two
+decimals — exactly Prop 8.10's `h^-(μ-1)` — and the index-1 fixture is correctly flat. Without that, a small
+tail proves nothing, which is precisely what the three failed attempts had.
+
+**The answer is LOCAL**: the amplified error lives for `μ` steps and what remains shrinks with refinement
+rather than persisting. So for this tree's estimator, **the `1/h` contaminates the estimate per step and does
+not compound** — the thing to change is the ESTIMATOR FORMULA, not the integrator.
+
+⚠ The arm of note (6) that covers a variable-coefficient nonlinear MNA is the index-2 one, and the margin to
+the PROPAGATING index-3 case is one index level. **Nothing here tests index 3.**
+
+⚠ The three failed framings are kept in the benchmark: an interval-length sweep (could not fail — contracting
+systems saturate), a fixed-offset rule (a defect dies after μ steps, not at a fixed offset), and an injection
+aimed in a null direction above the turn. Each was a real defect found, and the last is what produced the
+`σ_min` route.

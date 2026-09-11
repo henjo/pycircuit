@@ -19302,3 +19302,72 @@ def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_tes
     assert hasattr(cir['cq'], 'q')
     _i, info = topological_index(cir)
     assert info['cap_path_to_datum'] is False, info
+
+
+def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
+    """⚠⚠ THE QUESTION THAT WAS OPEN ALL SESSION, ANSWERED: the amplification
+    is LOCAL.
+
+    The filtered local-error estimate reads one order below its declared
+    `EMBEDDED_ORDER + 1` on a DAE, because `J = C + a·h·G` is singular in `C`
+    so `J⁻¹` behaves like `1/h` on the algebraic subspace. Whether that matters
+    depends entirely on whether the amplified part PROPAGATES. Lamour, März &
+    Tischendorf §8.4 note (6) says it does not, at index ≤ 2 with a properly
+    stated leading term. This measures it here rather than citing it.
+
+    ⚠⚠ TWO THINGS HAD TO BE RIGHT AT ONCE, and fixing either alone still reads
+    nothing — which is why three earlier attempts failed:
+
+    * the defect must go in a direction `‖J⁻¹‖` ACTUALLY AMPLIFIES, the left
+      singular vector of `J` for `σ_min`. A defect in that operator's
+      nullspace is amplified by exactly nothing, and `|e| = δ` is then the
+      CORRECT answer — which is what the earlier attempts were measuring;
+    * and it must be probed BELOW the `‖C‖/‖G‖` turn. Above it the reactive
+      term is negligible, `J` is effectively resistive, and there is no
+      amplification anywhere to find.
+
+    MEASURED, `δ = 1e-9` injected at ONE step through `provided_function` (a
+    defect in the residual — the theorem's `q_ni`), differenced against the
+    undisturbed run of the SAME discretisation so truncation cancels exactly:
+
+    ===========  =====================  ==========================
+    fixture      amplification at n0    tail after μ steps
+    ===========  =====================  ==========================
+    C-V loop     −1.00, −1.00 (μ=2)     +2.00, +1.98 → shrinks h²
+    ExpG         −0.00, −0.00 (μ=1)     +1.00, +1.00 → shrinks h
+    ===========  =====================  ==========================
+
+    The INSTRUMENT-ALIVE half is the amplification column: the index-2
+    fixture amplifies as `δ/h` to two decimals, exactly Prop 8.10's
+    `h^-(μ-1)`, and the index-1 fixture is correctly flat. Without that, a
+    small tail proves nothing.
+
+    ⚠ The arm of note (6) covering a variable-coefficient nonlinear MNA is the
+    index-2 one, and the margin to the PROPAGATING index-3 case is one index
+    level. Nothing here tests index 3.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from defect_locality import locality_below_the_turn, index1, index2
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        amp2, tail2 = locality_below_the_turn(index2, 'index-2', 2)
+        amp1, tail1 = locality_below_the_turn(index1, 'index-1', 1)
+
+    ## (1) INSTRUMENT ALIVE: index 2 amplifies as delta/h, index 1 does not
+    for v in amp2:
+        assert abs(v - (-1.0)) < 0.1, ('index-2 amplification', amp2)
+    for v in amp1:
+        assert abs(v) < 0.1, ('index-1 amplification', amp1)
+
+    ## (2) LOCAL: what survives mu steps SHRINKS with refinement.  A
+    ## propagated term would keep the amplification's own scaling (negative).
+    for v in tail2:
+        assert v > 0.5, ('index-2 tail does not decay -- PROPAGATED?', tail2)
+    for v in tail1:
+        assert v > 0.5, ('index-1 tail does not decay', tail1)
