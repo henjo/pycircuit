@@ -2019,8 +2019,10 @@ class PSS(Analysis):
     2026-09-08: the default is chosen for ACCURACY, not cost -- "we do not
     want to fool the user; instead they should change integrator and know
     the impact").  Every entry below is MEASURED in this tree
-    (doc/pss_roadmap_260902.md, A10, the radau-default section and its
-    monotonicity fixtures); nothing is quoted from a textbook order alone.
+    (doc/pss_roadmap_260902.md A10; the radau-default section and its
+    monotonicity fixtures moved to doc/pss_log_260902.md in the 2026-09-11
+    plan/log split, and the plan's index names it); nothing is quoted from a
+    textbook order alone.
 
       method    order   period error   error        above its monotonicity limit
                         (ppm @ 400pt,  ESTIMABLE    (h_FE = 1/steepest slope)

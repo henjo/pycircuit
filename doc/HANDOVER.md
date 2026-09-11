@@ -18,11 +18,18 @@ Suite: **3189 passed, 6 skipped, 3 xfailed**, ~21 min at `-n 4`.
 ⚠ Two concurrent `-n 10` suites were OOM-killed on this box — run ONE suite at
 a time, and `-n 4`–`6` is what survives.
 
-**The active thread is PSS / shooting / DAE integration**, and its roadmap is
-`doc/pss_roadmap_260902.md` (14.7k lines).  That file is mostly a LOG of
-completed work; the forward-looking part is §A (capabilities) and §B
-(formulation decisions awaiting a call).  Almost everything in both is now
-marked BUILT or CLOSED.  What is genuinely open:
+**The active thread is PSS / shooting / DAE integration**, and it is now TWO
+files (split 2026-09-11, because the plan was buried in 14.7k lines of log):
+
+  - `doc/pss_roadmap_260902.md` — **the PLAN**: the organising fact, §A
+    capabilities, §B decisions awaiting a call, §C closed, §D the failure
+    shapes.  It ends with a 128-entry INDEX of the log.
+  - `doc/pss_log_260902.md` — **the RECORD**: what was built and measured, in
+    order.  ⚠ Code docstrings reference sections BY NAME, and some of those
+    names are here rather than in the plan; the plan's index resolves them.
+
+Almost everything in §A and §B is now marked BUILT or CLOSED.  What is
+genuinely open:
 
 | item | status |
 |---|---|
