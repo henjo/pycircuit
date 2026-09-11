@@ -14116,3 +14116,54 @@ the PROPAGATING index-3 case is one index level. **Nothing here tests index 3.**
 systems saturate), a fixed-offset rule (a defect dies after μ steps, not at a fixed offset), and an injection
 aimed in a null direction above the turn. Each was a real defect found, and the last is what produced the
 `σ_min` route.
+
+### ⚠⚠⚠ CORRECTION: the estimator deficit is NOT an index effect (2026-09-11)
+
+Measured, in answer to "how do we use the locality conclusion to improve". The answer changed the premise
+instead.
+
+Since 2026-09-10 this record has attributed the estimator's order deficit to the DAE index — *"`J = C + a·h·G`
+is singular in `C` on a DAE, so `J⁻¹` behaves like `1/h` on the algebraic subspace"*. **That was measured on
+ONE fixture and it is wrong.**
+
+| method | fixture | want | slopes | verdict |
+|---|---|---|---|---|
+| radau | ExpG (nonlinear) | 4 | 3.02 3.10 3.18 | DEFICIT 0.82 |
+| radau | RC (**LINEAR control**) | 4 | 3.10 3.12 3.19 | DEFICIT 0.81 |
+| radau | C-V loop (**INDEX 2**) | 4 | 4.03 4.03 4.01 | **no deficit** |
+| TR-BDF2 | ExpG (nonlinear) | 3 | 1.93 1.84 1.77 | DEFICIT 1.23 |
+| TR-BDF2 | RC (**LINEAR control**) | 3 | 1.88 1.88 1.84 | DEFICIT 1.16 |
+| TR-BDF2 | C-V loop (**INDEX 2**) | 3 | 2.88 2.95 2.97 | **no deficit** |
+
+**The index-2 circuit is the one with NO deficit** — the opposite of an index effect. ESDIRK43 and GLM3 read
+the same way (0.82–1.94 on ExpG, none on the C-V loop).
+
+**⚠ And it is not the nonlinearity either.** The RC control is ExpG's topology with the nonlinear conductance
+replaced by a resistor and shows the same deficit to two decimals. Both candidate explanations refuted by one
+pair of rows.
+
+**WHAT IT ACTUALLY IS: `σ_min(J)` scaling with `h`.**
+
+| fixture | `σ_min(J)` at h=2e-5 → 2.5e-6 | |
+|---|---|---|
+| RC control | 1.0146e-07 → 1.3557e-08 | ~`h` → `J⁻¹ ~ 1/h` → one order lost |
+| C-V loop | 2.0500e-09 → 2.0062e-09 | **constant** (it is `‖C‖`) → nothing lost |
+
+The discriminator is topological: a circuit with a purely RESISTIVE path from a source has a direction of `J`
+carrying no capacitance, whose singular value is `~h·G`; a C-V loop's smallest direction is capacitive and is
+floored at `‖C‖`. **Which directions carry reactance** — not the index, not the nonlinearity.
+
+**WHAT THIS LICENSES.** The controller uses `dt_next = dt·SAFETY·err^(−1/(ORDER+1))`, so a wrong estimate
+order makes the exponent wrong AND the estimate inflated: steps stay smaller than the accuracy warrants. The
+target is identifiable at realistic step sizes — `σ_min(J)` comes from a matrix already assembled and factored
+every step — so "does this circuit lose an order" is a **per-step measurement rather than an assumption**, and
+it is correct on circuits (like the C-V loop) where no correction is wanted at all.
+
+⚠ That is the measurement, not the fix. Deflating an error estimate is exactly how accuracy is silently lost,
+so any correction must be gated **two-sided**: the same error against an independent fine reference AND fewer
+steps. Either alone is just a looser tolerance.
+
+⚠ The locality result still stands and is what makes a deflation admissible at all: the `1/h` contaminates the
+estimate PER STEP and does not compound, so correcting it cannot hide a growing error. But it was established
+below the turn on an index-2 fixture, and the deficit it was meant to explain is neither of those things —
+two separate facts that I had joined into one wrong story.
