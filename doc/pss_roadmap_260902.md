@@ -14029,3 +14029,50 @@ check what they have in COMMON and build the case that lacks it.** Here the comm
 algebraic constraint at all", invisible precisely because every fixture had one. Their own first run of this
 test swept `1e-6 … 1e-9` against fixtures whose `‖C‖/‖G‖` was ~7e-7 — straddling the turn — and read `a ≈ 0`
 for all three, which would have "confirmed" the probe cannot separate them.
+
+### `topological_index` gains the index-0 rung (Andreas: "Do 2 then 3", 2026-09-11)
+
+The function was **floored at 1 by construction** and answered 1 for an implicit ODE, silently. Estevez
+Schwarz & Tischendorf's criterion is "index 2 iff a C-V loop or an L-I cutset, otherwise 1"; Theorem 3.47's
+index-0 case — a capacitive path from every node to datum AND no voltage sources — was recorded in the
+docstring as something the theory "adds" and was never implemented. Now it is, and `index` can be 0.
+
+**How it was found is the part worth keeping**: a numerical probe read index 0 for a van der Pol and I
+CLAMPED it to agree with this function — agreeing for the wrong reason, against a reference that could not
+represent the answer.
+
+**The independent cross-check is the rank condition, and it is what makes this more than a restatement:
+index 0 IFF the reduced `C` is NONSINGULAR**, which is exactly what an implicit ODE is. Asserted in both
+directions:
+
+| fixture | topological | rank C full? | σ_min(C) |
+|---|---|---|---|
+| van der Pol | **0** | YES | 1.00e+00 |
+| ExpG | 1 | no | 0 |
+| C-V loop | 2 | no | 0 |
+
+⚠ **An inductor does not spoil index 0**, which a reading of the theorem's wording alone might get wrong: the
+flux term makes that branch row differential, not algebraic. The van der Pol carries one and is the case that
+shows it.
+
+**⚠⚠ AND A PINNED LIMITATION FOUND WHILE GATING IT**: `_TI_CAPACITIVE` matches the built-in `C` class only, so
+a BEHAVIOURAL charge is INVISIBLE to the topological route — including to the C-V loop test, which predates
+this. Measured on the branch fixture, whose `CubicCap` carries a real `q`: `cap_path_to_datum` is False
+because the capacitor cannot be seen. **Its agreement with the rank test there is COINCIDENTAL** — topological
+says 1 because it is blind, rank says 1 because `C` vanishes at that operating point — which is why the
+agreement is asserted only on fixtures both routes can see. Pre-existing, not introduced here, and now
+pinned rather than latent.
+
+Gated by `test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_test`, verified to fail
+against the floored behaviour.
+
+⚠⚠ **AND THE SUITE'S OWN CROSS-CHECK CAUGHT THE INTERACTION** — `test_the_topological_index_agrees_with_an_
+incidence_RANK_criterion` failed on the `tank` fixture, reading (0, 1), **and it was right to fail.** The tank
+is C + L with no voltage source; its reduced `C` is NONSINGULAR (2×2, rank 2, σ_min 1.0), so it is genuinely
+index 0. **Lemma 3.45's rank criterion is ALSO FLOORED AT 1** — its conditions distinguish 1 from 2 and cannot
+express 0, exactly the limitation ES&T has — so the comparison is now on the 1-vs-2 axis, with the reason
+stated at the assertion. ⚠ Folding the index-0 rung in there would compare two floored criteria and prove
+nothing; the cross-check for that rung is a different instrument, `σ_min(C)`.
+
+That is two floored references in this tree, both found in one afternoon, and the second only because adding
+the missing rung made the first one disagree.

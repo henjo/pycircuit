@@ -292,18 +292,18 @@ def topological_index(cir):
     rank iff no C-V loop -- under the same hypothesis, "let all current and
     voltage sources be independent"; Theorem 3.47 adds the index-0 case
     (a capacitive path from every node to datum AND no voltage sources) and
-    ⚠⚠ AND IT IS FLOORED AT 1 BY CONSTRUCTION, which matters for anything that
-    validates against it.  The criterion is "index 2 IF AND ONLY IF the network
-    contains a C-V loop or an L-I cutset, OTHERWISE 1", so it CANNOT return 0
-    and will answer 1 for a circuit that is an implicit ODE.  MEASURED
-    2026-09-11 on the van der Pol fixture (C, L and a BSource, no voltage
-    source): its reduced `C` is NONSINGULAR -- rank 2 of 2, sigma_min 1.0 --
-    which is index 0, and this function reports 1.  Theorem 3.47's index-0
-    case (a capacitive path from every node to datum AND no voltage sources)
-    is the gap, noted below as "adds" and still not implemented.  ⚠ A
-    downstream check that agrees with this function on such a circuit is
-    agreeing for the wrong reason: `benchmarks/defect_locality.py` had a clamp
-    inserted for exactly that agreement and it has been removed.
+    ⚠⚠ IT USED TO BE FLOORED AT 1 BY CONSTRUCTION, and that is fixed as of
+    2026-09-11.  Estevez Schwarz & Tischendorf's criterion is "index 2 IF AND
+    ONLY IF the network contains a C-V loop or an L-I cutset, OTHERWISE 1", so
+    it could not return 0 and answered 1 for an implicit ODE -- SILENTLY, while
+    the line below already recorded Theorem 3.47's index-0 case as something
+    the theory "adds".  Found because a numerical probe read index 0 for a van
+    der Pol and was CLAMPED to agree with this function, which was agreeing for
+    the wrong reason.  Theorem 3.47's case is now implemented: `index` can be
+    0, and `info['cap_path_to_datum']` says whether that test was reached and
+    what it found.  ⚠ The rank condition is the independent cross-check --
+    index 0 IFF the reduced `C` is NONSINGULAR, an implicit ODE -- and it is
+    gated as such.
 
     closed-form projectors (3.61)/(3.62).  ⚠ THIS LINE SAID "not implemented"
     UNTIL 2026-09-10 AND WAS STALE BY A DAY: the rank form IS implemented, as
@@ -579,7 +579,37 @@ def topological_index(cir):
                       'kinds': kinds, 'unclassified': unclassified,
                       'provisional': bool(unclassified)}
     index = 2 if (loop or cutset) else 1
+    ## ⚠⚠ THE INDEX-0 RUNG, Theorem 3.47 (added 2026-09-11).  Estevez Schwarz &
+    ## Tischendorf's criterion is "2 iff a C-V loop or an L-I cutset, otherwise
+    ## 1" and is FLOORED AT 1 BY CONSTRUCTION, so this function used to answer
+    ## 1 for an implicit ODE -- SILENTLY, and its own docstring had recorded
+    ## the omission all along.  MEASURED on a van der Pol (C, L and a BSource,
+    ## no voltage source): its reduced `C` is NONSINGULAR, rank 2 of 2 with
+    ## sigma_min 1.0, which is index 0.
+    ##
+    ## The condition is "a capacitive path from every node to datum AND no
+    ## voltage sources": with no voltage sources the only branch-current
+    ## unknowns are inductive, and each carries `L di/dt` in `q`, so every row
+    ## of `C` has a reactive entry and `C` is nonsingular.
+    ##
+    ## ⚠ An INDUCTOR does not spoil it, which is the case a reading of the
+    ## theorem's wording alone might get wrong -- the flux term makes that row
+    ## differential, not algebraic.  The van der Pol is exactly that shape and
+    ## the rank cross-check agrees.
+    cap_to_datum = None
+    if index == 1 and not any(kinds[nm] == 'V' for nm in cir.elements):
+        _pc, _cc, _ct, cfind = forest(
+            [nm for nm in cir.elements if kinds[nm] == 'C'])
+        try:
+            datum = cir.get_node_index(gnd)
+        except Exception:                                      # noqa: BLE001
+            datum = None
+        if datum is not None:
+            cap_to_datum = all(cfind(i) == cfind(datum) for i in range(nn))
+            if cap_to_datum:
+                index = 0
     return index, {'loop': loop, 'cutset': cutset,
+                   'cap_path_to_datum': cap_to_datum,
                    'v_loop': [], 'i_cutset': [],
                    'ill_posed': False,
                    'kinds': kinds, 'unclassified': unclassified,

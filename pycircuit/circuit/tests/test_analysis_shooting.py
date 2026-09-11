@@ -18564,7 +18564,21 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
         cir = build()
         traversal, _info = topological_index(cir)
         rank, no_cutset, no_loop = rank_index(cir)
-        assert traversal == rank, (label, traversal, rank)
+        ## ⚠⚠ COMPARED ON THE 1-vs-2 AXIS, because LEMMA 3.45 IS ALSO FLOORED
+        ## AT 1.  Its two conditions -- `[A_C A_R A_V]` full row rank iff no
+        ## L-I cutset, `Q_C^T A_V` full column rank iff no C-V loop --
+        ## distinguish 1 from 2 and cannot express 0, the same limitation
+        ## Estevez Schwarz & Tischendorf has.  When the index-0 rung was added
+        ## to `topological_index` (2026-09-11) this cross-check FAILED on the
+        ## `tank` fixture, reading (0, 1), and it was RIGHT TO: the tank is
+        ## C + L with no voltage source, its reduced `C` is NONSINGULAR (2x2,
+        ## rank 2, sigma_min 1.0), and it is genuinely index 0.  The traversal
+        ## is correct and the rank criterion cannot see it.
+        ## ⚠ The cross-check for THAT rung is a different instrument,
+        ## `sigma_min(C)`, in `test_topological_index_reports_the_index_0_rung
+        ## _and_agrees_with_the_rank_test`.  Folding it in here would compare
+        ## two floored criteria and prove nothing.
+        assert max(traversal, 1) == rank, (label, traversal, rank)
         seen[label] = (rank, no_cutset, no_loop)
     ## the two index-1 topologies pass BOTH conditions
     assert seen['tank'] == (1, True, True) and seen['tank+RC'] == (1, True, True), seen
@@ -19203,3 +19217,88 @@ def test_the_branch_check_reports_on_the_paths_it_cannot_confirm():
                      fixed_timestep=True)
         assert getattr(tr.statistics, 'branch_screens_unconfirmed', 0) == 0
         assert getattr(tr.statistics, 'branch_points', 0) == 0
+
+
+def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_test():
+    """⚠⚠ THE FUNCTION USED TO BE FLOORED AT 1 AND ANSWERED 1 FOR AN IMPLICIT
+    ODE, SILENTLY.
+
+    Estevez Schwarz & Tischendorf's criterion is "index 2 if and only if the
+    network contains a C-V loop or an L-I cutset, otherwise 1" — it cannot
+    return 0. Theorem 3.47's index-0 case (a capacitive path from every node to
+    datum AND no voltage sources) was recorded in the docstring as something
+    the theory "adds" and was never implemented, so a van der Pol read 1.
+
+    How it was found is the part worth keeping: a NUMERICAL probe read index 0
+    for that circuit and was CLAMPED to agree with this function — agreeing
+    for the wrong reason, against a reference that could not represent the
+    answer. The clamp is gone and the rung is implemented.
+
+    ⚠ THE INDEPENDENT CROSS-CHECK is the rank condition, and it is what makes
+    this more than a restatement: **index 0 IFF the reduced `C` is
+    NONSINGULAR** — that is exactly what an implicit ODE is. Asserted in both
+    directions on all three fixtures.
+
+    ⚠ AN INDUCTOR DOES NOT SPOIL INDEX 0, which a reading of the theorem's
+    wording alone might get wrong: the flux term makes that branch row
+    differential, not algebraic. The van der Pol carries one and is the case
+    that shows it.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.circuit import gnd as _gnd, defaultepar
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.analysis import remove_row_col
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.shooting import topological_index
+    from pycircuit.circuit.integrator import Gear2Integrator
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from noise_floor_sources_off import vdp
+    from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
+                                                              PER)
+    from pycircuit.circuit.tests.test_glm import _cv_loop
+
+    def c_is_nonsingular(cir):
+        tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-12)
+        iref = cir.get_node_index(_gnd)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            x = np.asarray(DC(cir, refnode=_gnd).solve().x,
+                           dtype=float).ravel()
+        C = np.asarray(cir.C(x, defaultepar), dtype=float)
+        (Cr,) = remove_row_col((C,), iref, tr.toolkit)
+        Cr = np.asarray(Cr, dtype=float)
+        sv = np.linalg.svd(Cr, compute_uv=False)
+        return int((sv > 1e-12 * max(sv.max(), 1e-300)).sum()) == Cr.shape[0]
+
+    cases = [(lambda: vdp()[0], 'van der Pol', 0),
+             (lambda: _expg_fixture(PER), 'ExpG', 1),
+             (lambda: _cv_loop(1e-3), 'C-V loop', 2)]
+    for build, name, want in cases:
+        cir = build()
+        idx, info = topological_index(cir)
+        assert idx == want, (name, idx, want)
+        ## and the two routes must agree, in BOTH directions
+        assert (idx == 0) == c_is_nonsingular(build()), (name, idx)
+
+    ## the index-0 verdict reports what it tested
+    _i, info = topological_index(vdp()[0])
+    assert info['cap_path_to_datum'] is True, info
+
+    ## ⚠ A PINNED LIMITATION, not an aspiration: `_TI_CAPACITIVE` matches the
+    ## built-in `C` class only, so a BEHAVIOURAL charge is INVISIBLE to the
+    ## topological route -- including to the C-V loop test, which predates
+    ## this.  Measured on the branch fixture, whose `CubicCap` carries a real
+    ## `q`: `cap_path_to_datum` is False because the capacitor cannot be seen.
+    ## Its agreement with the rank test there is COINCIDENTAL -- topological
+    ## says 1 because it is blind, rank says 1 because `C` vanishes at that
+    ## operating point -- which is why the agreement above is asserted only on
+    ## fixtures both routes can see.
+    from branch_selection import build as branch_build
+    cir = branch_build(-1.0)
+    assert hasattr(cir['cq'], 'q')
+    _i, info = topological_index(cir)
+    assert info['cap_path_to_datum'] is False, info
