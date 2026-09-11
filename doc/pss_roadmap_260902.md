@@ -14362,3 +14362,104 @@ INITIAL CONDITIONS from CONSISTENT INITIAL VALUES — different objects. At inde
 `Π_can(a)x(a) = Π_can(a)x_a` always. **So at index 1 one does not need a consistent starting value — one needs
 the right projection of an arbitrary one.** If the opening step here works to produce a consistent value, that
 may be effort spent on the wrong object. Worth a look; not looked at.
+
+#### The true-local-error pass: the estimator deficit does not survive it
+
+The preceding section flagged that every estimator verdict in this arc was
+measured against the DECLARED `EMBEDDED_ORDER + 1`, and asked for its own pass
+with the true local error as the reference throughout.  That pass is done
+(`benchmarks/estimator_deficit.py`, `true_local_pass` / `crossover` /
+`reference_control`).
+
+**There is no order deficit.**  Against the true local state error -- one step
+of `h` from a state taken from a run 64x finer, compared with that run at
+`t + h` -- every estimate either matches the true local order asymptotically
+or exceeds it transiently and then turns over to match.  What remains is a
+bounded constant per (method, circuit), 1.00 to 11.7 across everything
+measured.  Worst over-statement: radau 11.7x on the C-V loop and still
+improving, costing `11.7**0.25` ~ 1.85x the steps.  Worst under-statement:
+ESDIRK43 at 0.415, i.e. a true error 2.4x the estimate, flat rather than
+growing.  TR-BDF2 on the C-V loop reads 1.00 on all five grids.
+
+What the older sections were reading as an estimator defect is STIFF ORDER
+REDUCTION IN THE SOLUTION.  The methods do not have their declared order on
+these problems; the estimate tracks the order they actually have.
+
+**Both candidate fixes were aimed backwards, and so is the screen behind
+them.**  `sigma_min(J) ~ h` fires on the RC and stays silent on the C-V loop,
+but the RC is where the estimate is CLOSEST to the true local error (0.4-0.8)
+and the C-V loop is where it is furthest (11.7-408).  Deflating where the
+screen fires would push an already-low estimate lower.  A stiffly-accurate
+embedded formula (Guenther, estimate = stage increment, no filter) removes an
+order loss that is not there.  Recalibrating the controller exponent assumes
+the declared order is wrong for the ESTIMATE; it is not.
+
+**Recommendation: park the arc.**  Nothing here justifies a change to the
+estimator, the controller, or the method set.  The residual is a bounded
+constant, in the conservative direction for the default.
+
+Two instrument failures are pinned in the benchmark rather than remembered:
+
+  - the CLOCK RESTART (`_march`): starting the one-step run at `t = 0`
+    evaluated the source at the wrong phase and made an order-5 method read
+    order 1.  Caught because a local error cannot be `O(h)`.
+  - the MOVING PHASE (`_start_state`): starting at `t0 = (nref-1)*h` put every
+    grid at a different phase of the sinusoid, so the local-error coefficient
+    `C(t)` moved between the very points whose ratio is the order.  It
+    contaminated the ORDERS only; the `est/true` ratio was immune, both sides
+    coming from the same step.  The tell was radau's estimate reading 3.93 in
+    one harness and 3.19 in the other -- the same quantity, two answers.
+
+And one near-miss worth keeping.  On three grids ESDIRK43's C-V loop ratio
+reads 8.05 -> 2.05 -> 0.515, a clean geometric fall through 1, estimate at
+order 4 against a true order 2 -- an estimate going unboundedly blind, which
+is an accuracy alarm.  Two more grids show it turns over: the estimate's order
+drops 3.99 -> 2.32 -> 2.00 to meet the true order and the ratio flattens at
+0.415.  THREE POINTS WERE ENOUGH TO DRAW A LINE AND WRONG ABOUT WHERE IT WENT.
+
+Controls that passed: `reference_control` re-runs rows against ESDIRK43 at
+`h/128` in place of radau at `h/64` -- true local orders identical to three
+digits, so a shared-method reference is not hiding a shared error.  Radau's
+true local order 3.01 on the index-2 C-V loop is the independently measured
+"order 5 differential / 3 algebraic" split (HLR Thm 5.9) arriving from a
+second direction.
+
+Not readable from the table: the ExpG rows are pre-asymptotic at these step
+sizes and are excluded (the RC control is ExpG's topology with the
+nonlinearity removed, and is asymptotic).  The RC true orders are still
+drifting upward at N=1600 (3.09 -> 3.48), so RC order values are local, not
+settled; the C-V loop rows are settled.
+
+##### What the pass opened, and did NOT settle
+
+docs-46 relayed Baechle 2007 Thm 2.26 (PhD thesis, index-1 DAEs in circuit
+simulation): for an IRK of classical order `p` satisfying `C(q)`, with
+consistent initial values and `d g_2 / d y` having a BOUNDED INVERSE near the
+solution, a STIFFLY ACCURATE method converges at `p` in BOTH components.  All
+three methods here are stiffly accurate with `R(inf) = 0` and the RC is
+index 1, so the theorem predicts `p`.  We measure below it.  The candidate
+named in the theorem itself is the bounded inverse -- which is exactly what a
+reactance-free direction threatens, and exactly what the `sigma_min` screen
+detects.  So the screen may be aimed at the right quantity after all, just at
+the wrong consequence: not deflating an estimate, but flagging where a method
+does not have the order it advertises.
+
+⚠ THE IDENTIFICATION IS UNVERIFIED IN BOTH DIRECTIONS.  Neither of us has
+shown that `d g_2 / d y` is the same object as the `sigma_min` direction; that
+needs the index-1 `(x, y)` splitting made explicit for the RC and the Jacobian
+block extracted.  And `global_order_control()` does not settle whether we are
+below `p` at all: the radau rows sit within 1-10x of the INNER SOLVE's own
+`reltol = 1e-14` (1.27e-13 on the RC, 2.37e-15 on the C-V loop), the RC rows
+are still rising at the finest grid, and the C-V loop is index 2 and outside
+the theorem.  A conclusive version needs a tightened inner solve, grids in the
+asymptotic regime, and the error split by component instead of a max-norm.
+
+One thing the control DOES establish: global order equals LOCAL order here,
+row for row, instead of the `local = global + 1` of the ODE case.  The
+endpoint error is one local error -- `R(inf) = 0` damps every earlier
+algebraic contribution -- so the classical local/global relation cannot be
+used to reason about any of these numbers.
+
+NOT STARTED.  This is a question about the SOLUTION's order, not the
+estimator's, and it bears on the "radau is the default because it is accurate"
+decision.  Owner's call.
