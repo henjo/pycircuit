@@ -13826,3 +13826,29 @@ Extending it found three defects, all mine, and the third is the one worth carry
 ⚠ Defect 3 is the same shape as the day's other instrument failures: a quantity that looks like the thing
 being measured, agrees with itself perfectly, and is not it. Here the tell was that the "second solution" was
 numerically equal to the perturbed seed.
+
+#### Closing the coverage holes — and a diagnostic that changed the simulation (2026-09-11)
+
+I reported the coupled path as the last gap. It was not: **three more solve paths had no branch check** —
+Radau's opt-in transform, the coupled PCNR step and the multistep PCNR step — each carrying its own iteration
+rather than going through `_newton`. For a default-on diagnostic a silent coverage hole is the worst failure
+mode, since the user gets no warning and no way to know the check did not run.
+
+**⚠⚠ AND EXTENDING IT EXPOSED A DEFECT IN WHAT WAS ALREADY SHIPPED: the check was changing the simulation.**
+The confirmation re-solves a step from a perturbed seed, and every solve path here calls `cir.limit`, which
+for a junction device WRITES `_vlim` on the instance. So the speculative solve left the limiting state at the
+ALTERNATIVE's value — and `Diode.G` linearises around `_vlim`, so the next step's Jacobian was taken at the
+wrong point. **MEASURED** on a rank-dropping circuit carrying a diode: `_vlim` read `0.0` with
+`branch_check='off'` and `0.10166261963824502` with it on, while the step's own answer was unchanged. A
+LATENT corruption — it only bites once the screen fires, which is why the full suite never saw it. Fixed with
+the documented re-sync `limit(x, x)` at zero delta, applied after every confirmation whether or not it found
+anything, on both the single-Newton and coupled paths, and gated.
+
+**What the three remaining paths get is the SCREEN, not the confirmation.** None of their loops is factored to
+be re-entered from a supplied seed, and wiring one means restructuring three solve loops — NOT DONE. They
+report the rank drop and say the multiplicity test did not run, counted separately as
+`branch_screens_unconfirmed` so it is never confused with a confirmed `branch_points`, which had a second
+solution in hand. ⚠ The honest limit, asserted in the gate rather than hidden: an unconfirmed screen CANNOT
+separate the repelling fixture from the attracting one — both report.
+
+Ordinary circuits stay quiet on every path and on both transform settings.

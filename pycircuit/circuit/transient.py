@@ -921,6 +921,7 @@ class Transient(Analysis):
                 direction = self.toolkit.concatenate(
                     (direction[:self.irefnode], direction[self.irefnode + 1:]))
             alt = self._branch_confirm(func, x_res, direction)
+            self._branch_restore_limits([xf])
             if alt is None:
                 return
             self._branch_count('branch_points')
@@ -958,9 +959,7 @@ class Transient(Analysis):
 
         ⚠ Perturbing one stage is not enough and would be a different question:
         the three stages are unknowns of ONE Newton, so a second root of the
-        block is what "the step equation had several roots" means here.  The
-        perturbation goes on every stage at once, along the null direction of
-        whichever stage's `C` collapsed.
+        block is what "the step equation had several roots" means here.
         """
         if getattr(self, 'branch_check', 'on') != 'on':
             return
@@ -989,8 +988,8 @@ class Transient(Analysis):
             ## row, and its residual is EXACTLY ZERO because it is the same
             ## physical solution.  Measured: `alt` came back as
             ## [0.7071, 0.7071] with `r_alt = 0.0`, and that was 5 false alarms
-            ## out of 5 on the attracting control.  The reference component is
-            ## zeroed, and the fallback direction is not constant.
+            ## out of 5 on the attracting control -- which the residual check
+            ## could not catch, the residual being genuinely zero.
             n = len(np.asarray(Y[0], dtype=float))
             if direction is not None:
                 d = np.asarray(direction, dtype=float).copy()
@@ -1003,54 +1002,30 @@ class Transient(Analysis):
             if dn <= 0.0:
                 return
             d = d / dn
-            scale = max(float(np.max([np.max(np.abs(np.asarray(Yi, dtype=float)))
+            scale = max(float(np.max([np.max(np.abs(np.asarray(Yi,
+                                                               dtype=float)))
                                       for Yi in Y])), 1.0)
             base = np.array([np.asarray(Yi, dtype=float) for Yi in Y])
-            for mag in (1.0, 0.1):
-                for sign in (1.0, -1.0):
-                    seed = [np.asarray(seed0[i], dtype=float)
-                            + sign * mag * scale * d for i in range(len(seed0))]
-                    try:
-                        alt = stage_newton(seed)
-                    except Exception:                          # noqa: BLE001
-                        continue
-                    altm = np.array([np.asarray(a, dtype=float) for a in alt])
-                    gap = float(np.max(np.abs(altm - base)))
-                    if gap <= 1e3 * self.par.reltol * scale:
-                        continue
-                    ## ⚠⚠ AND IT MUST ACTUALLY BE A ROOT.  `_stage_newton` can
-                    ## hand the SEED BACK, which a pure distance test reads as
-                    ## a second solution -- measured, the "alternative" was
-                    ## 0.7071067811865475 in every component, exactly the
-                    ## perturbed seed, and it produced 5 FALSE ALARMS out of 5
-                    ## on the ATTRACTING control where the solution is unique.
-                    ## ⚠ A FIXED-POINT TEST DOES NOT CATCH THAT: re-solving
-                    ## from a seed the solve hands back returns it again and
-                    ## the test passes vacuously.  So the BLOCK RESIDUAL is
-                    ## assembled and measured -- the alternative has to solve
-                    ## the equations, not merely be a different vector.
-                    try:
-                        r_alt = residual([a.copy() for a in altm])
-                        r_base = residual([b.copy() for b in base])
-                    except Exception:                          # noqa: BLE001
-                        continue
-                    if r_alt > max(1e3 * r_base, 1e-9 * scale):
-                        continue
-                    if True:
-                        self._branch_count('branch_points')
-                        if not getattr(self, '_branch_warned', False):
-                            self._branch_warned = True
-                            logging.warning(
-                                'transient: THE COUPLED STAGE SYSTEM HAD MORE '
-                                'THAN ONE ROOT at t=%.6g s. rank C fell below '
-                                'its structural value at one of the stages, '
-                                'and re-solving the block from a different '
-                                'seed converged to a DIFFERENT solution '
-                                '(largest component differs by %.3g). The '
-                                'answer returned is one of several valid ones. '
-                                'Set branch_check="off" to skip this test.',
-                                float(getattr(self.epar, 't', 0.0) or 0.0), gap)
-                        return
+            try:
+                gap = self._branch_coupled_scan(stage_newton, seed0, base, d,
+                                                scale, residual)
+            finally:
+                ## ⚠ ALWAYS, however the scan leaves: every speculative solve
+                ## has written the devices' limiting state
+                self._branch_restore_limits(list(base))
+            if gap is None:
+                return
+            self._branch_count('branch_points')
+            if not getattr(self, '_branch_warned', False):
+                self._branch_warned = True
+                logging.warning(
+                    'transient: THE COUPLED STAGE SYSTEM HAD MORE THAN ONE '
+                    'ROOT at t=%.6g s. rank C fell below its structural value '
+                    'at one of the stages, and re-solving the block from a '
+                    'different seed converged to a DIFFERENT solution (largest '
+                    'component differs by %.3g). The answer returned is one of '
+                    'several valid ones. Set branch_check="off" to skip this '
+                    'test.', float(getattr(self.epar, 't', 0.0) or 0.0), gap)
         except Exception as exc:                               # noqa: BLE001
             if not getattr(self, '_branch_error', None):
                 self._branch_error = repr(exc)
@@ -1058,6 +1033,107 @@ class Transient(Analysis):
                                 '(%s); it is disabled for this run and the '
                                 'solve is unaffected', self._branch_error)
             self.branch_check = 'off'
+
+    def _branch_coupled_scan(self, stage_newton, seed0, base, d, scale,
+                             residual):
+        """Try the perturbations; return the gap to a genuine second root, or
+        `None`.  Split out so the caller can restore limiting state in a
+        `finally` however this leaves."""
+        for mag in (1.0, 0.1):
+            for sign in (1.0, -1.0):
+                seed = [np.asarray(seed0[i], dtype=float)
+                        + sign * mag * scale * d for i in range(len(seed0))]
+                try:
+                    alt = stage_newton(seed)
+                except Exception:                              # noqa: BLE001
+                    continue
+                altm = np.array([np.asarray(a, dtype=float) for a in alt])
+                gap = float(np.max(np.abs(altm - base)))
+                if gap <= 1e3 * self.par.reltol * scale:
+                    continue
+                ## ⚠⚠ AND IT MUST ACTUALLY BE A ROOT.  `_stage_newton` can
+                ## hand the SEED BACK, which a pure distance test reads as a
+                ## second solution.  ⚠ A FIXED-POINT test does not catch that:
+                ## re-solving from a seed the solve hands back returns it again
+                ## and the test passes vacuously.  So the BLOCK RESIDUAL is
+                ## assembled and measured -- the alternative has to solve the
+                ## equations, not merely be a different vector.
+                try:
+                    r_alt = residual([a.copy() for a in altm])
+                    r_base = residual([b.copy() for b in base])
+                except Exception:                              # noqa: BLE001
+                    continue
+                if r_alt > max(1e3 * r_base, 1e-9 * scale):
+                    continue
+                return gap
+        return None
+
+    def _branch_screen_only(self, states, path):
+        """Screen without confirming, for the solve paths whose loops are not
+        re-enterable from a chosen seed.
+
+        ⚠ THE SILENT HOLE IS THE PROBLEM, NOT THE MISSING CONFIRMATION.  A
+        default-on diagnostic that simply does not run on some paths tells the
+        user nothing and gives them no way to find out; one that says "a rank
+        drop happened here and I could not test it" is weaker but honest.
+        These three paths -- Radau's opt-in transform, the coupled PCNR step
+        and the multistep PCNR step -- each carry their own iteration with
+        device limiting state, and none is factored to be re-entered from a
+        supplied seed.  Wiring the confirmation means restructuring three
+        solve loops, which is NOT DONE.
+
+        ⚠ Counted separately (`branch_screens_unconfirmed`) so the two are
+        never confused: a confirmed `branch_points` had a second solution in
+        hand, this did not.
+        """
+        if getattr(self, 'branch_check', 'on') != 'on':
+            return
+        try:
+            for st in states:
+                hit, _d = self._branch_screen(st)
+                if not hit:
+                    continue
+                self._branch_count('branch_screens_unconfirmed')
+                if not getattr(self, '_branch_warned', False):
+                    self._branch_warned = True
+                    logging.warning(
+                        'transient: rank C fell below its structural value at '
+                        't=%.6g s, which is where a step equation can have '
+                        'more than one root -- but the multiplicity test is '
+                        'NOT WIRED on this solve path (%s), so whether the '
+                        'answer is one of several was not determined. See '
+                        'branch_screens_unconfirmed in the statistics.',
+                        float(getattr(self.epar, 't', 0.0) or 0.0), path)
+                return
+        except Exception as exc:                               # noqa: BLE001
+            if not getattr(self, '_branch_error', None):
+                self._branch_error = repr(exc)
+            self.branch_check = 'off'
+
+    def _branch_restore_limits(self, states):
+        """Put every device's limiting state back where the ACCEPTED solution
+        leaves it.
+
+        ⚠⚠ A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE
+        DID.  The confirmation re-solves the step from a perturbed seed, and
+        every solve path in this file calls `cir.limit`, which for a junction
+        device WRITES `_vlim` on the instance -- so a speculative solve leaves
+        the limiting state at the ALTERNATIVE's value.  `Diode.G` linearises
+        around `_vlim`, so the NEXT step's Jacobian is then taken at the wrong
+        point.  MEASURED on a rank-dropping circuit with a diode: `_vlim` read
+        0.0 with `branch_check='off'` and 0.1017 with it on, while the step's
+        own answer was unchanged -- a latent corruption that only bites once
+        the screen fires, which is why the suite never saw it.
+
+        `limit(x, x)` is the documented re-sync: it sets `_vlim` to `x` at zero
+        delta, exactly as the PCNR coupled step does at its own convergence.
+        """
+        try:
+            for st in states:
+                self.cir.limit(np.asarray(st, dtype=float),
+                               np.asarray(st, dtype=float), self.epar)
+        except Exception:                                      # noqa: BLE001
+            pass
 
     def _branch_count(self, name):
         """Count on `statistics` when there is one, on the instance otherwise
@@ -2891,6 +2967,8 @@ class Transient(Analysis):
                 ## and its own predictor node, exactly as the limiting
                 ## path records one -- symmetry is what gate 13-6 asks for
                 self._pred_pending = (t, ())
+                ## BRANCH SCREEN (no confirmation on this path)
+                self._branch_screen_only([x], 'multistep PCNR')
                 return x, feval, J, f
 
         raise NoConvergenceError(
@@ -3617,6 +3695,9 @@ class Transient(Analysis):
         self._Geq = a33 * h * G3
         self._effective_method = 'RadauIIA3Integrator'
         self._companion_coeffs = None
+        ## BRANCH SCREEN (no confirmation on this path -- see
+        ## `_branch_screen_only`)
+        self._branch_screen_only([Y1, Y2, Y3], 'coupled PCNR')
         self._rk_Y = [Y1, Y2, Y3]
         ## predictor nodes for the NEXT step; promoted only on accept
         self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
@@ -4237,6 +4318,9 @@ class Transient(Analysis):
         self._Geq = a33 * h * G3
         self._effective_method = 'RadauIIA3Integrator'
         self._companion_coeffs = None
+        ## BRANCH SCREEN (no confirmation on this path -- see
+        ## `_branch_screen_only`)
+        self._branch_screen_only([Y1, Y2, Y3], "Radau's transform fast path")
         self._rk_Y = [Y1, Y2, Y3]
         ## predictor nodes for the NEXT step; promoted only on accept
         self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))

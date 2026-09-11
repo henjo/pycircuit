@@ -19047,3 +19047,159 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     finally:
         Transient.branch_check = prev
     assert s_off == 0 and p_off == 0, (s_off, p_off)
+
+
+def test_the_branch_check_does_not_disturb_device_limiting_state():
+    """⚠⚠ A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE
+    DID.  The confirmation re-solves a step from a perturbed seed, and every
+    solve path in `transient.py` calls `cir.limit`, which for a junction device
+    WRITES `_vlim` on the instance.  So the speculative solve left the limiting
+    state at the ALTERNATIVE's value -- and `Diode.G` linearises around
+    `_vlim`, so the NEXT step's Jacobian was then taken at the wrong point.
+
+    MEASURED on a rank-dropping circuit carrying a diode: `_vlim` read 0.0 with
+    `branch_check='off'` and 0.10166261963824502 with it on, while the step's
+    own answer was unchanged.  A LATENT corruption -- it only bites once the
+    screen fires, which is why the full suite never saw it.
+
+    The fix is the documented re-sync, `limit(x, x)` at zero delta, applied
+    after every confirmation whether or not it found anything.  Asserted on
+    both the single-Newton path and the coupled one, since they restore
+    separately.
+    """
+    import warnings
+    import numpy as np
+    import sympy
+    import pycircuit.circuit.circuit as _cc
+    from pycircuit.circuit.circuit import SubCircuit, gnd as _gnd
+    from pycircuit.circuit.elements import G as _G, Diode
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter, ddt)
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import (RadauIIA3Integrator,
+                                              Gear2Integrator)
+
+    _cc.default_toolkit = numeric
+
+    class CubicCap(Behavioural):
+        instparams = [Parameter(name='c0', desc='c', unit='F', default=1.0)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return (Contribution(b.I, ddt(c0 * b.V ** 3 / 3)),)  # noqa: F821
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['cq'] = CubicCap('a', _gnd, c0=1.0)
+        c['g'] = _G('a', _gnd, g=-1.0)
+        c['gd'] = _G('a', 'b', g=1e-3)
+        c['d'] = Diode('b', _gnd, IS=1e-15)
+        return c
+
+    def march(cls, chk, npts=2, h=1.0 / 200):
+        cir = build()
+        prev = Transient.branch_check
+        Transient.branch_check = chk
+        try:
+            tr = Transient(cir, integrator=cls(), reltol=1e-11)
+            tr.irefnode = cir.get_node_index(_gnd)
+            x = np.zeros(cir.n)
+            tr.epar.t = 0.0
+            tr._begin_run(x, cir.n)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                for j in range(1, npts + 1):
+                    tr._dt_last = tr._dt if j > 1 else None
+                    tr._dt = h
+                    tr.epar.t = j * h
+                    x, _f, _J, _ = tr.solve_timestep(x, j * h)
+                    tr._push_history(x)
+        finally:
+            Transient.branch_check = prev
+        return (np.asarray(x, dtype=float), getattr(cir['d'], '_vlim', None),
+                getattr(tr, 'branch_points', 0))
+
+    for cls, name in ((RadauIIA3Integrator, 'radau (coupled)'),
+                      (Gear2Integrator, 'gear (single Newton)')):
+        x_off, v_off, p_off = march(cls, 'off')
+        x_on, v_on, p_on = march(cls, 'on')
+        ## the check must have actually run, or this proves nothing
+        assert p_on > 0 and p_off == 0, (name, p_on, p_off)
+        ## and it must have left no trace
+        assert v_off is not None and v_on is not None, (name, v_off, v_on)
+        assert abs(float(v_on) - float(v_off)) < 1e-12, (name, v_off, v_on)
+        assert np.max(np.abs(x_on - x_off)) < 1e-12, (name, x_on, x_off)
+
+
+def test_the_branch_check_reports_on_the_paths_it_cannot_confirm():
+    """⚠ THE SILENT HOLE IS THE PROBLEM, NOT THE MISSING CONFIRMATION.  Three
+    solve paths -- Radau's opt-in transform, the coupled PCNR step and the
+    multistep PCNR step -- each carry their own iteration and none is factored
+    to be re-entered from a supplied seed, so the confirmation is NOT WIRED
+    there.  A default-on diagnostic that simply does not run on some paths
+    tells the user nothing and gives them no way to find out.
+
+    So those paths run the SCREEN and say so, counted separately
+    (`branch_screens_unconfirmed`) so the two are never confused: a confirmed
+    `branch_points` had a second solution in hand, this did not.  ⚠ It
+    therefore CANNOT separate the repelling fixture from the attracting one --
+    both report -- and that is the honest limit, asserted here rather than
+    hidden.
+    """
+    import os
+    import sys
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.circuit import gnd as _gnd
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from branch_selection import build
+    from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
+                                                              PER)
+
+    def transform_run(g):
+        cir = build(g)
+        tr = Transient(cir, integrator=RadauIIA3Integrator(), reltol=1e-12)
+        tr._radau_use_transform = True
+        tr.irefnode = cir.get_node_index(_gnd)
+        x = np.zeros(cir.n)
+        tr.epar.t = 0.0
+        tr._begin_run(x, cir.n)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for j in range(1, 4):
+                tr._dt_last = tr._dt if j > 1 else None
+                tr._dt = 1.0 / 200
+                tr.epar.t = j / 200.0
+                x, _f, _J, _ = tr.solve_timestep(x, j / 200.0)
+                tr._push_history(x)
+        return (getattr(tr, 'branch_screens_unconfirmed', 0),
+                getattr(tr, 'branch_points', 0), getattr(tr, '_branch_error',
+                                                         None))
+
+    ## the hole is closed: the transform path reports the rank drop ...
+    u_bad, p_bad, e_bad = transform_run(-1.0)
+    assert e_bad is None, e_bad
+    assert u_bad > 0, u_bad
+    assert p_bad == 0, p_bad          # unconfirmed, by construction
+    ## ... and reports it on the ATTRACTING fixture too, which is the limit
+    u_ok, p_ok, _ = transform_run(1.0)
+    assert u_ok > 0, u_ok
+
+    ## and an ordinary circuit is quiet on both transform settings
+    for tf in (True, False):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(_expg_fixture(PER), integrator=RadauIIA3Integrator(),
+                           reltol=1e-10)
+            tr._radau_use_transform = tf
+            tr.solve(refnode=_gnd, tend=PER, timestep=PER / 100,
+                     fixed_timestep=True)
+        assert getattr(tr.statistics, 'branch_screens_unconfirmed', 0) == 0
+        assert getattr(tr.statistics, 'branch_points', 0) == 0
