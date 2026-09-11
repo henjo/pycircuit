@@ -286,6 +286,17 @@ def sigma_min_index(build, label, known_index, decades=22, per_decade=1):
     because pre-asymptotic".  That is exactly the trap both sessions fell into,
     and it is why the sweep here is wide by default.
 
+    ⚠⚠ `sigma_min(J)` MEASURES TWO DIFFERENT THINGS IN THE TWO WINDOWS, and
+    conflating them cost two sessions a day between them.  BELOW the turn it
+    finds the INDEX (`||J^-1|| ~ h^-(mu-1)`).  ABOVE it -- at the step sizes a
+    transient actually takes -- it finds DIRECTIONS CARRYING NO REACTANCE,
+    which is the estimator-order deficit of `benchmarks/estimator_deficit.py`.
+    The two readings look contradictory: an RC is index 1 and reads
+    `sigma_min ~ h` above the turn, which BELOW the turn would mean index 2;
+    a C-V loop is index 2 and reads `sigma_min` CONSTANT above the turn, which
+    below would mean index 1.  Exactly inverted, and both correct in their own
+    regime.  Same matrix, same quantity, different question.
+
     ⚠ There is a roundoff floor at `eps * ||C||/||G||`, below which `C/h`
     swamps `G` in the sum and `J` goes numerically singular though it is
     mathematically fine.  For these fixtures that is ~4e-25, so the usable

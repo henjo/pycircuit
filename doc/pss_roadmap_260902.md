@@ -14167,3 +14167,47 @@ steps. Either alone is just a looser tolerance.
 estimate PER STEP and does not compound, so correcting it cannot hide a growing error. But it was established
 below the turn on an index-2 fixture, and the deficit it was meant to explain is neither of those things —
 two separate facts that I had joined into one wrong story.
+
+#### Splitting raw from filtered splits the deficit into TWO defects (2026-09-11)
+
+docs-46 supplied the design spec I asked for: Hairer & Wanner IV.8 (8.18)/(8.19) — **the embedded
+COEFFICIENTS supply the order, the filter supplies only BOUNDEDNESS** at `h·λ → ∞`. *"For h → 0 we still have
+err = O(h⁴)."* So the filter is order-PRESERVING, and a deficient filtered estimate can come from either end.
+I had only ever measured the filtered one for the RK methods. Measured both:
+
+| method | fixture | want | RAW slopes | FILTERED slopes |
+|---|---|---|---|---|
+| TR-BDF2 | RC | 3 | 2.87 2.86 **2.80** | 1.88 1.88 **1.84** |
+| TR-BDF2 | C-V loop | 3 | 2.90 2.96 **2.98** | 2.88 2.95 **2.97** |
+| ESDIRK43 | RC | 4 | 2.95 2.96 **3.04** | 1.97 1.98 2.10 |
+| ESDIRK43 | C-V loop | 4 | 2.95 2.94 **2.99** | 3.89 3.96 3.69 |
+
+**DEFECT 1 — the filter, only where `σ_min(J) ~ h`.** TR-BDF2's raw estimate is 2.80–2.98 on both fixtures
+(its declared 3); the filter takes it to 1.84 on the RC and leaves it at 2.97 on the C-V loop. This is exactly
+the substitution Hairer does **not** cover: his filter uses the ODE Jacobian `df/dy`, which on a DAE with
+singular `C` does not exist, so this code substitutes the step matrix — and that substitution is not
+order-preserving when the step matrix has a direction carrying no reactance.
+
+**DEFECT 2 — ESDIRK43's embedded coefficients, independent of the filter AND of the circuit.** Its RAW
+estimate reads ~3.0 on BOTH fixtures where its declared `EMBEDDED_ORDER + 1 = 4` wants 4. That is Hairer's
+coefficient condition failing — not a filter effect and not a DAE effect — and it means the controller's
+exponent `1/(EMBEDDED_ORDER+1)` is wrong for ESDIRK43 **on every circuit**. ⚠ NOT CHANGED: `EMBEDDED_ORDER`
+drives step-size selection, so relabelling it is a behaviour change and an owner decision.
+
+⚠ A third reading worth having (Guenther 2005 p.47, relayed): for STIFFLY ACCURATE EMBEDDED ROW methods the
+estimate IS a stage increment, *"based on node potentials and branch currents only"* — no filter, no extra
+solve, nothing needing a Jacobian inverse. On that reading **the filter is a repair for a non-stiffly-accurate
+embedded formula**, and stiff accuracy removes the need for it.
+
+⚠ And Hairer supports the caution on deflation from the other side: *"both error estimators are ALWAYS ABOVE
+the actual local error, so that the code usually produces very precise results."* The conservatism is
+deliberate, so deflating it spends a safety margin someone chose on purpose.
+
+#### ⚠⚠ `σ_min(J)` measures two different things in the two windows
+
+Worth stating wherever the probe lives, or the readings look contradictory and the right one gets distrusted.
+**Below** the `‖C‖/‖G‖` turn it finds the INDEX (`‖J⁻¹‖ ~ h^-(μ-1)`). **Above** it — at the step sizes a
+transient actually takes — it finds DIRECTIONS CARRYING NO REACTANCE, which is the estimator deficit. An RC is
+index 1 and reads `σ_min ~ h` above the turn, which below would mean index 2; a C-V loop is index 2 and reads
+`σ_min` constant above the turn, which below would mean index 1. **Exactly inverted, and both correct in their
+own regime.** Conflating the windows is what cost both sessions a day.

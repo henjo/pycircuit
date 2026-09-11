@@ -49,6 +49,41 @@ assumption.  ⚠ That is the measurement, not the fix; deflating an error
 estimate is exactly how accuracy is silently lost, so any correction has to be
 gated two-sided -- same error against an independent reference AND fewer steps.
 
+⚠⚠ AND SPLITTING RAW FROM FILTERED SPLITS IT INTO TWO DEFECTS.  Hairer &
+Wanner IV.8 (8.18)/(8.19) say the embedded COEFFICIENTS supply the order and
+the filter supplies only BOUNDEDNESS at `h*lambda -> infinity` -- "for h -> 0
+we still have err = O(h^4)".  So the filter is order-PRESERVING, and a
+deficient filtered estimate can come from either end.  MEASURED, both:
+
+    method    fixture          want   RAW slopes          FILTERED slopes
+    trbdf2    RC               3      2.87 2.86 2.80      1.88 1.88 1.84
+    trbdf2    C-V loop         3      2.90 2.96 2.98      2.88 2.95 2.97
+    esdirk43  RC               4      2.95 2.96 3.04      1.97 1.98 2.10
+    esdirk43  C-V loop         4      2.95 2.94 2.99      3.89 3.96 3.69
+
+  DEFECT 1 -- THE FILTER, only where `sigma_min(J) ~ h`.  TR-BDF2's raw
+  estimate is 2.80-2.98 on BOTH fixtures (its declared 3), and the filter
+  takes it to 1.84 on the RC and leaves it at 2.97 on the C-V loop.  That is
+  the substitution Hairer does NOT cover: his filter uses the ODE Jacobian
+  `df/dy`, which on a DAE with singular `C` does not exist, so this code
+  substitutes the step matrix -- and that substitution is not order-preserving
+  when the step matrix has a direction carrying no reactance.
+
+  DEFECT 2 -- ESDIRK43'S EMBEDDED COEFFICIENTS, independent of the filter AND
+  of the circuit.  Its RAW estimate reads ~3.0 on BOTH fixtures where its
+  declared `EMBEDDED_ORDER + 1 = 4` wants 4.  That is Hairer's coefficient
+  condition failing, not a filter or a DAE effect, and it means the
+  controller's exponent `1/(EMBEDDED_ORDER+1)` is wrong for ESDIRK43 on EVERY
+  circuit.  ⚠ NOT CHANGED HERE: `EMBEDDED_ORDER` drives step-size selection,
+  so relabelling it is a behaviour change and an owner decision.
+
+⚠ A THIRD READING WORTH HAVING (Guenther 2005 p.47, relayed): for STIFFLY
+ACCURATE EMBEDDED ROW methods the estimate IS a stage increment, "based on
+node potentials and branch currents only" -- no filter, no extra solve,
+nothing needing a Jacobian inverse.  On that reading the filter is a REPAIR
+for a non-stiffly-accurate embedded formula and stiff accuracy removes the
+need for it.
+
 Run: `python benchmarks/estimator_deficit.py`
 """
 import warnings
