@@ -13918,3 +13918,51 @@ theorem" holds in the book's coordinates, not in these.
 step-matrix-goes-indefinite screen, which false-fired 4 times out of 4 because MNA with a voltage source is a
 saddle-point system. Both failures have the same root: **MNA is not a small dense system with a clean
 splitting, and a method that assumes one does not survive the assembly.**
+
+#### ⚠⚠⚠ CORRECTION: the route DOES transfer — the previous section measured the pre-asymptotic window
+
+The section above concluded that the `J^{-1}` route "does not transfer to MNA". **That is wrong, and it is
+wrong in the way this session keeps being wrong: the numbers were taken before the asymptotic regime began.**
+docs-46 supplied three corrections, all confirmed here.
+
+**(1) `cond(J)` is the wrong statistic.** It mixes `σ_max ~ C/h`, which grows trivially for any circuit with a
+capacitor and has nothing to do with the index, with `σ_min`, where the index actually lives. Use `σ_min(J)`,
+equivalently `‖J⁻¹‖₂`.
+
+**(2) The per-column probe is basis-dependent** and the which-row information does not survive a change of
+coordinates — withdrawn by its author after testing it under random invertible transforms. The
+basis-invariant part (`‖J⁻¹‖₂`) survives; the per-row part does not.
+
+**(3) The signature is asymptotic in `h`, and my sweep sat at the turning point.** Exponent of `‖J⁻¹‖` per
+decade on the index-2 C-V loop:
+
+| range | exponents | reads |
+|---|---|---|
+| 1e-3 … 1e-9 | −0.62, −0.99, −0.78 | index 1 — **wrong** |
+| 1e-9 … 1e-15 | +0.78, **+1.00, +1.00** | index 2 — right |
+
+**THE ROUTE WORKS**, measured on real MNA over the last three decades:
+
+| fixture | asymptotic exponents | max+1 | `topological_index` | |
+|---|---|---|---|---|
+| ExpG | +0.000, +0.000, +0.000 | 1 | 1 | MATCH |
+| C-V loop | +1.000, +1.000, +1.000 | 2 | 2 | MATCH |
+
+**⚠⚠ AND WHERE THE WINDOW STARTS IS NOT `C/G`.** docs-46 gave the scale as the circuit time constant
+`τ = C/G`, which here is `R·C = 2e-4`. The turn is measured at `h ≈ 1e-10` — **five orders away**. In MNA the
+VOLTAGE-SOURCE rows carry `±1` INCIDENCE ENTRIES, so `max|G|` is 1 rather than a conductance, and the scale is
+`C/max|G| = C = 2e-9`, which is the right order. **An RC reasoning puts the window in entirely the wrong
+place**, and that is what my τ estimate did when I said the sweep was "well below τ".
+
+⚠ `h ≈ 1e-10` is far below any step a transient would take here — 1e7 points per period. Not an obstacle: the
+probe FACTORS `J` at that stepsize, it does not take the step. So a runtime index measurement from two
+factorisations is viable after all, and it grades the index rather than answering yes/no at 2 — but NOT per
+row, since that part is basis-dependent.
+
+⚠ The `cond(J)` fall I reported (4.98e+02 → 3.73e+00) is real but is not evidence of anything; its
+near-reproduction elsewhere was withdrawn as coming from a fixture that scaled `B` without scaling `D`, which
+changes the DAE rather than its conditioning.
+
+⚠ What survives from the previous section unchanged: the step-matrix-goes-indefinite screen still false-fires
+4/4 on real MNA, and that is still a saddle-point fact. But "two for two" was wrong as a pattern — **this one
+transferred, and I closed it out early.**

@@ -197,27 +197,29 @@ def jinv_column_exponents(build, label, known_index, hs=(1e-6, 1e-7, 1e-8)):
     Verified by them to every digit on the book's index-1/2/3 fixtures, with
     the caveat that they could not run it on a real MNA matrix.
 
-    ⚠⚠ MEASURED HERE, AND IT DOES NOT TRANSFER.  On charge-oriented MNA:
+    ⚠⚠⚠ THE CONCLUSION FIRST RECORDED HERE WAS WRONG, AND IT WAS WRONG IN THE
+    WAY THIS SESSION KEEPS BEING WRONG: measured in the PRE-ASYMPTOTIC WINDOW.
+    It read
 
         index-1 (ExpG)      a_i = [+0.00, -0.38, +0.00]   max+1 = 1   MATCH
         index-2 (C-V loop)  a_i = [+0.00, -1.00, +0.00]   max+1 = 1   NO
 
-    `topological_index` independently calls these 1 and 2, and names the loop
-    (`vs`, `c1`, `c2`).  No column of `J^-1` grows on the index-2 circuit --
-    one SHRINKS exactly as `h` (the differential direction) and the rest are
-    flat -- so the recipe reads index 1 where the circuit is index 2.
+    and concluded the route "does not transfer to MNA".  It does.  See
+    :func:`sigma_min_index`.  What was wrong was the STATISTIC and the RANGE:
 
-    ⚠ AND `J` STAYS WELL-CONDITIONED, which is the sharper form of the same
-    fact: cond(J) reads 4.98e+02 / 5.02e+01 / 5.34e+00 / 3.73e+00 at
-    h = 1e-6 / 1e-7 / 1e-8 / 1e-9.  It DECREASES as the grid refines, where an
-    index-2 DAE is expected to give `1/h^2`.  So the index-2 character of this
-    circuit is not visible in `C/h + G` at all, and no probing of that matrix
-    can recover it.
+    * `cond(J)` mixes `sigma_max ~ C/h`, which grows trivially for any circuit
+      containing a capacitor and has nothing to do with the index, with
+      `sigma_min`, where the index actually lives.  Use `sigma_min` or
+      equivalently `||J^-1||_2` (docs-46's correction, confirmed here).
+    * the per-COLUMN probe is BASIS-DEPENDENT and the which-row information
+      does not survive a change of coordinates -- withdrawn by its author
+      after testing it under random invertible transforms.
+    * and the sweep 1e-6..1e-9 sat AT THE TURNING POINT, where the reading is
+      neither value.
 
-    The identification gap is therefore still open and is the same one: `C` in
-    this assembly is the product `A D`, and the theorem's per-row structure
-    lives in coordinates where `A` and `D` are separate.  "Needs nothing from
-    the theorem" holds in the book's coordinates and not in these.
+    ⚠ `cond(J)` falling in that window is real but is not evidence of
+    anything: its author could not reproduce the FALL with an honest row
+    scaling and withdrew the near-match as coming from a broken fixture.
     """
     from pycircuit.circuit.circuit import defaultepar
     from pycircuit.circuit.analysis import remove_row_col
@@ -243,3 +245,63 @@ def jinv_column_exponents(build, label, known_index, hs=(1e-6, 1e-7, 1e-8)):
              known_index,
              'MATCH' if abs(max(a) + 1 - known_index) < 0.25 else 'NO'))
     return a
+
+
+def sigma_min_index(build, label, known_index, kmin=9, kmax=17):
+    """The index from `sigma_min(J)`, `J = C/h + G`, in the ASYMPTOTIC window.
+
+    `||J^-1||_2 ~ h^-(mu-1)`, so the exponent plus one is the tractability
+    index.  Two factorisations and an SVD, no projector sequence and no
+    symbolic structure.
+
+    ⚠⚠ AND THE WINDOW IS THE WHOLE DIFFICULTY.  Above it the reactive term
+    `C/h` is negligible against `G`, `J` is effectively resistive and the index
+    character is ABSENT -- not weak, absent -- so the probe correctly reads 1
+    for everything.  MEASURED on the index-2 C-V loop, exponent of `||J^-1||`
+    per decade of `h`:
+
+        1e-3 .. 1e-9     -0.62  -0.99  -0.78     reads index 1   WRONG
+        1e-9 .. 1e-15    +0.78  +1.00  +1.00     reads index 2   right
+
+    ⚠⚠ WHERE THE WINDOW STARTS IS NOT `C/G`.  docs-46 gave the scale as the
+    circuit time constant `tau = C/G`, which for this fixture is `R*C = 2e-4`.
+    The turn is measured at `h ~ 1e-10`, five orders away.  In MNA the
+    VOLTAGE-SOURCE rows carry `+-1` INCIDENCE ENTRIES, so `max|G|` is 1 rather
+    than a conductance, and the scale is `C/max|G| = C = 2e-9` -- which is the
+    right order.  An RC reasoning puts the window in the wrong place entirely.
+
+    MEASURED, asymptotic exponents over the last three decades:
+
+        ExpG      +0.000 +0.000 +0.000   max+1 = 1   topological_index 1
+        C-V loop  +1.000 +1.000 +1.000   max+1 = 2   topological_index 2
+
+    ⚠ `h ~ 1e-10` is far below any step a transient would take here (1e7
+    points per period).  That is not an obstacle: this factors `J` at a probe
+    stepsize, it does not TAKE the step.
+    """
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.analysis import remove_row_col
+    from pycircuit.circuit.dcanalysis import DC as _DC
+    cir = build()
+    tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-12)
+    iref = cir.get_node_index(gnd)
+    x = np.asarray(_DC(cir, refnode=gnd).solve().x, dtype=float).ravel()
+    C = np.asarray(cir.C(x, defaultepar), dtype=float)
+    G = np.asarray(cir.G(x, defaultepar), dtype=float)
+    hs = [10.0 ** (-k) for k in range(kmin, kmax)]
+    smin = []
+    for h in hs:
+        (Jr,) = remove_row_col((C / h + G,), iref, tr.toolkit)
+        smin.append(float(np.linalg.svd(np.asarray(Jr, dtype=float),
+                                        compute_uv=False).min()))
+    a = [np.log(smin[i - 1] / smin[i]) / np.log(hs[i - 1] / hs[i])
+         for i in range(1, len(hs))]
+    asym = a[-3:]
+    print('  %-22s window starts ~ C/max|G| = %.1e   asymptotic %s'
+          % (label, np.abs(C).max() / max(np.abs(G).max(), 1e-300),
+             ' '.join('%+.3f' % v for v in asym)))
+    print('  %-22s max+1 = %.0f   known index = %d   %s'
+          % ('', round(max(asym)) + 1, known_index,
+             'MATCH' if abs(round(max(asym)) + 1 - known_index) < 0.5
+             else 'NO'))
+    return asym
