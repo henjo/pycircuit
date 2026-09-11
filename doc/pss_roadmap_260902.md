@@ -14285,3 +14285,36 @@ what a scalar Prothero-Robinson has by having no DAE structure to carry a reacta
 ⚠ The near-miss is the lesson, and it is the same one as the noise floor's and the branch probe's: I built a
 control for one variable and it moved two, and the wrong answer was *tidier* than the right one. Every fixture
 in `estimator_deficit.py` now reports `σ_min`'s exponent alongside its result.
+
+#### Does the charge-rate correction apply to the FILTERED column too? NO — measured (2026-09-11)
+
+docs-46 asked whether the unit correction that fixed the RAW column also applies to the FILTERED one. If
+radau's filtered estimate were a rate, its target would be 3 and its 3.18/3.19 would be no deficit at all,
+while 4.01 on the C-V loop would become the anomaly. **It is not a rate**, and this is settled against the
+TRUE LOCAL STATE ERROR rather than against my own docstring — the same class of mistake as the raw column.
+
+One step of size `h` from a fine-reference state (radau at `h/64`), compared with the reference at `t_n + h`:
+
+| fixture | true local error orders | est orders | est/true |
+|---|---|---|---|
+| RC | 3.86 4.02 4.12 | 3.82 3.93 3.93 | 0.34 → 0.43 |
+| C-V loop | 4.47 3.96 3.99 | 3.86 3.16 3.76 | 645 → 2005 |
+
+On the RC the estimate **tracks** the true local error — matching order, ratio O(1) and roughly constant. So
+the filtered estimate is a STATE quantity and its target is the state order. The question is answered: **no**.
+
+⚠ An instrument failure on the way, caught by the number being physically impossible: the first version
+restarted the clock at `t = 0` for the one-step run, so the source was evaluated at the wrong phase and the
+"true local error" read ORDER 1 for an order-5 method. A local error cannot be `O(h)`; that is what exposed it.
+
+**⚠⚠ AND IT OPENS SOMETHING LARGER THAT IS NOT RESOLVED HERE.** The TRUE local error reads ~4 on both
+fixtures, not the 6 an order-5 method would give on an ODE — that is real stiff order reduction. So comparing
+the estimate against a DECLARED order, which is what every measurement in the preceding sections does, is
+comparing it against a target the method does not have on these problems. Measured against the true local
+error instead, the picture moves: the RC estimate tracks it, while the C-V loop estimate **over-estimates by
+645× rising to 2005×**. That inverts which fixture looks healthy.
+
+⚠ NOT RESTATED as a conclusion, deliberately. It needs its own pass with the true local error as the
+reference throughout, and the preceding sections' verdicts should be read as "against the declared order"
+until that is done. Recording the discrepancy rather than rewriting the story around one measurement is the
+lesson of the last five corrections.

@@ -330,3 +330,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260911T080924Z,bfff943,pycircuit 10,1331.5,3184,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1141.4
 20260911T080939Z,bfff943,pycircuit/circuit/tests/test_analysis_shooting.py one_over_h_defect or index_0_rung or incidence_RANK,0.3,3,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated,0.1
 20260911T082915Z,bfff943,pycircuit 10,1168.8,3184,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1045.1
+20260911T085346Z,6856416,pycircuit 10,1198.4,3184,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1009.3
