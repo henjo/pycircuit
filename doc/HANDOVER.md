@@ -1,4 +1,78 @@
-# Handover — where the leapfrog/symbolic work stands, 2026-07-30
+# Handover
+
+> **⚠ THIS FILE COVERS TWO THREADS.**  The CURRENT state is immediately below.
+> Everything from "Handover — the leapfrog/symbolic work" onward is the OLDER
+> thread (2026-07-30) and is kept because it is still resumable, not because it
+> is current.
+
+---
+
+## CURRENT STATE — 2026-09-11
+
+**Branch `cna-jax-vectorization`, pushed to `adf0fbc`.  Nothing unpushed.**
+Verify rather than trusting this line:
+`git rev-list --count origin/cna-jax-vectorization..HEAD`.
+Merging to master remains the repo owner's call and has NOT been done.
+
+Suite: **3189 passed, 6 skipped, 3 xfailed**, ~21 min at `-n 4`.
+⚠ Two concurrent `-n 10` suites were OOM-killed on this box — run ONE suite at
+a time, and `-n 4`–`6` is what survives.
+
+**The active thread is PSS / shooting / DAE integration**, and its roadmap is
+`doc/pss_roadmap_260902.md` (14.7k lines).  That file is mostly a LOG of
+completed work; the forward-looking part is §A (capabilities) and §B
+(formulation decisions awaiting a call).  Almost everything in both is now
+marked BUILT or CLOSED.  What is genuinely open:
+
+| item | status |
+|---|---|
+| A4b output layer (AM/PM as a change of basis) | unbuilt; citations, not measurements |
+| A8 sampled / edge-jitter noise | unbuilt; **from a real circuit**, marked small |
+| A6 driven oscillators and PLLs | requested, nothing built |
+| A5 envelope-following | marked LAST; gated on the LTE/smoothness question |
+| B3 Aprille & Trick substitution | awaiting a call; would subsume two open things |
+| B4 index-2 support via independent states | awaiting a call; **priority low** — no silent wrong answer |
+| B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
+| `orbital_spectrum` amplitude | ❌ OPEN — shape checked against λ₂, AMPLITUDE validated against nothing external |
+
+**Not on that roadmap but repeatedly recommended:** the GLM JAX backend and the
+GLM PCNR stage path (the GLM thread), and three loose ends — the unexplained
+480-point row in the noise floor, the +3.0 % gear/trap coarse-fixed-grid
+regression, and the ~2 % pnoise residual.  ⛔ Wright §3.11 is PARKED by owner
+decision.
+
+### What a fresh session most needs to know
+
+⚠⚠ **`cir.G(x)` IS NOT A PURE FUNCTION OF `x`.**  `Diode` linearises around a
+stored `_vlim`.  DC, AC and transient are safe because a CONVERGED solve leaves
+the limiting state consistent with its own answer — but any NEW site that
+evaluates `G` outside a converged solve inherits the bug.  The defence is
+per-call-site by design (declaring `hidden_state` would make PSS refuse every
+diode circuit).  `test_no_analysis_answer_depends_on_a_stale_limiting_state` is
+the net.
+
+⚠⚠ **A NEGATIVE CLAIM CANNOT BE MADE PROVISIONALLY.**  A test asserting an
+ABSENCE passes vacuously on anything a classifier does not recognise.  Presence
+claims survive that ignorance; absence claims do not — so after widening the
+range of any quantity, the audit is FINITE: find the negatives.  Both live
+instances are now guarded (`topological_index`'s index-0 rung reads the absence
+off the MNA dimension; `Circuit.hidden_state` is gated by an allow-list with a
+reason per entry).
+
+⚠ **A diagnostic that changes the simulation is a defect** — twice now
+(`branch_check` left `_vlim` at a speculative solve's value; the algebraic-block
+probe needed a re-sync).  Both bracket their writes with snapshot/restore.
+
+⚠ `copy.deepcopy` of a circuit FAILS (`cannot pickle 'module' object`, the
+toolkit reference).  Do not retry it.
+
+The measurement discipline this campaign accumulated lives in
+`doc/pss_roadmap_260902.md` §D ("How these items keep failing — the shapes
+worth checking for"), and it is worth reading before starting anything new.
+
+---
+
+# Handover — the leapfrog/symbolic work, 2026-07-30
 
 **Read this first if you are picking the symbolic work back up.** The transient work
 (`doc/transient_work_plan.md`) is expected to run first and to span several sessions, so
@@ -8,7 +82,10 @@ it.
 Everything below is committed. ⚠ **The "unpushed backlog" this paragraph used to describe
 was gone as of 2026-09-01**, when `cna-jax-vectorization` was pushed to its tip. ⚠⚠ **THAT IS NO
 LONGER TRUE — 187 commits were unpushed as of 2026-09-07**, so do not read the sentence above as a
-current statement about the remote. Merging to master remains the repo owner's call and has NOT been done. Use
+current statement about the remote.  ⚠ AND NEITHER IS THAT ONE: as of **2026-09-11 the branch is
+pushed to `adf0fbc` with nothing unpushed** — see CURRENT STATE at the top of this file.  The
+lesson the two stale sentences make is the point: **no count written in a document is a statement
+about the remote**, and each correction has itself gone stale within days. Merging to master remains the repo owner's call and has NOT been done. Use
 `git log --oneline origin/cna-jax-vectorization..HEAD | wc -l` to check the current state
 rather than trusting any count written here.
 

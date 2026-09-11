@@ -14567,3 +14567,193 @@ spent the morning insisting on that in the other direction.
 WHAT IS NOT TOUCHED: the index-2 C-V loop, outside Thm 2.26 regardless, where
 `d g_2/d y` is singular by definition rather than by defect.  If a real order
 question survives in this area it is there, not on the RC.
+
+### The algebraic block made measurable — `algebraic_conditioning` BUILT (2026-09-11)
+
+Bächle 2007 Thm 2.26 (relayed) requires `d g_2 / d y` to have a BOUNDED INVERSE
+before a stiffly accurate method with `R(inf) = 0` is entitled to its classical
+order on an index-1 DAE.  That quantity is now computable from `C` and `G`
+alone, with NO index-1 `(x, y)` splitting and no null basis:
+
+    sigma_min(C + h G) / h  ->  sigma_min(Z^T G N)    as h -> 0
+
+`N = ker C` (the algebraic unknowns), `Z = ker C^T` (the algebraic equations).
+⚠ THE CONVENTION IS OURS, `J = C + a h G`, not the literature's `C/h + G`, and
+it flips every exponent.  Identification relayed; VERIFIED here on six random
+systems with non-symmetric `G` and mixed-rank `C` to six significant figures,
+plus both negative controls (singular block does not converge; `C` nonsingular
+grows like `1/h`).
+
+Four verdicts, each cross-checked against `topological_index`:
+`well-conditioned` (1), `singular` = `theta_0 > 0` (2), `no-algebraic-block`
+(0), `no-window`.
+
+**What it is for.**  A binary "is `N^T G N` singular" test cannot answer the
+case where an index changes with `rank C` FIXED — a VCCS cancelling a node's
+self conductance, which is the `e.5` situation.  This returns the NUMBER and
+tracks `G_22` down four decades.
+
+⚠⚠ **THE HAZARD IT EXISTS TO EXCLUDE.**  An absolute-tolerance rank test on
+these blocks smears the crossing into a false window of width
+`~tol*||G||/||C||`, which WIDENS AS `1/||C||` — at picofarads it swallows
+healthy operating points silently.  Measured across TWELVE decades of `C`, the
+resolution limit here is `G_22 = 2e-07` in every case.  The window is set by
+`||G||` alone.  Two things make that so, both load-bearing: `ker C` by a
+RELATIVE tolerance, and a verdict based on FLATNESS, which is scale-free.
+
+⚠⚠ **THREE READOUTS WERE WRONG BEFORE THIS ONE**, and the error is U-SHAPED so
+neither END of the probe ladder is the answer — truncation of the limit falls
+like `h`, contamination from `C`'s near-null singular values rises as `h` falls:
+
+    readout                    RC        swallowed-capacitor fixture
+    median of the ladder       1.1e-09   --
+    last usable point          2.0e-13   1.0e-04
+    flattest 3-point window    2.0e-12   2.0e-10
+
+And flatness over the WHOLE ladder is not the test either: it condemned a
+healthy block whose ratio was converging to 2.0e-04 to ten digits, because the
+coarse end was 3% off.  UNCONVERGED IS NOT NON-FLAT.  `spread - 1` ships as the
+error bound and is gated as such.
+
+⚠⚠ **THE RESOLUTION LIMIT IS A READOUT PARAMETER, NOT A PROPERTY.**  A first
+gate asserted `== 2e-7` flat, which reads as a fact about the problem and is
+not one.  BOTH knobs bind, about a decade each, and they compose:
+`flat_tol` loosened 100x -> 2e-08, `floor_k` 1e3 -> 1 -> 2e-08, both -> 2e-09.
+`flat_tol` FIRES; `floor_k` decides how many points the flatness test ever
+sees.  Ladder depth sets NOTHING (8 to 30 decades, unmoved), because the floor
+guard caps the usable count at 7 either way — and THAT invariant is what the
+gate asserts, so relaxing `floor_k` cannot make it fire on an improvement.
+
+**The consumer, chosen by measurement not by design.**  ⚠ I first aimed it at
+the solver's failure path and measured whether a singular algebraic block
+actually produces a failure.  IT DOES NOT — `cv_loop`, `li_cutset` and `e5` at
+`G22 = 0` all run to completion; the only failure in eight circuits was an
+ill-posed V loop, where the diagnostic returns `no-window` and says nothing.
+That consumer would have been a message that never fires, so it was dropped.
+`_resolve_x0_unknown`'s own notes name the right target instead: "the index-3
+netlist DC-solves cleanly and silently at `g*`, while the singular one is loud
+— THE CASE TO GUARD AGAINST IS THE ONE THAT SOLVES AND LOOKS HEALTHY."  So on
+the DECLINE path, when the topological index reads below 2 and the numeric
+block reads SINGULAR, the two instruments disagree and the numeric one is
+right; it warns and names the explicit override.  NO behaviour change —
+`x0_unknown` stays off, because the remedy is justified at index 2 and not
+known to apply at index 3.
+
+⚠ THE CONTROL IS THE WHOLE GATE and the first one was wrong: "provisional but
+healthy" built as a VCVS across a capacitor IS a C-V loop, so the fixture was
+genuinely index 2 and the warning was right.  A VCCS is the correct control —
+it adds no branch equation, so it makes the reading provisional WITHOUT
+changing the index.
+
+### ⚠⚠ A NEGATIVE CLAIM CANNOT BE MADE PROVISIONALLY (2026-09-11)
+
+The sharpest rule of the campaign, and it cost a defect shipped the same
+morning to find.  `topological_index`'s index-0 rung read
+
+    if index == 1 and not any(kinds[nm] == 'V' for nm in cir.elements):
+
+and Theorem 3.47's test asserts an ABSENCE — a capacitive path from every node
+to datum AND NO VOLTAGE SOURCES.  An element outside the covered class is
+`'?'`, so `kinds[nm] == 'V'` is FALSE for it and the absence test passes
+VACUOUSLY.  A VCVS is exactly that.  On the P1 fixture it returned INDEX 0 at
+every gain, for a circuit that is index 2 off `g*` and index 3 on it.
+
+**Why only this rung needed a guard.**  The other criteria assert PRESENCE.
+"I found a C-V loop" stands whatever else is in the netlist, and `provisional`
+then says only that there may be MORE.  An ABSENCE cannot be established from a
+partial reading at all.  Audited: this was the ONLY absence claim over the
+classifier in the routine.
+
+⚠ **AND THE STRICT FIX IS NOT THE FIX.**  `not unclassified` regressed van der
+Pol from 0 to 1, and it is GENUINELY index 0.  Trading a vacuous TRUE for an
+avoidable FALSE is not a repair.  The absence IS establishable from complete
+data: a voltage source of any kind contributes a BRANCH-CURRENT unknown to MNA
+and a VCCS, a current source or a nonlinear conductance does not (measured:
+VS 1, VCVS 1, L 1, VCCS 0, IS 0, R 0).  An EXCESS of `cir.n - len(nodes)` over
+the classified `V` and `L` count is an unclassified element that could be one.
+Read off the MNA dimension, which is complete.
+
+⚠⚠ **ONE NEW VALUE IN A QUANTITY BREAKS THREE THINGS, ALL INVISIBLE TO THE
+SUITE:** (a) an if/else on it — a two-branch test is a DEFAULT, not a
+partition; (b) partitions whose fixture set never spanned the new value, so a
+case was never tested; (c) vacuous-absence tests.  The index-0 rung broke one
+of each plus a stale label, in four places:
+
+  - a stale comment here calling an index-0 tank an "index-1 topology" — the
+    INSTRUMENT'S CEILING written down as a property of the circuit;
+  - the rank cross-check's fixture set spanned {0, 0, 2, 2}, so its `1` was
+    only ever the floor and a genuine index-1 circuit had NEVER been compared
+    against the rank criterion.  Fixed by adding `tank+R-only` and asserting
+    `spanned == {0, 1, 2}`;
+  - the docs session's pole-count partition, same shape, found independently;
+  - the rung itself.
+
+**WHEN AN INSTRUMENT IS FLOORED, ITS FLOOR VALUE GETS WRITTEN DOWN AS A
+PROPERTY OF THE THING MEASURED, AND THE FLOOR COLLAPSES TWO VALUES INTO ONE
+NAME.**  No test catches either half — every assertion involved was written
+against the floored instrument and is therefore correct.  Check the labels for
+what is WRONG and the partition for what is MISSING; the second costs coverage.
+
+### The negatives audit, and the two absences that remain (2026-09-11)
+
+After widening the range of a quantity the audit is FINITE: find the NEGATIVES.
+Swept: exactly one absence claim over an element classifier in production (the
+rung, fixed), and one much worse-placed.
+
+⚠⚠ **`Circuit.hidden_state` DEFAULTS TO FALSE**, so an element carrying hidden
+state that never declares it CLAIMS IT DOES NOT — and unlike the rung there is
+no `unclassified` list, so nothing anywhere knows the claim was never checked.
+Its consequence is already on the attribute: a quarter-wave `TLine` gave PSS
+`converged = True`, `spectral_radius = 0.0` and an amplitude of 0.999969
+against a transient's 0.244201.
+
+**And this one cannot be fixed the way the rung was** — whether a stamp reads
+state outside `x` is NOT decidable from the netlist.  So the other remedy: MAKE
+THE IGNORANCE LOUD.  Any element admitting it carries state (defining
+`accept_step`, `reset_state`, `state_ic` or `periodic_states`) must declare
+`hidden_state` or appear on a checked list WITH A REASON; verified the gate
+fires by name on a new undeclared element.  No live defect among the eleven,
+and two were measured: the idtmod family's state is IN `x` (`Idtmod` adds one
+unknown; `state_ic` seeds exactly that), and `Diode` is NOT clean — see below.
+
+### The call-site audit: `cir.G(x)` is not a pure function of `x` (2026-09-11)
+
+`Diode` linearises around a stored `_vlim`, so any site evaluating `G` outside
+a converged solve reads whatever the last solve left.  31 call sites is too
+many to reason about, so: poison the limiting state and compare the ANSWER.
+
+    DC operating point      0.0e+00
+    AC small signal         0.0e+00
+    Transient final state   0.0e+00
+    algebraic_conditioning  1.0e+00   <-- inherited it
+
+DC, AC and transient defend themselves for a reason worth stating: a CONVERGED
+solve leaves `_vlim` consistent with its own answer, so the limiting state
+cannot carry information from anywhere else.  EXACTLY ONE site inherited the
+bug and it was shipped the same day the hazard was written down — which is the
+argument for a gate rather than for vigilance.
+
+⚠⚠ **THE FIRST MEASUREMENT WAS FIVE AGREEING NULLS FROM A DEAD POISON.**  It
+poisoned via `limit()` with a FULL-CIRCUIT `x`; that call takes the ELEMENT's
+local `x`, so it set `_vlim = 0.0` — the unpoisoned value — and every analysis
+read 0.0e+00 INCLUDING a raw `G` already measured to move by 3.6e+02.  The gate
+now carries an instrument arm that fails if the poison does not move a raw `G`.
+PROVE THE POISON IS ALIVE BEFORE BELIEVING IT MOVES NOTHING.
+
+Fixed by re-syncing with `limit(x, x)` at zero delta — the documented re-sync,
+the same one `Transient._branch_restore_limits` uses — bracketed by a
+snapshot/restore of every element's instance dict, because "A DIAGNOSTIC THAT
+CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE DID" is recorded on that very
+method about `branch_check`.  Purity 1.0 -> 0.0; the caller's `_vlim` survives
+unchanged, and a circuit that had none still has none.
+
+⚠ `copy.deepcopy` of a circuit was the cleaner semantic and is NOT AVAILABLE —
+it fails with "cannot pickle 'module' object", the toolkit reference.  Recorded
+so the next person does not retry it.
+
+⚠ **THE RESIDUAL HAZARD IS UNCHANGED AND IS A DESIGN DECISION, NOT A BUG:**
+`Diode`'s defence is PER-CALL-SITE, not per-element.  Declaring
+`hidden_state = True` would make PSS refuse every diode circuit, so the
+defence stays at the call sites — which means a new site evaluating `cir.G(x)`
+outside a converged solve still inherits it.  The purity gate above is now the
+net that catches it.
