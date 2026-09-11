@@ -18553,6 +18553,20 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
         c['L'] = L('v', gnd, L=1.0)
         return c
 
+    def tank_r_only():
+        ## ⚠⚠ THE CASE THIS TEST CLAIMED TO COVER AND NEVER DID.  `tank` and
+        ## `tank+RC` both carry a capacitor at EVERY node, so both are index
+        ## 0; with only those and the two index-2 fixtures, the traversal side
+        ## of this cross-check spanned {0, 0, 2, 2} and the `1` in
+        ## `max(traversal, 1) == rank` was ONLY ever reached through the floor.
+        ## A genuine index-1 circuit had never been compared against the rank
+        ## criterion here.  Node `w` carries no capacitor: rank C = 2 of 3.
+        c = tank()
+        c.add_node('w')
+        c['Rs'] = R('v', 'w', r=100.0)
+        c['Rl'] = R('w', gnd, r=1e3)
+        return c
+
     def tank_rc():
         c = tank()
         c.add_node('w')
@@ -18580,7 +18594,9 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
         return c
 
     seen = {}
+    spanned = set()
     for label, build in (('tank', tank), ('tank+RC', tank_rc),
+                         ('tank+R-only', tank_r_only),
                          ('L-I cutset', li_cutset), ('C-V loop', cv_loop)):
         cir = build()
         traversal, _info = topological_index(cir)
@@ -18601,8 +18617,30 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
         ## two floored criteria and prove nothing.
         assert max(traversal, 1) == rank, (label, traversal, rank)
         seen[label] = (rank, no_cutset, no_loop)
-    ## the two index-1 topologies pass BOTH conditions
+        spanned.add(traversal)
+    ## ⚠⚠ THE FIXTURE SET MUST SPAN ALL THREE INDICES, asserted rather than
+    ## assumed.  A FLOORED INSTRUMENT COLLAPSES TWO VALUES INTO ONE NAME, so
+    ## a case can go missing without any assertion failing -- every assertion
+    ## here was written against the floored criterion and was therefore
+    ## correct while index 1 was untested.  No test catches that; only
+    ## reading does.  This line is what makes the next rung fail loudly
+    ## instead of a case vanishing into the floor.
+    ## (Consequence-to-look-for named by docs-46, 2026-09-11, which found the
+    ## same hole in its own pole-count check: not just a wrong label, a
+    ## MISSING CASE.)
+    assert spanned == {0, 1, 2}, spanned
+    ## ⚠ A STALE LABEL FROM BEFORE THE INDEX-0 RUNG: this line used to read
+    ## "the two index-1 topologies", and `tank` is index 0 -- the name was
+    ## minted while `topological_index` was floored at 1.  `seen` holds RANK
+    ## values, and the rank criterion is ALSO floored, so the 1 here is the
+    ## floor and not the tank's index.  The assertion is right; the label was
+    ## describing the instrument's ceiling as if it were the circuit.
+    ## (Class flagged by docs-46, 2026-09-11, which hit the same stale name on
+    ## its own 'index-1 tank' fixture.)
+    ## the three topologies the RANK criterion reads as 1 pass BOTH conditions
+    ## -- two of them index 0 by the floor, and `tank+R-only` a GENUINE index 1
     assert seen['tank'] == (1, True, True) and seen['tank+RC'] == (1, True, True), seen
+    assert seen['tank+R-only'] == (1, True, True), seen['tank+R-only']
     ## and each index-2 one fails exactly the condition named for it -- without
     ## this the agreement above could be four passes of a criterion that never
     ## fires
