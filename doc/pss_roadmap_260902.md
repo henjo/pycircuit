@@ -14211,3 +14211,77 @@ transient actually takes — it finds DIRECTIONS CARRYING NO REACTANCE, which is
 index 1 and reads `σ_min ~ h` above the turn, which below would mean index 2; a C-V loop is index 2 and reads
 `σ_min` constant above the turn, which below would mean index 1. **Exactly inverted, and both correct in their
 own regime.** Conflating the windows is what cost both sessions a day.
+
+#### ⚠⚠ Defect 2 is the DIRK STAGE-ORDER CAP, not the coefficients (2026-09-11)
+
+Corrects the previous section. docs-46 evaluated the Kennedy & Carpenter ARK4(3)6L[2]SA tableau in **exact
+rational arithmetic**: `B` satisfies every order condition to 4 with zero residual and `B_HAT` to 3, failing
+at 4 — **precisely what `EMBEDDED_ORDER = 3` declares.** The coefficients are exactly as labelled and my
+"Hairer's coefficient condition failing" is refuted.
+
+What caps it is the STAGE ORDER, and the method's own name says so — ESDIRK4(3)6L**[2]**SA, the `[2]` being
+`q`. Hairer & Wanner IV.15 Ex.1: *"the stage order of a DIRK method is at most 2"*; Ex.3 (Burrage &
+Hundsdorfer): *"the order of B-convergence … is q+1"*. So on a stiff problem any DIRK is capped at 3 —
+circuit-independent, which is exactly the property measured. ⚠ **The join is relayed and unverified**: those
+results concern the order of the SOLUTION; that the same cap lands on the embedded ESTIMATE is docs-46's
+inference, fits the numbers, and neither of us has seen it stated or measured directly.
+
+**⚠⚠ AND THE RAW COLUMNS ARE NOT COMPARABLE TO A SINGLE "want"** — the mistake that nearly made me report the
+account refuted. They are different physical quantities:
+
+| method | raw is | filter on a C-dominated direction | raw want |
+|---|---|---|---|
+| radau | charge-RATE | `~h/(γC)` — carries `h` | state order − 1 = **3** |
+| TR-BDF2 / ESDIRK43 | CHARGE | `~1/C` — no `h` | the declared order |
+
+Against those, on the C-V loop: radau wants 3 and reads **3.00**; TR-BDF2 wants 3 and reads **2.98**;
+ESDIRK43 wants 4 and reads **2.99**. **Only ESDIRK43 is short.** My first reading applied "want 4" to radau's
+raw and took 3.00 as refuting the account.
+
+**The internal control is what makes the ESDIRK43 gap safe**: TR-BDF2 and ESDIRK43 use the SAME raw form on
+the SAME fixture and differ only in declared order — 2.98 against 3, 2.99 against 4. Same form, same circuit,
+different declaration, and the gap sits exactly where a cap of `q+1 = 3` puts it.
+
+**⚠ DO NOT RELABEL `EMBEDDED_ORDER`** — reversing the suggestion in the previous section. It is correct for
+the tableau, and the controller's exponent is right for the nonstiff regime the tableau is designed for. What
+is wrong is the EXPECTATION that a DIRK's estimate reaches its classical order on a stiff problem.
+Relabelling would make the controller wrong in the nonstiff case to make a stiff measurement agree.
+
+⚠ Also withdrawn by its author: the explicit-stage lead for TR-BDF2. Its raw estimate is healthy, so
+evaluation order is not implicated in anything measured here.
+
+#### ⚠⚠ My stiffness control was CONFOUNDED — and it produced a clean wrong answer
+
+docs-46 then MEASURED their own inference on Prothero-Robinson with stiffness as the control: ESDIRK43 4.00
+nonstiff → 3.00 stiff, TR-BDF2 flat at 3.00, and stage orders computed from `C(q)` (TR-BDF2 2, ESDIRK43 2,
+Radau IIA(3) 3). Their prediction: radau's cap equals its declared 4, so it should NOT move.
+
+Reproducing that control here by tuning the C-V loop's resistor:
+
+| method | declared | NONSTIFF (τ=1e-4) | STIFF (τ=1e-9) | drop |
+|---|---|---|---|---|
+| radau | 4 | 4.01 | **3.02** | 0.99 |
+| TR-BDF2 | 3 | 2.97 | **1.97** | 1.00 |
+| ESDIRK43 | 4 | 3.69 | **1.99** | 1.70 |
+
+All three drop — radau included — and all three land near their STAGE ORDER `q` (3, 2, 2) rather than `q+1`.
+Read at face value that refutes the account, and it is a clean, coherent, quotable pattern.
+
+**It is an artefact. The fixture moves two variables:**
+
+| r | `σ_min(J)` across h | exponent |
+|---|---|---|
+| 1e5 | 2.050e-09 … 2.006e-09 | **+0.00** |
+| 1e0 | 5.000e-06 … 6.245e-07 | **+1.00** |
+
+Changing `r` to add stiffness **also turned Defect 1 on** — at `r = 1` the C-V loop acquires a direction whose
+singular value scales with `h`. So the uniform −1 is the FILTER, and radau's drop is fully explained by Defect
+1 switching on, which is **consistent** with the prediction that radau has no stage-order deficit.
+
+**So this measurement neither confirms nor refutes the stage-order account** — it cannot separate the two
+effects. What would is a fixture varying stiffness while holding `σ_min`'s scaling fixed, which is exactly
+what a scalar Prothero-Robinson has by having no DAE structure to carry a reactance-free direction at all.
+
+⚠ The near-miss is the lesson, and it is the same one as the noise floor's and the branch probe's: I built a
+control for one variable and it moved two, and the wrong answer was *tidier* than the right one. Every fixture
+in `estimator_deficit.py` now reports `σ_min`'s exponent alongside its result.
