@@ -9662,6 +9662,27 @@ def test_the_closing_step_period_column_matches_its_own_derivative():
 
 def _measured_index(cir):
     """The index by direct computation: `N^T G N` singular for `N` a null
+
+    ⚠⚠ THIS TEST IS COMPUTING A CANONICAL CHARACTERISTIC UNDER A LOCAL NAME.
+    Hanke & März define `theta = dim(N ∩ S)` with `N = ker E` and
+    `S = {z : Fz in im E}`.  For MNA with `E = C`, `F = G` and symmetric `C`,
+    `Gz in im C` iff `Gz ⊥ ker C` iff `N^T G z = 0` -- so "`N^T G N` singular
+    for `N` a null basis of `C`" IS `theta_0 > 0`.  (Relayed from a source
+    reading, 2026-09-11.)
+
+    ⚠ And `theta_0` is what makes the pole count come out.  Common Ground's
+    Cor. c.pencil: for a constant pair, `theta_i` is the NUMBER OF JORDAN
+    BLOCKS of order >= 2+i in the Weierstrass-Kronecker nilpotent, so
+    `theta_0` COUNTS the index-2 constraints and `d = r - sum theta_i`.  That
+    is the coefficient behind this tree's "rank(C) overcounts the finite poles
+    by one per index-2 constraint": the one IS `theta_0`, and a circuit with
+    two independent index-2 constraints would overcount by two.
+
+    ⚠⚠ IT READS AN INDEX AND DOES NOT CERTIFY REGULARITY -- see
+    `topological_index`'s docstring for the Brenan/Campbell/Petzold
+    counterexample where every local pencil is regular and the solution family
+    is infinite-dimensional.  No frozen-`t` test can see that.
+
     basis of `C` means index 2. The reference the topological criterion is
     gated against, and the one that overruled a relayed quote."""
     from pycircuit.circuit.analysis import remove_row_col

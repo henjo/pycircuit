@@ -292,6 +292,27 @@ def topological_index(cir):
     rank iff no C-V loop -- under the same hypothesis, "let all current and
     voltage sources be independent"; Theorem 3.47 adds the index-0 case
     (a capacitive path from every node to datum AND no voltage sources) and
+    ⚠⚠⚠ AND IT READS AN INDEX; IT DOES NOT CERTIFY THAT ONE EXISTS.  No
+    frozen-`t` / structural test can, and that is a theorem rather than a
+    caution.  Brenan, Campbell & Petzold's counterexample (quoted in Estevez
+    Schwarz, Lamour & März, "The common ground of DAE approaches"):
+
+        E(t) = [[-t, t^2], [-1, t]],  F = I,  t in [-1, 1]
+
+    has `det(lam E(t) + F(t)) = 1` exactly -- EVERY LOCAL PENCIL IS REGULAR --
+    and yet `x(t) = gamma(t) [t, 1]^T` solves the homogeneous DAE for ARBITRARY
+    smooth `gamma`.  An infinite-dimensional solution family, so no index is
+    meaningful at all.  The failure is NON-LOCAL: the pair is pre-regular and
+    the REDUCED pair has `im[E_1 F_1] = {0}`, which lives in the reduction
+    sequence and not in any quantity computable at fixed `t`.  BCP's own text
+    says this regularity notion "does not imply solvability".
+
+    So: use this to READ an index on a circuit already known to be solvable,
+    never to ESTABLISH solvability.  A simulator that reports "index 1"
+    pointwise has not shown the problem is well posed.  (Relayed from a source
+    reading; the counterexample was reproduced by that session to 4.4e-16 for
+    three unrelated `gamma`, not by this one.)
+
     ⚠⚠ IT USED TO BE FLOORED AT 1 BY CONSTRUCTION, and that is fixed as of
     2026-09-11.  Estevez Schwarz & Tischendorf's criterion is "index 2 IF AND
     ONLY IF the network contains a C-V loop or an L-I cutset, OTHERWISE 1", so

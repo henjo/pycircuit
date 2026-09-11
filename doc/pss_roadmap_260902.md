@@ -14318,3 +14318,47 @@ error instead, the picture moves: the RC estimate tracks it, while the C-V loop 
 reference throughout, and the preceding sections' verdicts should be read as "against the declared order"
 until that is done. Recording the discrepancy rather than rewriting the story around one measurement is the
 lesson of the last five corrections.
+
+### Two limits on the index machinery, and one identification (2026-09-11, relayed)
+
+**⚠⚠⚠ NO FROZEN-`t` TEST CAN ESTABLISH REGULARITY — a theorem, not a caution.** Brenan, Campbell & Petzold's
+counterexample: `E(t) = [[−t, t²], [−1, t]]`, `F = I` has `det(λE + F) = 1` exactly, so EVERY local pencil is
+regular — and `x(t) = γ(t)·[t, 1]ᵀ` solves the homogeneous DAE for ARBITRARY smooth `γ`. An
+infinite-dimensional solution family, so no index is meaningful. The failure is NON-LOCAL: the pair is
+pre-regular and the REDUCED pair has `im[E₁ F₁] = {0}`, which lives in the reduction sequence and in no
+quantity computable at fixed `t`. docs-46 reports their `σ_min` probe returns a confident "index 2" at every
+`t` sampled, and verified the solution family independently to 4.4e-16 for three unrelated `γ`.
+
+**Operational consequence, now on `topological_index`'s docstring**: use it to READ an index on a circuit
+already known solvable, never to ESTABLISH solvability. **A simulator that reports "index 1" pointwise has not
+shown the problem is well posed.** This applies to the `σ_min` probe equally — it is also a frozen-`t`
+quantity.
+
+**⚠ AND AN INDEX CHANGE THAT NO RANK TEST CAN SEE.** Estevez Schwarz, Lamour & März 2024, Example e.5, flagged
+by its authors as new — *"such a circumstance was not discussed in literature before, since harmless critical
+points were usually tight to rank changes of E"*. A 4×4 pair with `rank E = 2` and `d = 0` EVERYWHERE, whose
+index is 3 where `a + b ≠ 0` and 2 where `a + b = 0`. Measured by docs-46's probe: +2.000 → index 3, +1.000 →
+index 2, exact agreement, `rank E` unmoved in every row. **Every rank-based or topological index test is blind
+here by construction**, since the structure they key on is what does not change. It cuts both ways and both
+should be held: `topological_index` works from the netlist with no numerics and no stepsize window, which the
+probe cannot do.
+
+⚠ OPEN, and it is mine to answer: **can MNA produce this at all?** A circuit analogue needs two reactive paths
+whose CONTRIBUTIONS cancel while both remain present — "a C-V loop that is not a loop in the incidence graph".
+If MNA cannot produce it, this stays a theoretical capability gap rather than a practical one, and that is
+worth knowing too. NOT INVESTIGATED.
+
+**AN IDENTIFICATION: this tree's `N^T G N` test IS `θ₀`.** Hanke & März define `θ = dim(N ∩ S)` with
+`N = ker E`, `S = {z : Fz ∈ im E}`; for MNA with symmetric `C`, `Gz ∈ im C` iff `N^T G z = 0`, so the
+structural index-2 test is computing the canonical characteristic under a local name. And `θ₀` is what makes
+the pole count come out: Common Ground's Cor. c.pencil makes `θ_i` the number of Jordan blocks of order
+`≥ 2+i`, so `θ₀` COUNTS the index-2 constraints and `d = r − Σθ_i`. That is the coefficient behind this tree's
+"rank(C) overcounts the finite poles by one per index-2 constraint" — **the one is `θ₀`**, and two independent
+index-2 constraints would overcount by two.
+
+⚠ Also relayed, bearing on the opening step and NOT acted on: Hanke & März distinguish ACCURATELY STATED
+INITIAL CONDITIONS from CONSISTENT INITIAL VALUES — different objects. At index 1 the initial condition is
+`x(a) − x_a ∈ N(a)` with *"x_a arbitrary and NOT NECESSARILY A CONSISTENT VALUE"*; the solution satisfies
+`Π_can(a)x(a) = Π_can(a)x_a` always. **So at index 1 one does not need a consistent starting value — one needs
+the right projection of an arbitrary one.** If the opening step here works to produce a consistent value, that
+may be effort spent on the wrong object. Worth a look; not looked at.
