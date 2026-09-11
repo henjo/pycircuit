@@ -14463,3 +14463,107 @@ used to reason about any of these numbers.
 NOT STARTED.  This is a question about the SOLUTION's order, not the
 estimator's, and it bears on the "radau is the default because it is accurate"
 decision.  Owner's call.
+
+##### `global = local - 1` does not survive stiffness -- and a correction to the row above
+
+The one positive result of the pass -- that global order EQUALS local order on
+these problems, instead of the ODE case's `global = local - 1` -- is now
+measured on a third instrument with an EXACT solution, so no reference run and
+no inner-solve tolerance anywhere in it: scalar Prothero-Robinson as an MNA
+circuit (`prothero_robinson` / `local_vs_global_relation`), a unit capacitor,
+`r = -1/lam`, and one sinusoidal current source.  Verified against `sin(w t)`
+to 1.4e-15, 4.4e-16 and 2.2e-15 at `lam = -1e0, -1e2, -1e4`.
+
+    method    lam      glob-loc          method    lam      glob-loc
+    esdirk43  -1e0      -0.98            radau     -1e0      -0.68 (floor)
+    esdirk43  -1e2      -0.91            radau     -1e2      -0.92
+    esdirk43  -1e4      +0.00            radau     -1e4      +0.00
+    esdirk43  -1e6      -0.02            radau     -1e6      +0.01
+    trbdf2    -1e0      -1.03            trbdf2    -1e4      +0.07
+    trbdf2    -1e2      -0.91            trbdf2    -1e6      +0.01
+
+THE NONSTIFF ARM IS THE CONTROL.  The classical relation holds at `lam = -1`
+for all three methods and goes to zero as stiffness rises; without that arm the
+stiff number is just a number.  docs-46 measured the same switch independently
+on its own scalar fixture with an exact linear stage solve.  Two instruments,
+no shared code.  Treat as established: on a stiff problem the endpoint error IS
+one local error, and the classical local/global relation may not be used on any
+number in this arc, in either direction.
+
+It also CLOSES a flagged item.  `stiffness_control_is_CONFOUNDED` records "all
+three land at their stage order `q`" as a clean, quotable ARTEFACT -- confounded
+because tuning the C-V loop's resistor also switched on a reactance-free
+direction -- and nominates a scalar Prothero-Robinson fixture as what would
+answer it.  That fixture now exists, has no DAE structure to carry such a
+direction, and lands all three on exactly `q` (esdirk43 `q=2` -> 1.99, radau
+`q=3` -> 3.01, trbdf2 `q=2` -> 2.00).  Same pattern; this time not an artefact.
+
+⚠⚠ AND IT CORRECTS THE SECTION ABOVE, SAME DAY.  `global_order_control`
+labelled TR-BDF2 `p = 3`.  IT IS AN ORDER-2 METHOD, and `integrator.py` says so
+in its own docstring.  With the right `p` the trbdf2 rows are AT full order,
+not reduced -- and they were the rows I had read as the cleanest evidence of
+reduction.  The corrected reading is narrower and sharper: reduction appears
+exactly where `p > q + 1`.  ESDIRK43 (`p=4`, `q=2`) and radau (`p=5`, `q=3`)
+read below `p` and are still rising; TR-BDF2 (`p=2`, `q=2`) has no room to
+reduce and does not.  ⚠ READ A METHOD'S ORDER OFF ITS OWN CLASS BEFORE
+LABELLING A COLUMN WITH IT.
+
+⚠ The floor here is the SOLUTION SCALE, not `eps` (docs-46's caution, and it
+bites): with `|y| ~ 1` radau runs at 2.2e-13 to 8.3e-15 absolute, tens of ulp,
+and its nonstiff LOCAL orders are visibly noisy (5.76 5.04 5.68 for a true 6),
+which is why its `glob-loc` reads -0.68 rather than -1.  The GLOBAL arm, further
+from the floor, reads a clean 5.00.
+
+STILL NOT STARTED: the Thm 2.26 bounded-inverse question.  This fixture is
+scalar and has no algebraic component, so it says nothing about `d g_2 / d y`.
+
+##### The solution-order question closes: the reduction was PRE-ASYMPTOTIC
+
+`rc_asymptotic_check` settles the item the section above opened, and the answer
+is that there was nothing there.  Five grids on the index-1 RC:
+
+    method    p   GLOBAL orders               errors
+    esdirk43  4    2.54  3.05  3.50  3.79     2.50e-10 ... 3.33e-14
+    trbdf2    2    2.12  2.13  2.12  2.09     6.49e-10 ... 1.86e-12
+    radau     5    3.48  3.88  3.87  0.58     8.02e-13 ... 2.22e-16
+
+ESDIRK43 climbs monotonically to its `p = 4`; TR-BDF2 sits flat at its true
+`p = 2`.  My own caveat (2) -- "the rows are still rising, so a value below `p`
+is not yet a value that stays below `p`" -- was the correct one, and it was the
+cheapest thing on the list.
+
+docs-46 reached the same place from the other side and RETRACTED its own
+mechanism: measured read-only on our fixtures, the RC's algebraic block is
+essentially perfectly conditioned (`sigma_min(d g_2/d y) = 0.9995`, flat across
+`h = 1e-10 ... 1e-14`), so Thm 2.26's bounded-inverse hypothesis HOLDS.  Theory
+and measurement agree; what disagreed was an under-refined grid.
+
+It also relays a general identification worth having (RELAYED, not reproduced
+here): `sigma_min(C + h G)/h -> sigma_min(d g_2/d y)` as `h -> 0`, with
+`d g_2/d y = Z^T G N`, `N = ker C`, `Z = ker C^T` -- which for symmetric `C` is
+exactly our `N^T G N`.  Two consequences.  The `(x, y)` splitting is NOT needed
+to ask the conditioning question; two SVDs at different `h` answer it from `C`
+and `G` alone.  And "`sigma_min ~ h`" tests the EXISTENCE of an algebraic block,
+not its conditioning -- it fires on essentially every circuit.  The
+bounded-inverse question is whether `sigma_min/h` goes FLAT, not how big it is.
+So the screen, the `N^T G N` test and `theta_0` are all testing one thing, and
+none of them is the hypothesis test.
+
+⚠ RADAU IS UNRESOLVED ON OUR FIXTURE and only the MAGNITUDE says so: its last
+error is 2.22e-16, which IS machine epsilon, so the `0.58` is floor and the
+usable part is 3.48 -> 3.88 -> 3.87.  An order-5 method reaches `eps` on this
+circuit before its asymptotic regime, so no refinement of THIS fixture can
+confirm `p = 5`.  docs-46 reports radau at 4.98 on its best pre-floor pair
+against an exact analytic RC solution; RELAYED, not reproduced here.
+
+⚠ AND A DOUBT OF MINE THAT WAS WRONG, kept because it nearly stopped the
+measurement.  I expected the REFERENCE to limit these grids, reasoning that a
+25600-step reference march at an inner `reltol = 1e-14` must accumulate past
+the finest test error.  It does not: the same esdirk43 errors against
+references at `PER/25600`, `PER/51200` and `PER/102400` are unmoved to five
+digits at every grid.  A REASONED floor is not a MEASURED floor, and I had just
+spent the morning insisting on that in the other direction.
+
+WHAT IS NOT TOUCHED: the index-2 C-V loop, outside Thm 2.26 regardless, where
+`d g_2/d y` is singular by definition rather than by defect.  If a real order
+question survives in this area it is there, not on the RC.

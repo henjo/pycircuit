@@ -209,7 +209,7 @@ import warnings
 import numpy as np
 
 from pycircuit.circuit.circuit import SubCircuit, gnd, defaultepar
-from pycircuit.circuit.elements import R, C as Cap, VSin
+from pycircuit.circuit.elements import R, C as Cap, VSin, ISin
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.transient import Transient
@@ -416,6 +416,161 @@ def crossover(Ns=(100, 200, 400, 800, 1600)):
 
 
 
+def prothero_robinson(lam, w=2.0 * np.pi):
+    """Scalar Prothero-Robinson as an MNA circuit, with an EXACT solution.
+
+    `y' = lam (y - phi(t)) + phi'(t)` with `phi(t) = sin(w t)`, so `y(t) =
+    sin(w t)` exactly.  As MNA: a unit capacitor to ground, a resistor
+    `r = -1/lam`, and one sinusoidal current source carrying
+    `-lam sin(w t) + w cos(w t)`, which is a SINGLE sinusoid of amplitude
+    `hypot(lam, w)` and phase `atan2(w, -lam)`.
+
+    WHY THIS FIXTURE.  `stiffness_control_is_CONFOUNDED` below records that
+    tuning the C-V loop's resistor to add stiffness ALSO switches on a
+    reactance-free direction, so it cannot separate the two effects, and names
+    a scalar Prothero-Robinson fixture as what would.  This is that fixture.
+    It has an EXACT solution, so there is no reference run and no inner-solve
+    tolerance anywhere in the measurement -- the two floors that limit
+    `global_order_control`.  Verified: a fine radau run matches `sin(w t)` to
+    1.4e-15 at `lam = -1`, 4.4e-16 at `-1e2` and 2.2e-15 at `-1e4`.
+    """
+    amp = float(np.hypot(lam, w))
+    phase = float(np.degrees(np.arctan2(w, -lam)))
+    c = SubCircuit()
+    c.add_node('a')
+    c['c'] = Cap('a', gnd, c=1.0)
+    c['r'] = R('a', gnd, r=1.0 / (-lam))
+    c['i'] = ISin(gnd, 'a', ia=amp, freq=w / (2.0 * np.pi), phase=phase)
+    return c
+
+
+def rc_asymptotic_check(Ns=(200, 400, 800, 1600, 3200), span=PER / 4.0):
+    """⚠⚠ IT WAS PRE-ASYMPTOTIC.  `global_order_control`'s RC rows read below
+    the classical `p` and were STILL RISING at its finest grid, which is a
+    caveat that file raised against itself.  Five grids settle it:
+
+        method    p   GLOBAL orders               errors
+        esdirk43  4    2.54  3.05  3.50  3.79     2.50e-10 ... 3.33e-14
+        trbdf2    2    2.12  2.13  2.12  2.09     6.49e-10 ... 1.86e-12
+        radau     5    3.48  3.88  3.87  0.58     8.02e-13 ... 2.22e-16
+
+    ESDIRK43 climbs monotonically to its `p = 4`.  TR-BDF2 sits flat at its
+    true `p = 2`.  So there is no order reduction on the index-1 RC and no
+    Thm 2.26 hypothesis failure to explain -- which agrees with docs-46's
+    independent read-only measurement that the RC's algebraic block is
+    essentially perfectly conditioned, `sigma_min(d g_2/d y) = 0.9995`, flat.
+
+    ⚠ RADAU IS UNRESOLVABLE ON THIS FIXTURE, AND ONLY THE MAGNITUDE SAYS SO.
+    Its last error is 2.22e-16, which IS machine epsilon; the `0.58` is the
+    floor, not the method.  The usable part is 3.48 -> 3.88 -> 3.87, climbing.
+    An order-5 method reaches `eps` on this circuit before it reaches its
+    asymptotic regime, so no refinement of THIS fixture can confirm `p = 5`.
+
+    ⚠ AND A DOUBT OF MINE THAT WAS WRONG, kept because it nearly stopped the
+    measurement: I expected the REFERENCE to be the limit at these grids,
+    reasoning that a 25600-step reference march at an inner `reltol = 1e-14`
+    would accumulate past the finest test error.  It does not.  The same
+    esdirk43 errors against references at `PER/25600`, `PER/51200` and
+    `PER/102400` are 2.5003e-10 / 4.3083e-11 / 5.2015e-12 -- unmoved to five
+    digits at every grid.  A reasoned floor is not a measured floor.
+    """
+    href = PER / (400.0 * 128)
+    start = _start_state(rc_linear, 'RC/asym', RadauIIA3Integrator, href)
+    xr, _ = _march(RadauIIA3Integrator, rc_linear, href,
+                   int(round(span / href)), x0=start, t0=T0_FIX)
+    tgt = xr[-1]
+    print('=== RC (index 1) global order, five grids: does it climb to p? ===')
+    print('%-9s %-3s %-30s %s' % ('method', 'p', 'GLOBAL orders', 'errors'))
+    for cls, nm, p_ in ((ESDIRK43Integrator, 'esdirk43', 4),
+                        (TRBDF2Integrator, 'trbdf2', 2),
+                        (RadauIIA3Integrator, 'radau', 5)):
+        errs = []
+        for N in Ns:
+            xs, _ = _march(cls, rc_linear, span / N, N, x0=start, t0=T0_FIX)
+            errs.append(float(np.max(np.abs(xs[-1] - tgt))))
+        print('%-9s %-3d %-30s %s'
+              % (nm, p_, ' '.join('%5.2f' % v for v in _orders(errs)),
+                 ' '.join('%.2e' % v for v in errs)))
+
+
+
+def local_vs_global_relation(t0=0.125, span=0.25):
+    """Does `global = local - 1` survive stiffness?  NO -- it goes to zero.
+
+        method    lam      h*|lam|  LOCAL orders       GLOBAL orders      glob-loc
+        esdirk43  -1e0     0.00781   4.87 4.95 4.97     3.98 3.99 3.99     -0.98
+        esdirk43  -1e2     0.125     4.64 4.82 4.91     3.95 3.99 4.00     -0.91
+        esdirk43  -1e4     12.5      2.14 2.28 2.53     2.02 2.18 2.53     +0.00
+        esdirk43  -1e6     1.25e+03  2.00 2.00 2.01     1.95 1.98 1.99     -0.02
+        trbdf2    -1e0     0.00781   2.80 2.91 2.96     1.58 1.84 1.93     -1.03
+        trbdf2    -1e2     0.125     2.72 2.85 2.92     2.03 2.02 2.01     -0.91
+        trbdf2    -1e4     12.5      1.97 2.00 2.04     2.04 2.08 2.11     +0.07
+        trbdf2    -1e6     1.25e+03  1.97 1.98 1.99     1.98 1.99 2.00     +0.01
+        radau     -1e0     0.0104    5.76 5.04 5.68     5.02 5.01 5.00     -0.68
+        radau     -1e2     0.125     5.62 5.80 5.91     4.92 4.96 4.98     -0.92
+        radau     -1e4     12.5      3.15 3.26 3.49     3.12 3.23 3.49     +0.00
+        radau     -1e6     1.25e+03  3.03 3.02 3.01     3.02 3.01 3.01     +0.01
+
+    THE NONSTIFF ARM IS THE CONTROL AND IT IS WHAT MAKES THIS MEAN ANYTHING.
+    At `lam = -1` the classical `global = local - 1` holds for all three
+    methods, and the relation goes to ZERO as stiffness rises.  Without that
+    arm the stiff number is just a number.  So on a stiff problem THE ENDPOINT
+    ERROR IS ONE LOCAL ERROR -- earlier contributions are damped out -- and
+    the classical local/global relation may not be used on any number in this
+    file, in either direction.
+
+    Independently reproduced: docs-46 measured the same switch on its own
+    scalar fixture with an exact linear stage solve (glob-loc +0.99 at
+    `lam=-1e0`, +0.08 at `-1e2`, -0.02 at `-1e4`, -0.05 at `-1e6`; sign
+    convention reversed).  Two instruments, no shared code, same switch.
+
+    AND IT CLOSES A FLAGGED ITEM.  The stiff arm lands all three methods on
+    EXACTLY THEIR STAGE ORDER `q` -- esdirk43 `q=2` reads 1.99, radau `q=3`
+    reads 3.01, trbdf2 `q=2` reads 2.00.  ⚠⚠ That is the same "all three land
+    at `q`" pattern that `stiffness_control_is_CONFOUNDED` records as an
+    ARTEFACT -- but there it was confounded because changing the C-V loop's
+    resistor also switched on a reactance-free direction.  Here there is no
+    DAE structure to carry one, which is exactly why that docstring nominated
+    this fixture.  Same pattern, and this time it is not an artefact.
+
+    ⚠ FLOOR, and it is the SOLUTION SCALE not `eps` (docs-46's caution, and it
+    bites here).  With `|y| ~ 1` the radau rows run at 2.2e-13 to 8.3e-15
+    absolute, tens of ulp, and radau's nonstiff LOCAL orders are visibly noisy
+    (5.76 5.04 5.68 for a true 6) -- which is why its `glob-loc` reads -0.68
+    rather than -1.  Its GLOBAL arm, further from the floor, reads a clean
+    5.02 5.01 5.00.  Keep the grids coarse enough that the error stays above
+    ~1e-13.
+    """
+    print('=== local vs global order across stiffness (EXACT solution) ===')
+    print('%-9s %-9s %-9s %-20s %-20s %-8s %9s'
+          % ('method', 'lam', 'h*|lam|', 'LOCAL orders', 'GLOBAL orders',
+             'glob-loc', 'loc err'))
+    for cls, nm, coarse in ((ESDIRK43Integrator, 'esdirk43', (4, 8, 16, 32)),
+                            (TRBDF2Integrator, 'trbdf2', (4, 8, 16, 32)),
+                            (RadauIIA3Integrator, 'radau', (3, 6, 12, 24))):
+        for lam in (-1e0, -1e2, -1e4, -1e6):
+            Ns = coarse if lam == -1e0 else (25, 50, 100, 200)
+            build = lambda l=lam: prothero_robinson(l)
+            loc, glo = [], []
+            for N in Ns:
+                h = span / N
+                x0 = np.array([np.sin(2 * np.pi * t0), 0.0])
+                xs, _ = _march(cls, build, h, 1, x0=x0, t0=t0)
+                loc.append(abs(float(xs[1][0]) -
+                               np.sin(2 * np.pi * (t0 + h))))
+                xs, _ = _march(cls, build, h, N, x0=x0, t0=t0)
+                glo.append(abs(float(xs[-1][0]) -
+                               np.sin(2 * np.pi * (t0 + span))))
+            ol, og = _orders(loc), _orders(glo)
+            print('%-9s %-9.0e %-9.3g %-20s %-20s %+8.2f %9.2e'
+                  % (nm, lam, (span / Ns[-1]) * abs(lam),
+                     ' '.join('%5.2f' % s for s in ol),
+                     ' '.join('%5.2f' % s for s in og),
+                     og[-1] - ol[-1], loc[-1]))
+        print()
+
+
+
 def global_order_control(Ns=(50, 100, 200, 400), span=PER / 4.0):
     """⚠⚠ INCONCLUSIVE BY CONSTRUCTION -- KEPT FOR WHAT IT RULES IN, NOT OUT.
 
@@ -432,10 +587,10 @@ def global_order_control(Ns=(50, 100, 200, 400), span=PER / 4.0):
 
         method    fixture   p   GLOBAL orders        final rel err
         radau     RC        5    3.11 3.23 3.48       1.27e-13
-        trbdf2    RC        3    2.05 2.08 2.12       2.65e-10
+        trbdf2    RC        2    2.05 2.08 2.12       2.65e-10
         esdirk43  RC        4    2.04 2.19 2.54       7.62e-11
         radau     C-V loop  5    3.33 3.01 3.01       2.37e-15
-        trbdf2    C-V loop  3    2.00 2.00 2.00       1.76e-07
+        trbdf2    C-V loop  2    2.00 2.00 2.00       1.76e-07
         esdirk43  C-V loop  4    3.97 1.99 1.99       1.39e-12
 
     Three reasons not to read a hypothesis failure out of this:
@@ -461,6 +616,34 @@ def global_order_control(Ns=(50, 100, 200, 400), span=PER / 4.0):
     the estimator sections above cannot be reasoned about with the classical
     local/global relation.
 
+    ⚠⚠ CORRECTION, SAME DAY.  A first version of this table labelled TR-BDF2
+    `p = 3`.  IT IS AN ORDER-2 METHOD -- `integrator.py` says so in its own
+    docstring, "it is here for three failure modes it does NOT have rather than
+    for accuracy (it is order 2)".  With the right `p` the trbdf2 rows are AT
+    full order, not reduced, and they were the rows I had read as the cleanest
+    evidence of reduction.  The corrected reading is that order reduction
+    appears exactly where `p > q + 1`: ESDIRK43 (`p=4`, `q=2`) and radau
+    (`p=5`, `q=3`) both read below `p` and both are still rising; TR-BDF2
+    (`p=2`, `q=2`) has no room to reduce and does not.
+
+    ⚠⚠ ANSWERED, SAME DAY, BY `rc_asymptotic_check`: THE ROWS WERE
+    PRE-ASYMPTOTIC.  Given two more grids ESDIRK43 climbs 2.54 -> 3.05 -> 3.50
+    -> 3.79 to its `p = 4` and TR-BDF2 sits flat at its true `p = 2`, so there
+    is no reduction on the index-1 RC and no hypothesis failure to explain.
+    docs-46 reached the same place from the other side, measuring the RC's
+    algebraic block as essentially perfectly conditioned
+    (`sigma_min(d g_2/d y) = 0.9995`, flat) -- so Thm 2.26's hypothesis HOLDS,
+    and the mechanism it had proposed (a reactance-free direction costing the
+    bounded inverse) is refuted on our own fixtures.  Radau is unresolved HERE --
+    it reaches machine epsilon on this circuit before its asymptotic regime --
+    and resolved elsewhere: docs-46 reports (RELAYED, not reproduced in this
+    repo) that against the EXACT analytic solution of the linear RC, with no
+    reference run at all, radau reads 4.98 on its best PRE-FLOOR pair and all
+    three methods reach full classical order.  Its error stalls at ~4e-13 for
+    three consecutive grids there, where the fitted orders read 0.46, 0.16 and
+    8.17 -- so that result depends entirely on reading BEFORE the floor, which
+    is why it is worth restating rather than quoting a fit.
+
     A CONCLUSIVE version needs all three: an inner solve tightened well below
     the discretisation error (or a fixture whose error scale is larger), grids
     that reach the asymptotic regime, and the error SPLIT into differential and
@@ -480,7 +663,7 @@ def global_order_control(Ns=(50, 100, 200, 400), span=PER / 4.0):
         tgt = xr[-1]
         scale = max(float(np.max(np.abs(tgt))), 1e-30)
         for cls, nm, p in ((RadauIIA3Integrator, 'radau', 5),
-                           (TRBDF2Integrator, 'trbdf2', 3),
+                           (TRBDF2Integrator, 'trbdf2', 2),
                            (ESDIRK43Integrator, 'esdirk43', 4)):
             errs = []
             for N in Ns:
@@ -580,6 +763,8 @@ def main():
     print()
     reference_control()
     global_order_control()
+    local_vs_global_relation()
+    rc_asymptotic_check()
 
 
 if __name__ == '__main__':
