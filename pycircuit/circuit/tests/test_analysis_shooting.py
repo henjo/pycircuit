@@ -19392,3 +19392,321 @@ def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
         assert v > 0.5, ('index-2 tail does not decay -- PROPAGATED?', tail2)
     for v in tail1:
         assert v > 0.5, ('index-1 tail does not decay', tail1)
+
+
+def _ac_fixtures():
+    """RC (index 1), C-V loop (index 2), and a circuit with NO algebraic
+    block -- one per verdict `algebraic_conditioning` can return."""
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+
+    def rc(k=1.0):
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=0.8, freq=1.0 / per)
+        c['rs'] = R('a', 'b', r=50.0)
+        c['cl'] = C('b', gnd, c=1e-9 * k)
+        c['rl'] = R('b', gnd, r=1e4)
+        return c
+
+    def cv():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1.0 / per)
+        c['c1'] = C('a', 'b', c=1e-9)
+        c['c2'] = C('b', gnd, c=2e-9)
+        c['rl'] = R('b', gnd, r=1e4)
+        return c
+
+    def ode():
+        ## Current-driven, capacitor to datum on the only node: `C` is
+        ## nonsingular, so there is no algebraic block at all.
+        c = SubCircuit()
+        c.add_node('a')
+        c['i'] = IS(gnd, 'a', i=1e-3)
+        c['c'] = C('a', gnd, c=1e-9)
+        c['r'] = R('a', gnd, r=1e3)
+        return c
+
+    return rc, cv, ode
+
+
+def _explicit_block_sigma(cir):
+    """`sigma_min(Z^T G N)` the long way -- `N = ker C`, `Z = ker C^T`, both
+    by SVD.  The reference `algebraic_conditioning` must reproduce WITHOUT
+    forming either basis."""
+    from pycircuit.circuit.analysis import remove_row_col
+    import pycircuit.circuit.analysis as _an
+    n = cir.n
+    Cm = np.asarray(cir.C(np.zeros(n), defaultepar), dtype=float)
+    Gm = np.asarray(cir.G(np.zeros(n), defaultepar), dtype=float)
+    Cm, Gm = [np.asarray(m, dtype=float) for m in
+              remove_row_col((Cm, Gm), cir.get_node_index(gnd), _an.numeric)]
+    u, sv, vt = np.linalg.svd(Cm)
+    tol = max(Cm.shape) * np.finfo(float).eps * sv[0]
+    if not np.any(sv <= tol):
+        return None
+    N = vt[sv <= tol].T
+    Z = u[:, sv <= tol]
+    sb = np.linalg.svd(Z.T @ Gm @ N, compute_uv=False)
+    return float(sb.min()) if len(sb) else None
+
+
+def test_algebraic_conditioning_reproduces_the_block_without_forming_it():
+    """`sigma_min(C + hG)/h -> sigma_min(d g_2/d y)`, and the verdict agrees
+    with the topological index on all three fixtures.
+
+    The point of the routine is that it needs NO index-1 `(x, y)` splitting
+    and no null basis: two SVDs at different `h` from `C` and `G` alone.  So
+    the gate is that it reproduces the explicitly formed `Z^T G N` block.
+    """
+    rc, cv, ode = _ac_fixtures()
+
+    sigma, info = algebraic_conditioning(rc())
+    assert info['verdict'] == 'well-conditioned', info['verdict']
+    ## the documented contract: `spread - 1` bounds the relative error
+    assert abs(sigma - _explicit_block_sigma(rc())) <= \
+        (info['spread'] - 1.0) * _explicit_block_sigma(rc())
+    ref = _explicit_block_sigma(rc())
+    ## ⚠ THE BOUND IS SET BY THE LADDER, NOT BY WHAT PASSES.  Three readouts
+    ## were tried and the numbers are the argument: the MEDIAN of the ladder
+    ## gives 1.1e-09, its LAST point 2.0e-13 here but 1.0e-04 on the swallowed
+    ## -capacitor fixture below, and the FLATTEST 3-POINT WINDOW 2.0e-12 here
+    ## and 2.0e-10 there.  1e-10 passes only the last of those.
+    assert abs(sigma - ref) <= 1e-10 * ref, (sigma, ref)
+    assert topological_index(rc())[0] == 1
+
+    ## An index-2 circuit is exactly `theta_0 > 0`, i.e. a SINGULAR block.
+    sigma, info = algebraic_conditioning(cv())
+    assert info['verdict'] == 'singular', info['verdict']
+    assert sigma == 0.0
+    assert _explicit_block_sigma(cv()) == 0.0
+    assert topological_index(cv())[0] == 2
+
+    ## `C` nonsingular: nothing to condition, and the ratio would grow like
+    ## `1/h` forever.  Reporting a number here would be reporting noise.
+    sigma, info = algebraic_conditioning(ode())
+    assert info['verdict'] == 'no-algebraic-block', info['verdict']
+    assert sigma is None
+    assert _explicit_block_sigma(ode()) is None
+
+
+def test_algebraic_conditioning_is_invariant_to_the_CAPACITANCE_UNIT():
+    """⚠⚠ THE HAZARD THIS EXISTS TO EXCLUDE.  A rank test on these blocks with
+    an ABSOLUTE tolerance smears the index-2 crossing into a false window,
+    because the relevant singular value goes as `|G_22| * ||C|| / ||G||` --
+    so the window widens as `1/||C||` and at picofarads it is enormous.  A
+    circuit does not change its index when its capacitors are restated in
+    different units, so the verdict must not move either.  (Hazard relayed
+    from the docs session, 2026-09-11, which hit it in its own first version.)
+
+    Two things make it not apply here and BOTH are load-bearing: the null
+    space of `C` is taken by a RELATIVE tolerance, and the verdict is the
+    FLATNESS of the ratio, which is scale-free, rather than a magnitude
+    compared against a fixed number.
+    """
+    rc, _cv, _ode = _ac_fixtures()
+    seen = []
+    for k in (1e6, 1e3, 1.0, 1e-3, 1e-6):
+        sigma, info = algebraic_conditioning(rc(k))
+        assert info['verdict'] == 'well-conditioned', (k, info['verdict'])
+        seen.append(sigma)
+    assert max(seen) / min(seen) <= 1 + 1e-9, seen
+
+
+def test_algebraic_conditioning_says_no_window_rather_than_a_plausible_number():
+    """⚠ THE WINDOW CAN BE EMPTY, AND THAT MUST NOT BE ROUNDED TO AN ANSWER.
+
+    The ratio has to be read above the roundoff floor (`eps*||C||`) and below
+    the turn (`sigma_r(C)/sigma`), and a badly conditioned `C` leaves nothing
+    in between.  A routine that fits a plateau anyway would return a confident
+    number built out of roundoff.
+
+    ⚠ The response is NOT monotone in the conditioning of `C`, and that reads
+    like a bug until you see why.  Widening the capacitance spread to 1e10 and
+    1e14 closes the window, but at 1e16 the small capacitor drops BELOW the
+    relative rank tolerance, is correctly reclassified as part of the
+    algebraic block, and the answer comes back -- as `1/r2`, which is the
+    right answer for a node whose capacitance is numerically absent.
+    """
+    per = 1e-3
+
+    def ladder(spread):
+        c = SubCircuit()
+        for nm in ('a', 'b', 'd'):
+            c.add_node(nm)
+        c['vs'] = VSin('a', gnd, va=0.8, freq=1.0 / per)
+        c['rs'] = R('a', 'b', r=50.0)
+        c['cl'] = C('b', gnd, c=1e-9)
+        c['rl'] = R('b', gnd, r=1e4)
+        c['r2'] = R('b', 'd', r=1e3)
+        c['c2'] = C('d', gnd, c=1e-9 / spread)
+        return c
+
+    sigma, info = algebraic_conditioning(ladder(1e6))
+    assert info['verdict'] == 'well-conditioned', info['verdict']
+
+    for spread in (1e10, 1e12):
+        sigma, info = algebraic_conditioning(ladder(spread))
+        assert info['verdict'] == 'no-window', (spread, info['verdict'])
+        assert sigma is None
+
+    ## and the non-monotone tail: the capacitor vanishes into the null space
+    sigma, info = algebraic_conditioning(ladder(1e16))
+    assert info['verdict'] == 'well-conditioned', info['verdict']
+    ## ⚠ AND IT IS NOT EXACT HERE, WHICH IS THE POINT OF REPORTING `spread`.
+    ## A first version of this gate asserted `sigma == 1/r2` to 1e-9 and
+    ## failed at 1.01e-04 -- the plateau is FLAT to 1e-4 and WRONG by 1e-4,
+    ## because `C` still carries the 1e-25 F singular value that the rank
+    ## tolerance swallowed.  Flatness certifies coherence, not convergence.
+    ref = _explicit_block_sigma(ladder(1e16))
+    assert abs(sigma - ref) <= (info['spread'] - 1.0) * ref, (sigma, ref)
+    ## ⚠ AND THE LADDER IS U-SHAPED HERE, WHICH IS WHY THE READOUT IS A
+    ## WINDOW AND NOT AN END.  The ratio descends THROUGH the true value and
+    ## climbs again as the 1e-25 F singular value starts to tell, so the last
+    ## point is the WORST: reading it gives 1.0e-04, the flattest window gives
+    ## 2.0e-10.  Pin the gap so the readout cannot quietly move to an end.
+    good = [r for r, u in zip(info['ratio'], info['usable']) if u]
+    assert abs(good[-1] - ref) > 1e-5 * ref, (
+        'the last ladder point is supposed to be BAD on this fixture; if it '
+        'went good the gate no longer distinguishes the readouts', good[-1])
+
+
+def test_algebraic_conditioning_decides_on_FLATNESS_not_on_descent():
+    """⚠ A DESCENT RULE IS THE WRONG RULE AND THE ROUNDOFF FLOOR IS WHY.
+
+    On a singular block the ratio falls like `h` while the leading term is
+    still resolved -- on the C-V loop, four clean decades of exactly that --
+    and then TURNS UPWARD below the floor, because what is left is roundoff
+    divided by `h`.  Measured on random systems: 1.3e-07, 5.2e-09, 7.7e-07,
+    3.0e-05 across four decades.  So "is it decreasing" reports a singular
+    block as healthy at small enough `h`, and the floor guard is what keeps
+    the turn out of the usable ladder.
+
+    This gate asserts both halves: the usable ladder on a singular block
+    descends by decades, and the points the floor guard REJECTED are the ones
+    that would have broken a descent rule.
+    """
+    _rc, cv, _ode = _ac_fixtures()
+    sigma, info = algebraic_conditioning(cv())
+    usable = [r for r, u in zip(info['ratio'], info['usable']) if u]
+    assert len(usable) >= 3, info
+    ## a decade of `h` is a decade of ratio -- the signature of a zero block
+    for a, b in zip(usable, usable[1:]):
+        assert 8.0 <= a / b <= 12.0, usable
+    ## and the spread is what condemns it, not the direction.  `spread` is
+    ## now the FLATTEST 3-POINT WINDOW, so on a block falling a decade per
+    ## probe its best window still spans two decades: the arithmetic says 100
+    ## and it measures 99.0.  Bound at 50 -- naming the predicted value first,
+    ## because a gate written as `> 100` fails on 99.0 and invites widening.
+    assert info['spread'] > 50.0, info['spread']
+    ## the guard actually rejected points -- otherwise this proves nothing
+    assert not all(info['usable']), info['usable']
+
+
+def _e5_circuit(g22, cscale=1.0, r1=1e3, r2=1e3):
+    """A VCCS cancelling node 2's self conductance, so `G_22` passes through
+    ZERO with `rank C` FIXED -- an index change with no rank change and no
+    topology change.  `theta_0 = 1` exactly when `G_22 = 0`.  (Construction
+    relayed from the docs session, 2026-09-11, as the `e.5` case.)"""
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('1')
+    c.add_node('2')
+    c['i'] = IS(gnd, '1', i=1e-3)
+    c['c'] = C('1', gnd, c=1e-9 * cscale)
+    c['r1'] = R('1', '2', r=r1)
+    c['r2'] = R('2', gnd, r=r2)
+    c['gm'] = VCCS('2', gnd, '2', gnd, gm=g22 - (1.0 / r1 + 1.0 / r2))
+    return c
+
+
+def test_algebraic_conditioning_resolves_a_crossing_rank_C_cannot_see():
+    """The case a RANK test cannot answer, and the width of the window where
+    this one cannot either.
+
+    A binary "is `N^T G N` singular" test is blind here twice over: `rank C`
+    never moves, and with a ONE-dimensional null space the usual
+    `s.min()/s.max()` guard is identically 1, so it can only fire when the
+    block is EXACTLY zero.  `algebraic_conditioning` returns the number
+    instead, and tracks `G_22` down four decades.
+
+    ⚠⚠ IT DOES HAVE A FALSE WINDOW -- every numerical index test does -- AND
+    THE POINT IS WHERE IT IS.  An absolute rank test on these blocks has a
+    window of width `~ tol * ||G|| / ||C||`, which WIDENS AS `1/||C||`: at
+    picofarads it swallows perfectly healthy operating points, silently.
+    This one's window is set by `||G||` ALONE, at about `1e-4 * ||G||`, and is
+    invariant to the capacitance unit across twelve decades.  That invariance
+    is the property under test; the width itself is just a number to know.
+    """
+    ## tracks the real value down four decades
+    for g22 in (2e-3, 1e-3, 2e-4, 2e-5, 2e-6):
+        sigma, info = algebraic_conditioning(_e5_circuit(g22))
+        assert info['verdict'] == 'well-conditioned', (g22, info['verdict'])
+        assert abs(sigma - g22) <= (info['spread'] - 1.0) * g22, (sigma, g22)
+        ## and rank C never moved -- this is not a topology change
+        assert topological_index(_e5_circuit(g22))[0] == 1
+
+    ## exactly at the crossing it is genuinely singular
+    sigma, info = algebraic_conditioning(_e5_circuit(0.0))
+    assert info['verdict'] == 'singular', info['verdict']
+    assert sigma == 0.0
+
+    ## ⚠ THE INVARIANCE IS THE GATE.  Find the last resolved `G_22` at each
+    ## capacitance scale; if the window were `1/||C||` this walks by twelve
+    ## decades.  It does not move at all.
+    limits = []
+    for cscale in (1e6, 1e3, 1.0, 1e-3, 1e-6):
+        last = None
+        for e in range(2, 13):
+            g22 = 2.0 * 10.0 ** (-e)
+            _s, info = algebraic_conditioning(_e5_circuit(g22, cscale))
+            if info['verdict'] != 'well-conditioned':
+                break
+            last = g22
+        limits.append(last)
+    assert len(set(limits)) == 1, limits
+
+    ## ⚠⚠ AND THE WIDTH ITSELF IS A PARAMETER ARTEFACT, SO PIN THE CAUSE AND
+    ## NOT THE NUMBER.  A first version of this gate asserted `== 2e-7` flat,
+    ## which reads as a property of the problem and is not one: it is what
+    ## `flat_tol = 1e-2` buys.  Two arms, and they must disagree --
+    ## `flat_tol` moves the limit, the LADDER DEPTH does not.  docs-46
+    ## predicted the opposite (one decade of limit per decade of ladder) and
+    ## offered the falsification; this is it.
+    def _limit(**kw):
+        last = None
+        for e in range(2, 22):
+            g22 = 2.0 * 10.0 ** (-e)
+            sig, inf = algebraic_conditioning(_e5_circuit(g22), **kw)
+            if inf['verdict'] != 'well-conditioned':
+                break
+            if abs(sig - g22) > 0.1 * g22:
+                break
+            last = g22
+        return last
+
+    assert _limit(flat_tol=1e-2, decades=8) == 2e-7
+    for dec in (12, 20, 30):
+        assert _limit(flat_tol=1e-2, decades=dec) == 2e-7, dec
+
+    ## ⚠⚠ GATE THE MECHANISM, NOT ITS CONSEQUENCE.  The arm above passes only
+    ## because the FLOOR GUARD eats the extra probes -- so if anyone ever
+    ## relaxes `floor_k`, the ladder-depth arm starts moving and this gate
+    ## would fire on a change that IMPROVED the routine.  The actual invariant
+    ## is the usable point count.  (docs-46 read this code and made exactly
+    ## that objection to the first version of this gate.)
+    counts = set()
+    for dec in (8, 12, 20, 30):
+        _s, inf = algebraic_conditioning(_e5_circuit(2e-7), decades=dec)
+        counts.add(sum(inf['usable']))
+    assert len(counts) == 1, counts
+
+    ## ⚠ AND BOTH KNOBS BIND, ABOUT A DECADE EACH -- a single-cause story was
+    ## wrong twice, once in each direction.  `flat_tol` fires; `floor_k`
+    ## decides how many points the flatness test ever sees.
+    assert _limit(flat_tol=1e0, decades=30) == 2e-8
+    assert _limit(floor_k=1.0, decades=30) == 2e-8
+    assert _limit(flat_tol=1e0, floor_k=1.0, decades=30) == 2e-9

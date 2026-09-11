@@ -637,6 +637,240 @@ def topological_index(cir):
                    'provisional': bool(unclassified)}
 
 
+def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
+                           decades=8, flat_tol=1e-2, floor_k=1e3):
+    """`(sigma, info)` — how well conditioned the circuit's ALGEBRAIC block is.
+
+    `sigma` is `sigma_min(d g_2 / d y)`, the smallest singular value of the
+    block that Bächle 2007 Thm 2.26 requires to have a BOUNDED INVERSE before
+    a stiffly accurate method with `R(inf) = 0` is entitled to its classical
+    order on an index-1 DAE.  `None` when there is no such block, or when the
+    question cannot be answered on this circuit — the info dict says which.
+
+    HOW, and why no index-1 splitting is needed.  With `N = ker C` (the
+    algebraic unknowns) and `Z = ker C^T` (the algebraic equations),
+    `d g_2/d y = Z^T G N`, and
+
+        sigma_min(C + h G) / h  ->  sigma_min(Z^T G N)    as h -> 0
+
+    so two SVDs at different `h` answer the question from `C` and `G` alone,
+    with no basis extraction and no `(x, y)` form.  ⚠ THE CONVENTION IS OURS:
+    `J = C + a h G`, not the literature's `C/h + G`, and it flips every
+    exponent here.  (Identification relayed from the docs session, 2026-09-11;
+    verified here on six random systems with NON-symmetric `G` and mixed-rank
+    `C`, recovered to six significant figures, plus both negative controls.)
+
+    ⚠⚠ THE VERDICT IS FLATNESS, NOT MAGNITUDE, AND THAT IS THE WHOLE POINT.
+    `sigma_min(C + hG) ~ h` fires whenever an algebraic block EXISTS, which is
+    essentially every circuit — a voltage source alone is enough.  So the
+    screen that fires on "`sigma_min ~ h`" is testing EXISTENCE, and existence
+    is not a defect.  The hypothesis fails only when `sigma_min(Z^T G N) -> 0`,
+    and THAT shows up as the ratio FAILING TO SETTLE.  Reading the magnitude
+    instead of the flatness is what made an earlier screen point at the
+    healthiest fixture we had.
+
+    ⚠ AND THE RATIO DOES NOT SIMPLY FALL WHEN THE BLOCK IS SINGULAR.  On a
+    singular block it falls while the leading term is resolved and then GROWS,
+    because what is left is roundoff divided by `h`: measured 1.3e-07,
+    5.2e-09, 7.7e-07, 3.0e-05 over four decades.  Anything keyed on "is it
+    decreasing" reports a singular block as healthy at small enough `h`.
+    ⚠⚠ BUT THOSE NUMBERS ARE FROM RANDOM DENSE SYSTEMS AND YOU WILL NOT SEE
+    THEM ON A NETLIST.  `sigma_min(C + hG)` is ORTHOGONALLY INVARIANT, so in
+    exact arithmetic no rotation of the same problem can change it -- the
+    turn-up is therefore PURE ROUNDOFF and depends on how `ker C` happens to
+    be represented.  A capacitor-free node gives MNA an EXACT structural zero,
+    and there the ratio falls cleanly with no turn-up at all (docs-46,
+    2026-09-11, measured on these same assembled matrices: axis-aligned zero
+    no turn-up, the same problem rotated turn-up, MNA as assembled no
+    turn-up).  So gate on FLATNESS, which is right in either basis, and never
+    on SEEING the turn-up -- on real circuits it is not there to see.
+
+    ⚠ THERE IS A WINDOW AND IT CAN BE EMPTY.  Above `sigma_r(C)/sigma`, where
+    `sigma_r(C)` is the smallest NONZERO singular value of `C`, the ratio is
+    reading the differential directions instead; below `eps*||C||/sigma` it is
+    reading roundoff.  A badly conditioned `C` leaves no window at all, and
+    this returns `verdict='no-window'` rather than a number — the one answer
+    that must never be silently replaced by a plausible-looking value.
+
+    `info` carries `verdict`, one of:
+
+      ``well-conditioned``   the ratio settled; `sigma` is the plateau, and
+                             Thm 2.26's hypothesis holds.
+      ``singular``           an algebraic block exists and its smallest
+                             singular value is zero to working precision.  This
+                             is `theta_0 > 0`, i.e. index >= 2 — cross-check it
+                             against :func:`topological_index`.
+      ``no-algebraic-block`` `C` is nonsingular, so there is nothing to condition
+                             (the ratio grows like `1/h`; the ODE case).
+      ``no-window``          `C` is too ill-conditioned for a plateau to exist
+                             between the turn and the roundoff floor.
+
+    plus `h`, `ratio` and `usable` (the probe ladder and which points were not
+    roundoff), `spread` (max/min over the usable points), and `window`.
+
+    ⚠ `spread - 1` BOUNDS THE RELATIVE ERROR OF `sigma`, and it is the only
+    accuracy statement on offer -- so `flat_tol` is not a cosmetic threshold,
+    it is the worst-case accuracy the caller is agreeing to accept.  Measured
+    against an explicitly formed `Z^T G N`:
+
+        fixture        sigma          explicit    rel err     spread-1
+        RC             0.99005        0.99005     1.98e-12    1.96e-11
+        ladder 1e16    0.001          0.001       2.04e-10    1.98e-07
+        ladder 1e18    0.001          0.001       2.04e-11    1.98e-08
+        e5 G22=2e-04   0.0002         0.0002      2.98e-08    2.95e-07
+        e5 G22=2e-06   1.99999e-06    2e-06       3.09e-06    3.06e-05
+
+    ⚠⚠ THERE IS A RESOLUTION LIMIT, AND A WIDTH WITHOUT ITS PARAMETERS IS
+    NOT A RESULT.  On the `e5` sweep (a VCCS cancelling a node's
+    self-conductance, so `G_22` passes through zero with `rank C` FIXED) the
+    last value still reported is `G_22 = 2e-07` against `||G|| = 2e-03` --
+    but that `1e-4 * ||G||` holds only AT `flat_tol = 1e-2` AND a 10%
+    acceptance criterion, and both move it:
+
+        flat_tol   1e-1    1e-2    1e-3    1e-4       accepted within 10%
+        last G_22  2e-07   2e-07   2e-06   2e-06
+        accepted   50%     10%     1e-3    1e-6       at flat_tol = 1e-2
+        last G_22  2e-07   2e-07   2e-07   2e-05
+
+    ⚠ WHAT DOES *NOT* SET IT IS THE LADDER DEPTH.  Extending `decades` from 8
+    to 12, 16, 20, 24 and 30 leaves the limit at 2e-07, unmoved to every
+    digit, because THE FLOOR GUARD CAPS THE USABLE POINT COUNT: 7 points
+    whether `decades` is 8 or 30, every extra probe falling below
+    `floor_k * eps * ||C||` and never reaching the flatness test.  That is the
+    mechanism; the depth-insensitivity is its consequence.  (docs-46 predicted
+    one decade of limit per decade of ladder, offered the falsification
+    explicitly, and it FAILED here -- then read this code and identified the
+    guard, which is the arm that did hold.)
+
+    ⚠⚠ BOTH KNOBS BIND, ABOUT A DECADE EACH, AND A SINGLE-CAUSE STORY IS
+    WRONG.  An earlier version of this docstring named `flat_tol` as the
+    cause; docs-46 then named the floor guard instead, on a transcription
+    where loosening `flat_tol` bought nothing.  Measured here on an
+    independent transcription with both exposed, at `decades = 30`:
+
+        shipped (floor_k=1e3, flat_tol=1e-2)    2e-07
+        flat_tol loosened 100x to 1e0           2e-08
+        floor guard floor_k 1e3 -> 1            2e-08
+        both                                    2e-09
+
+    so each is worth a decade and they compose.  `flat_tol` is what FIRES --
+    every run stops with the spread over threshold -- and `floor_k` decides
+    HOW MANY points the flatness test ever sees.  `floor_k = 1e3` is a
+    three-decade safety margin over the natural roundoff floor `eps*||C||`,
+    and it costs about a decade of resolution: a judgement call, exposed as a
+    parameter so it can be measured rather than argued.  The default stays
+    high deliberately -- the failure mode on the other side is a CONFIDENT
+    WRONG NUMBER built from roundoff, which is worse than `singular`.
+
+    ⚠ One might expect that price to vary by circuit, since the guard is keyed
+    on `||C||` while the quantity it protects (`smin ~ h * sigma` near the
+    plateau) carries no `||C||` at all -- so the margin, expressed in units of
+    what is actually being guarded, moves with `||C||/||G||`.  It does not
+    bite: the capacitance sweep above varies `||C||/||G||` over twelve decades
+    at fixed `||G||` and the limit is 2e-07 throughout.  (Raised by docs-46 as
+    untested; it was already covered by that sweep.)
+
+    ⚠⚠ AND THAT LIMIT IS INVARIANT TO THE CAPACITANCE UNIT, which is the whole
+    question.  An absolute rank test on these blocks smears the index-2
+    crossing into a false window of width `~ tol * ||G||/||C||`, so it widens
+    as `1/||C||` and at picofarads it is enormous.  Measured here across
+    twelve decades of `C` -- 1e6, 1e3, 1, 1e-3, 1e-6 times nominal -- the
+    limit sits at `G_22 = 2e-07` in EVERY case, exactly `1e-4` of `||G||`.
+    The window is set by `||G||` alone.  Two things make that so and both are
+    load-bearing: the null space of `C` is taken by a RELATIVE tolerance, and
+    the verdict is the FLATNESS of the ratio, which is scale-free, rather than
+    a magnitude compared against a fixed number.
+    """
+    n = cir.n
+    if epar is None:
+        epar = defaultepar
+    xv = np.zeros(n) if x is None else np.asarray(x, dtype=float)
+    Cm = np.asarray(cir.C(xv, epar), dtype=float)
+    Gm = np.asarray(cir.G(xv, epar), dtype=float)
+    irn = cir.get_node_index(refnode)
+    if irn is not None:
+        Cm, Gm = remove_row_col((Cm, Gm), irn, analysis.numeric)
+        Cm = np.asarray(Cm, dtype=float)
+        Gm = np.asarray(Gm, dtype=float)
+
+    sv = np.linalg.svd(Cm, compute_uv=False)
+    cnorm = float(sv[0]) if len(sv) else 0.0
+    gnorm = float(np.linalg.norm(Gm, 2)) if Gm.size else 0.0
+    info = {'h': [], 'ratio': [], 'usable': [], 'spread': None,
+            'window': None, 'c_norm': cnorm, 'g_norm': gnorm}
+    if cnorm == 0.0 or gnorm == 0.0:
+        info['verdict'] = 'no-window'
+        return None, info
+
+    ## The null space of `C` by a RELATIVE tolerance -- an absolute one makes
+    ## the rank a function of the capacitance unit.
+    tol = max(Cm.shape) * np.finfo(float).eps * cnorm
+    nz = sv[sv > tol]
+    if len(nz) == len(sv):
+        info['verdict'] = 'no-algebraic-block'
+        return None, info
+    sigma_r = float(nz[-1]) if len(nz) else cnorm
+
+    ## Probe a decade ladder below the turn.  `h_hi` is conservative because
+    ## the turn sits at `sigma_r / sigma` and `sigma` is what we are after;
+    ## bounding `sigma <= ||G||` puts the turn at or above `sigma_r/||G||`.
+    h_hi = 1e-2 * sigma_r / gnorm
+    floor = floor_k * np.finfo(float).eps * cnorm
+    hs, ratios, usable = [], [], []
+    for k in range(decades):
+        h = h_hi * (0.1 ** k)
+        smin = float(np.linalg.svd(Cm + h * Gm, compute_uv=False).min())
+        hs.append(h)
+        ratios.append(smin / h)
+        usable.append(smin > floor)
+    info['h'], info['ratio'], info['usable'] = hs, ratios, usable
+    info['window'] = (floor, h_hi)
+
+    good = [r for r, u in zip(ratios, usable) if u]
+    if len(good) < 3:
+        ## Either the block is zero (every probe is roundoff) or `C` is too
+        ## ill-conditioned to leave a window.  Those are different answers and
+        ## the rank of the block separates them without another probe.
+        _u, sC, vtC = np.linalg.svd(Cm)
+        Nb = vtC[sC <= tol].T
+        Zb = _u[:, sC <= tol]
+        blk = Zb.T @ Gm @ Nb
+        sb = np.linalg.svd(blk, compute_uv=False)
+        if len(sb) and sb.max() <= tol * max(1.0, gnorm / cnorm):
+            info['verdict'] = 'singular'
+            return 0.0, info
+        info['verdict'] = 'no-window'
+        return None, info
+
+    ## ⚠⚠ THE ERROR IS U-SHAPED, SO NEITHER END OF THE LADDER IS THE ANSWER.
+    ## Two error sources move in opposite directions: the identification is a
+    ## LIMIT, so its truncation falls like `h`; and `C`'s near-null singular
+    ## values (plus roundoff) contaminate more as `h` falls.  On a clean
+    ## fixture the error decreases all the way down and the LAST point is
+    ## best; on a circuit carrying a singular value just under the rank
+    ## tolerance the ladder passes THROUGH the true value and climbs again,
+    ## and the last point is the WORST.  Two earlier versions read the median
+    ## (1000x worse than attainable) and then the last point (wrong by 1e-4 on
+    ## the second shape).  Take the FLATTEST 3-POINT WINDOW instead: it finds
+    ## the turn wherever it is, and its own spread is the error bound.
+    ## ⚠ Flatness over the WHOLE ladder is not the test either -- the coarse
+    ## end is simply unconverged, and judging on it reported a perfectly
+    ## healthy block (ratio converging to 2.0e-04 to ten digits) as SINGULAR
+    ## because the top of its ladder was 3% off.
+    win = 3 if len(good) >= 3 else len(good)
+    best = min((max(good[i:i + win]) / min(good[i:i + win]), i)
+               for i in range(len(good) - win + 1))
+    spread, at = best
+    info['spread'] = spread
+    info['window_at'] = at
+    if spread <= 1.0 + flat_tol:
+        info['verdict'] = 'well-conditioned'
+        return float(np.median(good[at:at + win])), info
+    info['verdict'] = 'singular'
+    return 0.0, info
+
+
+
 def _cx_collect(a, b):
     """`a + 1j*b` over possibly NESTED lists of arrays (collected adjoint
     samples; a DIRK nests per-stage solves inside per-step entries)."""
