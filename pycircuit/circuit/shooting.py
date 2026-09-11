@@ -292,6 +292,19 @@ def topological_index(cir):
     rank iff no C-V loop -- under the same hypothesis, "let all current and
     voltage sources be independent"; Theorem 3.47 adds the index-0 case
     (a capacitive path from every node to datum AND no voltage sources) and
+    ⚠⚠ AND IT IS FLOORED AT 1 BY CONSTRUCTION, which matters for anything that
+    validates against it.  The criterion is "index 2 IF AND ONLY IF the network
+    contains a C-V loop or an L-I cutset, OTHERWISE 1", so it CANNOT return 0
+    and will answer 1 for a circuit that is an implicit ODE.  MEASURED
+    2026-09-11 on the van der Pol fixture (C, L and a BSource, no voltage
+    source): its reduced `C` is NONSINGULAR -- rank 2 of 2, sigma_min 1.0 --
+    which is index 0, and this function reports 1.  Theorem 3.47's index-0
+    case (a capacitive path from every node to datum AND no voltage sources)
+    is the gap, noted below as "adds" and still not implemented.  ⚠ A
+    downstream check that agrees with this function on such a circuit is
+    agreeing for the wrong reason: `benchmarks/defect_locality.py` had a clamp
+    inserted for exactly that agreement and it has been removed.
+
     closed-form projectors (3.61)/(3.62).  ⚠ THIS LINE SAID "not implemented"
     UNTIL 2026-09-10 AND WAS STALE BY A DAY: the rank form IS implemented, as
     `test_the_topological_index_agrees_with_an_incidence_RANK_criterion`,

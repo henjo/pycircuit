@@ -308,3 +308,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260911T033439Z,d0d2b38,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.3,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.1
 20260911T035333Z,d0d2b38,pycircuit 10,1089.3,3182,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,988.3
 20260911T041819Z,0d1a5e1,pycircuit 10,1181.5,3182,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,992.5
+20260911T042202Z,6486c34,no:cacheprovider /dev/null pycircuit/circuit/tests/test_analysis_shooting.py::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.3,1,::test_the_pac_operator_is_the_monodromy_and_L_is_never_formed,0.1
+20260911T044316Z,6486c34,pycircuit 10,1224.1,3182,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1031.8

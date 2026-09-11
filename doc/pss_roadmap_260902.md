@@ -13997,3 +13997,35 @@ algebraic constraint at all, every direction is differential, and `‖J⁻¹‖ 
 
 ⚠ The van der Pol row is the one worth having: it has no voltage source, so `max|G|` is not 1 and it is the
 case neither session's earlier fixtures covered.
+
+#### ⚠⚠⚠ The clamp was wrong: the van der Pol is INDEX 0, and the reference is floored at 1
+
+The clamp added in the previous section made a van der Pol's `a = −1.000` agree with `topological_index`'s 1.
+**That was agreeing for the wrong reason.** `topological_index` implements Estevez Schwarz & Tischendorf,
+which is FLOORED AT 1 BY CONSTRUCTION — *"index 2 if and only if the network contains a C-V loop or an L-I
+cutset, otherwise 1"* — and its own docstring already records Theorem 3.47's index-0 case as not implemented.
+I clamped a probe to match a reference that cannot represent the answer the probe was giving.
+
+**MEASURED directly, which settles it without the topological criterion at all — index 0 means `C` is
+NONSINGULAR, an implicit ODE:**
+
+| fixture | rank C (reduced) | σ_min(C) | `a` | index | `topological_index` |
+|---|---|---|---|---|---|
+| van der Pol | **2 of 2** | **1.0000e+00** | −1.000 | **0** | 1 (floored) |
+| ExpG | 1 of 3 | 0.0000e+00 | +0.000 | 1 | 1 |
+| C-V loop | 2 of 3 | 0.0000e+00 | +1.000 | 2 | 2 |
+
+The van der Pol has `C`, `L` and a `BSource` and **no voltage source**, so it also meets Thm 3.47's stated
+condition. The rule is **unclamped**, `index = maxᵢ aᵢ + 1`, and it extends DOWN as well as up:
+−1 → 0, 0 → 1, +1 → 2, +2 → 3. **The probe is strictly more capable than the topological criterion here**, and
+the clamp threw that away.
+
+⚠ `topological_index`'s docstring now states the floor explicitly with this measurement, because a downstream
+check that agrees with it on such a circuit is agreeing for the wrong reason — which is exactly what the clamp
+would have institutionalised.
+
+⚠ The transferable rule, from docs-46 and better than what I wrote: **when two independent fixture sets agree,
+check what they have in COMMON and build the case that lacks it.** Here the common feature was "has an
+algebraic constraint at all", invisible precisely because every fixture had one. Their own first run of this
+test swept `1e-6 … 1e-9` against fixtures whose `‖C‖/‖G‖` was ~7e-7 — straddling the turn — and read `a ≈ 0`
+for all three, which would have "confirmed" the probe cannot separate them.

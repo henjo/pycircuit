@@ -285,19 +285,28 @@ def sigma_min_index(build, label, known_index, decades=22, per_decade=1):
     window is about 16 decades wide and CENTRED on the crossover, not
     unbounded.  Rows below the floor are dropped.
 
-    ⚠⚠ AND THE EXPONENT MUST BE CLAMPED AT ZERO -- found by adding a third
-    fixture with NO VOLTAGE SOURCE.  `max(a) + 1` silently assumes at least
-    one FLAT direction exists, which holds whenever there is a voltage source
-    or a resistive-only node.  A purely reactive circuit has NO algebraic
-    constraint, every direction is differential, and `||J^-1|| ~ h` gives
-    `a = -1` and `max(a) + 1 = 0` for something the topological route calls
-    index 1.  The rule is `index = max(0, max_i a_i) + 1`.
+    ⚠⚠⚠ DO NOT CLAMP THE EXPONENT AT ZERO.  A previous version did, to make a
+    van der Pol's `a = -1.000` agree with `topological_index`'s 1 -- and that
+    was AGREEING FOR THE WRONG REASON.  `topological_index` implements
+    Estevez Schwarz & Tischendorf, which is FLOORED AT 1 BY CONSTRUCTION
+    ("index 2 iff the network contains a C-V loop or an L-I cutset, otherwise
+    1"); its own docstring records that Theorem 3.47's INDEX-0 case is not
+    implemented.  So the probe was being clamped to match a reference that
+    cannot represent the answer the probe was giving.
 
-    MEASURED, asymptotic exponents over the last three usable decades:
+    MEASURED directly, which settles it without the topological criterion at
+    all -- INDEX 0 MEANS `C` IS NONSINGULAR, an implicit ODE:
 
-        ExpG          +0.000  clamp 0  -> 1   topological_index 1
-        C-V loop      +1.000  clamp 1  -> 2   topological_index 2
-        van der Pol   -1.000  clamp 0  -> 1   topological_index 1
+        fixture       rank C (reduced)   sigma_min(C)   a        index
+        van der Pol        2 of 2          1.0000e+00   -1.000     0
+        ExpG               1 of 3          0.0000e+00   +0.000     1
+        C-V loop           2 of 3          0.0000e+00   +1.000     2
+
+    The van der Pol has C, L and a BSource and NO voltage source, so it also
+    meets Thm 3.47's stated condition.  The rule is UNCLAMPED,
+    `index = max_i a_i + 1`, and it extends DOWN as well as up: -1 -> 0,
+    0 -> 1, +1 -> 2, +2 -> 3.  The probe is strictly more capable than the
+    topological criterion here, and clamping threw that away.
     """
     from pycircuit.circuit.circuit import defaultepar
     from pycircuit.circuit.analysis import remove_row_col
@@ -322,9 +331,9 @@ def sigma_min_index(build, label, known_index, decades=22, per_decade=1):
     a = [np.log(smin[i - 1] / smin[i]) / np.log(hs[i - 1] / hs[i])
          for i in range(1, len(hs))]
     asym = a[-3:]
-    ## clamped: see the docstring -- a purely reactive circuit has no flat
-    ## direction at all and reads -1, not 0
-    idx_meas = max(0.0, round(max(asym))) + 1
+    ## ⚠ UNCLAMPED: -1 means index 0 (C nonsingular, an implicit ODE), and
+    ## clamping it to 1 only agreed with a reference that is floored at 1
+    idx_meas = round(max(asym)) + 1
     turn = None
     for i in range(len(a) - 1, 0, -1):
         if a[i - 1] < 0.5 <= a[i]:
@@ -334,7 +343,7 @@ def sigma_min_index(build, label, known_index, decades=22, per_decade=1):
           % (label, ratio, floor,
              ('%.1e (%.3gx the ratio)' % (turn, turn / ratio)) if turn
              else 'none found (flat throughout)'))
-    print('  %-22s asymptotic %s   max(0,a)+1 = %.0f   index = %d   %s'
+    print('  %-22s asymptotic %s   max(a)+1 = %.0f   index = %d   %s'
           % ('', ' '.join('%+.3f' % v for v in asym), idx_meas, known_index,
              'MATCH' if abs(idx_meas - known_index) < 0.5 else 'NO'))
     return asym
