@@ -13852,3 +13852,34 @@ solution in hand. ⚠ The honest limit, asserted in the gate rather than hidden:
 separate the repelling fixture from the attracting one — both report.
 
 Ordinary circuits stay quiet on every path and on both transform settings.
+
+### The defect-locality question: NOT ANSWERED (2026-09-11)
+
+Asked whether the `1/h` amplification of the local-error estimate is LOCAL or PROPAGATED — Prop 8.10's term,
+with §8.4 note (6) claiming it is local at index ≤ 2 with a properly stated leading term. **The measurement
+did not come off and the question stays open.**
+
+What was built, and why it is not an answer: inject a defect at ONE step, difference against the undisturbed
+run of the same discretisation so truncation cancels, and check (a) that `|e|` at the injection step scales as
+`h^-(μ-1)` — **the instrument-alive check** — and (b) that it is exactly zero from step `n0 + μ`. **Check (a)
+FAILS**: `|e|` reads exactly the injected `δ` at every grid, exponent +0.00 where index 2 wants −1. Without
+the amplification being reproduced, the zeros in (b) prove nothing.
+
+Two injections are now known to be wrong, and the benchmark is kept to record them rather than deleted:
+
+* **into the STATE** (add `δ` to `x` after the step converges) — then `|e|` at that step is trivially `|δ|`;
+* **into the SOURCE VECTOR** via `provided_function` — closer, since it does perturb the equation, but still
+  reads `|e| = δ` exactly, and on the index-2 C-V loop the tail is ~100× SMALLER than `δ` and decays slowly
+  rather than being amplified and then vanishing.
+
+⚠ The step that was skipped is the identification: **where does the theorem's `q_ni` enter this assembly?** A
+defect entering as a current on an algebraic row is not obviously the same object as a perturbation of the
+stage equations in the theorem's coordinates. The next attempt should establish that before choosing a hook.
+
+⚠ Two earlier framings of the same question also failed, and the progression is worth keeping: an
+interval-length sweep (deleted — contracting systems saturate, so a flat reading was guaranteed) and a
+fixed-offset rule `err(n0)/err(n0+2)` (never built — a defect dies after μ steps, not at a fixed offset, so
+an index-3 defect that vanishes at `n0+3` would be scored as propagated).
+
+What still stands, unmeasured here: the arm of note (6) covering a variable-coefficient nonlinear MNA is the
+index-2 one, it is stated to hold, and the margin to the propagating index-3 case is one index level.

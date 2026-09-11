@@ -302,3 +302,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260910T215723Z,e0171a5,pycircuit 10,1371.8,3180,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1168.7
 20260911T020415Z,69f1b4e,pycircuit/circuit/tests/test_analysis_shooting.py branch_check,1.9,3,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise,0.6
 20260911T022354Z,69f1b4e,pycircuit 10,1162.5,3182,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,973.9
+20260911T024711Z,fd335a7,pycircuit 10,1212.5,3182,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,1127.4
