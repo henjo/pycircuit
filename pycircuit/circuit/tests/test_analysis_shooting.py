@@ -19903,3 +19903,92 @@ def test_pss_warns_when_the_numeric_block_disagrees_with_the_topological_index()
     c['cd'] = C('d', gnd, c=1e-9)
     assert topological_index(c)[1]['provisional'], 'control is not provisional'
     assert _warned(c) == []
+
+
+def _diode_fixture():
+    circuit.default_toolkit = circuit.numeric
+    per = 1e-3
+    c = SubCircuit()
+    c.add_node('a')
+    c.add_node('b')
+    c['vs'] = VSin('a', gnd, va=0.8, freq=1.0 / per, vo=0.6)
+    c['rs'] = R('a', 'b', r=50.0)
+    c['d'] = Diode('b', gnd)
+    c['cl'] = C('b', gnd, c=1e-9)
+    c['rl'] = R('b', gnd, r=1e4)
+    return c
+
+
+def test_no_analysis_answer_depends_on_a_stale_limiting_state():
+    """⚠⚠ `cir.G(x)` IS NOT A PURE FUNCTION OF `x`.  `Diode` linearises around
+    a stored `_vlim`, so any site evaluating `G` outside a converged solve
+    reads whatever the last solve left behind.  The defence in this tree is
+    PER-CALL-SITE (shooting routes `_G_at` through PCNR), which means a NEW
+    site inherits the bug silently -- and one did, the same day the hazard was
+    written down.
+
+    This gate is the general form: poison the limiting state and assert every
+    analysis answer is unmoved.  Measured before the fix:
+
+        DC operating point      0.0e+00
+        AC small signal         0.0e+00
+        Transient final state   0.0e+00
+        algebraic_conditioning  1.0e+00   <-- inherited it
+    """
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.analysis_ss import AC
+    poison = 5.0
+
+    def poisoned():
+        c = _diode_fixture()
+        c['d'].__dict__['_vlim'] = poison
+        return c
+
+    ## ⚠⚠ THE INSTRUMENT ARM, AND IT IS NOT OPTIONAL.  A first version of this
+    ## measurement poisoned via `limit()` with a FULL-CIRCUIT x vector; that
+    ## takes the ELEMENT's local x, so it set `_vlim = 0.0` -- the unpoisoned
+    ## value -- and every analysis read 0.0e+00 including the raw `G` that was
+    ## known to move.  A clean sweep of nulls from a DEAD POISON.  Prove the
+    ## poison moves something before believing it moves nothing.
+    x = np.zeros(_diode_fixture().n)
+    x[_diode_fixture().get_node_index('b')] = 0.7
+    g_clean = np.asarray(_diode_fixture().G(x, defaultepar), dtype=float)
+    g_poisoned = np.asarray(poisoned().G(x, defaultepar), dtype=float)
+    assert np.max(np.abs(g_poisoned - g_clean)) > 1.0, (
+        'the poison does not move a raw G evaluation, so every null below '
+        'would be measuring nothing')
+
+    def unmoved(name, fn):
+        a = np.atleast_1d(np.asarray(fn(_diode_fixture()), dtype=complex)).ravel()
+        b = np.atleast_1d(np.asarray(fn(poisoned()), dtype=complex)).ravel()
+        scale = max(float(np.max(np.abs(a))), 1e-300)
+        moved = float(np.max(np.abs(a - b))) / scale
+        assert moved < 1e-12, (name, moved)
+
+    unmoved('DC', lambda c: DC(c, refnode=gnd).solve().x)
+    unmoved('AC', lambda c: np.asarray(
+        AC(c).solve(np.array([1e3]), refnode=gnd).v('b', 'gnd')))
+    unmoved('transient', lambda c: Transient(c).solve(
+        refnode=gnd, tend=1e-3, timestep=1e-3 / 50, fixed_timestep=True).x[-1])
+    unmoved('algebraic_conditioning', lambda c: algebraic_conditioning(c)[0])
+
+
+def test_algebraic_conditioning_leaves_the_limiting_state_as_it_found_it():
+    """⚠⚠ "A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE
+    DID" -- recorded on `Transient._branch_restore_limits` about `branch_check`,
+    which left `_vlim` at a speculative solve's value and moved the NEXT step's
+    Jacobian.  Making this routine's reading PURE required re-syncing the
+    limiting state with `limit(x, x)`, so it now has the same obligation.
+    """
+    cir = _diode_fixture()
+    cir['d'].__dict__['_vlim'] = 5.0
+    algebraic_conditioning(cir)
+    assert cir['d'].__dict__.get('_vlim') == 5.0, \
+        cir['d'].__dict__.get('_vlim')
+
+    ## and it must not CREATE state on a circuit that had none
+    fresh = _diode_fixture()
+    assert '_vlim' not in fresh['d'].__dict__
+    algebraic_conditioning(fresh)
+    assert '_vlim' not in fresh['d'].__dict__, fresh['d'].__dict__.get('_vlim')

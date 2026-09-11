@@ -679,6 +679,29 @@ def topological_index(cir):
                    'provisional': bool(unclassified)}
 
 
+def _limit_state_snapshot(cir):
+    """Every element's instance dict, shallowly, so a diagnostic can put the
+    limiting state back exactly as it found it."""
+    out = []
+
+    def walk(c):
+        elems = getattr(c, 'elements', None)
+        if not elems:
+            return
+        for e in elems.values():
+            out.append((e, dict(e.__dict__)))
+            walk(e)
+    walk(cir)
+    return out
+
+
+def _limit_state_restore(snap):
+    for elem, saved in snap:
+        elem.__dict__.clear()
+        elem.__dict__.update(saved)
+
+
+
 def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
                            decades=8, flat_tol=1e-2, floor_k=1e3):
     """`(sigma, info)` — how well conditioned the circuit's ALGEBRAIC block is.
@@ -846,8 +869,32 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
     if epar is None:
         epar = defaultepar
     xv = np.zeros(n) if x is None else np.asarray(x, dtype=float)
-    Cm = np.asarray(cir.C(xv, epar), dtype=float)
-    Gm = np.asarray(cir.G(xv, epar), dtype=float)
+    ## ⚠⚠ RE-SYNC THE LIMITING STATE TO `xv`, AND PUT IT BACK AFTERWARDS.
+    ## `G(x)` is NOT a pure function of `x` for a device with a Newton
+    ## limiter -- `Diode` linearises around a stored `_vlim` -- so without
+    ## this the answer depends on whatever solve ran last.  MEASURED: with a
+    ## poisoned `_vlim` this routine's `sigma` moved by a RELATIVE 1.0, while
+    ## DC, AC and transient were all unaffected to 0.0e+00 exactly, because a
+    ## converged solve leaves the state consistent by construction.  This was
+    ## the ONLY site in the tree that inherited it, and it was shipped the
+    ## same day the hazard was written down -- which is the argument for the
+    ## gate rather than for vigilance.
+    ## `limit(x, x)` at ZERO DELTA is the documented re-sync (the same one
+    ## `Transient._branch_restore_limits` uses, and the PCNR coupled step at
+    ## its own convergence).  ⚠ And the restore is not optional: "A DIAGNOSTIC
+    ## THAT CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE DID" is recorded
+    ## on that method about `branch_check`, which left `_vlim` at a
+    ## speculative solve's value and moved the NEXT step's Jacobian.
+    _snap = _limit_state_snapshot(cir)
+    try:
+        try:
+            cir.limit(xv, xv, epar)
+        except Exception:                                      # noqa: BLE001
+            pass
+        Cm = np.asarray(cir.C(xv, epar), dtype=float)
+        Gm = np.asarray(cir.G(xv, epar), dtype=float)
+    finally:
+        _limit_state_restore(_snap)
     irn = cir.get_node_index(refnode)
     if irn is not None:
         Cm, Gm = remove_row_col((Cm, Gm), irn, analysis.numeric)
