@@ -185,3 +185,61 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def jinv_column_exponents(build, label, known_index, hs=(1e-6, 1e-7, 1e-8)):
+    """docs-46's route: the amplifying directions are the COLUMNS OF `J^-1`
+    that grow as `h` shrinks, and `max exponent + 1` is the tractability index.
+
+    At the injection step the previous error is zero, so `e = J^-1(-delta)`
+    with `J = A D/h + B` -- the step matrix already assembled and factored.
+    Probing unit vectors therefore needs no `G_2`, no `Q_1` and no decoupling.
+    Verified by them to every digit on the book's index-1/2/3 fixtures, with
+    the caveat that they could not run it on a real MNA matrix.
+
+    ⚠⚠ MEASURED HERE, AND IT DOES NOT TRANSFER.  On charge-oriented MNA:
+
+        index-1 (ExpG)      a_i = [+0.00, -0.38, +0.00]   max+1 = 1   MATCH
+        index-2 (C-V loop)  a_i = [+0.00, -1.00, +0.00]   max+1 = 1   NO
+
+    `topological_index` independently calls these 1 and 2, and names the loop
+    (`vs`, `c1`, `c2`).  No column of `J^-1` grows on the index-2 circuit --
+    one SHRINKS exactly as `h` (the differential direction) and the rest are
+    flat -- so the recipe reads index 1 where the circuit is index 2.
+
+    ⚠ AND `J` STAYS WELL-CONDITIONED, which is the sharper form of the same
+    fact: cond(J) reads 4.98e+02 / 5.02e+01 / 5.34e+00 / 3.73e+00 at
+    h = 1e-6 / 1e-7 / 1e-8 / 1e-9.  It DECREASES as the grid refines, where an
+    index-2 DAE is expected to give `1/h^2`.  So the index-2 character of this
+    circuit is not visible in `C/h + G` at all, and no probing of that matrix
+    can recover it.
+
+    The identification gap is therefore still open and is the same one: `C` in
+    this assembly is the product `A D`, and the theorem's per-row structure
+    lives in coordinates where `A` and `D` are separate.  "Needs nothing from
+    the theorem" holds in the book's coordinates and not in these.
+    """
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.analysis import remove_row_col
+    from pycircuit.circuit.dcanalysis import DC as _DC
+    cir = build()
+    tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-12)
+    iref = cir.get_node_index(gnd)
+    x = np.asarray(_DC(cir, refnode=gnd).solve().x, dtype=float).ravel()
+    norms = []
+    for h in hs:
+        C = np.asarray(cir.C(x, defaultepar), dtype=float)
+        G = np.asarray(cir.G(x, defaultepar), dtype=float)
+        (Jr,) = remove_row_col((C / h + G,), iref, tr.toolkit)
+        Ji = np.linalg.inv(np.asarray(Jr, dtype=float))
+        norms.append(np.abs(Ji).max(axis=0))
+        print('    h=%.0e  |J^-1| cols %s   cond %.2e'
+              % (h, '  '.join('%.4e' % v for v in norms[-1]),
+                 np.linalg.cond(np.asarray(Jr, dtype=float))))
+    a = [np.log(norms[-1][k] / norms[0][k]) / np.log(hs[0] / hs[-1])
+         for k in range(len(norms[0]))]
+    print('  %-22s a_i = [%s]   max+1 = %.0f   index = %d   %s'
+          % (label, ', '.join('%+.2f' % v for v in a), max(a) + 1,
+             known_index,
+             'MATCH' if abs(max(a) + 1 - known_index) < 0.25 else 'NO'))
+    return a

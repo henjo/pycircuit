@@ -13883,3 +13883,38 @@ an index-3 defect that vanishes at `n0+3` would be scored as propagated).
 
 What still stands, unmeasured here: the arm of note (6) covering a variable-coefficient nonlinear MNA is the
 index-2 one, it is stated to hold, and the margin to the propagating index-3 case is one index level.
+
+#### And the proposed route does not transfer to MNA either (2026-09-11)
+
+docs-46 answered the identification question I left open, and the answer is elegant: at the injection step the
+previous error is zero, so `e = J^{-1}(−δ)` with `J = A·D/h + B` — the step matrix already assembled and
+factored — and therefore **the amplifying directions are simply the columns of `J^{-1}` that grow as `h`
+shrinks.** No `G₂`, no `Q₁`, no decoupling. They verified it to every digit on the book's index-1/2/3 fixtures
+and predicted that `max exponent + 1` is the tractability index, flagging that they could not run it on a real
+MNA matrix.
+
+**MEASURED HERE, and it does not transfer:**
+
+| fixture | per-column exponent `a_i` | max+1 | `topological_index` | |
+|---|---|---|---|---|
+| ExpG | `[+0.00, −0.38, +0.00]` | 1 | 1 | MATCH |
+| C-V loop | `[+0.00, −1.00, +0.00]` | 1 | 2 | **NO** |
+
+No column of `J^{-1}` grows on the index-2 circuit — one SHRINKS exactly as `h` (the differential direction)
+and the rest are flat — so the recipe reads index 1 where the tree's own `topological_index` reads 2 and names
+the loop (`vs`, `c1`, `c2`).
+
+**⚠ The sharper form of the same fact: `J` stays WELL-CONDITIONED.** `cond(J)` = 4.98e+02 / 5.02e+01 /
+5.34e+00 / 3.73e+00 at `h` = 1e-6 / 1e-7 / 1e-8 / 1e-9 — it **decreases** as the grid refines, where an index-2
+DAE is expected to give `1/h²`. The index-2 character of this circuit is not visible in `C/h + G` at all, so no
+probing of that matrix can recover it, and that also explains why the injection experiment found no
+amplification to measure.
+
+**The identification gap is unchanged and is the same one**: `C` in this assembly is the product `A·D`, and the
+theorem's per-row structure lives in coordinates where `A` and `D` are separate. "Needs nothing from the
+theorem" holds in the book's coordinates, not in these.
+
+⚠ This is the SECOND recipe validated on scalar/2×2 systems that fails on real MNA — the first was the
+step-matrix-goes-indefinite screen, which false-fired 4 times out of 4 because MNA with a voltage source is a
+saddle-point system. Both failures have the same root: **MNA is not a small dense system with a clean
+splitting, and a method that assumes one does not survive the assembly.**
