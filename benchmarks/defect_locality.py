@@ -247,37 +247,57 @@ def jinv_column_exponents(build, label, known_index, hs=(1e-6, 1e-7, 1e-8)):
     return a
 
 
-def sigma_min_index(build, label, known_index, kmin=9, kmax=17):
-    """The index from `sigma_min(J)`, `J = C/h + G`, in the ASYMPTOTIC window.
+def sigma_min_index(build, label, known_index, decades=22, per_decade=1):
+    """The index from `sigma_min(J)`, `J = C/h + G`, with the window LOCATED
+    rather than assumed.
 
     `||J^-1||_2 ~ h^-(mu-1)`, so the exponent plus one is the tractability
-    index.  Two factorisations and an SVD, no projector sequence and no
-    symbolic structure.
+    index.  Two factorisations and an SVD; no projector sequence, no symbolic
+    structure.  ⚠ NOT per row -- that part of the original proposal is
+    basis-dependent and was withdrawn by its author after testing it under
+    random invertible transforms.
 
-    ⚠⚠ AND THE WINDOW IS THE WHOLE DIFFICULTY.  Above it the reactive term
-    `C/h` is negligible against `G`, `J` is effectively resistive and the index
-    character is ABSENT -- not weak, absent -- so the probe correctly reads 1
-    for everything.  MEASURED on the index-2 C-V loop, exponent of `||J^-1||`
-    per decade of `h`:
+    ⚠⚠ THE WINDOW IS THE WHOLE DIFFICULTY, AND A FIXED RANGE IS THE TRAP.
+    Above the window the reactive term `C/h` is negligible against `G`, `J` is
+    effectively resistive, and the index character is ABSENT -- not weak,
+    absent -- so the probe correctly reads 1 for everything.  MEASURED on the
+    index-2 C-V loop, exponent of `||J^-1||` per decade:
 
-        1e-3 .. 1e-9     -0.62  -0.99  -0.78     reads index 1   WRONG
-        1e-9 .. 1e-15    +0.78  +1.00  +1.00     reads index 2   right
+        1e-3 .. 1e-9    -0.62  -0.99  -0.78     reads index 1   WRONG
+        1e-9 .. 1e-15   +0.78  +1.00  +1.00     reads index 2   right
 
-    ⚠⚠ WHERE THE WINDOW STARTS IS NOT `C/G`.  docs-46 gave the scale as the
-    circuit time constant `tau = C/G`, which for this fixture is `R*C = 2e-4`.
-    The turn is measured at `h ~ 1e-10`, five orders away.  In MNA the
-    VOLTAGE-SOURCE rows carry `+-1` INCIDENCE ENTRIES, so `max|G|` is 1 rather
-    than a conductance, and the scale is `C/max|G| = C = 2e-9` -- which is the
-    right order.  An RC reasoning puts the window in the wrong place entirely.
+    An earlier version of this function hard-coded `1e-9 .. 1e-17`, which is
+    the same mistake one layer up: the turn tracks `||C||/||G||` FROM THE
+    ASSEMBLED MATRICES (docs-46, measured over 15 decades with the two scales
+    varied independently -- no appeal to `RC` or to any physical time
+    constant), but THE CONSTANT IS FIXTURE-DEPENDENT AND LANDS ON EITHER SIDE:
+    theirs sits 7.6x ABOVE `||C||/||G||`, this tree's C-V loop about 0.05x
+    BELOW it.  So the window is SWEPT and the turn LOCATED, never computed and
+    probed at.
 
-    MEASURED, asymptotic exponents over the last three decades:
+    ⚠ A single decade cannot distinguish "flat because index 1" from "flat
+    because pre-asymptotic".  That is exactly the trap both sessions fell into,
+    and it is why the sweep here is wide by default.
 
-        ExpG      +0.000 +0.000 +0.000   max+1 = 1   topological_index 1
-        C-V loop  +1.000 +1.000 +1.000   max+1 = 2   topological_index 2
+    ⚠ There is a roundoff floor at `eps * ||C||/||G||`, below which `C/h`
+    swamps `G` in the sum and `J` goes numerically singular though it is
+    mathematically fine.  For these fixtures that is ~4e-25, so the usable
+    window is about 16 decades wide and CENTRED on the crossover, not
+    unbounded.  Rows below the floor are dropped.
 
-    ⚠ `h ~ 1e-10` is far below any step a transient would take here (1e7
-    points per period).  That is not an obstacle: this factors `J` at a probe
-    stepsize, it does not TAKE the step.
+    ⚠⚠ AND THE EXPONENT MUST BE CLAMPED AT ZERO -- found by adding a third
+    fixture with NO VOLTAGE SOURCE.  `max(a) + 1` silently assumes at least
+    one FLAT direction exists, which holds whenever there is a voltage source
+    or a resistive-only node.  A purely reactive circuit has NO algebraic
+    constraint, every direction is differential, and `||J^-1|| ~ h` gives
+    `a = -1` and `max(a) + 1 = 0` for something the topological route calls
+    index 1.  The rule is `index = max(0, max_i a_i) + 1`.
+
+    MEASURED, asymptotic exponents over the last three usable decades:
+
+        ExpG          +0.000  clamp 0  -> 1   topological_index 1
+        C-V loop      +1.000  clamp 1  -> 2   topological_index 2
+        van der Pol   -1.000  clamp 0  -> 1   topological_index 1
     """
     from pycircuit.circuit.circuit import defaultepar
     from pycircuit.circuit.analysis import remove_row_col
@@ -288,7 +308,12 @@ def sigma_min_index(build, label, known_index, kmin=9, kmax=17):
     x = np.asarray(_DC(cir, refnode=gnd).solve().x, dtype=float).ravel()
     C = np.asarray(cir.C(x, defaultepar), dtype=float)
     G = np.asarray(cir.G(x, defaultepar), dtype=float)
-    hs = [10.0 ** (-k) for k in range(kmin, kmax)]
+    ratio = np.abs(C).max() / max(np.abs(G).max(), 1e-300)
+    floor = np.finfo(float).eps * ratio
+    ## centred on the crossover, wide on both sides, stopping at the floor
+    top = np.log10(ratio) + 3.0
+    hs = [10.0 ** e for e in np.arange(top, top - decades, -1.0 / per_decade)
+          if 10.0 ** e > 1e2 * floor]
     smin = []
     for h in hs:
         (Jr,) = remove_row_col((C / h + G,), iref, tr.toolkit)
@@ -297,11 +322,19 @@ def sigma_min_index(build, label, known_index, kmin=9, kmax=17):
     a = [np.log(smin[i - 1] / smin[i]) / np.log(hs[i - 1] / hs[i])
          for i in range(1, len(hs))]
     asym = a[-3:]
-    print('  %-22s window starts ~ C/max|G| = %.1e   asymptotic %s'
-          % (label, np.abs(C).max() / max(np.abs(G).max(), 1e-300),
-             ' '.join('%+.3f' % v for v in asym)))
-    print('  %-22s max+1 = %.0f   known index = %d   %s'
-          % ('', round(max(asym)) + 1, known_index,
-             'MATCH' if abs(round(max(asym)) + 1 - known_index) < 0.5
-             else 'NO'))
+    ## clamped: see the docstring -- a purely reactive circuit has no flat
+    ## direction at all and reads -1, not 0
+    idx_meas = max(0.0, round(max(asym))) + 1
+    turn = None
+    for i in range(len(a) - 1, 0, -1):
+        if a[i - 1] < 0.5 <= a[i]:
+            turn = hs[i]
+            break
+    print('  %-22s ||C||/||G|| = %.2e  floor = %.1e  turn = %s'
+          % (label, ratio, floor,
+             ('%.1e (%.3gx the ratio)' % (turn, turn / ratio)) if turn
+             else 'none found (flat throughout)'))
+    print('  %-22s asymptotic %s   max(0,a)+1 = %.0f   index = %d   %s'
+          % ('', ' '.join('%+.3f' % v for v in asym), idx_meas, known_index,
+             'MATCH' if abs(idx_meas - known_index) < 0.5 else 'NO'))
     return asym

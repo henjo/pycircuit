@@ -13966,3 +13966,34 @@ changes the DAE rather than its conditioning.
 ⚠ What survives from the previous section unchanged: the step-matrix-goes-indefinite screen still false-fires
 4/4 on real MNA, and that is still a saddle-point fact. But "two for two" was wrong as a pattern — **this one
 transferred, and I closed it out early.**
+
+#### The window is LOCATED, not computed — and the exponent needs a clamp (2026-09-11)
+
+docs-46 verified and generalised the scale correction: the turn tracks **`‖C‖/‖G‖` from the ASSEMBLED
+MATRICES**, measured over 15 decades with the two scales varied independently, with no appeal to `RC` or to
+any physical time constant. That is the form to carry, since it needs no reasoning about what the rows mean —
+which is exactly where the `C/G` version went wrong.
+
+**⚠ But the constant is fixture-dependent and lands on either side**: theirs sits 7.6× ABOVE `‖C‖/‖G‖`, this
+tree's C-V loop 0.1× BELOW it. So the window is SWEPT AND THE TURN LOCATED, never computed and probed at.
+`sigma_min_index` did hard-code `1e-9 … 1e-17`, which is the same mistake one layer up; it now centres a wide
+sweep on `‖C‖/‖G‖` and finds the turn. ⚠ A single decade cannot distinguish "flat because index 1" from "flat
+because pre-asymptotic", which is the trap both sessions fell into.
+
+⚠ There is a roundoff floor at `eps·‖C‖/‖G‖`, below which `C/h` swamps `G` in the sum and `J` goes numerically
+singular though it is mathematically fine (~4e-25 here). The usable window is ~16 decades wide and **centred
+on the crossover**, not unbounded.
+
+**⚠⚠ AND A THIRD FIXTURE FOUND A GAP IN THE RULE.** `max(a) + 1` silently assumes at least one FLAT direction
+exists — true whenever there is a voltage source or a resistive-only node. A PURELY REACTIVE circuit has no
+algebraic constraint at all, every direction is differential, and `‖J⁻¹‖ ~ h` gives `a = −1` and `max(a)+1 =
+0` for something the topological route calls index 1. The rule is **`index = max(0, maxᵢ aᵢ) + 1`**:
+
+| fixture | asymptotic | clamped | `topological_index` | |
+|---|---|---|---|---|
+| ExpG | +0.000 | 1 | 1 | MATCH |
+| C-V loop | +1.000 | 2 | 2 | MATCH |
+| van der Pol | −1.000 | 1 | 1 | MATCH |
+
+⚠ The van der Pol row is the one worth having: it has no voltage source, so `max|G|` is not 1 and it is the
+case neither session's earlier fixtures covered.
