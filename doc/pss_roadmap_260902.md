@@ -2,7 +2,8 @@
 
 > ⚠ **SPLIT 2026-09-11.**  This file is now the PLAN: the organising fact,
 > the open capabilities (§A), the decisions awaiting a call (§B), what is
-> closed (§C) and the failure shapes (§D).  The chronological record moved to
+> closed (§C), the failure shapes (§D) and §E, the open items that never got a
+> roadmap number and until 2026-09-11 lived only in a handover.  The chronological record moved to
 > **`doc/pss_log_260902.md`**, indexed at the bottom of this file.  It had
 > grown to 14.7k lines of which the forward-looking part was about eight
 > items, and a plan nobody can find inside a log is not a plan.
@@ -7401,7 +7402,7 @@ returned `nan`. Geometric grading spreads the same overall opening across every 
 inside the bound by construction. **A grid is an instrument, and an invalid grid measures the
 integrator instead of the thing under test.**
 
-### B2. theta = 1/2 + Ch — the fifth trapezoidal design
+### B2. theta = 1/2 + Ch — the fifth trapezoidal design — ✅ **BUILT 2026-09-06** as `method='theta'` (`ThetaIntegrator`)
 
 Houben (2003): "a pure BDF method should not be used" for autonomous oscillators, and his
 theta-method biases theta off 1/2 by `Ch`, making it "virtually second order" while damping
@@ -7594,7 +7595,7 @@ failure reports `converged=False`; every converged run is correct to <=1.7e-4.
 variables at the period boundary, which the manufactured flat history destroys — so it is
 the same change as B1/B3, not a separate one.
 
-### B5. The probe technique for the trivial-root basin
+### B5. The probe technique for the trivial-root basin — ✅ **BUILT 2026-09-06/07** (probe + multi-harmonic + PAC Jacobian)
 
 Bizzarri et al., "Probe Based Shooting Method …", **already in the library**. A periodic
 voltage source feeds the oscillator until its own current reaches zero; the probe can then
@@ -8187,6 +8188,86 @@ not diagnose it.
    `null_residual / (1 − λ₂)`. ⚠ **Dismissing an instrument is a claim about it and needs the same
    measurement as trusting one** — the useful output was neither verdict but the CONVERSION FACTOR
    between them, now shipped as `null_residual_amplification`.
+
+## E. Open items that never got a roadmap number
+
+⚠ **THESE WERE REAL AND WERE NOT ON THIS FILE.**  Until 2026-09-11 they lived
+only in session summaries and `doc/HANDOVER.md` — repeatedly recommended, never
+written down as items — so a reader of the plan could not see them at all.
+That is the same fragility the plan/log split was meant to remove, one level
+down: a list that exists only in a handover is a list that dies with the
+handover.  Each entry below is MEASURED; the pointer is to
+`doc/pss_log_260902.md`.
+
+### E1. The GLM PCNR stage path — unbuilt
+
+The GLM class shipped with a documented scope: *"Transient only, constant step
+(Theorem 9.5's own scope), no PSS period map (a multivalue monodromy lives on
+the `r·m` Nordsieck state), no PCNR stage path, not on JAX."*
+
+⚠ **TWO OF THOSE FOUR ARE NOW CLOSED and the line reads as if they were not**:
+the PSS period map was built 2026-09-10 ("GLM in shooting"), and adaptive
+stepping was built the same day.  What remains is **the PCNR stage path** and
+**E2**.  Cost is unmeasured; the entry point is the stage solve, as for every
+other family.
+
+### E2. GLM on the JAX backend — unbuilt
+
+Same scope line.  The branch is named `cna-jax-vectorization` and the GLM
+family is the one integrator class not on it.  ⚠ Unmeasured: whether the
+Nordsieck vector's `r·m` state vectorises the way the one-step families do is
+the question, and nothing here answers it.
+
+### E3. `trap` does not improve monotonically near Q = 100 — UNEXPLAINED
+
+Relative error in `c` against the analytic high-Q reference: **2.913e-06 at 240
+points, 4.061e-06 at 480**.  Refining the grid made it WORSE.
+
+⚠ This sits inside the argument that made `radau` the default, and it is not
+the *deciding* part of it — the deciding part is that `trap`'s error CHANGES
+SIGN near Q = 100, so `grid_error` must refuse it there (a two-grid difference
+under-states the true error by up to **300×**).  The non-monotonicity is
+consistent with a sign change passing through, but that is a reading, not a
+measurement: nobody has shown the 480-point row IS the crossing rather than a
+second effect.  Low priority — `trap` is not the default — but it is the one
+number in that section with no account.
+
+### E4. Gear-2 and trapezoidal cost +3.0 % on a coarse fixed grid — DELIBERATELY NOT CARVED OUT
+
+The stage predictor pays off everywhere except here: on a COARSE FIXED grid
+through an exponential knee (40 points, 2 V), Gear-2 and trapezoidal cost
+**+3.0 %** and their worst solve takes **14 Newton iterations against 8**.
+
+⚠ **THE DECISION IS ALREADY MADE AND SHOULD NOT BE RE-LITIGATED WITHOUT NEW
+EVIDENCE:** not carved out, because *"a per-family exception justified by one
+fixture is fixture-tuning."*  The case is a step too large for the dynamics —
+the case adaptive stepping exists for — and with adaptive stepping the same
+predictor takes **22 % off** instead.  ⚠⚠ And the CLAMP is what bounds it:
+unclamped, the same case costs **+17 %** and 27 iterations.  Listed as open
+only because the +3.0 % has never been explained, not because the trade-off is
+unsettled.
+
+### E5. The ~2 % pnoise residual — CHARACTERISED, UNEXPLAINED
+
+Between the noisy Monte Carlo and the deterministic tone route.  What has been
+excluded, each by measurement rather than argument: it is **flat in `a`, in the
+grid and in the band**; PSD/4 and PSD×4 runs make it **linear** in the noise
+power (`P(4·PSD)/(4·P(PSD))` = 1.010 ± 0.015 demod, 1.015 ± 0.016 crossing);
+and its EVEN-order excursion dependence is excluded at **3.3σ** (a quadratic
+law predicts 1.0588 against a measured ~1.01).  "The whole 2 % residual is
+excursion-amplitude dependence" is therefore refuted.
+
+⚠ A milder trend the PSD/4 run hinted at (1.028) is **1.2σ away and NOT
+separated** — that is the live possibility, and separating it needs more seeds
+rather than another hypothesis.  ⚠ Also recorded there: an earlier 1.035 ±
+0.017 in the core control was NOISE (it now reads 1.006), so this item has
+already produced one false lead.
+
+### Already recorded elsewhere, listed so they are not re-raised as missing
+
+  - **Wright §3.11's local-error minimisation** — ⏸ OPTION FOR LATER, not now
+    (owner decision 2026-09-10).  It IS in this file; see the GLM sections.
+  - **`Ag` standing `gmin` insertion** — ⛔ DECIDED 2026-09-07, not built, in §A.
 
 ## Index of the chronological log
 

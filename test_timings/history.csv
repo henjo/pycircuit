@@ -374,3 +374,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260911T191853Z,9ccfb37,pycircuit 4,1291.1,3195,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,800.2
 20260911T200603Z,adf0fbc,pycircuit 4,1297.7,3195,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,790.6
 20260911T204643Z,38b435f,pycircuit 4,1289.8,3195,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,793.7
+20260912T062253Z,059b1a1,pycircuit 4,1265.6,3195,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,786.8

@@ -41,12 +41,20 @@ genuinely open:
 | B4 index-2 support via independent states | awaiting a call; **priority low** — no silent wrong answer |
 | B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
 | `orbital_spectrum` amplitude | ❌ OPEN — shape checked against λ₂, AMPLITUDE validated against nothing external |
+| E1 GLM PCNR stage path | unbuilt |
+| E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
+| E3 `trap` non-monotone near Q = 100 | unexplained (2.913e-06 at 240 pts, **4.061e-06 at 480**) |
+| E4 Gear-2/trap +3.0 % on a coarse fixed grid | ⚠ decision MADE — not carved out; the +3.0 % itself unexplained |
+| E5 ~2 % pnoise residual | characterised, unexplained; one live possibility at 1.2σ |
 
-**Not on that roadmap but repeatedly recommended:** the GLM JAX backend and the
-GLM PCNR stage path (the GLM thread), and three loose ends — the unexplained
-480-point row in the noise floor, the +3.0 % gear/trap coarse-fixed-grid
-regression, and the ~2 % pnoise residual.  ⛔ Wright §3.11 is PARKED by owner
-decision.
+⚠ **E1–E5 USED TO LIVE ONLY IN THIS FILE.**  They were real, repeatedly
+recommended, and absent from the roadmap — so a reader of the plan could not
+see them.  They are now **§E of the plan**, which is the authoritative list;
+this table is a summary of it, not the original.  A list that exists only in a
+handover is a list that dies with the handover.
+
+⛔ Wright §3.11 is PARKED by owner decision (2026-09-10) and IS recorded in the
+plan; `Ag` standing `gmin` is ⛔ DECIDED and in §A.  Neither is missing.
 
 ### What a fresh session most needs to know
 
