@@ -8218,19 +8218,22 @@ family is the one integrator class not on it.  ⚠ Unmeasured: whether the
 Nordsieck vector's `r·m` state vectorises the way the one-step families do is
 the question, and nothing here answers it.
 
-### E3. `trap` does not improve monotonically near Q = 100 — UNEXPLAINED
+### E3. `trap` does not improve monotonically near Q = 100 — ✅ RESOLVED 2026-09-14: A DEFECT, FIXED
 
-Relative error in `c` against the analytic high-Q reference: **2.913e-06 at 240
-points, 4.061e-06 at 480**.  Refining the grid made it WORSE.
+Was: relative error in `c` of **2.913e-06 at 240 points, 4.061e-06 at 480**.
 
-⚠ This sits inside the argument that made `radau` the default, and it is not
-the *deciding* part of it — the deciding part is that `trap`'s error CHANGES
-SIGN near Q = 100, so `grid_error` must refuse it there (a two-grid difference
-under-states the true error by up to **300×**).  The non-monotonicity is
-consistent with a sign change passing through, but that is a reading, not a
-measurement: nobody has shown the 480-point row IS the crossing rather than a
-second effect.  Low priority — `trap` is not the default — but it is the one
-number in that section with no account.
+**It was not trapezoidal.**  An autonomous trap run reads its PPV from a TR-BDF2
+twin, and `diffusion_constant`, `colour_projection` and
+`coloured_diffusion_resolved` divided the twin's integral by TRAP's period —
+`e = e_twin − ΔT/T`, an `O(h³)` error plus an `O(h²)` one of opposite sign.
+Rows predicted from that sum before they ran matched to three digits; `ppv()`
+now returns the period of its own orbit and the three sites use it.
+
+⚠⚠ **IT OVERTURNS the "deciding" half of the radau-default record** — trap's
+error "changing sign" so `grid_error` must refuse it: fixed, trap reads order
+3.02 and a clean estimate.  The ACCURACY half stands and is stronger (trap at
+480 points 3.320e-06 / 1.661e-05 at Q ≈ 100 / 500, against radau at 60 points
+7.599e-07 / 3.802e-06).  Record: "E3 RESOLVED" in `doc/pss_log_260902.md`.
 
 ### E4. Gear-2 and trapezoidal cost +3.0 % on a coarse fixed grid — DELIBERATELY NOT CARVED OUT
 

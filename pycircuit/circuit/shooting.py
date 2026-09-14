@@ -2040,14 +2040,16 @@ class PSS(Analysis):
       esdirk43  4       5.3e-05        yes          output in range; stages leave it
                                                     <= 3 % above ~2.5 h_FE
       trbdf2    2       10.1           yes          OUTPUT rings above 2.4 h_FE
-      trap      2       20.8           NO -- its    OUTPUT rings above 2 h_FE
-                                       error
-                                       CHANGES SIGN
-                                       near Q~100,
-                                       so a two-grid
-                                       estimate can
-                                       under-state
-                                       it 300x
+      trap      2       20.8           yes -- its   OUTPUT rings above 2 h_FE
+                                       PPV surfaces
+                                       are its
+                                       TR-BDF2
+                                       twin's (the
+                                       recorded
+                                       "sign change"
+                                       was a defect,
+                                       fixed
+                                       2026-09-14)
       gear      2       83.1           yes          not an RK; a small ring at
                                                     h >= 10 tau measured; does not
                                                     CERTIFY a free-period solve at
@@ -2171,15 +2173,20 @@ class PSS(Analysis):
          ## in the diffusion constant against the analytic high-Q reference is
          ##
          ##     Q      gear        trap        radau
-         ##      100   1.79e-03    1.49e-06    6.97e-10
-         ##      500   9.02e-03    1.04e-04    3.48e-09
-         ##     1000   1.82e-02    2.36e-04    6.97e-09
+         ##      100   1.79e-03    2.63e-05    6.97e-10
+         ##      500   9.02e-03    1.32e-04    3.48e-09
+         ##     1000   1.82e-02    2.63e-04    6.97e-09
          ##
-         ## `trap` is not merely less accurate than `radau` here -- its error
-         ## CHANGES SIGN near Q = 100, which is why it fits no clean law in
-         ## that table and why `grid_error` has to refuse it (its two-grid
-         ## difference under-states the true error by up to 300x there).  A
-         ## default whose error estimate cannot be trusted is a poor default.
+         ## (240-against-960 grid difference.)  `trap`'s column is its TR-BDF2
+         ## twin's `c` (the PPV comes from the twin), `~2.6e-07 Q` at order 3
+         ## -- linear in Q like the others.
+         ## ⚠⚠ The column recorded here until 2026-09-14 (1.49e-06 / 1.04e-04
+         ## / 2.36e-04) was a DEFECT, not trapezoidal: `diffusion_constant`
+         ## divided the twin's integral by trap's own period, adding an O(h^2)
+         ## term of opposite sign.  That sum was the "error that CHANGES SIGN
+         ## near Q = 100" which `grid_error` refused and which was cited for
+         ## this default; fixed, trap is estimable.  The default still stands
+         ## on accuracy, and more clearly than before (below).
          ## `radau` is order 5, self-starting (no manufactured opener, so no
          ## seam in the period map), L-stable, and carries its own monodromy,
          ## so an autonomous run takes NO TR-BDF2 twin and reads its own
@@ -2205,15 +2212,15 @@ class PSS(Analysis):
          ## ⚠ AND AT EQUAL ACCURACY IT IS NOT CLOSE.  Relative error in `c`
          ## against the analytic high-Q reference, with total wall-clock:
          ##
-         ##     Q~100   trap  480 pts  4.061e-06   6.747 s
+         ##     Q~100   trap  480 pts  3.320e-06   6.747 s
          ##             radau  60 pts  7.599e-07   0.908 s
-         ##     Q~500   trap  480 pts  9.230e-06  12.434 s
+         ##     Q~500   trap  480 pts  1.661e-05  12.434 s
          ##             radau  60 pts  3.802e-06   0.633 s
          ##
          ## Radau at SIXTY points beats trap at four hundred and eighty, on
-         ## both axes at once.  ⚠ Note also `trap` at Q~100 going 2.913e-06 at
-         ## 240 to 4.061e-06 at 480 -- it does not even improve monotonically
-         ## here, which is the sign change again.
+         ## both axes at once.  (trap's errors re-measured 2026-09-14 after the
+         ## period-normalisation fix; the old 4.061e-06 / 9.230e-06 were the
+         ## defect's, and its "non-monotone" 2.913e-06 -> 4.061e-06 too.)
          ##
          ## `trap` remains one argument away for a cheap coarse answer.
          Parameter(name='method',
@@ -6139,7 +6146,13 @@ class PSS(Analysis):
                 'monodromy_method': getattr(self.par, 'method', '?'),
                 'samples_eq': np.asarray(_eq),
                 'v_eq': _v_eq,
-                'times': np.asarray(fp.times, dtype=float)}
+                'times': np.asarray(fp.times, dtype=float),
+                ## ⚠ THE PERIOD OF THE ORBIT THESE SAMPLES LIVE ON, which is
+                ## not the caller's `period` when this came from a twin (trap
+                ## and euler read a TR-BDF2 twin whose period differs by
+                ## O(h^2)).  A quadrature over `times` divides by THIS; mixing
+                ## it with the host's period was the E3 "sign change".
+                'period': float(fp.T)}
         return v, info
 
     def frequency_aware_ppv(self, offset, tol=None):
@@ -6718,9 +6731,12 @@ class PSS(Analysis):
         points per period is
 
             Q      gear        trap        radau
-             100   1.79e-03    1.49e-06    6.97e-10
-             500   9.02e-03    1.04e-04    3.48e-09
-            1000   1.82e-02    2.36e-04    6.97e-09
+             100   1.79e-03    2.63e-05    6.97e-10
+             500   9.02e-03    1.32e-04    3.48e-09
+            1000   1.82e-02    2.63e-04    6.97e-09
+
+        (trap's column corrected 2026-09-14: it read 1.49e-06 / 1.04e-04 /
+        2.36e-04, the period-normalisation defect's values.)
 
         i.e. `~1.8e-05 Q` for gear against `~7.0e-12 Q` for radau -- SIX
         ORDERS at the same cost per step.  Those constants are real but they
@@ -6734,12 +6750,15 @@ class PSS(Analysis):
         give `|f_h - f_h/r| = |C| h^p (1 - r^-p)`, which over-states the fine
         grid's own error `|C|(h/r)^p` by `r^p - 1` -- an upper bound, and a
         tempting place to stop.  **IT IS NOT SAFE, AND THIS STACK CONTAINS A
-        COUNTEREXAMPLE.**  `trap` on the high-Q van der Pol has an error that
-        CHANGES SIGN near `Q = 100`: two terms of opposite sign cancel, the
-        two-grid difference collapses, and the estimate UNDER-STATES the true
-        error by 3.6x (measured: change 1.15e-06 against a true 4.06e-06 at
-        240 points).  A bound that fails silently where the error is
-        interesting is worse than none.
+        COUNTEREXAMPLE.**  A quantity mixing TWO discretisations -- an
+        `O(h^3)` error plus an `O(h^2)` one of opposite sign -- changes sign:
+        the two terms cancel, the two-grid difference collapses, and the
+        estimate UNDER-STATES the true error by 3.6x (measured: change
+        1.15e-06 against a true 4.06e-06 at 240 points).  ⚠ That quantity
+        was `diffusion_constant` under `trap` until 2026-09-14 -- the twin's
+        integral over trap's own period, a DEFECT now fixed -- and the
+        validity check below is what refused it.  A bound that fails silently
+        where the error is interesting is worse than none.
 
         So the third grid is not extra confidence, it is the VALIDITY CHECK.
         From `d1 = |f_h - f_h/r|` and `d2 = |f_h/r - f_h/r^2|`,
@@ -6749,8 +6768,8 @@ class PSS(Analysis):
         is the order the circuit ACTUALLY shows, and it is checked against the
         single-power-law assumption before the error estimate built on it is
         offered.  Measured orders on that fixture: `gear` 2.94 (its `O(h^3)`
-        autonomous rate), `radau` ~5, and `trap` failing the check exactly
-        where it cancels.  `error` is then `d2 / (r^order - 1)`, and
+        autonomous rate), `radau` ~5, `trap` 3.02 (its twin's), and the
+        mixed quantity failing the check exactly where it cancels.  `error` is then `d2 / (r^order - 1)`, and
         `power_law=False` means READ `d2` AS A RAW CHANGE AND NOTHING MORE.
 
         ⚠ AND IT IS AN ESTIMATE OF THE GRID ERROR ONLY.  It cannot see an
@@ -6830,7 +6849,7 @@ class PSS(Analysis):
         if levels == 3:
             d1, d2 = deltas
             ## ⚠ `d2 >= d1` means the sequence is NOT settling: either the
-            ## error is not a single power law (`trap`'s sign change) or the
+            ## error is not a single power law (two terms of opposite sign) or the
             ## finest grid has reached a roundoff floor.  Either way the
             ## Richardson step below would be arithmetic on noise.
             _sgn = ((values[1] - values[0]) * (values[2] - values[1]) > 0.0)
@@ -6841,10 +6860,13 @@ class PSS(Analysis):
                 ## its order; an observed order well above it means two error
                 ## terms nearly cancelled at this grid, which makes the
                 ## deltas shrink faster than the error and the estimate
-                ## UNDER-state.  MEASURED: `trap` at 120 points shows an
-                ## apparent order of 6.45 -- monotone, same-signed deltas,
-                ## nothing else suspicious -- while its estimate under-states
-                ## the true error by 300x.  A plain `0.5 <= order <= 8` range
+                ## UNDER-state.  MEASURED: a quantity mixing two
+                ## discretisations (a twin's `c` over the host's period --
+                ## what `diffusion_constant` under `trap` computed until the
+                ## 2026-09-14 fix) shows an apparent order of 6.45 at 120
+                ## points -- monotone, same-signed deltas, nothing else
+                ## suspicious -- while its estimate under-states the true
+                ## error by 300x.  A plain `0.5 <= order <= 8` range
                 ## ACCEPTS that case; the ceiling below rejects it.
                 ## ⚠ The `+ 1.5` allowance is not slack: on an AUTONOMOUS
                 ## problem the period is an unknown that absorbs the leading
@@ -13893,7 +13915,8 @@ class PAC(Analysis):
         S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
         h = np.diff(tms)
-        T = float(pss.period)
+        ## the samples' own orbit, not `pss.period` -- see `ppv()`'s 'period'
+        T = float(info['period'])
         cy = self._cy_reduced(pss, float(w))
         ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`), and
@@ -13976,7 +13999,7 @@ class PAC(Analysis):
         S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
         h = np.diff(tms)
-        T = float(pss.period)
+        T = float(info['period'])
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES, deliberately:
         ## it is what makes `Gamma <= c` exact rather than approximate.
         vbar = (S * h[:, None]).sum(0) / T
@@ -14050,7 +14073,9 @@ class PAC(Analysis):
         S = np.asarray(info['samples_eq'], dtype=float)[:, :m]
         tms = np.asarray(info['times'], dtype=float)
         n = S.shape[0]
-        T = float(pss.period)
+        ## the samples' orbit: both the 1/T AND the harmonic frequency `w0`
+        ## must come from it, or Parseval leaks (1.5e-09 under a trap twin)
+        T = float(info['period'])
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES: one sample per
         ## step, weighted by that step, so that Parseval closes exactly.
         t = tms[1:1 + n]

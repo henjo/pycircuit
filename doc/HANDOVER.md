@@ -43,7 +43,7 @@ genuinely open:
 | `orbital_spectrum` amplitude | ❌ OPEN — shape checked against λ₂, AMPLITUDE validated against nothing external |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
-| E3 `trap` non-monotone near Q = 100 | unexplained (2.913e-06 at 240 pts, **4.061e-06 at 480**) |
+| ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |
 | E4 Gear-2/trap +3.0 % on a coarse fixed grid | ⚠ decision MADE — not carved out; the +3.0 % itself unexplained |
 | E5 ~2 % pnoise residual | characterised, unexplained; one live possibility at 1.2σ |
 

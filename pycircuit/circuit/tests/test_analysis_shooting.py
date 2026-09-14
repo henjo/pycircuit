@@ -15684,7 +15684,9 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
 
         method   observed order   power_law   est rel err   true rel err
         gear         3.04           True       2.208e-04     2.257e-04
-        trap         6.45           False      (withheld)    4.061e-06
+        trap         3.02           True       3.29e-06      3.320e-06
+        (trap's row read `6.45 False (withheld) 4.061e-06` until the
+        2026-09-14 fix -- a period-normalisation defect; see step 4)
         radau        5.03           True       2.132e-11     1.076e-11
 
     `gear` recovers its `O(h^3)` autonomous rate and its estimate lands within
@@ -15761,21 +15763,50 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
         'radau %.3e is not far below gear %.3e' % (
             r_r['rel_error'], r['rel_error'])
 
-    ## 4. trap: the instrument must REFUSE rather than under-state.
+    ## 4. trap: its `c` is its TR-BDF2 twin's, so it is ESTIMABLE.
+    ##    ⚠⚠ This step used to assert the opposite -- that `grid_error` must
+    ##    REFUSE trap here, its error "changing sign near Q = 100" and a
+    ##    two-grid estimate under-stating it 300x.  That sign change was a
+    ##    DEFECT: `diffusion_constant` divided the twin's integral by trap's
+    ##    own period (see
+    ##    `test_ppv_quadratures_normalise_by_the_period_of_the_orbit_they_integrate`).
+    ##    Fixed, trap reads order 3.02 and a clean estimate.
     cir = vdp()
     p = PSS(cir, method='trap', reltol=1e-12)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         p.solve(period=T0, timestep=T0 / 120,
                 x0=np.array([2.0, 0.0]), maxiterations=80)
-    with _w.catch_warnings(record=True) as caught:
-        _w.simplefilter('always')
         r_t = p.grid_error(
             lambda q: float(PAC(cir, toolkit=circuit.numeric)
                             .diffusion_constant(q)))
-    assert not r_t['power_law'], \
-        'trap apparent order %r was ACCEPTED; its estimate under-states ' \
-        'the true error by ~300x here' % (r_t['order'],)
+    true_t = abs(r_t['values'][-1] - analytic) / analytic
+    assert r_t['power_law'] and abs(r_t['order'] - 3.0) < 0.3, \
+        'trap (via its twin) should read the O(h^3) autonomous rate, got ' \
+        '%r' % (r_t['order'],)
+    assert 0.5 < r_t['rel_error'] / true_t < 2.0, \
+        'trap estimate %.3e against a true error %.3e' % (
+            r_t['rel_error'], true_t)
+
+    ## 4b. THE CEILING STILL NEEDS ITS COUNTEREXAMPLE, and the defect above
+    ##     is a real one: a quantity MIXING TWO DISCRETISATIONS -- the twin's
+    ##     `c` times `T_twin / T_trap`, an `O(h^3)` error plus an `O(h^2)`
+    ##     one of opposite sign.  Built from real solves, it reproduces the
+    ##     old apparent order 6.45 exactly, with monotone same-signed deltas;
+    ##     a plain `0.5 <= order <= 8` range ACCEPTS it and only the ceiling
+    ##     at the method's order refuses.
+    def mixed(q):
+        c = float(PAC(cir, toolkit=circuit.numeric).diffusion_constant(q))
+        return c * float(q.monodromy_twin().period) / float(q.period)
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        r_m = p.grid_error(mixed)
+    assert not r_m['power_law'], \
+        'the mixed quantity (apparent order %r) was ACCEPTED; its estimate ' \
+        'under-states the true error by ~300x' % (r_m['order'],)
+    assert r_m['order'] is not None and r_m['order'] > 3.5 + 2.0, \
+        'the counterexample must be the CEILING case, order %r' % (
+            r_m['order'],)
     assert any('single power law' in str(w.message) for w in caught), \
         'the refusal must warn; got %r' % [str(w.message) for w in caught]
 
@@ -15794,6 +15825,78 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
         assert 'grid' in str(exc)
     else:
         raise AssertionError('grid_error accepted an explicit grid')
+
+
+def test_ppv_quadratures_normalise_by_the_period_of_the_orbit_they_integrate():
+    """A PPV quadrature divides by the period of THE ORBIT ITS SAMPLES LIVE ON.
+
+    An autonomous `trap` run reads its PPV from a TR-BDF2 twin
+    (`monodromy_twin`), re-converged on the same grid, whose period differs
+    from trap's by `O(h^2)`.  `diffusion_constant`, `colour_projection` and
+    `coloured_diffusion_resolved` integrated the TWIN's samples over the
+    twin's steps and divided by `pss.period` -- TRAP's.  So trap's `c` was
+    `c_twin * T_twin / T_trap`: an `O(h^3)` positive error plus an `O(h^2)`
+    period mismatch of the opposite sign.
+
+    ⚠⚠ THAT SUM IS THE "SIGN CHANGE" OF E3 AND OF THE RADAU-DEFAULT RECORD.
+    Measured at `Q = 100` against the analytic reference, signed:
+    `+9.71e-05, -2.91e-06, -4.06e-06, -1.43e-06, -4.08e-07` at 120..1920
+    points, reproduced from `e_trbdf2 - dT/T` to three digits at every row
+    (the rows were PREDICTED before they ran), while trbdf2's own `c` falls
+    monotonically at order 3.  The non-monotone row and the 300x
+    under-statement `grid_error` refused were this defect, not a property of
+    trapezoidal.  Every amplitude check passed, because the error is `O(h^2)`
+    and SHRINKS -- only a comparison against the twin's own value sees it.
+
+    Gate: under `trap` each quantity equals the twin's own, and the Parseval
+    identity `coloured_diffusion_resolved == diffusion_constant` (white
+    source) closes to round-off; before the fix they missed by exactly
+    `T_twin/T_trap - 1 = -2.96e-05`, and Parseval by 1.5e-09 because the
+    harmonic frequency came from the other orbit too.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 0.05
+
+    def osc():
+        ## asymmetric (0.3 u^2) so `vbar` is not a symmetry zero
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0)
+                         + 0.3 * mu * u ** 2)
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return c
+
+    cir = osc()
+    p = PSS(cir, method='trap', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=2 * np.pi, timestep=2 * np.pi / 240,
+                x0=np.array([2.0, 0.0]), maxiterations=80)
+    tw = p.monodromy_twin()
+    assert tw is not p, 'the fixture must exercise the twin'
+    mismatch = float(tw.period) / float(p.period) - 1.0
+    assert abs(mismatch) > 1e-6, \
+        'the periods must differ or this gate cannot fail (%.3e)' % mismatch
+
+    pac = PAC(cir, toolkit=circuit.numeric)
+    c_host, c_twin = pac.diffusion_constant(p), pac.diffusion_constant(tw)
+    assert abs(c_host / c_twin - 1.0) < 1e-12, \
+        'diffusion_constant under trap is %+.3e off its twin (the period ' \
+        'mismatch is %+.3e)' % (c_host / c_twin - 1.0, mismatch)
+
+    vb_h, i_h = pac.colour_projection(p)
+    vb_t, i_t = pac.colour_projection(tw)
+    assert np.max(np.abs(vb_h / vb_t - 1.0)) < 1e-12, \
+        'colour_projection vbar off its twin by %s' % (vb_h / vb_t - 1.0)
+    assert np.max(np.abs(i_h['rms'] / i_t['rms'] - 1.0)) < 1e-12
+
+    cr_h = pac.coloured_diffusion_resolved(p, [1e-3])[0]
+    assert abs(cr_h / c_host - 1.0) < 1e-12, \
+        'Parseval under trap: resolved %.12e against c %.12e' % (cr_h, c_host)
 
 
 def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
@@ -15876,15 +15979,16 @@ def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
     (240-against-960), and what it is worth on a reported phase noise::
 
         Q      gear        trap        radau       gear in dB
-         100   1.79e-03    1.49e-06    6.97e-10    0.0078
-         500   9.02e-03    1.04e-04    3.48e-09    0.0392
-        1000   1.82e-02    2.36e-04    6.97e-09    0.0791
+         100   1.79e-03    2.63e-05    6.97e-10    0.0078
+         500   9.02e-03    1.32e-04    3.48e-09    0.0392
+        1000   1.82e-02    2.63e-04    6.97e-09    0.0791
 
     **`gear` and `radau` both scale LINEARLY IN Q** (ratios 5.04/2.02 and
     5.00/2.00 against Q ratios 5 and 2) -- so `c`'s uncertainty is
-    `~1.8e-05 Q` for gear and `~7.0e-12 Q` for radau, SIX ORDERS apart.  `trap`
-    does not fit a clean law here because its error changes sign near Q = 100,
-    which is recorded rather than fitted.
+    `~1.8e-05 Q` for gear and `~7.0e-12 Q` for radau, SIX ORDERS apart.  `trap`'s
+    column did not fit a clean law because it was a DEFECT (the twin's `c`
+    over trap's own period, fixed 2026-09-14; it read 1.49e-06 / 1.04e-04 /
+    2.36e-04); corrected it is its TR-BDF2 twin's -- linear in Q too.
 
     So at Q = 1000 the shipped `gear` costs 0.08 dB and by Q = 10000 it would
     cost roughly 0.7 dB -- the concern was real -- while `radau` is at 7e-08
@@ -16762,10 +16866,12 @@ def test_the_default_method_is_radau_and_it_takes_no_monodromy_twin():
 
     1. The default is `radau`. Chosen because the floor of this stack is
        discretisation and grows linearly in `Q` (gear `~1.8e-05 Q`, radau
-       `~7.0e-12 Q` at 240 points), and — the part that decides it — `trap`'s
-       error CHANGES SIGN near `Q = 100`, so `grid_error` must refuse it there;
-       its two-grid difference under-states the true error by up to 300x. A
-       default whose error cannot be estimated is a poor default.
+       `~7.0e-12 Q` at 240 points).  ⚠⚠ The record also cited, as "the part
+       that decides it", `trap`'s error CHANGING SIGN near `Q = 100` so that
+       `grid_error` must refuse it.  WITHDRAWN 2026-09-14: that was a defect
+       (the twin's `c` over trap's own period), and fixed, trap is estimable.
+       The accuracy argument stands and is stronger: radau at 60 points
+       (7.6e-07) still beats trap at 480 (3.3e-06, not the defect's 4.1e-06).
 
     2. An autonomous run under the default takes **no TR-BDF2 twin**.
        `monodromy_twin` returns `self` for any method that
