@@ -13914,6 +13914,60 @@ def test_no_limiter_in_the_tree_has_a_charge_that_reads_its_limiting_state():
         'dq=%.2e) -- `_C_at` needs its `_sync_limit_at` back' % (dC, dq)
 
 
+def test_am_pm_noise_does_not_depend_on_where_t_equals_zero():
+    """A time shift of the drive cannot move the physical AM/PM split.
+
+    Reported by a peer session and reproduced 2026-09-14: `am_pm_noise` formed
+    `a + conj(b)` / `a - conj(b)` against the TIME ORIGIN, which is the
+    carrier's frame only for a cosine-phased carrier.  On a diode driven
+    through 1 k (thermal noise of R1 only, 100 Hz from a 10 kHz carrier):
+
+        drive phase   carrier phase   am/pm before   am/pm after
+          0 deg         -92.34 deg       0.3047         3.3159
+         90 deg          -2.34 deg       3.2816         3.3159
+         37 deg         -55.34 deg       0.6508         3.3159
+
+    AM and PM SWAPPED under a quarter-period shift.  ⚠ The pnoise identity
+    `S_am + S_pm = up + lo` could not see it -- the rotation leaves `|a|` and
+    `|b|` alone -- which is why every existing gate passed.  On an oscillator
+    the leak is `sin^2(phi)` of the 1/df^2 PM into AM, so AM rose toward the
+    carrier instead of sitting flat below the corner.
+    """
+    import warnings as _w
+    from pycircuit.circuit.semiconductors import ZenerDiode
+    F0, fm = 1e4, 100.0
+    got = []
+    for ph in (0.0, 90.0):
+        circuit.default_toolkit = circuit.numeric
+        cir = SubCircuit()
+        cir['V1'] = VSin('in', gnd, vo=1.0, va=0.8, freq=F0, phase=ph)
+        cir['R1'] = R('in', 'n1', r=1e3)
+        cir['C1'] = C('n1', gnd, c=1e-9)
+        cir['D1'] = ZenerDiode('n1', gnd, IS=1e-13)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=1 / F0, timestep=1 / F0 / 800)
+        pac = PAC(cir, toolkit=circuit.numeric)
+        full = cir.get_node_index('n1')
+        k = full - 1 if full > pss.irefnode else full
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            am, pm, _ = pac.am_pm_noise(pss, fm, k, carrier=1, maxsidebands=30)
+            up, _ = pac.pnoise(pss, F0 + fm, k, maxsidebands=30)
+            lo, _ = pac.pnoise(pss, F0 - fm, k, maxsidebands=30)
+        up, lo = float(np.real(up)), float(np.real(lo))
+        assert abs((am + pm) / (up + lo) - 1.0) < 1e-6, (ph, am + pm, up + lo)
+        got.append((am, pm))
+    (am0, pm0), (am90, pm90) = got
+    assert am0 > 2.0 * pm0, \
+        'the physical split is AM-dominant here (3.32); got am/pm %.4f' % (am0 / pm0)
+    for x, y, name in ((am0, am90, 'S_am'), (pm0, pm90, 'S_pm')):
+        assert abs(x / y - 1.0) < 1e-9, \
+            '%s moved by %.3e under a 90-degree shift of the drive: the split ' \
+            'is being taken against t = 0, not the carrier' % (name, x / y - 1.0)
+
+
 def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
     """`PAC.am_pm_noise` splits output noise into AM and PM parts.
 
@@ -17077,9 +17131,9 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
     The drift toward f0 (0.9855 at 0.2 f0) is shared by pnoise's PM and AM
     parts equally, i.e. the Lorentzian approximation, not the orbital term.
 
-    ⚠⚠ SYMMETRIC ORBITS ONLY.  On an asymmetric one the phase-orbital CROSS
-    term, which `orbital_spectrum` drops, is not negligible: on
-    `_hostile_oscillator` the sum over-states pnoise by ~3.3x above f_amp.
+    ⚠⚠ SYMMETRIC ORBITS ONLY.  On `_hostile_oscillator` the sum over-states
+    pnoise by ~3.3x above f_amp, and a Monte Carlo sides with pnoise (not
+    the dropped cross term, which is ~1e-8 of the total there).
     See `test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so`.
     """
     import warnings as _w
@@ -17121,10 +17175,17 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
         0.30   0.100                 0.3090
 
     Smooth, monotone, 1 at `a = 0` -- the prediction named before the sweep.
-    The dropped phase-orbital cross term is the ATTRIBUTION (its coefficient
-    carries the PPV's DC harmonic, which vanishes by half-wave symmetry, and
-    Traversa & Bonani's Fig. 5 shows it negative); building `S_corr` (A9
-    step 6) is what would MEASURE it.
+
+    ⚠⚠ WHICH SIDE IS RIGHT WAS SETTLED BY MONTE CARLO, AND IT OVERTURNED THE
+    FIRST ATTRIBUTION.  A vectorised trapezoidal SDE (64 x 4000 periods,
+    `Var(i) = PSD/(2h)`), one-sided PSD in 8-12 f_amp on both sidebands:
+    a = 0 control MC/pnoise 1.009, MC/modal 1.008; a = 0.30 MC/pnoise
+    **1.011**, MC/modal **0.313** -- and MC reproduces pnoise's sideband
+    ASYMMETRY (6.07e-4 / 7.64e-4 against 6.01e-4 / 7.55e-4), which the
+    modal sum does not have.  The dropped phase-orbital cross term was
+    recorded as the cause for a few hours and is NOT: `S_corr` from eq (92)
+    is ~1e-8 of the total on this fixture (it needs the PPV's DC at the
+    noise source's row, which the tank inductor shorts).
 
     ⚠ The warning that fired here before blamed an O(h) grid residual of the
     adjoint replay and said to refine -- true of `orbital_correlation`'s
@@ -17144,7 +17205,7 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
     with _w.catch_warnings(record=True) as caught:
         _w.simplefilter('always')
         Sorb = float(pac.orbital_spectrum(pss, off, 0, harmonic=1, H=8)[0])
-    assert any('cross term' in str(w.message).lower()
+    assert any('over-states' in str(w.message)
                and 'pnoise' in str(w.message) for w in caught), \
         'orbital_spectrum must warn that the sum over-states on an asymmetric ' \
         'orbit; got %r' % [str(w.message) for w in caught]

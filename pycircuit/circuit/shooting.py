@@ -13770,10 +13770,29 @@ class PAC(Analysis):
         So on a SYMMETRIC orbit the amplitude is right to 0.1 % (also at
         C = 1 and Q = 50 -- the first external check this spectrum had), and
         on an asymmetric one the sum over-states by up to 3.2x (5 dB) with no
-        grid dependence.  The cross term is the ATTRIBUTION -- it scales with
-        the PPV's DC coefficient, a symmetry zero, and its sign matches the
-        source's Fig. 5 -- not a measurement: that needs `S_corr` (A9 step 6,
-        not built).  A warning fires above `ORBITAL_ASYMMETRY_LIMIT`.
+        grid dependence.  A Monte Carlo of the SDE (64 oscillators x 4000
+        periods, trapezoidal, `Var(i) = PSD/(2h)`) settles which side is
+        right: at a = 0.30, MC/pnoise = 1.011 and MC/(S_ph + S_orb) = 0.313,
+        with the a = 0 control reading 1.009 / 1.008.  pnoise is the total.
+
+        ⚠⚠ AND THE DROPPED CROSS TERM IS NOT THE CAUSE -- an attribution
+        recorded for a few hours on 2026-09-14 and withdrawn on measurement.
+        `S_corr` built from eq (92) on this fixture is ~1e-8 of the total:
+        its coefficient needs the PPV's DC harmonic AT THE NOISE SOURCE's
+        row, and an ideal tank inductor shorts that node at DC (`vbar` =
+        [-2.3e-6, -0.114], the DC sitting in the inductor-current row).
+        The true total is BELOW even the phase Lorentzian alone (pnoise/S_ph
+        = 0.61 at a = 0.30): the over-statement is in the decomposition's
+        frequency-independent terms above f_amp, not in a missing
+        correction.  LOCALISED: the PHASE half is the Lorentzian's
+        frequency-independent PPV -- with `c(f)` from `frequency_aware_ppv`
+        pnoise's PM content matches it to <= 2.3 % at 0.3-10 f_amp -- and
+        the ORBITAL half over-states by a factor FLAT in offset (AM content
+        0.317 of this spectrum at a = 0.30, at every offset), which is open.
+        Traversa & Bonani's own Figs 1-2 show the same limit on their
+        amplitude-phase-coupled test oscillator (theory above the exact
+        spectrum at high frequency, growing with the coupling).  A warning
+        fires above `ORBITAL_ASYMMETRY_LIMIT`.
 
         **Lemma 3.5**: the orbital spectrum is a sum of Lorentzians centred at
         `j*w0 + Im(mu_l)` with half-width `|Re(mu_l)| + (1/2) h^2 w0^2 c`,
@@ -13824,13 +13843,14 @@ class PAC(Analysis):
             ## refinement changes it -- see the docstring.
             warnings.warn(
                 'PAC.orbital_spectrum: this orbit has half-wave asymmetry '
-                '%.3f. On an asymmetric orbit the phase-orbital CROSS term '
-                'this spectrum drops is not negligible: measured against '
-                'pnoise, S_ph + S_orb over-states the total sideband noise '
-                'above f_amp by x1.03 / x1.45 / x3.2 at asymmetry 0.033 / '
-                '0.067 / 0.100 (van der Pol, C=4, Q=8, 10 f_amp), and '
-                'refining the grid does not change it. Use PAC.pnoise for the '
-                'total.' % (_asym,),
+                '%.3f. On an asymmetric orbit S_ph + S_orb over-states the '
+                'total sideband noise above f_amp: x1.03 / x1.45 / x3.2 at '
+                'asymmetry 0.033 / 0.067 / 0.100 (van der Pol, C=4, Q=8, '
+                '10 f_amp), confirmed by Monte Carlo, which agrees with '
+                'pnoise to 1 %%. Refining the grid does not change it, and '
+                'the dropped phase-orbital cross term is NOT the cause (it '
+                'is ~1e-8 of the total there). Use PAC.pnoise for the total.'
+                % (_asym,),
                 RuntimeWarning, stacklevel=2)
         R, C = self.orbital_correlation(pss, H=H)
         modes = pss.floquet_modes(pss)
@@ -14540,9 +14560,13 @@ class PAC(Analysis):
             'is above the amplitude-relaxation pole f_amp = %.4g Hz '
             '(lambda_2 = %.6f, f_amp = f0/(2*pi*Q)). Above f_amp the '
             'amplitude noise no longer decays within a period and adds to the '
-            'total, so the value returned here is a LOWER BOUND: measured '
-            'excess of a commercial simulator over the phase-only prediction '
-            'is -0.54 dB at 1 kHz and -2.90 dB at 10 kHz for lambda_2 = 0.99. '
+            'total, so on a half-wave-symmetric orbit the value returned here '
+            'is a LOWER BOUND: measured excess of a commercial simulator over '
+            'the phase-only prediction is -0.54 dB at 1 kHz and -2.90 dB at '
+            '10 kHz for lambda_2 = 0.99. On an ASYMMETRIC orbit it can instead '
+            'OVER-state the total (pnoise/phase-only = 0.61 at half-wave '
+            'asymmetry 0.10, confirmed by Monte Carlo) -- use PAC.pnoise for '
+            'the total above f_amp. '
             '%sThe valid band scales as 1/Q, so it NARROWS as the oscillator '
             'improves.'
             % (worst, f_amp, lam2,
@@ -14781,6 +14805,21 @@ class PAC(Analysis):
                                                        N // 2)
         cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         k = int(carrier)
+        ## ⚠⚠ THE SPLIT IS TAKEN IN THE CARRIER'S FRAME, NOT THE TIME ORIGIN'S
+        ## (defect reported by a peer session and reproduced 2026-09-14).  AM
+        ## is the envelope component ALONG the carrier phasor, so `a + conj(b)`
+        ## is right only for a cosine-phased carrier.  Until this rotation the
+        ## answer depended on where t = 0 sat: a driven diode gave am/pm =
+        ## 0.305 / 3.28 / 0.651 at drive phase 0 / 90 / 37 degrees, and
+        ## 3.316 at all three once rotated, `S_am + S_pm` unchanged to 1e-15
+        ## (the identity cannot see it -- `|a_r|`, `|b_r|` are `|a|`, `|b|`).
+        ## `am_pm` never had it: it divides by the COMPLEX carrier phasor.
+        ## With no carrier at this harmonic the phase is undefined and the
+        ## split is left unrotated, as `am_pm` refuses the same case.
+        _C = self.carrier_phasor(pss, output, k)
+        _scale = float(np.max(np.abs(self._output_waveform_row(pss, output))))
+        _rot = (np.exp(-1j * np.angle(_C))
+                if abs(_C) > 1e-9 * max(_scale, 1e-300) else 1.0)
         S_am = 0.0
         S_pm = 0.0
         bands = []
@@ -14789,8 +14828,10 @@ class PAC(Analysis):
             a = self.adjoint_sideband_row(pss, g, output, k - p)[0]
             b = self.adjoint_sideband_row(pss, -g, output, k + p)[0]
             cy = cyfn(pss, 2.0 * np.pi * g)
-            m_am = a + np.conj(b)
-            m_pm = a - np.conj(b)
+            a_r = a * _rot
+            b_r = np.conj(b) * np.conj(_rot)
+            m_am = a_r + b_r
+            m_pm = a_r - b_r
             S_am += 0.5 * float(np.real(m_am @ cy @ np.conj(m_am)))
             S_pm += 0.5 * float(np.real(m_pm @ cy @ np.conj(m_pm)))
             bands.append(p)

@@ -8266,7 +8266,31 @@ rather than another hypothesis.  ⚠ Also recorded there: an earlier 1.035 ±
 0.017 in the core control was NOISE (it now reads 1.006), so this item has
 already produced one false lead.
 
-### E6. The phase–orbital cross term on an ASYMMETRIC orbit — MEASURED GAP, UNBUILT (A9 step 6)
+### E6. The Floquet decomposition over-states an ASYMMETRIC orbit above f_amp — MEASURED, MC-CONFIRMED, OPEN
+
+⚠⚠ **CORRECTED THE SAME DAY — the cross-term attribution below is WITHDRAWN.**  A Monte Carlo of the
+SDE (64 oscillators × 4000 periods, trapezoidal) sides with **pnoise**: a = 0.30 MC/pnoise **1.011**,
+MC/(S_ph+S_orb) **0.313** (a = 0 control 1.009 / 1.008), and it reproduces pnoise's sideband asymmetry.
+A prototype of `S_corr` from eq (92), calibrated against the two shipped terms (S_ph to 1e-5, S_yy to
+6e-4), is **~1e-8 of the total** on this fixture: `D_lhj` needs the PPV's DC harmonic at the SOURCE's row,
+and the ideal tank inductor shorts that node at DC (`v̄₁` = [−2.3e-6, −0.114]).  So building step 6 would
+NOT close this.  The true total is below even the phase Lorentzian alone (pnoise/S_ph = 0.61 at a = 0.30),
+which also contradicts `_warn_above_amplitude_pole`'s "phase-only is a LOWER bound above f_amp" on an
+asymmetric orbit.  **Localised the same evening:** the PHASE half is the Lorentzian's frequency-independent
+PPV — with `c(f)` from `frequency_aware_ppv`, pnoise's PM content matches it to ≤ 2.3 % at 0.3–10 f_amp
+(0.999 / 0.994 / 0.983 / 0.977); the ORBITAL half over-states by a factor FLAT in offset (am/4S_orb = 0.317
+at a = 0.30) — **open**.  Traversa & Bonani's own §V.A (Figs 1–2) shows the same limit on their
+amplitude–phase-coupled test oscillator (theory above the exact spectrum at high frequency, growing with the
+coupling), so this is the decomposition's documented limit, not a pycircuit defect.  Candidate builds, owner's
+call: a frequency-aware phase term in `oscillator_spectrum` (measured to close the phase half); the orbital
+half has no candidate.  **Also measured (item 3):** the k = 1 orbital over-statement is a real amplitude
+(harmonic sum rule), and AWAY from k = 1 the line-shape models miss the Monte-Carlo-confirmed noise even on a
+SYMMETRIC orbit (k = 0 ×135 over; k = 2/3 ×3.2/×3.7 under; all-h phase tails and the dropped `Im c_lhj`
+term narrow k = 2/3 to 1.39/1.50, k = 0 untouched) — line-shape models are valid near the orbit's lines only.
+Proposed guard, not built: refuse/warn when harmonic k carries no carrier, point at `pnoise`.  Prototype and arbiter scripts:
+session scratch `orb/scorr.py`, `orb/mcarb.py`.  Superseded text follows.
+
+#### (superseded) The phase–orbital cross term on an ASYMMETRIC orbit — MEASURED GAP, UNBUILT (A9 step 6)
 
 `orbital_spectrum`'s amplitude was the one A9 output validated against nothing
 external.  **Checked 2026-09-14 against pnoise** (the total linear sideband
