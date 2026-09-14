@@ -17161,6 +17161,98 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
                 % (f / f_amp, tot / (sph + sorb), tot / sph)
 
 
+def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
+    """The phase Lorentzian with `c(f)` instead of `c` -- built 2026-09-14.
+
+    The DC-PPV Lorentzian assumes a noise current moves the phase instantly.
+    Where the response goes through a slow mode it is filtered above that
+    mode's corner, and the closed form over-states.  `frequency_aware=True`
+    (the default) uses `c(f)` from `PSS.frequency_aware_ppv`, integrated by
+    `diffusion_constant`'s own quadrature.  Gated against pnoise's PM content
+    (Monte-Carlo-confirmed on the first fixture), measured:
+
+        van der Pol C=4 Q=8 a=0.30    1 f_amp   10 f_amp
+          pm / 4 S_v, closed form      0.647     0.302
+          pm / 4 S_v, frequency-aware  0.998     0.980
+        A2 slow node, tau/T = 100     1e-3 f0   1e-2 f0
+          closed form                  0.729     0.027
+          frequency-aware              1.004     1.004
+        symmetric control (a=0): unchanged to 1e-3
+
+    ⚠ The prototype first read `c(0)/c = 0.9963` on the asymmetric fixtures and
+    1.0000 on the symmetric one with IDENTICAL samples -- the quadrature used
+    `frequency_aware_ppv`'s `times`, which is one entry short and drops the last
+    step.  Over the orbit's full grid it is 1.000000000000; asserted below.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    def pm_ratio(pac, pss, off, ov, fa, sb=16):
+        S = float(np.asarray(pac.oscillator_spectrum(
+            pss, np.array([off]), ov, frequency_aware=fa)[0])[0])
+        _am, pm, _ = pac.am_pm_noise(pss, off, ov, carrier=1, maxsidebands=sb)
+        return pm / (4.0 * S)
+
+    ## 1. AM-to-PM coupling above f_amp
+    cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.30)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _v, info = pss.ppv()
+        f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+        c = pac.diffusion_constant(pss)
+        assert abs(pac.frequency_aware_diffusion(pss, 1e-9 * f0) / c - 1.0) < 1e-6
+        for mult, closed in ((1.0, 0.647), (10.0, 0.302)):
+            r_fa = pm_ratio(pac, pss, mult * f_amp, 0, True)
+            r_cf = pm_ratio(pac, pss, mult * f_amp, 0, False)
+            assert abs(r_fa - 1.0) < 0.03, \
+                'at %g f_amp the frequency-aware phase spectrum is off pnoise ' \
+                'PM by %.4f' % (mult, r_fa)
+            assert abs(r_cf - closed) < 0.03, \
+                'the closed form must still over-state here (%.4f, measured ' \
+                '%.3f) or this gate no longer separates the two' % (r_cf, closed)
+
+    ## 2. symmetric control: nothing to correct
+    cir_s, pss_s = _a9_vdp(cval=4.0, lval=0.25, a=0.0)
+    pac_s = PAC(cir_s, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        f0s = 1.0 / float(pss_s.period)
+        _v, info_s = pss_s.ppv()
+        fa_s = -np.log(float(info_s['second_multiplier'])) * f0s / (2 * np.pi)
+        o = np.array([10.0 * fa_s])
+        s_fa = float(np.asarray(pac_s.oscillator_spectrum(pss_s, o, 0)[0])[0])
+        s_cf = float(np.asarray(pac_s.oscillator_spectrum(
+            pss_s, o, 0, frequency_aware=False)[0])[0])
+    assert abs(s_fa / s_cf - 1.0) < 2e-3, s_fa / s_cf
+
+    ## 3. a source behind a slow node (A2)
+    T0 = 6.6634
+    c2 = SubCircuit()
+    c2.add_node('v'); c2.add_node('w'); c2.add_node('x')
+    c2['C'] = C('v', gnd, c=1.0)
+    c2['L'] = L('v', 'x', L=1.0); c2['Rl'] = R('x', gnd, r=0.2)
+    c2['B'] = BSource('v', gnd, gnd, 'v',
+                      i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+    c2['Rs'] = R('v', 'w', r=1e2); c2['Cs'] = C('w', gnd, c=100.0 * T0 / 1e2)
+    c2['n'] = IS('w', gnd, i=0.0, noisePSD=1e-6)
+    p2 = PSS(c2, method='gear', reltol=1e-11)
+    x0 = np.zeros(c2.n - 1); x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p2.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+        assert p2.converged
+        pac2 = PAC(c2, toolkit=circuit.numeric)
+        ov = [str(n_) for n_ in c2.nodes].index('v')
+        f02 = 1.0 / float(p2.period)
+        for r_, closed in ((1e-3, 0.729), (1e-2, 0.027)):
+            r_fa = pm_ratio(pac2, p2, r_ * f02, ov, True, sb=32)
+            r_cf = pm_ratio(pac2, p2, r_ * f02, ov, False, sb=32)
+            assert abs(r_fa - 1.0) < 0.02, ('A2 frequency-aware', r_, r_fa)
+            assert abs(r_cf / closed - 1.0) < 0.05, ('A2 closed form', r_, r_cf)
+
+
 def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so():
     """The other half of the amplitude check: where `S_ph + S_orb` is WRONG.
 
@@ -17211,7 +17303,10 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
         'orbit; got %r' % [str(w.message) for w in caught]
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        Sph = float(np.asarray(pac.oscillator_spectrum(pss, off, 0)[0])[0])
+        ## the closed form: this test's claim is about the modal SUM as
+        ## `orbital_spectrum`'s docstring states it (DC-PPV phase term)
+        Sph = float(np.asarray(pac.oscillator_spectrum(
+            pss, off, 0, frequency_aware=False)[0])[0])
         up, _ = pac.pnoise(pss, f0 + off[0], 0, maxsidebands=16)
         lo, _ = pac.pnoise(pss, f0 - off[0], 0, maxsidebands=16)
     R = float(np.real(up) + np.real(lo)) / (4.0 * (Sph + Sorb))
@@ -18100,7 +18195,10 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
             G2 = np.abs(G) ** 2; G2[1:] *= 2.0
             tau = tau_over_T * T0
             offs = f0 * np.array(rs)
-            Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
+            ## the CLOSED FORM, deliberately: this test pins how the DC-PPV
+            ## Lorentzian departs from pnoise; the default now corrects it
+            ## (`test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner`)
+            Sv, _ = pac.oscillator_spectrum(pss, offs, ov, frequency_aware=False)
             out = []
             for f, sv in zip(offs, Sv):
                 up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32)
@@ -18310,7 +18408,10 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
         P0 = float(np.sum(np.abs(np.fft.fft(S0) / S0.shape[0]) ** 2))
         for r, tol in ((1e-3, 0.01), (1e-2, 0.01), (5e-2, 0.02), (1e-1, 0.05)):
             f = r * f0
-            Sv, _ = pac.oscillator_spectrum(pss, np.array([f]), ov)
+            ## the CLOSED FORM, scaled by the frequency-aware PPV's own ratio
+            ## `Pf/P0` -- which is what the default now does internally
+            Sv, _ = pac.oscillator_spectrum(pss, np.array([f]), ov,
+                                            frequency_aware=False)
             _am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
             Sf = pss.frequency_aware_ppv(f)[1]['samples'][:, iw]
             Pf = float(np.sum(np.abs(np.fft.fft(Sf) / Sf.shape[0]) ** 2))

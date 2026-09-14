@@ -6369,6 +6369,26 @@ class PSS(Analysis):
                 'corner': abs(1.0 - mu2) / (2.0 * np.pi * T), 'second_multiplier': mu2,
                 'samples_pair': samples_pair, 'samples': samples, 'times': tms,
                 'residual': float(relres), 'ppv': info0}
+        ## ⚠ THE EQUATION-ROW SAMPLES, which is what `CY` contracts against
+        ## (see `ppv()`'s `samples_eq`).  `_equation_row_ppv` casts to float,
+        ## so the complex samples go through it as real and imaginary parts:
+        ## the map is linear (measured to round-off) and commutes with the
+        ## per-step phase factor.  At offset 0 these equal `ppv()`'s
+        ## `samples_eq` to 7e-14.  ⚠ `times` above is truncated to the sample
+        ## count, ONE ENTRY SHORT of the orbit's grid -- a quadrature over it
+        ## drops the last step (0.4 % of `c` on an asymmetric orbit, measured);
+        ## integrate over `info['ppv']['times']` and `['period']` instead.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            info['samples_eq'] = np.array([
+                self._equation_row_ppv(
+                    np.real(st[:m]), _Xf[:, _j if _j < _Xf.shape[1] else -1],
+                    _alg_rows, _alg_cols)
+                + 1j * self._equation_row_ppv(
+                    np.imag(st[:m]), _Xf[:, _j if _j < _Xf.shape[1] else -1],
+                    _alg_rows, _alg_cols)
+                for _j, st in enumerate(samples)])
+        info['period'] = T
         return v, info
 
     def _forced_replay_transposed(self, fp, freq, xa):
@@ -14400,7 +14420,8 @@ class PAC(Analysis):
                         'midpoint': mid,
                         'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
 
-    def oscillator_spectrum(self, pss, offsets, output, harmonic=1):
+    def oscillator_spectrum(self, pss, offsets, output, harmonic=1,
+                            frequency_aware=True):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
 
         ⚠⚠ THIS DOES NOT GO THROUGH `pnoise`'s SIDEBAND FOLD, AND IT CANNOT.
@@ -14478,8 +14499,14 @@ class PAC(Analysis):
         an asymmetric core AND tank loss (both needed for G_0 != 0; an
         ideal tank inductor shorts DC).  `c` is still right (the filter
         removes only high-frequency content); `pnoise` computes the true
-        value at any offset; this method does not, and a Monte Carlo of
-        `c` cannot see it.  Measured against `pnoise` to four digits
+        value at any offset, and a Monte Carlo of `c` cannot see it.
+        ✅ SINCE 2026-09-14 THIS METHOD DOES TOO, by default:
+        `frequency_aware=True` replaces `c` by `c(f)` from the
+        frequency-aware PPV (`frequency_aware_diffusion`), which matches
+        pnoise's PM content to 0.4 % at 1e-3 and 1e-2 f0 on that fixture
+        (the DC-PPV Lorentzian: 0.73x and 0.027x), and to <= 2 % above
+        f_amp on an orbit with AM-to-PM coupling.  `frequency_aware=False`
+        is the closed form, one `c` for every offset, and costs no solve.  Measured against `pnoise` to four digits
         through the corner (test ..._behind_a_slow_node_...).
 
         ⚠ AND IT IS THE ONLY ROUTE THAT IS VALID BELOW THE CORNER.  A
@@ -14495,11 +14522,75 @@ class PAC(Analysis):
         f0 = 1.0 / float(pss.period)
         self._warn_above_amplitude_pole(offsets, f0)
         X = self.carrier_phasor(pss, output, harmonic)
-        Sv = abs(X) ** 2 * self.lorentzian(offsets, c, f0, harmonic)
+        if frequency_aware:
+            ## `c(f)` per offset -- one bordered adjoint solve each, cached on
+            ## `|offset|` so a symmetric sweep pays once per magnitude.  `c(0)`
+            ## is `c` exactly, so the near-carrier lineshape is unchanged.
+            off = np.asarray(offsets, dtype=float)
+            _cache = {}
+            flat = []
+            for o in np.atleast_1d(off).ravel():
+                key = abs(float(o))
+                if key not in _cache:
+                    _cache[key] = (c if key == 0.0 else
+                                   self.frequency_aware_diffusion(pss, key))
+                flat.append(float(self.lorentzian(np.array([o]), _cache[key],
+                                                  f0, harmonic)[0]))
+            Sv = abs(X) ** 2 * np.asarray(flat).reshape(np.shape(off))
+        else:
+            Sv = abs(X) ** 2 * self.lorentzian(offsets, c, f0, harmonic)
         with np.errstate(divide='ignore'):
             L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
                                            1e-300))
         return Sv, L
+
+    def frequency_aware_diffusion(self, pss, offset):
+        """`c(f)` — the phase diffusion constant seen at modulation offset `f`.
+
+        `c(f) = (1/T) integral v_f^H (CY/2) v_f dt` with `v_f` the
+        frequency-aware PPV (`PSS.frequency_aware_ppv`, Lai 2008 eq. 23) on
+        the equation rows, integrated by the SAME quadrature as
+        `diffusion_constant` over the orbit's full grid -- so `c(0)` is `c`
+        exactly, not approximately.
+
+        ⚠⚠ WHY IT EXISTS (2026-09-14).  The Lorentzian from `c` uses the DC
+        PPV at every offset: a noise current is assumed to move the phase
+        instantly.  Wherever part of that response goes THROUGH a slow mode --
+        the amplitude mode on an orbit with AM-to-PM coupling, or a slow node
+        in the source's path -- it is filtered above that mode's corner, and
+        the DC-PPV Lorentzian over-states.  Measured against pnoise's PM
+        content (itself Monte-Carlo-confirmed on the first case):
+
+            van der Pol C=4 Q=8, a=0.30     0.3 / 1 / 3 / 10 f_amp
+              c(f)/c                         0.939 0.649 0.371 0.308
+              pm / 4 S_v(DC PPV)             0.942 0.647 0.366 0.302
+              pm / 4 S_v(c(f))               1.003 0.998 0.986 0.980
+            A2 slow node (tau/T=100)         1e-3 / 1e-2 f0
+              pm / 4 S_v(DC PPV)             0.729 0.027
+              pm / 4 S_v(c(f))               1.004 1.004
+            symmetric control (a=0)          c(f)/c within 1e-3
+
+        ⚠ Stationary WHITE sources only, like `diffusion_constant`.  Cost:
+        one bordered adjoint GMRES per offset (0.25-0.7 s on these fixtures);
+        the solve can fail to converge (Lai's own warning about eq. 23), and
+        then this raises rather than returning the DC value silently.
+        """
+        self._check_circuit(pss)
+        self._refuse_coloured(pss, 'frequency_aware_diffusion')
+        self._refuse_driven(pss, 'frequency_aware_diffusion')
+        off = abs(float(offset))
+        if off == 0.0:
+            return self.diffusion_constant(pss)
+        _v, fi = pss.frequency_aware_ppv(off)
+        base = fi['ppv']
+        m = pss.cir.n - 1
+        S = np.asarray(fi['samples_eq'])[:, :m]
+        h = np.diff(np.asarray(base['times'], dtype=float))
+        n = min(len(h), S.shape[0])
+        T = float(base['period'])
+        cy = 0.5 * np.real(self._cy_reduced(pss, 2.0 * np.pi / float(pss.period)))
+        quad = np.real(np.einsum('ij,jk,ik->i', np.conj(S[:n]), cy, S[:n]))
+        return float((quad * h[:n]).sum() / T)
 
     def _warn_above_amplitude_pole(self, offsets, f0):
         """⚠ THE PHASE-ONLY SPECTRUM IS A LOWER BOUND ABOVE `f_amp`.
@@ -14565,7 +14656,9 @@ class PAC(Analysis):
             'the phase-only prediction is -0.54 dB at 1 kHz and -2.90 dB at '
             '10 kHz for lambda_2 = 0.99. On an ASYMMETRIC orbit it can instead '
             'OVER-state the total (pnoise/phase-only = 0.61 at half-wave '
-            'asymmetry 0.10, confirmed by Monte Carlo) -- use PAC.pnoise for '
+            'asymmetry 0.10 with frequency_aware=False, confirmed by Monte '
+            'Carlo; the default frequency_aware=True corrects the phase part '
+            'to ~2 %%) -- use PAC.pnoise for '
             'the total above f_amp. '
             '%sThe valid band scales as 1/Q, so it NARROWS as the oscillator '
             'improves.'

@@ -41,7 +41,8 @@ genuinely open:
 | B4 index-2 support via independent states | awaiting a call; **priority low** — no silent wrong answer |
 | B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
 | ~~`orbital_spectrum` amplitude~~ | ✅ 2026-09-14 VALIDATED against pnoise on SYMMETRIC orbits (0.1 %, C=1/C=4/Q=50); on ASYMMETRIC ones `S_ph + S_orb` over-states up to 3.2× — see E6 |
-| E6 Floquet decomposition over-states asymmetric orbits above f_amp | ⚠ MC-CONFIRMED (pnoise right to 1 %, S_ph+S_orb 3.2× high); NOT the cross term (S_corr ~1e-8, prototyped) — cause open |
+| E6 Floquet decomposition over-states asymmetric orbits above f_amp | ⚠ MC-CONFIRMED (pnoise right to 1 %); NOT the cross term; PHASE half = DC PPV, ✅ fixed by frequency-aware `oscillator_spectrum` (default on); ORBITAL half (flat factor) open; line-shape models wrong away from k=1 (guard proposed) |
+| PSP noise tests with `pytest.approx` defaults | ⚠ several CANNOT FAIL (abs 1e-12 vs 1e-42..1e-15 quantities) — found by the rg-noise fix, not fixed, owner's call |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
 | ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |

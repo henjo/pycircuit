@@ -8282,7 +8282,8 @@ PPV — with `c(f)` from `frequency_aware_ppv`, pnoise's PM content matches it t
 at a = 0.30) — **open**.  Traversa & Bonani's own §V.A (Figs 1–2) shows the same limit on their
 amplitude–phase-coupled test oscillator (theory above the exact spectrum at high frequency, growing with the
 coupling), so this is the decomposition's documented limit, not a pycircuit defect.  Candidate builds, owner's
-call: a frequency-aware phase term in `oscillator_spectrum` (measured to close the phase half); the orbital
+call: a frequency-aware phase term in `oscillator_spectrum` (✅ BUILT 2026-09-14, default ON, gated on this
+fixture and A2 — see the log); the orbital
 half has no candidate.  **Also measured (item 3):** the k = 1 orbital over-statement is a real amplitude
 (harmonic sum rule), and AWAY from k = 1 the line-shape models miss the Monte-Carlo-confirmed noise even on a
 SYMMETRIC orbit (k = 0 ×135 over; k = 2/3 ×3.2/×3.7 under; all-h phase tails and the dropped `Im c_lhj`
