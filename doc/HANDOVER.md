@@ -42,7 +42,9 @@ genuinely open:
 | B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
 | ~~`orbital_spectrum` amplitude~~ | ✅ 2026-09-14 VALIDATED against pnoise on SYMMETRIC orbits (0.1 %, C=1/C=4/Q=50); on ASYMMETRIC ones `S_ph + S_orb` over-states up to 3.2× — see E6 |
 | E6 Floquet decomposition over-states asymmetric orbits above f_amp | ⚠ MC-CONFIRMED (pnoise right to 1 %); NOT the cross term; PHASE half = DC PPV, ✅ fixed by frequency-aware `oscillator_spectrum` (default on); ORBITAL half (flat factor) open; line-shape models wrong away from k=1 (guard proposed) |
-| PSP noise tests with `pytest.approx` defaults | ⚠ several CANNOT FAIL (abs 1e-12 vs 1e-42..1e-15 quantities) — found by the rg-noise fix, not fixed, owner's call |
+| ~~PSP tests with `pytest.approx` defaults~~ | ✅ 2026-09-15 tightened, each mutation-checked; exposed 4 wrong-thing assertions (fixed) and 2 real residuals now pinned (p-ch overlap 2e-3; drain density vs ign split 2e-7). Outside PSP still vacuous: `test_spicecard.py`, `test_chained_first_class.py` |
+| ~~PSP p-channel overlap capacitance, 2e-3 on the short device~~ | ✅ NOT the model: the test's reference omits PSP's gate–bulk overlap `cgbol`; subtracting `cgbov` gives 8.8e-7 / 3.4e-6. Test correction queued |
+| PSP `rg` uses drawn W·L, PSP uses W_f·L_f (peer, reproduced) | PMOS +9.4 % / +55 %; NMOS exact. Fix queued (geometry() → Lf/Wf) |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
 | ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |
