@@ -22,6 +22,44 @@ def _inv(M):
     return np.linalg.inv(M)
 
 
+def _is_swept(M):
+    """True when ``M`` holds Waveform entries -- a frequency-swept result.
+
+    ⚠ A swept `solve_s(freqs=array)` stores one Waveform per matrix entry, in
+    an object array.  `np.linalg.inv` cannot take that and `_inv` hands it to
+    sympy, which cannot either -- so every conversion has to go frequency by
+    frequency (2026-09-15; `.Z` and `.Y` both raised on a sweep before).
+    """
+    M = np.asarray(M)
+    if M.dtype != object or M.size == 0:
+        return False
+    return all(hasattr(x, 'get_x') and hasattr(x, 'get_y') for x in M.ravel())
+
+
+def _per_frequency(M, convert):
+    """Apply ``convert`` (a single-frequency matrix map) at every frequency of
+    a Waveform-valued matrix, and return Waveforms on the SAME axis, with the
+    source's labels and units."""
+    from pycircuit.post.waveform import Waveform
+    M = np.asarray(M)
+    probe = M.flat[0]
+    x = probe.get_x()
+    nf = len(np.asarray(probe.get_y()))
+    rows, cols = M.shape
+    cube = np.empty((nf, rows, cols), dtype=complex)
+    for a in range(rows):
+        for b in range(cols):
+            cube[:, a, b] = np.asarray(M[a, b].get_y(), dtype=complex)
+    out = np.array([np.asarray(convert(cube[k]), dtype=complex)
+                    for k in range(nf)])
+    res = np.empty(out.shape[1:], dtype=object)
+    for a in range(res.shape[0]):
+        for b in range(res.shape[1]):
+            res[a, b] = Waveform(x=x, y=out[:, a, b], xlabels=probe.xlabels,
+                                 xunits=probe.xunits)
+    return res
+
+
 class NPort(object):
     """Class that represents an n-port with optional noise parameters
 
@@ -351,18 +389,38 @@ class NPortS(NPort):
 
     @property
     def Z(self):
-        """Return Z-parameter matrix"""
-        S = np.asarray(self.S).astype(float)
+        """Return Z-parameter matrix
+
+        ⚠⚠ THIS CAST S TO FLOAT until 2026-09-15 (peer report, reproduced):
+        `np.asarray(self.S).astype(float)` dropped Im S with only a
+        ComplexWarning -- 1.027 off on a synthetic complex S, and 5103x off at
+        1e7 Hz on an ordinary R-C two-port from `TwoPortAnalysis`, where
+        `E - S` is nearly singular and an Im S of 3.8e-4 dominates the
+        inverse.  `Y` below never had the cast.  Now written the same way as
+        `Y` (S's own dtype, `_inv`, the toolkit's `sqrt`), and a swept S is
+        converted frequency by frequency.
+        """
+        S = np.asarray(self.S)
+        if _is_swept(S):
+            return _per_frequency(
+                S, lambda s: NPortS(s, z0=self.z0, toolkit=self.toolkit).Z)
         E = np.eye(self.n, self.n)
-        Zref = self.z0 * E
-        Gref = 1 / np.sqrt(np.real(self.z0)) * E
-        return np.asarray(np.linalg.inv(Gref) @ np.linalg.inv(E - S) @
-                          (S + E) @ Zref @ Gref)
+        zref_scalar = self.z0
+        gref_scalar = 1 / self.toolkit.sqrt(self.toolkit.real(self.z0))
+        Zref = zref_scalar * E
+        Gref = gref_scalar * E
+        Gref_inv = (1 / gref_scalar) * E
+        return np.asarray(Gref_inv @ _inv(E - S) @ (S + E) @ Zref @ Gref)
 
     @property
     def Y(self):
-        """Return Z-parameter matrix"""
+        """Return Y-parameter matrix"""
         S = np.asarray(self.S)
+        ## a swept S holds Waveforms, which `_inv` would hand to sympy -- see
+        ## `_is_swept`; this raised on every sweep before 2026-09-15
+        if _is_swept(S):
+            return _per_frequency(
+                S, lambda s: NPortS(s, z0=self.z0, toolkit=self.toolkit).Y)
         E = np.eye(self.n, self.n)
         ## Gref, Zref are scalar multiples of the identity -- their inverse
         ## is just the reciprocal scalar, needing no matrix inversion at
