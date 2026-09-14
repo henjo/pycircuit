@@ -3548,12 +3548,26 @@ class TestTheOverlapAndFringeCapacitance(object):
         gd = (p if kind == 'pmos' else n)[geom]
         e = self._fet(deck, kind, gd)
         gi = e.gate_index
+        ## ⚠⚠ THE REFERENCE HAS NO GATE-BULK OVERLAP (2026-09-15).  The
+        ## recorded `cgg + cgsol + cgdol` omits PSP's `cgbol` (the file does
+        ## not record it); the model's `C[gi,gi]` includes it through
+        ## `q_gb = cgbov*vgb`.  `cgbovl` is ~1e-28 F on the n-channel card and
+        ## not negligible on the p-channel one -- which is the whole of the
+        ## "p-channel residual" this test pinned at 0.3 % for an hour:
+        ## measured worst (got - cgbov)/tot - 1 = 3.0e-6 / 6.7e-7 (n long /
+        ## short), 3.4e-6 / 8.8e-7 (p long / short), against 3.3e-4 / 1.99e-3
+        ## before.  A peer session's external reference agrees to 6e-7 once
+        ## `cgbol` is summed.  So the model's own `cgbov` is subtracted.
+        cgbov = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, w=gd['w'],
+                              l=gd['l'], ng=1, m=1, pre_layout=1),
+            w=gd['w'], l=gd['l'], T=T27)['cgbov']
         for pt in gd['points']:
             tot = pt['cgg'] + pt['cgsol'] + pt['cgdol']
             got = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0,
                                         pt['vb'])), float)[gi, gi]
-            assert got == pytest.approx(tot, rel=0.003, abs=0.0), \
-                (kind, geom, pt['vg'], pt['vd'], got, tot)
+            assert got - cgbov == pytest.approx(tot, rel=2e-5, abs=0.0), \
+                (kind, geom, pt['vg'], pt['vd'], got, cgbov, tot)
 
     def test_without_them_the_short_device_is_missing_most_of_its_charge(
             self, deck, op):
@@ -4848,3 +4862,39 @@ def test_folding_the_card_does_not_move_the_vendor_agreement(deck, ref):
     assert where is not None
     ## measured 6.7e-14 -- reassociation, nothing else
     assert worst < 1e-12, 'folded differs by %.3e on %s' % (worst, where)
+
+
+@needs_pdk
+def test_the_gate_resistance_uses_psps_effective_width_and_length(deck):
+    """`RG = (RINT + RVPOLY)/(W_f*L_f)`, not `/(W*L)` (peer report, 2026-09-15).
+
+    PSP103_scaling.include:604 divides by `W_f*L_f`, where `L_f = L + delLPS`
+    and `W_f = W + delWOD` (:46, :48) carry the card's LVARO/WVARO offsets --
+    the same ones in `LE = L_f - 2*LAP` and `WE = W_f - 2*WOT` (:36-37).
+    `to_long_channel` used the DRAWN `W*L`.  On the n-channel card LVARO =
+    WVARO = 0, so the recorded `lp_rg` of 1.3025 ohm matched and hid it; the
+    p-channel card sets LVARO = 9.695e-8, and its `rg` was +9.36 % (10/1 um,
+    0.1 vs 0.0914397 ohm) and +54.85 % (1/0.13 um, 7.69231 vs 4.96745 ohm).
+    Since `d0e7e4e` that is a noise source, so it moved gate noise too.
+
+    The expected value is rebuilt from `LE + 2*LAP` and `WE + 2*WOT`, not from
+    whatever the fix returns, so this cannot agree with itself.
+    """
+    g = psp_scaling._g
+    seen_offset = False
+    for kind, pinned in (('nmos', (1.3025, 100.192)), ('pmos', (None, None))):
+        for (w, l), pin in zip(((10e-6, 1e-6), (1e-6, 0.13e-6)), pinned):
+            card = deck.model_params('sg13g2_lv_%s_psp' % kind, w=w, l=l,
+                                     ng=1, m=1, pre_layout=1)
+            kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
+            geo = psp_scaling.geometry(card, w, l)
+            lf = geo['LE'] + 2.0 * g(card, 'lap')
+            wf = geo['WE'] + 2.0 * g(card, 'wot')
+            want = (g(card, 'rint') + g(card, 'rvpoly')) / (wf * lf)
+            assert kw['rg'] == pytest.approx(want, rel=1e-12, abs=0.0), \
+                (kind, w, l, kw['rg'], want)
+            if pin is not None:
+                assert kw['rg'] == pytest.approx(pin, rel=1e-4, abs=0.0)
+            seen_offset |= abs(lf - l) > 1e-12 or abs(wf - w) > 1e-12
+    assert seen_offset, 'no card here has an LVARO/WVARO offset -- this ' \
+        'test would pass on the drawn W*L and could not fail'

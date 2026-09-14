@@ -104,7 +104,12 @@ def geometry(card, w, l):
     ## overlap.  Two different effective lengths, a line apart in the
     ## vendor source, and easy to swap by accident.
     dlq, dwq = _g(card, 'dlq'), _g(card, 'dwq')
-    return dict(LE=LE, WE=WE, iLE=LEN / LE, iWE=WEN / WE,
+    ## `L_f`/`W_f` (:46, :48): the drawn dimensions plus the LVARO/WVARO
+    ## offsets, BEFORE the lateral-diffusion subtraction -- what the gate
+    ## resistance divides by (:604).  Returned so no caller has to rebuild
+    ## them from `LE + 2*LAP`, or reach for the drawn `w*l` instead.
+    return dict(Lf=max(l + dl, 1.0e-9), Wf=max(w + dw, 1.0e-9),
+                LE=LE, WE=WE, iLE=LEN / LE, iWE=WEN / WE,
                 LEcv=max(LE + dlq, 1.0e-9), WEcv=max(WE + dwq, 1.0e-9),
                 Lcv=max(l + dl + dlq, 1.0e-9),
                 Wcv=max(w + dw + dwq, 1.0e-9))
@@ -470,14 +475,23 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     ## GATE RESISTANCE (:604, clipped at :816).  The full expression
     ## carries a sheet-resistance term and a per-finger term; this card
     ## sets neither (`RSHG` and `RGO` are absent), leaving
-    ## `RG = (RINT + RVPOLY)/(W*L)`, which reproduces PSP's own `lp_rg`
-    ## of 1.3025 ohm exactly on a 10x1 um device.
+    ## `RG = (RINT + RVPOLY)/(W_f*L_f)`, which reproduces PSP's own `lp_rg`
+    ## of 1.3025 ohm exactly on a 10x1 um n-channel device.
+    ##
+    ## ⚠⚠ `W_f*L_f`, NOT THE DRAWN `W*L` (fixed 2026-09-15, peer report).
+    ## `L_f = L + delLPS`, `W_f = W + delWOD` carry the card's LVARO/WVARO
+    ## offsets (:30-31, :46, :48).  The n-channel card has both zero, so the
+    ## `lp_rg` check above passed on the drawn area and hid it; the
+    ## p-channel card sets LVARO = 9.695e-8, and `rg` was +9.36 % at
+    ## 10/1 um and +54.85 % at 1/0.13 um -- a noise source since the gate
+    ## resistor carries its 4kT/rg.
     ##
     ## `RSE`, `RDE` and `RBULK` are all zero on this card -- the source
     ## and drain resistance PSP folds into the mobility instead, which
     ## this model already does.  So the gate is the only terminal
     ## resistance there is here.
-    rg = max((_g(card, 'rint') + _g(card, 'rvpoly')) / (w * l), 0.0)
+    rg = max((_g(card, 'rint') + _g(card, 'rvpoly'))
+             / (geo['Wf'] * geo['Lf']), 0.0)
 
     ## BODY-BIAS MOBILITY CORRECTION (:299, clipped at :731).
     ## `Rxcor = (1 + 0.2*XCOR*Vsbx)/(1 + XCOR*Vsbx)` multiplies `Gmob`
