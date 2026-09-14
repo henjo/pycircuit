@@ -12771,11 +12771,37 @@ class PAC(Analysis):
         ## refused every MODULATED source before the covariance routes
         ## (which evaluate `CY` per step and handle modulation exactly)
         ## could reach it.
+        ## ⚠⚠ PER ENTRY, AND AT MORE THAN ONE STATE (2026-09-15; reported by a
+        ## peer session, reproduced).  This compared the difference against
+        ## `1e-9 * max|CY|` over the WHOLE matrix, at `x_last` only.  Once the
+        ## PSP gate resistor carried its white 4kT/rg (`d0e7e4e`), a low-rg
+        ## device put `1.27e-20` in `CY` and a drain's flicker colour
+        ## (`2.5e-30` on its own `1.3e-27`) passed that global threshold --
+        ## `covariance` folded 1/f at w0 on a sample-and-hold and said
+        ## nothing.  And a source white at the period boundary (a switch OFF
+        ## at t = 0) but coloured elsewhere passed at any scale.  So each
+        ## entry is judged against ITS OWN magnitude, at `x_last` and at
+        ## states spread over the orbit.  Exact zeros and white entries give
+        ## identical values at both frequencies, so neither can fire.
+        ## `_cy_at` takes a REDUCED state: the reference row is removed here.
         _xl = np.asarray(pss.factored_period().x_last, dtype=float).ravel()
-        c1 = self._cy_at(pss, w1, _xl)
-        c2 = self._cy_at(pss, 10.0 * w1, _xl)
-        sc = max(float(np.max(np.abs(c1))), 1e-300)
-        if float(np.max(np.abs(c1 - c2))) > 1e-9 * sc:
+        _states = [_xl]
+        _wf = getattr(pss, 'waveform', None)
+        if _wf is not None:
+            _W = np.delete(np.asarray(_wf[1], dtype=float), pss.irefnode,
+                           axis=0)
+            for _k in sorted(set(np.linspace(0, _W.shape[1] - 1,
+                                             8).astype(int))):
+                _states.append(_W[:, _k])
+        coloured = False
+        for _xr in _states:
+            c1 = self._cy_at(pss, w1, _xr)
+            c2 = self._cy_at(pss, 10.0 * w1, _xr)
+            den = np.maximum(np.abs(c1), np.abs(c2))
+            if np.any(np.abs(c1 - c2) > 1e-9 * den):
+                coloured = True
+                break
+        if coloured:
             raise NotImplementedError(
                 'PAC.%s: a noise source in this circuit is COLOURED (its CY '
                 'differs between w0 and 10 w0), and this routine assumes '
@@ -13885,6 +13911,30 @@ class PAC(Analysis):
         else:
             row = np.asarray(d, dtype=float).ravel()[:m]
 
+        ## ⚠⚠ NO ORBITAL LINE AT THIS HARMONIC -- refuse rather than return the
+        ## tails of the others (2026-09-14).  The line weight at `j f0` is
+        ## `W_j = sum_{l,h} Re(row C_lhj row)`; where it is zero (a symmetric
+        ## orbit's even harmonics: the modes' own Fourier content vanishes)
+        ## what this would return is the neighbouring lines' Lorentzian tails,
+        ## which a Monte Carlo put 3.2x LOW at 2 f0 on van der Pol C=4 Q=8
+        ## (pnoise agreed with it to 1 %).  ⚠ NOT caught: DC, where a small
+        ## line can exist and the model read ~100x HIGH (the tank inductor
+        ## shorts the node, which Lorentzian tails do not know), and 2 f0 on
+        ## an asymmetric orbit (0.40) -- away from the fundamental use
+        ## `pnoise`.
+        _W = {}
+        for (_l, _h, _j), _cl in C.items():
+            _W[_j] = _W.get(_j, 0.0) + float(np.real(row @ _cl @ row))
+        _Wtot = sum(abs(v_) for v_ in _W.values())
+        if abs(_W.get(int(harmonic), 0.0)) <= 1e-9 * max(_Wtot, 1e-300):
+            raise ValueError(
+                'PAC.orbital_spectrum: no orbital line at harmonic %d for this '
+                'output (weight %.3e of %.3e), so the value here would be the '
+                'tails of other lines, not the noise at that frequency '
+                '(measured 3.2x low at 2 f0 on a symmetric van der Pol). Use '
+                'PAC.pnoise there.' % (int(harmonic), _W.get(int(harmonic), 0.0),
+                                       _Wtot))
+
         f = float(harmonic) * f0 + np.atleast_1d(
             np.asarray(offsets, dtype=float))
         S = np.zeros_like(f, dtype=float)
@@ -14522,6 +14572,29 @@ class PAC(Analysis):
         f0 = 1.0 / float(pss.period)
         self._warn_above_amplitude_pole(offsets, f0)
         X = self.carrier_phasor(pss, output, harmonic)
+        ## ⚠⚠ NO CARRIER, NO LINE -- AND THE ANSWER WOULD BE A PLAUSIBLE ZERO.
+        ## This is a LINE-SHAPE model: it broadens the carrier's own harmonic.
+        ## Where the output has no component at `harmonic` (a half-wave
+        ## symmetric orbit's even harmonics, or `harmonic = 0`, which the
+        ## Lorentzian returns as zeros by construction) there is nothing to
+        ## broaden, and the true density is BROADBAND noise this method does
+        ## not represent.  Measured (2026-09-14, Monte Carlo, which agreed
+        ## with pnoise to 1 % at every harmonic): van der Pol C=4 Q=8, 2 f0 +
+        ## 10 f_amp -- this returned ~0 against 5.6e-6 V^2/Hz.  Refused, as
+        ## `am_pm` refuses the same case.  ⚠ NOT caught, and recorded instead:
+        ## away from the fundamental the model also misses where a line DOES
+        ## exist (asymmetric orbit, 2 f0: 0.40 of the Monte Carlo) -- use
+        ## `pnoise` away from the fundamental.
+        _scale = float(np.max(np.abs(self._output_waveform_row(pss, output))))
+        if int(harmonic) == 0 or abs(X) <= 1e-9 * max(_scale, 1e-300):
+            raise ValueError(
+                'PAC.oscillator_spectrum: the output carries no component at '
+                'harmonic %d (|X| = %.3e against a signal scale of %.3e), so '
+                'there is no line for this line-shape model to broaden; the '
+                'noise there is broadband and this method would return ~0 '
+                '(measured: ~0 against 5.6e-6 V^2/Hz on a symmetric van der '
+                'Pol at 2 f0). Use PAC.pnoise at that frequency.'
+                % (int(harmonic), abs(X), _scale))
         if frequency_aware:
             ## `c(f)` per offset -- one bordered adjoint solve each, cached on
             ## `|offset|` so a symmetric sweep pays once per magnitude.  `c(0)`

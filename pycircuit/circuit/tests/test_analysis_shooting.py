@@ -17161,6 +17161,130 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
                 % (f / f_amp, tot / (sph + sorb), tot / sph)
 
 
+def test_a_coloured_source_is_refused_whatever_else_is_in_CY():
+    """`_refuse_coloured` judged colour against ONE GLOBAL SCALE at ONE state.
+
+    Reported by a peer session and reproduced 2026-09-15.  The guard compared
+    `CY(w0)` with `CY(10 w0)` at `x_last` only, against `1e-9 * max|CY|` over
+    the WHOLE matrix.  Since the PSP gate resistor carries its 4kT/rg
+    (`d0e7e4e`), a low-rg device puts a white `1.27e-20` in `CY`, and the
+    drain's flicker colour (`2.5e-30` on its own `1.3e-27` at that state)
+    passes the global threshold `1.27e-29` -- so `covariance` folded 1/f at
+    w0 and returned a held variance 4.5 % high (peer's numbers), silently.
+
+    On a sample-and-hold (IHP lv nmos 10/1 um, rg = 1.30 ohm, flicker on,
+    swign = 0; 100 kHz, clock phase 270 so the switch is OFF at t = 0):
+
+        rg on,  clock 270    RAN          <- the defect
+        rg = 0, clock 270    refused
+        rg on,  clock  90    refused      (x_last is a conducting state)
+        rg on,  no flicker   ran, correctly
+
+    Two weaknesses, both fixed: the global scale (a large white entry hides a
+    small coloured one), and the single state (a source white at the period
+    boundary but coloured elsewhere).  Now per entry, at `x_last` and states
+    spread over the orbit.
+    """
+    import os
+    import warnings as _w
+    PDK = os.path.expanduser(
+        '~/source/IHP-Open-PDK/ihp-sg13g2/libs.tech/ngspice/models')
+    if not os.path.isdir(PDK):
+        pytest.skip('IHP Open PDK not installed')
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit import psp_scaling, defaultepar
+    from pycircuit.circuit.compact import PspMosLongChannel
+    from pycircuit.utilities import spicecard
+    T27 = 273.15 + 27.0
+    was = defaultepar.T
+    defaultepar.T = T27
+    try:
+        deck = spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
+                              section='mos_tt')
+        w, l = 10e-6, 1e-6
+        base = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1, m=1,
+                              pre_layout=1), w=w, l=l, T=T27)
+        F = 1e5
+
+        def sampler(over, clock_phase):
+            circuit.default_toolkit = circuit.numeric
+            kw = dict(base, swign=0.0)
+            kw.update(over)
+            cir = SubCircuit()
+            cir['Vin'] = VSin('in', gnd, vo=0.3, va=0.2, freq=F, phase=0.0)
+            cir['Vck'] = VSin('ck', gnd, vo=0.75, va=0.75, freq=F,
+                              phase=clock_phase)
+            cir['M1'] = PspMosLongChannel(cm.Node('in'), cm.Node('ck'),
+                                          cm.Node('out'), gnd, **kw)
+            cir['Ch'] = C('out', gnd, c=100e-12)
+            pss = PSS(cir, method='gear', reltol=1e-12)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                pss.solve(period=1 / F, timestep=1 / F / 100)
+            return PAC(cir, toolkit=circuit.numeric), pss
+
+        assert base['rg'] > 1.0, 'the fixture needs the low-rg device'
+        for label, over in (('rg on', {}), ('rg = 0', dict(rg=0.0))):
+            pac, pss = sampler(over, 270.0)
+            with pytest.raises(NotImplementedError, match='COLOURED'):
+                pac._refuse_coloured(pss, 'covariance')
+        ## presence control: white sources only must pass
+        pac, pss = sampler(dict(nfa=0.0, nfb=0.0, nfc=0.0), 270.0)
+        pac._refuse_coloured(pss, 'covariance')
+    finally:
+        defaultepar.T = was
+
+
+def test_the_line_shape_spectra_refuse_a_harmonic_that_has_no_line():
+    """No carrier, no line: refuse instead of returning a plausible zero.
+
+    `oscillator_spectrum` and `orbital_spectrum` are LINE-SHAPE models -- they
+    broaden the orbit's own harmonic lines.  A Monte Carlo of the SDE (64 x 4000
+    periods), which agreed with pnoise to 1 % at every harmonic, measured them
+    AWAY from the fundamental on van der Pol C=4 Q=8 (2026-09-14):
+
+        symmetric orbit    k=0     k=1      k=2     k=3
+        MC / model         0.0074  1.0015   3.21    3.70
+
+    At an even harmonic of a symmetric orbit the output has no component and
+    the modes have no Fourier content there, so `oscillator_spectrum` returned
+    ~0 and `orbital_spectrum` returned other lines' tails, against a true
+    5.6e-6 V^2/Hz.  Both now REFUSE that case (as `am_pm` refuses a harmonic
+    with no carrier), and `harmonic=0`, which the Lorentzian returned as zeros
+    by construction.  ⚠ The asymmetric orbit's k = 2 has a real line and is
+    NOT refused -- its mismatch (0.40) is recorded, not guarded.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    offs = None
+    for a_, expect_refusal in ((0.0, True), (0.30, False)):
+        cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=a_)
+        pac = PAC(cir, toolkit=circuit.numeric)
+        f0 = 1.0 / float(pss.period)
+        offs = np.array([0.01 * f0])
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            ## the fundamental always works
+            assert np.all(np.isfinite(np.asarray(
+                pac.oscillator_spectrum(pss, offs, 0, frequency_aware=False)[0])))
+            for call in (
+                    lambda: pac.oscillator_spectrum(pss, offs, 0, harmonic=2,
+                                                    frequency_aware=False),
+                    lambda: pac.orbital_spectrum(pss, offs, 0, harmonic=2, H=8)):
+                if expect_refusal:
+                    with pytest.raises(ValueError, match='pnoise'):
+                        call()
+                else:
+                    got = call()
+                    got = got[0] if isinstance(got, tuple) else got
+                    assert np.all(np.isfinite(np.asarray(got)))
+            if expect_refusal:
+                with pytest.raises(ValueError, match='harmonic 0'):
+                    pac.oscillator_spectrum(pss, offs, 0, harmonic=0,
+                                            frequency_aware=False)
+
+
 def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     """The phase Lorentzian with `c(f)` instead of `c` -- built 2026-09-14.
 
