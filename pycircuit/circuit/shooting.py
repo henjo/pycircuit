@@ -13758,6 +13758,23 @@ class PAC(Analysis):
         noise** — conservative for a design margin, wrong in a known
         direction.  It is identically zero with no AM-to-PM coupling.
 
+        ⚠⚠ MEASURED 2026-09-14 -- "negligible" is a property of THOSE
+        circuits, and the over-statement can be large.  Against pnoise (the
+        total linear sideband noise, on one absolute scale with the certified
+        Lorentzian), `(up+lo)/(4 (S_ph + S_orb))` at 10 f_amp on van der Pol
+        with C = 4, Q = 8 and an `a u^2` asymmetry:
+
+            half-wave asymmetry   0      0.017   0.033   0.067   0.100
+            R                     0.999  0.997   0.972   0.691   0.309
+
+        So on a SYMMETRIC orbit the amplitude is right to 0.1 % (also at
+        C = 1 and Q = 50 -- the first external check this spectrum had), and
+        on an asymmetric one the sum over-states by up to 3.2x (5 dB) with no
+        grid dependence.  The cross term is the ATTRIBUTION -- it scales with
+        the PPV's DC coefficient, a symmetry zero, and its sign matches the
+        source's Fig. 5 -- not a measurement: that needs `S_corr` (A9 step 6,
+        not built).  A warning fires above `ORBITAL_ASYMMETRY_LIMIT`.
+
         **Lemma 3.5**: the orbital spectrum is a sum of Lorentzians centred at
         `j*w0 + Im(mu_l)` with half-width `|Re(mu_l)| + (1/2) h^2 w0^2 c`,
         weighted by the `C_lhj` of eq (22).  Every input already exists:
@@ -13796,7 +13813,25 @@ class PAC(Analysis):
         `orbital_correlation`, which needs `CY` constant for eq (22)'s
         products to collapse.
         """
-        self._warn_if_orbit_is_asymmetric(pss)
+        try:
+            _asym = self._orbit_asymmetry(pss)
+        except Exception:
+            _asym = 0.0
+        if _asym > self.ORBITAL_ASYMMETRY_LIMIT:
+            ## ⚠ NOT the grid residual `_warn_if_orbit_is_asymmetric` names:
+            ## measured against pnoise (2026-09-14), the sum this spectrum is
+            ## meant for over-states the TOTAL on an asymmetric orbit, and no
+            ## refinement changes it -- see the docstring.
+            warnings.warn(
+                'PAC.orbital_spectrum: this orbit has half-wave asymmetry '
+                '%.3f. On an asymmetric orbit the phase-orbital CROSS term '
+                'this spectrum drops is not negligible: measured against '
+                'pnoise, S_ph + S_orb over-states the total sideband noise '
+                'above f_amp by x1.03 / x1.45 / x3.2 at asymmetry 0.033 / '
+                '0.067 / 0.100 (van der Pol, C=4, Q=8, 10 f_amp), and '
+                'refining the grid does not change it. Use PAC.pnoise for the '
+                'total.' % (_asym,),
+                RuntimeWarning, stacklevel=2)
         R, C = self.orbital_correlation(pss, H=H)
         modes = pss.floquet_modes(pss)
         c = float(self.diffusion_constant(pss))

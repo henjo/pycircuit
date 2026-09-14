@@ -8266,6 +8266,30 @@ rather than another hypothesis.  ⚠ Also recorded there: an earlier 1.035 ±
 0.017 in the core control was NOISE (it now reads 1.006), so this item has
 already produced one false lead.
 
+### E6. The phase–orbital cross term on an ASYMMETRIC orbit — MEASURED GAP, UNBUILT (A9 step 6)
+
+`orbital_spectrum`'s amplitude was the one A9 output validated against nothing
+external.  **Checked 2026-09-14 against pnoise** (the total linear sideband
+noise, on one absolute scale with the certified Lorentzian):
+`R = (up+lo)/(4 (S_ph + S_orb))` is **0.9993–0.9997** up to f_amp and
+0.9986–0.9995 at 3–10 f_amp on van der Pol at C = 1, C = 4 and Q = 50 — right
+to 0.1 % where the orbital term carries half the noise.
+
+⚠⚠ **On an asymmetric orbit the SUM over-states.**  Same family, C = 4, Q = 8,
+`a u²`, at 10 f_amp: R = 0.999 / 0.997 / 0.972 / 0.691 / **0.309** at half-wave
+asymmetry 0 / 0.017 / 0.033 / 0.067 / 0.100 — smooth, monotone, 1 at a = 0 as
+predicted before the sweep; up to 3.2× (5 dB), grid-independent.  The dropped
+`S_corr` is the ATTRIBUTION (its `D_lhj` carries `V_{1,0}`, a symmetry zero;
+Traversa & Bonani's Fig. 5 shows it negative), not a measurement.
+
+**What exists now:** `orbital_spectrum` warns above `ORBITAL_ASYMMETRY_LIMIT`
+with the measured factors and points at `pnoise` for the total (the old
+warning blamed an O(h) grid residual — true of the covariance, wrong for this
+sum).  **What would close it:** build `S_corr` — eq (26) from eq (20)'s
+`D_lhj`, whose one new object is `V_{1,0}`, an extra accumulator in the loop
+`diffusion_constant` already runs — and require `R → 1` on this sweep.  New
+scope; waits for a decision.  Record: "orbital_spectrum amplitude" in the log.
+
 ### Already recorded elsewhere, listed so they are not re-raised as missing
 
   - **Wright §3.11's local-error minimisation** — ⏸ OPTION FOR LATER, not now

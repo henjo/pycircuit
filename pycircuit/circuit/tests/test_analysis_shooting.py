@@ -17051,6 +17051,115 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
         'must be fixture-independent' % (max(seen) / min(seen), seen)
 
 
+def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
+    """`orbital_spectrum`'s ABSOLUTE amplitude, against a reference outside it.
+
+    Until 2026-09-14 the amplitude was validated against NOTHING external:
+    its SHAPE was tied to `lambda_2` (half-width `f_amp`) and its INTEGRAL to
+    the Lyapunov covariance, but the V^2/Hz at an offset rested on the modal
+    sum alone.  pnoise is the linear LPTV sideband noise -- adjoint sideband
+    fold, no Floquet modes, no eq (22) -- and the three-leg chain puts it on
+    one absolute scale with the externally certified Lorentzian.  Above the
+    phase linewidth it is the TOTAL linear noise, so
+
+        R = (up + lo) / (4 (S_ph + S_orb))
+
+    must be 1.  Measured (H = 8, 16 sidebands), `R` at 0.1 / 1 / 3 / 10 f_amp:
+
+        van der Pol Q=8, C=1       0.9997  0.9993  0.9981  0.9855 (0.2 f0)
+        C=4, L=1/4 (same w0)       0.9997  0.9996  0.9995  0.9986
+        Q=50                       0.9997  0.9996  0.9995  0.9992
+
+    and the phase term alone reads 1.50 at f_amp and 1.99 above it, so the
+    orbital term is carrying HALF the noise there and is right to 0.1 %.
+    ⚠ The C = 4 row is the one that matters: the orbital covariance was once
+    too large by exactly `C^2`, and a unit-reactance fixture cannot see that.
+    The drift toward f0 (0.9855 at 0.2 f0) is shared by pnoise's PM and AM
+    parts equally, i.e. the Lorentzian approximation, not the orbital term.
+
+    ⚠⚠ SYMMETRIC ORBITS ONLY.  On an asymmetric one the phase-orbital CROSS
+    term, which `orbital_spectrum` drops, is not negligible: on
+    `_hostile_oscillator` the sum over-states pnoise by ~3.3x above f_amp.
+    See `test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so`.
+    """
+    import warnings as _w
+    cir, pss = _a9_vdp(cval=4.0, lval=0.25)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _v, info = pss.ppv()
+        f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+        offs = np.array([0.3, 3.0, 10.0]) * f_amp
+        Sph, _ = pac.oscillator_spectrum(pss, offs, 0)
+        Sorb = pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8)
+        for f, sph, sorb in zip(offs, np.asarray(Sph), np.asarray(Sorb)):
+            up, _ = pac.pnoise(pss, f0 + f, 0, maxsidebands=16)
+            lo, _ = pac.pnoise(pss, f0 - f, 0, maxsidebands=16)
+            tot = float(np.real(up) + np.real(lo)) / 4.0
+            ## the orbital term must be carrying real weight, or `R` is a
+            ## statement about the phase term alone
+            if f > f_amp:
+                assert sorb / sph > 0.5, (f / f_amp, sorb / sph)
+            assert abs(tot / (sph + sorb) - 1.0) < 5e-3, \
+                'at %.1f f_amp pnoise/(S_ph+S_orb) = %.4f; the orbital ' \
+                'spectrum amplitude is off (phase alone would read %.4f)' \
+                % (f / f_amp, tot / (sph + sorb), tot / sph)
+
+
+def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so():
+    """The other half of the amplitude check: where `S_ph + S_orb` is WRONG.
+
+    Same fixture family as the symmetric test (van der Pol, C = 4, L = 1/4,
+    Q = 8) with an `a u^2` asymmetry, against pnoise at 10 f_amp:
+
+        a      half-wave asymmetry   R = (up+lo)/4(S_ph+S_orb)
+        0.00   0.000                 0.9986
+        0.05   0.017                 0.9969
+        0.10   0.033                 0.9717
+        0.20   0.067                 0.6914
+        0.30   0.100                 0.3090
+
+    Smooth, monotone, 1 at `a = 0` -- the prediction named before the sweep.
+    The dropped phase-orbital cross term is the ATTRIBUTION (its coefficient
+    carries the PPV's DC harmonic, which vanishes by half-wave symmetry, and
+    Traversa & Bonani's Fig. 5 shows it negative); building `S_corr` (A9
+    step 6) is what would MEASURE it.
+
+    ⚠ The warning that fired here before blamed an O(h) grid residual of the
+    adjoint replay and said to refine -- true of `orbital_correlation`'s
+    covariance, and wrong for this sum, which over-states by 1.45x at this
+    asymmetry whatever the grid.  So this test pins BOTH the gap (a presence
+    claim: it must stay large) and that the warning names it.
+    """
+    import warnings as _w
+    cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.20)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _v, info = pss.ppv()
+    f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+    off = np.array([10.0 * f_amp])
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        Sorb = float(pac.orbital_spectrum(pss, off, 0, harmonic=1, H=8)[0])
+    assert any('cross term' in str(w.message).lower()
+               and 'pnoise' in str(w.message) for w in caught), \
+        'orbital_spectrum must warn that the sum over-states on an asymmetric ' \
+        'orbit; got %r' % [str(w.message) for w in caught]
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        Sph = float(np.asarray(pac.oscillator_spectrum(pss, off, 0)[0])[0])
+        up, _ = pac.pnoise(pss, f0 + off[0], 0, maxsidebands=16)
+        lo, _ = pac.pnoise(pss, f0 - off[0], 0, maxsidebands=16)
+    R = float(np.real(up) + np.real(lo)) / (4.0 * (Sph + Sorb))
+    assert 0.6 < R < 0.8, \
+        'at a = 0.20 pnoise/(S_ph+S_orb) = %.4f at 10 f_amp (measured 0.6914). ' \
+        'Near 1 means the cross term became negligible or the sum changed; ' \
+        'far below means something else moved' % R
+
+
 def test_floquet_modes_runs_under_the_stage_methods_and_conserves_qCp():
     """`floquet_modes` CRASHED under trbdf2 for as long as the DIRK transposed
     matvec existed -- "can't multiply sequence by non-int of type 'complex'".

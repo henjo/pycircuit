@@ -40,7 +40,8 @@ genuinely open:
 | B3 Aprille & Trick substitution | awaiting a call; would subsume two open things |
 | B4 index-2 support via independent states | awaiting a call; **priority low** — no silent wrong answer |
 | B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
-| `orbital_spectrum` amplitude | ❌ OPEN — shape checked against λ₂, AMPLITUDE validated against nothing external |
+| ~~`orbital_spectrum` amplitude~~ | ✅ 2026-09-14 VALIDATED against pnoise on SYMMETRIC orbits (0.1 %, C=1/C=4/Q=50); on ASYMMETRIC ones `S_ph + S_orb` over-states up to 3.2× — see E6 |
+| E6 phase–orbital cross term (A9 step 6) | ⚠ MEASURED GAP, unbuilt — owner's call; a warning now names it |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
 | ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |
