@@ -52,7 +52,7 @@ genuinely open:
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
 | ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |
 | E4 Gear-2/trap +3.0 % on a coarse fixed grid | ⚠ decision MADE — not carved out; the +3.0 % itself unexplained |
-| E5 ~2 % pnoise residual | ✅ order closed 2026-09-15: a CONSTANT (c₁ = −0.0002 ± 0.0064, linear law excluded 3.2σ); cause still open |
+| ~~E5 ~2 % pnoise residual~~ | ✅ CLOSED 2026-09-14: NOT SIGNIFICANT — at 36/36 seeds the MC slow/core ratio moved −1.5 %/−1.7 %; residual +1.07 ± 1.04 % demod (1.0σ), −0.23 ± 1.01 % crossing (0.2σ). It was core-fixture seed scatter (16 seeds); the "constant" level fit is consistent with no residual at all |
 
 ⚠ **E1–E5 USED TO LIVE ONLY IN THIS FILE.**  They were real, repeatedly
 recommended, and absent from the roadmap — so a reader of the plan could not

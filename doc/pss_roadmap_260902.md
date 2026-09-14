@@ -8250,7 +8250,13 @@ unclamped, the same case costs **+17 %** and 27 iterations.  Listed as open
 only because the +3.0 % has never been explained, not because the trade-off is
 unsettled.
 
-### E5. The ~2 % pnoise residual — CHARACTERISED, UNEXPLAINED; ✅ ORDER QUESTION CLOSED 2026-09-15: A CONSTANT
+### E5. The ~2 % pnoise residual — ✅ CLOSED 2026-09-14: NOT SIGNIFICANT (core-fixture seed scatter)
+
+✅✅ **Decided by 20 more CORE-fixture seeds (36 per fixture):** the MC slow/core ratio moved −1.49 % (demod) / −1.70 %
+(crossing) from 16 to 36 core seeds; the residual against the tone route is **+1.07 ± 1.04 % (1.0σ) / −0.23 ± 1.01 %
+(0.2σ)**.  There is no established residual — the 16-seed core mean sat ~1.5 % high.  The order fit below ("a
+CONSTANT") is consistent with zero and is not evidence of a constant offset, and the mechanism searches in the log
+chased a 1.7σ number.  See the log, "E5 decided: NOT SIGNIFICANT".  The text below is the earlier record.
 
 ✅ **Decided by 60 more Monte Carlo runs (36 seeds per level):** the joint fit gives c₁ = −0.0002 ± 0.0064 (demod) /
 −0.0011 ± 0.0064 (crossing) and c₂ ≈ 0 ± 0.0025 — a linear law carrying the 2 % is excluded at 3.2σ / 3.3σ, a
