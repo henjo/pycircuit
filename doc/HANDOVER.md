@@ -46,7 +46,7 @@ genuinely open:
 | ~~PSP p-channel overlap capacitance, 2e-3 on the short device~~ | ✅ NOT the model: the test's reference omits PSP's gate–bulk overlap `cgbol`; the test now subtracts `cgbov` (8.8e-7 / 3.4e-6) |
 | ~~PSP `rg` uses drawn W·L~~ | ✅ fixed: `geometry()` returns `Lf`/`Wf`, `rg` divides by them (PMOS was +9.4 % / +55 %) |
 | ~~`NPortS.Z` float cast; `.Z`/`.Y` fail on sweeps~~ | ✅ fixed (5103× on an RC two-port at 1e7 Hz before); swept S converted per frequency |
-| NPortY/Z/A `.S`/`.CS` renormalise to 50 Ω (dead `z0` property argument) | ⚠ reported, NOT fixed — design, owner's call (1.138 in S at z0 = 1) |
+| ~~NPortY/Z/A `.S`/`.CS` renormalise to 50 Ω (dead `z0` property argument)~~ | ✅ fixed 2026-09-14 (Andreas confirmed the peer's spec): conversions carry the source's `z0`, `.S`/`.CS` at the stored `z0`, direct construction 50 Ω, explicit `to_s(z0)` on every class (1.18 off in S at z0 = 1 on HEAD) |
 | Stale `nport.py` doctests (4) | ⚠ pre-existing: sympy `symbols('abcd')` API, NumPy repr; values right; suite does not collect doctests |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |

@@ -402,3 +402,10 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260914T182133Z,2946ac4,pycircuit 2 no:cacheprovider,2807.6,3216,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,805.8
 20260914T194245Z,b4ba488,no:cacheprovider pycircuit/circuit/tests/test_analysis_shooting.py gear_free_period_stall,8.4,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_a_gear_free_period_stall_near_unit_multiplier_is_named_and_redirected,7.4
 20260914T203222Z,b4ba488,2 no:cacheprovider pycircuit,2959.3,3217,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,837.5
+20260914T203452Z,d77ca59,no:cacheprovider pycircuit/circuit/tests/test_analysis_nport.py carries_its_reference,0.2,1,pycircuit/circuit/tests/test_analysis_nport.py::test_a_converted_nport_carries_its_reference_impedance,0.0
+20260914T203455Z,d77ca59,no:cacheprovider pycircuit/circuit/tests/test_nport.py pycircuit/circuit/tests/test_analysis_nport.py not carries_its_reference,0.5,12,pycircuit/circuit/tests/test_analysis_nport.py::test_symbolic_twoport,0.2
+20260914T203456Z,d77ca59,no:cacheprovider pycircuit/circuit/nport.py,0.8,4,pycircuit/circuit/nport.py::pycircuit.circuit.nport.NPortA.S,0.0
+20260914T203640Z,d77ca59,no:cacheprovider pycircuit/circuit/tests/test_nport.py pycircuit/circuit/tests/test_analysis_nport.py,0.6,13,pycircuit/circuit/tests/test_analysis_nport.py::test_symbolic_twoport,0.2
+20260914T203643Z,d77ca59,no:cacheprovider pycircuit/circuit/nport.py,0.8,4,pycircuit/circuit/nport.py::pycircuit.circuit.nport.NPort.__floordiv__,0.0
+20260914T203724Z,d77ca59,no:cacheprovider pycircuit/circuit/tests/test_examples.py,3.2,2,pycircuit/circuit/tests/test_examples.py::test_multi_feedback_filter_example,2.1
+20260914T212721Z,d77ca59,2 no:cacheprovider pycircuit,2987.7,3218,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,849.0

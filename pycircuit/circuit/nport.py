@@ -60,6 +60,17 @@ def _per_frequency(M, convert):
     return res
 
 
+def _same_z0(a, b):
+    """True when two reference impedances are the same value (numeric or
+    symbolic); anything that cannot be compared counts as different."""
+    if a is b:
+        return True
+    try:
+        return bool(a == b)
+    except Exception:
+        return False
+
+
 class NPort(object):
     """Class that represents an n-port with optional noise parameters
 
@@ -76,19 +87,37 @@ class NPort(object):
     CY -- Y-parameter noise correlation matrix
     CZ -- Z-parameter noise correlation matrix
     CA -- ABCD-parameter noise correlation matrix
+    z0 -- reference impedance of S and CS
 
+    ⚠⚠ z0 IS CARRIED THROUGH CONVERSIONS (2026-09-14, peer report).  Before,
+    `NPortY/Z/A.S` and `.CS` were properties with a `z0=50` argument that a
+    property can never receive, and a conversion dropped the source's z0 -- so
+    `NPortY(TwoPortAnalysis(...).solve_s(f)).S` (source z0 = 1) silently
+    described a 50 ohm reference.  Now a port built from another port keeps
+    its z0, `.S`/`.CS` are at the stored z0, a directly constructed port is at
+    50 ohm, and `to_s(z0)` renormalises explicitly.
     """
     passive = False
+    z0 = 50.0
 
     def __init__(self, passive = False):
         self.passive = passive
-    
+
+    def to_s(self, z0=None):
+        """This n-port as an `NPortS` at reference impedance `z0` (default:
+        the stored one), with S and CS renormalised to it."""
+        if z0 is None:
+            z0 = self.z0
+        return NPortS(self._s_at(z0), self._cs_at(z0), z0=z0,
+                      passive=self.passive)
+
     def __mul__(self, a):
         """Cascade of two n-ports"""
         selfA = np.asarray(self.A)
         aA = np.asarray(a.A)
         anport = NPortA(selfA @ aA,
-                        selfA @ np.asarray(a.CA) @ selfA.conj().T + self.CA )
+                        selfA @ np.asarray(a.CA) @ selfA.conj().T + self.CA,
+                        z0=self.z0)
         return self.__class__(anport)
 
     def __floordiv__(self, a):
@@ -104,7 +133,7 @@ class NPort(object):
         [2.0*c,     d]
 
         """
-        ynport = NPortY(self.Y + a.Y, self.CY + a.CY)
+        ynport = NPortY(self.Y + a.Y, self.CY + a.CY, z0=self.z0)
         return self.__class__(ynport)
 
     def series(self, a):
@@ -119,7 +148,7 @@ class NPort(object):
         [0.5*c,   d]
         
         """
-        znport = NPortZ(self.Z + a.Z, self.CZ + a.CZ)
+        znport = NPortZ(self.Z + a.Z, self.CZ + a.CZ, z0=self.z0)
         
         return self.__class__(znport)
 
@@ -139,14 +168,16 @@ class NPort(object):
 class NPortY(NPort):
     """Two-port class where the internal representation is the Y-parameters"""
     
-    def __init__(self, Y, CY = None, passive = False):
+    def __init__(self, Y, CY = None, passive = False, z0 = None):
         self.passive = passive
         if isinstance(Y, NPort):
+            self.z0 = Y.z0 if z0 is None else z0
             self.Y = Y.Y
             self.CY = Y.CY
         else:
+            self.z0 = 50.0 if z0 is None else z0
             self.Y = np.array(Y)
-        
+
             if CY is None:
                 self.CY = np.zeros(np.shape(self.Y))
             else:
@@ -171,13 +202,18 @@ class NPortY(NPort):
         return np.linalg.inv(self.Y)
 
     @property
-    def S(self, z0 = 50.0):
-        """Return scattering parameters"""
-        Y = self.Y
+    def S(self):
+        """Return scattering parameters at the stored reference `self.z0`"""
+        return self._s_at(self.z0)
+
+    def _s_at(self, z0):
+        Y = np.asarray(self.Y)
+        if _is_swept(Y):
+            return _per_frequency(Y, lambda y: NPortY(y, z0=z0)._s_at(z0))
         E = np.eye(self.n, self.n)
         Zref = z0 * E
         Gref = 1 / np.sqrt(np.real(z0)) * E
-        return Gref @ (E - Zref @ Y) @ np.linalg.inv(E + Zref @ Y) @ \
+        return Gref @ (E - Zref @ Y) @ _inv(E + Zref @ Y) @ \
             np.linalg.inv(Gref)
 
     @property
@@ -186,8 +222,12 @@ class NPortY(NPort):
         return np.asarray(Z @ self.CY @ Z.conj().T)
 
     @property
-    def CS(self, z0 = 50.):
-        S = np.asarray(self.S)
+    def CS(self):
+        """Noise-wave correlation at the stored reference `self.z0`"""
+        return self._cs_at(self.z0)
+
+    def _cs_at(self, z0):
+        S = np.asarray(self._s_at(z0))
         E = np.eye(self.n, self.n)
         return np.asarray((E + S) @ (np.asarray(self.CY) * z0) @
                           (E + S).conj().T / 4)
@@ -203,12 +243,14 @@ class NPortY(NPort):
 class NPortZ(NPort):
     """Two-port class where the internal representation is the Z-parameters"""
     
-    def __init__(self, Z, CZ = None, passive=False):
+    def __init__(self, Z, CZ = None, passive=False, z0 = None):
         self.passive = passive
         if isinstance(Z, NPort):
+            self.z0 = Z.z0 if z0 is None else z0
             self.Z = Z.Z
             self.CZ = np.array(Z.CZ)
         else:
+            self.z0 = 50.0 if z0 is None else z0
             self.Z = np.array(Z)
         
             if CZ is None:
@@ -235,13 +277,18 @@ class NPortZ(NPort):
         return np.linalg.inv(self.Z)
 
     @property
-    def S(self, z0 = 50.0):
-        """Return scattering parameters"""
-        Z = self.Z
+    def S(self):
+        """Return scattering parameters at the stored reference `self.z0`"""
+        return self._s_at(self.z0)
+
+    def _s_at(self, z0):
+        Z = np.asarray(self.Z)
+        if _is_swept(Z):
+            return _per_frequency(Z, lambda z: NPortZ(z, z0=z0)._s_at(z0))
         E = np.eye(self.n, self.n)
         Zref = z0 * E
         Gref = 1 / np.sqrt(np.real(z0)) * E
-        return Gref @ (Z - Zref) @ np.linalg.inv(Z + Zref) @ np.linalg.inv(Gref)
+        return Gref @ (Z - Zref) @ _inv(Z + Zref) @ np.linalg.inv(Gref)
 
     @property
     def CY(self):
@@ -249,8 +296,12 @@ class NPortZ(NPort):
         return np.asarray(Y @ self.CZ @ Y.conj().T)
 
     @property
-    def CS(self, z0 = 50.):
-        S = np.asarray(self.S)
+    def CS(self):
+        """Noise-wave correlation at the stored reference `self.z0`"""
+        return self._cs_at(self.z0)
+
+    def _cs_at(self, z0):
+        S = np.asarray(self._s_at(z0))
         E = np.eye(self.n, self.n)
         T = (E - S) / (2 * np.sqrt(z0))
         return np.asarray(T @ np.asarray(self.CZ) @ T.conj().T)
@@ -263,13 +314,15 @@ class NPortZ(NPort):
 class NPortA(NPort):
     """Two-port class where the internal representation is the ABCD-parameters"""
 
-    def __init__(self, A, CA = None, passive=False):
+    def __init__(self, A, CA = None, passive=False, z0 = None):
         self.passive = passive
 
         if isinstance(A, NPort):
+            self.z0 = A.z0 if z0 is None else z0
             self.A = A.A
             self.CA = A.CA
         else:
+            self.z0 = 50.0 if z0 is None else z0
             self.A = np.array(A)
 
             if CA is None:
@@ -302,9 +355,9 @@ class NPortA(NPort):
                         [-1.0 / A[0,1], A[0,0] / A[0,1]]])
     
     @property
-    def S(self, z0 = 50.0):
-        """Return scattering parameters
-        
+    def S(self):
+        """Return scattering parameters at the stored reference `self.z0`
+
         >>> abcd = np.array([[  5.90000000e-01,   8.05000000e+01], \
                               [  4.20000000e-03,   1.59000000e+00]])
         >>> P = NPortA(abcd)
@@ -312,8 +365,11 @@ class NPortA(NPort):
         array([[ 0.1,  0.3],
                [ 0.5,  0.6]])
 
-        >>> 
+        >>>
         """
+        return self._s_at(self.z0)
+
+    def _s_at(self, z0):
         a,b,c,d = self.A[0,0], self.A[0,1], self.A[1,0], self.A[1,1]
 
         A = np.array([[a + b / z0 - c * z0 - d, 2 * (a * d - b * c)],
@@ -334,8 +390,12 @@ class NPortA(NPort):
         return np.asarray(T @ np.asarray(self.CA) @ T.conj().T)
 
     @property
-    def CS(self, z0=50.):
-        return NPortY(self).CS
+    def CS(self):
+        """Noise-wave correlation at the stored reference `self.z0`"""
+        return self._cs_at(self.z0)
+
+    def _cs_at(self, z0):
+        return NPortY(self)._cs_at(z0)
 
     def __str__(self):
         return self.__class__.__name__ + '(' + repr(self.A) + ')'
@@ -344,20 +404,24 @@ class NPortA(NPort):
 class NPortS(NPort):
     """Two-port class where the internal representation is the S-parameters"""
 
-    def __init__(self, S, CS = None, z0 = 50, passive=False, toolkit=None):
+    def __init__(self, S, CS = None, z0 = None, passive=False, toolkit=None):
         self.passive = passive
 
-        self.z0 = z0
-
+        if toolkit is None:
+            toolkit = getattr(S, 'toolkit', None)
         if toolkit is None:
             from .toolkit import numeric
             toolkit = numeric
         self.toolkit = toolkit
-        
+
         if isinstance(S, NPort):
-            self.S = S.S
-            self.CS = S.CS
+            ## keep the source's reference unless one is asked for, and then
+            ## renormalise S and CS to it rather than relabel them
+            self.z0 = S.z0 if z0 is None else z0
+            self.S = S._s_at(self.z0)
+            self.CS = S._cs_at(self.z0)
         else:
+            self.z0 = 50 if z0 is None else z0
             self.S = np.array(S)
         
             if CS is None:
@@ -366,6 +430,21 @@ class NPortS(NPort):
                 self.CS = np.array(CS)
 
         self.n = np.size(self.S,0)
+
+    def _s_at(self, z0):
+        if _same_z0(z0, self.z0):
+            return self.S
+        return NPortZ(self)._s_at(z0)
+
+    def _cs_at(self, z0):
+        if _same_z0(z0, self.z0):
+            return self.CS
+        return NPortY(self)._cs_at(z0)
+
+    def to_s(self, z0=None):
+        """This n-port at reference impedance `z0` (default: the stored one);
+        a different z0 renormalises S and CS, it does not relabel them."""
+        return NPortS(self, z0=z0, passive=self.passive)
 
     @property
     def A(self):
