@@ -43,13 +43,16 @@ genuinely open:
 | ~~`orbital_spectrum` amplitude~~ | ✅ 2026-09-14 VALIDATED against pnoise on SYMMETRIC orbits (0.1 %, C=1/C=4/Q=50); on ASYMMETRIC ones `S_ph + S_orb` over-states up to 3.2× — see E6 |
 | E6 Floquet decomposition over-states asymmetric orbits above f_amp | ⚠ MC-CONFIRMED (pnoise right to 1 %); NOT the cross term; PHASE half = DC PPV, ✅ fixed by frequency-aware `oscillator_spectrum` (default on); ORBITAL half (flat factor) open; line-shape models wrong away from k=1 (guard proposed) |
 | ~~PSP tests with `pytest.approx` defaults~~ | ✅ 2026-09-15 tightened, each mutation-checked; exposed 4 wrong-thing assertions (fixed) and 2 real residuals now pinned (p-ch overlap 2e-3; drain density vs ign split 2e-7). Outside PSP still vacuous: `test_spicecard.py`, `test_chained_first_class.py` |
-| ~~PSP p-channel overlap capacitance, 2e-3 on the short device~~ | ✅ NOT the model: the test's reference omits PSP's gate–bulk overlap `cgbol`; subtracting `cgbov` gives 8.8e-7 / 3.4e-6. Test correction queued |
-| PSP `rg` uses drawn W·L, PSP uses W_f·L_f (peer, reproduced) | PMOS +9.4 % / +55 %; NMOS exact. Fix queued (geometry() → Lf/Wf) |
+| ~~PSP p-channel overlap capacitance, 2e-3 on the short device~~ | ✅ NOT the model: the test's reference omits PSP's gate–bulk overlap `cgbol`; the test now subtracts `cgbov` (8.8e-7 / 3.4e-6) |
+| ~~PSP `rg` uses drawn W·L~~ | ✅ fixed: `geometry()` returns `Lf`/`Wf`, `rg` divides by them (PMOS was +9.4 % / +55 %) |
+| ~~`NPortS.Z` float cast; `.Z`/`.Y` fail on sweeps~~ | ✅ fixed (5103× on an RC two-port at 1e7 Hz before); swept S converted per frequency |
+| NPortY/Z/A `.S`/`.CS` renormalise to 50 Ω (dead `z0` property argument) | ⚠ reported, NOT fixed — design, owner's call (1.138 in S at z0 = 1) |
+| Stale `nport.py` doctests (4) | ⚠ pre-existing: sympy `symbols('abcd')` API, NumPy repr; values right; suite does not collect doctests |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
 | ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |
 | E4 Gear-2/trap +3.0 % on a coarse fixed grid | ⚠ decision MADE — not carved out; the +3.0 % itself unexplained |
-| E5 ~2 % pnoise residual | characterised, unexplained; one live possibility at 1.2σ |
+| E5 ~2 % pnoise residual | ✅ order closed 2026-09-15: a CONSTANT (c₁ = −0.0002 ± 0.0064, linear law excluded 3.2σ); cause still open |
 
 ⚠ **E1–E5 USED TO LIVE ONLY IN THIS FILE.**  They were real, repeatedly
 recommended, and absent from the roadmap — so a reader of the plan could not

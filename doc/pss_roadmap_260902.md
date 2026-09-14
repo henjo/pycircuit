@@ -8250,7 +8250,12 @@ unclamped, the same case costs **+17 %** and 27 iterations.  Listed as open
 only because the +3.0 % has never been explained, not because the trade-off is
 unsettled.
 
-### E5. The ~2 % pnoise residual — CHARACTERISED, UNEXPLAINED
+### E5. The ~2 % pnoise residual — CHARACTERISED, UNEXPLAINED; ✅ ORDER QUESTION CLOSED 2026-09-15: A CONSTANT
+
+✅ **Decided by 60 more Monte Carlo runs (36 seeds per level):** the joint fit gives c₁ = −0.0002 ± 0.0064 (demod) /
+−0.0011 ± 0.0064 (crossing) and c₂ ≈ 0 ± 0.0025 — a linear law carrying the 2 % is excluded at 3.2σ / 3.3σ, a
+quadratic one at ~4σ.  The "live possibility" below (1.2σ) was noise.  The residual is flat in `a`, grid, band and
+noise excursion; its CAUSE stays open (see the log, "E5 decided").  The text below is the record before the run.
 
 Between the noisy Monte Carlo and the deterministic tone route.  What has been
 excluded, each by measurement rather than argument: it is **flat in `a`, in the
