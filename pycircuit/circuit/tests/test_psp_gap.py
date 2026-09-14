@@ -683,7 +683,7 @@ class TestTheTwoDrainBiasQuantities(object):
             for vd in (0.05, 0.6, 1.2):
                 f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
                 r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)[0]
-                assert f == pytest.approx(-r, rel=1e-12), (vg, vd, f, r)
+                assert f == pytest.approx(-r, rel=1e-12, abs=0.0), (vg, vd, f, r)
 
     def test_the_alp2_term_now_matches_the_vendor(self, deck, ref):
         """The differential that found this, run in reverse.
@@ -1336,7 +1336,7 @@ class TestImpactIonisation(object):
                                               0.0)), float)[0]
                     r = np.asarray(e.i(e.bias(0.0, sgn * vg, sgn * vd,
                                               0.0)), float)[0]
-                    assert f == pytest.approx(-r, rel=1e-12), (kind, vg, vd)
+                    assert f == pytest.approx(-r, rel=1e-12, abs=0.0), (kind, vg, vd)
 
     def test_it_conserves_charge_and_stays_finite(self, deck):
         """A new branch pair is a new chance to leak current."""
@@ -1632,7 +1632,7 @@ class TestTheConditionedGateDrive(object):
         kw = self._kw(deck, 10e-6, 1e-6)
         for a, b in [(1.05, 1.0), (0.05, 0.0), (2.2, 0.7), (1.5, 1.5)]:
             assert self._offset(kw, a, b) == pytest.approx(
-                self._offset(kw, b, a), rel=1e-14), (a, b)
+                self._offset(kw, b, a), rel=1e-14, abs=0.0), (a, b)
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_antisymmetry_survives_it_under_body_bias(self, deck,
@@ -1666,7 +1666,7 @@ class TestTheConditionedGateDrive(object):
                                               sgn * vb)), float)[0]
                     r = np.asarray(e.i(e.bias(0.0, sgn * vg, sgn * vd,
                                               sgn * vb)), float)[0]
-                    assert f == pytest.approx(-r, rel=1e-12), \
+                    assert f == pytest.approx(-r, rel=1e-12, abs=0.0), \
                         (kind, vb, vg, vd, f, r)
 
     @pytest.mark.parametrize('vd', [1e3, 1e7, 1e40])
@@ -1686,7 +1686,7 @@ class TestTheConditionedGateDrive(object):
         assert abs(self._offset(kw, 0.0, vd)) < 1e-3
         ## And it is still exactly even out there.
         assert self._offset(kw, vd, 0.0) == pytest.approx(
-            self._offset(kw, 0.0, vd), rel=1e-14)
+            self._offset(kw, 0.0, vd), rel=1e-14, abs=0.0)
         ## The bound, stated: half the smoothing scale plus the offset.
         assert abs(self._offset(kw, vd, 0.0)) < \
             0.5 * math.sqrt(0.0025 * kw['phib'] ** 2) + 1e-3
@@ -1890,7 +1890,7 @@ class TestTheScalingTermByTerm(object):
         for psp_name, ours in self.DIRECT.items():
             if psp_name not in e:
                 continue
-            assert kw[ours] == pytest.approx(e[psp_name], rel=1e-5), \
+            assert kw[ours] == pytest.approx(e[psp_name], rel=1e-5, abs=0.0), \
                 '%s %s: %r vs %r' % (geom, psp_name, kw[ours], e[psp_name])
 
     @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
@@ -2027,7 +2027,7 @@ class TestPolysiliconDepletion(object):
             for vd in (0.05, 0.3, 0.9, 1.5):
                 f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)
                 r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)
-                assert f[0] == pytest.approx(-r[0], rel=1e-14), (vg, vd)
+                assert f[0] == pytest.approx(-r[0], rel=1e-14, abs=0.0), (vg, vd)
             q = np.asarray(e.q(e.bias(0.5, vg, 0.0, 0.0)), float)
             assert abs(q.sum()) < 4e-16 * max(np.abs(q).max(), 1e-30)
 
@@ -2497,7 +2497,7 @@ class TestTheChannelTypes(object):
             deck.model_params('sg13g2_lv_pmos_psp', w=e['w'], l=e['l'],
                               ng=1, m=1, pre_layout=1),
             w=e['w'], l=e['l'], all_terms=True, T=T27)
-        assert kw[par] == pytest.approx(e[par], rel=1e-5, abs=1e-12)
+        assert kw[par] == pytest.approx(e[par], rel=1e-5, abs=0.0)
 
     @pytest.mark.parametrize('geom', GEOMS)
     def test_the_doping_matches_before_the_qm_correction(self, deck,
@@ -2572,7 +2572,7 @@ class TestTheChannelTypes(object):
                                float)[0]
                 r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)),
                                float)[0]
-                assert f == pytest.approx(-r, rel=1e-13), (vg, vd)
+                assert f == pytest.approx(-r, rel=1e-13, abs=0.0), (vg, vd)
 
     def test_it_conserves_charge_like_the_n_channel(self, deck):
         e = self._fet(deck)
@@ -3049,7 +3049,7 @@ class TestTheChargeModelAgainstTheVendor(object):
             kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'], T=T27)
             eps_ox = card.get('epsroxo', 3.9) * 8.8541878128e-12
             ours = eps_ox / kw['tox'] * kw['wcv'] * kw['lcv']
-            assert ours == pytest.approx(e['cox'], rel=1e-4), (kind, geom)
+            assert ours == pytest.approx(e['cox'], rel=1e-4, abs=0.0), (kind, geom)
 
     def test_the_cv_dimensions_are_not_the_drawn_ones(self, deck):
         """Which is half the error, and invisible without a card."""
@@ -3067,20 +3067,25 @@ class TestTheChargeModelAgainstTheVendor(object):
         assert kw['lcv'] > 0.90e-6, kw['lcv']
         assert 10.0e-6 < kw['wcv'] < 10.02e-6, kw['wcv']
 
-    @staticmethod
-    def _psp_total(pt):
-        """PSP's TOTAL gate capacitance: intrinsic plus the overlap it
-        reports separately."""
-        return pt['cgg'] + pt['cgsol'] + pt['cgdol']
-
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_gate_capacitance_matches_on_the_long_device(self, deck,
                                                              op, kind):
-        """The measurement.  Every bias point on the long device,
-        within 0.2% -- which is what it became once channel-length
-        modulation and the polysilicon factor went into the CHARGES as
-        well as the current.  Before those, 1%; before the oxide
-        capacitance was corrected, 24%."""
+        """The measurement.  Every bias point on the long device, against
+        PSP's INTRINSIC `cgg` -- `_fet` switches the overlap off, and PSP
+        reports its overlap separately (`cgsol`, `cgdol`).
+
+        Measured 2026-09-14: worst 3.45e-6 (n) and 3.70e-6 (p), which is
+        the reference's six printed figures; the tolerance is 2e-5.
+
+        This was asserted against `cgg + cgsol + cgdol` at `rel=0.002`
+        -- an overlap-OFF model against an overlap-ON reference, 8.5% to
+        15.2% low at every point -- and PASSED: `approx` adds a default
+        ABSOLUTE tolerance of 1e-12 and these capacitances are
+        7e-14..1.3e-13 F, so no capacitance comparison here could fail.
+        The figures quoted before (0.2%; 1% before channel-length
+        modulation went into the charges; 24% before the oxide
+        capacitance was corrected) were not checked by this assertion.
+        """
         n, p = op
         gd = (p if kind == 'pmos' else n)['long']
         cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
@@ -3090,8 +3095,8 @@ class TestTheChargeModelAgainstTheVendor(object):
             x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             C = np.asarray(e.C(x), float)
             gi = e.gate_index
-            assert C[gi, gi] == pytest.approx(self._psp_total(pt),
-                                              rel=0.002), \
+            assert C[gi, gi] == pytest.approx(pt['cgg'], rel=2e-5,
+                                              abs=0.0), \
                 (kind, pt['vg'], pt['vd'], pt['vb'],
                  C[e.gate_index, e.gate_index], pt['cgg'])
 
@@ -3109,14 +3114,27 @@ class TestTheChargeModelAgainstTheVendor(object):
             x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             C = np.asarray(e.C(x), float)
             gi = e.gate_index
-            ## Column order is (vd, vg, vs, vb); PSP reports `cgs` and
-            ## `cgb` as the negated cross terms.  The ROW is the
-            ## intrinsic gate, which is an internal node once the gate
-            ## resistance is on.
-            assert -C[gi, 2] == pytest.approx(pt['cgs'], rel=0.01), \
-                ('cgs', kind, pt['vg'], pt['vd'])
+            ## Column order is (vd, vg, vs, vb, gi, noi); PSP reports
+            ## `cgs` and `cgb` as the negated cross terms.  The ROW is
+            ## the intrinsic gate, which is an internal node once the
+            ## gate resistance is on.
+            ##
+            ## `cgs` is the SOURCE column plus the auxiliary `noi` one.
+            ## The induced-gate-noise network puts `-CGeff` on
+            ## `C[gi, noi]` and the source entry carries `+CGeff` so the
+            ## row still sums to zero -- so `-C[gi, s]` alone is
+            ## `cgs - CGeff`, NEGATIVE and 0.56x..2.0x `cgs` in size.
+            ## It was asserted that way at `rel=0.01` and passed on the
+            ## default absolute tolerance of 1e-12 against 4e-14 F.
+            ## Measured 2026-09-14 with the sum: `cgs` worst 8.7e-7 (n), 7.8e-7 (p);
+            ## `cgb` worst 2.4e-6.  Tolerance 2e-5 on both.
+            nm = [n_.name for n_ in e.nodes]
+            cs = C[gi, nm.index('s')] + C[gi, nm.index('noi')]
+            assert -cs == pytest.approx(pt['cgs'], rel=2e-5, abs=0.0), \
+                ('cgs', kind, pt['vg'], pt['vd'], -cs, pt['cgs'])
             if abs(pt['cgb']) > 1e-16:
-                assert -C[gi, 3] == pytest.approx(pt['cgb'], rel=0.10), \
+                assert -C[gi, 3] == pytest.approx(pt['cgb'], rel=2e-5,
+                                                  abs=0.0), \
                     ('cgb', kind, pt['vg'], pt['vd'])
 
     def test_both_corrections_are_needed(self, deck, op):
@@ -3358,6 +3376,13 @@ class TestChannelLengthModulationInTheCharges(object):
         Overlap is a fixed capacitance in parallel with the intrinsic
         one; it does not switch itself off at low drain bias.  This
         error did.
+
+        Measured 2026-09-14 on the linear-region points: worst 2.8e-6
+        (n long), 1.9e-6 (n short), 3.7e-6 (p long), 1.4e-6 (p short).
+        Tolerance 2e-5.  This read `C[1, 1]` -- the TERMINAL gate row,
+        exactly 0.0 once the gate resistance made the intrinsic gate an
+        internal node -- and passed, a 100% error, on `approx`'s default
+        absolute tolerance of 1e-12 against 1e-16..1.2e-13 F.
         """
         n, p = op
         for gd in ((p if kind == 'pmos' else n)[g] for g in
@@ -3367,7 +3392,9 @@ class TestChannelLengthModulationInTheCharges(object):
                 if abs(pt['vd']) > 0.1:
                     continue
                 C = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])), float)
-                assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
+                gi = e.gate_index
+                assert C[gi, gi] == pytest.approx(pt['cgg'], rel=2e-5,
+                                                  abs=0.0), \
                     (kind, gd['l'], pt['vg'], pt['vd'])
 
     def test_it_is_worth_a_factor_of_four_in_saturation(self, deck, op):
@@ -3388,7 +3415,12 @@ class TestChannelLengthModulationInTheCharges(object):
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_long_device_is_now_exact(self, deck, op, kind):
-        """0.1% across the whole bias grid, both channel types.
+        """3.7e-6 across the whole bias grid, both channel types.
+
+        Measured 2026-09-14: worst 3.45e-6 (n), 3.70e-6 (p), tolerance
+        2e-5.  Previously quoted as 0.1% and asserted on `C[1, 1]`, the
+        terminal gate row, which is 0.0 with the gate resistance on; it
+        passed on `approx`'s default absolute tolerance of 1e-12.
 
         This is the strongest statement the model can make about its
         charges: they come from a foundry card through the scaling
@@ -3400,7 +3432,9 @@ class TestChannelLengthModulationInTheCharges(object):
         e = self._fet(deck, kind, gd)
         for pt in gd['points']:
             C = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])), float)
-            assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
+            gi = e.gate_index
+            assert C[gi, gi] == pytest.approx(pt['cgg'], rel=2e-5,
+                                              abs=0.0), \
                 (kind, pt['vg'], pt['vd'], pt['vb'])
 
     def test_psps_cgg_is_intrinsic_and_excludes_overlap(self, op):
@@ -3423,13 +3457,13 @@ class TestChannelLengthModulationInTheCharges(object):
             assert lo < frac < hi, (geom, frac)
 
     def test_what_is_left_on_the_short_device(self, deck, op):
-        """2%, and NOT explained -- which is the honest statement.
+        """Nothing: 3.6e-6, the same as the long device.
 
-        It is not overlap: PSP reports that separately, as the test
-        above pins.  It is not channel-length modulation: that is in
-        now, and it was the linear-region agreement that identified it.
-        Recorded as an upper bound so that whatever explains it has
-        something to beat.
+        This recorded a 2% residual as "NOT explained", bounded at 3%.
+        Re-measured 2026-09-14 it is 3.64e-6 at the worst of the nine
+        points -- the reference's printed precision -- so whatever the
+        2% was, a later change removed it and this bound never noticed.
+        Now bounded at 2e-5 like the long device.
         """
         n, _ = op
         gd = n['short']
@@ -3439,7 +3473,7 @@ class TestChannelLengthModulationInTheCharges(object):
             abs(np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0,
                                       pt['vb'])), float)[gi, gi]
                 / pt['cgg'] - 1.0) for pt in gd['points'])
-        assert worst < 0.03, worst
+        assert worst < 2e-5, worst
 
 
 class TestTheOverlapAndFringeCapacitance(object):
@@ -3492,8 +3526,8 @@ class TestTheOverlapAndFringeCapacitance(object):
                               ng=1, m=1, pre_layout=1),
             w=e['w'], l=e['l'], T=T27)
         if geom == 'long':
-            assert kw['cgov'] == pytest.approx(4.53951e-15, rel=1e-5)
-            assert kw['cfr'] == pytest.approx(1.998e-15, rel=1e-4)
+            assert kw['cgov'] == pytest.approx(4.53951e-15, rel=1e-5, abs=0.0)
+            assert kw['cfr'] == pytest.approx(1.998e-15, rel=1e-4, abs=0.0)
         assert kw['cgov'] > 0.0 and kw['cfr'] > 0.0
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
@@ -3502,9 +3536,13 @@ class TestTheOverlapAndFringeCapacitance(object):
                                                 geom):
         """Intrinsic plus overlap against PSP's intrinsic plus overlap.
 
-        Within 0.7% everywhere and 0.1% on the long devices -- and the
-        short device is the one to watch, because there the overlap is
-        more than twice the intrinsic part.
+        Measured 2026-09-14: worst 3.0e-6 (n long), 6.7e-7
+        (n short), 3.3e-4 (p long), 1.99e-3 (p short) -- and the short device is the one
+        to watch, because there the overlap is more than twice the
+        intrinsic part.  Tolerance 0.3%.  (Previously "within 0.7%
+        everywhere and 0.1% on the long devices", at `rel=0.008` with
+        `approx`'s default absolute tolerance of 1e-12 -- against
+        1.2e-15..1.3e-13 F, so it could not fail.)
         """
         n, p = op
         gd = (p if kind == 'pmos' else n)[geom]
@@ -3514,7 +3552,7 @@ class TestTheOverlapAndFringeCapacitance(object):
             tot = pt['cgg'] + pt['cgsol'] + pt['cgdol']
             got = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0,
                                         pt['vb'])), float)[gi, gi]
-            assert got == pytest.approx(tot, rel=0.008), \
+            assert got == pytest.approx(tot, rel=0.003, abs=0.0), \
                 (kind, geom, pt['vg'], pt['vd'], got, tot)
 
     def test_without_them_the_short_device_is_missing_most_of_its_charge(
@@ -3533,7 +3571,7 @@ class TestTheOverlapAndFringeCapacitance(object):
         without = np.asarray(off.C(x_off), float)[off.gate_index,
                                                   off.gate_index]
         assert without / tot < 0.45, without / tot
-        assert with_ov == pytest.approx(tot, rel=0.008)
+        assert with_ov == pytest.approx(tot, rel=0.008, abs=0.0)
 
     def test_it_leaves_the_dc_current_alone(self, deck, op):
         """Charge only -- it must not touch the current at all."""
@@ -3544,7 +3582,7 @@ class TestTheOverlapAndFringeCapacitance(object):
         for vd, vg in ((0.05, 1.2), (1.2, 0.8)):
             a = np.asarray(on.i(on.bias(vd, vg)), float)[0]
             b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
-            assert a == pytest.approx(b, rel=1e-14)
+            assert a == pytest.approx(b, rel=1e-14, abs=0.0)
 
     def test_the_construction_properties_survive(self, deck, op):
         """Conservation and antisymmetry, with the overlap on.
@@ -3566,7 +3604,7 @@ class TestTheOverlapAndFringeCapacitance(object):
         for vg, vd in ((0.6, 0.7), (1.2, 1.5)):
             f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
             r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)[0]
-            assert f == pytest.approx(-r, rel=1e-13), (vg, vd)
+            assert f == pytest.approx(-r, rel=1e-13, abs=0.0), (vg, vd)
 
 
 class TestTemperatureScaling(object):
@@ -3928,10 +3966,10 @@ class TestTheJunction(object):
                                  l=0.13e-6, ng=1, m=1, pre_layout=1)
         geo = psp_scaling.geometry(card, w=1e-6, l=0.13e-6)
         jg = psp_scaling.junction_geometry(1e-6, geo['WE'])
-        assert jg['lg'] == pytest.approx(geo['WE'], rel=1e-12)
+        assert jg['lg'] == pytest.approx(geo['WE'], rel=1e-12, abs=0.0)
         assert jg['lg'] != pytest.approx(1e-6, rel=1e-6), \
             'the drawn width would be wrong by 2% here'
-        assert jg['ab'] == pytest.approx(3.40e-13, rel=1e-3)
+        assert jg['ab'] == pytest.approx(3.40e-13, rel=1e-3, abs=0.0)
         assert jg['ls'] == pytest.approx(1.66e-6, rel=1e-3)
 
     def test_it_uses_its_own_reference_temperature(self, deck):
@@ -3969,7 +4007,7 @@ class TestTheJunction(object):
             b = np.asarray(off.C(off.bias(pt['vd'], pt['vg'], 0.0,
                                           pt['vb'])), float)[3, 3]
             assert a - b == pytest.approx(pt['cjs'] + pt['cjd'],
-                                          rel=1e-4), \
+                                          rel=1e-4, abs=0.0), \
                 (kind, geom, pt['vg'], pt['vd'], pt['vb'])
 
     def test_the_components_are_all_live(self, deck, op):
@@ -3985,7 +4023,9 @@ class TestTheJunction(object):
         assert pt['cjsbot'] / tot > 0.7
         assert pt['cjssti'] / tot > 0.03
         assert pt['cjsgat'] / tot > 0.03
-        assert tot == pytest.approx(pt['cjs'], rel=1e-6)
+        ## A sum of three six-figure numbers against a fourth: measured
+        ## 7.5e-7.  `abs=0.0` because the values are 4e-15 F.
+        assert tot == pytest.approx(pt['cjs'], rel=3e-6, abs=0.0)
 
     def test_it_leaves_the_drain_current_alone(self, deck, op):
         """The junction is charge plus a diode to the BULK; the channel
@@ -3995,7 +4035,7 @@ class TestTheJunction(object):
         for vd, vg in ((0.05, 1.2), (1.2, 0.8)):
             a = np.asarray(on.i(on.bias(vd, vg)), float)[0]
             b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
-            assert a == pytest.approx(b, rel=1e-9)
+            assert a == pytest.approx(b, rel=1e-9, abs=0.0)
 
     @pytest.mark.parametrize('geom', ['long', 'short'])
     def test_the_reverse_leakage_matches_psp(self, deck, op, geom):
@@ -4010,7 +4050,15 @@ class TestTheJunction(object):
         a junction model.
 
         Measured as the difference the junction makes to the drain
-        current, against PSP's `ijd`.
+        current, against PSP's `ijd` -- NEGATED.  PSP's `ijd` is the
+        diode current bulk-to-drain, so reverse leakage is negative
+        there, and the element's drain entry is the current INTO the
+        terminal, positive.  Measured 2026-09-14: `-ijd` to 3.4e-5 at
+        worst, over 7.95e-17..1.47e-14 A.  Tolerance 1e-4.
+
+        This compared against `+ijd` at `rel=1e-3` and passed -- a sign
+        error, relative error 2.0 at every point -- on `approx`'s default
+        absolute tolerance of 1e-12, three orders above the current.
         """
         n, _ = op
         gd = n[geom]
@@ -4022,7 +4070,7 @@ class TestTheJunction(object):
                                         pt['vb'])), float)[0]
             b = np.asarray(off.i(off.bias(pt['vd'], pt['vg'], 0.0,
                                           pt['vb'])), float)[0]
-            assert a - b == pytest.approx(pt['ijd'], rel=1e-3), \
+            assert a - b == pytest.approx(-pt['ijd'], rel=1e-4, abs=0.0), \
                 (geom, pt['vg'], pt['vd'], pt['vb'])
 
     def test_the_ideal_term_alone_would_not_do(self, deck, op):
@@ -4054,7 +4102,7 @@ class TestTheJunction(object):
                       - np.asarray(off.i(off.bias(pt['vd'], pt['vg'],
                                                   0.0, pt['vb'])),
                                    float)[0])
-        assert full == pytest.approx(pt['ijd'], rel=1e-3)
+        assert full == pytest.approx(-pt['ijd'], rel=1e-4, abs=0.0)
         assert abs(only_ideal) < 1e-3 * abs(full), (only_ideal, full)
 
     def test_the_forward_diode_still_conducts(self, deck, op):
@@ -4136,8 +4184,17 @@ class TestTheChannelNoise(object):
 
     @pytest.mark.parametrize('geom', ['long', 'short'])
     def test_both_densities_match_psp(self, deck, op, geom):
-        """Within half a percent, which is where the drain current they
-        are built from already sits."""
+        """To the reference's printed precision.
+
+        Measured 2026-09-14: `sid` worst 7.7e-7 (long), 4.3e-6 (short);
+        `sfl` worst 1.8e-5 (long), 1.9e-5 (short) -- `sfl` is separated
+        from two frequencies, which costs it a digit.  Tolerance 1e-4.
+
+        This said "within half a percent" and asserted `rel=0.02` with
+        `approx`'s default absolute tolerance of 1e-12 -- against
+        `sid` 9e-26..6e-23 and `sfl` 3e-20..1e-15 A^2/Hz, so neither
+        assertion could fail.
+        """
         gd = op[geom]
         e = self._fet(deck, gd)
         for pt in gd['points']:
@@ -4145,10 +4202,10 @@ class TestTheChannelNoise(object):
                 continue
             x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             sid, sfl = self._split(e, x)
-            assert sid == pytest.approx(pt['sid'], rel=0.02), \
+            assert sid == pytest.approx(pt['sid'], rel=1e-4, abs=0.0), \
                 ('sid', geom, pt['vg'], pt['vd'])
             if pt['sfl'] > 0.0:
-                assert sfl == pytest.approx(pt['sfl'], rel=0.02), \
+                assert sfl == pytest.approx(pt['sfl'], rel=1e-4, abs=0.0), \
                     ('sfl', geom, pt['vg'], pt['vd'])
 
     def test_the_corner_frequency_matches(self, deck, op):
@@ -4156,6 +4213,8 @@ class TestTheChannelNoise(object):
         against each other rather than both against the current they
         share -- an error common to both would cancel here and an error
         in one would not.
+
+        Measured 2026-09-14: worst 1.7e-5, tolerance 1e-4 (was 0.02).
         """
         gd = op['long']
         e = self._fet(deck, gd)
@@ -4164,7 +4223,7 @@ class TestTheChannelNoise(object):
                 continue
             x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             sid, sfl = self._split(e, x)
-            assert sfl / sid == pytest.approx(pt['fknee'], rel=0.02), \
+            assert sfl / sid == pytest.approx(pt['fknee'], rel=1e-4), \
                 (pt['vg'], pt['vd'], sfl / sid, pt['fknee'])
 
     def test_the_residual_is_the_current_it_is_built_from(self, deck, op):
@@ -4313,17 +4372,17 @@ class TestTheInducedGateNoise(object):
         return cross / np.sqrt(self._white(e, x, i_n, i_n)
                                * self._white(e, x, i_d, i_d))
 
-    #: `cigid` tolerance per (channel type, geometry) -- measured, not
-    #: chosen.  The p-channel is the better device here, as it is on
-    #: this branch's DC sweeps.
-    CORR_TOL = {('nmos', 'long'): 0.004, ('nmos', 'short'): 0.04,
-                ('pmos', 'long'): 0.002, ('pmos', 'short'): 0.008}
+    #: `cigid` tolerance -- measured.  Worst 2.0e-6 (n long), 2.1e-6
+    #: (n short, p long), 1.7e-6 (p short), 2026-09-14.  It was a table
+    #: of 0.2%..4% per device, from before the `CGeff`/`Gmob_dL` fixes,
+    #: and the short n-channel's 4% was 19000x the measured error.
+    CORR_TOL = 1e-4
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     @pytest.mark.parametrize('geom', ['long', 'short'])
     def test_the_correlation_matches_psp(self, deck, ops, kind, geom):
-        """Within 0.1% on the long n-channel and 3.2% on the short one;
-        within 0.55% on the p-channel at both geometries.
+        """To 2.1e-6 on every device (measured 2026-09-14; this quoted
+        0.1% long / 3.2% short n-channel and 0.55% p-channel).
 
         `c_igid` is built from the channel's SHAPE functions alone --
         `t1`, `t2`, `r` -- with `g_ideal`, `lc` and `CGeff` cancelling
@@ -4333,7 +4392,7 @@ class TestTheInducedGateNoise(object):
         """
         gd = ops[kind][geom]
         e = self._fet(deck, gd, kind)
-        tol = self.CORR_TOL[(kind, geom)]
+        tol = self.CORR_TOL
         for pt in gd['points']:
             if pt['sid'] <= 0.0 or pt['cigid'] <= 0.0:
                 continue
@@ -4341,25 +4400,30 @@ class TestTheInducedGateNoise(object):
             assert self._corr(e, x) == pytest.approx(pt['cigid'], rel=tol), \
                 (kind, geom, pt['vg'], pt['vd'], pt['vb'])
 
-    #: `sig` tolerance per (channel type, geometry) -- measured.  One
-    #: tolerance ACROSS ALL BIASES of a device, deliberately: the bug
-    #: this replaced was exact at `Vds = 0.05` and 73% high at 1.2, so a
-    #: per-bias tolerance would have accommodated it and a shared one
-    #: does not.  Anything that makes `CGeff` carry a spurious
-    #: `Vds`-dependence fails here.
-    SIG_TOL = {('nmos', 'long'): 0.005, ('nmos', 'short'): 0.09,
-               ('pmos', 'long'): 0.005, ('pmos', 'short'): 0.02}
+    #: `sig` tolerance -- measured.  One tolerance ACROSS ALL BIASES and
+    #: devices, deliberately: the bug this replaced was exact at
+    #: `Vds = 0.05` and 73% high at 1.2, so a per-bias tolerance would
+    #: have accommodated it and a shared one does not.  Anything that
+    #: makes `CGeff` carry a spurious `Vds`-dependence fails here.
+    #:
+    #: Worst 1.4e-6 (n long), 2.3e-6 (p long), 3.2e-6 (n short), 3.3e-6
+    #: (p short), with `rg = 0`, 2026-09-14.  It was a table of 0.5%..9%,
+    #: and none of it was ever enforced: `approx`'s default ABSOLUTE
+    #: tolerance of 1e-12 is 1e23..1e30 times `sig` (8e-42..1e-35
+    #: A^2/Hz), so this test passed a 1828x change the day the gate
+    #: resistor's noise was built.
+    SIG_TOL = 1e-4
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     @pytest.mark.parametrize('geom', ['long', 'short'])
     def test_the_gate_density_matches_psp(self, deck, ops, kind, geom):
         """End to end through a noise analysis, every recorded bias.
 
-        Within 0.4% on both long devices and on the short p-channel.
-        The short n-channel runs to 8.4% low, and it is the same two
-        places its DRAIN density is already off -- deep subthreshold at
-        `Vg = 0.4`, where `sid` itself is 5-10% out -- rather than
-        anything the gate path adds.
+        To 3.3e-6 on every device (measured 2026-09-14, `rg = 0`).  This
+        said 0.4% on the long devices and the short p-channel, and 8.4%
+        low on the short n-channel "where `sid` itself is 5-10% out" --
+        but `sid` is 4.3e-6 there now, and neither figure was ever
+        enforced (see `SIG_TOL`).
         """
         gd = ops[kind][geom]
         ## `rg = 0`: PSP's `sig` is the INTRINSIC density, at `GP`.  A
@@ -4368,12 +4432,12 @@ class TestTheInducedGateNoise(object):
         ## -- up to 1828x `sig` on the short n-channel at Vg = 1.2,
         ## Vd = 0.05 -- which is real, and not the quantity recorded.
         kw = self._kw(deck, gd, kind, rg=0.0)
-        tol = self.SIG_TOL[(kind, geom)]
+        tol = self.SIG_TOL
         for pt in gd['points']:
             if pt['sig'] <= 0.0:
                 continue
             assert self._sig(kw, pt, kind=kind) \
-                == pytest.approx(pt['sig'], rel=tol), \
+                == pytest.approx(pt['sig'], rel=tol, abs=0.0), \
                 (kind, geom, pt['vg'], pt['vd'], pt['vb'])
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
@@ -4400,7 +4464,11 @@ class TestTheInducedGateNoise(object):
         `core['GdL']` too left a spurious `1/GdL^2` that grows with
         `Vds` through channel-length modulation.
 
-        Within 0.1% on the long devices.
+        Measured 2026-09-14: worst 1.6e-6 (n long, p short), 3.5e-6
+        (n short), 3.8e-6 (p long); tolerance 1e-4.  This said "within
+        0.1% on the long devices" and allowed 0.5% / 5% -- with
+        `approx`'s default absolute tolerance of 1e-12 against
+        6e-16..1.3e-13 F, so it could not fail.
         """
         gd = ops[kind][geom]
         e = self._fet(deck, gd, kind)
@@ -4409,7 +4477,7 @@ class TestTheInducedGateNoise(object):
         C_ours = np.asarray  # local alias, keeps the line short
         nt = self._nt(deck, gd, kind)
         w = 2.0 * np.pi * 1.0e3
-        tol = 0.005 if geom == 'long' else 0.05
+        tol = 1e-4
         for pt in gd['points']:
             if pt['sig'] <= 0.0 or pt['cigid'] <= 0.0:
                 continue
@@ -4421,17 +4489,27 @@ class TestTheInducedGateNoise(object):
             mig_p = migid0 ** 2 / (pt['cigid'] ** 2 * mid_p)
             den = nt * w * w * mig_p - pt['sig'] * w * w * mig_p * mig_p
             theirs = np.sqrt(pt['sig'] / den)
-            assert ours == pytest.approx(theirs, rel=tol), \
+            assert ours == pytest.approx(theirs, rel=tol, abs=0.0), \
                 (kind, geom, pt['vg'], pt['vd'], ours, theirs)
 
     def test_the_drain_density_is_untouched_by_the_split(self, deck, op):
         """The correlated source and the reduced independent one sum
-        back to `Sid` IDENTICALLY, whatever the clip did.
+        back to `Sid`.
 
         Which is the invariant that lets the drain-noise tests above
         stay exactly as they were: adding a correlated pair changes the
         gate and the cross terms, and must change the drain-drain entry
         by nothing at all.
+
+        NOT identically, which is what this claimed.  Measured
+        2026-09-14 with flicker off, the same at 1 Hz, 1 kHz and 1 GHz:
+        `swign = 1` against `swign = 0` differs by -2.09e-7 at
+        `Vg = 0.4, Vd = 0.05` and by 3e-9..1.7e-8 at the other eight
+        points -- far above rounding.  The `rel=1e-12` here passed on
+        `approx`'s default absolute tolerance of 1e-12 against densities
+        of 9e-24..6e-23.  Not investigated; the tolerance is 1e-6, the
+        worst point with a 5x margin, so it pins the size and fails on
+        any growth.
         """
         gd = op['long']
         on = self._fet(deck, gd)
@@ -4445,7 +4523,8 @@ class TestTheInducedGateNoise(object):
                             nm_on.index('d'), nm_on.index('d'))
             b = self._white(off, off.bias(pt['vd'], pt['vg'], 0.0, pt['vb']),
                             nm_off.index('d'), nm_off.index('d'))
-            assert a == pytest.approx(b, rel=1e-12), (pt['vg'], pt['vd'])
+            assert a == pytest.approx(b, rel=1e-6, abs=0.0), \
+                (pt['vg'], pt['vd'], a / b - 1.0)
 
     def test_it_rises_as_f_squared_and_then_flattens(self, deck, op):
         """The RC's signature, which is the reason for building it as a
@@ -4479,7 +4558,9 @@ class TestTheInducedGateNoise(object):
         i_n = nm.index('noi')
         pwr = self._white(e, e.bias(pt['vd'], pt['vg'], 0.0, pt['vb']),
                           i_n, i_n)
-        assert hi2 == pytest.approx(pwr, rel=0.01)
+        ## Measured 2.0e-7 (2026-09-14).  `abs=0.0`: the density is
+        ## 6e-22, so `approx`'s default 1e-12 made this unfailable.
+        assert hi2 == pytest.approx(pwr, rel=0.01, abs=0.0)
 
     def test_swign_switches_it_off_and_costs_a_row(self, deck, op):
         """`SWIGN = 0` removes the term AND the node it lived on -- the
@@ -4540,7 +4621,7 @@ class TestTheGateResistorNoise(object):
     measured density by up to 1828x (short n-channel, Vg = 1.2,
     Vd = 0.05).  `test_the_gate_density_matches_psp` still PASSED -- its
     `approx` carries the default absolute tolerance of 1e-12 against
-    densities near 1e-30, so it could not fail -- and it now builds with
+    densities of 8e-42..1e-35, so it could not fail -- and it now builds with
     `rg = 0`, because PSP's `sig` is the intrinsic density at `GP`.
     """
 

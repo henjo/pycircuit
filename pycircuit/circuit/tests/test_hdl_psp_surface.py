@@ -212,7 +212,7 @@ class TestSimparam(object):
         e = _mk(Shunt, 'p', 'm', g0=1e-3)
         G = np.asarray(e.G(np.array([1.0, 0.0])), float)
         ## gmin resolved to 0, so the stamp is exactly g0
-        assert G[0, 0] == pytest.approx(1e-3, rel=1e-15)
+        assert G[0, 0] == pytest.approx(1e-3, rel=1e-15, abs=0.0)
 
     def test_it_composes_with_the_let_chain(self):
         class ShuntChained(Behavioural):
@@ -228,7 +228,7 @@ class TestSimparam(object):
         e = _mk(ShuntChained, 'p', 'm', g0=1e-3)
         assert ShuntChained._hdl_info['chained'] is True
         G = np.asarray(e.G(np.array([1.0, 0.0])), float)
-        assert G[0, 0] == pytest.approx(1e-3, rel=1e-15)
+        assert G[0, 0] == pytest.approx(1e-3, rel=1e-15, abs=0.0)
 
 
 class TestMfactorIsNotNeeded(object):
@@ -262,4 +262,4 @@ class TestMfactorIsNotNeeded(object):
         for n in (1.0, 4.0, 17.0):
             e = _mk(Mult, 'p', 'm', g0=1e-3, mult=n)
             G = np.asarray(e.G(np.array([1.0, 0.0])), float)
-            assert G[0, 0] == pytest.approx(n * 1e-3, rel=1e-12)
+            assert G[0, 0] == pytest.approx(n * 1e-3, rel=1e-12, abs=0.0)

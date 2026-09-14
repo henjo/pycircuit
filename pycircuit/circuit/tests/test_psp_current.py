@@ -245,8 +245,8 @@ class TestTheElement(object):
         e = self._fet()
         fwd = np.asarray(e.i(e.bias(0.7, 1.2, 0.0, 0.0)), float)
         rev = np.asarray(e.i(e.bias(0.0, 1.2, 0.7, 0.0)), float)
-        assert fwd[0] == pytest.approx(-rev[0], rel=1e-14)
-        assert fwd[2] == pytest.approx(-rev[2], rel=1e-14)
+        assert fwd[0] == pytest.approx(-rev[0], rel=1e-14, abs=0.0)
+        assert fwd[2] == pytest.approx(-rev[2], rel=1e-14, abs=0.0)
 
     def test_geometry_scales_the_current(self):
         """Ids is proportional to W/L, and to nothing else here."""
@@ -256,7 +256,7 @@ class TestTheElement(object):
         for w, l, factor in ((2e-6, 1e-6, 2.0), (1e-6, 2e-6, 0.5),
                              (4e-6, 2e-6, 2.0), (5e-6, 1e-6, 5.0)):
             got = np.asarray(self._fet(w=w, l=l).i(x), float)[0]
-            assert got == pytest.approx(factor * i0, rel=1e-12)
+            assert got == pytest.approx(factor * i0, rel=1e-12, abs=0.0)
 
     def test_transconductance_and_output_conductance_are_positive(self):
         e = self._fet()
@@ -403,9 +403,9 @@ class TestTheChargeModel(object):
             for vd in (0.05, 0.3, 0.8, 1.5):
                 fwd = np.asarray(e.q(e.bias(vd, vg, 0.0, 0.0)), float)
                 rev = np.asarray(e.q(e.bias(0.0, vg, vd, 0.0)), float)
-                assert fwd[0] == pytest.approx(rev[2], rel=1e-14)
-                assert fwd[2] == pytest.approx(rev[0], rel=1e-14)
-                assert fwd[1] == pytest.approx(rev[1], rel=1e-14), \
+                assert fwd[0] == pytest.approx(rev[2], rel=1e-14, abs=0.0)
+                assert fwd[2] == pytest.approx(rev[0], rel=1e-14, abs=0.0)
+                assert fwd[1] == pytest.approx(rev[1], rel=1e-14, abs=0.0), \
                     'gate charge, to one ulp since terminals are ordered'
 
     def test_below_threshold_the_gate_charge_mirrors_the_bulk(self):
@@ -421,7 +421,7 @@ class TestTheChargeModel(object):
         e = self._fet()
         q = np.asarray(e.q(e.bias(0.0, -0.5, 0.0, 0.0)), float)
         assert q[1] > 0, 'gate charge'
-        assert q[3] == pytest.approx(-q[1], rel=1e-10), 'bulk mirrors it'
+        assert q[3] == pytest.approx(-q[1], rel=1e-10, abs=0.0), 'bulk mirrors it'
         assert 0 < abs(q[0]) < 1e-10 * abs(q[1]), 'inversion charge is tiny'
         assert 0 < abs(q[2]) < 1e-10 * abs(q[1]), 'but not zero'
 
@@ -511,7 +511,7 @@ class TestMobilityAndVelocitySaturation(object):
             for vd in (0.05, 0.3, 0.9, 1.6):
                 fwd = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)
                 rev = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)
-                assert fwd[0] == pytest.approx(-rev[0], rel=1e-14), (vg, vd)
+                assert fwd[0] == pytest.approx(-rev[0], rel=1e-14, abs=0.0), (vg, vd)
 
     def test_charge_conservation_survives_it_too(self):
         e = self._fet()
@@ -704,7 +704,7 @@ class TestTheSaturationVoltage(object):
         e = self._fet()
         f = np.asarray(e.i(e.bias(vd, 1.8, 0.0, 0.0)), float)[0]
         r = np.asarray(e.i(e.bias(0.0, 1.8, vd, 0.0)), float)[0]
-        assert f == pytest.approx(-r, rel=1e-12), (vd, f, r)
+        assert f == pytest.approx(-r, rel=1e-12, abs=0.0), (vd, f, r)
 
 
 class TestTheVoltageConditioning(object):
@@ -939,7 +939,7 @@ class TestTheGateResistanceAndMultiplicity(object):
         for vd, vg in ((1.2, 1.2), (0.05, 0.8), (1.2, 0.4)):
             a = np.asarray(on.i(on.bias(vd, vg)), float)[0]
             b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
-            assert a == pytest.approx(b, rel=1e-12), (vd, vg, a, b)
+            assert a == pytest.approx(b, rel=1e-12, abs=0.0), (vd, vg, a, b)
 
     def test_the_resistor_is_actually_there(self):
         """Not merely tolerated -- it has to conduct.
@@ -958,10 +958,10 @@ class TestTheGateResistanceAndMultiplicity(object):
         x1, x3 = one.bias(1.2, 1.2), three.bias(1.2, 1.2)
         assert (np.asarray(three.i(x3), float)[0]
                 == pytest.approx(3.0 * np.asarray(one.i(x1),
-                                                  float)[0], rel=1e-12))
+                                                  float)[0], rel=1e-12, abs=0.0))
         assert (np.asarray(three.q(x3), float)[1]
                 == pytest.approx(3.0 * np.asarray(one.q(x1),
-                                                  float)[1], rel=1e-12))
+                                                  float)[1], rel=1e-12, abs=0.0))
 
     def test_multiplicity_divides_the_gate_resistance(self):
         """`mult` devices in parallel present `rg/mult`.

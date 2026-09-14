@@ -269,7 +269,7 @@ class TestTheHelperFunctions(object):
                          (a, c, tau, eta))
         for args in ((2.0, 3.0, 0.5, 1.0), (1e-3, 0.2, -2.0, 0.1),
                      (5.0, -1.0, 3.0, -2.0)):
-            assert f1(*args) == pytest.approx(f2(*args), rel=1e-12)
+            assert f1(*args) == pytest.approx(f2(*args), rel=1e-12, abs=0.0)
 
     def test_sigma2_takes_the_vendors_tiny_tau_shortcut(self):
         a, b, c, tau, eta = sympy.symbols('a b c tau eta', real=True)
