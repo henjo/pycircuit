@@ -2542,7 +2542,82 @@ class PSS(Analysis):
                 'here, and it widens the basin rather than removing the '
                 'seed dependence.'
                 % (T, seed_period), RuntimeWarning, stacklevel=3)
+        if (ier != 1 and not trivial_orbit and solver is None
+                and np.isfinite(T)
+                and abs(T) >= self.DEGENERATE_PERIOD_FACTOR * abs(seed_period)):
+            self._diagnose_lmm_free_period_stall(func, z)
         return z, info, ier, mesg
+
+    def _diagnose_lmm_free_period_stall(self, func, z):
+        """Say WHY a multistep free-period solve stalled, when it is not the
+        iteration count.
+
+        ⚠⚠ MEASURED 2026-09-14 (peer report, reproduced).  On a weakly limited
+        LC oscillator (second Floquet multiplier 0.99, set by the limiting),
+        Gear-2's autonomous shooting solve stalls at a residual FLOOR:
+        converged quadratically at 925..1600 points per period, never at 900
+        or 800.  Every property that would point at the solver was ruled
+        out -- the residual is a pure function of the unknowns; damped,
+        Armijo (20 halvings) and Levenberg-Marquardt steps from the stall all
+        stop at the floor; tighter inner tolerances change nothing; the grid
+        is exactly uniform; a scan of the Jacobian's two weakest directions
+        finds no lower point.  The discrete periodic solution of the
+        solved-history system `(x_0, x_{-1}, T)` CEASES TO EXIST below a grid
+        threshold: `sigma_min(J)` at the root falls linearly toward it (to
+        zero near 904 points), the discrete second multiplier stays at 0.990,
+        and the vanishing direction lies ~99 % in the `x_{-1}` block.  The
+        threshold grows as the multiplier approaches 1 (no convergence at
+        6400 points at 0.999).  Trapezoidal stalls too; `radau` -- no history,
+        no manufactured opening -- converged in 7-10 evaluations at 800
+        points at both multipliers.
+
+        So no number of iterations, damping or tolerance fixes it, and the
+        generic advice would send the caller the wrong way.  This measures
+        what it can at the last iterate (one residual evaluation, only on a
+        failed solve) and says so.  Stage methods are skipped: they did not
+        show this.
+        """
+        try:
+            integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+            if integ.is_stage_method():
+                return
+            _F, J = func(z)
+            J = np.asarray(J, dtype=float)
+            _U, s, Vt = np.linalg.svd(J)
+            v = Vt[-1]
+            m = self.cir.n - 1
+            hist = (float(np.linalg.norm(v[m:2 * m]))
+                    if J.shape[0] == 2 * m + 1 else None)
+            cond = float(s[-1] / max(s[0], 1e-300))
+            method = getattr(self.par, 'method', '?')
+        except Exception:
+            return
+        common = (
+            "method='radau' (the default) converged on that oscillator in "
+            '7-10 evaluations at 800 points per period where this one never '
+            'did -- use it, or refine the grid. Raising maxiterations, damping '
+            'or tightening tolerances does not help: the stall was measured to '
+            'be a residual floor with no root nearby, not slow convergence.')
+        if hist is not None and hist > 0.5:
+            msg = ('PSS: this autonomous solve (method=%r) stopped at a '
+                   'residual floor, and the Jacobian at the last iterate '
+                   'shows the signature of a solved-history stall: its '
+                   'weakest direction (sigma_min/sigma_max = %.1e) lies %.0f %% '
+                   'in the entering-history block x_{-1}. On a weakly damped '
+                   'orbit (second Floquet multiplier near 1) the two-step '
+                   'discrete periodic solution exists only above a grid '
+                   'threshold that grows as the multiplier approaches 1 '
+                   '(measured: about 905 points per period at 0.99, above 6400 '
+                   'at 0.999). ' % (method, cond, 100.0 * hist)) + common
+        else:
+            msg = ('PSS: this autonomous solve (method=%r) did not converge. '
+                   'On a weakly damped oscillator (second Floquet multiplier '
+                   'near 1) the multistep free-period solves stall at a '
+                   'residual floor that iterations and tolerances do not move '
+                   '(measured for gear and trapezoidal at 0.99 on 800 points; '
+                   'sigma_min/sigma_max at the last iterate here: %.1e). '
+                   % (method, cond)) + common
+        warnings.warn(msg, RuntimeWarning, stacklevel=4)
 
     def _resolve_break_events(self, requested):
         """`break_events`, defaulted from the METHOD when not given.
@@ -10159,17 +10234,25 @@ class PSS(Analysis):
             ## measured 1.69e-01 -> 1.06e-02 -> 3.78e-06 -> 3.48e-12 against
             ## trapezoidal's linear 3.91e-03 -> 3.14e-04 -> 2.66e-05 on the
             ## same circuit.
+            ## ⚠ THE GEAR ADVICE IS FOR A DRIVEN SOLVE ONLY (2026-09-16).  On an
+            ## autonomous oscillator near a unit second multiplier gear is the
+            ## method that STALLS (see `_diagnose_lmm_free_period_stall`), so
+            ## recommending it there sent a gear user to gear.
+            if getattr(self, 'autonomous', False):
+                _advice = ("On an oscillator, method='radau' (the default) is "
+                           'the robust choice; see any preceding diagnosis.')
+            else:
+                _advice = ("Raise maxiterations, or use method='gear', whose "
+                           'solved-history formulation has an exact Jacobian '
+                           'and converges quadratically where the plain path '
+                           'is a contraction with a linear rate.')
             warnings.warn(
                 'PSS: the shooting solve did not converge in %d iterations '
                 '(method=%r). ⚠ The returned waveform IS STILL A FULL '
                 'RESULT -- it is the last iterate, not a periodic steady '
                 'state -- so a reader who does not check `converged` gets '
-                'an array that looks like an answer and is not. Raise '
-                "maxiterations, or use method='gear', whose solved-history "
-                'formulation has an exact Jacobian and converges '
-                'quadratically where the plain path is a contraction with a '
-                'linear rate.'
-                % (maxiterations, method),
+                'an array that looks like an answer and is not. %s'
+                % (maxiterations, method, _advice),
                 RuntimeWarning, stacklevel=2)
         
         ## THE THIRD LEVEL, MEASURED ON THE WAY OUT.

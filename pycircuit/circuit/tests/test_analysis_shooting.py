@@ -20493,3 +20493,64 @@ def test_algebraic_conditioning_leaves_the_limiting_state_as_it_found_it():
     assert '_vlim' not in fresh['d'].__dict__
     algebraic_conditioning(fresh)
     assert '_vlim' not in fresh['d'].__dict__, fresh['d'].__dict__.get('_vlim')
+
+
+def _weakly_limited_lc(lambda2):
+    """An LC tank with loss and a cubic negative resistance, limited so weakly
+    that the second Floquet multiplier is `lambda2` at 1 V (first-order
+    averaging: b = -4 C ln(lambda2) / (3 T A^2), a = gl + 3 b A^2 / 4)."""
+    lval, cval, gl, amp = 100e-6, 100e-12, 1e-4, 1.0
+    period = 2 * np.pi * np.sqrt(lval * cval)
+    b = -4.0 * cval * np.log(lambda2) / (3.0 * period * amp ** 2)
+    a = gl + 0.75 * b * amp ** 2
+    c = SubCircuit()
+    c.add_node('p')
+    c['L0'] = L('p', gnd, L=lval)
+    c['C0'] = C('p', gnd, c=cval)
+    c['R0'] = R('p', gnd, r=1.0 / gl)
+    c['N0'] = BSource('p', gnd, gnd, 'p', i_func=lambda u: a * u - b * u ** 3)
+    return c, period, amp
+
+
+def test_a_gear_free_period_stall_near_unit_multiplier_is_named_and_redirected():
+    """⚠⚠ A MULTISTEP FREE-PERIOD SOLVE THAT STALLS AT A RESIDUAL FLOOR MUST
+    NOT BE TOLD TO RAISE `maxiterations`.  Reported by a peer session on a
+    weakly limited LC oscillator and reproduced on this twin: at a second
+    multiplier of 0.99, Gear-2 on a coarse uniform grid stops at a floor with
+    no root nearby (the solved-history discrete solution does not exist below
+    a grid threshold), while radau converges on the same grid, and Gear-2
+    converges at 0.9.  The generic non-convergence warning used to advise
+    `method='gear'` on an oscillator -- the wrong way.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def run(method, lambda2):
+        cir, period, amp = _weakly_limited_lc(lambda2)
+        pss = PSS(cir, method=method, reltol=1e-10)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = amp
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            pss.solve(period=period, timestep=period / 200, x0=x0,
+                      maxiterations=6)
+        return pss.converged, [str(w.message) for w in caught]
+
+    converged, msgs = run('gear', 0.99)
+    assert not converged, 'the fixture no longer stalls; it tests nothing'
+    stall = [m for m in msgs if 'solved-history stall' in m]
+    assert len(stall) == 1, msgs
+    assert "method='radau'" in stall[0] and 'x_{-1}' in stall[0], stall[0]
+    generic = [m for m in msgs if 'did not converge in 6 iterations' in m]
+    assert len(generic) == 1, msgs
+    assert "use method='gear'" not in generic[0], generic[0]
+
+    ## the redirection is true on this fixture: radau converges on that grid
+    converged, msgs = run('radau', 0.99)
+    assert converged
+    assert not [m for m in msgs if 'residual floor' in m], msgs
+
+    ## and the diagnosis is silent when gear converges (stronger limiting)
+    converged, msgs = run('gear', 0.9)
+    assert converged
+    assert not [m for m in msgs if 'residual floor' in m], msgs
