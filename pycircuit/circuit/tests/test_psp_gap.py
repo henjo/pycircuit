@@ -4185,9 +4185,14 @@ class TestTheChannelNoise(object):
 
     def test_it_is_off_without_a_card(self, deck, op):
         """An element built with defaults is noiseless, so the noise
-        cannot leak into a model that never asked for it."""
+        cannot leak into a model that never asked for it.
+
+        `rg = 0` as well, which is the element's default: the card's
+        gate resistor is a thermal source of its own, and PSP's
+        `rgatenoise` does not go through `FNT` (`TestTheGateResistorNoise`).
+        """
         e = self._fet(deck, op['long'], fnt=0.0, nfa=0.0, nfb=0.0,
-                      nfc=0.0)
+                      nfc=0.0, rg=0.0)
         CY = np.asarray(e.CY(e.bias(0.05, 1.2), 2 * np.pi), float)
         assert np.all(CY == 0.0)
 
@@ -4357,7 +4362,12 @@ class TestTheInducedGateNoise(object):
         anything the gate path adds.
         """
         gd = ops[kind][geom]
-        kw = self._kw(deck, gd, kind)
+        ## `rg = 0`: PSP's `sig` is the INTRINSIC density, at `GP`.  A
+        ## gate lead held by an ideal source behind the card's resistor
+        ## also carries that resistor's thermal noise, `4kT rg |Y_gi|^2`
+        ## -- up to 1828x `sig` on the short n-channel at Vg = 1.2,
+        ## Vd = 0.05 -- which is real, and not the quantity recorded.
+        kw = self._kw(deck, gd, kind, rg=0.0)
         tol = self.SIG_TOL[(kind, geom)]
         for pt in gd['points']:
             if pt['sig'] <= 0.0:
@@ -4474,24 +4484,230 @@ class TestTheInducedGateNoise(object):
     def test_swign_switches_it_off_and_costs_a_row(self, deck, op):
         """`SWIGN = 0` removes the term AND the node it lived on -- the
         auxiliary branch collapses, so switching it off is free rather
-        than merely zeroed."""
+        than merely zeroed.
+
+        The zero is measured with `rg = 0`.  The gate resistor is a
+        thermal source of its own (`TestTheGateResistorNoise`), and it
+        reaches a gate lead held by an ideal source through the intrinsic
+        gate's admittance, as `4kT rg |Y_gi|^2` -- 9.65e-39 A^2/Hz at this
+        point, which this assertion read once that source was built, and
+        which the capacitive part alone, `4kT rg w^2 Cgg^2`, predicts to
+        7%.  It is not the term under test."""
         gd = op['long']
         on, off = self._fet(deck, gd), self._fet(deck, gd, swign=0.0)
         assert 'noi' in [n.name for n in on.nodes]
         assert 'noi' not in [n.name for n in off.nodes]
         assert off.n == on.n - 1
         pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
-        assert self._sig(self._kw(deck, gd, swign=0.0), pt) \
+        assert self._sig(self._kw(deck, gd, swign=0.0, rg=0.0), pt) \
             == pytest.approx(0.0, abs=1e-45)
 
     def test_it_needs_the_thermal_term(self, deck, op):
         """The gate density is proportional to `nt`, so `fnt = 0` takes
         it with the drain's white term -- an element that was told it
-        has no thermal noise cannot acquire some at the gate."""
+        has no thermal noise cannot acquire some at the gate.
+
+        With `rg = 0`, for the reason given in the test above: `FNT`
+        scales the CHANNEL's thermal noise, and PSP's `rgatenoise` does
+        not go through it."""
         gd = op['long']
         pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
-        assert self._sig(self._kw(deck, gd, fnt=0.0), pt) \
+        assert self._sig(self._kw(deck, gd, fnt=0.0, rg=0.0), pt) \
             == pytest.approx(0.0, abs=1e-45)
+
+
+class TestTheGateResistorNoise(object):
+    """The gate resistor is a RESISTOR, so it is a thermal noise source.
+
+    PSP attaches it with `CollapsableR(ggate, RG_i, rgatenoise, G, GP,
+    "rgate")` (`PSP103_module.include:1719`), and that macro contributes
+    the conductance AND `white_noise(rgatenoise)`, with
+    `rgatenoise = nt0 * ggate` (`:1684`), `nt0 = 4*KBOL*TKD` -- no `FNT`,
+    no `CT`.  This element built the conductance and the collapse and not
+    the noise: `CY[g, g]`, `CY[gi, gi]` and `CY[g, gi]` were exactly 0.0
+    on both geometries and both channel types, against `4kT/rg` =
+    1.654e-22 A^2/Hz on the 1/0.13 um n-channel (rg = 100.19 ohm) and
+    1.273e-20 on the 10/1 um one (rg = 1.3025 ohm).  Measured 2026-09-14
+    on the unfixed element, which is what the first test below failed on.
+
+    Why it hid: every other small-signal quantity of this device has an
+    external reference -- the current to 1.3e-6, `sid`, `sfl`, `sig` and
+    `cigid` against IHP's compiled PSP103 -- and all of them agree.  No
+    test read the gate rows of `CY`, and the resistance's own tests
+    checked its conductance.  The one measurement that DOES see this
+    source is `sig` through an ideal gate source: the resistor's noise
+    reaches that lead as `4kT rg |Y_gi|^2`, and once built it moved the
+    measured density by up to 1828x (short n-channel, Vg = 1.2,
+    Vd = 0.05).  `test_the_gate_density_matches_psp` still PASSED -- its
+    `approx` carries the default absolute tolerance of 1e-12 against
+    densities near 1e-30, so it could not fail -- and it now builds with
+    `rg = 0`, because PSP's `sig` is the intrinsic density at `GP`.
+    """
+
+    #: element class and card name, per channel type.
+    DEV = {'nmos': (PspMosLongChannel, 'sg13g2_lv_nmos_psp'),
+           'pmos': (PspPmosLongChannel, 'sg13g2_lv_pmos_psp')}
+
+    GEOM = {'short': dict(w=1e-6, l=0.13e-6), 'long': dict(w=10e-6, l=1e-6)}
+
+    def _kw(self, deck, geom, kind='nmos', **over):
+        g = self.GEOM[geom]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(self.DEV[kind][1], w=g['w'], l=g['l'], ng=1,
+                              m=1, pre_layout=1),
+            w=g['w'], l=g['l'], T=T27)
+        kw.update(over)
+        return kw
+
+    def _fet(self, deck, geom, kind='nmos', **over):
+        cm.default_toolkit = numeric
+        e = self.DEV[kind][0](cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **self._kw(deck, geom, kind,
+                                                       **over))
+        e.update_iparv()
+        return e
+
+    @staticmethod
+    def _cy(e, x, f):
+        return np.asarray(e.CY(x, 2 * np.pi * f), complex)
+
+    @needs_pdk
+    @pytest.mark.parametrize('mult', [1.0, 2.0])
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    @pytest.mark.parametrize('geom', ['short', 'long'])
+    def test_the_gate_rows_carry_4kT_over_rg(self, deck, geom, kind, mult):
+        """`CY[g, g] = 4 k T mult / rg`, to 1e-9, at 1 Hz and at 1 GHz.
+
+        The terminal row carries the resistor and nothing else -- every
+        intrinsic source hangs off `gi` -- so it is asserted as the whole
+        entry, with no flicker or induced part to separate, and the two
+        frequencies agreeing is itself that check.  The branch runs `g`
+        to `gi`, so the cross entry is the same power with the opposite
+        sign.
+
+        `mult`: `m` devices in parallel present `rg/mult`, so the density
+        doubles with `mult = 2` exactly as the conductance does.
+
+        `abs=0.0` on every comparison, and it is load-bearing: `approx`
+        defaults to an absolute tolerance of 1e-12, ten orders above the
+        density, and the first version of this test PASSED on the
+        unfixed element -- 0.0 is "approximately" 1.65e-22 at that
+        tolerance.
+        """
+        from pycircuit.circuit.psp_scaling import PSP_KBOL
+        rg = self._kw(deck, geom, kind)['rg']
+        assert rg > 0.0
+        expect = 4.0 * PSP_KBOL * T27 * mult / rg
+        e = self._fet(deck, geom, kind, mult=mult)
+        nm = [n.name for n in e.nodes]
+        ig, igi = nm.index('g'), nm.index('gi')
+        sg = -1.0 if kind == 'pmos' else 1.0
+        for vd, vg in ((1.2, 1.2), (0.05, 0.6)):
+            x = e.bias(sg * vd, sg * vg)
+            for f in (1.0, 1.0e9):
+                CY = self._cy(e, x, f)
+                assert CY[ig, ig].real == pytest.approx(expect, rel=1e-9,
+                                                        abs=0.0), \
+                    (geom, kind, mult, vd, vg, f, CY[ig, ig], expect)
+                assert CY[ig, ig].imag == 0.0
+                assert CY[ig, igi].real == pytest.approx(-expect, rel=1e-9,
+                                                         abs=0.0)
+                others = [k for k in range(e.n) if k not in (ig, igi)]
+                assert np.all(CY[ig, others] == 0.0), CY[ig]
+
+    @needs_pdk
+    @pytest.mark.parametrize('geom', ['short', 'long'])
+    def test_it_adds_to_the_intrinsic_gate_and_moves_nothing_else(self,
+                                                                   deck,
+                                                                   geom):
+        """Against the SAME device with `rg = 0`, whose collapsed gate row
+        is the intrinsic gate: `CY[gi, gi]` is that plus `4kT/rg` and
+        every drain, source, bulk and auxiliary entry is unchanged.
+
+        Which is what says the new source sits on the resistor branch and
+        nowhere else -- the induced gate noise at `gi` is untouched.
+        """
+        from pycircuit.circuit.psp_scaling import PSP_KBOL
+        rg = self._kw(deck, geom)['rg']
+        s_rg = 4.0 * PSP_KBOL * T27 / rg
+        on, off = self._fet(deck, geom), self._fet(deck, geom, rg=0.0)
+        nm_on = [n.name for n in on.nodes]
+        nm_off = [n.name for n in off.nodes]
+        x_on, x_off = on.bias(1.2, 1.2), off.bias(1.2, 1.2)
+        for f in (1.0e3, 1.0e9):
+            a, b = self._cy(on, x_on, f), self._cy(off, x_off, f)
+            gi, g0 = nm_on.index('gi'), nm_off.index('g')
+            assert a[gi, gi].real == pytest.approx(b[g0, g0].real + s_rg,
+                                                   rel=1e-9, abs=0.0), \
+                (geom, f, a[gi, gi], b[g0, g0], s_rg)
+            for p in ('d', 's', 'b', 'noi'):
+                for q in ('d', 's', 'b', 'noi'):
+                    assert a[nm_on.index(p), nm_on.index(q)] == pytest.approx(
+                        b[nm_off.index(p), nm_off.index(q)], rel=1e-12,
+                        abs=1e-40), (geom, f, p, q)
+
+    @needs_pdk
+    def test_zero_resistance_collapses_the_branch_and_its_noise(self, deck):
+        """`rg = 0` still removes the node, the branch and its noise, so
+        the `1/rg` in the density is never evaluated -- the same guarantee
+        the conductance relies on.  And the whole gate row is zero with
+        the channel's thermal source off, so nothing else is on it."""
+        e = self._fet(deck, 'long', rg=0.0, fnt=0.0, nfa=0.0, nfb=0.0,
+                      nfc=0.0)
+        nm = [n.name for n in e.nodes]
+        assert 'gi' not in nm
+        CY = self._cy(e, e.bias(1.2, 1.2), 1.0e3)
+        assert np.all(np.isfinite(CY))
+        assert np.all(CY == 0.0)
+
+    @needs_pdk
+    def test_a_common_source_stage_sees_it_at_the_drain(self, deck):
+        """End to end: the resistor's voltage noise `4kT rg` reaches the
+        output through the stage's own gain.
+
+        Gate held by an ideal source, drain loaded by a resistor to the
+        supply.  The output density with the card's `rg` less the same
+        stage with `rg = 0` is `4kT rg |A|^2`, `A` the gain from the gate
+        source -- the gate current is negligible at 1 MHz, so the gain
+        from `g` and from `gi` are the same.  Every other source is the
+        same in both circuits and cancels in the difference.
+
+        Before the fix the stage WITH the resistor was the quieter one,
+        2.166419005657925e-16 against 2.166419006059425e-16 V^2/Hz --
+        the resistor only divided.  After it the difference is
+        3.2256188e-19 against a predicted 3.2256192e-19, a ratio of
+        0.99999988 on the short device (rg = 100 ohm, gain 0.4407).
+        The tolerance is 1% because the INCREMENT is only 0.15% of the
+        output noise at 1 MHz, so the ratio is a difference of two
+        close numbers; it is not a statement that the agreement is 1%.
+        """
+        from pycircuit.circuit.circuit import SubCircuit, gnd
+        from pycircuit.circuit.elements import VS, R
+        from pycircuit.circuit.analysis_ss import Noise
+        from pycircuit.circuit.psp_scaling import PSP_KBOL
+        cm.default_toolkit = numeric
+        f = 1.0e6
+
+        def stage(**over):
+            c = SubCircuit()
+            nd, ng_, nv = c.add_nodes('d', 'g', 'vdd')
+            c['vdd'] = VS(nv, gnd, v=1.2)
+            c['vg'] = VS(ng_, gnd, v=0.6)
+            c['rl'] = R(nv, nd, r=2e3)
+            c['m1'] = PspMosLongChannel(nd, ng_, gnd, gnd,
+                                        **self._kw(deck, 'short', **over))
+            res = Noise(c, inputsrc='vg', outputnodes=(nd, gnd)).solve(f)
+            return (float(np.real(res['Svnout'])),
+                    abs(complex(res['gain'])))
+
+        rg = self._kw(deck, 'short')['rg']
+        s_on, a_on = stage()
+        s_off, a_off = stage(rg=0.0)
+        assert a_on == pytest.approx(a_off, rel=1e-6)
+        expect = 4.0 * PSP_KBOL * T27 * rg * a_on ** 2
+        assert s_on > s_off
+        assert (s_on - s_off) / expect == pytest.approx(1.0, rel=0.01), \
+            (s_on, s_off, a_on, expect)
 
 
 @needs_pdk

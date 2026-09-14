@@ -741,6 +741,26 @@ def _psp_mos_analog(T, pmos):
         ## CONDUCTANCE scales the same way everything else does.
         return (Contribution(br_rg.I,
                              mult * br_rg.V / rg),  # noqa: F821
+                ## ITS THERMAL NOISE.  `CollapsableR` contributes the
+                ## conductance AND `white_noise(rgatenoise)`
+                ## (`PSP103_module.include:1719`), with
+                ## `rgatenoise = nt0 * ggate` (`:1684`) and
+                ## `nt0 = 4*KBOL*TKD` -- no `CT`, no `FNT`.  So it is
+                ## built on `phit0`, the PLAIN thermal voltage on PSP's
+                ## own KBOL/QELE, which is also what the validated
+                ## channel noise is handed below, and not on `phit`.
+                ## `mult` for the reason the conductance carries it; no
+                ## `T`, as for every density.  Absent until 2026-09-14:
+                ## `CY` on both gate rows was exactly zero, no test read
+                ## them, and the one comparison that sees this source --
+                ## `sig` through an ideal gate source -- could not fail
+                ## (`test_psp_gap.py`, `TestTheGateResistorNoise`).  The
+                ## collapse below removes it with the branch, so its
+                ## `1/rg` is as safe as the conductance's.
+                Contribution(br_rg.I,
+                             white_noise(mult * 4.0 * phit0            # noqa
+                                         * psp_scaling.PSP_QELE / rg,  # noqa
+                                         'rgate')),
                 Collapse(br_rg, rg <= 0),                      # noqa: F821
                 Contribution(Branch(d, s, 'chan').I,
                              mult * T * sgn * core['ids']),    # noqa: F821
@@ -914,8 +934,9 @@ class PspMosLongChannel(Behavioural):
     Since built, and no longer absent: the junction with its reverse
     leakage, overlap and fringe capacitance, DIBL, the bias modulations
     of the velocity-saturation parameter, every temperature coefficient,
-    channel thermal and flicker noise, induced gate noise, impact
-    ionisation, and gate tunnelling.  This paragraph listed all of them
+    channel thermal and flicker noise, induced gate noise, the gate
+    resistor's thermal noise (since 2026-09-14), impact ionisation, and
+    gate tunnelling.  This paragraph listed all of them
     as missing until 2026-08-24, and by then it had already sent one
     investigation after a term that was implemented -- see
     `test_psp_gap.py`,
