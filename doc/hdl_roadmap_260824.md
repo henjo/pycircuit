@@ -6068,3 +6068,34 @@ bulk row of `CY` is exactly 0.  Small for this card's leakage, but structurally 
 
 **Pinned:** `test_psp_gap.py::test_the_flicker_density_goes_as_vds_squared_through_the_origin` (n and p: flicker(0) ≤ 1e-12
 × flicker(5 mV); flicker/Vds² at 0.1 mV within 1 % of 1 mV).
+
+## 2026-09-15 — PSP gate-tunnelling, junction and avalanche SHOT noise added (found absent during the flicker fix)
+
+PSP contributes `2q|I|` of currents the element already computes (`PSP103_module.include:1886-1906, 1951-1954`), and
+none of it was in `compact.py` — `CY`'s bulk row was exactly zero.  Added as white sources carrying `mult` (no `T`):
+
+- gate–source / gate–drain: `2q(gsel|Igcs| + (1 − gsel)|Igcd| + |Igsov|)` and mirror — the CHANNEL tunnelling part
+  follows the ordering (as PSP's forward/reverse `shot_igs`), the OVERLAP part does not;
+- bulk–source / bulk–drain: each junction's `2q|Ijun|` plus the avalanche shot `2q (mavl + 1) |Iimpact|` on the HIGH
+  terminal (`(1 ± sgn)/2`).
+- The edge transistor (`Sfledge`, `sqidedge`) stays out: SWEDGE = 0 on this PDK's cards and the element has no edge path.
+
+On the IHP n-channel 10/1 µm card the gate current is 4.2e-9 A at (Vd 0.05, Vg 1.2) — shot 1.3e-27 A²/Hz, ~1e-7 of the gate
+row; the card sets no junction saturation currents; avalanche 4.7e-13 A at Vds 1.2 V.  Small, but PSP-faithful, and it
+dominates the gate row at weak inversion (1e-30 against induced-gate densities of 1e-35..1e-41).
+
+**Pinned:** `test_the_gate_and_avalanche_shot_noise_are_2q_times_their_currents` — identities against the element's OWN
+terminal currents (no reference number): at Vds = 0, `−CY[g,s] = 2q|I_s|`, `−CY[g,d] = 2q|I_d|` (rel 1e-9); at Vds = 1.2
+with gate leakage off, `−CY[b,d] = 2q (mavl + 1)|I_b|`, `mavl = |I_b|/(|I_d| − |I_b|)` (rel 1e-6); n and p.  Fails on HEAD
+(the entries were 0).
+
+**Tests whose MEASUREMENT had to change (not their tolerances):**
+- the two all-zero tests (`test_it_is_off_without_a_card`, `test_zero_resistance_collapses_the_branch_and_its_noise`)
+  and the induced-gate `swign`/`fnt` zero tests and the `f²` slope test now switch leakage off (`NO_LEAKAGE`) — shot noise
+  is not switched by FNT/SWIGN, exactly as in PSP;
+- `test_the_gate_density_matches_psp` compares PSP's `sig` (induced only) with `sig(swign on) − sig(swign off)`, which
+  removes the uncorrelated gate shot exactly with the card unchanged;
+- `_split` (PSP `sid`/`sfl` comparisons) reads the drain diagonal with the shot taken out, `CY[d,d] + CY[gi,d] + CY[b,d]`
+  (each shot source is the only one between its nodes).  ⚠ A first attempt used `−CY[d,s]` and was WRONG — the correlated
+  induced-gate source also sits on noi–s, and its cross term lands on [d,s]: `sid` read +51 % (long) / ×14.5 (short).
+All 423 PSP gap / C-backend / compile-budget tests pass.

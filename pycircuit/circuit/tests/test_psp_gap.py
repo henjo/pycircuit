@@ -4190,9 +4190,23 @@ class TestTheChannelNoise(object):
     def _split(e, x):
         """Separate the white and flicker densities by measuring at two
         frequencies -- `CY` gives their sum."""
+        ## ⚠ the drain DIAGONAL with the SHOT noise taken back out: since
+        ## 2026-09-15 it also carries the gate-drain and bulk-drain shot
+        ## sources, which PSP's `sid`/`sfl` do not include.  Each is the
+        ## ONLY source between its two nodes, so its power is minus that
+        ## cross entry.  ⚠ NOT `-CY[d, s]`: the correlated induced-gate
+        ## source also sits on noi-s, and its cross term lands on [d, s]
+        ## (measured +51 % / x14.5 on `sid` when that was tried).
         f1, f2 = 1.0, 1.0e9
-        a = np.asarray(e.CY(x, 2 * np.pi * f1), float)[0, 0]
-        b = np.asarray(e.CY(x, 2 * np.pi * f2), float)[0, 0]
+        nm = [n.name for n in e.nodes]
+        i_d, i_b = nm.index('d'), nm.index('b')
+        i_g = nm.index('gi') if 'gi' in nm else nm.index('g')
+
+        def chan(f):
+            C = np.asarray(e.CY(x, 2 * np.pi * f), float)
+            return C[i_d, i_d] + C[i_g, i_d] + C[i_b, i_d]
+        a = chan(f1)
+        b = chan(f2)
         sfl = (a - b) / (1.0 / f1 - 1.0 / f2)
         return a - sfl / f1, sfl
 
@@ -4264,8 +4278,10 @@ class TestTheChannelNoise(object):
         gate resistor is a thermal source of its own, and PSP's
         `rgatenoise` does not go through `FNT` (`TestTheGateResistorNoise`).
         """
+        ## ⚠ and the leakage currents off: their SHOT noise (since
+        ## 2026-09-15) does not go through `FNT` either, exactly as in PSP
         e = self._fet(deck, op['long'], fnt=0.0, nfa=0.0, nfb=0.0,
-                      nfc=0.0, rg=0.0)
+                      nfc=0.0, rg=0.0, **NO_LEAKAGE)
         CY = np.asarray(e.CY(e.bias(0.05, 1.2), 2 * np.pi), float)
         assert np.all(CY == 0.0)
 
@@ -4446,12 +4462,20 @@ class TestTheInducedGateNoise(object):
         ## -- up to 1828x `sig` on the short n-channel at Vg = 1.2,
         ## Vd = 0.05 -- which is real, and not the quantity recorded.
         kw = self._kw(deck, gd, kind, rg=0.0)
+        ## ⚠ and the gate SHOT noise out (since 2026-09-15): PSP's `sig` is
+        ## the induced density alone, while the gate lead also carries
+        ## `2q|Ig|` -- which dominates at weak inversion (1e-30 against
+        ## 1e-35..1e-41).  The shot term is the same with `swign = 0` and
+        ## uncorrelated with the channel, so the difference is exactly the
+        ## induced part, with the card left as it is.
+        kw_off = dict(kw, swign=0.0)
         tol = self.SIG_TOL
         for pt in gd['points']:
             if pt['sig'] <= 0.0:
                 continue
-            assert self._sig(kw, pt, kind=kind) \
-                == pytest.approx(pt['sig'], rel=tol, abs=0.0), \
+            induced = (self._sig(kw, pt, kind=kind)
+                       - self._sig(kw_off, pt, kind=kind))
+            assert induced == pytest.approx(pt['sig'], rel=tol, abs=0.0), \
                 (kind, geom, pt['vg'], pt['vd'], pt['vb'])
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
@@ -4553,7 +4577,9 @@ class TestTheInducedGateNoise(object):
         just not the pole under test here.
         """
         gd = op['long']
-        kw = self._kw(deck, gd, rg=0.0)
+        ## leakage off: the gate SHOT noise (since 2026-09-15) is flat in
+        ## frequency and would hide the `f^2` region under test
+        kw = self._kw(deck, gd, rg=0.0, **NO_LEAKAGE)
         pt = [p for p in gd['points']
               if p['vg'] == 1.2 and p['vd'] == 0.6 and p['vb'] == 0.0][0]
         lo1 = self._sig(kw, pt, f=1.0e3)
@@ -4594,8 +4620,9 @@ class TestTheInducedGateNoise(object):
         assert 'noi' not in [n.name for n in off.nodes]
         assert off.n == on.n - 1
         pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
-        assert self._sig(self._kw(deck, gd, swign=0.0, rg=0.0), pt) \
-            == pytest.approx(0.0, abs=1e-45)
+        ## leakage off: the gate SHOT noise is not switched by `swign`
+        assert self._sig(self._kw(deck, gd, swign=0.0, rg=0.0, **NO_LEAKAGE),
+                         pt) == pytest.approx(0.0, abs=1e-45)
 
     def test_it_needs_the_thermal_term(self, deck, op):
         """The gate density is proportional to `nt`, so `fnt = 0` takes
@@ -4607,8 +4634,9 @@ class TestTheInducedGateNoise(object):
         not go through it."""
         gd = op['long']
         pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
-        assert self._sig(self._kw(deck, gd, fnt=0.0, rg=0.0), pt) \
-            == pytest.approx(0.0, abs=1e-45)
+        ## leakage off: the gate SHOT noise does not go through `FNT`
+        assert self._sig(self._kw(deck, gd, fnt=0.0, rg=0.0, **NO_LEAKAGE),
+                         pt) == pytest.approx(0.0, abs=1e-45)
 
 
 class TestTheGateResistorNoise(object):
@@ -4747,8 +4775,10 @@ class TestTheGateResistorNoise(object):
         the `1/rg` in the density is never evaluated -- the same guarantee
         the conductance relies on.  And the whole gate row is zero with
         the channel's thermal source off, so nothing else is on it."""
+        ## leakage off too: gate/junction/avalanche SHOT noise is not
+        ## switched by FNT (PSP's own structure)
         e = self._fet(deck, 'long', rg=0.0, fnt=0.0, nfa=0.0, nfb=0.0,
-                      nfc=0.0)
+                      nfc=0.0, **NO_LEAKAGE)
         nm = [n.name for n in e.nodes]
         assert 'gi' not in nm
         CY = self._cy(e, e.bias(1.2, 1.2), 1.0e3)
@@ -4938,3 +4968,62 @@ def test_the_flicker_density_goes_as_vds_squared_through_the_origin(deck):
         assert fl5 > 0.0 and abs(fl0) <= 1e-12 * fl5, (name, fl0, fl5)
         assert abs(k01 / k1 - 1.0) < 0.01, (name, k01, k1)
         assert wh0 > 0.0 and np.isfinite(wh0), (name, wh0)
+
+
+@needs_pdk
+def test_the_gate_and_avalanche_shot_noise_are_2q_times_their_currents(deck):
+    """⚠⚠ PSP103's SHOT sources were absent (found 2026-09-15 while fixing the
+    flicker floor): `CY`'s bulk row was exactly zero.  PSP contributes
+    `2q|I|` of the gate tunnelling, junction and avalanche currents
+    (`PSP103_module.include:1886-1906, 1951-1954`).  Checked as identities
+    against the element's OWN terminal currents, so no reference number is
+    involved:
+
+      gate, Vds = 0 (channel current and avalanche zero, junctions unbiased):
+          -CY[g, s] = 2q |I_s|,  -CY[g, d] = 2q |I_d|
+      avalanche, Vds = 1.2 V, gate leakage off:
+          -CY[b, d] = 2q (mavl + 1) |I_b|,  mavl = |I_b| / (|I_d| - |I_b|)
+
+    Channel thermal/flicker, the gate resistor and the induced gate noise are
+    off so nothing else lands on those entries.  Before: both read 0."""
+    from pycircuit.circuit.psp_scaling import PSP_QELE
+    cm.default_toolkit = numeric
+    w, l = 10e-6, 1e-6
+    for pmos in (False, True):
+        name = 'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp'
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(name, w=w, l=l, ng=1, m=1, pre_layout=1),
+            w=w, l=l, T=T27)
+        kw.update(fnt=0.0, nfa=0.0, nfb=0.0, nfc=0.0, rg=0.0, swign=0.0)
+        cls = PspPmosLongChannel if pmos else PspMosLongChannel
+        sg = -1.0 if pmos else 1.0
+
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **dict(kw, a1=0.0))
+        e.update_iparv()
+        nm = [n.name for n in e.nodes]
+        ig, idd, iss, ib = (nm.index(k) for k in ('g', 'd', 's', 'b'))
+        x = e.bias(0.0, sg * 1.2)
+        cur = np.asarray(e.i(x), dtype=float)
+        CY = np.real(np.asarray(e.CY(x, 2 * np.pi * 1e3), dtype=complex))
+        assert abs(cur[iss]) > 0.0, (name, cur)
+        assert -CY[ig, iss] == pytest.approx(2 * PSP_QELE * abs(cur[iss]),
+                                             rel=1e-9, abs=0.0), (name, CY[ig])
+        assert -CY[ig, idd] == pytest.approx(2 * PSP_QELE * abs(cur[idd]),
+                                             rel=1e-9, abs=0.0), (name, CY[ig])
+
+        if kw['a1'] <= 0.0:
+            continue
+        e2 = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                 **dict(kw, iginv=0.0, igov=0.0, igovd=0.0))
+        e2.update_iparv()
+        nm2 = [n.name for n in e2.nodes]
+        idd2, ib2 = nm2.index('d'), nm2.index('b')
+        x2 = e2.bias(sg * 1.2, sg * 1.2)
+        cur2 = np.asarray(e2.i(x2), dtype=float)
+        CY2 = np.real(np.asarray(e2.CY(x2, 2 * np.pi * 1e3), dtype=complex))
+        i_b, i_d = abs(cur2[ib2]), abs(cur2[idd2])
+        assert i_b > 0.0, (name, cur2)
+        mavl = i_b / (i_d - i_b)
+        assert -CY2[ib2, idd2] == pytest.approx(
+            2 * PSP_QELE * (mavl + 1.0) * i_b, rel=1e-6, abs=0.0), (name, CY2[ib2])

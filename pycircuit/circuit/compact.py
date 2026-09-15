@@ -708,6 +708,36 @@ def _psp_mos_analog(T, pmos):
         ij_s = juncap.current(vjs, jpar, 's') + juncap.leakage(vjs, jpar, 's')
         ij_d = juncap.current(vjd, jpar, 'd') + juncap.leakage(vjd, jpar, 'd')
 
+        ## SHOT NOISE (`PSP103_module.include:1886-1906, 1951-1954`).
+        ## Absent from this element until 2026-09-15: `CY`'s bulk row was
+        ## exactly zero.  Every density is `2 q |I|` of a current already
+        ## computed above, carries `mult` and no `T` (a power), and follows
+        ## PSP's own split:
+        ##   gate: the CHANNEL tunnelling current swaps with the ordering
+        ##     (`gsel`, as the current does), the OVERLAP one does not --
+        ##     `shot_igs = 2q(|Igcs| + |Igsov|)` forward, `2q(|Igcd| +
+        ##     |Igsov|)` reversed;
+        ##   bulk: each junction's own current, plus the avalanche shot
+        ##     `2q (mavl + 1) |Iimpact|` on the HIGH terminal's junction
+        ##     (`(1 +- sgn)/2`, the selection the avalanche current uses).
+        ## A term whose current is compiled out contributes zero -- a
+        ## contribution cannot be left empty.
+        _qe2 = 2.0 * psp_scaling.PSP_QELE
+        if ig_s is not None:
+            sh_gs = white_noise(mult * _qe2 * (gsel * sympy.Abs(igcs)   # noqa
+                                               + (1.0 - gsel) * sympy.Abs(igcd)
+                                               + sympy.Abs(ig_ovs)), 'igs')
+            sh_gd = white_noise(mult * _qe2 * (gsel * sympy.Abs(igcd)   # noqa
+                                               + (1.0 - gsel) * sympy.Abs(igcs)
+                                               + sympy.Abs(ig_ovd)), 'igd')
+        else:
+            sh_gs = sh_gd = 0.0
+        _av = 0.0 if mavl is None else (mavl + 1.0) * sympy.Abs(iavl)
+        sh_bs = white_noise(mult * _qe2 * (sympy.Abs(ij_s)               # noqa
+                                           + 0.5 * (1.0 - sgn) * _av), 'ibs')
+        sh_bd = white_noise(mult * _qe2 * (sympy.Abs(ij_d)               # noqa
+                                           + 0.5 * (1.0 + sgn) * _av), 'ibd')
+
         ## CHANNEL NOISE, on the same branch the current is on
         ## (`PSP103_module.include:1948-1949`).  Both densities come out
         ## of the surface-potential quantities the current already used,
@@ -805,6 +835,9 @@ def _psp_mos_analog(T, pmos):
                              mult * T * ig_ovs),              # noqa: F821
                 Contribution(Branch(gi, d, 'igdov').I,
                              mult * T * ig_ovd),              # noqa: F821
+                ## their shot noise (see SHOT NOISE above)
+                Contribution(Branch(gi, s, 'igcs').I, sh_gs),
+                Contribution(Branch(gi, d, 'igcd').I, sh_gd),
                 ## `I(BS,SI)` and `I(BD,DI)` (`module:1715-1716`,
                 ## `:1794-1795`) -- bulk-referenced, so conservation
                 ## stays structural here too.
@@ -816,6 +849,9 @@ def _psp_mos_analog(T, pmos):
                              mult * T * ij_s),                 # noqa: F821
                 Contribution(Branch(b, d, 'jid').I,
                              mult * T * ij_d),                 # noqa: F821
+                ## junction + avalanche shot noise (see SHOT NOISE above)
+                Contribution(Branch(b, s, 'jis').I, sh_bs),
+                Contribution(Branch(b, d, 'jid').I, sh_bd),
                 ## THE AUXILIARY NOISE NODE.  A conductance, a
                 ## capacitance and the shared source -- the network
                 ## whose impedance IS the frequency shape of the
