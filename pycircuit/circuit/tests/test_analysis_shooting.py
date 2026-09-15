@@ -20866,9 +20866,10 @@ def test_the_sampled_noise_runs_natively_under_the_stage_methods():
     1.000000 (radau) / 0.999979 (trbdf2) kT/C at 400 points; the tracking
     value converges at first order (radau 0.949 -> 0.975 at 400 -> 800).
     ⚠ Checked to matter: `CY` at the end-of-step state for every stage read
-    the held variance 0.867 (radau, 400 points).  ⚠ `covariance` is not the
-    reference here: under these methods its end-of-step Van Loan injection
-    reads 0.876 held at 400 points (an O(h) edge error, 0.934 at 800)."""
+    the held variance 0.867 (radau, 400 points).  ⚠ `covariance` under these
+    methods read 0.876 held at 400 points until its injection moved to the
+    stages as well -- see
+    `test_the_stage_method_covariance_injects_at_the_stages_and_holds_kTC_across_a_switching_edge`."""
     import warnings
     ktc = _KB * _TEMP / 100e-12
     for method in ('radau', 'trbdf2'):
@@ -20997,3 +20998,30 @@ def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
         warnings.simplefilter('ignore')
         vw, _u = wpac.pnoise(wpss, f0, wio, maxsidebands=90, cyclostationary=True)
     assert np.isfinite(vw) and float(np.real(vw)) > 0.0
+
+
+def test_the_stage_method_covariance_injects_at_the_stages_and_holds_kTC_across_a_switching_edge():
+    """⚠⚠ `covariance` under radau/trbdf2 read a switch's HELD variance O(h)
+    low (2026-09-15): its Van Loan injection froze `C`, `G`, `CY` at the END of
+    each step, i.e. at the OFF conductance across the switch-off edge --
+    1 - 0.876 / 0.934 / 0.966 kT/C at 400 / 800 / 1600 points under radau,
+    0.87 under trbdf2 -- while gear read 0.9987.  Now the source enters every
+    stage (`_stage_injection`): measured radau 1.3e-7 off held and tracking at
+    400 points, trbdf2 2.5e-3 held at 400 and 1.0e-2 at 200 (second order).
+    The constant-operating-point convergence tests beside this one keep their
+    rates (radau 1.4e-9 at 100 points, trbdf2 ~4x per doubling)."""
+    ktc = _KB * _TEMP / 100e-12
+    err = {}
+    for method, npts in (('radau', 400), ('trbdf2', 200), ('trbdf2', 400)):
+        cir, pss, io, pac, T = _sampler_fixture_method(
+            lambda c: c.__setitem__('S0', _sw()), method, npts)
+        N = len(pss.factored_period().steps)
+        _K0, Ks = pac.covariance(pss, samples=True)
+        held = float(np.asarray(Ks[int(0.375 * N)], dtype=float)[io, io]) / ktc
+        track = float(np.asarray(Ks[int(0.1 * N)], dtype=float)[io, io]) / ktc
+        err[(method, npts)] = (1.0 - held, 1.0 - track)
+    assert abs(err[('radau', 400)][0]) < 1e-6, err
+    assert abs(err[('radau', 400)][1]) < 1e-6, err
+    assert abs(err[('trbdf2', 400)][0]) < 5e-3, err
+    r = err[('trbdf2', 200)][0] / err[('trbdf2', 400)][0]
+    assert 3.2 < r < 5.0, (r, err)

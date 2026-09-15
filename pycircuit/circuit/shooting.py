@@ -13494,7 +13494,12 @@ class PAC(Analysis):
                 np.asarray(pss._monodromy_matvec_full([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
-            Qs.append(self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
+            ## the source enters every STAGE -- see `_stage_injection`; the
+            ## end-of-step Van Loan below read a switch's held variance
+            ## 0.876 kT/C at 400 points (O(h)) and stays the fallback
+            Q_k = self._stage_injection(pss, fp, k, w0)
+            Qs.append(Q_k if Q_k is not None
+                      else self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
         K = np.zeros((n, n))
         for A_k, Q_k in zip(As, Qs):
             K = A_k @ K @ A_k.T + Q_k
@@ -13525,13 +13530,95 @@ class PAC(Analysis):
                 np.asarray(pss._monodromy_matvec_dirk([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
-            Qs.append(self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
+            Q_k = self._stage_injection(pss, fp, k, w0)
+            Qs.append(Q_k if Q_k is not None
+                      else self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
         K = np.zeros((n, n))
         for A_k, Q_k in zip(As, Qs):
             K = A_k @ K @ A_k.T + Q_k
         M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                              for e in np.eye(n)])
         return As, Qs, K, M, m, n
+
+    def _stage_injection(self, pss, fp, k, w):
+        """The per-step process-noise covariance `Q_k` of a STAGE method with
+        the source entering EVERY stage (2026-09-15), or None when the
+        tableau has a non-positive weight (then the caller keeps Van Loan).
+
+            Q_k = sum_i T_i (CY(Y_i) / (2 h b_i)) T_i^T,
+            T_i = d x_{k+1} / d u_i   through the method's own stage solve
+
+        with `CY` at the STAGE states `Y_i`.  White noise over the step is
+        the method's quadrature `h sum_i b_i u_i` with independent stage
+        samples of variance `CY/(2 h b_i)`, so the increment's variance is
+        `h CY/2` -- the diffusion -- and each sample reaches the step's end
+        through the stage equations exactly as a stage source does.
+
+        ⚠⚠ WHY (measured on a switched capacitor, Ron 1 k, 100 pF, 100 kHz).
+        The Van Loan injection freezes `C`, `G`, `CY` at the END of the step,
+        so across the switch-off edge it integrates the injection with the
+        OFF conductance: held variance 1 - 0.876 / 0.934 / 0.966 kT/C at
+        400 / 800 / 1600 points under radau (first order), 0.87 under
+        trbdf2.  With the stage injection radau reads 1.3e-7 off at 400
+        points and trbdf2 2.5e-3 (second order, 4.1x per doubling); a
+        b-weighted Van Loan at the stage states read 5.5e-4 / 4.6e-3.  On a
+        constant-operating-point RC it is not an exactness fit: the error is
+        nonzero and falls with the grid (radau 1.4e-9 / 4.4e-11 / 1.4e-12,
+        trbdf2 2.6e-4 / 6.3e-5 / 1.6e-5 at 100 / 200 / 400 points).
+        ⚠ Needs stiff accuracy (`x_{k+1} = Y_s`) and positive weights:
+        radau and trbdf2 qualify; ESDIRK43 has `b = 0` and `b < 0` and keeps
+        the end-of-step Van Loan.
+        """
+        m = pss.cir.n - 1
+        tms = np.asarray(fp.times, dtype=float)
+        h = float(tms[k + 1] - tms[k])
+        if fp.kind == 'full':
+            Amat, bvec, _c = pss._integrator_for(pss.par.method).butcher()
+            Amat = np.asarray(Amat, dtype=float)
+            bvec = np.asarray(bvec, dtype=float)
+        elif fp.kind == 'dirk':
+            Amat = np.asarray(fp.steps[k][4], dtype=float)
+            bvec = Amat[-1]
+        else:
+            return None
+        if np.any(bvec <= 0.0):
+            return None
+        s = Amat.shape[0]
+        states = self._stage_states(pss, fp)
+        irn = pss.irefnode
+        Q = np.zeros((m, m))
+        for i in range(s):
+            yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
+            CYi = np.real(np.asarray(self._cy_at(pss, w, yi), dtype=complex))
+            Ti = self._stage_source_response(pss, fp, k, i, Amat, h)
+            Q += Ti @ (CYi / (2.0 * h * bvec[i])) @ Ti.T
+        return 0.5 * (Q + Q.T)
+
+    @staticmethod
+    def _stage_source_response(pss, fp, k, i_src, Amat, h):
+        """`d x_{k+1} / d u` (m x m) for a unit source entering stage `i_src`
+        of step `k`: the stage residuals carry it as `-h A_{i,i_src} u`."""
+        import scipy.linalg as sla
+        m = pss.cir.n - 1
+        s = Amat.shape[0]
+        if fp.kind == 'full':
+            lu, _Cn, _mm = fp.steps[k]
+            rhs = np.concatenate([h * Amat[i, i_src] * np.eye(m)
+                                  for i in range(s)], axis=0)
+            return -sla.lu_solve(lu, rhs)[(s - 1) * m:, :]
+        Kfacs, Gs, _Cn, hh, Am, _cv = fp.steps[k]
+        dY = [np.zeros((m, m)) for _ in range(s)]
+        for i in range(s):
+            if Kfacs[i] is None:
+                continue                  # an explicit stage sees x_k only
+            rhs = -hh * Am[i, i_src] * np.eye(m)
+            for jj in range(i):
+                if Am[i, jj] != 0.0:
+                    rhs = rhs - hh * Am[i, jj] * (Gs[jj] @ dY[jj])
+            dY[i] = np.column_stack([np.asarray(Kfacs[i].solve(rhs[:, c]),
+                                                dtype=float)
+                                     for c in range(m)])
+        return dY[s - 1]
 
     def covariance(self, pss, samples=False):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
@@ -13691,11 +13778,11 @@ class PAC(Analysis):
         1.000000 (radau) / 0.999979 (trbdf2) kT/C at 400 points and stays
         there at 800, the tracking value converges at first order (radau
         0.949 -> 0.975, trbdf2 0.916 -> 0.957).  ⚠ `covariance` under these
-        methods is NOT the reference at a switching edge: its Van Loan
-        injection freezes `C`, `G`, `CY` at the END of each step, which read
-        the held variance 0.876 / 0.934 (radau, 400 / 800 points) -- an O(h)
-        edge error, halving -- against 0.9987 under gear.  GLM period maps
-        are refused.
+        methods WAS no reference at a switching edge until its injection
+        moved to the stages too (`_stage_injection`, 2026-09-15): the Van
+        Loan injection frozen at the END of each step read the held variance
+        0.876 / 0.934 (radau, 400 / 800 points); it now reads 1.3e-7 off at
+        400.  GLM period maps are refused.
 
         ⚠ TIME AVERAGE, PER FREQUENCY: the mean over `t0` of this PSD is
         the fold of the time-averaged PSD, `sum_k pnoise(|f + k f0|)`, over
