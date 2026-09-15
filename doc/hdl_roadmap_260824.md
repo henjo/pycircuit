@@ -6039,3 +6039,32 @@ speed. `solve_batched` is where that backend pays (22.5x at 512 lanes), and
 `eval_i_pure`, so they cannot join a `vmap` group. A chained model on the JAX
 transient today is slower than the CPU and correct, which is the right order to
 achieve those two in.
+
+## 2026-09-15 — PSP flicker noise kept a (0.2 mV)² floor at Vds = 0 (peer report) — FIXED
+
+**Reported** by a peer session (pycircuit-only evidence, plus an external-reference agreement not recorded here) and
+**reproduced**: IHP `sg13g2_lv_nmos_psp`, W/L 10/1 µm, `swign = 0`, Vg = 0.8 V — flicker part of `CY[d,d]` at 1 Hz
+(CY(1 Hz) − CY(1 MHz)) = **2.5686e-23 A²/Hz at Vds = 0**; a fit `K (Vds² + v0²)` gives **v0 = 0.2000 mV**; flicker/Vds² =
+3.21e-15 / 7.45e-16 / 6.68e-16 / 6.42e-16 at 0.1 / 0.5 / 1 / 5 mV.
+
+**Mechanism.**  PSP orders the terminals exactly and computes `Sfl = Sfl_prefac · Ids · Gvsatinv · (…)/N1` with
+`(…) ∝ Delta_N1 ∝ dps` (`PSP103_module.include:1824-1827`), so `Sfl ∝ Vds²` and is 0 at the origin
+(contributed as `flicker_noise(sigVds · MULT_i · Sfl)`, `:1950`).  `compact.py` carries the ordering arithmetically:
+the core runs on `vdsa = 2·hypsmooth(vds, 1e-4) − vds = sqrt(Vds² + (2e-4)²)`, so `Ids_core` and `dps` both scale with
+`vdsa` and the density with `vdsa²`.  The terminal current is multiplied back by `sgn = vds/vdsa` (0 at the origin); the
+density, a power, was not.
+
+**Fix:** `flicker_noise(mult · n_sfl · sgn², ef)` — `(|Vds|/vdsa)²` removes the floor to first order and is `1 − 4e-8/Vds²`
+away from it.  After: flicker at Vds = 0 exactly 0; flicker/Vds² 6.4212 / 6.4211 / 6.4205 / 6.4197 / 6.4127e-16 at 0.1 /
+0.2 / 0.5 / 1 / 5 mV (p-channel card at negative bias 2.749 / 2.747 / 2.744 / 2.719e-16, flicker(0) = 0); white
+density unchanged (3.780778e-23 vs 3.780780e-23).  The 34 PSP noise tests pass.
+
+**Audit of other powers built on `vdsa`.**  The white channel density is EVEN and finite at the origin: its smoothing
+offset measured −1.9e-4 relative at Vds = 0 (slope vs `vdsa` × 2e-4) — recorded, not corrected (no clean form).  The
+induced-gate pair's coupling already carries `sgn` (an amplitude).  ⚠ **Found absent, not fixed:** PSP's gate-tunnelling
+shot noise (`shot_igs`, `shot_igd`, `module:1951-1952`), junction shot noise (`jnoise_s`, `jnoise_d`, `:1953-1954`) and
+the edge-transistor flicker/thermal (`Sfledge`, `sqidedge`, `:1955-1956`) have no contribution in the element — the
+bulk row of `CY` is exactly 0.  Small for this card's leakage, but structurally missing.
+
+**Pinned:** `test_psp_gap.py::test_the_flicker_density_goes_as_vds_squared_through_the_origin` (n and p: flicker(0) ≤ 1e-12
+× flicker(5 mV); flicker/Vds² at 0.1 mV within 1 % of 1 mV).

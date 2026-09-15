@@ -850,10 +850,27 @@ def _psp_mos_analog(T, pmos):
                 ## is therefore unchanged by any of this.  What changes
                 ## is the gate, and the CROSS terms -- which is the
                 ## whole point of the pair.
+                ## ⚠⚠ THE FLICKER DENSITY CARRIES `sgn^2` (peer report,
+                ## 2026-09-15).  The core runs on the ordered `vdsa =
+                ## sqrt(Vds^2 + (2e-4)^2)`, not on `|Vds|`, and PSP's
+                ## flicker is `Sfl ~ Ids * Delta_N1` (`module:1824-1827`),
+                ## both proportional to the drain bias -- so ours went as
+                ## `vdsa^2` and kept a (0.2 mV)^2 FLOOR at `Vds = 0`
+                ## (2.57e-23 A^2/Hz at Vg = 0.8 V, IHP n-channel 10/1 um),
+                ## where PSP's ordered device gives exactly 0.  The current
+                ## is multiplied back by `sgn = vds/vdsa`, which vanishes at
+                ## the origin; a density is a power, so it takes the square
+                ## -- `(|Vds|/vdsa)^2`, which removes the floor to first
+                ## order and is `1 - 4e-8/Vds^2` away from it.  It matters
+                ## for a conducting SWITCH, whose Vds is a few mV (+16 % at
+                ## 0.5 mV before).  ⚠ The white density is even and finite
+                ## at the origin, so it does NOT take it: its smoothing
+                ## offset measured -1.9e-4 relative at `Vds = 0`.
                 Contribution(Branch(d, s, 'chan').I,
                              white_noise(mult * n_sid                 # noqa
                                          * (1.0 - ign['c2']))
-                             + flicker_noise(mult * n_sfl, ef)),      # noqa
+                             + flicker_noise(mult * n_sfl * sgn * sgn,  # noqa
+                                             ef)),
                 ## `sigVds` and no `CHNL_TYPE` -- PSP's own signs
                 ## (`module:1947`).  The relative sign between this and
                 ## the gate coupling is the physics; the absolute one

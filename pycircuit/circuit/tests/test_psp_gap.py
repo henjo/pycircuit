@@ -4898,3 +4898,43 @@ def test_the_gate_resistance_uses_psps_effective_width_and_length(deck):
             seen_offset |= abs(lf - l) > 1e-12 or abs(wf - w) > 1e-12
     assert seen_offset, 'no card here has an LVARO/WVARO offset -- this ' \
         'test would pass on the drawn W*L and could not fail'
+
+
+@needs_pdk
+def test_the_flicker_density_goes_as_vds_squared_through_the_origin(deck):
+    """⚠⚠ PEER REPORT, 2026-09-15.  PSP's flicker density is `Sfl ~ Ids *
+    Delta_N1` on the ORDERED device (`PSP103_module.include:1824-1827`), so
+    it is proportional to `Vds^2` near the origin and exactly 0 at
+    `Vds = 0`.  The element runs its core on the smooth `vdsa = sqrt(Vds^2 +
+    (2e-4)^2)`, and the density kept a (0.2 mV)^2 FLOOR: 2.5686e-23 A^2/Hz
+    at Vds = 0, Vg = 0.8 V on the IHP n-channel 10/1 um card, and
+    flicker/Vds^2 of 3.21e-15 at 0.1 mV against 6.68e-16 at 1 mV.  A
+    conducting switch sits at a few mV, where that was +16 % (0.5 mV).
+    Fixed by `sgn^2` on the flicker contribution; measured after: exactly 0
+    at the origin and flicker/Vds^2 6.4212 / 6.4205 / 6.4197e-16 at 0.1 /
+    0.5 / 1 mV (p-channel 2.749 / 2.747 / 2.744e-16), the white density
+    unchanged.  Both channel types share the analog body."""
+    cm.default_toolkit = numeric
+    w, l = 10e-6, 1e-6
+    for pmos in (False, True):
+        name = 'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp'
+        card = deck.model_params(name, w=w, l=l, ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
+        kw['swign'] = 0.0
+        cls = PspPmosLongChannel if pmos else PspMosLongChannel
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
+        e.update_iparv()
+        sgn = -1.0 if pmos else 1.0
+
+        def parts(vds):
+            x = e.bias(sgn * vds, sgn * 0.8, 0.0, 0.0)
+            lo = np.real(np.asarray(e.CY(x, 2 * np.pi * 1.0), dtype=complex))[0, 0]
+            hi = np.real(np.asarray(e.CY(x, 2 * np.pi * 1e6), dtype=complex))[0, 0]
+            return lo - hi, hi
+        fl0, wh0 = parts(0.0)
+        fl5, _ = parts(5e-3)
+        k01 = parts(1e-4)[0] / 1e-4 ** 2
+        k1 = parts(1e-3)[0] / 1e-3 ** 2
+        assert fl5 > 0.0 and abs(fl0) <= 1e-12 * fl5, (name, fl0, fl5)
+        assert abs(k01 / k1 - 1.0) < 0.01, (name, k01, k1)
+        assert wh0 > 0.0 and np.isfinite(wh0), (name, wh0)
