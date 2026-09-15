@@ -13904,12 +13904,16 @@ class PAC(Analysis):
         right: at a = 0.30, MC/pnoise = 1.011 and MC/(S_ph + S_orb) = 0.313,
         with the a = 0 control reading 1.009 / 1.008.  pnoise is the total.
 
-        ⚠⚠ AND THE DROPPED CROSS TERM IS NOT THE CAUSE -- an attribution
-        recorded for a few hours on 2026-09-14 and withdrawn on measurement.
-        `S_corr` built from eq (92) on this fixture is ~1e-8 of the total:
-        its coefficient needs the PPV's DC harmonic AT THE NOISE SOURCE's
-        row, and an ideal tank inductor shorts that node at DC (`vbar` =
-        [-2.3e-6, -0.114], the DC sitting in the inductor-current row).
+        ⚠⚠ THE DROPPED CROSS TERM IS THE CAUSE -- BUT ONLY WITH EVERY
+        HARMONIC KEPT (2026-09-15; the reverse reading of 2026-09-14 held only
+        for the truncated form).  `S_corr` built from eq (92) on this fixture
+        is ~1e-8 of the total: that form keeps only the PPV's DC harmonic AT
+        THE NOISE SOURCE's row, and an ideal tank inductor shorts that node at
+        DC (`vbar` = [-2.3e-6, -0.114]).  The full-harmonic correlation is
+        -1.1 to -2.4x this spectrum at a = 0.30, and `modal_spectrum`'s three
+        terms sum to pnoise (1.006 at 10 f_amp, grid error that halves with
+        the grid).  The orbital mode's AM share at the output,
+        `sin^2 arg(U_{l,1}/U_{0,1})` = 0.307, is the flat factor below.
         The true total is BELOW even the phase Lorentzian alone (pnoise/S_ph
         = 0.61 at a = 0.30): the over-statement is in the decomposition's
         frequency-independent terms above f_amp, not in a missing
@@ -13976,9 +13980,12 @@ class PAC(Analysis):
                 'total sideband noise above f_amp: x1.03 / x1.45 / x3.2 at '
                 'asymmetry 0.033 / 0.067 / 0.100 (van der Pol, C=4, Q=8, '
                 '10 f_amp), confirmed by Monte Carlo, which agrees with '
-                'pnoise to 1 %%. Refining the grid does not change it, and '
-                'the dropped phase-orbital cross term is NOT the cause (it '
-                'is ~1e-8 of the total there). Use PAC.pnoise for the total.'
+                'pnoise to 1 %%. Refining the grid does not change it. The '
+                'cause is the phase-orbital correlation this sum drops (with '
+                'every harmonic kept it is -1.1 to -2.4x the orbital term '
+                'there): use PAC.modal_spectrum for a phase/orbital/'
+                'correlation split that sums to the total, or PAC.pnoise for '
+                'the total.'
                 % (_asym,),
                 RuntimeWarning, stacklevel=2)
         R, C = self.orbital_correlation(pss, H=H)
@@ -14041,6 +14048,165 @@ class PAC(Analysis):
             ## total power is `sum(w) = row^T R row` by construction.
             S = S + w * (gam / np.pi) / ((f - fc) ** 2 + gam ** 2)
         return S
+
+    def modal_spectrum(self, pss, offsets, output, harmonic=1, H=None,
+                       sidebands=None):
+        """Phase, orbital AND phase-orbital CORRELATION spectra from ONE modal
+        transfer, which sum to the total.  E6, built 2026-09-15.
+
+        Returns a dict of arrays at `harmonic*f0 + offsets` (a negative offset
+        is the lower sideband), on the scale of `oscillator_spectrum`'s `S_v`
+        and `orbital_spectrum` (0.5x a one-sided PSD):
+
+            'phase', 'orbital', 'correlation', 'total'
+            total = phase + orbital + correlation
+
+        Every Floquet mode `l` -- the phase mode (`mu = 0`) and each orbital
+        mode -- carries noise from input sideband `m` to the output at `w`:
+
+            T_m^l(w) = sum_j (d . U_{l,j}) V_{l,m-j}^T / (i(w - j w0) - mu_l + a_j)
+
+        with `U`, `V` the Fourier coefficients of `p_l`, `q_l` (the
+        conventions of `orbital_correlation`) and `a_j = j^2 w0^2 c / 2` the
+        phase-diffusion rate of output harmonic `j`.  With `T = T^0 + sum_l
+        T^l` the output is `sum_m T_m (CY/2) T_m^H`; `phase`, `orbital` and
+        `correlation` are its phase-phase, orbital-orbital and
+        `2 Re(phase-orbital)` blocks.
+
+        ⚠⚠ WHY IT EXISTS.  `oscillator_spectrum(frequency_aware=False) +
+        orbital_spectrum` over-states an asymmetric orbit's total by up to
+        3.2x (Monte-Carlo-confirmed).  The missing piece IS the correlation --
+        but not in the form Traversa & Bonani keep: their eq (92) retains only
+        its DC harmonic, ~1e-8 of the total on van der Pol (the tank inductor
+        shorts the source node at DC).  With every harmonic kept it is -1.1 to
+        -2.4x the orbital term there.  It removes the DC-PPV phase excess above
+        f_amp AND the orbital mode's PM projection at the output -- the orbital
+        line's AM share `sin^2 arg(U_{l,1}/U_{0,1})` (0.307 at a = 0.30) is the
+        flat factor `orbital_spectrum` was measured to over-state by.
+        Measured on van der Pol C=4, Q=8, 400 points per period (H = 8, 16
+        sidebands), `total / (pnoise/2)`:
+
+            a     harmonic   +1      +3      +10     -3      -10  f_amp
+            0.00  1          1.0006  1.0006  1.0006  1.0006  1.0006
+            0.00  2                  1.0010  1.0010  1.0010  1.0009
+            0.30  1          1.054   1.014   1.006   1.008   1.006
+            0.30  2                  1.014   1.005   1.008   1.005
+
+        ⚠ THE a = 0.30 EXCESS IS GRID ERROR, NOT THE MODEL: on 800 points it
+        reads 1.026 / 1.006 / 1.002 at +1/+3/+10 f_amp (it halves -- the O(h)
+        of the modes), and the a = 0 control reads 1.00013; H 8 -> 12 and
+        sidebands 16 -> 24 move the fourth digit.  ⚠ Because the correlation
+        cancels most of the other two, a few percent of error in any part is
+        AMPLIFIED in the total -- which is why the three are computed together
+        here rather than the correlation being offered as an add-on to
+        `oscillator_spectrum + orbital_spectrum`: those line-shape spectra keep
+        only the resonant term of each line (2.5 % short at 10 f_amp even on a
+        symmetric orbit), which is harmless alone and not under cancellation.
+        The modal sum also reproduces pnoise's upper/lower sideband asymmetry,
+        which the two-term sum cannot.
+
+        Near the carrier `phase` IS the library Lorentzian (1.00022 of
+        `oscillator_spectrum(frequency_aware=False)` from 0 to 3 linewidths,
+        symmetric orbit) and `correlation` is ~1e-6 of it.  Above f_amp
+        `total` agrees with `pnoise`; within the linewidth pnoise has no
+        meaning and this is the route.
+
+        ⚠ Stationary WHITE sources, free-running oscillators, and the dense
+        `floquet_modes` only (inherited).  `harmonic >= 1`: harmonic 0 was
+        never measured.  `H` defaults to `ORBITAL_HARMONICS` (capped by the
+        grid), `sidebands` to `2 H`.  `output` follows `orbital_spectrum`.
+        """
+        self._check_circuit(pss)
+        self._refuse_coloured(pss, 'modal_spectrum')
+        self._refuse_driven(pss, 'modal_spectrum')
+        if int(harmonic) < 1:
+            raise ValueError(
+                'PAC.modal_spectrum: harmonic must be >= 1 -- harmonic 0 was '
+                'never measured against pnoise. Use PAC.pnoise there.')
+        modes = pss.floquet_modes(pss)
+        ph = [k for k, md in enumerate(modes)
+              if abs(abs(md['lam']) - 1.0) <= 1e-6]
+        orb = [k for k, md in enumerate(modes)
+               if abs(abs(md['lam']) - 1.0) > 1e-6]
+        if len(ph) != 1:
+            raise ValueError(
+                'PAC.modal_spectrum: expected exactly one Floquet multiplier '
+                'on the unit circle (the phase mode), found %d.' % len(ph))
+        m = pss.cir.n - 1
+        d = np.asarray(output)
+        if d.ndim == 0:
+            row = np.zeros(m, dtype=float)
+            row[int(d)] = 1.0
+        else:
+            row = np.asarray(d, dtype=float).ravel()[:m]
+        c = float(self.diffusion_constant(pss))
+        w0 = 2.0 * np.pi / float(pss.period)
+        CY2 = 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0)))
+        N = np.asarray(modes[ph[0]]['p']).shape[1] - 1
+        H = self.ORBITAL_HARMONICS if H is None else int(H)
+        H = min(H, N // 2 - 1)
+        M = 2 * H if sidebands is None else int(sidebands)
+        js = np.arange(-H, H + 1)
+        ms = np.arange(-M, M + 1)
+        a_j = 0.5 * js.astype(float) ** 2 * w0 ** 2 * c
+
+        ## per mode: the output's share of each harmonic of p_l, and q_l's
+        ## Fourier coefficients (m x N).  ⚠ The phase mode's exponent is set
+        ## to 0 exactly: its multiplier is 1 to rounding, and a 1e-16 real part
+        ## would put a spurious pole width on the Lorentzian.
+        coef = []
+        for l in ph + orb:
+            Ul = np.fft.fft(np.asarray(modes[l]['p'])[:, :-1], axis=1) / N
+            Vl = np.fft.fft(np.asarray(modes[l]['q'])[:, :-1], axis=1) / N
+            coef.append((l, row @ Ul[:, js % N], Vl,
+                         0.0 if l == ph[0] else complex(modes[l]['mu'])))
+
+        def transfer(w, entry):
+            ## (2M+1) x m; looped over j so memory stays m x (2M+1) per mode
+            _l, u, Vl, mul = entry
+            g = u / (1j * (w - js * w0) - mul + a_j)
+            T = np.zeros((ms.size, m), dtype=complex)
+            for ji, j in enumerate(js):
+                if g[ji] != 0.0:
+                    T += g[ji] * Vl[:, (ms - j) % N].T
+            return T
+
+        def quad(A, B):
+            return complex(np.einsum('mi,ik,mk->', A, CY2, np.conj(B)))
+
+        offs = np.atleast_1d(np.asarray(offsets, dtype=float))
+        res = {k: np.zeros(offs.shape, dtype=float)
+               for k in ('phase', 'orbital', 'correlation', 'total')}
+        for i, o in enumerate(offs.ravel()):
+            w = float(harmonic) * w0 + 2.0 * np.pi * float(o)
+            Tp = transfer(w, coef[0])
+            To = np.zeros_like(Tp)
+            for entry in coef[1:]:
+                To += transfer(w, entry)
+            sp = float(np.real(quad(Tp, Tp)))
+            so = float(np.real(quad(To, To)))
+            sc = 2.0 * float(np.real(quad(Tp, To)))
+            ix = np.unravel_index(i, offs.shape)
+            res['phase'][ix] = sp
+            res['orbital'][ix] = so
+            res['correlation'][ix] = sc
+            res['total'][ix] = sp + so + sc
+        return res
+
+    def correlation_spectrum(self, pss, offsets, output, harmonic=1, H=None,
+                             sidebands=None):
+        """The FULL-harmonic phase-orbital correlation spectrum:
+        `modal_spectrum(...)['correlation']`.
+
+        ⚠ It sums to the total with `modal_spectrum`'s own `phase` and
+        `orbital` -- NOT with `oscillator_spectrum + orbital_spectrum`, whose
+        line-shape approximations are a few percent off under the cancellation
+        this term produces (see `modal_spectrum`).  Negative where AM-to-PM
+        coupling exists: -1.1 to -2.4x the orbital term on van der Pol at
+        half-wave asymmetry 0.10.
+        """
+        return self.modal_spectrum(pss, offsets, output, harmonic=harmonic,
+                                   H=H, sidebands=sidebands)['correlation']
 
     def diffusion_constant(self, pss):
         """`c` — the phase diffusion constant, in seconds.

@@ -8289,8 +8289,11 @@ already produced one false lead.
 output, sin² arg(U_l,1/U_0,1) = 1.0000 / 0.9716 / 0.6889 / 0.3069 against am/4S_orb 0.9995 / 0.97 / 0.6988 / 0.3166
 at a = 0 / 0.10 / 0.20 / 0.30.  `orbital_spectrum` counts the mode in both quadratures; the PM projection is cancelled
 by the phase–orbital correlation the decomposition keeps only at DC.  S_ph,fa + AMshare·S_orb closes pnoise's total to
-≤ 0.5 %; the 3 % AM residual halves on a 2× grid (O(h)).  The cross-spectrum itself is inferred, not built.  Owner's
-call: report the AM-share line, or build the full-harmonic correlation.  Harmonic guard: ✅ BUILT (`da7e89c`).
+≤ 0.5 %; the 3 % AM residual halves on a 2× grid (O(h)).  Harmonic guard: ✅ BUILT (`da7e89c`).
+✅✅ **FULL CORRELATION BUILT 2026-09-15 (Andreas: "Build full correlation term"):** `PAC.modal_spectrum` returns
+phase, orbital and full-harmonic correlation from one modal transfer; the total closes on pnoise to 6e-4 (symmetric) and
+0.6–1.4 % at 3–10 f_amp on a = 0.30 (400 pts; halves on 800), both sidebands and harmonic 2; correlation −1.1 to −2.4×
+orbital there.  `correlation_spectrum` = its correlation block.  Log: "E6 — the FULL phase–orbital correlation, BUILT".
 
 ⚠⚠ **CORRECTED THE SAME DAY — the cross-term attribution below is WITHDRAWN.**  A Monte Carlo of the
 SDE (64 oscillators × 4000 periods, trapezoidal) sides with **pnoise**: a = 0.30 MC/pnoise **1.011**,

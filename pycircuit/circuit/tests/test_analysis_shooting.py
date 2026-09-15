@@ -17132,8 +17132,10 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
     parts equally, i.e. the Lorentzian approximation, not the orbital term.
 
     ⚠⚠ SYMMETRIC ORBITS ONLY.  On `_hostile_oscillator` the sum over-states
-    pnoise by ~3.3x above f_amp, and a Monte Carlo sides with pnoise (not
-    the dropped cross term, which is ~1e-8 of the total there).
+    pnoise by ~3.3x above f_amp, and a Monte Carlo sides with pnoise.  The
+    cross term in Traversa & Bonani's DC-harmonic form is ~1e-8 there; with
+    EVERY harmonic kept it closes the gap (2026-09-15) -- see
+    `test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise`.
     See `test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so`.
     """
     import warnings as _w
@@ -17398,10 +17400,12 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
     a = 0 control MC/pnoise 1.009, MC/modal 1.008; a = 0.30 MC/pnoise
     **1.011**, MC/modal **0.313** -- and MC reproduces pnoise's sideband
     ASYMMETRY (6.07e-4 / 7.64e-4 against 6.01e-4 / 7.55e-4), which the
-    modal sum does not have.  The dropped phase-orbital cross term was
-    recorded as the cause for a few hours and is NOT: `S_corr` from eq (92)
-    is ~1e-8 of the total on this fixture (it needs the PPV's DC at the
-    noise source's row, which the tank inductor shorts).
+    modal sum does not have.  `S_corr` in eq (92)'s DC-harmonic form is ~1e-8
+    of the total on this fixture (it needs the PPV's DC at the noise source's
+    row, which the tank inductor shorts) -- ⚠⚠ but the phase-orbital
+    correlation with EVERY harmonic kept is -1.1 to -2.4x the orbital term
+    and closes the gap (2026-09-15, `PAC.modal_spectrum`): the "cross term is
+    not the cause" reading held only for the truncated form.
 
     ⚠ The warning that fired here before blamed an O(h) grid residual of the
     adjoint replay and said to refine -- true of `orbital_correlation`'s
@@ -20554,3 +20558,71 @@ def test_a_gear_free_period_stall_near_unit_multiplier_is_named_and_redirected()
     converged, msgs = run('gear', 0.9)
     assert converged
     assert not [m for m in msgs if 'residual floor' in m], msgs
+
+
+def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
+    """⚠⚠ E6 CLOSED BY THE PHASE-ORBITAL CORRELATION WITH EVERY HARMONIC KEPT.
+
+    `oscillator_spectrum(frequency_aware=False) + orbital_spectrum` over-states
+    an asymmetric orbit's total by ~3x (Monte-Carlo-confirmed), and Traversa &
+    Bonani's DC-harmonic cross term is ~1e-8 there.  `PAC.modal_spectrum`
+    builds phase, orbital and correlation from ONE modal transfer
+    (every Floquet mode, every harmonic, every input sideband), and its total
+    must close on pnoise.  Measured (400 points, H = 8, 16 sidebands),
+    `total/(pnoise/2)` at +3 / +10 / -10 f_amp:
+
+        a = 0.00   1.0006  1.0006  1.0006     correlation/orbital +0.013 +0.047 -0.052
+        a = 0.30   1.0145  1.0057  1.0055     correlation/orbital -1.74  -1.49  -1.38
+
+    (the a = 0.30 excess halves on 800 points -- grid error, not the model),
+    while the two-term sum reads ~3x at 10 f_amp.  Near the carrier the phase
+    part is the library Lorentzian (1.00022 from 0 to 3 linewidths) and the
+    correlation ~1e-6 of it.
+    """
+    import warnings as _w
+    for a in (0.0, 0.30):
+        cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=a)
+        pac = PAC(cir, toolkit=circuit.numeric)
+        f0 = 1.0 / float(pss.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _v, info = pss.ppv()
+            f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+            offs = np.array([3.0, 10.0, -10.0]) * f_amp
+            ms = pac.modal_spectrum(pss, offs, 0, H=8, sidebands=16)
+            pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, 0,
+                                                    maxsidebands=16)[0]))
+                           for o in offs])
+            old = (np.asarray(pac.oscillator_spectrum(
+                pss, offs, 0, frequency_aware=False)[0], dtype=float)
+                + np.asarray(pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8),
+                             dtype=float))
+        parts = ms['phase'] + ms['orbital'] + ms['correlation']
+        assert np.max(np.abs(parts - ms['total'])) <= 1e-12 * np.max(ms['total'])
+        ratio = ms['total'] / (pn / 2.0)
+        corr_over_orb = ms['correlation'] / ms['orbital']
+        if a == 0.0:
+            assert np.max(np.abs(ratio - 1.0)) < 2e-3, ratio
+            assert np.max(np.abs(corr_over_orb)) < 0.1, corr_over_orb
+            ## near the carrier: the phase part IS the Lorentzian, no correlation
+            lw = np.pi * f0 ** 2 * float(pac.diffusion_constant(pss))
+            near = np.array([0.0, lw])
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                mn = pac.modal_spectrum(pss, near, 0, H=8, sidebands=16)
+                lor = np.asarray(pac.oscillator_spectrum(
+                    pss, near, 0, frequency_aware=False)[0], dtype=float)
+            assert np.max(np.abs(mn['phase'] / lor - 1.0)) < 1e-3, mn['phase'] / lor
+            assert np.max(np.abs(mn['correlation'] / mn['phase'])) < 1e-5
+        else:
+            assert np.max(np.abs(ratio - 1.0)) < 0.02, ratio
+            ## the correlation is what closes it: large and negative
+            assert np.all(corr_over_orb < -1.0), corr_over_orb
+            ## and without it the modal sum is far off (a presence claim)
+            old_ratio = old[1:] / (pn[1:] / 2.0)
+            assert np.all(old_ratio > 2.0), old_ratio
+            np.testing.assert_allclose(
+                pac.correlation_spectrum(pss, offs, 0, H=8, sidebands=16),
+                ms['correlation'], rtol=0, atol=0)
+    with pytest.raises(ValueError, match='harmonic must be >= 1'):
+        pac.modal_spectrum(pss, np.array([f_amp]), 0, harmonic=0, H=8)
