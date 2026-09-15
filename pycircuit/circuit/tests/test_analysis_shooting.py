@@ -21025,3 +21025,27 @@ def test_the_stage_method_covariance_injects_at_the_stages_and_holds_kTC_across_
     assert abs(err[('trbdf2', 400)][0]) < 5e-3, err
     r = err[('trbdf2', 200)][0] / err[('trbdf2', 400)][0]
     assert 3.2 < r < 5.0, (r, err)
+
+
+def test_the_esdirk43_covariance_holds_kTC_across_a_switching_edge_despite_its_negative_weight():
+    """ESDIRK43's weights are `0.158, 0, 0.187, 0.681, -0.275, 0.25`, so the
+    per-stage injection radau and trbdf2 use (variance `CY/(2 h b_i)`) is
+    undefined, and it kept the END-of-step Van Loan: held variance
+    1 - 0.367 / 0.224 / 0.124 kT/C at 100 / 200 / 400 points on the sampler.
+    It now takes the Van Loan injection at the stage states with positive
+    trapezoid weights over the abscissae: measured 2.1e-2 / 3.4e-3 / 3.7e-4,
+    tracking unchanged (2.6e-6 at 400), and identical to the end-of-step form
+    wherever the operating point is constant (the weights sum to one)."""
+    ktc = _KB * _TEMP / 100e-12
+    err = {}
+    for npts in (200, 400):
+        cir, pss, io, pac, T = _sampler_fixture_method(
+            lambda c: c.__setitem__('S0', _sw()), 'esdirk43', npts)
+        N = len(pss.factored_period().steps)
+        _K0, Ks = pac.covariance(pss, samples=True)
+        held = float(np.asarray(Ks[int(0.375 * N)], dtype=float)[io, io]) / ktc
+        track = float(np.asarray(Ks[int(0.1 * N)], dtype=float)[io, io]) / ktc
+        err[npts] = (1.0 - held, 1.0 - track)
+    assert abs(err[400][0]) < 1e-3, err
+    assert err[200][0] / err[400][0] > 4.0, err
+    assert abs(err[400][1]) < 1e-4, err

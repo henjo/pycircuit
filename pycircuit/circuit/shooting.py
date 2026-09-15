@@ -13566,26 +13566,46 @@ class PAC(Analysis):
         nonzero and falls with the grid (radau 1.4e-9 / 4.4e-11 / 1.4e-12,
         trbdf2 2.6e-4 / 6.3e-5 / 1.6e-5 at 100 / 200 / 400 points).
         ⚠ Needs stiff accuracy (`x_{k+1} = Y_s`) and positive weights:
-        radau and trbdf2 qualify; ESDIRK43 has `b = 0` and `b < 0` and keeps
-        the end-of-step Van Loan.
+        radau and trbdf2 qualify.  ⚠⚠ A TABLEAU WITH A NON-POSITIVE WEIGHT
+        (ESDIRK43: `b = 0.158, 0, 0.187, 0.681, -0.275, 0.25`) takes the Van
+        Loan injection at the STAGE states instead, averaged with POSITIVE
+        trapezoid weights over the stage abscissae in time.  Measured on the
+        same sampler, 1 - held at 100 / 200 / 400 points: end-of-step Van Loan
+        0.367 / 0.224 / 0.124; this 2.1e-2 / 3.4e-3 / 3.7e-4 (tracking and a
+        constant-operating-point RC identical to the end-of-step form -- the
+        weights sum to one); equal-variance stage samples, the other
+        tableau-independent candidate, 5.3e-2 / 3.6e-2 / 2.0e-2 and 6.8e-2 off
+        on the RC -- rejected.
         """
         m = pss.cir.n - 1
         tms = np.asarray(fp.times, dtype=float)
         h = float(tms[k + 1] - tms[k])
         if fp.kind == 'full':
-            Amat, bvec, _c = pss._integrator_for(pss.par.method).butcher()
+            Amat, bvec, cvec = pss._integrator_for(pss.par.method).butcher()
             Amat = np.asarray(Amat, dtype=float)
             bvec = np.asarray(bvec, dtype=float)
+            cvec = np.asarray(cvec, dtype=float)
         elif fp.kind == 'dirk':
             Amat = np.asarray(fp.steps[k][4], dtype=float)
             bvec = Amat[-1]
+            cvec = np.asarray(fp.steps[k][5], dtype=float)
         else:
-            return None
-        if np.any(bvec <= 0.0):
             return None
         s = Amat.shape[0]
         states = self._stage_states(pss, fp)
         irn = pss.irefnode
+        if np.any(bvec <= 0.0):
+            wts = self._abscissa_weights(cvec)
+            Q = np.zeros((m, m))
+            for i in range(s):
+                if wts[i] <= 0.0:
+                    continue
+                yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
+                CYi = np.real(np.asarray(self._cy_at(pss, w, yi), dtype=complex))
+                Q += wts[i] * self._vanloan_step_injection(
+                    np.asarray(pss._C_at(yi), dtype=float),
+                    np.asarray(pss._G_at(yi), dtype=float), CYi, h)
+            return 0.5 * (Q + Q.T)
         Q = np.zeros((m, m))
         for i in range(s):
             yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
@@ -13593,6 +13613,28 @@ class PAC(Analysis):
             Ti = self._stage_source_response(pss, fp, k, i, Amat, h)
             Q += Ti @ (CYi / (2.0 * h * bvec[i])) @ Ti.T
         return 0.5 * (Q + Q.T)
+
+    @staticmethod
+    def _abscissa_weights(cvec):
+        """Positive trapezoid weights over stage abscissae `c` in [0, 1]
+        (summing to one), shared equally among stages with the same `c`."""
+        c = np.asarray(cvec, dtype=float)
+        uniq = np.unique(np.round(c, 12))
+        wu = np.zeros(len(uniq))
+        for i, u in enumerate(uniq):
+            lo = uniq[i - 1] if i > 0 else u
+            hi = uniq[i + 1] if i < len(uniq) - 1 else u
+            wu[i] = 0.5 * (hi - lo)
+            if i == 0:
+                wu[i] += 0.5 * u
+            if i == len(uniq) - 1:
+                wu[i] += 0.5 * (1.0 - u)
+        wts = np.zeros(len(c))
+        for i, u in enumerate(uniq):
+            same = [k for k in range(len(c)) if abs(c[k] - u) < 1e-12]
+            for k in same:
+                wts[k] = wu[i] / len(same)
+        return wts
 
     @staticmethod
     def _stage_source_response(pss, fp, k, i_src, Amat, h):
