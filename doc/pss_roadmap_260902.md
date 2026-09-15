@@ -8235,7 +8235,13 @@ error "changing sign" so `grid_error` must refuse it: fixed, trap reads order
 480 points 3.320e-06 / 1.661e-05 at Q ≈ 100 / 500, against radau at 60 points
 7.599e-07 / 3.802e-06).  Record: "E3 RESOLVED" in `doc/pss_log_260902.md`.
 
-### E4. Gear-2 and trapezoidal cost +3.0 % on a coarse fixed grid — DELIBERATELY NOT CARVED OUT
+### E4. Gear-2 and trapezoidal cost +3.0 % on a coarse fixed grid — DELIBERATELY NOT CARVED OUT; ✅ EXPLAINED 2026-09-15
+
+✅ **The +3.0 % (4 evaluations) is the two solves crossing the knee** (log, "E4 and E6's orbital half"): solve 3 has
+only two predictor nodes because the t = 0 state is never one (`_pred_reset` treats the start as a discontinuity, by
+design), so a linear fit seeds 7.5 VT past the knee (7 → 13 its); solve 4's seed is set by the CLAMP edge below the
+root (5 → 14).  The smooth remainder saves 12.  A scratch t = 0 node takes it to +0.7 %; clamp K = 1.5 is near the
+best total.  Not a defect; a consistent-start t = 0 node would be a design change (owner's call, one fixture only).
 
 The stage predictor pays off everywhere except here: on a COARSE FIXED grid
 through an exponential knee (40 points, 2 V), Gear-2 and trapezoidal cost
@@ -8277,7 +8283,14 @@ rather than another hypothesis.  ⚠ Also recorded there: an earlier 1.035 ±
 0.017 in the core control was NOISE (it now reads 1.006), so this item has
 already produced one false lead.
 
-### E6. The Floquet decomposition over-states an ASYMMETRIC orbit above f_amp — MEASURED, MC-CONFIRMED, OPEN
+### E6. The Floquet decomposition over-states an ASYMMETRIC orbit above f_amp — MEASURED, MC-CONFIRMED; ✅ BOTH HALVES EXPLAINED 2026-09-15
+
+✅ **Orbital half explained** (log, "E4 and E6's orbital half"): the flat factor IS the orbital mode's AM share at the
+output, sin² arg(U_l,1/U_0,1) = 1.0000 / 0.9716 / 0.6889 / 0.3069 against am/4S_orb 0.9995 / 0.97 / 0.6988 / 0.3166
+at a = 0 / 0.10 / 0.20 / 0.30.  `orbital_spectrum` counts the mode in both quadratures; the PM projection is cancelled
+by the phase–orbital correlation the decomposition keeps only at DC.  S_ph,fa + AMshare·S_orb closes pnoise's total to
+≤ 0.5 %; the 3 % AM residual halves on a 2× grid (O(h)).  The cross-spectrum itself is inferred, not built.  Owner's
+call: report the AM-share line, or build the full-harmonic correlation.  Harmonic guard: ✅ BUILT (`da7e89c`).
 
 ⚠⚠ **CORRECTED THE SAME DAY — the cross-term attribution below is WITHDRAWN.**  A Monte Carlo of the
 SDE (64 oscillators × 4000 periods, trapezoidal) sides with **pnoise**: a = 0.30 MC/pnoise **1.011**,

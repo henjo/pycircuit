@@ -41,7 +41,7 @@ genuinely open:
 | B4 index-2 support via independent states | awaiting a call; **priority low** — no silent wrong answer |
 | B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
 | ~~`orbital_spectrum` amplitude~~ | ✅ 2026-09-14 VALIDATED against pnoise on SYMMETRIC orbits (0.1 %, C=1/C=4/Q=50); on ASYMMETRIC ones `S_ph + S_orb` over-states up to 3.2× — see E6 |
-| E6 Floquet decomposition over-states asymmetric orbits above f_amp | ⚠ MC-CONFIRMED (pnoise right to 1 %); NOT the cross term; PHASE half = DC PPV, ✅ fixed by frequency-aware `oscillator_spectrum` (default on); ORBITAL half (flat factor) open; line-shape models wrong away from k=1 (guard proposed) |
+| E6 Floquet decomposition over-states asymmetric orbits above f_amp | ✅ EXPLAINED 2026-09-15: PHASE half = DC PPV (fixed, frequency-aware `oscillator_spectrum`); ORBITAL half = the orbital mode's PM projection at the output, cancelled in pnoise by the phase–orbital correlation (AM share 0.307 vs flat factor 0.317 at a = 0.30; total closes ≤ 0.5 %; residual O(h)); harmonic guard ✅ BUILT. Open, owner's call: report the AM-share line or build the full correlation |
 | ~~PSP tests with `pytest.approx` defaults~~ | ✅ 2026-09-15 tightened, each mutation-checked; exposed 4 wrong-thing assertions (fixed) and 2 real residuals now pinned (p-ch overlap 2e-3; drain density vs ign split 2e-7). Outside PSP still vacuous: `test_spicecard.py`, `test_chained_first_class.py` |
 | ~~PSP p-channel overlap capacitance, 2e-3 on the short device~~ | ✅ NOT the model: the test's reference omits PSP's gate–bulk overlap `cgbol`; the test now subtracts `cgbov` (8.8e-7 / 3.4e-6) |
 | ~~PSP `rg` uses drawn W·L~~ | ✅ fixed: `geometry()` returns `Lf`/`Wf`, `rg` divides by them (PMOS was +9.4 % / +55 %) |
@@ -51,7 +51,7 @@ genuinely open:
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
 | ~~E3 `trap` non-monotone near Q = 100~~ | ✅ RESOLVED 2026-09-14 — a DEFECT (twin's `c` over trap's own period), fixed; withdraws the "trap cannot be estimated" half of the radau-default argument |
-| E4 Gear-2/trap +3.0 % on a coarse fixed grid | ⚠ decision MADE — not carved out; the +3.0 % itself unexplained |
+| E4 Gear-2/trap +3.0 % on a coarse fixed grid | ✅ EXPLAINED 2026-09-15 (decision unchanged, not carved out): two knee solves — no t = 0 predictor node (start reset by design) gives a linear seed 7.5 VT past the knee, then the clamp edge seeds below the root; a scratch t = 0 node → +0.7 %. Consistent-start t = 0 node = owner's call |
 | ~~E5 ~2 % pnoise residual~~ | ✅ CLOSED 2026-09-14: NOT SIGNIFICANT — at 36/36 seeds the MC slow/core ratio moved −1.5 %/−1.7 %; residual +1.07 ± 1.04 % demod (1.0σ), −0.23 ± 1.01 % crossing (0.2σ). It was core-fixture seed scatter (16 seeds); the "constant" level fit is consistent with no residual at all |
 
 ⚠ **E1–E5 USED TO LIVE ONLY IN THIS FILE.**  They were real, repeatedly
