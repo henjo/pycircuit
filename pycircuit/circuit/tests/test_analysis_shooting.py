@@ -20833,10 +20833,167 @@ def test_the_sampled_variance_grows_as_ln_fmin_with_flicker_and_refuses_what_it_
     ocir, opss = _a9_vdp()
     with pytest.raises(ValueError, match='OSCILLATOR'):
         PAC(ocir, toolkit=circuit.numeric).sampled_noise(opss, 0, [0.0], [0.01])
-    rpss = PSS(cir, method='radau', reltol=1e-10)
+
+
+def _sampler_fixture_method(elements, method, npts=400):
+    """`_sampler_fixture` under another integrator."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    fclk = 100e3
+    T = 1.0 / fclk
+    cir = SubCircuit()
+    for nd in ('in', 'out', 'ck'):
+        cir.add_node(nd)
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    elements(cir)
+    pss = PSS(cir, method=method, reltol=1e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        rpss.solve(period=T, timestep=T / 100, x0=np.zeros(cir.n - 1),
-                   maxiterations=100)
-    with pytest.raises(NotImplementedError, match="method='gear'"):
-        pac.sampled_noise(rpss, io, [0.0], [0.1 * f0])
+        pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                  maxiterations=100)
+    assert pss.converged
+    io = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('out')
+    return cir, pss, io, PAC(cir, toolkit=circuit.numeric), T
+
+
+def test_the_sampled_noise_runs_natively_under_the_stage_methods():
+    """radau and trbdf2 inject the source at every STAGE, so the sampled
+    route reads its sensitivities at the stage abscissae and `CY` at the
+    stage states (2026-09-15).  Measured on the sampler: the LTI series sum
+    equals the pnoise fold to 1e-10 under both methods; the held variance is
+    1.000000 (radau) / 0.999979 (trbdf2) kT/C at 400 points; the tracking
+    value converges at first order (radau 0.949 -> 0.975 at 400 -> 800).
+    ⚠ Checked to matter: `CY` at the end-of-step state for every stage read
+    the held variance 0.867 (radau, 400 points).  ⚠ `covariance` is not the
+    reference here: under these methods its end-of-step Van Loan injection
+    reads 0.876 held at 400 points (an O(h) edge error, 0.934 at 800)."""
+    import warnings
+    ktc = _KB * _TEMP / 100e-12
+    for method in ('radau', 'trbdf2'):
+        def els(c):
+            c['S0'] = _sw(gon=1e-3, goff=1e-3)
+            c['F0'] = _Flicker('out', gnd, i=0.0, noisePSD=1e-22, fref=1.0)
+        cir, pss, io, pac, T = _sampler_fixture_method(els, method)
+        f0 = 1.0 / T
+        f = 0.137 * f0
+        S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            ref = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
+                                               maxsidebands=20)[0]))
+                      for k in range(-10, 11))
+        assert abs(S / ref - 1.0) < 1e-8, (method, S, ref)
+    held = {}
+    for method, npts in (('radau', 400), ('radau', 800), ('trbdf2', 400)):
+        cir, pss, io, pac, T = _sampler_fixture_method(
+            lambda c: c.__setitem__('S0', _sw()), method, npts)
+        f0 = 1.0 / T
+        grid = np.asarray(pss.factored_period().times, dtype=float)
+        N = len(pss.factored_period().steps)
+        fmin = 1e-6 * f0
+        v = pac.sampled_variance(pss, io, [grid[int(0.375 * N)], grid[int(0.1 * N)]],
+                                 fmin, 0.5 * f0, points_per_decade=10) / ktc
+        held[(method, npts)] = v / (1.0 - fmin / (0.5 * f0))
+    assert abs(held[('radau', 400)][0] - 1.0) < 1e-4, held
+    assert abs(held[('trbdf2', 400)][0] - 1.0) < 1e-4, held
+    assert abs(held[('radau', 800)][0] - 1.0) < 1e-4, held
+    e4, e8 = 1.0 - held[('radau', 400)][1], 1.0 - held[('radau', 800)][1]
+    assert e4 > 0.02 and 0.4 < e8 / e4 < 0.6, (e4, e8)
+
+
+def test_the_time_average_of_the_sampled_psd_is_the_fold_of_time_averaged_pnoise():
+    """The peer's validation 2, which holds PER FREQUENCY: averaged over the
+    sampling instant, the sample series samples the time-averaged
+    autocorrelation at lags kT, so `mean_t0 S(f; t0) = sum_k S_avg(|f + k f0|)`
+    with `S_avg` = `pnoise(cyclostationary=True)` -- over EVERY output band to
+    the grid's Nyquist.  A switched capacitor buffered into an RC low-pass
+    (pole f0/20) so the output is cyclostationary and band-limited.
+    Measured at 60 points: 3.9e-4 with the full fold (4.4e-5 at 100 points),
+    while a fold cut at |k| <= 10 is 0.25 % off (0.41 % at 100) -- so the
+    identity is checked, not a truncation that happens to agree."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    fclk = 100e3
+    T = 1.0 / fclk
+    f0 = fclk
+    cir = SubCircuit()
+    for nd in ('in', 'out', 'ck', 'b', 'y'):
+        cir.add_node(nd)
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    cir['S0'] = _sw()
+    cir['E0'] = VCVS('out', gnd, 'b', gnd, g=1.0)
+    cir['Rf'] = R('b', 'y', r=1e4)
+    cir['Cf'] = C('y', gnd, c=1.0 / (2 * np.pi * 1e4 * f0 / 20))
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1),
+                  maxiterations=100)
+    assert pss.converged
+    iy = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('y')
+    pac = PAC(cir, toolkit=circuit.numeric)
+    N = len(pss.factored_period().steps)
+    grid = np.asarray(pss.factored_period().times, dtype=float)[:N]
+    f = 0.37 * f0
+    mean = float(np.mean(pac.sampled_noise(pss, iy, grid, [f])[:, 0]))
+    K = N // 2
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        parts = {k: float(np.real(pac.pnoise(pss, abs(f + k * f0), iy,
+                                             cyclostationary=True)[0]))
+                 for k in range(-K, K + 1)}
+    full = sum(parts.values())
+    cut = sum(v for k, v in parts.items() if abs(k) <= 10)
+    assert abs(mean / full - 1.0) < 1e-3, (mean, full)
+    assert abs(mean / cut - 1.0) > 2e-3, (mean, cut)
+
+
+def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
+    """⚠⚠ PEER REPORT, 2026-09-15.  With a 1/f source, `pnoise(cyclostationary=
+    True)` at EXACTLY a clock harmonic returned 6.3e-2 V^2/Hz against 9.2e-15
+    at 0.1 % either side, silently.  `1/T` rounds (99999.999999999985 Hz), so
+    the folded band sits 1.5e-11 Hz from DC -- finite and enormous for 1/f --
+    and the harmonic guard refused only a NON-finite CY.  Now a
+    frequency-dependent CY on a harmonic refuses; white stays allowed.
+    ⚠ Also fixed and pinned: the colour model was NaN at negative band
+    frequencies, so the ratio stop never fired for a coloured source and
+    every call ran to the Nyquist bound with a spurious warning."""
+    import warnings
+
+    def els(c):
+        c['S0'] = _sw()
+        c['N0'] = IS('out', gnd, i=0.0, noisePSD=1e-26, noiseFc=1e6)
+    cir, pss, io, pac, T = _sampler_fixture(els, npts=200)
+    f0 = 1.0 / T
+    ## both forms of "on the harmonic": `k/T` lands the folded band exactly on
+    ## 0 (a ZeroDivisionError from inside the guard, before the fix); the
+    ## literal `k * 100e3` lands it 1.5e-11 Hz off (the finite absurd value)
+    for f in (f0, 2 * f0, 100e3, 200e3):
+        with pytest.raises(ValueError, match='harmonic'):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pac.pnoise(pss, f, io, maxsidebands=90, cyclostationary=True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        v, _used = pac.pnoise(pss, 1.001 * f0, io, maxsidebands=90,
+                              cyclostationary=True)
+    msgs = [str(w.message) for w in caught]
+    assert pac.alias_stop == 'ratio', (pac.alias_stop, msgs)
+    assert not [m_ for m_ in msgs if 'invalid value' in m_ or 'Nyquist' in m_], msgs
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        v0, _u = pac.pnoise(pss, 1.001 * f0, io, maxsidebands=90,
+                            cyclostationary=True, ratio_tol=0.0)
+    assert np.isfinite(v) and abs(float(np.real(v)) / float(np.real(v0)) - 1.0) < 1e-4, (v, v0)
+
+    ## white sources on the harmonic are still answered
+    wcir, wpss, wio, wpac, _T = _sampler_fixture(lambda c: c.__setitem__('S0', _sw()),
+                                                 npts=200)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        vw, _u = wpac.pnoise(wpss, f0, wio, maxsidebands=90, cyclostationary=True)
+    assert np.isfinite(vw) and float(np.real(vw)) > 0.0

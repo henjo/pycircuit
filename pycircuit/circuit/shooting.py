@@ -12145,6 +12145,28 @@ class PAC(Analysis):
                     'own advice is to cluster frequencies NEAR each '
                     'harmonic and never place one ON it.'
                     % (float(freq), f0_))
+            ## ⚠⚠ A FINITE PROBE IS NOT A SAFE ONE (peer report, 2026-09-15).
+            ## `1/T` rounds (99999.999999999985 Hz for T = 1e-5 s), so at
+            ## `f = f0` the folded band sits 1.5e-11 Hz from DC, not ON it: a
+            ## 1/f source there is finite and enormous, and the cyclostationary
+            ## fold returned 6.3e-2 V^2/Hz against 9.2e-15 at 0.1 % either
+            ## side, with no warning.  So a frequency-DEPENDENT CY at the folded
+            ## band refuses too; a white one stays allowed (its fold to DC is
+            ## harmless, the divider value above).
+            probe_ref = cyfn(pss, 2.0 * np.pi * max(abs(float(freq)) * 2.0, f0_))
+            if not np.allclose(np.asarray(probe), np.asarray(probe_ref),
+                               rtol=1e-9, atol=0.0):
+                raise ValueError(
+                    'PAC.pnoise: %.12g Hz sits on harmonic %d of %.12g Hz, so '
+                    'a sideband folds the noise sources to %.3g Hz -- DC up to '
+                    'rounding -- and this circuit\'s CY is frequency-dependent '
+                    'there: a 1/f source is read next to its singularity and '
+                    'the fold returns a finite, absurd number (measured '
+                    '6.3e-2 V^2/Hz against 9.2e-15 at 0.1 %% either side). '
+                    'Offset from the harmonic, or use PAC.sampled_variance, '
+                    'whose explicit fmin keeps every band off DC.'
+                    % (float(freq), int(round(abs(float(freq)) / f0_)), f0_,
+                       near))
 
         ## ⚠ AND THE STEEP REGION BESIDE IT IS A SWEEP HAZARD RATHER THAN
         ## A WRONG NUMBER, so it warns instead of raising.  MEASURED with
@@ -12286,7 +12308,10 @@ class PAC(Analysis):
         A, B, EF = fit
         w1 = ws[0]
         def model(w):
-            return A + B * (w1 / float(w)) ** EF
+            ## |w| -- see `_cy_components_model`: a negative band frequency
+            ## made this NaN and silently disabled pnoise's ratio stop
+            with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+                return A + B * (np.float64(w1) / np.abs(np.float64(w))) ** EF
         return model
 
     @staticmethod
@@ -12360,24 +12385,48 @@ class PAC(Analysis):
                           np.asarray(el.CY(subx, w), dtype=complex).ravel())
                 yield prefix + (inst,), G
 
-    def _element_cy_samples(self, pss, w):
-        """`{key: (N, m, m)}` -- each leaf element's reduced `CY(x(t_k), w)`
-        over the orbit, indexed like `_cy_samples`, which they sum to."""
-        fp = pss.factored_period()
+    @staticmethod
+    def _orbit_states(pss, states=None):
+        """Full-width state vectors to sample `CY` at: the stored orbit
+        `x(t_k)`, `k = 0..N-1` (the default), or the given `states`."""
+        n = pss.cir.n
         irn = pss.irefnode
-        xs = np.asarray(pss.waveform[1], dtype=float)
-        nsamp = len(fp.steps)
+        if states is None:
+            xs = np.asarray(pss.waveform[1], dtype=float)
+            nsamp = len(pss.factored_period().steps)
+            states = [xs[:, k] for k in range(nsamp)]
+        out = []
+        for xr in states:
+            xr = np.asarray(xr, dtype=float).ravel()
+            out.append(xr if xr.shape[0] == n
+                       else np.concatenate((xr[:irn], np.zeros(1), xr[irn:])))
+        return out
+
+    def _element_cy_samples(self, pss, w, states=None):
+        """`{key: (K, m, m)}` -- each leaf element's reduced `CY(x, w)` at the
+        orbit samples `x(t_k)` (the default, indexed like `_cy_samples`, which
+        they sum to) or at the given `states`."""
+        irn = pss.irefnode
         n = pss.cir.n
         keep = np.array([i for i in range(n) if i != irn])
         out = {}
-        for k in range(nsamp):
-            xr = np.asarray(xs[:, k], dtype=float).ravel()
-            xf = xr if xr.shape[0] == n else np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+        for xf in self._orbit_states(pss, states):
             for key, G in self._leaf_cy_stamps(pss.cir, xf, w):
                 out.setdefault(key, []).append(G[np.ix_(keep, keep)])
         return {key: np.asarray(v, dtype=complex) for key, v in out.items()}
 
-    def _cy_components_model(self, pss, f, f0):
+    def _cy_at_states(self, pss, w, states=None):
+        """The whole circuit's reduced `CY(x, w)` at the orbit samples or at
+        `states`, `(K, m, m)` -- `_cy_samples` generalised."""
+        irn = pss.irefnode
+        Cs = []
+        for xf in self._orbit_states(pss, states):
+            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
+            Cs.append(np.asarray(cyk, dtype=complex))
+        return np.asarray(Cs, dtype=complex)
+
+    def _cy_components_model(self, pss, f, f0, states=None):
         """`CY(x(t), w)` as INDEPENDENT components -- one white and one
         coloured part per leaf element -- for the coloured folds.
 
@@ -12401,18 +12450,19 @@ class PAC(Analysis):
         -- independence is resolved to element x {white, coloured}.
         """
         ws = self._colour_fit_frequencies(f, f0)
-        per_w = [self._element_cy_samples(pss, w) for w in ws]
+        per_w = [self._element_cy_samples(pss, w, states) for w in ws]
         keys = [key for key in per_w[0]
                 if any(np.any(per_w[i][key]) for i in range(len(ws)))]
         m = pss.cir.n - 1
-        N = len(pss.factored_period().steps)
+        N = (len(pss.factored_period().steps) if states is None
+             else len(states))
         ## ⚠ THE ELEMENTS MUST BE THE CIRCUIT'S CY.  A circuit whose `CY` is
         ## not the sum of its leaf elements' (an override, a batched toolkit
         ## group) cannot be split, and splitting it anyway would silently
         ## analyse a different noise model -- so check at two fit frequencies
         ## and fall back to the whole-circuit model, saying why.
         for i in (0, len(ws) - 1):
-            whole = self._cy_samples(pss, ws[i])
+            whole = self._cy_at_states(pss, ws[i], states)
             parts = sum((per_w[i][key] for key in per_w[i]),
                         np.zeros_like(whole))
             scale = max(float(np.max(np.abs(whole))), 1e-300)
@@ -12425,6 +12475,8 @@ class PAC(Analysis):
                     'with different modulations are then not additive '
                     '(measured +7.3 % of the total on a switch + 1/f source).',
                     RuntimeWarning, stacklevel=3)
+                if states is not None:
+                    return None
                 return self._cy_colour_model(pss, f, f0)
         white = np.zeros((N, m, m), dtype=complex)
         white_parts, flicker, perband = [], [], []
@@ -12451,10 +12503,20 @@ class PAC(Analysis):
 
         def model(w):
             tot = white.copy()
-            for _key, B, EF in flicker:
-                tot = tot + B * (w1 / float(w)) ** EF
+            ## ⚠ |w|: the stop rule asks at NEGATIVE band frequencies
+            ## (f - l f0 < 0), and a non-integer power of a negative base is
+            ## NaN -- the ratio stop then never fired and every coloured call
+            ## ran to the Nyquist bound with a spurious warning (2026-09-15)
+            ## ⚠ and numpy division: exactly ON a harmonic the folded band is
+            ## w = 0, where a Python float division raised ZeroDivisionError
+            ## from inside pnoise's harmonic guard instead of letting it see
+            ## the non-finite CY and refuse by name
+            with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+                ratio = np.float64(w1) / np.abs(np.float64(w))
+                for _key, B, EF in flicker:
+                    tot = tot + B * ratio ** EF
             if perband:
-                ew = self._element_cy_samples(pss, w)
+                ew = self._element_cy_samples(pss, w, states)
                 for key in perband:
                     tot = tot + ew[key]
             return tot
@@ -13573,7 +13635,11 @@ class PAC(Analysis):
         squared per Hz, for `0 < f <= f0/2`.  `sum` over the band of `S` is
         the variance at `t0` that a sampler sees; see `sampled_variance`.
         The instants actually used (the nearest period-grid points) are left
-        in `self.sampled_instants`.
+        in `self.sampled_instants`.  ⚠ When comparing at a round instant,
+        pass the grid's own times (`pss.factored_period().times`): the grid
+        need not have the step count the `timestep` suggests (T/1000 can give
+        999 steps), and with a 1/f source the held variance moves measurably
+        between neighbouring grid points (peer report).
 
         ⚠ WHAT THIS IS, AND WHAT IT IS NOT.  The noise at a sampling instant
         folds every source band `nu = f + n f0` onto the series frequency
@@ -13617,8 +13683,24 @@ class PAC(Analysis):
         the source samples one step early read 1.30 kT/C, sidebands cut to
         N/8 read 0.77 in track.
 
-        ⚠ Solved-history (gear) and plain one-step (euler, trap) period maps
-        only; the stage methods and GLMs have no seeded reverse pass here.
+        ⚠ STAGE METHODS (radau, trbdf2) RUN NATIVELY, 2026-09-15: the source
+        enters every stage, so the sensitivities are read at the stage
+        abscissae and `CY` at the STAGE states (one re-traversal of the
+        orbit, cached).  Measured on the sampler: the LTI series sum equals
+        the pnoise fold to 1e-10 under both; the held variance reads
+        1.000000 (radau) / 0.999979 (trbdf2) kT/C at 400 points and stays
+        there at 800, the tracking value converges at first order (radau
+        0.949 -> 0.975, trbdf2 0.916 -> 0.957).  ⚠ `covariance` under these
+        methods is NOT the reference at a switching edge: its Van Loan
+        injection freezes `C`, `G`, `CY` at the END of each step, which read
+        the held variance 0.876 / 0.934 (radau, 400 / 800 points) -- an O(h)
+        edge error, halving -- against 0.9987 under gear.  GLM period maps
+        are refused.
+
+        ⚠ TIME AVERAGE, PER FREQUENCY: the mean over `t0` of this PSD is
+        the fold of the time-averaged PSD, `sum_k pnoise(|f + k f0|)`, over
+        EVERY output band to the grid's Nyquist -- measured 4.4e-5 at 100
+        points (a fold cut at |k| <= 10 left 0.4 %).
         """
         return self._sampled_series(pss, output, times, freqs, maxsidebands)
 
@@ -13660,13 +13742,14 @@ class PAC(Analysis):
                 'cyclostationary sample series (see covariance()). Use '
                 'oscillator_spectrum or modal_spectrum.')
         fp = pss.factored_period()
-        if fp.kind not in ('solved_history', 'plain'):
+        if fp.kind not in ('solved_history', 'plain', 'dirk', 'full'):
             raise NotImplementedError(
-                "PAC.sampled_noise: the period map is '%s' (method %r), and "
-                'only the solved-history (gear) and plain one-step (euler, '
-                'trap) maps have the seeded reverse pass this needs. Solve '
-                "the PSS with method='gear'." % (
-                    fp.kind, getattr(pss.par, 'method', None)))
+                "PAC.sampled_noise: the period map is '%s' (method %r); the "
+                'seeded reverse pass exists for the linear multistep (gear, '
+                'euler, trap) and stage (trbdf2 and other DIRKs, radau) maps, '
+                "not for a multivalue GLM. Solve the PSS with method='radau' "
+                "or 'gear'." % (fp.kind, getattr(pss.par, 'method', None)))
+        stage = fp.kind in ('dirk', 'full')
         T = float(fp.T)
         f0 = 1.0 / T
         tms = np.asarray(fp.times, dtype=float)
@@ -13706,18 +13789,37 @@ class PAC(Analysis):
         ## components, rolled to the INJECTION index: step j's source enters
         ## at t_{j+1} (the reverse pass's own pairing) -- sampled one step
         ## early the held variance read 1.30 kT/C instead of 0.9987
-        model = self._cy_components_model(pss, float(np.min(fr)), f0)
-        roll = lambda C: np.roll(np.asarray(C), -1, axis=0)
-        white = [self._psd_sqrt(roll(A)) for _key, A in model.white_parts]
-        scaled, perband = [], []
-        for _key, Bc, EF in model.flicker:
-            ef = self._uniform_exponent(Bc, EF)
-            if ef is not None:
-                scaled.append((self._psd_sqrt(roll(Bc)), ef))
-            else:
-                perband.append(lambda w, Bc=Bc, EF=EF: roll(Bc * (model.w1 / w) ** EF))
-        for key in model.perband:
-            perband.append(lambda w, key=key: roll(self._element_cy_samples(pss, w)[key]))
+        ## ⚠ WHERE THE SOURCE ENTERS: an LMM step's source enters at
+        ## `t_{j+1}`, so `CY` is sampled at `x(t_{j+1})`; a stage method's
+        ## enters at every stage abscissa `t_j + c_k h`, so at the STAGE
+        ## states.  Measured on the sampler at 400 points: the end-of-step
+        ## state for every stage read the held variance 0.867 kT/C (radau)
+        ## against 1.000000 at the stage states, and it is the stage-state
+        ## value that holds under refinement.
+        if stage:
+            tinj = self._stage_times(pss, fp)
+            states = self._stage_states(pss, fp)
+        else:
+            tinj = tms[1:N + 1]
+            xs = np.asarray(pss.waveform[1], dtype=float)
+            states = [xs[:, (j + 1) % N] for j in range(N)]
+        model = self._cy_components_model(pss, float(np.min(fr)), f0, states)
+        white, scaled, perband = [], [], []
+        if model is None:
+            ## the elements do not sum to the circuit's CY (warned): one
+            ## joint component over the whole circuit
+            perband.append(lambda w: self._cy_at_states(pss, w, states))
+        else:
+            white = [self._psd_sqrt(A) for _key, A in model.white_parts]
+            for _key, Bc, EF in model.flicker:
+                ef = self._uniform_exponent(Bc, EF)
+                if ef is not None:
+                    scaled.append((self._psd_sqrt(Bc), ef))
+                else:
+                    perband.append(lambda w, Bc=Bc, EF=EF: Bc * (model.w1 / w) ** EF)
+            for key in model.perband:
+                perband.append(lambda w, key=key: self._element_cy_samples(
+                    pss, w, states)[key])
 
         tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
         ns = np.arange(-L, L + 1)
@@ -13727,16 +13829,23 @@ class PAC(Analysis):
                 alpha = np.exp(-2j * np.pi * f * T)
                 inject = np.zeros((N, m), dtype=complex)
                 inject[k0] = np.exp(-2j * np.pi * f * tms[k0]) * d
-                g, t_inj, _st = fp.matvec_transposed(
-                    np.zeros(n, dtype=complex), collect=True, inject=inject)
                 A_ = spla.LinearOperator(
                     (n, n), dtype=complex,
                     matvec=lambda v, a=alpha: np.asarray(v) - a * fp.matvec_transposed(v))
-                z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
-                _e, t_z, _st = fp.matvec_transposed(z, collect=True)
-                Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))      # N x m
+                if stage:
+                    seedv = np.exp(-2j * np.pi * f * tms[k0]) * d
+                    g, cA = self._stage_pass(pss, fp, np.zeros(m), (k0, seedv))
+                    z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
+                    _l, cZ = self._stage_pass(pss, fp, z)
+                    Sv = -(cA + alpha * cZ)                          # N s x m
+                else:
+                    g, t_inj, _st = fp.matvec_transposed(
+                        np.zeros(n, dtype=complex), collect=True, inject=inject)
+                    z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
+                    _e, t_z, _st = fp.matvec_transposed(z, collect=True)
+                    Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))  # N x m
                 nu = f + ns * f0
-                E = (np.exp(2j * np.pi * nu[:, None] * tms[None, 1:N + 1])
+                E = (np.exp(2j * np.pi * nu[:, None] * tinj[None, :])
                      * np.exp(-2j * np.pi * ns * f0 * tms[k0])[:, None])
                 dens = 0.0
                 for SA in white:
@@ -13754,6 +13863,104 @@ class PAC(Analysis):
                         dens += float(np.sum(np.abs(R) ** 2))
                 S[ti, fi] = dens
         return S
+
+    def _stage_times(self, pss, fp):
+        """The stage abscissae `t_j + c_k h_j` of one period, step by step,
+        `(N s,)` -- the injection times of a stage method's source."""
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        if fp.kind == 'full':
+            _A, _b, cvec = pss._integrator_for(pss.par.method).butcher()
+        out = []
+        for j in range(N):
+            h = tms[j + 1] - tms[j]
+            cv = fp.steps[j][5] if fp.kind == 'dirk' else cvec
+            out.extend(tms[j] + np.asarray(cv, dtype=float) * h)
+        return np.asarray(out, dtype=float)
+
+    def _stage_states(self, pss, fp):
+        """The stage states of one period, `N s` full-width vectors in the
+        order of `_stage_times` -- one re-traversal of the converged orbit
+        on a FRESH inner transient (the run's own is restored), cached per
+        factored period."""
+        cache = getattr(pss, '_sampled_stage_cache', None)
+        if cache is not None and cache[0] is fp:
+            return cache[1]
+        tms = np.asarray(fp.times, dtype=float)
+        hs = np.diff(tms)
+        m = pss.cir.n - 1
+        x = np.asarray(pss._period_state[1], dtype=float)[:m]
+        saved = getattr(pss, '_tran', None)
+        pss._tran = pss._new_transient(pss._integrator_for(pss.par.method))
+        try:
+            pss._begin_period(x)
+            tr = pss._transient()
+            Ys = []
+            for j in range(len(fp.steps)):
+                x = np.asarray(pss.solve_timestep(x, tms[j + 1], hs[j]),
+                               dtype=float)
+                Ys.extend(np.asarray(y, dtype=float) for y in tr._rk_Y)
+        finally:
+            pss._tran = saved
+        pss._sampled_stage_cache = (fp, Ys)
+        return Ys
+
+    def _stage_pass(self, pss, fp, lam0, seed=None):
+        """One reverse pass of a stage period map (`dirk` or `full`): returns
+        the final costate and `(N s, m)` coupling vectors `h sum_i A_ik p_i`
+        -- the sensitivity of the costate's functional to a unit source at
+        stage `k` of step `j` is minus that (see `_sideband_forced_dirk` /
+        `_sideband_forced_full`, whose loops these are).  `seed = (k0, v)`
+        adds `v` to the costate after step `k0`'s update: the output at
+        `t_{k0}` couples to the sources of earlier steps only."""
+        import scipy.linalg as sla
+        m = pss.cir.n - 1
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        lam = np.asarray(lam0, dtype=complex).copy()
+        per = [None] * N
+        if fp.kind == 'full':
+            Amat, _b, _c = pss._integrator_for(pss.par.method).butcher()
+        for j in range(N - 1, -1, -1):
+            if fp.kind == 'full':
+                lu, Cn, _mm = fp.steps[j]
+                h = tms[j + 1] - tms[j]
+                s = Amat.shape[0]
+                b = np.concatenate([np.zeros(m)] * (s - 1) + [lam])
+                p = (sla.lu_solve(lu, b.real, trans=1)
+                     + 1j * sla.lu_solve(lu, b.imag, trans=1))
+                pb = [p[i * m:(i + 1) * m] for i in range(s)]
+                per[j] = [h * sum(Amat[i, k] * pb[i] for i in range(s))
+                          for k in range(s)]
+                lam = Cn.T @ sum(pb)
+            else:
+                Kfacs, Gs, Cn, h, Am, _cv = fp.steps[j]
+                s = Am.shape[0]
+                dbar = [np.zeros(m, dtype=complex) for _ in range(s)]
+                dbar[s - 1] = lam
+                wbar = np.zeros(m, dtype=complex)
+                rbars = [None] * s
+                for i in range(s - 1, -1, -1):
+                    if Kfacs[i] is None:
+                        if i == 0:
+                            wbar = wbar + dbar[0]
+                    else:
+                        rb = pss._csolve_fac_T(Kfacs[i], dbar[i])
+                        rbars[i] = rb
+                        wbar = wbar + Cn.T @ rb
+                        for jj in range(i):
+                            dbar[jj] = dbar[jj] - h * Am[i, jj] * (Gs[jj].T @ rb)
+                row = []
+                for k in range(s):
+                    cp = sum(Am[i, k] * rbars[i] for i in range(k, s)
+                             if rbars[i] is not None)
+                    row.append(h * cp if not np.isscalar(cp)
+                               else np.zeros(m, dtype=complex))
+                per[j] = row
+                lam = wbar
+            if seed is not None and j == seed[0]:
+                lam = lam + seed[1]
+        return lam, np.asarray([v for row in per for v in row], dtype=complex)
 
     @staticmethod
     def _psd_sqrt(Cs):
