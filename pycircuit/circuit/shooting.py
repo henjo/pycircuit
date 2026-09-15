@@ -12091,7 +12091,10 @@ class PAC(Analysis):
             ## The colour model (see `_cy_colour_model`) is fitted ONCE
             ## here and serves both: the 34 orbit sweeps of the stop rule
             ## were 1.1 s of a 4.1 s call after the fold itself was cut.
-            colour = self._cy_colour_model(pss, float(freq), f0)
+            ## per-element components, so independent sources ADD in the
+            ## coloured fold (see `_cy_components_model`); its call is the
+            ## summed model the stop rule reads, as before
+            colour = self._cy_components_model(pss, float(freq), f0)
             if colour is None:
                 cyfn = self._cy_cycle_averaged
             else:
@@ -12276,15 +12279,35 @@ class PAC(Analysis):
         a bracketed root find on the ratio of differences, so a mix of
         flicker exponents across sources is fine; a white entry (B = 0)
         needs no exponent."""
-        from scipy.optimize import brentq
-        f = abs(float(f))
+        ws = self._colour_fit_frequencies(f, f0)
+        fit = self._colour_fit([self._cy_samples(pss, w) for w in ws], ws)
+        if fit is None:
+            return None
+        A, B, EF = fit
+        w1 = ws[0]
+        def model(w):
+            return A + B * (w1 / float(w)) ** EF
+        return model
+
+    @staticmethod
+    def _colour_fit_frequencies(f, f0):
         ## three to fit, two to verify: one BETWEEN the fit points and one
         ## at the FAR end of the band range the fold reaches (up to
         ## ~(N/2 + lmax) f0), so a shape that is not thermal-plus-flicker
         ## is caught where the model would have been extrapolating
-        ws = [2.0 * np.pi * x for x in (max(f, 1e-3 * f0), 3.0 * f0 + f, 10.0 * f0 + f,
-                                        2.0 * f0 + f, 150.0 * f0 + f)]
-        C1, C2, C3, C4, C5 = (self._cy_samples(pss, w) for w in ws)
+        f = abs(float(f))
+        return [2.0 * np.pi * x for x in (max(f, 1e-3 * f0), 3.0 * f0 + f,
+                                          10.0 * f0 + f, 2.0 * f0 + f,
+                                          150.0 * f0 + f)]
+
+    @staticmethod
+    def _colour_fit(Cs, ws):
+        """`(A, B, EF)` with `C(w) = A + B (w1/w)^EF` entry by entry, from
+        `Cs` = samples `(N, n, n)` at the five `ws` of
+        `_colour_fit_frequencies` (three fit, two verify); None when the
+        shape is not thermal-plus-power-law anywhere."""
+        from scipy.optimize import brentq
+        C1, C2, C3, C4, C5 = Cs
         N, n, _ = C1.shape
         A = np.zeros_like(C1); B = np.zeros_like(C1); EF = np.zeros((N, n, n))
         scale = max(float(np.max(np.abs(C1))), 1e-300)
@@ -12310,9 +12333,148 @@ class PAC(Analysis):
         for wv, Cv in ((w4, C4), (w5, C5)):
             if float(np.max(np.abs(A + B * (w1 / wv) ** EF - Cv))) > 1e-8 * scale:
                 return None
+        return A, B, EF
+
+    @classmethod
+    def _leaf_cy_stamps(cls, cir, x, w, prefix=()):
+        """Yield `(key, G)`: each LEAF element's `CY(x, w)` stamped into
+        `cir`'s full `n x n` space, recursing into sub-circuits.  Their sum
+        is `cir.CY(x, w)` (the elements are independent by that method's
+        own contract)."""
+        n = cir.n
+        idx = cir._map_indices_2d
+        for inst, el in cir.elements.items():
+            rc = idx.get(inst)
+            if rc is None:
+                continue
+            rows, cols = rc
+            subx = np.asarray(x)[cir.elementnodemap[inst]]
+            if getattr(el, 'elements', None):
+                for key, Gc in cls._leaf_cy_stamps(el, subx, w, prefix + (inst,)):
+                    G = np.zeros((n, n), dtype=complex)
+                    np.add.at(G, (rows, cols), np.asarray(Gc).ravel())
+                    yield key, G
+            else:
+                G = np.zeros((n, n), dtype=complex)
+                np.add.at(G, (rows, cols),
+                          np.asarray(el.CY(subx, w), dtype=complex).ravel())
+                yield prefix + (inst,), G
+
+    def _element_cy_samples(self, pss, w):
+        """`{key: (N, m, m)}` -- each leaf element's reduced `CY(x(t_k), w)`
+        over the orbit, indexed like `_cy_samples`, which they sum to."""
+        fp = pss.factored_period()
+        irn = pss.irefnode
+        xs = np.asarray(pss.waveform[1], dtype=float)
+        nsamp = len(fp.steps)
+        n = pss.cir.n
+        keep = np.array([i for i in range(n) if i != irn])
+        out = {}
+        for k in range(nsamp):
+            xr = np.asarray(xs[:, k], dtype=float).ravel()
+            xf = xr if xr.shape[0] == n else np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            for key, G in self._leaf_cy_stamps(pss.cir, xf, w):
+                out.setdefault(key, []).append(G[np.ix_(keep, keep)])
+        return {key: np.asarray(v, dtype=complex) for key, v in out.items()}
+
+    def _cy_components_model(self, pss, f, f0):
+        """`CY(x(t), w)` as INDEPENDENT components -- one white and one
+        coloured part per leaf element -- for the coloured folds.
+
+        ⚠⚠ WHY (2026-09-15, measured).  The coloured fold took ONE symmetric
+        square root of the SUMMED `CY(x(t), w)` per band.  Independent
+        sources whose modulations differ do not add under a joint root:
+        `sqrt(A(t) + B)` cross-couples them at `(t, t')`.  Switch white
+        noise `4kT g(t)` plus a constant 1/f source at the same node read
+        pnoise(both) = white + flicker + 7.3 % of the total at 0.013 f0
+        (+2.2 % at 0.137 f0), and the sampled variance in hold +9.3 % with
+        white and flicker inside ONE element.  One root per component
+        restores additivity: 1.7e-16 (separate elements) and 2.3e-11 (one
+        element, split) against the sum.
+
+        Returns a callable `w -> (N, m, m)` (the summed `CY`, the contract
+        `_cy_colour_model` had) carrying `white` (summed), `white_parts`
+        `[(key, A)]`, `flicker` `[(key, B, EF)]` (`C = A + B (w1/w)^EF` per
+        element, fitted and verified as `_colour_fit`), `perband` (keys
+        whose colour did not fit: evaluated per band) and `w1`.  ⚠ Within
+        one element all white terms share a root, as do all power-law terms
+        -- independence is resolved to element x {white, coloured}.
+        """
+        ws = self._colour_fit_frequencies(f, f0)
+        per_w = [self._element_cy_samples(pss, w) for w in ws]
+        keys = [key for key in per_w[0]
+                if any(np.any(per_w[i][key]) for i in range(len(ws)))]
+        m = pss.cir.n - 1
+        N = len(pss.factored_period().steps)
+        ## ⚠ THE ELEMENTS MUST BE THE CIRCUIT'S CY.  A circuit whose `CY` is
+        ## not the sum of its leaf elements' (an override, a batched toolkit
+        ## group) cannot be split, and splitting it anyway would silently
+        ## analyse a different noise model -- so check at two fit frequencies
+        ## and fall back to the whole-circuit model, saying why.
+        for i in (0, len(ws) - 1):
+            whole = self._cy_samples(pss, ws[i])
+            parts = sum((per_w[i][key] for key in per_w[i]),
+                        np.zeros_like(whole))
+            scale = max(float(np.max(np.abs(whole))), 1e-300)
+            if float(np.max(np.abs(parts - whole))) > 1e-9 * scale:
+                warnings.warn(
+                    'PAC: this circuit\'s CY is not the sum of its elements\' '
+                    '(an override or a batched group?), so the coloured fold '
+                    'cannot take one square root per independent source and '
+                    'uses ONE root of the summed CY -- independent sources '
+                    'with different modulations are then not additive '
+                    '(measured +7.3 % of the total on a switch + 1/f source).',
+                    RuntimeWarning, stacklevel=3)
+                return self._cy_colour_model(pss, f, f0)
+        white = np.zeros((N, m, m), dtype=complex)
+        white_parts, flicker, perband = [], [], []
+        for key in keys:
+            fit = self._colour_fit([per_w[i][key] for i in range(len(ws))], ws)
+            if fit is None:
+                perband.append(key)
+                continue
+            A, B, EF = fit
+            if np.any(A):
+                white = white + A
+                white_parts.append((key, A))
+            if np.any(B):
+                flicker.append((key, B, EF))
+        if perband:
+            warnings.warn(
+                'PAC: the noise of %s is not thermal-plus-power-law, so it is '
+                'evaluated per band with ONE square root per element: '
+                'independent sources INSIDE such an element are not split '
+                '(measured 4.2e-4 on an EKV stage, thermal + flicker).'
+                % ', '.join('.'.join(k) for k in perband),
+                RuntimeWarning, stacklevel=3)
+        w1 = ws[0]
+
         def model(w):
-            return A + B * (w1 / float(w)) ** EF
+            tot = white.copy()
+            for _key, B, EF in flicker:
+                tot = tot + B * (w1 / float(w)) ** EF
+            if perband:
+                ew = self._element_cy_samples(pss, w)
+                for key in perband:
+                    tot = tot + ew[key]
+            return tot
+        model.white = white
+        model.white_parts = white_parts
+        model.flicker = flicker
+        model.perband = perband
+        model.w1 = w1
         return model
+
+    @staticmethod
+    def _uniform_exponent(B, EF):
+        """The one power-law exponent of a component, or None when its
+        non-zero entries carry different ones (then `sqrt(B (w1/w)^EF)` is
+        not `(w1/w)^(ef/2) sqrt(B)` and must be taken per band)."""
+        nz = np.abs(B) > 0
+        if not np.any(nz):
+            return 0.0
+        e = EF[nz]
+        return float(e.flat[0]) if np.allclose(e, e.flat[0], rtol=0.0, atol=1e-9) else None
 
     def _cy_sqrt_harmonics(self, pss, w):
         """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
@@ -12390,10 +12552,9 @@ class PAC(Analysis):
         ## all the bands come from the model with no further circuit
         ## calls; a source whose colour is not of that shape fails the
         ## check and gets the full evaluation as before.
-        cache = {}
         Nn = Pa.shape[0]
         if model is None:
-            model = self._cy_colour_model(pss, f, f0)
+            model = self._cy_components_model(pss, f, f0)
         ## ⚠ A SPECIFICATION LIMIT, NOT AN IMPLEMENTATION ONE (docs session,
         ## 2026-09-08): a coloured source under a modulation that CHANGES
         ## SIGN is not representable by any fold built from a PSD -- the
@@ -12469,22 +12630,55 @@ class PAC(Analysis):
                 'discrepancy is set by the offset, not the mechanism -- and '
                 'exact for a sign-definite one. Only the element knows the sign.',
                 RuntimeWarning, stacklevel=3)
-        def _B(p):
-            key = round(abs(f - p * f0) / f0, 12)
-            if key not in cache:
-                wp = 2.0 * np.pi * abs(f - p * f0)
-                if model is not None:
-                    cache[key] = self._sqrt_harmonics_of(model(wp))
-                else:
-                    cache[key] = self._cy_sqrt_harmonics(pss, wp)
-            return cache[key]
         ks = np.fft.fftfreq(Nn, d=1.0 / Nn).astype(int)
-        ## every band the sum reaches, stacked once: BB[pi, k] = B_k^{(p)}
-        ## with pi = p - pmin.  The (l, l') pair sum is then two fancy
-        ## indexings and one einsum instead of N small products in Python
-        ## (204 000 `_B` calls, 1.9 s of a 2.8 s fold, before).
         pmin = min(ls) + int(ks.min()); pmax = max(ls) + int(ks.max())
-        BB = np.asarray([_B(p) for p in range(pmin, pmax + 1)], dtype=complex)
+        wband = lambda p: 2.0 * np.pi * abs(f - p * f0)
+        ## ⚠⚠ ONE SQUARE ROOT PER INDEPENDENT COMPONENT, NOT OF THE SUM
+        ## (2026-09-15).  A joint `sqrt(CY)` made independent sources with
+        ## different modulations NON-ADDITIVE (+7.3 % of the total on a
+        ## switch + a 1/f source at one node) -- see `_cy_components_model`.
+        ## The white parts stay in the exact P-form (linear in `CY`, so
+        ## additive already); each coloured part gets its own root, scaled
+        ## per band when its exponent is uniform (`sqrt(c B) = sqrt(c)
+        ## sqrt(B)`, no per-band eigendecomposition).
+        if getattr(model, 'flicker', None) is None:
+            groups = [lambda p: (self._sqrt_harmonics_of(model(wband(p)))
+                                 if model is not None else
+                                 self._cy_sqrt_harmonics(pss, wband(p)))]
+        else:
+            Pw = np.fft.fft(model.white, axis=0) / Nn
+            for l in ls:
+                for lp in ls:
+                    total += complex(rows[l] @ Pw[(lp - l) % Nn] @ np.conj(rows[lp]))
+            groups = []
+            for _key, Bc, EF in model.flicker:
+                ef = self._uniform_exponent(Bc, EF)
+                if ef is not None:
+                    groups.append(lambda p, SB=self._sqrt_harmonics_of(Bc), ef=ef:
+                                  (model.w1 / wband(p)) ** (0.5 * ef) * SB)
+                else:
+                    groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
+                        Bc * (model.w1 / wband(p)) ** EF))
+            for key in model.perband:
+                groups.append(lambda p, key=key: self._sqrt_harmonics_of(
+                    self._element_cy_samples(pss, wband(p))[key]))
+        for sqrt_at in groups:
+            cache = {}
+            ## every band the sum reaches, stacked once: BB[pi, k] =
+            ## B_k^{(p)} with pi = p - pmin.  The (l, l') pair sum is then two
+            ## fancy indexings and one einsum instead of N small products in
+            ## Python (204 000 `_B` calls, 1.9 s of a 2.8 s fold, before).
+            def _B(p, cache=cache, sqrt_at=sqrt_at):
+                key = round(abs(f - p * f0) / f0, 12)
+                if key not in cache:
+                    cache[key] = sqrt_at(p)
+                return cache[key]
+            BB = np.asarray([_B(p) for p in range(pmin, pmax + 1)], dtype=complex)
+            total = self._band_resolved_pairs(rows, ls, ks, Nn, pmin, BB, total)
+        return float(np.real(total))
+
+    @staticmethod
+    def _band_resolved_pairs(rows, ls, ks, Nn, pmin, BB, total):
         for l in ls:
             for lp in ls:
                 ## (B B^H)_j = sum_k B_k B_{k-j}^H: the partner index is
@@ -13370,6 +13564,205 @@ class PAC(Analysis):
             K = A @ K @ A.T + Q
             seq.append(0.5 * (K + K.T))
         return K0, seq
+
+    def sampled_noise(self, pss, output, times, freqs, maxsidebands=None):
+        """The one-sided PSD of the SAMPLE SERIES `y(t0 + kT)` -- DRIVEN
+        circuits, white AND coloured sources.  2026-09-15.
+
+        Returns `S` of shape `(len(times), len(freqs))` in `output`'s units
+        squared per Hz, for `0 < f <= f0/2`.  `sum` over the band of `S` is
+        the variance at `t0` that a sampler sees; see `sampled_variance`.
+        The instants actually used (the nearest period-grid points) are left
+        in `self.sampled_instants`.
+
+        ⚠ WHAT THIS IS, AND WHAT IT IS NOT.  The noise at a sampling instant
+        folds every source band `nu = f + n f0` onto the series frequency
+        `f`: `S(f; t0) = sum_n G_n(f; t0) CY(|nu_n|) G_n^H` with `G_n` the
+        response AT `t0` to a source at `nu_n`.  It is NOT the time-averaged
+        output PSD (`pnoise`); only the INTEGRATED statistics connect -- the
+        cycle average of the variance at `t0` is the integral of the
+        time-averaged PSD.  ⚠ A band `[fmin, fmax]` on `f` excludes
+        `+-fmin` around EVERY clock harmonic, not only DC.
+
+        ⚠⚠ ONE TRANSPOSED SOLVE PER `(t0, f)` COVERS EVERY SIDEBAND.  For a
+        driven circuit the periodic adjoint at `nu = f + n f0` differs from
+        the one at `f` only through phases (`exp(-j nu T)` is the same), so
+        the solve seeded at `t0` is shared and each `n` is a weighted sum of
+        the per-step sensitivities the reverse pass already collects.  The
+        sideband count costs nothing; the grid's Nyquist (`N/2 - 1`) bounds
+        it, as in `adjoint_sideband_row`.
+
+        ⚠ SOURCE MODEL, A NAMED CHOICE: MODULATED-STATIONARY, per band --
+        `sqrt(CY(x(t), nu))`, the convention of `pnoise(cyclostationary=True)`
+        -- with ONE square root per independent component (per leaf element,
+        white part and power-law part separately; `_cy_components_model`).
+        A joint root of the summed `CY` made independent sources
+        non-additive (measured +9.3 % of the held variance, white + flicker
+        in one element).  ⚠ Mahmutoglu & Demir (TCAS-I 62(4), 2015) show
+        that a SWITCHED MOSFET's trap (1/f) noise is whitened below the
+        switching frequency and that a modulated-stationary 1/f model
+        over-predicts it; the physical fix needs trap states in the device
+        model, which is outside this analysis.  An agreement with another
+        tool on this quantity is agreement on the convention.  A flicker
+        spectrum is also singular at DC: keep `f` away from 0 (the band
+        integral takes an explicit `fmin`).
+
+        MEASURED (switched capacitor, Ron 1 k, Roff 1 G, 100 pF, 100 kHz,
+        gear, 400 points): the white held variance equals `covariance`'s
+        at the same instant to 1e-6 (0.998721 kT/C) and the tracking value
+        to 1.6e-4 (0.8466, covariance's own O(h/tau) floor); the seeded row
+        at `t0 = 0` equals `adjoint_transfer_row` to 1.5e-16; on an LTI
+        circuit the series sum equals the fold of `pnoise` over the same
+        sidebands to 1e-10, white and 1/f.  Each gate was checked to fail:
+        the source samples one step early read 1.30 kT/C, sidebands cut to
+        N/8 read 0.77 in track.
+
+        ⚠ Solved-history (gear) and plain one-step (euler, trap) period maps
+        only; the stage methods and GLMs have no seeded reverse pass here.
+        """
+        return self._sampled_series(pss, output, times, freqs, maxsidebands)
+
+    def sampled_variance(self, pss, output, times, fmin, fmax,
+                         points_per_decade=40, maxsidebands=None):
+        """The variance at sampling instants over the SERIES band
+        `[fmin, fmax]`, `0 < fmin < fmax <= f0/2`: the trapezoidal integral
+        of `sampled_noise` on a log grid of `points_per_decade`, nothing
+        added below `fmin`.  Returns an array over `times`.
+
+        ⚠ `fmin` AND `fmax` ARE REQUIRED.  With a 1/f source the integral
+        grows as `ln(fmax/fmin)` (measured 0.0010 kT/C per decade, flat from
+        1e-4 to 1e-1 f0, on a switched capacitor with a constant 1/f source)
+        and has no limit at `fmin -> 0`; with white sources only, the band
+        removes `fmin/(f0/2)` of the full variance because the series PSD is
+        flat.  Nothing is extrapolated into `[0, fmin]`.
+        """
+        f0 = 1.0 / float(pss.factored_period().T)
+        fmin, fmax = float(fmin), float(fmax)
+        if not (0.0 < fmin < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
+            raise ValueError(
+                'PAC.sampled_variance: need 0 < fmin < fmax <= f0/2 = %.6g Hz '
+                '(the sample series\' Nyquist); got fmin = %.6g, fmax = %.6g. '
+                'fmin has no default: a 1/f source makes the variance grow '
+                'as ln(fmax/fmin) without limit.' % (0.5 * f0, fmin, fmax))
+        nf = max(2, int(np.ceil(points_per_decade * np.log10(fmax / fmin))) + 1)
+        fs = np.logspace(np.log10(fmin), np.log10(fmax), nf)
+        S = self._sampled_series(pss, output, times, fs, maxsidebands)
+        from scipy.integrate import trapezoid
+        return trapezoid(S, fs, axis=1)
+
+    def _sampled_series(self, pss, output, times, freqs, maxsidebands):
+        import scipy.sparse.linalg as spla
+        self._check_circuit(pss)
+        if getattr(pss, 'autonomous', False):
+            raise ValueError(
+                'PAC.sampled_noise: an OSCILLATOR has no sampling instant '
+                'fixed to its own phase -- its phase diffuses, so there is no '
+                'cyclostationary sample series (see covariance()). Use '
+                'oscillator_spectrum or modal_spectrum.')
+        fp = pss.factored_period()
+        if fp.kind not in ('solved_history', 'plain'):
+            raise NotImplementedError(
+                "PAC.sampled_noise: the period map is '%s' (method %r), and "
+                'only the solved-history (gear) and plain one-step (euler, '
+                'trap) maps have the seeded reverse pass this needs. Solve '
+                "the PSS with method='gear'." % (
+                    fp.kind, getattr(pss.par, 'method', None)))
+        T = float(fp.T)
+        f0 = 1.0 / T
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        n = fp.width
+        m = pss.cir.n - 1
+        fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+        if np.any(fr <= 0.0) or np.any(fr > 0.5 * f0 * (1.0 + 1e-12)):
+            raise ValueError(
+                'PAC.sampled_noise: series frequencies must lie in (0, f0/2] '
+                '= (0, %.6g Hz]; the sample series has nothing above its '
+                'Nyquist and a 1/f source is singular at 0.' % (0.5 * f0))
+        lmax = N // 2 - 1
+        L = lmax if maxsidebands is None else int(maxsidebands)
+        if L > lmax:
+            raise ValueError(
+                "PAC.sampled_noise: maxsidebands = %d is above the grid's "
+                'Nyquist (%d at %d points per period). Nothing aliases down '
+                'from above what the grid represents -- use a finer period '
+                'grid.' % (L, lmax, N))
+        d = np.zeros(m, dtype=complex)
+        if np.isscalar(output):
+            d[int(output)] = 1.0
+        else:
+            out = np.asarray(output, dtype=complex).ravel()
+            d[:len(out)] = out
+        ts = np.atleast_1d(np.asarray(times, dtype=float))
+        grid = tms[:N]
+        k0s = []
+        for t in ts:
+            tt = float(t) % T
+            dist = np.abs(grid - tt)
+            dist = np.minimum(dist, T - dist)
+            k0s.append(int(np.argmin(dist)))
+        self.sampled_instants = grid[k0s]
+
+        ## components, rolled to the INJECTION index: step j's source enters
+        ## at t_{j+1} (the reverse pass's own pairing) -- sampled one step
+        ## early the held variance read 1.30 kT/C instead of 0.9987
+        model = self._cy_components_model(pss, float(np.min(fr)), f0)
+        roll = lambda C: np.roll(np.asarray(C), -1, axis=0)
+        white = [self._psd_sqrt(roll(A)) for _key, A in model.white_parts]
+        scaled, perband = [], []
+        for _key, Bc, EF in model.flicker:
+            ef = self._uniform_exponent(Bc, EF)
+            if ef is not None:
+                scaled.append((self._psd_sqrt(roll(Bc)), ef))
+            else:
+                perband.append(lambda w, Bc=Bc, EF=EF: roll(Bc * (model.w1 / w) ** EF))
+        for key in model.perband:
+            perband.append(lambda w, key=key: roll(self._element_cy_samples(pss, w)[key]))
+
+        tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
+        ns = np.arange(-L, L + 1)
+        S = np.zeros((len(ts), len(fr)))
+        for ti, k0 in enumerate(k0s):
+            for fi, f in enumerate(fr):
+                alpha = np.exp(-2j * np.pi * f * T)
+                inject = np.zeros((N, m), dtype=complex)
+                inject[k0] = np.exp(-2j * np.pi * f * tms[k0]) * d
+                g, t_inj, _st = fp.matvec_transposed(
+                    np.zeros(n, dtype=complex), collect=True, inject=inject)
+                A_ = spla.LinearOperator(
+                    (n, n), dtype=complex,
+                    matvec=lambda v, a=alpha: np.asarray(v) - a * fp.matvec_transposed(v))
+                z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
+                _e, t_z, _st = fp.matvec_transposed(z, collect=True)
+                Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))      # N x m
+                nu = f + ns * f0
+                E = (np.exp(2j * np.pi * nu[:, None] * tms[None, 1:N + 1])
+                     * np.exp(-2j * np.pi * ns * f0 * tms[k0])[:, None])
+                dens = 0.0
+                for SA in white:
+                    R = E @ np.einsum('ji,jik->jk', Sv, SA)
+                    dens += float(np.sum(np.abs(R) ** 2))
+                for SB, ef in scaled:
+                    R = E @ np.einsum('ji,jik->jk', Sv, SB)
+                    c = (model.w1 / (2.0 * np.pi * np.abs(nu))) ** ef
+                    dens += float(np.sum(c * np.sum(np.abs(R) ** 2, axis=1)))
+                for comp in perband:
+                    for bi, nb in enumerate(nu):
+                        R = E[bi] @ np.einsum(
+                            'ji,jik->jk', Sv,
+                            self._psd_sqrt(comp(2.0 * np.pi * abs(nb))))
+                        dens += float(np.sum(np.abs(R) ** 2))
+                S[ti, fi] = dens
+        return S
+
+    @staticmethod
+    def _psd_sqrt(Cs):
+        """Symmetric PSD square roots of a stack `(..., n, n)`."""
+        Cs = np.asarray(Cs, dtype=complex)
+        Cs = 0.5 * (Cs + np.conj(np.swapaxes(Cs, -1, -2)))
+        lam, U = np.linalg.eigh(Cs)
+        return np.einsum('...ik,...k,...jk->...ij', U,
+                         np.sqrt(np.clip(np.real(lam), 0.0, None)), U.conj())
 
     ## ⚠⚠⚠ THE NOTE THAT WAS HERE ACCUSED THIS ROUTE AND WAS WRONG.  A
     ## MONTE CARLO SETTLED IT THE OTHER WAY: this route is CORRECT and

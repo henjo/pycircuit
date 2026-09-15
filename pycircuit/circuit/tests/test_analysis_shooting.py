@@ -18735,7 +18735,16 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     1.000 to four digits at every offset: through a time-INVARIANT
     transfer only P_0 survives and the construction cannot show -- the
     fixture, not the fold.  Pinned: refusal; 0.376 within 2 %; the flicker
-    ratio at 0.1 MHz within 3 % of 0.319 and away from the thermal one.
+    ratio at 0.1 MHz within 3 % of 0.3055 and away from the thermal one.
+
+    ⚠⚠ 0.319 WAS THE DEFECT'S NUMBER (2026-09-15).  It came from ONE square
+    root of the summed CY, and the EKV carries thermal AND flicker noise in
+    one element under different modulations -- a joint root makes such
+    independent sources non-additive (measured +9.3 % of a held variance
+    with white + flicker in one switch element, against the same sources as
+    two elements, which the split reproduces to 2.3e-11).  With one root
+    per component the ratio reads 0.3055; the thermal-only 0.376 is white
+    and unchanged.
     """
     import warnings
     from pycircuit.circuit import elements_hdl as eh
@@ -18775,7 +18784,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
             sc, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         ratios[kf] = sc / sm
     assert abs(ratios[0.0] / 0.376 - 1.0) < 0.02, ratios
-    assert abs(ratios[1e-13] / 0.319 - 1.0) < 0.03, ratios
+    assert abs(ratios[1e-13] / 0.3055 - 1.0) < 0.03, ratios
     assert abs(ratios[1e-13] - ratios[0.0]) > 0.03, ratios
 
     ## THE COLOURED BRANCH'S COST (2026-09-09): the profile said the cost
@@ -18788,17 +18797,27 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     ## and (ii) a colour that is NOT thermal-plus-flicker (a Lorentzian
     ## term added to the fixture's CY) fails the verification, so the
     ## fold falls back to evaluating the circuit and still agrees.
+    ## ⚠ Since 2026-09-15 the fit is per ELEMENT (`_cy_components_model`),
+    ## so the per-band reference is forced by failing THAT fit (every
+    ## element is then evaluated per band), not the whole-circuit one.
+    ## ⚠⚠ AND THE REFERENCE IS NO LONGER THE SAME MODEL TO 1e-9: evaluated
+    ## per band an element gets ONE root for its white and flicker parts
+    ## together (there is no fit to split them), while the fitted route
+    ## roots them separately.  On the EKV (thermal + flicker in one device)
+    ## that in-element difference measured 4.2e-4 -- the cross-ELEMENT
+    ## independence, which both routes keep, is what moved 0.319 -> 0.3055.
     from pycircuit.circuit import shooting as _sh
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         assert pac._cy_colour_model(pss, 0.1e6, f0) is not None
-        orig = _sh.PAC._cy_colour_model
-        _sh.PAC._cy_colour_model = lambda self, pss_, f_, f0_: None
+        orig_fit = _sh.PAC.__dict__['_colour_fit']
+        _sh.PAC._colour_fit = staticmethod(lambda Cs, ws: None)
         try:
             sfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
-            _sh.PAC._cy_colour_model = orig
-    assert abs(sc / sfull - 1.0) < 1e-9, (sc, sfull)
+            _sh.PAC._colour_fit = orig_fit
+    assert 1e-6 < abs(sc / sfull - 1.0) < 1e-3, (sc, sfull)
+    orig = _sh.PAC._cy_colour_model
 
     cy_orig = c.CY
     def cy_lorentz(x, w, **kw):
@@ -20626,3 +20645,198 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
                 ms['correlation'], rtol=0, atol=0)
     with pytest.raises(ValueError, match='harmonic must be >= 1'):
         pac.modal_spectrum(pss, np.array([f_amp]), 0, harmonic=0, H=8)
+
+
+class _SwitchFlickerHdl(_SwitchHdl):
+    """`_SwitchHdl` plus a CONSTANT 1/f current noise `kf/f` on the same
+    branch -- white and coloured sources in ONE element under DIFFERENT
+    modulations, the case a joint square root got wrong."""
+    instparams = _SwitchHdl.instparams + [
+        _HdlParameter(name='kf', desc='Flicker PSD at 1 Hz', unit='A^2/Hz',
+                      default=0.0)]
+
+    @staticmethod
+    def analog(p, n, cp, cn):
+        import sympy
+        from pycircuit.circuit.hdl import flicker_noise
+        b = Branch(p, n)
+        ctrl = Branch(cp, cn)
+        s = (1 + sympy.tanh((ctrl.V - vth) / vs)) / 2          # noqa: F821
+        g = goff + (gon - goff) * s                            # noqa: F821
+        return (Contribution(b.I, g * b.V),
+                Contribution(b.I, white_noise(4 * kb * temp * g)),  # noqa
+                Contribution(b.I, flicker_noise(kf, 1)))       # noqa: F821
+
+
+def _sampler_fixture(elements, npts=400):
+    """The switched-capacitor sampler of
+    `test_a_switched_capacitor_holds_kTC_with_per_step_CY` with the noisy
+    elements supplied: `elements(cir)` adds them between 'in'/'out'/'ck'."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    fclk = 100e3
+    T = 1.0 / fclk
+    cir = SubCircuit()
+    for nd in ('in', 'out', 'ck'):
+        cir.add_node(nd)
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    elements(cir)
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                  maxiterations=100)
+    assert pss.converged
+    io = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('out')
+    return cir, pss, io, PAC(cir, toolkit=circuit.numeric), T
+
+
+_KB, _TEMP = 1.38e-23, 300.0
+
+
+def _sw(kb=_KB, **kw):
+    kw.setdefault('gon', 1e-3)
+    kw.setdefault('goff', 1e-9)
+    return _SwitchHdl('in', 'out', 'ck', gnd, vth=0.0, vs=50e-3, temp=_TEMP,
+                      kb=kb, **kw)
+
+
+def test_the_sampled_variance_is_the_covariance_at_that_instant_for_white_sources():
+    """`PAC.sampled_variance` -- one seeded adjoint per (instant, series
+    frequency), every sideband from its phases -- against the validated
+    per-step Lyapunov route at the SAME instants.  Measured at 400 points:
+    held 0.998721 kT/C both ways (1e-6), tracking 0.846606 against 0.846745
+    (1.6e-4, covariance's own O(h/tau) floor).  The white series PSD is flat,
+    so the band [fmin, f0/2] holds `1 - fmin/(f0/2)` of the full variance;
+    fmin = 1e-6 f0 makes that 2e-6.  ⚠ Checked to fail: sources sampled one
+    step early read 1.30 kT/C held; sidebands cut to N/8 read 0.77 tracking.
+    """
+    cir, pss, io, pac, T = _sampler_fixture(lambda c: c.__setitem__('S0', _sw()))
+    ktc = _KB * _TEMP / 100e-12
+    _K0, Ks = pac.covariance(pss, samples=True)
+    cov = np.array([np.asarray(k, dtype=float)[io, io] for k in Ks]) / ktc
+    grid = np.asarray(pss.factored_period().times, dtype=float)
+    kh, kt = 149, 40
+    f0 = 1.0 / T
+    fmin = 1e-6 * f0
+    ## a hair off the grid points: the nearest ones are used and reported
+    want = [grid[kh] + 1e-12 * T, grid[kt] - 1e-12 * T]
+    var = pac.sampled_variance(pss, io, want, fmin, 0.5 * f0,
+                               points_per_decade=10) / ktc
+    var = var / (1.0 - fmin / (0.5 * f0))
+    np.testing.assert_allclose(pac.sampled_instants, [grid[kh], grid[kt]],
+                               rtol=0, atol=0)
+    assert abs(var[0] / cov[kh] - 1.0) < 1e-5, (var[0], cov[kh])
+    assert abs(var[1] / cov[kt] - 1.0) < 5e-4, (var[1], cov[kt])
+    assert abs(cov[kh] - 1.0) < 3e-3 and cov[kt] < 0.9
+
+
+def test_the_sampled_series_psd_is_the_pnoise_fold_on_an_lti_circuit_white_and_one_over_f():
+    """On a time-invariant circuit the sample series folds the output PSD:
+    `S(f; t0) = sum_n S_out(|f + n f0|)`, whatever `t0`.  The switch with
+    `gon = goff` is a noisy resistor; a 1/f source sits at the output.
+    Measured: 1e-10 at 0.137 f0 and 0.01 f0 over |n| <= 10 against
+    `pnoise` at the same bands (which evaluates `CY` per band itself)."""
+    import warnings
+
+    def els(c):
+        c['S0'] = _sw(gon=1e-3, goff=1e-3)
+        c['F0'] = _Flicker('out', gnd, i=0.0, noisePSD=1e-22, fref=1.0)
+    cir, pss, io, pac, T = _sampler_fixture(els)
+    f0 = 1.0 / T
+    fs = np.array([0.137, 0.01]) * f0
+    S = pac.sampled_noise(pss, io, [0.37 * T], fs, maxsidebands=10)[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = [sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
+                                            maxsidebands=20)[0]))
+                   for k in range(-10, 11)) for f in fs]
+    np.testing.assert_allclose(S, ref, rtol=1e-8, atol=0)
+
+
+def test_independent_noise_sources_add_in_the_coloured_folds():
+    """⚠⚠ THE DEFECT THIS FIXES (2026-09-15).  `pnoise(cyclostationary=True)`
+    took ONE square root of the summed `CY(x(t), w)` per band, so independent
+    sources under different modulations did not add: switch white `4kTg(t)`
+    plus a constant 1/f source at the same node read +7.3 % of the total at
+    0.013 f0 (+2.2 % at 0.137 f0) over white-only + flicker-only, and the
+    sampled variance in hold was +9.3 % with both sources inside ONE element.
+    Now one root per element x {white, coloured}: pnoise additive to 1e-15;
+    the one-element sampled variance equals the two-element one to 2.3e-11.
+    """
+    import warnings
+    ktc = _KB * _TEMP / 100e-12
+    flick = lambda c: c.__setitem__('F0', _Flicker('out', gnd, i=0.0,
+                                                   noisePSD=1e-22, fref=1.0))
+    fx = {
+        'white': _sampler_fixture(lambda c: c.__setitem__('S0', _sw())),
+        'flicker': _sampler_fixture(lambda c: (c.__setitem__('S0', _sw(kb=0.0)),
+                                               flick(c))),
+        'both': _sampler_fixture(lambda c: (c.__setitem__('S0', _sw()), flick(c))),
+    }
+    f0 = 1.0 / fx['white'][4]
+    p = {}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        for k, (_c, pss, io, pac, _T) in fx.items():
+            p[k] = float(np.real(pac.pnoise(pss, 0.013 * f0, io, maxsidebands=60,
+                                            cyclostationary=True)[0]))
+    assert not [w for w in caught if 'not the sum of its elements' in str(w.message)]
+    assert abs((p['both'] - p['white'] - p['flicker']) / p['both']) < 1e-9, p
+    assert p['flicker'] / p['both'] > 0.05, p      # the flicker is not negligible
+
+    one = _sampler_fixture(lambda c: c.__setitem__(
+        'S0', _SwitchFlickerHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                                vth=0.0, vs=50e-3, temp=_TEMP, kb=_KB, kf=1e-20)))
+    two = _sampler_fixture(lambda c: (
+        c.__setitem__('S0', _sw()),
+        c.__setitem__('S1', _SwitchFlickerHdl('in', 'out', 'ck', gnd, gon=1e-15,
+                                              goff=1e-15, vth=0.0, vs=50e-3,
+                                              temp=_TEMP, kb=0.0, kf=1e-20))))
+    T = one[4]
+    t_hold = 149 * T / 400
+    v1 = one[3].sampled_variance(one[1], one[2], [t_hold], 1e-2 * f0, 0.5 * f0,
+                                 points_per_decade=20)[0] / ktc
+    v2 = two[3].sampled_variance(two[1], two[2], [t_hold], 1e-2 * f0, 0.5 * f0,
+                                 points_per_decade=20)[0] / ktc
+    assert abs(v1 / v2 - 1.0) < 1e-8, (v1, v2)
+    assert v1 > 1.1, v1                  # the flicker is a visible share
+
+
+def test_the_sampled_variance_grows_as_ln_fmin_with_flicker_and_refuses_what_it_cannot_do():
+    """A 1/f source makes the band variance grow by a constant per decade
+    of `fmin` (measured 0.0010 kT/C per decade, flat 1e-4 -> 1e-1 f0), so
+    `fmin` is required.  Refused: a band outside (0, f0/2], a series
+    frequency of 0, sidebands above the grid's Nyquist, an oscillator, and
+    a stage-method period map."""
+    import warnings
+    ktc = _KB * _TEMP / 100e-12
+    cir, pss, io, pac, T = _sampler_fixture(lambda c: (
+        c.__setitem__('S0', _sw(kb=0.0)),
+        c.__setitem__('F0', _Flicker('out', gnd, i=0.0, noisePSD=1e-22, fref=1.0))))
+    f0 = 1.0 / T
+    v = [pac.sampled_variance(pss, io, [149 * T / 400], r * f0, 0.5 * f0,
+                              points_per_decade=10)[0] / ktc
+         for r in (1e-4, 1e-3, 1e-2)]
+    inc = -np.diff(v)
+    assert inc[0] > 0 and abs(inc[0] / inc[1] - 1.0) < 0.05, (v, inc)
+    with pytest.raises(ValueError, match='fmin'):
+        pac.sampled_variance(pss, io, [0.0], 0.0, 0.5 * f0)
+    with pytest.raises(ValueError, match='fmin'):
+        pac.sampled_variance(pss, io, [0.0], 1e-3 * f0, 0.6 * f0)
+    with pytest.raises(ValueError, match=r'\(0, f0/2\]'):
+        pac.sampled_noise(pss, io, [0.0], [0.0])
+    with pytest.raises(ValueError, match='Nyquist'):
+        pac.sampled_noise(pss, io, [0.0], [0.1 * f0], maxsidebands=400)
+    ocir, opss = _a9_vdp()
+    with pytest.raises(ValueError, match='OSCILLATOR'):
+        PAC(ocir, toolkit=circuit.numeric).sampled_noise(opss, 0, [0.0], [0.01])
+    rpss = PSS(cir, method='radau', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rpss.solve(period=T, timestep=T / 100, x0=np.zeros(cir.n - 1),
+                   maxiterations=100)
+    with pytest.raises(NotImplementedError, match="method='gear'"):
+        pac.sampled_noise(rpss, io, [0.0], [0.1 * f0])

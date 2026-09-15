@@ -47,6 +47,8 @@ genuinely open:
 | ~~PSP `rg` uses drawn W·L~~ | ✅ fixed: `geometry()` returns `Lf`/`Wf`, `rg` divides by them (PMOS was +9.4 % / +55 %) |
 | ~~`NPortS.Z` float cast; `.Z`/`.Y` fail on sweeps~~ | ✅ fixed (5103× on an RC two-port at 1e7 Hz before); swept S converted per frequency |
 | ~~NPortY/Z/A `.S`/`.CS` renormalise to 50 Ω (dead `z0` property argument)~~ | ✅ fixed 2026-09-14 (Andreas confirmed the peer's spec): conversions carry the source's `z0`, `.S`/`.CS` at the stored `z0`, direct construction 50 Ω, explicit `to_s(z0)` on every class (1.18 off in S at z0 = 1 on HEAD) |
+| Time-sampled noise with coloured sources (peer request) | ✅ BUILT 2026-09-15 first cut: `PAC.sampled_noise` / `sampled_variance` (sample-series PSD on (0, f0/2], one seeded adjoint per (t0, f) covers all sidebands; white held variance = `covariance` to 1e-6); gear/one-step only; Sepke eq. (33) case open |
+| ~~`pnoise(cyclostationary=True)` non-additive for independent sources~~ | ✅ FIXED 2026-09-15: joint sqrt of summed CY → one root per element × {white, power-law}; was +7.3 % of the total (switch + 1/f at one node); MOS test pin 0.319 → 0.3055 |
 | Stale `nport.py` doctests (4) | ⚠ pre-existing: sympy `symbols('abcd')` API, NumPy repr; values right; suite does not collect doctests |
 | E1 GLM PCNR stage path | unbuilt |
 | E2 GLM on the JAX backend | unbuilt; the one integrator class not on this branch's own backend |
