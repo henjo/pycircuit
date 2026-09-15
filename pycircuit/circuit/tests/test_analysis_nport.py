@@ -283,3 +283,38 @@ def test_a_converted_nport_carries_its_reference_impedance():
                     dtype=complex)
     assert np.max(np.abs(np.asarray(cas.S, dtype=complex)
                          - textbook_s(Zc, 1.0))) < 1e-9
+
+
+def test_a_swept_nport_renormalises_s_and_cs_frequency_by_frequency():
+    """`to_s(z0)` on a SWEPT `solve_s` result -- `S` as Waveforms, `CS` as
+    per-frequency arrays -- must equal the scalar renormalisation at every
+    frequency.
+
+    ⚠ RECORDED AS AN OPEN GAP ON 2026-09-14 ("a swept CS is not renormalised
+    per frequency") WITHOUT A MEASUREMENT, AND WRONG: written 2026-09-15 to pin
+    a fix, this test already PASSED on the unmodified code (to 1e-12), so the
+    existing Y/Z conversion path handles the sweep and no change was made.
+    Kept as the pin that the claim now has."""
+    import pycircuit.circuit.circuit as _cc
+    _cc.default_toolkit = numeric
+    cir = SubCircuit()
+    n1, n2 = cir.add_nodes('1', '2')
+    cir['R1'] = R(n1, n2, r=50.0)
+    cir['C1'] = C(n2, gnd, c=3.18e-12)
+    an = TwoPortAnalysis(cir, n1, gnd, n2, gnd)
+    freqs = [1e7, 1e9, 1e11]
+    swept = an.solve_s(freqs=np.array(freqs))
+    assert swept.z0 != 50.0
+    ren = swept.to_s(50.0)
+    assert ren.z0 == 50.0
+    for i, f in enumerate(freqs):
+        one = an.solve_s(freqs=f).to_s(50.0)
+        Si = np.array([[complex(ren.S[a, b][i]) for b in range(2)]
+                       for a in range(2)])
+        CSi = np.array([[complex(ren.CS[a, b][i]) for b in range(2)]
+                        for a in range(2)])
+        S1 = np.asarray(one.S, dtype=complex)
+        CS1 = np.asarray(one.CS, dtype=complex)
+        assert np.max(np.abs(Si - S1)) <= 1e-12 * np.max(np.abs(S1)), (f, Si, S1)
+        assert np.max(np.abs(CSi - CS1)) <= 1e-12 * np.max(np.abs(CS1)), (f, CSi, CS1)
+        assert np.max(np.abs(CS1)) > 0.0

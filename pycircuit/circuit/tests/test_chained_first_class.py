@@ -366,9 +366,11 @@ class TestTheRecoveredScales(object):
             va, ia = a.pcnr_scales(_params(a), _epar())
             vb, ib = b.pcnr_scales(_params(b), _epar())
             assert vb == pytest.approx(va, rel=1e-14)
-            assert ib == pytest.approx(ia, rel=1e-14)
+            ## `abs=0.0`: these currents are ~1e-14 A, and `approx`'s default
+            ## absolute tolerance of 1e-12 made both comparisons unfailable
+            assert ib == pytest.approx(ia, rel=1e-14, abs=0.0)
             ## And they are the physical numbers, not merely equal.
-            assert ia == pytest.approx(kw.get('isat', 1e-14), rel=1e-9)
+            assert ia == pytest.approx(kw.get('isat', 1e-14), rel=1e-9, abs=0.0)
 
 
 def _epar():

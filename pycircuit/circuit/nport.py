@@ -124,13 +124,14 @@ class NPort(object):
         """Parallel of two n-ports
 
         >>> import sympy as S
-        >>> a,b,c,d = S.symbols('abcd')
+        >>> a,b,c,d = S.symbols('a b c d')
         >>> A = NPortA(np.array([[a,b], [c,d]]))
         >>> A = S.Matrix((A // A).A)
         >>> A.simplify()
         >>> A
-        [    a, 0.5*b]
-        [2.0*c,     d]
+        Matrix([
+        [1.0*a, 0.5*b],
+        [2.0*c, 1.0*d]])
 
         """
         ynport = NPortY(self.Y + a.Y, self.CY + a.CY, z0=self.z0)
@@ -140,12 +141,13 @@ class NPort(object):
         """Series connection with another n-port
 
         >>> import sympy as S
-        >>> a,b,c,d = S.symbols('abcd')
+        >>> a,b,c,d = S.symbols('a b c d')
         >>> A = NPortA(np.array([[a,b], [c,d]]))
         >>> A = S.Matrix(A.series(A).A)
         >>> A.expand()
-        [    a, 2*b]
-        [0.5*c,   d]
+        Matrix([
+        [1.0*a, 2.0*b],
+        [0.5*c, 1.0*d]])
         
         """
         znport = NPortZ(self.Z + a.Z, self.CZ + a.CZ, z0=self.z0)
@@ -362,8 +364,8 @@ class NPortA(NPort):
                               [  4.20000000e-03,   1.59000000e+00]])
         >>> P = NPortA(abcd)
         >>> P.S
-        array([[ 0.1,  0.3],
-               [ 0.5,  0.6]])
+        array([[0.1, 0.3],
+               [0.5, 0.6]])
 
         >>>
         """
@@ -451,9 +453,9 @@ class NPortS(NPort):
         """Return chain parameters (ABCD)
         
         >>> S = np.array([[0.1,0.3],[0.5,0.6]])
-        >>> NPortS(S).A
-        array([[0.59, 80.5],
-               [0.0042, 1.59]], dtype=object)
+        >>> np.round(np.asarray(NPortS(S).A, dtype=float), 6)
+        array([[5.90e-01, 8.05e+01],
+               [4.20e-03, 1.59e+00]])
 
         """
         s = self.S

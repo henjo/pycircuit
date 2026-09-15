@@ -638,3 +638,20 @@ def test_a_glm_has_no_error_estimate_across_a_restart():
         Transient._solve_timestep_glm = orig
     assert seen[0][0] and seen[0][1] == 0.0, seen[0]
     assert not seen[1][0] and seen[1][1] > 0.0, seen[1]
+
+
+def test_sampled_noise_refuses_a_glm_period_map():
+    """`PAC.sampled_noise` has seeded reverse passes for the LMM and stage
+    maps only; a multivalue GLM map is refused by name rather than
+    mis-replayed (the refusal was written 2026-09-15 and had no test)."""
+    import pytest
+    from pycircuit.circuit.shooting import PSS, PAC
+    per = 1e-3
+    cir = _cv_loop(per)
+    p = PSS(cir, method='glm3', reltol=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p.solve(period=per, timestep=per / 40, maxiterations=40)
+    assert p.factored_period().kind == 'glm'
+    with pytest.raises(NotImplementedError, match='GLM'):
+        PAC(cir).sampled_noise(p, 0, [0.0], [0.1 / per])

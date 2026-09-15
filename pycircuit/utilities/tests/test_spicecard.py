@@ -36,21 +36,21 @@ class TestParameters(object):
             .model m1 nmos vth='b + 1' w=3
             """)
         p = spicecard.read(f).model_params('m1')
-        assert p['vth'] == pytest.approx(11.0)
-        assert p['w'] == pytest.approx(3.0)
+        assert p['vth'] == pytest.approx(11.0, rel=1e-12, abs=0.0)
+        assert p['w'] == pytest.approx(3.0, rel=1e-12, abs=0.0)
 
     def test_engineering_suffixes(self, tmp_path):
         f = _write(tmp_path, 'a.sp', """
             .model m1 nmos a=1u b=2n c=3p d=1meg e=4k g=5m h=6f
             """)
         p = spicecard.read(f).model_params('m1')
-        assert p['a'] == pytest.approx(1e-6)
-        assert p['b'] == pytest.approx(2e-9)
-        assert p['c'] == pytest.approx(3e-12)
-        assert p['d'] == pytest.approx(1e6), 'meg must beat m'
-        assert p['e'] == pytest.approx(4e3)
-        assert p['g'] == pytest.approx(5e-3)
-        assert p['h'] == pytest.approx(6e-15)
+        assert p['a'] == pytest.approx(1e-6, rel=1e-12, abs=0.0)
+        assert p['b'] == pytest.approx(2e-9, rel=1e-12, abs=0.0)
+        assert p['c'] == pytest.approx(3e-12, rel=1e-12, abs=0.0)
+        assert p['d'] == pytest.approx(1e6, rel=1e-12, abs=0.0), 'meg must beat m'
+        assert p['e'] == pytest.approx(4e3, rel=1e-12, abs=0.0)
+        assert p['g'] == pytest.approx(5e-3, rel=1e-12, abs=0.0)
+        assert p['h'] == pytest.approx(6e-15, rel=1e-12, abs=0.0)
 
     def test_exponent_notation_is_not_eaten_by_the_suffix_rule(self,
                                                               tmp_path):
@@ -59,9 +59,9 @@ class TestParameters(object):
             .model m1 nmos a=1e-6 b=2.5E+3 c=1.44e-15
             """)
         p = spicecard.read(f).model_params('m1')
-        assert p['a'] == pytest.approx(1e-6)
-        assert p['b'] == pytest.approx(2500.0)
-        assert p['c'] == pytest.approx(1.44e-15)
+        assert p['a'] == pytest.approx(1e-6, rel=1e-12, abs=0.0)
+        assert p['b'] == pytest.approx(2500.0, rel=1e-12, abs=0.0)
+        assert p['c'] == pytest.approx(1.44e-15, rel=1e-12, abs=0.0)
 
     def test_functions(self, tmp_path):
         f = _write(tmp_path, 'a.sp', """
@@ -93,15 +93,15 @@ class TestParameters(object):
             + y=10
             """)
         p = spicecard.read(f).model_params('m1')
-        assert p['x'] == pytest.approx(3.0)
-        assert p['y'] == pytest.approx(10.0)
+        assert p['x'] == pytest.approx(3.0, rel=1e-12, abs=0.0)
+        assert p['y'] == pytest.approx(10.0, rel=1e-12, abs=0.0)
 
     def test_a_semicolon_inside_a_quoted_expression_survives(self, tmp_path):
         f = _write(tmp_path, 'a.sp', """
             .param a = 'max(1, 2)'
             .model m1 nmos x='a * 3'
             """)
-        assert spicecard.read(f).model_params('m1')['x'] == pytest.approx(6.0)
+        assert spicecard.read(f).model_params('m1')['x'] == pytest.approx(6.0, rel=1e-12, abs=0.0)
 
 
 class TestLibSections(object):
@@ -136,7 +136,7 @@ class TestLibSections(object):
             .lib inner.lib tt
             .model m1 nmos x='k * 2'
             """)
-        assert spicecard.read(f).model_params('m1')['x'] == pytest.approx(6.0)
+        assert spicecard.read(f).model_params('m1')['x'] == pytest.approx(6.0, rel=1e-12, abs=0.0)
 
     def test_include_paths_are_relative_to_the_including_file(self, tmp_path):
         sub = tmp_path / 'sub'
@@ -146,7 +146,7 @@ class TestLibSections(object):
             .include sub/p.lib
             .model m1 nmos x='k'
             """)
-        assert spicecard.read(f).model_params('m1')['x'] == pytest.approx(4.0)
+        assert spicecard.read(f).model_params('m1')['x'] == pytest.approx(4.0, rel=1e-12, abs=0.0)
 
 
 class TestScoping(object):
@@ -160,8 +160,8 @@ class TestScoping(object):
             .model outer nmos x='w'
             """)
         d = spicecard.read(f)
-        assert d.model_params('inner')['x'] == pytest.approx(2.0)
-        assert d.model_params('outer')['x'] == pytest.approx(1.0)
+        assert d.model_params('inner')['x'] == pytest.approx(2.0, rel=1e-12, abs=0.0)
+        assert d.model_params('outer')['x'] == pytest.approx(1.0, rel=1e-12, abs=0.0)
 
     def test_an_override_beats_the_subckt_default(self, tmp_path):
         """That is what an instance parameter IS.
@@ -176,9 +176,9 @@ class TestScoping(object):
             .ends
             """)
         d = spicecard.read(f)
-        assert d.model_params('inner')['x'] == pytest.approx(5e-6)
-        assert d.model_params('inner', w=2e-6)['x'] == pytest.approx(2e-5)
-        assert d.model_params('inner', w=2e-6, ng=4)['x'] == pytest.approx(5e-6)
+        assert d.model_params('inner')['x'] == pytest.approx(5e-6, rel=1e-12, abs=0.0)
+        assert d.model_params('inner', w=2e-6)['x'] == pytest.approx(2e-5, rel=1e-12, abs=0.0)
+        assert d.model_params('inner', w=2e-6, ng=4)['x'] == pytest.approx(5e-6, rel=1e-12, abs=0.0)
 
     def test_overrides_are_case_insensitive(self, tmp_path):
         f = _write(tmp_path, 'a.sp', """
@@ -187,8 +187,8 @@ class TestScoping(object):
             .ends
             """)
         d = spicecard.read(f)
-        assert d.model_params('inner', W=7.0)['x'] == pytest.approx(7.0)
-        assert d.model_params('INNER', w=8.0)['x'] == pytest.approx(8.0)
+        assert d.model_params('inner', W=7.0)['x'] == pytest.approx(7.0, rel=1e-12, abs=0.0)
+        assert d.model_params('INNER', w=8.0)['x'] == pytest.approx(8.0, rel=1e-12, abs=0.0)
 
 
 class TestRefusals(object):
@@ -252,8 +252,8 @@ class TestTheRealPDK(object):
         p = d.model_params('sg13g2_lv_nmos_psp', **self.INST)
         assert len(p) > 350
         assert all(isinstance(v, float) for v in p.values())
-        assert p['level'] == pytest.approx(103.6)
-        assert p['type'] == pytest.approx(1.0)
+        assert p['level'] == pytest.approx(103.6, rel=1e-12, abs=0.0)
+        assert p['type'] == pytest.approx(1.0, rel=1e-12, abs=0.0)
 
     def test_corner_multipliers_are_actually_applied(self):
         """The card holds `'-0.25737*sg13g2_lv_nmos_dphibo'`.
@@ -266,7 +266,7 @@ class TestTheRealPDK(object):
         for sec in ('mos_tt', 'mos_ss', 'mos_ff'):
             d = spicecard.read(self.CORNER, section=sec)
             got[sec] = d.model_params('sg13g2_lv_nmos_psp', **self.INST)
-        assert got['mos_tt']['dphibo'] == pytest.approx(-0.25737 * 0.9915)
+        assert got['mos_tt']['dphibo'] == pytest.approx(-0.25737 * 0.9915, rel=1e-12, abs=0.0)
         assert len({round(g['dphibo'], 9) for g in got.values()}) == 3
         assert len({round(g['rsw1'], 9) for g in got.values()}) == 3
 
@@ -277,11 +277,11 @@ class TestTheRealPDK(object):
                               **dict(self.INST, pre_layout=1))
         pre0 = d.model_params('sg13g2_lv_nmos_psp',
                               **dict(self.INST, pre_layout=0))
-        assert pre0['dlq'] == pytest.approx(pre1['dlq'] - 2e-8)
+        assert pre0['dlq'] == pytest.approx(pre1['dlq'] - 2e-8, rel=1e-12, abs=0.0)
         for ng in (1, 2, 4):
             p = d.model_params('sg13g2_lv_nmos_psp',
                                **dict(self.INST, ng=ng))
-            assert p['cfrw'] == pytest.approx(2e-16 / ng)
+            assert p['cfrw'] == pytest.approx(2e-16 / ng, rel=1e-12, abs=0.0)
 
     @pytest.mark.parametrize('lib,section,model', [
         ('cornerMOSlv.lib', 'mos_tt', 'sg13g2_lv_pmos_psp'),
