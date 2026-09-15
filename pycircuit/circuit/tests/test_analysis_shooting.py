@@ -20953,6 +20953,76 @@ def test_the_time_average_of_the_sampled_psd_is_the_fold_of_time_averaged_pnoise
     assert abs(mean / cut - 1.0) > 2e-3, (mean, cut)
 
 
+def test_the_sampled_psd_of_a_reset_rc_is_sepke_eq_33_white_and_one_over_f():
+    """Sepke et al. 2009 (TCAS-I 56(3)) eq. (33), the LTI-plus-reset case, with
+    no fitted factor: when the node is reset before a window of length `Tw`
+    and filters LTI within it, the one-sided sample-series PSD is
+    `S(f) = sum_n |H_w(f + n f0)|^2 CY(|f + n f0|)` with the WINDOWED impulse
+    response `H_w(f) = (1 - exp(-(a + j2 pi f) Tw)) / (C (a + j2 pi f))`,
+    `a = G/C`, and stationary `CY` = thermal `4kTG` plus a 1/f source.
+    A 1 nF / 1 MOhm node, reset by a NOISELESS switch while the clock is
+    above 0.95 (10 % of the period), sampled at two instants in the window.
+    Measured at 400 points (radau): worst 1.2e-3 mid-window at 10 Hz,
+    1.5e-4 white and 5e-4 1/f at the end of the window (1e-5 at 1000
+    points).  The controls: the reference with the window one step longer is
+    1e-3..1e-2 off, the never-reset (stationary) RC 0.13x..1.87x -- so the
+    window, not only the filter, is what agrees."""
+    import warnings
+    from pycircuit.circuit.constants import kboltzmann
+    circuit.default_toolkit = circuit.numeric
+    f0 = 1e3
+    T = 1.0 / f0
+    Cv, G, vth, L, npts = 1e-9, 1e-6, 0.95, 50, 400
+    fl_psd, fl_fc = 1e-24, 1e3
+    cir = SubCircuit()
+    for nd in ('out', 'ck'):
+        cir.add_node(nd)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=f0, phase=0.0)
+    cir['C0'] = C('out', gnd, c=Cv)
+    cir['R0'] = R('out', gnd, r=1.0 / G)
+    cir['SW'] = _SwitchHdl('out', gnd, 'ck', gnd, gon=1e-2, goff=1e-15,
+                           vth=vth, vs=1e-5, temp=_TEMP, kb=0.0)
+    cir['N0'] = IS('out', gnd, i=0.0, noisePSD=fl_psd, noiseFc=fl_fc)
+    pss = PSS(cir, method='radau', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                  maxiterations=60)
+    assert pss.converged
+    io = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('out')
+    pac = PAC(cir, toolkit=circuit.numeric)
+    fp = pss.factored_period()
+    grid = np.asarray(fp.times, dtype=float)[:len(fp.steps)]
+    half = np.arccos(vth) / (2 * np.pi) * T    # reset is centred on T/4
+    t_open = T / 4 + half
+    kT = kboltzmann * float(circuit.defaultepar.T)
+    a = G / Cv
+    fs = np.array([10.0, 50.0, 100.0, 200.0, 400.0, 500.0])
+
+    def cy(nu):
+        return 4 * kT * G + fl_psd * (1.0 + fl_fc / np.abs(nu))
+
+    def fold(h):
+        return np.array([np.sum(np.abs(h(f + np.arange(-L, L + 1) * f0)) ** 2
+                                * cy(f + np.arange(-L, L + 1) * f0)) for f in fs])
+
+    def windowed(Tw):
+        return lambda nu: ((1 - np.exp(-(a + 2j * np.pi * nu) * Tw))
+                           / (Cv * (a + 2j * np.pi * nu)))
+
+    for back in (0.01, 0.45):          # end of the window, and mid-window
+        t0 = grid[np.argmin(np.abs(grid - (T / 4 - half - back * T) % T))]
+        Tw = t0 - t_open if t0 > t_open else t0 + T - t_open
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S = pac.sampled_noise(pss, io, [t0], fs, maxsidebands=L)[0]
+        ref = fold(windowed(Tw))
+        assert np.max(np.abs(S / ref - 1.0)) < 3e-3, (back, S / ref)
+        assert np.min(np.abs(S / fold(windowed(Tw - T / npts)) - 1.0)) > 5e-4, back
+        stationary = fold(lambda nu: 1.0 / (Cv * (a + 2j * np.pi * nu)))
+        assert np.min(np.abs(S / stationary - 1.0)) > 0.1, (back, S / stationary)
+
+
 def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
     """⚠⚠ PEER REPORT, 2026-09-15.  With a 1/f source, `pnoise(cyclostationary=
     True)` at EXACTLY a clock harmonic returned 6.3e-2 V^2/Hz against 9.2e-15
