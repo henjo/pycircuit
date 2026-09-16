@@ -21300,6 +21300,132 @@ def test_the_edge_jitter_of_a_linear_stage_matches_its_closed_form_and_the_grid_
                - 1.0) < 2e-3, st
 
 
+def _a8_mc_edge_scatter(npts, nper, seed, s_tot, scale=1.0, res=1e3, cap=2e-10,
+                        gm=5e-4, va=1.0, f0=1e6, burn=8):
+    """Run a NOISY transient and return `(scatter of the rising crossings,
+    count, mean spacing)`.
+
+    ⚠ THE INJECTION CONVENTION IS THE WHOLE RISK, and it is not chosen here on
+    reasoning.  A Monte Carlo that injects noise with the same one-sided /
+    two-sided convention the analysis assumes cannot validate that analysis --
+    this library has been bitten by exactly that, a MC and `diffusion_constant`
+    agreeing to 0.9965 while both were 2x wrong.  So `sigma_i^2 = S/(2h)` was
+    pinned against `kT/C`, which neither route can influence: backward Euler on
+    R||C predicts `Var = (kT/C)/(1 + h/2tau)` = 0.993789 and measured
+    1.005742 +/- 0.014891, with the rival `S/h` reading (1.987578) rejected at
+    ~66 sigma.
+    """
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import EulerIntegrator
+    T = 1.0 / f0
+    h = T / npts
+    rng = np.random.default_rng(seed)
+    draws = rng.normal(0.0, scale * np.sqrt(s_tot / (2.0 * h)),
+                       size=int(nper * npts) + 8)
+    cir = _a8_one_stage(psd=0.0, noisy=False, res=res, cap=cap, gm=gm, va=va,
+                        f0=f0)
+    cir['In'] = IS(gnd, 'o0', i=0.0)
+    cir['In'].function.f = lambda t: float(draws[int(t / h + 0.5)])
+    tran = Transient(cir, integrator=EulerIntegrator())
+    sol = tran.solve(tend=nper * T, timestep=h, x0=np.zeros(cir.n),
+                     fixed_timestep=True)
+    v = np.asarray(sol.v('o0', gnd), dtype=float)
+    t = np.arange(len(v)) * h
+    ## ⚠ the threshold is ANALYTIC (0.0 -- a filtered sine with no DC path),
+    ## not the midpoint of the record.  Taking it from the record let startup
+    ## bias it, which moved the crossing off the steepest point and cost about
+    ## half of an apparent deficit before it was caught.
+    cross = []
+    for k in range(1, len(v)):
+        if t[k - 1] >= burn * T and v[k - 1] < 0 <= v[k]:
+            frac = (0.0 - v[k - 1]) / (v[k] - v[k - 1])
+            cross.append(t[k - 1] + frac * (t[k] - t[k - 1]))
+    cross = np.asarray(cross)
+    assert len(cross) > 2, 'only %d crossings' % len(cross)
+    idx = np.round((cross - cross[0]) / T)
+    resid = (cross - cross[0]) - idx * T
+    slope = float(np.polyfit(idx, resid, 1)[0])
+    return (float(np.std(resid - slope * idx, ddof=1)), len(cross),
+            float(np.mean(np.diff(cross))))
+
+
+def test_the_edge_jitter_is_the_scatter_of_a_noisy_transients_crossings_not_just_a_variance():
+    """A8's LAST GAP CLOSED: sigma_t stops being a definition.
+
+    Everything else in A8 computes `sigma_t := sqrt(var)/|slew|` and the
+    roadmap said, in as many words, that converting a variance to a time this
+    way is a DEFINITION and not a measured jitter -- nothing showed that a
+    noisy transient's crossings actually scatter by it.  This runs the
+    transient and measures the scatter.
+
+    Measured 2026-09-16, pooled over 9 seeds x 3 grids (npts 200/400/800) and
+    3528 crossings: sigma_t(MC) / closed form = 1.01099 +/- 0.01156,
+    consistent with 1.000 at 0.95 sigma.  A factor of 2 in the variance is
+    excluded at 26-35 sigma, a factor of 4 at 44-86 sigma.  The seed spread
+    (0.03467) matches 1/sqrt(2N) for N = 392 (0.03571) to 3 %, so the scatter
+    is sampling noise and the error model checks itself.
+
+    ⚠ WHAT THIS TEST CAN AFFORD is one seed and ~192 crossings, i.e. a 5.1 %
+    sampling error -- so the claim it GATES is not the 1 % agreement but that
+    the conversion is not out by a FACTOR, which it places at 5.3 sigma.  The
+    precise statement lives in `doc/pss_log_260902.md`; do not tighten the
+    band here without buying the crossings to pay for it.  The seed is fixed,
+    so this is deterministic rather than flaky (this seed sits ~1 sigma low,
+    at 0.9699).
+
+    ⚠⚠ TWO THINGS THAT WENT WRONG BUILDING THIS, both now gated below:
+      * A HARNESS WHOSE CONTROLS FAILED THEIR OWN CRITERIA and one of them fed
+        the measurement.  Run from `x0 = 0` with no burn-in, "crossing spacing
+        = T" read 473 ppm off (a drift of 13x sigma_t per period, which would
+        have swamped everything), the "floor" read 41x sigma_t, and the
+        record's midpoint -- used as the crossing threshold -- was biased
+        enough to move the measured slew to 0.9948 of analytic.
+      * A REFINEMENT TEST TOO COARSE TO SEE WHAT IT LOOKED FOR.  Chasing a
+        1.2 % deficit across npts 200/400/800 was hopeless when each grid
+        carries a 2.1 % sampling error; the "deficit" was a 0.95 sigma
+        fluctuation under an error bar I had underestimated by taking the sem
+        from three seeds that happened to agree.  It is withdrawn.
+    """
+    psd, res, cap, gm, va, f0 = 4e-21, 1e3, 2e-10, 5e-4, 1.0, 1e6
+    kT = circuit.numeric.kboltzmann * float(defaultepar.T)
+    s_tot = psd + 4.0 * kT / res
+    T = 1.0 / f0
+
+    ## the shipped frequency-domain route, on the same fixture
+    var_f, slew_f, _ = _a8_edge_variance(
+        _a8_one_stage(psd, res=res, cap=cap, gm=gm, va=va, f0=f0), 200,
+        f0=f0, node='o0')
+    sig_freq = np.sqrt(var_f) / abs(slew_f)
+
+    ## and the time domain, which knows nothing about it
+    sig_mc, ncross, spacing = _a8_mc_edge_scatter(200, 200, 21, s_tot, res=res,
+                                                  cap=cap, gm=gm, va=va, f0=f0)
+    assert ncross > 150, 'only %d crossings: the run was short' % ncross
+    ratio = sig_mc / sig_freq
+    assert abs(ratio - 1.0) < 0.20, \
+        'the crossings scatter by %.6e s, the frequency route says %.6e s ' \
+        '(ratio %.4f); the sampling error here is 5.1 %%, so this is a ' \
+        'factor, not noise' % (sig_mc, sig_freq, ratio)
+
+    ## ⚠ and the alternative the whole exercise exists to exclude
+    assert abs(ratio - 1.0 / np.sqrt(2.0)) > 0.15 and abs(ratio - np.sqrt(2.0)) > 0.15, \
+        'ratio %.4f is consistent with a factor of 2 in the variance' % ratio
+
+    ## the crossing ladder must be uniform, or the residuals are measured
+    ## against the wrong thing
+    assert abs(spacing / T - 1.0) < 1e-6, spacing
+
+    ## POISON ALIVE: silence the source and the crossings must stop moving.
+    ## Without this a dead source and a correct answer look identical.
+    sig_q, nq, spacing_q = _a8_mc_edge_scatter(200, 40, 99, s_tot, scale=0.0,
+                                               res=res, cap=cap, gm=gm, va=va,
+                                               f0=f0)
+    assert sig_q < 1e-3 * sig_mc, \
+        'the noiseless harness floor is %.3e s against a signal of %.3e s' % (
+            sig_q, sig_mc)
+    assert abs(spacing_q / T - 1.0) < 1e-9, spacing_q
+
+
 def _sampler_fixture_method(elements, method, npts=400):
     """`_sampler_fixture` under another integrator."""
     import warnings

@@ -6888,11 +6888,19 @@ NAMED BEFORE MEASURING — `(2/π)·f_c/f_N` = 2.533e-03 at npts 400, 1.266e-03 
 grids, the slew to 1.1e-05, and σ_t at 3.614654e-11 s against an analytic 3.618558e-11 s. Test
 `test_the_edge_jitter_of_a_linear_stage_matches_its_closed_form_and_the_grid_truncation_it_names`.
 
-⚠ **NEXT STEP, and it is cheap compared with what follows.** The variance→time conversion is a DEFINITION here:
-nothing yet checks that a noisy transient's crossings actually scatter by σ_t. That needs Monte Carlo over
-injected time-domain noise, machinery that does not exist (`_vdp_injected` is injection LOCKING, a deterministic
-`ISin`). Until it does, this number is "the sampled output-noise variance at the crossing, divided by the local
-slew" — not a validated jitter, and it should not be described as one.
+✅ **AND THE CONVERSION IS NOW VALIDATED — σ_t IS NO LONGER A DEFINITION** (Andreas: "continue on a8"). A noisy
+transient's crossings were measured directly: pooled over 9 seeds × 3 grids and **3528 crossings**,
+`σ_t(MC)/closed form = 1.01099 ± 0.01156`, i.e. 0.95σ from unity, with a factor of 2 in the variance excluded at
+26–35σ. ⚠ The error model checks itself — the seed spread 0.03467 against `1/√(2N)` = 0.03571. Test
+`test_the_edge_jitter_is_the_scatter_of_a_noisy_transients_crossings_not_just_a_variance` gates the FACTOR
+(5.3σ on one seed / 192 crossings), not the 1 %.
+
+⚠⚠ **PHASE 1 MEASURED NO JITTER ON PURPOSE.** An MC sharing the analysis's one-sided/two-sided convention cannot
+validate it — that pair once agreed to 0.9965 with both sides 2× wrong. So the injection was anchored on `kT/C`
+first: `σ_i² = S/(2h)` predicted `(kT/C)/(1 + h/2τ)` = 0.993789 and measured 1.005742 ± 0.014891, rejecting
+`S/h` at ~66σ. ⚠ Two withdrawals on the way, both recorded in the log: a harness whose controls failed their own
+criteria (and whose contaminated midpoint fed the measurement), and a "1.2 % deficit" that was a 0.95σ
+fluctuation chased with a refinement sweep whose per-grid error (2.1 %) was the size of the effect.
 
 ⚠ **OUT OF SCOPE, and moved to its own entry so that A8 does not quietly become it**: the LDO modulating each
 inverter's DELAY (bias-dependent, non-stationary) and the across-period correlation `ρ_k` that the three jitter
