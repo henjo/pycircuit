@@ -21033,6 +21033,179 @@ def test_the_sampled_variance_grows_as_ln_fmin_with_flicker_and_refuses_what_it_
         PAC(ocir, toolkit=circuit.numeric).sampled_noise(opss, 0, [0.0], [0.01])
 
 
+def _a8_buffer_chain(psd=4e-21, noisy=True, cap=2e-10, res=1e3, va=1.0, f0=1e6):
+    """A8's driven buffer chain: three tanh stages into RC loads.
+
+    ⚠⚠ THE LOAD CAPACITANCE IS NOT A FREE CHOICE, and getting it wrong cost a
+    published number.  The sample series folds every sideband up to the GRID's
+    Nyquist.  With `cap = 2e-12` the RC pole sits at 1/(2 pi R C) = 80 f0, far
+    above the fold, so the grid -- not the circuit -- decides how much of the
+    noise tail is counted: at npts = 1600 the folded variance is 3.38e-7 V^2
+    at `maxsidebands = 10` against 1.83e-6 at 400, i.e. a ten-sideband read
+    captures 18 % of the answer, and sigma_t climbed +14.66 / +8.71 / +4.89 %
+    per grid doubling over npts 200 -> 1600.  `cap = 2e-10` puts the pole at
+    0.80 f0, where the circuit's own bandwidth limits the fold and the answer
+    converges (+0.24 %, then +0.14 % per doubling).
+    """
+    cir = SubCircuit()
+    cir.add_node('in')
+    cir['vs'] = VSin('in', gnd, va=va, freq=f0)
+    prev = 'in'
+    for k in range(3):
+        nd = 'o%d' % k
+        cir.add_node(nd)
+        cir['B%d' % k] = BSource(prev, gnd, nd, gnd,
+                                 i_func=lambda u: 5e-4 * np.tanh(3.0 * u))
+        cir['R%d' % k] = R(nd, gnd, r=res, noisy=noisy)
+        cir['C%d' % k] = C(nd, gnd, c=cap)
+        if psd > 0:
+            cir['n%d' % k] = IS(nd, gnd, i=0.0, noisePSD=psd)
+        prev = nd
+    return cir
+
+
+def _a8_edge_variance(cir, npts, f0=1e6, method='radau'):
+    """`(variance at the rising crossing of o2, slew there, lte_warned)`."""
+    import warnings as _warnings
+    T = 1.0 / f0
+    pss = PSS(cir, method=method, reltol=1e-11)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter('always')
+        pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                  maxiterations=60)
+    warned = any('not resolved at this accuracy' in str(w.message)
+                 for w in caught)
+    assert pss.converged, 'A8 chain PSS did not converge at npts = %d' % npts
+    Xw = np.asarray(pss.waveform[1], dtype=float)
+    grid = np.asarray(pss.factored_period().times, dtype=float)[:Xw.shape[1]]
+    red = [str(n) for n in cir.nodes if str(n) != 'gnd!'].index('o2')
+    v = Xw[cir.get_node_index('o2')]
+    mid = 0.5 * (v.max() + v.min())
+    cross = [k for k in range(1, len(v)) if (v[k - 1] - mid) < 0 <= (v[k] - mid)]
+    assert cross, 'no rising crossing at o2 (pk-pk %.5g)' % float(np.ptp(v))
+    j = cross[0]
+    slew = float((v[j] - v[j - 1]) / (grid[j] - grid[j - 1]))
+    pac = PAC(cir, toolkit=circuit.numeric)
+    ## ⚠ the gate that caught a SILENT all-zeros.  `pss.waveform` rows are the
+    ## FULL MNA vector, while `_output_waveform_row` takes a REDUCED index and
+    ## lifts it past irefnode itself -- so a full index quietly addressed a
+    ## source's branch current and returned 0.0 for sources ON *and* OFF, a
+    ## mis-addressed query wearing a clean noise floor's clothes.  The row the
+    ## noise API resolves must be the node meant, and that is asserted before
+    ## any number leaves this helper.
+    chk = np.asarray(pac._output_waveform_row(pss, red), dtype=float)
+    assert abs(float(np.ptp(chk)) - float(np.ptp(v))) <= 1e-9 * float(np.ptp(v)), \
+        'output row mismatch: the API resolved pk-pk %.6f, o2 is %.6f' % (
+            float(np.ptp(chk)), float(np.ptp(v)))
+    var = float(np.asarray(pac.sampled_variance(pss, red, [grid[j]], 1e3,
+                                                0.5 * f0,
+                                                points_per_decade=5)).ravel()[0])
+    return var, slew, warned
+
+
+def test_the_additive_edge_jitter_is_method_independent_and_nothing_manufactures_its_floor():
+    """A8's first additive number, with the three checks that decide whether
+    it is an answer or an artefact.  Given the oscillator's waveform the
+    buffer chain is a DRIVEN LPTV system, where `sampled_noise` applies (it
+    refuses autonomous PSS by design, tested above); the oscillator's own
+    share is `c`, which already ships.
+
+    Measured 2026-09-16 on three tanh buffers, `gm R = 0.5`, 4e-21 A^2/Hz
+    injected per stage, f0 = 1 MHz: sigma_t = 8.27e-11 s at o2's rising
+    crossing, band [1 kHz, 500 kHz].
+
+    ⚠ TWO GRIDS AGREEING IS NOT CONVERGENCE, so the gate is across METHOD
+    FAMILIES.  gear-2 declares this fixture unresolved (local truncation error
+    5.11e6 x tolerance at 400 points, 1.29e6 at 800) -- and radau, which
+    reports nothing at any grid tried, lands on the same number anyway: radau
+    100/200/400 give 8.249493 / 8.266431 / 8.274739e-11 s against gear 400/800
+    at 8.263152 / 8.275126e-11 and trap 400 at 8.268268e-11.  That is 0.17 %
+    over three families and a 4x grid range, with radau 400 and gear 800
+    agreeing to 0.005 %.  The gear warning is in any case mostly the reltol
+    chosen here: LTE/tol runs 5.11e6 -> 5.98e4 -> 600 as reltol goes 1e-11 ->
+    1e-9 -> 1e-7 while sigma_t is unchanged to seven digits.
+
+    ⚠⚠ WHAT THIS TEST EXISTS TO PREVENT -- three claims of mine that a
+    plausible-looking harness produced and that had to be withdrawn:
+
+      * A GRID-BOUND HEADLINE.  The first fixture's pole sat at 80 f0, so the
+        grid's Nyquist set the noise bandwidth and sigma_t rose ~5-15 % per
+        doubling, leaving the quoted 5.712532e-11 s about 18 % under its own
+        extrapolated limit.  Hence the convergence assertion here, which that
+        fixture fails outright (it moves 8.7 % over the same pair).
+      * A FLOOR CONTROL THAT CONTROLLED NOTHING.  "Sources off, 242x down"
+        left the RESISTORS noisy (`R.CY` is `4kT/r`), so it compared injected
+        noise against thermal noise and called the remainder an instrument
+        floor.  The real control needs `noisy=False` too -- and it is much
+        better than the claim it replaces: the variance is then EXACTLY zero.
+      * A VACUOUS FALSIFIER.  "sigma_t * slew constant" cannot fail: sigma_t
+        is DEFINED as sqrt(var)/|slew|, so the product is sqrt(var)
+        identically (residual measured at 1.4e-20).  It tested only whether
+        the variance moved under the knob.  Likewise `PSD x 4 -> 1.99690` is
+        arithmetic given exact linearity in the source PSDs, not evidence.
+
+    ⚠ WHAT IS STILL NOT VALIDATED, stated so this is not read as more than it
+    is: converting a variance to a time by the local slew is a DEFINITION
+    here, not a measured jitter.  An independent time-domain check (Monte
+    Carlo scatter of the actual crossing) is not done and needs machinery
+    that does not exist -- see A8 in `doc/pss_roadmap_260902.md`.
+    """
+    psd, res, f0 = 4e-21, 1e3, 1e6
+
+    ## the headline, on the accurate family: radau reports no resolution
+    ## trouble on this fixture at any grid tried
+    v_r, slew_r, warned_r = _a8_edge_variance(_a8_buffer_chain(psd, res=res), 200)
+    st_radau = np.sqrt(v_r) / abs(slew_r)
+    assert not warned_r, 'radau now reports this orbit unresolved: the ' \
+        'fixture has moved and the number below is no longer its own'
+    assert abs(st_radau / 8.266431e-11 - 1.0) < 2e-3, st_radau
+
+    ## 1. THE ANSWER, NOT THE DISCRETISATION.  A different family at a
+    ##    different grid must land on the same number.  gear-2 is the least
+    ##    accurate method here and it does declare itself unresolved -- which
+    ##    is exactly why agreeing with it is worth asserting, and why two gear
+    ##    grids agreeing with each other would not have been.
+    v_g, slew_g, warned_g = _a8_edge_variance(_a8_buffer_chain(psd, res=res),
+                                              400, method='gear')
+    st_gear = np.sqrt(v_g) / abs(slew_g)
+    assert warned_g, 'gear no longer reports this fixture unresolved; the ' \
+        'cross-family check has quietly become a comparison of two ' \
+        'well-resolved solves, and proves less than it claims'
+    assert abs(st_gear / st_radau - 1.0) < 3e-3, \
+        'radau 200 gives %.6e s, gear 400 gives %.6e s (%.2f %% apart): the ' \
+        'number depends on the integrator, so it is not the circuit\'s' % (
+            st_radau, st_gear, 100.0 * (st_gear / st_radau - 1.0))
+
+    ## the structural checks need one grid only; radau 100 is the cheapest
+    ## place to run four solves against each other
+    v_all, _, _ = _a8_edge_variance(_a8_buffer_chain(psd, res=res), 100)
+
+    ## 2. nothing is manufactured: silence every source, resistors included,
+    ##    and the variance must be exactly zero -- the control that the
+    ##    earlier "sources off" run only appeared to be
+    v_quiet, _, _ = _a8_edge_variance(
+        _a8_buffer_chain(0.0, noisy=False, res=res), 100)
+    assert v_quiet == 0.0, \
+        'with every source silent the variance is %.6e, not 0' % v_quiet
+
+    ## 3. the sources-off reading is RESISTOR THERMAL NOISE, and its size
+    ##    follows from 4kT/R with nothing fitted
+    v_res, _, _ = _a8_edge_variance(
+        _a8_buffer_chain(0.0, noisy=True, res=res), 100)
+    therm = 4.0 * circuit.numeric.kboltzmann * float(defaultepar.T) / res
+    assert abs((v_all / v_res) / (1.0 + psd / therm) - 1.0) < 1e-4, \
+        'injected/thermal variance ratio %.6f against 1 + PSD/(4kT/R) = %.6f' % (
+            v_all / v_res, 1.0 + psd / therm)
+
+    ## 4. independent sources add -- the property a coloured-fold defect once
+    ##    broke (test_independent_noise_sources_add_in_the_coloured_folds)
+    v_inj, _, _ = _a8_edge_variance(
+        _a8_buffer_chain(psd, noisy=False, res=res), 100)
+    assert abs((v_inj + v_res) / v_all - 1.0) < 1e-9, (v_inj, v_res, v_all)
+    assert v_inj / v_all > 0.99, \
+        'the injected sources must dominate; they are %.4f' % (v_inj / v_all)
+
+
 def _sampler_fixture_method(elements, method, npts=400):
     """`_sampler_fixture` under another integrator."""
     import warnings

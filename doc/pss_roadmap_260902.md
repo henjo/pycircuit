@@ -6860,24 +6860,49 @@ oscillator noise, measured and rejected as B12), and **37th EuMC Munich, October
 the EuMC paper's embedded PDF metadata is **placeholder junk dated 1999** — do not read the date
 off the file.
 
-### A8. Sampled / edge-jitter noise (`noisetype=timedomain`) — OPENED 2026-09-16, reconnaissance measured, unbuilt
+### A8. Sampled / edge-jitter noise (`noisetype=timedomain`) — OPENED 2026-09-16, first number GATED, unbuilt as a feature
 
-✅ **A FIRST ADDITIVE NUMBER EXISTS WITHOUT NEW MACHINERY, on the DRIVEN buffer chain** (Andreas: "start with A8").
-Given the oscillator's waveform the chain is a driven LPTV system, and `sampled_noise` works on driven circuits:
-three tanh buffers into RC loads, `gm·R = 0.5`, 4e-21 A²/Hz per stage, f₀ = 1 MHz → **σ_t = 5.712532e-11 s**
-(5.71e-05 of T) at the last crossing, band [1 kHz, 500 kHz]. Gate and falsifiers all passed: sources OFF collapses
-242× in variance (floor 3.669792e-12 s, **quoted beside the figure, never subtracted**), PSD×4 gives 1.99689
-against 2.000, and varying the DRIVE alone holds σ_t·slew constant to 0.9 % over a 7.8× slew range.
+✅ **A FIRST ADDITIVE NUMBER, NOW GATED IN THE SUITE** (Andreas: "start with A8", then "do with A8 as you
+suggest"). Given the oscillator's waveform the buffer chain is a driven LPTV system, and `sampled_noise` works on
+driven circuits: three tanh buffers into RC loads, `gm·R = 0.5`, 4e-21 A²/Hz per stage, f₀ = 1 MHz →
+**σ_t = 8.27e-11 s** at the last crossing, band [1 kHz, 500 kHz]. Test
+`test_the_additive_edge_jitter_is_method_independent_and_nothing_manufactures_its_floor`.
 
-⚠ **THE ORIGINAL "CHEAP FIRST STEP" IS WITHDRAWN**: `sampled_noise` refuses an autonomous PSS by design, so it
-cannot be pointed at an oscillator's crossings. ⚠ The oscillator's share is `c`, and the `K_orb + n d u uᵀ`
-n-scaling reproduces it independently (`c_equiv` 6.251420e-08 vs shipped 6.248352e-08, ratio 1.0005).
+⚠⚠ **THE FIRST VERSION OF THIS ENTRY QUOTED 5.712532e-11 s AND THREE PASSING CHECKS; ALL THREE ARE WITHDRAWN.**
+The number was grid-bound (the RC pole at 80 f₀ let the GRID's Nyquist set the noise bandwidth — σ_t moved
++14.7 / +8.7 / +4.9 % per doubling); the "242× sources-OFF floor" was the resistors' own `4kT/r`, predicted
+exactly as `1 + PSD/(4kT/R)` = 242.312 against 242.311695 measured; and "σ_t·slew constant" cannot fail, because
+σ_t is *defined* as `√var/|slew|`. Full autopsy in `doc/pss_log_260902.md` under "A8 opened".
 
-⚠ **STILL OUT OF SCOPE and this is what a real A8 must add**: the LDO modulating each inverter's DELAY is
-bias-dependent and non-stationary, outside the modulated-stationary support; and the across-period correlation
-`ρ_k` — which the three jitter metrics (absolute, k-cycle, cycle-to-cycle) need and which this route cannot
-supply — is precisely what Demir 1996 computes. Full record, including eight convention errors worth not
-repeating, in `doc/pss_log_260902.md` under "A8 opened".
+✅ **WHAT THE GATE IS NOW**: agreement ACROSS METHOD FAMILIES (radau 100/200/400, gear 400/800, trap 400, all
+within 0.17 %, where gear declares itself unresolved and radau does not); a TRUE floor control (`R(noisy=False)`
+plus injected PSDs at zero → variance **exactly 0.0**); the resistor share predicted from `4kT/R` with nothing
+fitted; and additivity of independent sources to 1e-9.
+
+⚠ **NEXT STEP, and it is cheap compared with what follows.** The variance→time conversion is a DEFINITION here:
+nothing yet checks that a noisy transient's crossings actually scatter by σ_t. That needs Monte Carlo over
+injected time-domain noise, machinery that does not exist (`_vdp_injected` is injection LOCKING, a deterministic
+`ISin`). Until it does, this number is "the sampled output-noise variance at the crossing, divided by the local
+slew" — not a validated jitter, and it should not be described as one.
+
+⚠ **OUT OF SCOPE, and moved to its own entry so that A8 does not quietly become it**: the LDO modulating each
+inverter's DELAY (bias-dependent, non-stationary) and the across-period correlation `ρ_k` that the three jitter
+metrics need → **A11**.
+
+### A11. Non-stationary delay modulation and the across-period correlation `ρ_k` — NEW 2026-09-16, unbuilt, WEEKS not days
+
+⚠ **CARVED OUT OF A8 ON 2026-09-16**, so that A8's first number could land without dragging this behind it.
+Two things the driven-chain route provably cannot supply:
+
+* **The LDO modulating each inverter's delay.** Bias-dependent and non-stationary, so it falls outside the
+  modulated-stationary support the sampled-noise machinery rests on. This is not a harder integral of the same
+  kind — it is a different support, and pretending otherwise is how A8's scope would have crept.
+* **`ρ_k`, the correlation between crossing errors k periods apart.** The three jitter metrics A8's original
+  entry names — absolute/edge, k-cycle `τ(t+kT) − τ(t)`, and cycle-to-cycle (the second difference) — are all
+  functions of `ρ_k`, and a single-instant sampled variance supplies none of it.
+
+**Demir 1996 is the starting point**, as A8's original entry already said. This is weeks of work and it is
+Andreas's to scope; it is not to be started unasked.
 
 ### A8 (original entry). Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
 
