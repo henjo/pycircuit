@@ -6914,12 +6914,20 @@ Two things the driven-chain route provably cannot supply:
 * **The LDO modulating each inverter's delay.** Bias-dependent and non-stationary, so it falls outside the
   modulated-stationary support the sampled-noise machinery rests on. This is not a harder integral of the same
   kind — it is a different support, and pretending otherwise is how A8's scope would have crept.
-* **`ρ_k`, the correlation between crossing errors k periods apart.** The three jitter metrics A8's original
-  entry names — absolute/edge, k-cycle `τ(t+kT) − τ(t)`, and cycle-to-cycle (the second difference) — are all
-  functions of `ρ_k`, and a single-instant sampled variance supplies none of it.
+* ✅ **`ρ_k` IS BUILT — 2026-09-16, and this half was NEVER Demir's.** ⚠⚠ The sentence that stood here said
+  `ρ_k` is what "this route cannot supply". That was wrong, and the error was a conflation: a single-instant
+  sampled **variance** supplies none of it (true), but `sampled_noise` returns the PSD of the **sample series**
+  `y(t₀+kT)`, and the autocovariance of a series is the cosine transform of its spectrum. So
+  `R_k = ∫ S(f;t₀) cos(2πf·kT) df` and `ρ_k = R_k/R_0`, from machinery that already shipped and was already
+  validated. `PAC.jitter_metrics` returns `σ_t`, `ρ_k`, the k-cycle `√(2(R_0−R_k))/|s|` and the
+  cycle-to-cycle `√(6R_0−8R_1+2R_2)/|s|`. Test
+  `test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_series`.
 
-**Demir 1996 is the starting point**, as A8's original entry already said. This is weeks of work and it is
-Andreas's to scope; it is not to be started unasked.
+**WHAT IS LEFT IS THE LDO, AND ONLY THE LDO.** The bias-dependent, non-stationary delay modulation is still
+outside the modulated-stationary support, still a different support rather than a harder integral, and **Demir
+1996 is still its starting point**. That part remains weeks of work and Andreas's to scope; it is not to be
+started unasked. The estimate that put `ρ_k` alongside it was mine and it was wrong by a wide margin — the
+measurement took an afternoon.
 
 ### A8 (original entry). Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
 

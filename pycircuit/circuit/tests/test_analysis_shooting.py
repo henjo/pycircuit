@@ -21426,6 +21426,125 @@ def test_the_edge_jitter_is_the_scatter_of_a_noisy_transients_crossings_not_just
     assert abs(spacing_q / T - 1.0) < 1e-9, spacing_q
 
 
+def test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_series():
+    """A11 step 1: `rho_k` needs NO new machinery, and in particular not
+    Demir 1996.
+
+    ⚠⚠ THIS CORRECTS A11's OWN ENTRY, which filed `rho_k` under "weeks of
+    work, Demir 1996 the starting point".  That conflated two things:
+    `sampled_variance` is one number at one instant and genuinely supplies
+    none of it -- but `sampled_noise` returns the PSD of the SAMPLE SERIES
+    `y(t0 + kT)`, and the autocovariance of a series IS the cosine transform
+    of its spectrum.  So for a DRIVEN chain `rho_k`, and with it the k-cycle
+    and cycle-to-cycle metrics, follows from what already ships.  Only the
+    LDO's non-stationary delay modulation is still Demir's problem.
+
+    The fixture is built so the answer is known in closed form rather than
+    only cross-checked: one LINEAR stage, `tau = RC = T` exactly, and an LTI
+    noise path (gm, R, C constant -- the drive only sets the waveform), so the
+    sampled series is AR(1) with `rho_k = exp(-k)` exactly.
+
+    MEASURED 2026-09-16: the transform gives 0.368067 / 0.135404 / 0.049813 /
+    0.018325 against 0.367879 / 0.135335 / 0.049787 / 0.018316 -- ratio
+    1.0005 at EVERY lag, a constant offset rather than one growing with k.
+    ⚠ Independently, a Monte Carlo over 1176 noisy crossings (no PSS, no
+    adjoint, no spectrum) agreed within 1 sigma at every lag it can resolve:
+    0.346404 and 0.131894 at k = 1, 2, i.e. 0.74 and 0.12 sigma, with
+    `sigma_t` matching at 0.9901.  ⚠ A8's own fixture could NOT have tested
+    this -- at `tau = 0.2 T` the first correlation is `e^-5` = 0.0067, far
+    under the ~0.03 floor of that many crossings, and a quantity below the
+    floor of the instrument that would check it is not a test.
+
+    ⚠ The `sqrt(2)` / `sqrt(6)` collapse below is the check on the ALGEBRA:
+    an uncorrelated series must give exactly those, and the second-difference
+    coefficients `[1, -2, 1]` are easy to get wrong in a way no fixture with
+    correlation would reveal.
+    """
+    f0 = 1e6
+    T = 1.0 / f0
+    fmin, fmax = f0 / 2e4, 0.5 * f0
+    nfreq = 151
+
+    def solved(cap, psd=4e-21):
+        cir = _a8_one_stage(psd=psd, cap=cap, f0=f0)
+        pss = PSS(cir, method='radau', reltol=1e-11)
+        pss.solve(period=T, timestep=T / 400, x0=np.zeros(cir.n - 1),
+                  maxiterations=60)
+        assert pss.converged, 'A11 fixture PSS did not converge (cap %g)' % cap
+        Xw = np.asarray(pss.waveform[1], dtype=float)
+        grid = np.asarray(pss.factored_period().times, dtype=float)[:Xw.shape[1]]
+        v = Xw[cir.get_node_index('o0')]
+        red = [str(n) for n in cir.nodes if str(n) != 'gnd!'].index('o0')
+        j = [i for i in range(1, len(v)) if v[i - 1] < 0 <= v[i]][0]
+        return cir, pss, red, grid, j, v
+
+    ## tau = RC = T  ->  rho_k = exp(-k), exactly
+    cir, pss, red, grid, j, v = solved(1e-9)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    m = pac.jitter_metrics(pss, red, grid[j], fmin, fmax, kmax=4, nfreq=nfreq,
+                           dc_rectangle=True)
+    for k in range(1, 5):
+        assert abs(m['rho'][k - 1] / np.exp(-k) - 1.0) < 3e-3, \
+            'rho_%d = %.6f against exp(-%d) = %.6f' % (
+                k, m['rho'][k - 1], k, np.exp(-k))
+    assert m['instant'] == grid[j], (m['instant'], grid[j])
+
+    ## the metrics are functions of rho and sigma_t, by a route that does not
+    ## go through R -- an algebra slip in the method would not survive this
+    rho = np.asarray(m['rho'], dtype=float)
+    np.testing.assert_allclose(m['k_cycle'],
+                               np.sqrt(2.0 * (1.0 - rho)) * m['sigma_t'],
+                               rtol=1e-9)
+    assert abs(m['cycle_to_cycle'] /
+               (np.sqrt(6.0 - 8.0 * rho[0] + 2.0 * rho[1]) * m['sigma_t'])
+               - 1.0) < 1e-9
+
+    ## ⚠ and the flag must DO something: without the [0, fmin) rectangle the
+    ## error grows with k, exactly as truncation should (measured 0.9889 of
+    ## analytic at k = 4, against 1.0005 with it)
+    m_raw = pac.jitter_metrics(pss, red, grid[j], fmin, fmax, kmax=4,
+                               nfreq=nfreq, dc_rectangle=False)
+    assert abs(m_raw['rho'][3] / np.exp(-4) - 1.0) > 5e-3, \
+        'the DC rectangle no longer changes anything (%.6f); either the band ' \
+        'moved or the flag stopped working' % m_raw['rho'][3]
+
+    ## UNCORRELATED LIMIT: tau = 0.02 T, so rho -> 0 and the two metrics must
+    ## collapse to sqrt(2) and sqrt(6) times sigma_t
+    cir2, pss2, red2, grid2, j2, _v2 = solved(2e-11)
+    pac2 = PAC(cir2, toolkit=circuit.numeric)
+    m2 = pac2.jitter_metrics(pss2, red2, grid2[j2], fmin, fmax, kmax=4,
+                             nfreq=nfreq, dc_rectangle=True)
+    assert np.max(np.abs(m2['rho'])) < 1e-3, m2['rho']
+    np.testing.assert_allclose(np.asarray(m2['k_cycle']) / m2['sigma_t'],
+                               np.sqrt(2.0), rtol=1e-5)
+    assert abs(m2['cycle_to_cycle'] / m2['sigma_t'] - np.sqrt(6.0)) < 1e-5
+
+    ## refusals.  The band and kmax ones raise before any spectrum is built,
+    ## so they cost nothing; the flat-instant one has to compute S first, so
+    ## it is asked for the cheapest possible one.
+    with pytest.raises(ValueError, match='kmax'):
+        pac.jitter_metrics(pss, red, grid[j], fmin, fmax, kmax=1)
+    with pytest.raises(ValueError, match='fmin'):
+        pac.jitter_metrics(pss, red, grid[j], 0.0, fmax)
+    with pytest.raises(ValueError, match='fmin'):
+        pac.jitter_metrics(pss, red, grid[j], fmin, 0.9 * f0)
+    ## ⚠⚠ THE LAST GUARD IS ON THE LINEARISATION, NOT ON "FLATNESS", and the
+    ## reason is a number I misread on the way here.  At a peak the central
+    ## DIFFERENCE is -8.86e-07, but the SLOPE is that over 2h = -1.767e+02 --
+    ## 3.58e-04 of the steepest 4.94e+05, not 1.8e-12.  On a 400-point grid
+    ## 3.58e-04 is the smallest ratio ANY instant can have, since no grid
+    ## point lands exactly on the peak, so a relative-slope threshold would
+    ## only ever describe the grid and would move with N.  What does not move
+    ## is whether the displacement stays small against the period: at this
+    ## fixture's peak sigma_t is 0.179 T, so 100x the source PSD puts it past
+    ## T/2 and the first-order picture is gone.
+    cir3, pss3, red3, grid3, _j3, v3 = solved(1e-9, psd=4e-19)
+    pac3 = PAC(cir3, toolkit=circuit.numeric)
+    with pytest.raises(ValueError, match='first-order'):
+        pac3.jitter_metrics(pss3, red3, grid3[int(np.argmax(v3))], fmin, fmax,
+                            kmax=2, nfreq=21)
+
+
 def _sampler_fixture_method(elements, method, npts=400):
     """`_sampler_fixture` under another integrator."""
     import warnings
