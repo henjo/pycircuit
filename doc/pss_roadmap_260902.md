@@ -6923,11 +6923,34 @@ Two things the driven-chain route provably cannot supply:
   cycle-to-cycle `√(6R_0−8R_1+2R_2)/|s|`. Test
   `test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_series`.
 
-**WHAT IS LEFT IS THE LDO, AND ONLY THE LDO.** The bias-dependent, non-stationary delay modulation is still
-outside the modulated-stationary support, still a different support rather than a harder integral, and **Demir
-1996 is still its starting point**. That part remains weeks of work and Andreas's to scope; it is not to be
-started unasked. The estimate that put `ρ_k` alongside it was mine and it was wrong by a wide margin — the
-measurement took an afternoon.
+**WHAT IS LEFT IS ADDITIVE EDGE JITTER ON AN AUTONOMOUS CIRCUIT** — ⚠⚠ *not* "non-stationary delay modulation",
+which was my phrase and is **withdrawn (Andreas concurred 2026-09-17: "Agree that my mentioning of non-stationary
+is wrong")**. A8's original entry already settled the physics: the LDO is characterised separately and injected
+as a **supply-node noise source**, so it is an ordinary source in an ordinary autonomous PSS — "no multirate
+anything". There is no exotic support problem. The real gap is narrower and sharper: `sampled_noise` refuses an
+autonomous PSS (a diffusing phase has no sampling instant), so the NON-ACCUMULATING jitter at the last buffer has
+no route, while `c` covers only the walk.
+
+⚠ **RECONNAISSANCE DONE 2026-09-17, NOT A RESULT.** The mechanism is identified and the analysis side converges;
+the validation does not yet have the precision to confirm it. Full record in `doc/pss_log_260902.md` under "A11
+autonomous reconnaissance". In brief:
+
+* **The object is `Π P(t_j) Πᵀ` contracted on the output row, over slew²** — `P` from
+  `oscillator_covariance(samples=True)`, `Π = I − u_j v_jᵀ/(v_jᵀ u_j)`, `u_j` recovered from the rank-one
+  `growth_samples[j]`, everything sliced `[:m,:m]` out of pair space. ⚠ NOT raw `P` ("bounded is not
+  transverse" — it changes the variance by 15.8 % on this fixture) and NOT `P − (t/T)G` (superseded).
+* **A fixture exists**: van der Pol tank + 3 tanh buffers, `τ_buf = RC = 0.5`. ⚠ At `τ_buf = 0.1` the FROZEN
+  free-period Jacobian goes singular (T/τ = 66.6); `phase_rule='reselect'` rescues it and finds the same orbit
+  (periods agree to 4.44e-16). ⚠ The library's error blames "a seed BELOW the fundamental" — **that is not this
+  cause**; the seed was the measured period and the bare tank converges from it.
+* **The shipped loop holds on it**: `c_from_growth / c = 0.998992`, `d_residual 5.49e-12`, at m = 5.
+* **The analysis side converges**: `2A` = 1.023870e-06 → 1.055112e-06 → 1.062936e-06 at npts 240/480/960,
+  increments shrinking ~4×, extrapolating to ≈1.066e-06.
+* ⚠ **WHAT BLOCKS IT**: the Monte Carlo's seed-to-seed spread is 17–41 %. Two seeds at npts 960 average 1.0032
+  of the analysis value, but that is 1.00 ± 0.06 and the same seeds one grid coarser give 1.1375. **Confirming
+  at 3 % needs ~45 seeds ≈ 3 hours of compute.** Until then this is not validated and must not be quoted.
+
+**Andreas's to scope.** The remaining work is a long Monte Carlo campaign plus an API, not a research problem.
 
 ### A8 (original entry). Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
 
