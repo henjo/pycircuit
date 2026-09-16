@@ -37,7 +37,7 @@ genuinely open:
 | A8 sampled / edge-jitter noise | unbuilt; **from a real circuit**, marked small |
 | A6 driven oscillators and PLLs | requested, nothing built |
 | A5 envelope-following | marked LAST; gated on the LTE/smoothness question |
-| B3 Aprille & Trick substitution | awaiting a call; would subsume two open things |
+| B3 Aprille & Trick substitution | ✅ BUILT 2026-09-16 as `PSS.solve(phase_rule='reselect')`, **OPT-IN** (default stays `'frozen'`): the substitution alone is the bordered solve (iterates ≤ 1e-9); A&T's per-iterate re-selection is the gain — van der Pol 4× seeds 0/6 → 6/6, 10× 0/6 → 2/6, on-orbit unchanged; C3's 09-02 rejection was a pin-frame error. ⚠ Costs (found by the full suite, 6 failures on a reselect default): the grid-aligned `Idtmod` wrap stops converging, and it lands on a different PHASE of the same orbit (slow-node PPV mode content at 0.1 f0 1.64e-6 vs 2.45e-6). `_solve_twin` 399-vs-400 grid floor fixed on the way |
 | B4 index-2 support via independent states | awaiting a call; **priority low** — no silent wrong answer |
 | B10 LSOAC (minimum-norm, no phase row) | unbuilt; distinct from what C2 rejected |
 | ~~`orbital_spectrum` amplitude~~ | ✅ 2026-09-14 VALIDATED against pnoise on SYMMETRIC orbits (0.1 %, C=1/C=4/Q=50); on ASYMMETRIC ones `S_ph + S_orb` over-states up to 3.2× — see E6 |

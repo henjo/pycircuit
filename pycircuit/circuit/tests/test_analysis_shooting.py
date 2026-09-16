@@ -3324,6 +3324,102 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
     assert seen and all(seen),         'PSS called fsolve with line_search=%r -- the damping is '         'implemented and not asked for' % (seen,)
 
 
+def test_the_phase_pin_is_reselected_every_iterate_and_rescues_a_far_seed():
+    """B3, built as `phase_rule='reselect'` (2026-09-16): Aprille & Trick's
+    Step 3 -- at every iterate pin `k = argmax |dphi/dT|` at the iterate's
+    OWN value -- against the frozen seed pin it replaces.
+
+    Van der Pol at mu = 1 from 4x the orbit amplitude: a frozen pin names a
+    value the orbit never attains and the solve fails (0/6 seeds measured,
+    trap/radau/gear alike); re-selected, it reaches the on-orbit period
+    (6/6).  ⚠ The substitution A&T write it as is NOT the gain -- with `k`
+    frozen it is the bordered solve to <= 1e-9 -- so the frozen control is
+    the old rule, not a strawman.  Matrix-free keeps less of the gain (4/6);
+    the seed below is one it solves, and a DENSE frozen solve re-seeded at
+    its answer must reproduce the period, so the matrix-free row is the same
+    orbit's, not a lucky collapse.
+
+    ⚠⚠ AND THE DEFAULT IS ASSERTED HERE BECAUSE RE-SELECTION IS NOT FREE.
+    With it as the default the full suite failed six tests (2026-09-16): the
+    grid-aligned `Idtmod` wrap stops converging, and re-selection lands on a
+    different PHASE of the same orbit, which moves every phase-sensitive
+    surface (`frequency_aware_ppv` mode content at 0.1 f0, 1.64e-6 against
+    2.45e-6) and breaks the dense-vs-matrix-free `lambda_2` bit-equality.
+    So it ships opt-in, and a future flip of the default has to fail this.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def vdp():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: u - u ** 3 / 3.0)
+        return c
+
+    def run(seed, rule, **kw):
+        pss = PSS(vdp(), method='trap', reltol=1e-9)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=6.3, timestep=6.3 / 200, x0=seed,
+                          maxiterations=40, phase_rule=rule, **kw)
+            return pss, pss.converged
+        except Exception:                                 # noqa: BLE001
+            return pss, False
+
+    ## on the orbit the two rules agree on the answer
+    on = 2.0 * np.array([np.cos(0.3), np.sin(0.3)])
+    p_f, ok_f = run(on, 'frozen')
+    p_r, ok_r = run(on, 'reselect')
+    assert ok_f and ok_r
+    T_on = float(p_r.period)
+    assert abs(T_on - 6.6633) < 5e-3
+    assert abs(float(p_f.period) - T_on) < 1e-9 * T_on, (p_f.period, T_on)
+    assert p_r.phase_rule == 'reselect' and p_f.phase_rule == 'frozen'
+
+    ## ⚠ THE DEFAULT IS THE FROZEN RULE, and this is where a flip of it has
+    ## to fail: six suite tests broke under a re-selecting default.
+    p_d = PSS(vdp(), method='trap', reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p_d.solve(period=6.3, timestep=6.3 / 200, x0=on, maxiterations=40)
+    assert p_d.phase_rule == 'frozen', \
+        'the autonomous phase rule now defaults to %r; with re-selection as ' \
+        'the default the full suite failed six tests (the grid-aligned ' \
+        'Idtmod wrap stops converging, and phase-sensitive PPV surfaces ' \
+        'move), so this is opt-in on purpose' % (p_d.phase_rule,)
+
+    ## from 4x, the frozen pin fails and re-selection reaches the orbit
+    for ang in (0.3, 1.35):
+        far = 8.0 * np.array([np.cos(ang), np.sin(ang)])
+        p_f, ok_f = run(far, 'frozen')
+        assert not (ok_f and abs(float(p_f.period) - T_on) < 1e-6 * T_on), \
+            'the frozen pin now solves the 4x seed at angle %g, so this ' \
+            'fixture no longer separates the rules' % ang
+        p_r, ok_r = run(far, 'reselect')
+        assert ok_r and abs(float(p_r.period) - T_on) < 1e-9 * T_on, \
+            're-selection did not reach the orbit from 4x at angle %g: ' \
+            'converged=%r, T=%r against %r' % (ang, ok_r, p_r.period, T_on)
+
+    ## matrix-free: the builders' row re-selects too
+    far = 8.0 * np.array([np.cos(0.3), np.sin(0.3)])
+    p_m, ok_m = run(far, 'frozen', x0_unknown=True, matrix_free=True)
+    assert not (ok_m and abs(float(p_m.period) - 6.6635) < 1e-3)
+    p_m, ok_m = run(far, 'reselect', x0_unknown=True, matrix_free=True)
+    assert ok_m and abs(float(p_m.period) - 6.6635) < 1e-3, (ok_m, p_m.period)
+    x_start = np.asarray(p_m._period_state[1], dtype=float).ravel()
+    p_d, ok_d = run(x_start, 'frozen', x0_unknown=True)
+    assert ok_d and abs(float(p_d.period) - float(p_m.period)) < 1e-12, \
+        (p_d.period, p_m.period)
+
+    with pytest.raises(ValueError, match='phase_rule'):
+        PSS(vdp(), method='trap').solve(period=6.3, timestep=6.3 / 50,
+                                        x0=on, phase_rule='moving')
+
+
 def test_the_monodromy_is_correct_across_a_switching_boundary():
     """The saltation concern, run as a falsifier and NOT confirmed.
 

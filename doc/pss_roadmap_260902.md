@@ -7582,6 +7582,50 @@ the orbit never attains.
 **Gate:** it changes the outer system's shape, so the honest first step is the same
 far-seed case that defeated the bordered version: van der Pol at 4x/10x/30x amplitude.
 
+✅ **BUILT 2026-09-16 (Andreas: "Do B3") — AND THE SUBSTITUTION TURNED OUT NOT TO BE THE PART THAT
+WORKS.** Measured on the shipped residuals before building (log, 2026-09-16):
+
+  * **The substitution with `k` frozen IS the bordered solve.** Holding `x_0k` constant and
+    solving for `T` in its place is the bordered row with a zero residual — the same linear system
+    — and it reproduced the bordered iterates to ≤ 1e-9 and failed on exactly the same seeds. The
+    entry's "would subsume the far-seed failure" was an untested claim and is withdrawn.
+  * **The gain is A&T's Step 3, re-selection:** `k = argmax |dphi/dT|` at every iterate, held at the
+    iterate's own value. Van der Pol μ = 1, six seeds per amplitude, reaching the true period:
+    on-orbit 6/6 → 6/6 (same answer, ≤ iterations); 4× 0/6 → 6/6; 10× 0/6 → 2/6; 30× 0/6 → 0/6
+    (trap in both frames, radau, gear). Q = 8 series-loss tank at 4×: 2/6 → 6/6 (trap, gear, radau).
+    Matrix-free 4× 0/6 → 4/6. A control freezing `k` at re-selection's FIRST choice stays 0/6, so it
+    is the re-selection, not a better `k` rule.
+  * **C3's "tried and rejected" is withdrawn with its reason.** The 2026-09-02 failure (on-orbit
+    seed not converged) reproduces with a pin taken from the unknown `x_in` but compared against the
+    manufactured `x_0[k]` — a frame error — not from "the row carries no information".
+
+⚠⚠ **AND IT SHIPS OPT-IN, NOT AS THE DEFAULT — THE FULL SUITE SAID SO.** With `'reselect'` as the
+default the suite returned **6 failures** (3222 passed), and all six pass with the old rule forced back,
+so they are the default flip and not the twin fix. Two are real costs, and they falsify the claim
+"every frozen success is also a reselect success" that two fixtures had supported:
+
+  * **A discontinuous period map stops converging.** `Idtmod` with the wrap exactly ON a grid point —
+    the case `test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff` documents as
+    converging anyway — solves frozen and fails reselected (1200 points, `ic = 0`; the off-grid wrap at
+    500 points is fine). Both rules pick the SAME `k` at the seed there, so it is the moving pin
+    wandering on a map with no derivative, not a bad first choice.
+  * **A different PHASE of the same orbit.** On the slow-node van der Pol the two rules agree on the
+    orbit to the digit (period 6.656833399, `v` ∈ ±1.9985, `w` ∈ ±3.238e-3) while
+    `frequency_aware_ppv`'s mode content at 0.1 f0 reads 1.64e-6 against 2.45e-6 — a phase-sensitive
+    surface, and the Arnoldi/Ritz gap-ratio pins move for the same reason. ⚠ The pin is phase-specific
+    under the FROZEN rule too: six seeds give 2.45 / 2.32 / 1.94 / 1.83 / 2.25 / 2.44 e-6, so that test
+    measures its own seed's phase; re-selection lands just outside the spread, at 1.64e-6. Bit-level: dense and
+    matrix-free pick `k` from last-ulp-different `dphi/dT`, so `lambda_2` agrees to ~1e-13, not to the bit.
+
+Shipped as `PSS.solve(phase_rule='reselect')`, OPT-IN; `'frozen'` stays the default. The
+row is computed inside each autonomous residual (plain, solved-history, full, DIRK, GLM, both
+matrix-free builders) as a pure function of the iterate, so the damped Newton's carried trial
+evaluation stays consistent — a re-selecting CALLBACK fed that cached row fails every 4× seed.
+**Found on the way:** `_solve_twin` asked `solve` for `T / N` and `int(T / (T / N))` floors to
+`N − 1` for some `T` (399.99999999999994 on B16's fixture) — the "same grid" twin ran on 399
+points; fixed with half a step of slack. **Not addressed:** 10×/30× seeds, and far seeds that
+reach the `T = 0` root (refused as before) — `tstab` remains the remedy there.
+
 ### B4. Index-2 support
 
 [TCF] 1975 §III solves it, by the same authors as the method — capacitor loops and inductor

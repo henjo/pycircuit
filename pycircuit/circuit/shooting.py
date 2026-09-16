@@ -6712,11 +6712,26 @@ class PSS(Analysis):
         nonuniform = float(hs.max() / hs.min()) > 1.0 + 1e-9
         grid = (hs / float(hs.sum())) if nonuniform else None
         x0r = np.asarray(x0, dtype=float)[:self.cir.n - 1]
+        ## ⚠ THE STEP COUNT MUST SURVIVE `solve`'s `int(period / timestep)`.
+        ## `T / (T / N)` is not N in floating point: measured on B16's
+        ## fixture, T = 6.730731946457316 gives 399.99999999999994, so the
+        ## "same grid" twin ran on 399 points against the state's 400 (found
+        ## when `phase_rule='reselect'` moved T in its 15th digit).  Half a
+        ## step of slack makes the floor land on N for every T.
+        ##
+        ## ⚠ AND THE TWIN TAKES THE DEFAULT PHASE RULE RATHER THAN THIS RUN'S.
+        ## It is seeded at the converged state so that it lands on the SAME
+        ## point of the SAME orbit -- which is exactly what the agreement
+        ## check below tests -- and `phase_rule='reselect'` re-chooses the
+        ## pinned coordinate and lands on ANOTHER phase (measured; see
+        ## `solve`).  Inheriting it would move the twin off the orbit point
+        ## whose monodromy was asked for.
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 twin.solve(refnode=kw.get('refnode', gnd), period=float(T),
-                           x0=x0r, timestep=float(T) / len(hs), grid=grid,
+                           x0=x0r, timestep=float(T) / (len(hs) + 0.5),
+                           grid=grid,
                            maxiterations=max(int(kw.get('maxiterations',
                                                         20)), 20),
                            matrix_free=bool(kw.get('matrix_free', False)))
@@ -9083,7 +9098,8 @@ class PSS(Analysis):
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
-              x0_unknown=None, tstab=None, break_events=None):
+              x0_unknown=None, tstab=None, break_events=None,
+              phase_rule='frozen'):
         """Solve for the periodic steady state.
 
         `break_events` lands the circuit's source discontinuities on grid
@@ -9253,6 +9269,92 @@ class PSS(Analysis):
         `2m` systems win earlier and by more.  Every one of them agrees with
         the dense path to <= 2e-16, and both autonomous ones reproduce the
         period exactly.
+
+        `phase_rule` chooses how an AUTONOMOUS solve removes the orbit's
+        time-translation freedom.  `'frozen'` (the DEFAULT) picks `k` and
+        its pinned value once at the seed.  `'reselect'` is Aprille &
+        Trick's own Step 3: at every Newton iterate the pinned coordinate
+        is `k = argmax |dphi/dT|` -- the vector field at the period's end --
+        and it is held at the iterate's OWN value, so the Newton step moves
+        every other coordinate and the period (`dz[k] = 0`).  A driven
+        circuit ignores it.
+
+        ⚠ RESELECT IS OPT-IN, AND THE REASON IS MEASURED, NOT CAUTION -- see
+        the costs below.  Ask for it when a seed is far from the orbit and
+        the default reports non-convergence; `tstab` is the other remedy and
+        they compose.
+
+        ⚠ WHAT IT BUYS, measured 2026-09-16 on the shipped
+        residuals: a frozen pin is a VALUE the orbit must attain, and a far
+        seed names one it never reaches.  Van der Pol (mu = 1), six seeds
+        per amplitude on a circle, reaching the true period:
+
+              seed amplitude     frozen     reselect    (trap and radau alike)
+              on the orbit        6/6         6/6       same answer, <= iterations
+              4x                  0/6         6/6
+              10x                 0/6         2/6
+              30x                 0/6         0/6
+
+        and a Q = 8 tank with a series loss resistor (an algebraic node) at
+        4x: 2/6 -> 6/6 under trap, gear (the solved-history system) and
+        radau.
+        Matrix-free, the same van der Pol seeds: 4x 0/6 -> 4/6 (trap and
+        gear), 10x 2/6 (trap) and 0/6 (gear) -- the inexact inner solve
+        keeps less of the gain than the dense one.  ⚠ Far seeds can still
+        reach the `T = 0` root; `_free_period_solve` refuses it as before.
+
+        ⚠⚠ AND WHAT IT COSTS -- THE FULL SUITE FOUND BOTH, which is why the
+        default did not move.  "Every frozen success stays a success" was
+        asserted here from two fixtures and is FALSE:
+
+          * **A discontinuous period map stops converging.** `Idtmod` with
+            the wrap landing exactly ON a grid point -- the case documented
+            to converge anyway -- solves frozen and fails reselected (1200
+            points, `ic = 0`; the off-grid wrap at 500 points is fine).  The
+            seed choice is not the difference: both rules pick the same `k`
+            there, so it is the moving pin that wanders on a map with no
+            derivative.
+          * **It lands on a different PHASE of the same orbit**, and a
+            phase-sensitive surface then reads differently: on the slow-node
+            van der Pol (`tau = 100 T`) the orbit matches to the digit
+            (period 6.656833399, `v` in +-1.9985, `w` in +-3.238e-3) while
+            `frequency_aware_ppv`'s mode content at 0.1 f0 reads 1.64e-6
+            against the frozen 2.45e-6.  Anything whose value depends on
+            where `t = 0` sits on the orbit moves with it.  ⚠ That surface
+            is phase-specific under the FROZEN rule too -- six seeds around
+            the same orbit give 2.4522 / 2.3161 / 1.9423 / 1.8306 / 2.2461 /
+            2.4445 e-6 -- so the test pinning 2.45e-6 measures ITS seed's
+            phase; re-selection simply lands just outside that spread.
+
+        A bit-level consequence of the same mechanism: dense and matrix-free
+        Newtons pick `k` from `dphi/dT` values that differ in the last ulp,
+        so `lambda_2` agrees to ~1e-13 rather than to the bit.
+
+        ⚠ WHERE THE CONVERGED PERIOD DIFFERS BETWEEN THE RULES, IT IS THE
+        GRID, NOT THE RULE: trap with `x0_unknown=True` moves its Euler step
+        inside the period, so its discrete orbit depends on the start phase
+        (6.663745 / 6.662827 / 6.663525 from on-orbit seeds at three angles,
+        identical under either rule), and a frozen solve re-seeded at a
+        reselected answer reproduces its period to 1.8e-15.
+
+        ⚠ IT IS NOT A NEW FORMULATION, and the substitution it is usually
+        described with buys nothing by itself.  Aprille & Trick write the
+        unknown as `[x_01, ..., T, ..., x_0n]` with `x_0k` a constant; with
+        `k` FROZEN that solve took the bordered solve's iterates to <= 1e-9
+        and failed on exactly the same seeds.  The gain is the re-selection.
+        Holding `x_0k` at the iterate's own value is the bordered row with a
+        zero residual, which is how it is built here -- inside the residual,
+        a pure function of the iterate, so the damped Newton's carried trial
+        evaluation stays consistent.
+
+        ⚠ A 2026-09-02 attempt at this was measured and REVERTED (it failed an
+        on-orbit seed), and the reason recorded then -- "the row carries no
+        information, the orbit slides" -- was wrong.  Reproduced since: a
+        pin taken from the iterate's UNKNOWN (`x_in`) but compared against
+        the MANUFACTURED `x_0[k]` fails the on-orbit seed exactly so (40
+        iterations, not converged), while the consistent row converges in 8;
+        and a re-selecting callback fed the damping's cached trial row fails
+        every 4x seed the consistent one solves.
         """
         self._solve_kwargs = dict(refnode=refnode, maxiterations=maxiterations,
                                   matrix_free=matrix_free, tstab=tstab)
@@ -9378,7 +9480,8 @@ class PSS(Analysis):
                                 maxiterations=maxiterations, grid=grid,
                                 matrix_free=matrix_free,
                                 x0_unknown=x0_unknown, tstab=tstab,
-                                break_events=break_events)
+                                break_events=break_events,
+                                phase_rule=phase_rule)
 
         n = self.cir.n
         dt = timestep
@@ -9439,6 +9542,23 @@ class PSS(Analysis):
         ## system is solved.  Structural and exact -- see `_is_autonomous`.
         self.autonomous = self._is_autonomous(times)
         phase_k, phase_pin = 0, 0.0
+        if phase_rule not in ('reselect', 'frozen'):
+            raise ValueError("phase_rule must be 'reselect' or 'frozen', not %r"
+                             % (phase_rule,))
+        self.phase_rule = phase_rule
+
+        def _phase_row(x0_vec, tcol):
+            """The autonomous phase row at THIS iterate: `(k, residual)`.
+
+            `'reselect'` pins `k = argmax |dphi/dT|` over the `x_0` block at
+            the iterate's own value, so the residual is zero and the row
+            only fixes the step (`dz[k] = 0`); `'frozen'` compares the seed's
+            `k` against the seed's value.  See `solve`'s docstring."""
+            if phase_rule == 'reselect':
+                tc = np.abs(np.asarray(tcol, dtype=float).ravel()[:n - 1])
+                return int(np.argmax(tc)), 0.0
+            return (phase_k,
+                    float(np.asarray(x0_vec, dtype=float)[phase_k]) - phase_pin)
         if self.autonomous:
             ## An unseeded autonomous run starts at the origin, which IS a
             ## periodic solution -- the trivial one -- and the free-period
@@ -9578,10 +9698,9 @@ class PSS(Analysis):
             ## iterate's OWN current value, is attainable by construction,
             ## which removes the failure mode measured below (a far seed
             ## pinning a value the orbit never reaches) structurally rather
-            ## than by advice.  Not done here: `analysis.fsolve` exposes no
-            ## per-iteration hook, so it needs the autonomous outer solve
-            ## restructured, and re-selecting BETWEEN outer iterations does
-            ## not threaten `phi` being a function of `x_0` alone.
+            ## than by advice.  ✅ DONE 2026-09-16 as `phase_rule='reselect'`,
+            ## OPT-IN (the default stays `'frozen'`) -- `_phase_row`, and the
+            ## measurements, gains AND costs, in `solve`'s docstring.
             ##
             ## ⚠ THE PHASE ROW SITS OUTSIDE THE INTEGRATOR ON PURPOSE, and
             ## that placement is load-bearing rather than incidental.
@@ -9606,31 +9725,25 @@ class PSS(Analysis):
             ## for the far-seed failure recorded below.  It is not.
             ##
             ## Built and measured 2026-09-02: re-selecting `k` and the pin
-            ## from the current trajectory between outer iterations REGRESSES
+            ## from the current trajectory between outer iterations REGRESSED
             ## the working case.  Van der Pol at mu=1 from an ON-ORBIT seed
             ## went from converged to NOT converged, and far seeds wandered
             ## to periods of -52, -1088 and +110 against a true 6.6633.
             ##
-            ## ⚠ AND THE REASON IS STRUCTURAL, not a bug in the attempt.
-            ## Pinning the iterate's own value makes the phase residual
-            ## `x_0[k] - pin` IDENTICALLY ZERO at every iterate, so the row
-            ## carries no information: it constrains the STEP (`dz[k] = 0`)
-            ## and nothing else, and with `k` re-chosen each iteration a
-            ## different coordinate is frozen each time, so the orbit slides
-            ## along itself.
-            ##
-            ## A&T do not have this problem because THEY HAVE NO PHASE
-            ## EQUATION.  Their unknown vector SUBSTITUTES the period for the
-            ## pinned coordinate -- `v = [x_01, ..., x_0(k-1), T,
-            ## x_0(k+1), ..., x_0n]` -- an n x n system in which `x_0k` is a
-            ## CONSTANT rather than an unknown with a trivially satisfied
-            ## equation.  The constraint is structural where ours is
-            ## algebraic.  So Step 3 is not portable to a bordered
-            ## formulation as a drop-in: taking it means taking the
-            ## substitution with it.
-            ##
-            ## The frozen pin's failure mode below therefore STANDS, and its
-            ## fix is that substitution, not a moving pin.
+            ## ⚠⚠ WITHDRAWN 2026-09-16: THE REASON RECORDED THEN WAS WRONG, and
+            ## so was "taking Step 3 means taking the substitution".  The
+            ## zero residual does not make the row empty -- `dz[k] = 0` is
+            ## exactly A&T's constraint, and their substitution with `k`
+            ## frozen reproduces the bordered iterates to <= 1e-9 (the two
+            ## are one linear system).  Re-selection built consistently
+            ## converges on-orbit and widens the basin (4x seeds 0/6 -> 6/6)
+            ## -- at a cost that keeps it OPT-IN: it fails the grid-aligned
+            ## `Idtmod` wrap the frozen pin solves, and it lands on a
+            ## different phase of the same orbit.
+            ## The 09-02 failure REPRODUCES with a pin taken from the
+            ## unknown `x_in` but compared against the manufactured `x_0[k]`
+            ## -- the frame error the note below records for the frozen pin.
+            ## Built as `phase_rule`; see `solve`'s docstring.
             ##
             ## ⚠ THE PIN MUST BE IN THE UNKNOWN'S OWN FRAME.  `_x1` is the
             ## state one step AFTER the seed, which is the right thing to
@@ -9780,10 +9893,11 @@ class PSS(Analysis):
             J = np.zeros((m + 1, m + 1))
             J[:m, :m] = D - alpha * Mx
             J[:m, m] = -np.asarray(Mt).ravel()
-            J[m, phase_k] = 1.0
+            _k, _r = _phase_row(x0, Mt)
+            J[m, _k] = 1.0
             F = np.zeros(m + 1)
             F[:m] = self._fold_periodic(x0 - x_end)
-            F[m] = x0[phase_k] - phase_pin
+            F[m] = _r
             return F, J
         
         def func_autonomous_solved_history(z):
@@ -9830,12 +9944,13 @@ class PSS(Analysis):
             J[m:2 * m, :m] = -alpha * P_prev[:, :m]
             J[m:2 * m, m:2 * m] = D - alpha * P_prev[:, m:]
             J[m:2 * m, 2 * m] = -np.asarray(Pt_prev).ravel()
-            J[2 * m, phase_k] = 1.0
+            _k, _r = _phase_row(x0_in, Pt_last)
+            J[2 * m, _k] = 1.0
 
             F = np.zeros(2 * m + 1)
             F[:m] = np.asarray(x0_in) - np.asarray(x_last)
             F[m:2 * m] = np.asarray(xm1_in) - np.asarray(x_prev)
-            F[2 * m] = np.asarray(x0_in)[phase_k] - phase_pin
+            F[2 * m] = _r
             return F, J
 
         def func_full(x):
@@ -9868,10 +9983,11 @@ class PSS(Analysis):
             J = np.zeros((m + 1, m + 1))
             J[:m, :m] = D - alpha * Mx
             J[:m, m] = -np.asarray(Mt).ravel()
-            J[m, phase_k] = 1.0
+            _k, _r = _phase_row(x0, Mt)
+            J[m, _k] = 1.0
             F = np.zeros(m + 1)
             F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
-            F[m] = np.asarray(x0)[phase_k] - phase_pin
+            F[m] = _r
             return F, J
 
         def func_dirk(x):
@@ -9913,10 +10029,11 @@ class PSS(Analysis):
             J = np.zeros((m + 1, m + 1))
             J[:m, :m] = D - alpha * Mx
             J[:m, m] = -np.asarray(Mt).ravel()
-            J[m, phase_k] = 1.0
+            _k, _r = _phase_row(x0, Mt)
+            J[m, _k] = 1.0
             F = np.zeros(m + 1)
             F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
-            F[m] = np.asarray(x0)[phase_k] - phase_pin
+            F[m] = _r
             return F, J
 
         def func_autonomous_dirk(z):
@@ -9931,10 +10048,11 @@ class PSS(Analysis):
             J = np.zeros((m + 1, m + 1))
             J[:m, :m] = D - alpha * Mx
             J[:m, m] = -np.asarray(Mt).ravel()
-            J[m, phase_k] = 1.0
+            _k, _r = _phase_row(x0, Mt)
+            J[m, _k] = 1.0
             F = np.zeros(m + 1)
             F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
-            F[m] = np.asarray(x0)[phase_k] - phase_pin
+            F[m] = _r
             return F, J
 
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
@@ -10057,17 +10175,17 @@ class PSS(Analysis):
                         x0_, xm1_, tms_, hsT_, T=T_, want_dT=True)
                     Ptv_ = np.concatenate((np.asarray(Ptl_).ravel(),
                                            np.asarray(Ptp_).ravel()))
+                    k_, r_ = _phase_row(x0_, Ptl_)
                     F_ = np.concatenate(
                         (np.asarray(x0_, dtype=float) - np.asarray(xl_, dtype=float),
                          np.asarray(xm1_, dtype=float) - np.asarray(xp_, dtype=float),
-                         [float(np.asarray(x0_, dtype=float)[phase_k])
-                          - phase_pin]))
+                         [r_]))
 
                     def mv_(w):
                         v_, s_ = w[:2 * m_], float(w[2 * m_])
                         top = (v_ - alpha * self._monodromy_matvec(C0_, st_, v_)
                                - s_ * Ptv_)
-                        return np.concatenate((top, [v_[phase_k]]))
+                        return np.concatenate((top, [v_[k_]]))
                     return F_, mv_
 
                 def _mfc(z0_, ab_, xt_, rt_, mi_):
@@ -10105,14 +10223,15 @@ class PSS(Analysis):
                         open_at_x0=x0_unknown)
                     x0_ = np.asarray(x0_, dtype=float)
                     Mt_ = np.asarray(Mt_, dtype=float).ravel()
+                    k_, r_ = _phase_row(x0_, Mt_)
                     F_ = np.concatenate((x0_ - np.asarray(xe_, dtype=float),
-                                         [x0_[phase_k] - phase_pin]))
+                                         [r_]))
 
                     def mv_(w):
                         v_, s_ = w[:m_], float(w[m_])
                         top = (v_ - alpha * self._monodromy_matvec_plain(
                             op_, st_, v_)) - s_ * Mt_
-                        return np.concatenate((top, [v_[phase_k]]))
+                        return np.concatenate((top, [v_[k_]]))
                     return F_, mv_
 
                 def _mf(z0_, ab_, xt_, rt_, mi_):
