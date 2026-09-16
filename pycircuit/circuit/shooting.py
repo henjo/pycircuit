@@ -2545,10 +2545,10 @@ class PSS(Analysis):
         if (ier != 1 and not trivial_orbit and solver is None
                 and np.isfinite(T)
                 and abs(T) >= self.DEGENERATE_PERIOD_FACTOR * abs(seed_period)):
-            self._diagnose_lmm_free_period_stall(func, z)
+            self._diagnose_lmm_free_period_stall(func, z, info)
         return z, info, ier, mesg
 
-    def _diagnose_lmm_free_period_stall(self, func, z):
+    def _diagnose_lmm_free_period_stall(self, func, z, info=None):
         """Say WHY a multistep free-period solve stalled, when it is not the
         iteration count.
 
@@ -2571,11 +2571,38 @@ class PSS(Analysis):
         no manufactured opening -- converged in 7-10 evaluations at 800
         points at both multipliers.
 
-        So no number of iterations, damping or tolerance fixes it, and the
-        generic advice would send the caller the wrong way.  This measures
+        So no number of iterations, damping or tolerance fixes THAT stall, and
+        the generic advice would send the caller the wrong way.  This measures
         what it can at the last iterate (one residual evaluation, only on a
         failed solve) and says so.  Stage methods are skipped: they did not
         show this.
+
+        ⚠⚠ THE "ITERATIONS DO NOT HELP" CLAIM WAS OVER-BROAD AND IS NARROWED
+        (2026-09-16, peer report + reproduced here).  It was measured for
+        GEAR-2's solved-history stall and then written as though it held for
+        every multistep free-period solve.  It does not: a trapezoidal solve at
+        multiplier 0.9 converges with a bigger budget on the reporter's
+        oscillator (200 iterations) and at the DEFAULT 25 on the van der Pol
+        fixture here.  What IS measured at 0.99, on the reporter's tank and
+        rebuilt independently: trapezoidal's residual RISES with budget --
+        6.765e-07 at 25 iterations, 9.011e-07 at 200 -- and the analytic step
+        is UPHILL against the true derivative, so the line search's halvings
+        cannot improve it.  `radau` converged on that same fixture in 25
+        iterations (period 6.2831863e-07, amplitude to five digits).
+
+        ⚠ AND THE DISCRIMINATOR IS NOW REPORTED RATHER THAN GUESSED:
+        `analysis.fsolve` counts the iterations whose step it could not improve
+        (`infodict['ls_unimproved']`) and this message names the count.  Zero
+        means the solve was descending and a bigger budget is worth trying;
+        non-zero means the budget would repeat an uphill direction.
+
+        ⚠ `x0_unknown=True` IS A DIAGNOSTIC HERE, NOT A FIX.  In that frame the
+        analytic Jacobian IS the derivative (worst entry 6e-07 against 1.000 in
+        the default frame, both measured by central differences on the
+        reporter's fixture) and the step becomes a descent direction -- but the
+        solve still does not converge there: `||F||` plateaus at 3.069e-05,
+        identical at 25 and 200 iterations.  The frame explains the behaviour;
+        it does not rescue the case.
         """
         try:
             integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
@@ -2592,12 +2619,39 @@ class PSS(Analysis):
             method = getattr(self.par, 'method', '?')
         except Exception:
             return
-        common = (
-            "method='radau' (the default) converged on that oscillator in "
-            '7-10 evaluations at 800 points per period where this one never '
-            'did -- use it, or refine the grid. Raising maxiterations, damping '
-            'or tightening tolerances does not help: the stall was measured to '
-            'be a residual floor with no root nearby, not slow convergence.')
+        ## the line search's own verdict on this solve -- see the docstring
+        ls = int((info or {}).get('ls_unimproved', 0))
+        if ls:
+            ls_note = (
+                'The line search could not improve %d of the steps taken here: '
+                'the full step and four halvings each left the residual no '
+                'better than the point they started from, and the step was '
+                'taken anyway because there is no other candidate. That is a '
+                'direction UPHILL against the true derivative, which halving '
+                'cannot cure, so a larger budget would repeat it -- measured '
+                'on a weakly limited LC tank at multiplier 0.99, trapezoidal '
+                'goes 6.765e-07 at 25 iterations to 9.011e-07 at 200. ' % ls)
+        else:
+            ls_note = (
+                'Every step here was one the line search could improve, so '
+                'the solve was descending when the budget ran out: raising '
+                'maxiterations is worth trying before anything else. ')
+        common = ls_note + (
+            "method='radau' (the default) converges where these do not -- 7-10 "
+            'evaluations at 800 points on the oscillator above, and 25 '
+            'iterations on a weakly limited LC tank at multiplier 0.99 '
+            '(2026-09-16) where trapezoidal never did -- so use it, or refine '
+            'the grid. ⚠ Whether MORE ITERATIONS help depends on the circuit, '
+            'and this message over-claimed until 2026-09-16: gear-2 stalling '
+            'with the solved-history signature below is a residual floor that '
+            'iterations, damping and tolerances do not move, but a trapezoidal '
+            'solve at multiplier 0.9 converges with a 200-iteration budget on '
+            'one circuit and at the default 25 on another. The count above is '
+            'the discriminator. ⚠ `x0_unknown=True` is a DIAGNOSTIC here, not '
+            'a fix: it makes the Jacobian the actual derivative (worst entry '
+            '6e-07 against 1.000) and the step a descent direction, but on '
+            'that 0.99 fixture the residual plateaus at 3.069e-05 and the '
+            'solve still does not converge.')
         if hist is not None and hist > 0.5:
             msg = ('PSS: this autonomous solve (method=%r) stopped at a '
                    'residual floor, and the Jacobian at the last iterate '

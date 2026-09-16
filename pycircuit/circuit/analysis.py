@@ -345,6 +345,23 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     converged = False
     ier = 2
     cached = None
+    ## ⚠⚠ AN UNIMPROVABLE STEP IS COMMITTED ANYWAY, AND USED TO LEAVE NO TRACE.
+    ## When the halvings below all fail to reduce `||F||`, the loop still takes
+    ## `x0 + step*xdiff` -- there is no other candidate -- and the convergence
+    ## test then scores `F` at the PREVIOUS point, not at the trial.  A solve
+    ## whose direction is uphill therefore drifts silently: measured on a
+    ## weakly limited LC oscillator (second multiplier 0.99, peer-reported and
+    ## reproduced here), trapezoidal's free-period residual RISES with budget,
+    ## 6.765e-07 at 25 iterations to 9.011e-07 at 200, with nothing said.
+    ##
+    ## Counted here rather than acted on: refusing the step would be worse.
+    ## A case measured on the reporter's own fixture climbs for ~90 iterations
+    ## and THEN descends geometrically to converge by 200, so stopping at the
+    ## first unimprovable step would turn a slow success into a failure.  The
+    ## count goes out through `infodict` (which every caller in this tree
+    ## discards today) so a diagnosis can say what happened; the iteration
+    ## itself is bit-for-bit what it was.
+    ls_unimproved = 0
     for i in range(maxiter):
         if cached is None:
             F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
@@ -370,12 +387,19 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
             F0 = float(toolkit.sqrt(toolkit.sum(F * F)))
             step = 1.0
             Ft, Jt = f(x, *args)
+            improved = False
             for _k in range(_LS_MAX_HALVINGS):
                 if float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0:
+                    improved = True
                     break
                 step *= 0.5
                 x = x0 + step * xdiff
                 Ft, Jt = f(x, *args)
+            else:
+                ## the budget ran out; the last trial is still the candidate
+                improved = float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0
+            if not improved:
+                ls_unimproved += 1
             xdiff = x - x0          # the step actually taken, for conv_x
             cached = (Ft, Jt)
 
@@ -399,7 +423,12 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     if ier == 2:
         mesg = "No convergence. xerror = "+str(xdiff)
     
-    infodict = {}
+    ## `ls_unimproved`: iterations whose step the line search could not make
+    ## better than the point it started from.  Zero on every solve that is
+    ## converging normally; non-zero is the signature of a step that is uphill
+    ## against the TRUE derivative, which halving cannot cure.  Reported rather
+    ## than acted on -- see the note at its declaration.
+    infodict = {'ls_unimproved': ls_unimproved}
     if full_output:
         return x, infodict, ier, mesg
     else:

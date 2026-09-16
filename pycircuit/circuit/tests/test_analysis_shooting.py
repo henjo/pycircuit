@@ -18094,6 +18094,108 @@ def _current_sense_relaxation_oscillator(k=20.0):
     return cir, T_ideal
 
 
+def test_an_unimprovable_step_is_counted_and_named_instead_of_committed_in_silence():
+    """⚠⚠ PEER REPORT, 2026-09-16, REPRODUCED -- and it is a DIAGNOSIS defect,
+    not a Jacobian one.
+
+    The report was "the free-period Jacobian is not the derivative of its
+    residual".  It is not -- `dF/dx_in` is SINGULAR (shooting.py's own
+    2026-09-02 measurement: sigma_min exactly 0, rank 1/3, 2/4, 1/3), so an
+    exact Newton for that formulation does not exist and `I - dx_end/dx_0` is
+    an approximation to a DIFFERENT, well-posed derivative.  The reporter
+    withdrew that headline.  What survives is narrower and real: on a weakly
+    limited tank (second multiplier 0.99) the step is UPHILL against the true
+    derivative, the line search's four halvings cannot improve it, `fsolve`
+    commits it anyway -- there is no other candidate -- and NOTHING SAID SO.
+    Measured on the reporter's fixture, rebuilt here: the residual RISES with
+    budget, 6.765e-07 at 25 iterations to 9.011e-07 at 200.
+
+    Pinned here: the count reaches `infodict`, a failing solve NAMES it, a
+    converging solve is untouched, and the message no longer claims that
+    iterations never help -- which was measured for GEAR's solved-history
+    stall and written as though it held for every multistep solve (a
+    trapezoidal solve at multiplier 0.9 converges with a bigger budget on the
+    reporter's circuit and at the default 25 on the van der Pol here).
+
+    ⚠ NOT FIXED BY, measured on that fixture: `x0_unknown=True` (Jacobian
+    becomes the derivative, 6e-07 against 1.000, step becomes descent -- and
+    `||F||` still plateaus at 3.069e-05, identical at 25 and 200 iterations)
+    or `tstab` (50 periods: still non-converged).  `radau` DOES converge there
+    in 25 iterations, which is what the message steers to.
+    """
+    import warnings
+    from pycircuit.circuit import analysis as _an
+    circuit.default_toolkit = circuit.numeric
+
+    ## the counter exists and is silent on a healthy solve
+    def arctan(x):
+        return (np.array([float(np.arctan(x[0]))]),
+                np.array([[1.0 / (1.0 + x[0] ** 2)]]))
+    _x, info, ier, _m = _an.fsolve(arctan, np.array([0.2]), maxiter=40,
+                                   toolkit=circuit.numeric, full_output=True,
+                                   line_search=True)
+    assert ier == 1 and info['ls_unimproved'] == 0, (ier, info)
+
+    ## the reporter's lambda_2 = 0.99 tank, rebuilt: series-resonant LC with a
+    ## cubic negative resistance; their switch sits at a fixed control voltage,
+    ## so it is the gl = 1e-4 S tank loss and is written as a resistor here.
+    T_TANK = 6.28318530718e-07
+
+    def tank():
+        c = SubCircuit()
+        c.add_node('p')
+        c['L0'] = L('p', gnd, L=1e-4)
+        c['C0'] = C('p', gnd, c=1e-10)
+        c['Rl'] = R('p', gnd, r=1e4)
+        c['N0'] = BSource('p', gnd, gnd, 'p',
+                          i_func=lambda u: 1.01599560631e-04 * u
+                          - 2.13274750776e-06 * u ** 3)
+        return c
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        cir = tank()
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 1.0                      # the kick is ON the orbit (A = 1)
+        pss = PSS(cir, method='trap', reltol=1e-10)
+        pss.solve(period=T_TANK, timestep=T_TANK / 800, x0=x0,
+                  maxiterations=25)
+    assert not pss.converged, \
+        'the weakly damped tank now converges under trap, so this fixture no ' \
+        'longer exercises the uphill step it exists for'
+    named = [str(w.message) for w in caught
+             if 'line search could not improve' in str(w.message)]
+    assert named, \
+        'a solve whose step the line search could not improve said nothing: ' \
+        '%r' % ([str(w.message)[:80] for w in caught],)
+    msg = named[0]
+    ## the count is real (24 of 25 measured), and the claim is narrowed
+    import re
+    n_named = int(re.search(r'could not improve (\d+) of', msg).group(1))
+    assert n_named >= 1, msg
+    assert 'UPHILL' in msg and 'radau' in msg, msg
+    assert 'does not help' not in msg, \
+        'the blanket "iterations do not help" claim is back; it was measured ' \
+        'for gear\'s solved-history stall only'
+
+    ## and a converging autonomous solve is untouched by the bookkeeping
+    def vdp():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: u - u ** 3 / 3.0)
+        return c
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p2 = PSS(vdp(), method='trap', reltol=1e-9)
+        p2.solve(period=6.6634, timestep=6.6634 / 200,
+                 x0=np.array([2.0, 0.0]), maxiterations=40)
+    assert p2.converged and abs(p2.period / 6.663571642 - 1.0) < 1e-6, \
+        (p2.converged, p2.period)
+
+
 def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():
     """Owner decision 2026-09-08 ("Do 2"): the inner step Newton on the PSS
     path had no damping, and a nonlinearity fed by a branch current through
