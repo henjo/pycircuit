@@ -1119,6 +1119,124 @@ def test_pcnr_is_the_stage_method_limiting_and_matches_device_limiting():
         'PCNR lost the diode nonlinearity (DC offset %.2e, junction idle)' % dc
 
 
+def test_pcnr_is_the_glm_stage_limiting_too_and_says_so_truthfully():
+    """E1 (2026-09-16): `pcnr=True` under a GLM method used to do DEVICE
+    limiting and REPORT that it had used PCNR.
+
+    Measured before the fix on a diode rectifier: 3 PCNR solves -- the
+    startup's Radau substeps, which go through `_rk_step_coupled` -- against
+    39987 `Diode.limit` calls, with `pcnr_status == 'used'`.  That is the same
+    shape as the coupled path's recorded bug (0 solves, 4869 limit calls).
+
+    A GLM stage IS `_rk_stage_pcnr`'s form: `q(Y_i) - target - h a_ii K_i = 0`
+    over `h a_ii` is `i(Y) + iq_eff + u = 0`.  Every shipped tableau is
+    DIRK-like with ONE non-zero diagonal (0.25 / 0.25 / 0.258 for GLM2/3/4),
+    so no stage needs excepting.
+
+    What this pins: the ROUTING (one PCNR solve per stage per step, and the
+    device `limit()` calls falling to the one sync each solve makes at
+    convergence), the AGREEMENT with device limiting, and the per-stage
+    FALLBACK.
+
+    ⚠ AGREEMENT IS A TOLERANCE STATEMENT, NOT A BIT ONE, on every sequential
+    stage path -- measured in one harness at reltol 1e-9: glm3 6.2e-9,
+    esdirk43 1.6e-8, trbdf2 8.4e-11 (only the COUPLED radau gives 0.0).  The
+    GLM gaps track `reltol` exactly (glm3 1.2e-6 / 6.2e-9 / 7.9e-16 at 1e-6 /
+    1e-9 / 1e-12), which is why this asserts at a tight tolerance.
+    ⚠ GLM4 IS EXCLUDED FROM THE AGREEMENT ASSERTION ON PURPOSE: its own
+    reproducibility floor is ~1e-8 with PCNR nowhere in sight (stage predictor
+    on vs off 8.2e-9, reltol 1e-12 vs 1e-13 1.3e-8), against ~1.4e-15 for
+    GLM2/GLM3 -- the badly scaled tableau, not the solver.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import GLM2Integrator, GLM3Integrator
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    circuit.default_toolkit = circuit.numeric
+    NSTEP = 120
+
+    def rectifier():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    calls = [0]
+    orig_limit = Diode.limit
+
+    def counting(self, *a, **k):
+        calls[0] += 1
+        return orig_limit(self, *a, **k)
+
+    def run(integ, pcnr, reltol=1e-12):
+        calls[0] = 0
+        c = rectifier()
+        tr = Transient(c, toolkit=circuit.numeric, integrator=integ,
+                       reltol=reltol, pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=3e-6, timestep=3e-6 / NSTEP,
+                           x0=np.zeros(c.n), fixed_timestep=True)
+        return tr, np.asarray(res.x, dtype=float), calls[0]
+
+    Diode.limit = counting
+    try:
+        for I in (GLM2Integrator, GLM3Integrator):
+            stages = I().tableau()[0].shape[0]
+            _tr0, x_lim, lim_off = run(I(), False)
+            tr1, x_pcnr, lim_on = run(I(), True)
+
+            ## the stages really went through PCNR ...
+            assert tr1.pcnr_status == 'used' and tr1.pcnr_fallbacks == 0, \
+                (I.__name__, tr1.pcnr_status, tr1.pcnr_fallbacks)
+            assert tr1.pcnr_solves >= stages * NSTEP, \
+                '%s: %d PCNR solves for %d stages x %d steps -- the stage ' \
+                'solve is not routed through PCNR (it was 3, the startup, ' \
+                'before E1)' % (I.__name__, tr1.pcnr_solves, stages, NSTEP)
+            ## ... and device limiting is now only the one sync per solve,
+            ## instead of carrying the solve itself
+            assert lim_on < 2 * tr1.pcnr_solves < lim_off, \
+                '%s: %d limit() calls against %d PCNR solves (limiting run ' \
+                'made %d) -- PCNR is not doing the limiting' \
+                % (I.__name__, lim_on, tr1.pcnr_solves, lim_off)
+
+            ## and it reaches the same solution device limiting does
+            rel = (np.linalg.norm(x_lim - x_pcnr)
+                   / np.linalg.norm(x_lim))
+            assert rel < 1e-12, \
+                '%s: PCNR and limiting disagree by %.2e at reltol 1e-12' \
+                % (I.__name__, rel)
+
+        ## the diode must actually conduct, or none of the above tested PCNR
+        _tr, xp, _l = run(GLM3Integrator(), True)
+        v2 = xp[rectifier().get_node_index(2)][-NSTEP:]
+        assert abs(np.mean(v2)) > 1e-2, \
+            'the junction is idle (DC %.2e), so nothing exercised PCNR' \
+            % abs(np.mean(v2))
+
+        ## ⚠ AND A STAGE PCNR FAILURE FALLS BACK PER STAGE rather than ending
+        ## the run: PCNR carries no continuation ladder, `self._newton` does.
+        _tr_ref, x_ref, _l = run(GLM3Integrator(), False)
+        orig_stage = Transient._rk_stage_pcnr
+
+        def always_fail(self, *a, **k):
+            raise NoConvergenceError('forced')
+        Transient._rk_stage_pcnr = always_fail
+        try:
+            tr_fb, x_fb, _l = run(GLM3Integrator(), True)
+        finally:
+            Transient._rk_stage_pcnr = orig_stage
+        assert tr_fb.pcnr_fallbacks >= 3 * NSTEP and \
+            tr_fb.pcnr_status == 'partial', \
+            (tr_fb.pcnr_fallbacks, tr_fb.pcnr_status)
+        assert np.array_equal(x_fb, x_ref), \
+            'the fallback must be the device-limiting solve, bit for bit'
+    finally:
+        Diode.limit = orig_limit
+
+
 def test_pcnr_coupled_radau_solves_the_collocation_exactly():
     """Both coupled Radau IIA(3) paths -- PCNR and device limiting -- must solve
     the exact collocation stage equations, reaching the TRUE root of

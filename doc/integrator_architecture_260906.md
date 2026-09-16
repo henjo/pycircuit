@@ -324,6 +324,33 @@ moved from bin 2, a non-harmonic bin that only rang on the old bug's artifacts, 
 real 2nd harmonic). The PCNR-in-shooting scoreboard is now 3-for-4 (LMM, DIRK, FULL all carry
 PCNR through `solve_timestep`).
 
+### PCNR wired for the GLM (multivalue) path — E1, and it had been claiming to work
+
+**4-for-4 since 2026-09-16.** `pcnr=True` under a GLM method did DEVICE limiting and reported
+`pcnr_status == 'used'`: measured on a diode rectifier, **3 PCNR solves against 39987
+`Diode.limit` calls** — and those 3 are the startup's Radau substeps going through
+`_rk_step_coupled`, not the GLM's own stages. Same shape as the coupled path's bug above (0
+solves, 4869 limit calls), and worse in one way: the status said it had been used.
+
+A GLM stage is `_rk_stage_pcnr`'s form unchanged — `q(Y_i) - target - h a_ii K_i = 0` over
+`h a_ii` is `i(Y) + iq_eff + u = 0` — and every shipped tableau is DIRK-like with ONE non-zero
+diagonal (0.25 / 0.25 / 0.258 for GLM2/3/4, every stage equal), so unlike an ESDIRK there is no
+explicit stage without an `h a_ii` to divide by. `_solve_timestep_glm` now calls it, with the
+DIRK path's per-stage fallback to `self._newton` (PCNR has no continuation ladder; the limiting
+solve does). After: one solve per stage per step, `limit()` down to the one sync each solve makes
+at convergence, and **device evaluations 0.34–0.38× of the limiting run**.
+
+⚠ **AGREEMENT IS A TOLERANCE STATEMENT ON EVERY SEQUENTIAL STAGE PATH, NOT A BIT ONE** — and the
+"machine precision" wording above is from a different comparison (a 160-step fixed grid at reltol
+1e-10, where it holds). On a 1001-step fixed grid at reltol 1e-9 the PCNR-vs-limiting waveform gap
+is glm3 6.2e-9, **esdirk43 1.6e-8**, trbdf2 8.4e-11 — only the COUPLED radau gives exactly 0.0.
+The GLM gaps track `reltol` (glm3 1.2e-6 / 6.2e-9 / 7.9e-16 at 1e-6 / 1e-9 / 1e-12), i.e. the two
+solvers stop at different points of the same equation, which is the expected behaviour and not a
+defect of either. ⚠ **GLM4 floors at ~1e-8 for its own reasons**: with PCNR nowhere in sight,
+stage predictor on-vs-off reads 8.2e-9 and reltol 1e-12-vs-1e-13 reads 1.3e-8, against ~1.4e-15
+for GLM2/GLM3 — the badly scaled tableau (B ~2500, two abscissae outside [0,1]) showing up as a
+reproducibility floor. Test: `test_pcnr_is_the_glm_stage_limiting_too_and_says_so_truthfully`.
+
 ### The same shared-`_vlim` defect was in the MONODROMY — found, measured, fixed
 
 The transient fix above named a *class* of bug, so the monodromy was checked for it rather than

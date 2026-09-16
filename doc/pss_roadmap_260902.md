@@ -8243,7 +8243,35 @@ down: a list that exists only in a handover is a list that dies with the
 handover.  Each entry below is MEASURED; the pointer is to
 `doc/pss_log_260902.md`.
 
-### E1. The GLM PCNR stage path — unbuilt
+### E1. The GLM PCNR stage path — ✅ BUILT 2026-09-16 (Andreas: "Do E1/E2")
+
+**It was not merely missing — it was claiming to work.** `pcnr=True` under a GLM method did DEVICE
+limiting and set `pcnr_status = 'used'`: measured on a diode rectifier, **3 PCNR solves against
+39987 `Diode.limit` calls**, and those 3 are the startup's Radau substeps (they go through
+`_rk_step_coupled`, which has its own PCNR branch), not the GLM's stages. The same shape as the
+coupled path's recorded bug, with a false status on top.
+
+A GLM stage is `_rk_stage_pcnr`'s form unchanged (`q(Y_i) − target − h a_ii K_i = 0` over `h a_ii`
+is the DC-flow `i(Y) + iq_eff + u = 0`), and every shipped tableau is DIRK-like with ONE non-zero
+diagonal (0.25 / 0.25 / 0.258 for GLM2/3/4, all stages equal), so no explicit stage needs
+excepting. `_solve_timestep_glm` now routes each stage through it with the DIRK path's per-stage
+fallback to `self._newton`. After: one solve per stage per step, `limit()` down to the single sync
+per solve, **device evaluations 0.34–0.38×** of the limiting run, and the forced-failure control
+completes with `status='partial'` and a bit-identical waveform.
+
+⚠ **AGREEMENT IS A TOLERANCE STATEMENT ON EVERY SEQUENTIAL STAGE PATH.** My prediction ("matches
+device limiting to near machine precision on a fixed grid") was REFUTED and the refutation is the
+useful part: on a 1001-step fixed grid at reltol 1e-9 the gap is glm3 6.2e-9, **esdirk43 1.6e-8**
+(a shipped path), trbdf2 8.4e-11, coupled radau exactly 0.0. The GLM gaps track `reltol` (glm3
+1.2e-6 / 6.2e-9 / 7.9e-16 at 1e-6 / 1e-9 / 1e-12), so the two solvers stop at different points of
+the SAME equation. ⚠ GLM4 floors at ~1e-8 for its own reasons — with PCNR absent, predictor
+on-vs-off 8.2e-9 and reltol 1e-12-vs-1e-13 1.3e-8 against ~1.4e-15 for GLM2/3 — the badly scaled
+tableau, which is why the test asserts agreement on GLM2/GLM3 only.
+
+Test `test_pcnr_is_the_glm_stage_limiting_too_and_says_so_truthfully`; the architecture doc's PCNR
+scoreboard moves to 4-for-4.
+
+### E1 (original entry). The GLM PCNR stage path — was unbuilt
 
 The GLM class shipped with a documented scope: *"Transient only, constant step
 (Theorem 9.5's own scope), no PSS period map (a multivalue monodromy lives on
@@ -8255,7 +8283,29 @@ stepping was built the same day.  What remains is **the PCNR stage path** and
 **E2**.  Cost is unmeasured; the entry point is the stage solve, as for every
 other family.
 
-### E2. GLM on the JAX backend — unbuilt
+### E2. GLM on the JAX backend — unbuilt, ⚠⚠ AND THIS ENTRY'S PREMISE IS WRONG (checked 2026-09-16)
+
+**"The one integrator class not on it" is false: NO stage or multivalue method is on that backend.**
+`jaxtransient.py` contains zero mentions of radau / trbdf2 / esdirk, and refuses anything but
+`'gear'`, `'euler'` and `'trap'` in three separate places (`compute_integration`, the method check,
+and the constructor); the parity ledger's P6 row says the same ("integrator selection … Euler /
+Trap / Gear2"). So GLM would be the FIRST multi-stage method there, not the last family to arrive,
+and E2 is a much larger item than this entry implies — the Nordsieck `r·m` question is the second
+problem, not the first. ⚠ Note also that `JAXTransient`'s own docstring claims "CPU-only: nothing,
+as of 2026-09-01", which cannot be squared with the absence of every stage method; one of the two
+records is wrong and this one was checked.
+
+✅ **DECIDED 2026-09-16 (Andreas, asked with the three options): SPIKE ONE STAGE METHOD FIRST.** Port the
+cheapest stage method — TR-BDF2, two implicit stages sharing one diagonal — far enough to TIME a batched
+sweep against the CPU, and decide GLM-on-JAX on that number rather than on the argument below. The spike
+is the deliverable; GLM is not started.
+
+**What a decision needs, unmeasured:** whether a stage method belongs on that backend at all. The
+backend's purpose is `solve_batched` (one compiled kernel per parameter sweep); a sequential
+multi-stage step with a per-stage Newton is exactly the shape that suffered in the `lax.cond`
+lesson, and GLM4 is already 2.4–4.7× slower than radau on the CPU at equal grid.
+
+Original entry follows.
 
 Same scope line.  The branch is named `cna-jax-vectorization` and the GLM
 family is the one integrator class not on it.  ⚠ Unmeasured: whether the

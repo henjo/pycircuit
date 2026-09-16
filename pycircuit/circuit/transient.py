@@ -3392,7 +3392,48 @@ class Transient(Analysis):
                 f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
                 J = arr(self.cir.C(x, epar)) + h * _aii * arr(self.cir.G(x, epar))
                 return f, J
-            Y[i] = self._newton(func_i, guess)
+
+            ## ⚠⚠ E1: PCNR IS THE STAGE SOLVE HERE TOO (2026-09-16).  Before
+            ## this, `pcnr=True` under a GLM method did device limiting and
+            ## SAID it had used PCNR -- measured on a diode half-wave
+            ## rectifier, 3 PCNR solves (the startup's Radau substeps) against
+            ## 39987 `Diode.limit` calls, with `pcnr_status == 'used'`.  That
+            ## is the same shape as the coupled path's recorded bug.
+            ##
+            ## A GLM stage IS the DC-flow form `_rk_stage_pcnr` solves:
+            ## `q(Y_i) - target - h a_ii K_i = 0` divided by `h a_ii` gives
+            ## `i(Y) + iq_eff + u = 0`, `iq_eff = (q - target)/(h a_ii)`.
+            ## Every shipped tableau is DIRK-like with ONE diagonal
+            ## (0.25 / 0.25 / 0.258 for GLM2/3/4, all stages equal and
+            ## non-zero), so there is no explicit stage to except -- unlike an
+            ## ESDIRK, whose `a_11 = 0` has no `h a_ii` to divide by.
+            ## `_rk_stage_pcnr` syncs `_vlim` with one `limit(x, x)` at
+            ## convergence, which this loop needs before it reads `K[i]`.
+            _pcnr_ok = False
+            if self._rk_use_pcnr():
+                ## ⚠ FALLS BACK PER STAGE, exactly as the DIRK and LMM steps
+                ## do: PCNR carries no continuation ladder, `self._newton`
+                ## does, so a stage PCNR cannot solve is handed to the
+                ## limiting solve rather than ending the transient.
+                from pycircuit.circuit.nrsolver import NoConvergenceError \
+                    as _NCE
+                try:
+                    Y[i] = self._rk_stage_pcnr(target, aii, h, ti, guess,
+                                               provided_function)
+                    _pcnr_ok = True
+                    self.pcnr_solves += 1
+                    self.pcnr_status = ('used' if not self.pcnr_fallbacks
+                                        else 'partial')
+                except _NCE as _exc:
+                    logging.warning(
+                        'transient pcnr=True: GLM stage PCNR failed at t=%g '
+                        '(%s); device limiting for this stage',
+                        ti, str(_exc)[:80])
+                    self.pcnr_fallbacks += 1
+                    self.pcnr_status = ('partial' if self.pcnr_solves
+                                        else 'fell-back')
+            if not _pcnr_ok:
+                Y[i] = self._newton(func_i, guess)
             K[i] = -(arr(self.cir.i(Y[i], epar)) + src(ti))
         Qn = np.array([sum(V[k, j] * Q[j] for j in range(r))
                        + h * sum(B[k, j] * K[j] for j in range(s)) for k in range(r)])

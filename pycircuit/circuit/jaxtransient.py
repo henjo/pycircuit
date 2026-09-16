@@ -3028,7 +3028,15 @@ class JAXTransient(Analysis):
       lane with its own adaptive (or coupled (x, h)) step sequence.  The
       CPU deliberately has no imitation of it.
 
-    * **CPU-only**: nothing, as of 2026-09-01.  The coupled 'bordered'
+    * **CPU-only**: ⚠ EVERY STAGE AND MULTIVALUE METHOD (corrected
+      2026-09-16; the line below had said "nothing" since 2026-09-01 and was
+      read as such by the roadmap).  This backend takes 'gear', 'euler' and
+      'trap' -- the three LMM companions -- and refuses anything else in
+      three places; `radau`, `trbdf2`, `esdirk43` and the GLM family appear
+      nowhere in this file.  So a per-stage Newton has never run here, and
+      putting one of them on this backend is a NEW capability rather than a
+      port of a missing case.  The rest of the sentence still stands: of the
+      features the LMM paths have, the coupled 'bordered'
       eq (12) branch is REFUSED rather than missing: measured on the CPU
       before any port (`benchmarks/coupled_bordered_gear2.py`), it costs
       2.72x the time points and 2.24x the Newton iterations of 'approx' under
