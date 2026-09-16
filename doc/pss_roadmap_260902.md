@@ -8300,6 +8300,42 @@ cheapest stage method — TR-BDF2, two implicit stages sharing one diagonal — 
 sweep against the CPU, and decide GLM-on-JAX on that number rather than on the argument below. The spike
 is the deliverable; GLM is not started.
 
+✅ **SPIKE DONE 2026-09-16 — `benchmarks/stage_method_batched.py`, and the answer is "~1.5×, on a fixture
+too small to decide a port".** Both integrators on IDENTICAL machinery (same hand-written Newton, same
+convergence tests, same `vmap`, same fixed grid; only the companion differs), 128 lanes, one CUDA device:
+
+| steps | TR-BDF2 warm | err (V) | gear-2 warm | err (V) |
+|---|---|---|---|---|
+| 100 | 0.060 s | 1.571e-03 | 0.038 s | 1.585e-02 |
+| 200 | 0.100 s | 3.823e-04 | 0.053 s | 3.613e-03 |
+| 400 | 0.171 s | 9.432e-05 | 0.093 s | 8.442e-04 |
+| 800 | 0.314 s | 2.336e-05 | 0.173 s | 2.020e-04 |
+
+Both cleanly second order (4.04–4.4 per doubling). Gear-2 is **1.7–1.8× cheaper per step** (216–377 µs vs
+393–597 µs — one solve against two stages); TR-BDF2's error constant is **~10× smaller**, so gear-2 needs
+√10 ≈ 3.2× the steps for equal accuracy. **Net at equal accuracy: TR-BDF2 ~1.4–1.6× faster** (matching
+TR-BDF2@200 needs ~590 gear steps ≈ 0.136 s vs 0.100 s; matching TR-BDF2@800 needs ~2350 ≈ 0.51 s vs
+0.314 s). The march is the CPU's TR-BDF2 to round-off: same method, same 1600-step grid, both backends,
+worst lane **1.9e-12**.
+
+⚠⚠ **TWO RETRACTIONS FROM THIS SPIKE, both recorded in the harness so they are not repeated.** (1) A first
+"20× over the CPU loop" was EIGHT IDENTICAL LANES: `params_tree` is consumed only through the evaluation
+groups and `_eval_groups` is built lazily inside `Circuit.G`, so a march that never calls `G` silently runs
+the build value in every lane — the exact failure `solve_batched`'s own comment describes. (2) A first gear
+column compared against `solve_batched`, which has no `fixed_timestep` and therefore ran ADAPTIVE at 7.3e-4
+while the fixed march reached 5e-14 — different work at different accuracy, so its "20–47×" measured
+nothing. ⚠ A third, milder one: the reference gate compared 12800-step JAX against 1600-step CPU and read
+the coarser grid's own error (5.75e-6) as a disagreement — predicted 5.8e-6 from the 800-step row.
+
+**RECOMMENDATION (the spike's purpose): do NOT port GLM on this evidence, and do not port TR-BDF2 either
+without one more measurement.** The fixture has FOUR unknowns, where per-step cost is dominated by fixed
+overheads (a 3×3 dense solve, the traced `while_loop`), so the per-step ratio need not survive at the
+circuit sizes where a batched backend earns its keep. And the spike is fixed-step: LTE control, rejection,
+breakpoints and the rescue ladder are what a production port must add, and are where this backend's
+complexity already lives (the `lax.cond`/death-march lessons). If a stage method ever goes on that backend
+it should be TR-BDF2, not GLM (five stages, a badly scaled tableau, and 2.4–4.7× slower than radau on the
+CPU). The cheap next measurement is the same harness at a larger `m`.
+
 **What a decision needs, unmeasured:** whether a stage method belongs on that backend at all. The
 backend's purpose is `solve_batched` (one compiled kernel per parameter sweep); a sequential
 multi-stage step with a per-stage Newton is exactly the shape that suffered in the `lax.cond`
