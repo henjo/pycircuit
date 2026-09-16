@@ -6860,7 +6860,26 @@ oscillator noise, measured and rejected as B12), and **37th EuMC Munich, October
 the EuMC paper's embedded PDF metadata is **placeholder junk dated 1999** — do not read the date
 off the file.
 
-### A8. Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
+### A8. Sampled / edge-jitter noise (`noisetype=timedomain`) — OPENED 2026-09-16, reconnaissance measured, unbuilt
+
+✅ **A FIRST ADDITIVE NUMBER EXISTS WITHOUT NEW MACHINERY, on the DRIVEN buffer chain** (Andreas: "start with A8").
+Given the oscillator's waveform the chain is a driven LPTV system, and `sampled_noise` works on driven circuits:
+three tanh buffers into RC loads, `gm·R = 0.5`, 4e-21 A²/Hz per stage, f₀ = 1 MHz → **σ_t = 5.712532e-11 s**
+(5.71e-05 of T) at the last crossing, band [1 kHz, 500 kHz]. Gate and falsifiers all passed: sources OFF collapses
+242× in variance (floor 3.669792e-12 s, **quoted beside the figure, never subtracted**), PSD×4 gives 1.99689
+against 2.000, and varying the DRIVE alone holds σ_t·slew constant to 0.9 % over a 7.8× slew range.
+
+⚠ **THE ORIGINAL "CHEAP FIRST STEP" IS WITHDRAWN**: `sampled_noise` refuses an autonomous PSS by design, so it
+cannot be pointed at an oscillator's crossings. ⚠ The oscillator's share is `c`, and the `K_orb + n d u uᵀ`
+n-scaling reproduces it independently (`c_equiv` 6.251420e-08 vs shipped 6.248352e-08, ratio 1.0005).
+
+⚠ **STILL OUT OF SCOPE and this is what a real A8 must add**: the LDO modulating each inverter's DELAY is
+bias-dependent and non-stationary, outside the modulated-stationary support; and the across-period correlation
+`ρ_k` — which the three jitter metrics (absolute, k-cycle, cycle-to-cycle) need and which this route cannot
+supply — is precisely what Demir 1996 computes. Full record, including eight convention errors worth not
+repeating, in `doc/pss_log_260902.md` under "A8 opened".
+
+### A8 (original entry). Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
 
 ⚠ **FROM A REAL CIRCUIT, NOT FROM THE LITERATURE.** Andreas put the case up: a free-running
 oscillator followed by several inverter buffers, output taken at the **last inverter**, the
