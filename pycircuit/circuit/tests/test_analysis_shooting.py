@@ -21064,8 +21064,8 @@ def _a8_buffer_chain(psd=4e-21, noisy=True, cap=2e-10, res=1e3, va=1.0, f0=1e6):
     return cir
 
 
-def _a8_edge_variance(cir, npts, f0=1e6, method='radau'):
-    """`(variance at the rising crossing of o2, slew there, lte_warned)`."""
+def _a8_edge_variance(cir, npts, f0=1e6, method='radau', node='o2'):
+    """`(variance at the rising crossing of `node`, slew there, lte_warned)`."""
     import warnings as _warnings
     T = 1.0 / f0
     pss = PSS(cir, method=method, reltol=1e-11)
@@ -21078,11 +21078,11 @@ def _a8_edge_variance(cir, npts, f0=1e6, method='radau'):
     assert pss.converged, 'A8 chain PSS did not converge at npts = %d' % npts
     Xw = np.asarray(pss.waveform[1], dtype=float)
     grid = np.asarray(pss.factored_period().times, dtype=float)[:Xw.shape[1]]
-    red = [str(n) for n in cir.nodes if str(n) != 'gnd!'].index('o2')
-    v = Xw[cir.get_node_index('o2')]
+    red = [str(n) for n in cir.nodes if str(n) != 'gnd!'].index(node)
+    v = Xw[cir.get_node_index(node)]
     mid = 0.5 * (v.max() + v.min())
     cross = [k for k in range(1, len(v)) if (v[k - 1] - mid) < 0 <= (v[k] - mid)]
-    assert cross, 'no rising crossing at o2 (pk-pk %.5g)' % float(np.ptp(v))
+    assert cross, 'no rising crossing at %s (pk-pk %.5g)' % (node, float(np.ptp(v)))
     j = cross[0]
     slew = float((v[j] - v[j - 1]) / (grid[j] - grid[j - 1]))
     pac = PAC(cir, toolkit=circuit.numeric)
@@ -21204,6 +21204,100 @@ def test_the_additive_edge_jitter_is_method_independent_and_nothing_manufactures
     assert abs((v_inj + v_res) / v_all - 1.0) < 1e-9, (v_inj, v_res, v_all)
     assert v_inj / v_all > 0.99, \
         'the injected sources must dominate; they are %.4f' % (v_inj / v_all)
+
+
+def _a8_one_stage(psd=4e-21, noisy=True, res=1e3, cap=2e-10, gm=5e-4, va=1.0,
+                  f0=1e6):
+    """ONE LINEAR stage -- A8's anchor fixture.  `i = gm v_in` into `R||C`,
+    no tanh anywhere, so every quantity has a closed form."""
+    cir = SubCircuit()
+    cir.add_node('in')
+    cir.add_node('o0')
+    cir['vs'] = VSin('in', gnd, va=va, freq=f0)
+    cir['B0'] = BSource('in', gnd, 'o0', gnd, i_func=lambda u: gm * u)
+    cir['R0'] = R('o0', gnd, r=res, noisy=noisy)
+    cir['C0'] = C('o0', gnd, c=cap)
+    if psd > 0:
+        cir['n0'] = IS('o0', gnd, i=0.0, noisePSD=psd)
+    return cir
+
+
+def test_the_edge_jitter_of_a_linear_stage_matches_its_closed_form_and_the_grid_truncation_it_names():
+    """A8's ANCHOR: an absolute value to hit, not just agreement between
+    methods.  The cross-family test above establishes that the number belongs
+    to the circuit rather than to an integrator; it cannot establish that it
+    is RIGHT, because the three-tanh chain has no analytic value at any grid.
+    A single LINEAR stage does.
+
+    ⚠ THE GAP THIS CLOSES WAS POINTED OUT BY THE PEER SESSION
+    (`test-pycircuit-spectre-e2`, 2026-09-16), and the point generalises: their
+    sampled `kT/C` sits against an exact 1.0, so it cannot drift by tens of
+    percent without announcing itself as disagreement with the PHYSICS rather
+    than with another tool.  My grid-bound headline had no such anchor, which
+    is precisely why only grid refinement could catch it.
+
+    White current sources `S = S_inj + 4kT/R` into `R||C` give
+    `var = S R/(4C)` over all frequencies (the resistor's own share being
+    exactly `kT/C`), the flat series PSD puts `1 - fmin/(f0/2)` of that inside
+    the band, and the fold reaches only the GRID's Nyquist
+    `f_N = (npts/2) f0`, so a known fraction is missing:
+    `captured = (2/pi) arctan(f_N/f_c)` with `f_c = 1/(2 pi R C)`.
+
+    ⚠ THE DEFICIT WAS NAMED BEFORE IT WAS MEASURED, per the campaign's
+    pre-commitment rule: `(2/pi) f_c/f_N` predicts 2.533e-03 at npts 400 and
+    1.266e-03 at 800, i.e. HALVING per doubling.  Measured 2.178e-03 and
+    8.976e-04 (ratio 0.412), and with the truncation term included the
+    variance matches the closed form to 3.6e-04 at both grids.  The slew
+    matches `2 pi f0 A_out` to 1.1e-05 and sigma_t lands 3.614654e-11 s
+    against an analytic 3.618558e-11 s.
+
+    ⚠ The truncation term is asserted to be DOING WORK rather than
+    decorating: dropping it puts the coarse grid out by more than the
+    tolerance the corrected form is held to.
+
+    ⚠ Still a DEFINITION, as above: this anchors the VARIANCE and the slew,
+    not the claim that crossings scatter by sigma_t.  That needs the Monte
+    Carlo named in A8.
+    """
+    psd, res, cap, gm, va, f0 = 4e-21, 1e3, 2e-10, 5e-4, 1.0, 1e6
+    fmin = 1e3
+    kT = circuit.numeric.kboltzmann * float(defaultepar.T)
+    fc = 1.0 / (2.0 * np.pi * res * cap)
+    var_full = (psd + 4.0 * kT / res) * res / (4.0 * cap)
+    band = 1.0 - fmin / (0.5 * f0)
+    a_out = gm * va * res / np.sqrt(1.0 + (2.0 * np.pi * f0 * res * cap) ** 2)
+
+    got = {}
+    for npts in (400, 800):
+        var, slew, warned = _a8_edge_variance(
+            _a8_one_stage(psd, res=res, cap=cap, gm=gm, va=va, f0=f0), npts,
+            f0=f0, node='o0')
+        assert not warned, 'radau reports the linear stage unresolved at %d' % npts
+        captured = (2.0 / np.pi) * np.arctan(0.5 * npts * f0 / fc)
+        got[npts] = (var, slew, var_full * band * captured)
+
+    for npts in (400, 800):
+        var, slew, pred = got[npts]
+        assert abs(var / pred - 1.0) < 1e-3, \
+            'npts %d: sampled variance %.9e against the closed form %.9e ' \
+            '(%.4f)' % (npts, var, pred, var / pred)
+
+    ## the truncation term earns its place: without it the coarse grid misses
+    ## by more than the tolerance the corrected form just passed
+    d400 = 1.0 - got[400][0] / (var_full * band)
+    d800 = 1.0 - got[800][0] / (var_full * band)
+    assert d400 > 1.5e-3, \
+        'the untruncated closed form is already within %.2e at npts 400, so ' \
+        'this fixture no longer demonstrates the grid truncation' % d400
+    ## and it halves with the grid, as (2/pi) f_c/f_N says it must
+    assert 0.30 < d800 / d400 < 0.60, (d400, d800)
+
+    ## the conversion factor is analytic here too
+    var, slew, _ = got[400]
+    assert abs(abs(slew) / (2.0 * np.pi * f0 * a_out) - 1.0) < 1e-4, slew
+    st = np.sqrt(var) / abs(slew)
+    assert abs(st / (np.sqrt(var_full * band) / (2.0 * np.pi * f0 * a_out))
+               - 1.0) < 2e-3, st
 
 
 def _sampler_fixture_method(elements, method, npts=400):

@@ -6879,6 +6879,15 @@ within 0.17 %, where gear declares itself unresolved and radau does not); a TRUE
 plus injected PSDs at zero → variance **exactly 0.0**); the resistor share predicted from `4kT/R` with nothing
 fitted; and additivity of independent sources to 1e-9.
 
+✅ **AND AN ABSOLUTE ANCHOR, added the same day** (the gap was named by the peer session: cross-family agreement
+cannot show a number is RIGHT, only that it is not an integrator's artefact). A single LINEAR stage — `i = gm·v_in`
+into `R‖C` — has a closed form for everything: `var = (S_inj + 4kT/R)·R/(4C)`, band factor `1 − fmin/(f0/2)`, and
+a fold that reaches only the grid's Nyquist so `captured = (2/π)·arctan(f_N/f_c)`. ⚠ The truncation deficit was
+NAMED BEFORE MEASURING — `(2/π)·f_c/f_N` = 2.533e-03 at npts 400, 1.266e-03 at 800, halving — and came out
+2.178e-03 → 8.976e-04 (ratio 0.412), with the corrected variance matching the closed form to **3.7e-04** at both
+grids, the slew to 1.1e-05, and σ_t at 3.614654e-11 s against an analytic 3.618558e-11 s. Test
+`test_the_edge_jitter_of_a_linear_stage_matches_its_closed_form_and_the_grid_truncation_it_names`.
+
 ⚠ **NEXT STEP, and it is cheap compared with what follows.** The variance→time conversion is a DEFINITION here:
 nothing yet checks that a noisy transient's crossings actually scatter by σ_t. That needs Monte Carlo over
 injected time-domain noise, machinery that does not exist (`_vdp_injected` is injection LOCKING, a deterministic
