@@ -9,7 +9,9 @@
 
 ## CURRENT STATE — 2026-09-17
 
-**Branch `cna-jax-vectorization`, HEAD `51e2d54`, ONE COMMIT UNPUSHED.**
+**Branch `cna-jax-vectorization`, HEAD `9d7228c`, TWO COMMITS UNPUSHED.**
+⚠ This line is written by the commit that changes it, so it is stale by one the
+moment it lands — the count below is the authority, not this sentence.
 Verify rather than trusting this line:
 `git rev-list --count origin/cna-jax-vectorization..HEAD`.
 Merging to master remains the repo owner's call and has NOT been done.
