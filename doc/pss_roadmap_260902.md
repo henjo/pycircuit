@@ -6931,9 +6931,10 @@ anything". There is no exotic support problem. The real gap is narrower and shar
 autonomous PSS (a diffusing phase has no sampling instant), so the NON-ACCUMULATING jitter at the last buffer has
 no route, while `c` covers only the walk.
 
-⚠ **RECONNAISSANCE DONE 2026-09-17, NOT A RESULT.** The mechanism is identified and the analysis side converges;
-the validation does not yet have the precision to confirm it. Full record in `doc/pss_log_260902.md` under "A11
-autonomous reconnaissance". In brief:
+✅ **BUILT 2026-09-17 as `PAC.oscillator_edge_jitter`** (`3e0ff8e`), test
+`test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_covariance`. ⚠⚠ **AND THE 80-SEED
+CAMPAIGN THEN OVERTURNED ITS AGREEMENT — see the last bullet.** Full record in `doc/pss_log_260902.md`. In
+brief:
 
 * **The object is `Π P(t_j) Πᵀ` contracted on the output row, over slew²** — `P` from
   `oscillator_covariance(samples=True)`, `Π = I − u_j v_jᵀ/(v_jᵀ u_j)`, `u_j` recovered from the rank-one
@@ -6951,11 +6952,28 @@ autonomous reconnaissance". In brief:
   being taken at the nearest grid point rather than at the requested instant, which on a 240-point grid reads
   1.485472 against a converged 1.528 (2.8 % low, and everything here goes as 1/s²). Corrected in
   `PAC.oscillator_edge_jitter`, which differentiates a local quadratic AT the instant asked for.
-* ⚠ **WHAT BLOCKS IT**: the Monte Carlo's seed-to-seed spread is 17–41 %. Two seeds at npts 960 average 1.0032
-  of the analysis value, but that is 1.00 ± 0.06 and the same seeds one grid coarser give 1.1375. **Confirming
-  at 3 % needs ~45 seeds ≈ 3 hours of compute.** Until then this is not validated and must not be quoted.
+* ⚠⚠ **THE 80-SEED CAMPAIGN OVERTURNED THE AGREEMENT, AND THIS IS NOW A11's OPEN QUESTION.**
+  `MC/analysis = 1.0571 ± 0.0141` — **4.04σ from 1.000**, i.e. the route **under-predicts the measured crossing
+  scatter by ~5.7 %**, unexplained. The nine-seed figure recorded at build time (1.032 ± 0.033, "consistent with
+  1.000 at 0.99σ") is **superseded**: the centre barely moved, the error bar halved, and the agreement did not
+  survive it. ✅ It is a CENTRE shift, not a tail — skew 0.050, median 1.0648 against mean 1.0559, trimmed means
+  1.0481 / 1.0798, and 67.5 % of all 80 draws above 1.0. ✅ And it is **GRID-INDEPENDENT**: npts 240 gives
+  1.0493 ± 0.0162 (n = 64), npts 480 gives 1.0824 ± 0.0291 (n = 16), **0.99σ apart** — so it sits on the
+  ANALYSIS side rather than being Monte Carlo discretisation. **A factor of 2 in the variance stays excluded at
+  >15σ**, so the object is right and the structure is gated; what is open is a ~6 % scale. ⚠ `ρ_k` is excluded
+  as the cause **by sign** — a non-zero `ρ_k` drives the k-lag variance DOWN via `(1−ρ_k)`, and the discrepancy
+  is upward. Named but unmeasured: the oblique projection removing slightly the wrong component; `P` read at the
+  nearest grid sample while the slope is taken at the exact instant; and the MC's threshold being
+  `0.5(max+min)` of a *noisy* record. ⚠ Harness `a11/campaign.py` is resumable (appends and fsyncs per seed,
+  skips what is on disk) — reuse it rather than rebuilding.
 
-**Andreas's to scope.** The remaining work is a long Monte Carlo campaign plus an API, not a research problem.
+**Andreas's to scope.** ⚠ The estimate that the remainder was "a long Monte Carlo campaign plus an API, not a
+research problem" was mine and it is **withdrawn**: the API is built and the campaign is run, and what they
+produced is a 4σ discrepancy nobody has explained. I also recommended AGAINST running the campaign on the
+grounds that it would only sharpen a settled number — it changed the conclusion instead, so that recommendation
+was wrong. What remains is genuinely a research question, and a better-posed one than the item started with:
+**why does the projected bounded covariance under-predict the measured crossing scatter by ~6 %, independently
+of the grid?**
 
 ### A8 (original entry). Sampled / edge-jitter noise (`noisetype=timedomain`) — NEW 2026-09-04, unbuilt
 

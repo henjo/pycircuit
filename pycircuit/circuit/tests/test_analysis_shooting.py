@@ -21629,12 +21629,25 @@ def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_cova
     anything".  There is no exotic support problem; the gap was only that no
     route existed for the additive part.
 
-    MEASURED 2026-09-17: against a Monte Carlo over nine seed-runs -- a noisy
-    transient carrying no PSS, no adjoint and no Lyapunov solve --
-    `MC / analysis = 1.032 ± 0.033`, consistent with 1.000 at 0.99σ, with a
-    factor of 2 in the variance excluded at 16-30σ.  ⚠ That is a FACTOR-level
-    check: the MC's seed spread is 17-41 % and 3 % would need ~45 seeds, so
-    this test gates the structure and the invariants, not the percent.
+    MEASURED 2026-09-17, over EIGHTY Monte Carlo seed-runs -- noisy transients
+    carrying no PSS, no adjoint and no Lyapunov solve:
+
+        MC / analysis = 1.0571 ± 0.0141   (4.0σ from 1.000)
+
+    ⚠⚠ SO THE ROUTE UNDER-PREDICTS BY ~5.7 %, AND THIS TEST DOES NOT GATE
+    THAT.  An earlier nine-seed figure (1.032 ± 0.033) was recorded as
+    "consistent with 1.000 at 0.99σ"; the centre barely moved but the error
+    bar halved and the agreement did not survive.  It is a centre shift, not a
+    tail (skew 0.050, median 1.0648, 67.5 % of draws above 1.0), and it is
+    GRID-INDEPENDENT -- npts 240 gives 1.0493 ± 0.0162 and npts 480 gives
+    1.0824 ± 0.0291, differing by 0.99σ -- which is what makes it the
+    analysis's ~6 % rather than the Monte Carlo's discretisation.
+
+    WHAT THIS TEST GATES is therefore the STRUCTURE and the invariants below,
+    plus the exclusion of a FACTOR (a factor of 2 in the variance is more than
+    15σ away).  It deliberately does not assert the ratio.  ⚠ `rho_k` is
+    excluded as the cause by SIGN: a non-zero `rho_k` drives the k-lag
+    variance down, and the discrepancy is upward.
     """
     cir, pss, red, tc, _v = _a11_solved()
     pac = PAC(cir, toolkit=circuit.numeric)

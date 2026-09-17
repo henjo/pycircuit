@@ -14727,16 +14727,34 @@ class PAC(Analysis):
         increments shrinking ~4x").  That was the slope error above shrinking
         with the grid, not the covariance converging -- with the slope taken
         at the requested instant the grid dependence is essentially gone.  A
-        Monte Carlo over nine
+        Monte Carlo over EIGHTY
         seed-runs -- a noisy transient with no PSS, no adjoint and no Lyapunov
-        solve in it -- gives `MC / analysis = 1.032 +/- 0.033`, consistent
-        with 1.000 at 0.99 sigma, with a factor of 2 in the variance excluded
-        at 16-30 sigma.  ⚠ THAT IS A FACTOR-LEVEL CHECK, NOT A PERCENT-LEVEL
-        ONE: the MC's seed-to-seed spread is 17-41 %, and confirming at 3 %
-        needs of order 45 seeds.  ⚠ One configuration (gear at 240 points)
-        showed a 0.152 seed spread against Euler's 0.028 on IDENTICAL noise
-        draws; that is unexplained and is not averaged away in the figure
-        above.
+        solve in it -- gives
+
+            MC / analysis = 1.0571 +/- 0.0141   (4.0 sigma from 1.000)
+
+        ⚠⚠ SO THIS ROUTE UNDER-PREDICTS THE MEASURED CROSSING SCATTER BY
+        ABOUT 5.7 %, AND THAT IS NOT YET EXPLAINED.  An earlier record of this
+        (nine seeds, `1.032 +/- 0.033`) called it "consistent with 1.000 at
+        0.99 sigma"; the central value barely moved but the error bar halved,
+        and the agreement did not survive it.  The shift is a CENTRE shift and
+        not a tail: skew 0.050, median 1.0648 against mean 1.0559, trimmed
+        means tracking the means, and 67.5 % of all 80 draws above 1.0.
+
+        ⚠ IT IS GRID-INDEPENDENT, which is what makes it the analysis's
+        problem rather than the Monte Carlo's: npts 240 gives 1.0493 +/-
+        0.0162 (n = 64) and npts 480 gives 1.0824 +/- 0.0291 (n = 16), which
+        differ by 0.99 sigma.  MC discretisation would move between those.
+
+        WHAT IS STILL SOUND: a factor of 2 in the variance is excluded at more
+        than 15 sigma, so the OBJECT is right and the structure below is
+        gated.  What is open is a ~6 % scale.  ⚠ `rho_k` is excluded as the
+        cause BY SIGN -- a non-zero `rho_k` drives the k-lag variance DOWN
+        (the `(1 - rho_k)` factor), and the discrepancy is upward.  Named but
+        unmeasured candidates: the oblique projection removing slightly the
+        wrong component; `P` taken at the nearest grid sample while the slope
+        is taken at the exact instant; and the Monte Carlo's threshold, which
+        is `0.5(max + min)` of a NOISY record.
 
         ⚠ `k_cycle` IS THE LARGE-`k` FORM, with `rho_k` taken to zero.  The
         orbital part's across-period correlation is not computed here, so at
