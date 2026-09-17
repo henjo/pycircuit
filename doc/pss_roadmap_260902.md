@@ -8493,6 +8493,42 @@ complexity already lives (the `lax.cond`/death-march lessons). If a stage method
 it should be TR-BDF2, not GLM (five stages, a badly scaled tableau, and 2.4–4.7× slower than radau on the
 CPU). The cheap next measurement is the same harness at a larger `m`.
 
+✅ **DONE 2026-09-17 (Andreas: "Do E2") — THE LARGER-`m` MEASUREMENT, AND BOTH HALVES SURVIVE.** `build()` now
+takes `nsec` diode-RC sections: **m = nsec + 3**, not the 2·nsec + 2 first written here, because R and C hang
+on the same section node. An RC ladder was rejected deliberately — linear, one Newton iteration, and it would
+hide exactly the per-stage nonlinear work that separates two stages from one. Grids 400/800/1600 against a
+12800-step reference, 128 lanes, every row `nonconv 0`:
+
+| m | per-step tr/gear | err ratio gear/tr | gear steps for equal acc | TR-BDF2 net at equal acc |
+|---|---|---|---|---|
+| 4 | 1.97 | 8.55 | 2.92 | 1.48 |
+| 13 | 1.88 | 8.63 | 2.94 | 1.57 |
+| 28 | 1.77 | 8.67 | 2.94 | 1.66 |
+
+Gear-2 stays cheaper per step at every size (1.44–1.97 across nine cells, never approaching 1); TR-BDF2 still
+wins at equal accuracy at every size (1.48–2.13); and the **error-constant ratio is the stable part**
+(8.55–9.32 over every cell), so "gear needs ~3× the steps" is a property of the two methods rather than of the
+fixture's size. ⚠ **No trend in m is claimed**: the per-step column is monotone at 1600 steps but NOT at 800
+(1.81 → 1.87 → 1.69), and every cell is a single timing whose grid-to-grid scatter at fixed m equals the
+variation across m.
+
+⚠⚠ **TWO FIXTURE DEFECTS HAD TO BE FIXED FIRST, both caught by a guard rather than by an implausible number.**
+(1) The chain's far sections were **dead** at va=5 — nodes b9..b24 sat at 5e-11 down to 1e-161 V — so a first
+"m=28" was nine live nonlinear sections plus sixteen unknowns doing linear-algebra work only, which is the very
+defect the RC ladder was rejected for. The tell was error columns identical to every digit at nsec=10 and
+nsec=25. The drive now scales with the chain (measured, not extrapolated) and a **liveness guard** asserts the
+deepest section carries volts. (2) `params_tree` is keyed by **class**, and a hit replaces the whole group's
+params, so it needs one column per element; the `(lanes, 1)` shape is correct only at nsec=1. Both are recorded
+at their sites in the harness and in `doc/pss_log_260902.md`.
+
+⚠ Liveness cost the coarse end: at the higher drive the 100-step grid no longer converges at m=13 or m=28, so
+those rows are marked EXCLUDED rather than quoted, and the reference was raised to 12800 (3200 against 800 is
+only 4× finer, putting ~6 % of its own error into the ratio's denominator).
+
+**The recommendation is unchanged — TR-BDF2 not GLM, if ever — but its premise is no longer "four unknowns
+where fixed overheads dominate".** What remains true: 28 is not the "hundreds" a batched backend exists for,
+every size here is one rectifier chain with one device model, and fixed-step is still fixed-step.
+
 **What a decision needs, unmeasured:** whether a stage method belongs on that backend at all. The
 backend's purpose is `solve_batched` (one compiled kernel per parameter sweep); a sequential
 multi-stage step with a per-stage Newton is exactly the shape that suffered in the `lax.cond`

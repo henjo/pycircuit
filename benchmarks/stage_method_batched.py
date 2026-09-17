@@ -54,14 +54,44 @@ error is the worst lane against a validated TR-BDF2 reference at 12800 steps):
     matching TR-BDF2@200 needs ~590 gear steps ~ 0.136s vs 0.100s; matching
     TR-BDF2@800 needs ~2350 gear steps ~ 0.51s vs 0.314s).
 
-⚠ WHAT THIS DOES NOT SAY.  One fixture with FOUR unknowns, where per-step cost
-is dominated by fixed overheads (a 3x3 dense solve, the traced while_loop), so
-the per-step ratio need not transfer to a circuit with hundreds of unknowns --
-and that is exactly where a batched backend earns its keep.  Fixed step, no LTE
-control, no rejection/retry, no breakpoints, no rescue ladder: all of those are
-what a production port must add, and they are where this backend's complexity
-already lives.  A ~1.5x per-step-efficiency win is not by itself a reason to
-port; measure at a larger `m` before deciding.
+LARGER-m FOLLOW-UP (2026-09-17), which the entry above asked for: the same
+harness at nsec = 1 / 10 / 25, i.e. m = 4 / 13 / 28, on grids 400/800/1600
+against a 12800-step reference.  Every row converged (nonconv 0):
+
+        m    per-step   err ratio   gear steps for   TR-BDF2 net
+             tr/gear     gear/tr    equal accuracy   at equal acc
+        4      1.97        8.55          2.92           1.48
+       13      1.88        8.63          2.94           1.57
+       28      1.77        8.67          2.94           1.66
+
+  * BOTH HALVES SURVIVE.  Gear-2 is still cheaper per step at every size
+    (1.44-1.97 over all nine cells, never approaching 1), and TR-BDF2 still
+    wins at equal accuracy at every size (1.48-2.13).  The m=4 result was not
+    an artefact of fixed overheads, which is exactly what was in doubt.
+  * THE ERROR-CONSTANT RATIO IS THE STABLE PART: 8.55-9.32 across every cell,
+    and 8.55/8.63/8.67 at the finest grid.  "Gear needs ~3x the steps" is a
+    property of the two methods, not of the fixture's size.
+  * ⚠ NO TREND IN m IS CLAIMED.  The per-step column looks monotone at the
+    finest grid (1.97 -> 1.88 -> 1.77) but is NOT monotone at 800 steps
+    (1.81 -> 1.87 -> 1.69), and every cell is a SINGLE timing: the
+    grid-to-grid scatter at fixed m (m=28 reads 1.44 / 1.69 / 1.77) is as
+    large as the variation across m.  Repeats would be needed to say more.
+  * Cost grows superlinearly in m, as a dense solve should: at 1600 steps
+    TR-BDF2 runs 390 / 784 / 2388 us per step for m = 4 / 13 / 28.
+
+⚠ TWO FIXTURE DEFECTS WERE FOUND GETTING THERE, both documented at their sites:
+the chain's far sections were DEAD at the original drive (see `build`), so a
+first version of this sweep padded m with unknowns that did no nonlinear work
+and printed identical error columns at nsec=10 and nsec=25; and `params_tree`
+is keyed by CLASS, needing one column per element (see `lane_tree`).
+
+⚠ WHAT THIS STILL DOES NOT SAY.  Twenty-eight unknowns is not the "hundreds"
+where a batched backend earns its keep, and every size here is the same
+rectifier chain -- one topology, one device model.  Fixed step, no LTE control,
+no rejection/retry, no breakpoints, no rescue ladder: all of those are what a
+production port must add, and they are where this backend's complexity already
+lives.  A ~1.5-1.7x net win, now shown to hold from m=4 to m=28, is a real
+argument for the stage method but still not by itself a schedule.
 
 Run:  XLA_PYTHON_CLIENT_PREALLOCATE=false python benchmarks/stage_method_batched.py [lanes] [ref_steps]
 
@@ -96,22 +126,94 @@ def lane_values(n):
     return np.logspace(np.log10(R_LO), np.log10(R_HI), n)
 
 
-def build(R, C, VSin, Diode, SubCircuit, gnd, r):
+def lane_tree(jnp, rs, nsec=1):
+    """The lane sweep as a `params_tree`: ONE COLUMN PER RESISTOR IN THE GROUP.
+
+    ⚠ `params_tree` IS KEYED BY CLASS NAME, NOT BY INSTANCE NAME, and a hit
+    REPLACES THE WHOLE GROUP'S params (`toolkit.batched_contributions`:
+    `if cls.__name__ in params_tree: params = params_tree[cls.__name__]`).  So
+    `{'R': {'r': ...}}` addresses EVERY resistor at once and must carry one
+    column per resistor -- `(lanes, nsec)`, not `(lanes, 1)`.
+
+    At `nsec=1` the two shapes coincide, which is why the original fixture ran
+    for a day without showing this.  At `nsec=10` it is a LOUD failure, not a
+    silent wrong answer: `vmap got inconsistent sizes ... one axis had size 10
+    ... one axis had size 1`.  That is the opposite of the trap the sweep guard
+    exists for, and worth knowing -- a shape that is merely too small fails
+    closed here, while a KEY that stops matching fails open.
+
+    Every section gets the same lane value, which also makes column order
+    irrelevant: the group's order is its instance order, not necessarily the
+    build order one would assume.
+    """
+    col = jnp.asarray(rs).reshape(-1, 1)
+    return {'R': {'r': jnp.repeat(col, int(nsec), axis=1)}}
+
+
+def build(R, C, VSin, Diode, SubCircuit, gnd, r, nsec=1):
+    """`nsec` diode-RC sections in a chain.  `nsec=1` is the original fixture.
+
+    ⚠ THE SECTIONS KEEP THE DIODE, and an RC ladder was rejected for this.
+    A linear ladder converges in ONE Newton iteration, so it would measure
+    linear-solve cost only and hide exactly the per-stage NONLINEAR work that
+    separates TR-BDF2 (two implicit stages) from gear-2 (one).  Scaling `m`
+    with a linear circuit would answer a different question than the one the
+    spike asked.
+
+    ⚠ THE SWEPT PARAMETER IS ADDRESSED BY CLASS, NOT BY INSTANCE NAME.  The
+    section names (`R1..R{nsec-1}`) are irrelevant to `params_tree`, which
+    overrides the whole `R` group at once; what matters is that its array
+    carries one column per resistor.  See `lane_tree`, which is the only place
+    that shape is built.  If the override ever stops matching BY KEY, every
+    lane silently runs the build value -- the eight-identical-lanes trap this
+    harness already caught once -- which is why `timed()` returns the per-lane
+    finals and both `main()` and the sweep assert they differ.
+    """
+    ## ⚠ THE DRIVE SCALES WITH THE CHAIN, and this is not cosmetic.  At the
+    ## original va = 5 the series drops (MEASURED: a steady 0.42 V per section)
+    ## exhaust the source by section 8 -- nodes b9..b24 sat at 5e-11 down to
+    ## 1e-161 V.  So a nsec=25 chain carried NINE live nonlinear sections and
+    ## sixteen dead unknowns, and nsec=10 and nsec=25 printed error columns
+    ## identical to every digit because they were solving the SAME live
+    ## subcircuit.  Dead unknowns add linear-algebra and element-eval work but
+    ## no per-stage NONLINEAR work -- exactly the defect the RC ladder was
+    ## rejected for, rebuilt in another shape.  `nsec=1` keeps va = 5.0 to the
+    ## bit, so the one-section findings quoted above are unchanged.
+    ##
+    ## THE SLOPE IS MEASURED WHERE IT IS USED.  The first 0.42 V/section was
+    ## read off a chain that DIED at section 8 -- the shallow end -- and
+    ## extrapolating it to 25 sections left the deepest node at 1.5e-6 V (the
+    ## liveness guard caught that, which is what it is for).  Swept over
+    ## va = 15.1..55 V the drop is FLAT: 0.431 V near the source, 0.474 V
+    ## mid-chain, unchanged at every drive, with v(b) ~= 0.775*va - 1.06.  A
+    ## chain therefore needs v(b) > ~0.45*(nsec-1) of headroom.
+    ##
+    ## ⚠ AND THE DRIVE IS BOUNDED ON BOTH SIDES: at va = 55 the fixed-step
+    ## Newton starts failing (nonconv 44 at 400 steps) where 15.1..40 all give
+    ## 0, so "more drive" is not a free fix and the smallest sufficient one is
+    ## wanted.  0.85 V/section puts nsec=25 at va = 25.4, deepest node ~39 % of
+    ## the first, nonconv 0.
+    va = 5.0 + 0.85 * (int(nsec) - 1)
     c = SubCircuit()
-    c['vs'] = VSin('a', gnd, va=5.0, freq=1e3)
-    c['D'] = Diode('a', 'b')
-    c['R'] = R('b', gnd, r=float(r))
-    c['C'] = C('b', gnd, c=1e-7)
+    c['vs'] = VSin('a', gnd, va=va, freq=1e3)
+    prev = 'a'
+    for k in range(int(nsec)):
+        nd = 'b' if k == 0 else 'b%d' % k
+        c['D%s' % ('' if k == 0 else k)] = Diode(prev, nd)
+        name = 'R' if k == 0 else 'R%d' % k
+        c[name] = R(nd, gnd, r=float(r))
+        c['C%s' % ('' if k == 0 else k)] = C(nd, gnd, c=1e-7)
+        prev = nd
     return c
 
 
-def jax_setup():
+def jax_setup(nsec=1):
     from pycircuit.circuit import circuit as circuit_mod, gnd
     from pycircuit.circuit.toolkit import jaxtoolkit
     circuit_mod.default_toolkit = jaxtoolkit
     from pycircuit.circuit.circuit import SubCircuit
     from pycircuit.circuit.elements import R, C, VSin, Diode
-    cir = build(R, C, VSin, Diode, SubCircuit, gnd, 1e3)
+    cir = build(R, C, VSin, Diode, SubCircuit, gnd, 1e3, nsec)
     ## trap 1 above: without this every lane runs the build value.
     cir._eval_groups = cir.toolkit.evaluation_groups(cir)
     return cir, cir.get_node_index(gnd), cir.get_node_index('b')
@@ -215,7 +317,7 @@ def timed(fn, tree, ib):
     return cold, warm, np.asarray(xf)[:, ib], int(np.sum(np.asarray(bad)))
 
 
-def cpu_same_grid(lanes_subset, nstep):
+def cpu_same_grid(lanes_subset, nstep, nsec=1):
     """The CPU's OWN TR-BDF2 on the SAME grid -- the yardstick's validation.
 
     ⚠ IT MUST BE THE SAME GRID.  Comparing the 12800-step march against the CPU
@@ -232,7 +334,7 @@ def cpu_same_grid(lanes_subset, nstep):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         for r in lanes_subset:
-            c = build(R, C, VSin, Diode, SubCircuit, gnd, r)
+            c = build(R, C, VSin, Diode, SubCircuit, gnd, r, nsec)
             tr = Transient(c, toolkit=numeric, integrator=TRBDF2Integrator(),
                            reltol=RELTOL)
             res = tr.solve(tend=TEND, timestep=TEND / nstep,
@@ -248,21 +350,37 @@ def main():
     ## the reference grid is the expensive compile; a second argument makes the
     ## harness usable for a quick check without waiting for 12800 steps.
     ref_steps = int(sys.argv[2]) if len(sys.argv) > 2 else NSTEP_REF
+    ## E2 FOLLOW-UP: the entry's own next measurement is "the same harness at a
+    ## larger m".  At four unknowns the per-step cost is dominated by fixed
+    ## overheads (a 3x3 dense solve, the traced while_loop), so the 1.7-1.8x
+    ## per-step gear advantage need not survive where a batched backend earns
+    ## its keep.  `nsec` diode-RC sections give m = nsec + 3 (MEASURED, and not
+    ## the 2*nsec + 2 first written here: R and C hang on the SAME section node,
+    ## so a section adds ONE unknown, not two; nsec 1/10/25 -> m 4/13/28).
+    nsec = int(sys.argv[3]) if len(sys.argv) > 3 else 1
     print('devices:', jax.devices())
-    print('lanes=%d  tend=%g  reltol=%g   (fixed grids, identical Newton)'
-          % (lanes, TEND, RELTOL))
+    print('lanes=%d  tend=%g  reltol=%g  nsec=%d   (fixed grids, identical Newton)'
+          % (lanes, TEND, RELTOL, nsec))
 
-    cir, iref, ib = jax_setup()
+    cir, iref, ib = jax_setup(nsec)
+    print('m = cir.n = %d unknowns' % cir.n)
     rs = lane_values(lanes)
-    tree = {'R': {'r': jnp.asarray(rs).reshape(-1, 1)}}
+    tree = lane_tree(jnp, rs, nsec)
 
     ## the reference, and its validation on a grid the CPU also runs
     ref_trbdf2, _gear = make_marches(cir, iref, ref_steps)
     _c, _w, ref, ref_bad = timed(ref_trbdf2, tree, ib)
+    ## ⚠ the eight-identical-lanes guard: a sweep that does not reach the
+    ## elements gives every lane the build value and looks fast.
+    spread = float(np.max(ref) - np.min(ref))
+    assert spread > 1e-9, (
+        'the %d lane finals span only %.3e V -- params_tree is not reaching '
+        'the circuit and every lane is running the build value' % (lanes, spread))
+    print('lane finals span %.4e V (the identical-lanes guard)' % spread)
     idx = np.linspace(0, lanes - 1, CHECK_LANES).astype(int)
     val_march, _g = make_marches(cir, iref, 1600)
-    _c2, _w2, val, _b2 = timed(val_march, {'R': {'r': jnp.asarray(rs[idx]).reshape(-1, 1)}}, ib)
-    err = float(np.max(np.abs(val - cpu_same_grid(rs[idx], 1600))))
+    _c2, _w2, val, _b2 = timed(val_march, lane_tree(jnp, rs[idx], nsec), ib)
+    err = float(np.max(np.abs(val - cpu_same_grid(rs[idx], 1600, nsec))))
     print('reference: TR-BDF2 at %d steps, nonconv %d; the same march at 1600 '
           'steps against the CPU at 1600 steps, %d lanes: %.2e'
           % (ref_steps, ref_bad, CHECK_LANES, err))
