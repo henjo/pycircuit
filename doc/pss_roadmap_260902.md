@@ -5552,7 +5552,41 @@ the undamped iteration would have moved uphill."*
 the B6-note tolerance floor, where `matrix_free=True` at `reltol = 1e-12` exhausts the inner
 GMRES restarts at `Q ≥ 16` with exactly 126 matvecs regardless of the outer budget.
 
-### B10. LSOAC — least squares with NO phase condition — NEW 2026-09-04, unbuilt
+### B10. LSOAC — least squares with NO phase condition — ⛔ **MEASURED AND REJECTED 2026-09-17**
+
+⛔ **CLOSED: minimum-norm is STRICTLY WORSE here, and the reason is structural.** Andreas asked for the
+defensible gate the entry names (below) rather than the `λ₂` one. Measured on the shipped deflation fixture
+(van der Pol Q = 15.92, n = 4), comparing the minimum-norm solution of `(I − αM)y = b` against
+`PAC._deflated_solve`, with an exact dense `pinv` so the iterative solver is not a confound:
+
+| offset/f0 | σ_min(plain) | σ_min(bordered) | ‖y_min − y_brd‖ | residual(min) |
+|---|---|---|---|---|
+| 1e-1 | 2.683e-01 | 1.555e-01 | **1.446e-12** | 6.347e-16 |
+| 1e-2 | 2.809e-02 | 4.041e-02 | 1.587e-11 | 6.241e-15 |
+| 1e-3 | 2.810e-03 | 2.872e-02 | 1.606e-10 | 7.945e-14 |
+| 1e-4 | 2.810e-04 | 2.858e-02 | 1.607e-09 | 5.196e-13 |
+| 1e-6 | 2.810e-06 | 2.858e-02 | 1.606e-07 | 4.304e-11 |
+| 1e-9 | 2.810e-09 | 2.858e-02 | **1.606e-04** | 8.055e-08 |
+
+✅ **AT MODERATE OFFSETS THE TWO RETURN THE SAME VECTOR** (1.4e-12), which is the point: **there is no
+ambiguity here for LSOAC to resolve.** For `α ≠ 1` the system is NONSINGULAR, so `y` is determined by `b`
+alone — `test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV` already records that *any* `v` not
+orthogonal to the null direction gives the same `y`. Our border resolves **conditioning**, not arbitrariness,
+while LSOAC's stated motivation is arbitrariness ("an arbitrary choice … unphysical artifacts").
+
+⛔ **AND BELOW ~1e-6 IT DEGRADES EXACTLY AS THE CONDITIONING PREDICTS**: the error grows linearly in `1/offset`
+(1.6e-10 → 1.6e-9 → 1.6e-7 → 1.6e-4) because minimum-norm inherits the plain operator, whose `σ_min` tracks the
+offset over six decades, while the bordered system stays **flat at 2.858e-02**. The pole is the answer's own,
+and the border carries it analytically as `1/(1−α)`; removing the row puts it back into the conditioning.
+**The outcome that would have revived B10 — minimum-norm holding accuracy at 1e-9 — did not occur.**
+
+⚠ **LIMITATION, STATED SO IT IS NOT OVERSOLD: this is a null on ONE FIXTURE** (Q = 15.92, n = 4, monodromy
+eigenvalues 1 / 0.939 / 5.5e-16 / 3.6e-16). The conditioning argument is structural and should generalise, but
+that has not been shown, and "measured on one fixture" is how several claims went wrong this week. No test was
+added — it would gate a rejected method, and the property that makes LSOAC unnecessary is already pinned by the
+deflation test above.
+
+**The original entry, kept because the reasoning is the record:**
 
 Mei & Roychowdhury 2006 DATE, relayed by the docs session: resolve the phase ambiguity by taking
 **minimum-norm** solutions of the underdetermined system — a particular solution, then subtract the
