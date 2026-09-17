@@ -9,11 +9,16 @@
 
 ## CURRENT STATE — 2026-09-17
 
-**Branch `cna-jax-vectorization`, HEAD `9d7228c`, TWO COMMITS UNPUSHED.**
-⚠ This line is written by the commit that changes it, so it is stale by one the
-moment it lands — the count below is the authority, not this sentence.
-Verify rather than trusting this line:
-`git rev-list --count origin/cna-jax-vectorization..HEAD`.
+**Branch `cna-jax-vectorization`.**
+⚠ **The commit/push state is deliberately NOT written here.**  A line that
+records it is changed by the commit that records it, so it is stale the moment
+it lands — this file carried a wrong count twice in one day (first six days
+behind, then one commit behind in the other direction, after a push).  Ask git,
+which is the only statement of it that stays true:
+
+    git rev-list --count origin/cna-jax-vectorization..HEAD   # 0 = nothing unpushed
+    git log --oneline -1
+
 Merging to master remains the repo owner's call and has NOT been done.
 ⚠ Push only when asked, and only this branch.
 
