@@ -18721,9 +18721,39 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
             assert c[1e-1] / c[1e-4] < 300.0, c
             plateau = c[1e-1]
             if tau_over_T == 100.0:
-                assert abs(plateau / 2.45e-6 - 1.0) < 0.1, plateau
+                ## ⚠⚠ THE ABSOLUTE PLATEAU IS PHASE-SPECIFIC -- WIDE ON PURPOSE.
+                ## `mode_content` is read from the PPV AT t = 0, so it depends on
+                ## which phase of the orbit the shooting solve lands on, and the
+                ## solve's phase is set by its seed.  Three independent samplings
+                ## of the SAME orbit (period and |mu_2| identical to five digits,
+                ## orbit min/max to four):
+                ##   six seeds, frozen rule : 2.45 / 2.32 / 1.94 / 1.83 / 2.25 / 2.44 e-6
+                ##   this file's seed sweep : 2.256 .. 2.641 e-6 (seeds 1.5 .. 2.5)
+                ##   the B3 pair            : 2.2461 / 2.4445 e-6
+                ## and `phase_rule='reselect'`, which lands on a different phase of
+                ## that same orbit, reads 1.6437e-6.  The old pin was `2.45e-6
+                ## +-10 %` = [2.205, 2.695]e-6, which HALF of the recorded seeds
+                ## fail; it passed only because this test's seed (x0[0] = 2.0) is
+                ## fixed.
+                ## ⚠ AN INTERVAL, NOT centre+-percent: a first rewrite of this line
+                ## used `2.2e-6 +-25 %` = [1.65, 2.695]e-6, whose LOWER EDGE sits
+                ## 0.08 % above the known-legitimate reselect reading 1.6437e-6 --
+                ## a knife edge that would flip on rounding, i.e. the same defect
+                ## in a new costume.  [1.3e-6, 3.0e-6] clears every phase on record
+                ## by >= 1.13x at BOTH ends and still rejects a wrong POWER of
+                ## T/tau: the tau/T = 10 plateau is 2.3e-5, 7.7x outside it.
+                assert 1.3e-6 < plateau < 3.0e-6, plateau
                 p100 = plateau
             else:
+                ## ⚠ THE RATIO IS THE PHASE-INVARIANT QUANTITY, and it is what this
+                ## gate is really about: across the seed sweep above the absolute
+                ## moved 17 % while `plateau_10 / plateau_100` read 10.349, 10.350,
+                ## 10.351, 10.352, 10.353 -- a 0.0 % spread, because both plateaus
+                ## are read at the same phase and the phase factor cancels.
+                ## ⚠ Tolerance stays 10 %, NOT tightened: the measured ratio is
+                ## 10.35, not 10.0, and whether that 3.5 % is physical or a grid
+                ## effect is NOT established -- tightening onto 10.35 would pin an
+                ## unexplained number at 240 points.
                 assert abs(plateau / p100 / 10.0 - 1.0) < 0.1, (plateau, p100)   # scales as T/tau
         ## 3. the application: a source behind the slow node
         cir = build(100.0, 1e2, 0.4, 0.2, src='w')

@@ -7771,7 +7771,14 @@ so they are the default flip and not the twin fix. Two are real costs, and they 
     `frequency_aware_ppv`'s mode content at 0.1 f0 reads 1.64e-6 against 2.45e-6 — a phase-sensitive
     surface, and the Arnoldi/Ritz gap-ratio pins move for the same reason. ⚠ The pin is phase-specific
     under the FROZEN rule too: six seeds give 2.45 / 2.32 / 1.94 / 1.83 / 2.25 / 2.44 e-6, so that test
-    measures its own seed's phase; re-selection lands just outside the spread, at 1.64e-6. Bit-level: dense and
+    measures its own seed's phase; re-selection lands just outside the spread, at 1.64e-6.
+    ✅ **PIN FIXED 2026-09-17 (Andreas: "Do phase-specific PPV plateau pin …").** A fresh seed sweep on the same
+    orbit moves the absolute plateau 17 % (2.2563 … 2.6410e-6) while the **T/τ ratio is invariant to 0.0 %**
+    (10.349 … 10.353) — so the ratio carries the gate, and the absolute became the interval **[1.3e-6, 3.0e-6]**,
+    clearing every recorded phase by ≥1.13× while still rejecting a wrong power of T/τ (τ/T = 10 is 7.7× outside).
+    ⚠ A first rewrite as `2.2e-6 ±25 %` put its lower edge 0.08 % above the reselect reading — a knife edge, caught
+    before it shipped. The ratio tolerance stays 10 %: the measured 10.35 is unexplained at 240 points and pinning
+    it would fix a number nobody has justified. Recorded in `doc/pss_log_260902.md`. Bit-level: dense and
     matrix-free pick `k` from last-ulp-different `dphi/dT`, so `lambda_2` agrees to ~1e-13, not to the bit.
 
 Shipped as `PSS.solve(phase_rule='reselect')`, OPT-IN; `'frozen'` stays the default. The
