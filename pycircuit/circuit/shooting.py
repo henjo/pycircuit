@@ -14665,6 +14665,184 @@ class PAC(Analysis):
                                        dtype=float)
         return K_orb, d, info
 
+    def oscillator_edge_jitter(self, pss, output, time, kmax=8):
+        """The ADDITIVE (non-accumulating) edge jitter of a FREE-RUNNING
+        oscillator -- the number a clock designer wants at the last buffer,
+        and the one `c` does not contain.
+
+        `sampled_noise` refuses an autonomous PSS by design: a diffusing phase
+        has no sampling instant fixed to it, so there is no cyclostationary
+        sample series and `jitter_metrics` cannot be used here.  But the split
+        `oscillator_covariance` already returns says exactly what to do --
+
+            K(t_j + n T) = P(t_j) + n d u_j u_j^T
+
+        `n d u_j u_j^T` is the random walk ALONG the orbit (that is `c`);
+        `P(t_j)` is bounded and does not accumulate.  A crossing is displaced
+        by `delta_y/slew`, so with `s` the slope at `t_j`
+
+            sigma_t^2 = e^T Pi P(t_j) Pi^T e / s^2,  Pi = I - u_j v_j^T/(v_j^T u_j)
+
+        and the k-lag law that a designer actually measures is
+
+            Var(tau_{n+k} - tau_n) = c k T + 2 sigma_t^2 (1 - rho_k)
+
+        ⚠⚠ `P` ITSELF IS THE WRONG OBJECT, and by a margin that hides easily.
+        "Bounded is not transverse": `P` keeps the phase direction's bounded
+        within-period variance, which the ORBITAL deviation excludes (Demir's
+        `v_1^T y = 0`).  `projection_share` in the result is how much it would
+        cost you here.  ⚠ IT IS A PROPERTY OF THE SOURCE MIX, NOT OF THIS
+        METHOD: measured 0.1611 / 0.0173 / 0.0017 / 0.0002 as the TANK's noise
+        falls 1e-6 -> 1e-9 against a fixed 1e-6 at the buffers, because the
+        phase direction is exactly what tank noise drives.  So a fixture whose
+        oscillator is quiet will show the projection doing nothing and teach
+        you the wrong lesson; one with a noisy tank shows 16 %.  It also falls
+        as 1/Q, so a high-Q fixture hides it too.
+        ⚠ `P - (t/T) G` is the SUPERSEDED prescription and is also wrong; see
+        `orbital_correlation`, which gates the projection three ways.
+
+        ⚠ `u_j` COMES BACK FROM `growth_samples[j]`, WHICH IS A RANK-ONE
+        MATRIX `d u_j u_j^T`, not a vector -- its leading eigenpair gives
+        `sqrt(d) u_j`, and `Pi` is invariant to that scale (and to `v`'s), so
+        taking `v` from `ppv()` in a separate call is safe here.  Everything
+        is sliced `[:m, :m]` out of PAIR space.
+
+        ⚠ THE SLOPE IS A LOCAL QUADRATIC FIT, NOT A TWO-POINT DIFFERENCE, and
+        that is a correction rather than a preference.  A straddling
+        difference across a threshold crossing samples whichever pair of grid
+        points brackets it, and the crossing sits at a different fraction of a
+        step on every grid: measured -0.720 / -0.077 / +2.028 % under
+        refinement, changing SIGN, while the period and swing of the same runs
+        converged cleanly at first order.  The quadratic fit reads
+        1.527458 / 1.527793 / 1.528023 at 240 / 480 / 960 points -- flat.  The
+        straddling value on a 240-point grid was 2.8 % low, and since every
+        quantity here goes as `1/s^2` that inflated the variance by 5.6 % and
+        was briefly blamed on the other side's integrator.
+
+        MEASURED 2026-09-17 on a van der Pol tank driving three tanh buffers
+        (`tau_buf = RC = 0.5`), noise at every node: `2 sigma_t^2` reads
+        1.055708e-06 / 1.055112e-06 / 1.062936e-06 at 240 / 480 / 960 points,
+        i.e. FLAT to a few parts per thousand.  ⚠ An earlier record of this
+        said it CONVERGED (1.023870e-06 -> 1.055112e-06 -> 1.062936e-06, "the
+        increments shrinking ~4x").  That was the slope error above shrinking
+        with the grid, not the covariance converging -- with the slope taken
+        at the requested instant the grid dependence is essentially gone.  A
+        Monte Carlo over nine
+        seed-runs -- a noisy transient with no PSS, no adjoint and no Lyapunov
+        solve in it -- gives `MC / analysis = 1.032 +/- 0.033`, consistent
+        with 1.000 at 0.99 sigma, with a factor of 2 in the variance excluded
+        at 16-30 sigma.  ⚠ THAT IS A FACTOR-LEVEL CHECK, NOT A PERCENT-LEVEL
+        ONE: the MC's seed-to-seed spread is 17-41 %, and confirming at 3 %
+        needs of order 45 seeds.  ⚠ One configuration (gear at 240 points)
+        showed a 0.152 seed spread against Euler's 0.028 on IDENTICAL noise
+        draws; that is unexplained and is not averaged away in the figure
+        above.
+
+        ⚠ `k_cycle` IS THE LARGE-`k` FORM, with `rho_k` taken to zero.  The
+        orbital part's across-period correlation is not computed here, so at
+        small `k` the true k-cycle jitter is LOWER than this returns (the
+        `(1 - rho_k)` factor is below 1).  Treat small-`k` entries as an upper
+        bound.  For a DRIVEN circuit use `jitter_metrics`, which computes
+        `rho_k` properly from the sample series.
+
+        ⚠ THE INSTANT IS THE CALLER'S.  This does not hunt for a crossing: a
+        threshold taken from a simulated record can be biased by startup, and
+        that moves the instant off the steepest point.  `instant` in the
+        result is the grid point used.
+
+        Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`, `k_cycle`
+        (k = 1..kmax), `instant`, `d`, `projection_share`.
+        """
+        import warnings as _warnings
+        self._check_circuit(pss)
+        K_orb, d, info = self.oscillator_covariance(pss, samples=True)
+        m = self.cir.n - 1
+        T = float(pss.period)
+        fp = pss.factored_period()
+        times = np.asarray(fp.times, dtype=float)
+        row = np.asarray(self._output_waveform_row(pss, output), dtype=float)
+        nt = int(min(len(times), len(row)))
+        if nt < 5:
+            raise ValueError(
+                'PAC.oscillator_edge_jitter: the period grid has %d points; '
+                'the slope needs at least 5.' % nt)
+        times, row = times[:nt], row[:nt]
+        j = int(np.argmin(np.abs(times - float(time))))
+
+        ## ⚠ THE SLOPE IS TAKEN AT THE REQUESTED INSTANT, NOT AT THE SNAPPED
+        ## GRID POINT, and the difference is the whole correction.  `time` is
+        ## typically a threshold crossing, which sits at a different FRACTION
+        ## of a step on every grid; differentiating at the nearest sample
+        ## instead reproduces the straddling value (1.485472 against a
+        ## converged 1.5275 on a 240-point grid, 2.8 % low) and every quantity
+        ## here goes as 1/s^2.
+        lo = max(min(j - 2, nt - 5), 0)
+        tt = times[lo:lo + 5] - float(time)
+        a2, b2, _c2 = np.polyfit(tt, row[lo:lo + 5], 2)
+        slew = float(b2)
+        if not abs(slew) > 0.0:
+            raise ValueError(
+                'PAC.oscillator_edge_jitter: the slope at t = %.6g is exactly '
+                'zero, so delta_y/slew is undefined. Pass an instant on an '
+                'edge.' % times[j])
+
+        Ps = [np.asarray(P, dtype=float)[:m, :m] for P in info['orbital_samples']]
+        G = [np.asarray(g, dtype=float)[:m, :m] for g in info['growth_samples']]
+        with _warnings.catch_warnings():
+            _warnings.simplefilter('ignore')
+            v0, pinfo = pss.ppv()
+        vs = [np.asarray(v0, dtype=float)[:m]]
+        vs += [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
+        jj = int(min(j, len(Ps) - 1, len(vs) - 1))
+
+        w, U = np.linalg.eigh(G[jj])
+        if not float(w.max()) > 0.0:
+            raise ValueError(
+                'PAC.oscillator_edge_jitter: the growth term has collapsed at '
+                'this instant (largest eigenvalue %.3g), so the orbit tangent '
+                'cannot be recovered from it and the phase direction cannot '
+                'be projected out. Is any source noisy?' % float(w.max()))
+        uj = U[:, int(np.argmax(w))] * np.sqrt(float(w.max()))
+        den = float(vs[jj] @ uj)
+        if den == 0.0:
+            raise ValueError(
+                'PAC.oscillator_edge_jitter: the left and right null '
+                'directions are orthogonal at this instant, so the oblique '
+                'projection is undefined.')
+        Pi = np.eye(m) - np.outer(uj, vs[jj]) / den
+        e = np.zeros(m)
+        e[int(output)] = 1.0
+        var_prj = float(e @ (Pi @ Ps[jj] @ Pi.T) @ e)
+        var_raw = float(e @ Ps[jj] @ e)
+        if not var_prj > 0.0:
+            raise ValueError(
+                'PAC.oscillator_edge_jitter: the projected variance is %.3g, '
+                'not positive -- there is no additive jitter to report.'
+                % var_prj)
+
+        A = var_prj / (slew * slew)
+        sigma_t = float(np.sqrt(A))
+        if not sigma_t < 0.5 * T:
+            raise ValueError(
+                'PAC.oscillator_edge_jitter: the implied displacement is '
+                'sigma_t = %.3g s, %.3g of the period -- the first-order '
+                'picture (a crossing moved by delta_y/slew) does not hold '
+                'there. Pass an instant on an edge, or check the source '
+                'levels.' % (sigma_t, sigma_t / T))
+
+        c = float(info['c_from_growth'])
+        ks = np.arange(1, int(kmax) + 1)
+        return {
+            'sigma_t': sigma_t,
+            'A': A,
+            'c': c,
+            'slew': slew,
+            'k_cycle': np.sqrt(c * ks * T + 2.0 * A),
+            'instant': float(times[j]),
+            'd': float(d),
+            'projection_share': float(var_raw / var_prj - 1.0),
+        }
+
     def orbital_mode_weights(self, pss, nmodes=None):
         """`K_orb` resolved onto the Floquet modes — A9's second step.
 

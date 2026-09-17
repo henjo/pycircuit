@@ -21545,6 +21545,147 @@ def test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_ser
                             kmax=2, nfreq=21)
 
 
+def _a11_osc_chain(psd_tank=1e-6, psd_buf=1e-6, nstage=3, cb=0.5):
+    """A11's AUTONOMOUS fixture: a van der Pol tank driving tanh buffers.
+
+    `BSource` reads the tank voltage without drawing current, so the buffers
+    do not load it and the orbit is van der Pol's own -- the autonomous
+    analogue of `_a8_buffer_chain`.
+
+    ⚠ `cb = 0.5` IS NOT A FREE CHOICE.  At `cb = 0.1` (T/tau = 66.6) the
+    FROZEN free-period Jacobian goes singular: the fast buffer rows of
+    `I - M` go near-degenerate and the frozen pin lands there.
+    `phase_rule='reselect'` rescues it onto the SAME orbit (periods agree to
+    4.44e-16), but `cb = 0.5` converges on the shipped defaults and needs no
+    opt-in flag.  ⚠ The library's error blames "a seed BELOW the
+    fundamental"; that is NOT this cause -- the seed is the measured period
+    and the bare tank converges from it.
+    """
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
+    if psd_tank > 0:
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=psd_tank)
+    prev = 'v'
+    for k in range(nstage):
+        nd = 'o%d' % k
+        c.add_node(nd)
+        c['B%d' % k] = BSource(prev, gnd, nd, gnd,
+                               i_func=lambda u: 1.0 * np.tanh(2.0 * u))
+        c['R%d' % k] = R(nd, gnd, r=1.0, noisy=False)
+        c['C%d' % k] = C(nd, gnd, c=cb)
+        if psd_buf > 0:
+            c['nb%d' % k] = IS(nd, gnd, i=0.0, noisePSD=psd_buf)
+        prev = nd
+    return c
+
+
+def _a11_solved(psd_tank=1e-6, psd_buf=1e-6, npts=240):
+    """`(cir, pss, reduced index of the last buffer, crossing time)`."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _a11_osc_chain(psd_tank, psd_buf)
+    m = cir.n - 1
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    x0 = np.zeros(m)
+    x0[0] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=6.664052486, timestep=6.664052486 / npts, x0=x0,
+                  maxiterations=80)
+    assert pss.converged, 'the A11 autonomous fixture did not converge'
+    ## ⚠ this circuit has an INDUCTOR, so the reduced index is NOT the
+    ## position among non-gnd nodes; it is the inverse of the lifting rule
+    full = cir.get_node_index('o2')
+    red = full if full < cir.get_node_index(gnd) else full - 1
+    Xw = np.asarray(pss.waveform[1], dtype=float)
+    grid = np.asarray(pss.factored_period().times, dtype=float)[:Xw.shape[1]]
+    v = Xw[full]
+    mid = 0.5 * (v.max() + v.min())
+    j = [k for k in range(2, len(v) - 2)
+         if (v[k - 1] - mid) < 0 <= (v[k] - mid)][0]
+    tc = grid[j - 1] + (mid - v[j - 1]) / (v[j] - v[j - 1]) * (grid[j] - grid[j - 1])
+    return cir, pss, red, tc, v
+
+
+def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_covariance():
+    """A11's second half: the NON-ACCUMULATING edge jitter of a free-running
+    oscillator -- the number `c` does not contain.
+
+    `sampled_noise` refuses an autonomous PSS (a diffusing phase has no
+    sampling instant), so `jitter_metrics` cannot be used here.  The split
+    `oscillator_covariance` returns supplies it instead: `n d u_j u_jᵀ` is the
+    walk, `P(t_j)` is bounded, and the additive jitter is the bounded part
+    OBLIQUELY PROJECTED, `Π P Πᵀ` with `Π = I − u_j v_jᵀ/(v_jᵀu_j)`.
+
+    ⚠⚠ THE SCOPE THIS CLOSES WAS MIS-STATED BY ME.  A11 said the remaining
+    half was "bias-dependent, non-stationary delay modulation, outside the
+    modulated-stationary support".  Andreas concurred it was wrong
+    (2026-09-17): A8's own entry already had the LDO injected as a
+    SUPPLY-NODE NOISE SOURCE in "one ordinary autonomous PSS ... no multirate
+    anything".  There is no exotic support problem; the gap was only that no
+    route existed for the additive part.
+
+    MEASURED 2026-09-17: against a Monte Carlo over nine seed-runs -- a noisy
+    transient carrying no PSS, no adjoint and no Lyapunov solve --
+    `MC / analysis = 1.032 ± 0.033`, consistent with 1.000 at 0.99σ, with a
+    factor of 2 in the variance excluded at 16-30σ.  ⚠ That is a FACTOR-level
+    check: the MC's seed spread is 17-41 % and 3 % would need ~45 seeds, so
+    this test gates the structure and the invariants, not the percent.
+    """
+    cir, pss, red, tc, _v = _a11_solved()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    r = pac.oscillator_edge_jitter(pss, red, tc)
+
+    ## 1. the shipped two-anchor loop must still close on this 5-state
+    ##    fixture -- a forward Lyapunov recursion against an adjoint-replayed
+    ##    PPV, sharing only the CY/2 convention
+    c_ref = float(pac.diffusion_constant(pss))
+    assert abs(r['c'] / c_ref - 1.0) < 5e-3, (r['c'], c_ref)
+
+    ## 2. the projection is not decoration, and its size is a property of the
+    ##    SOURCE MIX: the phase direction is what tank noise drives, so a
+    ##    quiet tank makes it vanish.  Measured 0.1611 here against 0.0002
+    ##    when the tank is 1000x quieter.
+    assert 0.10 < r['projection_share'] < 0.25, r['projection_share']
+    _c2, p2, red2, tc2, _v2 = _a11_solved(psd_tank=1e-9)
+    r2 = PAC(_c2, toolkit=circuit.numeric).oscillator_edge_jitter(p2, red2, tc2)
+    assert r2['projection_share'] < 0.01, \
+        'a quiet tank should leave almost nothing for the projection to ' \
+        'remove, got %.4f' % r2['projection_share']
+
+    ## 3. ⚠ GRID INDEPENDENCE, and it is a real property only because the
+    ##    slope is taken at the REQUESTED INSTANT.  Differentiating at the
+    ##    nearest grid point instead reads 1.485472 on this grid against a
+    ##    converged 1.528 -- 2.8 % low, 5.6 % in the variance -- and that
+    ##    error masqueraded as the covariance converging.
+    _c3, p3, red3, tc3, _v3 = _a11_solved(npts=480)
+    r3 = PAC(_c3, toolkit=circuit.numeric).oscillator_edge_jitter(p3, red3, tc3)
+    assert abs(r3['A'] / r['A'] - 1.0) < 1e-2, (r['A'], r3['A'])
+    assert abs(r3['slew'] / r['slew'] - 1.0) < 5e-3, (r['slew'], r3['slew'])
+
+    ## 4. the k-lag law: Var -> c k T + 2A, so k_cycle rises from just above
+    ##    sqrt(2A) and the walk eventually dominates
+    assert r['k_cycle'][0] >= np.sqrt(2.0 * r['A'])
+    assert np.all(np.diff(r['k_cycle']) > 0)
+
+    ## 5. refusal on a DRIVEN circuit.
+    ## ⚠ THE FIXTURE IS BUILT OUTSIDE THE `raises` BLOCK, DELIBERATELY.  With
+    ## the construction inside it, a ValueError from the FIXTURE would satisfy
+    ## the context and the method under test would never be called at all --
+    ## a vacuous pass, and a green dot cannot tell the two apart.  Only the
+    ## call being tested belongs inside.
+    cirq, pssq, _io, _pacq, _T = _sampler_fixture(
+        lambda c: c.__setitem__('S0', _sw()))
+    assert not getattr(pssq, 'autonomous', False), \
+        'the driven-refusal control is not driven, so it proves nothing'
+    with pytest.raises(ValueError, match='covariance that GROWS'):
+        PAC(cirq, toolkit=circuit.numeric).oscillator_edge_jitter(pssq, 0, 0.0)
+
+
 def _sampler_fixture_method(elements, method, npts=400):
     """`_sampler_fixture` under another integrator."""
     import warnings

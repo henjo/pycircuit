@@ -6944,8 +6944,13 @@ autonomous reconnaissance". In brief:
   (periods agree to 4.44e-16). ⚠ The library's error blames "a seed BELOW the fundamental" — **that is not this
   cause**; the seed was the measured period and the bare tank converges from it.
 * **The shipped loop holds on it**: `c_from_growth / c = 0.998992`, `d_residual 5.49e-12`, at m = 5.
-* **The analysis side converges**: `2A` = 1.023870e-06 → 1.055112e-06 → 1.062936e-06 at npts 240/480/960,
-  increments shrinking ~4×, extrapolating to ≈1.066e-06.
+* **The analysis side is essentially GRID-INDEPENDENT**: `2A` = 1.055708e-06 / 1.055112e-06 / 1.062936e-06 at
+  npts 240/480/960, flat to a few parts per thousand. ⚠⚠ An earlier version of this entry (committed in
+  `39acd11`) reported it as CONVERGING, 1.023870e-06 → 1.055112e-06 → 1.062936e-06 with "increments shrinking
+  ~4×". **That was my own slope error shrinking with the grid, not the covariance converging** — the slope was
+  being taken at the nearest grid point rather than at the requested instant, which on a 240-point grid reads
+  1.485472 against a converged 1.528 (2.8 % low, and everything here goes as 1/s²). Corrected in
+  `PAC.oscillator_edge_jitter`, which differentiates a local quadratic AT the instant asked for.
 * ⚠ **WHAT BLOCKS IT**: the Monte Carlo's seed-to-seed spread is 17–41 %. Two seeds at npts 960 average 1.0032
   of the analysis value, but that is 1.00 ± 0.06 and the same seeds one grid coarser give 1.1375. **Confirming
   at 3 % needs ~45 seeds ≈ 3 hours of compute.** Until then this is not validated and must not be quoted.
