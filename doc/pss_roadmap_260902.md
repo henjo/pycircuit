@@ -6952,7 +6952,15 @@ brief:
   being taken at the nearest grid point rather than at the requested instant, which on a 240-point grid reads
   1.485472 against a converged 1.528 (2.8 % low, and everything here goes as 1/s²). Corrected in
   `PAC.oscillator_edge_jitter`, which differentiates a local quadratic AT the instant asked for.
-* ⚠⚠ **THE 80-SEED CAMPAIGN OVERTURNED THE AGREEMENT, AND THIS IS NOW A11's OPEN QUESTION.**
+* ✅ **RESOLVED 2026-09-17: `MC/analysis = 1.0066 ± 0.0102` (0.64σ) over 124 seed-runs on three grids.** The 4σ
+  "defect" below was **my harness** — the MC crosses on an Euler orbit while the analysis divides by the PSS's
+  gear slope, and `σ_t = √var/slew` makes that enter squared. Slew gaps 2.717/1.361/0.686 % at npts 240/480/960
+  (halving, first order) predict 1.0566/1.0278/1.0139; the 960 prediction was pinned before its seeds ran, and
+  dividing each grid by its own correction collapses raw 1.0493/1.0513/1.0165 onto 0.9931/1.0229/1.0025. ⚠ The
+  false alarm came from asserting "grid-independent" on **two points 0.99σ apart** — which cannot distinguish
+  flat from halving. **`oscillator_edge_jitter` is correct as it stands; A11 has no open residual.**
+
+* ⚠⚠ **SUPERSEDED — the claim as committed in `7abd2ea`, kept for the shape of the mistake:**
   `MC/analysis = 1.0571 ± 0.0141` — **4.04σ from 1.000**, i.e. the route **under-predicts the measured crossing
   scatter by ~5.7 %**, unexplained. The nine-seed figure recorded at build time (1.032 ± 0.033, "consistent with
   1.000 at 0.99σ") is **superseded**: the centre barely moved, the error bar halved, and the agreement did not

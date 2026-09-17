@@ -14731,30 +14731,41 @@ class PAC(Analysis):
         seed-runs -- a noisy transient with no PSS, no adjoint and no Lyapunov
         solve in it -- gives
 
-            MC / analysis = 1.0571 +/- 0.0141   (4.0 sigma from 1.000)
+            MC / analysis = 1.0066 +/- 0.0102   (0.64 sigma from 1.000)
 
-        ⚠⚠ SO THIS ROUTE UNDER-PREDICTS THE MEASURED CROSSING SCATTER BY
-        ABOUT 5.7 %, AND THAT IS NOT YET EXPLAINED.  An earlier record of this
-        (nine seeds, `1.032 +/- 0.033`) called it "consistent with 1.000 at
-        0.99 sigma"; the central value barely moved but the error bar halved,
-        and the agreement did not survive it.  The shift is a CENTRE shift and
-        not a tail: skew 0.050, median 1.0648 against mean 1.0559, trimmed
-        means tracking the means, and 67.5 % of all 80 draws above 1.0.
+        over 124 seed-runs across three grids, ONCE the comparison is made
+        between the same orbit on both sides.
 
-        ⚠ IT IS GRID-INDEPENDENT, which is what makes it the analysis's
-        problem rather than the Monte Carlo's: npts 240 gives 1.0493 +/-
-        0.0162 (n = 64) and npts 480 gives 1.0824 +/- 0.0291 (n = 16), which
-        differ by 0.99 sigma.  MC discretisation would move between those.
+        ⚠⚠ AN EARLIER RECORD OF THIS CLAIMED A 4-SIGMA DEFECT IN THIS METHOD
+        AND IT WAS WRONG -- THE FAULT WAS IN THE COMPARISON, NOT HERE.  An
+        80-seed campaign reported `1.0571 +/- 0.0141`, "under-predicts by
+        5.7 %, grid-independent, therefore on the analysis side".  It was
+        neither.  `sigma_t = sqrt(var)/slew`, so the comparison goes as
+        `1/slew^2` -- and the Monte Carlo finds its crossings on an EULER
+        orbit while this method divides by the slope of the PSS's GEAR orbit.
+        At finite `h` those orbits differ: Euler's period runs 0.39 % short
+        and its slope at the crossing is low by 2.717 / 1.361 / 0.686 % at
+        240 / 480 / 960 points, HALVING as first-order convergence requires.
+        Squared, that predicts ratios of 1.0566 / 1.0278 / 1.0139.
 
-        WHAT IS STILL SOUND: a factor of 2 in the variance is excluded at more
-        than 15 sigma, so the OBJECT is right and the structure below is
-        gated.  What is open is a ~6 % scale.  ⚠ `rho_k` is excluded as the
-        cause BY SIGN -- a non-zero `rho_k` drives the k-lag variance DOWN
-        (the `(1 - rho_k)` factor), and the discrepancy is upward.  Named but
-        unmeasured candidates: the oblique projection removing slightly the
-        wrong component; `P` taken at the nearest grid sample while the slope
-        is taken at the exact instant; and the Monte Carlo's threshold, which
-        is `0.5(max + min)` of a NOISY record.
+        MEASURED AGAINST THAT PREDICTION (the 960 value pinned before its
+        seeds ran): raw 1.0493 / 1.0513 / 1.0165, and dividing by each grid's
+        own independently measured slew correction collapses them onto
+        0.9931 +/- 0.0153, 1.0229 +/- 0.0160, 1.0025 +/- 0.0261 -- pooled
+        1.0066 +/- 0.0102, with a residual trend of +0.0047 per doubling
+        against a per-grid scatter of 0.019.
+
+        ⚠ THE ERROR THAT PRODUCED THE FALSE ALARM IS WORTH MORE THAN THE
+        NUMBER: "grid-independent" was asserted from TWO points 0.99 sigma
+        apart.  Two noisy points cannot tell FLAT from HALVING, and halving is
+        what it was doing.  An absence of evidence was read as evidence of a
+        property, and a structural conclusion ("therefore the analysis's") was
+        built on it.
+
+        A factor of 2 in the variance remains excluded at more than 15 sigma.
+        ⚠ When validating this against a transient, run the Monte Carlo on the
+        SAME integrator as the PSS, or divide by the slope of the orbit the
+        Monte Carlo actually runs on -- otherwise the mismatch enters squared.
 
         ⚠ `k_cycle` IS THE LARGE-`k` FORM, with `rho_k` taken to zero.  The
         orbital part's across-period correlation is not computed here, so at

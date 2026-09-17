@@ -21632,22 +21632,30 @@ def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_cova
     MEASURED 2026-09-17, over EIGHTY Monte Carlo seed-runs -- noisy transients
     carrying no PSS, no adjoint and no Lyapunov solve:
 
-        MC / analysis = 1.0571 ± 0.0141   (4.0σ from 1.000)
+        MC / analysis = 1.0066 ± 0.0102   (0.64σ from 1.000)
 
-    ⚠⚠ SO THE ROUTE UNDER-PREDICTS BY ~5.7 %, AND THIS TEST DOES NOT GATE
-    THAT.  An earlier nine-seed figure (1.032 ± 0.033) was recorded as
-    "consistent with 1.000 at 0.99σ"; the centre barely moved but the error
-    bar halved and the agreement did not survive.  It is a centre shift, not a
-    tail (skew 0.050, median 1.0648, 67.5 % of draws above 1.0), and it is
-    GRID-INDEPENDENT -- npts 240 gives 1.0493 ± 0.0162 and npts 480 gives
-    1.0824 ± 0.0291, differing by 0.99σ -- which is what makes it the
-    analysis's ~6 % rather than the Monte Carlo's discretisation.
+    over 124 seed-runs on three grids, once both sides use the same orbit.
 
-    WHAT THIS TEST GATES is therefore the STRUCTURE and the invariants below,
-    plus the exclusion of a FACTOR (a factor of 2 in the variance is more than
-    15σ away).  It deliberately does not assert the ratio.  ⚠ `rho_k` is
-    excluded as the cause by SIGN: a non-zero `rho_k` drives the k-lag
-    variance down, and the discrepancy is upward.
+    ⚠⚠ AN EARLIER VERSION OF THIS DOCSTRING CLAIMED A 4σ DEFECT AND IT WAS
+    WRONG. An 80-seed campaign gave 1.0571 ± 0.0141 and I recorded it as "the
+    route under-predicts by 5.7 %, grid-independent, therefore the analysis's
+    problem". The fault was the COMPARISON: `σ_t = √var/slew`, so it goes as
+    `1/slew²`, and the Monte Carlo crosses on an EULER orbit while the method
+    divides by the PSS's GEAR slope. Those orbits differ at finite h — Euler's
+    slope at the crossing is low by 2.717 / 1.361 / 0.686 % at npts
+    240 / 480 / 960, halving as first order requires — so squared they predict
+    1.0566 / 1.0278 / 1.0139. Dividing each grid by its own measured
+    correction collapses the raw 1.0493 / 1.0513 / 1.0165 onto 0.9931 / 1.0229
+    / 1.0025, pooling to 1.0066 ± 0.0102.
+
+    ⚠ THE LESSON OUTLIVES THE NUMBER: "grid-independent" was asserted from two
+    points 0.99σ apart. Two noisy points cannot distinguish FLAT from HALVING,
+    and halving is what it was doing — an absence of evidence read as evidence
+    of a property, with a structural conclusion built on top.
+
+    WHAT THIS TEST GATES is the STRUCTURE and the invariants below, plus the
+    exclusion of a FACTOR (a factor of 2 in the variance is >15σ away). It
+    deliberately does not assert the ratio, which needs ~100 transient runs.
     """
     cir, pss, red, tc, _v = _a11_solved()
     pac = PAC(cir, toolkit=circuit.numeric)
