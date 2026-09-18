@@ -22021,3 +22021,122 @@ def test_the_esdirk43_covariance_holds_kTC_across_a_switching_edge_despite_its_n
     assert abs(err[400][0]) < 1e-3, err
     assert err[200][0] / err[400][0] > 4.0, err
     assert abs(err[400][1]) < 1e-4, err
+
+
+class _PllMultPd(Behavioural):
+    """Multiplier phase detector, `V(out) = k V(a) V(b)` -- the minimal
+    feedback that can pin a VCO's phase.  A PFD is deliberately NOT used:
+    A6 step 2 asks about the Jacobian's RANK, and a linear PD is the
+    smallest thing that closes the loop."""
+    terminals = ('ap', 'an', 'bp', 'bn', 'outp', 'outn')
+    params_as = 'p'
+    instparams = [_HdlParameter(name='k', desc='PD gain', unit='1/V',
+                                default=1.0)]
+
+    @staticmethod
+    def analog(p, ap, an, bp, bn, outp, outn):
+        ba, bb, bo = Branch(ap, an), Branch(bp, bn), Branch(outp, outn)
+        return (Contribution(bo.V, p.k * ba.V * bb.V),)
+
+
+def _pll_loop(K, kvco, fref=1e6):
+    """VCO + multiplier PD + RC filter, `f0` EXACTLY `fref` and modulus 1 --
+    so at zero gain the phase advances one cycle per reference period and
+    EVERY offset is a solution, which is the marginal mode itself."""
+    from pycircuit.circuit.elements_hdl import VcoHdl
+    c = SubCircuit()
+    for nd in ('ref', 'vco', 'ph', 'pd', 'ctl'):
+        c.add_node(nd)
+    c['Vref'] = VSin('ref', gnd, va=1.0, freq=fref, phase=0.0)
+    c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=fref, kvco=kvco,
+                     va=1.0, modulus=1.0)
+    c['PD'] = _PllMultPd('vco', gnd, 'ref', gnd, 'pd', gnd, k=K)
+    c['Rf'] = R('pd', 'ctl', r=1e3)
+    c['Cf'] = C('ctl', gnd, c=1e-9)
+    return c
+
+
+def _pll_lambda(K, kvco, offset=0.0, fref=1e6, npts=400):
+    """`|lambda|_max` of the closed loop, seeded at `offset` CYCLES on the
+    integrator's own accumulator.  Returns None if the solve does not
+    converge."""
+    import warnings as _w
+    cir = _pll_loop(K, kvco, fref)
+    names = [str(n) for n in cir.nodes if str(n) != 'gnd!']
+    x0 = np.zeros(cir.n - 1)
+    ## ⚠ the ACCUMULATOR, not the `ph` node: `ph` is a dependent output and
+    ## seeding it leaves the integrator's state untouched, so the solve
+    ## returns to the same equilibrium (measured: offsets on `ph` alone
+    ## never left the saddle).
+    x0[names.index('X1._state0')] = offset
+    x0[names.index('ph')] = offset
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=1.0 / fref, timestep=1.0 / fref / npts, x0=x0,
+                  maxiterations=100)
+    if not pss.converged:
+        return None
+    mu = np.linalg.eigvals(np.asarray(pss._monodromy))
+    return float(np.max(np.abs(mu)))
+
+
+def test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth():
+    """A6 step 2, and it decides whether the rest of A6 is a build or research.
+
+    The roadmap left this open: "a free-running integrator's phase row is a
+    marginal mode -- measured dx_end/dx_0 = 1.000000 -- so `I - M` is singular
+    there by construction.  Locking it needs feedback (a PLL) ... the fold
+    repairs the residual's VALUE, not the Jacobian's RANK."  So: does closing
+    the loop move that multiplier off 1?
+
+    IT DOES, at exactly the loop bandwidth.  Linearising the averaged loop --
+    equilibrium at `f0 + kvco Vctl = fref`, `Vctl = (K/2) cos(2 pi theta)`,
+    slope `-+ pi K` V/cycle -- gives `dtheta/dt = -+ kvco pi K theta`, so over
+    one reference period
+
+        |lambda|_phase = exp( -+ pi * kvco * K * T )
+
+    MEASURED 2026-09-18 to 4e-09..4e-05 relative over two decades of gain, on
+    TWO independent knobs (K at fixed kvco, and kvco at fixed K), which agree
+    to all printed digits wherever the PRODUCT `kvco*K` matches -- so it is the
+    loop-gain product that governs and nothing else.
+
+    ⚠ BOTH EQUILIBRIA ARE REAL AND THE SOLVER DOES NOT PREFER THE STABLE ONE.
+    A multiplier PD has two per cycle, `theta = +-1/4`: measured 0.999371484
+    (stable) and 1.000628121 (saddle) at K = 1e-2, kvco = 2e4.  From the
+    NATURAL zero seed the solve lands on the SADDLE -- so convergence does not
+    select stability, and lock must be read from the multiplier.  That is the
+    same lesson A6's injection-locking gates already carry ("read lock from
+    CONVERGENCE -- every detuning converges").
+
+    ⚠ The branch is selected by the integrator's ACCUMULATOR, not by the `ph`
+    node, which is a dependent output.
+    """
+    fref, T = 1e6, 1e-6
+    kvco, K = 2e4, 1e-2
+    want_stable = np.exp(-np.pi * kvco * K * T)
+    want_saddle = np.exp(+np.pi * kvco * K * T)
+
+    ## the NEGATIVE CONTROL: with the loop open the driven solve is correctly
+    ## underdetermined -- every phase offset is a solution.
+    assert _pll_lambda(0.0, kvco) is None, \
+        'with K = 0 the marginal mode makes I - M singular; a driven ' \
+        'fixed-period solve must NOT report convergence'
+
+    lam_saddle = _pll_lambda(K, kvco, offset=0.0)
+    lam_stable = _pll_lambda(K, kvco, offset=0.25)
+    assert lam_saddle is not None and lam_stable is not None
+    assert abs(lam_saddle / want_saddle - 1.0) < 1e-5, (lam_saddle, want_saddle)
+    assert abs(lam_stable / want_stable - 1.0) < 1e-5, (lam_stable, want_stable)
+    ## and they must straddle 1 -- feedback PINS the mode, it does not merely
+    ## perturb it in some direction
+    assert lam_stable < 1.0 < lam_saddle, (lam_stable, lam_saddle)
+
+    ## the PRODUCT is what governs: ten times the gain on the other knob is
+    ## the same loop, to the digit.
+    a = _pll_lambda(K, kvco, offset=0.0)
+    b = _pll_lambda(K * 10.0, kvco / 10.0, offset=0.0)
+    assert abs(a / b - 1.0) < 1e-9, \
+        'kvco*K is the loop gain, so these must agree: %.12f vs %.12f' % (a, b)
+

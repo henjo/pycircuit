@@ -517,3 +517,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260918T060648Z,76d208d,pycircuit 4 no:randomly,1631.8,3241,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,785.5
 20260918T074343Z,646ac6c,pycircuit 4 no:randomly,1677.4,3241,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,864.6
 20260918T081933Z,646ac6c,pycircuit 4 no:randomly,1747.6,3241,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,952.6
+20260918T100232Z,22f4099,no:randomly pycircuit/circuit/tests/test_analysis_shooting.py::test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth,112.8,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth,111.7
+20260918T103023Z,22f4099,pycircuit 4 no:randomly,1656.1,3242,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,826.5

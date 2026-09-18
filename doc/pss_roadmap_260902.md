@@ -3916,6 +3916,15 @@ returns to itself at 1e-15. *Compare what the residual compares.*
 ⚠ **A circuit that declares no periodic state is bit-identical** (empty gauge, `np.array_equal`
 on a converged gear solve), so this cannot perturb the rest of the suite.
 
+✅✅ **STEP 2 ANSWERED 2026-09-18 (Andreas: "Do step 2") — CLOSING THE LOOP PINS THE MARGINAL MODE, SO THE REST OF A6 IS A BUILD, NOT RESEARCH.** The question the paragraph below leaves open is now measured on the smallest closable loop (`VcoHdl` with `f0` exactly `fref` and modulus 1, a multiplier PD, an RC filter — no PFD, because the question is about the Jacobian's RANK and a linear PD is the minimal feedback that can pin a phase). Linearising the averaged loop gives `|lambda|_phase = exp(-+ pi * kvco * K * T)`, and:
+
+| | measured | predicted |
+|---|---|---|
+| stable branch (seed offset 0.25 cycle) | **0.999371484** | 0.999371879 |
+| saddle branch (seed offset 0.00 cycle) | **1.000628121** | 1.000628516 |
+
+Matched to **4e-09 … 4e-05** relative over two decades of loop gain, on **two independent knobs** (`K` at fixed `kvco`, and `kvco` at fixed `K`), which agree to all printed digits wherever the PRODUCT `kvco*K` matches — so it is the loop-gain product that governs and nothing else. ⚠ **The negative control holds**: at `K = 0` the driven fixed-period solve does NOT converge, exactly as the paragraph below predicts. ⚠⚠ **But convergence does not select STABILITY** — from the natural zero seed the solver lands on the SADDLE, so lock must be read from the multiplier, which is the same lesson the injection-locking gates already carry. ⚠ The branch is chosen by the integrator's ACCUMULATOR, not by the `ph` node (a dependent output: seeding it alone never left the saddle). Test `test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth`.
+
 ⚠⚠ **WHAT THE FOLD DOES NOT DO, asserted so it is not credited with more.** A free-running
 integrator's phase row is a **marginal mode** — measured `dx_end/dx_0 = 1.000000` along it — so
 `I - M` is singular there by construction. At a rate of a whole number of moduli EVERY `x_0` is a
