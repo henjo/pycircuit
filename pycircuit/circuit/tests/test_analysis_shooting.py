@@ -22140,3 +22140,106 @@ def test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth()
     assert abs(a / b - 1.0) < 1e-9, \
         'kvco*K is the loop gain, so these must agree: %.12f vs %.12f' % (a, b)
 
+
+def _pll_phase_noise(K, kvco, cf, fm_list, sf=1.0, fref=1e6, npts=400):
+    """`(f_c from the multiplier, [pnoise at the PHASE node])` for the locked
+    loop, seeded on the STABLE branch."""
+    import warnings as _w
+    from pycircuit.circuit.elements_hdl import VcoHdl
+    T = 1.0 / fref
+    c = SubCircuit()
+    for nd in ('ref', 'vco', 'ph', 'pd', 'ctl'):
+        c.add_node(nd)
+    c['Vref'] = VSin('ref', gnd, va=1.0, freq=fref, phase=0.0)
+    c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=fref, kvco=kvco,
+                     va=1.0, modulus=1.0, sf=sf)
+    c['PD'] = _PllMultPd('vco', gnd, 'ref', gnd, 'pd', gnd, k=K)
+    c['Rf'] = R('pd', 'ctl', r=1e3)
+    c['Cf'] = C('ctl', gnd, c=cf)
+    names = [str(n) for n in c.nodes if str(n) != 'gnd!']
+    x0 = np.zeros(c.n - 1)
+    x0[names.index('X1._state0')] = 0.25          # STABLE branch, see step 2
+    x0[names.index('ph')] = 0.25
+    pss = PSS(c, method='gear', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=100)
+    assert pss.converged
+    lam = float(np.max(np.abs(np.linalg.eigvals(np.asarray(pss._monodromy)))))
+    assert lam < 1.0, 'seeded onto the saddle; noise about an unstable orbit'
+    fc = -np.log(lam) / (2.0 * np.pi * T)
+    pac = PAC(c, toolkit=circuit.numeric)
+    iph = names.index('ph')
+    out = []
+    for fm in fm_list:
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            S, _nsb = pac.pnoise(pss, fm, iph)
+        out.append(float(np.real(np.asarray(S, dtype=complex).ravel()[0])))
+    return fc, out
+
+
+def test_a_locked_loop_shapes_its_vco_phase_noise_with_nothing_fitted():
+    """A6 step 4: the closed-loop phase noise against a CLOSED FORM, with both
+    of its constants predicted by other measurements and nothing fitted.
+
+    `VcoHdl` injects white FREQUENCY noise of PSD `sf`, so the phase -- which
+    the `ph` node carries in CYCLES -- is its integral:
+
+        S_phi,free(f_m) = sf / (4 pi^2 f_m^2)
+
+    ⚠ THE `4 pi^2` IS THE CYCLES CONVENTION AND IS NOT COSMETIC.  `phi = int f
+    dt` gives `Phi = N_f / (j 2 pi f_m)`.  `VcoHdl`'s own docstring quotes
+    `S_phi = sf/f_m^2`, which is the RADIAN form; applying it to this node
+    reads a factor of 39.5 low, and that error presents as a CONSTANT ratio
+    across every offset -- which is exactly how it was caught.  A scale error
+    flat across decades is a UNITS problem; a shape error would be physics.
+
+    A first-order loop high-passes that with corner `f_c`, and the RC's own
+    pole makes the loop second order, worth `2 f_c/f_RC`:
+
+        S_phi,closed(f_m) = sf (1 + 2 f_c/f_RC) / (4 pi^2 (f_m^2 + f_c^2))
+
+    NOTHING HERE IS FITTED.  `f_c` is read from the FLOQUET MULTIPLIER, which
+    never looks at noise (`|lam| = exp(-2 pi f_c T)`, measured 100.063 Hz
+    against `kvco*K/2` = 100.000), and `2 f_c/f_RC` from R and C.  Measured
+    2026-09-18 at npts 400/800/1600 -- grid-independent to eight digits --
+    agreeing to ~1e-4 across three decades of offset.
+
+    The second-pole term was found, not assumed: the first form left a
+    CONSTANT 1.2586e-3 which did not move with the grid (so not
+    discretisation) and was identical below and far above the corner (so not
+    the loop's first pole).  It scales linearly on two independent knobs:
+    `Cf` 1e-10/1e-9/1e-8 gives 1.2569e-4 / 1.2586e-3 / 1.2716e-2, and cutting
+    the PD gain 100x gives 1.257e-5 -- i.e. `2 f_c/f_RC` on both.
+    """
+    fref, T = 1e6, 1e-6
+    kvco, K, sf, rf = 2e4, 1e-2, 1.0, 1e3
+    fms = [10.0, 1e3, 1e4]
+
+    cf = 1e-9
+    f_rc = 1.0 / (2.0 * np.pi * rf * cf)
+    fc, vals = _pll_phase_noise(K, kvco, cf, fms, sf=sf)
+    ## the corner comes from the multiplier and must match the circuit
+    assert abs(fc / (kvco * K / 2.0) - 1.0) < 2e-3, (fc, kvco * K / 2.0)
+
+    pred = [sf * (1.0 + 2.0 * fc / f_rc) / (4.0 * np.pi ** 2 * (fm ** 2 + fc ** 2))
+            for fm in fms]
+    ratios = [v / p for v, p in zip(vals, pred)]
+    ## THE SHAPE is the strong claim: one constant across three decades,
+    ## spanning the flat region, the corner and the -20 dB/decade roll-off.
+    assert max(ratios) / min(ratios) - 1.0 < 1e-4, ratios
+    for r in ratios:
+        assert abs(r - 1.0) < 5e-4, ratios
+
+    ## and the second-pole term is a TERM, not a fudge: ten times the filter
+    ## corner divides it by ten.
+    cf2 = 1e-10
+    f_rc2 = 1.0 / (2.0 * np.pi * rf * cf2)
+    fc2, vals2 = _pll_phase_noise(K, kvco, cf2, [1e3], sf=sf)
+    base2 = sf / (4.0 * np.pi ** 2 * (1e3 ** 2 + fc2 ** 2))
+    resid2 = vals2[0] / base2 - 1.0
+    assert abs(resid2 / (2.0 * fc2 / f_rc2) - 1.0) < 0.02, \
+        'the second-pole term must scale as 2 f_c/f_RC: %.4e vs %.4e' \
+        % (resid2, 2.0 * fc2 / f_rc2)
+
