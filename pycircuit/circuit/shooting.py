@@ -13845,10 +13845,63 @@ class PAC(Analysis):
         O(h/tau) floor -- 4% out at 800 points where the held value is
         already 1.6e-4 -- and both agree with a reference simulator's sampled pnoise at
         matched instants to 1e-3 (0.99878 track, 0.99915 edge, 0.99999
-        hold).  The tracked variance is 0.957 kT/C, NOT kT/C: a sinusoidal
-        clock holds the switch at full `gon` only instantaneously, so the
-        capacitor is never in equilibrium with `Ron`; both tools agree on
-        that independently.
+        hold).  ⚠⚠ **AN EARLIER READING OF THAT TRACKING NUMBER IS
+        WITHDRAWN (2026-09-18).**  It said: "the tracked variance is 0.957
+        kT/C, NOT kT/C -- a sinusoidal clock holds the switch at full `gon`
+        only instantaneously, so the capacitor is never in equilibrium with
+        `Ron`; both tools agree on that independently."  That is a
+        DISCRETISATION FLOOR described as physics.  Within this fixture's
+        own definition the switch contributes `g V` and `white_noise(4 kT
+        g)` with the SAME `g`, so the variance obeys `dV/dt = -2(g/C)V +
+        2kT g/C^2`, for which `V(t) = kT/C` is an EXACT solution at every
+        instant and for ANY `g(t)` -- fluctuation-dissipation, and the
+        periodic solution is unique because `g > 0` contracts.  The
+        capacitor IS in equilibrium throughout.  Measured against that
+        exact profile (a stiff solve to periodic steady state, closing
+        error 0.0): the tracking value reads 0.7398 / 0.8467 / 0.9157 /
+        0.9556 kT/C at 200 / 400 / 800 / 1600 points -- errors 0.260,
+        0.153, 0.084, 0.044, HALVING per doubling, i.e. first order,
+        converging to kT/C.  ⚠ And the cross-tool agreement does not
+        rescue the claim: two tools discretising the same period at
+        comparable step counts agree about a SHARED artefact, which is
+        exactly why agreement between implementations cannot establish a
+        LIMIT -- the same lesson the edge-jitter work paid for when
+        cross-family agreement could not show a number was right.
+        ✅ CONSISTENCY IS SEPARATELY CONFIRMED, and it is what this routine
+        should be judged on: against a closed-form time-varying reference
+        built by breaking the fluctuation-dissipation balance (an extra
+        white source not tied to `g`, giving a profile that spans 15x over
+        the period), `covariance` converges to the exact continuous answer
+        at FIRST order in both phases -- hold 1.07e-2 -> 1.09e-3 and track
+        2.60e-1 -> 4.44e-2 over 200..1600 points, ratios 2.07 and 1.90.
+        That is the O(h) its piecewise-constant injection predicts, and it
+        converges to the RIGHT limit.  ⚠ The "held converges at better
+        than second order" above is a property of the kT/C fixture, where
+        the exact profile is a CONSTANT and the leading terms cancel: with
+        the balance broken the held value converges at first order too.
+        ⚠⚠ **AND THE kT/C ARGUMENT IS SPECIFIC TO A FIXTURE WHOSE NOISE IS
+        TIED TO ITS OWN CONDUCTANCE** -- the caveat is the reference suite's
+        and it is right.  It is a theorem about THIS circuit only because
+        the element's own definition contributes `g V` and `white_noise(4 kT
+        g)` with the SAME `g`.  A REAL DEVICE WOULD BREAK IT -- on a PSP
+        switch the measured `sid/(4kT g)` runs 1.09 during conduction to
+        3.17 through turn-off, so fluctuation-dissipation would not balance
+        and that circuit's tracking limit need not be kT/C.  ⚠ But that is
+        a caveat about OTHER fixtures, not about this one: the reference
+        side runs the SAME behavioural switch (`pcswitch.va`, the same `g`
+        and the same `white_noise(4 kT g)`), which is the point of the
+        fixture, so the theorem applies to both sides and there is no real
+        device near it.
+        ⚠⚠ A REFERENCE-SIDE READING OF ~0.974 kT/C FOR THE TRACKING LIMIT
+        IS WITHDRAWN (2026-09-18, by the side that made it).  It came from
+        an Aitken extrapolation of 0.95489 / 0.96723 / 0.97128 / 0.97239,
+        whose error ratios DECELERATE -- 1.38, 1.14, 1.04.  A ratio heading
+        to ONE is a sequence that has stopped moving, and Aitken on a
+        stalled sequence returns approximately where it stalled rather than
+        a limit; a converging first-order ladder heads to TWO, as the one
+        above does (1.70, 1.82, 1.90).  So that number is a floor in the
+        reference's own sampled-noise integration, and the limit for this
+        fixture remains kT/C by the argument above.
 
         Returns `K0`, the covariance at `t = 0`; with `samples=True`,
         `(K0, [K_j])`, the covariance at every step, which is the
