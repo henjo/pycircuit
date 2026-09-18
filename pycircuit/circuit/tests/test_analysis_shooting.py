@@ -22039,7 +22039,7 @@ class _PllMultPd(Behavioural):
         return (Contribution(bo.V, p.k * ba.V * bb.V),)
 
 
-def _pll_loop(K, kvco, fref=1e6):
+def _pll_loop(K, kvco, fref=1e6, df=0.0):
     """VCO + multiplier PD + RC filter, `f0` EXACTLY `fref` and modulus 1 --
     so at zero gain the phase advances one cycle per reference period and
     EVERY offset is a solution, which is the marginal mode itself."""
@@ -22048,7 +22048,7 @@ def _pll_loop(K, kvco, fref=1e6):
     for nd in ('ref', 'vco', 'ph', 'pd', 'ctl'):
         c.add_node(nd)
     c['Vref'] = VSin('ref', gnd, va=1.0, freq=fref, phase=0.0)
-    c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=fref, kvco=kvco,
+    c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=fref + df, kvco=kvco,
                      va=1.0, modulus=1.0)
     c['PD'] = _PllMultPd('vco', gnd, 'ref', gnd, 'pd', gnd, k=K)
     c['Rf'] = R('pd', 'ctl', r=1e3)
@@ -22056,12 +22056,12 @@ def _pll_loop(K, kvco, fref=1e6):
     return c
 
 
-def _pll_lambda(K, kvco, offset=0.0, fref=1e6, npts=400):
+def _pll_lambda(K, kvco, offset=0.0, fref=1e6, npts=400, df=0.0):
     """`|lambda|_max` of the closed loop, seeded at `offset` CYCLES on the
     integrator's own accumulator.  Returns None if the solve does not
     converge."""
     import warnings as _w
-    cir = _pll_loop(K, kvco, fref)
+    cir = _pll_loop(K, kvco, fref, df)
     names = [str(n) for n in cir.nodes if str(n) != 'gnd!']
     x0 = np.zeros(cir.n - 1)
     ## ⚠ the ACCUMULATOR, not the `ph` node: `ph` is a dependent output and
@@ -22242,4 +22242,46 @@ def test_a_locked_loop_shapes_its_vco_phase_noise_with_nothing_fitted():
     assert abs(resid2 / (2.0 * fc2 / f_rc2) - 1.0) < 0.02, \
         'the second-pole term must scale as 2 f_c/f_RC: %.4e vs %.4e' \
         % (resid2, 2.0 * fc2 / f_rc2)
+
+
+def test_the_pll_lock_range_is_the_loop_bandwidth_and_the_whole_locus_is_predicted():
+    """A6 step 3: the hold-in range, gated as a LOCUS rather than an edge, and
+    with every constant imported from the two measurements before it.
+
+    For a first-order loop the VCO can be pulled by at most `kvco*(K/2)`, so the
+    hold-in range is `|f0 - fref| <= Df_max = kvco*K/2` -- THE SAME CONSTANT
+    step 2 read off the Floquet multiplier and step 4 read out of the noise
+    corner.  Inside it the equilibrium sits at `cos(2 pi theta) = -Df/Df_max`,
+    the linearised rate is `kvco pi K |sin(2 pi theta)|`, and with step 4's
+    second pole:
+
+        -ln|lam| / (pi kvco K T) = s + s^2 (f_c/f_RC),   s = sqrt(1 - x^2)
+
+    a unit semicircle in `x = Df/Df_max`, tilted by the RC.  NOTHING IS FITTED:
+    `Df_max` and `f_c` come from `kvco` and `K`, and `f_RC` from R and C.
+    MEASURED 2026-09-18 to 6.3e-07 .. 7.9e-06 over x = 0 .. 0.99, with lock lost
+    between 99 and 100.5 Hz.  So this is a THIRD independent route to one
+    constant -- a multiplier, a noise corner, and a detuning edge.
+
+    ⚠ Seeded on the STABLE branch and continued, never from a fixed seed: step 2
+    showed the natural seed lands on the saddle, and A6's own injection-locking
+    record says a fixed seed hops branches.
+    """
+    fref, T = 1e6, 1e-6
+    kvco, K, rf, cf = 2e4, 1e-2, 1e3, 1e-9
+    dfmax = kvco * K / 2.0
+    f_rc = 1.0 / (2.0 * np.pi * rf * cf)
+
+    for df in (0.0, 60.0, 90.0, 99.0):
+        lam = _pll_lambda(K, kvco, offset=0.25, df=df)
+        assert lam is not None and lam < 1.0, (df, lam)
+        x = df / dfmax
+        s = np.sqrt(1.0 - x ** 2)
+        want = s + s * s * (dfmax / f_rc)
+        got = -np.log(lam) / (np.pi * kvco * K * T)
+        assert abs(got / want - 1.0) < 1e-4, (df, got, want)
+
+    ## the EDGE: beyond the hold-in range there is no locked branch at all
+    assert _pll_lambda(K, kvco, offset=0.25, df=105.0) is None, \
+        'a locked branch survived past Df_max = %.1f Hz' % dfmax
 
