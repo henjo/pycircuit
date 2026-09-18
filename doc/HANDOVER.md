@@ -22,19 +22,37 @@ which is the only statement of it that stays true:
 Merging to master remains the repo owner's call and has NOT been done.
 ⚠ Push only when asked, and only this branch.
 
-Suite: **3235 passed, 6 skipped, 3 xfailed**.
-⚠⚠ **THE SUITE NO LONGER FITS IN ONE FOREGROUND RUN AND MUST BE CHUNKED.**
-`test_B16` alone runs **763 s** against this harness's 600 s cap, and background
-runs have been killed as "low memory" with ~20 GB free and PSI zero (six times
-in one day). What works, ~36 min total, one chunk at a time:
+Suite: **3235 passed, 6 skipped, 3 xfailed** — **27 min as ONE run**.
 
-  1. everything except `test_analysis_shooting.py`, `-n 4` (~5 min)
-  2.–5. `test_analysis_shooting.py` split FOUR ways by node id, `-n 4`
-     (~6 / ~14 / ~8 / ~3 min; the 14-minute one holds `test_B16`)
+✅ **RUN IT DETACHED, IN ONE PIECE** (measured 2026-09-18, 1631 s):
 
-⚠ **RE-COLLECT the node ids before splitting** (`--collect-only -q`): a stale
-split once produced four green chunks that silently omitted the very test being
-committed. ⚠ Run ONE suite at a time; `-n 4`–`6` is what survives, `-n 10` OOMs.
+    setsid nohup .venv/bin/python -m pytest pycircuit -q -n 4 -p no:randomly \
+        > suite.log 2>&1 < /dev/null &
+
+then poll the log rather than holding the foreground.
+
+⚠⚠ **THIS REPLACES THE FIVE-WAY CHUNKED RECIPE.** That recipe existed only
+because six background runs in one day were killed as "low memory" with ~20 GB
+free and PSI zero, and because `test_B16` alone runs **785 s** against this
+harness's 600 s cap. `setsid nohup` puts the run outside the harness's process
+group and it simply survives — `test_B16` included. It is also FASTER than
+chunking (~36 min) and, unlike a split, it cannot silently omit a test.
+(Credit: the private suite's session, which measured the same kills at 18–19 GB
+available against a 260 MB peak and found detaching, not retrying, was the fix.)
+
+⚠ **WHEN YOU POLL, EXIT ON THE PID DISAPPEARING AS WELL AS ON A RESULT LINE.**
+A kill and "still running" look identical to a grep that only matches success;
+a watcher that greps only for `passed` hangs forever on a crash.
+⚠ **Use `kill -0 <pid>`, NOT `pgrep -f`** — `pgrep` matches its own shell, and
+it has produced a false "process gone" and a hung `until` loop repeatedly here.
+Take the PID from `ps`, not from a `pgrep` list: the list can hold transients.
+⚠ Run ONE suite at a time; `-n 4`–`6` is what survives, `-n 10` OOMs.
+
+**Fallback, if a detached run is ever killed after all:** the old five-way
+chunking — everything except `test_analysis_shooting.py`, plus that file split
+four ways by node id, `-n 4`. ⚠ RE-COLLECT the node ids before splitting
+(`--collect-only -q`): a stale split once produced four green chunks that
+silently omitted the very test being committed.
 
 **The active thread is PSS / shooting / DAE integration**, and it is now TWO
 files (split 2026-09-11, because the plan was buried in 14.7k lines of log):
