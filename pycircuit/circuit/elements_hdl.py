@@ -768,7 +768,9 @@ def _spice_diode(p, a, c, T, junction=None):
     ## every bias, floored below by `safe_abs`'s own eps.
     iabs = _var(_safe_abs(idio), 'iabs')
     noise = (Contribution(bd.I, _white_noise(2 * _QE * iabs)),
-             Contribution(bd.I, _flicker_noise(p.kf * iabs ** p.af, 1)),
+             ## signed: see the note at the EKV flicker term
+             Contribution(bd.I, _var(idio / iabs, 'sgnfl')
+                          * _flicker_noise(p.kf * iabs ** p.af, 1)),
              ## Thermal noise of the series resistance.  It goes away
              ## with the branch when rs collapses, which is the correct
              ## behaviour and comes for free.
@@ -1895,7 +1897,9 @@ def _gp_core(p, T, npn, c, b, e):
     noise = (
         Contribution(bct.I, _white_noise(2.0 * _QE * icol)),
         Contribution(bbe.I, _white_noise(2.0 * _QE * ibas)),
-        Contribution(bbe.I, _flicker_noise(p.kf * ibas ** p.af, 1)),
+        ## signed: see the note at the EKV flicker term
+        Contribution(bbe.I, _var((ibe + ibc) / ibas, 'sgnfl')
+                     * _flicker_noise(p.kf * ibas ** p.af, 1)),
         ## Thermal noise of the three parasitics.  Each goes away
         ## with its branch when the resistance collapses, which is
         ## the correct behaviour and comes for free.  The base one
@@ -2398,7 +2402,16 @@ def _ekv_analog(T, nmos):
             ## the normalisation is folded into `kf` here as it is in
             ## the diode above.  `safe_abs` because a PSD may not be
             ## negative and `ids` is negative for a reversed device.
-            Contribution(bds.I, _flicker_noise(
+            ## ⚠ THE SIGN IN THE SCALE FACTOR (2026-09-19): a 1/f current is a
+            ## slow relative fluctuation of the conductance TIMES the current,
+            ## so it follows the current's sign, and a periodic noise fold
+            ## needs that sign (`Element.noise_amplitudes`, hdl.py).  `CY` is
+            ## what it was: the factor is +-1 to (1e-30/I)^2.
+            ## ⚠ AS A `var`, NOT INLINE: `CY` squares the factor, and inline that
+            ## is `I^2 |I|^(af-2)`, whose `I^2` OVERFLOWS at the junction sweep's
+            ## 1e4 V (TestNoFloatingPointGarbage caught it).  Named, it is
+            ## formed once as a ratio and squared at magnitude 1.
+            Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
                 kf * _safe_abs(ids) ** af, ef)),                   # noqa
         )
         return (Contribution(bds.I, ids),
@@ -2924,7 +2937,8 @@ def _mos1_analog(T, nmos, limiting='group'):
             ## rather than chased.
             ## `safe_abs` because a PSD may not be negative and `ids` is
             ## negative for a reversed device.
-            Contribution(bds.I, _flicker_noise(
+            ## signed: see the note at the EKV flicker term
+            Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
                 kf * _safe_abs(ids) ** af / (cox * leff ** 2), 1)),  # noqa
             Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
             Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),
@@ -3608,8 +3622,9 @@ class MesfetStatzHdl(Behavioural):
             Contribution(brs.I, brs.V * p.area / p.rs),
             Collapse(brs, p.rs <= 0.0),
             Contribution(bds.I, _white_noise(8.0 / 3.0 * _KB * TEMP * gmn)),
-            Contribution(bds.I, _flicker_noise(p.kf * _safe_abs(ids) ** p.af,
-                                               1)),
+            ## signed: see the note at the EKV flicker term
+            Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl')
+                         * _flicker_noise(p.kf * _safe_abs(ids) ** p.af, 1)),
             Contribution(brd.I, _white_noise(4 * _KB * TEMP * p.area / p.rd)),
             Contribution(brs.I, _white_noise(4 * _KB * TEMP * p.area / p.rs)),
         )
@@ -4109,7 +4124,8 @@ def _mos3_analog(T, nmos):
             Contribution(brs.I, brs.V / rsx),
             Collapse(brs, sympy.And(p.rs <= 0.0, p.rsh * p.nrs <= 0.0)),
             Contribution(bds.I, _white_noise(4.0 * _KB * T * gn)),
-            Contribution(bds.I, _flicker_noise(
+            ## signed: see the note at the EKV flicker term
+            Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
                 p.kf * _safe_abs(ids) ** p.af / (cox * leff ** 2), 1)),
             Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
             Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),

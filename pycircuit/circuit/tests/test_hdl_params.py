@@ -640,9 +640,12 @@ _RECORDED = [
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
      ['c3ed303997f1392e', '21e88b90474a46ad', '21439709d3b32cd6'],
      'f47a8c22e23dbb57'),
+    ## 2026-09-19: explain re-recorded (was d498f022d01f0c10).  The flicker term gained a
+    ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
+    ## (`_v73_pdiss` -> `_v74_pdiss`); the three POINT digests did not move.
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
      ['fe1b458d8329968c', '3455c501ca26160e', 'd500ccf7379c575b'],
-     'd498f022d01f0c10'),
+     '85b972d92cf59d7d'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
     ## hold their own arguments, so the chain carries more named
@@ -663,9 +666,12 @@ _RECORDED = [
     ## Old: points b2230da8487a876f / cda54034e9a55933 / 8361dbfb58d3a752,
     ## explain 0dcf03f6b937d283.  Moved by 1.213e-15 relative -- see the
     ## note above.
+    ## 2026-09-19: explain re-recorded (was 1a44be911a0da312).  The flicker term gained a
+    ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
+    ## (`_v29_pdiss` -> `_v30_pdiss`); the three POINT digests did not move.
     ('DiodeSpiceThermalHdl', _DIO, ('a', 'c', 'th', 'tha'), 5,
      ['304cd81bdc921677', '5436b44b35812ab8', 'c55e46b8b22ded83'],
-     '1a44be911a0da312'),
+     '38a3b45aa096f320'),
 ]
 
 

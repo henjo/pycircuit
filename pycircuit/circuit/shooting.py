@@ -12697,6 +12697,25 @@ class PAC(Analysis):
         return out
 
     @staticmethod
+    def _warn_signed_unused(model, where):
+        """⚠ A FALLBACK THAT REPRODUCES THE OLD ANSWER LOOKS LIKE AGREEMENT
+        (peer, 2026-09-19: found only by a bit-for-bit A/B against an older
+        commit).  If an element STATED its signed amplitudes and the fold is
+        about to factor that component by sqrt(PSD) anyway, say so."""
+        signed = getattr(model, 'amplitude', None) or {}
+        lost = [key for key, B, EF in (getattr(model, 'flicker', None) or [])
+                if key in signed and PAC._uniform_exponent(B, EF) is None]
+        if lost:
+            warnings.warn(
+                '%s: %s states SIGNED coloured-noise amplitudes, but its '
+                'power-law exponent is not uniform across its entries, so the '
+                'component is evaluated per band from sqrt(PSD) -- the SIGN-'
+                'BLIND fold (the |m| process).  The result is the pre-2026-09-19 '
+                'one for this component, not the signed physics.'
+                % (where, ', '.join('.'.join(k) for k in lost)),
+                RuntimeWarning, stacklevel=4)
+
+    @staticmethod
     def _orbit_states(pss, states=None):
         """Full-width state vectors to sample `CY` at: the stored orbit
         `x(t_k)`, `k = 0..N-1` (the default), or the given `states`."""
@@ -12853,15 +12872,26 @@ class PAC(Analysis):
         ## crosses zero -- has its exponent in the rounding of the white part
         ## beside it (measured 1 - 2.2e-09 on an entry of 1.4e-31 against
         ## 7.2e-20).  That one entry failed the whole component into the
-        ## per-band route at ONE clock amplitude of a sweep.  Below 1e-9 of the
-        ## scale an entry takes the component's exponent; the reference is the
-        ## LARGEST entry's, not the first's.
+        ## per-band route at ONE clock amplitude of a sweep.
+        ## ⚠⚠ AND A WEIGHT CUT-OFF WAS THE WRONG REPAIR (same day, peer, 1000
+        ## points): my first fix let entries above 1e-9 of the scale vote, and
+        ## a finer orbit landed a sample at 7.1e-09 with its exponent off by
+        ## 8.1e-09 -- the fallback fired again at two amplitudes and the new
+        ## commit reproduced the OLD one to the last bit there.  The exponent's
+        ## noise goes as 1/weight, so no cut-off separates them.  What matters
+        ## is what a wrong exponent COSTS: giving entry i the exponent `ref`
+        ## misstates the component by `r_i |(w1/w)^d_i - 1| ~ r_i d_i |ln(w1/w)|`
+        ## of its scale (`r` relative weight, `d` deviation).  Bounded over 50
+        ## e-folds of band frequency and held to 1e-9: a genuinely different
+        ## exponent (d ~ 1) still fails from a weight of 2e-11 up, while the
+        ## two measured offenders cost 2e-19 and 3e-15.  The reference is the
+        ## LARGEST entry's exponent, not the first's.
         aB = np.abs(B)
         if not np.any(aB > 0):
             return 0.0
         ref = float(np.real(EF.flat[int(np.argmax(aB))]))
-        e = EF[aB > 1e-9 * float(aB.max())]
-        return ref if np.allclose(e, ref, rtol=0.0, atol=1e-9) else None
+        cost = 50.0 * (aB / float(aB.max())) * np.abs(EF - ref)
+        return ref if float(np.max(cost)) <= 1e-9 else None
 
     def _cy_sqrt_harmonics(self, pss, w):
         """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
@@ -12952,13 +12982,18 @@ class PAC(Analysis):
         ## gain, grid-independent; 1.000000000 for a sign-definite gain).
         ## The sign is invisible here; its NECESSARY condition is a PSD
         ## that touches zero along the orbit with a KINK in its square
-        ## root, so that is warned on.  ⚠ SCOPE (measured on an EKV stage,
-        ## 2026-09-09): a DEVICE's own noise has no sign to lose -- its
-        ## modulation is a physical intensity, sqrt(PSD(x(t))) >= 0 IS the
-        ## process -- so for intrinsic MOS thermal, shot or flicker noise the
-        ## PSD-specified model is the physics and this warning does not
-        ## apply; the ambiguity belongs to noise passing through a SIGNED
-        ## external gain (the multiplier fixtures).  Okumura's eq. 23
+        ## root, so that is warned on.  ⚠⚠ THE 2026-09-09 SCOPE NOTE THAT
+        ## STOOD HERE WAS WRONG AND IS WITHDRAWN (2026-09-19): it said a
+        ## DEVICE's own flicker "has no sign to lose -- sqrt(PSD(x(t))) >= 0
+        ## IS the process".  A 1/f current is a slow conductance fluctuation
+        ## TIMES the current and follows its sign; on a PSP sampler whose Vds
+        ## crosses zero while it conducts that is +0.1 % at one clock
+        ## amplitude and 400x at another, against a commercial simulator.
+        ## Where the element states its signed amplitudes
+        ## (`Element.noise_amplitudes`) the folds use them and nothing below
+        ## applies; this limit is for sources that state none.  (White
+        ## sources are untouched: uncorrelated across the period, no sign
+        ## product survives.)  Okumura's eq. 23
         ## objection to flicker is then the separate, physical question of
         ## whether a trap process is "modulated coloured noise" at all.
         ## The proxy's threshold: a zero crossing SAMPLED on an N-point grid
@@ -12969,6 +13004,7 @@ class PAC(Analysis):
         ## ⚠ NOT WHEN EVERY COLOURED COMPONENT CARRIES ITS SIGN: then nothing
         ## below takes a square root of a PSD and there is nothing to warn of
         _signed = getattr(model, 'amplitude', None) or {}
+        self._warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
         _all_signed = (getattr(model, 'flicker', None) is not None
                        and not model.perband
                        and all(k_ in _signed and self._uniform_exponent(B_, E_) is not None
@@ -14472,6 +14508,7 @@ class PAC(Analysis):
             perband.append(lambda w: self._cy_at_states(pss, w, states))
         else:
             white = [self._psd_sqrt(A) for _key, A in model.white_parts]
+            self._warn_signed_unused(model, 'PAC.sampled_noise')
             for _key, Bc, EF in model.flicker:
                 ef = self._uniform_exponent(Bc, EF)
                 if ef is not None:

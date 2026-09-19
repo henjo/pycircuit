@@ -22745,3 +22745,98 @@ def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce(
         assert 0.2 < hi['blind'] / lo['blind'] < 5.0, (hi, lo)
     finally:
         defaultepar.T = was
+
+
+def test_every_library_device_states_the_sign_of_its_flicker_current():
+    """A 1/f current is a slow relative fluctuation of a conductance TIMES the
+    current through it, so it follows the current's sign -- and a periodic
+    noise fold needs that sign (see
+    `test_a_coloured_source_keeps_the_sign_of_its_scale_factor...`).  The
+    SPICE-style models wrote `flicker_noise(kf |I|^af)`, which states none and
+    left them on the |m| fold; they now write `(I/|I|) * flicker_noise(...)`.
+
+    Per device, at a bias and at its mirror: the amplitudes REBUILD the
+    flicker part of `CY` (which is unchanged: the factor is +-1 to
+    (1e-30/I)^2), and they change sign with the current.
+    """
+    import warnings as _w
+    import pycircuit.circuit.elements_hdl as eh
+    w1, winf = 2 * np.pi * 10.0, 2 * np.pi * 1e30
+    mos = [(0.5, 1.5, 0.0, 0.0), (0.0, 1.5, 0.5, 0.0)]
+    cases = [('DiodeSpiceHdl', dict(kf=1e-12), [(0.7, 0.0), (-1.0, 0.0)]),
+             ('GummelPoonNpnHdl', dict(kf=1e-12),
+              [(1.0, 0.7, 0.0), (0.0, -0.7, 0.0)]),
+             ('EkvNmosHdl', dict(kf=1e-24), mos),
+             ('MosLevel1Hdl', dict(kf=1e-24), mos),
+             ('MosLevel3Hdl', dict(kf=1e-24), mos),
+             ('MesfetStatzHdl', dict(kf=1e-12),
+              [(0.5, 0.0, 0.0), (0.0, 0.0, 0.5)])]
+    for name, kw, biases in cases:
+        cls = getattr(eh, name)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            el = cls(*['n%d' % i for i in range(len(cls.terminals))], **kw)
+            signs = []
+            for bias in biases:
+                x = np.zeros(el.n)
+                x[:len(bias)] = bias
+                W = el.noise_amplitudes(x, w1)
+                assert W is not None and W.shape == (el.n, 1), name
+                fl = (np.asarray(el.CY(x, w1), dtype=complex)
+                      - np.asarray(el.CY(x, winf), dtype=complex))
+                assert np.max(np.abs(fl)) > 0, name        # the flicker is alive
+                err = np.max(np.abs(W @ W.conj().T - fl)) / np.max(np.abs(fl))
+                assert err < 1e-9, (name, err)
+                signs.append(np.sign(np.real(W[int(np.argmax(np.abs(W[:, 0]))), 0])))
+        assert signs[0] * signs[1] == -1.0, (name, signs)
+
+
+def test_a_weightless_entry_cannot_fail_a_component_into_the_sign_blind_route():
+    """⚠ THE SILENT FALLBACK, twice.  A flicker component whose entries do not
+    share one exponent is evaluated per band from sqrt(PSD) -- sign-blind.  The
+    exponent is fitted from differences of `CY`, so its noise goes as
+    1/weight, and an orbit sample at Vds ~ 0 always supplies a light entry:
+
+        200 points,  amp 0.375:  weight 1.9e-12, exponent off by 2.2e-09
+        1000 points, amp 0.25:   weight 7.1e-09, exponent off by 8.1e-09
+
+    The first failed a 1e-9 tolerance; my repair (entries above 1e-9 vote)
+    was walked through by the second, found by the peer as a fixed commit
+    reproducing the OLD one to the last bit at two amplitudes.  No weight
+    cut-off separates noise from signal; the COST of the wrong exponent does.
+    And where the fallback does happen to a component that stated its sign,
+    it now says so.
+    """
+    import warnings as _w
+    B = np.zeros((3, 2, 2), dtype=complex)
+    EF = np.ones((3, 2, 2))
+    B[0, 0, 0] = 7.2e-20
+    B[1, 0, 0] = 1.4e-31
+    EF[1, 0, 0] = 1.0 - 2.2e-9                    # the 200-point offender
+    assert PAC._uniform_exponent(B, EF) == 1.0
+    B[2, 0, 0] = 7.1e-9 * 7.2e-20
+    EF[2, 0, 0] = 1.0 + 8.1e-9                    # the 1000-point offender
+    assert PAC._uniform_exponent(B, EF) == 1.0
+    ## the reference is the LARGEST entry's exponent, wherever it sits
+    assert PAC._uniform_exponent(B[::-1], EF[::-1]) == 1.0
+    ## presence: a genuinely different exponent still fails, even when light
+    EF[2, 0, 0] = 2.0
+    assert PAC._uniform_exponent(B, EF) is None
+    B[2, 0, 0] = 1e-12 * 7.2e-20                  # too light to cost 1e-9
+    assert PAC._uniform_exponent(B, EF) == 1.0
+
+    ## the visible fallback
+    def model():
+        pass
+    model.amplitude = {('M1',): np.zeros((3, 2, 1))}
+    B[2, 0, 0] = 1e-3 * 7.2e-20
+    model.flicker = [(('M1',), B, EF)]
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        PAC._warn_signed_unused(model, 'here')
+    assert len(rec) == 1 and 'SIGN-' in str(rec[0].message), rec
+    EF[2, 0, 0] = 1.0
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        PAC._warn_signed_unused(model, 'here')
+    assert not rec
