@@ -22840,3 +22840,124 @@ def test_a_weightless_entry_cannot_fail_a_component_into_the_sign_blind_route():
         _w.simplefilter('always')
         PAC._warn_signed_unused(model, 'here')
     assert not rec
+
+
+class _PllPhaseDiv(Behavioural):
+    """Smooth phase-domain /N: `V(out) = sin(2 pi V(in) / n)`, no limiter."""
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    params_as = 'p'
+    instparams = [_HdlParameter(name='n', desc='Divide ratio', unit='',
+                                default=1.0)]
+
+    @staticmethod
+    def analog(p, inp, inn, outp, outn):
+        import sympy as _sp
+        bi, bo = Branch(inp, inn), Branch(outp, outn)
+        return (Contribution(bo.V, _sp.sin(2 * _sp.pi * bi.V / p.n)),)
+
+
+def test_a_shooting_solve_sitting_on_its_answer_says_why_it_failed_its_step_test():
+    """⚠⚠ "PLAIN PSS ENDS AT N ~ 32 ON A PLL" WAS AN ARTEFACT OF THE STEP TEST.
+
+    A /N PLL (VCO at N f_ref, the loop held at f_c = 100 Hz, 32 points per VCO
+    cycle).  The A5 spike read its cost as ~N^1.5 ending in non-convergence at
+    N = 32, and a seeding experiment then read "a fragile Newton basin" off
+    which seeds happened to pass -- BOTH WRONG, and both mine: I never looked
+    at a residual history.  It says: Newton reaches the solution in TWO
+    iterations (|F| 7e-13) and the iterate never moves again, while the STEP of
+    the VCO's output node -- a unit sine sampled at its zero crossing
+    (-1.5e-05), so `reltol |x|` vanishes and only `vabstol` is left -- stays
+    RANDOM at 4e-12 .. 1e-09: the rounding of a 1024-step traversal carrying an
+    unknown of 3.2e7 (the VCO's frequency node; one ulp is 3.7e-09).  At
+    `vabstol = 1e-12` the solve burned its budget and reported failure, or
+    passed when a draw landed under 1e-12.  Fixed seed, |lambda| = 0.999371:
+
+        N      vabstol = 1e-12            vabstol = 1e-9    1e-6
+        32     142 s, NOT CONVERGED        5.7 s             5.7 s
+        64     297 s                      12.9 s
+        128    (never reached)            16.3 s
+
+    ⚠ AND THE FIRST REPAIR WAS WRONG.  `fsolve` declared success on the
+    signature (residual test held three iterations, step not contracting); the
+    suite refused it twice, on fixtures whose `I - M` is SINGULAR -- there the
+    residual is met on a whole manifold, the step wanders along the null
+    direction, and "not converged" is the designed answer.  Both are rounding
+    amplified by conditioning and the iteration cannot tell them apart.  So the
+    signature is COUNTED, never acted on: the iteration is bit for bit what it
+    was, and a failed solve now says why, naming both causes.
+    """
+    import warnings as _w
+    from pycircuit.circuit.elements_hdl import VcoHdl
+    from pycircuit.circuit import analysis as _an
+    circuit.default_toolkit = circuit.numeric
+    fref, K, N = 1e6, 1e-2, 32
+    T = 1.0 / fref
+
+    def solve(maxiterations, **kw):
+        c = SubCircuit()
+        for nd in ('ref', 'ph', 'dv', 'pd', 'ctl'):
+            c.add_node(nd)
+        c['Vref'] = VSin('ref', gnd, va=1.0, freq=fref, phase=0.0)
+        c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=N * fref,
+                         kvco=N * 2e4, va=1.0, modulus=float(N))
+        c['DV'] = _PllPhaseDiv('ph', gnd, 'dv', gnd, n=float(N))
+        c['PD'] = _PllMultPd('dv', gnd, 'ref', gnd, 'pd', gnd, k=K)
+        c['Rf'] = R('pd', 'ctl', r=1e3)
+        c['Cf'] = C('ctl', gnd, c=1e-9)
+        names = [str(n) for n in c.nodes if str(n) != 'gnd!']
+        x0 = np.zeros(c.n - 1)
+        x0[names.index('X1._state0')] = 0.25 * N
+        x0[names.index('ph')] = 0.25 * N
+        pss = PSS(c, method='gear', reltol=1e-9, **kw)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            pss.solve(period=T, timestep=T / (32 * N), x0=x0,
+                      maxiterations=maxiterations)
+        said = [r for r in rec if 'STOPPED MOVING' in str(r.message)]
+        lam = float(np.max(np.abs(np.linalg.eigvals(np.asarray(pss._monodromy)))))
+        return pss, said, lam, names
+
+    expected = np.exp(-np.pi * 2e4 * K * T)
+    ## a tolerance above the floor: converged at once, nothing to say
+    pss, said, lam, names = solve(60, vabstol=1e-6)
+    assert pss.converged and not said and not pss.step_floor
+    assert abs(lam / expected - 1.0) < 1e-5, (lam, expected)
+    ## below it: the SAME orbit, reported as not converged -- and now with why
+    pss2, said2, lam2, _n = solve(10, vabstol=1e-12)
+    assert not pss2.converged
+    assert len(said2) == 1, said2
+    sf = pss2.step_floor
+    assert names[sf['index'] % len(names)] == 'vco', (sf, names)
+    assert sf['since'] <= 4 and sf['ratio'] > 3.0 and sf['step'] < 1e-7, sf
+    assert abs(lam2 / lam - 1.0) < 1e-8, (lam2, lam)     # it WAS the solution
+    msg = str(said2[0].message)
+    assert 'ARITHMETIC FLOOR' in msg and 'SINGULAR' in msg
+
+    ## ⚠ COUNTED, NOT ACTED ON: with the signature present the iteration is
+    ## what it would have been without the flag.
+    calls = []
+
+    def stuck(x):
+        ## residual met at once; a step that never contracts (a noisy J^-1 F)
+        calls.append(1)
+        k = len(calls)
+        return (np.array([1e-4 * (1.0 if k % 2 else -1.2)]),
+                np.array([[1.0]]))
+    kw = dict(maxiter=9, reltol=1e-12, abstol=1e-3, xtol=1e-12,
+              toolkit=circuit.numeric, full_output=True)
+    ref = _an.fsolve(stuck, np.array([0.0]), **kw)
+    n_ref = len(calls)
+    del calls[:]
+    got = _an.fsolve(stuck, np.array([0.0]), floor_detect=True, **kw)
+    assert got[2] == ref[2] == 2 and len(calls) == n_ref
+    assert float(got[0][0]) == float(ref[0][0])
+    assert got[1]['step_floor'] and got[1]['step_floor']['index'] == 0
+    assert ref[1]['step_floor'] is None
+    ## and a LINEARLY converging Newton never shows the signature: its step
+    ## contracts every iteration (a frozen Jacobian of 2 for 1 halves the error)
+    def lin(x):
+        return np.array([x[0] - 1.0]), np.array([[2.0]])
+    got = _an.fsolve(lin, np.array([0.0]), maxiter=200, reltol=1e-12,
+                     abstol=1e-3, xtol=1e-12, toolkit=circuit.numeric,
+                     full_output=True, floor_detect=True)
+    assert got[2] == 1 and got[1]['step_floor'] is None

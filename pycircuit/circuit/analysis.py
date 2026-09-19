@@ -314,7 +314,7 @@ def newton_tolerance_vectors(n_nodes, n_branches, iabstol, vabstol, toolkit):
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None,
-           line_search=False):
+           line_search=False, floor_detect=False):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
     In each iteration the linear system
@@ -362,6 +362,34 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     ## discards today) so a diagnosis can say what happened; the iteration
     ## itself is bit-for-bit what it was.
     ls_unimproved = 0
+    ## ⚠⚠ A SOLVE THAT HAS STOPPED MOVING AND STILL FAILS ITS STEP TEST
+    ## (2026-09-19, `floor_detect`).  ⚠ COUNTED, NOT ACTED ON -- like
+    ## `ls_unimproved` above, and for a reason that was MEASURED: the first
+    ## version of this DECLARED SUCCESS on the signature below, and the suite
+    ## refused it twice.
+    ##
+    ## The signature: the residual test has held for three consecutive
+    ## iterations while the step, in units of its tolerance, did NOT contract
+    ## (a linearly converging Newton contracts every time).  Two different things
+    ## produce it, and the iteration cannot tell them apart -- both are rounding
+    ## amplified by the conditioning of `J`:
+    ##   * THE ARITHMETIC FLOOR.  A PLL shooting solve reached its solution in
+    ##     two iterations (|F| 7e-13) and never moved again, while the step of
+    ##     ONE unknown -- a unit sine sampled at its zero crossing, so
+    ##     `reltol*|x|` vanishes and only `xtol = 1e-12` is left -- stayed RANDOM
+    ##     at 4e-12 .. 1e-09: the rounding of a 1024-step traversal carrying an
+    ##     unknown of 3.2e7 (one ulp = 3.7e-09).  142 s and "not converged", for
+    ##     an answer `vabstol = 1e-9` delivers in 5.7 s digit for digit.
+    ##   * A SINGULAR JACOBIAN.  With a marginal mode (multiplier 1 + 2e-11)
+    ##     `I - M` is singular, EVERY point of a manifold satisfies the residual,
+    ##     and the step wanders along the null direction.  There is no unique
+    ##     solution, and "not converged" is the designed, honest answer.
+    ## So the iteration is bit for bit what it was and the signature goes out
+    ## through `infodict['step_floor']`; the caller uses it to say WHY a failed
+    ## solve failed.  (Modelling the floor instead -- `eps * I_scale` through
+    ## `J^-1` -- named the right unknown and under-stated the noise 18x.)
+    _floor_q = []
+    step_floor = None
     for i in range(maxiter):
         if cached is None:
             F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
@@ -417,7 +445,26 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
             ier = 1
             mesg = "Success"
             break
-            
+        if floor_detect:
+            if conv_f:
+                import numpy as _np
+                _tolx = _np.asarray(
+                    reltol * toolkit.maximum(abs(x), abs(x0)) + xtol, dtype=float)
+                _dx = _np.abs(_np.asarray(xdiff, dtype=float))
+                _k = int(_np.argmax(_dx / _tolx))
+                _floor_q.append((float(_dx[_k] / _tolx[_k]), _k,
+                                 float(_dx[_k]), float(_tolx[_k])))
+            else:
+                _floor_q = []
+            if len(_floor_q) >= 3 and any(
+                    _floor_q[-j_][0] >= _floor_q[-j_ - 1][0] for j_ in (1, 2)):
+                _w = max(_floor_q[-3:])
+                if step_floor is None:
+                    step_floor = dict(since=i + 1 - len(_floor_q))
+                step_floor.update(index=_w[1], step=_w[2], tol=_w[3],
+                                  ratio=_w[0])
+            elif not _floor_q:
+                step_floor = None
         x0 = x
 
     if ier == 2:
@@ -428,7 +475,7 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     ## converging normally; non-zero is the signature of a step that is uphill
     ## against the TRUE derivative, which halving cannot cure.  Reported rather
     ## than acted on -- see the note at its declaration.
-    infodict = {'ls_unimproved': ls_unimproved}
+    infodict = {'ls_unimproved': ls_unimproved, 'step_floor': step_floor}
     if full_output:
         return x, infodict, ier, mesg
     else:

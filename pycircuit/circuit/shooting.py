@@ -10244,7 +10244,8 @@ class PSS(Analysis):
                 x0_ss, _info, _ier, _mesg = analysis.fsolve(
                     _fdr, x, maxiter=maxiterations,
                     reltol=_shoot_reltol, abstol=_tol, xtol=_tol,
-                    toolkit=self.toolkit, full_output=True, line_search=True)
+                    toolkit=self.toolkit, full_output=True, line_search=True,
+                    floor_detect=True)
         elif self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
             ## rule as the plain autonomous system: the two state blocks
@@ -10369,7 +10370,8 @@ class PSS(Analysis):
                 z_ss, _info, _ier, _mesg = analysis.fsolve(
                     func_solved_history, z0, maxiter=maxiterations,
                     reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
-                    toolkit=self.toolkit, full_output=True, line_search=True)
+                    toolkit=self.toolkit, full_output=True, line_search=True,
+                    floor_detect=True)
             x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
         elif matrix_free:
             ## RECORDED SCOPE ITEM 6 on the PLAIN path: `m` columns rather
@@ -10390,8 +10392,34 @@ class PSS(Analysis):
             x0_ss, _info, _ier, _mesg = analysis.fsolve(
                 func, x, maxiter=maxiterations, reltol=_shoot_reltol,
                 abstol=_tol, xtol=_tol, toolkit=self.toolkit,
-                full_output=True, line_search=True)
+                full_output=True, line_search=True, floor_detect=True)
         self.converged = (_ier == 1)
+        ## ⚠ WHY A SOLVE THAT HAD STOPPED MOVING STILL FAILED (see `fsolve`'s
+        ## `floor_detect`: counted there, never acted on).  The generic
+        ## non-convergence warning cannot tell a solve that is lost from one
+        ## that is sitting ON its answer; this one can, and names both causes.
+        self.step_floor = (_info.get('step_floor')
+                           if isinstance(_info, dict) else None)
+        if not self.converged and self.step_floor:
+            _sf = self.step_floor
+            warnings.warn(
+                'PSS: the shooting solve STOPPED MOVING AND STILL FAILED ITS STEP '
+                'TEST: the periodicity residual has met its tolerance since '
+                'iteration %d, but the Newton step of unknown %d stays at %.1e '
+                'against a tolerance of %.1e (%.0fx) and does not contract.  Two '
+                'causes look like this. (1) THE ARITHMETIC FLOOR: the step is '
+                'rounding -- typically a long traversal carrying an unknown of '
+                'very different magnitude, tested on a node near a zero crossing '
+                'where only the absolute tolerance is left -- and the waveform IS '
+                'the solution; an absolute tolerance (vabstol / iabstol) at or '
+                'above ~%.0e ends the solve as soon as it is there. (2) A '
+                'SINGULAR I - M: a Floquet multiplier at 1 (an autonomous or '
+                'marginally stable circuit solved at a fixed period), so the '
+                'periodic solution is NOT UNIQUE and the step wanders along the '
+                'null direction; check `spectral_radius`.'
+                % (_sf['since'], _sf['index'], _sf['step'], _sf['tol'],
+                   _sf['ratio'], _sf['step']),
+                RuntimeWarning, stacklevel=2)
         self.shooting_iterations = maxiterations if not self.converged else None
         ## ⚠ AN AUTONOMOUS OSCILLATOR CANNOT BE SOLVED AT A FIXED PERIOD,
         ## and this is the only place it says so.
