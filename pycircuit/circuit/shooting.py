@@ -6089,6 +6089,15 @@ class PSS(Analysis):
                                    for _e in np.eye(n)])
             _lams = np.linalg.eigvals(_Md)
             _keep = np.real(_lams)[np.abs(_lams - 1.0) > 1e-6]
+            if _keep.size == _lams.size:
+                ## ⚠ NO MULTIPLIER IN THE WINDOW: the phase multiplier is 1
+                ## only as far as the DISCRETISATION is time-translation
+                ## invariant, and a non-uniform `grid=` breaks that at O(h^2)
+                ## (measured 1 - 5.1e-05 at N = 400, 3:1, rate 4).  Without
+                ## this the phase multiplier itself was reported as the
+                ## SECOND one -- silently, f_amp 600x too small.  Drop the
+                ## one nearest 1 instead; a uniform grid never gets here.
+                _keep = np.real(np.delete(_lams, int(np.argmin(np.abs(_lams - 1.0)))))
             if _keep.size:
                 lam2 = float(max(np.max(_keep), 0.0))
             ## the spectrum is exact, so there is nothing to certify against
@@ -10808,6 +10817,23 @@ class PSS(Analysis):
                          np.asarray(X, dtype=float))
 
         freqs, FX = freq_analysis(X[:,:-1], times[:-1])
+        ## ⚠ ON A NON-UNIFORM GRID (`grid=`) THE INDEX DFT ABOVE IS NOT A
+        ## FOURIER COEFFICIENT -- measured 7.5 % off in the carrier and not
+        ## converging on a 3:1 grid.  Same layout and RMS fold, taken as the
+        ## trapezoid-weighted sum at the true times (`_period_quadrature`'s
+        ## weights; uniform grids never reach this branch).
+        _h = np.diff(np.asarray(times, dtype=float))
+        if len(_h) >= 2 and float(np.max(_h)) / float(np.min(_h)) - 1.0 \
+                > self.UNIFORM_GRID_TOL:
+            _tt = np.asarray(times, dtype=float)
+            _Tp = float(_tt[-1] - _tt[0])
+            _wq = 0.5 * (_h + np.roll(_h, 1)) / _Tp
+            _ks = np.arange(len(freqs))
+            freqs = _ks / _Tp
+            _E = np.exp(-2j * np.pi * np.outer(_ks, (_tt[:-1] - _tt[0]) / _Tp)) \
+                * _wq[None, :]
+            FX = np.asarray(X[:, :-1], dtype=float) @ _E.T
+            FX[:, 1:] *= np.sqrt(2)
 
         ## ⚠ `fpss` IS RMS, AND THE USUAL THING TO COMPARE IT AGAINST IS NOT.
         ## `freq_analysis` returns an RMS, energy-folded, positive-frequency
@@ -15207,9 +15233,11 @@ class PAC(Analysis):
                 'multiplier sits on the unit circle.')
 
         def fcoef(P):
+            ## `_period_dft`: the index DFT on a uniform grid, unchanged, and
+            ## the trapezoid-weighted sum at the true times on a non-uniform one
             X = np.asarray(P)[:, :-1]
             N = X.shape[1]
-            return np.fft.fft(X, axis=1) / N, N
+            return self._period_dft(pss, X.T).T, N
 
         U, V, N = {}, {}, None
         for k in orb:
@@ -15501,7 +15529,11 @@ class PAC(Analysis):
         if len(ph) != 1:
             raise ValueError(
                 'PAC.modal_spectrum: expected exactly one Floquet multiplier '
-                'on the unit circle (the phase mode), found %d.' % len(ph))
+                'on the unit circle (the phase mode), found %d.  (On a '
+                'non-uniform `grid=` the phase multiplier leaves 1 at O(h^2) '
+                '-- the discretisation is no longer time-translation '
+                'invariant -- and this refusal is deliberate: use a uniform '
+                'grid, or PAC.pnoise, which is correct on either.)' % len(ph))
         m = pss.cir.n - 1
         d = np.asarray(output)
         if d.ndim == 0:
@@ -15526,8 +15558,10 @@ class PAC(Analysis):
         ## would put a spurious pole width on the Lorentzian.
         coef = []
         for l in ph + orb:
-            Ul = np.fft.fft(np.asarray(modes[l]['p'])[:, :-1], axis=1) / N
-            Vl = np.fft.fft(np.asarray(modes[l]['q'])[:, :-1], axis=1) / N
+            ## ⚠ `_period_dft`, not an index DFT: measured 8-13 % off and NOT
+            ## converging on a 3:1 grid before (see `PSS._period_quadrature`)
+            Ul = self._period_dft(pss, np.asarray(modes[l]['p'])[:, :-1].T).T
+            Vl = self._period_dft(pss, np.asarray(modes[l]['q'])[:, :-1].T).T
             coef.append((l, row @ Ul[:, js % N], Vl,
                          0.0 if l == ph[0] else complex(modes[l]['mu'])))
 
@@ -16439,7 +16473,12 @@ class PAC(Analysis):
         t = np.asarray(times, dtype=float)[:-1]
         v = row[:len(t)]
         w0 = 2.0 * np.pi / float(pss.period)
-        return complex(np.sum(v * np.exp(-1j * carrier * w0 * t)) / len(t))
+        ## ⚠ a Fourier INTEGRAL: `1/N` is its quadrature only on a uniform
+        ## grid (measured 7.5 % off and not converging on a 3:1 one)
+        _wq = pss._period_quadrature(pss.factored_period())
+        if _wq is None or len(_wq) != len(t):
+            return complex(np.sum(v * np.exp(-1j * carrier * w0 * t)) / len(t))
+        return complex(np.sum(v * np.exp(-1j * carrier * w0 * t) * _wq))
 
     def am_pm(self, pss, freq, output, carrier=1):
         """AM and PM modulation indices at `carrier`, per noise/signal source.

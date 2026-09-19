@@ -22387,6 +22387,99 @@ def test_pnoise_is_correct_on_a_non_uniform_grid_with_trapezoid_period_weights()
     assert errs[0] / errs[1] > 3.0, errs
 
 
+def test_every_period_harmonic_is_a_fourier_integral_on_a_non_uniform_grid():
+    """⚠ THE SITES THE pnoise FIX LEFT ON AN INDEX DFT, measured then converted.
+
+    Against a KNOWN answer -- a driven RC, first harmonic `H/(2j)` -- on a 3:1
+    grid, before: `carrier_phasor` and `fpss` 7.5 % off and NOT converging
+    (the same flat error as the folds had).  After, the trapezoid-weighted sum
+    at the true times: second order, like the gear samples it reads.  The
+    uniform grid keeps the index DFT bit for bit.
+
+    And one thing the measurement found that is not a quadrature: the phase
+    multiplier of an oscillator is 1 only while the DISCRETISATION is
+    time-translation invariant.  A non-uniform grid breaks that at O(h^2)
+    (1 - 5.1e-05 at N = 400), it fell outside `ppv`'s 1e-6 window, and `ppv`
+    then reported the PHASE multiplier as `second_multiplier` -- silently,
+    f_amp 600x too small.  `modal_spectrum` refuses such a grid and says why
+    (converted anyway: with the mode forced it closes on pnoise to 1.0001 at
+    N = 1600, 8-13 % off before).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    w = 2 * np.pi / T
+    Rv, Cv = 1e3, 0.3e-9
+    truth = 1.0 / (1.0 + 1j * w * Rv * Cv) / 2j
+
+    def fracs(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+
+    def run(n, nonuniform):
+        c = SubCircuit()
+        c.add_node('in')
+        c.add_node('out')
+        c['V'] = VSin('in', gnd, va=1.0, freq=1.0 / T, phase=0.0)
+        c['R'] = R('in', 'out', r=Rv)
+        c['C'] = C('out', gnd, c=Cv)
+        pss = PSS(c, method='gear', reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = pss.solve(period=T, timestep=T / n, maxiterations=60,
+                            break_events=False,
+                            grid=(fracs(n) if nonuniform else None))
+        assert pss.converged
+        cp = PAC(c, toolkit=circuit.numeric).carrier_phasor(pss, c.get_node_index('out'), 1)
+        fp1 = complex(res['fpss'].v('out')[1])
+        f1 = float(res['fpss'].sweep_values[1])
+        return cp, fp1, f1
+
+    errs = []
+    for n in (200, 400):
+        cp, fp1, f1 = run(n, True)
+        assert abs(f1 * T - 1.0) < 1e-12
+        ## fpss is RMS-folded: sqrt(2) times the coefficient
+        assert abs(fp1 - np.sqrt(2) * cp) < 1e-12 * abs(cp)
+        errs.append(abs(cp - truth) / abs(truth))
+    assert errs[0] < 2e-3 and errs[1] < 5e-4, errs
+    assert errs[0] / errs[1] > 3.0, errs
+    ## the uniform grid is the index DFT, and as accurate as before
+    cpu, fpu, _f = run(200, False)
+    assert abs(cpu - truth) / abs(truth) < 2e-3
+    assert abs(fpu - np.sqrt(2) * cpu) < 1e-12 * abs(cpu)
+
+    ## the phase multiplier off the unit circle, and what ppv makes of it
+    def vdp(nonuniform):
+        mu = 1.0 / (2.0 * np.pi * 8.0)
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        Tv = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+        pss = PSS(cir, method='gear', reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=Tv, timestep=Tv / 200, x0=np.array([2.0, 0.0]),
+                      maxiterations=300, break_events=False,
+                      grid=(fracs(200) if nonuniform else None))
+            assert pss.converged
+            lam2 = float(pss.ppv()[1]['second_multiplier'])
+        return cir, pss, lam2
+
+    _c, _p, lam_u = vdp(False)
+    cir, pss, lam_n = vdp(True)
+    phase = min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes(pss))
+    assert 1e-5 < phase < 1e-3, phase          # the premise: outside the window
+    assert abs(lam_n / lam_u - 1.0) < 1e-3, (lam_n, lam_u)
+    with pytest.raises(ValueError, match='non-uniform'):
+        PAC(cir, toolkit=circuit.numeric).modal_spectrum(
+            pss, np.array([1e-3]), 0, H=8)
+
+
 def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid():
     """The forward `PAC.solve` and `adjoint_sideband_row` must use the SAME
     period weights -- on a 3:1 grid too.  The uniform-grid twin of this check
