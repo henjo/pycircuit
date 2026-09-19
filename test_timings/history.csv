@@ -558,3 +558,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260919T201646Z,039a017,pycircuit/circuit/tests/test_coupled_method.py no:randomly does_not_depend,0.5,1,pycircuit/circuit/tests/test_coupled_method.py::test_bordered_does_not_depend_on_how_tightly_newton_is_converged,0.3
 20260919T201656Z,039a017,pycircuit/circuit/tests/test_coupled_method.py no:randomly does_not_depend,9.3,1,pycircuit/circuit/tests/test_coupled_method.py::test_bordered_does_not_depend_on_how_tightly_newton_is_converged,9.1
 20260919T204330Z,039a017,pycircuit 4 no:randomly,1585.4,3253,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,835.5
+20260919T204841Z,873cbd3,pycircuit/circuit/tests/test_analysis_shooting.py no:randomly library_mosfets_signed_flicker,30.4,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold,29.2
+20260919T211549Z,873cbd3,pycircuit 4 no:randomly,1617.6,3254,pycircuit/circuit/tests/test_analysis_shooting.py::test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2,858.1

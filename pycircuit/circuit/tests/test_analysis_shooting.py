@@ -22964,3 +22964,92 @@ def test_a_shooting_solve_sitting_on_its_answer_says_why_it_failed_its_step_test
                      abstol=1e-3, xtol=1e-12, toolkit=circuit.numeric,
                      full_output=True, floor_detect=True)
     assert got[2] == 1 and got[1]['step_floor'] is None
+
+
+def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
+    """⚠ THE CIRCUIT-LEVEL GATE the six converted library models did not have:
+    a device whose current REVERSES under a periodic fold, against an answer
+    that is exact by construction -- no reference simulator, nothing fitted.
+
+    MOS level 1 track-and-hold; the drain current crosses zero twice per period
+    while the switch conducts.  With `af = 2` the device's signed 1/f amplitude
+    is EXACTLY `kappa ids(t)`, so the same physics is a CONSTANT 1/f source
+    times the SENSED drain current (a CCVS on a series sense branch, into a
+    multiplier) -- a stationary source through an LPTV gain, which the fold gets
+    right with no sign to lose.  pnoise at 1e-3 f0, over the clock amplitude:
+
+        ck amp   device, signed / exact    device, sign-blind / exact
+        0.90        1.000113                   13.2
+        0.60        1.000047                   22.9
+        0.45        1.000028                   33.8
+        0.30        1.000050                   58.1
+
+    ⚠ LIVENESS IS ASSERTED, because this control nearly fooled me: a harness
+    print showed the sensed current as [0, 0] (my indexing), and had that been
+    true the multiplier would contribute NOTHING and "B/A = 1" would only have
+    meant flicker was negligible.  Measured instead: the sensed current spans
+    -7.3e-05 .. +1.2e-05 A and flicker is 44 % of the exact total.
+    """
+    import warnings as _w
+    import pycircuit.circuit.elements_hdl as eh
+    from pycircuit.circuit.elements import CCVS
+    circuit.default_toolkit = circuit.numeric
+    F = 1e5
+    T = 1.0 / F
+    mos = dict(vto=0.4, kp=2e-4, w=10e-6, l=1e-6, af=2.0)
+    kf = 1e-24
+
+    ## kappa from the element itself: W[d] = kappa ids / sqrt(f)
+    el = eh.MosLevel1Hdl('d', 'g', 's', 'b', kf=kf, **mos)
+    x = np.zeros(el.n)
+    x[0], x[1] = 0.05, 1.5
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        wd = float(np.real(el.noise_amplitudes(x, 2 * np.pi * 10.0)[0, 0]))
+        ids = float(np.real(np.asarray(el.i(x)).ravel()[0]))
+    kappa = wd * np.sqrt(10.0) / ids
+
+    def build(exact, gain=None):
+        c = SubCircuit()
+        for nd in ('in', 'ck', 'dd', 'out', 'x'):
+            c.add_node(nd)
+        c['Vin'] = VSin('in', gnd, vo=0.3, va=0.2, freq=F, phase=0.0)
+        c['Vck'] = VSin('ck', gnd, vo=0.9, va=0.6, freq=F, phase=90.0)
+        ## the sense branch is in BOTH circuits: they are the same orbit
+        c['Hs'] = CCVS('in', 'dd', 'x', gnd, r=1.0)
+        c['M1'] = eh.MosLevel1Hdl('dd', 'ck', 'out', gnd,
+                                  kf=(0.0 if exact else kf), **mos)
+        if exact:
+            c.add_node('n')
+            c['xi'] = _Flicker('n', gnd, i=0.0, noisePSD=1.0, fref=1.0)
+            c['Rn'] = R('n', gnd, r=1.0)
+            c['Mx'] = _NuMult('dd', 'out', 'n', gnd, 'x', gnd,
+                              k=(kappa if gain is None else gain))
+        c['Ch'] = C('out', gnd, c=100e-12)
+        return c
+
+    def pn(c, blind=False):
+        pss = PSS(c, method='gear', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = pss.solve(period=T, timestep=T / 200, maxiterations=60)
+            assert pss.converged
+            pac = PAC(c, toolkit=circuit.numeric)
+            if blind:
+                pac._signed_amplitudes = lambda *a_, **k_: {}
+            o = [str(n) for n in c.nodes].index('out')
+            s, _nsb = pac.pnoise(pss, 1e-3 * F, o, maxsidebands=40,
+                                 cyclostationary=True)
+        vx = np.asarray(res['tpss'].v('x'), dtype=float).ravel()
+        return float(np.real(s)), vx
+
+    a, vx = pn(build(True))
+    thermal, _v = pn(build(True, gain=0.0))
+    ## liveness: the current REVERSES, and the flicker is a real share of A
+    assert vx.min() < -1e-5 and vx.max() > 1e-6, (vx.min(), vx.max())
+    assert int(np.sum(np.diff(np.sign(vx)) != 0)) >= 2
+    assert 1.0 - thermal / a > 0.2, (thermal, a)
+    b, _v = pn(build(False))
+    bb, _v = pn(build(False), blind=True)
+    assert abs(b / a - 1.0) < 5e-4, b / a
+    assert bb / a > 5.0, bb / a
