@@ -11973,6 +11973,71 @@ class PAC(Analysis):
     ## conversion effect (Rizzoli, Mastri & Masotti, MTT 42-807, 1994).  Free-
     ## running phase noise goes through the Floquet/PPV stack instead; see
     ## `oscillator_spectrum` for why the two cannot be unified and why the wrong
+    #: Relative step spread above which the FFT-based folds are unsound.
+    #: ⚠ NOT zero: `event_grid` rebuilds a uniform grid that differs from
+    #: `_period_grid`'s in the LAST BIT, and that grid is perfectly fine.
+    NONUNIFORM_FOLD_TOL = 1e-9
+
+    def _warn_if_nonuniform_grid(self, pss, what):
+        """⚠ The harmonic extraction is an INDEX DFT, so it needs UNIFORM steps.
+
+        `C_k = (1/T) int C(t) e^{-j2pi k t/T} dt` is evaluated as
+        `np.fft.fft(samples)/N`: phase `2 pi k n/N`, weight `1/N`. On a uniform
+        grid that sum IS the periodic trapezoid rule and converges SPECTRALLY
+        (measured 2.4e-16 at N = 1024 on an analytic integrand). On a grid whose
+        non-uniformity does not shrink with refinement it does not converge AT
+        ALL -- measured a flat 59 % error at k=1 and 133 % at k=3, rate 1.00 per
+        doubling -- and end to end the suite's cyclostationary IDENTITY, pinned
+        at 1e-12 on a uniform grid, breaks by 27 % and stays broken.
+
+        ⚠ `covariance` is NOT affected and must not call this: it uses each
+        step's own `h` and has no FFT (measured clean on the same grids).
+
+        ⚠ Fixing the WEIGHTS is not a full remedy -- no non-uniform quadrature
+        recovers the spectral property. Correct `h_n` weights buy first order,
+        trapezoid weights second. Full accuracy needs INTERPOLATION onto a
+        uniform grid before transforming, which is what a derived-grid workflow
+        would have to add.
+
+        ⚠ The exposure is `solve(grid=...)`, i.e. `lte_grid`/`refine_grid`,
+        whose non-uniformity is scale-invariant BY DESIGN. `break_events` is
+        NOT implicated: measured, it yields a uniform grid with an adjusted step
+        count. Warned once per solve; other FFT-based surfaces
+        (`oscillator_spectrum`, `modal_spectrum`, `am_pm_noise`) share the
+        mechanism but were NOT measured, and are deliberately not claimed here.
+        """
+        if getattr(pss, '_nonuniform_fold_warned', False):
+            return
+        try:
+            ts = np.asarray(pss.factored_period().times, dtype=float)
+        except Exception:
+            return
+        hs = np.diff(ts)
+        if len(hs) < 2:
+            return
+        lo = float(np.min(hs))
+        if not lo > 0.0:
+            return
+        spread = float(np.max(hs)) / lo - 1.0
+        if spread <= self.NONUNIFORM_FOLD_TOL:
+            return
+        try:
+            pss._nonuniform_fold_warned = True
+        except Exception:
+            pass
+        warnings.warn(
+            'PAC.%s: the PSS grid is NON-UNIFORM (steps span %.3gx) and this '
+            'analysis extracts harmonics with an INDEX DFT, which assumes '
+            'equal steps -- phase 2*pi*k*n/N and weight 1/N. On a uniform grid '
+            'that is the periodic trapezoid rule and is spectrally accurate; '
+            'on a grid whose non-uniformity does not shrink with refinement it '
+            'does NOT converge (measured: a flat 59%% error in the first '
+            'harmonic, and the cyclostationary identity broken by 27%% at every '
+            'grid). Use a UNIFORM grid for noise analysis, or interpolate the '
+            'orbit onto one first; refining this grid will not fix it. '
+            '`covariance` is unaffected -- it uses each step\'s own h.'
+            % (what, spread + 1.0), RuntimeWarning, stacklevel=3)
+
     ## one still returns a plausible number.
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
                modulated=False, cyclostationary=False):
@@ -12232,6 +12297,7 @@ class PAC(Analysis):
         here.)
         """
         self._check_circuit(pss)
+        self._warn_if_nonuniform_grid(pss, 'pnoise')
         ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
         ## _forced_replay_transposed), whose two-stage chained transpose is
         ## not built for TR-BDF2, so it falls back to a Gear-2 twin -- see
@@ -14227,6 +14293,7 @@ class PAC(Analysis):
         }
 
     def _sampled_series(self, pss, output, times, freqs, maxsidebands):
+        self._warn_if_nonuniform_grid(pss, '_sampled_series')
         import scipy.sparse.linalg as spla
         self._check_circuit(pss)
         if getattr(pss, 'autonomous', False):

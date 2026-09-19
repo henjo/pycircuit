@@ -22285,3 +22285,109 @@ def test_the_pll_lock_range_is_the_loop_bandwidth_and_the_whole_locus_is_predict
     assert _pll_lambda(K, kvco, offset=0.25, df=105.0) is None, \
         'a locked branch survived past Df_max = %.1f Hz' % dfmax
 
+
+def _nonuniform_probe(grid=None, break_events=False, npts=200):
+    """The switched-cap sampler solved on a given grid, plus the handles the
+    noise surfaces need.  `grid=None` is uniform."""
+    import warnings as _w
+    T = 1e-5
+    c = SubCircuit()
+    for nd in ('in', 'out', 'ck'):
+        c.add_node(nd)
+    c['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=1.0 / T, phase=0.0)
+    c['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=1.0 / T, phase=90.0)
+    c['C0'] = C('out', gnd, c=100e-12)
+    c['S0'] = _sw()
+    pss = PSS(c, method='gear', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=np.zeros(c.n - 1), grid=grid,
+                  maxiterations=60, break_events=break_events)
+    assert pss.converged
+    o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
+    hs = np.diff(np.asarray(pss.factored_period().times, dtype=float))
+    return pss, PAC(c, toolkit=circuit.numeric), o, T, hs.max() / hs.min()
+
+
+def _warned(fn):
+    """`True` if `fn()` emits the non-uniform-grid warning."""
+    import warnings as _w
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        fn()
+    return any('NON-UNIFORM' in str(r.message) for r in rec)
+
+
+def test_the_fft_folds_refuse_to_be_silent_on_a_non_uniform_grid():
+    """⚠⚠ The harmonic extraction is an INDEX DFT, so it needs UNIFORM steps --
+    and `PSS.solve(grid=...)` happily accepts a non-uniform one.
+
+    `C_k = (1/T) int C(t) e^{-j2pi k t/T} dt` is computed as
+    `np.fft.fft(samples)/N`: phase `2 pi k n/N`, weight `1/N`.  On a uniform
+    grid that sum IS the periodic trapezoid rule and converges SPECTRALLY
+    (measured 2.411e-16 at N = 1024 against dense-quadrature truth on an
+    analytic integrand).  On a grid whose non-uniformity does NOT shrink with
+    refinement it does not converge at all: a flat 59 % error at k = 1 and
+    133 % at k = 3, rate 1.00 per doubling.  End to end, the suite's own
+    cyclostationary IDENTITY -- pinned at 1e-12 on a uniform grid by
+    `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics...`
+    -- reads B/A = 0.7268 at N = 200 and 0.7261 at N = 800: a 27 % break that
+    REFINEMENT DOES NOT FIX, with the stationary route shifting 30 % to a
+    different limit.
+
+    ⚠ This test pins the GUARD, not the defect's magnitude -- a number like
+    0.7261 should never become a pass condition.  Whoever fixes the quadrature
+    should expect this test to fail and should update it deliberately.  ⚠ And
+    fixing the WEIGHTS is not a full remedy: no non-uniform quadrature recovers
+    the spectral property (correct `h_n` weights measure first order, trapezoid
+    weights second).  Full accuracy needs interpolation onto a uniform grid.
+
+    Three things are pinned:
+      * `covariance` is NOT affected and must stay silent -- it uses each
+        step's own `h` and has no FFT (measured clean on the same grids);
+      * a uniform grid is silent, including the one `break_events` builds.
+        ⚠ That second case is a REGRESSION CANARY: `break_events` defaults ON
+        for one-step methods, and it is safe today only because `event_grid`
+        returns a UNIFORM grid with an adjusted step count (measured: 204 steps
+        against 199, one distinct `h`).  If it ever starts snapping points
+        instead, this assertion fires and says the noise path just became
+        exposed by default;
+      * an explicitly non-uniform grid warns from both FFT paths.
+    """
+    f0 = 1e5
+    n = 200
+    w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)     # 3:1, scale-invariant
+    nonu = w / w.sum()
+
+    ## 1. UNIFORM -- everything silent
+    pss, pac, o, T, ratio = _nonuniform_probe(grid=None)
+    assert abs(ratio - 1.0) < 1e-9, ratio
+    ts = np.asarray(pss.factored_period().times, dtype=float)
+    assert not _warned(lambda: pac.covariance(pss))
+    assert not _warned(lambda: pac.pnoise(pss, 0.05 * f0, o, maxsidebands=8,
+                                          cyclostationary=True))
+
+    ## 2. the grid `break_events` builds -- ALSO silent (the canary)
+    pss, pac, o, T, ratio = _nonuniform_probe(grid=None, break_events=None)
+    assert abs(ratio - 1.0) < 1e-9, \
+        'event_grid no longer returns a uniform grid (steps span %.6gx), so ' \
+        'the FFT folds are now exposed BY DEFAULT for one-step methods' % ratio
+
+    ## 3. explicitly non-uniform -- both FFT paths warn, covariance does not
+    pss, pac, o, T, ratio = _nonuniform_probe(grid=nonu)
+    assert ratio > 2.5, ratio
+    assert not _warned(lambda: pac.covariance(pss)), \
+        'covariance uses each step own h and has no FFT; it must not warn'
+    for name in ('_nonuniform_fold_warned',):
+        if hasattr(pss, name):
+            delattr(pss, name)
+    assert _warned(lambda: pac.pnoise(pss, 0.05 * f0, o, maxsidebands=8,
+                                      cyclostationary=True)), \
+        'pnoise must not fold an index DFT over a non-uniform grid in silence'
+    if hasattr(pss, '_nonuniform_fold_warned'):
+        delattr(pss, '_nonuniform_fold_warned')
+    tsn = np.asarray(pss.factored_period().times, dtype=float)
+    assert _warned(lambda: pac.sampled_variance(pss, o, np.array([tsn[80]]),
+                                                1e-2 * f0, f0 / 2.0)), \
+        'the sampled series must not fold an index DFT over a non-uniform grid'
+
