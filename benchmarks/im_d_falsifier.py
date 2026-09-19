@@ -199,7 +199,9 @@ def endpoint(cls, build, npts, offset=0.0):
     ## endpoints pinned at 0 and PER; interior nodes shifted by offset*h
     inner = [(k - offset) * h for k in range(1, npts + 1)]
     times = [0.0] + [t for t in inner if 1e-15 < t < PER * (1 - 1e-15)] + [PER]
-    tr = Transient(cir, integrator=cls(), reltol=1e-11)
+    ## vabstol=1e-12: measured at the pre-2026-09-19 default; this pins agreement far
+    ## below the 1e-6 default's Newton floor, so it asks for the tight solve by name
+    tr = Transient(cir, integrator=cls(), reltol=1e-11, vabstol=1e-12)
     ia = cir.get_node_index('a')
     x = np.asarray(DC(cir, refnode=gnd).solve().x, dtype=float).ravel()
     tr.irefnode = cir.get_node_index(gnd)

@@ -350,7 +350,7 @@ class Transient(Analysis):
                         'Newton-solve tolerance',
                    unit='', default=7.0),
          ## NEWTON's x-tolerance on node rows, and nothing else.  Shared with `DC`,
-         ## which uses the same 1e-12, so the operating point and the steps after it
+         ## which uses the same value, so the operating point and the steps after it
          ## are solved to the same accuracy.
          ##
          ## This used to be 1e-6 and used for BOTH roles.  The 1e-12 -> 1e-6 change
@@ -360,10 +360,19 @@ class Transient(Analysis):
          ## so every transient was seeded by an operating point solved a million
          ## times tighter than any step that followed it.  Decision 0.3a/0.3d in
          ## `doc/transient_work_plan.md` split the two roles; this is the Newton one.
+         ## ⚠ 1e-6 SINCE 2026-09-19 (Andreas), in DC, Transient, JAXTransient and
+         ## PSS TOGETHER -- the four share one meaning and one default.  It was
+         ## 1e-12, below what double precision can deliver on a node once ANY
+         ## unknown in the circuit is large: a PLL shooting solve reached its
+         ## solution in two iterations and then failed the STEP test for 170 more
+         ## on a node at its zero crossing (`reltol |x|` gone, 1e-12 left)
+         ## against rounding of 1e-09 -- 142 s and "not converged" for an answer
+         ## that 5.7 s delivers at 1e-9 and at 1e-6 alike, digit for digit.
+         ## `lte_vabstol` is NOT this quantity and stays where it is.
          Parameter(name='vabstol',
                    desc='Absolute voltage error tolerance for the Newton solve',
                    unit='V',
-                   default=1e-12),
+                   default=1e-6),
          ## THE STEP CONTROLLER's tolerances, which are a different quantity: they
          ## apply to `lte = J^-1 Eg`, not to Newton's residual or its x-update.
          ##
@@ -2105,8 +2114,8 @@ class Transient(Analysis):
         two vectors are transposed with respect to each other.  Getting this
         backwards is the same class of error stage 0.3d separated for the LTE
         tolerances: the numbers are dimensionally different quantities that
-        happen to share default values (`iabstol` and `vabstol` are both 1e-12),
-        so a swap is invisible until someone changes one of them.
+        happened to share a default (both 1e-12 until 2026-09-19, when
+        `vabstol` became 1e-6 -- which is what makes a swap visible).
         """
         from pycircuit.circuit.analysis import newton_tolerance_vectors
         return newton_tolerance_vectors(

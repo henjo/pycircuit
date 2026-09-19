@@ -961,8 +961,11 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
 
     def run(build, transform, tend, dt):
         c = build()
+        ## vabstol=1e-12: measured at the pre-2026-09-19 default; this pins agreement far
+        ## below the 1e-6 default's Newton floor, so it asks for the tight solve by name
         tr = Transient(c, toolkit=circuit.numeric,
-                       integrator=RadauIIA3Integrator(), reltol=1e-10)
+                       integrator=RadauIIA3Integrator(), reltol=1e-10,
+                       vabstol=1e-12)
         tr._radau_use_transform = transform
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -1336,9 +1339,11 @@ def test_pcnr_coupled_radau_solves_the_collocation_exactly():
     for pcnr in (True, False):
         for va in (0.3, 0.8, 2.0):
             c = mixer(va)
+            ## vabstol=1e-12: measured at the pre-2026-09-19 default; this pins agreement far
+            ## below the 1e-6 default's Newton floor, so it asks for the tight solve by name
             tr = Transient(c, toolkit=circuit.numeric,
                            integrator=RadauIIA3Integrator(), reltol=1e-12,
-                           pcnr=pcnr)
+                           pcnr=pcnr, vabstol=1e-12)
             worst = [0.0]
             step = (tr._rk_step_coupled_pcnr if pcnr else tr._rk_step_coupled)
 

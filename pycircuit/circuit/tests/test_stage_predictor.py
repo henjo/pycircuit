@@ -84,7 +84,9 @@ def _counted(cls, mode, npts, va=0.8, fixed=True, reltol=1e-9):
     fi = cir.i
     cir.i = lambda *a, **k: (n.__setitem__('i', n['i'] + 1), fi(*a, **k))[1]
     try:
-        tr = Transient(cir, integrator=cls(), reltol=reltol)
+        ## vabstol=1e-12: measured at the pre-2026-09-19 default; this pins agreement far
+        ## below the 1e-6 default's Newton floor, so it asks for the tight solve by name
+        tr = Transient(cir, integrator=cls(), reltol=reltol, vabstol=1e-12)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tr.solve(refnode=gnd, tend=PER, timestep=PER / npts,

@@ -3090,9 +3090,11 @@ class JAXTransient(Analysis):
         Parameter(name='iabstol',
                   desc='Absolute current error tolerance', unit='A',
                   default=1e-12),
+        ## 1e-6 since 2026-09-19 -- DC, Transient, JAXTransient and PSS share one
+        ## meaning and one default; the reason is at `Transient.vabstol`
         Parameter(name='vabstol',
                   desc='Absolute voltage error tolerance for the Newton solve',
-                  unit='V', default=1e-12),
+                  unit='V', default=1e-6),
         Parameter(name='lte_vabstol',
                   desc='Absolute voltage tolerance for the local truncation error',
                   unit='V', default=1e-12),

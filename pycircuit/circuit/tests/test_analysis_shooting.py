@@ -13890,7 +13890,10 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
         return c
 
     ## (1) linear: the answer is forced by phi being affine
-    pss = PSS(rlc(False), method='euler', reltol=1e-9)
+    ## vabstol=1e-12: the PREMISE below (a cold start that fails in 8 iterations) was
+    ## established at the pre-2026-09-19 default; at 1e-6 the cold start gets there
+    ## in 8 and the fixture demonstrates nothing.  Asked for by name.
+    pss = PSS(rlc(False), method='euler', reltol=1e-9, vabstol=1e-12)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         _x, info = pss.find_initial_solution(period=T, npts=200,
@@ -13903,7 +13906,7 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
 
     ## (2) nonlinear: the criterion must REFUSE the first iterate, or (1) is
     ## satisfied by a criterion that never says no
-    pssd = PSS(rlc(True), method='euler', reltol=1e-9)
+    pssd = PSS(rlc(True), method='euler', reltol=1e-9, vabstol=1e-12)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         xw, infod = pssd.find_initial_solution(period=T, npts=200,
@@ -13920,7 +13923,7 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
 
     ## (3) the handoff has to be worth taking
     def solves_from(x0):
-        p = PSS(rlc(True), method='euler', reltol=1e-9)
+        p = PSS(rlc(True), method='euler', reltol=1e-9, vabstol=1e-12)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')

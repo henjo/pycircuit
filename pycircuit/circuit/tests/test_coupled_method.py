@@ -52,7 +52,14 @@ def _analytic(t):
 
 
 def _run(method=None):
-    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
+    ## ⚠ vabstol=1e-12 ON PURPOSE, AND IT MARKS AN OPEN DEFECT (2026-09-19).  At
+    ## any Newton tolerance of 1e-9 or looser -- so at the 1e-6 default -- `bordered`
+    ## takes 8828 steps where it took 93 (653 for 264 on the pulse), same accuracy
+    ## (2.4e-4): its loop exits on `converged_x and |dh| < eta h`, and the tight
+    ## tolerance was incidentally supplying the extra iterations in which `h`
+    ## grows.  `approx`, the default, is unaffected (93 -> 100).  Pinned where it
+    ## was measured; the exit logic is NOT fixed.  See doc/HANDOVER.md.
+    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5, vabstol=1e-12)
     if method is not None:
         tran.par.coupled_method = method
     with warnings.catch_warnings():
@@ -122,7 +129,8 @@ def _pulsed_rc():
 
 
 def _pulse_run(method):
-    tran = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5)
+    ## vabstol=1e-12: see the note in `_run` -- an OPEN defect in `bordered`
+    tran = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5, vabstol=1e-12)
     tran.par.coupled_method = method
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')

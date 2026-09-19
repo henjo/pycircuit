@@ -298,7 +298,8 @@ def newton_tolerance_vectors(n_nodes, n_branches, iabstol, vabstol, toolkit):
       transposed with respect to each other.
 
     ⚠ Getting the flavours backwards is invisible until someone changes one
-    of them, because `iabstol` and `vabstol` share the default 1e-12 -- the
+    of them, because `iabstol` and `vabstol` SHARED the default 1e-12 (until
+    2026-09-19, when `vabstol` became 1e-6 and a swap became visible) -- the
     same class of error the LTE tolerances were separated for.  That is why
     this lives in one place: `Transient`, `JAXTransient` and `PSS` all
     describe these three Parameters to the user with the same words, so

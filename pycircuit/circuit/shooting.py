@@ -2105,9 +2105,11 @@ class PSS(Analysis):
          Parameter(name='iabstol', 
                    desc='Absolute current error tolerance', unit='A', 
                    default=1e-12),
+         ## 1e-6 since 2026-09-19 -- DC, Transient, JAXTransient and PSS share one
+         ## meaning and one default; the reason is at `Transient.vabstol`
          Parameter(name='vabstol', 
                    desc='Absolute voltage error tolerance', unit='V', 
-                   default=1e-12),
+                   default=1e-6),
          Parameter(name='maxiter',
                    desc='Maximum number of iterations', unit='',
                    default=100),
