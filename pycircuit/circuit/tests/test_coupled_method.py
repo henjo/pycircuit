@@ -52,14 +52,7 @@ def _analytic(t):
 
 
 def _run(method=None):
-    ## ⚠ vabstol=1e-12 ON PURPOSE, AND IT MARKS AN OPEN DEFECT (2026-09-19).  At
-    ## any Newton tolerance of 1e-9 or looser -- so at the 1e-6 default -- `bordered`
-    ## takes 8828 steps where it took 93 (653 for 264 on the pulse), same accuracy
-    ## (2.4e-4): its loop exits on `converged_x and |dh| < eta h`, and the tight
-    ## tolerance was incidentally supplying the extra iterations in which `h`
-    ## grows.  `approx`, the default, is unaffected (93 -> 100).  Pinned where it
-    ## was measured; the exit logic is NOT fixed.  See doc/HANDOVER.md.
-    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5, vabstol=1e-12)
+    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
     if method is not None:
         tran.par.coupled_method = method
     with warnings.catch_warnings():
@@ -129,8 +122,7 @@ def _pulsed_rc():
 
 
 def _pulse_run(method):
-    ## vabstol=1e-12: see the note in `_run` -- an OPEN defect in `bordered`
-    tran = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5, vabstol=1e-12)
+    tran = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5)
     tran.par.coupled_method = method
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -310,3 +302,44 @@ def test_bordered_survives_the_ring_reset_on_a_delay_line():
     ## without letting a correction-law regression hide.
     assert dev < 1e-12, 'bordered drifted from approx on the line: %.3e' % dev
 
+
+
+def test_bordered_does_not_depend_on_how_tightly_newton_is_converged():
+    """⚠⚠ THE `q^T dv0` TERM WAS COUNTED TWICE, and `vabstol = 1e-12` hid it.
+
+    Eq (12) is `dh = -(f + q^T dv0)/denom` with the LTE residual `f` taken at the
+    iterate BEFORE the Newton update; this code takes `err` at `x_stage1 = x +
+    dx0`, where the update is already in it, and kept the term.  `denom = err
+    w'/w` is tiny wherever the error is, so the spurious term decided the SIGN of
+    `dh`: per time point the step grew 15 % on the first iteration and shrank
+    15 % on the second (0.9775, on 8821 of 8828 points).  Measured, driven RC:
+
+        vabstol     approx    bordered (before)    bordered (after)
+        1e-12         93           93                  93
+        1e-6         100         8828                 100      same error, 2.5e-4
+
+    At 1e-12 the loop kept iterating until `dx0` had decayed to ~1e-13 and the
+    term with it, so nothing showed until the default became 1e-6.  The property
+    pinned is the one that was violated: a step controller's step COUNT must not
+    hang on the Newton tolerance.
+    """
+    counts = {}
+    for method in ('approx', 'bordered'):
+        for va in (1e-12, 1e-9, 1e-6):
+            tran = Transient(_rc(), toolkit=numeric, reltol=1e-5, vabstol=va)
+            tran.par.coupled_method = method
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(tend=5e-4, timestep=1e-5, coupled_lte=True)
+            t = np.asarray(res.v('b').x, dtype=float).ravel()
+            v = np.asarray(res.v('b').y, dtype=float).ravel()
+            err = float(np.max(np.abs(v - _analytic(t))[2:]))
+            counts[method, va] = tran.statistics.accepted_steps
+            assert err < 3.5e-4, (method, va, err)
+    for method in ('approx', 'bordered'):
+        n = [counts[method, va] for va in (1e-12, 1e-9, 1e-6)]
+        assert max(n) <= 1.15 * min(n), (method, n)
+    ## and the two methods agree with each other at every tolerance
+    for va in (1e-12, 1e-9, 1e-6):
+        a, b = counts['approx', va], counts['bordered', va]
+        assert abs(a - b) <= 0.05 * a, (va, a, b)
