@@ -905,8 +905,12 @@ def _psp_mos_analog(T, pmos):
                 Contribution(Branch(d, s, 'chan').I,
                              white_noise(mult * n_sid                 # noqa
                                          * (1.0 - ign['c2']))
-                             + flicker_noise(mult * n_sfl * sgn * sgn,  # noqa
-                                             ef)),
+                             ## ⚠ `sgn` OUTSIDE the call: the scale factor
+                             ## is the AMPLITUDE, so `CY` is what it was
+                             ## (`sgn^2 n_sfl`) and the 1/f current keeps
+                             ## the sign of Vds for a periodic fold -- see
+                             ## `noise_amplitudes` (hdl.py)
+                             + sgn * flicker_noise(mult * n_sfl, ef)),  # noqa
                 ## `sigVds` and no `CHNL_TYPE` -- PSP's own signs
                 ## (`module:1947`).  The relative sign between this and
                 ## the gate coupling is the physics; the absolute one

@@ -22529,3 +22529,219 @@ def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid(
             h = np.conj(h)
         assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
 
+
+
+class _SgnPsdFlicker(Behavioural):
+    """1/f noise, PSD-specified: `(k V)^2 / f` -- the sign of `V` is gone."""
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+    @staticmethod
+    def analog(p, outp, outn, b, bn):
+        from pycircuit.circuit.hdl import flicker_noise as _fn
+        return Contribution(Branch(outp, outn).I,
+                            _fn((p.k * Branch(b, bn).V) ** 2, 1))
+
+
+class _SgnAmpFlicker(Behavioural):
+    """The SAME PSD, amplitude-specified: `(k V) * flicker_noise(1)`."""
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+    @staticmethod
+    def analog(p, outp, outn, b, bn):
+        from pycircuit.circuit.hdl import flicker_noise as _fn
+        return Contribution(Branch(outp, outn).I,
+                            p.k * Branch(b, bn).V * _fn(1, 1))
+
+
+def test_a_coloured_source_keeps_the_sign_of_its_scale_factor_through_the_periodic_folds():
+    """⚠⚠ THE SIGN-BLIND sqrt(PSD) FOLD, FIXED WHERE THE ELEMENT STATES THE SIGN.
+
+    A coloured source is correlated ACROSS the period, so `k(x(t)) n(t)` has
+    `R(t,t') = k(t) k(t') R_n(t-t')`, and `CY = k^2 S` has lost the sign of `k`.
+    The folds factored `CY` with its square root and so computed the |k|
+    process.  The exact answer is available with nothing fitted: a CONSTANT
+    1/f source through a signed multiplier ('A', a stationary fold) is the same
+    physics as the modulated source.  pnoise at 1e-3 f0, LO = vo + sin:
+
+        vo      sqrt(PSD) / exact     signed amplitude / exact
+        1.5        1.000                1.000000000     (sign-definite: no defect)
+        0.5        2.059                1.000000000
+        0.0      810.6                  1.000000000     (zero-mean LO: all of it
+                                                         is up-converted away)
+
+    This is the PSP sampler's "+0.1 % flicker residual" (2026-09-17..19): Vds
+    crosses zero while the switch conducts, the 1/f current follows sgn(Vds),
+    and the residual survived every grid, sideband and tolerance knob because
+    it was never numerical.  A commercial simulator shows a NOTCH in the
+    sampled flicker at one clock amplitude, where the signed modulation
+    cancels; a sign-blind fold cannot produce one.
+
+    The contract: the scale factor OUTSIDE the noise call is the amplitude and
+    carries the sign (`Element.noise_amplitudes`); a sign squared into the
+    power is gone, and such a source keeps the |k| fold AND its warning.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    f0 = 1.0 / T
+    k1, Rn = 0.5, 2.0
+
+    def run(kind, vo, sampled=False):
+        c = SubCircuit()
+        c.add_node('lo')
+        c.add_node('out')
+        c['vlo'] = VSin('lo', gnd, va=1.0, vo=vo, freq=f0)
+        if kind == 'A':
+            c.add_node('n')
+            c['xi'] = _Flicker('n', gnd, i=0.0, noisePSD=1.0, fref=1.0)
+            c['Rn'] = R('n', gnd, r=Rn)
+            c['M1'] = _NuMult('out', gnd, 'n', gnd, 'lo', gnd, k=k1)
+        else:
+            cls = _SgnAmpFlicker if kind == 'C' else _SgnPsdFlicker
+            c['src'] = cls('out', gnd, 'lo', gnd, k=k1 * Rn)
+        c['Ro'] = R('out', gnd, r=1.0)
+        c['Co'] = C('out', gnd, c=0.2e-6)
+        pss = PSS(c, method='gear', reltol=1e-10)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            pss.solve(period=T, timestep=T / 200, maxiterations=40)
+            o = [str(x) for x in c.nodes].index('out')
+            pac = PAC(c, toolkit=circuit.numeric)
+            if sampled:
+                s = pac.sampled_noise(pss, o, [0.3 * T], np.array([1e-3 * f0]),
+                                      maxsidebands=16)[0, 0]
+            else:
+                s, _ = pac.pnoise(pss, 1e-3 * f0, o, maxsidebands=16,
+                                  cyclostationary=(kind != 'A'))
+        signwarn = [r for r in rec if 'Only the element knows the sign'
+                    in str(r.message)]
+        return float(np.real(s)), bool(signwarn)
+
+    for vo in (0.5, 0.0):
+        a, _wa = run('A', vo)
+        b, wb = run('B', vo)
+        c_, wc = run('C', vo)
+        assert abs(c_ / a - 1.0) < 1e-6, (vo, c_ / a)
+        assert wb and not wc, (vo, wb, wc)
+        ## presence: the sign-blind fold is wrong by a FACTOR here
+        assert b / a > (500.0 if vo == 0.0 else 1.8), (vo, b / a)
+    ## sign-definite: nothing to lose, all three agree
+    a, _w0 = run('A', 1.5)
+    assert abs(run('B', 1.5)[0] / a - 1.0) < 1e-6
+    assert abs(run('C', 1.5)[0] / a - 1.0) < 1e-6
+    ## the time-sampled fold takes the same amplitudes: the two specifications
+    ## agree where the sign is definite and part by a factor where it is not
+    sb, sc = run('B', 1.5, sampled=True)[0], run('C', 1.5, sampled=True)[0]
+    assert abs(sb / sc - 1.0) < 1e-6, sb / sc
+    sb, sc = run('B', 0.0, sampled=True)[0], run('C', 0.0, sampled=True)[0]
+    assert sb / sc > 1.5, sb / sc
+
+    ## the element-level contract
+    el = _SgnAmpFlicker('out', gnd, 'lo', gnd, k=2.0)
+    w = 2 * np.pi * 10.0
+    for v in (0.7, -0.7):
+        x = np.zeros(el.n)
+        x[2] = v                                   # terminal `b`
+        W = el.noise_amplitudes(x, w)
+        assert W.shape == (el.n, 1)
+        np.testing.assert_allclose(W @ W.conj().T, el.CY(x, w), rtol=1e-12,
+                                   atol=1e-30)
+        assert np.sign(np.real(W[0, 0])) == np.sign(v)
+    assert _NuModNoise('out', gnd, 'lo', gnd).noise_amplitudes(
+        np.zeros(4), w) is None                    # white only: nothing to state
+    ## ⚠ and a sign squared into the POWER is not stated either: sqrt(pwr)
+    ## would pass the |k| process off as signed and silence the warning
+    assert _SgnPsdFlicker('out', gnd, 'lo', gnd).noise_amplitudes(
+        np.zeros(4), w) is None
+
+
+def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce():
+    """⚠⚠ THE PSP SAMPLER'S FLICKER RESIDUAL, CLOSED: the 1/f current follows
+    sgn(Vds), and Vds crosses zero while the switch conducts.
+
+    `PspMosLongChannel` now contributes `sgn * flicker_noise(n_sfl)` -- the
+    sign in the AMPLITUDE, `CY` unchanged -- and the sampled fold takes it.
+    Swept over the clock amplitude (10 Hz, sampled mid-hold, 200 points), the
+    sign-blind fold over the signed one, beside the ratio a peer session
+    measured for the OLD fold against a commercial simulator:
+
+        clock amp    0.75    0.50    0.375   0.30   0.25   0.20   0.15   0.10
+        blind/signed 1.0007  1.0069  1.0602  1.420  3.585  401    5.16   2.18
+        old/reference 1.0011 1.0073  1.0582  1.387  3.238  567    5.87   2.27
+
+    so the campaign's "+0.1 %" at the fixture's 0.75 -- which survived every
+    grid, sideband, tolerance and frequency-axis knob -- was never numerical.
+    At 0.20 the signed modulation CANCELS through the sampler's transfer: a
+    notch, reference-converged, which no fold built from a PSD can produce.
+    Gated here as the notch itself (coarse grid, so as a factor).
+
+    ⚠ One more thing the sweep found: at 0.375 alone the two folds read
+    bit-identical -- one orbit sample at Vds ~ 0 carried a flicker entry at
+    1e-12 of scale whose fitted exponent was rounding, and that failed the
+    whole component into the per-band route.  See `_uniform_exponent`.
+    """
+    import os
+    import warnings as _w
+    PDK = os.path.expanduser(
+        '~/source/IHP-Open-PDK/ihp-sg13g2/libs.tech/ngspice/models')
+    if not os.path.isdir(PDK):
+        pytest.skip('IHP Open PDK not installed')
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit import psp_scaling, defaultepar
+    from pycircuit.circuit.compact import PspMosLongChannel
+    from pycircuit.utilities import spicecard
+    T27 = 273.15 + 27.0
+    was = defaultepar.T
+    defaultepar.T = T27
+    try:
+        circuit.default_toolkit = circuit.numeric
+        deck = spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
+                              section='mos_tt')
+        w, l = 10e-6, 1e-6
+        base = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1, m=1,
+                              pre_layout=1), w=w, l=l, T=T27)
+        F = 1e5
+
+        def density(amp):
+            cir = SubCircuit()
+            cir['Vin'] = VSin('in', gnd, vo=0.3, va=0.2, freq=F, phase=0.0)
+            cir['Vck'] = VSin('ck', gnd, vo=0.75, va=amp, freq=F, phase=90.0)
+            cir['M1'] = PspMosLongChannel(cm.Node('in'), cm.Node('ck'),
+                                          cm.Node('out'), gnd,
+                                          **dict(base, swign=0.0))
+            cir['Ch'] = C('out', gnd, c=100e-12)
+            pss = PSS(cir, method='gear', reltol=1e-10)
+            out = {}
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                pss.solve(period=1 / F, timestep=1 / F / 100, maxiterations=60)
+                assert pss.converged
+                k = cir.get_node_index(cir.get_node('out'))
+                k = k - 1 if k > pss.irefnode else k
+                tt = np.asarray(pss.factored_period().times, float)
+                tq = tt[np.argmin(abs(tt - 5e-6))]
+                for tag in ('signed', 'blind'):
+                    pac = PAC(cir, toolkit=circuit.numeric)
+                    if tag == 'blind':
+                        pac._signed_amplitudes = lambda *a_, **k_: {}
+                    out[tag] = float(np.real(pac.sampled_noise(
+                        pss, k, [tq], np.array([10.0]), maxsidebands=40))[0, 0])
+                ## a FRESH PAC: `pac` above is the deliberately blinded one
+                model = PAC(cir, toolkit=circuit.numeric)._cy_components_model(
+                    pss, 10.0, F)
+            return out, model
+
+        ## the element states its sign, and its amplitudes rebuild the flicker
+        hi, model = density(0.25)
+        assert [key for key, _B, _E in model.flicker] == [('M1',)]
+        assert ('M1',) in model.amplitude
+        lo, _m = density(0.20)
+        ## the notch: the SIGNED density collapses, the blind one does not
+        assert hi['signed'] / lo['signed'] > 10.0, (hi, lo)
+        assert lo['blind'] / lo['signed'] > 50.0, (hi, lo)
+        assert 0.2 < hi['blind'] / lo['blind'] < 5.0, (hi, lo)
+    finally:
+        defaultepar.T = was

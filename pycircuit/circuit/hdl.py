@@ -3625,6 +3625,19 @@ def generate_code(cls):
     uvec = [sympy.Integer(0)] * n
     acvec = [sympy.Integer(0)] * n
     CYacc = {}
+    ## The SIGNED injection columns of the coloured sources -- one `{row:
+    ## amplitude}` per independent fluctuation, `amp * sqrt(pwr)` on its
+    ## rows -- for `noise_amplitudes`.  `CY` is `sum_s w_s w_s^dagger` of
+    ## these and cannot carry the sign of `amp`; see that method.
+    ## ⚠ ONLY WHERE THE MODEL STATES A SIGN.  A source whose POWER follows
+    ## the operating point under a constant scale factor -- `flicker_noise(
+    ## (k V)^2)`, `kf |ids|^af` -- may have squared a sign away, and its
+    ## amplitude `sqrt(pwr)` would present the |k| process as if it were
+    ## signed, silencing the fold's warning.  One such source and the element
+    ## states nothing.
+    NAcols = []
+    NAsigned = [True]
+    _xdep = lambda e: bool(sympy.sympify(e).free_symbols & xset_split)
     ## name -> [shared power, {row: summed amplitude}].  See `_NamedNoise`:
     ## every member of a group is the SAME fluctuation, so the group has one
     ## power and one injection vector, not one of each per contribution.
@@ -3650,6 +3663,13 @@ def generate_code(cls):
                     CYacc[(m_, m_)] = CYacc.get((m_, m_), 0) + psd
                     CYacc[(p, m_)] = CYacc.get((p, m_), 0) - psd
                     CYacc[(m_, p)] = CYacc.get((m_, p), 0) - psd
+                    if pwr.has(FREQ):
+                        if _xdep(pwr) and not _xdep(amp):
+                            NAsigned[0] = False
+                        col = {}
+                        col[p] = col.get(p, 0) + amp * sympy.sqrt(pwr)
+                        col[m_] = col.get(m_, 0) - amp * sympy.sqrt(pwr)
+                        NAcols.append(col)
                     continue
                 group = named_noise.setdefault(name, [pwr, {}])
                 if group[0] != pwr:
@@ -3702,6 +3722,10 @@ def generate_code(cls):
             for c_ in rows:
                 CYacc[(r_, c_)] = (CYacc.get((r_, c_), 0)
                                    + pwr * wvec[r_] * _conj(wvec[c_]))
+        if pwr.has(FREQ):
+            if _xdep(pwr) and not any(_xdep(wvec[r_]) for r_ in rows):
+                NAsigned[0] = False
+            NAcols.append({r_: wvec[r_] * sympy.sqrt(pwr) for r_ in rows})
 
     ## State equations: ds/dt = arg  ->  q-row s, i-row -arg.
     dc_pins = {}     # x-index -> (pin expression for i, seed expression)
@@ -3787,6 +3811,8 @@ def generate_code(cls):
     for (r_, c_), psd in CYacc.items():
         CY[r_, c_] = psd
     dudt = [sympy.diff(u_, TIME) for u_ in uvec]
+    NA = ([[col.get(r_, sympy.Integer(0)) for r_ in range(n)] for col in NAcols]
+          if NAsigned[0] else [])
 
     x = sympy.DeferredVector('x')
     xsubs = dict(zip(xsyms, [x[i] for i in range(n)]))
@@ -3848,6 +3874,10 @@ def generate_code(cls):
                          modules_map=_mods, unpack=_unpack),
                      u=cu(uvec, (TIME,)),
                      dudt=cu(dudt, (TIME,)), uac=cu(acvec))
+        if NA:
+            funcs['NA'] = _chain_compile(
+                chain_defs, NA, chain_args + [FREQ],
+                modules_map=_mods, unpack=_unpack)
         ## The DC variants differ from the transient ones ONLY where a
         ## state is pinned (`ivec_dc` is built from `ivec` by replacing
         ## the pinned rows).  With nothing pinned they are the same
@@ -3872,6 +3902,8 @@ def generate_code(cls):
         uac=sympy.lambdify(paramsyms + [TEMP] + given_syms, acvec,
                            modules=NUMPY_MODULES, cse=True),
       )
+      if NA:
+          funcs['NA'] = compile_x(sympy.Matrix(NA), extra=(FREQ,))
       if dc_pins:
           funcs['i_dc'] = compile_x(ivec_dc)
           funcs['G_dc'] = compile_x(G_dc)
@@ -6107,6 +6139,31 @@ class BehaviouralMeta(type):
                 return np.asarray([[np.broadcast_to(e, shape) for e in r]
                                    for r in rows])
 
+        def noise_amplitudes(self, x, w=0, epar=defaultepar):
+            """The SIGNED injection amplitudes of the element's COLOURED
+            noise sources at `x`, `(n, S)` -- one column per independent
+            fluctuation, `A/sqrt(Hz)` -- or None when it has none.
+
+            `CY(x, w)` is `sum_s W[:, s] W[:, s]^dagger` of these, and that is
+            all a stationary analysis needs.  A PERIODIC one needs more: a
+            coloured source is correlated across the period, so the
+            correlation of `k(x(t)) * flicker_noise(p)` at two instants keeps
+            the product `k(t) k(t')` -- and `CY = k^2 p` has lost the sign of
+            `k`.  A MOSFET's 1/f current follows `sgn(Vds)`; through a
+            sampler whose `Vds` crosses zero while it conducts the sign-blind
+            fold read +0.1 % at one clock amplitude and 567x at another,
+            against a commercial simulator (2026-09-19).  So the scale factor
+            OUTSIDE the noise call is where a model states the sign; a sign
+            squared into the power is gone.
+            """
+            fn = funcs.get('NA')
+            if fn is None:
+                return None
+            f_hz = np.abs(w) / (2 * np.pi)
+            raw = fn(x, *_args_of(self, epar), f_hz)
+            return np.asarray([[complex(e) for e in col] for col in raw],
+                              dtype=complex).T
+
         def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
             if analysis == 'ac':
                 ## ONLY `ac_stim` terms drive a small-signal analysis.
@@ -6174,6 +6231,7 @@ class BehaviouralMeta(type):
         if info['pure_spec'] is None:
             cls.linear = False
             cls.i, cls.G, cls.q, cls.C, cls.CY = i, G, q, C, CY
+            cls.noise_amplitudes = noise_amplitudes
             cls.u, cls.dudt, cls.update = u, dudt, update
             if state_meta['dc_pins']:
                 cls.state_ic = state_ic
@@ -6194,6 +6252,7 @@ class BehaviouralMeta(type):
 
             cls.update = update
             cls.i, cls.G, cls.q, cls.C, cls.CY = i, G, q, C, CY
+            cls.noise_amplitudes = noise_amplitudes
             cls.u, cls.dudt = u, dudt
             if state_meta['dc_pins']:
                 cls.state_ic = state_ic

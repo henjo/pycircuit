@@ -12650,6 +12650,52 @@ class PAC(Analysis):
                           np.asarray(el.CY(subx, w), dtype=complex).ravel())
                 yield prefix + (inst,), G
 
+    @classmethod
+    def _leaf_noise_amplitudes(cls, cir, x, w, prefix=()):
+        """Yield `(key, W)`: each leaf element's SIGNED coloured-noise
+        amplitudes (`Element.noise_amplitudes`, where it has them) in `cir`'s
+        full `n`-row space, `(n, S)`; keyed like `_leaf_cy_stamps`."""
+        n = cir.n
+        for inst, el in cir.elements.items():
+            if cir._map_indices_2d.get(inst) is None:
+                continue
+            nodemap = np.asarray(cir.elementnodemap[inst])
+            subx = np.asarray(x)[nodemap]
+            if getattr(el, 'elements', None):
+                inner = cls._leaf_noise_amplitudes(el, subx, w, prefix + (inst,))
+            else:
+                fn = getattr(el, 'noise_amplitudes', None)
+                Wc = fn(subx, w) if fn is not None else None
+                inner = [] if Wc is None else [(prefix + (inst,), Wc)]
+            for key, Wc in inner:
+                Wc = np.asarray(Wc, dtype=complex)
+                W = np.zeros((n, Wc.shape[1]), dtype=complex)
+                np.add.at(W, nodemap, Wc)
+                yield key, W
+
+    def _signed_amplitudes(self, pss, w1, flicker, states=None):
+        """`{key: (K, m, S)}` for the flicker components whose element states
+        its signed amplitudes AND whose amplitudes rebuild the component:
+        `W W^dagger = B` at the fit frequency, to 1e-6.  Anything else keeps
+        the square root of its PSD -- the |m| process, warned on as before."""
+        irn = pss.irefnode
+        keep = np.array([i for i in range(pss.cir.n) if i != irn])
+        acc = {}
+        for xf in self._orbit_states(pss, states):
+            for key, W in self._leaf_noise_amplitudes(pss.cir, xf, w1):
+                acc.setdefault(key, []).append(W[keep])
+        out = {}
+        for key, B, _EF in flicker:
+            if key not in acc:
+                continue
+            W = np.asarray(acc[key], dtype=complex)
+            if W.shape[0] != B.shape[0] or not np.all(np.isfinite(W)):
+                continue
+            rebuilt = np.einsum('kis,kjs->kij', W, W.conj())
+            if float(np.max(np.abs(rebuilt - B))) <= 1e-6 * float(np.max(np.abs(B))):
+                out[key] = W
+        return out
+
     @staticmethod
     def _orbit_states(pss, states=None):
         """Full-width state vectors to sample `CY` at: the stored orbit
@@ -12789,6 +12835,10 @@ class PAC(Analysis):
         model.white_parts = white_parts
         model.flicker = flicker
         model.perband = perband
+        ## ⚠ THE SIGN (2026-09-19): where the element states its coloured
+        ## AMPLITUDES, the folds factor the component with them instead of
+        ## with sqrt(PSD) -- see `Element.noise_amplitudes` (hdl.py)
+        model.amplitude = self._signed_amplitudes(pss, w1, flicker, states)
         model.w1 = w1
         return model
 
@@ -12797,11 +12847,21 @@ class PAC(Analysis):
         """The one power-law exponent of a component, or None when its
         non-zero entries carry different ones (then `sqrt(B (w1/w)^EF)` is
         not `(w1/w)^(ef/2) sqrt(B)` and must be taken per band)."""
-        nz = np.abs(B) > 0
-        if not np.any(nz):
+        ## ⚠ ONLY ENTRIES THAT CARRY WEIGHT VOTE (2026-09-19).  The exponent is
+        ## fitted from differences of `CY`, so an entry at 1e-12 of the
+        ## component's scale -- a MOS flicker source at the sample where Vds
+        ## crosses zero -- has its exponent in the rounding of the white part
+        ## beside it (measured 1 - 2.2e-09 on an entry of 1.4e-31 against
+        ## 7.2e-20).  That one entry failed the whole component into the
+        ## per-band route at ONE clock amplitude of a sweep.  Below 1e-9 of the
+        ## scale an entry takes the component's exponent; the reference is the
+        ## LARGEST entry's, not the first's.
+        aB = np.abs(B)
+        if not np.any(aB > 0):
             return 0.0
-        e = EF[nz]
-        return float(e.flat[0]) if np.allclose(e, e.flat[0], rtol=0.0, atol=1e-9) else None
+        ref = float(np.real(EF.flat[int(np.argmax(aB))]))
+        e = EF[aB > 1e-9 * float(aB.max())]
+        return ref if np.allclose(e, ref, rtol=0.0, atol=1e-9) else None
 
     def _cy_sqrt_harmonics(self, pss, w):
         """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
@@ -12906,6 +12966,13 @@ class PAC(Analysis):
         ## the gate fixture), while a sign-definite PSD with a ten-fold
         ## swing sits at 1e-2 -- so 1e-2 separates them here; a heuristic,
         ## and it is a warning for that reason.
+        ## ⚠ NOT WHEN EVERY COLOURED COMPONENT CARRIES ITS SIGN: then nothing
+        ## below takes a square root of a PSD and there is nothing to warn of
+        _signed = getattr(model, 'amplitude', None) or {}
+        _all_signed = (getattr(model, 'flicker', None) is not None
+                       and not model.perband
+                       and all(k_ in _signed and self._uniform_exponent(B_, E_) is not None
+                               for k_, B_, E_ in model.flicker))
         Cs0 = np.asarray([np.abs(np.diag(np.fft.ifft(Pa, axis=0)[k])) for k in range(Nn)])
         dmax = Cs0.max(axis=0)
         touches = (dmax > 0) & (Cs0.min(axis=0) <= 1e-2 * dmax)
@@ -12942,7 +13009,7 @@ class PAC(Analysis):
             sq = np.sqrt(Cs0[:, jj])
             d2 = np.abs(sq - 0.5 * (np.roll(sq, 1) + np.roll(sq, -1)))
             kinked[jj] = bool(d2.max() / (sq.max() * hT) > 3.0)
-        if bool(np.any(kinked)):
+        if bool(np.any(kinked)) and not _all_signed:
             warnings.warn(
                 'PAC.pnoise(cyclostationary=True): a COLOURED source whose PSD '
                 'touches zero along the orbit -- if its modulation changes sign '
@@ -12984,7 +13051,12 @@ class PAC(Analysis):
             for _key, Bc, EF in model.flicker:
                 ef = self._uniform_exponent(Bc, EF)
                 if ef is not None:
-                    groups.append(lambda p, SB=self._sqrt_harmonics_of(Bc, _dft), ef=ef:
+                    ## the element's SIGNED amplitudes where it states them
+                    ## (any factor with `W W^dagger = B` serves the pair sum;
+                    ## only this one knows the sign), else the PSD's root
+                    _W = _signed.get(_key)
+                    groups.append(lambda p, SB=(_dft(_W) if _W is not None else
+                                                self._sqrt_harmonics_of(Bc, _dft)), ef=ef:
                                   (model.w1 / wband(p)) ** (0.5 * ef) * SB)
                 else:
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
@@ -14403,7 +14475,8 @@ class PAC(Analysis):
             for _key, Bc, EF in model.flicker:
                 ef = self._uniform_exponent(Bc, EF)
                 if ef is not None:
-                    scaled.append((self._psd_sqrt(Bc), ef))
+                    _W = (getattr(model, 'amplitude', None) or {}).get(_key)
+                    scaled.append((_W if _W is not None else self._psd_sqrt(Bc), ef))
                 else:
                     perband.append(lambda w, Bc=Bc, EF=EF: Bc * (model.w1 / w) ** EF)
             for key in model.perband:
