@@ -22286,108 +22286,153 @@ def test_the_pll_lock_range_is_the_loop_bandwidth_and_the_whole_locus_is_predict
         'a locked branch survived past Df_max = %.1f Hz' % dfmax
 
 
-def _nonuniform_probe(grid=None, break_events=False, npts=200):
-    """The switched-cap sampler solved on a given grid, plus the handles the
-    noise surfaces need.  `grid=None` is uniform."""
+class _NuMult(Behavioural):
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='gain', unit='A/V^2', default=1.0)]
+
+    @staticmethod
+    def analog(p, outp, outn, a, an, b, bn):
+        return Contribution(Branch(outp, outn).I,
+                            p.k * Branch(a, an).V * Branch(b, bn).V)
+
+
+class _NuModNoise(Behavioural):
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+    @staticmethod
+    def analog(p, outp, outn, b, bn):
+        return Contribution(Branch(outp, outn).I,
+                            white_noise((p.k * Branch(b, bn).V) ** 2))
+
+
+def _nu_identity(kind, n, nonuniform):
+    """pnoise of the cyclostationary IDENTITY pair (see
+    `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics...`):
+    'A' a stationary source through a multiplier, 'B' the same physics as a
+    cyclostationary source.  Optionally on a 3:1 non-uniform grid."""
     import warnings as _w
-    T = 1e-5
+    T = 1e-6
     c = SubCircuit()
-    for nd in ('in', 'out', 'ck'):
+    for nd in ('lo', 'mid', 'out'):
         c.add_node(nd)
-    c['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=1.0 / T, phase=0.0)
-    c['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=1.0 / T, phase=90.0)
-    c['C0'] = C('out', gnd, c=100e-12)
-    c['S0'] = _sw()
+    c['vlo'] = VSin('lo', gnd, va=1.0, vo=0.3, freq=1.0 / T)
+    if kind == 'A':
+        c.add_node('n'); c['xi'] = IS('n', gnd, i=0.0, noisePSD=1.0)
+        c['Rn'] = R('n', gnd, r=2.0)
+        c['M1'] = _NuMult('mid', gnd, 'n', gnd, 'lo', gnd, k=0.5)
+    else:
+        c['src'] = _NuModNoise('mid', gnd, 'lo', gnd, k=1.0)
+    c['Rm'] = R('mid', gnd, r=1.0)
+    c['M2'] = _NuMult('out', gnd, 'mid', gnd, 'lo', gnd, k=0.3)
+    c['Ro'] = R('out', gnd, r=1.0); c['Co'] = C('out', gnd, c=0.2e-6)
+    grid = None
+    if nonuniform:
+        w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)
+        grid = w / w.sum()
     pss = PSS(c, method='gear', reltol=1e-10)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        pss.solve(period=T, timestep=T / npts, x0=np.zeros(c.n - 1), grid=grid,
-                  maxiterations=60, break_events=break_events)
+        pss.solve(period=T, timestep=T / n, grid=grid, maxiterations=40,
+                  break_events=False)
     assert pss.converged
-    o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
-    hs = np.diff(np.asarray(pss.factored_period().times, dtype=float))
-    return pss, PAC(c, toolkit=circuit.numeric), o, T, hs.max() / hs.min()
+    o = [str(x) for x in c.nodes].index('out')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        s, _ = PAC(c, toolkit=circuit.numeric).pnoise(
+            pss, 0.05 / T, o, maxsidebands=16, cyclostationary=(kind == 'B'))
+    return float(np.real(s)), pss
 
 
-def _warned(fn):
-    """`True` if `fn()` emits the non-uniform-grid warning."""
-    import warnings as _w
-    with _w.catch_warnings(record=True) as rec:
-        _w.simplefilter('always')
-        fn()
-    return any('NON-UNIFORM' in str(r.message) for r in rec)
+def test_pnoise_is_correct_on_a_non_uniform_grid_with_trapezoid_period_weights():
+    """⚠⚠ `PSS.solve(grid=...)` accepts a non-uniform grid, and until 2026-09-19
+    pnoise on one was WRONG BY TENS OF PERCENT AND DID NOT CONVERGE.
 
+    Every Fourier coefficient the folds take over the period is an INTEGRAL,
+    and it was evaluated as an index DFT -- `fft/N`, and `/ N` on the adjoint
+    inject.  On a uniform grid that IS the periodic trapezoid rule (spectral);
+    on a 3:1 grid it is not a quadrature at all: measured a flat 59 % error in
+    the first harmonic, stationary pnoise converging 30 % off (2.971e-01 /
+    2.963e-01 / 2.959e-01 at N = 200/400/800, rate 1.00), and the
+    cyclostationary identity B/A stuck at 0.7268 / 0.7263 / 0.7261.
 
-def test_the_fft_folds_refuse_to_be_silent_on_a_non_uniform_grid():
-    """⚠⚠ The harmonic extraction is an INDEX DFT, so it needs UNIFORM steps --
-    and `PSS.solve(grid=...)` happily accepts a non-uniform one.
-
-    `C_k = (1/T) int C(t) e^{-j2pi k t/T} dt` is computed as
-    `np.fft.fft(samples)/N`: phase `2 pi k n/N`, weight `1/N`.  On a uniform
-    grid that sum IS the periodic trapezoid rule and converges SPECTRALLY
-    (measured 2.411e-16 at N = 1024 against dense-quadrature truth on an
-    analytic integrand).  On a grid whose non-uniformity does NOT shrink with
-    refinement it does not converge at all: a flat 59 % error at k = 1 and
-    133 % at k = 3, rate 1.00 per doubling.  End to end, the suite's own
-    cyclostationary IDENTITY -- pinned at 1e-12 on a uniform grid by
-    `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics...`
-    -- reads B/A = 0.7268 at N = 200 and 0.7261 at N = 800: a 27 % break that
-    REFINEMENT DOES NOT FIX, with the stationary route shifting 30 % to a
-    different limit.
-
-    ⚠ This test pins the GUARD, not the defect's magnitude -- a number like
-    0.7261 should never become a pass condition.  Whoever fixes the quadrature
-    should expect this test to fail and should update it deliberately.  ⚠ And
-    fixing the WEIGHTS is not a full remedy: no non-uniform quadrature recovers
-    the spectral property (correct `h_n` weights measure first order, trapezoid
-    weights second).  Full accuracy needs interpolation onto a uniform grid.
-
-    Three things are pinned:
-      * `covariance` is NOT affected and must stay silent -- it uses each
-        step's own `h` and has no FFT (measured clean on the same grids);
-      * a uniform grid is silent, including the one `break_events` builds.
-        ⚠ That second case is a REGRESSION CANARY: `break_events` defaults ON
-        for one-step methods, and it is safe today only because `event_grid`
-        returns a UNIFORM grid with an adjusted step count (measured: 204 steps
-        against 199, one distinct `h`).  If it ever starts snapping points
-        instead, this assertion fires and says the noise path just became
-        exposed by default;
-      * an explicitly non-uniform grid warns from both FFT paths.
+    FIXED with `PSS._period_quadrature`: trapezoid weights
+    `(h_{n-1}+h_n)/(2T)` at the TRUE times, used by the adjoint inject (plain,
+    dirk and full paths), the forward `PAC.solve`, and every harmonic of `CY`.
+    Measured after: B/A = 0.99995733 / 0.99998933 / 0.99999733 (rate 4.00 --
+    the gear samples' own order; a rectangle `h_n/T` measured first order and
+    is the bottleneck for every method).  ⚠ Uniform grids take the ORIGINAL
+    expressions (the helper returns None), so they are bit-identical.
+    ⚠ A derived grid is now CORRECT, not competitive: uniform reads 3e-10
+    where this reads 1e-05 at N = 800, and second order caps radau.
+    ⚠ The dual-consistency identity closes for ANY weights used on both
+    sides, so it could never have caught this -- only a known answer can.
+    ⚠ `sampled_noise` and `covariance` were never affected: their time sums
+    carry each step's own `h`.
     """
-    f0 = 1e5
-    n = 200
-    w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)     # 3:1, scale-invariant
-    nonu = w / w.sum()
+    ref, pss_u = _nu_identity('A', 400, False)
+    assert pss_u._period_quadrature(pss_u.factored_period()) is None, \
+        'a uniform grid must keep the index DFT (bit-identical results)'
+    errs = []
+    for n in (200, 400):
+        a, pss_n = _nu_identity('A', n, True)
+        b, _p = _nu_identity('B', n, True)
+        assert pss_n._period_quadrature(pss_n.factored_period()) is not None
+        ## the stationary route lands on the uniform answer (was 30 % off) ...
+        assert abs(a / ref - 1.0) < 5e-4, (n, a, ref)
+        ## ... and the identity holds (was 0.727, at every N)
+        errs.append(abs(b / a - 1.0))
+        assert errs[-1] < 1e-4, (n, b / a)
+    ## second order: the quadrature reaches the integrator's order
+    assert errs[0] / errs[1] > 3.0, errs
 
-    ## 1. UNIFORM -- everything silent
-    pss, pac, o, T, ratio = _nonuniform_probe(grid=None)
-    assert abs(ratio - 1.0) < 1e-9, ratio
-    ts = np.asarray(pss.factored_period().times, dtype=float)
-    assert not _warned(lambda: pac.covariance(pss))
-    assert not _warned(lambda: pac.pnoise(pss, 0.05 * f0, o, maxsidebands=8,
-                                          cyclostationary=True))
 
-    ## 2. the grid `break_events` builds -- ALSO silent (the canary)
-    pss, pac, o, T, ratio = _nonuniform_probe(grid=None, break_events=None)
-    assert abs(ratio - 1.0) < 1e-9, \
-        'event_grid no longer returns a uniform grid (steps span %.6gx), so ' \
-        'the FFT folds are now exposed BY DEFAULT for one-step methods' % ratio
-
-    ## 3. explicitly non-uniform -- both FFT paths warn, covariance does not
-    pss, pac, o, T, ratio = _nonuniform_probe(grid=nonu)
-    assert ratio > 2.5, ratio
-    assert not _warned(lambda: pac.covariance(pss)), \
-        'covariance uses each step own h and has no FFT; it must not warn'
-    for name in ('_nonuniform_fold_warned',):
-        if hasattr(pss, name):
-            delattr(pss, name)
-    assert _warned(lambda: pac.pnoise(pss, 0.05 * f0, o, maxsidebands=8,
-                                      cyclostationary=True)), \
-        'pnoise must not fold an index DFT over a non-uniform grid in silence'
-    if hasattr(pss, '_nonuniform_fold_warned'):
-        delattr(pss, '_nonuniform_fold_warned')
-    tsn = np.asarray(pss.factored_period().times, dtype=float)
-    assert _warned(lambda: pac.sampled_variance(pss, o, np.array([tsn[80]]),
-                                                1e-2 * f0, f0 / 2.0)), \
-        'the sampled series must not fold an index DFT over a non-uniform grid'
+def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid():
+    """The forward `PAC.solve` and `adjoint_sideband_row` must use the SAME
+    period weights -- on a 3:1 grid too.  The uniform-grid twin of this check
+    is `test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_
+    the_fold`; this one runs the trapezoid-weighted branch of both sides.
+    ⚠ It pins CONSISTENCY only: the identity closes for any weights used on
+    both sides, which is why it never caught the old `1/N`.  Correctness on a
+    non-uniform grid is pinned by
+    `test_pnoise_is_correct_on_a_non_uniform_grid_with_trapezoid_period_weights`.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    fclk = 100e3; T = 1.0 / fclk; fin = 7e3; n = 200
+    cir = SubCircuit()
+    for nd in ('in', 'out', 'ck'):
+        cir.add_node(nd)
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0, vac=1.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                           vth=0.0, vs=50e-3)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / n, x0=np.zeros(cir.n - 1),
+                  grid=w / w.sum(), maxiterations=60, break_events=False)
+    assert pss.converged
+    assert pss._period_quadrature(pss.factored_period()) is not None
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = pac.solve(pss, freqs=[fin])
+    fout = np.asarray(res.sweep_values, dtype=float)
+    X = np.asarray(res.x)
+    io = [str(x) for x in cir.nodes].index('out')
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), pss.irefnode,
+                             circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io, sidebands=[0, 1, -1]))
+    for li, l in enumerate((0, 1, -1)):
+        f_phys = abs(fin + l * fclk)
+        k = int(np.argmin(np.abs(fout - f_phys)))
+        assert abs(fout[k] - f_phys) < 1e-6 * fclk, (l, fout[k], f_phys)
+        x = complex(X[io, k]); h = complex(H[li] @ u_ac)
+        if fin + l * fclk < 0:
+            h = np.conj(h)
+        assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
 

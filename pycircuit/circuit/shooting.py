@@ -4720,6 +4720,7 @@ class PSS(Analysis):
         d = np.asarray(d, dtype=complex).ravel()
         lam = np.zeros(m, dtype=complex)
         forced = np.zeros(m, dtype=complex)
+        _wq = self._period_quadrature(fp)
         for j in range(N - 1, -1, -1):
             Kfacs, Gs, Cn, h, Amat, cvec = fp.steps[j]
             s = Amat.shape[0]
@@ -4744,8 +4745,8 @@ class PSS(Analysis):
                            if rbars[i] is not None)
                 if not np.isscalar(coup):
                     forced = forced - h * np.exp(jw * tk) * coup
-            lam = wbar + np.exp(-1j * (float(l) * w0
-                                       + 2.0 * np.pi * float(freq)) * ts) / N * d
+            _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
+            lam = wbar + (_e / N if _wq is None else _e * _wq[j]) * d
         return forced, lam
 
     def _i_at(self, x_reduced):
@@ -6645,6 +6646,7 @@ class PSS(Analysis):
             return (sla.lu_solve(lu, b.real, trans=1)
                     + 1j * sla.lu_solve(lu, b.imag, trans=1))
 
+        _wq = self._period_quadrature(fp)
         for j in range(N - 1, -1, -1):
             lu, Cn, mm = fp.steps[j]
             ts = tms[j]; te = tms[j + 1]; h = te - ts
@@ -6655,9 +6657,42 @@ class PSS(Analysis):
                 coup = sum(Amat[i, k] * pb[i] for i in range(s))
                 forced = forced - h * np.exp(jw * tk) * coup
             lam = Cn.T @ sum(pb)
-            lam = lam + np.exp(-1j * (float(l) * w0
-                                      + 2.0 * np.pi * float(freq)) * ts) / N * d
+            _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
+            lam = lam + (_e / N if _wq is None else _e * _wq[j]) * d
         return forced, lam
+
+    #: Relative step spread below which the period grid counts as uniform.
+    #: Not zero: `event_grid`'s uniform grid differs from `_period_grid`'s in
+    #: the last bit.
+    UNIFORM_GRID_TOL = 1e-9
+
+    def _period_quadrature(self, fp):
+        """Trapezoid weights `W_n = (h_{n-1} + h_n)/(2T)` for samples at
+        `fp.times[:N]`, or **None on a uniform grid**.
+
+        Every Fourier coefficient the noise folds take over the period is an
+        INTEGRAL, `(1/T) int c(t) e^{-j k w0 t} dt`.  On a uniform grid the
+        index DFT (`fft/N`, the inject's `/ N`) IS the periodic trapezoid rule
+        and nothing changes -- callers keep their original expression when
+        this returns None, so uniform results are bit-identical.  On a
+        non-uniform grid (`solve(grid=...)`, `lte_grid`, `refine_grid`) `1/N`
+        is not a quadrature at all: measured 2026-09-19, a flat 59 % error in
+        the first harmonic and pnoise converging 30 % off, rate 1.00.
+        Measured with these weights on the same 3:1 grid: 1.8e-04 / 4.4e-05 /
+        1.1e-05 at N = 200/400/800 -- second order, the rate of the gear
+        samples themselves (a rectangle `h_n/T` is first order and becomes
+        the bottleneck for every method).  ⚠ Still four orders behind a
+        uniform grid on that circuit, and second order caps radau: a derived
+        grid is now CORRECT for noise analysis, not competitive.  ⚠ The SAME
+        vector must be used by the adjoint inject and by every harmonic of
+        `CY`: the dual-consistency identity closes for ANY weights, so it
+        cannot catch a mismatch."""
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        h = np.diff(tms[:N + 1])
+        if len(h) < 2 or float(np.max(h)) / float(np.min(h)) - 1.0 <= self.UNIFORM_GRID_TOL:
+            return None
+        return 0.5 * (h + np.roll(h, 1)) / float(tms[N] - tms[0])
 
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
@@ -11709,7 +11744,16 @@ class PAC(Analysis):
             if len(tms) > 1 and np.isclose(tms[-1] - tms[0], T,
                                            rtol=1e-9, atol=0.0):
                 v, tms = v[:-1], tms[:-1]
-            sb, V = freq_analysis(v, tms, axis=0)
+            _wq = pss._period_quadrature(fp)
+            if _wq is not None and len(_wq) == len(tms):
+                ## non-uniform grid: the SAME trapezoid weights the adjoint
+                ## inject uses, at the true times -- see `_period_quadrature`
+                _ks = np.fft.fftshift(np.fft.fftfreq(len(tms), d=1.0 / len(tms)))
+                sb = _ks / T
+                V = np.tensordot(np.exp(-2j * np.pi * np.outer(
+                    _ks, (tms - tms[0]) / T)) * _wq[None, :], v, axes=(1, 0))
+            else:
+                sb, V = freq_analysis(v, tms, axis=0)
             fs = np.asarray(sb, dtype=float) + f
             V = np.asarray(V)
             neg = fs < 0.0
@@ -11905,9 +11949,15 @@ class PAC(Analysis):
                 ## `_sideband_forced_full`
                 forced, g = pss._sideband_forced_full(fp, freq, l, d)
             else:
-                inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
-                                         * float(freq)) * tms[:N]) / N)[:, None]
-                          * d[None, :])
+                _wq = pss._period_quadrature(fp)
+                if _wq is None:
+                    inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
+                                             * float(freq)) * tms[:N]) / N)[:, None]
+                              * d[None, :])
+                else:
+                    inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
+                                             * float(freq)) * tms[:N]) * _wq)[:, None]
+                              * d[None, :])
                 g, ts, _st = fp.matvec_transposed(
                     np.zeros(n, dtype=complex), collect=True, inject=inject)
                 forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
@@ -11973,72 +12023,6 @@ class PAC(Analysis):
     ## conversion effect (Rizzoli, Mastri & Masotti, MTT 42-807, 1994).  Free-
     ## running phase noise goes through the Floquet/PPV stack instead; see
     ## `oscillator_spectrum` for why the two cannot be unified and why the wrong
-    #: Relative step spread above which the FFT-based folds are unsound.
-    #: ⚠ NOT zero: `event_grid` rebuilds a uniform grid that differs from
-    #: `_period_grid`'s in the LAST BIT, and that grid is perfectly fine.
-    NONUNIFORM_FOLD_TOL = 1e-9
-
-    def _warn_if_nonuniform_grid(self, pss, what):
-        """⚠ The harmonic extraction is an INDEX DFT, so it needs UNIFORM steps.
-
-        `C_k = (1/T) int C(t) e^{-j2pi k t/T} dt` is evaluated as
-        `np.fft.fft(samples)/N`: phase `2 pi k n/N`, weight `1/N`. On a uniform
-        grid that sum IS the periodic trapezoid rule and converges SPECTRALLY
-        (measured 2.4e-16 at N = 1024 on an analytic integrand). On a grid whose
-        non-uniformity does not shrink with refinement it does not converge AT
-        ALL -- measured a flat 59 % error at k=1 and 133 % at k=3, rate 1.00 per
-        doubling -- and end to end the suite's cyclostationary IDENTITY, pinned
-        at 1e-12 on a uniform grid, breaks by 27 % and stays broken.
-
-        ⚠ `covariance` is NOT affected and must not call this: it uses each
-        step's own `h` and has no FFT (measured clean on the same grids).
-
-        ⚠ Fixing the WEIGHTS is not a full remedy -- no non-uniform quadrature
-        recovers the spectral property. Correct `h_n` weights buy first order,
-        trapezoid weights second. Full accuracy needs INTERPOLATION onto a
-        uniform grid before transforming, which is what a derived-grid workflow
-        would have to add.
-
-        ⚠ The exposure is `solve(grid=...)`, i.e. `lte_grid`/`refine_grid`,
-        whose non-uniformity is scale-invariant BY DESIGN. `break_events` is
-        NOT implicated: measured, it yields a uniform grid with an adjusted step
-        count. Warned once per solve; other FFT-based surfaces
-        (`oscillator_spectrum`, `modal_spectrum`, `am_pm_noise`) share the
-        mechanism but were NOT measured, and are deliberately not claimed here.
-        """
-        if getattr(pss, '_nonuniform_fold_warned', False):
-            return
-        try:
-            ts = np.asarray(pss.factored_period().times, dtype=float)
-        except Exception:
-            return
-        hs = np.diff(ts)
-        if len(hs) < 2:
-            return
-        lo = float(np.min(hs))
-        if not lo > 0.0:
-            return
-        spread = float(np.max(hs)) / lo - 1.0
-        if spread <= self.NONUNIFORM_FOLD_TOL:
-            return
-        try:
-            pss._nonuniform_fold_warned = True
-        except Exception:
-            pass
-        warnings.warn(
-            'PAC.%s: the PSS grid is NON-UNIFORM (steps span %.3gx) and this '
-            'analysis extracts harmonics with an INDEX DFT, which assumes '
-            'equal steps -- phase 2*pi*k*n/N and weight 1/N. On a uniform grid '
-            'that is the periodic trapezoid rule and is spectrally accurate; '
-            'on a grid whose non-uniformity does not shrink with refinement it '
-            'does NOT converge (measured: a flat 59%% error in the first '
-            'harmonic, and the cyclostationary identity broken by 27%% at every '
-            'grid). Use a UNIFORM grid for noise analysis, or interpolate the '
-            'orbit onto one first; refining this grid will not fix it. '
-            '`covariance` is unaffected -- it uses each step\'s own h.'
-            % (what, spread + 1.0), RuntimeWarning, stacklevel=3)
-
-    ## one still returns a plausible number.
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
                modulated=False, cyclostationary=False):
         """TIME-AVERAGED output noise PSD at `freq`, sidebands folded in.
@@ -12297,7 +12281,6 @@ class PAC(Analysis):
         here.)
         """
         self._check_circuit(pss)
-        self._warn_if_nonuniform_grid(pss, 'pnoise')
         ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
         ## _forced_replay_transposed), whose two-stage chained transpose is
         ## not built for TR-BDF2, so it falls back to a Gear-2 twin -- see
@@ -12502,7 +12485,7 @@ class PAC(Analysis):
             (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
             Cs.append(np.asarray(cyk, dtype=complex))
         Cs = np.asarray(Cs, dtype=complex)
-        return np.fft.fft(Cs, axis=0) / Cs.shape[0]
+        return self._period_dft(pss, Cs)
 
     def _cy_samples(self, pss, w):
         """`CY(x(t_k), w)` over the orbit, reduced, `(N, n, n)` complex."""
@@ -12519,8 +12502,25 @@ class PAC(Analysis):
             Cs.append(np.asarray(cyk, dtype=complex))
         return np.asarray(Cs, dtype=complex)
 
+    def _period_dft(self, pss, S):
+        """Fourier coefficients over the period of samples `S` `(N, ...)` taken
+        at `fp.times[:N]`, laid out like `numpy.fft.fftfreq`.  Uniform grid:
+        the index DFT, unchanged.  Non-uniform: the weighted sum at the TRUE
+        times with `PSS._period_quadrature`'s weights -- O(N^2), paid only by
+        a caller who chose that grid."""
+        S = np.asarray(S, dtype=complex)
+        fp = pss.factored_period()
+        wq = pss._period_quadrature(fp)
+        if wq is None or S.shape[0] != len(wq):
+            return np.fft.fft(S, axis=0) / S.shape[0]
+        N = S.shape[0]
+        tms = np.asarray(fp.times, dtype=float)
+        ks = np.fft.fftfreq(N, d=1.0 / N)
+        E = np.exp(-2j * np.pi * np.outer(ks, (tms[:N] - tms[0]) / float(tms[N] - tms[0]))) * wq[None, :]
+        return np.tensordot(E, S, axes=(1, 0))
+
     @staticmethod
-    def _sqrt_harmonics_of(Cs):
+    def _sqrt_harmonics_of(Cs, dft=None):
         """The DFT of the symmetric square root of the sampled `CY` (see
         `_cy_sqrt_harmonics`), for a `(N, n, n)` array already in hand."""
         Bs = []
@@ -12530,7 +12530,7 @@ class PAC(Analysis):
             lam = np.clip(np.real(lam), 0.0, None)
             Bs.append((U * np.sqrt(lam)[None, :]) @ U.conj().T)
         Bs = np.asarray(Bs, dtype=complex)
-        return np.fft.fft(Bs, axis=0) / Bs.shape[0]
+        return (np.fft.fft(Bs, axis=0) / Bs.shape[0]) if dft is None else dft(Bs)
 
     def _cy_colour_model(self, pss, f, f0):
         """Fit `CY(x(t), w) = A(t) + B(t) (w1/w)^ef` entry by entry from three
@@ -12796,7 +12796,7 @@ class PAC(Analysis):
             lam = np.clip(np.real(lam), 0.0, None)
             Bs.append((U * np.sqrt(lam)[None, :]) @ U.conj().T)
         Bs = np.asarray(Bs, dtype=complex)
-        return np.fft.fft(Bs, axis=0) / Bs.shape[0]
+        return self._period_dft(pss, Bs)
 
     def _cyclostationary_fold(self, pss, freq, rows, model=None):
         """`S(f) = sum_{l,l'} a_l Q_{l,l'} a_{l'}^H` over the gathered
@@ -12942,12 +12942,15 @@ class PAC(Analysis):
         ## additive already); each coloured part gets its own root, scaled
         ## per band when its exponent is uniform (`sqrt(c B) = sqrt(c)
         ## sqrt(B)`, no per-band eigendecomposition).
+        ## the period's Fourier coefficients: the index DFT on a uniform grid,
+        ## the trapezoid-weighted sum on a non-uniform one -- see `_period_dft`
+        _dft = lambda B: self._period_dft(pss, B)
         if getattr(model, 'flicker', None) is None:
-            groups = [lambda p: (self._sqrt_harmonics_of(model(wband(p)))
+            groups = [lambda p: (self._sqrt_harmonics_of(model(wband(p)), _dft)
                                  if model is not None else
                                  self._cy_sqrt_harmonics(pss, wband(p)))]
         else:
-            Pw = np.fft.fft(model.white, axis=0) / Nn
+            Pw = _dft(model.white)
             for l in ls:
                 for lp in ls:
                     total += complex(rows[l] @ Pw[(lp - l) % Nn] @ np.conj(rows[lp]))
@@ -12955,14 +12958,14 @@ class PAC(Analysis):
             for _key, Bc, EF in model.flicker:
                 ef = self._uniform_exponent(Bc, EF)
                 if ef is not None:
-                    groups.append(lambda p, SB=self._sqrt_harmonics_of(Bc), ef=ef:
+                    groups.append(lambda p, SB=self._sqrt_harmonics_of(Bc, _dft), ef=ef:
                                   (model.w1 / wband(p)) ** (0.5 * ef) * SB)
                 else:
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
-                        Bc * (model.w1 / wband(p)) ** EF))
+                        Bc * (model.w1 / wband(p)) ** EF, _dft))
             for key in model.perband:
                 groups.append(lambda p, key=key: self._sqrt_harmonics_of(
-                    self._element_cy_samples(pss, wband(p))[key]))
+                    self._element_cy_samples(pss, wband(p))[key], _dft))
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =
@@ -14293,7 +14296,6 @@ class PAC(Analysis):
         }
 
     def _sampled_series(self, pss, output, times, freqs, maxsidebands):
-        self._warn_if_nonuniform_grid(pss, '_sampled_series')
         import scipy.sparse.linalg as spla
         self._check_circuit(pss)
         if getattr(pss, 'autonomous', False):
