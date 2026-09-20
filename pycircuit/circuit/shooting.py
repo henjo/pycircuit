@@ -7806,7 +7806,14 @@ class PSS(Analysis):
             ## a 3:1 grid) and second order (trap); those keep their path.
             _e2, _tsolves, _st = fp.matvec_transposed(vk, collect=True)
             _gear_pair = getattr(fp, 'kind', None) == 'solved_history'
-            if _gear_pair:
+            ## ⚠ GEAR ON A NON-UNIFORM GRID: THE TRANSPOSE IS FIRST ORDER AND
+            ## NO RESCALING LIFTS IT, so the adjoint is integrated SEPARATELY
+            ## there -- gated on STRUCTURE (a multistep pair on a grid whose
+            ## step changes), never on order.  See `_continuous_adjoint`.
+            _nonuniform = self._period_quadrature(fp) is not None
+            if _gear_pair and _nonuniform:
+                q, ts2 = self._continuous_adjoint(fp, lk, muk, times)
+            elif _gear_pair:
                 _tsolves = [np.asarray(z, dtype=complex).ravel()[:m]
                             for z in _tsolves]
                 _a0 = [float(np.asarray(_step[2][0])) for _step in fp.steps]
@@ -8471,6 +8478,91 @@ class PSS(Analysis):
         """
         tr = self._transient()
         tr.cir.limit(x_full, x_full, tr.epar)
+
+    def _continuous_adjoint(self, fp, lam, mu, times):
+        """A mode's adjoint `q(t_j)` on a NON-UNIFORM gear grid, by integrating
+        the continuous adjoint equation SEPARATELY (2026-09-20).
+
+        The exact transpose of gear's two-step recursion draws `a1` and `a2`
+        from LATER steps, so on a grid whose step changes it is a consistent
+        scheme for the adjoint equation only to first order, and no per-node
+        rescaling lifts it (four measured, all halving per doubling).  Here
+        `C^T dq/dt = G^T q` is integrated backwards with BDF2 whose
+        coefficients belong to the REVERSE grid's own step pair --
+        `companion_coefficients(h_{n+1}, h_{n+2})`:
+
+            (a0' C_n + G_n)^T q_n = -C_n^T (a1' q_{n+1} + a2' q_{n+2})
+
+        The state is the pair (q_{n+1}, q_{n+2}); the backward map over one
+        period is built from 2m basis propagations and the mode's eigenvector
+        matched to the forward multiplier `lam` (they agree to O(h^2):
+        1.2e-3 / 3.1e-4 / 7.7e-5 at N = 200 / 400 / 800).  MEASURED on the
+        asymmetric van der Pol, 3:1 grid, invariant `q^T C p` spread:
+
+            transpose, a0-scaled   2.2e-02  1.1e-02  5.9e-03   halving
+            this                   1.8e-03  4.6e-04  1.1e-04   QUARTERING
+
+        and `orbital_correlation`'s R against radau's (exact there) 2.3e-02 /
+        7.2e-03 / 2.0e-03, monotone at ~x3.5, onto the floor `p` sets.
+
+        ⚠ TWO ADJOINTS IN THE TREE, ON PURPOSE.  This one is NOT the transpose
+        of the discrete map: the PPV, the adjoint noise folds and the sideband
+        rows keep the exact transpose (pinned at 1e-15) because their
+        identities need it.  This serves the MODE SHAPES only, where the
+        continuous adjoint is the object wanted.  On a uniform grid the two
+        coincide (`a0' = a0`) and the transpose is used; one-step kinds never
+        come here.  ⚠ Dense: a 2m x 2m eigenproblem, refused above
+        `CONTINUOUS_ADJOINT_MAX_M` unknowns -- the same ceiling `ppv` uses for
+        its dense spectrum.  ⚠ Biorthonormality against the OTHER modes is not
+        exact here (it is for the transpose) -- each mode is normalised on its
+        own `q(0)^T C p(0)`, as before.
+        """
+        N = len(fp.steps)
+        m = self.cir.n - 1
+        if m > self.CONTINUOUS_ADJOINT_MAX_M:
+            raise NotImplementedError(
+                'PSS.floquet_modes: the continuous adjoint on a non-uniform '
+                'gear grid forms a dense %d x %d backward map, above the '
+                '%d-unknown ceiling. Use a uniform grid, or method=\'radau\' '
+                '(exact on this grid), or trap (second order).'
+                % (2 * m, 2 * m, self.CONTINUOUS_ADJOINT_MAX_M))
+        tms = np.asarray(times, dtype=float)
+        h = np.diff(tms[:N + 1])
+        W = np.delete(np.asarray(self.waveform[1], dtype=float),
+                      self.irefnode, axis=0)
+        Cs = [np.asarray(self._C_at(W[:, j]), dtype=float) for j in range(N + 1)]
+        Gs = [np.asarray(self._G_at(W[:, j]), dtype=float) for j in range(N + 1)]
+        integ = self._integrator_for(self.par.method)
+
+        def step_back(n, q1, q2):
+            a0, a1, a2 = [float(x) for x in
+                          integ.companion_coefficients(h[n % N], h[(n + 1) % N])[0]]
+            A = (a0 * Cs[n] + Gs[n]).T
+            return np.linalg.solve(A, -Cs[n].T @ (a1 * q1 + a2 * q2))
+
+        def propagate(qN, qN1):
+            q = [None] * (N + 2)
+            q[N], q[N + 1] = qN, qN1
+            for n in range(N - 1, -1, -1):
+                q[n] = step_back(n, q[n + 1], q[n + 2])
+            return q
+
+        Mp = np.zeros((2 * m, 2 * m), dtype=complex)
+        for c in range(2 * m):
+            e = np.zeros(2 * m, dtype=complex)
+            e[c] = 1.0
+            qq = propagate(e[:m], e[m:])
+            Mp[:, c] = np.concatenate((qq[0], qq[1]))
+        lams, vecs = np.linalg.eig(Mp)
+        k = int(np.argmin(np.abs(lams - lam)))
+        w = vecs[:, k]
+        qq = propagate(w[:m], w[m:])
+        ts2 = tms[:N + 1]
+        q = np.column_stack([qq[j] * np.exp(mu * ts2[j]) for j in range(N + 1)])
+        return q, ts2
+
+    #: the dense 2m x 2m ceiling of `_continuous_adjoint`
+    CONTINUOUS_ADJOINT_MAX_M = 200
 
     def _C_at(self, x_reduced):
         """The reduced capacitance at a point, without taking a step.
@@ -15489,6 +15581,19 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
             raise ValueError(
                 'PAC.orbital_correlation: no orbital mode -- every non-null '
                 'multiplier sits on the unit circle.')
+        ## ⚠ AND THE PHASE MODE MUST BE ON THE CIRCLE, or it is swept into the
+        ## orbital sum with a near-zero exponent and the result blows up as
+        ## 1/|mu|^2 -- measured 146x / 602x / 2449x radau's R at N = 200 / 400
+        ## / 800 on a 3:1 gear grid, SILENTLY (2026-09-20).  `modal_spectrum`
+        ## refuses this; so does this now, with the same route named.
+        if len(orb) == len(modes):
+            raise ValueError(
+                'PAC.orbital_correlation: no Floquet multiplier lies on the '
+                'unit circle (the phase mode), so the orbital sum would '
+                'include it with a near-zero exponent and blow up.  On a '
+                'non-uniform `grid=` a multistep or trapezoidal solve leaves '
+                'the phase multiplier off 1 by O(h^2); method=\'radau\' keeps '
+                'it there, or use a uniform grid.')
 
         def fcoef(P):
             ## `_period_dft`: the index DFT on a uniform grid, unchanged, and

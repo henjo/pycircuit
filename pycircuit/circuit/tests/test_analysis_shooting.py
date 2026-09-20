@@ -23240,3 +23240,75 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
     d200, d400 = drift(200), drift(400)
     assert 3e-4 < d200 < 3e-3, d200                   # was 9.9e-03 before the fix
     assert 3.3 < d200 / d400 < 4.8, (d200, d400)      # second order, not first
+
+
+def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_correlation_refuses_an_off_circle_phase_mode():
+    """The separately-discretised continuous adjoint (Andreas: "Do it"), gated
+    on STRUCTURE: gear's two-step transpose on a grid whose step changes is a
+    first-order scheme for the adjoint equation (it draws a1, a2 from later
+    steps) and no rescaling lifts it -- four measured, all halving.  On such a
+    grid `floquet_modes` now integrates `C^T dq/dt = G^T q` backwards with BDF2
+    on the REVERSE grid's own step pair, matched to the forward multiplier.
+    Invariant `q^T C p` spread at N = 200 / 400 / 800, 3:1 grid, measured:
+
+        transpose (a0-scaled)   2.2e-02  1.1e-02  5.9e-03   halving
+        continuous              1.8e-03  4.6e-04  1.1e-04   QUARTERING
+
+    Uniform grids and one-step kinds never take this path (bit-identical).
+
+    ⚠ And a latent defect the gate found: `orbital_correlation` swept an
+    off-circle PHASE mode (gear's sits at 1 - 5e-05 on that grid) into its
+    orbital sum and returned 146x .. 2449x radau's R, growing as N^2,
+    silently.  It refuses now, naming radau, as `modal_spectrum` does.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+
+    def fracs(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+
+    def solve(n, nonuniform, method):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+        pss = PSS(cir, method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / n, x0=np.array([2.0, 0.0]),
+                      maxiterations=300, break_events=False,
+                      grid=(fracs(n) if nonuniform else None))
+        assert pss.converged
+        return cir, pss
+
+    def drift(pss):
+        W = np.delete(np.asarray(pss.waveform[1], dtype=float), pss.irefnode, axis=0)
+        out = []
+        for md in pss.floquet_modes(pss):
+            P, Q = np.asarray(md['p']), np.asarray(md['q'])
+            K = min(P.shape[1], Q.shape[1], W.shape[1])
+            a = np.abs([np.vdot(Q[:, j], np.asarray(pss._C_at(W[:, j]), dtype=float)
+                                @ P[:, j]) for j in range(K)])
+            out.append((a.max() - a.min()) / a.mean())
+        return max(out)
+
+    ## gear on the 3:1 grid: the continuous adjoint, second order
+    d200 = drift(solve(200, True, 'gear')[1])
+    d400 = drift(solve(400, True, 'gear')[1])
+    assert 8e-4 < d200 < 4e-3, d200                    # 2.2e-02 on the transpose
+    assert 3.3 < d200 / d400 < 4.8, (d200, d400)
+
+    ## the refusal: gear and trap off the circle on the 3:1 grid, radau runs
+    for method in ('gear', 'trap'):
+        cir, pss = solve(400, True, method)
+        with pytest.raises(ValueError, match='radau'):
+            PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
+    cir, pss = solve(400, True, 'radau')
+    R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
+    assert np.all(np.isfinite(R))
