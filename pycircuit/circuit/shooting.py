@@ -2050,10 +2050,59 @@ class PSS(Analysis):
                                        was a defect,
                                        fixed
                                        2026-09-14)
-      gear      2       83.1           yes          not an RK; a small ring at
+      gear      2       83.1           yes          not an RC; a small ring at
                                                     h >= 10 tau measured; does not
                                                     CERTIFY a free-period solve at
-                                                    1e-14 below ~400 pts at Q=1e4
+                                                    1e-14 below ~400 pts at Q=1e4.
+                                                    FIRST-CLASS ON NON-UNIFORM
+                                                    GRIDS (2026-09-20, all
+                                                    measured): the PPV, the
+                                                    diffusion constant, the period
+                                                    (free or driven), the adjoint
+                                                    modes and every noise fold are
+                                                    second order on any grid whose
+                                                    step ratios stay inside the
+                                                    zero-stability bound 1+sqrt(2)
+                                                    (a 2:1 alternating grid costs
+                                                    NOTHING over uniform: +4.86 vs
+                                                    +4.87 ppm); beyond it (3:1) the
+                                                    period is FIRST order and
+                                                    `_period_grid` warns.  Events:
+                                                    `break_events` is on, second
+                                                    order across a landed edge; the
+                                                    one cost is a CONSTANT at the
+                                                    step after a hard corner (30x
+                                                    trap's there).  Index 2: order
+                                                    2 in BOTH subspaces (no BDF
+                                                    order reduction, measured on the
+                                                    C-V loop 2.01/2.01 uniform,
+                                                    2.00/2.00 smooth); the PPV and
+                                                    c on a non-uniform index-2 grid
+                                                    second order since 2026-09-20
+                                                    (the index-2 fallback's samples
+                                                    come from the continuous adjoint
+                                                    there, and PAC's period weights
+                                                    are a periodic trapezoid).  ⚠
+                                                    Gear is the ONLY method whose
+                                                    oscillator surfaces are on a
+                                                    non-uniform grid at all: the
+                                                    one-step kinds' factored
+                                                    periods and the TR-BDF2 twin
+                                                    replay on a uniform grid
+                                                    whatever the solve used.
+                                                    Adjoints: the exact transpose
+                                                    for the PPV and the noise folds,
+                                                    a second-order continuous
+                                                    adjoint for the mode shapes on
+                                                    non-uniform grids (dense to 8
+                                                    unknowns, Ritz-certified
+                                                    Arnoldi above).  Cost: one real
+                                                    factorisation per step, 3.0-11.8x
+                                                    cheaper than radau as n grows
+                                                    (table below); TR-BDF2 matched
+                                                    it 1.5-1.7x better at equal
+                                                    accuracy on E2's fixture, so
+                                                    price both with `grid_error`.
       euler     1       --             yes          never rings; damps the orbit it
                                                     is asked to find (13 % of the
                                                     amplitude at 20 pts/period)
