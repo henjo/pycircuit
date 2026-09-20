@@ -23609,3 +23609,118 @@ def test_gears_free_period_is_second_order_on_a_non_uniform_grid_inside_the_zero
     e_u, _ = ppm(800, None)
     e_2, _ = ppm(800, alt(800, 2.0))
     assert abs(e_2 / e_u - 1.0) < 0.05, (e_u, e_2)
+
+
+def test_gears_ppv_samples_are_second_order_on_a_non_uniform_index2_grid():
+    """Item 3 of gear-first-class (2026-09-20).  On an INDEX-2 oscillator
+    gear's forward solve keeps order 2 in both subspaces on any grid, its
+    period and adjoint modes are second order on uniform and smooth grids --
+    and its PPV SAMPLES were FIRST order on the non-uniform grid alone::
+
+        gear, smooth grid     N=100      N=200      N=400      N=800
+        c rel to radau      -5.0e-03   -2.4e-03   -1.2e-03   -5.8e-04   (2.1, 2.05, 2.0)
+        gear, uniform       +1.2e-03   +3.3e-04   +8.7e-05   +2.2e-05   (3.7, 3.8, 3.9)
+        trap, smooth        -1.2e-03   -2.9e-04   -7.1e-05   -1.8e-05   (4.1, 4.0, 4.0)
+
+    The cause is `_ppv_propagate`'s index-2 fallback: with `G[A,Z]` singular
+    the pair-consistent correction keeps the differential block only
+    (`G[D,NZ]`), the coupling through the algebraic variables being a
+    DERIVATIVE term that does not exist as a Schur complement.  The dropped
+    term cancels between steps on a uniform grid -- where the fallback was
+    priced "second order" -- and does not on a non-uniform one.  Fix: on a
+    non-uniform solved-history grid at index >= 2 the samples come from the
+    continuous adjoint's phase mode, `v_j = C_j^T q_j` normalised by
+    `q_0^T C_0 xdot_0 = 1` -- the same object `floquet_modes` uses there,
+    whose invariant quarters on this very fixture and grid (4.3e-4 / 1.1e-4 /
+    2.9e-5 / 7.5e-6).  Measured, c relative to radau at N = 3200:
+    -1.9e-4 / -2.2e-5 / +7e-8 / +8e-7 -- at the reference's floor from
+    N = 400, 130x closer at 800.  AND a second, independent half: every
+    period integral in `PAC` weighted its samples with `diff(times)`, the
+    LEFT RECTANGLE rule -- the trapezoid rule on a uniform periodic grid and
+    FIRST order on a non-uniform one by itself (`PAC._period_weights`).
+    With the fixed samples alone PAC's `c` still read -1.9e-3 / -9.3e-4 /
+    -4.6e-4; with periodic trapezoid weights over the same samples +4.0e-5
+    / +3.6e-5 / +1.3e-5 at N = 200 / 400 / 800, the reference's floor.
+
+    ⚠ WHY TRAP AND RADAU NEVER PAID EITHER: their `info['times']` on this
+    "smooth grid" run is UNIFORM (h = T/200 everywhere, 1.1 s off the
+    waveform's nodes) -- `factored_period_full` / `_dirk` and the TR-BDF2
+    twin replay the converged orbit on a `linspace` grid whatever grid the
+    solve used.  Their PPV, modes and noise surfaces on a non-uniform grid
+    are uniform-grid replays; accurate, and not on that grid.  Recorded
+    here, not changed.
+
+    ⚠ Three instruments were rejected on the way, and the record matters
+    more than the fix: cross-method comparison of the PPV WAVEFORM on this
+    fixture is not one (the two kinds' sample waveforms are not related by
+    any shift or sign, while their maxima and c agree), a noise VOLTAGE
+    inside the C-V loop gives c = 0 exactly for every method (a voltage
+    perturbation of an index-2 constraint is a differentiated input the PPV
+    projection cannot represent -- recorded, not chased), and the continuous
+    q pairs with CHARGE perturbations: the state-space PPV is `C^T q`, and
+    normalising `q` by `q . xdot` alone lands 16.7x off with the right shape.
+    ⚠ The van der Pol fixture is index 2 through a DC source INSIDE a
+    capacitor loop, which also exercises the constant-source period column
+    fixed in 15579a9.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    def fix():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir.add_node('a')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['vo'] = VS('v', 'a', v=0.5)
+        cir['Ca'] = C('a', gnd, c=1.0)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    c0 = fix()
+    names = [str(x) for x in c0.nodes]
+    iref = c0.get_node_index(gnd)
+    red = [i for i in range(c0.n) if i != iref]
+    x0 = np.zeros(c0.n - 1)
+    x0[red.index(names.index('v'))] = 2.0
+    x0[red.index(names.index('a'))] = 1.5
+
+    ## it IS index 2 (the test's own projector criterion), or this proves nothing
+    xf = np.zeros(c0.n)
+    xf[names.index('v')], xf[names.index('a')] = 2.0, 1.5
+    Cm = np.asarray(c0.C(xf), float)[np.ix_(red, red)]
+    Gm = np.asarray(c0.G(xf), float)[np.ix_(red, red)]
+    _U, sv, Vt = np.linalg.svd(Cm)
+    d = int(np.sum(sv > len(red) * sv[0] * np.finfo(float).eps))
+    Nn = Vt[d:].T
+    s2 = np.linalg.svd(Nn.T @ Gm @ Nn, compute_uv=False)
+    assert s2[-1] / max(s2[0], 1e-300) < 1e-10, 'the fixture is not index 2'
+
+    def smooth(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+
+    def c_of(method, n, grid):
+        cir = fix()
+        p = PSS(cir, method=method, reltol=1e-10)
+        kw = dict(period=T0, timestep=T0 / n, maxiterations=60, x0=x0)
+        if grid is not None:
+            kw['grid'] = grid
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            p.solve(**kw)
+            assert p.converged
+            p.ppv()
+            c = float(np.real(PAC(cir).diffusion_constant(p)))
+        return c, any('algebraic block G[A,Z] is singular' in str(w.message) for w in rec)
+    cref, _ = c_of('radau', 3200, None)
+    e200, w200 = c_of('gear', 200, smooth(200))
+    e400, w400 = c_of('gear', 400, smooth(400))
+    assert w200 and w400, 'the index-2 fallback must have fired'
+    r200, r400 = abs(e200 / cref - 1.0), abs(e400 / cref - 1.0)
+    assert r200 < 1e-4 and r400 < 8e-5, (r200, r400)      # was 2.4e-3 / 1.2e-3
+    ## the uniform grid keeps the exact-transpose samples (second order there)
+    eu, wu = c_of('gear', 400, None)
+    assert wu and abs(eu / cref - 1.0) < 2e-4, eu / cref - 1.0    # measured 8.7e-5

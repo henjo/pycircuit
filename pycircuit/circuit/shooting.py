@@ -5326,6 +5326,7 @@ class PSS(Analysis):
         correction; the others return the replay as it is."""
         _dt = complex if np.iscomplexobj(v) else float
         _alg_rows, _alg_cols = alg_rows, alg_cols
+        self._ppv_alg_fallback = False
         _end, _ts, states = fp.matvec_transposed(v, collect=True)
         states_pair = [np.array(st, dtype=_dt, copy=True) for st in states]
         _Xf = np.asarray(self.waveform[1], dtype=float)
@@ -5429,6 +5430,7 @@ class PSS(Analysis):
                                  - _Gj[np.ix_(_D, _Zc)] @ np.linalg.solve(
                                      _Gj[np.ix_(_A, _Zc)], _Gj[np.ix_(_A, _NZ)]))
                     except np.linalg.LinAlgError:
+                        self._ppv_alg_fallback = True
                         if _j == 0:
                             warnings.warn(
                                 'PSS.ppv: the algebraic block G[A,Z] is '
@@ -5830,6 +5832,50 @@ class PSS(Analysis):
         ## reverse replay computes exactly that sequence on its way to the
         ## answer -- it was being discarded.
         states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols)
+        ## ⚠ INDEX >= 2 ON A NON-UNIFORM SOLVED-HISTORY GRID (2026-09-20, item
+        ## 3 of "gear as a first-class choice on non-uniform grids"): the
+        ## fallback above keeps only the differential block of the
+        ## pair-consistent correction, and the coupling it drops -- a
+        ## DERIVATIVE term at index 2, with no Schur complement to stand in
+        ## for it -- cancels between steps on a uniform grid and not on a
+        ## non-uniform one.  Measured on a van der Pol with a DC source inside
+        ## a capacitor loop, smooth grid, `c` against radau: -5.0e-3 / -2.4e-3
+        ## / -1.2e-3 / -5.8e-4 at N = 100..800 (FIRST order) where the uniform
+        ## grid gives +1.2e-3 / +3.3e-4 / +8.7e-5 / +2.2e-5 and trap on the
+        ## same smooth grid is second order.  So on that grid the samples come
+        ## from the continuous adjoint's phase mode instead -- the object
+        ## `floquet_modes` already uses there, whose invariant quarters on
+        ## this fixture -- as the STATE-SPACE PPV `v_j = C_j^T q_j` (the
+        ## continuous `q` IS Demir's equation-row `v_1`, and `samples` carry
+        ## `C^T v_1` -- see `_equation_row_ppv`; `q` put there bare lands
+        ## 16.7x off with the right shape), scaled so `q_0^T C_0 xdot_0 = 1`,
+        ## which is `ppv()`'s own `v . xdot = 1`.  Measured with a periodic
+        ## trapezoid over the actual grid: +4.0e-5 / +3.6e-5 / +1.3e-5 at
+        ## N = 200 / 400 / 800, the reference's floor.  ⚠ The second half of
+        ## that measurement was PAC's period weights (`_period_weights`):
+        ## a left-rectangle rule on a non-uniform grid is first order by
+        ## itself.  The anchor `v` and the pair block are untouched; the
+        ## uniform grid never comes here, and the one-step kinds cannot:
+        ## their `factored_period_full` / `_dirk` replays are built on a
+        ## uniform `linspace` grid whatever the solve used, which is WHY
+        ## radau read as "exact on the 3:1 grid" -- its adjoint surfaces
+        ## never saw that grid.
+        if (getattr(self, '_ppv_alg_fallback', False)
+                and getattr(fp, 'kind', None) == 'solved_history'
+                and self._period_quadrature(fp) is not None):
+            _tms = np.asarray(self.waveform[0], dtype=float)
+            _qc = np.real(self._continuous_adjoint(fp, 1.0 + 0.0j, 0.0, _tms)[0])
+            _Wr = np.delete(np.asarray(self.waveform[1], dtype=float),
+                            self.irefnode, axis=0)
+            _C0 = np.asarray(self._C_at(_Wr[:, 0]), dtype=float)
+            _sN = float(_qc[:, 0] @ (_C0 @ np.asarray(xdot, dtype=float)))
+            if _sN != 0.0 and _qc.shape[1] >= len(states):
+                _new = []
+                for _sj, st in enumerate(states):
+                    _Cj = np.asarray(self._C_at(_Wr[:, _sj]), dtype=float)
+                    _vj = (_Cj.T @ _qc[:, _sj]) / _sN
+                    _new.append(np.concatenate((_vj, np.asarray(st)[m:])))
+                states = _new
         ## ⚠ AND FILL EVERY SAMPLE TOO, at ITS OWN operating point, because
         ## `G` is state-dependent and the algebraic entries are a pointwise
         ## function of the differential ones.  Done here rather than by
@@ -13556,11 +13602,11 @@ class PAC(Analysis):
         irn = pss.irefnode
         fp = pss.factored_period()
         tms = np.asarray(fp.times, dtype=float)
-        hs = np.diff(tms)
         T = float(fp.T)
         xs = np.asarray(pss.waveform[1], dtype=float)
         m = pss.cir.n - 1
-        nsamp = min(len(hs), xs.shape[1])
+        nsamp = min(len(tms) - 1, xs.shape[1])
+        hs = self._period_weights(tms, nsamp, T)
         acc = None
         for k in range(nsamp):
             xr = xs[:m, k]
@@ -16198,6 +16244,35 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
                 "source's, and its noise is pnoise's problem, not this one."
                 % what)
 
+    @staticmethod
+    def _period_weights(tms, nsamp, T):
+        """Periodic TRAPEZOID weights for samples at `tms[0..nsamp-1]` over
+        a period `T`: `w_j = (g_j + g_{j-1}) / 2` with `g_j` the gap to the
+        next sample and the last gap closing the period.
+
+        ⚠ EVERY PERIOD INTEGRAL HERE USED `h = diff(times)` -- the LEFT
+        RECTANGLE rule (2026-09-20).  On a uniform periodic grid that is the
+        trapezoid rule, spectrally accurate; on a NON-UNIFORM grid it is
+        FIRST order by itself (its error is (1/2) integral h'(t) y(t) dt, not
+        zero).  Measured on a solved-history (gear) run of an index-2
+        oscillator on a smooth grid, `c` against radau: -1.9e-3 / -9.3e-4 /
+        -4.6e-4 at N = 200 / 400 / 800 with the rectangle weights and
+        +4.0e-5 / +3.6e-5 / +1.3e-5 with these, from the same samples.  On a
+        uniform grid `0.5 h + 0.5 h == h` exactly, so every uniform-grid
+        number is bit-identical to before.  The one-step kinds' replays are
+        uniform-grid replays (`factored_period_full` / `_dirk`), so only the
+        solved-history kind ever paid this."""
+        tms = np.asarray(tms, dtype=float).ravel()
+        n = int(nsamp)
+        t = tms[:n]
+        g = np.empty(n)
+        g[:-1] = t[1:] - t[:-1]
+        g[-1] = float(T) + t[0] - t[-1]
+        w = 0.5 * g
+        w[1:] += 0.5 * g[:-1]
+        w[0] += 0.5 * g[-1]
+        return w
+
     def _white_diffusion_at(self, pss, w):
         """`(1/T) integral v_1^T (CY(w)/2) v_1 dt` with `CY` FROZEN at `w`.
 
@@ -16224,9 +16299,9 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         ## the algebraic ones.  See `_equation_row_ppv`.
         S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
-        h = np.diff(tms)
         ## the samples' own orbit, not `pss.period` -- see `ppv()`'s 'period'
         T = float(info['period'])
+        h = self._period_weights(tms, S.shape[0], T)
         cy = self._cy_reduced(pss, float(w))
         ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`), and
@@ -16308,8 +16383,8 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         ## equation-row input too.
         S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
-        h = np.diff(tms)
         T = float(info['period'])
+        h = self._period_weights(tms, S.shape[0], T)
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES, deliberately:
         ## it is what makes `Gamma <= c` exact rather than approximate.
         vbar = (S * h[:, None]).sum(0) / T
@@ -16389,7 +16464,7 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES: one sample per
         ## step, weighted by that step, so that Parseval closes exactly.
         t = tms[1:1 + n]
-        h = np.diff(np.concatenate(([tms[0]], t)))
+        h = self._period_weights(t, n, T)
         w0 = 2.0 * np.pi / T
         L = n // 2 if harmonics is None else int(harmonics)
         ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
