@@ -386,6 +386,11 @@ if __name__ == "__main__":
     doctest.testmod()
 
 
+## module level: a class-body comprehension cannot see a class attribute
+_DC_PASSTHROUGH = ('reltol', 'iabstol', 'vabstol', 'maxiter', 'gmin',
+                   'pcnr', 'bypass', 'bypasstol')
+
+
 class DCSweep(Analysis):
     """Sweep an instance parameter and solve the DC operating point at each value.
 
@@ -414,7 +419,17 @@ class DCSweep(Analysis):
     ['0.00', '1.00', '2.00']
     """
 
-    parameters = [Parameter(name='analysis', desc='Analysis name', default='dc')]
+    ## ⚠ THE INNER DC'S TOLERANCES ARE DECLARED HERE AND PASSED THROUGH
+    ## (2026-09-20, found by the peer suite after the `vabstol` default moved
+    ## to 1e-6 in 039a017).  Until then a sweep built its DC with the DEFAULTS
+    ## and REJECTED `vabstol` -- "parameter vabstol not in parameter
+    ## dictionary" -- so a caller had no way to name a tolerance for a sweep at
+    ## all, while the rule for that change was "name the tolerance, do not
+    ## re-pin".  The list is DC's own Newton parameters, taken from `DC` so the
+    ## two cannot drift apart; `analysis` and `epar` come from the base.
+    DC_PASSTHROUGH = _DC_PASSTHROUGH
+    parameters = ([Parameter(name='analysis', desc='Analysis name', default='dc')]
+                  + [p for p in DC.parameters if p.name in _DC_PASSTHROUGH])
 
     def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
         self.parameters = super(DCSweep, self).parameters + self.parameters
@@ -446,7 +461,9 @@ class DCSweep(Analysis):
 
         original = getattr(element.ipar, param)
         dc = DC(self.cir, toolkit=self.toolkit,
-                refnode=self.refnode if refnode is None else refnode)
+                refnode=self.refnode if refnode is None else refnode,
+                epar=self.par.epar,
+                **{name: getattr(self.par, name) for name in self.DC_PASSTHROUGH})
 
         columns = []
         x0 = None

@@ -23053,3 +23053,70 @@ def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
     bb, _v = pn(build(False), blind=True)
     assert abs(b / a - 1.0) < 5e-4, b / a
     assert bb / a > 5.0, bb / a
+
+
+def test_the_free_period_and_matrix_free_solves_record_the_stalled_step_signature_too():
+    """`57600a8` gave the DENSE driven shooting solves a diagnosis for "sitting on
+    the answer and still failing the step test" and said the free-period and
+    matrix-free solves were not covered.  Now they are, the same way: COUNTED,
+    never acted on.  Unit-level, because no cheap fixture stalls those paths on
+    demand: the free-period solve hands `fsolve` the flag, and the matrix-free
+    Newton records the signature with an iteration that is bit for bit what it
+    was (same iterate, same verdict, same number of `build` calls).
+    """
+    from pycircuit.circuit import analysis as _an
+    circuit.default_toolkit = circuit.numeric
+
+    ## (1) the free-period solve asks fsolve for the signature
+    seen = {}
+    real = _an.fsolve
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    pss = PSS(cir, method='gear', reltol=1e-9)
+
+    def f(z):
+        return (np.array([z[0] - 1.0, z[1] - 2.0]),
+                np.array([[1.0, 0.0], [0.0, 1.0]]))
+    _an.fsolve = spy
+    try:
+        z, info, ier, _m = pss._free_period_solve(
+            f, np.array([0.0, 3.0]), np.array([1e-9, 1e-9]),
+            np.array([1e-9, 1e-15]), 1e-9, 20, 3.0)
+    finally:
+        _an.fsolve = real
+    assert seen.get('floor_detect') is True
+    assert 'step_floor' in info
+
+    ## (2) the matrix-free Newton: a stuck system shows the signature, a
+    ## converging one does not, and the iteration is unchanged either way
+    calls = []
+
+    def stuck(z):
+        calls.append(1)
+        k = len(calls)
+        F = np.array([1e-4 * (1.0 if k % 2 else -1.2), 0.0])
+        ## a COPY: GMRES works in place, and a matvec that returns its own
+        ## input aliases its work vectors (a real matvec never does)
+        return F, (lambda v: np.array(v, dtype=float))
+    ## reltol 1e-6, not 1e-12: GMRES's rtol is a factor below reltol, and at
+    ## 1e-12 it hit its iteration limit before the Newton loop ran once
+    z1, info1, ier1, _m = pss._matrix_free_newton(
+        stuck, np.zeros(2), np.array([1e-3, 1e-3]), np.array([1e-12, 1e-12]),
+        1e-6, 9)
+    assert ier1 == 2 and len(calls) == 9
+    assert info1['step_floor'] and info1['step_floor']['index'] == 0 \
+        and info1['step_floor']['since'] <= 2, info1
+
+    def fine(z):
+        return np.array([z[0] - 1.0, z[1] + 1.0]), (lambda v: np.array(v, dtype=float))
+    z2, info2, ier2, _m = pss._matrix_free_newton(
+        fine, np.zeros(2), np.array([1e-12, 1e-12]), np.array([1e-12, 1e-12]),
+        1e-6, 20)
+    assert ier2 == 1 and info2['step_floor'] is None
+    np.testing.assert_allclose(z2, [1.0, -1.0], rtol=0, atol=1e-12)

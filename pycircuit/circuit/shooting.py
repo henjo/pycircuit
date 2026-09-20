@@ -2439,7 +2439,7 @@ class PSS(Analysis):
                 z, info, ier, mesg = analysis.fsolve(
                     func, z0, maxiter=maxiter, reltol=reltol, abstol=abstol,
                     xtol=xtol, toolkit=self.toolkit, full_output=True,
-                    line_search=True)
+                    line_search=True, floor_detect=True)
             else:
                 ## ⚠ THE MATRIX-FREE ROUTE COMES THROUGH HERE TOO, so the
                 ## trivial-root diagnosis below covers it.  Routing it around
@@ -8051,6 +8051,10 @@ class PSS(Analysis):
         z = np.asarray(z0, dtype=float).copy()
         n = len(z)
         ier, mesg, xdiff = 2, 'No convergence', None
+        ## the "stopped moving and still failing its step test" signature, as
+        ## `analysis.fsolve(floor_detect=True)` records it: COUNTED, never
+        ## acted on -- the iteration below is what it was
+        _floor_q, step_floor = [], None
         for _i in range(maxiter):
             F, mv = build(z)
 
@@ -8101,7 +8105,24 @@ class PSS(Analysis):
             if conv_x and conv_f:
                 ier, mesg = 1, 'Success'
                 break
-        return z, {}, ier, mesg
+            if conv_f:
+                _tolx = reltol * np.maximum(np.abs(z_new), np.abs(z)) + xtol
+                _dx = np.abs(xdiff)
+                _k = int(np.argmax(_dx / _tolx))
+                _floor_q.append((float(_dx[_k] / _tolx[_k]), _k,
+                                 float(_dx[_k]), float(_tolx[_k])))
+            else:
+                _floor_q = []
+            if len(_floor_q) >= 3 and any(
+                    _floor_q[-j_][0] >= _floor_q[-j_ - 1][0] for j_ in (1, 2)):
+                _w = max(_floor_q[-3:])
+                if step_floor is None:
+                    step_floor = dict(since=_i + 1 - len(_floor_q))
+                step_floor.update(index=_w[1], step=_w[2], tol=_w[3],
+                                  ratio=_w[0])
+            elif not _floor_q:
+                step_floor = None
+        return z, {'step_floor': step_floor}, ier, mesg
 
     ## Below this, a multiplier says the mode decays by six decades in one
     ## period and no stability question turns on it -- so parasitic

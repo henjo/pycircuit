@@ -255,7 +255,14 @@ def test_coupled_tline_matches_standard_path():
     assert abs(vb2[-1] - 2.0 / 3.0) < 5e-3
 
 def test_bordered_survives_the_ring_reset_on_a_delay_line():
-    """PINS the lte_gradients slice in the bordered branch.
+    """An INTEGRATION CHECK: the bordered branch survives the ring reset.
+
+    ⚠ 2026-09-20: this test used to PIN an `x_hist[:len(h_hist)+1]` slice fed
+    to `lte_gradients` in the bordered branch; that call is gone (its outputs
+    fed only eq (12)'s double-counted `q^T dv0` term, removed 873cbd3), so the
+    `ValueError` below cannot recur and the slice pins nothing.  What remains
+    worth keeping is the run itself -- bordered across a TLine's breakpoint
+    landings, reaching tend and staying near 'approx'.  The history:
 
     The kink discipline empties the step ring on a breakpoint landing (TLine
     circuits only), so the next bordered step sees 3 history points with 0 or

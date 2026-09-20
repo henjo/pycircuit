@@ -169,3 +169,38 @@ def test_diode_limiter_state_does_not_outlive_its_analysis():
 
     assert len(set(runs)) == 1, \
         'repeated DC on one circuit took %r evaluations -- state is surviving' % runs
+
+
+def test_dcsweep_takes_the_dc_tolerances_and_hands_them_to_its_inner_dc():
+    """⚠ A gap the `vabstol` default change (039a017) opened and a peer suite
+    found: `DCSweep` declared no tolerances and built its inner `DC` with the
+    defaults, so `DCSweep(cir, vabstol=1e-12)` raised "parameter vabstol not
+    in parameter dictionary" and a sweep could not be asked for a tolerance at
+    all -- while the rule for that change was "name the tolerance, do not
+    re-pin".  Now: the same Newton parameters as `DC`, same defaults, passed
+    through to every point's solve.
+    """
+    from pycircuit.circuit import dcanalysis as _dcm
+    cir = _diode_chain()
+    sw = DCSweep(cir, toolkit=numeric, vabstol=1e-12, reltol=1e-6, maxiter=57)
+    assert sw.par.vabstol == 1e-12 and sw.par.reltol == 1e-6 and sw.par.maxiter == 57
+    ## defaults are DC's defaults, by construction from the same list
+    d, s = DC(cir, toolkit=numeric), DCSweep(cir, toolkit=numeric)
+    for name in DCSweep.DC_PASSTHROUGH:
+        assert getattr(s.par, name) == getattr(d.par, name), name
+    ## and the inner DC receives them: spy on the construction
+    seen = {}
+    real = _dcm.DC
+
+    class Spy(real):
+        def __init__(self, *a, **kw):
+            seen.update(kw)
+            real.__init__(self, *a, **kw)
+    _dcm.DC = Spy
+    try:
+        res = sw.solve('V1', 'v', np.linspace(0.0, 2.0, 3))
+    finally:
+        _dcm.DC = real
+    assert seen['vabstol'] == 1e-12 and seen['reltol'] == 1e-6 \
+        and seen['maxiter'] == 57, seen
+    assert np.asarray(res.v('n4', gnd), dtype=float).shape[-1] == 3

@@ -2512,27 +2512,22 @@ class Transient(Analysis):
                 if denom <= 0.0 or denom != denom or denom == float('inf'):
                     h_new = h_want = h
                 else:
-                    ## TESTED AND REJECTED (rev-2 hygiene item): slicing
-                    ## these inputs to the integrator's degree -- to match
-                    ## `_lte_in_band`'s `err` -- collapsed the bordered method
-                    ## to 5x the steps (3117 vs 611 on the smooth agreement
-                    ## test).  The full-history gradient is self-consistent
-                    ## with `denom`'s full-history w'/w accumulation above,
-                    ## and that pairing, not degree-matching with `err`, is
-                    ## what the branch's measured record was tuned on.
-                    ## `x_hist[:len(h_hist)+1]`: points beyond the step ring
-                    ## have no spacing recorded, so the gradient cannot use
-                    ## them -- with the ring full this slices nothing, and
-                    ## after a breakpoint landing empties the ring (the kink
-                    ## discipline below) it keeps PRE-kink points out of the
-                    ## divided differences, which is that discipline's whole
-                    ## point.  NOT the rejected degree-slice of the hygiene
-                    ## note above: that sliced a FULL ring down to the
-                    ## integrator's degree; this only drops points that have
-                    ## no step size to difference against.
-                    i_ctrl, q_val, _d_unused = ctrl.lte_gradients(
-                        x_stage1, list(x_hist)[:len(h_hist) + 1],
-                        h_hist, h, etol)
+                    ## ⚠ THE `lte_gradients` CALL THAT STOOD HERE IS GONE
+                    ## (2026-09-20): its outputs fed only the `q^T dv0` term
+                    ## removed below, so after that fix it computed three
+                    ## things nothing read.  (My note of 2026-09-19 said
+                    ## `i_ctrl` served "the diagnostics"; nothing reads it.)
+                    ## Two notes retired with it, and their reasons: the
+                    ## "TESTED AND REJECTED" degree-slicing measurement (3117
+                    ## vs 611 steps) was about the gradient's INPUTS, so it
+                    ## was only ever a measurement of the double-counted term
+                    ## -- nothing is left to re-test; and the
+                    ## `x_hist[:len(h_hist)+1]` slice existed so the gradient
+                    ## did not raise after a breakpoint emptied the step ring
+                    ## (`test_bordered_survives_the_ring_reset_on_a_delay_line`
+                    ## keeps that run as an integration check).
+                    ## `lte_gradients` itself stays in `StepController`, gated
+                    ## by `test_solution_lte.py`; no shipped path calls it.
                     f_lte = err - target
                     ## ⚠⚠ NO `q^T dv0` TERM, AND ITS PRESENCE WAS A DEFECT
                     ## (2026-09-19).  Eq (12) has `-(f + q^T dv0)/denom` because
@@ -2553,8 +2548,6 @@ class Transient(Analysis):
                     ## to ~1e-13 and the term with it.  At any tolerance of 1e-9
                     ## or looser the loop exits with `dx0` still ~1e-8, and `q` is
                     ## ~1/etol.  Found when the default became 1e-6.
-                    ## `q_val` is still computed: `lte_gradients` supplies
-                    ## `i_ctrl` for the diagnostics, and the cost is nil.
                     dh_raw = -f_lte / denom
                     ## `h_want` is the UNCLAMPED Newton step, kept before the eta
                     ## limiter for the same reason the 'approx' branch keeps it:
