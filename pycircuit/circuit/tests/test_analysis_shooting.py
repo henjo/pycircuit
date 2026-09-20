@@ -22517,9 +22517,14 @@ def test_every_period_harmonic_is_a_fourier_integral_on_a_non_uniform_grid():
     phase = min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes(pss))
     assert 1e-5 < phase < 1e-3, phase          # the premise: outside the window
     assert abs(lam_n / lam_u - 1.0) < 1e-3, (lam_n, lam_u)
-    with pytest.raises(ValueError, match='non-uniform'):
+    ## 2026-09-20: this used to pin a REFUSAL on the non-uniform gear grid;
+    ## the phase mode is now found by its tangent alignment and the solve RUNS,
+    ## warning with the measured departure (see `_phase_mode_split`)
+    with _w.catch_warnings(record=True) as _rec:
+        _w.simplefilter('always')
         PAC(cir, toolkit=circuit.numeric).modal_spectrum(
             pss, np.array([1e-3]), 0, H=8)
+    assert any('off the unit circle' in str(r.message) for r in _rec)
 
 
 def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid():
@@ -23225,14 +23230,28 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
     cn, pn = solve(400, True, 'radau')
     assert phase_off(pn) < 1e-9, phase_off(pn)
     np.testing.assert_allclose(parts(cn, pn), parts(cu, pu), rtol=1e-8, atol=0)
-    ## gear and trap: O(h^2) off the circle on the same grid, and refused
+    ## gear and trap: O(h^2) off the circle on the same grid -- and they RUN
+    ## (2026-09-20, Andreas: gear as a first-class choice on non-uniform
+    ## grids): the phase mode is identified by its tangent alignment, its
+    ## exponent forced to 0, and the departure is WARNED with its size.
+    ## Gear's total converges to radau's at second order there: 7.6e-02 /
+    ## 1.76e-02 / 4.2e-03 at N = 200 / 400 / 800 (ratios 4.35, 4.15).
     for method in ('gear', 'trap'):
         cir, pss = solve(400, True, method)
         off = phase_off(pss)
         assert 1e-5 < off < 1e-4, (method, off)
-        with pytest.raises(ValueError, match="radau"):
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
             PAC(cir, toolkit=circuit.numeric).modal_spectrum(
                 pss, np.array([1e-3]), 0, H=8)
+        assert any('off the unit circle' in str(r.message) for r in rec), method
+    g200 = parts(*solve(200, True, 'gear'))
+    g400 = parts(*solve(400, True, 'gear'))
+    ref = parts(cu, pu)                       # radau: uniform == 3:1 to 1e-10
+    e200 = float(np.max(np.abs(g200 / ref - 1.0)))
+    e400 = float(np.max(np.abs(g400 / ref - 1.0)))
+    assert e400 < 4e-2, e400
+    assert 2.5 < e200 / e400 < 5.5, (e200, e400)       # second order
 
     ## gear's invariant on a UNIFORM grid: second order now (it halved before)
     def drift(n):
@@ -23313,11 +23332,15 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
     assert 8e-4 < d200 < 4e-3, d200                    # 2.2e-02 on the transpose
     assert 3.3 < d200 / d400 < 4.8, (d200, d400)
 
-    ## the refusal: gear and trap off the circle on the 3:1 grid, radau runs
+    ## gear, trap and radau all RUN on the 3:1 grid now (the phase mode by its
+    ## tangent alignment, never in the orbital sum): gear's R converges to
+    ## radau's at ~x3.5 per doubling (2.3e-02 / 7.2e-03 / 2.0e-03 measured)
+    Rr, _c = PAC(*[solve(400, True, 'radau')[0]], toolkit=circuit.numeric).orbital_correlation(
+        solve(400, True, 'radau')[1], H=8)
     for method in ('gear', 'trap'):
         cir, pss = solve(400, True, method)
-        with pytest.raises(ValueError, match='radau'):
-            PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
-    cir, pss = solve(400, True, 'radau')
-    R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
-    assert np.all(np.isfinite(R))
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
+        assert np.all(np.isfinite(R))
+        assert np.linalg.norm(R - Rr) / np.linalg.norm(Rr) < 3e-2, method

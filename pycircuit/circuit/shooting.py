@@ -15572,25 +15572,14 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         Tp = float(pss.period)
         w0 = 2.0 * np.pi / Tp
         CY2 = 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0)))
-        orb = [k for k, md in enumerate(modes)
-               if abs(abs(md['lam']) - 1.0) > 1e-6]
+        ## the phase mode by its tangent alignment (see `_phase_mode_split`),
+        ## and NEVER in the orbital sum: swept in with a near-zero exponent it
+        ## blew up as 1/|mu|^2 (146x .. 2449x radau's R on a 3:1 gear grid)
+        _kph, orb = self._phase_mode_split(pss, modes, 'PAC.orbital_correlation')
         if not orb:
             raise ValueError(
                 'PAC.orbital_correlation: no orbital mode -- every non-null '
-                'multiplier sits on the unit circle.')
-        ## ⚠ AND THE PHASE MODE MUST BE ON THE CIRCLE, or it is swept into the
-        ## orbital sum with a near-zero exponent and the result blows up as
-        ## 1/|mu|^2 -- measured 146x / 602x / 2449x radau's R at N = 200 / 400
-        ## / 800 on a 3:1 gear grid, SILENTLY (2026-09-20).  `modal_spectrum`
-        ## refuses this; so does this now, with the same route named.
-        if len(orb) == len(modes):
-            raise ValueError(
-                'PAC.orbital_correlation: no Floquet multiplier lies on the '
-                'unit circle (the phase mode), so the orbital sum would '
-                'include it with a near-zero exponent and blow up.  On a '
-                'non-uniform `grid=` a multistep or trapezoidal solve leaves '
-                'the phase multiplier off 1 by O(h^2); method=\'radau\' keeps '
-                'it there, or use a uniform grid.')
+                'multiplier is the phase mode.')
 
         def fcoef(P):
             ## `_period_dft`: the index DFT on a uniform grid, unchanged, and
@@ -15882,21 +15871,11 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
                 'PAC.modal_spectrum: harmonic must be >= 1 -- harmonic 0 was '
                 'never measured against pnoise. Use PAC.pnoise there.')
         modes = pss.floquet_modes(pss)
-        ph = [k for k, md in enumerate(modes)
-              if abs(abs(md['lam']) - 1.0) <= 1e-6]
-        orb = [k for k, md in enumerate(modes)
-               if abs(abs(md['lam']) - 1.0) > 1e-6]
-        if len(ph) != 1:
-            raise ValueError(
-                'PAC.modal_spectrum: expected exactly one Floquet multiplier '
-                'on the unit circle (the phase mode), found %d.  (On a '
-                'non-uniform `grid=` a MULTISTEP or trapezoidal solve leaves '
-                'the phase multiplier off 1 by O(h^2) -- measured 1 - 5e-05 '
-                'for gear and 1 + 5e-05 for trap at 400 points on a 3:1 grid '
-                '-- and this refusal is deliberate.  method=\'radau\' keeps '
-                'it at 1 to 1e-11 on the same grid and its modal spectra '
-                'reproduce the uniform grid to 1e-10; or use a uniform grid, '
-                'or PAC.pnoise, which is correct on either.)' % len(ph))
+        ## the phase mode by its tangent alignment, on any grid -- see
+        ## `_phase_mode_split` (the 1e-6 window refused every gear solve on a
+        ## non-uniform grid)
+        _kph, orb = self._phase_mode_split(pss, modes, 'PAC.modal_spectrum')
+        ph = [_kph]
         m = pss.cir.n - 1
         d = np.asarray(output)
         if d.ndim == 0:
@@ -15974,6 +15953,72 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         """
         return self.modal_spectrum(pss, offsets, output, harmonic=harmonic,
                                    H=H, sidebands=sidebands)['correlation']
+
+    #: the phase mode may sit this far off the unit circle before it is refused
+    PHASE_MODE_MAX_DEPARTURE = 1e-3
+
+    def _phase_mode_split(self, pss, modes, where):
+        """`(phase_index, orbital_indices)` -- the phase mode identified by WHAT
+        DEFINES IT, its eigenvector's alignment with the orbit tangent, not by
+        a window on `|lam| - 1` (2026-09-20, Andreas: gear as a first-class
+        choice on non-uniform grids).
+
+        On a uniform grid the phase multiplier is 1 to rounding.  On a grid
+        whose step varies, a multistep or trapezoidal solve loses time-
+        translation symmetry and the multiplier leaves the circle at O(h^2)
+        -- measured 1 - 5.1e-05 (gear) and 1 + 4.7e-05 (trap) at 400 points
+        on a 3:1 grid; radau keeps it at 1 + 1e-11 -- and a 1e-6 window
+        refused every gear solve there.  The right eigenvector of the phase
+        mode is the tangent `xdot(0)` (`C xdot = -i(x)` for the autonomous
+        circuit), which no orbital mode shares, so alignment picks it on any
+        grid; its exponent is then forced to 0 exactly, as the consumers
+        already do.  The departure is WARNED with its size when it exceeds
+        rounding, and the split is REFUSED when a second multiplier lies
+        within ten times that departure of the circle with any alignment --
+        the case a window ever protected against.
+        """
+        m = pss.cir.n - 1
+        irn = pss.irefnode
+        xr = np.asarray(pss.waveform[1], dtype=float)[:, 0]
+        xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+        i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel(), irn)
+        C0 = np.asarray(pss._C_at(xr), dtype=float)
+        try:
+            xdot0 = np.linalg.solve(C0, -i_red)
+        except np.linalg.LinAlgError:
+            xdot0 = np.linalg.lstsq(C0, -i_red, rcond=None)[0]
+        nx = float(np.linalg.norm(xdot0))
+        dep, cos = [], []
+        for md in modes:
+            u = np.asarray(md['u0'])[:m]
+            dep.append(abs(abs(complex(md['lam'])) - 1.0))
+            cos.append(abs(complex(np.vdot(u, xdot0))) / max(float(np.linalg.norm(u)) * nx, 1e-300))
+        cand = [k for k in range(len(modes)) if dep[k] <= self.PHASE_MODE_MAX_DEPARTURE and cos[k] > 0.9]
+        if not cand:
+            raise ValueError(
+                '%s: no Floquet mode is both within %.0e of the unit circle and '
+                'aligned with the orbit tangent (|lam|-1: %s; alignment: %s).  Is '
+                'this an autonomous oscillator solved at its own period?'
+                % (where, self.PHASE_MODE_MAX_DEPARTURE,
+                   ', '.join('%.1e' % d for d in dep), ', '.join('%.2f' % c for c in cos)))
+        k = max(cand, key=lambda j: cos[j])
+        rival = [j for j in range(len(modes)) if j != k and dep[j] <= max(10.0 * dep[k], 1e-6)]
+        if rival:
+            raise ValueError(
+                '%s: a second Floquet multiplier (|lam|-1 = %s) lies as close to '
+                'the unit circle as the phase mode (%.1e), so the phase mode '
+                'cannot be told from an orbital one.  A uniform grid or '
+                'method=\'radau\' puts the phase multiplier at 1 to rounding.'
+                % (where, ', '.join('%.1e' % dep[j] for j in rival), dep[k]))
+        if dep[k] > 1e-6:
+            warnings.warn(
+                '%s: the phase mode sits %.1e off the unit circle (alignment '
+                'with the orbit tangent %.4f); its exponent is forced to 0.  '
+                'On a non-uniform grid a multistep or trapezoidal solve leaves '
+                'it there at O(h^2); the modal parts are then the method\'s '
+                'order (measured second order for gear on a 3:1 grid).'
+                % (where, dep[k], cos[k]), RuntimeWarning, stacklevel=3)
+        return k, [j for j in range(len(modes)) if j != k]
 
     def diffusion_constant(self, pss):
         """`c` — the phase diffusion constant, in seconds.
