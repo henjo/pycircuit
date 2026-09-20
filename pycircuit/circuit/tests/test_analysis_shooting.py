@@ -23302,11 +23302,17 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
                                     sidebands=16)
         return np.concatenate([ms[k] for k in ('phase', 'orbital', 'correlation')])
 
-    ## radau: on the unit circle on the 3:1 grid, runs, and equals the uniform grid
+    ## radau: on the unit circle on the 3:1 grid, runs, and agrees with the
+    ## uniform grid to 2.6e-6 -- ORDER 5 AT 400 POINTS ON A GENUINE 3:1 GRID.
+    ## ⚠ This used to be pinned at rtol 1e-8 (2026-09-20, earlier the same
+    ## day) and read as "exact": the factored period then replayed on a
+    ## UNIFORM grid whatever the solve used, so the two sides were the same
+    ## replay.  Since the replay honours the solved grid the difference is
+    ## radau's own fifth-order error on the coarse 3:1 steps.
     cu, pu = solve(400, False, 'radau')
     cn, pn = solve(400, True, 'radau')
     assert phase_off(pn) < 1e-9, phase_off(pn)
-    np.testing.assert_allclose(parts(cn, pn), parts(cu, pu), rtol=1e-8, atol=0)
+    np.testing.assert_allclose(parts(cn, pn), parts(cu, pu), rtol=1e-5, atol=0)
     ## gear and trap: O(h^2) off the circle on the same grid -- and they RUN
     ## (2026-09-20, Andreas: gear as a first-class choice on non-uniform
     ## grids): the phase mode is identified by its tangent alignment, its
@@ -23316,7 +23322,11 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
     for method in ('gear', 'trap'):
         cir, pss = solve(400, True, method)
         off = phase_off(pss)
-        assert 1e-5 < off < 1e-4, (method, off)
+        ## ⚠ the lower bound was 1e-5 while the replay was UNIFORM whatever
+        ## the solve used (trap's surfaces come from its TR-BDF2 twin, which
+        ## now honours the 3:1 grid): measured 6.0e-6 for trap there, gear
+        ## unchanged (its replay was always on the caller's grid)
+        assert 1e-6 < off < 1e-4, (method, off)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
             PAC(cir, toolkit=circuit.numeric).modal_spectrum(
@@ -23324,7 +23334,7 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
         assert any('off the unit circle' in str(r.message) for r in rec), method
     g200 = parts(*solve(200, True, 'gear'))
     g400 = parts(*solve(400, True, 'gear'))
-    ref = parts(cu, pu)                       # radau: uniform == 3:1 to 1e-10
+    ref = parts(cu, pu)                       # radau: uniform == 3:1 to 3e-6
     e200 = float(np.max(np.abs(g200 / ref - 1.0)))
     e400 = float(np.max(np.abs(g400 / ref - 1.0)))
     assert e400 < 4e-2, e400
@@ -23724,3 +23734,109 @@ def test_gears_ppv_samples_are_second_order_on_a_non_uniform_index2_grid():
     ## the uniform grid keeps the exact-transpose samples (second order there)
     eu, wu = c_of('gear', 400, None)
     assert wu and abs(eu / cref - 1.0) < 2e-4, eu / cref - 1.0    # measured 8.7e-5
+
+
+def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
+    """The factored period of a stage method (radau, trbdf2, esdirk43, and
+    the TR-BDF2 twin trap/euler borrow) replays the converged orbit on the
+    grid the SOLVE ran on, not on a uniform `linspace` of the same count
+    (2026-09-20, Andreas: "honour the caller's grid").
+
+    ⚠ UNTIL THEN EVERY ONE-STEP REPLAY WAS UNIFORM, and the consequence
+    was live on the DEFAULT method: `break_events` lands a pulse edge in
+    the solve, `factored_period_full` replayed on a uniform grid, so
+    `_period_quadrature(fp)` returned None and `carrier_phasor` took a
+    plain MEAN over the event grid's non-uniform nodes.  Pulsed RC, tr = 0,
+    radau, events landed by default, first harmonic of the capacitor
+    voltage against the analytic periodic solution's coefficient::
+
+        N      nodes   uniform replay (shipped)   replay on the solved grid
+        50     55      1.04e-01                   1.54e-03
+        100    105     5.43e-02                   3.77e-04
+        200    205     2.77e-02                   9.39e-05
+        400    403     7.05e-03                   2.33e-05
+        800    803     3.53e-03                   5.68e-06
+
+    First order against second, 600x at 800.  The same uniform replay is
+    why radau's PPV, modes and noise read as "exact on the 3:1 grid": its
+    adjoint never saw that grid.  `factored_period` now hands the solved
+    fractions down (`_replay_grid`); a direct `factored_period_full(x0, T,
+    npts)` call with a bare count is uniform as before, and a uniform
+    solve is bit-identical (the fractions are only passed when the grid is
+    not uniform).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    RR, CC = 1e3, 3e-10
+    TAU = RR * CC
+    TD, PW = 0.0125 * T, 0.4 * T
+
+    def pulsed():
+        c = SubCircuit()
+        c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=TD, tr=0.0, tf=0.0, pw=PW, per=T)
+        c['R'] = R(1, 2, r=RR)
+        c['C'] = C(2, gnd, c=CC)
+        return c
+
+    def exact(ts):
+        tr = 1e-18
+        e = [0.0, TD, TD + tr, TD + tr + PW, TD + tr + PW + tr, T]
+        seg = [(e[0], e[1], 0.0, 0.0), (e[1], e[2], 0.0, 1.0 / tr),
+               (e[2], e[3], 1.0, 0.0), (e[3], e[4], 1.0, -1.0 / tr),
+               (e[4], e[5], 0.0, 0.0)]
+
+        def prop(x0, t0, t1, a, b):
+            one_e = -np.expm1(-(t1 - t0) / TAU)
+            return x0 * (1.0 - one_e) + (a - b * TAU) * one_e + b * (t1 - t0)
+        alpha, beta = 1.0, 0.0
+        for (t0, t1, a, b) in seg:
+            al = np.exp(-(t1 - t0) / TAU)
+            alpha, beta = al * alpha, al * beta + prop(0.0, t0, t1, a, b)
+        x0 = beta / (1.0 - alpha)
+        out = np.empty(len(ts))
+        for i, t in enumerate(ts):
+            t = float(t) % T
+            x = x0
+            for (t0, t1, a, b) in seg:
+                if t <= t1 + 1e-30:
+                    out[i] = prop(x, t0, t, a, b)
+                    break
+                x = prop(x, t0, t1, a, b)
+            else:
+                out[i] = x
+        return out
+    tt = np.linspace(0.0, T, 100001)[:-1]
+    X1 = complex(np.sum(exact(tt) * np.exp(-2j * np.pi * tt / T)) / len(tt))
+
+    errs = []
+    for N in (100, 200, 400):
+        c = pulsed()
+        p = PSS(c, method='radau', reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / N, maxiterations=40)
+        assert p.converged and p.break_events and len(p.event_times) == 4
+        fp = p.factored_period()
+        ## the replay IS on the solved grid
+        assert np.allclose(np.asarray(fp.times, float),
+                           np.asarray(p.waveform[0], float).ravel(), rtol=0, atol=1e-18 * 0 + 1e-15)
+        assert p._period_quadrature(fp) is not None
+        full = [str(n_) for n_ in c.nodes].index('2')
+        out = full if full < p.irefnode else full - 1
+        a = PAC(c).carrier_phasor(p, out)
+        errs.append(abs(a - X1) / abs(X1))
+    assert errs[0] < 1e-3 and errs[2] < 5e-5, errs         # shipped: 5.4e-2 / 7.0e-3
+    assert 3.3 < errs[0] / errs[1] < 4.8 and 3.3 < errs[1] / errs[2] < 4.8, errs
+
+    ## a bare count is still a uniform replay; a uniform solve is unchanged
+    c = pulsed()
+    p = PSS(c, method='radau', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 100, maxiterations=40, break_events=False)
+    fpu = p.factored_period()
+    assert p._period_quadrature(fpu) is None
+    x0 = np.asarray(p._period_state[1], float).ravel()
+    fpb = p.factored_period_full(x0, T, 100)
+    assert np.allclose(np.asarray(fpb.times, float), np.linspace(0.0, T, 101), rtol=0, atol=1e-22)

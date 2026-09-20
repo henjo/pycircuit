@@ -4579,7 +4579,7 @@ class PSS(Analysis):
         return (np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float),
                 Mx, np.asarray(Mt).ravel())
 
-    def factored_period_glm(self, x0, T, npts, method=None):
+    def factored_period_glm(self, x0, T, npts, method=None, grid=None):
         """The factored period map of a Nordsieck GLM about a periodic point.
 
         ⚠ THE MAP IS ON THE NORDSIECK STATE, width ``r*m = (p+1)*m``, not on
@@ -4596,8 +4596,7 @@ class PSS(Analysis):
         x0 = np.asarray(x0, dtype=float)
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
-        times = np.linspace(0.0, float(T), int(npts) + 1)
-        hs = np.diff(times)
+        times, hs = self._replay_grid(T, npts, grid)
         tr_saved = getattr(self, '_tran', None)
         self._tran = self._new_transient(self._integrator_for(method))
         try:
@@ -7570,6 +7569,36 @@ class PSS(Analysis):
                     autonomous=autonomous, component_rms=component_rms,
                     check_ratio=check_ratio, trusted=trusted)
 
+    @staticmethod
+    def _replay_grid(T, npts, grid):
+        """The grid a one-step factored period replays on: uniform for a
+        bare point count, the CALLER'S fractions when `grid` is given.
+
+        ⚠ UNTIL 2026-09-20 THESE REPLAYS WERE ALWAYS UNIFORM.  `factored_period`
+        passed `len(times) - 1` and the builders built `linspace(0, T, npts+1)`
+        whatever grid the solve had run on, so the PPV, the Floquet modes and
+        every noise fold of a radau / trbdf2 / esdirk43 run -- and of trap and
+        euler through the TR-BDF2 twin -- on a non-uniform grid were computed
+        on a uniform replay from the converged `x0`.  Accurate (radau is
+        order 5 on most grids), and the reason radau read as "exact on the
+        3:1 grid": its adjoint never saw that grid.  Only the solved-history
+        (gear) kind replayed on the caller's grid.  Now `factored_period`
+        hands the solved fractions down and the replay is on the grid the
+        solve was on; a direct call with a bare `npts` is uniform as before.
+        The fractions are scaled to `T` (an autonomous period is solved, and
+        the fractions are of the period, not of the seed)."""
+        if grid is None:
+            times = np.linspace(0.0, float(T), int(npts) + 1)
+            return times, np.diff(times)
+        fr = np.asarray(grid, dtype=float).ravel()
+        if len(fr) != int(npts):
+            raise ValueError('factored period: %d step fractions for %d steps'
+                             % (len(fr), int(npts)))
+        hs = fr / float(fr.sum()) * float(T)
+        times = np.concatenate(([0.0], np.cumsum(hs)))
+        times[-1] = float(T)
+        return times, hs
+
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
@@ -7607,6 +7636,12 @@ class PSS(Analysis):
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
         _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
         if _integ.is_stage_method():
+            ## the SOLVED grid's fractions (None on a uniform grid keeps the
+            ## replay bit-identical to before) -- see `_replay_grid`
+            _hs = np.asarray(hs, dtype=float).ravel()
+            _uniform = (len(_hs) < 2 or float(np.max(_hs)) / float(np.min(_hs))
+                        - 1.0 <= self.UNIFORM_GRID_TOL)
+            _fr = None if _uniform else _hs / float(_hs.sum())
             ## A self-starting stage method has its own factored map (no opener,
             ## no pair).  Route BY STRUCTURE: a fully-implicit tableau to the
             ## coupled builder, a lower-triangular one (DIRK/ESDIRK) to the
@@ -7617,11 +7652,11 @@ class PSS(Analysis):
             if getattr(_integ, 'is_multivalue', lambda: False)():
                 ## a Nordsieck GLM: the map is on the MULTIVALUE state, width
                 ## r*m -- see `factored_period_glm`
-                fp = self.factored_period_glm(x0, T, len(times) - 1)
+                fp = self.factored_period_glm(x0, T, len(times) - 1, grid=_fr)
             elif _integ.is_fully_implicit():
-                fp = self.factored_period_full(x0, T, len(times) - 1)
+                fp = self.factored_period_full(x0, T, len(times) - 1, grid=_fr)
             else:
-                fp = self.factored_period_dirk(x0, T, len(times) - 1)
+                fp = self.factored_period_dirk(x0, T, len(times) - 1, grid=_fr)
             self._factored_period_cache = fp
             return fp
         if solved:
@@ -7639,7 +7674,7 @@ class PSS(Analysis):
         self._factored_period_cache = fp
         return fp
 
-    def factored_period_full(self, x0, T, npts, method=None):
+    def factored_period_full(self, x0, T, npts, method=None, grid=None):
         """The factored period map of ANY FULLY-IMPLICIT (FULL) stage method
         about a periodic point `x0` -- the tableau-generic coupled monodromy.
 
@@ -7664,8 +7699,7 @@ class PSS(Analysis):
         x0 = np.asarray(x0, dtype=float)
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
-        times = np.linspace(0.0, float(T), int(npts) + 1)
-        hs = np.diff(times)
+        times, hs = self._replay_grid(T, npts, grid)
         tr_saved = getattr(self, '_tran', None)
         self._tran = self._new_transient(self._integrator_for(method))
         try:
@@ -7676,7 +7710,7 @@ class PSS(Analysis):
         return FactoredPeriod('full', None, steps, x_last, x_prev,
                               self, times=times, T=float(T))
 
-    def factored_period_dirk(self, x0, T, npts, method=None):
+    def factored_period_dirk(self, x0, T, npts, method=None, grid=None):
         """The factored period map of ANY lower-triangular (DIRK/ESDIRK) stage
         method about a periodic point `x0` -- the tableau-generic SEQUENTIAL
         monodromy builder (`FactoredPeriod(kind='dirk')`).  TR-BDF2 is the first
@@ -7687,8 +7721,7 @@ class PSS(Analysis):
         x0 = np.asarray(x0, dtype=float)
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
-        times = np.linspace(0.0, float(T), int(npts) + 1)
-        hs = np.diff(times)
+        times, hs = self._replay_grid(T, npts, grid)
         tr_saved = getattr(self, '_tran', None)
         self._tran = self._new_transient(self._integrator_for(method))
         try:
