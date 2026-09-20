@@ -14306,7 +14306,11 @@ def test_event_grid_lands_the_period_on_its_event_times():
         p = PSS(cr, method='gear', reltol=1e-10)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            p.solve(period=T, grid=list(fr), maxiterations=40)
+            ## the grid under test is the one passed in -- since 2026-09-20
+            ## `break_events` defaults ON for gear too, and would land the
+            ## events on the "uniform" baseline as well (measured: identical)
+            p.solve(period=T, grid=list(fr), maxiterations=40,
+                    break_events=False)
         return np.asarray(p._period_state[1], float).ravel()
 
     td = 0.5 / N * T                      # edges deliberately between points
@@ -14762,65 +14766,154 @@ def test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged():
         'seeds at and above the fundamental should find it: %r' % (found,)
 
 
-def test_event_breaking_defaults_on_for_one_step_methods_and_off_for_gear():
-    """The default is decided by the METHOD, and the split is measured.
+def test_event_breaking_defaults_on_for_every_method_and_a_jump_keeps_both_ramp_ends():
+    """The default is ON for every method, and `event_grid` never snaps an
+    event onto an event.  Both are measured on a ladder (2026-09-20).
 
-    Landing a source's discontinuities on grid points HELPS a one-step method
-    and HURTS Gear-2 -- same circuit, same step count::
+    ⚠ THIS USED TO ASSERT GEAR DEFAULTS OFF, "measured to lose", on ONE step
+    count (gear uniform 8.23e-3, + events 1.29e-2, with a jittered control
+    showing non-uniformity itself costs gear).  The ladder overturned the
+    conclusion, not the control: non-uniformity does cost a multistep method,
+    and the alignment buys more.  Pulsed RC, analytic reference, max error
+    over the ACTUAL grid nodes, edges ramped over 0.02 T::
 
-        method               uniform     + events    jittered, no events
-        gear   (multistep)   8.23e-03    1.29e-02    1.24e-02    lost 7 of 9
-        trap   (one-step)    4.98e-03    3.15e-03    6.82e-03    lost 0 of 9
-        radau  (one-step)                1.02-1.89x gain         lost 0 of 9
+        N       gear uniform  gear + events   trap uniform  trap + events
+        50      1.39e-02      3.16e-03        7.78e-03      1.68e-04
+        400     3.72e-04      2.44e-04        1.30e-04      5.81e-06
+        800     9.52e-05      6.31e-05        3.25e-05      1.45e-06
+        1600    2.41e-05      1.61e-05        8.13e-06      3.63e-07
 
-    ⚠ THE JITTERED COLUMN IS THE CONTROL THAT MAKES THIS A CAUSE AND NOT A
-    CORRELATION.  A grid of the same step COUNT and comparable non-uniformity,
-    with the events deliberately NOT landed, hurts gear just as much as the
-    event grid does.  So gear's loss is NON-UNIFORMITY ITSELF, not a defect in
-    `event_grid` -- a multistep companion's coefficients depend on the
-    step-size RATIO, so a uniform grid is its best case.  `trap` pays that cost
-    too and the alignment is worth more than the cost.
+    gear + events wins at 5 of 6 N and is second order (3.88x, 3.92x per
+    doubling).  Its gain (1.5x) is small next to trap's (22x) because BDF2
+    takes an O(h^2 [x'']) hit at the ONE step after each corner, where its
+    history straddles the jump in x'' (5.5e-7 -> 1.7e-4 across that step,
+    30x trap's) -- a constant, not an order.
 
-    ⚠ Three attempts at that measurement were discarded before one was
-    trusted: the first compared `x0` on a circuit whose RC settles inside the
-    period (errors of 1e-33 -- a zero-vs-zero) and "showed" 15-37x gains; the
-    second compared the raw `x_in`, whose algebraic entries are free, and
-    "showed" losses in 16 of 18 rows.  The third validated the instrument
-    first -- reference converged at 4x per doubling, uniform error reaching
-    gear-2's asymptotic 3.95x, self-bias 5e-6 against errors of 1e-3 -- and
-    only then compared.  The tell in attempt two was a NON-MONOTONIC error
-    column.
+    ⚠ AT A TRUE JUMP (tr = 0, clamped to a 1e-18 ramp) EVERY METHOD WAS
+    FIRST ORDER WITH THE EDGES LANDED, and the cause was the grid, not a
+    method: the snap landed the ramp's first event and then OVERWROTE that
+    node with its second, so the edge sat on the post-jump side and the
+    step arriving there integrated its whole length with the post-jump
+    source.  The error was injected AT the edge node and decayed over tau,
+    each method's endpoint weight times h dU/tau (radau 0.111 x 8.3e-3 =
+    9.3e-4 predicted, 8.5e-4 measured).  Keeping BOTH ramp ends as nodes --
+    a 1e-18 step -- fixes all three, gear included, with no restart::
+
+        N      gear collapsed  gear both ends   trap both ends  radau both ends
+        200    5.73e-03        6.43e-05         6.27e-06        5.0e-08
+        800    2.55e-03        1.01e-05         6.34e-07        2.0e-07
+        1600   1.30e-03        3.42e-06         2.30e-06        5.3e-07
+
+    Variable-step BDF2 with h_n/h_{n-1} -> inf over a consistent tiny step
+    degenerates to the trapezoidal rule (the factor w/2 multiplies a
+    difference that is O(1/w)), which is also why the zero-stability
+    warning must not fire on an ISOLATED up-step.  The ~1e-6 floors at
+    800-1600 are the ramp node's time rounding (1e-24 in t is 1e-6 in u on
+    a 1e-18 ramp), not the solver.
+
+    ⚠ The reference is the RC's closed form per linear segment written with
+    `expm1`: the naive `a - b tau` with b = 1/tr = 1e18 cancelled to a flat
+    9.5e-5 on every method, and that flat floor was the tell.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
+    RR, CC = 1e3, 3e-10
+    TAU = RR * CC
+    TD, PW = 0.0125 * T, 0.4 * T
 
-    def pulsed():
+    def pulsed(tr):
         c = SubCircuit()
-        c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=0.0125 * T,
-                         tr=T * 0.02, tf=T * 0.02, pw=T * 0.4, per=T)
-        c['R'] = R(1, 2, r=1e3)
-        c['C'] = C(2, gnd, c=3e-10)
+        c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=TD, tr=tr, tf=tr, pw=PW, per=T)
+        c['R'] = R(1, 2, r=RR)
+        c['C'] = C(2, gnd, c=CC)
         return c
 
-    ## (1) The predicate is the method's own `companion_reach`, not a name.
-    expect = {'euler': True, 'trap': True, 'gear': False,
-              'radau': True, 'trbdf2': True}
-    for meth, want in expect.items():
-        p = PSS(pulsed(), method=meth)
-        got = p._resolve_break_events(None)
-        reach = int(p._integrator_for(meth).companion_reach())
-        assert got is want, \
-            '%s (companion_reach=%d) defaulted break_events=%r, wanted %r' \
-            % (meth, reach, got, want)
-        assert (reach == 1) is want, \
-            '%s: the predicate and the expectation disagree' % meth
+    def exact(tr, ts):
+        tr = max(tr, 1e-18)
+        e = [0.0, TD, TD + tr, TD + tr + PW, TD + tr + PW + tr, T]
+        seg = [(e[0], e[1], 0.0, 0.0), (e[1], e[2], 0.0, 1.0 / tr),
+               (e[2], e[3], 1.0, 0.0), (e[3], e[4], 1.0, -1.0 / tr),
+               (e[4], e[5], 0.0, 0.0)]
 
-    ## (2) An explicit value is honoured in both directions.
-    assert PSS(pulsed(), method='gear')._resolve_break_events(True) is True
-    assert PSS(pulsed(), method='trap')._resolve_break_events(False) is False
+        def prop(x0, t0, t1, a, b):
+            one_e = -np.expm1(-(t1 - t0) / TAU)
+            return x0 * (1.0 - one_e) + (a - b * TAU) * one_e + b * (t1 - t0)
+        alpha, beta = 1.0, 0.0
+        for (t0, t1, a, b) in seg:
+            al = np.exp(-(t1 - t0) / TAU)
+            alpha, beta = al * alpha, al * beta + prop(0.0, t0, t1, a, b)
+        x0 = beta / (1.0 - alpha)
+        out = np.empty(len(ts))
+        for i, t in enumerate(ts):
+            t = float(t) % T
+            x = x0
+            for (t0, t1, a, b) in seg:
+                if t <= t1 + 1e-30:
+                    out[i] = prop(x, t0, t, a, b)
+                    break
+                x = prop(x, t0, t1, a, b)
+            else:
+                out[i] = x
+        return out
 
-    ## (3) ⚠ A circuit whose sources declare no discontinuity must be
+    def err(tr, method, N, be):
+        c = pulsed(tr)
+        pss = PSS(c, method=method, reltol=1e-10)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            pss.solve(period=T, timestep=T / N, break_events=be, maxiterations=40)
+        assert pss.converged
+        ts = np.asarray(pss.waveform[0], float).ravel()
+        xs = np.asarray(pss.waveform[1], float)
+        row = [str(n) for n in c.nodes].index('2')
+        ratio_warn = [w for w in rec if 'steps up by' in str(w.message)]
+        return float(np.abs(xs[row] - exact(tr, ts)).max()), pss, ratio_warn
+
+    ## (1) ON for every method; an explicit value honoured both ways.
+    for meth in ('euler', 'trap', 'gear', 'radau', 'trbdf2'):
+        assert PSS(pulsed(0.02 * T), method=meth)._resolve_break_events(None) is True, meth
+    assert PSS(pulsed(0.02 * T), method='gear')._resolve_break_events(False) is False
+    assert PSS(pulsed(0.02 * T), method='trap')._resolve_break_events(True) is True
+
+    ## (2) Ramped edges: gear + events second order and ahead of uniform.
+    e_u400, _, _ = err(0.02 * T, 'gear', 400, False)
+    e_e400, _, _ = err(0.02 * T, 'gear', 400, True)
+    e_e800, _, _ = err(0.02 * T, 'gear', 800, True)
+    e_e1600, g1600, wr = err(0.02 * T, 'gear', 1600, True)
+    assert g1600.break_events is True and len(g1600.event_times) == 4
+    assert e_e400 < e_u400, (e_e400, e_u400)
+    assert e_e1600 < 3e-5, e_e1600
+    assert 3.3 < e_e800 / e_e1600 < 4.5, (e_e800, e_e1600)
+    assert not wr, 'an isolated event insertion must not raise the ratio warning'
+
+    ## (3) A true jump: both ramp ends are nodes, and every method is back
+    ## to its order.  The collapsed grid gave >= 1.3e-3 for all three.
+    fr = PSS(pulsed(0.0)).event_grid(T, npts=200)
+    assert min(fr) < 1e-9, 'the 1e-18 ramp step must survive: min step %.3e' % min(fr)
+    assert len(fr) >= 204, len(fr)
+    e_g200, _, _ = err(0.0, 'gear', 200, True)
+    e_g800, g800, wr = err(0.0, 'gear', 800, True)
+    assert e_g800 < 3e-5 and e_g200 / e_g800 > 3.0, (e_g200, e_g800)
+    assert not wr, 'a 1e-18 event ramp is an isolated up-step: no ratio warning'
+    e_t800, _, _ = err(0.0, 'trap', 800, True)
+    assert e_t800 < 5e-6, e_t800
+    e_r400, _, _ = err(0.0, 'radau', 400, True)
+    assert e_r400 < 1e-7, e_r400
+
+    ## (4) The ratio warning still fires where up-steps REPEAT.
+    N = 200
+    alt = np.tile([3.0, 1.0], N // 2)
+    c = pulsed(0.02 * T)
+    pss = PSS(c, method='gear', reltol=1e-8)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        pss.solve(period=T, timestep=T / N, break_events=False,
+                  grid=alt / alt.sum(), maxiterations=40)
+    assert any('steps up by' in str(w.message) and 'REPEAT' in str(w.message)
+               for w in rec), 'an alternating 3:1 grid must still warn'
+
+    ## (5) ⚠ A circuit whose sources declare no discontinuity must be
     ## BIT-IDENTICAL either way, or this default silently moves every solve in
     ## the suite.  `event_grid` rebuilds a uniform grid from `linspace` even
     ## when it finds nothing, and that differs from `_period_grid`'s in the
@@ -14846,22 +14939,6 @@ def test_event_breaking_defaults_on_for_one_step_methods_and_off_for_gear():
     assert np.array_equal(same[0], same[1]), \
         'break_events perturbed an event-free circuit (||d|| = %.3e)' \
         % np.linalg.norm(same[1] - same[0])
-
-    ## (4) And on a circuit that DOES have events the default must actually
-    ## bite -- the events are found and the grid grows.
-    p = PSS(pulsed(), method='trap')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        p.solve(period=T, timestep=T / 80)
-    assert p.break_events is True and len(p.event_times) >= 3, \
-        'trap should have broken at the pulse edges, got break_events=%r ' \
-        'events=%r' % (p.break_events, p.event_times)
-    g = PSS(pulsed(), method='gear')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        g.solve(period=T, timestep=T / 80)
-    assert g.break_events is False, \
-        'gear must NOT break by default -- it is measured to lose'
 
 
 def test_the_ppv_waveform_matches_a_pulse_isf_over_the_whole_period():

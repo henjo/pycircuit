@@ -2676,42 +2676,39 @@ class PSS(Analysis):
         warnings.warn(msg, RuntimeWarning, stacklevel=4)
 
     def _resolve_break_events(self, requested):
-        """`break_events`, defaulted from the METHOD when not given.
+        """`break_events`, ON for every method when not given.
 
-        ⚠⚠ THIS IS ON FOR ONE-STEP METHODS AND OFF FOR A MULTISTEP ONE, AND
-        THE SPLIT IS MEASURED RATHER THAN ASSUMED.  Landing a source's
-        discontinuities on grid points helps a one-step method and HURTS
-        Gear-2, on the same circuit, at the same step count:
+        ⚠⚠ THIS USED TO BE OFF FOR GEAR, ON A ONE-STEP-COUNT MEASUREMENT,
+        AND THE LADDER OVERTURNED IT (2026-09-20).  The old table (gear
+        uniform 8.23e-3, + events 1.29e-2, jittered 1.24e-2, "lost 7 of 9")
+        was one N on the ramped pulse, and its jittered control did show
+        that non-uniformity costs a multistep method something.  It does; it
+        is just smaller than what the alignment buys.  Pulsed RC, analytic
+        reference, max node error, edges ramped over 0.02 T::
 
-            method               uniform     + events   jittered, no events
-            gear   (multistep)   8.23e-03    1.29e-02   1.24e-02   lost 7 of 9
-            trap   (one-step)    4.98e-03    3.15e-03   6.82e-03   lost 0 of 9
-            radau  (one-step)    --          1.02-1.89x gain       lost 0 of 9
+            N        gear uniform   gear + events    trap uniform   trap + events
+            50       1.39e-02       3.16e-03         7.78e-03       1.68e-04
+            100      4.70e-03       5.76e-03         1.50e-03       7.14e-05
+            400      3.72e-04       2.44e-04         1.30e-04       5.81e-06
+            1600     2.41e-05       1.61e-05         8.13e-06       3.63e-07
 
-        ⚠ **The jittered column is the control that makes this a cause.**  A
-        grid of the same step COUNT and comparable non-uniformity, with the
-        events deliberately NOT landed, hurts gear just as much as the event
-        grid does (1.24e-2 against 1.29e-2).  So gear's loss is NON-UNIFORMITY
-        ITSELF, not a defect in `event_grid`: a multistep method's companion
-        coefficients depend on the step-size RATIO, so a uniform grid is its
-        best case and any insertion is a real cost.  `trap` pays that cost too
-        (jittered 6.82e-3 against uniform 4.98e-3) and the event alignment is
-        worth MORE than the cost, so it nets out ahead.
-
-        The predicate is `companion_reach() == 1` -- the method's own statement
-        of how many charges back its companion reads, which is exactly the
-        property that makes step ratios matter.  `RungeKuttaIntegrator` says
-        the mechanism in its own words: *"a one-step method carries no
-        zero-stability step-ratio limit"*.  Asked of the method, never inferred
-        from a name.
+        Gear + events wins at 5 of 6 N, by 1.2-4x, and is second order on
+        both grids (3.9x per doubling from 400).  Its gain is small next to
+        trap's 22x because a two-step formula takes an O(h^2 [x'']) hit at
+        the ONE step after a corner, where its history straddles the jump
+        in x'' -- measured 5e-7 -> 1.7e-4 across that step, 30x trap's --
+        which is a constant, not an order, and is the honest cost of gear on
+        hard corners.  At a TRUE jump (tr = 0) the gain is 130x (1.3e-3 ->
+        1.0e-5 at 800) once `event_grid` keeps both ends of the clamped ramp
+        (see there).  So the default is on for every method, and the old
+        `companion_reach() == 1` predicate is gone.
 
         ⚠ An explicit `True`/`False` is honoured untouched; this only fills in
         `None`.
         """
         if requested is not None:
             return bool(requested)
-        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        return int(integ.companion_reach()) == 1
+        return True
 
     def _resolve_x0_unknown(self, requested):
         """`x0_unknown`, defaulted from the circuit's TOPOLOGY when not given.
@@ -2960,22 +2957,45 @@ class PSS(Analysis):
         if not ev:
             return list(np.diff(pts))
 
+        ## ⚠ A SNAP MAY MOVE A GRID POINT ONTO AN EVENT, NEVER AN EVENT
+        ## ONTO AN EVENT (2026-09-20).  A `tr = 0` pulse is clamped to a
+        ## `Pulse.MIN_EDGE` = 1e-18 ramp, so each edge is TWO events 1e-18
+        ## apart.  The snap used to land the first and then overwrite that
+        ## node with the second, collapsing the ramp onto ONE node on the
+        ## post-jump side -- and the step arriving there integrated its
+        ## whole length with the post-jump source.  Measured on the pulsed
+        ## RC (analytic reference), edges landed, N = 100 .. 1600: EVERY
+        ## method first order, gear 1.3e-3 / trap 9.5e-4 / radau 3.0e-4 at
+        ## 1600 halving per doubling, the error injected AT the edge node
+        ## (radau's = its endpoint weight 0.111 x h dU/tau).  With both ramp
+        ## ends kept as nodes -- a 1e-18 step -- radau is exact (8e-10), trap
+        ## second order, and gear second order too (3.7e-4 -> 1.0e-5 over
+        ## 100 -> 800): variable-step BDF2 with h_n/h_{n-1} -> inf over a
+        ## consistent tiny step degenerates to the trapezoidal rule, the
+        ## "parasitic" factor w/2 multiplying a difference that is itself
+        ## O(1/w).  So the tiny step is the ramp and it stays; the B7c
+        ## lesson ("no arbitrarily small step") is about grid points near an
+        ## event, not about two events.
+        landed = set()
         for f in ev:
             j = int(np.argmin(np.abs(pts - f)))
             if j == 0 or j == len(pts) - 1:
                 ## never move an endpoint: the period boundary is not ours
                 k = 1 if j == 0 else len(pts) - 2
                 h = abs(pts[k] - pts[j])
-                if abs(pts[k] - f) < min_sep * h:
+                if abs(pts[k] - f) < min_sep * h and pts[k] not in landed:
                     pts[k] = f
+                    landed.add(f)
                     continue
             else:
                 h = min(pts[j] - pts[j - 1], pts[j + 1] - pts[j])
-                if abs(pts[j] - f) < min_sep * h:
+                if abs(pts[j] - f) < min_sep * h and pts[j] not in landed:
                     pts[j] = f          ## SNAP -- no tiny step created
+                    landed.add(f)
                     continue
             pts = np.append(pts, f)
             pts = np.sort(pts)
+            landed.add(f)
         pts = np.unique(pts)
         return list(np.diff(pts))
 
@@ -3267,25 +3287,40 @@ class PSS(Analysis):
         ## note in the class docstring argues Wambacq's objections to
         ## non-uniform BDF "do not bite inside a run" because the grid is
         ## UNIFORM and frozen.  A caller's grid is frozen but not uniform.
+        ## ⚠ ONLY REPEATED UP-STEPS COMPOUND (2026-09-20).  An ISOLATED
+        ## up-step -- an event ramp, an inserted event -- is harmless at any
+        ## ratio: the factor w/2 the recursion applies acts on the difference
+        ## across the SMALL step, and their product is (h/2) x', the
+        ## trapezoidal predictor.  Measured: gear across a 1e-18 event ramp
+        ## (ratio 2.5e9) is second order, and gear on an event grid with
+        ## ratios up to 20 at N = 50 is 4x BETTER than uniform.  The 60 %-low
+        ## alternating 3:1 grid has a bad ratio every other step, and it is
+        ## that repetition this warns about, so a bad ratio counts only when
+        ## another lies within `RATIO_ISOLATION` steps of it.  ⚠ This
+        ## traversal never drops a step to Euler -- what the text used to say
+        ## is `Transient`'s `check_order_drop`, which does not run here.
         if len(fr) > 1 and self._companion_reach() >= 2:
             from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
             ratios = fr[1:] / fr[:-1]
-            worst = float(np.max(ratios))
-            if worst > ZERO_STABILITY_RATIO:
-                n_bad = int(np.sum(ratios > ZERO_STABILITY_RATIO))
+            bad = np.flatnonzero(ratios > ZERO_STABILITY_RATIO)
+            rep = [i for i in bad
+                   if np.any((bad != i) & (np.abs(bad - i) <= self.RATIO_ISOLATION))]
+            if rep:
+                worst = float(np.max(ratios[rep]))
                 warnings.warn(
                     'PSS: this grid steps up by %.3fx where a two-step '
                     'method is zero-stable only to %.3fx, at %d of %d '
-                    'interior ratios. Those steps are dropped to Euler by '
-                    'the integrator, so the run is first-order there and '
-                    'the answer can be far low while reporting converged -- '
+                    'interior ratios, and those up-steps REPEAT within %d '
+                    'steps of each other, which is what compounds: the '
+                    'answer can be far low while reporting converged -- '
                     'measured 60%% low on a Q=20 resonator with an '
                     'alternating 3:1 grid. Refining will NOT fix it: a '
                     'refined 3:1 grid is still 3:1. Smooth the grid so '
                     'adjacent steps stay within %.3fx, or use a one-step '
                     "method (method='trap')."
-                    % (worst, ZERO_STABILITY_RATIO, n_bad, len(ratios),
-                       ZERO_STABILITY_RATIO), RuntimeWarning, stacklevel=3)
+                    % (worst, ZERO_STABILITY_RATIO, len(rep), len(ratios),
+                       self.RATIO_ISOLATION, ZERO_STABILITY_RATIO),
+                    RuntimeWarning, stacklevel=3)
 
         hs = fr * period
         times = np.concatenate(([0.0], np.cumsum(hs)))
@@ -8616,6 +8651,11 @@ class PSS(Analysis):
     #: below this many unknowns `_continuous_adjoint` forms the dense 2m x 2m
     #: backward map (exact); above it, Arnoldi on the map (Ritz-certified)
     CONTINUOUS_ADJOINT_DENSE_M = 8
+
+    #: a step-ratio above `ZERO_STABILITY_RATIO` is reported by `_period_grid`
+    #: only when another lies within this many steps -- isolated up-steps
+    #: (event ramps) do not compound; see the note there
+    RATIO_ISOLATION = 4
 
     def _C_at(self, x_reduced):
         """The reduced capacitance at a point, without taking a step.
