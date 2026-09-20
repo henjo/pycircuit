@@ -17663,17 +17663,31 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
     is the whole point: a fixture on which the defect is visible.
     """
     import warnings as _w
-    cir, pss = _hostile_oscillator()
-    pac = PAC(cir)
-    m = cir.n - 1
-    Tp = float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
-        R, _ = pac.orbital_correlation(pss, H=8)
-        modes = pss.floquet_modes(pss)
-        v0, info = pss.ppv()
-        Kf, d, ci = pac.oscillator_covariance(pss, samples=True)
+    ## ⚠ 2026-09-20: TWO grids, because the reference route is FIRST ORDER
+    ## and this gate at one grid measured that, not eq (22).  See the ladder
+    ## in the docstring: with the second-order adjoint the eq (22) route
+    ## self-converges at >= 2nd order (2.7e-03 / 2.7e-04 / 1.5e-05 against
+    ## N = 3200) while the Lyapunov route halves per doubling (7.8e-02 /
+    ## 3.9e-02 / 1.7e-02); their distance at any one N is the reference's
+    ## error.  The old first-order `q` read 1.6e-02 here by CANCELLATION
+    ## (5.0e-02 / 2.5e-02 / 1.1e-02 self-convergence, and 2.0e-03 against the
+    ## reference at 3200 -- closer than the exact adjoint, which cannot be
+    ## right).  Pinned: the value at 400 (4.66e-02) and its halving from 200
+    ## (9.41e-02), which is the reference's order.
+    def gate(npts):
+        cir, pss = _hostile_oscillator(npts=npts)
+        pac = PAC(cir)
+        m = cir.n - 1
+        Tp = float(pss.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
+            R, _ = pac.orbital_correlation(pss, H=8)
+            modes = pss.floquet_modes(pss)
+            v0, info = pss.ppv()
+            Kf, d, ci = pac.oscillator_covariance(pss, samples=True)
+        return cir, pss, pac, m, Tp, CY2, R, modes, v0, info, Kf, d, ci
+    cir, pss, pac, m, Tp, CY2, R, modes, v0, info, Kf, d, ci = gate(400)
 
     ## route B: the definition integral
     md = [x for x in modes if abs(abs(x['lam']) - 1.0) > 1e-6][0]
@@ -17707,12 +17721,28 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         proj.append(Pi @ Ps[j] @ Pi.T)
     Pm = np.mean(np.stack(proj), axis=0)
     relAC = np.linalg.norm(R - Pm) / np.linalg.norm(Pm)
-    assert relAC < 3.2e-2, \
+    assert relAC < 7e-2, \
         'eq (22) disagrees with the Lyapunov reference by %.3e on the ' \
-        'hostile fixture (measured 1.6e-02 at 400 points with the C^-T ' \
-        'transform; 2.98e-01 without it). If this is large, the replayed ' \
-        'adjoint is being used as q again' % relAC
-
+        'hostile fixture at 400 points (measured 4.66e-02 with the second-' \
+        'order adjoint; the reference route is first order)' % relAC
+    ## and the disagreement is the REFERENCE's: it halves with the grid
+    _c2, _p2, _pac2, _m2, _T2, _CY2, R2, _mo2, v02, info2, _K2, _d2, ci2 = gate(200)
+    Ps2 = [np.asarray(x, float)[:m, :m] for x in ci2['orbital_samples']]
+    G2 = [np.asarray(x, float)[:m, :m] for x in ci2['growth_samples']]
+    vs2 = [np.asarray(v02, float)[:m]] + [np.asarray(sv, float)[:m]
+                                          for sv in info2['samples']]
+    proj2 = []
+    for j in range(min(len(Ps2), len(vs2))):
+        w, U = np.linalg.eigh(G2[j])
+        uj = U[:, np.argmax(w)] * np.sqrt(max(float(w.max()), 0.0))
+        den = float(vs2[j] @ uj)
+        if abs(den) < 1e-300:
+            continue
+        Pi = np.eye(m) - np.outer(uj, vs2[j]) / den
+        proj2.append(Pi @ Ps2[j] @ Pi.T)
+    Pm2 = np.mean(np.stack(proj2), axis=0)
+    relAC200 = np.linalg.norm(R2 - Pm2) / np.linalg.norm(Pm2)
+    assert 1.6 < relAC200 / relAC < 2.6, (relAC200, relAC)
 
 
 def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400,
@@ -23122,25 +23152,27 @@ def test_the_free_period_and_matrix_free_solves_record_the_stalled_step_signatur
     np.testing.assert_allclose(z2, [1.0, -1.0], rtol=0, atol=1e-12)
 
 
-def test_floquet_modes_on_a_non_uniform_grid_are_exact_under_radau_and_first_order_under_gear():
-    """⚠ THE 'UNEXPLAINED 0.2 %' OF modal_spectrum's PARTS ON A 3:1 GRID, CLOSED.
+def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_is_exact_on_a_non_uniform_one():
+    """⚠ GEAR'S ADJOINT MODES WERE FIRST ORDER; NOW SECOND, ON A UNIFORM GRID.
 
-    It was gear's.  Against a uniform N = 3200 reference, gear's Floquet mode
-    coefficients err 3e-02 at N = 200 and converge at rates 2.2-3 (~first
-    order: the solved-history pair projected onto the state block), trap's
-    err 7e-05 at rates ~4.  The invariant `q^T C p` drifts along the orbit
-    under gear on EVERY grid -- spread 9.9e-03 / 5.0e-03 / 2.5e-03 at N = 200
-    / 400 / 800, halving -- and the 3:1 grid triples it with the opposite
-    sign.  The parts are quadratic in `q` and not stationary, so they show it
-    while the total closes on pnoise at second order.
+    Found as an 'unexplained 0.2 %' of modal_spectrum's parts on a 3:1 grid,
+    it was gear's on any grid: `floquet_modes` reconstructed `q` from the
+    discrete adjoint PAIR's first block `w1 = Jf^T t` through pinv(C^T) --
+    `a0 * q(t + 2h/3)`, staggered by a fraction of a step -- so the invariant
+    `q^T C p` drifted along the orbit and HALVED per doubling.  The per-step
+    transposed solve `t` is the adjoint at the NEXT node; with `q_j = a0 *
+    ts[j-1] exp(mu t_j)` the spread QUARTERS (measured 9.3e-04 / 2.3e-04 /
+    5.6e-05 at N = 200 / 400 / 800, ratios 4.09 / 4.05 and 3.94 / 3.98).
 
-    And the refusal on a non-uniform grid is a gear/trap property, not the
-    grid's: radau's collocation solve keeps the phase multiplier at 1 + 1e-11
-    on the 3:1 grid, `modal_spectrum` RUNS, and every part equals the uniform
-    grid's to 1e-10.  Gear and trap leave the multiplier at O(h^2) and refuse
-    (with radau named as the route).  ⚠ Corrects 'the phase multiplier is 1
-    only while the discretisation is time-translation invariant' (b6e874a):
-    true of a multistep or trapezoidal solve, not of radau.
+    ⚠ ON A NON-UNIFORM GRID IT STAYS FIRST ORDER, at 2x the old accuracy:
+    a variable-step multistep discrete adjoint draws a1, a2 from later steps
+    and is the continuous adjoint's only to O(h) (four scalings measured, all
+    halving).  Gear is refused by the modal spectra there anyway: its phase
+    multiplier leaves the unit circle at O(h^2) (1 - 5e-05 at N = 400), as
+    does trap's; radau's collocation solve keeps it at 1 + 1e-11 and its
+    modes reproduce the uniform grid to 1e-10, so modal_spectrum RUNS under
+    radau on the 3:1 grid.  ⚠ Corrects b6e874a's 'the phase multiplier
+    leaves 1 on a non-uniform grid': true of gear and trap, not of radau.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -23193,7 +23225,7 @@ def test_floquet_modes_on_a_non_uniform_grid_are_exact_under_radau_and_first_ord
             PAC(cir, toolkit=circuit.numeric).modal_spectrum(
                 pss, np.array([1e-3]), 0, H=8)
 
-    ## gear's invariant drifts on a UNIFORM grid too, and halves per doubling
+    ## gear's invariant on a UNIFORM grid: second order now (it halved before)
     def drift(n):
         cir, pss = solve(n, False, 'gear')
         W = np.delete(np.asarray(pss.waveform[1], dtype=float), pss.irefnode, axis=0)
@@ -23206,5 +23238,5 @@ def test_floquet_modes_on_a_non_uniform_grid_are_exact_under_radau_and_first_ord
             out.append((a.max() - a.min()) / a.mean())
         return max(out)
     d200, d400 = drift(200), drift(400)
-    assert 5e-3 < d200 < 2e-2, d200
-    assert 1.6 < d200 / d400 < 2.6, (d200, d400)      # first order, not second
+    assert 3e-4 < d200 < 3e-3, d200                   # was 9.9e-03 before the fix
+    assert 3.3 < d200 / d400 < 4.8, (d200, d400)      # second order, not first

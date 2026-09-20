@@ -7543,25 +7543,32 @@ class PSS(Analysis):
     FLOQUET_NULL_TOL = 1e-12
 
     def floquet_modes(self, pss_unused=None, nmodes=None, fp=None):
-        """⚠ THE MODES' ACCURACY IS THE METHOD'S, AND GEAR'S IS FIRST ORDER
-        (2026-09-20, measured on the asymmetric van der Pol against a uniform
-        N = 3200 reference of the same method).  Fourier coefficients of `p`
-        and `q`, relative error at N = 200 / 400 / 800 / 1600:
+        """⚠ THE MODES' ACCURACY IS THE METHOD'S -- AND GEAR'S ADJOINT MODES
+        WERE FIRST ORDER UNTIL 2026-09-20, from a second-order method, on
+        every grid.  The reconstruction of `q` from the discrete adjoint took
+        the pair's first block through pinv(C^T), a fraction of a step off
+        the node (see the note at the reconstruction below).  The invariant
+        `q^T C p`, constant along the orbit for the true adjoint, measured on
+        the asymmetric van der Pol at N = 200 / 400 / 800:
 
-            gear   3.0e-02  1.4e-02  5.9e-03  2.0e-03   (rates 2.2, 2.3, 3.0)
-            trap   6.9e-05  3.9e-05  1.8e-05  6.0e-06   (~4, second order)
+            gear, uniform, before   9.9e-03  5.0e-03  2.5e-03   halving: FIRST order
+            gear, uniform, now      9.3e-04  2.3e-04  5.6e-05   quartering: SECOND
+            gear, 3:1 grid, now     2.2e-02  1.1e-02  5.9e-03   halving (was 3.4e-02):
+                                    a variable-step multistep adjoint is first
+                                    order and no rescaling makes it more
 
-        -- gear's are ~100x less accurate at equal N and converge at about
-        first order, the solved-history pair's projection onto the state
-        block; the invariant `q^T C p` drifts along the orbit by 1e-2 at
-        N = 200 and HALVES per doubling.  Radau: on a 3:1 non-uniform grid its
-        modes reproduce the uniform grid's to 1e-10 and the phase multiplier
-        stays at 1 + 1e-11; gear and trap leave it at O(h^2) and the modal
-        spectra refuse.  `PAC.modal_spectrum`'s TOTAL still closes on pnoise
-        at second order under gear (it is stationary in the modes to first
-        order); the PARTS are quadratic in `q` and are not -- they read 0.2 %
-        off on a 3:1 grid under gear, which is how this was found.  For the
-        modes themselves use radau (the default) or trap.
+        On a uniform grid at N = 400 gear's modal-spectrum PARTS now agree
+        with trap's (second order) to 4e-4 / 9e-4 / 5e-4 and the total closes
+        on pnoise at 1.0004 (it read 1.0145 before).  ⚠ A mode's k = 1
+        Fourier coefficient still differs from a uniform N = 3200 reference
+        by 3e-2 at N = 200 -- for `p` AND `q` alike, so it is the mode's
+        phase across N, not the adjoint; the invariant and the spectra are
+        phase-insensitive and are the gates.
+
+        Radau: on a 3:1 non-uniform grid its modes reproduce the uniform
+        grid's to 1e-10 and its phase multiplier stays at 1 + 1e-11; gear and
+        trap leave it at O(h^2) there and the modal spectra refuse.  For the
+        modes on a non-uniform grid use radau (the default).
 
         The Floquet pairs `(λ_l, μ_l, p_l(t), q_l(t))` — A9's prerequisite.
 
@@ -7643,7 +7650,7 @@ class PSS(Analysis):
         evidence either way about the high-Q regime; and it states that a
         truncated run "cannot compute ALL the Floquet multipliers" -- which
         is the requirement eq (22) carries (IET CDS 2011, above).
-        """
+                """
         _tw = self.monodromy_twin()
         if _tw is not self:
             ## ⚠ the twin gets `None`, not `pss_unused`: it must read ITS OWN
@@ -7759,13 +7766,65 @@ class PSS(Analysis):
 
             ## adjoint: Phi(T,s_j)^T v_k(T) -- B8 made this available under
             ## every integrator, not only the solved-history one
-            _e2, _ts, st = fp.matvec_transposed(vk, collect=True)
-            qtraj = ([np.asarray(z, dtype=complex).ravel()[:m] for z in st]
-                     + [np.asarray(vk, dtype=complex)[:m]])
-            ts2 = times[:len(qtraj)]
-            qtraj = qtraj[:len(ts2)]
-            q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
-                                 for j in range(len(qtraj))])
+            ## ⚠⚠ THE ADJOINT IS THE PER-STEP TRANSPOSED SOLVE `t`, NOT THE
+            ## PAIR'S FIRST BLOCK -- AND IT BELONGS TO THE NEXT NODE
+            ## (2026-09-20, measured).  `collect` hands back both: `ts[k]`,
+            ## the solve `Jf_k^-T w1` made while replaying step k backwards,
+            ## and `states[k]`, the pair (w1; w2) it leaves behind.  This
+            ## took the pair's first block and mapped it through pinv(C^T);
+            ## since `w1 = Jf^T t = (a0 C + G)^T t` and the adjoint equation
+            ## `C^T dq/dt = G^T q` turns the `G^T t` part into a time
+            ## derivative, that `q` was `a0 * q(t + 2h/3)` -- staggered by a
+            ## fraction of a step, so the invariant `q^T C p` drifted along
+            ## the orbit by 1e-2 at N = 200 and HALVED per doubling: FIRST
+            ## order, from a second-order method, on every grid.  The solve
+            ## `t` itself obeys the BDF2-discretised adjoint recursion, and
+            ## the replay computes it for step k from the pair at node k+1,
+            ## so `ts[k]` is the adjoint at node k + 1.  Scored on the
+            ## invariant's spread at N = 200 / 400 / 800, uniform grid:
+            ##
+            ##     pair block, pinv(C^T)  (this, before)   9.9e-03 5.0e-03 2.5e-03   x2 per doubling
+            ##     ts[k] at node k        (one node off)   1.5e-02 7.6e-03 3.8e-03   x2
+            ##     ts[k] at node k + 1    (this, now)      9.3e-04 2.3e-04 5.6e-05   x4  SECOND ORDER
+            ##
+            ## ⚠ THE SCALE.  `t = Jf^-T w1` carries the step through `a0 ~ 1/h`,
+            ## invisible on a uniform grid (absorbed by `c0` below) and a
+            ## factor-3 modulation on a 3:1 one, so `a0` of the node's own step
+            ## is put back.  ⚠ THAT IS FIRST ORDER ON A NON-UNIFORM GRID and
+            ## cannot be more: the discrete adjoint of a variable-step
+            ## multistep method draws `a1` and `a2` from LATER steps, so its
+            ## recursion is the continuous adjoint's only to O(h) once the step
+            ## changes (Sandu's inconsistency).  Four scalings were measured
+            ## on the 3:1 grid and all halve per doubling; this one is the
+            ## best of them at 2x the previous accuracy.  A non-uniform gear
+            ## grid is refused by the modal spectra anyway (its phase
+            ## multiplier leaves the unit circle); radau is exact there.
+            ## Node 0 is node N by periodicity of the periodic part.
+            ## ⚠ GEAR ONLY (`solved_history`).  A one-step kind's `ts` is
+            ## NESTED -- per-stage solves per step -- and its state-block
+            ## adjoint through pinv(C^T) was measured exact (radau, 1e-10 on
+            ## a 3:1 grid) and second order (trap); those keep their path.
+            _e2, _tsolves, _st = fp.matvec_transposed(vk, collect=True)
+            _gear_pair = getattr(fp, 'kind', None) == 'solved_history'
+            if _gear_pair:
+                _tsolves = [np.asarray(z, dtype=complex).ravel()[:m]
+                            for z in _tsolves]
+                _a0 = [float(np.asarray(_step[2][0])) for _step in fp.steps]
+                _nq = min(len(_tsolves), len(times) - 1)
+                ts2 = times[:_nq + 1]
+                qtraj = [None] * (_nq + 1)
+                for _k in range(_nq):
+                    qtraj[_k + 1] = (_a0[_k] * _tsolves[_k]
+                                     * np.exp(muk * ts2[_k + 1]))
+                qtraj[0] = qtraj[_nq]
+                q = np.column_stack(qtraj)
+            else:
+                qtraj = ([np.asarray(z, dtype=complex).ravel()[:m] for z in _st]
+                         + [np.asarray(vk, dtype=complex)[:m]])
+                ts2 = times[:len(qtraj)]
+                qtraj = qtraj[:len(ts2)]
+                q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
+                                     for j in range(len(qtraj))])
 
             ## ⚠⚠⚠ THE REPLAYED VECTOR IS `C^T q`, NOT `q`.  The conserved
             ## bilinear form of the variational DAE is `w^T C delta`, so over
@@ -7803,13 +7862,17 @@ class PSS(Analysis):
             ## algebraic rows) does not raise; the algebraic components of `q`
             ## are then the minimum-norm choice, which is a SCOPE LIMIT and
             ## not a solution -- recorded, not hidden.
-            _Wq = np.delete(np.asarray(self.waveform[1], dtype=float),
-                            self.irefnode, axis=0)
-            _nw = _Wq.shape[1]
-            for _j in range(q.shape[1]):
-                _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
-                                 dtype=float)
-                q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
+            ## The pinv(C^T) map belongs to the STATE-BLOCK adjoint of the
+            ## one-step kinds; gear's transposed solve is already the adjoint
+            ## of the DAE variable (its invariant is `q^T C p`, see above).
+            if not _gear_pair:
+                _Wq = np.delete(np.asarray(self.waveform[1], dtype=float),
+                                self.irefnode, axis=0)
+                _nw = _Wq.shape[1]
+                for _j in range(q.shape[1]):
+                    _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
+                                     dtype=float)
+                    q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
 
             ## ⚠⚠ RENORMALISE ON THE STATE BLOCK. `v_k` was biorthonormalised
             ## against `u_k` at the map's FULL width `n`; under a
@@ -14806,7 +14869,18 @@ class PAC(Analysis):
     ## orbital fluctuation is the decisive third route and has not been run.
     ## Until then, treat this on a strongly asymmetric orbit as unvalidated.
     def oscillator_covariance(self, pss, samples=False):
-        """The state covariance of a FREE-RUNNING oscillator, split in two.
+        """
+        ⚠ THE ORBITAL SAMPLES ARE FIRST ORDER IN THE STEP (2026-09-20,
+        measured): the obliquely-projected cycle-mean built from
+        `ci['orbital_samples']` on the hostile van der Pol differs from its
+        own N = 3200 value by 7.8e-02 / 3.9e-02 / 1.7e-02 at N = 200 / 400 /
+        800 -- halving per doubling -- where eq (22) with the second-order
+        adjoint modes reads 2.7e-03 / 2.7e-04 / 1.5e-05.  A gate that
+        compares the two at ONE grid measures this route's error; the
+        three-way gate now pins that the distance halves.  Not fixed: the
+        same LMM stagger the adjoint modes had is the likely cause, in the
+        per-step propagation here.
+The state covariance of a FREE-RUNNING oscillator, split in two.
 
         Returns `(K_orb, d, info)`.  `K_orb` is the BOUNDED periodic
         (orbital) part of the covariance at `t = 0`; `d` is the growth per
