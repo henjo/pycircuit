@@ -11579,8 +11579,9 @@ def test_orbital_correlation_is_gated_three_ways():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         v0, pinfo = pss.ppv()
-    vs = [np.asarray(v0, float)[:m]] + [np.asarray(sv, float)[:m]
-                                       for sv in pinfo['samples']]
+    ## `samples[j]` is node j: prepending `v0` shifted every node by one
+    ## (the 'first-order Lyapunov route' of 2026-09-20 was this shift)
+    vs = [np.asarray(sv, float)[:m] for sv in pinfo['samples']]
     proj = []
     for j in range(min(len(Ps), len(vs))):
         w, Uj = np.linalg.eigh(G[j])
@@ -11825,8 +11826,9 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
                            for j in range(len(Ps))]), axis=0)
     rel_g = float(np.linalg.norm(Rm - Pg)) / float(np.linalg.norm(Pg))
     ## the RIGHT reference
-    vs = [np.asarray(v0, float)[:m]] + [np.asarray(sv, float)[:m]
-                                       for sv in pinfo['samples']]
+    ## `samples[j]` is node j: prepending `v0` shifted every node by one
+    ## (the 'first-order Lyapunov route' of 2026-09-20 was this shift)
+    vs = [np.asarray(sv, float)[:m] for sv in pinfo['samples']]
     proj = []
     for j in range(min(len(Ps), len(vs))):
         w, Uj = np.linalg.eigh(G[j])
@@ -17708,8 +17710,9 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
     ## route C: obliquely-projected Lyapunov cycle-mean
     Ps = [np.asarray(x, float)[:m, :m] for x in ci['orbital_samples']]
     G = [np.asarray(x, float)[:m, :m] for x in ci['growth_samples']]
-    vs = [np.asarray(v0, float)[:m]] + [np.asarray(sv, float)[:m]
-                                        for sv in info['samples']]
+    ## `samples[j]` is node j: prepending `v0` shifted every node by one
+    ## (the 'first-order Lyapunov route' of 2026-09-20 was this shift)
+    vs = [np.asarray(sv, float)[:m] for sv in info['samples']]
     proj = []
     for j in range(min(len(Ps), len(vs))):
         w, U = np.linalg.eigh(G[j])
@@ -17721,16 +17724,19 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         proj.append(Pi @ Ps[j] @ Pi.T)
     Pm = np.mean(np.stack(proj), axis=0)
     relAC = np.linalg.norm(R - Pm) / np.linalg.norm(Pm)
-    assert relAC < 7e-2, \
+    ## ⚠ 2026-09-20, second correction: the 4.66e-02 pinned here earlier was
+    ## THIS TEST's own one-node shift of the phase-vector list ([v0] +
+    ## samples), not the reference route.  Unshifted, the two routes agree
+    ## at the 1e-3 level and the residual no longer halves with the grid.
+    assert relAC < 2e-3, \
         'eq (22) disagrees with the Lyapunov reference by %.3e on the ' \
-        'hostile fixture at 400 points (measured 4.66e-02 with the second-' \
-        'order adjoint; the reference route is first order)' % relAC
+        'hostile fixture at 400 points (measured 7.9e-04 with the second-' \
+        'order adjoint and the phase-vector list unshifted)' % relAC
     ## and the disagreement is the REFERENCE's: it halves with the grid
     _c2, _p2, _pac2, _m2, _T2, _CY2, R2, _mo2, v02, info2, _K2, _d2, ci2 = gate(200)
     Ps2 = [np.asarray(x, float)[:m, :m] for x in ci2['orbital_samples']]
     G2 = [np.asarray(x, float)[:m, :m] for x in ci2['growth_samples']]
-    vs2 = [np.asarray(v02, float)[:m]] + [np.asarray(sv, float)[:m]
-                                          for sv in info2['samples']]
+    vs2 = [np.asarray(sv, float)[:m] for sv in info2['samples']]
     proj2 = []
     for j in range(min(len(Ps2), len(vs2))):
         w, U = np.linalg.eigh(G2[j])
@@ -17742,7 +17748,10 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         proj2.append(Pi @ Ps2[j] @ Pi.T)
     Pm2 = np.mean(np.stack(proj2), axis=0)
     relAC200 = np.linalg.norm(R2 - Pm2) / np.linalg.norm(Pm2)
-    assert 1.6 < relAC200 / relAC < 2.6, (relAC200, relAC)
+    ## SECOND order between the two routes once the list is unshifted:
+    ## measured 3.07e-03 / 7.90e-04 / 2.12e-04 at 200 / 400 / 800 (3.9, 3.7)
+    assert relAC200 < 6e-3, relAC200
+    assert 3.0 < relAC200 / relAC < 4.8, (relAC200, relAC)
 
 
 def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400,

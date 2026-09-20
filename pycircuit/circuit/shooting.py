@@ -14962,16 +14962,6 @@ class PAC(Analysis):
     ## Until then, treat this on a strongly asymmetric orbit as unvalidated.
     def oscillator_covariance(self, pss, samples=False):
         """
-        ⚠ THE ORBITAL SAMPLES ARE FIRST ORDER IN THE STEP (2026-09-20,
-        measured): the obliquely-projected cycle-mean built from
-        `ci['orbital_samples']` on the hostile van der Pol differs from its
-        own N = 3200 value by 7.8e-02 / 3.9e-02 / 1.7e-02 at N = 200 / 400 /
-        800 -- halving per doubling -- where eq (22) with the second-order
-        adjoint modes reads 2.7e-03 / 2.7e-04 / 1.5e-05.  A gate that
-        compares the two at ONE grid measures this route's error; the
-        three-way gate now pins that the distance halves.  Not fixed: the
-        same LMM stagger the adjoint modes had is the likely cause, in the
-        per-step propagation here.
 The state covariance of a FREE-RUNNING oscillator, split in two.
 
         Returns `(K_orb, d, info)`.  `K_orb` is the BOUNDED periodic
@@ -15318,8 +15308,15 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         with _warnings.catch_warnings():
             _warnings.simplefilter('ignore')
             v0, pinfo = pss.ppv()
-        vs = [np.asarray(v0, dtype=float)[:m]]
-        vs += [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
+        ## ⚠ `samples[j]` IS node j (2026-09-20, measured).  This list used to
+        ## be `[v0] + samples`, which paired node j's covariance with the
+        ## phase vector of node j - 1 -- a one-node shift, first order in the
+        ## step: the obliquely-projected transverse cycle mean read 8.0e-2 /
+        ## 4.0e-2 / 1.7e-2 against its own N = 3200 value at N = 200 / 400 /
+        ## 800 (halving), and 3.3e-4 / 5.1e-4 / 1.8e-4 with the list
+        ## unshifted.  The same prepend sat in three tests, and it was read
+        ## as "the Lyapunov route is first order" (5129485) -- it was this.
+        vs = [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
         jj = int(min(j, len(Ps) - 1, len(vs) - 1))
 
         w, U = np.linalg.eigh(G[jj])
