@@ -8511,21 +8511,14 @@ class PSS(Analysis):
         identities need it.  This serves the MODE SHAPES only, where the
         continuous adjoint is the object wanted.  On a uniform grid the two
         coincide (`a0' = a0`) and the transpose is used; one-step kinds never
-        come here.  ⚠ Dense: a 2m x 2m eigenproblem, refused above
-        `CONTINUOUS_ADJOINT_MAX_M` unknowns -- the same ceiling `ppv` uses for
-        its dense spectrum.  ⚠ Biorthonormality against the OTHER modes is not
+        come here.  Dense 2m x 2m up to `CONTINUOUS_ADJOINT_DENSE_M`
+        unknowns; above that, Arnoldi on the backward map with Ritz-residual
+        certification (see the note at the branch).  ⚠ Biorthonormality against the OTHER modes is not
         exact here (it is for the transpose) -- each mode is normalised on its
         own `q(0)^T C p(0)`, as before.
         """
         N = len(fp.steps)
         m = self.cir.n - 1
-        if m > self.CONTINUOUS_ADJOINT_MAX_M:
-            raise NotImplementedError(
-                'PSS.floquet_modes: the continuous adjoint on a non-uniform '
-                'gear grid forms a dense %d x %d backward map, above the '
-                '%d-unknown ceiling. Use a uniform grid, or method=\'radau\' '
-                '(exact on this grid), or trap (second order).'
-                % (2 * m, 2 * m, self.CONTINUOUS_ADJOINT_MAX_M))
         tms = np.asarray(times, dtype=float)
         h = np.diff(tms[:N + 1])
         W = np.delete(np.asarray(self.waveform[1], dtype=float),
@@ -8533,36 +8526,96 @@ class PSS(Analysis):
         Cs = [np.asarray(self._C_at(W[:, j]), dtype=float) for j in range(N + 1)]
         Gs = [np.asarray(self._G_at(W[:, j]), dtype=float) for j in range(N + 1)]
         integ = self._integrator_for(self.par.method)
-
-        def step_back(n, q1, q2):
-            a0, a1, a2 = [float(x) for x in
-                          integ.companion_coefficients(h[n % N], h[(n + 1) % N])[0]]
-            A = (a0 * Cs[n] + Gs[n]).T
-            return np.linalg.solve(A, -Cs[n].T @ (a1 * q1 + a2 * q2))
+        import scipy.linalg as _sla
+        coef, lus = [], []
+        for n in range(N):
+            a = [float(x) for x in
+                 integ.companion_coefficients(h[n % N], h[(n + 1) % N])[0]]
+            coef.append(a)
+            ## one factorisation per node, reused by every propagation
+            lus.append(_sla.lu_factor((a[0] * Cs[n] + Gs[n]).T))
 
         def propagate(qN, qN1):
             q = [None] * (N + 2)
             q[N], q[N + 1] = qN, qN1
             for n in range(N - 1, -1, -1):
-                q[n] = step_back(n, q[n + 1], q[n + 2])
+                _a0, a1, a2 = coef[n]
+                q[n] = _sla.lu_solve(lus[n], -Cs[n].T @ (a1 * q[n + 1] + a2 * q[n + 2]))
             return q
 
-        Mp = np.zeros((2 * m, 2 * m), dtype=complex)
-        for c in range(2 * m):
-            e = np.zeros(2 * m, dtype=complex)
-            e[c] = 1.0
-            qq = propagate(e[:m], e[m:])
-            Mp[:, c] = np.concatenate((qq[0], qq[1]))
-        lams, vecs = np.linalg.eig(Mp)
-        k = int(np.argmin(np.abs(lams - lam)))
-        w = vecs[:, k]
+        if m <= self.CONTINUOUS_ADJOINT_DENSE_M:
+            ## small: the dense 2m x 2m map, exact
+            Mp = np.zeros((2 * m, 2 * m), dtype=complex)
+            for c in range(2 * m):
+                e = np.zeros(2 * m, dtype=complex)
+                e[c] = 1.0
+                qq = propagate(e[:m], e[m:])
+                Mp[:, c] = np.concatenate((qq[0], qq[1]))
+            lams, vecs = np.linalg.eig(Mp)
+            k = int(np.argmin(np.abs(lams - lam)))
+            w = vecs[:, k]
+        else:
+            ## ⚠ MATRIX-FREE ABOVE THAT (2026-09-20, item 3 of "gear as a
+            ## first-class choice on non-uniform grids").  The wanted modes --
+            ## the phase mode and the slow orbital ones -- are the DOMINANT
+            ## eigenvalues of the backward map, so a plain Arnoldi on it with
+            ## the Ritz-residual certification `_ritz_second_multiplier` uses
+            ## (|h_{k+1,k}| |y_last| / ||y||) reaches them at a basis far below
+            ## 2m: MEASURED equal to the dense eigenvector to cos 1.00000000 at
+            ## a basis of 3 / 16 / 24 for 2m = 4 / 32 / 124, residuals 1e-16 ..
+            ## 1e-52, on the hostile fixture and the ladder oscillator
+            ## re-solved on a 3:1 grid.  Grown from `PPV_RITZ_BASIS` toward
+            ## `PPV_RITZ_MAX_BASIS` until the matched pair certifies; a pair
+            ## that never certifies is refused, not returned.
+            n2 = 2 * m
+            kmax = int(min(n2, self.PPV_RITZ_MAX_BASIS))
+            kk = int(min(n2, self.PPV_RITZ_BASIS))
+            _rng = np.random.default_rng(12345)
+            q0 = _rng.standard_normal(n2).astype(complex)
+            Qb = [q0 / np.linalg.norm(q0)]
+            H = np.zeros((kmax + 1, kmax), dtype=complex)
+            kdone = 0
+            while True:
+                while kdone < kk:
+                    qq = propagate(Qb[kdone][:m], Qb[kdone][m:])
+                    wv = np.concatenate((qq[0], qq[1]))
+                    for i in range(kdone + 1):
+                        H[i, kdone] = np.vdot(Qb[i], wv)
+                        wv = wv - H[i, kdone] * Qb[i]
+                    for i in range(kdone + 1):
+                        cc = np.vdot(Qb[i], wv)
+                        H[i, kdone] += cc
+                        wv = wv - cc * Qb[i]
+                    H[kdone + 1, kdone] = np.linalg.norm(wv)
+                    kdone += 1
+                    if H[kdone, kdone - 1] < 1e-14:
+                        break
+                    Qb.append(wv / H[kdone, kdone - 1])
+                th, Y = np.linalg.eig(H[:kdone, :kdone])
+                i = int(np.argmin(np.abs(th - lam)))
+                resid = (abs(H[kdone, kdone - 1]) * abs(Y[kdone - 1, i])
+                         / max(float(np.linalg.norm(Y[:, i])), 1e-300)
+                         if kdone < n2 else 0.0)
+                if resid <= self.PPV_RITZ_RESIDUAL_TOL or kdone >= kmax:
+                    break
+                kk = int(min(2 * kk, kmax))
+            if resid > self.PPV_RITZ_RESIDUAL_TOL:
+                raise ValueError(
+                    'PSS.floquet_modes: the continuous adjoint\'s Arnoldi did '
+                    'not certify the mode at |lam| = %.6f (Ritz residual %.1e '
+                    'at a basis of %d of %d). Use a uniform grid, or '
+                    'method=\'radau\'.' % (abs(lam), resid, kdone, n2))
+            w = np.zeros(n2, dtype=complex)
+            for j in range(kdone):
+                w += Y[j, i] * Qb[j]
         qq = propagate(w[:m], w[m:])
         ts2 = tms[:N + 1]
         q = np.column_stack([qq[j] * np.exp(mu * ts2[j]) for j in range(N + 1)])
         return q, ts2
 
-    #: the dense 2m x 2m ceiling of `_continuous_adjoint`
-    CONTINUOUS_ADJOINT_MAX_M = 200
+    #: below this many unknowns `_continuous_adjoint` forms the dense 2m x 2m
+    #: backward map (exact); above it, Arnoldi on the map (Ritz-certified)
+    CONTINUOUS_ADJOINT_DENSE_M = 8
 
     def _C_at(self, x_reduced):
         """The reduced capacitance at a point, without taking a step.

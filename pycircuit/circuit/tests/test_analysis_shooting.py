@@ -23344,3 +23344,50 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
             R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
         assert np.all(np.isfinite(R))
         assert np.linalg.norm(R - Rr) / np.linalg.norm(Rr) < 3e-2, method
+
+
+def test_the_continuous_adjoints_arnoldi_path_equals_its_dense_path():
+    """Item 3 of gear-first-class-on-non-uniform-grids: above a small `m` the
+    continuous adjoint no longer forms the dense 2m x 2m backward map but runs
+    Arnoldi on it, Ritz-certified.  Forced onto the hostile fixture (m = 2) by
+    lowering the switch, the Arnoldi q must equal the dense q -- MEASURED cos
+    1.00000000 and identical invariant spreads at a basis of 3 / 16 / 24 for
+    2m = 4 / 32 / 124 on the hostile and ladder fixtures.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+
+    def fracs(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=4.0)
+    cir['L'] = L('v', gnd, L=0.25)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300, break_events=False, grid=fracs(400))
+    assert pss.converged
+    was = PSS.CONTINUOUS_ADJOINT_DENSE_M
+    try:
+        PSS.CONTINUOUS_ADJOINT_DENSE_M = 8
+        dense = pss.floquet_modes(pss)
+        PSS.CONTINUOUS_ADJOINT_DENSE_M = 0          # force Arnoldi at m = 2
+        arn = pss.floquet_modes(pss)
+    finally:
+        PSS.CONTINUOUS_ADJOINT_DENSE_M = was
+    assert len(dense) == len(arn) >= 2
+    for a, b in zip(dense, arn):
+        qa, qb = np.asarray(a['q']), np.asarray(b['q'])
+        for j in (0, 100, 200, 399):
+            cos = abs(np.vdot(qa[:, j], qb[:, j])) / (np.linalg.norm(qa[:, j]) * np.linalg.norm(qb[:, j]))
+            assert cos > 1.0 - 1e-8, (j, cos)
+        assert np.linalg.norm(qa - qb) / np.linalg.norm(qa) < 1e-6
