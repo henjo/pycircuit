@@ -6092,10 +6092,13 @@ class PSS(Analysis):
             _lams = np.linalg.eigvals(_Md)
             _keep = np.real(_lams)[np.abs(_lams - 1.0) > 1e-6]
             if _keep.size == _lams.size:
-                ## ⚠ NO MULTIPLIER IN THE WINDOW: the phase multiplier is 1
-                ## only as far as the DISCRETISATION is time-translation
-                ## invariant, and a non-uniform `grid=` breaks that at O(h^2)
-                ## (measured 1 - 5.1e-05 at N = 400, 3:1, rate 4).  Without
+                ## ⚠ NO MULTIPLIER IN THE WINDOW: for a MULTISTEP or trapezoidal
+                ## solve the phase multiplier is 1 only as far as the
+                ## discretisation is time-translation invariant, and a
+                ## non-uniform `grid=` breaks that at O(h^2) (measured
+                ## 1 - 5.1e-05 gear / 1 + 4.7e-05 trap at N = 400, 3:1, rate
+                ## 4).  ⚠ NOT radau: its collocation solve keeps the
+                ## multiplier at 1 + 1.2e-11 on the same grid (2026-09-20).  Without
                 ## this the phase multiplier itself was reported as the
                 ## SECOND one -- silently, f_amp 600x too small.  Drop the
                 ## one nearest 1 instead; a uniform grid never gets here.
@@ -7540,7 +7543,27 @@ class PSS(Analysis):
     FLOQUET_NULL_TOL = 1e-12
 
     def floquet_modes(self, pss_unused=None, nmodes=None, fp=None):
-        """The Floquet pairs `(λ_l, μ_l, p_l(t), q_l(t))` — A9's prerequisite.
+        """⚠ THE MODES' ACCURACY IS THE METHOD'S, AND GEAR'S IS FIRST ORDER
+        (2026-09-20, measured on the asymmetric van der Pol against a uniform
+        N = 3200 reference of the same method).  Fourier coefficients of `p`
+        and `q`, relative error at N = 200 / 400 / 800 / 1600:
+
+            gear   3.0e-02  1.4e-02  5.9e-03  2.0e-03   (rates 2.2, 2.3, 3.0)
+            trap   6.9e-05  3.9e-05  1.8e-05  6.0e-06   (~4, second order)
+
+        -- gear's are ~100x less accurate at equal N and converge at about
+        first order, the solved-history pair's projection onto the state
+        block; the invariant `q^T C p` drifts along the orbit by 1e-2 at
+        N = 200 and HALVES per doubling.  Radau: on a 3:1 non-uniform grid its
+        modes reproduce the uniform grid's to 1e-10 and the phase multiplier
+        stays at 1 + 1e-11; gear and trap leave it at O(h^2) and the modal
+        spectra refuse.  `PAC.modal_spectrum`'s TOTAL still closes on pnoise
+        at second order under gear (it is stationary in the modes to first
+        order); the PARTS are quadratic in `q` and are not -- they read 0.2 %
+        off on a 3:1 grid under gear, which is how this was found.  For the
+        modes themselves use radau (the default) or trap.
+
+        The Floquet pairs `(λ_l, μ_l, p_l(t), q_l(t))` — A9's prerequisite.
 
         Returns a list of dicts, one per mode, ordered by `|λ|` descending.
         `nmodes=None` returns EVERY non-null mode, and that default is the
@@ -15691,10 +15714,13 @@ class PAC(Analysis):
             raise ValueError(
                 'PAC.modal_spectrum: expected exactly one Floquet multiplier '
                 'on the unit circle (the phase mode), found %d.  (On a '
-                'non-uniform `grid=` the phase multiplier leaves 1 at O(h^2) '
-                '-- the discretisation is no longer time-translation '
-                'invariant -- and this refusal is deliberate: use a uniform '
-                'grid, or PAC.pnoise, which is correct on either.)' % len(ph))
+                'non-uniform `grid=` a MULTISTEP or trapezoidal solve leaves '
+                'the phase multiplier off 1 by O(h^2) -- measured 1 - 5e-05 '
+                'for gear and 1 + 5e-05 for trap at 400 points on a 3:1 grid '
+                '-- and this refusal is deliberate.  method=\'radau\' keeps '
+                'it at 1 to 1e-11 on the same grid and its modal spectra '
+                'reproduce the uniform grid to 1e-10; or use a uniform grid, '
+                'or PAC.pnoise, which is correct on either.)' % len(ph))
         m = pss.cir.n - 1
         d = np.asarray(output)
         if d.ndim == 0:

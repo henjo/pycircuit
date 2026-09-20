@@ -23120,3 +23120,91 @@ def test_the_free_period_and_matrix_free_solves_record_the_stalled_step_signatur
         1e-6, 20)
     assert ier2 == 1 and info2['step_floor'] is None
     np.testing.assert_allclose(z2, [1.0, -1.0], rtol=0, atol=1e-12)
+
+
+def test_floquet_modes_on_a_non_uniform_grid_are_exact_under_radau_and_first_order_under_gear():
+    """⚠ THE 'UNEXPLAINED 0.2 %' OF modal_spectrum's PARTS ON A 3:1 GRID, CLOSED.
+
+    It was gear's.  Against a uniform N = 3200 reference, gear's Floquet mode
+    coefficients err 3e-02 at N = 200 and converge at rates 2.2-3 (~first
+    order: the solved-history pair projected onto the state block), trap's
+    err 7e-05 at rates ~4.  The invariant `q^T C p` drifts along the orbit
+    under gear on EVERY grid -- spread 9.9e-03 / 5.0e-03 / 2.5e-03 at N = 200
+    / 400 / 800, halving -- and the 3:1 grid triples it with the opposite
+    sign.  The parts are quadratic in `q` and not stationary, so they show it
+    while the total closes on pnoise at second order.
+
+    And the refusal on a non-uniform grid is a gear/trap property, not the
+    grid's: radau's collocation solve keeps the phase multiplier at 1 + 1e-11
+    on the 3:1 grid, `modal_spectrum` RUNS, and every part equals the uniform
+    grid's to 1e-10.  Gear and trap leave the multiplier at O(h^2) and refuse
+    (with radau named as the route).  ⚠ Corrects 'the phase multiplier is 1
+    only while the discretisation is time-translation invariant' (b6e874a):
+    true of a multistep or trapezoidal solve, not of radau.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+
+    def fracs(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+
+    def solve(n, nonuniform, method):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+        pss = PSS(cir, method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / n, x0=np.array([2.0, 0.0]),
+                      maxiterations=300, break_events=False,
+                      grid=(fracs(n) if nonuniform else None))
+        assert pss.converged
+        return cir, pss
+
+    def phase_off(pss):
+        return min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes(pss))
+
+    def parts(cir, pss):
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            ms = pac.modal_spectrum(pss, np.array([1e-3, 3e-3]), 0, H=8,
+                                    sidebands=16)
+        return np.concatenate([ms[k] for k in ('phase', 'orbital', 'correlation')])
+
+    ## radau: on the unit circle on the 3:1 grid, runs, and equals the uniform grid
+    cu, pu = solve(400, False, 'radau')
+    cn, pn = solve(400, True, 'radau')
+    assert phase_off(pn) < 1e-9, phase_off(pn)
+    np.testing.assert_allclose(parts(cn, pn), parts(cu, pu), rtol=1e-8, atol=0)
+    ## gear and trap: O(h^2) off the circle on the same grid, and refused
+    for method in ('gear', 'trap'):
+        cir, pss = solve(400, True, method)
+        off = phase_off(pss)
+        assert 1e-5 < off < 1e-4, (method, off)
+        with pytest.raises(ValueError, match="radau"):
+            PAC(cir, toolkit=circuit.numeric).modal_spectrum(
+                pss, np.array([1e-3]), 0, H=8)
+
+    ## gear's invariant drifts on a UNIFORM grid too, and halves per doubling
+    def drift(n):
+        cir, pss = solve(n, False, 'gear')
+        W = np.delete(np.asarray(pss.waveform[1], dtype=float), pss.irefnode, axis=0)
+        out = []
+        for md in pss.floquet_modes(pss):
+            P, Q = np.asarray(md['p']), np.asarray(md['q'])
+            K = min(P.shape[1], Q.shape[1], W.shape[1])   # the modes' own width
+            a = np.abs([np.vdot(Q[:, j], np.asarray(pss._C_at(W[:, j]), dtype=float)
+                                @ P[:, j]) for j in range(K)])
+            out.append((a.max() - a.min()) / a.mean())
+        return max(out)
+    d200, d400 = drift(200), drift(400)
+    assert 5e-3 < d200 < 2e-2, d200
+    assert 1.6 < d200 / d400 < 2.6, (d200, d400)      # first order, not second
