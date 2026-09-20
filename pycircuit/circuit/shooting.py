@@ -2455,7 +2455,12 @@ class PSS(Analysis):
                 'drawn to it and the Jacobian degenerates on the way. Seed '
                 'at or above the expected period -- a short transient and '
                 'the interval between two output recurrences is the usual '
-                'way to get one.' % (seed_period, exc)) from exc
+                'way to get one. A LinAlgError raised INSIDE the traversal '
+                'is wrapped here too: a stage matrix going singular after a '
+                'Newton step left the orbit reads the same -- check the '
+                'period column first (2026-09-20: it omitted a constant '
+                'source vector and threw x0 to 2.8e6 on the first step).'
+                % (seed_period, exc)) from exc
 
         T = float(z[-1])
         ## ⚠⚠ THE SECOND TRIVIAL ROOT, found 2026-09-08 while gating
@@ -4626,7 +4631,7 @@ class PSS(Analysis):
                     D[i] = np.asarray(Kf[i].solve(rhs))
             P = D[s - 1]
             if want_dT:
-                Ks = [-np.asarray(self._i_at(Ys[i])) for i in range(s)]
+                Ks = [np.asarray(self._k_at(Ys[i])) for i in range(s)]
                 Dt = [None] * s
                 CnPt = Cn @ Pt
                 for i in range(s):
@@ -4787,13 +4792,39 @@ class PSS(Analysis):
         return forced, lam
 
     def _i_at(self, x_reduced):
-        """The reduced resistive current `i(x)` at a point.  For an
-        AUTONOMOUS circuit `dq/dt = -i(x)` (no source term), which is the
-        stage derivative the TR-BDF2 period column needs."""
+        """The reduced resistive current `i(x)` at a point."""
         tr = self._transient()
         i = tr.cir.i(self._insert_refnode(x_reduced), tr.epar)
         iref = self.irefnode
         return self.toolkit.concatenate((i[:iref], i[iref + 1:]))
+
+    def _k_at(self, x_reduced):
+        """The reduced STAGE DERIVATIVE `dq/dt = -(i(x) + u)` at a point --
+        what the DIRK and coupled-Radau period columns need.
+
+        ⚠ THIS USED TO BE `-i(x)` ALONE, on the reasoning that an autonomous
+        circuit has "no source term" (2026-09-20).  An autonomous circuit
+        has a CONSTANT source vector, not a zero one: a DC supply, a bias
+        current.  On a row a source pins, `i(x) = -u` at convergence, so
+        the true derivative is 0 and `-i(x)` is `u` -- and the period
+        column read `-u/T` there.  Measured on the tree's own phase
+        fixture (a 1 kV DC supply): radau's column `[-1e6, ~0, -1.8e-4,
+        ...]` against the finite difference `[0, -3.18, 6.28e3, ...]`,
+        and on a van der Pol with a decoupled 1 kV node the oscillator rows
+        agreed with the FD to 4 digits while the supply node read
+        -157.9 = -1e3/T and its branch current +i_R/T.  The first Newton
+        step on that column threw `x0` to 2.8e6 and the stage matrix went
+        singular there, mislabelled "seed below the fundamental".  Both FD
+        checks in the build were on a source-free van der Pol, where the
+        two expressions coincide.  `u` is taken at t = 0 because this is
+        only built for autonomous circuits, where it is constant."""
+        tr = self._transient()
+        xf = self._insert_refnode(x_reduced)
+        k = -(np.asarray(tr.cir.i(xf, tr.epar), dtype=float)
+              + np.asarray(tr.cir.u(0.0, tr.epar,
+                                    analysis=self.par.analysis), dtype=float))
+        iref = self.irefnode
+        return self.toolkit.concatenate((k[:iref], k[iref + 1:]))
 
     def _traverse_full(self, x_in, T, times, hs, want_dT=False):
         """One period under Radau IIA(3) with the DENSE sensitivities -- the
@@ -4857,7 +4888,7 @@ class PSS(Analysis):
             Z = sla.lu_solve(lu, np.vstack([CnP] * s))
             P = Z[(s - 1) * m:s * m, :]
             if want_dT:
-                Ks = [-np.asarray(self._i_at(y)) for y in Ys]
+                Ks = [np.asarray(self._k_at(y)) for y in Ys]
                 rhs = np.zeros(s * m)
                 CnPt = Cn @ Pt
                 for i in range(s):

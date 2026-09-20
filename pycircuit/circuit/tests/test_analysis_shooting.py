@@ -23468,3 +23468,144 @@ def test_the_continuous_adjoints_arnoldi_path_equals_its_dense_path():
             cos = abs(np.vdot(qa[:, j], qb[:, j])) / (np.linalg.norm(qa[:, j]) * np.linalg.norm(qb[:, j]))
             assert cos > 1.0 - 1e-8, (j, cos)
         assert np.linalg.norm(qa - qb) / np.linalg.norm(qa) < 1e-6
+
+
+def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_circuit():
+    """`dphi/dT` for the DIRK and coupled-Radau kinds is built from the stage
+    derivative `-(i(Y) + u)`, and `u` is the CONSTANT source vector of an
+    autonomous circuit -- not zero (2026-09-20).
+
+    ⚠ It used to be `-i(Y)`, "no source term", and both FD checks in the
+    build sat on a source-free van der Pol where that is the same thing.
+    On a row a source pins `i = -u` at convergence, so the column read
+    `-u/T` there: on this van der Pol with a decoupled 1 kV node the
+    oscillator rows agreed with the finite difference to 4 digits while the
+    supply node read -157.9 = -1e3/T and its branch current +i_R/T.  On the
+    tree's own phase fixture (a 1 kV DC supply) radau's column was
+    `[-1e6, ~0, -1.8e-4, ...]` against the FD's `[0, -3.18, 6.28e3, ...]`,
+    the first Newton step threw `x0` to 2.8e6 and the stage matrix went
+    singular there -- the DEFAULT method failing the free-period solve on a
+    shipped autonomous fixture, mislabelled "seed below the fundamental".
+    Fixed: max |Mt - FD| / max |FD| = 4.6e-11 (radau) / 7.9e-11 (trbdf2) on
+    the phase fixture, 1.2e-10 here; radau then finds the phase fixture's
+    period at order 5: +1.52e-6 / +2.36e-8 / +6.5e-10 ppm at N = 100 / 200 /
+    400.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0
+
+    def vdp_vs():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir.add_node('p')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['vp'] = VS('p', gnd, v=1e3)
+        cir['Rp'] = R('p', gnd, r=1e6)
+        return cir
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    x0 = np.zeros(4)
+    x0[0], x0[1] = 2.0, 1e3
+    g = PSS(vdp_vs(), method='gear', reltol=1e-8)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        g.solve(period=T0, timestep=T0 / 200, maxiterations=40,
+                break_events=False, x0=x0)
+    assert g.converged
+    xs = np.asarray(g._period_state[1], float).ravel()
+    T = float(g.period)
+
+    for method in ('radau', 'trbdf2'):
+        def trav(TT, want):
+            q = PSS(vdp_vs(), method=method, reltol=1e-10)
+            q._grid_fracs = None
+            tms, hs = q._period_grid(TT, 200, None)
+            f = q._traverse_full if method == 'radau' else q._traverse_dirk
+            return f(xs, TT, tms, hs, want_dT=want)
+        Mt = np.asarray(trav(T, True)[3], float).ravel()
+        xe = lambda TT: np.asarray(trav(TT, False)[1], float).ravel()
+        fd = (xe(T * (1 + 1e-6)) - xe(T * (1 - 1e-6))) / (2e-6 * T)
+        rel = np.max(np.abs(Mt - fd)) / np.max(np.abs(fd))
+        assert rel < 1e-7, (method, rel, Mt, fd)
+        ## the source rows are exactly the ones that used to be -u/T
+        assert abs(Mt[1]) < 1e-6 and abs(Mt[3]) < 1e-9, (method, Mt)
+
+    ## and the default method solves the phase fixture it used to fail on
+    prev = None
+    for n in (100, 200):
+        pss = PSS(_phase_circuit(), method='radau', reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-3 / n, maxiterations=60,
+                      break_events=False)
+        assert pss.converged and pss.autonomous
+        e = abs(1e6 * (pss.period - 1e-3) / 1e-3)
+        assert e < 1e-4, (n, e)
+        if prev is not None:
+            assert prev / e > 16.0, (prev, e)
+        prev = e
+
+
+def test_gears_free_period_is_second_order_on_a_non_uniform_grid_inside_the_zero_stability_bound():
+    """Item 2 of gear-first-class (2026-09-20): the free-period solve on a
+    non-uniform gear grid.  Nothing needed fixing; this pins what was
+    measured.  Van der Pol mu = 1, reference radau N = 3200 (grid-independent
+    to 1e-10 ppm; radau is order 5 on every grid here, 3:1 included)::
+
+        grid                  N=200      N=400     N=800     N=1600    order
+        uniform             +313.5     +78.1     +19.5      +4.87     4.00
+        smooth 1+0.5 sin    +442.3    +110.8     +27.7      +6.94     4.00
+        alternating 2:1     +310.5     +77.7     +19.4      +4.86     4.00
+        alternating 3:1    -1615     -840.8    -428.7    -216.4      1.98
+
+    Second order wherever the step ratio stays inside BDF2's zero-stability
+    bound 1 + sqrt(2) -- the 2:1 grid's constant is the uniform one's -- and
+    FIRST order beyond it, where `_period_grid` warns (it counts REPEATED
+    up-steps; the 3:1 grid has one every other step).  ⚠ The phase fixture
+    (a linear rotation) is second order on 3:1 too, and would have hidden
+    this: the parasitic mode compounds only through the nonlinearity.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T_REF = 6.330195895892e+00
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: (u - u ** 3 / 3.0) + 0.3 * u * u)
+        return cir
+
+    def ppm(n, fr):
+        pss = PSS(vdp(), method='gear', reltol=1e-10)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            pss.solve(period=T0, timestep=T0 / n, maxiterations=60,
+                      break_events=False, grid=fr, x0=np.array([2.0, 0.0]))
+        assert pss.converged
+        warned = any('steps up by' in str(w.message) for w in rec)
+        return 1e6 * (pss.period - T_REF) / T_REF, warned
+
+    def smooth(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+
+    def alt(n, r):
+        f = np.tile([r, 1.0], n // 2)
+        return f / f.sum()
+    for name, mk, lo, hi in (('smooth', smooth, 3.6, 4.4),
+                             ('alt21', lambda n: alt(n, 2.0), 3.6, 4.4),
+                             ('alt31', lambda n: alt(n, 3.0), 1.7, 2.3)):
+        e400, w400 = ppm(400, mk(400))
+        e800, w800 = ppm(800, mk(800))
+        assert lo < e400 / e800 < hi, (name, e400, e800)
+        assert w400 is w800 is (name == 'alt31'), (name, w400, w800)
+    e_u, _ = ppm(800, None)
+    e_2, _ = ppm(800, alt(800, 2.0))
+    assert abs(e_2 / e_u - 1.0) < 0.05, (e_u, e_2)
