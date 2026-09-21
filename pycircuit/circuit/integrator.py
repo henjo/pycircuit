@@ -667,6 +667,14 @@ class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
 
     ORDER = 2
+    #: the `h_curr / h_last < 0.1` drop to Euler in `check_order_drop` is a
+    #: STALLED-ESTIMATE heuristic for an adaptive run (see there); on a
+    #: FROZEN grid there is no estimate to stall, and the drop only costs a
+    #: two-alpha step the shooting adjoint cannot transpose -- measured on a
+    #: relaxation van der Pol's own `lte_grid`, where the period seam is a
+    #: 0.007x shrink (2026-09-21).  `PSS._new_transient` turns it off; the
+    #: growth guard (zero-stability) stays on everywhere.
+    shrink_guard = True
 
     def __init__(self):
         ## No `lte_formula`: removed in 9(f) -- see the module note above.
@@ -751,7 +759,7 @@ class Gear2Integrator(Integrator):
         ## is a proxy for "we have rejected three times at this time point", and
         ## the thing it is a proxy for is known exactly one level up in
         ## `transient.py`, where it would not need a threshold at all.
-        if h_curr / h_last < 0.1:
+        if h_curr / h_last < 0.1 and getattr(self, 'shrink_guard', True):
             return EulerIntegrator()
 
         return self

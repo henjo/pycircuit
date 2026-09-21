@@ -3255,6 +3255,27 @@ class PSS(Analysis):
         FOR THE WRONG TRAJECTORY, silently -- the fractions will still sum
         to 1 and `solve` will still accept them.  Pass a longer `tstab`,
         or seed `x0` on the orbit, when the answer matters.
+
+        ⚠ TWO THINGS ABOUT THE WINDOW, BOTH FOUND WHEN GEAR COULD NOT RUN
+        ITS PPV ON THE GRID GEAR HAD PRODUCED (2026-09-21, relaxation van der
+        Pol, mu = 10): the window ends at the last NATURAL step, not at the
+        `tend`-landing step `Transient.solve` truncates (a tenth of its
+        predecessor, hence a 10.5x growth across the period seam, beyond a
+        two-step method's zero-stability bound -- the integrator dropped two
+        steps to Euler and the transposed replay refused); and the cut is
+        ROTATED to the node whose seam ratio is closest to 1, the seed moving
+        with it.  The interior ratios are the adaptive run's own (growth
+        clamped at 2).  ⚠ AND THE PERIOD YOU PASS MUST BE CLOSE: the grid is
+        fractions of it, so with `period` 16 % off the fine regions sit 16 %
+        away from the edges and gear's and trbdf2's per-step Newton fail on
+        the coarse steps that land there; seeded within a per cent (a coarse
+        uniform solve, or the transient's own recurrence) both converge.
+        Measured on that fixture, 195 points: gear's period -519 ppm (second
+        order under 2x splitting; a uniform gear grid of the same count
+        -7214 ppm), trbdf2's -66 ppm; gear's diffusion constant 52 % high
+        with its unit multiplier 0.10 off the circle (see `ppv`'s warning),
+        trbdf2's 16 %.  On a relaxation oscillator's adaptive grid trbdf2
+        uses gear's own grid better than gear does.
         """
         import warnings as _warnings
         from pycircuit.circuit.transient import Transient
@@ -3276,8 +3297,19 @@ class PSS(Analysis):
         t = np.asarray(res.sweep_values, dtype=float).ravel()
         xs = np.asarray(res.x, dtype=float)
         ## a settled window of exactly one period, taken from the END
-        j0 = int(np.searchsorted(t, t[-1] - T))
-        win_t, win_x = t[j0:], xs[:, j0:]
+        ## ⚠ THE WINDOW ENDS AT THE LAST NATURAL STEP, NOT AT `tend`
+        ## (2026-09-21).  `Transient.solve` lands its final step exactly on
+        ## `tend`, truncating it -- on a relaxation van der Pol at mu = 10 to
+        ## a tenth of its predecessor -- and a periodic grid then carries a
+        ## 10.5x GROWTH out of that step that no controller clamp ever saw:
+        ## beyond the two-step zero-stability bound, so the integrator
+        ## dropped two steps to Euler and gear's transposed replay refused
+        ## the grid gear itself had produced.  Rotating the seam only moved
+        ## the step into the interior.  The last accepted point before the
+        ## landing step ends the window instead.
+        j1 = len(t) - 2 if len(t) > 3 else len(t) - 1
+        j0 = int(np.searchsorted(t, t[j1] - T))
+        win_t, win_x = t[j0:j1 + 1], xs[:, j0:j1 + 1]
         if len(win_t) < 3:
             raise RuntimeError(
                 'lte_grid: the adaptive run put only %d points in the last '
@@ -3288,11 +3320,42 @@ class PSS(Analysis):
         total = float(hs.sum())
         if total <= 0.0:
             raise RuntimeError('lte_grid: the derived window has zero span.')
-        fr = hs / total
-        ## the seed is the state at the window's start, with the reference
-        ## row removed -- the shape `solve(x0=...)` takes
+        ## ⚠ THE CUT IS ROTATED TO THE SANEST SEAM (2026-09-21).  The window
+        ## is the last period of the adaptive run, so its seam -- the last
+        ## step against the first, which a PERIODIC grid joins -- fell
+        ## wherever `t[-1] - T` happened to land: on a relaxation van der Pol
+        ## at mu = 10 that was right after a rejected tiny step, a 10.5x
+        ## GROWTH across the period boundary.  That is beyond a two-step
+        ## method's zero-stability bound (1 + sqrt 2), so the integrator
+        ## dropped the first step (and the one after it, rebuilding history)
+        ## to Euler, and gear's transposed replay refused the two-alpha
+        ## steps -- gear could not run its PPV on the grid gear itself had
+        ## produced.  The interior ratios are the run's own (growth clamped
+        ## at 2 by the controller; shrinks unconditionally stable), so the
+        ## cut moves, when the seam is outside the bound, by the least to a
+        ## sane one, and the seed moves to that node.
+        ## ⚠ ROTATED ONLY WHEN THE SEAM DEMANDS IT, and then by the smallest
+        ## rotation to a sane seam: an unconditional move to the flattest
+        ## seam put the seed at a phase from which the free-period Newton,
+        ## started 8 % off in period, ran away (mu = 4, the tree's own
+        ## `lte_grid` test) -- the seed's phase is part of the basin.
+        from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
+        k = 0
+        if len(hs) > 2:
+            seam = float(hs[0] / hs[-1])
+            if seam > ZERO_STABILITY_RATIO or seam < 1.0 / ZERO_STABILITY_RATIO:
+                ratios = hs[1:] / hs[:-1]
+                sane = np.flatnonzero((ratios < ZERO_STABILITY_RATIO)
+                                      & (ratios > 1.0 / ZERO_STABILITY_RATIO)) + 1
+                if len(sane):
+                    n_ = len(hs)
+                    dist = np.minimum(sane, n_ - sane)
+                    k = int(sane[int(np.argmin(dist))])
+        fr = np.roll(hs, -k) / total
+        ## the seed is the state at the (rotated) window start, with the
+        ## reference row removed -- the shape `solve(x0=...)` takes
         iref = self.cir.get_node_index(refnode)
-        seed = np.concatenate((win_x[:iref, 0], win_x[iref + 1:, 0]))
+        seed = np.concatenate((win_x[:iref, k], win_x[iref + 1:, k]))
         return fr, seed
 
     def _period_grid(self, period, npts, grid):
@@ -3367,9 +3430,28 @@ class PSS(Analysis):
         ## converges and reaches -47.3 ppm where the subdivided 1106-step
         ## one reaches -73.8.  So the subdivision COSTS accuracy, and it is
         ## skipped where it buys nothing.
+        ## ⚠ A RAMP, NOT ONE TINY STEP (2026-09-21).  The subdivision used to
+        ## put a single step of `fr.min()` in front of the coarse first step:
+        ## on a relaxation van der Pol's own `lte_grid` (mu = 10) a 2.6e-4
+        ## step before a 3.5e-2 one, a 138x GROWTH beyond a two-step method's
+        ## zero-stability bound, so the integrator dropped two steps to Euler
+        ## and gear's transposed replay refused the grid gear had produced.
+        ## Skipping the subdivision for the solved-history kind was tried
+        ## first and the coarse first step then defeated the per-step Newton
+        ## (the entering history is flat at the seed), so the protection is
+        ## needed there too.  Doubling steps `d, 2d, 4d, ...` up to the first
+        ## step keep every ratio at 2, inside the bound, for ~log2 of the
+        ## span in extra points.
         if fr[0] > 8.0 * fr.min() and not getattr(self, '_open_at_x0', False):
             d = float(fr.min())
-            fr = np.concatenate(([d, fr[0] - d], fr[1:]))
+            ramp = []
+            rest = float(fr[0])
+            while rest > 2.0 * d:
+                ramp.append(d)
+                rest -= d
+                d *= 2.0
+            ramp.append(rest)
+            fr = np.concatenate((np.asarray(ramp, dtype=float), fr[1:]))
 
         ## ⚠ A CALLER'S GRID CAN SILENTLY DEMOTE GEAR-2 TO FIRST ORDER.
         ## `_period_grid` validated positivity and sum-to-1 and nothing
@@ -5920,6 +6002,32 @@ class PSS(Analysis):
         ## injected into an algebraic KCL row is.  So this line is
         ## unchanged, and every PPV number on every circuit is
         ## bit-for-bit what it was.
+        ## ⚠ THE UNIT MULTIPLIER OFF THE CIRCLE IS A SILENT ERROR IN `c`
+        ## (2026-09-21).  This solves the bordered system AT lambda = 1
+        ## whatever the discrete period map's own unit multiplier is, so
+        ## nothing here can see that multiplier sit at 1.10 -- and on a
+        ## relaxation van der Pol (mu = 10) on its own 195-point `lte_grid`,
+        ## gear's did: the PPV then gave a diffusion constant 52 % high (14.7 %
+        ## at 2x, 4.0 % under trbdf2 at |rho - 1| = 3.4e-3), tracking the
+        ## departure at 5-12x, with `converged = True` and no message.  The
+        ## solve already records `spectral_radius`; an autonomous run whose
+        ## unit multiplier is more than `PPV_UNIT_MULTIPLIER_WARN` off the
+        ## circle is told so here, once, with the size and the remedy.
+        _rho = getattr(self, 'spectral_radius', None)
+        if (getattr(self, 'autonomous', False) and _rho is not None
+                and np.isfinite(_rho)
+                and abs(float(_rho) - 1.0) > self.PPV_UNIT_MULTIPLIER_WARN):
+            warnings.warn(
+                'PSS.ppv: the discrete period map\'s unit multiplier sits '
+                '%.2e off the unit circle (spectral_radius %.6f). The PPV is '
+                'solved at exactly 1, so it cannot see this, and the '
+                'diffusion constant built from it is uncertain by about '
+                '5-12x that departure (measured on a relaxation oscillator: '
+                '1.0e-1 -> c 52 %% high). Refine the grid, or use a method '
+                'whose multiplier stays on the circle at this step count '
+                '(radau, or trbdf2 on the same grid).'
+                % (abs(float(_rho) - 1.0), float(_rho)), RuntimeWarning,
+                stacklevel=2)
         _alg_rows, _alg_cols = self._algebraic_adjoint_pattern(x0f)
         vx = float(v[:m] @ xdot)
         if vx == 0.0:
@@ -8872,6 +8980,11 @@ class PSS(Analysis):
     #: backward map (exact); above it, Arnoldi on the map (Ritz-certified)
     CONTINUOUS_ADJOINT_DENSE_M = 8
 
+    #: `ppv` warns on an autonomous run whose period map's unit multiplier
+    #: is further than this from 1 -- `c` is then uncertain by 5-12x that
+    #: departure (measured); see the note in `ppv`
+    PPV_UNIT_MULTIPLIER_WARN = 1e-2
+
     #: a step-ratio above `ZERO_STABILITY_RATIO` is reported by `_period_grid`
     #: only when another lies within this many steps -- isolated up-steps
     #: (event ramps) do not compound; see the note there
@@ -9263,6 +9376,12 @@ class PSS(Analysis):
         silently discarded at the boundary.
         """
         from pycircuit.circuit.transient import Transient
+        ## a frozen grid has no stalled estimate: the shrink drop to Euler is
+        ## off here (see `Gear2Integrator.shrink_guard`); growth stays guarded
+        try:
+            integ.shrink_guard = False
+        except Exception:                                      # noqa: BLE001
+            pass
         ## ⚠ ONE CHOKE POINT for the theta bias, because there are four call
         ## sites building a transient and a per-site fix would drift.  A no-op
         ## for every other integrator -- see `_theta_biased`.

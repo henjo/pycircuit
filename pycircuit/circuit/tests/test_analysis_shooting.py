@@ -1700,14 +1700,21 @@ def test_a_grid_that_opens_coarse_is_subdivided_but_a_benign_one_is_not():
         assert len(hs) == n, '%s grid was resized' % kind
         assert np.allclose(hs, fr * 1e-3), '%s grid was rewritten' % kind
 
-    ## a grid opening far coarser than its finest step gains ONE step, and
-    ## opens on that finest step
+    ## a grid opening far coarser than its finest step gains a RAMP of
+    ## doubling steps from its finest step up to the coarse one (2026-09-21:
+    ## ONE step of `fr.min()` before the coarse remainder was a growth of
+    ## `fr[0]/fr.min()` -- 138x on a relaxation van der Pol's own `lte_grid`,
+    ## beyond a two-step method's zero-stability bound, so the integrator
+    ## dropped two steps to Euler and gear's transposed replay refused the
+    ## grid gear had produced).  Every ratio in the ramp is at most 2.
     fr = np.concatenate(([0.5], np.full(500, 0.001)))
     fr = fr / fr.sum()
     times, hs = pss._period_grid(1e-3, len(fr), fr)
-    assert len(hs) == len(fr) + 1
+    nramp = len(hs) - len(fr) + 1
+    assert 5 <= nramp <= 12, nramp                       # ~log2(500) doubling steps
     assert hs[0] == pytest.approx(fr.min() * 1e-3, rel=1e-12)
-    assert hs[0] + hs[1] == pytest.approx(fr[0] * 1e-3, rel=1e-12)
+    assert np.sum(hs[:nramp]) == pytest.approx(fr[0] * 1e-3, rel=1e-12)
+    assert np.all(hs[1:nramp] / hs[:nramp - 1] <= 2.0 + 1e-12)
     ## the period is preserved -- a subdivision that moved it would change
     ## the interval the solve believes it integrated
     assert times[-1] == pytest.approx(1e-3, rel=1e-12)
@@ -23936,3 +23943,104 @@ def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_fi
     s200, _ = run(smooth(200), 200)
     s400, _ = run(smooth(400), 400)
     assert abs(s200) < 2e-9 and abs(s400) < 2e-10, (s200, s400)
+
+
+def test_gear_runs_its_ppv_on_the_lte_grid_gear_produced_and_is_told_when_its_unit_multiplier_left_the_circle():
+    """Gear on an ADAPTIVE grid (2026-09-21, Andreas: "Do as you suggest").
+    `lte_grid`'s adaptive run is `Gear2Integrator()` by default, so the grid
+    is gear-shaped -- and gear could not run its PPV on it.
+
+    Relaxation van der Pol, mu = 10, `lte_grid` at reltol 1e-5, ~195 steps,
+    span 176:1.  Two window defects: the run's FINAL step is truncated to
+    land on `tend` (a tenth of its predecessor), so a periodic grid carried
+    a 10.5x growth across the seam -- beyond the two-step zero-stability
+    bound -- and the integrator dropped two steps to Euler, which gear's
+    transposed replay refuses; rotating the seam only moved that step into
+    the interior.  Fixed in `lte_grid`: the window ends at the last natural
+    step and, when the seam is outside the bound, the cut is rotated by the
+    least to a sane one (an unconditional move to the flattest seam put the
+    seed at a phase from which the mu = 4 test's Newton, 8 % off in period,
+    ran away).  Two more things stood between gear and its own grid:
+    `_period_grid`'s first-step subdivision put ONE step of `fr.min()` in
+    front of a coarse first step (a 138x growth) -- now a doubling ramp, every
+    ratio 2 -- and Transient's `h_curr/h_last < 0.1` drop to Euler (a
+    stalled-estimate heuristic for adaptive runs) fired on the ramp's first
+    step at the seam -- `Gear2Integrator.shrink_guard`, off in PSS-driven
+    transients.  Measured after: seam inside the bound, max growth 2.000, no
+    two-alpha steps, and gear's PPV, modes and c run.
+
+    ⚠ THE PERIOD PASSED MUST BE CLOSE.  With it 16 % off, gear's AND
+    trbdf2's per-step Newton fail on the coarse steps that land on the
+    edges (the grid is fractions of the period); seeded at the reference
+    both converge.  Measured, 195 points, against radau uniform N = 1480
+    (self-checked against 740 to 5e-3 ppm)::
+
+        method / grid          T err (ppm)   c rel     |rho - 1|
+        gear   LTE             -519          +0.52     1.0e-1
+        gear   LTE split 2x    -133          +0.15     2.7e-2
+        gear   uniform, 185    -7214         +0.10     --
+        trbdf2 LTE             -66           +0.16     1.4e-2
+        trbdf2 LTE split 2x    -17           +0.040    3.4e-3
+
+    Gear's period is second order on the adaptive grid and 14x better than
+    a uniform grid of the same count; its c is 52 % high because the
+    discrete period map's unit multiplier sits 0.10 off the circle, which
+    `ppv` -- solved at exactly 1 -- could not see: it now WARNS from
+    `spectral_radius` (`PPV_UNIT_MULTIPLIER_WARN`), c tracking the
+    departure at 5-12x.  The spline quadrature is not it (trapezoid +0.528).
+    And trbdf2 uses gear's own grid 8x better than gear for the period, 3.5x
+    for c: on a relaxation oscillator's adaptive grid, that is the method.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    MU = 10.0
+    T_REF = 19.098600502
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: MU * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    cir = vdp()
+    p = PSS(cir, method='gear')
+    xfull = np.zeros(cir.n)
+    xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fr, seed = p.lte_grid(T_REF, x0=xfull, reltol=1e-5)
+    fr = np.asarray(fr, float)
+    N = len(fr)
+    r = fr[1:] / fr[:-1]
+    assert 150 < N < 260, N
+    assert 1.0 / 2.414 < fr[0] / fr[-1] < 2.414, fr[0] / fr[-1]     # was 10.53
+    assert r.max() < 2.5, r.max()                                     # the controller's clamp
+
+    def run(method, grid, n):
+        c_ = vdp()
+        q = PSS(c_, method=method, reltol=1e-9)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            q.solve(period=T_REF, timestep=T_REF / n, x0=seed, maxiterations=80,
+                    break_events=False, grid=grid)
+            assert q.converged
+            fp = q.factored_period()
+            if fp.kind == 'solved_history':
+                assert all(len(st[2]) == 3 for st in fp.steps), 'an order-dropped step'
+            q.ppv()
+        warned = [str(w_.message) for w_ in rec if 'unit multiplier sits' in str(w_.message)]
+        return 1e6 * (float(q.period) - T_REF) / T_REF, float(q.spectral_radius), warned
+    e1, rho1, w1 = run('gear', fr, N)
+    e2, rho2, w2 = run('gear', np.repeat(fr / 2.0, 2), 2 * N)
+    ## second order on the adaptive grid, and far better than a uniform grid
+    ## of the same count (-6541 ppm measured): -519 / -133 with the seed in
+    ## the fine region, -1436 / -384 with it at the window start (the ramp)
+    assert -2500 < e1 < -300 and 3.0 < e1 / e2 < 5.0, (e1, e2)
+    assert rho1 - 1.0 > 3e-2 and w1, (rho1, w1)                      # 0.10: told
+    assert 5e-3 < rho2 - 1.0 < 5e-2 and w2, (rho2, w2)               # 0.027: still told
+    e3, rho3, w3 = run('trbdf2', fr, N)
+    assert abs(e3) < 400 and abs(e3) * 3 < abs(e1), (e3, e1)         # -66 / -519 measured
+    assert rho3 - 1.0 > 5e-3 and w3, (rho3, w3)                      # 0.0135: told too
