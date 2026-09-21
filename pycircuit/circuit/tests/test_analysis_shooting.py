@@ -24765,3 +24765,65 @@ def test_the_recurrence_detector_picks_one_crossing_per_period_by_the_hint():
     tc = PSS._crossing_chain(t, y, T)
     d = np.diff(tc)
     assert len(tc) >= 30 and np.max(np.abs(d / T - 1.0)) < 1e-6, (len(tc), d[:5])
+
+
+def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_gear_no_longer_swings():
+    """Item 3 of the non-uniform-grid list (2026-09-21): the "gear swing" on
+    folded grids was the FOLD's alignment, not gear.  `_fold_periods` walked
+    past the period by up to one coarse step and rescaled every fraction to
+    sum 1, shifting every phase by up to that step times its phase: six
+    folds of vdP mu = 10 (205 points, the same edge groups to the point)
+    split into two clusters whose fine groups sat 0.007 / 0.020 T apart, and
+    gear read +1409 / +1563 / +1489 ppm on one cluster against +273 .. +302
+    on the other -- trbdf2 on the SAME grids +150 .. +173 against +44 .. +46,
+    a 5x split for every second-order method.  The walk now ends exactly
+    at the period (the remainder spread over the trailing steps within the
+    controller's 2x growth): gear +26 / +18 / +24 / +16 / -44 / +30, trbdf2
+    +12 / +10 / +13 / +10 / +4 / +12.  Pinned on two folds from different
+    transient starts: their fine groups' phases agree to 8e-3 T (measured
+    0.0005 / 0.0042; were 0.007 / 0.020 apart), no consecutive ratio exceeds 2 in either grid, and gear's
+    period on each is within 120 ppm of the reference and the two within
+    40 ppm of each other (were 1100 ppm apart).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    MU = 10.0
+    T_REF = 19.098600502
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: MU * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+
+    folds = {}
+    for v0 in (2.0, 1.0):
+        cir = vdp()
+        p = PSS(cir, method='gear')
+        xfull = np.zeros(cir.n)
+        xfull[[str(n_) for n_ in cir.nodes].index('v')] = v0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            fr, seed = p.lte_grid(19.1, x0=xfull, reltol=1e-5)
+        fr = np.asarray(fr, float)
+        assert abs(fr.sum() - 1.0) < 1e-12
+        r = fr[1:] / fr[:-1]
+        assert np.max(np.maximum(r, 1.0 / r)) <= 2.0 + 1e-9, np.max(np.maximum(r, 1.0 / r))
+        st = np.concatenate([[0.0], np.cumsum(fr)[:-1]])
+        fine = np.flatnonzero(fr < 0.004)
+        groups = np.split(fine, np.flatnonzero(np.diff(fine) > 3) + 1)
+        q = PSS(vdp(), method='gear', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=p.lte_period, timestep=p.lte_period / len(fr), x0=seed,
+                    maxiterations=80, break_events=False, grid=fr)
+        assert q.converged
+        folds[v0] = ([float(st[g[0]]) for g in groups], (q.period / T_REF - 1.0) * 1e6)
+    (ga, ea), (gb, eb) = folds[2.0], folds[1.0]
+    assert len(ga) == len(gb) == 2, (ga, gb)
+    assert max(abs(x - y) for x, y in zip(ga, gb)) < 8e-3, (ga, gb)     # 0.0005 / 0.0042 measured
+    assert abs(ea) < 120 and abs(eb) < 120 and abs(ea - eb) < 40, (ea, eb)

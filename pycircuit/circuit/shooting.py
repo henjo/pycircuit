@@ -2218,13 +2218,31 @@ class PSS(Analysis):
                                                     +10 / -180 ppm; radau -0.01 /
                                                     -0.04): the adaptive run's
                                                     growth-by-2 steps land
-                                                    differently each period.  On a relaxation
-                                                    oscillator's adaptive grid,
-                                                    choose trbdf2 or radau; gear
-                                                    is the method that makes
-                                                    the grid (the Transient
-                                                    default), not the one that
-                                                    uses it best.  The adaptive
+                                                    differently each period.
+                                                    ⚠ THE FOLD'S "GEAR SWING"
+                                                    WAS THE FOLD'S ALIGNMENT
+                                                    (2026-09-21): a rescale
+                                                    after overshooting the
+                                                    period put the orbit's
+                                                    edges on the boundary of
+                                                    the fine groups -- six
+                                                    folds split 5x for gear
+                                                    (+1409..+1563 vs +273..+302
+                                                    ppm) AND trbdf2 on the same
+                                                    grids (+150..+173 vs +44..
+                                                    +46).  Walk fixed: gear +16
+                                                    ..+30 (-44 at 192 pts),
+                                                    trbdf2 +4..+13.  Gear is a
+                                                    steady ~8x trbdf2 on any
+                                                    given grid, both second
+                                                    order; choose by that
+                                                    factor, not by a swing.
+                                                    For NOISE on a coarse or
+                                                    folded grid choose trbdf2
+                                                    or radau (exact per-stage
+                                                    injection); gear's
+                                                    covariance is first order
+                                                    in h/tau.  The adaptive
                                                     run's reltol must be tighter
                                                     than the transient's habit:
                                                     1e-5 is too coarse above
@@ -3413,11 +3431,44 @@ class PSS(Analysis):
             h = float(dens[min(int(ph * nbins), nbins - 1)])
             if last is not None:
                 h = min(h, 2.0 * last)
+            if ph + h >= 1.0:
+                ## ⚠ THE WALK ENDS EXACTLY AT THE PERIOD (2026-09-21, item 3
+                ## of the non-uniform-grid list).  It used to overshoot by
+                ## up to one step and RESCALE every fraction to sum 1 --
+                ## which shifts every phase by up to a coarse step times
+                ## its phase, so the grid's fine regions landed off the
+                ## orbit's edges by up to 2 % of T: six folds of vdP mu = 10
+                ## (205 points, the same edge groups to the point) split
+                ## into two clusters, gear +1409 .. +1563 ppm against +273
+                ## .. +302, trbdf2 on the same grids +150 .. +173 against
+                ## +44 .. +46 -- the "gear swing" of the record was this,
+                ## the grid's alignment, and it was 5x for every second-
+                ## order method.  The remainder is its own step, merged into
+                ## the last one when it would be a sliver and the merged
+                ## step keeps the controller's own 2x growth -- spread over
+                ## the trailing steps, each grown to at most 2x the one
+                ## before it, so no sliver and no ratio beyond the bound
+                ## (the tail is the seam, the coarsest phase: a step there
+                ## grown by a fraction of itself costs nothing measurable).
+                rem = 1.0 - ph
+                if last is not None and rem < 0.5 * last:
+                    j = 1
+                    while rem > 0.0 and j < len(fr):
+                        room = 2.0 * fr[-j - 1] - fr[-j]
+                        take = min(rem, room) if room > 0.0 else 0.0
+                        fr[-j] += take
+                        rem -= take
+                        j += 1
+                    if rem > 0.0:
+                        fr.append(rem)
+                else:
+                    fr.append(rem)
+                break
             fr.append(h)
             ph += h
             last = h
         fr = np.asarray(fr, dtype=float)
-        fr = fr / float(fr.sum())
+        fr = fr / float(fr.sum())          # 1 up to rounding
         ## the seed: the state at that phase of the last full period
         t_seed = float(tc[-2] + ph0 * (tc[-1] - tc[-2]))
         i = int(np.searchsorted(t, t_seed)) - 1
@@ -3572,7 +3623,10 @@ class PSS(Analysis):
         -7214 ppm), trbdf2's -66 ppm; gear's diffusion constant 52 % high
         with its unit multiplier 0.10 off the circle (see `ppv`'s warning),
         trbdf2's 16 %.  On a relaxation oscillator's adaptive grid trbdf2
-        uses gear's own grid better than gear does.
+        uses gear's own grid better than gear does -- by a steady ~8x, the
+        methods' constants; the 5x swing between folds of one orbit that
+        the record blamed on gear was the fold's own rescale (2026-09-21,
+        `_fold_periods`), and every second-order method paid it.
 
         ⚠ THE ADAPTIVE RUN NEEDS A TIGHTER TOLERANCE THAN THE PSS'S OWN
         (2026-09-21, "Do 2").  Measured on the same fixture, each method on
