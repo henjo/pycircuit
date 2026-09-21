@@ -24449,3 +24449,155 @@ def test_lte_grid_folds_a_driven_circuit_on_the_drives_own_period_boundaries():
     d = np.abs(ph_fine[:, None] - ph_steep[None, :])
     d = np.minimum(d, 1.0 - d)
     assert np.max(np.min(d, axis=1)) < 0.05, (ph_fine, ph_steep)   # was 0.45 off
+
+
+def _pulse_clocked_sampler(T, cval=100e-12, kb=1.38e-23, temp=300.0):
+    """The switched-capacitor sampler with a PULSE clock: the switch turns
+    on at k T (rising ramp `tr` = T/200 at phase 0) and off at T/2."""
+    cir = SubCircuit()
+    cir.add_node('in')
+    cir.add_node('out')
+    cir.add_node('ck')
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=1.0 / T, phase=0.0)
+    cir['Vck'] = VPulse('ck', gnd, v1=-1.0, v2=1.0, td=0.0, tr=T / 200,
+                        tf=T / 200, pw=T / 2 - T / 200, per=T)
+    cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                           vth=0.0, vs=50e-3, temp=temp, kb=kb)
+    cir['C0'] = C('out', gnd, c=cval)
+    return cir
+
+
+def test_gears_euler_backstop_step_on_an_event_grid_replays_in_covariance_and_the_adjoint():
+    """A one-step companion is a two-step companion with a zero third
+    coefficient (2026-09-21, found by the driven check of the fold).
+    `event_grid` lands a T/200 clock ramp inside a T/63 cell; the sliver
+    from the ramp's end to the next node grows 5.4x into the following
+    cell and `Gear2Integrator.check_order_drop` takes THAT step at order 1
+    past the zero-stability bound -- `alphas = (1/h, -1/h)`.  The
+    solved-history consumers read `alphas[2]` unguarded
+    (`PAC.covariance`: `IndexError`) or refused the step as "unreachable
+    through solve" (`_monodromy_matvec_transposed`: every adjoint noise
+    call).  Pinned: the Euler step IS in the factored period, the forward
+    covariance and the reverse `sampled_variance` -- the two recursions
+    the fix touches, run independently -- agree at the hold instant to
+    2e-3 where the sampled sum is resolved (N = 252; at 63 its 31
+    sidebands truncate it by 5.6 %), and the held variance climbs the
+    recursion's own O(h/tau)
+    tracking floor with N (0.686 / 0.740 / 0.902 x kT/C at 63 / 126 / 252
+    measured; the floor is the recorded gear covariance item, not this).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    ktc = 1.38e-23 * 300.0 / 100e-12
+
+    def run(npts):
+        cir = _pulse_clocked_sampler(T)
+        p = PSS(cir, method='gear', reltol=1e-8)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                    maxiterations=100)
+        assert p.converged
+        fp = p.factored_period()
+        n_euler = sum(1 for st in fp.steps if len(st[2]) == 2)
+        io = [str(n_) for n_ in cir.nodes].index('out')
+        io = io if io < p.irefnode else io - 1
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _K0, Ks = pac.covariance(p, samples=True)
+            sv = pac.sampled_variance(p, io, [0.8 * T], 1.0, 50e3)
+        ts = np.asarray(p.waveform[0], float)
+        v = np.array([np.asarray(k, float)[io, io] for k in Ks]) / ktc
+        tt = ts[:len(v)]
+        at = float(np.interp(0.8 * T, tt, v))
+        held = float(v[(tt > 0.6 * T) & (tt < 0.95 * T)].mean())
+        return n_euler, held, at, float(np.asarray(sv, float).ravel()[0]) / ktc
+
+    n63, h63, a63, s63 = run(63)
+    assert n63 == 1, 'the Euler step must be in the ring for this to test anything: %d' % n63
+    assert np.isfinite(s63) and np.isfinite(a63)      # both recursions RUN across it
+    ## ⚠ the reverse-pass agreement is pinned at 252, not 63: at 63 the
+    ## sampled sum covers 31 sidebands and reads 0.647 against the
+    ## covariance's 0.686 -- the recorded sampled-resolution item, not
+    ## the replay (0.742 / 0.740 at 126, 0.9023 / 0.9018 at 252)
+    n252, h252, a252, s252 = run(252)
+    assert n252 >= 1, n252
+    assert abs(s252 / a252 - 1.0) < 2e-3, (s252, a252)
+    assert 0.6 < h63 < h252 < 1.0, (h63, h252)        # the O(h/tau) floor, climbing
+
+
+def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
+    """Item 5 of the non-uniform-grid list (2026-09-21): the fold on a
+    DRIVEN circuit, measured.  Sine-clocked sampler, radau, against a
+    radau uniform-3200 reference: the 95-point fold reads 3.7e-5 of the
+    output swing where uniform 95 reads 2.4e-4 and uniform 190 5.1e-5;
+    held variance 1.00000 x kT/C on the fold, 0.99992 / 0.99999 uniform.
+    (trbdf2 261: 1.5e-4 vs 2.1e-3; gear 125: 1.2e-3 vs 4.5e-2 -- but
+    gear's held variance on its fold is 0.78 against 0.98 uniform: the
+    fold resolves the STATE, and gear's covariance has its recorded
+    O(h/tau) tracking floor where the state is flat -- see `lte_grid`.)
+    Pinned: the fold at least 4x better than uniform at its own count on
+    the waveform, held within 5e-4 of kT/C.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
+    ktc = kb * temp / cval
+    T = 1.0 / fclk
+
+    def build():
+        cir = SubCircuit()
+        cir.add_node('in')
+        cir.add_node('out')
+        cir.add_node('ck')
+        cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+        cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+        cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                               vth=0.0, vs=50e-3, temp=temp, kb=kb)
+        cir['C0'] = C('out', gnd, c=cval)
+        return cir
+
+    def out_of(cir, p):
+        io = [str(n_) for n_ in cir.nodes].index('out')
+        io = io if io < p.irefnode else io - 1
+        X = np.asarray(p.waveform[1], float)
+        X = X if X.shape[0] == cir.n - 1 else np.delete(X, p.irefnode, axis=0)
+        return io, np.asarray(p.waveform[0], float), X[io]
+
+    def solve(npts, grid=None, seed=None, reltol=1e-8):
+        cir = build()
+        p = PSS(cir, method='radau', reltol=reltol)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / npts, grid=grid,
+                    x0=np.zeros(cir.n - 1) if seed is None else seed,
+                    maxiterations=100)
+        assert p.converged
+        return cir, p
+
+    ## ⚠ 3200, not 1600: a 1600-point radau reference has ~1e-4 of the
+    ## swing left in it and reads the fold's 3.7e-5 as 1.1e-4 (ratio 2.4)
+    cr, pr = solve(3200, reltol=1e-10)
+    _io, tsr, vr = out_of(cr, pr)
+    swing = vr.max() - vr.min()
+    cir = build()
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fr, seed = PSS(cir, method='radau', reltol=1e-8).lte_grid(
+            T, x0=np.zeros(cir.n), reltol=1e-5)
+    fr = np.asarray(fr, float)
+    errs, helds = {}, {}
+    for label, grid, sd in (('fold', fr, seed), ('uniform', None, None)):
+        c2, p2 = solve(len(fr), grid=grid, seed=sd)
+        io, ts, v = out_of(c2, p2)
+        errs[label] = float(np.max(np.abs(v - np.interp(ts % T, tsr, vr))) / swing)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _K0, Ks = PAC(c2, toolkit=circuit.numeric).covariance(p2, samples=True)
+        vv = np.array([np.asarray(k, float)[io, io] for k in Ks]) / ktc
+        tt = ts[:len(vv)]
+        helds[label] = float(vv[(tt > 0.3 * T) & (tt < 0.45 * T)].mean())
+    assert errs['uniform'] / errs['fold'] > 4.0, errs
+    assert abs(helds['fold'] - 1.0) < 5e-4, helds

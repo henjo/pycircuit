@@ -3437,6 +3437,23 @@ class PSS(Analysis):
         beat a 20000-point uniform grid -- 18x fewer points and -47.3 ppm
         against -60.6.
 
+        ⚠ ON A DRIVEN CIRCUIT (measured 2026-09-21, the switched-capacitor
+        sampler, sine and pulse clocks, each method's fold against uniform
+        grids of the same and double count, radau uniform-3200 reference):
+        the waveform is 6.5-40x better on the fold at the same count (radau
+        95 points 3.7e-5 of the swing vs 2.4e-4; trbdf2 261: 1.5e-4 vs
+        2.1e-3; gear 125: 1.2e-3 vs 4.5e-2) and the fold at N beats uniform
+        at 2N; a uniform grid puts ONE step across a clock's ramp whatever
+        N, the fold's finest steps sit inside it.  Held noise on the fold is
+        at kT/C for trbdf2 and radau.  ⚠ NOT FOR GEAR'S NOISE: gear's held
+        variance on its own fold reads 0.78 x kT/C against 0.98 uniform at
+        the same count.  The fold resolves the STATE -- the tracking phase,
+        where the state is flat, gets h ~ tau -- and gear's covariance
+        recursion carries its recorded O(h/tau) tracking floor through the
+        turn-off.  A noise quantity with its own time scale is resolved only
+        where the state's grid happens to be fine; use trbdf2 or radau for
+        noise on a folded grid, or a uniform grid for gear's.
+
         ⚠⚠ IT IS FOR STIFF SMOOTH PROBLEMS AND NOT FOR EVENTS, and that
         boundary is measured rather than cautionary.  On a wrapping
         `Idtmod` the derived grid is WORSE than a uniform grid of the same
@@ -5531,21 +5548,30 @@ class PSS(Analysis):
 
         for j in range(len(steps) - 1, -1, -1):
             lu, _C_new, alphas, b = steps[j]
-            if len(alphas) < 3:
-                ## ⚠ A ONE-STEP COMPANION HAS NO `alphas[2]`, and this used
-                ## to read it anyway -- an `IndexError` from inside a
-                ## reverse loop, three frames from the cause, where the
-                ## `b != 0` case one line below states its refusal
-                ## plainly.  Unreachable through `solve`, which takes this
-                ## path only for Gear-2, but PPV and adjoint noise both
-                ## call the transposed replay directly and a one-step
-                ## method is the obvious thing to try first.
-                raise NotImplementedError(
-                    'PSS: the transposed replay is derived for a two-step '
-                    'companion (Gear-2) and this step has %d alpha '
-                    'coefficients, so there is no second history term to '
-                    'transpose. A one-step method needs its own reverse '
-                    'recursion, not this one.' % len(alphas))
+            ## ⚠ A ONE-STEP COMPANION IS A TWO-STEP COMPANION WITH A ZERO
+            ## THIRD COEFFICIENT (2026-09-21).  This used to REFUSE a step
+            ## with two alphas as "unreachable through `solve`" -- it is
+            ## reachable on the default path: `event_grid` lands a clock's
+            ## ramp inside a coarse cell, the sliver to the next node grows
+            ## 5.4x into the following cell (a T/200 ramp at N = 63), and
+            ## `Gear2Integrator.check_order_drop` drops THAT step to Euler
+            ## past the zero-stability bound -- `alphas = (1/h, -1/h)`, no
+            ## second history term, `b = 0`.  The pair map holds with
+            ## `alphas[2] = 0`: the C ring keeps rolling across the step
+            ## (the transient's own rule) and the step simply does not read
+            ## its second entry.  Measured on the pulse-clocked sampler
+            ## (`Ron C` = T/100): gear's held variance 0.686 / 0.740 / 0.902
+            ## x kT/C at N = 63 / 126 / 252 with the Euler step in the ring,
+            ## the recursion's own O(h/tau) tracking floor and nothing else
+            ## (the sine-clocked twin reads 0.74 at 200 uniform points), and
+            ## `sampled_variance` -- THIS reverse pass -- agrees with the
+            ## forward covariance sample to 5e-4 at N = 252 and 2e-3 at 126
+            ## (at 63 the sampled sum's 31 sidebands truncate it by 5.6 %,
+            ## the recorded resolution item, not the replay).  A refusal was
+            ## an `IndexError` in `PAC.covariance` (which read `alphas[2]`
+            ## unguarded) and a `NotImplementedError` in every adjoint
+            ## noise call, for a switched-capacitor circuit under gear.
+            a2 = float(alphas[2]) if len(alphas) > 2 else 0.0
             if b:
                 ## a `b != 0` companion carries `iq` in the state, so the
                 ## step map is not the pair above.  Unreachable today --
@@ -5566,7 +5592,7 @@ class PSS(Analysis):
             if collect:
                 ts.append(t)
             w1, w2 = (-alphas[1] * (cs0[j].T @ t) + w2,
-                      -alphas[2] * (cs1[j].T @ t))
+                      -a2 * (cs1[j].T @ t))
             if inj is not None:
                 w1 = w1 + inj[j]
             if collect:
@@ -5907,7 +5933,9 @@ class PSS(Analysis):
             _vphys = []
             for _j, st in enumerate(states):
                 _lu, _Cn, _al, _b = fp.steps[_j]
-                _z = -_al[2] * np.asarray(_ts[_j], dtype=_dt)
+                ## (a one-step companion -- gear's Euler backstop past the
+                ## zero-stability bound on an event grid -- has no third alpha)
+                _z = -(float(_al[2]) if len(_al) > 2 else 0.0) * np.asarray(_ts[_j], dtype=_dt)
                 ## ⚠ DIFFERENTIAL ROWS ONLY.  `w2 = C^T z` does not see the
                 ## algebraic rows of `z` (their rows of `C` are zero), so
                 ## the decomposition is non-unique there, and those
@@ -14678,13 +14706,18 @@ class PAC(Analysis):
             if b:
                 raise NotImplementedError(
                     'PAC.%s: derived for a b = 0 companion (Gear-2).' % what)
+            ## a one-step companion (gear's Euler backstop past the
+            ## zero-stability bound on an event grid, 2026-09-21) has no
+            ## third alpha: the pair map holds with it zero -- see
+            ## `_monodromy_matvec_transposed`
+            a2 = float(alphas[2]) if len(alphas) > 2 else 0.0
             A = np.zeros((n, n))
             for j in range(n):
                 p0 = np.zeros(m)
                 p1 = np.zeros(m)
                 (p0 if j < m else p1)[j if j < m else j - m] = 1.0
                 A[:m, j] = -lu.solve(alphas[1] * (cs0[k] @ p0)
-                                     + alphas[2] * (cs1[k] @ p1))
+                                     + a2 * (cs1[k] @ p1))
                 A[m:, j] = p0
             return A
 
