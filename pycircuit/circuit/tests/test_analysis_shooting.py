@@ -24332,3 +24332,64 @@ def test_lte_grid_measures_its_own_period_and_the_solve_seeds_from_it():
         assert not any('closing step ended' in str(w_.message) for w_ in rec), method
         e = 1e6 * (float(q.period) - T_REF) / T_REF
         assert abs(e) < bound, (method, e)                   # -17 / +10 measured
+
+
+def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped():
+    """`lte_grid` (and `refine_grid`) used to build their adaptive Transient
+    with no integrator -- the Transient default `Gear2Integrator()` -- so a
+    radau PSS got a gear-shaped grid, denser on the slow branch than a
+    fifth-order method needs (2026-09-21, Andreas: "Do 2").  They now step
+    with the PSS's own integrator.  Relaxation van der Pol, mu = 10, reltol
+    1e-5, each method on the grid ITS OWN run produced, seeded from
+    `lte_period`::
+
+        method   steps   span      T err (ppm)   c rel
+        gear     195     176:1     -1461 / -22   -8.6 % / -4.5 %   (two windows)
+        trbdf2   286     833:1     -8.7          +0.29 %
+        radau    110     130:1     -0.32         -0.05 %
+
+    ⚠ Gear's two numbers are two windows of runs that differ only in the
+    period hint (19.1 vs 16.1): same count, same span, a 70x different
+    period error -- and rotating the converged grid to start at its finest
+    step (no ramp, no seam question) moves each by ~40 ppm only.  Gear's
+    period on a relaxation oscillator's frozen adaptive grid depends on
+    where that window's fine regions sit against the converged edges; that
+    is gear's property on such grids, recorded, and why the `method` table
+    says trbdf2 or radau there.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    MU = 10.0
+    T_REF = 19.098600502
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: MU * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    grids = {}
+    for method in ('gear', 'radau'):
+        cir = vdp()
+        p = PSS(cir, method=method)
+        xfull = np.zeros(cir.n)
+        xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            fr, seed = p.lte_grid(19.1, x0=xfull, reltol=1e-5)
+        grids[method] = (np.asarray(fr, float), seed, float(p.lte_period))
+    ## a radau grid is not a gear grid: sparser, from the fifth-order run
+    assert len(grids['radau'][0]) < 0.75 * len(grids['gear'][0]), \
+        (len(grids['radau'][0]), len(grids['gear'][0]))
+    fr, seed, Tl = grids['radau']
+    q = PSS(vdp(), method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / len(fr), x0=seed, maxiterations=80,
+                break_events=False, grid=fr)
+    assert q.converged
+    e = 1e6 * (float(q.period) - T_REF) / T_REF
+    assert abs(e) < 5.0, e                                       # -0.32 measured

@@ -3194,7 +3194,14 @@ class PSS(Analysis):
             xf = self._insert_refnode(xf)
         rt = self.par.reltol if reltol is None else float(reltol)
         h0 = (T / 200.0) if timestep is None else float(timestep)
-        tr = Transient(self.cir, toolkit=self.toolkit, reltol=rt)
+        ## ⚠ THE PSS'S OWN METHOD SHAPES THE GRID (2026-09-21, "Do 2"): this
+        ## used to build `Transient(...)` with no integrator, i.e. the
+        ## Transient default `Gear2Integrator()` whatever `method` the PSS
+        ## was given -- a gear-shaped grid for a radau PSS.  The adaptive run
+        ## steps with the PSS's integrator, so the LTE profile the grid
+        ## freezes is the one the PSS will pay (`refine_grid` likewise).
+        tr = Transient(self.cir, toolkit=self.toolkit, reltol=rt,
+                       integrator=self._integrator_for(self.par.method))
         with _warnings.catch_warnings():
             _warnings.simplefilter('ignore')
             res = tr.solve(refnode=refnode, tend=T, timestep=h0, x0=xf)
@@ -3330,7 +3337,14 @@ class PSS(Analysis):
         rt = self.par.reltol if reltol is None else float(reltol)
         h0 = (T / 200.0) if timestep is None else float(timestep)
 
-        tr = Transient(self.cir, toolkit=self.toolkit, reltol=rt)
+        ## ⚠ THE PSS'S OWN METHOD SHAPES THE GRID (2026-09-21, "Do 2"): this
+        ## used to build `Transient(...)` with no integrator, i.e. the
+        ## Transient default `Gear2Integrator()` whatever `method` the PSS
+        ## was given -- a gear-shaped grid for a radau PSS.  The adaptive run
+        ## steps with the PSS's integrator, so the LTE profile the grid
+        ## freezes is the one the PSS will pay (`refine_grid` likewise).
+        tr = Transient(self.cir, toolkit=self.toolkit, reltol=rt,
+                       integrator=self._integrator_for(self.par.method))
         with _warnings.catch_warnings():
             _warnings.simplefilter('ignore')
             res = tr.solve(refnode=refnode, tend=tstab + T, timestep=h0,
