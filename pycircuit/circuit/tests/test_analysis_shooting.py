@@ -1711,10 +1711,13 @@ def test_a_grid_that_opens_coarse_is_subdivided_but_a_benign_one_is_not():
     fr = fr / fr.sum()
     times, hs = pss._period_grid(1e-3, len(fr), fr)
     nramp = len(hs) - len(fr) + 1
-    assert 5 <= nramp <= 12, nramp                       # ~log2(500) doubling steps
-    assert hs[0] == pytest.approx(fr.min() * 1e-3, rel=1e-12)
+    assert 5 <= nramp <= 12, nramp                       # ~log2(500) halvings
+    ## top-down (2026-09-21): the first piece is the coarse step halved down
+    ## to its finest scale -- within a factor 2 of `fr.min()` -- doubled up,
+    ## so the hand-off to the next step is a ratio of 2 too
+    assert fr.min() * 1e-3 / 2.0 < hs[0] <= fr.min() * 1e-3 * (1.0 + 1e-12)
     assert np.sum(hs[:nramp]) == pytest.approx(fr[0] * 1e-3, rel=1e-12)
-    assert np.all(hs[1:nramp] / hs[:nramp - 1] <= 2.0 + 1e-12)
+    assert np.all(hs[1:nramp + 1] / hs[:nramp] <= 2.0 + 1e-12)
     ## the period is preserved -- a subdivision that moved it would change
     ## the interval the solve believes it integrated
     assert times[-1] == pytest.approx(1e-3, rel=1e-12)
@@ -11094,7 +11097,11 @@ def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
     p2 = PSS(vdp(), method='gear', reltol=1e-6)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        p2.solve(period=T, grid=fr, x0=seed, maxiterations=60)
+        ## at the period `lte_grid` OBSERVED (2026-09-21): the grid is
+        ## fractions of it, and this test's hint T = 11 is 8 % above the true
+        ## 10.2 -- at the hint the folded grid's seam (mid-edge) meets the
+        ## period error at the fastest dynamics
+        p2.solve(period=pss.lte_period, grid=fr, x0=seed, maxiterations=60)
     assert p2.converged, 'the derived grid did not converge'
 
     p3 = PSS(vdp(), method='gear', reltol=1e-6)
@@ -24042,46 +24049,41 @@ def test_gear_runs_its_ppv_on_the_lte_grid_gear_produced_and_is_told_when_its_un
         return 1e6 * (float(q.period) - T_REF) / T_REF, float(q.spectral_radius), warned
     e1, rho1, w1 = run('gear', fr, N)
     e2, rho2, w2 = run('gear', np.repeat(fr / 2.0, 2), 2 * N)
-    ## second order on the adaptive grid, and far better than a uniform grid
-    ## of the same count (-6541 ppm measured): -519 / -133 with the seed in
-    ## the fine region, -1436 / -384 with it at the window start (the ramp)
-    assert -2500 < e1 < -300 and 3.0 < e1 / e2 < 5.0, (e1, e2)
-    assert rho1 - 1.0 > 3e-2 and w1, (rho1, w1)                      # 0.10: told
-    assert 5e-3 < rho2 - 1.0 < 5e-2 and w2, (rho2, w2)               # 0.027: still told
+    ## on the FOLDED grid (every settled period, per-phase minimum, seam at
+    ## the finest phase; 2026-09-21 "Do 1"): gear +20 / +12 / +4.4 ppm under
+    ## 1x / 2x / 4x -- against -1461 / -22 on two raw single windows, a
+    ## uniform grid of the same count at -6541 -- and its unit multiplier
+    ## nearer the circle (c +22 %, was +52 %); still told
+    ## gear's period on a ~200-point folded grid is an O(300 ppm) constant
+    ## whose sign depends on the remesh phase (+285 with the seam on the
+    ## slow branch, +20 / -28 elsewhere), second order under splitting
+    assert abs(e1) < 500 and abs(e2) < 150 and abs(e2) < abs(e1), (e1, e2)
+    ## and it is told exactly when its unit multiplier has left the circle
+    for rho, w in ((rho1, w1), (rho2, w2)):
+        assert bool(w) == (rho - 1.0 > PSS.PPV_UNIT_MULTIPLIER_WARN), (rho, w)
     e3, rho3, w3 = run('trbdf2', fr, N)
-    assert abs(e3) < 400 and abs(e3) * 3 < abs(e1), (e3, e1)         # -66 / -519 measured
-    assert rho3 - 1.0 > 5e-3 and w3, (rho3, w3)                      # 0.0135: told too
+    assert abs(e3) < 100, (e3, e1)                                  # +7 .. +57 by remesh phase
+    assert bool(w3) == (rho3 - 1.0 > PSS.PPV_UNIT_MULTIPLIER_WARN), (rho3, w3)
 
 
-def test_the_closing_period_column_takes_a_free_period_solve_from_a_seed_the_proportional_one_cannot():
-    """Item 2 of gear-on-adaptive-grids (2026-09-21): the 'closing' period
-    column, B7c completed, on every kind, and 'auto' on a caller's grid.
+def test_the_closing_period_column_is_opt_in_and_takes_a_raw_window_from_a_seed_the_proportional_one_cannot():
+    """The 'closing' period column (B7c completed on every kind, 2026-09-21)
+    and what its evidence was.  On a RAW single window of an adaptive run
+    (`lte_grid(fold=False)`), whose seam sits on the slow branch, a free-period
+    solve seeded 16 % low fails its per-step Newton under 'proportional'
+    (every step rescaled with the trial period: the fine regions slide off
+    the edges) and converges under 'closing' (inner steps frozen, only the
+    last follows T) -- the closing step then holds the whole 3 s correction,
+    and a proportional polish on the caller's fractions at the solved period
+    lands on the reference-seeded answer.
 
-    Under 'proportional' (`dh/dT = h/T`) the outer Newton rescales EVERY
-    step with each trial period, so an adaptive grid's fine regions slide
-    off the relaxation edges they were placed on; from a period seed 16 %
-    low (my (3 - 2 ln 2) mu estimate against the true 19.10 at mu = 10)
-    gear's AND trbdf2's per-step Newton fail on the coarse steps that land
-    on the edges.  Under 'closing' the inner steps keep the absolute lengths
-    the transient validated and only the last step follows T -- and the
-    free-period Newton converges.  But that closing step then holds the
-    whole 3 s correction (a growth far beyond the zero-stability bound: an
-    Euler drop for gear, and for trbdf2 an answer -1.1 % in period and -97 %
-    in c), so 'auto' solves ONCE MORE on the caller's fractions at the
-    solved period, proportionally, from the converged state -- and lands
-    on the reference-seeded answer.  Measured, mu = 10, ~200 points::
-
-        seed          method   proportional          auto (closing, then polish)
-        16 % low      gear     per-step Newton FAILS   -1464 ppm, c -8.6 %
-        16 % low      trbdf2   per-step Newton FAILS   -195 ppm,  c +2.0 %
-        reference     gear     -1436 ppm, c -8.5 %     -1594 ppm (closing) / same
-        reference     trbdf2   -195 ppm,  c +2.0 %     -197 ppm  (closing) / same
-
-    ⚠ Re-fractioning the closing-DISTORTED grid for the second pass keeps
-    its giant last step (measured: still -1.1 % / -97 %); the polish must be
-    on the caller's fractions.  The mu = 1 smooth-grid free period is
-    bit-identical between conventions (gear +442.27 / +110.85 / +27.75 ppm
-    either way; radau at 1e-10), so nothing moved where the seed was good.
+    ⚠ AND THAT IS ALL IT IS.  On the FOLDED grid `lte_grid` now makes,
+    closing FAILS from 2 % off where proportional converges (seam mid-edge)
+    or lands +690 ppm off (seam on the slow branch), and `lte_period`
+    removes the bad seed at its source -- so 'auto' resolves to
+    'proportional' (reversed the same day it was set, on this measurement)
+    and 'closing' is selectable by name.  Pinned: 'auto' is bit-identical
+    to 'proportional'; 'closing' still does what it did on the raw window.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -24103,41 +24105,37 @@ def test_the_closing_period_column_takes_a_free_period_solve_from_a_seed_the_pro
     xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        fr, seed = p.lte_grid(T_REF, x0=xfull, reltol=1e-5)
+        fr, seed = p.lte_grid(19.1, x0=xfull, reltol=1e-5, fold=False)   # the raw window
     fr = np.asarray(fr, float)
     N = len(fr)
-    T_LOW = (3.0 - 2.0 * np.log(2.0)) * MU                 # 16 % low
+    T_LOW = 0.84 * p.lte_period
 
-    def run(method, pc, Tseed):
+    def run(pc, Tseed):
         c_ = vdp()
-        q = PSS(c_, method=method, reltol=1e-9, period_column=pc)
+        q = PSS(c_, method='gear', reltol=1e-9, period_column=pc)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
             q.solve(period=Tseed, timestep=Tseed / N, x0=seed, maxiterations=80,
                     break_events=False, grid=fr)
-        assert q.converged
-        fp = q.factored_period()
-        if fp.kind == 'solved_history':
-            assert all(len(st[2]) == 3 for st in fp.steps), 'an order-dropped step'
-        second = any('closing step ended' in str(w_.message) for w_ in rec)
-        return 1e6 * (float(q.period) - T_REF) / T_REF, second
-    for method, lo, hi in (('gear', -2500, -300), ('trbdf2', -400, -50)):
-        ## the reference-seeded answer, proportional
-        e_ref, s_ref = run(method, 'proportional', T_REF)
-        assert lo < e_ref < hi and not s_ref, (method, e_ref)
-        ## from 16 % low, proportional fails the per-step Newton
-        try:
-            run(method, 'proportional', T_LOW)
-            raise AssertionError('%s: proportional converged from the low seed' % method)
-        except AssertionError:
-            raise
-        except Exception:
-            pass
-        ## and auto lands on the reference-seeded answer with the second pass
-        e_auto, s_auto = run(method, 'auto', T_LOW)
-        assert s_auto, method
-        assert abs(e_auto - e_ref) < 0.05 * abs(e_ref) + 5.0, (method, e_auto, e_ref)
-
+        if not q.converged:
+            raise RuntimeError('did not converge')       # the expected failure, catchable
+        return float(q.period), any('closing step ended' in str(w_.message) for w_ in rec)
+    ## 'auto' is 'proportional', bit for bit
+    Ta, _ = run('auto', p.lte_period)
+    Tp, _ = run('proportional', p.lte_period)
+    assert Ta == Tp, (Ta, Tp)
+    ## proportional fails from 16 % low on the raw window ...
+    try:
+        run('proportional', T_LOW)
+        raise AssertionError('proportional converged from the low seed on the raw window')
+    except AssertionError:
+        raise
+    except Exception:
+        pass
+    ## ... and closing takes it there, with the polish, to the same answer
+    Tc, second = run('closing', T_LOW)
+    assert second
+    assert abs(Tc / Tp - 1.0) < 1e-4, (Tc, Tp)
 
 def test_a_noise_source_on_an_index2_constraint_is_named_not_silently_zero():
     """A voltage noise in series with the DC source INSIDE a capacitor loop
@@ -24321,7 +24319,7 @@ def test_lte_grid_measures_its_own_period_and_the_solve_seeds_from_it():
     assert any('recurs every' in str(w_.message) for w_ in rec), 'the off hint must be named'
     fr = np.asarray(fr, float)
     N = len(fr)
-    for method, bound in (('gear', 100.0), ('trbdf2', 60.0)):
+    for method, bound in (('gear', 500.0), ('trbdf2', 100.0)):
         c_ = vdp()
         q = PSS(c_, method=method, reltol=1e-9)
         with _w.catch_warnings(record=True) as rec:
@@ -24331,7 +24329,7 @@ def test_lte_grid_measures_its_own_period_and_the_solve_seeds_from_it():
         assert q.converged
         assert not any('closing step ended' in str(w_.message) for w_ in rec), method
         e = 1e6 * (float(q.period) - T_REF) / T_REF
-        assert abs(e) < bound, (method, e)                   # -17 / +10 measured
+        assert abs(e) < bound, (method, e)     # folded grid: gear O(300), trbdf2 +7..+10
 
 
 def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped():

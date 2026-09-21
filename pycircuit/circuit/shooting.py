@@ -2269,8 +2269,9 @@ class PSS(Analysis):
          ## a caller's grid for an autonomous run and 'proportional' otherwise
          ## -- see `_period_grid` and the note at `_period_column`.
          Parameter(name='period_column',
-                   desc="'auto', 'proportional' or 'closing': which step "
-                        "lengths depend on an unknown period",
+                   desc="'auto' (= 'proportional'), 'proportional' or 'closing': "
+                        "which step lengths depend on an unknown period; see "
+                        "the note at the policy in solve()",
                    unit='', default='auto'),
          ## ⚠⚠ THE ONE KNOB `method='theta'` HAS, AND IT WAS UNREACHABLE.
          ## `_integrator_for` builds `table[method]()`, so every shooting run
@@ -3160,6 +3161,15 @@ class PSS(Analysis):
                     delta=0.25, reltol=None, timestep=None):
         """REPAIR an under-resolved step grid, given a solution solved on it.
 
+        ⚠ SUPERSEDED FOR ADAPTIVE GRIDS BY `lte_grid`'s FOLD (2026-09-21,
+        "Do 3"): one pass on the folded mu = 10 grid took trbdf2 from 290 to
+        6180 points (21x) for -7.7 -> -0.01 ppm, and its output carries step
+        ratios beyond the two-step bound (gear's transposed replay refused
+        it).  For a relaxation oscillator's grid, a tighter `lte_grid`
+        reltol buys the same accuracy at a fraction of the points (the table
+        at `lte_grid`).  Kept for the decimated-grid repair it was measured
+        on; its ratio control predates the fold.
+
         B7c.  Returns a new fraction list: `grid` with points ADDED wherever an
         adaptive run from `x0` asks for a step more than `gamma` times finer
         than what is there.  Feed it back to `solve(grid=..., x0=...)`.
@@ -3229,7 +3239,8 @@ class PSS(Analysis):
         xf = np.asarray(x0, dtype=float).ravel()
         if xf.shape[0] == self.cir.n - 1:
             xf = self._insert_refnode(xf)
-        rt = self.par.reltol if reltol is None else float(reltol)
+        rt = (min(float(self.par.reltol), self.LTE_GRID_RELTOL_MAX)
+              if reltol is None else float(reltol))
         h0 = (T / 200.0) if timestep is None else float(timestep)
         ## ⚠ THE PSS'S OWN METHOD SHAPES THE GRID (2026-09-21, "Do 2"): this
         ## used to build `Transient(...)` with no integrator, i.e. the
@@ -3266,6 +3277,85 @@ class PSS(Analysis):
         pts = np.unique(np.asarray(out, dtype=float))
         return list(np.diff(pts))
 
+    #: how many settled periods `lte_grid` folds onto one phase for its grid
+    LTE_FOLD_PERIODS = 24
+
+    #: the coarsest reltol the adaptive runs of `lte_grid` / `refine_grid`
+    #: take by default -- see the table at `lte_grid`
+    LTE_GRID_RELTOL_MAX = 1e-5
+
+    def _fold_periods(self, t, xs, iref_probe, T_obs, nbins=4000):
+        """`(fracs, seed)` from the accepted steps of the last settled
+        periods folded onto a common phase: the per-phase minimum of the
+        local step, re-meshed with growth capped at 2, the seed the state at
+        the last rising crossing.  None when fewer than 4 periods fold."""
+        t = np.asarray(t, dtype=float).ravel()
+        xs = np.asarray(xs, dtype=float)
+        keep = [i for i in range(xs.shape[0]) if i != iref_probe]
+        nper = int(self.LTE_FOLD_PERIODS) + 1
+        j0 = int(np.searchsorted(t, t[-1] - nper * T_obs))
+        if j0 >= len(t) - 3:
+            return None, None
+        W = xs[keep][:, j0:]
+        tw = t[j0:]
+        k = int(np.argmax(W.max(axis=1) - W.min(axis=1)))
+        y = W[k] - 0.5 * (W[k].max() + W[k].min())
+        up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
+        if len(up) < 5:
+            return None, None
+        tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
+        phases = (np.arange(nbins) + 0.5) / nbins
+        dens = None
+        for a, b in zip(tc[:-1], tc[1:]):
+            Tk = float(b - a)
+            i0 = int(np.searchsorted(t, a))
+            i1 = int(np.searchsorted(t, b))
+            ts_k = np.concatenate(([a], t[i0:i1], [b]))
+            hs_k = np.diff(ts_k)
+            if len(hs_k) < 2 or np.any(hs_k <= 0.0):
+                continue
+            edges = (ts_k - a) / Tk
+            idx = np.clip(np.searchsorted(edges, phases, side='right') - 1,
+                          0, len(hs_k) - 1)
+            d = hs_k[idx] / Tk
+            dens = d if dens is None else np.minimum(dens, d)
+        if dens is None:
+            return None, None
+        ## the grid starts at the phase of COARSEST density -- the slow
+        ## branch.  At the crossing itself the density jumps ~4x (coarse steps
+        ## approach an edge, fine ones follow it: a 0.25 seam ratio).  At the
+        ## FINEST phase the seam sits mid-edge, where the PPV's sensitivity
+        ## is: measured on the same grid, gear's c +28 % against -3.9 % with
+        ## the seam on the slow branch, trbdf2's +8 % against +0.4 %, the
+        ## period the same either way (+23 / -28, +10 / +7 ppm).  The coarse
+        ## opener is `_period_grid`'s doubling ramp.
+        k0 = int(np.argmax(dens))
+        dens = np.roll(dens, -k0)
+        ph0 = float(phases[k0])
+        fr = []
+        ph = 0.0
+        last = None
+        ## the walk overshoots the period by at most one step and the whole
+        ## grid is then rescaled to sum 1: every ratio is preserved and no
+        ## tiny closing step is made (a closing remainder used to trip the
+        ## closing-step bound and fire a needless second pass)
+        while ph < 1.0:
+            h = float(dens[min(int(ph * nbins), nbins - 1)])
+            if last is not None:
+                h = min(h, 2.0 * last)
+            fr.append(h)
+            ph += h
+            last = h
+        fr = np.asarray(fr, dtype=float)
+        fr = fr / float(fr.sum())
+        ## the seed: the state at that phase of the last full period
+        t_seed = float(tc[-2] + ph0 * (tc[-1] - tc[-2]))
+        i = int(np.searchsorted(t, t_seed)) - 1
+        w = (t_seed - t[i]) / (t[i + 1] - t[i])
+        x = (1.0 - w) * xs[:, i] + w * xs[:, i + 1]
+        seed = np.concatenate((x[:iref_probe], x[iref_probe + 1:]))
+        return fr, seed
+
     @staticmethod
     def _observed_period(t, xs, iref_probe, T_hint, nper=8):
         """The period an adaptive run actually shows, from the rising
@@ -3296,7 +3386,7 @@ class PSS(Analysis):
         return float(np.mean(d))
 
     def lte_grid(self, period, x0=None, refnode=gnd, tstab=None,
-                 reltol=None, timestep=None):
+                 reltol=None, timestep=None, fold=True):
         """Step FRACTIONS for `solve(grid=...)`, derived from an adaptive run.
 
         B7a.  A transient adapts because it cannot see the future; PSS
@@ -3361,6 +3451,22 @@ class PSS(Analysis):
         with its unit multiplier 0.10 off the circle (see `ppv`'s warning),
         trbdf2's 16 %.  On a relaxation oscillator's adaptive grid trbdf2
         uses gear's own grid better than gear does.
+
+        ⚠ THE ADAPTIVE RUN NEEDS A TIGHTER TOLERANCE THAN THE PSS'S OWN
+        (2026-09-21, "Do 2").  Measured on the same fixture, each method on
+        the FOLDED grid its own run made, period error (ppm) and diffusion
+        constant error against radau N = 8N::
+
+            reltol   gear (pts, ppm, c)         trbdf2                  radau
+            1e-4     95    -900    +179 %      146   -2.0    +1.0 %     70   -3.9    -1.9 %
+            1e-5     207   +20     +22 %       290   -7.7    +0.27 %    116  -0.17   -0.04 %
+            1e-6     425   -3.6    +7.8 %      602   -1.0    +0.05 %    191  -0.004  -0.002 %
+            1e-7     928   -1.6    +2.6 %      1294  -0.25   +0.01 %    331   0.000  -0.0002 %
+
+        The PSS default reltol 1e-4 makes a grid gear cannot use (-900 ppm,
+        c 2.8x); 1e-5 is the coarsest that serves every method at the 10-ppm
+        level, so the default is `min(reltol, LTE_GRID_RELTOL_MAX)`; gear's c
+        within a few per cent wants 1e-7.
         """
         import warnings as _warnings
         from pycircuit.circuit.transient import Transient
@@ -3371,7 +3477,8 @@ class PSS(Analysis):
         if tstab < 0.0:
             raise ValueError('lte_grid: tstab must not be negative, got %g'
                              % tstab)
-        rt = self.par.reltol if reltol is None else float(reltol)
+        rt = (min(float(self.par.reltol), self.LTE_GRID_RELTOL_MAX)
+              if reltol is None else float(reltol))
         h0 = (T / 200.0) if timestep is None else float(timestep)
 
         ## ⚠ THE PSS'S OWN METHOD SHAPES THE GRID (2026-09-21, "Do 2"): this
@@ -3420,6 +3527,28 @@ class PSS(Analysis):
                 'is far off); the grid is cut at the period passed, %.6g s.'
                 % T, RuntimeWarning, stacklevel=2)
         self.lte_period = float(T)
+        ## ⚠ THE GRID COMES FROM EVERY SETTLED PERIOD, NOT THE LAST WINDOW
+        ## (2026-09-21, Andreas: "Do 1").  A frozen window inherits whichever
+        ## rejection-and-growth pattern that one period got: two windows of
+        ## the same run parameters read gear -1461 / -22 ppm and trbdf2 -180 /
+        ## +10 on a relaxation van der Pol (mu = 10) -- an 8x lottery for
+        ## every second-order method (radau, order 5, does not care).  With
+        ## the period detected, each of the last `LTE_FOLD_PERIODS` periods'
+        ## accepted steps is folded onto a common phase (phase 0 at the
+        ## rising crossing the detector found), the per-phase MINIMUM of the
+        ## local step over periods is the density, and a grid is re-meshed
+        ## from it with growth capped at the controller's own 2x.  Measured on
+        ## the same run: gear +40 ppm, trbdf2 +10, radau -0.01 at 207 points
+        ## (the 25 % quantile +267 / +13, the median +957 / +16, the last
+        ## window re-meshed +150 / +6).  Phase 0 sits mid-edge, so the seam is
+        ## fine steps on both sides and the opener needs no ramp.  The seed is
+        ## the interpolated state at the last crossing.  `fold=False` keeps
+        ## the single-window cut; a run without a consistent recurrence
+        ## falls back to it.
+        if fold and T_obs is not None:
+            _fr, _seed = self._fold_periods(t, xs, self.cir.get_node_index(refnode), float(T))
+            if _fr is not None:
+                return _fr, _seed
         ## a settled window of exactly one period, taken from the END
         ## ⚠ THE WINDOW ENDS AT THE LAST NATURAL STEP, NOT AT `tend`
         ## (2026-09-21).  `Transient.solve` lands its final step exactly on
@@ -3567,15 +3696,17 @@ class PSS(Analysis):
         ## step keep every ratio at 2, inside the bound, for ~log2 of the
         ## span in extra points.
         if fr[0] > 8.0 * fr.min() and not getattr(self, '_open_at_x0', False):
-            d = float(fr.min())
-            ramp = []
-            rest = float(fr[0])
-            while rest > 2.0 * d:
-                ramp.append(d)
-                rest -= d
-                d *= 2.0
-            ramp.append(rest)
-            fr = np.concatenate((np.asarray(ramp, dtype=float), fr[1:]))
+            ## ⚠ TOP-DOWN (2026-09-21): built bottom-up as d, 2d, 4d, ..., rest,
+            ## the remainder could be a sliver before the next coarse step --
+            ## a growth beyond the bound, an Euler drop, gear +918 ppm on its
+            ## own folded grid.  Halving from the coarse step down to its
+            ## finest scale, with the smallest piece doubled up, keeps EVERY
+            ## ratio at 2 or less, the hand-off to the next step included.
+            f0 = float(fr[0])
+            kk = int(np.ceil(np.log2(f0 / float(fr.min()))))
+            pieces = [f0 / 2.0 ** j for j in range(kk, 0, -1)]      # f0/2^k .. f0/2
+            pieces = [f0 / 2.0 ** kk] + pieces                       # the remainder, first
+            fr = np.concatenate((np.asarray(pieces, dtype=float), fr[1:]))
 
         ## ⚠ A CALLER'S GRID CAN SILENTLY DEMOTE GEAR-2 TO FIRST ORDER.
         ## `_period_grid` validated positivity and sum-to-1 and nothing
@@ -10463,9 +10594,14 @@ class PSS(Analysis):
         if _pc not in ('auto', 'proportional', 'closing'):
             raise ValueError("period_column must be 'auto', 'proportional' "
                              "or 'closing', got %r" % (_pc,))
-        self._period_column = ('closing' if (_pc == 'closing' or (
-            _pc == 'auto' and self.autonomous and self._grid_fracs is not None))
-            else 'proportional')
+        ## ⚠ 'auto' IS 'proportional' (2026-09-21, reversed the same day it
+        ## was set).  Closing's evidence was a raw single window of an
+        ## adaptive run with its seam on the slow branch, from a seed 16 %
+        ## off.  On the FOLDED grid `lte_grid` now makes, closing FAILS from
+        ## 2 % off where proportional converges (seam mid-edge) or lands
+        ## +690 ppm off (seam on the slow branch), and `lte_period` removes
+        ## the bad seed at its source.  'closing' stays selectable by name.
+        self._period_column = 'closing' if _pc == 'closing' else 'proportional'
         self._closing_inner = None
         self._closing_warned = False
         phase_k, phase_pin = 0, 0.0
