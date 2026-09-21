@@ -141,9 +141,31 @@ def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     raise AssertionError('unreachable')
 
 
-def periodic_spline_weights(t, T):
+def periodic_spline_weights(t, T, breaks=None):
     """Weights `w` with `sum_j w_j y_j` = the integral over one period of the
-    PERIODIC CUBIC SPLINE through `(t_j, y_j)`, `j = 0..n-1`, `t_n = t_0 + T`.
+    PERIODIC CUBIC SPLINE through `(t_j, y_j)`, `j = 0..n-1`, `t_n = t_0 + T`
+    -- or, with `breaks` (node indices where the integrand KINKS), of the
+    PIECEWISE not-a-knot cubic spline whose pieces meet at those nodes and
+    at node 0.
+
+    ⚠ UNDER LANDED EVENTS THE PIECES BREAK AT THE EVENT NODES (2026-09-21,
+    item 2 of the non-uniform-grid list).  A landed edge puts a kink in the
+    integrand at its node; a spline that is C^2 across it rings, which is
+    why the callers used to keep the trapezoid whenever `event_times` was
+    non-empty -- and the trapezoid caps every method's period integrals at
+    second order on exactly the grids a clocked circuit gets.  A cubic
+    spline fitted PER SEGMENT (not-a-knot ends; a two-node segment is the
+    trapezoid, a three-node one the parabola `CubicSpline` builds) never
+    crosses a kink.  Node 0 is always a break when any event exists: an
+    edge at the drive's t = 0 is dropped by `event_grid` (the period
+    boundary is not its to move) and would otherwise sit inside the
+    periodic seam.  Measured on `exp(sin) + triangle` (kinks landed, a
+    1 + 0.15 sin grid): the periodic spline +4.0e-5 .. -2.2e-8 with no order
+    (ringing), the trapezoid +1.8e-5 .. -7.8e-9 at second order, the
+    piecewise rule -8.6e-7 .. -1.8e-15 over N = 52 .. 1602; on a smooth
+    integrand with only node 0 broken it is fourth order too (-8.9e-7 ..
+    -6.1e-13 against the periodic rule's +1.7e-8 .. +2.5e-13), so the seam
+    break costs a constant, not an order.
 
     The higher-order period quadrature for a NON-UNIFORM, EVENT-FREE grid
     (2026-09-21).  The periodic trapezoid rule is spectrally accurate on a
@@ -156,10 +178,11 @@ def periodic_spline_weights(t, T):
     produce.  With these weights: -5.5e-9 / -2.4e-10 / -7.3e-12 / +2.6e-12,
     the reference's floor from N = 400.
 
-    ⚠ ONLY WITHOUT EVENTS.  A spline is C^2 across every node; a landed
-    source edge puts a KINK in the integrand at that node, and a spline
-    through a kink rings where the trapezoid is exact-ish, so the callers
-    keep the trapezoid whenever `event_times` is non-empty.  ⚠ ON A UNIFORM
+    ⚠ THE PERIODIC RULE IS FOR EVENT-FREE GRIDS.  A spline is C^2 across
+    every node; a landed source edge puts a KINK in the integrand at that
+    node, and a spline through a kink rings where the trapezoid is
+    exact-ish -- under events the callers pass `breaks` and get the
+    piecewise rule above (they used to keep the trapezoid).  ⚠ ON A UNIFORM
     GRID these equal the trapezoid weights to 1.7e-18 (a periodic spline's
     `sum M_j = 0`), and the callers keep their uniform path, which is
     bit-identical to before.  The spline system is cyclic tridiagonal and
@@ -170,6 +193,24 @@ def periodic_spline_weights(t, T):
     import scipy.sparse.linalg as _spla
     t = np.asarray(t, dtype=float).ravel()
     n = len(t)
+    if breaks is not None and len(breaks) > 0:
+        from scipy.interpolate import CubicSpline as _CS
+        w = np.zeros(n)
+        b = sorted(set([0] + [int(i) % n for i in breaks]))
+        for k in range(len(b)):
+            i0 = b[k]
+            i1 = b[k + 1] if k + 1 < len(b) else n
+            idx = list(range(i0, i1)) + [i1 % n]
+            tt = t[idx].copy()
+            if i1 == n:
+                tt[-1] = t[0] + float(T)
+            if len(tt) == 2:
+                np.add.at(w, idx, [0.5 * (tt[1] - tt[0])] * 2)
+                continue
+            ## the integral of every cardinal spline of the segment at once
+            cs = _CS(tt, np.eye(len(tt)), axis=0)
+            np.add.at(w, idx, cs.integrate(tt[0], tt[-1]))
+        return w
     h = np.empty(n)
     h[:-1] = np.diff(t)
     h[-1] = float(T) + t[0] - t[-1]
@@ -7381,6 +7422,21 @@ class PSS(Analysis):
     #: the last bit.
     UNIFORM_GRID_TOL = 1e-9
 
+    def _event_nodes(self, tms, T):
+        """Indices of the grid nodes the landed events sit on (fractions of
+        `T` from `tms[0]`, within 1e-9 of a node), for the piecewise
+        quadrature's breaks.  Empty when nothing is landed."""
+        ev = getattr(self, 'event_times', None)
+        if not ev:
+            return []
+        fr = (np.asarray(tms, dtype=float) - float(tms[0])) / float(T)
+        out = []
+        for e in ev:
+            j = int(np.argmin(np.abs(fr - float(e))))
+            if abs(fr[j] - float(e)) < 1e-9:
+                out.append(j)
+        return out
+
     def _period_quadrature(self, fp):
         """Trapezoid weights `W_n = (h_{n-1} + h_n)/(2T)` for samples at
         `fp.times[:N]`, or **None on a uniform grid**.
@@ -7408,13 +7464,11 @@ class PSS(Analysis):
         if len(h) < 2 or float(np.max(h)) / float(np.min(h)) - 1.0 <= self.UNIFORM_GRID_TOL:
             return None
         T = float(tms[N] - tms[0])
-        ## ⚠ THE SECOND-ORDER CAP IS LIFTED ON EVENT-FREE GRIDS (2026-09-21):
-        ## a periodic cubic spline rule, fourth order on a smoothly varying
-        ## grid -- see `periodic_spline_weights`, which also says why a
-        ## landed edge keeps the trapezoid.  Same vector for every consumer.
-        if not getattr(self, 'event_times', None):
-            return periodic_spline_weights(tms[:N], T) / T
-        return 0.5 * (h + np.roll(h, 1)) / T
+        ## ⚠ THE SECOND-ORDER CAP IS LIFTED (2026-09-21): a periodic cubic
+        ## spline rule on an event-free grid, a PIECEWISE one breaking at
+        ## the landed event nodes otherwise -- see `periodic_spline_weights`.
+        ## Same vector for every consumer.
+        return periodic_spline_weights(tms[:N], T, self._event_nodes(tms[:N], T)) / T
 
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
@@ -11890,13 +11944,11 @@ class PSS(Analysis):
             _tt = np.asarray(times, dtype=float)
             _Tp = float(_tt[-1] - _tt[0])
             ## the SAME rule `_period_quadrature` gives every consumer
-            ## (2026-09-21): a periodic cubic spline on an event-free grid, the
-            ## trapezoid under a landed edge -- `fpss` and `carrier_phasor`
-            ## are pinned equal to 1e-12, which a second rule here broke
-            if not getattr(self, 'event_times', None):
-                _wq = periodic_spline_weights(_tt[:-1], _Tp) / _Tp
-            else:
-                _wq = 0.5 * (_h + np.roll(_h, 1)) / _Tp
+            ## (2026-09-21): a periodic cubic spline on an event-free grid, a
+            ## piecewise one breaking at the landed event nodes -- `fpss` and
+            ## `carrier_phasor` are pinned equal to 1e-12, which a second
+            ## rule here broke
+            _wq = periodic_spline_weights(_tt[:-1], _Tp, self._event_nodes(_tt[:-1], _Tp)) / _Tp
             _ks = np.arange(len(freqs))
             freqs = _ks / _Tp
             _E = np.exp(-2j * np.pi * np.outer(_ks, (_tt[:-1] - _tt[0]) / _Tp)) \
@@ -17050,17 +17102,18 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         SECOND-ORDER CAP on a smoothly varying grid (2026-09-21): with `pss`
         given, a non-uniform grid and no landed events, these are the
         periodic cubic-spline weights of `periodic_spline_weights` (radau's
-        `c` on a 1 + 0.5 sin grid 1.3e-5 -> 2.4e-10 at N = 200); a landed
-        edge keeps the trapezoid, and a uniform grid is unchanged."""
+        `c` on a 1 + 0.5 sin grid 1.3e-5 -> 2.4e-10 at N = 200); under
+        landed events the spline breaks at their nodes (2026-09-21, it used
+        to keep the trapezoid), and a uniform grid is unchanged."""
         tms = np.asarray(tms, dtype=float).ravel()
         n = int(nsamp)
         t = tms[:n]
         g = np.empty(n)
         g[:-1] = t[1:] - t[:-1]
         g[-1] = float(T) + t[0] - t[-1]
-        if (pss is not None and n >= 4 and not getattr(pss, 'event_times', None)
+        if (pss is not None and n >= 4
                 and float(np.max(g)) / float(np.min(g)) - 1.0 > pss.UNIFORM_GRID_TOL):
-            return periodic_spline_weights(t, T)
+            return periodic_spline_weights(t, T, pss._event_nodes(t, T))
         w = 0.5 * g
         w[1:] += 0.5 * g[:-1]
         w[0] += 0.5 * g[-1]

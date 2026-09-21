@@ -23778,7 +23778,10 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
         400    403     7.05e-03                   2.33e-05
         800    803     3.53e-03                   5.68e-06
 
-    First order against second, 600x at 800.  The same uniform replay is
+    First order against second, 600x at 800.  (2026-09-21: with the period
+    quadrature breaking its spline at the landed nodes the same three
+    grids read 7.9e-8 / 4.6e-8 / 1.4e-9 -- the reference's floor.)  The
+    same uniform replay is
     why radau's PPV, modes and noise read as "exact on the 3:1 grid": its
     adjoint never saw that grid.  `factored_period` now hands the solved
     fractions down (`_replay_grid`); a direct `factored_period_full(x0, T,
@@ -23848,15 +23851,24 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
         a = PAC(c).carrier_phasor(p, out)
         errs.append(abs(a - X1) / abs(X1))
     assert errs[0] < 1e-3 and errs[2] < 5e-5, errs         # shipped: 5.4e-2 / 7.0e-3
-    ## and on this EVENT grid the weights are the trapezoid's, not a spline's
-    ## (a spline rings through the kink a landed edge puts in the integrand)
+    ## and on this EVENT grid the weights are the PIECEWISE spline's,
+    ## breaking at the landed nodes (2026-09-21, item 2 of the
+    ## non-uniform-grid list; until then the trapezoid, "a spline rings
+    ## through the kink" -- true of a spline that crosses it).  Measured
+    ## here against the analytic coefficient: 3.77e-4 / 9.39e-5 / 2.33e-5
+    ## under the trapezoid (second order), 7.9e-8 / 4.6e-8 / 1.4e-9 under
+    ## the piecewise rule -- at the reference's own floor, hence no ladder
     _tm = np.asarray(fp.times, float)
     _N = len(fp.steps)
     _h = np.diff(_tm[:_N + 1])
     assert p.event_times
-    np.testing.assert_allclose(p._period_quadrature(fp) * (_tm[_N] - _tm[0]),
-                               0.5 * (_h + np.roll(_h, 1)), rtol=1e-12, atol=0)
-    assert 3.3 < errs[0] / errs[1] < 4.8 and 3.3 < errs[1] / errs[2] < 4.8, errs
+    from pycircuit.circuit.shooting import periodic_spline_weights as _psw
+    _Tq = _tm[_N] - _tm[0]
+    np.testing.assert_allclose(p._period_quadrature(fp) * _Tq,
+                               _psw(_tm[:_N], _Tq, p._event_nodes(_tm[:_N], _Tq)),
+                               rtol=1e-12, atol=0)
+    assert np.max(np.abs(p._period_quadrature(fp) * _Tq - 0.5 * (_h + np.roll(_h, 1)))) > 0.1 * np.max(_h)
+    assert errs[0] < 5e-7 and errs[2] < 2e-8, errs
 
     ## a bare count is still a uniform replay; a uniform solve is unchanged
     c = pulsed()
@@ -24601,3 +24613,93 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
         helds[label] = float(vv[(tt > 0.3 * T) & (tt < 0.45 * T)].mean())
     assert errs['uniform'] / errs['fold'] > 4.0, errs
     assert abs(helds['fold'] - 1.0) < 5e-4, helds
+
+
+def test_the_period_quadrature_breaks_its_spline_at_landed_events_and_reaches_fourth_order_there():
+    """Item 2 of the non-uniform-grid list (2026-09-21): under landed events
+    every period integral kept the TRAPEZOID -- a spline C^2 across a kink
+    rings -- and that capped every method's harmonics and noise at second
+    order on exactly the grids a clocked circuit gets.  `periodic_spline_weights`
+    now takes `breaks`: a not-a-knot cubic spline PER SEGMENT between the
+    event nodes (and node 0), never crossing a kink.
+
+    (a) Exact ladder: `exp(sin 2 pi t) + 3 tri(t - te)` (integral I_0(1) +
+    3/4), both corners landed on a 1 + 0.15 sin grid.  Pinned: the
+    piecewise rule at least 30x below the trapezoid at N = 202 and falling
+    at least 8x per doubling to 802 (measured -6.3e-10 / -2.1e-11 /
+    -5.9e-13 against the trapezoid's -3.6e-7 / -9.3e-8 / -2.5e-8); on the
+    smooth integrand alone, breaking only at node 0 costs a constant, not
+    the order (-8.2e-10 vs +6.4e-11 at 200).
+    (b) The circuit: radau on its own fold of the pulse-clocked sampler,
+    ramp ends landed, the output's harmonics from `_period_quadrature`
+    against a radau uniform-3200 reference: H1 5.2e-2 -> 5.3e-4 and H2
+    3.1e-1 -> 2.1e-2 at 90 points (measured; H1 reaches the reference's
+    1.3e-5 floor by 177).  Pinned: |H1| within 2e-3 and |H2| within 5e-2
+    of the reference, and the weights differ from the trapezoid's.
+    """
+    import warnings as _w
+    from scipy.special import i0
+    from pycircuit.circuit.shooting import periodic_spline_weights
+
+    ## (a)
+    te = 0.3137
+    exact = float(i0(1.0)) + 0.75
+    err_t, err_p = {}, {}
+    for N in (202, 402, 802):
+        u = np.linspace(0.0, 1.0, N - 2, endpoint=False)
+        t = u + 0.15 * np.sin(2 * np.pi * u) / (2 * np.pi)
+        t = np.sort(np.concatenate([t, [te, (te + 0.5) % 1.0]]))
+        x = (t - te) % 1.0
+        y = np.exp(np.sin(2 * np.pi * t)) + 3.0 * np.where(x < 0.5, x, 1.0 - x)
+        br = [int(np.argmin(np.abs(t - te))),
+              int(np.argmin(np.abs(t - ((te + 0.5) % 1.0))))]
+        h = np.diff(np.r_[t, t[0] + 1.0])
+        err_t[N] = abs(float((0.5 * (h + np.roll(h, 1))) @ y) - exact)
+        err_p[N] = abs(float(periodic_spline_weights(t, 1.0, br) @ y) - exact)
+    assert err_t[202] / err_p[202] > 30.0, (err_t, err_p)
+    assert err_p[202] / err_p[402] > 8.0 and err_p[402] / err_p[802] > 8.0, err_p
+    u = np.linspace(0.0, 1.0, 200, endpoint=False)
+    t = u + 0.15 * np.sin(2 * np.pi * u) / (2 * np.pi)
+    y = np.exp(np.sin(2 * np.pi * t))
+    e_seam = abs(float(periodic_spline_weights(t, 1.0, [0]) @ y) - float(i0(1.0)))
+    assert e_seam < 1e-8, e_seam
+
+    ## (b)
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+
+    def solve(npts, grid=None, seed=None, reltol=1e-8):
+        cir = _pulse_clocked_sampler(T)
+        p = PSS(cir, method='radau', reltol=reltol)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / npts, grid=grid,
+                    x0=np.zeros(cir.n - 1) if seed is None else seed,
+                    maxiterations=100)
+        assert p.converged
+        io = [str(n_) for n_ in cir.nodes].index('out')
+        io = io if io < p.irefnode else io - 1
+        fp = p.factored_period()
+        tm = np.asarray(fp.times, float)[:len(fp.steps)]
+        X = np.asarray(p.waveform[1], float)
+        X = X if X.shape[0] == cir.n - 1 else np.delete(X, p.irefnode, axis=0)
+        v = X[io][:len(tm)]
+        w = p._period_quadrature(fp)
+        if w is None:                        # uniform: the index DFT
+            w = np.full(len(tm), 1.0 / len(tm))
+        H = np.array([np.sum(w * v * np.exp(-2j * np.pi * k * tm / T))
+                      for k in range(3)])
+        return cir, p, H, w, tm
+
+    _c, _p, Href, _w0, _t0 = solve(3200, reltol=1e-10)
+    cir = _pulse_clocked_sampler(T)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fr, seed = PSS(cir, method='radau', reltol=1e-8).lte_grid(
+            T, x0=np.zeros(cir.n), reltol=1e-5)
+    _c, p, H, w, tm = solve(len(fr), grid=np.asarray(fr, float), seed=seed)
+    assert p.event_times, 'the ramp ends must be landed for this to test anything'
+    h = np.diff(np.r_[tm, tm[0] + T])
+    assert np.max(np.abs(w - 0.5 * (h + np.roll(h, 1)) / T)) > 1e-3 * np.max(w)
+    rel = np.abs(H - Href) / np.abs(Href)
+    assert rel[1] < 2e-3 and rel[2] < 5e-2, rel
