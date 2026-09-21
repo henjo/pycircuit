@@ -2225,6 +2225,16 @@ class PSS(Analysis):
                    desc='Use Predictor/Corrector Newton-Raphson instead of '
                         'limiting in the inner transient; off by default',
                    unit='', default=False),
+         ## 2026-09-21 (B7c completed): which step lengths move with an
+         ## unknown period.  'proportional' rescales every step with T;
+         ## 'closing' keeps a caller's inner steps at their absolute lengths
+         ## and lets the last step close the period.  'auto' is 'closing' on
+         ## a caller's grid for an autonomous run and 'proportional' otherwise
+         ## -- see `_period_grid` and the note at `_period_column`.
+         Parameter(name='period_column',
+                   desc="'auto', 'proportional' or 'closing': which step "
+                        "lengths depend on an unknown period",
+                   unit='', default='auto'),
          ## ⚠⚠ THE ONE KNOB `method='theta'` HAS, AND IT WAS UNREACHABLE.
          ## `_integrator_for` builds `table[method]()`, so every shooting run
          ## took `ThetaIntegrator.DEFAULT_C` -- a RATE, calibrated on ONE
@@ -3513,6 +3523,36 @@ class PSS(Analysis):
                     RuntimeWarning, stacklevel=3)
 
         hs = fr * period
+        ## ⚠ THE 'CLOSING' CONVENTION (2026-09-21, B7c completed): on a
+        ## caller's grid the inner steps keep the ABSOLUTE lengths they had
+        ## at the first call of this solve (the seed period) and only the
+        ## last step moves with `T`.  Under 'proportional' every step is
+        ## rescaled with each trial period, so an adaptive grid's fine
+        ## regions slide off the edges they were placed on while the outer
+        ## Newton hunts for T -- measured on a relaxation van der Pol
+        ## (mu = 10) on its own `lte_grid`: with the period seeded 16 % low,
+        ## gear's and trbdf2's per-step Newton FAIL on the coarse steps that
+        ## then land on the edges.  The closing step is bounded below so a
+        ## trial period that would swallow it falls back to proportional
+        ## scaling for that evaluation, with a one-time warning.
+        if getattr(self, '_period_column', 'proportional') == 'closing':
+            inner = getattr(self, '_closing_inner', None)
+            if inner is None or len(inner) != len(hs) - 1:
+                self._closing_inner = np.array(hs[:-1], dtype=float, copy=True)
+            else:
+                last = float(period) - float(np.sum(inner))
+                if last > 0.05 * float(np.min(inner)):
+                    hs = np.concatenate((inner, [last]))
+                elif not getattr(self, '_closing_warned', False):
+                    self._closing_warned = True
+                    warnings.warn(
+                        'PSS: the closing step would collapse at this trial '
+                        'period (%.6g s against inner steps summing to %.6g '
+                        's); this evaluation scales the grid proportionally '
+                        'instead. Seed the period closer, or pass '
+                        "period_column='proportional'."
+                        % (float(period), float(np.sum(inner))),
+                        RuntimeWarning, stacklevel=3)
         times = np.concatenate(([0.0], np.cumsum(hs)))
         return times, hs
 
@@ -3744,7 +3784,12 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros_like(Pt[0])
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdT).ravel() / T
+                if self._period_column == 'closing':
+                    ## only the closing step's length depends on T (dh/dT = 1)
+                    if _j == len(times) - 2:
+                        St = St + np.asarray(self._dfdh).ravel()
+                else:
+                    St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -toolkit.linearsolver(Jf, St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -3877,7 +3922,12 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros(m)
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdT).ravel() / T
+                if self._period_column == 'closing':
+                    ## only the closing step's length depends on T (dh/dT = 1)
+                    if _j == len(times) - 2:
+                        St = St + np.asarray(self._dfdh).ravel()
+                else:
+                    St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -lu.solve(St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -4016,7 +4066,12 @@ class PSS(Analysis):
                 St = b * Pqt if b else np.zeros(m)
                 for k in range(1, len(alphas)):
                     St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                St = St + np.asarray(self._dfdT).ravel() / T
+                if self._period_column == 'closing':
+                    ## only the closing step's length depends on T (dh/dT = 1)
+                    if _j == len(times) - 2:
+                        St = St + np.asarray(self._dfdh).ravel()
+                else:
+                    St = St + np.asarray(self._dfdT).ravel() / T
                 Pt_new = -lu.solve(St)
                 Pqt = alphas[0] * (C_new @ Pt_new) + St
                 Pt = [Pt_new, Pt[0]]
@@ -4569,7 +4624,7 @@ class PSS(Analysis):
         return steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x
 
     @staticmethod
-    def _glm_propagate(steps, P, T=None):
+    def _glm_propagate(steps, P, T=None, closing=False):
         """The Nordsieck sensitivity recursion, one period.
 
         ``P`` is a list of `r` blocks ``dQ_k/d(unknown)``; each step maps it by
@@ -4589,8 +4644,12 @@ class PSS(Analysis):
         ``(h/T) sum_i B_ki K_i`` to each output component.
         """
         D = None
-        for Kfacs, Gs, h, A, U, B, V, Ks in steps:
+        _nsteps = len(steps)
+        for _si, (Kfacs, Gs, h, A, U, B, V, Ks) in enumerate(steps):
             s = len(Kfacs)
+            ## 'closing': dh/dT = 1 on the last step, 0 elsewhere
+            _fT = ((1.0 if _si == _nsteps - 1 else 0.0) if closing
+                   else (h / T if T is not None else 0.0))
             r = len(P)
             D = [None] * s
             for i in range(s):
@@ -4599,14 +4658,14 @@ class PSS(Analysis):
                     ## the explicit `h = frac T` in the stage: dh/dT = h/T, and
                     ## for an AUTONOMOUS circuit `K_j = -i(Y_j)` carries no
                     ## time of its own, so the only new term is the stage sum
-                    rhs = rhs + (h / T) * sum(A[i, j] * Ks[j]
-                                              for j in range(i + 1))
+                    rhs = rhs + _fT * sum(A[i, j] * Ks[j]
+                                          for j in range(i + 1))
                 for j in range(i):
                     rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
                 D[i] = Kfacs[i].solve(rhs)
             P = [sum(V[k, j] * P[j] for j in range(r))
                  - h * sum(B[k, i] * (Gs[i] @ D[i]) for i in range(s))
-                 + ((h / T) * sum(B[k, i] * Ks[i] for i in range(s))
+                 + (_fT * sum(B[k, i] * Ks[i] for i in range(s))
                     if T is not None else 0.0)
                  for k in range(r)]
         return P, (D[-1] if D is not None else None)
@@ -4711,7 +4770,8 @@ class PSS(Analysis):
         ## through the SCALING `Q_k = h^k q^(k)` (kept -- `dQ_k/dT = (k/T) Q_k`)
         ## and through the Radau substeps at `h/p` (dropped, as `Mx`'s is).
         Pt = [(k / float(T)) * np.asarray(Q0[k], dtype=float) for k in range(r)]
-        _Ptout, Mt = self._glm_propagate(steps, Pt, T=float(T))
+        _Ptout, Mt = self._glm_propagate(steps, Pt, T=float(T),
+                                         closing=(self._period_column == 'closing'))
         return (np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float),
                 Mx, np.asarray(Mt).ravel())
 
@@ -4823,7 +4883,10 @@ class PSS(Analysis):
                         Dt[0] = Pt
                     else:
                         Si = sum(Amat[i, j] * Ks[j] for j in range(i + 1))
-                        rhs = CnPt + (h / Tf) * Si \
+                        ## 'closing': only the last step's length depends on T
+                        _dhdT = ((1.0 if _j == len(times) - 2 else 0.0)
+                                 if self._period_column == 'closing' else h / Tf)
+                        rhs = CnPt + _dhdT * Si \
                             - h * sum(Amat[i, j] * (Gs[j] @ Dt[j])
                                       for j in range(i))
                         Dt[i] = Kf[i].solve(rhs)
@@ -5077,7 +5140,9 @@ class PSS(Analysis):
                 CnPt = Cn @ Pt
                 for i in range(s):
                     Si = sum(Amat[i, jj] * Ks[jj] for jj in range(s))
-                    rhs[i * m:(i + 1) * m] = CnPt + (h / Tf) * Si
+                    _dhdT = ((1.0 if _j == len(times) - 2 else 0.0)
+                             if self._period_column == 'closing' else h / Tf)
+                    rhs[i * m:(i + 1) * m] = CnPt + _dhdT * Si
                 Zt = sla.lu_solve(lu, rhs)
                 Pt = Zt[(s - 1) * m:s * m]
         self._want_dfdh = False
@@ -10088,7 +10153,8 @@ class PSS(Analysis):
         every 4x seed the consistent one solves.
         """
         self._solve_kwargs = dict(refnode=refnode, maxiterations=maxiterations,
-                                  matrix_free=matrix_free, tstab=tstab)
+                                  matrix_free=matrix_free, tstab=tstab,
+                                  period_seed=float(period))
         self._monodromy_twin = None
         self._twins = {}
         ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
@@ -10272,6 +10338,17 @@ class PSS(Analysis):
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
         ## system is solved.  Structural and exact -- see `_is_autonomous`.
         self.autonomous = self._is_autonomous(times)
+        ## the period-column convention for this solve (see the Parameter)
+        _pc = str(getattr(self, '_force_period_column', None)
+                  or getattr(self.par, 'period_column', 'auto'))
+        if _pc not in ('auto', 'proportional', 'closing'):
+            raise ValueError("period_column must be 'auto', 'proportional' "
+                             "or 'closing', got %r" % (_pc,))
+        self._period_column = ('closing' if (_pc == 'closing' or (
+            _pc == 'auto' and self.autonomous and self._grid_fracs is not None))
+            else 'proportional')
+        self._closing_inner = None
+        self._closing_warned = False
         phase_k, phase_pin = 0, 0.0
         if phase_rule not in ('reselect', 'frozen'):
             raise ValueError("phase_rule must be 'reselect' or 'frozen', not %r"
@@ -11517,6 +11594,54 @@ class PSS(Analysis):
                                       sweep_values=freqs, sweep_label='freq', 
                                       sweep_unit='Hz')
         
+        ## ⚠ THE SECOND PASS (2026-09-21).  'closing' keeps a caller's inner
+        ## steps where the transient validated them, so the free-period
+        ## Newton converges from a seed period 16 % off where 'proportional'
+        ## fails its per-step Newton (relaxation van der Pol, mu = 10, its
+        ## own `lte_grid`).  But the closing step then absorbed the whole
+        ## period correction -- 3 s against a 0.7 s neighbour, a growth far
+        ## beyond a two-step method's zero-stability bound -- so the
+        ## integrator dropped it to Euler and the transposed replay refused.
+        ## Closing is the BASIN device; once converged, the grid is
+        ## re-fractioned at the solved period and solved once more
+        ## proportionally from the converged state, which is the sane grid
+        ## the answer is reported on.  Only when the closing step left the
+        ## bound; a seed already close needs no second pass.
+        if (getattr(self, '_period_column', 'proportional') == 'closing'
+                and self.converged and getattr(self, 'autonomous', False)
+                and not getattr(self, '_closing_second_pass', False)
+                and len(hs) > 2):
+            from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
+            _hs = np.asarray(hs, dtype=float)
+            _r = float(_hs[-1] / _hs[-2])
+            if _r > ZERO_STABILITY_RATIO or _r < 1.0 / ZERO_STABILITY_RATIO:
+                warnings.warn(
+                    'PSS: the closing step ended %.2fx its neighbour after the '
+                    'free-period solve moved the period from %.6g to %.6g s; '
+                    'solving once more on that grid re-fractioned at the '
+                    'solved period (proportional), from the converged state.'
+                    % (_r, float(self._solve_kwargs.get('period_seed', period)),
+                       float(period)), RuntimeWarning, stacklevel=2)
+                ## ⚠ ON THE CALLER'S FRACTIONS, not the closing-distorted grid:
+                ## re-fractioning THAT grid keeps the giant last step (measured:
+                ## trbdf2 -1.1 % in period, c -97 %, second pass or not)
+                _fr_caller = (np.asarray(self._grid_fracs, dtype=float)
+                              if self._grid_fracs is not None else None)
+                self._closing_second_pass = True
+                self._force_period_column = 'proportional'
+                try:
+                    return self.solve(refnode=refnode, period=float(period),
+                                      x0=copy(x0_ss),
+                                      timestep=float(period) / len(_hs),
+                                      maxiterations=maxiterations,
+                                      grid=_fr_caller,
+                                      matrix_free=matrix_free,
+                                      x0_unknown=x0_unknown, tstab=None,
+                                      break_events=self.break_events,
+                                      phase_rule=phase_rule)
+                finally:
+                    self._closing_second_pass = False
+                    self._force_period_column = None
         return InternalResultDict({'tpss': tpss, 'fpss': fpss})
 
 class SidebandResponse(object):

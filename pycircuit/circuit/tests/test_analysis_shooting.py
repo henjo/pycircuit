@@ -23721,7 +23721,14 @@ def test_gears_ppv_samples_are_second_order_on_a_non_uniform_index2_grid():
 
     def c_of(method, n, grid):
         cir = fix()
-        p = PSS(cir, method=method, reltol=1e-10)
+        ## ⚠ the period column is pinned to 'proportional' here: this test's
+        ## subject is the PPV samples at a FIXED discretisation.  Under
+        ## 'auto' (closing, then a proportional polish -- the seed period is
+        ## 8 % low here) the two paths converge to points 0.7 ppm apart in
+        ## the period, both within tolerance, and c at N = 200 moves by
+        ## 1.5e-4 between them (measured +2.9e-5 vs -1.2e-4) -- the
+        ## fixture's own sensitivity, not the samples
+        p = PSS(cir, method=method, reltol=1e-10, period_column='proportional')
         kw = dict(period=T0, timestep=T0 / n, maxiterations=60, x0=x0)
         if grid is not None:
             kw['grid'] = grid
@@ -24044,3 +24051,89 @@ def test_gear_runs_its_ppv_on_the_lte_grid_gear_produced_and_is_told_when_its_un
     e3, rho3, w3 = run('trbdf2', fr, N)
     assert abs(e3) < 400 and abs(e3) * 3 < abs(e1), (e3, e1)         # -66 / -519 measured
     assert rho3 - 1.0 > 5e-3 and w3, (rho3, w3)                      # 0.0135: told too
+
+
+def test_the_closing_period_column_takes_a_free_period_solve_from_a_seed_the_proportional_one_cannot():
+    """Item 2 of gear-on-adaptive-grids (2026-09-21): the 'closing' period
+    column, B7c completed, on every kind, and 'auto' on a caller's grid.
+
+    Under 'proportional' (`dh/dT = h/T`) the outer Newton rescales EVERY
+    step with each trial period, so an adaptive grid's fine regions slide
+    off the relaxation edges they were placed on; from a period seed 16 %
+    low (my (3 - 2 ln 2) mu estimate against the true 19.10 at mu = 10)
+    gear's AND trbdf2's per-step Newton fail on the coarse steps that land
+    on the edges.  Under 'closing' the inner steps keep the absolute lengths
+    the transient validated and only the last step follows T -- and the
+    free-period Newton converges.  But that closing step then holds the
+    whole 3 s correction (a growth far beyond the zero-stability bound: an
+    Euler drop for gear, and for trbdf2 an answer -1.1 % in period and -97 %
+    in c), so 'auto' solves ONCE MORE on the caller's fractions at the
+    solved period, proportionally, from the converged state -- and lands
+    on the reference-seeded answer.  Measured, mu = 10, ~200 points::
+
+        seed          method   proportional          auto (closing, then polish)
+        16 % low      gear     per-step Newton FAILS   -1464 ppm, c -8.6 %
+        16 % low      trbdf2   per-step Newton FAILS   -195 ppm,  c +2.0 %
+        reference     gear     -1436 ppm, c -8.5 %     -1594 ppm (closing) / same
+        reference     trbdf2   -195 ppm,  c +2.0 %     -197 ppm  (closing) / same
+
+    ⚠ Re-fractioning the closing-DISTORTED grid for the second pass keeps
+    its giant last step (measured: still -1.1 % / -97 %); the polish must be
+    on the caller's fractions.  The mu = 1 smooth-grid free period is
+    bit-identical between conventions (gear +442.27 / +110.85 / +27.75 ppm
+    either way; radau at 1e-10), so nothing moved where the seed was good.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    MU = 10.0
+    T_REF = 19.098600502
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: MU * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    cir = vdp()
+    p = PSS(cir, method='gear')
+    xfull = np.zeros(cir.n)
+    xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fr, seed = p.lte_grid(T_REF, x0=xfull, reltol=1e-5)
+    fr = np.asarray(fr, float)
+    N = len(fr)
+    T_LOW = (3.0 - 2.0 * np.log(2.0)) * MU                 # 16 % low
+
+    def run(method, pc, Tseed):
+        c_ = vdp()
+        q = PSS(c_, method=method, reltol=1e-9, period_column=pc)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            q.solve(period=Tseed, timestep=Tseed / N, x0=seed, maxiterations=80,
+                    break_events=False, grid=fr)
+        assert q.converged
+        fp = q.factored_period()
+        if fp.kind == 'solved_history':
+            assert all(len(st[2]) == 3 for st in fp.steps), 'an order-dropped step'
+        second = any('closing step ended' in str(w_.message) for w_ in rec)
+        return 1e6 * (float(q.period) - T_REF) / T_REF, second
+    for method, lo, hi in (('gear', -2500, -300), ('trbdf2', -400, -50)):
+        ## the reference-seeded answer, proportional
+        e_ref, s_ref = run(method, 'proportional', T_REF)
+        assert lo < e_ref < hi and not s_ref, (method, e_ref)
+        ## from 16 % low, proportional fails the per-step Newton
+        try:
+            run(method, 'proportional', T_LOW)
+            raise AssertionError('%s: proportional converged from the low seed' % method)
+        except AssertionError:
+            raise
+        except Exception:
+            pass
+        ## and auto lands on the reference-seeded answer with the second pass
+        e_auto, s_auto = run(method, 'auto', T_LOW)
+        assert s_auto, method
+        assert abs(e_auto - e_ref) < 0.05 * abs(e_ref) + 5.0, (method, e_auto, e_ref)
