@@ -2162,14 +2162,22 @@ class PSS(Analysis):
                                                     der Pol mu = 10, each method
                                                     on the grid its own run made,
                                                     seeded from `lte_period`):
-                                                    gear 195 pts -22 / -1461 ppm
-                                                    (two windows: gear's period
-                                                    there depends on where the
-                                                    frozen window's fine regions
-                                                    sit against the converged
-                                                    edges), trbdf2 286 pts
-                                                    -8.7 ppm, radau 110 pts
-                                                    -0.32 ppm.  On a relaxation
+                                                    gear 195 pts -1461 ppm (second
+                                                    order: -361 / -92 under 2x /
+                                                    4x splitting; a window that
+                                                    read -22 ppm sat on a SIGN
+                                                    CHANGE of the error, -22 ->
+                                                    +7 -> +3 -- refine before
+                                                    believing a good number),
+                                                    trbdf2 286 pts -8.7 ppm,
+                                                    radau 110 pts -0.32 ppm.
+                                                    Windows differ for every
+                                                    second-order method (trbdf2
+                                                    on the same two gear grids
+                                                    +10 / -180 ppm; radau -0.01 /
+                                                    -0.04): the adaptive run's
+                                                    growth-by-2 steps land
+                                                    differently each period.  On a relaxation
                                                     oscillator's adaptive grid,
                                                     choose trbdf2 or radau; gear
                                                     is the method that makes

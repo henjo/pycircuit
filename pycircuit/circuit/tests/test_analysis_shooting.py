@@ -24349,13 +24349,15 @@ def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped(
         radau    110     130:1     -0.32         -0.05 %
 
     ⚠ Gear's two numbers are two windows of runs that differ only in the
-    period hint (19.1 vs 16.1): same count, same span, a 70x different
-    period error -- and rotating the converged grid to start at its finest
-    step (no ramp, no seam question) moves each by ~40 ppm only.  Gear's
-    period on a relaxation oscillator's frozen adaptive grid depends on
-    where that window's fine regions sit against the converged edges; that
-    is gear's property on such grids, recorded, and why the `method` table
-    says trbdf2 or radau there.
+    period hint (19.1 vs 16.1): same count, same span -- and the "70x" was
+    NOT gear's (measured after this test was written, 2026-09-21): trbdf2
+    on the same two grids reads +10 / -180 ppm, radau -0.01 / -0.04, so
+    the windows differ for every second-order method (12 growth-by-2 steps
+    against 5, 4x the total LTE); and the -22 ppm window sat on a SIGN
+    CHANGE of the error (-22 -> +7 -> +3 under 2x / 4x splitting) where the
+    other is clean second order (-1461 -> -361 -> -92).  Gear's honest
+    number on a 195-point adaptive grid here is O(1000 ppm), second order;
+    a good number at one N is refined before it is believed.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
