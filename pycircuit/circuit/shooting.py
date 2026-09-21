@@ -2242,7 +2242,19 @@ class PSS(Analysis):
                                                     or radau (exact per-stage
                                                     injection); gear's
                                                     covariance is first order
-                                                    in h/tau.  The adaptive
+                                                    in h/tau.  STATE EVENTS
+                                                    (a comparator, a threshold
+                                                    switch; `state_events`,
+                                                    2026-09-22): radau's
+                                                    staged solve 9-21x closer
+                                                    at 50-200 points on a PWM
+                                                    loop; trbdf2's own
+                                                    second-order error on the
+                                                    switch-off decay dominates
+                                                    there (staged no better
+                                                    than unstaged) -- use radau
+                                                    on such circuits; gear
+                                                    skips the stage.  The adaptive
                                                     run's reltol must be tighter
                                                     than the transient's habit:
                                                     1e-5 is too coarse above
@@ -2472,6 +2484,9 @@ class PSS(Analysis):
         self._period_column = 'proportional'
         self._dfdh = None
         self._want_lte = False
+        ## the state-event fractions the last solve landed on (None: none)
+        self._state_event_fracs = None
+        self._captured = {}
         ## The caller's step fractions, or None for the uniform grid.  Read
         ## by the autonomous closures, which rebuild the grid at the current
         ## `T` on every residual evaluation.
@@ -3701,6 +3716,183 @@ class PSS(Analysis):
         iref = self.cir.get_node_index(refnode)
         seed = np.concatenate((win_x[:iref, k], win_x[iref + 1:, k]))
         return fr, seed
+
+    ## ⚠ THE STATE-EVENT STAGE (2026-09-21) -- see `solve`'s docstring.
+    def _state_event_rows(self):
+        """`(W, c)`: the circuit's state-event rows on the REDUCED state and
+        their thresholds, or `(None, None)` when the circuit declares none."""
+        rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
+        if not rows:
+            return None, None
+        W = np.array([np.delete(np.asarray(r, dtype=float).ravel(), self.irefnode)
+                      for r, _t in rows])
+        c = np.array([float(t) for _r, t in rows])
+        return W, c
+
+    @staticmethod
+    def _land_fractions(base, theta, min_sep=0.25):
+        """`(fractions, theta)`: the base grid with each fraction of `theta`
+        landed on a node -- a node within `min_sep` of the local step is
+        MOVED onto it (no sliver), otherwise one is inserted; `event_grid`'s
+        rule.  Endpoints never move."""
+        pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
+        pts[-1] = 1.0
+        landed = []
+        for f in np.asarray(theta, dtype=float):
+            j = int(np.argmin(np.abs(pts - f)))
+            if 0 < j < len(pts) - 1:
+                h = min(pts[j] - pts[j - 1], pts[j + 1] - pts[j])
+                if abs(pts[j] - f) < min_sep * h and pts[j] not in landed:
+                    pts[j] = f
+                    landed.append(f)
+                    continue
+            pts = np.sort(np.append(pts, f))
+            landed.append(f)
+        pts = np.unique(pts)
+        ## ⚠ A WINDOW BETWEEN TWO EVENTS GETS ITS OWN SUB-GRID (2026-09-21).
+        ## A threshold switch declares both edges of its transition; the
+        ## segment between them holds the whole S-curve of the switch, and
+        ## as ONE step it is integrated by three collocation points across
+        ## the curve -- the stage solve stalled at 6e-4 of the swing
+        ## whatever the count.  A gap between two landed events narrower
+        ## than its neighbours is split into `EVENT_WINDOW_STEPS` steps,
+        ## which the remap then scales with the window.
+        ## (against the BASE grid's local step, not the immediate
+        ## neighbours: an inserted event leaves a sliver beside the window,
+        ## and measured against that the rule never fired on the PWM
+        ## loop's on-window)
+        base_pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
+        base_h = np.diff(base_pts)
+        landed_sorted = sorted(landed)
+        for a, b in zip(landed_sorted[:-1], landed_sorted[1:]):
+            ia = int(np.argmin(np.abs(pts - a)))
+            ib = int(np.argmin(np.abs(pts - b)))
+            if ib == ia + 1:
+                gap = pts[ib] - pts[ia]
+                jb = min(int(np.searchsorted(base_pts, 0.5 * (a + b), side='right')) - 1,
+                         len(base_h) - 1)
+                if gap < base_h[max(jb, 0)]:
+                    sub = pts[ia] + gap * np.arange(1, PSS.EVENT_WINDOW_STEPS) / PSS.EVENT_WINDOW_STEPS
+                    pts = np.sort(np.concatenate((pts, sub)))
+        pts = np.unique(pts)
+        return np.diff(pts), np.asarray(landed_sorted, dtype=float)
+
+    #: steps the segment between a switching window's two edges is cut into
+    EVENT_WINDOW_STEPS = 8
+
+    @staticmethod
+    def _event_remap(base, theta0, theta, T):
+        """`(fractions, hsens, nodes)`: the base grid (with `theta0` on
+        nodes) mapped piecewise-linearly so the anchors `theta0` land on
+        `theta`, every step between two anchors scaling with its segment;
+        `hsens[j, k] = d h_j / d theta_k` in seconds (`h_j = fraction_j T`)
+        and `nodes[k]` the node each event sits on -- the grid's topology
+        is frozen, which is what keeps the Newton exact."""
+        base = np.asarray(base, dtype=float)
+        p = np.concatenate(([0.0], np.cumsum(base)))
+        p[-1] = 1.0
+        theta0 = np.asarray(theta0, dtype=float)
+        theta = np.asarray(theta, dtype=float)
+        nodes = [int(np.argmin(np.abs(p - t))) for t in theta0]
+        a0 = np.concatenate(([0.0], theta0, [1.0]))
+        a1 = np.concatenate(([0.0], theta, [1.0]))
+        seg = np.clip(np.searchsorted(a0, p, side='right') - 1, 0, len(a0) - 2)
+        L0 = a0[1:] - a0[:-1]
+        L1 = a1[1:] - a1[:-1]
+        pn = a1[seg] + (p - a0[seg]) * (L1[seg] / L0[seg])
+        pn[0] = 0.0
+        pn[-1] = 1.0
+        for k, j in enumerate(nodes):
+            pn[j] = theta[k]
+        fr = np.diff(pn)
+        K = len(theta0)
+        N = len(fr)
+        hsens = np.zeros((N, K))
+        blen = np.diff(p)
+        for j in range(N):
+            sj = int(seg[j])
+            g = blen[j] / L0[sj] * float(T)
+            if sj >= 1:
+                hsens[j, sj - 1] -= g
+            if sj + 1 <= K:
+                hsens[j, sj] += g
+        return fr, hsens, nodes
+
+    def _state_event_stage(self, x0_ss, info, ier, mesg, period, times, hs,
+                           fully, maxiterations, tol, shoot_reltol, alpha):
+        """The bordered second stage of a driven solve: the crossings of the
+        first stage's orbit become unknowns.  Returns the stage-1 tuple
+        unchanged when the circuit declares no state event or its orbit
+        crosses none."""
+        W, c = self._state_event_rows()
+        if W is None:
+            return x0_ss, info, ier, mesg, times, hs
+        trav = self._traverse_full if fully else self._traverse_dirk
+        N = len(hs)
+        m = self.cir.n - 1
+        trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
+             capture=set(range(1, N + 1)))
+        X = np.array([np.asarray(x0_ss, dtype=float)]
+                     + [np.asarray(self._captured[j][0], dtype=float)
+                        for j in range(1, N + 1)])
+        g = X @ W.T - c[None, :]
+        found = []
+        for r in range(W.shape[0]):
+            gr = g[:, r]
+            for j in range(N):
+                if gr[j] == 0.0 or gr[j] * gr[j + 1] < 0.0:
+                    f = (times[j] if gr[j] == gr[j + 1] else
+                         times[j] + (times[j + 1] - times[j]) * gr[j] / (gr[j] - gr[j + 1]))
+                    f = float(f) / float(period)
+                    if 1e-6 < f < 1.0 - 1e-6:
+                        found.append((f, r))
+        if not found:
+            return x0_ss, info, ier, mesg, times, hs
+        found.sort()
+        base = np.asarray(hs, dtype=float) / float(period)
+        base2, th0 = self._land_fractions(base, [f for f, _r in found])
+        rows = [r for _f, r in found]
+        K = len(th0)
+        Wk = W[rows]
+        ck = c[rows]
+        def func_ev(z):
+            x0 = np.asarray(z[:m], dtype=float)
+            th = np.asarray(z[m:], dtype=float)
+            fr, hsens, nodes = self._event_remap(base2, th0, th, period)
+            hs_ = fr * float(period)
+            tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+            _x0, x_end, Mx, Pk = trav(x0, period, tms_, hs_, hsens=hsens,
+                                      capture=set(nodes))
+            F = np.zeros(m + K)
+            J = np.zeros((m + K, m + K))
+            F[:m] = self._fold_periodic(x0 - np.asarray(x_end, dtype=float))
+            J[:m, :m] = np.eye(m) - alpha * np.asarray(Mx)
+            for k in range(K):
+                J[:m, m + k] = -alpha * np.asarray(Pk[k]).ravel()
+            for k, jn in enumerate(nodes):
+                xj, Pj, Pkj = self._captured[jn]
+                F[m + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
+                J[m + k, :m] = Wk[k] @ np.asarray(Pj)
+                for l in range(K):
+                    J[m + k, m + l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+            return F, J
+        z0 = np.concatenate((np.asarray(x0_ss, dtype=float), th0))
+        tol = np.asarray(tol, dtype=float)
+        abst = np.concatenate((tol, np.full(K, float(np.max(tol)))))
+        xt = np.concatenate((tol, np.full(K, 1e-12)))
+        z_ss, info, ier, mesg = analysis.fsolve(
+            func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
+            abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
+            line_search=True, floor_detect=True)
+        th = np.asarray(z_ss[m:], dtype=float)
+        fr, _hsens, _nodes = self._event_remap(base2, th0, th, period)
+        self._grid_fracs = np.asarray(fr, dtype=float)
+        self._state_event_fracs = th
+        self.event_times = sorted(set([float(e) for e in self.event_times]
+                                      + [float(t) for t in th]))
+        hs2 = fr * float(period)
+        tms2 = np.concatenate(([0.0], np.cumsum(hs2)))
+        return np.asarray(z_ss[:m], dtype=float), info, ier, mesg, tms2, hs2
 
     def _period_grid(self, period, npts, grid):
         """`(times, hs)` for one period -- uniform, or a caller's own grid.
@@ -5152,7 +5344,8 @@ class PSS(Analysis):
         Pout, _D = self._glm_propagate(steps, P)
         return np.concatenate([np.asarray(Pk).ravel() for Pk in Pout])
 
-    def _traverse_dirk(self, x_in, T, times, hs, want_dT=False):
+    def _traverse_dirk(self, x_in, T, times, hs, want_dT=False,
+                       hsens=None, capture=None):
         """One period under a lower-triangular (DIRK/ESDIRK) stage method with
         the DENSE sensitivities -- the shooting Newton's monodromy `P` and,
         with `want_dT`, the period column `Pt`, solved stage by stage.
@@ -5183,6 +5376,13 @@ class PSS(Analysis):
         x0 = copy(x_in)
         P = np.asarray(toolkit.eye(m), dtype=float)
         Pt = np.zeros(m)
+        Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
+              if hsens is not None else None)
+        self._captured = {}
+        ## the driven source's own motion with the grid -- see `_traverse_full`
+        _cabs = (np.asarray(integ.butcher()[2], dtype=float)
+                 if Pk is not None else None)
+        _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
@@ -5210,6 +5410,35 @@ class PSS(Analysis):
                     ## takes a 2D b), not column by column
                     D[i] = np.asarray(Kf[i].solve(rhs))
             P = D[s - 1]
+            if Pk is not None:
+                ## the event columns -- see `_traverse_full`
+                _t0 = float(times[_j])
+                Ks = [np.asarray(self._k_at(Ys[i], _t0 + float(_cabs[i]) * h))
+                      for i in range(s)]
+                Ud = [np.delete(np.asarray(self.cir.dudt(_t0 + float(_cabs[jj]) * h,
+                                                          analysis=self.par.analysis),
+                                           dtype=float), iref)
+                      for jj in range(s)]
+                for k in range(len(Pk)):
+                    w = float(hsens[_j, k])
+                    Dk = [None] * s
+                    CnPk = Cn @ Pk[k]
+                    for i in range(s):
+                        if Kf[i] is None:
+                            Dk[0] = Pk[k]
+                        else:
+                            Si = sum(Amat[i, j] * Ks[j] for j in range(i + 1))
+                            Ui = sum(Amat[i, j] * Ud[j] * (_tau[k] + float(_cabs[j]) * w)
+                                     for j in range(i + 1))
+                            rhs = CnPk + w * Si - h * Ui \
+                                - h * sum(Amat[i, j] * (Gs[j] @ Dk[j])
+                                          for j in range(i))
+                            Dk[i] = Kf[i].solve(rhs)
+                    Pk[k] = Dk[s - 1]
+                _tau = _tau + hsens[_j]
+                if capture is not None and (_j + 1) in capture:
+                    self._captured[_j + 1] = (copy(x), P.copy(),
+                                              [pk.copy() for pk in Pk])
             if want_dT:
                 Ks = [np.asarray(self._k_at(Ys[i])) for i in range(s)]
                 Dt = [None] * s
@@ -5229,6 +5458,8 @@ class PSS(Analysis):
                 Pt = Dt[s - 1]
         self._want_dfdh = False
         self._monodromy = P
+        if Pk is not None:
+            return x0, x, P, Pk
         if want_dT:
             return x0, x, P, Pt
         return x0, x, P, None
@@ -5381,9 +5612,13 @@ class PSS(Analysis):
         iref = self.irefnode
         return self.toolkit.concatenate((i[:iref], i[iref + 1:]))
 
-    def _k_at(self, x_reduced):
-        """The reduced STAGE DERIVATIVE `dq/dt = -(i(x) + u)` at a point --
-        what the DIRK and coupled-Radau period columns need.
+    def _k_at(self, x_reduced, t=0.0):
+        """The reduced STAGE DERIVATIVE `dq/dt = -(i(x) + u(t))` at a point --
+        what the DIRK and coupled-Radau period columns need, and with `t`
+        the stage time what a DRIVEN circuit's event columns need
+        (2026-09-21): at t = 0 the source is wrong on every other stage of
+        a driven circuit, and on the PWM fixture's ramp row that read as a
+        -3.9 in the event row's derivative where the FD said +4.2.
 
         ⚠ THIS USED TO BE `-i(x)` ALONE, on the reasoning that an autonomous
         circuit has "no source term" (2026-09-20).  An autonomous circuit
@@ -5404,12 +5639,13 @@ class PSS(Analysis):
         tr = self._transient()
         xf = self._insert_refnode(x_reduced)
         k = -(np.asarray(tr.cir.i(xf, tr.epar), dtype=float)
-              + np.asarray(tr.cir.u(0.0, tr.epar,
+              + np.asarray(tr.cir.u(float(t), tr.epar,
                                     analysis=self.par.analysis), dtype=float))
         iref = self.irefnode
         return self.toolkit.concatenate((k[:iref], k[iref + 1:]))
 
-    def _traverse_full(self, x_in, T, times, hs, want_dT=False):
+    def _traverse_full(self, x_in, T, times, hs, want_dT=False,
+                       hsens=None, capture=None):
         """One period under Radau IIA(3) with the DENSE sensitivities -- the
         shooting Newton's monodromy for the fully-implicit collocation method.
 
@@ -5450,6 +5686,26 @@ class PSS(Analysis):
         x0 = copy(x_in)
         P = np.asarray(toolkit.eye(m), dtype=float)
         Pt = np.zeros(m)
+        ## ⚠ EVENT COLUMNS (2026-09-21): `hsens[j, k] = d h_j / d theta_k`
+        ## for the state-event unknowns, one column each, propagated by
+        ## the same stage algebra as the period column with the per-step
+        ## weight taken from the matrix instead of `h/T`; `capture` names
+        ## the nodes whose state and sensitivities the bordered residual
+        ## reads (the event nodes).
+        Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
+              if hsens is not None else None)
+        self._captured = {}
+        ## ⚠ A DRIVEN CIRCUIT'S SOURCES MOVE WITH THE GRID (2026-09-21).  The
+        ## period column never needed this -- it exists for autonomous
+        ## circuits, whose `u` is constant -- but an event column shifts the
+        ## TIMES the stages are evaluated at, so `f = -(i + u(t))` changes by
+        ## `-u_dot . dt_stage`, `dt_stage = tau_n + c_i dh` with `tau_n` the
+        ## shift of the step's start.  Without it the FD check read the
+        ## column 77 % off and the event row's derivative with the WRONG
+        ## SIGN on the PWM fixture (the ramp is the source).
+        _cabs = (np.asarray(integ.butcher()[2], dtype=float)
+                 if Pk is not None else None)
+        _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
@@ -5470,6 +5726,29 @@ class PSS(Analysis):
             CnP = Cn @ P
             Z = sla.lu_solve(lu, np.vstack([CnP] * s))
             P = Z[(s - 1) * m:s * m, :]
+            if Pk is not None:
+                _t0 = float(times[_j])
+                Ks = [np.asarray(self._k_at(Ys[jj], _t0 + float(_cabs[jj]) * h))
+                      for jj in range(s)]
+                Ss = [sum(Amat[i, jj] * Ks[jj] for jj in range(s)) for i in range(s)]
+                Ud = [np.delete(np.asarray(self.cir.dudt(_t0 + float(_cabs[jj]) * h,
+                                                          analysis=self.par.analysis),
+                                           dtype=float), iref)
+                      for jj in range(s)]
+                for k in range(len(Pk)):
+                    w = float(hsens[_j, k])
+                    rhs = np.zeros(s * m)
+                    CnPk = Cn @ Pk[k]
+                    for i in range(s):
+                        Ui = sum(Amat[i, jj] * Ud[jj] * (_tau[k] + float(_cabs[jj]) * w)
+                                 for jj in range(s))
+                        rhs[i * m:(i + 1) * m] = CnPk + w * Ss[i] - h * Ui
+                    Zk = sla.lu_solve(lu, rhs)
+                    Pk[k] = Zk[(s - 1) * m:s * m]
+                _tau = _tau + hsens[_j]
+                if capture is not None and (_j + 1) in capture:
+                    self._captured[_j + 1] = (copy(x), P.copy(),
+                                              [pk.copy() for pk in Pk])
             if want_dT:
                 Ks = [np.asarray(self._k_at(y)) for y in Ys]
                 rhs = np.zeros(s * m)
@@ -5483,6 +5762,8 @@ class PSS(Analysis):
                 Pt = Zt[(s - 1) * m:s * m]
         self._want_dfdh = False
         self._monodromy = P
+        if Pk is not None:
+            return x0, x, P, Pk
         if want_dT:
             return x0, x, P, Pt
         return x0, x, P, None
@@ -10260,8 +10541,32 @@ class PSS(Analysis):
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
               x0_unknown=None, tstab=None, break_events=None,
-              phase_rule='frozen'):
+              phase_rule='frozen', state_events=True):
         """Solve for the periodic steady state.
+
+        ⚠ STATE EVENTS AS NEWTON UNKNOWNS (2026-09-21, the event half of
+        B7).  `break_events` lands the SOURCE discontinuities, known before
+        the solve.  A comparator's, a threshold switch's or a latch's edge
+        happens where the SOLUTION crosses a condition -- `Circuit.
+        state_events()`, `row . x = threshold` -- at a time no frozen grid
+        can hold, and with the crossing inside a step every method was
+        FIRST order (voltage-mode PWM loop, radau uniform 100 .. 800 points:
+        mean error 2.9e-2 -> 3.3e-3 V, halving per doubling; trbdf2 and
+        gear the same).  With `state_events` (the default) a DRIVEN solve
+        under radau or trbdf2 runs a second stage: the crossings of the
+        first stage's orbit become unknowns `theta_k` (fractions of the
+        period) alongside `x_0`, the grid between consecutive events
+        scales with its segment (a proportional column per event, the
+        period column's own algebra), each event contributes the row
+        `row . x(theta_k T) = threshold`, and the bordered Newton lands the
+        grid on the crossing exactly.  The solved fractions become the
+        grid every consumer replays on and the event nodes are breaks for
+        the period quadrature.  `state_events=False` keeps the one-stage
+        solve.  Gear and the plain one-step kinds skip the stage with a
+        warning: a two-step companion's step derivative needs the previous
+        step's partial too (the 3/2 of `residual_dT`), not built.
+        Autonomous circuits with state events are not built (the period
+        and the events would be unknowns together).
 
         `break_events` lands the circuit's source discontinuities on grid
         points (`event_grid`).  `None` -- the default -- decides from the
@@ -10703,6 +11008,23 @@ class PSS(Analysis):
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
         ## system is solved.  Structural and exact -- see `_is_autonomous`.
         self.autonomous = self._is_autonomous(times)
+        ## the state-event stage runs only under the stage kinds -- see the
+        ## docstring; say so once when the circuit declares events
+        self._state_event_fracs = None
+        if state_events and not self.autonomous:
+            _rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
+            _method_se = getattr(self.par, 'method', 'euler')
+            _integ_se = self._integrator_for(_method_se)
+            if _rows and not (_integ_se.is_stage_method()
+                              and not getattr(_integ_se, 'is_multivalue', lambda: False)()):
+                warnings.warn(
+                    'PSS: this circuit declares %d state event(s) (a threshold '
+                    'switch or comparator) but the state-event stage is built '
+                    'for the stage methods only (radau, trbdf2); under %r the '
+                    'crossing stays inside a step and the solve is first order '
+                    "there. Use method='radau' or 'trbdf2', or pass "
+                    'state_events=False to silence this.' % (len(_rows), _method_se),
+                    RuntimeWarning, stacklevel=2)
         ## the period-column convention for this solve (see the Parameter)
         _pc = str(getattr(self, '_force_period_column', None)
                   or getattr(self.par, 'period_column', 'auto'))
@@ -11345,6 +11667,10 @@ class PSS(Analysis):
                     reltol=_shoot_reltol, abstol=_tol, xtol=_tol,
                     toolkit=self.toolkit, full_output=True, line_search=True,
                     floor_detect=True)
+                if state_events and _ier == 1 and _fdr in (func_full, func_dirk):
+                    (x0_ss, _info, _ier, _mesg, times, hs) = self._state_event_stage(
+                        x0_ss, _info, _ier, _mesg, period, times, hs, _fully,
+                        maxiterations, _tol, _shoot_reltol, alpha)
         elif self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
             ## rule as the plain autonomous system: the two state blocks

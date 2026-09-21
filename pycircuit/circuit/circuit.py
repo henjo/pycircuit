@@ -667,6 +667,21 @@ class Circuit():
     def next_event(self, t):
         """Returns the time of the next event given the current time t"""
         return self.toolkit.inf
+
+    def state_events(self):
+        """The circuit's STATE-DEPENDENT switching conditions, each as
+        `(row, threshold)` over this circuit's own state vector: the event
+        is where `row . x - threshold` crosses zero.
+
+        `next_event(t)` names the events a SOURCE makes, known before any
+        solve; these are the ones a comparator, a threshold switch or a
+        latch makes, whose time depends on the solution -- `PSS.solve`
+        takes each crossing per period as an unknown (2026-09-21) so the
+        grid lands on it.  Linear in `x` by contract, which covers a
+        comparator on node voltages exactly and keeps the derivative
+        trivial; an element with a nonlinear condition declares the
+        linearised row.  The base class has none."""
+        return []
     
     def name_state_vector(self, x, analysis=''):
         """Return a dictionary of the x-vector keyed by node and branch names
@@ -1451,6 +1466,28 @@ class SubCircuit(Circuit):
 
     def i(self, x, epar=defaultepar, params_tree=None):
         return self._add_element_subvectors('i', x, (epar,), params_tree=params_tree)
+
+    def state_events(self):
+        """Every element's `state_events()`, each row mapped through
+        `elementnodemap` onto this circuit's full state vector (a nested
+        SubCircuit's rows come already mapped onto ITS state, which the same
+        map places)."""
+        import numpy as np
+        out = []
+        for instance_name, element in self.elements.items():
+            se = getattr(element, 'state_events', None)
+            if se is None:
+                continue
+            rows = se()
+            if not rows:
+                continue
+            idx = np.asarray(self.elementnodemap[instance_name])
+            for row, thr in rows:
+                row = np.asarray(row, dtype=float).ravel()
+                full = np.zeros(self.n)
+                full[idx[:len(row)]] += row
+                out.append((full, float(thr)))
+        return out
 
     #This seemed to be missing
     def q(self, x, epar=defaultepar, params_tree=None):

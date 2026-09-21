@@ -2179,6 +2179,20 @@ class VSwitch(Circuit):
         params = {'Ron': self.iparv.Ron, 'Roff': self.iparv.Roff, 'Von': self.iparv.Von, 'Voff': self.iparv.Voff}
         return self.eval_i_pure(x, params, epar, self.toolkit)
 
+    def state_events(self):
+        """The switching WINDOW's two edges: `v(cp) - v(cm)` crossing `Von`
+        and crossing `Voff`.  Declared so `PSS.solve` can take the
+        crossings' times as unknowns and land grid points on them
+        (2026-09-21): with the crossing inside a step every method was
+        FIRST order on a voltage-mode PWM loop, radau included.  ⚠ BOTH
+        EDGES, NOT THE MIDPOINT: landed at the midpoint alone, half of the
+        `tanh` transition sat in each neighbouring step and the solve
+        stalled at 6e-4 of the swing whatever the count -- the tr = 0
+        pulse's lesson (keep both ramp ends as nodes) again.  Between the
+        two edges the transition gets its own sub-grid."""
+        return [([0.0, 0.0, 1.0, -1.0], float(self.iparv.Von)),
+                ([0.0, 0.0, 1.0, -1.0], float(self.iparv.Voff))]
+
     def G(self, x, epar=defaultepar):
         if self.toolkit.supports('autodiff'):
             return self.toolkit.jacobian(self.eval_i_pure, x,

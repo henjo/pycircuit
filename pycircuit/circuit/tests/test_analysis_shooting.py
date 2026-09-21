@@ -24731,3 +24731,127 @@ def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_g
     assert len(ga) == len(gb) == 2, (ga, gb)
     assert max(abs(x - y) for x, y in zip(ga, gb)) < 8e-3, (ga, gb)     # 0.0005 / 0.0042 measured
     assert abs(ea) < 120 and abs(eb) < 120 and abs(ea - eb) < 40, (ea, eb)
+
+
+def _pwm_loop(T):
+    """A voltage-mode PWM loop with a STATE-dependent switching instant: a
+    sawtooth against the output filtered by an RC of 10 T, a `VSwitch`
+    (20 mV `tanh` window) feeding an LC filter, a 20 ohm path for the
+    inductor current in the off phase."""
+    from pycircuit.circuit.elements import VSwitch
+    cir = SubCircuit()
+    for n_ in ('vin', 'ramp', 'sw', 'out', 'fb'):
+        cir.add_node(n_)
+    cir['Vin'] = VS('vin', gnd, v=5.0)
+    cir['Vramp'] = VPulse('ramp', gnd, v1=0.0, v2=4.0, td=0.0, tr=0.98 * T,
+                          pw=0.01 * T, tf=0.01 * T, per=T)
+    cir['S'] = VSwitch('vin', 'sw', 'ramp', 'fb', Ron=0.1, Roff=1e6,
+                       Von=0.01, Voff=-0.01)
+    cir['Rf'] = R('out', 'fb', r=1e4)
+    cir['Cf'] = C('fb', gnd, c=1e-8)
+    cir['L'] = L('sw', 'out', L=2e-6)
+    cir['C'] = C('out', gnd, c=1e-6)
+    cir['Rl'] = R('out', gnd, r=5.0)
+    cir['Rd'] = R('sw', gnd, r=20.0)
+    return cir
+
+
+def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switching_instant():
+    """The event half of B7 (2026-09-21/22, Andreas: "Do the events as a
+    Newton unknown").  On the PWM loop every method was FIRST order on a
+    uniform grid because the comparator's crossing sits inside a step
+    (radau, mean error 2.9e-2 -> 3.3e-3 V over 100 -> 800 points, halving
+    per doubling).  With `state_events` (the default) a driven radau or
+    trbdf2 solve runs a bordered second stage: the crossings of the
+    first stage's orbit (both edges of the switch's window, declared by
+    `VSwitch.state_events()`) become unknowns with `x_0`, the grid between
+    consecutive events scales with its segment, and the Newton lands the
+    grid on the crossings.  ⚠ Two things the period column never needed
+    were found by the FD check and are pinned here: a driven source moves
+    with the grid (`-u_dot . dt_stage` on every stage), and `_k_at` takes
+    the stage time (it took t = 0, "autonomous only").  Pinned: the
+    bordered Jacobian's event column and row against central differences
+    to 1e-6 (radau and trbdf2); the staged solve at 100 points at least
+    5x closer to a staged 800-point radau reference than the
+    unstaged one, with the on-crossing within 5e-4 of the
+    reference's; `state_events=False` reproduces the one-stage solve;
+    gear is told it skips the stage.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+
+    def solve(method, N, se, reltol=1e-8):
+        cir = _pwm_loop(T)
+        p = PSS(cir, method=method, reltol=reltol)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            p.solve(period=T, timestep=T / N, x0=np.zeros(cir.n - 1),
+                    maxiterations=100, state_events=se)
+        assert p.converged
+        io = [str(n_) for n_ in cir.nodes].index('out')
+        io = io if io < p.irefnode else io - 1
+        ts = np.asarray(p.waveform[0], float)
+        X = np.asarray(p.waveform[1], float)
+        v = X[io] if X.shape[0] == cir.n - 1 else np.delete(X, p.irefnode, axis=0)[io]
+        return p, ts, v, [str(w_.message) for w_ in rec]
+
+    ## (a) the Jacobian, against central differences, both kinds
+    for method in ('radau', 'trbdf2'):
+        p, ts, _v, _ws = solve(method, 60, False)
+        x0 = np.asarray(p._period_state[1], float)
+        m = p.cir.n - 1
+        hs = np.diff(ts)
+        W, c = p._state_event_rows()
+        assert W is not None and W.shape[0] == 2
+        base2, th0 = p._land_fractions(hs / T, [0.706, 0.7107])
+        trav = p._traverse_full if method == 'radau' else p._traverse_dirk
+
+        def FJ(z):
+            xx, th = z[:m], z[m:]
+            fr, hsens, nodes = p._event_remap(base2, th0, th, T)
+            hs_ = fr * T
+            tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+            _x0, x_end, Mx, Pk = trav(xx, T, tms_, hs_, hsens=hsens, capture=set(nodes))
+            F = np.concatenate((xx - np.asarray(x_end),
+                                [float(W[k] @ p._captured[nd][0]) - c[k]
+                                 for k, nd in enumerate(nodes)]))
+            J = np.zeros((m + 2, m + 2))
+            J[:m, :m] = np.eye(m) - Mx
+            for k in range(2):
+                J[:m, m + k] = -np.asarray(Pk[k]).ravel()
+            for k, nd in enumerate(nodes):
+                xj, Pj, Pkj = p._captured[nd]
+                J[m + k, :m] = W[k] @ Pj
+                for l in range(2):
+                    J[m + k, m + l] = float(W[k] @ Pkj[l])
+            return F, J
+        z = np.concatenate((x0, th0 + np.array([0.001, -0.001])))
+        _F0, J0 = FJ(z)
+        for i in (m, m + 1):
+            zp = z.copy(); zp[i] += 1e-6
+            zm = z.copy(); zm[i] -= 1e-6
+            fd = (FJ(zp)[0] - FJ(zm)[0]) / 2e-6
+            assert np.linalg.norm(J0[:, i] - fd) < 1e-6 * np.linalg.norm(fd), (method, i)
+
+    ## (b) the accuracy, against a staged reference
+    pr, tsr, vr, _ = solve('radau', 800, True, 1e-10)
+    ref = lambda t: np.interp(t % T, tsr, vr)
+    swing = vr.max() - vr.min()
+    errs = {}
+    for se in (False, True):
+        p, ts, v, ws = solve('radau', 100, se)
+        errs[se] = np.max(np.abs(v - ref(ts))) / swing
+        if se:
+            th = np.asarray(p._state_event_fracs, float)
+            assert len(th) == 4, th
+            assert abs(th[0] - pr._state_event_fracs[0]) < 5e-4, (th, pr._state_event_fracs)
+            assert all(float(t_) in [float(e) for e in p.event_times] for t_ in th)
+        else:
+            assert p._state_event_fracs is None
+    assert errs[False] / errs[True] > 5, errs
+
+    ## (c) gear is told
+    _p, _ts, _v, ws = solve('gear', 100, True)
+    assert any('state-event stage is built for the stage methods' in w_ for w_ in ws), ws
+    assert _p._state_event_fracs is None
