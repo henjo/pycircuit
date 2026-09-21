@@ -2157,6 +2157,35 @@ class PSS(Analysis):
                                                     it 1.5-1.7x better at equal
                                                     accuracy on E2's fixture, so
                                                     price both with `grid_error`.
+                                                    ADAPTIVE GRIDS (`lte_grid`,
+                                                    2026-09-21, relaxation van
+                                                    der Pol mu = 10, each method
+                                                    on the grid its own run made,
+                                                    seeded from `lte_period`):
+                                                    gear 195 pts -22 / -1461 ppm
+                                                    (two windows: gear's period
+                                                    there depends on where the
+                                                    frozen window's fine regions
+                                                    sit against the converged
+                                                    edges), trbdf2 286 pts
+                                                    -8.7 ppm, radau 110 pts
+                                                    -0.32 ppm.  On a relaxation
+                                                    oscillator's adaptive grid,
+                                                    choose trbdf2 or radau; gear
+                                                    is the method that makes
+                                                    the grid (the Transient
+                                                    default), not the one that
+                                                    uses it best.  The adaptive
+                                                    run's reltol must be tighter
+                                                    than the transient's habit:
+                                                    1e-5 is too coarse above
+                                                    mu ~ 10 for every method
+                                                    (the mu = 100 benchmark used
+                                                    1e-7).  Pass the period
+                                                    `lte_grid` observed
+                                                    (`pss.lte_period`) to
+                                                    `solve`: the grid is
+                                                    fractions of it.
       euler     1       --             yes          never rings; damps the orbit it
                                                     is asked to find (13 % of the
                                                     amplitude at 20 pts/period)
