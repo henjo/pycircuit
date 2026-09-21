@@ -24078,7 +24078,7 @@ def test_gear_runs_its_ppv_on_the_lte_grid_gear_produced_and_is_told_when_its_un
     assert bool(w3) == (rho3 - 1.0 > PSS.PPV_UNIT_MULTIPLIER_WARN), (rho3, w3)
 
 
-def test_the_closing_period_column_is_opt_in_and_takes_a_raw_window_from_a_seed_the_proportional_one_cannot():
+def test_the_closing_period_column_is_the_default_again_and_its_polished_answer_does_not_depend_on_the_seed():
     """The 'closing' period column (B7c completed on every kind, 2026-09-21)
     and what its evidence was.  On a RAW single window of an adaptive run
     (`lte_grid(fold=False)`), whose seam sits on the slow branch, a free-period
@@ -24089,13 +24089,22 @@ def test_the_closing_period_column_is_opt_in_and_takes_a_raw_window_from_a_seed_
     and a proportional polish on the caller's fractions at the solved period
     lands on the reference-seeded answer.
 
-    ⚠ AND THAT IS ALL IT IS.  On the FOLDED grid `lte_grid` now makes,
-    closing FAILS from 2 % off where proportional converges (seam mid-edge)
-    or lands +690 ppm off (seam on the slow branch), and `lte_period`
-    removes the bad seed at its source -- so 'auto' resolves to
-    'proportional' (reversed the same day it was set, on this measurement)
-    and 'closing' is selectable by name.  Pinned: 'auto' is bit-identical
-    to 'proportional'; 'closing' still does what it did on the raw window.
+    ⚠ 'auto' WAS REVERSED TO 'proportional' THE SAME DAY, AND RESTORED
+    LATER THAT DAY ON THE DIAGNOSIS.  The reversal's evidence ("+690 ppm
+    off on the fold, fails from 2 %") was the polish firing only beyond
+    the zero-stability bound: a stretch of the last step INSIDE the bound
+    is a change of discretisation and stayed in the answer (gear on its
+    fold from seeds 0 / 0.5 / 2 % low: +1615 / +2470 / +3646 ppm at
+    stretches 1.04 / 1.19 / 1.61, proportional +1431 at every seed; this
+    raw window at 5 %: +3129 ppm at 2.28x, and its -33.5 ppm at 2 % was a
+    cancellation), and the 2 % failure was the old mid-edge seam.  The
+    polish is unconditional now, so the closing answer is proportional's
+    at the solved period, seed-independent (+1408.5 / +1408.6 / +1408.9
+    on the fold; -1319.1 / -1319.0 / -1318.7 / -1318.1 here at 0 .. 5 %).
+    Pinned: 'auto' is bit-identical to 'closing' on the caller's grid;
+    closing from 0, 2 and 5 % low agrees with itself to 5e-6 and with
+    proportional to 1e-4;
+    proportional fails from 16 % low where closing takes it.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -24132,10 +24141,16 @@ def test_the_closing_period_column_is_opt_in_and_takes_a_raw_window_from_a_seed_
         if not q.converged:
             raise RuntimeError('did not converge')       # the expected failure, catchable
         return float(q.period), any('closing step ended' in str(w_.message) for w_ in rec)
-    ## 'auto' is 'proportional', bit for bit
+    ## 'auto' is 'closing', bit for bit; the polished answer does not move
+    ## with the seed, and it is proportional's
     Ta, _ = run('auto', p.lte_period)
+    Tc0, _ = run('closing', p.lte_period)
     Tp, _ = run('proportional', p.lte_period)
-    assert Ta == Tp, (Ta, Tp)
+    assert Ta == Tc0, (Ta, Tc0)
+    Tc2, _ = run('closing', 0.98 * p.lte_period)
+    Tc5, _ = run('closing', 0.95 * p.lte_period)
+    assert abs(Tc2 / Tc0 - 1.0) < 5e-6 and abs(Tc5 / Tc0 - 1.0) < 5e-6, (Tc0, Tc2, Tc5)   # 0.8 / 2.1 ppm measured
+    assert abs(Tc0 / Tp - 1.0) < 1e-4, (Tc0, Tp)
     ## proportional fails from 16 % low on the raw window ...
     try:
         run('proportional', T_LOW)

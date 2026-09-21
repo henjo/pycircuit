@@ -2310,7 +2310,7 @@ class PSS(Analysis):
          ## a caller's grid for an autonomous run and 'proportional' otherwise
          ## -- see `_period_grid` and the note at `_period_column`.
          Parameter(name='period_column',
-                   desc="'auto' (= 'proportional'), 'proportional' or 'closing': "
+                   desc="'auto' (= 'closing' + proportional polish on a caller's grid, 'proportional' on a uniform one), 'proportional' or 'closing': "
                         "which step lengths depend on an unknown period; see "
                         "the note at the policy in solve()",
                    unit='', default='auto'),
@@ -10717,14 +10717,33 @@ class PSS(Analysis):
         if _pc not in ('auto', 'proportional', 'closing'):
             raise ValueError("period_column must be 'auto', 'proportional' "
                              "or 'closing', got %r" % (_pc,))
-        ## ⚠ 'auto' IS 'proportional' (2026-09-21, reversed the same day it
-        ## was set).  Closing's evidence was a raw single window of an
-        ## adaptive run with its seam on the slow branch, from a seed 16 %
-        ## off.  On the FOLDED grid `lte_grid` now makes, closing FAILS from
-        ## 2 % off where proportional converges (seam mid-edge) or lands
-        ## +690 ppm off (seam on the slow branch), and `lte_period` removes
-        ## the bad seed at its source.  'closing' stays selectable by name.
-        self._period_column = 'closing' if _pc == 'closing' else 'proportional'
+        ## ⚠ 'auto' IS 'closing' WITH THE PROPORTIONAL POLISH (2026-09-21,
+        ## Andreas's call restored on the diagnosis of why it was reversed).
+        ## The reversal's evidence -- "closing lands +690 ppm off on the
+        ## fold, fails from 2 % off" -- was two things that were not closing:
+        ## the polish fired only when the closing step left the
+        ## zero-stability bound, so a stretch INSIDE the bound stayed in the
+        ## answer (gear on its fold from seeds 0 / 0.5 / 2 % low: +1615 /
+        ## +2470 / +3646 ppm at stretches 1.04 / 1.19 / 1.61, proportional
+        ## +1431 at every seed; the raw window at 5 %: +3129 ppm at 2.28x,
+        ## and its "-33.5 ppm" at 2 % was a cancellation), and the 2 %
+        ## failure was the old mid-edge seam whose last step was too short
+        ## to absorb the correction.  With the polish unconditional the
+        ## closing answer is proportional's at the solved period, seed-
+        ## independent to 0.4 ppm (+1408.5 / +1408.6 / +1408.9), and closing
+        ## keeps its basin: 5 % low on the fold and 16 % on the window,
+        ## where proportional's per-step Newton fails.  'proportional'
+        ## stays selectable by name -- one solve, the seed's own grid.
+        ## ⚠ ON A CALLER'S GRID FOR AN AUTONOMOUS RUN, as the Parameter
+        ## says: on a UNIFORM grid 'auto' is proportional -- the closing
+        ## column there makes one step of N absorb the period correction
+        ## for no reason, and two uniform-grid gear solves that converge
+        ## proportionally (the stall fixture at lambda_2 = 0.9, the
+        ## periodic-state fold fixture) did not converge closing.
+        self._period_column = ('closing' if (_pc == 'closing' or
+                               (_pc == 'auto' and grid is not None
+                                and getattr(self, 'autonomous', False)))
+                               else 'proportional')
         self._closing_inner = None
         self._closing_warned = False
         phase_k, phase_pin = 0, 0.0
@@ -11981,8 +12000,17 @@ class PSS(Analysis):
         ## Closing is the BASIN device; once converged, the grid is
         ## re-fractioned at the solved period and solved once more
         ## proportionally from the converged state, which is the sane grid
-        ## the answer is reported on.  Only when the closing step left the
-        ## bound; a seed already close needs no second pass.
+        ## the answer is reported on.  ⚠ ALWAYS, NOT ONLY BEYOND THE BOUND
+        ## (2026-09-21).  This used to polish only when the closing step
+        ## left the zero-stability bound, on the reasoning that a seed
+        ## already close needs no second pass -- but ANY stretch of the last
+        ## step is a change of discretisation and stays in the answer: gear
+        ## on its fold, seeds 0 / 0.5 / 2 % low, +1615 / +2470 / +3646 ppm
+        ## at stretches 1.04 / 1.19 / 1.61 where proportional reads +1431 at
+        ## every seed and the polished answer +1408.5 / +1408.6 / +1408.9.
+        ## The seed-exact case stretches too (the discretisation's own
+        ## period error is absorbed by the last step).  Cost: one Newton
+        ## from a converged state, one or two iterations.
         if (getattr(self, '_period_column', 'proportional') == 'closing'
                 and self.converged and getattr(self, 'autonomous', False)
                 and not getattr(self, '_closing_second_pass', False)
@@ -11998,26 +12026,26 @@ class PSS(Analysis):
                     'solved period (proportional), from the converged state.'
                     % (_r, float(self._solve_kwargs.get('period_seed', period)),
                        float(period)), RuntimeWarning, stacklevel=2)
-                ## ⚠ ON THE CALLER'S FRACTIONS, not the closing-distorted grid:
-                ## re-fractioning THAT grid keeps the giant last step (measured:
-                ## trbdf2 -1.1 % in period, c -97 %, second pass or not)
-                _fr_caller = (np.asarray(self._grid_fracs, dtype=float)
-                              if self._grid_fracs is not None else None)
-                self._closing_second_pass = True
-                self._force_period_column = 'proportional'
-                try:
-                    return self.solve(refnode=refnode, period=float(period),
-                                      x0=copy(x0_ss),
-                                      timestep=float(period) / len(_hs),
-                                      maxiterations=maxiterations,
-                                      grid=_fr_caller,
-                                      matrix_free=matrix_free,
-                                      x0_unknown=x0_unknown, tstab=None,
-                                      break_events=self.break_events,
-                                      phase_rule=phase_rule)
-                finally:
-                    self._closing_second_pass = False
-                    self._force_period_column = None
+            ## ⚠ ON THE CALLER'S FRACTIONS, not the closing-distorted grid:
+            ## re-fractioning THAT grid keeps the giant last step (measured:
+            ## trbdf2 -1.1 % in period, c -97 %, second pass or not)
+            _fr_caller = (np.asarray(self._grid_fracs, dtype=float)
+                          if self._grid_fracs is not None else None)
+            self._closing_second_pass = True
+            self._force_period_column = 'proportional'
+            try:
+                return self.solve(refnode=refnode, period=float(period),
+                                  x0=copy(x0_ss),
+                                  timestep=float(period) / len(_hs),
+                                  maxiterations=maxiterations,
+                                  grid=_fr_caller,
+                                  matrix_free=matrix_free,
+                                  x0_unknown=x0_unknown, tstab=None,
+                                  break_events=self.break_events,
+                                  phase_rule=phase_rule)
+            finally:
+                self._closing_second_pass = False
+                self._force_period_column = None
         return InternalResultDict({'tpss': tpss, 'fpss': fpss})
 
 class SidebandResponse(object):
