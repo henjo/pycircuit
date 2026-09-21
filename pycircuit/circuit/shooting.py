@@ -3355,10 +3355,10 @@ class PSS(Analysis):
             tw = t[j0:]
             k = int(np.argmax(W.max(axis=1) - W.min(axis=1)))
             y = W[k] - 0.5 * (W[k].max() + W[k].min())
-            up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
-            if len(up) < 5:
+            ## the same chain the period came from (one crossing per period)
+            tc = self._crossing_chain(tw, y, T_obs)
+            if len(tc) < 5:
                 return None, None
-            tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
         phases = (np.arange(nbins) + 0.5) / nbins
         dens = None
         for a, b in zip(tc[:-1], tc[1:]):
@@ -3427,6 +3427,42 @@ class PSS(Analysis):
         return fr, seed
 
     @staticmethod
+    def _crossing_chain(tw, y, T_hint):
+        """The rising crossings of `y` (times `tw`, linear interpolation),
+        ONE PER PERIOD OF THE HINT: every rising crossing when they are
+        already one per period, else the chain walked back from the last
+        crossing choosing, per step of `T_hint`, the crossing nearest the
+        expected time within a quarter period.
+
+        ⚠ A STATE THAT CROSSES ITS MIDLINE MORE THAN ONCE PER PERIOD
+        (2026-09-21, item 2 of the non-uniform-grid list).  The detector
+        took EVERY rising crossing of the fastest-swinging state, and a
+        strong third harmonic (`sin + 1.2 sin 3`, three crossings) or two
+        pulses of different height per period (two crossings) spread the
+        spacings past the 1 % rule: `_observed_period` returned None, the
+        fold was refused with the "no consistent recurrence" warning and
+        the grid fell back to the single window.  Not silent, but a
+        capability lost on exactly the harmonic-rich oscillators whose
+        grids need folding.  The hint names the period the caller expects
+        and picks the branch; a single-crossing state gives the same chain
+        as before, bit for bit."""
+        up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
+        if len(up) == 0:
+            return np.zeros(0)
+        tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
+        d = np.diff(tc)
+        if len(d) < 2 or float(np.std(d)) <= 1e-2 * float(np.mean(d)):
+            return tc
+        chain = [float(tc[-1])]
+        while True:
+            target = chain[-1] - float(T_hint)
+            j = int(np.argmin(np.abs(tc - target)))
+            if abs(tc[j] - target) > 0.25 * float(T_hint) or tc[j] >= chain[-1]:
+                break
+            chain.append(float(tc[j]))
+        return np.asarray(chain[::-1], dtype=float)
+
+    @staticmethod
     def _observed_period(t, xs, iref_probe, T_hint, nper=8):
         """The period an adaptive run actually shows, from the rising
         crossings of the fastest-swinging state over the last `nper` hints,
@@ -3446,10 +3482,9 @@ class PSS(Analysis):
             return None
         k = int(np.argmax(swing))
         y = W[k] - 0.5 * (W[k].max() + W[k].min())
-        up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
-        if len(up) < 3:
+        tc = PSS._crossing_chain(tw, y, T_hint)
+        if len(tc) < 3:
             return None
-        tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
         d = np.diff(tc)
         if len(d) < 2 or float(np.std(d)) > 1e-2 * float(np.mean(d)):
             return None
@@ -3632,11 +3667,15 @@ class PSS(Analysis):
         ## from it with growth capped at the controller's own 2x.  Measured on
         ## the same run: gear +40 ppm, trbdf2 +10, radau -0.01 at 207 points
         ## (the 25 % quantile +267 / +13, the median +957 / +16, the last
-        ## window re-meshed +150 / +6).  Phase 0 sits mid-edge, so the seam is
-        ## fine steps on both sides and the opener needs no ramp.  The seed is
-        ## the interpolated state at the last crossing.  `fold=False` keeps
-        ## the single-window cut; a run without a consistent recurrence
-        ## falls back to it.
+        ## window re-meshed +150 / +6).  The seam sits at the COARSEST phase
+        ## (the slow branch; a mid-edge seam cost gear's c +28 %) and the
+        ## opener is `_period_grid`'s doubling ramp; the seed is the
+        ## interpolated state at that phase of the last full period.  A
+        ## driven circuit folds on the drive's own boundaries k T (phase 0
+        ## at the drive's t = 0), an oscillator on the rising-crossing chain
+        ## `_crossing_chain` picks, one per period of the hint.  `fold=False`
+        ## keeps the single-window cut; a run without a consistent
+        ## recurrence falls back to it, warned.
         if fold and T_obs is not None:
             if _driven:
                 ## the drive's own period boundaries, the last ones the run holds

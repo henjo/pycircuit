@@ -24718,3 +24718,50 @@ def test_the_period_quadrature_breaks_its_spline_at_landed_events_and_reaches_fo
     assert np.max(np.abs(w - 0.5 * (h + np.roll(h, 1)) / T)) > 1e-3 * np.max(w)
     rel = np.abs(H - Href) / np.abs(Href)
     assert rel[1] < 2e-3 and rel[2] < 5e-2, rel
+
+
+def test_the_recurrence_detector_picks_one_crossing_per_period_by_the_hint():
+    """Item 2 of the non-uniform-grid list (2026-09-21): `_observed_period`
+    took every rising crossing of the fastest-swinging state, so a state
+    that crosses its midline more than once per period -- a strong third
+    harmonic (three crossings), two pulses of different height (two) --
+    spread the spacings past the 1 % rule and returned None: the fold
+    was refused (warned, "no consistent recurrence") and the grid fell
+    back to the single window.  `_crossing_chain` now walks back from the
+    last crossing choosing, per hint period, the crossing nearest the
+    expected time; a single-crossing state gives the same chain as
+    before, bit for bit.  Pinned on synthetic waveforms with the period
+    known: the two multi-crossing cases return the period to 1e-6 from
+    hints 10 % either side, the single-crossing case is unchanged, and
+    the fold's boundaries are one per period on the three-crossing state.
+    """
+    T = 2.0
+    w = 2.0 * np.pi / T
+    t = np.sort(np.concatenate([np.linspace(0.0, 40 * T, 8000),
+                                np.linspace(0.0, 40 * T, 8000) + 0.0013]))
+    ph = (t % T) / T
+    cases = {
+        'sin': np.sin(w * t),
+        'sin + 1.2 sin 3': np.sin(w * t) + 1.2 * np.sin(3 * w * t),
+        'two pulses': (0.2 * np.sin(w * t)
+                       + 3.0 * np.exp(-((ph - 0.2) / 0.02) ** 2)
+                       + 2.5 * np.exp(-((ph - 0.6) / 0.02) ** 2)),
+    }
+    for label, v in cases.items():
+        xs = np.vstack([v, 0.1 * v])
+        y = v - 0.5 * (v.max() + v.min())
+        per_period = np.sum((y[:-1] < 0.0) & (y[1:] >= 0.0)) / 40.0
+        for hint in (T, 1.1 * T, 0.9 * T):
+            r = PSS._observed_period(t, xs, 5, hint)
+            assert r is not None, (label, hint)
+            assert abs(r / T - 1.0) < 1e-6, (label, hint, r)
+        if label == 'sin':
+            assert per_period == 1.0
+        else:
+            assert per_period >= 2.0, (label, per_period)
+    ## the fold's boundaries come from the same chain
+    v = cases['sin + 1.2 sin 3']
+    y = v - 0.5 * (v.max() + v.min())
+    tc = PSS._crossing_chain(t, y, T)
+    d = np.diff(tc)
+    assert len(tc) >= 30 and np.max(np.abs(d / T - 1.0)) < 1e-6, (len(tc), d[:5])
