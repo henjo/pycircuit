@@ -23840,3 +23840,85 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     x0 = np.asarray(p._period_state[1], float).ravel()
     fpb = p.factored_period_full(x0, T, 100)
     assert np.allclose(np.asarray(fpb.times, float), np.linspace(0.0, T, 101), rtol=0, atol=1e-22)
+
+
+def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_five_except_where_the_period_quadrature_caps_them():
+    """Item (c) after "honour the caller's grid" (2026-09-21): what the
+    one-step kinds' PPV, modes and diffusion constant do on grids they now
+    actually see.  Every earlier "radau exact on the 3:1 grid" number was a
+    uniform replay; these are not.  Van der Pol, radau, `c` against radau
+    N = 3200 uniform, phase multiplier and mode invariant::
+
+        grid        N=100      N=200      N=400      N=800     order   |lam0|-1  inv
+        uniform    -8.9e-10   -3.3e-11   +4.3e-12   +6.0e-13   ~5      2e-11     1e-15
+        alt 2:1    -2.6e-09   -9.1e-11   -2.7e-12   -4.2e-13   ~5      2e-11     1e-15
+        alt 3:1    -5.2e-09   -1.6e-10   -1.1e-11   +6.3e-12   ~5      2e-11     1e-15
+        smooth     +4.9e-05   +1.3e-05   +3.3e-06   +8.4e-07   2.0     2e-11     1e-15
+
+    ⚠ THE SMOOTH ROW IS THE PERIOD QUADRATURE, NOT RADAU.  The periodic
+    trapezoid rule is spectrally accurate on a uniform grid and on an
+    alternating one (two interleaved uniform sums) and genuinely O(h^2) on
+    a smoothly varying grid, so there `c` is second order for EVERY method
+    -- `_period_quadrature`'s own "second order caps radau", now measured
+    on a real replay (the index-2 twin reads the same: +4.7e-5 / 1.3e-5 /
+    3.2e-6 / 8.1e-7).  Lifting it needs a higher-order non-uniform
+    quadrature; recorded, not built.  trbdf2 (and trap through its twin)
+    are second order on every grid with no penalty for alternation, and
+    their phase multiplier leaves 1 at O(h^2) on the smooth grid only
+    (1.1e-4 -> 1.7e-6), which is warned.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    C_REF = [None]                # radau, uniform, N = 1600: within 1e-13 of N = 3200
+
+    def run(fr, n):
+        cir = vdp()
+        p = PSS(cir, method='radau', reltol=1e-10)
+        kw = dict(period=T0, timestep=T0 / n, maxiterations=60,
+                  x0=np.array([2.0, 0.0]), break_events=False)
+        if fr is not None:
+            kw['grid'] = fr
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(**kw)
+            assert p.converged
+            p.ppv()
+            c = float(np.real(PAC(cir).diffusion_constant(p)))
+            fp = p.factored_period()
+            assert (p._period_quadrature(fp) is not None) == (fr is not None)
+            modes = p.floquet_modes(p)
+        lam0 = min(abs(abs(md['lam']) - 1.0) for md in modes)
+        if fr is None:
+            return c, lam0
+        return c / C_REF[0] - 1.0, lam0
+
+    def alt(n, r):
+        f = np.tile([r, 1.0], n // 2)
+        return f / f.sum()
+
+    def smooth(n):
+        f = 1.0 + 0.5 * np.sin(2 * np.pi * np.arange(n) / n)
+        return f / f.sum()
+    ## ⚠ the reference is computed, not quoted: a 7-digit printed value put
+    ## a flat 5.3e-8 under every row (measured before this line existed)
+    C_REF[0], _ = run(None, 1600)
+    ## 3:1 alternating: order 5, at the reference's floor
+    e200, l200 = run(alt(200, 3.0), 200)
+    e400, l400 = run(alt(400, 3.0), 400)
+    assert abs(e200) < 2e-9 and abs(e400) < 2e-10, (e200, e400)
+    assert l200 < 1e-9 and l400 < 1e-9, (l200, l400)
+    ## smooth: the quadrature's second order, every method's cap there
+    s200, _ = run(smooth(200), 200)
+    s400, _ = run(smooth(400), 400)
+    assert 5e-6 < s200 < 3e-5 and 3.3 < s200 / s400 < 4.8, (s200, s400)
