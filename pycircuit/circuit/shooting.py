@@ -3284,7 +3284,8 @@ class PSS(Analysis):
     #: take by default -- see the table at `lte_grid`
     LTE_GRID_RELTOL_MAX = 1e-5
 
-    def _fold_periods(self, t, xs, iref_probe, T_obs, nbins=4000):
+    def _fold_periods(self, t, xs, iref_probe, T_obs, nbins=4000,
+                      boundaries=None, rotate=True):
         """`(fracs, seed)` from the accepted steps of the last settled
         periods folded onto a common phase: the per-phase minimum of the
         local step, re-meshed with growth capped at 2, the seed the state at
@@ -3293,17 +3294,30 @@ class PSS(Analysis):
         xs = np.asarray(xs, dtype=float)
         keep = [i for i in range(xs.shape[0]) if i != iref_probe]
         nper = int(self.LTE_FOLD_PERIODS) + 1
-        j0 = int(np.searchsorted(t, t[-1] - nper * T_obs))
-        if j0 >= len(t) - 3:
-            return None, None
-        W = xs[keep][:, j0:]
-        tw = t[j0:]
-        k = int(np.argmax(W.max(axis=1) - W.min(axis=1)))
-        y = W[k] - 0.5 * (W[k].max() + W[k].min())
-        up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
-        if len(up) < 5:
-            return None, None
-        tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
+        if boundaries is not None:
+            ## ⚠ A DRIVEN CIRCUIT'S PERIODS ARE THE DRIVE'S (2026-09-21): its
+            ## sources are functions of absolute time and its edges sit at
+            ## fixed phases of the drive, so the boundaries are k T exactly
+            ## and phase 0 is the drive's t = 0.  Folded on a CROSSING instead
+            ## (the oscillator rule), the switched-capacitor sampler's finest
+            ## steps landed at phases 0.26 .. 0.31 of the drive with the
+            ## switch edges at 0.75 -- the grid half a period off where it
+            ## mattered, and the default path.
+            tc = np.asarray(boundaries, dtype=float).ravel()
+            if len(tc) < 5:
+                return None, None
+        else:
+            j0 = int(np.searchsorted(t, t[-1] - nper * T_obs))
+            if j0 >= len(t) - 3:
+                return None, None
+            W = xs[keep][:, j0:]
+            tw = t[j0:]
+            k = int(np.argmax(W.max(axis=1) - W.min(axis=1)))
+            y = W[k] - 0.5 * (W[k].max() + W[k].min())
+            up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
+            if len(up) < 5:
+                return None, None
+            tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
         phases = (np.arange(nbins) + 0.5) / nbins
         dens = None
         for a, b in zip(tc[:-1], tc[1:]):
@@ -3314,6 +3328,19 @@ class PSS(Analysis):
             hs_k = np.diff(ts_k)
             if len(hs_k) < 2 or np.any(hs_k <= 0.0):
                 continue
+            ## ⚠ A STEP THAT STRADDLES THE BOUNDARY KEEPS ITS OWN WIDTH
+            ## (2026-09-21).  Clipped to its sliver inside the period, the
+            ## per-phase MIN over 24 periods whose natural steps drift
+            ## against the boundary drove the first and last bins to
+            ## 0.0009 T on the switched-capacitor sampler (natural steps
+            ## there 0.034 T) -- a fine seam on a flat part of the drive.
+            ## The crossing seam of an oscillator sits on an edge that is
+            ## already fine, which is why the autonomous fold did not
+            ## show it.
+            if i0 > 0:
+                hs_k[0] = t[i0] - t[i0 - 1]
+            if i1 < len(t):
+                hs_k[-1] = t[i1] - t[i1 - 1]
             edges = (ts_k - a) / Tk
             idx = np.clip(np.searchsorted(edges, phases, side='right') - 1,
                           0, len(hs_k) - 1)
@@ -3329,9 +3356,11 @@ class PSS(Analysis):
         ## the seam on the slow branch, trbdf2's +8 % against +0.4 %, the
         ## period the same either way (+23 / -28, +10 / +7 ppm).  The coarse
         ## opener is `_period_grid`'s doubling ramp.
-        k0 = int(np.argmax(dens))
+        ## (a driven grid keeps phase 0 at the drive's t = 0: `solve` reads
+        ## its fractions from there, and the landed events with them)
+        k0 = int(np.argmax(dens)) if rotate else 0
         dens = np.roll(dens, -k0)
-        ph0 = float(phases[k0])
+        ph0 = float(phases[k0]) if rotate else 0.0
         fr = []
         ph = 0.0
         last = None
@@ -3509,7 +3538,12 @@ class PSS(Analysis):
         ## `self.lte_period` for `solve(period=...)`, and a hint more than
         ## 1 % off is WARNED.  An inconsistent detection (spacings spread
         ## above 1 %, or fewer than two) keeps the hint, with a warning.
-        T_obs = self._observed_period(t, xs, self.cir.get_node_index(refnode), T)
+        ## (drivenness read on the run's own last period of natural steps:
+        ## break_events landed them on every edge, so a narrow pulse that 64
+        ## even points would straddle is seen -- `_is_autonomous`'s own rule)
+        _driven = not self._is_autonomous(np.asarray(t, float)[np.asarray(t, float) >= t[-1] - T])
+        T_obs = (T if _driven else
+                 self._observed_period(t, xs, self.cir.get_node_index(refnode), T))
         if T_obs is not None:
             if abs(T_obs / T - 1.0) > 1e-2:
                 _warnings.warn(
@@ -3546,7 +3580,14 @@ class PSS(Analysis):
         ## the single-window cut; a run without a consistent recurrence
         ## falls back to it.
         if fold and T_obs is not None:
-            _fr, _seed = self._fold_periods(t, xs, self.cir.get_node_index(refnode), float(T))
+            if _driven:
+                ## the drive's own period boundaries, the last ones the run holds
+                _kmax = int(np.floor(t[-2] / float(T)))
+                _bnd = np.arange(max(_kmax - int(self.LTE_FOLD_PERIODS), 1), _kmax + 1) * float(T)
+                _fr, _seed = self._fold_periods(t, xs, self.cir.get_node_index(refnode), float(T),
+                                                boundaries=_bnd, rotate=False)
+            else:
+                _fr, _seed = self._fold_periods(t, xs, self.cir.get_node_index(refnode), float(T))
             if _fr is not None:
                 return _fr, _seed
         ## a settled window of exactly one period, taken from the END

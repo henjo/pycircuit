@@ -24393,3 +24393,59 @@ def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped(
     assert q.converged
     e = 1e6 * (float(q.period) - T_REF) / T_REF
     assert abs(e) < 5.0, e                                       # -0.32 measured
+
+
+def test_lte_grid_folds_a_driven_circuit_on_the_drives_own_period_boundaries():
+    """The fold on a DRIVEN circuit (2026-09-21, found the day the fold went
+    in): its sources are functions of absolute time, its edges sit at fixed
+    phases of the drive, so the fold's boundaries are `k T` and phase 0 is
+    the drive's t = 0 -- not a crossing of the fastest state, the oscillator
+    rule.  Folded on a crossing, the switched-capacitor sampler's finest
+    steps landed at phases 0.26 .. 0.31 of the drive with the switch edges
+    (the steepest output) at 0.75; `fold=False` had hidden it because the
+    default `tstab` = 200 T starts the window at the drive's phase 0.  Pinned:
+    the ten finest fractions of the folded grid start within 0.05 T of the
+    ten steepest phases of the converged output.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
+    T = 1.0 / fclk
+
+    def build():
+        cir = SubCircuit()
+        cir.add_node('in')
+        cir.add_node('out')
+        cir.add_node('ck')
+        cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+        cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+        cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9,
+                               vth=0.0, vs=50e-3, temp=temp, kb=kb)
+        cir['C0'] = C('out', gnd, c=cval)
+        return cir
+    cir = build()
+    p = PSS(cir, method='radau', reltol=1e-6)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fr, seed = p.lte_grid(T, x0=np.zeros(cir.n), reltol=1e-5)
+    fr = np.asarray(fr, float)
+    assert abs(p.lte_period / T - 1.0) < 1e-12          # the drive's, exactly
+    q = PSS(build(), method='radau', reltol=1e-6)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=T, timestep=T / len(fr), x0=seed, grid=fr, maxiterations=40)
+    assert q.converged
+    ts = np.asarray(q.waveform[0], float)
+    X = np.delete(np.asarray(q.waveform[1], float), q.irefnode, axis=0)
+    out = [str(n_) for n_ in cir.nodes].index('out')
+    out = out if out < q.irefnode else out - 1
+    ## the fold's OWN fractions (the solve's grid adds `_period_grid`'s
+    ## opener ramp and closing step at the seam, phase 0 -- structural,
+    ## the same on every folded grid, and not where the fold put its steps)
+    starts = np.concatenate([[0.0], np.cumsum(fr)[:-1]])
+    ph_fine = np.sort(starts[np.argsort(fr)[:10]] % 1.0)
+    dv = np.abs(np.gradient(X[out], ts))
+    ph_steep = np.sort(ts[np.argsort(dv)[-10:]] / T % 1.0)
+    d = np.abs(ph_fine[:, None] - ph_steep[None, :])
+    d = np.minimum(d, 1.0 - d)
+    assert np.max(np.min(d, axis=1)) < 0.05, (ph_fine, ph_steep)   # was 0.45 off
