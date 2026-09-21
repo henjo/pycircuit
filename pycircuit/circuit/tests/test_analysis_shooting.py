@@ -24269,3 +24269,66 @@ def test_the_sampled_noise_tail_closure_is_derived_and_the_resolution_limit_is_n
     g8t, _ = held('gear', 800, True)
     assert gw0 and not gw8, (gw0, gw8)
     assert g0 < 0.87 and 0.92 < g8 < 0.95 and 0.96 < g8t < 0.98, (g0, g8, g8t)
+
+
+def test_lte_grid_measures_its_own_period_and_the_solve_seeds_from_it():
+    """`lte_grid` cuts its window at the period the adaptive run SHOWS, not
+    at the hint, and leaves it in `pss.lte_period` (2026-09-21, Andreas:
+    "Do 1").  The grid is fractions of the period, so a hint 16 % off (my
+    relaxation estimate (3 - 2 ln 2) mu at mu = 10 against the true 19.10)
+    put the fine regions 16 % away from the edges: every method's per-step
+    Newton failed, and the free-period solve needed the closing convention
+    plus a second pass just to recover -- landing at gear -1464 ppm.  The
+    run already contains the period: rising crossings of the fastest
+    state, interpolated, read 19.1003 (+9e-5, the transient's own
+    discretisation), consistent to 5e-5.  Cut there and seeded from it::
+
+        method   period_column   T err (ppm)   c rel     second pass
+        gear     proportional    -17           -4.5 %    no
+        gear     auto            -22           -4.6 %    no
+        trbdf2   proportional    +10           +0.36 %   no
+        trbdf2   auto            +10           +0.36 %   no
+
+    against -1436 / -195 ppm with the window cut at a right period but the
+    grid built from the hint's length.  A hint more than 1 % off is warned
+    with the observed period; an inconsistent detection keeps the hint and
+    says so.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    MU = 10.0
+    T_REF = 19.098600502
+
+    def vdp():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: MU * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    T_HINT = (3.0 - 2.0 * np.log(2.0)) * MU                # 16 % low
+    cir = vdp()
+    p = PSS(cir, method='gear')
+    xfull = np.zeros(cir.n)
+    xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        fr, seed = p.lte_grid(T_HINT, x0=xfull, reltol=1e-5)
+    assert p.lte_period is not None
+    assert abs(p.lte_period / T_REF - 1.0) < 3e-4, p.lte_period
+    assert any('recurs every' in str(w_.message) for w_ in rec), 'the off hint must be named'
+    fr = np.asarray(fr, float)
+    N = len(fr)
+    for method, bound in (('gear', 100.0), ('trbdf2', 60.0)):
+        c_ = vdp()
+        q = PSS(c_, method=method, reltol=1e-9)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            q.solve(period=p.lte_period, timestep=p.lte_period / N, x0=seed,
+                    maxiterations=80, break_events=False, grid=fr)
+        assert q.converged
+        assert not any('closing step ended' in str(w_.message) for w_ in rec), method
+        e = 1e6 * (float(q.period) - T_REF) / T_REF
+        assert abs(e) < bound, (method, e)                   # -17 / +10 measured

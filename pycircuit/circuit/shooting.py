@@ -2379,6 +2379,8 @@ class PSS(Analysis):
         ## by the autonomous closures, which rebuild the grid at the current
         ## `T` on every residual evaluation.
         self._grid_fracs = None
+        ## the period `lte_grid` observed in its adaptive run (see there)
+        self.lte_period = None
         self._lte = None
         self._lte_seam = False
         self._lte_valid = True
@@ -3220,6 +3222,35 @@ class PSS(Analysis):
         pts = np.unique(np.asarray(out, dtype=float))
         return list(np.diff(pts))
 
+    @staticmethod
+    def _observed_period(t, xs, iref_probe, T_hint, nper=8):
+        """The period an adaptive run actually shows, from the rising
+        crossings of the fastest-swinging state over the last `nper` hints,
+        each crossing refined by linear interpolation; None when fewer than
+        two spacings exist or they spread by more than 1 % (a run that has
+        not settled, or a hint off by more than the window can hold)."""
+        t = np.asarray(t, dtype=float).ravel()
+        xs = np.asarray(xs, dtype=float)
+        keep = [i for i in range(xs.shape[0]) if i != iref_probe]
+        j0 = int(np.searchsorted(t, t[-1] - nper * float(T_hint)))
+        if j0 >= len(t) - 3:
+            return None
+        W = xs[keep][:, j0:]
+        tw = t[j0:]
+        swing = W.max(axis=1) - W.min(axis=1)
+        if not np.any(swing > 0.0):
+            return None
+        k = int(np.argmax(swing))
+        y = W[k] - 0.5 * (W[k].max() + W[k].min())
+        up = np.flatnonzero((y[:-1] < 0.0) & (y[1:] >= 0.0))
+        if len(up) < 3:
+            return None
+        tc = tw[up] - y[up] * (tw[up + 1] - tw[up]) / (y[up + 1] - y[up])
+        d = np.diff(tc)
+        if len(d) < 2 or float(np.std(d)) > 1e-2 * float(np.mean(d)):
+            return None
+        return float(np.mean(d))
+
     def lte_grid(self, period, x0=None, refnode=gnd, tstab=None,
                  reltol=None, timestep=None):
         """Step FRACTIONS for `solve(grid=...)`, derived from an adaptive run.
@@ -3306,6 +3337,38 @@ class PSS(Analysis):
                            x0=x0)
         t = np.asarray(res.sweep_values, dtype=float).ravel()
         xs = np.asarray(res.x, dtype=float)
+        ## ⚠ THE PERIOD IS MEASURED FROM THE RUN, NOT TAKEN FROM THE HINT
+        ## (2026-09-21).  The grid is FRACTIONS of the period, and with the
+        ## hint 16 % off (my relaxation estimate at mu = 10) the fine regions
+        ## sat 16 % away from the edges and every method's per-step Newton
+        ## failed; the free-period solve then needed the closing convention
+        ## and a second pass just to recover.  The adaptive run already
+        ## contains the period: the rising crossings of the fastest-swinging
+        ## state over the last periods, refined by linear interpolation, read
+        ## 19.1003 against a reference 19.0986 (+9e-5, the transient's own
+        ## discretisation) from that 16 %-low hint, consistent across
+        ## crossings to 5e-5.  The window is cut at THAT period, it is left in
+        ## `self.lte_period` for `solve(period=...)`, and a hint more than
+        ## 1 % off is WARNED.  An inconsistent detection (spacings spread
+        ## above 1 %, or fewer than two) keeps the hint, with a warning.
+        T_obs = self._observed_period(t, xs, self.cir.get_node_index(refnode), T)
+        if T_obs is not None:
+            if abs(T_obs / T - 1.0) > 1e-2:
+                _warnings.warn(
+                    'lte_grid: the adaptive run recurs every %.6g s but the '
+                    'period passed was %.6g s (%.1f %% off); the grid is cut '
+                    'at the observed period -- pass period=pss.lte_period to '
+                    'solve(), the grid\'s fractions are of it.'
+                    % (T_obs, T, 100.0 * abs(T_obs / T - 1.0)),
+                    RuntimeWarning, stacklevel=2)
+            T = float(T_obs)
+        else:
+            _warnings.warn(
+                'lte_grid: no consistent recurrence was found in the last '
+                'periods of the adaptive run (unsettled, or the period hint '
+                'is far off); the grid is cut at the period passed, %.6g s.'
+                % T, RuntimeWarning, stacklevel=2)
+        self.lte_period = float(T)
         ## a settled window of exactly one period, taken from the END
         ## ⚠ THE WINDOW ENDS AT THE LAST NATURAL STEP, NOT AT `tend`
         ## (2026-09-21).  `Transient.solve` lands its final step exactly on
