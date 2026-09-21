@@ -4452,6 +4452,8 @@ grid wrong is a SLOW MODE (the warmup has not settled) -- and a slow mode is pre
 condition that motivates the feature and the condition that breaks the solver are the same
 condition.
 
+⚠ **DELETED 2026-09-21** (Andreas: "Do the deletion"): measured from converged coarse solves at reltol 1e-5 it reached the fold's accuracy at 10–20× its points (radau ~1100 vs 114, gear ~4600 vs 204) with step ratios 4–6 beyond the two-step bound — it subdivides each cell uniformly at the finest step wanted anywhere inside it — while `lte_grid(T, x0=x_converged, tstab=25 T)` gives the fold's own grid from the same state in 3–7 s. The idiom and table are in `lte_grid`'s docstring; the separation-constant lesson below stands and the `event_grid` test cites it. The original entry follows.
+
 ✅ **BUILT 2026-09-06 as `PSS.refine_grid(grid, x0, period=...)`** on exactly that basis -- a repair
 path, not a replacement. Pinned by
 `test_refine_grid_repairs_an_under_resolved_grid_and_reaches_a_fixed_point`, which asserts the
