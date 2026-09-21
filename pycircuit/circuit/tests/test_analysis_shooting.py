@@ -24137,3 +24137,135 @@ def test_the_closing_period_column_takes_a_free_period_solve_from_a_seed_the_pro
         e_auto, s_auto = run(method, 'auto', T_LOW)
         assert s_auto, method
         assert abs(e_auto - e_ref) < 0.05 * abs(e_ref) + 5.0, (method, e_auto, e_ref)
+
+
+def test_a_noise_source_on_an_index2_constraint_is_named_not_silently_zero():
+    """A voltage noise in series with the DC source INSIDE a capacitor loop
+    perturbs an index-2 constraint: a differentiated input whose response is
+    a charge jump, which the PPV projection cannot represent -- and
+    `diffusion_constant` came back EXACTLY 0 for every method, with no
+    message (found 2026-09-20 while measuring gear at index 2; the same
+    circuit's current noise at the node gives 3.2e-9).  `_white_diffusion_at`
+    now names it once: the circuit is index >= 2 at the orbit point
+    (`G[A,Z]` singular -- the PPV fallback's own test, computed here so every
+    kind is covered, not only solved-history) and `CY` has power on an
+    algebraic row.  Silent for a source on a differential row.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    def fix(noisy_vs):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir.add_node('a')
+        cir['C'] = C('v', gnd, c=4.0)
+        cir['L'] = L('v', gnd, L=0.25)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: (u - u ** 3 / 3.0) + 0.3 * u * u)
+        cir['vo'] = VS('v', 'a', v=0.5, noisePSD=(1e-6 if noisy_vs else 0.0))
+        cir['Ca'] = C('a', gnd, c=1.0)
+        if not noisy_vs:
+            cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        return cir
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    for noisy_vs, want in ((True, True), (False, False)):
+        cir = fix(noisy_vs)
+        names = [str(x) for x in cir.nodes]
+        iref = cir.get_node_index(gnd)
+        red = [i for i in range(cir.n) if i != iref]
+        x0 = np.zeros(cir.n - 1)
+        x0[red.index(names.index('v'))] = 2.0
+        x0[red.index(names.index('a'))] = 1.5
+        p = PSS(cir, method='radau', reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 200, maxiterations=60, x0=x0)
+        assert p.converged
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            p.ppv()
+            c = float(np.real(PAC(cir).diffusion_constant(p)))
+        told = any('noise source sits on an algebraic row' in str(w_.message)
+                   for w_ in rec)
+        assert told is want, (noisy_vs, told, c)
+        if noisy_vs:
+            assert c == 0.0, c
+        else:
+            assert c > 1e-9, c
+
+
+def test_the_sampled_noise_tail_closure_is_derived_and_the_resolution_limit_is_named():
+    """Two limits on a held variance, told apart (2026-09-21, from a peer's
+    kT/C ladder): the source spectrum beyond the covered sidebands (a
+    Lorentzian's tail `1 - (2/pi) atan(F/fc)`, coefficient ONE -- the fold's
+    `|n| <= L` sum is symmetric and covers |nu| < (L + 1/2) f0 whole), and
+    the discretisation of the covered top sidebands at `omega h` per step.
+    The peer's "coefficient 3.0" was the second at a fixed M/npts: at a
+    fixed 100 sidebands the coefficient against the pure tail fell 3.03 /
+    1.93 / 1.33 / 1.12 / 1.05 at 204 .. 3200 points.
+
+    LTI limit of the switched capacitor (vck = 0: g = 0.5 mS exactly, C =
+    100 pF, fc = 795.78 kHz, f0 = 100 kHz), 100 sidebands (edge 12 fc)::
+
+        method  points  omega h   no tail    tail=True   warned
+        radau   204     3.1       0.9479     0.9981      yes
+        gear    204     3.1       0.8469     0.8737      yes
+        gear    800     0.79      0.9326     0.9688      no
+
+    Radau's covered bands are accurate even at omega h = 3, so its deficit
+    IS the pure tail (5.2e-2 against 5.06e-2 exact) and the closure -- the
+    1/nu^2 extrapolation of the two outermost covered sidebands, nothing
+    fitted -- removes it to 2e-3.  Gear's deficit at 204 points is mostly
+    discretisation, which no closure can remove; the warning names it.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
+    ktc = kb * temp / cval
+    T = 1.0 / fclk
+    gon, goff = 1e-3, 1e-9
+
+    def build():
+        cir = SubCircuit()
+        cir.add_node('in')
+        cir.add_node('out')
+        cir.add_node('ck')
+        cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0)
+        cir['Vck'] = VSin('ck', gnd, vo=0.0, va=0.0, freq=fclk, phase=90.0)
+        cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=gon, goff=goff,
+                               vth=0.0, vs=50e-3, temp=temp, kb=kb)
+        cir['C0'] = C('out', gnd, c=cval)
+        return cir
+
+    def held(method, npts, tail):
+        cir = build()
+        p = PSS(cir, method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+                    maxiterations=40)
+        assert p.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        out = [str(n_) for n_ in cir.nodes].index('out')
+        out = out if out < p.irefnode else out - 1
+        tms = np.asarray(p.factored_period().times, float)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            v = float(pac.sampled_variance(p, out, [tms[npts // 2]],
+                                           1e-3 * fclk, 0.5 * fclk,
+                                           points_per_decade=40,
+                                           maxsidebands=100, tail=tail)[0])
+        warned = any('omega h' in str(w_.message) for w_ in rec)
+        return v / ktc, warned
+    fc = (goff + (gon - goff) / 2) / (2 * np.pi * cval)
+    pure_tail = 1.0 - (2.0 / np.pi) * np.arctan(100.5 * fclk / fc)
+    r0, w0 = held('radau', 204, False)
+    r1, w1 = held('radau', 204, True)
+    assert abs((1.0 - r0) - pure_tail) < 0.3 * pure_tail, (1.0 - r0, pure_tail)
+    assert 1.0 - r1 < 5e-3, r1
+    assert w0 and w1
+    g0, gw0 = held('gear', 204, False)
+    g8, gw8 = held('gear', 800, False)
+    g8t, _ = held('gear', 800, True)
+    assert gw0 and not gw8, (gw0, gw8)
+    assert g0 < 0.87 and 0.92 < g8 < 0.95 and 0.96 < g8t < 0.98, (g0, g8, g8t)

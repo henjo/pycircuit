@@ -9045,6 +9045,11 @@ class PSS(Analysis):
     #: backward map (exact); above it, Arnoldi on the map (Ritz-certified)
     CONTINUOUS_ADJOINT_DENSE_M = 8
 
+    #: `sampled_noise` warns when its top sideband sits above this many
+    #: radians per grid step -- the regime where the covered bands are
+    #: discretisation-limited (measured: 3x the pure tail low at 3.1)
+    SAMPLED_RESOLUTION_WARN = 1.0
+
     #: `ppv` warns on an autonomous run whose period map's unit multiplier
     #: is further than this from 1 -- `c` is then uncertain by 5-12x that
     #: departure (measured); see the note in `ppv`
@@ -14978,7 +14983,8 @@ class PAC(Analysis):
             seq.append(0.5 * (K + K.T))
         return K0, seq
 
-    def sampled_noise(self, pss, output, times, freqs, maxsidebands=None):
+    def sampled_noise(self, pss, output, times, freqs, maxsidebands=None,
+                      tail=False):
         """The one-sided PSD of the SAMPLE SERIES `y(t0 + kT)` -- DRIVEN
         circuits, white AND coloured sources.  2026-09-15.
 
@@ -15052,11 +15058,37 @@ class PAC(Analysis):
         the fold of the time-averaged PSD, `sum_k pnoise(|f + k f0|)`, over
         EVERY output band to the grid's Nyquist -- measured 4.4e-5 at 100
         points (a fold cut at |k| <= 10 left 0.4 %).
+
+        ⚠ TWO THINGS LIMIT A HELD VARIANCE, AND THEY ARE NOT THE SAME THING
+        (2026-09-21, from a peer's kT/C ladder on a half-on switch).  The
+        fold stops at `|n| <= maxsidebands`, so the source spectrum beyond
+        `F = (L + 1/2) f0` is dropped: for a Lorentzian that is the tail
+        `1 - (2/pi) atan(F/fc)` ~ `(2/pi) fc/F`, first order in the sideband
+        count.  `tail=True` adds, per instant and series frequency, the
+        `1/nu^2` extrapolation of the two OUTERMOST covered sidebands over
+        the uncovered half-lines -- `A = nu_L^2 dens_L`, `A / (f0 (F +
+        f0/2))` each side -- which is exact for a single pole and correct to
+        `(fc/F)^2` in general; nothing is fitted.  AND the covered sidebands
+        are computed on the grid: at `omega h ~ 3` per step (the top bands
+        of a fold to the grid's Nyquist) gear's discrete transfer is far
+        from the continuous one.  Measured on the LTI limit of the switched
+        capacitor (g = 0.5 mS, C = 100 pF, fc = 796 kHz, f0 = 100 kHz), the
+        deficit against the pure tail at a FIXED 100 sidebands: 3.03 /
+        1.93 / 1.33 / 1.12 / 1.05 at 204 / 400 / 800 / 1600 / 3200 points --
+        the peer's "coefficient 3.0" was this, at a fixed M/npts, not a
+        property of the kernel.  A run whose top sideband sits above
+        `omega h = 1` is WARNED (`SAMPLED_RESOLUTION_WARN`): the remedy is
+        more points; `tail=True` then closes what lies beyond the covered
+        edge, which needs that edge well above the spectrum's corner (edge
+        at 12 fc: radau 0.948 -> 0.998 x kT/C at 204 points, gear 0.947 ->
+        0.995 at 3200; edge at 0.8 fc: 0.71, the 1/nu^2 form is wrong
+        inside the corner).
         """
-        return self._sampled_series(pss, output, times, freqs, maxsidebands)
+        return self._sampled_series(pss, output, times, freqs, maxsidebands,
+                                    tail=tail)
 
     def sampled_variance(self, pss, output, times, fmin, fmax,
-                         points_per_decade=40, maxsidebands=None):
+                         points_per_decade=40, maxsidebands=None, tail=False):
         """The variance at sampling instants over the SERIES band
         `[fmin, fmax]`, `0 < fmin < fmax <= f0/2`: the trapezoidal integral
         of `sampled_noise` on a log grid of `points_per_decade`, nothing
@@ -15079,7 +15111,8 @@ class PAC(Analysis):
                 'as ln(fmax/fmin) without limit.' % (0.5 * f0, fmin, fmax))
         nf = max(2, int(np.ceil(points_per_decade * np.log10(fmax / fmin))) + 1)
         fs = np.logspace(np.log10(fmin), np.log10(fmax), nf)
-        S = self._sampled_series(pss, output, times, fs, maxsidebands)
+        S = self._sampled_series(pss, output, times, fs, maxsidebands,
+                                 tail=tail)
         from scipy.integrate import trapezoid
         return trapezoid(S, fs, axis=1)
 
@@ -15222,7 +15255,8 @@ class PAC(Analysis):
             'instant': t0,
         }
 
-    def _sampled_series(self, pss, output, times, freqs, maxsidebands):
+    def _sampled_series(self, pss, output, times, freqs, maxsidebands,
+                        tail=False):
         import scipy.sparse.linalg as spla
         self._check_circuit(pss)
         if getattr(pss, 'autonomous', False):
@@ -15315,6 +15349,25 @@ class PAC(Analysis):
 
         tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
         ns = np.arange(-L, L + 1)
+        ## ⚠ THE TOP SIDEBANDS ARE COMPUTED ON THE GRID.  At `omega h > 1`
+        ## per step their discrete transfer is not the continuous one, and
+        ## the held variance is short by a factor that looked like a kernel
+        ## constant (3.0 x the pure tail on a half-on switch) and was this.
+        _hmax = float(np.max(np.diff(tms))) if len(tms) > 1 else T / max(N, 1)
+        _wh = 2.0 * np.pi * (L + 0.5) * f0 * _hmax
+        if _wh > pss.SAMPLED_RESOLUTION_WARN and not getattr(self, '_sampled_res_warned', False):
+            self._sampled_res_warned = True
+            warnings.warn(
+                'PAC.sampled_noise: the top sideband (|n| = %d, %.3g Hz) sits '
+                'at omega h = %.2f per step on this grid; a two-step method\'s '
+                'discrete transfer there is far from the continuous one, and '
+                'the held variance came out low by 3x the pure tail at '
+                'omega h = 3 (1.05x at 0.2) on a switched capacitor. Use '
+                'more points per period; tail=True closes the spectrum '
+                'beyond the covered edge, but only once that edge is well '
+                'above the spectrum\'s corner (measured: 0.71 x kT/C with the '
+                'edge inside the corner, 0.998 with it 12x beyond).'
+                % (L, (L + 0.5) * f0, _wh), RuntimeWarning, stacklevel=3)
         S = np.zeros((len(ts), len(fr)))
         for ti, k0 in enumerate(k0s):
             for fi, f in enumerate(fr):
@@ -15340,19 +15393,33 @@ class PAC(Analysis):
                 E = (np.exp(2j * np.pi * nu[:, None] * tinj[None, :])
                      * np.exp(-2j * np.pi * ns * f0 * tms[k0])[:, None])
                 dens = 0.0
+                ## per-sideband densities, kept for the tail closure
+                _pb = np.zeros(len(ns))
                 for SA in white:
                     R = E @ np.einsum('ji,jik->jk', Sv, SA)
-                    dens += float(np.sum(np.abs(R) ** 2))
+                    _pb += np.sum(np.abs(R) ** 2, axis=1)
                 for SB, ef in scaled:
                     R = E @ np.einsum('ji,jik->jk', Sv, SB)
                     c = (model.w1 / (2.0 * np.pi * np.abs(nu))) ** ef
-                    dens += float(np.sum(c * np.sum(np.abs(R) ** 2, axis=1)))
+                    _pb += c * np.sum(np.abs(R) ** 2, axis=1)
                 for comp in perband:
                     for bi, nb in enumerate(nu):
                         R = E[bi] @ np.einsum(
                             'ji,jik->jk', Sv,
                             self._psd_sqrt(comp(2.0 * np.pi * abs(nb))))
-                        dens += float(np.sum(np.abs(R) ** 2))
+                        _pb[bi] += float(np.sum(np.abs(R) ** 2))
+                dens = float(np.sum(_pb))
+                if tail and len(ns) >= 3:
+                    ## the 1/nu^2 extrapolation of each outermost covered
+                    ## sideband over its uncovered half-line: int_F^inf A/nu^2
+                    ## per f0 of series bandwidth = A / (f0 F), F the edge
+                    ## half a band beyond the last centre.  Coefficient 1,
+                    ## derived; exact for one pole.
+                    for _edge in (0, -1):
+                        _nu_e = float(nu[_edge])
+                        _A = _nu_e ** 2 * float(_pb[_edge])
+                        _F = abs(_nu_e) + 0.5 * f0
+                        dens += _A / (f0 * _F)
                 S[ti, fi] = dens
         return S
 
@@ -16705,6 +16772,49 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         T = float(info['period'])
         h = self._period_weights(tms, S.shape[0], T, pss)
         cy = self._cy_reduced(pss, float(w))
+        ## ⚠ A NOISE SOURCE ON AN INDEX-2 CONSTRAINT GIVES c = 0, SILENTLY
+        ## (2026-09-21): a voltage noise in series with a DC source inside a
+        ## capacitor loop perturbs an algebraic constraint -- a DIFFERENTIATED
+        ## input, whose response is a charge jump the PPV projection cannot
+        ## represent -- and `c` came back exactly 0 for every method on an
+        ## index-2 van der Pol (the same circuit's current noise at the node
+        ## gives 3.2e-9).  Named here once: the PPV's algebraic fallback
+        ## fired (index >= 2) and `CY` has power on an algebraic row.
+        ## (the gate is the index-2 condition itself -- `G[A,Z]` singular at
+        ## the orbit point, the test the PPV's algebraic fallback makes --
+        ## computed here so every kind is covered, not only solved-history)
+        try:
+            x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
+            irn = pss.irefnode
+            x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+            _arows, _acols = pss._algebraic_adjoint_pattern(x0f)
+            _idx2 = False
+            if _arows and _acols and len(_arows) == len(_acols):
+                _Gz = np.asarray(pss._G_at(x0r), dtype=float)[np.ix_(
+                    np.asarray(_arows, dtype=int), np.asarray(_acols, dtype=int))]
+                _sv = np.linalg.svd(_Gz, compute_uv=False)
+                _idx2 = (float(_sv[-1]) <= 1e-12 * max(float(_sv[0]), 1e-300))
+            elif _arows:
+                _idx2 = True
+        except Exception:                                      # noqa: BLE001
+            _idx2 = False
+        if _idx2:
+            try:
+                _dcy = np.abs(np.real(np.diag(cy)))
+                _on_alg = [r for r in _arows if _dcy[r] > 0.0]
+                if _on_alg and float(np.max(_dcy)) > 0.0:
+                    warnings.warn(
+                        'PAC.diffusion_constant: this circuit is index >= 2 and '
+                        'a noise source sits on an algebraic row (%s). A '
+                        'perturbation of an index-2 constraint is a '
+                        'differentiated input -- a charge jump -- which the '
+                        'PPV projection cannot represent, and its share of c '
+                        'is 0 here whatever the source (measured: exactly 0 '
+                        'for every method). Only the differential rows\' '
+                        'sources are counted.' % (_on_alg,),
+                        RuntimeWarning, stacklevel=3)
+            except Exception:                                  # noqa: BLE001
+                pass
         ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`), and
         ## these two functions disagreed about it until a Monte Carlo was
