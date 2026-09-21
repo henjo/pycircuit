@@ -23827,6 +23827,14 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
         a = PAC(c).carrier_phasor(p, out)
         errs.append(abs(a - X1) / abs(X1))
     assert errs[0] < 1e-3 and errs[2] < 5e-5, errs         # shipped: 5.4e-2 / 7.0e-3
+    ## and on this EVENT grid the weights are the trapezoid's, not a spline's
+    ## (a spline rings through the kink a landed edge puts in the integrand)
+    _tm = np.asarray(fp.times, float)
+    _N = len(fp.steps)
+    _h = np.diff(_tm[:_N + 1])
+    assert p.event_times
+    np.testing.assert_allclose(p._period_quadrature(fp) * (_tm[_N] - _tm[0]),
+                               0.5 * (_h + np.roll(_h, 1)), rtol=1e-12, atol=0)
     assert 3.3 < errs[0] / errs[1] < 4.8 and 3.3 < errs[1] / errs[2] < 4.8, errs
 
     ## a bare count is still a uniform replay; a uniform solve is unchanged
@@ -23859,10 +23867,15 @@ def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_fi
     trapezoid rule is spectrally accurate on a uniform grid and on an
     alternating one (two interleaved uniform sums) and genuinely O(h^2) on
     a smoothly varying grid, so there `c` is second order for EVERY method
-    -- `_period_quadrature`'s own "second order caps radau", now measured
-    on a real replay (the index-2 twin reads the same: +4.7e-5 / 1.3e-5 /
-    3.2e-6 / 8.1e-7).  Lifting it needs a higher-order non-uniform
-    quadrature; recorded, not built.  trbdf2 (and trap through its twin)
+    -- `_period_quadrature`'s own "second order caps radau", measured on a
+    real replay (the index-2 twin read the same: +4.7e-5 / 1.3e-5 / 3.2e-6
+    / 8.1e-7).  ⚠ LIFTED THE SAME DAY (2026-09-21, Andreas: "Do as you
+    recommend"): on a non-uniform EVENT-FREE grid the period weights are a
+    periodic cubic spline's (`periodic_spline_weights`), and the smooth
+    row reads -5.5e-9 / -2.4e-10 / -7.3e-12 / +2.6e-12 -- the reference's
+    floor from N = 400.  A landed edge keeps the trapezoid (a spline rings
+    through a kink), and a uniform grid never uses it.  trbdf2 (and trap
+    through its twin)
     are second order on every grid with no penalty for alternation, and
     their phase multiplier leaves 1 at O(h^2) on the smooth grid only
     (1.1e-4 -> 1.7e-6), which is warned.
@@ -23918,7 +23931,8 @@ def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_fi
     e400, l400 = run(alt(400, 3.0), 400)
     assert abs(e200) < 2e-9 and abs(e400) < 2e-10, (e200, e400)
     assert l200 < 1e-9 and l400 < 1e-9, (l200, l400)
-    ## smooth: the quadrature's second order, every method's cap there
+    ## smooth: was the trapezoid's second order (1.3e-5 / 3.3e-6), now the
+    ## spline's -- at the reference's floor
     s200, _ = run(smooth(200), 200)
     s400, _ = run(smooth(400), 400)
-    assert 5e-6 < s200 < 3e-5 and 3.3 < s200 / s400 < 4.8, (s200, s400)
+    assert abs(s200) < 2e-9 and abs(s400) < 2e-10, (s200, s400)

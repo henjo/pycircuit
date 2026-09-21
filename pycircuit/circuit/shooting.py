@@ -141,6 +141,60 @@ def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     raise AssertionError('unreachable')
 
 
+def periodic_spline_weights(t, T):
+    """Weights `w` with `sum_j w_j y_j` = the integral over one period of the
+    PERIODIC CUBIC SPLINE through `(t_j, y_j)`, `j = 0..n-1`, `t_n = t_0 + T`.
+
+    The higher-order period quadrature for a NON-UNIFORM, EVENT-FREE grid
+    (2026-09-21).  The periodic trapezoid rule is spectrally accurate on a
+    uniform grid and on an alternating one (two interleaved uniform sums) and
+    genuinely O(h^2) on a smoothly varying grid -- measured: radau's diffusion
+    constant on a 1 + 0.5 sin grid sat at +4.9e-5 / 1.3e-5 / 3.3e-6 / 8.4e-7
+    (N = 100 .. 800) while its period, multipliers and mode invariant were at
+    order 5 / 1e-11 / 1e-15, so every method's noise was capped at second
+    order by the quadrature on exactly the grids `lte_grid` and `refine_grid`
+    produce.  With these weights: -5.5e-9 / -2.4e-10 / -7.3e-12 / +2.6e-12,
+    the reference's floor from N = 400.
+
+    ⚠ ONLY WITHOUT EVENTS.  A spline is C^2 across every node; a landed
+    source edge puts a KINK in the integrand at that node, and a spline
+    through a kink rings where the trapezoid is exact-ish, so the callers
+    keep the trapezoid whenever `event_times` is non-empty.  ⚠ ON A UNIFORM
+    GRID these equal the trapezoid weights to 1.7e-18 (a periodic spline's
+    `sum M_j = 0`), and the callers keep their uniform path, which is
+    bit-identical to before.  The spline system is cyclic tridiagonal and
+    is solved sparse (O(n)); the weights are `wt - B^T A^{-T} d`, with
+    `wt` the trapezoid weights and `d_j = (h_j^3 + h_{j-1}^3) / 24` the
+    coefficient of the node's second derivative in the spline integral."""
+    import scipy.sparse as _sp
+    import scipy.sparse.linalg as _spla
+    t = np.asarray(t, dtype=float).ravel()
+    n = len(t)
+    h = np.empty(n)
+    h[:-1] = np.diff(t)
+    h[-1] = float(T) + t[0] - t[-1]
+    if n < 4 or np.any(h <= 0.0):
+        w = 0.5 * h
+        w[1:] += 0.5 * h[:-1]
+        w[0] += 0.5 * h[-1]
+        return w
+    j = np.arange(n)
+    jm, jp = (j - 1) % n, (j + 1) % n
+    hm = h[jm]
+    A = _sp.csc_matrix((np.concatenate((hm / 6.0, (hm + h) / 3.0, h / 6.0)),
+                        (np.concatenate((j, j, j)), np.concatenate((jm, j, jp)))),
+                       shape=(n, n))
+    B = _sp.csc_matrix((np.concatenate((1.0 / h, -1.0 / h - 1.0 / hm, 1.0 / hm)),
+                        (np.concatenate((j, j, j)), np.concatenate((jp, j, jm)))),
+                       shape=(n, n))
+    wt = 0.5 * h
+    wt[jp] += 0.5 * h
+    d = h ** 3 / 24.0
+    d = d + d[jm]
+    x = _spla.spsolve(A.T.tocsc(), d)
+    return wt - np.asarray(B.T @ x).ravel()
+
+
 class FactoredPeriod(object):
     """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
 
@@ -6866,7 +6920,14 @@ class PSS(Analysis):
         h = np.diff(tms[:N + 1])
         if len(h) < 2 or float(np.max(h)) / float(np.min(h)) - 1.0 <= self.UNIFORM_GRID_TOL:
             return None
-        return 0.5 * (h + np.roll(h, 1)) / float(tms[N] - tms[0])
+        T = float(tms[N] - tms[0])
+        ## ⚠ THE SECOND-ORDER CAP IS LIFTED ON EVENT-FREE GRIDS (2026-09-21):
+        ## a periodic cubic spline rule, fourth order on a smoothly varying
+        ## grid -- see `periodic_spline_weights`, which also says why a
+        ## landed edge keeps the trapezoid.  Same vector for every consumer.
+        if not getattr(self, 'event_times', None):
+            return periodic_spline_weights(tms[:N], T) / T
+        return 0.5 * (h + np.roll(h, 1)) / T
 
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
@@ -11308,7 +11369,14 @@ class PSS(Analysis):
                 > self.UNIFORM_GRID_TOL:
             _tt = np.asarray(times, dtype=float)
             _Tp = float(_tt[-1] - _tt[0])
-            _wq = 0.5 * (_h + np.roll(_h, 1)) / _Tp
+            ## the SAME rule `_period_quadrature` gives every consumer
+            ## (2026-09-21): a periodic cubic spline on an event-free grid, the
+            ## trapezoid under a landed edge -- `fpss` and `carrier_phasor`
+            ## are pinned equal to 1e-12, which a second rule here broke
+            if not getattr(self, 'event_times', None):
+                _wq = periodic_spline_weights(_tt[:-1], _Tp) / _Tp
+            else:
+                _wq = 0.5 * (_h + np.roll(_h, 1)) / _Tp
             _ks = np.arange(len(freqs))
             freqs = _ks / _Tp
             _E = np.exp(-2j * np.pi * np.outer(_ks, (_tt[:-1] - _tt[0]) / _Tp)) \
@@ -13688,7 +13756,7 @@ class PAC(Analysis):
         xs = np.asarray(pss.waveform[1], dtype=float)
         m = pss.cir.n - 1
         nsamp = min(len(tms) - 1, xs.shape[1])
-        hs = self._period_weights(tms, nsamp, T)
+        hs = self._period_weights(tms, nsamp, T, pss)
         acc = None
         for k in range(nsamp):
             xr = xs[:m, k]
@@ -16327,7 +16395,7 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
                 % what)
 
     @staticmethod
-    def _period_weights(tms, nsamp, T):
+    def _period_weights(tms, nsamp, T, pss=None):
         """Periodic TRAPEZOID weights for samples at `tms[0..nsamp-1]` over
         a period `T`: `w_j = (g_j + g_{j-1}) / 2` with `g_j` the gap to the
         next sample and the last gap closing the period.
@@ -16343,13 +16411,21 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         uniform grid `0.5 h + 0.5 h == h` exactly, so every uniform-grid
         number is bit-identical to before.  The one-step kinds' replays are
         uniform-grid replays (`factored_period_full` / `_dirk`), so only the
-        solved-history kind ever paid this."""
+        solved-history kind ever paid this.  ⚠ AND THE TRAPEZOID IS ITSELF A
+        SECOND-ORDER CAP on a smoothly varying grid (2026-09-21): with `pss`
+        given, a non-uniform grid and no landed events, these are the
+        periodic cubic-spline weights of `periodic_spline_weights` (radau's
+        `c` on a 1 + 0.5 sin grid 1.3e-5 -> 2.4e-10 at N = 200); a landed
+        edge keeps the trapezoid, and a uniform grid is unchanged."""
         tms = np.asarray(tms, dtype=float).ravel()
         n = int(nsamp)
         t = tms[:n]
         g = np.empty(n)
         g[:-1] = t[1:] - t[:-1]
         g[-1] = float(T) + t[0] - t[-1]
+        if (pss is not None and n >= 4 and not getattr(pss, 'event_times', None)
+                and float(np.max(g)) / float(np.min(g)) - 1.0 > pss.UNIFORM_GRID_TOL):
+            return periodic_spline_weights(t, T)
         w = 0.5 * g
         w[1:] += 0.5 * g[:-1]
         w[0] += 0.5 * g[-1]
@@ -16383,7 +16459,7 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         tms = np.asarray(info['times'], dtype=float)
         ## the samples' own orbit, not `pss.period` -- see `ppv()`'s 'period'
         T = float(info['period'])
-        h = self._period_weights(tms, S.shape[0], T)
+        h = self._period_weights(tms, S.shape[0], T, pss)
         cy = self._cy_reduced(pss, float(w))
         ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`), and
@@ -16466,7 +16542,7 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         S = np.asarray(info['samples_eq'])[:, :m]
         tms = np.asarray(info['times'], dtype=float)
         T = float(info['period'])
-        h = self._period_weights(tms, S.shape[0], T)
+        h = self._period_weights(tms, S.shape[0], T, pss)
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES, deliberately:
         ## it is what makes `Gamma <= c` exact rather than approximate.
         vbar = (S * h[:, None]).sum(0) / T
@@ -16546,7 +16622,7 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES: one sample per
         ## step, weighted by that step, so that Parseval closes exactly.
         t = tms[1:1 + n]
-        h = self._period_weights(t, n, T)
+        h = self._period_weights(t, n, T, pss)
         w0 = 2.0 * np.pi / T
         L = n // 2 if harmonics is None else int(harmonics)
         ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
