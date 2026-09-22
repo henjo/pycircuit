@@ -25741,3 +25741,145 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
         x = complex(Xr[io_full, k])
         h = complex(H[li] @ u_ac)
         assert abs(x - h) < 1e-8 * abs(h), (l, x, h)
+
+
+def _windowed_exact_relaxation_period():
+    """The EXACT period of `_comparator_relaxation_oscillator` WITH its
+    0.2 mV window: `VSwitch`'s compact smoothstep conductance integrated at
+    rtol 1e-12 (DOP853), the period by shooting on the falling crossing of
+    `fb1 - 2.5`.  -7.997e-8 off the ideal-comparator period; the reference
+    for the staged solve's fifth order AT the switch."""
+    from scipy.integrate import solve_ivp
+    from scipy.optimize import fsolve
+    R1 = R2 = R3 = 1e3
+    C1, C2, C3 = 1e-9, 3e-10, 3e-10
+    VDD, VREF, RON, ROFF, VON, VOFF = 5.0, 2.5, 10.0, 1e7, 1e-4, -1e-4
+
+    def g_of(vc):
+        t = min(max((vc - VOFF) / (VON - VOFF), 0.0), 1.0)
+        return 1 / ROFF + (1 / RON - 1 / ROFF) * t * t * t * (10 + t * (-15 + 6 * t))
+
+    def f(t, x):
+        c, fb0, fb1 = x
+        g = g_of(fb1 - VREF)
+        return [((VDD - c) / R1 - (c - fb0) / R2 - g * c) / C1,
+                ((c - fb0) / R2 - (fb0 - fb1) / R3) / C2,
+                ((fb0 - fb1) / R3) / C3]
+
+    def cross(t, x):
+        return x[2] - VREF
+    cross.direction = -1
+    cross.terminal = True
+
+    def one_period(x0):
+        a = solve_ivp(f, (0, 2e-7), x0, method='DOP853', rtol=1e-12, atol=1e-14, max_step=2e-9)
+        s = solve_ivp(f, (2e-7, 5e-6), a.y[:, -1], method='DOP853', rtol=1e-12, atol=1e-14,
+                      events=cross, max_step=2e-9)
+        assert len(s.t_events[0]) == 1
+        return s.y_events[0][0], float(s.t_events[0][0])
+
+    def resid(z):
+        x1, _T = one_period([z[0], z[1], VREF])
+        return [x1[0] - z[0], x1[1] - z[1]]
+
+    z = fsolve(resid, [0.0717, 2.2036], xtol=1e-12)
+    _x1, T = one_period([z[0], z[1], VREF])
+    return T
+
+
+def test_the_staged_solve_is_fifth_order_at_the_switch_against_the_windowed_exact_period():
+    """E8 closed (2026-09-22): with `VSwitch`'s compact transition the
+    staged radau period converges to the WINDOWED exact period as -7.3e-7 /
+    -1.85e-8 / -9.0e-10 / -2.5e-10 at 100 / 200 / 400 / 800 points (with
+    the tanh it was -6.7e-4 / -2.2e-4 / -9.6e-5 / -2.7e-5 against the ideal
+    one and never better than first order: 12 % of the transition sat
+    outside the landed window).  Pinned at 100 and 200 points: within 2e-6
+    and 5e-8 of the windowed exact period, and the ratio between them
+    above 8 (fifth order would be 32; the 100-point solve is where the
+    grid's own resolution of the two lags still shows)."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T_ex = _windowed_exact_relaxation_period()
+    assert abs(T_ex / 1.3918374e-6 - 1.0) < 2e-7, T_ex
+    cir = _comparator_relaxation_oscillator()
+    p = PSS(cir, method='radau', reltol=1e-8)
+    names = [str(n_) for n_ in cir.nodes]
+    x0 = np.zeros(cir.n)
+    x0[names.index('c')] = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
+    Tl = float(p.lte_period)
+    errs = {}
+    for N in (100, 200):
+        q = PSS(cir, method='radau', reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100, state_events=True)
+        assert q.converged
+        errs[N] = abs(q.period / T_ex - 1.0)
+    assert errs[100] < 2e-6 and errs[200] < 5e-8, errs
+    assert errs[100] / errs[200] > 8.0, errs
+
+
+def test_the_transient_lands_declared_state_events_and_its_period_stops_jittering():
+    """E7 (2026-09-22, Andreas: "Add fixing the transient at events to our
+    list"): `Transient` cuts an accepted step to a declared crossing
+    (`Circuit.state_events()`, a VSwitch's two window edges) by a secant
+    on the fraction and restarts the history there, as at a source corner.
+
+    ⚠ WHAT IT BUYS, MEASURED on the sharp comparator oscillator against the
+    windowed exact period (25 periods): with VSwitch's compact transition
+    the LTE controller already localises the crossing to the tolerance,
+    so an LMM's MEAN period error is its own and landing does not change
+    it -- gear +5.4e-3 / 1.4e-3 / 3.7e-4 / 9.1e-5 unlanded, +6.7e-3 /
+    1.8e-3 / 4.2e-4 / 9.6e-5 landed at reltol 1e-4 .. 1e-7, restart or
+    not.  What landing removes is the period-to-period JITTER, the "where
+    in the step" randomness: gear's spread 1.3e-4 -> 1.5e-5 at 1e-6
+    (6.5e-3 -> 3e-4 at 1e-4); trap's -1.1e-5 mean was a cancellation
+    inside a 1.2e-3 spread and becomes +1.9e-4 +- 1.3e-5.  Cost: ~2 secant
+    cuts per landing, +30 % steps.  Radau, one-step, is at -1.7e-8
+    unlanded and takes the `_run_rk_adaptive` loop, which is not wired.
+    Pinned: four landings per period, each on a window edge to 5 % of
+    the window (1e-3 of the step; measured 1.1 %), the landed spread
+    below 5e-5 and the unlanded above it, `state_events=False` landing
+    nothing."""
+    import warnings as _w
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+    T_ex = 1.3918372887e-6
+    cir = _comparator_relaxation_oscillator()
+    names = [str(n_) for n_ in cir.nodes]
+    x0 = np.zeros(cir.n)
+    x0[names.index('c')] = 1.0
+    ifb1, iref = names.index('fb1'), names.index('ref')
+    out = {}
+    for se in (True, False):
+        tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-6, state_events=se)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0)
+        tt = np.asarray(res.sweep_values, dtype=float)
+        xx = np.asarray(res.x, dtype=float)
+        d = xx[ifb1] - xx[iref]
+        up = np.flatnonzero((d[:-1] < 0) & (d[1:] >= 0))
+        tc = tt[up] - d[up] * (tt[up + 1] - tt[up]) / (d[up + 1] - d[up])
+        per = np.diff(tc)[-6:]
+        out[se] = (np.ptp(per) / T_ex, np.mean(per) / T_ex - 1.0, tr, tt, d)
+    spread_l, mean_l, tr_l, tt_l, d_l = out[True]
+    spread_u, mean_u, tr_u, _tt, _d = out[False]
+    assert spread_l < 5e-5 and spread_u > 5e-5, (spread_l, spread_u)
+    assert abs(mean_l) < 2e-3 and abs(mean_u) < 2e-3, (mean_l, mean_u)
+    assert tr_u.statistics.state_events_hit == 0 and not tr_u.event_times
+    ev = np.asarray(tr_l.event_times, dtype=float)
+    ## four edges per period once the orbit has settled (the first period starts off it)
+    settled = ev[ev > 4 * T_ex]
+    assert 4 * 9 <= len(settled) <= 4 * 10 + 2, len(settled)
+    assert tr_l.statistics.state_events_hit == len(ev)
+    ## every landed time is a grid point ON a window edge: |fb1 - ref| = 1e-4
+    ## to 5 % of the window (EVENT_LAND_RTOL is 1e-3 of the STEP, a fifth of
+    ## this 0.04 ns window at a 7 ns step; measured 1.1 %)
+    for te in settled:
+        j = int(np.argmin(np.abs(tt_l - te)))
+        assert abs(tt_l[j] - te) < 1e-12 * T_ex
+        assert abs(abs(d_l[j]) - 1e-4) < 2e-4 * 5e-2, (te, d_l[j])

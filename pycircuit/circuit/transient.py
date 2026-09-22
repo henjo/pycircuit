@@ -178,7 +178,7 @@ class TransientStatistics(object):
 
     __slots__ = ('accepted_steps', 'rejected_steps', 'newton_iterations',
                  'force_accepts', 'order_drops', 'breakpoints_hit',
-                 'gmin_rescues',
+                 'gmin_rescues', 'state_events_hit', 'state_event_cuts',
                  'min_step', 'max_step', 'solve_seconds', 'total_seconds')
 
     def __init__(self):
@@ -190,6 +190,10 @@ class TransientStatistics(object):
         self.breakpoints_hit = 0
         ## P18: failed time points recovered by the continuation ladder.
         self.gmin_rescues = 0
+        ## E7: state events landed (a step cut to a declared crossing, the
+        ## history restarted there) and the secant re-solves it took
+        self.state_events_hit = 0
+        self.state_event_cuts = 0
         self.min_step = None
         self.max_step = None
         self.solve_seconds = 0.0
@@ -208,7 +212,8 @@ class TransientStatistics(object):
         return (
             'accepted %d, rejected %d (%.1f%% of attempts), Newton iterations %d '
             '(%.1f per accepted step)\n'
-            'force-accepts %d, order drops %d, breakpoints hit %d\n'
+            'force-accepts %d, order drops %d, breakpoints hit %d, '
+            'state events landed %d (%d cuts)\n'
             'step %.4g .. %.4g s\n'
             'time %.3f s total, %.3f s in the Newton solve (%.1f%%)'
             % (self.accepted_steps, self.rejected_steps,
@@ -217,12 +222,24 @@ class TransientStatistics(object):
                self.newton_iterations,
                self.newton_iterations / max(1, self.accepted_steps),
                self.force_accepts, self.order_drops, self.breakpoints_hit,
+               self.state_events_hit, self.state_event_cuts,
                self.min_step if self.min_step is not None else float('nan'),
                self.max_step if self.max_step is not None else float('nan'),
                self.total_seconds, self.solve_seconds, pct))
 
 
 class Transient(Analysis):
+    ## E7: a state event is landed when the crossing sits within this
+    ## fraction of the step's end, in at most this many secant re-solves.
+    ## Measured on the comparator oscillator (gear, reltol 1e-6): 1e-6 / 6
+    ## took 2.6 cuts per landing, 1e-3 / 4 takes 2.1 for the same
+    ## period-to-period spread (1.6e-5 against 1.3e-4 unlanded); one cut
+    ## alone leaves the spread where it was.
+    EVENT_LAND_RTOL = 1e-3
+    EVENT_LAND_MAXITER = 4
+    ## whether a landed crossing restarts the multistep history (measured
+    ## both ways on the comparator oscillator -- see the E7 entry)
+    EVENT_RESTART_HISTORY = True
     """Simple transient analysis class.
 
     NOT REENTRANT: one Transient object runs one solve at a time.  The run
@@ -522,6 +539,13 @@ class Transient(Analysis):
          Parameter(name='uic',
                    desc='Use initial conditions (skip DC OP computation)', unit='',
                    default=False),
+         Parameter(name='state_events',
+                   desc='Land the circuit\'s declared STATE events (a VSwitch '
+                        'window edge, `Circuit.state_events()`): a crossing '
+                        'inside an accepted step cuts the step to the '
+                        'crossing and restarts the history there, as a '
+                        'source corner does (E7, 2026-09-22)',
+                   unit='', default=True),
          ## STAGE 10.3 -- SPICE's `.ic`, for `uic=True`.
          ##
          ## `uic=True` used to mean "start from a vector of zeros", which is not
@@ -4628,6 +4652,20 @@ class Transient(Analysis):
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
+        ## E7 (2026-09-22): the circuit's declared state events, as rows on
+        ## the FULL state (node voltages first; the branch currents that
+        ## follow get zero weight).  `event_times` collects the landed
+        ## crossings in seconds.
+        self.event_times = []
+        self._ev_rows, self._ev_thr = None, None
+        _ev_iter = 0
+        if self.par.state_events and hasattr(self.cir, 'state_events'):
+            _rows = self.cir.state_events()
+            if _rows:
+                self._ev_rows = np.array([np.pad(np.asarray(r, dtype=float).ravel(),
+                                                 (0, max(0, n - len(np.asarray(r).ravel()))))
+                                          for r, _t in _rows])
+                self._ev_thr = np.array([float(t_) for _r, t_ in _rows])
         if x0 is None:
             if self.par.uic:
                 ## Skip the operating point and start from the stated initial
@@ -5136,6 +5174,33 @@ class Transient(Analysis):
                     next_dt = dt_next
                 reject_count = 0
                 point_retries = 0
+            ## E7: a declared crossing INSIDE the accepted step.  The step is
+            ## cut to the crossing by a secant on the fraction -- the crossing
+            ## state is smooth up to the switch -- and re-solved from the same
+            ## history, exactly as a rejected step is; once the crossing sits
+            ## within EVENT_LAND_RTOL of the step's end the step is a break
+            ## step: the multistep history restarts there, as at a source
+            ## corner.  A window's two edges are two rows, so the window is
+            ## stepped edge to edge as the PSS stage lands it.
+            if self._ev_rows is not None and not fixed_timestep:
+                _s0 = self._ev_rows @ np.asarray(X[-1], dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
+                _s1 = self._ev_rows @ np.asarray(x, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
+                _in = np.flatnonzero(_s0 * _s1 < 0.0)
+                if len(_in):
+                    _f = float(np.min(_s0[_in] / (_s0[_in] - _s1[_in])))
+                    if (_f < 1.0 - self.EVENT_LAND_RTOL and _ev_iter < self.EVENT_LAND_MAXITER
+                            and _f * dt >= self.par.minstep):
+                        _ev_iter += 1
+                        self.statistics.state_event_cuts += 1
+                        dt = _f * dt
+                        continue
+                    _ev_iter = 0
+                    self.event_times.append(float(next_t))
+                    self.statistics.state_events_hit += 1
+                    if self.EVENT_RESTART_HISTORY:
+                        was_break_step = True
+                else:
+                    _ev_iter = 0
 
             t = next_t
             self.statistics.accepted_steps += 1

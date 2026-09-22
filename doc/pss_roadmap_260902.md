@@ -8687,7 +8687,41 @@ sum).  **What would close it:** build `S_corr` — eq (26) from eq (20)'s
 `diffusion_constant` already runs — and require `R → 1` on this sweep.  New
 scope; waits for a decision.  Record: "orbital_spectrum amplitude" in the log.
 
-### E7. `Transient` at state events — OPEN (Andreas, 2026-09-22: "Add fixing the transient at events to our list of items to do")
+### E7. `Transient` at state events — ✅ BUILT 2026-09-22, and what it buys is not what this entry promised
+
+Built in `_solve` (the LMM and one-step integrators through
+`solve_timestep`): `Circuit.state_events()` rows on the full state, a sign
+change across an accepted step → secant re-solve of the step at the
+fraction (as a rejected step is re-solved) until the crossing sits within
+`EVENT_LAND_RTOL` = 1e-3 of the step's end (≤ 4 cuts; 2.1 per landing
+measured), the landed step a break step (history restart);
+`Transient(state_events=False)` turns it off; `Transient.event_times`,
+`statistics.state_events_hit` / `state_event_cuts`.  The coupled-LTE loop
+(`_run_rk_adaptive`, radau/trbdf2/esdirk in the transient) is NOT wired.
+
+⚠ MEASURED on the sharp comparator oscillator against the windowed exact
+period, 25 periods, restart on or off (it makes no difference):
+
+| gear, reltol | unlanded mean / spread | landed mean / spread | steps |
+|---|---|---|---|
+| 1e-4 | +5.4e-3 / 6.5e-3 | +6.7e-3 / 3.0e-4 | 1275 → 2635 |
+| 1e-5 | +1.4e-3 / 1.3e-3 | +1.8e-3 / 1.0e-4 | 2496 → 3875 |
+| 1e-6 | +3.7e-4 / 1.3e-4 | +4.2e-4 / 1.5e-5 | 4833 → 6356 |
+| 1e-7 | +9.1e-5 / 1.1e-5 | +9.6e-5 / 2.5e-6 | 9771 → 11046 |
+
+With `VSwitch`'s compact transition the LTE controller already localises
+the crossing to the tolerance, so the MEAN error is the integrator's own
+(gear: second order in its own right) and landing does not touch it.  What
+landing removes is the period-to-period JITTER — the "where in the step"
+randomness — by 10–50×, and it exposes the crossing instants; trap's
+−1.1e-5 mean at 1e-6 was a cancellation inside a 1.2e-3 spread and becomes
++1.9e-4 ± 1.3e-5.  Radau in the transient is at −1.7e-8 unlanded (reltol
+1e-6).  The premise of this entry — "first order at a straddled crossing" —
+was the tanh's (E8): with a compact transition an LTE-controlled step that
+straddles the crossing is not first order, it is jittery.  Cost +30 %
+steps.  Test: `test_the_transient_lands_declared_state_events_and_its_period_stops_jittering`.
+
+#### E7 as it was written (2026-09-22, before the measurement)
 
 `Transient` lands only SOURCE events (`break_events`: a `VPulse`'s corners).
 A STATE event — a comparator's crossing, a `VSwitch` window — is met by LTE
