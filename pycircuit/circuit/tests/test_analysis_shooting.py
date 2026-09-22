@@ -25040,3 +25040,60 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     p0._event_columns = ev
     assert errs[True]['out'] < 1e-6 and errs[True]['fb'] < 1e-6, errs
     assert errs[False]['out'] > 0.1 and errs[False]['fb'] > 0.03, errs     # 0.55 / 0.057 at 60 points
+
+
+def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve():
+    """Phase B of events-as-unknowns (2026-09-22): `adjoint_sideband_row`
+    borders its adjoint solve with the event rows -- the transpose of
+    `PAC.solve`'s bordered system, by block elimination and a second
+    reverse pass carrying the event rows' costate `-zeta_k w_k` -- so
+    `pnoise` and `mixer_response` on a solve whose grid was landed on
+    state events read the moving crossings.  Pinned as the suite pins
+    PAC everywhere: dual consistency, the bordered forward solve's
+    reported coefficients equal `H_l . u_ac` to 1e-10 for sidebands
+    0, 1, -1 (PWM loop, 60 points, f = 0.3 f0), and the unbordered row
+    differs from them by more than 1 %.
+    """
+    import warnings as _w
+    from pycircuit.circuit.shooting import remove_row_col
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    f0 = 1.0 / T
+    fin = 0.3 * f0
+    cir = _pwm_loop(T)
+    del cir['Vin']
+    cir.add_node('vin0')
+    cir['Vin'] = VS('vin0', gnd, v=5.0, vac=0.0)
+    cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=0.0, freq=fin, phase=0.0, vac=1.0)
+    cir['Vramp'].iparv.vac = 0.0
+    p = PSS(cir, method='radau', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
+    assert p.converged and p._event_columns is not None
+    io_full = [str(n_) for n_ in cir.nodes].index('out')
+    io = io_full if io_full < p.irefnode else io_full - 1
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), p.irefnode, circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = pac.solve(p, freqs=[fin])
+    fout = np.asarray(res.sweep_values, dtype=float)
+    X = np.asarray(res.x)
+    H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1, -1]))
+    ev = p._event_columns
+    p._event_columns = None
+    H0 = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1, -1]))
+    p._event_columns = ev
+    for li, l in enumerate((0, 1, -1)):
+        f_phys = abs(fin + l * f0)
+        k = int(np.argmin(np.abs(fout - f_phys)))
+        x = complex(X[io_full, k])
+        h = complex(H[li] @ u_ac)
+        h0 = complex(H0[li] @ u_ac)
+        if fin + l * f0 < 0:
+            h = np.conj(h)
+            h0 = np.conj(h0)
+        assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
+        assert abs(x - h0) > 1e-2 * abs(h), (l, x, h0)

@@ -5627,7 +5627,7 @@ class PSS(Analysis):
                 'SuperLUSolver.')
         return rr + 1j * fac.solve_transposed(b.imag)
 
-    def _sideband_forced_dirk(self, fp, freq, l, d):
+    def _sideband_forced_dirk(self, fp, freq, l, d, extra=None):
         """The forced (source-injected) part of a lower-triangular stage
         method's sideband row `l`, and the final costate `g` -- the injected
         sibling of `_forced_replay_transposed_dirk` (output functional `d`
@@ -5668,6 +5668,8 @@ class PSS(Analysis):
                     forced = forced - h * np.exp(jw * tk) * coup
             _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
             lam = wbar + (_e / N if _wq is None else _e * _wq[j]) * d
+            if extra is not None and j in extra:
+                lam = lam + np.asarray(extra[j], dtype=complex)
         return forced, lam
 
     def _i_at(self, x_reduced):
@@ -7705,7 +7707,7 @@ class PSS(Analysis):
             w = Cn.T @ sum(pb)
         return acc
 
-    def _sideband_forced_full(self, fp, freq, l, d):
+    def _sideband_forced_full(self, fp, freq, l, d, extra=None):
         """The forced (source-injected) part of the Radau IIA(3) sideband row
         for sideband `l`, and the final costate `g` for the closure.
 
@@ -7753,6 +7755,10 @@ class PSS(Analysis):
             lam = Cn.T @ sum(pb)
             _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
             lam = lam + (_e / N if _wq is None else _e * _wq[j]) * d
+            if extra is not None and j in extra:
+                ## a raw costate injection at node j (the bordered adjoint's
+                ## event-row term, 2026-09-22) -- same position as `d`'s
+                lam = lam + np.asarray(extra[j], dtype=complex)
         return forced, lam
 
     #: Relative step spread below which the period grid counts as uniform.
@@ -13622,9 +13628,46 @@ class PAC(Analysis):
             ## the pole out and carries `1/(1 - alpha)` analytically; on a
             ## driven circuit there is no pole and the plain solve is both
             ## correct and cheaper.
+            _ev = getattr(pss, '_event_columns', None)
             if getattr(pss, 'autonomous', False):
                 z = self._deflated_solve(pss, alpha, g, transposed=True,
                                          tol=tol)
+            elif _ev is not None and fp.kind in ('full', 'dirk'):
+                ## ⚠ THE BORDERED ADJOINT (2026-09-22, events phase B): the
+                ## transpose of `PAC.solve`'s bordered system.  With
+                ## `B = [[I - aM, -a P_theta], [Gn, Gt]]` and the output's
+                ## costate `g` and its theta-sensitivity `g_theta = sum_n
+                ## c_n d . Pk_n`, solve `B^T [z; zeta] = [g; g_theta]` by
+                ## block elimination -- `z = z_g - Z_G zeta`, `Z_G = (I -
+                ## aM)^-T Gn^T`, `zeta = (Gt^T + a P_theta^T Z_G)^-1
+                ## (g_theta + a P_theta^T z_g)` -- and the row is the direct
+                ## forced part, plus `a W^T z`, plus the event rows' term:
+                ## a second reverse pass with the raw injection `-zeta_k
+                ## w_k` at node k (the source coupling of `f_node_k`).
+                ## Verified by dual consistency against the bordered
+                ## forward solve (the suite's own PAC test pattern).
+                K = _ev['P_end'].shape[1]
+                nodes, Wk = _ev['nodes'], np.asarray(_ev['W'])
+                _wq = pss._period_quadrature(fp)
+                cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
+                               * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
+                g_theta = np.array([np.sum(cn * (_ev['Pk_nodes'][:N, :, kk] @ d)) for kk in range(K)])
+                z_g = self._gmres_checked(A, g, tol, 'the adjoint solve at sideband %d' % l)
+                Gn = np.array([Wk[k] @ _ev['P_nodes'][nd] for k, nd in enumerate(nodes)])
+                Z_G = np.column_stack([self._gmres_checked(
+                    A, np.asarray(Gn[k], dtype=complex), tol,
+                    'the bordered adjoint solve, event %d' % k) for k in range(K)])
+                Gt_n = np.array([Wk[k] @ _ev['Pk_nodes'][nd] for k, nd in enumerate(nodes)])
+                Pth = np.asarray(_ev['P_end'], dtype=complex)
+                Sb = Gt_n.T + alpha * (Pth.T @ Z_G)
+                zeta = np.linalg.solve(Sb, g_theta + alpha * (Pth.T @ z_g))
+                z = z_g - Z_G @ zeta
+                extra = {nd: -zeta[k] * Wk[k] for k, nd in enumerate(nodes)}
+                if fp.kind == 'dirk':
+                    forced_ev, _g2 = pss._sideband_forced_dirk(fp, freq, l, np.zeros(m), extra=extra)
+                else:
+                    forced_ev, _g2 = pss._sideband_forced_full(fp, freq, l, np.zeros(m), extra=extra)
+                forced = forced + forced_ev
             else:
                 z = self._gmres_checked(
                     A, g, tol, 'the adjoint solve at sideband %d' % l)
