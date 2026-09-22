@@ -24775,7 +24775,8 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
     5x closer to a staged 800-point radau reference than the
     unstaged one, with the on-crossing within 5e-4 of the
     reference's; `state_events=False` reproduces the one-stage solve;
-    gear is told it skips the stage.
+    a plain one-step kind (trap) is told it skips the stage, gear stages
+    (phase B).
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -24851,10 +24852,12 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
             assert p._state_event_fracs is None
     assert errs[False] / errs[True] > 5, errs
 
-    ## (c) gear is told
-    _p, _ts, _v, ws = solve('gear', 100, True)
-    assert any('state-event stage is built for the stage methods' in w_ for w_ in ws), ws
+    ## (c) a plain one-step kind is told; gear stages (phase B, 2026-09-22)
+    _p, _ts, _v, ws = solve('trap', 100, True)
+    assert any('state-event stage is built for radau, trbdf2 and gear' in w_ for w_ in ws), ws
     assert _p._state_event_fracs is None
+    _g, _ts, _v, _ws = solve('gear', 100, True)
+    assert _g._state_event_fracs is not None and len(_g._state_event_fracs) == 4
 
 
 def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_event():
@@ -25097,3 +25100,155 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
             h0 = np.conj(h0)
         assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
         assert abs(x - h0) > 1e-2 * abs(h), (l, x, h0)
+
+
+def _comparator_relaxation_oscillator():
+    """An autonomous circuit with a STATE event: RC from a rail, a sharp
+    comparator (`VSwitch`, 0.2 mV window) across C driven by the capacitor
+    voltage through two RC lags against a reference.  One lag settles into
+    a sliding equilibrium at the threshold; two oscillate at 1.39 us."""
+    from pycircuit.circuit.elements import VSwitch
+    cir = SubCircuit()
+    for n_ in ('vdd', 'c', 'fb0', 'fb1', 'ref'):
+        cir.add_node(n_)
+    cir['Vdd'] = VS('vdd', gnd, v=5.0, vac=0.0)
+    cir['Vref'] = VS('ref', gnd, v=2.5, vac=0.0)
+    cir['R1'] = R('vdd', 'c', r=1e3)
+    cir['C1'] = C('c', gnd, c=1e-9)
+    cir['R2'] = R('c', 'fb0', r=1e3)
+    cir['C2'] = C('fb0', gnd, c=3e-10)
+    cir['R3'] = R('fb0', 'fb1', r=1e3)
+    cir['C3'] = C('fb1', gnd, c=3e-10)
+    cir['S'] = VSwitch('c', gnd, 'fb1', 'ref', Ron=10.0, Roff=1e7, Von=1e-4, Voff=-1e-4)
+    return cir
+
+
+def test_an_autonomous_solve_takes_its_state_events_and_its_period_as_unknowns_together():
+    """Phase B of events-as-unknowns (2026-09-22): on an AUTONOMOUS circuit
+    the period joins the event unknowns, `z = [x_0, theta, T]`, the period
+    one more column of the event algebra (`d h_j / d T = fraction_j`), the
+    phase row closing the system.  The comparator relaxation oscillator
+    with a sharp window: unstaged radau on uniform grids reads a period
+    error of +4.4e-3 / +2.1e-4 / -1.7e-3 / -7.7e-4 at 100 / 200 / 400 / 800
+    points against an unstaged 3200-point solve (itself untrusted below
+    1e-4) -- set by where the crossing falls in its step, not by N.
+    Against a STAGED radau-1600 reference the staged period reads
+    -6.4e-4 / -1.9e-4 / -6.8e-5 / +8.1e-7 at 100 / 200 / 400 / 800 points
+    (a thousandfold at 800, all four edges at the reference's).  ⚠ FD
+    lesson: a theta step of 1e-6 across a 0.04 ns window is 3.5 % of it
+    and reads the first-edge columns 1e-4 off by truncation; at 1e-8 every
+    column is below 1e-7.  Pinned (measured -6.4e-4 vs -1.9e-4 staged,
+    +4.4e-3 vs +2.0e-4 unstaged): the staged periods at 100 and 200
+    points within 1e-3 of each other, the unstaged ones more than 2e-3
+    apart and the unstaged more than 2e-3 from the staged at 100; four
+    event fractions landed.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    p = PSS(cir, method='radau', reltol=1e-8)
+    x0 = np.zeros(cir.n)
+    x0[[str(n_) for n_ in cir.nodes].index('c')] = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
+    Tl = float(p.lte_period)
+
+    def solve(N, se):
+        c2 = _comparator_relaxation_oscillator()
+        q = PSS(c2, method='radau', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100, state_events=se)
+        assert q.converged
+        return q
+
+    q1, q2 = solve(100, True), solve(200, True)
+    u1, u2 = solve(100, False), solve(200, False)
+    assert q1._state_event_fracs is not None and len(q1._state_event_fracs) >= 2
+    assert abs(q1.period / q2.period - 1.0) < 1e-3, (q1.period, q2.period)
+    assert abs(u1.period / u2.period - 1.0) > 2e-3, (u1.period, u2.period)
+    assert abs(u1.period / q1.period - 1.0) > 2e-3
+    assert len(q1._state_event_fracs) == 4
+
+
+def test_gears_state_event_stage_carries_both_step_partials_and_lands_the_crossing():
+    """Phase B of events-as-unknowns (2026-09-22): gear's event columns.  A
+    two-step companion's residual depends on its own step AND the previous
+    one, so each column carries `dr/dh_n hsens[j] + dr/dh_{n-1} hsens[j-1]`
+    with the previous step's partial assembled from the two that exist --
+    `residual_dT` is `sum_j h_j dr/dh_j` (Euler's theorem, no source) and
+    `residual_dh` is the coefficients' partial PLUS `du/dt`, so `dr/dh_{n-1}
+    = (residual_dT - (residual_dh - u_dot) h_n) / h_{n-1}` -- and the
+    source's motion once: `residual_dh`'s own part and `u_dot tau_n` for
+    the shift of the step's start.  ⚠ Counting `u_dot (tau + w)` on top
+    of `residual_dh` read the node after a landed event 153 % off.  Pinned:
+    the columns against central differences to 1e-6 at the period and at
+    the event nodes (PWM loop, two anchors), and the staged gear solve at
+    200 points converging with its crossing within 5e-4 T of the staged
+    radau reference's and no worse than the unstaged one (measured 4.0e-3
+    vs 4.4e-3 of the swing; gear's own second-order off-phase error
+    dominates here, as trbdf2's does).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+
+    def solve(method, N, se):
+        cir = _pwm_loop(T)
+        p = PSS(cir, method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / N, x0=np.zeros(cir.n - 1),
+                    maxiterations=100, state_events=se)
+        assert p.converged
+        io = [str(n_) for n_ in cir.nodes].index('out')
+        io = io if io < p.irefnode else io - 1
+        ts = np.asarray(p.waveform[0], float)
+        X = np.asarray(p.waveform[1], float)
+        v = X[io] if X.shape[0] == cir.n - 1 else np.delete(X, p.irefnode, axis=0)[io]
+        return p, ts, v
+
+    ## (a) the columns
+    p, ts, _v = solve('gear', 100, False)
+    x0s = np.asarray(p._period_state[1], float)
+    m = p.cir.n - 1
+    hs = np.diff(ts)
+    X = np.delete(np.asarray(p.waveform[1], float), p.irefnode, axis=0)
+    xm1 = X[:, -2].copy()
+    base2, th0 = p._land_fractions(hs / T, [0.6914, 0.6961])
+    K = 2
+
+    def run(th):
+        fr, hsens, nodes = p._event_remap(base2, th0, th, T)
+        hs_ = fr * T
+        tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+        out = p._traverse_solved_history(x0s, xm1, tms_, hs_, T=T, hsens=hsens, capture=set(nodes))
+        return (np.asarray(out[0]), [np.asarray(c).ravel() for c in out[4]], nodes,
+                {nd: (np.asarray(p._captured[nd][0]), [np.asarray(c).ravel() for c in p._captured[nd][2]]) for nd in nodes})
+
+    th = th0 + np.array([0.002, -0.003])
+    xl, Pkl, nodes, caps = run(th)
+    for k in range(K):
+        d = 1e-6
+        tp = th.copy(); tp[k] += d
+        tm = th.copy(); tm[k] -= d
+        xlp, _, _, cp = run(tp)
+        xlm, _, _, cm = run(tm)
+        fd = (xlp - xlm) / (2 * d)
+        assert np.linalg.norm(Pkl[k] - fd) < 1e-6 * np.linalg.norm(fd), k
+        for nd in nodes:
+            fdn = (cp[nd][0] - cm[nd][0]) / (2 * d)
+            assert np.linalg.norm(caps[nd][1][k] - fdn) < 5e-6 * np.linalg.norm(fdn), (k, nd)   # 1.4e-6 measured at one node: the FD's own noise
+
+    ## (b) the stage
+    pr, tsr, vr = solve('radau', 800, True)
+    ref = lambda t: np.interp(t % T, tsr, vr)
+    swing = vr.max() - vr.min()
+    qs, tss, vs = solve('gear', 200, True)
+    qu, tsu, vu = solve('gear', 200, False)
+    assert qs._state_event_fracs is not None and len(qs._state_event_fracs) == 4
+    assert abs(qs._state_event_fracs[0] - pr._state_event_fracs[0]) < 5e-4
+    es = np.max(np.abs(vs - ref(tss))) / swing
+    eu = np.max(np.abs(vu - ref(tsu))) / swing
+    assert es <= eu, (es, eu)
