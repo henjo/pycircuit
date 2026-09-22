@@ -25846,8 +25846,10 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     the window (1e-3 of the step; measured 1.1 %), the landed spread
     below 5e-5 and the unlanded above it, `state_events=False` landing
     nothing; no landing in the first step (an initial condition is not a
-    solved state); and the Runge-Kutta loop, wired the same day, landing
-    the same edges for radau."""
+    solved state); the Runge-Kutta loop, wired the same day, landing the
+    same edges for radau; and the coupled-LTE loop, wired last, where
+    landing does buy accuracy (gear coupled: mean +1.4e-3 -> +1.9e-4,
+    spread 2.7e-3 -> 2.7e-6 at reltol 1e-6)."""
     import warnings as _w
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
@@ -25919,3 +25921,33 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
         j = int(np.argmin(np.abs(tt_rk - te)))
         assert abs(tt_rk[j] - te) < 1e-12 * T_ex
         assert abs(abs(d_rk[j]) - 1e-4) < 2e-4 * 5e-2, (te, d_rk[j])
+    ## the coupled-LTE loop (`coupled_lte=True`), wired last -- and the one
+    ## place landing buys ACCURACY, not only consistency: the coupled (x, h)
+    ## solve's own step unknown walked through the crossing badly.  gear,
+    ## reltol 1e-6, 14 periods: mean +1.4e-3 -> +1.9e-4, spread 2.7e-3 ->
+    ## 2.7e-6 (at 1e-4: +2.1e-2 -> +3.6e-3, 2.4e-2 -> 3.3e-4); the handed
+    ## step is HELD during a cut (`hold_h`), edges to 1-4 % of the window.
+    cp = {}
+    for se in (True, False):
+        tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-6, state_events=se)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0, coupled_lte=True)
+        tt = np.asarray(res.sweep_values, dtype=float)
+        xx = np.asarray(res.x, dtype=float)
+        d = xx[ifb1] - xx[iref]
+        up = np.flatnonzero((d[:-1] < 0) & (d[1:] >= 0))
+        tc = tt[up] - d[up] * (tt[up + 1] - tt[up]) / (d[up + 1] - d[up])
+        per = np.diff(tc)[-6:]
+        cp[se] = (np.ptp(per) / T_ex, np.mean(per) / T_ex - 1.0, tr, tt, d)
+    assert cp[True][0] < 1e-5 and cp[False][0] > 1e-4, (cp[True][0], cp[False][0])
+    assert abs(cp[True][1]) < 5e-4 and abs(cp[False][1]) > 5e-4, (cp[True][1], cp[False][1])
+    assert cp[False][2].statistics.state_events_hit == 0
+    ev_cp = np.asarray(cp[True][2].event_times, dtype=float)
+    settled_cp = ev_cp[ev_cp > 4 * T_ex]
+    assert 4 * 9 <= len(settled_cp) <= 4 * 10 + 2 and ev_cp[0] > 0.5 * T_ex, (len(settled_cp), ev_cp[:2])
+    tt_cp, d_cp = cp[True][3], cp[True][4]
+    for te in settled_cp:
+        j = int(np.argmin(np.abs(tt_cp - te)))
+        assert abs(tt_cp[j] - te) < 1e-12 * T_ex
+        assert abs(abs(d_cp[j]) - 1e-4) < 2e-4 * 5e-2, (te, d_cp[j])

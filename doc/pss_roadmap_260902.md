@@ -8702,7 +8702,13 @@ same day on request — the same cut, no history to restart; radau's spread
 4.8e-6 → 8.2e-7 (reltol 1e-4) and 3.7e-8 → 1.9e-9 (1e-6) with the mean
 unchanged (−1.0e-6 / −1.7e-8 → −1.3e-6 / −9.1e-9), steps +40–130 %;
 trbdf2 gains nothing in spread (9.6e-5 → 6.9e-5, 8.9e-7 → 1.5e-6).  The
-coupled-LTE loop (`_solve_coupled`) is the one loop still not wired.
+coupled-LTE loop (`_solve_coupled`) was wired last, on request — and it is
+the one loop where landing buys ACCURACY: the coupled `(x, h)` solve's own
+step unknown walked through the crossing badly (gear, 14 periods, reltol
+1e-4 / 1e-6: mean +2.1e-2 / +1.4e-3 unlanded → +3.6e-3 / +1.9e-4 landed,
+spread 2.4e-2 / 2.7e-3 → 3.3e-4 / 2.7e-6; the handed step is HELD during a
+cut, edges to 1–4 % of the window).  Every stepping loop lands events now;
+`_init_state_events(n)` serves both entry points.
 
 ⚠ MEASURED on the sharp comparator oscillator against the windowed exact
 period, 25 periods, restart on or off (it makes no difference):

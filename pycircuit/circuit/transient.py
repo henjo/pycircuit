@@ -4574,6 +4574,21 @@ class Transient(Analysis):
             return self._solve(refnode, tend, x0, timestep, provided_function,
                                fixed_timestep, coupled_lte)
 
+    def _init_state_events(self, n):
+        """E7 (2026-09-22): the circuit's declared state events as rows on
+        the FULL state (node voltages first; the branch currents that follow
+        get zero weight), and an empty `event_times` for the run.  Called by
+        every stepping entry (`_solve`, `_solve_coupled`)."""
+        self.event_times = []
+        self._ev_rows, self._ev_thr = None, None
+        if self.par.state_events and hasattr(self.cir, 'state_events'):
+            _rows = self.cir.state_events()
+            if _rows:
+                self._ev_rows = np.array([np.pad(np.asarray(r, dtype=float).ravel(),
+                                                 (0, max(0, n - len(np.asarray(r).ravel()))))
+                                          for r, _t in _rows])
+                self._ev_thr = np.array([float(t_) for _r, t_ in _rows])
+
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         from pycircuit.circuit.integrator import TRBDF2Integrator
         ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
@@ -4652,20 +4667,8 @@ class Transient(Analysis):
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
-        ## E7 (2026-09-22): the circuit's declared state events, as rows on
-        ## the FULL state (node voltages first; the branch currents that
-        ## follow get zero weight).  `event_times` collects the landed
-        ## crossings in seconds.
-        self.event_times = []
-        self._ev_rows, self._ev_thr = None, None
+        self._init_state_events(n)
         _ev_iter = 0
-        if self.par.state_events and hasattr(self.cir, 'state_events'):
-            _rows = self.cir.state_events()
-            if _rows:
-                self._ev_rows = np.array([np.pad(np.asarray(r, dtype=float).ravel(),
-                                                 (0, max(0, n - len(np.asarray(r).ravel()))))
-                                          for r, _t in _rows])
-                self._ev_thr = np.array([float(t_) for _r, t_ in _rows])
         if x0 is None:
             if self.par.uic:
                 ## Skip the operating point and start from the stated initial
@@ -5435,6 +5438,7 @@ class Transient(Analysis):
         X = []
         self.irefnode = self.cir.get_node_index(refnode)
         n = self.cir.n
+        self._init_state_events(n)
         if x0 is None:
             ## Same fix as `solve()`: a failed operating point raises rather than
             ## silently becoming a vector of zeros.  This path had the defect too.
@@ -5522,6 +5526,7 @@ class Transient(Analysis):
         ## reason, and it is the whole reason this path works at all.
         from pycircuit.circuit.nrsolver import NoConvergenceError
         MAX_LTE_ITERS = 10
+        _ev_iter, _ev_hold = 0, False        # E7: secant cuts in flight, and the step they impose
 
         ## TLINE WAVEFRONT ARRIVALS -- same fix as the JAX backend's
         ## collect_breakpoints, discovered there first: a source corner
@@ -5673,7 +5678,7 @@ class Transient(Analysis):
                         X[-1], t, h_curr, X[-1:-4:-1],
                         provided_function=provided_function,
                         hold_h=(was_break_step or fixed_timestep
-                                or was_tend_truncated),
+                                or was_tend_truncated or _ev_hold),
                         grid_locked=fixed_timestep,
                         method=self.par.coupled_method,
                         gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
@@ -5765,6 +5770,31 @@ class Transient(Analysis):
             if (not was_break_step and next_t_break < float('inf')
                     and t + h_curr >= next_t_break * (1.0 - 1e-12)):
                 was_break_step = True
+            ## E7 (wired on request, 2026-09-22): a declared crossing inside
+            ## the accepted step -- cut to it by the secant on the fraction
+            ## and re-solve, the coupled solve HOLDING the handed step (its
+            ## own `h` unknown would walk off the crossing); the landed step
+            ## restarts the history as a corner does, as in `_solve`.
+            if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
+                _s0 = self._ev_rows @ np.asarray(X[-1], dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
+                _s1 = self._ev_rows @ np.asarray(x_curr, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
+                _in = np.flatnonzero(_s0 * _s1 < 0.0)
+                if len(_in):
+                    _f = float(np.min(_s0[_in] / (_s0[_in] - _s1[_in])))
+                    if (_f < 1.0 - self.EVENT_LAND_RTOL
+                            and _ev_iter < self.EVENT_LAND_MAXITER
+                            and _f * h_curr >= minstep):
+                        _ev_iter += 1
+                        self.statistics.state_event_cuts += 1
+                        h = _f * h_curr
+                        _ev_hold = True
+                        continue
+                    _ev_iter, _ev_hold = 0, False
+                    self.event_times.append(float(t + h_curr))
+                    self.statistics.state_events_hit += 1
+                    was_break_step = True
+                else:
+                    _ev_iter, _ev_hold = 0, False
             t += h_curr
             self.statistics.accepted_steps += 1
             self.statistics._note_step(h_curr)
