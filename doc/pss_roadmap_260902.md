@@ -8722,6 +8722,20 @@ window is stepped exactly as the PSS stage lands it.  ⚠ E8's lesson
 applies here too: with `VSwitch`'s tanh the transition is not inside the
 window — landing the edges buys the order only with a compact transition.
 
+### E8 — closing measurement (2026-09-22, after `b5051d4`): the staged period against the WINDOWED exact one
+
+The remaining −8.0e-8 of the staged period against the IDEAL comparator is
+the 0.2 mV window itself: the windowed exact model (the smoothstep
+conductance integrated at rtol 1e-12, period by shooting on the crossing,
+`e8_windowed_exact.py`) has `T = 1.3918372887 µs`, −7.997e-8 off the ideal.
+Against it the staged radau period reads −7.3e-7 / −1.85e-8 / −9.0e-10 /
+−2.5e-10 at 100 / 200 / 400 / 800 points — fifth order down to the
+reference's floor.  `VSwitch` is the only element declaring `state_events`;
+the package's other `tanh`s are soft limiters (the op-amp macromodel's
+output clamp, `func.py`), not switches.  Open beside it: `_orbit_rate`'s
+three-node stencil (5 % on a collapsed node inside a 10 ns phase; it enters
+the fixed-time correction only, now per-mille in weight).
+
 ### E8. The STAGED map's unit multiplier is first order — ✅ EXPLAINED AND BUILT the same day: `VSwitch`'s tanh TAILS, not the stage; option (a) built (Andreas: "Implement 1"), and the phase-B "unbordered O(1)" numbers re-measured as the tails' (see the log of 2026-09-22, `VSwitch`: the compact transition)
 
 Measured (`e8_window_ladder.py`, `e8_tanh_tails.py`): the window sub-grid
