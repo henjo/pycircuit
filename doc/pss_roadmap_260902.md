@@ -8696,8 +8696,13 @@ fraction (as a rejected step is re-solved) until the crossing sits within
 `EVENT_LAND_RTOL` = 1e-3 of the step's end (≤ 4 cuts; 2.1 per landing
 measured), the landed step a break step (history restart);
 `Transient(state_events=False)` turns it off; `Transient.event_times`,
-`statistics.state_events_hit` / `state_event_cuts`.  The coupled-LTE loop
-(`_run_rk_adaptive`, radau/trbdf2/esdirk in the transient) is NOT wired.
+`statistics.state_events_hit` / `state_event_cuts`.  The Runge-Kutta loop
+(`_run_rk_adaptive`: radau/trbdf2/esdirk in the transient) was wired the
+same day on request — the same cut, no history to restart; radau's spread
+4.8e-6 → 8.2e-7 (reltol 1e-4) and 3.7e-8 → 1.9e-9 (1e-6) with the mean
+unchanged (−1.0e-6 / −1.7e-8 → −1.3e-6 / −9.1e-9), steps +40–130 %;
+trbdf2 gains nothing in spread (9.6e-5 → 6.9e-5, 8.9e-7 → 1.5e-6).  The
+coupled-LTE loop (`_solve_coupled`) is the one loop still not wired.
 
 ⚠ MEASURED on the sharp comparator oscillator against the windowed exact
 period, 25 periods, restart on or off (it makes no difference):

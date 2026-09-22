@@ -25839,11 +25839,15 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     (6.5e-3 -> 3e-4 at 1e-4); trap's -1.1e-5 mean was a cancellation
     inside a 1.2e-3 spread and becomes +1.9e-4 +- 1.3e-5.  Cost: ~2 secant
     cuts per landing, +30 % steps.  Radau, one-step, is at -1.7e-8
-    unlanded and takes the `_run_rk_adaptive` loop, which is not wired.
+    unlanded; wired into its `_run_rk_adaptive` loop the same day, landing
+    trims its spread 4.8e-6 -> 8.2e-7 (1e-4) and 3.7e-8 -> 1.9e-9 (1e-6),
+    mean unchanged, steps +40-130 %; trbdf2 gains nothing in spread.
     Pinned: four landings per period, each on a window edge to 5 % of
     the window (1e-3 of the step; measured 1.1 %), the landed spread
     below 5e-5 and the unlanded above it, `state_events=False` landing
-    nothing."""
+    nothing; no landing in the first step (an initial condition is not a
+    solved state); and the Runge-Kutta loop, wired the same day, landing
+    the same edges for radau."""
     import warnings as _w
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
@@ -25883,3 +25887,35 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
         j = int(np.argmin(np.abs(tt_l - te)))
         assert abs(tt_l[j] - te) < 1e-12 * T_ex
         assert abs(abs(d_l[j]) - 1e-4) < 2e-4 * 5e-2, (te, d_l[j])
+    ## no landing in the first step: the initial condition is not a solved state
+    assert ev[0] > 0.5 * T_ex, ev[:3]
+    ## the Runge-Kutta loop, wired the same day: radau at reltol 1e-4 lands
+    ## the same four edges (to 1e-5 of the window), spread 2.0e-6 -> 3.9e-7
+    ## over these 14 periods (4.8e-6 -> 8.2e-7 over 25), mean unchanged
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    rk = {}
+    for se in (True, False):
+        tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-4, state_events=se,
+                       integrator=RadauIIA3Integrator())
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0)
+        tt = np.asarray(res.sweep_values, dtype=float)
+        xx = np.asarray(res.x, dtype=float)
+        d = xx[ifb1] - xx[iref]
+        up = np.flatnonzero((d[:-1] < 0) & (d[1:] >= 0))
+        tc = tt[up] - d[up] * (tt[up + 1] - tt[up]) / (d[up + 1] - d[up])
+        per = np.diff(tc)[-6:]
+        rk[se] = (np.ptp(per) / T_ex, np.mean(per) / T_ex - 1.0, tr, tt, d)
+    ## measured over the last 6 of 14 periods: 3.9e-7 landed, 2.0e-6 unlanded
+    assert rk[True][0] < 1e-6 and rk[False][0] > 1e-6, (rk[True][0], rk[False][0])
+    assert abs(rk[True][1]) < 1e-5 and abs(rk[False][1]) < 1e-5
+    assert rk[False][2].statistics.state_events_hit == 0
+    ev_rk = np.asarray(rk[True][2].event_times, dtype=float)
+    settled_rk = ev_rk[ev_rk > 4 * T_ex]
+    assert 4 * 9 <= len(settled_rk) <= 4 * 10 + 2 and ev_rk[0] > 0.5 * T_ex, (len(settled_rk), ev_rk[:2])
+    tt_rk, d_rk = rk[True][3], rk[True][4]
+    for te in settled_rk:
+        j = int(np.argmin(np.abs(tt_rk - te)))
+        assert abs(tt_rk[j] - te) < 1e-12 * T_ex
+        assert abs(abs(d_rk[j]) - 1e-4) < 2e-4 * 5e-2, (te, d_rk[j])

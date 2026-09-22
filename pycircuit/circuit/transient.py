@@ -5182,7 +5182,10 @@ class Transient(Analysis):
             ## step: the multistep history restarts there, as at a source
             ## corner.  A window's two edges are two rows, so the window is
             ## stepped edge to edge as the PSS stage lands it.
-            if self._ev_rows is not None and not fixed_timestep:
+            ## (not on the very first step: an initial condition need not be a
+            ## solved state -- a source node handed in at zero "crosses" to
+            ## its value in the first step and read as a landing at t = 1e-9 T)
+            if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
                 _s0 = self._ev_rows @ np.asarray(X[-1], dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
                 _s1 = self._ev_rows @ np.asarray(x, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
                 _in = np.flatnonzero(_s0 * _s1 < 0.0)
@@ -5294,6 +5297,7 @@ class Transient(Analysis):
         from pycircuit.circuit.nrsolver import NoConvergenceError
         MAX_REJECT = 12
         t = 0.0
+        _ev_iter = 0
         try:
             while t < tend:
                 dt = min(dt, max_step, tend - t)
@@ -5357,6 +5361,32 @@ class Transient(Analysis):
                     self.statistics.rejected_steps += 1
                     reject += 1
                     dt = dt * max(K, SAFETY * err ** (-1.0 / (ORDER + 1)))
+                ## E7 (2026-09-22, wired here on request): a declared crossing
+                ## inside the accepted step cuts the step to it by the secant
+                ## on the fraction and re-solves from the same `x`, as in
+                ## `_solve`; a one-step method has no history to restart, so
+                ## the landed step is simply accepted and its time recorded.
+                ## Radau resolves the compact transition to -1.7e-8 of the
+                ## period unlanded (reltol 1e-6): this buys `event_times` and
+                ## a spread of zero from the crossing phase, not accuracy.
+                if self._ev_rows is not None and len(X) > 1:      # not from the initial condition (see `_solve`)
+                    _s0 = self._ev_rows @ np.asarray(x, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
+                    _s1 = self._ev_rows @ np.asarray(xnew, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
+                    _in = np.flatnonzero(_s0 * _s1 < 0.0)
+                    if len(_in):
+                        _f = float(np.min(_s0[_in] / (_s0[_in] - _s1[_in])))
+                        if (_f < 1.0 - self.EVENT_LAND_RTOL
+                                and _ev_iter < self.EVENT_LAND_MAXITER
+                                and _f * dt >= minstep):
+                            _ev_iter += 1
+                            self.statistics.state_event_cuts += 1
+                            dt = _f * dt
+                            continue
+                        _ev_iter = 0
+                        self.event_times.append(float(t + dt))
+                        self.statistics.state_events_hit += 1
+                    else:
+                        _ev_iter = 0
                 ## accept
                 t = t + dt
                 x = xnew
