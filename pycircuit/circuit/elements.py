@@ -2144,12 +2144,49 @@ class CoupledInductors(Circuit):
             self.eval_q_pure, x, {'L1': self.iparv.L1, 'L2': self.iparv.L2, 'K': self.iparv.K}, epar, self._C)
 
 class VSwitch(Circuit):
-    """Voltage Controlled Switch"""
+    """Voltage Controlled Switch.
+
+    The conductance is exactly `1/Roff` while the control voltage `v(cp) -
+    v(cm)` is below `Voff`, exactly `1/Ron` above `Von`, and a C2 smoothstep
+    `t^3 (10 - 15 t + 6 t^2)`, `t = (vc - Voff)/(Von - Voff)`, in between:
+    the transition is COMPACTLY SUPPORTED on `[Voff, Von]`, so the two
+    declared edges (`state_events`) are where the switching begins and
+    ends, not two points on an endless tail.
+
+    ⚠ IT WAS A `tanh` UNTIL 2026-09-22, `(tanh(2 x_norm) + 1)/2` with
+    `x_norm = +-0.5` at the edges -- 12 % of the swing on each side sat
+    OUTSIDE the declared window, in the coarse steps a staged PSS never
+    refines, and every consumer of a switched orbit was first order for
+    it: the comparator relaxation oscillator's staged period converged as
+    -6.7e-4 / -2.2e-4 / -9.6e-5 / -2.7e-5 against the exact
+    ideal-comparator period at 100-800 radau points, its unit multiplier
+    displaced 2.3e-3 / 9.9e-4 / 4.2e-4 / 1.2e-4; refining the window's
+    sub-grid 8 -> 64 moved nothing.  With this transition (measured before
+    the change by monkeypatching it in): period within 8.8e-7 at 100
+    points and 8e-8 from 200 on, multiplier 3e-13 .. 1e-14 -- fifth order
+    at the switch.  The 12 % / 88 % conductance a tanh gave AT `Von` /
+    `Voff` is now `1/Ron` / `1/Roff` exactly, which is what the parameter
+    descriptions say; a circuit read at those points moves accordingly.
+    """
     terminals = ('plus', 'minus', 'cp', 'cm')
     instparams = [Parameter('Ron', 'On resistance', default=1.0),
                   Parameter('Roff', 'Off resistance', default=1e6),
-                  Parameter('Von', 'Control voltage for on state', default=1.0),
-                  Parameter('Voff', 'Control voltage for off state', default=0.0)]
+                  Parameter('Von', 'Control voltage at which the switch is fully on', default=1.0),
+                  Parameter('Voff', 'Control voltage at which the switch is fully off', default=0.0)]
+
+    @staticmethod
+    def _transition(vc, Von, Voff, toolkit):
+        """`(factor, dfactor/dvc)`: the C2 smoothstep of the control voltage
+        across `[Voff, Von]`, 0 below and 1 above, clamped with `maximum`
+        alone so the same expression serves the autodiff toolkit."""
+        Vscale = Von - Voff
+        if Vscale == 0:
+            Vscale = 1e-6
+        u = (vc - Voff) / Vscale
+        t = toolkit.maximum(0.0, 1.0 - toolkit.maximum(0.0, 1.0 - u))    # min(max(u, 0), 1)
+        factor = t * t * t * (10.0 + t * (-15.0 + 6.0 * t))
+        dfactor = 30.0 * t * t * (1.0 - t) * (1.0 - t) / Vscale
+        return factor, dfactor
 
     @staticmethod
     def eval_i_pure(x, params, epar, toolkit):
@@ -2159,19 +2196,13 @@ class VSwitch(Circuit):
         Roff = params.get('Roff', 1e6)
         Von = params.get('Von', 1.0)
         Voff = params.get('Voff', 0.0)
-        
+
         Gon = 1.0 / Ron
         Goff = 1.0 / Roff
-        
-        Vmid = (Von + Voff) / 2.0
-        Vscale = Von - Voff
-        if Vscale == 0:
-            Vscale = 1e-6
-            
-        x_norm = (vc - Vmid) / Vscale
-        factor = (toolkit.tanh(x_norm * 2.0) + 1.0) / 2.0
+
+        factor, _d = VSwitch._transition(vc, Von, Voff, toolkit)
         g = Goff + (Gon - Goff) * factor
-        
+
         i_val = v * g
         return toolkit.array([i_val, -i_val, 0.0, 0.0])
 
@@ -2206,17 +2237,9 @@ class VSwitch(Circuit):
         
         Gon = 1.0 / Ron
         Goff = 1.0 / Roff
-        
-        Vmid = (Von + Voff) / 2.0
-        Vscale = Von - Voff
-        if Vscale == 0:
-            Vscale = 1e-6
-            
-        x_norm = (vc - Vmid) / Vscale
-        factor = (self.toolkit.tanh(x_norm * 2.0) + 1.0) / 2.0
+
+        factor, dfactor = VSwitch._transition(vc, Von, Voff, self.toolkit)
         g = Goff + (Gon - Goff) * factor
-        
-        dfactor = 1.0 / self.toolkit.cosh(x_norm * 2.0)**2 * 2.0 / Vscale / 2.0
         dg = (Gon - Goff) * dfactor
         
         g_vc = v * dg

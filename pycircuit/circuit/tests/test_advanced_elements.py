@@ -90,7 +90,9 @@ def test_vswitch_numeric():
     
     Testbench Description:
     - Directly tests the `i(x)` evaluation hook.
-    - Evaluates the smoothed tanh mathematical step transition.
+    - Evaluates the compact C2 smoothstep transition (2026-09-22; a tanh
+      before, which read 88 % of `Gon` AT `Von`): exactly `Gon` at `Von`,
+      exactly `Goff` at `Voff`, and the smoothstep's own value inside.
     """
     c = SubCircuit(toolkit=numeric)
     c['Vctrl'] = VS('ctrl', gnd, v=1.0) # Control voltage is 1.0V (Von)
@@ -101,9 +103,13 @@ def test_vswitch_numeric():
     x = numeric.array([1.0, 0.0, 1.0, 0.0]) # v=1, vc=1
     i_out = i_func(x)
     Gon = 1.0; Goff = 1e-6
-    factor = (numeric.tanh(1.0) + 1.0) / 2.0
-    g_expected = Goff + (Gon - Goff) * factor
-    assert abs(i_out[0] - g_expected) < 1e-6
+    assert abs(i_out[0] - Gon) < 1e-12                       # fully on AT Von
+    x = numeric.array([1.0, 0.0, 0.0, 0.0])                  # vc = Voff: fully off
+    assert abs(i_func(x)[0] - Goff) < 1e-12
+    x = numeric.array([1.0, 0.0, 0.5, 0.0])                  # mid-window: the smoothstep's 1/2
+    assert abs(i_func(x)[0] - (Goff + (Gon - Goff) * 0.5)) < 1e-12
+    x = numeric.array([1.0, 0.0, 1.5, 0.0])                  # beyond Von: still exactly Gon (no tail)
+    assert abs(i_func(x)[0] - Gon) < 1e-12
 
 def test_vswitch_dc():
     """
@@ -113,8 +119,10 @@ def test_vswitch_dc():
     - Iin injects 1.0A into node '1'.
     - VSW is placed as the only path to ground for this current, acting as the load.
     - Vctrl applies 1.0V to the VSW control nodes, turning it ON.
-    - With the switch ON, its resistance is ~1.135 ohms (based on the tanh transition).
-    - Ohm's law: 1.0A flowing through ~1.135 ohms means node '1' must be ~1.135V.
+    - With the switch fully ON at Vctrl = Von its resistance is Ron = 1 ohm
+      exactly (2026-09-22: the compact transition; the tanh before read
+      1.135 ohms here, 88 % of the way on).
+    - Ohm's law: 1.0A through 1 ohm means node '1' must be 1.0V.
     - The non-linear Newton-Raphson solver validates this analytically.
     """
     from pycircuit.circuit.elements import IS
@@ -125,8 +133,8 @@ def test_vswitch_dc():
     
     dc = DC(c)
     res = dc.solve()
-    # Resistance is ~ 1.135 ohms, so 1A injected gives ~ 1.135V
-    assert 1.13 < res.v('1') < 1.14
+    # Ron exactly at Von, so 1A injected gives 1.0V
+    assert abs(res.v('1') - 1.0) < 1e-6
 
 def test_cccs():
     """

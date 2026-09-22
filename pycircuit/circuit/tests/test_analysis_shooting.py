@@ -24931,7 +24931,10 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
         xm = x0.copy(); xm[i] -= d
         col = (phi(xp)[0] - phi(xm)[0]) / (2 * d)
         assert np.linalg.norm(Mtot[:, i] - col) < 1e-5 * np.linalg.norm(col), nm
-        assert np.linalg.norm(Mx[:, i] - col) > 0.3 * np.linalg.norm(col), nm
+        ## with VSwitch's compact transition (2026-09-22) the fixed-grid map
+        ## through the landed, resolved window is 8 % off the total derivative
+        ## on `fb` (109 % with the tanh, whose tails sat outside the window)
+        assert np.linalg.norm(Mx[:, i] - col) > 0.03 * np.linalg.norm(col), nm
 
 
 def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_and_is_exact():
@@ -25059,7 +25062,11 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     ## bordering's gain on this driven loop is real but modest; the O(1)
     ## cases are the staged oscillator's sideband response and the
     ## covariance closure (their own tests).
-    assert errs[False]['out'] > 0.02 and errs[False]['fb'] > 0.03, errs     # 0.031 / 0.049 at 60 points
+    ## ⚠ RE-PINNED AGAIN 2026-09-22 for VSwitch's COMPACT transition: 1.1 % /
+    ## 2.5 % (was 3.1 % / 4.9 % with the tanh, whose tails outside the window
+    ## a fixed grid never resolved).  The bordering is the exact
+    ## linearisation; its numerical weight on this loop is a few per cent.
+    assert errs[False]['out'] > 0.005 and errs[False]['fb'] > 0.01, errs     # 0.011 / 0.025 at 60 points
 
 
 def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve():
@@ -25116,7 +25123,9 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
             h = np.conj(h)
             h0 = np.conj(h0)
         assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
-        assert abs(x - h0) > 1e-2 * abs(h), (l, x, h0)
+        ## the unbordered row: 0.55 % off with VSwitch's compact transition
+        ## (2026-09-22; several per cent with the tanh's tails)
+        assert abs(x - h0) > 2e-3 * abs(h), (l, x, h0)
 
 
 def _comparator_relaxation_oscillator():
@@ -25268,7 +25277,13 @@ def test_gears_state_event_stage_carries_both_step_partials_and_lands_the_crossi
     assert abs(qs._state_event_fracs[0] - pr._state_event_fracs[0]) < 5e-4
     es = np.max(np.abs(vs - ref(tss))) / swing
     eu = np.max(np.abs(vu - ref(tsu))) / swing
-    assert es <= eu, (es, eu)
+    ## ⚠ with VSwitch's compact transition (2026-09-22) gear's stage buys
+    ## NOTHING on this loop: staged 4.3e-3 against unstaged 3.7e-3 at 200
+    ## points -- like trbdf2's, gear's own second-order off-phase error is
+    ## what is left once the transition sits inside the landed window.  The
+    ## columns are exact (above); the pin is that the stage does no harm
+    ## beyond that margin.  Radau is the method for a staged solve.
+    assert es <= 1.3 * eu, (es, eu)
 
 
 def _jitter_sampler(T=1e-6, V1=5.0, V2=10.0):
@@ -25303,13 +25318,16 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     closes on the TOTAL monodromy with the noise-driven motion of the
     crossings in the injection, and samples at FIXED times.
 
-    Measured on `_jitter_sampler` at 100 / 200 / 400 points (radau):
-    bordered held variance 0.9991 / 0.9992 / 0.9992 of the analytic
-    `(s2/s1)^2 kT/C_n` (flat in the count -- the residual is the 100 ps
-    tracking lag of the fixture, not the grid); the UNBORDERED closure on
-    the same staged solve reads 4.08 / 3.79 / 3.29 -- the landed window
-    step's own linearisation carries the threshold noise into the hold
-    with a gain the collocation points invent.  And the node-rate
+    Measured on `_jitter_sampler` at 100 / 200 / 400 points (radau, the
+    tanh switch): bordered held variance 0.9991 / 0.9992 / 0.9992 of the
+    analytic `(s2/s1)^2 kT/C_n` (flat in the count -- the residual is the
+    100 ps tracking lag of the fixture, not the grid); the UNBORDERED
+    closure on the same staged solve read 4.08 / 3.79 / 3.29.  ⚠ With
+    VSwitch's COMPACT transition (2026-09-22) both read 0.9996 at 100
+    points: the 4x was the tanh's tails outside the landed window, which
+    the per-step maps could not resolve; with the transition inside the
+    window they carry the threshold's motion themselves and the bordering
+    corrects a sliver.  And the node-rate
     correction is not decoration: without it the NOISELESS sawtooth
     source reads 0.225 kT/C_n at t = 0.7T -- exactly its node's share of
     the moving segment, ((0.925 - 0.7) / (0.925 - 0.45))^2."""
@@ -25355,7 +25373,11 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
         _K0u, sequ = pac.covariance(pss, samples=True)
     finally:
         pss._event_columns = ev
-    assert sequ[j7][ih, ih] / exp_h > 2.5, sequ[j7][ih, ih] / exp_h
+    ## ⚠ RE-PINNED 2026-09-22 for VSwitch's COMPACT transition: the unbordered
+    ## closure reads 0.9996 too -- with the whole transition inside the
+    ## landed window the per-step maps carry the threshold's motion.  The
+    ## 4.08 / 3.79 / 3.29 it read with the tanh was the tails.
+    assert abs(sequ[j7][ih, ih] / exp_h - 1.0) < 5e-3, sequ[j7][ih, ih] / exp_h
     ## and the node-rate correction is what keeps the source silent
     orig = PAC._orbit_rate
     PAC._orbit_rate = lambda self, p, nodes: np.zeros((len(p.waveform[0]), p.cir.n - 1))
@@ -25446,14 +25468,15 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
     into its samples as costate injections at the event nodes.  The
     reference is EXACT -- `_exact_relaxation_oscillator_ppv`, the
     piecewise-linear flow with saltation matrices -- and independent of
-    every integrator.  Measured: bordered samples within 0.05-0.4 % of
-    it at 400 points and 0.08-0.33 % at 200 (nodes before, just after
-    and well after the crossings; INSIDE a 0.04 ns window the discrete
-    sample interpolates the jump and the nearest-state comparison is
-    meaningless, 146 %); the fixed-grid PPV of the same staged solve is
-    140-230 % off on fb1 before the first crossing (its `M^T v - v`
-    residual is 1.5: the fixed-grid map has no unit multiplier,
-    |lambda - 1| = 0.99).  ⚠ The transient FD that was to be the
+    every integrator.  Measured with VSwitch's compact transition
+    (2026-09-22): bordered and fixed-grid samples both within 4.7e-4 of
+    it at 200 points and 2.9e-4 at 400 (the nearest-state comparison's
+    floor; INSIDE a 0.04 ns window the discrete sample interpolates the
+    jump and the comparison is meaningless).  With the tanh the fixed-grid
+    PPV of the same staged solve was 140-230 % off on fb1 before the
+    first crossing (`M^T v - v` = 1.5, |lambda - 1| = 0.99): that was the
+    transition's tails outside the window, which the bordering corrected
+    and the compact transition removed.  ⚠ The transient FD that was to be the
     instrument read `c` at +4.4e-8 for the exact -7.4e-9 s/V -- its phase
     was read at the `c` waveform's crossing of `(max + min) / 2` of the
     PERTURBED record, a level the perturbation moved; read at the
@@ -25510,10 +25533,21 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
     finally:
         q._event_columns = cols
     Su = np.asarray(info_u['samples'])
-    j = before[0]
-    xs = X[[names.index(nm) for nm in ('c', 'fb0', 'fb1')], j]
-    ex = exact(xs)
-    assert np.abs(Su[j, idx[2]] - ex[2]) / abs(ex[2]) > 0.3, (Su[j, idx], ex)
+    ## ⚠ RE-PINNED 2026-09-22 for VSwitch's COMPACT transition: with the whole
+    ## transition inside the landed window the fixed-grid map of the staged
+    ## solve carries the switching itself -- its unit multiplier sits at
+    ## 1e-7 / 7e-10 / 7e-10 (100 / 200 / 400 points, the total's at 1e-12 ..
+    ## 1e-15) and its PPV matches the exact one as well as the bordered does
+    ## (4.7e-4 both at 200 points, the nearest-state comparison's floor).
+    ## The 140 % it was off with the tanh was the tails outside the window.
+    ## Pinned: the fixed-grid PPV within 2e-2 too, the bordered within 1e-6
+    ## of it at the period node (the two null vectors agree to the solve).
+    worst_u = 0.0
+    for j in before + after:
+        xs = X[[names.index(nm) for nm in ('c', 'fb0', 'fb1')], j]
+        ex = exact(xs)
+        worst_u = max(worst_u, float(np.max(np.abs(Su[j, idx] - ex)) / np.max(np.abs(ex))))
+    assert worst_u < 2e-2, worst_u
 
 
 def _exact_relaxation_oscillator_forced(fr, t_shift):
@@ -25612,14 +25646,14 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     multiplier), and the nodes' responses are at FIXED times (`Pk - xdot
     tau^T`).  The reference is EXACT (`_exact_relaxation_oscillator_forced`)
     and the comparison sits at the same offset from each model's own f0.
-    Measured at 200 points, 0.3 f0 / 1.7 f0: every node within 0.2 %
-    outside the 10 ns ON phase (there the collapsed `c` node's three-point
-    rate stencil costs 5 %, `fb0`/`fb1` stay at 0.1 %); at 1.001 f0 the
-    discrete staged map's unit multiplier, displaced 8e-4 (first order in
-    the count -- roadmap E8), sets the answer: 15.7 % off, pinned below
-    0.25.  The plain deflated solve on the same staged solve read the
-    period node 0.3-1.8x and the interior nodes up to 400x off, and at
-    1.001 f0 1.02.  The adjoint row is the transpose of the same solve:
+    Measured at 200 points with VSwitch's compact transition
+    (2026-09-22): every node within 0.3 % at 0.3 / 1.7 / 1.001 f0 outside
+    the 10 ns ON phase (there the collapsed `c` node's three-point rate
+    stencil costs 5 %, `fb0`/`fb1` stay at 0.1 %) -- and the PLAIN deflated
+    solve on the same staged solve reads the same to 0.1 %: with the whole
+    transition inside the landed window the fixed-grid map carries the
+    switching.  With the tanh it read 0.3-400x off and the bordered one
+    15.7 % at 1.001 f0 (E8): the tails outside the window.  The adjoint row is the transpose of the same solve:
     dual-consistent with the forward one (the deflated solve refines on
     the plain operator, so both are the discrete operator's own)."""
     import warnings as _w
@@ -25682,16 +25716,13 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
                 got = np.asarray(yy[j])[idx]
                 comp = [1, 2] if j in on_phase else [0, 1, 2]
                 worst[bordered] = max(worst[bordered], float(np.max(np.abs(got[comp] - ex[comp]) / np.abs(ex[comp]))))
-        if fr == 1.001:
-            ## ⚠ near the harmonic the discrete staged map's unit multiplier,
-            ## displaced 8e-4 at 200 points (first order -- roadmap E8),
-            ## sets the response: measured 0.157 off the exact at an offset
-            ## of 1e-3 f0, |lambda - 1| / |1 - alpha| = 0.13.  The plain
-            ## deflated solve read 1.02.
-            assert worst[True] < 0.25, (fr, worst)
-        else:
-            assert worst[True] < 5e-3, (fr, worst)
-        assert worst[False] > 0.2, (fr, worst)
+        ## ⚠ RE-PINNED 2026-09-22 for VSwitch's COMPACT transition: bordered
+        ## 2.3e-3 / 7.4e-4 / 3.2e-3 and UNBORDERED 8.7e-4 / 6.5e-4 / 1.3e-3
+        ## at 0.3 / 1.7 / 1.001 f0 -- both at the comparison's floor, the
+        ## near-harmonic 15.7 % (E8: the tanh's multiplier displacement) gone.
+        ## With the tanh the plain deflated solve read 0.3-400x off: the tails.
+        assert worst[True] < 5e-3, (fr, worst)
+        assert worst[False] < 5e-3, (fr, worst)
     ## the adjoint row is the transpose of the same bordered, deflated solve
     fin = 0.3 / Tq
     io_full = names.index('fb1')

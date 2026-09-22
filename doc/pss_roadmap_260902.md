@@ -8722,7 +8722,7 @@ window is stepped exactly as the PSS stage lands it.  ⚠ E8's lesson
 applies here too: with `VSwitch`'s tanh the transition is not inside the
 window — landing the edges buys the order only with a compact transition.
 
-### E8. The STAGED map's unit multiplier is first order — ✅ EXPLAINED the same day: `VSwitch`'s tanh TAILS, not the stage (decision pending: the switch's transition law)
+### E8. The STAGED map's unit multiplier is first order — ✅ EXPLAINED AND BUILT the same day: `VSwitch`'s tanh TAILS, not the stage; option (a) built (Andreas: "Implement 1"), and the phase-B "unbordered O(1)" numbers re-measured as the tails' (see the log of 2026-09-22, `VSwitch`: the compact transition)
 
 Measured (`e8_window_ladder.py`, `e8_tanh_tails.py`): the window sub-grid
 count 8 → 64 changes nothing (`|λ₀−1|` 9.88e-4 and the period −2.19e-4 at
