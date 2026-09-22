@@ -2484,8 +2484,10 @@ class PSS(Analysis):
         self._period_column = 'proportional'
         self._dfdh = None
         self._want_lte = False
-        ## the state-event fractions the last solve landed on (None: none)
+        ## the state-event fractions the last solve landed on (None: none),
+        ## and `dtheta/dx_0` from the bordered solve (K x m)
         self._state_event_fracs = None
+        self._event_sensitivity = None
         self._captured = {}
         ## The caller's step fractions, or None for the uniform grid.  Read
         ## by the autonomous closures, which rebuild the grid at the current
@@ -3855,7 +3857,7 @@ class PSS(Analysis):
         K = len(th0)
         Wk = W[rows]
         ck = c[rows]
-        def func_ev(z):
+        def pieces(z):
             x0 = np.asarray(z[:m], dtype=float)
             th = np.asarray(z[m:], dtype=float)
             fr, hsens, nodes = self._event_remap(base2, th0, th, period)
@@ -3866,15 +3868,23 @@ class PSS(Analysis):
             F = np.zeros(m + K)
             J = np.zeros((m + K, m + K))
             F[:m] = self._fold_periodic(x0 - np.asarray(x_end, dtype=float))
-            J[:m, :m] = np.eye(m) - alpha * np.asarray(Mx)
-            for k in range(K):
-                J[:m, m + k] = -alpha * np.asarray(Pk[k]).ravel()
+            Mx = np.asarray(Mx, dtype=float)
+            Pkm = np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
+            J[:m, :m] = np.eye(m) - alpha * Mx
+            J[:m, m:] = -alpha * Pkm
+            G = np.zeros((K, m))
+            Gt = np.zeros((K, K))
             for k, jn in enumerate(nodes):
                 xj, Pj, Pkj = self._captured[jn]
                 F[m + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
-                J[m + k, :m] = Wk[k] @ np.asarray(Pj)
+                G[k] = Wk[k] @ np.asarray(Pj)
                 for l in range(K):
-                    J[m + k, m + l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+                    Gt[k, l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+            J[m:, :m] = G
+            J[m:, m:] = Gt
+            return F, J, Mx, Pkm, G, Gt
+        def func_ev(z):
+            F, J, _Mx, _Pkm, _G, _Gt = pieces(z)
             return F, J
         z0 = np.concatenate((np.asarray(x0_ss, dtype=float), th0))
         tol = np.asarray(tol, dtype=float)
@@ -3888,6 +3898,20 @@ class PSS(Analysis):
         fr, _hsens, _nodes = self._event_remap(base2, th0, th, period)
         self._grid_fracs = np.asarray(fr, dtype=float)
         self._state_event_fracs = th
+        ## ⚠ THE TOTAL MONODROMY THROUGH A MOVING EVENT (2026-09-22, phase
+        ## B).  The period map's derivative is not `Mx` (the grid frozen):
+        ## a perturbation of `x_0` moves the crossing, `dtheta/dx_0 =
+        ## -Gt^-1 G` from the event rows, and the state at the period moves
+        ## with it through the event columns -- the bordered system's Schur
+        ## complement, which is the saltation matrix derived rather than
+        ## guessed.  Measured on the PWM loop: `Mx` 109 % off the finite
+        ## difference of the staged period map, this 3.3e-8; the dominant
+        ## multiplier 0.691 where `Mx` read 0.632.
+        if ier == 1:
+            _F, _J, Mx, Pkm, G, Gt = pieces(z_ss)
+            dth = -np.linalg.solve(Gt, G)
+            self._event_sensitivity = dth
+            self._monodromy = Mx + Pkm @ dth
         self.event_times = sorted(set([float(e) for e in self.event_times]
                                       + [float(t) for t in th]))
         hs2 = fr * float(period)

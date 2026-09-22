@@ -24855,3 +24855,74 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
     _p, _ts, _v, ws = solve('gear', 100, True)
     assert any('state-event stage is built for the stage methods' in w_ for w_ in ws), ws
     assert _p._state_event_fracs is None
+
+
+def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_event():
+    """Phase B of events-as-unknowns (2026-09-22): the period map's
+    derivative is NOT the fixed-grid monodromy.  A perturbation of `x_0`
+    moves the crossing (`dtheta/dx_0 = -Gt^-1 G` from the event rows) and
+    the state at the period moves with it through the event columns; the
+    bordered system's Schur complement `M + P_theta dtheta/dx_0` is the
+    saltation matrix, derived.  Measured on the PWM loop at 100 points:
+    the fixed-grid `Mx` 109 % off the finite difference of the staged
+    period map, the total 3.3e-8; dominant multiplier 0.691 where `Mx`
+    reads 0.632 (and a LOCAL two-step saltation 0.656 -- which steps
+    absorb the event's motion is not a small choice at this resolution,
+    so the consumers need the bordered system, not a per-step patch).
+    Pinned at 60 points: two columns of `_monodromy` against central
+    differences of the staged map (inner Newton on theta) to 1e-5, and
+    the fixed grid at least 30 % off.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    cir = _pwm_loop(T)
+    p = PSS(cir, method='radau', reltol=1e-8)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
+    assert p.converged and p._state_event_fracs is not None
+    x0 = np.asarray(p._period_state[1], float)
+    m = cir.n - 1
+    base2 = np.asarray(p._grid_fracs, float)
+    th_s = np.asarray(p._state_event_fracs, float)
+    K = len(th_s)
+    W, c = p._state_event_rows()
+    Mtot = np.asarray(p._monodromy, float)
+    assert np.asarray(p._event_sensitivity).shape == (K, m)
+
+    def pieces(xx, th):
+        fr, hsens, nodes = p._event_remap(base2, th_s, th, T)
+        hs_ = fr * T
+        tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+        _x0, x_end, Mx, Pk = p._traverse_full(xx, T, tms_, hs_, hsens=hsens, capture=set(nodes))
+        gv = np.zeros(K)
+        Gt = np.zeros((K, K))
+        for k, nd in enumerate(nodes):
+            xj, _Pj, Pkj = p._captured[nd]
+            r = int(np.argmin([abs(float(W[i] @ xj) - c[i]) for i in range(W.shape[0])]))
+            gv[k] = float(W[r] @ xj) - c[r]
+            for l in range(K):
+                Gt[k, l] = float(W[r] @ np.asarray(Pkj[l]).ravel())
+        return np.asarray(x_end, float), np.asarray(Mx, float), gv, Gt
+
+    def phi(xx):
+        th = th_s.copy()
+        for _it in range(30):
+            x_end, Mx, gv, Gt = pieces(xx, th)
+            if np.max(np.abs(gv)) < 1e-13:
+                break
+            th = th - np.linalg.solve(Gt, gv)
+        return x_end, Mx
+
+    _xe, Mx = phi(x0)
+    ## the two columns that move the crossing most (the filtered output and the output)
+    names = [str(n_) for i, n_ in enumerate(cir.nodes) if i != p.irefnode]
+    for nm in ('fb', 'out'):
+        i = names.index(nm)
+        d = 1e-6 * max(1.0, abs(x0[i]))
+        xp = x0.copy(); xp[i] += d
+        xm = x0.copy(); xm[i] -= d
+        col = (phi(xp)[0] - phi(xm)[0]) / (2 * d)
+        assert np.linalg.norm(Mtot[:, i] - col) < 1e-5 * np.linalg.norm(col), nm
+        assert np.linalg.norm(Mx[:, i] - col) > 0.3 * np.linalg.norm(col), nm
