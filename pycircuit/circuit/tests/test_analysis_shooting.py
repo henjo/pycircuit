@@ -24926,3 +24926,117 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
         col = (phi(xp)[0] - phi(xm)[0]) / (2 * d)
         assert np.linalg.norm(Mtot[:, i] - col) < 1e-5 * np.linalg.norm(col), nm
         assert np.linalg.norm(Mx[:, i] - col) > 0.3 * np.linalg.norm(col), nm
+
+
+def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_and_is_exact():
+    """Phase B of events-as-unknowns (2026-09-22): on a solve whose grid was
+    landed on state events, a periodic perturbation moves the crossings,
+    and `PAC.solve` borders its per-frequency system with the event rows
+    (`_event_columns`; block elimination, a K x K Schur complement for the
+    crossings' modulation).  Verified against the finite difference AT
+    FIXED BASE -- an inner Newton on `(x_0, theta)` with the perturbed
+    circuits on the solve's own grid, the discrete map the bordering
+    linearises: PWM loop, 100 points, `out` 4e-10, `fb` 1.4e-10, `sw`
+    4e-8 at f0 and 2 f0, the crossings' shifts identical to six digits;
+    unbordered 60-70 % off on the filter nodes and 3-12x on the switch
+    node.  Read from `PAC.time_response`: the sideband coefficients are
+    quadrature integrals of the envelope and on this grid (eight steps of
+    6e-4 T inside the switch's window) summing them back at the nodes is
+    not exact.  ⚠ Two instrument traps, recorded because they cost a day: `vac`
+    DEFAULTS TO 1 on every voltage source, so every source in a fixture is
+    an AC source unless zeroed; and re-SOLVED orbits at +-eps each re-land
+    their base grid from their own first stage, so their difference is
+    the derivative of a different discrete map (9 % off here) -- the FD
+    must keep the base.  Pinned at 60 points, f = f0: the reconstruction
+    of `PAC.result` (AC-phasor convention, divided by the source's AC
+    phase) against the fixed-base FD to 1e-6 on `out` and `fb`, the
+    unbordered one at least 0.1 / 0.03 off (0.55 / 0.057 measured), and
+    `event_shifts` against the FD.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    f0 = 1.0 / T
+    N = 60
+
+    def build(eps=0.0, vac=0.0):
+        cir = _pwm_loop(T)
+        del cir['Vin']
+        cir.add_node('vin0')
+        cir['Vin'] = VS('vin0', gnd, v=5.0, vac=0.0)
+        cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=eps, freq=f0, phase=90.0, vac=vac)
+        cir['Vramp'].iparv.vac = 0.0
+        return cir
+
+    cir = build(0.0, vac=1.0)
+    p0 = PSS(cir, method='radau', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p0.solve(period=T, timestep=T / N, x0=np.zeros(cir.n - 1), maxiterations=100)
+    assert p0.converged and p0._event_columns is not None
+    g0 = np.asarray(p0._grid_fracs, float)
+    x0s = np.asarray(p0._period_state[1], float)
+    m = cir.n - 1
+    th0 = np.asarray(p0._state_event_fracs, float)
+    K = len(th0)
+    ev = p0._event_columns
+    Wk, ck = np.asarray(ev['W']), np.asarray(ev['c'])
+
+    def solve_fixed_base(eps):
+        c2 = build(eps)
+        q = PSS(c2, method='radau', reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=T, timestep=T / len(g0), x0=x0s, grid=g0,
+                    maxiterations=1, state_events=False)
+        z = np.concatenate((x0s, th0))
+        for _it in range(40):
+            xx, th = z[:m], z[m:]
+            fr, hsens, nodes = q._event_remap(g0, th0, th, T)
+            hs = fr * T
+            tms = np.concatenate(([0.0], np.cumsum(hs)))
+            _x0, x_end, Mx, Pk = q._traverse_full(xx, T, tms, hs, hsens=hsens,
+                                                  capture=set(range(1, len(hs) + 1)))
+            F = np.zeros(m + K)
+            J = np.zeros((m + K, m + K))
+            F[:m] = xx - np.asarray(x_end)
+            J[:m, :m] = np.eye(m) - np.asarray(Mx)
+            for k in range(K):
+                J[:m, m + k] = -np.asarray(Pk[k]).ravel()
+            for k, nd in enumerate(nodes):
+                xj, Pj, Pkj = q._captured[nd]
+                F[m + k] = float(Wk[k] @ xj) - ck[k]
+                J[m + k, :m] = Wk[k] @ Pj
+                for l in range(K):
+                    J[m + k, m + l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+            if np.max(np.abs(F)) < 1e-12:
+                break
+            z = z - np.linalg.solve(J, F)
+        X = np.array([z[:m]] + [np.asarray(q._captured[j][0]) for j in range(1, len(hs) + 1)]).T
+        return z, X, tms
+
+    e = 1e-4
+    zp, Xp, tms = solve_fixed_base(e)
+    zm, Xm, _ = solve_fixed_base(-e)
+    d = (Xp - Xm) / (2 * e)
+    dth_fd = (zp[m:] - zm[m:]) / (2 * e)
+    names = [str(n_) for i, n_ in enumerate(cir.nodes) if i != p0.irefnode]
+    errs = {}
+    for bordered in (True, False):
+        if not bordered:
+            p0._event_columns = None
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = pac.solve(p0, [f0])
+        t_r, y_r = pac.time_response[0]
+        assert np.max(np.abs(t_r - tms[:len(t_r)])) < 1e-5 * T      # the same nodes (fp rebuilds them from the fractions)
+        rec = np.real(y_r / 1j).T                                          # the source's AC phase is 90 deg
+        errs[bordered] = {nm: np.max(np.abs(rec[names.index(nm)] - d[names.index(nm)][:rec.shape[1]]))
+                          / np.max(np.abs(d[names.index(nm)])) for nm in ('out', 'fb')}
+        if bordered:
+            sh = np.real(np.asarray(pac.event_shifts[0]) / 1j)
+            assert np.max(np.abs(sh - dth_fd)) < 1e-6 * np.max(np.abs(dth_fd)), (sh, dth_fd)
+    p0._event_columns = ev
+    assert errs[True]['out'] < 1e-6 and errs[True]['fb'] < 1e-6, errs
+    assert errs[False]['out'] > 0.1 and errs[False]['fb'] > 0.03, errs     # 0.55 / 0.057 at 60 points

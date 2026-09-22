@@ -2488,6 +2488,7 @@ class PSS(Analysis):
         ## and `dtheta/dx_0` from the bordered solve (K x m)
         self._state_event_fracs = None
         self._event_sensitivity = None
+        self._event_columns = None
         self._captured = {}
         ## The caller's step fractions, or None for the uniform grid.  Read
         ## by the autonomous closures, which rebuild the grid at the current
@@ -3896,7 +3897,19 @@ class PSS(Analysis):
             line_search=True, floor_detect=True)
         th = np.asarray(z_ss[m:], dtype=float)
         fr, _hsens, _nodes = self._event_remap(base2, th0, th, period)
-        self._grid_fracs = np.asarray(fr, dtype=float)
+        ## ⚠ THE GRID EVERY CONSUMER REPLAYS ON IS THE ONE `_period_grid`
+        ## MAKES OF THESE FRACTIONS -- with its opener ramp, which the window
+        ## sub-grid's tiny steps trigger.  The stored pieces below were
+        ## first computed on the unramped fractions, and `factored_period`'s
+        ## node indices were shifted by the ramp's pieces against them: the
+        ## bordered sideband solve read its event rows at the wrong nodes
+        ## (dtheta 12 % off, the response 51 %).  So the ramped grid IS the
+        ## grid from here on: `_grid_fracs` carries it (its first piece is
+        ## the smallest, so `_period_grid` will not ramp it again), and the
+        ## monodromy and the event columns are computed on it.
+        _tms_r, _hs_r = self._period_grid(float(period), len(fr), np.asarray(fr, dtype=float))
+        fr_r = np.asarray(_hs_r, dtype=float) / float(period)
+        self._grid_fracs = fr_r
         self._state_event_fracs = th
         ## ⚠ THE TOTAL MONODROMY THROUGH A MOVING EVENT (2026-09-22, phase
         ## B).  The period map's derivative is not `Mx` (the grid frozen):
@@ -3908,15 +3921,43 @@ class PSS(Analysis):
         ## difference of the staged period map, this 3.3e-8; the dominant
         ## multiplier 0.691 where `Mx` read 0.632.
         if ier == 1:
-            _F, _J, Mx, Pkm, G, Gt = pieces(z_ss)
+            ## the identity remap on the ramped grid gives every step's
+            ## sensitivity to the events (the ramp's pieces included) and
+            ## the event nodes on that grid
+            _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, period)
+            hs_r = np.asarray(_hs_r, dtype=float)
+            tms_r = np.asarray(_tms_r, dtype=float)
+            _x0r, _xe, Mx, Pk = trav(np.asarray(z_ss[:m], dtype=float), period, tms_r, hs_r,
+                                     hsens=hsens_r, capture=set(range(1, len(hs_r) + 1)))
+            Mx = np.asarray(Mx, dtype=float)
+            Pkm = np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
+            Pk_nodes = np.zeros((len(hs_r) + 1, m, K))
+            P_nodes = np.zeros((len(hs_r) + 1, m, m))
+            P_nodes[0] = np.eye(m)
+            for j in range(1, len(hs_r) + 1):
+                _xj, Pj, Pkj = self._captured[j]
+                P_nodes[j] = np.asarray(Pj, dtype=float)
+                for k in range(K):
+                    Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
+            G = np.zeros((K, m))
+            Gt = np.zeros((K, K))
+            for k, jn in enumerate(nodes_r):
+                G[k] = Wk[k] @ P_nodes[jn]
+                Gt[k] = Wk[k] @ Pk_nodes[jn]
             dth = -np.linalg.solve(Gt, G)
             self._event_sensitivity = dth
             self._monodromy = Mx + Pkm @ dth
+            ## the pieces the BORDERED consumers need: the event columns at
+            ## every node and at the period, the homogeneous maps to the
+            ## nodes, the event rows' derivatives, the event nodes and rows
+            ## -- `PAC.solve` borders its sideband solve with them
+            self._event_columns = {'nodes': list(nodes_r), 'W': Wk, 'c': ck,
+                                   'P_end': Pkm, 'Pk_nodes': Pk_nodes,
+                                   'P_nodes': P_nodes, 'G': G, 'Gt': Gt}
         self.event_times = sorted(set([float(e) for e in self.event_times]
                                       + [float(t) for t in th]))
-        hs2 = fr * float(period)
-        tms2 = np.concatenate(([0.0], np.cumsum(hs2)))
-        return np.asarray(z_ss[:m], dtype=float), info, ier, mesg, tms2, hs2
+        return (np.asarray(z_ss[:m], dtype=float), info, ier, mesg,
+                np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float))
 
     def _period_grid(self, period, npts, grid):
         """`(times, hs)` for one period -- uniform, or a caller's own grid.
@@ -11035,6 +11076,7 @@ class PSS(Analysis):
         ## the state-event stage runs only under the stage kinds -- see the
         ## docstring; say so once when the circuit declares events
         self._state_event_fracs = None
+        self._event_columns = None
         if state_events and not self.autonomous:
             _rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
             _method_se = getattr(self.par, 'method', 'euler')
@@ -13280,11 +13322,59 @@ class PAC(Analysis):
             ys, self.matvecs = self._solve_each(fp, alphas, rhs, tol)
 
         ## one driven replay per frequency turns `y_0` into the period
+        ## ⚠ THE BORDERED SIDEBAND RESPONSE (2026-09-22, events phase B).
+        ## On a solve whose grid was landed on state events, a periodic
+        ## perturbation moves the crossings: `y_end = M y_0 + w + P_theta
+        ## dtheta`, and the event rows close it -- `w_k . y(node_k) = 0`
+        ## with `y(node) = P_node y_0 + f_node + Pk_node dtheta` (the
+        ## homogeneous map to the node, the forced response there, the
+        ## event column there).  Solved by block elimination: the m x m
+        ## solve for the source and for each event column, then the K x K
+        ## Schur complement for `dtheta`.  A per-step saltation instead of
+        ## this read the dominant multiplier 28 % short of the exact total
+        ## (see `_state_event_stage`); the bordered system IS the
+        ## linearisation of the solve that produced the orbit.
+        _ev = getattr(pss, '_event_columns', None)
+        dthetas = [None] * len(freqs)
+        if _ev is not None and not self.deflated:
+            K = _ev['P_end'].shape[1]
+            Wk, nodes = np.asarray(_ev['W']), _ev['nodes']
+            for i, (f, a, y0) in enumerate(zip(freqs, alphas, ys)):
+                cols = [a * np.asarray(_ev['P_end'][:, k], dtype=complex) for k in range(K)]
+                Ycols, _ = self._solve_each(fp, [a] * K, cols, tol)
+                _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(m, dtype=complex),
+                                                  collect=True)
+                f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v, dtype=complex)[:m]
+                                                         for v in f_steps]
+                r = np.zeros(K, dtype=complex)
+                S = np.zeros((K, K), dtype=complex)
+                for k, nd in enumerate(nodes):
+                    Pn = _ev['P_nodes'][nd]
+                    r[k] = Wk[k] @ (Pn @ np.asarray(y0)[:m] + f_nodes[nd])
+                    for l in range(K):
+                        S[k, l] = Wk[k] @ (Pn @ np.asarray(Ycols[l])[:m] + _ev['Pk_nodes'][nd, :, l])
+                dth = -np.linalg.solve(S, r)
+                dthetas[i] = dth
+                ys[i] = np.asarray(y0, dtype=complex) + sum(Ycols[l] * dth[l] for l in range(K))
+        ## the crossings' modulation per frequency (fractions of the period
+        ## per unit source), None where the solve had no state events
+        self.event_shifts = list(dthetas)
         outfreq, outV = [], []
-        for f, y0 in zip(freqs, ys):
+        ## the complex time-domain response per frequency, `(times, y)` with
+        ## `y` the response to the source `u_ac e^{j w t}` at the grid's
+        ## nodes (reduced state); the sideband coefficients below are its
+        ## periodic envelope's Fourier coefficients by the period quadrature,
+        ## which on a strongly non-uniform grid is not an interpolating basis
+        ## -- a time-domain reading comes from here, not from summing them
+        self.time_response = []
+        for f, y0, dth in zip(freqs, ys, dthetas):
             _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0, collect=True)
             y = np.array([np.asarray(y0)[:m]] + [np.asarray(v)[:m]
                                                  for v in ysteps])
+            if dth is not None:
+                ## the crossings' motion at every node
+                y = y + np.tensordot(_ev['Pk_nodes'][:len(y)], dth, axes=(2, 0))
+            self.time_response.append((np.asarray(fp.times, dtype=float)[:len(y)], y.copy()))
             ## `v(t) = y(t) exp(-j w t)` is T-periodic; its DFT is the
             ## sideband set, exactly as the withdrawn body intended
             tms = np.asarray(fp.times, dtype=float)[:len(y)]
