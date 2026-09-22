@@ -4162,6 +4162,11 @@ class PSS(Analysis):
             self._event_columns = {'nodes': list(nodes_r), 'W': Wk, 'c': ck,
                                    'P_end': Pkm, 'Pk_nodes': Pk_nodes,
                                    'P_nodes': P_nodes, 'G': G, 'Gt': Gt}
+        ## the landed crossings join `event_times` (fractions of the
+        ## period) as the driven stage's do -- `covariance`, `sampled_noise`
+        ## and a reader of the solve see the same list either way
+        self.event_times = sorted(set([float(e) for e in self.event_times]
+                                      + [float(t) for t in th]))
         return (np.asarray(z_ss[:m], dtype=float), info, ier, mesg, Tn,
                 np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float))
 
@@ -6519,7 +6524,7 @@ class PSS(Analysis):
         out[rows] = va
         return out
 
-    def _ppv_propagate(self, fp, v, m, xdot, alg_rows, alg_cols):
+    def _ppv_propagate(self, fp, v, m, xdot, alg_rows, alg_cols, inject=None):
         """The pair-consistent SECOND-ORDER propagation of an anchor vector
         `v` over the period (the block `ppv()` applies to its null vector,
         lifted 2026-09-08 so `frequency_aware_ppv` can run it on a COMPLEX
@@ -6532,7 +6537,7 @@ class PSS(Analysis):
         _dt = complex if np.iscomplexobj(v) else float
         _alg_rows, _alg_cols = alg_rows, alg_cols
         self._ppv_alg_fallback = False
-        _end, _ts, states = fp.matvec_transposed(v, collect=True)
+        _end, _ts, states = fp.matvec_transposed(v, collect=True, inject=inject)
         states_pair = [np.array(st, dtype=_dt, copy=True) for st in states]
         _Xf = np.asarray(self.waveform[1], dtype=float)
         ## ⚠⚠ THE PAIR'S FIRST BLOCK IS NOT THE PPV, AND THE ERROR IS FIRST
@@ -6886,7 +6891,28 @@ class PSS(Analysis):
         would be O(h) at best.  The DAE gives it directly: `dq/dt + i(x) +
         u(t) = 0` and `dq/dt = C xdot`, so `q = -(i(x_0) + u(0))` -- two
         evaluations at the converged solution, no derivative anywhere.
-        """
+        
+        ⚠ ON A STAGED SOLVE (`state_events=True`) THE PPV IS BORDERED
+        (2026-09-22, events phase B): the null vector is that of the TOTAL
+        monodromy `M + P_theta dtheta/dx_0`, and the samples carry the
+        crossings' motion as costate injections `-zeta_k W_k` at the event
+        nodes, `zeta = Gt^-T P_theta^T v` -- one reverse pass, and it IS
+        the phase gradient at fixed time (the tail-restricted Newton plus
+        the node's own motion agrees with it to 1e-4).  VERIFIED against
+        the exact piecewise-linear PPV of a comparator relaxation
+        oscillator (linear flows joined by saltation matrices): every
+        sample within 0.4 % before, between and after the crossings,
+        where the fixed-grid PPV of the same solve is 140 % off before
+        the first crossing and its `M^T v - v` residual is 1.5.  ⚠ THE
+        TRANSIENT FD THAT WAS TO BE THE INSTRUMENT read `c` at +4.4e-8
+        for the exact -7.4e-9 s/V, converged in its own step, period to
+        4e-6, along the flow to 1e-4: its phase was read at the `c`
+        waveform's crossing of ``(max + min) / 2`` OF THE PERTURBED RECORD
+        -- a level the perturbation itself moved.  Read at the
+        comparator's own crossing it agrees with the exact value to 0.4 %.
+        An instrument's reference level must not come from the record it
+        measures.
+"""
         _tw = self.monodromy_twin()
         if _tw is not self:
             return _tw.ppv(tol)
@@ -6922,10 +6948,31 @@ class PSS(Analysis):
                 'at t=0 and there is nothing to normalise against. That '
                 'should not happen on a converged limit cycle.')
 
+        ## ⚠ ON A STAGED SOLVE THE MONODROMY IS THE TOTAL ONE (2026-09-22,
+        ## events phase B): a perturbation moves the crossings, `M_tot = M
+        ## + P_theta dtheta/dx_0`, and the PPV is its left null vector.
+        ## Its samples along the orbit carry the same correction as costate
+        ## injections at the event nodes -- `-zeta_k w_k`, `zeta = Gt^-T
+        ## P_theta^T v` -- which the reverse pass carries to every earlier
+        ## node: the saltation matrix's transpose, derived from the bordered
+        ## system rather than guessed.  A comparator oscillator's PPV jumps
+        ## at its switching instants, and this is where the jump comes from.
+        _ev = getattr(self, '_event_columns', None)
+        _ev = _ev if (_ev is not None and _ev['P_end'].shape[0] == n) else None
+        def _MtT(v_):
+            out = np.asarray(fp.matvec_transposed(v_))
+            if _ev is not None:
+                out = out + np.asarray(self._event_sensitivity).T @ (np.asarray(_ev['P_end']).T @ np.asarray(v_))
+            return out
+        def _Mt(u_):
+            out = np.asarray(fp.matvec(u_))
+            if _ev is not None:
+                out = out + np.asarray(_ev['P_end']) @ (np.asarray(self._event_sensitivity) @ np.asarray(u_))
+            return out
         def _mv(z):
             z = np.asarray(z)
             v_, y_ = z[:n], z[n]
-            top = v_ - fp.matvec_transposed(v_) + y_ * qp
+            top = v_ - _MtT(v_) + y_ * qp
             return np.concatenate((top, [float(qp @ v_)]))
 
         rtol = max(self.par.reltol * 1e-2 if tol is None else tol, 1e-14)
@@ -6946,7 +6993,7 @@ class PSS(Analysis):
                 'tangent is nearly orthogonal to the null direction the '
                 'bordering is poor.' % relres)
         v, y = z[:n], float(z[n])
-        resid = float(np.linalg.norm(v - fp.matvec_transposed(v)))
+        resid = float(np.linalg.norm(v - _MtT(v)))
 
         ## ⚠ THE SCALE NEEDS THE TANGENT, so the RIGHT null vector is solved
         ## for too -- by the same bordering, not by an eigendecomposition,
@@ -6955,7 +7002,7 @@ class PSS(Analysis):
         def _mvf(zz):
             zz = np.asarray(zz)
             u_, yy = zz[:n], zz[n]
-            top = u_ - fp.matvec(u_) + yy * qp
+            top = u_ - _Mt(u_) + yy * qp
             return np.concatenate((top, [float(qp @ u_)]))
 
         Af = spla.LinearOperator((n + 1, n + 1), matvec=_mvf, dtype=float)
@@ -7064,7 +7111,17 @@ class PSS(Analysis):
         ## an integral over the orbit.  `Phi(T,s)^T v(T) = v(s)`, and the
         ## reverse replay computes exactly that sequence on its way to the
         ## answer -- it was being discarded.
-        states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols)
+        _inject = None
+        if _ev is not None:
+            ## the event nodes' costate injections: the transpose of the
+            ## saltation, carried by the reverse pass to every earlier node
+            zeta = np.linalg.solve(np.asarray(_ev['Gt']).T, np.asarray(_ev['P_end']).T @ np.asarray(v))
+            _inject = np.zeros((len(fp.steps), n))
+            for k, nd in enumerate(_ev['nodes']):
+                if 0 <= nd < len(fp.steps):
+                    _inject[nd, :len(_ev['W'][k])] -= zeta[k] * np.asarray(_ev['W'][k])
+        states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols,
+                                                          inject=_inject)
         ## ⚠ INDEX >= 2 ON A NON-UNIFORM SOLVED-HISTORY GRID (2026-09-20, item
         ## 3 of "gear as a first-class choice on non-uniform grids"): the
         ## fallback above keeps only the differential block of the
@@ -13618,7 +13675,29 @@ class PAC(Analysis):
         ## user would see; the subspace recycling across frequencies is
         ## given up on the autonomous path (one bordered solve per point).
         self.deflated = bool(getattr(pss, 'autonomous', False))
+        _dth_f = [None] * len(freqs)
         if self.deflated:
+            ## ⚠ ON A STAGED OSCILLATOR (2026-09-22, events phase B) the
+            ## bordered system collapses onto the total map: with `dtheta
+            ## = dtheta/dx_0 y_0 + dtheta_f`, `dtheta_f = -Gt^-1 W f_node`
+            ## the source's own motion of the crossings, `(I - a M_tot)
+            ## y_0 = a (w + P_theta dtheta_f)` -- the deflated solve with
+            ## the total operator and this source.  Exact against the
+            ## piecewise-linear forced response (see the test); the plain
+            ## deflated solve on such a solve was 0.3-400x off.
+            _evd = getattr(pss, '_event_columns', None)
+            if _evd is not None and np.asarray(_evd['P_end']).shape[0] == fp.width:
+                _Wd, _ndd = np.asarray(_evd['W']), _evd['nodes']
+                _Gtd = np.asarray(_evd['Gt'], dtype=complex)
+                _Pthd = np.asarray(_evd['P_end'], dtype=complex)
+                for i, (f, a) in enumerate(zip(freqs, alphas)):
+                    _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(m, dtype=complex),
+                                                      collect=True)
+                    f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v_, dtype=complex)[:m]
+                                                             for v_ in f_steps]
+                    r_ = np.array([_Wd[k] @ f_nodes[nd] for k, nd in enumerate(_ndd)])
+                    _dth_f[i] = -np.linalg.solve(_Gtd, r_)
+                    rhs[i] = np.asarray(rhs[i], dtype=complex) + a * (_Pthd @ _dth_f[i])
             ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
                   for a, b in zip(alphas, rhs)]
             self.matvecs = None
@@ -13662,6 +13741,12 @@ class PAC(Analysis):
                 dth = -np.linalg.solve(S, r)
                 dthetas[i] = dth
                 ys[i] = np.asarray(y0, dtype=complex) + sum(Ycols[l] * dth[l] for l in range(K))
+        elif _ev is not None and self.deflated and _dth_f[0] is not None:
+            ## the crossings' motion on the staged oscillator: the state's
+            ## part through the total map's sensitivity plus the source's
+            _dthx = np.asarray(pss._event_sensitivity, dtype=float)
+            for i, y0 in enumerate(ys):
+                dthetas[i] = _dthx @ np.asarray(y0, dtype=complex)[:m] + _dth_f[i]
         ## the crossings' modulation per frequency (fractions of the period
         ## per unit source), None where the solve had no state events
         self.event_shifts = list(dthetas)
@@ -13673,13 +13758,21 @@ class PAC(Analysis):
         ## which on a strongly non-uniform grid is not an interpolating basis
         ## -- a time-domain reading comes from here, not from summing them
         self.time_response = []
+        _Pk_fixed = None
         for f, y0, dth in zip(freqs, ys, dthetas):
             _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0, collect=True)
             y = np.array([np.asarray(y0)[:m]] + [np.asarray(v)[:m]
                                                  for v in ysteps])
             if dth is not None:
-                ## the crossings' motion at every node
-                y = y + np.tensordot(_ev['Pk_nodes'][:len(y)], dth, axes=(2, 0))
+                ## the crossings' motion at every node, AT FIXED TIME --
+                ## `Pk_j - xdot_j tau_j^T` (2026-09-22): the response of "node
+                ## j" itself includes the node's motion along the orbit,
+                ## O(1) of the response on a staged oscillator; with the
+                ## motion removed the exact forced response is matched to
+                ## 1e-3 at every node (see `_fixed_time_event_columns`)
+                if _Pk_fixed is None:
+                    _Pk_fixed, _t_, _x_ = self._fixed_time_event_columns(pss)
+                y = y + np.tensordot(_Pk_fixed[:len(y)], dth, axes=(2, 0))
             self.time_response.append((np.asarray(fp.times, dtype=float)[:len(y)], y.copy()))
             ## `v(t) = y(t) exp(-j w t)` is T-periodic; its DFT is the
             ## sideband set, exactly as the withdrawn body intended
@@ -13930,8 +14023,36 @@ class PAC(Analysis):
             ## correct and cheaper.
             _ev = getattr(pss, '_event_columns', None)
             if getattr(pss, 'autonomous', False):
-                z = self._deflated_solve(pss, alpha, g, transposed=True,
-                                         tol=tol)
+                if _ev is not None and fp.kind in ('full', 'dirk'):
+                    ## ⚠ THE BORDERED ADJOINT ON A STAGED OSCILLATOR
+                    ## (2026-09-22): the transpose of the collapsed system
+                    ## -- the costate of `y_0` is `g + (dtheta/dx_0)^T
+                    ## g_theta` through the total operator (deflated), and
+                    ## the source's own motion of the crossings enters as
+                    ## `zeta = Gt^-T (g_theta + a P_theta^T z)` injected
+                    ## in a second reverse pass, as on the driven solve.
+                    K = _ev['P_end'].shape[1]
+                    nodes, Wk = _ev['nodes'], np.asarray(_ev['W'])
+                    _wq = pss._period_quadrature(fp)
+                    cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
+                                   * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
+                    _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)   # the output is read at FIXED times
+                    g_theta = np.array([np.sum(cn * (_Pkf[:N, :, kk] @ d)) for kk in range(K)])
+                    _dthx = np.asarray(pss._event_sensitivity, dtype=float)
+                    z = self._deflated_solve(pss, alpha, np.asarray(g, dtype=complex) + _dthx.T @ g_theta,
+                                             transposed=True, tol=tol)
+                    Pth = np.asarray(_ev['P_end'], dtype=complex)
+                    Gt_n = np.array([Wk[k] @ _ev['Pk_nodes'][nd] for k, nd in enumerate(nodes)])
+                    zeta = np.linalg.solve(Gt_n.T, g_theta + alpha * (Pth.T @ z))
+                    extra = {nd: -zeta[k] * Wk[k] for k, nd in enumerate(nodes)}
+                    if fp.kind == 'dirk':
+                        forced_ev, _g2 = pss._sideband_forced_dirk(fp, freq, l, np.zeros(m), extra=extra)
+                    else:
+                        forced_ev, _g2 = pss._sideband_forced_full(fp, freq, l, np.zeros(m), extra=extra)
+                    forced = forced + forced_ev
+                else:
+                    z = self._deflated_solve(pss, alpha, g, transposed=True,
+                                             tol=tol)
             elif _ev is not None and fp.kind in ('full', 'dirk'):
                 ## ⚠ THE BORDERED ADJOINT (2026-09-22, events phase B): the
                 ## transpose of `PAC.solve`'s bordered system.  With
@@ -13951,7 +14072,8 @@ class PAC(Analysis):
                 _wq = pss._period_quadrature(fp)
                 cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
                                * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
-                g_theta = np.array([np.sum(cn * (_ev['Pk_nodes'][:N, :, kk] @ d)) for kk in range(K)])
+                _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)   # the output is read at FIXED times
+                g_theta = np.array([np.sum(cn * (_Pkf[:N, :, kk] @ d)) for kk in range(K)])
                 z_g = self._gmres_checked(A, g, tol, 'the adjoint solve at sideband %d' % l)
                 Gn = np.array([Wk[k] @ _ev['P_nodes'][nd] for k, nd in enumerate(nodes)])
                 Z_G = np.column_stack([self._gmres_checked(
@@ -16015,6 +16137,168 @@ class PAC(Analysis):
                                      for c in range(m)])
         return dY[s - 1]
 
+    def _orbit_rate(self, pss, event_nodes):
+        """`xdot` at every node of the solved orbit (reduced width), by the
+        quadratic through three neighbouring nodes -- one-sided AT a landed
+        event (the crossing state belongs to the branch before it) and at
+        the node after one, central elsewhere, periodic at the ends.  The
+        rate is what converts a node's motion in time into a state change:
+        see `_event_closure`."""
+        ts = np.asarray(pss.waveform[0], dtype=float)
+        X = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                      pss.irefnode, axis=0)
+        N = len(ts) - 1
+        T = float(ts[-1] - ts[0])
+        ev = set(int(j) for j in event_nodes)
+        out = np.zeros((N + 1, X.shape[0]))
+
+        def _t(i):
+            k = i % N
+            return float(ts[k]) + T * ((i - k) // N)
+
+        for j in range(N + 1):
+            if j in ev or (j % N) in ev:
+                a, b, c = j - 2, j - 1, j
+            elif (j - 1) in ev or ((j - 1) % N) in ev:
+                a, b, c = j, j + 1, j + 2
+            else:
+                a, b, c = j - 1, j, j + 1
+            ta, tb, tc = _t(a), _t(b), _t(c)
+            xa, xb, xc = X[:, a % N], X[:, b % N], X[:, c % N]
+            tj = _t(j)
+            ## d/dt of the Lagrange parabola through (ta, xa), (tb, xb), (tc, xc)
+            out[j] = (xa * ((tj - tb) + (tj - tc)) / ((ta - tb) * (ta - tc))
+                      + xb * ((tj - ta) + (tj - tc)) / ((tb - ta) * (tb - tc))
+                      + xc * ((tj - ta) + (tj - tb)) / ((tc - ta) * (tc - tb)))
+        return out
+
+    def _fixed_time_event_columns(self, pss):
+        """The event columns at every node AT FIXED TIME: ``Pk_j - xdot_j
+        tau_j^T`` with `tau_j = sum_{i<j} dh_i/dtheta` (seconds) the node's
+        own motion when the crossings move (`_event_remap` scales the steps
+        between two crossings together) and `xdot_j` from `_orbit_rate`.
+        ⚠ The stored `Pk_nodes` are the derivatives of "the state at node
+        j", a point whose TIME moves with theta; a consumer that reports
+        a response or a covariance at the grid's times needs this form --
+        without it a noiseless ramp source reads 0.225 kT/C of a
+        threshold's noise (its node's share of the moving segment) and the
+        sideband response along a staged oscillator's orbit is O(1) off
+        the exact one while its period node is exact.  Returns
+        ``(Pk_fixed, tau, xdot)``."""
+        ev = pss._event_columns
+        th = np.asarray(pss._state_event_fracs, dtype=float)
+        _fr, hsens, _nd = pss._event_remap(
+            np.asarray(pss._grid_fracs, dtype=float), th, th, float(pss.period))
+        tau = np.vstack((np.zeros((1, len(th))),
+                         np.cumsum(np.asarray(hsens, dtype=float), axis=0)))
+        xdot = self._orbit_rate(pss, ev['nodes'])
+        Pk = np.asarray(ev['Pk_nodes'], dtype=float)
+        return Pk - xdot[:, :, None] * tau[:, None, :], tau, xdot
+
+    def _event_closure(self, pss, As, Qs, M, m, n):
+        """The BORDERED Lyapunov closure on a staged solve (2026-09-22,
+        events phase B), or `None` when the solve is not staged.
+
+        On a staged solve the state's linearised period map is not `M`
+        alone: the per-step noise `w_j` moves the landed crossings,
+        ``dtheta = -Gt^-1 (G dx_0 + sum_j d_j w_j)`` with ``d_j[k] = W_k
+        P_{nd_k <- j+1}`` (the event row's sensitivity to the noise of
+        step `j`), and the state at the period carries ``P_theta dtheta``.
+        Stationarity then closes on the TOTAL monodromy `M + P_theta
+        dtheta/dx_0` with the injection ``Q_tot = Cov(u - P_theta Gt^-1
+        v)``: ``[I, -P_theta Gt^-1] Cov([u; v]) [.]^T`` from ``Cov(u) =
+        K_1`` (the plain forward recursion), ``Cov(u, v) = E = Z_N`` with
+        ``Z_{j+1} = A_j Z_j + Q_j d_j^T`` and ``Cov(v) = D = sum_j d_j Q_j
+        d_j^T``.
+
+        ⚠ THE UNBORDERED CLOSURE ON A STAGED SOLVE IS NOT MERELY
+        INCOMPLETE, IT IS WRONG BY O(1): the landed window step's OWN
+        linearisation carries the threshold noise through the switch with
+        a gain the three collocation points invent -- a comparator-jitter
+        sampler (a noisy threshold, a hold capacitor on a second ramp)
+        read 3.8x its analytic held variance `(s_2/s_1)^2 kT/C_n`.  With
+        the crossing conditions pinned at both window edges the bordered
+        system cancels that internal sensitivity, which is why the
+        moving events must be unknowns of the noise problem too.
+
+        SAMPLES ARE AT FIXED TIMES.  The grid's nodes move with the
+        events (`_event_remap`: the steps between two crossings scale
+        together), so the covariance of "node j" would include the node's
+        own motion along the orbit -- ``xdot_j tau_j^T dtheta``, `tau_j =
+        sum_{i<j} dh_i/dtheta` -- an artefact the size of the physics (a
+        NOISELESS ramp source would read the threshold's kT/C).  The
+        sample is the state at the node's unperturbed time: ``Pk_j^fixed
+        = Pk_j - xdot_j tau_j^T``, ``R_j = P_{j<-0} + Pk_j^fixed dth``,
+        ``Cov_j = R_j K_0 R_j^T + K_j^fwd - Z_j Gt^-T Pk_j^T - Pk_j Gt^-1
+        Z_j^T + Pk_j Gt^-1 D Gt^-T Pk_j^T`` (`Pk_j` fixed throughout); at
+        `j = 0` this is `K_0` and at `j = N` it closes back to `K_0`.
+        ``dtheta`` depends on the noise of EVERY step, the future ones
+        included -- a crossing later in the period moves the node's time
+        now -- so the sample recursion is not causal step by step; the
+        period-level objects are exact.
+
+        Returns ``(M_tot, Q_tot, samples)`` with ``samples(K0)`` the list
+        of per-node covariances.  Built for the one-step hosts whose
+        per-step maps are the state maps (`n == m`: radau; trbdf2 borrows
+        its gear twin, which has no columns -- warned, unbordered)."""
+        ev = getattr(pss, '_event_columns', None)
+        if ev is None:
+            return None
+        N = len(As)
+        Pk_nodes = np.asarray(ev['Pk_nodes'], dtype=float)
+        if n != m or Pk_nodes.shape[0] != N + 1:
+            warnings.warn(
+                'PAC.covariance: the solve is staged on its state events, '
+                'but this Floquet host (%s, %d steps for %d event-column '
+                'nodes) is not the one the event columns were built on -- '
+                'the closure runs UNBORDERED and its answer through the '
+                'switching instants is not to be trusted. Solve with '
+                'method=\'radau\' for the bordered closure.'
+                % (getattr(pss.par, 'method', '?'), N, Pk_nodes.shape[0] - 1),
+                RuntimeWarning, stacklevel=3)
+            return None
+        nodes = [int(j) for j in ev['nodes']]
+        W = [np.asarray(w, dtype=float).ravel() for w in ev['W']]
+        K = len(nodes)
+        P_end = np.asarray(ev['P_end'], dtype=float)
+        P_nodes = np.asarray(ev['P_nodes'], dtype=float)
+        Gt = np.asarray(ev['Gt'], dtype=float)
+        dth = np.asarray(pss._event_sensitivity, dtype=float)
+        ## d_j[k] = W_k A_{nd_k - 1} ... A_{j+1}: the event row's response to
+        ## the noise landing at node j+1 (zero once the crossing is past)
+        d = np.zeros((N, K, m))
+        for k, nd in enumerate(nodes):
+            r = W[k].copy()
+            for j in range(nd - 1, -1, -1):
+                d[j, k] = r
+                r = r @ As[j]
+        Z = np.zeros((N + 1, m, K))
+        Kf = np.zeros((N + 1, m, m))
+        D = np.zeros((K, K))
+        for j in range(N):
+            Z[j + 1] = As[j] @ Z[j] + Qs[j] @ d[j].T
+            Kf[j + 1] = As[j] @ Kf[j] @ As[j].T + Qs[j]
+            D = D + d[j] @ Qs[j] @ d[j].T
+        Gi = np.linalg.inv(Gt)
+        E = Z[N]
+        M_tot = M + P_end @ dth
+        Q_tot = (Kf[N] - E @ Gi.T @ P_end.T - P_end @ Gi @ E.T
+                 + P_end @ Gi @ D @ Gi.T @ P_end.T)
+        Q_tot = 0.5 * (Q_tot + Q_tot.T)
+        Pk_fixed, _tau, _xdot = self._fixed_time_event_columns(pss)
+
+        def samples(K0):
+            seq = []
+            for j in range(N + 1):
+                Pkf = Pk_fixed[j]
+                Rj = P_nodes[j] + Pkf @ dth
+                Cj = (Rj @ K0 @ Rj.T + Kf[j]
+                      - Z[j] @ Gi.T @ Pkf.T - Pkf @ Gi @ Z[j].T
+                      + Pkf @ Gi @ D @ Gi.T @ Pkf.T)
+                seq.append(0.5 * (Cj + Cj.T))
+            return seq
+        return M_tot, Q_tot, samples
+
     def covariance(self, pss, samples=False):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
 
@@ -16134,7 +16418,14 @@ class PAC(Analysis):
 
         ⚠ COST: the solve has `(2m)^2` unknowns and is dense here, so it is
         `O(m^4)`.  Small circuits only until that is replaced.
-        """
+        
+        ⚠ ON A STAGED SOLVE (`state_events=True`) THE CLOSURE IS BORDERED
+        (2026-09-22): the noise moves the landed crossings, and the plain
+        closure on such a solve is wrong by O(1), not merely incomplete --
+        see `_event_closure` for the algebra and the comparator-jitter
+        sampler that measured 3.8x its analytic held variance unbordered
+        and 0.999 bordered.  Samples are the covariance at FIXED times.
+"""
         self._check_circuit(pss)
         if getattr(pss, 'autonomous', False):
             raise ValueError(
@@ -16151,11 +16442,18 @@ class PAC(Analysis):
         ## `_lyapunov_host`
         pss = pss._lyapunov_host()
         As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
+        ## a staged solve closes on the TOTAL monodromy with the events'
+        ## noise-driven motion in the injection -- see `_event_closure`
+        bordered = self._event_closure(pss, As, Qs, M, m, n)
+        if bordered is not None:
+            M, K1, _samples = bordered
         S = np.eye(n * n) - np.kron(M, M)
         K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
         K0 = 0.5 * (K0 + K0.T)
         if not samples:
             return K0
+        if bordered is not None:
+            return K0, _samples(K0)
         seq, K = [K0], K0
         for A, Q in zip(As, Qs):
             K = A @ K @ A.T + Q
@@ -18960,6 +19258,11 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
             bands.append(p)
         return S_am, S_pm, bands
 
+    ## `|1 - alpha|` below which the deflated answer is left as recovered:
+    ## nearer a harmonic than this the plain operator is singular at the
+    ## arithmetic (an unstaged radau map's multiplier sits at 1e-11 from 1)
+    DEFLATION_REFINE_MIN = 1e-8
+
     def _deflated_solve(self, pss, alpha, b, transposed=False, tol=None):
         """`(I - alpha M) y = b` on an OSCILLATOR, with the pole taken out.
 
@@ -19023,7 +19326,34 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
                 'PAC: the PPV is orthogonal to the orbit tangent, so the '
                 'bordering is singular and the pole cannot be removed.')
         col, row = (v, u) if transposed else (u, v)
+        ## ⚠ THE BORDER VECTORS ARE NORMALISED (2026-09-22): the recovery
+        ## `y = w + s col / (1 - alpha)` is scale-free in exact arithmetic,
+        ## but GMRES sees the bordered MATRIX, and with the tangent in V/s
+        ## (1e6 on a comparator oscillator) against the PPV in s/V (1e-6)
+        ## its condition number was 1.8e9 where `I - alpha M` alone was
+        ## 2.4 -- the forward solve returned with a 5.5e-4 residual and
+        ## the transposed one did not converge at all.  Unit vectors put
+        ## the bordering at the operator's own conditioning; `s` absorbs
+        ## the scale.
+        col = col / max(float(np.linalg.norm(col)), 1e-300)
+        row = row / max(float(np.linalg.norm(row)), 1e-300)
         mv = (fp.matvec_transposed if transposed else fp.matvec)
+        ## ⚠ ON A STAGED SOLVE THE POLE IS THE TOTAL MAP'S (2026-09-22,
+        ## events phase B): `u`, `v` are the null vectors of `I - M_tot`,
+        ## `M_tot = M + P_theta dtheta/dx_0`, and the fixed-grid `M` has no
+        ## unit multiplier at all (|lambda - 1| = 0.99 on the comparator
+        ## oscillator) -- bordered with the total map's vectors it read
+        ## the sideband response 0.3-400x off the exact one.  The
+        ## operator here is the total map's.
+        _ev = getattr(pss, '_event_columns', None)
+        if _ev is not None and np.asarray(_ev['P_end']).shape[0] == n:
+            _Pth = np.asarray(_ev['P_end'], dtype=float)
+            _dth = np.asarray(pss._event_sensitivity, dtype=float)
+            _mv0 = mv
+            if transposed:
+                mv = lambda z_: np.asarray(_mv0(z_)) + _dth.T @ (_Pth.T @ np.asarray(z_))
+            else:
+                mv = lambda z_: np.asarray(_mv0(z_)) + _Pth @ (_dth @ np.asarray(z_))
         b = np.asarray(b, dtype=complex).ravel()
 
         def _mv(z):
@@ -19045,7 +19375,43 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
                 'where 1/(1 - alpha) is a division by zero and the physical '
                 'response is unbounded. The pole is removed from the '
                 'CONDITIONING, not from the answer.')
-        return w + s * col / denom
+        y = w + s * col / denom
+        ## ⚠ REFINED ON THE PLAIN OPERATOR WHERE THAT IS WELL CONDITIONED
+        ## (2026-09-22): the recovery assumes `u`, `v` are EXACT null
+        ## vectors of `I - M`.  On a staged solve the discrete total map's
+        ## unit multiplier is displaced by O(h) (8e-4 at 200 points on the
+        ## comparator oscillator, 4e-4 at 400; an unstaged radau map sits
+        ## at 1e-11), and the recovered `y` then misses the true operator
+        ## by that much over `|1 - alpha|`: 5.5e-4 at 0.3 f0, 0.14 at
+        ## 1.001 f0.  The plain operator is well conditioned there (2.4 at
+        ## 0.3 f0, 310 at 1.001 f0, 2e3 at 1.00001 f0 -- its pole sits
+        ## where the DISCRETE multiplier is, not at alpha = 1), so the
+        ## deflated answer seeds a plain correction on its own residual,
+        ## kept only if it lowers the residual; below
+        ## `DEFLATION_REFINE_MIN` the deflated answer stands.  ⚠ This makes
+        ## the forward and adjoint solves the discrete operator's own,
+        ## dual-consistent -- and near a harmonic the discrete operator's
+        ## answer carries the multiplier's displacement: 15.7 % off the
+        ## exact forced response at 1.001 f0 on the 200-point staged
+        ## comparator oscillator (0.2 % at 0.3 f0 and 1.7 f0), where the
+        ## unrefined recovery, which carries the pole analytically at
+        ## alpha = 1, happened to read 0.2 % but is not dual-consistent
+        ## (4.5e-4 at 0.3 f0) and has its own O(h/|1 - alpha|) split
+        ## error.  The item is the staged map's multiplier (roadmap E8).
+        ## On an unstaged oscillator the residual is already at the
+        ## tolerance and nothing happens.
+        if abs(denom) >= self.DEFLATION_REFINE_MIN:
+            def _plain(z_):
+                z_ = np.asarray(z_)
+                return z_ - alpha * np.asarray(mv(z_))
+            r0 = b - _plain(y)
+            scale = max(float(np.linalg.norm(b)), 1e-300)
+            if float(np.linalg.norm(r0)) / scale > rt:
+                dy, _rr, _H2, _k2 = _arnoldi_gmres(_plain, r0, rtol=rt,
+                                                   maxiter=min(n, 200))
+                if float(np.linalg.norm(b - _plain(y + dy))) < float(np.linalg.norm(r0)):
+                    y = y + dy
+        return y
 
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""

@@ -8687,6 +8687,80 @@ sum).  **What would close it:** build `S_corr` — eq (26) from eq (20)'s
 `diffusion_constant` already runs — and require `R → 1` on this sweep.  New
 scope; waits for a decision.  Record: "orbital_spectrum amplitude" in the log.
 
+### E7. `Transient` at state events — OPEN (Andreas, 2026-09-22: "Add fixing the transient at events to our list of items to do")
+
+`Transient` lands only SOURCE events (`break_events`: a `VPulse`'s corners).
+A STATE event — a comparator's crossing, a `VSwitch` window — is met by LTE
+rejection alone: on the sharp comparator oscillator (0.04 ns window) the
+default gear2 at reltol 1e-9 resolved each crossing with 24–99 steps, read
+the period to 4e-6 and the phase response to 0.45 % of the exact saltation
+PPV (once the instrument read its phase at the comparator's crossing — the
++4.4e-8 that first pointed at the transient was the instrument's own level,
+`(max+min)/2` of the perturbed record).  So the transient is not WRONG at a
+resolved crossing; it is expensive there, and at looser tolerances a step
+that straddles the crossing costs gear2 its order (the PSS phase-A lesson:
+every method first order at an unlanded jump).  The item: detect a declared
+state event (`Circuit.state_events()` rows, both window edges) inside a
+step, cut the step to the crossing (secant / one Newton on the fraction,
+the PSS stage's `_land_fractions` snap rule in one dimension), restart the
+multistep history there as `event_grid` does for sources, and expose the
+crossing times.  Gate: the sharp oscillator's period and PPV instrument at
+reltol 1e-6 against the exact ones (`_exact_relaxation_oscillator_ppv`),
+and the step count against today's LTE-only run.
+
+Where it goes (read 2026-09-22): `Transient.solve`'s step loop already cuts
+`dt` to the next source breakpoint (`was_break_step`, `breakpoints_hit`,
+the history restart a corner gets) — the state event reuses that path.
+After `solve_timestep` returns `x` at `next_t`: for every declared row,
+`s0 = row·X[-1] − c`, `s1 = row·x − c`; a sign change means a crossing
+inside the step.  Locate it by a secant on the step FRACTION (re-solve the
+step with `dt·f`, two or three times; the crossing state is smooth up to
+the switch), accept the shortened step as a break step (history restart as
+for a corner), record the time in the result's `event_times`, and let the
+next step start ON the crossing.  Both window edges are rows, so the
+window is stepped exactly as the PSS stage lands it.  ⚠ E8's lesson
+applies here too: with `VSwitch`'s tanh the transition is not inside the
+window — landing the edges buys the order only with a compact transition.
+
+### E8. The STAGED map's unit multiplier is first order — ✅ EXPLAINED the same day: `VSwitch`'s tanh TAILS, not the stage (decision pending: the switch's transition law)
+
+Measured (`e8_window_ladder.py`, `e8_tanh_tails.py`): the window sub-grid
+count 8 → 64 changes nothing (`|λ₀−1|` 9.88e-4 and the period −2.19e-4 at
+200 points, identically); a compactly supported C² smoothstep inside
+`[Voff, Von]` (monkeypatched `i` and `G`, nothing else) gives `|λ₀−1|` =
+3.1e-13 / 3.2e-14 / 1.1e-14 at 100 / 200 / 400 points and the staged period
+within −8.8e-7 / −1.0e-7 / −8.1e-8 of the EXACT ideal-comparator period.
+The stage is fifth-order exact; `VSwitch.eval_i_pure` is `(tanh(2 x_norm) +
+1)/2` with `x_norm = ±0.5` at the edges, so 12 % of the swing sits OUTSIDE
+the declared window on each side, in the coarse steps between events —
+that is the first-order error, in every consumer (period, multiplier, PPV
+tails, near-carrier sideband response).  Options for the maintainer: (a) a
+compact transition on `[Voff, Von]` (the parameters mean what they say;
+every VSwitch result moves slightly, pinned numbers with it); (b) keep the
+tanh and declare the state events at ±2.5 windows (tanh(5): 4.5e-5 outside),
+landing a 5× wider window; (c) both.  Recommended: (a).
+
+
+The total monodromy `M + P_θ dθ/dx₀` of a staged solve is FD-exact against
+the discrete staged map, but that map's unit multiplier converges slowly:
+`|λ₀−1|` = 2.3e-3 / 9.9e-4 / 4.2e-4 / 1.2e-4 at 100 / 200 / 400 / 800
+radau points on the sharp comparator oscillator, where the unstaged
+soft-window one reads 4.7e-3 / 1.9e-6 / 5.7e-12 / 5.7e-15.  The staged
+period against the EXACT ideal-comparator period: −6.7e-4 / −2.2e-4 /
+−9.6e-5 / −2.7e-5 (the "+8.1e-7 at 800" in the autonomous-stage entry was
+against a staged 1600-point reference that carries the same convergence).
+Consequences: near a harmonic the sideband response is off by `|λ−1|/|1−α|`
+(15.7 % at 1.001 f0, 200 points) and the deflation's null vectors are
+inexact to the same degree.  ⚠ The reference is an IDEAL comparator and the
+fixture's 0.2 mV window is itself O(3e-5) of the period — the period
+ladder's tail may be the window; the multiplier's 1.2e-4 at 800 is not.
+Plan: (1) a windowed exact model — the window as a third piece (conductance
+linear in the control voltage) integrated at 1e-12 — to separate the
+window from the stage; (2) ladders with the window sub-grid count
+(`EVENT_WINDOW_STEPS` 8 → 16 → 32), without the snap, without the ramp;
+(3) the PPV samples' convergence on the same ladder (0.08–0.33 % at 200,
+0.05–0.4 % at 400 — floored by the nearest-state comparison at 2.5e-4).
+
 ### Already recorded elsewhere, listed so they are not re-raised as missing
 
   - **Wright §3.11's local-error minimisation** — ⏸ OPTION FOR LATER, not now

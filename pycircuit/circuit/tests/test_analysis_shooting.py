@@ -10558,35 +10558,41 @@ def _osc_for_deflation(Q=15.92, npts=400):
 
 
 def test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV():
-    """⚠⚠ THE BORDER ROW'S ACCURACY DOES NOT ENTER THE ANSWER. The border
-    COLUMN'S DOES, linearly. That asymmetry is not obvious and it decides
-    where effort belongs.
+    """⚠⚠ THE BORDER ROW'S ACCURACY DOES NOT ENTER THE ANSWER; the border
+    COLUMN'S enters linearly -- BELOW THE REFINEMENT GATE.  Above it, since
+    2026-09-22, neither does.
 
     The natural reading of a bordered solve is that it "consumes the null
-    vectors", so its accuracy is capped by how well they are known. That
+    vectors", so its accuracy is capped by how well they are known.  That
     reading is HALF WRONG, and the half matters:
-
-      - `v` (the PPV) enters only as the constraint row `v^T w = 0`. For
+      - `v` (the PPV) enters only as the constraint row `v^T w = 0`.  For
         `alpha != 1` the system `(I - alpha M) y = b` is NONSINGULAR, so
         `y` is already determined by `b` alone; the border merely picks a
-        well-conditioned route to it. Any `v` not orthogonal to the null
+        well-conditioned route to it.  Any `v` not orthogonal to the null
         direction gives the SAME `y`.
       - `u` (the orbit tangent) enters the RECONSTRUCTION,
-        `y = w + s u / (1 - alpha)`. An error there is an error in the
-        answer, and it passes straight through.
-
+        `y = w + s u / (1 - alpha)`.  An error there is an error in the
+        answer, and it passes straight through -- UNLESS the answer is
+        then refined on the plain operator, which `_deflated_solve` does
+        wherever `|1 - alpha| >= DEFLATION_REFINE_MIN` (1e-8): the
+        refined answer is the operator's own and neither border vector
+        is load-bearing any more.
     Measured through the shipped `_deflated_solve` (relative move in `y`):
-
-        perturbation   border ROW (v)    border COLUMN (u)
-          1e-10          2.9e-14             7.7e-11
-          1e-08          9.2e-15             9.0e-09
-          1e-06          1.6e-15             1.1e-06
-          1e-04          2.7e-14             1.0e-04
-          1e-02          3.1e-15             7.8e-03
-
+        offset 1e-6 f0 (refined, |1 - alpha| 6e-6):
+          perturbation   border ROW (v)    border COLUMN (u)
+            1e-08          6.3e-11             3.7e-10
+            1e-04          2.8e-10             2.5e-10
+            1e-02          1.4e-10             5.0e-10
+        offset 1e-10 f0 (below the gate, |1 - alpha| 6e-10):
+            1e-08          1.2e-14             1.0e-08
+            1e-04          5.9e-15             2.1e-04
+            1e-02          9.8e-15             6.0e-03
     ⚠ SO A MORE ACCURATE PPV BUYS NOTHING HERE, and a more accurate orbit
-    tangent buys everything. Anyone tempted to tighten `ppv()`'s tolerance
-    to improve a PAC result is optimising the wrong vector.
+    tangent buys everything only within 1e-8 of a harmonic.  Anyone
+    tempted to tighten `ppv()`'s tolerance to improve a PAC result is
+    optimising the wrong vector; and on a STAGED solve, whose discrete
+    unit multiplier is displaced by O(h), the refinement is what makes
+    the forward and adjoint solves agree (the staged-oscillator PAC test).
     """
     _cir, pss = _osc_for_deflation()
     fp = pss.factored_period()
@@ -10594,51 +10600,48 @@ def test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV():
     pac = PAC(_cir)
     rng = np.random.default_rng(1)
     b = rng.standard_normal(n).astype(complex)
-    ## one part in 1e6 off the carrier -- near, but not AT, the harmonic
-    alpha = np.exp(-2j * np.pi * (1.0 + 1e-6))
-
     true_v, true_info = pss.ppv()
     true_v = np.asarray(true_v, float)
     true_u = np.asarray(true_info['tangent_pair'], float)
-    ref = pac._deflated_solve(pss, alpha, b)
-    scale = float(np.linalg.norm(ref))
-    assert scale > 1.0, \
-        'the deflated answer is ~zero (%.3e), so the comparisons below ' \
-        'would be vacuous' % scale
-
     orig = pss.ppv
     try:
-        for eps in (1e-8, 1e-4, 1e-2):
-            d1 = rng.standard_normal(n)
-            d1 /= np.linalg.norm(d1)
-            d2 = rng.standard_normal(n)
-            d2 /= np.linalg.norm(d2)
-            vp = true_v + eps * np.linalg.norm(true_v) * d1
-            up = true_u + eps * np.linalg.norm(true_u) * d2
-
-            pss.ppv = lambda *a, **k: (vp, dict(true_info,
-                                                tangent_pair=true_u))
-            ev = float(np.linalg.norm(
-                pac._deflated_solve(pss, alpha, b) - ref)) / scale
-            pss.ppv = lambda *a, **k: (true_v, dict(true_info,
-                                                    tangent_pair=up))
-            eu = float(np.linalg.norm(
-                pac._deflated_solve(pss, alpha, b) - ref)) / scale
-            pss.ppv = orig
-
-            assert ev < 1e-11, \
-                'the border ROW now changes the answer (%.3e at eps=%.0e). ' \
-                'If that is real, the deflated solve has stopped being a ' \
-                'reformulation of a nonsingular system and the PPV\'s ' \
-                'accuracy has become load-bearing' % (ev, eps)
-            assert eu > 0.05 * eps, \
-                'the border COLUMN no longer propagates linearly (%.3e at ' \
-                'eps=%.0e); the tangent is supposed to enter the ' \
-                'reconstruction directly' % (eu, eps)
-            assert eu > 1e3 * max(ev, 1e-16), \
-                'the two vectors now matter comparably (row %.3e against ' \
-                'column %.3e at eps=%.0e); the asymmetry this test exists ' \
-                'to record is gone' % (ev, eu, eps)
+        ## one part in 1e6 off the carrier (refined on the plain operator)
+        ## and one part in 1e10 (below the refinement gate: the recovery alone)
+        for offset, refined in ((1e-6, True), (1e-10, False)):
+            alpha = np.exp(-2j * np.pi * (1.0 + offset))
+            ref = pac._deflated_solve(pss, alpha, b)
+            scale = float(np.linalg.norm(ref))
+            assert scale > 1.0, \
+                'the deflated answer is ~zero (%.3e), so the comparisons ' \
+                'below would be vacuous' % scale
+            for eps in (1e-8, 1e-4, 1e-2):
+                d1 = rng.standard_normal(n)
+                d1 /= np.linalg.norm(d1)
+                d2 = rng.standard_normal(n)
+                d2 /= np.linalg.norm(d2)
+                vp = true_v + eps * np.linalg.norm(true_v) * d1
+                up = true_u + eps * np.linalg.norm(true_u) * d2
+                pss.ppv = lambda *a, **k: (vp, dict(true_info, tangent_pair=true_u))
+                ev = float(np.linalg.norm(pac._deflated_solve(pss, alpha, b) - ref)) / scale
+                pss.ppv = lambda *a, **k: (true_v, dict(true_info, tangent_pair=up))
+                eu = float(np.linalg.norm(pac._deflated_solve(pss, alpha, b) - ref)) / scale
+                pss.ppv = orig
+                if refined:
+                    assert ev < 1e-8 and eu < 1e-8, (offset, eps, ev, eu)
+                    continue
+                assert ev < 1e-11, \
+                    'the border ROW now changes the answer (%.3e at eps=%.0e). ' \
+                    'If that is real, the deflated solve has stopped being a ' \
+                    'reformulation of a nonsingular system and the PPV\'s ' \
+                    'accuracy has become load-bearing' % (ev, eps)
+                assert eu > 0.05 * eps, \
+                    'the border COLUMN no longer propagates linearly (%.3e at ' \
+                    'eps=%.0e); the tangent is supposed to enter the ' \
+                    'reconstruction directly' % (eu, eps)
+                assert eu > 1e3 * max(ev, 1e-16), \
+                    'the two vectors now matter comparably (row %.3e against ' \
+                    'column %.3e at eps=%.0e); the asymmetry this test exists ' \
+                    'to record is gone' % (ev, eu, eps)
     finally:
         pss.ppv = orig
 
@@ -25020,9 +25023,16 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
 
     e = 1e-4
     zp, Xp, tms = solve_fixed_base(e)
-    zm, Xm, _ = solve_fixed_base(-e)
+    zm, Xm, tms_m = solve_fixed_base(-e)
     d = (Xp - Xm) / (2 * e)
     dth_fd = (zp[m:] - zm[m:]) / (2 * e)
+    ## the FD reads "node j" of the two solves, whose TIME moved with the
+    ## crossings; the response PAC reports is at FIXED times (2026-09-22),
+    ## so take the node's motion out with the orbit's rate -- the
+    ## fixed-time form itself is exact-verified on the autonomous fixture
+    ## (`test_the_sideband_response_on_a_staged_oscillator_is_bordered...`)
+    _rate = PAC(cir, toolkit=circuit.numeric)._orbit_rate(p0, p0._event_columns['nodes'])   # (N+1, m)
+    d = d - _rate.T[:, :d.shape[1]] * ((tms - tms_m)[:d.shape[1]] / (2 * e))[None, :]
     names = [str(n_) for i, n_ in enumerate(cir.nodes) if i != p0.irefnode]
     errs = {}
     for bordered in (True, False):
@@ -25042,7 +25052,14 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
             assert np.max(np.abs(sh - dth_fd)) < 1e-6 * np.max(np.abs(dth_fd)), (sh, dth_fd)
     p0._event_columns = ev
     assert errs[True]['out'] < 1e-6 and errs[True]['fb'] < 1e-6, errs
-    assert errs[False]['out'] > 0.1 and errs[False]['fb'] > 0.03, errs     # 0.55 / 0.057 at 60 points
+    ## ⚠ RE-PINNED 2026-09-22 with the fixed-time instrument: the unbordered
+    ## response is 3.1 % / 4.9 % off at 60 points (out / fb), NOT the 55 % /
+    ## 5.7 % first recorded -- that 55 % was mostly the moving-node artefact
+    ## the old instrument shared with the old `time_response`.  The
+    ## bordering's gain on this driven loop is real but modest; the O(1)
+    ## cases are the staged oscillator's sideband response and the
+    ## covariance closure (their own tests).
+    assert errs[False]['out'] > 0.02 and errs[False]['fb'] > 0.03, errs     # 0.031 / 0.049 at 60 points
 
 
 def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve():
@@ -25252,3 +25269,444 @@ def test_gears_state_event_stage_carries_both_step_partials_and_lands_the_crossi
     es = np.max(np.abs(vs - ref(tss))) / swing
     eu = np.max(np.abs(vu - ref(tsu))) / swing
     assert es <= eu, (es, eu)
+
+
+def _jitter_sampler(T=1e-6, V1=5.0, V2=10.0):
+    """A comparator-jitter sampler -- the analytic gate for the bordered
+    Lyapunov closure.  A sawtooth (slope `s1 = V1 / 0.9T`) crosses a NOISY
+    threshold node `n` (`Vref` through `R_n` into `C_n`: `kT/C_n`); the
+    crossing opens a VSwitch that disconnects a hold capacitor from a
+    SECOND ramp (slope `s2 = V2 / 0.9T`).  The held value is `ramp2(t_c)`
+    and the crossing jitters by `-dn / s1`, so ``Var(hold) = (s2/s1)^2
+    kT/C_n`` -- reachable only through the crossing's motion: the switch
+    has no noise model and the sources none."""
+    from pycircuit.circuit import VSwitch
+    cir = SubCircuit()
+    for nm in ('saw', 'r2', 'ref', 'n', 'hold'):
+        cir.add_node(nm)
+    cir['Vsaw'] = VPulse('saw', gnd, v1=0.0, v2=V1, td=0.0, tr=0.9 * T,
+                         tf=0.05 * T, pw=0.0, per=T, vac=0.0)
+    cir['Vr2'] = VPulse('r2', gnd, v1=0.0, v2=V2, td=0.0, tr=0.9 * T,
+                        tf=0.05 * T, pw=0.0, per=T, vac=0.0)
+    cir['Vref'] = VS('ref', gnd, v=2.5, vac=0.0)
+    cir['Rn'] = R('ref', 'n', r=1e4)
+    cir['Cn'] = C('n', gnd, c=1e-12)
+    ## ON while saw < n; the 0.2 mV window is 36 ps on the slope
+    cir['S'] = VSwitch('hold', 'r2', 'n', 'saw', Ron=10.0, Roff=1e9,
+                       Von=1e-4, Voff=-1e-4)
+    cir['Ch'] = C('hold', gnd, c=1e-11)
+    return cir
+
+
+def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_moving_events():
+    """Events phase B (2026-09-22): `PAC.covariance` on a staged solve
+    closes on the TOTAL monodromy with the noise-driven motion of the
+    crossings in the injection, and samples at FIXED times.
+
+    Measured on `_jitter_sampler` at 100 / 200 / 400 points (radau):
+    bordered held variance 0.9991 / 0.9992 / 0.9992 of the analytic
+    `(s2/s1)^2 kT/C_n` (flat in the count -- the residual is the 100 ps
+    tracking lag of the fixture, not the grid); the UNBORDERED closure on
+    the same staged solve reads 4.08 / 3.79 / 3.29 -- the landed window
+    step's own linearisation carries the threshold noise into the hold
+    with a gain the collocation points invent.  And the node-rate
+    correction is not decoration: without it the NOISELESS sawtooth
+    source reads 0.225 kT/C_n at t = 0.7T -- exactly its node's share of
+    the moving segment, ((0.925 - 0.7) / (0.925 - 0.45))^2."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    cir = _jitter_sampler(T)
+    pss = PSS(cir, method='radau', reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 100, maxiterations=100,
+                  state_events=True)
+    assert pss.converged
+    ## the turn-off crossing lands at 0.45 T (saw = 2.5 V), both edges
+    fr = sorted(float(e) for e in pss.event_times if 0.1 < e < 0.9)
+    assert len(fr) == 2 and abs(fr[0] - 0.45) < 1e-4 and abs(fr[1] - 0.45) < 1e-4
+    names = [str(n) for n in cir.nodes]
+    red = [n for i, n in enumerate(names) if i != pss.irefnode]
+    ih, inn, isaw = red.index('hold'), red.index('n'), red.index('saw')
+    ts = np.asarray(pss.waveform[0], dtype=float)
+    kT = 1.380649e-23 * 300.0
+    exp_n = kT / 1e-12
+    exp_h = 4.0 * exp_n
+    pac = PAC(cir, toolkit=circuit.numeric)
+    K0, seq = pac.covariance(pss, samples=True)
+    assert len(seq) == len(ts)
+    assert np.linalg.norm(seq[-1] - K0) / np.linalg.norm(K0) < 1e-8
+    var_n = np.mean([K[inn, inn] for K in seq])
+    assert abs(var_n / exp_n - 1.0) < 5e-3, var_n / exp_n
+    held = seq[int(np.searchsorted(ts, 0.7 * T))][ih, ih]
+    assert abs(held / exp_h - 1.0) < 5e-3, held / exp_h
+    ## the hold is flat while held, silent while tracking
+    for ph in (0.5, 0.6, 0.8):
+        assert abs(seq[int(np.searchsorted(ts, ph * T))][ih, ih] / held - 1.0) < 1e-3
+    assert seq[int(np.searchsorted(ts, 0.2 * T))][ih, ih] < 1e-6 * exp_h
+    ## a noiseless source carries no variance -- the samples are at fixed times
+    j7 = int(np.searchsorted(ts, 0.7 * T))
+    assert seq[j7][isaw, isaw] < 1e-9 * exp_n, seq[j7][isaw, isaw] / exp_n
+    ## the unbordered closure on the same solve is wrong by O(1)
+    ev = pss._event_columns
+    pss._event_columns = None
+    try:
+        _K0u, sequ = pac.covariance(pss, samples=True)
+    finally:
+        pss._event_columns = ev
+    assert sequ[j7][ih, ih] / exp_h > 2.5, sequ[j7][ih, ih] / exp_h
+    ## and the node-rate correction is what keeps the source silent
+    orig = PAC._orbit_rate
+    PAC._orbit_rate = lambda self, p, nodes: np.zeros((len(p.waveform[0]), p.cir.n - 1))
+    try:
+        _K0z, seqz = pac.covariance(pss, samples=True)
+    finally:
+        PAC._orbit_rate = orig
+    share = ((0.925 - ts[j7] / T) / (0.925 - 0.45)) ** 2
+    assert abs(seqz[j7][isaw, isaw] / exp_n / share - 1.0) < 2e-2, (seqz[j7][isaw, isaw] / exp_n, share)
+
+
+def _exact_relaxation_oscillator_ppv():
+    """The EXACT PPV of `_comparator_relaxation_oscillator` with an ideal
+    comparator: the flow is linear in each switch state (c shorted through
+    `Ron`, or `Roff`), the states (c, fb0, fb1), and the period map is the
+    two matrix exponentials joined by saltation matrices ``I + (f+ - f-)
+    h^T / (h . f-)`` at the crossings of ``h = fb1 - 2.5``.  Returns
+    ``(T, sample)`` with ``sample(x)`` the PPV (``v . f = 1``) at the
+    orbit point nearest the state `x = (c, fb0, fb1)`."""
+    from scipy.linalg import expm, null_space
+    from scipy.optimize import fsolve
+    R1 = R2 = R3 = 1e3
+    C1, C2, C3 = 1e-9, 3e-10, 3e-10
+    VDD, VREF, RON, ROFF = 5.0, 2.5, 10.0, 1e7
+
+    def sysm(g):
+        A = np.array([[-(1 / R1 + 1 / R2 + g) / C1, 1 / (R2 * C1), 0.0],
+                      [1 / (R2 * C2), -(1 / R2 + 1 / R3) / C2, 1 / (R3 * C2)],
+                      [0.0, 1 / (R3 * C3), -1 / (R3 * C3)]])
+        return A, np.array([VDD / (R1 * C1), 0.0, 0.0])
+
+    A_on, b_on = sysm(1 / RON)
+    A_off, b_off = sysm(1 / ROFF)
+
+    def flow(A, b, x, t):
+        E = expm(A * t)
+        return E @ x + np.linalg.solve(A, (E - np.eye(3)) @ b), E
+
+    h = np.array([0.0, 0.0, 1.0])
+
+    def resid(z):
+        xa, t_off, t_on = z[:3], z[3], z[4]
+        xb, _ = flow(A_off, b_off, xa, t_off)
+        xc, _ = flow(A_on, b_on, xb, t_on)
+        return np.concatenate((xc - xa, [xa[2] - VREF, xb[2] - VREF]))
+
+    z = fsolve(resid, np.array([1.0, 2.4, 2.5, 1.1e-6, 0.3e-6]), xtol=1e-13)
+    assert np.linalg.norm(resid(z)) < 1e-9
+    xa, t_off, t_on = z[:3], float(z[3]), float(z[4])
+    T = t_off + t_on
+    xb, E_off = flow(A_off, b_off, xa, t_off)
+    _xc, E_on = flow(A_on, b_on, xb, t_on)
+
+    def salt(A_pre, b_pre, A_post, b_post, x):
+        f_pre, f_post = A_pre @ x + b_pre, A_post @ x + b_post
+        return np.eye(3) + np.outer(f_post - f_pre, h) / float(h @ f_pre)
+
+    S0 = salt(A_on, b_on, A_off, b_off, xa)
+    S1 = salt(A_off, b_off, A_on, b_on, xb)
+    M = E_on @ S1 @ E_off @ S0
+    v = null_space(M.T - np.eye(3), rcond=1e-9)
+    assert v.shape[1] == 1
+    v = v[:, 0]
+    v = v / float(v @ (A_on @ xa + b_on))
+    tgrid = np.linspace(0.0, T, 4001)[:-1]
+
+    def at(t):
+        if t < t_off:
+            xt, _ = flow(A_off, b_off, xa, t)
+            _, Et = flow(A_off, b_off, xt, t_off - t)
+            return xt, (E_on @ S1 @ Et).T @ v
+        xt, _ = flow(A_on, b_on, xb, t - t_off)
+        _, Et = flow(A_on, b_on, xt, T - t)
+        return xt, Et.T @ v
+
+    orbit = np.array([at(t)[0] for t in tgrid])
+
+    def sample(x):
+        k = int(np.argmin(np.linalg.norm(orbit - np.asarray(x, dtype=float), axis=1)))
+        return at(tgrid[k])[1]
+
+    return T, sample
+
+
+def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_saltation_ppv():
+    """Events phase B (2026-09-22): `ppv()` on a staged solve takes the
+    null vector of the TOTAL monodromy and carries the crossings' motion
+    into its samples as costate injections at the event nodes.  The
+    reference is EXACT -- `_exact_relaxation_oscillator_ppv`, the
+    piecewise-linear flow with saltation matrices -- and independent of
+    every integrator.  Measured: bordered samples within 0.05-0.4 % of
+    it at 400 points and 0.08-0.33 % at 200 (nodes before, just after
+    and well after the crossings; INSIDE a 0.04 ns window the discrete
+    sample interpolates the jump and the nearest-state comparison is
+    meaningless, 146 %); the fixed-grid PPV of the same staged solve is
+    140-230 % off on fb1 before the first crossing (its `M^T v - v`
+    residual is 1.5: the fixed-grid map has no unit multiplier,
+    |lambda - 1| = 0.99).  ⚠ The transient FD that was to be the
+    instrument read `c` at +4.4e-8 for the exact -7.4e-9 s/V -- its phase
+    was read at the `c` waveform's crossing of `(max + min) / 2` of the
+    PERTURBED record, a level the perturbation moved; read at the
+    comparator's own crossing it agrees with the exact value to 0.4 %.
+    Also pins the autonomous stage listing its crossings in
+    `event_times`."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    p = PSS(cir, method='radau', reltol=1e-8)
+    x0 = np.zeros(cir.n)
+    names = [str(n_) for n_ in cir.nodes]
+    x0[names.index('c')] = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
+    Tl = float(p.lte_period)
+    c2 = _comparator_relaxation_oscillator()
+    q = PSS(c2, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
+    assert q.converged
+    T_ex, exact = _exact_relaxation_oscillator_ppv()
+    assert abs(q.period / T_ex - 1.0) < 5e-4, (q.period, T_ex)
+    ## the autonomous stage lists its four landed crossings
+    ev = [float(e) for e in q.event_times]
+    assert len(ev) == 4 and all(0.0 < e < 1.0 for e in ev), ev
+    red = [n_ for i, n_ in enumerate(names) if i != q.irefnode]
+    idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    X = np.asarray(q.waveform[1], dtype=float)
+    ts = np.asarray(q.waveform[0], dtype=float)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        v, info = q.ppv()
+    S = np.asarray(info['samples'])
+    nodes = list(q._event_columns['nodes'])
+    before = [j for j in (5, 15, 25) if j < nodes[0]]
+    after = [int(np.searchsorted(ts, f * float(q.period))) for f in (0.5, 0.8)]
+    worst = 0.0
+    for j in before + [nodes[1] + 3] + after:
+        xs = X[[names.index(nm) for nm in ('c', 'fb0', 'fb1')], j]
+        ex = exact(xs)
+        got = S[j, idx]
+        worst = max(worst, float(np.max(np.abs(got - ex)) / np.max(np.abs(ex))))
+    assert worst < 2e-2, worst
+    ## the fixed-grid PPV of the same solve is O(1) wrong before the crossings
+    cols = q._event_columns
+    q._event_columns = None
+    try:
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _vu, info_u = q.ppv()
+    finally:
+        q._event_columns = cols
+    Su = np.asarray(info_u['samples'])
+    j = before[0]
+    xs = X[[names.index(nm) for nm in ('c', 'fb0', 'fb1')], j]
+    ex = exact(xs)
+    assert np.abs(Su[j, idx[2]] - ex[2]) / abs(ex[2]) > 0.3, (Su[j, idx], ex)
+
+
+def _exact_relaxation_oscillator_forced(fr, t_shift):
+    """The EXACT sideband response of `_comparator_relaxation_oscillator`
+    to a unit tone on the rail at `fr` times its own fundamental: the
+    variational system ``y' = A_s y + B e^{j w (t - t_shift)}`` in each
+    switch state (augmented matrix exponentials), ``y+ = S y-`` at the
+    crossings, and ``y(T) = e^{j w T} y(0)``.  `t_shift` is where the
+    PSS's `t = 0` sits on this orbit.  Returns ``(T, at, orbit_at)`` with
+    ``at(t)`` the response and ``orbit_at(t)`` the state, `t` from the
+    ON->OFF switching."""
+    from scipy.linalg import expm
+    from scipy.optimize import fsolve
+    R1 = R2 = R3 = 1e3
+    C1, C2, C3 = 1e-9, 3e-10, 3e-10
+    VDD, VREF, RON, ROFF = 5.0, 2.5, 10.0, 1e7
+
+    def sysm(g):
+        A = np.array([[-(1 / R1 + 1 / R2 + g) / C1, 1 / (R2 * C1), 0.0],
+                      [1 / (R2 * C2), -(1 / R2 + 1 / R3) / C2, 1 / (R3 * C2)],
+                      [0.0, 1 / (R3 * C3), -1 / (R3 * C3)]])
+        return A, np.array([VDD / (R1 * C1), 0.0, 0.0])
+
+    A_on, b_on = sysm(1 / RON)
+    A_off, b_off = sysm(1 / ROFF)
+    Bv = np.array([1 / (R1 * C1), 0.0, 0.0])
+
+    def flow(A, b, x, t):
+        E = expm(A * t)
+        return E @ x + np.linalg.solve(A, (E - np.eye(3)) @ b), E
+
+    h = np.array([0.0, 0.0, 1.0])
+
+    def resid(z):
+        xa, t_off, t_on = z[:3], z[3], z[4]
+        xb, _ = flow(A_off, b_off, xa, t_off)
+        xc, _ = flow(A_on, b_on, xb, t_on)
+        return np.concatenate((xc - xa, [xa[2] - VREF, xb[2] - VREF]))
+
+    z = fsolve(resid, np.array([1.0, 2.4, 2.5, 1.1e-6, 0.3e-6]), xtol=1e-13)
+    assert np.linalg.norm(resid(z)) < 1e-9
+    xa, t_off, t_on = z[:3], float(z[3]), float(z[4])
+    T = t_off + t_on
+    xb, E_off = flow(A_off, b_off, xa, t_off)
+    _xc, E_on = flow(A_on, b_on, xb, t_on)
+
+    def salt(A_pre, b_pre, A_post, b_post, x):
+        f_pre, f_post = A_pre @ x + b_pre, A_post @ x + b_post
+        return np.eye(3) + np.outer(f_post - f_pre, h) / float(h @ f_pre)
+
+    S0 = salt(A_on, b_on, A_off, b_off, xa)
+    S1 = salt(A_off, b_off, A_on, b_on, xb)
+    M = E_on @ S1 @ E_off @ S0
+    w = 2.0 * np.pi * fr / T
+
+    def aug(A, t):
+        Z = np.zeros((4, 4), dtype=complex)
+        Z[:3, :3] = A
+        Z[:3, 3] = Bv
+        Z[3, 3] = 1j * w
+        return expm(Z * t)
+
+    def seg(A, y_in, ph_in, t):
+        Z = aug(A, t) @ np.concatenate((y_in, [ph_in]))
+        return Z[:3], Z[3]
+
+    ph0 = np.exp(-1j * w * t_shift)
+    y, ph = seg(A_off, S0 @ np.zeros(3, dtype=complex), ph0, t_off)
+    y, ph = seg(A_on, S1 @ y, ph, t_on)
+    alpha = np.exp(-1j * w * T)
+    y0 = np.linalg.solve(np.eye(3) - alpha * M, alpha * y)
+
+    def at(t):
+        yy, pp = S0 @ y0, ph0
+        if t < t_off:
+            yy, pp = seg(A_off, yy, pp, t)
+        else:
+            yy, pp = seg(A_off, yy, pp, t_off)
+            yy, pp = seg(A_on, S1 @ yy, pp, t - t_off)
+        return yy
+
+    def orbit_at(t):
+        if t < t_off:
+            return flow(A_off, b_off, xa, t)[0]
+        return flow(A_on, b_on, xb, t - t_off)[0]
+
+    return T, at, orbit_at
+
+
+def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_matches_the_exact_forced_response():
+    """Events phase B, last item (2026-09-22): PAC on an AUTONOMOUS staged
+    solve.  The bordered system collapses onto the total map -- `(I - a
+    M_tot) y_0 = a (w + P_theta dtheta_f)`, `dtheta_f = -Gt^-1 W f_node`
+    the source's own motion of the crossings -- solved by the deflated
+    route with the TOTAL operator (the fixed-grid `M` has no unit
+    multiplier), and the nodes' responses are at FIXED times (`Pk - xdot
+    tau^T`).  The reference is EXACT (`_exact_relaxation_oscillator_forced`)
+    and the comparison sits at the same offset from each model's own f0.
+    Measured at 200 points, 0.3 f0 / 1.7 f0: every node within 0.2 %
+    outside the 10 ns ON phase (there the collapsed `c` node's three-point
+    rate stencil costs 5 %, `fb0`/`fb1` stay at 0.1 %); at 1.001 f0 the
+    discrete staged map's unit multiplier, displaced 8e-4 (first order in
+    the count -- roadmap E8), sets the answer: 15.7 % off, pinned below
+    0.25.  The plain deflated solve on the same staged solve read the
+    period node 0.3-1.8x and the interior nodes up to 400x off, and at
+    1.001 f0 1.02.  The adjoint row is the transpose of the same solve:
+    dual-consistent with the forward one (the deflated solve refines on
+    the plain operator, so both are the discrete operator's own)."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    cir['Vdd'] = VS('vdd', gnd, v=5.0, vac=1.0)
+    p = PSS(cir, method='radau', reltol=1e-8)
+    names = [str(n_) for n_ in cir.nodes]
+    x0 = np.zeros(cir.n)
+    x0[names.index('c')] = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
+    Tl = float(p.lte_period)
+    q = PSS(cir, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
+    assert q.converged and q._event_columns is not None
+    Tq = float(q.period)
+    ts = np.asarray(q.waveform[0], dtype=float)
+    X = np.asarray(q.waveform[1], dtype=float)
+    sel = [names.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    red = [n_ for i, n_ in enumerate(names) if i != q.irefnode]
+    idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    T_ex, _at0, orbit_at = _exact_relaxation_oscillator_forced(0.3, 0.0)
+    tgrid = np.linspace(0.0, T_ex, 20001)[:-1]
+    orb = np.array([orbit_at(t) for t in tgrid])
+    k0 = int(np.argmin(np.linalg.norm(orb - X[sel, 0], axis=1)))
+    t_shift = float(tgrid[k0])
+    nodes = list(q._event_columns['nodes'])
+    on_phase = set(range(nodes[1], nodes[2] + 1))          # between the two crossings: the switch is ON
+    probe = [j for j in (0, 20, int(np.searchsorted(ts, 0.35 * Tq)), int(np.searchsorted(ts, 0.7 * Tq)))]
+    ev = q._event_columns
+    for fr in (0.3, 1.7, 1.001):
+        _T, at, _o = _exact_relaxation_oscillator_forced(fr, t_shift)
+        f = fr / Tq
+        worst = {True: 0.0, False: 0.0}
+        for bordered in (True, False):
+            q._event_columns = ev if bordered else None
+            try:
+                pac = PAC(cir, toolkit=circuit.numeric)
+                with _w.catch_warnings():
+                    _w.simplefilter('ignore')
+                    pac.solve(q, [f])
+                tt, yy = pac.time_response[0]
+            except RuntimeError:
+                ## the plain deflated solve borders the fixed-grid map with
+                ## the TOTAL map's null vectors: near a harmonic it does not
+                ## even converge -- that is the defect showing, count it
+                assert not bordered, (fr, 'the bordered deflated solve failed')
+                worst[False] = np.inf
+                continue
+            finally:
+                q._event_columns = ev
+            for j in probe:
+                te = (t_shift + float(tt[j])) % T_ex
+                wrap = np.exp(1j * 2.0 * np.pi * fr * ((t_shift + float(tt[j])) // T_ex))
+                ex = at(te) * wrap
+                got = np.asarray(yy[j])[idx]
+                comp = [1, 2] if j in on_phase else [0, 1, 2]
+                worst[bordered] = max(worst[bordered], float(np.max(np.abs(got[comp] - ex[comp]) / np.abs(ex[comp]))))
+        if fr == 1.001:
+            ## ⚠ near the harmonic the discrete staged map's unit multiplier,
+            ## displaced 8e-4 at 200 points (first order -- roadmap E8),
+            ## sets the response: measured 0.157 off the exact at an offset
+            ## of 1e-3 f0, |lambda - 1| / |1 - alpha| = 0.13.  The plain
+            ## deflated solve read 1.02.
+            assert worst[True] < 0.25, (fr, worst)
+        else:
+            assert worst[True] < 5e-3, (fr, worst)
+        assert worst[False] > 0.2, (fr, worst)
+    ## the adjoint row is the transpose of the same bordered, deflated solve
+    fin = 0.3 / Tq
+    io_full = names.index('fb1')
+    io = io_full if io_full < q.irefnode else io_full - 1
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = pac.solve(q, freqs=[fin])
+        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
+    fout = np.asarray(res.sweep_values, dtype=float)
+    Xr = np.asarray(res.x)
+    for li, l in enumerate((0, 1)):
+        k = int(np.argmin(np.abs(fout - (fin + l / Tq))))
+        x = complex(Xr[io_full, k])
+        h = complex(H[li] @ u_ac)
+        assert abs(x - h) < 1e-8 * abs(h), (l, x, h)
