@@ -3241,6 +3241,12 @@ class PSS(Analysis):
     #: takes by default -- see the table at `lte_grid`
     LTE_GRID_RELTOL_MAX = 1e-5
 
+    ## the fold's own resolution (2026-09-23): no step above this fraction
+    ## of the period, and a funnel of steps no larger than their distance
+    ## from a source corner within this reach of it
+    FOLD_MAX_STEP = 1.0 / 16.0
+    FOLD_EDGE_REACH = 1.0 / 16.0
+
     def _fold_periods(self, t, xs, iref_probe, T_obs, nbins=4000,
                       boundaries=None, rotate=True):
         """`(fracs, seed)` from the accepted steps of the last settled
@@ -3315,6 +3321,40 @@ class PSS(Analysis):
         ## opener is `_period_grid`'s doubling ramp.
         ## (a driven grid keeps phase 0 at the drive's t = 0: `solve` reads
         ## its fractions from there, and the landed events with them)
+        ## ⚠ THE FOLD OWNS ITS RESOLUTION AT A SOURCE CORNER (2026-09-23).
+        ## It used to inherit it by accident: a transient stepping OVER a
+        ## pulse corner left a cluster of rejection-driven tiny steps after
+        ## every edge, and the fold kept them.  Once the transient landed
+        ## its corners (the Runge-Kutta loop, item 2 after E7) that cluster
+        ## was gone -- radau, L-stable, damped the RC's decay after the edge
+        ## with a quiet estimate and 0.03 T steps, then doubled through the
+        ## flat hold phase up to 0.23 T -- and the PSS grid built from the
+        ## fold read its first harmonic 4.5e-2 off (was 5.3e-4) with the
+        ## period quadrature's spline weights at -0.24 / +0.36.  So: the
+        ## step density is funnelled towards every source corner (a step at
+        ## phase distance `s` from a corner is at most `s`, never below one
+        ## bin) and capped at FOLD_MAX_STEP of the period -- a period
+        ## integral needs points where a transient's tolerance does not.
+        ## Measured on that grid: H2 1.15 -> 3e-3 from the cap, H1 4.5e-2 ->
+        ## 1.1e-3 from the funnel (a ramp from an eighth of the edge width;
+        ## from a sixteenth, 2.2e-4), the pin being 2e-3.
+        if not rotate:
+            corners = []
+            tt = 0.0
+            for _ in range(64):
+                tt = float(self.cir.next_event(tt))
+                if not np.isfinite(tt) or tt >= T_obs * (1.0 - 1e-9):
+                    break
+                corners.append(tt / T_obs)
+            if corners:
+                phase_axis = (np.arange(nbins) + 0.5) / nbins
+                for c in corners:
+                    sdist = np.abs(phase_axis - c)
+                    sdist = np.minimum(sdist, 1.0 - sdist)
+                    funnel = np.where(sdist < self.FOLD_EDGE_REACH,
+                                      np.maximum(sdist, 1.0 / nbins), np.inf)
+                    dens = np.minimum(dens, funnel)
+        dens = np.minimum(dens, self.FOLD_MAX_STEP)
         k0 = int(np.argmax(dens)) if rotate else 0
         dens = np.roll(dens, -k0)
         ph0 = float(phases[k0]) if rotate else 0.0
@@ -4042,6 +4082,46 @@ class PSS(Analysis):
         _tms_r, _hs_r = self._period_grid(float(period), len(fr), np.asarray(fr, dtype=float))
         self._grid_fracs = np.asarray(_hs_r, dtype=float) / float(period)
         self._state_event_fracs = th
+        ## Item 3 (2026-09-22): the columns the bordered consumers need, in
+        ## the PAIR form gear's map has (a node's state depends on (x_0,
+        ## x_-1)): one more traversal on the ramped grid, capturing every
+        ## node -- `P_nodes[j]` is m x 2m, `P_end` 2m x K, the total
+        ## monodromy the pair map plus the saltation.  `PAC.solve`'s
+        ## bordered block reads them; the covariance closure and the
+        ## adjoint row stay unbordered on gear (warned / plain).
+        try:
+            _fr_id, _hsens_r, _nodes_r = self._event_remap(
+                np.asarray(self._grid_fracs, dtype=float), th, th, float(period))
+            _hs_rr = np.asarray(_hs_r, dtype=float)
+            _tms_rr = np.asarray(_tms_r, dtype=float)
+            _Nn = len(_hs_rr)
+            (_xl, _xp, _P_last, _P_prev, _Pk_last, _Pk_prev) = self._traverse_solved_history(
+                np.asarray(z_ss[:m], dtype=float), np.asarray(z_ss[m:2 * m], dtype=float),
+                _tms_rr, _hs_rr, T=float(period), hsens=_hsens_r,
+                capture=set(range(1, _Nn + 1)))
+            _P_end = np.vstack((np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in _Pk_last]),
+                                np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in _Pk_prev])))
+            _M_pair = np.vstack((np.asarray(_P_last, dtype=float), np.asarray(_P_prev, dtype=float)))
+            _Pk_nodes = np.zeros((_Nn + 1, m, K))
+            _P_nodes = np.zeros((_Nn + 1, m, 2 * m))
+            _P_nodes[0] = np.hstack((np.eye(m), np.zeros((m, m))))
+            for _j in range(1, _Nn + 1):
+                _xj, _Pj, _Pkj = self._captured[_j]
+                _P_nodes[_j] = np.asarray(_Pj, dtype=float)
+                for _k in range(K):
+                    _Pk_nodes[_j, :, _k] = np.asarray(_Pkj[_k], dtype=float).ravel()
+            _G = np.array([Wk[_k] @ _P_nodes[_nd] for _k, _nd in enumerate(_nodes_r)])
+            _Gt = np.array([Wk[_k] @ _Pk_nodes[_nd] for _k, _nd in enumerate(_nodes_r)])
+            _dth = -np.linalg.solve(_Gt, _G)
+            self._event_sensitivity = _dth
+            self._monodromy = _M_pair + _P_end @ _dth
+            self._event_columns = {'nodes': list(_nodes_r), 'W': Wk, 'c': ck,
+                                   'P_end': _P_end, 'Pk_nodes': _Pk_nodes,
+                                   'P_nodes': _P_nodes, 'G': _G, 'Gt': _Gt}
+        except (np.linalg.LinAlgError, ValueError, KeyError) as _exc:
+            warnings.warn('PSS: the gear stage could not assemble its event columns (%s); '
+                          'the bordered consumers run unbordered on this solve.' % _exc,
+                          RuntimeWarning, stacklevel=3)
         self.event_times = sorted(set([float(e) for e in self.event_times]
                                       + [float(t) for t in th]))
         return (np.asarray(z_ss[:m], dtype=float), np.asarray(z_ss[m:2 * m], dtype=float),
@@ -6704,6 +6784,24 @@ class PSS(Analysis):
                       for vp, st in zip(_vphys, states)]
         return states, states_pair, _ts, _Xf
 
+    def _event_costate_injection(self, fp, v, n):
+        """The event nodes' costate injections for a reverse pass of the
+        TOTAL map (2026-09-22): `-zeta_k W_k` at node `nd_k`, `zeta = Gt^-T
+        P_theta^T v` -- the transpose of the saltation, carried by the pass
+        to every earlier node; `None` when the solve is not staged.  What
+        `ppv()` and `floquet_modes` sample a left vector along the orbit
+        with."""
+        _ev = getattr(self, '_event_columns', None)
+        if _ev is None or np.asarray(_ev['P_end']).shape[0] != n:
+            return None
+        v = np.asarray(v)
+        zeta = np.linalg.solve(np.asarray(_ev['Gt']).T, np.asarray(_ev['P_end']).T @ v)
+        inject = np.zeros((len(fp.steps), n), dtype=v.dtype)
+        for k, nd in enumerate(_ev['nodes']):
+            if 0 <= nd < len(fp.steps):
+                inject[nd, :len(_ev['W'][k])] -= zeta[k] * np.asarray(_ev['W'][k])
+        return inject
+
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
 
@@ -7111,15 +7209,7 @@ class PSS(Analysis):
         ## an integral over the orbit.  `Phi(T,s)^T v(T) = v(s)`, and the
         ## reverse replay computes exactly that sequence on its way to the
         ## answer -- it was being discarded.
-        _inject = None
-        if _ev is not None:
-            ## the event nodes' costate injections: the transpose of the
-            ## saltation, carried by the reverse pass to every earlier node
-            zeta = np.linalg.solve(np.asarray(_ev['Gt']).T, np.asarray(_ev['P_end']).T @ np.asarray(v))
-            _inject = np.zeros((len(fp.steps), n))
-            for k, nd in enumerate(_ev['nodes']):
-                if 0 <= nd < len(fp.steps):
-                    _inject[nd, :len(_ev['W'][k])] -= zeta[k] * np.asarray(_ev['W'][k])
+        _inject = self._event_costate_injection(fp, v, n)
         states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols,
                                                           inject=_inject)
         ## ⚠ INDEX >= 2 ON A NON-UNIFORM SOLVED-HISTORY GRID (2026-09-20, item
@@ -9138,6 +9228,11 @@ class PSS(Analysis):
 
         M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                              for e in np.eye(n)])
+        ## on a staged solve the map is the TOTAL one (2026-09-22): the
+        ## crossings move with the state, `M + P_theta dtheta/dx_0`
+        _ev_fm = getattr(self, '_event_columns', None)
+        if _ev_fm is not None and np.asarray(_ev_fm['P_end']).shape[0] == n:
+            M = M + np.asarray(_ev_fm['P_end'], dtype=float) @ np.asarray(self._event_sensitivity, dtype=float)
         lam, U = np.linalg.eig(M)
         lam_l, V = np.linalg.eig(M.T)
 
@@ -9264,7 +9359,8 @@ class PSS(Analysis):
             ## NESTED -- per-stage solves per step -- and its state-block
             ## adjoint through pinv(C^T) was measured exact (radau, 1e-10 on
             ## a 3:1 grid) and second order (trap); those keep their path.
-            _e2, _tsolves, _st = fp.matvec_transposed(vk, collect=True)
+            _e2, _tsolves, _st = fp.matvec_transposed(
+                vk, collect=True, inject=self._event_costate_injection(fp, vk, n))
             _gear_pair = getattr(fp, 'kind', None) == 'solved_history'
             ## ⚠ GEAR ON A NON-UNIFORM GRID: THE TRANSPOSE IS FIRST ORDER AND
             ## NO RESCALING LIFTS IT, so the adjoint is integrated SEPARATELY
@@ -13727,7 +13823,7 @@ class PAC(Analysis):
             for i, (f, a, y0) in enumerate(zip(freqs, alphas, ys)):
                 cols = [a * np.asarray(_ev['P_end'][:, k], dtype=complex) for k in range(K)]
                 Ycols, _ = self._solve_each(fp, [a] * K, cols, tol)
-                _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(m, dtype=complex),
+                _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(fp.width, dtype=complex),
                                                   collect=True)
                 f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v, dtype=complex)[:m]
                                                          for v in f_steps]
@@ -13735,9 +13831,10 @@ class PAC(Analysis):
                 S = np.zeros((K, K), dtype=complex)
                 for k, nd in enumerate(nodes):
                     Pn = _ev['P_nodes'][nd]
-                    r[k] = Wk[k] @ (Pn @ np.asarray(y0)[:m] + f_nodes[nd])
+                    _w = Pn.shape[1]          # m on a one-step map, 2m on gear's pair
+                    r[k] = Wk[k] @ (Pn @ np.asarray(y0)[:_w] + f_nodes[nd])
                     for l in range(K):
-                        S[k, l] = Wk[k] @ (Pn @ np.asarray(Ycols[l])[:m] + _ev['Pk_nodes'][nd, :, l])
+                        S[k, l] = Wk[k] @ (Pn @ np.asarray(Ycols[l])[:_w] + _ev['Pk_nodes'][nd, :, l])
                 dth = -np.linalg.solve(S, r)
                 dthetas[i] = dth
                 ys[i] = np.asarray(y0, dtype=complex) + sum(Ycols[l] * dth[l] for l in range(K))
@@ -14090,6 +14187,39 @@ class PAC(Analysis):
                 else:
                     forced_ev, _g2 = pss._sideband_forced_full(fp, freq, l, np.zeros(m), extra=extra)
                 forced = forced + forced_ev
+            elif _ev is not None and fp.kind == 'solved_history':
+                ## ⚠ THE BORDERED ADJOINT ON A STAGED GEAR SOLVE (2026-09-22,
+                ## item 2 of the list after E7): the same elimination on
+                ## gear's PAIR map (`P_nodes[nd]` m x 2m, `P_end` 2m x K),
+                ## the event rows' term as a second reverse pass with the
+                ## raw injection `-zeta_k W_k` at node k -- gear's transposed
+                ## pass takes m-wide injections, as the plain forced part
+                ## above.  Unbordered, pnoise on a staged gear solve carried
+                ## the 10 % the bordered PAC removed (item 3).
+                K = _ev['P_end'].shape[1]
+                nodes, Wk = _ev['nodes'], np.asarray(_ev['W'])
+                _wq = pss._period_quadrature(fp)
+                cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
+                               * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
+                _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)
+                g_theta = np.array([np.sum(cn * (_Pkf[:N, :, kk] @ d)) for kk in range(K)])
+                z_g = self._gmres_checked(A, g, tol, 'the adjoint solve at sideband %d' % l)
+                Gn = np.array([Wk[k] @ _ev['P_nodes'][nd] for k, nd in enumerate(nodes)])
+                Z_G = np.column_stack([self._gmres_checked(
+                    A, np.asarray(Gn[k], dtype=complex), tol,
+                    'the bordered adjoint solve, event %d' % k) for k in range(K)])
+                Gt_n = np.array([Wk[k] @ _ev['Pk_nodes'][nd] for k, nd in enumerate(nodes)])
+                Pth = np.asarray(_ev['P_end'], dtype=complex)
+                Sb = Gt_n.T + alpha * (Pth.T @ Z_G)
+                zeta = np.linalg.solve(Sb, g_theta + alpha * (Pth.T @ z_g))
+                z = z_g - Z_G @ zeta
+                inj_ev = np.zeros((N, m), dtype=complex)
+                for k, nd in enumerate(nodes):
+                    if 0 <= nd < N:
+                        inj_ev[nd, :len(Wk[k])] -= zeta[k] * np.asarray(Wk[k])
+                _g2, ts_ev, _st2 = fp.matvec_transposed(
+                    np.zeros(n, dtype=complex), collect=True, inject=inj_ev)
+                forced = forced - np.tensordot(phase, np.asarray(ts_ev), axes=(0, 0))
             else:
                 z = self._gmres_checked(
                     A, g, tol, 'the adjoint solve at sideband %d' % l)
@@ -16138,12 +16268,66 @@ class PAC(Analysis):
         return dY[s - 1]
 
     def _orbit_rate(self, pss, event_nodes):
-        """`xdot` at every node of the solved orbit (reduced width), by the
-        quadratic through three neighbouring nodes -- one-sided AT a landed
-        event (the crossing state belongs to the branch before it) and at
-        the node after one, central elsewhere, periodic at the ends.  The
-        rate is what converts a node's motion in time into a state change:
-        see `_event_closure`."""
+        """`xdot` at every node of the solved orbit (reduced width) -- THE
+        DAE'S OWN DERIVATIVE at the node's state (2026-09-22): on the
+        differential rows ``C(x) xdot = -(i(x) + u(t))``, on the algebraic
+        rows (a zero row of `C`) the differentiated constraint ``G(x) xdot
+        = -du/dt``; one small solve per node, exact for the discrete state
+        and independent of the step.  The rate converts a node's motion in
+        time into a state change: see `_fixed_time_event_columns`.
+
+        ⚠ IT WAS A THREE-NODE PARABOLA (one-sided at a landed event), and
+        that cost 5 % on the comparator oscillator's collapsed `c` node
+        inside its 10 ns ON phase, where a 7 ns step cannot fit a parabola
+        to a 10 ns exponential -- the one node of the staged-oscillator
+        sideband test that had to be excluded.  Against the exact
+        piecewise-linear rate the DAE form reads 1e-15 at every node
+        outside the windows (the stencil 10.6 % at worst, 0.45 % at the
+        node that had to be excluded); on the driven jitter sampler the
+        sawtooth's rate is its slope exactly and the held capacitor's its
+        leak.  The stencil is kept only as the fallback where the
+        assembled matrix is singular (an index above one), and says so."""
+        ts = np.asarray(pss.waveform[0], dtype=float)
+        X = np.delete(np.asarray(pss.waveform[1], dtype=float),
+                      pss.irefnode, axis=0)
+        N = len(ts) - 1
+        m = X.shape[0]
+        out = np.zeros((N + 1, m))
+        analysis = getattr(pss.par, 'analysis', None)
+        ok = True
+        for j in range(N + 1):
+            x = X[:, j]
+            t = float(ts[j])
+            try:
+                C = np.asarray(pss._C_at(x), dtype=float)
+                k = np.asarray(pss._k_at(x, t), dtype=float).ravel()
+                alg = [i for i in range(m) if not np.any(C[i, :])]
+                A = C.copy()
+                b = k.copy()
+                if alg:
+                    G = np.asarray(pss._G_at(x), dtype=float)
+                    ud = np.delete(np.asarray(pss.cir.dudt(t, analysis=analysis),
+                                              dtype=float).ravel(), pss.irefnode)
+                    A[alg, :] = G[alg, :]
+                    b[alg] = -ud[alg]
+                out[j] = np.linalg.solve(A, b)
+            except (np.linalg.LinAlgError, ValueError):
+                ok = False
+                break
+        if ok:
+            return out
+        warnings.warn(
+            'PAC._orbit_rate: the DAE derivative could not be assembled at a '
+            'node (a singular differential/algebraic split -- an index above '
+            'one?); falling back to the three-node stencil, which is second '
+            'order in the step and one-sided at a landed event.',
+            RuntimeWarning, stacklevel=3)
+        return self._orbit_rate_stencil(pss, event_nodes)
+
+    def _orbit_rate_stencil(self, pss, event_nodes):
+        """The three-node parabola `_orbit_rate` used until 2026-09-22 --
+        one-sided AT a landed event and at the node after one, central
+        elsewhere, periodic at the ends.  Kept as the fallback."""
         ts = np.asarray(pss.waveform[0], dtype=float)
         X = np.delete(np.asarray(pss.waveform[1], dtype=float),
                       pss.irefnode, axis=0)
@@ -16166,7 +16350,6 @@ class PAC(Analysis):
             ta, tb, tc = _t(a), _t(b), _t(c)
             xa, xb, xc = X[:, a % N], X[:, b % N], X[:, c % N]
             tj = _t(j)
-            ## d/dt of the Lagrange parabola through (ta, xa), (tb, xb), (tc, xc)
             out[j] = (xa * ((tj - tb) + (tj - tc)) / ((ta - tb) * (ta - tc))
                       + xb * ((tj - ta) + (tj - tc)) / ((tb - ta) * (tb - tc))
                       + xc * ((tj - ta) + (tj - tb)) / ((tc - ta) * (tc - tb)))
@@ -16246,7 +16429,9 @@ class PAC(Analysis):
             return None
         N = len(As)
         Pk_nodes = np.asarray(ev['Pk_nodes'], dtype=float)
-        if n != m or Pk_nodes.shape[0] != N + 1:
+        P_end = np.asarray(ev['P_end'], dtype=float)
+        pair = (n == 2 * m and P_end.shape[0] == 2 * m)
+        if (n != m and not pair) or Pk_nodes.shape[0] != N + 1:
             warnings.warn(
                 'PAC.covariance: the solve is staged on its state events, '
                 'but this Floquet host (%s, %d steps for %d event-column '
@@ -16258,22 +16443,32 @@ class PAC(Analysis):
                 RuntimeWarning, stacklevel=3)
             return None
         nodes = [int(j) for j in ev['nodes']]
-        W = [np.asarray(w, dtype=float).ravel() for w in ev['W']]
+        ## gear's PAIR form (item 2 of the list after E7, 2026-09-22): the
+        ## state is (x_j, x_{j-1}), the event row acts on the first block,
+        ## the per-node column of node j is the pair (Pk_j, Pk_{j-1}) and
+        ## the map to node j the pair of `P_nodes` rows; the samples come
+        ## out as pair covariances, as the plain gear path returns them
+        W = [np.pad(np.asarray(w, dtype=float).ravel(), (0, n - m)) for w in ev['W']]
         K = len(nodes)
-        P_end = np.asarray(ev['P_end'], dtype=float)
         P_nodes = np.asarray(ev['P_nodes'], dtype=float)
+        if pair:
+            Pk_prev = np.concatenate((Pk_nodes[:1] * 0.0, Pk_nodes[:-1]), axis=0)
+            Pk_nodes = np.concatenate((Pk_nodes, Pk_prev), axis=1)          # (N+1, 2m, K)
+            P_prev = np.concatenate((np.zeros((1,) + P_nodes.shape[1:]), P_nodes[:-1]), axis=0)
+            P_prev[0] = np.hstack((np.zeros((m, m)), np.eye(m)))          # node -1 is the pair's second block
+            P_nodes = np.concatenate((P_nodes, P_prev), axis=1)            # (N+1, 2m, 2m)
         Gt = np.asarray(ev['Gt'], dtype=float)
         dth = np.asarray(pss._event_sensitivity, dtype=float)
         ## d_j[k] = W_k A_{nd_k - 1} ... A_{j+1}: the event row's response to
         ## the noise landing at node j+1 (zero once the crossing is past)
-        d = np.zeros((N, K, m))
+        d = np.zeros((N, K, n))
         for k, nd in enumerate(nodes):
             r = W[k].copy()
             for j in range(nd - 1, -1, -1):
                 d[j, k] = r
                 r = r @ As[j]
-        Z = np.zeros((N + 1, m, K))
-        Kf = np.zeros((N + 1, m, m))
+        Z = np.zeros((N + 1, n, K))
+        Kf = np.zeros((N + 1, n, n))
         D = np.zeros((K, K))
         for j in range(N):
             Z[j + 1] = As[j] @ Z[j] + Qs[j] @ d[j].T
@@ -16286,6 +16481,9 @@ class PAC(Analysis):
                  + P_end @ Gi @ D @ Gi.T @ P_end.T)
         Q_tot = 0.5 * (Q_tot + Q_tot.T)
         Pk_fixed, _tau, _xdot = self._fixed_time_event_columns(pss)
+        if pair:
+            Pkf_prev = np.concatenate((Pk_fixed[:1] * 0.0, Pk_fixed[:-1]), axis=0)
+            Pk_fixed = np.concatenate((Pk_fixed, Pkf_prev), axis=1)
 
         def samples(K0):
             seq = []
@@ -16297,7 +16495,67 @@ class PAC(Analysis):
                       + Pkf @ Gi @ D @ Gi.T @ Pkf.T)
                 seq.append(0.5 * (Cj + Cj.T))
             return seq
-        return M_tot, Q_tot, samples
+        pieces = {'dth': dth, 'Gi': Gi, 'D': D, 'nodes': nodes, 'E': E}
+        return M_tot, Q_tot, samples, pieces
+
+    def event_jitter(self, pss):
+        """The noise-driven JITTER of every landed crossing of a staged,
+        driven solve (2026-09-22): ``sigma`` in seconds per crossing, and
+        the crossings' covariance in fractions of the period.
+
+        The bordered Lyapunov closure (`_event_closure`) already carries
+        it: the crossings move as ``dtheta = (dtheta/dx_0) dx_0 - Gt^-1
+        sum_j d_j w_j`` -- the stationary state at the period start
+        (covariance `K_0`, from the previous periods' noise) and this
+        period's per-step injections, independent of each other -- so
+        ``Cov(dtheta) = dth K_0 dth^T + Gt^-1 D Gt^-T`` with ``D = sum_j
+        d_j Q_j d_j^T``.  Measured on the comparator-jitter sampler
+        (`_jitter_sampler`: a sawtooth of slope s_1 crossing a threshold
+        node with kT/C_n of noise): the turn-off crossing's sigma is
+        ``sqrt(kT/C_n) / s_1`` -- 11.5873 ps measured against 11.5844 ps
+        analytic, 1.0002, and flat at 100 / 200 / 400 points -- the same
+        crossing motion that gives the held capacitor its
+        `(s_2/s_1)^2 kT/C_n`.  The reset edges of that fixture read
+        0.6437 ps, the threshold node's own faster slope there.
+
+        Returns ``{'sigma': (K,) s, 'cov_fraction': (K, K), 'fractions':
+        (K,) the crossings' positions, 'nodes': (K,) their grid nodes}``.
+        An oscillator's crossings diffuse without bound with its phase;
+        that is `oscillator_covariance`'s object, and this refuses one.
+        Every source of the circuit is in it together; a per-source
+        split is the per-source `Q_j`, which `_lyapunov_pieces` does not
+        keep."""
+        self._check_circuit(pss)
+        if getattr(pss, 'autonomous', False):
+            raise ValueError(
+                'PAC.event_jitter: an OSCILLATOR\'s crossings diffuse with its '
+                'phase and have no stationary jitter; use '
+                'oscillator_covariance() for the growth and the bounded '
+                'orbital part.')
+        if getattr(pss, '_event_columns', None) is None:
+            raise ValueError(
+                'PAC.event_jitter: the solve has no landed state events -- '
+                'solve with state_events=True on a circuit that declares '
+                'them (a VSwitch).')
+        pss = pss._lyapunov_host()
+        As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
+        bordered = self._event_closure(pss, As, Qs, M, m, n)
+        if bordered is None:
+            raise ValueError(
+                'PAC.event_jitter: this Floquet host carries no event '
+                'columns (see the warning above); solve with method=\'radau\'.')
+        M_tot, Q_tot, _samples, pieces = bordered
+        S = np.eye(n * n) - np.kron(M_tot, M_tot)
+        K0 = np.linalg.solve(S, Q_tot.reshape(-1)).reshape(n, n)
+        K0 = 0.5 * (K0 + K0.T)
+        dth, Gi, D = pieces['dth'], pieces['Gi'], pieces['D']
+        cov = dth @ K0 @ dth.T + Gi @ D @ Gi.T
+        cov = 0.5 * (cov + cov.T)
+        T = float(pss.period)
+        return {'sigma': np.sqrt(np.clip(np.diag(cov), 0.0, None)) * T,
+                'cov_fraction': cov,
+                'fractions': np.asarray(pss._state_event_fracs, dtype=float).copy(),
+                'nodes': list(pieces['nodes'])}
 
     def covariance(self, pss, samples=False):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
@@ -16446,7 +16704,7 @@ class PAC(Analysis):
         ## noise-driven motion in the injection -- see `_event_closure`
         bordered = self._event_closure(pss, As, Qs, M, m, n)
         if bordered is not None:
-            M, K1, _samples = bordered
+            M, K1, _samples, _pieces = bordered
         S = np.eye(n * n) - np.kron(M, M)
         K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
         K0 = 0.5 * (K0 + K0.T)
@@ -16846,26 +17104,70 @@ class PAC(Analysis):
                 'edge inside the corner, 0.998 with it 12x beyond).'
                 % (L, (L + 0.5) * f0, _wh), RuntimeWarning, stacklevel=3)
         S = np.zeros((len(ts), len(fr)))
+        ## ⚠ ON A STAGED SOLVE THE SAMPLE'S ADJOINT IS BORDERED (2026-09-22,
+        ## item 3 of the list after E7) -- the dual of the bordered forward
+        ## solve, as `adjoint_sideband_row`'s: the operator is the TOTAL
+        ## map's transpose, the sample is read at FIXED time (its costate
+        ## carries `dtheta/dx_0^T Pk_fixed[k0]^T d`), and the source's own
+        ## motion of the crossings enters as a third reverse pass carrying
+        ## `-zeta_k W_k` at the event nodes, `zeta = Gt^-T (g_theta + a
+        ## P_theta^T z)`.  Unbordered, the jitter sampler's held node had no
+        ## path to the threshold's noise at all.
+        _ev = getattr(pss, '_event_columns', None)
+        _ev = _ev if (_ev is not None and np.asarray(_ev['P_end']).shape[0] == n) else None
+        if _ev is not None:
+            _Pth = np.asarray(_ev['P_end'], dtype=float)
+            _dth = np.asarray(pss._event_sensitivity, dtype=float)
+            _Gt = np.asarray(_ev['Gt'], dtype=float)
+            _Wk = [np.asarray(w, dtype=float).ravel() for w in _ev['W']]
+            _nds = list(_ev['nodes'])
+            _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)
         for ti, k0 in enumerate(k0s):
             for fi, f in enumerate(fr):
                 alpha = np.exp(-2j * np.pi * f * T)
                 inject = np.zeros((N, m), dtype=complex)
                 inject[k0] = np.exp(-2j * np.pi * f * tms[k0]) * d
-                A_ = spla.LinearOperator(
-                    (n, n), dtype=complex,
-                    matvec=lambda v, a=alpha: np.asarray(v) - a * fp.matvec_transposed(v))
+                if _ev is None:
+                    A_ = spla.LinearOperator(
+                        (n, n), dtype=complex,
+                        matvec=lambda v, a=alpha: np.asarray(v) - a * fp.matvec_transposed(v))
+                else:
+                    A_ = spla.LinearOperator(
+                        (n, n), dtype=complex,
+                        matvec=lambda v, a=alpha: (np.asarray(v) - a * (np.asarray(fp.matvec_transposed(v))
+                                                                          + _dth.T @ (_Pth.T @ np.asarray(v)))))
                 if stage:
                     seedv = np.exp(-2j * np.pi * f * tms[k0]) * d
                     g, cA = self._stage_pass(pss, fp, np.zeros(m), (k0, seedv))
+                    if _ev is not None:
+                        g_theta = np.exp(-2j * np.pi * f * tms[k0]) * (_Pkf[k0].T @ d)
+                        g = np.asarray(g) + _dth.T @ g_theta
                     z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
                     _l, cZ = self._stage_pass(pss, fp, z)
                     Sv = -(cA + alpha * cZ)                          # N s x m
+                    if _ev is not None:
+                        zeta = np.linalg.solve(_Gt.T, g_theta + alpha * (_Pth.T @ np.asarray(z)))
+                        _l2, cE = self._stage_pass(pss, fp, np.zeros(m),
+                                                   {nd: -zeta[k] * _Wk[k] for k, nd in enumerate(_nds)})
+                        Sv = Sv - cE
                 else:
                     g, t_inj, _st = fp.matvec_transposed(
                         np.zeros(n, dtype=complex), collect=True, inject=inject)
+                    if _ev is not None:
+                        g_theta = np.exp(-2j * np.pi * f * tms[k0]) * (_Pkf[k0].T @ d)
+                        g = np.asarray(g) + _dth.T @ g_theta
                     z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
                     _e, t_z, _st = fp.matvec_transposed(z, collect=True)
                     Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))  # N x m
+                    if _ev is not None:
+                        zeta = np.linalg.solve(_Gt.T, g_theta + alpha * (_Pth.T @ np.asarray(z)))
+                        inj_ev = np.zeros((N, m), dtype=complex)
+                        for k, nd in enumerate(_nds):
+                            if 0 <= nd < N:
+                                inj_ev[nd, :len(_Wk[k])] -= zeta[k] * _Wk[k]
+                        _g2, t_ev, _st2 = fp.matvec_transposed(
+                            np.zeros(n, dtype=complex), collect=True, inject=inj_ev)
+                        Sv = Sv - np.asarray(t_ev)
                 nu = f + ns * f0
                 E = (np.exp(2j * np.pi * nu[:, None] * tinj[None, :])
                      * np.exp(-2j * np.pi * ns * f0 * tms[k0])[:, None])
@@ -16994,8 +17296,12 @@ class PAC(Analysis):
                                else np.zeros(m, dtype=complex))
                 per[j] = row
                 lam = wbar
-            if seed is not None and j == seed[0]:
-                lam = lam + seed[1]
+            if seed is not None:
+                if isinstance(seed, dict):
+                    if j in seed:
+                        lam = lam + np.asarray(seed[j], dtype=complex)
+                elif j == seed[0]:
+                    lam = lam + seed[1]
         return lam, np.asarray([v for row in per for v in row], dtype=complex)
 
     @staticmethod
@@ -17193,6 +17499,13 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         pss = pss._lyapunov_host()
         As, Qs, K1, M, m, n = self._lyapunov_pieces(
             pss, 'oscillator_covariance')
+        ## a staged oscillator closes on the TOTAL map with the crossings'
+        ## noise-driven motion in the injection (2026-09-22) -- the same
+        ## `_event_closure` as `covariance`, whose `u`, `v` below are the
+        ## total map's already
+        _bordered = self._event_closure(pss, As, Qs, M, m, n)
+        if _bordered is not None:
+            M, K1, _samples_unused, _pieces_unused = _bordered
 
         v, pinfo = pss.ppv()
         v = np.asarray(v, dtype=float).ravel()

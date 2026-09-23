@@ -25647,10 +25647,14 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     tau^T`).  The reference is EXACT (`_exact_relaxation_oscillator_forced`)
     and the comparison sits at the same offset from each model's own f0.
     Measured at 200 points with VSwitch's compact transition
-    (2026-09-22): every node within 0.3 % at 0.3 / 1.7 / 1.001 f0 outside
-    the 10 ns ON phase (there the collapsed `c` node's three-point rate
-    stencil costs 5 %, `fb0`/`fb1` stay at 0.1 %) -- and the PLAIN deflated
-    solve on the same staged solve reads the same to 0.1 %: with the whole
+    (2026-09-23, each component scaled by its own orbit maximum): 9.8e-5 /
+    2.5e-4 / 1.5e-4 at 0.3 / 1.7 / 1.001 f0, every node and component
+    included -- the collapsed `c` inside the 10 ns ON phase since the rate
+    became the DAE's own (the three-node stencil had cost it 5 %), and
+    `fb0` at its near-null at t/T = 0.35, which a per-node relative error
+    had been reading as 7.4e-3 while its absolute error was the same 1e-5
+    as everywhere on the orbit.  The PLAIN deflated
+    solve on the same staged solve reads the same to 4 digits: with the whole
     transition inside the landed window the fixed-grid map carries the
     switching.  With the tanh it read 0.3-400x off and the bordered one
     15.7 % at 1.001 f0 (E8): the tails outside the window.  The adjoint row is the transpose of the same solve:
@@ -25691,6 +25695,17 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     for fr in (0.3, 1.7, 1.001):
         _T, at, _o = _exact_relaxation_oscillator_forced(fr, t_shift)
         f = fr / Tq
+        ## ⚠ EACH COMPONENT IS SCALED BY ITS OWN ORBIT MAXIMUM (2026-09-23),
+        ## not by its value at the node.  `fb0`'s response passes through a
+        ## near-null at t/T = 0.35 (1.3e-3 against its own 0.24), and a
+        ## per-node relative error there measures the zero crossing, not the
+        ## solve: that ONE entry read 7.4e-3 while its absolute error,
+        ## 9.8e-6, was the same as everywhere else on the orbit, and it moved
+        ## by 10x under changes that moved nothing else.  The trap is in the
+        ## campaign's own notes ("a relative error against a zero-crossing
+        ## quantity is not agreement") and this test had walked into it.
+        scale = np.max([np.abs(at((t_shift + float(x)) % T_ex))
+                        for x in np.linspace(0.0, Tq, 400)], axis=0)
         worst = {True: 0.0, False: 0.0}
         for bordered in (True, False):
             q._event_columns = ev if bordered else None
@@ -25714,15 +25729,23 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
                 wrap = np.exp(1j * 2.0 * np.pi * fr * ((t_shift + float(tt[j])) // T_ex))
                 ex = at(te) * wrap
                 got = np.asarray(yy[j])[idx]
-                comp = [1, 2] if j in on_phase else [0, 1, 2]
-                worst[bordered] = max(worst[bordered], float(np.max(np.abs(got[comp] - ex[comp]) / np.abs(ex[comp]))))
+                ## every component at every probe, the collapsed `c` in the ON
+                ## phase included: the 5 % it cost was the rate STENCIL, and the
+                ## DAE derivative (2026-09-22) reads the exact rate to 1e-15
+                worst[bordered] = max(worst[bordered], float(np.max(np.abs(got - ex) / scale)))
         ## ⚠ RE-PINNED 2026-09-22 for VSwitch's COMPACT transition: bordered
         ## 2.3e-3 / 7.4e-4 / 3.2e-3 and UNBORDERED 8.7e-4 / 6.5e-4 / 1.3e-3
         ## at 0.3 / 1.7 / 1.001 f0 -- both at the comparison's floor, the
         ## near-harmonic 15.7 % (E8: the tanh's multiplier displacement) gone.
         ## With the tanh the plain deflated solve read 0.3-400x off: the tails.
-        assert worst[True] < 5e-3, (fr, worst)
-        assert worst[False] < 5e-3, (fr, worst)
+        ## ⚠ RE-PINNED 2026-09-23 on the component-scaled instrument:
+        ## bordered 9.8e-5 / 2.5e-4 / 1.5e-4, unbordered the same to 4
+        ## digits -- with the compact transition the landed grid's own map
+        ## carries the switching, so the bordering is a sliver HERE (it is
+        ## 10 % on gear's two-step map, and it is what makes the forward
+        ## and adjoint solves one object).
+        assert worst[True] < 1e-3, (fr, worst)
+        assert worst[False] < 1e-3, (fr, worst)
     ## the adjoint row is the transpose of the same bordered, deflated solve
     fin = 0.3 / Tq
     io_full = names.index('fb1')
@@ -25951,3 +25974,458 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
         j = int(np.argmin(np.abs(tt_cp - te)))
         assert abs(tt_cp[j] - te) < 1e-12 * T_ex
         assert abs(abs(d_cp[j]) - 1e-4) < 2e-4 * 5e-2, (te, d_cp[j])
+
+
+def test_the_runge_kutta_transient_loop_lands_source_corners():
+    """Item 2 of the 2026-09-22 list: `_run_rk_adaptive` (radau, trbdf2,
+    esdirk in the transient) stepped OVER a source's corners -- it had no
+    breakpoint handling at all, where `_solve` cuts its step to the next
+    `next_event`.  Now it lands them the same way.  Measured against the
+    RC's EXACT response to the VPulse's ramps (a 0.1 ns edge into tau =
+    1 us): radau unlanded 7.1e-5 / 5.1e-7 at reltol 1e-4 / 1e-6, landed
+    1.3e-8 / 8.1e-10 with FEWER steps (109 -> 79, 144 -> 106); trbdf2
+    gains nothing (2.0e-4 -> 2.1e-4, 1.1e-5 -> 1.1e-5: its own second
+    order); gear, whose loop always landed, would read 8.9e-3 / 5.9e-4
+    without.  Pinned: radau at reltol 1e-4 below 1e-7 with all four
+    corners hit, and above 1e-5 with `next_event` silenced."""
+    import warnings as _w
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+    TD, TR, PW, TF, TAU = 2e-6, 1e-10, 5e-6, 1e-10, 1e-6
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=TD, tr=TR, tf=TF, pw=PW, per=20e-6)
+        c['r'] = R('a', 'b', r=1e3)
+        c['c'] = C('b', gnd, c=1e-9)
+        return c
+
+    def ramp(t, t0, w):
+        s = np.clip(t - t0, 0, None)
+        return (s - TAU * (1 - np.exp(-s / TAU))) / w
+
+    def exact(t):
+        t = np.asarray(t, dtype=float)
+        return (ramp(t, TD, TR) - ramp(t, TD + TR, TR)
+                - ramp(t, TD + TR + PW, TF) + ramp(t, TD + TR + PW + TF, TF))
+
+    errs = {}
+    for landed in (True, False):
+        c = build()
+        names = [str(n_) for n_ in c.nodes]
+        if not landed:
+            c.next_event = lambda t: float('inf')
+        tr = Transient(c, toolkit=circuit.numeric, reltol=1e-4, integrator=RadauIIA3Integrator())
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = tr.solve(refnode=gnd, tend=10e-6, timestep=0.2e-6)
+        tt = np.asarray(res.sweep_values, dtype=float)
+        vb = np.asarray(res.x, dtype=float)[names.index('b')]
+        errs[landed] = float(np.max(np.abs(vb - exact(tt))))
+        if landed:
+            assert tr.statistics.breakpoints_hit == 4, tr.statistics.breakpoints_hit
+            for tc in (TD, TD + TR, TD + TR + PW, TD + TR + PW + TF):
+                assert np.min(np.abs(tt - tc)) < 1e-15, tc
+        else:
+            assert tr.statistics.breakpoints_hit == 0
+    assert errs[True] < 1e-7 and errs[False] > 1e-5, errs
+
+
+def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
+    """Item 1 of the 2026-09-22 list: `floquet_modes` diagonalised the
+    FIXED-GRID map of a staged solve and sampled its modes along the orbit
+    without the event nodes' costate injections; `oscillator_covariance`
+    bordered `I - M kron M` with that map while its `u`, `v` were the total
+    map's.  Now the total map (`M + P_theta dtheta/dx_0`) and the
+    injections (`_event_costate_injection`, factored out of `ppv`).
+    Measured on the staged comparator oscillator (compact switch, 200
+    points): the multipliers move 2e-6 onto the total's (1.998273e-2; the
+    exact 1.998264e-2); oscillator_covariance's bordered residual 1.06e-7
+    -> 5.1e-15; the second mode's `C^T q` along the orbit matches the exact
+    saltation propagation's direction to 6 digits -- with or without the
+    injections, since with the transition inside the landed window the
+    fixed-grid map carries the switching and the injections are the
+    per-mille sliver (as everywhere today).  Pinned: multipliers equal to
+    eig(M_tot) to 1e-9, the bordered residual below 1e-11, the mode's
+    direction above 0.99999 at nodes before and after the crossings."""
+    import warnings as _w
+    from scipy.linalg import expm
+    from scipy.optimize import fsolve
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    p = PSS(cir, method='radau', reltol=1e-8)
+    names = [str(n_) for n_ in cir.nodes]
+    x0 = np.zeros(cir.n)
+    x0[names.index('c')] = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
+    Tl = float(p.lte_period)
+    q = PSS(cir, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
+    assert q.converged and q._event_columns is not None
+    fp = q.factored_period()
+    n = fp.width
+    Md = np.column_stack([np.asarray(fp.matvec(e), dtype=float) for e in np.eye(n)])
+    Mt = Md + np.asarray(q._event_columns['P_end'], dtype=float) @ np.asarray(q._event_sensitivity, dtype=float)
+    lam_t = np.sort(np.abs(np.linalg.eigvals(Mt)))[::-1]
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fm = q.floquet_modes(nmodes=2)
+    lam_fm = np.sort(np.abs([mm['lam'] for mm in fm]))[::-1]
+    assert np.max(np.abs(lam_fm - lam_t[:2]) / lam_t[:2]) < 1e-9, (lam_fm, lam_t[:2])
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _K, _d, info = pac.oscillator_covariance(q)
+    assert info['d_residual'] < 1e-11, info['d_residual']
+    ## the exact second left mode along the orbit (saltation propagation)
+    R1 = R2 = R3 = 1e3
+    C1, C2, C3 = 1e-9, 3e-10, 3e-10
+    VDD, VREF, RON, ROFF = 5.0, 2.5, 10.0, 1e7
+
+    def sysm(g):
+        A = np.array([[-(1 / R1 + 1 / R2 + g) / C1, 1 / (R2 * C1), 0.0],
+                      [1 / (R2 * C2), -(1 / R2 + 1 / R3) / C2, 1 / (R3 * C2)],
+                      [0.0, 1 / (R3 * C3), -1 / (R3 * C3)]])
+        return A, np.array([VDD / (R1 * C1), 0.0, 0.0])
+
+    A_on, b_on = sysm(1 / RON)
+    A_off, b_off = sysm(1 / ROFF)
+    h = np.array([0.0, 0.0, 1.0])
+
+    def flow(A, b, x, tt):
+        E = expm(A * tt)
+        return E @ x + np.linalg.solve(A, (E - np.eye(3)) @ b), E
+
+    def resid(z):
+        xa, t_off, t_on = z[:3], z[3], z[4]
+        xb, _ = flow(A_off, b_off, xa, t_off)
+        xc, _ = flow(A_on, b_on, xb, t_on)
+        return np.concatenate((xc - xa, [xa[2] - VREF, xb[2] - VREF]))
+
+    z = fsolve(resid, np.array([1.0, 2.4, 2.5, 1.1e-6, 0.3e-6]), xtol=1e-13)
+    xa, t_off, t_on = z[:3], float(z[3]), float(z[4])
+    T = t_off + t_on
+    xb, E_off = flow(A_off, b_off, xa, t_off)
+    _xc, E_on = flow(A_on, b_on, xb, t_on)
+
+    def salt(A_pre, b_pre, A_post, b_post, x):
+        f_pre, f_post = A_pre @ x + b_pre, A_post @ x + b_post
+        return np.eye(3) + np.outer(f_post - f_pre, h) / float(h @ f_pre)
+
+    S0 = salt(A_on, b_on, A_off, b_off, xa)
+    S1 = salt(A_off, b_off, A_on, b_on, xb)
+    M_ex = E_on @ S1 @ E_off @ S0
+    lam_ex, V_ex = np.linalg.eig(M_ex.T)
+    o = np.argsort(-np.abs(lam_ex))
+    v2 = np.real(V_ex[:, o[1]])
+    assert abs(lam_t[1] / abs(lam_ex[o[1]]) - 1.0) < 1e-4, (lam_t[1], lam_ex[o[1]])
+
+    def left2(tt):
+        if tt < t_off:
+            xt, _ = flow(A_off, b_off, xa, tt)
+            _, Et = flow(A_off, b_off, xt, t_off - tt)
+            return xt, (E_on @ S1 @ Et).T @ v2
+        xt, _ = flow(A_on, b_on, xb, tt - t_off)
+        _, Et = flow(A_on, b_on, xt, T - tt)
+        return xt, Et.T @ v2
+
+    tg = np.linspace(0.0, T, 20001)[:-1]
+    orb = np.array([left2(x)[0] for x in tg])
+    red = [nm for i, nm in enumerate(names) if i != q.irefnode]
+    idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    Xw = np.asarray(q.waveform[1], dtype=float)
+    sel = [names.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    qs = np.asarray(fm[1]['q'])
+    for j in (10, 150):
+        xs = Xw[sel, j]
+        k = int(np.argmin(np.linalg.norm(orb - xs, axis=1)))
+        _x, ve = left2(float(tg[k]))
+        Cj = np.asarray(q._C_at(np.delete(Xw[:, j], q.irefnode)), dtype=float)
+        w = (Cj.T @ np.real(qs[:, j]))[idx]
+        cos = abs(w @ ve) / (np.linalg.norm(w) * np.linalg.norm(ve))
+        assert cos > 0.99999, (j, cos)
+
+
+def test_gears_stage_stores_its_event_columns_and_its_bordered_pac_matches_radaus():
+    """Item 3 of the 2026-09-22 list: the gear stage stored no event columns,
+    so every bordered consumer ran unbordered on a staged gear solve.  Now it
+    stores them in gear's PAIR form (`P_nodes[j]` m x 2m, `P_end` 2m x K,
+    the total monodromy the pair map plus the saltation) and `PAC.solve`'s
+    bordered block takes the pair width.  Measured on the PWM loop at 100
+    points against radau's bordered response (exact against the fixed-time
+    FD): gear bordered 5.6e-4 / 2.5e-4 off (out / fb), gear UNBORDERED
+    10.6 % -- a two-step map through the landed window does not carry the
+    switching the way radau's one-step map does, so here the bordering is
+    worth two orders of magnitude, not a sliver.  Gear's pair-total
+    multipliers 0.98106 / 0.68206 against radau's 0.98105 / 0.68203.  The
+    covariance closure and the adjoint row stay unbordered on gear (warned,
+    plain)."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+
+    def staged(method):
+        cir = _pwm_loop(T)
+        p = PSS(cir, method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / 100, maxiterations=100, state_events=True)
+        assert p.converged
+        return cir, p
+
+    cr, pr = staged('radau')
+    cg, pg = staged('gear')
+    assert pg._event_columns is not None and np.shape(pg._monodromy) == (2 * (cg.n - 1), 2 * (cg.n - 1))
+    lr = np.sort(np.abs(np.linalg.eigvals(np.asarray(pr._monodromy))))[::-1]
+    lg = np.sort(np.abs(np.linalg.eigvals(np.asarray(pg._monodromy))))[::-1]
+    assert np.max(np.abs(lg[:2] - lr[:2]) / lr[:2]) < 1e-3, (lg[:2], lr[:2])
+    names = [str(n_) for n_ in cr.nodes]
+    red = [nm for i, nm in enumerate(names) if i != pr.irefnode]
+    f0 = 1.0 / T
+
+    def resp(cir, p, bordered):
+        ev = p._event_columns
+        if not bordered:
+            p._event_columns = None
+        try:
+            pac = PAC(cir, toolkit=circuit.numeric)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                pac.solve(p, [f0])
+            tt, yy = pac.time_response[0]
+        finally:
+            p._event_columns = ev
+        return np.asarray(tt, dtype=float), np.asarray(yy)
+
+    tr_, yr = resp(cr, pr, True)
+    for bordered, lo, hi in ((True, 0.0, 2e-3), (False, 5e-2, 1.0)):
+        tg_, yg = resp(cg, pg, bordered)
+        for nm in ('out', 'fb'):
+            i = red.index(nm)
+            yref = (np.interp(tg_, tr_, np.real(yr[:, i]))
+                    + 1j * np.interp(tg_, tr_, np.imag(yr[:, i])))
+            err = float(np.max(np.abs(yg[:, i] - yref)) / np.max(np.abs(yref)))
+            assert lo < err < hi, (bordered, nm, err)
+
+
+def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma():
+    """The crossings' noise-driven jitter as a user-facing quantity
+    (2026-09-23): `PAC.event_jitter` reads it off the bordered Lyapunov
+    closure -- ``Cov(dtheta) = dth K_0 dth^T + Gt^-1 D Gt^-T``, the
+    stationary state at the period start plus this period's per-step
+    injections.  On `_jitter_sampler` (a sawtooth of slope `s_1 = V1/0.9T`
+    crossing a threshold node carrying `kT/C_n`) the analytic answer is
+    ``sqrt(kT/C_n) / s_1`` at the turn-off crossing: 11.5844 ps.  Measured
+    11.5873 ps -- 1.0002 -- and FLAT at 100 / 200 / 400 points, the same
+    crossing motion that gives the held capacitor its `(s_2/s_1)^2 kT/C_n`
+    in `covariance`.  The reset edges read 0.6437 ps (the threshold's own
+    faster slope there).  Pinned: within 1 % of the analytic sigma at 100
+    and 200 points, the two edges of one window equal, and an oscillator
+    refused."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    kT = 1.380649e-23 * 300.0
+    sigma_exact = np.sqrt(kT / 1e-12) / (5.0 / (0.9 * T))
+    out = {}
+    for N in (100, 200):
+        cir = _jitter_sampler(T)
+        pss = PSS(cir, method='radau', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / N, maxiterations=100, state_events=True)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            j = pac.event_jitter(pss)
+        assert len(j['sigma']) == 4 and len(j['fractions']) == 4
+        fr = np.asarray(j['fractions'], dtype=float)
+        assert abs(fr[0] - 0.45) < 1e-4 and abs(fr[2] - 0.925) < 1e-3, fr
+        ## the two edges of one window cross together: the same sigma
+        assert abs(j['sigma'][0] / j['sigma'][1] - 1.0) < 1e-6
+        assert abs(j['sigma'][2] / j['sigma'][3] - 1.0) < 1e-6
+        ## the reset edge is faster, so it jitters less
+        assert j['sigma'][2] < 0.1 * j['sigma'][0]
+        out[N] = float(j['sigma'][0])
+    for N, s in out.items():
+        assert abs(s / sigma_exact - 1.0) < 1e-2, (N, s, sigma_exact)
+    assert abs(out[100] / out[200] - 1.0) < 1e-3, out
+    ## an oscillator's crossings diffuse with its phase: refused, not fudged
+    osc = _comparator_relaxation_oscillator()
+    po = PSS(osc, method='radau', reltol=1e-8)
+    x0 = np.zeros(osc.n)
+    x0[[str(n_) for n_ in osc.nodes].index('c')] = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _fr, seed = po.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
+        qo = PSS(osc, method='radau', reltol=1e-9)
+        qo.solve(period=float(po.lte_period), timestep=float(po.lte_period) / 200,
+                 x0=seed, maxiterations=100, state_events=True)
+    try:
+        PAC(osc, toolkit=circuit.numeric).event_jitter(qo)
+        assert False, 'an oscillator must be refused'
+    except ValueError as e:
+        assert 'diffuse' in str(e)
+
+
+def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
+    """Item 2 of the 2026-09-22 list, finished (2026-09-23): on a staged
+    GEAR solve the adjoint row and the covariance closure were unbordered
+    -- the columns did not exist until item 3 stored them in gear's pair
+    form, and both consumers assumed the one-step width.  Now: the adjoint
+    row does the same elimination on the pair map with the event rows'
+    term as a second injected reverse pass, and `_event_closure` builds
+    its noise-sensitivity rows at the MAP's width (the pair's `(x_j,
+    x_{j-1})`).
+
+    Measured.  (a) The adjoint row on the PWM loop at 100 points is
+    dual-consistent with the bordered forward solve to 1.7e-14 at l = 0
+    and 7e-14 at l = 1, where the UNBORDERED row is 15 % / 10 % off --
+    the same order the bordered PAC removed.  (b) The covariance closure
+    on `_jitter_sampler`: gear's held variance tracks its OWN threshold
+    variance to 3 % / 0.4 % / 0.2 % at 100 / 400 / 800 points.  ⚠ The
+    ABSOLUTE numbers there are 0.60 / 0.85 / 0.92 of the analytic, and
+    that is gear's known covariance floor, not the bordering: `Var(n)` is
+    the threshold node's own kT/C with no event in it and reads the same
+    0.60 / 0.85 / 0.92 whether the solve is staged or not (its RC is
+    10 ns against a 10 ns step at N = 100; radau reads 1.0004 throughout).
+    So the pin is the RATIO the bordering is responsible for.  ⚠ AND THE
+    BORDERING IS NOT WHAT SAVES THE HELD VARIANCE HERE: with the grid
+    landed but the columns withheld gear reads 0.607 against the bordered
+    0.6016 -- 1 % -- while its SIDEBAND response is 10 % off unbordered
+    (above).  What the hold needs is the landed grid: an UNSTAGED gear
+    solve of the same circuit reads 537x the analytic held variance, and
+    that is the contrast pinned below."""
+    import warnings as _w
+    from pycircuit.circuit import remove_row_col
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    f0 = 1.0 / T
+    ## (a) the adjoint row on a staged gear solve
+    cir = _pwm_loop(T)
+    p = PSS(cir, method='gear', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 100, maxiterations=100, state_events=True)
+    assert p.converged and p._event_columns is not None
+    names = [str(n_) for n_ in cir.nodes]
+    io_full = names.index('out')
+    io = io_full if io_full < p.irefnode else io_full - 1
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), p.irefnode, circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    fin = 0.3 * f0
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = pac.solve(p, freqs=[fin])
+        H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1]))
+        ev = p._event_columns
+        p._event_columns = None
+        try:
+            H0 = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1]))
+        finally:
+            p._event_columns = ev
+    fout = np.asarray(res.sweep_values, dtype=float)
+    X = np.asarray(res.x)
+    for li, l in enumerate((0, 1)):
+        k = int(np.argmin(np.abs(fout - abs(fin + l * f0))))
+        x = complex(X[io_full, k])
+        assert abs(x - complex(H[li] @ u_ac)) < 1e-10 * abs(x), (l, x, H[li] @ u_ac)
+        assert abs(x - complex(H0[li] @ u_ac)) > 1e-2 * abs(x), (l, x, H0[li] @ u_ac)
+    ## (b) the covariance closure in pair form
+    kT = 1.380649e-23 * 300.0
+    exp_n = kT / 1e-12
+    exp_h = 4.0 * exp_n
+    got = {}
+    for N in (100, 400):
+        c3 = _jitter_sampler(T)
+        ps = PSS(c3, method='gear', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            ps.solve(period=T, timestep=T / N, maxiterations=100, state_events=True)
+        red3 = [str(n_) for i, n_ in enumerate(c3.nodes) if i != ps.irefnode]
+        ih, inn = red3.index('hold'), red3.index('n')
+        ts3 = np.asarray(ps.waveform[0], dtype=float)
+        j7 = int(np.searchsorted(ts3, 0.7 * T))
+        pac3 = PAC(c3, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            K0, seq = pac3.covariance(ps, samples=True)
+            ## the contrast that matters to a user: NOT staging at all
+            pu = PSS(_jitter_sampler(T), method='gear', reltol=1e-9)
+            pu.solve(period=T, timestep=T / N, maxiterations=100, state_events=False)
+            _K0u, sequ = PAC(pu.cir, toolkit=circuit.numeric).covariance(pu, samples=True)
+        assert np.shape(K0) == (2 * (c3.n - 1), 2 * (c3.n - 1))     # gear's pair width
+        var_n = float(np.mean([K[inn, inn] for K in seq])) / exp_n
+        held = float(seq[j7][ih, ih]) / exp_h
+        got[N] = held / var_n
+        ## the bordering's job is the ratio; the level is gear's own floor
+        assert 0.5 < var_n < 1.0, (N, var_n)
+        assert abs(got[N] - 1.0) < 5e-2, (N, got[N], var_n, held)
+        ## an UNSTAGED gear solve of the same circuit: nonsense at the hold
+        tsu = np.asarray(pu.waveform[0], dtype=float)
+        assert float(sequ[int(np.searchsorted(tsu, 0.7 * T))][ih, ih]) / exp_h > 100.0
+    assert abs(got[400] - 1.0) < abs(got[100] - 1.0), got
+
+
+def test_the_sampled_series_sees_the_crossings_motion_on_a_staged_solve():
+    """Item 3 of the 2026-09-22 list (2026-09-23): `sampled_noise` sits on
+    the same adjoint machinery as the sideband row, and on a staged solve
+    it now uses the TOTAL map, reads its sample at FIXED time and carries
+    the crossings' costate injections in a third reverse pass.
+
+    The verification is the point and it is sharp on `_jitter_sampler`:
+    the HELD node has no noise source of its own -- `Ch` is noiseless, the
+    switch is off, the ramps are ideal sources -- so every part of its
+    sample-series variance arrives through the crossing's motion.
+    Measured at `t = 0.7 T` over `[1e-3, 0.5] f0` (radau): 1.373e-8 at 100
+    points and 1.500e-8 at 200 against the analytic `(s2/s1)^2 kT/C_n` =
+    1.657e-8 -- 0.83 and 0.91, converging as the band the series covers
+    does.  ⚠ The BORDERING itself is worth 1.15e-6 of that on radau (the
+    landed grid's per-step maps already carry the switching, as
+    everywhere with the compact transition) and 8.2e-3 on gear, whose
+    two-step map does not -- measured both ways, which is why the code
+    stays: the consumers now agree on one linearisation.  Gear's absolute
+    level, 0.63 / 0.75, is its own covariance floor (see the gear test)."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    f0 = 1.0 / T
+    kT = 1.380649e-23 * 300.0
+    exp_h = 4.0 * kT / 1e-12
+    got = {}
+    for N in (100, 200):
+        cir = _jitter_sampler(T)
+        p = PSS(cir, method='radau', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / N, maxiterations=100, state_events=True)
+        assert p.converged and p._event_columns is not None
+        io = [str(n_) for n_ in cir.nodes].index('hold')
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            V = pac.sampled_variance(p, io, [0.7 * T], 1e-3 * f0, 0.5 * f0,
+                                     points_per_decade=12)
+            ev = p._event_columns
+            p._event_columns = None
+            try:
+                V0 = pac.sampled_variance(p, io, [0.7 * T], 1e-3 * f0, 0.5 * f0,
+                                          points_per_decade=12)
+            finally:
+                p._event_columns = ev
+        got[N] = float(V[0]) / exp_h
+        ## every part of it came through the crossing: a held, noiseless node
+        assert 0.75 < got[N] < 1.02, (N, got[N])
+        ## the bordering is live and small on radau's landed grid
+        rel = abs(float(V[0]) - float(V0[0])) / float(V0[0])
+        assert 1e-8 < rel < 1e-4, (N, rel)
+    assert got[200] > got[100], got

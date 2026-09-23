@@ -8777,9 +8777,9 @@ Against it the staged radau period reads −7.3e-7 / −1.85e-8 / −9.0e-10 /
 −2.5e-10 at 100 / 200 / 400 / 800 points — fifth order down to the
 reference's floor.  `VSwitch` is the only element declaring `state_events`;
 the package's other `tanh`s are soft limiters (the op-amp macromodel's
-output clamp, `func.py`), not switches.  Open beside it: `_orbit_rate`'s
-three-node stencil (5 % on a collapsed node inside a 10 ns phase; it enters
-the fixed-time correction only, now per-mille in weight).
+output clamp, `func.py`), not switches.  `_orbit_rate`'s three-node stencil (5 % on a
+collapsed node inside a 10 ns phase) was replaced the same day by the DAE's
+own derivative at the node — 1e-15 against the exact rate.
 
 ### E8. The STAGED map's unit multiplier is first order — ✅ EXPLAINED AND BUILT the same day: `VSwitch`'s tanh TAILS, not the stage; option (a) built (Andreas: "Implement 1"), and the phase-B "unbordered O(1)" numbers re-measured as the tails' (see the log of 2026-09-22, `VSwitch`: the compact transition)
 

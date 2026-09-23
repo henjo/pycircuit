@@ -5304,6 +5304,22 @@ class Transient(Analysis):
         try:
             while t < tend:
                 dt = min(dt, max_step, tend - t)
+                ## Source breakpoints (2026-09-22): a VPulse's corners are
+                ## landed as `_solve` lands them -- this loop stepped OVER
+                ## them: on an RC behind a 0.1 ns edge radau at reltol 1e-6
+                ## sat 3e-14 s from the first corner by rejections alone and
+                ## still read 1.5e-4 after the edge, the SECOND corner (the
+                ## ramp's end) inside its next step; gear, landing both,
+                ## 1.7e-4 at its own order.  The `minbreak` guard is
+                ## `_solve`'s.
+                next_t_break = self.cir.next_event(t)
+                if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
+                    next_t_break = self.cir.next_event(
+                        t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+                was_break = False
+                if t + dt > next_t_break:
+                    dt = float(next_t_break - t)
+                    was_break = True
                 reject = 0
                 while True:
                     self._dt = dt
@@ -5391,6 +5407,8 @@ class Transient(Analysis):
                     else:
                         _ev_iter = 0
                 ## accept
+                if was_break and t + dt >= next_t_break * (1.0 - 1e-12):
+                    self.statistics.breakpoints_hit += 1
                 t = t + dt
                 x = xnew
                 X.append(copy(x))
