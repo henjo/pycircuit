@@ -229,17 +229,6 @@ class TransientStatistics(object):
 
 
 class Transient(Analysis):
-    ## E7: a state event is landed when the crossing sits within this
-    ## fraction of the step's end, in at most this many secant re-solves.
-    ## Measured on the comparator oscillator (gear, reltol 1e-6): 1e-6 / 6
-    ## took 2.6 cuts per landing, 1e-3 / 4 takes 2.1 for the same
-    ## period-to-period spread (1.6e-5 against 1.3e-4 unlanded); one cut
-    ## alone leaves the spread where it was.
-    EVENT_LAND_RTOL = 1e-3
-    EVENT_LAND_MAXITER = 4
-    ## whether a landed crossing restarts the multistep history (measured
-    ## both ways on the comparator oscillator -- see the E7 entry)
-    EVENT_RESTART_HISTORY = True
     """Simple transient analysis class.
 
     NOT REENTRANT: one Transient object runs one solve at a time.  The run
@@ -314,6 +303,17 @@ class Transient(Analysis):
     True
     
     """
+    ## E7: a state event is landed when the crossing sits within this
+    ## fraction of the step's end, in at most this many secant re-solves.
+    ## Measured on the comparator oscillator (gear, reltol 1e-6): 1e-6 / 6
+    ## took 2.6 cuts per landing, 1e-3 / 4 takes 2.1 for the same
+    ## period-to-period spread (1.6e-5 against 1.3e-4 unlanded); one cut
+    ## alone leaves the spread where it was.
+    EVENT_LAND_RTOL = 1e-3
+    EVENT_LAND_MAXITER = 4
+    ## whether a landed crossing restarts the multistep history (measured
+    ## both ways on the comparator oscillator -- see the E7 entry)
+    EVENT_RESTART_HISTORY = True
     ## TODO:
     ## * Implement automatic timestep adjustment, using difference between
     ##   BE and trapezoidal as a measure of the error.
@@ -4574,6 +4574,77 @@ class Transient(Analysis):
             return self._solve(refnode, tend, x0, timestep, provided_function,
                                fixed_timestep, coupled_lte)
 
+    def _finish_result(self, X, timelist, t_start):
+        """The run's `CircuitResult`, the same for every stepping loop
+        (`_solve`, `_run_rk_adaptive`, `_solve_coupled`; one helper since
+        2026-09-23, it was three copies).
+
+        ⚠ The t=0 point IS part of the result -- SPICE convention, and what
+        the JAX backend already does.  `X[0]` is the operating point (or the
+        uic vector) the run worked to compute; dropping it made every
+        index-aligned backend comparison off by one and left
+        resample_uniform unable to reproduce the initial value
+        (doc/transient_review_260820.md, F12(a)).
+
+        STAGE 10.2 -- resampled onto a uniform grid if one was asked for,
+        after the run rather than inside it, deliberately: the adaptive grid
+        is what the error control is defined on, so the solver keeps
+        choosing its own steps and only the REPORTED points change.  The
+        statistics are reachable from the result, not only from the
+        analysis (Stage 6(c), F13), so a caller who kept only the waveform
+        can still ask what produced it."""
+        X = self.toolkit.array(X).T
+        timelist = self.toolkit.array([0.0] + timelist)
+        self.statistics.total_seconds = time.perf_counter() - t_start
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=timelist,
+                                    sweep_label='time', sweep_unit='s')
+        outputstep = self.par.outputstep
+        if outputstep is not None:
+            _grid, _Xg = resample_uniform(self.result.sweep_values,
+                                          self.result.x, step=outputstep)
+            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
+                                        sweep_values=_grid,
+                                        sweep_label='time', sweep_unit='s')
+        self.result.statistics = self.statistics
+        return self.result
+
+    def _next_breakpoint(self, t):
+        """The next source breakpoint after `t`, strictly advancing: a
+        corner closer than `minbreak` (relative) is skipped so a step of
+        `dt = 0` cannot loop.  One guard for every stepping loop."""
+        nb = self.cir.next_event(t)
+        if nb <= t + self.par.minbreak * max(abs(t), 1.0):
+            nb = self.cir.next_event(t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+        return nb
+
+    def _state_event_step(self, x_prev, x_new, h, t_end, cuts, minstep):
+        """E7: a declared crossing inside the accepted step `x_prev -> x_new`
+        (length `h`, ending at `t_end`)?  Returns `('cut', f)` when the step
+        should be re-solved at `f * h` -- the secant on the fraction, `cuts`
+        re-solves already taken -- `'landed'` once the crossing sits within
+        `EVENT_LAND_RTOL` of the step's end (the time recorded in
+        `event_times`), or `None` with no crossing.  One hook for every
+        stepping loop; what a landing does to the history is the loop's
+        business (a multistep method restarts it, a one-step one has none,
+        the coupled solve had held its step while cutting)."""
+        if self._ev_rows is None:
+            return None
+        w = self._ev_rows.shape[1]
+        s0 = self._ev_rows @ np.asarray(x_prev, dtype=float)[:w] - self._ev_thr
+        s1 = self._ev_rows @ np.asarray(x_new, dtype=float)[:w] - self._ev_thr
+        cross = np.flatnonzero(s0 * s1 < 0.0)
+        if not len(cross):
+            return None
+        f = float(np.min(s0[cross] / (s0[cross] - s1[cross])))
+        if (f < 1.0 - self.EVENT_LAND_RTOL and cuts < self.EVENT_LAND_MAXITER
+                and f * h >= minstep):
+            self.statistics.state_event_cuts += 1
+            return 'cut', f
+        self.event_times.append(float(t_end))
+        self.statistics.state_events_hit += 1
+        return 'landed'
+
     def _init_state_events(self, n):
         """E7 (2026-09-22): the circuit's declared state events as rows on
         the FULL state (node voltages first; the branch currents that follow
@@ -4888,11 +4959,8 @@ class Transient(Analysis):
                 self._is_first_step = True
             force_order_drop = False
 
-            next_t_break = self.cir.next_event(t)
-            
-            # Ensure next_t_break strictly advances time to avoid infinite dt=0 loops
-            if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
-                next_t_break = self.cir.next_event(t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+            # the next corner, strictly advancing (no infinite dt = 0 loops)
+            next_t_break = self._next_breakpoint(t)
             
             ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS.
             ##
@@ -5189,24 +5257,14 @@ class Transient(Analysis):
             ## solved state -- a source node handed in at zero "crosses" to
             ## its value in the first step and read as a landing at t = 1e-9 T)
             if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
-                _s0 = self._ev_rows @ np.asarray(X[-1], dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
-                _s1 = self._ev_rows @ np.asarray(x, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
-                _in = np.flatnonzero(_s0 * _s1 < 0.0)
-                if len(_in):
-                    _f = float(np.min(_s0[_in] / (_s0[_in] - _s1[_in])))
-                    if (_f < 1.0 - self.EVENT_LAND_RTOL and _ev_iter < self.EVENT_LAND_MAXITER
-                            and _f * dt >= self.par.minstep):
-                        _ev_iter += 1
-                        self.statistics.state_event_cuts += 1
-                        dt = _f * dt
-                        continue
-                    _ev_iter = 0
-                    self.event_times.append(float(next_t))
-                    self.statistics.state_events_hit += 1
-                    if self.EVENT_RESTART_HISTORY:
-                        was_break_step = True
-                else:
-                    _ev_iter = 0
+                _evs = self._state_event_step(X[-1], x, dt, next_t, _ev_iter, self.par.minstep)
+                if _evs is not None and _evs[0] == 'cut':
+                    _ev_iter += 1
+                    dt = _evs[1] * dt
+                    continue
+                _ev_iter = 0
+                if _evs is not None and self.EVENT_RESTART_HISTORY:
+                    was_break_step = True
 
             t = next_t
             self.statistics.accepted_steps += 1
@@ -5239,39 +5297,7 @@ class Transient(Analysis):
             if not fixed_timestep:
                 dt = next_dt
             
-        ## The t=0 point IS part of the result -- SPICE convention, and what the
-        ## JAX backend already does.  `X[0]` is the operating point (or the uic
-        ## vector) the run worked to compute; dropping it made every index-aligned
-        ## backend comparison off by one and left resample_uniform unable to
-        ## reproduce the initial value (doc/transient_review_260820.md, F12(a);
-        ## fixed at BOTH CPU sites in one commit, standard and coupled, so the
-        ## divergence does not reappear inside one backend).
-        X = self.toolkit.array(X).T
-        timelist = self.toolkit.array([0.0] + timelist)
-        
-        self.statistics.total_seconds = time.perf_counter() - _t_run_start
-
-        self.result = CircuitResult(self.cir, x=X, xdot=None,
-                                    sweep_values=timelist, 
-                                    sweep_label='time', 
-                                    sweep_unit='s')
-
-        ## STAGE 10.2 -- resample onto a uniform grid if one was asked for.
-        ## Done after the run rather than inside it, deliberately: the adaptive
-        ## grid is what the error control is defined on, so the solver keeps
-        ## choosing its own steps and only the REPORTED points change.
-        outputstep = self.par.outputstep
-        if outputstep is not None:
-            _grid, _Xg = resample_uniform(self.result.sweep_values,
-                                          self.result.x, step=outputstep)
-            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
-                                        sweep_values=_grid,
-                                        sweep_label='time', sweep_unit='s')
-        ## Stage 6(c): reachable from the result, not only from the analysis, so a
-        ## caller who kept only the waveform can still ask what produced it.
-        self.result.statistics = self.statistics
-
-        return self.result
+        return self._finish_result(X, timelist, _t_run_start)
 
 
     def _run_rk_adaptive(self, x, n, X, timelist, tend, dt, max_step,
@@ -5312,10 +5338,7 @@ class Transient(Analysis):
                 ## ramp's end) inside its next step; gear, landing both,
                 ## 1.7e-4 at its own order.  The `minbreak` guard is
                 ## `_solve`'s.
-                next_t_break = self.cir.next_event(t)
-                if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
-                    next_t_break = self.cir.next_event(
-                        t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+                next_t_break = self._next_breakpoint(t)
                 was_break = False
                 if t + dt > next_t_break:
                     dt = float(next_t_break - t)
@@ -5389,23 +5412,12 @@ class Transient(Analysis):
                 ## period unlanded (reltol 1e-6): this buys `event_times` and
                 ## a spread of zero from the crossing phase, not accuracy.
                 if self._ev_rows is not None and len(X) > 1:      # not from the initial condition (see `_solve`)
-                    _s0 = self._ev_rows @ np.asarray(x, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
-                    _s1 = self._ev_rows @ np.asarray(xnew, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
-                    _in = np.flatnonzero(_s0 * _s1 < 0.0)
-                    if len(_in):
-                        _f = float(np.min(_s0[_in] / (_s0[_in] - _s1[_in])))
-                        if (_f < 1.0 - self.EVENT_LAND_RTOL
-                                and _ev_iter < self.EVENT_LAND_MAXITER
-                                and _f * dt >= minstep):
-                            _ev_iter += 1
-                            self.statistics.state_event_cuts += 1
-                            dt = _f * dt
-                            continue
-                        _ev_iter = 0
-                        self.event_times.append(float(t + dt))
-                        self.statistics.state_events_hit += 1
-                    else:
-                        _ev_iter = 0
+                    _evs = self._state_event_step(x, xnew, dt, t + dt, _ev_iter, minstep)
+                    if _evs is not None and _evs[0] == 'cut':
+                        _ev_iter += 1
+                        dt = _evs[1] * dt
+                        continue
+                    _ev_iter = 0
                 ## accept
                 if was_break and t + dt >= next_t_break * (1.0 - 1e-12):
                     self.statistics.breakpoints_hit += 1
@@ -5425,21 +5437,7 @@ class Transient(Analysis):
         finally:
             self._rk_want_est = False
 
-        X = tk.array(X).T
-        timelist = tk.array([0.0] + timelist)
-        self.statistics.total_seconds = time.perf_counter() - _t_run_start
-        self.result = CircuitResult(self.cir, x=X, xdot=None,
-                                    sweep_values=timelist,
-                                    sweep_label='time', sweep_unit='s')
-        outputstep = self.par.outputstep
-        if outputstep is not None:
-            _grid, _Xg = resample_uniform(self.result.sweep_values,
-                                          self.result.x, step=outputstep)
-            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
-                                        sweep_values=_grid,
-                                        sweep_label='time', sweep_unit='s')
-        self.result.statistics = self.statistics
-        return self.result
+        return self._finish_result(X, timelist, _t_run_start)
 
 
     def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False):
@@ -5583,10 +5581,7 @@ class Transient(Analysis):
                 self._is_first_step = True
             force_order_drop = False
 
-            next_t_break = self.cir.next_event(t)
-            if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
-                next_t_break = self.cir.next_event(
-                    t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+            next_t_break = self._next_breakpoint(t)
             if _tline_tds:
                 if next_t_break < tend and next_t_break not in _seen_corners:
                     _seen_corners.add(next_t_break)
@@ -5794,25 +5789,15 @@ class Transient(Analysis):
             ## own `h` unknown would walk off the crossing); the landed step
             ## restarts the history as a corner does, as in `_solve`.
             if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
-                _s0 = self._ev_rows @ np.asarray(X[-1], dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
-                _s1 = self._ev_rows @ np.asarray(x_curr, dtype=float)[:self._ev_rows.shape[1]] - self._ev_thr
-                _in = np.flatnonzero(_s0 * _s1 < 0.0)
-                if len(_in):
-                    _f = float(np.min(_s0[_in] / (_s0[_in] - _s1[_in])))
-                    if (_f < 1.0 - self.EVENT_LAND_RTOL
-                            and _ev_iter < self.EVENT_LAND_MAXITER
-                            and _f * h_curr >= minstep):
-                        _ev_iter += 1
-                        self.statistics.state_event_cuts += 1
-                        h = _f * h_curr
-                        _ev_hold = True
-                        continue
-                    _ev_iter, _ev_hold = 0, False
-                    self.event_times.append(float(t + h_curr))
-                    self.statistics.state_events_hit += 1
+                _evs = self._state_event_step(X[-1], x_curr, h_curr, t + h_curr, _ev_iter, minstep)
+                if _evs is not None and _evs[0] == 'cut':
+                    _ev_iter += 1
+                    h = _evs[1] * h_curr
+                    _ev_hold = True
+                    continue
+                _ev_iter, _ev_hold = 0, False
+                if _evs is not None:
                     was_break_step = True
-                else:
-                    _ev_iter, _ev_hold = 0, False
             t += h_curr
             self.statistics.accepted_steps += 1
             self.statistics._note_step(h_curr)
@@ -5885,36 +5870,7 @@ class Transient(Analysis):
             ## step count did not move when `reltol` changed by two decades.
             h = min(max_step, max(h_curr, minstep))
             
-        ## The t=0 point IS part of the result -- SPICE convention, and what the
-        ## JAX backend already does.  `X[0]` is the operating point (or the uic
-        ## vector) the run worked to compute; dropping it made every index-aligned
-        ## backend comparison off by one and left resample_uniform unable to
-        ## reproduce the initial value (doc/transient_review_260820.md, F12(a);
-        ## fixed at BOTH CPU sites in one commit, standard and coupled, so the
-        ## divergence does not reappear inside one backend).
-        X = self.toolkit.array(X).T
-        timelist = self.toolkit.array([0.0] + timelist)
-        self.result = CircuitResult(self.cir, x=X, xdot=None,
-                                    sweep_values=timelist, 
-                                    sweep_label='time', 
-                                    sweep_unit='s')
-
-        ## STAGE 10.2 -- resample onto a uniform grid if one was asked for.
-        ## Done after the run rather than inside it, deliberately: the adaptive
-        ## grid is what the error control is defined on, so the solver keeps
-        ## choosing its own steps and only the REPORTED points change.
-        outputstep = self.par.outputstep
-        if outputstep is not None:
-            _grid, _Xg = resample_uniform(self.result.sweep_values,
-                                          self.result.x, step=outputstep)
-            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
-                                        sweep_values=_grid,
-                                        sweep_label='time', sweep_unit='s')
-        self.statistics.total_seconds = time.perf_counter() - _t_run_start
-        ## Reachable from the result, not only from the analysis -- same as
-        ## the standard path (F13).
-        self.result.statistics = self.statistics
-        return self.result
+        return self._finish_result(X, timelist, _t_run_start)
 
 
 

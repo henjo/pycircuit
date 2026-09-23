@@ -12383,13 +12383,13 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         return cir
 
-    def solve(method):
+    def solve(method, maxiterations=300):
         cir = build()
         pss = PSS(cir, method=method, reltol=1e-12)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             pss.solve(period=6.731, timestep=6.731 / 400,
-                      x0=np.array([2.0, 0.0]), maxiterations=300)
+                      x0=np.array([2.0, 0.0]), maxiterations=maxiterations)
         assert pss.converged
         return cir, pss
     cir, pss = solve('trap')
@@ -12440,7 +12440,14 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
     ## Gear-2 twin refuses the same seed (by non-convergence).  Pinning one
     ## mechanism would pin a knife-edge; the assertion accepts either refusal.
     _refused = 'spurious|too poor to seed|did not converge'
-    _c3, p3 = solve('euler')
+    ## ⚠ THE BUDGET IS 20, NOT 300 (2026-09-23).  The twin inherits the
+    ## caller's `maxiterations`, and from this seed both twins now refuse by
+    ## NOT converging -- so at 300 the two refusals below ran their whole
+    ## budget, times the solve's retry ladder: 971 + 968 traversals, 790 of
+    ## this test's 807 s and the gate's single longest pole.  Measured at 20:
+    ## the same two refusals in 42.5 + 14.6 s.  The refusal is the pinned
+    ## invariant, and it holds at any budget.
+    _c3, p3 = solve('euler', maxiterations=20)
     with pytest.raises(RuntimeError, match=_refused):
         p3.ppv()
     p3.monodromy = 'gear'
@@ -25172,13 +25179,7 @@ def test_an_autonomous_solve_takes_its_state_events_and_its_period_as_unknowns_t
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
-    p = PSS(cir, method='radau', reltol=1e-8)
-    x0 = np.zeros(cir.n)
-    x0[[str(n_) for n_ in cir.nodes].index('c')] = 1.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
-    Tl = float(p.lte_period)
+    seed, Tl = _relaxation_oscillator_seed(cir)
 
     def solve(N, se):
         c2 = _comparator_relaxation_oscillator()
@@ -25389,15 +25390,28 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     assert abs(seqz[j7][isaw, isaw] / exp_n / share - 1.0) < 2e-2, (seqz[j7][isaw, isaw] / exp_n, share)
 
 
-def _exact_relaxation_oscillator_ppv():
-    """The EXACT PPV of `_comparator_relaxation_oscillator` with an ideal
-    comparator: the flow is linear in each switch state (c shorted through
-    `Ron`, or `Roff`), the states (c, fb0, fb1), and the period map is the
-    two matrix exponentials joined by saltation matrices ``I + (f+ - f-)
-    h^T / (h . f-)`` at the crossings of ``h = fb1 - 2.5``.  Returns
-    ``(T, sample)`` with ``sample(x)`` the PPV (``v . f = 1``) at the
-    orbit point nearest the state `x = (c, fb0, fb1)`."""
-    from scipy.linalg import expm, null_space
+import functools as _functools
+
+
+@_functools.lru_cache(maxsize=1)
+def _exact_relaxation_oscillator_model():
+    """The EXACT piecewise-linear model of `_comparator_relaxation_oscillator`
+    with an IDEAL comparator -- the reference the staged-events tests are
+    gated against.  The flow is linear in each switch state (c shorted
+    through `Ron`, or `Roff`), the states (c, fb0, fb1); the orbit is found
+    by shooting on the two crossings of ``h . x = fb1 = 2.5``; the period
+    map is the two matrix exponentials joined by saltation matrices ``I +
+    (f+ - f-) h^T / (h . f-)``.  Returned as a namespace: `A_on, b_on,
+    A_off, b_off` (the flows `x' = A x + b`), `Bv` (a unit tone on the
+    rail), `flow(A, b, x, t) -> (x(t), e^{At})`, `xa`/`xb` (the ON->OFF and
+    OFF->ON switching states), `t_off, t_on, T`, `E_off, E_on, S0, S1` and
+    `M` (the period map from just before `xa`'s switching), `orbit_at(t)`
+    and `left_at(v)` -- the closure sampling a LEFT vector `v` of `M`
+    along the orbit, ``(map from t to T)^T v``.  Cached: the three users
+    and every frequency of the forced one share one shooting solve.
+    (2026-09-23, refactor E9 item 4 -- it was copied three times.)"""
+    from types import SimpleNamespace
+    from scipy.linalg import expm
     from scipy.optimize import fsolve
     R1 = R2 = R3 = 1e3
     C1, C2, C3 = 1e-9, 3e-10, 3e-10
@@ -25411,6 +25425,7 @@ def _exact_relaxation_oscillator_ppv():
 
     A_on, b_on = sysm(1 / RON)
     A_off, b_off = sysm(1 / ROFF)
+    Bv = np.array([1 / (R1 * C1), 0.0, 0.0])
 
     def flow(A, b, x, t):
         E = expm(A * t)
@@ -25438,28 +25453,74 @@ def _exact_relaxation_oscillator_ppv():
     S0 = salt(A_on, b_on, A_off, b_off, xa)
     S1 = salt(A_off, b_off, A_on, b_on, xb)
     M = E_on @ S1 @ E_off @ S0
-    v = null_space(M.T - np.eye(3), rcond=1e-9)
+
+    def orbit_at(t):
+        if t < t_off:
+            return flow(A_off, b_off, xa, t)[0]
+        return flow(A_on, b_on, xb, t - t_off)[0]
+
+    def left_at(v):
+        def at(t):
+            if t < t_off:
+                xt, _ = flow(A_off, b_off, xa, t)
+                _, Et = flow(A_off, b_off, xt, t_off - t)
+                return xt, (E_on @ S1 @ Et).T @ v
+            xt, _ = flow(A_on, b_on, xb, t - t_off)
+            _, Et = flow(A_on, b_on, xt, T - t)
+            return xt, Et.T @ v
+        return at
+
+    return SimpleNamespace(A_on=A_on, b_on=b_on, A_off=A_off, b_off=b_off, Bv=Bv,
+                           flow=flow, h=h, xa=xa, xb=xb, t_off=t_off, t_on=t_on, T=T,
+                           E_off=E_off, E_on=E_on, S0=S0, S1=S1, M=M,
+                           orbit_at=orbit_at, left_at=left_at)
+
+
+def _relaxation_oscillator_seed(cir, phase=0.8):
+    """A seed and a period hint for a PSS of `_comparator_relaxation_oscillator`
+    (or a copy of it with an AC source), taken from the EXACT model's orbit at
+    `phase` of its period -- where the OFF branch has settled, away from both
+    crossings, so the staged solve's events land at ~0.14 T and ~0.20 T.
+    Returns ``(x0_reduced, T)``; the source nodes are set, the branch
+    currents left for the first Newton step.
+
+    ⚠ This replaced six identical `lte_grid` seed solves (2026-09-23), 72.6 s
+    each, which nothing else in those tests used: from either seed the staged
+    solve converges to the same period (5e-9 apart at 200 points), and the
+    unstaged solves stay unconverged (100 vs 200 points 8.6e-3 apart), which
+    is what the autonomous-stage test pins."""
+    mdl = _exact_relaxation_oscillator_model()
+    names = [str(n_) for n_ in cir.nodes]
+    x = np.zeros(cir.n)
+    xs = mdl.orbit_at(phase * mdl.T)
+    for nm, val in (('c', xs[0]), ('fb0', xs[1]), ('fb1', xs[2]),
+                    ('vdd', 5.0), ('ref', 2.5)):
+        x[names.index(nm)] = val
+    return np.delete(x, cir.get_node_index(gnd)), mdl.T
+
+
+def _exact_relaxation_oscillator_ppv():
+    """The EXACT PPV of `_comparator_relaxation_oscillator` with an ideal
+    comparator (`_exact_relaxation_oscillator_model`): the left null vector
+    of the saltation-joined period map, normalised ``v . f = 1`` on the
+    flow just before the ON->OFF switching, sampled along the orbit.
+    Returns ``(T, sample)`` with ``sample(x)`` the PPV at the orbit point
+    nearest the state `x = (c, fb0, fb1)`."""
+    from scipy.linalg import null_space
+    mdl = _exact_relaxation_oscillator_model()
+    v = null_space(mdl.M.T - np.eye(3), rcond=1e-9)
     assert v.shape[1] == 1
     v = v[:, 0]
-    v = v / float(v @ (A_on @ xa + b_on))
-    tgrid = np.linspace(0.0, T, 4001)[:-1]
-
-    def at(t):
-        if t < t_off:
-            xt, _ = flow(A_off, b_off, xa, t)
-            _, Et = flow(A_off, b_off, xt, t_off - t)
-            return xt, (E_on @ S1 @ Et).T @ v
-        xt, _ = flow(A_on, b_on, xb, t - t_off)
-        _, Et = flow(A_on, b_on, xt, T - t)
-        return xt, Et.T @ v
-
+    v = v / float(v @ (mdl.A_on @ mdl.xa + mdl.b_on))
+    at = mdl.left_at(v)
+    tgrid = np.linspace(0.0, mdl.T, 4001)[:-1]
     orbit = np.array([at(t)[0] for t in tgrid])
 
     def sample(x):
         k = int(np.argmin(np.linalg.norm(orbit - np.asarray(x, dtype=float), axis=1)))
         return at(tgrid[k])[1]
 
-    return T, sample
+    return mdl.T, sample
 
 
 def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_saltation_ppv():
@@ -25486,14 +25547,8 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
-    p = PSS(cir, method='radau', reltol=1e-8)
-    x0 = np.zeros(cir.n)
     names = [str(n_) for n_ in cir.nodes]
-    x0[names.index('c')] = 1.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
-    Tl = float(p.lte_period)
+    seed, Tl = _relaxation_oscillator_seed(cir)
     c2 = _comparator_relaxation_oscillator()
     q = PSS(c2, method='radau', reltol=1e-9)
     with _w.catch_warnings():
@@ -25552,61 +25607,21 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
 
 def _exact_relaxation_oscillator_forced(fr, t_shift):
     """The EXACT sideband response of `_comparator_relaxation_oscillator`
-    to a unit tone on the rail at `fr` times its own fundamental: the
-    variational system ``y' = A_s y + B e^{j w (t - t_shift)}`` in each
-    switch state (augmented matrix exponentials), ``y+ = S y-`` at the
-    crossings, and ``y(T) = e^{j w T} y(0)``.  `t_shift` is where the
-    PSS's `t = 0` sits on this orbit.  Returns ``(T, at, orbit_at)`` with
-    ``at(t)`` the response and ``orbit_at(t)`` the state, `t` from the
-    ON->OFF switching."""
+    to a unit tone on the rail at `fr` times its own fundamental, on
+    `_exact_relaxation_oscillator_model`: the variational system ``y' =
+    A_s y + B e^{j w (t - t_shift)}`` in each switch state (augmented
+    matrix exponentials), ``y+ = S y-`` at the crossings, and ``y(T) =
+    e^{j w T} y(0)``.  `t_shift` is where the PSS's `t = 0` sits on this
+    orbit.  Returns ``(T, at, orbit_at)`` with ``at(t)`` the response and
+    ``orbit_at(t)`` the state, `t` from the ON->OFF switching."""
     from scipy.linalg import expm
-    from scipy.optimize import fsolve
-    R1 = R2 = R3 = 1e3
-    C1, C2, C3 = 1e-9, 3e-10, 3e-10
-    VDD, VREF, RON, ROFF = 5.0, 2.5, 10.0, 1e7
-
-    def sysm(g):
-        A = np.array([[-(1 / R1 + 1 / R2 + g) / C1, 1 / (R2 * C1), 0.0],
-                      [1 / (R2 * C2), -(1 / R2 + 1 / R3) / C2, 1 / (R3 * C2)],
-                      [0.0, 1 / (R3 * C3), -1 / (R3 * C3)]])
-        return A, np.array([VDD / (R1 * C1), 0.0, 0.0])
-
-    A_on, b_on = sysm(1 / RON)
-    A_off, b_off = sysm(1 / ROFF)
-    Bv = np.array([1 / (R1 * C1), 0.0, 0.0])
-
-    def flow(A, b, x, t):
-        E = expm(A * t)
-        return E @ x + np.linalg.solve(A, (E - np.eye(3)) @ b), E
-
-    h = np.array([0.0, 0.0, 1.0])
-
-    def resid(z):
-        xa, t_off, t_on = z[:3], z[3], z[4]
-        xb, _ = flow(A_off, b_off, xa, t_off)
-        xc, _ = flow(A_on, b_on, xb, t_on)
-        return np.concatenate((xc - xa, [xa[2] - VREF, xb[2] - VREF]))
-
-    z = fsolve(resid, np.array([1.0, 2.4, 2.5, 1.1e-6, 0.3e-6]), xtol=1e-13)
-    assert np.linalg.norm(resid(z)) < 1e-9
-    xa, t_off, t_on = z[:3], float(z[3]), float(z[4])
-    T = t_off + t_on
-    xb, E_off = flow(A_off, b_off, xa, t_off)
-    _xc, E_on = flow(A_on, b_on, xb, t_on)
-
-    def salt(A_pre, b_pre, A_post, b_post, x):
-        f_pre, f_post = A_pre @ x + b_pre, A_post @ x + b_post
-        return np.eye(3) + np.outer(f_post - f_pre, h) / float(h @ f_pre)
-
-    S0 = salt(A_on, b_on, A_off, b_off, xa)
-    S1 = salt(A_off, b_off, A_on, b_on, xb)
-    M = E_on @ S1 @ E_off @ S0
-    w = 2.0 * np.pi * fr / T
+    mdl = _exact_relaxation_oscillator_model()
+    w = 2.0 * np.pi * fr / mdl.T
 
     def aug(A, t):
         Z = np.zeros((4, 4), dtype=complex)
         Z[:3, :3] = A
-        Z[:3, 3] = Bv
+        Z[:3, 3] = mdl.Bv
         Z[3, 3] = 1j * w
         return expm(Z * t)
 
@@ -25615,26 +25630,21 @@ def _exact_relaxation_oscillator_forced(fr, t_shift):
         return Z[:3], Z[3]
 
     ph0 = np.exp(-1j * w * t_shift)
-    y, ph = seg(A_off, S0 @ np.zeros(3, dtype=complex), ph0, t_off)
-    y, ph = seg(A_on, S1 @ y, ph, t_on)
-    alpha = np.exp(-1j * w * T)
-    y0 = np.linalg.solve(np.eye(3) - alpha * M, alpha * y)
+    y, ph = seg(mdl.A_off, mdl.S0 @ np.zeros(3, dtype=complex), ph0, mdl.t_off)
+    y, ph = seg(mdl.A_on, mdl.S1 @ y, ph, mdl.t_on)
+    alpha = np.exp(-1j * w * mdl.T)
+    y0 = np.linalg.solve(np.eye(3) - alpha * mdl.M, alpha * y)
 
     def at(t):
-        yy, pp = S0 @ y0, ph0
-        if t < t_off:
-            yy, pp = seg(A_off, yy, pp, t)
+        yy, pp = mdl.S0 @ y0, ph0
+        if t < mdl.t_off:
+            yy, pp = seg(mdl.A_off, yy, pp, t)
         else:
-            yy, pp = seg(A_off, yy, pp, t_off)
-            yy, pp = seg(A_on, S1 @ yy, pp, t - t_off)
+            yy, pp = seg(mdl.A_off, yy, pp, mdl.t_off)
+            yy, pp = seg(mdl.A_on, mdl.S1 @ yy, pp, t - mdl.t_off)
         return yy
 
-    def orbit_at(t):
-        if t < t_off:
-            return flow(A_off, b_off, xa, t)[0]
-        return flow(A_on, b_on, xb, t - t_off)[0]
-
-    return T, at, orbit_at
+    return mdl.T, at, mdl.orbit_at
 
 
 def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_matches_the_exact_forced_response():
@@ -25664,14 +25674,8 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     cir['Vdd'] = VS('vdd', gnd, v=5.0, vac=1.0)
-    p = PSS(cir, method='radau', reltol=1e-8)
     names = [str(n_) for n_ in cir.nodes]
-    x0 = np.zeros(cir.n)
-    x0[names.index('c')] = 1.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
-    Tl = float(p.lte_period)
+    seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='radau', reltol=1e-9)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
@@ -25825,14 +25829,8 @@ def test_the_staged_solve_is_fifth_order_at_the_switch_against_the_windowed_exac
     T_ex = _windowed_exact_relaxation_period()
     assert abs(T_ex / 1.3918374e-6 - 1.0) < 2e-7, T_ex
     cir = _comparator_relaxation_oscillator()
-    p = PSS(cir, method='radau', reltol=1e-8)
     names = [str(n_) for n_ in cir.nodes]
-    x0 = np.zeros(cir.n)
-    x0[names.index('c')] = 1.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
-    Tl = float(p.lte_period)
+    seed, Tl = _relaxation_oscillator_seed(cir)
     errs = {}
     for N in (100, 200):
         q = PSS(cir, method='radau', reltol=1e-10)
@@ -26052,18 +26050,10 @@ def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
     eig(M_tot) to 1e-9, the bordered residual below 1e-11, the mode's
     direction above 0.99999 at nodes before and after the crossings."""
     import warnings as _w
-    from scipy.linalg import expm
-    from scipy.optimize import fsolve
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
-    p = PSS(cir, method='radau', reltol=1e-8)
     names = [str(n_) for n_ in cir.nodes]
-    x0 = np.zeros(cir.n)
-    x0[names.index('c')] = 1.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        _fr, seed = p.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
-    Tl = float(p.lte_period)
+    seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='radau', reltol=1e-9)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
@@ -26085,58 +26075,13 @@ def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
         _K, _d, info = pac.oscillator_covariance(q)
     assert info['d_residual'] < 1e-11, info['d_residual']
     ## the exact second left mode along the orbit (saltation propagation)
-    R1 = R2 = R3 = 1e3
-    C1, C2, C3 = 1e-9, 3e-10, 3e-10
-    VDD, VREF, RON, ROFF = 5.0, 2.5, 10.0, 1e7
-
-    def sysm(g):
-        A = np.array([[-(1 / R1 + 1 / R2 + g) / C1, 1 / (R2 * C1), 0.0],
-                      [1 / (R2 * C2), -(1 / R2 + 1 / R3) / C2, 1 / (R3 * C2)],
-                      [0.0, 1 / (R3 * C3), -1 / (R3 * C3)]])
-        return A, np.array([VDD / (R1 * C1), 0.0, 0.0])
-
-    A_on, b_on = sysm(1 / RON)
-    A_off, b_off = sysm(1 / ROFF)
-    h = np.array([0.0, 0.0, 1.0])
-
-    def flow(A, b, x, tt):
-        E = expm(A * tt)
-        return E @ x + np.linalg.solve(A, (E - np.eye(3)) @ b), E
-
-    def resid(z):
-        xa, t_off, t_on = z[:3], z[3], z[4]
-        xb, _ = flow(A_off, b_off, xa, t_off)
-        xc, _ = flow(A_on, b_on, xb, t_on)
-        return np.concatenate((xc - xa, [xa[2] - VREF, xb[2] - VREF]))
-
-    z = fsolve(resid, np.array([1.0, 2.4, 2.5, 1.1e-6, 0.3e-6]), xtol=1e-13)
-    xa, t_off, t_on = z[:3], float(z[3]), float(z[4])
-    T = t_off + t_on
-    xb, E_off = flow(A_off, b_off, xa, t_off)
-    _xc, E_on = flow(A_on, b_on, xb, t_on)
-
-    def salt(A_pre, b_pre, A_post, b_post, x):
-        f_pre, f_post = A_pre @ x + b_pre, A_post @ x + b_post
-        return np.eye(3) + np.outer(f_post - f_pre, h) / float(h @ f_pre)
-
-    S0 = salt(A_on, b_on, A_off, b_off, xa)
-    S1 = salt(A_off, b_off, A_on, b_on, xb)
-    M_ex = E_on @ S1 @ E_off @ S0
-    lam_ex, V_ex = np.linalg.eig(M_ex.T)
+    mdl = _exact_relaxation_oscillator_model()
+    lam_ex, V_ex = np.linalg.eig(mdl.M.T)
     o = np.argsort(-np.abs(lam_ex))
     v2 = np.real(V_ex[:, o[1]])
     assert abs(lam_t[1] / abs(lam_ex[o[1]]) - 1.0) < 1e-4, (lam_t[1], lam_ex[o[1]])
-
-    def left2(tt):
-        if tt < t_off:
-            xt, _ = flow(A_off, b_off, xa, tt)
-            _, Et = flow(A_off, b_off, xt, t_off - tt)
-            return xt, (E_on @ S1 @ Et).T @ v2
-        xt, _ = flow(A_on, b_on, xb, tt - t_off)
-        _, Et = flow(A_on, b_on, xt, T - tt)
-        return xt, Et.T @ v2
-
-    tg = np.linspace(0.0, T, 20001)[:-1]
+    left2 = mdl.left_at(v2)
+    tg = np.linspace(0.0, mdl.T, 20001)[:-1]
     orb = np.array([left2(x)[0] for x in tg])
     red = [nm for i, nm in enumerate(names) if i != q.irefnode]
     idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
@@ -26260,14 +26205,11 @@ def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma(
     assert abs(out[100] / out[200] - 1.0) < 1e-3, out
     ## an oscillator's crossings diffuse with its phase: refused, not fudged
     osc = _comparator_relaxation_oscillator()
-    po = PSS(osc, method='radau', reltol=1e-8)
-    x0 = np.zeros(osc.n)
-    x0[[str(n_) for n_ in osc.nodes].index('c')] = 1.0
+    seed, To = _relaxation_oscillator_seed(osc)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        _fr, seed = po.lte_grid(1.391e-6, x0=x0, reltol=1e-5)
         qo = PSS(osc, method='radau', reltol=1e-9)
-        qo.solve(period=float(po.lte_period), timestep=float(po.lte_period) / 200,
+        qo.solve(period=To, timestep=To / 200,
                  x0=seed, maxiterations=100, state_events=True)
     try:
         PAC(osc, toolkit=circuit.numeric).event_jitter(qo)
@@ -26429,3 +26371,49 @@ def test_the_sampled_series_sees_the_crossings_motion_on_a_staged_solve():
         rel = abs(float(V[0]) - float(V0[0])) / float(V0[0])
         assert 1e-8 < rel < 1e-4, (N, rel)
     assert got[200] > got[100], got
+
+
+def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_second_order():
+    """`PAC._orbit_rate` -- the rate that turns a node's motion in time into a
+    state change for every fixed-time consumer -- and its fallback, given a
+    test that fires it (refactor E9 item 5, 2026-09-23).
+
+    On the driven noisy RC the source node's rate is ``w cos(w t)`` exactly,
+    and the DAE form reads it to the last digit at every node.  ⚠ Including
+    NODE 0, which it read as 0 until today: `VSin` clamps `t - td` at zero
+    (SPICE's rule for a transient), so its derivative at exactly t = td = 0
+    is the LEFT one, where the periodic steady state (t = 0 == t = T) has
+    `w`.  Node 0 is now evaluated as node N.  It never moved a consumer --
+    the fixed-time correction multiplies the rate by the node's own motion,
+    zero at node 0 -- which is why it survived.
+
+    The stencil fallback (the warned path for a singular differential /
+    algebraic split, an index above one) agrees with the DAE rate to its own
+    second order: 6.7e-4 / 1.66e-4 / 4.1e-5 at 100 / 200 / 400 points,
+    ratios 4.04 and 4.02.  Forcing the split singular fires it, warns, and
+    returns exactly the stencil."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    w = 2.0 * np.pi * 1e3
+    errs = []
+    for N in (100, 200, 400):
+        cir = _rc_noisy()
+        p = PSS(cir, method='radau', reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=1e-3, timestep=1e-3 / N, maxiterations=40)
+        pac = PAC(cir, toolkit=circuit.numeric)
+        rd = pac._orbit_rate(p, [])
+        rs = pac._orbit_rate_stencil(p, [])
+        ts = np.asarray(p.waveform[0], dtype=float)
+        ia = [str(n_) for i, n_ in enumerate(cir.nodes) if i != p.irefnode].index('a')
+        assert np.max(np.abs(rd[:, ia] - w * np.cos(w * ts))) < 1e-9 * w
+        assert abs(rd[0, ia] - w) < 1e-9 * w, rd[0, ia]           # node 0 is node N
+        errs.append(float(np.max(np.abs(rs - rd)) / np.max(np.abs(rd))))
+    assert errs[0] < 1e-3 and 3.5 < errs[0] / errs[1] < 4.5 and 3.5 < errs[1] / errs[2] < 4.5, errs
+    ## the fallback fires on a singular split, warns, and IS the stencil
+    zero = lambda x: np.zeros((len(x), len(x)))
+    p._C_at, p._G_at = zero, zero
+    with pytest.warns(RuntimeWarning, match='three-node stencil'):
+        rf = pac._orbit_rate(p, [])
+    assert np.array_equal(rf, pac._orbit_rate_stencil(p, []))

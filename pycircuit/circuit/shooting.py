@@ -1085,6 +1085,149 @@ def _cx_collect(a, b):
     return np.asarray(a) + 1j * np.asarray(b)
 
 
+class EventColumns(dict):
+    """A staged solve's EVENT COLUMNS and the linear algebra every bordered
+    consumer does with them (refactor E9 item 1, 2026-09-23).
+
+    The dict keys are the ones the consumers always read -- `nodes` (the
+    grid nodes the crossings land on), `W`, `c` (the event rows `W_k . x =
+    c_k`), `P_end` (the columns at the period: `d x_N / d theta`, m x K or
+    gear's 2m x K), `Pk_nodes` (the columns at every node), `P_nodes` (the
+    homogeneous maps to every node), `G = W P_node` and `Gt = W Pk_node`
+    (the event rows' derivatives) -- so every `ev['P_end']` read keeps
+    working and a consumer's "unbordered" control stays
+    `pss._event_columns = None`.  `dth` is `dtheta/dx_0 = -Gt^-1 G`.
+
+    Before this, the dict was read in 17 places and three derivations were
+    re-typed around it: the TOTAL map `M + P_end dth` at four sites, the
+    bordered adjoint's Schur elimination in two verbatim copies, the
+    `-zeta_k W_k` injection at four.  They are methods here; the numbers
+    are unchanged (the refactor's gate compares every consumer's output
+    before and after).
+    """
+
+    @classmethod
+    def build(cls, nodes, W, c, P_end, Pk_nodes, P_nodes):
+        """The columns from their node arrays: `G`, `Gt` and `dth`."""
+        K = len(nodes)
+        P_nodes = np.asarray(P_nodes, dtype=float)
+        Pk_nodes = np.asarray(Pk_nodes, dtype=float)
+        G = np.zeros((K, P_nodes.shape[2]))
+        Gt = np.zeros((K, K))
+        for k, jn in enumerate(nodes):
+            G[k] = W[k] @ P_nodes[jn]
+            Gt[k] = W[k] @ Pk_nodes[jn]
+        ev = cls(nodes=list(nodes), W=W, c=c, P_end=P_end, Pk_nodes=Pk_nodes,
+                 P_nodes=P_nodes, G=G, Gt=Gt)
+        ev.dth = -np.linalg.solve(Gt, G)
+        return ev
+
+    @classmethod
+    def from_capture(cls, captured, nsteps, m, P0, nodes, W, c, P_end):
+        """The columns from a traversal's `_captured` nodes (`(x, P, [Pk])`
+        per node 1..nsteps); `P0` is the map to node 0 -- the identity, or
+        gear's `[I, 0]` on its `(x_0, x_-1)` pair."""
+        K = np.asarray(P_end).shape[1]
+        Pk_nodes = np.zeros((nsteps + 1, m, K))
+        P_nodes = np.zeros((nsteps + 1, m, np.asarray(P0).shape[1]))
+        P_nodes[0] = P0
+        for j in range(1, nsteps + 1):
+            _xj, Pj, Pkj = captured[j]
+            P_nodes[j] = np.asarray(Pj, dtype=float)
+            for k in range(K):
+                Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
+        return cls.build(nodes, W, c, P_end, Pk_nodes, P_nodes)
+
+    @staticmethod
+    def of(pss, n=None):
+        """The solve's columns, or `None` when it is not staged -- or, with
+        `n`, when they were built on a map of another width (a host that
+        borrows a twin, trbdf2's covariance on gear)."""
+        ev = getattr(pss, '_event_columns', None)
+        if ev is None or (n is not None and not ev.fits(n)):
+            return None
+        return ev
+
+    def fits(self, n):
+        return np.asarray(self['P_end']).shape[0] == n
+
+    def total_matrix(self, M):
+        """The TOTAL monodromy `M + P_end dth`: the crossings move with the
+        state."""
+        return M + np.asarray(self['P_end'], dtype=float) @ np.asarray(self.dth, dtype=float)
+
+    def total_matvec(self, mv, transposed=False):
+        """`mv` (the fixed-grid map's product) made the total map's."""
+        P = np.asarray(self['P_end'], dtype=float)
+        D = np.asarray(self.dth, dtype=float)
+        if transposed:
+            return lambda z: np.asarray(mv(z)) + D.T @ (P.T @ np.asarray(z))
+        return lambda z: np.asarray(mv(z)) + P @ (D @ np.asarray(z))
+
+    def injection(self, zeta, nsteps, width, dtype=complex):
+        """The event rows' costate term as a reverse pass's `inject` array:
+        `-zeta_k W_k` at node `nd_k`."""
+        inject = np.zeros((nsteps, width), dtype=dtype)
+        for k, nd in enumerate(self['nodes']):
+            if 0 <= nd < nsteps:
+                wk = np.asarray(self['W'][k])
+                inject[nd, :len(wk)] -= zeta[k] * wk
+        return inject
+
+    def injection_dict(self, zeta):
+        """The same as `{node: vector}`, the stage passes' `extra` form."""
+        return {nd: -zeta[k] * np.asarray(self['W'][k])
+                for k, nd in enumerate(self['nodes'])}
+
+    def costate_injection(self, v, nsteps, width):
+        """The injection that samples a LEFT vector `v` of the total map
+        along the orbit: `zeta = Gt^-T P_end^T v` -- the transpose of the
+        saltation, carried by the reverse pass to every earlier node."""
+        v = np.asarray(v)
+        zeta = np.linalg.solve(np.asarray(self['Gt']).T,
+                               np.asarray(self['P_end']).T @ v)
+        return self.injection(zeta, nsteps, width, v.dtype)
+
+    def forced_shift(self, f_nodes):
+        """The crossings' motion driven by the SOURCE alone, `-Gt^-1 W
+        f_node` (the forced response at each event node)."""
+        W = np.asarray(self['W'])
+        r = np.array([W[k] @ f_nodes[nd] for k, nd in enumerate(self['nodes'])])
+        return -np.linalg.solve(np.asarray(self['Gt'], dtype=complex), r)
+
+    @staticmethod
+    def g_theta(cn, Pk_fixed, d, N):
+        """The output's theta-sensitivity: `sum_n c_n d . Pk_fixed[n]`."""
+        return np.array([np.sum(cn * (Pk_fixed[:N, :, kk] @ d))
+                         for kk in range(Pk_fixed.shape[2])])
+
+    def collapsed_zeta(self, g_theta, alpha, z):
+        """`zeta = Gt^-T (g_theta + a P_end^T z)` -- the event rows' costate
+        when `z` already solved the TOTAL operator (an oscillator's
+        deflated adjoint, the sampled series)."""
+        return np.linalg.solve(np.asarray(self['Gt']).T,
+                               g_theta + alpha * (np.asarray(self['P_end'], dtype=complex).T
+                                                  @ np.asarray(z)))
+
+    def bordered_adjoint(self, solve, g, g_theta, alpha):
+        """`B^T [z; zeta] = [g; g_theta]` with `B = [[I - aM, -a P_end],
+        [G, Gt]]`, by block elimination: `z = z_g - Z_G zeta`, `Z_G = (I -
+        aM)^-T G^T`, `zeta = (Gt^T + a P_end^T Z_G)^-1 (g_theta + a
+        P_end^T z_g)`.  `solve(b, k)` solves `(I - aM)^T x = b` (`k` the
+        event index for its failure message, `None` for `g`).  The
+        transpose of `PAC.solve`'s bordered forward system, and dual-
+        consistent with it (the suite's adjoint tests)."""
+        G = np.asarray(self['G'])
+        K = G.shape[0]
+        z_g = solve(g, None)
+        Z_G = np.column_stack([solve(np.asarray(G[k], dtype=complex), k)
+                               for k in range(K)])
+        Pth = np.asarray(self['P_end'], dtype=complex)
+        Sb = np.asarray(self['Gt']).T + alpha * (Pth.T @ Z_G)
+        zeta = np.linalg.solve(Sb, g_theta + alpha * (Pth.T @ z_g))
+        return z_g - Z_G @ zeta, zeta
+
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
 
@@ -3861,22 +4004,16 @@ class PSS(Analysis):
                 hsens[j, sj] += g
         return fr, hsens, nodes
 
-    def _state_event_stage(self, x0_ss, info, ier, mesg, period, times, hs,
-                           fully, maxiterations, tol, shoot_reltol, alpha):
-        """The bordered second stage of a driven solve: the crossings of the
-        first stage's orbit become unknowns.  Returns the stage-1 tuple
-        unchanged when the circuit declares no state event or its orbit
-        crosses none."""
-        W, c = self._state_event_rows()
-        if W is None:
-            return x0_ss, info, ier, mesg, times, hs
-        trav = self._traverse_full if fully else self._traverse_dirk
-        ## the steps the traversal takes: `times[1:]` (the autonomous
-        ## rebuild hands N times for N fractions, the driven one N + 1)
+    def _stage_one_crossings(self, x0_ss, times, period, W, c):
+        """The crossings of a stage-1 orbit, read off the states the
+        capturing traversal just left in `_captured`: every sign change of
+        `W_r . x - c_r` between two nodes, interpolated, kept inside (1e-6,
+        1 - 1e-6) of the period.  Returns `(base2, th0, Wk, ck)` -- the steps
+        the traversal took with the crossings landed on nodes, the
+        crossings as fractions, their rows and thresholds -- or `None` when
+        the orbit crosses none.  (Refactor E9 item 2: the three stages each
+        carried this.)"""
         N = len(times) - 1
-        m = self.cir.n - 1
-        trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
-             capture=set(range(1, N + 1)))
         X = np.array([np.asarray(x0_ss, dtype=float)]
                      + [np.asarray(self._captured[j][0], dtype=float)
                         for j in range(1, N + 1)])
@@ -3892,15 +4029,112 @@ class PSS(Analysis):
                     if 1e-6 < f < 1.0 - 1e-6:
                         found.append((f, r))
         if not found:
-            return x0_ss, info, ier, mesg, times, hs
+            return None
         found.sort()
-        base = np.diff(np.asarray(times, dtype=float))[:N] / float(period)   # the steps the traversal took
+        ## the steps the traversal takes: `times[1:]` (the autonomous
+        ## rebuild hands N times for N fractions, the driven one N + 1)
+        base = np.diff(np.asarray(times, dtype=float))[:N] / float(period)
         base2, th0 = self._land_fractions(base, [f for f, _r in found])
         rows = [r for _f, r in found]
+        return base2, th0, W[rows], c[rows]
+
+    def _event_rows_into(self, F, J, off, nodes, Wk, ck, width, ncols):
+        """The event rows of a bordered Newton system, rows `off .. off + K`:
+        ``F = W_k . x_{nd_k} - c_k``, ``J[:, :width] = W_k P_{nd_k}`` (the
+        state's map to the event node: `m` wide, gear's `2m`) and ``J[:,
+        off + l] = W_k Pk_{nd_k, l}`` for the `ncols` columns the traversal
+        carried (the events', and the period's on an oscillator)."""
+        for k, jn in enumerate(nodes):
+            xj, Pj, Pkj = self._captured[jn]
+            F[off + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
+            J[off + k, :width] = Wk[k] @ np.asarray(Pj)
+            for l in range(ncols):
+                J[off + k, off + l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+
+    def _finish_state_events(self, th, base2, th0, T, Wk, ck, attempt, columns):
+        """After a stage's Newton: the solved crossings `th` become the grid,
+        and -- when `attempt` -- the bordered consumers' columns are built on
+        it.  `columns(tms, hs, hsens)` traverses that grid capturing every
+        node and returns `(M, P_end, P0)`: the fixed-grid map, the event
+        columns at the period and the map to node 0 (`I`, or gear's `[I,
+        0]`).  Returns the grid `(tms, hs)`.
+
+        ⚠ THE GRID EVERY CONSUMER REPLAYS ON IS THE ONE `_period_grid` MAKES
+        OF THESE FRACTIONS -- with its opener ramp, which the window
+        sub-grid's tiny steps trigger.  The stored pieces were first
+        computed on the unramped fractions, and `factored_period`'s node
+        indices were shifted by the ramp's pieces against them: the
+        bordered sideband solve read its event rows at the wrong nodes
+        (dtheta 12 % off, the response 51 %).  So the ramped grid IS the
+        grid from here on: `_grid_fracs` carries it (its first piece is the
+        smallest, so `_period_grid` will not ramp it again), and the
+        monodromy and the event columns are computed on it -- the identity
+        remap on it gives every step's sensitivity to the events (the
+        ramp's pieces included) and the event nodes.
+
+        ⚠ THE TOTAL MONODROMY THROUGH A MOVING EVENT (2026-09-22, phase B).
+        The period map's derivative is not `M` (the grid frozen): a
+        perturbation of `x_0` moves the crossing, `dtheta/dx_0 = -Gt^-1 G`
+        from the event rows, and the state at the period moves with it
+        through the event columns -- the bordered system's Schur
+        complement, which is the saltation matrix derived rather than
+        guessed.  Measured on the PWM loop: `M` 109 % off the finite
+        difference of the staged period map, this 3.3e-8; the dominant
+        multiplier 0.691 where `M` read 0.632.
+
+        The landed crossings join `event_times` (fractions of the period)
+        for every kind, so `covariance`, `sampled_noise` and a reader of
+        the solve see the same list."""
+        m = self.cir.n - 1
+        fr, _hsens, _nodes = self._event_remap(base2, th0, th, T)
+        _tms_r, _hs_r = self._period_grid(float(T), len(fr), np.asarray(fr, dtype=float))
+        fr_r = np.asarray(_hs_r, dtype=float) / float(T)
+        self._grid_fracs = fr_r
+        self._state_event_fracs = th
+        if attempt:
+            try:
+                _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, T)
+                hs_r = np.asarray(_hs_r, dtype=float)
+                tms_r = np.asarray(_tms_r, dtype=float)
+                M, P_end, P0 = columns(tms_r, hs_r, hsens_r)
+                ev = EventColumns.from_capture(self._captured, len(hs_r), m, P0,
+                                               nodes_r, Wk, ck, P_end)
+                self._event_sensitivity = ev.dth
+                self._monodromy = M + P_end @ ev.dth
+                self._event_columns = ev
+            except (np.linalg.LinAlgError, ValueError, KeyError) as _exc:
+                warnings.warn('PSS: the state-event stage could not assemble its event '
+                              'columns (%s); the bordered consumers run unbordered on '
+                              'this solve.' % _exc, RuntimeWarning, stacklevel=3)
+        self.event_times = sorted(set([float(e) for e in self.event_times]
+                                      + [float(t) for t in th]))
+        return np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float)
+
+    @staticmethod
+    def _stack_columns(Pk):
+        return np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
+
+    def _state_event_stage(self, x0_ss, info, ier, mesg, period, times, hs,
+                           fully, maxiterations, tol, shoot_reltol, alpha):
+        """The bordered second stage of a driven solve: the crossings of the
+        first stage's orbit become unknowns.  Returns the stage-1 tuple
+        unchanged when the circuit declares no state event or its orbit
+        crosses none."""
+        W, c = self._state_event_rows()
+        if W is None:
+            return x0_ss, info, ier, mesg, times, hs
+        trav = self._traverse_full if fully else self._traverse_dirk
+        N = len(times) - 1
+        m = self.cir.n - 1
+        trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
+             capture=set(range(1, N + 1)))
+        found = self._stage_one_crossings(x0_ss, times, period, W, c)
+        if found is None:
+            return x0_ss, info, ier, mesg, times, hs
+        base2, th0, Wk, ck = found
         K = len(th0)
-        Wk = W[rows]
-        ck = c[rows]
-        def pieces(z):
+
+        def func_ev(z):
             x0 = np.asarray(z[:m], dtype=float)
             th = np.asarray(z[m:], dtype=float)
             fr, hsens, nodes = self._event_remap(base2, th0, th, period)
@@ -3911,24 +4145,11 @@ class PSS(Analysis):
             F = np.zeros(m + K)
             J = np.zeros((m + K, m + K))
             F[:m] = self._fold_periodic(x0 - np.asarray(x_end, dtype=float))
-            Mx = np.asarray(Mx, dtype=float)
-            Pkm = np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
-            J[:m, :m] = np.eye(m) - alpha * Mx
-            J[:m, m:] = -alpha * Pkm
-            G = np.zeros((K, m))
-            Gt = np.zeros((K, K))
-            for k, jn in enumerate(nodes):
-                xj, Pj, Pkj = self._captured[jn]
-                F[m + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
-                G[k] = Wk[k] @ np.asarray(Pj)
-                for l in range(K):
-                    Gt[k, l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
-            J[m:, :m] = G
-            J[m:, m:] = Gt
-            return F, J, Mx, Pkm, G, Gt
-        def func_ev(z):
-            F, J, _Mx, _Pkm, _G, _Gt = pieces(z)
+            J[:m, :m] = np.eye(m) - alpha * np.asarray(Mx, dtype=float)
+            J[:m, m:] = -alpha * self._stack_columns(Pk)
+            self._event_rows_into(F, J, m, nodes, Wk, ck, m, K)
             return F, J
+
         z0 = np.concatenate((np.asarray(x0_ss, dtype=float), th0))
         tol = np.asarray(tol, dtype=float)
         abst = np.concatenate((tol, np.full(K, float(np.max(tol)))))
@@ -3937,69 +4158,17 @@ class PSS(Analysis):
             func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
             abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
             line_search=True, floor_detect=True)
-        th = np.asarray(z_ss[m:], dtype=float)
-        fr, _hsens, _nodes = self._event_remap(base2, th0, th, period)
-        ## ⚠ THE GRID EVERY CONSUMER REPLAYS ON IS THE ONE `_period_grid`
-        ## MAKES OF THESE FRACTIONS -- with its opener ramp, which the window
-        ## sub-grid's tiny steps trigger.  The stored pieces below were
-        ## first computed on the unramped fractions, and `factored_period`'s
-        ## node indices were shifted by the ramp's pieces against them: the
-        ## bordered sideband solve read its event rows at the wrong nodes
-        ## (dtheta 12 % off, the response 51 %).  So the ramped grid IS the
-        ## grid from here on: `_grid_fracs` carries it (its first piece is
-        ## the smallest, so `_period_grid` will not ramp it again), and the
-        ## monodromy and the event columns are computed on it.
-        _tms_r, _hs_r = self._period_grid(float(period), len(fr), np.asarray(fr, dtype=float))
-        fr_r = np.asarray(_hs_r, dtype=float) / float(period)
-        self._grid_fracs = fr_r
-        self._state_event_fracs = th
-        ## ⚠ THE TOTAL MONODROMY THROUGH A MOVING EVENT (2026-09-22, phase
-        ## B).  The period map's derivative is not `Mx` (the grid frozen):
-        ## a perturbation of `x_0` moves the crossing, `dtheta/dx_0 =
-        ## -Gt^-1 G` from the event rows, and the state at the period moves
-        ## with it through the event columns -- the bordered system's Schur
-        ## complement, which is the saltation matrix derived rather than
-        ## guessed.  Measured on the PWM loop: `Mx` 109 % off the finite
-        ## difference of the staged period map, this 3.3e-8; the dominant
-        ## multiplier 0.691 where `Mx` read 0.632.
-        if ier == 1:
-            ## the identity remap on the ramped grid gives every step's
-            ## sensitivity to the events (the ramp's pieces included) and
-            ## the event nodes on that grid
-            _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, period)
-            hs_r = np.asarray(_hs_r, dtype=float)
-            tms_r = np.asarray(_tms_r, dtype=float)
-            _x0r, _xe, Mx, Pk = trav(np.asarray(z_ss[:m], dtype=float), period, tms_r, hs_r,
-                                     hsens=hsens_r, capture=set(range(1, len(hs_r) + 1)))
-            Mx = np.asarray(Mx, dtype=float)
-            Pkm = np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
-            Pk_nodes = np.zeros((len(hs_r) + 1, m, K))
-            P_nodes = np.zeros((len(hs_r) + 1, m, m))
-            P_nodes[0] = np.eye(m)
-            for j in range(1, len(hs_r) + 1):
-                _xj, Pj, Pkj = self._captured[j]
-                P_nodes[j] = np.asarray(Pj, dtype=float)
-                for k in range(K):
-                    Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
-            G = np.zeros((K, m))
-            Gt = np.zeros((K, K))
-            for k, jn in enumerate(nodes_r):
-                G[k] = Wk[k] @ P_nodes[jn]
-                Gt[k] = Wk[k] @ Pk_nodes[jn]
-            dth = -np.linalg.solve(Gt, G)
-            self._event_sensitivity = dth
-            self._monodromy = Mx + Pkm @ dth
-            ## the pieces the BORDERED consumers need: the event columns at
-            ## every node and at the period, the homogeneous maps to the
-            ## nodes, the event rows' derivatives, the event nodes and rows
-            ## -- `PAC.solve` borders its sideband solve with them
-            self._event_columns = {'nodes': list(nodes_r), 'W': Wk, 'c': ck,
-                                   'P_end': Pkm, 'Pk_nodes': Pk_nodes,
-                                   'P_nodes': P_nodes, 'G': G, 'Gt': Gt}
-        self.event_times = sorted(set([float(e) for e in self.event_times]
-                                      + [float(t) for t in th]))
-        return (np.asarray(z_ss[:m], dtype=float), info, ier, mesg,
-                np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float))
+        x0n = np.asarray(z_ss[:m], dtype=float)
+
+        def columns(tms_r, hs_r, hsens_r):
+            _x0r, _xe, Mx, Pk = trav(x0n, period, tms_r, hs_r, hsens=hsens_r,
+                                     capture=set(range(1, len(hs_r) + 1)))
+            return np.asarray(Mx, dtype=float), self._stack_columns(Pk), np.eye(m)
+
+        tms_r, hs_r = self._finish_state_events(
+            np.asarray(z_ss[m:], dtype=float), base2, th0, period, Wk, ck,
+            ier == 1, columns)
+        return x0n, info, ier, mesg, tms_r, hs_r
 
     def _state_event_stage_gear(self, x0_ss, xm1_ss, info, ier, mesg, period, times, hs,
                                 maxiterations, tol, shoot_reltol, alpha):
@@ -4009,7 +4178,10 @@ class PSS(Analysis):
         `_traverse_solved_history` from the two partials that exist) and the
         source at the new time; the residual is the pair closure plus the
         event rows, the Jacobian the pair blocks plus the event columns at
-        the period and one step before it."""
+        the period and one step before it.  Its event columns are stored in
+        the PAIR form gear's map has (a node's state depends on `(x_0,
+        x_-1)`: `P_nodes[j]` is m x 2m, `P_end` 2m x K, the total monodromy
+        the pair map plus the saltation; item 3, 2026-09-22)."""
         W, c = self._state_event_rows()
         if W is None:
             return x0_ss, xm1_ss, info, ier, mesg, times, hs
@@ -4017,28 +4189,12 @@ class PSS(Analysis):
         m = self.cir.n - 1
         self._traverse_solved_history(x0_ss, xm1_ss, times, hs, T=period,
                                       hsens=np.zeros((N, 0)), capture=set(range(1, N + 1)))
-        X = np.array([np.asarray(x0_ss, dtype=float)]
-                     + [np.asarray(self._captured[j][0], dtype=float) for j in range(1, N + 1)])
-        g = X @ W.T - c[None, :]
-        found = []
-        for r in range(W.shape[0]):
-            gr = g[:, r]
-            for j in range(N):
-                if gr[j] == 0.0 or gr[j] * gr[j + 1] < 0.0:
-                    f = (times[j] if gr[j] == gr[j + 1] else
-                         times[j] + (times[j + 1] - times[j]) * gr[j] / (gr[j] - gr[j + 1]))
-                    f = float(f) / float(period)
-                    if 1e-6 < f < 1.0 - 1e-6:
-                        found.append((f, r))
-        if not found:
+        found = self._stage_one_crossings(x0_ss, times, period, W, c)
+        if found is None:
             return x0_ss, xm1_ss, info, ier, mesg, times, hs
-        found.sort()
-        base = np.diff(np.asarray(times, dtype=float))[:N] / float(period)   # the steps the traversal took
-        base2, th0 = self._land_fractions(base, [f for f, _r in found])
-        rows = [r for _f, r in found]
+        base2, th0, Wk, ck = found
         K = len(th0)
-        Wk = W[rows]
-        ck = c[rows]
+
         def func_ev(z):
             x0 = np.asarray(z[:m], dtype=float)
             xm1 = np.asarray(z[m:2 * m], dtype=float)
@@ -4062,13 +4218,9 @@ class PSS(Analysis):
             for k in range(K):
                 J[:m, 2 * m + k] = -alpha * np.asarray(Pk_last[k], dtype=float).ravel()
                 J[m:2 * m, 2 * m + k] = -alpha * np.asarray(Pk_prev[k], dtype=float).ravel()
-            for k, jn in enumerate(nodes):
-                xj, Pj, Pkj = self._captured[jn]
-                F[2 * m + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
-                J[2 * m + k, :2 * m] = Wk[k] @ np.asarray(Pj)
-                for l in range(K):
-                    J[2 * m + k, 2 * m + l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+            self._event_rows_into(F, J, 2 * m, nodes, Wk, ck, 2 * m, K)
             return F, J
+
         z0 = np.concatenate((np.asarray(x0_ss, dtype=float), np.asarray(xm1_ss, dtype=float), th0))
         tol = np.asarray(tol, dtype=float)
         abst = np.concatenate((tol, tol, np.full(K, float(np.max(tol)))))
@@ -4077,55 +4229,23 @@ class PSS(Analysis):
             func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
             abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
             line_search=True, floor_detect=True)
-        th = np.asarray(z_ss[2 * m:], dtype=float)
-        fr, _hsens, _nodes = self._event_remap(base2, th0, th, period)
-        _tms_r, _hs_r = self._period_grid(float(period), len(fr), np.asarray(fr, dtype=float))
-        self._grid_fracs = np.asarray(_hs_r, dtype=float) / float(period)
-        self._state_event_fracs = th
-        ## Item 3 (2026-09-22): the columns the bordered consumers need, in
-        ## the PAIR form gear's map has (a node's state depends on (x_0,
-        ## x_-1)): one more traversal on the ramped grid, capturing every
-        ## node -- `P_nodes[j]` is m x 2m, `P_end` 2m x K, the total
-        ## monodromy the pair map plus the saltation.  `PAC.solve`'s
-        ## bordered block reads them; the covariance closure and the
-        ## adjoint row stay unbordered on gear (warned / plain).
-        try:
-            _fr_id, _hsens_r, _nodes_r = self._event_remap(
-                np.asarray(self._grid_fracs, dtype=float), th, th, float(period))
-            _hs_rr = np.asarray(_hs_r, dtype=float)
-            _tms_rr = np.asarray(_tms_r, dtype=float)
-            _Nn = len(_hs_rr)
-            (_xl, _xp, _P_last, _P_prev, _Pk_last, _Pk_prev) = self._traverse_solved_history(
-                np.asarray(z_ss[:m], dtype=float), np.asarray(z_ss[m:2 * m], dtype=float),
-                _tms_rr, _hs_rr, T=float(period), hsens=_hsens_r,
-                capture=set(range(1, _Nn + 1)))
-            _P_end = np.vstack((np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in _Pk_last]),
-                                np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in _Pk_prev])))
-            _M_pair = np.vstack((np.asarray(_P_last, dtype=float), np.asarray(_P_prev, dtype=float)))
-            _Pk_nodes = np.zeros((_Nn + 1, m, K))
-            _P_nodes = np.zeros((_Nn + 1, m, 2 * m))
-            _P_nodes[0] = np.hstack((np.eye(m), np.zeros((m, m))))
-            for _j in range(1, _Nn + 1):
-                _xj, _Pj, _Pkj = self._captured[_j]
-                _P_nodes[_j] = np.asarray(_Pj, dtype=float)
-                for _k in range(K):
-                    _Pk_nodes[_j, :, _k] = np.asarray(_Pkj[_k], dtype=float).ravel()
-            _G = np.array([Wk[_k] @ _P_nodes[_nd] for _k, _nd in enumerate(_nodes_r)])
-            _Gt = np.array([Wk[_k] @ _Pk_nodes[_nd] for _k, _nd in enumerate(_nodes_r)])
-            _dth = -np.linalg.solve(_Gt, _G)
-            self._event_sensitivity = _dth
-            self._monodromy = _M_pair + _P_end @ _dth
-            self._event_columns = {'nodes': list(_nodes_r), 'W': Wk, 'c': ck,
-                                   'P_end': _P_end, 'Pk_nodes': _Pk_nodes,
-                                   'P_nodes': _P_nodes, 'G': _G, 'Gt': _Gt}
-        except (np.linalg.LinAlgError, ValueError, KeyError) as _exc:
-            warnings.warn('PSS: the gear stage could not assemble its event columns (%s); '
-                          'the bordered consumers run unbordered on this solve.' % _exc,
-                          RuntimeWarning, stacklevel=3)
-        self.event_times = sorted(set([float(e) for e in self.event_times]
-                                      + [float(t) for t in th]))
-        return (np.asarray(z_ss[:m], dtype=float), np.asarray(z_ss[m:2 * m], dtype=float),
-                info, ier, mesg, np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float))
+        x0n = np.asarray(z_ss[:m], dtype=float)
+        xm1n = np.asarray(z_ss[m:2 * m], dtype=float)
+
+        def columns(tms_r, hs_r, hsens_r):
+            (_xl, _xp, P_last, P_prev, Pk_last, Pk_prev) = self._traverse_solved_history(
+                x0n, xm1n, tms_r, hs_r, T=float(period), hsens=hsens_r,
+                capture=set(range(1, len(hs_r) + 1)))
+            P_end = np.vstack((self._stack_columns(Pk_last), self._stack_columns(Pk_prev)))
+            M_pair = np.vstack((np.asarray(P_last, dtype=float), np.asarray(P_prev, dtype=float)))
+            return M_pair, P_end, np.hstack((np.eye(m), np.zeros((m, m))))
+
+        ## (gear builds its columns whether or not the stage converged, as it
+        ## did before the stages shared this finish)
+        tms_r, hs_r = self._finish_state_events(
+            np.asarray(z_ss[2 * m:], dtype=float), base2, th0, period, Wk, ck,
+            True, columns)
+        return x0n, xm1n, info, ier, mesg, tms_r, hs_r
 
     def _state_event_stage_autonomous(self, x0_ss, info, ier, mesg, period, times, hs,
                                       fully, maxiterations, tol, shoot_reltol, alpha,
@@ -4142,36 +4262,17 @@ class PSS(Analysis):
         if W is None:
             return x0_ss, info, ier, mesg, period, times, hs
         trav = self._traverse_full if fully else self._traverse_dirk
-        ## the steps the traversal takes: `times[1:]` (the autonomous
-        ## rebuild hands N times for N fractions, the driven one N + 1)
         N = len(times) - 1
         m = self.cir.n - 1
         trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
              capture=set(range(1, N + 1)))
-        X = np.array([np.asarray(x0_ss, dtype=float)]
-                     + [np.asarray(self._captured[j][0], dtype=float)
-                        for j in range(1, N + 1)])
-        g = X @ W.T - c[None, :]
-        found = []
-        for r in range(W.shape[0]):
-            gr = g[:, r]
-            for j in range(N):
-                if gr[j] == 0.0 or gr[j] * gr[j + 1] < 0.0:
-                    f = (times[j] if gr[j] == gr[j + 1] else
-                         times[j] + (times[j + 1] - times[j]) * gr[j] / (gr[j] - gr[j + 1]))
-                    f = float(f) / float(period)
-                    if 1e-6 < f < 1.0 - 1e-6:
-                        found.append((f, r))
-        if not found:
+        found = self._stage_one_crossings(x0_ss, times, period, W, c)
+        if found is None:
             return x0_ss, info, ier, mesg, period, times, hs
-        found.sort()
-        base = np.diff(np.asarray(times, dtype=float))[:N] / float(period)   # the steps the traversal took
-        base2, th0 = self._land_fractions(base, [f for f, _r in found])
-        rows = [r for _f, r in found]
+        base2, th0, Wk, ck = found
         K = len(th0)
-        Wk = W[rows]
-        ck = c[rows]
-        def pieces(z):
+
+        def func_ev(z):
             x0 = np.asarray(z[:m], dtype=float)
             th = np.asarray(z[m:m + K], dtype=float)
             Tz = float(z[-1])
@@ -4181,74 +4282,37 @@ class PSS(Analysis):
             hsens_T = np.column_stack((hsens, fr))          # d h_j / d T = fraction_j
             _x0, x_end, Mx, Pk = trav(x0, Tz, tms_, hs_, hsens=hsens_T,
                                       capture=set(nodes))
-            Mx = np.asarray(Mx, dtype=float)
-            Pkm = np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
+            Pkm = self._stack_columns(Pk)
             F = np.zeros(m + K + 1)
             J = np.zeros((m + K + 1, m + K + 1))
             F[:m] = self._fold_periodic(x0 - np.asarray(x_end, dtype=float))
-            J[:m, :m] = np.eye(m) - alpha * Mx
+            J[:m, :m] = np.eye(m) - alpha * np.asarray(Mx, dtype=float)
             J[:m, m:] = -alpha * Pkm
-            for k, jn in enumerate(nodes):
-                xj, Pj, Pkj = self._captured[jn]
-                F[m + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
-                J[m + k, :m] = Wk[k] @ np.asarray(Pj)
-                for l in range(K + 1):
-                    J[m + k, m + l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+            self._event_rows_into(F, J, m, nodes, Wk, ck, m, K + 1)
             _k, _r = phase_row(x0, Pkm[:, K])
             J[m + K, _k] = 1.0
             F[m + K] = _r
-            return F, J, Mx, Pkm, nodes
-        def func_ev(z):
-            F, J, _Mx, _Pkm, _nodes = pieces(z)
             return F, J
+
         z0 = np.concatenate((np.asarray(x0_ss, dtype=float), th0, [float(period)]))
         tol = np.asarray(tol, dtype=float)
         abst = np.concatenate((tol, np.full(K, float(np.max(tol))), [tol[phase_k]]))
         xt = np.concatenate((tol, np.full(K, 1e-12), [1e-15 * float(period)]))
         z_ss, info, ier, mesg = self._free_period_solve(
             func_ev, z0, abst, xt, shoot_reltol, maxiterations, float(period))
-        th = np.asarray(z_ss[m:m + K], dtype=float)
+        x0n = np.asarray(z_ss[:m], dtype=float)
         Tn = float(z_ss[-1])
-        fr, _hsens, _nodes = self._event_remap(base2, th0, th, Tn)
-        _tms_r, _hs_r = self._period_grid(Tn, len(fr), np.asarray(fr, dtype=float))
-        fr_r = np.asarray(_hs_r, dtype=float) / Tn
-        self._grid_fracs = fr_r
-        self._state_event_fracs = th
-        if ier == 1:
-            _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, Tn)
-            hs_r = np.asarray(_hs_r, dtype=float)
-            tms_r = np.asarray(_tms_r, dtype=float)
-            _x0r, _xe, Mx, Pk = trav(np.asarray(z_ss[:m], dtype=float), Tn, tms_r, hs_r,
-                                     hsens=hsens_r, capture=set(range(1, len(hs_r) + 1)))
-            Mx = np.asarray(Mx, dtype=float)
-            Pkm = np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
-            Pk_nodes = np.zeros((len(hs_r) + 1, m, K))
-            P_nodes = np.zeros((len(hs_r) + 1, m, m))
-            P_nodes[0] = np.eye(m)
-            for j in range(1, len(hs_r) + 1):
-                _xj, Pj, Pkj = self._captured[j]
-                P_nodes[j] = np.asarray(Pj, dtype=float)
-                for k in range(K):
-                    Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
-            G = np.zeros((K, m))
-            Gt = np.zeros((K, K))
-            for k, jn in enumerate(nodes_r):
-                G[k] = Wk[k] @ P_nodes[jn]
-                Gt[k] = Wk[k] @ Pk_nodes[jn]
-            dth = -np.linalg.solve(Gt, G)
-            self._event_sensitivity = dth
+
+        def columns(tms_r, hs_r, hsens_r):
             ## the monodromy at FIXED period: the orbit's own map
-            self._monodromy = Mx + Pkm @ dth
-            self._event_columns = {'nodes': list(nodes_r), 'W': Wk, 'c': ck,
-                                   'P_end': Pkm, 'Pk_nodes': Pk_nodes,
-                                   'P_nodes': P_nodes, 'G': G, 'Gt': Gt}
-        ## the landed crossings join `event_times` (fractions of the
-        ## period) as the driven stage's do -- `covariance`, `sampled_noise`
-        ## and a reader of the solve see the same list either way
-        self.event_times = sorted(set([float(e) for e in self.event_times]
-                                      + [float(t) for t in th]))
-        return (np.asarray(z_ss[:m], dtype=float), info, ier, mesg, Tn,
-                np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float))
+            _x0r, _xe, Mx, Pk = trav(x0n, Tn, tms_r, hs_r, hsens=hsens_r,
+                                     capture=set(range(1, len(hs_r) + 1)))
+            return np.asarray(Mx, dtype=float), self._stack_columns(Pk), np.eye(m)
+
+        tms_r, hs_r = self._finish_state_events(
+            np.asarray(z_ss[m:m + K], dtype=float), base2, th0, Tn, Wk, ck,
+            ier == 1, columns)
+        return x0n, info, ier, mesg, Tn, tms_r, hs_r
 
     def _period_grid(self, period, npts, grid):
         """`(times, hs)` for one period -- uniform, or a caller's own grid.
@@ -6791,16 +6855,10 @@ class PSS(Analysis):
         to every earlier node; `None` when the solve is not staged.  What
         `ppv()` and `floquet_modes` sample a left vector along the orbit
         with."""
-        _ev = getattr(self, '_event_columns', None)
-        if _ev is None or np.asarray(_ev['P_end']).shape[0] != n:
+        _ev = EventColumns.of(self, n)
+        if _ev is None:
             return None
-        v = np.asarray(v)
-        zeta = np.linalg.solve(np.asarray(_ev['Gt']).T, np.asarray(_ev['P_end']).T @ v)
-        inject = np.zeros((len(fp.steps), n), dtype=v.dtype)
-        for k, nd in enumerate(_ev['nodes']):
-            if 0 <= nd < len(fp.steps):
-                inject[nd, :len(_ev['W'][k])] -= zeta[k] * np.asarray(_ev['W'][k])
-        return inject
+        return _ev.costate_injection(v, len(fp.steps), n)
 
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
@@ -7055,18 +7113,13 @@ class PSS(Analysis):
         ## node: the saltation matrix's transpose, derived from the bordered
         ## system rather than guessed.  A comparator oscillator's PPV jumps
         ## at its switching instants, and this is where the jump comes from.
-        _ev = getattr(self, '_event_columns', None)
-        _ev = _ev if (_ev is not None and _ev['P_end'].shape[0] == n) else None
-        def _MtT(v_):
-            out = np.asarray(fp.matvec_transposed(v_))
-            if _ev is not None:
-                out = out + np.asarray(self._event_sensitivity).T @ (np.asarray(_ev['P_end']).T @ np.asarray(v_))
-            return out
-        def _Mt(u_):
-            out = np.asarray(fp.matvec(u_))
-            if _ev is not None:
-                out = out + np.asarray(_ev['P_end']) @ (np.asarray(self._event_sensitivity) @ np.asarray(u_))
-            return out
+        _ev = EventColumns.of(self, n)
+        if _ev is None:
+            _MtT = lambda v_: np.asarray(fp.matvec_transposed(v_))
+            _Mt = lambda u_: np.asarray(fp.matvec(u_))
+        else:
+            _MtT = _ev.total_matvec(fp.matvec_transposed, transposed=True)
+            _Mt = _ev.total_matvec(fp.matvec)
         def _mv(z):
             z = np.asarray(z)
             v_, y_ = z[:n], z[n]
@@ -9230,9 +9283,9 @@ class PSS(Analysis):
                              for e in np.eye(n)])
         ## on a staged solve the map is the TOTAL one (2026-09-22): the
         ## crossings move with the state, `M + P_theta dtheta/dx_0`
-        _ev_fm = getattr(self, '_event_columns', None)
-        if _ev_fm is not None and np.asarray(_ev_fm['P_end']).shape[0] == n:
-            M = M + np.asarray(_ev_fm['P_end'], dtype=float) @ np.asarray(self._event_sensitivity, dtype=float)
+        _ev_fm = EventColumns.of(self, n)
+        if _ev_fm is not None:
+            M = _ev_fm.total_matrix(M)
         lam, U = np.linalg.eig(M)
         lam_l, V = np.linalg.eig(M.T)
 
@@ -13781,18 +13834,15 @@ class PAC(Analysis):
             ## the total operator and this source.  Exact against the
             ## piecewise-linear forced response (see the test); the plain
             ## deflated solve on such a solve was 0.3-400x off.
-            _evd = getattr(pss, '_event_columns', None)
-            if _evd is not None and np.asarray(_evd['P_end']).shape[0] == fp.width:
-                _Wd, _ndd = np.asarray(_evd['W']), _evd['nodes']
-                _Gtd = np.asarray(_evd['Gt'], dtype=complex)
+            _evd = EventColumns.of(pss, fp.width)
+            if _evd is not None:
                 _Pthd = np.asarray(_evd['P_end'], dtype=complex)
                 for i, (f, a) in enumerate(zip(freqs, alphas)):
                     _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(m, dtype=complex),
                                                       collect=True)
                     f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v_, dtype=complex)[:m]
                                                              for v_ in f_steps]
-                    r_ = np.array([_Wd[k] @ f_nodes[nd] for k, nd in enumerate(_ndd)])
-                    _dth_f[i] = -np.linalg.solve(_Gtd, r_)
+                    _dth_f[i] = _evd.forced_shift(f_nodes)
                     rhs[i] = np.asarray(rhs[i], dtype=complex) + a * (_Pthd @ _dth_f[i])
             ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
                   for a, b in zip(alphas, rhs)]
@@ -13841,7 +13891,7 @@ class PAC(Analysis):
         elif _ev is not None and self.deflated and _dth_f[0] is not None:
             ## the crossings' motion on the staged oscillator: the state's
             ## part through the total map's sensitivity plus the source's
-            _dthx = np.asarray(pss._event_sensitivity, dtype=float)
+            _dthx = np.asarray(_ev.dth, dtype=float)
             for i, y0 in enumerate(ys):
                 dthetas[i] = _dthx @ np.asarray(y0, dtype=complex)[:m] + _dth_f[i]
         ## the crossings' modulation per frequency (fractions of the period
@@ -14118,108 +14168,59 @@ class PAC(Analysis):
             ## the pole out and carries `1/(1 - alpha)` analytically; on a
             ## driven circuit there is no pole and the plain solve is both
             ## correct and cheaper.
-            _ev = getattr(pss, '_event_columns', None)
-            if getattr(pss, 'autonomous', False):
-                if _ev is not None and fp.kind in ('full', 'dirk'):
-                    ## ⚠ THE BORDERED ADJOINT ON A STAGED OSCILLATOR
-                    ## (2026-09-22): the transpose of the collapsed system
-                    ## -- the costate of `y_0` is `g + (dtheta/dx_0)^T
-                    ## g_theta` through the total operator (deflated), and
-                    ## the source's own motion of the crossings enters as
-                    ## `zeta = Gt^-T (g_theta + a P_theta^T z)` injected
-                    ## in a second reverse pass, as on the driven solve.
-                    K = _ev['P_end'].shape[1]
-                    nodes, Wk = _ev['nodes'], np.asarray(_ev['W'])
-                    _wq = pss._period_quadrature(fp)
-                    cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
-                                   * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
-                    _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)   # the output is read at FIXED times
-                    g_theta = np.array([np.sum(cn * (_Pkf[:N, :, kk] @ d)) for kk in range(K)])
-                    _dthx = np.asarray(pss._event_sensitivity, dtype=float)
-                    z = self._deflated_solve(pss, alpha, np.asarray(g, dtype=complex) + _dthx.T @ g_theta,
-                                             transposed=True, tol=tol)
-                    Pth = np.asarray(_ev['P_end'], dtype=complex)
-                    Gt_n = np.array([Wk[k] @ _ev['Pk_nodes'][nd] for k, nd in enumerate(nodes)])
-                    zeta = np.linalg.solve(Gt_n.T, g_theta + alpha * (Pth.T @ z))
-                    extra = {nd: -zeta[k] * Wk[k] for k, nd in enumerate(nodes)}
-                    if fp.kind == 'dirk':
-                        forced_ev, _g2 = pss._sideband_forced_dirk(fp, freq, l, np.zeros(m), extra=extra)
-                    else:
-                        forced_ev, _g2 = pss._sideband_forced_full(fp, freq, l, np.zeros(m), extra=extra)
-                    forced = forced + forced_ev
-                else:
-                    z = self._deflated_solve(pss, alpha, g, transposed=True,
-                                             tol=tol)
-            elif _ev is not None and fp.kind in ('full', 'dirk'):
-                ## ⚠ THE BORDERED ADJOINT (2026-09-22, events phase B): the
-                ## transpose of `PAC.solve`'s bordered system.  With
-                ## `B = [[I - aM, -a P_theta], [Gn, Gt]]` and the output's
-                ## costate `g` and its theta-sensitivity `g_theta = sum_n
-                ## c_n d . Pk_n`, solve `B^T [z; zeta] = [g; g_theta]` by
-                ## block elimination -- `z = z_g - Z_G zeta`, `Z_G = (I -
-                ## aM)^-T Gn^T`, `zeta = (Gt^T + a P_theta^T Z_G)^-1
-                ## (g_theta + a P_theta^T z_g)` -- and the row is the direct
-                ## forced part, plus `a W^T z`, plus the event rows' term:
-                ## a second reverse pass with the raw injection `-zeta_k
-                ## w_k` at node k (the source coupling of `f_node_k`).
-                ## Verified by dual consistency against the bordered
-                ## forward solve (the suite's own PAC test pattern).
-                K = _ev['P_end'].shape[1]
-                nodes, Wk = _ev['nodes'], np.asarray(_ev['W'])
+            ## ⚠ ON A STAGED SOLVE THE ROW IS BORDERED (events phase B,
+            ## 2026-09-22): the transpose of `PAC.solve`'s bordered system,
+            ## the output read at FIXED times (`g_theta` over the fixed-time
+            ## columns), and the event rows' term -- `-zeta_k W_k` at node
+            ## k, the source coupling of `f_node_k` -- as a second reverse
+            ## pass.  On a driven solve `z, zeta` come from the block
+            ## elimination (`EventColumns.bordered_adjoint`); on an
+            ## oscillator the system collapses onto the TOTAL operator,
+            ## deflated, with `zeta` read off after it.  Radau/trbdf2 and
+            ## gear's pair map alike (an autonomous gear solve stays
+            ## unbordered).  Verified by dual consistency against the
+            ## bordered forward solve (the suite's own PAC test pattern);
+            ## unbordered, pnoise on a staged gear solve was 10-15 % off.
+            _autonomous = getattr(pss, 'autonomous', False)
+            _ev = EventColumns.of(pss)
+            if _ev is not None and not (fp.kind in ('full', 'dirk')
+                                        or (fp.kind == 'solved_history' and not _autonomous)):
+                _ev = None
+            if _ev is not None:
                 _wq = pss._period_quadrature(fp)
                 cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
                                * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
                 _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)   # the output is read at FIXED times
-                g_theta = np.array([np.sum(cn * (_Pkf[:N, :, kk] @ d)) for kk in range(K)])
-                z_g = self._gmres_checked(A, g, tol, 'the adjoint solve at sideband %d' % l)
-                Gn = np.array([Wk[k] @ _ev['P_nodes'][nd] for k, nd in enumerate(nodes)])
-                Z_G = np.column_stack([self._gmres_checked(
-                    A, np.asarray(Gn[k], dtype=complex), tol,
-                    'the bordered adjoint solve, event %d' % k) for k in range(K)])
-                Gt_n = np.array([Wk[k] @ _ev['Pk_nodes'][nd] for k, nd in enumerate(nodes)])
-                Pth = np.asarray(_ev['P_end'], dtype=complex)
-                Sb = Gt_n.T + alpha * (Pth.T @ Z_G)
-                zeta = np.linalg.solve(Sb, g_theta + alpha * (Pth.T @ z_g))
-                z = z_g - Z_G @ zeta
-                extra = {nd: -zeta[k] * Wk[k] for k, nd in enumerate(nodes)}
-                if fp.kind == 'dirk':
-                    forced_ev, _g2 = pss._sideband_forced_dirk(fp, freq, l, np.zeros(m), extra=extra)
+                g_theta = EventColumns.g_theta(cn, _Pkf, d, N)
+                if _autonomous:
+                    z = self._deflated_solve(
+                        pss, alpha, np.asarray(g, dtype=complex)
+                        + np.asarray(_ev.dth, dtype=float).T @ g_theta,
+                        transposed=True, tol=tol)
+                    zeta = _ev.collapsed_zeta(g_theta, alpha, z)
                 else:
-                    forced_ev, _g2 = pss._sideband_forced_full(fp, freq, l, np.zeros(m), extra=extra)
-                forced = forced + forced_ev
-            elif _ev is not None and fp.kind == 'solved_history':
-                ## ⚠ THE BORDERED ADJOINT ON A STAGED GEAR SOLVE (2026-09-22,
-                ## item 2 of the list after E7): the same elimination on
-                ## gear's PAIR map (`P_nodes[nd]` m x 2m, `P_end` 2m x K),
-                ## the event rows' term as a second reverse pass with the
-                ## raw injection `-zeta_k W_k` at node k -- gear's transposed
-                ## pass takes m-wide injections, as the plain forced part
-                ## above.  Unbordered, pnoise on a staged gear solve carried
-                ## the 10 % the bordered PAC removed (item 3).
-                K = _ev['P_end'].shape[1]
-                nodes, Wk = _ev['nodes'], np.asarray(_ev['W'])
-                _wq = pss._period_quadrature(fp)
-                cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
-                               * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
-                _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)
-                g_theta = np.array([np.sum(cn * (_Pkf[:N, :, kk] @ d)) for kk in range(K)])
-                z_g = self._gmres_checked(A, g, tol, 'the adjoint solve at sideband %d' % l)
-                Gn = np.array([Wk[k] @ _ev['P_nodes'][nd] for k, nd in enumerate(nodes)])
-                Z_G = np.column_stack([self._gmres_checked(
-                    A, np.asarray(Gn[k], dtype=complex), tol,
-                    'the bordered adjoint solve, event %d' % k) for k in range(K)])
-                Gt_n = np.array([Wk[k] @ _ev['Pk_nodes'][nd] for k, nd in enumerate(nodes)])
-                Pth = np.asarray(_ev['P_end'], dtype=complex)
-                Sb = Gt_n.T + alpha * (Pth.T @ Z_G)
-                zeta = np.linalg.solve(Sb, g_theta + alpha * (Pth.T @ z_g))
-                z = z_g - Z_G @ zeta
-                inj_ev = np.zeros((N, m), dtype=complex)
-                for k, nd in enumerate(nodes):
-                    if 0 <= nd < N:
-                        inj_ev[nd, :len(Wk[k])] -= zeta[k] * np.asarray(Wk[k])
-                _g2, ts_ev, _st2 = fp.matvec_transposed(
-                    np.zeros(n, dtype=complex), collect=True, inject=inj_ev)
-                forced = forced - np.tensordot(phase, np.asarray(ts_ev), axes=(0, 0))
+                    def _solve_adj(b, k):
+                        return self._gmres_checked(
+                            A, b, tol, ('the adjoint solve at sideband %d' % l) if k is None
+                            else ('the bordered adjoint solve, event %d' % k))
+                    z, zeta = _ev.bordered_adjoint(_solve_adj, g, g_theta, alpha)
+                if fp.kind == 'dirk':
+                    forced_ev, _g2 = pss._sideband_forced_dirk(
+                        fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
+                    forced = forced + forced_ev
+                elif fp.kind == 'full':
+                    forced_ev, _g2 = pss._sideband_forced_full(
+                        fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
+                    forced = forced + forced_ev
+                else:
+                    ## gear's transposed pass takes m-wide injections
+                    _g2, ts_ev, _st2 = fp.matvec_transposed(
+                        np.zeros(n, dtype=complex), collect=True,
+                        inject=_ev.injection(zeta, N, m))
+                    forced = forced - np.tensordot(phase, np.asarray(ts_ev), axes=(0, 0))
+            elif _autonomous:
+                z = self._deflated_solve(pss, alpha, g, transposed=True,
+                                         tol=tol)
             else:
                 z = self._gmres_checked(
                     A, g, tol, 'the adjoint solve at sideband %d' % l)
@@ -16296,8 +16297,16 @@ class PAC(Analysis):
         analysis = getattr(pss.par, 'analysis', None)
         ok = True
         for j in range(N + 1):
-            x = X[:, j]
-            t = float(ts[j])
+            ## ⚠ NODE 0 IS EVALUATED AS NODE N (2026-09-23).  A source's
+            ## derivative at exactly its start (`VSin` clamps `t - td` at 0:
+            ## SPICE's rule for a transient) is the LEFT one -- 0 -- where the
+            ## periodic steady state, t = 0 == t = T, has the right one: the
+            ## rate read 0 for an exact 6283 V/s at node 0 on a driven RC.
+            ## Harmless to the consumers (the node's own motion `tau_0` is 0)
+            ## and wrong as a function; node N is the same point.
+            jj = N if j == 0 else j
+            x = X[:, jj]
+            t = float(ts[jj])
             try:
                 C = np.asarray(pss._C_at(x), dtype=float)
                 k = np.asarray(pss._k_at(x, t), dtype=float).ravel()
@@ -17113,14 +17122,10 @@ class PAC(Analysis):
         ## `-zeta_k W_k` at the event nodes, `zeta = Gt^-T (g_theta + a
         ## P_theta^T z)`.  Unbordered, the jitter sampler's held node had no
         ## path to the threshold's noise at all.
-        _ev = getattr(pss, '_event_columns', None)
-        _ev = _ev if (_ev is not None and np.asarray(_ev['P_end']).shape[0] == n) else None
+        _ev = EventColumns.of(pss, n)
         if _ev is not None:
-            _Pth = np.asarray(_ev['P_end'], dtype=float)
-            _dth = np.asarray(pss._event_sensitivity, dtype=float)
-            _Gt = np.asarray(_ev['Gt'], dtype=float)
-            _Wk = [np.asarray(w, dtype=float).ravel() for w in _ev['W']]
-            _nds = list(_ev['nodes'])
+            _dth = np.asarray(_ev.dth, dtype=float)
+            _MtT = _ev.total_matvec(fp.matvec_transposed, transposed=True)
             _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)
         for ti, k0 in enumerate(k0s):
             for fi, f in enumerate(fr):
@@ -17134,8 +17139,7 @@ class PAC(Analysis):
                 else:
                     A_ = spla.LinearOperator(
                         (n, n), dtype=complex,
-                        matvec=lambda v, a=alpha: (np.asarray(v) - a * (np.asarray(fp.matvec_transposed(v))
-                                                                          + _dth.T @ (_Pth.T @ np.asarray(v)))))
+                        matvec=lambda v, a=alpha: np.asarray(v) - a * _MtT(v))
                 if stage:
                     seedv = np.exp(-2j * np.pi * f * tms[k0]) * d
                     g, cA = self._stage_pass(pss, fp, np.zeros(m), (k0, seedv))
@@ -17146,9 +17150,8 @@ class PAC(Analysis):
                     _l, cZ = self._stage_pass(pss, fp, z)
                     Sv = -(cA + alpha * cZ)                          # N s x m
                     if _ev is not None:
-                        zeta = np.linalg.solve(_Gt.T, g_theta + alpha * (_Pth.T @ np.asarray(z)))
-                        _l2, cE = self._stage_pass(pss, fp, np.zeros(m),
-                                                   {nd: -zeta[k] * _Wk[k] for k, nd in enumerate(_nds)})
+                        zeta = _ev.collapsed_zeta(g_theta, alpha, z)
+                        _l2, cE = self._stage_pass(pss, fp, np.zeros(m), _ev.injection_dict(zeta))
                         Sv = Sv - cE
                 else:
                     g, t_inj, _st = fp.matvec_transposed(
@@ -17160,13 +17163,10 @@ class PAC(Analysis):
                     _e, t_z, _st = fp.matvec_transposed(z, collect=True)
                     Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))  # N x m
                     if _ev is not None:
-                        zeta = np.linalg.solve(_Gt.T, g_theta + alpha * (_Pth.T @ np.asarray(z)))
-                        inj_ev = np.zeros((N, m), dtype=complex)
-                        for k, nd in enumerate(_nds):
-                            if 0 <= nd < N:
-                                inj_ev[nd, :len(_Wk[k])] -= zeta[k] * _Wk[k]
+                        zeta = _ev.collapsed_zeta(g_theta, alpha, z)
                         _g2, t_ev, _st2 = fp.matvec_transposed(
-                            np.zeros(n, dtype=complex), collect=True, inject=inj_ev)
+                            np.zeros(n, dtype=complex), collect=True,
+                            inject=_ev.injection(zeta, N, m))
                         Sv = Sv - np.asarray(t_ev)
                 nu = f + ns * f0
                 E = (np.exp(2j * np.pi * nu[:, None] * tinj[None, :])
@@ -19658,15 +19658,9 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         ## oscillator) -- bordered with the total map's vectors it read
         ## the sideband response 0.3-400x off the exact one.  The
         ## operator here is the total map's.
-        _ev = getattr(pss, '_event_columns', None)
-        if _ev is not None and np.asarray(_ev['P_end']).shape[0] == n:
-            _Pth = np.asarray(_ev['P_end'], dtype=float)
-            _dth = np.asarray(pss._event_sensitivity, dtype=float)
-            _mv0 = mv
-            if transposed:
-                mv = lambda z_: np.asarray(_mv0(z_)) + _dth.T @ (_Pth.T @ np.asarray(z_))
-            else:
-                mv = lambda z_: np.asarray(_mv0(z_)) + _Pth @ (_dth @ np.asarray(z_))
+        _ev = EventColumns.of(pss, n)
+        if _ev is not None:
+            mv = _ev.total_matvec(mv, transposed=transposed)
         b = np.asarray(b, dtype=complex).ravel()
 
         def _mv(z):

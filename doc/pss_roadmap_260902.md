@@ -8820,7 +8820,9 @@ window from the stage; (2) ladders with the window sub-grid count
 (3) the PPV samples' convergence on the same ladder (0.08–0.33 % at 200,
 0.05–0.4 % at 400 — floored by the nearest-state comparison at 2.5e-4).
 
-### E9. The state-event machinery's refactor — PLANNED 2026-09-23 (Andreas: "After restart we will do the refactor")
+### E9. The state-event machinery's refactor — ✅ DONE 2026-09-23, every consumer bit-identical (see the log); the traversals' merge deliberately not done (a design change), the twin-budget cap left as a decision
+
+#### E9 as planned (2026-09-23)
 
 The events arc is complete and pushed (`89c83c6..cd7b751`).  What it left behind,
 measured rather than guessed:
