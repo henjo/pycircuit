@@ -2642,3 +2642,54 @@ def test_p25_transient_rescue_chain_topology():
     assert inner.base_solver is base
     ## The diode's junction rows made it in, in reduced indices.
     assert inner.junction_rows, 'the diode junction was not enumerated'
+
+
+## ---------------------------------------------------------------------------
+## The excursion check binds under every integrator family (2026-09-23)
+## ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('integrator', [
+    'EulerIntegrator', 'TrapezoidalIntegrator', 'Gear2Integrator',
+    'TRBDF2Integrator', 'RadauIIA3Integrator', 'ESDIRK43Integrator',
+    'GLM2Integrator', 'GLM3Integrator'])
+def test_max_dv_step_binds_under_every_integrator(integrator):
+    """`max_dv_step` / `max_di_step` bound the per-step excursion under EVERY
+    integrator.  The check lived in the LMM loop and the coupled loop (as a
+    copied block) and not in `_run_rk_adaptive`, so every Runge-Kutta and GLM
+    method ignored both knobs SILENTLY: on a pulsed RC with 'auto' (bound
+    0.098 V) gear and trap went 70 -> 86 steps and held 0.097 V while radau
+    stayed at 69 steps and 0.0996 V (measured before the fix).  Now one
+    `Transient._excursion_ratio` serves all three loops.
+
+    The network is the one `test_max_dv_step_voltage_check_on_algebraic_
+    networks` uses: resistive, so no error estimator has anything to measure
+    and a blind run samples at the step cap -- the premise is asserted per
+    method, so the knob provably BINDS rather than being vacuously met."""
+    import warnings
+    from pycircuit.circuit import integrator as integ_mod
+    from pycircuit.circuit.elements import VCCS, VSin
+
+    def amp():
+        c = SubCircuit()
+        c['vs'] = VSin('in', gnd, va=1.0, freq=1e6)
+        c['Ri'] = R('in', 'x', r=1e3)
+        c['Rg'] = R('x', gnd, r=9e3)
+        c['gm'] = VCCS('x', gnd, 'out', gnd, gm=5e-3)
+        c['RL'] = R('out', gnd, r=2e3)
+        return c
+
+    def run(**kw):
+        tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
+                         integrator=getattr(integ_mod, integrator)(), **kw)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=2e-6, timestep=2e-8)
+        vo = np.asarray(res.v('out'), float).reshape(-1)
+        return float(np.max(np.abs(np.diff(vo)))), len(vo)
+
+    dv0, n0 = run()
+    assert dv0 > 1.0, 'premise gone: the %s run is not blind' % integrator
+    ## FACTOR semantics: 2e11 * lte_vabstol (1e-12) is a 0.2 V bound
+    dv1, n1 = run(max_dv_step=2e11)
+    assert dv1 <= 0.2 * (1.0 + 1e-9), (integrator, dv1)
+    assert n1 > 5 * n0, (integrator, n0, n1)

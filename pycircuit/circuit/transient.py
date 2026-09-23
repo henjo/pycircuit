@@ -2754,6 +2754,42 @@ class Transient(Analysis):
                      float(self.par.lte_iabstol), i_src)
         return bv, bi
 
+    def _excursion_ratio(self, x_new, x_prev):
+        """The excursion check (`max_dv_step` / `max_di_step`): the largest
+        per-step change over the node rows against the voltage bound, and
+        over the branch rows against the current bound -- a ratio above 1
+        vetoes the step, and a proportional retry (``0.9 / ratio``) follows
+        (the industry semantics).  None when both knobs are off.
+
+        The running unit-group maxima behind 'auto' are updated from
+        `x_prev`, the ACCEPTED state, before this candidate is looked at --
+        so the relative term cannot h-cancel at a signal birth.
+
+        ⚠ ONE COPY FOR EVERY STEPPING LOOP (2026-09-23).  The check was
+        typed out in the LMM loop and again in the coupled loop, and
+        `_run_rk_adaptive` never had it: every Runge-Kutta and GLM method
+        ignored both knobs SILENTLY -- on a pulsed RC with 'auto' (bound
+        0.098 V) gear and trap went 70 -> 86 steps and held 0.097 V while
+        radau stayed at 69 steps and 0.0996 V, trbdf2 at 71."""
+        if self.par.max_dv_step is None and self.par.max_di_step is None:
+            return None
+        (_bvs, _cvr), (_bis, _cir_) = self._dv_step_bounds()
+        _nn = len(self.cir.nodes)
+        _xa = np.abs(np.asarray(x_prev, dtype=float))
+        self._dv_run_v = max(getattr(self, '_dv_run_v', 0.0),
+                             float(np.max(_xa[:_nn])))
+        self._dv_run_i = max(getattr(self, '_dv_run_i', 0.0),
+                             float(np.max(_xa[_nn:]))
+                             if _nn < len(_xa) else 0.0)
+        _bv = max(_bvs, _cvr * self._dv_run_v)
+        _bi = max(_bis, _cir_ * self._dv_run_i)
+        _d = np.abs(np.asarray(x_new, dtype=float)
+                    - np.asarray(x_prev, dtype=float))
+        ratio = float(np.max(_d[:_nn])) / _bv
+        if _nn < len(_d):
+            ratio = max(ratio, float(np.max(_d[_nn:])) / _bi)
+        return ratio
+
     def _state_row_mask(self, x_ref):
         """True where the unknown participates in ANY charge -- P22.
 
@@ -5130,30 +5166,11 @@ class Transient(Analysis):
                     x_hist=X[-1:-4:-1],
                 )
 
-                ## VOLTAGE CHECK (max_dv_step): an additional veto on an
-                ## accepted step, with a proportional retry -- the industry
-                ## semantics.  Node rows only ("voltage" check); branch
-                ## currents are not bounded by it.
-                if (self.par.max_dv_step is not None
-                        or self.par.max_di_step is not None) and accept:
-                    (_bvs, _cvr), (_bis, _cir_) = self._dv_step_bounds()
-                    _nn = len(self.cir.nodes)
-                    _xa = np.abs(np.asarray(X[-1], dtype=float))
-                    ## Running unit-group maxima, ACCEPTED history only --
-                    ## anchored before this candidate, so the relative term
-                    ## cannot h-cancel at a signal birth.
-                    self._dv_run_v = max(getattr(self, '_dv_run_v', 0.0),
-                                         float(np.max(_xa[:_nn])))
-                    self._dv_run_i = max(getattr(self, '_dv_run_i', 0.0),
-                                         float(np.max(_xa[_nn:]))
-                                         if _nn < len(_xa) else 0.0)
-                    _bv = max(_bvs, _cvr * self._dv_run_v)
-                    _bi = max(_bis, _cir_ * self._dv_run_i)
-                    _d = np.abs(np.asarray(x, dtype=float)
-                                - np.asarray(X[-1], dtype=float))
-                    _ratio = float(np.max(_d[:_nn])) / _bv
-                    if _nn < len(_d):
-                        _ratio = max(_ratio, float(np.max(_d[_nn:])) / _bi)
+                ## EXCURSION CHECK (max_dv_step / max_di_step): an additional
+                ## veto on an accepted step, with a proportional retry -- see
+                ## `_excursion_ratio`.
+                _ratio = self._excursion_ratio(x, X[-1]) if accept else None
+                if _ratio is not None:
                     ## No `fixed_timestep` guard is needed HERE: this whole
                     ## block already sits inside `if not fixed_timestep:`
                     ## above, so under a fixed grid the veto is structurally
@@ -5399,7 +5416,17 @@ class Transient(Analysis):
                     ek = tk.array([est[i] / wt[i] for i in keep])
                     err = float((tk.sum(ek * ek) / len(keep)) ** 0.5)
                     if err <= 1.0 or reject >= MAX_REJECT or dt <= minstep:
-                        break
+                        ## the excursion veto on a step the estimate passed,
+                        ## with the same proportional retry as the other two
+                        ## loops -- this loop ignored `max_dv_step` /
+                        ## `max_di_step` until 2026-09-23 (`_excursion_ratio`)
+                        _ratio = self._excursion_ratio(xnew, x)
+                        if _ratio is None or _ratio <= 1.0 or dt <= minstep:
+                            break
+                        self.statistics.rejected_steps += 1
+                        dt = max(minstep, dt * max(MIN_SHRINK_RATIO,
+                                                   0.9 / _ratio))
+                        continue
                     self.statistics.rejected_steps += 1
                     reject += 1
                     dt = dt * max(K, SAFETY * err ** (-1.0 / (ORDER + 1)))
@@ -5719,26 +5746,8 @@ class Transient(Analysis):
                     ## the P22 mask deliberately blinds the band to algebraic
                     ## rows, so on a resistive/algebraic network this is the
                     ## only step-size control tracking the waveform.
-                    if (self.par.max_dv_step is not None
-                            or self.par.max_di_step is not None):
-                        (_bvs, _cvr), (_bis, _cir_) = self._dv_step_bounds()
-                        _nn = len(self.cir.nodes)
-                        _xa = np.abs(np.asarray(X[-1], dtype=float))
-                        self._dv_run_v = max(
-                            getattr(self, '_dv_run_v', 0.0),
-                            float(np.max(_xa[:_nn])))
-                        self._dv_run_i = max(
-                            getattr(self, '_dv_run_i', 0.0),
-                            float(np.max(_xa[_nn:]))
-                            if _nn < len(_xa) else 0.0)
-                        _bv = max(_bvs, _cvr * self._dv_run_v)
-                        _bi = max(_bis, _cir_ * self._dv_run_i)
-                        _d = np.abs(np.asarray(x_curr, dtype=float)
-                                    - np.asarray(X[-1], dtype=float))
-                        _ratio = float(np.max(_d[:_nn])) / _bv
-                        if _nn < len(_d):
-                            _ratio = max(_ratio,
-                                         float(np.max(_d[_nn:])) / _bi)
+                    _ratio = self._excursion_ratio(x_curr, X[-1])
+                    if _ratio is not None:
                         ## Same fixed-grid guard as the standard path above:
                         ## the caller owns the step size, so this veto must
                         ## not shrink it.  Doubly so here -- `grid_locked`
