@@ -286,14 +286,9 @@ class FactoredPeriod(object):
         self.width = 2 * m if kind == 'solved_history' else m
 
     def matvec(self, v):
-        """`M v`, real or complex, replaying the stored factors."""
-        if self.kind == 'solved_history':
-            return self._pss._monodromy_matvec(self.opening, self.steps, v)
-        if self.kind in ('full', 'dirk'):
-            return self._pss._monodromy_matvec_stage(self.steps, v)
-        if self.kind == 'glm':
-            return self._pss._monodromy_matvec_glm(self.steps, v)
-        return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
+        """`M v`, real or complex, replaying the stored factors (the one
+        replay every kind shares: `PSS._replay`)."""
+        return self._pss._replay(self, v)
 
     def matvec_transposed(self, v, collect=False, inject=None):
         """`M^T v` -- see `_monodromy_matvec_transposed{,_plain}`.
@@ -314,17 +309,148 @@ class FactoredPeriod(object):
         `m` for the plain one. `st[:m]` is the differential block under
         both, which is the slice every consumer wants.
         """
-        if self.kind == 'solved_history':
-            return self._pss._monodromy_matvec_transposed(
-                self.opening, self.steps, v, collect=collect, inject=inject)
-        if self.kind in ('full', 'dirk'):
-            return self._pss._monodromy_matvec_transposed_stage(
-                self.steps, v, collect=collect, inject=inject)
+        return self._pss._replay_transposed(self, v, collect=collect,
+                                            inject=inject)
+
+    ## -- what differs between the kinds, in one place -----------------------
+    ##
+    ## (2026-09-23) Every kind's map is `extract . step_N ... step_1 . seed`:
+    ## the steps are objects with one algebra (`_StageStep`, `_LMMStep`,
+    ## `_GLMStep`: `solve`, `adjoint`, `sources`, `source_adjoint`), and what
+    ## is left per kind is how a direction seeds the per-step state, what the
+    ## map reads out of it, and where a costate injection lands.  The replays
+    ## (`PSS._replay`, `_replay_transposed`, `_forced_replay`,
+    ## `_forced_replay_transposed`, `_sideband_forced`) are one function each.
+
+    def _is_stage(self):
+        return self.kind in ('full', 'dirk')
+
+    def _is_lmm(self):
+        return self.kind in ('plain', 'solved_history')
+
+    def step_objects(self):
+        """The steps as objects that know their own algebra.  A stage step
+        is stored as one; an LMM step is its stored record plus the
+        capacitance ring the forward pass saw -- rebuilt here, `N`
+        references to matrices that already exist -- and its end time."""
+        if self._is_stage():
+            return self.steps
         if self.kind == 'glm':
-            return self._pss._monodromy_matvec_transposed_glm(
-                self.steps, v, collect=collect, inject=inject)
-        return self._pss._monodromy_matvec_transposed_plain(
-            self.opening, self.steps, v, collect=collect, inject=inject)
+            return [_GLMStep(st) for st in self.steps]
+        ring = (list(self.opening) if self.kind == 'solved_history'
+                else [self.opening[0], self.opening[0]])
+        tms = self.times
+        out = []
+        for j, st in enumerate(self.steps):
+            out.append(_LMMStep(st, ring[0], ring[1],
+                                None if tms is None else tms[j + 1]))
+            ring = [st[1], ring[0]]
+        return out
+
+    def seed(self, v):
+        """The per-step state the map starts from, for a direction `v` of
+        width `self.width`.
+
+        * gear's PAIR: ``(v_0, v_{-1})``, the companion current at zero
+          (``b = 0``);
+        * the PLAIN map: ``P = v`` in both ring slots, and ``Pq`` from THE
+          OPENING PAIR, not the loop's -- `_traverse` opens it right after the
+          MANUFACTURING step, order-dropped to Euler (``b = 0``), so in
+          practice at zero; using the loop's made the map 100 % wrong for
+          `trap`.  Plus the consistent-``iq_0`` seed (`_pq_seed_at_x0`,
+          `theta`), `None` for every other method;
+        * a GLM: the Nordsieck blocks, as columns."""
+        if self._is_stage():
+            return v
+        m = self._pss.cir.n - 1
+        if self.kind == 'glm':
+            return [v[k * m:(k + 1) * m].reshape(m, 1)
+                    for k in range(v.shape[0] // m)]
+        if self.kind == 'solved_history':
+            return (v[:m].copy(), v[m:].copy(), np.zeros(m, dtype=v.dtype))
+        C_open, a_open, b_open, pq_open = self.opening
+        Pq = (a_open[0] * (C_open @ v) if b_open
+              else np.zeros(m, dtype=v.dtype))
+        if pq_open is not None:
+            Pq = Pq + pq_open @ v
+        return (v.copy(), v.copy(), Pq)
+
+    def extract(self, c):
+        """What the map reads out of the final per-step state (width
+        `self.width`)."""
+        if self._is_stage():
+            return c
+        if self.kind == 'glm':
+            return np.concatenate([np.asarray(Pk).ravel() for Pk in c])
+        if self.kind == 'solved_history':
+            return np.concatenate((c[0], c[1]))
+        return c[0]
+
+    def node(self, c):
+        """The circuit state at the node a per-step state ends on (width
+        `m`) -- what a forced replay collects."""
+        return c if self._is_stage() else c[0]
+
+    def extract_T(self, v):
+        """The adjoint of `extract`: the final adjoint state for a seed
+        `v`."""
+        if self._is_stage():
+            return v
+        m = self._pss.cir.n - 1
+        if self.kind == 'glm':
+            return [v[k * m:(k + 1) * m].copy() for k in range(v.shape[0] // m)]
+        if self.kind == 'solved_history':
+            return (v[:m].copy(), v[m:].copy(), np.zeros(m, dtype=v.dtype))
+        return (v.copy(), np.zeros(m, dtype=v.dtype),
+                np.zeros(m, dtype=v.dtype))
+
+    def seed_T(self, w):
+        """The adjoint of `seed`: back to a direction of width
+        `self.width`."""
+        if self._is_stage():
+            return w
+        if self.kind == 'glm':
+            return np.concatenate(w)
+        if self.kind == 'solved_history':
+            return np.concatenate((w[0], w[1]))
+        ## ⚠ THE SEED'S COMPANION CURRENT IS ONLY DISCARDABLE WHEN IT DOES
+        ## NOT DEPEND ON THE SEED: the forward map opens at `P = v`, `Pq =
+        ## (a_0 C_open [b_open] + pq_open) v`, so the transpose closes at
+        ## `w1 + w2 + (...)^T w3` (`w2`, the adjoint of the carried slot, is
+        ## zero on a one-step map)
+        C_open, a_open, b_open, pq_open = self.opening
+        out = w[0] + w[1]
+        if b_open:
+            out = out + a_open[0] * (np.asarray(C_open).T @ w[2])
+        if pq_open is not None:
+            out = out + pq_open.T @ w[2]
+        return out
+
+    def inject(self, w, x):
+        """A costate injection `x` at a node: on the circuit state (``P_n``)
+        for an LMM or a stage map, on the whole Nordsieck vector for a
+        GLM."""
+        if self._is_stage():
+            return w + x
+        if self.kind == 'glm':
+            m = self._pss.cir.n - 1
+            x = np.asarray(x).ravel()
+            return [w[k] + x[k * m:(k + 1) * m] for k in range(len(w))]
+        return (w[0] + x, w[1], w[2])
+
+    def collected(self, w):
+        """The adjoint state at a node, as `matvec_transposed(collect=True)`
+        returns it: gear's PAIR (``2m``), the plain map's circuit block
+        (``m`` -- its `Pq` adjoint is a companion term, not a state), a
+        stage map's state, a GLM's Nordsieck vector.  ``st[:m]`` is the
+        circuit block under every map."""
+        if self._is_stage():
+            return w.copy()
+        if self.kind == 'glm':
+            return np.concatenate([x.copy() for x in w])
+        if self.kind == 'solved_history':
+            return np.concatenate((w[0].copy(), w[1].copy()))
+        return w[0].copy()
 
 
 ## Bound once: `_lu_solve_split` runs once per step of every coupled replay
@@ -462,7 +588,7 @@ class _StageStep(object):
                  if r[i] is not None)
         return None if np.isscalar(cp) else cp
 
-    def sources(self, u, jw, ts):
+    def sources(self, u, jw, ts, _te):
         """A source ``u e^{jw t}`` on the step from `ts`, as the stage
         residuals carry it: ``-h sum_k A_ik u e^{jw (ts + c_k h)}`` per stage
         `i`, one-term forcing tuples for `solve`."""
@@ -471,7 +597,7 @@ class _StageStep(object):
                           for k in range(s if self.lu is not None else i + 1)),)
                 for i in range(s)]
 
-    def source_adjoint(self, acc, r, jw, ts):
+    def source_adjoint(self, acc, r, jw, ts, _te):
         """`acc` less the step's source coupling to the costates `r` --
         ``acc - h sum_k e^{jw (ts + c_k h)} sum_i A_ik r_i``, the transpose of
         `sources`."""
@@ -493,6 +619,181 @@ class _StageStep(object):
 def _butcher(integ):
     """A Runge-Kutta integrator's `(A, b, c)` as float arrays."""
     return tuple(np.array(v, dtype=float) for v in integ.butcher())
+
+
+def _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source=None):
+    """One step of the linear-multistep sensitivity recursion (see
+    `PSS._step_sensitivity`, which documents it):
+
+        S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
+        P_n  = -Jf_n^-1 (S + source)
+        Pq_n = a_0 C_n P_n + S
+
+    `solve` takes the `Jf` solve.  Returns `(P_n, Pq_n)`."""
+    S = b * Pq if b else np.zeros_like(Px[0])
+    for k in range(1, len(alphas)):
+        S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
+    S_solve = S if source is None else S + source
+    Px_new = -solve(S_solve)
+    Pq_new = alphas[0] * (C_new @ Px_new) + S
+    return Px_new, Pq_new
+
+
+class _LMMStep(object):
+    """One step of a linear multistep method's period map -- the plain map
+    (euler, trap, theta) and gear's solved-history pair alike -- with the
+    `_StageStep` interface, built from the stored record `(lu, C_new, alphas,
+    b)`, the capacitance ring the forward pass saw (`C1 = C_{n-1}`, `C2 =
+    C_{n-2}`) and the step's end time.
+
+    The per-step state is ``(P_n, P_{n-1}, Pq_n)``: the recursion
+    `_lmm_recursion` reads ``a_k C_{n-k} P_{n-k}`` for ``k <= 2`` and ``b
+    Pq``.  Which of it the MAP exposes -- ``P_n`` for the plain map, the pair
+    ``(P_n, P_{n-1})`` for gear's -- is the `FactoredPeriod`'s business, and
+    so is the opening; the step algebra is one.
+
+    ⚠ ONE TRANSPOSE FOR EVERY COMPANION (2026-09-23).  The plain map had a
+    reverse recursion derived for a ONE-STEP companion and refused anything
+    else; gear's pair had its own, for ``b = 0``, and refused anything else.
+    Both are this: with ``(w1, w2, w3)`` the adjoints of ``(P_n, P_{n-1},
+    Pq_n)``,
+
+        Sbar  = w3 - Jf^-T (w1 + a_0 C_n^T w3)
+        (P_{n-1}, P_{n-2}, Pq_{n-1})bar = (a_1 C_{n-1}^T Sbar + w2,
+                                           a_2 C_{n-2}^T Sbar,  b Sbar)
+
+    -- trap's shared bracket (``b != 0``, one-step) and gear's ``(-a_1 C^T t
+    + w2, -a_2 C^T t)`` (``b = 0``, ``Sbar = -t``) are its two special cases,
+    operation for operation."""
+
+    __slots__ = ('lu', 'C_new', 'alphas', 'b', 'C1', 'C2', 't_end')
+
+    def __init__(self, record, C1, C2, t_end):
+        self.lu, self.C_new, self.alphas, self.b = record
+        self.C1, self.C2, self.t_end = C1, C2, t_end
+
+    def solve(self, carry, forcing=None):
+        """The step on the state `(P_n, P_{n-1}, Pq_n)`; `forcing` is a
+        source vector (see `sources`)."""
+        P1, P2, Pq = carry
+        Px_new, Pq_new = _lmm_recursion(
+            [P1, P2], [self.C1, self.C2], Pq, self.C_new, self.alphas,
+            self.b, lambda S, _l=self.lu: _complex_solve(_l, S), forcing)
+        return (Px_new, P1, Pq_new)
+
+    def adjoint(self, w):
+        """The transposed step on `(w1, w2, w3)` (see the class note), and
+        the transposed solve ``t = Jf^-T (...)`` -- the step's costate, which
+        a source entering the solve reads."""
+        w1, w2, w3 = w
+        a, b = self.alphas, self.b
+        rhs = w1 + a[0] * (np.asarray(self.C_new).T @ w3) if b else w1
+        t = _complex_solve_transposed(self.lu, rhs)
+        if t is None:
+            raise NotImplementedError(
+                'PSS: this linear solver cannot solve transposed, so the '
+                'monodromy transpose cannot be replayed. Use DenseSolver or '
+                'SuperLUSolver.')
+        Sbar = (w3 - t) if b else -t
+        p1 = a[1] * (np.asarray(self.C1).T @ Sbar) + w2
+        p2 = (a[2] * (np.asarray(self.C2).T @ Sbar) if len(a) > 2
+              else np.zeros_like(w1))
+        pq = b * Sbar if b else np.zeros_like(w1)
+        return (p1, p2, pq), t
+
+    def sources(self, u, jw, _ts, te):
+        """A source ``u e^{jw t}``: it enters the step's solve (not the
+        companion -- an injected current is not a charge) at the step's
+        END, ``t_{n+1}``."""
+        return u * np.exp(jw * float(te))
+
+    def source_adjoint(self, acc, t, jw, _ts, te):
+        """`acc` less the source's coupling to the transposed solve `t`: the
+        forward source is ``P_n = -Jf^-1 (S + u e^{jw t_{n+1}})``."""
+        return acc - np.exp(jw * float(te)) * np.asarray(t)
+
+
+class _GLMStep(object):
+    """One step of a Nordsieck GLM's period map with the `_StageStep`
+    interface, on the MULTIVALUE state (`r` blocks of width `m`), from the
+    record `(Kfacs, Gs, h, A, U, B, V, Ks)` of `_glm_period_blocks`."""
+
+    __slots__ = ('rec',)
+
+    def __init__(self, rec):
+        self.rec = rec
+
+    def solve(self, P, forcing=None):
+        if forcing is not None:
+            raise NotImplementedError('_GLMStep: no forcing')
+        return _glm_step(self.rec, P)[0]
+
+    def adjoint(self, W):
+        """The reverse-mode adjoint of one step (see
+        `PSS._monodromy_matvec_transposed`): per step, with `W` the adjoint
+        of the output vector,
+
+            Dbar_i  = -h sum_k B_ki G_i^T W_k
+            Pbar_j  =  sum_k V_kj W_k
+            for i = s-1 .. 0:   rbar_i = K_i^{-T} Dbar_i
+                                Pbar_j += U_ij rbar_i          (all j)
+                                Dbar_j += -h A_ij G_j^T rbar_i (j < i)
+
+        Returns `(Pbar, rbars)`."""
+        Kfacs, Gs, h, A, U, B, V, _Ks = self.rec
+        s = len(Kfacs)
+        r = len(W)
+        Dbar = [-h * sum(B[k, i] * (Gs[i].T @ W[k]) for k in range(r))
+                for i in range(s)]
+        Pbar = [sum(V[k, jj] * W[k] for k in range(r)) for jj in range(r)]
+        rbars = [None] * s
+        for i in range(s - 1, -1, -1):
+            rb = Kfacs[i].solve_transposed(Dbar[i])
+            if rb is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so '
+                    'the GLM monodromy transpose cannot be replayed. Use '
+                    'DenseSolver or SuperLUSolver.')
+            rbars[i] = rb
+            for jj in range(r):
+                Pbar[jj] = Pbar[jj] + U[i, jj] * rb
+            for jj in range(i):
+                Dbar[jj] = Dbar[jj] - h * A[i, jj] * (Gs[jj].T @ rb)
+        return Pbar, rbars
+
+    def sources(self, *_args):
+        raise NotImplementedError(
+            'PAC: the forced (small-signal) response is not built for a '
+            'Nordsieck GLM -- its sources would enter every stage and the '
+            'Nordsieck output rows; the monodromy, its transpose and the PPV '
+            'are.  Use a Runge-Kutta or linear multistep method for PAC and '
+            'noise.')
+
+    source_adjoint = sources
+
+
+def _glm_step(rec, P, fT=None):
+    """One step of the GLM sensitivity recursion (`_glm_propagate`'s body):
+    the stage solves on the multivalue input `P` (`r` blocks), and the
+    output vector.  `fT` (not None) adds the step's period-column forcing
+    ``fT sum_j A_ij K_j`` / ``fT sum_i B_ki K_i``.  Returns `(P_out, D)`."""
+    Kfacs, Gs, h, A, U, B, V, Ks = rec
+    s = len(Kfacs)
+    r = len(P)
+    D = [None] * s
+    for i in range(s):
+        rhs = sum(U[i, j] * P[j] for j in range(r))
+        if fT is not None:
+            rhs = rhs + fT * sum(A[i, j] * Ks[j] for j in range(i + 1))
+        for j in range(i):
+            rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
+        D[i] = Kfacs[i].solve(rhs)
+    P = [sum(V[k, j] * P[j] for j in range(r))
+         - h * sum(B[k, i] * (Gs[i] @ D[i]) for i in range(s))
+         + (fT * sum(B[k, i] * Ks[i] for i in range(s))
+            if fT is not None else 0.0)
+         for k in range(r)]
+    return P, D
 
 
 ## Element classes the topological index criterion recognises.  Anything not
@@ -4767,10 +5068,6 @@ class PSS(Analysis):
         ## the driven one is the forced response, and they differ by this
         ## one term.
         alphas, b = self._coeffs if coeffs is None else coeffs
-        S = b * Pq if b else np.zeros_like(Px[0])
-        for k in range(1, len(alphas)):
-            S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
-        S_solve = S if source is None else S + source
         if solve is None:
             ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`.
             ## This is the DENSE propagation -- the thing matrix-free is
@@ -4781,11 +5078,9 @@ class PSS(Analysis):
             ## flattered it; both sides go through the same strategy now.
             ## `DenseSolver` IS `toolkit.linearsolver`, so the default is
             ## unchanged.
-            Px_new = -self._get_linearsolver().solve(Jf, S_solve, self.toolkit)
-        else:
-            Px_new = -solve(S_solve)
-        Pq_new = alphas[0] * (C_new @ Px_new) + S
-        return Px_new, Pq_new
+            def solve(S_solve):
+                return self._get_linearsolver().solve(Jf, S_solve, self.toolkit)
+        return _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source)
 
     def _traverse_solved_history(self, x0_in, xm1_in, times, hs,
                                  T=None, want_dT=False, hsens=None, capture=None):
@@ -5104,46 +5399,201 @@ class PSS(Analysis):
             return C0, steps, x, x_prev, Pt[0], Pt[1]
         return C0, steps, x, x_prev
 
-    def _monodromy_matvec(self, C0, steps, v):
-        """`M v` for the solved-history map, replaying stored steps at width 1.
+    ## ------------------------------------------------------------------
+    ## THE REPLAYS -- one of each for every kind of factored period (plain
+    ## LMM, gear's pair, stage, GLM; 2026-09-23, they were a copy per kind).
+    ## A map is `extract . step_N ... step_1 . seed` (see `FactoredPeriod`);
+    ## the steps know their own algebra (`_LMMStep`, `_StageStep`,
+    ## `_GLMStep`).  The `_monodromy_matvec*` names below are the entry
+    ## points the matrix-free Newton builds on from raw step lists.
+    ## ------------------------------------------------------------------
 
-        THE SAME RECURSION THE DENSE PATH USES -- `_step_sensitivity`, with
-        its solve pointed at the stored factorisation.  The dense path seeds
-        it with `P_0 = [I 0]`, `P_{-1} = [0 I]` and carries `2m` columns;
-        here it is seeded with the two halves of `v` and carries one, which
-        is the whole difference between the two paths.
+    def _replay(self, fp, v):
+        """`M v` for any factored period: the seed, the steps, the output.
 
-        `v` is `(v_0, v_{-1})`; the result is `(P_last v, P_prev v)`, so the
-        shooting Jacobian's action is `v - M v` -- see `_matrix_free_solve`.
-        """
-        m = self.cir.n - 1
-        ## ⚠ COMPLEX `v` IS TWO REAL REPLAYS, NOT A COMPLEX FACTORISATION.
-        ## `Jf` and `C` are real, so `M` is a REAL linear map and
-        ## `M(a + ib) = Ma + i Mb` exactly.  PAC needs complex products
-        ## (`I + alpha(f) H` with `alpha = exp(-2j pi f T)`), and the
-        ## alternative -- factoring `Jf` in complex arithmetic -- would
-        ## double the stored factors and roughly quadruple the solve cost
-        ## for a map that has no imaginary part to begin with.  Splitting
-        ## costs two back-substitutions against the SAME factors.
-        ##
-        ## ⚠ The float cast below is therefore a GUARD, not a convenience:
-        ## it used to swallow a complex `v` silently by discarding the
-        ## imaginary part, which is a wrong answer rather than an error.
+        ⚠ COMPLEX `v` IS TWO REAL REPLAYS, NOT A COMPLEX FACTORISATION.  The
+        steps are real, so `M` is a REAL linear map and `M(a + ib) = Ma + i
+        Mb` exactly; PAC needs complex products (`I + alpha(f) H`), and
+        factoring in complex arithmetic would double the stored factors for
+        a map with no imaginary part.  ⚠ The float cast below is therefore a
+        GUARD, not a convenience: it used to swallow a complex `v` silently
+        by discarding the imaginary part, a wrong answer rather than an
+        error."""
         v = np.asarray(v)
         if np.iscomplexobj(v):
-            return (self._monodromy_matvec(C0, steps, v.real)
-                    + 1j * self._monodromy_matvec(C0, steps, v.imag))
+            return self._replay(fp, v.real) + 1j * self._replay(fp, v.imag)
+        c = fp.seed(v.astype(float))
+        for st in fp.step_objects():
+            c = st.solve(c)
+        return fp.extract(c)
+
+    def _replay_transposed(self, fp, v, collect=False, inject=None):
+        """`M^T v` -- the same stored steps REPLAYED BACKWARDS, each solve
+        transposed (``M = M_{N-1} ... M_0``, so ``M^T = M_0^T ...
+        M_{N-1}^T``).
+
+        ⚠ THIS IS WHY IT COSTS NOTHING TO HAVE.  Demir & Roychowdhury (TCAD
+        22(2) 188-196) call reverse integration "often unavailable even in
+        existing time-domain simulators" -- true of a forward-only DENSE
+        implementation.  The factored period already stores every step's
+        factorisation, and every factorisation solves transposed, so the
+        reverse pass needs no new integrator and no second traversal
+        (measured against the dense `M^T` at 1.8e-15 when first built, 0.75x
+        the forward cost).  It is the shared dependency of the PPV, adjoint
+        noise and the sideband rows.
+
+        ⚠ `collect` HANDS BACK THE PER-STEP COSTATES (`ts[j]`, the step's
+        transposed solve(s)) and the adjoint state after each step
+        (`states[j]`; for a PPV seed it IS the PPV there, `Phi(T,s_j)^T v(T)
+        = v(s_j)`), both in step order.  ⚠ `inject[j]` lands on the adjoint
+        state after `steps[j]` is applied backwards, so the output becomes a
+        functional over the whole period rather than a value at its end --
+        the difference between the response at `t = 0` and a sideband
+        coefficient.  ⚠ The collected lists may be NESTED (a stage method's
+        `ts` holds per-stage costates per step), so the complex split
+        recombines through `_cx_collect`: a flat `a + 1j*b` multiplied a
+        LIST by `1j` and `floquet_modes` under trbdf2 raised for as long as
+        that path existed."""
+        v = np.asarray(v)
+        inj = None if inject is None else [np.asarray(z) for z in inject]
+        if np.iscomplexobj(v) or (
+                inj is not None and any(np.iscomplexobj(z) for z in inj)):
+            ii = (None, None) if inj is None else (
+                [np.real(z) for z in inj], [np.imag(z) for z in inj])
+            re = self._replay_transposed(fp, v.real, collect, ii[0])
+            im = self._replay_transposed(fp, v.imag, collect, ii[1])
+            if collect:
+                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
+                        _cx_collect(re[2], im[2]))
+            return re + 1j * im
         v = v.astype(float)
-        Px = [v[:m].copy(), v[m:].copy()]
-        Cs = list(C0)
-        Pq = np.zeros(m)
-        for lu, C_new, alphas, b in steps:
-            Px_new, Pq = self._step_sensitivity(
-                Px, Cs, Pq, None, C_new,
-                solve=lambda S, _l=lu: _l.solve(S), coeffs=(alphas, b))
-            Px = [Px_new, Px[0]]
-            Cs = [C_new, Cs[0]]
-        return np.concatenate((Px[0], Px[1]))
+        steps = fp.step_objects()
+        if not steps:
+            return (v.copy(), [], []) if collect else v.copy()
+        w = fp.extract_T(v)
+        ts, states = [], []
+        for j in range(len(steps) - 1, -1, -1):
+            w, r = steps[j].adjoint(w)
+            if inj is not None:
+                w = fp.inject(w, inj[j])
+            if collect:
+                ts.append(r)
+                states.append(fp.collected(w))
+        out = fp.seed_T(w)
+        if collect:
+            ts.reverse()
+            states.reverse()
+            return out, ts, states
+        return out
+
+    def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
+        """One period of the LINEARISED circuit, driven at `freq`: the same
+        steps as `_replay`, each with its source switched on (`sources`),
+        so ``y_end = M y0 + w(freq)`` with `w` the particular response from
+        a zero state.  That superposition is not incidental -- it is what
+        lets PAC solve an `m x m` system instead of an `(N m) x (N m)` one --
+        and it holds because the source enters the SAME steps the monodromy
+        replays (and, on the plain map, the same consistent-``iq_0`` seed).
+        With `collect`, the circuit state at every node.
+
+        ⚠ THE SOLVE IS REAL, THE REPLAY IS COMPLEX: a complex right-hand
+        side costs two back-substitutions against the same factors."""
+        jw = 2j * np.pi * float(freq)
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
+        tms = np.asarray(fp.times, dtype=float)
+        v = (np.zeros(fp.width, dtype=complex) if y0 is None
+             else np.asarray(y0, dtype=complex).ravel().copy())
+        c = fp.seed(v)
+        ys = []
+        for j, st in enumerate(fp.step_objects()):
+            c = st.solve(c, st.sources(u_ac, jw, tms[j], tms[j + 1]))
+            if collect:
+                ys.append(fp.node(c).copy())
+        return fp.extract(c), ys
+
+    def _forced_replay_transposed(self, fp, freq, xa):
+        """`W^T xa` -- the transpose of the map `u -> w(freq)`, the
+        many-to-one half and the reason adjoint noise is affordable: the
+        forward replay answers what THIS source does at the output, one run
+        per source; this answers what the output owes to EVERY source in one
+        reverse pass (Okumura et al. 1993 choose the adjoint for exactly
+        this).  It is the transposed replay plus each step's source coupling
+        (`source_adjoint`), with no second recursion to keep in step."""
+        jw = 2j * np.pi * float(freq)
+        tms = np.asarray(fp.times, dtype=float)
+        w = fp.extract_T(np.asarray(xa, dtype=complex).ravel().copy())
+        acc = np.zeros(self.cir.n - 1, dtype=complex)
+        steps = fp.step_objects()
+        for j in range(len(steps) - 1, -1, -1):
+            w, r = steps[j].adjoint(w)
+            acc = steps[j].source_adjoint(acc, r, jw, tms[j], tms[j + 1])
+        return acc
+
+    def _sideband_forced(self, fp, freq, l, d, extra=None):
+        """The forced (source-injected) part of sideband row `l`, and the
+        final costate `g` for the closure: the transposed replay with the
+        OUTPUT functional `d` injected at every node (weighted by
+        ``exp(-j(l w0 + w) t_n)/N``, or the period quadrature's weight) and
+        the source coupling read at every step.  ⚠ The injection is added
+        AFTER the step's costate update, so the output at `t_n` couples to
+        the sources of steps `< n` (causality); the state at `t_n` is the
+        one step `n` enters from.  `extra` is a raw costate injection per
+        node (the bordered adjoint's event-row term, 2026-09-22), at `d`'s
+        position.  Returns `(forced, g)`."""
+        jw = 2j * np.pi * float(freq)
+        T = float(fp.T)
+        w0 = 2.0 * np.pi / T
+        N = len(fp.steps)
+        tms = np.asarray(fp.times, dtype=float)
+        d = np.asarray(d, dtype=complex).ravel()
+        lam = fp.extract_T(np.zeros(fp.width, dtype=complex))
+        forced = np.zeros(self.cir.n - 1, dtype=complex)
+        _wq = self._period_quadrature(fp)
+        steps = fp.step_objects()
+        for j in range(N - 1, -1, -1):
+            st = steps[j]
+            ts = tms[j]
+            lam, r = st.adjoint(lam)
+            forced = st.source_adjoint(forced, r, jw, ts, tms[j + 1])
+            _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
+            lam = fp.inject(lam, (_e / N if _wq is None else _e * _wq[j]) * d)
+            if extra is not None and j in extra:
+                lam = fp.inject(lam, np.asarray(extra[j], dtype=complex))
+        return forced, fp.seed_T(lam)
+
+    def _monodromy_matvec(self, C0, steps, v):
+        """`M v` for gear's solved-history PAIR map from its raw steps --
+        ``(v_0, v_{-1}) -> (P_last v, P_prev v)``."""
+        return self._replay(FactoredPeriod('solved_history', C0, steps,
+                                           None, None, self), v)
+
+    def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
+                                     inject=None):
+        """`M^T v` for gear's PAIR map from its raw steps."""
+        return self._replay_transposed(
+            FactoredPeriod('solved_history', C0, steps, None, None, self), v,
+            collect=collect, inject=inject)
+
+    def _monodromy_matvec_plain(self, opening, steps, v):
+        """`M v` for the PLAIN map (one entering state) from its raw
+        steps and its opening."""
+        return self._replay(FactoredPeriod('plain', opening, steps, None,
+                                           None, self), v)
+
+    def _monodromy_matvec_transposed_plain(self, opening, steps, v,
+                                           collect=False, inject=None):
+        """`M^T v` for the PLAIN map from its raw steps (B8: derived, and
+        gated against the dense `M` built from the forward replay -- a
+        from-scratch adjoint in this file has come out sign-inverted before,
+        roadmap 0h)."""
+        return self._replay_transposed(
+            FactoredPeriod('plain', opening, steps, None, None, self), v,
+            collect=collect, inject=inject)
+
+    def _monodromy_matvec_stage(self, steps, v):
+        """`M v` for a stage method's steps (`_StageStep`)."""
+        return self._replay(FactoredPeriod('full', None, steps, None, None,
+                                           self), v)
 
     def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False,
                                  open_at_x0=False):
@@ -5247,177 +5697,6 @@ class PSS(Analysis):
         return ((C_open, a_open, b_open, pq_open), steps, x0, x,
                 (Pt[0] if want_dT else None))
 
-    def _monodromy_matvec_plain(self, opening, steps, v):
-        """`M v` for the plain path, one column through the stored steps."""
-        m = self.cir.n - 1
-        C_open, a_open, b_open, pq_open = opening
-        ## ⚠ COMPLEX `v` IS TWO REAL REPLAYS, NOT A COMPLEX FACTORISATION.
-        ## `Jf` and `C` are real, so `M` is a REAL linear map and
-        ## `M(a + ib) = Ma + i Mb` exactly.  PAC needs complex products
-        ## (`I + alpha(f) H` with `alpha = exp(-2j pi f T)`), and the
-        ## alternative -- factoring `Jf` in complex arithmetic -- would
-        ## double the stored factors and roughly quadruple the solve cost
-        ## for a map that has no imaginary part to begin with.  Splitting
-        ## costs two back-substitutions against the SAME factors.
-        ##
-        ## ⚠ The float cast below is therefore a GUARD, not a convenience:
-        ## it used to swallow a complex `v` silently by discarding the
-        ## imaginary part, which is a wrong answer rather than an error.
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            return (self._monodromy_matvec_plain(opening, steps, v.real)
-                    + 1j * self._monodromy_matvec_plain(opening, steps, v.imag))
-        v = v.astype(float)
-        Px = [v.copy(), v.copy()]
-        Cs = [C_open, C_open]
-        ## ⚠ THE OPENING PAIR, NOT THE LOOP'S.  `_traverse` opens `Pq` at
-        ## `a_0 C` for a `b != 0` method reading `_coeffs` right after the
-        ## MANUFACTURING step -- which is order-dropped to Euler, where
-        ## `b = 0`, so in practice `Pq` opens at ZERO for every method here.
-        ## Using the loop's pair instead makes it non-zero and the matvec
-        ## 100% wrong for `trap`; this is the half that is load-bearing.
-        Pq = a_open[0] * (C_open @ v) if b_open else np.zeros(m)
-        ## the consistent-`iq_0` seed, applied to this column -- see
-        ## `_pq_seed_at_x0`.  `None` leaves the zero above untouched.
-        if pq_open is not None:
-            Pq = Pq + pq_open @ v
-        for lu, C_new, alphas, b in steps:
-            Px_new, Pq = self._step_sensitivity(
-                Px, Cs, Pq, None, C_new,
-                solve=lambda S, _l=lu: _l.solve(S), coeffs=(alphas, b))
-            Px = [Px_new, Px[0]]
-            Cs = [C_new, Cs[0]]
-        return Px[0]
-
-    def _monodromy_matvec_transposed_plain(self, opening, steps, v,
-                                           collect=False, inject=None):
-        """`M^T v` for the PLAIN path — the one-step companions (B8).
-
-        The forward recursion `_step_sensitivity` implements is
-
-            S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
-            P_n  = -K S,          K = Jf_n^-1
-            Pq_n = a_0 C_n P_n + S
-
-        and for a ONE-STEP companion the sum has a single term, so the two
-        shipped one-step methods transpose differently and both are cheap:
-
-        **Euler** (`b = 0`): `Pq` never re-enters, the map is
-        `P_n = -a_1 K C_{n-1} P_{n-1}`, and the transpose is one term:
-
-            w <- -a_1 C_{n-1}^T K^T w
-
-        **Trapezoidal** (`b = -1`): `Pq` DOES re-enter, so the state is the
-        pair `(P, Pq)` — but a DIFFERENT pair from Gear-2's `(P_n, P_{n-1})`,
-        which is why the solved-history replay cannot be reused. Writing
-        `S = a_1 C_{n-1} P_{n-1} + b Pq_{n-1}`,
-
-            P_n  = -K S,        Pq_n = (I - a_0 C_n K) S
-
-        so the transpose acting on `(w1, w2)` shares one bracket
-
-            r = w2 - K^T (w1 + a_0 C_n^T w2)
-            (w1, w2) <- (a_1 C_{n-1}^T r,  b r)
-
-        ⚠ ONE TRANSPOSED SOLVE PER STEP, the same cost as Gear-2 — the naive
-        arrangement takes two (`K^T w1` and `K^T C_n^T w2` separately) and
-        the factorisation above avoids it.
-
-        ⚠⚠ `Pq` OPENS AT ZERO, which the forward plain replay documents as
-        the load-bearing half: `_traverse` opens `Pq` right after the
-        MANUFACTURING step, which is order-dropped to Euler where `b = 0`.
-        So the seed enters through `P` alone and the backward pass reads its
-        answer out of `w1`.
-
-        ⚠ DERIVED HERE AND GATED AGAINST A DENSE REFERENCE, because a
-        from-scratch adjoint derivation in this file has come out
-        sign-inverted before (roadmap §0h): the asymmetry between "the
-        derivative acts on the product `C x`" and "on `y` alone" is easy to
-        carry over wrongly. The test builds `M` column by column from the
-        FORWARD replay and compares `M^T`.
-        """
-        m = self.cir.n - 1
-        C_open, _a_open, _b_open, pq_open = opening
-        v = np.asarray(v)
-        inj = None if inject is None else [np.asarray(z) for z in inject]
-        if np.iscomplexobj(v) or (
-                inj is not None and any(np.iscomplexobj(z) for z in inj)):
-            ii = (None, None) if inj is None else (
-                [z.real for z in inj], [z.imag for z in inj])
-            re = self._monodromy_matvec_transposed_plain(
-                opening, steps, np.asarray(v).real, collect, ii[0])
-            im = self._monodromy_matvec_transposed_plain(
-                opening, steps, np.asarray(v).imag, collect, ii[1])
-            if collect:
-                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
-                ## per-stage solves per step), so a flat `a + 1j*b`
-                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
-                ## raised "can't multiply sequence by non-int of type
-                ## 'complex'" for as long as the path existed.  Recurse.
-                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
-                        _cx_collect(re[2], im[2]))
-            return re + 1j * im
-        v = v.astype(float)
-        if not steps:
-            return (v.copy(), [], []) if collect else v.copy()
-        ## ⚠ `w2` IS THE ADJOINT OF `Pq_0`, AND IT IS ONLY DISCARDABLE WHEN
-        ## `Pq_0` DOES NOT DEPEND ON THE SEED.  The forward map opens at
-        ## `P_0 = v`, `Pq_0 = pq_open v`, so the transpose closes at
-        ## `w1 + pq_open^T w2` -- see `_pq_seed_at_x0`.  With `pq_open` None
-        ## (every method but `theta`) the second term is absent and this
-        ## returns `w1` exactly as it always did.
-        ## `C_{n-1}` for each step: the previous step's `C_new`, or the
-        ## opening capacitance for the first
-        prevC = [C_open] + [np.asarray(st[1]) for st in steps[:-1]]
-
-        w1 = v.copy()
-        w2 = np.zeros(m)
-        ts = []
-        states = []
-        for j in range(len(steps) - 1, -1, -1):
-            lu, C_new, alphas, b = steps[j]
-            if len(alphas) != 2:
-                raise NotImplementedError(
-                    'PSS: the plain transposed replay is derived for a '
-                    'ONE-STEP companion (two alpha coefficients) and this '
-                    'step has %d. A multistep method on the plain path needs '
-                    'its own reverse recursion.' % len(alphas))
-            Cn = np.asarray(C_new)
-            rhs = w1 + (alphas[0] * (Cn.T @ w2) if b else np.zeros(m))
-            t = lu.solve_transposed(rhs)
-            if t is None:
-                raise NotImplementedError(
-                    'PSS: this linear solver cannot solve transposed, so the '
-                    'monodromy transpose cannot be replayed. Use DenseSolver '
-                    'or SuperLUSolver.')
-            if collect:
-                ts.append(t)
-            r = (w2 - t) if b else (-t)
-            Cp = np.asarray(prevC[j])
-            w1 = alphas[1] * (Cp.T @ r)
-            w2 = (b * r) if b else np.zeros(m)
-            if inj is not None:
-                w1 = w1 + inj[j]
-            if collect:
-                ## ⚠ THE PLAIN ADJOINT STATE IS WIDTH `m`, NOT `2m`.  The
-                ## solved-history replay collects `concat(w1, w2)` because
-                ## its state IS the pair; here `w2` is the companion term
-                ## `Pq`, not a second state block, and `v(s_j)` is `w1`
-                ## alone.  Callers slice `st[:m]`, which is the whole
-                ## vector here and the first block there -- the same
-                ## quantity under both maps, which is what lets `ppv`
-                ## consume either without knowing which it has.
-                states.append(w1.copy())
-        if pq_open is not None:
-            w1 = w1 + pq_open.T @ w2
-        if collect:
-            ## reversed so `ts[j]`/`states[j]` line up with `steps[j]`,
-            ## matching `_monodromy_matvec_transposed`'s contract
-            ts.reverse()
-            states.reverse()
-            return w1, ts, states
-        return w1
-
     ## ------------------------------------------------------------------
     ## The Runge-Kutta STAGE family (Radau IIA, TR-BDF2, ESDIRK) --
     ## self-starting, tableau-generic over any number of stages.  One
@@ -5515,67 +5794,6 @@ class PSS(Analysis):
         self._want_dfdh = False
         return steps, x, x_prev
 
-    def _monodromy_matvec_stage(self, steps, v):
-        """`M v` for a stage method's map, replaying the stored steps
-        (`_StageStep.solve`).  Real map, so a complex `v` splits into two
-        real replays exactly (the guard every stage/LMM matvec uses -- a
-        float cast would silently drop the imaginary part)."""
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            return (self._monodromy_matvec_stage(steps, v.real)
-                    + 1j * self._monodromy_matvec_stage(steps, v.imag))
-        w = v.astype(float)
-        for st in steps:
-            w = st.solve(w)
-        return w
-
-    def _monodromy_matvec_transposed_stage(self, steps, v, collect=False,
-                                           inject=None):
-        """`M^T v` for a stage method's map -- the adjoint of each step
-        (`_StageStep.adjoint`), replayed LAST step to first (``M = M_{N-1}
-        ... M_0``, so ``M^T = M_0^T ... M_{N-1}^T``).
-
-        With `collect`, returns ``(w, ts, states)`` where ``states[j]`` is the
-        adjoint state after step `j` (the PPV over the period that `ppv`
-        reads) and ``ts[j]`` the step's per-stage costates (`None` at an
-        explicit stage) -- a source injected at step `j` enters through
-        every stage (``A (x) B``), so there is no two-vector shortcut."""
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            ii = (None, None) if inject is None else (
-                np.real(inject), np.imag(inject))
-            re = self._monodromy_matvec_transposed_stage(
-                steps, v.real, collect, ii[0])
-            im = self._monodromy_matvec_transposed_stage(
-                steps, v.imag, collect, ii[1])
-            if collect:
-                ## ⚠ The collected lists are NESTED (per-stage costates per
-                ## step), so a flat `a + 1j*b` multiplied a LIST by `1j`:
-                ## `floquet_modes` under trbdf2 raised "can't multiply
-                ## sequence by non-int of type 'complex'" for as long as the
-                ## path existed.  Recurse.
-                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
-                        _cx_collect(re[2], im[2]))
-            return re + 1j * im
-        v = v.astype(float)
-        if not steps:
-            return (v.copy(), [], []) if collect else v.copy()
-        w = v.copy()
-        ts = []
-        states = []
-        for j in range(len(steps) - 1, -1, -1):
-            w, r = steps[j].adjoint(w)
-            if inject is not None:
-                w = w + inject[j]
-            if collect:
-                ts.append(r)
-                states.append(w.copy())
-        if collect:
-            ts.reverse()
-            states.reverse()
-            return w, ts, states
-        return w
-
     def _glm_period_blocks(self, x_in, times, hs):
         """One period under a Nordsieck GLM, collecting per-step factors.
 
@@ -5656,103 +5874,16 @@ class PSS(Analysis):
         """
         D = None
         _nsteps = len(steps)
-        for _si, (Kfacs, Gs, h, A, U, B, V, Ks) in enumerate(steps):
-            s = len(Kfacs)
-            ## 'closing': dh/dT = 1 on the last step, 0 elsewhere
-            _fT = ((1.0 if _si == _nsteps - 1 else 0.0) if closing
-                   else (h / T if T is not None else 0.0))
-            r = len(P)
-            D = [None] * s
-            for i in range(s):
-                rhs = sum(U[i, j] * P[j] for j in range(r))
-                if T is not None:
-                    ## the explicit `h = frac T` in the stage: dh/dT = h/T, and
-                    ## for an AUTONOMOUS circuit `K_j = -i(Y_j)` carries no
-                    ## time of its own, so the only new term is the stage sum
-                    rhs = rhs + _fT * sum(A[i, j] * Ks[j]
-                                          for j in range(i + 1))
-                for j in range(i):
-                    rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
-                D[i] = Kfacs[i].solve(rhs)
-            P = [sum(V[k, j] * P[j] for j in range(r))
-                 - h * sum(B[k, i] * (Gs[i] @ D[i]) for i in range(s))
-                 + (_fT * sum(B[k, i] * Ks[i] for i in range(s))
-                    if T is not None else 0.0)
-                 for k in range(r)]
+        for _si, rec in enumerate(steps):
+            ## 'closing': dh/dT = 1 on the last step, 0 elsewhere.  The
+            ## explicit `h = frac T` in the stage: for an AUTONOMOUS circuit
+            ## `K_j = -i(Y_j)` carries no time of its own, so the only new
+            ## term is the stage sum (see `_glm_step`)
+            fT = (None if T is None else
+                  ((1.0 if _si == _nsteps - 1 else 0.0) if closing
+                   else rec[2] / T))
+            P, D = _glm_step(rec, P, fT)
         return P, (D[-1] if D is not None else None)
-
-    def _monodromy_matvec_transposed_glm(self, steps, v, collect=False,
-                                         inject=None):
-        """`M^T v` on the NORDSIECK state -- the reverse-mode adjoint of
-        :meth:`_glm_propagate`, replayed last step to first.
-
-        Transposing the forward step (`P` the r input blocks, `D` the s stage
-        blocks) gives, per step, with `W` the adjoint of the OUTPUT vector:
-
-            Dbar_i  = -h sum_k B_ki G_i^T W_k
-            Pbar_j  =  sum_k V_kj W_k
-            for i = s-1 .. 0:   rbar_i = K_i^{-T} Dbar_i
-                                Pbar_j += U_ij rbar_i          (all j)
-                                Dbar_j += -h A_ij G_j^T rbar_i (j < i)
-
-        and `W <- Pbar`.  With `collect`, `states[j]` is the adjoint Nordsieck
-        state after step `j` and `ts[j]` its per-stage reverse solves -- the
-        same contract the sequential-stage adjoint returns, so a caller that
-        goes through `FactoredPeriod.matvec_transposed` needs no branch.
-
-        ⚠ `inject[j]` is added to the WHOLE `r*m` state, not to a differential
-        block: on a multivalue map the injection site is the Nordsieck vector.
-        """
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            re = self._monodromy_matvec_transposed_glm(
-                steps, v.real, collect=collect, inject=inject)
-            im = self._monodromy_matvec_transposed_glm(
-                steps, v.imag, collect=collect, inject=inject)
-            if collect:
-                return (re[0] + 1j * im[0],
-                        [[(a + 1j * b) for a, b in zip(x, y)]
-                         for x, y in zip(re[1], im[1])],
-                        [a + 1j * b for a, b in zip(re[2], im[2])])
-            return re + 1j * im
-        v = v.astype(float)
-        if not steps:
-            return (v.copy(), [], []) if collect else v.copy()
-        m = self.cir.n - 1
-        r = v.shape[0] // m
-        W = [v[k * m:(k + 1) * m].copy() for k in range(r)]
-        ts, states = [], []
-        for j in range(len(steps) - 1, -1, -1):
-            Kfacs, Gs, h, A, U, B, V, _Ks = steps[j]
-            s = len(Kfacs)
-            Dbar = [-h * sum(B[k, i] * (Gs[i].T @ W[k]) for k in range(r))
-                    for i in range(s)]
-            Pbar = [sum(V[k, jj] * W[k] for k in range(r)) for jj in range(r)]
-            rbars = [None] * s
-            for i in range(s - 1, -1, -1):
-                rb = Kfacs[i].solve_transposed(Dbar[i])
-                if rb is None:
-                    raise NotImplementedError(
-                        'PSS: this linear solver cannot solve transposed, so '
-                        'the GLM monodromy transpose cannot be replayed. Use '
-                        'DenseSolver or SuperLUSolver.')
-                rbars[i] = rb
-                for jj in range(r):
-                    Pbar[jj] = Pbar[jj] + U[i, jj] * rb
-                for jj in range(i):
-                    Dbar[jj] = Dbar[jj] - h * A[i, jj] * (Gs[jj].T @ rb)
-            W = Pbar
-            if inject is not None:
-                inj = np.asarray(inject[j]).ravel()
-                W = [W[k] + inj[k * m:(k + 1) * m] for k in range(r)]
-            if collect:
-                ts.append(rbars)
-                states.append(np.concatenate([w.copy() for w in W]))
-        if collect:
-            ts.reverse()
-            states.reverse()
-            return np.concatenate(W), ts, states
-        return np.concatenate(W)
 
     def _traverse_glm(self, x_in, T, times, hs, want_dT=False):
         """One period under a Nordsieck GLM with the shooting sensitivities.
@@ -5814,18 +5945,6 @@ class PSS(Analysis):
                             times=times, T=float(T))
         fp.width = len(Q0) * (self.cir.n - 1)
         return fp
-
-    def _monodromy_matvec_glm(self, steps, v):
-        """`M v` on the NORDSIECK state (width `r*m`) -- the multivalue replay."""
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            return (self._monodromy_matvec_glm(steps, v.real)
-                    + 1j * self._monodromy_matvec_glm(steps, v.imag))
-        m = self.cir.n - 1
-        r = v.shape[0] // m
-        P = [v.astype(float)[k * m:(k + 1) * m].reshape(m, 1) for k in range(r)]
-        Pout, _D = self._glm_propagate(steps, P)
-        return np.concatenate([np.asarray(Pk).ravel() for Pk in Pout])
 
     def _traverse_stage(self, x_in, T, times, hs, want_dT=False, hsens=None,
                         capture=None):
@@ -5936,99 +6055,6 @@ class PSS(Analysis):
             return x0, x, P, Pt
         return x0, x, P, None
 
-    def _forced_replay_stage(self, fp, freq, u_ac, y0=None, collect=False):
-        """One driven period under a Runge-Kutta stage method -- the FORWARD
-        replay, the transpose of `_forced_replay_transposed_stage`.
-
-        Each step maps the entering state and the source to the endpoint by
-        the stage solve, the source at `freq` entering stage `i`'s residual
-        at every abscissa ``t_{n,k} = t_n + c_k h`` it reaches:
-
-            rhs_i = C_n y_n - h sum_k A_ik u exp(jw t_{n,k})
-            y_{n+1} = (J^{-1} rhs)_s                    (stiff accuracy)
-
-        (`_StageStep.sources`), so ``y_end = M y0 + w(freq)`` by linearity,
-        the superposition PAC relies on.  ⚠ THE SOURCE COUPLING IS THE SAME
-        ``-h sum_k A_ik exp(...)`` the adjoint reads, so the two are exact
-        transposes (dual-consistent to machine precision); a real factor
-        takes a complex rhs as two back-substitutions."""
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        u_ac = np.asarray(u_ac, dtype=complex).ravel()
-        tms = np.asarray(fp.times, dtype=float)
-        y = (np.zeros(m, dtype=complex) if y0 is None
-             else np.asarray(y0, dtype=complex).ravel().copy())
-        ys = []
-        for j, st in enumerate(fp.steps):
-            y = st.solve(y, st.sources(u_ac, jw, tms[j]))
-            if collect:
-                ys.append(y.copy())
-        return y, ys
-
-    def _forced_replay_transposed_stage(self, fp, freq, xa):
-        """`W^T xa` for a Runge-Kutta stage method -- the adjoint of
-        `_forced_replay_stage` (no output injection), the source-coupling
-        sibling of `_monodromy_matvec_transposed_stage`.
-
-        Per step (last to first) the transposed step gives the stage
-        costates ``r = J^{-T} [0; ..; 0; w]``; a source at abscissa `k`
-        couples to every stage that reaches it, so
-
-            acc += -h sum_k exp(jw t_{n,k}) sum_i A_ik r_i
-
-        (`_StageStep.source_adjoint`) and the costate propagates by ``w <-
-        C_n^T sum_i r_i``.  ⚠ NO TWO-VECTOR SHORTCUT on a coupled tableau:
-        the source couples through every stage with the full ``A (x) B``
-        weighting.  Dual-consistent with the forward replay and matched to
-        forward driven solves; the injected sibling is
-        `_sideband_forced_stage`."""
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        w = np.asarray(xa, dtype=complex).ravel().copy()
-        acc = np.zeros(m, dtype=complex)
-        tms = np.asarray(fp.times, dtype=float)
-        for j in range(len(fp.steps) - 1, -1, -1):
-            st = fp.steps[j]
-            w, r = st.adjoint(w)
-            acc = st.source_adjoint(acc, r, jw, tms[j])
-        return acc
-
-    def _sideband_forced_stage(self, fp, freq, l, d, extra=None):
-        """The forced (source-injected) part of a Runge-Kutta stage method's
-        sideband row `l`, and the final costate `g` for the closure -- the
-        injected sibling of `_forced_replay_transposed_stage`.
-
-        The reverse pass injects the OUTPUT functional `d` (weighted by
-        ``exp(-j(l w0 + w) t_n)/N``, or the period quadrature's weight) at
-        each step and reads the SOURCE coupling through every stage at every
-        step.  ⚠ The injection is added AFTER the step's costate update, so
-        the output at step `n` couples to the source at steps `< n`
-        (causality); the accepted trajectory state at `t_n` IS the entering
-        state `x_n` of step `n`, so `d` couples at `t_n` exactly as in the
-        TR-BDF2 fold.  `extra` is a raw costate injection per node (the
-        bordered adjoint's event-row term, 2026-09-22), at `d`'s position.
-        Returns `(forced, g)`."""
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        T = float(fp.T)
-        w0 = 2.0 * np.pi / T
-        N = len(fp.steps)
-        tms = np.asarray(fp.times, dtype=float)
-        d = np.asarray(d, dtype=complex).ravel()
-        lam = np.zeros(m, dtype=complex)
-        forced = np.zeros(m, dtype=complex)
-        _wq = self._period_quadrature(fp)
-        for j in range(N - 1, -1, -1):
-            st = fp.steps[j]
-            ts = tms[j]
-            lam, r = st.adjoint(lam)
-            forced = st.source_adjoint(forced, r, jw, ts)
-            _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
-            lam = lam + (_e / N if _wq is None else _e * _wq[j]) * d
-            if extra is not None and j in extra:
-                lam = lam + np.asarray(extra[j], dtype=complex)
-        return forced, lam
-
     def _i_at(self, x_reduced):
         """The reduced resistive current `i(x)` at a point."""
         tr = self._transient()
@@ -6067,163 +6093,6 @@ class PSS(Analysis):
                                     analysis=self.par.analysis), dtype=float))
         iref = self.irefnode
         return self.toolkit.concatenate((k[:iref], k[iref + 1:]))
-
-    def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
-                                     inject=None):
-        """`M^T v` -- the same stored steps, REPLAYED BACKWARDS.
-
-        A shooting monodromy is a product of per-step solves, so its
-        transpose is that product in reverse order with each solve
-        transposed.  For Gear-2 (`b = 0`, three alphas) the per-step state
-        is the PAIR `(Px_n, Px_{n-1})` and the step map is
-
-            B_n = [ -a1 Jf^-1 C_{n-1}   -a2 Jf^-1 C_{n-2} ]
-                  [        I                    0         ]
-
-        so `B_n^T (v1; v2)` is
-        `(-a1 C_{n-1}^T Jf^-T v1 + v2 ; -a2 C_{n-2}^T Jf^-T v1)`.
-
-        ⚠ THIS IS WHY IT COSTS NOTHING TO HAVE.  Demir & Roychowdhury
-        (TCAD 22(2) 188-196) call reverse integration "often unavailable
-        even in existing time-domain simulators", requiring "significant
-        changes to core simulation routines" -- true of a forward-only
-        DENSE implementation.  `_traverse_factored` already stores every
-        step's factorisation, and every factorisation here already knows how
-        to solve transposed, so the reverse pass needs no new integrator, no
-        refactorisation and no second traversal.
-
-        MEASURED against the dense `M^T` built from the forward matvec:
-        agreement 1.8e-15, and the reverse pass costs 0.75x the forward one
-        -- CHEAPER, because it does two `C^T` products against one shared
-        transposed solve where the forward does two `C` products and a
-        solve.
-
-        ⚠ NOT A CAPABILITY, A BUILDING BLOCK.  It is the shared dependency
-        of a PPV (Demir & Roychowdhury's reverse Jacobian `J_r`) and of
-        adjoint noise, neither of which is built.  It exists because the
-        spike that established it is worth keeping, and it is pinned by a
-        test rather than left in a scratch file.
-        """
-        m = self.cir.n - 1
-        ## complex `v` is two real reverse replays -- see the note in
-        ## `_monodromy_matvec`; `M^T` is real for exactly the same reason
-        ## `M` is, and adjoint noise needs complex products.
-        ## ⚠ `collect` HANDS BACK THE PER-STEP TRANSPOSED SOLVES, and it
-        ## exists so ADJOINT NOISE does not get a second copy of this
-        ## recursion.  The sensitivity of the final state to a source
-        ## injected at step `j` is exactly `-Jf_j^-T` applied to the adjoint
-        ## state there -- which is `t` below, already computed.  A driven
-        ## reverse replay is therefore this pass plus a weighted sum, not a
-        ## new traversal, and the two cannot drift apart because there is
-        ## only one of them.  See `_forced_replay_transposed`.
-        ## ⚠ `inject` MAKES THE OUTPUT A FUNCTIONAL OVER THE WHOLE PERIOD
-        ## RATHER THAN A VALUE AT ITS END, and that is the difference
-        ## between "the response at `t = 0`" and a SIDEBAND coefficient.
-        ## `H_l` is `(1/N) sum_n exp(-j l w0 t_n) d^T y_n`: every state on
-        ## the trajectory contributes, so its adjoint takes `c_n` INTO the
-        ## reverse state at every step instead of seeding once at the end.
-        ## Same recursion, one added term -- which is why this is a
-        ## parameter and not a second function to keep in step.
-        ##
-        ## `inject[j]` lands on the state AFTER `steps[j]` has been applied
-        ## backwards, i.e. on `P_j`, and `v` seeds `P_N`.
-        v = np.asarray(v)
-        inj = None if inject is None else np.asarray(inject)
-        cx = np.iscomplexobj(v) or (inj is not None and np.iscomplexobj(inj))
-        if cx:
-            ir = None if inj is None else inj.real
-            ii = None if inj is None else inj.imag
-            re = self._monodromy_matvec_transposed(
-                C0, steps, np.asarray(v).real, collect, ir)
-            im = self._monodromy_matvec_transposed(
-                C0, steps, np.asarray(v).imag, collect, ii)
-            if collect:
-                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
-                ## per-stage solves per step), so a flat `a + 1j*b`
-                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
-                ## raised "can't multiply sequence by non-int of type
-                ## 'complex'" for as long as the path existed.  Recurse.
-                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
-                        _cx_collect(re[2], im[2]))
-            return re + 1j * im
-        v = v.astype(float)
-        w1, w2 = v[:m].copy(), v[m:].copy()
-        ts = []
-        states = []
-
-        ## The capacitance ring as the FORWARD pass saw it, so the reverse
-        ## pass can consume it backwards.  Rebuilt rather than stored: it is
-        ## `len(steps)` references to matrices that already exist.
-        cs0, cs1, ring = [], [], list(C0)
-        for _lu, C_new, _alphas, _b in steps:
-            cs0.append(ring[0])
-            cs1.append(ring[1])
-            ring = [C_new, ring[0]]
-
-        for j in range(len(steps) - 1, -1, -1):
-            lu, _C_new, alphas, b = steps[j]
-            ## ⚠ A ONE-STEP COMPANION IS A TWO-STEP COMPANION WITH A ZERO
-            ## THIRD COEFFICIENT (2026-09-21).  This used to REFUSE a step
-            ## with two alphas as "unreachable through `solve`" -- it is
-            ## reachable on the default path: `event_grid` lands a clock's
-            ## ramp inside a coarse cell, the sliver to the next node grows
-            ## 5.4x into the following cell (a T/200 ramp at N = 63), and
-            ## `Gear2Integrator.check_order_drop` drops THAT step to Euler
-            ## past the zero-stability bound -- `alphas = (1/h, -1/h)`, no
-            ## second history term, `b = 0`.  The pair map holds with
-            ## `alphas[2] = 0`: the C ring keeps rolling across the step
-            ## (the transient's own rule) and the step simply does not read
-            ## its second entry.  Measured on the pulse-clocked sampler
-            ## (`Ron C` = T/100): gear's held variance 0.686 / 0.740 / 0.902
-            ## x kT/C at N = 63 / 126 / 252 with the Euler step in the ring,
-            ## the recursion's own O(h/tau) tracking floor and nothing else
-            ## (the sine-clocked twin reads 0.74 at 200 uniform points), and
-            ## `sampled_variance` -- THIS reverse pass -- agrees with the
-            ## forward covariance sample to 5e-4 at N = 252 and 2e-3 at 126
-            ## (at 63 the sampled sum's 31 sidebands truncate it by 5.6 %,
-            ## the recorded resolution item, not the replay).  A refusal was
-            ## an `IndexError` in `PAC.covariance` (which read `alphas[2]`
-            ## unguarded) and a `NotImplementedError` in every adjoint
-            ## noise call, for a switched-capacitor circuit under gear.
-            a2 = float(alphas[2]) if len(alphas) > 2 else 0.0
-            if b:
-                ## a `b != 0` companion carries `iq` in the state, so the
-                ## step map is not the pair above.  Unreachable today --
-                ## `_solves_history` is true only for Gear-2, whose `b` is
-                ## zero -- and refused rather than silently transposing a
-                ## different operator.
-                raise NotImplementedError(
-                    'PSS: the transposed replay is derived for a companion '
-                    'with b = 0 (Gear-2), and this step reports b = %r. A '
-                    'b != 0 method carries iq in the per-step state, so its '
-                    'transpose is not the pair map this implements.' % (b,))
-            t = lu.solve_transposed(w1)
-            if t is None:
-                raise NotImplementedError(
-                    'PSS: this linear solver cannot solve transposed, so '
-                    'the monodromy transpose cannot be replayed. Use '
-                    'DenseSolver or SuperLUSolver.')
-            if collect:
-                ts.append(t)
-            w1, w2 = (-alphas[1] * (cs0[j].T @ t) + w2,
-                      -a2 * (cs1[j].T @ t))
-            if inj is not None:
-                w1 = w1 + inj[j]
-            if collect:
-                ## ⚠ THE ADJOINT STATE AFTER THE STEP, which for a seed of
-                ## the PPV IS the PPV at that time -- `Phi(T,s_j)^T v(T) =
-                ## v(s_j)`.  Oscillator phase noise needs `v(t)` over the
-                ## whole period, not `v(0)`, and it is already being
-                ## computed here and thrown away.
-                states.append(np.concatenate((w1.copy(), w2.copy())))
-        if collect:
-            ## reversed, so `ts[j]` lines up with `steps[j]` -- the reverse
-            ## loop produced them last-first and a caller weighting them by
-            ## a per-step time must not have to remember that
-            ts.reverse()
-            states.reverse()
-            return np.concatenate((w1, w2)), ts, states
-        return np.concatenate((w1, w2))
 
     ## How many deflated power iterations estimate the second multiplier.
     ## Convergence is at |lambda_3|/|lambda_2|, which is fast in the case
@@ -7902,44 +7771,6 @@ class PSS(Analysis):
         info['period'] = T
         return v, info
 
-    def _forced_replay_transposed(self, fp, freq, xa):
-        """`W^T xa` -- the transpose of the map `u -> w(freq)`.
-
-        THE MANY-TO-ONE HALF, and the reason adjoint noise is affordable.
-        The forward replay answers "what does THIS source do at the
-        output"; one run per source.  This answers "what does the output
-        owe to EVERY source", in one reverse pass -- which is the shape
-        pnoise has, with hundreds of sources and one output.  Okumura et
-        al. (1993) choose the adjoint for exactly this: "it is efficient to
-        use the adjoint method ... because circuits have many noise
-        sources."
-
-        The identity is one line.  The forward replay makes each step
-        `Px_j = -Jf_j^-1 (S_j + u e^{jw t_j})`, so the final state's
-        sensitivity to `u` through step `j` is `-Jf_j^-T` applied to the
-        adjoint state there, weighted by `e^{jw t_j}`.  That solve is
-        already taken by the reverse pass -- it is `t` in
-        `_monodromy_matvec_transposed` -- so this is that pass plus a
-        weighted sum, with no second recursion to keep in step.
-
-        ⚠ NO LONGER SOLVED-HISTORY ONLY (B8).  This said "because the
-        reverse pass is", which was true when written and is not now: the
-        plain path has its own reverse recursion, so the dispatch belongs
-        to `FactoredPeriod` and this reads `ts` from whichever map it was
-        handed.  `ts[j]` is the transposed solve at step `j` under BOTH
-        recursions -- that is the quantity the identity below needs, and
-        it is what makes this method map-agnostic rather than merely
-        permitted.
-        """
-        if fp.kind in ('full', 'dirk'):
-            return self._forced_replay_transposed_stage(fp, freq, xa)
-        _end, ts, _states = fp.matvec_transposed(xa, collect=True)
-        jw = 2j * np.pi * float(freq)
-        acc = np.zeros(self.cir.n - 1, dtype=complex)
-        for tvec, t in zip(ts, fp.times[1:]):
-            acc = acc - np.exp(jw * float(t)) * np.asarray(tvec)
-        return acc
-
     #: Relative step spread below which the period grid counts as uniform.
     #: Not zero: `event_grid`'s uniform grid differs from `_period_grid`'s in
     #: the last bit.
@@ -9255,73 +9086,6 @@ class PSS(Analysis):
                         'residual': float(np.linalg.norm(M @ uk - lk * uk)
                                           / max(abs(lk), 1e-300))})
         return out
-
-    def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
-        """One period of the LINEARISED circuit, driven at `freq`.
-
-        The same recursion as `_monodromy_matvec`, with `source` switched
-        on: `_step_sensitivity` is linear in `(y0, source)`, so this returns
-
-            y_end = M y0 + w(freq)
-
-        with `w` the particular response from a zero initial state.  That
-        superposition is not an incidental property -- it is what lets PAC
-        solve an `m x m` system instead of an `(N m) x (N m)` one, and it is
-        asserted in the suite rather than assumed.
-
-        ⚠ THE SOLVE IS REAL, THE REPLAY IS COMPLEX.  `Jf` is real and stays
-        factored once; a complex right-hand side costs two back-substitutions
-        against those same factors.  See the note in `_monodromy_matvec`.
-        """
-        if fp.kind in ('full', 'dirk'):
-            return self._forced_replay_stage(fp, freq, u_ac, y0, collect)
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        u_ac = np.asarray(u_ac, dtype=complex).ravel()
-
-        if fp.kind == 'solved_history':
-            if y0 is None:
-                Px = [np.zeros(m, dtype=complex), np.zeros(m, dtype=complex)]
-            else:
-                y0 = np.asarray(y0, dtype=complex).ravel()
-                Px = [y0[:m].copy(), y0[m:].copy()]
-            Cs = list(fp.opening)
-            Pq = np.zeros(m, dtype=complex)
-        else:
-            C_open, a_open, b_open, pq_open = fp.opening
-            v = (np.zeros(m, dtype=complex) if y0 is None
-                 else np.asarray(y0, dtype=complex).ravel().copy())
-            Px = [v.copy(), v.copy()]
-            Cs = [C_open, C_open]
-            ## the OPENING pair, exactly as `_monodromy_matvec_plain` -- see
-            ## the note there; using the loop's makes it wrong for `trap`
-            Pq = (a_open[0] * (C_open @ v) if b_open
-                  else np.zeros(m, dtype=complex))
-            ## ⚠ AND THE CONSISTENT-`iq_0` SEED, for the same reason and by
-            ## the same term: `y0` perturbs `x_0`, and a method that seeds
-            ## `iq_0 = -(i(x_0) + u(t_0))` carries that perturbation into the
-            ## companion current before the first step.  `None` for every
-            ## method that does not declare `needs_consistent_iq0`.  See
-            ## `_pq_seed_at_x0`; THE FORCED REPLAY MUST MATCH THE MONODROMY
-            ## it superposes with, or `y_end = M y0 + w` stops holding.
-            if pq_open is not None:
-                Pq = Pq + pq_open @ v
-
-        ys = []
-        for (lu, C_new, alphas, b), t in zip(fp.steps, fp.times[1:]):
-            src = u_ac * np.exp(jw * float(t))
-            Px_new, Pq = self._step_sensitivity(
-                Px, Cs, Pq, None, C_new,
-                solve=lambda S, _l=lu: _complex_solve(_l, S),
-                coeffs=(alphas, b), source=src)
-            Px = [Px_new, Px[0]]
-            Cs = [C_new, Cs[0]]
-            if collect:
-                ys.append(Px_new.copy())
-
-        end = (np.concatenate((Px[0], Px[1])) if fp.kind == 'solved_history'
-               else Px[0])
-        return end, ys
 
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
     ## An inexact Newton only needs the step accurate enough not to spoil the
@@ -13765,7 +13529,6 @@ class PAC(Analysis):
 
         A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
         tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
-        phase = np.exp(2j * np.pi * float(freq) * tms[1:N + 1])
 
         rows = np.zeros((len(ls), m), dtype=complex)
         for li, l in enumerate(ls):
@@ -13778,25 +13541,11 @@ class PAC(Analysis):
             ## and it AGREES with a forward reference written the same way,
             ## so only a check against a circuit whose answer is known
             ## independently catches it.
-            if fp.kind in ('full', 'dirk'):
-                ## the source couples through every stage it reaches (A (x) B
-                ## on a coupled tableau), so the stage fold carries it
-                ## (verified vs forward driven solves and the bespoke trbdf2
-                ## fold) -- see `_sideband_forced_stage`
-                forced, g = pss._sideband_forced_stage(fp, freq, l, d)
-            else:
-                _wq = pss._period_quadrature(fp)
-                if _wq is None:
-                    inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
-                                             * float(freq)) * tms[:N]) / N)[:, None]
-                              * d[None, :])
-                else:
-                    inject = ((np.exp(-1j * (float(l) * w0 + 2.0 * np.pi
-                                             * float(freq)) * tms[:N]) * _wq)[:, None]
-                              * d[None, :])
-                g, ts, _st = fp.matvec_transposed(
-                    np.zeros(n, dtype=complex), collect=True, inject=inject)
-                forced = -np.tensordot(phase, np.asarray(ts), axes=(0, 0))
+            ## the source couples through every stage/step it reaches (A (x) B
+            ## on a coupled tableau), and the output functional is injected at
+            ## every node -- one fold for every kind (`_sideband_forced`,
+            ## verified vs forward driven solves and the bespoke trbdf2 fold)
+            forced, g = pss._sideband_forced(fp, freq, l, d)
             ## ⚠ ON AN OSCILLATOR THIS OPERATOR IS SINGULAR AT EVERY
             ## HARMONIC and near-singular around them, which is exactly
             ## where phase noise is measured.  The deflated route borders
@@ -13839,16 +13588,9 @@ class PAC(Analysis):
                             A, b, tol, ('the adjoint solve at sideband %d' % l) if k is None
                             else ('the bordered adjoint solve, event %d' % k))
                     z, zeta = _ev.bordered_adjoint(_solve_adj, g, g_theta, alpha)
-                if fp.kind in ('full', 'dirk'):
-                    forced_ev, _g2 = pss._sideband_forced_stage(
-                        fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
-                    forced = forced + forced_ev
-                else:
-                    ## gear's transposed pass takes m-wide injections
-                    _g2, ts_ev, _st2 = fp.matvec_transposed(
-                        np.zeros(n, dtype=complex), collect=True,
-                        inject=_ev.injection(zeta, N, m))
-                    forced = forced - np.tensordot(phase, np.asarray(ts_ev), axes=(0, 0))
+                forced_ev, _g2 = pss._sideband_forced(
+                    fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
+                forced = forced + forced_ev
             elif _autonomous:
                 z = self._deflated_solve(pss, alpha, g, transposed=True,
                                          tol=tol)
@@ -16801,7 +16543,7 @@ class PAC(Analysis):
         """One reverse pass of a stage period map (`dirk` or `full`): returns
         the final costate and `(N s, m)` coupling vectors `h sum_i A_ik p_i`
         -- the sensitivity of the costate's functional to a unit source at
-        stage `k` of step `j` is minus that (see `_sideband_forced_stage`,
+        stage `k` of step `j` is minus that (see `_sideband_forced`,
         whose loop this is).  `seed = (k0, v)` adds `v` to the costate after
         step `k0`'s update: the output at `t_{k0}` couples to the sources of
         earlier steps only."""

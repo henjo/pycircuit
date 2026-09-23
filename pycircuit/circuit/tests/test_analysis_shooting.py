@@ -10514,25 +10514,29 @@ def test_the_plain_transposed_replay_carries_the_autonomous_multiplier():
         % lam[('gear', 240)]
 
 
-def test_the_plain_transposed_replay_refuses_a_multistep_companion():
-    """It is DERIVED for a one-step companion, and says so rather than
-    quietly returning a wrong vector.
-
-    The reverse recursion assumes `S` has a single history term. A
-    multistep method on the plain path has more, and the arithmetic below
-    would silently drop them — which is precisely the class of defect
-    this session spent the day finding by measurement. So it raises.
-    """
+def test_the_plain_transposed_replay_is_exact_for_a_multistep_companion():
+    """The plain map's reverse recursion used to be derived for a ONE-STEP
+    companion and REFUSED a step with a second history term (it would have
+    silently dropped it).  Since 2026-09-23 every linear multistep step
+    transposes through one derivation (`_LMMStep.adjoint`: trap's shared
+    bracket and gear's pair are its two special cases), which carries the
+    `a_2 C_{n-2}` term -- so a forged step with a NONZERO third coefficient
+    is transposed exactly: ``<M^T u, w> = <u, M w>`` to rounding, with the
+    forward replay taking the same term through `_step_sensitivity`."""
     _cir, pss = _resonant_driven(120, 'trap')
     fp = pss.factored_period()
-    ## forge a step with three alpha coefficients
-    lu, C_new, alphas, b = fp.steps[0]
+    lu, C_new, alphas, b = fp.steps[3]
     forged = list(fp.steps)
-    forged[0] = (lu, C_new, (alphas[0], alphas[1], 0.0), b)
-    with pytest.raises(NotImplementedError) as exc:
-        pss._monodromy_matvec_transposed_plain(fp.opening, forged,
-                                               np.ones(fp.width))
-    assert 'ONE-STEP' in str(exc.value)
+    forged[3] = (lu, C_new, (alphas[0], alphas[1], 0.3 * alphas[1]), b)
+    rng = np.random.default_rng(7)
+    u = rng.standard_normal(fp.width)
+    w = rng.standard_normal(fp.width)
+    Mw = pss._monodromy_matvec_plain(fp.opening, forged, w)
+    MTu = pss._monodromy_matvec_transposed_plain(fp.opening, forged, u)
+    ## the forged term is live: the map moved
+    assert np.linalg.norm(Mw - fp.matvec(w)) > 1e-6 * np.linalg.norm(Mw)
+    lhs, rhs = float(np.dot(MTu, w)), float(np.dot(u, Mw))
+    assert abs(lhs - rhs) < 1e-12 * max(abs(lhs), 1.0), (lhs, rhs)
 
 
 def _osc_for_deflation(Q=15.92, npts=400):
