@@ -621,22 +621,92 @@ def _butcher(integ):
     return tuple(np.array(v, dtype=float) for v in integ.butcher())
 
 
-def _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source=None):
+def _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source=None,
+                   forcing=()):
     """One step of the linear-multistep sensitivity recursion (see
     `PSS._step_sensitivity`, which documents it):
 
-        S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
+        S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq + sum(forcing)
         P_n  = -Jf_n^-1 (S + source)
         Pq_n = a_0 C_n P_n + S
 
-    `solve` takes the `Jf` solve.  Returns `(P_n, Pq_n)`."""
+    `solve` takes the `Jf` solve.  ⚠ `forcing` and `source` are different
+    things: a `forcing` term is part of the step's COMPANION derivative (the
+    period column's `dr/dh`, an event column's step-size and source-time
+    terms), so it enters `Pq` too; a small-signal `source` is an injected
+    current, not a charge, so it enters the solve alone.  The forcing terms
+    are added one at a time, in order.  Returns `(P_n, Pq_n)`."""
     S = b * Pq if b else np.zeros_like(Px[0])
     for k in range(1, len(alphas)):
         S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
+    for f in forcing:
+        S = S + f
     S_solve = S if source is None else S + source
     Px_new = -solve(S_solve)
     Pq_new = alphas[0] * (C_new @ Px_new) + S
     return Px_new, Pq_new
+
+
+class _PeriodWalk(object):
+    """What one walk of the period produced (`PSS._walk_lmm`,
+    `PSS._walk_stage`): the opened and final states (`x_prev` the one a step
+    before the end), the dense monodromy `P` (a two-entry ring on the
+    multistep walk), the period column `Pt`, the event columns `Pk`, the kept
+    steps and what a replay seeds from (`opening`).  A field the walk was not
+    asked for is None.
+
+    `kind` is the map's (`PSS._map_kind`), and the methods read the walk in
+    the MAP'S coordinates -- gear's pair stacks ``(x_0, x_{-1})`` and ends on
+    ``(x_{N-1}, x_{N-2})`` -- so a caller needs no branch per kind.
+    `fp_kind` is the `FactoredPeriod` kind the kept steps make."""
+    __slots__ = ('kind', 'fp_kind', 'z', 'x0', 'x_end', 'x_prev', 'P', 'Pt',
+                 'Pk', 'steps', 'opening', 'open_at_x0', 'width')
+
+    def __init__(self, kind=None, fp_kind=None, z=None, x0=None, x_end=None,
+                 x_prev=None, P=None, Pt=None, Pk=None, steps=None,
+                 opening=None, open_at_x0=False, width=None):
+        self.kind, self.fp_kind, self.z = kind, fp_kind, z
+        self.x0, self.x_end, self.x_prev = x0, x_end, x_prev
+        self.P, self.Pt, self.Pk = P, Pt, Pk
+        self.steps, self.opening = steps, opening
+        self.open_at_x0, self.width = open_at_x0, width
+
+    def z0(self):
+        """Where the map starts: the pair's unknown itself, else the state
+        the period opened at (after the manufacturing step, if any)."""
+        return self.z if self.kind == 'pair' else self.x0
+
+    def end(self):
+        """Where the map ends, in the unknown's coordinates."""
+        if self.kind == 'pair':
+            return np.concatenate((np.asarray(self.x_end),
+                                   np.asarray(self.x_prev)))
+        return self.x_end
+
+    def monodromy(self):
+        """The dense map `M = d end / d z0`."""
+        if self.kind == 'pair':
+            return np.vstack((self.P[0], self.P[1]))
+        return self.P[0] if self.kind == 'plain' else self.P
+
+    def period_column(self):
+        """`d end / dT`, one column in the map's coordinates."""
+        if self.kind == 'pair':
+            return np.concatenate((np.asarray(self.Pt[0]).ravel(),
+                                   np.asarray(self.Pt[1]).ravel()))
+        return self.Pt[0] if self.kind == 'plain' else self.Pt
+
+    def factored(self, pss, times=None, T=None):
+        """The kept steps as a `FactoredPeriod` (a GLM's acts on the
+        Nordsieck state, `width` wide)."""
+        fp = FactoredPeriod(self.fp_kind, self.opening, self.steps,
+                            self.x_end,
+                            (self.x0 if self.kind in ('plain', 'glm')
+                             else self.x_prev),
+                            pss, times=times, T=T, open_at_x0=self.open_at_x0)
+        if self.width is not None:
+            fp.width = self.width
+        return fp
 
 
 class _LMMStep(object):
@@ -4992,87 +5062,222 @@ class PSS(Analysis):
                 return self._get_linearsolver().solve(Jf, S_solve, self.toolkit)
         return _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source)
 
-    def _traverse_solved_history(self, x0_in, xm1_in, times, hs,
-                                 T=None, want_dT=False, hsens=None, capture=None):
-        """One period from a SOLVED history, for a two-step companion.
+    def _map_kind(self):
+        """Which period map the PSS's method shoots on -- decided HERE, once
+        (2026-09-23: `solve`, `factored_period` and the state-event check
+        each decided it in their own words):
 
-        The plain `_traverse` solves for a single entering state `x_in` and
-        manufactures `x(0)` from it with one order-dropped Euler step.  That
-        is sound for a companion reaching one charge back and measurably
-        wrong for one reaching two: the shooting condition constrains
-        `x(0) = x(P)`, it does NOT constrain `x_in` to be the orbit's own
-        `x(-dt)`, so `x_in` is an O(h^2) stand-in -- and Gear-2 reads it as
-        a history point.
+        * 'plain': a linear-multistep companion reaching one charge back --
+          one entering unknown (`_walk_lmm`);
+        * 'pair':  one reaching two (Gear-2) -- the solved history ``(x_0,
+          x_{-1})`` (`_walk_lmm`; see `_solves_history` for why);
+        * 'stage': a self-starting Runge-Kutta method (`_walk_stage`);
+        * 'glm':   a Nordsieck multivalue method (`_glm_period_blocks`).
 
-        Here BOTH `x(0)` and `x(-dt)` are unknowns and both are required to
-        close:
+        Asked of the integrator, never inferred from the method's name; the
+        multistep split is `_solves_history`'s (one place to override it --
+        `test_pss_solved_history_jacobian_is_the_exact_one` forces the plain
+        map through it)."""
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        if integ.is_stage_method():
+            return ('glm' if getattr(integ, 'is_multivalue', lambda: False)()
+                    else 'stage')
+        return 'pair' if self._solves_history() else 'plain'
 
-            F = [ x_{N-1} - x_0 ,  x_{N-2} - x_{-1} ]
+    def _walk(self, kind, z, times, hs, T=None, dense=True, keep=False,
+              want_dT=False, hsens=None, capture=None, open_at_x0=False):
+        """ONE WALK OF THE PERIOD for every map, from the unknown `z` (gear's
+        pair stacked): `_walk_stage` for 'stage', `_walk_glm` for 'glm',
+        `_walk_lmm` for 'plain' and 'pair'.  Returns the `_PeriodWalk`."""
+        if kind == 'glm':
+            return self._walk_glm(z, T, times, hs, dense=dense, keep=keep,
+                                  want_dT=want_dT)
+        if kind == 'stage':
+            return self._walk_stage(z, T, times, hs, dense=dense, keep=keep,
+                                    want_dT=want_dT, hsens=hsens,
+                                    capture=capture)
+        if kind == 'pair':
+            m = self.cir.n - 1
+            w = self._walk_lmm(('pair', z[:m], z[m:]), times, hs, T=T,
+                               dense=dense, keep=keep, want_dT=want_dT,
+                               hsens=hsens, capture=capture)
+            w.z = z
+            return w
+        return self._walk_lmm(('plain', z, open_at_x0), times, hs, T=T,
+                              dense=dense, keep=keep, want_dT=want_dT,
+                              hsens=hsens, capture=capture)
 
-        which is periodicity of the whole state a two-step method needs,
-        rather than of one slice of it.  The trajectory then opens at full
-        order off a history the solve is responsible for, so there is no
-        opening step to drop and no fabricated charge to read.
+    def _walk_lmm(self, opening, times, hs, T=None, dense=True, keep=False,
+                  want_dT=False, hsens=None, capture=None):
+        """ONE WALK OF THE PERIOD UNDER A LINEAR-MULTISTEP COMPANION -- the
+        plain map and gear's solved-history pair, dense or factored
+        (2026-09-23: it was four walks, `_traverse`,
+        `_traverse_solved_history`, `_traverse_factored_plain` and
+        `_traverse_factored`, each with its own copy of the period column).
 
-        Returns `(x_last, x_prev, P_last, P_prev)`, the `P` being
-        `d x / d(x_0, x_{-1})` as one `n x 2n` block -- and with `want_dT`,
-        two more entries: `d x_{N-1}/dT` and `d x_{N-2}/dT`, for the
-        autonomous system, where the period is an unknown too.  BOTH rows
-        need a period column, which is the one thing the composed system
-        needs that neither enlargement carried alone.
+        EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a function of
+        its arguments alone; if iteration k+1 inherited the ring buffers
+        iteration k ended with, the period map would depend on which
+        iteration it was and the monodromy would be the derivative of
+        something else.  `_begin_period` / `_install_history` make the run
+        start fresh.
+
+        `opening` says where the period starts:
+
+        * ``('plain', x_in, open_at_x0)``: ONE entering unknown.  By default
+          `x(0)` is manufactured from `x_in` with one order-dropped step;
+          with `open_at_x0` the unknown IS `x(0)` and the first step inside
+          the period is the order-dropped opener.
+        * ``('pair', x0_in, xm1_in)``: gear's SOLVED HISTORY.  The plain map
+          manufactures `x(0)` from a single state, which is sound for a
+          companion reaching one charge back and measurably wrong for one
+          reaching two: the shooting condition constrains `x(0) = x(P)`, it
+          does NOT constrain `x_in` to be the orbit's own `x(-dt)`, so `x_in`
+          is an O(h^2) stand-in -- and Gear-2 reads it as a history point.
+          Here BOTH `x(0)` and `x(-dt)` are unknowns, required to close as
+          ``F = [x_{N-1} - x_0, x_{N-2} - x_{-1}]``, so the trajectory opens
+          at full order off a history the solve is responsible for.
+
+        What rides along the walk:
+
+        * `dense`: the monodromy columns (`m` for the plain map, `2m` for the
+          pair), propagated step by step and DROPPED -- the Newton's
+          Jacobian.  The walk also records `Cvec`/`Jtvec`/`times`, as it
+          always has on this path.
+        * `keep`: each step's FACTORED `Jf` with its `C` and coefficients,
+          for a later replay (`FactoredPeriod`) -- the matrix-free Newton's
+          matvec and every small-signal consumer.  ⚠ THE FACTORISATION IS
+          THE POINT: a replay runs one solve per step per Krylov iteration,
+          and refactoring `Jf` each time would cost `k` times the
+          factorisations.  ⚠ AND THE COST IS MEMORY: `N` factorisations and
+          `N` capacitances, `2 N m^2` doubles (~800 MB at `m = 1002` and 50
+          points) -- a caller with a long period and a large circuit can run
+          out of memory where the dense walk merely runs slowly.
+        * `want_dT`: the PERIOD column, the same recursion with the step
+          size's own source term (`dh/dT = h/T` on every step, or `1` on
+          the closing step alone).  It does not depend on the Newton
+          direction, so a factored walk computes it once here rather than
+          once per Krylov iteration.
+        * `hsens` / `capture`: the state-event columns of the pair (phase B)
+          and the nodes whose state and sensitivities the bordered residual
+          reads.
+
+        ⚠ ONE LINEAR SOLVE PER STEP, CHOSEN BY WHETHER THE STEP IS KEPT.  A
+        kept step is factored once (`_factorise`) and every column solves
+        against that; a dropped one solves through the caller's solver
+        directly.  Both are an LU with partial pivoting, but numpy's `solve`
+        and scipy's `lu_factor`/`lu_solve` differ in the last bits (measured
+        on this box: 140 of 360 random systems, up to 3.5e-13 relative), so
+        each walk keeps the arithmetic it had -- the merge moved no answer.
+
+        Returns a `_PeriodWalk`; the `_traverse*` names are its views.
         """
-        toolkit = self.toolkit
-        self._want_dfdh = want_dT
+        pair = opening[0] == 'pair'
+        if hsens is not None and not pair:
+            raise NotImplementedError(
+                'PSS: state-event columns are built for the stage methods '
+                "and gear's solved-history pair, not the plain map")
         toolkit = self.toolkit
         m = self.cir.n - 1
-
-        ## THE HISTORY IS INSTALLED, NOT SEEDED.  `_begin_run(x_{-1})` opens
-        ## the rings on the earlier point and the push puts `x_0` in front of
-        ## it, so the first real step reads `q(x_0)` and `q(x_{-1})` -- two
-        ## genuine solved points.  The flags then say what is true of them:
-        ## a step of `dt` has been taken (`_dt_last`), the run is no longer
-        ## opening (`_is_first_step`, `_no_history`), and `_dt_last2` stays
-        ## None because the THIRD charge is still `q(x_{-1})` repeated -- the
-        ## LTE estimator differences three, so its opening reading remains
-        ## unsound and the report goes on discarding it.
-        tr = self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
-
-        ## `P_0 = [I 0]`, `P_{-1} = [0 I]` -- the two unknowns, exactly.  The
-        ## plain path seeds BOTH rings with `I`, which is the flat-history
-        ## assumption written into the Jacobian; here there is nothing to
-        ## assume.
+        solver = self._get_linearsolver()
         eye = np.asarray(toolkit.eye(m))
-        zero = np.zeros((m, m))
-        Px = [np.hstack((eye, zero)), np.hstack((zero, eye))]
-        Cs = [np.asarray(self._C_at(x0_in)), np.asarray(self._C_at(xm1_in))]
-        ## `Pq` is `d(iq_{-1})/d(x_0, x_{-1})`.  For `b = 0` the recursion
-        ## never reads it and zero is right.  For `b != 0` it is NOT zero,
-        ## and it is exactly differentiable because `_install_history` seeds
-        ## `iq_{-1} = -(i(x_{-1}) + u)` from the DAE:
-        ##
-        ##     d(iq_{-1})/d x_{-1} = -G(x_{-1}),   d(iq_{-1})/d x_0 = 0
-        ##
-        ## Leaving it at zero would make the Jacobian wrong for trapezoidal
-        ## in the same way the plain path's flat seed is wrong -- which is
-        ## the whole defect this formulation removes.
-        Pq = np.zeros((m, 2 * m))
-
-        ## Kept for PAC as the plain path does -- but opening EMPTY, because
-        ## on this path `x_0` is an unknown rather than the result of a step,
-        ## so there is no solved `(C, Jf)` pair at it to record.  The lists
-        ## therefore align with `times[1:]`, one shorter than `X`.  PAC is
-        ## withdrawn (`test_PAC_is_withdrawn`) and nothing else reads them;
-        ## stated here so its rewrite does not read a stale alignment out of
-        ## the plain path's shape.
-        self.Cvec = []
-        self.Jtvec = []
-        self.times = times
-
-        ## The period column, propagated by the SAME recursion with one
-        ## extra source term.  Zero at the start: neither unknown depends on
-        ## T -- they are states, and the solve owns them.  (In the plain
-        ## autonomous system the single entering unknown is likewise
-        ## T-independent, so this opens the same way.)
+        self._want_dfdh = want_dT
+        Px = Pq = None
+        if pair:
+            _kind, x0_in, xm1_in = opening
+            ## THE HISTORY IS INSTALLED, NOT SEEDED.  `_begin_run(x_{-1})`
+            ## opens the rings on the earlier point and the push puts `x_0` in
+            ## front of it, so the first real step reads `q(x_0)` and
+            ## `q(x_{-1})` -- two genuine solved points.  The flags then say
+            ## what is true of them: a step of `dt` has been taken
+            ## (`_dt_last`), the run is no longer opening (`_is_first_step`,
+            ## `_no_history`), and `_dt_last2` stays None because the THIRD
+            ## charge is still `q(x_{-1})` repeated -- the LTE estimator
+            ## differences three, so its opening reading remains unsound and
+            ## the report goes on discarding it.
+            self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
+            opened = [np.asarray(self._C_at(x0_in)),
+                      np.asarray(self._C_at(xm1_in))]
+            Cs = list(opened)
+            x, x_prev, x0 = copy(x0_in), copy(xm1_in), x0_in
+            if dense:
+                ## `P_0 = [I 0]`, `P_{-1} = [0 I]` -- the two unknowns,
+                ## exactly.  The plain map seeds BOTH rings with `I`, which
+                ## is the flat-history assumption written into the Jacobian;
+                ## here there is nothing to assume.
+                zero = np.zeros((m, m))
+                Px = [np.hstack((eye, zero)), np.hstack((zero, eye))]
+                ## `Pq` is `d(iq_{-1})/d(x_0, x_{-1})`.  For `b = 0` the
+                ## recursion never reads it and zero is right.  (A `b != 0`
+                ## companion would need ``-G(x_{-1})`` in the second block --
+                ## `_install_history` seeds `iq_{-1} = -(i(x_{-1}) + u)` --
+                ## but only companions reaching two charges back take the
+                ## pair, `_solves_history`, and Gear-2's `b` is 0.)
+                Pq = np.zeros((m, 2 * m))
+                ## Kept as the plain map does -- but opening EMPTY: `x_0` is
+                ## an unknown here rather than the result of a step, so
+                ## there is no solved `(C, Jf)` pair at it to record.
+                self.Cvec, self.Jtvec = [], []
+        else:
+            _kind, x_in, open_at_x0 = opening
+            self._begin_period(x_in)
+            if open_at_x0:
+                ## ⚠ NO MANUFACTURING STEP: the caller's unknown IS `x_0`.
+                ## `_begin_period` has seeded both charge rings from
+                ## `q(x_in)` and marked the next step `is_first_step`, so
+                ## the first step INSIDE the period is order-dropped to
+                ## Euler -- the L-stable opener this formulation cannot do
+                ## without.  See `x0_unknown` on `solve`.
+                x, x0 = copy(x_in), copy(x_in)
+                C_open = np.asarray(self._C_at(x_in))
+            else:
+                x = self.solve_timestep(x_in, times[0], hs[0])
+                x0 = copy(x)
+                C_open = np.asarray(self._C)
+            x_prev = None
+            ## `Px[k]` is d(x_{n-k})/d(x0), `Pq` is d(iq_n)/d(x0), `Cs[k]`
+            ## the capacitance of step n-k.  Two of each -- as far back as
+            ## any method here reaches.  Both rings open seeded with the
+            ## entering step, mirroring how the transient seeds `_qlast`
+            ## with `q0` repeated.
+            Cs = [copy(C_open), copy(C_open)]
+            ## ⚠ THE OPENING'S COEFFICIENTS ARE THE OPENING'S.  `_coeffs` is
+            ## live state and the manufacturing step is order-dropped, so it
+            ## reports Euler's `(alphas, b)` -- `b = 0` -- where the loop's
+            ## steps report the method's own (trapezoidal opens at
+            ## `((49000, -49000), 0.0)` and runs at `((98000, -98000),
+            ## -1.0)`).  Reading them once for the whole run put the period
+            ## column 40-50 % out for trap and gear; reading the loop's for
+            ## the opening made `Pq` non-zero where it is zero, a 100 %
+            ## error for trap.  Euler was exact both ways and would have
+            ## passed a one-method test.  ⚠ `_coeffs` DOES NOT EXIST YET when
+            ## opening AT `x_0` -- no step has run -- so it is not read:
+            ## `b_open = 0`, no companion current has been formed.
+            a_open, b_open = ((None, 0.0) if open_at_x0 else self._coeffs)
+            ## ⚠ UNLESS THE METHOD SEEDS ONE.  `theta` refuses the opener
+            ## and so reads `iq_{-1}` on step one, where `_begin_run` puts
+            ## `-(i(x_0) + u(t_0))` -- a function of the unknown.  See
+            ## `_pq_seed_at_x0`; `None` restores the zero seed exactly.
+            pq_open = self._pq_seed_at_x0(x_in) if open_at_x0 else None
+            opened = (copy(C_open), a_open, b_open, pq_open)
+            if dense:
+                Px = [eye, eye]
+                if open_at_x0:
+                    ## the seed is EXACT here rather than assumed: with `x_0`
+                    ## the unknown and both rings holding `q(x_0)`,
+                    ## `dq_{-1}/dx_0` really IS `C`
+                    Pq = pq_open if pq_open is not None else np.zeros((m, m))
+                else:
+                    Pq = a_open[0] * Cs[0] if b_open else np.zeros((m, m))
+                ## ⚠ `C_open`, not `self._C`: on the `open_at_x0` path no
+                ## step has run, so `_C` does not exist yet.
+                self.Cvec = [copy(C_open)]
+                self.Jtvec = [] if open_at_x0 else [copy(self._Jf)]
+        if dense:
+            self.times = times
+            self._captured = {}
+        ## the period column, zero at the start: the unknowns are states,
+        ## and the solve owns them
         Pt = [np.zeros(m), np.zeros(m)]
         Pqt = np.zeros(m)
         ## ⚠ EVENT COLUMNS FOR A TWO-STEP COMPANION (2026-09-22, phase B).
@@ -5082,131 +5287,171 @@ class PSS(Analysis):
         ## with `dr/dh_{n-1} = (residual_dT T - residual_dh h_n) / h_{n-1}`
         ## (Euler's theorem on the homogeneous coefficients gives the total
         ## under uniform scaling; the difference is the previous step's
-        ## partial), plus the source at the NEW time, `u_dot(t_{n+1}) (tau
-        ## + hsens[j])`, for a driven circuit.  The pair history and the
-        ## companion current are propagated as for the period column.
+        ## partial), plus the source at the NEW time, `u_dot(t_{n+1}) (tau +
+        ## hsens[j])`, for a driven circuit.
         self._want_event_cols = hsens is not None
         Pk = ([[np.zeros(m), np.zeros(m)] for _ in range(hsens.shape[1])]
               if hsens is not None else None)
         Pqk = ([np.zeros(m) for _ in range(hsens.shape[1])]
                if hsens is not None else None)
         _tau = np.zeros(hsens.shape[1]) if hsens is not None else None
-        self._captured = {}
-
-        x, x_prev = copy(x0_in), copy(xm1_in)
-        P_prev = Px[1]
+        steps = [] if keep else None
+        last = len(times) - 2
         for _j, t in enumerate(times[1:]):
-            dt = hs[_j]
+            dt = hs[min(_j, len(hs) - 1)]
             x_prev = x
             x = copy(self.solve_timestep(x, t, dt))
-            self.Cvec.append(copy(self._C))
-            self.Jtvec.append(copy(self._Jf))
-
+            ## ⚠ THE COEFFICIENTS BELONG TO THE STEP, NOT TO THE RUN -- read
+            ## per step and, on a kept step, stored with it: a matrix-free
+            ## replay happens after the run, when `_coeffs` no longer
+            ## describes the step being replayed.  (Inside the loop they are
+            ## constant for every method in this tree, so storing them is
+            ## belt-and-braces today -- a mutation replacing them with a
+            ## post-run snapshot does NOT fail the tests -- but a
+            ## variable-order method would make that failure silent.)
+            alphas, b = self._coeffs
             Jf = np.asarray(self._Jf)
-            C_new = np.asarray(self._C)
-            Px_new, Pq = self._step_sensitivity(Px, Cs, Pq, Jf, C_new)
-
+            C_new = np.asarray(self._C).copy()
+            if dense:
+                self.Cvec.append(copy(self._C))
+                self.Jtvec.append(copy(self._Jf))
+            if keep:
+                lu = self._factorise(Jf)
+                steps.append((lu, C_new, alphas, b))
+                solve = lu.solve
+            else:
+                ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`
+                ## (`DenseSolver` IS that, so the default is unchanged): a
+                ## sparse matrix-free path must not be measured against a
+                ## hard-wired dense baseline.
+                def solve(S, _Jf=Jf):
+                    return solver.solve(_Jf, S, toolkit)
+            ## ONE RECURSION FOR EVERY METHOD AND EVERY COLUMN
+            ## (`_lmm_recursion`): the monodromy, the period column and the
+            ## event columns differ only in the forcing each step adds.
+            if dense:
+                Px_new, Pq = _lmm_recursion(Px, Cs, Pq, C_new, alphas, b,
+                                            solve)
             if Pk is not None:
-                alphas, b = self._coeffs
                 ## ⚠ `residual_dh` is Fang's `p`: the coefficients' partial
-                ## PLUS `du/dt`, because the residual sits at `t_{n} + h_n`
-                ## and that time moves with `h_n`; `residual_dT` is the
-                ## coefficients' total under uniform scaling (`sum_j h_j
-                ## dr/dh_j`, Euler's theorem, no source).  So the previous
-                ## step's coefficient partial is `(residual_dT - (residual_dh
-                ## - u_dot) h_n) / h_{n-1}`, and the source's motion enters
-                ## once: `residual_dh`'s `u_dot h_n`-part through this step's
-                ## weight, and `u_dot tau_n` for the shift of the step's
-                ## START, which no partial of this step can know.  Counting
-                ## `u_dot (tau + w)` on top of `residual_dh` -- twice -- read
-                ## the node after a landed event 153 % off (2026-09-22).
+                ## PLUS `du/dt`, because the residual sits at `t_n + h_n` and
+                ## that time moves with `h_n`; `residual_dT` is the
+                ## coefficients' total under uniform scaling.  So the
+                ## previous step's coefficient partial is `(residual_dT -
+                ## (residual_dh - u_dot) h_n) / h_{n-1}`, and the source's
+                ## motion enters once: `residual_dh`'s `u_dot h_n` part
+                ## through this step's weight, and `u_dot tau_n` for the
+                ## shift of the step's START.  Counting `u_dot (tau + w)` on
+                ## top of `residual_dh` -- twice -- read the node after a
+                ## landed event 153 % off (2026-09-22).
                 dr_dhn_full = np.asarray(self._dfdh, dtype=float).ravel()
-                Ud = np.delete(np.asarray(self.cir.dudt(float(t), analysis=self.par.analysis),
-                                          dtype=float), self.irefnode)
+                Ud = np.delete(np.asarray(self.cir.dudt(
+                    float(t), analysis=self.par.analysis), dtype=float),
+                    self.irefnode)
                 dr_dhn_iq = dr_dhn_full - Ud
                 dt_prev = float(hs[_j - 1]) if _j > 0 else float(hs[-1])
                 dr_dhprev = (np.asarray(self._dfdT, dtype=float).ravel()
                              - dr_dhn_iq * float(dt)) / dt_prev
                 hprev = hsens[_j - 1] if _j > 0 else hsens[-1]
                 for k in range(len(Pk)):
-                    St = b * Pqk[k] if b else np.zeros(m)
-                    for l in range(1, len(alphas)):
-                        St = St + alphas[l] * (Cs[l - 1] @ Pk[k][l - 1])
-                    St = (St + dr_dhn_full * float(hsens[_j, k]) + dr_dhprev * float(hprev[k])
-                          + Ud * float(_tau[k]))
-                    Pk_new = -toolkit.linearsolver(Jf, St)
-                    Pqk[k] = alphas[0] * (C_new @ Pk_new) + St
+                    Pk_new, Pqk[k] = _lmm_recursion(
+                        Pk[k], Cs, Pqk[k], C_new, alphas, b, solve,
+                        forcing=(dr_dhn_full * float(hsens[_j, k]),
+                                 dr_dhprev * float(hprev[k]),
+                                 Ud * float(_tau[k])))
                     Pk[k] = [Pk_new, Pk[k][0]]
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
-                    self._captured[_j + 1] = (copy(x), np.asarray(Px_new).copy(),
+                    self._captured[_j + 1] = (copy(x),
+                                              np.asarray(Px_new).copy(),
                                               [pk[0].copy() for pk in Pk])
-
             if want_dT:
-                ## Every step scales together (`h = T/(N-1)`), so `dh/dT =
-                ## h/T`, and `df/dh` at fixed solution is Fang's `p` --
-                ## `residual_dh`, already shared.  For an AUTONOMOUS circuit
-                ## its `du/dt` half vanishes, which is what makes solving
-                ## for the period tractable at all.
-                alphas, b = self._coeffs
-                St = b * Pqt if b else np.zeros_like(Pt[0])
-                for k in range(1, len(alphas)):
-                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
+                ## Every step scales together, so `dh/dT = h/T`, and `df/dh`
+                ## at fixed solution is Fang's `p` (`residual_dT` for the
+                ## total under uniform scaling -- for Gear-2 the partial is
+                ## 3/2 of it).  For an AUTONOMOUS circuit its `du/dt` half
+                ## vanishes, which is what makes solving for the period
+                ## tractable at all.  'closing': only the closing step's
+                ## length depends on `T`, with `dh/dT = 1`, so the term
+                ## appears once, undivided, on the last step.
                 if self._period_column == 'closing':
-                    ## only the closing step's length depends on T (dh/dT = 1)
-                    if _j == len(times) - 2:
-                        St = St + np.asarray(self._dfdh).ravel()
+                    fT = ((np.asarray(self._dfdh).ravel(),) if _j == last
+                          else ())
                 else:
-                    St = St + np.asarray(self._dfdT).ravel() / T
-                Pt_new = -toolkit.linearsolver(Jf, St)
-                Pqt = alphas[0] * (C_new @ Pt_new) + St
+                    fT = (np.asarray(self._dfdT).ravel() / T,)
+                Pt_new, Pqt = _lmm_recursion(Pt, Cs, Pqt, C_new, alphas, b,
+                                             solve, forcing=fT)
                 Pt = [Pt_new, Pt[0]]
-
-            P_prev = Px[0]
-            Px = [Px_new, Px[0]]
-            Cs = [copy(C_new), Cs[0]]
-
+            if dense:
+                Px = [Px_new, Px[0]]
+            Cs = [C_new, Cs[0]]
         self._want_dfdh = False
         self._want_event_cols = False
-        if Pk is not None:
-            return (x, x_prev, Px[0], P_prev,
-                    [pk[0] for pk in Pk], [pk[1] for pk in Pk])
-        ## ⚠ THE FULL 2m x 2m MAP, not the `d x_{N-1}/d x_0` corner.  For a
-        ## two-step method the one-period map acts on the PAIR, and its
-        ## spectrum is the physical Floquet multipliers TOGETHER WITH the
-        ## parasitic roots the k-step discretisation introduces (see the
-        ## literature note in the class docstring -- controlling those roots
-        ## is the whole subject).  The autonomous unit-circle eigenvalue is
-        ## in there.  ⚠ `spectral_radius` NO LONGER TAKES A MAXIMUM OVER
-        ## THIS MIXTURE (2026-09-02): `_spectral_report` separates the
-        ## physical multipliers from the parasitic roots by the
-        ## eigenvector's block structure and reports the maximum over the
-        ## physical ones, so a method whose spurious root sits near the
-        ## unit circle cannot have it read back as the orbit's stability.
+        return _PeriodWalk(kind=opening[0],
+                           fp_kind='solved_history' if pair else 'plain',
+                           x0=x0, x_end=x, x_prev=x_prev, P=Px,
+                           Pt=Pt if want_dT else None, Pk=Pk, steps=steps,
+                           opening=opened,
+                           open_at_x0=(not pair) and bool(opening[2]))
+
+    def _traverse(self, x_in, T, times, hs, want_dT, open_at_x0=False):
+        """The PLAIN map, dense: ``(x0, x_end, dx_end/dx0, dx_end/dT)`` --
+        the last only when asked for.  A view of `_walk_lmm`."""
+        w = self._walk_lmm(('plain', x_in, open_at_x0), times, hs, T=T,
+                           want_dT=want_dT)
+        ## Kept for the autonomous check after the solve: its spectrum is
+        ## the only place a free period announces itself.
+        self._monodromy = w.P[0]
+        return w.x0, w.x_end, w.P[0], (w.Pt[0] if want_dT else None)
+
+    def _traverse_solved_history(self, x0_in, xm1_in, times, hs,
+                                 T=None, want_dT=False, hsens=None,
+                                 capture=None):
+        """Gear's PAIR map, dense: ``(x_last, x_prev, P_last, P_prev)``, the
+        `P` being ``d x / d(x_0, x_{-1})`` as `n x 2n` blocks; with `want_dT`
+        two more entries, ``d x_{N-1}/dT`` and ``d x_{N-2}/dT`` -- BOTH rows
+        need a period column -- and with `hsens` the two blocks of each
+        event column instead.  A view of `_walk_lmm`."""
+        w = self._walk_lmm(('pair', x0_in, xm1_in), times, hs, T=T,
+                           want_dT=want_dT, hsens=hsens, capture=capture)
+        if w.Pk is not None:
+            return (w.x_end, w.x_prev, w.P[0], w.P[1],
+                    [pk[0] for pk in w.Pk], [pk[1] for pk in w.Pk])
         ## ⚠ ALWAYS THE FULL 2m x 2m MAP, NEVER THE `d x_{N-1}/d x_0`
-        ## CORNER.  This used to hand the corner back on the driven path
-        ## (`Px[0][:, :m]`), and a sub-block of a sensitivity is not a
-        ## monodromy: its eigenvalues mean nothing.  Measured, it reported
-        ## `spectral_radius` 1.279605 for the Q=20 resonator -- ABOVE ONE,
-        ## reading as an unstable orbit -- where the analytic per-period
-        ## decay is exp(-pi/Q) = 0.854636 and every other path reports
-        ## 0.855.  For a two-step method the one-period map acts on the
-        ## PAIR, so the monodromy is the pair's.
-        ##
-        ## Its spectrum carries the parasitic roots of the discretisation
-        ## alongside the physical multipliers -- but they are not a problem
-        ## here and the reason is quantitative: BDF-2's parasitic root is
-        ## 1/3 per STEP (roots of `1.5z^2 - 2z + 0.5` are 1 and 1/3), so
-        ## over a period it is (1/3)^N, which at 200 points is ~1e-95.
-        ## Measured on the autonomous element the 16x16 spectrum is
-        ## [1.000, 3.5e-06, 5.2e-16, 4.7e-17, 0, ...]: one physical unit
-        ## eigenvalue and nothing else above rounding, so `max |eig|` picks
-        ## the physical one.  A method whose parasitic root sat nearer the
-        ## unit circle would need that separated; Gear-2's does not.
-        self._monodromy = np.vstack((Px[0], Px[1]))
+        ## CORNER.  This used to hand the corner back on the driven path,
+        ## and a sub-block of a sensitivity is not a monodromy: it reported
+        ## `spectral_radius` 1.279605 for the Q=20 resonator -- ABOVE ONE --
+        ## where the analytic per-period decay is exp(-pi/Q) = 0.854636.
+        ## For a two-step method the one-period map acts on the PAIR, and
+        ## its spectrum carries the discretisation's parasitic roots beside
+        ## the physical multipliers; BDF-2's is 1/3 per STEP, (1/3)^N over a
+        ## period, and `_spectral_report` separates them by eigenvector
+        ## block structure anyway.
+        self._monodromy = np.vstack((w.P[0], w.P[1]))
         if want_dT:
-            return x, x_prev, Px[0], Px[1], Pt[0], Pt[1]
-        return x, x_prev, Px[0], P_prev
+            return w.x_end, w.x_prev, w.P[0], w.P[1], w.Pt[0], w.Pt[1]
+        return w.x_end, w.x_prev, w.P[0], w.P[1]
+
+    def _traverse_factored(self, x0_in, xm1_in, times, hs, T=None,
+                           want_dT=False):
+        """Gear's PAIR map, factored: ``(C0, steps, x_last, x_prev[, Pt_last,
+        Pt_prev])`` -- the two opening capacitances and per step
+        ``(lu, C, alphas, b)``.  A view of `_walk_lmm`."""
+        w = self._walk_lmm(('pair', x0_in, xm1_in), times, hs, T=T,
+                           dense=False, keep=True, want_dT=want_dT)
+        if want_dT:
+            return w.opening, w.steps, w.x_end, w.x_prev, w.Pt[0], w.Pt[1]
+        return w.opening, w.steps, w.x_end, w.x_prev
+
+    def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False,
+                                 open_at_x0=False):
+        """The PLAIN map, factored: ``(opening, steps, x0, x_end, Pt)`` with
+        ``opening = (C_open, a_open, b_open, pq_open)``.  A view of
+        `_walk_lmm`."""
+        w = self._walk_lmm(('plain', x_in, open_at_x0), times, hs, T=T,
+                           dense=False, keep=True, want_dT=want_dT)
+        return (w.opening, w.steps, w.x0, w.x_end,
+                (w.Pt[0] if want_dT else None))
 
     def _factorise(self, Jf):
         """One step's `Jf`, factored by the CALLER'S linear solver.
@@ -5235,79 +5480,6 @@ class PSS(Analysis):
             def solve(self, b):
                 return solver.solve(A, b, toolkit)
         return _PerSolve()
-
-    def _traverse_factored(self, x0_in, xm1_in, times, hs, T=None,
-                           want_dT=False):
-        """One period WITHOUT the sensitivities, keeping each step factored.
-
-        RECORDED SCOPE ITEM 6, the trajectory half.  `_traverse_solved_history`
-        does two things at once: it walks the period, and it propagates a
-        `2m`-column sensitivity alongside.  Matrix-free needs the walk
-        without the propagation, because the propagation is the thing it
-        replaces -- so this returns what a MATVEC needs to replay the same
-        steps: the two opening capacitances, and per step a FACTORED `Jf`
-        with its `C`.
-
-        ⚠ THE FACTORISATION IS THE POINT, not an optimisation on top.  The
-        matvec runs one solve per step per Krylov iteration; refactoring
-        `Jf` each time would cost `k` times the factorisations the dense
-        path takes and lose before it started.  Factoring once here makes
-        every later solve a back-substitution.
-
-        ⚠ AND THE COST OF THAT IS MEMORY: `N` factorisations and `N`
-        capacitances, `2 N m^2` doubles, where the dense path holds `O(m^2)`
-        at a time.  At `m = 1002` and 50 points that is ~800 MB.  This is
-        the trade matrix-free makes here and it is not free; a caller with a
-        long period and a large circuit can run out of memory where the
-        dense path merely ran slowly.
-        """
-        m = self.cir.n - 1
-        self._want_dfdh = want_dT
-        self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
-        C0 = [np.asarray(self._C_at(x0_in)), np.asarray(self._C_at(xm1_in))]
-        Cs = list(C0)
-        Pt = [np.zeros(m), np.zeros(m)]
-        Pqt = np.zeros(m)
-        steps = []
-        x, x_prev = copy(x0_in), copy(xm1_in)
-        for _j, t in enumerate(times[1:]):
-            x_prev = x
-            x = copy(self.solve_timestep(x, t, hs[_j]))
-            ## ⚠ THE COEFFICIENTS ARE STORED PER STEP, like `Jf` and `C`.
-            ## `_coeffs` is live state; on THIS path the history is
-            ## installed so no step is order-dropped and the pair is
-            ## constant, which is why a single post-run snapshot was right
-            ## here.  It was right by luck rather than by construction --
-            ## the plain path, whose opening IS dropped to Euler, showed
-            ## what that luck is worth.  See `_traverse_factored_plain`.
-            alphas, b = self._coeffs
-            C_new = np.asarray(self._C).copy()
-            lu = self._factorise(np.asarray(self._Jf))
-            steps.append((lu, C_new, alphas, b))
-            if want_dT:
-                ## BOTH ROWS NEED A PERIOD COLUMN -- `dx_{N-1}/dT` and
-                ## `dx_{N-2}/dT` -- and the ring carries both, so this is the
-                ## same one-column recursion the plain path runs, kept to the
-                ## end.  Neither depends on the Krylov direction, so both are
-                ## computed once per Newton iteration rather than per GMRES
-                ## iteration.
-                St = b * Pqt if b else np.zeros(m)
-                for k in range(1, len(alphas)):
-                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                if self._period_column == 'closing':
-                    ## only the closing step's length depends on T (dh/dT = 1)
-                    if _j == len(times) - 2:
-                        St = St + np.asarray(self._dfdh).ravel()
-                else:
-                    St = St + np.asarray(self._dfdT).ravel() / T
-                Pt_new = -lu.solve(St)
-                Pqt = alphas[0] * (C_new @ Pt_new) + St
-                Pt = [Pt_new, Pt[0]]
-            Cs = [C_new, Cs[0]]
-        self._want_dfdh = False
-        if want_dT:
-            return C0, steps, x, x_prev, Pt[0], Pt[1]
-        return C0, steps, x, x_prev
 
     ## ------------------------------------------------------------------
     ## THE REPLAYS -- one of each for every kind of factored period (plain
@@ -5505,108 +5677,6 @@ class PSS(Analysis):
         return self._replay(FactoredPeriod('full', None, steps, None, None,
                                            self), v)
 
-    def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False,
-                                 open_at_x0=False):
-        """The PLAIN path's trajectory pass, factored -- item 6 for one-step
-        methods and for the systems whose unknown is a single entering state.
-
-        Mirrors `_traverse`'s opening exactly, which is the whole
-        requirement: the manufacturing step first, then BOTH rings seeded
-        with the same `C` and `Pq = a_0 C` for a `b != 0` method.  Getting
-        that opening wrong would give a matvec for a DIFFERENT map than the
-        dense path's, and the two would disagree only in the third figure --
-        the kind of difference a converged answer absorbs.
-
-        With `want_dT` it also propagates the PERIOD COLUMN.  That column
-        does not depend on the Newton direction, so it is computed once here
-        rather than once per Krylov iteration, and returned as a vector --
-        which is exactly what the bordered autonomous matvec needs.
-        """
-        toolkit = self.toolkit
-        m = self.cir.n - 1
-        self._want_dfdh = want_dT
-        self._begin_period(x_in)
-        if open_at_x0:
-            ## no manufacturing step -- see `_traverse`, which this mirrors
-            x = copy(x_in)
-            x0 = copy(x_in)
-            C_open = np.asarray(self._C_at(x_in)).copy()
-        else:
-            x = self.solve_timestep(x_in, times[0], hs[0])
-            x0 = copy(x)
-            C_open = np.asarray(self._C).copy()
-
-        ## ⚠ THE COEFFICIENTS BELONG TO THE STEP, NOT TO THE RUN.  `_coeffs`
-        ## is live state and the MANUFACTURING step is order-dropped, so it
-        ## reports Euler's `(alphas, b)` -- `b = 0` -- where the loop steps
-        ## report the method's own: measured on this ladder, trapezoidal
-        ## opens at `((49000, -49000), 0.0)` and then runs at
-        ## `((98000, -98000), -1.0)`.
-        ##
-        ## Both halves of that were got wrong here first, in opposite
-        ## directions, with the trajectory itself matching to ZERO both
-        ## times: reading the coefficients ONCE BEFORE THE LOOP applied the
-        ## OPENING's to every step and put the period column 40-50% out for
-        ## `trap` and `gear`; reading them once in the matvec applied the
-        ## LOOP's to the opening and made `Pq` non-zero where `_traverse`
-        ## seeds it at zero, which is a 100% error for `trap`.  `euler` was
-        ## exact under both and would have passed a one-method test.
-        ##
-        ## ⚠ WHAT IS LOAD-BEARING IS THE OPENING PAIR.  Inside the loop the
-        ## coefficients are CONSTANT for every method in this tree, so
-        ## storing them per step is currently belt-and-braces -- a mutation
-        ## replacing them with a post-run snapshot does NOT fail the tests,
-        ## and that is recorded rather than hidden.  They are stored anyway
-        ## because a variable-order method would make the loop vary too, and
-        ## that failure would be silent.
-        ## ⚠ `b_open = 0` when opening AT `x_0`: no companion current has
-        ## been formed, so the matvec must seed `Pq` at zero to match
-        ## `_traverse`'s exact seed rather than the manufactured one.
-        ## ⚠ `_coeffs` DOES NOT EXIST YET on the `open_at_x0` path -- no step
-        ## has run to set it -- so it must not be read at all, not even for
-        ## the half that is then discarded.  `b_open = 0` makes the matvec
-        ## seed `Pq` at zero, which is what `_traverse` does there, and
-        ## `a_open` is unused in consequence.
-        a_open, b_open = ((None, 0.0) if open_at_x0 else self._coeffs)
-        ## ⚠ AND THE ONE THING `b_open = 0` DOES NOT COVER: a method that
-        ## SEEDS a consistent `iq_{-1}` has formed a companion current at
-        ## `x_0` after all, and it depends on `x_0`.  Carried in `opening`
-        ## rather than read off `self` because a matrix-free replay happens
-        ## after the run -- the same reason `steps` stores its coefficients.
-        ## `None` for every other method, which keeps them bit-identical.
-        pq_open = self._pq_seed_at_x0(x_in) if open_at_x0 else None
-        Pt = [np.zeros(m), np.zeros(m)]
-        Pqt = np.zeros(m)
-        Cs = [C_open, C_open]
-        steps = []
-        for _j, t in enumerate(times[1:]):
-            dt = hs[_j]
-            x = copy(self.solve_timestep(x, t, dt))
-            alphas, b = self._coeffs
-            Jf = np.asarray(self._Jf)
-            C_new = np.asarray(self._C).copy()
-            lu = self._factorise(Jf)
-            steps.append((lu, C_new, alphas, b))
-            if want_dT:
-                ## the same recursion with the step size's own source term,
-                ## one column wide -- see `_traverse`
-                St = b * Pqt if b else np.zeros(m)
-                for k in range(1, len(alphas)):
-                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                if self._period_column == 'closing':
-                    ## only the closing step's length depends on T (dh/dT = 1)
-                    if _j == len(times) - 2:
-                        St = St + np.asarray(self._dfdh).ravel()
-                else:
-                    St = St + np.asarray(self._dfdT).ravel() / T
-                Pt_new = -lu.solve(St)
-                Pqt = alphas[0] * (C_new @ Pt_new) + St
-                Pt = [Pt_new, Pt[0]]
-            Cs = [C_new, Cs[0]]
-        self._want_dfdh = False
-        return ((C_open, a_open, b_open, pq_open), steps, x0, x,
-                (Pt[0] if want_dT else None))
-
     ## ------------------------------------------------------------------
     ## The Runge-Kutta STAGE family (Radau IIA, TR-BDF2, ESDIRK) --
     ## self-starting, tableau-generic over any number of stages.  One
@@ -5657,52 +5727,6 @@ class PSS(Analysis):
                 Ci = np.asarray(self._C_at(Ys[i]))
                 Kf.append(self._factorise(Ci + h * A[i, i] * Gs[i]))
         return _StageStep(Cn, Gs, h, A, b, c, Kf=Kf), Ys
-
-    def _traverse_factored_stage(self, x0_in, times, hs):
-        """One period under a Runge-Kutta stage method, kept FACTORED -- the
-        `m x m` monodromy of a SELF-STARTING method as one `_StageStep` per
-        step.
-
-        Linearising the stage residuals ``F_i = q(Y_i) - q(x_n) - h sum_j
-        A_ij K_j`` w.r.t. the entering ``x_n`` (``K_j = -(i(Y_j) + u)``, so
-        ``dK_j/dY_j = -G(Y_j)``) gives ``J (dY/dx_n) = [C_n]_i``, and the step
-        map is the last block, ``dx_{n+1}/dx_n = (dY/dx_n)_s``, by stiff
-        accuracy.  Coupled (fully implicit) that is one block solve; lower
-        triangular it is the recursion
-
-            D_0 = I                                    (explicit first stage)
-            D_i = K_i^{-1} (C_n - h sum_{j<i} A_ij G_j D_j)   (implicit)
-
-        Verified against the pencil ``exp(mu T)`` before shipping.
-
-        ⚠ NO OPENER, NO PAIR.  Every step reads only ``x_n``, so the map is
-        `m x m` and high-order all the way round, with no order-dropped
-        opening seam inside the period.  The dense coupled factor is the
-        real solve; the ``A^{-1}``-eigenbasis transform (1 real + 1 complex
-        LU) is the efficiency follow-up documented on `RadauIIA3Integrator`.
-        """
-        from pycircuit.circuit.integrator import RungeKuttaIntegrator
-        tr = self._transient()
-        self._want_dfdh = False
-        self._want_lte = False
-        self._begin_period(x0_in)
-        integ = tr.base_integrator
-        if not isinstance(integ, RungeKuttaIntegrator):
-            raise ValueError('_traverse_factored_stage needs a Runge-Kutta '
-                             'stage inner integrator, got %r' % (integ,))
-        tab = _butcher(integ)
-        coupled = integ.is_fully_implicit()
-        x = copy(x0_in)
-        x_prev = copy(x0_in)
-        steps = []
-        for _j, t in enumerate(times[1:]):
-            h = float(hs[min(_j, len(hs) - 1)])
-            xn = x
-            x = copy(self.solve_timestep(xn, t, h))
-            x_prev = xn
-            steps.append(self._stage_step(xn, h, tab, coupled)[0])
-        self._want_dfdh = False
-        return steps, x, x_prev
 
     def _glm_period_blocks(self, x_in, times, hs):
         """One period under a Nordsieck GLM, collecting per-step factors.
@@ -5795,8 +5819,14 @@ class PSS(Analysis):
             P, D = _glm_step(rec, P, fT)
         return P, (D[-1] if D is not None else None)
 
-    def _traverse_glm(self, x_in, T, times, hs, want_dT=False):
-        """One period under a Nordsieck GLM with the shooting sensitivities.
+    def _walk_glm(self, x_in, T, times, hs, dense=True, keep=False,
+                  want_dT=False):
+        """ONE WALK OF THE PERIOD UNDER A NORDSIECK GLM: `_glm_period_blocks`,
+        then, when `dense`, the sensitivity recursion (`_glm_propagate`) for
+        the map and, with `want_dT`, its period column.  The blocks are always
+        collected -- the dense map is propagated FROM them -- so `keep` only
+        decides whether they are handed back (a `FactoredPeriod` of kind
+        'glm', on the Nordsieck state, `width` ``r*m``).
 
         The map shot on is ``x_0 -> x_N``: the Nordsieck vector is built from
         ``x_0`` by `Transient._glm_startup` at the top of the period and
@@ -5809,23 +5839,29 @@ class PSS(Analysis):
         index-2 C-V loop: 3 iterations to 1e-12, the same count as radau's
         exact monodromy on the same fixture (roadmap).
         """
-        steps, xs, Q0, Qend, x_end = self._glm_period_blocks(x_in, times, hs)
+        steps, _xs, Q0, _Qend, x_end = self._glm_period_blocks(x_in, times, hs)
         m = self.cir.n - 1
         r = len(Q0)
-        P = [np.asarray(self._C_at(np.asarray(x_in, dtype=float)), dtype=float)] \
-            + [np.zeros((m, m)) for _ in range(r - 1)]
-        _Pout, Mx = self._glm_propagate(steps, P)
-        self._glm_last = (steps, xs, Q0, Qend)
-        if not want_dT:
-            return np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float), Mx
-        ## the period column.  The startup's own T-dependence enters twice:
-        ## through the SCALING `Q_k = h^k q^(k)` (kept -- `dQ_k/dT = (k/T) Q_k`)
-        ## and through the Radau substeps at `h/p` (dropped, as `Mx`'s is).
-        Pt = [(k / float(T)) * np.asarray(Q0[k], dtype=float) for k in range(r)]
-        _Ptout, Mt = self._glm_propagate(steps, Pt, T=float(T),
-                                         closing=(self._period_column == 'closing'))
-        return (np.asarray(x_in, dtype=float), np.asarray(x_end, dtype=float),
-                Mx, np.asarray(Mt).ravel())
+        Mx = Mt = None
+        if dense:
+            P = [np.asarray(self._C_at(np.asarray(x_in, dtype=float)),
+                            dtype=float)] + [np.zeros((m, m)) for _ in range(r - 1)]
+            _Pout, Mx = self._glm_propagate(steps, P)
+        if want_dT:
+            ## the period column.  The startup's own T-dependence enters
+            ## twice: through the SCALING `Q_k = h^k q^(k)` (kept --
+            ## `dQ_k/dT = (k/T) Q_k`) and through the Radau substeps at `h/p`
+            ## (dropped, as `Mx`'s is).
+            Pt = [(k / float(T)) * np.asarray(Q0[k], dtype=float)
+                  for k in range(r)]
+            _Ptout, Mt = self._glm_propagate(
+                steps, Pt, T=float(T),
+                closing=(self._period_column == 'closing'))
+            Mt = np.asarray(Mt).ravel()
+        return _PeriodWalk(kind='glm', fp_kind='glm',
+                           x0=np.asarray(x_in, dtype=float),
+                           x_end=np.asarray(x_end, dtype=float), P=Mx, Pt=Mt,
+                           steps=steps if keep else None, width=r * m)
 
     def factored_period_glm(self, x0, T, npts, method=None, grid=None):
         """The factored period map of a Nordsieck GLM about a periodic point.
@@ -5839,44 +5875,30 @@ class PSS(Analysis):
         reading Floquet data off this map must expect the extra zeros, exactly
         as it expects the DAE's structural zeros.
         """
-        if method is None:
-            method = getattr(self.par, 'method', 'euler')
-        x0 = np.asarray(x0, dtype=float)
-        if x0.shape[0] == self.cir.n:
-            x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
-        times, hs = self._replay_grid(T, npts, grid)
-        tr_saved = getattr(self, '_tran', None)
-        self._tran = self._new_transient(self._integrator_for(method))
-        try:
-            steps, xs, Q0, Qend, x_end = self._glm_period_blocks(x0, times, hs)
-        finally:
-            self._tran = tr_saved
-        fp = FactoredPeriod('glm', None, steps, x_end, x0, self,
-                            times=times, T=float(T))
-        fp.width = len(Q0) * (self.cir.n - 1)
-        return fp
+        return self._factored_self_starting('glm', x0, T, npts, method, grid)
 
-    def _traverse_stage(self, x_in, T, times, hs, want_dT=False, hsens=None,
-                        capture=None):
-        """One period under a Runge-Kutta stage method with the DENSE
-        sensitivities -- the shooting Newton's monodromy `P = dx/dx0` and,
-        on request, the period column `Pt = dx/dT` and the event columns
-        `Pk`.  Self-starting: `x_in` IS `x_0`, so there is no opener seam and
-        `M` keeps the method's order round the whole period.
+    def _walk_stage(self, x_in, T, times, hs, dense=True, keep=False,
+                    want_dT=False, hsens=None, capture=None):
+        """ONE WALK OF THE PERIOD UNDER A RUNGE-KUTTA STAGE METHOD (Radau
+        IIA, TR-BDF2, ESDIRK), dense or factored (2026-09-23: it was two
+        walks, `_traverse_stage` and `_traverse_factored_stage`).
+        Self-starting: `x_in` IS `x_0`, so there is no opener seam and the
+        map keeps the method's order round the whole period.
 
-        Every step solves the SAME stage system for every column, ``J Z =
-        B`` with ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)`` -- one
-        `_StageStep`, coupled for a fully implicit tableau (Radau IIA),
-        stage by stage for a lower-triangular one (TR-BDF2, ESDIRK).  The
-        right-hand sides differ only in their forcing:
+        Every step is one `_StageStep` -- the stage system ``J Z = B`` with
+        ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)``, coupled for a fully
+        implicit tableau, stage by stage for a lower-triangular one.  What
+        rides along, as for `_walk_lmm`: `dense` propagates the monodromy
+        `P = dx/dx0` through it and drops it; `keep` keeps it for a replay
+        (`FactoredPeriod`); `want_dT` and `hsens` propagate the period and
+        event columns through the SAME solve, their right-hand sides
+        differing only in their forcing:
 
             P:   [C_n P]_i
             Pt:  [C_n Pt + (dh/dT) S_i]_i,       S_i = sum_j A_ij K_j
             Pk:  [C_n Pk + w S_i - h U_i]_i
 
-        and the last stage is the step's result (stiff accuracy).  Refactor
-        E9 item 2 (2026-09-23): this was `_traverse_full` and
-        `_traverse_dirk`, two copies.
+        and the last stage is the step's result (stiff accuracy).
 
         ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY BECAUSE THE CIRCUIT IS
         AUTONOMOUS.  With `T` unknown the grid rebuilds as ``h_j = frac_j T``,
@@ -5888,46 +5910,55 @@ class PSS(Analysis):
         wrong in this file twice -- roadmap 0j).
 
         ⚠ EVENT COLUMNS (2026-09-21): `hsens[j, k] = d h_j / d theta_k` for
-        the state-event unknowns, one column each, propagated by the same
-        stage algebra as the period column with the per-step weight taken
-        from the matrix instead of `h/T`; `capture` names the nodes whose
-        state and sensitivities the bordered residual reads.
+        the state-event unknowns, propagated by the same stage algebra as the
+        period column with the per-step weight taken from the matrix instead
+        of `h/T`; `capture` names the nodes whose state and sensitivities the
+        bordered residual reads.  ⚠ A DRIVEN CIRCUIT'S SOURCES MOVE WITH THE
+        GRID: an event column shifts the TIMES the stages are evaluated at,
+        so `f = -(i + u(t))` changes by `-u_dot . dt_stage`, `dt_stage =
+        tau_n + c_i dh` with `tau_n` the shift of the step's start (the `U_i`
+        term).  Without it the FD check read the column 77 % off and the
+        event row's derivative with the WRONG SIGN on the PWM fixture.
 
-        ⚠ A DRIVEN CIRCUIT'S SOURCES MOVE WITH THE GRID (2026-09-21).  The
-        period column never needed this -- it exists for autonomous
-        circuits, whose `u` is constant -- but an event column shifts the
-        TIMES the stages are evaluated at, so `f = -(i + u(t))` changes by
-        `-u_dot . dt_stage`, `dt_stage = tau_n + c_i dh` with `tau_n` the
-        shift of the step's start (the `U_i` term).  Without it the FD check
-        read the column 77 % off and the event row's derivative with the
-        WRONG SIGN on the PWM fixture (the ramp is the source)."""
+        Returns a `_PeriodWalk`; `_traverse_stage` is its dense view, and
+        `_factored_self_starting` keeps its steps."""
+        from pycircuit.circuit.integrator import RungeKuttaIntegrator
         toolkit = self.toolkit
         m = self.cir.n - 1
         self._want_dfdh = False
         self._want_lte = False
         self._begin_period(x_in)
         integ = self._transient().base_integrator
+        if not isinstance(integ, RungeKuttaIntegrator):
+            raise ValueError('_walk_stage needs a Runge-Kutta stage inner '
+                             'integrator, got %r' % (integ,))
         tab = _butcher(integ)
         Amat = tab[0]
         s = Amat.shape[0]
         coupled = integ.is_fully_implicit()
         iref = self.irefnode
-        Tf = float(T)
         x = copy(x_in)
         x0 = copy(x_in)
-        P = np.asarray(toolkit.eye(m), dtype=float)
+        x_prev = copy(x_in)
+        P = np.asarray(toolkit.eye(m), dtype=float) if dense else None
         Pt = np.zeros(m)
         Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
               if hsens is not None else None)
-        self._captured = {}
+        if dense:
+            self._captured = {}
         _cabs = tab[2] if Pk is not None else None
         _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
+        steps = [] if keep else None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
+            x_prev = xn
             st, Ys = self._stage_step(xn, h, tab, coupled)
-            P = st.solve(P)
+            if keep:
+                steps.append(st)
+            if dense:
+                P = st.solve(P)
             if Pk is not None:
                 _t0 = float(times[_j])
                 Ks = [np.asarray(self._k_at(Ys[jj], _t0 + float(_cabs[jj]) * h))
@@ -5953,17 +5984,27 @@ class PSS(Analysis):
                 Ks = [np.asarray(self._k_at(y)) for y in Ys]
                 ## 'closing': only the last step's length depends on T
                 _dhdT = ((1.0 if _j == len(times) - 2 else 0.0)
-                         if self._period_column == 'closing' else h / Tf)
+                         if self._period_column == 'closing' else h / float(T))
                 forcing = [(_dhdT * sum(Amat[i, jj] * Ks[jj] for jj in range(s)),)
                            for i in range(s)]
                 Pt = st.solve(Pt, forcing)
         self._want_dfdh = False
-        self._monodromy = P
-        if Pk is not None:
-            return x0, x, P, Pk
-        if want_dT:
-            return x0, x, P, Pt
-        return x0, x, P, None
+        return _PeriodWalk(kind='stage', fp_kind='full' if coupled else 'dirk',
+                           x0=x0, x_end=x, x_prev=x_prev, P=P,
+                           Pt=Pt if want_dT else None, Pk=Pk, steps=steps)
+
+    def _traverse_stage(self, x_in, T, times, hs, want_dT=False, hsens=None,
+                        capture=None):
+        """The stage map, dense: ``(x0, x_end, M, Mt)`` -- or the event
+        columns in place of `Mt` when `hsens` is given.  A view of
+        `_walk_stage`."""
+        w = self._walk_stage(x_in, T, times, hs, want_dT=want_dT,
+                             hsens=hsens, capture=capture)
+        self._monodromy = w.P
+        if w.Pk is not None:
+            return w.x0, w.x_end, w.P, w.Pk
+        return w.x0, w.x_end, w.P, (w.Pt if want_dT else None)
+
 
     def _i_at(self, x_reduced):
         """The reduced resistive current `i(x)` at a point."""
@@ -8521,40 +8562,24 @@ class PSS(Analysis):
             return self._factored_period_cache
 
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
-        _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        if _integ.is_stage_method():
-            ## the SOLVED grid's fractions (None on a uniform grid keeps the
-            ## replay bit-identical to before) -- see `_replay_grid`
+        kind = self._map_kind()
+        if kind in ('stage', 'glm'):
+            ## A self-starting method has its own factored map (no opener, no
+            ## pair), replayed on the SOLVED grid's fractions (None on a
+            ## uniform grid keeps the replay bit-identical to before) -- see
+            ## `_replay_grid` and `_factored_self_starting`
             _hs = np.asarray(hs, dtype=float).ravel()
             _uniform = (len(_hs) < 2 or float(np.max(_hs)) / float(np.min(_hs))
                         - 1.0 <= self.UNIFORM_GRID_TOL)
             _fr = None if _uniform else _hs / float(_hs.sum())
-            ## A self-starting stage method has its own factored map (no opener,
-            ## no pair).  `factored_period_stage` routes BY STRUCTURE -- the
-            ## coupled block for a fully implicit tableau, per-stage factors
-            ## for a lower-triangular one (the coupled block is singular on a
-            ## DAE for an explicit first stage) -- so a new method of either
-            ## family needs no edit here.
-            if getattr(_integ, 'is_multivalue', lambda: False)():
-                ## a Nordsieck GLM: the map is on the MULTIVALUE state, width
-                ## r*m -- see `factored_period_glm`
-                fp = self.factored_period_glm(x0, T, len(times) - 1, grid=_fr)
-            else:
-                fp = self.factored_period_stage(x0, T, len(times) - 1, grid=_fr)
-            self._factored_period_cache = fp
-            return fp
-        if solved:
-            C0, steps, x_last, x_prev = self._traverse_factored(
-                x0, xm1, times, hs, T=T)
-            fp = FactoredPeriod('solved_history', C0, steps, x_last, x_prev,
-                                self, times=times, T=T)
+            fp = self._factored_self_starting(kind, x0, T, len(times) - 1,
+                                              grid=_fr)
         else:
-            opening, steps, x0_out, x_last, _dT = \
-                self._traverse_factored_plain(x0, T, times, hs,
-                                              open_at_x0=x0_unknown)
-            fp = FactoredPeriod('plain', opening, steps, x_last, x0_out,
-                                self, times=times, T=T,
-                                open_at_x0=x0_unknown)
+            w = self._walk('pair' if solved else 'plain',
+                           np.concatenate((x0, xm1)) if solved else x0,
+                           times, hs, T=T, dense=False, keep=True,
+                           open_at_x0=x0_unknown)
+            fp = w.factored(self, times=times, T=T)
         self._factored_period_cache = fp
         return fp
 
@@ -8574,22 +8599,30 @@ class PSS(Analysis):
         ⚠ SELF-STARTING, SO NO TWIN.  No order-dropped opener, so this does
         not consult `monodromy_twin`.
         """
+        return self._factored_self_starting('stage', x0, T, npts, method, grid)
+
+    def _factored_self_starting(self, kind, x0, T, npts, method=None,
+                                grid=None):
+        """The factored period of a SELF-STARTING method about `x0` -- 'stage'
+        (`_walk_stage`; a `FactoredPeriod` of kind 'full' or 'dirk') or 'glm'
+        (`_glm_period_blocks`; kind 'glm') -- integrated under `method` (or
+        the PSS's own) in a transient of its own, on `npts` steps: uniform,
+        or `grid`'s fractions (see `_replay_grid`).  One builder for both
+        (2026-09-23: `factored_period_stage` and `factored_period_glm` were a
+        copy each)."""
         if method is None:
             method = getattr(self.par, 'method', 'euler')
         x0 = np.asarray(x0, dtype=float)
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
         times, hs = self._replay_grid(T, npts, grid)
-        integ = self._integrator_for(method)
         tr_saved = getattr(self, '_tran', None)
-        self._tran = self._new_transient(integ)
+        self._tran = self._new_transient(self._integrator_for(method))
         try:
-            steps, x_last, x_prev = self._traverse_factored_stage(x0, times, hs)
+            w = self._walk(kind, x0, times, hs, dense=False, keep=True)
         finally:
             self._tran = tr_saved
-        return FactoredPeriod('full' if integ.is_fully_implicit() else 'dirk',
-                              None, steps, x_last, x_prev, self, times=times,
-                              T=float(T))
+        return w.factored(self, times=times, T=float(T))
 
     FLOQUET_DENSE_LIMIT = 400
     ## below this a multiplier is an annihilated algebraic
@@ -9699,159 +9732,6 @@ class PSS(Analysis):
             junc = _pcnr.pcnr_devices(self.cir)
             self._pcnr_junctions_cache = junc
         return junc
-
-    def _traverse(self, x_in, T, times, hs, want_dT, open_at_x0=False):
-        """One pass over the period, with the sensitivities accumulated.
-
-        Returns ``(x0, x_end, dx_end/dx0, dx_end/dT)`` -- the last only when
-        asked for.  Shared by the fixed-period and autonomous systems so the
-        period map is written once; they differ only in what they build from
-        it.
-
-        EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a function of
-        its arguments alone; if iteration k+1 inherited the ring buffers
-        iteration k ended with, the period map would depend on which
-        iteration it was and the monodromy would be the derivative of
-        something else.  `_begin_run` also makes the first step
-        `is_first_step`, so a multi-step method opens at order 1 -- the same
-        restart the old `iq_last=None` produced, now for the integrator's
-        own reason.
-        """
-        toolkit = self.toolkit
-        n = self.cir.n
-        self._want_dfdh = want_dT
-        self._begin_period(x_in)
-        if open_at_x0:
-            ## ⚠ NO MANUFACTURING STEP: the caller's unknown IS `x_0`.
-            ## `_begin_period` has seeded both charge rings from `q(x_in)`
-            ## and marked the next step `is_first_step`, so the first step
-            ## INSIDE the period is order-dropped to Euler -- which is the
-            ## L-stable opener this formulation cannot do without.  See
-            ## `x0_unknown` on `solve` for why, and for what it costs.
-            x = copy(x_in)
-            x0 = copy(x_in)
-            C_open = np.asarray(self._C_at(x_in))
-        else:
-            x = self.solve_timestep(x_in, times[0], hs[0])
-            x0 = copy(x)
-            C_open = np.asarray(self._C)
-        ## ⚠ `None`, not `self._iq`, when nothing has been solved yet: no
-        ## companion current exists at `x_0` because no step has formed one.
-        ## `solve_timestep` reads `iq_last=None` as "open the run", which is
-        ## the same restart `_begin_period` already asked for -- passing a
-        ## stale `_iq` from a previous traversal would be the hidden-state
-        ## defect this class refuses elsewhere.
-        iq_last = None if open_at_x0 else self._iq
-
-        ## `Px[k]` is d(x_{n-k})/d(x0), `Pq` is d(iq_n)/d(x0), `Cs[k]` the
-        ## capacitance of step n-k.  Two of each -- as far back as any
-        ## method here reaches.  Both rings open seeded with the entering
-        ## step, mirroring how the transient seeds `_qlast` with `q0`
-        ## repeated: at the start of a period there is no earlier point to
-        ## differentiate against.
-        eye = np.asarray(toolkit.eye(n - 1))
-        Px = [eye, eye]
-        Cs = [copy(C_open), copy(C_open)]
-        if open_at_x0:
-            ## ⚠ AND HERE THE SEED IS EXACT RATHER THAN ASSUMED.  With `x_0`
-            ## the unknown and both rings holding `q(x_0)`, `dq_{-1}/dx_0`
-            ## really IS `C` -- the same `I` the other branch writes down as
-            ## an assumption about a history it did not solve for.  `Pq` is
-            ## zero because no companion current has been formed yet: the
-            ## opening step has not been taken.  That is the whole reason
-            ## this path has an exact Jacobian and the other does not.
-            ##
-            ## ⚠ UNLESS THE METHOD SEEDS ONE.  `theta` refuses the opener and
-            ## so reads `iq_{-1}` on step one, where `_begin_run` puts
-            ## `-(i(x_0) + u(t_0))` -- a function of the unknown.  See
-            ## `_pq_seed_at_x0`; `None` there restores the zero seed exactly.
-            Pq = self._pq_seed_at_x0(x_in)
-            if Pq is None:
-                Pq = np.zeros((n - 1, n - 1))
-        else:
-            a_first, b_first = self._coeffs
-            Pq = (a_first[0] * Cs[0] if b_first else np.zeros((n - 1, n - 1)))
-        ## The period column, propagated the same way with one extra source
-        ## term.  Zero at the start: the entering state does not depend on T.
-        Pt = [np.zeros(n - 1), np.zeros(n - 1)]
-        Pqt = np.zeros(n - 1)
-
-        ## Kept for PAC.
-        ## ⚠ `C_open`, not `self._C`: on the `open_at_x0` path no step has
-        ## run, so `_C` does not exist yet.  `C_open` is the same matrix the
-        ## other branch would have found there, evaluated at `x_0` directly.
-        ## (Kept for PAC, which is withdrawn; `Jtvec` opens empty for the
-        ## same reason -- there is no solved `Jf` at `x_0`.)
-        self.Cvec = [copy(C_open)]
-        self.Jtvec = ([] if open_at_x0 else [copy(self._Jf)])
-        self.times = times
-
-        for _j, t in enumerate(times[1:]):
-            dt = hs[min(_j, len(hs) - 1)]
-            x = copy(self.solve_timestep(x, t, dt, iq_last=iq_last))
-            iq_last = self._iq
-            self.Cvec.append(copy(self._C))
-            self.Jtvec.append(copy(self._Jf))
-
-            ## ONE RECURSION FOR EVERY METHOD.  Each writes its companion as
-            ## `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`, so differentiating
-            ## the step gives
-            ##
-            ##     S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
-            ##     P_n  = -Jf_n^-1 S
-            ##     Pq_n = a_0 C_n P_n + S
-            ##
-            ## Euler is `b = 0` reaching back one step, trapezoidal `b = -1`
-            ## reaching back one, Gear-2 `b = 0` reaching back two.  The
-            ## coefficients come from the integrator that RAN, so an
-            ## order-dropped step contributes its own.
-            ##
-            ## ⚠ A SOLVE, NOT AN INVERSE (stage 11).  `inv(Jf) @ ...` formed
-            ## a dense inverse per timestep per iteration and squared the
-            ## condition number it then multiplied through.
-            alphas, b = self._coeffs
-            Jf = np.asarray(self._Jf)
-            C_new = np.asarray(self._C)
-
-            ## ⚠ THIS USED TO BE AN INLINE COPY of `_step_sensitivity`,
-            ## byte-for-byte, while that method's own docstring said the two
-            ## systems "share this and not a copy".  They did not: only the
-            ## solved-history path called it.  Found while measuring the
-            ## plain path's propagation share -- a timer wrapped around
-            ## `_step_sensitivity` reported 0.0%, which is not a small
-            ## number but a wrong one.
-            Px_new, Pq = self._step_sensitivity(Px, Cs, Pq, Jf, C_new)
-
-            if want_dT:
-                ## The SAME recursion, plus the step size's own dependence
-                ## on T.  Every step scales together (`h = T/(N-1)`), so
-                ## `dh/dT = h/T`, and `df/dh` at fixed solution is Fang's
-                ## `p` -- already shared.  For an autonomous circuit its
-                ## `du/dt` half vanishes, which is what makes this term the
-                ## companion derivative alone.
-                St = b * Pqt if b else np.zeros_like(Pt[0])
-                for k in range(1, len(alphas)):
-                    St = St + alphas[k] * (Cs[k - 1] @ Pt[k - 1])
-                if self._period_column == 'closing':
-                    ## only the CLOSING step's length depends on `T`, and it
-                    ## does so with `dh/dT = 1` -- so the term appears once,
-                    ## undivided, on the last step and nowhere else.
-                    if _j == len(times) - 2:
-                        St = St + np.asarray(self._dfdh).ravel()
-                else:
-                    St = St + np.asarray(self._dfdT).ravel() / T
-                Pt_new = -self.toolkit.linearsolver(Jf, St)
-                Pqt = alphas[0] * (C_new @ Pt_new) + St
-                Pt = [Pt_new, Pt[0]]
-
-            Px = [Px_new, Px[0]]
-            Cs = [copy(C_new), Cs[0]]
-
-        self._want_dfdh = False
-        ## Kept for the autonomous check after the solve: its spectrum is
-        ## the only place a free period announces itself.
-        self._monodromy = Px[0]
-        return x0, x, Px[0], (Pt[0] if want_dT else None)
 
     def _transient(self):
         """The `Transient` this analysis integrates with.
@@ -11029,11 +10909,7 @@ class PSS(Analysis):
         if state_events:
             _rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
             _method_se = getattr(self.par, 'method', 'euler')
-            _integ_se = self._integrator_for(_method_se)
-            _stage_ok = ((_integ_se.is_stage_method()
-                          and not getattr(_integ_se, 'is_multivalue', lambda: False)())
-                         or _integ_se.companion_reach() >= 2)     # radau, trbdf2, gear
-            if _rows and not _stage_ok:
+            if _rows and self._map_kind() not in ('stage', 'pair'):
                 warnings.warn(
                     'PSS: this circuit declares %d state event(s) (a threshold '
                     'switch or comparator) but the state-event stage is built '
@@ -11410,14 +11286,7 @@ class PSS(Analysis):
         ## THE PERIOD MAP, per kind -- the only thing about the Newton that
         ## depends on the method (2026-09-23: it was eight residual closures,
         ## one per kind and driven/free period).
-        _integ_m = self._integrator_for(method)
-        if _integ_m.is_stage_method():
-            _kind = ('glm' if getattr(_integ_m, 'is_multivalue',
-                                      lambda: False)() else 'stage')
-        elif solved_history:
-            _kind = 'pair'
-        else:
-            _kind = 'plain'
+        _kind = self._map_kind()
 
         def _pmap(z, T, tms_, hs_, want_dT):
             """One period from the unknown `z`: ``(z_0, z_end, M, Mt)`` with
@@ -11441,36 +11310,24 @@ class PSS(Analysis):
             * GLM: the method's own map (the startup at the top of the
               period, then N multivalue steps); ⚠ `M` is APPROXIMATE -- the
               residual is exact, the Jacobian drops the startup's derivative
-              (see `_traverse_glm`); its period column carries the two
+              (see `_walk_glm`); its period column carries the two
               explicit `T` dependences a multivalue method has.
 
             ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY FOR AN AUTONOMOUS CIRCUIT:
             the grid is rebuilt at the current `T` (``dh/dT = h/T`` for every
             step, uniform or not) and the stage derivatives carry no time of
             their own."""
-            m = n - 1
-            if _kind == 'pair':
-                if want_dT:
-                    (x_last, x_prev, P_last, P_prev, Pt_last,
-                     Pt_prev) = self._traverse_solved_history(
-                        z[:m], z[m:], tms_, hs_, T=T, want_dT=True)
-                    Mt = np.concatenate((np.asarray(Pt_last).ravel(),
-                                         np.asarray(Pt_prev).ravel()))
-                else:
-                    x_last, x_prev, P_last, P_prev = \
-                        self._traverse_solved_history(z[:m], z[m:], tms_, hs_)
-                    Mt = None
-                return (z, np.concatenate((np.asarray(x_last),
-                                           np.asarray(x_prev))),
-                        np.vstack((P_last, P_prev)), Mt)
-            if _kind == 'stage':
-                return self._traverse_stage(z, T, tms_, hs_, want_dT=want_dT)
-            if _kind == 'glm':
-                if want_dT:
-                    return self._traverse_glm(z, T, tms_, hs_, want_dT=True)
-                return self._traverse_glm(z, T, tms_, hs_) + (None,)
-            return self._traverse(z, T, tms_, hs_, want_dT=want_dT,
-                                  open_at_x0=x0_unknown)
+            w = self._walk(_kind, z, tms_, hs_, T=T, want_dT=want_dT,
+                           open_at_x0=x0_unknown)
+            M = w.monodromy()
+            if _kind != 'glm':
+                ## kept for the checks after the solve: the spectrum is the
+                ## only place a free period announces itself.  (Never the
+                ## GLM's: its `M` drops the startup's derivative, and its map
+                ## acts on the Nordsieck state -- see `_walk_glm`.)
+                self._monodromy = M
+            return (w.z0(), w.end(), M,
+                    w.period_column() if want_dT else None)
 
         def func(z):
             """The fixed-period system, ``x_0 - phi(x_0) = 0``."""
@@ -11585,23 +11442,13 @@ class PSS(Analysis):
                     tms_, hs_ = self._period_grid(T_, npts, self._grid_fracs)
                 else:
                     z, T_, tms_, hs_ = zz, period, times, hs
-                if _kind == 'pair':
-                    out = self._traverse_factored(z[:m], z[m:], tms_, hs_,
-                                                  T=T_, want_dT=self.autonomous)
-                    fp_ = FactoredPeriod('solved_history', out[0], out[1],
-                                         None, None, self)
-                    z0_ = z
-                    ze_ = np.concatenate((np.asarray(out[2]),
-                                          np.asarray(out[3])))
-                    Mt_ = (np.concatenate((np.asarray(out[4]).ravel(),
-                                           np.asarray(out[5]).ravel()))
-                           if self.autonomous else None)
-                else:
-                    op_, st_, z0_, ze_, Mt_ = self._traverse_factored_plain(
-                        z, T_, tms_, hs_, want_dT=self.autonomous,
-                        open_at_x0=x0_unknown)
-                    fp_ = FactoredPeriod('plain', op_, st_, None, None, self)
-                F_ = self._close_periodic(z0_, ze_, tms_)
+                w_ = self._walk(_kind, z, tms_, hs_, T=T_, dense=False,
+                                keep=True, want_dT=self.autonomous,
+                                open_at_x0=x0_unknown)
+                fp_ = w_.factored(self)
+                z0_ = w_.z0()
+                Mt_ = w_.period_column() if self.autonomous else None
+                F_ = self._close_periodic(z0_, w_.end(), tms_)
                 if not self.autonomous:
                     return F_, (lambda v: v - alpha * fp_.matvec(v))
                 Mt_ = np.asarray(Mt_, dtype=float).ravel()

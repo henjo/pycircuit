@@ -181,7 +181,7 @@ def test_shooting_with_a_glm_keeps_the_algebraic_order_at_one_factorisation_per_
     esdirk43 (also one per step, stage order 2) drops to 2.
 
     ⚠ The Newton's Jacobian here is APPROXIMATE by construction
-    (`_traverse_glm`: the startup's derivative is dropped) and the residual
+    (`_walk_glm`: the startup's derivative is dropped) and the residual
     is not, so the fixed point is the method's own; this test is what says
     the approximation does not cost the solve.  Measured at npts = 80:
     glm3 8.2e-11 against esdirk43's 5.7e-10 and radau's 2.0e-11.
@@ -244,7 +244,7 @@ def _vdp(Q=15.9):
 
 def test_a_glm_finds_the_free_period_and_the_orbits_multipliers():
     """The autonomous path: `(x_0, T)` unknown, with the period column from
-    `_traverse_glm(want_dT=True)`.
+    `_walk_glm(want_dT=True)`.
 
     ⚠ A MULTIVALUE METHOD HAS TWO EXPLICIT `T` DEPENDENCES, not one: the
     grid's `h = frac T` inside every step, AND the starting vector's own

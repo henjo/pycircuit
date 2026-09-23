@@ -2431,24 +2431,72 @@ class Transient(Analysis):
             len(self.cir.nodes), len(self.cir.branches),
             self.par.iabstol, self.par.vabstol, self.toolkit)[1]
 
-    def _residual_and_jacobian(self, x, t, provided_function=None):
-        """``(f, J)`` at ``(x, t)`` using the current ``self._dt``.
+    def _companion_at(self, x):
+        """``(iq, Geq)``: the step's companion current and conductance at `x`
+        (the current ``self._dt``), with the charge cached against the state
+        it belongs to.  One assembly for every step's residual and Jacobian
+        (2026-09-24: it was six copies).
 
-        The same assembly `solve_timestep`'s inner function performs, reachable
-        without running a Newton solve -- the coupled method needs one residual
-        per iteration of its OWN loop.
-        """
+        `self.epar`, not the module-level `defaultepar`.  Omitting it meant
+        every device in a transient was evaluated at defaultepar's T = 300 K
+        whatever the caller asked for, and -- because `Analysis.__init__`
+        attaches `bypasstol` to the analysis's own epar and nowhere else --
+        every device took its `except AttributeError` branch and the `bypass`
+        parameter did nothing at all.
+
+        STAGE 2c.  The charge vector is stashed alongside the state it belongs
+        to.  `solve()` needs `q` at the converged point twice more -- once for
+        the step controller and once for the history roll -- and was
+        recomputing the whole assembly both times at an x it had already
+        evaluated.  Measured 5.08 `q` assemblies per accepted step against
+        3.06 for every other stamp; the difference is exactly those two.
+        Keyed by the state so a stale value can never be served: the check is
+        identity-then-equality on x, not a bare "did we cache"."""
         C = self.cir.C(x, self.epar)
         q = self.cir.q(x, self.epar)
         self._q_cache = (x, q)
-        iq, Geq = self.get_diff(q, C)
+        return self.get_diff(q, C)
+
+    def _source_at(self, t, provided_function=None):
+        """`u(t)`: the circuit's sources, plus `provided_function(t)`.
+
+        ONE CONTRACT: `provided_function(t)` is an extra source term, on every
+        path.  The standard path used to treat it as a post-solve callback
+        `provided_function(f, J, C)` whose result was unpacked and never read,
+        while the coupled and PCNR paths added it to `u` -- two contradictory
+        meanings behind one parameter, flag-selected
+        (doc/transient_review_260820.md, F4).  The callback contract was born
+        dead: its introducing commit says "currently is calculated but returns
+        no value to solve method", and no consumer ever appeared.  The live
+        semantics wins; callback callers break loudly on arity."""
         u = self.cir.u(t, self.epar, analysis=self.par.analysis)
         if provided_function is not None:
             u = u + provided_function(t)
+        return u
+
+    def _residual_and_jacobian(self, x, t, provided_function=None):
+        """``(f, J)`` at ``(x, t)`` using the current ``self._dt`` -- the step
+        residual `solve_timestep`'s Newton drives to zero, and reachable
+        without one: the coupled method needs one residual per iteration of
+        its OWN loop."""
+        iq, Geq = self._companion_at(x)
+        u = self._source_at(t, provided_function)
         f = self.cir.i(x, self.epar) + iq + u
         J = self.cir.G(x, self.epar) + Geq
         return (self.toolkit.array(f, dtype=float),
                 self.toolkit.array(J, dtype=float))
+
+    def _pcnr_augmented(self, x, v_lim, t, junctions, provided_function=None):
+        """The PCNR augmented system at `(x, v_lim)` with the step's companion
+        and sources folded in as `u_extra` / `J_extra` -- ``(g_mna, g_lim,
+        J_mm, J_ml, J_lm, didv)``, see `pcnr.augmented_system`."""
+        from pycircuit.circuit import pcnr as _pcnr
+        iq, Geq = self._companion_at(x)
+        u = self._source_at(t, provided_function)
+        return _pcnr.augmented_system(
+            self.cir, x, v_lim, junctions, self.epar,
+            u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
+            dense_blocks=False, J_extra=Geq)
 
     def _residual_and_jacobian_pcnr(self, x, v_lim, t, junctions,
                                     provided_function=None):
@@ -2463,17 +2511,8 @@ class Transient(Analysis):
         (N+1) extension too**, which reuses the same factors for ``dxh``.
         """
         from pycircuit.circuit import pcnr as _pcnr
-        C = self.cir.C(x, self.epar)
-        q = self.cir.q(x, self.epar)
-        self._q_cache = (x, q)
-        iq, Geq = self.get_diff(q, C)
-        u = self.cir.u(t, self.epar, analysis=self.par.analysis)
-        if provided_function is not None:
-            u = u + provided_function(t)
-        g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
-            self.cir, x, v_lim, junctions, self.epar,
-            u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
-            dense_blocks=False, J_extra=Geq)
+        g_mna, g_lim, J_mm, J_ml, J_lm, didv = self._pcnr_augmented(
+            x, v_lim, t, junctions, provided_function)
         f_eff, J_eff = _pcnr.schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm,
                                           junctions, didv)
         return (self.toolkit.array(f_eff, dtype=float),
@@ -3259,18 +3298,8 @@ class Transient(Analysis):
         feval = 0
 
         for _it in range(self.par.maxiter):
-            C = self.cir.C(x, self.epar)
-            q = self.cir.q(x, self.epar)
-            self._q_cache = (x, q)
-            iq, Geq = self.get_diff(q, C)
-            u = self.cir.u(t, self.epar, analysis=self.par.analysis)
-            if provided_function is not None:
-                u = u + provided_function(t)
-
-            g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
-                self.cir, x, v_lim, junctions, self.epar,
-                u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
-                dense_blocks=False, J_extra=Geq)
+            g_mna, g_lim, J_mm, J_ml, J_lm, didv = self._pcnr_augmented(
+                x, v_lim, t, junctions, provided_function)
             feval += 1
 
             dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
@@ -3299,10 +3328,7 @@ class Transient(Analysis):
                 abs(dx_mna) < reltol * abs(x_new) + xtol))
             x, v_lim = x_new, v_new
             if done:
-                C = self.cir.C(x, self.epar)
-                q = self.cir.q(x, self.epar)
-                self._q_cache = (x, q)
-                iq, Geq = self.get_diff(q, C)
+                iq, Geq = self._companion_at(x)
 
                 ## THE JACOBIAN HANDED TO THE STEP CONTROLLER MUST BE THE ONE
                 ## THIS PATH ACTUALLY SOLVED, and `cir.G(x) + Geq` is not it.
@@ -4692,41 +4718,7 @@ class Transient(Analysis):
         dt = self._dt
         
         def func(x):
-            ## `self.epar`, not the module-level `defaultepar`.  Omitting it meant
-            ## every device in a transient was evaluated at defaultepar's T = 300 K
-            ## whatever the caller asked for, and -- because `Analysis.__init__`
-            ## attaches `bypasstol` to the analysis's own epar and nowhere else --
-            ## every device took its `except AttributeError` branch and the `bypass`
-            ## parameter did nothing at all.
-            C = self.cir.C(x, self.epar)
-            q = self.cir.q(x, self.epar)
-            ## STAGE 2c.  Stash the charge vector alongside the state it belongs
-            ## to.  `solve()` needs `q` at the converged point twice more -- once
-            ## for the step controller and once for the history roll -- and was
-            ## recomputing the whole assembly both times at an x it had already
-            ## evaluated.  Measured 5.08 `q` assemblies per accepted step against
-            ## 3.06 for every other stamp; the difference is exactly those two.
-            ##
-            ## Keyed by the state so a stale value can never be served: the check
-            ## below is identity-then-equality on x, not a bare "did we cache".
-            self._q_cache = (x, q)
-            iq, Geq = self.get_diff(q, C)
-            u = self.cir.u(t, self.epar, analysis=self.par.analysis)
-            ## ONE CONTRACT: `provided_function(t)` is an extra source term, on
-            ## every path.  The standard path used to treat it as a post-solve
-            ## callback `provided_function(f, J, C)` whose result was unpacked
-            ## and never read, while the coupled and PCNR paths added it to `u`
-            ## -- two contradictory meanings behind one parameter, flag-selected
-            ## (doc/transient_review_260820.md, F4).  The callback contract was
-            ## born dead: its introducing commit says "currently is calculated
-            ## but returns no value to solve method", and no consumer ever
-            ## appeared.  The live semantics wins; callback callers break
-            ## loudly on arity.
-            if provided_function is not None:
-                u = u + provided_function(t)
-            f = self.cir.i(x, self.epar) + iq + u
-            J = self.cir.G(x, self.epar) + Geq
-            return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
+            return self._residual_and_jacobian(x, t, provided_function)
 
         def jacobian_only(x):
             """The converged-point evaluation, without the residual nobody reads.
@@ -4747,10 +4739,7 @@ class Transient(Analysis):
             that starts reading it fails loudly instead of silently using zeros --
             which is the whole lesson of stage 1.
             """
-            C = self.cir.C(x, self.epar)
-            q = self.cir.q(x, self.epar)
-            self._q_cache = (x, q)
-            iq, Geq = self.get_diff(q, C)
+            _iq, Geq = self._companion_at(x)
             J = self.cir.G(x, self.epar) + Geq
             return None, self.toolkit.array(J, dtype=float)
 
