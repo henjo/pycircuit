@@ -8820,6 +8820,37 @@ window from the stage; (2) ladders with the window sub-grid count
 (3) the PPV samples' convergence on the same ladder (0.08–0.33 % at 200,
 0.05–0.4 % at 400 — floored by the nearest-state comparison at 2.5e-4).
 
+### E9. The state-event machinery's refactor — PLANNED 2026-09-23 (Andreas: "After restart we will do the refactor")
+
+The events arc is complete and pushed (`89c83c6..cd7b751`).  What it left behind,
+measured rather than guessed:
+
+1. **One `EventColumns` object.**  `_event_columns` is a raw dict read in 17+ places,
+   and three derivations are re-typed around it: the total map `M + P_end dth` (four
+   sites), the Schur elimination `zeta = Gt^-T (g_theta + a P_theta^T z)` with its
+   second injected reverse pass (three near-copies: the driven adjoint, the gear
+   adjoint, the sampled series), and the `-zeta_k W_k` injection (four).
+   `_event_costate_injection` and `_fixed_time_event_columns` are already factored
+   and are the model.  ⚠ Keep the dict readable until every consumer moves: six
+   tests set `_event_columns = None` as their "unbordered" control.
+2. **The three stages** (`_state_event_stage` 140 lines, `_gear` 126, `_autonomous`
+   123) share landing, remap, Newton loop and column assembly; they differ in the
+   unknown vector and the traversal.  Parametrise by map kind.  Largest; own commit.
+3. **The transient's three loops** each carry a copy of the E7 sign-change hook and
+   of the `next_event` truncation.  Two helpers collapse both.
+4. **The tests' exact piecewise-linear model** is copied three times; one builder with
+   `ppv`, `forced` and `left_mode` over it.
+5. **`_orbit_rate_stencil`** is a warned fallback no test fires: give it an index-2
+   fixture or delete it.
+
+Order: 1, 3 (they are what let this week's copies happen), then 4, 5, then 2.  The
+gate is the arc's own exact/FD tests — the staged-events, bordered-consumer, jitter,
+fifth-order-at-the-switch and fold-quadrature tests — which must come back with the
+SAME numbers; a refactor that moves one has changed behaviour.  ⚠ And when a number
+does move, check the INSTRUMENT first: this arc lost a day to a fold that had been
+inheriting resolution by accident and to a test dividing by its reference's own zero
+crossing.
+
 ### Already recorded elsewhere, listed so they are not re-raised as missing
 
   - **Wright §3.11's local-error minimisation** — ⏸ OPTION FOR LATER, not now
