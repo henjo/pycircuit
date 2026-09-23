@@ -1849,8 +1849,8 @@ class PSS(Analysis):
                                 unknowns.
       the FREE-PERIOD system    what an autonomous circuit solves: unknowns
                                 `(x0, T)` with a phase condition, because the
-                                period is not given.  `func_solved_history`'s
-                                sibling `func_autonomous`.
+                                period is not given.  `func_autonomous` in
+                                `solve`, on every kind's `_pmap`.
       a SOLVED ENTERING HISTORY unknowns `(x0, x_{-1})`, 4b.  About where
                                 the period map STARTS, not how long it runs.
                                 DRIVEN circuits.  `self.solved_history`.
@@ -1901,8 +1901,8 @@ class PSS(Analysis):
          solved-history one is exact.
 
       4c. THE COMPOSED SYSTEM -- `(x_0, x_{-1}, T)`, AUTONOMOUS ONLY -- DONE
-         (2026-09-01), `func_autonomous_solved_history`.  It is 4b's
-         enlargement AND the free-period one at once, because an autonomous
+         (2026-09-01), the pair's free-period residual (`func_autonomous` on
+         `_pmap` in `solve`).  It is 4b's enlargement AND the free-period one at once, because an autonomous
          circuit under a two-step method needs both: the period because it
          is not given, the history because the companion reads it.  4b alone
          does not cover such a circuit and 4b's numbers are not this one's.
@@ -2228,7 +2228,8 @@ class PSS(Analysis):
       conditions as "one initial and k-1 final", chosen at both ends
       deliberately because it improves stability.  A periodic BVP hands
       them over for free: requiring the whole k-tuple to close is what
-      `func_solved_history` does.  The parasitic roots are also the spurious
+      gear's pair residual (`_pmap` in `solve`) does.  The parasitic roots
+      are also the spurious
       eigenvalues that appear in the 2m x 2m monodromy, which is why the
       autonomous eigenvalue-at-1 diagnostic would need redefining if the two
       systems were ever composed.  Standard reference for the BVP side:
@@ -2650,7 +2651,7 @@ class PSS(Analysis):
 
          AND IT IS NOW BUILT (2026-09-02) for the DRIVEN solved-history
          path: `solve(matrix_free=True)`, on `_traverse_factored` +
-         `_monodromy_matvec` + `_matrix_free_solve`.  The recursion is not
+         `_monodromy_matvec` + the matrix-free Newton.  The recursion is not
          duplicated -- `_step_sensitivity` took a `solve` argument and is
          still the one recursion, run at width 1 against a stored
          factorisation instead of width 2m.  End to end: 1.36x at m=242,
@@ -4577,205 +4578,114 @@ class PSS(Analysis):
     def _stack_columns(Pk):
         return np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
 
-    def _state_event_stage(self, x0_ss, info, ier, mesg, period, times, hs,
-                           maxiterations, tol, shoot_reltol, alpha):
-        """The bordered second stage of a driven solve: the crossings of the
-        first stage's orbit become unknowns.  Returns the stage-1 tuple
-        unchanged when the circuit declares no state event or its orbit
-        crosses none."""
+    def _state_event_stage(self, kind, z_ss, info, ier, mesg, period, times,
+                           hs, maxiterations, tol, shoot_reltol, alpha,
+                           phase_row=None, phase_k=None):
+        """The bordered second stage: the crossings of the first stage's
+        orbit become Newton unknowns (events phases A/B).  One stage for every
+        kind that has one since 2026-09-23 -- it was three, the driven and
+        the autonomous stage methods and gear's pair.
+
+        Unknowns ``(z, theta[, T])``: `z` the entering state (gear's PAIR
+        `(x_0, x_{-1})`), `theta` the `K` crossing fractions, and the period
+        when the circuit is autonomous (`phase_row` given).  Equations: the
+        orbit closes (folded on the idtmod rows), each crossing sits on its
+        threshold (`_event_rows_into`), and the phase row.  The period enters
+        as one more column of the step-size sensitivities (``d h_j / d T =
+        frac_j``).  Returns the stage-1 tuple unchanged when the circuit
+        declares no state event or its orbit crosses none; else ``(z, info,
+        ier, mesg, period, times, hs)`` on the landed grid (see
+        `_finish_state_events`)."""
+        autonomous = phase_row is not None
         W, c = self._state_event_rows()
         if W is None:
-            return x0_ss, info, ier, mesg, times, hs
-        trav = self._traverse_stage
+            return z_ss, info, ier, mesg, period, times, hs
         N = len(times) - 1
         m = self.cir.n - 1
-        trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
-             capture=set(range(1, N + 1)))
-        found = self._stage_one_crossings(x0_ss, times, period, W, c)
+        wm = len(z_ss)
+
+        def evmap(z, T, tms_, hs_, hsens, capture):
+            """`(z_end, M, Pk)`: the period map with its event columns."""
+            if kind == 'pair':
+                (x_last, x_prev, P_last, P_prev, Pk_last,
+                 Pk_prev) = self._traverse_solved_history(
+                    z[:m], z[m:], tms_, hs_, T=T, hsens=hsens, capture=capture)
+                return (np.concatenate((np.asarray(x_last, dtype=float),
+                                        np.asarray(x_prev, dtype=float))),
+                        np.vstack((np.asarray(P_last, dtype=float),
+                                   np.asarray(P_prev, dtype=float))),
+                        (np.vstack((self._stack_columns(Pk_last),
+                                    self._stack_columns(Pk_prev)))
+                         if len(Pk_last) else None))
+            _x0, x_end, Mx, Pk = self._traverse_stage(
+                z, T, tms_, hs_, hsens=hsens, capture=capture)
+            return (np.asarray(x_end, dtype=float), np.asarray(Mx, dtype=float),
+                    self._stack_columns(Pk) if len(Pk) else None)
+
+        ## the first stage's orbit, captured at every node, for the crossings
+        evmap(np.asarray(z_ss, dtype=float), period, times, hs,
+              np.zeros((N, 0)), set(range(1, N + 1)))
+        found = self._stage_one_crossings(z_ss[:m], times, period, W, c)
         if found is None:
-            return x0_ss, info, ier, mesg, times, hs
+            return z_ss, info, ier, mesg, period, times, hs
         base2, th0, Wk, ck = found
         K = len(th0)
+        ncol = K + (1 if autonomous else 0)
 
-        def func_ev(z):
-            x0 = np.asarray(z[:m], dtype=float)
-            th = np.asarray(z[m:], dtype=float)
-            fr, hsens, nodes = self._event_remap(base2, th0, th, period)
-            hs_ = fr * float(period)
+        def func_ev(zz):
+            z = np.asarray(zz[:wm], dtype=float)
+            th = np.asarray(zz[wm:wm + K], dtype=float)
+            T = float(zz[-1]) if autonomous else period
+            fr, hsens, nodes = self._event_remap(base2, th0, th, T)
+            hs_ = fr * float(T)
             tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-            _x0, x_end, Mx, Pk = trav(x0, period, tms_, hs_, hsens=hsens,
-                                      capture=set(nodes))
-            F = np.zeros(m + K)
-            J = np.zeros((m + K, m + K))
-            F[:m] = self._fold_periodic(x0 - np.asarray(x_end, dtype=float))
-            J[:m, :m] = np.eye(m) - alpha * np.asarray(Mx, dtype=float)
-            J[:m, m:] = -alpha * self._stack_columns(Pk)
-            self._event_rows_into(F, J, m, nodes, Wk, ck, m, K)
+            if autonomous:
+                hsens = np.column_stack((hsens, fr))   # d h_j / d T = fraction_j
+            z_end, M, Pkm = evmap(z, T, tms_, hs_, hsens, set(nodes))
+            F = np.zeros(wm + ncol)
+            J = np.zeros((wm + ncol, wm + ncol))
+            F[:wm] = self._fold_periodic(z - z_end)
+            J[:wm, :wm] = np.eye(wm) - alpha * M
+            J[:wm, wm:] = -alpha * Pkm
+            self._event_rows_into(F, J, wm, nodes, Wk, ck, wm, ncol)
+            if autonomous:
+                _k, _r = phase_row(z, Pkm[:, K])
+                J[wm + K, _k] = 1.0
+                F[wm + K] = _r
             return F, J
 
-        z0 = np.concatenate((np.asarray(x0_ss, dtype=float), th0))
         tol = np.asarray(tol, dtype=float)
-        abst = np.concatenate((tol, np.full(K, float(np.max(tol)))))
-        xt = np.concatenate((tol, np.full(K, 1e-12)))
-        z_ss, info, ier, mesg = analysis.fsolve(
-            func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
-            abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
-            line_search=True, floor_detect=True)
-        x0n = np.asarray(z_ss[:m], dtype=float)
-
-        def columns(tms_r, hs_r, hsens_r):
-            _x0r, _xe, Mx, Pk = trav(x0n, period, tms_r, hs_r, hsens=hsens_r,
-                                     capture=set(range(1, len(hs_r) + 1)))
-            return np.asarray(Mx, dtype=float), self._stack_columns(Pk), np.eye(m)
-
-        tms_r, hs_r = self._finish_state_events(
-            np.asarray(z_ss[m:], dtype=float), base2, th0, period, Wk, ck,
-            ier == 1, columns)
-        return x0n, info, ier, mesg, tms_r, hs_r
-
-    def _state_event_stage_gear(self, x0_ss, xm1_ss, info, ier, mesg, period, times, hs,
-                                maxiterations, tol, shoot_reltol, alpha):
-        """The bordered second stage of a driven GEAR solve: the pair
-        `(x_0, x_{-1})` and the crossings.  A two-step companion's step
-        derivative needs the previous step's partial (assembled in
-        `_traverse_solved_history` from the two partials that exist) and the
-        source at the new time; the residual is the pair closure plus the
-        event rows, the Jacobian the pair blocks plus the event columns at
-        the period and one step before it.  Its event columns are stored in
-        the PAIR form gear's map has (a node's state depends on `(x_0,
-        x_-1)`: `P_nodes[j]` is m x 2m, `P_end` 2m x K, the total monodromy
-        the pair map plus the saltation; item 3, 2026-09-22)."""
-        W, c = self._state_event_rows()
-        if W is None:
-            return x0_ss, xm1_ss, info, ier, mesg, times, hs
-        N = len(times) - 1
-        m = self.cir.n - 1
-        self._traverse_solved_history(x0_ss, xm1_ss, times, hs, T=period,
-                                      hsens=np.zeros((N, 0)), capture=set(range(1, N + 1)))
-        found = self._stage_one_crossings(x0_ss, times, period, W, c)
-        if found is None:
-            return x0_ss, xm1_ss, info, ier, mesg, times, hs
-        base2, th0, Wk, ck = found
-        K = len(th0)
-
-        def func_ev(z):
-            x0 = np.asarray(z[:m], dtype=float)
-            xm1 = np.asarray(z[m:2 * m], dtype=float)
-            th = np.asarray(z[2 * m:], dtype=float)
-            fr, hsens, nodes = self._event_remap(base2, th0, th, period)
-            hs_ = fr * float(period)
-            tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-            (x_last, x_prev, P_last, P_prev, Pk_last, Pk_prev) = self._traverse_solved_history(
-                x0, xm1, tms_, hs_, T=period, hsens=hsens, capture=set(nodes))
-            F = np.zeros(2 * m + K)
-            J = np.zeros((2 * m + K, 2 * m + K))
-            D = np.eye(m)
-            P_last = np.asarray(P_last, dtype=float)
-            P_prev = np.asarray(P_prev, dtype=float)
-            F[:m] = x0 - np.asarray(x_last, dtype=float)
-            F[m:2 * m] = xm1 - np.asarray(x_prev, dtype=float)
-            J[:m, :m] = D - alpha * P_last[:, :m]
-            J[:m, m:2 * m] = -alpha * P_last[:, m:]
-            J[m:2 * m, :m] = -alpha * P_prev[:, :m]
-            J[m:2 * m, m:2 * m] = D - alpha * P_prev[:, m:]
-            for k in range(K):
-                J[:m, 2 * m + k] = -alpha * np.asarray(Pk_last[k], dtype=float).ravel()
-                J[m:2 * m, 2 * m + k] = -alpha * np.asarray(Pk_prev[k], dtype=float).ravel()
-            self._event_rows_into(F, J, 2 * m, nodes, Wk, ck, 2 * m, K)
-            return F, J
-
-        z0 = np.concatenate((np.asarray(x0_ss, dtype=float), np.asarray(xm1_ss, dtype=float), th0))
-        tol = np.asarray(tol, dtype=float)
-        abst = np.concatenate((tol, tol, np.full(K, float(np.max(tol)))))
-        xt = np.concatenate((tol, tol, np.full(K, 1e-12)))
-        z_ss, info, ier, mesg = analysis.fsolve(
-            func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
-            abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
-            line_search=True, floor_detect=True)
-        x0n = np.asarray(z_ss[:m], dtype=float)
-        xm1n = np.asarray(z_ss[m:2 * m], dtype=float)
-
-        def columns(tms_r, hs_r, hsens_r):
-            (_xl, _xp, P_last, P_prev, Pk_last, Pk_prev) = self._traverse_solved_history(
-                x0n, xm1n, tms_r, hs_r, T=float(period), hsens=hsens_r,
-                capture=set(range(1, len(hs_r) + 1)))
-            P_end = np.vstack((self._stack_columns(Pk_last), self._stack_columns(Pk_prev)))
-            M_pair = np.vstack((np.asarray(P_last, dtype=float), np.asarray(P_prev, dtype=float)))
-            return M_pair, P_end, np.hstack((np.eye(m), np.zeros((m, m))))
-
-        ## (gear builds its columns whether or not the stage converged, as it
-        ## did before the stages shared this finish)
-        tms_r, hs_r = self._finish_state_events(
-            np.asarray(z_ss[2 * m:], dtype=float), base2, th0, period, Wk, ck,
-            True, columns)
-        return x0n, xm1n, info, ier, mesg, tms_r, hs_r
-
-    def _state_event_stage_autonomous(self, x0_ss, info, ier, mesg, period, times, hs,
-                                      maxiterations, tol, shoot_reltol, alpha,
-                                      phase_row, phase_k):
-        """The bordered second stage of an AUTONOMOUS solve: the crossings
-        of the stage-1 orbit AND the period as unknowns, `z = [x_0, theta,
-        T]` (the free-period solver reads the period last).  The period is
-        one more column of the event algebra -- `d h_j / d T = fraction_j`
-        at fixed theta -- so the traversal that carries the event columns
-        carries it too; the phase row closes the system as it does for the
-        free-period solve.  Returns the stage-1 tuple unchanged when the
-        circuit declares no state event or its orbit crosses none."""
-        W, c = self._state_event_rows()
-        if W is None:
-            return x0_ss, info, ier, mesg, period, times, hs
-        trav = self._traverse_stage
-        N = len(times) - 1
-        m = self.cir.n - 1
-        trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
-             capture=set(range(1, N + 1)))
-        found = self._stage_one_crossings(x0_ss, times, period, W, c)
-        if found is None:
-            return x0_ss, info, ier, mesg, period, times, hs
-        base2, th0, Wk, ck = found
-        K = len(th0)
-
-        def func_ev(z):
-            x0 = np.asarray(z[:m], dtype=float)
-            th = np.asarray(z[m:m + K], dtype=float)
-            Tz = float(z[-1])
-            fr, hsens, nodes = self._event_remap(base2, th0, th, Tz)
-            hs_ = fr * Tz
-            tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-            hsens_T = np.column_stack((hsens, fr))          # d h_j / d T = fraction_j
-            _x0, x_end, Mx, Pk = trav(x0, Tz, tms_, hs_, hsens=hsens_T,
-                                      capture=set(nodes))
-            Pkm = self._stack_columns(Pk)
-            F = np.zeros(m + K + 1)
-            J = np.zeros((m + K + 1, m + K + 1))
-            F[:m] = self._fold_periodic(x0 - np.asarray(x_end, dtype=float))
-            J[:m, :m] = np.eye(m) - alpha * np.asarray(Mx, dtype=float)
-            J[:m, m:] = -alpha * Pkm
-            self._event_rows_into(F, J, m, nodes, Wk, ck, m, K + 1)
-            _k, _r = phase_row(x0, Pkm[:, K])
-            J[m + K, _k] = 1.0
-            F[m + K] = _r
-            return F, J
-
-        z0 = np.concatenate((np.asarray(x0_ss, dtype=float), th0, [float(period)]))
-        tol = np.asarray(tol, dtype=float)
-        abst = np.concatenate((tol, np.full(K, float(np.max(tol))), [tol[phase_k]]))
-        xt = np.concatenate((tol, np.full(K, 1e-12), [1e-15 * float(period)]))
-        z_ss, info, ier, mesg = self._free_period_solve(
-            func_ev, z0, abst, xt, shoot_reltol, maxiterations, float(period))
-        x0n = np.asarray(z_ss[:m], dtype=float)
-        Tn = float(z_ss[-1])
+        tail = ([float(period)],) if autonomous else ()
+        z0 = np.concatenate((np.asarray(z_ss, dtype=float), th0) + tail)
+        abst = np.concatenate(tuple([tol] * (wm // m))
+                              + (np.full(K, float(np.max(tol))),)
+                              + (([tol[phase_k]],) if autonomous else ()))
+        xt = np.concatenate(tuple([tol] * (wm // m)) + (np.full(K, 1e-12),)
+                            + (([1e-15 * float(period)],) if autonomous
+                               else ()))
+        if autonomous:
+            z_new, info, ier, mesg = self._free_period_solve(
+                func_ev, z0, abst, xt, shoot_reltol, maxiterations,
+                float(period))
+        else:
+            z_new, info, ier, mesg = analysis.fsolve(
+                func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
+                abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
+                line_search=True, floor_detect=True)
+        zn = np.asarray(z_new[:wm], dtype=float)
+        Tn = float(z_new[-1]) if autonomous else period
 
         def columns(tms_r, hs_r, hsens_r):
             ## the monodromy at FIXED period: the orbit's own map
-            _x0r, _xe, Mx, Pk = trav(x0n, Tn, tms_r, hs_r, hsens=hsens_r,
-                                     capture=set(range(1, len(hs_r) + 1)))
-            return np.asarray(Mx, dtype=float), self._stack_columns(Pk), np.eye(m)
-
+            _ze, M, Pk = evmap(zn, Tn, tms_r, hs_r, hsens_r,
+                               set(range(1, len(hs_r) + 1)))
+            return M, Pk, np.hstack((np.eye(m), np.zeros((m, wm - m))))
+        ## (gear's pair builds its columns whether or not the stage converged,
+        ## as it did before the stages shared this finish)
         tms_r, hs_r = self._finish_state_events(
-            np.asarray(z_ss[m:m + K], dtype=float), base2, th0, Tn, Wk, ck,
-            ier == 1, columns)
-        return x0n, info, ier, mesg, Tn, tms_r, hs_r
+            np.asarray(z_new[wm:wm + K], dtype=float), base2, th0, Tn, Wk, ck,
+            ier == 1 or kind == 'pair', columns)
+        return zn, info, ier, mesg, Tn, tms_r, hs_r
 
     def _period_grid(self, period, npts, grid):
         """`(times, hs)` for one period -- uniform, or a caller's own grid.
@@ -4996,8 +4906,8 @@ class PSS(Analysis):
         rising to 73% at 400 as the seam falls one order slower than the
         interior.
 
-        Autonomous runs take it too, through the composed system
-        (`func_autonomous_solved_history`): a free period does not remove
+        Autonomous runs take it too, through the composed system (the pair's
+        free-period residual in `solve`): a free period does not remove
         the need for a history the companion can read.  See 4c in the class
         docstring for what the seam does to an oscillator, which is NOT what
         it does to a driven circuit -- 0.75% of the error against 54%,
@@ -9100,10 +9010,17 @@ class PSS(Analysis):
     KRYLOV_RESTART = 200
     KRYLOV_MAX_CYCLES = 20
 
-    def _matrix_free_solve(self, z0, times, hs, abstol, xtol, reltol,
-                           maxiter):
-        """The outer Newton with the monodromy never formed (item 6).
+    def _matrix_free_newton(self, build, z0, abstol, xtol, reltol, maxiter):
+        """The Newton loop every matrix-free system shares.
 
+        `build(z)` returns `(F, matvec)` for the current iterate -- one
+        trajectory pass, then a linear operator that never forms its matrix.
+        Written once because the four systems differ ONLY in those two
+        things: the plain path's `I - M`, the solved-history path's `2m`
+        pair, and the bordered autonomous versions of each (one builder
+        since 2026-09-23, `_mf_build` in `solve`).
+
+        MEASURED (moved here from the solved-history driver, 2026-09-23).
         The dense path builds the `2m x 2m` Jacobian and factors it once per
         iteration; here the same iteration runs on a matvec, so the
         `2m`-column propagation never happens.  Measured against the dense
@@ -9154,27 +9071,6 @@ class PSS(Analysis):
         proof of direction, and this is the first thing to check if the two
         paths ever disagree on convergence.
         """
-        m = self.cir.n - 1
-
-        def build(z):
-            C0, steps, x_last, x_prev = self._traverse_factored(
-                z[:m], z[m:], times, hs)
-            F = np.concatenate((z[:m] - np.asarray(x_last),
-                                z[m:] - np.asarray(x_prev)))
-            return F, (lambda v: v - self._monodromy_matvec(C0, steps, v))
-
-        return self._matrix_free_newton(build, z0, abstol, xtol, reltol,
-                                        maxiter)
-
-    def _matrix_free_newton(self, build, z0, abstol, xtol, reltol, maxiter):
-        """The Newton loop every matrix-free system shares.
-
-        `build(z)` returns `(F, matvec)` for the current iterate -- one
-        trajectory pass, then a linear operator that never forms its matrix.
-        Written once because the four systems differ ONLY in those two
-        things: the plain path's `I - M`, the solved-history path's `2m`
-        pair, and the bordered autonomous versions of each.
-        """
         import scipy.sparse.linalg as spla
         z = np.asarray(z0, dtype=float).copy()
         n = len(z)
@@ -9223,7 +9119,7 @@ class PSS(Analysis):
             z_new = z + xdiff
 
             ## `|J| . |x|` is not available without the matrix; see
-            ## `_matrix_free_solve` for what this substitute is and is not.
+            ## this docstring for what this substitute is and is not.
             I_scale = np.abs(z_new) + np.abs(mv(z_new)) + np.abs(F)
             conv_x = np.all(np.abs(xdiff)
                             < reltol * np.maximum(np.abs(z_new), np.abs(z))
@@ -10507,9 +10403,14 @@ class PSS(Analysis):
         if not rows:
             return F
         F = np.asarray(F, dtype=float).copy()
-        for r, m in rows:
-            if r < F.shape[0]:
-                F[r] -= m * np.round(F[r] / m)
+        ## every STATE of the unknown folds on its own rows -- gear's pair
+        ## `(x_0, x_{-1})` carries two (its autonomous and event residuals did
+        ## not fold at all before 2026-09-23; the driven one folded each half)
+        w = self.cir.n - 1
+        for off in range(0, F.shape[0], w):
+            for r, m in rows:
+                if off + r < F.shape[0]:
+                    F[off + r] -= m * np.round(F[off + r] / m)
         return F
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
@@ -11077,9 +10978,9 @@ class PSS(Analysis):
         def _closing(x0, x_end, M):
             """The fixed-period system at one iterate: ``F = x_0 - phi(x_0)``
             (folded on the idtmod rows), ``J = I - alpha M``."""
-            D = np.asarray(toolkit.eye(n - 1))
-            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
-                    D - alpha * M)
+            F = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
+            D = np.asarray(toolkit.eye(F.shape[0]))
+            return F, D - alpha * M
 
         def _bordered(F, J, tcol, x0_vec, phase_col):
             """The FREE-PERIOD system: the fixed-period one `(F, J)` bordered
@@ -11384,168 +11285,85 @@ class PSS(Analysis):
         ## substitution' alternative was dead and the claim it selected was
         ## false anyway -- see the non-convergence warning below.)
 
-        def func(x):
-            x0, x_end, Mx, _Mt = self._traverse(x, period, times, hs,
-                                                want_dT=False,
-                                                open_at_x0=x0_unknown)
-            return _closing(x0, x_end, Mx)
+        ## THE PERIOD MAP, per kind -- the only thing about the Newton that
+        ## depends on the method (2026-09-23: it was eight residual closures,
+        ## one per kind and driven/free period).
+        _integ_m = self._integrator_for(method)
+        if _integ_m.is_stage_method():
+            _kind = ('glm' if getattr(_integ_m, 'is_multivalue',
+                                      lambda: False)() else 'stage')
+        elif solved_history:
+            _kind = 'pair'
+        else:
+            _kind = 'plain'
 
-        def func_solved_history(z):
-            """Residual and Jacobian when the entering history is an unknown.
+        def _pmap(z, T, tms_, hs_, want_dT):
+            """One period from the unknown `z`: ``(z_0, z_end, M, Mt)`` with
+            `M = dz_end/dz_0` and, on request, the period column `Mt`.
 
-            Unknowns are `(x_0, x_{-1})`; the equations are that BOTH close,
+            * PLAIN (one-step LMM): `z` is the entering state; with a
+              manufacturing step the period opens one step in, so `z_0` is
+              the state it opened at.
+            * gear's PAIR: `z = (x_0, x_{-1})`, and BOTH close --
+              ``F = [x_0 - x_{N-1}, x_{-1} - x_{N-2}]``, the rows of
+              ``M = [[A(N-1,0), A(N-1,-1)], [A(N-2,0), A(N-2,-1)]]`` from
+              `_traverse_solved_history`.  A two-step companion needs two
+              states to be continued, so periodicity of ONE is an
+              under-determined statement about the orbit (1.266e-01 V at 100
+              points under Gear-2 before this).  ⚠ THE HISTORY POINT MOVES
+              WITH T: `x_{-1}` sits at `-T/(N-1)`, and `x_{-1}`, `x_{N-2}` are
+              the same phase of the orbit at every `T`, so the residual is
+              still right and its `T` column is the propagation to step N-2.
+            * STAGE (Radau, TR-BDF2, ESDIRK): self-starting, `z` IS `x_0`,
+              `M` the dense stage product (`_traverse_stage`).
+            * GLM: the method's own map (the startup at the top of the
+              period, then N multivalue steps); ⚠ `M` is APPROXIMATE -- the
+              residual is exact, the Jacobian drops the startup's derivative
+              (see `_traverse_glm`); its period column carries the two
+              explicit `T` dependences a multivalue method has.
 
-                F = [ x_0 - x_{N-1} ,  x_{-1} - x_{N-2} ]
-                J = [[ I - A(N-1,0) , -A(N-1,-1) ],
-                     [   -A(N-2,0)  , I - A(N-2,-1) ]]
-
-            with `A(j,k) = d x_j / d x_k`, which is what `_traverse_solved_history`
-            returns as one `n x 2n` block per row.  A two-step companion needs
-            two states to be continued, so periodicity of ONE of them is an
-            under-determined statement about the orbit -- which is the defect
-            this replaces, measured at 1.266e-01 V for Gear-2 at 100 points
-            per period.
-            """
+            ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY FOR AN AUTONOMOUS CIRCUIT:
+            the grid is rebuilt at the current `T` (``dh/dT = h/T`` for every
+            step, uniform or not) and the stage derivatives carry no time of
+            their own."""
             m = n - 1
-            x0_in, xm1_in = z[:m], z[m:]
-            x_last, x_prev, P_last, P_prev = self._traverse_solved_history(
-                x0_in, xm1_in, times, hs)
+            if _kind == 'pair':
+                if want_dT:
+                    (x_last, x_prev, P_last, P_prev, Pt_last,
+                     Pt_prev) = self._traverse_solved_history(
+                        z[:m], z[m:], tms_, hs_, T=T, want_dT=True)
+                    Mt = np.concatenate((np.asarray(Pt_last).ravel(),
+                                         np.asarray(Pt_prev).ravel()))
+                else:
+                    x_last, x_prev, P_last, P_prev = \
+                        self._traverse_solved_history(z[:m], z[m:], tms_, hs_)
+                    Mt = None
+                return (z, np.concatenate((np.asarray(x_last),
+                                           np.asarray(x_prev))),
+                        np.vstack((P_last, P_prev)), Mt)
+            if _kind == 'stage':
+                return self._traverse_stage(z, T, tms_, hs_, want_dT=want_dT)
+            if _kind == 'glm':
+                if want_dT:
+                    return self._traverse_glm(z, T, tms_, hs_, want_dT=True)
+                return self._traverse_glm(z, T, tms_, hs_) + (None,)
+            return self._traverse(z, T, tms_, hs_, want_dT=want_dT,
+                                  open_at_x0=x0_unknown)
 
-            D = np.asarray(toolkit.eye(m))
-            J = np.zeros((2 * m, 2 * m))
-            J[:m, :m] = D - alpha * P_last[:, :m]
-            J[:m, m:] = -alpha * P_last[:, m:]
-            J[m:, :m] = -alpha * P_prev[:, :m]
-            J[m:, m:] = D - alpha * P_prev[:, m:]
-            F = np.concatenate((
-                self._fold_periodic(np.asarray(x0_in) - np.asarray(x_last)),
-                self._fold_periodic(np.asarray(xm1_in) - np.asarray(x_prev))))
-            return F, J
+        def func(z):
+            """The fixed-period system, ``x_0 - phi(x_0) = 0``."""
+            z0_, z_end, M, _Mt = _pmap(z, period, times, hs, False)
+            return _closing(z0_, z_end, M)
 
-        def func_autonomous(z):
-            """Residual and Jacobian of the FREE-PERIOD system.
-
-            Unknowns are `(x0, T)`; equations are the period map's fixed
-            point plus a phase condition, because without one the system is
-            singular by construction -- every point on the orbit is a
-            solution, so `I - M` has a null direction along it.
-
-                F = [ x0 - phi_T(x0) ,  x0[k] - pinned ]
-                J = [[ I - M , -dphi/dT ],
-                     [ e_k^T ,     0    ]]
-
-            `k` is the coordinate moving fastest at the seed, so the orbit
-            crosses the pinning hyperplane transversally; pinning a slow
-            coordinate makes the last row nearly parallel to the null
-            direction it is there to remove.
-            """
-            x_in, T = z[:-1], float(z[-1])
-            ## Rebuilt at the CURRENT T, which is what keeps `dh/dT = h/T`
-            ## true of every step -- uniform or not.
-            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            x0, x_end, Mx, Mt = self._traverse(x_in, T, tms, hs_T,
-                                               want_dT=True,
-                                               open_at_x0=x0_unknown)
-            return _bordered(*_closing(x0, x_end, Mx), Mt, x0, Mt)
-        
-        def func_autonomous_solved_history(z):
-            """Both enlargements at once: `(x_0, x_{-1}, T)`.
-
-            The free-period system and a solved entering history grow the
-            SAME unknown vector in different directions, and a two-step
-            method on an autonomous circuit needs both -- the period because
-            it is not given, the history because the companion reads it.
-
-                F = [ x_0  - x_{N-1} ,  x_{-1} - x_{N-2} ,  x_0[k] - pin ]
-
-                J = [[ I - A(N-1,0) ,   -A(N-1,-1) , -dx_{N-1}/dT ],
-                     [   -A(N-2,0)  , I - A(N-2,-1), -dx_{N-2}/dT ],
-                     [     e_k^T    ,       0      ,       0      ]]
-
-            ⚠ ONE PHASE ROW STILL SUFFICES, and it pins only the `x_0`
-            block.  Time translation slides BOTH states along the orbit
-            together -- the null vector is `(xdot(0) ds, xdot(-h) ds, dT)` --
-            so the freedom stays one-dimensional and pinning `x_0[k]` kills
-            it whenever `xdot(0)[k] != 0`.  That is the same reason `k` is
-            chosen as the fastest-moving coordinate at the seed, and the
-            same reason a slow one would leave the last row nearly parallel
-            to the direction it exists to remove.
-
-            ⚠ THE HISTORY POINT MOVES WITH T.  `x_{-1}` sits at `-T/(N-1)`,
-            so its location tracks the unknown.  The residual is still the
-            right statement -- `x_{-1}` and `x_{N-2}` are the same phase of
-            the orbit at every T -- and the T column is just the propagation
-            accumulated to step N-2, which the ring already carries.
-            """
-            m = n - 1
-            x0_in, xm1_in, T = z[:m], z[m:2 * m], float(z[-1])
-            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            (x_last, x_prev, P_last, P_prev, Pt_last,
-             Pt_prev) = self._traverse_solved_history(
-                x0_in, xm1_in, tms, hs_T, T=T, want_dT=True)
-
-            D = np.asarray(toolkit.eye(m))
-            J = np.zeros((2 * m, 2 * m))
-            J[:m, :m] = D - alpha * P_last[:, :m]
-            J[:m, m:] = -alpha * P_last[:, m:]
-            J[m:, :m] = -alpha * P_prev[:, :m]
-            J[m:, m:] = D - alpha * P_prev[:, m:]
-            F = np.concatenate((np.asarray(x0_in) - np.asarray(x_last),
-                                np.asarray(xm1_in) - np.asarray(x_prev)))
-            tcol = np.concatenate((np.asarray(Pt_last).ravel(),
-                                   np.asarray(Pt_prev).ravel()))
-            return _bordered(F, J, tcol, x0_in, Pt_last)
-
-        def func_stage(x):
-            """Driven fixed-period residual and Jacobian for a Runge-Kutta
-            stage method (Radau IIA, TR-BDF2, ESDIRK).
-
-            `x` IS `x_0` (self-starting), so `F = x_0 - phi(x_0)` and
-            `J = I - M` with `M` the dense monodromy from `_traverse_stage`.
-            No manufacturing step, no solved history.
-            """
-            x0, x_end, Mx, _Mt = self._traverse_stage(
-                x, period, times, hs, want_dT=False)
-            return _closing(x0, x_end, Mx)
-
-        def func_autonomous_stage(z):
-            """Free-period residual and Jacobian for a Runge-Kutta stage
-            method.
-
-            Unknowns `(x0, T)`; `F = [x0 - phi_T(x0), x0[k] - pinned]`,
-            `J = [[I - M, -dphi/dT], [e_k^T, 0]]`.  The period column
-            `dphi/dT` comes from `_traverse_stage(want_dT=True)`, tractable
-            because the circuit is autonomous.
-            """
-            x_in, T = z[:-1], float(z[-1])
-            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            x0, x_end, Mx, Mt = self._traverse_stage(
-                x_in, T, tms, hs_T, want_dT=True)
-            return _bordered(*_closing(x0, x_end, Mx), Mt, x0, Mt)
-
-        def func_glm(x):
-            """Driven fixed-period residual/Jacobian for a Nordsieck GLM:
-            `F = x0 - phi(x0)` with `phi` the method's own period map (the
-            startup at the top of the period, then N multivalue steps), and
-            `J = I - M` with `M` the APPROXIMATE monodromy `_traverse_glm`
-            documents -- the residual is exact, the Jacobian drops the
-            startup's derivative."""
-            x0, x_end, Mx = self._traverse_glm(x, period, times, hs)
-            return _closing(x0, x_end, Mx)
-
-        def func_autonomous_glm(z):
-            """Free-period residual/Jacobian for a Nordsieck GLM.  Same shape
-            as the DIRK one; the period column comes from
-            `_traverse_glm(want_dT=True)` and carries the two explicit `T`
-            dependences a multivalue method has -- the grid's `h = frac T` in
-            every step AND the starting vector's own `Q_k = h^k q^(k)` scaling,
-            `dQ_k/dT = (k/T) Q_k`.  ⚠ What it drops is what `Mx` drops: the
-            Radau substeps inside the startup."""
-            x_in, T = z[:-1], float(z[-1])
-            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            x0, x_end, Mx, Mt = self._traverse_glm(
-                x_in, T, tms, hs_T, want_dT=True)
-            return _bordered(*_closing(x0, x_end, Mx), Mt, x0, Mt)
+        def func_autonomous(zT):
+            """The FREE-PERIOD system: unknowns `(z, T)`, the fixed-period
+            equations bordered by the period column and the phase row (see
+            `_bordered`) -- rebuilt at the CURRENT `T`, which is what keeps
+            `dh/dT = h/T` true of every step."""
+            z, T = zT[:-1], float(zT[-1])
+            tms_, hs_T = self._period_grid(T, npts, self._grid_fracs)
+            z0_, z_end, M, Mt = _pmap(z, T, tms_, hs_T, True)
+            return _bordered(*_closing(z0_, z_end, M), Mt, z0_, Mt)
 
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
@@ -11602,203 +11420,117 @@ class PSS(Analysis):
         ## undamped iteration would have moved uphill.
 
         ## Find periodic steady state x-vector
-        if self._integrator_for(method).is_stage_method():
-            ## A self-starting stage method: its own dense monodromy, never
-            ## solved-history, always self-starting (x0 is the unknown).
-            ## `_traverse_stage` routes BY STRUCTURE (coupled for a fully
-            ## implicit tableau, sequential for a DIRK/ESDIRK) and is
-            ## tableau-generic; a new method of either family needs no edit
-            ## here.
-            _integ_m = self._integrator_for(method)
-            if getattr(_integ_m, 'is_multivalue', lambda: False)():
-                _fdr = func_glm
-                _fda = func_autonomous_glm
-            else:
-                _fdr = func_stage
-                _fda = func_autonomous_stage
-            _label = method
-            if matrix_free:
-                raise NotImplementedError(
-                    'PSS: matrix-free shooting is not built for %s; its '
-                    'monodromy is a dense stage product. Drop '
-                    'matrix_free, or use a one-step LMM.' % _label)
-            if self.autonomous:
-                xa = np.asarray(x, dtype=float)
-                z0 = np.concatenate((xa, [period]))
-                abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
-                xtol_z = np.concatenate((_tol, [1e-15 * period]))
-                z_ss, _info, _ier, _mesg = self._free_period_solve(
-                    _fda, z0, abstol_z, xtol_z,
-                    _shoot_reltol, maxiterations, period)
-                x0_ss = z_ss[:-1]
-                self.period = period = float(z_ss[-1])
-                times, hs = self._period_grid(period, npts, self._grid_fracs)
-                if state_events and _ier == 1 and _fda is func_autonomous_stage:
-                    (x0_ss, _info, _ier, _mesg, period, times, hs) = self._state_event_stage_autonomous(
-                        x0_ss, _info, _ier, _mesg, period, times, hs,
-                        maxiterations, _tol, _shoot_reltol, alpha, _phase_row, phase_k)
-                    self.period = period
-            else:
-                x0_ss, _info, _ier, _mesg = analysis.fsolve(
-                    _fdr, x, maxiter=maxiterations,
-                    reltol=_shoot_reltol, abstol=_tol, xtol=_tol,
-                    toolkit=self.toolkit, full_output=True, line_search=True,
-                    floor_detect=True)
-                if state_events and _ier == 1 and _fdr is func_stage:
-                    (x0_ss, _info, _ier, _mesg, times, hs) = self._state_event_stage(
-                        x0_ss, _info, _ier, _mesg, period, times, hs,
-                        maxiterations, _tol, _shoot_reltol, alpha)
-        elif self.autonomous and solved_history:
-            ## BOTH unknowns and the period.  The floors follow the same
-            ## rule as the plain autonomous system: the two state blocks
-            ## take the solution-unit tolerance, and the row that adds a
-            ## TIME as an unknown takes a time as its floor -- mixing them
-            ## is flavour error F6(a) one row further out.
-            m_ = n - 1
-            xa = np.asarray(x, dtype=float)
-            z0 = np.concatenate((xa, xa, [period]))
-            abstol_z = np.concatenate((_tol, _tol, [_tol[phase_k]]))
-            xtol_z = np.concatenate((_tol, _tol, [1e-15 * period]))
-            _mfc = None
-            if matrix_free:
-                ## BOTH ENLARGEMENTS AT ONCE, matrix-free.  With
-                ## `w = (v_0, v_{-1}, s)` and `M v` the `2m` pair map,
-                ##     J w = [ v - M v - s (Pt_last, Pt_prev) ; v[k] ]
-                ## -- one phase row, pinning the `x_0` block only, exactly as
-                ## the dense system does and for the same reason.
-                self._monodromy = None
+        ## Find the periodic steady state: ONE Newton for every kind
+        ## (2026-09-23; it was a five-way branch).  The unknown is the entering
+        ## state -- gear's PAIR `(x_0, x_{-1})`, seeded `x_{-1} = x_0`, the
+        ## old formulation's assumption written down, so a pair run starts
+        ## where a plain one does and the comparison is about the SOLVE -- and
+        ## on an autonomous circuit the period joins it.  Its row is the phase
+        ## condition, in the units of the coordinate it pins (`_tol[phase_k]`),
+        ## while the UNKNOWN it adds is a time whose own floor must be a time:
+        ## mixing the two is flavour error F6(a) one row further out.
+        m = n - 1
+        _width = 2 if _kind == 'pair' else 1
+        if matrix_free and _kind in ('stage', 'glm'):
+            raise NotImplementedError(
+                'PSS: matrix-free shooting is not built for %s; its '
+                'monodromy is a dense stage product. Drop '
+                'matrix_free, or use a one-step LMM.' % method)
+        z0 = np.concatenate([np.asarray(x, dtype=float)] * _width)
+        tol_z = np.concatenate([_tol] * _width)
+        _mf = None
+        if matrix_free:
+            ## ⚠ THE MONODROMY IS NOT FORMED, so it must not be REPORTED
+            ## either: `_monodromy` survives from any earlier traversal and
+            ## `spectral_radius` reads it without knowing which run wrote it.
+            ## (Only the pair's matrix-free paths cleared it; the plain ones
+            ## reported the previous solve's radius.)
+            self._monodromy = None
 
-                def _build_comp(z):
-                    x0_, xm1_, T_ = z[:m_], z[m_:2 * m_], float(z[-1])
-                    tms_, hsT_ = self._period_grid(T_, npts, self._grid_fracs)
-                    (C0_, st_, xl_, xp_, Ptl_,
-                     Ptp_) = self._traverse_factored(
-                        x0_, xm1_, tms_, hsT_, T=T_, want_dT=True)
-                    Ptv_ = np.concatenate((np.asarray(Ptl_).ravel(),
-                                           np.asarray(Ptp_).ravel()))
-                    k_, r_ = _phase_row(x0_, Ptl_)
-                    F_ = np.concatenate(
-                        (np.asarray(x0_, dtype=float) - np.asarray(xl_, dtype=float),
-                         np.asarray(xm1_, dtype=float) - np.asarray(xp_, dtype=float),
-                         [r_]))
+            def _mf_build(zz):
+                """RECORDED SCOPE ITEM 6: the Newton's residual and its
+                Jacobian as a MAT-VEC, from the factored period (`m` columns
+                on the plain map, `2m` on the pair, never formed).  With the
+                period an unknown, `dphi/dT` is ONE column independent of the
+                Krylov direction, computed once per Newton iteration:
 
-                    def mv_(w):
-                        v_, s_ = w[:2 * m_], float(w[2 * m_])
-                        top = (v_ - alpha * self._monodromy_matvec(C0_, st_, v_)
-                               - s_ * Ptv_)
-                        return np.concatenate((top, [v_[k_]]))
-                    return F_, mv_
+                    J [v; s] = [ (I - M) v - s dphi/dT ; v_k ]
 
-                def _mfc(z0_, ab_, xt_, rt_, mi_):
-                    return self._matrix_free_newton(_build_comp, z0_, ab_,
-                                                    xt_, rt_, mi_)
-            z_ss, _info, _ier, _mesg = self._free_period_solve(
-                func_autonomous_solved_history, z0, abstol_z, xtol_z,
-                _shoot_reltol, maxiterations, period, solver=_mfc)
-            x0_ss, xm1_ss = z_ss[:m_], z_ss[m_:2 * m_]
-            self.period = period = float(z_ss[-1])
-            times, hs = self._period_grid(period, npts, self._grid_fracs)
-        elif self.autonomous:
-            ## The period joins the unknowns.  Its residual row is the phase
-            ## condition -- in the units of the coordinate it pins, hence
-            ## `_tol[phase_k]` -- while the UNKNOWN it adds is a time, whose
-            ## own floor has to be a time; mixing the two is the flavour
-            ## error F6(a) names, one row further out.
-            z0 = np.concatenate((np.asarray(x, dtype=float), [period]))
-            abstol_z = np.concatenate((_tol, [_tol[phase_k]]))
-            xtol_z = np.concatenate((_tol, [1e-15 * period]))
-            _mf = None
-            if matrix_free:
-                ## THE BORDERED SYSTEM, matrix-free.  `dphi/dT` is ONE column
-                ## and does not depend on the Krylov direction, so the
-                ## trajectory pass computes it once per Newton iteration and
-                ## the matvec just uses it:
-                ##     J [v; s] = [ (I - M) v - s dphi/dT ; v_k ]
-                m_ = n - 1
-
-                def _build_auto(z):
-                    xin_, T_ = z[:m_], float(z[-1])
-                    tms_, hsT_ = self._period_grid(T_, npts, self._grid_fracs)
-                    op_, st_, x0_, xe_, Mt_ = self._traverse_factored_plain(
-                        xin_, T_, tms_, hsT_, want_dT=True,
+                -- one phase row, pinning the `x_0` block only, as the dense
+                system does."""
+                if self.autonomous:
+                    z, T_ = zz[:-1], float(zz[-1])
+                    tms_, hs_ = self._period_grid(T_, npts, self._grid_fracs)
+                else:
+                    z, T_, tms_, hs_ = zz, period, times, hs
+                if _kind == 'pair':
+                    out = self._traverse_factored(z[:m], z[m:], tms_, hs_,
+                                                  T=T_, want_dT=self.autonomous)
+                    fp_ = FactoredPeriod('solved_history', out[0], out[1],
+                                         None, None, self)
+                    z0_ = z
+                    ze_ = np.concatenate((np.asarray(out[2]),
+                                          np.asarray(out[3])))
+                    Mt_ = (np.concatenate((np.asarray(out[4]).ravel(),
+                                           np.asarray(out[5]).ravel()))
+                           if self.autonomous else None)
+                else:
+                    op_, st_, z0_, ze_, Mt_ = self._traverse_factored_plain(
+                        z, T_, tms_, hs_, want_dT=self.autonomous,
                         open_at_x0=x0_unknown)
-                    x0_ = np.asarray(x0_, dtype=float)
-                    Mt_ = np.asarray(Mt_, dtype=float).ravel()
-                    k_, r_ = _phase_row(x0_, Mt_)
-                    F_ = np.concatenate((x0_ - np.asarray(xe_, dtype=float),
-                                         [r_]))
+                    fp_ = FactoredPeriod('plain', op_, st_, None, None, self)
+                F_ = self._fold_periodic(np.asarray(z0_, dtype=float)
+                                         - np.asarray(ze_, dtype=float))
+                if not self.autonomous:
+                    return F_, (lambda v: v - alpha * fp_.matvec(v))
+                Mt_ = np.asarray(Mt_, dtype=float).ravel()
+                k_, r_ = _phase_row(z0_, Mt_)
 
-                    def mv_(w):
-                        v_, s_ = w[:m_], float(w[m_])
-                        top = (v_ - alpha * self._monodromy_matvec_plain(
-                            op_, st_, v_)) - s_ * Mt_
-                        return np.concatenate((top, [v_[k_]]))
-                    return F_, mv_
+                def mv_(w):
+                    v_, s_ = w[:-1], float(w[-1])
+                    top = (v_ - alpha * fp_.matvec(v_)) - s_ * Mt_
+                    return np.concatenate((top, [v_[k_]]))
+                return np.concatenate((F_, [r_])), mv_
 
-                def _mf(z0_, ab_, xt_, rt_, mi_):
-                    return self._matrix_free_newton(_build_auto, z0_, ab_,
-                                                    xt_, rt_, mi_)
+            def _mf(z0_, ab_, xt_, rt_, mi_):
+                return self._matrix_free_newton(_mf_build, z0_, ab_, xt_,
+                                                rt_, mi_)
+        if self.autonomous:
+            zT0 = np.concatenate((z0, [period]))
+            abstol_z = np.concatenate((tol_z, [_tol[phase_k]]))
+            xtol_z = np.concatenate((tol_z, [1e-15 * period]))
             z_ss, _info, _ier, _mesg = self._free_period_solve(
-                func_autonomous, z0, abstol_z, xtol_z, _shoot_reltol,
+                func_autonomous, zT0, abstol_z, xtol_z, _shoot_reltol,
                 maxiterations, period, solver=_mf)
-            x0_ss = z_ss[:-1]
             self.period = period = float(z_ss[-1])
-            ## The grid follows the solved period; everything downstream --
-            ## the replay, the waveform, the DFT -- must use it or the
-            ## answer is reported on a period the solver rejected.
+            z_ss = z_ss[:-1]
+            ## the grid follows the solved period; everything downstream --
+            ## the replay, the waveform, the DFT -- must use it, or the
+            ## answer is reported on a period the solver rejected
             times, hs = self._period_grid(period, npts, self._grid_fracs)
-        elif solved_history:
-            ## THE SEED IS THE OLD FORMULATION'S ASSUMPTION, written down:
-            ## `x_{-1} = x_0`.  It is what the plain path silently assumes
-            ## (it seeds both charge rings with the entering state), so an
-            ## solved-history run starts where a plain one starts and the
-            ## comparison between them is about the SOLVE, not the seed.
-            xa = np.asarray(x, dtype=float)
-            z0 = np.concatenate((xa, xa))
-            tol_z = np.concatenate((_tol, _tol))
-            if matrix_free:
-                ## ⚠ THE MONODROMY IS NOT FORMED, so it must not be
-                ## REPORTED either.  `_monodromy` survives on the object
-                ## from any earlier traversal, and `spectral_radius` reads
-                ## it below without knowing which run wrote it -- so a
-                ## matrix-free solve that left it alone would report the
-                ## PREVIOUS solve's radius as this one's.  Cleared here,
-                ## and `spectral_radius` is documented as None on this path.
-                self._monodromy = None
-                z_ss, _info, _ier, _mesg = self._matrix_free_solve(
-                    z0, times, hs, tol_z, tol_z, _shoot_reltol,
-                    maxiterations)
-            else:
-                z_ss, _info, _ier, _mesg = analysis.fsolve(
-                    func_solved_history, z0, maxiter=maxiterations,
-                    reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
-                    toolkit=self.toolkit, full_output=True, line_search=True,
-                    floor_detect=True)
-            x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
-            if state_events and _ier == 1 and not matrix_free:
-                (x0_ss, xm1_ss, _info, _ier, _mesg, times, hs) = self._state_event_stage_gear(
-                    x0_ss, xm1_ss, _info, _ier, _mesg, period, times, hs,
-                    maxiterations, _tol, _shoot_reltol, alpha)
         elif matrix_free:
-            ## RECORDED SCOPE ITEM 6 on the PLAIN path: `m` columns rather
-            ## than `2m`, so a lower share and a lower ceiling than the
-            ## solved-history route -- 42.5% and 1.71x at m=502, 60.7% and
-            ## 2.50x at m=1002.
-            def _build(z):
-                opening, steps, x0_, xe_, _dT = self._traverse_factored_plain(
-                    z, period, times, hs, want_dT=False,
-                    open_at_x0=x0_unknown)
-                return (np.asarray(x0_) - np.asarray(xe_),
-                        lambda v: v - alpha * self._monodromy_matvec_plain(
-                            opening, steps, v))
-            x0_ss, _info, _ier, _mesg = self._matrix_free_newton(
-                _build, np.asarray(x, dtype=float), _tol, _tol,
-                _shoot_reltol, maxiterations)
+            z_ss, _info, _ier, _mesg = _mf(z0, tol_z, tol_z, _shoot_reltol,
+                                           maxiterations)
         else:
-            x0_ss, _info, _ier, _mesg = analysis.fsolve(
-                func, x, maxiter=maxiterations, reltol=_shoot_reltol,
-                abstol=_tol, xtol=_tol, toolkit=self.toolkit,
+            z_ss, _info, _ier, _mesg = analysis.fsolve(
+                func, z0, maxiter=maxiterations, reltol=_shoot_reltol,
+                abstol=tol_z, xtol=tol_z, toolkit=self.toolkit,
                 full_output=True, line_search=True, floor_detect=True)
+        ## the state events as Newton unknowns: a second, bordered stage from
+        ## the converged orbit (the stage methods, driven or free period, and
+        ## gear's driven pair) -- see `_state_event_stage`
+        if state_events and _ier == 1 and not matrix_free and (
+                _kind == 'stage' or (_kind == 'pair' and not self.autonomous)):
+            (z_ss, _info, _ier, _mesg, period, times,
+             hs) = self._state_event_stage(
+                _kind, z_ss, _info, _ier, _mesg, period, times, hs,
+                maxiterations, _tol, _shoot_reltol, alpha,
+                *((_phase_row, phase_k) if self.autonomous else ()))
+            if self.autonomous:
+                self.period = period
+        x0_ss = z_ss[:m]
+        if _kind == 'pair':
+            xm1_ss = z_ss[m:]
         self.converged = (_ier == 1)
         ## ⚠ WHY A SOLVE THAT HAD STOPPED MOVING STILL FAILED (see `fsolve`'s
         ## `floor_detect`: counted there, never acted on).  The generic
@@ -11986,7 +11718,7 @@ class PSS(Analysis):
         ## a pair cannot be misaligned by one.
         ## ⚠ WHAT A LATER FACTORED REPLAY NEEDS, and the reason it is kept
         ## HERE rather than inside the Newton.  `_traverse_factored*` runs
-        ## inside `_matrix_free_solve`'s `build` closure, whose `steps` go
+        ## inside the matrix-free Newton's `_mf_build` closure, whose `steps` go
         ## out of scope with the closure -- and the last `build` call is at
         ## the last TRIAL iterate, which is the converged one only by
         ## accident.  `PAC` wants the factors of the SOLUTION.
