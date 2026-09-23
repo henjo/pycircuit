@@ -232,6 +232,14 @@ All five steps done and green. A new integrator is now tableau-only.
   funcs) deleted. Any new **DIRK/ESDIRK** of any stage count is now tableau-only.
 - **Step 3c** (dispatch): `FactoredPeriod.kind ∈ {'plain','solved_history','full','dirk'}`;
   every surface routes by STRUCTURE (`is_fully_implicit()`), never by method name.
+- **2026-09-23 (refactor E9 item 2): Steps 3a and 3b are ONE family now.** The two copies
+  differed only in how a step's stage system is factored and solved, so one `_StageStep` per
+  step carries that (`lu` for the coupled block, `Kf` per stage for the sequential one) with
+  `solve`/`adjoint`/`sources`/`source_adjoint`/`source_response`, and every replay exists
+  once: `_traverse_stage` (dense), `_traverse_factored_stage`/`factored_period_stage`,
+  `_monodromy_matvec{,_transposed}_stage`, `_forced_replay{,_transposed}_stage`,
+  `_sideband_forced_stage`, `_lyapunov_pieces_stage`, `PAC._stage_pass`. `kind` still says
+  `'full'`/`'dirk'` (which factorisation), and the `_*_full`/`_*_dirk` names below are history.
 - **Test vehicle**: `ESDIRK43Integrator` (KenCarp4, s=6, order 4) — added as **only a Butcher
   tableau** — reaches order 4 through the untouched generic transient step AND the generic
   s-stage DIRK shooting family (monodromy ratios →16 vs `exp(μT)`, adjoint exact). That an

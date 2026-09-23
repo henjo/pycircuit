@@ -12440,12 +12440,13 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
     ## Gear-2 twin refuses the same seed (by non-convergence).  Pinning one
     ## mechanism would pin a knife-edge; the assertion accepts either refusal.
     _refused = 'spurious|too poor to seed|did not converge'
-    ## ⚠ THE BUDGET IS 20, NOT 300 (2026-09-23).  The twin inherits the
-    ## caller's `maxiterations`, and from this seed both twins now refuse by
-    ## NOT converging -- so at 300 the two refusals below ran their whole
-    ## budget, times the solve's retry ladder: 971 + 968 traversals, 790 of
-    ## this test's 807 s and the gate's single longest pole.  Measured at 20:
-    ## the same two refusals in 42.5 + 14.6 s.  The refusal is the pinned
+    ## ⚠ THE BUDGET IS 20, NOT 300 (2026-09-23).  The twin used to inherit the
+    ## caller's `maxiterations`, and from this seed both twins refuse by NOT
+    ## converging -- so at 300 the two refusals below ran their whole budget,
+    ## times the solve's retry ladder: 971 + 968 traversals, 790 of this
+    ## test's 807 s and the gate's single longest pole.  At 20: 42.5 + 14.6 s.
+    ## (The twin is now also capped at `PSS.TWIN_MAXITER` = 40 and warns when
+    ## it hits the cap -- see the twin-cap test.)  The refusal is the pinned
     ## invariant, and it holds at any budget.
     _c3, p3 = solve('euler', maxiterations=20)
     with pytest.raises(RuntimeError, match=_refused):
@@ -12915,7 +12916,7 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
 
     On a source-free RC network the period map is the homogeneous flow
     `exp(A T)` with `A = -C^-1 G` (reduced), whose eigenvalues are known in
-    closed form from the pencil `(C, G)`.  `PSS.factored_period_dirk`
+    closed form from the pencil `(C, G)`.  `PSS.factored_period_stage`
     builds the TR-BDF2 monodromy as a factored replay; densifying it and
     comparing its eigenvalues to `exp(mu T)` checks BOTH that the map is the
     right one and that its error falls as `O(h^2)`.
@@ -12957,7 +12958,7 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
 
     errs = {}
     for npts in (100, 200, 400):
-        fp = pss.factored_period_dirk(x0, T, npts, method='trbdf2')
+        fp = pss.factored_period_stage(x0, T, npts, method='trbdf2')
         assert fp.kind == 'dirk'
         assert fp.width == m
         lam = np.sort(np.linalg.eigvals(dense_M(fp)).real)
@@ -12971,7 +12972,7 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
 
     ## the adjoint is the exact transpose of the forward map (built as a
     ## dedicated test elsewhere; sanity-checked here on one grid)
-    fp = pss.factored_period_dirk(x0, T, 100, method='trbdf2')
+    fp = pss.factored_period_stage(x0, T, 100, method='trbdf2')
     Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                           for e in np.eye(m)])
     Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -12985,7 +12986,7 @@ def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
 
     Same source-free RC network as the TR-BDF2 pencil test: the period map is
     the homogeneous flow `exp(A T)` with `A = -C^-1 G` (reduced).
-    `PSS.factored_period_full` builds the coupled Radau monodromy as a
+    `PSS.factored_period_stage` builds the coupled Radau monodromy as a
     factored replay (one `3m x 3m` factor per step, reading the third block by
     stiff accuracy); densifying it and comparing eigenvalues to `exp(mu T)`
     checks BOTH that the map is the right one and that the error falls as
@@ -13014,7 +13015,7 @@ def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
 
     errs = {}
     for npts in (25, 50, 100):
-        fp = pss.factored_period_full(x0, T, npts, method='radau')
+        fp = pss.factored_period_stage(x0, T, npts, method='radau')
         assert fp.kind == 'full'
         assert fp.width == m
         lam = np.sort(np.linalg.eigvals(dense_M(fp)).real)
@@ -13028,7 +13029,7 @@ def test_radau_monodromy_matches_the_pencil_and_is_fifth_order():
     assert errs[25] < 1e-7, errs
 
     ## the adjoint is the exact transpose of the coupled forward map
-    fp = pss.factored_period_full(x0, T, 50, method='radau')
+    fp = pss.factored_period_stage(x0, T, 50, method='radau')
     Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                           for e in np.eye(m)])
     Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -13221,7 +13222,7 @@ def test_radau_monodromy_transpose_matches_the_dense_transpose():
     cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
     pss = PSS(cir, method='radau')
     m = cir.n - 1
-    fp = pss.factored_period_full(np.zeros(m), 5e-4, 50)
+    fp = pss.factored_period_stage(np.zeros(m), 5e-4, 50)
     M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                          for e in np.eye(m)])
     MT = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -13251,7 +13252,7 @@ def test_trbdf2_monodromy_transpose_matches_the_dense_transpose():
     cir['C1'] = C(1, gnd, c=1e-8); cir['C2'] = C(2, gnd, c=3e-8)
     pss = PSS(cir, method='trbdf2')
     m = cir.n - 1
-    fp = pss.factored_period_dirk(np.zeros(m), 5e-4, 50)
+    fp = pss.factored_period_stage(np.zeros(m), 5e-4, 50)
     M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                          for e in np.eye(m)])
     MT = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
@@ -13462,7 +13463,7 @@ def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator
     `dQ/Q = Q_lambda dlambda2/lambda2`).  TR-BDF2 carries far less of it.
 
     Deterministic and cheap: no ODE integration, no PSS solve.  TR-BDF2's
-    monodromy is the SHIPPING one (`factored_period_dirk`); Gear-2's is the
+    monodromy is the SHIPPING one (`factored_period_stage`); Gear-2's is the
     BDF2 companion on the same reduced pencil, which is exactly the
     `solved_history` pair map a Gear-2 PSS forms on a linear system.
 
@@ -13500,7 +13501,7 @@ def test_trbdf2_monodromy_has_less_fake_damping_than_gear_on_a_linear_oscillator
 
     def errs(N):
         h = T / N
-        fp = pss.factored_period_dirk(np.zeros(m), T, N)
+        fp = pss.factored_period_stage(np.zeros(m), T, N)
         Mt = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                               for e in np.eye(m)])
         lam_t = float(np.max(np.abs(np.linalg.eigvals(Mt))))
@@ -13673,7 +13674,7 @@ def test_esdirk43_monodromy_order4_through_the_generic_dirk_family():
     exact = np.sort(np.exp(np.linalg.eigvals(A) * T).real)
     errs = {}
     for npts in (25, 50, 100):
-        fp = pss.factored_period_dirk(x0, T, npts, method='esdirk43')
+        fp = pss.factored_period_stage(x0, T, npts, method='esdirk43')
         assert fp.kind == 'dirk'
         M = np.column_stack([fp.matvec(e) for e in np.eye(m)])
         errs[npts] = float(np.max(np.abs(np.sort(np.linalg.eigvals(M).real)
@@ -13683,7 +13684,7 @@ def test_esdirk43_monodromy_order4_through_the_generic_dirk_family():
     assert errs[50] / errs[100] > 10.0, errs
     assert errs[25] < 1e-6, errs
     ## adjoint is the exact transpose
-    fp = pss.factored_period_dirk(x0, T, 50, method='esdirk43')
+    fp = pss.factored_period_stage(x0, T, 50, method='esdirk43')
     Mf = np.column_stack([np.asarray(fp.matvec(e), dtype=float) for e in np.eye(m)])
     Mt = np.column_stack([np.asarray(fp.matvec_transposed(e), dtype=float)
                           for e in np.eye(m)])
@@ -23461,7 +23462,7 @@ def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_c
             q = PSS(vdp_vs(), method=method, reltol=1e-10)
             q._grid_fracs = None
             tms, hs = q._period_grid(TT, 200, None)
-            f = q._traverse_full if method == 'radau' else q._traverse_dirk
+            f = q._traverse_stage
             return f(xs, TT, tms, hs, want_dT=want)
         Mt = np.asarray(trav(T, True)[3], float).ravel()
         xe = lambda TT: np.asarray(trav(TT, False)[1], float).ravel()
@@ -23698,7 +23699,7 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     same uniform replay is
     why radau's PPV, modes and noise read as "exact on the 3:1 grid": its
     adjoint never saw that grid.  `factored_period` now hands the solved
-    fractions down (`_replay_grid`); a direct `factored_period_full(x0, T,
+    fractions down (`_replay_grid`); a direct `factored_period_stage(x0, T,
     npts)` call with a bare count is uniform as before, and a uniform
     solve is bit-identical (the fractions are only passed when the grid is
     not uniform).
@@ -23793,7 +23794,7 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     fpu = p.factored_period()
     assert p._period_quadrature(fpu) is None
     x0 = np.asarray(p._period_state[1], float).ravel()
-    fpb = p.factored_period_full(x0, T, 100)
+    fpb = p.factored_period_stage(x0, T, 100)
     assert np.allclose(np.asarray(fpb.times, float), np.linspace(0.0, T, 101), rtol=0, atol=1e-22)
 
 
@@ -24816,7 +24817,7 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
         W, c = p._state_event_rows()
         assert W is not None and W.shape[0] == 2
         base2, th0 = p._land_fractions(hs / T, [0.706, 0.7107])
-        trav = p._traverse_full if method == 'radau' else p._traverse_dirk
+        trav = p._traverse_stage
 
         def FJ(z):
             xx, th = z[:m], z[m:]
@@ -24908,7 +24909,7 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
         fr, hsens, nodes = p._event_remap(base2, th_s, th, T)
         hs_ = fr * T
         tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-        _x0, x_end, Mx, Pk = p._traverse_full(xx, T, tms_, hs_, hsens=hsens, capture=set(nodes))
+        _x0, x_end, Mx, Pk = p._traverse_stage(xx, T, tms_, hs_, hsens=hsens, capture=set(nodes))
         gv = np.zeros(K)
         Gt = np.zeros((K, K))
         for k, nd in enumerate(nodes):
@@ -25011,7 +25012,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
             fr, hsens, nodes = q._event_remap(g0, th0, th, T)
             hs = fr * T
             tms = np.concatenate(([0.0], np.cumsum(hs)))
-            _x0, x_end, Mx, Pk = q._traverse_full(xx, T, tms, hs, hsens=hsens,
+            _x0, x_end, Mx, Pk = q._traverse_stage(xx, T, tms, hs, hsens=hsens,
                                                   capture=set(range(1, len(hs) + 1)))
             F = np.zeros(m + K)
             J = np.zeros((m + K, m + K))
@@ -26417,3 +26418,86 @@ def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_sec
     with pytest.warns(RuntimeWarning, match='three-node stencil'):
         rf = pac._orbit_rate(p, [])
     assert np.array_equal(rf, pac._orbit_rate_stencil(p, []))
+
+
+def test_the_monodromy_twin_is_capped_and_warns_when_it_hits_the_cap():
+    """`PSS.TWIN_MAXITER` (Andreas, 2026-09-23): a monodromy twin is a polish
+    from this run's converged state, not a cold solve, and it used to inherit
+    the caller's `maxiterations` -- on B16's van der Pol a poor (Euler) seed
+    then spent 790 s running two twins to their 300-iteration budgets to
+    refuse.  The twin is now capped at `min(maxiterations, TWIN_MAXITER)`, 40
+    by default, and a twin that hits the cap without converging WARNS before
+    it refuses.  Pinned both ways: from a GOOD seed (trapezoidal, the solve
+    allowing 300) the capped twin converges -- in 4-13 iterations, measured --
+    with no cap warning; from the poor Euler seed, with the cap patched to 6
+    under a solve allowing 20, the twin warns that it hit the cap and then
+    refuses."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+
+    def build():
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u ** 2)
+        return cir
+
+    def solve(method, maxiterations):
+        pss = PSS(build(), method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=6.731, timestep=6.731 / 400,
+                      x0=np.array([2.0, 0.0]), maxiterations=maxiterations)
+        assert pss.converged
+        return pss
+
+    assert PSS.TWIN_MAXITER == 40
+    good = solve('trap', 300)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        _v, info = good.ppv()
+    assert info['monodromy_method'] == 'trbdf2'
+    assert not [r for r in rec if 'capped iteration budget' in str(r.message)]
+    poor = solve('euler', 20)
+    orig = PSS.TWIN_MAXITER
+    PSS.TWIN_MAXITER = 6
+    try:
+        with pytest.warns(RuntimeWarning, match='within its capped iteration budget'):
+            with pytest.raises(RuntimeError, match='did not converge|spurious|too poor'):
+                poor.ppv()
+    finally:
+        PSS.TWIN_MAXITER = orig
+
+
+def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():
+    """The autonomous solve pins the coordinate moving fastest over the seed's
+    first step, as a RAW `argmax |x_2 - x_1|` -- volts against amps.  A peer
+    session showed the cost and it reproduces: on a van der Pol in LC form
+    with real units (1 nF, 1 uH) seeded at v's turning point the rule pins v,
+    nearly along the flow, and the bordered Jacobian (scaled by swing) has
+    cond 120-160 against 3.75-9.3 for a pin chosen relative to each
+    coordinate's swing.  That swing-scaled rule was built and REVERTED on
+    measurement (2026-09-23, Andreas): on the comparator relaxation oscillator
+    seeded at ten phases of its exact orbit it converged from 4/10 against the
+    raw rule's 7/10.  Pinned: the raw rule's choice on the LC (v), that every
+    method still converges there, and `phase_k` exposed for diagnosis."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    Cv, Lv, mu = 1e-9, 1e-6, 0.3
+    Z = np.sqrt(Lv / Cv)
+    T0 = 2.0 * np.pi * np.sqrt(Lv * Cv)
+    for method in ('gear', 'radau', 'trbdf2'):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=Cv)
+        cir['L'] = L('v', gnd, L=Lv)
+        cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: (mu / Z) * (u - u ** 3 / 3.0))
+        p = PSS(cir, method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]), maxiterations=60)
+        assert p.converged, method
+        assert p.phase_k == 0, (method, p.phase_k)            # v: the raw rule's choice

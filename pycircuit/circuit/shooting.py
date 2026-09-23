@@ -54,7 +54,7 @@ def _complex_solve(lu, b):
     Jacobians are real, so the solve is real and splits exactly.
     """
     b = np.asarray(b)
-    if np.iscomplexobj(b):
+    if b.dtype.kind == 'c':
         return lu.solve(b.real) + 1j * lu.solve(b.imag)
     return lu.solve(b)
 
@@ -64,7 +64,7 @@ def _complex_solve_transposed(lu, b):
     two transposed back-substitutions.  `None` if the solver cannot
     transpose (mirrors `solve_transposed`)."""
     b = np.asarray(b)
-    if np.iscomplexobj(b):
+    if b.dtype.kind == 'c':
         re = lu.solve_transposed(b.real)
         im = lu.solve_transposed(b.imag)
         if re is None or im is None:
@@ -289,10 +289,8 @@ class FactoredPeriod(object):
         """`M v`, real or complex, replaying the stored factors."""
         if self.kind == 'solved_history':
             return self._pss._monodromy_matvec(self.opening, self.steps, v)
-        if self.kind == 'full':
-            return self._pss._monodromy_matvec_full(self.steps, v)
-        if self.kind == 'dirk':
-            return self._pss._monodromy_matvec_dirk(self.steps, v)
+        if self.kind in ('full', 'dirk'):
+            return self._pss._monodromy_matvec_stage(self.steps, v)
         if self.kind == 'glm':
             return self._pss._monodromy_matvec_glm(self.steps, v)
         return self._pss._monodromy_matvec_plain(self.opening, self.steps, v)
@@ -319,11 +317,8 @@ class FactoredPeriod(object):
         if self.kind == 'solved_history':
             return self._pss._monodromy_matvec_transposed(
                 self.opening, self.steps, v, collect=collect, inject=inject)
-        if self.kind == 'full':
-            return self._pss._monodromy_matvec_transposed_full(
-                self.steps, v, collect=collect, inject=inject)
-        if self.kind == 'dirk':
-            return self._pss._monodromy_matvec_transposed_dirk(
+        if self.kind in ('full', 'dirk'):
+            return self._pss._monodromy_matvec_transposed_stage(
                 self.steps, v, collect=collect, inject=inject)
         if self.kind == 'glm':
             return self._pss._monodromy_matvec_transposed_glm(
@@ -331,6 +326,173 @@ class FactoredPeriod(object):
         return self._pss._monodromy_matvec_transposed_plain(
             self.opening, self.steps, v, collect=collect, inject=inject)
 
+
+## Bound once: `_lu_solve_split` runs once per step of every coupled replay
+## (~20k calls per PAC + adjoint row on the PWM fixture), and a function-local
+## import plus `np.iscomplexobj` there was 6 % of that row's profile.
+## scipy.linalg is loaded by the package's import already.
+from scipy.linalg import lu_solve as _sla_lu_solve
+
+
+def _lu_solve_split(lu, b, trans=0):
+    """`scipy.linalg.lu_solve` against a REAL `lu_factor` pair -- a complex
+    `b` (an ndarray) is two real back-substitutions (`_complex_solve` for a
+    factor that is not a solver object)."""
+    if b.dtype.kind == 'c':
+        return (_sla_lu_solve(lu, b.real, trans=trans)
+                + 1j * _sla_lu_solve(lu, b.imag, trans=trans))
+    return _sla_lu_solve(lu, b, trans=trans)
+
+
+class _StageStep(object):
+    """One step of a Runge-Kutta STAGE method's period map, kept factored --
+    an entry of a 'full' or 'dirk' `FactoredPeriod.steps`, and what
+    `PSS._traverse_stage` solves every column of a step with.
+
+    The stage system is ``J Z = B`` with ``J[i][j] = delta_ij C(Y_i) + h
+    A_ij G(Y_j)`` -- the stage residuals ``F_i = q(Y_i) - q(x_n) - h sum_j
+    A_ij K_j`` linearised, ``K_j = -(i(Y_j) + u)`` -- and the step's result is
+    the LAST stage by stiff accuracy (``x_{n+1} == Y_s``).  The tableau's
+    structure picks the factorisation:
+
+    * FULLY IMPLICIT (Radau IIA): the coupled `s m x s m` block, `lu`.  The
+      stages are solved together, so the step map is not a product of
+      per-stage solves.
+    * LOWER TRIANGULAR (TR-BDF2, ESDIRK): `J` is block lower-triangular, so
+      one factor per stage, ``Kf[i] = LU(C(Y_i) + h a_ii G(Y_i))`` -- None
+      for the EXPLICIT first stage, which carries its input straight through
+      (``Y_0 = x_n``, so ``D_0 = carry``; `C` may be singular, so it is never
+      solved for).  The coupled block would be singular there on a DAE
+      (``J[0][0] = C``), which is why the two are not one factorisation.
+
+    ⚠ ONE COPY OF EVERY REPLAY (refactor E9 item 2, 2026-09-23).  The two
+    structures had a copy each of the forward and transposed mat-vecs, the
+    forced replay and its transpose, the sideband fold, the stage pass, the
+    stage-source response and the Lyapunov pieces, dispatched on `fp.kind`.
+    They differ only inside `solve` and `adjoint`; the rest reads the stage
+    costates those return and the step's OWN tableau (`A`, `b`, `c` -- the
+    coupled replays read `par.method`'s, wrong for a `factored_period_stage`
+    built with another `method=`).
+    """
+
+    __slots__ = ('Cn', 'Gs', 'h', 'A', 'b', 'c', 'lu', 'Kf', 'm', 's')
+
+    def __init__(self, Cn, Gs, h, A, b, c, lu=None, Kf=None):
+        self.Cn, self.Gs, self.h = Cn, Gs, h
+        self.A, self.b, self.c = A, b, c
+        self.lu, self.Kf = lu, Kf
+        self.m = Cn.shape[0]
+        self.s = A.shape[0]
+
+    def solve(self, carry, forcing=None):
+        """The last stage of ``J Z = [C_n carry + sum(forcing[i])]_i`` --
+        the step map on `carry` (a vector or an `m x k` block, real or
+        complex) plus a per-stage forcing, a tuple of terms per stage added
+        in order: ``(dh/dT) S_i`` for a period column, ``w S_i - h U_i`` for
+        an event column, a source's `sources`."""
+        s, m = self.s, self.m
+        base = self.Cn @ carry
+        if self.lu is not None:
+            blocks = []
+            for i in range(s):
+                r = base
+                if forcing is not None:
+                    for term in forcing[i]:
+                        r = r + term
+                blocks.append(r)
+            Z = _lu_solve_split(self.lu, np.vstack(blocks) if np.ndim(carry) == 2
+                                else np.concatenate(blocks))
+            return Z[(s - 1) * m:s * m]
+        A, h, Gs = self.A, self.h, self.Gs
+        D = [None] * s
+        for i in range(s):
+            if self.Kf[i] is None:
+                D[i] = carry          # the explicit first stage: D_0 = carry
+                continue
+            r = base
+            if forcing is not None:
+                for term in forcing[i]:
+                    r = r + term
+            r = r - h * sum(A[i, jj] * (Gs[jj] @ D[jj]) for jj in range(i))
+            D[i] = np.asarray(_complex_solve(self.Kf[i], r))
+        return D[s - 1]
+
+    def adjoint(self, w):
+        """The transposed step: ``(M_j^T w, r)`` with `r` the per-stage
+        costates, ``r = J^{-T} [0; ..; 0; w]`` and ``M_j^T w = C_n^T sum_i
+        r_i``.  Coupled: one transposed solve of the block.  Lower
+        triangular: reverse mode on the forward recursion, stages in
+        REVERSE -- ``r_i = K_i^{-T} dbar_i``, ``wbar += C_n^T r_i``, ``dbar_j
+        -= h A_ij G_j^T r_i`` for ``j < i`` -- and the explicit first stage
+        (no costate, ``r_0 = None``) passes ``dbar_0`` straight to `wbar`."""
+        s, m = self.s, self.m
+        if self.lu is not None:
+            p = _lu_solve_split(
+                self.lu, np.concatenate([np.zeros(m)] * (s - 1) + [w]), trans=1)
+            r = [p[i * m:(i + 1) * m] for i in range(s)]
+            return self.Cn.T @ sum(r), r
+        A, h, Gs = self.A, self.h, self.Gs
+        dbar = [np.zeros_like(w) for _ in range(s)]
+        dbar[s - 1] = w
+        wbar = np.zeros_like(w)
+        r = [None] * s
+        for i in range(s - 1, -1, -1):
+            if self.Kf[i] is None:
+                wbar = wbar + dbar[i]
+                continue
+            rb = _complex_solve_transposed(self.Kf[i], dbar[i])
+            if rb is None:
+                raise NotImplementedError(
+                    'PSS: this linear solver cannot solve transposed, so a '
+                    'stage method\'s adjoint cannot be replayed. Use '
+                    'DenseSolver or SuperLUSolver.')
+            r[i] = rb
+            wbar = wbar + self.Cn.T @ rb
+            for jj in range(i):
+                dbar[jj] = dbar[jj] - h * A[i, jj] * (Gs[jj].T @ rb)
+        return wbar, r
+
+    def reach(self, r, k):
+        """``sum_i A_ik r_i`` -- what the stage costates `r` read of a source
+        at abscissa `k` (every stage residual carries it as ``-h A_ik u_k``);
+        None when no stage reaches it.  A lower-triangular tableau's sum
+        starts at the diagonal (``A_ik = 0`` above it)."""
+        lo = 0 if self.lu is not None else k
+        cp = sum(self.A[i, k] * r[i] for i in range(lo, self.s)
+                 if r[i] is not None)
+        return None if np.isscalar(cp) else cp
+
+    def sources(self, u, jw, ts):
+        """A source ``u e^{jw t}`` on the step from `ts`, as the stage
+        residuals carry it: ``-h sum_k A_ik u e^{jw (ts + c_k h)}`` per stage
+        `i`, one-term forcing tuples for `solve`."""
+        s, A, c, h = self.s, self.A, self.c, self.h
+        return [(-h * sum(A[i, k] * u * np.exp(jw * (ts + c[k] * h))
+                          for k in range(s if self.lu is not None else i + 1)),)
+                for i in range(s)]
+
+    def source_adjoint(self, acc, r, jw, ts):
+        """`acc` less the step's source coupling to the costates `r` --
+        ``acc - h sum_k e^{jw (ts + c_k h)} sum_i A_ik r_i``, the transpose of
+        `sources`."""
+        for k in range(self.s):
+            cp = self.reach(r, k)
+            if cp is not None:
+                acc = acc - self.h * np.exp(jw * (ts + self.c[k] * self.h)) * cp
+        return acc
+
+    def source_response(self, i_src):
+        """``d x_{n+1} / d u`` (`m x m`) for a unit source entering stage
+        `i_src` alone -- the stage residuals carry it as ``-h A_{i,i_src} u``."""
+        m = self.m
+        return self.solve(np.zeros((m, m)),
+                          [(-self.h * self.A[i, i_src] * np.eye(m),)
+                           for i in range(self.s)])
+
+
+def _butcher(integ):
+    """A Runge-Kutta integrator's `(A, b, c)` as float arrays."""
+    return tuple(np.array(v, dtype=float) for v in integ.butcher())
 
 
 ## Element classes the topological index criterion recognises.  Anything not
@@ -4115,7 +4277,7 @@ class PSS(Analysis):
         return np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
 
     def _state_event_stage(self, x0_ss, info, ier, mesg, period, times, hs,
-                           fully, maxiterations, tol, shoot_reltol, alpha):
+                           maxiterations, tol, shoot_reltol, alpha):
         """The bordered second stage of a driven solve: the crossings of the
         first stage's orbit become unknowns.  Returns the stage-1 tuple
         unchanged when the circuit declares no state event or its orbit
@@ -4123,7 +4285,7 @@ class PSS(Analysis):
         W, c = self._state_event_rows()
         if W is None:
             return x0_ss, info, ier, mesg, times, hs
-        trav = self._traverse_full if fully else self._traverse_dirk
+        trav = self._traverse_stage
         N = len(times) - 1
         m = self.cir.n - 1
         trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
@@ -4248,7 +4410,7 @@ class PSS(Analysis):
         return x0n, xm1n, info, ier, mesg, tms_r, hs_r
 
     def _state_event_stage_autonomous(self, x0_ss, info, ier, mesg, period, times, hs,
-                                      fully, maxiterations, tol, shoot_reltol, alpha,
+                                      maxiterations, tol, shoot_reltol, alpha,
                                       phase_row, phase_k):
         """The bordered second stage of an AUTONOMOUS solve: the crossings
         of the stage-1 orbit AND the period as unknowns, `z = [x_0, theta,
@@ -4261,7 +4423,7 @@ class PSS(Analysis):
         W, c = self._state_event_rows()
         if W is None:
             return x0_ss, info, ier, mesg, period, times, hs
-        trav = self._traverse_full if fully else self._traverse_dirk
+        trav = self._traverse_stage
         N = len(times) - 1
         m = self.cir.n - 1
         trav(x0_ss, period, times, hs, hsens=np.zeros((N, 0)),
@@ -5256,182 +5418,79 @@ class PSS(Analysis):
             return w1, ts, states
         return w1
 
-    def _traverse_factored_full(self, x0_in, times, hs):
-        """One period under Radau IIA(3), kept factored -- the `m x m`
-        monodromy of a SELF-STARTING fully-implicit collocation method.
-
-        ⚠ COUPLED, NOT A COMPANION SUM AND NOT A DIRK COMPOSITION.  The three
-        stages are solved together each step, so the per-step Jacobian is the
-        `3m x 3m` coupled operator, not a product of per-stage solves.
-        Linearising the stage residuals
-        ``F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`` w.r.t. the entering
-        ``x_n`` (``K_j = -(i(Y_j) + u)``, so ``dK_j/dY_j = -G(Y_j)``):
-
-            J_block (dY/dx_n) = [Cn; Cn; Cn],
-            J_block[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)
-
-        and the step map is ``dx_{n+1}/dx_n = (dY/dx_n)_3`` -- the third
-        `m`-block -- by stiff accuracy (``x_{n+1} == Y_3``).  Each step stores
-        ``(lu_block, Cn, m)``: the dense `3m x 3m` factor and the entering
-        capacitance.  ``C(Y_i)`` and ``G(Y_j)`` are at the THREE distinct
-        stage points, which is why `_C_at`/`_G_at` exist rather than a stored
-        `Geq`.  Verified against the pencil ``exp(mu T)`` before shipping.
-
-        ⚠ NO OPENER, NO PAIR.  Like TR-BDF2, Radau is self-starting -- every
-        step reads only ``x_n`` -- so the map is `m x m` and high-order all
-        the way round, with no order-dropped opening seam inside the period.
-        The dense `3m x 3m` factor is the coupled real solve; the
-        ``A^{-1}``-eigenbasis transform (1 real + 1 complex LU) is the
-        efficiency follow-up documented on `RadauIIA3Integrator`.
-        """
-        import scipy.linalg as sla
-        from pycircuit.circuit.integrator import RungeKuttaIntegrator
-        tr = self._transient()
-        self._want_dfdh = False
-        self._want_lte = False
-        self._begin_period(x0_in)
-        integ = tr.base_integrator
-        if not isinstance(integ, RungeKuttaIntegrator):
-            raise ValueError('_traverse_factored_full needs a Runge-Kutta stage '
-                             'inner integrator, got %r' % (integ,))
-        Amat = np.array(integ.A, dtype=float)
-        s = Amat.shape[0]
-        iref = self.irefnode
-        x = copy(x0_in)
-        x_prev = copy(x0_in)
-        steps = []
-        for _j, t in enumerate(times[1:]):
-            h = hs[min(_j, len(hs) - 1)]
-            xn = x
-            x = copy(self.solve_timestep(xn, t, h))
-            x_prev = xn
-            Yf = tr._rk_Y
-            Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
-                  for yf in Yf]
-            Cn = np.asarray(self._C_at(xn))
-            m = Cn.shape[0]
-            Cs = [np.asarray(self._C_at(y)) for y in Ys]
-            Gs = [np.asarray(self._G_at(y)) for y in Ys]
-            Jb = np.zeros((s * m, s * m))
-            for i in range(s):
-                for jj in range(s):
-                    blk = h * Amat[i, jj] * Gs[jj]
-                    if i == jj:
-                        blk = Cs[i] + blk
-                    Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
-            lu = sla.lu_factor(Jb)
-            steps.append((lu, Cn, m))
-        self._want_dfdh = False
-        return steps, x, x_prev
-
-    def _monodromy_matvec_full(self, steps, v):
-        """`M v` for the Radau IIA(3) map, replaying the stored coupled
-        factors.  Each step: stack the entering direction into the coupled
-        RHS ``[Cn v; Cn v; Cn v]``, solve the `3m x 3m` system, and carry the
-        THIRD `m`-block forward (``x_{n+1} == Y_3``).  Real map, so a complex
-        `v` splits into two real replays exactly (the same guard the LMM and
-        TR-BDF2 matvecs use -- a float cast would silently drop the imaginary
-        part)."""
-        import scipy.linalg as sla
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            return (self._monodromy_matvec_full(steps, v.real)
-                    + 1j * self._monodromy_matvec_full(steps, v.imag))
-        w = v.astype(float)
-        for lu, Cn, m in steps:
-            s = lu[0].shape[0] // m
-            cw = Cn @ w
-            Z = sla.lu_solve(lu, np.concatenate([cw] * s))
-            w = Z[(s - 1) * m:s * m]
-        return w
-
-    def _monodromy_matvec_transposed_full(self, steps, v, collect=False,
-                                           inject=None):
-        """`M^T v` for the Radau IIA(3) map -- the adjoint of the coupled
-        step, replayed in reverse step order.
-
-        The forward step is ``M_j = E3 J^{-1} (1_3 (x) Cn)`` with ``E3`` the
-        third-block extractor and ``1_3 (x) Cn`` the stacking of ``Cn``, so
-
-            p = J^{-T} [0; 0; w]
-            M_j^T w = Cn^T (p_1 + p_2 + p_3)
-
-        -- one coupled transposed solve per step.  ``M = M_{N-1} ... M_0`` so
-        ``M^T = M_0^T ... M_{N-1}^T`` and the loop runs LAST step to first.
-
-        With `collect`, returns ``(w, ts, states)`` where ``states[j]`` is the
-        adjoint state after step `j` (the PPV over the period that `ppv`
-        reads) and ``ts[j]`` is the FULL `3m` coupled transposed solve ``p``
-        at that step -- what the Radau forced/sideband fold needs, since a
-        source injected at step `j` enters through all three stages
-        (``A (x) B``), so there is no two-vector shortcut."""
-        import scipy.linalg as sla
-        v = np.asarray(v)
-        if np.iscomplexobj(v):
-            ii = (None, None) if inject is None else (
-                np.real(inject), np.imag(inject))
-            re = self._monodromy_matvec_transposed_full(
-                steps, v.real, collect, ii[0])
-            im = self._monodromy_matvec_transposed_full(
-                steps, v.imag, collect, ii[1])
-            if collect:
-                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
-                ## per-stage solves per step), so a flat `a + 1j*b`
-                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
-                ## raised "can't multiply sequence by non-int of type
-                ## 'complex'" for as long as the path existed.  Recurse.
-                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
-                        _cx_collect(re[2], im[2]))
-            return re + 1j * im
-        v = v.astype(float)
-        if not steps:
-            return (v.copy(), [], []) if collect else v.copy()
-        w = v.copy()
-        ts = []
-        states = []
-        for j in range(len(steps) - 1, -1, -1):
-            lu, Cn, m = steps[j]
-            s = lu[0].shape[0] // m
-            b3 = np.concatenate([np.zeros(m)] * (s - 1) + [w])
-            p = sla.lu_solve(lu, b3, trans=1)
-            w = Cn.T @ sum(p[k * m:(k + 1) * m] for k in range(s))
-            if inject is not None:
-                w = w + inject[j]
-            if collect:
-                ts.append(p)
-                states.append(w.copy())
-        if collect:
-            ts.reverse()
-            states.reverse()
-            return w, ts, states
-        return w
-
     ## ------------------------------------------------------------------
-    ## The DIRK / ESDIRK (lower-triangular) shooting family -- SEQUENTIAL,
-    ## tableau-generic over any number of stages.  A fully-implicit method
-    ## uses the coupled `_*_full` family instead; the DAE forces the split
-    ## (an explicit first stage makes the coupled block singular), and the
-    ## sequential recursion below never forms that block.  See
+    ## The Runge-Kutta STAGE family (Radau IIA, TR-BDF2, ESDIRK) --
+    ## self-starting, tableau-generic over any number of stages.  One
+    ## `_StageStep` per step carries the factored stage system in the
+    ## structure its tableau calls for (the coupled block for a fully
+    ## implicit one, per-stage factors for a lower-triangular one: an
+    ## explicit first stage makes the coupled block singular on a DAE, and
+    ## the sequential recursion never forms it).  See
     ## doc/integrator_architecture_260906.md.
     ## ------------------------------------------------------------------
 
-    def _traverse_factored_dirk(self, x0_in, times, hs):
-        """One period under a lower-triangular (DIRK/ESDIRK) stage method, kept
-        factored -- the `m x m` monodromy, solved stage by stage.
+    def _stage_step(self, xn, h, tab, coupled):
+        """The factored stage system of the step just taken from `xn` -- its
+        stage states read off the inner transient -- as a `_StageStep`, and
+        those stage states (reduced).  ``C(Y_i)`` and ``G(Y_j)`` are at the
+        DISTINCT stage points, which is why `_C_at`/`_G_at` exist rather
+        than a stored `Geq`."""
+        import scipy.linalg as sla
+        A, b, c = tab
+        s = A.shape[0]
+        iref = self.irefnode
+        Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
+              for yf in self._transient()._rk_Y]
+        Cn = np.asarray(self._C_at(xn))
+        m = Cn.shape[0]
+        if coupled:
+            Cs = [np.asarray(self._C_at(y)) for y in Ys]
+        Gs = [np.asarray(self._G_at(y)) for y in Ys]
+        if coupled:
+            Jb = np.zeros((s * m, s * m))
+            for i in range(s):
+                for jj in range(s):
+                    blk = h * A[i, jj] * Gs[jj]
+                    if i == jj:
+                        blk = Cs[i] + blk
+                    Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
+            return _StageStep(Cn, Gs, h, A, b, c, lu=sla.lu_factor(Jb)), Ys
+        Kf = []
+        for i in range(s):
+            if abs(A[i, i]) < 1e-14:
+                if i != 0:
+                    raise NotImplementedError(
+                        'PSS: an explicit stage other than the first is not '
+                        'supported (its solve would need C^-1, singular on a '
+                        'DAE).')
+                Kf.append(None)
+            else:
+                Ci = np.asarray(self._C_at(Ys[i]))
+                Kf.append(self._factorise(Ci + h * A[i, i] * Gs[i]))
+        return _StageStep(Cn, Gs, h, A, b, c, Kf=Kf), Ys
 
-        Each step stores, for every stage, the factor
-        ``K_i = LU(C(Y_i) + h A_ii G(Y_i))`` (``None`` for an explicit stage),
-        the stage conductances ``G(Y_i)``, the entering ``C(x_n)``, and ``h``.
-        The monodromy recursion (differentiating the stage residuals w.r.t. the
-        entering ``x_n``) is
+    def _traverse_factored_stage(self, x0_in, times, hs):
+        """One period under a Runge-Kutta stage method, kept FACTORED -- the
+        `m x m` monodromy of a SELF-STARTING method as one `_StageStep` per
+        step.
+
+        Linearising the stage residuals ``F_i = q(Y_i) - q(x_n) - h sum_j
+        A_ij K_j`` w.r.t. the entering ``x_n`` (``K_j = -(i(Y_j) + u)``, so
+        ``dK_j/dY_j = -G(Y_j)``) gives ``J (dY/dx_n) = [C_n]_i``, and the step
+        map is the last block, ``dx_{n+1}/dx_n = (dY/dx_n)_s``, by stiff
+        accuracy.  Coupled (fully implicit) that is one block solve; lower
+        triangular it is the recursion
 
             D_0 = I                                    (explicit first stage)
             D_i = K_i^{-1} (C_n - h sum_{j<i} A_ij G_j D_j)   (implicit)
 
-        with ``x_{n+1} = Y_s`` (stiff accuracy).  No coupled ``sm`` block is
-        ever formed, so an explicit first stage costs nothing and never makes a
-        singular block -- the whole reason a DIRK is not routed through the
-        `_*_full` coupled family on a DAE.
+        Verified against the pencil ``exp(mu T)`` before shipping.
+
+        ⚠ NO OPENER, NO PAIR.  Every step reads only ``x_n``, so the map is
+        `m x m` and high-order all the way round, with no order-dropped
+        opening seam inside the period.  The dense coupled factor is the
+        real solve; the ``A^{-1}``-eigenbasis transform (1 real + 1 complex
+        LU) is the efficiency follow-up documented on `RadauIIA3Integrator`.
         """
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
         tr = self._transient()
@@ -5440,93 +5499,61 @@ class PSS(Analysis):
         self._begin_period(x0_in)
         integ = tr.base_integrator
         if not isinstance(integ, RungeKuttaIntegrator):
-            raise ValueError('_traverse_factored_dirk needs a Runge-Kutta '
+            raise ValueError('_traverse_factored_stage needs a Runge-Kutta '
                              'stage inner integrator, got %r' % (integ,))
-        Amat = np.array(integ.A, dtype=float)
-        s = Amat.shape[0]
-        iref = self.irefnode
+        tab = _butcher(integ)
+        coupled = integ.is_fully_implicit()
         x = copy(x0_in)
         x_prev = copy(x0_in)
         steps = []
         for _j, t in enumerate(times[1:]):
-            h = hs[min(_j, len(hs) - 1)]
+            h = float(hs[min(_j, len(hs) - 1)])
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
             x_prev = xn
-            Yf = tr._rk_Y
-            Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
-                  for yf in Yf]
-            Cn = np.asarray(self._C_at(xn))
-            Gs = [np.asarray(self._G_at(Ys[i])) for i in range(s)]
-            Kfacs = []
-            for i in range(s):
-                if abs(Amat[i, i]) < 1e-14:
-                    Kfacs.append(None)  # explicit stage
-                else:
-                    Ci = np.asarray(self._C_at(Ys[i]))
-                    Kfacs.append(self._factorise(Ci + h * Amat[i, i] * Gs[i]))
-            ## carry the tableau IN the step so the replay uses the FP's own
-            ## method (a factored_period_dirk built with method= may differ
-            ## from self.par.method -- the FULL matvec dodges this by replaying
-            ## a stored factor, but the DIRK replay needs A and c).
-            steps.append((Kfacs, Gs, Cn, float(h), Amat,
-                          np.array(integ.C, dtype=float)))
+            steps.append(self._stage_step(xn, h, tab, coupled)[0])
         self._want_dfdh = False
         return steps, x, x_prev
 
-    def _monodromy_matvec_dirk(self, steps, v):
-        """`M v` for a lower-triangular stage map -- the sequential replay of
-        the stored per-stage factors.  Real map, so a complex `v` splits into
-        two real replays (the guard every stage/LMM matvec uses)."""
+    def _monodromy_matvec_stage(self, steps, v):
+        """`M v` for a stage method's map, replaying the stored steps
+        (`_StageStep.solve`).  Real map, so a complex `v` splits into two
+        real replays exactly (the guard every stage/LMM matvec uses -- a
+        float cast would silently drop the imaginary part)."""
         v = np.asarray(v)
         if np.iscomplexobj(v):
-            return (self._monodromy_matvec_dirk(steps, v.real)
-                    + 1j * self._monodromy_matvec_dirk(steps, v.imag))
+            return (self._monodromy_matvec_stage(steps, v.real)
+                    + 1j * self._monodromy_matvec_stage(steps, v.imag))
         w = v.astype(float)
-        for Kfacs, Gs, Cn, h, Amat, _cvec in steps:
-            s = Amat.shape[0]
-            d = [None] * s
-            for i in range(s):
-                if Kfacs[i] is None:
-                    if i != 0:
-                        raise NotImplementedError(
-                            'DIRK monodromy: an explicit stage other than the '
-                            'first is not supported (its solve would need C^-1, '
-                            'singular on a DAE).')
-                    d[0] = w  # explicit first stage: Y_0 = x_n, so D_0 = I
-                else:
-                    rhs = Cn @ w - h * sum(Amat[i, j] * (Gs[j] @ d[j])
-                                           for j in range(i))
-                    d[i] = Kfacs[i].solve(rhs)
-            w = d[s - 1]
+        for st in steps:
+            w = st.solve(w)
         return w
 
-    def _monodromy_matvec_transposed_dirk(self, steps, v, collect=False,
-                                          inject=None):
-        """`M^T v` for a lower-triangular stage map -- the reverse-mode adjoint
-        of the sequential recursion, replayed last step to first.
+    def _monodromy_matvec_transposed_stage(self, steps, v, collect=False,
+                                           inject=None):
+        """`M^T v` for a stage method's map -- the adjoint of each step
+        (`_StageStep.adjoint`), replayed LAST step to first (``M = M_{N-1}
+        ... M_0``, so ``M^T = M_0^T ... M_{N-1}^T``).
 
-        Within a step, seed the adjoint on the last stage and process stages in
-        REVERSE: for an implicit stage ``i``,
-        ``rbar = K_i^{-T} dbar_i``; ``wbar += C_n^T rbar``;
-        ``dbar_j += -h A_ij G_j^T rbar`` for ``j<i``.  The explicit first stage
-        contributes ``wbar += dbar_0``.  With `collect`, ``states[j]`` is the
-        adjoint state after step `j` (the PPV) and ``ts[j]`` is the per-stage
-        reverse solves the DIRK forced fold reads."""
+        With `collect`, returns ``(w, ts, states)`` where ``states[j]`` is the
+        adjoint state after step `j` (the PPV over the period that `ppv`
+        reads) and ``ts[j]`` the step's per-stage costates (`None` at an
+        explicit stage) -- a source injected at step `j` enters through
+        every stage (``A (x) B``), so there is no two-vector shortcut."""
         v = np.asarray(v)
         if np.iscomplexobj(v):
             ii = (None, None) if inject is None else (
                 np.real(inject), np.imag(inject))
-            re = self._monodromy_matvec_transposed_dirk(
+            re = self._monodromy_matvec_transposed_stage(
                 steps, v.real, collect, ii[0])
-            im = self._monodromy_matvec_transposed_dirk(
+            im = self._monodromy_matvec_transposed_stage(
                 steps, v.imag, collect, ii[1])
             if collect:
-                ## ⚠ The collected lists may be NESTED (a DIRK's `ts` holds
-                ## per-stage solves per step), so a flat `a + 1j*b`
-                ## multiplied a LIST by `1j`: `floquet_modes` under trbdf2
-                ## raised "can't multiply sequence by non-int of type
-                ## 'complex'" for as long as the path existed.  Recurse.
+                ## ⚠ The collected lists are NESTED (per-stage costates per
+                ## step), so a flat `a + 1j*b` multiplied a LIST by `1j`:
+                ## `floquet_modes` under trbdf2 raised "can't multiply
+                ## sequence by non-int of type 'complex'" for as long as the
+                ## path existed.  Recurse.
                 return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
                         _cx_collect(re[2], im[2]))
             return re + 1j * im
@@ -5537,32 +5564,11 @@ class PSS(Analysis):
         ts = []
         states = []
         for j in range(len(steps) - 1, -1, -1):
-            Kfacs, Gs, Cn, h, Amat, _cvec = steps[j]
-            s = Amat.shape[0]
-            dbar = [np.zeros_like(w) for _ in range(s)]
-            dbar[s - 1] = w
-            wbar = np.zeros_like(w)
-            rbars = [None] * s
-            for i in range(s - 1, -1, -1):
-                if Kfacs[i] is None:
-                    if i == 0:
-                        wbar = wbar + dbar[0]
-                else:
-                    rb = Kfacs[i].solve_transposed(dbar[i])
-                    if rb is None:
-                        raise NotImplementedError(
-                            'PSS: this linear solver cannot solve transposed, '
-                            'so the DIRK monodromy transpose cannot be '
-                            'replayed. Use DenseSolver or SuperLUSolver.')
-                    rbars[i] = rb
-                    wbar = wbar + Cn.T @ rb
-                    for jj in range(i):
-                        dbar[jj] = dbar[jj] - h * Amat[i, jj] * (Gs[jj].T @ rb)
-            w = wbar
+            w, r = steps[j].adjoint(w)
             if inject is not None:
                 w = w + inject[j]
             if collect:
-                ts.append(rbars)
+                ts.append(r)
                 states.append(w.copy())
         if collect:
             ts.reverse()
@@ -5821,32 +5827,61 @@ class PSS(Analysis):
         Pout, _D = self._glm_propagate(steps, P)
         return np.concatenate([np.asarray(Pk).ravel() for Pk in Pout])
 
-    def _traverse_dirk(self, x_in, T, times, hs, want_dT=False,
-                       hsens=None, capture=None):
-        """One period under a lower-triangular (DIRK/ESDIRK) stage method with
-        the DENSE sensitivities -- the shooting Newton's monodromy `P` and,
-        with `want_dT`, the period column `Pt`, solved stage by stage.
+    def _traverse_stage(self, x_in, T, times, hs, want_dT=False, hsens=None,
+                        capture=None):
+        """One period under a Runge-Kutta stage method with the DENSE
+        sensitivities -- the shooting Newton's monodromy `P = dx/dx0` and,
+        on request, the period column `Pt = dx/dT` and the event columns
+        `Pk`.  Self-starting: `x_in` IS `x_0`, so there is no opener seam and
+        `M` keeps the method's order round the whole period.
 
-        Same sequential recursion as :meth:`_monodromy_matvec_dirk`, carried on
-        the full `m x m` matrix `P`:
+        Every step solves the SAME stage system for every column, ``J Z =
+        B`` with ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)`` -- one
+        `_StageStep`, coupled for a fully implicit tableau (Radau IIA),
+        stage by stage for a lower-triangular one (TR-BDF2, ESDIRK).  The
+        right-hand sides differ only in their forcing:
 
-            D_0 = I;  D_i = K_i^{-1}(C_n P - h sum_{j<i} A_ij G_j D_j);  P = D_s
+            P:   [C_n P]_i
+            Pt:  [C_n Pt + (dh/dT) S_i]_i,       S_i = sum_j A_ij K_j
+            Pk:  [C_n Pk + w S_i - h U_i]_i
 
-        and the period column (autonomous, ``h_j = frac_j T``, ``dh/dT=h/T``,
-        ``K_j = -i(Y_j)``):
+        and the last stage is the step's result (stiff accuracy).  Refactor
+        E9 item 2 (2026-09-23): this was `_traverse_full` and
+        `_traverse_dirk`, two copies.
 
-            Dt_0 = Pt;  Dt_i = K_i^{-1}(C_n Pt + (h/T) S_i - h sum_{j<i} A_ij G_j Dt_j)
+        ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY BECAUSE THE CIRCUIT IS
+        AUTONOMOUS.  With `T` unknown the grid rebuilds as ``h_j = frac_j T``,
+        so ``dh_j/dT = h_j/T`` and the stage derivative ``K_j = -i(Y_j)`` has
+        no explicit time dependence; differentiating the stage residuals
+        ``F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`` w.r.t. `T` gives the `Pt`
+        row above.  ('closing': only the last step's length depends on `T`.)
+        Finite-difference checked before use (the dT column has been got
+        wrong in this file twice -- roadmap 0j).
 
-        with ``S_i = sum_{j<=i} A_ij K_j``.  FD-checked before use (the dT
-        column has been got wrong in this file twice -- roadmap 0j)."""
+        ⚠ EVENT COLUMNS (2026-09-21): `hsens[j, k] = d h_j / d theta_k` for
+        the state-event unknowns, one column each, propagated by the same
+        stage algebra as the period column with the per-step weight taken
+        from the matrix instead of `h/T`; `capture` names the nodes whose
+        state and sensitivities the bordered residual reads.
+
+        ⚠ A DRIVEN CIRCUIT'S SOURCES MOVE WITH THE GRID (2026-09-21).  The
+        period column never needed this -- it exists for autonomous
+        circuits, whose `u` is constant -- but an event column shifts the
+        TIMES the stages are evaluated at, so `f = -(i + u(t))` changes by
+        `-u_dot . dt_stage`, `dt_stage = tau_n + c_i dh` with `tau_n` the
+        shift of the step's start (the `U_i` term).  Without it the FD check
+        read the column 77 % off and the event row's derivative with the
+        WRONG SIGN on the PWM fixture (the ramp is the source)."""
         toolkit = self.toolkit
         m = self.cir.n - 1
         self._want_dfdh = False
         self._want_lte = False
         self._begin_period(x_in)
         integ = self._transient().base_integrator
-        Amat = np.array(integ.A, dtype=float)
+        tab = _butcher(integ)
+        Amat = tab[0]
         s = Amat.shape[0]
+        coupled = integ.is_fully_implicit()
         iref = self.irefnode
         Tf = float(T)
         x = copy(x_in)
@@ -5856,83 +5891,43 @@ class PSS(Analysis):
         Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
               if hsens is not None else None)
         self._captured = {}
-        ## the driven source's own motion with the grid -- see `_traverse_full`
-        _cabs = (np.asarray(integ.butcher()[2], dtype=float)
-                 if Pk is not None else None)
+        _cabs = tab[2] if Pk is not None else None
         _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
-            Yf = self._transient()._rk_Y
-            Ys = [toolkit.concatenate((yf[:iref], yf[iref + 1:])) for yf in Yf]
-            Cn = np.asarray(self._C_at(xn))
-            Gs = [np.asarray(self._G_at(Ys[i])) for i in range(s)]
-            Kf = []
-            for i in range(s):
-                if abs(Amat[i, i]) < 1e-14:
-                    Kf.append(None)
-                else:
-                    Ci = np.asarray(self._C_at(Ys[i]))
-                    Kf.append(self._factorise(Ci + h * Amat[i, i] * Gs[i]))
-            D = [None] * s
-            CnP = Cn @ P
-            for i in range(s):
-                if Kf[i] is None:
-                    D[0] = P  # explicit first: D_0 = I, so D_0 P_in = P_in
-                else:
-                    rhs = CnP - h * sum(Amat[i, j] * (Gs[j] @ D[j])
-                                        for j in range(i))
-                    ## solve the whole m x m RHS at once (the factor's solve
-                    ## takes a 2D b), not column by column
-                    D[i] = np.asarray(Kf[i].solve(rhs))
-            P = D[s - 1]
+            st, Ys = self._stage_step(xn, h, tab, coupled)
+            P = st.solve(P)
             if Pk is not None:
-                ## the event columns -- see `_traverse_full`
                 _t0 = float(times[_j])
-                Ks = [np.asarray(self._k_at(Ys[i], _t0 + float(_cabs[i]) * h))
-                      for i in range(s)]
+                Ks = [np.asarray(self._k_at(Ys[jj], _t0 + float(_cabs[jj]) * h))
+                      for jj in range(s)]
+                Ss = [sum(Amat[i, jj] * Ks[jj] for jj in range(s)) for i in range(s)]
                 Ud = [np.delete(np.asarray(self.cir.dudt(_t0 + float(_cabs[jj]) * h,
                                                           analysis=self.par.analysis),
                                            dtype=float), iref)
                       for jj in range(s)]
                 for k in range(len(Pk)):
                     w = float(hsens[_j, k])
-                    Dk = [None] * s
-                    CnPk = Cn @ Pk[k]
+                    forcing = []
                     for i in range(s):
-                        if Kf[i] is None:
-                            Dk[0] = Pk[k]
-                        else:
-                            Si = sum(Amat[i, j] * Ks[j] for j in range(i + 1))
-                            Ui = sum(Amat[i, j] * Ud[j] * (_tau[k] + float(_cabs[j]) * w)
-                                     for j in range(i + 1))
-                            rhs = CnPk + w * Si - h * Ui \
-                                - h * sum(Amat[i, j] * (Gs[j] @ Dk[j])
-                                          for j in range(i))
-                            Dk[i] = Kf[i].solve(rhs)
-                    Pk[k] = Dk[s - 1]
+                        Ui = sum(Amat[i, jj] * Ud[jj] * (_tau[k] + float(_cabs[jj]) * w)
+                                 for jj in range(s))
+                        forcing.append((w * Ss[i], -(h * Ui)))
+                    Pk[k] = st.solve(Pk[k], forcing)
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
                     self._captured[_j + 1] = (copy(x), P.copy(),
                                               [pk.copy() for pk in Pk])
             if want_dT:
-                Ks = [np.asarray(self._k_at(Ys[i])) for i in range(s)]
-                Dt = [None] * s
-                CnPt = Cn @ Pt
-                for i in range(s):
-                    if Kf[i] is None:
-                        Dt[0] = Pt
-                    else:
-                        Si = sum(Amat[i, j] * Ks[j] for j in range(i + 1))
-                        ## 'closing': only the last step's length depends on T
-                        _dhdT = ((1.0 if _j == len(times) - 2 else 0.0)
-                                 if self._period_column == 'closing' else h / Tf)
-                        rhs = CnPt + _dhdT * Si \
-                            - h * sum(Amat[i, j] * (Gs[j] @ Dt[j])
-                                      for j in range(i))
-                        Dt[i] = Kf[i].solve(rhs)
-                Pt = Dt[s - 1]
+                Ks = [np.asarray(self._k_at(y)) for y in Ys]
+                ## 'closing': only the last step's length depends on T
+                _dhdT = ((1.0 if _j == len(times) - 2 else 0.0)
+                         if self._period_column == 'closing' else h / Tf)
+                forcing = [(_dhdT * sum(Amat[i, jj] * Ks[jj] for jj in range(s)),)
+                           for i in range(s)]
+                Pt = st.solve(Pt, forcing)
         self._want_dfdh = False
         self._monodromy = P
         if Pk is not None:
@@ -5941,17 +5936,22 @@ class PSS(Analysis):
             return x0, x, P, Pt
         return x0, x, P, None
 
-    def _forced_replay_dirk(self, fp, freq, u_ac, y0=None, collect=False):
-        """One driven period under a lower-triangular stage method -- the
-        FORWARD sequential replay.  Source at `freq` enters stage `i`'s residual
-        at every abscissa ``k <= i``:
+    def _forced_replay_stage(self, fp, freq, u_ac, y0=None, collect=False):
+        """One driven period under a Runge-Kutta stage method -- the FORWARD
+        replay, the transpose of `_forced_replay_transposed_stage`.
 
-            d_0 = y                                       (explicit first)
-            d_i = K_i^{-1}(C_n y - h sum_{j<i} A_ij G_j d_j
-                          - h sum_{k<=i} A_ik u e^{jw t_{n,k}})
+        Each step maps the entering state and the source to the endpoint by
+        the stage solve, the source at `freq` entering stage `i`'s residual
+        at every abscissa ``t_{n,k} = t_n + c_k h`` it reaches:
 
-        so ``y_end = M y0 + w(freq)`` by linearity.  The exact transpose of
-        `_forced_replay_transposed_dirk`."""
+            rhs_i = C_n y_n - h sum_k A_ik u exp(jw t_{n,k})
+            y_{n+1} = (J^{-1} rhs)_s                    (stiff accuracy)
+
+        (`_StageStep.sources`), so ``y_end = M y0 + w(freq)`` by linearity,
+        the superposition PAC relies on.  ⚠ THE SOURCE COUPLING IS THE SAME
+        ``-h sum_k A_ik exp(...)`` the adjoint reads, so the two are exact
+        transposes (dual-consistent to machine precision); a real factor
+        takes a complex rhs as two back-substitutions."""
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
@@ -5959,91 +5959,55 @@ class PSS(Analysis):
         y = (np.zeros(m, dtype=complex) if y0 is None
              else np.asarray(y0, dtype=complex).ravel().copy())
         ys = []
-        for jstep, (Kfacs, Gs, Cn, h, Amat, cvec) in enumerate(fp.steps):
-            ts = tms[jstep]
-            s = Amat.shape[0]
-            d = [None] * s
-            Cny = Cn @ y
-            for i in range(s):
-                if Kfacs[i] is None:
-                    d[0] = y
-                else:
-                    src = -h * sum(Amat[i, k] * u_ac * np.exp(jw * (ts + cvec[k] * h))
-                                   for k in range(i + 1))
-                    rhs = Cny - h * sum(Amat[i, j] * (Gs[j] @ d[j])
-                                        for j in range(i)) + src
-                    d[i] = self._csolve_fac(Kfacs[i], rhs)
-            y = d[s - 1]
+        for j, st in enumerate(fp.steps):
+            y = st.solve(y, st.sources(u_ac, jw, tms[j]))
             if collect:
                 ys.append(y.copy())
         return y, ys
 
-    def _csolve_fac(self, fac, b):
-        """Complex solve against a real factor object (`.solve` real-only):
-        two back-substitutions."""
-        b = np.asarray(b, dtype=complex)
-        return fac.solve(b.real) + 1j * fac.solve(b.imag)
+    def _forced_replay_transposed_stage(self, fp, freq, xa):
+        """`W^T xa` for a Runge-Kutta stage method -- the adjoint of
+        `_forced_replay_stage` (no output injection), the source-coupling
+        sibling of `_monodromy_matvec_transposed_stage`.
 
-    def _forced_replay_transposed_dirk(self, fp, freq, xa):
-        """`W^T xa` for a lower-triangular stage map -- the reverse-mode adjoint
-        of `_forced_replay_dirk` (no output injection).
+        Per step (last to first) the transposed step gives the stage
+        costates ``r = J^{-T} [0; ..; 0; w]``; a source at abscissa `k`
+        couples to every stage that reaches it, so
 
-        Per step, the monodromy reverse pass yields the per-stage reverse solves
-        ``rbar_i = K_i^{-T} dbar_i``; the source at abscissa `k` couples to every
-        stage ``i >= k``, so
+            acc += -h sum_k exp(jw t_{n,k}) sum_i A_ik r_i
 
-            acc += -h sum_k e^{jw t_{n,k}} sum_{i>=k} A_ik rbar_i
-
-        and the costate propagates by ``w <- wbar``.  Exact transpose of the
-        forward replay (dual-consistent to machine precision)."""
+        (`_StageStep.source_adjoint`) and the costate propagates by ``w <-
+        C_n^T sum_i r_i``.  ⚠ NO TWO-VECTOR SHORTCUT on a coupled tableau:
+        the source couples through every stage with the full ``A (x) B``
+        weighting.  Dual-consistent with the forward replay and matched to
+        forward driven solves; the injected sibling is
+        `_sideband_forced_stage`."""
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         w = np.asarray(xa, dtype=complex).ravel().copy()
         acc = np.zeros(m, dtype=complex)
         tms = np.asarray(fp.times, dtype=float)
         for j in range(len(fp.steps) - 1, -1, -1):
-            Kfacs, Gs, Cn, h, Amat, cvec = fp.steps[j]
-            s = Amat.shape[0]
-            ts = tms[j]
-            dbar = [np.zeros(m, dtype=complex) for _ in range(s)]
-            dbar[s - 1] = w
-            wbar = np.zeros(m, dtype=complex)
-            rbars = [None] * s
-            for i in range(s - 1, -1, -1):
-                if Kfacs[i] is None:
-                    if i == 0:
-                        wbar = wbar + dbar[0]
-                else:
-                    rb = self._csolve_fac_T(Kfacs[i], dbar[i])
-                    rbars[i] = rb
-                    wbar = wbar + Cn.T @ rb
-                    for jj in range(i):
-                        dbar[jj] = dbar[jj] - h * Amat[i, jj] * (Gs[jj].T @ rb)
-            for k in range(s):
-                tk = ts + cvec[k] * h
-                coup = sum(Amat[i, k] * rbars[i] for i in range(k, s)
-                           if rbars[i] is not None)
-                if not np.isscalar(coup):
-                    acc = acc - h * np.exp(jw * tk) * coup
-            w = wbar
+            st = fp.steps[j]
+            w, r = st.adjoint(w)
+            acc = st.source_adjoint(acc, r, jw, tms[j])
         return acc
 
-    def _csolve_fac_T(self, fac, b):
-        """Complex transposed solve against a real factor object."""
-        b = np.asarray(b, dtype=complex)
-        rr = fac.solve_transposed(b.real)
-        if rr is None:
-            raise NotImplementedError(
-                'PSS: this linear solver cannot solve transposed, so the DIRK '
-                'forced adjoint cannot be replayed. Use DenseSolver or '
-                'SuperLUSolver.')
-        return rr + 1j * fac.solve_transposed(b.imag)
+    def _sideband_forced_stage(self, fp, freq, l, d, extra=None):
+        """The forced (source-injected) part of a Runge-Kutta stage method's
+        sideband row `l`, and the final costate `g` for the closure -- the
+        injected sibling of `_forced_replay_transposed_stage`.
 
-    def _sideband_forced_dirk(self, fp, freq, l, d, extra=None):
-        """The forced (source-injected) part of a lower-triangular stage
-        method's sideband row `l`, and the final costate `g` -- the injected
-        sibling of `_forced_replay_transposed_dirk` (output functional `d`
-        added to the costate AFTER each step's update, causality)."""
+        The reverse pass injects the OUTPUT functional `d` (weighted by
+        ``exp(-j(l w0 + w) t_n)/N``, or the period quadrature's weight) at
+        each step and reads the SOURCE coupling through every stage at every
+        step.  ⚠ The injection is added AFTER the step's costate update, so
+        the output at step `n` couples to the source at steps `< n`
+        (causality); the accepted trajectory state at `t_n` IS the entering
+        state `x_n` of step `n`, so `d` couples at `t_n` exactly as in the
+        TR-BDF2 fold.  `extra` is a raw costate injection per node (the
+        bordered adjoint's event-row term, 2026-09-22), at `d`'s position.
+        Returns `(forced, g)`."""
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         T = float(fp.T)
@@ -6055,31 +6019,12 @@ class PSS(Analysis):
         forced = np.zeros(m, dtype=complex)
         _wq = self._period_quadrature(fp)
         for j in range(N - 1, -1, -1):
-            Kfacs, Gs, Cn, h, Amat, cvec = fp.steps[j]
-            s = Amat.shape[0]
+            st = fp.steps[j]
             ts = tms[j]
-            dbar = [np.zeros(m, dtype=complex) for _ in range(s)]
-            dbar[s - 1] = lam
-            wbar = np.zeros(m, dtype=complex)
-            rbars = [None] * s
-            for i in range(s - 1, -1, -1):
-                if Kfacs[i] is None:
-                    if i == 0:
-                        wbar = wbar + dbar[0]
-                else:
-                    rb = self._csolve_fac_T(Kfacs[i], dbar[i])
-                    rbars[i] = rb
-                    wbar = wbar + Cn.T @ rb
-                    for jj in range(i):
-                        dbar[jj] = dbar[jj] - h * Amat[i, jj] * (Gs[jj].T @ rb)
-            for k in range(s):
-                tk = ts + cvec[k] * h
-                coup = sum(Amat[i, k] * rbars[i] for i in range(k, s)
-                           if rbars[i] is not None)
-                if not np.isscalar(coup):
-                    forced = forced - h * np.exp(jw * tk) * coup
+            lam, r = st.adjoint(lam)
+            forced = st.source_adjoint(forced, r, jw, ts)
             _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
-            lam = wbar + (_e / N if _wq is None else _e * _wq[j]) * d
+            lam = lam + (_e / N if _wq is None else _e * _wq[j]) * d
             if extra is not None and j in extra:
                 lam = lam + np.asarray(extra[j], dtype=complex)
         return forced, lam
@@ -6122,130 +6067,6 @@ class PSS(Analysis):
                                     analysis=self.par.analysis), dtype=float))
         iref = self.irefnode
         return self.toolkit.concatenate((k[:iref], k[iref + 1:]))
-
-    def _traverse_full(self, x_in, T, times, hs, want_dT=False,
-                       hsens=None, capture=None):
-        """One period under Radau IIA(3) with the DENSE sensitivities -- the
-        shooting Newton's monodromy for the fully-implicit collocation method.
-
-        The coupled analogue of `_traverse_trbdf2`.  Each step propagates the
-        full `m x m` monodromy `P = dx/dx0` (and, with `want_dT`, the period
-        column `Pt = dx/dT`) through the `3m x 3m` coupled stage operator
-        ``J_block[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)``:
-
-            J_block (dY/dx0) = [Cn P; Cn P; Cn P],   P <- (dY/dx0)_3
-
-        -- the monodromy is the third `m`-block by stiff accuracy
-        (``x_{n+1} == Y_3``).  Self-starting: `x_in` IS `x_0`, so there is no
-        opener seam and `M` is order-5 round the whole period.
-
-        ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY BECAUSE THE CIRCUIT IS
-        AUTONOMOUS.  With `T` unknown the grid rebuilds as ``h_j = frac_j T``,
-        so ``dh_j/dT = h_j/T`` and the stage derivative ``K_j = -i(Y_j)`` has
-        no explicit time dependence.  Differentiating the stage residuals
-        ``F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`` w.r.t. `T`:
-
-            J_block (dY/dT) = [Cn Pt + (h/T) sum_j A_ij K_j]_i,   Pt <- (dY/dT)_3
-
-        Finite-difference checked before use (the dT column has been got wrong
-        in this file twice -- roadmap 0j).
-        """
-        import scipy.linalg as sla
-        toolkit = self.toolkit
-        m = self.cir.n - 1
-        self._want_dfdh = False
-        self._want_lte = False
-        self._begin_period(x_in)
-        integ = self._transient().base_integrator
-        Amat = np.array(integ.A, dtype=float)
-        s = Amat.shape[0]
-        iref = self.irefnode
-        Tf = float(T)
-        x = copy(x_in)
-        x0 = copy(x_in)
-        P = np.asarray(toolkit.eye(m), dtype=float)
-        Pt = np.zeros(m)
-        ## ⚠ EVENT COLUMNS (2026-09-21): `hsens[j, k] = d h_j / d theta_k`
-        ## for the state-event unknowns, one column each, propagated by
-        ## the same stage algebra as the period column with the per-step
-        ## weight taken from the matrix instead of `h/T`; `capture` names
-        ## the nodes whose state and sensitivities the bordered residual
-        ## reads (the event nodes).
-        Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
-              if hsens is not None else None)
-        self._captured = {}
-        ## ⚠ A DRIVEN CIRCUIT'S SOURCES MOVE WITH THE GRID (2026-09-21).  The
-        ## period column never needed this -- it exists for autonomous
-        ## circuits, whose `u` is constant -- but an event column shifts the
-        ## TIMES the stages are evaluated at, so `f = -(i + u(t))` changes by
-        ## `-u_dot . dt_stage`, `dt_stage = tau_n + c_i dh` with `tau_n` the
-        ## shift of the step's start.  Without it the FD check read the
-        ## column 77 % off and the event row's derivative with the WRONG
-        ## SIGN on the PWM fixture (the ramp is the source).
-        _cabs = (np.asarray(integ.butcher()[2], dtype=float)
-                 if Pk is not None else None)
-        _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
-        for _j, t in enumerate(times[1:]):
-            h = hs[min(_j, len(hs) - 1)]
-            xn = x
-            x = copy(self.solve_timestep(xn, t, h))
-            Yf = self._transient()._rk_Y
-            Ys = [toolkit.concatenate((yf[:iref], yf[iref + 1:])) for yf in Yf]
-            Cn = np.asarray(self._C_at(xn))
-            Cs = [np.asarray(self._C_at(y)) for y in Ys]
-            Gs = [np.asarray(self._G_at(y)) for y in Ys]
-            Jb = np.zeros((s * m, s * m))
-            for i in range(s):
-                for jj in range(s):
-                    blk = h * Amat[i, jj] * Gs[jj]
-                    if i == jj:
-                        blk = Cs[i] + blk
-                    Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
-            lu = sla.lu_factor(Jb)
-            CnP = Cn @ P
-            Z = sla.lu_solve(lu, np.vstack([CnP] * s))
-            P = Z[(s - 1) * m:s * m, :]
-            if Pk is not None:
-                _t0 = float(times[_j])
-                Ks = [np.asarray(self._k_at(Ys[jj], _t0 + float(_cabs[jj]) * h))
-                      for jj in range(s)]
-                Ss = [sum(Amat[i, jj] * Ks[jj] for jj in range(s)) for i in range(s)]
-                Ud = [np.delete(np.asarray(self.cir.dudt(_t0 + float(_cabs[jj]) * h,
-                                                          analysis=self.par.analysis),
-                                           dtype=float), iref)
-                      for jj in range(s)]
-                for k in range(len(Pk)):
-                    w = float(hsens[_j, k])
-                    rhs = np.zeros(s * m)
-                    CnPk = Cn @ Pk[k]
-                    for i in range(s):
-                        Ui = sum(Amat[i, jj] * Ud[jj] * (_tau[k] + float(_cabs[jj]) * w)
-                                 for jj in range(s))
-                        rhs[i * m:(i + 1) * m] = CnPk + w * Ss[i] - h * Ui
-                    Zk = sla.lu_solve(lu, rhs)
-                    Pk[k] = Zk[(s - 1) * m:s * m]
-                _tau = _tau + hsens[_j]
-                if capture is not None and (_j + 1) in capture:
-                    self._captured[_j + 1] = (copy(x), P.copy(),
-                                              [pk.copy() for pk in Pk])
-            if want_dT:
-                Ks = [np.asarray(self._k_at(y)) for y in Ys]
-                rhs = np.zeros(s * m)
-                CnPt = Cn @ Pt
-                for i in range(s):
-                    Si = sum(Amat[i, jj] * Ks[jj] for jj in range(s))
-                    _dhdT = ((1.0 if _j == len(times) - 2 else 0.0)
-                             if self._period_column == 'closing' else h / Tf)
-                    rhs[i * m:(i + 1) * m] = CnPt + _dhdT * Si
-                Zt = sla.lu_solve(lu, rhs)
-                Pt = Zt[(s - 1) * m:s * m]
-        self._want_dfdh = False
-        self._monodromy = P
-        if Pk is not None:
-            return x0, x, P, Pk
-        if want_dT:
-            return x0, x, P, Pt
-        return x0, x, P, None
 
     def _monodromy_matvec_transposed(self, C0, steps, v, collect=False,
                                      inject=None):
@@ -7289,8 +7110,9 @@ class PSS(Analysis):
         ## a left-rectangle rule on a non-uniform grid is first order by
         ## itself.  The anchor `v` and the pair block are untouched; the
         ## uniform grid never comes here, and the one-step kinds cannot:
-        ## their `factored_period_full` / `_dirk` replays are built on a
-        ## uniform `linspace` grid whatever the solve used, which is WHY
+        ## their `factored_period_full` / `_dirk` replays (now
+        ## `factored_period_stage`) were built on a uniform `linspace` grid
+        ## whatever the solve used, which is WHY
         ## radau read as "exact on the 3:1 grid" -- its adjoint surfaces
         ## never saw that grid.
         if (getattr(self, '_ppv_alg_fallback', False)
@@ -8109,120 +7931,14 @@ class PSS(Analysis):
         it is what makes this method map-agnostic rather than merely
         permitted.
         """
-        if fp.kind == 'dirk':
-            return self._forced_replay_transposed_dirk(fp, freq, xa)
-        if fp.kind == 'full':
-            return self._forced_replay_transposed_full(fp, freq, xa)
+        if fp.kind in ('full', 'dirk'):
+            return self._forced_replay_transposed_stage(fp, freq, xa)
         _end, ts, _states = fp.matvec_transposed(xa, collect=True)
         jw = 2j * np.pi * float(freq)
         acc = np.zeros(self.cir.n - 1, dtype=complex)
         for tvec, t in zip(ts, fp.times[1:]):
             acc = acc - np.exp(jw * float(t)) * np.asarray(tvec)
         return acc
-
-    def _forced_replay_transposed_full(self, fp, freq, xa):
-        """`W^T xa` for Radau IIA(3) -- the COUPLED three-stage adjoint (no
-        output injection), the source-coupling sibling of
-        `_monodromy_matvec_transposed_full`.
-
-        A source at frequency `freq` enters stage `k` (abscissa
-        ``t_{j,k} = t_j + c_k h``) through ``K_k = -(i + u)``, so the forward
-        source RHS of the coupled step is ``S_i = -h sum_k A_ik du_k`` with
-        ``du_k = exp(jw t_{j,k})``.  The endpoint reads block 3, so the
-        adjoint of one step's source-to-endpoint sensitivity is, with
-        ``p = J^{-T} [0; 0; w]`` (the same coupled transposed solve the
-        monodromy transpose takes),
-
-            acc += -h sum_k exp(jw t_{j,k}) (A_1k p_1 + A_2k p_2 + A_3k p_3)
-
-        and the costate propagates back by ``w <- Cn^T (p_1 + p_2 + p_3)``.
-        ⚠ NO TWO-VECTOR SHORTCUT: the source couples through all three stages
-        with the full ``A (x) B`` weighting, so all three `m`-blocks of `p`
-        are read (a DIRK's ``A1 p`` feed is the two-stage special case of
-        this).  Dual-consistent with the forward replay and matched to
-        forward driven solves; the injected sibling is
-        `_sideband_forced_full`.
-        """
-        import scipy.linalg as sla
-        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        Amat, _Bw, cvec = integ.butcher()
-        s = Amat.shape[0]
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        w = np.asarray(xa, dtype=complex).ravel().copy()
-        acc = np.zeros(m, dtype=complex)
-        tms = np.asarray(fp.times, dtype=float)
-
-        def csolveT(lu, b):
-            return (sla.lu_solve(lu, b.real, trans=1)
-                    + 1j * sla.lu_solve(lu, b.imag, trans=1))
-
-        for j in range(len(fp.steps) - 1, -1, -1):
-            lu, Cn, mm = fp.steps[j]
-            ts = tms[j]; te = tms[j + 1]; h = te - ts
-            b3 = np.concatenate([np.zeros(m)] * (s - 1) + [w])
-            p = csolveT(lu, b3)
-            pb = [p[i * m:(i + 1) * m] for i in range(s)]
-            for k in range(s):
-                tk = ts + cvec[k] * h
-                coup = sum(Amat[i, k] * pb[i] for i in range(s))
-                acc = acc - h * np.exp(jw * tk) * coup
-            w = Cn.T @ sum(pb)
-        return acc
-
-    def _sideband_forced_full(self, fp, freq, l, d, extra=None):
-        """The forced (source-injected) part of the Radau IIA(3) sideband row
-        for sideband `l`, and the final costate `g` for the closure.
-
-        The three-vector analogue of `_sideband_forced_trbdf2`: the reverse
-        pass injects the OUTPUT functional `d` (weighted by
-        `exp(-j(l w0 + w) t_n)/N`) at each step and reads the SOURCE coupling
-        through ALL THREE stages at every step -- the coupled fold
-        (`_forced_replay_transposed_full` with the injection added).  ⚠ The
-        injection is added AFTER the step's costate update, so the output at
-        step `n` couples to the source at steps `< n` (causality); the
-        accepted trajectory state at `t_n` IS the entering state `x_n` of step
-        `n`, so `d` couples at `t_n` (`ts`) exactly as in the TR-BDF2 fold.
-        The source coupling folds the three abscissae with
-        `sum_k exp(jw t_{n,k}) sum_i A_ik p_i` -- there is no two-vector
-        shortcut (`A (x) B`).  Returns `(forced, g)`.
-        """
-        import scipy.linalg as sla
-        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        Amat, _Bw, cvec = integ.butcher()
-        s = Amat.shape[0]
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        T = float(fp.T)
-        w0 = 2.0 * np.pi / T
-        N = len(fp.steps)
-        tms = np.asarray(fp.times, dtype=float)
-        d = np.asarray(d, dtype=complex).ravel()
-        lam = np.zeros(m, dtype=complex)
-        forced = np.zeros(m, dtype=complex)
-
-        def csolveT(lu, b):
-            return (sla.lu_solve(lu, b.real, trans=1)
-                    + 1j * sla.lu_solve(lu, b.imag, trans=1))
-
-        _wq = self._period_quadrature(fp)
-        for j in range(N - 1, -1, -1):
-            lu, Cn, mm = fp.steps[j]
-            ts = tms[j]; te = tms[j + 1]; h = te - ts
-            p = csolveT(lu, np.concatenate([np.zeros(m)] * (s - 1) + [lam]))
-            pb = [p[i * m:(i + 1) * m] for i in range(s)]
-            for k in range(s):
-                tk = ts + cvec[k] * h
-                coup = sum(Amat[i, k] * pb[i] for i in range(s))
-                forced = forced - h * np.exp(jw * tk) * coup
-            lam = Cn.T @ sum(pb)
-            _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
-            lam = lam + (_e / N if _wq is None else _e * _wq[j]) * d
-            if extra is not None and j in extra:
-                ## a raw costate injection at node j (the bordered adjoint's
-                ## event-row term, 2026-09-22) -- same position as `d`'s
-                lam = lam + np.asarray(extra[j], dtype=complex)
-        return forced, lam
 
     #: Relative step spread below which the period grid counts as uniform.
     #: Not zero: `event_grid`'s uniform grid differs from `_period_grid`'s in
@@ -8361,6 +8077,17 @@ class PSS(Analysis):
         self._monodromy_twin = twin
         return twin
 
+    ## The iteration budget of a monodromy twin's re-solve (Andreas,
+    ## 2026-09-23).  A twin is a POLISH, not a cold solve: it is seeded at
+    ## this run's converged state on the same grid, and from a good seed it
+    ## converges in 4-13 iterations (measured on B16's van der Pol).  It used
+    ## to inherit the caller's `maxiterations` -- 300 in B16 -- and from a
+    ## poor seed (Euler at 400 points, its orbit 55 % off) both twins refuse by
+    ## NOT converging, so each ran its whole budget times the solve's retry
+    ## ladder: 971 + 968 traversals, 790 s, to say "no".  Capped at this, and
+    ## a twin that hits the cap without converging WARNS before it refuses.
+    TWIN_MAXITER = 40
+
     def _solve_twin(self, method):
         """A converged twin `PSS` of this circuit under `method`, re-solved
         once on the SAME grid from this orbit's converged state, cached per
@@ -8398,18 +8125,28 @@ class PSS(Analysis):
         ## pinned coordinate and lands on ANOTHER phase (measured; see
         ## `solve`).  Inheriting it would move the twin off the orbit point
         ## whose monodromy was asked for.
+        _asked = max(int(kw.get('maxiterations', 20)), 20)
+        _budget = min(_asked, int(self.TWIN_MAXITER))
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 twin.solve(refnode=kw.get('refnode', gnd), period=float(T),
                            x0=x0r, timestep=float(T) / (len(hs) + 0.5),
-                           grid=grid,
-                           maxiterations=max(int(kw.get('maxiterations',
-                                                        20)), 20),
+                           grid=grid, maxiterations=_budget,
                            matrix_free=bool(kw.get('matrix_free', False)))
             _ok = bool(twin.converged)
         except NoConvergenceError:
             _ok = False
+        if not _ok and _budget < _asked:
+            warnings.warn(
+                'PSS.monodromy_twin: the %s re-solve did not converge within '
+                'its capped iteration budget (PSS.TWIN_MAXITER = %d; the solve '
+                'itself allowed %d).  A twin is seeded at the converged orbit '
+                'and a good seed converges in a handful of iterations, so this '
+                'usually means the %s orbit is too poor to seed it; if the seed '
+                'is good but slow, raise PSS.TWIN_MAXITER.'
+                % (method, _budget, _asked, getattr(self.par, 'method', '?')),
+                RuntimeWarning, stacklevel=3)
         if not _ok:
             raise RuntimeError(
                 'PSS.monodromy_twin: the %s re-solve from the converged '
@@ -9052,20 +8789,17 @@ class PSS(Analysis):
                         - 1.0 <= self.UNIFORM_GRID_TOL)
             _fr = None if _uniform else _hs / float(_hs.sum())
             ## A self-starting stage method has its own factored map (no opener,
-            ## no pair).  Route BY STRUCTURE: a fully-implicit tableau to the
-            ## coupled builder, a lower-triangular one (DIRK/ESDIRK) to the
-            ## sequential builder -- the coupled block is singular on a DAE for
-            ## an explicit first stage, so the two cannot share a path.  A new
-            ## method of either family reaches the right builder with no edit
-            ## here.
+            ## no pair).  `factored_period_stage` routes BY STRUCTURE -- the
+            ## coupled block for a fully implicit tableau, per-stage factors
+            ## for a lower-triangular one (the coupled block is singular on a
+            ## DAE for an explicit first stage) -- so a new method of either
+            ## family needs no edit here.
             if getattr(_integ, 'is_multivalue', lambda: False)():
                 ## a Nordsieck GLM: the map is on the MULTIVALUE state, width
                 ## r*m -- see `factored_period_glm`
                 fp = self.factored_period_glm(x0, T, len(times) - 1, grid=_fr)
-            elif _integ.is_fully_implicit():
-                fp = self.factored_period_full(x0, T, len(times) - 1, grid=_fr)
             else:
-                fp = self.factored_period_dirk(x0, T, len(times) - 1, grid=_fr)
+                fp = self.factored_period_stage(x0, T, len(times) - 1, grid=_fr)
             self._factored_period_cache = fp
             return fp
         if solved:
@@ -9083,25 +8817,21 @@ class PSS(Analysis):
         self._factored_period_cache = fp
         return fp
 
-    def factored_period_full(self, x0, T, npts, method=None, grid=None):
-        """The factored period map of ANY FULLY-IMPLICIT (FULL) stage method
-        about a periodic point `x0` -- the tableau-generic coupled monodromy.
+    def factored_period_stage(self, x0, T, npts, method=None, grid=None):
+        """The factored period map of ANY Runge-Kutta stage method about a
+        periodic point `x0` -- a `FactoredPeriod` of kind 'full' (a fully
+        implicit tableau: Radau IIA, and any Gauss/Lobatto/higher-Radau one)
+        or 'dirk' (lower triangular: TR-BDF2, ESDIRK), one `_StageStep` per
+        step in the structure its tableau calls for.
 
         Integrates the orbit under the stage method (`method`, or the PSS's
-        own) on a uniform `npts`-step grid and returns the `m x m` monodromy as
-        a `FactoredPeriod(kind='full')`.  Each step is the COUPLED `sm x sm`
-        stage solve; the stored per-step object is one factorisation plus the
-        entering capacitance `Cn`, and the matvec reads the LAST `m`-block of the
-        coupled solution (`x_{n+1} == Y_s`, stiff accuracy).  Radau IIA(3) is
-        the first member; any Gauss/Lobatto/higher-Radau tableau reuses this.
+        own) on `npts` steps -- uniform, or `grid`'s fractions (see
+        `_replay_grid`) -- and returns the `m x m` monodromy, kept factored.
+        Refactor E9 item 2 (2026-09-23): this was `factored_period_full` and
+        `factored_period_dirk`, routed by the caller.
 
-        ⚠ FULLY-IMPLICIT ONLY.  A DIRK/ESDIRK (lower-triangular `A`, explicit
-        first stage) must NOT come here: its coupled block `[0][0] = C` is
-        singular on a DAE -- it takes the sequential `factored_period_dirk`
-        path instead.  `factored_period` routes by structure.
-
-        ⚠ SELF-STARTING, SO NO TWIN.  No order-dropped opener, so this does not
-        consult `monodromy_twin`.
+        ⚠ SELF-STARTING, SO NO TWIN.  No order-dropped opener, so this does
+        not consult `monodromy_twin`.
         """
         if method is None:
             method = getattr(self.par, 'method', 'euler')
@@ -9109,36 +8839,16 @@ class PSS(Analysis):
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
         times, hs = self._replay_grid(T, npts, grid)
+        integ = self._integrator_for(method)
         tr_saved = getattr(self, '_tran', None)
-        self._tran = self._new_transient(self._integrator_for(method))
+        self._tran = self._new_transient(integ)
         try:
-            steps, x_last, x_prev = self._traverse_factored_full(
-                x0, times, hs)
+            steps, x_last, x_prev = self._traverse_factored_stage(x0, times, hs)
         finally:
             self._tran = tr_saved
-        return FactoredPeriod('full', None, steps, x_last, x_prev,
-                              self, times=times, T=float(T))
-
-    def factored_period_dirk(self, x0, T, npts, method=None, grid=None):
-        """The factored period map of ANY lower-triangular (DIRK/ESDIRK) stage
-        method about a periodic point `x0` -- the tableau-generic SEQUENTIAL
-        monodromy builder (`FactoredPeriod(kind='dirk')`).  TR-BDF2 is the first
-        member; a new DIRK/ESDIRK of any stage count reuses this.  Self-starting,
-        so no twin."""
-        if method is None:
-            method = getattr(self.par, 'method', 'euler')
-        x0 = np.asarray(x0, dtype=float)
-        if x0.shape[0] == self.cir.n:
-            x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
-        times, hs = self._replay_grid(T, npts, grid)
-        tr_saved = getattr(self, '_tran', None)
-        self._tran = self._new_transient(self._integrator_for(method))
-        try:
-            steps, x_last, x_prev = self._traverse_factored_dirk(x0, times, hs)
-        finally:
-            self._tran = tr_saved
-        return FactoredPeriod('dirk', None, steps, x_last, x_prev,
-                              self, times=times, T=float(T))
+        return FactoredPeriod('full' if integ.is_fully_implicit() else 'dirk',
+                              None, steps, x_last, x_prev, self, times=times,
+                              T=float(T))
 
     FLOQUET_DENSE_LIMIT = 400
     ## below this a multiplier is an annihilated algebraic
@@ -9546,52 +9256,6 @@ class PSS(Analysis):
                                           / max(abs(lk), 1e-300))})
         return out
 
-    def _forced_replay_full(self, fp, freq, u_ac, y0=None, collect=False):
-        """One driven period under Radau IIA(3) -- the FORWARD coupled replay,
-        the transpose of :meth:`_forced_replay_transposed_full`.
-
-        Each step maps the entering state and the source to the endpoint by the
-        coupled stage solve: with the source at frequency `freq` entering stage
-        `k` (abscissa ``t_{n,k} = t_n + c_k h``),
-
-            rhs_i = C_n y_n - h sum_k A_ik u exp(jw t_{n,k})
-            y_{n+1} = (J_block^{-1} rhs)_3            (stiff accuracy)
-
-        so ``y_end = M y0 + w(freq)`` by linearity, the superposition PAC
-        relies on.  ⚠ THE SOURCE COUPLING IS THE SAME ``-h sum_k A_ik exp(...)``
-        the adjoint reads, so the two are exact transposes (dual-consistent to
-        machine precision); a real ``J_block`` factor takes a complex rhs as
-        two back-substitutions.
-        """
-        import scipy.linalg as sla
-        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        Amat, _Bw, cvec = integ.butcher()
-        s = Amat.shape[0]
-        m = self.cir.n - 1
-        jw = 2j * np.pi * float(freq)
-        u_ac = np.asarray(u_ac, dtype=complex).ravel()
-        tms = np.asarray(fp.times, dtype=float)
-        y = (np.zeros(m, dtype=complex) if y0 is None
-             else np.asarray(y0, dtype=complex).ravel().copy())
-
-        def csolve(lu, b):
-            return (sla.lu_solve(lu, b.real) + 1j * sla.lu_solve(lu, b.imag))
-
-        ys = []
-        for j, (lu, Cn, _mm) in enumerate(fp.steps):
-            ts = tms[j]; te = tms[j + 1]; h = te - ts
-            cw = Cn @ y
-            rhs = np.concatenate([cw] * s).astype(complex)
-            for i in range(s):
-                srci = -h * sum(Amat[i, k] * u_ac * np.exp(jw * (ts + cvec[k] * h))
-                                for k in range(s))
-                rhs[i * m:(i + 1) * m] += srci
-            Z = csolve(lu, rhs)
-            y = Z[(s - 1) * m:s * m]
-            if collect:
-                ys.append(y.copy())
-        return y, ys
-
     def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
         """One period of the LINEARISED circuit, driven at `freq`.
 
@@ -9609,10 +9273,8 @@ class PSS(Analysis):
         factored once; a complex right-hand side costs two back-substitutions
         against those same factors.  See the note in `_monodromy_matvec`.
         """
-        if fp.kind == 'dirk':
-            return self._forced_replay_dirk(fp, freq, u_ac, y0, collect)
-        if fp.kind == 'full':
-            return self._forced_replay_full(fp, freq, u_ac, y0, collect)
+        if fp.kind in ('full', 'dirk'):
+            return self._forced_replay_stage(fp, freq, u_ac, y0, collect)
         m = self.cir.n - 1
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
@@ -11769,14 +11431,29 @@ class PSS(Analysis):
             _x1 = self.solve_timestep(x, times[0], hs[0])
             _x2 = self.solve_timestep(_x1, times[1], hs[0], iq_last=self._iq)
             phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
-            ## ⚠ THE RULE ITSELF IS CANONICAL.  Aprille & Trick's
-            ## oscillator paper, Step 3: "select k by
-            ## |f_k(x^i(T^i))| = max_k |f_k(x^i(T^i))|" -- argmax of the
-            ## vector field, which is what an argmax over one step is up to
-            ## `h`, and `h` is common to every coordinate so the mixed units
-            ## cancel exactly.  Both the rule and the decision not to
-            ## replace it with a Poincare row have precedent as well as
-            ## measurement behind them.
+            self.phase_k = phase_k                  # which coordinate is pinned, for diagnosis
+            ## ⚠ THE RULE IS CANONICAL, AND IT DOES MIX UNITS -- KEPT ON
+            ## MEASUREMENT.  Aprille & Trick's oscillator paper, Step 3:
+            ## "select k by |f_k(x^i(T^i))| = max_k |f_k(x^i(T^i))|" -- argmax
+            ## of the vector field, which is what an argmax over one step is up
+            ## to `h`.  `h` is common to every coordinate and cancels; the
+            ## UNITS do not (this note used to say they did): the components
+            ## are V/s and A/s.  A peer session found the consequence and it
+            ## reproduces: on an LC van der Pol with real units (1 nF, 1 uH)
+            ## seeded at v's turning point this pins v, nearly along the flow,
+            ## and the swing-scaled bordered Jacobian's condition number is
+            ## 120-160 against 3.75-9.3 with the pin chosen by motion relative
+            ## to each coordinate's swing (one Newton iteration saved).  ⚠ BUT
+            ## THAT RULE WAS BUILT, MEASURED AND REVERTED (2026-09-23): on the
+            ## comparator relaxation oscillator, seeded at ten phases of its
+            ## exact orbit (unstaged, 40 iterations), the raw rule converged
+            ## from 7/10 and the swing rule from 4/10 -- raw pinned coordinate
+            ## 1 at nine phases, swing moved it to 2 or 3 at all ten, and the
+            ## two fail at different phases (not diagnosed further; Andreas
+            ## kept the raw rule on these counts).  Conditioning on a smooth
+            ## circuit is not what decides convergence on a switching one.
+            ## Both the rule and the decision not to replace it with a
+            ## Poincare row have precedent as well as measurement behind them.
             ##
             ## ⚠ WHAT IS NOT CANONICAL IS FREEZING IT.  Their Step 3 sits
             ## INSIDE the iteration (Step 5 returns to Step 1), so `k` and
@@ -12041,30 +11718,32 @@ class PSS(Analysis):
             F[2 * m] = _r
             return F, J
 
-        def func_full(x):
-            """Driven fixed-period residual and Jacobian for Radau IIA(3).
+        def func_stage(x):
+            """Driven fixed-period residual and Jacobian for a Runge-Kutta
+            stage method (Radau IIA, TR-BDF2, ESDIRK).
 
             `x` IS `x_0` (self-starting), so `F = x_0 - phi(x_0)` and
-            `J = I - M` with `M` the dense coupled monodromy from
-            `_traverse_full`.  No manufacturing step, no solved history.
+            `J = I - M` with `M` the dense monodromy from `_traverse_stage`.
+            No manufacturing step, no solved history.
             """
-            x0, x_end, Mx, _Mt = self._traverse_full(
+            x0, x_end, Mx, _Mt = self._traverse_stage(
                 x, period, times, hs, want_dT=False)
             D = np.asarray(toolkit.eye(n - 1))
             return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
                     D - alpha * Mx)
 
-        def func_autonomous_full(z):
-            """Free-period residual and Jacobian for Radau IIA(3).
+        def func_autonomous_stage(z):
+            """Free-period residual and Jacobian for a Runge-Kutta stage
+            method.
 
             Unknowns `(x0, T)`; `F = [x0 - phi_T(x0), x0[k] - pinned]`,
             `J = [[I - M, -dphi/dT], [e_k^T, 0]]`.  The period column
-            `dphi/dT` comes from `_traverse_full(want_dT=True)`, tractable
+            `dphi/dT` comes from `_traverse_stage(want_dT=True)`, tractable
             because the circuit is autonomous.
             """
             x_in, T = z[:-1], float(z[-1])
             tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            x0, x_end, Mx, Mt = self._traverse_full(
+            x0, x_end, Mx, Mt = self._traverse_stage(
                 x_in, T, tms, hs_T, want_dT=True)
             m = n - 1
             D = np.asarray(toolkit.eye(m))
@@ -12077,16 +11756,6 @@ class PSS(Analysis):
             F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
             F[m] = _r
             return F, J
-
-        def func_dirk(x):
-            """Driven fixed-period residual/Jacobian for a lower-triangular
-            (DIRK/ESDIRK) stage method: `F = x0 - phi(x0)`, `J = I - M`, with
-            `M` the sequential dense monodromy from `_traverse_dirk`."""
-            x0, x_end, Mx, _Mt = self._traverse_dirk(
-                x, period, times, hs, want_dT=False)
-            D = np.asarray(toolkit.eye(n - 1))
-            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
-                    D - alpha * Mx)
 
         def func_glm(x):
             """Driven fixed-period residual/Jacobian for a Nordsieck GLM:
@@ -12111,25 +11780,6 @@ class PSS(Analysis):
             x_in, T = z[:-1], float(z[-1])
             tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
             x0, x_end, Mx, Mt = self._traverse_glm(
-                x_in, T, tms, hs_T, want_dT=True)
-            m = n - 1
-            D = np.asarray(toolkit.eye(m))
-            J = np.zeros((m + 1, m + 1))
-            J[:m, :m] = D - alpha * Mx
-            J[:m, m] = -np.asarray(Mt).ravel()
-            _k, _r = _phase_row(x0, Mt)
-            J[m, _k] = 1.0
-            F = np.zeros(m + 1)
-            F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
-            F[m] = _r
-            return F, J
-
-        def func_autonomous_dirk(z):
-            """Free-period residual/Jacobian for a DIRK/ESDIRK method; the
-            period column comes from `_traverse_dirk(want_dT=True)`."""
-            x_in, T = z[:-1], float(z[-1])
-            tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
-            x0, x_end, Mx, Mt = self._traverse_dirk(
                 x_in, T, tms, hs_T, want_dT=True)
             m = n - 1
             D = np.asarray(toolkit.eye(m))
@@ -12200,19 +11850,18 @@ class PSS(Analysis):
         ## Find periodic steady state x-vector
         if self._integrator_for(method).is_stage_method():
             ## A self-starting stage method: its own dense monodromy, never
-            ## solved-history, always self-starting (x0 is the unknown).  Route
-            ## BY STRUCTURE -- fully-implicit uses the coupled dense traverse
-            ## (`func_full`), a DIRK/ESDIRK the sequential one (`func_dirk`).
-            ## Both are tableau-generic; a new method of either family reaches
-            ## the right one with no edit here.
+            ## solved-history, always self-starting (x0 is the unknown).
+            ## `_traverse_stage` routes BY STRUCTURE (coupled for a fully
+            ## implicit tableau, sequential for a DIRK/ESDIRK) and is
+            ## tableau-generic; a new method of either family needs no edit
+            ## here.
             _integ_m = self._integrator_for(method)
             if getattr(_integ_m, 'is_multivalue', lambda: False)():
                 _fdr = func_glm
                 _fda = func_autonomous_glm
             else:
-                _fully = _integ_m.is_fully_implicit()
-                _fdr = func_full if _fully else func_dirk
-                _fda = func_autonomous_full if _fully else func_autonomous_dirk
+                _fdr = func_stage
+                _fda = func_autonomous_stage
             _label = method
             if matrix_free:
                 raise NotImplementedError(
@@ -12230,9 +11879,9 @@ class PSS(Analysis):
                 x0_ss = z_ss[:-1]
                 self.period = period = float(z_ss[-1])
                 times, hs = self._period_grid(period, npts, self._grid_fracs)
-                if state_events and _ier == 1 and _fda in (func_autonomous_full, func_autonomous_dirk):
+                if state_events and _ier == 1 and _fda is func_autonomous_stage:
                     (x0_ss, _info, _ier, _mesg, period, times, hs) = self._state_event_stage_autonomous(
-                        x0_ss, _info, _ier, _mesg, period, times, hs, _fully,
+                        x0_ss, _info, _ier, _mesg, period, times, hs,
                         maxiterations, _tol, _shoot_reltol, alpha, _phase_row, phase_k)
                     self.period = period
             else:
@@ -12241,9 +11890,9 @@ class PSS(Analysis):
                     reltol=_shoot_reltol, abstol=_tol, xtol=_tol,
                     toolkit=self.toolkit, full_output=True, line_search=True,
                     floor_detect=True)
-                if state_events and _ier == 1 and _fdr in (func_full, func_dirk):
+                if state_events and _ier == 1 and _fdr is func_stage:
                     (x0_ss, _info, _ier, _mesg, times, hs) = self._state_event_stage(
-                        x0_ss, _info, _ier, _mesg, period, times, hs, _fully,
+                        x0_ss, _info, _ier, _mesg, period, times, hs,
                         maxiterations, _tol, _shoot_reltol, alpha)
         elif self.autonomous and solved_history:
             ## BOTH unknowns and the period.  The floors follow the same
@@ -14139,16 +13788,12 @@ class PAC(Analysis):
             ## and it AGREES with a forward reference written the same way,
             ## so only a check against a circuit whose answer is known
             ## independently catches it.
-            if fp.kind == 'dirk':
-                ## the source couples through the lower-triangular stages; the
-                ## sequential fold carries it (verified vs forward driven solves
-                ## and the bespoke trbdf2 fold) -- see `_sideband_forced_dirk`
-                forced, g = pss._sideband_forced_dirk(fp, freq, l, d)
-            elif fp.kind == 'full':
-                ## the source couples through ALL THREE stages (A (x) B), which
-                ## needs the coupled three-vector fold -- see
-                ## `_sideband_forced_full`
-                forced, g = pss._sideband_forced_full(fp, freq, l, d)
+            if fp.kind in ('full', 'dirk'):
+                ## the source couples through every stage it reaches (A (x) B
+                ## on a coupled tableau), so the stage fold carries it
+                ## (verified vs forward driven solves and the bespoke trbdf2
+                ## fold) -- see `_sideband_forced_stage`
+                forced, g = pss._sideband_forced_stage(fp, freq, l, d)
             else:
                 _wq = pss._period_quadrature(fp)
                 if _wq is None:
@@ -14204,12 +13849,8 @@ class PAC(Analysis):
                             A, b, tol, ('the adjoint solve at sideband %d' % l) if k is None
                             else ('the bordered adjoint solve, event %d' % k))
                     z, zeta = _ev.bordered_adjoint(_solve_adj, g, g_theta, alpha)
-                if fp.kind == 'dirk':
-                    forced_ev, _g2 = pss._sideband_forced_dirk(
-                        fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
-                    forced = forced + forced_ev
-                elif fp.kind == 'full':
-                    forced_ev, _g2 = pss._sideband_forced_full(
+                if fp.kind in ('full', 'dirk'):
+                    forced_ev, _g2 = pss._sideband_forced_stage(
                         fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
                     forced = forced + forced_ev
                 else:
@@ -15769,16 +15410,10 @@ class PAC(Analysis):
         """
         self._refuse_coloured(pss, what)
         fp = pss.factored_period()
-        if fp.kind == 'dirk':
-            ## the sequential DIRK per-step map + the SAME exact Van Loan
-            ## injection -- see `_lyapunov_pieces_dirk`.
-            return self._lyapunov_pieces_dirk(pss, fp, what)
-        if fp.kind == 'full':
-            ## Radau's own injection: the SAME exact Van Loan integral (it is
-            ## the continuous per-step covariance, method-independent), with
-            ## the coupled Radau per-step map as A_n -- see
-            ## `_lyapunov_pieces_full`.
-            return self._lyapunov_pieces_full(pss, fp, what)
+        if fp.kind in ('full', 'dirk'):
+            ## the stage method's per-step map + its stage injection (or the
+            ## SAME exact Van Loan integral) -- see `_lyapunov_pieces_stage`
+            return self._lyapunov_pieces_stage(pss, fp, what)
         if fp.kind != 'solved_history':
             return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1
@@ -16064,24 +15699,26 @@ class PAC(Analysis):
         Qd = 0.5 * (Qd + Qd.T)
         return Emb @ Qd @ Emb.T
 
-    def _lyapunov_pieces_full(self, pss, fp, what):
-        """`_lyapunov_pieces` for a Radau IIA(3) Floquet source.
+    def _lyapunov_pieces_stage(self, pss, fp, what):
+        """`_lyapunov_pieces` for a Runge-Kutta stage method's Floquet source
+        (Radau IIA, TR-BDF2, ESDIRK).
 
         Identical in structure to `_lyapunov_pieces_trbdf2`: the per-step
-        injection `Q_n` is the DAE-projected VAN LOAN integral at that step's
-        operating point (`_vanloan_step_injection`), which is the EXACT
-        continuous per-step covariance and so is the same object for every
-        integrator; only the per-step transition `A_n` differs -- here the
-        coupled Radau step map (dense, `m x m`, via
-        `_monodromy_matvec_full` one step at a time).  State width `m`, so
-        `n = m`.
+        transition `A_n` is the stage step map (dense, `m x m`, via
+        `_monodromy_matvec_stage` one step at a time) and the per-step
+        injection `Q_n` is the stage injection (`_stage_injection`) -- the
+        source enters every STAGE; the end-of-step DAE-projected VAN LOAN
+        integral (`_vanloan_step_injection`) read a switch's held variance
+        0.876 kT/C at 400 points (O(h)) and stays the fallback.  State width
+        `m`, so `n = m`.
 
-        ⚠ THE INJECTION IS EXACT, THE METHOD SETS ONLY THE PROPAGATION.  The
-        covariance still converges to the stationary target (kT/C on an RC)
-        at the injection's O(h^2), not at Radau's O(h^5): Van Loan already
-        integrates the step exactly, so refining the grid gains on the
-        recursion's discretisation of a continuous Lyapunov flow, which the
-        higher-order transition does not change.
+        ⚠ THE VAN LOAN INJECTION IS EXACT, THE METHOD SETS ONLY THE
+        PROPAGATION.  Under it the covariance still converges to the
+        stationary target (kT/C on an RC) at the injection's O(h^2), not at
+        Radau's O(h^5): Van Loan already integrates the step exactly, so
+        refining the grid gains on the recursion's discretisation of a
+        continuous Lyapunov flow, which the higher-order transition does not
+        change.
         """
         self._refuse_coloured(pss, what)
         m = pss.cir.n - 1
@@ -16097,43 +15734,7 @@ class PAC(Analysis):
             Gn = np.asarray(pss._G_at(xk), dtype=float)
             CYn = self._cy_at(pss, w0, xk)
             A_k = np.column_stack([
-                np.asarray(pss._monodromy_matvec_full([step], e), dtype=float)
-                for e in np.eye(m)])
-            As.append(A_k)
-            ## the source enters every STAGE -- see `_stage_injection`; the
-            ## end-of-step Van Loan below read a switch's held variance
-            ## 0.876 kT/C at 400 points (O(h)) and stays the fallback
-            Q_k = self._stage_injection(pss, fp, k, w0)
-            Qs.append(Q_k if Q_k is not None
-                      else self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
-        K = np.zeros((n, n))
-        for A_k, Q_k in zip(As, Qs):
-            K = A_k @ K @ A_k.T + Q_k
-        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
-                             for e in np.eye(n)])
-        return As, Qs, K, M, m, n
-
-    def _lyapunov_pieces_dirk(self, pss, fp, what):
-        """`_lyapunov_pieces` for a lower-triangular (DIRK/ESDIRK) Floquet
-        source -- identical to `_lyapunov_pieces_full` except the per-step
-        transition `A_n` is the sequential DIRK step map
-        (`_monodromy_matvec_dirk`).  The Van Loan injection `Q_n` is the same
-        exact continuous per-step covariance (method-independent)."""
-        self._refuse_coloured(pss, what)
-        m = pss.cir.n - 1
-        n = m
-        hs = np.diff(np.asarray(fp.times, dtype=float))
-        w0 = 2.0 * np.pi / float(fp.T)
-        _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
-                       pss.irefnode, axis=0)
-        As, Qs = [], []
-        for k, step in enumerate(fp.steps):
-            xk = _W[:, min(k + 1, _W.shape[1] - 1)]
-            Cn = np.asarray(pss._C_at(xk), dtype=float)
-            Gn = np.asarray(pss._G_at(xk), dtype=float)
-            CYn = self._cy_at(pss, w0, xk)
-            A_k = np.column_stack([
-                np.asarray(pss._monodromy_matvec_dirk([step], e), dtype=float)
+                np.asarray(pss._monodromy_matvec_stage([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
             Q_k = self._stage_injection(pss, fp, k, w0)
@@ -16186,18 +15787,11 @@ class PAC(Analysis):
         m = pss.cir.n - 1
         tms = np.asarray(fp.times, dtype=float)
         h = float(tms[k + 1] - tms[k])
-        if fp.kind == 'full':
-            Amat, bvec, cvec = pss._integrator_for(pss.par.method).butcher()
-            Amat = np.asarray(Amat, dtype=float)
-            bvec = np.asarray(bvec, dtype=float)
-            cvec = np.asarray(cvec, dtype=float)
-        elif fp.kind == 'dirk':
-            Amat = np.asarray(fp.steps[k][4], dtype=float)
-            bvec = Amat[-1]
-            cvec = np.asarray(fp.steps[k][5], dtype=float)
-        else:
+        if fp.kind not in ('full', 'dirk'):
             return None
-        s = Amat.shape[0]
+        st = fp.steps[k]
+        bvec, cvec = st.b, st.c
+        s = st.s
         states = self._stage_states(pss, fp)
         irn = pss.irefnode
         if np.any(bvec <= 0.0):
@@ -16216,7 +15810,7 @@ class PAC(Analysis):
         for i in range(s):
             yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
             CYi = np.real(np.asarray(self._cy_at(pss, w, yi), dtype=complex))
-            Ti = self._stage_source_response(pss, fp, k, i, Amat, h)
+            Ti = st.source_response(i)
             Q += Ti @ (CYi / (2.0 * h * bvec[i])) @ Ti.T
         return 0.5 * (Q + Q.T)
 
@@ -16241,32 +15835,6 @@ class PAC(Analysis):
             for k in same:
                 wts[k] = wu[i] / len(same)
         return wts
-
-    @staticmethod
-    def _stage_source_response(pss, fp, k, i_src, Amat, h):
-        """`d x_{k+1} / d u` (m x m) for a unit source entering stage `i_src`
-        of step `k`: the stage residuals carry it as `-h A_{i,i_src} u`."""
-        import scipy.linalg as sla
-        m = pss.cir.n - 1
-        s = Amat.shape[0]
-        if fp.kind == 'full':
-            lu, _Cn, _mm = fp.steps[k]
-            rhs = np.concatenate([h * Amat[i, i_src] * np.eye(m)
-                                  for i in range(s)], axis=0)
-            return -sla.lu_solve(lu, rhs)[(s - 1) * m:, :]
-        Kfacs, Gs, _Cn, hh, Am, _cv = fp.steps[k]
-        dY = [np.zeros((m, m)) for _ in range(s)]
-        for i in range(s):
-            if Kfacs[i] is None:
-                continue                  # an explicit stage sees x_k only
-            rhs = -hh * Am[i, i_src] * np.eye(m)
-            for jj in range(i):
-                if Am[i, jj] != 0.0:
-                    rhs = rhs - hh * Am[i, jj] * (Gs[jj] @ dY[jj])
-            dY[i] = np.column_stack([np.asarray(Kfacs[i].solve(rhs[:, c]),
-                                                dtype=float)
-                                     for c in range(m)])
-        return dY[s - 1]
 
     def _orbit_rate(self, pss, event_nodes):
         """`xdot` at every node of the solved orbit (reduced width) -- THE
@@ -17206,14 +16774,10 @@ class PAC(Analysis):
         """The stage abscissae `t_j + c_k h_j` of one period, step by step,
         `(N s,)` -- the injection times of a stage method's source."""
         tms = np.asarray(fp.times, dtype=float)
-        N = len(fp.steps)
-        if fp.kind == 'full':
-            _A, _b, cvec = pss._integrator_for(pss.par.method).butcher()
         out = []
-        for j in range(N):
+        for j, st in enumerate(fp.steps):
             h = tms[j + 1] - tms[j]
-            cv = fp.steps[j][5] if fp.kind == 'dirk' else cvec
-            out.extend(tms[j] + np.asarray(cv, dtype=float) * h)
+            out.extend(tms[j] + st.c * h)
         return np.asarray(out, dtype=float)
 
     def _stage_states(self, pss, fp):
@@ -17247,55 +16811,19 @@ class PAC(Analysis):
         """One reverse pass of a stage period map (`dirk` or `full`): returns
         the final costate and `(N s, m)` coupling vectors `h sum_i A_ik p_i`
         -- the sensitivity of the costate's functional to a unit source at
-        stage `k` of step `j` is minus that (see `_sideband_forced_dirk` /
-        `_sideband_forced_full`, whose loops these are).  `seed = (k0, v)`
-        adds `v` to the costate after step `k0`'s update: the output at
-        `t_{k0}` couples to the sources of earlier steps only."""
-        import scipy.linalg as sla
+        stage `k` of step `j` is minus that (see `_sideband_forced_stage`,
+        whose loop this is).  `seed = (k0, v)` adds `v` to the costate after
+        step `k0`'s update: the output at `t_{k0}` couples to the sources of
+        earlier steps only."""
         m = pss.cir.n - 1
-        tms = np.asarray(fp.times, dtype=float)
         N = len(fp.steps)
         lam = np.asarray(lam0, dtype=complex).copy()
         per = [None] * N
-        if fp.kind == 'full':
-            Amat, _b, _c = pss._integrator_for(pss.par.method).butcher()
         for j in range(N - 1, -1, -1):
-            if fp.kind == 'full':
-                lu, Cn, _mm = fp.steps[j]
-                h = tms[j + 1] - tms[j]
-                s = Amat.shape[0]
-                b = np.concatenate([np.zeros(m)] * (s - 1) + [lam])
-                p = (sla.lu_solve(lu, b.real, trans=1)
-                     + 1j * sla.lu_solve(lu, b.imag, trans=1))
-                pb = [p[i * m:(i + 1) * m] for i in range(s)]
-                per[j] = [h * sum(Amat[i, k] * pb[i] for i in range(s))
-                          for k in range(s)]
-                lam = Cn.T @ sum(pb)
-            else:
-                Kfacs, Gs, Cn, h, Am, _cv = fp.steps[j]
-                s = Am.shape[0]
-                dbar = [np.zeros(m, dtype=complex) for _ in range(s)]
-                dbar[s - 1] = lam
-                wbar = np.zeros(m, dtype=complex)
-                rbars = [None] * s
-                for i in range(s - 1, -1, -1):
-                    if Kfacs[i] is None:
-                        if i == 0:
-                            wbar = wbar + dbar[0]
-                    else:
-                        rb = pss._csolve_fac_T(Kfacs[i], dbar[i])
-                        rbars[i] = rb
-                        wbar = wbar + Cn.T @ rb
-                        for jj in range(i):
-                            dbar[jj] = dbar[jj] - h * Am[i, jj] * (Gs[jj].T @ rb)
-                row = []
-                for k in range(s):
-                    cp = sum(Am[i, k] * rbars[i] for i in range(k, s)
-                             if rbars[i] is not None)
-                    row.append(h * cp if not np.isscalar(cp)
-                               else np.zeros(m, dtype=complex))
-                per[j] = row
-                lam = wbar
+            st = fp.steps[j]
+            lam, r = st.adjoint(lam)
+            per[j] = [st.h * cp if cp is not None else np.zeros(m, dtype=complex)
+                      for cp in (st.reach(r, k) for k in range(st.s))]
             if seed is not None:
                 if isinstance(seed, dict):
                     if j in seed:
@@ -18511,7 +18039,7 @@ The state covariance of a FREE-RUNNING oscillator, split in two.
         +4.0e-5 / +3.6e-5 / +1.3e-5 with these, from the same samples.  On a
         uniform grid `0.5 h + 0.5 h == h` exactly, so every uniform-grid
         number is bit-identical to before.  The one-step kinds' replays are
-        uniform-grid replays (`factored_period_full` / `_dirk`), so only the
+        uniform-grid replays (`factored_period_stage`), so only the
         solved-history kind ever paid this.  ⚠ AND THE TRAPEZOID IS ITSELF A
         SECOND-ORDER CAP on a smoothly varying grid (2026-09-21): with `pss`
         given, a non-uniform grid and no landed events, these are the

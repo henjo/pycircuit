@@ -8820,7 +8820,27 @@ window from the stage; (2) ladders with the window sub-grid count
 (3) the PPV samples' convergence on the same ladder (0.08–0.33 % at 200,
 0.05–0.4 % at 400 — floored by the nearest-state comparison at 2.5e-4).
 
-### E9. The state-event machinery's refactor — ✅ DONE 2026-09-23, every consumer bit-identical (see the log); the traversals' merge deliberately not done (a design change), the twin-budget cap left as a decision
+### E9. The state-event machinery's refactor — ✅ DONE 2026-09-23, every consumer bit-identical (see the log); its three open items DONE the same day: the twin's budget capped (`TWIN_MAXITER = 40`, warns), the phase pin kept raw on measurement, the stage family merged (one `_StageStep`, exact up to three stated rounding conventions)
+
+#### E9's open items, closed (2026-09-23)
+
+Andreas: "For 1 Cap iteration count to 40 by default and give a warning if it is hit. For 2 do
+it. … For 3 implement the fix."  Order 1, 3, 2.
+
+1. **The twin's budget** — `PSS.TWIN_MAXITER = 40` (min with the caller's, never below 20);
+   a binding cap that ends without convergence warns before the refusal.
+3. **The phase pin's units** — the swing-scaled rule was built and measured (LC condition
+   120–160 → 3.75–9.3), but it converged the comparator oscillator from 4/10 seed phases
+   against the raw rule's 7/10.  Andreas: "Keep raw rule".  Recorded at the rule;
+   `PSS.phase_k` exposed.
+2. **The stage family's two copies** — ONE family: a `_StageStep` per step (`lu` coupled,
+   `Kf` per stage) with `solve`/`adjoint`/`sources`/`source_adjoint`/`source_response`;
+   `_traverse_stage`, `factored_period_stage`, the mat-vecs, forced replays, sideband fold,
+   Lyapunov pieces and stage pass exist once; `shooting.py` −472 lines; PAC + adjoint row +2–3 % (per-step dispatch), staged solves unchanged.  Gated by a 107-array
+   snapshot (Radau/Gear events + TR-BDF2/ESDIRK43): the dense traversal is bit-identical, the
+   family exact up to three rounding conventions (proved by patching them back: 107/107
+   bit-identical), ≤ 1.2e-11 relative otherwise.  The E9 note calling this "scaffolding, not
+   algebra" was wrong: the copies differed only in one step's factor-and-solve.
 
 #### E9 as planned (2026-09-23)
 
