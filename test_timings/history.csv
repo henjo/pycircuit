@@ -751,3 +751,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260923T142302Z,ef01a65,pycircuit/circuit/tests/test_transient_repairs.py no:cacheprovider 0 gate_4h4 or max_dv_step_binds,7.8,9,pycircuit/circuit/tests/test_transient_repairs.py::test_max_dv_step_binds_under_every_integrator[ESDIRK43Integrator],1.6
 20260923T142453Z,ef01a65,pycircuit/circuit/tests/test_idtmod.py no:cacheprovider 0 gauge_shift,5.9,4,pycircuit/circuit/tests/test_idtmod.py::test_jax_gauge_shift,4.2
 20260923T144734Z,ef01a65,pycircuit no:cacheprovider tran_recorder,1347.0,3305,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,308.7
+20260923T161320Z,03d865a,pycircuit/circuit/tests/test_analysis_shooting.py no:cacheprovider 0 plain_transposed_replay_is_exact,9.5,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_plain_transposed_replay_is_exact_for_a_multistep_companion,8.0
+20260923T171846Z,2d246d4,pycircuit no:cacheprovider tran_recorder,1068.7,3305,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,272.8

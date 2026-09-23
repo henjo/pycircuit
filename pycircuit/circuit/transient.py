@@ -3453,6 +3453,94 @@ class Transient(Analysis):
             'Radau/DIRK stage PCNR did not converge at t=%g after %d iterations'
             % (ti, self.par.maxiter))
 
+    ## -- what every stage step shares (2026-09-23: the DIRK, GLM and the three
+    ## Radau steps each carried a copy of the source closure and of the
+    ## epilogue; the DIRK and GLM steps of the implicit stage solve too) ------
+
+    def _stage_source(self, provided_function):
+        """`u(t)` for a stage step: the circuit's sources at `t`, plus the
+        caller's `provided_function`."""
+        epar, ana, tk = self.epar, self.par.analysis, self.toolkit
+
+        def src(tt):
+            u = tk.array(self.cir.u(tt, epar, analysis=ana), dtype=float)
+            if provided_function is not None:
+                u = u + provided_function(tt)
+            return u
+        return src
+
+    def _solve_implicit_stage(self, target, aii, h, ti, guess, src,
+                              provided_function, what):
+        """One implicit stage of a sequential stage method (DIRK, ESDIRK, a
+        Nordsieck GLM): ``q(Y) - target - h a_ii K(Y) = 0`` with ``K =
+        -(i(Y) + u(t_i))``, an ``m x m`` Newton via :meth:`_newton`
+        (limiting and the continuation rescue included).
+
+        With `pcnr` the stage is first the DC-flow solve `_rk_stage_pcnr`
+        takes (divided by ``h a_ii`` it is ``i(Y) + iq_eff + u = 0``) -- the
+        same augmented junction continuation the LMM step uses -- and ⚠ IT
+        FALLS BACK PER STAGE, as the LMM and coupled steps do: PCNR has no
+        continuation ladder, `_newton` does, so a stage PCNR cannot solve is
+        handed to the limiting solve rather than ending the transient.
+        (Under a GLM this is E1, 2026-09-16: before it, `pcnr=True` did device
+        limiting there and SAID it had used PCNR -- 3 PCNR solves against
+        39987 `Diode.limit` calls on a half-wave rectifier.)"""
+        epar = self.epar
+        arr = lambda v: self.toolkit.array(v, dtype=float)
+        if self._rk_use_pcnr():
+            from pycircuit.circuit.nrsolver import NoConvergenceError as _NCE
+            try:
+                Y = self._rk_stage_pcnr(target, aii, h, ti, guess,
+                                        provided_function)
+                self.pcnr_solves += 1
+                self.pcnr_status = ('used' if not self.pcnr_fallbacks
+                                    else 'partial')
+                return Y
+            except _NCE as _exc:
+                logging.warning(
+                    'transient pcnr=True: %s PCNR failed at t=%g (%s); device '
+                    'limiting for this stage', what, ti, str(_exc)[:80])
+                self.pcnr_fallbacks += 1
+                self.pcnr_status = ('partial' if self.pcnr_solves
+                                    else 'fell-back')
+
+        def func_i(x):
+            Ki = -(arr(self.cir.i(x, epar)) + src(ti))
+            f = arr(self.cir.q(x, epar)) - target - h * aii * Ki
+            J = arr(self.cir.C(x, epar)) + h * aii * arr(self.cir.G(x, epar))
+            return f, J
+        return self._newton(func_i, guess)
+
+    def _finish_stage_step(self, t, tstage, Y, a_last, h, src, K=None,
+                           screen=None):
+        """What a stage step leaves for the machinery that reads it, from its
+        stages `Y` (stiffly accurate: ``x_{n+1} = Y_{s-1}``): the charge
+        cache, `_iq` (the charge derivative at the new point), the per-step
+        `C` and companion conductance ``a_ss h G`` shooting's monodromy
+        reads, the stages (`_rk_Y`, `_rk_K`) and the predictor nodes for the
+        NEXT step (promoted only on accept).  `screen` names the step for the
+        branch screen of the paths that confirm no branch themselves.
+        Returns ``(x_{n+1}, J)``, ``J = C + a_ss h G``."""
+        epar = self.epar
+        arr = lambda v: self.toolkit.array(v, dtype=float)
+        xnp1 = Y[-1]
+        qY = self.cir.q(xnp1, epar)
+        self._q_cache = (xnp1, qY)
+        self._iq = -(arr(self.cir.i(xnp1, epar)) + src(t))
+        Cm = arr(self.cir.C(xnp1, epar))
+        Gm = arr(self.cir.G(xnp1, epar))
+        self._Cmat = Cm
+        self._Geq = a_last * h * Gm
+        self._effective_method = type(self.base_integrator).__name__
+        self._companion_coeffs = None
+        if screen is not None:
+            self._branch_screen_only(list(Y), screen)
+        self._rk_Y = list(Y)
+        self._pred_pending = (t, list(zip(tstage, list(Y))))
+        if K is not None:
+            self._rk_K = list(K)
+        return xnp1, Cm + a_last * h * Gm
+
     def _rk_step_dirk(self, x0, t, provided_function=None):
         """One step of a lower-triangular (DIRK/SDIRK/ESDIRK) RK method, solved
         stage by stage from the Butcher tableau.
@@ -3477,15 +3565,9 @@ class Transient(Analysis):
         h = self._dt
         tn = t - h
         epar = self.epar
-        ana = self.par.analysis
         tk = self.toolkit
         arr = lambda v: tk.array(v, dtype=float)
-
-        def src(tt):
-            u = arr(self.cir.u(tt, epar, analysis=ana))
-            if provided_function is not None:
-                u = u + provided_function(tt)
-            return u
+        src = self._stage_source(provided_function)
 
         xn = x0
         qn = arr(self.cir.q(xn, epar))
@@ -3518,62 +3600,13 @@ class Transient(Analysis):
                                if Y[j] is not None])
                 if guess is None:
                     guess = Y[i - 1] if i > 0 else xn
-                _pcnr_ok = False
-                if self._rk_use_pcnr():
-                    ## PCNR is the first-class per-step limiting: each implicit
-                    ## stage is a DC-flow solve `i(Y_i) + iq_eff + u = 0` with
-                    ## `iq_eff = (q(Y_i) - target)/(h a_ii)`, so it takes the same
-                    ## augmented junction-continuation the LMM step uses -- see
-                    ## `_rk_stage_pcnr`.  Flows to shooting too (same solve).
-                    ##
-                    ## ⚠ AND IT FALLS BACK PER STAGE, as the LMM step and the
-                    ## coupled step do: `_rk_stage_pcnr` has no continuation
-                    ## ladder, but `self._newton` below does, so a stage that
-                    ## PCNR cannot solve is handed to the limiting solve that
-                    ## carries the rescue rather than ending the transient.
-                    from pycircuit.circuit.nrsolver import NoConvergenceError \
-                        as _NCE
-                    try:
-                        Y[i] = self._rk_stage_pcnr(target, aii, h, ti, guess,
-                                                   provided_function)
-                        _pcnr_ok = True
-                        self.pcnr_solves += 1
-                        self.pcnr_status = ('used' if not self.pcnr_fallbacks
-                                            else 'partial')
-                    except _NCE as _exc:
-                        logging.warning(
-                            'transient pcnr=True: stage PCNR failed at t=%g '
-                            '(%s); device limiting for this stage',
-                            ti, str(_exc)[:80])
-                        self.pcnr_fallbacks += 1
-                        self.pcnr_status = ('partial' if self.pcnr_solves
-                                            else 'fell-back')
-                if not _pcnr_ok:
-                    def func_i(x, _tgt=target, _aii=aii, _ti=ti):
-                        Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
-                        f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
-                        J = arr(self.cir.C(x, epar)) \
-                            + h * _aii * arr(self.cir.G(x, epar))
-                        return f, J
-                    Y[i] = self._newton(func_i, guess)
+                Y[i] = self._solve_implicit_stage(target, aii, h, ti, guess,
+                                                  src, provided_function,
+                                                  'stage')
             K[i] = -(arr(self.cir.i(Y[i], epar)) + src(tstage[i]))
 
-        xnp1 = Y[s - 1]  ## stiff accuracy
-        self._rk_Y = list(Y)
-        ## predictor nodes for the NEXT step; promoted only on accept
-        self._pred_pending = (t, list(zip(tstage, list(Y))))
-        self._rk_K = list(K)
-        qY = self.cir.q(xnp1, epar)
-        self._q_cache = (xnp1, qY)
-        self._iq = -(arr(self.cir.i(xnp1, epar)) + src(t))
-        Cm = arr(self.cir.C(xnp1, epar))
-        Gm = arr(self.cir.G(xnp1, epar))
-        a_last = A[s - 1, s - 1]
-        self._Cmat = Cm
-        self._Geq = a_last * h * Gm
-        self._effective_method = type(integ).__name__
-        self._companion_coeffs = None
-        J = Cm + a_last * h * Gm
+        xnp1, J = self._finish_stage_step(t, tstage, Y, A[s - 1, s - 1], h,
+                                          src, K=K)
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._rk_dirk_estimate(K, h, J)
         return xnp1, None, J, None
@@ -3707,15 +3740,9 @@ class Transient(Analysis):
         h = self._dt
         tn = t - h
         epar = self.epar
-        ana = self.par.analysis
         tk = self.toolkit
         arr = lambda v: tk.array(v, dtype=float)
-
-        def src(tt):
-            u = arr(self.cir.u(tt, epar, analysis=ana))
-            if provided_function is not None:
-                u = u + provided_function(tt)
-            return u
+        src = self._stage_source(provided_function)
 
         ## ⚠⚠ TWO SLOTS, AND THE SECOND ONE IS WHAT MAKES ADAPTIVE STEPPING
         ## POSSIBLE AT ALL.  `_glm_Q` holds the vector this method last
@@ -3761,77 +3788,21 @@ class Transient(Analysis):
             guess = pred(i, Y) if pred is not None else None
             if guess is None:
                 guess = Y[i - 1] if i > 0 else xn
-
-            def func_i(x, _tgt=target, _aii=aii, _ti=ti):
-                Ki = -(arr(self.cir.i(x, epar)) + src(_ti))
-                f = arr(self.cir.q(x, epar)) - _tgt - h * _aii * Ki
-                J = arr(self.cir.C(x, epar)) + h * _aii * arr(self.cir.G(x, epar))
-                return f, J
-
-            ## ⚠⚠ E1: PCNR IS THE STAGE SOLVE HERE TOO (2026-09-16).  Before
-            ## this, `pcnr=True` under a GLM method did device limiting and
-            ## SAID it had used PCNR -- measured on a diode half-wave
-            ## rectifier, 3 PCNR solves (the startup's Radau substeps) against
-            ## 39987 `Diode.limit` calls, with `pcnr_status == 'used'`.  That
-            ## is the same shape as the coupled path's recorded bug.
-            ##
-            ## A GLM stage IS the DC-flow form `_rk_stage_pcnr` solves:
-            ## `q(Y_i) - target - h a_ii K_i = 0` divided by `h a_ii` gives
-            ## `i(Y) + iq_eff + u = 0`, `iq_eff = (q - target)/(h a_ii)`.
-            ## Every shipped tableau is DIRK-like with ONE diagonal
-            ## (0.25 / 0.25 / 0.258 for GLM2/3/4, all stages equal and
-            ## non-zero), so there is no explicit stage to except -- unlike an
-            ## ESDIRK, whose `a_11 = 0` has no `h a_ii` to divide by.
-            ## `_rk_stage_pcnr` syncs `_vlim` with one `limit(x, x)` at
-            ## convergence, which this loop needs before it reads `K[i]`.
-            _pcnr_ok = False
-            if self._rk_use_pcnr():
-                ## ⚠ FALLS BACK PER STAGE, exactly as the DIRK and LMM steps
-                ## do: PCNR carries no continuation ladder, `self._newton`
-                ## does, so a stage PCNR cannot solve is handed to the
-                ## limiting solve rather than ending the transient.
-                from pycircuit.circuit.nrsolver import NoConvergenceError \
-                    as _NCE
-                try:
-                    Y[i] = self._rk_stage_pcnr(target, aii, h, ti, guess,
-                                               provided_function)
-                    _pcnr_ok = True
-                    self.pcnr_solves += 1
-                    self.pcnr_status = ('used' if not self.pcnr_fallbacks
-                                        else 'partial')
-                except _NCE as _exc:
-                    logging.warning(
-                        'transient pcnr=True: GLM stage PCNR failed at t=%g '
-                        '(%s); device limiting for this stage',
-                        ti, str(_exc)[:80])
-                    self.pcnr_fallbacks += 1
-                    self.pcnr_status = ('partial' if self.pcnr_solves
-                                        else 'fell-back')
-            if not _pcnr_ok:
-                Y[i] = self._newton(func_i, guess)
+            ## A GLM stage IS the DC-flow form `_rk_stage_pcnr` solves, and
+            ## every shipped tableau is DIRK-like with ONE nonzero diagonal
+            ## (0.25 / 0.25 / 0.258 for GLM2/3/4), so no explicit stage to
+            ## except -- see `_solve_implicit_stage`
+            Y[i] = self._solve_implicit_stage(target, aii, h, ti, guess, src,
+                                              provided_function, 'GLM stage')
             K[i] = -(arr(self.cir.i(Y[i], epar)) + src(ti))
         Qn = np.array([sum(V[k, j] * Q[j] for j in range(r))
                        + h * sum(B[k, j] * K[j] for j in range(s)) for k in range(r)])
-        xnp1 = Y[s - 1]
         self._glm_Q = (Qn, t, h)
         ## what the NEXT step's stage predictor extrapolates from
         self._glm_prev = ([np.asarray(y, dtype=float) for y in Y],
                           np.asarray(xn, dtype=float), float(h), float(t))
-        self._rk_Y = list(Y)
-        ## predictor nodes for the NEXT step; promoted only on accept
-        self._pred_pending = (t, list(zip(tstage, list(Y))))
-        self._rk_K = list(K)
-        qY = self.cir.q(xnp1, epar)
-        self._q_cache = (xnp1, qY)
-        self._iq = -(arr(self.cir.i(xnp1, epar)) + src(t))
-        Cm = arr(self.cir.C(xnp1, epar))
-        Gm = arr(self.cir.G(xnp1, epar))
-        a_last = A[s - 1, s - 1]
-        self._Cmat = Cm
-        self._Geq = a_last * h * Gm
-        self._effective_method = type(integ).__name__
-        self._companion_coeffs = None
-        J = Cm + a_last * h * Gm
+        xnp1, J = self._finish_stage_step(t, tstage, Y, A[s - 1, s - 1], h,
+                                          src, K=K)
         if getattr(self, '_rk_want_est', False):
             if started:
                 ## ⚠ NO ESTIMATE ACROSS A RESTART.  The entering vector came
@@ -3896,6 +3867,52 @@ class Transient(Analysis):
         Est_r = tk.linearsolver(Jr, er_r)
         return tk.insert(Est_r, iref, 0.0)
 
+    def _coupled_stage_context(self, x0, t, provided_function):
+        """What every Radau IIA(3) coupled step shares before its Newton:
+        the tableau, the step, the stage times, the source, the reduced-vector
+        map (the reference row dropped) and the entering charge."""
+        from types import SimpleNamespace
+        integ = self.base_integrator
+        tk = self.toolkit
+        iref = self.irefnode
+        h = self._dt
+        tn = t - h
+        cvec = np.array(integ.C, dtype=float)
+        arr = lambda v: tk.array(v, dtype=float)
+
+        def red(v):
+            return np.concatenate((np.asarray(v)[:iref],
+                                   np.asarray(v)[iref + 1:]))
+        qn = arr(self.cir.q(x0, self.epar))
+        return SimpleNamespace(
+            Amat=np.array(integ.A, dtype=float), h=h, tn=tn, iref=iref,
+            arr=arr, red=red, src=self._stage_source(provided_function),
+            qn=qn, m=red(qn).shape[0],
+            tstage=[tn + cvec[i] * h for i in range(3)])
+
+    def _coupled_stage_system(self, ctx, qi, Ki, Ci=None, Gi=None):
+        """The coupled stage residual ``R_i = q(Y_i) - q(x_n) - h sum_j A_ij
+        K_j`` (reduced) and, with `Ci`/`Gi`, its block Jacobian ``J[i][j] =
+        delta_ij C_i + h A_ij G_j`` -- from per-stage lists, whatever
+        linearisation produced them (limited device evaluations, PCNR's
+        Schur-reduced conductance, ...)."""
+        m, h, A, red = ctx.m, ctx.h, ctx.Amat, ctx.red
+        R = np.empty(3 * m)
+        Jbig = None if Ci is None else np.zeros((3 * m, 3 * m))
+        for i in range(3):
+            Fi = qi[i] - ctx.qn - h * sum(A[i, j] * Ki[j] for j in range(3))
+            R[i * m:(i + 1) * m] = red(Fi)
+            if Jbig is not None:
+                for j in range(3):
+                    if i == j:
+                        blk = Ci[i] + h * A[i, j] * Gi[j]
+                    else:
+                        blk = h * A[i, j] * Gi[j]
+                    (blk_r,) = remove_row_col((blk,), ctx.iref, self.toolkit)
+                    Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = \
+                        np.asarray(blk_r)
+        return R, Jbig
+
     def _rk_step_coupled_pcnr(self, x0, t, provided_function=None):
         """The coupled Radau IIA(3) step with PCNR as the limiting, IN EVERY
         STAGE, instead of per-device ``cir.limit``.
@@ -3926,30 +3943,13 @@ class Transient(Analysis):
         from pycircuit.circuit import pcnr as _pcnr
         from pycircuit.circuit.nrsolver import NoConvergenceError
         junctions = _pcnr.pcnr_devices(self.cir)
-        integ = self.base_integrator
-        Amat = np.array(integ.A, dtype=float)
-        cvec = np.array(integ.C, dtype=float)
-        h = self._dt
-        tn = t - h
+        ctx = self._coupled_stage_context(x0, t, provided_function)
+        Amat, h, tn, iref = ctx.Amat, ctx.h, ctx.tn, ctx.iref
+        arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
+                                    ctx.m)
         epar = self.epar
-        ana = self.par.analysis
         tk = self.toolkit
-        iref = self.irefnode
-        arr = lambda v: tk.array(v, dtype=float)
-
-        def src(tt):
-            u = arr(self.cir.u(tt, epar, analysis=ana))
-            if provided_function is not None:
-                u = u + provided_function(tt)
-            return u
-
-        def red(v):
-            return np.concatenate((np.asarray(v)[:iref], np.asarray(v)[iref + 1:]))
-
         xn = x0
-        qn = arr(self.cir.q(xn, epar))
-        qn_r = red(qn)
-        tstage = [tn + cvec[i] * h for i in range(3)]
 
         ## Stage values and their PCNR limiting voltages.  `v_lim[j]` is the
         ## per-stage state that stands in for each device's internal `_vlim`;
@@ -3962,7 +3962,6 @@ class Transient(Analysis):
         Y = [self._pred_or(np.array(xn, dtype=float), tstage[j])
              for j in range(3)]
         v_lim = [_pcnr.v_lim_init(junctions, Y[j]) for j in range(3)]
-        m = qn_r.shape[0]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
@@ -4001,18 +4000,7 @@ class Transient(Analysis):
                 glim.append(g_lim)
             ## residual blocks (reduced) and dense 3m x 3m Jacobian -- identical
             ## to _rk_step_coupled with i_eff/G_eff in place of cir.i/cir.G.
-            R = np.empty(3 * m)
-            Jbig = np.zeros((3 * m, 3 * m))
-            for i in range(3):
-                Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j] for j in range(3))
-                R[i * m:(i + 1) * m] = red(Fi)
-                for j in range(3):
-                    if i == j:
-                        blk = Ci[i] + h * Amat[i, j] * Geff[j]
-                    else:
-                        blk = h * Amat[i, j] * Geff[j]
-                    (blk_r,) = remove_row_col((blk,), iref, tk)
-                    Jbig[i * m:(i + 1) * m, j * m:(j + 1) * m] = np.asarray(blk_r)
+            R, Jbig = self._coupled_stage_system(ctx, qi, Ki, Ci, Geff)
             dY = np.linalg.solve(Jbig, -R)
             scale = 0.0
             lim_ok = True
@@ -4099,25 +4087,10 @@ class Transient(Analysis):
         for j in range(3):
             self.cir.limit(Y[j], Y[j], epar)
 
-        Y1, Y2, Y3 = Y
-        ## Downstream state -- identical to _rk_step_coupled.
-        qY3 = self.cir.q(Y3, epar)
-        self._q_cache = (Y3, qY3)
-        self._iq = -(arr(self.cir.i(Y3, epar)) + src(t))
-        C3 = arr(self.cir.C(Y3, epar))
-        G3 = arr(self.cir.G(Y3, epar))
-        a33 = Amat[2, 2]
-        self._Cmat = C3
-        self._Geq = a33 * h * G3
-        self._effective_method = 'RadauIIA3Integrator'
-        self._companion_coeffs = None
         ## BRANCH SCREEN (no confirmation on this path -- see
         ## `_branch_screen_only`)
-        self._branch_screen_only([Y1, Y2, Y3], 'coupled PCNR')
-        self._rk_Y = [Y1, Y2, Y3]
-        ## predictor nodes for the NEXT step; promoted only on accept
-        self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
-        J = C3 + a33 * h * G3
+        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src,
+                                        screen='coupled PCNR')
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
@@ -4211,36 +4184,17 @@ class Transient(Analysis):
                 self.pcnr_fallbacks += 1
                 self.pcnr_status = ('partial' if self.pcnr_solves
                                     else 'fell-back')
-        integ = self.base_integrator
-        Amat = np.array(integ.A, dtype=float)
-        cvec = np.array(integ.C, dtype=float)
-        h = self._dt
-        tn = t - h
+        ctx = self._coupled_stage_context(x0, t, provided_function)
+        Amat, h, tn, iref = ctx.Amat, ctx.h, ctx.tn, ctx.iref
+        arr, red, src, qn, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.qn,
+                                        ctx.tstage, ctx.m)
         epar = self.epar
-        ana = self.par.analysis
         tk = self.toolkit
-        iref = self.irefnode
-        arr = lambda v: tk.array(v, dtype=float)
-
-        def src(tt):
-            u = arr(self.cir.u(tt, epar, analysis=ana))
-            if provided_function is not None:
-                u = u + provided_function(tt)
-            return u
-
-        def red(v):
-            ## reduce a full n-vector to the (n-1) reference-removed space
-            return np.concatenate((np.asarray(v)[:iref], np.asarray(v)[iref + 1:]))
-
         xn = x0
-        qn = arr(self.cir.q(xn, epar))
-        qn_r = red(qn)
-        tstage = [tn + cvec[i] * h for i in range(3)]
 
         ## Stage values, initialised at the previous solution.  Solved in the
         ## reference-removed space of dimension m = n-1 per stage; the coupled
         ## system is 3m.  Newton to the transient tolerances.
-        m = qn_r.shape[0]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
@@ -4286,21 +4240,7 @@ class Transient(Analysis):
                     Ci.append(arr(self.cir.C(Y[j], epar)))
                     Gi.append(G_j)
                 ## residual blocks (reduced) and dense 3m x 3m Jacobian
-                R = np.empty(3 * m)
-                Jbig = np.zeros((3 * m, 3 * m))
-                for i in range(3):
-                    Fi = qi[i] - qn - h * sum(Amat[i, j] * Ki[j]
-                                              for j in range(3))
-                    R[i * m:(i + 1) * m] = red(Fi)
-                    for j in range(3):
-                        if i == j:
-                            blk = Ci[i] + h * Amat[i, j] * Gi[j]
-                        else:
-                            blk = h * Amat[i, j] * Gi[j]
-                        (blk_r,) = remove_row_col((blk,), iref, tk)
-                        Jbig[i * m:(i + 1) * m,
-                             j * m:(j + 1) * m] = np.asarray(blk_r)
-                return R, Jbig
+                return self._coupled_stage_system(ctx, qi, Ki, Ci, Gi)
 
             ## ⚠ BACKTRACKING LINE SEARCH, AS A RETRY (owner decision
             ## 2026-09-08, "Do 2").  This Newton had no damping at all, and a
@@ -4472,33 +4412,16 @@ class Transient(Analysis):
 
         self._branch_after_coupled(_stage_newton, seed0, Y, _block_residual)
 
-        Y1, Y2, Y3 = Y
-        xnp1 = Y3  ## stiff accuracy: x_{n+1} == last stage
-
-        ## Downstream state the accepted-step machinery reads (mirrors the
-        ## TR-BDF2 step).  `_iq` is the charge derivative at the accepted point.
-        qY3 = self.cir.q(Y3, epar)
-        self._q_cache = (Y3, qY3)
-        self._iq = -(arr(self.cir.i(Y3, epar)) + src(t))
-        C3 = arr(self.cir.C(Y3, epar))
-        G3 = arr(self.cir.G(Y3, epar))
-        a33 = Amat[2, 2]
-        self._Cmat = C3
-        self._Geq = a33 * h * G3
-        self._effective_method = 'RadauIIA3Integrator'
-        self._companion_coeffs = None
-        ## Stage values kept for the shooting monodromy, which needs all three.
-        self._rk_Y = [Y1, Y2, Y3]
-        ## predictor nodes for the NEXT step; promoted only on accept
-        self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
-        J = C3 + a33 * h * G3
+        ## x_{n+1} == the last stage (stiff accuracy); the stage values are
+        ## kept for the shooting monodromy, which needs all three
+        xnp1, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src)
 
         ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner Vol II, IV.8, the
         ## radau5 estimator), gated so the fixed-step path pays nothing.  See
         ## :meth:`_radau_error_estimate` for the construction and its gates.
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
-        return Y3, None, J, None
+        return xnp1, None, J, None
 
     def _radau_error_estimate(self, xn, Y, tn, h, src, arr):
         """The filtered embedded 5(3) error estimate for one Radau IIA(3) step
@@ -4644,29 +4567,13 @@ class Transient(Analysis):
         ``_iq``, ``_q_cache``, ...) so every consumer is identical to the dense
         path."""
         from pycircuit.circuit.nrsolver import NoConvergenceError
-        integ = self.base_integrator
-        Amat = np.array(integ.A, dtype=float)
-        cvec = np.array(integ.C, dtype=float)
-        h = self._dt
-        tn = t - h
+        ctx = self._coupled_stage_context(x0, t, provided_function)
+        Amat, h, tn, iref = ctx.Amat, ctx.h, ctx.tn, ctx.iref
+        arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
+                                    ctx.m)
         epar = self.epar
-        ana = self.par.analysis
         tk = self.toolkit
-        iref = self.irefnode
-        arr = lambda v: tk.array(v, dtype=float)
-
-        def src(tt):
-            u = arr(self.cir.u(tt, epar, analysis=ana))
-            if provided_function is not None:
-                u = u + provided_function(tt)
-            return u
-
-        def red(v):
-            return np.concatenate((np.asarray(v)[:iref], np.asarray(v)[iref + 1:]))
-
         xn = x0
-        qn = arr(self.cir.q(xn, epar))
-        tstage = [tn + cvec[i] * h for i in range(3)]
 
         ## the FROZEN Jacobian pieces, at x_n, reduced -- the whole point:
         ## factored implicitly once per step and reused every iteration
@@ -4683,7 +4590,6 @@ class Transient(Analysis):
         ## to recover from a wild guess, only the dense fallback.
         Y = [self._pred_or(np.array(xn, dtype=float), tstage[i])
              for i in range(3)]
-        m = Cr.shape[0]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
@@ -4701,11 +4607,7 @@ class Transient(Analysis):
                 self.cir.limit(Y[j], Y[j], epar)
                 qi_all.append(arr(self.cir.q(Y[j], epar)))
                 Ki_all.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
-            R = np.empty(3 * m)
-            for i in range(3):
-                Fi = qi_all[i] - qn - h * sum(
-                    Amat[i, j] * Ki_all[j] for j in range(3))
-                R[i * m:(i + 1) * m] = red(Fi)
+            R, _J = self._coupled_stage_system(ctx, qi_all, Ki_all)
             dY = self._radau_transform_solve(R, Cr, Gr, h)
             scale = 0.0
             for i in range(3):
@@ -4724,24 +4626,10 @@ class Transient(Analysis):
             raise NoConvergenceError(
                 'Radau IIA(3) transform (simplified Newton) did not converge')
 
-        Y1, Y2, Y3 = Y
-        qY3 = self.cir.q(Y3, epar)
-        self._q_cache = (Y3, qY3)
-        self._iq = -(arr(self.cir.i(Y3, epar)) + src(t))
-        C3 = arr(self.cir.C(Y3, epar))
-        G3 = arr(self.cir.G(Y3, epar))
-        a33 = Amat[2, 2]
-        self._Cmat = C3
-        self._Geq = a33 * h * G3
-        self._effective_method = 'RadauIIA3Integrator'
-        self._companion_coeffs = None
         ## BRANCH SCREEN (no confirmation on this path -- see
         ## `_branch_screen_only`)
-        self._branch_screen_only([Y1, Y2, Y3], "Radau's transform fast path")
-        self._rk_Y = [Y1, Y2, Y3]
-        ## predictor nodes for the NEXT step; promoted only on accept
-        self._pred_pending = (t, list(zip(tstage, [Y1, Y2, Y3])))
-        J = C3 + a33 * h * G3
+        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src,
+                                        screen="Radau's transform fast path")
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
