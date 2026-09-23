@@ -11309,6 +11309,37 @@ class PSS(Analysis):
                 return int(np.argmax(tc)), 0.0
             return (phase_k,
                     float(np.asarray(x0_vec, dtype=float)[phase_k]) - phase_pin)
+
+        def _closing(x0, x_end, M):
+            """The fixed-period system at one iterate: ``F = x_0 - phi(x_0)``
+            (folded on the idtmod rows), ``J = I - alpha M``."""
+            D = np.asarray(toolkit.eye(n - 1))
+            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
+                    D - alpha * M)
+
+        def _bordered(F, J, tcol, x0_vec, phase_col):
+            """The FREE-PERIOD system: the fixed-period one `(F, J)` bordered
+            by the period column and the phase row --
+
+                F = [ F ,  x0[k] - pinned ]
+                J = [[ J , -dphi/dT ],
+                     [ e_k^T ,  0   ]]
+
+            -- because without a phase condition the system is singular by
+            construction (every point on the orbit is a solution, so `I - M`
+            has a null direction along it).  `k` is chosen by `_phase_row`
+            from `phase_col`; the row pins only the `x_0` block, whatever the
+            width of `F` (gear's pair: one phase row still suffices)."""
+            w = len(F)
+            Jb = np.zeros((w + 1, w + 1))
+            Jb[:w, :w] = J
+            Jb[:w, w] = -np.asarray(tcol).ravel()
+            _k, _r = _phase_row(x0_vec, phase_col)
+            Jb[w, _k] = 1.0
+            Fb = np.zeros(w + 1)
+            Fb[:w] = F
+            Fb[w] = _r
+            return Fb, Jb
         if self.autonomous:
             ## An unseeded autonomous run starts at the origin, which IS a
             ## periodic solution -- the trivial one -- and the free-period
@@ -11593,8 +11624,7 @@ class PSS(Analysis):
             x0, x_end, Mx, _Mt = self._traverse(x, period, times, hs,
                                                 want_dT=False,
                                                 open_at_x0=x0_unknown)
-            D = np.asarray(toolkit.eye(n - 1))
-            return self._fold_periodic(x0 - x_end), D - alpha * Mx
+            return _closing(x0, x_end, Mx)
 
         def func_solved_history(z):
             """Residual and Jacobian when the entering history is an unknown.
@@ -11652,18 +11682,7 @@ class PSS(Analysis):
             x0, x_end, Mx, Mt = self._traverse(x_in, T, tms, hs_T,
                                                want_dT=True,
                                                open_at_x0=x0_unknown)
-
-            D = np.asarray(toolkit.eye(n - 1))
-            m = n - 1
-            J = np.zeros((m + 1, m + 1))
-            J[:m, :m] = D - alpha * Mx
-            J[:m, m] = -np.asarray(Mt).ravel()
-            _k, _r = _phase_row(x0, Mt)
-            J[m, _k] = 1.0
-            F = np.zeros(m + 1)
-            F[:m] = self._fold_periodic(x0 - x_end)
-            F[m] = _r
-            return F, J
+            return _bordered(*_closing(x0, x_end, Mx), Mt, x0, Mt)
         
         def func_autonomous_solved_history(z):
             """Both enlargements at once: `(x_0, x_{-1}, T)`.
@@ -11702,21 +11721,16 @@ class PSS(Analysis):
                 x0_in, xm1_in, tms, hs_T, T=T, want_dT=True)
 
             D = np.asarray(toolkit.eye(m))
-            J = np.zeros((2 * m + 1, 2 * m + 1))
+            J = np.zeros((2 * m, 2 * m))
             J[:m, :m] = D - alpha * P_last[:, :m]
-            J[:m, m:2 * m] = -alpha * P_last[:, m:]
-            J[:m, 2 * m] = -np.asarray(Pt_last).ravel()
-            J[m:2 * m, :m] = -alpha * P_prev[:, :m]
-            J[m:2 * m, m:2 * m] = D - alpha * P_prev[:, m:]
-            J[m:2 * m, 2 * m] = -np.asarray(Pt_prev).ravel()
-            _k, _r = _phase_row(x0_in, Pt_last)
-            J[2 * m, _k] = 1.0
-
-            F = np.zeros(2 * m + 1)
-            F[:m] = np.asarray(x0_in) - np.asarray(x_last)
-            F[m:2 * m] = np.asarray(xm1_in) - np.asarray(x_prev)
-            F[2 * m] = _r
-            return F, J
+            J[:m, m:] = -alpha * P_last[:, m:]
+            J[m:, :m] = -alpha * P_prev[:, :m]
+            J[m:, m:] = D - alpha * P_prev[:, m:]
+            F = np.concatenate((np.asarray(x0_in) - np.asarray(x_last),
+                                np.asarray(xm1_in) - np.asarray(x_prev)))
+            tcol = np.concatenate((np.asarray(Pt_last).ravel(),
+                                   np.asarray(Pt_prev).ravel()))
+            return _bordered(F, J, tcol, x0_in, Pt_last)
 
         def func_stage(x):
             """Driven fixed-period residual and Jacobian for a Runge-Kutta
@@ -11728,9 +11742,7 @@ class PSS(Analysis):
             """
             x0, x_end, Mx, _Mt = self._traverse_stage(
                 x, period, times, hs, want_dT=False)
-            D = np.asarray(toolkit.eye(n - 1))
-            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
-                    D - alpha * Mx)
+            return _closing(x0, x_end, Mx)
 
         def func_autonomous_stage(z):
             """Free-period residual and Jacobian for a Runge-Kutta stage
@@ -11745,17 +11757,7 @@ class PSS(Analysis):
             tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
             x0, x_end, Mx, Mt = self._traverse_stage(
                 x_in, T, tms, hs_T, want_dT=True)
-            m = n - 1
-            D = np.asarray(toolkit.eye(m))
-            J = np.zeros((m + 1, m + 1))
-            J[:m, :m] = D - alpha * Mx
-            J[:m, m] = -np.asarray(Mt).ravel()
-            _k, _r = _phase_row(x0, Mt)
-            J[m, _k] = 1.0
-            F = np.zeros(m + 1)
-            F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
-            F[m] = _r
-            return F, J
+            return _bordered(*_closing(x0, x_end, Mx), Mt, x0, Mt)
 
         def func_glm(x):
             """Driven fixed-period residual/Jacobian for a Nordsieck GLM:
@@ -11765,9 +11767,7 @@ class PSS(Analysis):
             documents -- the residual is exact, the Jacobian drops the
             startup's derivative."""
             x0, x_end, Mx = self._traverse_glm(x, period, times, hs)
-            D = np.asarray(toolkit.eye(n - 1))
-            return (self._fold_periodic(np.asarray(x0) - np.asarray(x_end)),
-                    D - alpha * Mx)
+            return _closing(x0, x_end, Mx)
 
         def func_autonomous_glm(z):
             """Free-period residual/Jacobian for a Nordsieck GLM.  Same shape
@@ -11781,17 +11781,7 @@ class PSS(Analysis):
             tms, hs_T = self._period_grid(T, npts, self._grid_fracs)
             x0, x_end, Mx, Mt = self._traverse_glm(
                 x_in, T, tms, hs_T, want_dT=True)
-            m = n - 1
-            D = np.asarray(toolkit.eye(m))
-            J = np.zeros((m + 1, m + 1))
-            J[:m, :m] = D - alpha * Mx
-            J[:m, m] = -np.asarray(Mt).ravel()
-            _k, _r = _phase_row(x0, Mt)
-            J[m, _k] = 1.0
-            F = np.zeros(m + 1)
-            F[:m] = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
-            F[m] = _r
-            return F, J
+            return _bordered(*_closing(x0, x_end, Mx), Mt, x0, Mt)
 
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
