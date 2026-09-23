@@ -741,7 +741,15 @@ def test_cross_lands_the_comparator_edges():
     ## comparator sits on tanh, and a handful of step-acceptance
     ## decisions flip.  The ceiling still binds at 4.5x.
     assert s_on.accepted_steps < 4.5 * s_off.accepted_steps
-    assert s_on.rejected_steps <= s_off.rejected_steps + 2
+    ## ⚠ RE-PINNED 2026-09-23 when the transient's three stepping loops
+    ## became one: `rejected_steps` counts a FAILED NEWTON ATTEMPT too (F13:
+    ## "a rejection in all but name") -- the Runge-Kutta and coupled loops
+    ## always did, the LMM loop alone dropped them.  The trajectory of this
+    ## run is bit-identical to before; the 37 now counted are Newton
+    ## failures at the landings (the step shrinks x0.25 each, down to
+    ## `min_step` 1e-18 s -- also unchanged, just no longer hidden).  Was
+    ## `<= s_off.rejected_steps + 2` with them uncounted.
+    assert s_on.rejected_steps <= s_off.rejected_steps + 40
 
 
 def test_cross_predictions_use_the_fold_not_vhyst():

@@ -993,7 +993,7 @@ class RungeKuttaIntegrator(Integrator):
             '%s states no linear-multistep companion, so the LMM '
             'divided-difference compute_lte does not apply; its embedded '
             'estimate is computed in the generic RK step and consumed by '
-            '_run_rk_adaptive.' % type(self).__name__)
+            'the Transient stepping loop (_StageSteps).' % type(self).__name__)
 
 
 class TRBDF2Integrator(RungeKuttaIntegrator):
@@ -1019,7 +1019,8 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
     2(3) estimate (Hosea & Shampine 1996) is computed inside
     :meth:`Transient._solve_timestep_rk` from the three stage
     derivatives and filtered once through the stage matrix, and a dedicated
-    driver :meth:`Transient._run_rk_adaptive` runs step control on it.
+    step family of the transient's stepping loop (`_StageSteps`) runs step
+    control on it.
     :meth:`compute_lte` STILL raises: it is the LMM controller's
     divided-difference interface, which a two-stage DIRK does not fit -- the
     estimate is a stage combination, not a companion difference.  The
@@ -1181,8 +1182,8 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
             'TR-BDF2 states no linear-multistep companion, so the LMM '
             'controller\'s divided-difference compute_lte does not apply. Its '
             'embedded 2(3) estimate is computed in the generic RK step and '
-            'consumed by Transient._run_rk_adaptive, the adaptive path for '
-            'every stage method.')
+            'consumed by the Transient stepping loop (_StageSteps), the '
+            'adaptive path for every stage method.')
 
 
 class RadauIIA3Integrator(RungeKuttaIntegrator):

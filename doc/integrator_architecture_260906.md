@@ -223,6 +223,9 @@ All five steps done and green. A new integrator is now tableau-only.
 - **Steps 1–2** (transient side): `RungeKuttaIntegrator` base + polymorphic predicates;
   one tableau-driven, structure-aware transient step (`_solve_timestep_rk` → DIRK-sequential
   or FULL-coupled); one adaptive driver. Bespoke TR-BDF2 step/driver deleted.
+  **2026-09-23: the drivers are ONE loop** (`Transient._solve`): the LMM, Runge-Kutta/GLM and
+  coupled-LTE loops became step families (`_LMMSteps`, `_StageSteps`, `_CoupledSteps`) that
+  supply only how a step is attempted and judged.
 - **Step 3a** (FULL family): the Radau coupled shooting routines made tableau- and s-generic
   (`_*_full`, `kind='full'`). Any new **fully-implicit** method (Gauss, Lobatto IIIC, higher
   Radau) is now tableau-only.

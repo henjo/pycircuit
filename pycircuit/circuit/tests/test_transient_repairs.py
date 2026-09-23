@@ -1433,6 +1433,14 @@ def test_gate_4h4_a_fixed_grid_that_cannot_be_honoured_warns():
     msg = str(hits[0].message)
     assert 't=' in msg and 'falling back to' in msg, \
         'the warning must name the time and the step it fell back to: %s' % msg
+    ## ...FOR THIS STEP, as the warning says (2026-09-23, one stepping loop):
+    ## the old loop kept the shrunk step for the rest of the run -- 108
+    ## points for a 30-step grid, where the coupled path restored it.  Now
+    ## the grid step comes back after the fallback: one quarter step, then
+    ## `timestep` again.
+    h = np.diff(np.asarray(tran.result.sweep_values, dtype=float))
+    assert len(h) <= 32, len(h)
+    assert np.sum(np.abs(h - 1e-7) > 1e-12) <= 2, h
 
 
 def test_gate_4h_the_adaptive_path_is_untouched():

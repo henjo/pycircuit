@@ -234,6 +234,31 @@ def test_gauge_shift_keeps_state_bounded():
     assert s.max() - s.min() < 1.5
 
 
+@pytest.mark.parametrize('integrator', ['RadauIIA3Integrator',
+                                        'TRBDF2Integrator'])
+def test_gauge_shift_under_the_stage_methods_adaptive(integrator):
+    """The same rewrap under the Runge-Kutta methods on the ADAPTIVE path.
+    Their stepping loop used to accept without `_push_history` -- a stage
+    method reads no charge rings -- and so never applied the periodic
+    shifts either: the state spanned 5.000 moduli over 5 wraps under both
+    radau and trbdf2 (measured 2026-09-23), i.e. the unbounded state whose
+    error grows with the integral (`test_long_run_precision_payoff`).  One
+    stepping loop since, every family accepts through `_push_history`:
+    0.939 / 1.039 moduli."""
+    from pycircuit.circuit import integrator as integ_mod
+    c = _ramp_circuit(modulus=1.0, offset=-0.5)
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=getattr(integ_mod, integrator)())
+    result = tran.solve(tend=5.0, timestep=1e-2)
+    y = result.v('out').y
+    t = result.v('out').x[0]
+    d = np.abs(y[1:] - (((t[1:] + 0.5) % 1.0) - 0.5))
+    d = np.minimum(d, 1.0 - d)
+    assert d.max() < 1e-9
+    s = np.asarray(result.x[_idt_state_row(c)], float)
+    assert s.max() - s.min() < 1.5, s.max() - s.min()
+
+
 def test_long_run_precision_payoff():
     """The measured claim the Phase-2 recommendation stands on (idtmod.md
     5.4 item 4): the bounded state holds the phase to ~1 ulp regardless of

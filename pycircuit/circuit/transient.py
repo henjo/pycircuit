@@ -166,9 +166,12 @@ class TransientStatistics(object):
     counts nothing.  A run that takes 40x more steps than expected is currently
     indistinguishable, from the outside, from one that does not.
 
-    On the COUPLED path `force_accepts` is always zero BY DESIGN -- that
-    path has no force-accept: a persistently failing point raises instead
-    (F13 documents the always-zero rather than leaving it silent).
+    On the COUPLED path a persistently failing point raises BY DESIGN (F13):
+    its steps are solved, not rejected for error, so its only force-accept
+    is a step the excursion veto (`max_dv_step`) still refused after
+    `_CoupledSteps.max_reject` retries.  `rejected_steps` counts failed Newton
+    attempts too, on every path (one stepping loop since 2026-09-23; the LMM
+    loop alone used to drop them).
 
     The force-accept counter is the one to read first.  It counts steps accepted
     with an unbounded truncation error, and after 4d it should be zero on every
@@ -226,6 +229,288 @@ class TransientStatistics(object):
                self.min_step if self.min_step is not None else float('nan'),
                self.max_step if self.max_step is not None else float('nan'),
                self.total_seconds, self.solve_seconds, pct))
+
+
+class TransientStepError(NoConvergenceError, RuntimeError):
+    """A time point that could not be solved even at `minstep`, after the
+    continuation rescue.  Both a `NoConvergenceError` (what the Runge-Kutta
+    and coupled loops raised) and a `RuntimeError` (what the LMM loop raised)
+    -- one stepping loop since 2026-09-23, so a caller written against either
+    keeps catching it."""
+
+
+## ---------------------------------------------------------------------------
+## THE STEP FAMILIES -- what differs between integrators in the one stepping
+## loop of `Transient._solve` (2026-09-23; it was three loops: the LMM loop,
+## `_run_rk_adaptive` and `_solve_coupled`, which had drifted apart -- the
+## excursion bound in two of them, the continuation rescue in two, three
+## Newton-failure ladders, three exception types, two setups).  The loop owns
+## everything else: breakpoints, `tend`, the failure ladder and rescue, the
+## excursion veto, the rejection budget and force-accept, state events, the
+## bookkeeping of an accepted step.  A family supplies:
+##
+##   attempt(X, t, h, hold, provided_function) -> (x_new, h_taken, J)
+##       one step from X[-1] (`hold`: its size is imposed), or raises
+##       NoConvergenceError
+##   judge(X, x_new, h, J, clamped)  ->  (ok, h_next)  its error test
+##   h_after_force(h, h_next)  ->  the step after a force-accept
+##   next_breakpoint(t), after_accept(landing), finish()
+##
+## and its retry budget at one time point: `max_retries` attempts in all, of
+## which `max_reject` may be rejections for error -- then the step is
+## force-accepted.
+## ---------------------------------------------------------------------------
+
+class _LMMSteps(object):
+    """Linear multistep methods (euler, trap, theta, gear): a step is one
+    companion-model Newton solve, judged by the step controller on the
+    divided-difference charge LTE (`IntegralController` unless the caller
+    injected one).
+
+    ⚠ THREE REJECTIONS, THEN FORCE-ACCEPT.  Near a source corner the LTE
+    estimate can stay above tolerance for arbitrarily small steps while the
+    stored history is frozen; without a cap the step collapses and the solve
+    grinds.  After `max_reject` the already-converged step is accepted (only
+    its LTE was too high) with an order drop, so time advances and the history
+    refreshes.  The controller's lower-band GROWTH retries (a too-accurate
+    step redone larger, F14) are not rejections and do not count here."""
+
+    max_reject = 3
+    ## F14: the growth retries count here, bounding over/under alternation
+    max_retries = 10
+
+    def __init__(self, tr, run):
+        self.tr, self.run = tr, run
+        if getattr(tr, 'step_controller', None) is None:
+            from pycircuit.circuit.stepcontroller import IntegralController
+            tr.step_controller = IntegralController()
+            ## Marked so the coupled family can tell this apart from a
+            ## controller the CALLER injected.  Without the distinction, any
+            ## object that ran an LMM run first presents this auto-created
+            ## controller to a coupled run, which then refuses a controller
+            ## nobody asked for -- 11 tests failed exactly that way.
+            tr._step_controller_is_auto = True
+        ## ITEM 2+.3 / STAGE 12A: applied to whichever controller is in use,
+        ## including one the caller injected, and re-applied every run so a
+        ## running maximum or a band cannot leak from a previous solve.
+        tr.step_controller.set_relref(tr.par.relref)
+        tr.step_controller.set_lte_band(tr.par.lte_gamma_min,
+                                        tr.par.lte_gamma_max,
+                                        tr.par.lte_eta)
+
+    def next_breakpoint(self, t):
+        return self.tr._next_breakpoint(t)
+
+    def attempt(self, X, t, h, _hold, provided_function):
+        x_new, _feval, J, _f = self.tr.solve_timestep(
+            X[-1], t + h, provided_function=provided_function)
+        return x_new, h, J
+
+    def judge(self, X, x_new, h, J, clamped):
+        tr, run = self.tr, self.run
+        return tr.step_controller.evaluate_step(
+            x_curr=x_new,
+            x_last=X[-1],
+            q_curr=tr._q_at(x_new),
+            q_last_hist=tr._qlast,
+            iq_last_hist=tr._iqlast,
+            h_curr=h,
+            h_last=tr._dt_last if tr._dt_last is not None else h,
+            h_last2=tr._dt_last2,
+            no_history=tr._no_history,
+            J=J,
+            active_integrator=tr.active_integrator,
+            irefnode=tr.irefnode,
+            reltol=tr.par.reltol,
+            abstol=run.abstol,
+            toolkit=tr.toolkit,
+            max_step=run.max_step,
+            TRTOL=tr.LTERATIO,
+            n_nodes=len(tr.cir.nodes),
+            ## STAGE 12A -- a truncated step is not LTE-limited, so Fang's
+            ## lower bound must not try to grow it
+            h_clamped=clamped,
+            x_hist=X[-1:-4:-1],
+        )
+
+    def h_after_force(self, h, _h_next):
+        ## the clamp every accepted step obeys -- 4b's point is that the
+        ## force-accept must not bypass it
+        return min(self.run.max_step, h * MAX_GROWTH_RATIO)
+
+    def after_accept(self, landing):
+        pass
+
+    def finish(self):
+        pass
+
+
+class _StageSteps(object):
+    """Runge-Kutta methods (radau, trbdf2, esdirk43) and Nordsieck GLMs:
+    self-starting, so no divided-difference LTE -- a step is judged by the
+    method's own embedded estimate, the filtered `_rk_est` the step leaves
+    (a GLM delivers `_glm_error_estimate` through the same slot).  Accept at
+    ``err <= 1``; the next step is ``h * clamp(0.9 err^(-1/(p+1)), 0.5, 2)``
+    with ``p = EMBEDDED_ORDER`` (TR-BDF2 2(3) -> 1/3, Radau 5(3) -> 1/4), so
+    one anomalous estimate cannot swing the step wildly.  No history to
+    freeze at a corner, so more rejections are meaningful than for an LMM."""
+
+    max_reject = max_retries = 12
+    SAFETY, K = 0.9, 0.5
+
+    def __init__(self, tr, run):
+        self.tr, self.run = tr, run
+        n = tr.cir.n
+        self.keep = [i for i in range(n) if i != tr.irefnode]
+        ## an adaptive run asks the step for its estimate; a fixed grid leaves
+        ## the flag as the caller set it
+        if not run.fixed:
+            tr._rk_want_est = True
+
+    def next_breakpoint(self, t):
+        return self.tr._next_breakpoint(t)
+
+    def attempt(self, X, t, h, _hold, provided_function):
+        x_new, _feval, J, _f = self.tr.solve_timestep(
+            X[-1], t + h, provided_function=provided_function)
+        return x_new, h, J
+
+    def judge(self, _X, x_new, h, _J, _clamped):
+        tk = self.tr.toolkit
+        est = tk.array(self.tr._rk_est)
+        wt = self.tr.par.reltol * tk.abs(x_new) + tk.array(self.run.abstol)
+        ek = tk.array([est[i] / wt[i] for i in self.keep])
+        err = float((tk.sum(ek * ek) / len(self.keep)) ** 0.5)
+        order = int(self.tr.base_integrator.EMBEDDED_ORDER)
+        grow = self.SAFETY * (err if err > 1e-16 else 1e-16) ** (
+            -1.0 / (order + 1))
+        return err <= 1.0, h * min(1.0 / self.K, max(self.K, grow))
+
+    def h_after_force(self, _h, h_next):
+        return h_next
+
+    def after_accept(self, landing):
+        pass
+
+    def finish(self):
+        if not self.run.fixed:
+            self.tr._rk_want_est = False
+
+
+class _CoupledSteps(object):
+    """`coupled_lte=True`: Fang, "A New Time-Stepping Method for Circuit
+    Simulation" (DAC 2013).  The solution and the step size are solved
+    TOGETHER at each time point (`fang_timestep`, Figure 4's two-stage
+    Newton), so there is no backup due to LTE -- the step size is solved, not
+    retried, and `judge` always accepts; the solved step carries forward as
+    the next guess (Figure 3).  The LTE is eq (6)'s solution-space estimate
+    (`SolutionLTEController`), not the charge divided difference; see
+    `doc/fang_stage12_conclusions.md` sec. 3.  A held step (landing, `tend`,
+    a fixed grid, an event cut) has nothing to solve for; one whose LTE
+    stays over the band returns unconverged and goes the way of a Newton
+    failure -- smaller, and at `minstep` it raises.  So the only rejection
+    the loop can make of a coupled step is the excursion veto.
+
+    ⚠ TLINE WAVEFRONT ARRIVALS AND THE KINK DISCIPLINE ARE THIS FAMILY'S.
+    A source corner reaching a delay line re-emerges at the far end TD later
+    as a from-zero kink in an ALGEBRAIC variable that no element reports, so
+    each corner schedules {corner + TD, corner + 2*TD} as breakpoints, and a
+    landing empties the step ring (cold-start semantics for eq (6)).  History
+    that straddles such a kink poisons the solution-space LTE (h cancels:
+    err = 1/(TRTOL*reltol) = 1428.6 on the JAX probe; a ~10 fs crawl, 113
+    points to cross one edge here).  The LMM family's integrator-side LTE
+    decays with h and never livelocks, and applied there the reset MOVED the
+    pulsed-RC comparison 9.8e-4 -> 5.4e-3 V (test_coupled_breakpoints) -- so
+    it is gated on delay lines and on this family, by measurement."""
+
+    max_reject = max_retries = 10
+
+    def __init__(self, tr, run):
+        import heapq
+        self.tr, self.run = tr, run
+        self._heapq = heapq
+        ## R1 HARDENING: the sigglobal running maximum would otherwise
+        ## survive on the cached controllers across runs of one object
+        for ctrl in (getattr(tr, 'step_controller', None),
+                     getattr(tr, '_fang_controller', None)):
+            if ctrl is not None and hasattr(ctrl, 'set_relref'):
+                ctrl.set_relref(tr.par.relref)
+        ## F5: the 'auto' band sentinel resolved once, to Fang's values
+        self.band = tr._coupled_band()
+        self.tline_tds = sorted({float(e.iparv.TD)
+                                 for _nm, e in tr.cir.elements.items()
+                                 if type(e).__name__ == 'TLine'})
+        self.arrivals = []
+        self.seen_corners = set()
+
+    def next_breakpoint(self, t):
+        tr, run = self.tr, self.run
+        t_break = tr._next_breakpoint(t)
+        if self.tline_tds:
+            if t_break < run.tend and t_break not in self.seen_corners:
+                self.seen_corners.add(t_break)
+                for td in self.tline_tds:
+                    for k in (1, 2):
+                        arrival = t_break + k * td
+                        if arrival < run.tend:
+                            self._heapq.heappush(self.arrivals, arrival)
+            guard = t + tr.par.minbreak * max(abs(t), 1.0)
+            while self.arrivals and self.arrivals[0] <= guard:
+                self._heapq.heappop(self.arrivals)
+            if self.arrivals:
+                t_break = min(t_break, self.arrivals[0])
+        self.t_break = t_break
+        return t_break
+
+    def attempt(self, X, t, h, hold, provided_function):
+        tr, run = self.tr, self.run
+        ## THE STEP MAY NOT GROW PAST THE BREAKPOINT: fang solves for its own
+        ## h and could grow across the corner the entry h cleared (measured
+        ## on the pulsed TLine: landing 8.9e-12 PAST it -- a straddled kink).
+        ## Capping at the gap makes growth land exactly ON it.  A fixed grid
+        ## keeps the caller's step uncapped.
+        cap = run.max_step
+        if not run.fixed and self.t_break < float('inf'):
+            gap = self.t_break - t
+            if gap > 0.0:
+                cap = min(run.max_step, gap)
+        gamma_min, gamma_max, eta = self.band
+        x_new, h_solved, iters, converged = tr.fang_timestep(
+            X[-1], t, h, X[-1:-4:-1],
+            provided_function=provided_function,
+            hold_h=hold, grid_locked=run.fixed,
+            method=tr.par.coupled_method,
+            gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
+            hmin=tr.par.minstep, max_step=cap)
+        ## STAGE 12-3: the inner Newton iterations are real work, counted
+        ## for a failed attempt too
+        tr.statistics.newton_iterations += int(iters)
+        if not converged:
+            raise NoConvergenceError(
+                'coupled transient: the (x, h) Newton did not converge at '
+                't=%g s, h=%g s (or a held step stayed over the LTE band)'
+                % (t, h))
+        return x_new, h_solved, None
+
+    def judge(self, _X, _x_new, h, _J, _clamped):
+        ## THE SOLVED STEP CARRIES FORWARD -- the whole point of the method
+        ## (gate 12B-0: writing anything else here took 151,176 steps where
+        ## the standard path takes 4,067, and the count did not move with
+        ## `reltol`)
+        return True, max(h, self.tr.par.minstep)
+
+    def h_after_force(self, _h, h_next):
+        return h_next
+
+    def after_accept(self, landing):
+        ## COUPLED KINK DISCIPLINE (see the class note): a landing empties
+        ## the step ring, on delay-line circuits only
+        if landing and self.tline_tds:
+            self.tr._dt_last = None
+            self.tr._dt_last2 = None
+
+    def finish(self):
+        pass
 
 
 class Transient(Analysis):
@@ -745,7 +1030,7 @@ class Transient(Analysis):
     def _honours_continuation_rescue(self):
         """Whether THIS step path can actually reach the continuation ladder.
 
-        `_solve` and `_run_rk_adaptive` both arm `_continuation_rescue` once the
+        The stepping loop (`_rescue_step`) arms `_continuation_rescue` once the
         step has shrunk to `minstep`, as the last resort before giving up.  Every
         path now reaches a ladder, by one of three routes:
 
@@ -1434,8 +1719,8 @@ class Transient(Analysis):
     def _begin_run(self, x, n):
         """Reset every piece of PER-RUN integrator state and seed the rings.
 
-        Both `_solve` and `_solve_coupled` carried a byte-identical copy of
-        this, and `PSS` needs it too -- it re-integrates one period from a
+        The standard and coupled loops (one loop since 2026-09-23) each
+        carried a byte-identical copy of this, and `PSS` needs it too -- it re-integrates one period from a
         fresh state on every shooting iteration, so "begin a run" happens
         many times per analysis there.
 
@@ -1522,13 +1807,13 @@ class Transient(Analysis):
     def _pred_promote(self, x):
         """Turn the last step's pending record into predictor nodes.
 
-        ⚠ Called from the two ACCEPT sites and nowhere else, so a REJECTED
-        step's stages never become nodes -- they are samples of a trajectory
-        the run then threw away.  The stage-method adaptive driver
-        (:meth:`_run_rk_adaptive`) is the second site and is easy to miss: it
-        deliberately calls no :meth:`_push_history`, because a stage method
-        reads no charge rings, so it accepts without touching any of the other
-        history this class keeps.
+        ⚠ Called from the ACCEPT site (through :meth:`_push_history`) and
+        nowhere else, so a REJECTED step's stages never become nodes -- they
+        are samples of a trajectory the run then threw away.  (The stage
+        methods' adaptive driver used to be a second accept site that skipped
+        :meth:`_push_history`; one stepping loop since 2026-09-23, and every
+        family accepts through it -- a stage method reads no charge rings, but
+        its idtmod rows need the periodic shifts.)
         """
         pend = getattr(self, '_pred_pending', None)
         if pend is not None:
@@ -2765,9 +3050,9 @@ class Transient(Analysis):
         `x_prev`, the ACCEPTED state, before this candidate is looked at --
         so the relative term cannot h-cancel at a signal birth.
 
-        ⚠ ONE COPY FOR EVERY STEPPING LOOP (2026-09-23).  The check was
-        typed out in the LMM loop and again in the coupled loop, and
-        `_run_rk_adaptive` never had it: every Runge-Kutta and GLM method
+        ⚠ THE RUNGE-KUTTA LOOP NEVER HAD IT (fixed 2026-09-23, before the
+        three stepping loops became one).  The check was typed out in the LMM
+        loop and again in the coupled loop: every Runge-Kutta and GLM method
         ignored both knobs SILENTLY -- on a pulsed RC with 'auto' (bound
         0.098 V) gear and trap went 70 -> 86 steps and held 0.097 V while
         radau stayed at 69 steps and 0.0996 V, trbdf2 at 71."""
@@ -3861,7 +4146,8 @@ class Transient(Analysis):
         fail to converge; then this falls back to the dense full-Newton path
         below, so the answer is never wrong, only occasionally slower.
 
-        When ``_rk_want_est`` is set (by :meth:`_run_rk_adaptive`) it also
+        When ``_rk_want_est`` is set (by the stepping loop's `_StageSteps` on
+        an adaptive run) it also
         leaves the filtered embedded 5(3) error estimate in ``_rk_est`` (see
         :meth:`_radau_error_estimate`); the fixed-step path does not set the flag
         and pays nothing for it.  Returns ``(x, None, J, None)`` like
@@ -4560,7 +4846,7 @@ class Transient(Analysis):
             ITEM 2+.2.  Newton needs `f` on every iteration -- it is what drives the
             update.  The *final* evaluation at the converged point is different: its
             `f` is unpacked by both callers and then never referenced again (`solve`
-            at the `x, feval, J, f = ...` site, and `_solve_coupled` likewise). Only
+            at the `x, feval, J, f = ...` site, and the coupled path likewise). Only
             `J` is consumed, by the step controller.
 
             So `cir.i(x)` and `cir.u(t)` were assembled once per accepted step and
@@ -4611,9 +4897,8 @@ class Transient(Analysis):
                                fixed_timestep, coupled_lte)
 
     def _finish_result(self, X, timelist, t_start):
-        """The run's `CircuitResult`, the same for every stepping loop
-        (`_solve`, `_run_rk_adaptive`, `_solve_coupled`; one helper since
-        2026-09-23, it was three copies).
+        """The run's `CircuitResult` (one helper since 2026-09-23, when the
+        three stepping loops each had a copy -- then one loop).
 
         ⚠ The t=0 point IS part of the result -- SPICE convention, and what
         the JAX backend already does.  `X[0]` is the operating point (or the
@@ -4648,7 +4933,7 @@ class Transient(Analysis):
     def _next_breakpoint(self, t):
         """The next source breakpoint after `t`, strictly advancing: a
         corner closer than `minbreak` (relative) is skipped so a step of
-        `dt = 0` cannot loop.  One guard for every stepping loop."""
+        `dt = 0` cannot loop."""
         nb = self.cir.next_event(t)
         if nb <= t + self.par.minbreak * max(abs(t), 1.0):
             nb = self.cir.next_event(t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
@@ -4684,8 +4969,7 @@ class Transient(Analysis):
     def _init_state_events(self, n):
         """E7 (2026-09-22): the circuit's declared state events as rows on
         the FULL state (node voltages first; the branch currents that follow
-        get zero weight), and an empty `event_times` for the run.  Called by
-        every stepping entry (`_solve`, `_solve_coupled`)."""
+        get zero weight), and an empty `event_times` for the run."""
         self.event_times = []
         self._ev_rows, self._ev_thr = None, None
         if self.par.state_events and hasattr(self.cir, 'state_events'):
@@ -4697,7 +4981,6 @@ class Transient(Analysis):
                 self._ev_thr = np.array([float(t_) for _r, t_ in _rows])
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
-        from pycircuit.circuit.integrator import TRBDF2Integrator
         ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
         ## request: PCNR can decline for the whole run (no device
         ## declares a probe) or fail on individual timesteps and fall
@@ -4744,49 +5027,21 @@ class Transient(Analysis):
                 'state and integrates a spurious startup transient. Pass '
                 'uic=True or an explicit x0.', RuntimeWarning, stacklevel=3)
 
-        if coupled_lte:
-            return self._solve_coupled(refnode, tend, x0, timestep,
-                                       provided_function,
-                                       fixed_timestep=fixed_timestep)
-
-        ## Respect a step controller injected by the caller (e.g. PIController);
-        ## only fall back to the default IntegralController when none was set.
-        if getattr(self, 'step_controller', None) is None:
-            from pycircuit.circuit.stepcontroller import IntegralController
-            self.step_controller = IntegralController()
-            ## Marked so the coupled path can tell this apart from a controller
-            ## the CALLER injected.  Without the distinction, any object that ran
-            ## the standard path first presents this auto-created controller to
-            ## the coupled path, which then refuses a controller nobody asked
-            ## for -- 11 tests failed exactly that way.
-            self._step_controller_is_auto = True
-        ## ITEM 2+.3.  Applied to whichever controller is in use, including one
-        ## the caller injected, and re-applied every run so the running maximum
-        ## a global mode keeps cannot leak from a previous solve.
-        self.step_controller.set_relref(self.par.relref)
-        ## STAGE 12A -- same treatment, and for the same reason: applied to
-        ## whichever controller is in use and re-applied every run, so a band set
-        ## for one solve cannot leak into the next.
-        self.step_controller.set_lte_band(self.par.lte_gamma_min,
-                                          self.par.lte_gamma_max,
-                                          self.par.lte_eta)
-
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
         self._init_state_events(n)
-        _ev_iter = 0
         if x0 is None:
             if self.par.uic:
                 ## Skip the operating point and start from the stated initial
                 ## conditions -- zeros for anything `ic` does not name.
                 x0 = self._initial_state(refnode)
             else:
+                ## A failed operating point raises rather than silently
+                ## becoming a vector of zeros.
                 x0 = self._solve_operating_point(refnode)
-            x = x0
-        else:
-            x = x0
-        
+        x = x0
+
         ## `ic` without `uic` is a request the operating point overwrites, so
         ## honouring it silently would be a lie in either direction: SPICE uses
         ## `.ic` to CONSTRAIN the operating point and then releases it, which is
@@ -4807,20 +5062,20 @@ class Transient(Analysis):
                 "as well as the analysis-level ic dict -- both are starting "
                 "values, and both are ignored without uic.)")
 
+        if coupled_lte:
+            ## P22: eq (6)'s state-row mask, built once at the seed
+            self._lte_state_mask = self._state_row_mask(x0)
         self._begin_run(x, n)
 
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
             self.cir.accept_step(0.0, X[-1], self.epar)
-        
+
         timelist = []
         ## Stage 6(c).  Created per run, so a second `solve()` reports its own
         ## numbers rather than the sum of every run on this object.
         self.statistics = TransientStatistics()
-        was_break_step = False
-        force_order_drop = False
         _t_run_start = time.perf_counter()
-        t = 0.0
         ## DECISION D2, 2026-08-01.  The clamp on how large an ACCEPTED step may
         ## grow.  It defaults to `timestep` -- the historical behaviour, and what
         ## `.tran tstep` means to most callers -- but it is now reachable.
@@ -4877,46 +5132,6 @@ class Transient(Analysis):
                         % (timestep, element_cap, element_cap), RuntimeWarning)
             elif element_cap < max_step:
                 max_step = element_cap
-        ## The opening ramp exists to stop the ONE step the controller cannot check
-        ## from dominating the run.  Under `fixed_timestep` there is no controller
-        ## and `dt` is never updated, so ramping would not open small and grow -- it
-        ## would run the ENTIRE simulation at `timestep*1e-3`, a thousand times more
-        ## steps for a result the caller explicitly asked to be uniform.  Caught by
-        ## `test_transient_RLC` and three others, which is what the suite gate is for.
-        dt = timestep if fixed_timestep else min(self._opening_step(timestep),
-                                                 max_step)
-        TRTOL = self.LTERATIO   ## one bound, named once (hygiene)
-        ## Bound the number of consecutive LTE rejections at a single time point.
-        ## Near a source discontinuity (e.g. a VPulse corner) the truncation-error
-        ## estimate can stay above tolerance for arbitrarily small steps while the
-        ## stored history is frozen; without a cap the step size collapses and the
-        ## solve grinds indefinitely.  After MAX_REJECT rejections we accept the
-        ## already-converged Newton solution (only its LTE was too high) so time
-        ## advances and the integrator history refreshes.
-        reject_count = 0
-        MAX_REJECT = 3
-        ## F14 (doc/transient_review_260820.md): a lower-band GROWTH retry --
-        ## the controller redoing a too-ACCURATE step larger -- is a voluntary
-        ## redo, not a failure, and must not trip the force-accept above.
-        ## Before this split, three consecutive growth retries during the
-        ## opening ramp of a QUIESCENT circuit reached the force-accept path:
-        ## a step whose error was below the band got a warning claiming it
-        ## was "still above tolerance", a needless order drop, and a
-        ## force_accepts increment -- measured as 2 spurious warnings on a
-        ## settled RC with the band at (0.5, 3.0).  The discriminator is
-        ## dt_next > dt: over-tolerance rejections strictly shrink in every
-        ## controller, growth retries return only behind a strict-growth
-        ## guard, so the two populations cannot overlap.  MAX_POINT_RETRIES
-        ## preserves the anti-livelock guarantee MAX_REJECT alone used to
-        ## provide, against pathological over/under alternation.
-        point_retries = 0
-        MAX_POINT_RETRIES = 10
-        ## Set by the force-accept path below and consumed at the top of the next
-        ## iteration, exactly like `was_break_step`.  Both mean the same thing to
-        ## the integrator -- "do not trust a 2nd-order polynomial through this
-        ## point" -- and they arrive from opposite ends: a breakpoint knows the
-        ## history is about to be discontinuous, a force-accept has just found out.
-        force_order_drop = False
 
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
@@ -4936,950 +5151,252 @@ class Transient(Analysis):
         abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
                                           self.par.lte_iabstol * ones_branches))
 
-        ## Runge-Kutta adaptive: the one self-starting loop, driven by the
-        ## method's embedded estimate, reached only for the non-fixed grid
-        ## (fixed step runs the ordinary loop below, which dispatches the stage
-        ## step).  A stage method has no LMM divided-difference LTE, so it never
-        ## uses the controller below.  `_begin_run` has set `base_integrator`.
-        ## ⚠ AND A NORDSIECK GLM TOO.  It is not a Runge-Kutta method, but it
-        ## is self-starting, keeps no charge ring and has no divided-difference
-        ## LTE, so the LMM controller below cannot drive it -- it used to reach
-        ## that loop and die in `get_diff` with `AttributeError:
-        ## active_integrator`.  What it does have is an error estimate of its
-        ## own (`_glm_error_estimate`) delivered through the same `_rk_est`
-        ## slot, so it belongs in the one self-starting loop.
+        ## THE STEP FAMILY -- the only thing about stepping that depends on the
+        ## integrator (see `_LMMSteps`, `_StageSteps`, `_CoupledSteps`): how
+        ## one step is taken and judged.  Everything below is the same loop
+        ## for every method.  A Nordsieck GLM is not a Runge-Kutta method, but
+        ## it is self-starting, keeps no charge ring and delivers its own
+        ## estimate through `_rk_est`, so it is a stage family (it once
+        ## reached the LMM controller and died in `get_diff`).
+        from types import SimpleNamespace
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
-        if (isinstance(self.base_integrator, RungeKuttaIntegrator)
-                or getattr(self.base_integrator, 'is_multivalue',
-                           lambda: False)()) \
-                and not fixed_timestep:
-            return self._run_rk_adaptive(
-                x, n, X, timelist, tend, dt, max_step, abstol,
-                provided_function, _t_run_start)
-
-        was_break_step = False
-        while t < tend:
-            # --- BREAKPOINT HANDLING ---
-            # A breakpoint generally signifies a mathematical discontinuity (such as 
-            # the sharp corner of a VPulse/IPulse square wave).
-            # 
-            # When the solver approaches a breakpoint, it does three vital things to 
-            # maintain mathematical stability:
-            # 1. Truncates Step (dt): If normal step size overshoots the breakpoint, 
-            #    it forces dt to land *exactly* on the breakpoint timestamp.
-            # 2. Flags the Breakpoint: was_break_step is set to True.
-            # 3. Drops the Integration Order: Immediately after crossing the
-            #    breakpoint (was_break_step == True in the next iteration), it
-            #    sets `self._is_first_step = True`.
-            #
-            # Why? Integrators (like Gear2 or Trapezoidal) use past state history
-            # to fit a smooth mathematical polynomial. If they
-            # tried to fit a polynomial across a sharp discontinuous edge, the
-            # simulation would suffer from massive artificial ringing and overshoot.
-            # So the method drops to a safer 1st-order one
-            # (like Backward Euler) to gracefully navigate the corner and rebuild.
-            #
-            # `_is_first_step` does NOT mean "there is no history": the q and iq
-            # ring buffers keep rolling across a breakpoint, and the step just
-            # taken is perfectly good data.  It means "do not trust a 2nd-order
-            # polynomial through this point".  Those are different claims, and
-            # conflating them is what made `max_step` a correctness knob rather
-            # than a cost knob: the step controller used this same flag to skip
-            # the error check entirely, and `Sin.next_event` fires every quarter
-            # period, so a VSin drive produced a periodic, drive-synchronous,
-            # full-`max_step` step that was never checked at all.  The controller
-            # is therefore handed `_no_history` instead, which is true only at
-            # the genuine start of a run -- where the LTE really cannot be
-            # estimated and accepting is the only option.
-            if was_break_step or force_order_drop:
-                self._is_first_step = True
-            force_order_drop = False
-
-            # the next corner, strictly advancing (no infinite dt = 0 loops)
-            next_t_break = self._next_breakpoint(t)
-            
-            ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS.
-            ##
-            ## `dt` is loop-carried and truncation OVERWRITES it, while the restore
-            ## at the bottom of this loop is guarded by `if not fixed_timestep`.  So
-            ## a truncation used to be permanent, and because each later breakpoint
-            ## truncated the already-shrunken `dt` again the step collapsed
-            ## geometrically: a `VPulse` run that should take 30 steps took **292**,
-            ## ending at `dt = 1.241e-19 s`.
-            ##
-            ## Restoring `dt` afterwards would fix the collapse but not the count --
-            ## a `VPulse` at `per=1e-6` over `tend=3e-6` has ~12 edges, so the run
-            ## would take `tend/timestep + 12` steps.  `fixed_timestep` exists so a
-            ## caller can ask for exactly these output points, so the grid is what
-            ## must be preserved: breakpoints no longer move it.
-            ##
-            ## What IS kept is the part that protects the integrator: crossing a
-            ## breakpoint inside a step still drops the order for the next step, so
-            ## no 2nd-order polynomial is fitted across a discontinuity.  It just
-            ## costs no grid change.  A caller who needs edges resolved exactly
-            ## wants the adaptive path with `max_step`, not a fixed grid.
-            if fixed_timestep:
-                ## `<=`, not `<`.  A breakpoint landing exactly ON a grid point is
-                ## not a rounding curiosity here: with `td=1e-7` against a `1e-7`
-                ## grid, 2 of the 9 edges in a 30-step VPulse run land exactly on
-                ## one.  With a strict `<` those two produce no order drop at all --
-                ## the step that ends on the edge does not see it, and the next
-                ## iteration asks `next_event(t)` from the edge itself, whose
-                ## fixed-point guard skips past it.
-                ## TOLERANCED, and the tolerance is a measured fix: `t` is
-                ## accumulated by repeated `+= dt`, so "the breakpoint lands
-                ## exactly on a grid point" is a float knife-edge -- spied on
-                ## the pulsed-RC fixed run, the order drop fired at the FIRST
-                ## edge (t accumulated over 10 steps) and silently missed
-                ## every later one (21+ accumulations flipped the <=).  The
-                ## JAX port's crossing test carries the same tolerance.
-                was_break_step = next_t_break <= t + dt * (1.0 + 1e-9)
-            elif t + dt > next_t_break:
-                dt = float(next_t_break - t)
-                was_break_step = True
-            else:
-                was_break_step = False
-
-            ## STAGE 12A -- was this step's size chosen by the controller, or
-            ## imposed on it?  A truncated step is not LTE-limited, so its error
-            ## says nothing about the integrator and Fang's lower bound must not
-            ## try to grow it; see the guard in `IntegralController`.
-            dt_clamped = was_break_step and not fixed_timestep
-
-            if t + dt > tend:
-                dt = tend - t
-                dt_clamped = True
-                ## A uniform grid divides `tend` exactly, so what is left at the end
-                ## is floating-point residue rather than a step.  Turning it into
-                ## one produced a final `dt` of 2.033e-20 s on a run whose other
-                ## steps were 1e-6 -- 14 orders of magnitude down, and a step-size
-                ## ratio no integrator should be asked to swallow.  Measured on the
-                ## adaptive path for comparison: zero such steps, because a
-                ## controller-chosen `dt` does not land on `tend` to within 1e-20.
-                ## Hence the guard is scoped to fixed-step.
-                if fixed_timestep and dt <= 1e-9 * timestep:
-                    break
-            
-            self._dt = dt
-            next_t = t + dt
-            
-            if was_break_step:
-                self.statistics.breakpoints_hit += 1
-            try:
-                _t0 = time.perf_counter()
-                x, feval, J, f = self.solve_timestep(X[-1], next_t, provided_function=provided_function)
-                self.statistics.solve_seconds += time.perf_counter() - _t0
-            except NoConvergenceError:
-                ## STAGE 4h -- A FIXED GRID THAT CANNOT BE HONOURED MUST SAY SO.
-                ## Shrinking is the only way to make progress, so it stays -- but
-                ## under `fixed_timestep` the caller asked for exactly these output
-                ## points and is no longer getting them.  Same failure class as 4b's
-                ## force-accept: the result is still returned, and without this the
-                ## caller has no way to learn that the grid they specified was
-                ## abandoned partway through.
-                if fixed_timestep:
-                    warnings.warn(
-                        'transient: Newton did not converge at t=%.6g s with the '
-                        'requested fixed timestep %.6g s; falling back to %.6g s for '
-                        'this step. The output grid is no longer uniform.'
-                        % (t, timestep, dt * 0.25),
-                        RuntimeWarning, stacklevel=3)
-                dt = dt * 0.25
-                if dt < self.par.minstep:
-                    ## P18 phase 3 (+P25): one continuation rescue before
-                    ## giving up -- the point is re-solved through the
-                    ## junction-gmin -> gshunt -> pseudo-transient chain
-                    ## at minstep, and only a PURE converged solution
-                    ## flows on into the normal accept machinery below.
-                    dt = self.par.minstep
-                    self._dt = dt
-                    next_t = t + dt
-                    self._continuation_rescue = True
-                    try:
-                        _t0 = time.perf_counter()
-                        x, feval, J, f = self.solve_timestep(
-                            X[-1], next_t,
-                            provided_function=provided_function)
-                        self.statistics.solve_seconds += \
-                            time.perf_counter() - _t0
-                        self.statistics.gmin_rescues += 1
-                    except NoConvergenceError as e:
-                        ## ⚠ SAY WHICH OF THE TWO THINGS HAPPENED.  The rescue
-                        ## flag is read by `self._newton`, so only the paths
-                        ## that solve through it -- the LMM companions and the
-                        ## DIRK/ESDIRK stages -- actually apply the ladder.  The
-                        ## FULL coupled stage solve is a hand-rolled Newton on
-                        ## the `sm` system and never reads the flag, so on a
-                        ## fully-implicit method NO continuation was attempted
-                        ## and reporting that one "could not rescue the point"
-                        ## sends the reader to debug a ladder that never ran.
-                        if self._honours_continuation_rescue():
-                            _why = ('and the gmin/gshunt/pseudo-transient '
-                                    'continuation could not rescue the point')
-                        else:
-                            _why = ('and NO continuation was attempted: the '
-                                    'continuation rescue is only wired into '
-                                    'the solves that go through the circuit '
-                                    'Newton, which the FULL coupled stage '
-                                    'solve of a fully-implicit method (%s) '
-                                    'does not. Try a DIRK/ESDIRK method '
-                                    '(trbdf2, esdirk43) or an LMM (gear, trap) '
-                                    'if this point needs the ladder'
-                                    % type(self.base_integrator).__name__)
-                        raise RuntimeError(
-                            'Transient solver failed to converge: timestep '
-                            'shrank below %gs at t=%s, %s: %s'
-                            % (self.par.minstep, t, _why, e))
-                    finally:
-                        self._continuation_rescue = False
-                else:
-                    continue
-                
-            if not fixed_timestep:
-                accept, dt_next = self.step_controller.evaluate_step(
-                    x_curr=x,
-                    x_last=X[-1],
-                    q_curr=self._q_at(x),
-                    q_last_hist=self._qlast,
-                    iq_last_hist=self._iqlast,
-                    h_curr=dt,
-                    h_last=self._dt_last if self._dt_last is not None else dt,
-                    h_last2=self._dt_last2,
-                    no_history=self._no_history,
-                    J=J,
-                    active_integrator=self.active_integrator,
-                    irefnode=self.irefnode,
-                    reltol=self.par.reltol,
-                    abstol=abstol,
-                    toolkit=self.toolkit,
-                    max_step=max_step,
-                    TRTOL=TRTOL,
-                    ## `relref`'s global modes must not mix volts with amps.
-                    n_nodes=len(self.cir.nodes),
-                    h_clamped=dt_clamped,
-                    ## STAGE 12B -- accepted SOLUTION history, most recent first,
-                    ## for Fang's eq (6) estimator.  The charge-based controllers
-                    ## ignore it; `SolutionLTEController` extrapolates it to the
-                    ## new time point and measures the deviation there.  Sliced
-                    ## rather than passed whole so the controller cannot come to
-                    ## depend on the full run being retained.
-                    x_hist=X[-1:-4:-1],
-                )
-
-                ## EXCURSION CHECK (max_dv_step / max_di_step): an additional
-                ## veto on an accepted step, with a proportional retry -- see
-                ## `_excursion_ratio`.
-                _ratio = self._excursion_ratio(x, X[-1]) if accept else None
-                if _ratio is not None:
-                    ## No `fixed_timestep` guard is needed HERE: this whole
-                    ## block already sits inside `if not fixed_timestep:`
-                    ## above, so under a fixed grid the veto is structurally
-                    ## unreachable.  (One was added while fixing the coupled
-                    ## path below and removed again on reading the
-                    ## indentation -- a guard that cannot fire is the kind of
-                    ## dead-but-plausible branch this file has paid for
-                    ## before.)
-                    if _ratio > 1.0:
-                        accept = False
-                        dt_next = dt * max(MIN_SHRINK_RATIO, 0.9 / _ratio)
-
-                growth_retry = (not accept) and dt_next > dt
-                if growth_retry and point_retries < MAX_POINT_RETRIES:
-                    ## Too accurate, redone larger (Fang's lower bound).  A
-                    ## real re-solve, so it counts as rejected work -- but not
-                    ## toward MAX_REJECT, whose force-accept is for errors the
-                    ## shrinking side cannot bound.
-                    self.statistics.rejected_steps += 1
-                    point_retries += 1
-                    dt = dt_next
-                    continue
-                if growth_retry:
-                    ## Retry cap hit on a BELOW-band step: it is accurate --
-                    ## accept it as-is rather than force-accepting with a
-                    ## warning about an error it does not have.
-                    accept, next_dt = True, dt_next
-                if not accept and reject_count < MAX_REJECT \
-                        and point_retries < MAX_POINT_RETRIES:
-                    self.statistics.rejected_steps += 1
-                    reject_count += 1
-                    point_retries += 1
-                    dt = dt_next
-                    if dt < self.par.minstep:
-                        raise RuntimeError(f"Transient solver integration error: timestep shrank below {self.par.minstep:g}s at t={t}")
-                    continue
-                elif not accept:
-                    ## STAGE 4b -- THE ESCAPE HATCH USED TO GROW 10x, WHICH IS THE
-                    ## WRONG SIGN AND OUTSIDE BDF-2'S STABILITY BOUND.
-                    ##
-                    ## Reaching here means the LTE estimate stayed over tolerance
-                    ## for MAX_REJECT successively smaller steps.  The old response
-                    ## was `next_dt = min(max_step, dt * 10.0)`: grow tenfold in
-                    ## answer to an error that was already too large.  Variable-step
-                    ## BDF-2 is zero-stable only below `ZERO_STABILITY_RATIO`
-                    ## (2.414214); at 10x the parasitic root is 4.76, so the step
-                    ## that follows a force-accept amplified the previous solution
-                    ## instead of forgetting it -- and nothing warned.
-                    ##
-                    ## Measured before the change (stiff RLC, reltol 1e-5,
-                    ## `Trapezoidal('ywr')`): 78 force-accepts in 873 accepted steps,
-                    ## and every one of the 9 accepted-step ratios above 2.414
-                    ## across the whole run sat immediately after one, the largest
-                    ## being exactly 10.0.  **The shipped default is not exempt**:
-                    ## the same circuit at reltol 1e-3 under `Gear2('ywr')` reached
-                    ## here once and took the 10x once.  That case was found by
-                    ## this warning, after a sweep of three tighter tolerances had
-                    ## concluded the default no longer reached the path at all.
-                    ##
-                    ## What a stalled high-order estimate is actually asking for is
-                    ## a LOWER ORDER, not a bigger step: order 1 differences one
-                    ## past point instead of two, so it is far less sensitive to the
-                    ## stale history that a discontinuity leaves behind, and it
-                    ## still gets a real error estimate -- the controller is handed
-                    ## `_no_history`, not `_is_first_step`, so an order-dropped step
-                    ## is error-controlled rather than accepted blind.  Growth is
-                    ## then bounded by the same clamp every other accepted step
-                    ## obeys, which is what makes "no accepted ratio exceeds 2.414"
-                    ## true of the run as a whole rather than of its quiet parts.
-                    force_order_drop = True
-                    self.statistics.force_accepts += 1
-                    next_dt = min(max_step, dt * MAX_GROWTH_RATIO)
-                    ## An unbounded accepted truncation error must not be invisible.
-                    ## This is the same failure class stage 1 exists to remove: the
-                    ## result is still returned, and without this the caller has no
-                    ## way to learn that part of it was not error-controlled.
-                    warnings.warn(
-                        'transient: local truncation error still above tolerance '
-                        'after %d rejections at t=%.6g s; accepting the step at '
-                        'h=%.6g s with an order drop. The accepted error is '
-                        'unbounded -- treat the waveform near this time with '
-                        'suspicion.' % (MAX_REJECT, t, dt),
-                        ## 3, not 2: the loop lives in `_solve`, which `solve`
-                        ## calls, so 2 attributes the warning to `solve`'s own body
-                        ## and tells the caller nothing about which simulation
-                        ## produced it.  Verified by reading the reported filename.
-                        RuntimeWarning, stacklevel=3)
-                else:
-                    next_dt = dt_next
-                reject_count = 0
-                point_retries = 0
-            ## E7: a declared crossing INSIDE the accepted step.  The step is
-            ## cut to the crossing by a secant on the fraction -- the crossing
-            ## state is smooth up to the switch -- and re-solved from the same
-            ## history, exactly as a rejected step is; once the crossing sits
-            ## within EVENT_LAND_RTOL of the step's end the step is a break
-            ## step: the multistep history restarts there, as at a source
-            ## corner.  A window's two edges are two rows, so the window is
-            ## stepped edge to edge as the PSS stage lands it.
-            ## (not on the very first step: an initial condition need not be a
-            ## solved state -- a source node handed in at zero "crosses" to
-            ## its value in the first step and read as a landing at t = 1e-9 T)
-            if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
-                _evs = self._state_event_step(X[-1], x, dt, next_t, _ev_iter, self.par.minstep)
-                if _evs is not None and _evs[0] == 'cut':
-                    _ev_iter += 1
-                    dt = _evs[1] * dt
-                    continue
-                _ev_iter = 0
-                if _evs is not None and self.EVENT_RESTART_HISTORY:
-                    was_break_step = True
-
-            t = next_t
-            self.statistics.accepted_steps += 1
-            self.statistics._note_step(dt)
-            if self._effective_method == 'EulerIntegrator' and \
-                    type(self.base_integrator).__name__ != 'EulerIntegrator':
-                self.statistics.order_drops += 1
-            timelist.append(t)
-            X.append(copy(x))
-            
-            if hasattr(self.cir, 'accept_step'):
-                self.cir.accept_step(t, X[-1], self.epar)
-            
-            # --- INTEGRATOR HISTORY RING BUFFERS ---
-            # To support 2nd-order (and higher) integration methods, we must preserve the 
-            # charge (q) and current/derivative (iq) of previous timesteps.
-            # We push the newest values to index 0, and slice off the oldest `[:-1]` to 
-            # maintain a constant buffer size (e.g. size 2 for Gear2).
-            # This acts as a mathematical sliding window across the simulation time.
-            self._push_history(x, X)
-            ## Roll before overwriting: _dt_last2 takes the value _dt_last is
-            ## about to lose.  Reversing these two lines makes _dt_last2 equal
-            ## _dt_last and the estimator silently differences the wrong grid.
-            self._dt_last2 = self._dt_last
-            self._dt_last = dt
-            
-            self._is_first_step = False
-            self._no_history = False
-            
-            if not fixed_timestep:
-                dt = next_dt
-            
-        return self._finish_result(X, timelist, _t_run_start)
-
-
-    def _run_rk_adaptive(self, x, n, X, timelist, tend, dt, max_step,
-                         abstol, provided_function, _t_run_start):
-        """Adaptive loop for ANY Runge-Kutta method, driven by its embedded
-        estimate -- the one driver that replaced the per-method ones.
-
-        Self-starting, so its own loop rather than the LMM controller (a stage
-        method has no divided-difference LTE).  The per-step estimate is the
-        filtered ``_rk_est`` the step leaves; the step exponent is
-        ``1/(EMBEDDED_ORDER+1)`` read from the method (TR-BDF2 2(3) -> 1/3,
-        Radau 5(3) -> 1/4).  Accept at ``err <= 1``, halve on a non-convergent
-        Newton, and clamp per-step growth/shrink so one anomalous estimate
-        cannot swing the step wildly.  No ``_push_history``: a stage method
-        reads no charge rings.
-        """
-        tk = self.toolkit
-        iref = self.irefnode
-        reltol = self.par.reltol
+        run = SimpleNamespace(tend=float(tend), max_step=max_step,
+                              abstol=abstol, fixed=bool(fixed_timestep))
+        if coupled_lte:
+            family = _CoupledSteps(self, run)
+        elif (isinstance(self.base_integrator, RungeKuttaIntegrator)
+              or getattr(self.base_integrator, 'is_multivalue',
+                         lambda: False)()):
+            family = _StageSteps(self, run)
+        else:
+            family = _LMMSteps(self, run)
         minstep = self.par.minstep
-        SAFETY, K = 0.9, 0.5
-        ORDER = int(self.base_integrator.EMBEDDED_ORDER)
-        keep = [i for i in range(n) if i != iref]
-        abstol = tk.array(abstol)
-        self._rk_want_est = True
-        from pycircuit.circuit.nrsolver import NoConvergenceError
-        MAX_REJECT = 12
+
+        ## The opening ramp exists to stop the ONE step the controller cannot check
+        ## from dominating the run.  Under `fixed_timestep` there is no controller
+        ## and the step is never adapted, so ramping would not open small and grow
+        ## -- it would run the ENTIRE simulation at `timestep*1e-3`, a thousand
+        ## times more steps for a result the caller explicitly asked to be
+        ## uniform.  Caught by `test_transient_RLC` and three others.
+        h = timestep if fixed_timestep else min(self._opening_step(timestep),
+                                                max_step)
         t = 0.0
-        _ev_iter = 0
+        ## `landing`: this attempt ends on a breakpoint (or the last one landed
+        ## a state event); `order_drop`: the last step was force-accepted.
+        ## Both mean "do not fit a 2nd-order polynomial through this point" and
+        ## take effect on the NEXT attempt -- which, after a rejection, is the
+        ## retry of the same point.
+        landing = order_drop = False
+        rejects = point_retries = 0          # this time point's retries
+        ev_iter = 0                          # E7: secant cuts in flight
+        imposed = False                      # the next attempt's size was imposed (an event cut, the excursion veto)
+        ## F14 (doc/transient_review_260820.md): a lower-band GROWTH retry --
+        ## the controller redoing a too-ACCURATE step larger -- is a voluntary
+        ## redo, not a failure, and must not trip the force-accept.  Before
+        ## the split, three consecutive growth retries during the opening ramp
+        ## of a QUIESCENT circuit reached the force-accept path: 2 spurious
+        ## warnings on a settled RC with the band at (0.5, 3.0).  Over-tolerance
+        ## rejections strictly shrink in every controller, growth retries return
+        ## only behind a strict-growth guard, so `h_next > h` tells them apart;
+        ## the family's `max_retries` bounds both against pathological
+        ## alternation.
         try:
             while t < tend:
-                dt = min(dt, max_step, tend - t)
-                ## Source breakpoints (2026-09-22): a VPulse's corners are
-                ## landed as `_solve` lands them -- this loop stepped OVER
-                ## them: on an RC behind a 0.1 ns edge radau at reltol 1e-6
-                ## sat 3e-14 s from the first corner by rejections alone and
-                ## still read 1.5e-4 after the edge, the SECOND corner (the
-                ## ramp's end) inside its next step; gear, landing both,
-                ## 1.7e-4 at its own order.  The `minbreak` guard is
-                ## `_solve`'s.
-                next_t_break = self._next_breakpoint(t)
-                was_break = False
-                if t + dt > next_t_break:
-                    dt = float(next_t_break - t)
-                    was_break = True
-                reject = 0
-                while True:
-                    self._dt = dt
-                    try:
-                        xnew, _f, _J, _ = self.solve_timestep(
-                            x, t + dt, provided_function=provided_function)
-                    except NoConvergenceError as _exc:
-                        self.statistics.rejected_steps += 1
-                        reject += 1
-                        dt = 0.5 * dt
-                        if dt >= minstep:
-                            continue
-                        ## ⚠ THE LAST RESORT, MIRRORING `_solve`.  This driver
-                        ## used to `raise` here, and that made the continuation
-                        ## rescue UNREACHABLE FOR EVERY STAGE METHOD on the
-                        ## DEFAULT path: adaptive stepping routes Runge-Kutta
-                        ## methods here instead of through `_solve`'s loop, and
-                        ## `_continuation_rescue` appeared 0 times in this
-                        ## function against 3 times there.  So the ladder that
-                        ## `_rk_step_coupled` carries could only ever fire under
-                        ## `fixed_timestep=True` -- validated through a door
-                        ## users do not come through.  Re-solve the point at
-                        ## `minstep` with the chain armed before giving up.
-                        if getattr(self, '_continuation_rescue', False):
-                            raise
-                        dt = minstep
-                        self._dt = dt
-                        self._continuation_rescue = True
-                        try:
-                            xnew, _f, _J, _ = self.solve_timestep(
-                                x, t + dt,
-                                provided_function=provided_function)
-                            self.statistics.gmin_rescues += 1
-                        except NoConvergenceError as _exc2:
-                            ## Say which of the two happened -- see
-                            ## `_honours_continuation_rescue`.
-                            if self._honours_continuation_rescue():
-                                _why = ('and the continuation rescue could not '
-                                        'solve it either')
-                            else:
-                                _why = ('and NO continuation was attempted: the '
-                                        'rescue is not wired into this step '
-                                        'path (%s with pcnr=%s)'
-                                        % (type(self.base_integrator).__name__,
-                                           self._rk_use_pcnr()))
-                            raise NoConvergenceError(
-                                'transient: the step at t=%.6g s did not '
-                                'converge down to minstep=%.6g s, %s: %s'
-                                % (t, minstep, _why, _exc2)) from _exc2
-                        finally:
-                            self._continuation_rescue = False
-                    est = tk.array(self._rk_est)
-                    wt = reltol * tk.abs(xnew) + abstol
-                    ek = tk.array([est[i] / wt[i] for i in keep])
-                    err = float((tk.sum(ek * ek) / len(keep)) ** 0.5)
-                    if err <= 1.0 or reject >= MAX_REJECT or dt <= minstep:
-                        ## the excursion veto on a step the estimate passed,
-                        ## with the same proportional retry as the other two
-                        ## loops -- this loop ignored `max_dv_step` /
-                        ## `max_di_step` until 2026-09-23 (`_excursion_ratio`)
-                        _ratio = self._excursion_ratio(xnew, x)
-                        if _ratio is None or _ratio <= 1.0 or dt <= minstep:
-                            break
-                        self.statistics.rejected_steps += 1
-                        dt = max(minstep, dt * max(MIN_SHRINK_RATIO,
-                                                   0.9 / _ratio))
-                        continue
+                ## -- 1. where this attempt may end ---------------------------
+                ##
+                ## A breakpoint is a discontinuity (a VPulse corner): the step is
+                ## truncated to land exactly on it, and the step after it drops
+                ## the order -- `_is_first_step` means "do not trust a 2nd-order
+                ## polynomial through this point", not "there is no history": the
+                ## rings keep rolling, and the controller is handed `_no_history`
+                ## (true only at the genuine start of a run) so a truncated step
+                ## is still checked (a VSin drive fires `next_event` every
+                ## quarter period).
+                if landing or order_drop:
+                    self._is_first_step = True
+                order_drop = False
+                t_break = family.next_breakpoint(t)
+                if fixed_timestep:
+                    ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS: a
+                    ## breakpoint no longer moves it (a truncation used to be
+                    ## permanent and collapse the step geometrically: 292 steps
+                    ## for 30), but crossing one still drops the order.  `<=`,
+                    ## TOLERANCED: `t` accumulates by `+= h`, so an edge exactly
+                    ## on a grid point is a float knife-edge (measured: the drop
+                    ## fired at the first edge and missed every later one).
+                    landing = t_break <= t + h * (1.0 + 1e-9)
+                elif t + h > t_break:
+                    h = float(t_break - t)
+                    landing = True
+                else:
+                    landing = False
+                ## STAGE 12A -- was this step's size chosen, or imposed?
+                clamped = landing and not fixed_timestep
+                if t + h > tend:
+                    h = tend - t
+                    clamped = True
+                    ## what a uniform grid leaves at `tend` is rounding residue,
+                    ## not a step (a final 2.033e-20 s step against 1e-6 ones)
+                    if fixed_timestep and h <= 1e-9 * timestep:
+                        break
+                ## a step whose size was decided by where it must land is HELD:
+                ## the coupled family has nothing to solve for (F3: unheld, its
+                ## final step grew past `tend` in 5 of 6 configurations)
+                hold = clamped or fixed_timestep or imposed
+
+                ## -- 2. take it: smaller on a Newton failure -----------------
+                self._dt = h
+                try:
+                    x_new, h, J = self._attempt_step(family, X, t, h, hold,
+                                                     provided_function)
+                except NoConvergenceError:
+                    ## A failed attempt is retried smaller: a rejection in all
+                    ## but name, and counted as one (F13).
                     self.statistics.rejected_steps += 1
-                    reject += 1
-                    dt = dt * max(K, SAFETY * err ** (-1.0 / (ORDER + 1)))
-                ## E7 (2026-09-22, wired here on request): a declared crossing
-                ## inside the accepted step cuts the step to it by the secant
-                ## on the fraction and re-solves from the same `x`, as in
-                ## `_solve`; a one-step method has no history to restart, so
-                ## the landed step is simply accepted and its time recorded.
-                ## Radau resolves the compact transition to -1.7e-8 of the
-                ## period unlanded (reltol 1e-6): this buys `event_times` and
-                ## a spread of zero from the crossing phase, not accuracy.
-                if self._ev_rows is not None and len(X) > 1:      # not from the initial condition (see `_solve`)
-                    _evs = self._state_event_step(x, xnew, dt, t + dt, _ev_iter, minstep)
-                    if _evs is not None and _evs[0] == 'cut':
-                        _ev_iter += 1
-                        dt = _evs[1] * dt
+                    if fixed_timestep:
+                        ## STAGE 4h -- a fixed grid that cannot be honoured
+                        ## must say so
+                        warnings.warn(
+                            'transient: Newton did not converge at t=%.6g s with '
+                            'the requested fixed timestep %.6g s; falling back to '
+                            '%.6g s for this step. The output grid is no longer '
+                            'uniform.' % (t, timestep, h * 0.25),
+                            RuntimeWarning, stacklevel=3)
+                    h = h * 0.25
+                    ## a step whose size was imposed is retried smaller STILL
+                    ## imposed: the coupled family then solves the circuit
+                    ## only (unheld, its (x, h) Newton cost +25-38 % Newton
+                    ## iterations on the pulsed RC for no accuracy)
+                    imposed = hold
+                    if h >= minstep:
                         continue
-                    _ev_iter = 0
-                ## accept
-                if was_break and t + dt >= next_t_break * (1.0 - 1e-12):
-                    self.statistics.breakpoints_hit += 1
-                t = t + dt
-                x = xnew
-                X.append(copy(x))
+                    ## P18 phase 3 (+P25): the LAST resort -- the point is
+                    ## re-solved at `minstep` through the junction-gmin ->
+                    ## gshunt -> pseudo-transient chain, and only a converged
+                    ## solution flows on
+                    h = minstep
+                    x_new, h, J = self._rescue_step(family, X, t, h, hold,
+                                                    provided_function)
+
+                ## -- 3. judge it: the family's error test, then the
+                ## excursion veto (`max_dv_step` / `max_di_step`) ------------
+                if fixed_timestep:
+                    h_next = timestep
+                else:
+                    ok, h_next = family.judge(X, x_new, h, J, clamped)
+                    ratio = self._excursion_ratio(x_new, X[-1]) if ok else None
+                    vetoed = ratio is not None and ratio > 1.0
+                    if vetoed:
+                        ok, h_next = False, h * max(MIN_SHRINK_RATIO, 0.9 / ratio)
+                    if not ok:
+                        growth = h_next > h
+                        if point_retries < family.max_retries and (
+                                growth or (rejects < family.max_reject
+                                           and h > minstep)):
+                            self.statistics.rejected_steps += 1
+                            point_retries += 1
+                            rejects += 0 if growth else 1
+                            h = max(h_next, minstep)
+                            ## the bound decided this size, so the coupled
+                            ## family must not solve it back up (unheld, its
+                            ## (x, h) Newton grew straight past the bound again)
+                            imposed = vetoed
+                            continue
+                        if not growth:
+                            ## FORCE-ACCEPT (4b): the error is still over
+                            ## tolerance and the budget is spent; the converged
+                            ## step is taken with an order drop, and the run
+                            ## says so -- the accepted error is unbounded.
+                            self.statistics.force_accepts += 1
+                            order_drop = True
+                            h_next = family.h_after_force(h, h_next)
+                            warnings.warn(
+                                'transient: local truncation error still above '
+                                'tolerance after %d rejections at t=%.6g s; '
+                                'accepting the step at h=%.6g s with an order '
+                                'drop. The accepted error is unbounded -- treat '
+                                'the waveform near this time with suspicion.'
+                                % (rejects, t, h), RuntimeWarning, stacklevel=3)
+                    rejects = point_retries = 0
+
+                ## -- 4. a declared state event inside the step: cut to it ----
+                ## (E7) by the secant on the fraction and re-solve, holding the
+                ## cut step; the landed step restarts the history as a corner
+                ## does.  Not from the initial condition (`len(X) > 1`).
+                if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
+                    evs = self._state_event_step(X[-1], x_new, h, t + h,
+                                                 ev_iter, minstep)
+                    if evs is not None and evs[0] == 'cut':
+                        ev_iter += 1
+                        h = evs[1] * h
+                        imposed = True
+                        continue
+                    ev_iter = 0
+                    if evs is not None and self.EVENT_RESTART_HISTORY:
+                        landing = True
+
+                ## -- 5. accept it --------------------------------------------
+                imposed = False
+                ## a step is judged a landing by where it ENDED: a coupled step
+                ## that grew onto the corner is one in every way that matters
+                on_break = t + h >= t_break * (1.0 - 1e-12)
+                landing = landing or on_break
+                t = t + h
+                X.append(copy(x_new))
                 timelist.append(t)
                 self.statistics.accepted_steps += 1
-                self.statistics._note_step(dt)
-                self._pred_promote(x)
+                self.statistics._note_step(h)
+                if on_break:
+                    self.statistics.breakpoints_hit += 1
+                if self._effective_method == 'EulerIntegrator' and \
+                        type(self.base_integrator).__name__ != 'EulerIntegrator':
+                    self.statistics.order_drops += 1
                 if hasattr(self.cir, 'accept_step'):
-                    self.cir.accept_step(t, x, self.epar)
-                ## propose the next step from the same estimate
-                grow = SAFETY * (err if err > 1e-16 else 1e-16) ** (
-                    -1.0 / (ORDER + 1))
-                dt = dt * min(1.0 / K, max(K, grow))
+                    self.cir.accept_step(t, X[-1], self.epar)
+                self._push_history(x_new, X)
+                self._dt = h
+                self._dt_last2 = self._dt_last
+                self._dt_last = h
+                family.after_accept(landing)
+                self._is_first_step = False
+                self._no_history = False
+                h = min(h_next, max_step) if not fixed_timestep else timestep
         finally:
-            self._rk_want_est = False
+            family.finish()
 
         return self._finish_result(X, timelist, _t_run_start)
 
+    def _attempt_step(self, family, X, t, h, hold, provided_function):
+        """One attempt of the family's step, timed."""
+        _t0 = time.perf_counter()
+        try:
+            return family.attempt(X, t, h, hold, provided_function)
+        finally:
+            self.statistics.solve_seconds += time.perf_counter() - _t0
 
-    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False):
-        ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
-        ##
-        ## Position matters and cost a test to learn: placed after the initial
-        ## `accept_step(0.0, ...)` this wiped the very history that call had just
-        ## seeded, so `TLine.G` saw an empty buffer and stamped the line as a DC
-        ## SHORT -- v(p1) came out 1.0 where 0.5 is correct.  Elements that carry
-        ## state must be reset before the run seeds them, not after.
-        if hasattr(self.cir, 'reset_state'):
-            self.cir.reset_state(self.epar)
+    def _rescue_step(self, family, X, t, h, hold, provided_function):
+        """The last resort at `minstep`: the step re-solved with the
+        continuation chain armed (`_continuation_rescue`, read by `_newton`),
+        or a `TransientStepError` naming the point.
 
-        X = []
-        self.irefnode = self.cir.get_node_index(refnode)
-        n = self.cir.n
-        self._init_state_events(n)
-        if x0 is None:
-            ## Same fix as `solve()`: a failed operating point raises rather than
-            ## silently becoming a vector of zeros.  This path had the defect too.
-            ##
-            ## And it must honour `uic`, which it previously ignored -- one of the
-            ## four inputs 0.1d found this path silently dropping.  That went
-            ## unnoticed because ignoring `uic` and failing the DC produced the same
-            ## zeros the caller wanted; with the silent fallback gone, `uic=True`
-            ## would have raised on a circuit that has no operating point by design.
-            if self.par.uic:
-                x0 = self._initial_state(refnode)
-            else:
-                x0 = self._solve_operating_point(refnode)
-
-        x = x0
-        ## P22: the state-row mask for eq (6), built once at the seed.
-        self._lte_state_mask = self._state_row_mask(x0)
-        self._begin_run(x, n)
-
-        X.append(copy(x))
-        if hasattr(self.cir, 'accept_step'):
-            self.cir.accept_step(0.0, X[-1], self.epar)
-        timelist = []
-        
-        t = 0.0
-        ## Same opening ramp as `solve()` -- this path had the same defect.
-        h = self._opening_step(timestep)
-        ## DECISION D2 -- same clamp as `_solve`; see the note there.
-        ## Same decoupled resolution as the standard path: None -> tend/50.
-        max_step = self.par.timestep_max
-        if max_step is None or max_step <= 0:
-            max_step = tend / 50.0
-
-        ## STAGE 8(d) -- a delay element caps the step; see `_solve` for why.
-        ## The coupled path is always adaptive, so the cap simply applies.
-        element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
-        if element_cap is not None and element_cap < max_step:
-            max_step = element_cap
-        h = min(h, max_step)
-        ## STAGE 12B -- the coupled path never created a statistics object, so
-        ## `tran.statistics` raised AttributeError after any `coupled_lte=True`
-        ## run and the two paths could not be compared on step counts at all.
-        ## F13 completed it: timing, rejected_steps (the retry loop's failed
-        ## attempts ARE rejections), and the attach to the result -- "a
-        ## statistic that is silently always zero is worse than one that is
-        ## absent", this path's own words.  `force_accepts` stays 0 here BY
-        ## DESIGN, documented on TransientStatistics: the coupled path has no
-        ## force-accept -- persistent failure raises.
-        self.statistics = TransientStatistics()
-        _t_run_start = time.perf_counter()
-        ## R1 HARDENING (doc/transient_review_260820.md, refuted-but-latent):
-        ## the sigglobal running maximum survives on the cached controllers
-        ## across runs of one object, masked only by the coincidence of the
-        ## _dt_last reset meeting _reference's no_history branch.  Reset it
-        ## deliberately, as _solve already does for the standard controller --
-        ## an accidental invariant becomes a stated one.
-        for _ctrl in (getattr(self, 'step_controller', None),
-                      getattr(self, '_fang_controller', None)):
-            if _ctrl is not None and hasattr(_ctrl, 'set_relref'):
-                _ctrl.set_relref(self.par.relref)
-        was_break_step = False
-        force_order_drop = False
-        TRTOL = self.LTERATIO   ## one bound, named once (hygiene)
-        minstep = self.par.minstep
-        ## Resolve the 'auto' band sentinel ONCE, to Fang's values -- see
-        ## _coupled_band and the Parameter declarations (F5).
-        gamma_min, gamma_max, eta = self._coupled_band()
-
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
-        ## Solution-flavoured, for the same reason as in `solve` above: the coupled
-        ## controller also applies this to `lte`, not to the residual -- so it takes
-        ## the `lte_*` tolerances, not Newton's.
-        abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
-                                          self.par.lte_iabstol * ones_branches))
-        reltol = self.par.reltol
-
-        ## Coupled time-stepping, Fang, "A New Time-Stepping Method for Circuit
-        ## Simulation" (DAC 2013).  The solution and the step size are solved
-        ## TOGETHER at each time point -- see `fang_timestep` for Figure 4's
-        ## two-stage Newton and for why sec. 3.4's approximate step correction is
-        ## used in place of eq (12).  The LTE is eq (6)'s solution-space estimate
-        ## (`SolutionLTEController`), not the charge divided difference the rest
-        ## of this module uses; `doc/fang_stage12_conclusions.md` sec. 3 has the
-        ## reason, and it is the whole reason this path works at all.
-        from pycircuit.circuit.nrsolver import NoConvergenceError
-        MAX_LTE_ITERS = 10
-        _ev_iter, _ev_hold = 0, False        # E7: secant cuts in flight, and the step they impose
-
-        ## TLINE WAVEFRONT ARRIVALS -- same fix as the JAX backend's
-        ## collect_breakpoints, discovered there first: a source corner
-        ## reaching a delay line re-emerges at the far end TD later as a
-        ## from-zero kink in an ALGEBRAIC variable that no element reports.
-        ## next_event cannot know it (the TLine does not know the sources),
-        ## so corners are echoed here: each source corner next_event reveals
-        ## schedules {corner + TD, corner + 2*TD}.  Arrivals are breakpoints,
-        ## so landing on one holds the step AND resets the step ring below --
-        ## registering arrivals ALONE was falsified on the JAX side (a
-        ## registered kink without the ring reset still livelocks on the
-        ## h-independent relative LTE).  Deeper bounce ancestry is truncated,
-        ## as every SPICE truncates it; arrivals do not re-echo.
-        import heapq as _heapq
-        _tline_tds = sorted({float(e.iparv.TD)
-                             for _nm, e in self.cir.elements.items()
-                             if type(e).__name__ == 'TLine'})
-        _pending_arrivals = []
-        _seen_corners = set()
-
-        while t < tend:
-            ## BREAKPOINTS, which this path did not have at all until now.
-            ##
-            ## The omission was worse here than it would be on the standard path,
-            ## because Figure 3 has no rejection branch: a coupled step that runs
-            ## past a pulse edge cannot back up from it.  It also quietly broke
-            ## the invariant `p` depends on -- `TimeFunction.dfdt` takes the
-            ## right-hand limit at a corner, which is exact ONLY because a step
-            ## always starts on the corner rather than straddling it, and that is
-            ## true only if the solver truncates to breakpoints.  It does now.
-            if was_break_step or force_order_drop:
-                ## Not "there is no history" -- the ring buffers keep rolling
-                ## across a breakpoint.  It means "do not fit a 2nd-order
-                ## polynomial through this point", which also drops the eq (6)
-                ## predictor's degree, since that follows the active integrator.
-                self._is_first_step = True
-            force_order_drop = False
-
-            next_t_break = self._next_breakpoint(t)
-            if _tline_tds:
-                if next_t_break < tend and next_t_break not in _seen_corners:
-                    _seen_corners.add(next_t_break)
-                    for _td in _tline_tds:
-                        for _k in (1, 2):
-                            _arr = next_t_break + _k * _td
-                            if _arr < tend:
-                                _heapq.heappush(_pending_arrivals, _arr)
-                _guard = t + self.par.minbreak * max(abs(t), 1.0)
-                while _pending_arrivals and _pending_arrivals[0] <= _guard:
-                    _heapq.heappop(_pending_arrivals)
-                if _pending_arrivals:
-                    next_t_break = min(next_t_break, _pending_arrivals[0])
-
-            ## GATE 12-4 -- `fixed_timestep` on the coupled path.
-            ##
-            ## The two are not in conflict so much as one simply wins: Fang's
-            ## method exists to CHOOSE the step size, and `fixed_timestep` exists
-            ## to say the caller has already chosen it.  So the grid is kept and
-            ## the LTE equation is dropped on every step, exactly as it is for a
-            ## breakpoint-truncated one -- the circuit is still solved coupled,
-            ## it just has nothing to solve for.  Silently adapting anyway would
-            ## return output points the caller did not ask for, which is what
-            ## stage 4h fixed on the standard path.
-            if fixed_timestep:
-                h = timestep
-                was_break_step = next_t_break <= t + h
-            elif t + h > next_t_break:
-                h = float(next_t_break - t)
-                was_break_step = True
-            else:
-                was_break_step = False
-
-            ## A TEND-TRUNCATED STEP IS HELD, exactly like a breakpoint-
-            ## truncated one: its size was decided by where it must land, so
-            ## there is nothing for the coupled system to solve.  Without the
-            ## flag the LTE equation was free to GROW the final step past tend
-            ## -- on a quiet tail the error sits below the band, so the
-            ## step-size Newton grew it toward h_ceil: measured at t[-1]
-            ## exceeding tend in 5 of 6 configurations, by 13-24% of the final
-            ## step, while the standard path landed exactly in all 6
-            ## (doc/transient_review_260820.md, F3, Appendix A.1).  Clamping
-            ## h_ceil to tend - t instead would also work and shrinks over-band
-            ## final steps inside the solve rather than via the outer retry;
-            ## hold_h was chosen for symmetry with breakpoints, whose machinery
-            ## this path already tests.  Reconsider if profiling ever shows the
-            ## outer retry on final steps costing measurable time.
-            was_tend_truncated = t + h > tend
-            if was_tend_truncated:
-                h = tend - t
-
-            ## Co-determine (x, h): converge the circuit at h_curr, evaluate the
-            ## LTE, and while it is above the band shrink the step (Gear-predicted
-            ## by the controller) and re-solve.
-            h_curr = h
-            x_curr = copy(X[-1])
-            ## Whether any solve at this time point actually succeeded.  Without
-            ## this the loop could exhaust its retries and fall through to the
-            ## accept block below, which advanced `t` by the collapsed `h_curr` and
-            ## appended the PREVIOUS solution as if it were a new one -- while `h`
-            ## was restored to full size for the next outer iteration.  The result
-            ## was a livelock: 10 Newton solves bought `h*0.25^10` of simulated time,
-            ## measured at 9.5367e-13 s per iteration against a predicted 9.5367e-13,
-            ## i.e. ~2.1e7 further Newton attempts to finish a 5 us run.  It neither
-            ## raised nor returned.  (On a FIRST-step failure it instead died with
-            ## `AttributeError: _iq`, because `_iq` is set inside `solve_timestep`.)
-            ## See `benchmarks/transient_review/stage0_1d_coupled_livelock.py`.
-            ## STAGE 12B -- Fang's method, at last, replacing the rejection loop
-            ## that used to live here.  `fang_timestep` solves for the solution
-            ## and the step size together (Figures 3 and 4): there is no backup
-            ## due to LTE, and `h_curr` is only the initial guess.
-            ##
-            ## The old loop is gone rather than kept behind a flag.  It re-solved
-            ## the circuit from scratch whenever the LTE was over tolerance,
-            ## which is a rejection loop with the retries hidden inside the time
-            ## point -- the thing the citation in this module claimed not to be.
-            ## A CONVERGENCE backup, which is NOT the thing Figure 3 forbids.
-            ## The paper says "There is no backup due to LTE" -- the step size is
-            ## solved rather than retried.  A Newton that fails to converge at
-            ## all is a different failure, orthogonal to the LTE, and every
-            ## production simulator retries it at a smaller step.  Removing this
-            ## along with the LTE rejection loop is what broke the charge pump,
-            ## the transformer inrush and the delayed avalanche.
-            converged = False
-            for _retry in range(MAX_LTE_ITERS):
-                _t0 = time.perf_counter()
-                try:
-                    ## THE STEP MAY NOT GROW PAST THE BREAKPOINT.  The
-                    ## truncation above tests the ENTRY h, but fang solves for
-                    ## its own h and can grow across the corner the entry
-                    ## cleared: measured on the pulsed TLine, entry 6.78e-11
-                    ## from t=1.11918e-9 (under the 1.2e-9 corner), solved
-                    ## 8.97e-11, landing 8.9e-12 PAST it -- a straddled kink,
-                    ## which the kink discipline below then never fires on.
-                    ## The hole predates the discipline; it was masked because
-                    ## the pre-fix band trap kept h accidentally tiny near
-                    ## corners.  Capping max_step at the gap makes growth land
-                    ## exactly ON the corner instead; a growth-thwarted step
-                    ## is the normal saturated-at-ceiling exit, not a failure.
-                    ## `fixed_timestep` keeps the caller's grid uncapped.
-                    _cap = max_step
-                    if not fixed_timestep and next_t_break < float('inf'):
-                        _gap = next_t_break - t
-                        if _gap > 0.0:
-                            _cap = min(max_step, _gap)
-                    x_curr, h_solved, _iters, converged = self.fang_timestep(
-                        X[-1], t, h_curr, X[-1:-4:-1],
-                        provided_function=provided_function,
-                        hold_h=(was_break_step or fixed_timestep
-                                or was_tend_truncated or _ev_hold),
-                        grid_locked=fixed_timestep,
-                        method=self.par.coupled_method,
-                        gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
-                        hmin=minstep, max_step=_cap)
-                except NoConvergenceError:
-                    ## A device that cannot be evaluated at this step is the same
-                    ## situation as a Newton that will not converge, and gets the
-                    ## same response: shrink and try again, bounded.  Letting it
-                    ## escape here would skip the backup entirely and abandon a
-                    ## run that a smaller step would have completed.
-                    converged = False
-                finally:
-                    self.statistics.solve_seconds += time.perf_counter() - _t0
-                ## STAGE 12-3.  Count the inner Newton iterations, including
-                ## those of an attempt that then failed -- they are real work.
-                ## Without this `newton_iterations` was flat zero on this path,
-                ## so the only available cost comparison was per TIME POINT, and
-                ## the coupled path runs several iterations per point (12 were
-                ## measured at a pulse edge).  That made it look 14% cheaper per
-                ## point than the standard path on rc-vsin, which was an artefact
-                ## of the unit, not a property of the method.
-                self.statistics.newton_iterations += int(_iters)
-                if converged:
-                    ## VOLTAGE CHECK (max_dv_step) on the coupled path too:
-                    ## the P22 mask deliberately blinds the band to algebraic
-                    ## rows, so on a resistive/algebraic network this is the
-                    ## only step-size control tracking the waveform.
-                    _ratio = self._excursion_ratio(x_curr, X[-1])
-                    if _ratio is not None:
-                        ## Same fixed-grid guard as the standard path above:
-                        ## the caller owns the step size, so this veto must
-                        ## not shrink it.  Doubly so here -- `grid_locked`
-                        ## already suppresses the coupled solver's own
-                        ## over-band retry under a fixed grid, and leaving
-                        ## this one live meant the grid survived the LTE and
-                        ## was then broken by the excursion check instead.
-                        if _ratio > 1.0 and not fixed_timestep:
-                            self.statistics.rejected_steps += 1
-                            h_curr = max(minstep, h_curr * max(
-                                MIN_SHRINK_RATIO, 0.9 / _ratio))
-                            converged = False
-                            continue
-                    h_curr = h_solved
-                    break
-                ## A failed attempt is retried smaller: a rejection in all but
-                ## name, and counted as one (F13).
-                self.statistics.rejected_steps += 1
-                h_curr *= 0.25
-                if h_curr < minstep:
-                    break
-
-            if not converged:
-                ## Both failure kinds route through this loop: a Newton that
-                ## will not converge, and -- since tend-truncated steps are
-                ## held (F3) -- a held step whose LTE stays over the band at
-                ## every retry.  The message must not claim only one of them.
-                raise NoConvergenceError(
-                    "Coupled transient: could not complete the step at t=%g s, "
-                    "with h reduced to %g s over %d attempts. Either the "
-                    "(x, h) Newton failed to converge, or a held (breakpoint/"
-                    "tend-truncated) step kept failing its error test. Run "
-                    "with coupled_lte=False to use the standard adaptive "
-                    "controller on this circuit."
-                    % (t, h_curr, MAX_LTE_ITERS))
-
-            ## The landing is judged by where the step ENDED: a growth-
-            ## clamped step that reached the corner is a breakpoint landing
-            ## in every way that matters (statistics, _is_first_step, the
-            ## kink discipline below), even though the entry-h test above
-            ## said otherwise.
-            if (not was_break_step and next_t_break < float('inf')
-                    and t + h_curr >= next_t_break * (1.0 - 1e-12)):
-                was_break_step = True
-            ## E7 (wired on request, 2026-09-22): a declared crossing inside
-            ## the accepted step -- cut to it by the secant on the fraction
-            ## and re-solve, the coupled solve HOLDING the handed step (its
-            ## own `h` unknown would walk off the crossing); the landed step
-            ## restarts the history as a corner does, as in `_solve`.
-            if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
-                _evs = self._state_event_step(X[-1], x_curr, h_curr, t + h_curr, _ev_iter, minstep)
-                if _evs is not None and _evs[0] == 'cut':
-                    _ev_iter += 1
-                    h = _evs[1] * h_curr
-                    _ev_hold = True
-                    continue
-                _ev_iter, _ev_hold = 0, False
-                if _evs is not None:
-                    was_break_step = True
-            t += h_curr
-            self.statistics.accepted_steps += 1
-            self.statistics._note_step(h_curr)
-            ## The coupled path recorded only `accepted_steps`, so `order_drops`
-            ## and `breakpoints_hit` read as zero on a circuit that was hitting
-            ## ten pulse edges and dropping order at each -- a statistic that is
-            ## silently always zero is worse than one that is absent.
-            if was_break_step:
-                self.statistics.breakpoints_hit += 1
-            if self._effective_method == 'EulerIntegrator' and \
-                    type(self.base_integrator).__name__ != 'EulerIntegrator':
-                self.statistics.order_drops += 1
-            timelist.append(t)
-            X.append(copy(x_curr))
-
-            if hasattr(self.cir, 'accept_step'):
-                self.cir.accept_step(t, X[-1], self.epar)
-
-            self._dt = h_curr
-            self._dt_last2 = self._dt_last
-            self._dt_last = h_curr
-            if was_break_step and _tline_tds:
-                ## COUPLED KINK DISCIPLINE, ported from the JAX fix where the
-                ## mechanism was traced: history that STRADDLES a kink poisons
-                ## the solution-space LTE two ways -- (1) at a from-zero kink
-                ## every signal scales together, dev is proportional to ref
-                ## and h CANCELS (err = 1/(TRTOL*reltol) = 1428.6 measured on
-                ## the JAX probe, h-independent; on this backend the
-                ## lte_vabstol floor turns the same trap into a ~10 fs crawl,
-                ## 113 points to cross one pulse edge), and (2) the step
-                ## after that extrapolates degree-2 through a PRE-kink point,
-                ## and a quadratic through two flat points and one ramp point
-                ## misses a line at any reachable h.  Emptying the step ring
-                ## restores cold-start semantics: `not h_hist` skips the band
-                ## for one step, len(h_hist)==1 caps the eq (6) degree at 1
-                ## for the next, and after that every differenced point is
-                ## post-kink.  The STANDARD path is untouched -- its
-                ## integrator-side LTE decays with h, so it never livelocks,
-                ## and its one-step _is_first_step drop is measured (F11).
-                ## GATED ON DELAY LINES (`_tline_tds`), and the gate is a
-                ## measurement, not caution: applied unconditionally, the
-                ## two low-order band-relaxed steps at EVERY edge moved the
-                ## pulsed-RC coupled-vs-standard median from 9.8e-4 to
-                ## 5.4e-3 V at reltol 1e-5 (test_coupled_breakpoints) -- a
-                ## capacitive circuit's integrator-side LTE decays with h,
-                ## so its kink-spanning estimate is conservative and MORE
-                ## accurate than the reset.  Only algebraic rows (TLine
-                ## ports, resistive nodes fed by delayed kinks) need the
-                ## discipline, and only delay lines deliver kinks to them
-                ## mid-run.  The JAX backend gates identically.
-                self._dt_last = None
-                self._dt_last2 = None
-            self._is_first_step = False
-            self._no_history = False
-            self._push_history(x_curr, X)
-
-            ## THE SOLVED STEP CARRIES FORWARD.  This is the whole point of the
-            ## method -- `fang_timestep` returned the step size it solved for, and
-            ## it becomes the initial guess for the next time point (Figure 3:
-            ## "predict a step size", where the prediction is the previous
-            ## answer).
-            ##
-            ## Writing anything else here is the defect gate 12B-0 found in the
-            ## 2026-07 implementation, where `h = h_next` was followed two lines
-            ## later by `h = h_curr` and the coupled system's answer was thrown
-            ## away every step.  It came back the moment the old inner loop was
-            ## deleted, because `h_next` was assigned inside it: the run then
-            ## stayed at the opening step for its whole length, taking 151,176
-            ## steps where the standard path takes 4,067, and -- the tell -- the
-            ## step count did not move when `reltol` changed by two decades.
-            h = min(max_step, max(h_curr, minstep))
-            
-        return self._finish_result(X, timelist, _t_run_start)
+        ⚠ IT USED TO BE UNREACHABLE FOR EVERY STAGE METHOD on the default
+        path: the Runge-Kutta loop raised where the LMM loop rescued, so the
+        ladder `_rk_step_coupled` carries could only fire under
+        `fixed_timestep=True`.  One loop, one ladder."""
+        self._dt = h
+        self._continuation_rescue = True
+        try:
+            out = self._attempt_step(family, X, t, h, hold, provided_function)
+            self.statistics.gmin_rescues += 1
+            return out
+        except NoConvergenceError as e:
+            raise TransientStepError(
+                'Transient solver failed to converge: timestep shrank below '
+                'minstep=%gs at t=%s, and the gmin/gshunt/pseudo-transient '
+                'continuation could not rescue the point: %s'
+                % (self.par.minstep, t, e)) from e
+        finally:
+            self._continuation_rescue = False
 
 
 
