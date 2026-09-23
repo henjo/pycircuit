@@ -4644,7 +4644,7 @@ class PSS(Analysis):
             z_end, M, Pkm = evmap(z, T, tms_, hs_, hsens, set(nodes))
             F = np.zeros(wm + ncol)
             J = np.zeros((wm + ncol, wm + ncol))
-            F[:wm] = self._fold_periodic(z - z_end)
+            F[:wm] = self._close_periodic(z, z_end, tms_)
             J[:wm, :wm] = np.eye(wm) - alpha * M
             J[:wm, wm:] = -alpha * Pkm
             self._event_rows_into(F, J, wm, nodes, Wk, ck, wm, ncol)
@@ -10339,16 +10339,20 @@ class PSS(Analysis):
     _periodic_fold = []
 
     def _collect_periodic_fold(self):
-        """`[(reduced_row, modulus)]` for every state defined up to `n*modulus`.
+        """`[(reduced_row, modulus, offset)]` for every state defined up to
+        `n*modulus`.
 
         `Circuit.periodic_states()` reports GLOBAL rows; the shooting residual
         lives in reduced coordinates, so each is mapped through the same
         `irefnode` deletion the stamps use.  A declared row that IS the
         reference node has no reduced coordinate and is dropped.
 
-        The offset is deliberately discarded: a DIFFERENCE of two states on a
-        periodic row is defined up to `n*modulus` whatever window each state
-        was folded into, so only the modulus enters.
+        The state row's own fold needs only the modulus -- a DIFFERENCE of
+        two states is defined up to `n*modulus` whatever window each sits in.
+        The offset is for `_wrap_jump`: the declared window's edges
+        (``offset + k*modulus``) are where the element's OUTPUT wraps (the
+        `periodic_states` contract), so it says on which branch of the
+        output a state sits.
         """
         cir = self.cir
         if not hasattr(cir, 'periodic_states'):
@@ -10361,12 +10365,12 @@ class PSS(Analysis):
             return []
         iref = self.irefnode
         out = []
-        for row, modulus, _offset in declared or []:
+        for row, modulus, offset in declared or []:
             row = int(row)
             m = float(modulus)
             if row == iref or not np.isfinite(m) or m <= 0.0:
                 continue
-            out.append((row if row < iref else row - 1, m))
+            out.append((row if row < iref else row - 1, m, float(offset)))
         return out
 
     def _fold_periodic(self, F):
@@ -10408,10 +10412,126 @@ class PSS(Analysis):
         ## not fold at all before 2026-09-23; the driven one folded each half)
         w = self.cir.n - 1
         for off in range(0, F.shape[0], w):
-            for r, m in rows:
+            for r, m, _o in rows:
                 if off + r < F.shape[0]:
                     F[off + r] -= m * np.round(F[off + r] / m)
         return F
+
+    def _close_periodic(self, z0, z_end, tms):
+        """The closing residual ``z_0 - z_end``, folded: the orbit's jump
+        across an output wrap removed (`_wrap_jump`), then every periodic
+        state row folded (`_fold_periodic`).  `tms` is the period's grid;
+        block `b` of the unknown (gear's pair has two) ends at
+        ``tms[-1 - b]``."""
+        z0 = np.asarray(z0, dtype=float)
+        z_end = np.asarray(z_end, dtype=float)
+        return self._fold_periodic(z0 - z_end - self._wrap_jump(z0, z_end, tms))
+
+    def _wrap_jump(self, z0, z_end, tms):
+        """The orbit's jump across an output wrap that lies between `z_end`
+        and `z_0`, per block of the unknown; zero when none does.
+
+        ⚠ THE STATE FOLD ALONE LEAVES THE OUTPUTS DISCONTINUOUS.  An
+        idtmod's OUTPUT is `wrap(state)`, and every algebraic quantity it
+        feeds (the phase node, the branch current into a load, a phase
+        detector's node) jumps with it.  When the orbit wraps exactly at
+        ``t = 0`` -- a free-running VCO pinned at a zero crossing of
+        `sin(2 pi phase)`, or a reference phase that starts at 0 -- `z_0`
+        sits just after the wrap and `z_end` just before it, the state row
+        folds to zero, and those rows still differ by the whole jump.  At
+        rounding level the Newton iterates straddle the wrap and the jump
+        flips in and out of the residual: radau on the free-running
+        `VcoHdl` failed there (2026-09-23), with every other row at 1e-14.
+
+        ⚠ WHICH SIDE A STATE IS ON IS DECIDED BY THE STATE, NEVER BY THE
+        RESIDUAL.  The declared window's edges are where the output wraps,
+        so the fractional window positions `f_0`, `f_end` of the two states
+        say whether the state fold's nearest-representative path crosses an
+        edge: ``k = -round(f_0 - f_end)``, which is -1, 0 or +1.  Folding an
+        output row by the modulus instead (round the residual) accepts a
+        start point one modulus off its own constraint -- measured: radau,
+        gear and trap all "converged" with `ph(0) = 1.1` against a phase of
+        0.1 -- and cannot reach a loaded output at all (1 mA on a load
+        resistor's current, 2 V on a gain-2 detector's node).
+
+        The jump itself is the algebraic part re-solved on each side of the
+        edge with the differential part held: ``x = x_end' + N y`` with
+        ``N = ker C``, solving ``Z^T (i(x) + u(t)) = 0`` with ``Z = ker
+        C^T``, once with the straddling states just past their edges on
+        `z_0`'s side and once on `z_end`'s.  The difference ``N (y_+ - y_-)``
+        is the jump, exact for a nonlinear load as well; it lies in `ker C`,
+        so the states' own rows never see it.  The Jacobian is untouched:
+        `k` is constant between straddles.  ⚠ A capacitor ON a wrapped node
+        makes the jump an impulse (index 2); the algebraic block is then
+        singular, no jump is subtracted, and the solve warns once.
+        """
+        z0 = np.asarray(z0, dtype=float)
+        z_end = np.asarray(z_end, dtype=float)
+        jump = np.zeros_like(z_end)
+        rows = self._periodic_fold
+        if not rows:
+            return jump
+        w = self.cir.n - 1
+        for b, off in enumerate(range(0, z_end.shape[0], w)):
+            xe = z_end[off:off + w]
+            sides = []
+            for r, m, o in rows:
+                f0 = (z0[off + r] - o) / m
+                fe = (xe[r] - o) / m
+                k = -np.round((f0 - np.floor(f0)) - (fe - np.floor(fe)))
+                if k:
+                    sides.append((r, m, o, int(k)))
+            if sides:
+                jump[off:off + w] = self._jump_across(
+                    xe, float(tms[len(tms) - 1 - b]), sides)
+        return jump
+
+    def _jump_across(self, x, t, sides):
+        """The algebraic jump at `x` (time `t`) when each state in `sides`
+        (``(row, modulus, offset, k)``) crosses the output edge it sits
+        next to, from its own side to the other.  See `_wrap_jump`."""
+        plus, minus = x.copy(), x.copy()
+        for r, m, o, k in sides:
+            e = o + m * np.round((x[r] - o) / m)
+            d = 64.0 * np.finfo(float).eps * max(abs(e), m)
+            plus[r], minus[r] = e + k * d, e - k * d
+        ## ker C and ker C^T from an EQUILIBRATED C: a femtofarad column next
+        ## to an idtmod state's unit charge must not read as rank-deficient
+        C = np.asarray(self._C_at(x), dtype=float)
+        cs, rs = np.max(np.abs(C), axis=0), np.max(np.abs(C), axis=1)
+        dc = np.where(cs > 0.0, 1.0 / np.where(cs > 0.0, cs, 1.0), 1.0)
+        dr = np.where(rs > 0.0, 1.0 / np.where(rs > 0.0, rs, 1.0), 1.0)
+        U, S, Vt = np.linalg.svd(dr[:, None] * C * dc[None, :])
+        rank = int(np.sum(S > 1e-10 * (S[0] if S.size and S[0] > 0 else 1.0)))
+        N = dc[:, None] * Vt[rank:].T
+        Z = dr[:, None] * U[:, rank:]
+        if N.shape[1] == 0:
+            return np.zeros_like(x)
+
+        def algebraic(xs):
+            y = np.zeros(N.shape[1])
+            for _it in range(30):
+                xk = xs + N @ y
+                g = Z.T @ np.asarray(self._k_at(xk, t), dtype=float)
+                dy = np.linalg.solve(Z.T @ np.asarray(self._G_at(xk),
+                                                      dtype=float) @ N, g)
+                y = y + dy
+                if np.max(np.abs(N @ dy)) <= 1e-13 * max(1.0, np.max(np.abs(xk))):
+                    return y
+            raise np.linalg.LinAlgError('the algebraic re-solve did not converge')
+
+        try:
+            return N @ (algebraic(plus) - algebraic(minus))
+        except np.linalg.LinAlgError:
+            if not getattr(self, '_wrap_jump_warned', False):
+                self._wrap_jump_warned = True
+                warnings.warn(
+                    'PSS: the orbit starts on an idtmod output wrap, and the '
+                    'jump across it could not be resolved (the algebraic '
+                    'block is singular there -- a capacitor on a wrapped '
+                    'node?); the solve may not converge.', RuntimeWarning,
+                    stacklevel=2)
+            return np.zeros_like(x)
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
@@ -10896,6 +11016,7 @@ class PSS(Analysis):
         ## resolved by now).  See `_fold_periodic` for why the residual needs
         ## it and the Jacobian does not.
         self._periodic_fold = self._collect_periodic_fold()
+        self._wrap_jump_warned = False
         alpha = 1
 
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
@@ -10975,10 +11096,11 @@ class PSS(Analysis):
             return (phase_k,
                     float(np.asarray(x0_vec, dtype=float)[phase_k]) - phase_pin)
 
-        def _closing(x0, x_end, M):
+        def _closing(x0, x_end, M, tms_):
             """The fixed-period system at one iterate: ``F = x_0 - phi(x_0)``
-            (folded on the idtmod rows), ``J = I - alpha M``."""
-            F = self._fold_periodic(np.asarray(x0) - np.asarray(x_end))
+            (folded on the idtmod rows, see `_close_periodic`), ``J = I -
+            alpha M``."""
+            F = self._close_periodic(x0, x_end, tms_)
             D = np.asarray(toolkit.eye(F.shape[0]))
             return F, D - alpha * M
 
@@ -11353,7 +11475,7 @@ class PSS(Analysis):
         def func(z):
             """The fixed-period system, ``x_0 - phi(x_0) = 0``."""
             z0_, z_end, M, _Mt = _pmap(z, period, times, hs, False)
-            return _closing(z0_, z_end, M)
+            return _closing(z0_, z_end, M, times)
 
         def func_autonomous(zT):
             """The FREE-PERIOD system: unknowns `(z, T)`, the fixed-period
@@ -11363,7 +11485,7 @@ class PSS(Analysis):
             z, T = zT[:-1], float(zT[-1])
             tms_, hs_T = self._period_grid(T, npts, self._grid_fracs)
             z0_, z_end, M, Mt = _pmap(z, T, tms_, hs_T, True)
-            return _bordered(*_closing(z0_, z_end, M), Mt, z0_, Mt)
+            return _bordered(*_closing(z0_, z_end, M, tms_), Mt, z0_, Mt)
 
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
@@ -11479,8 +11601,7 @@ class PSS(Analysis):
                         z, T_, tms_, hs_, want_dT=self.autonomous,
                         open_at_x0=x0_unknown)
                     fp_ = FactoredPeriod('plain', op_, st_, None, None, self)
-                F_ = self._fold_periodic(np.asarray(z0_, dtype=float)
-                                         - np.asarray(ze_, dtype=float))
+                F_ = self._close_periodic(z0_, ze_, tms_)
                 if not self.autonomous:
                     return F_, (lambda v: v - alpha * fp_.matvec(v))
                 Mt_ = np.asarray(Mt_, dtype=float).ravel()

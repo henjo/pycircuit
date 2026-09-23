@@ -14452,9 +14452,10 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
 
     What is asserted, and what is deliberately NOT:
 
-    * the gauge is collected and mapped to REDUCED rows (offset discarded --
-      a DIFFERENCE is defined up to n*modulus whatever window each state sits
-      in);
+    * the gauge is collected and mapped to REDUCED rows, with the declared
+      window's offset (the state row's fold needs only the modulus -- a
+      DIFFERENCE is defined up to n*modulus whatever window each state sits
+      in -- but `_wrap_jump` reads the window's edges, where the output wraps);
     * a circuit with no folding state gets an empty gauge and a bit-identical
       solution, so this cannot perturb the rest of the suite;
     * on a folding orbit the fold FIRES with a full-modulus correction and
@@ -14476,7 +14477,8 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
         c['Ro'] = R('o', gnd, r=1e6)
         return c
 
-    ## (1) The gauge: global row -> reduced row, offset dropped.
+    ## (1) The gauge: global row -> reduced row, with the declared window
+    ## (`Idtmod` declares ``-(offset + modulus)``, here -1).
     c = folding(0.5)
     declared = c.periodic_states()
     assert len(declared) == 1 and declared[0][1] == 1.0, \
@@ -14485,7 +14487,7 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
     p = PSS(folding(0.5))
     gauge = p._collect_periodic_fold()
     iref = p.irefnode
-    assert gauge == [(grow if grow < iref else grow - 1, 1.0)], \
+    assert gauge == [(grow if grow < iref else grow - 1, 1.0, -1.0)], \
         'gauge %r does not map global row %d through irefnode %d' \
         % (gauge, grow, iref)
 
@@ -14611,6 +14613,98 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
         'the phase row should be marginal (dx_end/dx_0 == 1 on it), got ' \
         '%.9f -- if this ever stops being 1 the underdetermination argument ' \
         'above needs rewriting' % slope
+
+
+def test_an_orbit_that_starts_on_an_output_wrap_closes_across_the_jump():
+    """The state fold leaves an idtmod's OUTPUTS discontinuous: when the
+    orbit wraps exactly at ``t = 0``, `z_0` sits just after the wrap and
+    `z_end` just before it, and every algebraic quantity the wrapped output
+    feeds differs by the whole jump.  A free-running `VcoHdl` pinned at a zero
+    crossing of `sin(2 pi phase)` starts exactly there, and radau failed on
+    it at every load (2026-09-23): the Newton iterates straddled the wrap at
+    rounding level and the jump flipped in and out of the residual.
+    `_wrap_jump` subtracts the orbit's own jump, decided by the STATES.
+
+    The loads matter: a fold of the phase node by its modulus closes the
+    unloaded node and nothing else -- a load resistor's current jumps by
+    ``modulus/R`` and a gain-2 detector's node by ``2*modulus`` (measured:
+    both still failed with the node folded).  And the fold must be decided
+    by the state, not the residual: rounding the residual by the modulus
+    accepted a seed one modulus off its constraint (`ph(0) = 1.1` against a
+    phase of 0.1) as a converged orbit under radau, gear and trap.
+    """
+    circuit.default_toolkit = circuit.numeric
+    from pycircuit.circuit.elements_hdl import VcoHdl
+
+    def vco(load):
+        c = SubCircuit()
+        for nd in ('vco', 'ph', 'ctl') + (('pd',) if load == 'E' else ()):
+            c.add_node(nd)
+        c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=1e6, kvco=0.0,
+                         va=1.0, modulus=1.0)
+        c['Rc'] = R('ctl', gnd, r=1e3)
+        c['Rl'] = R('vco', gnd, r=1e3)
+        if load == 'R':
+            c['Rph'] = R('ph', gnd, r=1e3)
+        else:
+            c['E1'] = VCVS('ph', gnd, 'pd', gnd, g=2.0)
+            c['Rpd'] = R('pd', gnd, r=1e3)
+        return c
+
+    def solve(load, x0):
+        c = vco(load)
+        names = [str(nd) for nd in c.nodes if str(nd) != 'gnd!']
+        p = PSS(c, method='radau', reltol=1e-9)
+        p.solve(period=1.03e-6, timestep=1.03e-6 / 100, x0=x0(c, names),
+                maxiterations=30)
+        return p, names, np.asarray(p.waveform[1], dtype=float)
+
+    ## (1) Seeded consistently ON the wrap (every entry zero): the orbit
+    ## starts there, and closes.  ⚠ Whether the iterates straddle is
+    ## rounding luck: at 40 points the code before the fix converged here, at
+    ## 100 (this grid) it failed on both loads.
+    for load in ('R', 'E'):
+        p, names, xs = solve(load, lambda c, names: np.zeros(c.n - 1))
+        ip, ist = names.index('ph'), names.index('X1._state0')
+        assert p.converged, '%s: the orbit starting on the wrap did not close' % load
+        assert abs(p.period - 1e-6) < 1e-15, (load, p.period)
+        ## ⚠ Not vacuous: the solved orbit really does start on the wrap.
+        assert abs(xs[ip, 0]) < 1e-12, \
+            '%s: ph(0) = %.3e -- the orbit no longer starts on the wrap, so ' \
+            'this no longer tests the jump' % (load, xs[ip, 0])
+        d = (xs[ip] - np.mod(xs[ist], 1.0) + 0.5) % 1.0 - 0.5
+        assert np.max(np.abs(d)) < 1e-12, \
+            '%s: ph is not the wrap of its state (%.3e)' % (load, np.max(np.abs(d)))
+
+    ## (2) The jump itself, read at a hand-built straddle: exactly the output
+    ## map's jump on every row it feeds, nothing on the state's own row, and
+    ## nothing at all when the two states sit on the same branch.
+    ## (the waveform carries the reference row; the residual does not -- the
+    ## nodes named here all precede it)
+    k = {nm: j for j, nm in enumerate(names)}
+    z0 = np.delete(xs[:, 0], p.irefnode)
+    ze = z0.copy()
+    z0[k['X1._state0']], ze[k['X1._state0']] = 1e-9, 1.0 - 1e-9
+    jump = p._wrap_jump(z0, ze, (0.0, p.period))
+    assert abs(jump[k['ph']] + 1.0) < 1e-12, jump
+    assert abs(jump[k['pd']] + 2.0) < 1e-12, jump
+    ## (`vco = sin(2 pi ph)` is continuous: what is left is the 2x64-ulp
+    ## straddle the jump is read across)
+    assert abs(jump[k['X1._state0']]) < 1e-15 and abs(jump[k['vco']]) < 1e-12, jump
+    z0[k['X1._state0']], ze[k['X1._state0']] = 0.3, 1.3
+    assert not np.any(p._wrap_jump(z0, ze, (0.0, p.period)))
+
+    ## (3) No false root: a seed one modulus off its own constraint is
+    ## repaired, not accepted.
+    def off_by_one(c, names):
+        x0 = np.zeros(c.n - 1)
+        x0[names.index('X1._state0')] = 0.1
+        x0[names.index('vco')] = np.sin(0.2 * np.pi)
+        x0[names.index('ph')] = 1.1
+        return x0
+    p, names, xs = solve('R', off_by_one)
+    assert p.converged
+    assert abs(xs[names.index('ph'), 0] - 0.1) < 1e-9, xs[names.index('ph'), 0]
 
 
 def test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged():
@@ -22170,11 +22264,19 @@ def test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth()
     want_stable = np.exp(-np.pi * kvco * K * T)
     want_saddle = np.exp(+np.pi * kvco * K * T)
 
-    ## the NEGATIVE CONTROL: with the loop open the driven solve is correctly
-    ## underdetermined -- every phase offset is a solution.
-    assert _pll_lambda(0.0, kvco) is None, \
-        'with K = 0 the marginal mode makes I - M singular; a driven ' \
-        'fixed-period solve must NOT report convergence'
+    ## the NEGATIVE CONTROL: with the loop open the driven solve is
+    ## underdetermined -- every phase offset is a solution, the solve returns
+    ## the seed's, and its phase multiplier sits at 1 (measured 1 + 1.8e-11).
+    ## ⚠ THIS USED TO ASSERT NON-CONVERGENCE, and that held only because the
+    ## seed (offset 0) put the orbit's start on the phase WRAP: the Newton
+    ## iterates straddled it and stalled.  Off the wrap the open loop
+    ## converged on that code too (offset 0.3: 1.000000000018), and since
+    ## `_wrap_jump` (2026-09-23) it converges on it as well.  Singular
+    ## `I - M` is a family of orbits, not a failed solve; the multiplier
+    ## says which.
+    lam_open = _pll_lambda(0.0, kvco, offset=0.3)
+    assert lam_open is not None and abs(lam_open - 1.0) < 1e-9, \
+        'with K = 0 the phase mode must be marginal: |lambda| = %r' % lam_open
 
     lam_saddle = _pll_lambda(K, kvco, offset=0.0)
     lam_stable = _pll_lambda(K, kvco, offset=0.25)
