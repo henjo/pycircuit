@@ -764,3 +764,8 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260923T185133Z,b3857d7,pycircuit,1012.4,3306,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,273.0
 20260923T185708Z,b3857d7,0 pycircuit/circuit/tests/test_analysis_shooting.py closing_a_pll_loop_pins or starts_on_an_output_wrap,23.0,2,pycircuit/circuit/tests/test_analysis_shooting.py::test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth,15.9
 20260923T191447Z,b3857d7,pycircuit,1020.1,3306,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,273.0
+20260923T200320Z,a1cc6ac,0 pycircuit/circuit/tests/test_analysis_shooting.py multiple_is_reported_as_one,5.2,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_an_autonomous_period_that_is_a_multiple_is_reported_as_one,4.8
+20260923T200350Z,a1cc6ac,0 pycircuit/circuit/tests/test_analysis_shooting.py warping_estimate_refuses_a_reading_the_interpolant_sets,8.8,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_warping_estimate_refuses_a_reading_the_interpolant_sets,8.4
+20260923T200511Z,a1cc6ac,0 pycircuit/circuit/tests/test_analysis_shooting.py multiple_is_reported_as_one,10.7,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_an_autonomous_period_that_is_a_multiple_is_reported_as_one,9.2
+20260923T200519Z,a1cc6ac,0 pycircuit/circuit/tests/test_analysis_shooting.py multiple_is_reported_as_one,6.4,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_an_autonomous_period_that_is_a_multiple_is_reported_as_one,5.7
+20260923T203115Z,a1cc6ac,pycircuit,1006.0,3306,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,270.0

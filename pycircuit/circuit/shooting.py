@@ -12021,20 +12021,39 @@ class PSS(Analysis):
         ## Driven runs are exempt: their period is the caller's, and asking
         ## for two source periods is a legitimate request, not a mistake.
         if self.autonomous and len(X) > 8:
-            _pts = [np.asarray(v, dtype=float) for v in X]
-            _d = np.array([float(np.max(np.abs(v - _pts[0]))) for v in _pts])
+            ## ⚠ THE ORBIT IS ITS DIFFERENTIAL STATE, WITH THE PERIODIC ROWS
+            ## FOLDED (2026-09-23).  Two points of an autonomous orbit
+            ## coincide exactly when their differential states do -- the
+            ## algebraic rows are functions of them -- and a phase coincides
+            ## modulo its modulus.  Over the whole vector, an idtmod VCO
+            ## could never recur (its unfolded phase state advances one
+            ## modulus per fundamental), and its wrapped output jumps by a
+            ## whole modulus mid-period.  Measured on the free-running
+            ## `VcoHdl`: every one-fold solve warned "19.8 times", and true
+            ## 2- and 3-fold orbits were named 19.9 / 8.65 / 11.96.
+            _pts = np.array([np.asarray(v, dtype=float).ravel() for v in X])
+            _dyn = np.any(np.asarray(self._C_at(_pts[0]), dtype=float) != 0.0,
+                          axis=0)
+            if not np.any(_dyn):
+                _dyn[:] = True
+            _dev = _pts - _pts[0]
+            for _r, _m, _o in self._periodic_fold:
+                _dev[:, _r] -= _m * np.round(_dev[:, _r] / _m)
+            _d = np.max(np.abs(_dev[:, _dyn]), axis=1)
             _diam = float(np.max(_d))
-            ## ⚠ THE THRESHOLD IS THE GRID, NOT A FIXED FRACTION.  A k-fold
-            ## orbit returns BETWEEN grid points, so the nearest approach is
-            ## bounded below by how far the solution moves in one step: at
-            ## 200 points over two periods that is ~1.6% of the diameter,
-            ## and a fixed 1% test therefore fired on nothing.  Comparing
-            ## against the per-step displacement is scale-free and tightens
-            ## automatically as the grid refines.
-            _step = float(np.max([np.max(np.abs(_pts[i + 1] - _pts[i]))
-                                  for i in range(len(_pts) - 1)]))
+            ## ⚠ THE THRESHOLD IS THE ORBIT'S OWN SPEED AT `x_0`.  A k-fold
+            ## orbit passes `x_0` again at the SAME speed, between grid
+            ## points, so its nearest point is within about half a step's
+            ## displacement there -- and an orbit moving away from `x_0`
+            ## is two steps' displacement off by the excluded edge.  The
+            ## LARGEST step on the orbit is the wrong scale: it was an
+            ## output wrap's jump (0.99 on the VCO) or a fast edge, and at
+            ## three times that every point in the first quarter of the
+            ## diameter passed.  `_h` is each step of the replay, so
+            ## non-uniform grids scale locally.
+            _h = np.array([h for _t, h in walk], dtype=float)
+            _v0 = _d[1] / _h[0]
             _edge = max(2, len(_d) // 20)
-            _inner = _d[_edge:-_edge]
             ## ⚠ THE EARLIEST RECURRENCE, NOT THE NEAREST.  A three-fold
             ## orbit passes close to `x_0` at both `T/3` and `2T/3`, and
             ## `argmin` picked whichever happened to be numerically nearer
@@ -12042,7 +12061,8 @@ class PSS(Analysis):
             ## a factor of two and would have sent the reader to a period
             ## that is itself a multiple.
             _near = [j for j in range(_edge, len(_d) - _edge)
-                     if _d[j] < 3.0 * _step and _d[j] < 0.25 * _diam]
+                     if _d[j] < _v0 * max(_h[j - 1], _h[j])
+                     and _d[j] < 0.25 * _diam]
             if _diam > 0.0 and _near:
                 ## The closest approach WITHIN THE FIRST cluster: the first
                 ## point over the threshold is up to a step early, which
@@ -12054,27 +12074,27 @@ class PSS(Analysis):
                         break
                     _run.append(_c)
                 _j = min(_run, key=lambda i: _d[i])
-                if True:
-                    ## `times[_j]`, not `period * _j/(N-1)`: with a caller's
-                    ## grid the points are not evenly spaced.
-                    self.fundamental_period = float(
-                        times[min(_j, len(times) - 1)])
-                    warnings.warn(
-                        'PSS: this autonomous solve returned a period that '
-                        'is a MULTIPLE of the fundamental. The orbit comes '
-                        'back within %.2g of its own diameter at t=%.6g s, '
-                        'so the fundamental is about %.6g s and the '
-                        'returned %.6g s traverses it about %.1f times. '
-                        'k*T solves the periodicity condition whenever T '
-                        'does, so the solve follows its seed -- re-run with '
-                        'period=%.6g to get the fundamental. The waveform '
-                        'is a correct periodic solution either way; its '
-                        'FUNDAMENTAL FREQUENCY is what is off.'
-                        % (_d[_j] / _diam, self.fundamental_period,
-                           self.fundamental_period, period,
-                           period / self.fundamental_period,
-                           self.fundamental_period),
-                        RuntimeWarning, stacklevel=2)
+                ## the time from the reference point, summed over the
+                ## replay's own steps: with a caller's grid the points are
+                ## not evenly spaced, and on the plain path `X[0]` sits one
+                ## step before `t = 0`, so `times[_j]` was a step off there
+                self.fundamental_period = float(np.sum(_h[:_j]))
+                warnings.warn(
+                    'PSS: this autonomous solve returned a period that '
+                    'is a MULTIPLE of the fundamental. The orbit comes '
+                    'back within %.2g of its own diameter at t=%.6g s, '
+                    'so the fundamental is about %.6g s and the '
+                    'returned %.6g s traverses it about %.1f times. '
+                    'k*T solves the periodicity condition whenever T '
+                    'does, so the solve follows its seed -- re-run with '
+                    'period=%.6g to get the fundamental. The waveform '
+                    'is a correct periodic solution either way; its '
+                    'FUNDAMENTAL FREQUENCY is what is off.'
+                    % (_d[_j] / _diam, self.fundamental_period,
+                       self.fundamental_period, period,
+                       period / self.fundamental_period,
+                       self.fundamental_period),
+                    RuntimeWarning, stacklevel=2)
 
         ## ⚠ THE FIRST ENTRY IS DROPPED ONLY WHEN IT IS NOT PART OF THE
         ## PERIOD.  On the default plain path `X[0]` is `x_in`, the

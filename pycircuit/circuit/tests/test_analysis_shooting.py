@@ -1428,6 +1428,52 @@ def test_an_autonomous_period_that_is_a_multiple_is_reported_as_one():
             'rule has regressed to a nearest-recurrence one' % (
                 seed, ratio, factor)
 
+    ## ⚠ THE ORBIT IS ITS DIFFERENTIAL STATE, FOLDED; THE SCALE IS ITS SPEED
+    ## AT x_0 (2026-09-23).  The detector used to compare every row against
+    ## three times the LARGEST step on the orbit.  An idtmod VCO's wrapped
+    ## output jumps a whole modulus in one step, and its unfolded phase
+    ## never recurs, so every one-fold solve warned "19.8 times" and true
+    ## multiples were named 19.9 / 8.65 / 11.96.  A van der Pol seeded at
+    ## its turning point, moving slowly there, warned "24.0 times".
+    from pycircuit.circuit.elements_hdl import VcoHdl
+
+    def vco(k):
+        c = SubCircuit()
+        for nd in ('vco', 'ph', 'ctl'):
+            c.add_node(nd)
+        c['X1'] = VcoHdl('ctl', gnd, 'vco', gnd, 'ph', f0=1e6, kvco=0.0,
+                         va=1.0, modulus=1.0)
+        c['Rc'] = R('ctl', gnd, r=1e3)
+        c['Rl'] = R('vco', gnd, r=1e3)
+        names = [str(nd) for nd in c.nodes if str(nd) != 'gnd!']
+        x0 = np.zeros(c.n - 1)
+        x0[names.index('X1._state0')] = x0[names.index('ph')] = 0.1
+        x0[names.index('vco')] = np.sin(0.2 * np.pi)
+        pss = PSS(c, method='radau', reltol=1e-9)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            pss.solve(period=k * 1.03e-6, timestep=1.03e-6 / 100, x0=x0,
+                      maxiterations=40)
+        assert pss.converged and abs(pss.period - k * 1e-6) < 1e-12
+        return pss, [c_ for c_ in caught if 'MULTIPLE' in str(c_.message)]
+
+    one, hits = vco(1)
+    assert not hits and one.fundamental_period is None, \
+        'the one-fold VCO was called a multiple: %r' % (hits,)
+    two, hits = vco(2)
+    assert hits and abs(two.period / two.fundamental_period - 2.0) < 0.05, \
+        (hits, two.fundamental_period)
+
+    cir, _mu = _a10_vdp()
+    vdp = PSS(cir, method='radau', reltol=1e-12)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        vdp.solve(period=2 * np.pi, timestep=2 * np.pi / 50,
+                  x0=np.array([2.0, 0.0]), maxiterations=100)
+    assert vdp.converged
+    assert not [c_ for c_ in caught if 'MULTIPLE' in str(c_.message)], \
+        'a van der Pol seeded at its slow turning point was called a multiple'
+
     ## a DRIVEN run is exempt: its period is the caller's, and asking for
     ## two source periods is a legitimate request rather than a mistake
     pss = PSS(_q20_rlc(), method='gear', reltol=1e-6)
