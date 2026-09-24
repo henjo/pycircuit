@@ -1124,6 +1124,10 @@ class _PPVFloquet(object):
         ## `self`); the parameter stays in the signature because callers pass
         ## it positionally.
         fp = self._ppv_map() if fp is None else fp
+        if getattr(fp, 'is_glm', False) and hasattr(fp, 'state_map'):
+            ## a GLM's Nordsieck map handed in: its modes are read on the
+            ## state (the Nordsieck eigenvectors are not state-space modes)
+            fp = fp.state_map()
         n = fp.width
         T = float(fp.T)
         if n > self.FLOQUET_DENSE_LIMIT:

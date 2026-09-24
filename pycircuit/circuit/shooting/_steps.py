@@ -334,7 +334,7 @@ class _GLMStep(object):
             "Nordsieck GLM's own map (monodromy='native') -- its sources "
             'would enter every stage and the Nordsieck output rows.  A GLM '
             "run reads its small-signal response from a twin: leave "
-            "monodromy at 'trbdf2' or 'radau'.")
+            "monodromy at 'radau' or 'trbdf2'.")
 
     source_adjoint = sources
 

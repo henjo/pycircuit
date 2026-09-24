@@ -15,16 +15,19 @@ class _AccuracyChecks(object):
     def monodromy_twin(self):
         """The `PSS` whose monodromy the oscillator surfaces read.
 
-        `self` for a driven circuit, when `self.monodromy == 'native'`, or
+        `self` for a driven circuit, when `self.monodromy == 'native'`,
         when this run's own method already carries a second-order monodromy
-        (gear or a stage method).  Otherwise (an autonomous circuit solved with a
+        (gear or a stage method), or for a Nordsieck GLM, whose own map on the
+        state serves `ppv` and `floquet_modes` (`_GLMPeriod.state_map`; the
+        consumers built only on a map on `x` take its twin through
+        `_state_twin`).  Otherwise (an autonomous circuit solved with a
         one-step LMM, trap or euler) a twin `PSS` of the same circuit under
         the method `self.monodromy` names, solved once on the SAME grid from
         this orbit's converged state and cached.
 
-        The twin defaults to TR-BDF2 (`monodromy='trbdf2'`, the more
-        accurate on `lambda2` at coarse grids and high Q than gear);
-        `'radau'` (the most accurate by far, at about trbdf2's cost),
+        The twin defaults to Radau IIA (`monodromy='radau'`, the most
+        accurate by far, at about trbdf2's cost; Andreas, 2026-09-24:
+        "Set radau as default twin"); `'trbdf2'` (the default until then),
         `'esdirk43'` and `'gear'` select those twins, and `'native'` reads
         the run's own.  Trap's and
         euler's own monodromy is unusable on a limit cycle (trap's diverges
@@ -37,7 +40,7 @@ class _AccuracyChecks(object):
 
         History: `doc/shooting_history.md`, `_AccuracyChecks.monodromy_twin`.
         """
-        mono = getattr(self, 'monodromy', 'trbdf2')
+        mono = getattr(self, 'monodromy', 'radau')
         ## ⚠ ANY METHOD WHOSE OWN MAP SERVES may be the twin -- the ones that
         ## carry their own monodromy (`carries_own_monodromy`: gear and the
         ## stage methods; a Nordsieck GLM's map is on its Nordsieck state).
@@ -54,11 +57,19 @@ class _AccuracyChecks(object):
         if not _ok:
             raise ValueError(
                 "PSS.monodromy must be 'native' or a method whose own period "
-                "map serves as the twin -- 'trbdf2' (the default), 'radau', "
+                "map serves as the twin -- 'radau' (the default), 'trbdf2', "
                 "'esdirk43' or 'gear' -- not %r" % (mono,))
         _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        ## ⚠ A GLM USES ITS OWN MAP WHERE IT IS BUILT (Andreas, 2026-09-24:
+        ## "For twin use the own map when possible"): measured on van der
+        ## Pol, its `ppv` / `floquet_modes` on the state are second / third
+        ## order, and glm3's spectrum is 4.6e-8 of radau's where the trbdf2
+        ## twin read 9.7e-7.  `carries_own_monodromy` stays False: a GLM may
+        ## not BE the twin, because PAC and the noise surfaces are not built
+        ## on its map.
         if (mono == 'native'
                 or _integ.carries_own_monodromy()
+                or self._map_kind() == 'glm'
                 or not getattr(self, 'autonomous', False)):
             ## ⚠ SELF-SUFFICIENT METHODS TAKE NO TWIN
             ## (`carries_own_monodromy`: Gear-2 and every stage method).  Only
@@ -174,14 +185,15 @@ class _AccuracyChecks(object):
 
     def _state_twin(self):
         """`monodromy_twin`, except that a Nordsieck GLM takes its twin
-        DRIVEN OR NOT: its own map acts on the Nordsieck state (width
-        `r*m`), and the small-signal and noise consumers want a map on `x`.
-        `monodromy='native'` keeps the GLM's own map, and those consumers
-        refuse it.  `factored_period()` itself stays the run's own map.
+        DRIVEN OR NOT: PAC, its adjoint row, `sampled_noise` and the
+        Lyapunov surfaces are not built on its map (its factored period acts
+        on the Nordsieck state; `ppv` and `floquet_modes` read it on the
+        state, see `monodromy_twin`).  `monodromy='native'` keeps the GLM's
+        own map, and those consumers refuse it.
         """
         host = self.monodromy_twin()
         if (host is self and self._map_kind() == 'glm'
-                and getattr(self, 'monodromy', 'trbdf2') != 'native'
+                and getattr(self, 'monodromy', 'radau') != 'native'
                 and getattr(self, '_period_state', None) is not None
                 and self.converged):
             return self._solve_twin(self.monodromy)
@@ -323,6 +335,11 @@ class _AccuracyChecks(object):
             ## round-trip.
             twin = type(self)(self.cir, toolkit=self.toolkit,
                               irefnode=self.cir.nodes[self.irefnode], **kv)
+            ## ⚠ AND THE SAME MONODROMY TWIN: `monodromy` is an attribute,
+            ## not a Parameter, and the refined runs took the default --
+            ## measured, a trap run under `monodromy='gear'` read the gear
+            ## twin at level 0 and the default twin at levels 1 and 2
+            twin.monodromy = getattr(self, 'monodromy', 'radau')
             sub = dict(args)
             sub['timestep'] = args['timestep'] / float(refine ** _k)
             twin.solve(**sub)
@@ -353,8 +370,13 @@ class _AccuracyChecks(object):
                 ## generic `0.5 <= order <= 8` range would accept.  The `+ 1.5`
                 ## is not slack: on an AUTONOMOUS problem the period absorbs
                 ## the leading frequency error, and `gear` (nominal 2)
-                ## genuinely converges at ~3.
-                _hi = self._nominal_order() + 1.5
+                ## genuinely converges at ~3.  ⚠ AND IT IS THE HIGHER OF THE
+                ## RUN'S METHOD AND ITS TWIN'S: an oscillator quantity of a
+                ## trap run (its `c`) comes from the twin, and under the radau
+                ## twin it converges at radau's 5.03 -- a trap-only ceiling
+                ## (3.5) withheld a correct estimate.
+                _hi = max(self._nominal_order(),
+                          self._twin_nominal_order()) + 1.5
                 power_law = bool(0.5 <= order <= _hi and _sgn)
             else:
                 order, power_law = None, False
@@ -409,6 +431,22 @@ class _AccuracyChecks(object):
         p = self._nominal_order(method)
         k = (p + 1) if p % 2 == 0 else (p + 2)
         return max(3, k)
+
+    def _twin_nominal_order(self):
+        """The nominal order of the twin this run hands surfaces to -- a
+        one-step LMM's oscillator surfaces (`monodromy_twin`), a GLM's
+        state-space consumers (`_state_twin`) -- or 0 when it hands none."""
+        mono = getattr(self, 'monodromy', 'radau')
+        if mono == 'native':
+            return 0
+        try:
+            _own = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        except ValueError:
+            return 0
+        uses = (self._map_kind() == 'glm'
+                or (not _own.carries_own_monodromy()
+                    and getattr(self, 'autonomous', False)))
+        return self._nominal_order(mono) if uses else 0
 
     def _nominal_order(self, method=None):
         """The method's nominal convergence order, as its integrator

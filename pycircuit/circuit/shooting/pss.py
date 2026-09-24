@@ -287,7 +287,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         stage solves), never the cheap alternative.
       * trbdf2: order 2, contractive; the alternative to price against
         `grid_error` above a few hundred unknowns.
-      * trap: its PPV surfaces are its TR-BDF2 twin's (`monodromy_twin`).
+      * trap: its PPV surfaces are its Radau twin's (`monodromy_twin`).
       * gear: the PPV, the diffusion constant, the period (free or driven),
         the adjoint modes and every noise fold are second order on any grid
         whose step ratios stay inside the zero-stability bound 1+sqrt(2);
@@ -490,18 +490,21 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## `monodromy_twin`.  Selects the method that supplies the PPV,
         ## Floquet modes and factored period when a one-step LMM (trap/euler)
         ## solved an autonomous circuit, whose OWN monodromy is first-order
-        ## on a limit cycle (the opener seam).  'trbdf2' (DEFAULT): a TR-BDF2
-        ## twin on the same grid -- self-starting, no opener, 12-32x more
-        ## accurate on lambda2 than the Gear-2 twin at practical step counts.
-        ## 'gear': a Gear-2 twin.  'radau' / 'esdirk43': those twins (radau
-        ## the most accurate by far, at about trbdf2's cost -- see
-        ## `monodromy_twin`).  'native': the run's OWN plain factorisation --
+        ## on a limit cycle (the opener seam).  'radau' (DEFAULT since
+        ## 2026-09-24, Andreas): a Radau IIA twin on the same grid -- the most
+        ## accurate by far (lambda2 / c / d 1e-10 / 2e-11 / 6e-13 against
+        ## trbdf2's 1e-4 / 6e-6 / 8e-5 on van der Pol at 200 points), at about
+        ## trbdf2's cost.  'trbdf2' (the default until then), 'gear' and
+        ## 'esdirk43' select those twins (see `monodromy_twin`).  A Nordsieck
+        ## GLM reads its own map where it is built on the state (`ppv`,
+        ## `floquet_modes`) and the twin for the rest (`_state_twin`).
+        ## 'native': the run's OWN plain factorisation --
         ## ⚠ the WORST under a one-step method (its `Q` DIVERGES under
         ## refinement); it is for the gates that measure that defect, not for
         ## results.  gear and stage-method runs are self-sufficient
         ## (second-order native monodromy) and ignore this.
         ## History: `doc/shooting_history.md`, `PSS.__init__`.
-        self.monodromy = 'trbdf2'
+        self.monodromy = 'radau'
         self._monodromy_twin = None
         self._twins = {}
         self._solve_kwargs = {}

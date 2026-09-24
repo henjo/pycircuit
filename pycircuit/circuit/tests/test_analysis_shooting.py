@@ -11779,10 +11779,39 @@ def test_plain_covariance_reaches_kTC_like_gear_does():
             '%s: not converging toward kT/C (%s)' % (method, ratios)
 
 
-def test_trap_oscillator_covariance_goes_through_the_twin_default_trbdf2():
-    """trap hands `oscillator_covariance` to the monodromy twin -- TR-BDF2 by
-    default now, Gear-2 selectable -- and the twin re-converges the SAME
-    discrete orbit, so trap+twin matches a direct solve of the twin's method.
+def test_grid_error_refines_with_the_runs_own_twin():
+    """`grid_error` repeats the solve at finer steps on fresh instances, and
+    it copied the Parameters but not `monodromy`, an attribute: a trap run
+    under `monodromy='gear'` read the gear twin at the first level and the
+    DEFAULT twin at the refined ones (measured) -- a refinement mixing two
+    methods.  Now every level reads the run's own twin."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: 0.3 * (u - u ** 3 / 3.0))
+    p = PSS(cir, method='trap', reltol=1e-10)
+    p.monodromy = 'gear'
+    seen = []
+
+    def ev(q):
+        seen.append(q.monodromy_twin().par.method)
+        return float(q.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=6.3, timestep=6.3 / 60, x0=np.array([2.0, 0.0]),
+                maxiterations=80)
+        p.grid_error(ev)
+    assert seen == ['gear', 'gear', 'gear'], seen
+
+
+def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
+    """trap hands `oscillator_covariance` to the monodromy twin -- Radau by
+    default since 2026-09-24 (TR-BDF2 before), Gear-2 selectable -- and the
+    twin re-converges the SAME discrete orbit, so trap+twin matches a direct
+    solve of the twin's method.
 
     ⚠ The NATIVE path refused until 2026-09-24 (`oscillator_covariance`
     bordered with `ppv()`'s width-m vectors, the trap pair map `2m x 2m`); it
@@ -11817,21 +11846,21 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_trbdf2():
         return pss, np.asarray(PAC(cir).oscillator_covariance(pss)[0],
                                dtype=float)
 
-    ## default: trap hands off to the TR-BDF2 twin.  Compared to a direct
-    ## TR-BDF2 solve SEEDED FROM TRAP'S OWN x0 -- the covariance at t=0 is a
+    ## default: trap hands off to the Radau twin.  Compared to a direct
+    ## Radau solve SEEDED FROM TRAP'S OWN x0 -- the covariance at t=0 is a
     ## point on the orbit, so the two must be at the SAME PHASE to compare
     ## (seeding both elsewhere differs by O(h^2) of phase, ~1e-3 here, which
     ## is the orbit's covariance variation, not an error).
     tp, Kt = solve('trap', np.array([2.0, 0.0]))
     x0t = np.asarray(tp._period_state[1], dtype=float)
-    _pd, Kd = solve('trbdf2', x0t)
+    _pd, Kd = solve('radau', x0t)
     assert np.linalg.norm(Kt - Kd) / np.linalg.norm(Kd) < 1e-6, \
-        'the default trap twin and a direct TR-BDF2 solve from the same ' \
+        'the default trap twin and a direct Radau solve from the same ' \
         'seed differ by %.2e; the twin must re-converge the same orbit and ' \
         'injection' % (np.linalg.norm(Kt - Kd) / np.linalg.norm(Kd))
-    ## the twin exists and is TR-BDF2 by default
+    ## the twin exists and is Radau by default
     assert tp.monodromy_twin() is not tp
-    assert tp.monodromy_twin().par.method == 'trbdf2'
+    assert tp.monodromy_twin().par.method == 'radau'
 
     ## gear is selectable and matches a direct Gear-2 solve from the same seed
     _pg, Kg = solve('trap', np.array([2.0, 0.0]), mono='gear')
@@ -12396,7 +12425,7 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
             % (topology, abs(c / 5.3703e-06 - 1.0))
 
 
-def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
+def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_radau():
     """⚠⚠ THE B16 DECISION, PINNED ON THE FIXTURE THAT SHOWED IT (2026-09-05).
 
     Bias-sensitive core, exact `Q_lambda = 5.9083` and `c_true = 5.3703e-06`
@@ -12408,12 +12437,13 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
     the state keeps the method asked for, the monodromy comes from a TWIN
     on the same grid (`PSS.monodromy_twin`).
 
-    ⚠ THE TWIN DEFAULTS TO TR-BDF2 (2026-09-05), Gear-2 selectable.  On THIS
-    fixture the TR-BDF2 twin is measurably closer to the exact than the
-    Gear-2 twin: `Q` 5.90845 (err 2.6e-5) vs 5.90942 (err 1.9e-4), and `c`
-    err 1.4e-4 vs 1.7e-3 -- roughly an order on both, the eigenvalue AND the
-    PPV-based `c`.  Gates: under trap the default `ppv` reports the TR-BDF2
-    twin's `Q`/`c` (tighter than Gear's, asserted); `monodromy = 'gear'`
+    ⚠ THE TWIN DEFAULTS TO RADAU (2026-09-24, Andreas: "Set radau as default
+    twin"; TR-BDF2 from 2026-09-05), Gear-2 and TR-BDF2 selectable.  On THIS
+    fixture the Radau twin reads `Q` 5.908399 (err 1.7e-5) and `c` err
+    3.3e-5 -- both at the precision of the five-digit exact values -- where
+    TR-BDF2 read 5.90845 (2.6e-5) and 1.3e-4, and Gear-2 5.90942 (1.9e-4)
+    and 1.7e-3.  Gates: under trap the default `ppv` reports the Radau
+    twin's `Q`/`c` (tighter than TR-BDF2's `c`, asserted); `monodromy = 'gear'`
     restores the Gear-2 twin (also asserted, so the option is live); the
     native path still shows trapezoidal's own defect; the state is
     untouched; and a one-step orbit too poor to seed the twin (Euler at 400
@@ -12448,18 +12478,19 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_trbdf2():
     T_state = float(pss.period)
     _v, info = pss.ppv()
     c = PAC(cir).diffusion_constant(pss)
-    ## the DEFAULT twin is TR-BDF2, and it reads Q/c CLOSER to the exact
-    ## than the Gear-2 twin does on this fixture -- the tolerances below are
-    ## tight enough that the Gear-2 twin's numbers (err 1.9e-4 / 1.7e-3)
-    ## would FAIL them, so they encode the improvement, not just the value.
-    assert info['monodromy_method'] == 'trbdf2'
-    assert abs(info['Q'] / 5.9083 - 1.0) < 1e-4, \
-        'trap+trbdf2-twin reports Q = %.5f against exact 5.9083 (err %.1e); ' \
+    ## the DEFAULT twin is Radau, and it reads Q/c CLOSER to the exact than
+    ## the TR-BDF2 and Gear-2 twins do on this fixture -- the tolerances
+    ## below are tight enough that the Gear-2 twin's numbers (err 1.9e-4 /
+    ## 1.7e-3) and the TR-BDF2 twin's `c` (1.3e-4) would FAIL them, so they
+    ## encode the improvement, not just the value.
+    assert info['monodromy_method'] == 'radau'
+    assert abs(info['Q'] / 5.9083 - 1.0) < 5e-5, \
+        'trap+radau-twin reports Q = %.5f against exact 5.9083 (err %.1e); ' \
         'the Gear-2 twin gives 5.90942, err 1.9e-4' \
         % (info['Q'], abs(info['Q'] / 5.9083 - 1.0))
-    assert abs(c / 5.3703e-06 - 1.0) < 5e-4, \
-        'trap+trbdf2-twin reports c %.2e from the true; the Gear-2 twin ' \
-        'gives 1.7e-3' % abs(c / 5.3703e-06 - 1.0)
+    assert abs(c / 5.3703e-06 - 1.0) < 1e-4, \
+        'trap+radau-twin reports c %.2e from the true; the TR-BDF2 twin ' \
+        'gives 1.3e-4, the Gear-2 twin 1.7e-3' % abs(c / 5.3703e-06 - 1.0)
     assert float(pss.period) == T_state, 'the state must not move'
     assert np.asarray(pss.waveform[1]).shape == \
         np.asarray(pss.monodromy_twin().waveform[1]).shape
@@ -16052,7 +16083,9 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
         'radau %.3e is not far below gear %.3e' % (
             r_r['rel_error'], r['rel_error'])
 
-    ## 4. trap: its `c` is its TR-BDF2 twin's, so it is ESTIMABLE.
+    ## 4. trap: its `c` is its twin's (Radau since 2026-09-24; TR-BDF2
+    ##    before, order 3.02), so it is ESTIMABLE, at the twin's order -- and
+    ##    the ceiling is the higher of trap's and the twin's (5.03 here).
     ##    ⚠⚠ This step used to assert the opposite -- that `grid_error` must
     ##    REFUSE trap here, its error "changing sign near Q = 100" and a
     ##    two-grid estimate under-stating it 300x.  That sign change was a
@@ -16070,8 +16103,8 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
             lambda q: float(PAC(cir, toolkit=circuit.numeric)
                             .diffusion_constant(q)))
     true_t = abs(r_t['values'][-1] - analytic) / analytic
-    assert r_t['power_law'] and abs(r_t['order'] - 3.0) < 0.3, \
-        'trap (via its twin) should read the O(h^3) autonomous rate, got ' \
+    assert r_t['power_law'] and abs(r_t['order'] - 5.0) < 0.3, \
+        'trap (via its radau twin) should read radau\'s order 5, got ' \
         '%r' % (r_t['order'],)
     assert 0.5 < r_t['rel_error'] / true_t < 2.0, \
         'trap estimate %.3e against a true error %.3e' % (
@@ -16083,7 +16116,12 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
     ##     one of opposite sign.  Built from real solves, it reproduces the
     ##     old apparent order 6.45 exactly, with monotone same-signed deltas;
     ##     a plain `0.5 <= order <= 8` range ACCEPTS it and only the ceiling
-    ##     at the method's order refuses.
+    ##     at the method's order refuses.  ⚠ UNDER THE TR-BDF2 TWIN: under
+    ##     the radau twin (the default since 2026-09-24) the twin's `c` is
+    ##     O(h^5), the O(h^2) term alone is left, and the quantity is an
+    ##     honest order 2.01 -- no cancellation to refuse.
+    p.monodromy = 'trbdf2'
+
     def mixed(q):
         c = float(PAC(cir, toolkit=circuit.numeric).diffusion_constant(q))
         return c * float(q.monodromy_twin().period) / float(q.period)
@@ -23492,10 +23530,12 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
     and is the continuous adjoint's only to O(h) (four scalings measured, all
     halving).  Gear is refused by the modal spectra there anyway: its phase
     multiplier leaves the unit circle at O(h^2) (1 - 5e-05 at N = 400), as
-    does trap's; radau's collocation solve keeps it at 1 + 1e-11 and its
-    modes reproduce the uniform grid to 1e-10, so modal_spectrum RUNS under
-    radau on the 3:1 grid.  ⚠ Corrects b6e874a's 'the phase multiplier
-    leaves 1 on a non-uniform grid': true of gear and trap, not of radau.
+    did trap's under its TR-BDF2 twin; radau's collocation solve keeps it at
+    1 + 1e-11 and its modes reproduce the uniform grid to 1e-10, so
+    modal_spectrum RUNS under radau on the 3:1 grid -- and under trap since
+    its twin is radau by default (2026-09-24: 6e-12 off the circle).
+    ⚠ Corrects b6e874a's 'the phase multiplier leaves 1 on a non-uniform
+    grid': true of gear, not of radau.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -23551,13 +23591,15 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
     ## exponent forced to 0, and the departure is WARNED with its size.
     ## Gear's total converges to radau's at second order there: 7.6e-02 /
     ## 1.76e-02 / 4.2e-03 at N = 200 / 400 / 800 (ratios 4.35, 4.15).
-    for method in ('gear', 'trap'):
+    ## trap reads its twin, radau by default since 2026-09-24: on the circle
+    ## as radau is (6e-12; under the TR-BDF2 twin it read 6.0e-6)
+    _ct, pt = solve(400, True, 'trap')
+    assert phase_off(pt) < 1e-9, phase_off(pt)
+    for method in ('gear',):
         cir, pss = solve(400, True, method)
         off = phase_off(pss)
         ## ⚠ the lower bound was 1e-5 while the replay was UNIFORM whatever
-        ## the solve used (trap's surfaces come from its TR-BDF2 twin, which
-        ## now honours the 3:1 grid): measured 6.0e-6 for trap there, gear
-        ## unchanged (its replay was always on the caller's grid)
+        ## the solve used; gear's replay was always on the caller's grid
         assert 1e-6 < off < 1e-4, (method, off)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
@@ -27141,7 +27183,7 @@ def test_the_monodromy_twin_is_capped_and_warns_when_it_hits_the_cap():
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter('always')
         _v, info = good.ppv()
-    assert info['monodromy_method'] == 'trbdf2'
+    assert info['monodromy_method'] == 'radau'
     assert not [r for r in rec if 'capped iteration budget' in str(r.message)]
     poor = solve('euler', 20)
     poor.TWIN_MAXITER = 6

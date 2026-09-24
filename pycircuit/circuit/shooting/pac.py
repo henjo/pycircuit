@@ -1823,7 +1823,7 @@ class PAC(Analysis):
                 'PAC.%s: a Nordsieck GLM\'s own period map acts on its '
                 "Nordsieck state (monodromy='native' keeps it), and the "
                 "noise surfaces read a map on the state. Leave monodromy at "
-                "a twin ('trbdf2', 'radau')." % what)
+                "a twin ('radau', 'trbdf2')." % what)
         if fp.is_stage:
             ## the stage method's per-step map + its stage injection (or the
             ## SAME exact Van Loan integral) -- see `_lyapunov_pieces_stage`
@@ -2867,7 +2867,7 @@ class PAC(Analysis):
                 "PAC.sampled_noise: the period map is '%s' (method %r) and "
                 "monodromy='native': a Nordsieck GLM's own map acts on its "
                 'Nordsieck state, and the seeded reverse pass reads a map on '
-                "the state. Leave monodromy at a twin ('trbdf2', 'radau')."
+                "the state. Leave monodromy at a twin ('radau', 'trbdf2')."
                 % (fp.kind, getattr(pss.par, 'method', None)))
         stage = fp.is_stage
         T = float(fp.T)
@@ -3397,6 +3397,11 @@ class PAC(Analysis):
         """
         import warnings as _warnings
         self._check_circuit(pss)
+        ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) supplies
+        ## the period, the factored period and the PPV as well -- read off
+        ## the run itself they came from another discretisation (trap's own
+        ## period against its twin's covariance, until 2026-09-24)
+        pss = pss._lyapunov_host()
         K_orb, d, info = self.oscillator_covariance(pss, samples=True)
         m = self.cir.n - 1
         T = float(pss.period)
@@ -3543,6 +3548,9 @@ class PAC(Analysis):
 
         History: `doc/shooting_history.md`, `PAC.orbital_mode_weights`.
         """
+        ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) reads
+        ## the modes too, or they would come from another discretisation
+        pss = pss._lyapunov_host()
         K_orb, _d, _info = self.oscillator_covariance(pss)
         K = np.asarray(K_orb, dtype=float)
         n = K.shape[0]

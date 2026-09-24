@@ -376,12 +376,19 @@ def test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin(
     of them with no complaint because it renormalised to `v . xdot = 1`,
     which any scaling satisfies.
 
-    The fix is the machinery `trap` and `euler` already use for the same
-    shape of reason: `carries_own_monodromy()` is False for a multivalue
-    method, so the state-space surfaces take a TR-BDF2 TWIN re-solved on
-    this orbit's own grid.  The orbit stays the GLM's; only the map is
-    borrowed.  Measured here against radau on the same fixture: PPV 4e-4,
-    the phase diffusion constant 1.3e-3, the oscillator spectrum 5e-4.
+    The first fix was the machinery `trap` and `euler` use: a TR-BDF2 TWIN
+    re-solved on this orbit's own grid (measured here against radau: PPV
+    4e-4, the phase diffusion constant 1.3e-3, the oscillator spectrum
+    5e-4).  Since 2026-09-24 the GLM reads its OWN map where it is built on
+    the state (Andreas: "For twin use the own map when possible"): `ppv`
+    and the spectrum come from the map ``x_0 -> x_N`` through the
+    linearised startup (`_GLMPeriod.state_map`), and the consumers built
+    only on a map on `x` -- `oscillator_covariance` here -- take the twin,
+    Radau by default (`_state_twin`).  Measured at 60 points against radau
+    at 480: the spectrum 2.3e-6, `c` 1.6e-7; `v(0)` 4.4e-4, exactly what
+    the trbdf2 twin read (4.45e-4) -- both sit on glm3's own orbit, whose
+    phase-pinned `x_0` is another point than radau's, so `v(0)` measures
+    the orbit, not the map.
     """
     from pycircuit.circuit.shooting import PSS, PAC
     from pycircuit.circuit.elements import IS
@@ -405,22 +412,24 @@ def test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin(
         got[method] = (np.asarray(v)[:m], d / float(p.period), float(Sv[0]),
                        p.monodromy_twin())
     (v_r, c_r, s_r, tw_r), (v_g, c_g, s_g, tw_g) = got['radau'], got['glm3']
-    ## radau's own map is on `x`, so it is its own twin; the GLM borrows one
+    ## radau's own map is on `x`, so it is its own twin; so is the GLM's for
+    ## `ppv`, while its covariance comes from a Radau twin
     assert tw_r is not None and tw_g is not None
-    assert getattr(tw_g.par, 'method', None) == 'trbdf2', tw_g
-    assert np.max(np.abs(v_g - v_r)) < 3e-3 * np.max(np.abs(v_r)), (v_g, v_r)
-    assert abs(c_g / c_r - 1.0) < 5e-3, (c_g, c_r)
-    assert abs(s_g / s_r - 1.0) < 5e-3, (s_g, s_r)
+    assert getattr(tw_g.par, 'method', None) == 'glm3', tw_g
+    assert np.max(np.abs(v_g - v_r)) < 1e-3 * np.max(np.abs(v_r)), (v_g, v_r)
+    assert abs(c_g / c_r - 1.0) < 1e-5, (c_g, c_r)
+    assert abs(s_g / s_r - 1.0) < 1e-4, (s_g, s_r)
 
 
 def test_floquet_modes_off_the_nordsieck_map_drops_the_methods_own_multipliers():
-    """`floquet_modes` on a multivalue map: its null filter
-    (`FLOQUET_NULL_TOL`) drops the `(r-1)*m` multipliers that are the
-    METHOD's own -- they sit at zero because `V`'s lower block is nilpotent
-    -- so what comes back is the CIRCUIT's pair, matching radau's to 1e-4
-    on van der Pol.  ⚠ The MULTIPLIERS transfer; the EIGENVECTORS do not,
-    they live in the `r*m` Nordsieck space, which is why the state-space
-    surfaces take a twin instead (see the test above).
+    """`floquet_modes` handed a GLM's own factored period (the Nordsieck
+    map, `r*m` wide) reads it ON THE STATE (`_GLMPeriod.state_map`): the
+    Nordsieck eigenvectors are not state-space modes, and the method's own
+    `(r-1)*m` multipliers (at zero, `V`'s lower block nilpotent) are not
+    the circuit's.  What comes back is the CIRCUIT's pair, matching radau's
+    to 1e-4 on van der Pol.  ⚠ Until 2026-09-24 this test passed the
+    TR-BDF2 TWIN's map: an oscillator GLM's `factored_period()` returned the
+    twin's, so the Nordsieck map it names was never exercised.
     """
     from pycircuit.circuit.shooting import PSS
     lam = {}
