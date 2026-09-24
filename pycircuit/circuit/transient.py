@@ -1765,6 +1765,17 @@ class Transient(Analysis):
     ## grow (Gear-2 on a coarse grid: +3.0% at 1.5, +10.4% at 3.0)
     PRED_CLAMP = 1.5
 
+    ## ⚠ A NORDSIECK GLM RESTARTS WHERE ITS STEP GROWS BY MORE THAN THIS,
+    ## rather than rescaling (`Q_k <- rho^k Q_k`).  The vector leaving a
+    ## short step carries the derivatives of a fast stretch (a switch's
+    ## transition), and the rescale extrapolates them over a step `rho`
+    ## times longer.  Measured on a PWM loop's event-landed grid (jumps up
+    ## to 1125x): glm3 1.2e-1 of the swing off a radau reference, glm2
+    ## 1.5e-3; restarting, 7.8e-5 and 1.8e-4 (the same at a bound of 1.5).
+    ## The adaptive controller grows a step at most 2x, so it never reaches
+    ## this.
+    GLM_RESTART_GROWTH = 4.0
+
     def _pred_reset(self):
         """Forget the predictor's node history.  The transient start and a
         shooting period seam, where the trajectory is DISCONTINUOUS and a node
@@ -3777,12 +3788,23 @@ class Transient(Analysis):
         state = getattr(self, '_glm_Q', None)
         entry = getattr(self, '_glm_Q_at_entry', None)
         Q = None
+        ## the rescale this step applied, recorded for the shooting
+        ## analysis's linearisation (`_glm_step` scales its sensitivities by
+        ## the same `rho^k`)
+        self._glm_rho = 1.0
+        ## and whether it restarted on growth (`GLM_RESTART_GROWTH`), which
+        ## the shooting analysis's linearisation follows
+        self._glm_restarted = False
         for cand in (state, entry):
             if cand is not None and abs(cand[1] - tn) <= 1e-12 * max(abs(tn), h):
                 Q, _t_old, h_old = cand
-                if abs(h_old - h) > 1e-14 * h:
+                if h > self.GLM_RESTART_GROWTH * h_old:
+                    Q = None
+                    self._glm_restarted = True
+                elif abs(h_old - h) > 1e-14 * h:
                     rho = h / h_old
                     Q = np.array([rho ** k * Q[k] for k in range(r)])
+                    self._glm_rho = float(rho)
                 break
         started = Q is None
         if started:

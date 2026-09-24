@@ -180,8 +180,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         autonomous circuit's frequency, and is not shipped (see history).
       * 'stage' (radau, trbdf2, esdirk43): self-starting, the unknown IS
         `x_0`, `M` the dense stage product; no opener, no seam.
-      * 'glm' (Nordsieck GLM2-4): driven only; the map is on the multivalue
-        state and its Jacobian is approximate (`_walk_glm`).
+      * 'glm' (Nordsieck GLM2-4): the unknown is `x_0`, the map ``x_0 ->
+        x_N`` exact through the linearised startup (`_walk_glm`); the
+        factored period acts on the multivalue state, and `ppv` /
+        `floquet_modes` read it on the state (`_GLMPeriod.state_map`).
 
     ⚠ "SEAM-FREE" IS NOT "ERROR-FREE": the solved history removes the seam,
     not ordinary interior discretisation error (Gear-2 at 100 points/period
@@ -1008,13 +1010,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         `row . x(theta_k T) = threshold`, and the bordered Newton lands the
         grid on the crossing exactly.  The solved fractions become the grid
         every consumer replays on and the event nodes are breaks for the
-        period quadrature.  It runs on the stage kinds, gear's pair and the
-        plain map (euler, trap, theta) OPENED AT `x(0)` -- `x0_unknown`, its
-        default when the circuit declares state events -- driven or free
-        period: on an AUTONOMOUS circuit `z = [x_0, theta, T]` (gear's `x_0` a
-        pair), the period one more column of the event algebra (`d h_j / d T
-        = fraction_j`), the phase row closing the system, the polish
-        convention proportional.  A Nordsieck GLM skips it with a warning.
+        period quadrature.  It runs on every kind -- the stage methods,
+        gear's pair, a Nordsieck GLM (its map on the state) and the plain map
+        (euler, trap, theta) OPENED AT `x(0)` (`x0_unknown`, its default when
+        the circuit declares state events) -- driven or free period: on an
+        AUTONOMOUS circuit `z = [x_0, theta, T]` (gear's `x_0` a pair), the
+        period one more column of the event algebra (`d h_j / d T =
+        fraction_j`), the phase row closing the system, the polish
+        convention proportional.
         A first stage that did not converge is not the end: unless it
         collapsed onto a trivial root, the stage runs from its last iterate
         and its own Newton decides `converged` --
@@ -1324,8 +1327,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
         ## system is solved.  Structural and exact -- see `_is_autonomous`.
         self.autonomous = self._is_autonomous(times)
-        ## the state-event stage runs only under the stage kinds -- see the
-        ## docstring; say so once when the circuit declares events
+        ## the state-event stage runs on every kind but a matrix-free solve
+        ## and a plain map not opened at `x(0)` -- see the docstring; say so
+        ## once when the circuit declares events
         self._state_event_fracs = None
         self._event_columns = None
         if state_events:
@@ -1349,15 +1353,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     'stay inside their steps and the solve is first order '
                     'there. Pass x0_unknown=True (the default with state '
                     "events), or use method='radau'." % (len(_rows), _method_se),
-                    RuntimeWarning, stacklevel=3)
-            elif _rows and self._map_kind() == 'glm':
-                warnings.warn(
-                    'PSS: this circuit declares %d state event(s) (a threshold '
-                    'switch or comparator) but the state-event stage is not '
-                    'built for a Nordsieck GLM; under %r the crossing stays '
-                    'inside a step and the solve is first order there. Use '
-                    "method='radau' (best measured), or pass state_events=False "
-                    'to silence this.' % (len(_rows), _method_se),
                     RuntimeWarning, stacklevel=3)
         ## the period-column convention for this solve (see the Parameter)
         _pc = str(getattr(self, '_force_period_column', None)
@@ -1798,7 +1793,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## a state-event stage may follow (below): stage 1's own stall
         ## diagnosis then waits for its outcome
         _staged = (state_events and not matrix_free
-                   and (_kind in ('stage', 'pair')
+                   and (_kind in ('stage', 'pair', 'glm')
                         or (_kind == 'plain' and self._open_at_x0)))
         if self.autonomous:
             zT0 = np.concatenate((z0, [period]))

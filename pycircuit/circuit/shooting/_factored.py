@@ -288,8 +288,10 @@ class _StagePeriod(FactoredPeriod):
 class _GLMPeriod(FactoredPeriod):
     """A Nordsieck GLM's map ('glm', width ``r*m``): the per-step state is
     the Nordsieck blocks as columns; a costate injection lands on the whole
-    Nordsieck vector; the circuit state at a node is its first block."""
-    __slots__ = ('startup',)
+    Nordsieck vector; the circuit state at a node is its first block.
+    `x_matvec` / `x_matvec_transposed` are the map on the STATE (width `m`,
+    what the Newton shoots on), and `state_map` hands them out as a map."""
+    __slots__ = ('startup', '_node_startups')
     is_glm = True
 
     def step_objects(self):
@@ -302,11 +304,63 @@ class _GLMPeriod(FactoredPeriod):
         matrix-free Newton on `x_0` needs, where `matvec` acts on the
         Nordsieck state."""
         from ._steps import _glm_step
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            return self.x_matvec(v.real) + 1j * self.x_matvec(v.imag)
         P = [np.asarray(b, dtype=float).ravel() for b in self.startup.matvec(v)]
         D = None
         for rec in self.steps:
             P, D = _glm_step(rec, P)
         return np.asarray(D[-1], dtype=float).ravel()
+
+    def x_matvec_transposed(self, v, collect=False):
+        """``(d x_N / d x_0)^T v``: the costate seeded on the last step's
+        last stage (`x_N`, stiff accuracy), the steps replayed backwards,
+        and the startup's transpose at the end (`_GLMStartup.rmatvec`).
+
+        With `collect`, returns ``(out, ts, states)`` as `matvec_transposed`
+        does, `states[j]` the costate on the STATE at node `j`: the
+        Nordsieck costate on the vector step `j` entered with, taken back
+        through the startup AT that node, ``S_j^T lambda_j``
+        (`PSS._glm_node_startups`) -- at node 0 exactly `out`."""
+        v = np.asarray(v)
+        if np.iscomplexobj(v):
+            re = self.x_matvec_transposed(v.real, collect)
+            im = self.x_matvec_transposed(v.imag, collect)
+            if not collect:
+                return re + 1j * im
+            return (re[0] + 1j * im[0],
+                    [[a + 1j * b for a, b in zip(ra, rb)]
+                     for ra, rb in zip(re[1], im[1])],
+                    [a + 1j * b for a, b in zip(re[2], im[2])])
+        v = np.asarray(v, dtype=float).ravel()
+        steps = self.step_objects()
+        m = v.shape[0]
+        r = len(self.steps[0][9])
+        w = [np.zeros(m) for _ in range(r)]
+        lams, ts = [], []
+        for j in range(len(steps) - 1, -1, -1):
+            lam, rb = steps[j].adjoint(
+                w, Dseed=(v if j == len(steps) - 1 else None), entered=True)
+            lams.append(lam)
+            ts.append(rb)
+            rho = self.steps[j][8]
+            w = ([rho ** k * lam[k] for k in range(r)] if rho != 1.0
+                 else lam)
+        out = self.startup.rmatvec(w)
+        if not collect:
+            return out
+        lams.reverse()
+        ts.reverse()
+        if getattr(self, '_node_startups', None) is None:
+            self._node_startups = self._pss._glm_node_startups(self)
+        states = [su.rmatvec(lam) for su, lam in zip(self._node_startups, lams)]
+        return out, ts, states
+
+    def state_map(self):
+        """This map on the circuit state (width `m`), as the consumers that
+        read a map on `x` want it (`ppv`)."""
+        return _GLMStateMap(self)
 
     def seed(self, v):
         m = self._pss.cir.n - 1
@@ -333,6 +387,52 @@ class _GLMPeriod(FactoredPeriod):
 
     def collected(self, w):
         return np.concatenate([x.copy() for x in w])
+
+
+class _GLMStateMap(object):
+    """A Nordsieck GLM's period map on the circuit STATE, ``x_0 -> x_N``
+    (width `m`): what the shooting Newton solves on, and what `ppv` needs --
+    its left null vector is the phase gradient on `x`, and its samples the
+    per-node projections ``S_j^T lambda_j`` (`_GLMPeriod.x_matvec_transposed`).
+    The Nordsieck map itself (`_GLMPeriod.matvec`) is `r*m` wide and its
+    first costate block holds the higher Nordsieck components fixed."""
+    is_plain = is_pair = is_stage = False
+    is_glm = True
+
+    def __init__(self, fp):
+        self._fp = fp
+        self.kind = 'glm'
+        self.steps, self.times, self.T = fp.steps, fp.times, fp.T
+        self.width = fp._pss.cir.n - 1
+
+    def matvec(self, v):
+        return self._fp.x_matvec(v)
+
+    def matvec_transposed(self, v, collect=False, inject=None):
+        if inject is not None:
+            raise NotImplementedError(
+                'PSS: costate injections are not built on a Nordsieck GLM '
+                '(it has no state-event stage).')
+        return self._fp.x_matvec_transposed(v, collect=collect)
+
+    def forward_states(self, u):
+        """``(x_N, [x_1 .. x_N])``: a state direction `u` at node 0 carried
+        forward, the state at every later node (each step's last stage) --
+        what `floquet_modes` samples a right mode with, where the other
+        kinds run an unforced `_forced_replay`."""
+        from ._steps import _glm_step
+        u = np.asarray(u)
+        if np.iscomplexobj(u):
+            e1, f1 = self.forward_states(u.real)
+            e2, f2 = self.forward_states(u.imag)
+            return e1 + 1j * e2, [a + 1j * b for a, b in zip(f1, f2)]
+        P = [np.asarray(b, dtype=float).ravel()
+             for b in self._fp.startup.matvec(u)]
+        out = []
+        for rec in self.steps:
+            P, D = _glm_step(rec, P)
+            out.append(np.asarray(D[-1], dtype=float).ravel())
+        return out[-1], out
 
 
 _PERIOD_KINDS = {'plain': _PlainPeriod, 'solved_history': _PairPeriod,

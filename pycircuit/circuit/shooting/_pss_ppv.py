@@ -373,6 +373,15 @@ class _PPVFloquet(object):
                       for vp, st in zip(_vphys, states)]
         return states, states_pair, _ts, _Xf
 
+    def _ppv_map(self):
+        """The period map `ppv` reads: the factored period, except that a
+        Nordsieck GLM's is taken on the STATE (`_GLMPeriod.state_map`) --
+        its own acts on the Nordsieck vector, whose null vector's first
+        block holds the higher components fixed.  ⚠ Until 2026-09-24 a
+        native GLM's `ppv()` returned that Nordsieck object, `r*m` wide."""
+        fp = self.factored_period()
+        return fp.state_map() if fp.is_glm else fp
+
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
 
@@ -462,7 +471,7 @@ class _PPVFloquet(object):
         if _tw is not self:
             return _tw.ppv(tol)
         import scipy.sparse.linalg as spla
-        fp = self.factored_period()
+        fp = self._ppv_map()
         ## Every call below goes through `fp.matvec_transposed`/`fp.matvec`,
         ## so the map's kind is the dispatcher's business rather than this
         ## method's (B8).
@@ -939,7 +948,7 @@ class _PPVFloquet(object):
         """
         import scipy.sparse.linalg as spla
         v0, info0 = self.ppv(tol)
-        fp = self.factored_period()
+        fp = self._ppv_map()
         m = self.cir.n - 1
         n = fp.width
         irn = self.irefnode
@@ -1114,7 +1123,7 @@ class _PPVFloquet(object):
         ## `pss_unused` IS IGNORED, AS ITS NAME SAYS (the modes are read from
         ## `self`); the parameter stays in the signature because callers pass
         ## it positionally.
-        fp = self.factored_period() if fp is None else fp
+        fp = self._ppv_map() if fp is None else fp
         n = fp.width
         T = float(fp.T)
         if n > self.FLOQUET_DENSE_LIMIT:
@@ -1201,7 +1210,12 @@ class _PPVFloquet(object):
 
             ## forward: Phi(t_j,0) u_k(0), by an UNFORCED driven replay
             zero = np.zeros(m)
-            _end, fwd = self._forced_replay(fp, 0.0, zero, y0=uk, collect=True)
+            if hasattr(fp, 'forward_states'):
+                ## a GLM on the state (`_GLMStateMap`): its own forward pass
+                _end, fwd = fp.forward_states(uk)
+            else:
+                _end, fwd = self._forced_replay(fp, 0.0, zero, y0=uk,
+                                                collect=True)
             traj = ([np.asarray(uk, dtype=complex)[:m]]
                     + [np.asarray(z, dtype=complex).ravel()[:m] for z in fwd])
             tt = times[:len(traj)]

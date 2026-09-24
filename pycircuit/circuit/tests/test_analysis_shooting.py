@@ -25084,8 +25084,8 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
     5x closer to a staged 800-point radau reference than the
     unstaged one, with the on-crossing within 5e-4 of the
     reference's; `state_events=False` reproduces the one-stage solve;
-    gear stages (phase B), and so does the plain one-step map opened at
-    x(0) (trap, 2026-09-24); a Nordsieck GLM is told it skips the stage.
+    gear stages (phase B), and so do the plain one-step map opened at
+    x(0) (trap) and a Nordsieck GLM (2026-09-24).
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -25162,13 +25162,10 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
     assert errs[False] / errs[True] > 5, errs
 
     ## (c) gear stages (phase B, 2026-09-22), the plain map opened at x(0)
-    ## too (2026-09-24); a Nordsieck GLM is told it skips the stage
-    for meth in ('gear', 'trap'):
+    ## and a Nordsieck GLM too (2026-09-24)
+    for meth in ('gear', 'trap', 'glm2'):
         _g, _ts, _v, _ws = solve(meth, 100, True)
         assert _g._state_event_fracs is not None and len(_g._state_event_fracs) == 4, meth
-    _p, _ts, _v, ws = solve('glm2', 100, True)
-    assert any('not built for a Nordsieck GLM' in w_ for w_ in ws), ws
-    assert _p._state_event_fracs is None
 
 
 def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_event():
@@ -27337,6 +27334,228 @@ def test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised():
                 assert F1 < 1e-12 * F0, (method, F0, F1)
                 assert abs(p.spectral_radius / rho_exact - 1.0) < 1e-3, p.spectral_radius
         assert np.max(np.abs(out[True] - out[False])) < 1e-10 * np.max(np.abs(out[False]))
+
+
+def test_a_glm_map_carries_the_nordsieck_rescale_on_a_non_uniform_grid():
+    """Where the step changes, the transient scales the Nordsieck vector,
+    ``Q_k <- (h/h_old)^k Q_k``, before the step -- and the GLM's
+    linearisation did not.  Measured on van der Pol over a 3:1 grid: the
+    map 7.2e-3 / 2.0e-2 off its finite difference (glm2 / glm3; exact on a
+    uniform grid), the Newton 14 / 21 evaluations, and the 'closing' period
+    column 8 % / 19 % off on EVERY grid (the last step's rescale moves with
+    `T` even where `rho` is 1).  The step records now carry `rho` and the
+    entered vector (`_glm_period_blocks`), `_glm_step` scales by `rho^k`,
+    its adjoint scales back, and the closing column carries ``(k / h_N)
+    Q_k``.  Pinned: the map and both period columns against central
+    differences on the 3:1 grid, and the factored map's transpose against
+    its forward.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    N = 60
+    j = np.arange(N)
+    fr = 1.0 + 0.5 * np.sin(2 * np.pi * (j + 0.5) / N)
+    fr = fr / fr.sum()
+    rng = np.random.default_rng(1)
+    for method in ('glm2', 'glm3'):
+        p = PSS(_vdp_asym(), method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / N, x0=np.array([2.0, 0.0]),
+                    maxiterations=60, grid=fr)
+        assert p.converged, method
+        x0 = np.asarray(p._period_state[1], dtype=float)[:p.cir.n - 1]
+        T = float(p.period)
+        _tms0, hs0 = p._period_grid(T, N, fr)
+        assert float(np.max(hs0) / np.min(hs0)) > 2.5
+
+        def walk(x, hs, TT, want=False, keep=False):
+            tms = np.concatenate(([0.0], np.cumsum(hs)))
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                return p._walk('glm', x, tms, hs, T=TT, want_dT=want,
+                               keep=keep)
+        p._period_column = 'proportional'
+        w = walk(x0, hs0, T, True)
+        M = np.asarray(w.monodromy(), dtype=float)
+        Mt = np.asarray(w.period_column(), dtype=float).ravel()
+        eps, dT = 1e-6, 1e-6 * T
+        Mfd = np.column_stack([(np.asarray(walk(x0 + eps * e, hs0, T).end())
+                                - np.asarray(walk(x0 - eps * e, hs0, T).end()))
+                               / (2 * eps) for e in np.eye(len(x0))])
+        Mtfd = (np.asarray(walk(x0, hs0 * (T + dT) / T, T + dT).end())
+                - np.asarray(walk(x0, hs0 * (T - dT) / T, T - dT).end())) / (2 * dT)
+        assert np.max(np.abs(M - Mfd)) < 1e-7 * np.max(np.abs(Mfd)), method
+        assert np.max(np.abs(Mt - Mtfd)) < 1e-8 * np.max(np.abs(Mtfd)), method
+        ## 'closing': only the last step's length moves with the period
+        p._period_column = 'closing'
+        Mtc = np.asarray(walk(x0, hs0, T, True).period_column(),
+                         dtype=float).ravel()
+        hp, hm = hs0.copy(), hs0.copy()
+        hp[-1] += dT
+        hm[-1] -= dT
+        Mtcfd = (np.asarray(walk(x0, hp, T + dT).end())
+                 - np.asarray(walk(x0, hm, T - dT).end())) / (2 * dT)
+        assert np.max(np.abs(Mtc - Mtcfd)) < 1e-8 * np.max(np.abs(Mtcfd)), method
+        p._period_column = 'proportional'
+        fp = walk(x0, hs0, T, keep=True).factored(p)
+        u, v = rng.standard_normal(fp.width), rng.standard_normal(fp.width)
+        fwd = float(u @ np.asarray(fp.matvec(v)))
+        assert abs(fwd - float(np.asarray(fp.matvec_transposed(u)) @ v)) < 1e-12 * abs(fwd)
+
+
+def test_a_native_glm_ppv_and_floquet_modes_are_on_the_state():
+    """Under `monodromy='native'` a GLM oscillator's `ppv()` solved the
+    bordered null vector of its NORDSIECK map and returned that `r*m`-wide
+    object, normalised by a tangent read off the Nordsieck right null
+    vector's first block: on this van der Pol the tangent came out
+    [-0.0014, 0.0057] against [0.125, 8.07], `v(0)` 1.4e3 too large and `c`
+    8e3 times too large (glm3, 120 points).  `floquet_modes` refused (its
+    forward sampling went through the GLM's source-free forced replay).
+
+    Now both read the map on the STATE, ``x_0 -> x_N``
+    (`_GLMPeriod.state_map`): its null vector, and the samples along the
+    orbit ``S_j^T lambda_j`` -- each node's Nordsieck costate taken back
+    through a startup AT that node (`_glm_node_startups`), at node 0
+    exactly the null vector.  Measured against radau at 800 points: `v(0)`
+    2.5e-3 / 2.2e-5 (glm2 / glm3 at 60 points, second / third order), `c`
+    2e-4 / 3e-5, the second multiplier 1.1e-3 / 7e-5 of radau's.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+
+    def run(method, N, mono='native'):
+        c = _vdp_asym()
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        p = PSS(c, method=method, reltol=1e-12)
+        p.monodromy = mono
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / N, x0=np.array([2.0, 0.0]),
+                    maxiterations=60)
+            v, info = p.ppv()
+            cc = PAC(c, toolkit=circuit.numeric).diffusion_constant(p)
+            fm = p.floquet_modes(nmodes=2)
+        return p, np.asarray(v), info, float(np.real(np.asarray(cc).ravel()[0])), fm
+
+    _pr, vr, _ir, cr, fmr = run('radau', 800)
+    for method, tv, tc, tl in (('glm2', 5e-3, 5e-4, 2e-3),
+                               ('glm3', 1e-4, 1e-4, 2e-4)):
+        p, v, info, cc, fm = run(method, 60)
+        m = p.cir.n - 1
+        assert v.shape == (m,) and np.asarray(info['samples']).shape[1] == m
+        assert np.max(np.abs(v - vr)) < tv * np.max(np.abs(vr)), (method, v, vr)
+        assert abs(cc / cr - 1.0) < tc, (method, cc, cr)
+        lam = sorted((abs(x['lam']) for x in fm), reverse=True)
+        lamr = sorted((abs(x['lam']) for x in fmr), reverse=True)
+        assert abs(lam[0] - 1.0) < 1e-6 and abs(lam[1] / lamr[1] - 1.0) < tl, (method, lam, lamr)
+        ## the samples' first node is `M^T v`: the null vector, up to what
+        ## the border absorbs of the discrete unit multiplier's offset
+        ## (measured 4.9e-7 of `|v|` for glm2 at 60 points)
+        assert np.max(np.abs(np.asarray(info['samples'])[0] - v)) < 1e-5 * np.max(np.abs(v))
+        ## and the frequency-aware PPV runs on the same map, reaching `ppv`
+        ## as the offset vanishes
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            vf, _inf = p.frequency_aware_ppv(1e-9 / float(p.period))
+        assert np.max(np.abs(np.asarray(vf) - v)) < 1e-6 * np.max(np.abs(v))
+
+
+def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
+    """The state-event stage skipped a Nordsieck GLM (a warning: the
+    crossing inside a step, first order there).  Built: the GLM walk
+    carries event columns -- each step's own `h` in its stage and output
+    rows, the entering rescale's ``d rho``, a driven source moving with the
+    stage times, the startup's own substeps at node 0 -- and the stage
+    reads the map on the state as it does a stage method's.
+
+    ⚠ THE LANDED GRID NEEDED A RESTART.  Its window between a switch's two
+    edges is a few short steps, and leaving it the step grows up to 1125x:
+    rescaling the Nordsieck vector by `rho^k` extrapolates the transition's
+    derivatives over the long step.  On that grid alone (no stage) glm3
+    read 1.2e-1 of the PWM loop's swing off radau and glm2 1.5e-3, and the
+    stage converged to a false crossing (0.8685 against 0.688) or failed.
+    The transient now restarts where the step grows more than
+    `GLM_RESTART_GROWTH` (4x; its adaptive controller grows at most 2x),
+    and the linearisation follows: the step before ends on the startup of
+    its last stage.
+
+    Pinned: the bordered Jacobian against central differences on the PWM
+    loop (glm2, with a restart in the walk); on the comparator relaxation
+    oscillator against its exact period, glm3 staged +2.5e-7 at 100 points
+    where unstaged reads -3.6e-3 (and a fixed-grid multiplier of 0.30 for
+    the unit one), glm2 staged +6.4e-5 at 200 (unstaged +6.0e-4).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    cir = _pwm_loop(T)
+    p = PSS(cir, method='glm2', reltol=1e-8)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1),
+                maxiterations=100, state_events=False)
+    assert p.converged
+    ts = np.asarray(p.waveform[0], float)
+    x0 = np.asarray(p._period_state[1], float)[:cir.n - 1]
+    m = cir.n - 1
+    W, c = p._state_event_rows()
+    base2, th0 = p._land_fractions(np.diff(ts) / T, [0.706, 0.7107])
+    restarts = []
+
+    def FJ(z):
+        xx, th = z[:m], z[m:]
+        fr, hsens, nodes = p._event_remap(base2, th0, th, T)
+        hs_ = fr * T
+        tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            wk = p._walk('glm', xx, tms_, hs_, T=T, hsens=hsens,
+                         capture=set(nodes), keep=True)
+        restarts.append(sum(1 for rec in wk.steps if rec[12]))
+        F = np.concatenate((xx - np.asarray(wk.x_end),
+                            [float(W[k] @ p._captured[nd][0]) - c[k]
+                             for k, nd in enumerate(nodes)]))
+        J = np.zeros((m + 2, m + 2))
+        J[:m, :m] = np.eye(m) - wk.P
+        for k in range(2):
+            J[:m, m + k] = -np.asarray(wk.Pk[k]).ravel()
+        for k, nd in enumerate(nodes):
+            _xj, Pj, Pkj = p._captured[nd]
+            J[m + k, :m] = W[k] @ Pj
+            for l_ in range(2):
+                J[m + k, m + l_] = float(W[k] @ Pkj[l_])
+        return F, J
+    z = np.concatenate((x0, th0 + np.array([0.001, -0.001])))
+    _F0, J0 = FJ(z)
+    assert restarts[0] >= 1, restarts
+    for i in list(range(m)) + [m, m + 1]:
+        zp, zm = z.copy(), z.copy()
+        zp[i] += 1e-6
+        zm[i] -= 1e-6
+        fd = (FJ(zp)[0] - FJ(zm)[0]) / 2e-6
+        assert np.linalg.norm(J0[:, i] - fd) < 1e-6 * np.linalg.norm(fd), i
+
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+
+    def solve(method, N, se):
+        q = PSS(_comparator_relaxation_oscillator(), method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100,
+                    state_events=se)
+        assert q.converged, (method, N, se)
+        return q
+    q3 = solve('glm3', 100, True)
+    u3 = solve('glm3', 100, False)
+    assert len(q3._state_event_fracs) == 4
+    assert abs(q3.period / Tl - 1.0) < 2e-6, q3.period / Tl - 1.0
+    assert abs(u3.period / Tl - 1.0) > 1e-3, u3.period / Tl - 1.0
+    assert abs(float(np.max(np.abs(q3.floquet_multipliers))) - 1.0) < 1e-3
+    q2 = solve('glm2', 200, True)
+    assert abs(q2.period / Tl - 1.0) < 2e-4, q2.period / Tl - 1.0
 
 
 def test_a_driven_glm_run_reads_its_small_signal_from_a_twin():

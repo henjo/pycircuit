@@ -73,7 +73,8 @@ class _PeriodWalks(object):
         `_walk_lmm` for 'plain' and 'pair'.  Returns the `_PeriodWalk`."""
         if kind == 'glm':
             return self._walk_glm(z, T, times, hs, dense=dense, keep=keep,
-                                  want_dT=want_dT)
+                                  want_dT=want_dT, hsens=hsens,
+                                  capture=capture)
         if kind == 'stage':
             return self._walk_stage(z, T, times, hs, dense=dense, keep=keep,
                                     want_dT=want_dT, hsens=hsens,
@@ -438,9 +439,19 @@ class _PeriodWalks(object):
         explicitly, so the startup runs ONCE at `t = 0` and every later step
         continues the multivalue state (no seam inside the period).  Returns
         ``(steps, xs, Q0, Qend, x_end)`` where each step record is
-        ``(Kfacs, Gs, h, A, U, B, V)``: the stage factors
-        ``K_i = LU(C(Y_i) + h lambda G(Y_i))``, the stage conductances, and the
-        tableau blocks the sensitivity recursion needs.
+        ``(Kfacs, Gs, h, A, U, B, V, Ks, rho, Qin, x_in, restart_out,
+        restarted)``: the stage factors ``K_i = LU(C(Y_i) + h lambda
+        G(Y_i))``, the stage conductances, the tableau blocks the
+        sensitivity recursion needs, the stage derivatives, the rescale
+        ``rho = h / h_prev`` the step applied to the Nordsieck vector (``Q_k
+        <- rho^k Q_k``; 1 where the step did not change), the vector it
+        entered with, after the rescale, the state it started from (what a
+        startup AT that node starts from -- `_glm_node_startups`), the
+        next node's startup linearised when the next step RESTARTS on
+        growth (`Transient.GLM_RESTART_GROWTH`; else None), and whether this
+        step entered through such a restart.  `trace0` is the period's own
+        startup (`Transient._glm_startup_trace` after the first step: a
+        restart later in the period overwrites the transient's).
         """
         tr = self._transient()
         iref = self.irefnode
@@ -464,10 +475,20 @@ class _PeriodWalks(object):
                                               # trajectory a predictor fits
         steps, xs = [], []
         Q0 = None
+        trace0 = None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
+            restarted = bool(getattr(tr, '_glm_restarted', False)) and _j > 0
+            if _j == 0:
+                trace0 = tr._glm_startup_trace
+            elif restarted:
+                ## the step before ends on this node's startup (`_glm_step`)
+                prev = steps[-1]
+                steps[-1] = prev[:11] + (
+                    self._glm_startup_linearisation(tr._glm_startup_trace),
+                    prev[12])
             Qn = np.asarray(tr._glm_Q[0], dtype=float)
             if Q0 is None:
                 ## the vector the first step actually entered with, i.e. what
@@ -485,9 +506,18 @@ class _PeriodWalks(object):
                                      + h * A[i, i] * Gs[i]) for i in range(s)]
             Ks = [np.asarray(self.toolkit.concatenate((kf[:iref], kf[iref + 1:])),
                              dtype=float) for kf in tr._rk_K]
-            steps.append((Kfacs, Gs, float(h), A, U, B, V, Ks))
+            ## ⚠ THE RESCALE IS PART OF THE MAP: where the step changes, the
+            ## transient scales the Nordsieck vector by `rho^k` before the
+            ## step, and the sensitivities must be scaled with it.  Missing,
+            ## the map on a 3:1 grid was 0.7 % (glm2) / 2 % (glm3) off its
+            ## finite difference, exact on a uniform one.
+            Qin = np.delete(np.asarray(tr._glm_Q_in, dtype=float), iref, axis=1)
+            steps.append((Kfacs, Gs, float(h), A, U, B, V, Ks,
+                          float(getattr(tr, '_glm_rho', 1.0)), Qin,
+                          np.asarray(xn, dtype=float), None, restarted))
             xs.append(np.asarray(x, dtype=float))
-        return steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x
+        return (steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x,
+                trace0)
 
     @staticmethod
     def _glm_propagate(steps, P, T=None, closing=False):
@@ -511,19 +541,33 @@ class _PeriodWalks(object):
         """
         D = None
         _nsteps = len(steps)
+        def _dhdT(i):
+            return ((1.0 if i == _nsteps - 1 else 0.0) if closing
+                    else steps[i][2] / T)
         for _si, rec in enumerate(steps):
             ## 'closing': dh/dT = 1 on the last step, 0 elsewhere.  The
             ## explicit `h = frac T` in the stage: for an AUTONOMOUS circuit
             ## `K_j = -i(Y_j)` carries no time of its own, so the only new
             ## term is the stage sum (see `_glm_step`)
-            fT = (None if T is None else
-                  ((1.0 if _si == _nsteps - 1 else 0.0) if closing
-                   else rec[2] / T))
-            P, D = _glm_step(rec, P, fT)
+            fT = None if T is None else _dhdT(_si)
+            ## ⚠ AND UNDER 'closing' THE LAST STEP'S RESCALE MOVES WITH `T`
+            ## (`rho = h_N / h_{N-1}`, `d rho / dT = rho / h_N`), even on a
+            ## uniform grid where `rho` is 1; proportionally scaled steps keep
+            ## every `rho` fixed.  (A step entered by a restart has none.)
+            drho = (rec[8] / rec[2]
+                    if (T is not None and closing and _si == _nsteps - 1
+                        and not rec[12])
+                    else None)
+            ## a step ending on a restart: the startup moves with the next
+            ## step's length
+            nxt = ((_dhdT(_si + 1), 0.0)
+                   if (T is not None and rec[11] is not None
+                       and _si + 1 < _nsteps) else None)
+            P, D = _glm_step(rec, P, fT, drho, None, nxt)
         return P, (D[-1] if D is not None else None)
 
     def _walk_glm(self, x_in, T, times, hs, dense=True, keep=False,
-                  want_dT=False):
+                  want_dT=False, hsens=None, capture=None):
         """ONE WALK OF THE PERIOD UNDER A NORDSIECK GLM: `_glm_period_blocks`,
         then, when `dense`, the sensitivity recursion (`_glm_propagate`) for
         the map and, with `want_dT`, its period column.  The blocks are always
@@ -540,14 +584,28 @@ class _PeriodWalks(object):
         2026-09-24 only ``dQ_0/dx_0 = C(x_0)`` was carried: the Jacobian was
         approximate, and the factored map not the Newton's.)
 
+        ⚠ EVENT COLUMNS (`hsens`, ``d h_j / d theta_k``; `capture`, the nodes
+        the bordered residual reads) run through the same step with the
+        three ways a step's length enters it: its own `h` in the stage and
+        output rows (``dh sum A K``, ``dh sum B K``), the entering rescale
+        ``rho = h_j / h_{j-1}`` (``d rho = (dh_j - rho dh_{j-1}) / h_{j-1}``)
+        and, on a driven circuit, the source moving with the stage times
+        (``u_dot (tau_n + c_i dh)``, `tau_n` the shift of the step's start);
+        at node 0 the startup's own substeps move (`_GLMStartup.dh`).
+
         History: `doc/shooting_history.md`, `_PeriodWalks._walk_glm`.
         """
-        steps, _xs, Q0, _Qend, x_end = self._glm_period_blocks(x_in, times, hs)
+        steps, _xs, Q0, _Qend, x_end, trace0 = self._glm_period_blocks(
+            x_in, times, hs)
         m = self.cir.n - 1
         r = len(Q0)
-        su = self._glm_startup_linearisation()
+        su = self._glm_startup_linearisation(trace0)
         Mx = Mt = None
-        if dense:
+        Pk_end = None
+        if hsens is not None:
+            Mx, Pk_end = self._glm_event_columns(steps, _xs, su, times,
+                                                 hsens, capture)
+        elif dense:
             _Pout, Mx = self._glm_propagate(steps, su.matrix())
         if want_dT:
             ## the period column: the startup's substeps scale with `T`
@@ -563,18 +621,85 @@ class _PeriodWalks(object):
         return _PeriodWalk(kind='glm', fp_kind='glm',
                            x0=np.asarray(x_in, dtype=float),
                            x_end=np.asarray(x_end, dtype=float), P=Mx, Pt=Mt,
-                           steps=steps if keep else None, width=r * m,
-                           startup=su)
+                           Pk=Pk_end, steps=steps if keep else None,
+                           width=r * m, startup=su)
 
-    def _glm_startup_linearisation(self):
-        """The startup of the period just walked, linearised
-        (`_GLMStartup`), from what `Transient._glm_startup` recorded -- the
-        substep states and stages -- with the point evaluations the rest of
-        the map uses (`_C_at`, `_G_at`, `_k_at`)."""
+    def _glm_event_columns(self, steps, xs, su, times, hsens, capture):
+        """The monodromy on the state and the event columns of one GLM
+        period, step by step (`_walk_glm`), capturing ``(x_j, dx_j/dx_0,
+        [dx_j/dtheta_k])`` at the nodes in `capture` into `_captured`.
+        Returns ``(M, [dx_N/dtheta_k])``."""
+        from ._steps import _glm_step
+        iref = self.irefnode
+        integ = self._transient().base_integrator
+        c = np.asarray(integ.tableau()[4], dtype=float)
+        K = hsens.shape[1]
+        P = su.matrix()
+        Pk = [su.dh(float(hsens[0, k])) for k in range(K)]
+        tau = np.zeros(K)
+        self._captured = {}
+        D = None
+        Dk = [None] * K
+        for j, rec in enumerate(steps):
+            P, D = _glm_step(rec, P)
+            h = rec[2]
+            t0 = float(times[j])
+            Ud = [np.delete(np.asarray(self.cir.dudt(t0 + float(ci) * h,
+                                                      analysis=self.par.analysis),
+                                       dtype=float), iref) for ci in c]
+            for k in range(K):
+                w = float(hsens[j, k])
+                drho = ((w - rec[8] * float(hsens[j - 1, k])) / steps[j - 1][2]
+                        if (j > 0 and not rec[12]) else None)
+                src = [Ud[i] * (tau[k] + float(c[i]) * w) for i in range(len(c))]
+                nxt = ((float(hsens[j + 1, k]), float(tau[k]) + w)
+                       if (rec[11] is not None and j + 1 < len(steps)) else None)
+                Pk[k], Dk[k] = _glm_step(rec, Pk[k], fT=w, drho=drho, src=src,
+                                         nxt=nxt)
+            tau = tau + hsens[j]
+            if capture is not None and (j + 1) in capture:
+                self._captured[j + 1] = (
+                    np.asarray(xs[j], dtype=float), np.asarray(D[-1]).copy(),
+                    [np.asarray(d[-1]).copy() for d in Dk])
+        return (np.asarray(D[-1], dtype=float),
+                [np.asarray(d[-1], dtype=float).ravel() for d in Dk])
+
+    def _glm_node_startups(self, fp):
+        """The startup AT EACH NODE of a GLM period, linearised: ``S_j``, how
+        the Nordsieck vector a startup would build at ``t_j`` from ``x_j``
+        (with that node's step, ``h_j``) moves with ``x_j``.  Node 0's is the
+        period's own (`fp.startup`).  What turns a costate on the Nordsieck
+        vector into one on the STATE: ``v_j = S_j^T lambda_j`` (`ppv`'s
+        samples) -- the first block alone, `dphi/dQ_0` with the higher
+        components HELD, is the inconsistent object gear's pair also had.
+        Costs one startup (p Radau substeps) per node."""
+        tr = self._transient()
+        iref = self.irefnode
+        times = np.asarray(fp.times, dtype=float)
+        out = [fp.startup]
+        saved = getattr(tr, '_glm_startup_trace', None)
+        try:
+            for j in range(1, len(fp.steps)):
+                rec = fp.steps[j]
+                xf = np.insert(np.asarray(rec[10], dtype=float), iref, 0.0)
+                tr._glm_startup(float(times[j]), xf, float(rec[2]))
+                out.append(self._glm_startup_linearisation(
+                    tr._glm_startup_trace))
+        finally:
+            tr._glm_startup_trace = saved
+        return out
+
+    def _glm_startup_linearisation(self, trace=None):
+        """The startup of the period just walked (or the one `trace`
+        records), linearised (`_GLMStartup`), from what
+        `Transient._glm_startup` recorded -- the substep states and stages --
+        with the point evaluations the rest of the map uses (`_C_at`,
+        `_G_at`, `_k_at`)."""
         from math import factorial
         from scipy.linalg import lu_factor
         from pycircuit.circuit.integrator import RadauIIA3Integrator
-        tn, hs, p, xs, Ys = self._transient()._glm_startup_trace
+        tn, hs, p, xs, Ys = (self._transient()._glm_startup_trace
+                             if trace is None else trace)
         A = np.array(RadauIIA3Integrator.A, dtype=float)
         c = np.array(RadauIIA3Integrator.C, dtype=float)
         iref = self.irefnode
@@ -583,7 +708,7 @@ class _PeriodWalks(object):
         def red(v):
             return np.delete(np.asarray(v, dtype=float), iref)
         Cx = [np.asarray(self._C_at(red(x)), dtype=float) for x in xs]
-        lus, fT = [], []
+        lus, fT, Ud = [], [], []
         for j in range(1, p + 1):
             Yj = [red(y) for y in Ys[j - 1]]
             Ci = [np.asarray(self._C_at(y), dtype=float) for y in Yj]
@@ -601,6 +726,8 @@ class _PeriodWalks(object):
                  for l_ in range(3)]
             fT.append(np.concatenate([sum(A[i, l_] * K[l_] for l_ in range(3))
                                       for i in range(3)]))
+            Ud.append([red(self.cir.dudt(ts[l_], analysis=self.par.analysis))
+                       for l_ in range(3)])
         Vd = np.array([[float(k) ** jj for jj in range(p + 1)]
                        for k in range(p + 1)])
         Vi = np.linalg.solve(Vd, np.eye(p + 1))
@@ -608,7 +735,7 @@ class _PeriodWalks(object):
                       for k in range(p + 1)])
         W[0] = 0.0
         W[0, 0] = 1.0
-        return _GLMStartup(Cx, lus, fT, W, hs)
+        return _GLMStartup(Cx, lus, fT, W, hs, A=A, c=c, Ud=Ud)
 
     def _walk_stage(self, x_in, T, times, hs, dense=True, keep=False,
                     want_dT=False, hsens=None, capture=None):

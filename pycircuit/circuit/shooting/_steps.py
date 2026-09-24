@@ -263,7 +263,8 @@ class _LMMStep(object):
 class _GLMStep(object):
     """One step of a Nordsieck GLM's period map with the `_StageStep`
     interface, on the MULTIVALUE state (`r` blocks of width `m`), from the
-    record `(Kfacs, Gs, h, A, U, B, V, Ks)` of `_glm_period_blocks`."""
+    record `(Kfacs, Gs, h, A, U, B, V, Ks, rho, Qin)` of
+    `_glm_period_blocks`."""
 
     __slots__ = ('rec',)
 
@@ -275,7 +276,7 @@ class _GLMStep(object):
             raise NotImplementedError('_GLMStep: no forcing')
         return _glm_step(self.rec, P)[0]
 
-    def adjoint(self, W):
+    def adjoint(self, W, Dseed=None, entered=False):
         """The reverse-mode adjoint of one step (see
         `PSS._monodromy_matvec_transposed`): per step, with `W` the adjoint
         of the output vector,
@@ -286,13 +287,28 @@ class _GLMStep(object):
                                 Pbar_j += U_ij rbar_i          (all j)
                                 Dbar_j += -h A_ij G_j^T rbar_i (j < i)
 
-        Returns `(Pbar, rbars)`."""
-        Kfacs, Gs, h, A, U, B, V, _Ks = self.rec
+        then the entering rescale's transpose, ``Pbar_j <- rho^j Pbar_j``.
+        `Dseed` adds a costate on the LAST STAGE, which is the step's `x`
+        (stiff accuracy): the map on the state ends there.  `entered` stops
+        short of the rescale, leaving the costate on the vector the step
+        entered with.  Returns `(Pbar, rbars)`."""
+        Kfacs, Gs, h, A, U, B, V = self.rec[:7]
         s = len(Kfacs)
         r = len(W)
-        Dbar = [-h * sum(B[k, i] * (Gs[i].T @ W[k]) for k in range(r))
-                for i in range(s)]
-        Pbar = [sum(V[k, jj] * W[k] for k in range(r)) for jj in range(r)]
+        S_out = self.rec[11] if len(self.rec) > 11 else None
+        if S_out is not None:
+            ## the output is the next node's startup of the last stage
+            ## (see `_glm_step`)
+            Dbar = [np.zeros_like(np.asarray(W[0], dtype=float))
+                    for _ in range(s)]
+            Dbar[s - 1] = S_out.rmatvec(W)
+            Pbar = [np.zeros_like(Dbar[0]) for _ in range(r)]
+        else:
+            Dbar = [-h * sum(B[k, i] * (Gs[i].T @ W[k]) for k in range(r))
+                    for i in range(s)]
+            Pbar = [sum(V[k, jj] * W[k] for k in range(r)) for jj in range(r)]
+        if Dseed is not None:
+            Dbar[s - 1] = Dbar[s - 1] + np.asarray(Dseed, dtype=float)
         rbars = [None] * s
         for i in range(s - 1, -1, -1):
             rb = Kfacs[i].solve_transposed(Dbar[i])
@@ -306,6 +322,10 @@ class _GLMStep(object):
                 Pbar[jj] = Pbar[jj] + U[i, jj] * rb
             for jj in range(i):
                 Dbar[jj] = Dbar[jj] - h * A[i, jj] * (Gs[jj].T @ rb)
+        rho = self.rec[8]
+        if rho != 1.0 and not entered:
+            ## the entering rescale `Q_k <- rho^k Q_k`, transposed
+            Pbar = [rho ** jj * Pbar[jj] for jj in range(r)]
         return Pbar, rbars
 
     def sources(self, *_args):
@@ -340,17 +360,24 @@ class _GLMStartup(object):
     held fixed -- made the shooting Jacobian approximate and the factored
     map not the Newton's Jacobian (matrix-free, glm2 and glm3 diverged on a
     driven RLC)."""
-    __slots__ = ('Cx', 'lus', 'fT', 'W', 'hs', 'm')
+    __slots__ = ('Cx', 'lus', 'fT', 'W', 'hs', 'm', 'A', 'c', 'Ud')
 
-    def __init__(self, Cx, lus, fT, W, hs):
+    def __init__(self, Cx, lus, fT, W, hs, A=None, c=None, Ud=None):
         self.Cx, self.lus, self.fT, self.W, self.hs = Cx, lus, fT, W, hs
         self.m = Cx[0].shape[0]
+        ## the substeps' tableau and the source's rate at their stages, for
+        ## `dh` on a driven circuit (None: the source does not move)
+        self.A, self.c, self.Ud = A, c, Ud
 
-    def _substeps(self, d0, T=None):
+    def _substeps(self, d0, T=None, dh=None, tau=0.0):
         """``dx_j``, j = 0..p, from ``dx_0 = d0`` (a vector or a block);
-        with `T`, the period's own forcing added on every substep."""
+        with `T`, the period's own forcing added on every substep; with
+        `dh`, a change `dh` of the step the startup is built for (its
+        substeps are ``h/p``, their stage times ``t_n + (j + c_l) h/p``),
+        `tau` the shift of ``t_n`` itself."""
         from scipy.linalg import lu_solve
         m = self.m
+        p = len(self.lus)
         ds = [d0]
         for j, lu in enumerate(self.lus):
             blk = self.Cx[j] @ ds[-1]
@@ -358,6 +385,16 @@ class _GLMStartup(object):
                    else np.vstack([blk] * 3))
             if T is not None:
                 rhs = rhs + (self.hs / float(T)) * self.fT[j]
+            if dh is not None:
+                rhs = rhs + (float(dh) / p) * self.fT[j]
+                if self.Ud is not None:
+                    ## a driven source moves with the stage times
+                    sig = [self.Ud[j][l] * (float(tau) + (j + float(self.c[l]))
+                                            * float(dh) / p)
+                           for l in range(3)]
+                    rhs = rhs - self.hs * np.concatenate(
+                        [sum(self.A[i, l] * sig[l] for l in range(3))
+                         for i in range(3)])
             ds.append(lu_solve(lu, rhs)[2 * m:3 * m])
         return ds
 
@@ -379,26 +416,83 @@ class _GLMStartup(object):
         the period)."""
         return self._combine(self._substeps(np.zeros(self.m), T=T))
 
+    def dh(self, dh, tau=0.0):
+        """`dQ_k` for a change `dh` of the step the startup is built for
+        (and `tau` of its start time), `x_0` held, `r` vectors -- node 0's
+        event column (the first segment's length moves with a crossing), or
+        a restart's."""
+        return self._combine(self._substeps(np.zeros(self.m), dh=dh, tau=tau))
 
-def _glm_step(rec, P, fT=None):
+    def apply(self, d):
+        """`dQ_k/dx_0 d` for a vector or a block `d` (`matvec` without the
+        flattening): a restart's map from the state to its vector."""
+        return self._combine(self._substeps(d))
+
+    def rmatvec(self, lams):
+        """``(dQ/dx_0)^T lam``: a costate on the `r` starting blocks taken
+        back to `x_0` -- `matvec` transposed, the substeps in reverse
+        (each one's stage system solved transposed)."""
+        from scipy.linalg import lu_solve
+        m = self.m
+        p = len(self.lus)
+        lams = [np.asarray(l_, dtype=float).ravel() for l_ in lams]
+        g = [sum(self.W[k, j] * (self.Cx[j].T @ lams[k])
+                 for k in range(self.W.shape[0]))
+             for j in range(p + 1)]
+        for j in range(p - 1, -1, -1):
+            e = np.zeros(3 * m)
+            e[2 * m:] = g[j + 1]
+            a = lu_solve(self.lus[j], e, trans=1)
+            g[j] = g[j] + self.Cx[j].T @ (a[:m] + a[m:2 * m] + a[2 * m:])
+        return g[0]
+
+
+def _glm_step(rec, P, fT=None, drho=None, src=None, nxt=None):
     """One step of the GLM sensitivity recursion (`_glm_propagate`'s body):
-    the stage solves on the multivalue input `P` (`r` blocks), and the
-    output vector.  `fT` (not None) adds the step's period-column forcing
-    ``fT sum_j A_ij K_j`` / ``fT sum_i B_ki K_i``.  Returns `(P_out, D)`."""
-    Kfacs, Gs, h, A, U, B, V, Ks = rec
+    the entering rescale ``P_k <- rho^k P_k`` (the transient's, where the
+    step changed), the stage solves on the multivalue input `P` (`r`
+    blocks), and the output vector.  `fT` (not None) adds the step's
+    period-column forcing ``fT sum_j A_ij K_j`` / ``fT sum_i B_ki K_i``;
+    `drho` (not None), the column's derivative of `rho`, adds the rescale's
+    own ``(k drho / rho) Q_k`` on the entered vector; `src` (not None), per
+    stage ``u_dot(t_i) dt_i``, the motion of a driven source with the stage
+    times, ``-h sum_j A_ij src_j`` / ``-h sum_i B_ki src_i``.
+
+    ⚠ A STEP WHOSE END IS A RESTART (`rec[11]`, the next node's startup
+    linearised; `Transient.GLM_RESTART_GROWTH`) does not output ``V Q + h B
+    K``: the next step enters with the startup of this step's last stage,
+    ``S x_{n+1}``, so its output is ``S D_last`` -- plus, for a column,
+    the startup's own motion with the NEXT step's length and start time,
+    `nxt` ``= (dh_next, tau_next)``.  Returns `(P_out, D)`."""
+    Kfacs, Gs, h, A, U, B, V, Ks, rho, Qin = rec[:10]
     s = len(Kfacs)
     r = len(P)
+    if rho != 1.0:
+        P = [rho ** k * P[k] for k in range(r)]
+    if drho is not None:
+        P = [P[k] + (k * drho / rho) * Qin[k] for k in range(r)]
     D = [None] * s
     for i in range(s):
         rhs = sum(U[i, j] * P[j] for j in range(r))
         if fT is not None:
             rhs = rhs + fT * sum(A[i, j] * Ks[j] for j in range(i + 1))
+        if src is not None:
+            rhs = rhs - h * sum(A[i, j] * src[j] for j in range(i + 1))
         for j in range(i):
             rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
         D[i] = Kfacs[i].solve(rhs)
+    S_out = rec[11] if len(rec) > 11 else None
+    if S_out is not None:
+        P = S_out.apply(D[-1])
+        if nxt is not None:
+            dQ = S_out.dh(nxt[0], nxt[1])
+            P = [P[k] + dQ[k] for k in range(r)]
+        return P, D
     P = [sum(V[k, j] * P[j] for j in range(r))
          - h * sum(B[k, i] * (Gs[i] @ D[i]) for i in range(s))
          + (fT * sum(B[k, i] * Ks[i] for i in range(s))
             if fT is not None else 0.0)
+         - (h * sum(B[k, i] * src[i] for i in range(s))
+            if src is not None else 0.0)
          for k in range(r)]
     return P, D
