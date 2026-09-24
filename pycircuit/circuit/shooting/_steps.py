@@ -310,13 +310,74 @@ class _GLMStep(object):
 
     def sources(self, *_args):
         raise NotImplementedError(
-            'PAC: the forced (small-signal) response is not built for a '
-            'Nordsieck GLM -- its sources would enter every stage and the '
-            'Nordsieck output rows; the monodromy, its transpose and the PPV '
-            'are.  Use a Runge-Kutta or linear multistep method for PAC and '
-            'noise.')
+            'PAC: the forced (small-signal) response is not built on a '
+            "Nordsieck GLM's own map (monodromy='native') -- its sources "
+            'would enter every stage and the Nordsieck output rows.  A GLM '
+            "run reads its small-signal response from a twin: leave "
+            "monodromy at 'trbdf2' or 'radau'.")
 
     source_adjoint = sources
+
+
+class _GLMStartup(object):
+    """A Nordsieck GLM's STARTUP, linearised (`PSS._glm_startup_linearisation`):
+    how the starting vector ``Q_k`` (k = 0..p) moves with the unknown `x_0`
+    -- and, on an autonomous circuit, with the period.
+
+    The startup takes p Radau IIA(3) substeps of ``h_s = h/p`` from `x_0`
+    and interpolates their charges, ``Q_k = p^k k! sum_j (V^-1)_kj q(x_j)``
+    (``Q_0 = q(x_0)``), so
+
+        dQ_k = sum_j W_kj C(x_j) dx_j,      W_kj = p^k k! (V^-1)_kj
+
+    with ``dx_j`` carried through each substep's converged stage system:
+    ``dY = J^-1 [C(x_{j-1}) dx_{j-1}]_i``, ``J[i][l] = delta_il C(Y_i) + h_s
+    A_il G(Y_l)``, ``dx_j = dY_3`` (stiff accuracy).  The period enters
+    through ``h_s``: ``dY/dT`` gains ``J^-1 (h_s/T) [sum_l A_il K_l]_i``.
+
+    ⚠ THIS IS WHAT MAKES THE GLM'S MAP ON `x` EXACT.  Seeding the Nordsieck
+    recursion with ``[C(x_0), 0, ...]`` -- the startup's higher components
+    held fixed -- made the shooting Jacobian approximate and the factored
+    map not the Newton's Jacobian (matrix-free, glm2 and glm3 diverged on a
+    driven RLC)."""
+    __slots__ = ('Cx', 'lus', 'fT', 'W', 'hs', 'm')
+
+    def __init__(self, Cx, lus, fT, W, hs):
+        self.Cx, self.lus, self.fT, self.W, self.hs = Cx, lus, fT, W, hs
+        self.m = Cx[0].shape[0]
+
+    def _substeps(self, d0, T=None):
+        """``dx_j``, j = 0..p, from ``dx_0 = d0`` (a vector or a block);
+        with `T`, the period's own forcing added on every substep."""
+        from scipy.linalg import lu_solve
+        m = self.m
+        ds = [d0]
+        for j, lu in enumerate(self.lus):
+            blk = self.Cx[j] @ ds[-1]
+            rhs = (np.concatenate([blk] * 3) if blk.ndim == 1
+                   else np.vstack([blk] * 3))
+            if T is not None:
+                rhs = rhs + (self.hs / float(T)) * self.fT[j]
+            ds.append(lu_solve(lu, rhs)[2 * m:3 * m])
+        return ds
+
+    def _combine(self, ds):
+        return [sum(self.W[k, j] * (self.Cx[j] @ ds[j])
+                    for j in range(len(ds)))
+                for k in range(self.W.shape[0])]
+
+    def matrix(self):
+        """`dQ_k/dx_0`, `r` blocks of ``m x m``."""
+        return self._combine(self._substeps(np.eye(self.m)))
+
+    def matvec(self, v):
+        """`dQ_k/dx_0 v`, `r` vectors."""
+        return self._combine(self._substeps(np.asarray(v, dtype=float).ravel()))
+
+    def dT(self, T):
+        """`dQ_k/dT` with `x_0` held, `r` vectors (the substeps scale with
+        the period)."""
+        return self._combine(self._substeps(np.zeros(self.m), T=T))
 
 
 def _glm_step(rec, P, fT=None):

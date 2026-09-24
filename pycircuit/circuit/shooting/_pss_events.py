@@ -261,8 +261,15 @@ class _StateEvents(object):
         def evmap(z, T, tms_, hs_, hsens, capture):
             """`(z_end, M, Pk)`: the period map with its event columns."""
             w = self._walk(kind, z, tms_, hs_, T=T, hsens=hsens,
-                           capture=capture)
-            if kind == 'pair':
+                           capture=capture,
+                           open_at_x0=(kind == 'plain'
+                                       and getattr(self, '_open_at_x0', False)))
+            if kind == 'plain':
+                ## the plain walk carries each column as a two-entry ring,
+                ## `[P_n, P_{n-1}]`: the map's column is the current one
+                cols = (self._stack_columns([pk[0] for pk in w.Pk])
+                        if len(w.Pk) else None)
+            elif kind == 'pair':
                 cols = (np.vstack((self._stack_columns([pk[0] for pk in w.Pk]),
                                    self._stack_columns([pk[1] for pk in w.Pk])))
                         if len(w.Pk) else None)
@@ -314,15 +321,28 @@ class _StateEvents(object):
         xt = np.concatenate(tuple([tol] * (wm // m)) + (np.full(K, 1e-12),)
                             + (([1e-15 * float(period)],) if autonomous
                                else ()))
-        if autonomous:
-            z_new, info, ier, mesg = self._free_period_solve(
-                func_ev, z0, abst, xt, shoot_reltol, maxiterations,
-                float(period))
-        else:
-            z_new, info, ier, mesg = analysis.fsolve(
-                func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
-                abstol=abst, xtol=xt, toolkit=self.toolkit, full_output=True,
-                line_search=True, floor_detect=True)
+        ## ⚠ A STAGE THAT FAILS HANDS BACK STAGE 1, NOT AN EXCEPTION: an
+        ## iterate can leave the orbit far enough that an inner step does
+        ## not converge (measured: trap's first columns on a driven PWM loop,
+        ## before they were right, sent `vin` to 1e9 and the whole solve
+        ## raised).  The stage is an improvement on stage 1, never a
+        ## condition of having a result.
+        try:
+            if autonomous:
+                z_new, info, ier, mesg = self._free_period_solve(
+                    func_ev, z0, abst, xt, shoot_reltol, maxiterations,
+                    float(period))
+            else:
+                z_new, info, ier, mesg = analysis.fsolve(
+                    func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
+                    abstol=abst, xtol=xt, toolkit=self.toolkit,
+                    full_output=True, line_search=True, floor_detect=True)
+        except (analysis.NoConvergenceError, np.linalg.LinAlgError) as _exc:
+            warnings.warn(
+                'PSS: the state-event stage failed (%s); the solve returns '
+                'the first stage, the crossings inside their steps.'
+                % str(_exc)[:160], RuntimeWarning, stacklevel=3)
+            return z_ss, info, ier, mesg, period, times, hs
         zn = np.asarray(z_new[:wm], dtype=float)
         Tn = float(z_new[-1]) if autonomous else period
 

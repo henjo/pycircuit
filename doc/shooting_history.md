@@ -4250,6 +4250,30 @@ what the approximation can cost is Newton iterations.  MEASURED on the
 index-2 C-V loop: 3 iterations to 1e-12, the same count as radau's
 exact monodromy on the same fixture (roadmap).
 
+Until 2026-09-24 the walk seeded the recursion with the startup's first
+component only.  The docstring said:
+
+⚠ THE JACOBIAN IS APPROXIMATE BY CONSTRUCTION and the residual is not:
+only ``dQ_0/dx_0 = C(x_0)`` is carried into the recursion, the startup's
+dependence of the higher Nordsieck components on ``x_0`` (p Radau
+substeps and an interpolant) is dropped.  So the converged fixed point is
+the method's own, exactly; what the approximation can cost is Newton
+iterations.
+
+and the period column's comment:
+
+The startup's own T-dependence enters twice: through the SCALING
+`Q_k = h^k q^(k)` (kept -- `dQ_k/dT = (k/T) Q_k`) and through the Radau
+substeps at `h/p` (dropped, as `Mx`'s is).
+
+What the approximation cost, measured when `_GLMStartup` replaced it: the
+map 3.8e-2 / 9.5e-2 from finite differences (glm2 / glm3, van der Pol),
+the period column 6.9e-6 / 3.4e-10; a LINEAR driven RLC took 9 / 14
+Newton evaluations; matrix-free, whose operator is the factored map,
+DIVERGED on that RLC; and `solve` kept no GLM monodromy, so no spectrum.
+With the startup linearised: 3e-9 / 2e-10, 8e-12 / 6e-11, one Newton
+step, matrix-free equal to dense to 1e-15.
+
 ### `_walk_stage`
 
 The docstring's opening lines before the move:

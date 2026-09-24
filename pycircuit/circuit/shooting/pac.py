@@ -185,6 +185,7 @@ class PAC(Analysis):
         """
         toolkit = self.toolkit
         freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
+        pss = pss._state_map_host()          # a GLM run's twin (`_state_map_host`)
         fp = pss.factored_period()
         T = float(fp.T)
         m = self.cir.n - 1
@@ -499,6 +500,7 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
         """
         import scipy.sparse.linalg as spla
+        pss = pss._state_map_host()          # a GLM run's twin (`_state_map_host`)
         fp = pss.factored_period()
 
         self._check_circuit(pss)
@@ -1816,6 +1818,12 @@ class PAC(Analysis):
         """
         self._refuse_coloured(pss, what)
         fp = pss.factored_period()
+        if fp.is_glm:
+            raise NotImplementedError(
+                'PAC.%s: a Nordsieck GLM\'s own period map acts on its '
+                "Nordsieck state (monodromy='native' keeps it), and the "
+                "noise surfaces read a map on the state. Leave monodromy at "
+                "a twin ('trbdf2', 'radau')." % what)
         if fp.is_stage:
             ## the stage method's per-step map + its stage injection (or the
             ## SAME exact Van Loan integral) -- see `_lyapunov_pieces_stage`
@@ -2852,14 +2860,15 @@ class PAC(Analysis):
                 'fixed to its own phase -- its phase diffuses, so there is no '
                 'cyclostationary sample series (see covariance()). Use '
                 'oscillator_spectrum or modal_spectrum.')
+        pss = pss._state_map_host()          # a GLM run's twin (`_state_map_host`)
         fp = pss.factored_period()
         if fp.is_glm:
             raise NotImplementedError(
-                "PAC.sampled_noise: the period map is '%s' (method %r); the "
-                'seeded reverse pass exists for the linear multistep (gear, '
-                'euler, trap) and stage (trbdf2 and other DIRKs, radau) maps, '
-                "not for a multivalue GLM. Solve the PSS with method='radau' "
-                "or 'gear'." % (fp.kind, getattr(pss.par, 'method', None)))
+                "PAC.sampled_noise: the period map is '%s' (method %r) and "
+                "monodromy='native': a Nordsieck GLM's own map acts on its "
+                'Nordsieck state, and the seeded reverse pass reads a map on '
+                "the state. Leave monodromy at a twin ('trbdf2', 'radau')."
+                % (fp.kind, getattr(pss.par, 'method', None)))
         stage = fp.is_stage
         T = float(fp.T)
         f0 = 1.0 / T

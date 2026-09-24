@@ -3104,7 +3104,9 @@ class Transient(Analysis):
         -- accepted for now, recorded here, revisit if a circuit shows it.
         """
         C = self.toolkit.toMatrix(self.cir.C(x_ref, self.epar))
-        Ca = np.abs(np.asarray(C, dtype=float))
+        ## `toMatrix` can hand back a complex matrix (imaginary part exactly
+        ## zero); `abs` of it, not a float cast, which warned on every run
+        Ca = np.abs(np.asarray(C))
         mask = (Ca.sum(axis=0) + Ca.sum(axis=1)) > 0.0
         return mask
 
@@ -3646,6 +3648,7 @@ class Transient(Analysis):
         epar = self.epar
         hs = h / float(p)
         xs = [np.asarray(x0, dtype=float)]
+        Ys = []
         saved = (self.base_integrator, self._dt)
         try:
             self.base_integrator = RadauIIA3Integrator()
@@ -3653,8 +3656,13 @@ class Transient(Analysis):
             for k in range(1, p + 1):
                 xk = self._rk_step_coupled(xs[-1], tn + k * hs, provided_function)[0]
                 xs.append(np.asarray(xk, dtype=float))
+                Ys.append([np.asarray(y, dtype=float) for y in self._rk_Y])
         finally:
             self.base_integrator, self._dt = saved
+        ## what the startup did, for a caller that LINEARISES it (the
+        ## shooting analysis's GLM period map: `_GLMStartup`) -- the substep
+        ## states and each substep's converged stages
+        self._glm_startup_trace = (float(tn), float(hs), int(p), xs, Ys)
         qs = np.array([np.asarray(self.cir.q(x, epar), dtype=float) for x in xs])   # (p+1, n)
         ## Vandermonde in the scaled variable tau = (t - t_n)/h_s = k: q(tau) = sum_j a_j tau^j
         Vd = np.array([[float(k) ** j for j in range(p + 1)] for k in range(p + 1)])
@@ -4874,6 +4882,26 @@ class Transient(Analysis):
         self.pcnr_solves = 0
         self.pcnr_fallbacks = 0
         self.pcnr_status = 'off'
+        ## ⚠ FANG'S COUPLED PATH IS BUILT ON A LINEAR MULTISTEP COMPANION: it
+        ## solves the step from eq (6), a solution-space LTE over the step
+        ## history.  A stage method or a GLM judges its step by its own
+        ## embedded estimate; under `coupled_lte=True` they died inside
+        ## `compute_derivatives` with a message that never named the flag.
+        ## Refused here, by name, before any work.
+        if coupled_lte:
+            from pycircuit.circuit.integrator import RungeKuttaIntegrator
+            _integ = self._get_integrator()
+            if (isinstance(_integ, RungeKuttaIntegrator)
+                    or getattr(_integ, 'is_multivalue', lambda: False)()):
+                raise NotImplementedError(
+                    "coupled_lte=True (Fang's coupled (x, h) stepping) is "
+                    "built on a linear multistep companion (gear, trap, "
+                    "euler, theta), not on %s: it solves the step size from "
+                    "eq (6), a solution-space LTE over the step history, "
+                    "where a Runge-Kutta stage method or a GLM judges its "
+                    "step by its own embedded estimate. Run coupled_lte=False "
+                    "(that estimate drives the adaptive step), or choose a "
+                    "multistep integrator." % type(_integ).__name__)
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters and cost a test to learn: placed after the initial

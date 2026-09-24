@@ -289,11 +289,24 @@ class _GLMPeriod(FactoredPeriod):
     """A Nordsieck GLM's map ('glm', width ``r*m``): the per-step state is
     the Nordsieck blocks as columns; a costate injection lands on the whole
     Nordsieck vector; the circuit state at a node is its first block."""
-    __slots__ = ()
+    __slots__ = ('startup',)
     is_glm = True
 
     def step_objects(self):
         return [_GLMStep(st) for st in self.steps]
+
+    def x_matvec(self, v):
+        """The period map on the STATE, ``d x_N / d x_0`` applied to `v`:
+        the linearised startup (`_GLMStartup`) seeds the Nordsieck
+        recursion, whose last stage is ``x_N`` (stiff accuracy) -- what a
+        matrix-free Newton on `x_0` needs, where `matvec` acts on the
+        Nordsieck state."""
+        from ._steps import _glm_step
+        P = [np.asarray(b, dtype=float).ravel() for b in self.startup.matvec(v)]
+        D = None
+        for rec in self.steps:
+            P, D = _glm_step(rec, P)
+        return np.asarray(D[-1], dtype=float).ravel()
 
     def seed(self, v):
         m = self._pss.cir.n - 1
@@ -340,16 +353,17 @@ class _PeriodWalk(object):
     ``(x_{N-1}, x_{N-2})`` -- so a caller needs no branch per kind.
     `fp_kind` is the `FactoredPeriod` kind the kept steps make."""
     __slots__ = ('kind', 'fp_kind', 'z', 'x0', 'x_end', 'x_prev', 'P', 'Pt',
-                 'Pk', 'steps', 'opening', 'open_at_x0', 'width')
+                 'Pk', 'steps', 'opening', 'open_at_x0', 'width', 'startup')
 
     def __init__(self, kind=None, fp_kind=None, z=None, x0=None, x_end=None,
                  x_prev=None, P=None, Pt=None, Pk=None, steps=None,
-                 opening=None, open_at_x0=False, width=None):
+                 opening=None, open_at_x0=False, width=None, startup=None):
         self.kind, self.fp_kind, self.z = kind, fp_kind, z
         self.x0, self.x_end, self.x_prev = x0, x_end, x_prev
         self.P, self.Pt, self.Pk = P, Pt, Pk
         self.steps, self.opening = steps, opening
         self.open_at_x0, self.width = open_at_x0, width
+        self.startup = startup
 
     def z0(self):
         """Where the map starts: the pair's unknown itself, else the state
@@ -391,4 +405,6 @@ class _PeriodWalk(object):
                             pss, times=times, T=T, open_at_x0=self.open_at_x0)
         if self.width is not None:
             fp.width = self.width
+        if self.startup is not None:
+            fp.startup = self.startup
         return fp

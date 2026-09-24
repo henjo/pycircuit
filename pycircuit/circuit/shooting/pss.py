@@ -1008,14 +1008,16 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         `row . x(theta_k T) = threshold`, and the bordered Newton lands the
         grid on the crossing exactly.  The solved fractions become the grid
         every consumer replays on and the event nodes are breaks for the
-        period quadrature.  It runs on the stage kinds and on gear's pair,
-        driven or free period -- on an AUTONOMOUS circuit `z = [x_0, theta,
-        T]` (gear's `x_0` a pair), the period one more column of the event
-        algebra (`d h_j / d T = fraction_j`), the phase row closing the
-        system, the polish convention proportional; the plain and GLM kinds
-        skip it with a warning.  A first stage that did not converge is not
-        the end: unless it collapsed onto a trivial root, the stage runs from
-        its last iterate and its own Newton decides `converged` --
+        period quadrature.  It runs on the stage kinds, gear's pair and the
+        plain map (euler, trap, theta) OPENED AT `x(0)` -- `x0_unknown`, its
+        default when the circuit declares state events -- driven or free
+        period: on an AUTONOMOUS circuit `z = [x_0, theta, T]` (gear's `x_0` a
+        pair), the period one more column of the event algebra (`d h_j / d T
+        = fraction_j`), the phase row closing the system, the polish
+        convention proportional.  A Nordsieck GLM skips it with a warning.
+        A first stage that did not converge is not the end: unless it
+        collapsed onto a trivial root, the stage runs from its last iterate
+        and its own Newton decides `converged` --
         `stage_one_converged` records whether the first stage did (None
         when no stage ran).  Radau is the method for these circuits: gear's
         and trbdf2's own second-order error on the switch-off decay
@@ -1076,8 +1078,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         than `2m` columns gain less).  ⚠ It buys that with memory, `2 N m^2`
         doubles of stored factorisations (~800 MB at m=1002, 50 points), and
         it does NOT produce a monodromy, so `spectral_radius` is `None`
-        after a matrix-free solve.  Built for the plain, pair and stage
-        kinds, driven or free period; a Nordsieck GLM raises.  ⚠ The
+        after a matrix-free solve.  Built for every kind, driven or free
+        period (a Nordsieck GLM through its map on the state, seeded by the
+        linearised startup).  ⚠ The
         state-event stage needs the dense map and does not run under
         `matrix_free`: a circuit that declares state events warns.  ⚠ Those
         figures were taken with a DENSE linear solver on both sides; with a
@@ -1264,6 +1267,20 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## ⚠ `None` means "decide from the topology" -- see
         ## `_resolve_x0_unknown`.  Resolved to a concrete bool HERE, before
         ## anything reads it, so every downstream use sees one value.
+        ## ⚠ STATE EVENTS ON A PLAIN MAP OPEN IT AT `x(0)`.  The event stage
+        ## needs the map opened there: the manufactured opener's own step
+        ## moves with the first crossing, and that dependence is not carried.
+        ## Measured, trap on the comparator oscillator: with the opener the
+        ## stage failed to converge at 200 points and read -1.2e-3 at 800
+        ## (unstaged -7.2e-4); opened at `x(0)`, +1.4e-4 / +9.1e-6 against
+        ## +6.4e-3 / -7.2e-4 unstaged.  So a plain-map run with declared
+        ## state events defaults `x0_unknown` to True (an explicit value is
+        ## honoured, and False warns that the stage does not run).
+        _se_rows = (self.cir.state_events()
+                    if state_events and hasattr(self.cir, 'state_events') else [])
+        if (x0_unknown is None and _se_rows and not matrix_free
+                and self._map_kind() == 'plain'):
+            x0_unknown = True
         x0_unknown = self._resolve_x0_unknown(x0_unknown)
         if self._integrator_for(getattr(self.par, 'method', 'euler')
                                 ).needs_x0_unknown():
@@ -1323,11 +1340,21 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     'and the solve is first order there. Drop matrix_free to '
                     'land them, or pass state_events=False to silence this.'
                     % len(_rows), RuntimeWarning, stacklevel=3)
-            elif _rows and self._map_kind() not in ('stage', 'pair'):
+            elif (_rows and self._map_kind() == 'plain'
+                  and not self._open_at_x0):
+                warnings.warn(
+                    'PSS: this circuit declares %d state event(s), and on the '
+                    'plain map (method %r) the state-event stage needs the '
+                    'map opened at x(0): with x0_unknown=False the crossings '
+                    'stay inside their steps and the solve is first order '
+                    'there. Pass x0_unknown=True (the default with state '
+                    "events), or use method='radau'." % (len(_rows), _method_se),
+                    RuntimeWarning, stacklevel=3)
+            elif _rows and self._map_kind() == 'glm':
                 warnings.warn(
                     'PSS: this circuit declares %d state event(s) (a threshold '
-                    'switch or comparator) but the state-event stage is built '
-                    'for radau, trbdf2 and gear; under %r the crossing stays '
+                    'switch or comparator) but the state-event stage is not '
+                    'built for a Nordsieck GLM; under %r the crossing stays '
                     'inside a step and the solve is first order there. Use '
                     "method='radau' (best measured), or pass state_events=False "
                     'to silence this.' % (len(_rows), _method_se),
@@ -1611,12 +1638,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             w = self._walk(_kind, z, tms_, hs_, T=T, want_dT=want_dT,
                            open_at_x0=x0_unknown)
             M = w.monodromy()
-            if _kind != 'glm':
-                ## kept for the checks after the solve: the spectrum is the
-                ## only place a free period announces itself.  (Never the
-                ## GLM's: its `M` drops the startup's derivative, and its map
-                ## acts on the Nordsieck state -- see `_walk_glm`.)
-                self._monodromy = M
+            ## kept for the checks after the solve: the spectrum is the only
+            ## place a free period announces itself.  (A GLM's too since
+            ## 2026-09-24: its map on `x` is exact once the startup is
+            ## linearised -- see `_walk_glm`.)
+            self._monodromy = M
             return (w.z0(), w.end(), M,
                     w.period_column() if want_dT else None)
 
@@ -1711,22 +1737,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## the two is flavour error F6(a) one row further out.
         m = n - 1
         _width = 2 if _kind == 'pair' else 1
-        ## ⚠ THE STAGE KINDS RUN MATRIX-FREE: their factored map has the
-        ## mat-vec and the walk carries the period column without the dense
-        ## map (radau, trbdf2 and esdirk43 matched their dense solves to
-        ## 1e-15 on a driven RLC and a van der Pol oscillator; refused until
-        ## 2026-09-24 as "a dense stage product", which the factored stage
-        ## map had made stale).  A Nordsieck GLM's factored map acts on its
-        ## Nordsieck state without the linearised startup, so it is not the
-        ## Newton's Jacobian: matrix-free, glm2 and glm3 DIVERGED on the
-        ## driven RLC.
-        if matrix_free and _kind == 'glm':
-            raise NotImplementedError(
-                'PSS: matrix-free shooting is not built for a Nordsieck GLM '
-                '(method %r): its factored period map acts on the Nordsieck '
-                'state without the linearised startup, so it is not the '
-                "Newton's Jacobian. Drop matrix_free, or use another method."
-                % method)
+        ## ⚠ EVERY KIND RUNS MATRIX-FREE.  The stage kinds' factored map has
+        ## the mat-vec and the walk carries the period column without the
+        ## dense map (radau, trbdf2 and esdirk43 matched their dense solves
+        ## to 1e-15; refused until 2026-09-24 as "a dense stage product").  A
+        ## Nordsieck GLM's factored map acts on its Nordsieck state; the
+        ## Newton's operator on `x_0` is `x_matvec`, the recursion seeded by
+        ## the linearised startup (`_GLMStartup`) -- without it, matrix-free
+        ## glm2 and glm3 diverged on a driven RLC.
         z0 = np.concatenate([np.asarray(x, dtype=float)] * _width)
         tol_z = np.concatenate([_tol] * _width)
         _mf = None
@@ -1756,17 +1774,18 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                 keep=True, want_dT=self.autonomous,
                                 open_at_x0=x0_unknown)
                 fp_ = w_.factored(self)
+                _mv = fp_.x_matvec if _kind == 'glm' else fp_.matvec
                 z0_ = w_.z0()
                 Mt_ = w_.period_column() if self.autonomous else None
                 F_ = self._close_periodic(z0_, w_.end(), tms_)
                 if not self.autonomous:
-                    return F_, (lambda v: v - alpha * fp_.matvec(v))
+                    return F_, (lambda v: v - alpha * _mv(v))
                 Mt_ = np.asarray(Mt_, dtype=float).ravel()
                 k_, r_ = _phase_row(z0_, Mt_)
 
                 def mv_(w):
                     v_, s_ = w[:-1], float(w[-1])
-                    top = (v_ - alpha * fp_.matvec(v_)) - s_ * Mt_
+                    top = (v_ - alpha * _mv(v_)) - s_ * Mt_
                     return np.concatenate((top, [v_[k_]]))
                 return np.concatenate((F_, [r_])), mv_
 
@@ -1779,7 +1798,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## a state-event stage may follow (below): stage 1's own stall
         ## diagnosis then waits for its outcome
         _staged = (state_events and not matrix_free
-                   and _kind in ('stage', 'pair'))
+                   and (_kind in ('stage', 'pair')
+                        or (_kind == 'plain' and self._open_at_x0)))
         if self.autonomous:
             zT0 = np.concatenate((z0, [period]))
             abstol_z = np.concatenate((tol_z, [_tol[phase_k]]))

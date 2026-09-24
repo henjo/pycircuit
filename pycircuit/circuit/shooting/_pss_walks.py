@@ -4,6 +4,7 @@
 from copy import copy
 import numpy as np
 from ._factored import _PeriodWalk
+from ._steps import _GLMStartup
 from ._steps import _StageStep
 from ._steps import _butcher
 from ._steps import _glm_step
@@ -151,10 +152,6 @@ class _PeriodWalks(object):
         History: `doc/shooting_history.md`, `_PeriodWalks._walk_lmm`.
         """
         pair = opening[0] == 'pair'
-        if hsens is not None and not pair:
-            raise NotImplementedError(
-                'PSS: state-event columns are built for the stage methods '
-                "and gear's solved-history pair, not the plain map")
         toolkit = self.toolkit
         m = self.cir.n - 1
         solver = self._get_linearsolver()
@@ -320,11 +317,34 @@ class _PeriodWalks(object):
                              - dr_dhn_iq * float(dt)) / dt_prev
                 hprev = hsens[_j - 1] if _j > 0 else hsens[-1]
                 for k in range(len(Pk)):
-                    Pk_new, Pqk[k] = _lmm_recursion(
-                        Pk[k], Cs, Pqk[k], C_new, alphas, b, solve,
-                        forcing=(dr_dhn_full * float(hsens[_j, k]),
-                                 dr_dhprev * float(hprev[k]),
-                                 Ud * float(_tau[k])))
+                    if not pair:
+                        ## ⚠ ON THE PLAIN MAP THE NEXT STEP MAY READ `Pq` --
+                        ## trapezoidal's `b != 0` companion carries `iq`, and
+                        ## its first step is an order-dropped Euler whose `Pq`
+                        ## the second reads -- and the source's motion is a
+                        ## CURRENT, not a charge: it enters the solve
+                        ## (`source`) and not the carried companion
+                        ## sensitivity.  (Gear's pair has `b = 0` on every
+                        ## step and never reads `Pq`, which is why the lumped
+                        ## forcing below is exact there; on trap's columns on
+                        ## a driven PWM loop it was 0.3-380x off, 2026-09-24.)
+                        ## ⚠ AND NO PREVIOUS-STEP PARTIAL: a one-step
+                        ## companion's coefficients depend on `h_n` alone --
+                        ## the previous step enters through the CARRIED state
+                        ## `(x, iq)` -- so `dr/dh_{n-1}` is zero by structure.
+                        ## The Euler-theorem estimate above assumes
+                        ## coefficients homogeneous in `h`, which theta's
+                        ## `1/2 + c h` is not (its columns read up to 358x off).
+                        Pk_new, Pqk[k] = _lmm_recursion(
+                            Pk[k], Cs, Pqk[k], C_new, alphas, b, solve,
+                            source=Ud * float(hsens[_j, k] + _tau[k]),
+                            forcing=(dr_dhn_iq * float(hsens[_j, k]),))
+                    else:
+                        Pk_new, Pqk[k] = _lmm_recursion(
+                            Pk[k], Cs, Pqk[k], C_new, alphas, b, solve,
+                            forcing=(dr_dhn_full * float(hsens[_j, k]),
+                                     dr_dhprev * float(hprev[k]),
+                                     Ud * float(_tau[k])))
                     Pk[k] = [Pk_new, Pk[k][0]]
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
@@ -513,38 +533,82 @@ class _PeriodWalks(object):
 
         The map shot on is ``x_0 -> x_N``: the Nordsieck vector is built from
         ``x_0`` by `Transient._glm_startup` at the top of the period and
-        propagated by the method to the end.  ⚠ THE JACOBIAN IS APPROXIMATE
-        BY CONSTRUCTION and the residual is not: only ``dQ_0/dx_0 = C(x_0)``
-        is carried into the recursion, the startup's dependence of the higher
-        Nordsieck components on ``x_0`` (p Radau substeps and an interpolant)
-        is dropped.  So the converged fixed point is the method's own, exactly;
-        what the approximation can cost is Newton iterations.
+        propagated by the method to the end.  The recursion is seeded with
+        the startup LINEARISED (`_GLMStartup`: its p Radau substeps and its
+        interpolant, ``dQ_k/dx_0``), so the map on ``x`` is exact, and the
+        period column carries the substeps' own motion with `T`.  (Until
+        2026-09-24 only ``dQ_0/dx_0 = C(x_0)`` was carried: the Jacobian was
+        approximate, and the factored map not the Newton's.)
 
         History: `doc/shooting_history.md`, `_PeriodWalks._walk_glm`.
         """
         steps, _xs, Q0, _Qend, x_end = self._glm_period_blocks(x_in, times, hs)
         m = self.cir.n - 1
         r = len(Q0)
+        su = self._glm_startup_linearisation()
         Mx = Mt = None
         if dense:
-            P = [np.asarray(self._C_at(np.asarray(x_in, dtype=float)),
-                            dtype=float)] + [np.zeros((m, m)) for _ in range(r - 1)]
-            _Pout, Mx = self._glm_propagate(steps, P)
+            _Pout, Mx = self._glm_propagate(steps, su.matrix())
         if want_dT:
-            ## the period column.  The startup's own T-dependence enters
-            ## twice: through the SCALING `Q_k = h^k q^(k)` (kept --
-            ## `dQ_k/dT = (k/T) Q_k`) and through the Radau substeps at `h/p`
-            ## (dropped, as `Mx`'s is).
-            Pt = [(k / float(T)) * np.asarray(Q0[k], dtype=float)
-                  for k in range(r)]
-            _Ptout, Mt = self._glm_propagate(
-                steps, Pt, T=float(T),
-                closing=(self._period_column == 'closing'))
+            ## the period column: the startup's substeps scale with `T`
+            ## (`_GLMStartup.dT`) -- unless the convention is 'closing',
+            ## where only the LAST step's length moves and the startup, at
+            ## the first, does not
+            closing = self._period_column == 'closing'
+            Pt = ([np.zeros(m) for _ in range(r)] if closing
+                  else su.dT(float(T)))
+            _Ptout, Mt = self._glm_propagate(steps, Pt, T=float(T),
+                                             closing=closing)
             Mt = np.asarray(Mt).ravel()
         return _PeriodWalk(kind='glm', fp_kind='glm',
                            x0=np.asarray(x_in, dtype=float),
                            x_end=np.asarray(x_end, dtype=float), P=Mx, Pt=Mt,
-                           steps=steps if keep else None, width=r * m)
+                           steps=steps if keep else None, width=r * m,
+                           startup=su)
+
+    def _glm_startup_linearisation(self):
+        """The startup of the period just walked, linearised
+        (`_GLMStartup`), from what `Transient._glm_startup` recorded -- the
+        substep states and stages -- with the point evaluations the rest of
+        the map uses (`_C_at`, `_G_at`, `_k_at`)."""
+        from math import factorial
+        from scipy.linalg import lu_factor
+        from pycircuit.circuit.integrator import RadauIIA3Integrator
+        tn, hs, p, xs, Ys = self._transient()._glm_startup_trace
+        A = np.array(RadauIIA3Integrator.A, dtype=float)
+        c = np.array(RadauIIA3Integrator.C, dtype=float)
+        iref = self.irefnode
+        m = self.cir.n - 1
+
+        def red(v):
+            return np.delete(np.asarray(v, dtype=float), iref)
+        Cx = [np.asarray(self._C_at(red(x)), dtype=float) for x in xs]
+        lus, fT = [], []
+        for j in range(1, p + 1):
+            Yj = [red(y) for y in Ys[j - 1]]
+            Ci = [np.asarray(self._C_at(y), dtype=float) for y in Yj]
+            Gi = [np.asarray(self._G_at(y), dtype=float) for y in Yj]
+            J = np.zeros((3 * m, 3 * m))
+            for i in range(3):
+                for l_ in range(3):
+                    blk = hs * A[i, l_] * Gi[l_]
+                    if i == l_:
+                        blk = blk + Ci[i]
+                    J[i * m:(i + 1) * m, l_ * m:(l_ + 1) * m] = blk
+            lus.append(lu_factor(J))
+            ts = [tn + (j - 1) * hs + c[l_] * hs for l_ in range(3)]
+            K = [np.asarray(self._k_at(Yj[l_], ts[l_]), dtype=float)
+                 for l_ in range(3)]
+            fT.append(np.concatenate([sum(A[i, l_] * K[l_] for l_ in range(3))
+                                      for i in range(3)]))
+        Vd = np.array([[float(k) ** jj for jj in range(p + 1)]
+                       for k in range(p + 1)])
+        Vi = np.linalg.solve(Vd, np.eye(p + 1))
+        W = np.array([[p ** k * factorial(k) * Vi[k, jj] for jj in range(p + 1)]
+                      for k in range(p + 1)])
+        W[0] = 0.0
+        W[0, 0] = 1.0
+        return _GLMStartup(Cx, lus, fT, W, hs)
 
     def _walk_stage(self, x_in, T, times, hs, dense=True, keep=False,
                     want_dT=False, hsens=None, capture=None):

@@ -25084,8 +25084,8 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
     5x closer to a staged 800-point radau reference than the
     unstaged one, with the on-crossing within 5e-4 of the
     reference's; `state_events=False` reproduces the one-stage solve;
-    a plain one-step kind (trap) is told it skips the stage, gear stages
-    (phase B).
+    gear stages (phase B), and so does the plain one-step map opened at
+    x(0) (trap, 2026-09-24); a Nordsieck GLM is told it skips the stage.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -25161,12 +25161,14 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
             assert p._state_event_fracs is None
     assert errs[False] / errs[True] > 5, errs
 
-    ## (c) a plain one-step kind is told; gear stages (phase B, 2026-09-22)
-    _p, _ts, _v, ws = solve('trap', 100, True)
-    assert any('state-event stage is built for radau, trbdf2 and gear' in w_ for w_ in ws), ws
+    ## (c) gear stages (phase B, 2026-09-22), the plain map opened at x(0)
+    ## too (2026-09-24); a Nordsieck GLM is told it skips the stage
+    for meth in ('gear', 'trap'):
+        _g, _ts, _v, _ws = solve(meth, 100, True)
+        assert _g._state_event_fracs is not None and len(_g._state_event_fracs) == 4, meth
+    _p, _ts, _v, ws = solve('glm2', 100, True)
+    assert any('not built for a Nordsieck GLM' in w_ for w_ in ws), ws
     assert _p._state_event_fracs is None
-    _g, _ts, _v, _ws = solve('gear', 100, True)
-    assert _g._state_event_fracs is not None and len(_g._state_event_fracs) == 4
 
 
 def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_event():
@@ -25647,6 +25649,129 @@ def test_a_state_event_stage_rescues_a_first_stage_that_did_not_converge():
     stall = [m for m in msgs if 'solved-history stall' in m]
     assert len(stall) == 1 and 'state_events=True' in stall[0], msgs
 
+
+
+def test_the_plain_map_lands_state_events_opened_at_x0():
+    """The state-event stage skipped the PLAIN map (euler, trap, theta):
+    `_walk_lmm` refused its event columns.  Opened as the plain map is by
+    default -- `x(0)` manufactured by an order-dropped step -- the stage does
+    not work: that step moves with the first crossing, and on trap it failed
+    to converge (comparator oscillator, 200 points) or read worse than the
+    unstaged solve (800).  OPENED AT `x(0)` (`x0_unknown`, now its default
+    when the circuit declares events) it does -- after two defects in the
+    columns, both found against finite differences on a driven PWM loop:
+
+    * the source's motion (`u_dot`) went into the CARRIED companion
+      sensitivity `Pq`; it is a current, not a charge.  Gear's pair never
+      reads `Pq` (`b = 0`), trap's does -- its columns were 0.3-380x off;
+    * the previous step's partial, estimated from the total under uniform
+      scaling, assumes coefficients homogeneous in `h`; theta's are not, and
+      on a one-step companion that partial is zero by structure (theta's
+      columns up to 358x off).
+
+    Measured after: trap on the oscillator +1.4e-4 at 200 points against
+    +6.4e-3 unstaged; on the PWM loop, where the unstaged trap switches at
+    0.51 of the period against 0.688, the staged crossings within 1.2e-4 of
+    radau's (400 points).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+
+    def osc(method, se):
+        q = PSS(_comparator_relaxation_oscillator(), method=method, reltol=1e-9)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=60,
+                    state_events=se)
+        assert q.converged, (method, se)
+        return q, [str(r.message) for r in rec]
+
+    staged, msgs = osc('trap', True)
+    unstaged, _m = osc('trap', False)
+    assert staged._open_at_x0 and len(staged._state_event_fracs) == 4
+    assert abs(staged.period / Tl - 1.0) < 5e-4 < 3e-3 < abs(unstaged.period / Tl - 1.0), \
+        (staged.period / Tl - 1.0, unstaged.period / Tl - 1.0)
+    assert not any('state event' in m for m in msgs), msgs
+
+    ## the driven loop: the crossings against radau's, and the columns
+    T = 1e-5
+    th_radau = np.array([0.688459, 0.693154, 0.992922, 0.992972])   # radau, 400 pts
+    p = PSS(_pwm_loop(T), method='trap', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
+                maxiterations=100)
+    assert p.converged and p._open_at_x0
+    assert np.max(np.abs(np.asarray(p._state_event_fracs) - th_radau)) < 1e-3
+
+    for method in ('trap', 'theta'):
+        q = PSS(_pwm_loop(T), method=method, reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
+                    maxiterations=100, state_events=False)
+        x0 = np.asarray(q._period_state[1], dtype=float)[:q.cir.n - 1]
+        W, c = q._state_event_rows()
+        times, hs = q._period_grid(T, 60, None)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q._walk('plain', x0, times, hs, T=T, hsens=np.zeros((len(hs), 0)),
+                    capture=set(range(1, len(hs) + 1)), open_at_x0=True)
+        base2, th0, Wk, ck = q._stage_one_crossings(x0, times, T, W, c)
+
+        def end_and_cols(th):
+            fr, hsens, nodes = q._event_remap(base2, th0, th, T)
+            hs_ = fr * T
+            tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                w = q._walk('plain', x0, tms_, hs_, T=T, hsens=hsens,
+                            capture=set(nodes), open_at_x0=True)
+            return (np.asarray(w.x_end, dtype=float),
+                    np.column_stack([pk[0] for pk in w.Pk]))
+        _xe, Pk = end_and_cols(th0)
+        eps = 1e-8
+        for l in range(len(th0)):
+            d = np.zeros(len(th0))
+            d[l] = eps
+            fd = (end_and_cols(th0 + d)[0] - end_and_cols(th0 - d)[0]) / (2 * eps)
+            err = np.max(np.abs(Pk[:, l] - fd)) / np.max(np.abs(fd))
+            assert err < 1e-3, (method, l, err)
+
+    ## an explicit x0_unknown=False keeps the opener, and the stage says so
+    q = PSS(_comparator_relaxation_oscillator(), method='trap', reltol=1e-9)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=60,
+                x0_unknown=False)
+    assert q._state_event_fracs is None
+    assert any('needs the map opened at x(0)' in str(r.message) for r in rec)
+
+
+def test_a_state_event_stage_that_fails_hands_back_the_first_stage():
+    """A stage iterate can leave the orbit far enough that an inner step
+    does not converge -- measured: trap's first event columns on a driven
+    PWM loop, before they were right, sent `vin` to 1e9 -- and the whole
+    solve RAISED.  The stage improves on stage 1; it is not a condition of
+    having a result: a failure warns and returns the first stage.
+    """
+    import types
+    import warnings as _w
+    from pycircuit.circuit.analysis import NoConvergenceError
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    p = PSS(_pwm_loop(T), method='radau', reltol=1e-9)
+
+    def boom(self, *a, **k):
+        raise NoConvergenceError('forced')
+    p._event_remap = types.MethodType(boom, p)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
+                maxiterations=100)
+    assert p.converged and p._state_event_fracs is None
+    assert any('state-event stage failed' in str(r.message) for r in rec)
 
 def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     """Gear's staged OSCILLATOR (the autonomous pair stage, 2026-09-24) was a
@@ -27047,9 +27172,10 @@ def test_the_stage_methods_shoot_matrix_free():
     factored stage map, with its mat-vec, and a walk carrying the period
     column without the dense map had made the reason stale.  Measured once
     the refusal went: radau, trbdf2 and esdirk43 match their dense solves to
-    1e-15 on a driven RLC and a van der Pol oscillator.  A Nordsieck GLM
-    stays refused: its factored map lacks the linearised startup, and
-    matrix-free glm2 / glm3 DIVERGED on the driven RLC.  And the state-event
+    1e-15 on a driven RLC and a van der Pol oscillator.  (A Nordsieck GLM
+    runs matrix-free too, once its startup is linearised -- see
+    `test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised`.)
+    And the state-event
     stage, which needs the dense map, does not run under `matrix_free` --
     that was silent, and warns now.
     """
@@ -27071,9 +27197,6 @@ def test_the_stage_methods_shoot_matrix_free():
             assert abs(out[True][0] / out[False][0] - 1.0) < 1e-12, (method, mk.__name__)
             X0, X1 = out[False][1], out[True][1]
             assert np.max(np.abs(X1 - X0)) < 1e-10 * np.max(np.abs(X0)), (method, mk.__name__)
-    with pytest.raises(NotImplementedError, match='Nordsieck GLM'):
-        PSS(_q20_rlc(), method='glm2').solve(period=1e-3, timestep=1e-3 / 50,
-                                             matrix_free=True)
     seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
     p = PSS(_comparator_relaxation_oscillator(), method='radau', reltol=1e-9)
     with _w.catch_warnings(record=True) as rec:
@@ -27148,6 +27271,124 @@ def test_radau_and_esdirk43_serve_as_the_monodromy_twin():
     with pytest.raises(ValueError, match="'radau'"):
         p.monodromy_twin()
 
+
+
+def test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised():
+    """A Nordsieck GLM's period map on `x_0` runs through its STARTUP -- p
+    Radau substeps and an interpolant building the Nordsieck vector -- and
+    the recursion was seeded with ``[C(x_0), 0, ...]``, the startup's higher
+    components held fixed.  So the shooting Jacobian was approximate (3.8e-2
+    / 9.5e-2 from finite differences under glm2 / glm3 on van der Pol), the
+    Newton only linear (9 and 14 evaluations on a LINEAR RLC), the factored
+    map not the Newton's (matrix-free, glm2 and glm3 DIVERGED on that RLC)
+    and no spectrum was reported.  With the startup linearised
+    (`_GLMStartup`, exact through each substep's converged stage system):
+    the map 3e-9 / 2e-10 from finite differences and its period column
+    8e-12 / 6e-11, the RLC converged in ONE Newton step, matrix-free equal
+    to dense to 1e-15, and the spectral radius the RLC's decay.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    for method in ('glm2', 'glm3'):
+        p = PSS(_vdp_asym(), method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
+                    maxiterations=60)
+        assert p.converged, method
+        x0 = np.asarray(p._period_state[1], dtype=float)[:p.cir.n - 1]
+        T = float(p.period)
+        p._open_at_x0 = False
+
+        def walk(x, TT, want=False):
+            tms, hs = p._period_grid(TT, 60, None)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                return p._walk('glm', x, tms, hs, T=TT, want_dT=want)
+        w = walk(x0, T, True)
+        M = np.asarray(w.monodromy(), dtype=float)
+        Mt = np.asarray(w.period_column(), dtype=float).ravel()
+        eps = 1e-6
+        Mfd = np.column_stack([(np.asarray(walk(x0 + eps * e, T).end())
+                                - np.asarray(walk(x0 - eps * e, T).end())) / (2 * eps)
+                               for e in np.eye(len(x0))])
+        dT = 1e-6 * T
+        Mtfd = (np.asarray(walk(x0, T + dT).end())
+                - np.asarray(walk(x0, T - dT).end())) / (2 * dT)
+        assert np.max(np.abs(M - Mfd)) < 1e-7 * np.max(np.abs(Mfd)), method
+        assert np.max(np.abs(Mt - Mtfd)) < 1e-8 * np.max(np.abs(Mtfd)), method
+
+    rho_exact = float(np.exp(-np.pi / 20.0))      # `_q20_rlc`'s decay per period
+    for method in ('glm2', 'glm3'):
+        out = {}
+        for mf in (False, True):
+            p = PSS(_q20_rlc(), method=method, reltol=1e-9)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                p.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=60,
+                        matrix_free=mf, trace=True)
+            assert p.converged, (method, mf)
+            out[mf] = np.asarray(p.waveform[1], dtype=float)
+            if not mf:
+                ## a linear circuit and an exact Jacobian: one Newton step
+                F1 = np.max(np.abs(np.asarray(p.shooting_trace[1][1])))
+                F0 = np.max(np.abs(np.asarray(p.shooting_trace[0][1])))
+                assert F1 < 1e-12 * F0, (method, F0, F1)
+                assert abs(p.spectral_radius / rho_exact - 1.0) < 1e-3, p.spectral_radius
+        assert np.max(np.abs(out[True] - out[False])) < 1e-10 * np.max(np.abs(out[False]))
+
+
+def test_a_driven_glm_run_reads_its_small_signal_from_a_twin():
+    """A Nordsieck GLM's own period map acts on its Nordsieck state; every
+    state-space consumer wants a map on `x`.  An OSCILLATOR's already read
+    the monodromy twin, but a DRIVEN run did not: `PAC.solve` refused ("not
+    built for a Nordsieck GLM") and `covariance()` CRASHED with a TypeError
+    (the plain Lyapunov pieces reading a GLM's step records).  Now a GLM run
+    hands those consumers to a twin driven or not (`_state_twin`), and
+    `monodromy='native'` -- the GLM's own map -- refuses cleanly.
+    `factored_period()` stays the GLM's own Nordsieck map.  Measured
+    on the driven RLC with a noise source: through a radau twin, the PAC
+    response and the covariance equal a radau solve's on the same grid
+    exactly (the trbdf2 twin: 2.9e-6 on PAC).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+
+    def build():
+        c = _q20_rlc()
+        c['n'] = IS('c', gnd, i=0.0, noisePSD=1e-20)
+        return c
+
+    def run(method, mono=None):
+        c = build()
+        p = PSS(c, method=method, reltol=1e-10)
+        if mono is not None:
+            p.monodromy = mono
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=1e-3, timestep=1e-3 / 100)
+            pac = PAC(c, toolkit=circuit.numeric)
+            res = pac.solve(p, [300.0])
+            K0 = np.asarray(pac.covariance(p), dtype=float)
+        k = int(np.argmin(np.abs(np.asarray(res.sweep_values, dtype=float) - 300.0)))
+        x = complex(np.asarray(res.x)[[str(n_) for n_ in c.nodes].index('c'), k])
+        return x, K0
+
+    x_r, K_r = run('radau')
+    for method in ('glm2', 'glm3'):
+        x, K = run(method, 'radau')
+        assert abs(x - x_r) < 1e-12 * abs(x_r), (method, x, x_r)
+        assert np.max(np.abs(K - K_r)) < 1e-12 * np.max(np.abs(K_r)), method
+    with pytest.raises(NotImplementedError, match='Nordsieck'):
+        run('glm3', 'native')
+    c = build()
+    p = PSS(c, method='glm3', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=1e-3, timestep=1e-3 / 100)
+    assert p.factored_period().kind == 'glm'
+    assert p.monodromy_twin() is p
 
 def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
     """`oscillator_covariance` on trap's OWN map (`monodromy='native'`) was

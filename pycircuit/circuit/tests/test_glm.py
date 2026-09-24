@@ -643,12 +643,15 @@ def test_a_glm_has_no_error_estimate_across_a_restart():
 def test_sampled_noise_refuses_a_glm_period_map():
     """`PAC.sampled_noise` has seeded reverse passes for the LMM and stage
     maps only; a multivalue GLM map is refused by name rather than
-    mis-replayed (the refusal was written 2026-09-15 and had no test)."""
+    mis-replayed (the refusal was written 2026-09-15 and had no test).
+    Since 2026-09-24 a GLM run hands the sampler to its monodromy twin, so
+    the refusal is reached with `monodromy='native'` -- the GLM's own map."""
     import pytest
     from pycircuit.circuit.shooting import PSS, PAC
     per = 1e-3
     cir = _cv_loop(per)
     p = PSS(cir, method='glm3', reltol=1e-12)
+    p.monodromy = 'native'
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         p.solve(period=per, timestep=per / 40, maxiterations=40)

@@ -172,6 +172,30 @@ class _AccuracyChecks(object):
         cache[method] = twin
         return twin
 
+    def _state_twin(self):
+        """`monodromy_twin`, except that a Nordsieck GLM takes its twin
+        DRIVEN OR NOT: its own map acts on the Nordsieck state (width
+        `r*m`), and the small-signal and noise consumers want a map on `x`.
+        `monodromy='native'` keeps the GLM's own map, and those consumers
+        refuse it.  `factored_period()` itself stays the run's own map.
+        """
+        host = self.monodromy_twin()
+        if (host is self and self._map_kind() == 'glm'
+                and getattr(self, 'monodromy', 'trbdf2') != 'native'
+                and getattr(self, '_period_state', None) is not None
+                and self.converged):
+            return self._solve_twin(self.monodromy)
+        return host
+
+    def _state_map_host(self):
+        """The `PSS` whose factored period a state-space consumer
+        (`PAC.solve`, its adjoint row, `sampled_noise`) reads: this one,
+        unless its own map acts on another state -- a Nordsieck GLM's -- and
+        then its twin (`_state_twin`)."""
+        if self._map_kind() == 'glm':
+            return self._state_twin()
+        return self
+
     def _lyapunov_host(self):
         """The `PSS` the Lyapunov noise surfaces (`covariance`,
         `oscillator_covariance`) read.
@@ -183,8 +207,9 @@ class _AccuracyChecks(object):
         gear/trbdf2 host is its own host.  TR-BDF2's per-step injection is
         built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
         is no Gear-2 fallback -- the injection follows the chosen twin.
+        A Nordsieck GLM hands them to its twin driven or not (`_state_twin`).
         """
-        return self.monodromy_twin()
+        return self._state_twin()
 
     def _adjoint_host(self):
         """Host for the ADJOINT SIDEBAND noise surface (`pnoise`, via
@@ -195,9 +220,10 @@ class _AccuracyChecks(object):
         carries the source coupling through both stages), so this is the
         monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
         use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
-        Gear-2 twin if asked.
+        Gear-2 twin if asked.  A Nordsieck GLM hands it to its twin driven or
+        not (`_state_twin`).
         """
-        return self.monodromy_twin()
+        return self._state_twin()
 
     ## `grid_error`'s ceiling on a plausible OBSERVED order is the method's
     ## nominal order (`_nominal_order`), read off its integrator for every

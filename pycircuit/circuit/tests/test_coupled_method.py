@@ -350,3 +350,33 @@ def test_bordered_does_not_depend_on_how_tightly_newton_is_converged():
     for va in (1e-12, 1e-9, 1e-6):
         a, b = counts['approx', va], counts['bordered', va]
         assert abs(a - b) <= 0.05 * a, (va, a, b)
+
+
+def test_fang_coupled_stepping_refuses_a_stage_method_or_glm_by_name():
+    """`coupled_lte=True` is built on a linear multistep companion.  Under
+    radau, trbdf2, esdirk43 or a Nordsieck GLM it died inside
+    `compute_derivatives` with a NotImplementedError that never named
+    `coupled_lte` (measured 2026-09-24).  Fang's path solves the step from
+    eq (6), a solution-space LTE over the LMM's step history; a stage
+    method or GLM judges its step by its own embedded estimate.  So it is
+    refused at entry, by name, and the LMMs run -- without the
+    `ComplexWarning` every coupled run raised (`_state_row_mask` cast a
+    complex `toMatrix(C)` with a zero imaginary part to float)."""
+    from pycircuit.circuit.integrator import (
+        Gear2Integrator, TrapezoidalIntegrator, EulerIntegrator,
+        RadauIIA3Integrator, TRBDF2Integrator, ESDIRK43Integrator,
+        GLM2Integrator, GLM3Integrator)
+    for integ in (RadauIIA3Integrator(), TRBDF2Integrator(),
+                  ESDIRK43Integrator(), GLM2Integrator(), GLM3Integrator()):
+        tran = Transient(_rc(), toolkit=numeric, integrator=integ)
+        with pytest.raises(NotImplementedError, match='coupled_lte'):
+            tran.solve(tend=5e-4, timestep=1e-5, coupled_lte=True)
+    for integ in (Gear2Integrator(), TrapezoidalIntegrator(),
+                  EulerIntegrator()):
+        tran = Transient(_rc(), toolkit=numeric, reltol=1e-5, integrator=integ)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', np.exceptions.ComplexWarning)
+            res = tran.solve(tend=5e-4, timestep=1e-5, coupled_lte=True)
+        t = np.asarray(res.v('b').x, dtype=float).ravel()
+        v = np.asarray(res.v('b').y, dtype=float).ravel()
+        assert np.max(np.abs(v - _analytic(t))[2:]) < 5e-3, type(integ).__name__
