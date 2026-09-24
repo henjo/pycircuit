@@ -1,0 +1,147 @@
+"""The event columns of a staged solve (`EventColumns`): the total map, the
+Schur elimination and the costate injections, shared by every consumer.
+"""
+import numpy as np
+
+
+class EventColumns(dict):
+    """A staged solve's EVENT COLUMNS and the linear algebra every bordered
+    consumer does with them (refactor E9 item 1, 2026-09-23).
+
+    The dict keys are the ones the consumers always read -- `nodes` (the
+    grid nodes the crossings land on), `W`, `c` (the event rows `W_k . x =
+    c_k`), `P_end` (the columns at the period: `d x_N / d theta`, m x K or
+    gear's 2m x K), `Pk_nodes` (the columns at every node), `P_nodes` (the
+    homogeneous maps to every node), `G = W P_node` and `Gt = W Pk_node`
+    (the event rows' derivatives) -- so every `ev['P_end']` read keeps
+    working and a consumer's "unbordered" control stays
+    `pss._event_columns = None`.  `dth` is `dtheta/dx_0 = -Gt^-1 G`.
+
+    Before this, the dict was read in 17 places and three derivations were
+    re-typed around it: the TOTAL map `M + P_end dth` at four sites, the
+    bordered adjoint's Schur elimination in two verbatim copies, the
+    `-zeta_k W_k` injection at four.  They are methods here; the numbers
+    are unchanged (the refactor's gate compares every consumer's output
+    before and after).
+    """
+
+    @classmethod
+    def build(cls, nodes, W, c, P_end, Pk_nodes, P_nodes):
+        """The columns from their node arrays: `G`, `Gt` and `dth`."""
+        K = len(nodes)
+        P_nodes = np.asarray(P_nodes, dtype=float)
+        Pk_nodes = np.asarray(Pk_nodes, dtype=float)
+        G = np.zeros((K, P_nodes.shape[2]))
+        Gt = np.zeros((K, K))
+        for k, jn in enumerate(nodes):
+            G[k] = W[k] @ P_nodes[jn]
+            Gt[k] = W[k] @ Pk_nodes[jn]
+        ev = cls(nodes=list(nodes), W=W, c=c, P_end=P_end, Pk_nodes=Pk_nodes,
+                 P_nodes=P_nodes, G=G, Gt=Gt)
+        ev.dth = -np.linalg.solve(Gt, G)
+        return ev
+
+    @classmethod
+    def from_capture(cls, captured, nsteps, m, P0, nodes, W, c, P_end):
+        """The columns from a traversal's `_captured` nodes (`(x, P, [Pk])`
+        per node 1..nsteps); `P0` is the map to node 0 -- the identity, or
+        gear's `[I, 0]` on its `(x_0, x_-1)` pair."""
+        K = np.asarray(P_end).shape[1]
+        Pk_nodes = np.zeros((nsteps + 1, m, K))
+        P_nodes = np.zeros((nsteps + 1, m, np.asarray(P0).shape[1]))
+        P_nodes[0] = P0
+        for j in range(1, nsteps + 1):
+            _xj, Pj, Pkj = captured[j]
+            P_nodes[j] = np.asarray(Pj, dtype=float)
+            for k in range(K):
+                Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
+        return cls.build(nodes, W, c, P_end, Pk_nodes, P_nodes)
+
+    @staticmethod
+    def of(pss, n=None):
+        """The solve's columns, or `None` when it is not staged -- or, with
+        `n`, when they were built on a map of another width (a host that
+        borrows a twin, trbdf2's covariance on gear)."""
+        ev = getattr(pss, '_event_columns', None)
+        if ev is None or (n is not None and not ev.fits(n)):
+            return None
+        return ev
+
+    def fits(self, n):
+        return np.asarray(self['P_end']).shape[0] == n
+
+    def total_matrix(self, M):
+        """The TOTAL monodromy `M + P_end dth`: the crossings move with the
+        state."""
+        return M + np.asarray(self['P_end'], dtype=float) @ np.asarray(self.dth, dtype=float)
+
+    def total_matvec(self, mv, transposed=False):
+        """`mv` (the fixed-grid map's product) made the total map's."""
+        P = np.asarray(self['P_end'], dtype=float)
+        D = np.asarray(self.dth, dtype=float)
+        if transposed:
+            return lambda z: np.asarray(mv(z)) + D.T @ (P.T @ np.asarray(z))
+        return lambda z: np.asarray(mv(z)) + P @ (D @ np.asarray(z))
+
+    def injection(self, zeta, nsteps, width, dtype=complex):
+        """The event rows' costate term as a reverse pass's `inject` array:
+        `-zeta_k W_k` at node `nd_k`."""
+        inject = np.zeros((nsteps, width), dtype=dtype)
+        for k, nd in enumerate(self['nodes']):
+            if 0 <= nd < nsteps:
+                wk = np.asarray(self['W'][k])
+                inject[nd, :len(wk)] -= zeta[k] * wk
+        return inject
+
+    def injection_dict(self, zeta):
+        """The same as `{node: vector}`, the stage passes' `extra` form."""
+        return {nd: -zeta[k] * np.asarray(self['W'][k])
+                for k, nd in enumerate(self['nodes'])}
+
+    def costate_injection(self, v, nsteps, width):
+        """The injection that samples a LEFT vector `v` of the total map
+        along the orbit: `zeta = Gt^-T P_end^T v` -- the transpose of the
+        saltation, carried by the reverse pass to every earlier node."""
+        v = np.asarray(v)
+        zeta = np.linalg.solve(np.asarray(self['Gt']).T,
+                               np.asarray(self['P_end']).T @ v)
+        return self.injection(zeta, nsteps, width, v.dtype)
+
+    def forced_shift(self, f_nodes):
+        """The crossings' motion driven by the SOURCE alone, `-Gt^-1 W
+        f_node` (the forced response at each event node)."""
+        W = np.asarray(self['W'])
+        r = np.array([W[k] @ f_nodes[nd] for k, nd in enumerate(self['nodes'])])
+        return -np.linalg.solve(np.asarray(self['Gt'], dtype=complex), r)
+
+    @staticmethod
+    def g_theta(cn, Pk_fixed, d, N):
+        """The output's theta-sensitivity: `sum_n c_n d . Pk_fixed[n]`."""
+        return np.array([np.sum(cn * (Pk_fixed[:N, :, kk] @ d))
+                         for kk in range(Pk_fixed.shape[2])])
+
+    def collapsed_zeta(self, g_theta, alpha, z):
+        """`zeta = Gt^-T (g_theta + a P_end^T z)` -- the event rows' costate
+        when `z` already solved the TOTAL operator (an oscillator's
+        deflated adjoint, the sampled series)."""
+        return np.linalg.solve(np.asarray(self['Gt']).T,
+                               g_theta + alpha * (np.asarray(self['P_end'], dtype=complex).T
+                                                  @ np.asarray(z)))
+
+    def bordered_adjoint(self, solve, g, g_theta, alpha):
+        """`B^T [z; zeta] = [g; g_theta]` with `B = [[I - aM, -a P_end],
+        [G, Gt]]`, by block elimination: `z = z_g - Z_G zeta`, `Z_G = (I -
+        aM)^-T G^T`, `zeta = (Gt^T + a P_end^T Z_G)^-1 (g_theta + a
+        P_end^T z_g)`.  `solve(b, k)` solves `(I - aM)^T x = b` (`k` the
+        event index for its failure message, `None` for `g`).  The
+        transpose of `PAC.solve`'s bordered forward system, and dual-
+        consistent with it (the suite's adjoint tests)."""
+        G = np.asarray(self['G'])
+        K = G.shape[0]
+        z_g = solve(g, None)
+        Z_G = np.column_stack([solve(np.asarray(G[k], dtype=complex), k)
+                               for k in range(K)])
+        Pth = np.asarray(self['P_end'], dtype=complex)
+        Sb = np.asarray(self['Gt']).T + alpha * (Pth.T @ Z_G)
+        zeta = np.linalg.solve(Sb, g_theta + alpha * (Pth.T @ z_g))
+        return z_g - Z_G @ zeta, zeta
