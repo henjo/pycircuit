@@ -20068,10 +20068,11 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
     own answer was unchanged.  A LATENT corruption -- it only bites once the
     screen fires, which is why the full suite never saw it.
 
-    The fix is the documented re-sync, `limit(x, x)` at zero delta, applied
-    after every confirmation whether or not it found anything.  Asserted on
-    both the single-Newton path and the coupled one, since they restore
-    separately.
+    The fix puts the state back after every confirmation, whether or not it
+    found anything -- from a snapshot, since 2026-09-24: the `limit(x, x)`
+    re-sync it first used lands short above a junction's critical voltage
+    (see the next test).  Asserted on both the single-Newton path and the
+    coupled one, since they restore separately.
     """
     import warnings
     import numpy as np
@@ -20108,24 +20109,20 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
 
     def march(cls, chk, npts=2, h=1.0 / 200):
         cir = build()
-        prev = Transient.branch_check
-        Transient.branch_check = chk
-        try:
-            tr = Transient(cir, integrator=cls(), reltol=1e-11)
-            tr.irefnode = cir.get_node_index(_gnd)
-            x = np.zeros(cir.n)
-            tr.epar.t = 0.0
-            tr._begin_run(x, cir.n)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                for j in range(1, npts + 1):
-                    tr._dt_last = tr._dt if j > 1 else None
-                    tr._dt = h
-                    tr.epar.t = j * h
-                    x, _f, _J, _ = tr.solve_timestep(x, j * h)
-                    tr._push_history(x)
-        finally:
-            Transient.branch_check = prev
+        tr = Transient(cir, integrator=cls(), reltol=1e-11)
+        tr.branch_check = chk
+        tr.irefnode = cir.get_node_index(_gnd)
+        x = np.zeros(cir.n)
+        tr.epar.t = 0.0
+        tr._begin_run(x, cir.n)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for j in range(1, npts + 1):
+                tr._dt_last = tr._dt if j > 1 else None
+                tr._dt = h
+                tr.epar.t = j * h
+                x, _f, _J, _ = tr.solve_timestep(x, j * h)
+                tr._push_history(x)
         return (np.asarray(x, dtype=float), getattr(cir['d'], '_vlim', None),
                 getattr(tr, 'branch_points', 0))
 
@@ -20889,6 +20886,143 @@ def test_no_analysis_answer_depends_on_a_stale_limiting_state():
     unmoved('algebraic_conditioning', lambda c: algebraic_conditioning(c)[0])
 
 
+def test_the_branch_check_solves_the_step_equation_and_restores_device_state_exactly():
+    """Two defects of the branch check's confirmation, on a junction ABOVE
+    its critical voltage -- which the test above cannot reach: its diode sits
+    at 0 V, where `pnjlim` never clamps.
+
+    (1) THE SPECULATIVE SOLVE PASSED NO LIMITER, so no `cir.limit` ran and a
+    stateful device (`Diode`, whose `i` and `G` read `_vlim`) stayed
+    linearised at the ACCEPTED point: the solve and its root test both saw
+    that linearisation.  Measured with a diode ON the rank-dropping node at
+    0.85 V: the reported alternative, a = 1.0536, had residual 0 in the
+    linearised system and 489 A in the step equation.  With the step's own
+    limiter it is a = 0.86584, a root of the step equation.
+
+    (2) THE RESTORE WAS `limit(x, x)`, which clamps against the STORED
+    state: from a speculative 1.054 V it landed at 0.790, not 0.85.  It is a
+    snapshot now.  Asserted by leaving the state far away inside the
+    confirmation, as a speculative Newton that wandered would, and requiring
+    the step to end with the state it has with the check off.
+    """
+    import types
+    import warnings
+    import pycircuit.circuit.circuit as _cc
+    from pycircuit.circuit.circuit import SubCircuit, gnd as _gnd
+    from pycircuit.circuit.elements import G as _G, Diode, VS as _VS, IS as _IS
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter, ddt)
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import (RadauIIA3Integrator,
+                                              Gear2Integrator,
+                                              TrapezoidalIntegrator)
+
+    _cc.default_toolkit = numeric
+    v0, IS_, k0 = 0.85, 1e-15, 10.0
+    VT = 1.380649e-23 * 300.15 / 1.602176634e-19
+
+    class CubicCapAt(Behavioural):
+        instparams = [Parameter(name='c0', desc='c', unit='F', default=1.0),
+                      Parameter(name='v0', desc='v0', unit='V', default=0.0)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return (Contribution(b.I, ddt(c0 * (b.V - v0) ** 3 / 3)),)  # noqa: F821
+
+    def build():
+        ## `a` has C = 0 at v0 and a net NEGATIVE conductance there (k0 minus
+        ## the diode's own), with the diode's current at v0 fed in: an
+        ## equilibrium on a rank drop, so the step equation has several roots
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('r')
+        c['cq'] = CubicCapAt('a', _gnd, c0=1.0, v0=v0)
+        c['d'] = Diode('a', _gnd, IS=IS_)
+        c['vr'] = _VS('r', _gnd, v=v0)
+        c['gk'] = _G('a', 'r', g=-k0)
+        c['i0'] = _IS(_gnd, 'a', i=IS_ * (np.exp(v0 / VT) - 1.0))
+        return c
+
+    def march(cls, chk, wander=None, npts=3, h=1.0 / 200):
+        cir = build()
+        d = cir['d']
+        tr = Transient(cir, integrator=cls(), reltol=1e-11)
+        tr.branch_check = chk
+        tr.irefnode = cir.get_node_index(_gnd)
+        alts = []
+        confirm, scan = tr._branch_confirm, tr._branch_coupled_scan
+
+        def spy_confirm(self, func, x_res, direction):
+            alt = confirm(func, x_res, direction)
+            if alt is not None:
+                ## the step equation ITSELF at `alt`: the diode evaluated at
+                ## the point (no stored state), then put back
+                saved = dict(d.__dict__)
+                d.__dict__.pop('_vlim', None)
+                F, _J = func(alt)
+                d.__dict__.clear()
+                d.__dict__.update(saved)
+                alts.append((float(np.asarray(alt, dtype=float)[0]),
+                             float(np.max(np.abs(np.asarray(F, dtype=float))))))
+            if wander is not None:
+                d.__dict__['_vlim'] = wander
+            return alt
+
+        def spy_scan(self, *a, **k):
+            gap = scan(*a, **k)
+            if wander is not None:
+                d.__dict__['_vlim'] = wander
+            return gap
+        tr._branch_confirm = types.MethodType(spy_confirm, tr)
+        tr._branch_coupled_scan = types.MethodType(spy_scan, tr)
+        x = np.zeros(cir.n)
+        x[cir.get_node_index('a')] = v0
+        x[cir.get_node_index('r')] = v0
+        tr.epar.t = 0.0
+        tr._begin_run(x, cir.n)
+        vl = []
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for j in range(1, npts + 1):
+                tr._dt_last = tr._dt if j > 1 else None
+                tr._dt = h
+                tr.epar.t = j * h
+                x, _f, _J, _ = tr.solve_timestep(x, j * h)
+                tr._push_history(x)
+                vl.append(float(d.__dict__['_vlim']))
+        return (np.asarray(x, dtype=float), vl, alts,
+                getattr(tr, 'branch_points', 0), getattr(tr, 'branch_screens', 0))
+
+    for cls in (Gear2Integrator, TrapezoidalIntegrator):
+        name = cls.__name__
+        x_off, v_off, _a, p_off, _s = march(cls, 'off')
+        x_on, v_on, alts, p_on, _s = march(cls, 'on')
+        ## the check ran, and fired, or this proves nothing
+        assert p_on > 0 and p_off == 0 and alts, (name, p_on, p_off, alts)
+        ## (1) every alternative it reports is a root of the step equation
+        for a, F in alts:
+            assert abs(a - v0) > 1e-6 and F < 1e-9, (name, a, F)
+        assert np.max(np.abs(x_on - x_off)) < 1e-12, (name, x_on, x_off)
+        assert v_on == v_off, (name, v_on, v_off)
+
+    ## (2) whatever the speculative solve leaves, the state goes back, on
+    ## both solve paths (the coupled one is radau's).  1.0536 is where the
+    ## unlimited solve's "alternative" sat, 0.2 V beyond the clamp's reach of
+    ## 0.85; 0 V is a junction a wandering Newton turned off.  (The coupled
+    ## path's old restore re-synced once PER STAGE, and three calls walk
+    ## back from 1.0536 -- 0.790, 0.821, 0.850 -- but not from 0 V.)
+    for cls in (Gear2Integrator, RadauIIA3Integrator):
+        name = cls.__name__
+        x_off, v_off, _a, _p, _s = march(cls, 'off')
+        for wander in (1.0536, 0.0):
+            x_on, v_on, _a, _p, screens = march(cls, 'on', wander=wander)
+            assert screens > 0, (name, screens)
+            assert v_on == v_off, (name, wander, v_on, v_off)
+            assert np.max(np.abs(x_on - x_off)) < 1e-12, (name, wander, x_on, x_off)
+
+
 def test_algebraic_conditioning_is_history_free_above_the_critical_voltage():
     """The re-sync `limit(x, x)` clamps against the STORED state, so from a
     stale one it lands short of `x` wherever the junction is above its
@@ -20932,7 +21066,7 @@ def test_algebraic_conditioning_is_history_free_above_the_critical_voltage():
 
 def test_algebraic_conditioning_leaves_the_limiting_state_as_it_found_it():
     """⚠⚠ "A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE
-    DID" -- recorded on `Transient._branch_restore_limits` about `branch_check`,
+    DID" -- recorded on `transient.py`'s branch check (`branch_check`),
     which left `_vlim` at a speculative solve's value and moved the NEXT step's
     Jacobian.  Making this routine's reading PURE required re-syncing the
     limiting state with `limit(x, x)`, so it now has the same obligation.
@@ -25104,6 +25238,59 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
         ## on `fb` (109 % with the tanh, whose tails sat outside the window)
         assert np.linalg.norm(Mx[:, i] - col) > 0.03 * np.linalg.norm(col), nm
 
+
+
+def test_a_staged_solve_reports_the_landed_map_on_every_kind(monkeypatch):
+    """After a state-event stage, `_monodromy` -- and so `spectral_radius`
+    -- is the map at the stage's final state on the LANDED grid: the total
+    map through the events when their columns are built, the grid-frozen
+    map when they cannot be (the one the unbordered consumers then use).
+
+    ⚠ It is written once, after the stage.  Before, the stage kind wrote a
+    partial map from inside the stage's Newton and gear's pair wrote none,
+    so with the column assembly failing gear reported STAGE 1's map, from
+    another grid and another orbit: measured on this loop, spectral radius
+    0.905 against the landed map's 0.730.  (With the columns built, both
+    kinds already reported the total map.)
+    """
+    import warnings as _w
+    from pycircuit.circuit.shooting import events as _events
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+
+    def solve(method):
+        cir = _pwm_loop(T)
+        p = PSS(cir, method=method, reltol=1e-8)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1),
+                    maxiterations=100, state_events=True)
+        assert p.converged, method
+        fp = p.factored_period()
+        Md = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                              for e in np.eye(fp.width)])
+        return p, Md, [str(r.message) for r in rec]
+
+    def rho(M):
+        return float(np.max(np.abs(np.linalg.eigvals(np.asarray(M, dtype=float)))))
+
+    for method in ('radau', 'gear'):
+        p, Md, _msgs = solve(method)
+        assert p._event_columns is not None, method
+        Mt = Md + (np.asarray(p._event_columns['P_end'], dtype=float)
+                   @ np.asarray(p._event_sensitivity, dtype=float))
+        assert np.max(np.abs(np.asarray(p._monodromy) - Mt)) < 1e-8 * np.max(np.abs(Mt)), method
+        assert abs(p.spectral_radius / rho(Mt) - 1.0) < 1e-9, (method, p.spectral_radius)
+
+    def refuse(*a, **k):
+        raise ValueError('forced')
+    monkeypatch.setattr(_events.EventColumns, 'from_capture', staticmethod(refuse))
+    for method in ('radau', 'gear'):
+        p, Md, msgs = solve(method)
+        assert p._event_columns is None, method
+        assert any('could not assemble its event columns' in m for m in msgs), (method, msgs)
+        assert np.max(np.abs(np.asarray(p._monodromy) - Md)) < 1e-8 * np.max(np.abs(Md)), method
+        assert abs(p.spectral_radius / rho(Md) - 1.0) < 1e-9, (method, p.spectral_radius, rho(Md))
 
 def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_and_is_exact():
     """Phase B of events-as-unknowns (2026-09-22): on a solve whose grid was

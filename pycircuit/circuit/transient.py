@@ -13,6 +13,7 @@ from numpy.linalg import LinAlgError
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
+from pycircuit.circuit._limiting import state_restore, state_snapshot
 ## The clamp the step controller applies to every accepted step.  The force-accept
 ## path in `solve()` is the one place that used to bypass it, and 4b's whole point
 ## is that it must not: one bound, named once.  `stepcontroller` imports nothing
@@ -1183,11 +1184,19 @@ class Transient(Analysis):
             for sign in (1.0, -1.0):
                 seed = xr + sign * mag * scale * np.asarray(direction,
                                                             dtype=float)
+                ## ⚠ WITH THE STEP'S OWN LIMITER.  Without it no
+                ## `cir.limit` runs, a stateful device (`Diode`) stays
+                ## linearised at the ACCEPTED point, and the solve and the
+                ## root test below both see that linearisation: measured, a
+                ## diode on the rank-dropping node at 0.85 V gave an
+                ## "alternative" with residual 0 there and 489 A in the
+                ## step equation itself.
                 try:
                     alt, _it = self._get_nrsolver().solve_system(
                         seed, func, self.toolkit, self.par.reltol,
                         self._newton_abstol_vector_reduced(),
-                        self._newton_xtol_vector_reduced(), self.par.maxiter)
+                        self._newton_xtol_vector_reduced(), self.par.maxiter,
+                        limiter=self._newton_limiter())
                 except Exception:                              # noqa: BLE001
                     continue
                 alt = np.asarray(alt, dtype=float)
@@ -1238,8 +1247,19 @@ class Transient(Analysis):
             if direction is not None:
                 direction = self.toolkit.concatenate(
                     (direction[:self.irefnode], direction[self.irefnode + 1:]))
-            alt = self._branch_confirm(func, x_res, direction)
-            self._branch_restore_limits([xf])
+            ## ⚠⚠ A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT.  Every
+            ## speculative solve writes the devices' limiting state (`Diode`'s
+            ## `_vlim`, which its `i` and `G` read), so the NEXT step would
+            ## start from the alternative's linearisation -- measured once:
+            ## `_vlim` 0.0 with the check off, 0.1017 with it on.  It goes
+            ## back EXACTLY, from a snapshot; the `limit(x, x)` re-sync this
+            ## used to do clamps against the stored state and lands short
+            ## above a junction's critical voltage (`state_snapshot`).
+            _snap = state_snapshot(self.cir)
+            try:
+                alt = self._branch_confirm(func, x_res, direction)
+            finally:
+                state_restore(_snap)
             if alt is None:
                 return
             self._branch_count('branch_points')
@@ -1324,13 +1344,14 @@ class Transient(Analysis):
                                                                dtype=float)))
                                       for Yi in Y])), 1.0)
             base = np.array([np.asarray(Yi, dtype=float) for Yi in Y])
+            _snap = state_snapshot(self.cir)
             try:
                 gap = self._branch_coupled_scan(stage_newton, seed0, base, d,
                                                 scale, residual)
             finally:
                 ## ⚠ ALWAYS, however the scan leaves: every speculative solve
                 ## has written the devices' limiting state
-                self._branch_restore_limits(list(base))
+                state_restore(_snap)
             if gap is None:
                 return
             self._branch_count('branch_points')
@@ -1428,31 +1449,6 @@ class Transient(Analysis):
                 self._branch_error = repr(exc)
             self.branch_check = 'off'
 
-    def _branch_restore_limits(self, states):
-        """Put every device's limiting state back where the ACCEPTED solution
-        leaves it.
-
-        ⚠⚠ A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT, AND THIS ONE
-        DID.  The confirmation re-solves the step from a perturbed seed, and
-        every solve path in this file calls `cir.limit`, which for a junction
-        device WRITES `_vlim` on the instance -- so a speculative solve leaves
-        the limiting state at the ALTERNATIVE's value.  `Diode.G` linearises
-        around `_vlim`, so the NEXT step's Jacobian is then taken at the wrong
-        point.  MEASURED on a rank-dropping circuit with a diode: `_vlim` read
-        0.0 with `branch_check='off'` and 0.1017 with it on, while the step's
-        own answer was unchanged -- a latent corruption that only bites once
-        the screen fires, which is why the suite never saw it.
-
-        `limit(x, x)` is the documented re-sync: it sets `_vlim` to `x` at zero
-        delta, exactly as the PCNR coupled step does at its own convergence.
-        """
-        try:
-            for st in states:
-                self.cir.limit(np.asarray(st, dtype=float),
-                               np.asarray(st, dtype=float), self.epar)
-        except Exception:                                      # noqa: BLE001
-            pass
-
     def _branch_count(self, name):
         """Count on `statistics` when there is one, on the instance otherwise
         -- a hand-driven march has no `statistics` object."""
@@ -1470,18 +1466,26 @@ class Transient(Analysis):
         (t,) = remove_row_col((t,), self.irefnode, self.toolkit)
         return t
 
+    def _newton_limiter(self):
+        """The device limiting the step's Newton applies, in reduced
+        coordinates: `cir.limit` on the full vector.  One definition for the
+        step's own Newton and the branch check's speculative one, which must
+        solve the same equation."""
+        def limiter_func(xr, x0r):
+            x = self.toolkit.insert(xr, self.irefnode, 0.0)
+            x0_full = self.toolkit.insert(x0r, self.irefnode, 0.0)
+
+            x = self.cir.limit(x, x0_full, self.epar)
+            return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
+        return limiter_func
+
     def _newton(self, func, x0):
         abstol = self._newton_abstol_vector()
         xtol = self._newton_xtol_vector()
         
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
         
-        def limiter_func(xr, x0r):
-            x = self.toolkit.insert(xr, self.irefnode, 0.0)
-            x0_full = self.toolkit.insert(x0r, self.irefnode, 0.0)
-            
-            x = self.cir.limit(x, x0_full, self.epar)
-            return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
+        limiter_func = self._newton_limiter()
 
         from pycircuit.circuit.nrsolver import NoConvergenceError
         solver = self._get_nrsolver()

@@ -6,6 +6,7 @@ from pycircuit.circuit.analysis import defaultepar
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
 import pycircuit.circuit.analysis as analysis
+from pycircuit.circuit._limiting import state_restore, state_snapshot
 
 
 ## Element classes the topological index criterion recognises.  Anything not
@@ -296,28 +297,6 @@ def topological_index(cir):
                    'provisional': bool(unclassified)}
 
 
-def _limit_state_snapshot(cir):
-    """Every element's instance dict, shallowly, so a diagnostic can put the
-    limiting state back exactly as it found it."""
-    out = []
-
-    def walk(c):
-        elems = getattr(c, 'elements', None)
-        if not elems:
-            return
-        for e in elems.values():
-            out.append((e, dict(e.__dict__)))
-            walk(e)
-    walk(cir)
-    return out
-
-
-def _limit_state_restore(snap):
-    for elem, saved in snap:
-        elem.__dict__.clear()
-        elem.__dict__.update(saved)
-
-
 def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
                            decades=8, flat_tol=1e-2, floor_k=1e3):
     """`(sigma, info)` — how well conditioned the circuit's ALGEBRAIC block is.
@@ -409,7 +388,7 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
     ## algebraic node at 0.8 V: `_vlim` 0.089 from a stored 0 V, and
     ## `sigma` 0.0210 against 0.990).  After `reset_state` the first
     ## `limit` starts the state AT `x`.
-    _snap = _limit_state_snapshot(cir)
+    _snap = state_snapshot(cir)
     try:
         cir.reset_state(epar)
         try:
@@ -419,7 +398,7 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
         Cm = np.asarray(cir.C(xv, epar), dtype=float)
         Gm = np.asarray(cir.G(xv, epar), dtype=float)
     finally:
-        _limit_state_restore(_snap)
+        state_restore(_snap)
     irn = cir.get_node_index(refnode)
     if irn is not None:
         Cm, Gm = remove_row_col((Cm, Gm), irn, analysis.numeric)

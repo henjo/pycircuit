@@ -199,21 +199,30 @@ class _StateEvents(object):
         fr_r = np.asarray(_hs_r, dtype=float) / float(T)
         self._grid_fracs = fr_r
         self._state_event_fracs = th
-        if attempt:
-            try:
-                _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, T)
-                hs_r = np.asarray(_hs_r, dtype=float)
-                tms_r = np.asarray(_tms_r, dtype=float)
-                M, P_end, P0 = columns(tms_r, hs_r, hsens_r)
+        ## ⚠ THE ONE WRITE OF `_monodromy` AFTER A STAGE, for every kind: the
+        ## map at the stage's final state on the landed grid -- the TOTAL map
+        ## through the events when their columns are built, the grid-frozen
+        ## map when not (the one the unbordered consumers then use), None
+        ## when neither can be formed.  History:
+        ## `doc/shooting_history.md`, `_finish_state_events`.
+        M = None
+        try:
+            _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, T)
+            hs_r = np.asarray(_hs_r, dtype=float)
+            tms_r = np.asarray(_tms_r, dtype=float)
+            M, P_end, P0 = columns(tms_r, hs_r, hsens_r)
+            if attempt:
                 ev = EventColumns.from_capture(self._captured, len(hs_r), m, P0,
                                                nodes_r, Wk, ck, P_end)
                 self._event_sensitivity = ev.dth
-                self._monodromy = M + P_end @ ev.dth
                 self._event_columns = ev
-            except (np.linalg.LinAlgError, ValueError, KeyError) as _exc:
+                M = M + P_end @ ev.dth
+        except (np.linalg.LinAlgError, ValueError, KeyError) as _exc:
+            if attempt:
                 warnings.warn('PSS: the state-event stage could not assemble its event '
                               'columns (%s); the bordered consumers run unbordered on '
                               'this solve.' % _exc, RuntimeWarning, stacklevel=3)
+        self._monodromy = M
         self.event_times = sorted(set([float(e) for e in self.event_times]
                                       + [float(t) for t in th]))
         return np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float)
@@ -258,13 +267,8 @@ class _StateEvents(object):
                                    self._stack_columns([pk[1] for pk in w.Pk])))
                         if len(w.Pk) else None)
             else:
-                ## ⚠ ONLY THE STAGE KIND LEAVES THIS MAP IN `_monodromy`;
-                ## gear's pair leaves the first stage's.  Neither is the
-                ## total monodromy through the events (`EventColumns`), so
-                ## the spectral radius reported after a staged solve comes
-                ## from a partial map either way.  Recorded, not decided
-                ## (2026-09-24).
-                self._monodromy = w.P
+                ## (`_monodromy` is written once, after the stage: see
+                ## `_finish_state_events`)
                 cols = self._stack_columns(w.Pk) if len(w.Pk) else None
             return (np.asarray(w.end(), dtype=float),
                     np.asarray(w.monodromy(), dtype=float), cols)

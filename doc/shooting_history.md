@@ -3638,6 +3638,18 @@ guessed.  Measured on the PWM loop: `M` 109 % off the finite
 difference of the staged period map, this 3.3e-8; the dominant
 multiplier 0.691 where `M` read 0.632.
 
+The one write of `_monodromy` (2026-09-24).  Until then the stage kind
+wrote a PARTIAL map from inside the stage's Newton (`evmap`, a remnant of
+the `_traverse_stage` view) and gear's pair wrote none, while this method
+overwrote both with the total map when the event columns were built.  So
+the normal path was consistent -- measured on the PWM loop, both kinds
+reported the total map (radau 6e-11, gear 5e-13 from `M + P_end dtheta`)
+-- and a comment in `evmap` saying "a partial map either way" was wrong.
+The failure path was not: with the column assembly failing, radau reported
+the grid-frozen map on the landed grid (0.698) and gear's pair STAGE 1's
+map, from another grid and another orbit (0.905 against the landed map's
+0.730).  Now this method writes it once, for every kind.
+
 ### `_state_event_stage`
 
 The docstring's opening, as it stood before the history moved out:

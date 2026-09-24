@@ -634,3 +634,37 @@ def element_targets(element, subx, subx0, epar, nodemap):
         vlim = float(out[ra] - out[rb])
         targets.append((int(nodemap[ra]), int(nodemap[rb]), vorig, vlim))
     return targets, limited
+
+
+def state_snapshot(cir):
+    """Every element's instance dict, shallowly, so a caller can put the
+    device state -- a stateful limiter's `_vlim` above all -- back EXACTLY
+    as it found it (`state_restore`).
+
+    ⚠ THIS, NOT `limit(x, x)`, IS HOW TO UNDO A SPECULATIVE EVALUATION.
+    `limit` clamps against the STORED state, so above a junction's critical
+    voltage it lands on `x` only from a state already near it -- measured on
+    a diode at 0.85 V (critical 0.790 V): from a speculative 1.054 V it
+    lands at 0.790, from 0.65 V at 0.706, from 0 V at 0.090.
+
+    Shallow is exact for what a Newton writes, which is attribute REBINDS
+    (`_vlim` and its caches); the one in-place mutation in the library,
+    `TLine.history`, happens in `accept_step`, after a step is accepted."""
+    out = []
+
+    def walk(c):
+        elems = getattr(c, 'elements', None)
+        if not elems:
+            return
+        for e in elems.values():
+            out.append((e, dict(e.__dict__)))
+            walk(e)
+    walk(cir)
+    return out
+
+
+def state_restore(snap):
+    """Put back what `state_snapshot` saw."""
+    for elem, saved in snap:
+        elem.__dict__.clear()
+        elem.__dict__.update(saved)
