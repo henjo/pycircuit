@@ -236,6 +236,14 @@ def periodic_spline_weights(t, T, breaks=None):
     return wt - np.asarray(B.T @ x).ravel()
 
 
+class _SolveRun(object):
+    """The state one `PSS.solve` carries between its phases (see `solve`):
+    set by `_solve_prepare`, extended by `_shoot`, read by the rest."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
 class FactoredPeriod(object):
     """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
 
@@ -266,6 +274,19 @@ class FactoredPeriod(object):
                  'times', 'T', 'open_at_x0', '_pss')
     ## 'glm' is the MULTIVALUE kind: width r*m, see `factored_period_glm`.
 
+    ## ONE CLASS PER KIND (2026-09-24): `FactoredPeriod(kind, ...)` builds the
+    ## subclass that kind names (`_PERIOD_KINDS`), and what differs between
+    ## the kinds -- how a direction seeds the per-step state, what the map
+    ## reads out of it, where a costate injection lands -- is that class's
+    ## own methods, where it was a four-way branch in each of seven.
+    ## Consumers ask what a map IS through these flags, not its kind string.
+    is_plain = is_pair = is_stage = is_glm = False
+
+    def __new__(cls, kind=None, *args, **kwargs):
+        if cls is FactoredPeriod and kind is not None:
+            cls = _PERIOD_KINDS[kind]
+        return object.__new__(cls)
+
     def __init__(self, kind, opening, steps, x_last, x_prev, pss,
                  times=None, T=None, open_at_x0=False):
         self.kind, self.opening, self.steps = kind, opening, steps
@@ -283,7 +304,7 @@ class FactoredPeriod(object):
         m = pss.cir.n - 1
         ## the solved-history map acts on the PAIR, the plain map on one
         ## state -- the same distinction `_monodromy` carries
-        self.width = 2 * m if kind == 'solved_history' else m
+        self.width = 2 * m if self.is_pair else m
 
     def matvec(self, v):
         """`M v`, real or complex, replaying the stored factors (the one
@@ -312,7 +333,7 @@ class FactoredPeriod(object):
         return self._pss._replay_transposed(self, v, collect=collect,
                                             inject=inject)
 
-    ## -- what differs between the kinds, in one place -----------------------
+    ## -- what differs between the kinds: one subclass each -----------------
     ##
     ## (2026-09-23) Every kind's map is `extract . step_N ... step_1 . seed`:
     ## the steps are objects with one algebra (`_StageStep`, `_LMMStep`,
@@ -321,24 +342,60 @@ class FactoredPeriod(object):
     ## map reads out of it, and where a costate injection lands.  The replays
     ## (`PSS._replay`, `_replay_transposed`, `_forced_replay`,
     ## `_forced_replay_transposed`, `_sideband_forced`) are one function each.
-
-    def _is_stage(self):
-        return self.kind in ('full', 'dirk')
-
-    def _is_lmm(self):
-        return self.kind in ('plain', 'solved_history')
+    ## The interface, defined by `_PlainPeriod`, `_PairPeriod`,
+    ## `_StagePeriod` and `_GLMPeriod`:
 
     def step_objects(self):
-        """The steps as objects that know their own algebra.  A stage step
-        is stored as one; an LMM step is its stored record plus the
-        capacitance ring the forward pass saw -- rebuilt here, `N`
-        references to matrices that already exist -- and its end time."""
-        if self._is_stage():
-            return self.steps
-        if self.kind == 'glm':
-            return [_GLMStep(st) for st in self.steps]
-        ring = (list(self.opening) if self.kind == 'solved_history'
-                else [self.opening[0], self.opening[0]])
+        """The steps as objects that know their own algebra."""
+        raise NotImplementedError
+
+    def seed(self, v):
+        """The per-step state the map starts from, for a direction `v` of
+        width `self.width`."""
+        raise NotImplementedError
+
+    def extract(self, c):
+        """What the map reads out of the final per-step state (width
+        `self.width`)."""
+        raise NotImplementedError
+
+    def node(self, c):
+        """The circuit state at the node a per-step state ends on (width
+        `m`) -- what a forced replay collects."""
+        raise NotImplementedError
+
+    def extract_T(self, v):
+        """The adjoint of `extract`: the final adjoint state for a seed
+        `v`."""
+        raise NotImplementedError
+
+    def seed_T(self, w):
+        """The adjoint of `seed`: back to a direction of width
+        `self.width`."""
+        raise NotImplementedError
+
+    def inject(self, w, x):
+        """A costate injection `x` at a node."""
+        raise NotImplementedError
+
+    def collected(self, w):
+        """The adjoint state at a node, as `matvec_transposed(collect=True)`
+        returns it; ``st[:m]`` is the circuit block under every map."""
+        raise NotImplementedError
+
+
+class _LMMPeriod(FactoredPeriod):
+    """A linear-multistep map, plain or gear's pair.  Its steps are stored
+    records ``(lu, C_new, alphas, b)`` and become `_LMMStep`s with the
+    capacitance ring the forward pass saw -- rebuilt here, `N` references to
+    matrices that already exist -- and each step's end time.  The per-step
+    state is ``(P_n, P_{n-1}, Pq_n)`` for both; they differ in how a
+    direction seeds it and what the map reads out.  A costate injection
+    lands on the circuit state ``P_n``."""
+    __slots__ = ()
+
+    def step_objects(self):
+        ring = self._ring()
         tms = self.times
         out = []
         for j, st in enumerate(self.steps):
@@ -347,27 +404,30 @@ class FactoredPeriod(object):
             ring = [st[1], ring[0]]
         return out
 
-    def seed(self, v):
-        """The per-step state the map starts from, for a direction `v` of
-        width `self.width`.
+    def node(self, c):
+        return c[0]
 
-        * gear's PAIR: ``(v_0, v_{-1})``, the companion current at zero
-          (``b = 0``);
-        * the PLAIN map: ``P = v`` in both ring slots, and ``Pq`` from THE
-          OPENING PAIR, not the loop's -- `_traverse` opens it right after the
-          MANUFACTURING step, order-dropped to Euler (``b = 0``), so in
-          practice at zero; using the loop's made the map 100 % wrong for
-          `trap`.  Plus the consistent-``iq_0`` seed (`_pq_seed_at_x0`,
-          `theta`), `None` for every other method;
-        * a GLM: the Nordsieck blocks, as columns."""
-        if self._is_stage():
-            return v
+    def inject(self, w, x):
+        return (w[0] + x, w[1], w[2])
+
+
+class _PlainPeriod(_LMMPeriod):
+    """The PLAIN map ('plain', width `m`): one entering state, both ring
+    slots opened on it.
+
+    Its `seed` takes ``Pq`` from THE OPENING PAIR, not the loop's -- the
+    walk opens it right after the MANUFACTURING step, order-dropped to Euler
+    (``b = 0``), so in practice at zero; using the loop's made the map 100 %
+    wrong for `trap`.  Plus the consistent-``iq_0`` seed (`_pq_seed_at_x0`,
+    `theta`), `None` for every other method."""
+    __slots__ = ()
+    is_plain = True
+
+    def _ring(self):
+        return [self.opening[0], self.opening[0]]
+
+    def seed(self, v):
         m = self._pss.cir.n - 1
-        if self.kind == 'glm':
-            return [v[k * m:(k + 1) * m].reshape(m, 1)
-                    for k in range(v.shape[0] // m)]
-        if self.kind == 'solved_history':
-            return (v[:m].copy(), v[m:].copy(), np.zeros(m, dtype=v.dtype))
         C_open, a_open, b_open, pq_open = self.opening
         Pq = (a_open[0] * (C_open @ v) if b_open
               else np.zeros(m, dtype=v.dtype))
@@ -376,43 +436,14 @@ class FactoredPeriod(object):
         return (v.copy(), v.copy(), Pq)
 
     def extract(self, c):
-        """What the map reads out of the final per-step state (width
-        `self.width`)."""
-        if self._is_stage():
-            return c
-        if self.kind == 'glm':
-            return np.concatenate([np.asarray(Pk).ravel() for Pk in c])
-        if self.kind == 'solved_history':
-            return np.concatenate((c[0], c[1]))
         return c[0]
 
-    def node(self, c):
-        """The circuit state at the node a per-step state ends on (width
-        `m`) -- what a forced replay collects."""
-        return c if self._is_stage() else c[0]
-
     def extract_T(self, v):
-        """The adjoint of `extract`: the final adjoint state for a seed
-        `v`."""
-        if self._is_stage():
-            return v
         m = self._pss.cir.n - 1
-        if self.kind == 'glm':
-            return [v[k * m:(k + 1) * m].copy() for k in range(v.shape[0] // m)]
-        if self.kind == 'solved_history':
-            return (v[:m].copy(), v[m:].copy(), np.zeros(m, dtype=v.dtype))
         return (v.copy(), np.zeros(m, dtype=v.dtype),
                 np.zeros(m, dtype=v.dtype))
 
     def seed_T(self, w):
-        """The adjoint of `seed`: back to a direction of width
-        `self.width`."""
-        if self._is_stage():
-            return w
-        if self.kind == 'glm':
-            return np.concatenate(w)
-        if self.kind == 'solved_history':
-            return np.concatenate((w[0], w[1]))
         ## ⚠ THE SEED'S COMPANION CURRENT IS ONLY DISCARDABLE WHEN IT DOES
         ## NOT DEPEND ON THE SEED: the forward map opens at `P = v`, `Pq =
         ## (a_0 C_open [b_open] + pq_open) v`, so the transpose closes at
@@ -426,31 +457,111 @@ class FactoredPeriod(object):
             out = out + pq_open.T @ w[2]
         return out
 
-    def inject(self, w, x):
-        """A costate injection `x` at a node: on the circuit state (``P_n``)
-        for an LMM or a stage map, on the whole Nordsieck vector for a
-        GLM."""
-        if self._is_stage():
-            return w + x
-        if self.kind == 'glm':
-            m = self._pss.cir.n - 1
-            x = np.asarray(x).ravel()
-            return [w[k] + x[k * m:(k + 1) * m] for k in range(len(w))]
-        return (w[0] + x, w[1], w[2])
+    def collected(self, w):
+        ## the circuit block (`m`): the plain map's `Pq` adjoint is a
+        ## companion term, not a state
+        return w[0].copy()
+
+
+class _PairPeriod(_LMMPeriod):
+    """Gear's solved-history PAIR ('solved_history', width `2m`): the
+    direction is ``(v_0, v_{-1})``, the companion current opens at zero
+    (``b = 0``), and the map reads out -- and collects -- both blocks.
+    ``st[:m]`` is the circuit block, as under every map."""
+    __slots__ = ()
+    is_pair = True
+
+    def _ring(self):
+        return list(self.opening)
+
+    def seed(self, v):
+        m = self._pss.cir.n - 1
+        return (v[:m].copy(), v[m:].copy(), np.zeros(m, dtype=v.dtype))
+
+    def extract(self, c):
+        return np.concatenate((c[0], c[1]))
+
+    extract_T = seed
+
+    def seed_T(self, w):
+        return np.concatenate((w[0], w[1]))
 
     def collected(self, w):
-        """The adjoint state at a node, as `matvec_transposed(collect=True)`
-        returns it: gear's PAIR (``2m``), the plain map's circuit block
-        (``m`` -- its `Pq` adjoint is a companion term, not a state), a
-        stage map's state, a GLM's Nordsieck vector.  ``st[:m]`` is the
-        circuit block under every map."""
-        if self._is_stage():
-            return w.copy()
-        if self.kind == 'glm':
-            return np.concatenate([x.copy() for x in w])
-        if self.kind == 'solved_history':
-            return np.concatenate((w[0].copy(), w[1].copy()))
-        return w[0].copy()
+        return np.concatenate((w[0].copy(), w[1].copy()))
+
+
+class _StagePeriod(FactoredPeriod):
+    """A Runge-Kutta stage map ('full' coupled, 'dirk' lower triangular,
+    width `m`): self-starting, stored as `_StageStep`s, and the per-step
+    state IS the direction -- nothing to seed, read out or split."""
+    __slots__ = ()
+    is_stage = True
+
+    def step_objects(self):
+        return self.steps
+
+    def seed(self, v):
+        return v
+
+    def extract(self, c):
+        return c
+
+    def node(self, c):
+        return c
+
+    def extract_T(self, v):
+        return v
+
+    def seed_T(self, w):
+        return w
+
+    def inject(self, w, x):
+        return w + x
+
+    def collected(self, w):
+        return w.copy()
+
+
+class _GLMPeriod(FactoredPeriod):
+    """A Nordsieck GLM's map ('glm', width ``r*m``): the per-step state is
+    the Nordsieck blocks as columns; a costate injection lands on the whole
+    Nordsieck vector; the circuit state at a node is its first block."""
+    __slots__ = ()
+    is_glm = True
+
+    def step_objects(self):
+        return [_GLMStep(st) for st in self.steps]
+
+    def seed(self, v):
+        m = self._pss.cir.n - 1
+        return [v[k * m:(k + 1) * m].reshape(m, 1)
+                for k in range(v.shape[0] // m)]
+
+    def extract(self, c):
+        return np.concatenate([np.asarray(Pk).ravel() for Pk in c])
+
+    def node(self, c):
+        return c[0]
+
+    def extract_T(self, v):
+        m = self._pss.cir.n - 1
+        return [v[k * m:(k + 1) * m].copy() for k in range(v.shape[0] // m)]
+
+    def seed_T(self, w):
+        return np.concatenate(w)
+
+    def inject(self, w, x):
+        m = self._pss.cir.n - 1
+        x = np.asarray(x).ravel()
+        return [w[k] + x[k * m:(k + 1) * m] for k in range(len(w))]
+
+    def collected(self, w):
+        return np.concatenate([x.copy() for x in w])
+
+
+_PERIOD_KINDS = {'plain': _PlainPeriod, 'solved_history': _PairPeriod,
+                 'full': _StagePeriod, 'dirk': _StagePeriod,
+                 'glm': _GLMPeriod}
 
 
 ## Bound once: `_lu_solve_split` runs once per step of every coupled replay
@@ -494,7 +605,7 @@ class _StageStep(object):
     ⚠ ONE COPY OF EVERY REPLAY (refactor E9 item 2, 2026-09-23).  The two
     structures had a copy each of the forward and transposed mat-vecs, the
     forced replay and its transpose, the sideband fold, the stage pass, the
-    stage-source response and the Lyapunov pieces, dispatched on `fp.kind`.
+    stage-source response and the Lyapunov pieces, dispatched on the map's class.
     They differ only inside `solve` and `adjoint`; the rest reads the stage
     costates those return and the step's OWN tableau (`A`, `b`, `c` -- the
     coupled replays read `par.method`'s, wrong for a `factored_period_stage`
@@ -6006,13 +6117,6 @@ class PSS(Analysis):
         return w.x0, w.x_end, w.P, (w.Pt if want_dT else None)
 
 
-    def _i_at(self, x_reduced):
-        """The reduced resistive current `i(x)` at a point."""
-        tr = self._transient()
-        i = tr.cir.i(self._insert_refnode(x_reduced), tr.epar)
-        iref = self.irefnode
-        return self.toolkit.concatenate((i[:iref], i[iref + 1:]))
-
     def _k_at(self, x_reduced, t=0.0):
         """The reduced STAGE DERIVATIVE `dq/dt = -(i(x) + u(t))` at a point --
         what the DIRK and coupled-Radau period columns need, and with `t`
@@ -6357,7 +6461,7 @@ class PSS(Analysis):
         ## The seed's scale is `w1(0) . xdot = 1`; the consistent object
         ## is renormalised ONCE by its own `v(0) . xdot`, which is why the
         ## per-step invariant is the test and not the definition.
-        if (fp.kind == 'solved_history' and len(states) > 0
+        if (fp.is_pair and len(states) > 0
                 and len(states[0]) == 2 * m):
             _cs1, _ring = [], list(fp.opening)
             for _lu, _Cn, _al, _b in fp.steps:
@@ -6936,7 +7040,7 @@ class PSS(Analysis):
         ## radau read as "exact on the 3:1 grid" -- its adjoint surfaces
         ## never saw that grid.
         if (getattr(self, '_ppv_alg_fallback', False)
-                and getattr(fp, 'kind', None) == 'solved_history'
+                and getattr(fp, 'is_pair', False)
                 and self._period_quadrature(fp) is not None):
             _tms = np.asarray(self.waveform[0], dtype=float)
             _qc = np.real(self._continuous_adjoint(fp, 1.0 + 0.0j, 0.0, _tms)[0])
@@ -7260,7 +7364,7 @@ class PSS(Analysis):
         ## `dirk`/`full` keep the dense route ABOVE it as well: there it is
         ## expensive, but the alternative is not slower, it is WRONG, and
         ## those paths have never had the truncated one.
-        _dense_ok = (fp.kind in ('dirk', 'full')
+        _dense_ok = (fp.is_stage
                      or n <= self.FLOQUET_DENSE_LIMIT)
         if _dense_ok:
             ## ⚠ THE STAGE MAP IS DENSE AND WIDTH `m`, so its exact spectrum
@@ -8898,7 +9002,7 @@ class PSS(Analysis):
             ## a 3:1 grid) and second order (trap); those keep their path.
             _e2, _tsolves, _st = fp.matvec_transposed(
                 vk, collect=True, inject=self._event_costate_injection(fp, vk, n))
-            _gear_pair = getattr(fp, 'kind', None) == 'solved_history'
+            _gear_pair = getattr(fp, 'is_pair', False)
             ## ⚠ GEAR ON A NON-UNIFORM GRID: THE TRANSPOSE IS FIRST ORDER AND
             ## NO RESCALING LIFTS IT, so the adjoint is integrated SEPARATELY
             ## there -- gated on STRUCTURE (a multistep pair on a grid whose
@@ -10715,6 +10819,30 @@ class PSS(Analysis):
         and a re-selecting callback fed the damping's cached trial row fails
         every 4x seed the consistent one solves.
         """
+        ## ONE SHOOTING SOLVE, IN ITS PHASES (2026-09-24: this was one
+        ## 1650-line body).  Each phase is a method with its own record; they
+        ## share the run's state through `run`.
+        run = self._solve_prepare(refnode, period, x0, timestep,
+                                  maxiterations, grid, matrix_free,
+                                  x0_unknown, tstab, break_events,
+                                  phase_rule, state_events)
+        self._shoot(run)
+        self._report_convergence(run)
+        X, walk, lte_seen = self._replay_orbit(run)
+        self._report_lte(run, lte_seen)
+        self._check_fundamental(X, walk, run.period)
+        tpss, fpss = self._orbit_results(run, X)
+        polished = self._closing_polish(run)
+        if polished is not None:
+            return polished
+        return InternalResultDict({'tpss': tpss, 'fpss': fpss})
+
+    def _solve_prepare(self, refnode, period, x0, timestep, maxiterations,
+                       grid, matrix_free, x0_unknown, tstab, break_events,
+                       phase_rule, state_events):
+        """`solve`, phase 1: validate, build the grid, decide autonomy and
+        the period column, seed (operating point, `tstab`), pin the phase,
+        choose the formulation.  Returns the run's state."""
         self._solve_kwargs = dict(refnode=refnode, maxiterations=maxiterations,
                                   matrix_free=matrix_free, tstab=tstab,
                                   period_seed=float(period))
@@ -10917,7 +11045,7 @@ class PSS(Analysis):
                     'inside a step and the solve is first order there. Use '
                     "method='radau' (best measured), or pass state_events=False "
                     'to silence this.' % (len(_rows), _method_se),
-                    RuntimeWarning, stacklevel=2)
+                    RuntimeWarning, stacklevel=3)
         ## the period-column convention for this solve (see the Parameter)
         _pc = str(getattr(self, '_force_period_column', None)
                   or getattr(self.par, 'period_column', 'auto'))
@@ -10959,50 +11087,6 @@ class PSS(Analysis):
                              % (phase_rule,))
         self.phase_rule = phase_rule
 
-        def _phase_row(x0_vec, tcol):
-            """The autonomous phase row at THIS iterate: `(k, residual)`.
-
-            `'reselect'` pins `k = argmax |dphi/dT|` over the `x_0` block at
-            the iterate's own value, so the residual is zero and the row
-            only fixes the step (`dz[k] = 0`); `'frozen'` compares the seed's
-            `k` against the seed's value.  See `solve`'s docstring."""
-            if phase_rule == 'reselect':
-                tc = np.abs(np.asarray(tcol, dtype=float).ravel()[:n - 1])
-                return int(np.argmax(tc)), 0.0
-            return (phase_k,
-                    float(np.asarray(x0_vec, dtype=float)[phase_k]) - phase_pin)
-
-        def _closing(x0, x_end, M, tms_):
-            """The fixed-period system at one iterate: ``F = x_0 - phi(x_0)``
-            (folded on the idtmod rows, see `_close_periodic`), ``J = I -
-            alpha M``."""
-            F = self._close_periodic(x0, x_end, tms_)
-            D = np.asarray(toolkit.eye(F.shape[0]))
-            return F, D - alpha * M
-
-        def _bordered(F, J, tcol, x0_vec, phase_col):
-            """The FREE-PERIOD system: the fixed-period one `(F, J)` bordered
-            by the period column and the phase row --
-
-                F = [ F ,  x0[k] - pinned ]
-                J = [[ J , -dphi/dT ],
-                     [ e_k^T ,  0   ]]
-
-            -- because without a phase condition the system is singular by
-            construction (every point on the orbit is a solution, so `I - M`
-            has a null direction along it).  `k` is chosen by `_phase_row`
-            from `phase_col`; the row pins only the `x_0` block, whatever the
-            width of `F` (gear's pair: one phase row still suffices)."""
-            w = len(F)
-            Jb = np.zeros((w + 1, w + 1))
-            Jb[:w, :w] = J
-            Jb[:w, w] = -np.asarray(tcol).ravel()
-            _k, _r = _phase_row(x0_vec, phase_col)
-            Jb[w, _k] = 1.0
-            Fb = np.zeros(w + 1)
-            Fb[:w] = F
-            Fb[w] = _r
-            return Fb, Jb
         if self.autonomous:
             ## An unseeded autonomous run starts at the origin, which IS a
             ## periodic solution -- the trivial one -- and the free-period
@@ -11240,6 +11324,73 @@ class PSS(Analysis):
         self.solved_history = solved_history
         xm1_ss = None
 
+        return _SolveRun(
+            refnode=refnode, period=period, x=x, dt=dt,
+            maxiterations=maxiterations, matrix_free=matrix_free,
+            x0_unknown=x0_unknown, phase_rule=phase_rule,
+            state_events=state_events, irefnode=irefnode, n=n, times=times,
+            hs=hs, npts=npts, alpha=alpha, phase_k=phase_k,
+            phase_pin=phase_pin, method=method,
+            solved_history=solved_history, xm1_ss=xm1_ss)
+
+    def _shoot(self, run):
+        """`solve`, phase 2: THE SHOOTING NEWTON -- the fixed-period or
+        free-period system on the method's period map (dense or matrix-free),
+        then the state-event stage.  Leaves the solution in `run`."""
+        toolkit = self.toolkit
+        (n, x, period, times, hs, npts, alpha, irefnode) = (
+            run.n, run.x, run.period, run.times, run.hs, run.npts, run.alpha,
+            run.irefnode)
+        (x0_unknown, solved_history, method, phase_rule, phase_k,
+         phase_pin) = (run.x0_unknown, run.solved_history, run.method,
+                       run.phase_rule, run.phase_k, run.phase_pin)
+        (maxiterations, matrix_free, state_events, xm1_ss) = (
+            run.maxiterations, run.matrix_free, run.state_events, run.xm1_ss)
+
+        def _phase_row(x0_vec, tcol):
+            """The autonomous phase row at THIS iterate: `(k, residual)`.
+
+            `'reselect'` pins `k = argmax |dphi/dT|` over the `x_0` block at
+            the iterate's own value, so the residual is zero and the row
+            only fixes the step (`dz[k] = 0`); `'frozen'` compares the seed's
+            `k` against the seed's value.  See `solve`'s docstring."""
+            if phase_rule == 'reselect':
+                tc = np.abs(np.asarray(tcol, dtype=float).ravel()[:n - 1])
+                return int(np.argmax(tc)), 0.0
+            return (phase_k,
+                    float(np.asarray(x0_vec, dtype=float)[phase_k]) - phase_pin)
+
+        def _closing(x0, x_end, M, tms_):
+            """The fixed-period system at one iterate: ``F = x_0 - phi(x_0)``
+            (folded on the idtmod rows, see `_close_periodic`), ``J = I -
+            alpha M``."""
+            F = self._close_periodic(x0, x_end, tms_)
+            D = np.asarray(toolkit.eye(F.shape[0]))
+            return F, D - alpha * M
+
+        def _bordered(F, J, tcol, x0_vec, phase_col):
+            """The FREE-PERIOD system: the fixed-period one `(F, J)` bordered
+            by the period column and the phase row --
+
+                F = [ F ,  x0[k] - pinned ]
+                J = [[ J , -dphi/dT ],
+                     [ e_k^T ,  0   ]]
+
+            -- because without a phase condition the system is singular by
+            construction (every point on the orbit is a solution, so `I - M`
+            has a null direction along it).  `k` is chosen by `_phase_row`
+            from `phase_col`; the row pins only the `x_0` block, whatever the
+            width of `F` (gear's pair: one phase row still suffices)."""
+            w = len(F)
+            Jb = np.zeros((w + 1, w + 1))
+            Jb[:w, :w] = J
+            Jb[:w, w] = -np.asarray(tcol).ravel()
+            _k, _r = _phase_row(x0_vec, phase_col)
+            Jb[w, _k] = 1.0
+            Fb = np.zeros(w + 1)
+            Fb[:w] = F
+            Fb[w] = _r
+            return Fb, Jb
         ## THE SHOOTING JACOBIAN FOLLOWS THE INTEGRATOR'S OWN COEFFICIENTS.
         ##
         ## Backward Euler's per-step sensitivity is
@@ -11499,6 +11650,15 @@ class PSS(Analysis):
         x0_ss = z_ss[:m]
         if _kind == 'pair':
             xm1_ss = z_ss[m:]
+        run.period, run.times, run.hs = period, times, hs
+        run.x0_ss, run.xm1_ss = x0_ss, xm1_ss
+        run.info, run.ier = _info, _ier
+
+    def _report_convergence(self, run):
+        """`solve`, phase 3: the convergence flag, the stalled-step and
+        non-convergence diagnostics, the Floquet report."""
+        _ier, _info = run.ier, run.info
+        maxiterations, method = run.maxiterations, run.method
         self.converged = (_ier == 1)
         ## ⚠ WHY A SOLVE THAT HAD STOPPED MOVING STILL FAILED (see `fsolve`'s
         ## `floor_detect`: counted there, never acted on).  The generic
@@ -11525,7 +11685,7 @@ class PSS(Analysis):
                 'null direction; check `spectral_radius`.'
                 % (_sf['since'], _sf['index'], _sf['step'], _sf['tol'],
                    _sf['ratio'], _sf['step']),
-                RuntimeWarning, stacklevel=2)
+                RuntimeWarning, stacklevel=3)
         self.shooting_iterations = maxiterations if not self.converged else None
         ## ⚠ AN AUTONOMOUS OSCILLATOR CANNOT BE SOLVED AT A FIXED PERIOD,
         ## and this is the only place it says so.
@@ -11604,8 +11764,16 @@ class PSS(Analysis):
                 'state -- so a reader who does not check `converged` gets '
                 'an array that looks like an answer and is not. %s'
                 % (maxiterations, method, _advice),
-                RuntimeWarning, stacklevel=2)
+                RuntimeWarning, stacklevel=3)
         
+
+    def _replay_orbit(self, run):
+        """`solve`, phase 4: replay the CONVERGED period the way the solve
+        opened it, collecting the per-step LTE.  Returns ``(X, walk,
+        lte_seen)`` -- the states, the `(t, h)` pairs, the LTE readings."""
+        (solved_history, x0_ss, xm1_ss, times, hs, period, x0_unknown,
+         method) = (run.solved_history, run.x0_ss, run.xm1_ss, run.times,
+                    run.hs, run.period, run.x0_unknown, run.method)
         ## THE THIRD LEVEL, MEASURED ON THE WAY OUT.
         ##
         ## ⚠ WHY THE NESTING WORKS AT ALL, which this docstring stated the
@@ -11738,6 +11906,12 @@ class PSS(Analysis):
             X.append(copy(x))
         self._want_lte = False
 
+        return X, walk, lte_seen
+
+    def _report_lte(self, run, lte_seen):
+        """`solve`, phase 5: the three truncation-error figures and their
+        warning."""
+        method, npts = run.method, run.npts
         ## THREE NUMBERS, BECAUSE THEY HAVE DIFFERENT REMEDIES.
         ##
         ## `max_lte` is the INTERIOR per-step peak -- steps whose estimator
@@ -11839,12 +12013,11 @@ class PSS(Analysis):
                    else '%.3g' % self.total_lte,
                    'n/a' if self.max_lte_seam is None
                    else '%.3g' % self.max_lte_seam),
-                RuntimeWarning, stacklevel=2)
+                RuntimeWarning, stacklevel=3)
 
-        ## ⚠ THE PLAIN PATH'S FIRST ENTRY IS A SEED, THE OTHER PATH'S IS A
-        ## SOLUTION.  Plain takes N steps from `x0_ss` and reports their
-        ## results; the other starts AT `x_0` and takes N-1, so dropping the
-        ## first would drop a real point and shift the waveform by a step.
+    def _check_fundamental(self, X, walk, period):
+        """`solve`, phase 6: warn when an autonomous solve returned a
+        MULTIPLE of the fundamental (sets `fundamental_period`)."""
         ## ⚠ AN AUTONOMOUS PERIOD IS ONLY DETERMINED UP TO AN INTEGER
         ## MULTIPLE, AND THE SOLVE FOLLOWS THE SEED.
         ##
@@ -11941,8 +12114,18 @@ class PSS(Analysis):
                        self.fundamental_period, period,
                        period / self.fundamental_period,
                        self.fundamental_period),
-                    RuntimeWarning, stacklevel=2)
+                    RuntimeWarning, stacklevel=3)
 
+    def _orbit_results(self, run, X):
+        """`solve`, phase 7: the reported waveform (`self.waveform`) and the
+        two results, `tpss` in time and `fpss` in frequency."""
+        toolkit = self.toolkit
+        (times, irefnode, solved_history, x0_unknown) = (
+            run.times, run.irefnode, run.solved_history, run.x0_unknown)
+        ## ⚠ THE PLAIN PATH'S FIRST ENTRY IS A SEED, THE OTHER PATH'S IS A
+        ## SOLUTION.  Plain takes N steps from `x0_ss` and reports their
+        ## results; the other starts AT `x_0` and takes N-1, so dropping the
+        ## first would drop a real point and shift the waveform by a step.
         ## ⚠ THE FIRST ENTRY IS DROPPED ONLY WHEN IT IS NOT PART OF THE
         ## PERIOD.  On the default plain path `X[0]` is `x_in`, the
         ## pre-image of the manufactured step, which sits one step BEFORE
@@ -12008,6 +12191,16 @@ class PSS(Analysis):
                                       sweep_values=freqs, sweep_label='freq', 
                                       sweep_unit='Hz')
         
+        return tpss, fpss
+
+    def _closing_polish(self, run):
+        """`solve`, phase 8: after a 'closing' free-period solve, solve once
+        more proportionally on the caller's fractions from the converged
+        state, and return THAT result; None when no second pass is due."""
+        (refnode, period, hs, x0_ss, maxiterations, matrix_free, x0_unknown,
+         phase_rule) = (run.refnode, run.period, run.hs, run.x0_ss,
+                        run.maxiterations, run.matrix_free, run.x0_unknown,
+                        run.phase_rule)
         ## ⚠ THE SECOND PASS (2026-09-21).  'closing' keeps a caller's inner
         ## steps where the transient validated them, so the free-period
         ## Newton converges from a seed period 16 % off where 'proportional'
@@ -12044,7 +12237,7 @@ class PSS(Analysis):
                     'solving once more on that grid re-fractioned at the '
                     'solved period (proportional), from the converged state.'
                     % (_r, float(self._solve_kwargs.get('period_seed', period)),
-                       float(period)), RuntimeWarning, stacklevel=2)
+                       float(period)), RuntimeWarning, stacklevel=3)
             ## ⚠ ON THE CALLER'S FRACTIONS, not the closing-distorted grid:
             ## re-fractioning THAT grid keeps the giant last step (measured:
             ## trbdf2 -1.1 % in period, c -97 %, second pass or not)
@@ -12065,7 +12258,6 @@ class PSS(Analysis):
             finally:
                 self._closing_second_pass = False
                 self._force_period_column = None
-        return InternalResultDict({'tpss': tpss, 'fpss': fpss})
 
 class SidebandResponse(object):
     """Every input band that lands on ONE output frequency.
@@ -12908,7 +13100,7 @@ class PAC(Analysis):
         ## So this is a silent order loss for a caller who did nothing
         ## wrong, which is the one thing worth a warning.  Gear-2 takes the
         ## solved-history path and has no manufacturing step at all.
-        if (fp.kind == 'plain' and not fp.open_at_x0
+        if (fp.is_plain and not fp.open_at_x0
                 and pss.par.method != 'euler'):
             warnings.warn(
                 'PAC: this operating point was solved on the PLAIN path '
@@ -13287,8 +13479,8 @@ class PAC(Analysis):
             ## unbordered, pnoise on a staged gear solve was 10-15 % off.
             _autonomous = getattr(pss, 'autonomous', False)
             _ev = EventColumns.of(pss)
-            if _ev is not None and not (fp.kind in ('full', 'dirk')
-                                        or (fp.kind == 'solved_history' and not _autonomous)):
+            if _ev is not None and not (fp.is_stage
+                                        or (fp.is_pair and not _autonomous)):
                 _ev = None
             if _ev is not None:
                 _wq = pss._period_quadrature(fp)
@@ -14862,11 +15054,11 @@ class PAC(Analysis):
         """
         self._refuse_coloured(pss, what)
         fp = pss.factored_period()
-        if fp.kind in ('full', 'dirk'):
+        if fp.is_stage:
             ## the stage method's per-step map + its stage injection (or the
             ## SAME exact Van Loan integral) -- see `_lyapunov_pieces_stage`
             return self._lyapunov_pieces_stage(pss, fp, what)
-        if fp.kind != 'solved_history':
+        if not fp.is_pair:
             return self._lyapunov_pieces_plain(pss, fp, what)
         m = pss.cir.n - 1
         n = fp.width
@@ -15239,7 +15431,7 @@ class PAC(Analysis):
         m = pss.cir.n - 1
         tms = np.asarray(fp.times, dtype=float)
         h = float(tms[k + 1] - tms[k])
-        if fp.kind not in ('full', 'dirk'):
+        if not fp.is_stage:
             return None
         st = fp.steps[k]
         bvec, cvec = st.b, st.c
@@ -16030,14 +16222,14 @@ class PAC(Analysis):
                 'cyclostationary sample series (see covariance()). Use '
                 'oscillator_spectrum or modal_spectrum.')
         fp = pss.factored_period()
-        if fp.kind not in ('solved_history', 'plain', 'dirk', 'full'):
+        if fp.is_glm:
             raise NotImplementedError(
                 "PAC.sampled_noise: the period map is '%s' (method %r); the "
                 'seeded reverse pass exists for the linear multistep (gear, '
                 'euler, trap) and stage (trbdf2 and other DIRKs, radau) maps, '
                 "not for a multivalue GLM. Solve the PSS with method='radau' "
                 "or 'gear'." % (fp.kind, getattr(pss.par, 'method', None)))
-        stage = fp.kind in ('dirk', 'full')
+        stage = fp.is_stage
         T = float(fp.T)
         f0 = 1.0 / T
         tms = np.asarray(fp.times, dtype=float)

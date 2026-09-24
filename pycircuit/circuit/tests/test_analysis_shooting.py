@@ -300,11 +300,13 @@ def test_pss_uses_a_solve_not_an_explicit_inverse():
     """
     import inspect
     from pycircuit.circuit import shooting
-    ## Both, because the accumulation moved out of `solve` into `_traverse`
-    ## when the autonomous system began sharing the period map -- a source
-    ## check has to follow the code it is about.
-    src = (inspect.getsource(shooting.PSS.solve)
-           + inspect.getsource(shooting.PSS._traverse))
+    ## A source check has to follow the code it is about: the accumulation
+    ## moved out of `solve` into `_traverse` when the autonomous system began
+    ## sharing the period map, and into `_walk_lmm` / `_lmm_recursion` when the
+    ## walks merged (2026-09-24) -- after which this read `solve` and a
+    ## five-line view, and passed without looking at the recursion at all.
+    src = (inspect.getsource(shooting.PSS._walk_lmm)
+           + inspect.getsource(shooting._lmm_recursion))
     assert 'linalg.inv' not in src, 'the explicit inverse is back'
     assert 'linearsolver' in src
 
@@ -374,7 +376,9 @@ def _shooting_trace(method, reltol=1e-4, maxiterations=30):
     trace, orig = [], _an.fsolve
 
     def spy(f, x0, *a, **kw):
-        if f.__qualname__ != 'PSS.solve.<locals>.func':
+        ## the shooting Newton's residual -- a closure of `PSS._shoot`, the
+        ## Newton phase of `solve` since 2026-09-24
+        if f.__qualname__ != 'PSS._shoot.<locals>.func':
             return orig(f, x0, *a, **kw)
 
         def logged(x, *aa):
@@ -553,7 +557,9 @@ def test_steadyratio_relates_the_shooting_criterion_to_reltol():
     trace, orig = [], _an.fsolve
 
     def spy(f, x0, *a, **kw):
-        if f.__qualname__ != 'PSS.solve.<locals>.func':
+        ## the shooting Newton's residual -- a closure of `PSS._shoot`, the
+        ## Newton phase of `solve` since 2026-09-24
+        if f.__qualname__ != 'PSS._shoot.<locals>.func':
             return orig(f, x0, *a, **kw)
 
         def logged(x, *aa):
@@ -15746,7 +15752,9 @@ def _shooting_evaluations(method, K, T, **kw):
     pts, resid, box, orig = [], [], {}, _an.fsolve
 
     def spy(f, x0, *a, **kwa):
-        if 'PSS.solve' not in f.__qualname__:
+        ## the shooting Newton's residuals (fixed and free period) are
+        ## closures of `PSS._shoot`, the Newton phase of `solve`
+        if 'PSS._shoot' not in f.__qualname__:
             return orig(f, x0, *a, **kwa)
         box['f'] = f
 
