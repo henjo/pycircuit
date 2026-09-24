@@ -775,3 +775,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260923T215143Z,647282d,pycircuit/circuit/tests/test_analysis_shooting.py solved_history,3.8,3,pycircuit/circuit/tests/test_analysis_shooting.py::test_pss_solved_history_removes_the_gear2_seam,1.7
 20260923T221501Z,647282d,pycircuit pcnr or provided_function or residual_and_jacobian,57.3,168,pycircuit/circuit/tests/test_jax_continuation.py::test_vector_pcnr_traces_with_the_chain_armed,34.7
 20260923T223214Z,a741e9a,tran_recorder pycircuit,1025.4,3306,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,274.5
+20260924T051454Z,cb42317,pycircuit/circuit/tests/test_analysis_shooting.py solved_history or pair_map_not_a_corner or seam or plain or companion_it_cannot,41.4,15,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_plain_transposed_replay_matches_a_dense_transpose,36.5
+20260924T054055Z,cb42317,pycircuit,1029.5,3306,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,272.9

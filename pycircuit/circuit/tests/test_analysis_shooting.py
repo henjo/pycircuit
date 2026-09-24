@@ -963,6 +963,20 @@ def _pss_lte(method, timestep=1e-5, reltol=1e-3, **kw):
     return peak, pss
 
 
+def _force_plain_map(pss):
+    """Run `pss` on the PLAIN map where it would solve for gear's pair --
+    the OLD formulation, one entering unknown with `x_{-1}` manufactured by
+    an order-dropped step -- and leave every other kind alone.  Overrides
+    `PSS._map_kind`, the one place the map's kind is decided, so everything
+    that asks (`_solves_history`, the Newton, `factored_period`) sees the
+    same answer.  A test-level override on purpose, not a Parameter: a user
+    has no reason to ask for the formulation that measured 1.266e-01 V of
+    avoidable error."""
+    kind = pss._map_kind()
+    pss._map_kind = lambda: 'plain' if kind == 'pair' else kind
+    return pss
+
+
 def _pss_plain(method, timestep=1e-5, reltol=1e-3, **kw):
     """Force the pre-augmentation formulation, where a seam can exist.
 
@@ -975,8 +989,7 @@ def _pss_plain(method, timestep=1e-5, reltol=1e-3, **kw):
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
-    pss = PSS(_q20_rlc(), method=method, reltol=reltol, **kw)
-    pss._solves_history = lambda: False
+    pss = _force_plain_map(PSS(_q20_rlc(), method=method, reltol=reltol, **kw))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         res = pss.solve(period=1e-3, timestep=timestep, maxiterations=40)
@@ -1253,7 +1266,7 @@ def test_pss_solved_history_jacobian_is_the_exact_one():
             return orig(wrapped, x0, *a, **kw)
         pss = PSS(_q20_rlc(), method='gear', reltol=1e-9)
         if force_plain:
-            pss._solves_history = lambda: False
+            _force_plain_map(pss)
         _an.fsolve = spy
         try:
             with warnings.catch_warnings():
@@ -1558,7 +1571,7 @@ def test_the_monodromy_is_the_pair_map_not_a_corner_of_it():
     def rho(method, force_plain):
         pss = PSS(_q20_rlc(), method=method, reltol=1e-9)
         if force_plain:
-            pss._solves_history = lambda: False
+            _force_plain_map(pss)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)

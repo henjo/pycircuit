@@ -4998,7 +4998,7 @@ class PSS(Analysis):
         ## The right second unknown for a `b != 0` method is `iq_{-1}`
         ## ITSELF -- the `(x, iq)` state its monodromy already uses -- with
         ## the closure `iq_{-1} = iq_{N-1}`.  See item 5's note; not built.
-        return self._companion_reach() >= 2
+        return self._map_kind() == 'pair'
 
     def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new, solve=None,
                           coeffs=None, source=None):
@@ -5074,15 +5074,15 @@ class PSS(Analysis):
         * 'stage': a self-starting Runge-Kutta method (`_walk_stage`);
         * 'glm':   a Nordsieck multivalue method (`_glm_period_blocks`).
 
-        Asked of the integrator, never inferred from the method's name; the
-        multistep split is `_solves_history`'s (one place to override it --
-        `test_pss_solved_history_jacobian_is_the_exact_one` forces the plain
-        map through it)."""
+        Asked of the integrator, never inferred from the method's name.
+        `_solves_history` is this decision's answer for 'pair', and this is
+        the one place to override it: the tests that run Gear-2 on the old
+        plain formulation do it here (`_force_plain_map`)."""
         integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
         if integ.is_stage_method():
             return ('glm' if getattr(integ, 'is_multivalue', lambda: False)()
                     else 'stage')
-        return 'pair' if self._solves_history() else 'plain'
+        return 'pair' if integ.companion_reach() >= 2 else 'plain'
 
     def _walk(self, kind, z, times, hs, T=None, dense=True, keep=False,
               want_dT=False, hsens=None, capture=None, open_at_x0=False):
