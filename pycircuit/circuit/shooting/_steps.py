@@ -29,14 +29,15 @@ class _StageStep(object):
       solved for).  The coupled block would be singular there on a DAE
       (``J[0][0] = C``), which is why the two are not one factorisation.
 
-    ⚠ ONE COPY OF EVERY REPLAY (refactor E9 item 2, 2026-09-23).  The two
-    structures had a copy each of the forward and transposed mat-vecs, the
-    forced replay and its transpose, the sideband fold, the stage pass, the
-    stage-source response and the Lyapunov pieces, dispatched on the map's class.
-    They differ only inside `solve` and `adjoint`; the rest reads the stage
-    costates those return and the step's OWN tableau (`A`, `b`, `c` -- the
-    coupled replays read `par.method`'s, wrong for a `factored_period_stage`
+    ⚠ ONE COPY OF EVERY REPLAY.  The two structures differ only inside
+    `solve` and `adjoint`; everything else -- the forward and transposed
+    mat-vecs, the forced replay and its transpose, the sideband fold, the
+    stage pass, the stage-source response and the Lyapunov pieces -- reads
+    the stage costates those return and the step's OWN tableau (`A`, `b`,
+    `c`; never `par.method`'s, which is wrong for a `factored_period_stage`
     built with another `method=`).
+
+    History: `doc/shooting_history.md`, `_StageStep`.
     """
 
     __slots__ = ('Cn', 'Gs', 'h', 'A', 'b', 'c', 'lu', 'Kf', 'm', 's')
@@ -198,10 +199,8 @@ class _LMMStep(object):
     ``(P_n, P_{n-1})`` for gear's -- is the `FactoredPeriod`'s business, and
     so is the opening; the step algebra is one.
 
-    ⚠ ONE TRANSPOSE FOR EVERY COMPANION (2026-09-23).  The plain map had a
-    reverse recursion derived for a ONE-STEP companion and refused anything
-    else; gear's pair had its own, for ``b = 0``, and refused anything else.
-    Both are this: with ``(w1, w2, w3)`` the adjoints of ``(P_n, P_{n-1},
+    ⚠ ONE TRANSPOSE FOR EVERY COMPANION, the plain map's and gear's pair
+    alike: with ``(w1, w2, w3)`` the adjoints of ``(P_n, P_{n-1},
     Pq_n)``,
 
         Sbar  = w3 - Jf^-T (w1 + a_0 C_n^T w3)
@@ -210,7 +209,9 @@ class _LMMStep(object):
 
     -- trap's shared bracket (``b != 0``, one-step) and gear's ``(-a_1 C^T t
     + w2, -a_2 C^T t)`` (``b = 0``, ``Sbar = -t``) are its two special cases,
-    operation for operation."""
+    operation for operation.
+
+    History: `doc/shooting_history.md`, `_LMMStep`."""
 
     __slots__ = ('lu', 'C_new', 'alphas', 'b', 'C1', 'C2', 't_end')
 

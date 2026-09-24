@@ -22,52 +22,18 @@ class _AccuracyChecks(object):
         the method `self.monodromy` names, solved once on the SAME grid from
         this orbit's converged state and cached.
 
-        ⚠⚠ THE TWIN DEFAULTS TO TR-BDF2, MEASURED (2026-09-05), and Gear-2
-        is one setting away, not retired.  The twin exists because trap's
-        and euler's own monodromy is unusable on a limit cycle: trap's
-        diverges with refinement (B16, below) and euler's is first order.
-        Both TR-BDF2 and Gear-2 give a clean second-order twin, but TR-BDF2
-        is more accurate on `lambda2` -- measured against exact references
-        (`exp(A T)` on a linear oscillator; Abel's `exp(mu integral(1-v^2))`
-        on van der Pol) it is 12-32x better at practical step counts, and
-        the advantage GROWS with Q and with coarser grids -- the regime a
-        real oscillator PSS sits in.  At Q=100 and 50 points/period the
-        Gear-2 twin misreads Q by 22%, the TR-BDF2 twin by 0.27%.  The gap
-        is a coarse-grid/high-Q effect, not a fixed factor: refine the grid
-        or drop Q and both fall to the ordinary O(h^2) floor where the
-        difference is single digits and can even favour Gear-2.  So
-        `monodromy = 'trbdf2'` is the default, `'gear'` restores the former
-        twin, `'native'` reads the run's own.
+        The twin defaults to TR-BDF2 (`monodromy='trbdf2'`, the more
+        accurate on `lambda2` at coarse grids and high Q); `'gear'` selects
+        a Gear-2 twin and `'native'` reads the run's own.  Trap's and
+        euler's own monodromy is unusable on a limit cycle (trap's diverges
+        with refinement, with either opener; euler's is first order), so
+        the STATE keeps the method you asked for and every
+        monodromy-derived quantity -- `Q`, the PPV and everything built on
+        it, the Floquet modes, the phase-noise surfaces -- comes from the
+        twin on the same orbit, re-converged rather than copied (its period
+        differs from this one's by O(h^2)).
 
-        ⚠⚠ THE B16 DECISION, TAKEN ON A MEASUREMENT (2026-09-05).  On the
-        bias-sensitive oscillator (`vdp + 0.3 u^2`, exact `Q_lambda =
-        5.908`, `c_true = 5.3703e-06`) trapezoidal's monodromy is unusable
-        with EITHER opener: the default reads `Q_lambda` 11.1 / 28.4 / 63.9
-        at 400/800/1600 points and DIVERGES with refinement, and
-        `x0_unknown=True` reads 3086 / 12228 / 48699 -- a spurious
-        multiplier at 1 (the one-step companion's parasitic mode), while
-        the state and period are second order either way.  So "the most
-        accurate" is not a choice between openers: the STATE keeps the
-        method you asked for, and every monodromy-derived quantity -- `Q`,
-        the PPV and everything built on it, the Floquet modes, the
-        phase-noise surfaces -- comes from the twin on the same orbit.  The
-        twin's period differs from this one's by O(h^2); its orbit is
-        re-converged, not copied.
-
-        ⚠⚠ THE B16 DECISION, TAKEN ON A MEASUREMENT (2026-09-05).  On the
-        bias-sensitive oscillator (`vdp + 0.3 u^2`, exact `Q_lambda =
-        5.908`, `c_true = 5.3703e-06`) trapezoidal's monodromy is unusable
-        with EITHER opener: the default reads `Q_lambda` 11.1 / 28.4 / 63.9
-        at 400/800/1600 points and DIVERGES with refinement, and
-        `x0_unknown=True` reads 3086 / 12228 / 48699 -- a spurious
-        multiplier at 1 (the one-step companion's parasitic mode), while
-        the state and period are second order either way.  Gear-2 reads
-        5.9094 / 5.9086 / 5.9084.  So "the most accurate" is not a choice
-        between openers: the STATE keeps the method you asked for, and
-        every monodromy-derived quantity -- `Q`, the PPV and everything
-        built on it, the Floquet modes, the phase-noise surfaces -- comes
-        from Gear-2 on the same orbit.  The twin's period differs from
-        this one's by O(h^2); its orbit is re-converged, not copied.
+        History: `doc/shooting_history.md`, `_AccuracyChecks.monodromy_twin`.
         """
         mono = getattr(self, 'monodromy', 'trbdf2')
         if mono not in ('trbdf2', 'gear', 'native'):
@@ -78,17 +44,12 @@ class _AccuracyChecks(object):
         if (mono == 'native'
                 or _integ.carries_own_monodromy()
                 or not getattr(self, 'autonomous', False)):
-            ## ⚠ SELF-SUFFICIENT METHODS TAKE NO TWIN, and the method says which
-            ## it is (`carries_own_monodromy`): Gear-2 (a second-order native
-            ## companion monodromy) and every stage method (TR-BDF2, Radau -- no
-            ## opener seam, verified against the pencil).  This twin exists only
-            ## because a one-step LMM's monodromy is first-order on a limit
-            ## cycle (its manufactured opener is dropped to Euler and that seam
-            ## sits in the period map); twinning a self-sufficient method would
-            ## replace its own map with another on a re-converged orbit -- pure
-            ## cost -- and hide the run's own spectrum.  They read `native`
-            ## regardless of `monodromy`; the knob governs which twin trap/euler
-            ## borrow.
+            ## ⚠ SELF-SUFFICIENT METHODS TAKE NO TWIN
+            ## (`carries_own_monodromy`: Gear-2 and every stage method).  Only
+            ## a one-step LMM needs one -- its opener seam makes its monodromy
+            ## first-order on a limit cycle; twinning any other method is pure
+            ## cost and hides the run's own spectrum.  `monodromy` governs only
+            ## the twin trap/euler borrow.
             return self
         if getattr(self, '_period_state', None) is None or not self.converged:
             return self
@@ -96,15 +57,12 @@ class _AccuracyChecks(object):
         self._monodromy_twin = twin
         return twin
 
-    ## The iteration budget of a monodromy twin's re-solve (Andreas,
-    ## 2026-09-23).  A twin is a POLISH, not a cold solve: it is seeded at
-    ## this run's converged state on the same grid, and from a good seed it
-    ## converges in 4-13 iterations (measured on B16's van der Pol).  It used
-    ## to inherit the caller's `maxiterations` -- 300 in B16 -- and from a
-    ## poor seed (Euler at 400 points, its orbit 55 % off) both twins refuse by
-    ## NOT converging, so each ran its whole budget times the solve's retry
-    ## ladder: 971 + 968 traversals, 790 s, to say "no".  Capped at this, and
-    ## a twin that hits the cap without converging WARNS before it refuses.
+    ## The iteration budget of a monodromy twin's re-solve.  A twin is a
+    ## POLISH seeded at the converged orbit: a good seed converges in a
+    ## handful of iterations, a poor one refuses by NOT converging, so the
+    ## caller's `maxiterations` (times the retry ladder) would only make the
+    ## refusal slow.  Hitting the cap WARNS before the twin refuses.
+    ## History: `doc/shooting_history.md`, `_AccuracyChecks.TWIN_MAXITER`.
     TWIN_MAXITER = 40
 
     def _solve_twin(self, method):
@@ -114,6 +72,8 @@ class _AccuracyChecks(object):
         the method by `self.monodromy`) and `_lyapunov_host` (which forces
         `gear`, because the noise-injection surfaces cannot use a TR-BDF2
         twin yet).  Raises if the re-solve does not converge.
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks._solve_twin`.
         """
         from .pss import PSS    # imported when called: pss.py imports this module
         cache = self._twins
@@ -131,20 +91,12 @@ class _AccuracyChecks(object):
         nonuniform = float(hs.max() / hs.min()) > 1.0 + 1e-9
         grid = (hs / float(hs.sum())) if nonuniform else None
         x0r = np.asarray(x0, dtype=float)[:self.cir.n - 1]
-        ## ⚠ THE STEP COUNT MUST SURVIVE `solve`'s `int(period / timestep)`.
-        ## `T / (T / N)` is not N in floating point: measured on B16's
-        ## fixture, T = 6.730731946457316 gives 399.99999999999994, so the
-        ## "same grid" twin ran on 399 points against the state's 400 (found
-        ## when `phase_rule='reselect'` moved T in its 15th digit).  Half a
-        ## step of slack makes the floor land on N for every T.
-        ##
-        ## ⚠ AND THE TWIN TAKES THE DEFAULT PHASE RULE RATHER THAN THIS RUN'S.
-        ## It is seeded at the converged state so that it lands on the SAME
-        ## point of the SAME orbit -- which is exactly what the agreement
-        ## check below tests -- and `phase_rule='reselect'` re-chooses the
-        ## pinned coordinate and lands on ANOTHER phase (measured; see
-        ## `solve`).  Inheriting it would move the twin off the orbit point
-        ## whose monodromy was asked for.
+        ## ⚠ THE STEP COUNT MUST SURVIVE `solve`'s `int(period / timestep)`:
+        ## `T / (T / N)` is not N in floating point; half a step of slack
+        ## makes the floor land on N for every T.
+        ## ⚠ THE TWIN TAKES THE DEFAULT PHASE RULE, NOT THIS RUN'S: it must
+        ## land on the SAME point of the SAME orbit (what the agreement check
+        ## below tests), and `phase_rule='reselect'` lands on another phase.
         _asked = max(int(kw.get('maxiterations', 20)), 20)
         _budget = min(_asked, int(self.TWIN_MAXITER))
         try:
@@ -177,25 +129,13 @@ class _AccuracyChecks(object):
                 'physical one).'
                 % (method, getattr(self.par, 'method', '?')))
 
-        ## ⚠⚠ THE TWIN MUST HAVE CONVERGED TO THE SAME ORBIT IT WAS SEEDED
-        ## ON, and a MORE ROBUST twin makes this check load-bearing rather
-        ## than paranoid.  Measured: from a poor seed (euler at 400 pts, its
-        ## orbit 55% off) the Gear-2 twin fails to converge -- LOUD -- but
-        ## the TR-BDF2 twin, being more robust, CONVERGES to a SPURIOUS limit
-        ## cycle and reports `Q = 1.97` against the exact 5.91 with no error.
-        ## Improving the method degraded safety: the failure moved from a
-        ## refusal to a plausible wrong number.  So the twin's converged
-        ## orbit is checked against the seed it was handed: two convergent
-        ## methods on the SAME limit cycle agree on period and entering state
-        ## to O(h^p) -- measured 6e-6 / 1e-4 (trbdf2) and 3e-5 / 2e-2 (gear)
-        ## on a good seed -- while the spurious jump above sits at 2.17 /
-        ## 0.91.  The 0.25 gate is ~12x above the worst good case and ~3.6x
-        ## below the spurious one; it is set from the (universal, tiny)
-        ## good-case agreement, not the (fixture-dependent) failure size, so
-        ## it transfers.  The definitive test is refinement (a spurious orbit
-        ## does not survive h/2); this cheap consistency check is the
-        ## conservative stand-in -- it REFUSES a too-poor seed rather than
-        ## risk trusting it, which is the safe direction.
+        ## ⚠⚠ THE TWIN MUST HAVE CONVERGED TO THE ORBIT IT WAS SEEDED ON: from
+        ## a poor seed a robust twin (TR-BDF2) can converge to a SPURIOUS
+        ## limit cycle and report a plausible wrong `Q` with no error.  Two
+        ## convergent methods on one limit cycle agree on period and entering
+        ## state to O(h^p), far inside the 0.25 gate (set from that good-case
+        ## agreement, not the fixture-dependent failure size, so it
+        ## transfers); a too-poor seed is REFUSED, the safe direction.
         Th = float(T)
         dT = abs(float(twin.period) - Th) / max(abs(Th), 1e-30)
         x0t = np.asarray(twin._period_state[1],
@@ -245,12 +185,11 @@ class _AccuracyChecks(object):
         return self.monodromy_twin()
 
     ## Nominal convergence order per `method`, for `grid_error`'s ceiling on
-    ## a plausible OBSERVED order.  Sourced from this file's own measured
-    ## records rather than from the literature: trap/gear/theta second order,
-    ## TR-BDF2 measured at 4.01x/4.01x/4.00x per halving (exact `O(h^2)`),
-    ## Radau IIA(3) at 31.50x/31.74x (`O(h^5)`, theoretical 32), euler first.
+    ## a plausible OBSERVED order: trap/gear/theta/TR-BDF2 second order,
+    ## Radau IIA(3) fifth, euler first.
     ## ⚠ An unlisted method falls back to a generic range and the ceiling is
     ## not applied -- add it here rather than letting it default silently.
+    ## History: `doc/shooting_history.md`, `_AccuracyChecks.METHOD_ORDER`.
     METHOD_ORDER = {'euler': 1, 'trap': 2, 'gear': 2, 'theta': 2,
                     'trbdf2': 2, 'radau': 5}
 
@@ -263,60 +202,32 @@ class _AccuracyChecks(object):
         float -- `lambda p: PAC(cir).diffusion_constant(p)`, a Floquet
         multiplier, a harmonic amplitude, the period.
 
-        ⚠⚠ WHY THIS EXISTS RATHER THAN A PER-METHOD FORMULA.  The floor of
-        this stack is DISCRETISATION, it grows LINEARLY IN Q, and it is a
-        METHOD property: measured on the analytic high-Q van der Pol
-        reference, the relative error in the diffusion constant at 240
-        points per period is
+        ⚠⚠ WHY THIS EXISTS RATHER THAN A PER-METHOD FORMULA: the floor is
+        DISCRETISATION, linear in Q and a METHOD property (on the high-Q van
+        der Pol reference at 240 points, `~1.8e-05 Q` for gear against
+        `~7.0e-12 Q` for radau), and such constants belong to one fixture
+        and grid -- a fitted predictor would extrapolate across a regime
+        change.  Refining the actual circuit measures the actual number.
 
-            Q      gear        trap        radau
-             100   1.79e-03    2.63e-05    6.97e-10
-             500   9.02e-03    1.32e-04    3.48e-09
-            1000   1.82e-02    2.63e-04    6.97e-09
-
-        (trap's column corrected 2026-09-14: it read 1.49e-06 / 1.04e-04 /
-        2.36e-04, the period-normalisation defect's values.)
-
-        i.e. `~1.8e-05 Q` for gear against `~7.0e-12 Q` for radau -- SIX
-        ORDERS at the same cost per step.  Those constants are real but they
-        belong to THAT fixture at THAT grid: `gear` converges at `O(h^3)` on
-        an autonomous problem for `Q >= 5` and at `O(h^2)` at `mu = 1`, so a
-        shipped predictor built from them would extrapolate a fitted constant
-        across a regime change (roadmap D.0y).  Refining the actual circuit
-        measures the actual number instead, and needs no calibration.
-
-        ⚠⚠ WHY THREE GRIDS AND NOT TWO.  With `f_h = f + C h^p`, two grids
-        give `|f_h - f_h/r| = |C| h^p (1 - r^-p)`, which over-states the fine
-        grid's own error `|C|(h/r)^p` by `r^p - 1` -- an upper bound, and a
-        tempting place to stop.  **IT IS NOT SAFE, AND THIS STACK CONTAINS A
-        COUNTEREXAMPLE.**  A quantity mixing TWO discretisations -- an
-        `O(h^3)` error plus an `O(h^2)` one of opposite sign -- changes sign:
-        the two terms cancel, the two-grid difference collapses, and the
-        estimate UNDER-STATES the true error by 3.6x (measured: change
-        1.15e-06 against a true 4.06e-06 at 240 points).  ⚠ That quantity
-        was `diffusion_constant` under `trap` until 2026-09-14 -- the twin's
-        integral over trap's own period, a DEFECT now fixed -- and the
-        validity check below is what refused it.  A bound that fails silently
-        where the error is interesting is worse than none.
-
-        So the third grid is not extra confidence, it is the VALIDITY CHECK.
-        From `d1 = |f_h - f_h/r|` and `d2 = |f_h/r - f_h/r^2|`,
+        ⚠⚠ WHY THREE GRIDS AND NOT TWO.  With `f_h = f + C h^p`, the
+        two-grid difference `|C| h^p (1 - r^-p)` bounds the fine grid's
+        error only under a single power law: a quantity mixing two
+        discretisations of opposite sign changes sign, the difference
+        collapses, and the estimate UNDER-STATES the error.  The third grid
+        is the VALIDITY CHECK: from `d1 = |f_h - f_h/r|` and
+        `d2 = |f_h/r - f_h/r^2|`,
 
             order = log(d1/d2) / log(r)
 
-        is the order the circuit ACTUALLY shows, and it is checked against the
-        single-power-law assumption before the error estimate built on it is
-        offered.  Measured orders on that fixture: `gear` 2.94 (its `O(h^3)`
-        autonomous rate), `radau` ~5, `trap` 3.02 (its twin's), and the
-        mixed quantity failing the check exactly where it cancels.  `error` is then `d2 / (r^order - 1)`, and
-        `power_law=False` means READ `d2` AS A RAW CHANGE AND NOTHING MORE.
+        is the order the circuit ACTUALLY shows, checked against the
+        single-power-law assumption before `error = d2 / (r^order - 1)` is
+        offered; `power_law=False` means READ `d2` AS A RAW CHANGE AND
+        NOTHING MORE.
 
-        ⚠ AND IT IS AN ESTIMATE OF THE GRID ERROR ONLY.  It cannot see an
-        error both grids share -- a wrong stamp, a wrong tolerance
-        convention, a mis-specified circuit.  A small `rel_change` says the
-        grid is fine enough; it does NOT say the answer is right.  That is
-        the same trap `null_residual_amplification` documents one screen up,
-        and it is worth stating twice.
+        ⚠ IT ESTIMATES THE GRID ERROR ONLY: it cannot see an error both
+        grids share (a wrong stamp, tolerance convention or circuit).  A
+        small `rel_change` says the grid is fine enough, NOT that the answer
+        is right.
 
         `levels=3` (the default) costs two extra solves, at `r` and `r^2`
         times the points.  `levels=2` is the cheap two-grid difference with
@@ -326,6 +237,8 @@ class _AccuracyChecks(object):
         Returns a dict with `values` (coarse to finest), `deltas`, `order`,
         `error` (of the FINEST value), `rel_error`, `power_law`, `refine`
         and `npts`.
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks.grid_error`.
         """
         args = getattr(self, '_solve_args', None)
         if args is None:
@@ -394,24 +307,14 @@ class _AccuracyChecks(object):
             _sgn = ((values[1] - values[0]) * (values[2] - values[1]) > 0.0)
             if d2 > _tiny and d1 > d2:
                 order = float(np.log(d1 / d2) / np.log(float(refine)))
-                ## ⚠⚠ THE CEILING IS THE POINT OF THIS CHECK, AND A GENERIC
-                ## RANGE IS NOT ENOUGH.  A method cannot converge faster than
-                ## its order; an observed order well above it means two error
-                ## terms nearly cancelled at this grid, which makes the
-                ## deltas shrink faster than the error and the estimate
-                ## UNDER-state.  MEASURED: a quantity mixing two
-                ## discretisations (a twin's `c` over the host's period --
-                ## what `diffusion_constant` under `trap` computed until the
-                ## 2026-09-14 fix) shows an apparent order of 6.45 at 120
-                ## points -- monotone, same-signed deltas, nothing else
-                ## suspicious -- while its estimate under-states the true
-                ## error by 300x.  A plain `0.5 <= order <= 8` range
-                ## ACCEPTS that case; the ceiling below rejects it.
-                ## ⚠ The `+ 1.5` allowance is not slack: on an AUTONOMOUS
-                ## problem the period is an unknown that absorbs the leading
-                ## frequency error, so `gear` (nominal 2) genuinely converges
-                ## at 3.01 here.  Without the allowance this would reject the
-                ## shipped default method on its own reference fixture.
+                ## ⚠⚠ THE CEILING IS THE POINT OF THIS CHECK: a method cannot
+                ## converge faster than its order, and an observed order well
+                ## above it means two error terms nearly cancelled, so the
+                ## estimate UNDER-states -- with same-signed deltas that a
+                ## generic `0.5 <= order <= 8` range would accept.  The `+ 1.5`
+                ## is not slack: on an AUTONOMOUS problem the period absorbs
+                ## the leading frequency error, and `gear` (nominal 2)
+                ## genuinely converges at ~3.
                 _nom = self.METHOD_ORDER.get(
                     str(getattr(self.par, 'method', '')).lower())
                 _hi = 8.0 if _nom is None else (_nom + 1.5)
@@ -446,24 +349,13 @@ class _AccuracyChecks(object):
                 'npts': [_npts_c * refine ** k for k in range(levels)],
                 'label': label}
 
-    ## B7: the interpolant degree the defect-correction estimate needs, per
-    ## method.  Two-part rule, MEASURED 2026-09-08 (doc/pss_roadmap_260902.md,
-    ## B7's gate): the interpolant's DEGREE must exceed the method's stage
-    ## count -- a cubic spline lies INSIDE Radau IIA(3)'s collocation
-    ## exactness class (degree s = 3), so the neighbouring problem is solved
-    ## EXACTLY and the estimate is 1e-10 ppm against a true 6e-3 -- and its
-    ## ORDER must exceed the method's effective order, or a constant bias
-    ## remains (a quintic against radau's measured 6.1 left 4.9 % at every
-    ## grid; a septic gave 1.0001 / 0.9999 / 0.9998).  Cubic reproduced trap
-    ## and TR-BDF2 to 0.9996 -> 1.0000.
-    ## ⚠ THE STAGE-COUNT CLAUSE IS A COLLOCATION PROPERTY (peer, measured the
-    ## same day): ESDIRK43 has SIX stages and is not a collocation method, so
-    ## a quintic fails the clause literally -- and quintic and septic AGREE
-    ## through the stack (0.9998 / 1.0000 at 100 pts, 1.0000 / 1.0001 at 200).
-    ## For a non-collocation method only the ORDER clause is established;
-    ## written as "degree > stage count" the rule would over-constrain every
-    ## DIRK ever added.  The failure the clause guards against is SILENT (a
-    ## clean small number), which is why it was measured rather than argued.
+    ## The interpolant degree `warping_estimate` needs, per method: its ORDER
+    ## must exceed the method's effective order (else a constant bias), and
+    ## for a COLLOCATION method its DEGREE must exceed the stage count (else
+    ## the spline lies inside the exactness class -- a cubic for Radau
+    ## IIA(3) -- and the estimate reads a SILENT ~0).  For a non-collocation
+    ## method (ESDIRK43) only the order clause is established.
+    ## History: `doc/shooting_history.md`, `_AccuracyChecks.IDEC_DEGREE`.
     WARPING_CHECK_TOL = 0.05     # |half-grid / full-grid - 1| above this: the interpolant sets the reading
     IDEC_DEGREE = {'euler': 3, 'trap': 3, 'gear': 3, 'theta': 3,
                    'trbdf2': 3, 'esdirk43': 5, 'radau': 7}
@@ -472,9 +364,8 @@ class _AccuracyChecks(object):
         """Estimate THIS solve's period (warping) error at ITS OWN grid, with
         no reference solution and no refinement -- by defect correction.
 
-        B7's answer, MEASURED (2026-09-08).  A per-step local truncation
-        estimate cannot see an accumulating period error because warping is a
-        GLOBAL error; defect correction (Sickenberger, Weinmueller & Winkler,
+        A per-step local truncation estimate cannot see warping, a GLOBAL
+        error; defect correction (Sickenberger, Weinmueller & Winkler,
         "Local Error Estimates for Moderately Smooth ODEs and DAEs", Part I,
         Sec. 1) estimates the global error directly:
 
@@ -494,121 +385,26 @@ class _AccuracyChecks(object):
         A transient and not a periodic solve, deliberately: a forcing at T
         fixes the period, and warping cannot present as a period change.
 
-        Measured on A10's van der Pol (Q = 1e4), estimate / true period error
-        (true = T_h - T_ref, radau at 3200 points), numpy prototype:
+        ⚠⚠ THE INTERPOLANT IS THE LIMIT: the estimate is right only if the
+        interpolant's defect error is o(h^{p+1}) (Part I's "only if").  On
+        an orbit with an edge a few points wide the spline does not resolve
+        it, and the estimate under-reads by a factor nothing announces.
+        Trust it on smooth orbits; on edges refine until it converges in
+        `periods` and grid, or use `grid_error`.  (A restructured f-value
+        defect, Part I eq. 2.13, is not the fix: it is not monotone in the
+        grid.)
 
-            trap   / cubic    0.9996  0.9999  1.0000  1.0000   (100..800 pts)
-            trbdf2 / cubic    0.9999  1.0000  1.0000
-            radau  / cubic    0.0000  0.0000  0.0000   (25..50 pts) -- INSIDE the
-                                                       exactness class: see IDEC_DEGREE
-            radau  / quintic  1.0490  1.0494  1.0495   -- a constant bias where the
-                                                       orders tie (6 vs 6.1)
-            radau  / septic   1.0001  0.9999  0.9998
-
-        Controls: with RADAU solving the neighbouring problem of TRAP's defect
-        the estimate is 0.0000 -- the drift is the METHOD's error, not the
-        defect's; a LINEAR interpolant gives 0.03 / 2.3 / 3.4 -- the
-        interpolant-order wall from below.
-
-        Through THIS method (the stack, same fixture, reference radau at 3200
-        points, 2026-09-08): trap 1.0002 at 400 and 200 pts; radau septic
-        1.0003 / 1.0002 at 50 / 35 pts and CUBIC 0.0001 (the exactness-class
-        zero, reproduced); esdirk43 quintic 0.9998 / 1.0000 and septic
-        1.0000 / 1.0001 at 100 / 200 pts -- so for a non-collocation method
-        the order clause alone is established, and the stage-count clause is
-        a collocation property -- and Part I sec 1.1 says why: "one of the
-        most attractive features of the IDeC procedure is, that its fixed
-        point is a certain superconvergent COLLOCATION solution", so the
-        exactness class the stage-count clause guards against is a
-        collocation object by construction (docs session, 2026-09-09; one
-        family at two degrees on one fixture, so a mechanism, not a proof
-        that the clause is harmless in general).  ⚠ The first stack gate's driven control came
-        back `autonomous=True`: `Circuit.u(t)` evaluates its time functions
-        only when told `analysis='tran'`, and without it every source
-        VANISHES (zeros, DC value included) -- so that control ran against a
-        circuit with NO source at all; fixed at both call sites; with the
-        flag the driven van der
-        Pol returns `autonomous=False`, `period_error=None`, and a bounded
-        lag series, as it must.
-
-        ⚠⚠ THE INTERPOLANT IS THE LIMIT (measured 2026-09-08): on a
-        relaxation oscillator with a comparator edge a few points wide the
-        estimate reads 0.09 of the true period error at 200 points per
-        period and 0.65 at 400 -- uniformly in every component, so not a
-        collapse: the septic spline does not resolve the edge and the
-        defect is interpolation error, not the method's.  Part I's own
-        scope is "moderately smooth"; a relaxation orbit at PSS grids is
-        outside it, and the number returned is then wrong by a factor that
-        nothing in it announces.  Trust it on smooth orbits (1.000 to four
-        digits on the van der Pol, index 1 and 2); on an orbit with edges,
-        refine until the estimate converges in `periods` and grid, or use
-        `grid_error`.
-        ⚠ PART I READ THROUGH (docs session, 2026-09-09): its motivation is
-        this domain -- "we are especially motivated by applications in
-        electrical circuit simulation, where the models often contain data
-        with poor smoothness" -- so "moderately smooth" is the case the
-        paper was built for, not a clause this is outside of.  Its Remark
-        2.9 names a failure with the SAME SIGN as the edge underestimate:
-        the local estimates assume the leading term `c_i h^(p+1) x^(p+1)`
-        does not vanish, and "at least in case of oscillatory solutions,
-        there always exist time points where the derivative x^(p+1)
-        vanishes ... our error estimates will tend to UNDERESTIMATE the
-        true size of the error" (footnote: the third derivative vanishes
-        where the curvature is extremal; remedy: assume C^(p+2) and match
-        the next coefficient with an auxiliary scheme).  That remark is
-        stated for the LOCAL-error route of their section 2; this method is
-        the GLOBAL route of section 1 (Zadunaisky), and whether the global
-        route inherits it is not established.  ⚠ Ruled out here by the
-        h-scaling: Remark 2.9's mechanism is keyed on isolated zeros of
-        x^(p+1), whose aggregate effect is roughly h-INDEPENDENT, while the
-        edge reading improved 7.2x for a 2x grid (0.09 -> 0.65) -- that is
-        interpolation error, as stated above.  Where Remark 2.9 would bite
-        is a step controller built on defect correction; the paper hands
-        the fix.  Cost lead, not worked out: section 1.1's cheap variant
-        runs the high-order method once and a cheap LOW-order method twice
-        (original and neighbouring problem) -- a different substitution
-        from the radau-on-trap's-defect control that zeroed the estimate.
-        ⚠ THE LITERATURE'S ANSWER IS STRUCTURAL, NOT "REFINE" (docs session,
-        Part I p. 9, READING-LOG 2.165).  The gate this instrument should
-        test before returning a number is Part I's own "only if": the
-        estimate is asymptotically correct ONLY IF the interpolant's defect
-        error is o(h^{p+1}) -- asymptotically SMALLER than the truncation
-        error it is meant to reveal; on the comparator edge it is not, and
-        the number is wrong by a factor nothing announces.  And the fix for
-        a non-smooth orbit is to form the defect as a WEIGHTED SUM OF
-        f-VALUES with an auxiliary scheme sharing the base scheme's
-        left-hand side, so the solution terms cancel identically (their eq.
-        2.13, an extra factor h) -- not a higher-degree interpolant of the
-        solution, which is exactly the construction this one uses.  Scope:
-        their construction is the LOCAL error of an LMM; whether it
-        transfers to a period functional is unproven.  THE GATE IS BUILT
-        (2026-09-08, `check=True`): the same pass through every second
-        sample of the same solution, transient still at the solve's step;
+        `check=True` (the gate) repeats the pass through every second sample
+        of the same solution, the transient still at the solve's step:
         `check_ratio` = half-grid slope / full-grid slope, `trusted` =
-        within `WARPING_CHECK_TOL` (5 %) of 1, else a warning and the number
-        still returned.  Measured: van der Pol 1.0000 (radau and trap, 50
-        and 100 points); the relaxation orbit 0.0056 / 0.72 at 200 / 400
-        points under radau and 0.41 at 200 under trap -- the cases that
-        read 0.09 / 0.65 of the truth are refused, the smooth case accepted
-        with four orders of margin.  ⚠ The prediction "below 0.5 at 400"
-        was wrong (0.72): the ratio approaches 1 as the edge resolves, so
-        the tolerance is the gate, not the ratio's distance from 0.  The
-        restructured (f-value) defect (Part I eq. 2.13; for trap the Milne
-        device) was GATED and REFUTED as the edge fix (2026-09-08): smooth
-        0.9990 / 0.9998, but on the edge orbit 0.06 / 0.61 / 1.29 at 200 /
-        400 / 800 points against the spline route's 0.04 / 0.29 / 0.63 --
-        faster with the grid and NOT monotone, so a reading near 1 is
-        indistinguishable from a wrong one; the paper's own remedy is mesh
-        adaptation.  Not built.  Cost of the check: it doubles the call (a
-        second `periods`-long transient).
-        ⚠ Scope and limits.  The period reading needs an AUTONOMOUS solve;
-        on a driven circuit the lag is bounded (entrained) and `period_error`
-        is returned as None with the per-period lag series still filled.
-        The prototype ran on a 2-state ODE; on a DAE the differential and
-        algebraic components converge at different orders (H&W VI.7), so the
-        interpolant threshold binds per component and a component-wise
-        exactness collapse would be invisible in this scalar phase drift --
-        `component_rms` is returned so a caller can look.  Index-2 is outside
+        within `WARPING_CHECK_TOL` of 1, else a warning and the number still
+        returned.  It doubles the cost.
+
+        ⚠ The period reading needs an AUTONOMOUS solve; on a driven circuit
+        `period_error` is None and the (bounded) lag series is still filled.
+        On a DAE the components converge at different orders (H&W VI.7), so
+        a component-wise exactness collapse is invisible in the scalar drift
+        -- see `component_rms` and `lag_components`.  Index-2 is outside
         Part I's stated scope.  Cost: `periods` periods of transient at the
         working grid -- no refinement sweep, no analytic reference.
 
@@ -623,6 +419,8 @@ class _AccuracyChecks(object):
         the others agree is the per-component exactness-class collapse the
         DAE caveat names; a row of NaN is a component with no motion, e.g.
         a node pinned by a source).
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks.warping_estimate`.
         """
         import numpy as _np
         from scipy.interpolate import make_interp_spline
@@ -641,13 +439,9 @@ class _AccuracyChecks(object):
                              'periodic spline' % (X.shape[1] - 1, k))
         cir, epar = self.cir, self.epar
         ## ⚠ `analysis='tran'`, on BOTH calls.  `Circuit.u(t)` evaluates a
-        ## time function only when told which analysis is asking (`VS.u`:
-        ## `elif analysis in timedomain_analyses`); without it every source
-        ## VANISHES -- the else-branch returns zeros, and even the DC value
-        ## lives inside the gated branch (`timedomain_analyses = ('dc',
-        ## 'tran')`).  The first gate's driven control -- an `ISin` on the
-        ## van der Pol -- came back `autonomous=True` for exactly that reason,
-        ## and the defect would have omitted the drive on a driven circuit.
+        ## time function only when told which analysis is asking; without it
+        ## every source VANISHES (zeros, DC value included), and the defect
+        ## would omit the drive on a driven circuit.
         _u = lambda t: _np.asarray(cir.u(t, epar, analysis='tran'), dtype=float)
         u0 = _u(0.0)
         autonomous = all(_np.allclose(u0, _u(f * T)) for f in (0.37, 0.71))
@@ -690,9 +484,9 @@ class _AccuracyChecks(object):
                 ## the exactness-class collapse on THAT component (the DAE
                 ## caveat), invisible in the scalar `lag` above.
                 num_c = _np.sum(dP[:, sl] * E[:, sl], axis=1); den_c = _np.sum(dP[:, sl] ** 2, axis=1)
-            ## a RELATIVE threshold: a node pinned by a source has a
-                ## derivative of pure roundoff (measured 1e-32 rms), and
-                ## `den > 0` let it print a ratio of 96 where NaN was meant.
+                ## a RELATIVE threshold: a node pinned by a source has a
+                ## derivative of pure roundoff, and `den > 0` would print a
+                ## ratio where NaN is meant.
                 with _np.errstate(divide='ignore', invalid='ignore'):
                     lag_c.append(_np.where(den_c > 1e-20 * den_c.max(), num_c / den_c, _np.nan))
             lag = _np.asarray(lag); lag_c = _np.asarray(lag_c)
@@ -706,7 +500,7 @@ class _AccuracyChecks(object):
         period_error = -slope if autonomous else None
         last = ty >= (periods - 1) * T - 1e-12 * T
         component_rms = _np.sqrt(_np.mean(E[:, last] ** 2, axis=1))
-        ## THE SELF-DIAGNOSTIC (Part I's "only if", built 2026-09-08): the
+        ## THE SELF-DIAGNOSTIC (Part I's "only if"): the
         ## estimate is the method's error only while the interpolant's own
         ## defect is asymptotically smaller than it, and then it does NOT
         ## depend on the interpolant: the same pass through EVERY SECOND
@@ -745,14 +539,11 @@ class _AccuracyChecks(object):
     def _spectral_report(self, M):
         """Split a composed spectrum into physical multipliers and parasitics.
 
-        RECORDED SCOPE ITEM 3.  A k-step method turns an m-dimensional
-        system into a k*m-dimensional discrete one, so the composed
-        monodromy's spectrum carries `(k-1) m` PARASITIC roots beside the
-        physical Floquet multipliers.  `max |eig|` over that mixture is only
-        a stability verdict while the parasitic roots stay small -- which
-        for Gear-2 they emphatically do (`(1/3)^N`, ~1e-95 at 200 points)
-        and for a method whose spurious root sits nearer the unit circle
-        they would not.  This separates them instead of hoping.
+        A k-step method's composed monodromy carries `(k-1) m` PARASITIC
+        roots beside the `m` physical Floquet multipliers, and `max |eig|`
+        over that mixture is a stability verdict only while they stay small
+        -- true for Gear-2 (`(1/3)^N`), not for a method whose spurious root
+        sits nearer the unit circle.
 
         THE DISCRIMINATOR IS THE EIGENVECTOR'S BLOCK STRUCTURE, not the
         eigenvalue.  The composed map acts on the PAIR `(x_0, x_{-1})`:
@@ -765,88 +556,31 @@ class _AccuracyChecks(object):
             a trapezoidal-like root -- and the halves differ by O(1)
             whatever `h` is.
 
-        So `||v_{-1} - v_0||` (against a unit-norm eigenvector) is O(h) for
-        a physical mode and O(1) for a parasitic one.  MEASURED, and it is
-        the h-scaling that makes it a prediction rather than a story: on the
-        phase circuit the physical ratio falls 0.1281 -> 0.0316 when the
-        grid goes from 50 to 200 points -- a factor of 4.05 for a factor of
-        4 in `h` -- while the parasitic ratios sit at 1.0 to 10.  On the
-        Q=20 RLC the parasitic ratio is 1.9997 against the 2.0 that BDF-2's
-        `v_{-1} = 3 v_0` predicts exactly.
+        So `||v_{-1} - v_0||` (unit-norm eigenvector) is O(h) for a physical
+        mode and O(1) for a parasitic one, and the split is by RANK, not by
+        a threshold: the `m` smallest splits are the physical set by
+        construction (a threshold finds no physical mode at all on a stiff
+        circuit, where `lambda h ~ 40`).
 
-        ⚠ THE MODE COUNT HERE IS AN ODE COUNT AND THE OBJECT IS A DAE, and
-        the difference is structural rather than an off-by-`k`.  Demir
-        (IJCTA 28:163-185, 2000) gives the DAE monodromy as
+        ⚠ THE COUNT IS AN ODE COUNT, AND MNA CIRCUITS ARE DAEs: an index-1
+        system with `d = rank(C) < m` has `d` physical multipliers, `d`
+        parasitic and `2(m - d)` STRUCTURAL ZEROS (Demir, IJCTA 28:163-185,
+        2000: `Phi(t,s) = U(t) D(t-s) V(s) C(s)`), so on a real circuit
+        `parasitic_roots` comes back identically zero and
+        `floquet_multipliers` carries structural zeros; `rank(C)` also
+        overcounts by one per index-2 constraint.  The factorisation's
+        trailing `C(s)` has no ODE analogue -- revisit the split from there,
+        not from the eigenvector heuristic (check it against the paper
+        first).  Magnitude cannot separate the populations either: Gear-2's
+        parasitic roots (~1e-95) are numerically structural zeros.
 
-            Phi(t,s) = U(t) D(t-s) V(s) C(s)
-
-        with `D = diag[exp(mu_1 (t-s)), ..., exp(mu_d (t-s)), 0, ..., 0]`
-        for `d = rank(C)`: "equation (19) has k = n - m Floquet multipliers
-        that are 0", and on a real circuit "there are also eigenvalues
-        exactly equal to 0 due to the ALGEBRAIC EQUATIONS in the MNA
-        formulation".  So the `m - rank(C)` structural zeros are the
-        theory's, not an artefact -- which is why `parasitic_roots` comes
-        back identically zero on every MNA circuit tried here.  ⚠ AT INDEX
-        1 ONLY (the docs session, checked against the paper 2026-09-09:
-        "We assume that the DAEs we are dealing with are index-1").
-        `rank(C)` is the differential dimension at index 1 and OVERCOUNTS
-        by one per index-2 constraint: measured on `floquet_modes`, an
-        index-1 tank and an index-1 tank + R node give modes = rank(C) = 2,
-        an L-I cutset and a C-V loop give rank(C) = 3 with 2 modes -- the
-        code returns the true count; it is the formula that stops where
-        Demir says it does.
-
-        ⚠ AND THE FACTORISATION CARRIES A TRAILING `C(s)` WITH NO ODE
-        ANALOGUE (where `C = I` and it disappears).  A DAE monodromy is not
-        simply a product of state-transition blocks, so an ODE-shaped
-        count does not merely miscount -- it describes a different object.
-        Anyone revisiting this split should start there and not from the
-        eigenvector heuristic below.  Relayed from the docs session's read;
-        check it against the paper before building on it.
-
-        ⚠ THE SPLIT IS BY RANK, NOT BY A THRESHOLD, and that was measured
-        into the design rather than chosen.  A threshold of 0.25 was tried
-        first and returned NO physical modes at all on a stiff RC ladder --
-        `lambda h ~ 40` there, so every mode's halves differ by O(1) and the
-        classifier called the entire spectrum parasitic, handing back a
-        `spectral_radius` of `None` where the old code said 6e-15.  A
-        `k`-step method on `m` states has EXACTLY `m` physical multipliers
-        and `(k-1) m` spurious ones -- that is structural -- so the `m`
-        smallest splits are the physical set by construction, and the
-        question of where to put a cut never arises.
-
-        ⚠ THE COUNT IS AN ODE COUNT, AND MNA CIRCUITS ARE DAEs.  This
-        splits `2m` eigenvalues as `m` physical and `m` parasitic, which is
-        right for an ODE.  An index-1 MNA system with `d = rank(C) < m` has
-        `d` physical multipliers, `d` parasitic ones and `2(m - d)`
-        STRUCTURAL ZEROS from the algebraic variables -- so on a real
-        circuit both arrays are mislabelled: measured on the Q=20 resonator
-        (`m = 4`, `rank(C) = 2`), `parasitic_roots` comes back identically
-        zero and `floquet_multipliers` carries two structural zeros beside
-        the two real multipliers.
-
-        ⚠ `spectral_radius` IS UNAFFECTED, which is why this is recorded
-        rather than re-engineered.  The physical multipliers have the
-        SMALLEST block split by construction, so they are always inside the
-        first `m`, and the maximum over that set is the right number --
-        0.97531 on that circuit, against the analytic 0.9753.  What is
-        unreliable is the LABELLING of the diagnostic arrays.  And it cannot
-        be fixed by magnitude either: Gear-2's true parasitic roots are
-        `(1/3)^N`, about 1e-95, which is numerically indistinguishable from
-        a structural zero -- so on this method the two populations cannot be
-        told apart at all, by any test, and saying so is the honest
-        position.
-
-        ⚠ ON A STIFF CIRCUIT THE LABELS MAY STILL BE WRONG, and it does not
-        matter: when the physical modes are themselves stiff, a parasitic
-        root can have the smaller split and swap places with one.  Every
-        mode involved then has `|mu|` at the noise floor, so the RADIUS is
-        unaffected -- it is the labels, not the number, that degrade.  What
-        this buys is the case that motivated the item: a method whose
-        spurious root sits NEAR THE UNIT CIRCLE, where the physical modes
-        are well resolved, the splits separate cleanly, and taking a
-        maximum over the mixture would report the discretisation's own
-        artefact as the orbit's stability.
+        ⚠ `spectral_radius` IS UNAFFECTED: the physical multipliers have the
+        smallest splits, so the maximum over the first `m` is right; only
+        the LABELS of the diagnostic arrays degrade -- also on a stiff
+        circuit, where a parasitic root can swap with a stiff physical mode
+        at the noise floor.  What the split buys is a method whose spurious
+        root sits NEAR THE UNIT CIRCLE, where a maximum over the mixture
+        would report the discretisation's artefact as the orbit's stability.
 
         Returns `(rho, physical, parasitic)`: the spectral radius over the
         PHYSICAL multipliers only, and both sets sorted by magnitude.  An
@@ -854,6 +588,8 @@ class _AccuracyChecks(object):
         and no parasitic roots, so everything in it is physical.  `None`
         gives `(None, None, None)` -- the matrix-free path forms no
         monodromy at all.
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks._spectral_report`.
         """
         if M is None:
             return None, None, None

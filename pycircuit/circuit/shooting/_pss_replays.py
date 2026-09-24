@@ -12,11 +12,12 @@ class _FactoredReplays(object):
 
     ## ------------------------------------------------------------------
     ## THE REPLAYS -- one of each for every kind of factored period (plain
-    ## LMM, gear's pair, stage, GLM; 2026-09-23, they were a copy per kind).
+    ## LMM, gear's pair, stage, GLM).
     ## A map is `extract . step_N ... step_1 . seed` (see `FactoredPeriod`);
     ## the steps know their own algebra (`_LMMStep`, `_StageStep`,
     ## `_GLMStep`).  The `_monodromy_matvec*` names below are the entry
     ## points the matrix-free Newton builds on from raw step lists.
+    ## History: `doc/shooting_history.md`, `_FactoredReplays`.
     ## ------------------------------------------------------------------
 
     def _replay(self, fp, v):
@@ -26,10 +27,11 @@ class _FactoredReplays(object):
         steps are real, so `M` is a REAL linear map and `M(a + ib) = Ma + i
         Mb` exactly; PAC needs complex products (`I + alpha(f) H`), and
         factoring in complex arithmetic would double the stored factors for
-        a map with no imaginary part.  ⚠ The float cast below is therefore a
-        GUARD, not a convenience: it used to swallow a complex `v` silently
-        by discarding the imaginary part, a wrong answer rather than an
-        error."""
+        a map with no imaginary part.  ⚠ The complex split must stay ahead
+        of the float cast below: the cast alone discards an imaginary part
+        silently, a wrong answer rather than an error.
+
+        History: `doc/shooting_history.md`, `_replay`."""
         v = np.asarray(v)
         if np.iscomplexobj(v):
             return self._replay(fp, v.real) + 1j * self._replay(fp, v.imag)
@@ -48,10 +50,9 @@ class _FactoredReplays(object):
         existing time-domain simulators" -- true of a forward-only DENSE
         implementation.  The factored period already stores every step's
         factorisation, and every factorisation solves transposed, so the
-        reverse pass needs no new integrator and no second traversal
-        (measured against the dense `M^T` at 1.8e-15 when first built, 0.75x
-        the forward cost).  It is the shared dependency of the PPV, adjoint
-        noise and the sideband rows.
+        reverse pass needs no new integrator and no second traversal.  It
+        is the shared dependency of the PPV, adjoint noise and the sideband
+        rows.
 
         ⚠ `collect` HANDS BACK THE PER-STEP COSTATES (`ts[j]`, the step's
         transposed solve(s)) and the adjoint state after each step
@@ -62,9 +63,10 @@ class _FactoredReplays(object):
         the difference between the response at `t = 0` and a sideband
         coefficient.  ⚠ The collected lists may be NESTED (a stage method's
         `ts` holds per-stage costates per step), so the complex split
-        recombines through `_cx_collect`: a flat `a + 1j*b` multiplied a
-        LIST by `1j` and `floquet_modes` under trbdf2 raised for as long as
-        that path existed."""
+        recombines through `_cx_collect`: a flat `a + 1j*b` would multiply
+        a LIST by `1j`.
+
+        History: `doc/shooting_history.md`, `_replay_transposed`."""
         v = np.asarray(v)
         inj = None if inject is None else [np.asarray(z) for z in inject]
         if np.iscomplexobj(v) or (
@@ -149,8 +151,10 @@ class _FactoredReplays(object):
         AFTER the step's costate update, so the output at `t_n` couples to
         the sources of steps `< n` (causality); the state at `t_n` is the
         one step `n` enters from.  `extra` is a raw costate injection per
-        node (the bordered adjoint's event-row term, 2026-09-22), at `d`'s
-        position.  Returns `(forced, g)`."""
+        node (the bordered adjoint's event-row term), at `d`'s position.
+        Returns `(forced, g)`.
+
+        History: `doc/shooting_history.md`, `_sideband_forced`."""
         jw = 2j * np.pi * float(freq)
         T = float(fp.T)
         w0 = 2.0 * np.pi / T
@@ -193,10 +197,13 @@ class _FactoredReplays(object):
 
     def _monodromy_matvec_transposed_plain(self, opening, steps, v,
                                            collect=False, inject=None):
-        """`M^T v` for the PLAIN map from its raw steps (B8: derived, and
-        gated against the dense `M` built from the forward replay -- a
-        from-scratch adjoint in this file has come out sign-inverted before,
-        roadmap 0h)."""
+        """`M^T v` for the PLAIN map from its raw steps (derived, and gated
+        against the dense `M` built from the forward replay -- gate any
+        from-scratch adjoint here that way: sign inversion is the known
+        failure).
+
+        History: `doc/shooting_history.md`,
+        `_monodromy_matvec_transposed_plain`."""
         return self._replay_transposed(
             FactoredPeriod('plain', opening, steps, None, None, self), v,
             collect=collect, inject=inject)
@@ -259,8 +266,9 @@ class _FactoredReplays(object):
         if kind in ('stage', 'glm'):
             ## A self-starting method has its own factored map (no opener, no
             ## pair), replayed on the SOLVED grid's fractions (None on a
-            ## uniform grid keeps the replay bit-identical to before) -- see
-            ## `_replay_grid` and `_factored_self_starting`
+            ## uniform grid: the uniform replay) -- see `_replay_grid` and
+            ## `_factored_self_starting` (history: `doc/shooting_history.md`,
+            ## `factored_period`)
             _hs = np.asarray(hs, dtype=float).ravel()
             _uniform = (len(_hs) < 2 or float(np.max(_hs)) / float(np.min(_hs))
                         - 1.0 <= self.UNIFORM_GRID_TOL)
@@ -286,11 +294,11 @@ class _FactoredReplays(object):
         Integrates the orbit under the stage method (`method`, or the PSS's
         own) on `npts` steps -- uniform, or `grid`'s fractions (see
         `_replay_grid`) -- and returns the `m x m` monodromy, kept factored.
-        Refactor E9 item 2 (2026-09-23): this was `factored_period_full` and
-        `factored_period_dirk`, routed by the caller.
 
         ⚠ SELF-STARTING, SO NO TWIN.  No order-dropped opener, so this does
         not consult `monodromy_twin`.
+
+        History: `doc/shooting_history.md`, `factored_period_stage`.
         """
         return self._factored_self_starting('stage', x0, T, npts, method, grid)
 
@@ -300,9 +308,9 @@ class _FactoredReplays(object):
         (`_walk_stage`; a `FactoredPeriod` of kind 'full' or 'dirk') or 'glm'
         (`_glm_period_blocks`; kind 'glm') -- integrated under `method` (or
         the PSS's own) in a transient of its own, on `npts` steps: uniform,
-        or `grid`'s fractions (see `_replay_grid`).  One builder for both
-        (2026-09-23: `factored_period_stage` and `factored_period_glm` were a
-        copy each)."""
+        or `grid`'s fractions (see `_replay_grid`).  One builder for both.
+
+        History: `doc/shooting_history.md`, `_factored_self_starting`."""
         if method is None:
             method = getattr(self.par, 'method', 'euler')
         x0 = np.asarray(x0, dtype=float)

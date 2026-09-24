@@ -15,33 +15,30 @@ class FactoredPeriod(object):
     with the monodromy, never the monodromy itself -- so this is what
     `PSS.factored_period()` hands out.
 
-    ⚠ `matvec` IS THE WHOLE INTERFACE, and deliberately so.  The withdrawn
-    `PAC` read `pss.Jtvec` / `pss.Cvec` and rebuilt the `(NM)x(NM)` operator
-    from them, which is where its 419.5 GiB went.  Two things are wrong with
-    that route and only one of them is the memory: those two lists are
-    written by `_traverse` and `_traverse_solved_history` and by NEITHER
-    factored traversal, so after `solve(matrix_free=True)` they are stale or
-    absent -- an analysis reading them would rebuild an operator for a
-    DIFFERENT trajectory than the one that converged, silently.
+    ⚠ `matvec` IS THE WHOLE INTERFACE, and deliberately so.  Do not rebuild
+    the `(NM)x(NM)` operator from `pss.Jtvec` / `pss.Cvec`: besides the
+    memory, those lists are written by `_traverse` and
+    `_traverse_solved_history` and by neither factored traversal, so after
+    `solve(matrix_free=True)` they are stale or absent -- the operator would
+    silently belong to a different trajectory than the one that converged.
+    And a two-term-per-row `L` is Euler-shaped: for `trap` or `gear`,
+    `L^-1 B` is not the monodromy (`test_the_pac_L_is_backward_euler_only`).
+    A `matvec` cannot make that mistake, because each step carries its own
+    `(alphas, b)`.
 
-    ⚠ AND THE REBUILT OPERATOR WAS EULER-SHAPED.  See
-    `test_the_pac_L_is_backward_euler_only`: the old `L` has two terms per
-    row, so for `trap` or `gear` it is not the discretisation the trajectory
-    was produced by and `L^-1 B` is not the monodromy at all -- measured,
-    spectral radius 0 against the analytic 0.8546.  A `matvec` cannot make
-    that mistake, because each step carries its own `(alphas, b)`.
+    History: `doc/shooting_history.md`, `FactoredPeriod`.
     """
 
     __slots__ = ('kind', 'opening', 'steps', 'x_last', 'x_prev', 'width',
                  'times', 'T', 'open_at_x0', '_pss')
     ## 'glm' is the MULTIVALUE kind: width r*m, see `factored_period_glm`.
 
-    ## ONE CLASS PER KIND (2026-09-24): `FactoredPeriod(kind, ...)` builds the
-    ## subclass that kind names (`_PERIOD_KINDS`), and what differs between
-    ## the kinds -- how a direction seeds the per-step state, what the map
-    ## reads out of it, where a costate injection lands -- is that class's
-    ## own methods, where it was a four-way branch in each of seven.
+    ## ONE CLASS PER KIND: `FactoredPeriod(kind, ...)` builds the subclass
+    ## that kind names (`_PERIOD_KINDS`), and what differs between the kinds
+    ## -- how a direction seeds the per-step state, what the map reads out of
+    ## it, where a costate injection lands -- is that class's own methods.
     ## Consumers ask what a map IS through these flags, not its kind string.
+    ## History: `doc/shooting_history.md`, `FactoredPeriod.is_plain`.
     is_plain = is_pair = is_stage = is_glm = False
 
     def __new__(cls, kind=None, *args, **kwargs):
@@ -54,9 +51,9 @@ class FactoredPeriod(object):
         self.kind, self.opening, self.steps = kind, opening, steps
         self.x_last, self.x_prev, self._pss = x_last, x_prev, pss
         ## the grid the steps were taken on -- a forced replay needs the
-        ## time of each step to evaluate `exp(j w t)` there, and reading it
-        ## off `pss.times` later is exactly the parallel-indexing trap the
-        ## final replay's `(t, h)` pairing was rewritten to remove
+        ## time of each step to evaluate `exp(j w t)` there; reading it off
+        ## `pss.times` later is a parallel-indexing trap
+        ## (history: `doc/shooting_history.md`, `FactoredPeriod.__init__`)
         self.times, self.T = times, T
         ## whether the period opened AT `x_0` -- no manufacturing step.  A
         ## driven replay needs to know: the manufacturing step is not in
@@ -76,34 +73,36 @@ class FactoredPeriod(object):
     def matvec_transposed(self, v, collect=False, inject=None):
         """`M^T v` -- see `_monodromy_matvec_transposed{,_plain}`.
 
-        ⚠ B8: the PLAIN path now has one too, for the ONE-STEP companions.
-        It used to refuse outright, which made every adjoint surface --
-        `ppv`, PAC, `pnoise`, `covariance` -- Gear-2 only.
+        Every kind has one, the PLAIN map's one-step companions included, so
+        no adjoint surface -- `ppv`, PAC, `pnoise`, `covariance` -- is
+        Gear-2 only.
 
-        ⚠ `collect` AND `inject` FORWARD TO BOTH, which is what lets the
-        callers stop naming a map. They used to reach past this method to
-        `_monodromy_matvec_transposed` DIRECTLY, so B8 shipped without
-        reaching any of them -- the machinery existed and every surface
-        still refused. A caller that goes through here gets whichever
+        ⚠ `collect` AND `inject` FORWARD TO BOTH, so callers need not name a
+        map: go through here, never to `_monodromy_matvec_transposed`
+        directly.  A caller that goes through here gets whichever
         recursion its `kind` calls for and cannot acquire a Gear-2
         assumption by accident.
 
         ⚠ THE COLLECTED STATE HAS THE MAP'S OWN WIDTH: `2m` for the pair,
         `m` for the plain one. `st[:m]` is the differential block under
         both, which is the slice every consumer wants.
+
+        History: `doc/shooting_history.md`,
+        `FactoredPeriod.matvec_transposed`.
         """
         return self._pss._replay_transposed(self, v, collect=collect,
                                             inject=inject)
 
     ## -- what differs between the kinds: one subclass each -----------------
     ##
-    ## (2026-09-23) Every kind's map is `extract . step_N ... step_1 . seed`:
+    ## Every kind's map is `extract . step_N ... step_1 . seed`:
     ## the steps are objects with one algebra (`_StageStep`, `_LMMStep`,
     ## `_GLMStep`: `solve`, `adjoint`, `sources`, `source_adjoint`), and what
     ## is left per kind is how a direction seeds the per-step state, what the
     ## map reads out of it, and where a costate injection lands.  The replays
     ## (`PSS._replay`, `_replay_transposed`, `_forced_replay`,
     ## `_forced_replay_transposed`, `_sideband_forced`) are one function each.
+    ## (History: `doc/shooting_history.md`, `FactoredPeriod.step_objects`.)
     ## The interface, defined by `_PlainPeriod`, `_PairPeriod`,
     ## `_StagePeriod` and `_GLMPeriod`:
 
@@ -179,9 +178,11 @@ class _PlainPeriod(_LMMPeriod):
 
     Its `seed` takes ``Pq`` from THE OPENING PAIR, not the loop's -- the
     walk opens it right after the MANUFACTURING step, order-dropped to Euler
-    (``b = 0``), so in practice at zero; using the loop's made the map 100 %
-    wrong for `trap`.  Plus the consistent-``iq_0`` seed (`_pq_seed_at_x0`,
-    `theta`), `None` for every other method."""
+    (``b = 0``), so in practice at zero; the loop's makes the map wrong for
+    `trap`.  Plus the consistent-``iq_0`` seed (`_pq_seed_at_x0`,
+    `theta`), `None` for every other method.
+
+    History: `doc/shooting_history.md`, `_PlainPeriod`."""
     __slots__ = ()
     is_plain = True
 

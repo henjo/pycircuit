@@ -20,29 +20,26 @@ class ProbeShooting:
     so there is no phase condition, no free-period unknown, and no ``T = 0``
     trivial root for a seed below the fundamental to fall into.
 
-    ⚠ IT IS NOT A CONVERGENCE AID, AND THE PAPER SAYS SO ITSELF.  On its own
-    flagship high-Q Pierce example the authors report *"it is easy to assign a
-    tentative current to the Ls inductor ... and obtain convergence in a few
-    iterations (we did this with conventional SH)"*.  What this buys is the
-    SWEEP: unstable limit cycles, coexisting solutions, and a stability screen.
+    ⚠ IT IS NOT A CONVERGENCE AID, AND THE PAPER SAYS SO ITSELF (its
+    flagship high-Q Pierce example converges with conventional shooting).
+    What this buys is the SWEEP: unstable limit cycles, coexisting
+    solutions, and a stability screen.
 
-    ⚠⚠ ONE TONE GIVES A DESCRIBING-FUNCTION SOLVE, NOT THE ORBIT.  A single
-    tone forces a SINUSOID, so a non-sinusoidal orbit can only null the probe's
-    FUNDAMENTAL current.  Measured on van der Pol, the frequency error is
-    QUADRATIC in harmonic content -- ``df/f = 4.0 THD^2`` to 3% across two
-    decades -- and the probe sits at the LC resonance at every ``mu`` because
-    ``mu(u - u^3/3)`` is odd and memoryless, so its describing function shifts
-    no phase.  ``harmonics=K`` forces K tones and nulls K harmonics, which is
-    harmonic balance with a shooting inner solve: at K=3 the van der Pol error
-    falls from 5.9e-02 to 3.8e-04.
+    ⚠ ONE TONE GIVES A DESCRIBING-FUNCTION SOLVE, NOT THE ORBIT.  A single
+    tone forces a SINUSOID, so a non-sinusoidal orbit can only null the
+    probe's FUNDAMENTAL current; the frequency error grows QUADRATICALLY with
+    harmonic content (``df/f ~ 4 THD^2`` on van der Pol).  ``harmonics=K``
+    forces K tones and nulls K harmonics, which is harmonic balance with a
+    shooting inner solve.
 
-    ⚠⚠ PROBE PLACEMENT IS CIRCUIT-SPECIFIC, AND ITS FAILURE IS NOT A SOLVER
+    ⚠ PROBE PLACEMENT IS CIRCUIT-SPECIFIC, AND ITS FAILURE IS NOT A SOLVER
     FAILURE.  Forcing a node fixes every state the source reaches; any state it
     does NOT reach whose DC level is then unconstrained makes the shooting
-    Jacobian SINGULAR, because a whole family satisfies periodicity.  Measured
-    across van der Pol's only node with no series resistance: periodicity error
-    **2.11e-15** -- already a periodic solution -- reported as
-    ``converged = False``.  :meth:`degenerate_placement` names that pairing.
+    Jacobian SINGULAR, because a whole family satisfies periodicity -- an
+    already-periodic result reported as ``converged = False``.
+    :meth:`degenerate_placement` names that pairing.
+
+    History: `doc/shooting_history.md`, `ProbeShooting`.
     """
 
     def __init__(self, factory, node, refnode=gnd, method='gear',
@@ -86,12 +83,10 @@ class ProbeShooting:
         n = len(self.tones)
         for j, k in enumerate(self.tones):
             nxt = self.refnode if j == n - 1 else cir.add_node('__probe_n%d' % j)
-            ## ⚠⚠ `vac=0` EXPLICITLY.  `VS.vac` DEFAULTS TO 1, not 0, so every
+            ## ⚠ `vac=0` EXPLICITLY.  `VS.vac` DEFAULTS TO 1, not 0, so every
             ## probe source in the chain would be AC-excited at once -- and in
-            ## series they share one current, so the PAC response came back
-            ## exactly K times too large (measured ratios 1, 2, 3 at K = 1, 2,
-            ## 3).  K=1 validated because there was nothing to contaminate it,
-            ## which is why the diagonal alone could not catch this.
+            ## series they share one current, so the PAC response would come
+            ## back K times too large (invisible at K=1).
             cir['__probe%d' % j] = VSin(prev, nxt, va=float(amps[j]),
                                         freq=float(k) * float(f),
                                         phase=float(phases[j]), vac=0.0)
@@ -124,10 +119,9 @@ class ProbeShooting:
         T = 1.0 / float(f)
         ## ⚠ WARM START: the finite-difference columns perturb a parameter by
         ## ~1e-5, so the trajectory barely moves and solving each from cold is
-        ## waste.  Measured 2.09 s cold against 1.31 s warm -- 1.60x -- with
-        ## the answers agreeing to 3e-15.  A pure accelerator: it changes which
-        ## iterate the Newton starts from and nothing else, and carries no
-        ## assumption about the circuit.
+        ## waste.  A pure accelerator: it changes which iterate the Newton
+        ## starts from and nothing else, and carries no assumption about the
+        ## circuit.
         ## ⚠ `PSS.solve` takes the REDUCED state (length n-1), not the full
         ## one -- passing `X[:, 0]` verbatim makes a solved-history run build a
         ## 2(n-1) pair against an n-length vector and raise on the shapes.
@@ -163,23 +157,17 @@ class ProbeShooting:
         """`|I_even| / |I_odd|` on the probe current -- the ONLY basis on which
         even tones may be dropped.
 
-        ⚠⚠ PRUNING THE EVEN HARMONICS DOES **NOT** HOLD IN GENERAL, and the
+        ⚠ PRUNING THE EVEN HARMONICS DOES **NOT** HOLD IN GENERAL, and the
         failure is silent: dropping a tone that is really there removes both an
         unknown and the residual row constraining it, so the solve converges to
-        the wrong waveform.  Van der Pol is HALF-WAVE SYMMETRIC and its even
-        content is 7.1e-16; add an even term ``beta u^2`` to the same
-        nonlinearity and it is not::
+        the wrong waveform.  Van der Pol is HALF-WAVE SYMMETRIC (its even
+        content is at rounding level), but an even term ``beta u^2`` added to
+        the same nonlinearity can make H2 the largest correction after the
+        fundamental -- there is no margin to judge by eye.  So this measures
+        rather than assumes, and a caller passing `tones=[1, 3, 5]` should
+        check it first.
 
-            beta    H2/H1       H3/H1       H4/H1
-            0.00    7.080e-16   1.168e-01   2.710e-16   <- symmetric
-            0.05    2.649e-02   1.162e-01   9.239e-03
-            0.20    1.058e-01   1.068e-01   3.600e-02   <- H2 EQUALS H3
-            0.50    2.613e-01   5.994e-02   7.610e-02   <- H2 is 4x H3
-
-        At ``beta = 0.5`` pruning would discard the LARGEST correction after
-        the fundamental, and ``beta = 0.05`` already gives 2.6% -- there is no
-        margin to judge by eye.  So this measures rather than assumes, and a
-        caller passing `tones=[1, 3, 5]` should check it first.
+        History: `doc/shooting_history.md`, `ProbeShooting.even_harmonic_content`.
         """
         n = len(self.tones)
         if amps is None:
@@ -247,16 +235,12 @@ class ProbeShooting:
         `2K` unknowns against `2K` residuals, so the system is square.  Returns
         `(f, amps, phases, info)`.
 
-        Measured on van der Pol (`mu = 1`, autonomous `f = 0.150229`)::
+        ⚠ On a HALF-WAVE-SYMMETRIC circuit (van der Pol) an even tone buys
+        NOTHING because the even harmonics do not exist -- NOT because two
+        tones cannot help.  See :meth:`even_harmonic_content` before
+        concluding the same elsewhere.
 
-            K   f          df/f         note
-            1   0.159134   +5.93e-02
-            2   0.159134   +5.93e-02    A_2 = 2.3e-13 -- no change at all
-            3   0.150172   -3.77e-04    157x better
-
-        ⚠ K=2 buys NOTHING here because the even harmonics do not exist on a
-        half-wave-symmetric circuit -- NOT because two tones cannot help.  See
-        :meth:`even_harmonic_content` before concluding the same elsewhere.
+        History: `doc/shooting_history.md`, `ProbeShooting.solve_multitone`.
         """
         n = len(self.tones)
         if phases0 is None:
@@ -287,10 +271,8 @@ class ProbeShooting:
                 ## CHAIN RULE, NOT A POSITIONAL COPY.  `pac_jacobian` returns
                 ## `d(Re I, Im I)/d(Re V, Im V)`; the unknowns here are
                 ## `(A_k, phi_k)` with `phi` in DEGREES.  Copying the columns
-                ## across positionally feeds the Newton a Jacobian for the
-                ## WRONG VARIABLES -- it diverged to f = 0.0348 against 0.1502
-                ## while `pac_jacobian` itself validated at 1e-04, which is how
-                ## a correct derivative and a broken solve coexisted.
+                ## positionally feeds the Newton a Jacobian for the WRONG
+                ## VARIABLES, which `pac_jacobian`'s own validation cannot see.
                 ## With `V_k = A_k exp(j psi_k)`, `psi_k = (phi_k - phase0)*pi/180`:
                 ##     dV/dA   = (cos psi, sin psi)
                 ##     dV/dphi = A (pi/180) (-sin psi, cos psi)
@@ -379,19 +361,17 @@ class ProbeShooting:
     def _pac_response(self, pss, cir, row, f, excite_harmonic, want_harmonics):
         """`{m: dI_m}` from ONE linear PAC solve exciting harmonic `j`.
 
-        ⚠⚠ TWO CONVENTION FACTORS AND ONE INDEXING TRAP, all three pinned
+        ⚠ TWO CONVENTION FACTORS AND ONE INDEXING TRAP, all three pinned
         against a circuit whose answer is analytic (a resistor across the
-        probe, where `dI/dV = 1/R` exactly) rather than against the finite
-        difference this is meant to replace.  Calibrating against FD would
-        make the agreement circular and would absorb a genuine sideband-index
-        error into the fitted constant.
+        probe, where `dI/dV = 1/R` exactly), never against the finite
+        difference this is meant to replace: that would make the agreement
+        circular and absorb a genuine sideband-index error into a fitted
+        constant.
 
-        * **The frequency list carries DUPLICATES.**  `0.159155` appears twice
-          in the returned sweep, one entry near zero and one carrying the
-          response; `argmin(|fs - target|)` picks whichever comes first and it
-          was the wrong one, reading 5.9e-21 where the answer is 1e-3.  So the
-          entry is chosen by LARGEST RESPONSE among those at the target
-          frequency, not by proximity alone.
+        * **The frequency list carries DUPLICATES** at a harmonic (the direct
+          sideband and its folded image), so an entry is never chosen by
+          proximity alone; the excitation offset `_pac_delta` identifies them
+          by frequency (see below).
         * **A factor of two**: this file's probe spectrum uses the peak-amplitude
           convention `(2/N) sum(...)`; PAC returns a phasor.
         * **A 90 degree rotation that is OURS, not PAC's**: `VS` builds its AC
@@ -400,18 +380,18 @@ class ProbeShooting:
           rotates the AC excitation.  Dividing by the excitation phasor removes
           it, which is why the excitation is read from the circuit rather than
           assumed to be 1.
+
+        History: `doc/shooting_history.md`, `ProbeShooting._pac_response`.
         """
         tk = cir.toolkit
         pac = PAC(cir, toolkit=tk)
-        ## ⚠⚠⚠ EXCITE SLIGHTLY OFF THE HARMONIC, WHICH REMOVES THE AMBIGUITY
+        ## ⚠ EXCITE SLIGHTLY OFF THE HARMONIC, WHICH REMOVES THE AMBIGUITY
         ## INSTEAD OF GUESSING IT.  Exciting exactly at `j*f0` sends TWO
         ## sidebands to the same absolute output frequency -- `k = m - j` and
         ## `k = -m - j` -- and `PAC.solve` returns absolute frequencies with the
         ## sideband index folded away, so the two arrive in an order that is not
-        ## stable.  Ordering them by magnitude worked AT THE SOLUTION and failed
-        ## away from it (validation 1.6e-05 at the solved amplitudes, 1.763 at
-        ## the Newton's starting point), which is the kind of heuristic that
-        ## passes a gate and then fails in use.
+        ## stable (ordering by magnitude holds at the solution and fails away
+        ## from it).
         ##
         ## With the excitation at `j*f0 + delta` every output lands at
         ## `(j+k)*f0 + delta`, all distinct, so the wanted term is simply the
@@ -434,12 +414,9 @@ class ProbeShooting:
             ## Exciting at `j*f0 + delta`, the DIRECT sideband `k = m - j`
             ## lands at `m*f0 + delta`, and the IMAGE `k = -m - j` lands at
             ## `-m*f0 + delta`, which PAC folds onto `m*f0 - delta` and
-            ## conjugates.  Taking only the direct one halves the answer
-            ## (measured: a uniform 0.5 at every K); taking both without being
-            ## able to tell them apart is what forced the magnitude-ordering
-            ## heuristic that passed at the solution and failed at the Newton's
-            ## start.  With the offset they are identified by FREQUENCY, so the
-            ## rule is derived rather than guessed.
+            ## conjugates.  Taking only the direct one halves the answer; with
+            ## the offset the two are identified by FREQUENCY, so the rule is
+            ## derived rather than guessed.
             base = float(m) * float(f)
             i_dir = np.where(np.abs(fs - (base + delta)) < 0.25 * delta)[0]
             i_img = np.where(np.abs(fs - (base - delta)) < 0.25 * delta)[0]
@@ -464,62 +441,36 @@ class ProbeShooting:
         Returns `(J, info)` with `J` the real `2K x 2K` block
         `d(Re I, Im I)/d(Re V, Im V)`.
 
-        ⚠⚠⚠ **NOT SHIPPED-READY: THE NORMALISATION IS INCOMPLETE, AND THE
-        DEFAULT VALIDATION CORRECTLY REFUSES.**  The route is confirmed viable
-        -- PAC returns the right quantity, verified against a resistor where
-        `dI/dV = 1/R` analytically -- and two of the three discrepancies are
-        pinned and removed.  A third is not:
-
-            fixture                 PAC / FD after normalisation
-            resistor (linear)       -1.0        (sign only)
-            van der Pol (K=1)       -0.499999   (sign AND a factor 2)
-
-        **A constant that differs between two circuits is not a convention,
-        it is a missing term**, so the remaining factor is NOT applied by
-        fitting it -- that would make the "independent" Jacobian a fit to the
-        finite difference it replaces, hide any sideband-index error inside the
-        fitted constant, and reproduce exactly the circular-verification
-        failure this file already records for the PPV.
-
-        Until it is derived, `validate=True` raises on real circuits and the
+        ⚠ NOT SHIPPED-READY: THE NORMALISATION IS INCOMPLETE, AND THE
+        DEFAULT VALIDATION CORRECTLY REFUSES on real circuits, so the
         finite-difference Jacobian in :meth:`solve_multitone` remains the
-        shipped path.  What IS established and reusable:
+        shipped path.  The response itself is right (`dI/dV = 1/R` recovered
+        on a resistor; the conventions are in `_pac_response`).  **A constant
+        that differs between two circuits is not a convention, it is a missing
+        term**: never fit it to the finite difference this replaces.
 
-        * the response is present and correct (1/R recovered exactly);
-        * the 90 degree rotation is OURS -- `VS` builds its AC phasor as
-          `vac * exp(j*phase)` and the operating-point probe sets `phase = 90`
-          -- and dividing by the excitation phasor removes it, measured: the
-          residual ratio is real, not imaginary;
-        * PAC's frequency sweep contains DUPLICATE entries at the same
-          frequency, one near zero and one carrying the response, so
-          `argmin(|fs - target|)` reads 5.9e-21 where the answer is 1e-3.
-
-        ⚠⚠ `validate=True` CHECKS ONE COLUMN AGAINST THE FINITE DIFFERENCE AND
-        RAISES ON DISAGREEMENT, and it is on by default deliberately.  A wrong
-        Jacobian does not announce itself: the Newton still converges, to the
-        wrong orbit -- the same silent failure that even-harmonic pruning
-        produces, which this file already has a falsifier for.  The check costs
-        ONE extra solve, amortised over the whole solve, and it exercises the
-        conventions in `_pac_response` on the circuit actually in hand rather
-        than on the resistor they were derived from.
+        ⚠ `validate=True` CHECKS ONE COLUMN AGAINST THE FINITE DIFFERENCE AND
+        RAISES ON DISAGREEMENT, and it is on by default deliberately: a wrong
+        Jacobian does not announce itself -- the Newton still converges, to the
+        wrong orbit.  The check costs ONE extra solve and exercises the
+        conventions in `_pac_response` on the circuit actually in hand.
 
         ⚠ The OFF-DIAGONAL entries `dI_m/dV_j` with `m != j` are the ones that
         exercise the sideband map `k = m - j` and PAC's negative-frequency
         conjugation.  With `harmonics=1` there are none, so a passing K=1
         validation says NOTHING about the index map -- validate at K >= 2
         before trusting a multitone Jacobian.
+
+        History: `doc/shooting_history.md`, `ProbeShooting.pac_jacobian`.
         """
         import warnings as _w
         n = len(self.tones)
-        ## ⚠⚠ ONE PSS SOLVE FOR EVERY COLUMN.  `vac` is read ONLY under
+        ## ⚠ ONE PSS SOLVE FOR EVERY COLUMN.  `vac` is read ONLY under
         ## `analysis='ac'` -- it does not enter the transient residual, so it
-        ## cannot move the periodic operating point.  Building a fresh circuit
-        ## and re-solving the PSS per column therefore recomputed the SAME
-        ## orbit K times, which is the whole cost this method exists to avoid:
-        ## it made the "cheap" Jacobian K nonlinear solves plus K linear ones,
-        ## against the finite difference's 2K.  Solve once, then walk `vac`
-        ## across the probes and take K LINEAR PAC solves against that one
-        ## operating point.
+        ## cannot move the periodic operating point.  Solve once, then walk
+        ## `vac` across the probes and take K LINEAR PAC solves against that
+        ## one operating point (a PSS per column is the cost this method exists
+        ## to avoid).
         cir = self._build(f, amps, phases)
         row = self._probe_row(cir)
         pss = PSS(cir, method=self.method, reltol=self.reltol)

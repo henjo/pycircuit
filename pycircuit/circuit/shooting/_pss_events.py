@@ -12,7 +12,8 @@ class _StateEvents(object):
     onto them, and the bordered event stage.  A theme of `PSS` (see
     `pss.py`)."""
 
-    ## ⚠ THE STATE-EVENT STAGE (2026-09-21) -- see `solve`'s docstring.
+    ## ⚠ THE STATE-EVENT STAGE -- see `solve`'s docstring.
+    ## (History: `doc/shooting_history.md`, `_state_event_rows`.)
     def _state_event_rows(self):
         """`(W, c)`: the circuit's state-event rows on the REDUCED state and
         their thresholds, or `(None, None)` when the circuit declares none."""
@@ -45,18 +46,16 @@ class _StateEvents(object):
             pts = np.sort(np.append(pts, f))
             landed.append(f)
         pts = np.unique(pts)
-        ## ⚠ A WINDOW BETWEEN TWO EVENTS GETS ITS OWN SUB-GRID (2026-09-21).
-        ## A threshold switch declares both edges of its transition; the
+        ## ⚠ A WINDOW BETWEEN TWO EVENTS GETS ITS OWN SUB-GRID.  A
+        ## threshold switch declares both edges of its transition; the
         ## segment between them holds the whole S-curve of the switch, and
-        ## as ONE step it is integrated by three collocation points across
-        ## the curve -- the stage solve stalled at 6e-4 of the swing
-        ## whatever the count.  A gap between two landed events narrower
-        ## than its neighbours is split into `EVENT_WINDOW_STEPS` steps,
-        ## which the remap then scales with the window.
-        ## (against the BASE grid's local step, not the immediate
-        ## neighbours: an inserted event leaves a sliver beside the window,
-        ## and measured against that the rule never fired on the PWM
-        ## loop's on-window)
+        ## as ONE step the stage solve cannot resolve it, whatever the step
+        ## count.  A gap between two landed events narrower than the BASE
+        ## grid's local step is split into `EVENT_WINDOW_STEPS` steps, which
+        ## the remap then scales with the window.  (Not the immediate
+        ## neighbours': an inserted event leaves a sliver beside the window,
+        ## and against that the rule does not fire.)
+        ## History: `doc/shooting_history.md`, `_land_fractions`.
         base_pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
         base_h = np.diff(base_pts)
         landed_sorted = sorted(landed)
@@ -121,8 +120,9 @@ class _StateEvents(object):
         1 - 1e-6) of the period.  Returns `(base2, th0, Wk, ck)` -- the steps
         the traversal took with the crossings landed on nodes, the
         crossings as fractions, their rows and thresholds -- or `None` when
-        the orbit crosses none.  (Refactor E9 item 2: the three stages each
-        carried this.)"""
+        the orbit crosses none.
+
+        History: `doc/shooting_history.md`, `_stage_one_crossings`."""
         N = len(times) - 1
         X = np.array([np.asarray(x0_ss, dtype=float)]
                      + [np.asarray(self._captured[j][0], dtype=float)
@@ -171,30 +171,29 @@ class _StateEvents(object):
 
         ⚠ THE GRID EVERY CONSUMER REPLAYS ON IS THE ONE `_period_grid` MAKES
         OF THESE FRACTIONS -- with its opener ramp, which the window
-        sub-grid's tiny steps trigger.  The stored pieces were first
-        computed on the unramped fractions, and `factored_period`'s node
-        indices were shifted by the ramp's pieces against them: the
-        bordered sideband solve read its event rows at the wrong nodes
-        (dtheta 12 % off, the response 51 %).  So the ramped grid IS the
-        grid from here on: `_grid_fracs` carries it (its first piece is the
+        sub-grid's tiny steps trigger.  So the ramped grid IS the grid from
+        here on: `_grid_fracs` carries it (its first piece is the
         smallest, so `_period_grid` will not ramp it again), and the
         monodromy and the event columns are computed on it -- the identity
         remap on it gives every step's sensitivity to the events (the
-        ramp's pieces included) and the event nodes.
+        ramp's pieces included) and the event nodes.  Pieces computed on
+        the unramped fractions would not match `factored_period`'s node
+        indices (shifted by the ramp's pieces against them), and a bordered
+        consumer would read its event rows at the wrong nodes.
 
-        ⚠ THE TOTAL MONODROMY THROUGH A MOVING EVENT (2026-09-22, phase B).
+        ⚠ THE TOTAL MONODROMY THROUGH A MOVING EVENT.
         The period map's derivative is not `M` (the grid frozen): a
         perturbation of `x_0` moves the crossing, `dtheta/dx_0 = -Gt^-1 G`
         from the event rows, and the state at the period moves with it
         through the event columns -- the bordered system's Schur
         complement, which is the saltation matrix derived rather than
-        guessed.  Measured on the PWM loop: `M` 109 % off the finite
-        difference of the staged period map, this 3.3e-8; the dominant
-        multiplier 0.691 where `M` read 0.632.
+        guessed.
 
         The landed crossings join `event_times` (fractions of the period)
         for every kind, so `covariance`, `sampled_noise` and a reader of
-        the solve see the same list."""
+        the solve see the same list.
+
+        History: `doc/shooting_history.md`, `_finish_state_events`."""
         m = self.cir.n - 1
         fr, _hsens, _nodes = self._event_remap(base2, th0, th, T)
         _tms_r, _hs_r = self._period_grid(float(T), len(fr), np.asarray(fr, dtype=float))
@@ -228,9 +227,8 @@ class _StateEvents(object):
                            hs, maxiterations, tol, shoot_reltol, alpha,
                            phase_row=None, phase_k=None):
         """The bordered second stage: the crossings of the first stage's
-        orbit become Newton unknowns (events phases A/B).  One stage for every
-        kind that has one since 2026-09-23 -- it was three, the driven and
-        the autonomous stage methods and gear's pair.
+        orbit become Newton unknowns.  One stage for every kind that has
+        one: the driven and the autonomous stage methods and gear's pair.
 
         Unknowns ``(z, theta[, T])``: `z` the entering state (gear's PAIR
         `(x_0, x_{-1})`), `theta` the `K` crossing fractions, and the period
@@ -241,7 +239,9 @@ class _StateEvents(object):
         frac_j``).  Returns the stage-1 tuple unchanged when the circuit
         declares no state event or its orbit crosses none; else ``(z, info,
         ier, mesg, period, times, hs)`` on the landed grid (see
-        `_finish_state_events`)."""
+        `_finish_state_events`).
+
+        History: `doc/shooting_history.md`, `_state_event_stage`."""
         autonomous = phase_row is not None
         W, c = self._state_event_rows()
         if W is None:
@@ -326,8 +326,8 @@ class _StateEvents(object):
             _ze, M, Pk = evmap(zn, Tn, tms_r, hs_r, hsens_r,
                                set(range(1, len(hs_r) + 1)))
             return M, Pk, np.hstack((np.eye(m), np.zeros((m, wm - m))))
-        ## (gear's pair builds its columns whether or not the stage converged,
-        ## as it did before the stages shared this finish)
+        ## (gear's pair builds its columns whether or not the stage
+        ## converged; history: `doc/shooting_history.md`, `_state_event_stage`)
         tms_r, hs_r = self._finish_state_events(
             np.asarray(z_new[wm:wm + K], dtype=float), base2, th0, Tn, Wk, ck,
             ier == 1 or kind == 'pair', columns)
@@ -335,11 +335,13 @@ class _StateEvents(object):
 
     def _event_costate_injection(self, fp, v, n):
         """The event nodes' costate injections for a reverse pass of the
-        TOTAL map (2026-09-22): `-zeta_k W_k` at node `nd_k`, `zeta = Gt^-T
+        TOTAL map: `-zeta_k W_k` at node `nd_k`, `zeta = Gt^-T
         P_theta^T v` -- the transpose of the saltation, carried by the pass
         to every earlier node; `None` when the solve is not staged.  What
         `ppv()` and `floquet_modes` sample a left vector along the orbit
-        with."""
+        with.
+
+        History: `doc/shooting_history.md`, `_event_costate_injection`."""
         _ev = EventColumns.of(self, n)
         if _ev is None:
             return None

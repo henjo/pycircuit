@@ -15,12 +15,12 @@ class _ShootingNewton(object):
     ## reached from a seed one decade high is ~0.1 of it, and the trivial
     ## root lands 15 orders down, so nothing sits near this line.
     DEGENERATE_PERIOD_FACTOR = 1e-6
-    ## The equilibrium test above: a returned state whose DC residual is
-    ## within this factor of `iabstol` is an equilibrium, not an orbit.  1e3
-    ## because the shooting Newton's own residual sits at `abstol`, and an
-    ## orbit's DC residual at t = 0 is a CIRCUIT-scale current (measured:
-    ## the van der Pol at 2 V has |i + u| ~ 1 A there against 1e-27 for the
-    ## collapsed state -- 27 orders apart, so the factor is not delicate).
+    ## The equilibrium test of `_free_period_solve`: a returned state whose
+    ## DC residual is within this factor of `iabstol` is an equilibrium, not
+    ## an orbit.  Not delicate: the shooting Newton's own residual sits at
+    ## `abstol`, while an orbit's DC residual at t = 0 is a CIRCUIT-scale
+    ## current, many orders above it.
+    ## History: `doc/shooting_history.md`, `_ShootingNewton.TRIVIAL_ORBIT_FACTOR`.
     TRIVIAL_ORBIT_FACTOR = 1e3
 
     def _free_period_solve(self, func, z0, abstol, xtol, reltol, maxiter,
@@ -33,20 +33,14 @@ class _ShootingNewton(object):
         period -- so Newton reaches it from any seed below the fundamental
         and the run returns a period of ~1e-18 with no orbit in it.
 
-        Measured on BOTH autonomous elements in the tree, so it is a
-        property of the formulation and not of any circuit: from a 1e-4
-        seed against a 1e-3 fundamental, Gear-2 returned -1.5e-20 on the
-        quadrature element and 3.9e-19 on the scalar `Idtmod`, and
-        trapezoidal raised a bare `LinAlgError` from three seeds of five as
-        its Jacobian went singular on the way down.
+        It is a property of the formulation, not of any circuit.  The
+        collapse is demoted here to `converged = False`, with a warning that
+        names the cause, and a Jacobian going singular on the way down is
+        re-raised with the same diagnosis: the generic advice ("raise
+        maxiterations") is wrong for it -- no number of iterations reaches a
+        fundamental from below.
 
-        Neither outcome is a silent wrong answer -- the collapse reports
-        `converged = False` (⚠ ENFORCED HERE, by demoting `ier`; asserting it
-        in prose was not enough -- see the note at the demotion) and the
-        exception is loud -- but both told the
-        user nothing about the cause, and the generic non-convergence
-        advice ("raise maxiterations") is wrong for it: no number of
-        iterations reaches a fundamental from below.
+        History: `doc/shooting_history.md`, `_ShootingNewton._free_period_solve`.
         """
         try:
             if solver is None:
@@ -77,22 +71,13 @@ class _ShootingNewton(object):
                 % (seed_period, exc)) from exc
 
         T = float(z[-1])
-        ## ⚠⚠ THE SECOND TRIVIAL ROOT, found 2026-09-08 while gating
-        ## `warping_estimate` on an index-2 oscillator: the guard below
-        ## catches `T -> 0`, and an autonomous solve has ANOTHER root that it
-        ## cannot see -- the EQUILIBRIUM, `x(t) = x_dc`, which is periodic at
-        ## EVERY `T`.  Radau seeded 10 % below the fundamental on the
-        ## index-1 van der Pol and on the index-2 fixture returned
-        ## amplitude 0.0000 (state 1e-27) at a period near the seed with
-        ## `converged = True`; trapezoidal on the same seed failed honestly.
-        ## `T` stays finite, so the period test passes, and the periodicity
-        ## residual is exactly zero because the equilibrium IS periodic --
-        ## at every `T`, so it is a whole LINE of roots in `(x0, T)`, not a
-        ## point (peer's sharpening): that is why the residual is exactly
-        ## zero rather than small, why no residual-based guard could have
-        ## caught it, and why the DC residual does in one evaluation.
-        ## The test that sees it is the DC residual of the returned state:
-        ## an orbit has `C x' != 0` somewhere at t = 0, so `i(x) + u` is far
+        ## ⚠⚠ THE SECOND TRIVIAL ROOT: the EQUILIBRIUM, `x(t) = x_dc`, is
+        ## periodic at EVERY `T` -- a whole LINE of roots in `(x0, T)` -- so
+        ## `T` stays finite, the period test passes, and the periodicity
+        ## residual is exactly zero: no residual-based guard can catch it
+        ## (radau seeded 10 % low returns it with `converged = True`).  The
+        ## DC residual of the returned state does, in one evaluation: an
+        ## orbit has `C x' != 0` somewhere at t = 0, so `i(x) + u` is far
         ## from zero there; an equilibrium has it at solver tolerance.
         trivial_orbit = False
         try:
@@ -124,24 +109,13 @@ class _ShootingNewton(object):
                 RuntimeWarning, stacklevel=3)
         elif not np.isfinite(T) or abs(T) < self.DEGENERATE_PERIOD_FACTOR * abs(
                 seed_period):
-            ## ⚠⚠ THE COLLAPSE MUST BE DEMOTED HERE, and for two turns of this
-            ## record it was not.  The docstrings above and on `solve` both
-            ## asserted "the collapse reports `converged = False`" -- and
-            ## NOTHING ENFORCED IT.  `self.converged` is `(_ier == 1)` and
-            ## nothing else, while `T = 0` is a REGULAR root: the solver
-            ## reaches it cleanly and reports success, so Gear-2 returned
-            ## `T = 5.42e-18` with `converged = True` on a circuit with no
-            ## orbit in it.  The warning fired correctly the whole time, which
-            ## is exactly what made this survive -- a reader who checks the
-            ## documented flag instead of catching warnings got `True`.
-            ##
-            ## Demoting `ier` rather than assigning `self.converged` is
-            ## deliberate: all three autonomous call sites already feed this
-            ## return value into `self.converged`, so one demotion covers the
-            ## plain, solved-history and matrix-free paths, and any future
-            ## path inherits it by construction.  `ier = 5` is `fsolve`'s
-            ## "not making good progress" code -- the closest existing
-            ## meaning, and already handled everywhere `ier` is read.
+            ## ⚠⚠ THE COLLAPSE MUST BE DEMOTED HERE: `self.converged` is
+            ## `(_ier == 1)` alone and `T = 0` is a REGULAR root the solver
+            ## reports as success, so a warning alone leaves `converged =
+            ## True`.  Demoting `ier` (not assigning `self.converged`) covers
+            ## all three autonomous call sites -- plain, solved-history,
+            ## matrix-free -- and any future path by construction; `ier = 5`
+            ## is `fsolve`'s "not making good progress", handled everywhere.
             ier = 5
             mesg = ('collapsed onto the trivial root T = %.6g s from a seed '
                     'of %.6g s' % (T, seed_period))
@@ -173,57 +147,25 @@ class _ShootingNewton(object):
         """Say WHY a multistep free-period solve stalled, when it is not the
         iteration count.
 
-        ⚠⚠ MEASURED 2026-09-14 (peer report, reproduced).  On a weakly limited
-        LC oscillator (second Floquet multiplier 0.99, set by the limiting),
-        Gear-2's autonomous shooting solve stalls at a residual FLOOR:
-        converged quadratically at 925..1600 points per period, never at 900
-        or 800.  Every property that would point at the solver was ruled
-        out -- the residual is a pure function of the unknowns; damped,
-        Armijo (20 halvings) and Levenberg-Marquardt steps from the stall all
-        stop at the floor; tighter inner tolerances change nothing; the grid
-        is exactly uniform; a scan of the Jacobian's two weakest directions
-        finds no lower point.  The discrete periodic solution of the
-        solved-history system `(x_0, x_{-1}, T)` CEASES TO EXIST below a grid
-        threshold: `sigma_min(J)` at the root falls linearly toward it (to
-        zero near 904 points), the discrete second multiplier stays at 0.990,
-        and the vanishing direction lies ~99 % in the `x_{-1}` block.  The
-        threshold grows as the multiplier approaches 1 (no convergence at
-        6400 points at 0.999).  Trapezoidal stalls too; `radau` -- no history,
-        no manufactured opening -- converged in 7-10 evaluations at 800
-        points at both multipliers.
+        On a weakly damped oscillator (second Floquet multiplier near 1) a
+        multistep free-period solve can stall at a residual FLOOR.  Gear-2's
+        solved-history system `(x_0, x_{-1}, T)` has no discrete periodic
+        solution below a grid threshold that grows as the multiplier nears
+        1 (`sigma_min(J)` -> 0, the vanishing direction almost wholly in
+        `x_{-1}`): no iterations, damping or tolerance fix that; `radau`
+        converges there.  This measures what it can at the last iterate (one
+        residual evaluation, failed solves only; stage methods skipped).
 
-        So no number of iterations, damping or tolerance fixes THAT stall, and
-        the generic advice would send the caller the wrong way.  This measures
-        what it can at the last iterate (one residual evaluation, only on a
-        failed solve) and says so.  Stage methods are skipped: they did not
-        show this.
+        ⚠ Whether MORE ITERATIONS help depends on the circuit (a trapezoidal
+        residual can fall or RISE with the budget, its step then UPHILL), so
+        the discriminator is reported: `analysis.fsolve` counts the steps
+        the line search could not improve (`infodict['ls_unimproved']`) and
+        the message names it -- zero means a bigger budget is worth trying,
+        non-zero that it would repeat an uphill direction.
+        ⚠ `x0_unknown=True` is a diagnostic here, not a fix: the Jacobian
+        becomes the true derivative, and the solve still plateaus.
 
-        ⚠⚠ THE "ITERATIONS DO NOT HELP" CLAIM WAS OVER-BROAD AND IS NARROWED
-        (2026-09-16, peer report + reproduced here).  It was measured for
-        GEAR-2's solved-history stall and then written as though it held for
-        every multistep free-period solve.  It does not: a trapezoidal solve at
-        multiplier 0.9 converges with a bigger budget on the reporter's
-        oscillator (200 iterations) and at the DEFAULT 25 on the van der Pol
-        fixture here.  What IS measured at 0.99, on the reporter's tank and
-        rebuilt independently: trapezoidal's residual RISES with budget --
-        6.765e-07 at 25 iterations, 9.011e-07 at 200 -- and the analytic step
-        is UPHILL against the true derivative, so the line search's halvings
-        cannot improve it.  `radau` converged on that same fixture in 25
-        iterations (period 6.2831863e-07, amplitude to five digits).
-
-        ⚠ AND THE DISCRIMINATOR IS NOW REPORTED RATHER THAN GUESSED:
-        `analysis.fsolve` counts the iterations whose step it could not improve
-        (`infodict['ls_unimproved']`) and this message names the count.  Zero
-        means the solve was descending and a bigger budget is worth trying;
-        non-zero means the budget would repeat an uphill direction.
-
-        ⚠ `x0_unknown=True` IS A DIAGNOSTIC HERE, NOT A FIX.  In that frame the
-        analytic Jacobian IS the derivative (worst entry 6e-07 against 1.000 in
-        the default frame, both measured by central differences on the
-        reporter's fixture) and the step becomes a descent direction -- but the
-        solve still does not converge there: `||F||` plateaus at 3.069e-05,
-        identical at 25 and 200 iterations.  The frame explains the behaviour;
-        it does not rescue the case.
+        History: `doc/shooting_history.md`, `_ShootingNewton._diagnose_lmm_free_period_stall`.
         """
         try:
             integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
@@ -296,9 +238,9 @@ class _ShootingNewton(object):
 
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
     ## An inexact Newton only needs the step accurate enough not to spoil the
-    ## outer convergence; measured k is 2-12 on circuits whose `I - M`
-    ## clusters at 1 (the fast modes decay over a period, leaving the slow
-    ## ones), so k tracks the number of SLOW MODES, not m.
+    ## outer convergence.  `I - M` clusters at 1 (the fast modes decay over a
+    ## period), so k tracks the number of SLOW MODES, not m (2-12 measured).
+    ## History: `doc/shooting_history.md`, `_ShootingNewton.KRYLOV_TOLERANCE_FACTOR`.
     KRYLOV_TOLERANCE_FACTOR = 1e-2
     ## ⚠ THE BUDGET IS A CHOICE AND SCIPY'S UNITS ARE A TRAP: `maxiter` counts
     ## RESTART CYCLES, not matvecs, so the pair multiplies. 200 x 20 is far
@@ -314,38 +256,16 @@ class _ShootingNewton(object):
         trajectory pass, then a linear operator that never forms its matrix.
         Written once because the four systems differ ONLY in those two
         things: the plain path's `I - M`, the solved-history path's `2m`
-        pair, and the bordered autonomous versions of each (one builder
-        since 2026-09-23, `_mf_build` in `solve`).
+        pair, and the bordered autonomous versions of each (one builder,
+        `_mf_build` in `solve`).
 
-        MEASURED (moved here from the solved-history driver, 2026-09-23).
         The dense path builds the `2m x 2m` Jacobian and factors it once per
         iteration; here the same iteration runs on a matvec, so the
-        `2m`-column propagation never happens.  Measured against the dense
-        path on the RC ladder, single-threaded, k=12:
-
-              m     dense traversal   trajectory + 12 matvecs   speedup
-             40             0.0843                    0.1025      0.82x
-            110             0.2366                    0.2175      1.09x
-            242             0.7503                    0.5378      1.40x
-            502             3.4709                    1.5457      2.23x
-           1002            20.1143                    5.5512      3.62x
-
-        -- 82-87% of the predicted ceiling, and a LOSS at m=40, which the
-        ceiling said too.
-
-        ⚠ THOSE ARE TRAVERSAL FIGURES AND THE END-TO-END SOLVE GAINS LESS.
-        A `solve` also does its setup, the replay that builds the waveform
-        and the DFT, none of which this touches, and matrix-free spends an
-        extra Newton iteration (below).  Measured end to end, same circuits:
-
-              m    dense (iters)      matrix-free (iters)     speedup
-            242      2.113 s (2)            1.557 s (2)        1.36x
-            502      9.255 s (2)            6.131 s (3)        1.51x
-           1002     52.402 s (2)           24.636 s (3)        2.13x
-
-        Quote whichever answers the question being asked, and say which it
-        is; 2.23x and 1.51x at m=502 are both true and are not the same
-        measurement.
+        `2m`-column propagation never happens.  It LOSES at small m and wins
+        increasingly with m (on the RC ladder at m=1002, 3.6x per traversal
+        and 2.1x end to end: setup, replay and DFT are untouched and
+        matrix-free can spend an extra Newton iteration).  Traversal and
+        end-to-end figures are different measurements; say which is quoted.
 
         ⚠ THE CONVERGENCE TEST IS NOT BIT-IDENTICAL TO `analysis.fsolve`'s,
         and it cannot be.  `fsolve` scales its residual test by
@@ -353,20 +273,15 @@ class _ShootingNewton(object):
         matrix-free method has.  The substitute here is `|x| + |M x| + |F|`,
         one extra matvec per iteration.
 
-        ⚠ AND IT IS NOT PROVABLY THE STRICT DIRECTION.  This docstring first
-        claimed the substitute was a LOWER bound on `fsolve`'s scale, so
-        that the test could only ever be stricter.  That is FALSE: at
-        `M = I` the true scale `|I - M| . |x|` is zero while the substitute
-        is `2|x|`, so the substitute is the LARGER one there, and at `M = 0`
-        they are equal.  Neither dominates the other in general.
+        ⚠ AND IT IS NOT PROVABLY THE STRICT DIRECTION: at `M = I` the true
+        scale `|I - M| . |x|` is zero while the substitute is `2|x|`, and at
+        `M = 0` they are equal, so neither dominates.  On the RC ladder the
+        two paths agree on the converged waveform to 1.1e-16 and on the
+        verdict, matrix-free taking one more Newton iteration -- one circuit
+        is not a proof of direction, and this is the first thing to check if
+        the two paths ever disagree on convergence.
 
-        What is measured, on the RC ladder at m=242/502/1002: the two paths
-        agree on the converged waveform to 1.1e-16 and on the converged/not
-        verdict, and matrix-free takes ONE MORE Newton iteration at m>=502
-        (3 against 2) -- so it is stricter in practice here, and still wins
-        on wall time while doing 50% more traversals.  One circuit is not a
-        proof of direction, and this is the first thing to check if the two
-        paths ever disagree on convergence.
+        History: `doc/shooting_history.md`, `_ShootingNewton._matrix_free_newton`.
         """
         import scipy.sparse.linalg as spla
         z = np.asarray(z0, dtype=float).copy()
@@ -387,14 +302,10 @@ class _ShootingNewton(object):
                 J, -F, rtol=self.KRYLOV_TOLERANCE_FACTOR * reltol,
                 restart=min(n, self.KRYLOV_RESTART),
                 maxiter=self.KRYLOV_MAX_CYCLES)
-            ## ⚠ THE INNER SOLVE'S VERDICT IS NOT DISCARDED.  It used to be,
-            ## and a Krylov breakdown then surfaced as the generic outer
-            ## 'No convergence' with nothing naming the cause -- in a file
-            ## whose whole standard is that a failure says what happened
-            ## (`T = 0`, the trivial root, the singular free-period
-            ## Jacobian).  An unconverged GMRES makes `xdiff` a direction
-            ## the Newton has no reason to trust, so the outer loop is told
-            ## to stop rather than iterate on it.
+            ## ⚠ THE INNER SOLVE'S VERDICT IS NOT DISCARDED: an unconverged
+            ## GMRES makes `xdiff` a direction the Newton has no reason to
+            ## trust, so the outer loop stops, and the warning names the cause
+            ## rather than a generic 'No convergence'.
             if info != 0:
                 warnings.warn(
                     'PSS: the matrix-free inner solve did not converge at '

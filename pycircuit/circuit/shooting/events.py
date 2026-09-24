@@ -6,7 +6,7 @@ import numpy as np
 
 class EventColumns(dict):
     """A staged solve's EVENT COLUMNS and the linear algebra every bordered
-    consumer does with them (refactor E9 item 1, 2026-09-23).
+    consumer does with them.
 
     The dict keys are the ones the consumers always read -- `nodes` (the
     grid nodes the crossings land on), `W`, `c` (the event rows `W_k . x =
@@ -17,12 +17,12 @@ class EventColumns(dict):
     working and a consumer's "unbordered" control stays
     `pss._event_columns = None`.  `dth` is `dtheta/dx_0 = -Gt^-1 G`.
 
-    Before this, the dict was read in 17 places and three derivations were
-    re-typed around it: the TOTAL map `M + P_end dth` at four sites, the
-    bordered adjoint's Schur elimination in two verbatim copies, the
-    `-zeta_k W_k` injection at four.  They are methods here; the numbers
-    are unchanged (the refactor's gate compares every consumer's output
-    before and after).
+    The derivations every consumer needs -- the TOTAL map `M + P_end dth`,
+    the bordered adjoint's Schur elimination, the `-zeta_k W_k` injection
+    -- are methods here; a consumer calls them rather than re-deriving
+    them.
+
+    History: `doc/shooting_history.md`, `EventColumns`.
     """
 
     @classmethod

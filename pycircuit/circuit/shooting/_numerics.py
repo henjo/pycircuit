@@ -68,14 +68,12 @@ def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     -- so a GMRES that discards `H` throws away the spectrum it just
     computed.  `scipy.sparse.linalg.gmres` discards it.
 
-    SECOND, AND THE REASON THIS IS A CORRECTNESS CHANGE: SciPy REPORTS
-    BREAKDOWN ON SYSTEMS IT HAS ALREADY SOLVED.  When the Krylov space is
-    exhausted the next basis vector is numerically zero -- a HAPPY
-    breakdown, where the answer is EXACT -- and it comes back as
-    `info = 4`.  Trusting that flag turns an exact answer into a
-    `RuntimeError`, which is what it did for AM/PM at small offsets and
-    why `PAC._gmres_checked` exists to overrule it.  Here the breakdown is
-    detected where it happens and returned as the converged answer it is.
+    SECOND, A CORRECTNESS REASON: SciPy REPORTS BREAKDOWN ON SYSTEMS IT
+    HAS ALREADY SOLVED.  When the Krylov space is exhausted the next basis
+    vector is numerically zero -- a HAPPY breakdown, where the answer is
+    EXACT -- and it comes back as `info = 4`.  Trusting that flag turns an
+    exact answer into a `RuntimeError`.  Here the breakdown is detected
+    where it happens and returned as the converged answer it is.
 
     ⚠ REORTHOGONALISED ONCE BY DEFAULT.  Modified Gram-Schmidt loses
     orthogonality as the basis grows, and the Ritz values are read off `H`
@@ -87,6 +85,8 @@ def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     this exists to keep.  For the systems here -- `2m` unknowns, `k`
     bounded by `n` -- the full basis is affordable; a caller that needs
     restarts needs a different function and should not silently get one.
+
+    History: `doc/shooting_history.md`, `_arnoldi_gmres`.
     """
     b = np.asarray(b)
     n = b.shape[0]
@@ -128,47 +128,35 @@ def periodic_spline_weights(t, T, breaks=None):
     PIECEWISE not-a-knot cubic spline whose pieces meet at those nodes and
     at node 0.
 
-    ⚠ UNDER LANDED EVENTS THE PIECES BREAK AT THE EVENT NODES (2026-09-21,
-    item 2 of the non-uniform-grid list).  A landed edge puts a kink in the
-    integrand at its node; a spline that is C^2 across it rings, which is
-    why the callers used to keep the trapezoid whenever `event_times` was
-    non-empty -- and the trapezoid caps every method's period integrals at
-    second order on exactly the grids a clocked circuit gets.  A cubic
-    spline fitted PER SEGMENT (not-a-knot ends; a two-node segment is the
-    trapezoid, a three-node one the parabola `CubicSpline` builds) never
-    crosses a kink.  Node 0 is always a break when any event exists: an
-    edge at the drive's t = 0 is dropped by `event_grid` (the period
+    ⚠ UNDER LANDED EVENTS THE PIECES BREAK AT THE EVENT NODES.  A landed
+    edge puts a kink in the integrand at its node; a spline that is C^2
+    across it rings, and the trapezoid caps every method's period
+    integrals at second order on exactly the grids a clocked circuit gets.
+    A cubic spline fitted PER SEGMENT (not-a-knot ends; a two-node segment
+    is the trapezoid, a three-node one the parabola `CubicSpline` builds)
+    never crosses a kink.  Node 0 is always a break when any event exists:
+    an edge at the drive's t = 0 is dropped by `event_grid` (the period
     boundary is not its to move) and would otherwise sit inside the
-    periodic seam.  Measured on `exp(sin) + triangle` (kinks landed, a
-    1 + 0.15 sin grid): the periodic spline +4.0e-5 .. -2.2e-8 with no order
-    (ringing), the trapezoid +1.8e-5 .. -7.8e-9 at second order, the
-    piecewise rule -8.6e-7 .. -1.8e-15 over N = 52 .. 1602; on a smooth
-    integrand with only node 0 broken it is fourth order too (-8.9e-7 ..
-    -6.1e-13 against the periodic rule's +1.7e-8 .. +2.5e-13), so the seam
-    break costs a constant, not an order.
+    periodic seam; the seam break costs a constant, not an order.
 
-    The higher-order period quadrature for a NON-UNIFORM, EVENT-FREE grid
-    (2026-09-21).  The periodic trapezoid rule is spectrally accurate on a
-    uniform grid and on an alternating one (two interleaved uniform sums) and
-    genuinely O(h^2) on a smoothly varying grid -- measured: radau's diffusion
-    constant on a 1 + 0.5 sin grid sat at +4.9e-5 / 1.3e-5 / 3.3e-6 / 8.4e-7
-    (N = 100 .. 800) while its period, multipliers and mode invariant were at
-    order 5 / 1e-11 / 1e-15, so every method's noise was capped at second
-    order by the quadrature on exactly the grids `lte_grid`
-    produces.  With these weights: -5.5e-9 / -2.4e-10 / -7.3e-12 / +2.6e-12,
-    the reference's floor from N = 400.
+    Without `breaks`: the higher-order period quadrature for a
+    NON-UNIFORM, EVENT-FREE grid.  The periodic trapezoid rule is
+    spectrally accurate on a uniform grid and on an alternating one (two
+    interleaved uniform sums) but genuinely O(h^2) on a smoothly varying
+    grid -- exactly the grids `lte_grid` produces -- where the trapezoid
+    caps every method's noise at second order.
 
-    ⚠ THE PERIODIC RULE IS FOR EVENT-FREE GRIDS.  A spline is C^2 across
-    every node; a landed source edge puts a KINK in the integrand at that
-    node, and a spline through a kink rings where the trapezoid is
-    exact-ish -- under events the callers pass `breaks` and get the
-    piecewise rule above (they used to keep the trapezoid).  ⚠ ON A UNIFORM
-    GRID these equal the trapezoid weights to 1.7e-18 (a periodic spline's
-    `sum M_j = 0`), and the callers keep their uniform path, which is
-    bit-identical to before.  The spline system is cyclic tridiagonal and
-    is solved sparse (O(n)); the weights are `wt - B^T A^{-T} d`, with
-    `wt` the trapezoid weights and `d_j = (h_j^3 + h_{j-1}^3) / 24` the
-    coefficient of the node's second derivative in the spline integral."""
+    ⚠ THE PERIODIC RULE IS FOR EVENT-FREE GRIDS: a spline through a kink
+    rings where the trapezoid is exact-ish, so under events the callers
+    pass `breaks` and get the piecewise rule above.  ⚠ ON A UNIFORM GRID
+    these equal the trapezoid weights to rounding (a periodic spline's
+    `sum M_j = 0`), and the callers keep their uniform path.  The spline
+    system is cyclic tridiagonal and is solved sparse (O(n)); the weights
+    are `wt - B^T A^{-T} d`, with `wt` the trapezoid weights and
+    `d_j = (h_j^3 + h_{j-1}^3) / 24` the coefficient of the node's second
+    derivative in the spline integral.
+
+    History: `doc/shooting_history.md`, `periodic_spline_weights`."""
     import scipy.sparse as _sp
     import scipy.sparse.linalg as _spla
     t = np.asarray(t, dtype=float).ravel()
@@ -217,9 +205,10 @@ def periodic_spline_weights(t, T, breaks=None):
 
 
 ## Bound once: `_lu_solve_split` runs once per step of every coupled replay
-## (~20k calls per PAC + adjoint row on the PWM fixture), and a function-local
-## import plus `np.iscomplexobj` there was 6 % of that row's profile.
+## (~20k calls per PAC + adjoint row), so keep the import (and
+## `np.iscomplexobj`) out of its body.
 ## scipy.linalg is loaded by the package's import already.
+## History: `doc/shooting_history.md`, `_lu_solve_split`.
 from scipy.linalg import lu_solve as _sla_lu_solve
 
 

@@ -53,40 +53,26 @@ class _PeriodicStates(object):
     def _fold_periodic(self, F):
         """Fold a shooting residual's periodic rows into `[-m/2, m/2)`.
 
-        ⚠ THIS IS WHAT MAKES THE PERIOD MAP'S FIXED-POINT PROBLEM WELL POSED
-        FOR A FOLDING STATE, and it belongs in the RESIDUAL rather than in the
-        traversal.  `Idtmod`'s state is defined only up to `n*modulus` -- it
-        says so itself through `periodic_states()`, and the transient engine
-        already uses that declaration to keep the state bounded by exact gauge
-        translations.  Shooting did not: it asked for `x_0 - phi(x_0) == 0`
-        literally, which on a folding row demands the SAME REPRESENTATIVE, not
-        the same state.  An orbit that closes after advancing exactly one
-        modulus -- the normal case for a phase -- then has NO root at all, and
-        near the fold the raw difference jumps by a whole modulus while the
-        state moves infinitesimally.
+        A state declared through `periodic_states()` (an idtmod phase) is
+        defined only up to `n*modulus`, so closing the orbit asks for the same
+        STATE, not the same representative: unfolded, an orbit that advances
+        a whole modulus per period has no root at all.  The fold belongs in
+        the residual, not the traversal -- the jump is in the output map, and
+        no grid refinement reaches it
+        (`test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid`).
 
-        Measured (see `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_
-        not_on_the_grid`): that jump is grid-INDEPENDENT -- 1.414214e+09 at
-        seven different grids, with the wrap on a node and off it alike -- so
-        it is not an event-localisation defect and no refinement of the time
-        grid can reach it.  It is the output map, and the output map is what
-        this folds.
+        ⚠ The Jacobian is deliberately not touched: the wrap has unit slope
+        between its jumps, so `D - alpha*Mx` is already the derivative of the
+        folded residual.
 
-        ⚠ THE JACOBIAN IS DELIBERATELY NOT TOUCHED.  `d/dx0` of
-        `wrap(x0 - phi(x0))` equals `d/dx0 (x0 - phi(x0))` almost everywhere --
-        the wrap has unit slope between its jumps -- so `D - alpha*Mx` is
-        already the right derivative of the folded residual.  The fold moves
-        the residual onto the branch the Jacobian was always describing; that
-        is the whole reason this is a local change and not surgery on the six
-        traversal loops.
+        History: `doc/shooting_history.md`, `_PeriodicStates._fold_periodic`.
         """
         rows = self._periodic_fold
         if not rows:
             return F
         F = np.asarray(F, dtype=float).copy()
-        ## every STATE of the unknown folds on its own rows -- gear's pair
-        ## `(x_0, x_{-1})` carries two (its autonomous and event residuals did
-        ## not fold at all before 2026-09-23; the driven one folded each half)
+        ## every STATE block of the unknown folds on its own rows -- gear's
+        ## pair `(x_0, x_{-1})` carries two
         w = self.cir.n - 1
         for off in range(0, F.shape[0], w):
             for r, m, _o in rows:
@@ -108,28 +94,21 @@ class _PeriodicStates(object):
         """The orbit's jump across an output wrap that lies between `z_end`
         and `z_0`, per block of the unknown; zero when none does.
 
-        ⚠ THE STATE FOLD ALONE LEAVES THE OUTPUTS DISCONTINUOUS.  An
-        idtmod's OUTPUT is `wrap(state)`, and every algebraic quantity it
-        feeds (the phase node, the branch current into a load, a phase
-        detector's node) jumps with it.  When the orbit wraps exactly at
-        ``t = 0`` -- a free-running VCO pinned at a zero crossing of
-        `sin(2 pi phase)`, or a reference phase that starts at 0 -- `z_0`
-        sits just after the wrap and `z_end` just before it, the state row
-        folds to zero, and those rows still differ by the whole jump.  At
-        rounding level the Newton iterates straddle the wrap and the jump
-        flips in and out of the residual: radau on the free-running
-        `VcoHdl` failed there (2026-09-23), with every other row at 1e-14.
+        The state fold alone leaves the OUTPUTS discontinuous: an idtmod's
+        output is `wrap(state)`, and every algebraic quantity it feeds (the
+        phase node, a load's branch current, a phase detector's node) jumps
+        with it.  When the orbit wraps exactly at ``t = 0`` -- a free-running
+        VCO pinned at a zero crossing of `sin(2 pi phase)`, a reference phase
+        starting at 0 -- `z_0` sits just after the wrap and `z_end` just
+        before it, and the Newton iterates straddle it at rounding level.
 
-        ⚠ WHICH SIDE A STATE IS ON IS DECIDED BY THE STATE, NEVER BY THE
-        RESIDUAL.  The declared window's edges are where the output wraps,
-        so the fractional window positions `f_0`, `f_end` of the two states
-        say whether the state fold's nearest-representative path crosses an
-        edge: ``k = -round(f_0 - f_end)``, which is -1, 0 or +1.  Folding an
-        output row by the modulus instead (round the residual) accepts a
-        start point one modulus off its own constraint -- measured: radau,
-        gear and trap all "converged" with `ph(0) = 1.1` against a phase of
-        0.1 -- and cannot reach a loaded output at all (1 mA on a load
-        resistor's current, 2 V on a gain-2 detector's node).
+        ⚠ Which side a state is on is decided by the STATE, never by the
+        residual: the declared window's edges are where the output wraps, so
+        ``k = -round(f_0 - f_end)`` on the two states' fractional window
+        positions (-1, 0 or +1) says whether the state fold's path crosses an
+        edge.  Rounding an output row's residual by the modulus instead
+        accepts a start point one modulus off its own constraint, and cannot
+        reach a loaded output at all.
 
         The jump itself is the algebraic part re-solved on each side of the
         edge with the differential part held: ``x = x_end' + N y`` with
@@ -141,6 +120,8 @@ class _PeriodicStates(object):
         `k` is constant between straddles.  ⚠ A capacitor ON a wrapped node
         makes the jump an impulse (index 2); the algebraic block is then
         singular, no jump is subtracted, and the solve warns once.
+
+        History: `doc/shooting_history.md`, `_PeriodicStates._wrap_jump`.
         """
         z0 = np.asarray(z0, dtype=float)
         z_end = np.asarray(z_end, dtype=float)

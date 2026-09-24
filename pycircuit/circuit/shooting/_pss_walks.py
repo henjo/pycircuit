@@ -19,7 +19,7 @@ class _PeriodWalks(object):
                           coeffs=None, source=None):
         """One step of the sensitivity recursion, for ANY seed width.
 
-        ONE RECURSION FOR EVERY METHOD (and now for either formulation).
+        ONE RECURSION FOR EVERY METHOD AND BOTH FORMULATIONS.
         Each writes its companion as `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`,
         so differentiating the step gives
 
@@ -32,47 +32,35 @@ class _PeriodWalks(object):
         depends on that
         width, which is why the two systems share this and not a copy.
 
-        ⚠ A SOLVE, NOT AN INVERSE (stage 11).  `inv(Jf) @ ...` formed a dense
-        inverse per timestep per iteration and squared the condition number
-        it then multiplied through.
+        ⚠ A SOLVE, NOT AN INVERSE: a dense `inv(Jf)` per step would square
+        the condition number it then multiplies through.
 
-        `solve` overrides how that solve is taken, and exists so the
-        MATRIX-FREE path (item 6) can hand in a PRE-FACTORED `Jf` without
-        this recursion being copied.  It is the same recursion either way,
-        which is the point: a second copy would be a second thing to get
-        wrong, and this one is already shared by every method and both
-        formulations.  Without it, matrix-free would refactor `Jf` once per
-        step PER KRYLOV ITERATION -- `k` times the factorisations the dense
-        path takes, which is worse than the problem it set out to fix.
+        `solve` overrides how that solve is taken, so the MATRIX-FREE path
+        can hand in a PRE-FACTORED `Jf` without a second copy of this
+        recursion (which every method and both formulations share).  Without
+        it, matrix-free would refactor `Jf` once per step PER KRYLOV
+        ITERATION -- `k` times the factorisations the dense path takes.
+
+        History: `doc/shooting_history.md`, `_PeriodWalks._step_sensitivity`.
         """
         ## `coeffs` overrides the LIVE `_coeffs` for the same reason `solve`
-        ## overrides the solve: a matrix-free replay happens after the run
-        ## that produced the steps, when `_coeffs` no longer describes the
-        ## step being replayed.  See `_traverse_factored_plain`.
-        ## ⚠ `source` ENTERS THE SOLVE AND NOT `Pq`, and the asymmetry is
-        ## the physics rather than a convenience.  A small-signal source
+        ## overrides the solve: a matrix-free replay happens after the run,
+        ## when `_coeffs` no longer describes the step being replayed.  See
+        ## `_traverse_factored_plain`.
+        ## ⚠ `source` ENTERS THE SOLVE AND NOT `Pq`: a small-signal source
         ## appears in the step's residual -- `Jf dx + S + du = 0` -- but NOT
-        ## in the companion, because `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`
-        ## is built from CHARGES, and an injected current is not one.
-        ## Adding it to `Pq` as well would feed a fictitious charge forward
-        ## into every later step, and the error would grow along the period
-        ## rather than announce itself.
-        ##
-        ## This is what makes PAC share the recursion instead of copying it:
-        ## the homogeneous propagation (`source=None`) is the monodromy and
-        ## the driven one is the forced response, and they differ by this
-        ## one term.
+        ## in the companion, which is built from CHARGES.  Adding it to `Pq`
+        ## would feed a fictitious charge forward into every later step, an
+        ## error that grows along the period rather than announcing itself.
+        ## That one term is all that separates the monodromy (`source=None`)
+        ## from PAC's forced response, which is why they share this recursion.
         alphas, b = self._coeffs if coeffs is None else coeffs
         if solve is None:
-            ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`.
-            ## This is the DENSE propagation -- the thing matrix-free is
-            ## measured against -- and it used to be hardcoded to the
-            ## toolkit, so `linearsolver=SuperLUSolver()` reached the inner
-            ## Newton (once forwarded) and never the propagation.  Comparing
-            ## a sparse matrix-free path against a dense baseline would have
-            ## flattered it; both sides go through the same strategy now.
-            ## `DenseSolver` IS `toolkit.linearsolver`, so the default is
-            ## unchanged.
+            ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`:
+            ## this is the DENSE propagation -- the thing matrix-free is
+            ## measured against -- so both sides go through the same
+            ## strategy.  `DenseSolver` IS `toolkit.linearsolver`, so the
+            ## default is unchanged.
             def solve(S_solve):
                 return self._get_linearsolver().solve(Jf, S_solve, self.toolkit)
         return _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source)
@@ -103,17 +91,12 @@ class _PeriodWalks(object):
     def _walk_lmm(self, opening, times, hs, T=None, dense=True, keep=False,
                   want_dT=False, hsens=None, capture=None):
         """ONE WALK OF THE PERIOD UNDER A LINEAR-MULTISTEP COMPANION -- the
-        plain map and gear's solved-history pair, dense or factored
-        (2026-09-23: it was four walks, `_traverse`,
-        `_traverse_solved_history`, `_traverse_factored_plain` and
-        `_traverse_factored`, each with its own copy of the period column).
+        plain map and gear's solved-history pair, dense or factored.
 
-        EVERY SHOOTING ITERATION IS ITS OWN RUN.  phi must be a function of
-        its arguments alone; if iteration k+1 inherited the ring buffers
-        iteration k ended with, the period map would depend on which
-        iteration it was and the monodromy would be the derivative of
-        something else.  `_begin_period` / `_install_history` make the run
-        start fresh.
+        EVERY SHOOTING ITERATION IS ITS OWN RUN (`_begin_period` /
+        `_install_history` start it fresh): inherited ring buffers would make
+        phi depend on the iteration, and the monodromy the derivative of
+        something else.
 
         `opening` says where the period starts:
 
@@ -159,11 +142,13 @@ class _PeriodWalks(object):
         kept step is factored once (`_factorise`) and every column solves
         against that; a dropped one solves through the caller's solver
         directly.  Both are an LU with partial pivoting, but numpy's `solve`
-        and scipy's `lu_factor`/`lu_solve` differ in the last bits (measured
-        on this box: 140 of 360 random systems, up to 3.5e-13 relative), so
-        each walk keeps the arithmetic it had -- the merge moved no answer.
+        and scipy's `lu_factor`/`lu_solve` differ in the last bits (up to
+        ~3.5e-13 relative), so a dense and a factored walk of the same period
+        agree to rounding, not bit for bit.
 
         Returns a `_PeriodWalk`; the `_traverse*` names are its views.
+
+        History: `doc/shooting_history.md`, `_PeriodWalks._walk_lmm`.
         """
         pair = opening[0] == 'pair'
         if hsens is not None and not pair:
@@ -178,16 +163,10 @@ class _PeriodWalks(object):
         Px = Pq = None
         if pair:
             _kind, x0_in, xm1_in = opening
-            ## THE HISTORY IS INSTALLED, NOT SEEDED.  `_begin_run(x_{-1})`
-            ## opens the rings on the earlier point and the push puts `x_0` in
-            ## front of it, so the first real step reads `q(x_0)` and
-            ## `q(x_{-1})` -- two genuine solved points.  The flags then say
-            ## what is true of them: a step of `dt` has been taken
-            ## (`_dt_last`), the run is no longer opening (`_is_first_step`,
-            ## `_no_history`), and `_dt_last2` stays None because the THIRD
-            ## charge is still `q(x_{-1})` repeated -- the LTE estimator
-            ## differences three, so its opening reading remains unsound and
-            ## the report goes on discarding it.
+            ## THE HISTORY IS INSTALLED, NOT SEEDED (`_install_history`): the
+            ## first real step reads `q(x_0)` and `q(x_{-1})`, two genuine
+            ## solved points; `_dt_last2` stays None, so the LTE estimator's
+            ## opening reading is still discarded.
             self._install_history(x0_in, xm1_in, hs[0], h_prev=hs[-1])
             opened = [np.asarray(self._C_at(x0_in)),
                       np.asarray(self._C_at(xm1_in))]
@@ -237,15 +216,11 @@ class _PeriodWalks(object):
             ## ⚠ THE OPENING'S COEFFICIENTS ARE THE OPENING'S.  `_coeffs` is
             ## live state and the manufacturing step is order-dropped, so it
             ## reports Euler's `(alphas, b)` -- `b = 0` -- where the loop's
-            ## steps report the method's own (trapezoidal opens at
-            ## `((49000, -49000), 0.0)` and runs at `((98000, -98000),
-            ## -1.0)`).  Reading them once for the whole run put the period
-            ## column 40-50 % out for trap and gear; reading the loop's for
-            ## the opening made `Pq` non-zero where it is zero, a 100 %
-            ## error for trap.  Euler was exact both ways and would have
-            ## passed a one-method test.  ⚠ `_coeffs` DOES NOT EXIST YET when
-            ## opening AT `x_0` -- no step has run -- so it is not read:
-            ## `b_open = 0`, no companion current has been formed.
+            ## steps report the method's own; neither may stand in for the
+            ## other (Euler is exact both ways, so a one-method test cannot
+            ## tell).  ⚠ `_coeffs` DOES NOT EXIST YET when opening AT `x_0`
+            ## -- no step has run -- so it is not read: `b_open = 0`, no
+            ## companion current has been formed.
             a_open, b_open = ((None, 0.0) if open_at_x0 else self._coeffs)
             ## ⚠ UNLESS THE METHOD SEEDS ONE.  `theta` refuses the opener
             ## and so reads `iq_{-1}` on step one, where `_begin_run` puts
@@ -273,7 +248,7 @@ class _PeriodWalks(object):
         ## and the solve owns them
         Pt = [np.zeros(m), np.zeros(m)]
         Pqt = np.zeros(m)
-        ## ⚠ EVENT COLUMNS FOR A TWO-STEP COMPANION (2026-09-22, phase B).
+        ## ⚠ EVENT COLUMNS FOR A TWO-STEP COMPANION.
         ## `hsens[j, k] = d h_j / d theta_k`; a BDF-2 step's residual depends
         ## on ITS step and on the PREVIOUS one (the 3/2 of `residual_dT`),
         ## so each column carries `dr/dh_n hsens[j] + dr/dh_{n-1} hsens[j-1]`
@@ -298,10 +273,9 @@ class _PeriodWalks(object):
             ## per step and, on a kept step, stored with it: a matrix-free
             ## replay happens after the run, when `_coeffs` no longer
             ## describes the step being replayed.  (Inside the loop they are
-            ## constant for every method in this tree, so storing them is
-            ## belt-and-braces today -- a mutation replacing them with a
-            ## post-run snapshot does NOT fail the tests -- but a
-            ## variable-order method would make that failure silent.)
+            ## constant for every method in this tree, so no test catches a
+            ## post-run snapshot; a variable-order method would make that
+            ## failure silent.)
             alphas, b = self._coeffs
             Jf = np.asarray(self._Jf)
             C_new = np.asarray(self._C).copy()
@@ -334,9 +308,8 @@ class _PeriodWalks(object):
                 ## (residual_dh - u_dot) h_n) / h_{n-1}`, and the source's
                 ## motion enters once: `residual_dh`'s `u_dot h_n` part
                 ## through this step's weight, and `u_dot tau_n` for the
-                ## shift of the step's START.  Counting `u_dot (tau + w)` on
-                ## top of `residual_dh` -- twice -- read the node after a
-                ## landed event 153 % off (2026-09-22).
+                ## shift of the step's START -- never `u_dot (tau + w)` on
+                ## top of `residual_dh`, which counts it twice.
                 dr_dhn_full = np.asarray(self._dfdh, dtype=float).ravel()
                 Ud = np.delete(np.asarray(self.cir.dudt(
                     float(t), analysis=self.par.analysis), dtype=float),
@@ -411,15 +384,13 @@ class _PeriodWalks(object):
             return (w.x_end, w.x_prev, w.P[0], w.P[1],
                     [pk[0] for pk in w.Pk], [pk[1] for pk in w.Pk])
         ## ⚠ ALWAYS THE FULL 2m x 2m MAP, NEVER THE `d x_{N-1}/d x_0`
-        ## CORNER.  This used to hand the corner back on the driven path,
-        ## and a sub-block of a sensitivity is not a monodromy: it reported
-        ## `spectral_radius` 1.279605 for the Q=20 resonator -- ABOVE ONE --
-        ## where the analytic per-period decay is exp(-pi/Q) = 0.854636.
-        ## For a two-step method the one-period map acts on the PAIR, and
-        ## its spectrum carries the discretisation's parasitic roots beside
-        ## the physical multipliers; BDF-2's is 1/3 per STEP, (1/3)^N over a
-        ## period, and `_spectral_report` separates them by eigenvector
-        ## block structure anyway.
+        ## CORNER: a sub-block of a sensitivity is not a monodromy (its
+        ## spectral radius can exceed one on a decaying resonator).  For a
+        ## two-step method the one-period map acts on the PAIR, and its
+        ## spectrum carries the discretisation's parasitic roots beside the
+        ## physical multipliers (BDF-2's is 1/3 per STEP, (1/3)^N over a
+        ## period); `_spectral_report` separates them by eigenvector block
+        ## structure.
         self._monodromy = np.vstack((w.P[0], w.P[1]))
         if want_dT:
             return w.x_end, w.x_prev, w.P[0], w.P[1], w.Pt[0], w.Pt[1]
@@ -604,9 +575,9 @@ class _PeriodWalks(object):
         is carried into the recursion, the startup's dependence of the higher
         Nordsieck components on ``x_0`` (p Radau substeps and an interpolant)
         is dropped.  So the converged fixed point is the method's own, exactly;
-        what the approximation can cost is Newton iterations.  MEASURED on the
-        index-2 C-V loop: 3 iterations to 1e-12, the same count as radau's
-        exact monodromy on the same fixture (roadmap).
+        what the approximation can cost is Newton iterations.
+
+        History: `doc/shooting_history.md`, `_PeriodWalks._walk_glm`.
         """
         steps, _xs, Q0, _Qend, x_end = self._glm_period_blocks(x_in, times, hs)
         m = self.cir.n - 1
@@ -635,8 +606,7 @@ class _PeriodWalks(object):
     def _walk_stage(self, x_in, T, times, hs, dense=True, keep=False,
                     want_dT=False, hsens=None, capture=None):
         """ONE WALK OF THE PERIOD UNDER A RUNGE-KUTTA STAGE METHOD (Radau
-        IIA, TR-BDF2, ESDIRK), dense or factored (2026-09-23: it was two
-        walks, `_traverse_stage` and `_traverse_factored_stage`).
+        IIA, TR-BDF2, ESDIRK), dense or factored.
         Self-starting: `x_in` IS `x_0`, so there is no opener seam and the
         map keeps the method's order round the whole period.
 
@@ -661,22 +631,25 @@ class _PeriodWalks(object):
         no explicit time dependence; differentiating the stage residuals
         ``F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`` w.r.t. `T` gives the `Pt`
         row above.  ('closing': only the last step's length depends on `T`.)
-        Finite-difference checked before use (the dT column has been got
-        wrong in this file twice -- roadmap 0j).
+        Finite-difference checked before use (the dT column is easy to get
+        wrong).
 
-        ⚠ EVENT COLUMNS (2026-09-21): `hsens[j, k] = d h_j / d theta_k` for
-        the state-event unknowns, propagated by the same stage algebra as the
+        ⚠ EVENT COLUMNS: `hsens[j, k] = d h_j / d theta_k` for the
+        state-event unknowns, propagated by the same stage algebra as the
         period column with the per-step weight taken from the matrix instead
         of `h/T`; `capture` names the nodes whose state and sensitivities the
         bordered residual reads.  ⚠ A DRIVEN CIRCUIT'S SOURCES MOVE WITH THE
         GRID: an event column shifts the TIMES the stages are evaluated at,
         so `f = -(i + u(t))` changes by `-u_dot . dt_stage`, `dt_stage =
         tau_n + c_i dh` with `tau_n` the shift of the step's start (the `U_i`
-        term).  Without it the FD check read the column 77 % off and the
-        event row's derivative with the WRONG SIGN on the PWM fixture.
+        term).  Without it the column is badly wrong, down to the sign of the
+        event row's derivative.
 
         Returns a `_PeriodWalk`; `_traverse_stage` is its dense view, and
-        `_factored_self_starting` keeps its steps."""
+        `_factored_self_starting` keeps its steps.
+
+        History: `doc/shooting_history.md`, `_PeriodWalks._walk_stage`.
+        """
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
         toolkit = self.toolkit
         m = self.cir.n - 1
