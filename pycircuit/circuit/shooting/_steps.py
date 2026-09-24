@@ -11,7 +11,7 @@ from ._numerics import _lu_solve_split
 class _StageStep(object):
     """One step of a Runge-Kutta STAGE method's period map, kept factored --
     an entry of a 'full' or 'dirk' `FactoredPeriod.steps`, and what
-    `PSS._traverse_stage` solves every column of a step with.
+    `PSS._walk_stage` solves every column of a step with.
 
     The stage system is ``J Z = B`` with ``J[i][j] = delta_ij C(Y_i) + h
     A_ij G(Y_j)`` -- the stage residuals ``F_i = q(Y_i) - q(x_n) - h sum_j

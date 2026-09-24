@@ -330,9 +330,8 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
 
     ⚠ It linearises at `x`, and `G(x)` is not always a pure function of `x`:
     an element carrying Newton LIMITING state stamps from solver history as
-    well.  The body re-syncs that state to `x` and restores it afterwards;
-    for a reading that cannot depend on solver history, pass a converged `x`
-    or reset the circuit's state first.
+    well.  The body resets that state, starts it at `x`, and restores it
+    afterwards, so the reading does not depend on solver history.
 
     HOW, with no index-1 splitting.  With `N = ker C` (the algebraic
     unknowns) and `Z = ker C^T` (the algebraic equations),
@@ -402,12 +401,17 @@ def algebraic_conditioning(cir, x=None, epar=None, refnode=gnd,
     ## ⚠ RE-SYNC THE LIMITING STATE TO `xv`, AND PUT IT BACK AFTERWARDS.
     ## `G(x)` is NOT a pure function of `x` for a device with a Newton
     ## limiter -- `Diode` linearises around a stored `_vlim` -- so without
-    ## this the answer depends on whatever solve ran last.  `limit(x, x)` at
-    ## ZERO DELTA is the documented re-sync (as in
-    ## `Transient._branch_restore_limits`).  The restore is not optional: a
-    ## diagnostic that changes the simulation is a defect.
+    ## this the answer depends on whatever solve ran last.  The restore is
+    ## not optional: a diagnostic that changes the simulation is a defect.
+    ## ⚠ RESET FIRST, THEN `limit(x, x)`.  `limit` clamps against the
+    ## STORED state, so from a stale one it lands short of `x` wherever the
+    ## junction is above its critical voltage (measured, a diode on an
+    ## algebraic node at 0.8 V: `_vlim` 0.089 from a stored 0 V, and
+    ## `sigma` 0.0210 against 0.990).  After `reset_state` the first
+    ## `limit` starts the state AT `x`.
     _snap = _limit_state_snapshot(cir)
     try:
+        cir.reset_state(epar)
         try:
             cir.limit(xv, xv, epar)
         except Exception:                                      # noqa: BLE001

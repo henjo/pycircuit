@@ -74,7 +74,7 @@ class _InnerTransient(object):
         discarding it -- a solved history fixes what the SOLUTION reads,
         not what the estimator does.
 
-        Shared by `_traverse_solved_history` and the final replay, because a
+        Shared by the pair walk (`_walk_lmm`) and the final replay, because a
         replay that opened differently from the solve would report a
         waveform the residual was never driven to zero on.
         """
@@ -130,9 +130,13 @@ class _InnerTransient(object):
         left behind (the LAST stage) is used for all of them, and the period
         map linearises the junction at the wrong voltage.
 
-        `limit(x, x)` sets `_vlim` to `x`'s own branch voltage at zero delta, so
-        it moves the state without perturbing the point.  Same defect and same
-        remedy as the coupled stage solve in `Transient._rk_step_coupled`.
+        `limit(x, x)` moves the state without perturbing the point -- but it
+        clamps against the STORED state, so above a junction's critical
+        voltage it lands on `x` only from a state already near it (measured
+        on `algebraic_conditioning`, which resets first for that reason).
+        `_G_at` calls this only where no junction limits.  Same defect and
+        same remedy as the coupled stage solve in
+        `Transient._rk_step_coupled`.
 
         History: `doc/shooting_history.md`, `_InnerTransient._sync_limit_at`.
         """
@@ -184,7 +188,9 @@ class _InnerTransient(object):
 
         ⚠ `_C_at` CANNOT JOIN: PCNR re-stamps `i`/`G` at `v_lim` but leaves `q`
         alone (`pcnr.py` treats the algebraic equations; diffusion charge is its
-        stated caveat), so the capacitance keeps the limit-sync.
+        stated caveat), so the capacitance is read directly -- with no limit
+        sync either, since no charge in the library reads the limiting state
+        (see `_C_at`).
 
         History: `doc/shooting_history.md`, `_InnerTransient._G_at`.
         """
@@ -398,8 +404,10 @@ class _InnerTransient(object):
         ## ONE INTEGRATOR STEP, taken by the class that owns the definition.
         ## `Transient.solve_timestep` applies the chosen integrator through
         ## `get_diff` (so `method` selects something because the integrator
-        ## object does), the limiting machinery, PCNR when asked for, and the
-        ## continuation rescue.
+        ## object does), the limiting machinery and PCNR when asked for.  Not
+        ## the continuation rescue: only `Transient.solve`'s stepping loop
+        ## arms it (see `_transient`); this path's last resort is the line
+        ## search.
         tr._dt = dt
         x_full, J_full = self._transient_step(tr, x0, t)
 

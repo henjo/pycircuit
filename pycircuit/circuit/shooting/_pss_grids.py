@@ -28,11 +28,15 @@ class _PeriodGrids(object):
         `next_event` is a linear prediction from the last accepted point and
         returns `inf` before a traversal has started, so there is nothing to walk.
         The period-map jump at a wrap lies in the OUTPUT map and is fixed in
-        the residual (`_fold_periodic`), not by the grid.
+        the residual (`_close_periodic`), not by the grid; a declared state
+        event (`state_events`) is landed by the solve itself, as a Newton
+        unknown.
 
-        ⚠ AND THIS IS NOT SALTATION: each step already uses its own
-        `Jf`/`C`, which describe whichever side of the switch that step is
-        on; the problem is only that the grid cannot BREAK at the event.
+        ⚠ AND FOR A TIME-DRIVEN EVENT THIS IS NOT SALTATION: each step
+        already uses its own `Jf`/`C`, which describe whichever side of the
+        switch that step is on; the problem is only that the grid cannot
+        BREAK at the event.  (A state event's time moves with the state,
+        and that motion is what the state-event columns carry.)
 
         History: `doc/shooting_history.md`, `_PeriodGrids.event_grid`.
         """
@@ -116,7 +120,8 @@ class _PeriodGrids(object):
         """`(fracs, seed)` from the accepted steps of the last settled
         periods folded onto a common phase: the per-phase minimum of the
         local step, re-meshed with growth capped at 2, the seed the state at
-        the last rising crossing.  None when fewer than 4 periods fold."""
+        the last rising crossing.  `(None, None)` when fewer than 4 periods
+        fold."""
         ## History: `doc/shooting_history.md`, `_PeriodGrids._fold_periods`.
         t = np.asarray(t, dtype=float).ravel()
         xs = np.asarray(xs, dtype=float)
@@ -275,14 +280,13 @@ class _PeriodGrids(object):
             chain.append(float(tc[j]))
         return np.asarray(chain[::-1], dtype=float)
 
-    @staticmethod
-    def _observed_period(t, xs, iref_probe, T_hint, nper=8):
+    @classmethod
+    def _observed_period(cls, t, xs, iref_probe, T_hint, nper=8):
         """The period an adaptive run actually shows, from the rising
         crossings of the fastest-swinging state over the last `nper` hints,
         each crossing refined by linear interpolation; None when fewer than
         two spacings exist or they spread by more than 1 % (a run that has
         not settled, or a hint off by more than the window can hold)."""
-        from .pss import PSS    # imported when called: pss.py imports this module
         t = np.asarray(t, dtype=float).ravel()
         xs = np.asarray(xs, dtype=float)
         keep = [i for i in range(xs.shape[0]) if i != iref_probe]
@@ -296,7 +300,7 @@ class _PeriodGrids(object):
             return None
         k = int(np.argmax(swing))
         y = W[k] - 0.5 * (W[k].max() + W[k].min())
-        tc = PSS._crossing_chain(tw, y, T_hint)
+        tc = cls._crossing_chain(tw, y, T_hint)
         if len(tc) < 3:
             return None
         d = np.diff(tc)
@@ -313,12 +317,14 @@ class _PeriodGrids(object):
         chosen well ONCE and then frozen.  This is the derivation side;
         `_period_grid` is the consumption side.
 
-        Returns `(fracs, seed)` -- the accepted steps of one settled
-        period as fractions summing to 1, and the state at the start of
-        that window, ready to pass straight back in:
+        Returns `(fracs, seed)` -- step fractions of one period, summing to
+        1, folded from the last `LTE_FOLD_PERIODS` settled periods of the
+        run (`fold=False`, or a run the fold cannot use: the accepted steps
+        of the last period alone), and the state at the grid's start --
+        ready to pass straight back in, with the period the run showed:
 
             fracs, seed = pss.lte_grid(period=T)
-            pss.solve(period=T, grid=fracs, x0=seed)
+            pss.solve(period=pss.lte_period, grid=fracs, x0=seed)
 
         Gate: `benchmarks/pss_lte_grid.py` (van der Pol at `mu = 100`).
 
@@ -518,7 +524,7 @@ class _PeriodGrids(object):
                 'the period, so that every step scales with T when the '
                 'period is an unknown); they sum to %.12g' % total)
         ## ⚠ THE OPENING STEP IS MANUFACTURED, SO IT MUST NOT BE THE GRID'S
-        ## COARSE END.  `_traverse` builds `x(0)` with ONE order-dropped Euler
+        ## COARSE END.  The plain walk builds `x(0)` with ONE order-dropped Euler
         ## step of `hs[0]` FROM `x_in`, an iterate that may be far from the
         ## orbit, and an adaptive grid can open thousands of times coarser
         ## than its median step -- which defeats the inner Newton.  So a

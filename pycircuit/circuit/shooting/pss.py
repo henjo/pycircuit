@@ -162,7 +162,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         error at 100 points/period and a growing share under refinement.
         (Euler's and trapezoidal's seams measure zero: they read only
         `q_{n-1}` and `iq_{n-1}`.)  So `(x_0, x_{-1})` are unknowns
-        together and BOTH close (`_traverse_solved_history`), with an exact
+        together and BOTH close (the pair walk, `_walk_lmm`), with an exact
         Jacobian.  A k-step method turns a first-order problem into a k-th
         order discrete one that needs k conditions, not one (boundary value
         methods: Brugnano & Trigiante; Ascher, Mattheij & Russell, SIAM
@@ -949,7 +949,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6,
               maxiterations=20, grid=None, matrix_free=False,
               x0_unknown=None, tstab=None, break_events=None,
-              phase_rule='frozen', state_events=True):
+              phase_rule='frozen', state_events=True, trace=False):
         """Solve for the periodic steady state.
 
         Returns an `InternalResultDict` with `tpss`, the orbit in time (the
@@ -962,7 +962,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         (None after a matrix-free solve), `max_lte` / `total_lte` /
         `max_lte_seam` (`_report_lte`), `fundamental_period` (set when an
         autonomous solve returned a multiple), `autonomous`,
-        `solved_history`, `waveform` and `tstab_state`.
+        `solved_history`, `waveform`, `tstab_state`, `shooting_residual`
+        and `shooting_trace`.
 
         `period` is the period of a DRIVEN circuit and the SEED of an
         AUTONOMOUS one (nothing in it depends on `t`), whose period joins
@@ -1108,6 +1109,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         rules it is the GRID, not the rule (trap with `x0_unknown=True` has
         a start-phase-dependent discrete orbit).
 
+        `trace` records the shooting Newton: every evaluation of its
+        residual, line-search trials included, as `(z, F, J)` in
+        `shooting_trace` (`J` is None on the matrix-free path; a closing
+        second pass appends to the same list).  `shooting_residual` is always
+        kept -- the function the solve drove to zero, returning `(F, J)` --
+        so a caller can re-evaluate it, e.g. for a finite-difference check of
+        `J`.
+
         History: `doc/shooting_history.md`, `PSS.solve`.
         """
         ## ONE SHOOTING SOLVE, IN ITS PHASES.  Each phase is a method with its
@@ -1115,7 +1124,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         run = self._solve_prepare(refnode, period, x0, timestep,
                                   maxiterations, grid, matrix_free,
                                   x0_unknown, tstab, break_events,
-                                  phase_rule, state_events)
+                                  phase_rule, state_events, trace)
         self._shoot(run)
         self._report_convergence(run)
         X, walk, lte_seen = self._replay_orbit(run)
@@ -1129,7 +1138,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
 
     def _solve_prepare(self, refnode, period, x0, timestep, maxiterations,
                        grid, matrix_free, x0_unknown, tstab, break_events,
-                       phase_rule, state_events):
+                       phase_rule, state_events, trace=False):
         """`solve`, phase 1: validate, build the grid, decide autonomy and
         the period column, seed (operating point, `tstab`), pin the phase,
         choose the formulation.  Returns the run's state."""
@@ -1460,7 +1469,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             state_events=state_events, irefnode=irefnode, n=n, times=times,
             hs=hs, npts=npts, alpha=alpha, phase_k=phase_k,
             phase_pin=phase_pin, method=method,
-            solved_history=solved_history, xm1_ss=xm1_ss)
+            solved_history=solved_history, xm1_ss=xm1_ss, trace=trace)
 
     def _shoot(self, run):
         """`solve`, phase 2: THE SHOOTING NEWTON -- the fixed-period or
@@ -1562,7 +1571,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             * gear's PAIR: `z = (x_0, x_{-1})`, and BOTH close --
               ``F = [x_0 - x_{N-1}, x_{-1} - x_{N-2}]``, the rows of
               ``M = [[A(N-1,0), A(N-1,-1)], [A(N-2,0), A(N-2,-1)]]`` from
-              `_traverse_solved_history`.  A two-step companion needs two
+              the pair walk (`_walk_lmm`).  A two-step companion needs two
               states to be continued, so periodicity of ONE is an
               under-determined statement about the orbit.  ⚠ THE HISTORY
               POINT MOVES WITH T: `x_{-1}` sits at `-T/(N-1)`, and `x_{-1}`,
@@ -1570,7 +1579,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
               residual is still right and its `T` column is the propagation
               to step N-2.
             * STAGE (Radau, TR-BDF2, ESDIRK): self-starting, `z` IS `x_0`,
-              `M` the dense stage product (`_traverse_stage`).
+              `M` the dense stage product (`_walk_stage`).
             * GLM: the method's own map (the startup at the top of the
               period, then N multivalue steps); ⚠ `M` is APPROXIMATE -- the
               residual is exact, the Jacobian drops the startup's derivative
@@ -1607,6 +1616,27 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             tms_, hs_T = self._period_grid(T, npts, self._grid_fracs)
             z0_, z_end, M, Mt = _pmap(z, T, tms_, hs_T, True)
             return _bordered(*_closing(z0_, z_end, M, tms_), Mt, z0_, Mt)
+
+        ## the residual this solve drives to zero, kept for the caller; with
+        ## `trace` every evaluation is recorded (a closing second pass
+        ## appends to the first pass's list)
+        self.shooting_residual = func_autonomous if self.autonomous else func
+        if run.trace:
+            if (not getattr(self, '_closing_second_pass', False)
+                    or getattr(self, 'shooting_trace', None) is None):
+                self.shooting_trace = []
+
+            def _traced(f):
+                def g(z, *a):
+                    F, J = f(z, *a)
+                    self.shooting_trace.append(
+                        (np.array(z, dtype=float), np.array(F, dtype=float),
+                         None if callable(J) else np.array(J, dtype=float)))
+                    return F, J
+                return g
+            func, func_autonomous = _traced(func), _traced(func_autonomous)
+        elif not getattr(self, '_closing_second_pass', False):
+            self.shooting_trace = None
 
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
@@ -1710,6 +1740,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     top = (v_ - alpha * fp_.matvec(v_)) - s_ * Mt_
                     return np.concatenate((top, [v_[k_]]))
                 return np.concatenate((F_, [r_])), mv_
+
+            if run.trace:
+                _mf_build = _traced(_mf_build)
 
             def _mf(z0_, ab_, xt_, rt_, mi_):
                 return self._matrix_free_newton(_mf_build, z0_, ab_, xt_,
@@ -1855,7 +1888,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## ⚠ THE REPLAY MUST OPEN THE WAY THE SOLVE DID, or the waveform is
         ## not the solution: a plain replay of a solved-history answer would
         ## reintroduce the seam that formulation removes.
-        ## ⚠ AND IT MUST WALK THE SAME (t, h) PAIRS.  The plain `_traverse`
+        ## ⚠ AND IT MUST WALK THE SAME (t, h) PAIRS.  The plain walk
         ## takes the MANUFACTURING step at `(times[0], hs[0])` FIRST and
         ## only then walks `times[1:]` with `hs[_j]`, so the step after the
         ## opening one uses `hs[0]` again; indexing `times` and `hs` in
@@ -1883,7 +1916,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         else:
             X = [x0_ss]
             tr = self._begin_period(x0_ss)
-            ## the manufacturing step, then the loop -- exactly `_traverse`
+            ## the manufacturing step, then the loop -- exactly the plain walk
             ## ... unless there was no manufacturing step, in which case the
             ## replay opens AT `x_0` and walks the period alone.  Getting
             ## this wrong is the same class of defect as the grid shift
@@ -2196,7 +2229,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                   matrix_free=matrix_free,
                                   x0_unknown=x0_unknown, tstab=None,
                                   break_events=self.break_events,
-                                  phase_rule=phase_rule)
+                                  phase_rule=phase_rule, trace=run.trace)
             finally:
                 self._closing_second_pass = False
                 self._force_period_column = None

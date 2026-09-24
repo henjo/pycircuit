@@ -280,7 +280,10 @@ def run(method, npts, f0=1e3, Q=20.0, reltol=1e-3):
     ## its entering history, so measuring the shipped path would measure a
     ## seam of zero and the record of what the seam WAS would be gone.  This
     ## keeps the before, and `solve_shipped` supplies the after.
-    pss._solves_history = lambda: False
+    ## (`_map_kind` is the one place the map's kind is decided; overriding
+    ## `_solves_history` stopped reaching it on 2026-09-24)
+    _kind = pss._map_kind()
+    pss._map_kind = lambda: 'plain' if _kind == 'pair' else _kind
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res = pss.solve(period=period, timestep=period / npts,

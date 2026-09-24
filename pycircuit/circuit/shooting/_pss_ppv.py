@@ -13,11 +13,6 @@ class _PPVFloquet(object):
     Floquet modes and the continuous adjoint.  A theme of `PSS` (see
     `pss.py`)."""
 
-    ## Retired: it sized the deflated power iteration that estimated the
-    ## second multiplier before the Arnoldi/Ritz route replaced it; kept as
-    ## a name only.
-    ## History: `doc/shooting_history.md`, `_PPVFloquet.PPV_DEFLATION_ITERS`.
-    PPV_DEFLATION_ITERS = 30
     ## STARTING Arnoldi basis size for the second-multiplier estimate:
     ## `_ritz_second_multiplier` is grown from it until the selected pair's
     ## own Ritz residual certifies.  Exact at `k = n`; below that a
@@ -1343,10 +1338,12 @@ class _PPVFloquet(object):
         invariant `q^T C p` is then second order on a 3:1 grid.
 
         ⚠ TWO ADJOINTS IN THE TREE, ON PURPOSE.  This one is NOT the transpose
-        of the discrete map: the PPV, the adjoint noise folds and the sideband
-        rows keep the exact transpose (pinned at 1e-15) because their
-        identities need it.  This serves the MODE SHAPES only, where the
-        continuous adjoint is the object wanted.  On a uniform grid the two
+        of the discrete map: the PPV's anchor, the adjoint noise folds and the
+        sideband rows keep the exact transpose (pinned at 1e-15) because
+        their identities need it.  This serves the MODE SHAPES
+        (`floquet_modes`) and, at index 2 on a non-uniform solved-history
+        grid, `ppv`'s samples (see the note there) -- where the continuous
+        adjoint is the object wanted.  On a uniform grid the two
         coincide (`a0' = a0`) and the transpose is used; one-step kinds never
         come here.  Dense 2m x 2m up to `CONTINUOUS_ADJOINT_DENSE_M`
         unknowns; above that, Arnoldi on the backward map with Ritz-residual

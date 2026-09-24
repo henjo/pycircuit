@@ -441,13 +441,15 @@ class ProbeShooting:
         Returns `(J, info)` with `J` the real `2K x 2K` block
         `d(Re I, Im I)/d(Re V, Im V)`.
 
-        ⚠ NOT SHIPPED-READY: THE NORMALISATION IS INCOMPLETE, AND THE
-        DEFAULT VALIDATION CORRECTLY REFUSES on real circuits, so the
-        finite-difference Jacobian in :meth:`solve_multitone` remains the
-        shipped path.  The response itself is right (`dI/dV = 1/R` recovered
-        on a resistor; the conventions are in `_pac_response`).  **A constant
-        that differs between two circuits is not a convention, it is a missing
-        term**: never fit it to the finite difference this replaces.
+        ⚠ OPT-IN: :meth:`solve_multitone` takes it with `use_pac=True`, and
+        its default stays the finite-difference Jacobian.  Validated against
+        the finite difference on a nonlinear oscillator at the solution and
+        away from it (below 1e-3), and the Newton reaches the same orbit
+        (`test_the_pac_probe_jacobian_agrees_with_finite_difference_and_is_
+        cheaper`); the conventions that make it agree are in
+        `_pac_response`.  **A constant that differs between two circuits is
+        not a convention, it is a missing term**: never fit it to the finite
+        difference this replaces.
 
         ⚠ `validate=True` CHECKS ONE COLUMN AGAINST THE FINITE DIFFERENCE AND
         RAISES ON DISAGREEMENT, and it is on by default deliberately: a wrong

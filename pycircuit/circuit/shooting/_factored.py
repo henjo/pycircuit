@@ -17,8 +17,8 @@ class FactoredPeriod(object):
 
     ⚠ `matvec` IS THE WHOLE INTERFACE, and deliberately so.  Do not rebuild
     the `(NM)x(NM)` operator from `pss.Jtvec` / `pss.Cvec`: besides the
-    memory, those lists are written by `_traverse` and
-    `_traverse_solved_history` and by neither factored traversal, so after
+    memory, those lists are written only by a DENSE multistep walk
+    (`_walk_lmm`), never by a factored one, so after
     `solve(matrix_free=True)` they are stale or absent -- the operator would
     silently belong to a different trajectory than the one that converged.
     And a two-term-per-row `L` is Euler-shaped: for `trap` or `gear`,
@@ -364,7 +364,12 @@ class _PeriodWalk(object):
         return self.x_end
 
     def monodromy(self):
-        """The dense map `M = d end / d z0`."""
+        """The dense map `M = d end / d z0`.  ⚠ For gear's pair it is the
+        FULL ``2m x 2m`` map, never the ``d x_{N-1}/d x_0`` corner: a
+        sub-block of a sensitivity is not a monodromy (its spectral radius
+        can exceed one on a decaying resonator).  Its spectrum carries the
+        discretisation's parasitic roots beside the physical multipliers
+        (BDF-2's is 1/3 per step); `_spectral_report` separates them."""
         if self.kind == 'pair':
             return np.vstack((self.P[0], self.P[1]))
         return self.P[0] if self.kind == 'plain' else self.P

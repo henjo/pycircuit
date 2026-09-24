@@ -4330,6 +4330,10 @@ deflated power iteration this sized converged at
 `|lambda_3|/|lambda_2|` and lost three digits at a ratio of 1.065;
 Arnoldi replaced it at machine precision and fewer matvecs.
 
+The constant itself was removed on 2026-09-24: it had no reader, and with
+this document holding the history there was no longer a reason to keep the
+name.
+
 ### `PPV_RITZ_BASIS`
 
 The comment before the move:

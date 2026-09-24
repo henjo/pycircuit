@@ -1,5 +1,7 @@
 from pycircuit.circuit import *
-from pycircuit.circuit.shooting import *
+from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
+                                        topological_index)
+import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
 from pycircuit.post import Waveform, average
@@ -290,25 +292,51 @@ def test_backward_euler_damps_the_limit_cycle_and_trapezoidal_does_not():
         'the euler damping this test documents has gone: %.1f%%' % (100 * euler_peak / Q)
 
 
-def test_pss_uses_a_solve_not_an_explicit_inverse():
+def test_pss_uses_a_solve_not_an_explicit_inverse(monkeypatch):
     """`inv(Jf) @ C @ Jshoot` formed a dense inverse per timestep per iteration.
 
-    Asserted structurally: the quantity wanted is the solution of
-    `Jf X = C @ Jshoot`, and at N=137/M=1000 with 20 shooting iterations the old
-    form was 20,000 dense inversions.  A timing test would be a flake; the source
-    check says exactly what changed.
+    The quantity wanted is the solution of `Jf X = C @ Jshoot`, and at
+    N=137/M=1000 with 20 shooting iterations the old form was 20,000 dense
+    inversions.  A timing test would be a flake, so this asserts what the
+    walk does: it runs with `np.linalg.inv` refusing, and each step's
+    sensitivity is ONE matrix right-hand side solved through the caller's
+    `linearsolver` (a sparse matrix-free path must not be measured against a
+    hard-wired dense baseline).  The plain map and gear's pair both.
     """
-    import inspect
-    from pycircuit.circuit import shooting
-    ## A source check has to follow the code it is about: the accumulation
-    ## moved out of `solve` into `_traverse` when the autonomous system began
-    ## sharing the period map, and into `_walk_lmm` / `_lmm_recursion` when the
-    ## walks merged (2026-09-24) -- after which this read `solve` and a
-    ## five-line view, and passed without looking at the recursion at all.
-    src = (inspect.getsource(shooting.PSS._walk_lmm)
-           + inspect.getsource(shooting._lmm_recursion))
-    assert 'linalg.inv' not in src, 'the explicit inverse is back'
-    assert 'linearsolver' in src
+    import warnings
+    from pycircuit.circuit.linearsolver import DenseSolver
+
+    class _Counting(DenseSolver):
+        def __init__(self):
+            self.rhs = []
+
+        def solve(self, A, b, toolkit):
+            self.rhs.append(np.shape(b))
+            return DenseSolver.solve(self, A, b, toolkit)
+
+    def _refuse(*a, **k):
+        raise AssertionError('the explicit inverse is back')
+
+    circuit.default_toolkit = circuit.numeric
+    for method, kind, width in (('trap', 'plain', 1), ('gear2', 'pair', 2)):
+        cir = _q20_rlc()
+        per, m = 1e-3, cir.n - 1
+        solver = _Counting()
+        pss = PSS(cir, method=method, reltol=1e-9, linearsolver=solver)
+        pss._open_at_x0 = False
+        pss.autonomous = False
+        assert pss._map_kind() == kind
+        times, hs = pss._period_grid(per, 40, None)
+        with monkeypatch.context() as mp, warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            mp.setattr(np.linalg, 'inv', _refuse)
+            M = pss._walk(kind, np.zeros(width * m), times, hs,
+                          T=per).monodromy()
+        assert np.all(np.isfinite(M)) and M.shape == (width * m, width * m)
+        ## one matrix solve per step of the loop (the plain map's opening
+        ## step is the manufacturing step, not a step of the map)
+        matrix = [r for r in solver.rhs if len(r) == 2]
+        assert matrix == [(m, width * m)] * (len(times) - 1), (method, matrix)
 
 
 def test_pss_still_matches_the_ac_reference_with_a_fine_step():
@@ -370,35 +398,19 @@ def _q20_rlc(f0=1e3, Q=20.0):
 
 
 def _shooting_trace(method, reltol=1e-4, maxiterations=30):
-    """Run PSS, returning (residual per outer iteration, non-converged?)."""
+    """Run PSS, returning (the shooting Newton's trace as `(max |F|,
+    max |I - J|)` per residual evaluation, non-converged?, result)."""
     import warnings as _w
-    import pycircuit.circuit.analysis as _an
-    trace, orig = [], _an.fsolve
-
-    def spy(f, x0, *a, **kw):
-        ## the shooting Newton's residual -- a closure of `PSS._shoot`, the
-        ## Newton phase of `solve` since 2026-09-24
-        if f.__qualname__ != 'PSS._shoot.<locals>.func':
-            return orig(f, x0, *a, **kw)
-
-        def logged(x, *aa):
-            F, J = f(x, *aa)
-            trace.append((float(np.max(np.abs(F))),
-                          float(np.max(np.abs(np.eye(len(x)) - np.asarray(J))))))
-            return F, J
-        logged.__qualname__ = f.__qualname__
-        return orig(logged, x0, *a, **kw)
-
     circuit.default_toolkit = circuit.numeric
-    _an.fsolve = spy
-    try:
-        with _w.catch_warnings(record=True) as caught:
-            _w.simplefilter('always')
-            res = PSS(_q20_rlc(), method=method, reltol=reltol).solve(
-                period=1e-3, timestep=1e-5, maxiterations=maxiterations)
-        nonconv = any('did not converge' in str(c.message) for c in caught)
-    finally:
-        _an.fsolve = orig
+    pss = PSS(_q20_rlc(), method=method, reltol=reltol)
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        res = pss.solve(period=1e-3, timestep=1e-5,
+                        maxiterations=maxiterations, trace=True)
+    nonconv = any('did not converge' in str(c.message) for c in caught)
+    trace = [(float(np.max(np.abs(F))),
+              float(np.max(np.abs(np.eye(len(z)) - J))))
+             for z, F, J in pss.shooting_trace]
     return trace, nonconv, res
 
 
@@ -553,31 +565,11 @@ def test_steadyratio_relates_the_shooting_criterion_to_reltol():
                                        maxiterations=40)
     circuit.default_toolkit = circuit.numeric
     import warnings as _w
-    import pycircuit.circuit.analysis as _an
-    trace, orig = [], _an.fsolve
-
-    def spy(f, x0, *a, **kw):
-        ## the shooting Newton's residual -- a closure of `PSS._shoot`, the
-        ## Newton phase of `solve` since 2026-09-24
-        if f.__qualname__ != 'PSS._shoot.<locals>.func':
-            return orig(f, x0, *a, **kw)
-
-        def logged(x, *aa):
-            F, J = f(x, *aa)
-            trace.append(float(np.max(np.abs(F))))
-            return F, J
-        logged.__qualname__ = f.__qualname__
-        return orig(logged, x0, *a, **kw)
-
-    _an.fsolve = spy
-    try:
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
-            PSS(_q20_rlc(), method='euler', reltol=1e-9,
-                steadyratio=100.0).solve(period=1e-3, timestep=1e-5,
-                                         maxiterations=40)
-    finally:
-        _an.fsolve = orig
+    pss = PSS(_q20_rlc(), method='euler', reltol=1e-9, steadyratio=100.0)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-5, maxiterations=40, trace=True)
+    trace = [float(np.max(np.abs(F))) for _z, F, _J in pss.shooting_trace]
 
     ## looser criterion => stops earlier, at a larger residual
     assert len(trace) < len(tight), \
@@ -1257,31 +1249,18 @@ def test_pss_solved_history_jacobian_is_the_exact_one():
     solve that is not the expensive part, and removes iterations from the
     part that is.
     """
-    import pycircuit.circuit.analysis as _an
     circuit.default_toolkit = circuit.numeric
 
     def evals(force_plain):
-        calls = [0]
-        orig = _an.fsolve
-
-        def spy(f, x0, *a, **kw):
-            def wrapped(*aa):
-                calls[0] += 1
-                return f(*aa)
-            wrapped.__qualname__ = getattr(f, '__qualname__', '')
-            return orig(wrapped, x0, *a, **kw)
         pss = PSS(_q20_rlc(), method='gear', reltol=1e-9)
         if force_plain:
             _force_plain_map(pss)
-        _an.fsolve = spy
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)
-        finally:
-            _an.fsolve = orig
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-5, maxiterations=40,
+                      trace=True)
         assert pss.converged
-        return calls[0]
+        return len(pss.shooting_trace)
 
     plain, aug = evals(True), evals(False)
     assert aug < plain, \
@@ -1744,7 +1723,7 @@ def test_a_non_uniform_grid_works_when_the_period_is_an_unknown():
 def test_a_grid_that_opens_coarse_is_subdivided_but_a_benign_one_is_not():
     """RECORDED SCOPE ITEM 5: the opening step is MANUFACTURED.
 
-    `_traverse` builds `x(0)` from the unknown with one order-dropped Euler
+    The plain walk builds `x(0)` from the unknown with one order-dropped Euler
     step of `hs[0]`, so a grid taken from an adaptive transient opens
     wherever that transient's window happened to start -- which has nothing
     to do with what a good opening step is.  On van der Pol that step is
@@ -1928,9 +1907,10 @@ def test_the_matrix_free_matvec_is_the_dense_monodromy():
     xb = np.full(m, -0.03)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        _xl, _xp, P_last, P_prev = pss._traverse_solved_history(xa, xb, times, hs)
-        M = np.vstack((P_last, P_prev))
-        C0, steps, _a, _b = pss._traverse_factored(xa, xb, times, hs)
+        M = pss._walk('pair', np.concatenate((xa, xb)), times, hs).monodromy()
+        _wf = pss._walk('pair', np.concatenate((xa, xb)), times, hs,
+                        dense=False, keep=True)
+        C0, steps = _wf.opening, _wf.steps
 
     rng = np.random.default_rng(0)
     for _ in range(3):
@@ -2206,7 +2186,7 @@ def test_the_plain_matrix_free_matvec_carries_each_step_s_coefficients():
 
     Applying the OPENING's pair to every step put the period column 40-50%
     out for `trap` and `gear`; applying the LOOP's to the opening seeded
-    `Pq` non-zero where `_traverse` seeds it at zero, a 100% error for
+    `Pq` non-zero where the plain walk seeds it at zero, a 100% error for
     `trap`.  Both times the TRAJECTORY matched to zero, so nothing but a
     direct comparison against the dense sensitivity would have found them,
     and `euler` was exact under both -- a one-method test would have passed.
@@ -2229,10 +2209,13 @@ def test_the_plain_matrix_free_matvec_carries_each_step_s_coefficients():
         x_in = 0.01 * rng.standard_normal(m)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _x0, _xe, Mx, Mt = pss._traverse(x_in, 1e-3, times, hs,
-                                             want_dT=True)
-            opening, steps, x0f, xef, Mtf = pss._traverse_factored_plain(
-                x_in, 1e-3, times, hs, want_dT=True)
+            wk = pss._walk('plain', x_in, times, hs, T=1e-3, want_dT=True)
+            _x0, _xe, Mx, Mt = (wk.x0, wk.x_end, wk.monodromy(),
+                                wk.period_column())
+            _wf = pss._walk('plain', x_in, times, hs, T=1e-3, dense=False,
+                            keep=True, want_dT=True)
+            opening, steps, x0f, xef, Mtf = (_wf.opening, _wf.steps, _wf.x0,
+                                             _wf.x_end, _wf.period_column())
 
         ## the trajectory must be the same one, or the rest is meaningless
         assert np.allclose(np.asarray(_x0), np.asarray(x0f), rtol=0, atol=0)
@@ -2339,10 +2322,12 @@ def test_a_matrix_free_composed_autonomous_solve_agrees_with_the_dense_one():
     a, b = 0.01 * rng.standard_normal(m), 0.01 * rng.standard_normal(m)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        xl, xp, Pl, Pp, Ptl, Ptp = pss._traverse_solved_history(
-            a, b, times, hs, T=T, want_dT=True)
-        C0, st, xlf, xpf, Ptlf, Ptpf = pss._traverse_factored(
-            a, b, times, hs, T=T, want_dT=True)
+        wk = pss._walk('pair', np.concatenate((a, b)), times, hs, T=T,
+                       want_dT=True)
+        Pl, Pp, Ptl, Ptp = wk.P[0], wk.P[1], wk.Pt[0], wk.Pt[1]
+        _wf = pss._walk('pair', np.concatenate((a, b)), times, hs, T=T,
+                        dense=False, keep=True, want_dT=True)
+        C0, st, Ptlf, Ptpf = _wf.opening, _wf.steps, _wf.Pt[0], _wf.Pt[1]
 
     rel = lambda g, w: (np.linalg.norm(np.asarray(g).ravel()
                                        - np.asarray(w).ravel())
@@ -2531,40 +2516,37 @@ def test_the_period_column_is_a_total_derivative_not_a_partial():
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
+    import types
     cap = {}
-    orig = PSS._free_period_solve
 
     def grab(self, func, z0, abstol, xtol, reltol, maxiter, seed_period,
              solver=None):
         cap['func'] = func
         cap['z0'] = np.asarray(z0, dtype=float).copy()
-        return orig(self, func, z0, abstol, xtol, reltol, maxiter,
-                    seed_period, solver=solver)
+        return PSS._free_period_solve(self, func, z0, abstol, xtol, reltol,
+                                      maxiter, seed_period, solver=solver)
 
-    try:
-        PSS._free_period_solve = grab
-        got = {}
-        for method in ('gear', 'trap'):
-            pss = PSS(_phase_circuit(), method=method, reltol=1e-9)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
-            func, z = cap['func'], cap['z0'].copy()
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                _F, J = func(z)
-                d = 1e-7 * abs(z[-1])
-                zp, zm = z.copy(), z.copy()
-                zp[-1] += d
-                zm[-1] -= d
-                fp, _ = func(zp)
-                fm, _ = func(zm)
-            fd = (np.asarray(fp, float) - np.asarray(fm, float)) / (2 * d)
-            col = np.asarray(J, float)[:, -1]
-            got[method] = (np.linalg.norm(col - fd)
-                           / max(np.linalg.norm(fd), 1e-300))
-    finally:
-        PSS._free_period_solve = orig
+    got = {}
+    for method in ('gear', 'trap'):
+        pss = PSS(_phase_circuit(), method=method, reltol=1e-9)
+        pss._free_period_solve = types.MethodType(grab, pss)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
+        func, z = cap['func'], cap['z0'].copy()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _F, J = func(z)
+            d = 1e-7 * abs(z[-1])
+            zp, zm = z.copy(), z.copy()
+            zp[-1] += d
+            zm[-1] -= d
+            fp, _ = func(zp)
+            fm, _ = func(zm)
+        fd = (np.asarray(fp, float) - np.asarray(fm, float)) / (2 * d)
+        col = np.asarray(J, float)[:, -1]
+        got[method] = (np.linalg.norm(col - fd)
+                       / max(np.linalg.norm(fd), 1e-300))
 
     ## Gear-2's column is now the total derivative, to the FD floor
     assert got['gear'] < 1e-7, \
@@ -2905,8 +2887,8 @@ def test_an_index_2_solve_that_converges_is_correct():
 def test_the_returned_waveform_closes_on_a_non_uniform_grid():
     """The replay must walk the same `(t, h)` pairs the traversal did.
 
-    The two traversals pair them differently: `_traverse_solved_history`
-    walks `times[1:]` with `hs[_j]`, while the plain `_traverse` takes the
+    The two walks pair them differently: gear's pair walk (`_walk('pair',
+    ...)`) walks `times[1:]` with `hs[_j]`, while the plain walk takes the
     MANUFACTURING step at `(times[0], hs[0])` first and only then walks
     `times[1:]` with `hs[_j]` -- so in the plain case the step after the
     opening one uses `hs[0]` again, not `hs[1]`.  The replay set
@@ -3123,11 +3105,11 @@ def test_the_period_column_agrees_with_the_vector_field_at_T():
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 if pss._solves_history():
-                    _a, _b, _c, _d, Mt, _e = pss._traverse_solved_history(
-                        x0, red(-2), times, hs, T=T, want_dT=True)
+                    Mt = pss._walk('pair', np.concatenate((x0, red(-2))),
+                                   times, hs, T=T, want_dT=True).Pt[0]
                 else:
-                    _x0, _xe, _M, Mt = pss._traverse(x0, T, times, hs,
-                                                     want_dT=True)
+                    Mt = pss._walk('plain', x0, times, hs, T=T,
+                                   want_dT=True).Pt[0]
             ## xdot(T) from the converged waveform -- nothing borrowed from
             ## the accumulation being checked
             xdot = (red(-1) - red(-2)) / hs[-1]
@@ -3152,7 +3134,7 @@ def test_the_monodromy_transpose_is_a_reverse_replay():
 
     A shooting monodromy is a product of per-step solves, so its transpose
     is that product replayed in REVERSE ORDER with each solve transposed.
-    `_traverse_factored` already stores every step's factorisation and every
+    The kept walk (`keep=True`) stores every step's factorisation and every
     factorisation here can solve transposed, so the reverse pass needs no
     new integrator, no refactorisation and no second traversal.
 
@@ -3181,7 +3163,9 @@ def test_the_monodromy_transpose_is_a_reverse_replay():
     z = np.zeros(m)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        C0, steps, _xl, _xp = pss._traverse_factored(z, z, times, hs)
+        _wf = pss._walk('pair', np.concatenate((z, z)), times, hs,
+                        dense=False, keep=True)
+        C0, steps = _wf.opening, _wf.steps
 
     ## dense M from the FORWARD matvec, itself pinned against the traversal
     ## by test_the_matrix_free_matvec_is_the_dense_monodromy
@@ -3354,8 +3338,7 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
             k['line_search'] = ls
             return orig(g, *a, **k)
 
-        import pycircuit.circuit.shooting as _sh
-        _sh.analysis.fsolve = counting
+        _an.fsolve = counting
         try:
             pss = PSS(cir, method='trap', reltol=1e-10)
             with warnings.catch_warnings():
@@ -3364,7 +3347,7 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
             assert pss.converged
             counts[tag] = n[0]
         finally:
-            _sh.analysis.fsolve = orig
+            _an.fsolve = orig
 
     assert counts['damped'] <= counts['undamped'] + 2, \
         'damping cost %d residual evaluations against %d undamped -- the ' \
@@ -3383,8 +3366,7 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
         seen.append(bool(k.get('line_search', False)))
         return orig(fn, *a, **k)
 
-    import pycircuit.circuit.shooting as _sh
-    _sh.analysis.fsolve = recording
+    _an.fsolve = recording
     try:
         for cf, per_, method in ((lambda: _resonator_at_resonance()[0],
                                   _resonator_at_resonance()[1], 'trap'),
@@ -3394,7 +3376,7 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
                 warnings.simplefilter('ignore')
                 pss.solve(period=per_, timestep=per_ / 100, maxiterations=30)
     finally:
-        _sh.analysis.fsolve = orig
+        _an.fsolve = orig
 
     assert seen and all(seen),         'PSS called fsolve with line_search=%r -- the damping is '         'implemented and not asked for' % (seen,)
 
@@ -3576,13 +3558,13 @@ def test_the_monodromy_is_correct_across_a_switching_boundary():
         def phi(v):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
-                                               per, times, hs, want_dT=False)
+                xe = pss._walk('plain', np.asarray(v, dtype=float), times,
+                               hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+            M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         M = np.asarray(M, dtype=float)
         assert np.linalg.norm(M) > 0.1, \
             'the monodromy is %.3e -- the circuit erases its state each ' \
@@ -3790,12 +3772,13 @@ def _pac_operator_pieces(method, npts=40):
     x0 = np.zeros(N)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        pss._traverse(x0, per, times, hs, False)
+        pss._walk('plain', x0, times, hs, T=per)    # records Cvec/Jtvec/times
         Jt = [np.asarray(j).copy() for j in pss.Jtvec]
         Cv = [np.asarray(c).copy() for c in pss.Cvec]
         tms = np.asarray(pss.times).copy()
-        opening, steps, _x0, _x, _ = pss._traverse_factored_plain(
-            x0, per, times, hs)
+        _wf = pss._walk('plain', x0, times, hs, T=per, dense=False,
+                        keep=True)
+        opening, steps = _wf.opening, _wf.steps
     pss.Jtvec, pss.Cvec, pss.times = Jt, Cv, tms
     L, B, M = _pac_L_and_B(pss, N)
     Mmv = np.column_stack([pss._monodromy_matvec_plain(opening, steps, e)
@@ -4064,7 +4047,7 @@ def test_pac_order_is_lost_to_the_manufacturing_step(method, x0_unknown,
                                                      expect):
     """⚠ PAC ON THE PLAIN PATH IS FIRST ORDER WHATEVER THE METHOD.
 
-    `_traverse_factored_plain` takes one step OUTSIDE its loop to
+    The plain kept walk takes one step OUTSIDE its loop to
     manufacture a history, and that step is not in `steps`. For the
     homogeneous map its effect is folded into the `opening` triple — the
     documented flat-history approximation. For the DRIVEN map it also means
@@ -4303,7 +4286,7 @@ def test_the_adjoint_row_is_m_forward_solves_in_one():
     one agent and a wall-clock ratio here would be measuring the neighbours.
     So the test compares matvec counts, which no concurrent load can move.
 
-    ⚠ AND IT COSTS NO NEW MACHINERY. `_traverse_factored` already stores
+    ⚠ AND IT COSTS NO NEW MACHINERY. The kept walk (`keep=True`) stores
     every step's factorisation and every factorisation already solves
     transposed, so the reverse pass needs no reverse integrator -- the
     thing Demir & Roychowdhury call "often unavailable even in existing
@@ -8703,7 +8686,7 @@ def test_the_in_tree_gmres_matches_scipy_and_keeps_its_hessenberg():
     wrong**.
     """
     import scipy.sparse.linalg as spla
-    from pycircuit.circuit.shooting import _arnoldi_gmres
+    from pycircuit.circuit.shooting._numerics import _arnoldi_gmres
     rng = np.random.default_rng(0)
 
     for n in (4, 12, 40):
@@ -9024,13 +9007,13 @@ def test_saltation_is_unneeded_for_a_discontinuous_INJECTION_too():
         def phi(v):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
-                                               per, times, hs, want_dT=False)
+                xe = pss._walk('plain', np.asarray(v, dtype=float), times,
+                               hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+            M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         M = np.asarray(M, dtype=float)
         assert np.linalg.norm(M) > 0.1, \
             '%s erases its state (|M| = %.3e); comparing zero against ' \
@@ -9133,13 +9116,13 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         def phi(v):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
-                                               per, times, hs, want_dT=False)
+                xe = pss._walk('plain', np.asarray(v, dtype=float), times,
+                               hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+            M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         return np.asarray(M, dtype=float), phi, phi(x0), m
 
     ## the state really does reset -- otherwise this tests nothing new
@@ -9163,13 +9146,13 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         def phi(v):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                _a, xe, _b, _c = pss._traverse(np.asarray(v, dtype=float),
-                                               per, times, hs, want_dT=False)
+                xe = pss._walk('plain', np.asarray(v, dtype=float), times,
+                               hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _a, _e, M, _c = pss._traverse(x0, per, times, hs, want_dT=False)
+            M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         M = np.asarray(M, dtype=float)
         base = phi(x0)
         Mfd = np.zeros((m, m))
@@ -9795,18 +9778,18 @@ def test_the_closing_step_period_column_matches_its_own_derivative():
     def endpoint(Tv, t_, h_):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            o = pss._traverse(xin, Tv, t_, h_, want_dT=False)
-        return np.asarray(o[1], dtype=float)
+            o = pss._walk('plain', xin, t_, h_, T=Tv)
+        return np.asarray(o.x_end, dtype=float)
 
     def analytic(mode):
         pss._period_column = mode
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                o = pss._traverse(xin, T, times, hs, want_dT=True)
+                o = pss._walk('plain', xin, times, hs, T=T, want_dT=True)
         finally:
             pss._period_column = 'proportional'
-        return np.asarray(o[3], dtype=float).ravel()
+        return np.asarray(o.period_column(), dtype=float).ravel()
 
     ## the finite difference of the SAME convention: only the closing step
     ## lengthens, and it is hs[len(times) - 2] reaching times[-1]
@@ -12993,8 +12976,8 @@ def test_trbdf2_monodromy_matches_the_pencil_and_is_second_order():
     ⚠ THE POINT IS THE ORDER, NOT MERELY THE MATCH.  Trapezoidal is a
     second-order method whose SHOOTING monodromy is first-order on a limit
     cycle, because its opening manufacturing step is order-dropped to Euler
-    and that seam lives inside the period map (see `_traverse_factored_plain`
-    and `monodromy_twin`).  TR-BDF2 is a self-starting one-step DIRK: every
+    and that seam lives inside the period map (see `_walk_lmm` and
+    `monodromy_twin`).  TR-BDF2 is a self-starting one-step DIRK: every
     step, including the first, is the full two-stage method, so there is no
     opener and the monodromy stays second-order.  The error-ratio assertion
     is what distinguishes the two -- a first-order map would halve, not
@@ -14634,9 +14617,9 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
     ## the OPENED state (not the raw unknown, whose algebraic entries are
     ## free) to return to itself on EVERY row.
     solved, x_in, xm1, times, hs, Tp, x0u = q._period_state
-    x0, x_end, _Mx, _Mt = q._traverse(np.asarray(x_in, dtype=float).ravel(),
-                                      Tp, times, hs, want_dT=False,
-                                      open_at_x0=x0u)
+    wk = q._walk('plain', np.asarray(x_in, dtype=float).ravel(), times, hs,
+                 T=Tp, open_at_x0=x0u)
+    x0, x_end = wk.x0, wk.x_end
     gap = np.max(np.abs(np.asarray(x0, dtype=float).ravel()
                         - np.asarray(x_end, dtype=float).ravel()))
     assert gap < 1e-10, \
@@ -15748,38 +15731,18 @@ def _shooting_evaluations(method, K, T, **kw):
     COUNT alone is not.
     """
     import warnings as _w
-    import pycircuit.circuit.analysis as _an
-    pts, resid, box, orig = [], [], {}, _an.fsolve
-
-    def spy(f, x0, *a, **kwa):
-        ## the shooting Newton's residuals (fixed and free period) are
-        ## closures of `PSS._shoot`, the Newton phase of `solve`
-        if 'PSS._shoot' not in f.__qualname__:
-            return orig(f, x0, *a, **kwa)
-        box['f'] = f
-
-        def logged(x, *aa):
-            pts.append(np.array(x, float))
-            out = f(x, *aa)
-            F = out[0] if isinstance(out, tuple) else out
-            resid.append(float(np.max(np.abs(np.asarray(F, float)))))
-            return out
-        logged.__qualname__ = f.__qualname__
-        return orig(logged, x0, *a, **kwa)
-
     circuit.default_toolkit = circuit.numeric
-    _an.fsolve = spy
-    try:
-        cir, _T = _b2_resonator()
-        pss = PSS(cir, method=method, reltol=1e-3)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
-            res = pss.solve(period=T, timestep=T / K, maxiterations=200, **kw)
-    finally:
-        _an.fsolve = orig
+    cir, _T = _b2_resonator()
+    pss = PSS(cir, method=method, reltol=1e-3)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = pss.solve(period=T, timestep=T / K, maxiterations=200,
+                        trace=True, **kw)
     assert pss.converged, '%s at K=%d did not converge' % (method, K)
+    pts = [z for z, _F, _J in pss.shooting_trace]
+    resid = [float(np.max(np.abs(F))) for _z, F, _J in pss.shooting_trace]
     peak = float(np.max(np.abs(np.asarray(res['tpss'].v('n2'), float).ravel())))
-    return peak, len(pts), box['f'], pts, resid
+    return peak, len(pts), pss.shooting_residual, pts, resid
 
 
 def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
@@ -15832,8 +15795,8 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
 
     ⚠ AND `trap` WITH `x0_unknown=False` TAKES 7 / 6 / 77 HERE, so "many
     evaluations" is not by itself a theta symptom -- the manufactured-opening
-    formulation has an inexact Jacobian BY CONSTRUCTION and `_traverse` says so
-    in as many words.  It is not a control for this defect; the control is the
+    formulation has an inexact Jacobian BY CONSTRUCTION, and the plain walk's
+    record says so in as many words.  It is not a control for this defect; the control is the
     SAME formulation under a different method, which is the row above it.
 
     ⚠ THE JACOBIAN CHECK IS DELTA-SWEPT because that is how a real error is
@@ -16550,8 +16513,10 @@ def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
     with pytest.raises(ValueError, match='period must be'):
         ThetaIntegrator(period=0.0)
 
-    def peak(cir, node, T, K, **kw):
+    def peak(cir, node, T, K, neuter=False, **kw):
         p = PSS(cir, method='theta', reltol=1e-3, **kw)
+        if neuter:
+            p._theta_biased = lambda integ: integ
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             res = p.solve(period=T, timestep=T / K, maxiterations=200)
@@ -16595,12 +16560,7 @@ def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
 
     ## (6) NEUTER CHECK: with the normalisation removed the old defect comes
     ## straight back, so this test is verified to fail rather than assumed to.
-    saved = PSS._theta_biased
-    try:
-        PSS._theta_biased = lambda self, integ: integ
-        pk_bad, _p = peak(_q20_rlc(), 'c', 1e-3, 100)
-    finally:
-        PSS._theta_biased = saved
+    pk_bad, _p = peak(_q20_rlc(), 'c', 1e-3, 100, neuter=True)
     assert abs(pk_bad - 15.91117) < 5e-5, \
         'with `_theta_biased` neutered the K=100 peak should be the recorded ' \
         '15.91117 (20%% low), and it is %.5f -- if the defect no longer ' \
@@ -16748,32 +16708,26 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
     ## (4) ⚠ NEUTER = THE OLD ROUTE.  Forcing the truncated path back must
     ## reproduce the recorded failure, or this test no longer guards the
     ## reason the fix exists.  Both signs, and the `lam2 > 1` case.
-    saved = PSS.FLOQUET_DENSE_LIMIT
-    saved_max = PSS.PPV_RITZ_MAX_BASIS
-    try:
-        PSS.FLOQUET_DENSE_LIMIT = 4          # below n = 32, so Arnoldi again
+    bad = {}
+    for nslow in (12, 13, 14):
+        fp, ld, pss = fps[nslow]
+        pss.FLOQUET_DENSE_LIMIT = 4          # below n = 32, so Arnoldi again
         ## ⚠ AND THE BASIS MUST BE STARVED TOO, which is itself a result: the
         ## Ritz-residual gate GROWS `k` until the pair certifies, so the
         ## truncated path now gets these right on its own and the old defect
         ## is unreachable without disabling both mechanisms.  See
         ## `test_the_truncated_lam2_is_gated_on_its_own_ritz_residual`.
-        PSS.PPV_RITZ_MAX_BASIS = 12
-        bad = {}
-        for nslow in (12, 13, 14):
-            fp, ld, pss = fps[nslow]
-            ## `ppv` holds no cache -- it recomputes -- so re-calling it under
-            ## the lowered limit really does take the other branch, which the
-            ## route assertion below checks rather than assumes.
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
-                _v, info = pss.ppv()
-            assert info['second_multiplier_route'] == 'arnoldi', \
-                'the neuter did not reach the truncated path'
-            la = float(info['second_multiplier'])
-            bad[nslow] = (la, (1.0 - la) / (1.0 - ld))
-    finally:
-        PSS.FLOQUET_DENSE_LIMIT = saved
-        PSS.PPV_RITZ_MAX_BASIS = saved_max
+        pss.PPV_RITZ_MAX_BASIS = 12
+        ## `ppv` holds no cache -- it recomputes -- so re-calling it under
+        ## the lowered limit really does take the other branch, which the
+        ## route assertion below checks rather than assumes.
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _v, info = pss.ppv()
+        assert info['second_multiplier_route'] == 'arnoldi', \
+            'the neuter did not reach the truncated path'
+        la = float(info['second_multiplier'])
+        bad[nslow] = (la, (1.0 - la) / (1.0 - ld))
     for nslow in (12, 13, 14):
         assert abs(bad[nslow][1] - 1.0) > 0.5, \
             'NEUTER: nslow=%d no longer fails on the truncated path (gap ' \
@@ -16991,13 +16945,21 @@ def test_the_truncated_lam2_is_gated_on_its_own_ritz_residual():
         ld, _lams = _dense_lam2_of(fp)
         fps[nslow] = (fp, ld, pss)
 
-    def run_all():
+    def run_all(**settings):
         out = {}
         for nslow in (11, 12, 13, 14):
             fp, ld, pss = fps[nslow]
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter('always')
-                _v, info = pss.ppv()
+            ## the settings are this run's alone: each is removed again, so
+            ## the next run -- and (5) -- starts from the class defaults
+            for name, value in settings.items():
+                setattr(pss, name, value)
+            try:
+                with _w.catch_warnings(record=True) as caught:
+                    _w.simplefilter('always')
+                    _v, info = pss.ppv()
+            finally:
+                for name in settings:
+                    delattr(pss, name)
             la = float(info['second_multiplier'])
             out[nslow] = dict(
                 ratio=(1.0 - la) / (1.0 - ld),
@@ -17007,88 +16969,79 @@ def test_the_truncated_lam2_is_gated_on_its_own_ritz_residual():
                 warned=any('NOT CERTIFIED' in str(c.message) for c in caught))
         return out
 
-    saved_lim = PSS.FLOQUET_DENSE_LIMIT
-    saved_max = PSS.PPV_RITZ_MAX_BASIS
-    saved_tol = PSS.PPV_RITZ_RESIDUAL_TOL
-    try:
-        ## force the truncated path on a map the dense route would take
-        PSS.FLOQUET_DENSE_LIMIT = 4
+    ## force the truncated path on a map the dense route would take
+    truncated = dict(FLOQUET_DENSE_LIMIT=4)
 
-        ## (1) WITH ROOM TO GROW: exact everywhere, certified, silent.
-        grown = run_all()
-        for nslow, r in grown.items():
-            assert r['route'] == 'arnoldi', \
-                'nslow=%d did not reach the truncated path' % nslow
-            ## ⚠ A CERTIFIED VALUE IS ACCURATE TO ABOUT ITS RESIDUAL, NOT
-            ## TO MACHINE PRECISION, and the two track: nslow=11 certifies at
-            ## k=12 with residual 3.1e-07 and lands 1.5e-06 out in the gap.
-            ## 12/13/14 come back EXACT because the Krylov space closes on an
-            ## invariant subspace there (residual 0), which is a stronger
-            ## outcome than the gate promises.
-            assert abs(r['ratio'] - 1.0) < 1e-4, \
-                'nslow=%d: the gated Arnoldi should track the spectrum and ' \
-                'the gap ratio is %.6f. A fixed k=12 gave -0.031 / 18.020 / ' \
-                '0.245 at 12/13/14.' % (nslow, r['ratio'])
-            assert abs(r['ratio'] - 1.0) < max(1e3 * r['resid'], 1e-9), \
-                'nslow=%d: gap error %.2e against a certified residual of ' \
-                '%.2e -- the residual is supposed to BOUND the error to ' \
-                'within a few orders, and if it stops doing so the gate is ' \
-                'certifying something it cannot see' \
-                % (nslow, abs(r['ratio'] - 1.0), r['resid'])
-            assert r['cert'] and not r['warned'], \
-                'nslow=%d: a correct value must certify silently (cert=%s, ' \
-                'warned=%s)' % (nslow, r['cert'], r['warned'])
+    ## (1) WITH ROOM TO GROW: exact everywhere, certified, silent.
+    grown = run_all(**truncated)
+    for nslow, r in grown.items():
+        assert r['route'] == 'arnoldi', \
+            'nslow=%d did not reach the truncated path' % nslow
+        ## ⚠ A CERTIFIED VALUE IS ACCURATE TO ABOUT ITS RESIDUAL, NOT
+        ## TO MACHINE PRECISION, and the two track: nslow=11 certifies at
+        ## k=12 with residual 3.1e-07 and lands 1.5e-06 out in the gap.
+        ## 12/13/14 come back EXACT because the Krylov space closes on an
+        ## invariant subspace there (residual 0), which is a stronger
+        ## outcome than the gate promises.
+        assert abs(r['ratio'] - 1.0) < 1e-4, \
+            'nslow=%d: the gated Arnoldi should track the spectrum and ' \
+            'the gap ratio is %.6f. A fixed k=12 gave -0.031 / 18.020 / ' \
+            '0.245 at 12/13/14.' % (nslow, r['ratio'])
+        assert abs(r['ratio'] - 1.0) < max(1e3 * r['resid'], 1e-9), \
+            'nslow=%d: gap error %.2e against a certified residual of ' \
+            '%.2e -- the residual is supposed to BOUND the error to ' \
+            'within a few orders, and if it stops doing so the gate is ' \
+            'certifying something it cannot see' \
+            % (nslow, abs(r['ratio'] - 1.0), r['resid'])
+        assert r['cert'] and not r['warned'], \
+            'nslow=%d: a correct value must certify silently (cert=%s, ' \
+            'warned=%s)' % (nslow, r['cert'], r['warned'])
 
-        ## (2) BUDGET STARVED: the recorded failures return, and EVERY one is
-        ## flagged.  This is the half that says the gate detects rather than
-        ## that the growth happens to help.
-        PSS.PPV_RITZ_MAX_BASIS = 12
-        starved = run_all()
-        for nslow, want in ((12, -0.031), (13, 18.020), (14, 0.245)):
-            r = starved[nslow]
-            assert abs(r['ratio'] - want) < 0.02, \
-                'nslow=%d: starved of basis this should reproduce the ' \
-                'recorded gap ratio %.3f and gives %.3f' \
-                % (nslow, want, r['ratio'])
-            assert not r['cert'] and r['warned'], \
-                'NO FALSE ACCEPT is the whole claim: nslow=%d is wrong by ' \
-                '%.3f in the gap and reported certified=%s / warned=%s' \
-                % (nslow, r['ratio'], r['cert'], r['warned'])
-        ## and the one that is RIGHT at k=12 must still certify -- a gate that
-        ## rejected everything would pass the line above and be useless.
-        assert starved[11]['cert'] and abs(starved[11]['ratio'] - 1.0) < 1e-5, \
-            'NO FALSE REJECT: nslow=11 is correct at k=12 (residual 3.1e-07) ' \
-            'and must still certify; got cert=%s ratio=%.6f' \
-            % (starved[11]['cert'], starved[11]['ratio'])
+    ## (2) BUDGET STARVED: the recorded failures return, and EVERY one is
+    ## flagged.  This is the half that says the gate detects rather than
+    ## that the growth happens to help.
+    starved = run_all(PPV_RITZ_MAX_BASIS=12, **truncated)
+    for nslow, want in ((12, -0.031), (13, 18.020), (14, 0.245)):
+        r = starved[nslow]
+        assert abs(r['ratio'] - want) < 0.02, \
+            'nslow=%d: starved of basis this should reproduce the ' \
+            'recorded gap ratio %.3f and gives %.3f' \
+            % (nslow, want, r['ratio'])
+        assert not r['cert'] and r['warned'], \
+            'NO FALSE ACCEPT is the whole claim: nslow=%d is wrong by ' \
+            '%.3f in the gap and reported certified=%s / warned=%s' \
+            % (nslow, r['ratio'], r['cert'], r['warned'])
+    ## and the one that is RIGHT at k=12 must still certify -- a gate that
+    ## rejected everything would pass the line above and be useless.
+    assert starved[11]['cert'] and abs(starved[11]['ratio'] - 1.0) < 1e-5, \
+        'NO FALSE REJECT: nslow=11 is correct at k=12 (residual 3.1e-07) ' \
+        'and must still certify; got cert=%s ratio=%.6f' \
+        % (starved[11]['cert'], starved[11]['ratio'])
 
-        ## (3) THE RESIDUAL MUST ACTUALLY SEPARATE THEM, or (2) passed for
-        ## some other reason.
-        ok = starved[11]['resid']
-        bad = [starved[k]['resid'] for k in (12, 13, 14)]
-        assert ok < PSS.PPV_RITZ_RESIDUAL_TOL < min(bad), \
-            'the residual no longer brackets the tolerance: right %.2e, ' \
-            'wrong %r, tol %.0e' % (ok, bad, PSS.PPV_RITZ_RESIDUAL_TOL)
-        assert min(bad) / ok > 100.0, \
-            'right and wrong are only %.1fx apart in residual (%.2e vs %.2e); ' \
-            'with that little margin the tolerance is a tuned constant rather ' \
-            'than a separation' % (min(bad) / ok, ok, min(bad))
+    ## (3) THE RESIDUAL MUST ACTUALLY SEPARATE THEM, or (2) passed for
+    ## some other reason.
+    ok = starved[11]['resid']
+    bad = [starved[k]['resid'] for k in (12, 13, 14)]
+    assert ok < PSS.PPV_RITZ_RESIDUAL_TOL < min(bad), \
+        'the residual no longer brackets the tolerance: right %.2e, ' \
+        'wrong %r, tol %.0e' % (ok, bad, PSS.PPV_RITZ_RESIDUAL_TOL)
+    assert min(bad) / ok > 100.0, \
+        'right and wrong are only %.1fx apart in residual (%.2e vs %.2e); ' \
+        'with that little margin the tolerance is a tuned constant rather ' \
+        'than a separation' % (min(bad) / ok, ok, min(bad))
 
-        ## (4) ⚠ NEUTER THE TOLERANCE: with it wide open the wrong values must
-        ## certify, which is what proves the tolerance is load-bearing and not
-        ## decoration.
-        PSS.PPV_RITZ_RESIDUAL_TOL = 1.0
-        blind = run_all()
-        assert all(blind[k]['cert'] for k in (12, 13, 14)), \
-            'with the tolerance opened to 1.0 the wrong values should sail ' \
-            'through; if they do not, something other than the tolerance is ' \
-            'gating and this test is not measuring what it says'
-        assert abs(blind[14]['ratio'] - 0.245) < 0.02, \
-            'and they should be the SAME wrong values (%.3f)' \
-            % blind[14]['ratio']
-    finally:
-        PSS.FLOQUET_DENSE_LIMIT = saved_lim
-        PSS.PPV_RITZ_MAX_BASIS = saved_max
-        PSS.PPV_RITZ_RESIDUAL_TOL = saved_tol
+    ## (4) ⚠ NEUTER THE TOLERANCE: with it wide open the wrong values must
+    ## certify, which is what proves the tolerance is load-bearing and not
+    ## decoration.
+    blind = run_all(PPV_RITZ_RESIDUAL_TOL=1.0, PPV_RITZ_MAX_BASIS=12,
+                    **truncated)
+    assert all(blind[k]['cert'] for k in (12, 13, 14)), \
+        'with the tolerance opened to 1.0 the wrong values should sail ' \
+        'through; if they do not, something other than the tolerance is ' \
+        'gating and this test is not measuring what it says'
+    assert abs(blind[14]['ratio'] - 0.245) < 0.02, \
+        'and they should be the SAME wrong values (%.3f)' \
+        % blind[14]['ratio']
 
     ## (5) AND THE DEFAULT PATH IS UNTOUCHED: n = 32 is inside the real limit,
     ## so this fixture still takes the spectrum and certifies trivially.
@@ -19247,18 +19200,15 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     ## roots them separately.  On the EKV (thermal + flicker in one device)
     ## that in-element difference measured 4.2e-4 -- the cross-ELEMENT
     ## independence, which both routes keep, is what moved 0.319 -> 0.3055.
-    from pycircuit.circuit import shooting as _sh
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         assert pac._cy_colour_model(pss, 0.1e6, f0) is not None
-        orig_fit = _sh.PAC.__dict__['_colour_fit']
-        _sh.PAC._colour_fit = staticmethod(lambda Cs, ws: None)
+        pac._colour_fit = lambda Cs, ws: None
         try:
             sfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
-            _sh.PAC._colour_fit = orig_fit
+            del pac._colour_fit
     assert 1e-6 < abs(sc / sfull - 1.0) < 1e-3, (sc, sfull)
-    orig = _sh.PAC._cy_colour_model
 
     cy_orig = c.CY
     def cy_lorentz(x, w, **kw):
@@ -19271,11 +19221,11 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
         warnings.simplefilter('ignore')
         assert pac._cy_colour_model(pss, 0.1e6, f0) is None
         sl, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
-        _sh.PAC._cy_colour_model = lambda self, pss_, f_, f0_: None
+        pac._cy_colour_model = lambda pss_, f_, f0_: None
         try:
             slfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
-            _sh.PAC._cy_colour_model = orig
+            del pac._cy_colour_model
     assert abs(sl / slfull - 1.0) < 1e-12, (sl, slfull)
     assert abs(sl / sc - 1.0) > 1e-3, (sl, sc)
 
@@ -19473,7 +19423,7 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
     voltage sources be INDEPENDENT", which is this tree's controlled-source
     caveat reached from a second source.
     """
-    from pycircuit.circuit import shooting as _sh
+    from pycircuit.circuit.shooting import diagnostics as _diag
     circuit.default_toolkit = circuit.numeric
 
     def incidence(cir):
@@ -19486,11 +19436,11 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
         cols = {'C': [], 'L': [], 'V': [], 'I': [], 'R': []}
         for name in cir.elements:
             cls = type(cir[name]).__name__
-            kind = ('C' if cls in _sh._TI_CAPACITIVE else
-                    'V' if cls in _sh._TI_VOLTAGE else
-                    'L' if cls in _sh._TI_INDUCTIVE else
-                    'I' if cls in _sh._TI_CURRENT else
-                    'R' if cls in _sh._TI_RESISTIVE else '?')
+            kind = ('C' if cls in _diag._TI_CAPACITIVE else
+                    'V' if cls in _diag._TI_VOLTAGE else
+                    'L' if cls in _diag._TI_INDUCTIVE else
+                    'I' if cls in _diag._TI_CURRENT else
+                    'R' if cls in _diag._TI_RESISTIVE else '?')
             if kind == '?':
                 continue
             idx = sorted(set(int(i) for i in np.asarray(nmap[name]).ravel()
@@ -20937,6 +20887,47 @@ def test_no_analysis_answer_depends_on_a_stale_limiting_state():
     unmoved('transient', lambda c: Transient(c).solve(
         refnode=gnd, tend=1e-3, timestep=1e-3 / 50, fixed_timestep=True).x[-1])
     unmoved('algebraic_conditioning', lambda c: algebraic_conditioning(c)[0])
+
+
+def test_algebraic_conditioning_is_history_free_above_the_critical_voltage():
+    """The re-sync `limit(x, x)` clamps against the STORED state, so from a
+    stale one it lands short of `x` wherever the junction is above its
+    critical voltage (about 0.73 V here) -- and the gate above reads at
+    `x = 0`, where nothing limits, so it cannot see this.  Measured before
+    the fix, a diode on an ALGEBRAIC node at 0.8 V: sigma 0.990 on a fresh
+    circuit, 0.728 from a stored 5 V, 0.0210 from a stored 0 V.  On
+    `_diode_fixture` the diode's node is differential and sigma does not
+    move, which is why this needs its own circuit.
+    """
+    circuit.default_toolkit = circuit.numeric
+
+    def build(stale=None):
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c.add_node('o')
+        c['vs'] = VSin('a', gnd, va=0.8, freq=1e3, vo=0.6)
+        c['rs'] = R('a', 'b', r=50.0)
+        c['d'] = Diode('b', gnd)          # no capacitor on `b`: algebraic
+        c['rl'] = R('b', 'o', r=1e3)
+        c['cl'] = C('o', gnd, c=1e-9)
+        if stale is not None:
+            c['d'].__dict__['_vlim'] = stale
+        return c
+
+    c0 = build()
+    x = np.zeros(c0.n)
+    x[c0.get_node_index('a')] = 0.81
+    x[c0.get_node_index('b')] = 0.8
+    fresh, info = algebraic_conditioning(c0, x=x)
+    assert info['verdict'] == 'well-conditioned' and abs(fresh - 0.990) < 1e-2, fresh
+    for stale in (0.0, 5.0, -5.0):
+        got, _info = algebraic_conditioning(build(stale), x=x)
+        assert abs(got / fresh - 1.0) < 1e-12, (stale, got, fresh)
+    ## and the state it found is the state it leaves
+    c = build(0.0)
+    algebraic_conditioning(c, x=x)
+    assert c['d'].__dict__['_vlim'] == 0.0
 
 
 def test_algebraic_conditioning_leaves_the_limiting_state_as_it_found_it():
@@ -23565,14 +23556,10 @@ def test_the_continuous_adjoints_arnoldi_path_equals_its_dense_path():
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300, break_events=False, grid=fracs(400))
     assert pss.converged
-    was = PSS.CONTINUOUS_ADJOINT_DENSE_M
-    try:
-        PSS.CONTINUOUS_ADJOINT_DENSE_M = 8
-        dense = pss.floquet_modes(pss)
-        PSS.CONTINUOUS_ADJOINT_DENSE_M = 0          # force Arnoldi at m = 2
-        arn = pss.floquet_modes(pss)
-    finally:
-        PSS.CONTINUOUS_ADJOINT_DENSE_M = was
+    pss.CONTINUOUS_ADJOINT_DENSE_M = 8
+    dense = pss.floquet_modes(pss)
+    pss.CONTINUOUS_ADJOINT_DENSE_M = 0          # force Arnoldi at m = 2
+    arn = pss.floquet_modes(pss)
     assert len(dense) == len(arn) >= 2
     for a, b in zip(dense, arn):
         qa, qb = np.asarray(a['q']), np.asarray(b['q'])
@@ -23635,10 +23622,9 @@ def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_c
             q = PSS(vdp_vs(), method=method, reltol=1e-10)
             q._grid_fracs = None
             tms, hs = q._period_grid(TT, 200, None)
-            f = q._traverse_stage
-            return f(xs, TT, tms, hs, want_dT=want)
-        Mt = np.asarray(trav(T, True)[3], float).ravel()
-        xe = lambda TT: np.asarray(trav(TT, False)[1], float).ravel()
+            return q._walk('stage', xs, tms, hs, T=TT, want_dT=want)
+        Mt = np.asarray(trav(T, True).Pt, float).ravel()
+        xe = lambda TT: np.asarray(trav(TT, False).x_end, float).ravel()
         fd = (xe(T * (1 + 1e-6)) - xe(T * (1 - 1e-6))) / (2e-6 * T)
         rel = np.max(np.abs(Mt - fd)) / np.max(np.abs(fd))
         assert rel < 1e-7, (method, rel, Mt, fd)
@@ -24990,14 +24976,14 @@ def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switchin
         W, c = p._state_event_rows()
         assert W is not None and W.shape[0] == 2
         base2, th0 = p._land_fractions(hs / T, [0.706, 0.7107])
-        trav = p._traverse_stage
 
         def FJ(z):
             xx, th = z[:m], z[m:]
             fr, hsens, nodes = p._event_remap(base2, th0, th, T)
             hs_ = fr * T
             tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-            _x0, x_end, Mx, Pk = trav(xx, T, tms_, hs_, hsens=hsens, capture=set(nodes))
+            wk = p._walk('stage', xx, tms_, hs_, T=T, hsens=hsens, capture=set(nodes))
+            x_end, Mx, Pk = wk.x_end, wk.P, wk.Pk
             F = np.concatenate((xx - np.asarray(x_end),
                                 [float(W[k] @ p._captured[nd][0]) - c[k]
                                  for k, nd in enumerate(nodes)]))
@@ -25082,7 +25068,8 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
         fr, hsens, nodes = p._event_remap(base2, th_s, th, T)
         hs_ = fr * T
         tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-        _x0, x_end, Mx, Pk = p._traverse_stage(xx, T, tms_, hs_, hsens=hsens, capture=set(nodes))
+        wk = p._walk('stage', xx, tms_, hs_, T=T, hsens=hsens, capture=set(nodes))
+        x_end, Mx = wk.x_end, wk.P
         gv = np.zeros(K)
         Gt = np.zeros((K, K))
         for k, nd in enumerate(nodes):
@@ -25185,8 +25172,9 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
             fr, hsens, nodes = q._event_remap(g0, th0, th, T)
             hs = fr * T
             tms = np.concatenate(([0.0], np.cumsum(hs)))
-            _x0, x_end, Mx, Pk = q._traverse_stage(xx, T, tms, hs, hsens=hsens,
-                                                  capture=set(range(1, len(hs) + 1)))
+            wk = q._walk('stage', xx, tms, hs, T=T, hsens=hsens,
+                         capture=set(range(1, len(hs) + 1)))
+            x_end, Mx, Pk = wk.x_end, wk.P, wk.Pk
             F = np.zeros(m + K)
             J = np.zeros((m + K, m + K))
             F[:m] = xx - np.asarray(x_end)
@@ -25263,7 +25251,7 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     differs from them by more than 1 %.
     """
     import warnings as _w
-    from pycircuit.circuit.shooting import remove_row_col
+    from pycircuit.circuit.analysis import remove_row_col
     circuit.default_toolkit = circuit.numeric
     T = 1e-5
     f0 = 1.0 / T
@@ -25424,8 +25412,9 @@ def test_gears_state_event_stage_carries_both_step_partials_and_lands_the_crossi
         fr, hsens, nodes = p._event_remap(base2, th0, th, T)
         hs_ = fr * T
         tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-        out = p._traverse_solved_history(x0s, xm1, tms_, hs_, T=T, hsens=hsens, capture=set(nodes))
-        return (np.asarray(out[0]), [np.asarray(c).ravel() for c in out[4]], nodes,
+        wk = p._walk('pair', np.concatenate((x0s, xm1)), tms_, hs_, T=T,
+                     hsens=hsens, capture=set(nodes))
+        return (np.asarray(wk.x_end), [np.asarray(pk[0]).ravel() for pk in wk.Pk], nodes,
                 {nd: (np.asarray(p._captured[nd][0]), [np.asarray(c).ravel() for c in p._captured[nd][2]]) for nd in nodes})
 
     th = th0 + np.array([0.002, -0.003])
@@ -25554,12 +25543,11 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     ## 4.08 / 3.79 / 3.29 it read with the tanh was the tails.
     assert abs(sequ[j7][ih, ih] / exp_h - 1.0) < 5e-3, sequ[j7][ih, ih] / exp_h
     ## and the node-rate correction is what keeps the source silent
-    orig = PAC._orbit_rate
-    PAC._orbit_rate = lambda self, p, nodes: np.zeros((len(p.waveform[0]), p.cir.n - 1))
+    pac._orbit_rate = lambda p, nodes: np.zeros((len(p.waveform[0]), p.cir.n - 1))
     try:
         _K0z, seqz = pac.covariance(pss, samples=True)
     finally:
-        PAC._orbit_rate = orig
+        del pac._orbit_rate
     share = ((0.925 - ts[j7] / T) / (0.925 - 0.45)) ** 2
     assert abs(seqz[j7][isaw, isaw] / exp_n / share - 1.0) < 2e-2, (seqz[j7][isaw, isaw] / exp_n, share)
 
@@ -26635,14 +26623,10 @@ def test_the_monodromy_twin_is_capped_and_warns_when_it_hits_the_cap():
     assert info['monodromy_method'] == 'trbdf2'
     assert not [r for r in rec if 'capped iteration budget' in str(r.message)]
     poor = solve('euler', 20)
-    orig = PSS.TWIN_MAXITER
-    PSS.TWIN_MAXITER = 6
-    try:
-        with pytest.warns(RuntimeWarning, match='within its capped iteration budget'):
-            with pytest.raises(RuntimeError, match='did not converge|spurious|too poor'):
-                poor.ppv()
-    finally:
-        PSS.TWIN_MAXITER = orig
+    poor.TWIN_MAXITER = 6
+    with pytest.warns(RuntimeWarning, match='within its capped iteration budget'):
+        with pytest.raises(RuntimeError, match='did not converge|spurious|too poor'):
+            poor.ppv()
 
 
 def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():

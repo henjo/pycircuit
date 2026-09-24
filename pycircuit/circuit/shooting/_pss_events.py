@@ -25,13 +25,12 @@ class _StateEvents(object):
         c = np.array([float(t) for _r, t in rows])
         return W, c
 
-    @staticmethod
-    def _land_fractions(base, theta, min_sep=0.25):
+    @classmethod
+    def _land_fractions(cls, base, theta, min_sep=0.25):
         """`(fractions, theta)`: the base grid with each fraction of `theta`
         landed on a node -- a node within `min_sep` of the local step is
         MOVED onto it (no sliver), otherwise one is inserted; `event_grid`'s
         rule.  Endpoints never move."""
-        from .pss import PSS    # imported when called: pss.py imports this module
         pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
         pts[-1] = 1.0
         landed = []
@@ -67,7 +66,7 @@ class _StateEvents(object):
                 jb = min(int(np.searchsorted(base_pts, 0.5 * (a + b), side='right')) - 1,
                          len(base_h) - 1)
                 if gap < base_h[max(jb, 0)]:
-                    sub = pts[ia] + gap * np.arange(1, PSS.EVENT_WINDOW_STEPS) / PSS.EVENT_WINDOW_STEPS
+                    sub = pts[ia] + gap * np.arange(1, cls.EVENT_WINDOW_STEPS) / cls.EVENT_WINDOW_STEPS
                     pts = np.sort(np.concatenate((pts, sub)))
         pts = np.unique(pts)
         return np.diff(pts), np.asarray(landed_sorted, dtype=float)
@@ -252,21 +251,23 @@ class _StateEvents(object):
 
         def evmap(z, T, tms_, hs_, hsens, capture):
             """`(z_end, M, Pk)`: the period map with its event columns."""
+            w = self._walk(kind, z, tms_, hs_, T=T, hsens=hsens,
+                           capture=capture)
             if kind == 'pair':
-                (x_last, x_prev, P_last, P_prev, Pk_last,
-                 Pk_prev) = self._traverse_solved_history(
-                    z[:m], z[m:], tms_, hs_, T=T, hsens=hsens, capture=capture)
-                return (np.concatenate((np.asarray(x_last, dtype=float),
-                                        np.asarray(x_prev, dtype=float))),
-                        np.vstack((np.asarray(P_last, dtype=float),
-                                   np.asarray(P_prev, dtype=float))),
-                        (np.vstack((self._stack_columns(Pk_last),
-                                    self._stack_columns(Pk_prev)))
-                         if len(Pk_last) else None))
-            _x0, x_end, Mx, Pk = self._traverse_stage(
-                z, T, tms_, hs_, hsens=hsens, capture=capture)
-            return (np.asarray(x_end, dtype=float), np.asarray(Mx, dtype=float),
-                    self._stack_columns(Pk) if len(Pk) else None)
+                cols = (np.vstack((self._stack_columns([pk[0] for pk in w.Pk]),
+                                   self._stack_columns([pk[1] for pk in w.Pk])))
+                        if len(w.Pk) else None)
+            else:
+                ## ⚠ ONLY THE STAGE KIND LEAVES THIS MAP IN `_monodromy`;
+                ## gear's pair leaves the first stage's.  Neither is the
+                ## total monodromy through the events (`EventColumns`), so
+                ## the spectral radius reported after a staged solve comes
+                ## from a partial map either way.  Recorded, not decided
+                ## (2026-09-24).
+                self._monodromy = w.P
+                cols = self._stack_columns(w.Pk) if len(w.Pk) else None
+            return (np.asarray(w.end(), dtype=float),
+                    np.asarray(w.monodromy(), dtype=float), cols)
 
         ## the first stage's orbit, captured at every node, for the crossings
         evmap(np.asarray(z_ss, dtype=float), period, times, hs,

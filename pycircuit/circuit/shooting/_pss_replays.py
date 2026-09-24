@@ -231,7 +231,7 @@ class _FactoredReplays(object):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
         Runs the factored traversal ONCE, at the solution, and caches it.
-        Lazy on purpose: `_traverse_factored` stores `N` factorisations and
+        Lazy on purpose: a factored walk stores `N` factorisations and
         `N` capacitances (`2 N m^2` doubles -- ~800 MB at m=1002 and 50
         points), which is a bad trade to impose on every `solve` for the
         callers who never ask.

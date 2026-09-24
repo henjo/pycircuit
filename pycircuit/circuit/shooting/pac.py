@@ -215,7 +215,7 @@ class PAC(Analysis):
         ## the forced response at each frequency -- one period replay each,
         ## and unavoidable: the source is what changes across the sweep
         ## ⚠ THE MANUFACTURING STEP IS NOT IN `steps`, AND IT COSTS AN
-        ## ORDER.  On the plain path `_traverse_factored_plain` takes one
+        ## ORDER.  On the plain path the factored walk takes one
         ## step outside the loop to manufacture a history and folds it into
         ## the `opening` triple as a flat-history assumption.  The source is
         ## never applied at that step, so the driven response is first order
@@ -1902,14 +1902,12 @@ class PAC(Analysis):
 
             G_k = [ K ; a0 C_k K ],     Q_k = G_k (CY/2h_k) G_k^T
 
-        The period map on that pair is the plain product of the `A_k`
-        with NO re-seeding of `iq` at the boundary.  ⚠ THAT IS A DIFFERENT
-        OBJECT FROM `fp.matvec`, deliberately: the shooting SOLVE re-seeds
-        the companion at each period start (the manufactured opener, B16),
-        but the discretised noisy system does not, and the covariance is
-        a property of the latter.  The tie between the two is exact and is
-        the gate: the pair product applied to `(x, 0)` and read out on `x`
-        IS `fp.matvec`.
+        The period map on that pair RE-SEEDS `iq` at zero at the boundary,
+        as the shooting solve does (the manufactured opener, B16): it is
+        the product of the `A_k` applied to `(x, 0)`.  Its `x -> x` block
+        IS `fp.matvec`, and that tie is the gate.  Carrying `iq` across the
+        boundary instead makes `I - M kron M` singular (see the comment at
+        the end).
 
         ⚠ `oscillator_covariance` IS REFUSED FOR TRAP-PLAIN: it borders
         `I - M kron M` with `ppv()`'s null vectors, which are width `m` on
@@ -2137,8 +2135,8 @@ class PAC(Analysis):
 
     def _stage_injection(self, pss, fp, k, w):
         """The per-step process-noise covariance `Q_k` of a STAGE method with
-        the source entering EVERY stage, or None when the
-        tableau has a non-positive weight (then the caller keeps Van Loan).
+        the source entering EVERY stage, or None when the period is not a
+        stage method's (then the caller keeps its end-of-step Van Loan).
 
             Q_k = sum_i T_i (CY(Y_i) / (2 h b_i)) T_i^T,
             T_i = d x_{k+1} / d u_i   through the method's own stage solve
@@ -4531,8 +4529,10 @@ class PAC(Analysis):
 
         ⚠ EXACT FOR WHITE SOURCES, not a limiting form.  With coloured
         sources the transform "does not have a simple closed form" and only
-        two-regime approximations exist — which is one more reason this
-        module supports white sources only.
+        two-regime approximations exist — which is why the diffusion
+        constants that feed it (`diffusion_constant`,
+        `frequency_aware_diffusion`) refuse a coloured source
+        (`_refuse_coloured`).
 
         ⚠ AND ITS TOTAL POWER IS EXACTLY 1.  `∫ a/(b²+f²) df = aπ/b`, and
         here `a = i² f₀² c`, `b = π i⁴ f₀⁴ c² ^ ½`… concretely `b = π i²

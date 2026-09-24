@@ -66,24 +66,23 @@ class _AccuracyChecks(object):
     TWIN_MAXITER = 40
 
     def _solve_twin(self, method):
-        """A converged twin `PSS` of this circuit under `method`, re-solved
-        once on the SAME grid from this orbit's converged state, cached per
-        method.  The shared machinery behind `monodromy_twin` (which picks
-        the method by `self.monodromy`) and `_lyapunov_host` (which forces
-        `gear`, because the noise-injection surfaces cannot use a TR-BDF2
-        twin yet).  Raises if the re-solve does not converge.
+        """A converged twin of this analysis (the same class) under
+        `method`, re-solved once on the SAME grid from this orbit's
+        converged state, cached per method.  The machinery behind
+        `monodromy_twin`, which picks the method by `self.monodromy`; the
+        noise surfaces' hosts (`_lyapunov_host`, `_adjoint_host`) are that
+        twin.  Raises if the re-solve does not converge.
 
         History: `doc/shooting_history.md`, `_AccuracyChecks._solve_twin`.
         """
-        from .pss import PSS    # imported when called: pss.py imports this module
         cache = self._twins
         if method in cache:
             return cache[method]
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
         kw = dict(self._solve_kwargs)
-        twin = PSS(self.cir, toolkit=self.toolkit, irefnode=None,
-                   method=method, reltol=self.par.reltol,
-                   iabstol=self.par.iabstol, vabstol=self.par.vabstol)
+        twin = type(self)(self.cir, toolkit=self.toolkit, irefnode=None,
+                          method=method, reltol=self.par.reltol,
+                          iabstol=self.par.iabstol, vabstol=self.par.vabstol)
         hs = np.asarray(hs, dtype=float)
         ## the same grid: its fractions when it is not uniform, else the
         ## uniform step (a one-step plain state can carry an `hs` whose
@@ -226,7 +225,7 @@ class _AccuracyChecks(object):
 
         ⚠ IT ESTIMATES THE GRID ERROR ONLY: it cannot see an error both
         grids share (a wrong stamp, tolerance convention or circuit).  A
-        small `rel_change` says the grid is fine enough, NOT that the answer
+        small `rel_error` says the grid is fine enough, NOT that the answer
         is right.
 
         `levels=3` (the default) costs two extra solves, at `r` and `r^2`

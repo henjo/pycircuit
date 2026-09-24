@@ -46,7 +46,7 @@ class _PeriodWalks(object):
         ## `coeffs` overrides the LIVE `_coeffs` for the same reason `solve`
         ## overrides the solve: a matrix-free replay happens after the run,
         ## when `_coeffs` no longer describes the step being replayed.  See
-        ## `_traverse_factored_plain`.
+        ## `_walk_lmm`.
         ## ⚠ `source` ENTERS THE SOLVE AND NOT `Pq`: a small-signal source
         ## appears in the step's residual -- `Jf dx + S + du = 0` -- but NOT
         ## in the companion, which is built from CHARGES.  Adding it to `Pq`
@@ -146,7 +146,7 @@ class _PeriodWalks(object):
         ~3.5e-13 relative), so a dense and a factored walk of the same period
         agree to rounding, not bit for bit.
 
-        Returns a `_PeriodWalk`; the `_traverse*` names are its views.
+        Returns a `_PeriodWalk`; `_walk` is the one dispatch over the kinds.
 
         History: `doc/shooting_history.md`, `_PeriodWalks._walk_lmm`.
         """
@@ -359,63 +359,6 @@ class _PeriodWalks(object):
                            Pt=Pt if want_dT else None, Pk=Pk, steps=steps,
                            opening=opened,
                            open_at_x0=(not pair) and bool(opening[2]))
-
-    def _traverse(self, x_in, T, times, hs, want_dT, open_at_x0=False):
-        """The PLAIN map, dense: ``(x0, x_end, dx_end/dx0, dx_end/dT)`` --
-        the last only when asked for.  A view of `_walk_lmm`."""
-        w = self._walk_lmm(('plain', x_in, open_at_x0), times, hs, T=T,
-                           want_dT=want_dT)
-        ## Kept for the autonomous check after the solve: its spectrum is
-        ## the only place a free period announces itself.
-        self._monodromy = w.P[0]
-        return w.x0, w.x_end, w.P[0], (w.Pt[0] if want_dT else None)
-
-    def _traverse_solved_history(self, x0_in, xm1_in, times, hs,
-                                 T=None, want_dT=False, hsens=None,
-                                 capture=None):
-        """Gear's PAIR map, dense: ``(x_last, x_prev, P_last, P_prev)``, the
-        `P` being ``d x / d(x_0, x_{-1})`` as `n x 2n` blocks; with `want_dT`
-        two more entries, ``d x_{N-1}/dT`` and ``d x_{N-2}/dT`` -- BOTH rows
-        need a period column -- and with `hsens` the two blocks of each
-        event column instead.  A view of `_walk_lmm`."""
-        w = self._walk_lmm(('pair', x0_in, xm1_in), times, hs, T=T,
-                           want_dT=want_dT, hsens=hsens, capture=capture)
-        if w.Pk is not None:
-            return (w.x_end, w.x_prev, w.P[0], w.P[1],
-                    [pk[0] for pk in w.Pk], [pk[1] for pk in w.Pk])
-        ## ⚠ ALWAYS THE FULL 2m x 2m MAP, NEVER THE `d x_{N-1}/d x_0`
-        ## CORNER: a sub-block of a sensitivity is not a monodromy (its
-        ## spectral radius can exceed one on a decaying resonator).  For a
-        ## two-step method the one-period map acts on the PAIR, and its
-        ## spectrum carries the discretisation's parasitic roots beside the
-        ## physical multipliers (BDF-2's is 1/3 per STEP, (1/3)^N over a
-        ## period); `_spectral_report` separates them by eigenvector block
-        ## structure.
-        self._monodromy = np.vstack((w.P[0], w.P[1]))
-        if want_dT:
-            return w.x_end, w.x_prev, w.P[0], w.P[1], w.Pt[0], w.Pt[1]
-        return w.x_end, w.x_prev, w.P[0], w.P[1]
-
-    def _traverse_factored(self, x0_in, xm1_in, times, hs, T=None,
-                           want_dT=False):
-        """Gear's PAIR map, factored: ``(C0, steps, x_last, x_prev[, Pt_last,
-        Pt_prev])`` -- the two opening capacitances and per step
-        ``(lu, C, alphas, b)``.  A view of `_walk_lmm`."""
-        w = self._walk_lmm(('pair', x0_in, xm1_in), times, hs, T=T,
-                           dense=False, keep=True, want_dT=want_dT)
-        if want_dT:
-            return w.opening, w.steps, w.x_end, w.x_prev, w.Pt[0], w.Pt[1]
-        return w.opening, w.steps, w.x_end, w.x_prev
-
-    def _traverse_factored_plain(self, x_in, T, times, hs, want_dT=False,
-                                 open_at_x0=False):
-        """The PLAIN map, factored: ``(opening, steps, x0, x_end, Pt)`` with
-        ``opening = (C_open, a_open, b_open, pq_open)``.  A view of
-        `_walk_lmm`."""
-        w = self._walk_lmm(('plain', x_in, open_at_x0), times, hs, T=T,
-                           dense=False, keep=True, want_dT=want_dT)
-        return (w.opening, w.steps, w.x0, w.x_end,
-                (w.Pt[0] if want_dT else None))
 
     ## ------------------------------------------------------------------
     ## The Runge-Kutta STAGE family (Radau IIA, TR-BDF2, ESDIRK) --
@@ -645,8 +588,8 @@ class _PeriodWalks(object):
         term).  Without it the column is badly wrong, down to the sign of the
         event row's derivative.
 
-        Returns a `_PeriodWalk`; `_traverse_stage` is its dense view, and
-        `_factored_self_starting` keeps its steps.
+        Returns a `_PeriodWalk`; `_factored_self_starting` keeps its
+        steps.
 
         History: `doc/shooting_history.md`, `_PeriodWalks._walk_stage`.
         """
@@ -720,15 +663,3 @@ class _PeriodWalks(object):
         return _PeriodWalk(kind='stage', fp_kind='full' if coupled else 'dirk',
                            x0=x0, x_end=x, x_prev=x_prev, P=P,
                            Pt=Pt if want_dT else None, Pk=Pk, steps=steps)
-
-    def _traverse_stage(self, x_in, T, times, hs, want_dT=False, hsens=None,
-                        capture=None):
-        """The stage map, dense: ``(x0, x_end, M, Mt)`` -- or the event
-        columns in place of `Mt` when `hsens` is given.  A view of
-        `_walk_stage`."""
-        w = self._walk_stage(x_in, T, times, hs, want_dT=want_dT,
-                             hsens=hsens, capture=capture)
-        self._monodromy = w.P
-        if w.Pk is not None:
-            return w.x0, w.x_end, w.P, w.Pk
-        return w.x0, w.x_end, w.P, (w.Pt if want_dT else None)

@@ -29,6 +29,7 @@ import numpy as np
 from pycircuit import circuit
 from pycircuit.circuit import SubCircuit, gnd, R, C, L, VSin
 from pycircuit.circuit.shooting import PSS
+from pycircuit.circuit.shooting import _pss_walks
 
 NPTS = 50
 SECTIONS = (38, 108, 240, 500, 1000)
@@ -90,7 +91,10 @@ def solve_shares(pss, npts):
     tk = pss.toolkit
     acc = {'one': 0.0, 'wide': 0.0, 'prop': 0.0}
     orig_solve = tk.linearsolver
-    orig_sens = pss._step_sensitivity
+    ## ⚠ THE WALK PROPAGATES THROUGH `_lmm_recursion` DIRECTLY (since the
+    ## walks merged, 2026-09-24): timing `_step_sensitivity` read a share of
+    ## exactly 0.0.  The module-level name is the one the walk calls.
+    orig_sens = _pss_walks._lmm_recursion
 
     def spy(A, b, *a, **k):
         w = 1 if np.asarray(b).ndim == 1 else np.asarray(b).shape[1]
@@ -107,16 +111,16 @@ def solve_shares(pss, npts):
             acc['prop'] += time.perf_counter() - t0
 
     tk.linearsolver = spy
-    pss._step_sensitivity = timed_sens
+    _pss_walks._lmm_recursion = timed_sens
     try:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             t0 = time.perf_counter()
-            pss._traverse_solved_history(np.zeros(m), np.zeros(m), times, hs)
+            pss._walk('pair', np.zeros(2 * m), times, hs)
             total = time.perf_counter() - t0
     finally:
         tk.linearsolver = orig_solve
-        pss._step_sensitivity = orig_sens
+        _pss_walks._lmm_recursion = orig_sens
     return (total, acc['one'] / total, acc['prop'] / total,
             acc['wide'] / total)
 
