@@ -48,26 +48,32 @@ class _StateEvents(object):
         ## ⚠ A WINDOW BETWEEN TWO EVENTS GETS ITS OWN SUB-GRID.  A
         ## threshold switch declares both edges of its transition; the
         ## segment between them holds the whole S-curve of the switch, and
-        ## as ONE step the stage solve cannot resolve it, whatever the step
-        ## count.  A gap between two landed events narrower than the BASE
-        ## grid's local step is split into `EVENT_WINDOW_STEPS` steps, which
-        ## the remap then scales with the window.  (Not the immediate
-        ## neighbours': an inserted event leaves a sliver beside the window,
-        ## and against that the rule does not fire.)
+        ## in a few steps the stage solve cannot resolve it, whatever the
+        ## step count.  A gap between two landed events holding fewer than
+        ## `EVENT_WINDOW_STEPS` steps -- and narrower than that many BASE
+        ## steps -- is re-cut into `EVENT_WINDOW_STEPS` equal steps (its
+        ## base nodes dropped), which the remap then scales with the window.
+        ## (Not the immediate neighbours': an inserted event leaves a sliver
+        ## beside the window, and against that the rule does not fire.)
+        ## ⚠ Until 2026-09-25 it fired only on a window with NO base node
+        ## inside (narrower than one base step): a window spanning 2-7 base
+        ## steps kept them, fewer where a snapped edge stretched one, and the
+        ## staged PWM loop's error was non-monotone in N for every method --
+        ## radau 6.5e-5 / 1.0e-5 / 7.0e-5 / 4.2e-6 / 7.5e-5 / 3.9e-6 of the
+        ## swing at N = 780..805 against radau at 3200 (5e-6 to 1.1e-5 with
+        ## this rule, 5e-7 to 7.6e-6 at 16 steps).
         ## History: `doc/shooting_history.md`, `_land_fractions`.
         base_pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
         base_h = np.diff(base_pts)
         landed_sorted = sorted(landed)
+        K = cls.EVENT_WINDOW_STEPS
         for a, b in zip(landed_sorted[:-1], landed_sorted[1:]):
-            ia = int(np.argmin(np.abs(pts - a)))
-            ib = int(np.argmin(np.abs(pts - b)))
-            if ib == ia + 1:
-                gap = pts[ib] - pts[ia]
-                jb = min(int(np.searchsorted(base_pts, 0.5 * (a + b), side='right')) - 1,
-                         len(base_h) - 1)
-                if gap < base_h[max(jb, 0)]:
-                    sub = pts[ia] + gap * np.arange(1, cls.EVENT_WINDOW_STEPS) / cls.EVENT_WINDOW_STEPS
-                    pts = np.sort(np.concatenate((pts, sub)))
+            jb = min(int(np.searchsorted(base_pts, 0.5 * (a + b), side='right')) - 1,
+                     len(base_h) - 1)
+            inside = pts[(pts > a) & (pts < b)]
+            if (b - a) < K * base_h[max(jb, 0)] and len(inside) + 1 < K:
+                sub = a + (b - a) * np.arange(1, K) / K
+                pts = np.sort(np.concatenate((pts[(pts <= a) | (pts >= b)], sub)))
         pts = np.unique(pts)
         return np.diff(pts), np.asarray(landed_sorted, dtype=float)
 

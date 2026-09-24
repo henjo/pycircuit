@@ -25107,6 +25107,41 @@ def _pwm_loop(T):
     return cir
 
 
+def test_a_switching_window_is_re_cut_whatever_the_base_step():
+    """`_land_fractions` cuts the window between a switch's two landed edges
+    into `EVENT_WINDOW_STEPS` equal steps -- and until 2026-09-25 it did so
+    only when NO base node fell inside (a window narrower than one base
+    step).  A window spanning 2-7 base steps kept them, so the switch's
+    whole transition was resolved by a handful of steps that depended on
+    where the edges fell: on the PWM loop (window 0.0047 T) the staged
+    radau error against radau at 3200 points read 6.5e-5 / 1.0e-5 / 7.0e-5
+    / 4.2e-6 / 7.5e-5 / 3.9e-6 of the swing at N = 780..805, non-monotone
+    for every method, and a staged 800-point radau "reference" was itself
+    7.5e-5 off.  Re-cut, 5e-6 to 1.1e-5 at the same N, and radau / glm3 /
+    glm2 / trbdf2 converge monotonically (a floor at the window's own 8
+    steps).  Pinned on the fractions: a window over three base steps comes
+    back as `EVENT_WINDOW_STEPS` equal steps; one narrower than a base step
+    keeps the old rule's nodes; one wider than `EVENT_WINDOW_STEPS` base
+    steps is left to the base grid."""
+    K = PSS.EVENT_WINDOW_STEPS
+    base = np.full(100, 0.01)
+
+    def window_steps(a, b):
+        fr, landed = PSS._land_fractions(base, [a, b])
+        pts = np.concatenate(([0.0], np.cumsum(fr)))
+        i, j = int(np.argmin(np.abs(pts - a))), int(np.argmin(np.abs(pts - b)))
+        return np.diff(pts[i:j + 1])
+    ## over three base steps (0.4033 .. 0.4331): re-cut
+    w = window_steps(0.4033, 0.4331)
+    assert len(w) == K and np.allclose(w, (0.4331 - 0.4033) / K, rtol=1e-12), w
+    ## narrower than a base step: the old rule's nodes, unchanged
+    w = window_steps(0.5021, 0.5063)
+    assert len(w) == K and np.allclose(w, (0.5063 - 0.5021) / K, rtol=1e-12), w
+    ## wider than K base steps: the base grid's own nodes
+    w = window_steps(0.2033, 0.2033 + 0.01 * (K + 2))
+    assert len(w) > K and np.max(w) > 0.9 * 0.01, w
+
+
 def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switching_instant():
     """The event half of B7 (2026-09-21/22, Andreas: "Do the events as a
     Newton unknown").  On the PWM loop every method was FIRST order on a
