@@ -11784,10 +11784,11 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_trbdf2():
     default now, Gear-2 selectable -- and the twin re-converges the SAME
     discrete orbit, so trap+twin matches a direct solve of the twin's method.
 
-    ⚠ The NATIVE path still refuses: `oscillator_covariance` borders with
-    `ppv()`'s width-m vectors and the trap plain factorisation's pair map is
-    `2m x 2m`, so `pss.monodromy = 'native'` raises with the reason. The twin
-    is what makes the default path run at all.
+    ⚠ The NATIVE path refused until 2026-09-24 (`oscillator_covariance`
+    bordered with `ppv()`'s width-m vectors, the trap pair map `2m x 2m`); it
+    now runs on the pair's own null vectors -- first order, trap's own map's
+    limit (`test_oscillator_covariance_runs_on_the_trapezoidal_pair_map`).
+    The twin is what makes the default path accurate.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -11839,10 +11840,11 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_trbdf2():
     assert np.linalg.norm(Kg - Kdg) / np.linalg.norm(Kdg) < 1e-6, \
         'monodromy=gear should match a direct Gear-2 solve from the same seed'
 
-    ## native still refuses (the pair map)
+    ## native runs on the pair map's own null vectors (2m wide)
     tp.monodromy = 'native'
-    with pytest.raises(NotImplementedError, match='pair'):
-        PAC(tp.cir).oscillator_covariance(tp)
+    _Kn, dn, info_n = PAC(tp.cir).oscillator_covariance(tp)
+    assert np.shape(info_n['ppv_pair'])[0] == 2 * (tp.cir.n - 1)
+    assert np.isfinite(dn) and dn > 0.0
 
 def test_the_orbital_residual_was_the_reference_not_the_sum():
     """A9's 2-3 % residual, CLOSED by the plain-path wiring, in two steps.
@@ -20136,20 +20138,23 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
         assert np.max(np.abs(x_on - x_off)) < 1e-12, (name, x_on, x_off)
 
 
-def test_the_branch_check_reports_on_the_paths_it_cannot_confirm():
-    """⚠ THE SILENT HOLE IS THE PROBLEM, NOT THE MISSING CONFIRMATION.  Three
-    solve paths -- Radau's opt-in transform, the coupled PCNR step and the
-    multistep PCNR step -- each carry their own iteration and none is factored
-    to be re-entered from a supplied seed, so the confirmation is NOT WIRED
-    there.  A default-on diagnostic that simply does not run on some paths
-    tells the user nothing and gives them no way to find out.
+def test_the_branch_check_confirms_on_every_solve_path():
+    """⚠ THE SILENT HOLE IS THE PROBLEM, NOT THE MISSING CONFIRMATION -- and
+    the confirmation is no longer missing (2026-09-24).  Three paths --
+    Radau's opt-in transform, the coupled PCNR step and the multistep PCNR
+    step -- carried their own Newton, not re-enterable from a seed, so they
+    only SCREENED (`branch_screens_unconfirmed`), and could not tell the
+    repelling fixture from the attracting one.  And a fourth ran NOTHING: a
+    DIRK or GLM stage solved by PCNR (trbdf2, esdirk43, the GLMs under
+    `pcnr=True`) -- neither the screen nor the confirmation.
 
-    So those paths run the SCREEN and say so, counted separately
-    (`branch_screens_unconfirmed`) so the two are never confused: a confirmed
-    `branch_points` had a second solution in hand, this did not.  ⚠ It
-    therefore CANNOT separate the repelling fixture from the attracting one --
-    both report -- and that is the honest limit, asserted here rather than
-    hidden.
+    The step equation is the same whichever Newton solves it, so each path
+    now confirms with the limiting one: the multistep and stage paths
+    through `_branch_after_solve` on their own residual, the coupled paths
+    through the dense coupled Newton (`_coupled_stage_solver`), built only
+    once the screen fires.  Measured on the repelling (g = -1) and
+    attracting (g = +1) fixtures: every path confirms the first and screens
+    but does not confirm the second, and none leaves an unconfirmed screen.
     """
     import os
     import sys
@@ -20157,17 +20162,17 @@ def test_the_branch_check_reports_on_the_paths_it_cannot_confirm():
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
-    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    from pycircuit.circuit import integrator as _I
     sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import build
     from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
                                                               PER)
 
-    def transform_run(g):
+    def march(g, cls, transform=False, pcnr=False):
         cir = build(g)
-        tr = Transient(cir, integrator=RadauIIA3Integrator(), reltol=1e-12)
-        tr._radau_use_transform = True
+        tr = Transient(cir, integrator=cls(), reltol=1e-12, pcnr=pcnr)
+        tr._radau_use_transform = transform
         tr.irefnode = cir.get_node_index(_gnd)
         x = np.zeros(cir.n)
         tr.epar.t = 0.0
@@ -20180,29 +20185,31 @@ def test_the_branch_check_reports_on_the_paths_it_cannot_confirm():
                 tr.epar.t = j / 200.0
                 x, _f, _J, _ = tr.solve_timestep(x, j / 200.0)
                 tr._push_history(x)
-        return (getattr(tr, 'branch_screens_unconfirmed', 0),
-                getattr(tr, 'branch_points', 0), getattr(tr, '_branch_error',
-                                                         None))
+        return (getattr(tr, 'branch_screens', 0), getattr(tr, 'branch_points', 0),
+                getattr(tr, 'branch_screens_unconfirmed', 0),
+                getattr(tr, '_branch_error', None))
 
-    ## the hole is closed: the transform path reports the rank drop ...
-    u_bad, p_bad, e_bad = transform_run(-1.0)
-    assert e_bad is None, e_bad
-    assert u_bad > 0, u_bad
-    assert p_bad == 0, p_bad          # unconfirmed, by construction
-    ## ... and reports it on the ATTRACTING fixture too, which is the limit
-    u_ok, p_ok, _ = transform_run(1.0)
-    assert u_ok > 0, u_ok
+    paths = (('transform', _I.RadauIIA3Integrator, True, False),
+             ('coupled PCNR', _I.RadauIIA3Integrator, False, True),
+             ('multistep PCNR', _I.Gear2Integrator, False, True),
+             ('DIRK PCNR', _I.TRBDF2Integrator, False, True),
+             ('GLM PCNR', _I.GLM2Integrator, False, True))
+    for name, cls, tf, pcnr in paths:
+        s_bad, p_bad, u_bad, e_bad = march(-1.0, cls, tf, pcnr)
+        assert e_bad is None, (name, e_bad)
+        assert s_bad > 0 and p_bad > 0 and u_bad == 0, (name, s_bad, p_bad, u_bad)
+        s_ok, p_ok, u_ok, _e = march(1.0, cls, tf, pcnr)
+        assert s_ok > 0 and p_ok == 0 and u_ok == 0, (name, s_ok, p_ok, u_ok)
 
     ## and an ordinary circuit is quiet on both transform settings
     for tf in (True, False):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            tr = Transient(_expg_fixture(PER), integrator=RadauIIA3Integrator(),
+            tr = Transient(_expg_fixture(PER), integrator=_I.RadauIIA3Integrator(),
                            reltol=1e-10)
             tr._radau_use_transform = tf
             tr.solve(refnode=_gnd, tend=PER, timestep=PER / 100,
                      fixed_timestep=True)
-        assert getattr(tr.statistics, 'branch_screens_unconfirmed', 0) == 0
         assert getattr(tr.statistics, 'branch_points', 0) == 0
 
 
@@ -27140,6 +27147,39 @@ def test_radau_and_esdirk43_serve_as_the_monodromy_twin():
     p.monodromy = 'glm2'
     with pytest.raises(ValueError, match="'radau'"):
         p.monodromy_twin()
+
+
+def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
+    """`oscillator_covariance` on trap's OWN map (`monodromy='native'`) was
+    refused: the plain trapezoidal state is the pair `(x, iq)`, its map
+    `2m x 2m`, and the bordered solve needs THAT map's null vectors where
+    `ppv()` gives width `m`.  They follow from the state map's: the map
+    re-seeds `iq` at every period start, so its last `m` columns are zero,
+    and the null vectors are `[v; 0]` and `M[:, :m] u`.  Measured on van der
+    Pol against radau at 800 points: d -2.5 % at 200 points (-1.1 % at 800)
+    -- first order, trap's own map's limit, as euler's is -- where the
+    trbdf2 twin reads -7.6e-5.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    d_ref = 2.5756770857716342e-08          # radau, 800 points
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    out = {}
+    for mono in ('native', 'trbdf2'):
+        cir = _vdp_asym()
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        p = PSS(cir, method='trap', reltol=1e-10)
+        p.monodromy = mono
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
+                    maxiterations=60)
+            _K, d, info = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(p)
+        out[mono] = (d, info)
+    d, info = out['native']
+    assert np.shape(info['ppv_pair'])[0] == 4 and info['d_residual'] < 1e-4, info['d_residual']
+    assert abs(d / d_ref - 1.0) < 0.05, d / d_ref - 1.0
+    assert abs(out['trbdf2'][0] / d_ref - 1.0) < 1e-3, out['trbdf2'][0] / d_ref - 1.0
 
 def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():
     """The autonomous solve pins the coordinate moving fastest over the seed's

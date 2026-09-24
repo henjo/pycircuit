@@ -1291,7 +1291,8 @@ class Transient(Analysis):
                                 'solve is unaffected', self._branch_error)
             self.branch_check = 'off'
 
-    def _branch_after_coupled(self, stage_newton, seed0, Y, residual):
+    def _branch_after_coupled(self, stage_newton, seed0, Y, residual,
+                              build=None):
         """The coupled-path branch check: screen every stage, and if any is at
         a rank drop, re-solve the WHOLE BLOCK from a perturbed seed.
 
@@ -1318,6 +1319,11 @@ class Transient(Analysis):
             if not fired:
                 return
             self._branch_count('branch_screens')
+            if stage_newton is None:
+                ## built only now the screen has fired: a path that solved
+                ## with its own Newton (PCNR, the transform) confirms with
+                ## the dense coupled one, on the same step equation
+                _ctx, stage_newton, residual, seed0 = build()
             ## ⚠⚠ THE PERTURBATION MUST NOT BE A GAUGE SHIFT.  These are
             ## FULL-WIDTH stage vectors, so a direction of `ones` moves the
             ## REFERENCE NODE too -- a common-mode shift the circuit cannot
@@ -1406,48 +1412,6 @@ class Transient(Analysis):
                     continue
                 return gap
         return None
-
-    def _branch_screen_only(self, states, path):
-        """Screen without confirming, for the solve paths whose loops are not
-        re-enterable from a chosen seed.
-
-        ⚠ THE SILENT HOLE IS THE PROBLEM, NOT THE MISSING CONFIRMATION.  A
-        default-on diagnostic that simply does not run on some paths tells the
-        user nothing and gives them no way to find out; one that says "a rank
-        drop happened here and I could not test it" is weaker but honest.
-        These three paths -- Radau's opt-in transform, the coupled PCNR step
-        and the multistep PCNR step -- each carry their own iteration with
-        device limiting state, and none is factored to be re-entered from a
-        supplied seed.  Wiring the confirmation means restructuring three
-        solve loops, which is NOT DONE.
-
-        ⚠ Counted separately (`branch_screens_unconfirmed`) so the two are
-        never confused: a confirmed `branch_points` had a second solution in
-        hand, this did not.
-        """
-        if getattr(self, 'branch_check', 'on') != 'on':
-            return
-        try:
-            for st in states:
-                hit, _d = self._branch_screen(st)
-                if not hit:
-                    continue
-                self._branch_count('branch_screens_unconfirmed')
-                if not getattr(self, '_branch_warned', False):
-                    self._branch_warned = True
-                    logging.warning(
-                        'transient: rank C fell below its structural value at '
-                        't=%.6g s, which is where a step equation can have '
-                        'more than one root -- but the multiplicity test is '
-                        'NOT WIRED on this solve path (%s), so whether the '
-                        'answer is one of several was not determined. See '
-                        'branch_screens_unconfirmed in the statistics.',
-                        float(getattr(self.epar, 't', 0.0) or 0.0), path)
-                return
-        except Exception as exc:                               # noqa: BLE001
-            if not getattr(self, '_branch_error', None):
-                self._branch_error = repr(exc)
-            self.branch_check = 'off'
 
     def _branch_count(self, name):
         """Count on `statistics` when there is one, on the instance otherwise
@@ -3372,8 +3336,17 @@ class Transient(Analysis):
                 ## and its own predictor node, exactly as the limiting
                 ## path records one -- symmetry is what gate 13-6 asks for
                 self._pred_pending = (t, ())
-                ## BRANCH SCREEN (no confirmation on this path)
-                self._branch_screen_only([x], 'multistep PCNR')
+                ## THE BRANCH CHECK, CONFIRMED: the step equation is the one
+                ## the limiting path solves, so the speculative re-solve is
+                ## that Newton's (`_branch_after_solve`)
+                if getattr(self, 'branch_check', 'on') == 'on':
+                    self._branch_after_solve(
+                        refnode_removed(
+                            lambda xx: self._residual_and_jacobian(
+                                xx, t, provided_function),
+                            irefnode, self.toolkit),
+                        self.toolkit.concatenate((x[:irefnode],
+                                                  x[irefnode + 1:])))
                 return x, feval, J, f
 
         raise NoConvergenceError(
@@ -3517,6 +3490,12 @@ class Transient(Analysis):
         39987 `Diode.limit` calls on a half-wave rectifier.)"""
         epar = self.epar
         arr = lambda v: self.toolkit.array(v, dtype=float)
+
+        def func_i(x):
+            Ki = -(arr(self.cir.i(x, epar)) + src(ti))
+            f = arr(self.cir.q(x, epar)) - target - h * aii * Ki
+            J = arr(self.cir.C(x, epar)) + h * aii * arr(self.cir.G(x, epar))
+            return f, J
         if self._rk_use_pcnr():
             from pycircuit.circuit.nrsolver import NoConvergenceError as _NCE
             try:
@@ -3525,6 +3504,14 @@ class Transient(Analysis):
                 self.pcnr_solves += 1
                 self.pcnr_status = ('used' if not self.pcnr_fallbacks
                                     else 'partial')
+                ## THE BRANCH CHECK, CONFIRMED on the stage equation `_newton`
+                ## would have solved (until 2026-09-24 this path ran NONE:
+                ## neither the screen nor the confirmation)
+                if getattr(self, 'branch_check', 'on') == 'on':
+                    iref = self.irefnode
+                    self._branch_after_solve(
+                        refnode_removed(func_i, iref, self.toolkit),
+                        self.toolkit.concatenate((Y[:iref], Y[iref + 1:])))
                 return Y
             except _NCE as _exc:
                 logging.warning(
@@ -3534,15 +3521,9 @@ class Transient(Analysis):
                 self.pcnr_status = ('partial' if self.pcnr_solves
                                     else 'fell-back')
 
-        def func_i(x):
-            Ki = -(arr(self.cir.i(x, epar)) + src(ti))
-            f = arr(self.cir.q(x, epar)) - target - h * aii * Ki
-            J = arr(self.cir.C(x, epar)) + h * aii * arr(self.cir.G(x, epar))
-            return f, J
         return self._newton(func_i, guess)
 
-    def _finish_stage_step(self, t, tstage, Y, a_last, h, src, K=None,
-                           screen=None):
+    def _finish_stage_step(self, t, tstage, Y, a_last, h, src, K=None):
         """What a stage step leaves for the machinery that reads it, from its
         stages `Y` (stiffly accurate: ``x_{n+1} = Y_{s-1}``): the charge
         cache, `_iq` (the charge derivative at the new point), the per-step
@@ -3563,8 +3544,6 @@ class Transient(Analysis):
         self._Geq = a_last * h * Gm
         self._effective_method = type(self.base_integrator).__name__
         self._companion_coeffs = None
-        if screen is not None:
-            self._branch_screen_only(list(Y), screen)
         self._rk_Y = list(Y)
         self._pred_pending = (t, list(zip(tstage, list(Y))))
         if K is not None:
@@ -4117,105 +4096,26 @@ class Transient(Analysis):
         for j in range(3):
             self.cir.limit(Y[j], Y[j], epar)
 
-        ## BRANCH SCREEN (no confirmation on this path -- see
-        ## `_branch_screen_only`)
-        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src,
-                                        screen='coupled PCNR')
+        ## THE BRANCH CHECK, CONFIRMED: this path solved with its own Newton,
+        ## and the confirmation re-solves the same step equation with the
+        ## dense coupled one, built only if the screen fires
+        self._branch_after_coupled(
+            None, None, Y, None,
+            build=lambda: self._coupled_stage_solver(x0, t, provided_function))
+        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src)
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
 
-    def _rk_step_coupled(self, x0, t, provided_function=None):
-        """One Radau IIA(3) step: the three collocation stages solved as ONE
-        coupled ``3n`` Newton system.  Fully implicit -- no explicit first
-        stage, no per-stage one-LU shortcut -- and stiffly accurate, so the
-        step IS the last stage (``x_{n+1} = Y_3``, ``c_3 == 1``).  Self-starting
-        (the only past state is ``x0``), so no history ring is read.
-
-        The stage system in the charge formulation ``q'(x) = -(i(x) + u(t))`` is
-
-            F_i(Y) = q(Y_i) - q(x_n) - h sum_j A_ij K_j = 0,   K_j = -(i(Y_j)+u(t_j))
-
-        with block Jacobian ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)`` --
-        exactly ``(I3 (x) C + h A (x) G)`` in the linear case.  This dense
-        coupled solve is the DEFAULT and the correctness reference.
-
-        ⚠ THE COST TRANSFORM is the fast path, opt-in via ``radau_transform``
-        (or ``self._radau_use_transform``).  It block-diagonalises the coupled
-        system through ``eig(A^{-1})`` into one REAL and one COMPLEX `m x m`
-        solve (see :meth:`_rk_step_transformed`) -- an
-        ``O((3m)^3)`` dense solve becomes two sparse ones.  It is SIMPLIFIED
-        Newton (one Jacobian per step), so on a strongly nonlinear step it can
-        fail to converge; then this falls back to the dense full-Newton path
-        below, so the answer is never wrong, only occasionally slower.
-
-        When ``_rk_want_est`` is set (by the stepping loop's `_StageSteps` on
-        an adaptive run) it also
-        leaves the filtered embedded 5(3) error estimate in ``_rk_est`` (see
-        :meth:`_radau_error_estimate`); the fixed-step path does not set the flag
-        and pays nothing for it.  Returns ``(x, None, J, None)`` like
-        `solve_timestep`, with ``J`` the last-stage operator, and leaves
-        ``_iq``/``_q_cache`` set so the history push after the step is consistent.
-        """
-        from pycircuit.circuit.nrsolver import NoConvergenceError
-        if getattr(self, '_radau_use_transform',
-                   getattr(self.par, 'radau_transform', False)):
-            try:
-                return self._rk_step_transformed(
-                    x0, t, provided_function)
-            except NoConvergenceError:
-                ## simplified Newton stalled on this (nonlinear) step -- fall
-                ## through to the dense full-Newton solve, which is the
-                ## correctness reference and always converges here.
-                self._radau_transform_fallbacks = getattr(
-                    self, '_radau_transform_fallbacks', 0) + 1
-        if self._rk_use_pcnr():
-            ## PCNR is the first-class limiting here too: the coupled solve keeps
-            ## its structure but limits every junction, IN EVERY STAGE, by the
-            ## joint continuation instead of per-device `cir.limit` -- which is
-            ## the case device limiting cannot handle (parallel junctions on one
-            ## branch fight over the shared voltage).  See _rk_step_coupled_pcnr.
-            ##
-            ## ⚠ AND IT FALLS BACK, exactly as the LMM step does (and DC before
-            ## it): a PCNR failure on ONE step drops to the device-limiting
-            ## coupled solve below rather than ending the transient.  That is
-            ## what answers "what happens on a circuit bad enough to need the
-            ## ladder?" -- the PCNR Newton has no continuation ladder of its own
-            ## (a gshunt one and a junction-gmin one were both built and MEASURED
-            ## not to rescue it: its bottleneck is the junction limiter's slew,
-            ## which no deformation of the circuit accelerates), but the path it
-            ## falls back to HAS one.  So the rescue is reached by falling back
-            ## to the limiting that carries it, not by duplicating a ladder that
-            ## does not work here.
-            ##
-            ## ⚠ THE TWO LIMITINGS AGREE AT THE ROOT (measured 0.0 / 5e-18 rel on
-            ## a single junction), so a fallback step is not a different answer
-            ## -- EXCEPT where PCNR was load-bearing: PARALLEL junctions on one
-            ## branch, which per-device limiting resolves order-dependently.
-            ## The warning says so, because that is the one case where a silent
-            ## fallback would hand back a subtly different orbit.
-            try:
-                out = self._rk_step_coupled_pcnr(x0, t, provided_function)
-                self.pcnr_solves += 1
-                self.pcnr_status = ('used' if not self.pcnr_fallbacks
-                                    else 'partial')
-                return out
-            except NoConvergenceError as exc:
-                from pycircuit.circuit import pcnr as _pcnr_mod
-                _pairs = [(ra, rb) for _i, _e, ra, rb
-                          in _pcnr_mod.pcnr_junctions(self.cir)]
-                _parallel = len(_pairs) != len(set(_pairs))
-                logging.warning(
-                    'transient pcnr=True: coupled PCNR failed at t=%g (%s); '
-                    'device limiting for this step%s', t, str(exc)[:80],
-                    ' -- ⚠ THIS CIRCUIT HAS PARALLEL JUNCTIONS ON ONE BRANCH, '
-                    'which is the case PCNR exists for; the fallback resolves '
-                    'them order-dependently' if _parallel else '')
-                self.pcnr_fallbacks += 1
-                self.pcnr_status = ('partial' if self.pcnr_solves
-                                    else 'fell-back')
+    def _coupled_stage_solver(self, x0, t, provided_function):
+        """The dense coupled step's Newton and residual for the step
+        entering at `x0`: ``(ctx, stage_newton, block_residual, seed0)``.
+        `_rk_step_coupled` solves with them; the PCNR and transform paths
+        build them only once the branch screen fires, to confirm a second
+        root of the SAME step equation (its roots do not depend on which
+        Newton found the first)."""
         ctx = self._coupled_stage_context(x0, t, provided_function)
-        Amat, h, tn, iref = ctx.Amat, ctx.h, ctx.tn, ctx.iref
+        Amat, h, iref = ctx.Amat, ctx.h, ctx.iref
         arr, red, src, qn, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.qn,
                                         ctx.tstage, ctx.m)
         epar = self.epar
@@ -4356,16 +4256,125 @@ class Transient(Analysis):
                     + ('' if not gshunt else ' at gshunt=%g S' % gshunt))
             return Y
 
-        from pycircuit.circuit.nrsolver import (NoConvergenceError,
-                                                _adaptive_conductance_ladder)
-        ## STAGE PREDICTOR.  ⚠ The coupled solve has no converged stage of its
-        ## own to read -- all three are unknowns of ONE Newton -- so unlike the
-        ## sequential paths this is a whole-step extrapolation, and it is the
-        ## clamp in `_predict_state` that keeps its worst case bounded.  The
-        ## seed it replaces is `x_n` for all three stages, the crudest in this
-        ## file (measured: a full step's motion away, against ESDIRK43's 0.50).
+        def _block_residual(Ylist):
+            """`max |F_i|` for the coupled system, assembled from the SAME
+            formula the solve uses: `F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`
+            with `K_j = -(i(Y_j) + u(t_j))`.
+
+            ⚠ This exists because a FIXED-POINT test was not enough: if the
+            solve hands its seed back, re-solving from that seed hands it back
+            again and the fixed-point test passes vacuously.  A residual is a
+            measurement; a fixed point of a broken solve is not.
+            """
+            Ks = [-(arr(self.cir.i(Yj, epar)) + src(tstage[j]))
+                  for j, Yj in enumerate(Ylist)]
+            worst = 0.0
+            for i in range(3):
+                Fi = arr(self.cir.q(Ylist[i], epar)) - qn \
+                    - h * sum(Amat[i, j] * Ks[j] for j in range(3))
+                worst = max(worst, float(np.max(np.abs(np.asarray(Fi)))))
+            return worst
+
         seed0 = [self._pred_or(np.array(xn, dtype=float), tstage[i])
                  for i in range(3)]
+        return ctx, _stage_newton, _block_residual, seed0
+
+    def _rk_step_coupled(self, x0, t, provided_function=None):
+        """One Radau IIA(3) step: the three collocation stages solved as ONE
+        coupled ``3n`` Newton system.  Fully implicit -- no explicit first
+        stage, no per-stage one-LU shortcut -- and stiffly accurate, so the
+        step IS the last stage (``x_{n+1} = Y_3``, ``c_3 == 1``).  Self-starting
+        (the only past state is ``x0``), so no history ring is read.
+
+        The stage system in the charge formulation ``q'(x) = -(i(x) + u(t))`` is
+
+            F_i(Y) = q(Y_i) - q(x_n) - h sum_j A_ij K_j = 0,   K_j = -(i(Y_j)+u(t_j))
+
+        with block Jacobian ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)`` --
+        exactly ``(I3 (x) C + h A (x) G)`` in the linear case.  This dense
+        coupled solve is the DEFAULT and the correctness reference.
+
+        ⚠ THE COST TRANSFORM is the fast path, opt-in via ``radau_transform``
+        (or ``self._radau_use_transform``).  It block-diagonalises the coupled
+        system through ``eig(A^{-1})`` into one REAL and one COMPLEX `m x m`
+        solve (see :meth:`_rk_step_transformed`) -- an
+        ``O((3m)^3)`` dense solve becomes two sparse ones.  It is SIMPLIFIED
+        Newton (one Jacobian per step), so on a strongly nonlinear step it can
+        fail to converge; then this falls back to the dense full-Newton path
+        below, so the answer is never wrong, only occasionally slower.
+
+        When ``_rk_want_est`` is set (by the stepping loop's `_StageSteps` on
+        an adaptive run) it also
+        leaves the filtered embedded 5(3) error estimate in ``_rk_est`` (see
+        :meth:`_radau_error_estimate`); the fixed-step path does not set the flag
+        and pays nothing for it.  Returns ``(x, None, J, None)`` like
+        `solve_timestep`, with ``J`` the last-stage operator, and leaves
+        ``_iq``/``_q_cache`` set so the history push after the step is consistent.
+        """
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        if getattr(self, '_radau_use_transform',
+                   getattr(self.par, 'radau_transform', False)):
+            try:
+                return self._rk_step_transformed(
+                    x0, t, provided_function)
+            except NoConvergenceError:
+                ## simplified Newton stalled on this (nonlinear) step -- fall
+                ## through to the dense full-Newton solve, which is the
+                ## correctness reference and always converges here.
+                self._radau_transform_fallbacks = getattr(
+                    self, '_radau_transform_fallbacks', 0) + 1
+        if self._rk_use_pcnr():
+            ## PCNR is the first-class limiting here too: the coupled solve keeps
+            ## its structure but limits every junction, IN EVERY STAGE, by the
+            ## joint continuation instead of per-device `cir.limit` -- which is
+            ## the case device limiting cannot handle (parallel junctions on one
+            ## branch fight over the shared voltage).  See _rk_step_coupled_pcnr.
+            ##
+            ## ⚠ AND IT FALLS BACK, exactly as the LMM step does (and DC before
+            ## it): a PCNR failure on ONE step drops to the device-limiting
+            ## coupled solve below rather than ending the transient.  That is
+            ## what answers "what happens on a circuit bad enough to need the
+            ## ladder?" -- the PCNR Newton has no continuation ladder of its own
+            ## (a gshunt one and a junction-gmin one were both built and MEASURED
+            ## not to rescue it: its bottleneck is the junction limiter's slew,
+            ## which no deformation of the circuit accelerates), but the path it
+            ## falls back to HAS one.  So the rescue is reached by falling back
+            ## to the limiting that carries it, not by duplicating a ladder that
+            ## does not work here.
+            ##
+            ## ⚠ THE TWO LIMITINGS AGREE AT THE ROOT (measured 0.0 / 5e-18 rel on
+            ## a single junction), so a fallback step is not a different answer
+            ## -- EXCEPT where PCNR was load-bearing: PARALLEL junctions on one
+            ## branch, which per-device limiting resolves order-dependently.
+            ## The warning says so, because that is the one case where a silent
+            ## fallback would hand back a subtly different orbit.
+            try:
+                out = self._rk_step_coupled_pcnr(x0, t, provided_function)
+                self.pcnr_solves += 1
+                self.pcnr_status = ('used' if not self.pcnr_fallbacks
+                                    else 'partial')
+                return out
+            except NoConvergenceError as exc:
+                from pycircuit.circuit import pcnr as _pcnr_mod
+                _pairs = [(ra, rb) for _i, _e, ra, rb
+                          in _pcnr_mod.pcnr_junctions(self.cir)]
+                _parallel = len(_pairs) != len(set(_pairs))
+                logging.warning(
+                    'transient pcnr=True: coupled PCNR failed at t=%g (%s); '
+                    'device limiting for this step%s', t, str(exc)[:80],
+                    ' -- ⚠ THIS CIRCUIT HAS PARALLEL JUNCTIONS ON ONE BRANCH, '
+                    'which is the case PCNR exists for; the fallback resolves '
+                    'them order-dependently' if _parallel else '')
+                self.pcnr_fallbacks += 1
+                self.pcnr_status = ('partial' if self.pcnr_solves
+                                    else 'fell-back')
+        ctx, _stage_newton, _block_residual, seed0 = self._coupled_stage_solver(
+            x0, t, provided_function)
+        Amat, h, tn, arr, src, tstage = (ctx.Amat, ctx.h, ctx.tn, ctx.arr,
+                                         ctx.src, ctx.tstage)
+        xn = x0
+        from pycircuit.circuit.nrsolver import (NoConvergenceError,
+                                                _adaptive_conductance_ladder)
         try:
             Y = _stage_newton(seed0)
         except NoConvergenceError:
@@ -4421,25 +4430,6 @@ class Transient(Analysis):
         ## `_stage_newton` rather than a single-stage residual, so it needs its
         ## own call: a stage of the block can be at a rank drop while the
         ## others are not, and it is the BLOCK that has to be re-solved.
-        def _block_residual(Ylist):
-            """`max |F_i|` for the coupled system, assembled from the SAME
-            formula the solve uses: `F_i = q(Y_i) - q(x_n) - h sum_j A_ij K_j`
-            with `K_j = -(i(Y_j) + u(t_j))`.
-
-            ⚠ This exists because a FIXED-POINT test was not enough: if the
-            solve hands its seed back, re-solving from that seed hands it back
-            again and the fixed-point test passes vacuously.  A residual is a
-            measurement; a fixed point of a broken solve is not.
-            """
-            Ks = [-(arr(self.cir.i(Yj, epar)) + src(tstage[j]))
-                  for j, Yj in enumerate(Ylist)]
-            worst = 0.0
-            for i in range(3):
-                Fi = arr(self.cir.q(Ylist[i], epar)) - qn \
-                    - h * sum(Amat[i, j] * Ks[j] for j in range(3))
-                worst = max(worst, float(np.max(np.abs(np.asarray(Fi)))))
-            return worst
-
         self._branch_after_coupled(_stage_newton, seed0, Y, _block_residual)
 
         ## x_{n+1} == the last stage (stiff accuracy); the stage values are
@@ -4656,10 +4646,13 @@ class Transient(Analysis):
             raise NoConvergenceError(
                 'Radau IIA(3) transform (simplified Newton) did not converge')
 
-        ## BRANCH SCREEN (no confirmation on this path -- see
-        ## `_branch_screen_only`)
-        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src,
-                                        screen="Radau's transform fast path")
+        ## THE BRANCH CHECK, CONFIRMED: this path solved with its own Newton,
+        ## and the confirmation re-solves the same step equation with the
+        ## dense coupled one, built only if the screen fires
+        self._branch_after_coupled(
+            None, None, Y, None,
+            build=lambda: self._coupled_stage_solver(x0, t, provided_function))
+        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src)
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None

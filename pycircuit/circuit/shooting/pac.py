@@ -1913,11 +1913,12 @@ class PAC(Analysis):
         boundary instead makes `I - M kron M` singular (see the comment at
         the end).
 
-        ⚠ `oscillator_covariance` IS REFUSED FOR TRAP-PLAIN: it borders
-        `I - M kron M` with `ppv()`'s null vectors, which are width `m` on
-        the plain path, and the pair map is `2m x 2m`.  The pair's own null
-        vectors (with their own normalisation) would be needed.  Named
-        rather than approximated; euler-plain and gear both work.
+        ⚠ `oscillator_covariance` on TRAP-PLAIN borders `I - M kron M` with
+        the PAIR's null vectors, `2m` wide where `ppv()`'s are `m`: since the
+        map re-seeds `iq`, they are `[v; 0]` and `M[:, :m] u` (see
+        `oscillator_covariance`).  It reaches this only under
+        `monodromy='native'` -- a trap oscillator otherwise reads a twin --
+        and is as accurate as trap's own map, first order on a limit cycle.
 
         History: `doc/shooting_history.md`, `PAC._lyapunov_pieces_plain`.
         """
@@ -1941,14 +1942,6 @@ class PAC(Analysis):
                 'PAC.%s: the plain period mixes b = 0 and b != 0 steps, '
                 'which have different per-step states.' % what)
         pair = bs.pop()
-        if pair and what == 'oscillator_covariance':
-            raise NotImplementedError(
-                'PAC.oscillator_covariance: the trapezoidal plain path\'s '
-                'per-step state is the pair (x, iq), so its period map is '
-                '2m x 2m, and the bordered solve needs THAT map\'s null '
-                "vectors -- ppv()'s are width m. Not built (see "
-                '_lyapunov_pieces_plain). Use method=\'euler\' for a plain '
-                "width-m reference, or method='gear'.")
         n = 2 * m if pair else m
         As, Qs = [], []
         for k, (lu, C_new, alphas, b) in enumerate(fp.steps):
@@ -3246,6 +3239,17 @@ class PAC(Analysis):
         v = np.asarray(v, dtype=float).ravel()
         u = np.asarray(pinfo['tangent_pair'], dtype=float).ravel()
         xdot = np.asarray(pinfo['xdot'], dtype=float).ravel()
+        if n == 2 * m and v.shape[0] == m:
+            ## ⚠ THE TRAPEZOIDAL PLAIN PAIR `(x, iq)` (2026-09-24; refused
+            ## before): its map re-seeds `iq` at every period start, so its
+            ## last `m` columns are zero and its null vectors follow from the
+            ## state map's -- the left one `[v; 0]`, the right one the tangent
+            ## with the `iq` block it carries, `M[:, :m] u`.  The result is as
+            ## good as trap's own map: first order on a limit cycle (d -2.5 %
+            ## at 200 points, -1.1 % at 800 on van der Pol, against a radau
+            ## reference; the trbdf2 twin -4.8e-6).
+            u = np.asarray(M, dtype=float)[:, :m] @ u[:m]
+            v = np.concatenate((v, np.zeros(m)))
         ## rescale the bordered solve's DIRECTION onto the tangent `ppv`
         ## already scaled by `C u = q`; least squares so this is stable
         ## even where `u[:m]` is small, and exact where it is not.
