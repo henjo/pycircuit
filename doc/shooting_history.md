@@ -2449,6 +2449,23 @@ either: `_monodromy` survives from any earlier traversal and
 (Only the pair's matrix-free paths cleared it; the plain ones
 reported the previous solve's radius.)
 
+Gear's autonomous pair and the state-event stage (2026-09-24, Andreas:
+"Analyse, fix and create a test for the comparator relaxation oscillator
+with gear").  Until then the stage's gate read `_kind == 'stage' or
+(_kind == 'pair' and not self.autonomous)`: gear's free-period pair was the
+one kind skipped, and silently -- the method check at the top of `solve`
+counts gear as event-capable, so nothing warned.  On the comparator
+relaxation oscillator gear returned the unstaged orbit: +5.8e-3 of the exact
+period at 200 points (-2.9e-3 / +3.6e-3 at 100 / 300, the error set by where
+the crossing falls in its step), and the fixed-grid map's dominant
+multiplier 52.8 in place of 1.  The stage was already width-generic (gear's
+driven pair used it), so opening the gate was the fix: +1.1e-4 at 200 points
+(+8.7e-5 / -6.8e-4 / -1.9e-4 / +1.3e-5 at 150 / 100 / 300 / 800), a unit
+multiplier.  The same day the stage began running from a first stage that
+did not converge (unless it collapsed): unstaged, gear failed at 350 and 400
+points -- the fixed-grid map's multiplier 100-290 -- and the stage converged
+from its last iterate to 1.5e-4 / 1.2e-4.
+
 ### `_report_convergence`
 
 The comment on autonomous oscillators, before the move:
@@ -2755,6 +2772,14 @@ replay's own steps: with a caller's grid the points are
 not evenly spaced, and on the plain path `X[0]` sits one
 step before `t = 0`, so `times[_j]` was a step off there
 
+The excluded edges were `max(2, N // 20)` POINTS until 2026-09-24.  Gear's
+grid after a landed state event opens with ten doubling steps from 1e-5 T,
+so six points excluded 3e-4 of the period, and the orbit still leaving `x_0`
+-- its displacement about the speed times the step, the elapsed time being
+about the step -- read as a 3182-fold recurrence (the comparator oscillator
+at 100 and 150 points).  Now 5 % of the period in time: the same points on
+a uniform grid.
+
 ### `_orbit_results`
 
 The comment on the first entry, before the move:
@@ -2962,6 +2987,11 @@ reporter's fixture) and the step becomes a descent direction -- but the
 solve still does not converge there: `||F||` plateaus at 3.069e-05,
 identical at 25 and 200 iterations.  The frame explains the behaviour;
 it does not rescue the case.
+
+The state-event clause (2026-09-24).  On the comparator oscillator the
+diagnosis blamed weak damping ("second Floquet multiplier near 1") where the
+second multiplier is 0.002: the cause there is the unstaged map across a
+switch sharper than the grid, and the staged solve converges.
 
 ### `KRYLOV_TOLERANCE_FACTOR`
 
@@ -3542,6 +3572,17 @@ gear's and trbdf2's per-step Newton FAIL on the coarse steps that
 then land on the edges.  The closing step is bounded below so a
 trial period that would swallow it falls back to proportional
 scaling for that evaluation, with a one-time warning.
+
+The ratio warning's repeat rule was "another bad ratio within
+`RATIO_ISOLATION` steps" until 2026-09-24.  A landed switching window's
+exit -- its ramp, then the partial step back to the base grid -- is two
+adjacent bad ratios, so it counted as repeated: a false alarm under gear on
+the comparator oscillator at 100 and 800 points.  Measured: smoothing those
+pairs into doubling ramps never improved the period, and moved it by more
+than the pairs could have cost -- -6.8e-4 to +3.3e-3 (100 points), +8.7e-5
+to -7.4e-4 (150), +1.1e-4 to -5.8e-4 (200), +1.3e-5 to -2.9e-5 (800).  Now
+two others must lie within the isolation distance; an alternating 3:1 grid
+has them at every bad ratio.
 
 ### `_period_quadrature`
 

@@ -454,6 +454,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         self._state_event_fracs = None
         self._event_sensitivity = None
         self._event_columns = None
+        self.stage_one_converged = None
         self._captured = {}
         ## The caller's step fractions, or None for the uniform grid.  Read
         ## by the autonomous closures, which rebuild the grid at the current
@@ -1005,15 +1006,19 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         `row . x(theta_k T) = threshold`, and the bordered Newton lands the
         grid on the crossing exactly.  The solved fractions become the grid
         every consumer replays on and the event nodes are breaks for the
-        period quadrature.  It runs on the stage kinds, driven or free
-        period -- on an AUTONOMOUS circuit `z = [x_0, theta, T]`, the period
-        one more column of the event algebra (`d h_j / d T = fraction_j`),
-        the phase row closing the system, the polish convention
-        proportional -- and on gear's pair on a DRIVEN circuit; the plain
-        and GLM kinds skip it with a warning.  Radau is the method for these
-        circuits: gear's and trbdf2's own second-order error on the
-        switch-off decay dominates.  The stage is for crossings sharper than
-        the grid.  `state_events=False` keeps the one-stage solve.
+        period quadrature.  It runs on the stage kinds and on gear's pair,
+        driven or free period -- on an AUTONOMOUS circuit `z = [x_0, theta,
+        T]` (gear's `x_0` a pair), the period one more column of the event
+        algebra (`d h_j / d T = fraction_j`), the phase row closing the
+        system, the polish convention proportional; the plain and GLM kinds
+        skip it with a warning.  A first stage that did not converge is not
+        the end: unless it collapsed onto a trivial root, the stage runs from
+        its last iterate and its own Newton decides `converged` --
+        `stage_one_converged` records whether the first stage did (None
+        when no stage ran).  Radau is the method for these circuits: gear's
+        and trbdf2's own second-order error on the switch-off decay
+        dominates.  The stage is for crossings sharper than the grid.
+        `state_events=False` keeps the one-stage solve.
 
         `tstab` runs a TRANSIENT for that many seconds before shooting and
         uses its final state as the seed -- the stabilisation time every
@@ -1747,13 +1752,17 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             def _mf(z0_, ab_, xt_, rt_, mi_):
                 return self._matrix_free_newton(_mf_build, z0_, ab_, xt_,
                                                 rt_, mi_)
+        ## a state-event stage may follow (below): stage 1's own stall
+        ## diagnosis then waits for its outcome
+        _staged = (state_events and not matrix_free
+                   and _kind in ('stage', 'pair'))
         if self.autonomous:
             zT0 = np.concatenate((z0, [period]))
             abstol_z = np.concatenate((tol_z, [_tol[phase_k]]))
             xtol_z = np.concatenate((tol_z, [1e-15 * period]))
             z_ss, _info, _ier, _mesg = self._free_period_solve(
                 func_autonomous, zT0, abstol_z, xtol_z, _shoot_reltol,
-                maxiterations, period, solver=_mf)
+                maxiterations, period, solver=_mf, defer_diagnosis=_staged)
             self.period = period = float(z_ss[-1])
             z_ss = z_ss[:-1]
             ## the grid follows the solved period; everything downstream --
@@ -1768,11 +1777,20 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 func, z0, maxiter=maxiterations, reltol=_shoot_reltol,
                 abstol=tol_z, xtol=tol_z, toolkit=self.toolkit,
                 full_output=True, line_search=True, floor_detect=True)
-        ## the state events as Newton unknowns: a second, bordered stage from
-        ## the converged orbit (the stage methods, driven or free period, and
-        ## gear's driven pair) -- see `_state_event_stage`
-        if state_events and _ier == 1 and not matrix_free and (
-                _kind == 'stage' or (_kind == 'pair' and not self.autonomous)):
+        ## THE STATE EVENTS AS NEWTON UNKNOWNS: a second, bordered stage from
+        ## stage 1's orbit, for every kind that has one -- the stage methods
+        ## and gear's pair, driven or free period (see `_state_event_stage`).
+        ## ⚠ ALSO FROM A STAGE 1 THAT DID NOT CONVERGE, unless it collapsed
+        ## onto a trivial root.  Across a sharp switch the UNSTAGED map is
+        ## nearly discontinuous in the state -- where the crossing falls in
+        ## its step moves with every iterate -- and its Newton can fail where
+        ## the staged system, the crossings landed, converges.  The stage's
+        ## own Newton decides `converged`; `stage_one_converged` records
+        ## whether stage 1 did.  History: `doc/shooting_history.md`,
+        ## `PSS._shoot`.
+        _info_one, _ier_one = _info, _ier
+        if _staged and (_ier == 1 or not (isinstance(_info, dict)
+                                          and _info.get('collapsed'))):
             (z_ss, _info, _ier, _mesg, period, times,
              hs) = self._state_event_stage(
                 _kind, z_ss, _info, _ier, _mesg, period, times, hs,
@@ -1780,6 +1798,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 *((_phase_row, phase_k) if self.autonomous else ()))
             if self.autonomous:
                 self.period = period
+        self.stage_one_converged = (
+            (_ier_one == 1) if self._state_event_fracs is not None else None)
+        _stall = (_info_one.get('stall_diagnosis')
+                  if isinstance(_info_one, dict) else None)
+        if _stall is not None and _ier != 1:
+            _stall()
         x0_ss = z_ss[:m]
         if _kind == 'pair':
             xm1_ss = z_ss[m:]
@@ -2071,12 +2095,23 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## grids scale locally.
             _h = np.array([h for _t, h in walk], dtype=float)
             _v0 = _d[1] / _h[0]
-            _edge = max(2, len(_d) // 20)
+            ## ⚠ THE EXCLUDED EDGES ARE TIME, NOT POINTS: 5 % of the period
+            ## (at least two steps' worth), which on a uniform grid is the
+            ## same `max(2, N // 20)` points.  Counted in points, a grid that
+            ## OPENS WITH A RAMP (gear's, after a landed state event: ten
+            ## doubling steps from 1e-5 T) excluded 3e-4 of the period, and
+            ## the orbit still leaving `x_0` -- displacement about the speed
+            ## times the step, since the elapsed time IS about the step --
+            ## read as a recurrence ("traverses it about 3182 times").
+            _tj = np.concatenate(([0.0], np.cumsum(_h)))
+            _span = float(_tj[-1])
+            _edge_t = max(2, len(_d) // 20) * _span / len(_h) * (1.0 - 1e-9)
             ## ⚠ THE EARLIEST RECURRENCE, NOT THE NEAREST.  A three-fold
             ## orbit passes close to `x_0` at both `T/3` and `2T/3`, and the
             ## later one is itself a multiple.
-            _near = [j for j in range(_edge, len(_d) - _edge)
-                     if _d[j] < _v0 * max(_h[j - 1], _h[j])
+            _near = [j for j in range(1, len(_h))
+                     if _edge_t <= _tj[j] <= _span - _edge_t
+                     and _d[j] < _v0 * max(_h[j - 1], _h[j])
                      and _d[j] < 0.25 * _diam]
             if _diam > 0.0 and _near:
                 ## The closest approach WITHIN THE FIRST cluster: the first

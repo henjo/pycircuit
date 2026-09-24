@@ -270,7 +270,9 @@ class PAC(Analysis):
             if _evd is not None:
                 _Pthd = np.asarray(_evd['P_end'], dtype=complex)
                 for i, (f, a) in enumerate(zip(freqs, alphas)):
-                    _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(m, dtype=complex),
+                    ## (the map's width: gear's pair seeds `(x_0, x_{-1})`)
+                    _e0, f_steps = pss._forced_replay(fp, f, u_ac,
+                                                      y0=np.zeros(fp.width, dtype=complex),
                                                       collect=True)
                     f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v_, dtype=complex)[:m]
                                                              for v_ in f_steps]
@@ -323,8 +325,9 @@ class PAC(Analysis):
             ## the crossings' motion on the staged oscillator: the state's
             ## part through the total map's sensitivity plus the source's
             _dthx = np.asarray(_ev.dth, dtype=float)
+            _w = _dthx.shape[1]           # m on a one-step map, 2m on gear's pair
             for i, y0 in enumerate(ys):
-                dthetas[i] = _dthx @ np.asarray(y0, dtype=complex)[:m] + _dth_f[i]
+                dthetas[i] = _dthx @ np.asarray(y0, dtype=complex)[:_w] + _dth_f[i]
         ## the crossings' modulation per frequency (fractions of the period
         ## per unit source), None where the solve had no state events
         self.event_shifts = list(dthetas)
@@ -568,14 +571,15 @@ class PAC(Analysis):
             ## `z, zeta` come from the block elimination
             ## (`EventColumns.bordered_adjoint`); on an oscillator the system
             ## collapses onto the TOTAL operator, deflated, with `zeta` read
-            ## off after it.  Radau/trbdf2 and gear's pair map alike (an
-            ## autonomous gear solve stays unbordered).  Verified by dual
-            ## consistency against the bordered forward solve; unbordered,
-            ## pnoise on a staged gear solve is 10-15 % off.
+            ## off after it.  Radau/trbdf2 and gear's pair map alike, driven
+            ## or free period.  Verified by dual consistency against the
+            ## bordered forward solve; unbordered, pnoise on a staged gear
+            ## solve is 10-15 % off (driven), and the row missed the forward
+            ## solve by 8 % on gear's staged oscillator (2026-09-24, when that
+            ## solve first existed).
             _autonomous = getattr(pss, 'autonomous', False)
             _ev = EventColumns.of(pss)
-            if _ev is not None and not (fp.is_stage
-                                        or (fp.is_pair and not _autonomous)):
+            if _ev is not None and not (fp.is_stage or fp.is_pair):
                 _ev = None
             if _ev is not None:
                 _wq = pss._period_quadrature(fp)

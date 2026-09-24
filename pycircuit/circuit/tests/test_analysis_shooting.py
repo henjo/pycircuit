@@ -2519,12 +2519,10 @@ def test_the_period_column_is_a_total_derivative_not_a_partial():
     import types
     cap = {}
 
-    def grab(self, func, z0, abstol, xtol, reltol, maxiter, seed_period,
-             solver=None):
+    def grab(self, func, z0, *args, **kwargs):
         cap['func'] = func
         cap['z0'] = np.asarray(z0, dtype=float).copy()
-        return PSS._free_period_solve(self, func, z0, abstol, xtol, reltol,
-                                      maxiter, seed_period, solver=solver)
+        return PSS._free_period_solve(self, func, z0, *args, **kwargs)
 
     got = {}
     for method in ('gear', 'trap'):
@@ -25547,6 +25545,213 @@ def test_an_autonomous_solve_takes_its_state_events_and_its_period_as_unknowns_t
     assert abs(u1.period / q1.period - 1.0) > 2e-3
     assert len(q1._state_event_fracs) == 4
 
+
+
+def test_gear_lands_the_state_events_of_an_autonomous_orbit():
+    """Gear on the comparator relaxation oscillator (2026-09-24, Andreas:
+    "Analyse, fix and create a test").  Its free-period pair was the one kind
+    the state-event stage skipped -- silently, since the method check counts
+    gear as event-capable -- so it returned the UNSTAGED orbit: the crossing
+    inside a step, the period set by where it falls there (+5.8e-3 of the
+    exact period at 200 points, -2.9e-3 at 100, +3.6e-3 at 300), and the
+    fixed-grid map's dominant multiplier 52.8 in place of 1.  Staged:
+    +1.1e-4 at 200 points (+8.7e-5 / -6.8e-4 / -1.9e-4 / +1.3e-5 at 150 /
+    100 / 300 / 800), a unit multiplier, the four window edges landed.  What
+    is left is gear's own second order on the 10 ns discharge after the
+    switch closes (its crossings trail radau's by 5e-3 T at 200 points,
+    halving per doubling); radau lands 9e-8.
+
+    Two false warnings the staged grid then raised, pinned silent at 100
+    points.  The MULTIPLE-of-the-fundamental detector excluded its edges in
+    POINTS, and gear's grid opens with ten doubling steps from 1e-5 T, so
+    the orbit still leaving `x_0` read as a 3182-fold recurrence.  And the
+    step-ratio warning counted a landed window's exit -- its ramp, then the
+    partial step back to the base grid -- as REPEATED up-steps; smoothing
+    those pairs away never improved the period (100, 150, 200, 800 points).
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    ## `Tl` is the exact model's period
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+
+    def solve(N, se):
+        q = PSS(_comparator_relaxation_oscillator(), method='gear', reltol=1e-9)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100,
+                    state_events=se)
+        assert q.converged, (N, se)
+        return q, [str(r.message) for r in rec]
+
+    def err(q):
+        return abs(q.period / Tl - 1.0)
+
+    def rho(q):
+        return float(np.max(np.abs(q.floquet_multipliers)))
+
+    staged, msgs = solve(200, True)
+    unstaged, _m = solve(200, False)
+    assert len(staged._state_event_fracs) == 4 and staged.stage_one_converged is True
+    assert err(staged) < 3e-4 and err(unstaged) > 3e-3, (err(staged), err(unstaged))
+    assert abs(rho(staged) - 1.0) < 1e-3 and rho(unstaged) > 10.0, (rho(staged), rho(unstaged))
+    q100, msgs100 = solve(100, True)
+    assert len(q100._state_event_fracs) == 4 and err(q100) < 1.5e-3, err(q100)
+    for m in msgs + msgs100:
+        assert 'MULTIPLE' not in m and 'steps up by' not in m, m
+
+
+def test_a_state_event_stage_rescues_a_first_stage_that_did_not_converge():
+    """Across a sharp switch the UNSTAGED map is nearly discontinuous in the
+    state -- where the crossing falls in its step moves with every iterate
+    -- and its Newton can fail where the staged system converges.  Measured
+    on the comparator oscillator under gear: the unstaged solve fails at 350
+    and 400 points (the fixed-grid map's dominant multiplier 100-290, and a
+    'solved-history stall' diagnosed although the second multiplier is
+    0.002), and the stage, run from its last iterate, converges to 1.5e-4 /
+    1.2e-4 of the exact period.
+
+    The stage's own Newton decides `converged`; `stage_one_converged`
+    records that the first stage did not; and the first stage's stall
+    diagnosis -- about a system the result no longer comes from -- is held
+    back.  When the stage fails too (15 iterations leave it short) that
+    diagnosis is emitted after all, and it names the state events.  30
+    iterations keep the rescue quick.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+
+    def solve(maxiterations):
+        q = PSS(_comparator_relaxation_oscillator(), method='gear', reltol=1e-9)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            q.solve(period=Tl, timestep=Tl / 350, x0=seed,
+                    maxiterations=maxiterations, state_events=True)
+        return q, [str(r.message) for r in rec]
+
+    q, msgs = solve(30)
+    assert q.converged and q.stage_one_converged is False
+    assert len(q._state_event_fracs) == 4
+    assert abs(q.period / Tl - 1.0) < 3e-4, q.period / Tl - 1.0
+    assert not any('stall' in m or 'did not converge' in m for m in msgs), msgs
+
+    q, msgs = solve(15)
+    assert not q.converged and q.stage_one_converged is False
+    stall = [m for m in msgs if 'solved-history stall' in m]
+    assert len(stall) == 1 and 'state_events=True' in stall[0], msgs
+
+
+def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
+    """Gear's staged OSCILLATOR (the autonomous pair stage, 2026-09-24) was a
+    combination no consumer had met, and three broke on it:
+
+    * `floquet_modes` CRASHED: the event costate injection was built at the
+      MAP's width (`2m` on the pair) and the pair's reverse step adds it to
+      the `m`-wide circuit block;
+    * the bordered `PAC.solve` CRASHED twice over: the source's forced
+      replay seeded at `m`, and `dtheta/dz` (K x 2m) contracted with the
+      first `m` of the response;
+    * the ADJOINT row (pnoise's) stayed UNBORDERED on an autonomous pair --
+      a deliberate exclusion while no such solve existed -- and missed the
+      bordered forward solve by 8.4 % / 2.1 % (sidebands 0 / 1).
+
+    Measured after: the forced response 1.2e-3 from the exact one at 200
+    points (5.2e-5 at 800) against 2.2e-2 unbordered, the adjoint row the
+    transpose of the forward solve to 5e-15, the PPV 6.3e-3 from the exact
+    saltation PPV, and `diffusion_constant` / `pnoise` / `oscillator_
+    covariance` within 0.04 % / 3 % / 0.6 % of radau's at 200 points (0.00 /
+    0.1 / 0.3 % at 800) -- gear's own second order.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    cir['Vdd'] = VS('vdd', gnd, v=5.0, vac=1.0)
+    names = [str(n_) for n_ in cir.nodes]
+    seed, Tl = _relaxation_oscillator_seed(cir)
+    q = PSS(cir, method='gear', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100,
+                state_events=True)
+    assert q.converged and q._event_columns is not None
+    Tq = float(q.period)
+    sel = [names.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    red = [n_ for i, n_ in enumerate(names) if i != q.irefnode]
+    idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    X = np.asarray(q.waveform[1], dtype=float)
+    ts = np.asarray(q.waveform[0], dtype=float)
+
+    ## the Floquet modes run, on the TOTAL map
+    fp = q.factored_period()
+    Md = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                          for e in np.eye(fp.width)])
+    Mt = Md + (np.asarray(q._event_columns['P_end'], dtype=float)
+               @ np.asarray(q._event_sensitivity, dtype=float))
+    lam_t = np.sort(np.abs(np.linalg.eigvals(Mt)))[::-1]
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        fm = q.floquet_modes(nmodes=2)
+        v, info = q.ppv()
+    lam_fm = np.sort(np.abs([mm['lam'] for mm in fm]))[::-1]
+    assert np.max(np.abs(lam_fm - lam_t[:2]) / lam_t[:2]) < 1e-9, (lam_fm, lam_t[:2])
+
+    ## the PPV against the exact saltation PPV, before and after the crossings
+    _T_ex, exact = _exact_relaxation_oscillator_ppv()
+    S = np.asarray(info['samples'])
+    nodes = list(q._event_columns['nodes'])
+    js = ([j for j in (5, 15, 25) if j < nodes[0]]
+          + [int(np.searchsorted(ts, f * Tq)) for f in (0.5, 0.8)])
+    worst = max(float(np.max(np.abs(S[j, idx] - exact(X[sel, j])))
+                      / np.max(np.abs(exact(X[sel, j])))) for j in js)
+    assert worst < 2e-2, worst
+
+    ## the forced response against the exact one: bordered, and not
+    T_ex2, _a0, orbit_at = _exact_relaxation_oscillator_forced(0.3, 0.0)
+    tgrid = np.linspace(0.0, T_ex2, 20001)[:-1]
+    orb = np.array([orbit_at(tt) for tt in tgrid])
+    t_shift = float(tgrid[int(np.argmin(np.linalg.norm(orb - X[sel, 0], axis=1)))])
+    _T, at, _o = _exact_relaxation_oscillator_forced(0.3, t_shift)
+    scale = np.max([np.abs(at((t_shift + float(x)) % T_ex2))
+                    for x in np.linspace(0.0, Tq, 400)], axis=0)
+    probe = [0, 20, int(np.searchsorted(ts, 0.35 * Tq)), int(np.searchsorted(ts, 0.7 * Tq))]
+    ev = q._event_columns
+    worst = {}
+    for bordered in (True, False):
+        q._event_columns = ev if bordered else None
+        try:
+            pac = PAC(cir, toolkit=circuit.numeric)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                pac.solve(q, [0.3 / Tq])
+        finally:
+            q._event_columns = ev
+        tt, yy = pac.time_response[0]
+        worst[bordered] = max(
+            float(np.max(np.abs(np.asarray(yy[j])[idx]
+                                - at((t_shift + float(tt[j])) % T_ex2)
+                                * np.exp(1j * 2.0 * np.pi * 0.3
+                                         * ((t_shift + float(tt[j])) // T_ex2)))
+                         / scale)) for j in probe)
+    assert worst[True] < 5e-3 and worst[False] > 1e-2, worst
+
+    ## the adjoint row is the transpose of the same bordered solve
+    fin = 0.3 / Tq
+    io_full = names.index('fb1')
+    io = io_full if io_full < q.irefnode else io_full - 1
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = pac.solve(q, freqs=[fin])
+        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
+    fout = np.asarray(res.sweep_values, dtype=float)
+    Xr = np.asarray(res.x)
+    for li, l in enumerate((0, 1)):
+        k = int(np.argmin(np.abs(fout - (fin + l / Tq))))
+        x = complex(Xr[io_full, k])
+        h = complex(H[li] @ u_ac)
+        assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
 
 def test_gears_state_event_stage_carries_both_step_partials_and_lands_the_crossing():
     """Phase B of events-as-unknowns (2026-09-22): gear's event columns.  A

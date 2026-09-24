@@ -552,15 +552,21 @@ class _PeriodGrids(object):
         ## the ratio, not a smaller step.  An ISOLATED up-step (an event ramp)
         ## is harmless at any ratio -- the recursion's factor w/2 acts on the
         ## difference across the SMALL step, giving the trapezoidal
-        ## predictor -- so a bad ratio counts only when another lies within
-        ## `RATIO_ISOLATION` steps.  This traversal never drops a step to
-        ## Euler (`Transient`'s `check_order_drop` does not run here).
+        ## predictor -- and so is a PAIR, a landed switching window's exit
+        ## (its ramp, then the partial step back to the base grid): one
+        ## amplification of the parasitic root, bounded, not compounding.
+        ## So a bad ratio counts only when TWO others lie within
+        ## `RATIO_ISOLATION` steps.  (Measured on the comparator oscillator
+        ## under gear: smoothing those pairs into doubling ramps never
+        ## improved the period, at 100, 150, 200 or 800 points.)  This
+        ## traversal never drops a step to Euler (`Transient`'s
+        ## `check_order_drop` does not run here).
         if len(fr) > 1 and self._companion_reach() >= 2:
             from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
             ratios = fr[1:] / fr[:-1]
             bad = np.flatnonzero(ratios > ZERO_STABILITY_RATIO)
             rep = [i for i in bad
-                   if np.any((bad != i) & (np.abs(bad - i) <= self.RATIO_ISOLATION))]
+                   if np.sum((bad != i) & (np.abs(bad - i) <= self.RATIO_ISOLATION)) >= 2]
             if rep:
                 worst = float(np.max(ratios[rep]))
                 warnings.warn(
@@ -678,6 +684,7 @@ class _PeriodGrids(object):
         return times, hs
 
     #: a step-ratio above `ZERO_STABILITY_RATIO` is reported by `_period_grid`
-    #: only when another lies within this many steps -- isolated up-steps
-    #: (event ramps) do not compound; see the note there
+    #: only when two others lie within this many steps -- an isolated up-step
+    #: (an event ramp) or a pair (a window's exit) does not compound; see the
+    #: note there
     RATIO_ISOLATION = 4

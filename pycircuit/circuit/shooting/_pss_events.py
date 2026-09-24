@@ -236,7 +236,7 @@ class _StateEvents(object):
                            phase_row=None, phase_k=None):
         """The bordered second stage: the crossings of the first stage's
         orbit become Newton unknowns.  One stage for every kind that has
-        one: the driven and the autonomous stage methods and gear's pair.
+        one: the stage methods and gear's pair, driven or free period.
 
         Unknowns ``(z, theta[, T])``: `z` the entering state (gear's PAIR
         `(x_0, x_{-1})`), `theta` the `K` crossing fractions, and the period
@@ -350,4 +350,9 @@ class _StateEvents(object):
         _ev = EventColumns.of(self, n)
         if _ev is None:
             return None
-        return _ev.costate_injection(v, len(fp.steps), n)
+        ## ⚠ AT THE CIRCUIT'S WIDTH, NOT THE MAP'S: the event row reads the
+        ## node's circuit state, so its costate enters the circuit block --
+        ## gear's pair map is `2m` wide and its reverse step adds the
+        ## injection to that `m` block (a `2m` row broke `floquet_modes` on
+        ## the first staged gear oscillator, 2026-09-24)
+        return _ev.costate_injection(v, len(fp.steps), self.cir.n - 1)

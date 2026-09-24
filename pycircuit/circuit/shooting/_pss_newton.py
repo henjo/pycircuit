@@ -24,8 +24,13 @@ class _ShootingNewton(object):
     TRIVIAL_ORBIT_FACTOR = 1e3
 
     def _free_period_solve(self, func, z0, abstol, xtol, reltol, maxiter,
-                           seed_period, solver=None):
+                           seed_period, solver=None, defer_diagnosis=False):
         """Solve a free-period system, with its degenerate root named.
+
+        A collapse onto a trivial root sets ``info['collapsed']``.  With
+        `defer_diagnosis`, a stall's diagnosis is not emitted but left as a
+        callable in ``info['stall_diagnosis']``, for a caller whose next
+        stage may still converge (`solve`'s state-event stage).
 
         ⚠ `T = 0` IS A REGULAR ROOT OF EVERY AUTONOMOUS SHOOTING SYSTEM.
         `x0 - phi_T(x0)` vanishes identically at `T = 0`, and the phase
@@ -94,6 +99,8 @@ class _ShootingNewton(object):
             trivial_orbit = False
         if trivial_orbit:
             ier = 5
+            if isinstance(info, dict):
+                info['collapsed'] = True
             mesg = ('collapsed onto the EQUILIBRIUM (a trivial orbit, periodic '
                     'at every T) at T = %.6g s from a seed of %.6g s' % (T, seed_period))
             warnings.warn(
@@ -117,6 +124,8 @@ class _ShootingNewton(object):
             ## matrix-free -- and any future path by construction; `ier = 5`
             ## is `fsolve`'s "not making good progress", handled everywhere.
             ier = 5
+            if isinstance(info, dict):
+                info['collapsed'] = True
             mesg = ('collapsed onto the trivial root T = %.6g s from a seed '
                     'of %.6g s' % (T, seed_period))
             warnings.warn(
@@ -140,7 +149,11 @@ class _ShootingNewton(object):
         if (ier != 1 and not trivial_orbit and solver is None
                 and np.isfinite(T)
                 and abs(T) >= self.DEGENERATE_PERIOD_FACTOR * abs(seed_period)):
-            self._diagnose_lmm_free_period_stall(func, z, info)
+            if defer_diagnosis and isinstance(info, dict):
+                info['stall_diagnosis'] = (
+                    lambda: self._diagnose_lmm_free_period_stall(func, z, info))
+            else:
+                self._diagnose_lmm_free_period_stall(func, z, info)
         return z, info, ier, mesg
 
     def _diagnose_lmm_free_period_stall(self, func, z, info=None):
@@ -234,6 +247,25 @@ class _ShootingNewton(object):
                    '(measured for gear and trapezoidal at 0.99 on 800 points; '
                    'sigma_min/sigma_max at the last iterate here: %.1e). '
                    % (method, cond)) + common
+        ## ⚠ ON A CIRCUIT WITH STATE EVENTS THE LIKELIER CAUSE IS THE SWITCH,
+        ## NOT THE DAMPING: across a crossing sharper than the grid the
+        ## unstaged map moves with where the crossing falls in its step.
+        ## Measured: gear on the comparator oscillator stalls at 350 and 400
+        ## points with a second multiplier of 0.002 -- and converges staged.
+        try:
+            _ev = (self.cir.state_events()
+                   if hasattr(self.cir, 'state_events') else [])
+        except Exception:                                      # noqa: BLE001
+            _ev = []
+        if _ev:
+            msg += (' ⚠ This circuit declares %d state event(s): across a '
+                    'switch sharper than the grid the UNSTAGED map moves with '
+                    'where the crossing falls in its step, and its Newton can '
+                    'fail on that whatever the damping (measured: gear on a '
+                    'comparator oscillator, second multiplier 0.002). With '
+                    '`state_events=True` (the default) the crossings become '
+                    'Newton unknowns, and the stage runs even from a first '
+                    'stage that did not converge.' % len(_ev))
         warnings.warn(msg, RuntimeWarning, stacklevel=4)
 
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
