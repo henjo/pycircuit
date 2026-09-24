@@ -6020,6 +6020,12 @@ cost -- and hide the run's own spectrum.  They read `native`
 regardless of `monodromy`; the knob governs which twin trap/euler
 borrow.
 
+The twin could be trbdf2 or gear until 2026-09-24.  Now any method whose
+own map serves (`carries_own_monodromy`) may be the twin.  Measured on van
+der Pol, a trap run at 200 points against radau at 800 (lambda2 / c /
+oscillator d): gear 1e-3 / 1e-4 / 2e-3; trbdf2 1e-4 / 6e-6 / 8e-5; radau
+1e-10 / 2e-11 / 6e-13 at about trbdf2's cost; esdirk43 1e-9 / 2e-9 / 3e-5.
+
 ### `TWIN_MAXITER`
 
 The comment on the constant:
@@ -6084,6 +6090,11 @@ a plausible OBSERVED order.  Sourced from this file's own measured
 records rather than from the literature: trap/gear/theta second order,
 TR-BDF2 measured at 4.01x/4.01x/4.00x per halving (exact `O(h^2)`),
 Radau IIA(3) at 31.50x/31.74x (`O(h^5)`, theoretical 32), euler first.
+
+Replaced on 2026-09-24 by `_nominal_order`, which reads the order off the
+method's integrator (its `ORDER`, or a GLM's `order`).  The table covered 6
+of the 12 accepted names.  esdirk43, glm2-4 and the aliases `gear2` /
+`trapezoidal` took the generic range, so the ceiling was not applied.
 
 ### `grid_error`
 
@@ -6187,6 +6198,13 @@ For a non-collocation method only the ORDER clause is established;
 written as "degree > stage count" the rule would over-constrain every
 DIRK ever added.  The failure the clause guards against is SILENT (a
 clean small number), which is why it was measured rather than argued.
+
+Replaced on 2026-09-24 by `_idec_degree`: the smallest odd degree above
+the method's order, at least 3.  That rule reproduces every measured entry
+here (cubic for the second-order methods, quintic for esdirk43, septic for
+radau).  The table had given glm3 and glm4 a cubic.  Measured on van der
+Pol: glm4 at 120 points read -6.7e-7 against a true +2.8e-9, and +5.7e-10
+quintic.  Even degrees trip the half-grid check.
 
 ### `warping_estimate`
 

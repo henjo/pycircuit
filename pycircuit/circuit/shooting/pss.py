@@ -491,11 +491,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## on a limit cycle (the opener seam).  'trbdf2' (DEFAULT): a TR-BDF2
         ## twin on the same grid -- self-starting, no opener, 12-32x more
         ## accurate on lambda2 than the Gear-2 twin at practical step counts.
-        ## 'gear': a Gear-2 twin.  'native': the run's OWN plain
-        ## factorisation -- ⚠ the WORST of the three under a one-step method
-        ## (its `Q` DIVERGES under refinement); it is for the gates that
-        ## measure that defect, not for results.  gear and trbdf2 runs are
-        ## self-sufficient (second-order native monodromy) and ignore this.
+        ## 'gear': a Gear-2 twin.  'radau' / 'esdirk43': those twins (radau
+        ## the most accurate by far, at about trbdf2's cost -- see
+        ## `monodromy_twin`).  'native': the run's OWN plain factorisation --
+        ## ⚠ the WORST under a one-step method (its `Q` DIVERGES under
+        ## refinement); it is for the gates that measure that defect, not for
+        ## results.  gear and stage-method runs are self-sufficient
+        ## (second-order native monodromy) and ignore this.
         ## History: `doc/shooting_history.md`, `PSS.__init__`.
         self.monodromy = 'trbdf2'
         self._monodromy_twin = None
@@ -1074,8 +1076,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         than `2m` columns gain less).  ⚠ It buys that with memory, `2 N m^2`
         doubles of stored factorisations (~800 MB at m=1002, 50 points), and
         it does NOT produce a monodromy, so `spectral_radius` is `None`
-        after a matrix-free solve.  Built for the plain and pair kinds,
-        driven or free period; the stage and GLM kinds raise.  ⚠ Those
+        after a matrix-free solve.  Built for the plain, pair and stage
+        kinds, driven or free period; a Nordsieck GLM raises.  ⚠ The
+        state-event stage needs the dense map and does not run under
+        `matrix_free`: a circuit that declares state events warns.  ⚠ Those
         figures were taken with a DENSE linear solver on both sides; with a
         sparse one the m~250 gate may move --
         `benchmarks/pss_matrix_free_sparse.py` is the harness, to be run
@@ -1310,7 +1314,16 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         if state_events:
             _rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
             _method_se = getattr(self.par, 'method', 'euler')
-            if _rows and self._map_kind() not in ('stage', 'pair'):
+            if _rows and matrix_free:
+                warnings.warn(
+                    'PSS: this circuit declares %d state event(s) (a threshold '
+                    'switch or comparator), but the state-event stage needs '
+                    'the dense period map and does not run under '
+                    'matrix_free=True: the crossings stay inside their steps '
+                    'and the solve is first order there. Drop matrix_free to '
+                    'land them, or pass state_events=False to silence this.'
+                    % len(_rows), RuntimeWarning, stacklevel=3)
+            elif _rows and self._map_kind() not in ('stage', 'pair'):
                 warnings.warn(
                     'PSS: this circuit declares %d state event(s) (a threshold '
                     'switch or comparator) but the state-event stage is built '
@@ -1698,11 +1711,22 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## the two is flavour error F6(a) one row further out.
         m = n - 1
         _width = 2 if _kind == 'pair' else 1
-        if matrix_free and _kind in ('stage', 'glm'):
+        ## ⚠ THE STAGE KINDS RUN MATRIX-FREE: their factored map has the
+        ## mat-vec and the walk carries the period column without the dense
+        ## map (radau, trbdf2 and esdirk43 matched their dense solves to
+        ## 1e-15 on a driven RLC and a van der Pol oscillator; refused until
+        ## 2026-09-24 as "a dense stage product", which the factored stage
+        ## map had made stale).  A Nordsieck GLM's factored map acts on its
+        ## Nordsieck state without the linearised startup, so it is not the
+        ## Newton's Jacobian: matrix-free, glm2 and glm3 DIVERGED on the
+        ## driven RLC.
+        if matrix_free and _kind == 'glm':
             raise NotImplementedError(
-                'PSS: matrix-free shooting is not built for %s; its '
-                'monodromy is a dense stage product. Drop '
-                'matrix_free, or use a one-step LMM.' % method)
+                'PSS: matrix-free shooting is not built for a Nordsieck GLM '
+                '(method %r): its factored period map acts on the Nordsieck '
+                'state without the linearised startup, so it is not the '
+                "Newton's Jacobian. Drop matrix_free, or use another method."
+                % method)
         z0 = np.concatenate([np.asarray(x, dtype=float)] * _width)
         tol_z = np.concatenate([_tol] * _width)
         _mf = None

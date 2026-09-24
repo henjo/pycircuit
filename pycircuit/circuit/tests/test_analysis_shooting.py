@@ -27021,6 +27021,126 @@ def test_the_monodromy_twin_is_capped_and_warns_when_it_hits_the_cap():
             poor.ppv()
 
 
+
+def _vdp_asym():
+    """Van der Pol in LC form with an asymmetric term (period `T_REF` =
+    6.330195895892 s, radau at 800 points)."""
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=4.0)
+    cir['L'] = L('v', gnd, L=0.25)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: (u - u ** 3 / 3.0) + 0.3 * u * u)
+    return cir
+
+
+def test_the_stage_methods_shoot_matrix_free():
+    """`matrix_free=True` refused every stage method ("its monodromy is a
+    dense stage product") -- the DEFAULT method among them -- though the
+    factored stage map, with its mat-vec, and a walk carrying the period
+    column without the dense map had made the reason stale.  Measured once
+    the refusal went: radau, trbdf2 and esdirk43 match their dense solves to
+    1e-15 on a driven RLC and a van der Pol oscillator.  A Nordsieck GLM
+    stays refused: its factored map lacks the linearised startup, and
+    matrix-free glm2 / glm3 DIVERGED on the driven RLC.  And the state-event
+    stage, which needs the dense map, does not run under `matrix_free` --
+    that was silent, and warns now.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    cases = ((_q20_rlc, dict(period=1e-3, timestep=1e-3 / 200)),
+             (_vdp_asym, dict(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]))))
+    for method in ('radau', 'trbdf2'):
+        for mk, kw in cases:
+            out = {}
+            for mf in (False, True):
+                p = PSS(mk(), method=method, reltol=1e-9)
+                with _w.catch_warnings():
+                    _w.simplefilter('ignore')
+                    p.solve(maxiterations=60, matrix_free=mf, **kw)
+                assert p.converged, (method, mk.__name__, mf)
+                out[mf] = (float(p.period), np.asarray(p.waveform[1], dtype=float))
+            assert abs(out[True][0] / out[False][0] - 1.0) < 1e-12, (method, mk.__name__)
+            X0, X1 = out[False][1], out[True][1]
+            assert np.max(np.abs(X1 - X0)) < 1e-10 * np.max(np.abs(X0)), (method, mk.__name__)
+    with pytest.raises(NotImplementedError, match='Nordsieck GLM'):
+        PSS(_q20_rlc(), method='glm2').solve(period=1e-3, timestep=1e-3 / 50,
+                                             matrix_free=True)
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+    p = PSS(_comparator_relaxation_oscillator(), method='radau', reltol=1e-9)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        p.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=60,
+                matrix_free=True)
+    assert p._state_event_fracs is None
+    assert any('does not run under matrix_free=True' in str(r.message) for r in rec)
+
+
+def test_every_method_states_its_order_to_grid_error_and_warping_estimate():
+    """`grid_error`'s ceiling on a plausible observed order and
+    `warping_estimate`'s interpolant degree came from two tables that
+    covered 6 and 7 of the 12 accepted method names: esdirk43, the GLMs and
+    the aliases `gear2` / `trapezoidal` fell to a generic ceiling (none
+    applied) and a cubic.  Both now come from the integrator's own order --
+    the degree the smallest odd one above it, at least 3, the rule every
+    measured entry followed.  The cubic cost glm4 its estimate: on van der
+    Pol at 60 points it read +9.8e-7 against a true +1.7e-7 (the derived
+    quintic +2.0e-7), and at 120 points the wrong sign.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    want = {'euler': (1, 3), 'trap': (2, 3), 'trapezoidal': (2, 3),
+            'theta': (2, 3), 'gear': (2, 3), 'gear2': (2, 3),
+            'trbdf2': (2, 3), 'radau': (5, 7), 'esdirk43': (4, 5),
+            'glm2': (2, 3), 'glm3': (3, 5), 'glm4': (4, 5)}
+    p = PSS(_q20_rlc())
+    for m, (order, degree) in want.items():
+        assert p._nominal_order(m) == order, (m, p._nominal_order(m))
+        assert p._idec_degree(m) == degree, (m, p._idec_degree(m))
+
+    T_REF = 6.330195895892e+00
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    q = PSS(_vdp_asym(), method='glm4', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
+                maxiterations=60)
+        assert q.converged
+        true = float(q.period) / T_REF - 1.0
+        est = q.warping_estimate()['period_error'] / float(q.period)
+        cubic = q.warping_estimate(degree=3)['period_error'] / float(q.period)
+    assert abs(est / true - 1.0) < 0.3, (est, true)
+    assert abs(cubic / true - 1.0) > 2.0, (cubic, true)
+
+
+def test_radau_and_esdirk43_serve_as_the_monodromy_twin():
+    """A trap or euler oscillator reads its monodromy off a TWIN; the twin
+    could be trbdf2 or gear only.  Any method whose own map serves --
+    `carries_own_monodromy` -- may be one now.  Measured on van der Pol, a
+    trap run at 200 points against radau at 800: lambda2 / c / the
+    oscillator covariance's d off by 1e-3 / 1e-4 / 2e-3 under a gear twin,
+    1e-4 / 6e-6 / 8e-5 under trbdf2, 1e-10 / 2e-11 / 6e-13 under radau at
+    about trbdf2's cost.  A Nordsieck GLM (its map on the Nordsieck state)
+    is refused.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    lam2_ref = 0.20038546770896304          # radau, 800 points
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    p = PSS(_vdp_asym(), method='trap', reltol=1e-10)
+    p.monodromy = 'radau'
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
+                maxiterations=60)
+        _v, info = p.ppv()
+    assert info['monodromy_method'] == 'radau'
+    assert abs(float(info['second_multiplier']) / lam2_ref - 1.0) < 1e-8
+    p.monodromy = 'glm2'
+    with pytest.raises(ValueError, match="'radau'"):
+        p.monodromy_twin()
+
 def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():
     """The autonomous solve pins the coordinate moving fastest over the seed's
     first step, as a RAW `argmax |x_2 - x_1|` -- volts against amps.  A peer

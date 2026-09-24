@@ -17,14 +17,16 @@ class _AccuracyChecks(object):
 
         `self` for a driven circuit, when `self.monodromy == 'native'`, or
         when this run's own method already carries a second-order monodromy
-        (`gear`/`trbdf2`).  Otherwise (an autonomous circuit solved with a
+        (gear or a stage method).  Otherwise (an autonomous circuit solved with a
         one-step LMM, trap or euler) a twin `PSS` of the same circuit under
         the method `self.monodromy` names, solved once on the SAME grid from
         this orbit's converged state and cached.
 
         The twin defaults to TR-BDF2 (`monodromy='trbdf2'`, the more
-        accurate on `lambda2` at coarse grids and high Q); `'gear'` selects
-        a Gear-2 twin and `'native'` reads the run's own.  Trap's and
+        accurate on `lambda2` at coarse grids and high Q than gear);
+        `'radau'` (the most accurate by far, at about trbdf2's cost),
+        `'esdirk43'` and `'gear'` select those twins, and `'native'` reads
+        the run's own.  Trap's and
         euler's own monodromy is unusable on a limit cycle (trap's diverges
         with refinement, with either opener; euler's is first order), so
         the STATE keeps the method you asked for and every
@@ -36,10 +38,24 @@ class _AccuracyChecks(object):
         History: `doc/shooting_history.md`, `_AccuracyChecks.monodromy_twin`.
         """
         mono = getattr(self, 'monodromy', 'trbdf2')
-        if mono not in ('trbdf2', 'gear', 'native'):
+        ## ⚠ ANY METHOD WHOSE OWN MAP SERVES may be the twin -- the ones that
+        ## carry their own monodromy (`carries_own_monodromy`: gear and the
+        ## stage methods; a Nordsieck GLM's map is on its Nordsieck state).
+        ## Measured on van der Pol, a trap run at 200 points against radau
+        ## at 800: lambda2 / c / oscillator d off by 1e-3 / 1e-4 / 2e-3
+        ## under a gear twin, 1e-4 / 6e-6 / 8e-5 under trbdf2, 1e-10 /
+        ## 2e-11 / 6e-13 under radau (9.5 s against 8.6 s).
+        _ok = mono == 'native'
+        if not _ok:
+            try:
+                _ok = self._integrator_for(mono).carries_own_monodromy()
+            except ValueError:
+                _ok = False
+        if not _ok:
             raise ValueError(
-                "PSS.monodromy must be 'trbdf2', 'gear' or 'native', not %r"
-                % (mono,))
+                "PSS.monodromy must be 'native' or a method whose own period "
+                "map serves as the twin -- 'trbdf2' (the default), 'radau', "
+                "'esdirk43' or 'gear' -- not %r" % (mono,))
         _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
         if (mono == 'native'
                 or _integ.carries_own_monodromy()
@@ -183,14 +199,12 @@ class _AccuracyChecks(object):
         """
         return self.monodromy_twin()
 
-    ## Nominal convergence order per `method`, for `grid_error`'s ceiling on
-    ## a plausible OBSERVED order: trap/gear/theta/TR-BDF2 second order,
-    ## Radau IIA(3) fifth, euler first.
-    ## ⚠ An unlisted method falls back to a generic range and the ceiling is
-    ## not applied -- add it here rather than letting it default silently.
+    ## `grid_error`'s ceiling on a plausible OBSERVED order is the method's
+    ## nominal order (`_nominal_order`), read off its integrator for every
+    ## accepted name.  The table it replaced covered 6 of 12 -- esdirk43,
+    ## the GLMs and the aliases `gear2` / `trapezoidal` silently took the
+    ## generic range, the ceiling not applied.
     ## History: `doc/shooting_history.md`, `_AccuracyChecks.METHOD_ORDER`.
-    METHOD_ORDER = {'euler': 1, 'trap': 2, 'gear': 2, 'theta': 2,
-                    'trbdf2': 2, 'radau': 5}
 
     def grid_error(self, evaluate, refine=2, levels=3, label=None):
         """How much of a scalar is DISCRETISATION rather than answer.
@@ -314,9 +328,7 @@ class _AccuracyChecks(object):
                 ## is not slack: on an AUTONOMOUS problem the period absorbs
                 ## the leading frequency error, and `gear` (nominal 2)
                 ## genuinely converges at ~3.
-                _nom = self.METHOD_ORDER.get(
-                    str(getattr(self.par, 'method', '')).lower())
-                _hi = 8.0 if _nom is None else (_nom + 1.5)
+                _hi = self._nominal_order() + 1.5
                 power_law = bool(0.5 <= order <= _hi and _sgn)
             else:
                 order, power_law = None, False
@@ -355,9 +367,34 @@ class _AccuracyChecks(object):
     ## IIA(3) -- and the estimate reads a SILENT ~0).  For a non-collocation
     ## method (ESDIRK43) only the order clause is established.
     ## History: `doc/shooting_history.md`, `_AccuracyChecks.IDEC_DEGREE`.
+    ## ⚠ THE SMALLEST ODD DEGREE ABOVE THE METHOD'S ORDER, at least 3: the
+    ## rule every measured entry of the table this replaced followed (3 for
+    ## the second-order methods, quintic for esdirk43, septic for radau),
+    ## and it keeps the stage clause for every method here.  The table
+    ## missed the GLMs: glm3 and glm4 fell back to a cubic, and glm4's
+    ## estimate read -6.7e-7 against a true +2.8e-9 (van der Pol, 120
+    ## points; +5.7e-10 quintic).  Even degrees trip the check.
     WARPING_CHECK_TOL = 0.05     # |half-grid / full-grid - 1| above this: the interpolant sets the reading
-    IDEC_DEGREE = {'euler': 3, 'trap': 3, 'gear': 3, 'theta': 3,
-                   'trbdf2': 3, 'esdirk43': 5, 'radau': 7}
+
+    def _idec_degree(self, method=None):
+        """`warping_estimate`'s interpolant degree for `method` (this
+        run's by default): the smallest odd degree above its order, at
+        least 3."""
+        p = self._nominal_order(method)
+        k = (p + 1) if p % 2 == 0 else (p + 2)
+        return max(3, k)
+
+    def _nominal_order(self, method=None):
+        """The method's nominal convergence order, as its integrator
+        states it (`ORDER`, or a GLM's `order`) -- every accepted name,
+        aliases included."""
+        integ = self._integrator_for(
+            method if method is not None
+            else getattr(self.par, 'method', 'euler'))
+        p = getattr(integ, 'ORDER', None)
+        if p is None:
+            p = getattr(integ, 'order')
+        return int(p)
 
     def warping_estimate(self, periods=20, degree=None, check=True):
         """Estimate THIS solve's period (warping) error at ITS OWN grid, with
@@ -369,7 +406,7 @@ class _AccuracyChecks(object):
         Sec. 1) estimates the global error directly:
 
           1. p(t)  -- a periodic spline through this solve's own grid values
-                      (`IDEC_DEGREE[method]`, or `degree`);
+                      (`_idec_degree`, or `degree`);
           2. r(t)  = C(p) p' + i(p) + u(t)   -- the DEFECT of the interpolant
                       against the circuit's own equations, T-periodic;
           3. the NEIGHBOURING problem  d/dt q(y) + i(y) + u(t) - r(t) = 0,
@@ -432,7 +469,7 @@ class _AccuracyChecks(object):
             times = _np.r_[times, T]; X = _np.column_stack([X, X[:, 0]])
         X = X.copy(); X[:, -1] = X[:, 0]                        # close the orbit exactly
         method = str(self.par.method)
-        k = int(self.IDEC_DEGREE.get(method, 3) if degree is None else degree)
+        k = int(self._idec_degree(method) if degree is None else degree)
         if X.shape[1] <= k + 1:
             raise ValueError('warping_estimate: %d points per period cannot carry a degree-%d '
                              'periodic spline' % (X.shape[1] - 1, k))
