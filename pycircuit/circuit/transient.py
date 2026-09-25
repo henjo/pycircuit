@@ -4910,6 +4910,21 @@ class Transient(Analysis):
         ## embedded estimate; under `coupled_lte=True` they died inside
         ## `compute_derivatives` with a message that never named the flag.
         ## Refused here, by name, before any work.
+        ## ⚠ AND KEPT REFUSED ON MEASUREMENT (2026-09-25, plan item 4): a
+        ## prototype of the loop around the stage step (eq (6) of the
+        ## method's order, eq (17)'s error-ratio step, the step re-solved)
+        ## against the standard adaptive stage run, on the stage-12
+        ## benchmarks against their closed forms.  It does not keep Fang's
+        ## no-rejection property -- its re-solves outnumber the standard
+        ## run's rejections -- and on the stiff RLC its error is set by no
+        ## tolerance (flat across two decades of reltol: radau 1.21e-3 where
+        ## the standard run reads 1.6e-7 .. 6.5e-10, trbdf2 2.33e-3 against
+        ## 4e-4 .. 1.9e-5, glm2 9.7e-5 against 3.5e-5 .. 1.2e-5), because
+        ## eq (6) needs accepted history and so cannot judge the opening
+        ## steps an embedded estimate judges from the first.  On the driven
+        ## RC it saves steps by integrating less accurately (glm2: 3x fewer
+        ## steps, 8.5x the error).  Script:
+        ## `benchmarks/transient_review/stage12c_fang_stage_methods.py`.
         if coupled_lte:
             from pycircuit.circuit.integrator import RungeKuttaIntegrator
             _integ = self._get_integrator()
@@ -4921,9 +4936,13 @@ class Transient(Analysis):
                     "euler, theta), not on %s: it solves the step size from "
                     "eq (6), a solution-space LTE over the step history, "
                     "where a Runge-Kutta stage method or a GLM judges its "
-                    "step by its own embedded estimate. Run coupled_lte=False "
-                    "(that estimate drives the adaptive step), or choose a "
-                    "multistep integrator." % type(_integ).__name__)
+                    "step by its own embedded estimate. Measured on a "
+                    "prototype: around a stage step it re-solves more often "
+                    "than the standard run rejects, and on a stiff circuit "
+                    "its error does not follow the tolerance (eq (6) cannot "
+                    "judge the opening steps). Run coupled_lte=False (the "
+                    "embedded estimate drives the adaptive step), or choose "
+                    "a multistep integrator." % type(_integ).__name__)
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters and cost a test to learn: placed after the initial

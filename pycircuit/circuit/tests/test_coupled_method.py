@@ -361,7 +361,11 @@ def test_fang_coupled_stepping_refuses_a_stage_method_or_glm_by_name():
     method or GLM judges its step by its own embedded estimate.  So it is
     refused at entry, by name, and the LMMs run -- without the
     `ComplexWarning` every coupled run raised (`_state_row_mask` cast a
-    complex `toMatrix(C)` with a zero imaginary part to float)."""
+    complex `toMatrix(C)` with a zero imaginary part to float).  Kept
+    refused on measurement (2026-09-25): a prototype around the stage step
+    re-solved more often than the standard run rejects, and on the stiff
+    RLC its error was flat across two decades of reltol (see the comment at
+    the refusal)."""
     from pycircuit.circuit.integrator import (
         Gear2Integrator, TrapezoidalIntegrator, EulerIntegrator,
         RadauIIA3Integrator, TRBDF2Integrator, ESDIRK43Integrator,
