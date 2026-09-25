@@ -1545,21 +1545,22 @@ class _PPVFloquet(object):
         Cs = [np.asarray(self._C_at(W[:, j]), dtype=float) for j in range(N + 1)]
         Gs = [np.asarray(self._G_at(W[:, j]), dtype=float) for j in range(N + 1)]
         integ = self._integrator_for(self.par.method)
-        import scipy.linalg as _sla
         coef, lus = [], []
         for n in range(N):
             a = [float(x) for x in
                  integ.companion_coefficients(h[n % N], h[(n + 1) % N])[0]]
             coef.append(a)
-            ## one factorisation per node, reused by every propagation
-            lus.append(_sla.lu_factor((a[0] * Cs[n] + Gs[n]).T))
+            ## one factorisation per node, reused by every propagation --
+            ## by the caller's solver (`_factorise`; `lu_factor` under the
+            ## default `DenseSolver`, as it was)
+            lus.append(self._factorise((a[0] * Cs[n] + Gs[n]).T))
 
         def propagate(qN, qN1):
             q = [None] * (N + 2)
             q[N], q[N + 1] = qN, qN1
             for n in range(N - 1, -1, -1):
                 _a0, a1, a2 = coef[n]
-                q[n] = _sla.lu_solve(lus[n], -Cs[n].T @ (a1 * q[n + 1] + a2 * q[n + 2]))
+                q[n] = lus[n].solve(-Cs[n].T @ (a1 * q[n + 1] + a2 * q[n + 2]))
             return q
 
         if m <= self.CONTINUOUS_ADJOINT_DENSE_M:

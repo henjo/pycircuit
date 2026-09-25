@@ -402,7 +402,6 @@ class _PeriodWalks(object):
         those stage states (reduced).  ``C(Y_i)`` and ``G(Y_j)`` are at the
         DISTINCT stage points, which is why `_C_at`/`_G_at` exist rather
         than a stored `Geq`."""
-        import scipy.linalg as sla
         A, b, c = tab
         s = A.shape[0]
         iref = self.irefnode
@@ -421,7 +420,11 @@ class _PeriodWalks(object):
                     if i == jj:
                         blk = Cs[i] + blk
                     Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
-            return _StageStep(Cn, Gs, h, A, b, c, lu=sla.lu_factor(Jb)), Ys
+            ## the CALLER'S solver (`_factorise`), as every other stored
+            ## step: until 2026-09-25 the coupled block was `lu_factor`'d
+            ## here whatever `linearsolver=` said (bit-identical under the
+            ## default `DenseSolver`, whose factor is that `lu_factor`)
+            return _StageStep(Cn, Gs, h, A, b, c, lu=self._factorise(Jb)), Ys
         Kf = []
         for i in range(s):
             if abs(A[i, i]) < 1e-14:
@@ -701,7 +704,6 @@ class _PeriodWalks(object):
         with the point evaluations the rest of the map uses (`_C_at`,
         `_G_at`, `_k_at`)."""
         from math import factorial
-        from scipy.linalg import lu_factor
         from pycircuit.circuit.integrator import RadauIIA3Integrator
         tn, hs, p, xs, Ys = (self._transient()._glm_startup_trace
                              if trace is None else trace)
@@ -725,7 +727,7 @@ class _PeriodWalks(object):
                     if i == l_:
                         blk = blk + Ci[i]
                     J[i * m:(i + 1) * m, l_ * m:(l_ + 1) * m] = blk
-            lus.append(lu_factor(J))
+            lus.append(self._factorise(J))
             ts = [tn + (j - 1) * hs + c[l_] * hs for l_ in range(3)]
             K = [np.asarray(self._k_at(Yj[l_], ts[l_]), dtype=float)
                  for l_ in range(3)]

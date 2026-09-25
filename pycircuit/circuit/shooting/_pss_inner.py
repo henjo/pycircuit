@@ -34,6 +34,12 @@ class _InnerTransient(object):
         class _PerSolve(object):
             def solve(self, b):
                 return solver.solve(A, b, toolkit)
+
+            ## ⚠ the adjoint surfaces transpose every stored step; without
+            ## this a solver with no `factor` raised `AttributeError` there
+            ## (gear's `ppv` under `KLUSolver`/`AutoSolver` until 2026-09-25)
+            def solve_transposed(self, b):
+                return solver.solve(A.T, b, toolkit)
         return _PerSolve()
 
 

@@ -73,6 +73,18 @@ class _Factored(object):
         return self._solve_t(self._f, b)
 
 
+def _split_complex(solve, b):
+    """``solve(b)`` for a COMPLEX `b` against a REAL factorisation: two real
+    solves.  ⚠ A real sparse factorisation (SuperLU, KLU) handed a complex
+    `b` would cast it to real and drop the imaginary part; the dense
+    ``lu_solve`` promotes it instead, so the dense path does not come here
+    (its bits stay what they were)."""
+    b = numpy.asarray(b)
+    if numpy.iscomplexobj(b):
+        return solve(b.real) + 1j * solve(b.imag)
+    return solve(b)
+
+
 class LinearSolver(ABC):
     """Solve ``A x = b`` for the Newton iteration."""
 
@@ -179,9 +191,10 @@ class SuperLUSolver(LinearSolver):
         A = numpy.asarray(A)
         if A.dtype == object:
             return None
-        return _Factored(self._spla.splu(self._sp.csc_matrix(A)),
-                         lambda f, b: f.solve(numpy.asarray(b)),
-                         lambda f, b: f.solve(numpy.asarray(b), trans='T'))
+        return _Factored(
+            self._spla.splu(self._sp.csc_matrix(A)),
+            lambda f, b: _split_complex(lambda r: f.solve(r), b),
+            lambda f, b: _split_complex(lambda r: f.solve(r, trans='T'), b))
 
     def __repr__(self):
         return 'SuperLUSolver()'
@@ -265,6 +278,11 @@ class KLUSolver(LinearSolver):
                                   ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
                 ('klu_solve', [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
                                ctypes.c_int, c_dbl_p, ctypes.c_void_p],
+                 ctypes.c_int),
+                ('klu_tsolve', [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                ctypes.c_int, c_dbl_p, ctypes.c_void_p],
+                 ctypes.c_int),
+                ('klu_free_numeric', [ctypes.c_void_p, ctypes.c_void_p],
                  ctypes.c_int)):
             f = getattr(lib, nm)
             f.argtypes = argt
@@ -283,6 +301,12 @@ class KLUSolver(LinearSolver):
         self.factors = 0
         self.analyses = 0
         self.residual_fallbacks = 0
+        ## `factor`'s own: one analysis per sparsity pattern, one OWNED
+        ## numeric factorisation per call (kept apart from `solve`'s
+        ## single refactored one, whose counters the tests read)
+        self._factor_symbolics = {}
+        self.factor_analyses = 0
+        self.numerics = 0
 
     def _ptr(self, arr, ctype):
         return arr.ctypes.data_as(self._ct.POINTER(ctype))
@@ -295,12 +319,22 @@ class KLUSolver(LinearSolver):
             ## Symbolic matrices cannot go to KLU; fall back rather than fail.
             return toolkit.linearsolver(A, b)
 
+        if numpy.iscomplexobj(b):
+            return _split_complex(lambda r: self.solve(A, r, toolkit), b)
+
         Acsc = self._sp.csc_matrix(arr)
         n = Acsc.shape[0]
         Ap = numpy.ascontiguousarray(Acsc.indptr, dtype=numpy.int32)
         Ai = numpy.ascontiguousarray(Acsc.indices, dtype=numpy.int32)
         Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.float64)
-        rhs = numpy.ascontiguousarray(numpy.asarray(b, dtype=numpy.float64).ravel())
+        ## ⚠ SEVERAL RIGHT-HAND SIDES: `klu_solve` takes a column-major
+        ## `n x nrhs` block.  Until 2026-09-25 `b` was RAVELLED, so a matrix
+        ## right-hand side (gear's dense monodromy walk hands one, `m x 2m`)
+        ## crashed the PSS solve.
+        rhs = numpy.asarray(b, dtype=numpy.float64)
+        nrhs = 1 if rhs.ndim < 2 else rhs.shape[1]
+        rhs = (numpy.ascontiguousarray(rhs.ravel()) if rhs.ndim < 2
+               else numpy.asfortranarray(rhs))
 
         key = (n, Ap.tobytes(), Ai.tobytes())
         reused = key == self._pattern and self._symbolic and self._numeric
@@ -331,10 +365,10 @@ class KLUSolver(LinearSolver):
             if not ok:
                 raise numpy.linalg.LinAlgError('Singular matrix')
 
-        x = rhs.copy()
+        x = rhs.copy(order='F')
         if not self._lib.klu_solve(
                 ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric),
-                n, 1, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
+                n, nrhs, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
             raise numpy.linalg.LinAlgError('klu_solve failed')
 
         if reused:
@@ -351,17 +385,98 @@ class KLUSolver(LinearSolver):
                 self.factors += 1
                 if not self._numeric:
                     raise numpy.linalg.LinAlgError('Singular matrix')
-                x = rhs.copy()
+                x = rhs.copy(order='F')
                 if not self._lib.klu_solve(
                         ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric),
-                        n, 1, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
+                        n, nrhs, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
                     raise numpy.linalg.LinAlgError('klu_solve failed')
         return x
+
+    def factor(self, A, toolkit):
+        """A reusable KLU factorisation of `A` that OWNS its numeric object
+        (freed with it), with ``A x = b`` and ``A^T x = b`` (`klu_tsolve`)
+        for one or several right-hand sides -- the shooting replays store
+        one per step and transpose them for every adjoint surface.  The
+        symbolic analysis is shared per sparsity pattern.  ``None`` for a
+        symbolic matrix.
+
+        ⚠ Until 2026-09-25 KLU had no `factor`: the replays fell back to a
+        solve per replayed step with NO transposed solve, so gear's `ppv`
+        and `floquet_modes` raised `AttributeError` under this solver.
+        """
+        ctypes = self._ct
+        arr = numpy.asarray(A)
+        if arr.dtype == object:
+            return None
+        Acsc = self._sp.csc_matrix(arr)
+        n = Acsc.shape[0]
+        Ap = numpy.ascontiguousarray(Acsc.indptr, dtype=numpy.int32)
+        Ai = numpy.ascontiguousarray(Acsc.indices, dtype=numpy.int32)
+        Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.float64)
+        key = (n, Ap.tobytes(), Ai.tobytes())
+        sym = self._factor_symbolics.get(key)
+        if sym is None:
+            sym = self._lib.klu_analyze(
+                n, self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+                ctypes.byref(self._common))
+            if not sym:
+                raise numpy.linalg.LinAlgError('klu_analyze failed (singular structure?)')
+            self._factor_symbolics[key] = sym
+            self.factor_analyses += 1
+        num = self._lib.klu_factor(
+            self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+            self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(sym),
+            ctypes.byref(self._common))
+        if not num:
+            raise numpy.linalg.LinAlgError('Singular matrix')
+        self.numerics += 1
+        fac = _KLUNumeric(self, sym, num, n)
+        return _Factored(fac, lambda f, b: f.solve(b),
+                         lambda f, b: f.solve_transposed(b))
 
     def __repr__(self):
         return ('KLUSolver(analyses=%d, factors=%d, refactors=%d, fallbacks=%d)'
                 % (self.analyses, self.factors, self.refactors,
                    self.residual_fallbacks))
+
+
+class _KLUNumeric(object):
+    """One KLU numeric factorisation, OWNED: freed with this object.  Holds
+    its solver (the library and the `klu_common` buffer) and its symbolic
+    analysis, which `klu_solve` needs alongside it."""
+
+    def __init__(self, solver, symbolic, numeric, n):
+        self._solver = solver
+        self._sym, self._num, self.n = symbolic, numeric, n
+
+    def _run(self, fn, b):
+        b = numpy.asarray(b)
+        if numpy.iscomplexobj(b):
+            return self._run(fn, b.real) + 1j * self._run(fn, b.imag)
+        x = numpy.array(b, dtype=numpy.float64, order='F', copy=True)
+        nrhs = 1 if x.ndim < 2 else x.shape[1]
+        ct = self._solver._ct
+        if not fn(ct.c_void_p(self._sym), ct.c_void_p(self._num), self.n, nrhs,
+                  x.ctypes.data_as(ct.POINTER(ct.c_double)),
+                  ct.byref(self._solver._common)):
+            raise numpy.linalg.LinAlgError('klu solve failed')
+        return x
+
+    def solve(self, b):
+        return self._run(self._solver._lib.klu_solve, b)
+
+    def solve_transposed(self, b):
+        return self._run(self._solver._lib.klu_tsolve, b)
+
+    def __del__(self):
+        num, self._num = getattr(self, '_num', None), None
+        if num:
+            try:
+                ct = self._solver._ct
+                self._solver._lib.klu_free_numeric(
+                    ct.byref(ct.c_void_p(num)), ct.byref(self._solver._common))
+            except Exception:                         # pragma: no cover
+                pass                                  # interpreter shutdown
 
 
 class ComplexKLUSolver(object):
@@ -596,6 +711,12 @@ class AutoSolver(LinearSolver):
 
     def solve(self, A, b, toolkit):
         return self._select(A).solve(A, b, toolkit)
+
+    def factor(self, A, toolkit):
+        """The selected solver's factorisation.  ⚠ Until 2026-09-25 this
+        inherited the base `None`, so the shooting replays under
+        `AutoSolver` had no transposed solve (gear's `ppv` raised)."""
+        return self._select(A).factor(A, toolkit)
 
     def __repr__(self):
         return ('AutoSolver(min_n=%d, max_fill=%.2f, chose=%r)'

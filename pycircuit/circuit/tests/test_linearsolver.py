@@ -329,3 +329,116 @@ def test_complex_klu_reuses_the_ordering_across_solves():
     assert k.analyses == 1, 'the ordering was recomputed: %r' % k
     assert k.factors == 1, 'a full factorisation was redone: %r' % k
     assert k.refactors == 3, 'the refactor path was not taken: %r' % k
+
+
+## ---------------------------------------------------------------------------
+## The shooting replays under every solver (2026-09-25).
+## ---------------------------------------------------------------------------
+
+def test_klu_factor_solves_several_right_hand_sides_transposed_and_complex():
+    """`KLUSolver.factor` (2026-09-25): one OWNED numeric factorisation per
+    call, with ``A x = b`` and ``A^T x = b`` (`klu_tsolve`) for one or several
+    columns; `KLUSolver.solve` with a matrix right-hand side.  ⚠ A complex
+    `b` against a REAL sparse factorisation is split -- cast to real it would
+    lose its imaginary part silently."""
+    k = _klu_or_skip()
+    rng = np.random.default_rng(11)
+    n = 40
+    A = np.eye(n) * 4.0 + (rng.random((n, n)) < 0.08) * rng.standard_normal((n, n))
+    B = rng.standard_normal((n, 3))
+    f = k.factor(A, numeric)
+    assert k.numerics == 1 and k.factor_analyses == 1
+    for b in (B[:, 0], B):
+        assert np.abs(A @ f.solve(b) - b).max() < 1e-12
+        assert np.abs(A.T @ f.solve_transposed(b) - b).max() < 1e-12
+        assert np.abs(A @ k.solve(A, b, numeric) - b).max() < 1e-12
+    z = B[:, 0] + 2j * B[:, 1]
+    assert np.abs(A @ f.solve(z) - z).max() < 1e-12
+    assert np.abs(A.T @ f.solve_transposed(z) - z).max() < 1e-12
+    assert np.abs(A @ k.solve(A, z, numeric) - z).max() < 1e-12
+    ## the same pattern reuses its analysis; each call owns its numeric
+    k.factor(2.0 * A, numeric)
+    assert k.numerics == 2 and k.factor_analyses == 1
+    ## and `solve`'s own counters are untouched by `factor`
+    assert k.analyses == 1 and k.factors == 1
+    ## SuperLU's factorisation is split the same way
+    s = SuperLUSolver().factor(A, numeric)
+    assert np.abs(A @ s.solve(z) - z).max() < 1e-12
+    assert np.abs(A.T @ s.solve_transposed(z) - z).max() < 1e-12
+    ## `AutoSolver` hands out the factorisation of the solver it picked
+    assert AutoSolver().factor(A, numeric) is not None
+
+
+class _SolveOnly(LinearSolver):
+    """A solver with `solve` and nothing else -- no `factor`."""
+
+    def solve(self, A, b, toolkit):
+        return np.linalg.solve(A, b)
+
+
+def test_every_shooting_surface_runs_under_every_linear_solver():
+    """The shooting replays under `linearsolver=` (2026-09-25).  Before:
+    `KLUSolver` crashed gear's PSS SOLVE (its `solve` ravelled the `m x 2m`
+    right-hand side the dense monodromy walk hands it), and under
+    `KLUSolver` / `AutoSolver` -- no `factor` -- gear's `ppv` and
+    `floquet_modes` raised `AttributeError` (the per-step fallback had no
+    transposed solve).  Radau ran only because its coupled stage block was
+    `lu_factor`'d directly, IGNORING the solver; it, the GLM startup and
+    gear's continuous adjoint now take the caller's (bit-identical under
+    the default `DenseSolver`: the 297/50/65/42-array harnesses).
+
+    Measured against `DenseSolver`, on the asymmetric van der Pol plus a
+    noise current (period, orbit, PPV, multipliers, `c`, pnoise) and on the
+    switched sampler (covariance samples, pnoise, `sampled_noise`, PAC),
+    under gear / radau / trbdf2 / trap / glm2 and SuperLU / KLU / Auto:
+    worst 1.8e-14, except trbdf2's oscillator PPV at 1.4e-11 (the same
+    under both sparse solvers).  Here, at 60 points: radau <= 5e-15; gear's
+    PPV 1.7e-11 under SuperLU and KLU alike -- the orbit's last bits (3e-15,
+    the transient Newton's) amplified by this fixture's PPV normalisation,
+    a difference of two O(5) terms.  A solver with no `factor` at all runs
+    through the per-step fallback, now with a transposed solve."""
+    import pycircuit.circuit.circuit as _circuit
+    from pycircuit.circuit.elements import IS
+    from pycircuit.circuit.linearsolver import KLUSolver
+    from pycircuit.circuit.shooting import PSS, PAC
+    from pycircuit.circuit.tests.test_analysis_shooting import _vdp_asym
+    _circuit.default_toolkit = numeric
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+
+    def osc(method, ls):
+        c = _vdp_asym()
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        pss = PSS(c, method=method, reltol=1e-12, linearsolver=ls)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
+                      maxiterations=60)
+            pac = PAC(c, toolkit=numeric)
+            return [np.array([pss.period]), np.asarray(pss.waveform[1]),
+                    np.asarray(pss.ppv()[0]),
+                    np.array([m['lam'] for m in pss.floquet_modes()]),
+                    np.array([pac.diffusion_constant(pss)]),
+                    np.asarray(pac.pnoise(pss, 1.013 / pss.period, 0,
+                                          maxsidebands=6)[0])]
+
+    def rel(a, b):
+        a, b = np.asarray(a, dtype=complex), np.asarray(b, dtype=complex)
+        return float(np.abs(a - b).max() / max(np.abs(b).max(), 1e-300))
+
+    solvers = [SuperLUSolver(), AutoSolver(), _SolveOnly()]
+    try:
+        solvers.append(KLUSolver())
+    except ImportError:
+        pass
+    for method in ('gear', 'radau'):
+        ref = osc(method, DenseSolver())
+        for ls in solvers:
+            got = osc(method, ls)
+            worst = max(rel(g, r) for g, r in zip(got, ref))
+            assert worst < 1e-10, (method, ls, worst)
+    ## the coupled Radau block is factored by the CALLER'S solver
+    k = [ls for ls in solvers if isinstance(ls, KLUSolver)]
+    if k:
+        k = KLUSolver()
+        osc('radau', k)
+        assert k.numerics > 0, 'radau factored its stage block itself: %r' % k

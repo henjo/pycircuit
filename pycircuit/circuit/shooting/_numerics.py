@@ -214,8 +214,15 @@ from scipy.linalg import lu_solve as _sla_lu_solve
 
 def _lu_solve_split(lu, b, trans=0):
     """`scipy.linalg.lu_solve` against a REAL `lu_factor` pair -- a complex
-    `b` (an ndarray) is two real back-substitutions (`_complex_solve` for a
-    factor that is not a solver object)."""
+    `b` (an ndarray) is two real back-substitutions -- or, for a linear
+    solver's factorisation (`_InnerTransient._factorise`: the caller's
+    `linearsolver=`), its own solve and transposed solve, split the same
+    way (`_complex_solve`, `_complex_solve_transposed`).  The two agree to
+    the bit under `DenseSolver`, whose factorisation IS an `lu_factor`
+    pair."""
+    if type(lu) is not tuple:
+        return (_complex_solve_transposed(lu, b) if trans
+                else _complex_solve(lu, b))
     if b.dtype.kind == 'c':
         return (_sla_lu_solve(lu, b.real, trans=trans)
                 + 1j * _sla_lu_solve(lu, b.imag, trans=trans))
