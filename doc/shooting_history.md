@@ -5635,6 +5635,23 @@ integrate over `info['ppv']['times']` and `['period']` instead.
 
 ### `floquet_modes`
 
+The DENSE paragraph as it stood until 2026-09-25, when the dominant modes
+above `FLOQUET_DENSE_LIMIT` were built (`_floquet_modes_ritz`):
+
+⚠ DENSE, AND REFUSED ABOVE `FLOQUET_DENSE_LIMIT`: `n` matvecs, then
+`eig`.  The extension is an Arnoldi that keeps its Ritz VECTORS, and ⚠ it
+converges to the physical mode LAST, worse as Q rises (Garcia, Romero &
+Acha 2022): on `A = I - M` the physical `lam_2 -> 1` maps to the SMALLEST
+`theta`, while the fast parasitic modes (`theta ~ 1`) resolve first -- a
+separation `1/theta_2 ~ Q_lambda`.  A truncated run also "cannot compute
+ALL the Floquet multipliers", which eq (22) requires.  (That is an
+eigenvalue question; the GMRES iterations of the bordered SOLVE are
+Q-independent.)
+
+(Built as an Arnoldi on `M`, not `I - M`, for exactly that reason; the
+"ALL the multipliers" point is why `nmodes=None` still refuses above the
+limit.)
+
 The docstring before the move:
 
 ⚠ THE MODES' ACCURACY IS THE METHOD'S -- AND GEAR'S ADJOINT MODES

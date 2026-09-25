@@ -1051,6 +1051,11 @@ class _PPVFloquet(object):
         info['period'] = T
         return v, info
 
+    ## the widest monodromy `floquet_modes` assembles densely (every mode --
+    ## what the modal spectra need); above it only the DOMINANT modes, from a
+    ## Ritz-certified Arnoldi (`_floquet_modes_ritz`), and a spectrum is
+    ## `pnoise`'s.  A requirement of the spectra, not a budget: their weight
+    ## is spread over m/n = 0.97 of the modes.
     FLOQUET_DENSE_LIMIT = 400
     ## below this a multiplier is an annihilated algebraic
     ## direction, not a mode -- see `floquet_modes`
@@ -1106,15 +1111,18 @@ class _PPVFloquet(object):
         wants `p_l`'s Fourier series.  `p_l(T) = p_l(0)` is the gate that
         needs no reference.
 
-        ⚠ DENSE, AND REFUSED ABOVE `FLOQUET_DENSE_LIMIT`: `n` matvecs, then
-        `eig`.  The extension is an Arnoldi that keeps its Ritz VECTORS, and
-        ⚠ it converges to the physical mode LAST, worse as Q rises (Garcia,
-        Romero & Acha 2022): on `A = I - M` the physical `lam_2 -> 1` maps
-        to the SMALLEST `theta`, while the fast parasitic modes (`theta ~ 1`)
-        resolve first -- a separation `1/theta_2 ~ Q_lambda`.  A truncated
-        run also "cannot compute ALL the Floquet multipliers", which eq (22)
-        requires.  (That is an eigenvalue question; the GMRES iterations of
-        the bordered SOLVE are Q-independent.)
+        ⚠ DENSE UP TO `FLOQUET_DENSE_LIMIT` (`n` matvecs, then `eig`: every
+        mode); ABOVE IT, THE DOMINANT `nmodes` ONLY (`_floquet_modes_ritz`,
+        2026-09-25): a Ritz-certified Arnoldi on the map and on its
+        transpose, run on `M` itself -- whose outer spectrum, the slow modes,
+        converges first -- not on `I - M`, where the physical `lam_2 -> 1`
+        is the smallest `theta` and resolves LAST (Garcia, Romero & Acha
+        2022).  Each mode dict then carries `certified` and `ritz_residual`;
+        an uncertified mode is warned and flagged, never silent.
+        `nmodes=None` is refused there, and so are the modal spectra built
+        on it: eq (22) needs ALL the modes, whose weight this repo measured
+        spread over m/n = 0.97 of them -- above the limit a spectrum is
+        `pnoise`'s.
 
         History: `doc/shooting_history.md`, `_PPVFloquet.floquet_modes`.
         """
@@ -1135,12 +1143,7 @@ class _PPVFloquet(object):
         n = fp.width
         T = float(fp.T)
         if n > self.FLOQUET_DENSE_LIMIT:
-            raise NotImplementedError(
-                'PSS.floquet_modes: the monodromy is assembled densely and '
-                'this one is %d wide, past the %d limit. The extension is '
-                'an Arnoldi that keeps its Ritz VECTORS -- ppv() already '
-                'builds the basis and discards them.'
-                % (n, self.FLOQUET_DENSE_LIMIT))
+            return self._floquet_modes_ritz(fp, n, T, nmodes)
 
         M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                              for e in np.eye(n)])
@@ -1195,151 +1198,309 @@ class _PPVFloquet(object):
                 RuntimeWarning, stacklevel=2)
         ## `None` means ALL non-null modes -- the default.
         for k in (keep if nmodes is None else keep[:int(nmodes)]):
-            lk = complex(lam[k])
-            uk, vk = U[:, k].astype(complex), V[:, k].astype(complex)
-            nrm = complex(np.vdot(vk, uk))
-            if abs(nrm) < 1e-30:
-                raise ValueError(
-                    'PSS.floquet_modes: mode %d has left and right '
-                    'eigenvectors orthogonal to each other (v.u = %.3e), so '
-                    'it cannot be biorthonormalised. That happens at a '
-                    'defective eigenvalue -- two multipliers have collided.'
-                    % (k, abs(nrm)))
-            vk = vk / np.conj(nrm)                     ## v_k† u_k = 1
-            muk = np.log(lk) / T
-
-            ## ⚠ EVERYTHING BELOW IS THE WIDTH-`m` STATE BLOCK, NOT THE
-            ## WIDTH-`n` MAP INPUT. Under a solved-history map `n = 2m`
-            ## and the second block is the history term, not a second
-            ## state; the replays collect `m`-wide states either way, and
-            ## `u_l(t)` in eq (22) is a state-space function. Mixing the
-            ## two is a shape error that surfaces three frames away.
-            m = self.cir.n - 1
-
-            ## forward: Phi(t_j,0) u_k(0), by an UNFORCED driven replay
-            zero = np.zeros(m)
-            if hasattr(fp, 'forward_states'):
-                ## a GLM on the state (`_GLMStateMap`): its own forward pass
-                _end, fwd = fp.forward_states(uk)
-            else:
-                _end, fwd = self._forced_replay(fp, 0.0, zero, y0=uk,
-                                                collect=True)
-            traj = ([np.asarray(uk, dtype=complex)[:m]]
-                    + [np.asarray(z, dtype=complex).ravel()[:m] for z in fwd])
-            tt = times[:len(traj)]
-            traj = traj[:len(tt)]
-            p = np.column_stack([traj[j] * np.exp(-muk * tt[j])
-                                 for j in range(len(traj))])
-
-            ## adjoint: Phi(T,s_j)^T v_k(T), available under every integrator
-            ## (B8).
-            ## ⚠⚠ UNDER GEAR (`solved_history`) THE ADJOINT IS THE PER-STEP
-            ## TRANSPOSED SOLVE `t`, NOT THE PAIR'S FIRST BLOCK, AND IT BELONGS
-            ## TO THE NEXT NODE.  `collect` returns `ts[k]`, the solve
-            ## `Jf_k^-T w1` made while replaying step k backwards from the pair
-            ## at node k + 1 -- so the adjoint at node k + 1, second order --
-            ## and `states[k]`, the pair (w1; w2).  With
-            ## `w1 = (a0 C + G)^T t`, the first block through pinv(C^T) is
-            ## `a0 * q(t + 2h/3)`: staggered by a fraction of a step, FIRST
-            ## order.  `t` carries the step through `a0 ~ 1/h`, so the node's
-            ## own `a0` is put back (on a uniform grid `c0` below absorbs it).
-            ## On a non-uniform grid the transpose of a variable-step multistep
-            ## method is the continuous adjoint's only to O(h) whatever the
-            ## scaling (Sandu's inconsistency), so that case is integrated
-            ## separately (below).  Node 0 is node N by periodicity of the
-            ## periodic part.
-            ## ⚠ GEAR ONLY.  A one-step kind's `ts` is NESTED (per-stage solves
-            ## per step); its state-block adjoint through pinv(C^T) is exact
-            ## (radau) and second order (trap), and keeps its path.
-            _e2, _tsolves, _st = fp.matvec_transposed(
-                vk, collect=True, inject=self._event_costate_injection(fp, vk, n))
-            _gear_pair = getattr(fp, 'is_pair', False)
-            ## ⚠ GEAR ON A NON-UNIFORM GRID: THE TRANSPOSE IS FIRST ORDER AND
-            ## NO RESCALING LIFTS IT, so the adjoint is integrated SEPARATELY
-            ## there -- gated on STRUCTURE (a multistep pair on a grid whose
-            ## step changes), never on order.  See `_continuous_adjoint`.
-            _nonuniform = self._period_quadrature(fp) is not None
-            if _gear_pair and _nonuniform:
-                q, ts2 = self._continuous_adjoint(fp, lk, muk, times)
-            elif _gear_pair:
-                _tsolves = [np.asarray(z, dtype=complex).ravel()[:m]
-                            for z in _tsolves]
-                _a0 = [float(np.asarray(_step[2][0])) for _step in fp.steps]
-                _nq = min(len(_tsolves), len(times) - 1)
-                ts2 = times[:_nq + 1]
-                qtraj = [None] * (_nq + 1)
-                for _k in range(_nq):
-                    qtraj[_k + 1] = (_a0[_k] * _tsolves[_k]
-                                     * np.exp(muk * ts2[_k + 1]))
-                qtraj[0] = qtraj[_nq]
-                q = np.column_stack(qtraj)
-            else:
-                qtraj = ([np.asarray(z, dtype=complex).ravel()[:m] for z in _st]
-                         + [np.asarray(vk, dtype=complex)[:m]])
-                ts2 = times[:len(qtraj)]
-                qtraj = qtraj[:len(ts2)]
-                q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
-                                     for j in range(len(qtraj))])
-
-            ## ⚠⚠⚠ THE REPLAYED VECTOR IS `C^T q`, NOT `q`.  The conserved
-            ## bilinear form of the variational DAE is `w^T C delta`, so over
-            ## a period `M_a^T C M = C`, which makes the LEFT eigenvector of
-            ## the state monodromy `C^T w(0)` -- one factor of `C^T` away from
-            ## the state-space adjoint `q` that eq (22) and every covariance
-            ## here need.  The transposed replay propagates that object, so
-            ## every sample of `q` above is `C(t)^T q_true(t)`.  ⚠ A symmetric
-            ## orbit (van der Pol, reduced `C = diag(1, -1)`) hides the
-            ## difference, and can make its sign flip read as a time
-            ## reversal; an asymmetric orbit shows it.
-            ##
-            ## ⚠ Per sample, because `C` may depend on the state.  `pinv`
-            ## rather than `inv` so a singular reduced `C` (an index-2 MNA,
-            ## algebraic rows) does not raise; the algebraic components of `q`
-            ## are then the minimum-norm choice, which is a SCOPE LIMIT and
-            ## not a solution.
-            ## The pinv(C^T) map belongs to the STATE-BLOCK adjoint of the
-            ## one-step kinds; gear's transposed solve is already the adjoint
-            ## of the DAE variable (its invariant is `q^T C p`, see above).
-            if not _gear_pair:
-                _Wq = np.delete(np.asarray(self.waveform[1], dtype=float),
-                                self.irefnode, axis=0)
-                _nw = _Wq.shape[1]
-                for _j in range(q.shape[1]):
-                    _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
-                                     dtype=float)
-                    q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
-
-            ## ⚠⚠ RENORMALISE ON THE STATE BLOCK, WITH THE `C`-WEIGHTED INNER
-            ## PRODUCT.  `v_k` was biorthonormalised against `u_k` at the map's
-            ## FULL width `n`; under a solved-history map that is the pair
-            ## `[x_n; x_{n-1}]`, and the width-`m` state block then carries
-            ## `q(0)^T p(0) = c0 != 1` (on the plain path `n = m`).  And the
-            ## conserved bilinear form of the variational DAE is
-            ## `q(t)^T C(t) p(t)`, not `q(t)^T p(t)`: differentiating
-            ## `G p + d(C p)/dt = 0` against the adjoint gives
-            ## `d/dt [q^T C p] = 0`, so the biorthonormality eq (22) assumes is
-            ## `q_k^T C p_l = d_kl`.  Normalising on `q^T C p` fixes the slice
-            ## scale and the weighting in one step.  ⚠ `q` enters the
-            ## covariance QUADRATICALLY, so either error squares; the
-            ## periodicity gate p(T) = p(0) is scale-free, and a unit-reactance
-            ## fixture (`C` the identity) cannot tell the two inner products
-            ## apart.  The adjoint takes the scale (the right vector is the
-            ## physical direction).
-            _x0r = np.delete(np.asarray(self.waveform[1], dtype=float)[:, 0],
-                             self.irefnode)
-            _Cm = np.asarray(self._C_at(_x0r), dtype=float)
-            c0 = complex(np.vdot(q[:, 0], _Cm @ p[:, 0]))
-            if abs(c0) < 1e-30:
-                raise ValueError(
-                    'PSS.floquet_modes: mode %d has q(0)^T C p(0) = %.3e on '
-                    'the state block, so it cannot be biorthonormalised '
-                    'there.' % (k, abs(c0)))
-            q = q / np.conj(c0)
-            out.append({'lam': lk, 'mu': muk, 'u0': uk, 'v0': vk,
-                        'p': p, 'q': q, 'times': tt, 'c0': c0,
-                        'residual': float(np.linalg.norm(M @ uk - lk * uk)
-                                          / max(abs(lk), 1e-300))})
+            out.append(self._floquet_mode(
+                fp, k, complex(lam[k]), U[:, k].astype(complex),
+                V[:, k].astype(complex), T, times, n,
+                lambda uk, lk: float(np.linalg.norm(M @ uk - lk * uk)
+                                     / max(abs(lk), 1e-300))))
         return out
+
+    def _floquet_modes_ritz(self, fp, n, T, nmodes):
+        """`floquet_modes` above `FLOQUET_DENSE_LIMIT`: the DOMINANT `nmodes`
+        modes (by `|lambda|`), from a Ritz-certified Arnoldi on the map for
+        the right vectors and on its transpose for the left ones, paired by
+        value as the dense path pairs them; each then goes through the same
+        `_floquet_mode`.  On a staged solve both are the TOTAL map's.
+
+        ⚠ DOMINANT MODES ONLY, BY REQUIREMENT, NOT BY BUDGET.  The modal
+        spectra need EVERY mode -- orbital weight is spread over m/n = 0.97
+        of them (measured on two circuits) and does not follow `|lambda|`
+        (Traversa & Bonani, TCAS-I 2011, sec. V) -- so `nmodes=None` is
+        refused here, and a spectrum above the limit is `pnoise`'s.  What
+        this serves is stability and mode inspection: the multipliers,
+        exponents and shapes of the slow modes.  (Built 2026-09-25; until
+        then refused outright.)"""
+        if nmodes is None:
+            raise NotImplementedError(
+                'PSS.floquet_modes: this monodromy is %d wide, past '
+                'FLOQUET_DENSE_LIMIT = %d, and ALL its modes are the dense '
+                "route's. Pass nmodes=k for the k dominant modes (Ritz-"
+                'certified). The modal spectra (orbital_correlation, '
+                'orbital_spectrum, modal_spectrum) need every mode -- the '
+                'orbital weight does not concentrate (m/n = 0.97 measured) -- '
+                'so above the limit use PAC.pnoise for the spectrum.'
+                % (n, self.FLOQUET_DENSE_LIMIT))
+        k = int(nmodes)
+        kmax = int(min(n, self.PPV_RITZ_MAX_BASIS)) // 2
+        if not 1 <= k <= kmax:
+            raise NotImplementedError(
+                'PSS.floquet_modes: nmodes=%d on a %d-wide monodromy (past '
+                'FLOQUET_DENSE_LIMIT = %d): an Arnoldi of at most %d vectors '
+                '(PPV_RITZ_MAX_BASIS) certifies at most %d dominant modes. '
+                'The modal spectra need every mode; above the limit use '
+                'PAC.pnoise for the spectrum.'
+                % (k, n, self.FLOQUET_DENSE_LIMIT, int(min(n, self.PPV_RITZ_MAX_BASIS)), kmax))
+        mv, mvT = fp.matvec, fp.matvec_transposed
+        _ev = EventColumns.of(self, n)
+        if _ev is not None:
+            ## the TOTAL map, as the dense path's `total_matrix`
+            mv = _ev.total_matvec(fp.matvec)
+            mvT = _ev.total_matvec(fp.matvec_transposed, transposed=True)
+        lam, U, res_r, kk_r = self._ritz_modes(mv, n, k)
+        ## the left set with a margin, so every right mode finds its partner
+        lam_l, V, res_l, kk_l = self._ritz_modes(mvT, n, k + 2)
+        certified = [bool(r <= self.PPV_RITZ_RESIDUAL_TOL) for r in res_r]
+        if not all(certified):
+            warnings.warn(
+                'PSS.floquet_modes: %d of %d dominant modes did not certify '
+                'within an Arnoldi of %d vectors (PPV_RITZ_MAX_BASIS; Ritz '
+                'residuals %s against PPV_RITZ_RESIDUAL_TOL = %.0e). They are '
+                "returned flagged 'certified': False -- read their multipliers "
+                'and shapes as estimates.'
+                % (certified.count(False), len(certified), kk_r,
+                   ', '.join('%.1e' % r for r in res_r), self.PPV_RITZ_RESIDUAL_TOL),
+                RuntimeWarning, stacklevel=3)
+        warnings.warn(
+            'PSS.floquet_modes: nmodes=%d returns the %d DOMINANT modes (by '
+            '|lambda|) of a %d-wide monodromy. Orbital-noise weight does NOT '
+            'follow multiplier magnitude -- Traversa & Bonani (TCAS-I 2011, '
+            'Sec. V) show the contribution ordering INVERTING across six '
+            'orders in mu, and this repo measured no concentration (m/n = '
+            '0.97). These modes are for stability and inspection; a spectrum '
+            'above the limit is PAC.pnoise\'s.' % (k, len(lam), n),
+            RuntimeWarning, stacklevel=3)
+        times = np.asarray(fp.times, dtype=float)
+        tol = max(self.PPV_RITZ_RESIDUAL_TOL * 10.0,
+                  10.0 * max(max(res_r), max(res_l)))
+        used = set()
+        out = []
+        for i in range(len(lam)):
+            d = np.abs(lam_l - lam[i])
+            j = next((int(jj) for jj in np.argsort(d) if int(jj) not in used), None)
+            if j is None or d[j] > tol * max(1.0, abs(lam[i])):
+                raise ValueError(
+                    'PSS.floquet_modes: the dominant multiplier %s found no '
+                    'partner among the transposed map\'s Ritz values (nearest '
+                    '%s) within %.1e -- the left and right Arnoldi runs did '
+                    'not converge to the same eigenvalue. Ask for fewer modes.'
+                    % (complex(lam[i]), None if j is None else complex(lam_l[j]), tol))
+            used.add(j)
+            md = self._floquet_mode(
+                fp, i, complex(lam[i]), U[:, i].astype(complex),
+                V[:, j].astype(complex), T, times, n,
+                lambda uk, lk: float(np.linalg.norm(np.asarray(mv(uk)) - lk * uk)
+                                     / max(abs(lk), 1e-300)))
+            md['certified'] = certified[i]
+            md['ritz_residual'] = float(res_r[i])
+            out.append(md)
+        return out
+
+    def _ritz_modes(self, mv, n, k):
+        """`(lams, X, residuals, kk)`: the `k` dominant eigenpairs (by
+        `|lambda|`, a conjugate pair completed, null multipliers dropped) of
+        the operator `mv` on `R^n`, from an Arnoldi grown from
+        `PPV_RITZ_BASIS` by doubling up to `PPV_RITZ_MAX_BASIS` until every
+        selected pair's Ritz residual ``|h_{kk+1,kk}| |y_last| / ||y||``
+        (``||M x - theta x||`` for the unit Ritz vector) is within
+        `PPV_RITZ_RESIDUAL_TOL` -- the gate `ppv`'s truncated `lam2` uses
+        (`_ritz_second_multiplier`).
+
+        ⚠ ON THE MAP ITSELF, NOT ON `I - M`: Arnoldi resolves the OUTER
+        spectrum first, and the dominant modes are the outer ones; on `I -
+        M` they are the smallest `theta` and resolve last (Garcia, Romero &
+        Acha 2022).  The basis is EXTENDED, not restarted, and fully
+        reorthogonalised (twice), from `ppv`'s seeded start.  An invariant
+        subspace (the basis closes on itself) makes every pair exact."""
+        budget = int(min(n, self.PPV_RITZ_MAX_BASIS))
+        kk = int(min(n, max(self.PPV_RITZ_BASIS, 2 * k + 2), budget))
+        rng = np.random.default_rng(12345)
+        q0 = rng.standard_normal(n)
+        Q = np.zeros((n, budget + 1))
+        Q[:, 0] = q0 / np.linalg.norm(q0)
+        H = np.zeros((budget + 1, budget))
+        j = 0
+        closed = False
+        while True:
+            while j < kk and not closed:
+                w = np.asarray(mv(Q[:, j]), dtype=float).ravel()
+                for _pass in range(2):
+                    hcol = Q[:, :j + 1].T @ w
+                    w = w - Q[:, :j + 1] @ hcol
+                    H[:j + 1, j] += hcol
+                H[j + 1, j] = float(np.linalg.norm(w))
+                if H[j + 1, j] < 1e-13 * max(1.0, float(np.max(np.abs(H[:j + 2, :j + 1])))):
+                    closed = True
+                    kk = j + 1
+                    break
+                Q[:, j + 1] = w / H[j + 1, j]
+                j += 1
+            theta, Y = np.linalg.eig(H[:kk, :kk])
+            order = [int(i) for i in np.argsort(-np.abs(theta))
+                     if abs(theta[i]) > self.FLOQUET_NULL_TOL]
+            sel = order[:k]
+            ## a conjugate pair is completed, never split
+            for i in list(sel):
+                if abs(theta[i].imag) > 1e-12 * max(1.0, abs(theta[i])):
+                    c = min(order, key=lambda jj: abs(theta[jj] - np.conj(theta[i])))
+                    if c not in sel:
+                        sel.append(c)
+            ynorm = np.linalg.norm(Y[:, sel], axis=0)
+            res = (np.zeros(len(sel)) if closed else
+                   abs(H[kk, kk - 1]) * np.abs(Y[kk - 1, sel]) / np.maximum(ynorm, 1e-300))
+            if closed or np.all(res <= self.PPV_RITZ_RESIDUAL_TOL) or kk >= budget:
+                X = Q[:, :kk] @ (Y[:, sel] / ynorm[None, :])
+                return theta[sel], X, [float(r) for r in res], kk
+            kk = int(min(2 * kk, budget))
+
+    def _floquet_mode(self, fp, k, lk, uk, vk, T, times, n, residual):
+        """One Floquet mode's dict from its multiplier `lk` and its right and
+        left eigenvectors `uk`, `vk` at `t = 0` (the map's width `n`):
+        biorthonormalised, its periodic parts `p` (a forward replay) and `q`
+        (the transposed replay) sampled on `times`.  `residual(uk, lk)` is
+        its relative eigen-residual -- the dense matrix's, or the map's
+        mat-vec above `FLOQUET_DENSE_LIMIT`; `k` names the mode in a refusal.
+        (The loop body of `floquet_modes` until 2026-09-25, moved verbatim.)"""
+        nrm = complex(np.vdot(vk, uk))
+        if abs(nrm) < 1e-30:
+            raise ValueError(
+                'PSS.floquet_modes: mode %d has left and right '
+                'eigenvectors orthogonal to each other (v.u = %.3e), so '
+                'it cannot be biorthonormalised. That happens at a '
+                'defective eigenvalue -- two multipliers have collided.'
+                % (k, abs(nrm)))
+        vk = vk / np.conj(nrm)                     ## v_k† u_k = 1
+        muk = np.log(lk) / T
+
+        ## ⚠ EVERYTHING BELOW IS THE WIDTH-`m` STATE BLOCK, NOT THE
+        ## WIDTH-`n` MAP INPUT. Under a solved-history map `n = 2m`
+        ## and the second block is the history term, not a second
+        ## state; the replays collect `m`-wide states either way, and
+        ## `u_l(t)` in eq (22) is a state-space function. Mixing the
+        ## two is a shape error that surfaces three frames away.
+        m = self.cir.n - 1
+
+        ## forward: Phi(t_j,0) u_k(0), by an UNFORCED driven replay
+        zero = np.zeros(m)
+        if hasattr(fp, 'forward_states'):
+            ## a GLM on the state (`_GLMStateMap`): its own forward pass
+            _end, fwd = fp.forward_states(uk)
+        else:
+            _end, fwd = self._forced_replay(fp, 0.0, zero, y0=uk,
+                                            collect=True)
+        traj = ([np.asarray(uk, dtype=complex)[:m]]
+                + [np.asarray(z, dtype=complex).ravel()[:m] for z in fwd])
+        tt = times[:len(traj)]
+        traj = traj[:len(tt)]
+        p = np.column_stack([traj[j] * np.exp(-muk * tt[j])
+                             for j in range(len(traj))])
+
+        ## adjoint: Phi(T,s_j)^T v_k(T), available under every integrator
+        ## (B8).
+        ## ⚠⚠ UNDER GEAR (`solved_history`) THE ADJOINT IS THE PER-STEP
+        ## TRANSPOSED SOLVE `t`, NOT THE PAIR'S FIRST BLOCK, AND IT BELONGS
+        ## TO THE NEXT NODE.  `collect` returns `ts[k]`, the solve
+        ## `Jf_k^-T w1` made while replaying step k backwards from the pair
+        ## at node k + 1 -- so the adjoint at node k + 1, second order --
+        ## and `states[k]`, the pair (w1; w2).  With
+        ## `w1 = (a0 C + G)^T t`, the first block through pinv(C^T) is
+        ## `a0 * q(t + 2h/3)`: staggered by a fraction of a step, FIRST
+        ## order.  `t` carries the step through `a0 ~ 1/h`, so the node's
+        ## own `a0` is put back (on a uniform grid `c0` below absorbs it).
+        ## On a non-uniform grid the transpose of a variable-step multistep
+        ## method is the continuous adjoint's only to O(h) whatever the
+        ## scaling (Sandu's inconsistency), so that case is integrated
+        ## separately (below).  Node 0 is node N by periodicity of the
+        ## periodic part.
+        ## ⚠ GEAR ONLY.  A one-step kind's `ts` is NESTED (per-stage solves
+        ## per step); its state-block adjoint through pinv(C^T) is exact
+        ## (radau) and second order (trap), and keeps its path.
+        _e2, _tsolves, _st = fp.matvec_transposed(
+            vk, collect=True, inject=self._event_costate_injection(fp, vk, n))
+        _gear_pair = getattr(fp, 'is_pair', False)
+        ## ⚠ GEAR ON A NON-UNIFORM GRID: THE TRANSPOSE IS FIRST ORDER AND
+        ## NO RESCALING LIFTS IT, so the adjoint is integrated SEPARATELY
+        ## there -- gated on STRUCTURE (a multistep pair on a grid whose
+        ## step changes), never on order.  See `_continuous_adjoint`.
+        _nonuniform = self._period_quadrature(fp) is not None
+        if _gear_pair and _nonuniform:
+            q, ts2 = self._continuous_adjoint(fp, lk, muk, times)
+        elif _gear_pair:
+            _tsolves = [np.asarray(z, dtype=complex).ravel()[:m]
+                        for z in _tsolves]
+            _a0 = [float(np.asarray(_step[2][0])) for _step in fp.steps]
+            _nq = min(len(_tsolves), len(times) - 1)
+            ts2 = times[:_nq + 1]
+            qtraj = [None] * (_nq + 1)
+            for _k in range(_nq):
+                qtraj[_k + 1] = (_a0[_k] * _tsolves[_k]
+                                 * np.exp(muk * ts2[_k + 1]))
+            qtraj[0] = qtraj[_nq]
+            q = np.column_stack(qtraj)
+        else:
+            qtraj = ([np.asarray(z, dtype=complex).ravel()[:m] for z in _st]
+                     + [np.asarray(vk, dtype=complex)[:m]])
+            ts2 = times[:len(qtraj)]
+            qtraj = qtraj[:len(ts2)]
+            q = np.column_stack([qtraj[j] * np.exp(muk * ts2[j])
+                                 for j in range(len(qtraj))])
+
+        ## ⚠⚠⚠ THE REPLAYED VECTOR IS `C^T q`, NOT `q`.  The conserved
+        ## bilinear form of the variational DAE is `w^T C delta`, so over
+        ## a period `M_a^T C M = C`, which makes the LEFT eigenvector of
+        ## the state monodromy `C^T w(0)` -- one factor of `C^T` away from
+        ## the state-space adjoint `q` that eq (22) and every covariance
+        ## here need.  The transposed replay propagates that object, so
+        ## every sample of `q` above is `C(t)^T q_true(t)`.  ⚠ A symmetric
+        ## orbit (van der Pol, reduced `C = diag(1, -1)`) hides the
+        ## difference, and can make its sign flip read as a time
+        ## reversal; an asymmetric orbit shows it.
+        ##
+        ## ⚠ Per sample, because `C` may depend on the state.  `pinv`
+        ## rather than `inv` so a singular reduced `C` (an index-2 MNA,
+        ## algebraic rows) does not raise; the algebraic components of `q`
+        ## are then the minimum-norm choice, which is a SCOPE LIMIT and
+        ## not a solution.
+        ## The pinv(C^T) map belongs to the STATE-BLOCK adjoint of the
+        ## one-step kinds; gear's transposed solve is already the adjoint
+        ## of the DAE variable (its invariant is `q^T C p`, see above).
+        if not _gear_pair:
+            _Wq = np.delete(np.asarray(self.waveform[1], dtype=float),
+                            self.irefnode, axis=0)
+            _nw = _Wq.shape[1]
+            for _j in range(q.shape[1]):
+                _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
+                                 dtype=float)
+                q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
+
+        ## ⚠⚠ RENORMALISE ON THE STATE BLOCK, WITH THE `C`-WEIGHTED INNER
+        ## PRODUCT.  `v_k` was biorthonormalised against `u_k` at the map's
+        ## FULL width `n`; under a solved-history map that is the pair
+        ## `[x_n; x_{n-1}]`, and the width-`m` state block then carries
+        ## `q(0)^T p(0) = c0 != 1` (on the plain path `n = m`).  And the
+        ## conserved bilinear form of the variational DAE is
+        ## `q(t)^T C(t) p(t)`, not `q(t)^T p(t)`: differentiating
+        ## `G p + d(C p)/dt = 0` against the adjoint gives
+        ## `d/dt [q^T C p] = 0`, so the biorthonormality eq (22) assumes is
+        ## `q_k^T C p_l = d_kl`.  Normalising on `q^T C p` fixes the slice
+        ## scale and the weighting in one step.  ⚠ `q` enters the
+        ## covariance QUADRATICALLY, so either error squares; the
+        ## periodicity gate p(T) = p(0) is scale-free, and a unit-reactance
+        ## fixture (`C` the identity) cannot tell the two inner products
+        ## apart.  The adjoint takes the scale (the right vector is the
+        ## physical direction).
+        _x0r = np.delete(np.asarray(self.waveform[1], dtype=float)[:, 0],
+                         self.irefnode)
+        _Cm = np.asarray(self._C_at(_x0r), dtype=float)
+        c0 = complex(np.vdot(q[:, 0], _Cm @ p[:, 0]))
+        if abs(c0) < 1e-30:
+            raise ValueError(
+                'PSS.floquet_modes: mode %d has q(0)^T C p(0) = %.3e on '
+                'the state block, so it cannot be biorthonormalised '
+                'there.' % (k, abs(c0)))
+        q = q / np.conj(c0)
+        return {'lam': lk, 'mu': muk, 'u0': uk, 'v0': vk,
+                'p': p, 'q': q, 'times': tt, 'c0': c0,
+                'residual': residual(uk, lk)}
 
     def _continuous_adjoint(self, fp, lam, mu, times):
         """A mode's adjoint `q(t_j)` on a NON-UNIFORM gear grid, by integrating

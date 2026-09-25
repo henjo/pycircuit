@@ -16932,6 +16932,157 @@ def test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace(
 
 
 @pytest.mark.slow
+def _align_mode(ref, got):
+    """`got`'s `p`, `q` rescaled onto `ref`'s: a mode is defined up to a scalar
+    `a` (`p -> a p`, `q -> q / conj(a)` keeps `q^T C p = 1`)."""
+    a = complex(np.vdot(got['p'][:, 0], ref['p'][:, 0])
+                / np.vdot(got['p'][:, 0], got['p'][:, 0]))
+    return got['p'] * a, got['q'] / np.conj(a)
+
+
+def test_floquet_modes_above_the_dense_limit_are_the_dominant_ritz_certified_modes():
+    """Above `FLOQUET_DENSE_LIMIT` (2026-09-25; refused outright before)
+    `floquet_modes(nmodes=k)` returns the k DOMINANT modes from a
+    Ritz-certified Arnoldi on the map (right vectors) and on its transpose
+    (left), paired by value, each through the dense path's own per-mode body
+    (`_floquet_mode`).  `nmodes=None` keeps refusing there: the modal
+    spectra need every mode (orbital weight spread over m/n = 0.97 of them),
+    and the refusal points to `pnoise`.
+
+    Forced on `_osc_with_ladder(16, 14, 14)` (the instance's limit lowered
+    to 8) against the dense modes, gear's pair map (n = 32) and radau's
+    (n = 16): multipliers to 7e-15, `p` / `q` to 1e-12.  The certification
+    gate is alive: with the Arnoldi budget cut to 12 vectors the four modes
+    come back uncertified (Ritz residuals 2e-3 .. 6e-2), warned and flagged
+    -- and genuinely wrong, the multipliers 7e-4 .. 0.11 off; at 16 they
+    certify (residuals ~1e-20) and are exact."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir, p = _osc_with_ladder(16.0, 14, 14)
+    q = PSS(cir, method='radau', reltol=1e-11)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=float(p.period), timestep=float(p.period) / 200,
+                x0=np.asarray(p._period_state[1], dtype=float)[:cir.n - 1],
+                maxiterations=100)
+    assert q.converged
+    for pp in (p, q):
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            dense = pp.floquet_modes(nmodes=4)
+        pp.FLOQUET_DENSE_LIMIT = 8
+        try:
+            with _w.catch_warnings(record=True) as rec:
+                _w.simplefilter('always')
+                ritz = pp.floquet_modes(nmodes=4)
+        finally:
+            del pp.FLOQUET_DENSE_LIMIT
+        assert any('DOMINANT' in str(r.message) for r in rec)
+        assert len(ritz) == 4
+        for d, r in zip(dense, ritz):
+            assert r['certified'] and abs(d['lam'] - r['lam']) < 1e-10, (d['lam'], r['lam'])
+            pr, qr = _align_mode(d, r)
+            assert np.max(np.abs(pr - d['p'])) < 1e-9 * np.max(np.abs(d['p']))
+            assert np.max(np.abs(qr - d['q'])) < 1e-9 * np.max(np.abs(d['q']))
+    ## the certification gate, alive: a budget too small to certify
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        dense = p.floquet_modes(nmodes=4)
+    for budget, want in ((12, False), (16, True)):
+        p.FLOQUET_DENSE_LIMIT = 8
+        p.PPV_RITZ_MAX_BASIS = budget
+        try:
+            with _w.catch_warnings(record=True) as rec:
+                _w.simplefilter('always')
+                ritz = p.floquet_modes(nmodes=4)
+        finally:
+            del p.FLOQUET_DENSE_LIMIT, p.PPV_RITZ_MAX_BASIS
+        assert [r['certified'] for r in ritz] == [want] * 4, (budget, ritz)
+        assert any('did not certify' in str(r.message) for r in rec) == (not want)
+        err = max(abs(d['lam'] - r['lam']) for d, r in zip(dense, ritz))
+        assert (err < 1e-10) if want else (err > 1e-4), (budget, err)
+    ## the refusals name pnoise for the spectra
+    p.FLOQUET_DENSE_LIMIT = 8
+    try:
+        with pytest.raises(NotImplementedError, match='pnoise'):
+            p.floquet_modes()
+        with pytest.raises(NotImplementedError, match='pnoise'):
+            p.floquet_modes(nmodes=99)
+    finally:
+        del p.FLOQUET_DENSE_LIMIT
+
+
+def test_the_ritz_modes_complete_a_conjugate_pair_and_certify_it():
+    """`_ritz_modes` never splits a complex-conjugate pair: asked for the
+    ONE dominant mode of an operator whose dominant multipliers are a pair,
+    it returns both.  Synthetic, because no circuit fixture here has a
+    complex dominant multiplier: a 300 x 300 matrix with a known pair at
+    0.9 e^{+-0.3 j} over a spectrum inside 0.5."""
+    rng = np.random.default_rng(3)
+    n = 300
+    D = np.diag(0.5 * rng.random(n))
+    D[:2, :2] = 0.9 * np.array([[np.cos(0.3), -np.sin(0.3)], [np.sin(0.3), np.cos(0.3)]])
+    S = rng.standard_normal((n, n)) / np.sqrt(n) + np.eye(n)
+    A = S @ D @ np.linalg.inv(S)
+    cir, p = _osc_with_ladder(16.0, 2, 2, npts=40)
+    lam, X, res, kk = p._ritz_modes(lambda v: A @ v, n, 1)
+    assert len(lam) == 2 and abs(lam[0] - np.conj(lam[1])) < 1e-9, lam
+    assert max(res) <= p.PPV_RITZ_RESIDUAL_TOL, res
+    ## to the certification level: a Ritz residual of 1e-6 bounds the
+    ## eigenvalue error by it (measured 1.1e-7 here)
+    for i in range(2):
+        assert abs(abs(lam[i]) - 0.9) < 1e-6 and abs(abs(np.angle(lam[i])) - 0.3) < 1e-6
+        assert np.linalg.norm(A @ X[:, i] - lam[i] * X[:, i]) < 1e-6
+
+
+def test_floquet_modes_above_the_dense_limit_on_a_staged_solve_read_the_total_map():
+    """On a staged solve the dominant modes are the TOTAL map's (the crossings
+    move with the state), on both sides -- as the dense path's
+    `total_matrix`.  Forced (the limit lowered to 2) on the comparator
+    oscillator against the dense modes."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    osc = _comparator_relaxation_oscillator()
+    seed, Tl = _relaxation_oscillator_seed(osc)
+    p = PSS(osc, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100)
+        assert p.converged and p._event_columns is not None
+        dense = p.floquet_modes(nmodes=2)
+        p.FLOQUET_DENSE_LIMIT = 2
+        try:
+            ritz = p.floquet_modes(nmodes=2)
+        finally:
+            del p.FLOQUET_DENSE_LIMIT
+    for d, r in zip(dense, ritz):
+        assert abs(d['lam'] - r['lam']) < 1e-9, (d['lam'], r['lam'])
+        pr, qr = _align_mode(d, r)
+        assert np.max(np.abs(qr - d['q'])) < 1e-7 * np.max(np.abs(d['q']))
+    assert abs(ritz[0]['lam'] - 1.0) < 1e-6
+
+
+def test_floquet_modes_run_on_a_monodromy_wider_than_the_dense_limit():
+    """Genuinely above `FLOQUET_DENSE_LIMIT`: a van der Pol with a 200-section
+    ladder under gear, its pair map 404 wide.  The three dominant modes
+    certify, `q^T C p = 1`, and the second multiplier equals `ppv`'s --
+    two independent routes (Arnoldi on `M` here, on `I - M` there).
+    Measured: 16.5 s to solve, 10.8 s for the modes."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir, p = _osc_with_ladder(16.0, 200, 14, npts=60)
+    assert p._state_map().width > p.FLOQUET_DENSE_LIMIT
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        modes = p.floquet_modes(nmodes=3)
+        _v, info = p.ppv()
+    assert len(modes) == 3 and all(md['certified'] for md in modes)
+    assert abs(modes[0]['lam'] - 1.0) < 1e-8
+    assert all(md['residual'] < 1e-10 for md in modes)
+    lam2 = float(info['second_multiplier'])
+    assert abs(abs(modes[1]['lam']) - lam2) < 1e-6, (modes[1]['lam'], lam2)
+
+
 def test_the_truncated_lam2_is_gated_on_its_own_ritz_residual():
     """Above `FLOQUET_DENSE_LIMIT` a truncated `lam2` must certify itself.
 
