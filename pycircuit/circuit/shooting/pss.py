@@ -368,9 +368,23 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          ## this many equal steps whenever it holds fewer -- see
          ## `_land_fractions`.  It sets the staged solve's floor at the switch
          ## (on the PWM loop, radau 5e-6 of the swing at 8, below 1e-6 at 16).
+         ## ⚠ THE WINDOW'S OWN ERROR DOES NOT REFINE WITH `timestep`: a window
+         ## narrower than a base step is always cut into this many steps, so
+         ## its error falls as K^-p in the count, not in N.  radau (p = 5) is
+         ## past it by 16; a SECOND-ORDER method (gear, trap, trbdf2, glm2) is
+         ## not -- gear's period on the comparator oscillator reads -2.2e-4 /
+         ## -3.0e-4 / -1.2e-4 / +1.4e-5 at 100 / 200 / 400 / 800 points with 16
+         ## (non-monotone: the window's error crosses gear's own), and converges
+         ## at second order with 256 (+1.05e-4 / +2.2e-5 / +4.4e-6).  Raise it
+         ## for such a method where accuracy below ~1e-4 at a sharp switch
+         ## matters; the default stays 16 (Andreas, 2026-09-25: 256 per
+         ## crossing "is a bit much" as a default).
          Parameter(name='event_window_steps',
                    desc='Steps a switching window between two landed state '
-                        'events is cut into when it holds fewer (>= 2)',
+                        'events is cut into when it holds fewer (>= 2); '
+                        'raise it for a second-order method (gear, trap, '
+                        'trbdf2, glm2) at a sharp switch -- its error there '
+                        'falls with this count, not with timestep',
                    unit='', default=_StateEvents.EVENT_WINDOW_STEPS),
          Parameter(name='period_column',
                    desc="'auto' (= 'closing' + proportional polish on a caller's grid, 'proportional' on a uniform one), 'proportional' or 'closing': "
@@ -1022,7 +1036,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         `row . x(theta_k T) = threshold`, and the bordered Newton lands the
         grid on the crossing exactly.  The window between a switch's two
         edges is cut into `event_window_steps` equal steps (16 by default)
-        whenever it holds fewer.  The solved fractions become the grid
+        whenever it holds fewer; that window's error falls with the count, not
+        with `timestep`, so a second-order method (gear, trap, trbdf2, glm2)
+        at a sharp switch may need 64-256 (see the Parameter).  The solved
+        fractions become the grid
         every consumer replays on and the event nodes are breaks for the
         period quadrature.  It runs on every kind -- the stage methods,
         gear's pair, a Nordsieck GLM (its map on the state) and the plain map
