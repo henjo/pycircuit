@@ -8001,6 +8001,15 @@ inside the corner).
 
 ### `sampled_variance`
 
+2026-09-25: the linear trapezoid on the log grid was replaced by the log-log
+rule (`_loglog_integral`), after measurement.  The linear trapezoid
+overestimated a 1/f band by `(r - 1)^3 / 6` per point: +3.7e-4 .. +5.1e-4
+at 40 per decade on the sampler.  The trapezoid in ln f, the first
+proposal, overestimated a white band by +2.8e-4.  Log-log is exact for both
+and for any power law: +6e-5 at 40 per decade, where the series PSD bends.
+Table in the log, 2026-09-25.
+
+
 The docstring paragraph before the move:
 
 ⚠ `fmin` AND `fmax` ARE REQUIRED.  With a 1/f source the integral

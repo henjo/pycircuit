@@ -3042,9 +3042,21 @@ class PAC(Analysis):
     def sampled_variance(self, pss, output, times, fmin, fmax,
                          points_per_decade=40, maxsidebands=None, tail=False):
         """The variance at sampling instants over the SERIES band
-        `[fmin, fmax]`, `0 < fmin < fmax <= f0/2`: the trapezoidal integral
-        of `sampled_noise` on a log grid of `points_per_decade`, nothing
-        added below `fmin`.  Returns an array over `times`.
+        `[fmin, fmax]`, `0 < fmin < fmax <= f0/2`: the integral of
+        `sampled_noise` on a log grid of `points_per_decade`, nothing added
+        below `fmin`.  Returns an array over `times`.
+
+        ⚠ POWER LAW BETWEEN THE POINTS (`_loglog_integral`, 2026-09-25): the
+        density is interpolated linearly in log-log and each interval
+        integrated exactly, so a white band and any pure power law are
+        exact and the error is second order where the density BENDS.  The
+        linear trapezoid it replaced overestimates a 1/f band by
+        `(r - 1)^3 / 6` per point (r the grid ratio); on the switched
+        sampler at 40 per decade, against a 640-per-decade reference:
+        1/f +3.7e-4 / +5.1e-4 before, +6.6e-5 / +6.1e-5 now; white +
+        1/f +7.7e-5 / +5.1e-4 before, +2.6e-5 / +6.1e-5 now; white 1e-11
+        both.  (The trapezoid in ln f, exact for 1/f, is +2.8e-4 on a
+        white band -- not used.)
 
         ⚠ `fmin` AND `fmax` ARE REQUIRED.  With a 1/f source the integral
         grows as `ln(fmax/fmin)` and has no limit at `fmin -> 0`; with white
@@ -3066,8 +3078,30 @@ class PAC(Analysis):
         fs = np.logspace(np.log10(fmin), np.log10(fmax), nf)
         S = self._sampled_series(pss, output, times, fs, maxsidebands,
                                  tail=tail)
-        from scipy.integrate import trapezoid
-        return trapezoid(S, fs, axis=1)
+        return self._loglog_integral(np.asarray(S, dtype=float), fs)
+
+    @staticmethod
+    def _loglog_integral(S, fs):
+        """``int S df`` over the grid `fs` (last axis of `S`), `S` a power
+        law between neighbouring points: on `[f1, f2]`, ``S = S1
+        (f/f1)^p`` through both ends, integrated exactly --
+        ``S1 f1 ln(r) (e^z - 1)/z``, ``z = ln(S2 f2 / (S1 f1))``, stable at
+        ``z -> 0`` (1/f).  An interval with an end that is not positive
+        (no power law passes through it) takes the linear trapezoid.
+
+        History: `doc/shooting_history.md`, `PAC.sampled_variance`."""
+        S = np.asarray(S, dtype=float)
+        f1, f2 = fs[:-1], fs[1:]
+        S1, S2 = S[..., :-1], S[..., 1:]
+        L = np.log(f2 / f1)
+        ok = (S1 > 0.0) & (S2 > 0.0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z = np.log(np.where(ok, S2, 1.0) / np.where(ok, S1, 1.0)) + L
+            phi = np.where(np.abs(z) < 1e-8, 1.0 + 0.5 * z,
+                           np.expm1(z) / np.where(z == 0.0, 1.0, z))
+        pw = S1 * f1 * L * phi
+        lin = 0.5 * (S1 + S2) * (f2 - f1)
+        return np.sum(np.where(ok, pw, lin), axis=-1)
 
     def jitter_metrics(self, pss, output, time, fmin, fmax, kmax=4,
                        maxsidebands=None, nfreq=601, dc_rectangle=False):

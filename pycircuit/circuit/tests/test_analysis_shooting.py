@@ -21570,6 +21570,31 @@ def test_independent_noise_sources_add_in_the_coloured_folds():
     assert v1 > 1.1, v1                  # the flicker is a visible share
 
 
+def test_the_sampled_variance_integrates_a_power_law_between_its_points_exactly():
+    """`PAC._loglog_integral` (2026-09-25): `sampled_variance`'s density is
+    a power law between neighbouring points (linear in log-log), each
+    interval integrated exactly -- so white, 1/f, a MOS-like 1/f^0.9 and
+    1/f^2 are EXACT on any grid, where the linear trapezoid it replaced
+    overestimated a 1/f band by (r - 1)^3 / 6 per point (2.4e-3 at 20 per
+    decade here) and the trapezoid in ln f a white one by (ln r)^2 / 12
+    (1.1e-3).  An interval with a non-positive end takes the trapezoid."""
+    from scipy.integrate import trapezoid
+    f = np.geomspace(1.0, 1e3, 61)                     # 20 per decade
+    for p in (0.0, -1.0, -0.9, -2.0, 0.5):
+        S = 3.0 * f ** p
+        exact = 3.0 * (np.log(1e3) if p == -1.0
+                       else (1e3 ** (p + 1.0) - 1.0) / (p + 1.0))
+        got = PAC._loglog_integral(np.vstack((S, 2.0 * S)), f)
+        assert np.allclose(got / (np.array([1.0, 2.0]) * exact), 1.0,
+                           rtol=1e-13, atol=0), (p, got / exact)
+    S = 1.0 / f
+    assert trapezoid(S, f) / np.log(1e3) - 1.0 > 2e-3
+    assert trapezoid(np.ones_like(f) * f, np.log(f)) / (1e3 - 1.0) - 1.0 > 1e-3
+    got = PAC._loglog_integral(np.array([[1.0, 0.0, 2.0, 2.0]]),
+                               np.array([1.0, 2.0, 3.0, 4.0]))
+    assert abs(got[0] - (0.5 + 1.0 + 2.0)) < 1e-14
+
+
 def test_the_sampled_variance_grows_as_ln_fmin_with_flicker_and_refuses_what_it_cannot_do():
     """A 1/f source makes the band variance grow by a constant per decade
     of `fmin` (measured 0.0010 kT/C per decade, flat 1e-4 -> 1e-1 f0), so
@@ -27478,12 +27503,13 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
     sign flips twice per period; the switch is noiseless (`kb = 0`).
 
     Measured at 200 points, the hold instant (0.6 T), `sampled_variance` at
-    100 per decade: amplitude-stated (`_SgnAmpFlicker`, the signed
-    process) K/sv - 1 = -8.3e-5, PSD-stated (`_SgnPsdFlicker`, the |m|
-    process) -8.3e-5 -- `sampled_variance`'s own linear trapezoid (it
-    carries (r - 1)^3 / 6 per point on a 1/f band: -9e-5 predicted; at 400
-    per decade both routes agree to 3e-6 ... 5e-6 at four instants on a
-    constant 1/f source).  The two processes differ by 0.9 % at the hold
+    its default 40 per decade: amplitude-stated (`_SgnAmpFlicker`, the
+    signed process) K/sv - 1 = -3.2e-5, PSD-stated (`_SgnPsdFlicker`, the
+    |m| process) the same -- `sampled_variance`'s own quadrature, second
+    order in the grid ratio (-5.0e-6 at 100 per decade).  Under the linear
+    trapezoid it used until 2026-09-25 the same comparison read -8.3e-5 at
+    100 per decade, (r - 1)^3 / 6 per point on a 1/f band.  The two
+    processes differ by 0.9 % at the hold
     (the sampled charge from before the edge, where the clock is positive,
     against the charge integrated after it, where it is negative), and
     both routes carry that difference: a sign-blind `sqrt(B)` amplitude,
@@ -27502,10 +27528,9 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             _K0, seq = pac.covariance(pss, samples=True, fmin=1e-6 * f0)
-            sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0,
-                                      points_per_decade=100)[0]
+            sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0)[0]
         out[kind] = seq[jh][io, io]
-        assert abs(out[kind] / sv - 1.0 + 8.3e-5) < 3e-5, (kind, out[kind] / sv - 1)
+        assert abs(out[kind] / sv - 1.0 + 3.2e-5) < 1e-5, (kind, out[kind] / sv - 1)
     assert 5e-3 < abs(out['amp'] / out['psd'] - 1.0) < 2e-2, out
 
 
