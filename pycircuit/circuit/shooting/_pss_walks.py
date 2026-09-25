@@ -7,7 +7,7 @@ from ._factored import _PeriodWalk
 from ._steps import _GLMStartup
 from ._steps import _StageStep
 from ._steps import _butcher
-from ._steps import _glm_step
+from ._steps import _GLMStep
 from ._steps import _lmm_recursion
 
 
@@ -484,11 +484,10 @@ class _PeriodWalks(object):
             if _j == 0:
                 trace0 = tr._glm_startup_trace
             elif restarted:
-                ## the step before ends on this node's startup (`_glm_step`)
-                prev = steps[-1]
-                steps[-1] = prev[:11] + (
-                    self._glm_startup_linearisation(tr._glm_startup_trace),
-                    prev[12])
+                ## the step before ends on this node's startup
+                ## (`_GLMStep.forward`)
+                steps[-1].restart_out = self._glm_startup_linearisation(
+                    tr._glm_startup_trace)
             Qn = np.asarray(tr._glm_Q[0], dtype=float)
             if Q0 is None:
                 ## the vector the first step actually entered with, i.e. what
@@ -512,9 +511,10 @@ class _PeriodWalks(object):
             ## the map on a 3:1 grid was 0.7 % (glm2) / 2 % (glm3) off its
             ## finite difference, exact on a uniform one.
             Qin = np.delete(np.asarray(tr._glm_Q_in, dtype=float), iref, axis=1)
-            steps.append((Kfacs, Gs, float(h), A, U, B, V, Ks,
-                          float(getattr(tr, '_glm_rho', 1.0)), Qin,
-                          np.asarray(xn, dtype=float), None, restarted))
+            steps.append(_GLMStep(Kfacs, Gs, float(h), A, U, B, V, Ks,
+                                  rho=float(getattr(tr, '_glm_rho', 1.0)),
+                                  Qin=Qin, x_in=np.asarray(xn, dtype=float),
+                                  restart_out=None, restarted=restarted))
             xs.append(np.asarray(x, dtype=float))
         return (steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x,
                 trace0)
@@ -543,27 +543,27 @@ class _PeriodWalks(object):
         _nsteps = len(steps)
         def _dhdT(i):
             return ((1.0 if i == _nsteps - 1 else 0.0) if closing
-                    else steps[i][2] / T)
+                    else steps[i].h / T)
         for _si, rec in enumerate(steps):
             ## 'closing': dh/dT = 1 on the last step, 0 elsewhere.  The
             ## explicit `h = frac T` in the stage: for an AUTONOMOUS circuit
             ## `K_j = -i(Y_j)` carries no time of its own, so the only new
-            ## term is the stage sum (see `_glm_step`)
+            ## term is the stage sum (see `_GLMStep.forward`)
             fT = None if T is None else _dhdT(_si)
             ## ⚠ AND UNDER 'closing' THE LAST STEP'S RESCALE MOVES WITH `T`
             ## (`rho = h_N / h_{N-1}`, `d rho / dT = rho / h_N`), even on a
             ## uniform grid where `rho` is 1; proportionally scaled steps keep
             ## every `rho` fixed.  (A step entered by a restart has none.)
-            drho = (rec[8] / rec[2]
+            drho = (rec.rho / rec.h
                     if (T is not None and closing and _si == _nsteps - 1
-                        and not rec[12])
+                        and not rec.restarted)
                     else None)
             ## a step ending on a restart: the startup moves with the next
             ## step's length
             nxt = ((_dhdT(_si + 1), 0.0)
-                   if (T is not None and rec[11] is not None
+                   if (T is not None and rec.restart_out is not None
                        and _si + 1 < _nsteps) else None)
-            P, D = _glm_step(rec, P, fT, drho, None, nxt)
+            P, D = rec.forward(P, fT, drho, None, nxt)
         return P, (D[-1] if D is not None else None)
 
     def _walk_glm(self, x_in, T, times, hs, dense=True, keep=False,
@@ -629,7 +629,6 @@ class _PeriodWalks(object):
         period, step by step (`_walk_glm`), capturing ``(x_j, dx_j/dx_0,
         [dx_j/dtheta_k])`` at the nodes in `capture` into `_captured`.
         Returns ``(M, [dx_N/dtheta_k])``."""
-        from ._steps import _glm_step
         iref = self.irefnode
         integ = self._transient().base_integrator
         c = np.asarray(integ.tableau()[4], dtype=float)
@@ -641,21 +640,21 @@ class _PeriodWalks(object):
         D = None
         Dk = [None] * K
         for j, rec in enumerate(steps):
-            P, D = _glm_step(rec, P)
-            h = rec[2]
+            P, D = rec.forward(P)
+            h = rec.h
             t0 = float(times[j])
             Ud = [np.delete(np.asarray(self.cir.dudt(t0 + float(ci) * h,
                                                       analysis=self.par.analysis),
                                        dtype=float), iref) for ci in c]
             for k in range(K):
                 w = float(hsens[j, k])
-                drho = ((w - rec[8] * float(hsens[j - 1, k])) / steps[j - 1][2]
-                        if (j > 0 and not rec[12]) else None)
+                drho = ((w - rec.rho * float(hsens[j - 1, k])) / steps[j - 1].h
+                        if (j > 0 and not rec.restarted) else None)
                 src = [Ud[i] * (tau[k] + float(c[i]) * w) for i in range(len(c))]
                 nxt = ((float(hsens[j + 1, k]), float(tau[k]) + w)
-                       if (rec[11] is not None and j + 1 < len(steps)) else None)
-                Pk[k], Dk[k] = _glm_step(rec, Pk[k], fT=w, drho=drho, src=src,
-                                         nxt=nxt)
+                       if (rec.restart_out is not None and j + 1 < len(steps)) else None)
+                Pk[k], Dk[k] = rec.forward(Pk[k], fT=w, drho=drho, src=src,
+                                           nxt=nxt)
             tau = tau + hsens[j]
             if capture is not None and (j + 1) in capture:
                 self._captured[j + 1] = (
@@ -681,8 +680,8 @@ class _PeriodWalks(object):
         try:
             for j in range(1, len(fp.steps)):
                 rec = fp.steps[j]
-                xf = np.insert(np.asarray(rec[10], dtype=float), iref, 0.0)
-                tr._glm_startup(float(times[j]), xf, float(rec[2]))
+                xf = np.insert(np.asarray(rec.x_in, dtype=float), iref, 0.0)
+                tr._glm_startup(float(times[j]), xf, float(rec.h))
                 out.append(self._glm_startup_linearisation(
                     tr._glm_startup_trace))
         finally:

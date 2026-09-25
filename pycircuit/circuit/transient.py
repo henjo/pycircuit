@@ -3789,7 +3789,7 @@ class Transient(Analysis):
         entry = getattr(self, '_glm_Q_at_entry', None)
         Q = None
         ## the rescale this step applied, recorded for the shooting
-        ## analysis's linearisation (`_glm_step` scales its sensitivities by
+        ## analysis's linearisation (`_GLMStep.forward` scales its sensitivities by
         ## the same `rho^k`)
         self._glm_rho = 1.0
         ## and whether it restarted on growth (`GLM_RESTART_GROWTH`), which

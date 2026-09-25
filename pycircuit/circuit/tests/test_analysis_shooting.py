@@ -26330,6 +26330,66 @@ def _exact_relaxation_oscillator_ppv():
     return mdl.T, sample
 
 
+def test_a_staged_glm_oscillators_ppv_and_floquet_modes_carry_the_moving_events():
+    """A Nordsieck GLM oscillator with state events: `ppv()` and
+    `floquet_modes` RAISED ("costate injections are not built on a
+    Nordsieck GLM (it has no state-event stage)", false by then), because
+    the GLM's own map on the state (`_GLMStateMap`) refused the event rows'
+    costate injections.  Two rounds had each been sound alone: the GLM's
+    event stage, and the GLM reading its own map for `ppv`.  Now the
+    injection at node n seeds step n-1's last stage (which IS `x_n`), node
+    0's the result (`_GLMPeriod.x_matvec_transposed`).  Measured against
+    the EXACT saltation PPV (`_exact_relaxation_oscillator_ppv`) at 200
+    points: glm3 3.9e-4, glm2 6.6e-4, radau 4.5e-4 -- the comparison's own
+    floor (see the radau test below); the second multiplier 0.02 for all.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T_ex, exact = _exact_relaxation_oscillator_ppv()
+    for method in ('glm3', 'glm2'):
+        cir = _comparator_relaxation_oscillator()
+        names = [str(n_) for n_ in cir.nodes]
+        seed, Tl = _relaxation_oscillator_seed(cir)
+        q = PSS(_comparator_relaxation_oscillator(), method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100,
+                    state_events=True)
+            v, info = q.ppv()
+            fm = q.floquet_modes(nmodes=2)
+        assert q.converged and len(q._state_event_fracs) == 4, method
+        red = [n_ for i, n_ in enumerate(names) if i != q.irefnode]
+        idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
+        X = np.asarray(q.waveform[1], dtype=float)
+        ts = np.asarray(q.waveform[0], dtype=float)
+        S = np.asarray(info['samples'])
+        nodes = list(q._event_columns['nodes'])
+        before = [j for j in (5, 15, 25) if j < nodes[0]]
+        after = [int(np.searchsorted(ts, f * float(q.period))) for f in (0.5, 0.8)]
+        worst = 0.0
+        for j in before + [nodes[1] + 3] + after:
+            ex = exact(X[[names.index(nm) for nm in ('c', 'fb0', 'fb1')], j])
+            worst = max(worst, float(np.max(np.abs(S[j, idx] - ex))
+                                     / np.max(np.abs(ex))))
+        assert worst < 2e-3, (method, worst)
+        lam = sorted((abs(x['lam']) for x in fm), reverse=True)
+        assert abs(lam[0] - 1.0) < 1e-6 and abs(lam[1] - 0.02) < 1e-3, (method, lam)
+        ## the injection is EXACT, by duality with the forward pass: the
+        ## transposed map with `inject` is the gradient of `v . x_N + sum_n
+        ## inject[n] . x_n` (on this fixture the events' weight in the PPV
+        ## is small, so accuracy against the exact PPV cannot see it)
+        sm = q.factored_period().state_map()
+        m = sm.width
+        rng = np.random.default_rng(3)
+        vv, u = rng.standard_normal(m), rng.standard_normal(m)
+        inj = rng.standard_normal((len(sm.steps), m))
+        grad = np.asarray(sm.matvec_transposed(vv, inject=inj))
+        _xN, fwd = sm.forward_states(u)
+        lin = float(vv @ fwd[-1]) + float(inj[0] @ u) + sum(
+            float(inj[n] @ fwd[n - 1]) for n in range(1, len(sm.steps)))
+        assert abs(float(grad @ u) - lin) < 1e-10 * abs(lin), (method, float(grad @ u), lin)
+
+
 def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_saltation_ppv():
     """Events phase B (2026-09-22): `ppv()` on a staged solve takes the
     null vector of the TOTAL monodromy and carries the crossings' motion
@@ -27473,7 +27533,7 @@ def test_a_glm_map_carries_the_nordsieck_rescale_on_a_non_uniform_grid():
     uniform grid), the Newton 14 / 21 evaluations, and the 'closing' period
     column 8 % / 19 % off on EVERY grid (the last step's rescale moves with
     `T` even where `rho` is 1).  The step records now carry `rho` and the
-    entered vector (`_glm_period_blocks`), `_glm_step` scales by `rho^k`,
+    entered vector (`_glm_period_blocks`), `_GLMStep.forward` scales by `rho^k`,
     its adjoint scales back, and the closing column carries ``(k / h_N)
     Q_k``.  Pinned: the map and both period columns against central
     differences on the 3:1 grid, and the factored map's transpose against
@@ -27643,7 +27703,7 @@ def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
             _w.simplefilter('ignore')
             wk = p._walk('glm', xx, tms_, hs_, T=T, hsens=hsens,
                          capture=set(nodes), keep=True)
-        restarts.append(sum(1 for rec in wk.steps if rec[12]))
+        restarts.append(sum(1 for rec in wk.steps if rec.restarted))
         F = np.concatenate((xx - np.asarray(wk.x_end),
                             [float(W[k] @ p._captured[nd][0]) - c[k]
                              for k, nd in enumerate(nodes)]))

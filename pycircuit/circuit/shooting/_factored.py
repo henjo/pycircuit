@@ -295,7 +295,8 @@ class _GLMPeriod(FactoredPeriod):
     is_glm = True
 
     def step_objects(self):
-        return [_GLMStep(st) for st in self.steps]
+        ## the records ARE the steps (`_GLMStep`)
+        return list(self.steps)
 
     def x_matvec(self, v):
         """The period map on the STATE, ``d x_N / d x_0`` applied to `v`:
@@ -303,17 +304,16 @@ class _GLMPeriod(FactoredPeriod):
         recursion, whose last stage is ``x_N`` (stiff accuracy) -- what a
         matrix-free Newton on `x_0` needs, where `matvec` acts on the
         Nordsieck state."""
-        from ._steps import _glm_step
         v = np.asarray(v)
         if np.iscomplexobj(v):
             return self.x_matvec(v.real) + 1j * self.x_matvec(v.imag)
         P = [np.asarray(b, dtype=float).ravel() for b in self.startup.matvec(v)]
         D = None
         for rec in self.steps:
-            P, D = _glm_step(rec, P)
+            P, D = rec.forward(P)
         return np.asarray(D[-1], dtype=float).ravel()
 
-    def x_matvec_transposed(self, v, collect=False):
+    def x_matvec_transposed(self, v, collect=False, inject=None):
         """``(d x_N / d x_0)^T v``: the costate seeded on the last step's
         last stage (`x_N`, stiff accuracy), the steps replayed backwards,
         and the startup's transpose at the end (`_GLMStartup.rmatvec`).
@@ -322,11 +322,21 @@ class _GLMPeriod(FactoredPeriod):
         does, `states[j]` the costate on the STATE at node `j`: the
         Nordsieck costate on the vector step `j` entered with, taken back
         through the startup AT that node, ``S_j^T lambda_j``
-        (`PSS._glm_node_startups`) -- at node 0 exactly `out`."""
+        (`PSS._glm_node_startups`) -- at node 0 exactly `out`.
+
+        `inject[n]` (a staged solve's event rows, `EventColumns.injection`)
+        is a costate on `x_n` itself: node `n >= 1` is step `n-1`'s last
+        stage, so it seeds that step's adjoint (`Dseed`); node 0 adds to
+        the result; a collected state carries its node's.  (Until
+        2026-09-25 refused, so `ppv` / `floquet_modes` raised on a staged
+        GLM oscillator.)"""
         v = np.asarray(v)
-        if np.iscomplexobj(v):
-            re = self.x_matvec_transposed(v.real, collect)
-            im = self.x_matvec_transposed(v.imag, collect)
+        inj = None if inject is None else np.asarray(inject)
+        if np.iscomplexobj(v) or (inj is not None and np.iscomplexobj(inj)):
+            re = self.x_matvec_transposed(
+                v.real, collect, None if inj is None else inj.real)
+            im = self.x_matvec_transposed(
+                v.imag, collect, None if inj is None else inj.imag)
             if not collect:
                 return re + 1j * im
             return (re[0] + 1j * im[0],
@@ -336,18 +346,23 @@ class _GLMPeriod(FactoredPeriod):
         v = np.asarray(v, dtype=float).ravel()
         steps = self.step_objects()
         m = v.shape[0]
-        r = len(self.steps[0][9])
+        r = len(self.steps[0].Qin)
         w = [np.zeros(m) for _ in range(r)]
         lams, ts = [], []
-        for j in range(len(steps) - 1, -1, -1):
-            lam, rb = steps[j].adjoint(
-                w, Dseed=(v if j == len(steps) - 1 else None), entered=True)
+        N = len(steps)
+        for j in range(N - 1, -1, -1):
+            seed = v if j == N - 1 else None
+            if inj is not None and j + 1 < N:
+                seed = inj[j + 1] if seed is None else seed + inj[j + 1]
+            lam, rb = steps[j].adjoint(w, Dseed=seed, entered=True)
             lams.append(lam)
             ts.append(rb)
-            rho = self.steps[j][8]
+            rho = self.steps[j].rho
             w = ([rho ** k * lam[k] for k in range(r)] if rho != 1.0
                  else lam)
         out = self.startup.rmatvec(w)
+        if inj is not None:
+            out = out + inj[0]
         if not collect:
             return out
         lams.reverse()
@@ -355,6 +370,8 @@ class _GLMPeriod(FactoredPeriod):
         if getattr(self, '_node_startups', None) is None:
             self._node_startups = self._pss._glm_node_startups(self)
         states = [su.rmatvec(lam) for su, lam in zip(self._node_startups, lams)]
+        if inj is not None:
+            states = [st + inj[j] for j, st in enumerate(states)]
         return out, ts, states
 
     def state_map(self):
@@ -409,18 +426,13 @@ class _GLMStateMap(object):
         return self._fp.x_matvec(v)
 
     def matvec_transposed(self, v, collect=False, inject=None):
-        if inject is not None:
-            raise NotImplementedError(
-                'PSS: costate injections are not built on a Nordsieck GLM '
-                '(it has no state-event stage).')
-        return self._fp.x_matvec_transposed(v, collect=collect)
+        return self._fp.x_matvec_transposed(v, collect=collect, inject=inject)
 
     def forward_states(self, u):
         """``(x_N, [x_1 .. x_N])``: a state direction `u` at node 0 carried
         forward, the state at every later node (each step's last stage) --
         what `floquet_modes` samples a right mode with, where the other
         kinds run an unforced `_forced_replay`."""
-        from ._steps import _glm_step
         u = np.asarray(u)
         if np.iscomplexobj(u):
             e1, f1 = self.forward_states(u.real)
@@ -430,7 +442,7 @@ class _GLMStateMap(object):
              for b in self._fp.startup.matvec(u)]
         out = []
         for rec in self.steps:
-            P, D = _glm_step(rec, P)
+            P, D = rec.forward(P)
             out.append(np.asarray(D[-1], dtype=float).ravel())
         return out[-1], out
 
