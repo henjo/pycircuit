@@ -185,9 +185,7 @@ class PAC(Analysis):
         """
         toolkit = self.toolkit
         freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
-        ## the map on the state (a GLM's own, `_GLMPeriod.state_map`; a GLM
-        ## oscillator's twin, `_small_signal_host`)
-        pss = pss._small_signal_host()
+        ## the map on the state (a GLM's own, `_GLMPeriod.state_map`)
         fp = pss._state_map()
         T = float(fp.T)
         m = self.cir.n - 1
@@ -431,7 +429,6 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC.adjoint_transfer_row`.
         """
         import scipy.sparse.linalg as spla
-        pss = pss._small_signal_host()        # a GLM oscillator's twin
         fp = pss._state_map()
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the adjoint row')
@@ -503,7 +500,6 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
         """
         import scipy.sparse.linalg as spla
-        pss = pss._small_signal_host()        # a GLM oscillator's twin
         fp = pss._state_map()
 
         self._check_circuit(pss)
@@ -5327,7 +5323,19 @@ class PAC(Analysis):
         ## answer carries the multiplier's displacement (the staged map's
         ## multiplier, roadmap E8).  On an unstaged oscillator the residual
         ## is already at the tolerance and nothing happens.
-        if abs(denom) >= self.DEFLATION_REFINE_MIN:
+        ## ⚠⚠ NOT ON A NORDSIECK GLM'S MAP, MEASURED (2026-09-25; Andreas:
+        ## "If GLM is accurate use GLM").  Its map opens with the startup,
+        ## which breaks the discrete phase symmetry: the unit multiplier sits
+        ## ``eta = O(h^p)`` off 1 (van der Pol in LC form, glm3 2.35e-5 /
+        ## 1.1e-6 at 60 / 120 points; radau 3e-11).  Refined, the answer is
+        ## the discrete operator's and misses the physical one by ``eta /
+        ## (2 pi r)``, `r` the offset in units of f0 (glm3 at 60 points:
+        ## 3.8e-3 at 1e-3, 0.35 at 1e-5, and below ``r ~ eta / 2 pi`` the
+        ## pole is gone).  Unrefined -- the pole carried analytically -- it
+        ## is O(h^p) at every offset (3.3e-5 / 3.3e-5 / 8.4e-5 at 1e-3 /
+        ## 1e-5 / 1e-7 against radau at 480 points), and forward and adjoint
+        ## then agree to O(eta) rather than the arithmetic (1e-6).
+        if abs(denom) >= self.DEFLATION_REFINE_MIN and not fp.is_glm:
             def _plain(z_):
                 z_ = np.asarray(z_)
                 return z_ - alpha * np.asarray(mv(z_))

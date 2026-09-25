@@ -187,21 +187,17 @@ class _AccuracyChecks(object):
 
     def _state_twin(self):
         """`monodromy_twin`, except that a Nordsieck GLM takes its twin
-        DRIVEN OR NOT -- for the Lyapunov surfaces (`_lyapunov_host`) and,
-        on an OSCILLATOR, the small-signal ones (`_small_signal_host`).
+        DRIVEN OR NOT -- for the Lyapunov surfaces alone (`_lyapunov_host`).
         Everything else reads the GLM's own map on the state
         (`PSS._state_map`; Andreas, 2026-09-25: "Native for all but
-        covariance").  Both exceptions are MEASURED:
-
-        * the covariance: a white source over a GLM step reaches the state
-          through its effective weights ``w = l^T B`` (GLM3 0.359, -0.0167,
-          0.067, 0.591; GLM4 -26 .. +166), which no per-stage sampling can
-          carry with positive variances, so a native injection is one shared
-          sample per step -- first order;
-        * an oscillator's small-signal response NEAR A HARMONIC: see
-          `_small_signal_host`.
-
-        `monodromy='native'` keeps the GLM's own map for both.
+        covariance", then for an oscillator's small-signal surfaces "If GLM
+        is accurate use GLM" -- see `PAC._deflated_solve`).  The covariance
+        is the exception on MEASUREMENT: a white source over a GLM step
+        reaches the state through its effective weights ``w = l^T B`` (GLM3
+        0.359, -0.0167, 0.067, 0.591; GLM4 -26 .. +166), which no per-stage
+        sampling can carry with positive variances, so a native injection is
+        one shared sample per step -- first order.  `monodromy='native'`
+        selects it.
         """
         host = self.monodromy_twin()
         if (host is self and self._map_kind() == 'glm'
@@ -210,32 +206,6 @@ class _AccuracyChecks(object):
                 and self.converged):
             return self._solve_twin(self.monodromy)
         return host
-
-    def _small_signal_host(self):
-        """The `PSS` whose map on the state `PAC.solve`, the adjoint rows and
-        `pnoise` read: this one -- a Nordsieck GLM included, on its own map
-        (`PSS._state_map`) -- except an OSCILLATOR solved with a GLM, which
-        hands them to its twin (`_state_twin`: radau unless
-        `monodromy='native'`).
-
-        ⚠ MEASURED (2026-09-25), NOT ASSUMED.  A GLM's map on the state
-        opens with its startup, which breaks the discrete phase symmetry:
-        its unit multiplier sits ``eta = O(h^p)`` off 1 (van der Pol:
-        glm3 2.4e-5 / 1.1e-6 at 60 / 120 points, glm2 7e-6 / 1.1e-6; radau
-        3e-11).  The deflated solve returns the DISCRETE operator's answer
-        (refined on it, dual-consistent: `PAC._deflated_solve`), which
-        near a harmonic misses the physical one by ``eta / (2 pi r)``, `r`
-        the offset in units of f0 -- glm3 at 60 points 0.4 % at 1e-3, 35 %
-        at 1e-5, and below ``r ~ eta / 2 pi`` the pole is gone (the answer
-        bounded).  A driven circuit has no such pole: there the GLM's own
-        map is exact at its order (PAC on an LTI RLC against AC: 2.0 /
-        3.0 / 4.1 per halving for glm2 / 3 / 4).  (The deflated answer
-        UNREFINED is O(h^p) at every offset -- glm3 3.3e-5 at 60 points
-        from 1e-3 to 1e-7 -- but forward and adjoint then agree only to
-        O(eta); not built.)"""
-        if self._map_kind() == 'glm' and getattr(self, 'autonomous', False):
-            return self._state_twin()
-        return self
 
     def _lyapunov_host(self):
         """The `PSS` the Lyapunov noise surfaces (`covariance`,
@@ -263,10 +233,9 @@ class _AccuracyChecks(object):
         monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
         use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
         Gear-2 twin if asked.  A Nordsieck GLM reads its own map on the
-        state (`PSS._state_map`; until 2026-09-25 a radau twin), except on
-        an oscillator (`_small_signal_host`).
+        state (`PSS._state_map`; until 2026-09-25 a radau twin).
         """
-        return self._small_signal_host().monodromy_twin()
+        return self.monodromy_twin()
 
     ## `grid_error`'s ceiling on a plausible OBSERVED order is the method's
     ## nominal order (`_nominal_order`), read off its integrator for every

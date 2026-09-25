@@ -521,8 +521,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## 'esdirk43' select those twins (see `monodromy_twin`).  A Nordsieck
         ## GLM reads its own map on the state (`_state_map`: `ppv`,
         ## `floquet_modes`, PAC, the adjoint rows, pnoise, `sampled_noise`)
-        ## and the twin for the covariance surfaces and an oscillator's
-        ## small-signal ones (`_state_twin`).
+        ## and the twin for the covariance surfaces (`_state_twin`).
         ## 'native': the run's OWN plain factorisation --
         ## ⚠ the WORST under a one-step method (its `Q` DIVERGES under
         ## refinement); it is for the gates that measure that defect, not for

@@ -1617,11 +1617,12 @@ class NordsieckGLMIntegrator(Integrator):
         read it (`PSS._state_map`).  Still False, because two things keep a
         GLM from BEING a twin, both measured: the startup that opens the map
         breaks the discrete phase symmetry (the unit multiplier sits
-        ``O(h^p)`` off 1, which an oscillator's small-signal response near a
-        harmonic carries -- `PSS._small_signal_host`), and its white-noise
-        injection is one shared sample per step, first order
-        (`PAC._lyapunov_pieces_glm`).  Those surfaces take a radau twin by
-        default (`PSS._state_twin`); `monodromy='native'` keeps the GLM's.
+        ``O(h^p)`` off 1 -- an oscillator's small-signal response near a
+        harmonic is therefore read with the pole carried analytically,
+        `PAC._deflated_solve`), and its white-noise injection is one shared
+        sample per step, first order (`PAC._lyapunov_pieces_glm`).  The
+        covariance surfaces take a radau twin by default
+        (`PSS._state_twin`); `monodromy='native'` keeps the GLM's.
         """
         return False
 

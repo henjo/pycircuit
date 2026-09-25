@@ -28033,7 +28033,7 @@ def test_a_glm_reads_pac_off_its_own_map_at_its_order():
     for method, order in (('glm2', 2), ('glm3', 3)):
         e1, p = run(method, 100)
         e2, _p2 = run(method, 200)
-        assert p._state_map().is_glm and p._small_signal_host() is p
+        assert p._state_map().is_glm
         assert abs(np.log2(e1 / e2) - order) < 0.25, (method, e1, e2)
         ## the replays on the state against the GLM's own map
         sm = p._state_map()
@@ -28091,16 +28091,19 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
       not all positive).  The sampler's held variance: glm2 1.0153 /
       1.0055 / 1.0022 kT/C at 200 / 400 / 800 points (radau twin
       1.000000).
-    * An OSCILLATOR's small-signal surfaces keep the twin
-      (`_small_signal_host`), MEASURED: the GLM map's unit multiplier sits
-      ``eta = O(h^p)`` off 1 (its startup breaks the phase symmetry; van
-      der Pol in LC form with a ``0.3 u^2`` asymmetry, glm3 at 60 points:
-      2.35e-5), and near a harmonic the refined
-      deflated answer carries ``eta / (2 pi r)``.  `monodromy='native'`
-      reads the GLM's own; at r = 1e-3 it differs from the unrefined
-      deflated recovery by that term to 10 % (3.7e-3).  (Against the twin
-      the gap is 7.5e-3: the twin solves its own period, 6.5e-6 longer,
-      which moves the offset from its carrier by 6.5e-3 of r.)
+    * An OSCILLATOR's small-signal surfaces read the GLM's own map too
+      (Andreas: "If GLM is accurate use GLM"), with the deflated answer
+      UNREFINED (`PAC._deflated_solve`), MEASURED: the GLM map's unit
+      multiplier sits ``eta = O(h^p)`` off 1 (its startup breaks the phase
+      symmetry; van der Pol in LC form with a ``0.3 u^2`` asymmetry, glm3
+      at 60 points: 2.35e-5), and refined on that operator the answer near
+      a harmonic missed the physical one by ``eta / (2 pi r)`` -- 3.8e-3 /
+      0.35 / 1.0 at r = 1e-3 / 1e-5 / 1e-7, the pole lost.  Unrefined, the
+      carrier's response against radau at 480 points: 3.3e-5 / 3.3e-5 /
+      8.4e-5, forward and adjoint alike (dual to 1e-6, O(eta)).  ⚠ A weak
+      sideband is swamped: the l = -1 one here is 2e6 below the carrier's,
+      and the GLM's error there, 2e-6 of the carrier's response at its
+      order, is several times the coefficient (radau: 1e-4).
     """
     import warnings as _w
     from pycircuit.circuit.analysis import remove_row_col
@@ -28158,49 +28161,51 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
         held.append(seq_n[jh][io, io] / ktc - 1.0)
     assert 0.0 < held[1] < held[0] < 0.03 and held[0] / held[1] > 2.0, held
 
-    ## an oscillator's small-signal surfaces: the twin, unless native (an
-    ## asymmetric van der Pol in LC form)
-    cir = SubCircuit()
-    cir.add_node('v')
-    cir['C'] = C('v', gnd, c=1.0)
-    cir['L'] = L('v', gnd, L=1.0)
-    cir['B'] = BSource('v', gnd, gnd, 'v',
-                       i_func=lambda u: u - u ** 3 / 3.0 + 0.3 * u ** 2)
-    cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)
-    p = PSS(cir, method='glm3', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        p.solve(period=6.66, timestep=6.66 / 60, x0=np.array([2.0, 0.0]), maxiterations=100)
-    assert p.converged
-    tw = p._small_signal_host()
-    assert tw is not p and getattr(tw.par, 'method', None) == 'radau'
-    f0 = 1.0 / float(p.period)
-    f = (1.0 + 1e-3) * f0
-    sm = p._state_map()
-    M = np.column_stack([sm.matvec(e) for e in np.eye(sm.width)])
-    lam = np.linalg.eigvals(M)
-    eta = float(abs(lam[np.argmin(np.abs(lam - 1.0))] - 1.0))
-    iv = [str(n_) for n_ in cir.nodes].index('v')
+    ## an oscillator's small-signal surfaces: the GLM's own map, the pole
+    ## carried analytically (an asymmetric van der Pol in LC form)
+    def vdp():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: u - u ** 3 / 3.0 + 0.3 * u ** 2)
+        c['ac'] = IS('v', gnd, i=0.0, iac=1.0)
+        return c
 
-    def response(q, refine=True):
-        pac = PAC(cir, toolkit=circuit.numeric)
-        if not refine:
-            pac.DEFLATION_REFINE_MIN = np.inf
+    def carrier_response(method, N):
+        cir = vdp()
+        q = PSS(cir, method=method, reltol=1e-12)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            res = pac.solve(q, [f])
-        sv = np.asarray(res.sweep_values, dtype=float)
-        X = np.asarray(res.x)[iv]
-        return complex(X[int(np.argmax(np.where(np.abs(sv - f) < 1e-3 * f0, np.abs(X), -1.0)))])
+            q.solve(period=6.66, timestep=6.66 / N, x0=np.array([2.0, 0.0]),
+                    maxiterations=100)
+        assert q.converged
+        f0 = 1.0 / float(q.period)
+        iv = [str(n_) for n_ in cir.nodes].index('v')
+        io = iv if iv < q.irefnode else iv - 1
+        (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
+        out = []
+        for r in (1e-3, 1e-5, 1e-7):
+            f = (1.0 + r) * f0
+            pac = PAC(cir, toolkit=circuit.numeric)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                res = pac.solve(q, [f])
+                h = complex(np.asarray(pac.adjoint_sideband_row(q, f, io, sidebands=[0]))[0] @ u_ac)
+            sv = np.asarray(res.sweep_values, dtype=float)
+            X = np.asarray(res.x)[iv]
+            ks = [k for k in range(len(sv)) if abs(sv[k] - f) < 1e-9 * f]
+            out.append((complex(X[max(ks, key=lambda k: abs(X[k]))]), h))
+        return q, out
 
-    p.monodromy = 'native'
-    assert p._small_signal_host() is p
-    ## the native answer is the discrete operator's (refined): it differs
-    ## from the deflated recovery -- the pole carried analytically, O(h^p)
-    ## -- by eta / (2 pi r)
-    ratio = abs(response(p) / response(p, refine=False) - 1.0) / (eta / (2.0 * np.pi * 1e-3))
-    p.monodromy = 'radau'
-    assert 1e-6 < eta < 1e-4 and 0.9 < ratio < 1.1, (eta, ratio)
+    q, got = carrier_response('glm3', 60)
+    assert q._state_map().is_glm and q.monodromy_twin() is q
+    _qr, ref = carrier_response('radau', 480)
+    for (x, h), (xr, hr), r in zip(got, ref, (1e-3, 1e-5, 1e-7)):
+        assert abs(x / xr - 1.0) < 2e-4, (r, x, xr)
+        assert abs(h / hr - 1.0) < 2e-4, (r, h, hr)
 
 
 def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
