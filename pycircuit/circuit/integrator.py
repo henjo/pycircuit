@@ -1609,16 +1609,19 @@ class NordsieckGLMIntegrator(Integrator):
         neither `w[:m]` nor `C^T w_0` is the state PPV -- MEASURED against
         radau on van der Pol at Q = 15.9, both are wrong by 2 % in norm and by
         13x in the small component, and `ppv` used to return the first of them
-        SILENTLY.  Computing the right projection needs the same linearised
-        startup term the shooting Jacobian drops, and it is not built.
+        SILENTLY.
 
-        So a multivalue method takes a TWIN for the state-space surfaces --
-        the machinery `trap` and `euler` already use for the same shape of
-        reason (their own monodromy is not the object the surfaces want).  The
-        orbit is this method's; only the map is borrowed, and
-        `PSS.monodromy_twin` documents that.  The method's OWN map stays
-        available and gated through `PSS.factored_period()`
-        (`FactoredPeriod(kind='glm')`), with its adjoint.
+        Since 2026-09-24/25 the map ON THE STATE is built (the startup
+        linearised, `_GLMStartup`; `_GLMPeriod.state_map`), and `ppv`,
+        `floquet_modes`, PAC, the adjoint rows, pnoise and `sampled_noise`
+        read it (`PSS._state_map`).  Still False, because two things keep a
+        GLM from BEING a twin, both measured: the startup that opens the map
+        breaks the discrete phase symmetry (the unit multiplier sits
+        ``O(h^p)`` off 1, which an oscillator's small-signal response near a
+        harmonic carries -- `PSS._small_signal_host`), and its white-noise
+        injection is one shared sample per step, first order
+        (`PAC._lyapunov_pieces_glm`).  Those surfaces take a radau twin by
+        default (`PSS._state_twin`); `monodromy='native'` keeps the GLM's.
         """
         return False
 

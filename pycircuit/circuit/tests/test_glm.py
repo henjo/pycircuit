@@ -649,21 +649,27 @@ def test_a_glm_has_no_error_estimate_across_a_restart():
     assert not seen[1][0] and seen[1][1] > 0.0, seen[1]
 
 
-def test_sampled_noise_refuses_a_glm_period_map():
-    """`PAC.sampled_noise` has seeded reverse passes for the LMM and stage
-    maps only; a multivalue GLM map is refused by name rather than
-    mis-replayed (the refusal was written 2026-09-15 and had no test).
-    Since 2026-09-24 a GLM run hands the sampler to its monodromy twin, so
-    the refusal is reached with `monodromy='native'` -- the GLM's own map."""
-    import pytest
+def test_sampled_noise_reads_a_glm_run_off_its_own_map():
+    """`PAC.sampled_noise` on a Nordsieck GLM run reads the GLM's own map on
+    the state (2026-09-25; refused on the Nordsieck map from 2026-09-15, a
+    radau twin from 2026-09-24): its seeded reverse pass runs the steps on
+    ``(P, x)`` and collects a coupling per injection point -- the stages,
+    then the opening startup's substages (`_GLMStateStep`).  So the default
+    and `monodromy='native'` read the same number (the twin is for the
+    covariance alone), and it is not the radau twin's."""
     from pycircuit.circuit.shooting import PSS, PAC
     per = 1e-3
-    cir = _cv_loop(per)
-    p = PSS(cir, method='glm3', reltol=1e-12)
-    p.monodromy = 'native'
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        p.solve(period=per, timestep=per / 40, maxiterations=40)
-    assert p.factored_period().kind == 'glm'
-    with pytest.raises(NotImplementedError, match='GLM'):
-        PAC(cir).sampled_noise(p, 0, [0.0], [0.1 / per])
+    got = {}
+    from pycircuit.circuit.elements import IS
+    for method, mono in (('glm3', 'radau'), ('glm3', 'native'), ('radau', 'radau')):
+        cir = _cv_loop(per)
+        cir['n'] = IS('b', gnd, i=0.0, noisePSD=1e-20)
+        ib = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('b')
+        p = PSS(cir, method=method, reltol=1e-12)
+        p.monodromy = mono
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=per, timestep=per / 40, maxiterations=40)
+            got[(method, mono)] = float(PAC(cir).sampled_noise(p, ib, [0.0], [0.1 / per])[0, 0])
+    assert got[('glm3', 'radau')] == got[('glm3', 'native')] > 0.0, got
+    assert got[('glm3', 'radau')] != got[('radau', 'radau')], got

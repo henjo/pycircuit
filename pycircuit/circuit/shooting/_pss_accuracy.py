@@ -65,8 +65,9 @@ class _AccuracyChecks(object):
         ## Pol, its `ppv` / `floquet_modes` on the state are second / third
         ## order, and glm3's spectrum is 4.6e-8 of radau's where the trbdf2
         ## twin read 9.7e-7.  `carries_own_monodromy` stays False: a GLM may
-        ## not BE the twin, because PAC and the noise surfaces are not built
-        ## on its map.
+        ## not BE the twin -- its map's unit multiplier sits O(h^p) off 1
+        ## (the startup seam) and its covariance injection is first order;
+        ## the surfaces that feel those take a twin (`_state_twin`).
         if (mono == 'native'
                 or _integ.carries_own_monodromy()
                 or self._map_kind() == 'glm'
@@ -186,11 +187,21 @@ class _AccuracyChecks(object):
 
     def _state_twin(self):
         """`monodromy_twin`, except that a Nordsieck GLM takes its twin
-        DRIVEN OR NOT: PAC, its adjoint row, `sampled_noise` and the
-        Lyapunov surfaces are not built on its map (its factored period acts
-        on the Nordsieck state; `ppv` and `floquet_modes` read it on the
-        state, see `monodromy_twin`).  `monodromy='native'` keeps the GLM's
-        own map, and those consumers refuse it.
+        DRIVEN OR NOT -- for the Lyapunov surfaces (`_lyapunov_host`) and,
+        on an OSCILLATOR, the small-signal ones (`_small_signal_host`).
+        Everything else reads the GLM's own map on the state
+        (`PSS._state_map`; Andreas, 2026-09-25: "Native for all but
+        covariance").  Both exceptions are MEASURED:
+
+        * the covariance: a white source over a GLM step reaches the state
+          through its effective weights ``w = l^T B`` (GLM3 0.359, -0.0167,
+          0.067, 0.591; GLM4 -26 .. +166), which no per-stage sampling can
+          carry with positive variances, so a native injection is one shared
+          sample per step -- first order;
+        * an oscillator's small-signal response NEAR A HARMONIC: see
+          `_small_signal_host`.
+
+        `monodromy='native'` keeps the GLM's own map for both.
         """
         host = self.monodromy_twin()
         if (host is self and self._map_kind() == 'glm'
@@ -200,12 +211,29 @@ class _AccuracyChecks(object):
             return self._solve_twin(self.monodromy)
         return host
 
-    def _state_map_host(self):
-        """The `PSS` whose factored period a state-space consumer
-        (`PAC.solve`, its adjoint row, `sampled_noise`) reads: this one,
-        unless its own map acts on another state -- a Nordsieck GLM's -- and
-        then its twin (`_state_twin`)."""
-        if self._map_kind() == 'glm':
+    def _small_signal_host(self):
+        """The `PSS` whose map on the state `PAC.solve`, the adjoint rows and
+        `pnoise` read: this one -- a Nordsieck GLM included, on its own map
+        (`PSS._state_map`) -- except an OSCILLATOR solved with a GLM, which
+        hands them to its twin (`_state_twin`: radau unless
+        `monodromy='native'`).
+
+        ⚠ MEASURED (2026-09-25), NOT ASSUMED.  A GLM's map on the state
+        opens with its startup, which breaks the discrete phase symmetry:
+        its unit multiplier sits ``eta = O(h^p)`` off 1 (van der Pol:
+        glm3 2.4e-5 / 1.1e-6 at 60 / 120 points, glm2 7e-6 / 1.1e-6; radau
+        3e-11).  The deflated solve returns the DISCRETE operator's answer
+        (refined on it, dual-consistent: `PAC._deflated_solve`), which
+        near a harmonic misses the physical one by ``eta / (2 pi r)``, `r`
+        the offset in units of f0 -- glm3 at 60 points 0.4 % at 1e-3, 35 %
+        at 1e-5, and below ``r ~ eta / 2 pi`` the pole is gone (the answer
+        bounded).  A driven circuit has no such pole: there the GLM's own
+        map is exact at its order (PAC on an LTI RLC against AC: 2.0 /
+        3.0 / 4.1 per halving for glm2 / 3 / 4).  (The deflated answer
+        UNREFINED is O(h^p) at every offset -- glm3 3.3e-5 at 60 points
+        from 1e-3 to 1e-7 -- but forward and adjoint then agree only to
+        O(eta); not built.)"""
+        if self._map_kind() == 'glm' and getattr(self, 'autonomous', False):
             return self._state_twin()
         return self
 
@@ -220,7 +248,8 @@ class _AccuracyChecks(object):
         gear/trbdf2 host is its own host.  TR-BDF2's per-step injection is
         built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
         is no Gear-2 fallback -- the injection follows the chosen twin.
-        A Nordsieck GLM hands them to its twin driven or not (`_state_twin`).
+        A Nordsieck GLM hands them to its twin driven or not (`_state_twin`:
+        radau unless `monodromy='native'`).
         """
         return self._state_twin()
 
@@ -233,10 +262,11 @@ class _AccuracyChecks(object):
         carries the source coupling through both stages), so this is the
         monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
         use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
-        Gear-2 twin if asked.  A Nordsieck GLM hands it to its twin driven or
-        not (`_state_twin`).
+        Gear-2 twin if asked.  A Nordsieck GLM reads its own map on the
+        state (`PSS._state_map`; until 2026-09-25 a radau twin), except on
+        an oscillator (`_small_signal_host`).
         """
-        return self._state_twin()
+        return self._small_signal_host().monodromy_twin()
 
     ## `grid_error`'s ceiling on a plausible OBSERVED order is the method's
     ## nominal order (`_nominal_order`), read off its integrator for every
@@ -436,7 +466,7 @@ class _AccuracyChecks(object):
     def _twin_nominal_order(self):
         """The nominal order of the twin this run hands surfaces to -- a
         one-step LMM's oscillator surfaces (`monodromy_twin`), a GLM's
-        state-space consumers (`_state_twin`) -- or 0 when it hands none."""
+        covariance surfaces (`_state_twin`) -- or 0 when it hands none."""
         mono = getattr(self, 'monodromy', 'radau')
         if mono == 'native':
             return 0

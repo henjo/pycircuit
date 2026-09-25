@@ -4002,9 +4002,12 @@ def test_pac_forward_replay_works_over_the_stage_methods(method, tol):
         '%s PAC disagrees with AC by %.3e on a LINEAR circuit' % (method, rel)
 
 
-@pytest.mark.parametrize('method', ['trbdf2', 'radau'])
+@pytest.mark.parametrize('method', ['trbdf2', 'radau', 'glm2', 'glm3'])
 def test_forward_replay_is_the_exact_transpose_of_the_adjoint(method):
-    """``<xa, W u> == <W^T xa, u>`` to machine precision for the stage methods.
+    """``<xa, W u> == <W^T xa, u>`` to machine precision for the stage methods
+    and the Nordsieck GLMs' maps on the state (`PSS._state_map`: the source
+    enters every stage, the output rows and the opening startup's
+    substages -- `_GLMStateStep`; 2026-09-25).
 
     The forward driven replay ``_forced_replay`` and the adjoint
     ``_forced_replay_transposed`` are built from the SAME per-step source
@@ -4021,7 +4024,7 @@ def test_forward_replay_is_the_exact_transpose_of_the_adjoint(method):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         pss.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
-    fp = pss.factored_period()
+    fp = pss._state_map()
     m = cir.n - 1
     rng = np.random.default_rng(1)
     u = rng.standard_normal(m) + 1j * rng.standard_normal(m)
@@ -22187,6 +22190,80 @@ def test_the_sampled_noise_runs_natively_under_the_stage_methods():
     assert e4 > 0.02 and 0.4 < e8 / e4 < 0.6, (e4, e8)
 
 
+def test_the_sampled_noise_runs_natively_under_a_glm():
+    """A Nordsieck GLM's map on the state (2026-09-25, `_GLMStateStep`):
+    `sampled_noise` passes it as a stage map, one coupling per INJECTION
+    POINT -- every stage, then the substages of the startup that opens a
+    step -- with `CY` at the stored stage states.  Measured on the sampler:
+
+    * the pass's couplings at `_stage_times`, seeded with an output at node
+      1, reproduce the forced replay's response there to 1e-15 (exact: one
+      set of costates; step 0 and its startup's substages carry it all);
+    * the LTI series sum against the pnoise fold: glm2 1.9e-5 / 2.4e-6 /
+      3.0e-7, glm3 2.1e-6 / 1.1e-7 / 1.6e-8 at 100 / 200 / 400 points
+      (radau 6e-15) -- NOT a coupling defect: the startup at node 0 makes
+      the discretised LTI circuit periodically time-varying, so an
+      instant's samples carry O(h^p)-small sidebands the stationary fold
+      does not, and the gap falls at the method's order;
+    * the held variance glm2 0.999825 / 0.999978 / 0.999997, glm3 0.999775
+      / 0.999973 / 0.999997 kT/C at 200 / 400 / 800 points; the tracking
+      value first order, as radau's.
+
+    Pinned: the identity to 1e-12, the LTI gap falling by more than 5x
+    over 100 -> 200 (glm2), the held variance within 1e-4 at 400."""
+    import warnings
+    ktc = _KB * _TEMP / 100e-12
+    for method in ('glm2', 'glm3'):
+        cir, pss, io, pac, T = _sampler_fixture_method(
+            lambda c: c.__setitem__('S0', _sw()), method, 100)
+        fp = pss._state_map()
+        assert fp.is_glm
+        rng = np.random.default_rng(2)
+        m = fp.width
+        f = 0.137 / T
+        tinj = pac._stage_times(pss, fp)
+        ## the output at NODE 1 seeds the pass: step 0 and the substages of
+        ## the startup that opens it carry the whole coupling (seeded at the
+        ## period's end, the sampler damps it out before step 0 and a wrong
+        ## substage time passed)
+        d = rng.standard_normal(m)
+        u = rng.standard_normal(m) + 1j * rng.standard_normal(m)
+        _g, Cp = pac._stage_pass(pss, fp, np.zeros(m), (1, d))
+        assert len(tinj) == len(Cp) == len(pac._stage_states(pss, fp))
+        acc = -np.sum(np.exp(2j * np.pi * f * tinj)[:, None] * Cp, axis=0) @ u
+        _e, ys = pss._forced_replay(fp, f, u, y0=np.zeros(m, dtype=complex), collect=True)
+        assert abs(acc - d @ ys[0]) < 1e-12 * abs(d @ ys[0]), method
+    gap = []
+    for npts in (100, 200):
+        def els(c):
+            c['S0'] = _sw(gon=1e-3, goff=1e-3)
+            c['F0'] = _Flicker('out', gnd, i=0.0, noisePSD=1e-22, fref=1.0)
+        cir, pss, io, pac, T = _sampler_fixture_method(els, 'glm2', npts)
+        f0 = 1.0 / T
+        f = 0.137 * f0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+            ref = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
+                                               maxsidebands=20)[0]))
+                      for k in range(-10, 11))
+        gap.append(abs(S / ref - 1.0))
+    assert gap[0] < 1e-4 and gap[0] / gap[1] > 5.0, gap
+    for method in ('glm2', 'glm3'):
+        cir, pss, io, pac, T = _sampler_fixture_method(
+            lambda c: c.__setitem__('S0', _sw()), method, 400)
+        f0 = 1.0 / T
+        grid = np.asarray(pss.factored_period().times, dtype=float)
+        N = len(pss.factored_period().steps)
+        fmin = 1e-6 * f0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            v = pac.sampled_variance(pss, io, [grid[int(0.375 * N)]], fmin,
+                                     0.5 * f0, points_per_decade=10) / ktc
+        held = float(v[0]) / (1.0 - fmin / (0.5 * f0))
+        assert abs(held - 1.0) < 1e-4, (method, held)
+
+
 def test_the_time_average_of_the_sampled_psd_is_the_fold_of_time_averaged_pnoise():
     """The peer's validation 2, which holds PER FREQUENCY: averaged over the
     sampling instant, the sample series samples the time-averaged
@@ -25405,7 +25482,9 @@ def test_a_staged_solve_reports_the_landed_map_on_every_kind(monkeypatch):
         assert np.max(np.abs(np.asarray(p._monodromy) - Md)) < 1e-8 * np.max(np.abs(Md)), method
         assert abs(p.spectral_radius / rho(Md) - 1.0) < 1e-9, (method, p.spectral_radius, rho(Md))
 
-def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_and_is_exact():
+@pytest.mark.parametrize('method,kind', [('radau', 'stage'), ('glm2', 'glm'),
+                                         ('glm3', 'glm')])
+def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_and_is_exact(method, kind):
     """Phase B of events-as-unknowns (2026-09-22): on a solve whose grid was
     landed on state events, a periodic perturbation moves the crossings,
     and `PAC.solve` borders its per-frequency system with the event rows
@@ -25428,7 +25507,10 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     of `PAC.result` (AC-phasor convention, divided by the source's AC
     phase) against the fixed-base FD to 1e-6 on `out` and `fb`, the
     unbordered one at least 0.1 / 0.03 off (0.55 / 0.057 measured), and
-    `event_shifts` against the FD.
+    `event_shifts` against the FD.  2026-09-25: the Nordsieck GLMs on their
+    own maps (the fixed-base walk is theirs, `_walk('glm')`): 6e-10 / 7e-10
+    (glm2), 8.7e-10 / 6.5e-10 (glm3), the shifts 7e-10 / 6e-10, the
+    unbordered response 3e-3 / 5e-3 .. 7e-3 off.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -25446,7 +25528,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
         return cir
 
     cir = build(0.0, vac=1.0)
-    p0 = PSS(cir, method='radau', reltol=1e-10)
+    p0 = PSS(cir, method=method, reltol=1e-10)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         p0.solve(period=T, timestep=T / N, x0=np.zeros(cir.n - 1), maxiterations=100)
@@ -25461,7 +25543,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
 
     def solve_fixed_base(eps):
         c2 = build(eps)
-        q = PSS(c2, method='radau', reltol=1e-10)
+        q = PSS(c2, method=method, reltol=1e-10)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             q.solve(period=T, timestep=T / len(g0), x0=x0s, grid=g0,
@@ -25472,7 +25554,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
             fr, hsens, nodes = q._event_remap(g0, th0, th, T)
             hs = fr * T
             tms = np.concatenate(([0.0], np.cumsum(hs)))
-            wk = q._walk('stage', xx, tms, hs, T=T, hsens=hsens,
+            wk = q._walk(kind, xx, tms, hs, T=T, hsens=hsens,
                          capture=set(range(1, len(hs) + 1)))
             x_end, Mx, Pk = wk.x_end, wk.P, wk.Pk
             F = np.zeros(m + K)
@@ -25541,7 +25623,8 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     assert errs[False]['out'] > 5e-4 and errs[False]['fb'] > 1e-3, errs     # 7.6e-4 / 1.6e-3 at 60 points
 
 
-def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve():
+@pytest.mark.parametrize('method', ['radau', 'glm2', 'glm3'])
+def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve(method):
     """Phase B of events-as-unknowns (2026-09-22): `adjoint_sideband_row`
     borders its adjoint solve with the event rows -- the transpose of
     `PAC.solve`'s bordered system, by block elimination and a second
@@ -25551,7 +25634,9 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     PAC everywhere: dual consistency, the bordered forward solve's
     reported coefficients equal `H_l . u_ac` to 1e-10 for sidebands
     0, 1, -1 (PWM loop, 60 points, f = 0.3 f0), and the unbordered row
-    differs from them by more than 1 %.
+    differs from them by more than 1 %.  2026-09-25: the Nordsieck GLMs on
+    their own maps too (two growth restarts in this period): 1e-15, the
+    unbordered row 1.1e-3 .. 1.9e-3 off (radau 3.5e-4 .. 4.6e-4).
     """
     import warnings as _w
     from pycircuit.circuit.analysis import remove_row_col
@@ -25565,7 +25650,7 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     cir['Vin'] = VS('vin0', gnd, v=5.0, vac=0.0)
     cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=0.0, freq=fin, phase=0.0, vac=1.0)
     cir['Vramp'].iparv.vac = 0.0
-    p = PSS(cir, method='radau', reltol=1e-10)
+    p = PSS(cir, method=method, reltol=1e-10)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
@@ -27747,20 +27832,118 @@ def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
     assert abs(q2.period / Tl - 1.0) < 2e-4, q2.period / Tl - 1.0
 
 
-def test_a_driven_glm_run_reads_its_small_signal_from_a_twin():
-    """A Nordsieck GLM's own period map acts on its Nordsieck state; every
-    state-space consumer wants a map on `x`.  An OSCILLATOR's already read
-    the monodromy twin, but a DRIVEN run did not: `PAC.solve` refused ("not
-    built for a Nordsieck GLM") and `covariance()` CRASHED with a TypeError
-    (the plain Lyapunov pieces reading a GLM's step records).  Now a GLM run
-    hands those consumers to a twin driven or not (`_state_twin`), and
-    `monodromy='native'` -- the GLM's own map -- refuses cleanly.
-    `factored_period()` stays the GLM's own Nordsieck map.  Measured
-    on the driven RLC with a noise source: through a radau twin, the PAC
-    response and the covariance equal a radau solve's on the same grid
-    exactly (the trbdf2 twin: 2.9e-6 on PAC).
+def test_a_glm_reads_pac_off_its_own_map_at_its_order():
+    """Since 2026-09-25 PAC, the adjoint rows and pnoise read a DRIVEN
+    Nordsieck GLM run off its own map on the state (`PSS._state_map`; until
+    then a radau twin -- Andreas: "Native for all but covariance").  The
+    forced replay is the step on ``(P, x)`` (`_GLMStateStep`) with the
+    source in every stage, the output rows and the substages of the startup
+    that opens a step.  Measured on the LTI RLC against the analytic AC at
+    1.3 kHz: glm2 1.20e-3 / 2.98e-4 / 7.43e-5, glm3 1.03e-5 / 1.29e-6 /
+    1.62e-7, glm4 1.86e-7 / 1.04e-8 / 6.06e-10 at 100 / 200 / 400 points --
+    order 2.0 / 3.0 / 4.1; the forced replay against a finite difference of
+    the period walk with the source perturbed: 2.4e-8 at eps 1e-3 (1/eps
+    below it: the linear circuit's Newton floor); the generic replays equal
+    the GLM's own `x_matvec` / `x_matvec_transposed` bit for bit.  Pinned:
+    the order within a quarter of p over 100 -> 200, the finite difference
+    to 1e-6, the replays to 1e-14.
     """
     import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    f0, Q = 1e3, 20.0
+    L_, C_ = 1e-3, 1.0 / ((2 * np.pi * f0) ** 2 * 1e-3)
+    R_ = (1.0 / Q) * np.sqrt(L_ / C_)
+    f = 1300.0
+    w = 2 * np.pi * f
+    exact = (1.0 / (1j * w * C_)) / (R_ + 1j * w * L_ + 1.0 / (1j * w * C_))
+
+    def run(method, N):
+        c = _q20_rlc()
+        p = PSS(c, method=method, reltol=1e-12)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=1e-3, timestep=1e-3 / N)
+            res = PAC(c, toolkit=circuit.numeric).solve(p, [f])
+        sv = np.asarray(res.sweep_values, dtype=float)
+        X = np.asarray(res.x)[[str(n_) for n_ in c.nodes].index('c')]
+        ks = [k for k in range(len(sv)) if abs(sv[k] - f) < 1e-9 * f]
+        x = complex(X[max(ks, key=lambda k: abs(X[k]))])
+        return abs(x / exact - 1.0), p
+
+    for method, order in (('glm2', 2), ('glm3', 3)):
+        e1, p = run(method, 100)
+        e2, _p2 = run(method, 200)
+        assert p._state_map().is_glm and p._small_signal_host() is p
+        assert abs(np.log2(e1 / e2) - order) < 0.25, (method, e1, e2)
+        ## the replays on the state against the GLM's own map
+        sm = p._state_map()
+        rng = np.random.default_rng(3)
+        v = rng.standard_normal(sm.width)
+        assert np.max(np.abs(p._replay(sm, v) - sm.matvec(v))) < 1e-14 * np.max(np.abs(sm.matvec(v)))
+        assert np.max(np.abs(p._replay_transposed(sm, v) - sm.matvec_transposed(v))) \
+            < 1e-14 * np.max(np.abs(sm.matvec_transposed(v)))
+        ## the forced replay against the period walk with the source moved
+        m = sm.width
+        tms = np.asarray(sm.times, dtype=float)
+        x0 = np.asarray(p._period_state[1], dtype=float)[:m]
+        iref = p.irefnode
+        u_red = rng.standard_normal(m) * 1e-3
+        u_full = np.insert(u_red, iref, 0.0)
+        fq, eps = 2.3e3, 1e-3
+        cir = p.cir
+        orig = cir.u
+
+        def walk():
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                xs = p._glm_period_blocks(x0, tms, np.diff(tms))[1]
+            return np.array([np.asarray(x_, dtype=float) for x_ in xs])
+
+        X0 = walk()
+        try:
+            def u_pert(t, epar=None, analysis=None, **kw):
+                base = orig(t, epar, analysis=analysis, **kw)
+                if analysis == 'ac':
+                    return base
+                return np.asarray(base, dtype=float) + eps * np.real(u_full * np.exp(2j * np.pi * fq * t))
+            cir.u = u_pert
+            X1 = walk()
+        finally:
+            del cir.u
+        fd = (X1 - X0) / eps
+        _e, ys = p._forced_replay(sm, fq, u_red, y0=np.zeros(m, dtype=complex), collect=True)
+        err = np.max(np.abs(np.real(np.array(ys)) - fd)) / np.max(np.abs(fd))
+        assert err < 1e-6, (method, err)
+
+
+def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off_a_twin():
+    """What a Nordsieck GLM run's state-space consumers read (2026-09-25,
+    Andreas: "Native for all but covariance"):
+
+    * DRIVEN, `PAC.solve`, the adjoint rows, pnoise, `sampled_noise`: the
+      GLM's own map on the state (`PSS._state_map`) -- exact at its order
+      (`test_a_glm_reads_pac_off_its_own_map_at_its_order`), so no longer
+      equal to a radau solve's.
+    * The covariance surfaces: a radau twin by default (`_lyapunov_host`),
+      equal to a radau solve's on the same grid; the GLM's own with
+      `monodromy='native'` (`PAC._lyapunov_pieces_glm`: one shared sample
+      per step, first order -- the effective stage weights ``l^T B`` are
+      not all positive).  The sampler's held variance: glm2 1.0153 /
+      1.0055 / 1.0022 kT/C at 200 / 400 / 800 points (radau twin
+      1.000000).
+    * An OSCILLATOR's small-signal surfaces keep the twin
+      (`_small_signal_host`), MEASURED: the GLM map's unit multiplier sits
+      ``eta = O(h^p)`` off 1 (its startup breaks the phase symmetry; van
+      der Pol in LC form with a ``0.3 u^2`` asymmetry, glm3 at 60 points:
+      2.35e-5), and near a harmonic the refined
+      deflated answer carries ``eta / (2 pi r)``.  `monodromy='native'`
+      reads the GLM's own; at r = 1e-3 it differs from the unrefined
+      deflated recovery by that term to 10 % (3.7e-3).  (Against the twin
+      the gap is 7.5e-3: the twin solves its own period, 6.5e-6 longer,
+      which moves the offset from its carrier by 6.5e-3 of r.)
+    """
+    import warnings as _w
+    from pycircuit.circuit.analysis import remove_row_col
     circuit.default_toolkit = circuit.numeric
 
     def build():
@@ -27781,22 +27964,84 @@ def test_a_driven_glm_run_reads_its_small_signal_from_a_twin():
             K0 = np.asarray(pac.covariance(p), dtype=float)
         k = int(np.argmin(np.abs(np.asarray(res.sweep_values, dtype=float) - 300.0)))
         x = complex(np.asarray(res.x)[[str(n_) for n_ in c.nodes].index('c'), k])
-        return x, K0
+        return x, K0, p
 
-    x_r, K_r = run('radau')
+    x_r, K_r, _pr = run('radau')
     for method in ('glm2', 'glm3'):
-        x, K = run(method, 'radau')
-        assert abs(x - x_r) < 1e-12 * abs(x_r), (method, x, x_r)
+        x, K, p = run(method)
+        ## PAC is the GLM's own: not radau's, and at its order (300 Hz:
+        ## glm2 2.6e-6, glm3 5.3e-9 against AC at 100 points)
+        assert 1e-13 * abs(x_r) < abs(x - x_r) < 1e-5 * abs(x_r), (method, x, x_r)
+        ## the covariance is the radau twin's
         assert np.max(np.abs(K - K_r)) < 1e-12 * np.max(np.abs(K_r)), method
-    with pytest.raises(NotImplementedError, match='Nordsieck'):
-        run('glm3', 'native')
-    c = build()
-    p = PSS(c, method='glm3', reltol=1e-10)
+        assert p.factored_period().kind == 'glm' and p.monodromy_twin() is p
+        ## native: the GLM's own Lyapunov pieces, first order (glm2 0.164
+        ## off radau's at 100 points on this Q = 20 resonator)
+        x_n, K_n, _pn = run(method, 'native')
+        assert x_n == x
+        assert 0.02 < np.max(np.abs(K_n - K_r)) / np.max(np.abs(K_r)) < 0.4, method
+
+    ## the sampler: the native covariance's held value converges to kT/C
+    ktc = _KB * _TEMP / 100e-12
+    held = []
+    for npts in (200, 400):
+        cir, pss, io, pac, T = _sampler_fixture_method(
+            lambda c: c.__setitem__('S0', _sw()), 'glm2', npts)
+        N = len(pss.factored_period().steps)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            K0t, seq_t = pac.covariance(pss, samples=True)
+            pss.monodromy = 'native'
+            K0n, seq_n = pac.covariance(pss, samples=True)
+        jh = int(0.375 * N)
+        assert abs(seq_t[jh][io, io] / ktc - 1.0) < 1e-4
+        held.append(seq_n[jh][io, io] / ktc - 1.0)
+    assert 0.0 < held[1] < held[0] < 0.03 and held[0] / held[1] > 2.0, held
+
+    ## an oscillator's small-signal surfaces: the twin, unless native (an
+    ## asymmetric van der Pol in LC form)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: u - u ** 3 / 3.0 + 0.3 * u ** 2)
+    cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)
+    p = PSS(cir, method='glm3', reltol=1e-12)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        p.solve(period=1e-3, timestep=1e-3 / 100)
-    assert p.factored_period().kind == 'glm'
-    assert p.monodromy_twin() is p
+        p.solve(period=6.66, timestep=6.66 / 60, x0=np.array([2.0, 0.0]), maxiterations=100)
+    assert p.converged
+    tw = p._small_signal_host()
+    assert tw is not p and getattr(tw.par, 'method', None) == 'radau'
+    f0 = 1.0 / float(p.period)
+    f = (1.0 + 1e-3) * f0
+    sm = p._state_map()
+    M = np.column_stack([sm.matvec(e) for e in np.eye(sm.width)])
+    lam = np.linalg.eigvals(M)
+    eta = float(abs(lam[np.argmin(np.abs(lam - 1.0))] - 1.0))
+    iv = [str(n_) for n_ in cir.nodes].index('v')
+
+    def response(q, refine=True):
+        pac = PAC(cir, toolkit=circuit.numeric)
+        if not refine:
+            pac.DEFLATION_REFINE_MIN = np.inf
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = pac.solve(q, [f])
+        sv = np.asarray(res.sweep_values, dtype=float)
+        X = np.asarray(res.x)[iv]
+        return complex(X[int(np.argmax(np.where(np.abs(sv - f) < 1e-3 * f0, np.abs(X), -1.0)))])
+
+    p.monodromy = 'native'
+    assert p._small_signal_host() is p
+    ## the native answer is the discrete operator's (refined): it differs
+    ## from the deflated recovery -- the pole carried analytically, O(h^p)
+    ## -- by eta / (2 pi r)
+    ratio = abs(response(p) / response(p, refine=False) - 1.0) / (eta / (2.0 * np.pi * 1e-3))
+    p.monodromy = 'radau'
+    assert 1e-6 < eta < 1e-4 and 0.9 < ratio < 1.1, (eta, ratio)
+
 
 def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
     """`oscillator_covariance` on trap's OWN map (`monodromy='native'`) was

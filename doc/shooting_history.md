@@ -7621,6 +7621,29 @@ integral (`_vanloan_step_injection`) read a switch's held variance
 0.876 kT/C at 400 points (O(h)) and stays the fallback.  State width
 `m`, so `n = m`.
 
+### `_lyapunov_pieces_glm`
+
+Built 2026-09-25 (plan item 1, Andreas: "Native for all but covariance").
+Until then `_lyapunov_pieces` refused a GLM's map ("a Nordsieck GLM's own
+period map acts on its Nordsieck state ... Leave monodromy at a twin"),
+and a GLM run's covariance read a radau twin -- which it still does by
+default (`_lyapunov_host`).
+
+The design question was the injection.  A white source over a GLM step
+reaches the state through the effective stage weights ``w = l^T B`` (`l`
+the left unit eigenvector of `V`): GLM2 1/6, 7/12, 1/4; GLM3 0.359,
+-0.0167, 0.067, 0.591; GLM4 -26 .. +166.  Independent per-stage samples
+with variances ``CY / (2 h w_i)`` (the stage methods' `_stage_injection`)
+need every `w_i > 0`; GLM3 and GLM4 fail that.  So the injection is one
+shared sample per step, entering every stage, output row and opening
+startup substage -- first order, measured: the sampler's held variance
+glm2 1.0153 / 1.0055 / 1.0022 kT/C at 200 / 400 / 800 points, glm3
+1.096 / 1.045 / 1.022; the jitter sampler's sigma glm2 0.921 / 0.961 of
+the analytic at 100 / 200; van der Pol's growth `c_from_growth / c`
+glm3 1.00092 / 1.00025 at 60 / 120 points.  The recursion runs on the
+map on the state's ``(x, P)`` and closes on `x` (step 0's startup reads
+`x` alone); the product of the steps' `x` block is the map to 1e-15.
+
 ### `_stage_injection`
 
 The docstring before the move (its first sentence, and the paragraphs after the formula):

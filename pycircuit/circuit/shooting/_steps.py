@@ -127,6 +127,14 @@ class _StageStep(object):
                  if r[i] is not None)
         return None if np.isscalar(cp) else cp
 
+    def couplings(self, r):
+        """Per stage `k`: ``h sum_i A_ik r_i`` -- what the costates read of a
+        unit source at stage `k` (the sensitivity is minus that;
+        `PAC._stage_pass`)."""
+        return [self.h * cp if cp is not None
+                else np.zeros(self.m, dtype=complex)
+                for cp in (self.reach(r, k) for k in range(self.s))]
+
     def sources(self, u, jw, ts, _te):
         """A source ``u e^{jw t}`` on the step from `ts`, as the stage
         residuals carry it: ``-h sum_k A_ik u e^{jw (ts + c_k h)}`` per stage
@@ -275,21 +283,27 @@ class _GLMStep(object):
       from -- `_glm_node_startups`);
     * `restart_out`: the NEXT node's startup linearised when the next step
       restarts on growth (`Transient.GLM_RESTART_GROWTH`; else None);
-      `restarted`: whether THIS step entered through such a restart.
+      `restarted`: whether THIS step entered through such a restart;
+    * `c`: the stage abscissae; `Ys`: the converged stage states (full
+      width, reference row included) -- where a noise source is evaluated
+      (`PAC._stage_states`).
 
     (Until 2026-09-25 a 13-field tuple read by position.)"""
 
     __slots__ = ('Kfacs', 'Gs', 'h', 'A', 'U', 'B', 'V', 'Ks', 'rho', 'Qin',
-                 'x_in', 'restart_out', 'restarted')
+                 'x_in', 'restart_out', 'restarted', 'c', 'Ys')
 
     def __init__(self, Kfacs, Gs, h, A, U, B, V, Ks, rho=1.0, Qin=None,
-                 x_in=None, restart_out=None, restarted=False):
+                 x_in=None, restart_out=None, restarted=False, c=None,
+                 Ys=None):
         self.Kfacs, self.Gs, self.h = Kfacs, Gs, h
         self.A, self.U, self.B, self.V = A, U, B, V
         self.Ks, self.rho, self.Qin, self.x_in = Ks, rho, Qin, x_in
         self.restart_out, self.restarted = restart_out, restarted
+        self.c, self.Ys = c, Ys
 
-    def forward(self, P, fT=None, drho=None, src=None, nxt=None):
+    def forward(self, P, fT=None, drho=None, src=None, nxt=None,
+                output=True):
         """One step of the GLM sensitivity recursion (`_glm_propagate`'s
         body): the entering rescale ``P_k <- rho^k P_k`` (the transient's,
         where the step changed), the stage solves on the multivalue input
@@ -306,8 +320,11 @@ class _GLMStep(object):
         ``V Q + h B K``: the next step enters with the startup of this
         step's last stage, ``S x_{n+1}``, so its output is ``S D_last`` --
         plus, for a column, the startup's own motion with the NEXT step's
-        length and start time, `nxt` ``= (dh_next, tau_next)``.  Returns
-        `(P_out, D)`."""
+        length and start time, `nxt` ``= (dh_next, tau_next)``.  With
+        `output` False the output rows are not formed at all and `P_out` is
+        None (the map on the state, where a step whose successor restarts
+        hands on its last stage alone: `_GLMStateStep`).  Returns `(P_out,
+        D)`; real or complex."""
         Kfacs, Gs, h, A, U, B, V = (self.Kfacs, self.Gs, self.h, self.A,
                                     self.U, self.B, self.V)
         Ks, rho, Qin = self.Ks, self.rho, self.Qin
@@ -326,7 +343,9 @@ class _GLMStep(object):
                 rhs = rhs - h * sum(A[i, j] * src[j] for j in range(i + 1))
             for j in range(i):
                 rhs = rhs - h * A[i, j] * (Gs[j] @ D[j])
-            D[i] = Kfacs[i].solve(rhs)
+            D[i] = _complex_solve(Kfacs[i], rhs)
+        if not output:
+            return None, D
         S_out = self.restart_out
         if S_out is not None:
             P = S_out.apply(D[-1])
@@ -363,28 +382,34 @@ class _GLMStep(object):
         `Dseed` adds a costate on the LAST STAGE, which is the step's `x`
         (stiff accuracy): the map on the state ends there.  `entered` stops
         short of the rescale, leaving the costate on the vector the step
-        entered with.  Returns `(Pbar, rbars)`."""
+        entered with.  `W` None: the output rows are not read (`forward`
+        with `output` False), only `Dseed`.  Returns `(Pbar, rbars)`; real or
+        complex."""
         Kfacs, Gs, h, A, U, B, V = (self.Kfacs, self.Gs, self.h, self.A,
                                     self.U, self.B, self.V)
         s = len(Kfacs)
-        r = len(W)
         S_out = self.restart_out
-        if S_out is not None:
+        if W is None:
+            r = len(self.Qin)
+            Dbar = [np.zeros_like(np.asarray(Dseed)) for _ in range(s)]
+            Pbar = [np.zeros_like(Dbar[0]) for _ in range(r)]
+        elif S_out is not None:
+            r = len(W)
             ## the output is the next node's startup of the last stage
             ## (see `forward`)
-            Dbar = [np.zeros_like(np.asarray(W[0], dtype=float))
-                    for _ in range(s)]
+            Dbar = [np.zeros_like(np.asarray(W[0])) for _ in range(s)]
             Dbar[s - 1] = S_out.rmatvec(W)
             Pbar = [np.zeros_like(Dbar[0]) for _ in range(r)]
         else:
+            r = len(W)
             Dbar = [-h * sum(B[k, i] * (Gs[i].T @ W[k]) for k in range(r))
                     for i in range(s)]
             Pbar = [sum(V[k, jj] * W[k] for k in range(r)) for jj in range(r)]
         if Dseed is not None:
-            Dbar[s - 1] = Dbar[s - 1] + np.asarray(Dseed, dtype=float)
+            Dbar[s - 1] = Dbar[s - 1] + np.asarray(Dseed)
         rbars = [None] * s
         for i in range(s - 1, -1, -1):
-            rb = Kfacs[i].solve_transposed(Dbar[i])
+            rb = _complex_solve_transposed(Kfacs[i], Dbar[i])
             if rb is None:
                 raise NotImplementedError(
                     'PSS: this linear solver cannot solve transposed, so '
@@ -403,11 +428,10 @@ class _GLMStep(object):
 
     def sources(self, *_args):
         raise NotImplementedError(
-            'PAC: the forced (small-signal) response is not built on a '
-            "Nordsieck GLM's own map (monodromy='native') -- its sources "
-            'would enter every stage and the Nordsieck output rows.  A GLM '
-            "run reads its small-signal response from a twin: leave "
-            "monodromy at 'radau' or 'trbdf2'.")
+            'PAC: a forced (small-signal) replay runs on a Nordsieck GLM\'s '
+            'map on the STATE (`_GLMPeriod.state_map`, `PSS._state_map`), '
+            'not on its Nordsieck map: a source there enters the startup '
+            'that opens the period as well.')
 
     source_adjoint = sources
 
@@ -433,22 +457,30 @@ class _GLMStartup(object):
     held fixed -- made the shooting Jacobian approximate and the factored
     map not the Newton's Jacobian (matrix-free, glm2 and glm3 diverged on a
     driven RLC)."""
-    __slots__ = ('Cx', 'lus', 'fT', 'W', 'hs', 'm', 'A', 'c', 'Ud')
+    __slots__ = ('Cx', 'lus', 'fT', 'W', 'hs', 'm', 'A', 'c', 'Ud', 'tn',
+                 'Ys')
 
-    def __init__(self, Cx, lus, fT, W, hs, A=None, c=None, Ud=None):
+    def __init__(self, Cx, lus, fT, W, hs, A=None, c=None, Ud=None, tn=None,
+                 Ys=None):
         self.Cx, self.lus, self.fT, self.W, self.hs = Cx, lus, fT, W, hs
         self.m = Cx[0].shape[0]
         ## the substeps' tableau and the source's rate at their stages, for
         ## `dh` on a driven circuit (None: the source does not move)
         self.A, self.c, self.Ud = A, c, Ud
+        ## where it started and its substeps' converged stages (full width),
+        ## `Ys[j][l]` at ``t_n + (j + c_l) h_s`` -- where a noise source on
+        ## the substages is evaluated
+        self.tn, self.Ys = tn, Ys
 
-    def _substeps(self, d0, T=None, dh=None, tau=0.0):
+    def _substeps(self, d0, T=None, dh=None, tau=0.0, sig=None):
         """``dx_j``, j = 0..p, from ``dx_0 = d0`` (a vector or a block);
         with `T`, the period's own forcing added on every substep; with
         `dh`, a change `dh` of the step the startup is built for (its
         substeps are ``h/p``, their stage times ``t_n + (j + c_l) h/p``),
-        `tau` the shift of ``t_n`` itself."""
-        from scipy.linalg import lu_solve
+        `tau` the shift of ``t_n`` itself; with `sig`, a source on the
+        substages, ``sig[j][l]`` at stage `l` of substep `j` (`sources`),
+        entering as the stage residuals carry it, ``-h_s sum_l A_il
+        sig_l``.  Real or complex."""
         m = self.m
         p = len(self.lus)
         ds = [d0]
@@ -462,13 +494,17 @@ class _GLMStartup(object):
                 rhs = rhs + (float(dh) / p) * self.fT[j]
                 if self.Ud is not None:
                     ## a driven source moves with the stage times
-                    sig = [self.Ud[j][l] * (float(tau) + (j + float(self.c[l]))
-                                            * float(dh) / p)
-                           for l in range(3)]
+                    mv = [self.Ud[j][l] * (float(tau) + (j + float(self.c[l]))
+                                           * float(dh) / p)
+                          for l in range(3)]
                     rhs = rhs - self.hs * np.concatenate(
-                        [sum(self.A[i, l] * sig[l] for l in range(3))
+                        [sum(self.A[i, l] * mv[l] for l in range(3))
                          for i in range(3)])
-            ds.append(lu_solve(lu, rhs)[2 * m:3 * m])
+            if sig is not None:
+                rhs = rhs - self.hs * np.concatenate(
+                    [sum(self.A[i, l] * sig[j][l] for l in range(3))
+                     for i in range(3)])
+            ds.append(_lu_solve_split(lu, rhs)[2 * m:3 * m])
         return ds
 
     def _combine(self, ds):
@@ -482,7 +518,9 @@ class _GLMStartup(object):
 
     def matvec(self, v):
         """`dQ_k/dx_0 v`, `r` vectors."""
-        return self._combine(self._substeps(np.asarray(v, dtype=float).ravel()))
+        v = np.asarray(v)
+        return self._combine(self._substeps(
+            v.ravel() if np.iscomplexobj(v) else v.astype(float).ravel()))
 
     def dT(self, T):
         """`dQ_k/dT` with `x_0` held, `r` vectors (the substeps scale with
@@ -496,25 +534,189 @@ class _GLMStartup(object):
         a restart's."""
         return self._combine(self._substeps(np.zeros(self.m), dh=dh, tau=tau))
 
-    def apply(self, d):
+    def apply(self, d, sig=None):
         """`dQ_k/dx_0 d` for a vector or a block `d` (`matvec` without the
-        flattening): a restart's map from the state to its vector."""
-        return self._combine(self._substeps(d))
+        flattening): a restart's map from the state to its vector -- plus,
+        with `sig`, a source on the substages (`sources`)."""
+        return self._combine(self._substeps(d, sig=sig))
 
-    def rmatvec(self, lams):
+    def rmatvec(self, lams, keep=False):
         """``(dQ/dx_0)^T lam``: a costate on the `r` starting blocks taken
         back to `x_0` -- `matvec` transposed, the substeps in reverse
-        (each one's stage system solved transposed)."""
-        from scipy.linalg import lu_solve
+        (each one's stage system solved transposed).  With `keep`, also the
+        substeps' stage costates (`3m` each, in substep order): what a
+        source on the substages reads (`source_adjoint`).  Real or
+        complex."""
         m = self.m
         p = len(self.lus)
-        lams = [np.asarray(l_, dtype=float).ravel() for l_ in lams]
+        lams = [(np.asarray(l_).ravel() if np.iscomplexobj(l_)
+                 else np.asarray(l_, dtype=float).ravel()) for l_ in lams]
         g = [sum(self.W[k, j] * (self.Cx[j].T @ lams[k])
                  for k in range(self.W.shape[0]))
              for j in range(p + 1)]
+        subs = [None] * p
         for j in range(p - 1, -1, -1):
-            e = np.zeros(3 * m)
+            e = np.zeros(3 * m, dtype=np.asarray(g[j + 1]).dtype)
             e[2 * m:] = g[j + 1]
-            a = lu_solve(self.lus[j], e, trans=1)
+            a = _lu_solve_split(self.lus[j], e, trans=1)
+            subs[j] = a
             g[j] = g[j] + self.Cx[j].T @ (a[:m] + a[m:2 * m] + a[2 * m:])
-        return g[0]
+        return (g[0], subs) if keep else g[0]
+
+    ## -- a source on the substages (the map on the state, `_GLMStateStep`)
+    ## The startup integrates the interval of the step it opens, so a source
+    ## there enters its substages as the transient's own substeps read it.
+
+    def sources(self, u, jw, ts):
+        """``sig[j][l] = u e^{jw (ts + (j + c_l) h_s)}``: a source on the
+        substages of a startup at `ts`."""
+        return [[u * np.exp(jw * (ts + (j + float(self.c[l])) * self.hs))
+                 for l in range(3)] for j in range(len(self.lus))]
+
+    def _reach(self, a):
+        """``sum_i A_il a_i`` per substage `l`: what substep costates `a`
+        (`rmatvec(keep=True)`) read of a source at stage `l`."""
+        m = self.m
+        return [sum(self.A[i, l] * a[i * m:(i + 1) * m] for i in range(3))
+                for l in range(3)]
+
+    def source_adjoint(self, acc, subs, jw, ts):
+        """`acc` less the substages' source coupling -- `sources`
+        transposed."""
+        for j, a in enumerate(subs):
+            for l, cp in enumerate(self._reach(a)):
+                acc = acc - self.hs * np.exp(
+                    jw * (ts + (j + float(self.c[l])) * self.hs)) * cp
+        return acc
+
+    def couplings(self, subs):
+        """Per substage, in `injection_times` order: ``h_s sum_i A_il
+        a_i`` (the source sensitivity is minus that; `PAC._stage_pass`)."""
+        return [self.hs * cp for a in subs for cp in self._reach(a)]
+
+    def injection_times(self, ts):
+        return [ts + (j + float(self.c[l])) * self.hs
+                for j in range(len(self.lus)) for l in range(3)]
+
+    def injection_states(self):
+        return [y for Yj in self.Ys for y in Yj]
+
+
+class _GLMStateStep(object):
+    """One step of a Nordsieck GLM's map on the STATE (`_GLMStateMap`), with
+    the `_StageStep` interface: the record (`_GLMStep`) and the startup that
+    opens it, where one does.
+
+    The per-step state is ``(P, x)``: the `r` Nordsieck blocks the step
+    enters with (before its rescale) and the state at its start node.  A
+    step reads `x` only through a STARTUP -- node 0's (`_GLMPeriod.startup`)
+    or a growth restart's (the previous record's `restart_out`) -- which
+    belongs to the step it opens, since its substeps integrate that step's
+    interval.  It returns ``(P_out, x_out)``, `x_out` its last stage (stiff
+    accuracy); `P_out` is zero where the next step restarts, which reads
+    `x_out` alone.  So a costate on a node's state enters the step before
+    it as a costate on its last stage (`_GLMStep.adjoint`'s `Dseed`), which
+    is where an output functional or an event row lands.
+
+    A source ``u e^{jw t}`` enters where the transient's own step reads
+    one: every stage (``-h A_ij u_j``), the output rows (``-h B_ki u_i``)
+    and the opening startup's substages (`_GLMStartup.sources`).  The
+    transposed step's costates `r` are ``(rbars, W, subs)``: the stage
+    costates, the output rows' (None where they are not read) and the
+    startup substeps' (None without one) -- `source_adjoint` and
+    `couplings` read all three.
+    """
+
+    __slots__ = ('rec', 'startup', 's')
+
+    def __init__(self, rec, startup=None):
+        self.rec, self.startup = rec, startup
+        self.s = len(rec.Kfacs)
+
+    def solve(self, carry, forcing=None):
+        """The step on ``(P, x)`` (vectors or blocks, real or complex);
+        `forcing` is `sources`' ``(stage sources, substage sources)``."""
+        P, x = carry
+        src = sub = None
+        if forcing is not None:
+            src, sub = forcing
+        if self.startup is not None:
+            P = self.startup.apply(x, sig=sub)
+        rec = self.rec
+        through = rec.restart_out is None
+        P_out, D = rec.forward(P, src=src, output=through)
+        x_out = D[-1]
+        if not through:
+            P_out = [np.zeros_like(x_out) for _ in range(len(rec.Qin))]
+        return (P_out, x_out)
+
+    def adjoint(self, w):
+        """The transposed step on ``(Pbar, xbar)``: a costate on the state
+        it ends on seeds its last stage; the startup, where there is one,
+        takes the costate on the vector it built back to `x`."""
+        W, xbar = w
+        rec = self.rec
+        Wr = W if rec.restart_out is None else None
+        Pbar, rbars = rec.adjoint(Wr, Dseed=xbar)
+        if self.startup is not None:
+            g, subs = self.startup.rmatvec(Pbar, keep=True)
+            return ([np.zeros_like(g) for _ in Pbar], g), (rbars, Wr, subs)
+        return (Pbar, np.zeros_like(np.asarray(xbar))), (rbars, Wr, None)
+
+    def _reach(self, r):
+        """Per stage `k`: ``sum_{i>=k} A_ik rbar_i + sum_q B_qk W_q`` -- what
+        the costates read of a source at stage `k`."""
+        rbars, W, _subs = r
+        A, B, s = self.rec.A, self.rec.B, self.s
+        out = []
+        for k in range(s):
+            cp = sum(A[i, k] * rbars[i] for i in range(k, s))
+            if W is not None:
+                cp = cp + sum(B[q, k] * W[q] for q in range(len(W)))
+            out.append(cp)
+        return out
+
+    def sources(self, u, jw, ts, _te):
+        """A source ``u e^{jw t}`` on the step from `ts`: at the stage times
+        ``ts + c_i h``, and on the opening startup's substages."""
+        rec = self.rec
+        src = [u * np.exp(jw * (ts + float(rec.c[i]) * rec.h))
+               for i in range(self.s)]
+        sub = (None if self.startup is None
+               else self.startup.sources(u, jw, ts))
+        return (src, sub)
+
+    def source_adjoint(self, acc, r, jw, ts, _te):
+        """`acc` less the step's source coupling to the costates `r` --
+        `sources` transposed."""
+        rec = self.rec
+        for k, cp in enumerate(self._reach(r)):
+            acc = acc - rec.h * np.exp(jw * (ts + float(rec.c[k]) * rec.h)) * cp
+        if r[2] is not None:
+            acc = self.startup.source_adjoint(acc, r[2], jw, ts)
+        return acc
+
+    def couplings(self, r):
+        """Per injection point, in `injection_times` order: `h` times what
+        the costates read of a unit source there (the sensitivity is minus
+        that; `PAC._stage_pass`)."""
+        out = [self.rec.h * cp for cp in self._reach(r)]
+        if r[2] is not None:
+            out.extend(self.startup.couplings(r[2]))
+        return out
+
+    def injection_times(self, ts):
+        """Where a source enters the step: its stages, then the opening
+        startup's substages."""
+        rec = self.rec
+        out = [ts + float(ci) * rec.h for ci in rec.c]
+        if self.startup is not None:
+            out.extend(self.startup.injection_times(ts))
+        return out
+
+    def injection_states(self):
+        """The states at `injection_times` (full width)."""
+        out = list(self.rec.Ys)
+        if self.startup is not None:
+            out.extend(self.startup.injection_states())
+        return out

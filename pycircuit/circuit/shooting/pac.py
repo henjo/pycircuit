@@ -185,8 +185,10 @@ class PAC(Analysis):
         """
         toolkit = self.toolkit
         freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
-        pss = pss._state_map_host()          # a GLM run's twin (`_state_map_host`)
-        fp = pss.factored_period()
+        ## the map on the state (a GLM's own, `_GLMPeriod.state_map`; a GLM
+        ## oscillator's twin, `_small_signal_host`)
+        pss = pss._small_signal_host()
+        fp = pss._state_map()
         T = float(fp.T)
         m = self.cir.n - 1
 
@@ -429,7 +431,8 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC.adjoint_transfer_row`.
         """
         import scipy.sparse.linalg as spla
-        fp = pss.factored_period()
+        pss = pss._small_signal_host()        # a GLM oscillator's twin
+        fp = pss._state_map()
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the adjoint row')
         m = pss.cir.n - 1
@@ -500,8 +503,8 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
         """
         import scipy.sparse.linalg as spla
-        pss = pss._state_map_host()          # a GLM run's twin (`_state_map_host`)
-        fp = pss.factored_period()
+        pss = pss._small_signal_host()        # a GLM oscillator's twin
+        fp = pss._state_map()
 
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the sideband row')
@@ -581,7 +584,8 @@ class PAC(Analysis):
             ## solve first existed).
             _autonomous = getattr(pss, 'autonomous', False)
             _ev = EventColumns.of(pss)
-            if _ev is not None and not (fp.is_stage or fp.is_pair):
+            if _ev is not None and not (fp.is_stage or fp.is_pair
+                                        or fp.is_glm):
                 _ev = None
             if _ev is not None:
                 _wq = pss._period_quadrature(fp)
@@ -1819,11 +1823,8 @@ class PAC(Analysis):
         self._refuse_coloured(pss, what)
         fp = pss.factored_period()
         if fp.is_glm:
-            raise NotImplementedError(
-                'PAC.%s: a Nordsieck GLM\'s own period map acts on its '
-                "Nordsieck state (monodromy='native' keeps it), and the "
-                "noise surfaces read a map on the state. Leave monodromy at "
-                "a twin ('radau', 'trbdf2')." % what)
+            ## reached with monodromy='native' only (`_lyapunov_host`)
+            return self._lyapunov_pieces_glm(pss, fp.state_map(), what)
         if fp.is_stage:
             ## the stage method's per-step map + its stage injection (or the
             ## SAME exact Van Loan integral) -- see `_lyapunov_pieces_stage`
@@ -2089,6 +2090,87 @@ class PAC(Analysis):
         Qd = Phi @ E[:md, md:]
         Qd = 0.5 * (Qd + Qd.T)
         return Emb @ Qd @ Emb.T
+
+    def _lyapunov_pieces_glm(self, pss, sm, what):
+        """`_lyapunov_pieces` on a Nordsieck GLM's OWN map (`monodromy=
+        'native'`; the default hands a GLM run's covariance to a radau twin,
+        `_lyapunov_host`).
+
+        The per-step state is the map on the state's ``(x, P)``
+        (`_GLMStateStep`), width ``(r+1) m``, stacked `x` first, so `A_j` is
+        that step on it, dense.  The closure stays on `x`: step 0 opens with
+        a startup, which reads `x` alone, so the covariance's Nordsieck
+        block at the period start never matters, `M` is the map on the state
+        and `K1` the `x` block of the accumulation -- the Kronecker system
+        stays ``m^2``.  The consumers' walks pad `K0` to the step width
+        (`_lyap_walk`).
+
+        ⚠ ONE SHARED SAMPLE PER STEP, AND SO FIRST ORDER.  A white source
+        reaches a GLM step's state through its effective weights ``w = l^T
+        B`` (GLM3 0.359, -0.0167, 0.067, 0.591; GLM4 -26 .. +166), which no
+        set of independent per-stage samples with positive variances
+        carries.  So the source is one constant over the step, entering
+        every stage, output row and opening startup substage as a
+        transient's source does (`T_j`, the step's response to it), with
+        variance ``CYbar / 2h``: `CY` at the stage states averaged with
+        positive weights over the abscissae (`_abscissa_weights`,
+        normalised).
+
+        History: `doc/shooting_history.md`, `PAC._lyapunov_pieces_glm`.
+        """
+        m = pss.cir.n - 1
+        irn = pss.irefnode
+        steps = sm.step_objects()
+        r = len(sm.steps[0].Qin)
+        na = (r + 1) * m
+        w0 = 2.0 * np.pi / float(sm.T)
+
+        def carry(Z):
+            return ([Z[(k + 1) * m:(k + 2) * m] for k in range(r)], Z[:m])
+
+        def stack(c):
+            return np.vstack([np.asarray(c[1])] + [np.asarray(b) for b in c[0]])
+
+        E = np.eye(na)
+        I = np.eye(m)
+        Z0 = carry(np.zeros((na, m)))
+        As, Qs = [], []
+        for st in steps:
+            As.append(stack(st.solve(carry(E))))
+            sub = (None if st.startup is None
+                   else [[I] * 3 for _ in st.startup.lus])
+            Tj = stack(st.solve(Z0, ([I] * st.s, sub)))
+            wts = self._abscissa_weights(st.rec.c)
+            wts = wts / float(np.sum(wts))
+            CY = np.zeros((m, m))
+            for i, y in enumerate(st.rec.Ys):
+                if wts[i] > 0.0:
+                    CY += wts[i] * np.real(np.asarray(self._cy_at(
+                        pss, w0, np.delete(np.asarray(y, dtype=float), irn)),
+                        dtype=complex))
+            Q = Tj @ (CY / (2.0 * st.rec.h)) @ Tj.T
+            Qs.append(0.5 * (Q + Q.T))
+        K = np.zeros((na, na))
+        for A_j, Q_j in zip(As, Qs):
+            K = A_j @ K @ A_j.T + Q_j
+        M = np.column_stack([np.asarray(sm.matvec(e), dtype=float)
+                             for e in np.eye(m)])
+        return As, Qs, K[:m, :m], M, m, m
+
+    @staticmethod
+    def _lyap_walk(As, Qs, K0):
+        """The per-node covariances from `K0` at node 0: ``K_{j+1} = A_j K_j
+        A_j^T + Q_j``.  A step wider than `K0` (a GLM's ``(x, P)``,
+        `_lyapunov_pieces_glm`) starts from `K0` padded -- its startup reads
+        `x` alone -- and each sample is the `x` block."""
+        n = K0.shape[0]
+        na = As[0].shape[0] if As else n
+        K = K0 if na == n else np.pad(K0, ((0, na - n), (0, na - n)))
+        seq = [K0]
+        for A, Q in zip(As, Qs):
+            K = A @ K @ A.T + Q
+            seq.append((0.5 * (K + K.T))[:n, :n])
+        return seq
 
     def _lyapunov_pieces_stage(self, pss, fp, what):
         """`_lyapunov_pieces` for a Runge-Kutta stage method's Floquet source
@@ -2405,7 +2487,10 @@ class PAC(Analysis):
         ## (Pk_j, Pk_{j-1}) and the map to node j the pair of `P_nodes` rows;
         ## the samples come out as pair covariances, as the plain gear path
         ## returns them
-        W = [np.pad(np.asarray(w, dtype=float).ravel(), (0, n - m)) for w in ev['W']]
+        ## the recursion runs at the STEP's width -- `n`, or a GLM's native
+        ## `(x, P)` (`_lyapunov_pieces_glm`), read back at `n`
+        na = As[0].shape[0] if As else n
+        W = [np.pad(np.asarray(w, dtype=float).ravel(), (0, na - m)) for w in ev['W']]
         K = len(nodes)
         P_nodes = np.asarray(ev['P_nodes'], dtype=float)
         if pair:
@@ -2418,19 +2503,20 @@ class PAC(Analysis):
         dth = np.asarray(pss._event_sensitivity, dtype=float)
         ## d_j[k] = W_k A_{nd_k - 1} ... A_{j+1}: the event row's response to
         ## the noise landing at node j+1 (zero once the crossing is past)
-        d = np.zeros((N, K, n))
+        d = np.zeros((N, K, na))
         for k, nd in enumerate(nodes):
             r = W[k].copy()
             for j in range(nd - 1, -1, -1):
                 d[j, k] = r
                 r = r @ As[j]
-        Z = np.zeros((N + 1, n, K))
-        Kf = np.zeros((N + 1, n, n))
+        Z = np.zeros((N + 1, na, K))
+        Kf = np.zeros((N + 1, na, na))
         D = np.zeros((K, K))
         for j in range(N):
             Z[j + 1] = As[j] @ Z[j] + Qs[j] @ d[j].T
             Kf[j + 1] = As[j] @ Kf[j] @ As[j].T + Qs[j]
             D = D + d[j] @ Qs[j] @ d[j].T
+        Z, Kf = Z[:, :n], Kf[:, :n, :n]
         Gi = np.linalg.inv(Gt)
         E = Z[N]
         M_tot = M + P_end @ dth
@@ -2607,11 +2693,7 @@ class PAC(Analysis):
             return K0
         if bordered is not None:
             return K0, _samples(K0)
-        seq, K = [K0], K0
-        for A, Q in zip(As, Qs):
-            K = A @ K @ A.T + Q
-            seq.append(0.5 * (K + K.T))
-        return K0, seq
+        return K0, self._lyap_walk(As, Qs, K0)
 
     def sampled_noise(self, pss, output, times, freqs, maxsidebands=None,
                       tail=False):
@@ -2860,16 +2942,12 @@ class PAC(Analysis):
                 'fixed to its own phase -- its phase diffuses, so there is no '
                 'cyclostationary sample series (see covariance()). Use '
                 'oscillator_spectrum or modal_spectrum.')
-        pss = pss._state_map_host()          # a GLM run's twin (`_state_map_host`)
-        fp = pss.factored_period()
-        if fp.is_glm:
-            raise NotImplementedError(
-                "PAC.sampled_noise: the period map is '%s' (method %r) and "
-                "monodromy='native': a Nordsieck GLM's own map acts on its "
-                'Nordsieck state, and the seeded reverse pass reads a map on '
-                "the state. Leave monodromy at a twin ('radau', 'trbdf2')."
-                % (fp.kind, getattr(pss.par, 'method', None)))
-        stage = fp.is_stage
+        fp = pss._state_map()
+        ## a Nordsieck GLM's map on the state passes as a stage map: its
+        ## sources enter every stage, the output rows and the startup that
+        ## opens a step (`_GLMStateStep`), so the pass collects per
+        ## injection point, as a stage method's does
+        stage = fp.is_stage or fp.is_glm
         T = float(fp.T)
         f0 = 1.0 / T
         tms = np.asarray(fp.times, dtype=float)
@@ -3048,8 +3126,14 @@ class PAC(Analysis):
 
     def _stage_times(self, pss, fp):
         """The stage abscissae `t_j + c_k h_j` of one period, step by step,
-        `(N s,)` -- the injection times of a stage method's source."""
+        `(N s,)` -- the injection times of a stage method's source.  A GLM's
+        map on the state lists its steps' own (`_GLMStateStep`: the stages,
+        then the substages of the startup that opens a step)."""
         tms = np.asarray(fp.times, dtype=float)
+        if fp.is_glm:
+            return np.asarray([t for j, st in enumerate(fp.step_objects())
+                               for t in st.injection_times(tms[j])],
+                              dtype=float)
         out = []
         for j, st in enumerate(fp.steps):
             h = tms[j + 1] - tms[j]
@@ -3060,7 +3144,10 @@ class PAC(Analysis):
         """The stage states of one period, `N s` full-width vectors in the
         order of `_stage_times` -- one re-traversal of the converged orbit
         on a FRESH inner transient (the run's own is restored), cached per
-        factored period."""
+        factored period.  A GLM's steps carry theirs (the walk stored them)."""
+        if fp.is_glm:
+            return [y for st in fp.step_objects()
+                    for y in st.injection_states()]
         cache = getattr(pss, '_sampled_stage_cache', None)
         if cache is not None and cache[0] is fp:
             return cache[1]
@@ -3084,29 +3171,30 @@ class PAC(Analysis):
         return Ys
 
     def _stage_pass(self, pss, fp, lam0, seed=None):
-        """One reverse pass of a stage period map (`dirk` or `full`): returns
-        the final costate and `(N s, m)` coupling vectors `h sum_i A_ik p_i`
-        -- the sensitivity of the costate's functional to a unit source at
-        stage `k` of step `j` is minus that (see `_sideband_forced`,
-        whose loop this is).  `seed = (k0, v)` adds `v` to the costate after
-        step `k0`'s update: the output at `t_{k0}` couples to the sources of
-        earlier steps only."""
-        m = pss.cir.n - 1
-        N = len(fp.steps)
-        lam = np.asarray(lam0, dtype=complex).copy()
+        """One reverse pass of a stage period map (`dirk` or `full`, or a
+        GLM's map on the state): returns the final costate and the coupling
+        vectors, one per injection point (`_stage_times`; `h sum_i A_ik p_i`
+        per stage of a stage method) -- the sensitivity of the costate's
+        functional to a unit source there is minus that (see
+        `_sideband_forced`, whose loop this is).  `seed = (k0, v)` adds `v`
+        to the costate on the state after step `k0`'s update: the output at
+        `t_{k0}` couples to the sources of earlier steps only."""
+        steps = fp.step_objects()
+        N = len(steps)
+        lam = fp.extract_T(np.asarray(lam0, dtype=complex).copy())
         per = [None] * N
         for j in range(N - 1, -1, -1):
-            st = fp.steps[j]
+            st = steps[j]
             lam, r = st.adjoint(lam)
-            per[j] = [st.h * cp if cp is not None else np.zeros(m, dtype=complex)
-                      for cp in (st.reach(r, k) for k in range(st.s))]
+            per[j] = st.couplings(r)
             if seed is not None:
                 if isinstance(seed, dict):
                     if j in seed:
-                        lam = lam + np.asarray(seed[j], dtype=complex)
+                        lam = fp.inject(lam, np.asarray(seed[j], dtype=complex))
                 elif j == seed[0]:
-                    lam = lam + seed[1]
-        return lam, np.asarray([v for row in per for v in row], dtype=complex)
+                    lam = fp.inject(lam, seed[1])
+        return (fp.seed_T(lam),
+                np.asarray([v for row in per for v in row], dtype=complex))
 
     @staticmethod
     def _psd_sqrt(Cs):
@@ -3311,11 +3399,17 @@ class PAC(Analysis):
             ## FORWARD-propagated tangent, not `u` held fixed -- the walk
             ## is along the orbit, and the orbit turns.
             orb, grw, K, uj = [K_orb], [d * np.outer(u, u)], K_orb, u
+            ## a GLM's native steps are `(x, P)` wide: pad, read the `x`
+            ## block (`_lyap_walk`)
+            na = As[0].shape[0] if As else n
+            if na != n:
+                K = np.pad(K_orb, ((0, na - n), (0, na - n)))
+                uj = np.pad(u, (0, na - n))
             for A, Q in zip(As, Qs):
                 K = A @ K @ A.T + Q
                 uj = A @ uj
-                orb.append(0.5 * (K + K.T))
-                grw.append(d * np.outer(uj, uj))
+                orb.append((0.5 * (K + K.T))[:n, :n])
+                grw.append(d * np.outer(uj[:n], uj[:n]))
             info['orbital_samples'] = orb
             info['growth_samples'] = grw
             info['times'] = np.asarray(pss.factored_period().times,
@@ -5170,7 +5264,7 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC._deflated_solve`.
         """
         import scipy.sparse.linalg as spla
-        fp = pss.factored_period()
+        fp = pss._state_map()
         n = fp.width
         _v, info = pss.ppv()
         v = np.asarray(_v, dtype=float)

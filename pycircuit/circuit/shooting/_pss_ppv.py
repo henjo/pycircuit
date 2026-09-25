@@ -373,12 +373,16 @@ class _PPVFloquet(object):
                       for vp, st in zip(_vphys, states)]
         return states, states_pair, _ts, _Xf
 
-    def _ppv_map(self):
-        """The period map `ppv` reads: the factored period, except that a
-        Nordsieck GLM's is taken on the STATE (`_GLMPeriod.state_map`) --
+    def _state_map(self):
+        """The period map on the STATE that every state-space consumer reads
+        -- `ppv`, `floquet_modes`, `PAC.solve`, the adjoint rows, the
+        deflated solve, `sampled_noise`: the factored period, except that a
+        Nordsieck GLM's is taken on the state (`_GLMPeriod.state_map`) --
         its own acts on the Nordsieck vector, whose null vector's first
         block holds the higher components fixed.  ⚠ Until 2026-09-24 a
-        native GLM's `ppv()` returned that Nordsieck object, `r*m` wide."""
+        native GLM's `ppv()` returned that Nordsieck object, `r*m` wide; until
+        2026-09-25 PAC and the noise folds read a GLM run from a radau twin
+        (named `_ppv_map` then, `ppv`'s alone)."""
         fp = self.factored_period()
         return fp.state_map() if fp.is_glm else fp
 
@@ -471,7 +475,7 @@ class _PPVFloquet(object):
         if _tw is not self:
             return _tw.ppv(tol)
         import scipy.sparse.linalg as spla
-        fp = self._ppv_map()
+        fp = self._state_map()
         ## Every call below goes through `fp.matvec_transposed`/`fp.matvec`,
         ## so the map's kind is the dispatcher's business rather than this
         ## method's (B8).
@@ -948,7 +952,7 @@ class _PPVFloquet(object):
         """
         import scipy.sparse.linalg as spla
         v0, info0 = self.ppv(tol)
-        fp = self._ppv_map()
+        fp = self._state_map()
         m = self.cir.n - 1
         n = fp.width
         irn = self.irefnode
@@ -1123,7 +1127,7 @@ class _PPVFloquet(object):
         ## `pss_unused` IS IGNORED, AS ITS NAME SAYS (the modes are read from
         ## `self`); the parameter stays in the signature because callers pass
         ## it positionally.
-        fp = self._ppv_map() if fp is None else fp
+        fp = self._state_map() if fp is None else fp
         if getattr(fp, 'is_glm', False) and hasattr(fp, 'state_map'):
             ## a GLM's Nordsieck map handed in: its modes are read on the
             ## state (the Nordsieck eigenvectors are not state-space modes)

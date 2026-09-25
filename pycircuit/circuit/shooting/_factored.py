@@ -2,7 +2,7 @@
 what one walk of the period produced (`_PeriodWalk`).
 """
 import numpy as np
-from ._steps import _GLMStep
+from ._steps import _GLMStateStep
 from ._steps import _LMMStep
 
 
@@ -291,7 +291,7 @@ class _GLMPeriod(FactoredPeriod):
     Nordsieck vector; the circuit state at a node is its first block.
     `x_matvec` / `x_matvec_transposed` are the map on the STATE (width `m`,
     what the Newton shoots on), and `state_map` hands them out as a map."""
-    __slots__ = ('startup', '_node_startups')
+    __slots__ = ('startup', '_node_startups', '_state')
     is_glm = True
 
     def step_objects(self):
@@ -375,9 +375,14 @@ class _GLMPeriod(FactoredPeriod):
         return out, ts, states
 
     def state_map(self):
-        """This map on the circuit state (width `m`), as the consumers that
-        read a map on `x` want it (`ppv`)."""
-        return _GLMStateMap(self)
+        """This map on the circuit state (width `m`), as every consumer that
+        reads a map on `x` wants it -- `ppv`, `floquet_modes`, PAC and the
+        noise surfaces (`PSS._state_map`).  One per factored period (cached:
+        a consumer caching by identity sees one map)."""
+        sm = getattr(self, '_state', None)
+        if sm is None:
+            sm = self._state = _GLMStateMap(self)
+        return sm
 
     def seed(self, v):
         m = self._pss.cir.n - 1
@@ -408,11 +413,24 @@ class _GLMPeriod(FactoredPeriod):
 
 class _GLMStateMap(object):
     """A Nordsieck GLM's period map on the circuit STATE, ``x_0 -> x_N``
-    (width `m`): what the shooting Newton solves on, and what `ppv` needs --
-    its left null vector is the phase gradient on `x`, and its samples the
-    per-node projections ``S_j^T lambda_j`` (`_GLMPeriod.x_matvec_transposed`).
-    The Nordsieck map itself (`_GLMPeriod.matvec`) is `r*m` wide and its
-    first costate block holds the higher Nordsieck components fixed."""
+    (width `m`): what the shooting Newton solves on, and what every consumer
+    of a map on `x` reads -- `ppv` (its left null vector is the phase
+    gradient on `x`, its samples the per-node projections ``S_j^T
+    lambda_j``, `_GLMPeriod.x_matvec_transposed`), PAC, the adjoint rows,
+    `sampled_noise`.  The Nordsieck map itself (`_GLMPeriod.matvec`) is
+    `r*m` wide and its first costate block holds the higher Nordsieck
+    components fixed.
+
+    ⚠ TWO REPLAYS, ONE MAP.  `matvec` / `matvec_transposed` are the
+    GLM's own (`x_matvec*`: their collected samples are the startup
+    projections `ppv` reads).  The FactoredPeriod interface below --
+    `_GLMStateStep`s on the per-step state ``(P, x)`` -- is what the generic
+    replays run (`PSS._forced_replay`, `_forced_replay_transposed`,
+    `_sideband_forced`, `PAC._stage_pass`): the source enters the stages,
+    the output rows and the startup that opens a step.  The two agree on
+    `M v` and `M^T v` (to round-off, the suite's GLM PAC tests).  Until
+    2026-09-25 PAC, pnoise and `sampled_noise` read a GLM run from a radau
+    twin; the covariance surfaces still do by default (`_lyapunov_host`)."""
     is_plain = is_pair = is_stage = False
     is_glm = True
 
@@ -421,6 +439,49 @@ class _GLMStateMap(object):
         self.kind = 'glm'
         self.steps, self.times, self.T = fp.steps, fp.times, fp.T
         self.width = fp._pss.cir.n - 1
+        self.open_at_x0 = True
+        self._steps = None
+
+    ## -- the FactoredPeriod interface (see `FactoredPeriod`) --------------
+
+    def step_objects(self):
+        """The steps on ``(P, x)``: each record with the startup that opens
+        it -- node 0's, or a growth restart's (the record before it holds
+        that one as its `restart_out`)."""
+        if self._steps is None:
+            fp = self._fp
+            self._steps = [
+                _GLMStateStep(rec, fp.startup if j == 0
+                              else fp.steps[j - 1].restart_out)
+                for j, rec in enumerate(fp.steps)]
+        return self._steps
+
+    def _blocks(self, v):
+        return [np.zeros_like(v) for _ in range(len(self.steps[0].Qin))]
+
+    def seed(self, v):
+        ## step 0 opens with a startup, which reads `x` alone
+        return (self._blocks(v), v)
+
+    def extract(self, c):
+        return c[1]
+
+    def node(self, c):
+        return c[1]
+
+    def extract_T(self, v):
+        return (self._blocks(v), v)
+
+    def seed_T(self, w):
+        return w[1]
+
+    def inject(self, w, x):
+        ## a costate on the node's STATE, which the step before it hands on
+        ## as its last stage (`_GLMStateStep.adjoint`)
+        return (w[0], w[1] + x)
+
+    def collected(self, w):
+        return np.asarray(w[1]).copy()
 
     def matvec(self, v):
         return self._fp.x_matvec(v)

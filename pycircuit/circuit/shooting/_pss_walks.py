@@ -438,17 +438,12 @@ class _PeriodWalks(object):
         Drives `Transient._solve_timestep_glm` with the Nordsieck vector fed in
         explicitly, so the startup runs ONCE at `t = 0` and every later step
         continues the multivalue state (no seam inside the period).  Returns
-        ``(steps, xs, Q0, Qend, x_end)`` where each step record is
-        ``(Kfacs, Gs, h, A, U, B, V, Ks, rho, Qin, x_in, restart_out,
-        restarted)``: the stage factors ``K_i = LU(C(Y_i) + h lambda
-        G(Y_i))``, the stage conductances, the tableau blocks the
-        sensitivity recursion needs, the stage derivatives, the rescale
-        ``rho = h / h_prev`` the step applied to the Nordsieck vector (``Q_k
-        <- rho^k Q_k``; 1 where the step did not change), the vector it
-        entered with, after the rescale, the state it started from (what a
-        startup AT that node starts from -- `_glm_node_startups`), the
-        next node's startup linearised when the next step RESTARTS on
-        growth (`Transient.GLM_RESTART_GROWTH`; else None), and whether this
+        ``(steps, xs, Q0, Qend, x_end, trace0)``, each step a `_GLMStep`
+        record (its fields are documented there): the stage factors and
+        conductances, the tableau, the stage derivatives, abscissae and
+        states, the rescale ``rho = h / h_prev`` the step applied and the
+        vector it entered with, the state it started from, the next node's
+        startup where the next step RESTARTS on growth, and whether this
         step entered through such a restart.  `trace0` is the period's own
         startup (`Transient._glm_startup_trace` after the first step: a
         restart later in the period overwrites the transient's).
@@ -514,7 +509,10 @@ class _PeriodWalks(object):
             steps.append(_GLMStep(Kfacs, Gs, float(h), A, U, B, V, Ks,
                                   rho=float(getattr(tr, '_glm_rho', 1.0)),
                                   Qin=Qin, x_in=np.asarray(xn, dtype=float),
-                                  restart_out=None, restarted=restarted))
+                                  restart_out=None, restarted=restarted,
+                                  c=np.asarray(c, dtype=float),
+                                  Ys=[np.array(yf, dtype=float)
+                                      for yf in tr._rk_Y]))
             xs.append(np.asarray(x, dtype=float))
         return (steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x,
                 trace0)
@@ -734,7 +732,9 @@ class _PeriodWalks(object):
                       for k in range(p + 1)])
         W[0] = 0.0
         W[0, 0] = 1.0
-        return _GLMStartup(Cx, lus, fT, W, hs, A=A, c=c, Ud=Ud)
+        return _GLMStartup(Cx, lus, fT, W, hs, A=A, c=c, Ud=Ud, tn=float(tn),
+                           Ys=[[np.array(y, dtype=float) for y in Yj]
+                               for Yj in Ys])
 
     def _walk_stage(self, x_in, T, times, hs, dense=True, keep=False,
                     want_dT=False, hsens=None, capture=None):

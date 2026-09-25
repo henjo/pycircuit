@@ -519,8 +519,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## trbdf2's 1e-4 / 6e-6 / 8e-5 on van der Pol at 200 points), at about
         ## trbdf2's cost.  'trbdf2' (the default until then), 'gear' and
         ## 'esdirk43' select those twins (see `monodromy_twin`).  A Nordsieck
-        ## GLM reads its own map where it is built on the state (`ppv`,
-        ## `floquet_modes`) and the twin for the rest (`_state_twin`).
+        ## GLM reads its own map on the state (`_state_map`: `ppv`,
+        ## `floquet_modes`, PAC, the adjoint rows, pnoise, `sampled_noise`)
+        ## and the twin for the covariance surfaces and an oscillator's
+        ## small-signal ones (`_state_twin`).
         ## 'native': the run's OWN plain factorisation --
         ## ⚠ the WORST under a one-step method (its `Q` DIVERGES under
         ## refinement); it is for the gates that measure that defect, not for
