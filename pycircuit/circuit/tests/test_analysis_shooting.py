@@ -12097,6 +12097,145 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
     assert np.max(np.abs(tot['coloured'] / tot['filtered'] - 1.0)) < 5e-4
 
 
+def test_the_coloured_band_integral_resolves_a_high_q_line():
+    """The band integral's grid is ADAPTIVE (2026-09-25).  A driven parallel
+    tank at Q = 20, resonant at 1.37 f0, with a 1/f current: on the fixed
+    40-per-decade log grid the coloured covariance read -10.5 % against 640
+    per decade (-0.16 % at 160; Q = 5: -1.4e-4) -- the line is 2.5 % wide
+    and the grid 6 %.  Adaptive Simpson on the log axis (a panel against
+    itself on five points, ``|S_2 - S_1| / 15``, on its share of
+    `COLOURED_REFINE_TOL`): 10 and 40 per decade agree to 1.3e-7."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    fr = 1.37 / T
+    Lv = 1e-6
+    Cv = 1.0 / ((2.0 * np.pi * fr) ** 2 * Lv)
+    Rp = 20.0 * 2.0 * np.pi * fr * Lv
+    c = SubCircuit()
+    c.add_node('in')
+    c.add_node('out')
+    c['V'] = VSin('in', gnd, va=0.1, vo=0.0, freq=1.0 / T)
+    c['Rs'] = R('in', 'out', r=10.0 * Rp, noisy=False)
+    c['Rp'] = R('out', gnd, r=Rp, noisy=False)
+    c['C'] = C('out', gnd, c=Cv)
+    c['L'] = L('out', gnd, L=Lv)
+    c['n'] = _Flicker('out', gnd, i=0.0, noisePSD=1e-20, fref=1.0)
+    pss = PSS(c, method='radau', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 100, maxiterations=40)
+    o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
+    pac = PAC(c, toolkit=circuit.numeric)
+    a = pac.covariance(pss, fmin=1e3, points_per_decade=10)[o, o]
+    b = pac.covariance(pss, fmin=1e3, points_per_decade=40)[o, o]
+    assert abs(a / b - 1.0) < 1e-6, a / b - 1.0
+
+
+def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
+    """Coloured noise in `oscillator_covariance` (2026-09-25; D1, D2).  A
+    coloured source's phase does not diffuse, so it has no bounded-plus-
+    growth split; it enters the TRANSVERSE covariance alone -- the deflated
+    forced responses, replayed from their bounded part and projected at
+    every node (`_transverse_responses`), over the band, the grid adapting
+    to the orbital lines (0.02 f0 wide at each harmonic the mode couples:
+    `_orbital_lines`).  `K_orb`, `d`, `c_from_growth` stay the WHITE
+    sources' (here none: all exactly 0), with a warning.
+
+    Gate, two routes that share only the component model: the cycle-mean
+    transverse variance at the output against ``2 int
+    modal_spectrum['orbital'] df`` over the harmonics (broadening conserves
+    line power; calibrated on the white fixture: +1.1e-3, and
+    `orbital_correlation` -8.5e-4).  Measured on the Lorentzian van der Pol
+    (gear): -3.1e-3 at 200 points, -7.8e-4 at 400 (gear's h^2).  The
+    remaining refusals name their alternatives."""
+    import warnings as _w
+    from scipy.integrate import trapezoid
+    _c, pss, pac, ov = _coloured_vdp('coloured', npts=200)
+    f0 = 1.0 / float(pss.period)
+    with pytest.raises(NotImplementedError, match='COLOURED'):
+        pac.oscillator_covariance(pss)
+    with pytest.warns(RuntimeWarning, match="WHITE sources' alone"):
+        K_orb, d, info = pac.oscillator_covariance(pss, samples=True,
+                                                   fmin=1e-6 * f0)
+    assert d == 0.0 and not np.any(K_orb)
+    tr = np.asarray(info['transverse_samples'])
+    np.testing.assert_allclose(info['K_transverse'], tr[0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(info['K_coloured'], tr[0], rtol=1e-12, atol=0)
+    N = len(pss.factored_period().steps)
+    cyc = float(np.mean(tr[:N, ov, ov]))
+    tot = 0.0
+    dl = np.geomspace(1e-6, 0.5, 150)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        for j in range(1, 5):
+            offs = (np.unique(np.concatenate((-(1.0 - dl[::-1]), -dl[::-1], dl)))
+                    if j == 1 else np.concatenate((-dl[::-1], dl))) * f0
+            ms = pac.modal_spectrum(pss, offs, ov, harmonic=j, H=8, sidebands=16)
+            tot += trapezoid(ms['orbital'], offs)
+    assert abs(cyc / (2.0 * tot) - 1.0) < 5e-3, cyc / (2.0 * tot) - 1.0
+    with pytest.raises(NotImplementedError, match='residue sum'):
+        pac.orbital_correlation(pss)
+    with pytest.raises(NotImplementedError, match='no diffusion constant'):
+        pac.diffusion_constant(pss)
+
+
+def test_the_transverse_band_integral_is_the_lyapunov_route_for_a_white_source():
+    """The coloured oscillator path's WHITE LIMIT (2026-09-25): a white source
+    pushed through the frequency-domain transverse route (as a component of
+    exponent 0) against the Lyapunov route's ``Pi K_orb Pi^T``, node by
+    node, on the same radau van der Pol.  The frequency route stops at the
+    grid's Nyquist, and a WHITE source's transverse response falls as
+    1/nu^2, so its missing tail is FIRST order in h: -5.2e-4 / -2.6e-4 /
+    -1.3e-4 at 100 / 200 / 400 points, the Lyapunov route flat to seven
+    digits.  Richardson in N removes it: +5e-6 (100/200), +2e-6 (200/400).
+    (A 1/f source's tail is h^2, a Lorentzian's h^3 -- and white sources
+    never take this route outside this check.)"""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    Q = 8.0
+    mu = 1.0 / (2.0 * np.pi * Q)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    rel = {}
+    for npts in (100, 200):
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-8)
+        pss = PSS(c, method='radau', reltol=1e-12)
+        x0 = np.zeros(c.n - 1)
+        x0[0] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
+            pac = PAC(c, toolkit=circuit.numeric)
+            _K, _d, info = pac.oscillator_covariance(pss, samples=True)
+            host = pss._lyapunov_host()
+            fp = host._state_map()
+            counts, states = pac._injection_points(host, fp)
+            f0 = 1.0 / float(host.period)
+            W = pac._psd_sqrt(pac._cy_at_states(host, 2 * np.pi * f0, states))
+            col = {'fp': fp, 'counts': counts, 'comps': [(('n',), W, 0.0)],
+                   'w1': 2 * np.pi * f0, 'perband': [], 'state0': states[0],
+                   'fmin': 1e-7 * f0, 'fmax': 0.5 * len(fp.steps) * f0,
+                   'ppd': 40}
+            try:
+                Kf, _ = pac._coloured_covariance(
+                    host, col, c.n - 1, c.n - 1,
+                    responses=pac._transverse_responses,
+                    lines=pac._orbital_lines(host, col['fmin'], col['fmax']))
+            finally:
+                pac._transverse_cache = None
+        tr = np.asarray(info['transverse_samples'])
+        n = min(len(tr), len(Kf))
+        rel[npts] = float(np.mean(Kf[:n, 0, 0]) / np.mean(tr[:n, 0, 0]) - 1.0)
+    assert -1e-3 < rel[100] < -1e-4 and -5e-4 < rel[200] < -5e-5, rel
+    assert abs(2.0 * rel[200] - rel[100]) < 2e-5, rel
+
+
 def test_the_harmonic_resolved_fold_is_exactly_c_for_white():
     """PARSEVAL, ASSERTED AT ROUND-OFF: `sum_l V_l^H (CY/2) V_l = c`.
 

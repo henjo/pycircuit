@@ -7788,6 +7788,15 @@ crossing motion that gives the held capacitor its
 
 ### `_coloured_covariance`
 
+2026-09-25 (latest): the grid became ADAPTIVE (Simpson on the log axis,
+`|S_2 - S_1|/15` per panel).  A fixed 40-per-decade grid read -10.5 % on a
+driven Q = 20 tank and -21 % on a van der Pol's transverse covariance: the
+response lines were narrower than the grid.  A first adaptive version
+flagged on the plain rule's `|Q_h - Q_2h|` and refined smooth regions to
+the point cap.  An oscillator's orbital lines are resolved first
+(`_orbital_lines`), seeded only where the mode's adjoint couples.
+
+
 2026-09-25 (later): the quadrature became the power law exact per interval
 plus Richardson (`_power_law_weights`).  The trapezoid in ln nu was exact
 for EF = 1 only (+2.8e-4 at EF = 2).  The product rule alone left the
