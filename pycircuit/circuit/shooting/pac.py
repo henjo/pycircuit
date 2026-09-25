@@ -242,95 +242,7 @@ class PAC(Analysis):
         for f in freqs:
             self._check_harmonic(pss, f, 'a sweep point')
 
-        rhs = []
-        for f in freqs:
-            w, _ = pss._forced_replay(fp, f, u_ac)
-            rhs.append(np.exp(-2j * np.pi * f * T) * np.asarray(w))
-
-        alphas = [np.exp(-2j * np.pi * f * T) for f in freqs]
-        tol = max(pss.par.reltol * self.KRYLOV_FACTOR, 1e-14)
-        ## ⚠ ON AN OSCILLATOR THE OPERATOR HAS THE ANSWER'S OWN POLE at every
-        ## harmonic (see `_check_harmonic`), and a plain solve near one
-        ## carries relative error `eta / (2 pi df/f0)`, `eta = |lambda_1 - 1|`
-        ## the computed unit multiplier's displacement.  The deflated route
-        ## (`_deflated_solve`) borders the pole out and is exact there.
-        ## Under the radau default eta ~ 1e-12, so this is correctness
-        ## hygiene; the subspace recycling across frequencies is given up on
-        ## the autonomous path (one bordered solve per point).
-        self.deflated = bool(getattr(pss, 'autonomous', False))
-        _dth_f = [None] * len(freqs)
-        if self.deflated:
-            ## ⚠ ON A STAGED OSCILLATOR the bordered system collapses onto
-            ## the total map: with `dtheta = dtheta/dx_0 y_0 + dtheta_f`,
-            ## `dtheta_f = -Gt^-1 W f_node` the source's own motion of the
-            ## crossings, `(I - a M_tot) y_0 = a (w + P_theta dtheta_f)` --
-            ## the deflated solve with the total operator and this source.
-            ## Exact against the piecewise-linear forced response (see the
-            ## test); the plain deflated solve is 0.3-400x off here.
-            _evd = EventColumns.of(pss, fp.width)
-            if _evd is not None:
-                _Pthd = np.asarray(_evd['P_end'], dtype=complex)
-                for i, (f, a) in enumerate(zip(freqs, alphas)):
-                    ## (the map's width: gear's pair seeds `(x_0, x_{-1})`)
-                    _e0, f_steps = pss._forced_replay(fp, f, u_ac,
-                                                      y0=np.zeros(fp.width, dtype=complex),
-                                                      collect=True)
-                    f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v_, dtype=complex)[:m]
-                                                             for v_ in f_steps]
-                    _dth_f[i] = _evd.forced_shift(f_nodes)
-                    rhs[i] = np.asarray(rhs[i], dtype=complex) + a * (_Pthd @ _dth_f[i])
-            ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
-                  for a, b in zip(alphas, rhs)]
-            self.matvecs = None
-        elif recycle:
-            ys, self.matvecs = self._solve_subspace(fp, alphas, rhs, tol)
-        else:
-            ys, self.matvecs = self._solve_each(fp, alphas, rhs, tol)
-
-        ## one driven replay per frequency turns `y_0` into the period
-        ## ⚠ THE BORDERED SIDEBAND RESPONSE.  On a solve whose grid was
-        ## landed on state events, a periodic perturbation moves the
-        ## crossings: `y_end = M y_0 + w + P_theta dtheta`, and the event
-        ## rows close it -- `w_k . y(node_k) = 0` with `y(node) = P_node y_0
-        ## + f_node + Pk_node dtheta` (the homogeneous map to the node, the
-        ## forced response there, the event column there).  Solved by block
-        ## elimination: the m x m solve for the source and for each event
-        ## column, then the K x K Schur complement for `dtheta`.  A per-step
-        ## saltation reads the dominant multiplier 28 % short of the exact
-        ## total (see `_state_event_stage`); the bordered system IS the
-        ## linearisation of the solve that produced the orbit.
-        _ev = getattr(pss, '_event_columns', None)
-        dthetas = [None] * len(freqs)
-        if _ev is not None and not self.deflated:
-            K = _ev['P_end'].shape[1]
-            Wk, nodes = np.asarray(_ev['W']), _ev['nodes']
-            for i, (f, a, y0) in enumerate(zip(freqs, alphas, ys)):
-                cols = [a * np.asarray(_ev['P_end'][:, k], dtype=complex) for k in range(K)]
-                Ycols, _ = self._solve_each(fp, [a] * K, cols, tol)
-                _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(fp.width, dtype=complex),
-                                                  collect=True)
-                f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v, dtype=complex)[:m]
-                                                         for v in f_steps]
-                r = np.zeros(K, dtype=complex)
-                S = np.zeros((K, K), dtype=complex)
-                for k, nd in enumerate(nodes):
-                    Pn = _ev['P_nodes'][nd]
-                    _w = Pn.shape[1]          # m on a one-step map, 2m on gear's pair
-                    r[k] = Wk[k] @ (Pn @ np.asarray(y0)[:_w] + f_nodes[nd])
-                    for l in range(K):
-                        S[k, l] = Wk[k] @ (Pn @ np.asarray(Ycols[l])[:_w] + _ev['Pk_nodes'][nd, :, l])
-                dth = -np.linalg.solve(S, r)
-                dthetas[i] = dth
-                ys[i] = np.asarray(y0, dtype=complex) + sum(Ycols[l] * dth[l] for l in range(K))
-        elif _ev is not None and self.deflated and _dth_f[0] is not None:
-            ## the crossings' motion on the staged oscillator: the state's
-            ## part through the total map's sensitivity plus the source's
-            _dthx = np.asarray(_ev.dth, dtype=float)
-            _w = _dthx.shape[1]           # m on a one-step map, 2m on gear's pair
-            for i, y0 in enumerate(ys):
-                dthetas[i] = _dthx @ np.asarray(y0, dtype=complex)[:_w] + _dth_f[i]
-        ## the crossings' modulation per frequency (fractions of the period
-        ## per unit source), None where the solve had no state events
+        ys, dthetas = self._forced_responses(pss, fp, freqs, u_ac, recycle)
         self.event_shifts = list(dthetas)
         outfreq, outV = [], []
         ## the complex time-domain response per frequency, `(times, y)` with
@@ -340,20 +252,7 @@ class PAC(Analysis):
         ## which on a strongly non-uniform grid is not an interpolating basis
         ## -- a time-domain reading comes from here, not from summing them
         self.time_response = []
-        _Pk_fixed = None
-        for f, y0, dth in zip(freqs, ys, dthetas):
-            _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0, collect=True)
-            y = np.array([np.asarray(y0)[:m]] + [np.asarray(v)[:m]
-                                                 for v in ysteps])
-            if dth is not None:
-                ## the crossings' motion at every node, AT FIXED TIME --
-                ## `Pk_j - xdot_j tau_j^T`: the response of "node j" itself
-                ## includes the node's motion along the orbit, O(1) of the
-                ## response on a staged oscillator (see
-                ## `_fixed_time_event_columns`)
-                if _Pk_fixed is None:
-                    _Pk_fixed, _t_, _x_ = self._fixed_time_event_columns(pss)
-                y = y + np.tensordot(_Pk_fixed[:len(y)], dth, axes=(2, 0))
+        for f, y in zip(freqs, ys):
             self.time_response.append((np.asarray(fp.times, dtype=float)[:len(y)], y.copy()))
             ## `v(t) = y(t) exp(-j w t)` is T-periodic; its DFT is the
             ## sideband set
@@ -399,6 +298,127 @@ class PAC(Analysis):
             self.cir, x=X.T, xdot=None, sweep_values=fout,
             sweep_label='freq', sweep_unit='Hz')
         return self.result
+
+    def _forced_responses(self, pss, fp, freqs, u_ac, recycle=True,
+                          u_points=None):
+        """The steady forced response to the source ``u_ac e^{j w t}`` (or a
+        MODULATED one, `u_points`: `PSS._forced_replay`) at each frequency:
+        per frequency the complex response at every node of the grid, `(N +
+        1, m)`, and the crossings' shifts (None without state events).
+        The operator solves (deflated on an oscillator, recycled across the
+        sweep otherwise), the bordered event rows on a staged solve and the
+        fixed-time correction of the node responses -- `PAC.solve`'s core
+        (factored out 2026-09-25 so `_coloured_covariance` reads the same
+        responses).  Sets `deflated` and `matvecs` as `solve` did."""
+        T = float(fp.T)
+        m = self.cir.n - 1
+        rhs = []
+        for f in freqs:
+            w, _ = pss._forced_replay(fp, f, u_ac, u_points=u_points)
+            rhs.append(np.exp(-2j * np.pi * f * T) * np.asarray(w))
+
+        alphas = [np.exp(-2j * np.pi * f * T) for f in freqs]
+        tol = max(pss.par.reltol * self.KRYLOV_FACTOR, 1e-14)
+        ## ⚠ ON AN OSCILLATOR THE OPERATOR HAS THE ANSWER'S OWN POLE at every
+        ## harmonic (see `_check_harmonic`), and a plain solve near one
+        ## carries relative error `eta / (2 pi df/f0)`, `eta = |lambda_1 - 1|`
+        ## the computed unit multiplier's displacement.  The deflated route
+        ## (`_deflated_solve`) borders the pole out and is exact there.
+        ## Under the radau default eta ~ 1e-12, so this is correctness
+        ## hygiene; the subspace recycling across frequencies is given up on
+        ## the autonomous path (one bordered solve per point).
+        self.deflated = bool(getattr(pss, 'autonomous', False))
+        _dth_f = [None] * len(freqs)
+        if self.deflated:
+            ## ⚠ ON A STAGED OSCILLATOR the bordered system collapses onto
+            ## the total map: with `dtheta = dtheta/dx_0 y_0 + dtheta_f`,
+            ## `dtheta_f = -Gt^-1 W f_node` the source's own motion of the
+            ## crossings, `(I - a M_tot) y_0 = a (w + P_theta dtheta_f)` --
+            ## the deflated solve with the total operator and this source.
+            ## Exact against the piecewise-linear forced response (see the
+            ## test); the plain deflated solve is 0.3-400x off here.
+            _evd = EventColumns.of(pss, fp.width)
+            if _evd is not None:
+                _Pthd = np.asarray(_evd['P_end'], dtype=complex)
+                for i, (f, a) in enumerate(zip(freqs, alphas)):
+                    ## (the map's width: gear's pair seeds `(x_0, x_{-1})`)
+                    _e0, f_steps = pss._forced_replay(fp, f, u_ac,
+                                                      y0=np.zeros(fp.width, dtype=complex),
+                                                      collect=True, u_points=u_points)
+                    f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v_, dtype=complex)[:m]
+                                                             for v_ in f_steps]
+                    _dth_f[i] = _evd.forced_shift(f_nodes)
+                    rhs[i] = np.asarray(rhs[i], dtype=complex) + a * (_Pthd @ _dth_f[i])
+            ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
+                  for a, b in zip(alphas, rhs)]
+            self.matvecs = None
+        elif recycle:
+            ys, self.matvecs = self._solve_subspace(fp, alphas, rhs, tol)
+        else:
+            ys, self.matvecs = self._solve_each(fp, alphas, rhs, tol)
+
+        ## one driven replay per frequency turns `y_0` into the period
+        ## ⚠ THE BORDERED SIDEBAND RESPONSE.  On a solve whose grid was
+        ## landed on state events, a periodic perturbation moves the
+        ## crossings: `y_end = M y_0 + w + P_theta dtheta`, and the event
+        ## rows close it -- `w_k . y(node_k) = 0` with `y(node) = P_node y_0
+        ## + f_node + Pk_node dtheta` (the homogeneous map to the node, the
+        ## forced response there, the event column there).  Solved by block
+        ## elimination: the m x m solve for the source and for each event
+        ## column, then the K x K Schur complement for `dtheta`.  A per-step
+        ## saltation reads the dominant multiplier 28 % short of the exact
+        ## total (see `_state_event_stage`); the bordered system IS the
+        ## linearisation of the solve that produced the orbit.
+        _ev = getattr(pss, '_event_columns', None)
+        dthetas = [None] * len(freqs)
+        if _ev is not None and not self.deflated:
+            K = _ev['P_end'].shape[1]
+            Wk, nodes = np.asarray(_ev['W']), _ev['nodes']
+            for i, (f, a, y0) in enumerate(zip(freqs, alphas, ys)):
+                cols = [a * np.asarray(_ev['P_end'][:, k], dtype=complex) for k in range(K)]
+                Ycols, _ = self._solve_each(fp, [a] * K, cols, tol)
+                _e0, f_steps = pss._forced_replay(fp, f, u_ac, y0=np.zeros(fp.width, dtype=complex),
+                                                  collect=True, u_points=u_points)
+                f_nodes = [np.zeros(m, dtype=complex)] + [np.asarray(v, dtype=complex)[:m]
+                                                         for v in f_steps]
+                r = np.zeros(K, dtype=complex)
+                S = np.zeros((K, K), dtype=complex)
+                for k, nd in enumerate(nodes):
+                    Pn = _ev['P_nodes'][nd]
+                    _w = Pn.shape[1]          # m on a one-step map, 2m on gear's pair
+                    r[k] = Wk[k] @ (Pn @ np.asarray(y0)[:_w] + f_nodes[nd])
+                    for l in range(K):
+                        S[k, l] = Wk[k] @ (Pn @ np.asarray(Ycols[l])[:_w] + _ev['Pk_nodes'][nd, :, l])
+                dth = -np.linalg.solve(S, r)
+                dthetas[i] = dth
+                ys[i] = np.asarray(y0, dtype=complex) + sum(Ycols[l] * dth[l] for l in range(K))
+        elif _ev is not None and self.deflated and _dth_f[0] is not None:
+            ## the crossings' motion on the staged oscillator: the state's
+            ## part through the total map's sensitivity plus the source's
+            _dthx = np.asarray(_ev.dth, dtype=float)
+            _w = _dthx.shape[1]           # m on a one-step map, 2m on gear's pair
+            for i, y0 in enumerate(ys):
+                dthetas[i] = _dthx @ np.asarray(y0, dtype=complex)[:_w] + _dth_f[i]
+        ## the crossings' modulation per frequency (fractions of the period
+        ## per unit source), None where the solve had no state events
+        out = []
+        _Pk_fixed = None
+        for f, y0, dth in zip(freqs, ys, dthetas):
+            _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0, collect=True,
+                                               u_points=u_points)
+            y = np.array([np.asarray(y0)[:m]] + [np.asarray(v)[:m]
+                                                 for v in ysteps])
+            if dth is not None:
+                ## the crossings' motion at every node, AT FIXED TIME --
+                ## `Pk_j - xdot_j tau_j^T`: the response of "node j" itself
+                ## includes the node's motion along the orbit, O(1) of the
+                ## response on a staged oscillator (see
+                ## `_fixed_time_event_columns`)
+                if _Pk_fixed is None:
+                    _Pk_fixed, _t_, _x_ = self._fixed_time_event_columns(pss)
+                y = y + np.tensordot(_Pk_fixed[:len(y)], dth, axes=(2, 0))
+            out.append(y)
+        return out, dthetas
 
     def adjoint_transfer_row(self, pss, freq, output, recycle_tol=None):
         """Every source to ONE output, in a single transposed solve.
@@ -1647,6 +1667,17 @@ class PAC(Analysis):
         (cy,) = remove_row_col((cy,), irn, pss.toolkit)
         return np.asarray(cy, dtype=complex)
 
+    def _lyap_cy(self, pss, w, xr):
+        """`CY` as the Lyapunov pieces read it: `_cy_at`, except while a
+        COLOURED covariance runs (`_white_cy` set by `covariance` /
+        `event_jitter`), when it is the WHITE part `A(x)` of the component
+        model alone -- the coloured part is added in the frequency domain
+        (`_coloured_covariance`), and `CY` at `w0` would count it again."""
+        white = getattr(self, '_white_cy', None)
+        if white is None:
+            return self._cy_at(pss, w, xr)
+        return white(xr)
+
     HARMONIC_GUARD = 1e-12
 
     def _check_circuit(self, pss):
@@ -1748,6 +1779,8 @@ class PAC(Analysis):
 
     def _refuse_coloured(self, pss, what):
         """Refuse a coloured source where the machinery assumes WHITE.
+        (`covariance` and `event_jitter` take a band instead and do not
+        come here with one -- `_coloured_prepare`.)
 
         ⚠ THE TRAP IS THAT NOTHING ELSE WOULD OBJECT. The Lyapunov
         recursion, `diffusion_constant` and eq (22)'s collapse all read
@@ -1758,6 +1791,22 @@ class PAC(Analysis):
         frequency dependence, bias dependence is what `_cy_reduced`
         refuses separately.
         """
+        if self._coloured_present(pss):
+            raise NotImplementedError(
+                'PAC.%s: a noise source in this circuit is COLOURED (its CY '
+                'differs between w0 and 10 w0), and this routine assumes '
+                'white sources -- it would fold CY at one frequency as if '
+                'it held at every frequency and return a plausible wrong '
+                'number. Use the frequency-resolved surfaces (pnoise, '
+                'sampled_variance, phase_psd/coloured_diffusion on an '
+                'oscillator, where 1/f noise makes the phase growth '
+                'non-diffusive), covariance/event_jitter with a band '
+                '(fmin, fmax) on a driven circuit, or the white-through-filter '
+                'form of the source.' % what)
+
+    def _coloured_present(self, pss):
+        """Whether any noise source of the circuit is COLOURED -- see
+        `_refuse_coloured`, which asks this."""
         w1 = 2.0 * np.pi / float(pss.period)
         ## ⚠ Colour is asked at fixed state, two frequencies: it is separable
         ## from the bias question, and asking it through `_cy_reduced` would
@@ -1781,23 +1830,13 @@ class PAC(Analysis):
             for _k in sorted(set(np.linspace(0, _W.shape[1] - 1,
                                              8).astype(int))):
                 _states.append(_W[:, _k])
-        coloured = False
         for _xr in _states:
             c1 = self._cy_at(pss, w1, _xr)
             c2 = self._cy_at(pss, 10.0 * w1, _xr)
             den = np.maximum(np.abs(c1), np.abs(c2))
             if np.any(np.abs(c1 - c2) > 1e-9 * den):
-                coloured = True
-                break
-        if coloured:
-            raise NotImplementedError(
-                'PAC.%s: a noise source in this circuit is COLOURED (its CY '
-                'differs between w0 and 10 w0), and this routine assumes '
-                'white sources -- it would fold CY at one frequency as if '
-                'it held at every frequency and return a plausible wrong '
-                'number. Use the frequency-resolved surfaces (pnoise, '
-                'phase_psd/coloured_diffusion), or the white-through-filter '
-                'form of the source.' % what)
+                return True
+        return False
 
     def _lyapunov_pieces(self, pss, what):
         """The per-step maps, injections and one-period accumulation.
@@ -1816,7 +1855,10 @@ class PAC(Analysis):
 
         History: `doc/shooting_history.md`, `PAC._lyapunov_pieces`.
         """
-        self._refuse_coloured(pss, what)
+        if getattr(self, '_white_cy', None) is None:
+            ## (a coloured `covariance` / `event_jitter` has set the WHITE
+            ## part for the pieces and adds the coloured one itself)
+            self._refuse_coloured(pss, what)
         fp = pss.factored_period()
         if fp.is_glm:
             ## reached with monodromy='native' only (`_lyapunov_host`)
@@ -1840,8 +1882,8 @@ class PAC(Analysis):
         w0 = 2.0 * np.pi / float(fp.T)
         _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
                        pss.irefnode, axis=0)
-        cys = [np.real(self._cy_at(pss, w0,
-                                   _W[:, min(k + 1, _W.shape[1] - 1)]))
+        cys = [np.real(self._lyap_cy(pss, w0,
+                                     _W[:, min(k + 1, _W.shape[1] - 1)]))
                for k in range(len(fp.steps))]
 
         ## the C ring as the forward recursion sees it -- see the replays
@@ -1935,8 +1977,8 @@ class PAC(Analysis):
         w0 = 2.0 * np.pi / float(fp.T)
         _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
                        pss.irefnode, axis=0)
-        cys = [np.real(self._cy_at(pss, w0,
-                                   _W[:, min(k + 1, _W.shape[1] - 1)]))
+        cys = [np.real(self._lyap_cy(pss, w0,
+                                     _W[:, min(k + 1, _W.shape[1] - 1)]))
                for k in range(len(fp.steps))]
         C_open = np.asarray(fp.opening[0], dtype=float)
         prevC = [C_open] + [np.asarray(st[1], dtype=float)
@@ -2141,7 +2183,7 @@ class PAC(Analysis):
             CY = np.zeros((m, m))
             for i, y in enumerate(st.rec.Ys):
                 if wts[i] > 0.0:
-                    CY += wts[i] * np.real(np.asarray(self._cy_at(
+                    CY += wts[i] * np.real(np.asarray(self._lyap_cy(
                         pss, w0, np.delete(np.asarray(y, dtype=float), irn)),
                         dtype=complex))
             Q = Tj @ (CY / (2.0 * st.rec.h)) @ Tj.T
@@ -2189,7 +2231,8 @@ class PAC(Analysis):
 
         History: `doc/shooting_history.md`, `PAC._lyapunov_pieces_stage`.
         """
-        self._refuse_coloured(pss, what)
+        if getattr(self, '_white_cy', None) is None:
+            self._refuse_coloured(pss, what)
         m = pss.cir.n - 1
         n = m
         hs = np.diff(np.asarray(fp.times, dtype=float))
@@ -2201,7 +2244,7 @@ class PAC(Analysis):
             xk = _W[:, min(k + 1, _W.shape[1] - 1)]
             Cn = np.asarray(pss._C_at(xk), dtype=float)
             Gn = np.asarray(pss._G_at(xk), dtype=float)
-            CYn = self._cy_at(pss, w0, xk)
+            CYn = self._lyap_cy(pss, w0, xk)
             A_k = np.column_stack([
                 np.asarray(pss._monodromy_matvec_stage([step], e), dtype=float)
                 for e in np.eye(m)])
@@ -2263,7 +2306,7 @@ class PAC(Analysis):
                 if wts[i] <= 0.0:
                     continue
                 yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
-                CYi = np.real(np.asarray(self._cy_at(pss, w, yi), dtype=complex))
+                CYi = np.real(np.asarray(self._lyap_cy(pss, w, yi), dtype=complex))
                 Q += wts[i] * self._vanloan_step_injection(
                     np.asarray(pss._C_at(yi), dtype=float),
                     np.asarray(pss._G_at(yi), dtype=float), CYi, h)
@@ -2271,7 +2314,7 @@ class PAC(Analysis):
         Q = np.zeros((m, m))
         for i in range(s):
             yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
-            CYi = np.real(np.asarray(self._cy_at(pss, w, yi), dtype=complex))
+            CYi = np.real(np.asarray(self._lyap_cy(pss, w, yi), dtype=complex))
             Ti = st.source_response(i)
             Q += Ti @ (CYi / (2.0 * h * bvec[i])) @ Ti.T
         return 0.5 * (Q + Q.T)
@@ -2537,7 +2580,7 @@ class PAC(Analysis):
         pieces = {'dth': dth, 'Gi': Gi, 'D': D, 'nodes': nodes, 'E': E}
         return M_tot, Q_tot, samples, pieces
 
-    def event_jitter(self, pss):
+    def event_jitter(self, pss, fmin=None, fmax=None, points_per_decade=40):
         """The noise-driven JITTER of every landed crossing of a staged,
         driven solve: ``sigma`` in seconds per crossing, and the crossings'
         covariance in fractions of the period.
@@ -2555,6 +2598,10 @@ class PAC(Analysis):
 
         Returns ``{'sigma': (K,) s, 'cov_fraction': (K, K), 'fractions':
         (K,) the crossings' positions, 'nodes': (K,) their grid nodes}``.
+        A COLOURED source needs the band `fmin` / `fmax` /
+        `points_per_decade`, as `covariance`: the crossings' coloured motion
+        is read off the same bordered forced responses (the coloured part
+        of a 1/f threshold's sigma^2 is `Var_band(v_th) / s_1^2` to 1e-6).
         An oscillator's crossings diffuse without bound with its phase;
         that is `oscillator_covariance`'s object, and this refuses one.
         Every source of the circuit is in it together; a per-source
@@ -2575,18 +2622,28 @@ class PAC(Analysis):
                 'solve with state_events=True on a circuit that declares '
                 'them (a VSwitch).')
         pss = pss._lyapunov_host()
-        As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
-        bordered = self._event_closure(pss, As, Qs, M, m, n)
-        if bordered is None:
-            raise ValueError(
-                'PAC.event_jitter: this Floquet host carries no event '
-                'columns (see the warning above); solve with method=\'radau\'.')
-        M_tot, Q_tot, _samples, pieces = bordered
-        S = np.eye(n * n) - np.kron(M_tot, M_tot)
-        K0 = np.linalg.solve(S, Q_tot.reshape(-1)).reshape(n, n)
-        K0 = 0.5 * (K0 + K0.T)
-        dth, Gi, D = pieces['dth'], pieces['Gi'], pieces['D']
-        cov = dth @ K0 @ dth.T + Gi @ D @ Gi.T
+        col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
+                                     'event_jitter')
+        try:
+            As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
+            bordered = self._event_closure(pss, As, Qs, M, m, n)
+            if bordered is None:
+                raise ValueError(
+                    'PAC.event_jitter: this Floquet host carries no event '
+                    'columns (see the warning above); solve with method=\'radau\'.')
+            M_tot, Q_tot, _samples, pieces = bordered
+            S = np.eye(n * n) - np.kron(M_tot, M_tot)
+            K0 = np.linalg.solve(S, Q_tot.reshape(-1)).reshape(n, n)
+            K0 = 0.5 * (K0 + K0.T)
+            dth, Gi, D = pieces['dth'], pieces['Gi'], pieces['D']
+            cov = dth @ K0 @ dth.T + Gi @ D @ Gi.T
+        finally:
+            self._white_cy = None
+        if col is not None:
+            ## the crossings' coloured motion, from the same bordered forced
+            ## responses (`_forced_responses`' shifts)
+            _Kc, Dc = self._coloured_covariance(pss, col, m, n)
+            cov = cov + Dc
         cov = 0.5 * (cov + cov.T)
         T = float(pss.period)
         return {'sigma': np.sqrt(np.clip(np.diag(cov), 0.0, None)) * T,
@@ -2594,7 +2651,183 @@ class PAC(Analysis):
                 'fractions': np.asarray(pss._state_event_fracs, dtype=float).copy(),
                 'nodes': list(pieces['nodes'])}
 
-    def covariance(self, pss, samples=False):
+    def _injection_points(self, pss, fp):
+        """`(counts, states)`: how many injection points each step has and
+        their states (full width), in `injection_times` order -- where a
+        MODULATED source is evaluated (`_coloured_covariance`).  A stage
+        method's and a GLM's are the stage points (`_stage_states`); a
+        multistep step's source enters at its END, so its one point is the
+        next node (as `_sampled_series` reads it)."""
+        N = len(fp.steps)
+        if fp.is_glm:
+            return ([len(st.injection_times(0.0)) for st in fp.step_objects()],
+                    self._stage_states(pss, fp))
+        if fp.is_stage:
+            return [st.s for st in fp.steps], self._stage_states(pss, fp)
+        ## (the column the Lyapunov pieces read `CY` at)
+        xs = np.asarray(pss.waveform[1], dtype=float)
+        return [1] * N, [xs[:, min(j + 1, xs.shape[1] - 1)] for j in range(N)]
+
+    def _coloured_prepare(self, pss, fmin, fmax, points_per_decade, what):
+        """None on a circuit whose sources are all white.  Otherwise the
+        coloured components and the band, and the Lyapunov pieces are set to
+        read the WHITE part of each source (`_white_cy`, `_lyap_cy`) -- the
+        caller clears it.  Refuses what cannot be integrated: no `fmin` (a
+        1/f variance grows as ``ln(fmax/fmin)`` without limit), a component
+        that is not a power law, a circuit whose `CY` is not the sum of its
+        elements'."""
+        if not self._coloured_present(pss):
+            return None
+        fp = pss._state_map()
+        T = float(fp.T)
+        N = len(fp.steps)
+        f0 = 1.0 / T
+        fnyq = 0.5 * N / T
+        if fmin is None:
+            raise NotImplementedError(
+                'PAC.%s: a noise source in this circuit is COLOURED (a 1/f '
+                'source), and its variance grows as ln(fmax/fmin) without '
+                'limit -- pass fmin (and fmax, default the grid\'s Nyquist, '
+                '%.6g Hz): the coloured part is integrated over [fmin, fmax] '
+                'in the frequency domain, the white part as for white '
+                'sources.' % (what, fnyq))
+        fmin = float(fmin)
+        fmax = fnyq if fmax is None else float(fmax)
+        if not (0.0 < fmin < fmax <= fnyq * (1.0 + 1e-12)):
+            raise ValueError(
+                'PAC.%s: need 0 < fmin < fmax <= the grid\'s Nyquist '
+                '(N/2T = %.6g Hz); got fmin = %.6g, fmax = %.6g.'
+                % (what, fnyq, fmin, fmax))
+        counts, states = self._injection_points(pss, fp)
+        model = self._cy_components_model(pss, fmin, f0, states)
+        if model is None:
+            raise NotImplementedError(
+                'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
+                'so its coloured part cannot be separated from the white one '
+                '(see the warning above).' % what)
+        if model.perband:
+            raise NotImplementedError(
+                'PAC.%s: the noise of %s is coloured but not a power law '
+                '(thermal plus 1/f^EF), so there is no density to integrate '
+                'over the band. Use sampled_noise / pnoise, which evaluate '
+                'it per band.' % (what, ', '.join('.'.join(k) for k in model.perband)))
+        self._warn_signed_unused(model, 'PAC.%s' % what)
+        amp = getattr(model, 'amplitude', None) or {}
+        comps = []
+        for key, B, EF in model.flicker:
+            ef = self._uniform_exponent(B, EF)
+            if ef is None:
+                raise NotImplementedError(
+                    'PAC.%s: the coloured noise of %s carries different '
+                    'power-law exponents in different entries, so it has no '
+                    'one amplitude to replay. Use sampled_noise / pnoise.'
+                    % (what, '.'.join(key)))
+            ## ⚠ THE SIGN: the element's stated amplitudes where it has them
+            ## (`W W^H = B` with the sign of the modulation); `sqrt(B)` is
+            ## the sign-blind |m| process (`_warn_signed_unused` said so)
+            W = amp.get(key)
+            W = np.asarray(W if W is not None else self._psd_sqrt(B), dtype=complex)
+            comps.append((key, W, float(ef)))
+        ## the white part of each source, at the states the pieces read:
+        ## the injection points from the batch model, any other state (a
+        ## step end under the Van Loan fallback) fitted on demand
+        irn = pss.irefnode
+        m = pss.cir.n - 1
+        cache = {}
+        for x, A in zip(states, model.white):
+            xr = np.delete(np.asarray(x, dtype=float), irn)
+            cache[xr.tobytes()] = np.asarray(A, dtype=complex)
+
+        def white(xr):
+            xr = np.asarray(xr, dtype=float).ravel()[:m]
+            key = xr.tobytes()
+            if key not in cache:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    mdl = self._cy_components_model(pss, fmin, f0, states=[xr])
+                cache[key] = np.asarray(mdl.white[0], dtype=complex)
+            return cache[key]
+        self._white_cy = white
+        return {'fp': fp, 'counts': counts, 'comps': comps, 'w1': model.w1,
+                'fmin': fmin, 'fmax': fmax, 'ppd': int(points_per_decade)}
+
+    def _coloured_covariance(self, pss, col, m, n):
+        """The COLOURED sources' covariance at every node and the crossings'
+        -- the frequency-domain half of a coloured `covariance` /
+        `event_jitter`.  Returns `(K (N + 1, n, n), Cov(dtheta) or None)`.
+
+        A component is ``u(t) = W(x(t)) zeta(t)``, `W` its amplitudes at the
+        injection points, `zeta` independent unit processes whose one-sided
+        density ``(w1/w)^EF`` makes ``W W^H (w1/w)^EF`` the component's `CY`.
+        Per column of `W` and per input frequency `nu` of a log grid over
+        `[fmin, fmax]`, the steady response `y(nu, t_j)` to the MODULATED
+        source ``W e^{j 2 pi nu t}`` (`_forced_responses`: bordered and at
+        fixed time on a staged solve), and
+
+            K(t_j) = int_fmin^fmax (w1 / 2 pi nu)^EF Re[y y^H] dnu
+
+        -- the two-sided density `CY/2` over +-nu, `-nu` the conjugate.  A
+        log grid, `points_per_decade` as `sampled_variance`'s, and the
+        trapezoid in `ln(nu)`.  Gear's PAIR covariance carries `(x_j,
+        x_{j-1})`: the previous node's response, node -1 being node N - 1
+        a period back (``e^{-j 2 pi nu T}``).
+
+        ⚠ A SLOPE, NOT A STATE: no shaping filter, no fitted Lorentzian
+        ladder -- the exact power law over a hard band, as `sampled_variance`
+        and `coloured_diffusion` take it.
+
+        History: `doc/shooting_history.md`, `PAC._coloured_covariance`."""
+        fp = col['fp']
+        if n != m and not fp.is_pair:
+            raise NotImplementedError(
+                'PAC.covariance: the plain trapezoidal map\'s covariance is '
+                'on the pair (x, iq), whose second block is a companion '
+                'current and not a node -- the coloured part is built on the '
+                'nodes. Use gear, radau or trbdf2 for a coloured covariance.')
+        T = float(fp.T)
+        N = len(fp.steps)
+        fmin, fmax = col['fmin'], col['fmax']
+        ## the trapezoid in ln(nu), not in nu: `int F dnu = int nu F dln(nu)`
+        ## is EXACT for a pure 1/f density and spectrally accurate for one
+        ## whose response flattens at both band ends (the linear trapezoid
+        ## on the same log grid carries (r - 1)^3 / 6 per point, r the
+        ## grid ratio: 6e-4 of a 1/f band at 40 per decade)
+        nn = max(2, int(np.ceil(col['ppd'] * np.log10(fmax / fmin)))) + 1
+        nus = np.geomspace(fmin, fmax, nn)
+        dl = np.diff(np.log(nus))
+        wq = np.zeros(nn)
+        wq[:-1] += 0.5 * dl
+        wq[1:] += 0.5 * dl
+        wq = wq * nus
+        offs = np.concatenate(([0], np.cumsum(col['counts'])))
+        K = np.zeros((N + 1, n, n))
+        D = None
+        zero = np.zeros(m, dtype=complex)
+        for _key, W, ef in col['comps']:
+            for s_ in range(W.shape[2]):
+                Wc = W[:, :, s_]
+                if not np.any(Wc):
+                    continue
+                u_points = [Wc[offs[j]:offs[j + 1]] for j in range(N)]
+                ys, dths = self._forced_responses(pss, fp, nus, zero,
+                                                  u_points=u_points)
+                for i, nu in enumerate(nus):
+                    dens = wq[i] * (col['w1'] / (2.0 * np.pi * nu)) ** ef
+                    y = np.asarray(ys[i], dtype=complex)[:N + 1]
+                    if n != m:
+                        prev = np.vstack((y[N - 1:N] * np.exp(-2j * np.pi * nu * T),
+                                          y[:N]))
+                        y = np.hstack((y, prev))
+                    K += dens * np.real(np.einsum('ji,jk->jik', y, y.conj()))
+                    if dths[i] is not None:
+                        dd = np.asarray(dths[i], dtype=complex)
+                        Di = dens * np.real(np.outer(dd, dd.conj()))
+                        D = Di if D is None else D + Di
+        K = 0.5 * (K + np.swapaxes(K, 1, 2))
+        return K, D
+
+    def covariance(self, pss, samples=False, fmin=None, fmax=None,
+                   points_per_decade=40):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
 
         ⚠ A GRID CHOSEN FOR `kT/C` IS NOT A GRID FOR THE PROFILE.  The
@@ -2616,6 +2849,22 @@ class PAC(Analysis):
         Returns `K0`, the covariance at `t = 0`; with `samples=True`,
         `(K0, [K_j])`, the covariance at every step, which is the
         time-varying statistic this exists to produce.
+
+        ⚠ A COLOURED SOURCE NEEDS A BAND (2026-09-25).  With a 1/f source
+        (a `flicker_noise`, a MOS channel's flicker) pass `fmin` -- and
+        `fmax`, default the grid's Nyquist `N/2T` -- because a 1/f variance
+        grows as `ln(fmax/fmin)` without limit.  The WHITE part of every
+        source then goes through the recursion below and the COLOURED part
+        is integrated over the band in the frequency domain, per input
+        frequency the forced response to the modulated source
+        (`_coloured_covariance`; `points_per_decade` as
+        `sampled_variance`'s).  Measured: against the closed form on an RC
+        to each method's transfer error (radau 4e-9, gear 5.5e-5 at 100
+        points, second order); against `sampled_variance`'s adjoint route
+        on a switched sampler to that route's own quadrature (5e-6).
+        Refused: a colour that is not a power law, a component whose
+        exponent differs between its entries, and trap's plain map (its
+        covariance is on the (x, iq) pair).
 
         The noise covariance obeys a Lyapunov recursion alongside the
         trajectory, `K_{j+1} = A_j K_j A_jᵀ + Q_j`, so over one period
@@ -2676,20 +2925,35 @@ class PAC(Analysis):
         ## source is TR-BDF2 (its two-stage Q_j is not built) -- see
         ## `_lyapunov_host`
         pss = pss._lyapunov_host()
-        As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
-        ## a staged solve closes on the TOTAL monodromy with the events'
-        ## noise-driven motion in the injection -- see `_event_closure`
-        bordered = self._event_closure(pss, As, Qs, M, m, n)
-        if bordered is not None:
-            M, K1, _samples, _pieces = bordered
-        S = np.eye(n * n) - np.kron(M, M)
-        K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
-        K0 = 0.5 * (K0 + K0.T)
+        ## a COLOURED source: the white part through the recursion below,
+        ## the coloured part in the frequency domain over `[fmin, fmax]`
+        ## (`_coloured_covariance`)
+        col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
+                                     'covariance')
+        try:
+            As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
+            ## a staged solve closes on the TOTAL monodromy with the events'
+            ## noise-driven motion in the injection -- see `_event_closure`
+            bordered = self._event_closure(pss, As, Qs, M, m, n)
+            if bordered is not None:
+                M, K1, _samples, _pieces = bordered
+            S = np.eye(n * n) - np.kron(M, M)
+            K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
+            K0 = 0.5 * (K0 + K0.T)
+            seq = None
+            if samples:
+                seq = (_samples(K0) if bordered is not None
+                       else self._lyap_walk(As, Qs, K0))
+        finally:
+            self._white_cy = None
+        if col is not None:
+            Kc, _dth = self._coloured_covariance(pss, col, m, n)
+            K0 = K0 + Kc[0]
+            if seq is not None:
+                seq = [a + b for a, b in zip(seq, Kc)]
         if not samples:
             return K0
-        if bordered is not None:
-            return K0, _samples(K0)
-        return K0, self._lyap_walk(As, Qs, K0)
+        return K0, seq
 
     def sampled_noise(self, pss, output, times, freqs, maxsidebands=None,
                       tail=False):

@@ -138,9 +138,10 @@ class _StageStep(object):
     def sources(self, u, jw, ts, _te):
         """A source ``u e^{jw t}`` on the step from `ts`, as the stage
         residuals carry it: ``-h sum_k A_ik u e^{jw (ts + c_k h)}`` per stage
-        `i`, one-term forcing tuples for `solve`."""
+        `i`, one-term forcing tuples for `solve`.  `u` may be per stage
+        (`(s, m)`, a modulated source: `_at_point`)."""
         s, A, c, h = self.s, self.A, self.c, self.h
-        return [(-h * sum(A[i, k] * u * np.exp(jw * (ts + c[k] * h))
+        return [(-h * sum(A[i, k] * _at_point(u, k) * np.exp(jw * (ts + c[k] * h))
                           for k in range(s if self.lu is not None else i + 1)),)
                 for i in range(s)]
 
@@ -161,6 +162,14 @@ class _StageStep(object):
         return self.solve(np.zeros((m, m)),
                           [(-self.h * self.A[i, i_src] * np.eye(m),)
                            for i in range(self.s)])
+
+
+def _at_point(u, k):
+    """The source vector at injection point `k`: `u` itself when it is one
+    vector (the same at every point), its row `k` when it is per point (a
+    MODULATED source, `(points, m)`, in `injection_times` order --
+    `PAC._coloured_covariance`)."""
+    return u[k] if np.ndim(u) == 2 else u
 
 
 def _butcher(integ):
@@ -268,8 +277,9 @@ class _LMMStep(object):
     def sources(self, u, jw, _ts, te):
         """A source ``u e^{jw t}``: it enters the step's solve (not the
         companion -- an injected current is not a charge) at the step's
-        END, ``t_{n+1}``."""
-        return u * np.exp(jw * float(te))
+        END, ``t_{n+1}`` -- the step's one injection point (`u` per point is
+        `(1, m)`)."""
+        return _at_point(u, 0) * np.exp(jw * float(te))
 
     def source_adjoint(self, acc, t, jw, _ts, te):
         """`acc` less the source's coupling to the transposed solve `t`: the
@@ -578,8 +588,10 @@ class _GLMStartup(object):
 
     def sources(self, u, jw, ts):
         """``sig[j][l] = u e^{jw (ts + (j + c_l) h_s)}``: a source on the
-        substages of a startup at `ts`."""
-        return [[u * np.exp(jw * (ts + (j + float(self.c[l])) * self.hs))
+        substages of a startup at `ts` (`u` per substage, `(3p, m)`, in
+        `injection_times` order, for a modulated source)."""
+        return [[_at_point(u, 3 * j + l)
+                 * np.exp(jw * (ts + (j + float(self.c[l])) * self.hs))
                  for l in range(3)] for j in range(len(self.lus))]
 
     def _reach(self, a):
@@ -689,10 +701,11 @@ class _GLMStateStep(object):
         """A source ``u e^{jw t}`` on the step from `ts`: at the stage times
         ``ts + c_i h``, and on the opening startup's substages."""
         rec = self.rec
-        src = [u * np.exp(jw * (ts + float(rec.c[i]) * rec.h))
+        src = [_at_point(u, i) * np.exp(jw * (ts + float(rec.c[i]) * rec.h))
                for i in range(self.s)]
         sub = (None if self.startup is None
-               else self.startup.sources(u, jw, ts))
+               else self.startup.sources(u[self.s:] if np.ndim(u) == 2 else u,
+                                         jw, ts))
         return (src, sub)
 
     def source_adjoint(self, acc, r, jw, ts, _te):

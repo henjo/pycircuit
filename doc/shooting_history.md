@@ -7779,6 +7779,30 @@ crossing motion that gives the held capacitor its
 `(s_2/s_1)^2 kT/C_n`.  The reset edges of that fixture read
 0.6437 ps, the threshold node's own faster slope there.
 
+### `_coloured_covariance`
+
+Built 2026-09-25 (log: "coloured noise in `covariance` and
+`event_jitter`").  Before it, `covariance` and `event_jitter` refused any
+coloured source through `_refuse_coloured`.
+
+Why the frequency domain and not a shaping filter: the codebase's stance
+(`coloured_diffusion`: "a SLOPE, NOT A STATE"), and against a fitted
+Lorentzian ladder it has the exact power law, a hard band as
+`sampled_variance` has, and the bordered event machinery for free
+(`_forced_responses` is `PAC.solve`'s core).  No augmented Kronecker
+closure.
+
+Why the white part needs its own hook (`_lyap_cy`): the Lyapunov pieces
+read `CY` at `w0`, which on a flicker circuit carries the flicker at the
+clock frequency.  Folded as white, it counts the flicker a second time,
+as a flat density.  Measured as a poison: +4.9 % on the RC gate.
+
+Why the trapezoid in `ln(nu)`: exact on a pure 1/f density.  The linear
+trapezoid on a log grid (`sampled_variance`'s) carries `(r - 1)^3 / 6`
+per point: 6e-4 of a 1/f band at 40 per decade.  That was predicted and
+then seen as the residual of the comparison with `sampled_variance`
+(−5.6e-6 predicted at 400 per decade, −3e-6 .. −5e-6 measured).
+
 ### `covariance`
 
 The docstring paragraphs before the move (the first, from the top of the docstring):

@@ -99,7 +99,8 @@ class _FactoredReplays(object):
             return out, ts, states
         return out
 
-    def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False):
+    def _forced_replay(self, fp, freq, u_ac, y0=None, collect=False,
+                       u_points=None):
         """One period of the LINEARISED circuit, driven at `freq`: the same
         steps as `_replay`, each with its source switched on (`sources`),
         so ``y_end = M y0 + w(freq)`` with `w` the particular response from
@@ -110,7 +111,12 @@ class _FactoredReplays(object):
         With `collect`, the circuit state at every node.
 
         ⚠ THE SOLVE IS REAL, THE REPLAY IS COMPLEX: a complex right-hand
-        side costs two back-substitutions against the same factors."""
+        side costs two back-substitutions against the same factors.
+
+        `u_points` (per step, the source at each of its injection points,
+        `injection_times` order: `(points, m)`) replaces the constant `u_ac`
+        with a MODULATED source ``W(x(t)) e^{jw t}`` -- a coloured component
+        of a noise element (`PAC._coloured_covariance`)."""
         jw = 2j * np.pi * float(freq)
         u_ac = np.asarray(u_ac, dtype=complex).ravel()
         tms = np.asarray(fp.times, dtype=float)
@@ -119,7 +125,8 @@ class _FactoredReplays(object):
         c = fp.seed(v)
         ys = []
         for j, st in enumerate(fp.step_objects()):
-            c = st.solve(c, st.sources(u_ac, jw, tms[j], tms[j + 1]))
+            u_j = u_ac if u_points is None else u_points[j]
+            c = st.solve(c, st.sources(u_j, jw, tms[j], tms[j + 1]))
             if collect:
                 ys.append(fp.node(c).copy())
         return fp.extract(c), ys

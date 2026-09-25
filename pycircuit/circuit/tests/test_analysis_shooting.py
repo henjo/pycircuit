@@ -12135,9 +12135,11 @@ def test_a_coloured_source_folds_per_harmonic_and_agrees_with_pnoise():
 def test_the_white_only_covariance_routines_refuse_colour_with_the_reason():
     """⚠ A ROUTINE THAT FOLDS `CY` AT ONE FREQUENCY MUST SAY SO.
 
-    `oscillator_covariance`, `covariance` (both through `_lyapunov_pieces`)
-    and `orbital_correlation` read `CY` at `2 pi / T` as if it held at
-    every frequency.  On a coloured source that returns a plausible
+    `oscillator_covariance` (through `_lyapunov_pieces`) and
+    `orbital_correlation` read `CY` at `2 pi / T` as if it held at every
+    frequency.  (`covariance` did too until 2026-09-25; it now integrates
+    the colour over a band and refuses only without one --
+    `test_a_coloured_covariance_integrates_the_band_against_the_closed_form`.)  On a coloured source that returns a plausible
     number -- the shape A4d itself names -- so they refuse, and the
     refusal is the same test `_refuse_coloured` applies everywhere: `CY`
     at `w0` against `CY` at `10 w0`.
@@ -27327,6 +27329,184 @@ def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma(
         assert False, 'an oscillator must be refused'
     except ValueError as e:
         assert 'diffuse' in str(e)
+
+
+def _rc_flicker(method, npts, T=1e-6, Rv=1e3, Cv=1e-9, k=1e-20):
+    """A driven LTI RC (`fc = 159 kHz`, `f0 = 1 MHz`) whose ONLY noise is a
+    1/f current `k/f` into the capacitor node -- the closed-form gate of a
+    coloured covariance."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c.add_node('in')
+    c.add_node('out')
+    c['V'] = VSin('in', gnd, va=0.1, vo=0.0, freq=1.0 / T)
+    c['R'] = R('in', 'out', r=Rv, noisy=False)
+    c['C'] = C('out', gnd, c=Cv)
+    c['n'] = _Flicker('out', gnd, i=0.0, noisePSD=k, fref=1.0)
+    pss = PSS(c, method=method, reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, maxiterations=40)
+    o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
+    return c, pss, o, PAC(c, toolkit=circuit.numeric)
+
+
+def _rc_band_variance(f1, f2, Rv=1e3, Cv=1e-9, k=1e-20):
+    """``int_f1^f2 (k/f) R^2 / (1 + (f/fc)^2) df`` in closed form."""
+    fc = 1.0 / (2.0 * np.pi * Rv * Cv)
+    F = lambda f: 0.5 * np.log(f * f / (f * f + fc * fc))     # noqa: E731
+    return k * Rv ** 2 * (F(f2) - F(f1))
+
+
+def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
+    """Coloured noise in `covariance` (2026-09-25): the white part of every
+    source goes through the Lyapunov recursion, the coloured part is
+    integrated in the FREQUENCY DOMAIN over the band `[fmin, fmax]` --
+    per input frequency the forced periodic response to the MODULATED
+    source, ``K = int (w1/w)^EF Re[y y^H] dnu`` -- no shaping filter, no
+    fitted Lorentzians (`PAC._coloured_covariance`).
+
+    Gate: an LTI RC with only a 1/f current, against ``int (k/f) |H|^2 df``
+    in closed form, over `[1 kHz, the grid's Nyquist]`.  Measured (rel.):
+
+        N      gear       trbdf2     radau / glm2 (its twin)   euler
+        100   -5.5e-5    -8.5e-6    +3.1e-9                    -9.8e-4
+        200   -1.6e-5    -2.4e-6    +4.0e-9                    -4.9e-4
+        400   -4.5e-6    -6.6e-7    +4.2e-9                    -2.5e-4
+
+    -- each method's discrete transfer at its own order; radau's +4e-9 is
+    FLAT in N: the band quadrature (trapezoid in ln nu, second order in
+    the grid ratio: 2.5e-7 / 6.2e-8 / 1.4e-8 at 5 / 10 / 20 per decade --
+    in `nu` it would carry 6e-4 of a 1/f band at 40 per decade).  The
+    samples of a stationary answer are flat (1e-15), the first is `K0`.
+    Refused: no `fmin` (a 1/f variance grows as ln(fmax/fmin) without
+    limit), a band past the grid's Nyquist, and the plain trapezoidal
+    map, whose covariance lives on the pair (x, iq)."""
+    fmin = 1e3
+    for method, N, tol in (('radau', 100, 2e-8), ('gear', 100, 1e-4),
+                           ('gear', 200, 3e-5)):
+        _c, pss, o, pac = _rc_flicker(method, N)
+        Ns = len(pss.factored_period().steps)
+        fmax = 0.5 * Ns / float(pss.period)
+        K0, seq = pac.covariance(pss, samples=True, fmin=fmin)
+        rel = K0[o, o] / _rc_band_variance(fmin, fmax) - 1.0
+        assert abs(rel) < tol, (method, N, rel)
+        assert np.array_equal(K0, seq[0]) and len(seq) == Ns + 1
+        v = np.array([Kj[o, o] for Kj in seq])
+        assert (v.max() - v.min()) < 1e-12 * v.mean(), (method, N)
+        if method == 'gear' and N == 100:
+            rel100 = rel
+    ## second order: 5.5e-5 -> 1.6e-5
+    assert 2.5 < rel100 / rel < 5.0, (rel100, rel)
+    ## an inner band, fmax below the Nyquist
+    _c, pss, o, pac = _rc_flicker('radau', 100)
+    K = pac.covariance(pss, fmin=1e2, fmax=1e7)
+    assert abs(K[o, o] / _rc_band_variance(1e2, 1e7) - 1.0) < 1e-7
+    with pytest.raises(NotImplementedError, match='ln\\(fmax/fmin\\)'):
+        pac.covariance(pss)
+    with pytest.raises(ValueError, match='Nyquist'):
+        pac.covariance(pss, fmin=1e3, fmax=1e9)
+    _c, pss, o, pac = _rc_flicker('trap', 100)
+    with pytest.raises(NotImplementedError, match='pair \\(x, iq\\)'):
+        pac.covariance(pss, fmin=fmin)
+
+
+def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part():
+    """Coloured noise in `event_jitter` (2026-09-25): `_jitter_sampler` plus a
+    1/f current `k/f` into the threshold node `n` (`R_n C_n`, LTI).  The
+    crossing moves by ``-v_n/s_1``, so its coloured variance is exactly
+    ``Var_band(v_n) / s_1^2``, `Var_band` the RC's closed form over `[fmin,
+    fmax]`; the held capacitor takes `(s_2/s_1)^2` of it.  Measured at 100
+    and 200 points (radau): the coloured part of sigma^2 0.999999 of
+    exact, the node's coloured variance 0.999999, the hold's 0.99995 (the
+    fixture's tracking lag, as for the white part); gear and trbdf2
+    0.99999 on the jitter.
+
+    ⚠ THE WHITE PART MUST NOT SEE THE FLICKER.  The Lyapunov pieces read
+    `CY` at `w0`, which on this circuit carries the flicker at 1 MHz; they
+    read the component model's WHITE part while a coloured covariance runs
+    (`PAC._lyap_cy`).  The white-only run is the reference: the flicker
+    run minus the closed-form coloured part returns it to 1e-6."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    Rn, Cn, k = 1e4, 1e-12, 4e-18
+    fmin, fmax = 1e2, 2e6
+    s1 = 5.0 / (0.9 * T)
+    var_n = _rc_band_variance(fmin, fmax, Rv=Rn, Cv=Cn, k=k)
+    out = {}
+    for flick in (False, True):
+        cir = _jitter_sampler(T)
+        if flick:
+            cir['Fn'] = _Flicker('n', gnd, i=0.0, noisePSD=k, fref=1.0)
+        pss = PSS(cir, method='radau', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=100,
+                      state_events=True)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        band = dict(fmin=fmin, fmax=fmax) if flick else {}
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            j = pac.event_jitter(pss, **band)
+            K0, seq = pac.covariance(pss, samples=True, **band)
+        red = [str(x) for i, x in enumerate(cir.nodes) if i != pss.irefnode]
+        tms = np.asarray(pss.factored_period().times, dtype=float)
+        jh = int(np.argmin(abs(tms - 0.7 * T)))
+        out[flick] = (float(j['sigma'][0]) ** 2,
+                      seq[jh][red.index('n'), red.index('n')],
+                      seq[jh][red.index('hold'), red.index('hold')])
+        if flick:
+            with pytest.raises(NotImplementedError, match='COLOURED'):
+                pac.event_jitter(pss)
+    (sw, nw, hw), (sc, nc, hc) = out[False], out[True]
+    assert abs((sc - sw) / (var_n / s1 ** 2) - 1.0) < 1e-5
+    assert abs((nc - nw) / var_n - 1.0) < 1e-5
+    assert abs((hc - hw) / (4.0 * var_n) - 1.0) < 2e-4
+
+
+def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
+    """Coloured `covariance` against `sampled_variance` on the switched
+    sampler (2026-09-25): two routes that share no integration -- here the
+    FORWARD response to each input frequency over `[fmin, Nyquist]`, there
+    the seeded ADJOINT and the sample series' fold over `[fmin, f0/2]`
+    (they cover the same input frequencies up to holes of width `2 fmin`
+    around each clock harmonic, 1e-6 f0 wide here).  The source is a 1/f
+    current into the held node MODULATED by the clock, `k V_ck zeta`, whose
+    sign flips twice per period; the switch is noiseless (`kb = 0`).
+
+    Measured at 200 points, the hold instant (0.6 T), `sampled_variance` at
+    100 per decade: amplitude-stated (`_SgnAmpFlicker`, the signed
+    process) K/sv - 1 = -8.3e-5, PSD-stated (`_SgnPsdFlicker`, the |m|
+    process) -8.3e-5 -- `sampled_variance`'s own linear trapezoid (it
+    carries (r - 1)^3 / 6 per point on a 1/f band: -9e-5 predicted; at 400
+    per decade both routes agree to 3e-6 ... 5e-6 at four instants on a
+    constant 1/f source).  The two processes differ by 0.9 % at the hold
+    (the sampled charge from before the edge, where the clock is positive,
+    against the charge integrated after it, where it is negative), and
+    both routes carry that difference: a sign-blind `sqrt(B)` amplitude,
+    or a modulation frozen at one state, fails here."""
+    import warnings
+    out = {}
+    for kind, cls in (('amp', _SgnAmpFlicker), ('psd', _SgnPsdFlicker)):
+        def elements(cir, cls=cls):
+            cir['S'] = _sw(kb=0.0)
+            cir['F'] = cls('out', gnd, 'ck', gnd, k=1e-11)
+        cir, pss, io, pac, T = _sampler_fixture(elements, npts=200)
+        f0 = 1.0 / T
+        N = len(pss.factored_period().steps)
+        jh = int(0.6 * N)
+        th = float(np.asarray(pss.factored_period().times)[jh])
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _K0, seq = pac.covariance(pss, samples=True, fmin=1e-6 * f0)
+            sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0,
+                                      points_per_decade=100)[0]
+        out[kind] = seq[jh][io, io]
+        assert abs(out[kind] / sv - 1.0 + 8.3e-5) < 3e-5, (kind, out[kind] / sv - 1)
+    assert 5e-3 < abs(out['amp'] / out['psd'] - 1.0) < 2e-2, out
 
 
 def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
