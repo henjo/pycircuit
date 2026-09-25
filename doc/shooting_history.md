@@ -7788,6 +7788,15 @@ crossing motion that gives the held capacitor its
 
 ### `_coloured_covariance`
 
+2026-09-25 (later): the quadrature became the power law exact per interval
+plus Richardson (`_power_law_weights`).  The trapezoid in ln nu was exact
+for EF = 1 only (+2.8e-4 at EF = 2).  The product rule alone left the
+response's bend at h^2, which telescopes only at EF = 1 (+1.7e-5 at
+EF = 0.8).  Both measured before the fix; fourth order after.  A
+stationary per-band colour (a Lorentzian) is integrated through its own
+`CY(nu)` and unit sources; a modulated one is refused.
+
+
 Built 2026-09-25 (log: "coloured noise in `covariance` and
 `event_jitter`").  Before it, `covariance` and `event_jitter` refused any
 coloured source through `_refuse_coloured`.

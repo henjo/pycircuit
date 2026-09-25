@@ -2699,18 +2699,45 @@ class PAC(Analysis):
                 '(N/2T = %.6g Hz); got fmin = %.6g, fmax = %.6g.'
                 % (what, fnyq, fmin, fmax))
         counts, states = self._injection_points(pss, fp)
-        model = self._cy_components_model(pss, fmin, f0, states)
+        with warnings.catch_warnings():
+            ## (the per-band FOLD's caveat -- one root per element -- does not
+            ## apply here: a per-band component enters through its `CY`
+            ## itself, below, with no square root)
+            warnings.filterwarnings(
+                'ignore', message='PAC: the noise of .* is not '
+                'thermal-plus-power-law')
+            model = self._cy_components_model(pss, fmin, f0, states)
         if model is None:
             raise NotImplementedError(
                 'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
                 'so its coloured part cannot be separated from the white one '
                 '(see the warning above).' % what)
+        ## ⚠ A COLOUR THAT IS NOT A POWER LAW (a Lorentzian `IS(noiseTau)`,
+        ## 2026-09-25) has no density to factor out, but a STATIONARY one --
+        ## the same `CY(w)` at every point of the orbit -- needs none: its
+        ## response is linear in the source, so per band frequency `K +=
+        ## sum_kl CY_kl(nu) Re[y_k y_l^H]` over unit sources `e_k` on its
+        ## support (`_coloured_covariance`).  A MODULATED one would need `CY`
+        ## per point per frequency, and stays refused.
+        perband = []
         if model.perband:
-            raise NotImplementedError(
-                'PAC.%s: the noise of %s is coloured but not a power law '
-                '(thermal plus 1/f^EF), so there is no density to integrate '
-                'over the band. Use sampled_noise / pnoise, which evaluate '
-                'it per band.' % (what, ', '.join('.'.join(k) for k in model.perband)))
+            ws = (2.0 * np.pi * f0, 20.0 * np.pi * f0)
+            per_w = [self._element_cy_samples(pss, w_, states) for w_ in ws]
+            for key in model.perband:
+                for pw in per_w:
+                    Ck = np.asarray(pw[key], dtype=complex)
+                    scale = max(float(np.max(np.abs(Ck))), 1e-300)
+                    if float(np.max(np.abs(Ck - Ck[:1]))) > 1e-12 * scale:
+                        raise NotImplementedError(
+                            'PAC.%s: the noise of %s is coloured, not a power '
+                            'law, AND modulated by the orbit, so its density '
+                            'would be needed per point per band frequency. '
+                            'Use sampled_variance / pnoise, which evaluate it '
+                            'per band.' % (what, '.'.join(key)))
+                C0 = np.asarray(per_w[0][key][0], dtype=complex)
+                supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
+                if supp.size:
+                    perband.append((key, supp))
         self._warn_signed_unused(model, 'PAC.%s' % what)
         amp = getattr(model, 'amplitude', None) or {}
         comps = []
@@ -2749,7 +2776,51 @@ class PAC(Analysis):
             return cache[key]
         self._white_cy = white
         return {'fp': fp, 'counts': counts, 'comps': comps, 'w1': model.w1,
+                'perband': perband, 'state0': states[0],
                 'fmin': fmin, 'fmax': fmax, 'ppd': int(points_per_decade)}
+
+    @staticmethod
+    def _power_law_weights(nus, ef, richardson=True):
+        """Weights `q_i` with ``int nu^-ef g(nu) dnu = sum_i q_i g(nu_i)``
+        EXACT for `g` linear in ``ln nu`` between the points -- the power law
+        integrated analytically, the response interpolated.  On ``[u_i,
+        u_i + h]`` in ``u = ln nu``, with ``lam = 1 - ef``, ``z = lam h``:
+        ``nu_i^lam h (phi1(z) - phi2(z))`` to the left point and ``nu_i^lam h
+        phi2(z)`` to the right, ``phi1 = (e^z - 1)/z``, ``phi2 = int_0^1 t
+        e^{z t} dt``, by series near ``z = 0``.  `ef = 1` is the trapezoid in
+        `ln nu`; `ef = 0` is a density sampled at the points.
+
+        ⚠ AND RICHARDSON ON TOP, on an even number of intervals: ``(4 Q_h -
+        Q_2h) / 3`` with ``Q_2h`` on every other point.  The product rule is
+        exact for a flat response but carries ``h^2 g''`` where the response
+        BENDS, and at `ef != 1` that term does not telescope to the band
+        ends (it does at `ef = 1`): measured on an RC under 1/f^0.8, +6.85e-5
+        / +1.71e-5 / +4.28e-6 / +1.07e-6 at 20 / 40 / 80 / 160 per decade --
+        4.0x per halving, a clean `h^2`, which the combination removes.  The
+        weights stay positive (Simpson's pattern at `ef = 1`), and it stays
+        exact wherever the product rule is.
+
+        History: `doc/shooting_history.md`, `PAC._coloured_covariance`."""
+        nus = np.asarray(nus, dtype=float)
+        if richardson and nus.size >= 3 and (nus.size - 1) % 2 == 0:
+            q1 = PAC._power_law_weights(nus, ef, richardson=False)
+            q2 = np.zeros(nus.size)
+            q2[::2] = PAC._power_law_weights(nus[::2], ef, richardson=False)
+            return (4.0 * q1 - q2) / 3.0
+        h = np.diff(np.log(nus))
+        lam = 1.0 - float(ef)
+        z = lam * h
+        small = np.abs(z) < 1e-3
+        zs = np.where(small, 1.0, z)
+        phi1 = np.where(small, 1.0 + z / 2.0 + z ** 2 / 6.0 + z ** 3 / 24.0
+                        + z ** 4 / 120.0, np.expm1(zs) / zs)
+        phi2 = np.where(small, 0.5 + z / 3.0 + z ** 2 / 8.0 + z ** 3 / 30.0
+                        + z ** 4 / 144.0, (np.exp(zs) * (zs - 1.0) + 1.0) / zs ** 2)
+        base = nus[:-1] ** lam * h
+        q = np.zeros(nus.size)
+        q[:-1] += base * (phi1 - phi2)
+        q[1:] += base * phi2
+        return q
 
     def _coloured_covariance(self, pss, col, m, n):
         """The COLOURED sources' covariance at every node and the crossings'
@@ -2767,8 +2838,12 @@ class PAC(Analysis):
             K(t_j) = int_fmin^fmax (w1 / 2 pi nu)^EF Re[y y^H] dnu
 
         -- the two-sided density `CY/2` over +-nu, `-nu` the conjugate.  A
-        log grid, `points_per_decade` as `sampled_variance`'s, and the
-        trapezoid in `ln(nu)`.  Gear's PAIR covariance carries `(x_j,
+        log grid, `points_per_decade` as `sampled_variance`'s, the power law
+        integrated EXACTLY on each interval and the response linear in `ln
+        nu` (`_power_law_weights`; the trapezoid in `ln nu` it replaced,
+        2026-09-25, was exact for EF = 1 only).  A stationary colour that is
+        not a power law enters through its `CY(nu)` and unit sources on its
+        support.  Gear's PAIR covariance carries `(x_j,
         x_{j-1})`: the previous node's response, node -1 being node N - 1
         a period back (``e^{-j 2 pi nu T}``).
 
@@ -2787,23 +2862,29 @@ class PAC(Analysis):
         T = float(fp.T)
         N = len(fp.steps)
         fmin, fmax = col['fmin'], col['fmax']
-        ## the trapezoid in ln(nu), not in nu: `int F dnu = int nu F dln(nu)`
-        ## is EXACT for a pure 1/f density and spectrally accurate for one
-        ## whose response flattens at both band ends (the linear trapezoid
-        ## on the same log grid carries (r - 1)^3 / 6 per point, r the
-        ## grid ratio: 6e-4 of a 1/f band at 40 per decade)
+        ## the power law integrated EXACTLY between the grid points, the
+        ## response linear in ln(nu) (`_power_law_weights`): exact for a pure
+        ## power law under a flat response, second order in the grid ratio
+        ## where the response bends
         nn = max(2, int(np.ceil(col['ppd'] * np.log10(fmax / fmin)))) + 1
+        nn += (nn - 1) % 2            # an even number of intervals: Richardson
         nus = np.geomspace(fmin, fmax, nn)
-        dl = np.diff(np.log(nus))
-        wq = np.zeros(nn)
-        wq[:-1] += 0.5 * dl
-        wq[1:] += 0.5 * dl
-        wq = wq * nus
         offs = np.concatenate(([0], np.cumsum(col['counts'])))
         K = np.zeros((N + 1, n, n))
         D = None
         zero = np.zeros(m, dtype=complex)
+
+        def node_responses(y, nu):
+            y = np.asarray(y, dtype=complex)[:N + 1]
+            if n != m:
+                prev = np.vstack((y[N - 1:N] * np.exp(-2j * np.pi * nu * T),
+                                  y[:N]))
+                y = np.hstack((y, prev))
+            return y
+
         for _key, W, ef in col['comps']:
+            q = self._power_law_weights(nus, ef) * (
+                col['w1'] / (2.0 * np.pi)) ** ef
             for s_ in range(W.shape[2]):
                 Wc = W[:, :, s_]
                 if not np.any(Wc):
@@ -2812,17 +2893,34 @@ class PAC(Analysis):
                 ys, dths = self._forced_responses(pss, fp, nus, zero,
                                                   u_points=u_points)
                 for i, nu in enumerate(nus):
-                    dens = wq[i] * (col['w1'] / (2.0 * np.pi * nu)) ** ef
-                    y = np.asarray(ys[i], dtype=complex)[:N + 1]
-                    if n != m:
-                        prev = np.vstack((y[N - 1:N] * np.exp(-2j * np.pi * nu * T),
-                                          y[:N]))
-                        y = np.hstack((y, prev))
-                    K += dens * np.real(np.einsum('ji,jk->jik', y, y.conj()))
+                    y = node_responses(ys[i], nu)
+                    K += q[i] * np.real(np.einsum('ji,jk->jik', y, y.conj()))
                     if dths[i] is not None:
                         dd = np.asarray(dths[i], dtype=complex)
-                        Di = dens * np.real(np.outer(dd, dd.conj()))
+                        Di = q[i] * np.real(np.outer(dd, dd.conj()))
                         D = Di if D is None else D + Di
+        ## a STATIONARY colour that is not a power law: unit sources on its
+        ## support, weighted per band frequency by its own `CY(nu)`
+        q0 = self._power_law_weights(nus, 0.0)
+        for key, supp in col.get('perband', ()):
+            per_k = []
+            for k in supp:
+                e = np.zeros(m, dtype=complex)
+                e[k] = 1.0
+                per_k.append(self._forced_responses(pss, fp, nus, e))
+            for i, nu in enumerate(nus):
+                cy = np.asarray(self._element_cy_samples(
+                    pss, 2.0 * np.pi * nu, [col['state0']])[key][0],
+                    dtype=complex)[np.ix_(supp, supp)]
+                Y = np.array([node_responses(pk[0][i], nu) for pk in per_k])
+                K += q0[i] * np.real(np.einsum('kja,kl,ljb->jab', Y, cy,
+                                               Y.conj()))
+                if per_k[0][1][i] is not None:
+                    dd = np.array([np.asarray(pk[1][i], dtype=complex)
+                                   for pk in per_k])
+                    Di = q0[i] * np.real(np.einsum('ka,kl,lb->ab', dd, cy,
+                                                   dd.conj()))
+                    D = Di if D is None else D + Di
         K = 0.5 * (K + np.swapaxes(K, 1, 2))
         return K, D
 

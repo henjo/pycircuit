@@ -27436,20 +27436,22 @@ def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
     in closed form, over `[1 kHz, the grid's Nyquist]`.  Measured (rel.):
 
         N      gear       trbdf2     radau / glm2 (its twin)   euler
-        100   -5.5e-5    -8.5e-6    +3.1e-9                    -9.8e-4
-        200   -1.6e-5    -2.4e-6    +4.0e-9                    -4.9e-4
-        400   -4.5e-6    -6.6e-7    +4.2e-9                    -2.5e-4
+        100   -5.5e-5    -8.5e-6    -5.5e-11                   -9.8e-4
+        200   -1.6e-5    -2.4e-6    -3.3e-11                   -4.9e-4
+        400   -4.5e-6    -6.6e-7    -8.2e-12                   -2.5e-4
 
-    -- each method's discrete transfer at its own order; radau's +4e-9 is
-    FLAT in N: the band quadrature (trapezoid in ln nu, second order in
-    the grid ratio: 2.5e-7 / 6.2e-8 / 1.4e-8 at 5 / 10 / 20 per decade --
-    in `nu` it would carry 6e-4 of a 1/f band at 40 per decade).  The
-    samples of a stationary answer are flat (1e-15), the first is `K0`.
+    -- each method's discrete transfer at its own order.  The band
+    quadrature (`_power_law_weights`: the power law exact per interval,
+    Richardson on top) is fourth order: 5.9e-6 / 8.3e-10 / 2.0e-11 at 5 /
+    10 / 20 per decade.  (Until the Richardson step, 2026-09-25, radau read
+    a flat +4e-9 here -- the trapezoid in ln nu, second order; in `nu` it
+    would carry 6e-4 of a 1/f band at 40 per decade.)  The samples of a
+    stationary answer are flat (1e-15), the first is `K0`.
     Refused: no `fmin` (a 1/f variance grows as ln(fmax/fmin) without
     limit), a band past the grid's Nyquist, and the plain trapezoidal
     map, whose covariance lives on the pair (x, iq)."""
     fmin = 1e3
-    for method, N, tol in (('radau', 100, 2e-8), ('gear', 100, 1e-4),
+    for method, N, tol in (('radau', 100, 1e-9), ('gear', 100, 1e-4),
                            ('gear', 200, 3e-5)):
         _c, pss, o, pac = _rc_flicker(method, N)
         Ns = len(pss.factored_period().steps)
@@ -27572,6 +27574,176 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
         out[kind] = seq[jh][io, io]
         assert abs(out[kind] / sv - 1.0 + 3.2e-5) < 1e-5, (kind, out[kind] / sv - 1)
     assert 5e-3 < abs(out['amp'] / out['psd'] - 1.0) < 2e-2, out
+
+
+def _pow_flicker(ef):
+    """A 1/f^ef current, `flicker_noise(k, ef)` (one-sided `k / f^ef`)."""
+    from pycircuit.circuit.hdl import flicker_noise as _fn
+
+    class _PowFlicker(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn):
+            return Contribution(Branch(outp, outn).I, _fn(p.k, ef))
+    return _PowFlicker
+
+
+def test_a_coloured_covariance_integrates_any_flicker_exponent():
+    """The band integral for a flicker exponent other than 1 (2026-09-25).
+    `_coloured_covariance` took the trapezoid in ln nu, exact for EF = 1
+    only: ``((1 - EF) ln r)^2 / 12`` off on a flat response, +2.78e-4 at
+    EF = 2 and 40 per decade (predicted 2.76e-4).  The product rule (the
+    power law analytic per interval) removes that, and leaves the response's
+    bend at ``h^2`` -- a term that telescopes at EF = 1 but not here
+    (+1.71e-5 / -2.70e-6 at EF = 0.8 / 2.0, 4.0x per halving of the grid
+    ratio); Richardson on the same points removes that too.  Measured, RC
+    driven with `flicker_noise(k, EF)` against the closed-form integrand
+    by adaptive quadrature: -6.1e-10 (EF = 0.8) and +1.2e-9 (EF = 2.0) at
+    40 per decade, fourth order down to the method's floor."""
+    from scipy.integrate import quad
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T, Rv, Cv, k = 1e-6, 1e3, 1e-9, 1e-20
+    fc = 1.0 / (2.0 * np.pi * Rv * Cv)
+    for ef in (0.8, 2.0):
+        c = SubCircuit()
+        c.add_node('in')
+        c.add_node('out')
+        c['V'] = VSin('in', gnd, va=0.1, vo=0.0, freq=1.0 / T)
+        c['R'] = R('in', 'out', r=Rv, noisy=False)
+        c['C'] = C('out', gnd, c=Cv)
+        c['n'] = _pow_flicker(ef)('out', gnd, k=k)
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=40)
+        pac = PAC(c, toolkit=circuit.numeric)
+        o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
+        fmin, fmax = 1e3, 0.5 * len(pss.factored_period().steps) / T
+        K = pac.covariance(pss, fmin=fmin)
+        ref = quad(lambda u: k * np.exp((1.0 - ef) * u) * Rv ** 2
+                   / (1.0 + np.exp(2.0 * u) / fc ** 2),
+                   np.log(fmin), np.log(fmax), epsabs=0, epsrel=1e-12,
+                   limit=500)[0]
+        assert abs(K[o, o] / ref - 1.0) < 1e-8, (ef, K[o, o] / ref - 1.0)
+
+
+class _ModLorentz(IS):
+    """A Lorentzian current whose level follows the terminal voltage --
+    coloured, not a power law, AND modulated: refused by the band
+    integral."""
+
+    def CY(self, x, w, epar=None):
+        v = float(x[0] - x[1])
+        p = self.iparv.noisePSD * (1.0 + v * v) / (1.0 + (float(w) * 1e-7) ** 2)
+        return self.toolkit.array([[p, -p], [-p, p]])
+
+
+def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
+    """A colour that is NOT a power law (2026-09-25): `IS(noiseTau)`, a
+    Lorentzian ``P / (1 + (w tau)^2)``.  `_cy_components_model` calls it
+    per-band, and the band integral refused it; a STATIONARY one enters
+    through its own `CY(nu)` and unit sources on its support (no square
+    root: `_coloured_covariance`).
+
+    Two references, measured (radau):
+      * a driven RC, against the EXACT band-limited closed form
+        ``int P R^2 / ((1 + (2 pi f tau)^2)(1 + (2 pi f RC)^2)) df``:
+        -1.2e-7 at 100 / 200 / 400 points; and against the SAME noise
+        realised as a white source through an explicit RC filter into a
+        transconductor -- the white Lyapunov route, 3e-15 .. 1.6e-11 of the
+        full-band closed form -- -3.3e-6, exactly the band left below
+        `fmin = 1e-6 f0` (predicted 3.2e-6).  Gear: both routes second
+        order (-9.2e-5 / -1.6e-4 at 200 points).
+      * the comparator-jitter sampler with the Lorentzian on its threshold
+        node: the crossing's coloured sigma^2 against ``Var_band(v_n) /
+        s_1^2`` -- the crossings' path (`dtheta`) of the same integral:
+        +1.4e-5 at 100 points (tau = 0.3 T), +6.8e-7 at 200.  With the
+        corner at 8 f0 (tau = 0.02 T, the node's own RC one step) it read
+        +2.8e-4 / +1.7e-5: radau's transfer at that grid, not the integral.
+    A Lorentzian MODULATED by the orbit would need its density per point
+    per band frequency, and is refused."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+
+    def band(P, R_, RC, tau, f1, f2):
+        a, b = 2.0 * np.pi * tau, 2.0 * np.pi * RC
+        F = lambda f: (a * np.arctan(a * f) - b * np.arctan(b * f)) / (a * a - b * b)  # noqa: E731
+        return P * R_ ** 2 * (F(f2) - F(f1))
+
+    Rv, Cv = 1e3, 0.5e-9
+    Rf, Cf, g, Pw = 1e3, 0.3e-9, 1e-3, 1e-20
+    tau, P = Rf * Cf, g * g * Pw * Rf * Rf
+    out = {}
+    for kind in ('coloured', 'filtered'):
+        c = SubCircuit()
+        c.add_node('in')
+        c.add_node('out')
+        c['V'] = VSin('in', gnd, va=0.1, vo=0.0, freq=1.0 / T)
+        c['R'] = R('in', 'out', r=Rv, noisy=False)
+        c['C'] = C('out', gnd, c=Cv)
+        if kind == 'coloured':
+            c['n'] = IS('out', gnd, i=0.0, noisePSD=P, noiseTau=tau)
+        else:
+            c.add_node('f')
+            c['nw'] = IS('f', gnd, i=0.0, noisePSD=Pw)
+            c['rf'] = R('f', gnd, r=Rf, noisy=False)
+            c['cf'] = C('f', gnd, c=Cf)
+            c['gm'] = BSource('f', gnd, gnd, 'out', i_func=lambda u: g * u)
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 200, maxiterations=40)
+        pac = PAC(c, toolkit=circuit.numeric)
+        o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
+        fN = 0.5 * len(pss.factored_period().steps) / T
+        band_ = dict(fmin=1e-6 / T) if kind == 'coloured' else {}
+        out[kind] = (pac.covariance(pss, **band_)[o, o], fN)
+    kc, fN = out['coloured']
+    kf, _ = out['filtered']
+    assert abs(kc / band(P, Rv, Rv * Cv, tau, 1e-6 / T, fN) - 1.0) < 1e-6
+    full = band(P, Rv, Rv * Cv, tau, 0.0, np.inf)
+    assert abs(kf / full - 1.0) < 1e-9
+    assert abs(kc / kf - band(P, Rv, Rv * Cv, tau, 1e-6 / T, fN) / full) < 1e-6
+
+    ## the crossings' path: the Lorentzian on the jitter sampler's threshold
+    Rn, Cn, tn, Pn = 1e4, 1e-12, 3e-7, 5e-23
+    s1 = 5.0 / (0.9 * T)
+    sig = {}
+    for flick in (False, True):
+        cir = _jitter_sampler(T)
+        if flick:
+            cir['Fn'] = IS('n', gnd, i=0.0, noisePSD=Pn, noiseTau=tn)
+        pss = PSS(cir, method='radau', reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=100,
+                      state_events=True)
+            band_ = dict(fmin=1e-6 / T) if flick else {}
+            sig[flick] = float(PAC(cir, toolkit=circuit.numeric).event_jitter(
+                pss, **band_)['sigma'][0]) ** 2
+        fN = 0.5 * len(pss.factored_period().steps) / T
+    var_n = band(Pn, Rn, Rn * Cn, tn, 1e-6 / T, fN)
+    assert abs((sig[True] - sig[False]) / (var_n / s1 ** 2) - 1.0) < 5e-5, \
+        (sig, var_n / s1 ** 2)
+
+    ## modulated AND not a power law: refused
+    c = SubCircuit()
+    c.add_node('in')
+    c.add_node('out')
+    c['V'] = VSin('in', gnd, va=0.5, vo=1.0, freq=1.0 / T)
+    c['R'] = R('in', 'out', r=Rv, noisy=False)
+    c['C'] = C('out', gnd, c=Cv)
+    c['n'] = _ModLorentz('out', gnd, i=0.0, noisePSD=P)
+    pss = PSS(c, method='radau', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 100, maxiterations=40)
+        with pytest.raises(NotImplementedError, match='modulated by the orbit'):
+            PAC(c, toolkit=circuit.numeric).covariance(pss, fmin=1e-6 / T)
 
 
 def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
