@@ -22039,6 +22039,11 @@ def test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_ser
     MEASURED 2026-09-16: the transform gives 0.368067 / 0.135404 / 0.049813 /
     0.018325 against 0.367879 / 0.135335 / 0.049787 / 0.018316 -- ratio
     1.0005 at EVERY lag, a constant offset rather than one growing with k.
+    Since 2026-09-25 (R_0's low end on a log grid, for 1/f sources:
+    `test_jitter_metrics_integrate_a_flicker_low_end_on_a_log_grid`)
+    0.368072 / 0.135410 / 0.049819 / 0.018332, ratio 1.00052 .. 1.00088:
+    R_0 moved +7e-6 on this white spectrum, which the small rho_4 carries
+    53x.  Without the rectangle rho_4 reads 0.9893 (was 0.9889).
     ⚠ Independently, a Monte Carlo over 1176 noisy crossings (no PSS, no
     adjoint, no spectrum) agreed within 1 sigma at every lag it can resolve:
     0.346404 and 0.131894 at k = 1, 2, i.e. 0.74 and 0.12 sigma, with
@@ -22135,6 +22140,41 @@ def test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_ser
     with pytest.raises(ValueError, match='first-order'):
         pac3.jitter_metrics(pss3, red3, grid3[int(np.argmax(v3))], fmin, fmax,
                             kmax=2, nfreq=21)
+
+
+def test_jitter_metrics_integrate_a_flicker_low_end_on_a_log_grid():
+    """`jitter_metrics` with a 1/f source (2026-09-25).  Its `R_k` were a
+    trapezoid on a LINEAR grid, whose first interval spans the whole 1/f
+    low end: at `nfreq = 301` on this sampler (a constant 1/f current on
+    the switch, noiseless otherwise) R_0..4 changed by 2.6 .. 5.8 % against
+    finer grids (0.6 .. 0.8 % at the default 601).  Now ``R_k = int S df +
+    int S (cos - 1) df``: the first a power law between the points of a log
+    grid AND the linear one below their crossover, the plain trapezoid on
+    the linear grid above it; the second on the linear grid (it vanishes as
+    f^2 at low f).  R_0..4 move by <= 8.8e-5 against 2x the linear and 2x
+    the log points, and R_0 meets `sampled_variance` to -2.2e-5 (its own
+    40-per-decade error).  The k-cycle and cycle-to-cycle metrics depend
+    on ``R_0 - R_k`` alone and did not move."""
+    import warnings
+
+    def el(cir):
+        cir['S'] = _SwitchFlickerHdl('in', 'out', 'ck', gnd, vth=0.0,
+                                     vs=50e-3, temp=_TEMP, kb=0.0, gon=1e-3,
+                                     goff=1e-9, kf=1e-22)
+    cir, pss, io, pac, T = _sampler_fixture(el, npts=100)
+    f0 = 1.0 / T
+    fmin, fmax = 1e-3 * f0, 0.5 * f0
+    N = len(pss.factored_period().steps)
+    th = float(np.asarray(pss.factored_period().times)[int(0.6 * N)])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        m = pac.jitter_metrics(pss, io, th, fmin, fmax, kmax=4, nfreq=301)
+        fine = pac.jitter_metrics(pss, io, th, fmin, fmax, kmax=4, nfreq=601,
+                                  points_per_decade=80)
+        sv = pac.sampled_variance(pss, io, [th], fmin, fmax)[0]
+    assert abs(m['R'][0] / sv - 1.0) < 1e-4, (m['R'][0], sv)
+    moved = np.abs(np.asarray(m['R']) / np.asarray(fine['R']) - 1.0)
+    assert np.max(moved) < 3e-4, moved
 
 
 def _a11_osc_chain(psd_tank=1e-6, psd_buf=1e-6, nstage=3, cb=0.5):

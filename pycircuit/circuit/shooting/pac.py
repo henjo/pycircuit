@@ -3104,7 +3104,8 @@ class PAC(Analysis):
         return np.sum(np.where(ok, pw, lin), axis=-1)
 
     def jitter_metrics(self, pss, output, time, fmin, fmax, kmax=4,
-                       maxsidebands=None, nfreq=601, dc_rectangle=False):
+                       maxsidebands=None, nfreq=601, dc_rectangle=False,
+                       points_per_decade=40):
         """Edge jitter at ONE instant: `sigma_t`, the across-period
         correlation `rho_k`, and the three metrics that are functions of it.
         DRIVEN circuits (an oscillator is refused by `_sampled_series`; its
@@ -3116,6 +3117,19 @@ class PAC(Analysis):
 
             R_k   = int_fmin^fmax S(f; t0) cos(2 pi f k T) df
             rho_k = R_k / R_0
+
+        ⚠ TWO GRIDS (2026-09-25).  ``R_k = int S df + int S (cos - 1) df``:
+        the first takes each grid where it is the finer -- a power law
+        between points (`_loglog_integral`) on a log grid of
+        `points_per_decade` joined with the linear one below their
+        crossover (the 1/f low end), the plain trapezoid on the linear grid
+        above it (the top of the band); the second vanishes as f^2 at low f
+        and oscillates at high f, so it keeps the LINEAR grid of `nfreq`
+        points.
+        On the linear grid alone one interval spanned the whole 1/f low end:
+        on a 1/f sampler R_0 read +0.57 / +0.78 % and R_1..4 +1.2 .. 1.8 %,
+        now +6e-5 and +1e-4 .. 2e-4.  ``R_0 - R_k`` -- the k-cycle and
+        cycle-to-cycle metrics -- is the second integral alone, unchanged.
 
         A crossing is displaced by `delta_y(t0)/slew`, so with `s` the slope
         at `t0` the three metrics A8 names follow directly:
@@ -3177,9 +3191,32 @@ class PAC(Analysis):
         fs = np.linspace(fmin, fmax, int(nfreq))
         S = np.asarray(self._sampled_series(pss, output, [time], fs,
                                             maxsidebands), dtype=float)[0]
+        nlog = max(2, int(np.ceil(points_per_decade
+                                  * np.log10(fmax / fmin))) + 1)
+        fg = np.logspace(np.log10(fmin), np.log10(fmax), nlog)
+        Sg = np.asarray(self._sampled_series(pss, output, [time], fg,
+                                             maxsidebands), dtype=float)[0]
         rect = float(S[0]) * fmin if dc_rectangle else 0.0
-        R = np.array([float(trapezoid(S * np.cos(2.0 * np.pi * fs * k * T), fs))
-                      + rect for k in range(kmax + 1)])
+        ## `int S df`, each grid where it is the finer: below the crossover
+        ## `f*` (log spacing = linear spacing) a power law between the points
+        ## of BOTH grids, which resolves a 1/f low end; above it the plain
+        ## trapezoid on the linear grid, spectrally accurate on a smooth
+        ## spectrum whose slope vanishes at f0/2.  (The log grid alone moved
+        ## R_0 by +3.5e-5 on the white A11 fixture -- its top intervals are
+        ## 6 % wide -- and power-law interpolation on the union by -1.9e-5,
+        ## each 0.1 .. 0.2 % on rho_4.)
+        fstar = (fs[1] - fs[0]) / (fg[1] / fg[0] - 1.0)
+        js = min(int(np.searchsorted(fs, fstar)), len(fs) - 1)
+        low = fg < fs[js]
+        fu = np.concatenate((fs[:js + 1], fg[low]))
+        order = np.argsort(fu, kind='stable')
+        fu, Su = fu[order], np.concatenate((S[:js + 1], Sg[low]))[order]
+        keep = np.concatenate(([True], np.diff(fu) > 0.0))
+        R0 = (float(self._loglog_integral(Su[keep], fu[keep]))
+              + float(trapezoid(S[js:], fs[js:])) + rect)
+        R = np.array([R0 + float(trapezoid(
+            S * (np.cos(2.0 * np.pi * fs * k * T) - 1.0), fs))
+            for k in range(kmax + 1)])
         if not R[0] > 0.0:
             raise ValueError(
                 'PAC.jitter_metrics: R_0 = %.6g is not positive, so there is '

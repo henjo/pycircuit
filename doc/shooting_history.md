@@ -3719,6 +3719,13 @@ with.
 
 ### `_factorise`
 
+2026-09-25: every stored step now factors through here -- Radau's coupled
+block, the GLM startup and gear's continuous adjoint had called
+`lu_factor` directly and ignored `linearsolver=`.  `_PerSolve` gained a
+transposed solve (with none, a solver lacking `factor` crashed every
+adjoint surface), and KLU/Auto gained `factor` (log, 2026-09-25).
+
+
 The docstring's opening paragraphs before the move:
 
 One step's `Jf`, factored by the CALLER'S linear solver.
@@ -8020,6 +8027,15 @@ removes `fmin/(f0/2)` of the full variance because the series PSD is
 flat.  Nothing is extrapolated into `[0, fmin]`.
 
 ### `jitter_metrics`
+
+2026-09-25: `R_k` was a trapezoid on the LINEAR grid alone, whose first
+interval spans the 1/f low end (R_0 +0.6 .. 0.8 % at `nfreq=601` on a 1/f
+sampler, R_1..4 up to +1.8 %).  Split into `int S df` -- log-log on a log
+grid joined with the linear one below their crossover, the plain
+trapezoid above it -- plus `int S (cos - 1)` on the linear grid; `R_0 -
+R_k` unchanged.  The log grid alone was tried first and moved a white
+spectrum's R_0 by 3.5e-5 (its top intervals are 6 % wide).
+
 
 The docstring paragraphs before the move:
 
