@@ -23573,10 +23573,13 @@ def test_the_free_period_and_matrix_free_solves_record_the_stalled_step_signatur
         ## input aliases its work vectors (a real matvec never does)
         return F, (lambda v: np.array(v, dtype=float))
     ## reltol 1e-6, not 1e-12: GMRES's rtol is a factor below reltol, and at
-    ## 1e-12 it hit its iteration limit before the Newton loop ran once
+    ## 1e-12 it hit its iteration limit before the Newton loop ran once.
+    ## UNDAMPED (`line_search=False`, the default since 2026-09-25): the
+    ## signature is recorded on the iteration as it is, and this system's
+    ## alternating |F| would otherwise spend its `build`s on halvings
     z1, info1, ier1, _m = pss._matrix_free_newton(
         stuck, np.zeros(2), np.array([1e-3, 1e-3]), np.array([1e-12, 1e-12]),
-        1e-6, 9)
+        1e-6, 9, line_search=False)
     assert ier1 == 2 and len(calls) == 9
     assert info1['step_floor'] and info1['step_floor']['index'] == 0 \
         and info1['step_floor']['since'] <= 2, info1
@@ -27446,9 +27449,9 @@ def test_the_stage_methods_shoot_matrix_free():
     1e-15 on a driven RLC and a van der Pol oscillator.  (A Nordsieck GLM
     runs matrix-free too, once its startup is linearised -- see
     `test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised`.)
-    And the state-event
-    stage, which needs the dense map, does not run under `matrix_free` --
-    that was silent, and warns now.
+    The state-event stage, which did not run under `matrix_free` (silent,
+    then warned), runs there since 2026-09-25 --
+    `test_the_state_event_stage_runs_matrix_free`.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -27468,14 +27471,171 @@ def test_the_stage_methods_shoot_matrix_free():
             assert abs(out[True][0] / out[False][0] - 1.0) < 1e-12, (method, mk.__name__)
             X0, X1 = out[False][1], out[True][1]
             assert np.max(np.abs(X1 - X0)) < 1e-10 * np.max(np.abs(X0)), (method, mk.__name__)
+
+
+def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
+    """A trapezoidal plain map opened at `x(0)` (`x0_unknown=True`) starts
+    with an order-dropped Euler step (``b = 0``) whose companion current
+    `Pq` the next trap step (``b != 0``) reads.  `_LMMStep.adjoint` dropped
+    the costate on `Pq` whenever ``b = 0`` -- right for gear, whose steps
+    never read it -- so this map was not its forward replay's transpose.
+    Found 2026-09-25 by the matrix-free event stage (its reverse-replayed
+    event rows read 8.4e-4 off the dense ones).  Measured before the fix:
+    the map's own duality 2.8e-3 on the staged PWM loop's grid, an injected
+    row 1e-2 off from node 2 on; on the switched sampler the adjoint
+    sideband rows (pnoise) missed the forward PAC by 1.1e-5 / 7.2e-5 at
+    l = 0 / 1 (1e-15 opened at the manufacturing step).  Pinned: both to
+    1e-10."""
+    import warnings as _w
+    from pycircuit.circuit.analysis import remove_row_col
+    circuit.default_toolkit = circuit.numeric
+    Tp = 1e-5
+    cir = _pwm_loop(Tp)
+    p = PSS(cir, method='trap', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=Tp, timestep=Tp / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
+    fp = p.factored_period()
+    assert fp.is_plain and fp.open_at_x0
+    m = cir.n - 1
+    rng = np.random.default_rng(1)
+    u, v = rng.standard_normal(m), rng.standard_normal(m)
+    lhs = float(np.asarray(fp.matvec_transposed(u)) @ v)
+    rhs = float(u @ np.asarray(fp.matvec(v)))
+    assert abs(lhs - rhs) < 1e-10 * abs(rhs), (lhs, rhs)
+    fclk = 100e3
+    T = 1.0 / fclk
+    fin = 7e3
+    cir = SubCircuit()
+    for nd in ('in', 'out', 'ck'):
+        cir.add_node(nd)
+    cir['Vin'] = VSin('in', gnd, vo=0.5, va=0.4, freq=fclk, phase=0.0, vac=1.0)
+    cir['Vck'] = VSin('ck', gnd, vo=0.0, va=1.0, freq=fclk, phase=90.0)
+    cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9, vth=0.0, vs=50e-3)
+    cir['C0'] = C('out', gnd, c=100e-12)
+    q = PSS(cir, method='trap', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=T, timestep=T / 200, x0=np.zeros(cir.n - 1), maxiterations=60,
+                x0_unknown=True)
+    assert q.factored_period().open_at_x0
+    io_full = [str(n_) for n_ in cir.nodes].index('out')
+    io = io_full if io_full < q.irefnode else io_full - 1
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = pac.solve(q, freqs=[fin])
+        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
+    fout = np.asarray(res.sweep_values, dtype=float)
+    X = np.asarray(res.x)
+    for li, l in enumerate((0, 1)):
+        k = int(np.argmin(np.abs(fout - abs(fin + l * fclk))))
+        x = complex(X[io_full, k])
+        h = complex(H[li] @ u_ac)
+        assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
+
+
+@pytest.mark.parametrize('method', ['radau', 'gear', 'trap', 'glm2'])
+def test_the_state_event_stage_runs_matrix_free(method):
+    """The state-event stage under `matrix_free=True` (2026-09-25; until then
+    it warned and was skipped, the crossings left inside their steps).  Its
+    bordered system is a mat-vec: one forward replay per Krylov direction
+    gives the map and the state at every event node; the walk is factored
+    and carries only the event (and period) columns; `_monodromy` stays
+    None; the event rows' derivatives `G` come from reverse replays and the
+    dense map to every node (`P_nodes`) is built on first read.
+
+    Three things had to change in the matrix-free Newton to get there, each
+    measured:
+    * a LINE SEARCH, as the dense path's `fsolve(line_search=True)`: the
+      UNSTAGED matrix-free solve of the PWM loop failed under every method,
+      radau included, and a first staged step moved two crossings by a
+      whole period;
+    * COLUMN SCALING of the crossing and period columns (``dx/dT`` ~1e6):
+      the comparator oscillator's bordered operator had condition 3.7e6,
+      16 scaled;
+    * an inner solve judged by the RESIDUAL it reached: glm2's staged
+      system (scaled condition 1.6e6) stalled at 4.4e-11 against a 1e-11
+      target -- a failure flag on an excellent step.
+
+    Measured against the dense staged solves: the crossings to 1.6e-15 ..
+    9.7e-13, the periods to 3.6e-14, the waveforms to 1.4e-10 .. 3.7e-10
+    (PWM) and 1e-14 .. 9e-13 (oscillator).  Under radau the consumers too:
+    `G` 7.7e-15, PAC 3.9e-13, the adjoint row 1.8e-12, the covariance (its
+    closure reads `P_nodes`) 1.2e-14; the PPV samples 2.8e-11 and the
+    multipliers 3e-15 on the oscillator.
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    Tp = 1e-5
+    f0 = 1.0 / Tp
+
+    def pwm():
+        cir = _pwm_loop(Tp)
+        del cir['Vin']
+        cir.add_node('vin0')
+        cir['Vin'] = VS('vin0', gnd, v=5.0, vac=0.0)
+        cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=0.0, freq=0.3 * f0, phase=0.0, vac=1.0)
+        cir['Vramp'].iparv.vac = 0.0
+        return cir
+
+    def rel(a, b):
+        a, b = np.asarray(a), np.asarray(b)
+        return float(np.max(np.abs(a - b)) / max(float(np.max(np.abs(b))), 1e-300))
+
     seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
-    p = PSS(_comparator_relaxation_oscillator(), method='radau', reltol=1e-9)
-    with _w.catch_warnings(record=True) as rec:
-        _w.simplefilter('always')
-        p.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=60,
-                matrix_free=True)
-    assert p._state_event_fracs is None
-    assert any('does not run under matrix_free=True' in str(r.message) for r in rec)
+    cases = ((pwm, dict(period=Tp, timestep=Tp / 60, x0=np.zeros(pwm().n - 1))),
+             (_comparator_relaxation_oscillator, dict(period=Tl, timestep=Tl / 200, x0=seed)))
+    for mk, kw in cases:
+        got = {}
+        for mf in (False, True):
+            cir = mk()
+            p = PSS(cir, method=method, reltol=1e-10 if mk is pwm else 1e-9)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                p.solve(maxiterations=100, matrix_free=mf, **kw)
+            assert p.converged and p._event_columns is not None, (method, mk.__name__, mf)
+            got[mf] = (p, cir)
+        (pd, cd), (pm, cm) = got[False], got[True]
+        assert pm._monodromy is None and pd._monodromy is not None
+        assert rel(pm._state_event_fracs, pd._state_event_fracs) < 1e-10, method
+        assert abs(pm.period / pd.period - 1.0) < 1e-12, method
+        assert rel(pm.waveform[1], pd.waveform[1]) < 1e-8, method
+        assert rel(pm._event_columns['G'], pd._event_columns['G']) < 1e-9, method
+        if method != 'radau':
+            continue
+        if mk is pwm:
+            out = {}
+            for mf, (q, c) in got.items():
+                pac = PAC(c, toolkit=circuit.numeric)
+                with _w.catch_warnings():
+                    _w.simplefilter('ignore')
+                    out[mf] = (np.asarray(pac.solve(q, [0.3 * f0]).x),
+                               pac.adjoint_sideband_row(q, 0.3 * f0, 1, sidebands=[0, 1]),
+                               pac.covariance(q))
+            for a, b in zip(out[True], out[False]):
+                assert rel(a, b) < 1e-9, method
+        else:
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                sd = np.asarray(pd.ppv()[1]['samples'])
+                sm_ = np.asarray(pm.ppv()[1]['samples'])
+            assert rel(sm_, sd) < 1e-8, method
+    ## the unstaged matrix-free solve of the PWM loop (it failed under every
+    ## method before the line search)
+    cir = pwm()
+    p = PSS(cir, method=method, reltol=1e-9)
+    q = PSS(pwm(), method=method, reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=Tp, timestep=Tp / 100, x0=np.zeros(cir.n - 1), maxiterations=100,
+                matrix_free=True, state_events=False)
+        q.solve(period=Tp, timestep=Tp / 100, x0=np.zeros(cir.n - 1), maxiterations=100,
+                state_events=False)
+    assert p.converged, method
+    assert rel(p.waveform[1], q.waveform[1]) < 1e-10, method
 
 
 def test_every_method_states_its_order_to_grid_error_and_warping_estimate():

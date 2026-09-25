@@ -242,14 +242,23 @@ class _LMMStep(object):
         a source entering the solve reads."""
         w1, w2, w3 = w
         a, b = self.alphas, self.b
-        rhs = w1 + a[0] * (np.asarray(self.C_new).T @ w3) if b else w1
+        ## ⚠ THE COSTATE ON `Pq_n` (`w3`) IS DROPPED ONLY WHEN IT IS ZERO,
+        ## not whenever `b = 0`: a `b = 0` step's own `Pq_n` is still read by
+        ## a NEXT step with `b != 0` -- trap's order-dropped Euler OPENER, the
+        ## first step of a map opened at `x(0)` (`x0_unknown`).  Keyed on `b`
+        ## alone, trap's opened plain map was not its forward replay's
+        ## transpose: 2.8e-3 on the PWM loop, an injected row 1e-2 off from
+        ## node 2 on (found 2026-09-25 by the matrix-free event stage's
+        ## reverse-replayed event rows).  Gear's `w3` is zero throughout.
+        full = bool(b) or bool(np.any(w3))
+        rhs = w1 + a[0] * (np.asarray(self.C_new).T @ w3) if full else w1
         t = _complex_solve_transposed(self.lu, rhs)
         if t is None:
             raise NotImplementedError(
                 'PSS: this linear solver cannot solve transposed, so the '
                 'monodromy transpose cannot be replayed. Use DenseSolver or '
                 'SuperLUSolver.')
-        Sbar = (w3 - t) if b else -t
+        Sbar = (w3 - t) if full else -t
         p1 = a[1] * (np.asarray(self.C1).T @ Sbar) + w2
         p2 = (a[2] * (np.asarray(self.C2).T @ Sbar) if len(a) > 2
               else np.zeros_like(w1))

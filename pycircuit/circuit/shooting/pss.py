@@ -1116,9 +1116,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         it does NOT produce a monodromy, so `spectral_radius` is `None`
         after a matrix-free solve.  Built for every kind, driven or free
         period (a Nordsieck GLM through its map on the state, seeded by the
-        linearised startup).  ⚠ The
-        state-event stage needs the dense map and does not run under
-        `matrix_free`: a circuit that declares state events warns.  ⚠ Those
+        linearised startup).  The state-event stage runs matrix-free too
+        (since 2026-09-25; it warned and was skipped before): its bordered
+        system is a mat-vec, one replay per Krylov direction giving the map
+        and the state at every event node (`_state_event_stage`).  ⚠ Those
         figures were taken with a DENSE linear solver on both sides; with a
         sparse one the m~250 gate may move --
         `benchmarks/pss_matrix_free_sparse.py` is the harness, to be run
@@ -1314,7 +1315,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## honoured, and False warns that the stage does not run).
         _se_rows = (self.cir.state_events()
                     if state_events and hasattr(self.cir, 'state_events') else [])
-        if (x0_unknown is None and _se_rows and not matrix_free
+        if (x0_unknown is None and _se_rows
                 and self._map_kind() == 'plain'):
             x0_unknown = True
         x0_unknown = self._resolve_x0_unknown(x0_unknown)
@@ -1360,9 +1361,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## AUTONOMY IS DECIDED BEFORE THE SOLVE, because it decides which
         ## system is solved.  Structural and exact -- see `_is_autonomous`.
         self.autonomous = self._is_autonomous(times)
-        ## the state-event stage runs on every kind but a matrix-free solve
-        ## and a plain map not opened at `x(0)` -- see the docstring; say so
-        ## once when the circuit declares events
+        ## the state-event stage runs on every kind but a plain map not
+        ## opened at `x(0)` -- see the docstring; say so once when the circuit
+        ## declares events
         self._state_event_fracs = None
         self._event_columns = None
         if state_events:
@@ -1373,17 +1374,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     'steps a switching window is cut into), not %r' % (_ws,))
             _rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
             _method_se = getattr(self.par, 'method', 'euler')
-            if _rows and matrix_free:
-                warnings.warn(
-                    'PSS: this circuit declares %d state event(s) (a threshold '
-                    'switch or comparator), but the state-event stage needs '
-                    'the dense period map and does not run under '
-                    'matrix_free=True: the crossings stay inside their steps '
-                    'and the solve is first order there. Drop matrix_free to '
-                    'land them, or pass state_events=False to silence this.'
-                    % len(_rows), RuntimeWarning, stacklevel=3)
-            elif (_rows and self._map_kind() == 'plain'
-                  and not self._open_at_x0):
+            if (_rows and self._map_kind() == 'plain'
+                    and not self._open_at_x0):
                 warnings.warn(
                     'PSS: this circuit declares %d state event(s), and on the '
                     'plain map (method %r) the state-event stage needs the '
@@ -1820,7 +1812,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     v_, s_ = w[:-1], float(w[-1])
                     top = (v_ - alpha * _mv(v_)) - s_ * Mt_
                     return np.concatenate((top, [v_[k_]]))
-                return np.concatenate((F_, [r_])), mv_
+                ## ⚠ THE PERIOD'S COLUMN SCALED TO UNIT NORM: `dx/dT` is
+                ## ~1e6 on a microsecond oscillator against `I - M`'s unit
+                ## columns, and GMRES stalled on the raw operator (trap and
+                ## glm2 on the comparator oscillator, 2026-09-25)
+                _nt = float(np.linalg.norm(Mt_))
+                _cs = np.ones(len(zz))
+                if _nt > 0.0:
+                    _cs[-1] = 1.0 / _nt
+                return np.concatenate((F_, [r_])), mv_, _cs
 
             if run.trace:
                 _mf_build = _traced(_mf_build)
@@ -1830,7 +1830,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                                 rt_, mi_)
         ## a state-event stage may follow (below): stage 1's own stall
         ## diagnosis then waits for its outcome
-        _staged = (state_events and not matrix_free
+        _staged = (state_events
                    and (_kind in ('stage', 'pair', 'glm')
                         or (_kind == 'plain' and self._open_at_x0)))
         if self.autonomous:
@@ -1872,7 +1872,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
              hs) = self._state_event_stage(
                 _kind, z_ss, _info, _ier, _mesg, period, times, hs,
                 maxiterations, _tol, _shoot_reltol, alpha,
-                *((_phase_row, phase_k) if self.autonomous else ()))
+                *((_phase_row, phase_k) if self.autonomous else (None, None)),
+                matrix_free=matrix_free)
             if self.autonomous:
                 self.period = period
         self.stage_one_converged = (

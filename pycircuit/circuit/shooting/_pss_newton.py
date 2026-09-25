@@ -279,13 +279,38 @@ class _ShootingNewton(object):
     ## more than a clustered system needs; a circuit that exceeds it does not
     ## cluster, and the answer is the dense path, not a bigger budget.
     KRYLOV_RESTART = 200
+    ## the relative residual below which an inner solve that missed its
+    ## Krylov target still gives the Newton its step (`_matrix_free_newton`)
+    KRYLOV_ACCEPT_RESIDUAL = 1e-6
+    ## the matrix-free Newton's line search, as `analysis.fsolve`'s: four
+    ## halvings reach 1/16 of the step
+    LINE_SEARCH_MAX_HALVINGS = 4
     KRYLOV_MAX_CYCLES = 20
 
-    def _matrix_free_newton(self, build, z0, abstol, xtol, reltol, maxiter):
+    def _matrix_free_newton(self, build, z0, abstol, xtol, reltol, maxiter,
+                            line_search=True):
         """The Newton loop every matrix-free system shares.
 
         `build(z)` returns `(F, matvec)` for the current iterate -- one
-        trajectory pass, then a linear operator that never forms its matrix.
+        trajectory pass, then a linear operator that never forms its matrix
+        -- or `(F, matvec, d)` with `d` per-unknown COLUMN SCALES: the Krylov
+        solve is then on ``J diag(d)`` and the step ``diag(d) y``.  (The
+        event stage's bordered system needs them: its crossing and period
+        columns are ``dx/dtheta`` and ``dx/dT``, up to 1e6 against the unit
+        columns of ``I - M``, and GMRES could not reach its tolerance on the
+        raw operator -- condition 3.7e6 on the comparator oscillator, 16
+        scaled.)
+
+        `line_search`: `analysis.fsolve`'s -- the full step tried first and
+        kept when it lowers ``||F||``, else halved up to four times, the
+        accepted trial's `build` carried into the next iteration (so a
+        converging solve costs what the undamped loop costs).  A trial the
+        builder cannot evaluate (a `ValueError`, a failed inner step) counts
+        as uphill.  ON, as the dense path's `fsolve(line_search=True)` is
+        in every shooting stage (until 2026-09-25 the matrix-free Newton
+        took full steps: the unstaged solve of the PWM loop failed under
+        every method, radau included, and a first staged step from stage
+        1's crossings moved two of them by a whole period).
         Written once because the four systems differ ONLY in those two
         things: the plain path's `I - M`, the solved-history path's `2m`
         pair, and the bordered autonomous versions of each (one builder,
@@ -323,11 +348,15 @@ class _ShootingNewton(object):
         ## `analysis.fsolve(floor_detect=True)` records it: COUNTED, never
         ## acted on -- the iteration below is what it was
         _floor_q, step_floor = [], None
+        _cached = None
         for _i in range(maxiter):
-            F, mv = build(z)
+            _b = build(z) if _cached is None else _cached
+            _cached = None
+            F, mv = _b[0], _b[1]
+            _d = None if len(_b) < 3 or _b[2] is None else np.asarray(_b[2], dtype=float)
 
-            def _mv(v, _f=mv):
-                return _f(v)
+            def _mv(v, _f=mv, _d=_d):
+                return _f(v) if _d is None else _f(_d * np.asarray(v))
 
             J = spla.LinearOperator((n, n), matvec=_mv, dtype=float)
             xdiff, info = spla.gmres(
@@ -338,6 +367,19 @@ class _ShootingNewton(object):
             ## GMRES makes `xdiff` a direction the Newton has no reason to
             ## trust, so the outer loop stops, and the warning names the cause
             ## rather than a generic 'No convergence'.
+            ## ⚠ BUT THE VERDICT IS THE RESIDUAL IT REACHED, NOT THE FLAG: the
+            ## Krylov target (`KRYLOV_TOLERANCE_FACTOR * reltol`, 1e-11 at
+            ## reltol 1e-9) can sit below what the operator's conditioning
+            ## allows, and a Newton step needs far less (inexact Newton).
+            ## Measured on the comparator oscillator's staged glm2 system:
+            ## the scaled operator's condition 1.6e6, GMRES stalled at 4.4e-11
+            ## -- flagged a failure, and an excellent step.  A step whose true
+            ## residual is below `KRYLOV_ACCEPT_RESIDUAL` is taken.
+            if info != 0:
+                _res = float(np.linalg.norm(_mv(xdiff) + F))
+                _nF = float(np.linalg.norm(F))
+                if _nF > 0.0 and _res <= self.KRYLOV_ACCEPT_RESIDUAL * _nF:
+                    info = 0
             if info != 0:
                 warnings.warn(
                     'PSS: the matrix-free inner solve did not converge at '
@@ -356,7 +398,34 @@ class _ShootingNewton(object):
                        min(n, self.KRYLOV_RESTART) * self.KRYLOV_MAX_CYCLES),
                     RuntimeWarning, stacklevel=3)
                 return z, {}, 2, 'No convergence (inner Krylov solve failed)'
+            if _d is not None:
+                xdiff = _d * xdiff
             z_new = z + xdiff
+            if line_search:
+                F0 = float(np.linalg.norm(F))
+
+                def _trial(zt):
+                    try:
+                        bt = build(zt)
+                    except (ValueError, np.linalg.LinAlgError,
+                            analysis.NoConvergenceError):
+                        return None, np.inf
+                    return bt, float(np.linalg.norm(bt[0]))
+                step = 1.0
+                bt, nt = _trial(z_new)
+                for _k in range(self.LINE_SEARCH_MAX_HALVINGS):
+                    if nt < F0:
+                        break
+                    step *= 0.5
+                    z_new = z + step * xdiff
+                    bt, nt = _trial(z_new)
+                if bt is None:
+                    ## not one trial could be evaluated: stop at the last
+                    ## iterate that could, rather than raise from it
+                    return (z, {'step_floor': step_floor}, 2,
+                            'No convergence (no trial step could be evaluated)')
+                xdiff = z_new - z
+                _cached = bt
 
             ## `|J| . |x|` is not available without the matrix; see
             ## this docstring for what this substitute is and is not.

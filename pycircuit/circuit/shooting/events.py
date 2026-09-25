@@ -26,20 +26,46 @@ class EventColumns(dict):
     """
 
     @classmethod
-    def build(cls, nodes, W, c, P_end, Pk_nodes, P_nodes):
-        """The columns from their node arrays: `G`, `Gt` and `dth`."""
+    def build(cls, nodes, W, c, P_end, Pk_nodes, P_nodes, G=None,
+              lazy_P_nodes=None):
+        """The columns from their node arrays: `G`, `Gt` and `dth`.
+
+        ⚠ A MATRIX-FREE STAGE HAS NO DENSE MAP TO EVERY NODE: it passes
+        `P_nodes` None with `G` (the event rows' derivatives, one reverse
+        replay each) and a builder the dense `P_nodes` comes from on first
+        READ (`__missing__`) -- only the consumers that need a node's whole
+        map (PAC's driven bordered solve, the covariance closure) pay for
+        it, once."""
         K = len(nodes)
-        P_nodes = np.asarray(P_nodes, dtype=float)
         Pk_nodes = np.asarray(Pk_nodes, dtype=float)
-        G = np.zeros((K, P_nodes.shape[2]))
         Gt = np.zeros((K, K))
+        if P_nodes is not None:
+            P_nodes = np.asarray(P_nodes, dtype=float)
+            G = np.zeros((K, P_nodes.shape[2]))
         for k, jn in enumerate(nodes):
-            G[k] = W[k] @ P_nodes[jn]
+            if P_nodes is not None:
+                G[k] = W[k] @ P_nodes[jn]
             Gt[k] = W[k] @ Pk_nodes[jn]
-        ev = cls(nodes=list(nodes), W=W, c=c, P_end=P_end, Pk_nodes=Pk_nodes,
-                 P_nodes=P_nodes, G=G, Gt=Gt)
+        if P_nodes is not None:
+            ev = cls(nodes=list(nodes), W=W, c=c, P_end=P_end,
+                     Pk_nodes=Pk_nodes, P_nodes=P_nodes, G=G, Gt=Gt)
+        else:
+            G = np.asarray(G, dtype=float)
+            ev = cls(nodes=list(nodes), W=W, c=c, P_end=P_end,
+                     Pk_nodes=Pk_nodes, G=G, Gt=Gt)
+        ev._lazy_P_nodes = lazy_P_nodes
         ev.dth = -np.linalg.solve(Gt, G)
         return ev
+
+    def __missing__(self, key):
+        ## the dense maps to every node, built on first read on a
+        ## matrix-free stage (see `build`)
+        lazy = getattr(self, '_lazy_P_nodes', None)
+        if key == 'P_nodes' and lazy is not None:
+            P = np.asarray(lazy(), dtype=float)
+            self['P_nodes'] = P
+            return P
+        raise KeyError(key)
 
     @classmethod
     def from_capture(cls, captured, nsteps, m, P0, nodes, W, c, P_end):
@@ -56,6 +82,22 @@ class EventColumns(dict):
             for k in range(K):
                 Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
         return cls.build(nodes, W, c, P_end, Pk_nodes, P_nodes)
+
+    @classmethod
+    def from_capture_rows(cls, captured, nsteps, m, nodes, W, c, P_end, G,
+                          lazy_P_nodes):
+        """The columns of a MATRIX-FREE stage: the event columns at every
+        node from `_captured` (their dense maps are None), the event rows'
+        derivatives `G` given, `P_nodes` built on first read (see
+        `build`)."""
+        K = np.asarray(P_end).shape[1]
+        Pk_nodes = np.zeros((nsteps + 1, m, K))
+        for j in range(1, nsteps + 1):
+            _xj, _Pj, Pkj = captured[j]
+            for k in range(K):
+                Pk_nodes[j, :, k] = np.asarray(Pkj[k], dtype=float).ravel()
+        return cls.build(nodes, W, c, P_end, Pk_nodes, None, G=G,
+                         lazy_P_nodes=lazy_P_nodes)
 
     @staticmethod
     def of(pss, n=None):

@@ -178,9 +178,13 @@ class _StateEvents(object):
         """After a stage's Newton: the solved crossings `th` become the grid,
         and -- when `attempt` -- the bordered consumers' columns are built on
         it.  `columns(tms, hs, hsens)` traverses that grid capturing every
-        node and returns `(M, P_end, P0)`: the fixed-grid map, the event
-        columns at the period and the map to node 0 (`I`, or gear's `[I,
-        0]`).  Returns the grid `(tms, hs)`.
+        node and returns `(M, P_end, P0, fp, P_nodes)`: the fixed-grid map,
+        the event columns at the period, the map to node 0 (`I`, or gear's
+        `[I, 0]`), and -- on a MATRIX-FREE stage, whose `M` is None -- the
+        factored period, whose reverse replays give the event rows'
+        derivatives (`EventColumns.from_capture_rows`), and None; the dense
+        maps to every node (`columns(..., dense=True)`'s last item) are then
+        built on first read.  Returns the grid `(tms, hs)`.
 
         ⚠ THE GRID EVERY CONSUMER REPLAYS ON IS THE ONE `_period_grid` MAKES
         OF THESE FRACTIONS -- with its opener ramp, which the window
@@ -224,8 +228,15 @@ class _StateEvents(object):
             _fr_id, hsens_r, nodes_r = self._event_remap(fr_r, th, th, T)
             hs_r = np.asarray(_hs_r, dtype=float)
             tms_r = np.asarray(_tms_r, dtype=float)
-            M, P_end, P0 = columns(tms_r, hs_r, hsens_r)
-            if attempt:
+            M, P_end, P0, fp, _Pn = columns(tms_r, hs_r, hsens_r)
+            if attempt and M is None:
+                ev = EventColumns.from_capture_rows(
+                    self._captured, len(hs_r), m, nodes_r, Wk, ck, P_end,
+                    self._event_rows_T(fp, nodes_r, Wk),
+                    lambda: columns(tms_r, hs_r, hsens_r, dense=True)[4])
+                self._event_sensitivity = ev.dth
+                self._event_columns = ev
+            elif attempt:
                 ev = EventColumns.from_capture(self._captured, len(hs_r), m, P0,
                                                nodes_r, Wk, ck, P_end)
                 self._event_sensitivity = ev.dth
@@ -242,12 +253,29 @@ class _StateEvents(object):
         return np.asarray(_tms_r, dtype=float), np.asarray(_hs_r, dtype=float)
 
     @staticmethod
+    def _event_rows_T(fp, nodes, Wk):
+        """``G[k] = W_k P_{nd_k}`` without the dense map to the node: one
+        reverse replay each, the row injected at its node (the costate on
+        the node's STATE, `FactoredPeriod.inject`; a GLM's map on the state
+        takes it as its last stage's)."""
+        sm = fp.state_map() if fp.is_glm else fp
+        N = len(sm.steps)
+        m = np.asarray(Wk).shape[1]
+        G = []
+        for k, nd in enumerate(nodes):
+            inj = np.zeros((N, m))
+            inj[nd] = np.asarray(Wk[k], dtype=float)
+            G.append(np.asarray(sm.matvec_transposed(np.zeros(sm.width),
+                                                     inject=inj), dtype=float))
+        return np.array(G)
+
+    @staticmethod
     def _stack_columns(Pk):
         return np.column_stack([np.asarray(pk, dtype=float).ravel() for pk in Pk])
 
     def _state_event_stage(self, kind, z_ss, info, ier, mesg, period, times,
                            hs, maxiterations, tol, shoot_reltol, alpha,
-                           phase_row=None, phase_k=None):
+                           phase_row=None, phase_k=None, matrix_free=False):
         """The bordered second stage: the crossings of the first stage's
         orbit become Newton unknowns.  One stage for every kind that has
         one: the stage methods and gear's pair, driven or free period.
@@ -263,6 +291,21 @@ class _StateEvents(object):
         ier, mesg, period, times, hs)`` on the landed grid (see
         `_finish_state_events`).
 
+        ⚠ `matrix_free`: the same bordered system as a MAT-VEC, never forming
+        the period map.  The walk is factored (`keep`) and carries only the
+        event columns (and the period's); a Krylov direction ``[v; s]`` costs
+        ONE forward replay, which gives ``M v`` and the state at every event
+        node together:
+
+            J [v; s] = [ v - a M v - a P_theta s ;
+                         W_k (P_{nd_k} v + Pk_{nd_k} s) ;  v[k_phase] ]
+
+        (`_matrix_free_newton`; an oscillator through `_free_period_solve`).
+        The stage then leaves `_monodromy` None, as the unstaged matrix-free
+        solve does, and the event rows' derivatives `G` come from reverse
+        replays (`_finish_state_events`).  Until 2026-09-25 a matrix-free
+        solve warned and skipped the stage.
+
         History: `doc/shooting_history.md`, `_state_event_stage`."""
         autonomous = phase_row is not None
         W, c = self._state_event_rows()
@@ -272,10 +315,12 @@ class _StateEvents(object):
         m = self.cir.n - 1
         wm = len(z_ss)
 
-        def evmap(z, T, tms_, hs_, hsens, capture):
-            """`(z_end, M, Pk)`: the period map with its event columns."""
+        def evmap(z, T, tms_, hs_, hsens, capture, dense=True):
+            """`(z_end, M, Pk)`: the period map with its event columns --
+            without `dense`, the walk itself in `M`'s place (factored, its
+            steps kept: the matrix-free stage replays them)."""
             w = self._walk(kind, z, tms_, hs_, T=T, hsens=hsens,
-                           capture=capture,
+                           capture=capture, dense=dense, keep=not dense,
                            open_at_x0=(kind == 'plain'
                                        and getattr(self, '_open_at_x0', False)))
             if kind == 'plain':
@@ -292,7 +337,8 @@ class _StateEvents(object):
                 ## `_finish_state_events`)
                 cols = self._stack_columns(w.Pk) if len(w.Pk) else None
             return (np.asarray(w.end(), dtype=float),
-                    np.asarray(w.monodromy(), dtype=float), cols)
+                    (np.asarray(w.monodromy(), dtype=float) if dense else w),
+                    cols)
 
         ## the first stage's orbit, captured at every node, for the crossings
         evmap(np.asarray(z_ss, dtype=float), period, times, hs,
@@ -326,6 +372,62 @@ class _StateEvents(object):
                 F[wm + K] = _r
             return F, J
 
+        def build_mf(zz):
+            """`func_ev`'s residual, and its Jacobian as a mat-vec (see the
+            docstring)."""
+            z = np.asarray(zz[:wm], dtype=float)
+            th = np.asarray(zz[wm:wm + K], dtype=float)
+            T = float(zz[-1]) if autonomous else period
+            fr, hsens, nodes = self._event_remap(base2, th0, th, T)
+            hs_ = fr * float(T)
+            tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
+            if autonomous:
+                hsens = np.column_stack((hsens, fr))   # d h_j / d T = fraction_j
+            z_end, w, Pkm = evmap(z, T, tms_, hs_, hsens, set(nodes),
+                                  dense=False)
+            fp = w.factored(self, times=tms_, T=T)
+            sm = fp.state_map() if fp.is_glm else fp
+            steps = sm.step_objects()
+            F = np.zeros(wm + ncol)
+            F[:wm] = self._close_periodic(z, z_end, tms_)
+            Gt_ = np.zeros((K, ncol))
+            for k, jn in enumerate(nodes):
+                xj, _Pj, Pkj = self._captured[jn]
+                F[wm + k] = float(Wk[k] @ np.asarray(xj)) - ck[k]
+                for l in range(ncol):
+                    Gt_[k, l] = float(Wk[k] @ np.asarray(Pkj[l]).ravel())
+            _k = None
+            if autonomous:
+                _k, _r = phase_row(z, Pkm[:, K])
+                F[wm + K] = _r
+            where = {jn: k for k, jn in enumerate(nodes)}
+
+            def mv(ww):
+                v, sv = np.asarray(ww[:wm], dtype=float), np.asarray(ww[wm:], dtype=float)
+                ## one replay: the map and the state at every event node
+                c = sm.seed(v)
+                at = {}
+                for j, st in enumerate(steps):
+                    c = st.solve(c)
+                    if (j + 1) in where:
+                        at[j + 1] = np.asarray(sm.node(c), dtype=float)
+                out = np.zeros(wm + ncol)
+                out[:wm] = v - alpha * np.asarray(sm.extract(c), dtype=float) - alpha * (Pkm @ sv)
+                for k, jn in enumerate(nodes):
+                    out[wm + k] = float(Wk[k] @ at[jn]) + float(Gt_[k] @ sv)
+                if autonomous:
+                    out[wm + K] = v[_k]
+                return out
+            ## the columns scaled to unit norm: the crossing and period
+            ## columns are exact here, the state's are `I - M`'s, near one
+            _cs = np.ones(wm + ncol)
+            for l in range(ncol):
+                _n = float(np.sqrt(np.sum((alpha * Pkm[:, l]) ** 2)
+                                   + np.sum(Gt_[:, l] ** 2)))
+                if _n > 0.0:
+                    _cs[wm + l] = 1.0 / _n
+            return F, mv, _cs
+
         tol = np.asarray(tol, dtype=float)
         tail = ([float(period)],) if autonomous else ()
         z0 = np.concatenate((np.asarray(z_ss, dtype=float), th0) + tail)
@@ -341,11 +443,19 @@ class _StateEvents(object):
         ## before they were right, sent `vin` to 1e9 and the whole solve
         ## raised).  The stage is an improvement on stage 1, never a
         ## condition of having a result.
+        _solver = None
+        if matrix_free:
+            def _solver(z0_, ab_, xt_, rt_, mi_):
+                return self._matrix_free_newton(build_mf, z0_, ab_, xt_, rt_,
+                                                mi_)
         try:
             if autonomous:
                 z_new, info, ier, mesg = self._free_period_solve(
                     func_ev, z0, abst, xt, shoot_reltol, maxiterations,
-                    float(period))
+                    float(period), solver=_solver)
+            elif matrix_free:
+                z_new, info, ier, mesg = _solver(z0, abst, xt, shoot_reltol,
+                                                 maxiterations)
             else:
                 z_new, info, ier, mesg = analysis.fsolve(
                     func_ev, z0, maxiter=maxiterations, reltol=shoot_reltol,
@@ -360,16 +470,33 @@ class _StateEvents(object):
         zn = np.asarray(z_new[:wm], dtype=float)
         Tn = float(z_new[-1]) if autonomous else period
 
-        def columns(tms_r, hs_r, hsens_r):
-            ## the monodromy at FIXED period: the orbit's own map
+        P0 = np.hstack((np.eye(m), np.zeros((m, wm - m))))
+
+        def columns(tms_r, hs_r, hsens_r, dense=None):
+            ## the monodromy at FIXED period: the orbit's own map -- or, on a
+            ## matrix-free stage, the factored walk (M None); `dense=True`
+            ## there is `EventColumns`' deferred `P_nodes` (the dense map to
+            ## every node), the stage's captures left as they were
+            dense = (not matrix_free) if dense is None else dense
+            saved = getattr(self, '_captured', None)
             _ze, M, Pk = evmap(zn, Tn, tms_r, hs_r, hsens_r,
-                               set(range(1, len(hs_r) + 1)))
-            return M, Pk, np.hstack((np.eye(m), np.zeros((m, wm - m))))
+                               set(range(1, len(hs_r) + 1)), dense=dense)
+            if not dense:
+                return (None, Pk, P0, M.factored(self, times=tms_r, T=Tn),
+                        None)
+            Pn = None
+            if matrix_free:
+                Pn = np.array([P0] + [np.asarray(self._captured[j][1], dtype=float)
+                                      for j in range(1, len(hs_r) + 1)])
+                self._captured = saved
+            return M, Pk, P0, None, Pn
         ## (gear's pair builds its columns whether or not the stage
         ## converged; history: `doc/shooting_history.md`, `_state_event_stage`)
         tms_r, hs_r = self._finish_state_events(
             np.asarray(z_new[wm:wm + K], dtype=float), base2, th0, Tn, Wk, ck,
             ier == 1 or kind == 'pair', columns)
+        if matrix_free:
+            self._monodromy = None
         return zn, info, ier, mesg, Tn, tms_r, hs_r
 
     def _event_costate_injection(self, fp, v, n):

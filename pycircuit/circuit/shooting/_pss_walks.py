@@ -241,6 +241,9 @@ class _PeriodWalks(object):
                 self.Jtvec = [] if open_at_x0 else [copy(self._Jf)]
         if dense:
             self.times = times
+        if dense or capture is not None:
+            ## the nodes a staged residual reads (`capture`); on a factored
+            ## walk (the matrix-free event stage) without the dense map
             self._captured = {}
         ## the period column, zero at the start: the unknowns are states,
         ## and the solve owns them
@@ -350,7 +353,8 @@ class _PeriodWalks(object):
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
                     self._captured[_j + 1] = (copy(x),
-                                              np.asarray(Px_new).copy(),
+                                              (np.asarray(Px_new).copy()
+                                               if dense else None),
                                               [pk[0].copy() for pk in Pk])
             if want_dT:
                 ## Every step scales together, so `dh/dT = h/T`, and `df/dh`
@@ -602,7 +606,7 @@ class _PeriodWalks(object):
         Pk_end = None
         if hsens is not None:
             Mx, Pk_end = self._glm_event_columns(steps, _xs, su, times,
-                                                 hsens, capture)
+                                                 hsens, capture, dense=dense)
         elif dense:
             _Pout, Mx = self._glm_propagate(steps, su.matrix())
         if want_dT:
@@ -622,23 +626,26 @@ class _PeriodWalks(object):
                            Pk=Pk_end, steps=steps if keep else None,
                            width=r * m, startup=su)
 
-    def _glm_event_columns(self, steps, xs, su, times, hsens, capture):
+    def _glm_event_columns(self, steps, xs, su, times, hsens, capture,
+                           dense=True):
         """The monodromy on the state and the event columns of one GLM
         period, step by step (`_walk_glm`), capturing ``(x_j, dx_j/dx_0,
         [dx_j/dtheta_k])`` at the nodes in `capture` into `_captured`.
-        Returns ``(M, [dx_N/dtheta_k])``."""
+        Returns ``(M, [dx_N/dtheta_k])``; without `dense`, the columns alone
+        (`M` and the captured maps None: the matrix-free event stage)."""
         iref = self.irefnode
         integ = self._transient().base_integrator
         c = np.asarray(integ.tableau()[4], dtype=float)
         K = hsens.shape[1]
-        P = su.matrix()
+        P = su.matrix() if dense else None
         Pk = [su.dh(float(hsens[0, k])) for k in range(K)]
         tau = np.zeros(K)
         self._captured = {}
         D = None
         Dk = [None] * K
         for j, rec in enumerate(steps):
-            P, D = rec.forward(P)
+            if dense:
+                P, D = rec.forward(P)
             h = rec.h
             t0 = float(times[j])
             Ud = [np.delete(np.asarray(self.cir.dudt(t0 + float(ci) * h,
@@ -656,9 +663,10 @@ class _PeriodWalks(object):
             tau = tau + hsens[j]
             if capture is not None and (j + 1) in capture:
                 self._captured[j + 1] = (
-                    np.asarray(xs[j], dtype=float), np.asarray(D[-1]).copy(),
+                    np.asarray(xs[j], dtype=float),
+                    np.asarray(D[-1]).copy() if dense else None,
                     [np.asarray(d[-1]).copy() for d in Dk])
-        return (np.asarray(D[-1], dtype=float),
+        return (np.asarray(D[-1], dtype=float) if dense else None,
                 [np.asarray(d[-1], dtype=float).ravel() for d in Dk])
 
     def _glm_node_startups(self, fp):
@@ -805,7 +813,7 @@ class _PeriodWalks(object):
         Pt = np.zeros(m)
         Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
               if hsens is not None else None)
-        if dense:
+        if dense or capture is not None:
             self._captured = {}
         _cabs = tab[2] if Pk is not None else None
         _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
@@ -839,7 +847,8 @@ class _PeriodWalks(object):
                     Pk[k] = st.solve(Pk[k], forcing)
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
-                    self._captured[_j + 1] = (copy(x), P.copy(),
+                    self._captured[_j + 1] = (copy(x),
+                                              None if P is None else P.copy(),
                                               [pk.copy() for pk in Pk])
             if want_dT:
                 Ks = [np.asarray(self._k_at(y)) for y in Ys]
