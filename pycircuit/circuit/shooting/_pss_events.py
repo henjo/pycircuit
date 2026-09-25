@@ -26,11 +26,13 @@ class _StateEvents(object):
         return W, c
 
     @classmethod
-    def _land_fractions(cls, base, theta, min_sep=0.25):
+    def _land_fractions(cls, base, theta, min_sep=0.25, window_steps=None):
         """`(fractions, theta)`: the base grid with each fraction of `theta`
         landed on a node -- a node within `min_sep` of the local step is
         MOVED onto it (no sliver), otherwise one is inserted; `event_grid`'s
-        rule.  Endpoints never move."""
+        rule.  Endpoints never move.  A switching window is cut into
+        `window_steps` steps (the solve's `event_window_steps`; the class's
+        `EVENT_WINDOW_STEPS` when not given)."""
         pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
         pts[-1] = 1.0
         landed = []
@@ -66,7 +68,7 @@ class _StateEvents(object):
         base_pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
         base_h = np.diff(base_pts)
         landed_sorted = sorted(landed)
-        K = cls.EVENT_WINDOW_STEPS
+        K = int(cls.EVENT_WINDOW_STEPS if window_steps is None else window_steps)
         for a, b in zip(landed_sorted[:-1], landed_sorted[1:]):
             jb = min(int(np.searchsorted(base_pts, 0.5 * (a + b), side='right')) - 1,
                      len(base_h) - 1)
@@ -78,7 +80,11 @@ class _StateEvents(object):
         return np.diff(pts), np.asarray(landed_sorted, dtype=float)
 
     #: steps the segment between a switching window's two edges is cut into
-    EVENT_WINDOW_STEPS = 8
+    #: -- the default of the solve's `event_window_steps` Parameter.  16 since
+    #: 2026-09-25 (Andreas: "Cut by 16"; 8 before): on the PWM loop the
+    #: staged radau error against a fine reference was 5e-6 to 1.1e-5 of the
+    #: swing at 8, 5e-7 to 7.6e-6 at 16 (N = 780..805)
+    EVENT_WINDOW_STEPS = 16
 
     @staticmethod
     def _event_remap(base, theta0, theta, T):
@@ -149,7 +155,9 @@ class _StateEvents(object):
         ## the steps the traversal takes: `times[1:]` (the autonomous
         ## rebuild hands N times for N fractions, the driven one N + 1)
         base = np.diff(np.asarray(times, dtype=float))[:N] / float(period)
-        base2, th0 = self._land_fractions(base, [f for f, _r in found])
+        base2, th0 = self._land_fractions(
+            base, [f for f, _r in found],
+            window_steps=getattr(self.par, 'event_window_steps', None))
         rows = [r for _f, r in found]
         return base2, th0, W[rows], c[rows]
 

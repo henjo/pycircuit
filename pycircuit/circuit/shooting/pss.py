@@ -363,6 +363,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          ## 'auto' is 'closing' on a caller's grid for an autonomous run and
          ## 'proportional' otherwise -- see `_period_grid`, `_solve_prepare`
          ## and `_closing_polish`.
+         ## How finely a switching window is resolved: the segment between
+         ## a threshold switch's two landed edges (`state_events`) is cut into
+         ## this many equal steps whenever it holds fewer -- see
+         ## `_land_fractions`.  It sets the staged solve's floor at the switch
+         ## (on the PWM loop, radau 5e-6 of the swing at 8, below 1e-6 at 16).
+         Parameter(name='event_window_steps',
+                   desc='Steps a switching window between two landed state '
+                        'events is cut into when it holds fewer (>= 2)',
+                   unit='', default=_StateEvents.EVENT_WINDOW_STEPS),
          Parameter(name='period_column',
                    desc="'auto' (= 'closing' + proportional polish on a caller's grid, 'proportional' on a uniform one), 'proportional' or 'closing': "
                         "which step lengths depend on an unknown period; see "
@@ -1011,7 +1020,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         the grid between consecutive events scales with its segment (a
         proportional column per event), each event contributes the row
         `row . x(theta_k T) = threshold`, and the bordered Newton lands the
-        grid on the crossing exactly.  The solved fractions become the grid
+        grid on the crossing exactly.  The window between a switch's two
+        edges is cut into `event_window_steps` equal steps (16 by default)
+        whenever it holds fewer.  The solved fractions become the grid
         every consumer replays on and the event nodes are breaks for the
         period quadrature.  It runs on every kind -- the stage methods,
         gear's pair, a Nordsieck GLM (its map on the state) and the plain map
@@ -1336,6 +1347,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         self._state_event_fracs = None
         self._event_columns = None
         if state_events:
+            _ws = self.par.event_window_steps
+            if not (isinstance(_ws, (int, np.integer)) and int(_ws) >= 2):
+                raise ValueError(
+                    'PSS: event_window_steps must be an integer >= 2 (the '
+                    'steps a switching window is cut into), not %r' % (_ws,))
             _rows = self.cir.state_events() if hasattr(self.cir, 'state_events') else []
             _method_se = getattr(self.par, 'method', 'euler')
             if _rows and matrix_free:

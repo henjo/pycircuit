@@ -109,7 +109,8 @@ class _AccuracyChecks(object):
         kw = dict(self._solve_kwargs)
         twin = type(self)(self.cir, toolkit=self.toolkit, irefnode=None,
                           method=method, reltol=self.par.reltol,
-                          iabstol=self.par.iabstol, vabstol=self.par.vabstol)
+                          iabstol=self.par.iabstol, vabstol=self.par.vabstol,
+                          event_window_steps=self.par.event_window_steps)
         hs = np.asarray(hs, dtype=float)
         ## the same grid: its fractions when it is not uniform, else the
         ## uniform step (a one-step plain state can carry an `hs` whose

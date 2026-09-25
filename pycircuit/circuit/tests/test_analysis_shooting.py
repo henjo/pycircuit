@@ -25122,12 +25122,21 @@ def test_a_switching_window_is_re_cut_whatever_the_base_step():
     steps).  Pinned on the fractions: a window over three base steps comes
     back as `EVENT_WINDOW_STEPS` equal steps; one narrower than a base step
     keeps the old rule's nodes; one wider than `EVENT_WINDOW_STEPS` base
-    steps is left to the base grid."""
+    steps is left to the base grid.
+
+    The count is the solve's `event_window_steps` Parameter (Andreas,
+    2026-09-25: "Cut by 16. can this be controlled?"), 16 by default -- it
+    was a class constant (8) that one instance could not change.  Pinned:
+    the default, an explicit count reaching the cut, a run's own count
+    reaching its stage, and a count below 2 refused."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
     K = PSS.EVENT_WINDOW_STEPS
+    assert K == 16
     base = np.full(100, 0.01)
 
-    def window_steps(a, b):
-        fr, landed = PSS._land_fractions(base, [a, b])
+    def window_steps(a, b, ws=None):
+        fr, landed = PSS._land_fractions(base, [a, b], window_steps=ws)
         pts = np.concatenate(([0.0], np.cumsum(fr)))
         i, j = int(np.argmin(np.abs(pts - a))), int(np.argmin(np.abs(pts - b)))
         return np.diff(pts[i:j + 1])
@@ -25140,6 +25149,27 @@ def test_a_switching_window_is_re_cut_whatever_the_base_step():
     ## wider than K base steps: the base grid's own nodes
     w = window_steps(0.2033, 0.2033 + 0.01 * (K + 2))
     assert len(w) > K and np.max(w) > 0.9 * 0.01, w
+    ## an explicit count
+    assert len(window_steps(0.4033, 0.4331, ws=8)) == 8
+
+    ## a run's own count reaches its stage: the PWM loop's two windows are
+    ## each cut into `event_window_steps`
+    T = 1e-5
+    pts = {}
+    for ws in (8, 16):
+        cir = _pwm_loop(T)
+        p = PSS(cir, method='radau', reltol=1e-8, event_window_steps=ws)
+        assert p.par.event_window_steps == ws
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / 100, x0=np.zeros(cir.n - 1),
+                    maxiterations=100)
+        assert p.converged and len(p._state_event_fracs) == 4
+        pts[ws] = len(p.waveform[0])
+    assert pts[16] - pts[8] == 2 * (16 - 8), pts
+    with pytest.raises(ValueError, match='event_window_steps'):
+        PSS(_pwm_loop(T), method='radau', event_window_steps=1).solve(
+            period=T, timestep=T / 20, x0=np.zeros(_pwm_loop(T).n - 1))
 
 
 def test_state_events_become_newton_unknowns_and_land_the_grid_on_a_pwm_switching_instant():
@@ -25316,8 +25346,10 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
         assert np.linalg.norm(Mtot[:, i] - col) < 1e-5 * np.linalg.norm(col), nm
         ## with VSwitch's compact transition (2026-09-22) the fixed-grid map
         ## through the landed, resolved window is 8 % off the total derivative
-        ## on `fb` (109 % with the tanh, whose tails sat outside the window)
-        assert np.linalg.norm(Mx[:, i] - col) > 0.03 * np.linalg.norm(col), nm
+        ## on `fb` (109 % with the tanh, whose tails sat outside the window);
+        ## with the window in 16 steps (2026-09-25) 0.53 % -- part of the 8 %
+        ## was the 8-step window's own sensitivity to where it sat
+        assert np.linalg.norm(Mx[:, i] - col) > 0.003 * np.linalg.norm(col), nm
 
 
 
@@ -25503,7 +25535,10 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     ## 2.5 % (was 3.1 % / 4.9 % with the tanh, whose tails outside the window
     ## a fixed grid never resolved).  The bordering is the exact
     ## linearisation; its numerical weight on this loop is a few per cent.
-    assert errs[False]['out'] > 0.005 and errs[False]['fb'] > 0.01, errs     # 0.011 / 0.025 at 60 points
+    ## ⚠ RE-PINNED A THIRD TIME 2026-09-25, for the 16-step window
+    ## (`event_window_steps`): 0.076 % / 0.16 % -- the rest of the old gap
+    ## was the 8-step window's own resolution
+    assert errs[False]['out'] > 5e-4 and errs[False]['fb'] > 1e-3, errs     # 7.6e-4 / 1.6e-3 at 60 points
 
 
 def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve():
@@ -25561,8 +25596,9 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
             h0 = np.conj(h0)
         assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
         ## the unbordered row: 0.55 % off with VSwitch's compact transition
-        ## (2026-09-22; several per cent with the tanh's tails)
-        assert abs(x - h0) > 2e-3 * abs(h), (l, x, h0)
+        ## (2026-09-22; several per cent with the tanh's tails); 0.036 % with
+        ## the window in 16 steps (2026-09-25)
+        assert abs(x - h0) > 1e-4 * abs(h), (l, x, h0)
 
 
 def _comparator_relaxation_oscillator():
@@ -25675,7 +25711,12 @@ def test_gear_lands_the_state_events_of_an_autonomous_orbit():
     staged, msgs = solve(200, True)
     unstaged, _m = solve(200, False)
     assert len(staged._state_event_fracs) == 4 and staged.stage_one_converged is True
-    assert err(staged) < 3e-4 and err(unstaged) > 3e-3, (err(staged), err(unstaged))
+    ## ⚠ RE-PINNED 2026-09-25 for the 16-step window (`event_window_steps`):
+    ## 3.0e-4 at 200 points.  The 1.1e-4 at 8 steps was a CANCELLATION -- the
+    ## 8-step ladder alternated in sign (-6.3e-4 / +1.1e-4 / -1.2e-4 / +1.3e-5
+    ## at 100 / 200 / 400 / 800); at 16, -2.2e-4 / -3.0e-4 / -1.2e-4 / +1.4e-5,
+    ## the two agreeing from 400 on, where the window no longer dominates
+    assert err(staged) < 5e-4 and err(unstaged) > 3e-3, (err(staged), err(unstaged))
     assert abs(rho(staged) - 1.0) < 1e-3 and rho(unstaged) > 10.0, (rho(staged), rho(unstaged))
     q100, msgs100 = solve(100, True)
     assert len(q100._state_event_fracs) == 4 and err(q100) < 1.5e-3, err(q100)
@@ -25805,7 +25846,11 @@ def test_the_plain_map_lands_state_events_opened_at_x0():
             return (np.asarray(w.x_end, dtype=float),
                     np.column_stack([pk[0] for pk in w.Pk]))
         _xe, Pk = end_and_cols(th0)
-        eps = 1e-8
+        ## ⚠ 1e-7, not 1e-8: with the 16-step window (sub-steps 5e-6 T) the
+        ## difference is roundoff-limited below it -- theta's third column
+        ## read 1.6e-4 / 1.8e-3 / 1.6e-1 at eps 1e-7 / 1e-8 / 1e-9, growing
+        ## as eps shrinks (measured 2026-09-25)
+        eps = 1e-7
         for l in range(len(th0)):
             d = np.zeros(len(th0))
             d[l] = eps
@@ -25938,7 +25983,9 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
                                 * np.exp(1j * 2.0 * np.pi * 0.3
                                          * ((t_shift + float(tt[j])) // T_ex2)))
                          / scale)) for j in probe)
-    assert worst[True] < 5e-3 and worst[False] > 1e-2, worst
+    ## ⚠ RE-PINNED 2026-09-25 for the 16-step window: bordered 1.1e-3,
+    ## unbordered 4.8e-3 (it was above 1e-2 at 8 steps)
+    assert worst[True] < 5e-3 and worst[False] > 3e-3, worst
 
     ## the adjoint row is the transpose of the same bordered solve
     fin = 0.3 / Tq
@@ -26592,15 +26639,20 @@ def test_the_staged_solve_is_fifth_order_at_the_switch_against_the_windowed_exac
     names = [str(n_) for n_ in cir.nodes]
     seed, Tl = _relaxation_oscillator_seed(cir)
     errs = {}
-    for N in (100, 200):
+    ## ⚠ RE-PINNED 2026-09-25 for the 16-step window (`event_window_steps`):
+    ## against the windowed exact period, -5.6e-9 / -6.0e-9 / -6.3e-10 /
+    ## -2.7e-11 at 100 / 200 / 400 / 800 (at 8 steps -1.8e-7 / -1.8e-8 /
+    ## -8.5e-10 / -2.5e-10) -- lower everywhere, and the order shows from
+    ## 200 on (9.5, 23): at 100 points the window no longer dominates
+    for N in (200, 400):
         q = PSS(cir, method='radau', reltol=1e-10)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100, state_events=True)
         assert q.converged
         errs[N] = abs(q.period / T_ex - 1.0)
-    assert errs[100] < 2e-6 and errs[200] < 5e-8, errs
-    assert errs[100] / errs[200] > 8.0, errs
+    assert errs[200] < 2e-8 and errs[400] < 2e-9, errs
+    assert errs[200] / errs[400] > 8.0, errs
 
 
 def test_the_transient_lands_declared_state_events_and_its_period_stops_jittering():
