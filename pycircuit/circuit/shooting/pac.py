@@ -4445,20 +4445,32 @@ class PAC(Analysis):
         `pnoise`; within the linewidth pnoise has no meaning and this is the
         route.
 
-        ⚠ Stationary WHITE sources, free-running oscillators, and the dense
+        ⚠ STATIONARY sources, free-running oscillators, and the dense
         `floquet_modes` only (inherited).  `harmonic >= 1`: harmonic 0 was
         never measured.  `H` defaults to `ORBITAL_HARMONICS` (capped by the
         grid), `sidebands` to `2 H`.  `output` follows `orbital_spectrum`.
 
+        ⚠ A COLOURED SOURCE (2026-09-25): input sideband `m` carries the
+        source at ``w - m w0``, and reads `CY` THERE (as `pnoise` does)
+        rather than one `CY` for every sideband; the phase-diffusion widths
+        `a_j` take `c` from the WHITE part of the sources alone (zero for a
+        pure 1/f or Lorentzian source).  The phase part is then the
+        linearised skirt, valid only where `phase_psd` is: offsets it refuses
+        are refused here (`_modal_colour`).
+
         History: `doc/shooting_history.md`, `PAC.modal_spectrum`.
         """
         self._check_circuit(pss)
-        self._refuse_coloured(pss, 'modal_spectrum')
+        coloured = self._coloured_present(pss)
         self._refuse_driven(pss, 'modal_spectrum')
         if int(harmonic) < 1:
             raise ValueError(
                 'PAC.modal_spectrum: harmonic must be >= 1 -- harmonic 0 was '
                 'never measured against pnoise. Use PAC.pnoise there.')
+        offs = np.atleast_1d(np.asarray(offsets, dtype=float))
+        if coloured:
+            c_col, cy_at = self._modal_colour(pss, offs, harmonic,
+                                              'modal_spectrum')
         modes = pss.floquet_modes(pss)
         ## the phase mode by its tangent alignment, on any grid -- see
         ## `_phase_mode_split` (a 1e-6 window on |lam| - 1 refuses every gear
@@ -4467,9 +4479,10 @@ class PAC(Analysis):
         ph = [_kph]
         m = pss.cir.n - 1
         row = _output_row(output, m)
-        c = float(self.diffusion_constant(pss))
+        c = c_col if coloured else float(self.diffusion_constant(pss))
         w0 = 2.0 * np.pi / float(pss.period)
-        CY2 = 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0)))
+        CY2 = (None if coloured
+               else 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0))))
         N = np.asarray(modes[ph[0]]['p']).shape[1] - 1
         H = self.ORBITAL_HARMONICS if H is None else int(H)
         H = min(H, N // 2 - 1)
@@ -4502,13 +4515,18 @@ class PAC(Analysis):
             return T
 
         def quad(A, B):
+            if CY2.ndim == 3:
+                return complex(np.einsum('mi,mik,mk->', A, CY2, np.conj(B)))
             return complex(np.einsum('mi,ik,mk->', A, CY2, np.conj(B)))
 
-        offs = np.atleast_1d(np.asarray(offsets, dtype=float))
         res = {k: np.zeros(offs.shape, dtype=float)
                for k in ('phase', 'orbital', 'correlation', 'total')}
         for i, o in enumerate(offs.ravel()):
             w = float(harmonic) * w0 + 2.0 * np.pi * float(o)
+            if coloured:
+                ## input sideband `m` is the source at `w - m w0`
+                CY2 = np.array([0.5 * np.real(np.asarray(
+                    cy_at(abs(w - float(mm) * w0)))) for mm in ms])
             Tp = transfer(w, coef[0])
             To = np.zeros_like(Tp)
             for entry in coef[1:]:
@@ -4522,6 +4540,41 @@ class PAC(Analysis):
             res['correlation'][ix] = sc
             res['total'][ix] = sp + so + sc
         return res
+
+    def _modal_colour(self, pss, offs, harmonic, what):
+        """For `modal_spectrum` on a coloured circuit: `(c_white, cy_at)`.
+        Refuses a MODULATED source (`_cy_reduced`: sidebands of a
+        cyclostationary source do not add in power) and the offsets where the
+        linearised phase has broken down (`phase_psd`'s corner and power
+        bound); `c_white` is the diffusion of the sources' WHITE part alone
+        (`_cy_components_model`); `cy_at(w)` the reduced `CY` at `w`."""
+        f0 = 1.0 / float(pss.period)
+        w0 = 2.0 * np.pi * f0
+        self._cy_reduced(pss, w0)
+        ao = np.abs(np.asarray(offs, dtype=float)).ravel()
+        try:
+            self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic))
+        except ValueError as e:
+            raise ValueError(
+                'PAC.%s: with a COLOURED source the phase part is the '
+                'linearised skirt, valid only where phase_psd is -- %s'
+                % (what, e)) from None
+        x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
+        irn = pss.irefnode
+        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', message='PAC: the noise of .* is not '
+                'thermal-plus-power-law')
+            model = self._cy_components_model(pss, 1e-3 * f0, f0, states=[x0f])
+        if model is None:
+            raise NotImplementedError(
+                'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
+                'so the white part of its sources cannot be separated for the '
+                'phase-diffusion widths.' % what)
+        c_white = float(self._white_diffusion_at(
+            pss, w0, cy=np.real(np.asarray(model.white[0]))))
+        return c_white, (lambda w: self._cy_at(pss, w, x0r))
 
     def correlation_spectrum(self, pss, offsets, output, harmonic=1, H=None,
                              sidebands=None):
@@ -4677,7 +4730,7 @@ class PAC(Analysis):
         w[0] += 0.5 * g[-1]
         return w
 
-    def _white_diffusion_at(self, pss, w):
+    def _white_diffusion_at(self, pss, w, cy=None):
         """`(1/T) integral v_1^T (CY(w)/2) v_1 dt` with `CY` FROZEN at `w`.
 
         The white functional at one frequency, with no refusal: it is `c`
@@ -4708,7 +4761,9 @@ class PAC(Analysis):
         ## the samples' own orbit, not `pss.period` -- see `ppv()`'s 'period'
         T = float(info['period'])
         h = self._period_weights(tms, S.shape[0], T, pss)
-        cy = self._cy_reduced(pss, float(w))
+        ## `cy` given: the functional of THAT source matrix (the white part
+        ## of a coloured circuit, `_modal_colour`)
+        cy = self._cy_reduced(pss, float(w)) if cy is None else np.asarray(cy)
         ## ⚠ A NOISE SOURCE ON AN INDEX-2 CONSTRAINT GIVES c = 0, SILENTLY: a
         ## voltage noise in series with a DC source inside a capacitor loop
         ## perturbs an algebraic constraint -- a DIFFERENTIATED input, whose

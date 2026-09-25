@@ -12054,6 +12054,49 @@ def test_the_coloured_source_agrees_with_its_own_realisation():
             'realisation disagree' % (a, b)
 
 
+def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
+    """`modal_spectrum` with a STATIONARY coloured source (2026-09-25).  Input
+    sideband `m` carries the source at ``w - m w0``; it now reads `CY`
+    there, as `pnoise` does, instead of one `CY` for every sideband (which
+    the refusal guarded).  The phase widths take `c` from the white part
+    alone.  On `_coloured_vdp` (400 points, H = 8, 16 sidebands) at +3 /
+    +10 / -10 f_amp, `total / (pnoise/2) - 1`:
+
+        white      +5.2e-4  +5.7e-4  +4.4e-4    (the modal floor, as before)
+        coloured   +5.2e-4  +5.7e-4  +4.4e-4
+        filtered   +5.4e-4  +6.5e-4  +3.8e-4
+
+    and coloured/filtered totals +1.3e-4 (the `pnoise` pair's own
+    agreement).  ⚠ The PHASE / ORBITAL split differs between the two
+    realisations (phase 3.95e-9 against 3.32e-9 at 10 f_amp): the filtered
+    circuit's filter state enters its PPV, so its phase is a different
+    coordinate.  The totals are physical; the split is not.  One `CY` for
+    every sideband (the model the refusal protected) reads 2.3 .. 5.1x.
+    Below the phase model's validity (`phase_psd`'s corner / power bound)
+    it refuses."""
+    import warnings as _w
+    tot = {}
+    for kind in ('coloured', 'filtered'):
+        _c, pss, pac, ov = _coloured_vdp(kind)
+        f0 = 1.0 / float(pss.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _v, info = pss.ppv()
+            f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+            offs = np.array([3.0, 10.0, -10.0]) * f_amp
+            ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+            pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
+                                                    maxsidebands=16)[0]))
+                           for o in offs])
+        ratio = ms['total'] / (pn / 2.0)
+        assert np.max(np.abs(ratio - 1.0)) < 1e-3, (kind, ratio)
+        tot[kind] = ms['total']
+        if kind == 'coloured':
+            with pytest.raises(ValueError, match='linearised skirt'):
+                pac.modal_spectrum(pss, np.array([1e-12]), ov, H=8)
+    assert np.max(np.abs(tot['coloured'] / tot['filtered'] - 1.0)) < 5e-4
+
+
 def test_the_harmonic_resolved_fold_is_exactly_c_for_white():
     """PARSEVAL, ASSERTED AT ROUND-OFF: `sum_l V_l^H (CY/2) V_l = c`.
 
