@@ -2923,6 +2923,16 @@ class PAC(Analysis):
         ## its power-law exponent, and the evaluated frequencies
         terms = []
         for _key, W, ef in col['comps']:
+            ## ⚠ THE COMPONENT'S OWN RANK, not `m` columns: ``W_k U`` with `U`
+            ## an orthonormal basis of the stacked rows is the same process
+            ## (``U^T zeta`` are independent unit processes) in `rank`
+            ## columns -- a two-terminal source's symmetric root has two
+            ## proportional columns, three resistors' seven (one term each)
+            Wst = np.asarray(W, dtype=complex).reshape(-1, W.shape[2])
+            _u, sv, vh = np.linalg.svd(Wst, full_matrices=False)
+            r = int(np.sum(sv > 1e-12 * max(float(sv[0]), 1e-300))) if sv.size else 0
+            W = np.einsum('kms,sr->kmr', np.asarray(W, dtype=complex),
+                          vh[:r].conj().T)
             for s_ in range(W.shape[2]):
                 Wc = W[:, :, s_]
                 if not np.any(Wc):
@@ -3100,6 +3110,13 @@ class PAC(Analysis):
             ## harmonic with no energy there carries no line.  Seeding every
             ## harmonic to Nyquist (200 at 400 points) cost thousands of
             ## solves on lines of no weight.
+            ## ⚠ AND ONLY ISOLATED LINES: half-width below f0/4.  A strongly
+            ## damped mode (a relaxation oscillator's: multipliers 0.02, 0,
+            ## lines 0.62 and 3.4 f0 wide) OVERLAPS its neighbours into a
+            ## smooth response, which the adaptive rule handles; seeding its
+            ## 140 lines cost more than 20 minutes.
+            if hw >= 0.25 * f0:
+                continue
             Vl = self._period_dft(pss, np.asarray(modes[l]['q'])[:, :-1].T).T
             Nh = Vl.shape[1]
             en = np.sum(np.abs(Vl) ** 2, axis=0)
@@ -3125,7 +3142,16 @@ class PAC(Analysis):
         discretisation error times `1/offset` -- which, against a 1/f
         density, diverges as `fmin` falls.  Replaying `w` never forms it:
         the pole's part propagates along the tangent, which the projection
-        removes."""
+        removes.
+
+        ⚠ ON A STAGED OSCILLATOR (2026-09-25) the map is the TOTAL one
+        (`EventColumns.total_matrix`), the source moves the crossings itself
+        (``dtheta_f``, `forced_shift`: its ``P_theta dtheta_f`` enters the
+        right-hand side), and the node responses are at FIXED times: the
+        crossings' motion ``dtheta = dth w + dtheta_f`` enters through
+        `_fixed_time_event_columns`, as `_forced_responses` does it.  The
+        pole's part, dropped with `y`, moves the crossings along the orbit
+        with it, and its fixed-time response is again along ``xdot_j``."""
         T = float(fp.T)
         m = self.cir.n - 1
         N = len(fp.steps)
@@ -3144,29 +3170,54 @@ class PAC(Analysis):
             Md = (np.column_stack([np.asarray(fp.matvec(e), dtype=float)
                                    for e in np.eye(nw)])
                   if nw <= pss.FLOQUET_DENSE_LIMIT else None)
-            cache = (fp, self._node_projectors(pss), vb, ub, Md)
+            staged = None
+            _evd = EventColumns.of(pss, nw)
+            if _evd is not None:
+                ## the total map; the crossings' state sensitivity; the event
+                ## columns at fixed time
+                if Md is not None:
+                    Md = np.asarray(_evd.total_matrix(Md), dtype=float)
+                staged = (_evd, np.asarray(_evd['P_end'], dtype=complex),
+                          np.asarray(pss._event_columns.dth, dtype=float),
+                          self._fixed_time_event_columns(pss)[0])
+            cache = (fp, self._node_projectors(pss), vb, ub, Md, staged)
             self._transverse_cache = cache
-        _fp, Pi, vb, ub, Md = cache
+        _fp, Pi, vb, ub, Md, staged = cache
         tol = max(pss.par.reltol * self.KRYLOV_FACTOR, 1e-14)
         out = []
         for f in freqs:
             w, _ = pss._forced_replay(fp, f, u_ac, u_points=u_points)
             a = np.exp(-2j * np.pi * f * T)
+            rhs = a * np.asarray(w, dtype=complex)
+            dth_f = None
+            if staged is not None:
+                ## the source's own motion of the crossings
+                _evd, Pth, _dthx, _Pkf = staged
+                _e0, f_steps = pss._forced_replay(
+                    fp, f, u_ac, y0=np.zeros(fp.width, dtype=complex),
+                    collect=True, u_points=u_points)
+                f_nodes = [np.zeros(m, dtype=complex)] + [
+                    np.asarray(v_, dtype=complex)[:m] for v_ in f_steps]
+                dth_f = _evd.forced_shift(f_nodes)
+                rhs = rhs + a * (Pth @ dth_f)
             if Md is not None:
                 nw = Md.shape[0]
                 B = np.zeros((nw + 1, nw + 1), dtype=complex)
                 B[:nw, :nw] = np.eye(nw) - a * Md
                 B[:nw, nw] = ub
                 B[nw, :nw] = vb
-                wb = np.linalg.solve(B, np.concatenate(
-                    (a * np.asarray(w, dtype=complex), [0.0])))[:nw]
+                wb = np.linalg.solve(B, np.concatenate((rhs, [0.0])))[:nw]
             else:
-                _y, wb = self._deflated_solve(pss, a, a * np.asarray(w),
-                                              tol=tol, parts=True)
+                _y, wb = self._deflated_solve(pss, a, rhs, tol=tol, parts=True)
             _e, ysteps = pss._forced_replay(fp, f, u_ac, y0=wb, collect=True,
                                             u_points=u_points)
             Y = np.array([np.asarray(wb)[:m]]
                          + [np.asarray(v)[:m] for v in ysteps])[:N + 1]
+            if staged is not None:
+                ## the crossings' motion from the bounded part, at fixed time
+                _evd, Pth, _dthx, _Pkf = staged
+                dth = _dthx @ np.asarray(wb)[:_dthx.shape[1]] + dth_f
+                Y = Y + np.tensordot(_Pkf[:len(Y)], dth, axes=(2, 0))
             out.append(np.einsum('jab,jb->ja', Pi[:len(Y)], Y))
         return out, [None] * len(freqs)
 
@@ -3999,8 +4050,8 @@ class PAC(Analysis):
         at every node (`_transverse_responses`), as
         `info['K_coloured']` / `info['coloured_samples']`, and
         `info['K_transverse']` / `info['transverse_samples']` hold both.
-        The coloured PHASE is `phase_psd`'s.  A staged oscillator is
-        refused for colour.
+        The coloured PHASE is `phase_psd`'s.  On a staged oscillator the
+        responses are the total map's at fixed time (`_transverse_responses`).
 
         History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
         """
@@ -4020,13 +4071,6 @@ class PAC(Analysis):
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'oscillator_covariance')
         try:
-            if col is not None and getattr(pss, '_event_columns', None) is not None:
-                raise NotImplementedError(
-                    'PAC.oscillator_covariance: a COLOURED source on a staged '
-                    'oscillator (state events landed) is not built -- the '
-                    'transverse projection of the bordered, fixed-time '
-                    'responses is not derived. Solve without state_events, or '
-                    'use phase_psd / modal_spectrum.')
             As, Qs, K1, M, m, n = self._lyapunov_pieces(
                 pss, 'oscillator_covariance')
         finally:

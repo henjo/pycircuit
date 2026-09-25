@@ -12180,6 +12180,81 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
         pac.diffusion_constant(pss)
 
 
+def test_oscillator_covariance_takes_a_coloured_source_on_a_staged_oscillator():
+    """Coloured `oscillator_covariance` on a STAGED oscillator (2026-09-26;
+    Andreas: "Do 1").  The transverse responses are the total map's
+    (`EventColumns.total_matrix`), with the source's own motion of the
+    crossings in the right-hand side and the crossings' motion at FIXED
+    time on the nodes -- `_forced_responses`' staged-oscillator path,
+    replayed from the bounded part and projected.
+
+    The gate: on the comparator relaxation oscillator the transverse path
+    IS the projection of that verified full response, node by node -- 5e-13
+    at 0.3 and 2.7 f0 (the pole's part it never forms projects to round-off
+    there).  D2 exactly: a 1/f source added leaves `d` and `K_orb`
+    bit-identical.
+
+    ⚠ NOT gated by the white limit on this fixture, and measured why: a
+    white source through the band route against the Lyapunov route reads
+    -0.9 / -0.6 / -0.25 / -0.18 % at t = 0 (100 / 200 / 400 / 800 points)
+    but 18 / 9.6 / 6.1 / 3.8 % at worst in the switch's ON phase, where the
+    capacitor discharges through 10 ohm with `tau_on` about one step: the
+    band a WHITE source has above the grid's Nyquist, (2/pi) f_on / f_N
+    (7 / 3.5 % predicted at 400 / 800), is what the band route leaves out.
+    The cycle mean converges more slowly (3.2 / 2.0 / 1.8 / 1.3 %); the
+    Lyapunov route is itself first order on switched circuits (see
+    `covariance`).  A coloured source has no such band.  (The Lyapunov
+    route's own projection does not leak: `|Pi u_j|/|u_j|` ~ 1e-9.)"""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    res = {}
+    for flick in (False, True):
+        osc = _comparator_relaxation_oscillator()
+        if flick:
+            osc['fl'] = _Flicker('c', gnd, i=0.0, noisePSD=1e-22, fref=1.0)
+        seed, To = _relaxation_oscillator_seed(osc)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss = PSS(osc, method='radau', reltol=1e-9)
+            pss.solve(period=To, timestep=To / 200, x0=seed, maxiterations=100,
+                      state_events=True)
+        assert pss.converged and getattr(pss, '_event_columns', None) is not None
+        pac = PAC(osc, toolkit=circuit.numeric)
+        f0 = 1.0 / float(pss.period)
+        if flick:
+            with pytest.warns(RuntimeWarning, match="WHITE sources' alone"):
+                res[flick] = pac.oscillator_covariance(pss, samples=True,
+                                                       fmin=1e-4 * f0)
+        else:
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                res[flick] = pac.oscillator_covariance(pss, samples=True)
+            ## the transverse path against the projected full response
+            names = [str(x) for x in osc.nodes if str(x) != 'gnd!']
+            ic = names.index('c')
+            host = pss._lyapunov_host()
+            fp = host._state_map()
+            e = np.zeros(osc.n - 1, dtype=complex)
+            e[ic] = 1.0
+            Pi = pac._node_projectors(host)
+            for nu in (0.3 * f0, 2.7 * f0):
+                ys, _d = pac._forced_responses(host, fp, np.array([nu]), e)
+                full = np.einsum('jab,jb->ja', Pi[:len(ys[0])], np.asarray(ys[0]))
+                try:
+                    tv, _n = pac._transverse_responses(host, fp, np.array([nu]), e)
+                finally:
+                    pac._transverse_cache = None
+                n = min(len(full), len(tv[0]))
+                err = np.max(np.abs(np.asarray(tv[0])[:n] - full[:n])) \
+                    / np.max(np.abs(full[:n]))
+                assert err < 1e-10, (nu / f0, err)
+    (Kw, dw, _iw), (Kc, dc, ic_) = res[False], res[True]
+    assert dc == dw and np.array_equal(Kc, Kw)
+    kc = np.asarray(ic_['coloured_samples'])
+    assert np.all(np.diagonal(kc, axis1=1, axis2=2) >= -1e-30)
+    assert np.max(kc) > 0.0
+
+
 def test_the_transverse_band_integral_is_the_lyapunov_route_for_a_white_source():
     """The coloured oscillator path's WHITE LIMIT (2026-09-25): a white source
     pushed through the frequency-domain transverse route (as a component of
