@@ -7349,6 +7349,13 @@ modulation whose coefficients reach N/2.
 
 ### `_cy_cycle_averaged`
 
+2026-09-26: the same full-width misread as `_phase_mode_split` (`xs[:m]`
+of the full-width `waveform`, then the reference's zero a second time): a
+source controlled past the reference node read the shifted state.  The
+library fixtures place their nodes before the reference, so nothing
+pinned moved (`pnoise(modulated=True)` bit-identical on `_nu_identity`).
+
+
 The docstring before the move (after its first line):
 
 ⚠⚠ VALID FOR GENTLE MODULATION ONLY, AND IT FAILS AS A FACTOR, NOT A
@@ -8615,6 +8622,18 @@ an asymmetric orbit (0.40) -- away from the fundamental use
 
 ### `modal_spectrum`
 
+2026-09-26: a source whose LEVEL FOLLOWS THE ORBIT is taken instead of
+refused (Andreas: "modal_spectrum with orbit-varying noise").  White parts
+in the P-form `sum_{m,m'} T_m (P_{m'-m}/2) T_{m'}^H` (exact, no root: a
+root of `(k V)^2` is `|k V|`, whose kink the sideband window cuts); each
+coloured component as a unit process through its own columns `G(t)`,
+rows the harmonics of `q_l^T G`, band `p` at `|w - p w0|`.  Gated against
+the same physics as a stationary source times the modulating voltage:
+every part ~1e-13 (white, signed flicker, a per-band Lorentzian); the
+moving shape against `pnoise(cyclostationary=True)` 1.2e-13 on radau.
+The stationary paths are bit-identical.  Log, 2026-09-26.
+
+
 The docstring before the move (its first-line tail and its `WHY IT EXISTS` and near-carrier paragraphs):
 
 transfer, which sum to the total.  E6, built 2026-09-15.
@@ -8670,6 +8689,15 @@ converging on a 3:1 grid before (see `PSS._period_quadrature`)
 
 ### `_phase_mode_split`
 
+2026-09-26: `waveform` is FULL width (the reference row is in it), and the
+tangent was computed from it as if reduced, a second zero inserted, so
+every unknown past the reference was read one slot late.  Van der Pol hid
+it (the inductor current it misread is ~0 at the phase anchor); an idle
+3 V source in the circuit read the phase mode's alignment as 0.57 and
+refused.  Now `_orbit_states`.  No existing result moved (the same mode
+was picked).
+
+
 The docstring before the move (after its first line):
 
 DEFINES IT, its eigenvector's alignment with the orbit tangent, not by
@@ -8691,6 +8719,14 @@ within ten times that departure of the circle with any alignment --
 the case a window ever protected against.
 
 ### `diffusion_constant`
+
+2026-09-26: a MODULATED white source is taken: `CY` at each PPV sample's
+state, Demir's `B(x(t))` form, where `_cy_reduced` refused it.  Against
+the Lyapunov growth route (`CY` per step, no PPV): radau 4.6e-13 (van der
+Pol, `(k V)^2`) and -4.4e-11 (`test_multiplicative_noise_...`'s fixture;
+gear +1.0e-3, its own gap).  The Ito/Stratonovich reason the refusal also
+carried concerns the DRIFT; `c` is the diffusion, where they agree.
+
 
 The docstring paragraphs before the move:
 
@@ -8819,6 +8855,12 @@ the pair cannot drift the way `diffusion_constant` and
 `covariance` once did over exactly that factor.
 
 ### `coloured_diffusion_resolved`
+
+2026-09-26: a source whose level follows the orbit takes
+`_coloured_diffusion_modulated`: the harmonics of the PRODUCT `v_1^T G`
+per coloured component, the white parts as Demir's `c` (flat in `f`).  So
+`phase_psd` takes it too.
+
 
 The docstring paragraph before the move:
 

@@ -7290,7 +7290,7 @@ class _StateDependentNoise(IS):
         return self.toolkit.array([[p, -p], [-p, p]])
 
 
-def test_multiplicative_noise_is_refused_on_every_path():
+def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     """⚠⚠ ONE GUARD COVERS TWO UNRELATED THEORETICAL HAZARDS.
 
     `_cy_reduced` samples `CY` at three states on the orbit and refuses a
@@ -7324,6 +7324,17 @@ def test_multiplicative_noise_is_refused_on_every_path():
     ⚠ THE TELL, IF IT EVER ARRIVES: the drift shifts by `½G∂ₓG` and the
     diffusion does not. A discrepancy in a MEAN but not in a VARIANCE is
     where to look.
+
+    ⚠ AND THAT IS WHY THE DIFFUSION SURFACES NOW TAKE IT.  The routes that
+    evaluate `CY` along the orbit report second-order statistics of the
+    linearised response -- DIFFUSION, where the two interpretations agree
+    -- and no MEAN: `oscillator_covariance` (2026-09-05),
+    `pnoise(cyclostationary=True)`, and since 2026-09-26
+    `diffusion_constant` (Demir's `B(x(t))`, `CY` at each PPV sample's
+    state) and `modal_spectrum`.  On this fixture `c` matches the Lyapunov
+    growth route (`CY` per step, no PPV) to +1.0e-3 on gear at 240 points
+    (gear's own gap between the two; radau -4.4e-11).  The paths that sum
+    ONE stationary `CY` still refuse.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -7341,9 +7352,8 @@ def test_multiplicative_noise_is_refused_on_every_path():
                   x0=np.array([2.0, 0.0]), maxiterations=60)
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
-    ## every noise path funnels through `_cy_reduced`, so every one refuses
+    ## the paths that sum one stationary `CY` funnel through `_cy_reduced`
     for name, call in (
-            ('diffusion_constant', lambda: pac.diffusion_constant(pss)),
             ('coloured_diffusion',
              lambda: pac.coloured_diffusion(pss, [1.0 / pss.period])),
             ('oscillator_spectrum',
@@ -7357,6 +7367,10 @@ def test_multiplicative_noise_is_refused_on_every_path():
     ## switched-capacitor gate below.
     K, _d, _info = pac.oscillator_covariance(pss)
     assert np.all(np.isfinite(np.asarray(K, dtype=float)))
+    ## nor `diffusion_constant` (2026-09-26): the same diffusion by the PPV
+    c = float(pac.diffusion_constant(pss))
+    assert abs(c / float(_info['c_from_growth']) - 1.0) < 3e-3, \
+        (c, _info['c_from_growth'])
 
 
 def test_the_compact_mos_noise_is_off_without_a_card_not_absent():
@@ -12095,6 +12109,204 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
             with pytest.raises(ValueError, match='linearised skirt'):
                 pac.modal_spectrum(pss, np.array([1e-12]), ov, H=8)
     assert np.max(np.abs(tot['coloured'] / tot['filtered'] - 1.0)) < 5e-4
+
+
+def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
+    """van der Pol (Q = 8, 400 points) with a noise source whose level
+    follows the orbit, and its REALISATION: the same physics as a
+    STATIONARY source into an algebraic node `n`, times the modulating
+    voltage through `_NuMult` (the multiplier adds no state, and `n` is 0
+    on the orbit, so the modes are the same).
+
+      'white'        `white_noise((k V_v)^2)` on the tank (`_NuModNoise`)
+      'flicker'      `k V_v flicker_noise(1)`, SIGNED (`_SgnAmpFlicker`)
+      'flicker_psd'  the same PSD without its sign (`_SgnPsdFlicker`)
+      'lorentz'      a Lorentzian at `(k V(v, b))^2`, `b` a 3 V DC source
+                     (the level keeps its sign), `_ModLorentzCtl`
+      'lorentz_moving'  and its corner moving with V (`shape`)
+      '<kind>_ref'   the realisation of 'white' / 'flicker' / 'lorentz'
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0) + a * u * u)
+    ctl = ('v', gnd)
+    if kind.startswith('lorentz'):
+        c.add_node('b')
+        c['vb'] = VS('b', gnd, v=3.0)
+        ctl = ('v', 'b')
+    tau = 0.3 * 2.0 * np.pi
+    if kind.endswith('_ref'):
+        c.add_node('n')
+        c['xi'] = {'white_ref': lambda: IS('n', gnd, i=0.0, noisePSD=1.0),
+                   'flicker_ref': lambda: _Flicker('n', gnd, i=0.0, noisePSD=1.0),
+                   'lorentz_ref': lambda: IS('n', gnd, i=0.0, noisePSD=1.0,
+                                             noiseTau=tau)}[kind]()
+        c['Rn'] = R('n', gnd, r=1.0)
+        c['M'] = _NuMult('v', gnd, 'n', gnd, *ctl, k=kk)
+    elif kind == 'white':
+        c['src'] = _NuModNoise('v', gnd, *ctl, k=kk)
+    elif kind == 'flicker':
+        c['src'] = _SgnAmpFlicker('v', gnd, *ctl, k=kk)
+    elif kind == 'flicker_psd':
+        c['src'] = _SgnPsdFlicker('v', gnd, *ctl, k=kk)
+    else:
+        c['src'] = _ModLorentzCtl('v', gnd, *ctl, noisePSD=1.0, tau=tau, k=kk,
+                                  shape=0.02 if kind == 'lorentz_moving' else 0.0)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    pss = PSS(c, method=method, reltol=1e-12)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=x0, maxiterations=300)
+    assert pss.converged
+    ov = [str(n) for n in c.nodes].index('v')
+    return c, pss, PAC(c, toolkit=circuit.numeric), ov
+
+
+def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
+    """`modal_spectrum` and `diffusion_constant` with a WHITE source whose
+    level follows the orbit (2026-09-26; Andreas: "modal_spectrum with
+    orbit-varying noise").  Both refused it (`_cy_reduced`).  The sum is
+    now the P-form
+
+        sum_{m,m'} T_m (P_{m'-m}/2) T_{m'}^H,   P_k = harmonics of CY(x(t))
+
+    exact and without a square root (a root of `(k V)^2` is `|k V|`, whose
+    kink spreads it over harmonics the sideband window cuts), and `c` is
+    Demir's own `B(x(t))` form, `CY` at each PPV sample's state.
+
+    Gated against the same physics built as a STATIONARY source times the
+    tank voltage (`_orbit_modulated_vdp`), the verified stationary path,
+    on an asymmetric orbit (a = 0.3, where the correlation cancels the
+    parts to 1/40 of each), gear 400 points, at 0.3 / 3 / 10 / -10 f_amp:
+    every part to <= 1.7e-13 (4.4e-13 at a = 0), `c` to 2.2e-16 -- gear's
+    algebraic adjoint IS `k V_v q_v`, so the two discretisations coincide.
+    And `c` against the LYAPUNOV route (`oscillator_covariance`, `CY` per
+    step, no PPV) on radau: 4.6e-13.  Poisons (a = 0.3): the P-form cut to
+    `P_0` (the stationary assumption) 0.42; `P_{m-m'}` for `P_{m'-m}` 0.58;
+    `CY` read at one state 1.04 (`c` 0.39).  A byproduct: `pnoise(
+    cyclostationary=True)` on the modulated circuit reproduces the
+    stationary pnoise of its realisation digit for digit -- its first
+    measurement on an oscillator."""
+    import warnings as _w
+    res = {}
+    for kind in ('white_ref', 'white'):
+        _c, pss, pac, ov = _orbit_modulated_vdp(kind, a=0.3)
+        f0 = 1.0 / float(pss.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _v, info = pss.ppv()
+            f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+            offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
+            res[kind] = (pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16),
+                         float(pac.diffusion_constant(pss)))
+    A, B = res['white_ref'], res['white']
+    for k in ('phase', 'orbital', 'correlation', 'total'):
+        err = np.max(np.abs(B[0][k] / A[0][k] - 1.0))
+        assert err < 1e-9, (k, B[0][k] / A[0][k] - 1.0)
+    assert abs(B[1] / A[1] - 1.0) < 1e-12, (B[1], A[1])
+    _c, pss, pac, ov = _orbit_modulated_vdp('white', method='radau')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _K, _d, oi = pac.oscillator_covariance(pss)
+        c = float(pac.diffusion_constant(pss))
+    assert abs(c / float(oi['c_from_growth']) - 1.0) < 1e-9, \
+        (c, oi['c_from_growth'])
+
+
+def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
+    """`modal_spectrum` and `phase_psd` with a COLOURED source whose level
+    follows the orbit (2026-09-26).  Each component is a unit process
+    through its own columns `G(t)`: the rows are the harmonics of the
+    PRODUCT `q_l^T G` (the convolution `R_p = sum_k T_{p-k} G_k` over
+    every harmonic on the grid), band `p` weighted by the colour at
+    `|w - p w0|`; `c(f)` likewise with the PPV.  `G` is the element's
+    SIGNED amplitude where it states one, else the root of its PSD; a
+    per-band colour takes its root per band frequency.
+
+    Gated against the stationary realisation (`_orbit_modulated_vdp`),
+    gear, at 3 / 10 / -10 f_amp:
+      * a signed flicker `k V_v flicker_noise(1)`: every part <= 6.1e-13,
+        `phase_psd` 1.5e-12 (2.2e-13 on an asymmetric orbit);
+      * a Lorentzian at `(k V(v, b))^2` (per band, a level that keeps its
+        sign): parts <= 8.4e-14, `phase_psd` 3.4e-14 -- and no sign warning;
+      * the corner MOVING with V: against `pnoise(cyclostationary=True)`,
+        the same quasi-static model by another fold, on radau 1.2e-13 (with
+        no white part the phase widths are 0 and the two sums coincide).
+    The PSD-specified flicker (`(k V_v)^2 / f`, V_v changes sign) is warned
+    on, and reads 0.6 / -0.9 of the parts -- the `|m|` process.
+    Poisons: the modulation frozen to its mean 1.00; the convolution's sign
+    flipped 0.82."""
+    import warnings as _w
+
+    def run(kind, method='gear'):
+        _c, pss, pac, ov = _orbit_modulated_vdp(kind, method=method)
+        f0 = 1.0 / float(pss.period)
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter('always')
+            _v, info = pss.ppv()
+            f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+            offs = np.array([3.0, 10.0, -10.0]) * f_amp
+            ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+            ph = pac.phase_psd(pss, np.abs(offs[:2]))
+        blind = any('touches zero along the orbit' in str(x.message)
+                    for x in caught)
+        return ms, ph, blind, (pss, pac, ov, offs, f0)
+
+    for ref, kind in (('flicker_ref', 'flicker'), ('lorentz_ref', 'lorentz')):
+        A, B = run(ref), run(kind)
+        for k in ('phase', 'orbital', 'correlation', 'total'):
+            err = np.max(np.abs(B[0][k] / A[0][k] - 1.0))
+            assert err < 1e-9, (kind, k, B[0][k] / A[0][k] - 1.0)
+        assert np.max(np.abs(B[1] / A[1] - 1.0)) < 1e-9, (kind, B[1] / A[1])
+        assert not B[2], kind
+    assert run('flicker_psd')[2], 'a sign-blind root went unwarned'
+    ms, _ph, _b, (pss, pac, ov, offs, f0) = run('lorentz_moving', method='radau')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pn = float(np.real(pac.pnoise(pss, f0 + offs[1], ov, maxsidebands=16,
+                                      cyclostationary=True)[0]))
+    assert abs(ms['total'][1] / (pn / 2.0) - 1.0) < 1e-9, (ms['total'][1], pn)
+
+
+def test_the_orbit_is_read_full_width_past_the_reference_node():
+    """⚠ `PSS.waveform` is FULL width -- the reference row is in it -- and
+    two readers took it for the reduced state and inserted the reference's
+    zero a second time, reading every unknown past the reference one slot
+    late (found 2026-09-26 when a DC source entered an oscillator):
+
+      * `PAC._phase_mode_split` computed the orbit tangent from it: on a
+        van der Pol with an idle 3 V source the phase mode's alignment read
+        0.57 and `modal_spectrum` refused the circuit.  Plain van der Pol
+        hides it -- the inductor current it misread is ~0 at the phase
+        anchor.
+      * `PAC._cy_cycle_averaged` (`pnoise(modulated=True)`) evaluated
+        `CY` at the shifted states: a source controlled by V(v, b) read
+        `b` as 0.
+    Both now read `_orbit_states`, right whichever width it is given."""
+    import warnings as _w
+    _c, pss, pac, ov = _orbit_modulated_vdp('lorentz')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        modes = pss.floquet_modes(pss)
+    k, _orb = pac._phase_mode_split(pss, modes, 'test')
+    assert abs(abs(complex(modes[k]['lam'])) - 1.0) < 1e-9
+    w = 2.0 * np.pi / float(pss.period)
+    fp = pss.factored_period()
+    Cs = pac._cy_at_states(pss, w)
+    hs = pac._period_weights(np.asarray(fp.times, dtype=float), Cs.shape[0],
+                             float(fp.T), pss)
+    ref = np.tensordot(hs, Cs, axes=1) / float(hs.sum())
+    got = pac._cy_cycle_averaged(pss, w)
+    assert np.max(np.abs(got - ref)) <= 1e-12 * np.max(np.abs(ref)), \
+        (got, ref)
 
 
 class _ModLorentzCtl(Circuit):

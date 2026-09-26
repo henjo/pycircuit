@@ -1633,13 +1633,13 @@ class PAC(Analysis):
         tms = np.asarray(fp.times, dtype=float)
         T = float(fp.T)
         xs = np.asarray(pss.waveform[1], dtype=float)
-        m = pss.cir.n - 1
         nsamp = min(len(tms) - 1, xs.shape[1])
         hs = self._period_weights(tms, nsamp, T, pss)
         acc = None
         for k in range(nsamp):
-            xr = xs[:m, k]
-            xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            ## ⚠ `waveform` is FULL width: `xs[:m]` then a second zero read
+            ## every unknown past the reference one slot late (to 2026-09-26)
+            xf = self._orbit_states(pss, [xs[:, k]])[0]
             cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
             (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
             cyk = np.asarray(cyk, dtype=complex) * hs[k]
@@ -1676,7 +1676,10 @@ class PAC(Analysis):
         noise signals are small compared with the deterministic signals" --
         may NOT carry for trap noise (a two-state Markov chain, not a small
         perturbation).  The tell would be a discrepancy in a MEAN but not in
-        a variance.
+        a variance.  (The surfaces that read `CY` state by state --
+        `covariance`, `pnoise(cyclostationary=True)`, `diffusion_constant`,
+        `modal_spectrum` -- report DIFFUSION, where the two agree, and no
+        mean.)
 
         History: `doc/shooting_history.md`, `PAC._cy_reduced`.
         """
@@ -5049,10 +5052,25 @@ class PAC(Analysis):
         `pnoise`; within the linewidth pnoise has no meaning and this is the
         route.
 
-        ⚠ STATIONARY sources, free-running oscillators, and the dense
-        `floquet_modes` only (inherited).  `harmonic >= 1`: harmonic 0 was
-        never measured.  `H` defaults to `ORBITAL_HARMONICS` (capped by the
-        grid), `sidebands` to `2 H`.  `output` follows `orbital_spectrum`.
+        ⚠ Free-running oscillators and the dense `floquet_modes` only
+        (inherited).  `harmonic >= 1`: harmonic 0 was never measured.  `H`
+        defaults to `ORBITAL_HARMONICS` (capped by the grid), `sidebands` to
+        `2 H`.  `output` follows `orbital_spectrum`.
+
+        ⚠ A source whose LEVEL FOLLOWS THE ORBIT (2026-09-26; a MOS
+        channel's thermal and flicker noise, a shot noise): its sidebands
+        are correlated, so they no longer add in power.  WHITE parts enter
+        in the P-form ``sum_{m,m'} T_m (P_{m'-m}/2) T_{m'}^H`` with `P_k`
+        the harmonics of `CY(x(t))` -- exact, no square root (a root of
+        `(k V)^2` is `|k V|`, whose kink the sideband window would cut);
+        `c` is Demir's `B(x(t))` form.  Each COLOURED component is a unit
+        process through its own columns `G(t)` -- its signed amplitudes
+        where the element states them, else the root of its PSD (warned
+        where that PSD touches zero) -- and its rows are the harmonics of
+        `q_l^T G`, band `p` weighted by the colour at ``|w - p w0|``
+        (`_modal_modulated`, `_colour_groups`).  Gated against the same
+        physics built as a stationary source times the modulating voltage:
+        every part to ~1e-13.
 
         ⚠ A COLOURED SOURCE (2026-09-25): input sideband `m` carries the
         source at ``w - m w0``, and reads `CY` THERE (as `pnoise` does)
@@ -5072,7 +5090,19 @@ class PAC(Analysis):
                 'PAC.modal_spectrum: harmonic must be >= 1 -- harmonic 0 was '
                 'never measured against pnoise. Use PAC.pnoise there.')
         offs = np.atleast_1d(np.asarray(offsets, dtype=float))
-        if coloured:
+        ## ⚠ A MODULATED source (its `CY` follows the orbit) takes its own
+        ## sum, `_modal_modulated`; a stationary circuit runs the code
+        ## below as before
+        modulated = self._modulated_present(pss)
+        if modulated:
+            ## the band reach, for the per-band sources' classification
+            N_ = len(self._ppv_states(pss))
+            H_ = min(self.ORBITAL_HARMONICS if H is None else int(H), N_ // 2 - 1)
+            M_ = 2 * H_ if sidebands is None else int(sidebands)
+            c_mod, P2, groups = self._modal_modulated(
+                pss, offs, harmonic, coloured, M_ + int(harmonic),
+                'modal_spectrum')
+        elif coloured:
             c_col, cy_at = self._modal_colour(pss, offs, harmonic,
                                               'modal_spectrum')
         modes = pss.floquet_modes(pss)
@@ -5083,9 +5113,12 @@ class PAC(Analysis):
         ph = [_kph]
         m = pss.cir.n - 1
         row = _output_row(output, m)
-        c = c_col if coloured else float(self.diffusion_constant(pss))
+        if modulated:
+            c = c_mod
+        else:
+            c = c_col if coloured else float(self.diffusion_constant(pss))
         w0 = 2.0 * np.pi / float(pss.period)
-        CY2 = (None if coloured
+        CY2 = (None if coloured or modulated
                else 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0))))
         N = np.asarray(modes[ph[0]]['p']).shape[1] - 1
         H = self.ORBITAL_HARMONICS if H is None else int(H)
@@ -5100,6 +5133,11 @@ class PAC(Analysis):
         ## to 0 exactly: its multiplier is 1 to rounding, and a 1e-16 real part
         ## would put a spurious pole width on the Lorentzian.
         coef = []
+        ## modulated: per mode, q_l's samples and, per FIXED coloured group,
+        ## the Fourier coefficients of `q_l^T G(t)` -- the modulation enters
+        ## as a product in time, i.e. the convolution
+        ## `R_p = sum_k T_{p-k} G_k` over every harmonic the grid holds
+        extra = []
         for l in ph + orb:
             ## ⚠ `_period_dft`, not an index DFT, which is 8-13 % off and does
             ## not converge on a 3:1 grid (see `PSS._period_quadrature`)
@@ -5107,12 +5145,18 @@ class PAC(Analysis):
             Vl = self._period_dft(pss, np.asarray(modes[l]['q'])[:, :-1].T).T
             coef.append((l, row @ Ul[:, js % N], Vl,
                          0.0 if l == ph[0] else complex(modes[l]['mu'])))
+            if modulated:
+                ql = np.asarray(modes[l]['q'])[:, :-1]
+                extra.append((ql, [
+                    self._period_dft(pss, np.einsum('mn,nmr->nr', ql, G)).T
+                    for kind, G, _s in groups if kind == 'fixed']))
 
         def transfer(w, entry):
             ## (2M+1) x m; looped over j so memory stays m x (2M+1) per mode
             _l, u, Vl, mul = entry
             g = u / (1j * (w - js * w0) - mul + a_j)
-            T = np.zeros((ms.size, m), dtype=complex)
+            ## columns: the source rows `Vl` carries (`m`; `r` for a group)
+            T = np.zeros((ms.size, Vl.shape[0]), dtype=complex)
             for ji, j in enumerate(js):
                 if g[ji] != 0.0:
                     T += g[ji] * Vl[:, (ms - j) % N].T
@@ -5123,11 +5167,51 @@ class PAC(Analysis):
                 return complex(np.einsum('mi,mik,mk->', A, CY2, np.conj(B)))
             return complex(np.einsum('mi,ik,mk->', A, CY2, np.conj(B)))
 
+        def quadP(A, B):
+            ## a modulated WHITE source: `sum_{m,m'} A_m (P_{m'-m}/2) B_{m'}^H`
+            ## with `P_k` the harmonics of its `CY(x(t))` -- exact, no root
+            ## (a root of `(k V)^2` is `|k V|`, whose kink spreads it over
+            ## harmonics the sideband window then cuts).  ⚠ No circular wrap
+            ## past N/2: that harmonic is not on the grid.
+            S_ = A.shape[0]
+            tot = 0.0j
+            for d in range(-(S_ - 1), S_):
+                if abs(d) > N // 2:
+                    continue
+                lo, hi = max(0, -d), min(S_, S_ - d)
+                tot += complex(np.einsum('mi,ik,mk->', A[lo:hi], P2[d % N],
+                                         np.conj(B[lo + d:hi + d])))
+            return tot
+
+        def coloured_rows(w, gi, kind, G):
+            ## a modulated COLOURED group: the rows `R_p` of the unit
+            ## process in band `p` (at `|w - p w0|`), phase mode and the
+            ## orbital modes' sum, `(2M+1) x r` each
+            if kind == 'fixed':
+                Rp = transfer(w, coef[0][:2] + (extra[0][1][gi],) + coef[0][3:])
+                Ro = np.zeros_like(Rp)
+                for k in range(1, len(coef)):
+                    Ro += transfer(w, coef[k][:2] + (extra[k][1][gi],)
+                                   + coef[k][3:])
+                return Rp, Ro
+            ## the root per band: `q_l^T G(t; nu_p)`, row `p` alone
+            rows = []
+            for k in range(len(coef)):
+                _l, u, _Vl, mul = coef[k]
+                g = u / (1j * (w - js * w0) - mul + a_j)
+                R = []
+                for p in ms:
+                    Wp = self._period_dft(pss, np.einsum(
+                        'mn,nmr->nr', extra[k][0], G(abs(w - float(p) * w0)))).T
+                    R.append(Wp[:, (p - js) % N] @ g)
+                rows.append(np.asarray(R))
+            return rows[0], sum(rows[1:], np.zeros_like(rows[0]))
+
         res = {k: np.zeros(offs.shape, dtype=float)
                for k in ('phase', 'orbital', 'correlation', 'total')}
         for i, o in enumerate(offs.ravel()):
             w = float(harmonic) * w0 + 2.0 * np.pi * float(o)
-            if coloured:
+            if coloured and not modulated:
                 ## input sideband `m` is the source at `w - m w0`
                 CY2 = np.array([0.5 * np.real(np.asarray(
                     cy_at(abs(w - float(mm) * w0)))) for mm in ms])
@@ -5135,9 +5219,27 @@ class PAC(Analysis):
             To = np.zeros_like(Tp)
             for entry in coef[1:]:
                 To += transfer(w, entry)
-            sp = float(np.real(quad(Tp, Tp)))
-            so = float(np.real(quad(To, To)))
-            sc = 2.0 * float(np.real(quad(Tp, To)))
+            if modulated:
+                sp = float(np.real(quadP(Tp, Tp)))
+                so = float(np.real(quadP(To, To)))
+                sc = 2.0 * float(np.real(quadP(Tp, To)))
+                nu = np.abs(w - ms * w0)
+                gi = 0
+                for kind, G, s in groups:
+                    Rp, Ro = coloured_rows(w, gi, kind, G)
+                    if kind == 'fixed':
+                        gi += 1
+                        wt = 0.5 * np.asarray(s(nu), dtype=float)
+                    else:
+                        wt = 0.5 * np.ones(ms.size)
+                    sp += float(np.sum(wt * np.sum(np.abs(Rp) ** 2, axis=1)))
+                    so += float(np.sum(wt * np.sum(np.abs(Ro) ** 2, axis=1)))
+                    sc += 2.0 * float(np.sum(wt * np.real(
+                        np.sum(Rp * np.conj(Ro), axis=1))))
+            else:
+                sp = float(np.real(quad(Tp, Tp)))
+                so = float(np.real(quad(To, To)))
+                sc = 2.0 * float(np.real(quad(Tp, To)))
             ix = np.unravel_index(i, offs.shape)
             res['phase'][ix] = sp
             res['orbital'][ix] = so
@@ -5147,8 +5249,8 @@ class PAC(Analysis):
 
     def _modal_colour(self, pss, offs, harmonic, what):
         """For `modal_spectrum` on a coloured circuit: `(c_white, cy_at)`.
-        Refuses a MODULATED source (`_cy_reduced`: sidebands of a
-        cyclostationary source do not add in power) and the offsets where the
+        STATIONARY sources (a modulated one takes `_modal_modulated`;
+        `_cy_reduced` still guards this sum).  Refuses the offsets where the
         linearised phase has broken down (`phase_psd`'s corner and power
         bound); `c_white` is the diffusion of the sources' WHITE part alone
         (`_cy_components_model`); `cy_at(w)` the reduced `CY` at `w`."""
@@ -5179,6 +5281,98 @@ class PAC(Analysis):
         c_white = float(self._white_diffusion_at(
             pss, w0, cy=np.real(np.asarray(model.white[0]))))
         return c_white, (lambda w: self._cy_at(pss, w, x0r))
+
+    def _modal_modulated(self, pss, offs, harmonic, coloured, L, what):
+        """For `modal_spectrum` with a MODULATED source: `(c_white, P2,
+        groups)` -- `c_white` Demir's `c` of the WHITE parts at their own
+        states, `P2` half the harmonics of the white `CY(x(t))` (the
+        P-form), `groups` the coloured components (`_colour_groups`).  A
+        coloured circuit is first held to `phase_psd`'s validity, as
+        `_modal_colour` does."""
+        f0 = 1.0 / float(pss.period)
+        w0 = 2.0 * np.pi * f0
+        states = self._ppv_states(pss)
+        if not coloured:
+            white = np.real(self._cy_at_states(pss, w0, states))
+            groups = []
+        else:
+            ao = np.abs(np.asarray(offs, dtype=float)).ravel()
+            try:
+                self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic))
+            except ValueError as e:
+                raise ValueError(
+                    'PAC.%s: with a COLOURED source the phase part is the '
+                    'linearised skirt, valid only where phase_psd is -- %s'
+                    % (what, e)) from None
+            model = self._cy_components_model(pss, 1e-3 * f0, f0,
+                                              states=states)
+            if model is None:
+                raise NotImplementedError(
+                    'PAC.%s: this circuit\'s CY is not the sum of its '
+                    'elements\', so its modulated coloured sources cannot be '
+                    'taken one root per source.  PAC.pnoise('
+                    'cyclostationary=True) gives the total.' % what)
+            white = np.real(np.asarray(model.white))
+            groups = self._colour_groups(pss, model, states,
+                                         2.0 * np.pi * float(np.min(ao)), f0,
+                                         L, what)
+        c_white = float(self._white_diffusion_at(pss, w0, cy=white))
+        return c_white, 0.5 * self._period_dft(pss, white), groups
+
+    def _colour_groups(self, pss, model, states, wlo, f0, L, what):
+        """The coloured components of `model` as unit processes through
+        their own columns: `('fixed', G, s)` -- columns `G (K, m, r)` at
+        `states` and a power weight `s(nu)` (a uniform power law, its
+        element's SIGNED amplitudes where stated, else the root of its PSD)
+        -- or `('band', root, None)`, the columns per band frequency (a
+        power law whose exponent varies across its entries; a per-band
+        colour, `_perband_root_sampler`).  A component factored by the root
+        of its PSD whose PSD TOUCHES ZERO along the orbit is warned on: if
+        its modulation changes sign there, that root is the `|m|` process."""
+        signed = getattr(model, 'amplitude', None) or {}
+        self._warn_signed_unused(model, 'PAC.%s' % what)
+
+        def touches(C):
+            ## the necessary condition for a sign change, as the pnoise fold
+            ## asks it: a diagonal entry that falls to 1e-2 of its maximum
+            d = np.abs(np.real(np.diagonal(np.asarray(C), axis1=-2, axis2=-1)))
+            dmax = d.max(axis=0)
+            return bool(np.any((dmax > 0) & (d.min(axis=0) <= 1e-2 * dmax)))
+        groups, blind = [], []
+        for key, Bc, EF in model.flicker:
+            ef = self._uniform_exponent(Bc, EF)
+            W = signed.get(key)
+            if ef is not None:
+                if W is None:
+                    if touches(Bc):
+                        blind.append(key)
+                    W = self._psd_sqrt(Bc)
+                groups.append(('fixed', np.asarray(W, dtype=complex),
+                               lambda nu, ef=ef, w1=model.w1:
+                               (w1 / np.asarray(nu, dtype=float)) ** ef))
+            else:
+                if touches(Bc):
+                    blind.append(key)
+                groups.append(('band', lambda nu, Bc=Bc, EF=EF, w1=model.w1:
+                               self._psd_sqrt(Bc * (w1 / float(nu)) ** EF),
+                               None))
+        for key in model.perband:
+            if touches(self._one_element_cy(pss, key, 2.0 * np.pi * f0,
+                                            states)):
+                blind.append(key)
+            groups.append(('band', self._perband_root_sampler(
+                pss, key, states, wlo, f0, L), None))
+        if blind:
+            warnings.warn(
+                'PAC.%s: the PSD of %s touches zero along the orbit and the '
+                'element states no signed noise amplitudes, so it is factored '
+                'by the root of its PSD -- the |m| process: exact if the '
+                'modulation keeps its sign, wrong in either direction where it '
+                'changes sign.  Only the element knows the sign '
+                '(Element.noise_amplitudes).'
+                % (what, ', '.join('.'.join(k) for k in blind)),
+                RuntimeWarning, stacklevel=4)
+        return groups
 
     def correlation_spectrum(self, pss, offsets, output, harmonic=1, H=None,
                              sidebands=None):
@@ -5220,8 +5414,14 @@ class PAC(Analysis):
         """
         m = pss.cir.n - 1
         irn = pss.irefnode
-        xr = np.asarray(pss.waveform[1], dtype=float)[:, 0]
-        xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+        ## ⚠ `waveform` is FULL width (the reference row is in it): until
+        ## 2026-09-26 a zero was inserted a second time, so every unknown past
+        ## the reference was read one slot late -- invisible on van der Pol
+        ## (the inductor current it misread is ~0 at the phase anchor), 0.57
+        ## alignment and a refusal once a DC source sits in the circuit
+        xf = self._orbit_states(pss, [np.asarray(pss.waveform[1],
+                                                 dtype=float)[:, 0]])[0]
+        xr = np.delete(xf, irn)
         i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel(), irn)
         C0 = np.asarray(pss._C_at(xr), dtype=float)
         try:
@@ -5273,8 +5473,12 @@ class PAC(Analysis):
         two are different functionals of the same vector: a coloured
         source contributes `V_0m = (1/T) ∫ v₁ᵀ B_cm dt`, with no square.
         Using this one for a coloured source returns a plausible non-zero
-        number from the same PPV.  Only stationary white sources are
-        supported here, which `_cy_reduced` enforces.
+        number from the same PPV.  Only WHITE sources are supported here.
+
+        A MODULATED white source (its `CY` follows the orbit: a MOS
+        channel's `4kT gamma g_d0(x)`, a shot noise `2qI(x)`) is Demir's
+        own case, `B = B(x(t))`: `CY` is read at each PPV sample's state
+        (2026-09-26; before, `_cy_reduced` refused it).
 
         ⚠ `CY/2`, as in `covariance`: settled against `kT/C`, which is
         external to both (an injection of `Var(i) = CY/h` per step
@@ -5369,8 +5573,22 @@ class PAC(Analysis):
         T = float(info['period'])
         h = self._period_weights(tms, S.shape[0], T, pss)
         ## `cy` given: the functional of THAT source matrix (the white part
-        ## of a coloured circuit, `_modal_colour`)
-        cy = self._cy_reduced(pss, float(w)) if cy is None else np.asarray(cy)
+        ## of a coloured circuit, `_modal_colour`), one matrix or one per
+        ## PPV sample `(N, m, m)`
+        ## ⚠ A MODULATED source (2026-09-26): `CY` at each sample's OWN
+        ## state -- Demir's `B(x(t))` -- instead of `_cy_reduced`'s refusal.
+        ## The states are the PPV's orbit (`_ppv_states`: a twin's where one
+        ## serves the PPV).
+        if cy is None:
+            try:
+                cy = self._cy_reduced(pss, float(w))
+            except NotImplementedError:
+                cy = self._cy_at_states(pss, float(w), self._ppv_states(pss))
+        cy = np.asarray(cy)
+        if cy.ndim == 3 and cy.shape[0] != S.shape[0]:
+            raise ValueError(
+                'PAC: %d source samples against %d PPV samples -- they must '
+                'be taken at the same orbit states.' % (cy.shape[0], S.shape[0]))
         ## ⚠ A NOISE SOURCE ON AN INDEX-2 CONSTRAINT GIVES c = 0, SILENTLY: a
         ## voltage noise in series with a DC source inside a capacitor loop
         ## perturbs an algebraic constraint -- a DIFFERENTIATED input, whose
@@ -5398,7 +5616,9 @@ class PAC(Analysis):
             _idx2 = False
         if _idx2:
             try:
-                _dcy = np.abs(np.real(np.diag(cy)))
+                _dcy = np.abs(np.real(np.diagonal(cy, axis1=-2, axis2=-1)))
+                if _dcy.ndim == 2:
+                    _dcy = _dcy.max(axis=0)
                 _on_alg = [r for r in _arows if _dcy[r] > 0.0]
                 if _on_alg and float(np.max(_dcy)) > 0.0:
                     warnings.warn(
@@ -5417,8 +5637,27 @@ class PAC(Analysis):
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`); an
         ## injection of `Var(i) = CY/h` per step reproduces `1.92x kT/C`, so
         ## that convention carries TWICE the physical noise power.
-        quad = np.einsum('ij,jk,ik->i', S, 0.5 * np.real(cy), S)
+        if cy.ndim == 3:
+            quad = np.einsum('ij,ijk,ik->i', S, 0.5 * np.real(cy), S)
+        else:
+            quad = np.einsum('ij,jk,ik->i', S, 0.5 * np.real(cy), S)
         return float((quad * h).sum() / T)
+
+    def _ppv_states(self, pss):
+        """The full-width orbit states the PPV samples and the Floquet modes
+        live on, one per sample: the monodromy twin's orbit where a twin
+        serves them (trap, euler), else the solve's own."""
+        tw = pss.monodromy_twin() if hasattr(pss, 'monodromy_twin') else pss
+        return self._orbit_states(tw)
+
+    def _modulated_present(self, pss):
+        """Whether a noise source of the circuit follows the orbit -- the
+        bias dependence `_cy_reduced` refuses, asked without refusing."""
+        try:
+            self._cy_reduced(pss, 2.0 * np.pi / float(pss.period))
+        except NotImplementedError:
+            return True
+        return False
 
     def colour_projection(self, pss):
         """`<v_1>` — the PPV's TIME AVERAGE, which is a different functional.
@@ -5545,10 +5784,16 @@ class PAC(Analysis):
         than 1e-14 of the PPV's energy is kept, which is all of them that
         can move the sum at double precision.
 
+        A source whose level follows the orbit (2026-09-26) takes
+        `_coloured_diffusion_modulated`: the harmonics of the PRODUCT
+        `v_1^T G(t)` per component, and the white parts as Demir's `c`.
+
         History: `doc/shooting_history.md`, `PAC.coloured_diffusion_resolved`.
         """
         self._check_circuit(pss)
         self._refuse_driven(pss, 'coloured_diffusion_resolved')
+        if self._modulated_present(pss):
+            return self._coloured_diffusion_modulated(pss, freqs, harmonics)
         m = pss.cir.n - 1
         v0, info = pss.ppv()
         S = np.asarray(info['samples_eq'], dtype=float)[:, :m]
@@ -5577,6 +5822,67 @@ class PAC(Analysis):
                 tot += float(np.real(np.conj(vl) @ (0.5 * cy) @ vl))
             out.append(tot)
         return np.asarray(out)
+
+    def _coloured_diffusion_modulated(self, pss, freqs, harmonics=None):
+        """`coloured_diffusion_resolved` for sources that follow the orbit
+        (2026-09-26).  The phase moves as `v_1(t)^T G(t) xi(t)` for each
+        component, `xi` a unit process of power `s(nu)` and `G` its columns
+        at the PPV's own states, so
+
+            c(f) = c_white + sum_groups sum_l (s(|f - l f0|)/2) |V_l|^2
+
+        with `V_l` the Fourier coefficients of the PRODUCT `v_1^T G` -- a
+        modulation's harmonics shift the source-side frequency the way
+        the PPV's do.  The white parts give `c_white`, Demir's `c` with
+        `CY` at each sample's state, flat in `f` (a white process modulated
+        is still white).  The same period weights as the stationary form,
+        with the samples at their own times."""
+        m = pss.cir.n - 1
+        _v0, info = pss.ppv()
+        S = np.asarray(info['samples_eq'], dtype=float)[:, :m]
+        tms = np.asarray(info['times'], dtype=float)
+        n = S.shape[0]
+        T = float(info['period'])
+        t = tms[:n]
+        h = self._period_weights(t, n, T, pss)
+        f0 = 1.0 / T
+        w0 = 2.0 * np.pi * f0
+        L = n // 2 if harmonics is None else int(harmonics)
+        ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
+        E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :] / T      # (nl, n)
+        fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+        states = self._ppv_states(pss)
+        model = self._cy_components_model(pss, 1e-3 * f0, f0, states=states)
+        if model is None:
+            raise NotImplementedError(
+                'PAC.coloured_diffusion_resolved: this circuit\'s CY is not '
+                'the sum of its elements\', so its modulated sources cannot be '
+                'taken one root per source.')
+        out = np.full(fr.shape, float(self._white_diffusion_at(
+            pss, w0, cy=np.real(np.asarray(model.white)))))
+        pos = np.abs(fr[fr != 0.0])
+        wlo = 2.0 * np.pi * float(pos.min()) if pos.size else 1e-3 * w0
+        for kind, G, s in self._colour_groups(pss, model, states, wlo, f0, L,
+                                              'coloured_diffusion_resolved'):
+            if kind == 'fixed':
+                V = E @ np.einsum('jm,jmr->jr', S, G)
+                pw = np.sum(np.abs(V) ** 2, axis=1)
+                keep = pw > 1e-14 * pw.sum()
+                for i, f in enumerate(fr):
+                    nu = 2.0 * np.pi * np.abs(f - ls[keep] * f0)
+                    out[i] += 0.5 * float(np.sum(np.asarray(s(nu)) * pw[keep]))
+                continue
+            ## per band: the harmonics that carry weight at the carrier's
+            ## band, then each read at its own frequency
+            Vr = E @ np.einsum('jm,jmr->jr', S, G(w0))
+            pr = np.sum(np.abs(Vr) ** 2, axis=1)
+            idx = np.where(pr > 1e-14 * pr.sum())[0]
+            for i, f in enumerate(fr):
+                for k in idx:
+                    Vk = E[k] @ np.einsum('jm,jmr->jr', S,
+                                          G(2.0 * np.pi * abs(f - ls[k] * f0)))
+                    out[i] += 0.5 * float(np.sum(np.abs(Vk) ** 2))
+        return out
 
     def phase_psd(self, pss, offsets, harmonic=1):
         """`S_phi(f)` in rad^2/Hz at `offsets` from harmonic `i` — white AND coloured.
@@ -5614,6 +5920,12 @@ class PAC(Analysis):
         of range.  ⚠ So this is sound for free-running noise and must NOT
         be reused for injection locking, a PLL in lock, or coupled
         oscillators -- there the shift has to stay inside the argument.
+        ⚠ A source MODULATED BY THE OSCILLATOR'S OWN STATE (2026-09-26) is
+        the stationary case in this sense: its level `B(x(t + theta))`
+        moves with the phase, so `v^T B` is one periodic function of
+        `t + theta` driven by a stationary process -- Demir's own form.  A
+        modulation by an EXTERNAL clock would not be; only a driven circuit
+        has one, and those are refused.
 
         ⚠ REFUSED BELOW THE LORENTZIAN CORNER, and this is a validity
         boundary rather than a conditioning one.  There the excess phase is
