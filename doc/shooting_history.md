@@ -8026,6 +8026,13 @@ inside the corner).
 
 ### `sampled_variance`
 
+2026-09-26: a per-band colour in the sample series was evaluated for EVERY
+element at every point, per band frequency, sideband and instant (75 of
+79 s for 38 frequencies).  Now it is the element alone, cached per
+frequency, and classified once (stationary / separable / otherwise):
+10 .. 41x, the values bit-identical or 2e-16.
+
+
 2026-09-25: the linear trapezoid on the log grid was replaced by the log-log
 rule (`_loglog_integral`), after measurement.  The linear trapezoid
 overestimated a 1/f band by `(r - 1)^3 / 6` per point: +3.7e-4 .. +5.1e-4

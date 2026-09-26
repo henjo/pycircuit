@@ -1169,11 +1169,41 @@ class PAC(Analysis):
                        else np.concatenate((xr[:irn], np.zeros(1), xr[irn:])))
         return out
 
+    @staticmethod
+    def _leaf_access(cir, key, irn):
+        """`(element, nodemap, rows, cols, ok)` for a TOP-LEVEL leaf: its
+        state slice and where its `CY` lands in the REDUCED matrix (`ok`
+        masks the reference row/column out) -- or None (nested, or absent),
+        for which `_one_element_cy` walks the tree."""
+        if len(key) != 1 or key[0] not in cir.elements:
+            return None
+        el = cir.elements[key[0]]
+        if getattr(el, 'elements', None):
+            return None
+        rc = cir._map_indices_2d.get(key[0])
+        if rc is None:
+            return None
+        rows, cols = (np.asarray(a).ravel() for a in rc)
+        ok = (rows != irn) & (cols != irn)
+        return (el, np.asarray(cir.elementnodemap[key[0]]),
+                rows[ok] - (rows[ok] > irn), cols[ok] - (cols[ok] > irn), ok)
+
     def _one_element_cy(self, pss, key, w, states):
         """The reduced `CY(x, w)` of the ONE leaf element `key` at `states`,
         `(K, m, m)` -- nothing else evaluated (a modulated per-band colour
-        is read at every point for every band frequency)."""
+        is read at every point for every band frequency).  A top-level
+        leaf is stamped straight into the reduced matrix (`_leaf_access`)."""
         irn = pss.irefnode
+        acc = self._leaf_access(pss.cir, key, irn)
+        if acc is not None:
+            el, nodemap, rr, cc, ok = acc
+            m = pss.cir.n - 1
+            xs = self._orbit_states(pss, states)
+            out = np.zeros((len(xs), m, m), dtype=complex)
+            for k, xf in enumerate(xs):
+                C = np.asarray(el.CY(np.asarray(xf)[nodemap], w), dtype=complex)
+                np.add.at(out[k], (rr, cc), C.ravel()[ok])
+            return out
         keep = np.array([i for i in range(pss.cir.n) if i != irn])
         out = []
         for xf in self._orbit_states(pss, states):
@@ -3888,7 +3918,8 @@ class PAC(Analysis):
         if model is None:
             ## the elements do not sum to the circuit's CY (warned): one
             ## joint component over the whole circuit
-            perband.append(lambda w: self._cy_at_states(pss, w, states))
+            perband.append(self._cached_root(
+                lambda w: self._cy_at_states(pss, w, states)))
         else:
             white = [self._psd_sqrt(A) for _key, A in model.white_parts]
             self._warn_signed_unused(model, 'PAC.sampled_noise')
@@ -3898,10 +3929,11 @@ class PAC(Analysis):
                     _W = (getattr(model, 'amplitude', None) or {}).get(_key)
                     scaled.append((_W if _W is not None else self._psd_sqrt(Bc), ef))
                 else:
-                    perband.append(lambda w, Bc=Bc, EF=EF: Bc * (model.w1 / w) ** EF)
+                    perband.append(self._cached_root(
+                        lambda w, Bc=Bc, EF=EF: Bc * (model.w1 / w) ** EF))
             for key in model.perband:
-                perband.append(lambda w, key=key: self._element_cy_samples(
-                    pss, w, states)[key])
+                perband.append(self._perband_root_sampler(
+                    pss, key, states, 2.0 * np.pi * float(np.min(fr)), f0, L))
 
         tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
         ns = np.arange(-L, L + 1)
@@ -3992,11 +4024,12 @@ class PAC(Analysis):
                     R = E @ np.einsum('ji,jik->jk', Sv, SB)
                     c = (model.w1 / (2.0 * np.pi * np.abs(nu))) ** ef
                     _pb += c * np.sum(np.abs(R) ** 2, axis=1)
+                ## (each per-band component hands back its ROOT, cached per
+                ## frequency: `_perband_root_sampler`)
                 for comp in perband:
                     for bi, nb in enumerate(nu):
                         R = E[bi] @ np.einsum(
-                            'ji,jik->jk', Sv,
-                            self._psd_sqrt(comp(2.0 * np.pi * abs(nb))))
+                            'ji,jik->jk', Sv, comp(2.0 * np.pi * abs(nb)))
                         _pb[bi] += float(np.sum(np.abs(R) ** 2))
                 dens = float(np.sum(_pb))
                 if tail and len(ns) >= 3:
@@ -4012,6 +4045,60 @@ class PAC(Analysis):
                         dens += _A / (f0 * _F)
                 S[ti, fi] = dens
         return S
+
+    def _cached_root(self, cy_at):
+        """`w -> _psd_sqrt(cy_at(w))`, cached per frequency: the sample
+        series reads the same `|f + n f0|` for every instant."""
+        cache = {}
+
+        def root(w):
+            k = float(w)
+            if k not in cache:
+                cache[k] = self._psd_sqrt(cy_at(k))
+            return cache[k]
+        return root
+
+    def _perband_root_sampler(self, pss, key, states, wlo, f0, L):
+        """`w -> (K, m, m)`: the ROOT of one per-band element's `CY` at the
+        injection points, for the sample series -- the element alone
+        (`_one_element_cy`), cached per frequency, and classified once:
+
+          STATIONARY  the same `CY(w)` at every point: one point, broadcast;
+          SEPARABLE   ``C(x, w) = C(x, w_ref) s(w)``: the root per point at
+                      `w_ref` once, times ``sqrt(s(w))`` from one point;
+          otherwise   the element at every point for every frequency.
+
+        ⚠ Until 2026-09-26 every call evaluated EVERY element at every point
+        (and again for every instant): 5.5 M leaf evaluations for 38 band
+        frequencies at one instant, 75 of 79 s."""
+        wref = 2.0 * np.pi * f0
+        wt = sorted({float(wlo), wref, 20.0 * np.pi * f0,
+                     2.0 * np.pi * (float(L) + 0.5) * f0})
+        Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
+        K = len(states)
+        stationary = all(
+            float(np.max(np.abs(C - C[:1]))) <= 1e-12 * max(float(np.max(np.abs(C))), 1e-300)
+            for C in Cs)
+        if stationary:
+            one = [states[0]]
+            return self._cached_root(lambda w: np.broadcast_to(
+                self._one_element_cy(pss, key, w, one), (K,) + Cs[0].shape[1:]))
+        if self._separable(Cs):
+            Cref = self._one_element_cy(pss, key, wref, states)
+            Wref = self._psd_sqrt(Cref)
+            jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))), Cref.shape)
+            xr, cref = [states[jr]], complex(Cref[jr, pi_, qi])
+            cache = {}
+
+            def root(w):
+                k = float(w)
+                if k not in cache:
+                    c = self._one_element_cy(pss, key, k, xr)[0, pi_, qi]
+                    cache[k] = np.sqrt(max(float(np.real(c / cref)), 0.0)) * Wref
+                return cache[k]
+            return root
+        return self._cached_root(
+            lambda w: self._one_element_cy(pss, key, w, states))
 
     def _stage_times(self, pss, fp):
         """The stage abscissae `t_j + c_k h_j` of one period, step by step,

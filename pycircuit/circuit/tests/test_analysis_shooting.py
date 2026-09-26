@@ -12206,6 +12206,83 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     assert abs(Kt / Ks - 1.0) < 1e-4, Kt / Ks - 1.0
 
 
+def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
+    """`sampled_variance` / `sampled_noise` with a colour that is not a power
+    law (2026-09-26; Andreas: "Speeding up sampled_variance for 2b-type
+    sources").  Every band frequency and sideband evaluated EVERY element
+    at every injection point, again for every instant: 5.5 M leaf
+    evaluations for 38 band frequencies (75 of 79 s).  Now the element
+    alone (`_one_element_cy`, stamped straight into the reduced matrix),
+    the root cached per frequency, and the component classified once:
+    STATIONARY (one point), SEPARABLE (the root per point once, times
+    ``sqrt(s(w))`` from one point), else every point.  Measured on a driven
+    RC, two instants, 38 band frequencies: 63.8 -> 2.3 s (stationary,
+    bit-identical), 65.6 -> 1.6 s (separable, 2.2e-16), 65.2 -> 6.6 s (the
+    shape moving, bit-identical).  The separable source's element is called
+    7203 times against 1084050 on the general path."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+
+    def build(shape):
+        c = SubCircuit()
+        for nd in ('lo', 'out'):
+            c.add_node(nd)
+        c['Vlo'] = VSin('lo', gnd, va=1.0, vo=1.5, freq=1.0 / T)
+        c['Ro'] = R('out', gnd, r=1e3, noisy=False)
+        c['Co'] = C('out', gnd, c=0.5e-9)
+        c['n'] = _ModLorentzCtl('out', gnd, 'lo', gnd, noisePSD=1e-20,
+                                tau=3e-7, k=1.0, shape=shape)
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=40)
+        return pss, PAC(c, toolkit=circuit.numeric)
+
+    def sv(pss, pac):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return pac.sampled_variance(pss, 1, [0.3 * T, 0.7 * T], 1e-4 / T,
+                                        0.5 / T, points_per_decade=10)
+
+    calls = [0]
+    orig_cy = _ModLorentzCtl.CY
+
+    def counting(self, x, w, epar=None):
+        calls[0] += 1
+        return orig_cy(self, x, w, epar)
+    _ModLorentzCtl.CY = counting
+    try:
+        ## separable: about one evaluation per frequency, not one per point
+        pss, pac = build(0.0)
+        K = len(pac._stage_states(pss, pss._state_map()))
+        calls[0] = 0
+        fast = sv(pss, pac)
+        n_fast = calls[0]
+        pac._separable = lambda Cs, tol=1e-9: False       # the general path
+        calls[0] = 0
+        general = sv(pss, pac)
+        n_general = calls[0]
+    finally:
+        _ModLorentzCtl.CY = orig_cy
+    assert np.max(np.abs(fast / general - 1.0)) < 1e-12, fast / general - 1.0
+    ## (7203 against 1084050: the fit and the classification, then one per
+    ## band frequency and sideband -- against one per injection point each)
+    assert n_general > 100 * n_fast, (n_fast, n_general, K)
+    ## the shape moving: the one-element stamp equals the tree walk, and the
+    ## per-frequency cache changes nothing
+    pss, pac = build(0.5)
+    st = pac._stage_states(pss, pss._state_map())[:7]
+    a = pac._one_element_cy(pss, ('n',), 2 * np.pi * 3e5, st)
+    pac._leaf_access = lambda cir, key, irn: None
+    b = pac._one_element_cy(pss, ('n',), 2 * np.pi * 3e5, st)
+    del pac._leaf_access
+    assert np.array_equal(a, b)
+    cached = sv(pss, pac)
+    pac._cached_root = lambda cy_at: (lambda w: pac._psd_sqrt(cy_at(float(w))))
+    assert np.array_equal(sv(pss, pac), cached)
+
+
 def test_the_coloured_band_integral_resolves_a_high_q_line():
     """The band integral's grid is ADAPTIVE (2026-09-25).  A driven parallel
     tank at Q = 20, resonant at 1.37 f0, with a 1/f current: on the fixed
