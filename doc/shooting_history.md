@@ -4524,6 +4524,10 @@ from the constraint below instead.
 
 ### `_algebraic_adjoint_fill`
 
+2026-09-26: also fills each Floquet mode's adjoint (`_floquet_mode`), per
+sample.  It is complex-safe, and real inputs are unchanged.
+
+
 The docstring before the move:
 
 Fill the adjoint's ALGEBRAIC entries, which are SLAVED, not free.
@@ -5641,6 +5645,17 @@ drops the last step (0.4 % of `c` on an asymmetric orbit, measured);
 integrate over `info['ppv']['times']` and `['period']` instead.
 
 ### `floquet_modes`
+
+2026-09-26: a one-step method's adjoint `q` was EXACTLY 0 on an algebraic
+node (`pinv(C^T)`'s minimum-norm choice), so `modal_spectrum` and every
+consumer of the modes read a source there as absent, silently: exactly 0
+for a source into the node on radau, trbdf2, trap and the GLM (their
+twin), and -4.9e-3 against pnoise for a source across it and the tank.
+Gear's transposed solve was right.  Now the entries are filled from the
+constraint at each sample (`_algebraic_adjoint_fill`).  `q_n = -k V_v q_v`
+holds to 2.8e-16 on every route, and gear's own solve satisfies it to
+5.6e-16.  Log, 2026-09-26.
+
 
 The DENSE paragraph as it stood until 2026-09-25, when the dominant modes
 above `FLOQUET_DENSE_LIMIT` were built (`_floquet_modes_ritz`):

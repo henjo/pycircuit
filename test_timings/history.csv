@@ -965,3 +965,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260926T085224Z,bed329b3,4 no:cacheprovider /home/andreas/source/pycircuit/pycircuit/circuit/tests/test_analysis_shooting.py per_band_source_only_where_it_must ignore,14.9,1,pycircuit/circuit/tests/test_analysis_shooting.py::test_the_sample_series_evaluates_a_per_band_source_only_where_it_must,12.6
 20260926T091350Z,bed329b3,pycircuit no:cacheprovider tran_recorder,1275.3,3360,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,291.9
 20260926T104543Z,74830918,pycircuit no:cacheprovider tran_recorder,1362.8,3363,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,299.7
+20260926T113028Z,0c609c86,pycircuit no:cacheprovider tran_recorder,1356.2,3364,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,306.3

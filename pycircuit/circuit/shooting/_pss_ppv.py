@@ -227,7 +227,9 @@ class _PPVFloquet(object):
                 'are left at zero and noise entering those rows will be '
                 'UNDER-COUNTED.', RuntimeWarning, stacklevel=2)
             return vblock
-        out = np.array(vblock, dtype=float, copy=True)
+        ## complex for a Floquet mode's adjoint (`_floquet_mode`)
+        out = np.array(vblock, dtype=np.result_type(np.asarray(vblock), float),
+                       copy=True)
         out[rows] = va
         return out
 
@@ -1458,8 +1460,8 @@ class _PPVFloquet(object):
         ## ⚠ Per sample, because `C` may depend on the state.  `pinv`
         ## rather than `inv` so a singular reduced `C` (an index-2 MNA,
         ## algebraic rows) does not raise; the algebraic components of `q`
-        ## are then the minimum-norm choice, which is a SCOPE LIMIT and
-        ## not a solution.
+        ## are then its minimum-norm 0, and are filled from the constraint
+        ## below.
         ## The pinv(C^T) map belongs to the STATE-BLOCK adjoint of the
         ## one-step kinds; gear's transposed solve is already the adjoint
         ## of the DAE variable (its invariant is `q^T C p`, see above).
@@ -1471,6 +1473,28 @@ class _PPVFloquet(object):
                 _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
                                  dtype=float)
                 q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
+            ## ⚠⚠ AND THE ALGEBRAIC ENTRIES ARE SLAVED, NOT ZERO
+            ## (2026-09-26).  `pinv` leaves them at its minimum-norm 0, so a
+            ## source on an algebraic node reached no mode: `modal_spectrum`
+            ## read EXACTLY 0 for one on radau, silently (gear's transposed
+            ## solve carries them).  An algebraic state's column of the
+            ## adjoint equation holds no derivative, whatever the mode's
+            ## exponent, so the PPV's constraint fill applies as it stands
+            ## (`_algebraic_adjoint_fill`), at each sample's own state.
+            _irn = self.irefnode
+            _xf0 = np.insert(_Wq[:, 0], _irn, 0.0)
+            _arows, _acols = self._algebraic_adjoint_pattern(_xf0)
+            if _arows:
+                with warnings.catch_warnings(record=True) as _caught:
+                    warnings.simplefilter('always')
+                    for _j in range(q.shape[1]):
+                        q[:, _j] = self._algebraic_adjoint_fill(
+                            q[:, _j], np.insert(_Wq[:, min(_j, _nw - 1)],
+                                                _irn, 0.0),
+                            _arows, _acols)
+                for _msg in sorted({str(_w.message) for _w in _caught}):
+                    warnings.warn(_msg.replace('PSS.ppv', 'PSS.floquet_modes'),
+                                  RuntimeWarning, stacklevel=3)
 
         ## ⚠⚠ RENORMALISE ON THE STATE BLOCK, WITH THE `C`-WEIGHTED INNER
         ## PRODUCT.  `v_k` was biorthonormalised against `u_k` at the map's

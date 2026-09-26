@@ -12125,6 +12125,8 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
                      (the level keeps its sign), `_ModLorentzCtl`
       'lorentz_moving'  and its corner moving with V (`shape`)
       '<kind>_ref'   the realisation of 'white' / 'flicker' / 'lorentz'
+      'white_across' a white source between `n` and the tank (1e-4), so
+                     a sign error in the adjoint's algebraic entry shows
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -12147,6 +12149,11 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
                    'flicker_ref': lambda: _Flicker('n', gnd, i=0.0, noisePSD=1.0),
                    'lorentz_ref': lambda: IS('n', gnd, i=0.0, noisePSD=1.0,
                                              noiseTau=tau)}[kind]()
+        c['Rn'] = R('n', gnd, r=1.0)
+        c['M'] = _NuMult('v', gnd, 'n', gnd, *ctl, k=kk)
+    elif kind == 'white_across':
+        c.add_node('n')
+        c['xi'] = IS('n', 'v', i=0.0, noisePSD=1e-4)
         c['Rn'] = R('n', gnd, r=1.0)
         c['M'] = _NuMult('v', gnd, 'n', gnd, *ctl, k=kk)
     elif kind == 'white':
@@ -12274,6 +12281,77 @@ def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
         pn = float(np.real(pac.pnoise(pss, f0 + offs[1], ov, maxsidebands=16,
                                       cyclostationary=True)[0]))
     assert abs(ms['total'][1] / (pn / 2.0) - 1.0) < 1e-9, (ms['total'][1], pn)
+
+
+def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
+    """⚠⚠ Until 2026-09-26 a one-step method's `floquet_modes` gave the
+    adjoint `q` EXACTLY 0 on an algebraic node: the replay carries `C^T q`,
+    `pinv(C^T)` recovers `q` from it, and on a node with no capacitance its
+    minimum-norm choice is 0.  `modal_spectrum` (and every consumer of the
+    modes) then read a source there as absent, silently -- exactly 0 for
+    a source into `n` on radau, trbdf2, trap and the GLM (their twin);
+    -4.9e-3 against pnoise for a source across `n` and the tank.  Gear's
+    transposed solve carries the DAE adjoint and was right.
+
+    An algebraic state's column of the adjoint equation holds no
+    derivative, whatever the mode's exponent, so its entry is SLAVED -- the
+    PPV's constraint fill (`_algebraic_adjoint_fill`), now at each sample
+    of each mode.  Measured (van der Pol, the source into `n` times V_v):
+      * `q_n = -k V_v q_v` at every sample of every mode to 2.8e-16 on
+        radau, trbdf2, trap, glm3 and a non-uniform radau grid -- gear's
+        own transposed solve satisfies it to 5.6e-16 (4.2e-16 on its
+        non-uniform continuous adjoint), so the fill's sign is gear's;
+      * radau's modal parts against the modulated element (no algebraic
+        node): 1.2e-14;
+      * a source ACROSS `n` and the tank against pnoise: -1.5e-5 / -1.6e-6
+        at 3 / 10 f_amp (was -4.9e-3); on the asymmetric orbit -5.9e-5 /
+        -1.35e-4 at +-10 f_amp.
+    Poisons: the fill dropped (1.00; -1.5e-3 / -8.3e-3 across); its sign
+    flipped -- INVISIBLE on the symmetric orbit (`(1 - kV) q` is `(1 + kV)
+    q` shifted by T/2, the same power spectrum), +5.1e-3 / -5.2e-3 on the
+    asymmetric one, which is why the across case runs there."""
+    import warnings as _w
+    c, pss, pac, ov = _orbit_modulated_vdp('white_ref', method='radau')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        modes = pss.floquet_modes(pss)
+    names = [str(x) for x in c.nodes]
+    irn = pss.irefnode
+    kn = names.index('n') - (names.index('n') > irn)
+    kv = names.index('v') - (names.index('v') > irn)
+    V = np.asarray(pss.waveform[1], dtype=float)[names.index('v')]
+    for md in modes:
+        q = np.asarray(md['q'])
+        N = q.shape[1] - 1
+        err = np.max(np.abs(q[kn, :N] + 0.05 * V[:N] * q[kv, :N]))
+        assert err <= 1e-12 * np.max(np.abs(q[kv])), (md['lam'], err)
+    res = {}
+    for kind in ('white_ref', 'white'):
+        _c, pss, pac, ov = _orbit_modulated_vdp(kind, method='radau')
+        f0 = 1.0 / float(pss.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            _v, info = pss.ppv()
+            f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+            offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
+            res[kind] = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+    for k in ('phase', 'orbital', 'correlation', 'total'):
+        err = np.max(np.abs(res['white_ref'][k] / res['white'][k] - 1.0))
+        assert err < 1e-9, (k, res['white_ref'][k] / res['white'][k] - 1.0)
+    _c, pss, pac, ov = _orbit_modulated_vdp('white_across', method='radau',
+                                            a=0.3)
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _v, info = pss.ppv()
+        f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+        offs = np.array([10.0, -10.0]) * f_amp
+        ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+        pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
+                                                maxsidebands=16)[0]))
+                       for o in offs])
+    ratio = ms['total'] / (pn / 2.0)
+    assert np.max(np.abs(ratio - 1.0)) < 5e-4, ratio
 
 
 def test_the_orbit_is_read_full_width_past_the_reference_node():
