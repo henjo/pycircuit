@@ -9095,6 +9095,15 @@ exist (asymmetric orbit, 2 f0: 0.40 of the Monte Carlo) -- use
 
 ### `frequency_aware_diffusion`
 
+2026-09-26: a MODULATED white source is taken.  `CY` is read at each
+sample's state, on the solve's own orbit, since the frequency-aware PPV
+has no twin.  With it, the default `oscillator_spectrum` runs.  On the
+realisation pair (a stationary source times V_v), a = 0.3, `c(f)` agrees
+to 1.7e-14 and `S_v` to 1.2e-14 (gear), while `c(f)` falls 40x over 0.3
+to 10 f_amp.  Radau agrees to 3.4e-10, its GMRES tolerance.  Reading `CY`
+at one state is 0.39 to 0.51 off.
+
+
 The docstring paragraph before the move:
 
 ⚠⚠ WHY IT EXISTS (2026-09-14).  The Lorentzian from `c` uses the DC

@@ -6272,7 +6272,8 @@ class PAC(Analysis):
         behind a slow node (the DC PPV: 0.73x and 0.027x); on a symmetric
         orbit `c(f)/c` stays within 1e-3.
 
-        ⚠ Stationary WHITE sources only, like `diffusion_constant`.  Cost:
+        ⚠ WHITE sources only, like `diffusion_constant`; a MODULATED one
+        (2026-09-26) is read at each sample's state, as there.  Cost:
         one bordered adjoint GMRES per offset (0.25-0.7 s on these fixtures);
         the solve can fail to converge (Lai's own warning about eq. 23), and
         then this raises rather than returning the DC value silently.
@@ -6295,8 +6296,22 @@ class PAC(Analysis):
         h = np.diff(np.asarray(base['times'], dtype=float))
         n = min(len(h), S.shape[0])
         T = float(base['period'])
-        cy = 0.5 * np.real(self._cy_reduced(pss, 2.0 * np.pi / float(pss.period)))
-        quad = np.real(np.einsum('ij,jk,ik->i', np.conj(S[:n]), cy, S[:n]))
+        w0 = 2.0 * np.pi / float(pss.period)
+        try:
+            cy = 0.5 * np.real(self._cy_reduced(pss, w0))
+        except NotImplementedError:
+            cy = None
+        if cy is not None:
+            quad = np.real(np.einsum('ij,jk,ik->i', np.conj(S[:n]), cy, S[:n]))
+        else:
+            ## ⚠ A MODULATED source (2026-09-26): `CY` at each sample's own
+            ## state, as `diffusion_constant` reads it.  The frequency-aware
+            ## PPV is solved on this solve's OWN orbit (no twin), so its
+            ## samples pair with `pss.waveform`'s columns.
+            W = np.asarray(pss.waveform[1], dtype=float)
+            cys = 0.5 * np.real(self._cy_at_states(
+                pss, w0, [W[:, j] for j in range(n)]))
+            quad = np.real(np.einsum('ij,ijk,ik->i', np.conj(S[:n]), cys, S[:n]))
         return float((quad * h[:n]).sum() / T)
 
     def _warn_above_amplitude_pole(self, offsets, f0):

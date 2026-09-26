@@ -7331,7 +7331,8 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     -- and no MEAN: `oscillator_covariance` (2026-09-05),
     `pnoise(cyclostationary=True)`, and since 2026-09-26
     `diffusion_constant` (Demir's `B(x(t))`, `CY` at each PPV sample's
-    state) and `modal_spectrum`.  On this fixture `c` matches the Lyapunov
+    state), `frequency_aware_diffusion` / `oscillator_spectrum` and
+    `modal_spectrum`.  On this fixture `c` matches the Lyapunov
     growth route (`CY` per step, no PPV) to +1.0e-3 on gear at 240 points
     (gear's own gap between the two; radau -4.4e-11).  The paths that sum
     ONE stationary `CY` still refuse.
@@ -7356,8 +7357,6 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     for name, call in (
             ('coloured_diffusion',
              lambda: pac.coloured_diffusion(pss, [1.0 / pss.period])),
-            ('oscillator_spectrum',
-             lambda: pac.oscillator_spectrum(pss, [1e-3], 0)),
     ):
         with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT CY'):
             call()
@@ -7371,6 +7370,9 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     c = float(pac.diffusion_constant(pss))
     assert abs(c / float(_info['c_from_growth']) - 1.0) < 3e-3, \
         (c, _info['c_from_growth'])
+    ## nor `oscillator_spectrum` (its `frequency_aware_diffusion`, 2026-09-26)
+    Sv, _L = pac.oscillator_spectrum(pss, [1e-3], 0)
+    assert np.all(np.isfinite(Sv)) and np.all(np.asarray(Sv) > 0.0)
 
 
 def test_the_compact_mos_noise_is_off_without_a_card_not_absent():
@@ -12201,7 +12203,14 @@ def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
     `CY` read at one state 1.04 (`c` 0.39).  A byproduct: `pnoise(
     cyclostationary=True)` on the modulated circuit reproduces the
     stationary pnoise of its realisation digit for digit -- its first
-    measurement on an oscillator."""
+    measurement on an oscillator.
+
+    `frequency_aware_diffusion` too (2026-09-26), and with it the default
+    `oscillator_spectrum`: `CY` at each sample of the frequency-aware PPV
+    (the solve's own orbit, no twin).  Same pair, a = 0.3, where `c(f)`
+    falls 40x over 0.3 .. 10 f_amp: `c(f)` 1.7e-14, `S_v` 1.2e-14 (radau
+    3.4e-10 / 7.3e-10, its GMRES tolerance); `CY` at one state 0.39 ..
+    0.51."""
     import warnings as _w
     res = {}
     for kind in ('white_ref', 'white'):
@@ -12213,12 +12222,18 @@ def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
             res[kind] = (pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16),
-                         float(pac.diffusion_constant(pss)))
+                         float(pac.diffusion_constant(pss)),
+                         np.array([pac.frequency_aware_diffusion(pss, o)
+                                   for o in offs]),
+                         np.asarray(pac.oscillator_spectrum(pss, offs, ov)[0]))
     A, B = res['white_ref'], res['white']
     for k in ('phase', 'orbital', 'correlation', 'total'):
         err = np.max(np.abs(B[0][k] / A[0][k] - 1.0))
         assert err < 1e-9, (k, B[0][k] / A[0][k] - 1.0)
     assert abs(B[1] / A[1] - 1.0) < 1e-12, (B[1], A[1])
+    for i, name in ((2, 'frequency_aware_diffusion'), (3, 'oscillator_spectrum')):
+        err = np.max(np.abs(B[i] / A[i] - 1.0))
+        assert err < 1e-9, (name, B[i] / A[i] - 1.0)
     _c, pss, pac, ov = _orbit_modulated_vdp('white', method='radau')
     with _w.catch_warnings():
         _w.simplefilter('ignore')
