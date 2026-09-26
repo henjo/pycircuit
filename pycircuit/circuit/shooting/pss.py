@@ -1169,11 +1169,28 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         """
         ## ONE SHOOTING SOLVE, IN ITS PHASES.  Each phase is a method with its
         ## own record; they share the run's state through `run`.
+        _args = dict(refnode=refnode, period=period,
+                     x0=None if x0 is None else copy(x0), timestep=timestep,
+                     maxiterations=maxiterations, grid=grid,
+                     matrix_free=matrix_free, x0_unknown=x0_unknown,
+                     tstab=tstab, break_events=break_events,
+                     phase_rule=phase_rule, state_events=state_events,
+                     trace=trace)
         run = self._solve_prepare(refnode, period, x0, timestep,
                                   maxiterations, grid, matrix_free,
                                   x0_unknown, tstab, break_events,
                                   phase_rule, state_events, trace)
-        self._shoot(run)
+        try:
+            self._shoot(run)
+        except analysis.NoConvergenceError:
+            retried = self._closing_fallback(_args)
+            if retried is not None:
+                return retried
+            raise
+        if run.ier != 1:
+            retried = self._closing_fallback(_args)
+            if retried is not None:
+                return retried
         self._report_convergence(run)
         X, walk, lte_seen = self._replay_orbit(run)
         self._report_lte(run, lte_seen)
@@ -1403,6 +1420,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                (_pc == 'auto' and grid is not None
                                 and getattr(self, 'autonomous', False)))
                                else 'proportional')
+        ## (`_closing_fallback`: only a column 'auto' chose falls back)
+        self._period_column_requested = _pc
         self._closing_inner = None
         self._closing_warned = False
         phase_k, phase_pin = 0, 0.0
@@ -2289,6 +2308,42 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                       sweep_unit='Hz')
         
         return tpss, fpss
+
+    def _closing_fallback(self, args):
+        """'auto' on a caller's grid solves with the 'closing' period column
+        (its wider basin: a seed period 16 % off, from a settled state).
+        When THAT free-period solve fails, solve once more from the SAME seed
+        with 'proportional' and return that result; None when no fallback is
+        due (the column was asked for by name, or this is already a second
+        pass).
+
+        ⚠ WHY.  From a poor seed state the closing Newton can take a first
+        step that swallows the closing step (the grid then scales
+        proportionally for that one evaluation, and the function changes
+        under a closing Jacobian) and wander into a false near-solution: gear
+        on a smooth 3:1 grid, van der Pol a = 0.3 seeded at `[2, 0]` 7 % below
+        its period, drifted to small amplitude and stalled at |F| ~ 1e-3,
+        where proportional converges in 3.6 s.  Found 2026-09-26 with the
+        closing column's missing opening-step term (`_walk_lmm`).
+        History: `doc/shooting_history.md`, `PSS._closing_fallback`."""
+        if (getattr(self, '_period_column', None) != 'closing'
+                or getattr(self, '_period_column_requested', None) != 'auto'
+                or not getattr(self, 'autonomous', False)
+                or getattr(self, '_closing_fallback_pass', False)
+                or getattr(self, '_closing_second_pass', False)):
+            return None
+        warnings.warn(
+            "PSS: the free-period solve on the caller's grid did not converge "
+            "with the 'closing' period column (period_column='auto'); solving "
+            "again from the same seed with 'proportional' scaling.",
+            RuntimeWarning, stacklevel=3)
+        self._closing_fallback_pass = True
+        self._force_period_column = 'proportional'
+        try:
+            return self.solve(**args)
+        finally:
+            self._closing_fallback_pass = False
+            self._force_period_column = None
 
     def _closing_polish(self, run):
         """`solve`, phase 8: after a 'closing' free-period solve, solve once

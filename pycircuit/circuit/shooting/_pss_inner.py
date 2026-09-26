@@ -449,6 +449,10 @@ class _InnerTransient(object):
                 ## the 3/2 would be exactly the error.
                 (self._dfdh,) = remove_row_col(
                     (tr.residual_dh(x_full, t, dt),), irefnode, toolkit)
+                ## and the total, from which a TWO-STEP method's opening step
+                ## takes its previous-step partial (`_walk_lmm`)
+                (self._dfdT,) = remove_row_col(
+                    (tr.residual_dT(x_full, dt),), irefnode, toolkit)
             else:
                 (self._dfdT,) = remove_row_col(
                     (tr.residual_dT(x_full, dt),), irefnode, toolkit)

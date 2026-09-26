@@ -415,18 +415,38 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
             ## costs and only a REJECTED trial is extra.
             F0 = float(toolkit.sqrt(toolkit.sum(F * F)))
             step = 1.0
-            Ft, Jt = f(x, *args)
+            ## ⚠ A TRIAL THAT CANNOT BE EVALUATED IS UPHILL, not the end of
+            ## the solve (2026-09-26).  A shooting residual evaluates by
+            ## stepping a transient, and a trial state far from the orbit can
+            ## make one of its steps diverge: that used to abort the whole
+            ## solve from a trial the halving would have pulled back.  Now it
+            ## halves; only when no trial in the budget evaluates is the error
+            ## raised, as before.  A solve that never met such a trial is
+            ## bit-for-bit what it was.
+            failure = []
+
+            def trial(xt):
+                try:
+                    return f(xt, *args)
+                except NoConvergenceError as exc:
+                    failure[:] = [exc]
+                    return None, None
+            Ft, Jt = trial(x)
             improved = False
             for _k in range(_LS_MAX_HALVINGS):
-                if float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0:
+                if Ft is not None and \
+                        float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0:
                     improved = True
                     break
                 step *= 0.5
                 x = x0 + step * xdiff
-                Ft, Jt = f(x, *args)
+                Ft, Jt = trial(x)
             else:
                 ## the budget ran out; the last trial is still the candidate
-                improved = float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0
+                improved = (Ft is not None and
+                            float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0)
+            if Ft is None:
+                raise failure[0]
             if not improved:
                 ls_unimproved += 1
             xdiff = x - x0          # the step actually taken, for conv_x

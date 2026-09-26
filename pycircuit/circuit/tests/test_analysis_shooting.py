@@ -2556,6 +2556,92 @@ def test_the_period_column_is_a_total_derivative_not_a_partial():
         'error it is expected to carry' % got['trap']
 
 
+def _gear_on_a_smooth_3to1_grid(period_column, npts=200):
+    """Gear on van der Pol (Q = 8, `a u^2`, a = 0.3: period 6.73 s) on a
+    smooth 3:1 grid, and the seed `[2, 0]` at 2 pi -- 7 % below the period."""
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+    w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(npts) / npts)
+    pss = PSS(c, method='gear', reltol=1e-12, period_column=period_column)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    return pss, dict(period=T, timestep=T / npts, x0=x0, grid=w / w.sum())
+
+
+def test_gears_closing_period_column_carries_the_opening_step_and_auto_falls_back():
+    """⚠ Gear's 'closing' period column was 15 % off on a caller's
+    non-uniform grid until 2026-09-26.  Under 'closing' only the last step
+    follows `T` -- but gear's pair map OPENS each period with that step as
+    its previous one, so the opening step's coefficients move with `T` too,
+    and that route was missing (a one-step method has none: radau's column
+    6e-11).  Against finite differences at the seed: 1.47e-1 -> 8.6e-10
+    (`proportional`, 6e-10; a uniform grid, 2e-9).
+
+    With the column right, the free-period Newton from a poor seed (`[2, 0]`,
+    a flat gear history, the period 7 % low) still failed under 'closing':
+    its first step asks the closing step to absorb -4.3 s, the grid falls
+    back to proportional for that one evaluation (the function changes under
+    a closing Jacobian), and the iterates drift to a false near-solution at
+    small amplitude, |F| ~ 1e-3.  With the WRONG column it had failed at 200
+    and 240 points (a transient step diverging at a trial point, which
+    aborted the solve) and not converged at 300.  Now:
+      * a line-search trial whose evaluation raises is halved, not fatal
+        (`fsolve`);
+      * 'auto' falls back to 'proportional' from the same seed when its
+        closing solve fails (`PSS._closing_fallback`), warned.
+    All of 160 / 200 / 240 / 300 / 400 points converge: 6.736744 /
+    6.734582 / 6.733396 / 6.732417 / 6.731650 s, second order."""
+    import types
+    import warnings as _w
+
+    class _Stop(Exception):
+        pass
+    cap = {}
+
+    def grab(self, func, z0, *args, **kwargs):
+        cap['func'], cap['z0'] = func, np.asarray(z0, dtype=float).copy()
+        raise _Stop()
+    pss, kw = _gear_on_a_smooth_3to1_grid('closing')
+    pss._free_period_solve = types.MethodType(grab, pss)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        try:
+            pss.solve(maxiterations=40, **kw)
+        except _Stop:
+            pass
+        func, z = cap['func'], cap['z0']
+        _F, J = func(z)
+        d = 1e-6 * z[-1]
+        zp, zm = z.copy(), z.copy()
+        zp[-1] += d
+        zm[-1] -= d
+        fd = (np.asarray(func(zp)[0], float) - np.asarray(func(zm)[0], float)) / (2 * d)
+    col = np.asarray(J, float)[:, -1]
+    err = np.max(np.abs(col - fd)) / np.max(np.abs(fd))
+    assert err < 1e-6, 'the closing period column is %.2e from FD' % err
+
+    ref, kw = _gear_on_a_smooth_3to1_grid('proportional')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        ref.solve(maxiterations=40, **kw)
+    assert ref.converged
+    auto, kw = _gear_on_a_smooth_3to1_grid('auto')
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        auto.solve(maxiterations=40, **kw)
+    assert auto.converged
+    assert any("'closing' period column" in str(r.message) for r in rec), \
+        [str(r.message)[:80] for r in rec]
+    assert abs(auto.period / ref.period - 1.0) < 1e-9, (auto.period, ref.period)
+
+
 def test_autonomy_is_decided_on_every_grid_point_not_a_stride():
     """A narrow pulse must not read as a DC circuit.
 
@@ -19521,6 +19607,40 @@ def test_an_unimprovable_step_is_counted_and_named_instead_of_committed_in_silen
                  x0=np.array([2.0, 0.0]), maxiterations=40)
     assert p2.converged and abs(p2.period / 6.663571642 - 1.0) < 1e-6, \
         (p2.converged, p2.period)
+
+
+def test_a_line_search_trial_that_cannot_be_evaluated_is_halved_not_fatal():
+    """`fsolve(line_search=True)` (2026-09-26): a trial whose evaluation
+    raises `NoConvergenceError` -- a shooting residual stepping a transient
+    from a state far off the orbit -- counts as uphill and is halved.  It
+    used to abort the whole solve from a trial the halving would have pulled
+    back (gear's free-period solve on a smooth 3:1 grid died that way at 200
+    and 240 points).  Newton on arctan from 1.5 overshoots to -1.69; the
+    residual refuses |x| > 1.6: the solve now converges.  When NO trial in
+    the budget evaluates, the error still propagates."""
+    import numpy as _np
+    import pycircuit.circuit.analysis as _an
+    from pycircuit.circuit import numeric as _tk
+
+    def f(x):
+        v = float(x[0])
+        if abs(v) > 1.6:
+            raise _an.NoConvergenceError('the step diverged')
+        return (_np.array([_np.arctan(v)]),
+                _np.array([[1.0 / (1.0 + v * v)]]))
+    x, _i, ier, _m = _an.fsolve(f, _np.array([1.5]), maxiter=40,
+                                toolkit=_tk, full_output=True,
+                                line_search=True)
+    assert ier == 1 and abs(float(x[0])) < 1e-8, (ier, x)
+
+    def g(x):
+        if abs(float(x[0]) - 1.5) > 1e-9:
+            raise _an.NoConvergenceError('every trial diverges')
+        return (_np.array([_np.arctan(float(x[0]))]),
+                _np.array([[1.0 / (1.0 + float(x[0]) ** 2)]]))
+    with pytest.raises(_an.NoConvergenceError, match='every trial'):
+        _an.fsolve(g, _np.array([1.5]), maxiter=40, toolkit=_tk,
+                   full_output=True, line_search=True)
 
 
 def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():

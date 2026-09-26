@@ -2827,6 +2827,15 @@ is small enough to be mistaken for a modelling difference.
 
 ### `_closing_polish`
 
+2026-09-26: `_closing_fallback` beside it.  When 'auto' picked 'closing'
+and that free-period solve FAILS, the solve runs once more from the same
+seed with 'proportional' (warned).  Gear on a smooth 3:1 grid from a
+poor seed (`[2, 0]`, the period 7 % low) drifted to a false near-solution
+under 'closing'; proportional converges in 3.6 s.  The same day,
+the closing column's missing opening-step term was fixed (`_walk_lmm`).
+Log, 2026-09-26.
+
+
 The comment on the second pass, before the move:
 
 ⚠ THE SECOND PASS (2026-09-21).  'closing' keeps a caller's inner
@@ -4158,6 +4167,14 @@ flattered it; both sides go through the same strategy now.
 unchanged.
 
 ### `_walk_lmm`
+
+2026-09-26: the 'closing' period column now carries the OPENING step's
+route for gear's pair.  The pair map opens each period with the closing
+step as its previous one, so step 0's coefficients move with `T`: the
+previous-step partial `(dfdT - dfdh h_0) / h_closing` (Euler's theorem,
+as the event columns take it).  Against finite differences on a smooth
+3:1 grid: 1.47e-1 -> 8.6e-10.  Log, 2026-09-26.
+
 
 The docstring's opening paragraph before the move:
 

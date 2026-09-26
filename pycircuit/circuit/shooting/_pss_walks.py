@@ -368,6 +368,20 @@ class _PeriodWalks(object):
                 if self._period_column == 'closing':
                     fT = ((np.asarray(self._dfdh).ravel(),) if _j == last
                           else ())
+                    ## ⚠ AND THE OPENING STEP, FOR A TWO-STEP METHOD: the pair
+                    ## map opens each period with the CLOSING step as its
+                    ## previous one, so its coefficients move with `T` too --
+                    ## the previous-step partial `(dfdT - dfdh h_0) / h_prev`
+                    ## (Euler's theorem, as the event columns take it).
+                    ## Missing until 2026-09-26: gear's closing column was
+                    ## 15 % off on a caller's non-uniform grid, and the
+                    ## free-period Newton wandered and failed (radau, one
+                    ## step, 6e-11).
+                    if pair and _j == 0:
+                        fT = fT + (
+                            (np.asarray(self._dfdT, dtype=float).ravel()
+                             - np.asarray(self._dfdh, dtype=float).ravel()
+                             * float(dt)) / float(hs[-1]),)
                 else:
                     fT = (np.asarray(self._dfdT).ravel() / T,)
                 Pt_new, Pqt = _lmm_recursion(Pt, Cs, Pqt, C_new, alphas, b,
