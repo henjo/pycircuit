@@ -2827,6 +2827,12 @@ is small enough to be mistaken for a modelling difference.
 
 ### `_closing_polish`
 
+2026-09-26 (later): the 'auto' closing attempt now stops when `||F||` has
+not halved in `CLOSING_STALL_WINDOW` (20) iterations (`fsolve`'s
+`stall_window`), and the fallback takes over.  Gear on the 3:1 grid at
+`maxiterations=300`: 116 s -> 14.5 s, the same period.
+
+
 2026-09-26: `_closing_fallback` beside it.  When 'auto' picked 'closing'
 and that free-period solve FAILS, the solve runs once more from the same
 seed with 'proportional' (warned).  Gear on a smooth 3:1 grid from a
@@ -9335,6 +9341,14 @@ With no carrier at this harmonic the phase is undefined and the
 split is left unrotated, as `am_pm` refuses the same case.
 
 ### `_deflated_solve`
+
+2026-09-26: the border `(v, u)` is kept per (pss, state map, the `ppv`
+that made it).  `ppv()` has no cache of its own, and `am_pm_noise`'s 66
+deflated solves each recomputed it: 14 of 27 s.  The first key (pss, state
+map) was too narrow.  `test_the_deflated_solve_is_capped_by_the_TANGENT_not_
+by_the_PPV` replaces `pss.ppv` to inject perturbed vectors, and the cache
+served the old ones.  The producer is now in the key, here and for
+`frequency_aware_ppv`'s DC PPV.
 
 The docstring paragraph before the move:
 

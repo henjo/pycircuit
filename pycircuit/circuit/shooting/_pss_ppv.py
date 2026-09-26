@@ -953,8 +953,20 @@ class _PPVFloquet(object):
         History: `doc/shooting_history.md`, `_PPVFloquet.frequency_aware_ppv`.
         """
         import scipy.sparse.linalg as spla
-        v0, info0 = self.ppv(tol)
         fp = self._state_map()
+        ## ⚠ THE DC PPV ONCE PER SOLVED ORBIT (2026-09-26): it was 0.22 s of
+        ## every 0.23 s offset, and the coloured folds now take one offset
+        ## per band frequency.  Kept per (state map, tol, the `ppv` that made
+        ## it -- a replaced `self.ppv` is consulted, see `PAC._deflated_solve`);
+        ## a re-solve builds a new map and misses.
+        _ppv_fn = getattr(self.ppv, '__func__', self.ppv)
+        _base = getattr(self, '_fa_ppv_base', None)
+        if (_base is not None and _base[0] is fp and _base[1] == tol
+                and _base[4] is _ppv_fn):
+            v0, info0 = _base[2], _base[3]
+        else:
+            v0, info0 = self.ppv(tol)
+            self._fa_ppv_base = (fp, tol, v0, info0, _ppv_fn)
         m = self.cir.n - 1
         n = fp.width
         irn = self.irefnode

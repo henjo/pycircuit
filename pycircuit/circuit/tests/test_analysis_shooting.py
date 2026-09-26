@@ -2632,10 +2632,32 @@ def test_gears_closing_period_column_carries_the_opening_step_and_auto_falls_bac
         _w.simplefilter('ignore')
         ref.solve(maxiterations=40, **kw)
     assert ref.converged
+    ## (a generous budget: the closing attempt must STALL OUT and hand over,
+    ## not run to it -- 116 s at 300 before the stall stop, 14.5 s after)
+    import pycircuit.circuit.analysis as _an
+    attempts = []
+    orig = _an.fsolve
+
+    def spy(f, z0, *a, **k):
+        n = [0]
+
+        def g(z, *aa):
+            n[0] += 1
+            return f(z, *aa)
+        out = orig(g, z0, *a, **k)
+        attempts.append((k.get('stall_window'), out[1].get('stalled'), n[0]))
+        return out
     auto, kw = _gear_on_a_smooth_3to1_grid('auto')
-    with _w.catch_warnings(record=True) as rec:
-        _w.simplefilter('always')
-        auto.solve(maxiterations=40, **kw)
+    _an.fsolve = spy
+    try:
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            auto.solve(maxiterations=300, **kw)
+    finally:
+        _an.fsolve = orig
+    assert attempts[0][:2] == (PSS.CLOSING_STALL_WINDOW, True), attempts
+    assert attempts[0][2] < 200, attempts
+    assert all(a[0] is None for a in attempts[1:]), attempts
     assert auto.converged
     assert any("'closing' period column" in str(r.message) for r in rec), \
         [str(r.message)[:80] for r in rec]
@@ -19800,6 +19822,61 @@ def test_an_unimprovable_step_is_counted_and_named_instead_of_committed_in_silen
                  x0=np.array([2.0, 0.0]), maxiterations=40)
     assert p2.converged and abs(p2.period / 6.663571642 - 1.0) < 1e-6, \
         (p2.converged, p2.period)
+
+
+def test_the_ppv_border_caches_follow_a_re_solve():
+    """`PAC._deflated_solve` keeps the PPV border `(v, u)` and
+    `PSS.frequency_aware_ppv` the DC PPV, once per solved orbit (2026-09-26:
+    `ppv()` was 14 of `am_pm_noise`'s 27 s, recomputed for every deflated
+    solve; bit-identical cached).  Both are keyed on the state map, which a
+    re-solve rebuilds: the SAME objects re-solved on another grid must give
+    what fresh ones give."""
+    import warnings as _w
+    cir, pss = _a9_vdp(a=0.3)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8)
+        pss.frequency_aware_ppv(0.01 * f0)
+        T = float(pss.period)
+        pss.solve(period=T, timestep=T / 300, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+        assert pss.converged
+        got = (float(np.real(pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8)[0])),
+               np.asarray(pss.frequency_aware_ppv(0.01 * f0)[1]['samples_eq']))
+        cir2, pss2 = _a9_vdp(a=0.3)
+        pss2.solve(period=T, timestep=T / 300, x0=np.array([2.0, 0.0]),
+                   maxiterations=300)
+        ref = (float(np.real(PAC(cir2, toolkit=circuit.numeric).pnoise(
+                   pss2, f0 * 1.01, 0, maxsidebands=8)[0])),
+               np.asarray(pss2.frequency_aware_ppv(0.01 * f0)[1]['samples_eq']))
+    assert got[0] == ref[0], (got[0], ref[0])
+    assert np.array_equal(got[1], ref[1])
+
+
+def test_fsolve_stops_a_stalled_iteration_when_asked():
+    """`fsolve(stall_window=W)` (2026-09-26): stop when the best `||F||` of
+    the last `W` iterations is not half the best before them, with `ier = 2`
+    and `infodict['stalled']`.  Off by default.  `x^2 + 1` has no real root:
+    Newton wanders, and stops after W + 1 evaluations instead of `maxiter`."""
+    import numpy as _np
+    import pycircuit.circuit.analysis as _an
+    from pycircuit.circuit import numeric as _tk
+    n = [0]
+
+    def f(x):
+        n[0] += 1
+        return _np.array([x[0] ** 2 + 1.0]), _np.array([[2.0 * x[0] + 1e-12]])
+    _x, info, ier, mesg = _an.fsolve(f, _np.array([0.7]), maxiter=200,
+                                     toolkit=_tk, full_output=True,
+                                     stall_window=5)
+    assert ier == 2 and info['stalled'] and 'Stalled' in mesg, (ier, info, mesg)
+    assert n[0] < 30, n[0]
+    n[0] = 0
+    _x, info, ier, _m = _an.fsolve(f, _np.array([0.7]), maxiter=200,
+                                   toolkit=_tk, full_output=True)
+    assert ier == 2 and not info['stalled'] and n[0] == 200, (info, n[0])
 
 
 def test_a_line_search_trial_that_cannot_be_evaluated_is_halved_not_fatal():

@@ -7074,9 +7074,24 @@ class PAC(Analysis):
         import scipy.sparse.linalg as spla
         fp = pss._state_map()
         n = fp.width
-        _v, info = pss.ppv()
-        v = np.asarray(_v, dtype=float)
-        u = np.asarray(info['tangent_pair'], dtype=float)
+        ## ⚠ THE BORDER, ONCE PER SOLVED ORBIT (2026-09-26): `v` and `u`
+        ## depend only on the converged map, and `ppv()` recomputed them for
+        ## every solve -- 0.22 s each, 14 of `am_pm_noise`'s 27 s (66 solves
+        ## for 16 sidebands).  Kept per (pss, state map, the `ppv` that made
+        ## them); a re-solve builds a new map and misses.  ⚠ THE PRODUCER IS
+        ## PART OF THE KEY: a caller who replaces `pss.ppv` (the border-
+        ## sensitivity test injects perturbed vectors that way) must be
+        ## consulted, and a key of the solve alone served the old vectors.
+        _ppv_fn = getattr(pss.ppv, '__func__', pss.ppv)
+        _border = getattr(self, '_deflation_border', None)
+        if (_border is not None and _border[0] is pss and _border[1] is fp
+                and _border[4] is _ppv_fn):
+            v, u = _border[2], _border[3]
+        else:
+            _v, info = pss.ppv()
+            v = np.asarray(_v, dtype=float)
+            u = np.asarray(info['tangent_pair'], dtype=float)
+            self._deflation_border = (pss, fp, v, u, _ppv_fn)
         vu = float(v @ u)
         if abs(vu) < 1e-300:
             raise ValueError(

@@ -315,7 +315,7 @@ def newton_tolerance_vectors(n_nodes, n_branches, iabstol, vabstol, toolkit):
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None,
-           line_search=False, floor_detect=False):
+           line_search=False, floor_detect=False, stall_window=None):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
     In each iteration the linear system
@@ -391,11 +391,26 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     ## `J^-1` -- named the right unknown and under-stated the noise 18x.)
     _floor_q = []
     step_floor = None
+    ## ⚠ `stall_window` (2026-09-26): stop when the best `||F||` of the last
+    ## `stall_window` iterations is not half the best before them -- a
+    ## converging Newton halves its residual far faster.  Off by default;
+    ## `PSS` passes it for a free-period attempt it can FALL BACK from (an
+    ## 'auto' closing column), whose wandering ran to `maxiterations`
+    ## (116 .. 263 s at 300) before the fallback.
+    _norms = []
+    stalled = False
     for i in range(maxiter):
         if cached is None:
             F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
         else:
             F, J = cached
+        if stall_window:
+            _norms.append(float(toolkit.sqrt(toolkit.sum(F * F))))
+            if (len(_norms) > stall_window
+                    and min(_norms[-stall_window:])
+                    > 0.5 * min(_norms[:-stall_window])):
+                stalled = True
+                break
         xdiff = toolkit.linearsolver(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
@@ -489,14 +504,16 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
         x0 = x
 
     if ier == 2:
-        mesg = "No convergence. xerror = "+str(xdiff)
+        mesg = ("Stalled: ||F|| did not halve in %d iterations" % stall_window
+                if stalled else "No convergence. xerror = "+str(xdiff))
     
     ## `ls_unimproved`: iterations whose step the line search could not make
     ## better than the point it started from.  Zero on every solve that is
     ## converging normally; non-zero is the signature of a step that is uphill
     ## against the TRUE derivative, which halving cannot cure.  Reported rather
     ## than acted on -- see the note at its declaration.
-    infodict = {'ls_unimproved': ls_unimproved, 'step_floor': step_floor}
+    infodict = {'ls_unimproved': ls_unimproved, 'step_floor': step_floor,
+                'stalled': stalled}
     if full_output:
         return x, infodict, ier, mesg
     else:

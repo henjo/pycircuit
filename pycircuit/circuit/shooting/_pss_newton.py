@@ -22,6 +22,9 @@ class _ShootingNewton(object):
     ## current, many orders above it.
     ## History: `doc/shooting_history.md`, `_ShootingNewton.TRIVIAL_ORBIT_FACTOR`.
     TRIVIAL_ORBIT_FACTOR = 1e3
+    #: an 'auto' closing free-period attempt stops when `||F||` has not halved
+    #: in this many iterations, and `PSS._closing_fallback` takes over
+    CLOSING_STALL_WINDOW = 20
 
     def _free_period_solve(self, func, z0, abstol, xtol, reltol, maxiter,
                            seed_period, solver=None, defer_diagnosis=False):
@@ -47,12 +50,21 @@ class _ShootingNewton(object):
 
         History: `doc/shooting_history.md`, `_ShootingNewton._free_period_solve`.
         """
+        ## an 'auto' closing attempt has a fallback (`PSS._closing_fallback`),
+        ## so a stall there hands over instead of running to `maxiter`
+        _fallback_due = (getattr(self, '_period_column', None) == 'closing'
+                         and getattr(self, '_period_column_requested', None)
+                         == 'auto'
+                         and not getattr(self, '_closing_fallback_pass', False)
+                         and not getattr(self, '_closing_second_pass', False))
         try:
             if solver is None:
                 z, info, ier, mesg = analysis.fsolve(
                     func, z0, maxiter=maxiter, reltol=reltol, abstol=abstol,
                     xtol=xtol, toolkit=self.toolkit, full_output=True,
-                    line_search=True, floor_detect=True)
+                    line_search=True, floor_detect=True,
+                    stall_window=(self.CLOSING_STALL_WINDOW if _fallback_due
+                                  else None))
             else:
                 ## ⚠ THE MATRIX-FREE ROUTE COMES THROUGH HERE TOO, so the
                 ## trivial-root diagnosis below covers it.  Routing it around
