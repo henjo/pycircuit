@@ -7182,6 +7182,13 @@ decay fast, so this form is exact at any window.
 
 ### `_cy_colour_model`
 
+2026-09-26: it is now the whole circuit as ONE element, with a white and a
+coloured component under `JOINT_KEY`, and it serves every coloured surface
+when the elements do not sum to the circuit's `CY`.  Before, pnoise used it
+as one root of `A + B s` per band, and every other surface refused.  That
+one root was 4.0e-5 off a correlated pair whose white part follows the
+orbit and whose 1/f part does not.
+
 The comment in `model`:
 
 |w| -- see `_cy_components_model`: a negative band frequency

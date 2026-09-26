@@ -987,16 +987,35 @@ class PAC(Analysis):
         Bs = np.asarray(Bs, dtype=complex)
         return (np.fft.fft(Bs, axis=0) / Bs.shape[0]) if dft is None else dft(Bs)
 
-    def _cy_colour_model(self, pss, f, f0):
-        """Fit `CY(x(t), w) = A(t) + B(t) (w1/w)^ef` entry by entry from three
-        frequencies and verify at a fourth; return a callable `w -> (N, n, n)`
-        or None when the fit fails anywhere (the caller then evaluates the
-        circuit per band, as before).  The exponent is per entry, found by
-        a bracketed root find on the ratio of differences, so a mix of
-        flicker exponents across sources is fine; a white entry (B = 0)
-        needs no exponent."""
+    #: the one key of `_cy_colour_model`'s components: the whole circuit
+    JOINT_KEY = ('<circuit>',)
+
+    def _cy_colour_model(self, pss, f, f0, states=None):
+        """The WHOLE circuit's `CY(x, w)` as ONE white and ONE coloured
+        component: `A + B (w1/w)^EF` entry by entry (`_colour_fit`, three
+        frequencies to fit and two to verify), with the interface of
+        `_cy_components_model` under the one key `JOINT_KEY`, at the orbit
+        samples or at `states`.  For a circuit whose `CY` is not the sum of
+        its elements' -- noise CORRELATED across elements, by an override --
+        which cannot be split per element.  None when the whole `CY` is not
+        thermal-plus-power-law (the caller then evaluates the circuit per
+        band, or refuses).  The exponent is per entry, so a mix of flicker
+        exponents across entries is fine.
+
+        ⚠ Independence is resolved to circuit x {white, coloured}.  The white
+        part enters linearly wherever it enters (the P-form, Demir's
+        functional), so white sources add whatever their modulations; the
+        coloured part takes ONE root, so two INDEPENDENT coloured sources
+        under different modulations inside such a circuit do not add.
+        Until 2026-09-26 pnoise took one root of the whole `CY` here, white
+        included (4.0e-5 off a correlated pair whose white part follows the
+        orbit and whose 1/f part does not; +7.3 % on a switch + 1/f source),
+        and every other coloured surface refused.
+
+        History: `doc/shooting_history.md`, `PAC._cy_colour_model`."""
         ws = self._colour_fit_frequencies(f, f0)
-        fit = self._colour_fit([self._cy_samples(pss, w) for w in ws], ws)
+        fit = self._colour_fit([self._cy_at_states(pss, w, states) for w in ws],
+                               ws)
         if fit is None:
             return None
         A, B, EF = fit
@@ -1006,6 +1025,13 @@ class PAC(Analysis):
             ## otherwise gives NaN and silently disables pnoise's ratio stop
             with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
                 return A + B * (np.float64(w1) / np.abs(np.float64(w))) ** EF
+        model.white = A
+        model.white_parts = [(self.JOINT_KEY, A)] if np.any(A) else []
+        model.flicker = [(self.JOINT_KEY, B, EF)] if np.any(B) else []
+        model.perband = []
+        ## no element states signed amplitudes for a joint root
+        model.amplitude = {}
+        model.w1 = w1
         return model
 
     @staticmethod
@@ -1288,7 +1314,10 @@ class PAC(Analysis):
         element, fitted and verified as `_colour_fit`), `perband` (keys
         whose colour did not fit: evaluated per band) and `w1`.  ⚠ Within
         one element all white terms share a root, as do all power-law terms
-        -- independence is resolved to element x {white, coloured}.
+        -- independence is resolved to element x {white, coloured}.  A
+        circuit whose `CY` is not the sum of its elements' (an override:
+        noise correlated across elements) gets `_cy_colour_model`, the same
+        interface with the whole circuit as ONE element, or None.
 
         History: `doc/shooting_history.md`, `PAC._cy_components_model`.
         """
@@ -1300,10 +1329,10 @@ class PAC(Analysis):
         N = (len(pss.factored_period().steps) if states is None
              else len(states))
         ## ⚠ THE ELEMENTS MUST BE THE CIRCUIT'S CY.  A circuit whose `CY` is
-        ## not the sum of its leaf elements' (an override, a batched toolkit
-        ## group) cannot be split, and splitting it anyway would silently
-        ## analyse a different noise model -- so check at two fit frequencies
-        ## and fall back to the whole-circuit model, saying why.
+        ## not the sum of its leaf elements' (an override: noise CORRELATED
+        ## across elements) cannot be split, and splitting it anyway would
+        ## silently analyse a different noise model -- so check at two fit
+        ## frequencies and take the whole circuit as one element, saying why.
         for i in (0, len(ws) - 1):
             whole = self._cy_at_states(pss, ws[i], states)
             parts = sum((per_w[i][key] for key in per_w[i]),
@@ -1312,15 +1341,13 @@ class PAC(Analysis):
             if float(np.max(np.abs(parts - whole))) > 1e-9 * scale:
                 warnings.warn(
                     'PAC: this circuit\'s CY is not the sum of its elements\' '
-                    '(an override or a batched group?), so the coloured fold '
-                    'cannot take one square root per independent source and '
-                    'uses ONE root of the summed CY -- independent sources '
-                    'with different modulations are then not additive '
-                    '(measured +7.3 % of the total on a switch + 1/f source).',
+                    '(an override: noise correlated across elements?), so its '
+                    'sources cannot be split per element; the whole circuit is '
+                    'taken as ONE white and ONE coloured component -- two '
+                    'independent COLOURED sources under different modulations '
+                    'inside it then do not add (white ones do).',
                     RuntimeWarning, stacklevel=3)
-                if states is not None:
-                    return None
-                return self._cy_colour_model(pss, f, f0)
+                return self._cy_colour_model(pss, f, f0, states)
         white = np.zeros((N, m, m), dtype=complex)
         white_parts, flicker, perband = [], [], []
         for key in keys:
@@ -1531,10 +1558,10 @@ class PAC(Analysis):
         ## the period's Fourier coefficients: the index DFT on a uniform grid,
         ## the trapezoid-weighted sum on a non-uniform one -- see `_period_dft`
         _dft = lambda B: self._period_dft(pss, B)
-        if getattr(model, 'flicker', None) is None:
-            groups = [lambda p: (self._sqrt_harmonics_of(model(wband(p)), _dft)
-                                 if model is not None else
-                                 self._cy_sqrt_harmonics(pss, wband(p)))]
+        if model is None:
+            ## no component model (the whole `CY` is not thermal-plus-power-
+            ## law and not the sum of its elements'): one root per band
+            groups = [lambda p: self._cy_sqrt_harmonics(pss, wband(p))]
         else:
             Pw = _dft(model.white)
             for l in ls:
@@ -2802,9 +2829,10 @@ class PAC(Analysis):
             model = self._cy_components_model(pss, fmin, f0, states)
         if model is None:
             raise NotImplementedError(
-                'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
-                'so its coloured part cannot be separated from the white one '
-                '(see the warning above).' % what)
+                'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
+                '(see the warning above), and as a whole it is not thermal-'
+                'plus-power-law, so its coloured part cannot be separated from '
+                'the white one.' % what)
         ## ⚠ A COLOUR THAT IS NOT A POWER LAW (a Lorentzian `IS(noiseTau)`,
         ## 2026-09-25) has no density to factor out, but a STATIONARY one --
         ## the same `CY(w)` at every point of the orbit -- needs none: its
@@ -2926,6 +2954,12 @@ class PAC(Analysis):
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
                     mdl = self._cy_components_model(pss, fmin, f0, states=[xr])
+                if mdl is None:
+                    raise NotImplementedError(
+                        'PAC.%s: the circuit\'s CY, taken as a whole, is not '
+                        'thermal-plus-power-law at a state the white part is '
+                        'read at, so the white part cannot be separated '
+                        'there.' % what)
                 cache[key] = np.asarray(mdl.white[0], dtype=complex)
             return cache[key]
         self._white_cy = white
@@ -3974,8 +4008,9 @@ class PAC(Analysis):
         model = self._cy_components_model(pss, float(np.min(fr)), f0, states)
         white, scaled, perband = [], [], []
         if model is None:
-            ## the elements do not sum to the circuit's CY (warned): one
-            ## joint component over the whole circuit
+            ## the elements do not sum to the circuit's CY (warned) and the
+            ## whole is not thermal-plus-power-law: one root of the whole
+            ## circuit's CY per band
             perband.append(self._cached_root(
                 lambda w: self._cy_at_states(pss, w, states)))
         else:
@@ -5331,9 +5366,10 @@ class PAC(Analysis):
             model = self._cy_components_model(pss, 1e-3 * f0, f0, states=[x0f])
         if model is None:
             raise NotImplementedError(
-                'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
-                'so the white part of its sources cannot be separated for the '
-                'phase-diffusion widths.' % what)
+                'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
+                'and, as a whole, not thermal-plus-power-law, so the white part '
+                'of its sources cannot be separated for the phase-diffusion '
+                'widths.' % what)
         c_white = float(self._white_diffusion_at(
             pss, w0, cy=np.real(np.asarray(model.white[0]))))
         return c_white, (lambda w: self._cy_at(pss, w, x0r))
@@ -5366,9 +5402,9 @@ class PAC(Analysis):
             if model is None:
                 raise NotImplementedError(
                     'PAC.%s: this circuit\'s CY is not the sum of its '
-                    'elements\', so its modulated coloured sources cannot be '
-                    'taken one root per source.  PAC.pnoise('
-                    'cyclostationary=True) gives the total.' % what)
+                    'elements\' and, as a whole, not thermal-plus-power-law, '
+                    'so its white and coloured parts cannot be separated.  '
+                    'PAC.pnoise(cyclostationary=True) gives the total.' % what)
             white = np.real(np.asarray(model.white))
             groups = self._colour_groups(pss, model, states,
                                          2.0 * np.pi * float(np.min(ao)), f0,
@@ -6002,9 +6038,9 @@ class PAC(Analysis):
         model = self._cy_components_model(pss, 1e-3 * f0, f0, states=states)
         if model is None:
             raise NotImplementedError(
-                'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
-                'so its coloured sources cannot be taken one root per source.'
-                % what)
+                'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
+                'and, as a whole, not thermal-plus-power-law, so its white and '
+                'coloured parts cannot be separated.' % what)
         c_white = float(self._white_diffusion_at(
             pss, w0, cy=np.real(np.asarray(model.white))))
         wlo = 2.0 * np.pi * float(flo) if flo else 1e-3 * w0

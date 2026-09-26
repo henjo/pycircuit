@@ -20772,7 +20772,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
         warnings.simplefilter('ignore')
         assert pac._cy_colour_model(pss, 0.1e6, f0) is None
         sl, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
-        pac._cy_colour_model = lambda pss_, f_, f0_: None
+        pac._cy_colour_model = lambda *a_, **k_: None
         try:
             slfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
@@ -28953,7 +28953,8 @@ def _mixed_exponent_rc(kind):
     component whose exponent differs between entries), 'split' two
     elements, 'corr' one element whose two sources are CORRELATED (cross
     entry `sqrt(p1 p2)`, of a third slope: no split makes them
-    independent)."""
+    independent), 'xcorr' the same correlated noise as the two elements
+    of 'split' and a `CY` override adding the cross entry."""
     import warnings
     from pycircuit.circuit.hdl import flicker_noise as _fn
     circuit.default_toolkit = circuit.numeric
@@ -28977,7 +28978,17 @@ def _mixed_exponent_rc(kind):
             p1, p2 = self.iparv.k / f ** 0.8, self.iparv.k / f ** 2.0
             xx = np.sqrt(p1 * p2)
             return self.toolkit.array(np.array([[p1, xx], [xx, p2]]))
-    c = SubCircuit()
+
+    class _XCorr(SubCircuit):
+        def CY(self, x, w, epar=circuit.defaultepar):
+            out = np.array(SubCircuit.CY(self, x, w, epar))
+            f = abs(float(w)) / (2.0 * np.pi)
+            xx = np.sqrt((k / f ** 0.8) * (k / f ** 2.0))
+            i, j = self.get_node_index('o1'), self.get_node_index('o2')
+            out[i, j] += xx
+            out[j, i] += xx
+            return self.toolkit.array(out)
+    c = _XCorr() if kind == 'xcorr' else SubCircuit()
     for nd in ('in', 'o1', 'o2'):
         c.add_node(nd)
     c['V'] = VSin('in', gnd, va=0.1, vo=0.0, freq=1.0 / T)
@@ -29043,6 +29054,166 @@ def test_a_coloured_covariance_takes_a_flicker_whose_exponent_differs_between_en
     for (i, j), ef in (((i1, i1), 0.8), ((i2, i2), 2.0), ((i1, i2), 1.4)):
         assert abs(abs(K['corr'][i, j]) / ref(ef) - 1.0) < 1e-6, \
             (ef, K['corr'][i, j] / ref(ef))
+
+#: the correlated pair of `_xcorr_oscillator`: white `A`, 1/f `B` per node,
+#: correlation `RHO` in each part (white with white, 1/f with 1/f)
+_XC_A1, _XC_B1, _XC_A2, _XC_B2, _XC_RHO, _XC_FR = 1e-6, 2e-6, 0.5e-6, 1.5e-6, 0.6, 0.15
+
+
+class _XCOne(Circuit):
+    """One node's noise current: a white part `wa (1 + mod u^2)` that
+    follows the node's voltage and a 1/f part `fb fr/f` that does not."""
+    terminals = ('a', 'b')
+    instparams = [Parameter(name='wa', desc='', unit='', default=0.0),
+                  Parameter(name='fb', desc='', unit='', default=0.0),
+                  Parameter(name='mod', desc='', unit='', default=0.0)]
+
+    def CY(self, x, w, epar=None):
+        s = _XC_FR / (abs(float(w)) / (2.0 * np.pi))
+        u = float(x[0] - x[1])
+        p = (1.0 + self.iparv.mod * u * u) * self.iparv.wa + self.iparv.fb * s
+        return self.toolkit.array(np.array([[p, -p], [-p, p]]))
+
+
+def _xc_cross(uv, ux, mod, w):
+    s = _XC_FR / (abs(float(w)) / (2.0 * np.pi))
+    m1, m2 = 1.0 + mod * uv * uv, 1.0 + mod * ux * ux
+    return _XC_RHO * (np.sqrt(m1 * m2 * _XC_A1 * _XC_A2)
+                      + np.sqrt(_XC_B1 * _XC_B2) * s)
+
+
+class _XCPair(Circuit):
+    """The same two currents as ONE element, correlated: the reference --
+    the per-element model splits it into its white and 1/f parts."""
+    terminals = ('a', 'b')
+    instparams = [Parameter(name='mod', desc='', unit='', default=0.0)]
+
+    def CY(self, x, w, epar=None):
+        s = _XC_FR / (abs(float(w)) / (2.0 * np.pi))
+        uv, ux, mod = float(x[0]), float(x[1]), self.iparv.mod
+        p1 = (1.0 + mod * uv * uv) * _XC_A1 + _XC_B1 * s
+        p2 = (1.0 + mod * ux * ux) * _XC_A2 + _XC_B2 * s
+        xx = _xc_cross(uv, ux, mod, w)
+        return self.toolkit.array(np.array([[p1, xx], [xx, p2]]))
+
+
+class _XCSub(SubCircuit):
+    """Two single-node elements, and the cross term added by a `CY`
+    OVERRIDE: this circuit's `CY` is not the sum of its elements'."""
+    mod = 0.0
+
+    def CY(self, x, w, epar=circuit.defaultepar):
+        out = np.array(SubCircuit.CY(self, x, w, epar))
+        iv, ix = self.get_node_index('v'), self.get_node_index('x')
+        xx = _xc_cross(float(x[iv]), float(x[ix]), self.mod, w)
+        out[iv, ix] += xx
+        out[ix, iv] += xx
+        return self.toolkit.array(out)
+
+
+def _xcorr_oscillator(kind, mod):
+    """The asymmetric lossy LC of `_slow_node_oscillator` (no slow node),
+    its noise a correlated pair on `v` and `x`: 'joint' two elements and an
+    override, 'ref' one element."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+    c = _XCSub() if kind == 'joint' else SubCircuit()
+    c.mod = mod
+    c.add_node('v'); c.add_node('x')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', 'x', L=1.0)
+    c['Rl'] = R('x', gnd, r=0.2, noisy=False)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+    if kind == 'joint':
+        c['n1'] = _XCOne('v', gnd, wa=_XC_A1, fb=_XC_B1, mod=mod)
+        c['n2'] = _XCOne('x', gnd, wa=_XC_A2, fb=_XC_B2, mod=mod)
+    else:
+        c['n'] = _XCPair('v', 'x', mod=mod)
+    pss = PSS(c, method='gear', reltol=1e-11)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+    assert pss.converged
+    return pss, PAC(c, toolkit=circuit.numeric), [str(n) for n in c.nodes].index('v')
+
+
+def _xcorr_surfaces(pss, pac, ov, stationary):
+    """Every coloured surface at the offsets the test reads (warnings go
+    to the caller, which records them)."""
+    f0 = 1.0 / float(pss.period)
+    o = np.array([1e-3, 1e-2]) * f0
+    out = {}
+    ms = pac.modal_spectrum(pss, o[1:], ov)
+    out['modal'] = np.array([ms['phase'][0], ms['orbital'][0],
+                             ms['correlation'][0]])
+    if stationary:
+        return out
+    out['pnoise'] = np.array([float(np.real(pac.pnoise(
+        pss, o[1], ov, maxsidebands=16, cyclostationary=True)[0]))])
+    out['resolved'] = np.asarray(pac.coloured_diffusion_resolved(pss, o))
+    out['gamma'] = np.asarray(pac.coloured_diffusion(pss, o[:1]))
+    out['lineshape'] = np.asarray(pac.oscillator_spectrum(
+        pss, [0.0, o[1]], ov, fmin=1e-6 * f0)[0])
+    return out
+
+
+def test_noise_correlated_across_elements_is_one_joint_component():
+    """A circuit whose `CY` is not the sum of its elements' -- noise
+    CORRELATED across elements, added by a `CY` override -- was refused by
+    every coloured surface but pnoise and the sample series until
+    2026-09-26, and those two took ONE root of the whole `CY`.  Now the
+    whole circuit is one element with a white and a coloured component
+    (`_cy_colour_model`), so it must equal the SAME noise built as one
+    element spanning both nodes, which the per-element model splits the
+    same way -- bit for bit, measured, stationary and modulated.  pnoise's
+    old joint root was 4.0e-5 off that reference with the white part
+    following the orbit and the 1/f part not.  The correlation is not
+    small here: against the same pair uncorrelated it moves pnoise +59 %,
+    `coloured_diffusion` +59 %, the resolved `c` +49 / +21 %, the lineshape
+    -23 / +21 % and the modal terms 5 .. 23 %.  Poisoned: the cross term
+    dropped from the joint fit alone fails (first at the stationary modal
+    part, 1.6e-6, which reads the model only for its white width); the
+    refusals restored fail."""
+    import warnings as _w
+    for mod, stationary in ((0.0, True), (0.5, False)):
+        got = {}
+        for kind in ('joint', 'ref'):
+            pss, pac, ov = _xcorr_oscillator(kind, mod)
+            with _w.catch_warnings(record=True) as rec:
+                _w.simplefilter('always')
+                got[kind] = _xcorr_surfaces(pss, pac, ov, stationary)
+            said = any('not the sum of its elements' in str(r.message)
+                       for r in rec)
+            assert said == (kind == 'joint'), (kind, mod)
+        for k, ref in got['ref'].items():
+            err = float(np.max(np.abs(got['joint'][k] - ref) / np.abs(ref)))
+            assert err <= 1e-12, (mod, k, err)
+
+
+def test_a_coloured_covariance_takes_noise_correlated_across_elements():
+    """The band integral (`covariance` and its kin) on the correlated
+    sources of `_mixed_exponent_rc('corr')` built as two elements and a
+    `CY` override: identical to the one-element build, which is pinned to
+    the closed forms (refused until 2026-09-26).  The sample series, which
+    took one root of the whole `CY` per band before, now takes the joint
+    components: the same here (2.2e-16, measured)."""
+    import warnings as _w
+    K, V = {}, {}
+    for kind in ('corr', 'xcorr'):
+        pss, pac, names, (T, _Rv, _Cv, _k) = _mixed_exponent_rc(kind)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            K[kind] = pac.covariance(pss, fmin=1e3)
+            V[kind] = float(pac.sampled_variance(
+                pss, names.index('o2'), [0.3 * T], 0.01 / T, 0.5 / T,
+                points_per_decade=10)[0])
+    assert np.max(np.abs(K['xcorr'] - K['corr'])) <= \
+        1e-12 * np.max(np.abs(K['corr'])), 'the joint split is not exact'
+    assert abs(V['xcorr'] / V['corr'] - 1.0) <= 1e-12, V
 
 
 def test_a_coloured_covariance_integrates_any_flicker_exponent():
