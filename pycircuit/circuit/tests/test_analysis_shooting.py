@@ -12528,6 +12528,173 @@ def test_the_coloured_lineshape_transform_meets_a_closed_form():
     for f in (0.0, 1e-4, 1e-3, 1e-2, 1e-1):
         assert abs(shape(f) / ref(f) - 1.0) < 3e-6, (f, shape(f), ref(f))
 
+def _banded_lineshape_reference(f, a, eps, nu1, nu2):
+    """The exact lineshape for `c(nu) = c_w [1 - eps (k2 - k1)]`, `k_j = 1 /
+    (1 + (nu/nu_j)^2)`: a SIGNED change of `c` that vanishes at both ends.
+    `D = 2 a tau - A1 (1 - e^{-b1 tau}) + A2 (1 - e^{-b2 tau})`, `A_j = a eps
+    / (pi nu_j)`, `b_j = 2 pi nu_j`, so `exp(-D/2)` is a double series of
+    exponentials and `S` one of Lorentzians (mpmath, 40 digits)."""
+    import mpmath as mp
+    mp.mp.dps = 40
+    a, eps, nu1, nu2 = (mp.mpf(v) for v in (a, eps, nu1, nu2))
+    w = 2 * mp.pi * abs(mp.mpf(f))
+    A1, A2 = a * eps / (mp.pi * nu1), a * eps / (mp.pi * nu2)
+    b1, b2 = 2 * mp.pi * nu1, 2 * mp.pi * nu2
+    tot, ck = mp.mpf(0), mp.mpf(1)
+    for k in range(400):
+        if k:
+            ck *= -A1 / 2 / k
+        inner, cl = mp.mpf(0), mp.mpf(1)
+        for l in range(400):
+            if l:
+                cl *= A2 / 2 / l
+            r = a + k * b1 + l * b2
+            t = cl * r / (r * r + w * w)
+            inner += t
+            if l > 5 and abs(t) < mp.mpf(10) ** -35 * abs(inner):
+                break
+        tot += ck * inner
+        if k > 5 and abs(ck * inner) < mp.mpf(10) ** -35 * abs(tot):
+            break
+    return float(2 * mp.e ** ((A1 - A2) / 2) * tot)
+
+
+def test_the_lineshape_takes_a_signed_correction_to_c_against_a_closed_form():
+    """A SIGNED change of `c(nu)` inside the lineshape (2026-09-26, for the
+    frequency-aware PPV to all orders): `_lineshape.SignedTable` +
+    `correction_structure` put its structure function into `D` beside the
+    power-law pieces, and `LogChebyshev` represents `rho = c_fa/c_dc - 1`
+    from a few solves.  Against `_banded_lineshape_reference` (white `c_w`
+    with a band taken away, or added), 0 .. 1000 linewidths:
+
+        eps    corners (linewidths)   worst       first order (the old path)
+        0.9      0.3 / 30             2.1e-7      -0.57 at the carrier, -4.55
+                                                  at 0.1 (a NEGATIVE line)
+        -0.5     0.3 / 30             2.5e-8
+        0.99     0.03 / 3             4.8e-7      (D_inf = -65: the transform
+                                                  integrates exp(-D/2) itself)
+
+    ⚠ The third row is the cancellation the old transform could not take:
+    `exp(-D_inf/2) L_w` and the integral of `g` are each e^33 there.
+    Before `SPLIT_GAIN` it returned -75x the true value, flagged by its own
+    QUADPACK estimate (1e6).  The Chebyshev fit of the analytic `rho`:
+    129 points, 1.1e-7."""
+    from pycircuit.circuit.shooting import _lineshape
+    cw = 1e-3
+    a = 2 * np.pi ** 2 * cw
+    fc = a / (2 * np.pi)
+    for eps, r1, r2, tol in ((0.9, 0.3, 30.0, 1e-6), (-0.5, 0.3, 30.0, 1e-6),
+                             (0.99, 0.03, 3.0, 2e-6)):
+        nu1, nu2 = r1 * fc, r2 * fc
+        delta = lambda v, eps=eps, nu1=nu1, nu2=nu2: -cw * eps * (
+            1.0 / (1.0 + (v / nu2) ** 2) - 1.0 / (1.0 + (v / nu1) ** 2))
+        tab = _lineshape.SignedTable(delta, 1e-9 * nu1, 1e3 * nu2)
+        shape = _lineshape.ColouredLineshape(a, None, 4.0, corr=tab)
+        for x in (0.0, 0.1, 1.0, 10.0, 100.0, 1000.0):
+            ref = _banded_lineshape_reference(x * fc, a, eps, nu1, nu2)
+            assert abs(shape(x * fc) / ref - 1.0) < tol, (eps, x, shape(x * fc) / ref - 1.0)
+        if eps == 0.9:
+            first = 2 * a / (a * a + (2 * np.pi * 0.1 * fc) ** 2) + delta(0.1 * fc) / (0.1 * fc) ** 2
+            assert first < 0.0, 'the first-order path was the case this replaces'
+    nu1, nu2 = 0.3 * fc, 30.0 * fc
+    rho = lambda v: -0.9 * (1.0 / (1.0 + (v / nu2) ** 2) - 1.0 / (1.0 + (v / nu1) ** 2))
+    ch = _lineshape.LogChebyshev(rho, 1e-6 * nu1, 1e3 * nu2)
+    vs = np.geomspace(1e-6 * nu1, 1e3 * nu2, 333)
+    assert ch.converged and np.max(np.abs(ch(vs) - rho(vs))) < 1e-6
+
+
+def _fa_core_oscillator(psd, flicker_rel=1e-8):
+    """The slow-node LC (tau = 100 T) with white `psd` AND a 1/f source at
+    the slow node, `flicker_rel` of it at f0.  That is just above the 1e-9
+    `_coloured_present` asks of a colour; with fmin = 1e-5 f0 its
+    `D_c(inf)` is ~0.01, so the line is the white one.  psd = 0.7 puts the
+    slow corner 10 linewidths from the core; the math is linear in the
+    level."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+    c = SubCircuit()
+    c.add_node('v'); c.add_node('w'); c.add_node('x')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', 'x', L=1.0)
+    c['Rl'] = R('x', gnd, r=0.2)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+    c['Rs'] = R('v', 'w', r=1e2, noisy=False)
+    c['Cs'] = C('w', gnd, c=100.0 * T0 / 1e2)
+    c['nw'] = IS('w', gnd, i=0.0, noisePSD=psd)
+    c['nf'] = _Flicker('w', gnd, i=0.0, noisePSD=psd * flicker_rel, fref=1.0 / T0)
+    pss = PSS(c, method='gear', reltol=1e-11)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+    assert pss.converged
+    return pss, PAC(c, toolkit=circuit.numeric), [str(n) for n in c.nodes].index('v')
+
+
+def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_not_hold():
+    """The frequency-aware coloured lineshape (2026-09-26): FIRST ORDER in
+    the change while its estimated error is below `FA_FIRST_ORDER_TOL`,
+    to ALL ORDERS above it (`_fa_lineshape`).
+
+      * an LC with no slow node (`_lc_osc`, flicker + white): first order,
+        estimate 2.4e-6, the probes' 7 solves (all orders would take 42
+        solves and 21.6 s against 5.9 s for a ~1e-6 change);
+      * slow corner 10 linewidths out (psd 0.7): all orders.  The first order read
+        8.4 % low at the carrier and 13 % at 10 linewidths.
+        - The probe estimate of `D_corr(inf)` is within 6 % of the full one.
+        - The Chebyshev `rho` takes 65 solves.
+        - The skirt meets the frequency-aware linear one where the handover
+          takes it.
+    """
+    import warnings as _w
+    pss, pac, ov = _fa_core_oscillator(0.7)
+    f0 = 1.0 / float(pss.period)
+    X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
+    fcore = np.pi * f0 * f0 * pac._colour_fold(pss, 1e-5 * f0, None, 'x').c_white
+    offs = np.array([0.0, 1.0, 10.0, 100.0, 1000.0]) * fcore
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        S_all = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
+        info = dict(pac.lineshape_info)
+    ## ⚠ the far skirt resolved: past fmax the white part is held at its
+    ## corrected level (`ConstantTail`).  Returned to `c_w` there, its edge
+    ## rang through `D` and the two tau densities parted 4.7e-3 at 100
+    ## linewidths (warned); held, 6.8e-5, and 1000 linewidths is the
+    ## frequency-aware `S_phi` to 3.9e-6
+    assert not [r for r in rec if 'estimated relative error' in str(r.message)], \
+        [str(r.message) for r in rec]
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        sphi = float(pac.phase_psd(pss, [offs[-1]])[0])
+    assert abs(S_all[-1] / sphi - 1.0) < 1e-4, S_all[-1] / sphi - 1.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pac.FA_FIRST_ORDER_TOL = np.inf
+        try:
+            S_first = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
+        finally:
+            del pac.FA_FIRST_ORDER_TOL
+    assert info['frequency_aware'] == 'all orders', info
+    assert abs(info['cinf_estimate'] / info['cinf'] - 1.0) < 0.1, info
+    assert info['chebyshev_err'] < 1e-6, info
+    first_err = (S_first / S_all - 1.0)[:3]
+    assert np.all(first_err < -0.05), first_err
+    ## the first-order path's carrier gap is its core weight, exp(-D_corr/2)
+    assert abs((1.0 + first_err[0]) * np.exp(-0.5 * info['cinf']) - 1.0) < 0.03, \
+        (first_err[0], info['cinf'])
+    ## and a line with no slow path near its core stays first order
+    _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
+                           fref=1.0 / 6.66, white=1e-6)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pac.oscillator_spectrum(pss, [0.0, 1e-3 / float(pss.period)], 0,
+                                fmin=1e-7 / float(pss.period))
+    assert pac.lineshape_info['frequency_aware'] == 'first order', pac.lineshape_info
+    assert pac.lineshape_info['estimate'] < pac.FA_FIRST_ORDER_TOL, pac.lineshape_info
+
 
 def test_the_oscillator_spectrum_takes_a_coloured_source():
     """`oscillator_spectrum` with a 1/f source (2026-09-26; Andreas: "Do as
@@ -12786,10 +12953,16 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         L_fa = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0)[0] / X2
+        info = dict(pac.lineshape_info)
         L_dc = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0,
                                        frequency_aware=False)[0] / X2
     assert abs(L_fa[1] / sfa - 1.0) < 1e-6, L_fa[1] / sfa
-    assert L_fa[0] == L_dc[0], 'the core moved: no correction at the carrier'
+    ## the correction reaches this 1/f core (|D_corr(inf)|/2 ~ 5e-4 > the
+    ## first order's tolerance), so it is taken to all orders and the
+    ## carrier moves by about that (2.2e-4, measured); the first order left
+    ## it untouched
+    assert info['frequency_aware'] == 'all orders', info
+    assert 1e-5 < abs(L_fa[0] / L_dc[0] - 1.0) < 1e-3, L_fa[0] / L_dc[0] - 1.0
     assert L_dc[1] / L_fa[1] > 30.0, L_dc[1] / L_fa[1]
     ## AM-to-PM above f_amp, a coloured source at the core
     circuit.default_toolkit = circuit.numeric

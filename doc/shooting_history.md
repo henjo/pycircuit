@@ -9054,6 +9054,13 @@ measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
 
+2026-09-26 (later): the coloured lineshape's frequency-aware correction was
+FIRST order: `i^2 f0^2 (c_fa - c_dc)/f^2` per offset, with the carrier
+untouched and a warning where it met the core.  Against a closed form with
+the corner 0.3 linewidths out, that went negative (-4.55 of the true value
+at 0.1 linewidths).  It is now taken to all orders where its estimated
+error exceeds `FA_FIRST_ORDER_TOL` (1e-4), in `_fa_lineshape`.
+
 2026-09-26 (latest): the coloured lineshape is frequency-aware by
 default, to first order: each offset gains `i^2 f0^2 (c_fa - c_dc) /
 f^2`, and it is warned where that meets the nonlinear core.  Building D
