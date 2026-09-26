@@ -5804,7 +5804,14 @@ class PAC(Analysis):
         T = float(info['period'])
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES: one sample per
         ## step, weighted by that step, so that Parseval closes exactly.
-        t = tms[1:1 + n]
+        ## ⚠ Sample `j` is at `t_j` (the PPV pairs it with the orbit's column
+        ## `j`).  Until 2026-09-26 this read `tms[1:1 + n]`, one step late:
+        ## identical on a uniform grid (a common phase), but on a smoothly
+        ## varying one it capped the fold at SECOND order for a white source
+        ## (+8.6e-5 at 200 points, radau) and below FIRST for a coloured one,
+        ## whose harmonics carry different weights (-9.1e-4 / -5.7e-4 /
+        ## -3.2e-4 at 200 / 400 / 800); at `t_j`, 1.3e-8 / 4.9e-10 / 3.9e-11.
+        t = tms[:n]
         h = self._period_weights(t, n, T, pss)
         w0 = 2.0 * np.pi / T
         L = n // 2 if harmonics is None else int(harmonics)

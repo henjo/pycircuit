@@ -12369,6 +12369,69 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
     assert np.max(np.abs(ratio - 1.0)) < 5e-4, ratio
 
 
+def test_the_resolved_phase_diffusion_keeps_its_order_on_a_non_uniform_grid():
+    """⚠ `coloured_diffusion_resolved` (and so `phase_psd`) paired PPV sample
+    `j`, taken at `t_j`, with `t_{j+1}` (`tms[1:1 + n]`, weights from the
+    shifted times) until 2026-09-26.  A uniform grid cannot see it (a
+    common phase: white bit-identical, a Lorentzian 3.3e-16).  On a grid
+    whose step varies smoothly (3:1, van der Pol a = 0.3, radau), against a
+    uniform radau run at 1600 points:
+
+        source      pairing     N=200      N=400      N=800
+        white       t_{j+1}    +8.6e-5    +2.4e-5    +7.0e-6   (2nd order)
+                    t_j        +1.4e-8    +5.8e-10   -3.2e-11
+        Lorentzian  t_{j+1}    -9.1e-4    -5.7e-4    -3.2e-4   (below 1st)
+                    t_j        +1.3e-8    +4.9e-10   -3.9e-11
+
+    A coloured source is hit harder: its harmonics carry different weights
+    `CY(|f - l f0|)`, so the per-sample phase error moves energy between
+    them at first order, where for a white one it cancels in the sum.
+    Gated cheaply at 200 points: the white fold against the same grid's
+    `c` (Parseval), the Lorentzian against the uniform grid."""
+    import warnings as _w
+
+    def build(source, nonuniform):
+        circuit.default_toolkit = circuit.numeric
+        mu = 1.0 / (2.0 * np.pi * 8.0)
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+        T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+        c['n'] = (IS('v', gnd, i=0.0, noisePSD=1e-6) if source == 'white' else
+                  IS('v', gnd, i=0.0, noisePSD=1e-6, noiseTau=0.3 * T))
+        grid = None
+        if nonuniform:
+            w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(200) / 200)
+            grid = w / w.sum()
+        pss = PSS(c, method='radau', reltol=1e-12)
+        x0 = np.zeros(c.n - 1)
+        x0[0] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 200, x0=x0, maxiterations=300,
+                      grid=grid)
+        assert pss.converged
+        return pss, PAC(c, toolkit=circuit.numeric)
+
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss, pac = build('white', True)
+        f0 = 1.0 / float(pss.period)
+        freqs = np.array([1e-3, 1e-2, 0.1]) * f0
+        cf = pac.coloured_diffusion_resolved(pss, freqs)
+        c = float(pac.diffusion_constant(pss))
+        assert np.max(np.abs(cf / c - 1.0)) < 1e-7, cf / c - 1.0
+        out = {}
+        for nonuniform in (False, True):
+            pss, pac = build('lorentz', nonuniform)
+            out[nonuniform] = pac.coloured_diffusion_resolved(pss, freqs)
+    err = out[True] / out[False] - 1.0
+    assert np.max(np.abs(err)) < 1e-6, err
+
+
 def test_the_orbit_is_read_full_width_past_the_reference_node():
     """⚠ `PSS.waveform` is FULL width -- the reference row is in it -- and
     two readers took it for the reduced state and inserted the reference's

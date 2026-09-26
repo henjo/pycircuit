@@ -8871,6 +8871,17 @@ the pair cannot drift the way `diffusion_constant` and
 
 ### `coloured_diffusion_resolved`
 
+2026-09-26 (later): the stationary path paired PPV sample `j`, which is
+taken at `t_j`, with `t_{j+1}` (`tms[1:1 + n]`).  On a uniform grid that
+is identical; on a smoothly varying one it capped the fold (and so
+`phase_psd`).  Radau against a uniform 1600-point run, at 200 / 400 / 800
+points:
+- white: +8.6e-5 / +2.4e-5 / +7.0e-6, second order;
+- Lorentzian: -9.1e-4 / -5.7e-4 / -3.2e-4, below first order.
+Now `tms[:n]`: 1.4e-8 and 1.3e-8 at 200 points, high order.  Log,
+2026-09-26.
+
+
 2026-09-26: a source whose level follows the orbit takes
 `_coloured_diffusion_modulated`: the harmonics of the PRODUCT `v_1^T G`
 per coloured component, the white parts as Demir's `c` (flat in `f`).  So
