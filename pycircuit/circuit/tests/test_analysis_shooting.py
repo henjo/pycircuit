@@ -7335,8 +7335,8 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     -- and no MEAN: `oscillator_covariance` (2026-09-05),
     `pnoise(cyclostationary=True)`, and since 2026-09-26
     `diffusion_constant` (Demir's `B(x(t))`, `CY` at each PPV sample's
-    state), `frequency_aware_diffusion` / `oscillator_spectrum` and
-    `modal_spectrum`.  On this fixture `c` matches the Lyapunov
+    state), `frequency_aware_diffusion` / `oscillator_spectrum`,
+    `coloured_diffusion` and `modal_spectrum`.  On this fixture `c` matches the Lyapunov
     growth route (`CY` per step, no PPV) to +1.0e-3 on gear at 240 points
     (gear's own gap between the two; radau -4.4e-11).  The paths that sum
     ONE stationary `CY` still refuse.
@@ -7359,8 +7359,7 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     pac = PAC(cir, toolkit=circuit.numeric)
     ## the paths that sum one stationary `CY` funnel through `_cy_reduced`
     for name, call in (
-            ('coloured_diffusion',
-             lambda: pac.coloured_diffusion(pss, [1.0 / pss.period])),
+            ('orbital_correlation', lambda: pac.orbital_correlation(pss)),
     ):
         with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT CY'):
             call()
@@ -7377,6 +7376,8 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     ## nor `oscillator_spectrum` (its `frequency_aware_diffusion`, 2026-09-26)
     Sv, _L = pac.oscillator_spectrum(pss, [1e-3], 0)
     assert np.all(np.isfinite(Sv)) and np.all(np.asarray(Sv) > 0.0)
+    ## nor `coloured_diffusion` (the l = 0 term of the modulated fold)
+    assert np.all(np.isfinite(pac.coloured_diffusion(pss, [1e-3])))
 
 
 def test_the_compact_mos_noise_is_off_without_a_card_not_absent():
@@ -12551,6 +12552,40 @@ def test_the_resolved_phase_diffusion_keeps_its_order_on_a_non_uniform_grid():
             out[nonuniform] = pac.coloured_diffusion_resolved(pss, freqs)
     err = out[True] / out[False] - 1.0
     assert np.max(np.abs(err)) < 1e-6, err
+
+
+def test_the_dc_colour_projection_takes_a_source_that_follows_the_orbit():
+    """`coloured_diffusion` -- `Gamma(f) = vbar^T (CY/2) vbar`, the colour
+    that reaches the phase through the PPV's time average -- refused a
+    source that follows the orbit until 2026-09-26.  It is now the l = 0
+    term of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per component.
+    On the asymmetric orbit (a = 0.3):
+
+      * a SIGNED flicker against its stationary realisation (a 1/f source
+        times V_v): 1.1e-15 at 1e-4 .. 1e-2 f0;
+      * never above `coloured_diffusion_resolved` (Jensen): Gamma / c(f) =
+        1.000 / 0.9997 / 0.997 there -- a 1/f source reaches the phase
+        almost wholly through the DC term near the carrier.
+
+    ⚠ A modulated WHITE part enters through the root of its PSD, a
+    convention: `g xi` and `|g| xi` are one white process, and Gamma's
+    white share reads 0.0017 of `c` that way against 0.643 through a
+    signed multiplier -- both under `c`, which alone is physical for white
+    noise.  Poisons: the l = 1 row for the l = 0 one; the signed amplitudes
+    ignored."""
+    import warnings as _w
+    res = {}
+    for kind in ('flicker_ref', 'flicker'):
+        _c, pss, pac, ov = _orbit_modulated_vdp(kind, a=0.3, kk=0.005)
+        f0 = 1.0 / float(pss.period)
+        fr = np.array([1e-4, 1e-3, 1e-2]) * f0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res[kind] = pac.coloured_diffusion(pss, fr)
+            cres = pac.coloured_diffusion_resolved(pss, fr)
+        assert np.all(res[kind] <= cres * (1.0 + 1e-12)), (kind, res[kind] / cres)
+    err = np.max(np.abs(res['flicker'] / res['flicker_ref'] - 1.0))
+    assert err < 1e-9, err
 
 
 def test_the_orbit_is_read_full_width_past_the_reference_node():

@@ -8872,6 +8872,14 @@ cannot produce that pattern.
 
 ### `coloured_diffusion`
 
+2026-09-26: a source that follows the orbit is taken: the l = 0 term of
+the modulated fold (`_colour_fold.dc`), `(s(f)/2) |<v_1^T G>|^2` per
+component.  A signed flicker agrees with its stationary realisation to
+1.1e-15, and Gamma never exceeds `coloured_diffusion_resolved`.  A
+modulated WHITE part's share is a convention (its PSD root), since the
+sign of white noise is unobservable.
+
+
 The docstring paragraph before the move:
 
 ⚠ THE `CY/2` IS THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION THE

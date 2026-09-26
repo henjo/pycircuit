@@ -5803,9 +5803,29 @@ class PAC(Analysis):
         REST OF THIS CLASS USES, and it is shared rather than repeated so
         the functions cannot drift apart over that factor.
 
+        A source that FOLLOWS THE ORBIT (2026-09-26; refused before): the
+        l = 0 term of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per
+        component, `G` its columns (signed where the element states them,
+        `_colour_groups`) -- `vbar^T (CY/2) vbar` when `G` does not move, and
+        never above `coloured_diffusion_resolved` (Jensen).  ⚠ A modulated
+        WHITE part enters through the root of its PSD, a convention: the
+        sign of a white source is unobservable (`g xi` and `|g| xi` are one
+        process), so its share of this DC term is not a property of the
+        noise -- only `c` is.  (Its stationary realisation through a
+        signed multiplier reads a different share, as it always did.)
+
         History: `doc/shooting_history.md`, `PAC.coloured_diffusion`.
         """
         vbar, _ = self.colour_projection(pss)
+        if self._modulated_present(pss):
+            ## ⚠ A source that follows the orbit (2026-09-26): the l = 0 term
+            ## of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per component
+            ## (`_colour_fold`) -- `vbar^T (CY/2) vbar` when `G` does not move
+            fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+            pos = np.abs(fr[fr != 0.0])
+            return self._colour_fold(
+                pss, float(pos.min()) if pos.size else None, None,
+                'coloured_diffusion').dc(fr)
         out = []
         for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
             cy = np.real(self._cy_reduced(pss, 2.0 * np.pi * float(f)))
@@ -5936,8 +5956,8 @@ class PAC(Analysis):
             pss, w0, cy=np.real(np.asarray(model.white))))
         wlo = 2.0 * np.pi * float(flo) if flo else 1e-3 * w0
         fixed, band = [], []
-        for kind, G, s in self._colour_groups(pss, model, states, wlo, f0, L,
-                                              what):
+        groups_all = self._colour_groups(pss, model, states, wlo, f0, L, what)
+        for kind, G, s in groups_all:
             if kind == 'fixed':
                 V = E @ np.einsum('jm,jmr->jr', S, G)
                 pw = np.sum(np.abs(V) ** 2, axis=1)
@@ -5955,6 +5975,35 @@ class PAC(Analysis):
         fold = _Fold()
         fold.c_white = c_white
         fold.has_colour = bool(fixed or band)
+        ## the l = 0 row: `<v_1^T G>`, the PPV's time average through the
+        ## columns -- `coloured_diffusion`'s `vbar^T (CY/2) vbar` when `G`
+        ## does not move.  A WHITE part enters through the root of its PSD
+        ## (its share of the DC term is a convention: the sign of a white
+        ## source is unobservable, and only `c` is physical for it).
+        E0 = E[int(np.flatnonzero(ls == 0)[0])]
+        white_dc = 0.0
+        for _key, A in model.white_parts:
+            v0 = E0 @ np.einsum('jm,jmr->jr', S,
+                                self._psd_sqrt(np.real(np.asarray(A))))
+            white_dc += 0.5 * float(np.sum(np.abs(v0) ** 2))
+        fixed_dc = [(float(np.sum(np.abs(E0 @ np.einsum('jm,jmr->jr', S, G))
+                                  ** 2)), s)
+                    for kind, G, s in groups_all if kind == 'fixed']
+        band_G = [G for kind, G, _s in groups_all if kind == 'band']
+
+        def dc(freqs):
+            fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+            out = np.full(fr.shape, white_dc)
+            for p0, s in fixed_dc:
+                out += 0.5 * p0 * np.asarray(s(2.0 * np.pi * np.abs(fr)),
+                                             dtype=float)
+            for G in band_G:
+                for i, f in enumerate(fr):
+                    v0 = E0 @ np.einsum('jm,jmr->jr', S,
+                                        G(2.0 * np.pi * abs(float(f))))
+                    out[i] += 0.5 * float(np.sum(np.abs(v0) ** 2))
+            return out
+        fold.dc = dc
 
         def coloured(freqs, start=0.0):
             fr = np.atleast_1d(np.asarray(freqs, dtype=float))
