@@ -7046,7 +7046,8 @@ def test_the_phase_psd_convention_is_the_lorentzians_own():
     offs = np.logspace(np.log10(corner * 1e3), np.log10(corner * 1e9), 7)
     errs = []
     for i in (1, 2, 3):
-        S = pac.phase_psd(pss, offs, harmonic=i)
+        S = pac.phase_psd(pss, offs, harmonic=i,
+                          frequency_aware=False)  # the DC closed form's convention
         Lz = PAC.lorentzian(offs, c, f0, harmonic=i)
         errs.append(float(np.max(np.abs(S / Lz - 1.0))))
     assert errs[0] < 2e-6, 'harmonic 1 off by %.3e' % errs[0]
@@ -7100,7 +7101,10 @@ def test_a_flicker_source_gives_a_one_over_f_cubed_skirt():
     ## times the carrier's total power. `phase_psd` now refuses there; the
     ## test was wrong, not the refusal. See the power-bound test below.
     offs = np.logspace(-5, -1, 26)
-    S = pac.phase_psd(pss, offs)
+    ## the DC phase model's slopes: frequency-aware (the default since
+    ## 2026-09-26) steepens the top of this sweep further, -2.16, as the
+    ## amplitude mode filters above f_amp -- a different statement
+    S = pac.phase_psd(pss, offs, frequency_aware=False)
     slope = np.diff(np.log10(S)) / np.diff(np.log10(offs))
     assert slope[0] < -2.9, \
         'low-offset slope is %.3f decades/decade; a 1/f source must give ' \
@@ -7117,7 +7121,7 @@ def test_a_flicker_source_gives_a_one_over_f_cubed_skirt():
         % np.median(slope)
     ## and a WHITE source on the same circuit must not steepen
     _c2, pss2, pac2 = _lc_osc(a=0.25, rs=0.2, flicker=False)
-    S2 = pac2.phase_psd(pss2, offs)
+    S2 = pac2.phase_psd(pss2, offs, frequency_aware=False)
     sl2 = np.diff(np.log10(S2)) / np.diff(np.log10(offs))
     assert abs(sl2.min() + 2.0) < 1e-6 and abs(sl2.max() + 2.0) < 1e-6, \
         'a white source gave slopes in [%.4f, %.4f]; it must be exactly ' \
@@ -12378,7 +12382,10 @@ def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
         for k in ('phase', 'orbital', 'correlation', 'total'):
             err = np.max(np.abs(B[0][k] / A[0][k] - 1.0))
             assert err < 1e-9, (kind, k, B[0][k] / A[0][k] - 1.0)
-        assert np.max(np.abs(B[1] / A[1] - 1.0)) < 1e-9, (kind, B[1] / A[1])
+        ## `phase_psd` is frequency-aware by default (2026-09-26): each
+        ## side is a bordered GMRES solve on a different circuit, 2.4e-7
+        ## on the Lorentzian pair (the DC fold agrees to 3e-14)
+        assert np.max(np.abs(B[1] / A[1] - 1.0)) < 1e-6, (kind, B[1] / A[1])
         assert not B[2], kind
     assert run('flicker_psd')[2], 'a sign-blind root went unwarned'
     ms, _ph, _b, (pss, pac, ov, offs, f0) = run('lorentz_moving', method='radau')
@@ -12537,7 +12544,6 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
     assert 3e-3 < dev < 1e-2, dev
     assert abs(S[1e-7][2] / sphi[1] - 1.0) < 1e-6, S[1e-7][2] / sphi[1]
     for bad, exc in (({}, NotImplementedError),
-                     ({'fmin': 1e-7 * f0, 'frequency_aware': True}, ValueError),
                      ({'fmin': 1e-7 * f0, 'fmax': f0}, ValueError)):
         with pytest.raises(exc):
             pac.oscillator_spectrum(pss, offs, 0, **bad)
@@ -12547,7 +12553,10 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
                                fref=1.0 / 6.66, white=1e-6)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            Sv = pac.oscillator_spectrum(pss, offs, 0, fmin=1e-7 * f0)[0]
+            ## the colour's additivity onto the DC Lorentzian (the
+            ## frequency-aware skirt moves off it on this asymmetric orbit)
+            Sv = pac.oscillator_spectrum(pss, offs, 0, fmin=1e-7 * f0,
+                                         frequency_aware=False)[0]
             cw = pac._colour_fold(pss, 1e-7 * f0, None, 'x').c_white
         Lw = pac.lorentzian(offs, cw, f0, 1)
         devs.append(Sv / abs(pac.carrier_phasor(pss, 0, 1)) ** 2 / Lw - 1.0)
@@ -12629,13 +12638,15 @@ def test_the_resolved_phase_diffusion_keeps_its_order_on_a_non_uniform_grid():
         pss, pac = build('white', True)
         f0 = 1.0 / float(pss.period)
         freqs = np.array([1e-3, 1e-2, 0.1]) * f0
-        cf = pac.coloured_diffusion_resolved(pss, freqs)
+        cf = pac.coloured_diffusion_resolved(pss, freqs,
+                                             frequency_aware=False)  # the DC fold's timing
         c = float(pac.diffusion_constant(pss))
         assert np.max(np.abs(cf / c - 1.0)) < 1e-7, cf / c - 1.0
         out = {}
         for nonuniform in (False, True):
             pss, pac = build('lorentz', nonuniform)
-            out[nonuniform] = pac.coloured_diffusion_resolved(pss, freqs)
+            out[nonuniform] = pac.coloured_diffusion_resolved(
+                pss, freqs, frequency_aware=False)
     err = out[True] / out[False] - 1.0
     assert np.max(np.abs(err)) < 1e-6, err
 
@@ -12668,10 +12679,190 @@ def test_the_dc_colour_projection_takes_a_source_that_follows_the_orbit():
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             res[kind] = pac.coloured_diffusion(pss, fr)
-            cres = pac.coloured_diffusion_resolved(pss, fr)
+            ## Jensen bounds Gamma by the DC fold (frequency-aware can sit below)
+            cres = pac.coloured_diffusion_resolved(pss, fr,
+                                                   frequency_aware=False)
         assert np.all(res[kind] <= cres * (1.0 + 1e-12)), (kind, res[kind] / cres)
     err = np.max(np.abs(res['flicker'] / res['flicker_ref'] - 1.0))
     assert err < 1e-9, err
+
+
+def _slow_node_oscillator(kind, tau_over_T=100.0):
+    """The A2 fixture: an asymmetric, lossy LC whose noise source sits
+    behind a slow RC node `w` (tau = 100 T): 'white', 'lorentz' or
+    'flicker'."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+    c = SubCircuit()
+    c.add_node('v'); c.add_node('w'); c.add_node('x')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', 'x', L=1.0)
+    c['Rl'] = R('x', gnd, r=0.2)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+    c['Rs'] = R('v', 'w', r=1e2, noisy=False)
+    c['Cs'] = C('w', gnd, c=tau_over_T * T0 / 1e2)
+    c['n'] = {'white': lambda: IS('w', gnd, i=0.0, noisePSD=1e-6),
+              'lorentz': lambda: IS('w', gnd, i=0.0, noisePSD=1e-6,
+                                    noiseTau=0.3 * T0),
+              'flicker': lambda: _Flicker('w', gnd, i=0.0, noisePSD=1e-6,
+                                          fref=1.0 / T0)}[kind]()
+    pss = PSS(c, method='gear', reltol=1e-11)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+    assert pss.converged
+    return pss, PAC(c, toolkit=circuit.numeric), [str(n) for n in c.nodes].index('v')
+
+
+def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node():
+    """⚠ The coloured folds took the DC PPV until 2026-09-26 (Andreas:
+    "Continue as you suggest"; default ON, his call): a source behind a
+    slow path moves the phase through that path's filter, which the DC PPV
+    -- the response to a perturbation slow against every mode -- cannot
+    see.  `coloured_diffusion_resolved` / `phase_psd` now read `V_l` from
+    `frequency_aware_ppv(f)` per offset, the bands unchanged.  Against
+    pnoise's PM content, `pm / (4 |X|^2 S_phi)`, behind a tau = 100 T node
+    at 1e-3 / 1e-2 f0:
+
+        source      frequency-aware      DC PPV
+        white       1.0001  1.0002       0.7291  0.0268
+        Lorentzian  1.0001  1.0003       0.7290  0.0264
+        1/f         1.0001  1.0003       0.7290  0.0263
+
+    For a white source the fold IS `frequency_aware_diffusion(f)` (4.7e-10
+    here).  The AM-to-PM control (van der Pol C = 4, a = 0.3, a Lorentzian
+    at the tank): 0.9954 / 0.9588 at 1 / 10 f_amp against DC 0.6510 /
+    0.3077 (white: 0.998 / 0.980 against 0.647 / 0.302)."""
+    import warnings as _w
+    ## (pnoise's PM costs 13 s an offset: the flicker source at 1e-2 f0,
+    ## where the two separate most; white is gated by the identity, and by
+    ## `test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner`)
+    pss, pac, ov = _slow_node_oscillator('white')
+    f0 = 1.0 / float(pss.period)
+    offs = np.array([1e-3, 1e-2]) * f0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        cfa = pac.coloured_diffusion_resolved(pss, offs)
+        fad = np.array([pac.frequency_aware_diffusion(pss, o) for o in offs])
+    assert np.max(np.abs(cfa / fad - 1.0)) < 1e-8, cfa / fad
+    pss, pac, ov = _slow_node_oscillator('flicker')
+    X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
+    o = 1e-2 * f0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        sfa = float(pac.phase_psd(pss, [o])[0])
+        sdc = float(pac.phase_psd(pss, [o], frequency_aware=False)[0])
+        pm = pac.am_pm_noise(pss, o, ov, carrier=1, maxsidebands=16)[1]
+    assert abs(pm / (4 * X2 * sfa) - 1.0) < 5e-3, pm / (4 * X2 * sfa)
+    assert pm / (4 * X2 * sdc) < 0.03, pm / (4 * X2 * sdc)
+    ## and the coloured LINESHAPE (`oscillator_spectrum`), frequency-aware
+    ## by default: its skirt there IS the frequency-aware `S_phi`
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        L_fa = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0)[0] / X2
+        L_dc = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0,
+                                       frequency_aware=False)[0] / X2
+    assert abs(L_fa[1] / sfa - 1.0) < 1e-6, L_fa[1] / sfa
+    assert L_fa[0] == L_dc[0], 'the core moved: no correction at the carrier'
+    assert L_dc[1] / L_fa[1] > 30.0, L_dc[1] / L_fa[1]
+    ## AM-to-PM above f_amp, a coloured source at the core
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=4.0)
+    cir['L'] = L('v', gnd, L=0.25)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.3 * u * u)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6, noiseTau=0.3 * T)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
+                  maxiterations=300)
+        assert pss.converged
+        pac = PAC(cir, toolkit=circuit.numeric)
+        f0 = 1.0 / float(pss.period)
+        _v, info = pss.ppv()
+        f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
+        o = f_amp
+        X2 = abs(pac.carrier_phasor(pss, 0, 1)) ** 2
+        pm = pac.am_pm_noise(pss, o, 0, carrier=1, maxsidebands=16)[1]
+        rfa = pm / (4 * X2 * float(pac.phase_psd(pss, [o])[0]))
+        rdc = pm / (4 * X2 * float(pac.phase_psd(pss, [o],
+                                                 frequency_aware=False)[0]))
+    assert abs(rfa - 1.0) < 0.02, rfa
+    assert rdc < 0.7, rdc
+
+
+def test_the_frequency_aware_fold_reads_each_band_at_f_minus_l_f0():
+    """The band convention of the frequency-aware fold, MEASURED: a source
+    whose density peaks at `f0 + f` (Q = 20) as an element, against its
+    exact realisation -- white noise through a parallel RLC resonant there,
+    into the tank through a transconductor -- whose white source cannot
+    tell the bands apart (`frequency_aware_diffusion`).  At `f = 0.05 f0`,
+    element / realisation = 0.9999 with the bands at `f - l f0` (the DC
+    fold's), 1.083 with `f + l f0`; the DC fold 1.048.  (The slow-node
+    fixtures cannot tell: there the l = 0 term carries the colour.)"""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T6 = 6.66
+
+    def build(kind, fp, Qf=20.0, g=1e-2, Pw=1e-4, Rr=1.0):
+        wp = 2.0 * np.pi * fp
+        Lr, Cr = Rr / (Qf * wp), Qf / (Rr * wp)
+        P = g * g * Rr * Rr * Pw
+
+        class _Res(Circuit):
+            terminals = ('p', 'n')
+            instparams = []
+
+            def CY(self, x, w, epar=None):
+                ww = max(abs(float(w)), 1e-300)
+                p = P / (1.0 + Qf ** 2 * (ww / wp - wp / ww) ** 2)
+                return self.toolkit.array(np.array([[p, -p], [-p, p]]))
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+        c.add_node('x')
+        c['L'] = L('v', 'x', L=1.0)
+        c['Rs'] = R('x', gnd, r=0.2, noisy=False)
+        if kind == 'element':
+            c['n'] = _Res('v', gnd)
+        else:
+            c.add_node('r')
+            c['nw'] = IS('r', gnd, i=0.0, noisePSD=Pw)
+            c['Rr'] = R('r', gnd, r=Rr, noisy=False)
+            c['Lr'] = L('r', gnd, L=Lr)
+            c['Cr'] = C('r', gnd, c=Cr)
+            c['gm'] = BSource('r', gnd, gnd, 'v', i_func=lambda u, _g=g: _g * u)
+        pss = PSS(c, method='radau', reltol=1e-11)
+        x0 = np.zeros(c.n - 1)
+        x0[0] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T6, timestep=T6 / 240, x0=x0, maxiterations=200)
+        assert pss.converged
+        return pss, PAC(c, toolkit=circuit.numeric)
+    f0 = 1.0 / 6.884048287
+    fs = 0.05 * f0
+    pe, pace = build('element', f0 + fs)
+    pr, pacr = build('real', f0 + fs)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        ce = float(pace.coloured_diffusion_resolved(pe, [fs])[0])
+        cdc = float(pace.coloured_diffusion_resolved(pe, [fs],
+                                                     frequency_aware=False)[0])
+        cref = float(pacr.frequency_aware_diffusion(pr, fs))
+    assert abs(ce / cref - 1.0) < 1e-3, ce / cref
+    assert abs(cdc / cref - 1.0) > 2e-2, cdc / cref
 
 
 def test_the_orbit_is_read_full_width_past_the_reference_node():
@@ -13131,7 +13322,8 @@ def test_the_harmonic_resolved_fold_is_exactly_c_for_white():
         f0 = 1.0 / float(pss.period)
         c = pac.diffusion_constant(pss)
         offs = np.array([1e-3, 1e-4, 3e-2]) * f0
-        cres = pac.coloured_diffusion_resolved(pss, offs)
+        cres = pac.coloured_diffusion_resolved(pss, offs,
+                                               frequency_aware=False)  # the DC fold's identity (2026-09-26: frequency-aware is the default)
         assert np.all(np.abs(cres / c - 1.0) < 1e-12), \
             'a=%r rs=%r: the fold is %s against c = %.6e -- Parseval ' \
             'fails, so the transform normalisation is wrong' \
@@ -17279,7 +17471,8 @@ def test_ppv_quadratures_normalise_by_the_period_of_the_orbit_they_integrate():
         'colour_projection vbar off its twin by %s' % (vb_h / vb_t - 1.0)
     assert np.max(np.abs(i_h['rms'] / i_t['rms'] - 1.0)) < 1e-12
 
-    cr_h = pac.coloured_diffusion_resolved(p, [1e-3])[0]
+    cr_h = pac.coloured_diffusion_resolved(p, [1e-3],
+                                           frequency_aware=False)[0]  # the DC fold's identity (2026-09-26: frequency-aware is the default)
     assert abs(cr_h / c_host - 1.0) < 1e-12, \
         'Parseval under trap: resolved %.12e against c %.12e' % (cr_h, c_host)
 

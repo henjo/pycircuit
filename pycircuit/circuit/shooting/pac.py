@@ -5314,7 +5314,8 @@ class PAC(Analysis):
         self._cy_reduced(pss, w0)
         ao = np.abs(np.asarray(offs, dtype=float)).ravel()
         try:
-            self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic))
+            self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic),
+                           frequency_aware=False)
         except ValueError as e:
             raise ValueError(
                 'PAC.%s: with a COLOURED source the phase part is the '
@@ -5353,7 +5354,8 @@ class PAC(Analysis):
         else:
             ao = np.abs(np.asarray(offs, dtype=float)).ravel()
             try:
-                self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic))
+                self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic),
+                               frequency_aware=False)
             except ValueError as e:
                 raise ValueError(
                     'PAC.%s: with a COLOURED source the phase part is the '
@@ -5832,7 +5834,8 @@ class PAC(Analysis):
             out.append(float(vbar @ (0.5 * cy) @ vbar))
         return np.asarray(out)
 
-    def coloured_diffusion_resolved(self, pss, freqs, harmonics=None):
+    def coloured_diffusion_resolved(self, pss, freqs, harmonics=None,
+                                    frequency_aware=True):
         """`c(f) = sum_l V_l^H (CY(2 pi |f - l f_0|)/2) V_l` — the fold PER HARMONIC.
 
         `V_l` are the Fourier coefficients of the equation-row PPV `v_1(t)`
@@ -5859,6 +5862,17 @@ class PAC(Analysis):
         than 1e-14 of the PPV's energy is kept, which is all of them that
         can move the sum at double precision.
 
+        ⚠ `frequency_aware` (default True, 2026-09-26): `V_l` from the
+        frequency-aware PPV at each offset (`PSS.frequency_aware_ppv`, one
+        bordered solve per offset), with the same bands `f - l f0`.  The DC
+        PPV assumes a source moves the phase instantly, and behind a slow
+        path it over-states by the path's filter (pnoise PM: DC 0.729 /
+        0.026 at 1e-3 / 1e-2 f0 behind a tau = 100 T node, this 1.0001 /
+        1.0003, white, Lorentzian or 1/f alike).  For a white source this is
+        `frequency_aware_diffusion(f)` exactly, not `c` -- `False` keeps the
+        DC fold, which reproduces `diffusion_constant` (the Parseval
+        identity below).
+
         A source whose level follows the orbit (2026-09-26) takes
         `_coloured_diffusion_modulated`: the harmonics of the PRODUCT
         `v_1^T G(t)` per component, and the white parts as Demir's `c`.
@@ -5868,7 +5882,8 @@ class PAC(Analysis):
         self._check_circuit(pss)
         self._refuse_driven(pss, 'coloured_diffusion_resolved')
         if self._modulated_present(pss):
-            return self._coloured_diffusion_modulated(pss, freqs, harmonics)
+            return self._coloured_diffusion_modulated(pss, freqs, harmonics,
+                                                      frequency_aware)
         m = pss.cir.n - 1
         v0, info = pss.ppv()
         S = np.asarray(info['samples_eq'], dtype=float)[:, :m]
@@ -5892,6 +5907,28 @@ class PAC(Analysis):
         L = n // 2 if harmonics is None else int(harmonics)
         ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
         E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :]          # (nl, n)
+        if frequency_aware:
+            ## ⚠ THE FREQUENCY-AWARE PPV (2026-09-26, the default): at each
+            ## offset the coefficients of `frequency_aware_ppv(f)`'s periodic
+            ## samples, with the SAME bands `f - l f0` -- measured, not read:
+            ## a source peaked at f0 + f against its white-through-resonator
+            ## realisation reads 0.9999 this way and 1.083 with `f + l f0`.
+            ## Behind a slow node the DC PPV over-states by the path's filter
+            ## (pnoise PM / phase_psd: DC 0.729 / 0.026 at 1e-3 / 1e-2 f0,
+            ## this 1.0001 / 1.0003 for a Lorentzian or 1/f source).
+            out = []
+            for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
+                Sf = S if f == 0.0 else self._fa_samples(pss, f)
+                Vf = (E @ Sf) / T
+                en = np.sum(np.abs(Vf) ** 2, axis=1)
+                tot = 0.0
+                for l, vl in zip(ls[en > 1e-14 * en.sum()],
+                                 Vf[en > 1e-14 * en.sum()]):
+                    cy = np.real(self._cy_reduced(
+                        pss, 2.0 * np.pi * abs(float(f) - l / T)))
+                    tot += float(np.real(np.conj(vl) @ (0.5 * cy) @ vl))
+                out.append(tot)
+            return np.asarray(out)
         V = (E @ S) / T                                               # (nl, m)
         energy = np.sum(np.abs(V) ** 2, axis=1)
         keep = energy > 1e-14 * energy.sum()
@@ -5905,7 +5942,21 @@ class PAC(Analysis):
             out.append(tot)
         return np.asarray(out)
 
-    def _coloured_diffusion_modulated(self, pss, freqs, harmonics=None):
+    def _fa_samples(self, pss, f):
+        """`frequency_aware_ppv(f)`'s equation-row samples, `(n, m)` complex:
+        the periodic envelope on the DC PPV's times, its Fourier coefficient
+        `l` the phase transfer of the source band at `f - l f0` (the DC fold's
+        convention; see `coloured_diffusion_resolved`).  Cached per offset."""
+        cache = self.__dict__.setdefault('_fa_cache', {})
+        key = (id(pss.factored_period()), float(f))
+        if key not in cache:
+            m = pss.cir.n - 1
+            _v, fi = pss.frequency_aware_ppv(float(f))
+            cache[key] = np.asarray(fi['samples_eq'])[:, :m]
+        return cache[key]
+
+    def _coloured_diffusion_modulated(self, pss, freqs, harmonics=None,
+                                      frequency_aware=False):
         """`coloured_diffusion_resolved` for sources that follow the orbit
         (2026-09-26).  The phase moves as `v_1(t)^T G(t) xi(t)` for each
         component, `xi` a unit process of power `s(nu)` and `G` its columns
@@ -5923,6 +5974,8 @@ class PAC(Analysis):
         pos = np.abs(fr[fr != 0.0])
         fold = self._colour_fold(pss, float(pos.min()) if pos.size else None,
                                  harmonics, 'coloured_diffusion_resolved')
+        if frequency_aware:
+            return fold.resolved_fa(fr)
         return fold.coloured(fr, start=fold.c_white)
 
     def _colour_fold(self, pss, flo, harmonics, what):
@@ -5962,7 +6015,7 @@ class PAC(Analysis):
                 V = E @ np.einsum('jm,jmr->jr', S, G)
                 pw = np.sum(np.abs(V) ** 2, axis=1)
                 keep = pw > 1e-14 * pw.sum()
-                fixed.append((pw[keep], ls[keep], s))
+                fixed.append((pw[keep], ls[keep], s, G))
                 continue
             ## per band: the harmonics that carry weight at the carrier's
             ## band, then each read at its own frequency
@@ -6008,7 +6061,7 @@ class PAC(Analysis):
         def coloured(freqs, start=0.0):
             fr = np.atleast_1d(np.asarray(freqs, dtype=float))
             out = np.full(fr.shape, float(start))
-            for pw, lk, s in fixed:
+            for pw, lk, s, _G in fixed:
                 for i, f in enumerate(fr):
                     nu = 2.0 * np.pi * np.abs(f - lk * f0)
                     out[i] += 0.5 * float(np.sum(np.asarray(s(nu)) * pw))
@@ -6021,9 +6074,35 @@ class PAC(Analysis):
                         out[i] += 0.5 * float(np.sum(np.abs(Vk) ** 2))
             return out
         fold.coloured = coloured
+        white_A = 0.5 * np.real(np.asarray(model.white))
+
+        def resolved_fa(freqs):
+            ## the whole `c(f)` with the FREQUENCY-AWARE PPV's samples per
+            ## offset (`_fa_samples`): the white parts Demir's functional on
+            ## them, each coloured group through its columns as above
+            fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+            out = np.zeros(fr.shape)
+            for i, f in enumerate(fr):
+                Sf = S if f == 0.0 else self._fa_samples(pss, f)
+                out[i] = float(np.sum(h * np.real(np.einsum(
+                    'jm,jmk,jk->j', np.conj(Sf), white_A, Sf)))) / T
+                for _pw, _lk, s, G in fixed:
+                    V = E @ np.einsum('jm,jmr->jr', Sf, G)
+                    p = np.sum(np.abs(V) ** 2, axis=1)
+                    k = p > 1e-14 * p.sum()
+                    nu = 2.0 * np.pi * np.abs(f - ls[k] * f0)
+                    out[i] += 0.5 * float(np.sum(np.asarray(s(nu)) * p[k]))
+                for G, idx in band:
+                    for k in idx:
+                        Vk = E[k] @ np.einsum(
+                            'jm,jmr->jr', Sf,
+                            G(2.0 * np.pi * abs(f - ls[k] * f0)))
+                        out[i] += 0.5 * float(np.sum(np.abs(Vk) ** 2))
+            return out
+        fold.resolved_fa = resolved_fa
         return fold
 
-    def phase_psd(self, pss, offsets, harmonic=1):
+    def phase_psd(self, pss, offsets, harmonic=1, frequency_aware=True):
         """`S_phi(f)` in rad^2/Hz at `offsets` from harmonic `i` — white AND coloured.
 
             S_phi,i(f) = i^2 f_0^2 c(f) / f^2,   c(f) = sum_l V_l^H (CY(f - l f_0)/2) V_l
@@ -6074,6 +6153,14 @@ class PAC(Analysis):
         does not.  Reporting `S_phi` near the carrier is the mistake this
         object invites, so it raises instead.
 
+        ⚠ `frequency_aware` (default True, 2026-09-26): `c(f)` from the
+        frequency-aware PPV (`coloured_diffusion_resolved`), as
+        `oscillator_spectrum` takes it for white sources -- the DC PPV
+        over-states a source behind a slow node by the path's filter.  The
+        Lorentzian corner and the power bound's probe stay on the DC PPV:
+        the corner is a white-noise construct at the carrier, and the probe
+        over-states, which keeps the bound it serves conservative.
+
         History: `doc/shooting_history.md`, `PAC.phase_psd`.
         """
         self._check_circuit(pss)
@@ -6086,7 +6173,8 @@ class PAC(Analysis):
             raise ValueError(
                 'PAC.phase_psd: offsets must be positive; S_phi diverges '
                 'at zero offset and that divergence is physical.')
-        cres = self.coloured_diffusion_resolved(pss, offs)
+        cres = self.coloured_diffusion_resolved(
+            pss, offs, frequency_aware=frequency_aware)
         ## ⚠ THE CORNER IS THE WHITE LORENTZIAN'S, read at the carrier.  For
         ## a coloured source `f_h = pi i^2 f0^2 c` is not a lineshape
         ## parameter at all -- there is no Lorentzian -- and taking the
@@ -6150,8 +6238,11 @@ class PAC(Analysis):
         probe = np.unique(np.concatenate((
             offs, np.logspace(np.log10(offs.min() / 1e3),
                               np.log10(offs.max()), 32))))
+        ## the probe on the DC PPV: it over-states behind a slow node, so the
+        ## bound it serves stays conservative, and it costs no solves
         sprobe = ((i ** 2) * (f0 ** 2)
-                  * self.coloured_diffusion_resolved(pss, probe) / probe ** 2)
+                  * self.coloured_diffusion_resolved(
+                      pss, probe, frequency_aware=False) / probe ** 2)
         if np.any(np.diff(sprobe) > 1e-12 * np.abs(sprobe[:-1])):
             k = int(np.argmax(np.diff(sprobe) > 0)) + 1
             raise ValueError(
@@ -6351,14 +6442,11 @@ class PAC(Analysis):
         integrated over `[fmin, fmax]`.  `fmin` is REQUIRED -- a 1/f^3
         phase has no stationary lineshape without a low cutoff; it plays
         the part of the observation time -- and `fmax` defaults to f0/2,
-        the phase model's reach.  A white-only circuit is untouched.  The
-        DC PPV is used for every source: `frequency_aware` (default None:
-        True for white sources) is not composed with a coloured lineshape,
-        and asking for it with one is refused.  ⚠ So a circuit crossing
-        the colour classifier's threshold (`_coloured_present`, 1e-9 per
-        entry) steps by the frequency-aware correction in the skirt (1e-4
-        at 0.1 f0 on the 1/f fixture; large behind a slow node, which
-        `ppv()` warns of), as `phase_psd` already does.  Near the carrier
+        the phase model's reach.  A white-only circuit is untouched.
+        `frequency_aware` (default None = True, 2026-09-26) adds the
+        frequency-aware PPV's change of the skirt, `i^2 f0^2 (c_fa - c_dc) /
+        f^2`, per offset (first order; warned where it meets the line's
+        nonlinear core); `False` is the DC lineshape.  Near the carrier
         the transform is accurate to ~1e-6; the far skirt is the linear
         one (`phase_psd`'s), taken per offset where its estimated error
         (`_lineshape.linear_error`) is below the transform's (two tau
@@ -6367,15 +6455,10 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
         if self._coloured_present(pss):
-            if frequency_aware:
-                raise ValueError(
-                    'PAC.oscillator_spectrum: frequency_aware=True is not '
-                    'composed with a COLOURED source\'s lineshape (it '
-                    'substitutes c(f) offset by offset into a Lorentzian, '
-                    'which a coloured phase is not).  Leave it unset: the '
-                    'coloured lineshape uses the DC PPV for every source.')
-            return self._coloured_spectrum(pss, offsets, output, harmonic,
-                                           fmin, fmax)
+            return self._coloured_spectrum(
+                pss, offsets, output, harmonic, fmin, fmax,
+                frequency_aware=(frequency_aware is None
+                                 or bool(frequency_aware)))
         if frequency_aware is None:
             frequency_aware = True
         c = self.diffusion_constant(pss)
@@ -6438,7 +6521,8 @@ class PAC(Analysis):
     #: (1.1e-4 at 40/80 per decade, 9.6e-5 at 80/160)
     LINESHAPE_WARN = 1e-3
 
-    def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax):
+    def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax,
+                           frequency_aware=True):
         """`oscillator_spectrum` for a coloured source -- see there and
         `_lineshape`."""
         from . import _lineshape
@@ -6501,6 +6585,38 @@ class PAC(Analysis):
                     err = el
             vals.append(s2)
             errs.append(err)
+        if frequency_aware:
+            ## ⚠ THE FREQUENCY-AWARE PPV TO FIRST ORDER (2026-09-26, the
+            ## default): each offset gains `i^2 f0^2 (c_fa(f) - c_dc(f)) /
+            ## f^2`, the change of the linear skirt, both from
+            ## `coloured_diffusion_resolved` (one bordered solve an offset).
+            ## Exact to first order in the change wherever the line is past
+            ## its core -- the linear skirt then IS `c_fa` -- and the change
+            ## sits at and above the slow corner, far outside a 1/f core in
+            ## practice.  Building `D` from the whole frequency-aware
+            ## spectrum was the plan, dropped: `c_fa - c_w` changes sign (the
+            ## filtered white part falls below `c_w` where the flicker lifts
+            ## the rest), and the power-law pieces cannot pass a zero.  Where
+            ## the change is felt INSIDE the nonlinear core it is warned.
+            flat = np.atleast_1d(off).ravel()
+            inside = []
+            for k, o in enumerate(flat):
+                if o == 0.0:
+                    continue
+                cfa, cdc = (float(self.coloured_diffusion_resolved(
+                    pss, [abs(float(o))], frequency_aware=fa_)[0])
+                    for fa_ in (True, False))
+                vals[k] += i * i * f0 * f0 * (cfa - cdc) / float(o) ** 2
+                if (abs(cfa / cdc - 1.0) > 1e-3
+                        and _lineshape.linear_error(o, i, f0, c_w, pc) > 0.1):
+                    inside.append(float(o))
+            if inside:
+                warnings.warn(
+                    'PAC.oscillator_spectrum: at %s Hz the frequency-aware '
+                    'correction (> 1e-3) meets the nonlinear core of the line; '
+                    'it is applied to first order there.'
+                    % ', '.join('%.4g' % v for v in inside),
+                    RuntimeWarning, stacklevel=3)
         S = np.asarray(vals).reshape(np.shape(off))
         worst = max(errs) if errs else 0.0
         if worst > self.LINESHAPE_WARN:

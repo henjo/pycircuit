@@ -8906,6 +8906,15 @@ the pair cannot drift the way `diffusion_constant` and
 
 ### `coloured_diffusion_resolved`
 
+2026-09-26 (latest): `frequency_aware=True` is the default (Andreas's
+call).  The fold reads `V_l` from `frequency_aware_ppv(f)` at each
+offset, with the bands `f - l f0`: measured, a source peaked at f0 + f
+against its white-through-resonator realisation reads 0.9999 this way and
+1.083 flipped.  Behind a tau = 100 T node, against pnoise PM: DC 0.729 /
+0.026 at 1e-3 / 1e-2 f0, this 1.0001 / 1.0003 (white, Lorentzian, 1/f).
+`False` is the DC fold, which the Parseval identity pins.
+
+
 2026-09-26 (later): the stationary path paired PPV sample `j`, which is
 taken at `t_j`, with `t_{j+1}` (`tms[1:1 + n]`).  On a uniform grid that
 is identical; on a smoothly varying one it capped the fold (and so
@@ -8935,6 +8944,11 @@ inductor shorts the node at DC, so no core can bias it) -- the
 fixture shared the claim's assumption, failure shape 0b.
 
 ### `phase_psd`
+
+2026-09-26: `frequency_aware=True` by default.  The spectrum takes the
+frequency-aware `c(f)`; the corner and the power-bound probe stay DC
+(the probe over-states, so it is conservative).
+
 
 The docstring paragraphs before the move:
 
@@ -9026,6 +9040,15 @@ takes a band mean on one side and a point value on the other is then
 measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
+
+2026-09-26 (latest): the coloured lineshape is frequency-aware by
+default, to first order: each offset gains `i^2 f0^2 (c_fa - c_dc) /
+f^2`, and it is warned where that meets the nonlinear core.  Building D
+from the whole frequency-aware spectrum was planned and dropped:
+`c_fa - c_w` changes sign, which the power-law pieces cannot pass.
+Behind the slow node the skirt is the frequency-aware `S_phi` (1e-6), and
+the DC lineshape is 37x high at 1e-2 f0.
+
 
 2026-09-26: a COLOURED source is taken (it was refused through
 `diffusion_constant`).  The lineshape is the transform of
