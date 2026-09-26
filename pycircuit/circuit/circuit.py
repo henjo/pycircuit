@@ -1745,7 +1745,10 @@ class SubCircuit(Circuit):
         pending_val = []
 
         for instance, element in self.elements.items():
-            if groups and element.__class__ in groups:
+            ## ⚠ only what the batch STAMPED: a method it declines (`CY`)
+            ## comes back None, and skipping its classes here returned their
+            ## noise as zeros (2026-09-26)
+            if batched is not None and element.__class__ in groups:
                 continue # Handled by vectorization above
 
             nodemap = elementnodemap[instance]

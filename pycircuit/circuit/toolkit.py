@@ -469,6 +469,14 @@ class JAXToolkit(Toolkit):
         """Evaluate every grouped class in one vmapped call per class."""
         if not groups or x is None:
             return None
+        ## ⚠ ONLY THE METHODS THE PURE EVALUATORS CARRY.  `CY` came here too
+        ## (`_add_element_submatrices('CY', ...)`) and was stamped from the
+        ## CHARGE function -- the stamp then raised on a shape mismatch, so
+        ## every noise analysis under this toolkit failed on a circuit with a
+        ## batchable (noisy) resistor.  Anything else stamps element by
+        ## element.  Found 2026-09-26.
+        if methodname not in ('G', 'C', 'i', 'q'):
+            return None
 
         method_key = 'i' if methodname in ('G', 'i') else 'q'
         want_jacobian = methodname in ('G', 'C')

@@ -985,3 +985,32 @@ def test_p25_traced_pseudo_transient_ladder():
         assert bool(conv)
         assert float(x[0]) == pytest.approx(-1.7692923542386314, abs=1e-9)
     _with_jax(go)
+
+
+def test_the_jax_toolkit_stamps_noise_element_by_element():
+    """⚠ `CY` under the JAX toolkit (found 2026-09-26, checking whether its
+    batched groups could make a circuit's `CY` differ from its elements').
+    The batch serves `G`, `C`, `i`, `q`; `CY` reached it too and was stamped
+    from the CHARGE function, which RAISED on a shape mismatch -- every noise
+    analysis failed on a circuit with a batchable resistor.  Declining it
+    alone then returned ZEROS: the element loop skipped every grouped class
+    whether the batch had stamped it or not.  Now the batch declines what it
+    does not carry and the loop stamps it: equal to the numeric toolkit."""
+    def build():
+        c = SubCircuit()
+        c['R1'] = R('a', gnd, r=1e3)
+        c['R2'] = R('a', 'b', r=2e3)
+        c['R3'] = R('b', gnd, r=5e3)
+        c['C1'] = C('a', gnd, c=1e-9)
+        c.update_iparv()
+        return c
+    ref_c = build()
+    ref = np.asarray(ref_c.CY(np.zeros(ref_c.n), 2 * np.pi * 1e3), dtype=float)
+
+    def run():
+        c = build()
+        assert c._eval_groups, 'nothing batched: the test would not bite'
+        return np.asarray(c.CY(np.zeros(c.n), 2 * np.pi * 1e3), dtype=float)
+    got = _with_jax(run)
+    assert np.max(np.abs(ref)) > 0.0
+    assert np.max(np.abs(got - ref)) <= 1e-12 * np.max(np.abs(ref)), (got, ref)
