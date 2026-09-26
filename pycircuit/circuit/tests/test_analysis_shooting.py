@@ -12097,6 +12097,115 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
     assert np.max(np.abs(tot['coloured'] / tot['filtered'] - 1.0)) < 5e-4
 
 
+class _ModLorentzCtl(Circuit):
+    """A Lorentzian current p -> n whose LEVEL follows V(cp, cn):
+    ``P (k V)^2 / (1 + (w tau(V))^2)``, ``tau(V) = tau (1 + shape V^2)``.
+    `shape = 0`: a level under a fixed spectral shape (separable); `shape >
+    0`: the corner moves with V too."""
+    terminals = ('p', 'n', 'cp', 'cn')
+    instparams = [Parameter(name='noisePSD', desc='', unit='', default=0.0),
+                  Parameter(name='tau', desc='', unit='s', default=1e-7),
+                  Parameter(name='k', desc='', unit='', default=1.0),
+                  Parameter(name='shape', desc='', unit='', default=0.0)]
+
+    def CY(self, x, w, epar=None):
+        v = float(x[2] - x[3])
+        tau = self.iparv.tau * (1.0 + self.iparv.shape * v * v)
+        p = (self.iparv.noisePSD * (self.iparv.k * v) ** 2
+             / (1.0 + (float(w) * tau) ** 2))
+        out = np.zeros((4, 4))
+        out[0, 0] = out[1, 1] = p
+        out[0, 1] = out[1, 0] = -p
+        return self.toolkit.array(out)
+
+
+def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
+    """Coloured noise that is not a power law AND follows the orbit
+    (2026-09-26; Andreas: "Do 2a and 2b").  SEPARABLE -- a level that follows
+    the state under a fixed spectral shape, ``C(x, w) = C(x, w_ref) s(w)``
+    -- replays one amplitude per point and weights each band frequency by
+    `s`; with the SHAPE moving along the orbit the density is read at every
+    point for every band frequency (the quasi-static model `pnoise` and
+    `sampled_variance` use), warned for its cost and its sign-blind root.
+
+    Measured (radau, a driven RC, the level from a positive clock):
+      * separable, against the same noise realised as a white source
+        through an explicit RC filter times the clock (`_NuMult`) -- the
+        white Lyapunov route: -3.6e-6 at t = 0, 3.6e-6 at worst over a
+        profile that varies 2.8x in the period (the band below `fmin`);
+      * the separable source forced through the moving-shape path: 2.2e-16;
+      * the corner moving (`shape = 0.5`) against `sampled_variance` (the
+        adjoint route, the same quasi-static model): +6.0e-5 / +6.4e-5 at
+        two instants -- its own quadrature and the holes its fold leaves
+        (not asserted: that reference costs 235 s);
+      * the moving-shape path at ``shape -> 0`` meets the separable one."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    Rf, Cf, g, Pw = 1e3, 0.3e-9, 1e-3, 1e-20
+    tau, P = Rf * Cf, g * g * Pw * Rf * Rf
+
+    def build(kind, shape=0.0, npts=200):
+        c = SubCircuit()
+        for nd in ('lo', 'out'):
+            c.add_node(nd)
+        c['Vlo'] = VSin('lo', gnd, va=1.0, vo=1.5, freq=1.0 / T)
+        c['Ro'] = R('out', gnd, r=1e3, noisy=False)
+        c['Co'] = C('out', gnd, c=0.5e-9)
+        if kind == 'element':
+            c['n'] = _ModLorentzCtl('out', gnd, 'lo', gnd, noisePSD=P, tau=tau,
+                                    k=1.0, shape=shape)
+        else:
+            c.add_node('f')
+            c['nw'] = IS('f', gnd, i=0.0, noisePSD=Pw)
+            c['rf'] = R('f', gnd, r=Rf, noisy=False)
+            c['cf'] = C('f', gnd, c=Cf)
+            c['mx'] = _NuMult('out', gnd, 'f', gnd, 'lo', gnd, k=g)
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / npts, maxiterations=40)
+        o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
+        return pss, o, PAC(c, toolkit=circuit.numeric)
+
+    fmin = 1e-6 / T
+    ## separable, against its white-through-filter realisation
+    pss, o, pac = build('element')
+    with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
+        _K, se = pac.covariance(pss, samples=True, fmin=fmin)
+    pf, of, pacf = build('filtered')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _Kf, sf = pacf.covariance(pf, samples=True)
+    a = np.array([K[o, o] for K in se])
+    b = np.array([K[of, of] for K in sf])
+    n = min(len(a), len(b))
+    assert np.max(np.abs(a[:n] / b[:n] - 1.0)) < 1e-5, np.max(np.abs(a[:n] / b[:n] - 1.0))
+    ## the classifier, and the two paths on one source
+    host = pss._lyapunov_host()
+    fp = host._state_map()
+    _cnt, states = pac._injection_points(host, fp)
+    wsp = [2 * np.pi * f for f in (1e3, 1e6, 1e7, 5e7)]
+    assert PAC._separable([pac._one_element_cy(host, ('n',), w, states) for w in wsp])
+    p5, o5, pac5 = build('element', shape=0.5, npts=100)
+    h5 = p5._lyapunov_host()
+    _c5, st5 = pac5._injection_points(h5, h5._state_map())
+    assert not PAC._separable([pac5._one_element_cy(h5, ('n',), w, st5) for w in wsp])
+    p0, o0, pac0 = build('element', npts=100)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Ks = pac0.covariance(p0, fmin=fmin)[o0, o0]
+        ## (on the instance: the class keeps its own)
+        pac0._separable = lambda Cs, tol=1e-9: False
+        Kn = pac0.covariance(p0, fmin=fmin)[o0, o0]
+    assert abs(Kn / Ks - 1.0) < 1e-12, Kn / Ks - 1.0
+    ## the moving-shape path meets the separable one as the corner stops
+    pt, ot, pact = build('element', shape=1e-6, npts=100)
+    with pytest.warns(RuntimeWarning, match='SHAPE changes along the orbit'):
+        Kt = pact.covariance(pt, fmin=fmin)[ot, ot]
+    assert abs(Kt / Ks - 1.0) < 1e-4, Kt / Ks - 1.0
+
+
 def test_the_coloured_band_integral_resolves_a_high_q_line():
     """The band integral's grid is ADAPTIVE (2026-09-25).  A driven parallel
     tank at Q = 20, resonant at 1.37 f0, with a 1/f current: on the fixed
@@ -27920,8 +28029,8 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         +1.4e-5 at 100 points (tau = 0.3 T), +6.8e-7 at 200.  With the
         corner at 8 f0 (tau = 0.02 T, the node's own RC one step) it read
         +2.8e-4 / +1.7e-5: radau's transfer at that grid, not the integral.
-    A Lorentzian MODULATED by the orbit would need its density per point
-    per band frequency, and is refused."""
+    A Lorentzian MODULATED by the orbit was refused here until 2026-09-26;
+    it is now integrated (the separable path)."""
     import warnings
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
@@ -27987,7 +28096,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
     assert abs((sig[True] - sig[False]) / (var_n / s1 ** 2) - 1.0) < 5e-5, \
         (sig, var_n / s1 ** 2)
 
-    ## modulated AND not a power law: refused
+    ## modulated AND not a power law: integrated since 2026-09-26
     c = SubCircuit()
     c.add_node('in')
     c.add_node('out')
@@ -27999,8 +28108,12 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
-        with pytest.raises(NotImplementedError, match='modulated by the orbit'):
-            PAC(c, toolkit=circuit.numeric).covariance(pss, fmin=1e-6 / T)
+        ## (refused until 2026-09-26; a level under a fixed shape is now the
+        ## separable path -- see
+        ## `test_a_coloured_covariance_takes_a_modulated_non_power_law_source`)
+        with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
+            Km = PAC(c, toolkit=circuit.numeric).covariance(pss, fmin=1e-6 / T)
+        assert np.all(np.isfinite(Km)) and np.max(np.diag(Km)) > 0.0
 
 
 def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():

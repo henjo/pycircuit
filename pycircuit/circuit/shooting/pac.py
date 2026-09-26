@@ -1055,21 +1055,25 @@ class PAC(Analysis):
         return A, B, EF
 
     @classmethod
-    def _leaf_cy_stamps(cls, cir, x, w, prefix=()):
+    def _leaf_cy_stamps(cls, cir, x, w, prefix=(), only=None):
         """Yield `(key, G)`: each LEAF element's `CY(x, w)` stamped into
         `cir`'s full `n x n` space, recursing into sub-circuits.  Their sum
         is `cir.CY(x, w)` (the elements are independent by that method's
-        own contract)."""
+        own contract).  `only`: that element's key alone -- nothing else is
+        evaluated."""
         n = cir.n
         idx = cir._map_indices_2d
         for inst, el in cir.elements.items():
+            if only is not None and tuple(only[:len(prefix) + 1]) != prefix + (inst,):
+                continue
             rc = idx.get(inst)
             if rc is None:
                 continue
             rows, cols = rc
             subx = np.asarray(x)[cir.elementnodemap[inst]]
             if getattr(el, 'elements', None):
-                for key, Gc in cls._leaf_cy_stamps(el, subx, w, prefix + (inst,)):
+                for key, Gc in cls._leaf_cy_stamps(el, subx, w, prefix + (inst,),
+                                                   only):
                     G = np.zeros((n, n), dtype=complex)
                     np.add.at(G, (rows, cols), np.asarray(Gc).ravel())
                     yield key, G
@@ -1080,18 +1084,21 @@ class PAC(Analysis):
                 yield prefix + (inst,), G
 
     @classmethod
-    def _leaf_noise_amplitudes(cls, cir, x, w, prefix=()):
+    def _leaf_noise_amplitudes(cls, cir, x, w, prefix=(), only=None):
         """Yield `(key, W)`: each leaf element's SIGNED coloured-noise
         amplitudes (`Element.noise_amplitudes`, where it has them) in `cir`'s
         full `n`-row space, `(n, S)`; keyed like `_leaf_cy_stamps`."""
         n = cir.n
         for inst, el in cir.elements.items():
+            if only is not None and tuple(only[:len(prefix) + 1]) != prefix + (inst,):
+                continue
             if cir._map_indices_2d.get(inst) is None:
                 continue
             nodemap = np.asarray(cir.elementnodemap[inst])
             subx = np.asarray(x)[nodemap]
             if getattr(el, 'elements', None):
-                inner = cls._leaf_noise_amplitudes(el, subx, w, prefix + (inst,))
+                inner = cls._leaf_noise_amplitudes(el, subx, w, prefix + (inst,),
+                                                   only)
             else:
                 fn = getattr(el, 'noise_amplitudes', None)
                 Wc = fn(subx, w) if fn is not None else None
@@ -1161,6 +1168,55 @@ class PAC(Analysis):
             out.append(xr if xr.shape[0] == n
                        else np.concatenate((xr[:irn], np.zeros(1), xr[irn:])))
         return out
+
+    def _one_element_cy(self, pss, key, w, states):
+        """The reduced `CY(x, w)` of the ONE leaf element `key` at `states`,
+        `(K, m, m)` -- nothing else evaluated (a modulated per-band colour
+        is read at every point for every band frequency)."""
+        irn = pss.irefnode
+        keep = np.array([i for i in range(pss.cir.n) if i != irn])
+        out = []
+        for xf in self._orbit_states(pss, states):
+            G = None
+            for k, Gk in self._leaf_cy_stamps(pss.cir, xf, w, only=key):
+                if k == key:
+                    G = Gk
+            out.append(np.zeros((keep.size, keep.size), dtype=complex) if G is None
+                       else G[np.ix_(keep, keep)])
+        return np.asarray(out, dtype=complex)
+
+    def _one_element_amplitudes(self, pss, key, w, states):
+        """The SIGNED amplitudes of the one element `key` at `states`, `(K, m,
+        S)`, or None where it states none."""
+        irn = pss.irefnode
+        keep = np.array([i for i in range(pss.cir.n) if i != irn])
+        out = []
+        for xf in self._orbit_states(pss, states):
+            W = None
+            for k, Wk in self._leaf_noise_amplitudes(pss.cir, xf, w, only=key):
+                if k == key:
+                    W = Wk
+            if W is None:
+                return None
+            out.append(W[keep])
+        return np.asarray(out, dtype=complex)
+
+    @staticmethod
+    def _separable(Cs, tol=1e-9):
+        """Whether ``C(x_j, w_i) = s_i C(x_j, w_0)`` for every point `j` and
+        frequency `i` -- a level that follows the state under a fixed
+        spectral shape (`Cs`: one `(K, m, m)` stack per frequency)."""
+        C0 = np.asarray(Cs[0], dtype=complex)
+        n0 = float(np.vdot(C0, C0).real)
+        if n0 == 0.0:
+            return False
+        for Ci in Cs[1:]:
+            Ci = np.asarray(Ci, dtype=complex)
+            r = complex(np.vdot(C0, Ci)) / n0
+            if float(np.max(np.abs(Ci - r * C0))) > tol * max(
+                    float(np.max(np.abs(Ci))), 1e-300):
+                return False
+        return True
 
     def _element_cy_samples(self, pss, w, states=None):
         """`{key: (K, m, m)}` -- each leaf element's reduced `CY(x, w)` at the
@@ -2674,9 +2730,12 @@ class PAC(Analysis):
         coloured components and the band, and the Lyapunov pieces are set to
         read the WHITE part of each source (`_white_cy`, `_lyap_cy`) -- the
         caller clears it.  Refuses what cannot be integrated: no `fmin` (a
-        1/f variance grows as ``ln(fmax/fmin)`` without limit), a component
-        that is not a power law, a circuit whose `CY` is not the sum of its
-        elements'."""
+        1/f variance grows as ``ln(fmax/fmin)`` without limit), a circuit
+        whose `CY` is not the sum of its elements'.  A colour that is not a
+        power law is taken three ways: STATIONARY (its own `CY(nu)`),
+        modulated SEPARABLE (a level per point, a shape per frequency), or
+        modulated with a moving shape (its density per point per frequency,
+        warned)."""
         if not self._coloured_present(pss):
             return None
         fp = pss._state_map()
@@ -2720,25 +2779,66 @@ class PAC(Analysis):
         ## sum_kl CY_kl(nu) Re[y_k y_l^H]` over unit sources `e_k` on its
         ## support (`_coloured_covariance`).  A MODULATED one would need `CY`
         ## per point per frequency, and stays refused.
-        perband = []
+        perband, separable, nonseparable = [], [], []
         if model.perband:
             ws = (2.0 * np.pi * f0, 20.0 * np.pi * f0)
             per_w = [self._element_cy_samples(pss, w_, states) for w_ in ws]
             for key in model.perband:
+                stationary = True
                 for pw in per_w:
                     Ck = np.asarray(pw[key], dtype=complex)
                     scale = max(float(np.max(np.abs(Ck))), 1e-300)
                     if float(np.max(np.abs(Ck - Ck[:1]))) > 1e-12 * scale:
-                        raise NotImplementedError(
+                        stationary = False
+                if stationary:
+                    C0 = np.asarray(per_w[0][key][0], dtype=complex)
+                    supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
+                    if supp.size:
+                        perband.append((key, supp))
+                    continue
+                ## ⚠ MODULATED AND NOT A POWER LAW (2026-09-26).  SEPARABLE --
+                ## a level that follows the state under a fixed spectral shape,
+                ## ``C(x, w) = C(x, w_ref) s(w)``, the usual burst / G-R noise
+                ## -- replays one amplitude per point and weights each band
+                ## frequency by `s`; otherwise the density is read at EVERY
+                ## point for EVERY band frequency (the quasi-static model
+                ## `pnoise` and `sampled_variance` use, per band).
+                wref = 2.0 * np.pi * f0
+                wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
+                             np.pi * fmax})
+                Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
+                if self._separable(Cs):
+                    Cref = self._one_element_cy(pss, key, wref, states)
+                    W0 = self._one_element_amplitudes(pss, key, wref, states)
+                    if W0 is not None:
+                        rebuilt = np.einsum('kis,kjs->kij', W0, W0.conj())
+                        if float(np.max(np.abs(rebuilt - Cref))) > \
+                                1e-6 * float(np.max(np.abs(Cref))):
+                            W0 = None
+                    if W0 is None:
+                        W0 = self._psd_sqrt(Cref)
+                        warnings.warn(
                             'PAC.%s: the noise of %s is coloured, not a power '
-                            'law, AND modulated by the orbit, so its density '
-                            'would be needed per point per band frequency. '
-                            'Use sampled_variance / pnoise, which evaluate it '
-                            'per band.' % (what, '.'.join(key)))
-                C0 = np.asarray(per_w[0][key][0], dtype=complex)
-                supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
-                if supp.size:
-                    perband.append((key, supp))
+                            'law, and modulated by the orbit; it states no '
+                            'signed amplitudes, so its level enters as the '
+                            'square root of its PSD -- the |m| process, '
+                            'SIGN-BLIND where the modulation changes sign '
+                            '(Element.noise_amplitudes states the sign).'
+                            % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
+                    jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))),
+                                                   Cref.shape)
+                    separable.append((key, W0, states[jr], (pi_, qi),
+                                      complex(Cref[jr, pi_, qi])))
+                else:
+                    nonseparable.append(key)
+                    warnings.warn(
+                        'PAC.%s: the noise of %s is coloured, not a power law, '
+                        'and its spectral SHAPE changes along the orbit, so its '
+                        'density is read at every point for every band '
+                        'frequency -- the quasi-static model pnoise and '
+                        'sampled_variance use per band, costly here, and '
+                        'SIGN-BLIND (a square root per point).'
+                        % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
         self._warn_signed_unused(model, 'PAC.%s' % what)
         amp = getattr(model, 'amplitude', None) or {}
         comps = []
@@ -2777,7 +2877,9 @@ class PAC(Analysis):
             return cache[key]
         self._white_cy = white
         return {'fp': fp, 'counts': counts, 'comps': comps, 'w1': model.w1,
-                'perband': perband, 'state0': states[0],
+                'perband': perband, 'separable': separable,
+                'nonseparable': nonseparable, 'state0': states[0],
+                'states': states,
                 'fmin': fmin, 'fmax': fmax, 'ppd': int(points_per_decade)}
 
     @staticmethod
@@ -2974,6 +3076,66 @@ class PAC(Analysis):
                         Dd = np.real(np.einsum('ka,kl,lb->ab', dd, cy, dd.conj()))
                     out.append((np.real(np.einsum('kja,kl,ljb->jab', Y, cy,
                                                   Y.conj())), Dd))
+                return out
+            terms.append((0.0, ev, {}))
+
+        def reduced(W):
+            ## a component's own rank (see the power-law terms above)
+            W = np.asarray(W, dtype=complex)
+            _u, sv_, vh = np.linalg.svd(W.reshape(-1, W.shape[2]),
+                                        full_matrices=False)
+            r = int(np.sum(sv_ > 1e-12 * max(float(sv_[0]), 1e-300))) \
+                if sv_.size else 0
+            return np.einsum('kms,sr->kmr', W, vh[:r].conj().T)
+
+        ## MODULATED, SEPARABLE: one amplitude per point, the spectral shape
+        ## `s(nu)` (the element at one point, its dominant entry) per band
+        ## frequency
+        for key, W0, xref, pq, cref in col.get('separable', ()):
+            Wr = reduced(W0)
+
+            def shape(nu, key=key, xref=xref, pq=pq, cref=cref):
+                c = self._one_element_cy(pss, key, 2.0 * np.pi * nu, [xref])[0]
+                return float(np.real(c[pq] / cref))
+            for s_ in range(Wr.shape[2]):
+                u_points = [Wr[offs[j]:offs[j + 1], :, s_] for j in range(N)]
+
+                def ev(batch, u_points=u_points, shape=shape):
+                    ys, dths = resp(pss, fp, batch, zero, u_points=u_points)
+                    out = []
+                    for i, nu in enumerate(batch):
+                        sc = shape(nu)
+                        y = node_responses(ys[i], nu)
+                        Dd = None
+                        if dths[i] is not None:
+                            dd = np.asarray(dths[i], dtype=complex)
+                            Dd = sc * np.real(np.outer(dd, dd.conj()))
+                        out.append((sc * np.real(np.einsum('ji,jk->jik', y,
+                                                           y.conj())), Dd))
+                    return out
+                terms.append((0.0, ev, {}))
+        ## MODULATED, THE SHAPE MOVING: per band frequency the density at
+        ## every point, its root per point, one replay per column
+        for key in col.get('nonseparable', ()):
+            def ev(batch, key=key):
+                out = []
+                for nu in batch:
+                    Wn = reduced(self._psd_sqrt(self._one_element_cy(
+                        pss, key, 2.0 * np.pi * nu, col['states'])))
+                    G = np.zeros((nk, n, n))
+                    Dd = None
+                    for s_ in range(Wn.shape[2]):
+                        u_points = [Wn[offs[j]:offs[j + 1], :, s_]
+                                    for j in range(N)]
+                        ys, dths = resp(pss, fp, np.array([nu]), zero,
+                                        u_points=u_points)
+                        y = node_responses(ys[0], nu)
+                        G += np.real(np.einsum('ji,jk->jik', y, y.conj()))
+                        if dths[0] is not None:
+                            dd = np.asarray(dths[0], dtype=complex)
+                            Di = np.real(np.outer(dd, dd.conj()))
+                            Dd = Di if Dd is None else Dd + Di
+                    out.append((G, Dd))
                 return out
             terms.append((0.0, ev, {}))
 
