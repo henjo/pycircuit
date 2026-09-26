@@ -2863,7 +2863,8 @@ class PAC(Analysis):
                     separable.append((key, W0, states[jr], (pi_, qi),
                                       complex(Cref[jr, pi_, qi])))
                 else:
-                    nonseparable.append(key)
+                    nonseparable.append((key, lambda nu, key=key: self._one_element_cy(
+                        pss, key, 2.0 * np.pi * nu, states)))
                     warnings.warn(
                         'PAC.%s: the noise of %s is coloured, not a power law, '
                         'and its spectral SHAPE changes along the orbit, so its '
@@ -2878,11 +2879,30 @@ class PAC(Analysis):
         for key, B, EF in model.flicker:
             ef = self._uniform_exponent(B, EF)
             if ef is None:
-                raise NotImplementedError(
+                ## ⚠ EXPONENTS THAT DIFFER BETWEEN ENTRIES (2026-09-26; refused
+                ## before).  Entries in DISJOINT index blocks, one exponent
+                ## each (sources of different slope on branches that share no
+                ## node), are independent components: split exactly.
+                parts = self._split_by_exponent(B, EF)
+                if parts is not None:
+                    for Bg, efg in parts:
+                        comps.append((key, np.asarray(self._psd_sqrt(Bg),
+                                                      dtype=complex), efg))
+                    continue
+                ## otherwise no one amplitude to replay: the moving-shape way,
+                ## the density `B (w1/w)^EF` rooted at every point per band
+                ## frequency (its white part is already in `white`: the
+                ## element's own `CY` would count it twice)
+                nonseparable.append((key, lambda nu, B=B, EF=EF, w1=model.w1:
+                                     B * (w1 / (2.0 * np.pi * nu)) ** EF))
+                warnings.warn(
                     'PAC.%s: the coloured noise of %s carries different '
                     'power-law exponents in different entries, so it has no '
-                    'one amplitude to replay. Use sampled_noise / pnoise.'
-                    % (what, '.'.join(key)))
+                    'one amplitude to replay; its density is rooted at every '
+                    'point per band frequency -- costlier, and SIGN-BLIND (a '
+                    'square root per point).' % (what, '.'.join(key)),
+                    RuntimeWarning, stacklevel=3)
+                continue
             ## ⚠ THE SIGN: the element's stated amplitudes where it has them
             ## (`W W^H = B` with the sign of the modulation); `sqrt(B)` is
             ## the sign-blind |m| process (`_warn_signed_unused` said so)
@@ -2914,6 +2934,40 @@ class PAC(Analysis):
                 'nonseparable': nonseparable, 'state0': states[0],
                 'states': states,
                 'fmin': fmin, 'fmax': fmax, 'ppd': int(points_per_decade)}
+
+    @classmethod
+    def _split_by_exponent(cls, B, EF):
+        """`[(B_g, ef_g)]`: `B` split into the index blocks its nonzero entries
+        connect, when each block carries ONE exponent (`_uniform_exponent`);
+        None when a block mixes exponents (correlated entries of different
+        slope, which no split makes independent)."""
+        aB = np.max(np.abs(np.asarray(B)), axis=0)
+        m = aB.shape[0]
+        parent = list(range(m))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for i, j in zip(*np.nonzero(aB > 0.0)):
+            parent[find(i)] = find(j)
+        blocks = {}
+        for i in range(m):
+            if np.any(aB[i] > 0.0) or np.any(aB[:, i] > 0.0):
+                blocks.setdefault(find(i), []).append(i)
+        out = []
+        for idx in blocks.values():
+            Bg = np.zeros_like(np.asarray(B))
+            ix = np.ix_(range(Bg.shape[0]), idx, idx)
+            Bg[ix] = np.asarray(B)[ix]
+            EFg = np.zeros_like(np.asarray(EF, dtype=float))
+            EFg[ix] = np.asarray(EF, dtype=float)[ix]
+            ef = cls._uniform_exponent(Bg, EFg)
+            if ef is None:
+                return None
+            out.append((Bg, float(ef)))
+        return out
 
     @staticmethod
     def _power_law_weights(nus, ef, richardson=True):
@@ -3149,12 +3203,13 @@ class PAC(Analysis):
                 terms.append((0.0, ev, {}))
         ## MODULATED, THE SHAPE MOVING: per band frequency the density at
         ## every point, its root per point, one replay per column
-        for key in col.get('nonseparable', ()):
-            def ev(batch, key=key):
+        ## (`cy_at(nu)`: the element's density at every point, or a power law
+        ## whose exponent differs between entries)
+        for _key, cy_at in col.get('nonseparable', ()):
+            def ev(batch, cy_at=cy_at):
                 out = []
                 for nu in batch:
-                    Wn = reduced(self._psd_sqrt(self._one_element_cy(
-                        pss, key, 2.0 * np.pi * nu, col['states'])))
+                    Wn = reduced(self._psd_sqrt(cy_at(nu)))
                     G = np.zeros((nk, n, n))
                     Dd = None
                     for s_ in range(Wn.shape[2]):
@@ -5844,6 +5899,19 @@ class PAC(Analysis):
         `CY` at each sample's state, flat in `f` (a white process modulated
         is still white).  The same period weights as the stationary form,
         with the samples at their own times."""
+        fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+        pos = np.abs(fr[fr != 0.0])
+        fold = self._colour_fold(pss, float(pos.min()) if pos.size else None,
+                                 harmonics, 'coloured_diffusion_resolved')
+        return fold.coloured(fr, start=fold.c_white)
+
+    def _colour_fold(self, pss, flo, harmonics, what):
+        """The pieces of `_coloured_diffusion_modulated`, built once: returns
+        an object with `c_white` (Demir's `c` of the WHITE parts at the PPV's
+        states) and `coloured(freqs, start=0.0)`, the coloured part of
+        `c(f)` (vectorised over `freqs`, added to `start`).  A STATIONARY
+        source is the case whose columns do not move.  `flo`: the lowest
+        frequency the caller will ask (for the per-band classification)."""
         m = pss.cir.n - 1
         _v0, info = pss.ppv()
         S = np.asarray(info['samples_eq'], dtype=float)[:, :m]
@@ -5857,39 +5925,54 @@ class PAC(Analysis):
         L = n // 2 if harmonics is None else int(harmonics)
         ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
         E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :] / T      # (nl, n)
-        fr = np.atleast_1d(np.asarray(freqs, dtype=float))
         states = self._ppv_states(pss)
         model = self._cy_components_model(pss, 1e-3 * f0, f0, states=states)
         if model is None:
             raise NotImplementedError(
-                'PAC.coloured_diffusion_resolved: this circuit\'s CY is not '
-                'the sum of its elements\', so its modulated sources cannot be '
-                'taken one root per source.')
-        out = np.full(fr.shape, float(self._white_diffusion_at(
-            pss, w0, cy=np.real(np.asarray(model.white)))))
-        pos = np.abs(fr[fr != 0.0])
-        wlo = 2.0 * np.pi * float(pos.min()) if pos.size else 1e-3 * w0
+                'PAC.%s: this circuit\'s CY is not the sum of its elements\', '
+                'so its coloured sources cannot be taken one root per source.'
+                % what)
+        c_white = float(self._white_diffusion_at(
+            pss, w0, cy=np.real(np.asarray(model.white))))
+        wlo = 2.0 * np.pi * float(flo) if flo else 1e-3 * w0
+        fixed, band = [], []
         for kind, G, s in self._colour_groups(pss, model, states, wlo, f0, L,
-                                              'coloured_diffusion_resolved'):
+                                              what):
             if kind == 'fixed':
                 V = E @ np.einsum('jm,jmr->jr', S, G)
                 pw = np.sum(np.abs(V) ** 2, axis=1)
                 keep = pw > 1e-14 * pw.sum()
-                for i, f in enumerate(fr):
-                    nu = 2.0 * np.pi * np.abs(f - ls[keep] * f0)
-                    out[i] += 0.5 * float(np.sum(np.asarray(s(nu)) * pw[keep]))
+                fixed.append((pw[keep], ls[keep], s))
                 continue
             ## per band: the harmonics that carry weight at the carrier's
             ## band, then each read at its own frequency
             Vr = E @ np.einsum('jm,jmr->jr', S, G(w0))
             pr = np.sum(np.abs(Vr) ** 2, axis=1)
-            idx = np.where(pr > 1e-14 * pr.sum())[0]
-            for i, f in enumerate(fr):
-                for k in idx:
-                    Vk = E[k] @ np.einsum('jm,jmr->jr', S,
-                                          G(2.0 * np.pi * abs(f - ls[k] * f0)))
-                    out[i] += 0.5 * float(np.sum(np.abs(Vk) ** 2))
-        return out
+            band.append((G, np.where(pr > 1e-14 * pr.sum())[0]))
+
+        class _Fold:
+            pass
+        fold = _Fold()
+        fold.c_white = c_white
+        fold.has_colour = bool(fixed or band)
+
+        def coloured(freqs, start=0.0):
+            fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+            out = np.full(fr.shape, float(start))
+            for pw, lk, s in fixed:
+                for i, f in enumerate(fr):
+                    nu = 2.0 * np.pi * np.abs(f - lk * f0)
+                    out[i] += 0.5 * float(np.sum(np.asarray(s(nu)) * pw))
+            for G, idx in band:
+                for i, f in enumerate(fr):
+                    for k in idx:
+                        Vk = E[k] @ np.einsum(
+                            'jm,jmr->jr', S,
+                            G(2.0 * np.pi * abs(f - ls[k] * f0)))
+                        out[i] += 0.5 * float(np.sum(np.abs(Vk) ** 2))
+            return out
+        fold.coloured = coloured
+        return fold
 
     def phase_psd(self, pss, offsets, harmonic=1):
         """`S_phi(f)` in rad^2/Hz at `offsets` from harmonic `i` — white AND coloured.
@@ -6140,7 +6223,7 @@ class PAC(Analysis):
                         'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
 
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1,
-                            frequency_aware=True):
+                            frequency_aware=None, fmin=None, fmax=None):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
 
         ⚠⚠ THIS DOES NOT GO THROUGH `pnoise`'s SIDEBAND FOLD, AND IT CANNOT.
@@ -6210,11 +6293,71 @@ class PAC(Analysis):
         Reporting `S_phi` near the carrier instead is the mistake that
         object invites.
 
+        ⚠ A COLOURED SOURCE (2026-09-26): with a 1/f source the phase is
+        no longer a Wiener process and the line is not a Lorentzian.  The
+        lineshape is then the Fourier transform of `exp(-D(tau)/2)`, with
+        `D` the excess phase's structure function built from `phase_psd`'s
+        `c(f)` (`_lineshape`): the WHITE part of the sources gives the
+        Lorentzian in closed form, the coloured part `c(f) - c_w` is
+        integrated over `[fmin, fmax]`.  `fmin` is REQUIRED -- a 1/f^3
+        phase has no stationary lineshape without a low cutoff; it plays
+        the part of the observation time -- and `fmax` defaults to f0/2,
+        the phase model's reach.  A white-only circuit is untouched.  The
+        DC PPV is used for every source: `frequency_aware` (default None:
+        True for white sources) is not composed with a coloured lineshape,
+        and asking for it with one is refused.  ⚠ So a circuit crossing
+        the colour classifier's threshold (`_coloured_present`, 1e-9 per
+        entry) steps by the frequency-aware correction in the skirt (1e-4
+        at 0.1 f0 on the 1/f fixture; large behind a slow node, which
+        `ppv()` warns of), as `phase_psd` already does.  Near the carrier
+        the transform is accurate to ~1e-6; the far skirt is the linear
+        one (`phase_psd`'s), taken per offset where its estimated error
+        (`_lineshape.linear_error`) is below the transform's (two tau
+        densities plus QUADPACK) -- both near 1e-4 at the handover.
+
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
+        if self._coloured_present(pss):
+            if frequency_aware:
+                raise ValueError(
+                    'PAC.oscillator_spectrum: frequency_aware=True is not '
+                    'composed with a COLOURED source\'s lineshape (it '
+                    'substitutes c(f) offset by offset into a Lorentzian, '
+                    'which a coloured phase is not).  Leave it unset: the '
+                    'coloured lineshape uses the DC PPV for every source.')
+            return self._coloured_spectrum(pss, offsets, output, harmonic,
+                                           fmin, fmax)
+        if frequency_aware is None:
+            frequency_aware = True
         c = self.diffusion_constant(pss)
         f0 = 1.0 / float(pss.period)
         self._warn_above_amplitude_pole(offsets, f0)
+        X = self._carrier_line(pss, output, harmonic)
+        if frequency_aware:
+            ## `c(f)` per offset -- one bordered adjoint solve each, cached on
+            ## `|offset|` so a symmetric sweep pays once per magnitude.  `c(0)`
+            ## is `c` exactly, so the near-carrier lineshape is unchanged.
+            off = np.asarray(offsets, dtype=float)
+            _cache = {}
+            flat = []
+            for o in np.atleast_1d(off).ravel():
+                key = abs(float(o))
+                if key not in _cache:
+                    _cache[key] = (c if key == 0.0 else
+                                   self.frequency_aware_diffusion(pss, key))
+                flat.append(float(self.lorentzian(np.array([o]), _cache[key],
+                                                  f0, harmonic)[0]))
+            Sv = abs(X) ** 2 * np.asarray(flat).reshape(np.shape(off))
+        else:
+            Sv = abs(X) ** 2 * self.lorentzian(offsets, c, f0, harmonic)
+        with np.errstate(divide='ignore'):
+            L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
+                                           1e-300))
+        return Sv, L
+
+    def _carrier_line(self, pss, output, harmonic):
+        """The carrier phasor `X` at `harmonic`, refusing an output with no
+        line there."""
         X = self.carrier_phasor(pss, output, harmonic)
         ## ⚠⚠ NO CARRIER, NO LINE -- AND THE ANSWER WOULD BE A PLAUSIBLE ZERO.
         ## This is a LINE-SHAPE model: it broadens the carrier's own harmonic.
@@ -6237,26 +6380,97 @@ class PAC(Analysis):
                 '(measured: ~0 against 5.6e-6 V^2/Hz on a symmetric van der '
                 'Pol at 2 f0). Use PAC.pnoise at that frequency.'
                 % (int(harmonic), abs(X), _scale))
-        if frequency_aware:
-            ## `c(f)` per offset -- one bordered adjoint solve each, cached on
-            ## `|offset|` so a symmetric sweep pays once per magnitude.  `c(0)`
-            ## is `c` exactly, so the near-carrier lineshape is unchanged.
-            off = np.asarray(offsets, dtype=float)
-            _cache = {}
-            flat = []
-            for o in np.atleast_1d(off).ravel():
-                key = abs(float(o))
-                if key not in _cache:
-                    _cache[key] = (c if key == 0.0 else
-                                   self.frequency_aware_diffusion(pss, key))
-                flat.append(float(self.lorentzian(np.array([o]), _cache[key],
-                                                  f0, harmonic)[0]))
-            Sv = abs(X) ** 2 * np.asarray(flat).reshape(np.shape(off))
-        else:
-            Sv = abs(X) ** 2 * self.lorentzian(offsets, c, f0, harmonic)
+        return X
+
+    #: the coloured lineshape warns when its estimated error at an offset
+    #: exceeds this, relative.  ⚠ Where the transform hands over to the
+    #: linear skirt both sit near 1e-4 (the 1/f fixture, ~1e-2 f0): the
+    #: transform is cancellation-limited there whatever its tau density
+    #: (1.1e-4 at 40/80 per decade, 9.6e-5 at 80/160)
+    LINESHAPE_WARN = 1e-3
+
+    def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax):
+        """`oscillator_spectrum` for a coloured source -- see there and
+        `_lineshape`."""
+        from . import _lineshape
+        self._check_circuit(pss)
+        self._refuse_driven(pss, 'oscillator_spectrum')
+        f0 = 1.0 / float(pss.period)
+        i = int(harmonic)
+        if fmin is None:
+            raise NotImplementedError(
+                'PAC.oscillator_spectrum: a noise source in this circuit is '
+                'COLOURED, and a 1/f^3 phase has no stationary lineshape '
+                'without a low cutoff -- pass fmin (the reciprocal of the '
+                'observation time; the coloured part is integrated over '
+                '[fmin, fmax], fmax defaulting to f0/2 = %.6g Hz).'
+                % (0.5 * f0))
+        fmin = float(fmin)
+        fmax = 0.5 * f0 if fmax is None else float(fmax)
+        if not (0.0 < fmin < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
+            raise ValueError(
+                'PAC.oscillator_spectrum: need 0 < fmin < fmax <= f0/2 '
+                '(%.6g Hz); got fmin=%r, fmax=%r.' % (0.5 * f0, fmin, fmax))
+        self._warn_above_amplitude_pole(offsets, f0)
+        X = self._carrier_line(pss, output, i)
+        ## the white part's `c` and the coloured part of `c(f)` from one fold
+        ## (`_colour_fold`: every coloured component through its own
+        ## columns, a stationary one the case whose columns do not move)
+        fold = self._colour_fold(pss, fmin, None, 'oscillator_spectrum')
+        c_w = fold.c_white
+        cfun = lambda nus: np.maximum(fold.coloured(nus), 1e-300)
+        pc, converged = _lineshape.refine(cfun, fmin, fmax)
+        if not converged:
+            warnings.warn(
+                'PAC.oscillator_spectrum: the coloured c(f) was not resolved '
+                'to %.0e at every node within %d nodes; the lineshape is '
+                'accurate to about the largest midpoint mismatch.'
+                % (_lineshape.NODE_TOL, _lineshape.MAX_NODES),
+                RuntimeWarning, stacklevel=3)
+        a = 2.0 * np.pi ** 2 * i * i * f0 * f0 * c_w
+        pref = 4.0 * i * i * f0 * f0
+        ## ⚠ THE FAR SKIRT IS THE LINEAR ONE, AND THE TRANSFORM CANNOT SAY SO:
+        ## there the lineshape is ~1e-7 of the integrand's scale, and the
+        ## transform finds it by cancellation (+-2e-3 at 0.1 f0 on the 1/f
+        ## fixture, whatever the tolerance).  So each offset takes the
+        ## transform or the linear skirt `S_phi`, whichever carries the
+        ## smaller estimated error: the transform's from two tau densities
+        ## plus QUADPACK's, the skirt's from `_lineshape.linear_error`.
+        shapes = [_lineshape.ColouredLineshape(a, pc, pref, per_decade=d)
+                  for d in (_lineshape.TAU_PER_DECADE,
+                            2 * _lineshape.TAU_PER_DECADE)]
+        off = np.asarray(offsets, dtype=float)
+        vals, errs = [], []
+        for o in np.atleast_1d(off).ravel():
+            s1, s2 = shapes[0](o), shapes[1](o)
+            err = abs(s2 - s1) / max(abs(s2), 1e-300) + shapes[1].last_err
+            if o != 0.0:
+                el = _lineshape.linear_error(o, i, f0, c_w, pc)
+                if el < err:
+                    s2 = (i * i * f0 * f0
+                          * (c_w + float(fold.coloured([abs(o)])[0])) / o ** 2)
+                    err = el
+            vals.append(s2)
+            errs.append(err)
+        S = np.asarray(vals).reshape(np.shape(off))
+        worst = max(errs) if errs else 0.0
+        if worst > self.LINESHAPE_WARN:
+            warnings.warn(
+                'PAC.oscillator_spectrum: the coloured lineshape carries an '
+                'estimated relative error of %.1e at offset %.6g Hz (neither '
+                'the transform nor the linear skirt is resolved better '
+                'there).' % (worst, float(np.atleast_1d(off).ravel()[
+                    int(np.argmax(errs))])), RuntimeWarning, stacklevel=3)
+        shape = shapes[1]
+        if c_w == 0.0 and shape.line_weight > 1e-12:
+            warnings.warn(
+                'PAC.oscillator_spectrum: no WHITE source broadens the line, '
+                'so a coherent carrier of weight %.3e remains (exp(-D/2) at '
+                'infinite lag, set by fmin); it is not in the returned '
+                'density.' % shape.line_weight, RuntimeWarning, stacklevel=3)
+        Sv = abs(X) ** 2 * S
         with np.errstate(divide='ignore'):
-            L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
-                                           1e-300))
+            L = 10.0 * np.log10(np.maximum(S, 1e-300))
         return Sv, L
 
     def frequency_aware_diffusion(self, pss, offset):

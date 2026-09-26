@@ -7810,6 +7810,16 @@ crossing motion that gives the held capacitor its
 
 ### `_coloured_covariance`
 
+2026-09-26: a component whose power-law exponent differs between its
+entries was refused.
+- Entries in disjoint index blocks, one exponent each, now split exactly
+  into independent components (`_split_by_exponent`): -3.2e-10 / +7.4e-11
+  against the closed form.
+- Correlated entries of different slope take the per-band path with
+  their own density `B (w1/w)^EF` (the per-band entries are now
+  `(key, cy_at)`): <= 4.6e-8.
+
+
 2026-09-25 (latest): the grid became ADAPTIVE (Simpson on the log axis,
 `|S_2 - S_1|/15` per panel).  A fixed 40-per-decade grid read -10.5 % on a
 driven Q = 20 tank and -21 % on a van der Pol's transverse covariance: the
@@ -8991,6 +9001,23 @@ takes a band mean on one side and a point value on the other is then
 measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
+
+2026-09-26: a COLOURED source is taken (it was refused through
+`diffusion_constant`).  The lineshape is the transform of
+`exp(-D(tau)/2)`, with `D` built from `c(f)`.  The white part is taken in
+closed form, the coloured part over `[fmin, fmax]`, with `fmin` required
+(`_lineshape`, `_coloured_spectrum`).
+- Against a closed form (Lorentzian-shaped colour): <= 1e-6, even with
+  the colour's corner inside the core.
+- Against an independent mpmath reference (1/f): <= 9e-8.
+- In the far skirt the transform is cancellation-limited (+-2e-3 at
+  0.1 f0), so each offset takes the transform or the linear skirt
+  `S_phi`, whichever has the smaller estimated error.  The estimate
+  (`linear_error`) tracks the real deviation within 1.2-1.7x.
+- `frequency_aware` defaults to None (True for white); an explicit True
+  with colour is refused.
+Log, 2026-09-26.
+
 
 The docstring before the move (after its first line):
 

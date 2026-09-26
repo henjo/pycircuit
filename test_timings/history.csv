@@ -968,3 +968,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20260926T113028Z,0c609c86,pycircuit no:cacheprovider tran_recorder,1356.2,3364,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,306.3
 20260926T115818Z,f9d906c7,pycircuit no:cacheprovider tran_recorder,1269.3,3364,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,298.4
 20260926T125117Z,cd95559a,pycircuit no:cacheprovider tran_recorder,1265.0,3365,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,295.0
+20260926T145658Z,1c6bee47,pycircuit no:cacheprovider tran_recorder,1275.5,3370,pycircuit/circuit/tests/test_analysis_shooting.py::test_band_spread_tells_a_band_mean_from_a_point_value,294.0

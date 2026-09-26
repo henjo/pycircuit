@@ -6798,11 +6798,13 @@ class _Flicker(IS):
         return self.toolkit.array([[p, -p], [-p, p]])
 
 
-def _lc_osc(a=0.0, rs=0.0, psd=1e-6, npts=240, flicker=False, fref=1.0):
+def _lc_osc(a=0.0, rs=0.0, psd=1e-6, npts=240, flicker=False, fref=1.0,
+            white=0.0):
     """An LC oscillator with optional even nonlinearity and tank loss.
 
     `a` breaks the waveform's half-wave symmetry; `rs` breaks the LOSSLESS
     tank's structural identity. Both are needed — see the test below.
+    `white` adds a white source beside the flicker one.
     """
     import warnings
     circuit.default_toolkit = circuit.numeric
@@ -6822,6 +6824,8 @@ def _lc_osc(a=0.0, rs=0.0, psd=1e-6, npts=240, flicker=False, fref=1.0):
         cir['n'] = _Flicker('v', gnd, i=0.0, noisePSD=psd, fref=fref)
     else:
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
+    if white > 0.0:
+        cir['nw'] = IS('v', gnd, i=0.0, noisePSD=white)
     pss = PSS(cir, method='gear', reltol=1e-12)
     m = cir.n - 1
     x0 = np.zeros(m)
@@ -12367,6 +12371,123 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
                        for o in offs])
     ratio = ms['total'] / (pn / 2.0)
     assert np.max(np.abs(ratio - 1.0)) < 5e-4, ratio
+
+
+def test_the_coloured_lineshape_transform_meets_a_closed_form():
+    """`_lineshape` (2026-09-26): the normalised lineshape with a coloured
+    phase, `S(f) = 2 int exp(-D/2) cos(2 pi f tau) dtau`, against a CLOSED
+    FORM.  A Lorentzian-shaped colour `c_c = c1 / (1 + (nu/nu_c)^2)` beside a
+    white `c_w` gives `exp(-D/2) = e^{-(a + a1) tau} e^{b (1 - e^{-g tau})}`,
+    a series of Lorentzians (`b = pi c1 / nu_c`, `g = 2 pi nu_c`).  With the
+    colour's corner INSIDE the white linewidth (`b = 30`, the core reshaped):
+    9.8e-7 / 9.6e-7 / -1.8e-7 / -6.0e-8 / -4e-11 at 0 .. 100 linewidths (the
+    corner above the linewidth, `b = 0.3`: <= 3e-7).  A 1/f colour on a
+    band, against an independent reference (the structure function exact
+    through Ci, the transform by mpmath's `quadosc`): <= 9e-8 at 0 ..
+    100 linewidths, at flicker/white 1 and 100 (not run here: 12 s per
+    offset).  The `tau` grid was the binding knob (10 per decade left
+    1.8e-4 at 100 linewidths)."""
+    from pycircuit.circuit.shooting import _lineshape
+    cw = 1e-3 / np.pi
+    c1, nuc = 3.0 * cw, 1e-4
+    a, a1 = 2 * np.pi ** 2 * cw, 2 * np.pi ** 2 * c1
+    b, g = np.pi * c1 / nuc, 2 * np.pi * nuc
+
+    def ref(f):
+        import mpmath as mp
+        mp.mp.dps = 60
+        tot, bb, w = mp.mpf(0), mp.mpf(b), 2 * mp.pi * f
+        for k in range(400):
+            A = mp.mpf(a) + mp.mpf(a1) + k * mp.mpf(g)
+            t = (-bb) ** k / mp.factorial(k) * 2 * A / (A * A + w * w)
+            tot += t
+            if k > 5 and abs(t) < mp.mpf(10) ** -40 * abs(tot):
+                break
+        return float(mp.e ** bb * tot)
+
+    pc, converged = _lineshape.refine(
+        lambda v: c1 / (1.0 + (np.asarray(v) / nuc) ** 2), 1e-9, 1e4)
+    assert converged
+    shape = _lineshape.ColouredLineshape(a, pc, 4.0)
+    for f in (0.0, 1e-4, 1e-3, 1e-2, 1e-1):
+        assert abs(shape(f) / ref(f) - 1.0) < 3e-6, (f, shape(f), ref(f))
+
+
+def test_the_oscillator_spectrum_takes_a_coloured_source():
+    """`oscillator_spectrum` with a 1/f source (2026-09-26; Andreas: "Do as
+    you suggest").  The phase is then no Wiener process and the line no
+    Lorentzian: the lineshape is the transform of `exp(-D(tau)/2)`, `D`
+    built from `c(f)` -- the white part in closed form, the coloured part
+    over `[fmin, fmax]` (`fmin` required: a 1/f^3 phase has no stationary
+    lineshape without a low cutoff).  On the asymmetric, lossy LC
+    (`_lc_osc`, flicker = white at the fixture's reference frequency):
+
+      * the core WIDENS as `fmin` falls -- S(0) 1.9e7 / 1.2e5 / 9.0e4 /
+        7.6e4 at fmin 1e-5 .. 1e-8 f0 (the white Lorentzian's is 4.0e7);
+      * the skirt meets the LINEAR one (`phase_psd`) as the transform's
+        own estimate says it should: S / S_phi - 1 = 7.5e-2 / 6.5e-3 /
+        6.9e-4 / 7.6e-5 at 3e-4 / 1e-3 / 3e-3 / 1e-2 f0 against estimates
+        7.6e-2 / 8.1e-3 / 1.1e-3 / 1.3e-4; further out, where the transform
+        is cancellation-limited (+-2e-3 at 0.1 f0), the linear skirt is
+        returned;
+      * a flicker 1e-8 / 1e-7 of the white moves the line centre by
+        -6.4e-5 / -6.4e-4, LINEAR in that level (9.996x), and the skirt by
+        < 1e-6 (the colour enters additively);
+      * no `fmin`, `frequency_aware=True`, `fmax > f0/2`: refused."""
+    import warnings as _w
+    _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
+                           fref=1.0 / 6.66, white=1e-6)
+    f0 = 1.0 / float(pss.period)
+    X2 = abs(pac.carrier_phasor(pss, 0, 1)) ** 2
+    offs = np.array([0.0, 1e-3, 0.1]) * f0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        S = {fr: pac.oscillator_spectrum(pss, offs, 0, fmin=fr * f0)[0] / X2
+             for fr in (1e-5, 1e-7)}
+        sphi = pac.phase_psd(pss, offs[1:])
+    assert S[1e-7][0] < 0.5 * S[1e-5][0], 'the core did not widen'
+    dev = S[1e-7][1] / sphi[0] - 1.0
+    assert 3e-3 < dev < 1e-2, dev
+    assert abs(S[1e-7][2] / sphi[1] - 1.0) < 1e-6, S[1e-7][2] / sphi[1]
+    for bad, exc in (({}, NotImplementedError),
+                     ({'fmin': 1e-7 * f0, 'frequency_aware': True}, ValueError),
+                     ({'fmin': 1e-7 * f0, 'fmax': f0}, ValueError)):
+        with pytest.raises(exc):
+            pac.oscillator_spectrum(pss, offs, 0, **bad)
+    devs = []
+    for psd in (1e-14, 1e-13):
+        _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=psd,
+                               fref=1.0 / 6.66, white=1e-6)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            Sv = pac.oscillator_spectrum(pss, offs, 0, fmin=1e-7 * f0)[0]
+            cw = pac._colour_fold(pss, 1e-7 * f0, None, 'x').c_white
+        Lw = pac.lorentzian(offs, cw, f0, 1)
+        devs.append(Sv / abs(pac.carrier_phasor(pss, 0, 1)) ** 2 / Lw - 1.0)
+    ## the line centre moves LINEARLY with the flicker level (9.996x for
+    ## 10x; -6.4e-4 at 1e-7 of the white -- the 1/f^3 phase wanders at
+    ## the lags that set the core); the skirt stays at the Lorentzian
+    assert abs(devs[1][0] / devs[0][0] - 10.0) < 0.1, devs
+    assert np.max(np.abs(devs[1][1:])) < 1e-6, devs[1]
+
+
+def test_the_coloured_lineshape_takes_a_source_that_follows_the_orbit():
+    """The coloured lineshape reads `c(f)` from the same fold as `phase_psd`,
+    modulated sources included: a SIGNED flicker `k V_v flicker_noise(1)` on
+    van der Pol against the same physics as a stationary 1/f source times
+    V_v (`_orbit_modulated_vdp`), at 0 .. 1e-2 f0: 2.5e-13."""
+    import warnings as _w
+    res = {}
+    for kind in ('flicker_ref', 'flicker'):
+        _c, pss, pac, ov = _orbit_modulated_vdp(kind)
+        f0 = 1.0 / float(pss.period)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res[kind] = pac.oscillator_spectrum(
+                pss, np.array([0.0, 1e-4, 1e-2]) * f0, ov, fmin=1e-7 * f0)[1]
+    err = np.max(np.abs(10 ** ((res['flicker'] - res['flicker_ref']) / 10)
+                        - 1.0))
+    assert err < 1e-9, err
 
 
 def test_the_resolved_phase_diffusion_keeps_its_order_on_a_non_uniform_grid():
@@ -28399,6 +28520,104 @@ def _pow_flicker(ef):
         def analog(p, outp, outn):
             return Contribution(Branch(outp, outn).I, _fn(p.k, ef))
     return _PowFlicker
+
+
+def _mixed_exponent_rc(kind):
+    """Two RC branches `o1`, `o2` off one driven node, and a 1/f^0.8 plus a
+    1/f^2 source on them: 'mixed' one element on DISJOINT branches (a
+    component whose exponent differs between entries), 'split' two
+    elements, 'corr' one element whose two sources are CORRELATED (cross
+    entry `sqrt(p1 p2)`, of a third slope: no split makes them
+    independent)."""
+    import warnings
+    from pycircuit.circuit.hdl import flicker_noise as _fn
+    circuit.default_toolkit = circuit.numeric
+    T, Rv, Cv, k = 1e-6, 1e3, 1e-9, 1e-20
+
+    class _Mixed(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+        @staticmethod
+        def analog(p, a, an, b, bn):
+            return (Contribution(Branch(a, an).I, _fn(p.k, 0.8)),
+                    Contribution(Branch(b, bn).I, _fn(p.k, 2.0)))
+
+    class _Corr(Circuit):
+        terminals = ('a', 'b')
+        instparams = [Parameter(name='k', desc='', unit='', default=1.0)]
+
+        def CY(self, x, w, epar=None):
+            f = abs(float(w)) / (2.0 * np.pi)
+            p1, p2 = self.iparv.k / f ** 0.8, self.iparv.k / f ** 2.0
+            xx = np.sqrt(p1 * p2)
+            return self.toolkit.array(np.array([[p1, xx], [xx, p2]]))
+    c = SubCircuit()
+    for nd in ('in', 'o1', 'o2'):
+        c.add_node(nd)
+    c['V'] = VSin('in', gnd, va=0.1, vo=0.0, freq=1.0 / T)
+    for b in ('1', '2'):
+        c['R' + b] = R('in', 'o' + b, r=Rv, noisy=False)
+        c['C' + b] = C('o' + b, gnd, c=Cv)
+    if kind == 'mixed':
+        c['n'] = _Mixed('o1', gnd, 'o2', gnd, k=k)
+    elif kind == 'corr':
+        c['n'] = _Corr('o1', 'o2', k=k)
+    else:
+        c['n1'] = _pow_flicker(0.8)('o1', gnd, k=k)
+        c['n2'] = _pow_flicker(2.0)('o2', gnd, k=k)
+    pss = PSS(c, method='radau', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 100, maxiterations=40)
+    names = [str(x) for x in c.nodes if str(x) != 'gnd!']
+    return pss, PAC(c, toolkit=circuit.numeric), names, (T, Rv, Cv, k)
+
+
+def test_a_coloured_covariance_takes_a_flicker_whose_exponent_differs_between_entries():
+    """A coloured component whose power-law exponent differs between its
+    entries was refused by the band integral ("no one amplitude to
+    replay") until 2026-09-26.  Now:
+
+      * entries in DISJOINT index blocks, one exponent each (sources of
+        different slope on branches sharing no node) split EXACTLY into
+        independent components (`_split_by_exponent`): identical to the
+        same sources as two elements, and to the closed form -3.2e-10 /
+        +7.4e-11 (1/f^0.8 / 1/f^2);
+      * correlated entries of different slope cannot split: the density
+        `B (w1/w)^EF` is rooted at every point per band frequency (the
+        moving-shape path), warned; against the closed form -1.0e-8 /
+        -4.6e-8 / -2.2e-8 (both diagonals and the cross entry).
+    (Two sources SHARING a node sum in one entry, which the component
+    model cannot fit as one power law: that element is per-band already.)
+    """
+    from scipy.integrate import quad
+    import warnings as _w
+    K = {}
+    for kind in ('mixed', 'split', 'corr'):
+        pss, pac, names, (T, Rv, Cv, k) = _mixed_exponent_rc(kind)
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            K[kind] = pac.covariance(pss, fmin=1e3)
+        if kind == 'corr':
+            assert any('different power-law exponents' in str(r.message)
+                       for r in rec)
+    fmax = 0.5 * len(pss.factored_period().steps) / T
+    fc = 1.0 / (2.0 * np.pi * Rv * Cv)
+
+    def ref(ef):
+        return quad(lambda u: k * np.exp((1.0 - ef) * u) * Rv ** 2
+                    / (1.0 + np.exp(2.0 * u) / fc ** 2),
+                    np.log(1e3), np.log(fmax), epsabs=0, epsrel=1e-12,
+                    limit=500)[0]
+    i1, i2 = names.index('o1'), names.index('o2')
+    assert np.max(np.abs(K['mixed'] - K['split'])) <= \
+        1e-12 * np.max(np.abs(K['split'])), 'the split is not exact'
+    for (i, j), ef, tol in (((i1, i1), 0.8, 1e-9), ((i2, i2), 2.0, 1e-9)):
+        assert abs(K['mixed'][i, j] / ref(ef) - 1.0) < tol, (ef, K['mixed'][i, j])
+    for (i, j), ef in (((i1, i1), 0.8), ((i2, i2), 2.0), ((i1, i2), 1.4)):
+        assert abs(abs(K['corr'][i, j]) / ref(ef) - 1.0) < 1e-6, \
+            (ef, K['corr'][i, j] / ref(ef))
 
 
 def test_a_coloured_covariance_integrates_any_flicker_exponent():
