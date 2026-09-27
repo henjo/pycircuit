@@ -990,7 +990,7 @@ def test_radau_embedded_estimate_is_order_three_and_drives_step_control():
 
 
 def test_radau_cost_transform_matches_the_dense_coupled_solve():
-    """The Radau cost transform (opt-in) gives the SAME step as the dense
+    """The Radau cost transform (opt-in, `radau_transform=True`) gives the SAME step as the dense
     coupled solve -- machine precision on a linear circuit, Newton tolerance on
     a nonlinear one -- and falls back to the dense full-Newton path when its
     simplified Newton stalls.
@@ -1010,10 +1010,11 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
         c = build()
         ## vabstol=1e-12: measured at the pre-2026-09-19 default; this pins agreement far
         ## below the 1e-6 default's Newton floor, so it asks for the tight solve by name
+        ## the PUBLIC switch (a Parameter since 2026-09-27; a private
+        ## attribute only tests could set before)
         tr = Transient(c, toolkit=circuit.numeric,
                        integrator=RadauIIA3Integrator(), reltol=1e-10,
-                       vabstol=1e-12)
-        tr._radau_use_transform = transform
+                       vabstol=1e-12, radau_transform=transform)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tr.solve(tend=tend, timestep=dt, x0=np.zeros(c.n),

@@ -812,6 +812,24 @@ class Transient(Analysis):
                         "2026-09-27)",
                    unit='',
                    default='approx'),
+         ## THE RADAU COST TRANSFORM, promoted 2026-09-27 (Andreas: "Promote
+         ## but measure first") from a private switch only tests set.  radau5's
+         ## eig(A^-1) split: one real and one complex m x m solve per
+         ## SIMPLIFIED-Newton iteration instead of the dense 3m system, and the
+         ## dense full Newton when it stalls.  Measured on a diode-loaded RC
+         ## ladder: fixed step 1.74x at m = 102 and 3.05x at m = 402, the answer
+         ## the same to the Newton tolerance (1.2e-5 at the defaults; the
+         ## dense-vs-transform test pins 1e-9 at tight ones); adaptive 1.5x
+         ## (m = 52) to 3.1x (m = 402), at most one fallback per run.  Off by
+         ## default: simplified Newton can stall on a strongly nonlinear step,
+         ## and the dense solve is the correctness reference.
+         Parameter(name='radau_transform',
+                   desc="Solve each Radau IIA step by the eig(A^-1) cost "
+                        "transform: one real and one complex m x m solve per "
+                        "iteration instead of the dense 3m one, falling back "
+                        "to the dense solve if it stalls. Measured 1.5-3x "
+                        "faster at m = 50-400. Off by default.",
+                   unit='', default=False),
          ## STAGE 13 -- PCNR instead of limiting, on the transient path too.
          ## Off by default for the same measured reason as on DC: gate 13-4 puts
          ## it at +60-80% per Newton iteration, for a consistency these circuits
@@ -4270,8 +4288,8 @@ class Transient(Analysis):
         exactly ``(I3 (x) C + h A (x) G)`` in the linear case.  This dense
         coupled solve is the DEFAULT and the correctness reference.
 
-        ⚠ THE COST TRANSFORM is the fast path, opt-in via ``radau_transform``
-        (or ``self._radau_use_transform``).  It block-diagonalises the coupled
+        ⚠ THE COST TRANSFORM is the fast path, opt-in via the
+        ``radau_transform`` Parameter.  It block-diagonalises the coupled
         system through ``eig(A^{-1})`` into one REAL and one COMPLEX `m x m`
         solve (see :meth:`_rk_step_transformed`) -- an
         ``O((3m)^3)`` dense solve becomes two sparse ones.  It is SIMPLIFIED
@@ -4288,8 +4306,7 @@ class Transient(Analysis):
         ``_iq``/``_q_cache`` set so the history push after the step is consistent.
         """
         from pycircuit.circuit.nrsolver import NoConvergenceError
-        if getattr(self, '_radau_use_transform',
-                   getattr(self.par, 'radau_transform', False)):
+        if self.par.radau_transform:
             try:
                 return self._rk_step_transformed(
                     x0, t, provided_function)
@@ -5270,6 +5287,12 @@ class Transient(Analysis):
         ladder `_rk_step_coupled` carries could only fire under
         `fixed_timestep=True`.  One loop, one ladder."""
         self._dt = h
+        ## ⚠ WHETHER THIS PATH REACHES A LADDER AT ALL (`_honours_continuation_
+        ## rescue`, consulted here since 2026-09-27 -- it was written to guard
+        ## this message and had no caller): the error must not claim a rescue
+        ## that was never attempted, and a success is a rescue only where one
+        ## could run
+        honours = self._honours_continuation_rescue()
         self._continuation_rescue = True
         try:
             out = self._attempt_step(family, X, t, h, hold, provided_function)
@@ -5277,6 +5300,12 @@ class Transient(Analysis):
                 self.statistics.gmin_rescues += 1
             return out
         except NoConvergenceError as e:
+            if honours:
+                raise TransientStepError(
+                    'Transient solver failed to converge: timestep shrank below '
+                    'minstep=%gs at t=%s, and the gmin/gshunt/pseudo-transient '
+                    'continuation could not rescue the point: %s'
+                    % (self.par.minstep, t, e)) from e
             raise TransientStepError(
                 'Transient solver failed to converge: timestep shrank below '
                 'minstep=%gs at t=%s, and this step path carries no '
@@ -5290,15 +5319,3 @@ class Transient(Analysis):
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
-        ## ⚠ WHETHER THIS PATH REACHES A LADDER AT ALL (`_honours_continuation_
-        ## rescue`, consulted here since 2026-09-27 -- it was written to guard
-        ## this message and had no caller): the error must not claim a rescue
-        ## that was never attempted, and a success is a rescue only where one
-        ## could run
-        honours = self._honours_continuation_rescue()
-            if honours:
-                raise TransientStepError(
-                    'Transient solver failed to converge: timestep shrank below '
-                    'minstep=%gs at t=%s, and the gmin/gshunt/pseudo-transient '
-                    'continuation could not rescue the point: %s'
-                    % (self.par.minstep, t, e)) from e

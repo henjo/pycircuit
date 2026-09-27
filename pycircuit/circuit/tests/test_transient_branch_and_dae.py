@@ -822,7 +822,7 @@ def test_the_branch_check_confirms_on_every_solve_path():
     def march(g, cls, transform=False, pcnr=False):
         cir = build(g)
         tr = Transient(cir, integrator=cls(), reltol=1e-12, pcnr=pcnr)
-        tr._radau_use_transform = transform
+        tr.par.radau_transform = transform
         tr.irefnode = cir.get_node_index(_gnd)
         x = np.zeros(cir.n)
         tr.epar.t = 0.0
@@ -857,7 +857,7 @@ def test_the_branch_check_confirms_on_every_solve_path():
             warnings.simplefilter('ignore')
             tr = Transient(_expg_fixture(PER), integrator=_I.RadauIIA3Integrator(),
                            reltol=1e-10)
-            tr._radau_use_transform = tf
+            tr.par.radau_transform = tf
             tr.solve(refnode=_gnd, tend=PER, timestep=PER / 100,
                      fixed_timestep=True)
         assert getattr(tr.statistics, 'branch_points', 0) == 0
