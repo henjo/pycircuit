@@ -1237,8 +1237,8 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
 ## way doc/backend_parity_260821.md P19 records: sec. 3.4's error-ratio step
 ## correction with the eq (18) solution update, hold_h for imposed step sizes,
 ## the within-point excursion clamps and the thwarted-shrink saturation test.
-## NOT ported (CPU-only until separately justified): the 'bordered' eq (12)
-## branch.  The LTE degree follows the effective order (F19): both degrees are
+## (The 'bordered' eq (12) branch was never ported, and was retired on the
+## CPU on 2026-09-27.)  The LTE degree follows the effective order (F19): both degrees are
 ## computed and selected, which keeps every shape static under the trace.
 ##
 ## ⚠ CORRECTED 2026-09-01.  This list used to name three more items, and all
@@ -3035,13 +3035,9 @@ class JAXTransient(Analysis):
       three places; `radau`, `trbdf2`, `esdirk43` and the GLM family appear
       nowhere in this file.  So a per-stage Newton has never run here, and
       putting one of them on this backend is a NEW capability rather than a
-      port of a missing case.  The rest of the sentence still stands: of the
-      features the LMM paths have, the coupled 'bordered'
-      eq (12) branch is REFUSED rather than missing: measured on the CPU
-      before any port (`benchmarks/coupled_bordered_gear2.py`), it costs
-      2.72x the time points and 2.24x the Newton iterations of 'approx' under
-      Gear-2 on the pulsed RC -- against 1.02x/1.10x under Euler, so the
-      integrator is what mistunes it, and Gear-2 is this backend's default.
+      port of a missing case.  (The coupled 'bordered' eq (12) branch, once
+      refused here, was retired on the CPU on 2026-09-27: after its
+      double-counted term was removed it took the same steps as 'approx'.)
       Its whole purpose is to trade a few more time points for fewer Newton
       iterations; under Gear-2 it loses on both.  Porting it would import a
       defect and call it parity.  See the P19 note for what would reopen it.
@@ -3120,8 +3116,8 @@ class JAXTransient(Analysis):
                   unit='', default=False),
         Parameter(name='coupled_lte',
                   desc="Solve solution and step size together (Fang DAC 2013, "
-                       "sec 3.4 'approx' correction). The 'bordered' branch "
-                       "and PCNR-inside-Fang remain CPU-only.",
+                       "sec 3.4 'approx' correction). PCNR-inside-Fang "
+                       "remains CPU-only.",
                   unit='', default=False),
         ## The LTE acceptance band, with the CPU's 'auto' sentinel semantics
         ## (F5): 'auto' resolves to Fang's (0.7, 3.0, 0.15) on the coupled

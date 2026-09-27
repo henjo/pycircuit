@@ -546,7 +546,7 @@ class Transient(Analysis):
     default since P22's state-row mask (eq (6) measured on state rows
     only; algebraic rows are slaved through the Jacobian).
     CPU-only, with cause: trapezoidal integration (a correct VARIABLE-step
-    trap estimator exists only here), the coupled 'bordered' branch, and the
+    trap estimator exists only here) and the
     `nrsolver`/`scaler`/`linearsolver` strategy objects -- per-iteration
     Python dispatch that a traced loop cannot host, so `JAXTransient`
     refuses them permanently (P17).  JAX-only by design: `solve_batched`
@@ -802,14 +802,14 @@ class Transient(Analysis):
          ## 'approx'   Fang sec. 3.4: the new step comes from the error RATIO
          ##            (eq 17) and the solution is corrected by eq (18).  The
          ##            default, and the one with the measured record.
-         ## 'bordered' Fang eq (12)/(14): a linearised Newton step on the LTE
-         ##            equation, which additionally accounts for the pending
-         ##            solution update through `q^T dv`.  Its denominator is
-         ##            computed ANALYTICALLY -- see `fang_timestep` for why the
-         ##            paper's `q^T dxh + d` cannot be used as written.
+         ## 'bordered' Fang eq (12)/(14), RETIRED 2026-09-27: once its
+         ##            double-counted `q^T dv0` term was removed it took the
+         ##            same steps as 'approx' to every printed digit; asking
+         ##            for it raises, naming this.
          Parameter(name='coupled_method',
                    desc="Step-size correction for coupled_lte=True: 'approx' "
-                        "(Fang sec 3.4, default) or 'bordered' (eq 12/14)",
+                        "(Fang sec 3.4, the only one; 'bordered' was retired "
+                        "2026-09-27)",
                    unit='',
                    default='approx'),
          ## STAGE 13 -- PCNR instead of limiting, on the transient path too.
@@ -2513,8 +2513,7 @@ class Transient(Analysis):
         attaches to `solve_timestep`.  It does not need to: the Schur-reduced
         system IS an n-sized system whose Newton step equals `predict`'s
         ``dx_mna``, so handing `fang_timestep` ``(f_eff, J_eff)`` in place of
-        ``(f, J)`` makes its existing solve work unchanged -- **and its bordered
-        (N+1) extension too**, which reuses the same factors for ``dxh``.
+        ``(f, J)`` makes its existing solve work unchanged.
         """
         from pycircuit.circuit import pcnr as _pcnr
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = self._pcnr_augmented(
@@ -2668,10 +2667,18 @@ class Transient(Analysis):
         ## the same window the standard controller allows for one step.
         from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
                                                       MAX_GROWTH_RATIO)
-        if method not in ('approx', 'bordered'):
+        if method == 'bordered':
             raise ValueError(
-                "coupled_method must be 'approx' (Fang sec 3.4) or 'bordered' "
-                "(eq 12/14), not %r" % (method,))
+                "coupled_method='bordered' (Fang eq 12/14) was retired on "
+                "2026-09-27: once its double-counted q^T dv0 term was removed "
+                "(2026-09-19) it took the same steps as 'approx' to every "
+                "printed digit -- measured on a smooth and a pulsed RC, the "
+                "same accepted steps, Newton iterations and error. Use "
+                "'approx' (the default).")
+        if method != 'approx':
+            raise ValueError(
+                "coupled_method must be 'approx' (Fang sec 3.4), not %r"
+                % (method,))
 
         h_entry = h
         h_floor = max(hmin, h_entry * MIN_SHRINK_RATIO)
@@ -2802,122 +2809,13 @@ class Transient(Analysis):
 
             target = self._band_centre(ctrl, gamma_min, gamma_max)
 
-            if method == 'bordered':
-                ## EQ (12)/(14), with the denominator computed ANALYTICALLY.
-                ##
-                ## The paper forms eq (14)'s denominator as `q^T dxh + d`, where
-                ## `q^T dxh` is how the SOLUTION moves with the step size and `d`
-                ## is how the EXTRAPOLATION moves.  Both are approximately dv/dt,
-                ## so their difference is the derivative of the truncation error
-                ## -- tiny by construction, and computed as a difference of two
-                ## large numbers.  Measured at h = 3.48e-7 on a driven RC:
-                ##
-                ##     q^T dxh = -1.310e8      d = +1.301e8
-                ##     difference = -9.68e5, which is 0.74% of the larger term
-                ##     ground truth (re-solved finite difference) = +4.678e6
-                ##
-                ## The subtraction gets the SIGN WRONG and is 5x too small, which
-                ## is why an earlier attempt at eq (12) drove the step size down
-                ## four decades while the error sat far below its band.
-                ##
-                ## The same quantity has a closed form.  `eps ~ C w(h)` with
-                ## `w(h) = h(h+h1)(h+h1+h2)`, so `d(eps)/dh = eps w'(h)/w(h)` and
-                ## `w'/w` is a sum of positive reciprocals -- no cancellation
-                ## anywhere.  Measured against the same ground truth: +4.392e6,
-                ## a ratio of 0.939.
-                ##
-                ## ⚠ SUPERSEDED 2026-09-19 -- see the note at `dh_raw` below: the
-                ## `q^T dv0` term this paragraph credits was double-counted and
-                ## is gone.  What the branch still takes from eq (12) is a NEWTON
-                ## step on the LTE equation with an analytic denominator, where
-                ## 'approx' inverts the error ratio; on a smooth circuit the two
-                ## now agree to every printed digit.  Kept as written, below,
-                ## because it records what was believed:
-                ## What this branch still takes from eq (12), and the reason it
-                ## is not merely sec. 3.4 in disguise, is the `q^T dv0` term: the
-                ## LTE is evaluated at an iterate that has not converged, and
-                ## that term accounts for how it will move as the solution does.
-                acc, wp_over_w = 0.0, 1.0 / h
-                for hh in h_hist:
-                    acc = acc + hh
-                    wp_over_w = wp_over_w + 1.0 / (h + acc)
-
-                ## `max(err, tiny)`, and it is not defensive clutter -- it is the
-                ## difference between this branch working and crawling.
-                ##
-                ## `denom = err * w'/w` vanishes when the error does, and on a
-                ## pulsed circuit the error IS zero over the flat regions, where
-                ## the solution is constant and the extrapolation reproduces it
-                ## exactly.  Measured on rc-pulse: 76.1% of all step adjustments
-                ## happen at err = 0.  Guarding the degenerate denominator by
-                ## leaving `h` alone -- the obvious reading -- meant the step
-                ## never grew back after an edge had forced it down: 11831 of
-                ## 12382 time points took the SAME step as the one before, the
-                ## median step came out 10x smaller than the 'approx' branch's,
-                ## and the run took 5.6x the time points for the same waveform.
-                ##
-                ## Zero error does not mean "leave the step alone", it means "the
-                ## step is far too small".  A tiny positive denominator makes the
-                ## Newton step enormous, which the eta limiter then caps at the
-                ## same +15% growth `step_for_error_ratio` would have produced --
-                ## so the two branches agree in the limit instead of diverging.
-                denom = max(err, 1e-300) * wp_over_w
-
-                if denom <= 0.0 or denom != denom or denom == float('inf'):
-                    h_new = h_want = h
-                else:
-                    ## ⚠ THE `lte_gradients` CALL THAT STOOD HERE IS GONE
-                    ## (2026-09-20): its outputs fed only the `q^T dv0` term
-                    ## removed below, so after that fix it computed three
-                    ## things nothing read.  (My note of 2026-09-19 said
-                    ## `i_ctrl` served "the diagnostics"; nothing reads it.)
-                    ## Two notes retired with it, and their reasons: the
-                    ## "TESTED AND REJECTED" degree-slicing measurement (3117
-                    ## vs 611 steps) was about the gradient's INPUTS, so it
-                    ## was only ever a measurement of the double-counted term
-                    ## -- nothing is left to re-test; and the
-                    ## `x_hist[:len(h_hist)+1]` slice existed so the gradient
-                    ## did not raise after a breakpoint emptied the step ring
-                    ## (`test_bordered_survives_the_ring_reset_on_a_delay_line`
-                    ## keeps that run as an integration check).
-                    ## `lte_gradients` itself stays in `StepController`, gated
-                    ## by `test_solution_lte.py`; no shipped path calls it.
-                    f_lte = err - target
-                    ## ⚠⚠ NO `q^T dv0` TERM, AND ITS PRESENCE WAS A DEFECT
-                    ## (2026-09-19).  Eq (12) has `-(f + q^T dv0)/denom` because
-                    ## the paper evaluates the LTE residual `f` at the iterate
-                    ## BEFORE the Newton update, and `q^T dv0` predicts how it
-                    ## moves.  Here `err` comes from `_lte_in_band(ctrl,
-                    ## x_stage1, ...)` with `x_stage1 = x + dx0` -- the update is
-                    ## ALREADY IN IT -- so the term counted the movement twice.
-                    ## With `denom = err w'/w` tiny wherever the error is (the
-                    ## flat and the well-resolved regions) the spurious term, not
-                    ## `f`, decided the SIGN of `dh`: per time point the step grew
-                    ## 15 % on the first iteration and SHRANK 15 % on the second
-                    ## (1.15 x 0.85 = 0.9775, measured on every one of 8821
-                    ## points), ratcheting down to a crawl -- 8828 steps for 93
-                    ## on a driven RC, same accuracy.
-                    ## ⚠ HIDDEN FOR AS LONG AS `vabstol` DEFAULTED TO 1e-12: that
-                    ## tolerance kept the loop iterating until `dx0` had decayed
-                    ## to ~1e-13 and the term with it.  At any tolerance of 1e-9
-                    ## or looser the loop exits with `dx0` still ~1e-8, and `q` is
-                    ## ~1/etol.  Found when the default became 1e-6.
-                    dh_raw = -f_lte / denom
-                    ## `h_want` is the UNCLAMPED Newton step, kept before the eta
-                    ## limiter for the same reason the 'approx' branch keeps it:
-                    ## saturation has to be measured against what the step wants,
-                    ## not against what it got.  Setting `h_want = h_new` after
-                    ## clamping silently disabled the check that fixed the 56x
-                    ## post-breakpoint step -- the bordered branch would have
-                    ## inherited that defect with no test able to see it.
-                    h_want = h + dh_raw
-                    dh_raw = max(-eta * h, min(eta * h, dh_raw))
-                    h_new = h + dh_raw
-                ratio = target / max(err, 1e-300)
-            else:
-                ratio = target / max(err, 1e-300)
-                h_new = step_for_error_ratio(h, h_hist, ratio,
-                                             1.0 - eta, 1.0 + eta)
+            ## (`coupled_method='bordered'`, Fang eq (12)/(14) -- a Newton step
+            ## on the LTE equation with an analytic denominator -- stood here
+            ## until 2026-09-27; retired, see the check above.  History:
+            ## doc/pss_log_260902.md, 2026-09-27, and git.)
+            ratio = target / max(err, 1e-300)
+            h_new = step_for_error_ratio(h, h_hist, ratio,
+                                         1.0 - eta, 1.0 + eta)
 
             ## WHAT THE STEP WANTS, ignoring every clamp.  Saturation has to be
             ## measured against this, not against the clamped result: once `h` is
@@ -2934,8 +2832,7 @@ class Transient(Analysis):
             ## an analytic 0.018731, a 78% single-step error, and the resulting
             ## 1.465e-2 was IDENTICAL at reltol 1e-5 and 1e-6 because nothing
             ## about it was tolerance-controlled.
-            if method != 'bordered':
-                h_want = step_for_error_ratio(h, h_hist, ratio, 1e-6, 1e6)
+            h_want = step_for_error_ratio(h, h_hist, ratio, 1e-6, 1e6)
             h_new = min(max(h_new, h_floor), h_ceil)
             dh = h_new - h
 
@@ -3028,10 +2925,10 @@ class Transient(Analysis):
                                 + self._lte_abstol_vector())
         ## P22: eq (6) over the STATE rows only -- an infinite tolerance on
         ## algebraic rows removes them from the band test, the controlling-
-        ## node argmax, AND bordered's lte_gradients through this one
-        ## mechanism, so the two step-correction branches keep measuring the
-        ## same problem.  See _state_row_mask for the derivation and the
-        ## measured livelock this retires.
+        ## node argmax through this one mechanism (and, until its retirement on
+        ## 2026-09-27, the 'bordered' branch's lte_gradients).  See
+        ## _state_row_mask for the derivation and the measured livelock this
+        ## retires.
         ## 1e30, not inf: lte_gradients differentiates 1/etol terms, and an
         ## inf there turns a masked row's gradient into 0*inf = NaN.
         mask = getattr(self, '_lte_state_mask', None)

@@ -1,10 +1,12 @@
-"""STAGE 12B -- `coupled_method`, selecting how the coupled path corrects `h`.
+"""STAGE 12B -- `coupled_method`, how the coupled path corrects `h`.
 
     'approx'   Fang sec. 3.4 -- the step comes from the error RATIO (eq 17) and
-               the solution is corrected by eq (18). The default.
-    'bordered' Fang eq (12)/(14) -- a linearised Newton step on the LTE equation,
-               which additionally accounts for the pending solution update
-               through `q^T dv`.
+               the solution is corrected by eq (18). The default, and since
+               2026-09-27 the only one.
+    'bordered' Fang eq (12)/(14) -- a linearised Newton step on the LTE
+               equation.  RETIRED 2026-09-27: once its double-counted `q^T dv0`
+               term was removed (2026-09-19) it took the same steps as 'approx'
+               to every printed digit; the record below is of why it was built.
 
 **Eq (12) is usable only because its denominator is computed analytically.** The
 paper forms it as `q^T dxh + d`, and those two terms are how the solution moves
@@ -69,37 +71,24 @@ def test_the_default_is_the_method_with_the_measured_record():
     assert tran.par.coupled_method == 'approx'
 
 
-def test_both_methods_solve_the_circuit_and_take_no_rejections():
-    """Figure 3 has no rejection branch, whichever correction is selected."""
-    for method in ('approx', 'bordered'):
-        st, err = _run(method)
-        assert st.rejected_steps == 0, '%s took %d rejections' % (method, st.rejected_steps)
-        assert st.accepted_steps > 10
-        assert err < 5e-3, '%s: max error %g' % (method, err)
+def test_the_coupled_step_solves_the_circuit_and_takes_no_rejections():
+    """Figure 3 has no rejection branch."""
+    st, err = _run('approx')
+    assert st.rejected_steps == 0, 'took %d rejections' % st.rejected_steps
+    assert st.accepted_steps > 10
+    assert err < 5e-3, 'max error %g' % err
 
 
-def test_the_two_methods_agree_on_a_smooth_circuit():
-    """On a smooth drive the extra `q^T dv` term changes almost nothing.
-
-    That is the expected result, not a disappointing one: the term accounts for
-    the LTE moving as the solution converges, and on a smooth circuit the
-    solution is already close when the LTE is evaluated. Pinned so that a future
-    change making them diverge here is noticed.
-
-    RE-DERIVED at P22 (the state-row mask): the two branches used to agree
-    on max error to 5%, but part of that agreement came from BOTH branches
-    occasionally taking their controlling row from an ALGEBRAIC unknown
-    (the source current), whose eq (6) value measures grid conventions
-    rather than truncation -- the artifact the mask retires.  With the
-    mask, step counts still agree to 5% and the errors to ~11% (measured
-    3.138e-3 vs 3.489e-3); bound at 20%, with both pinned against the
-    analytic solution so neither can quietly degrade.
-    """
-    st_a, err_a = _run('approx')
-    st_b, err_b = _run('bordered')
-    assert abs(st_b.accepted_steps - st_a.accepted_steps) <= 0.05 * st_a.accepted_steps
-    assert err_b == pytest.approx(err_a, rel=0.20)
-    assert err_a < 5e-3 and err_b < 5e-3, (err_a, err_b)
+def test_bordered_is_retired_and_says_why():
+    """`coupled_method='bordered'` (Fang eq 12/14) raises, naming why: once its
+    double-counted `q^T dv0` term was removed (2026-09-19) it took the same
+    steps as 'approx' -- measured before retiring it, on this smooth RC and
+    on the pulsed one: the same accepted steps (100 / 264), Newton
+    iterations (222 / 1064), rejections and error, to every printed digit."""
+    tran = Transient(_rc(), toolkit=numeric)
+    tran.par.coupled_method = 'bordered'
+    with pytest.raises(ValueError, match='retired'):
+        tran.solve(tend=5e-5, timestep=1e-5, coupled_lte=True)
 
 
 def test_an_unknown_method_is_refused():
@@ -130,38 +119,7 @@ def _pulse_run(method):
     return tran.statistics
 
 
-def test_bordered_grows_the_step_back_where_the_error_is_zero():
-    """THE DEFECT THAT MADE EQ (12) LOOK UNUSABLE, and it was not eq (12).
-
-    `bordered`'s denominator is `err * w'(h)/w(h)`, which vanishes when the error
-    does -- and on a pulsed circuit the error IS zero across the flat regions
-    between edges, where the solution is constant and the extrapolation
-    reproduces it exactly. Measured on this circuit: **76.1% of all step
-    adjustments happen at err = 0**.
-
-    Guarding that degenerate denominator by leaving `h` alone is the obvious
-    reading and the wrong one. Zero error does not mean "leave the step alone",
-    it means "the step is far too small". With the guard, once an edge forced `h`
-    down it never grew back: 11831 of 12382 time points repeated the step before
-    them, the median step came out 10x smaller than `approx`'s, and the run took
-    5.6x the time points for the same waveform.
-
-    Asserted against `approx` rather than against an absolute count, so the test
-    survives step counts changing for unrelated reasons.
-    """
-    st_a = _pulse_run('approx')
-    st_b = _pulse_run('bordered')
-    assert st_b.accepted_steps < 2.0 * st_a.accepted_steps, (
-        'bordered took %d time points against approx\'s %d -- the step is not '
-        'growing back where the error is zero'
-        % (st_b.accepted_steps, st_a.accepted_steps))
-    ## And the Newton work must be comparable too: a step count held down by
-    ## doing more iterations per point would pass the check above for the wrong
-    ## reason.
-    assert st_b.newton_iterations < 2.0 * st_a.newton_iterations
-
-
-def test_neither_method_rejects_a_step_on_a_pulsed_circuit():
+def test_the_coupled_step_rejects_few_steps_on_a_pulsed_circuit():
     """Figure 3's promise has to survive real discontinuities, not just smooth
     drives -- which is the whole reason a breakpoint circuit is in this file.
 
@@ -174,7 +132,7 @@ def test_neither_method_rejects_a_step_on_a_pulsed_circuit():
     retry when their imposed size fails the error test.  Measured at
     re-derivation: 16/985 and 14/1035 rejections, all at edges.  Bound
     them to a small fraction rather than pretending they are zero."""
-    for method in ('approx', 'bordered'):
+    for method in ('approx',):
         st = _pulse_run(method)
         assert st.rejected_steps <= 0.05 * st.accepted_steps, \
             '%s: %d rejections against %d accepted -- held-step retries ' \
@@ -254,64 +212,9 @@ def test_coupled_tline_matches_standard_path():
     assert t2[-1] >= 8e-9 * (1.0 - 1e-9)
     assert abs(vb2[-1] - 2.0 / 3.0) < 5e-3
 
-def test_bordered_survives_the_ring_reset_on_a_delay_line():
-    """An INTEGRATION CHECK: the bordered branch survives the ring reset.
-
-    ⚠ 2026-09-20: this test used to PIN an `x_hist[:len(h_hist)+1]` slice fed
-    to `lte_gradients` in the bordered branch; that call is gone (its outputs
-    fed only eq (12)'s double-counted `q^T dv0` term, removed 873cbd3), so the
-    `ValueError` below cannot recur and the slice pins nothing.  What remains
-    worth keeping is the run itself -- bordered across a TLine's breakpoint
-    landings, reaching tend and staying near 'approx'.  The history:
-
-    The kink discipline empties the step ring on a breakpoint landing (TLine
-    circuits only), so the next bordered step sees 3 history points with 0 or
-    1 recorded spacings -- and `lte_gradients` on the unsliced history raised
-    `ValueError: need 2 step sizes for 3 points, got 1` mid-run.  The fix
-    slices x_hist to len(h_hist)+1 (points beyond the ring have no spacing to
-    difference against).  No other test reaches this interaction: the pulsed
-    RC bordered tests no longer trigger the reset (it is gated on TLines),
-    and the TLine test above runs the default 'approx' branch, which never
-    calls lte_gradients.  Verified fail-first: reverting the slice makes this
-    test die with the ValueError above; with it, the run completes, lands on
-    tend, and stays close to the 'approx' branch on the same circuit.
-    """
-    from pycircuit.circuit.elements import R as _R, VPulse, TLine
-
-    def line():
-        c = SubCircuit()
-        c.add_node('a'); c.add_node('b')
-        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
-                         tf=2e-10, pw=1e-8, per=1e-7)
-        c['Rs'] = _R('s', 'a', r=50.0)
-        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
-        c['Rl'] = _R('b', gnd, r=50.0)
-        return c
-
-    results = {}
-    for method in ('approx', 'bordered'):
-        tran = Transient(line(), toolkit=numeric, reltol=1e-4, uic=True)
-        tran.par.coupled_method = method
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            res = tran.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
-        t = np.asarray(res.sweep_values, float)
-        vb = np.asarray(res.v('b'), float).reshape(-1)
-        assert t[-1] >= 8e-9 * (1.0 - 1e-9), \
-            '%s did not reach tend: %g' % (method, t[-1])
-        results[method] = (t, vb)
-
-    ta, va = results['approx']
-    tb, vb_ = results['bordered']
-    dev = float(np.max(np.abs(np.interp(ta, tb, vb_) - va)))
-    ## Same equations, same band -- only the h-correction law differs.
-    ## Measured 5.551e-16 at landing (99 vs 100 points); 1e-12 leaves margin
-    ## without letting a correction-law regression hide.
-    assert dev < 1e-12, 'bordered drifted from approx on the line: %.3e' % dev
 
 
-
-def test_bordered_does_not_depend_on_how_tightly_newton_is_converged():
+def test_the_coupled_step_count_does_not_depend_on_how_tightly_newton_is_converged():
     """⚠⚠ THE `q^T dv0` TERM WAS COUNTED TWICE, and `vabstol = 1e-12` hid it.
 
     Eq (12) is `dh = -(f + q^T dv0)/denom` with the LTE residual `f` taken at the
@@ -331,7 +234,7 @@ def test_bordered_does_not_depend_on_how_tightly_newton_is_converged():
     hang on the Newton tolerance.
     """
     counts = {}
-    for method in ('approx', 'bordered'):
+    for method in ('approx',):
         for va in (1e-12, 1e-9, 1e-6):
             tran = Transient(_rc(), toolkit=numeric, reltol=1e-5, vabstol=va)
             tran.par.coupled_method = method
@@ -343,13 +246,8 @@ def test_bordered_does_not_depend_on_how_tightly_newton_is_converged():
             err = float(np.max(np.abs(v - _analytic(t))[2:]))
             counts[method, va] = tran.statistics.accepted_steps
             assert err < 3.5e-4, (method, va, err)
-    for method in ('approx', 'bordered'):
-        n = [counts[method, va] for va in (1e-12, 1e-9, 1e-6)]
-        assert max(n) <= 1.15 * min(n), (method, n)
-    ## and the two methods agree with each other at every tolerance
-    for va in (1e-12, 1e-9, 1e-6):
-        a, b = counts['approx', va], counts['bordered', va]
-        assert abs(a - b) <= 0.05 * a, (va, a, b)
+    n = [counts['approx', va] for va in (1e-12, 1e-9, 1e-6)]
+    assert max(n) <= 1.15 * min(n), n
 
 
 def test_fang_coupled_stepping_refuses_a_stage_method_or_glm_by_name():
