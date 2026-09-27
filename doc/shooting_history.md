@@ -8547,6 +8547,12 @@ asymmetry at which the error was already visible.
 
 ### `_warn_if_orbit_is_asymmetric`
 
+2026-09-27: DELETED -- no caller since 46190d04 (2026-09-14); its warning text
+read: "this orbit has half-wave asymmetry %.3f. On such an orbit the modal sum
+carries an O(h) discretisation residual of the adjoint replay that symmetric
+orbits do not show -- measured 6% high at 400 points per period and halving per
+doubling against a Monte-Carlo-validated reference."  Its docstring follows.
+
 The docstring paragraph before the move:
 
 ⚠⚠ THIS WARNING WAS WRITTEN FOR A DEFECT THAT IS NOW FIXED, and kept

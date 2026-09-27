@@ -9,6 +9,8 @@ from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
 import pycircuit.circuit.analysis as analysis
 from ._numerics import _arnoldi_gmres
+from ._numerics import _output_row
+from ._numerics import _output_weights
 from ._numerics import freq_analysis
 from ._numerics import periodic_spline_weights
 from .events import EventColumns
@@ -90,29 +92,6 @@ class SidebandResponse(object):
     def __repr__(self):
         return ('SidebandResponse(f_out=%g, f0=%g, sidebands=%r)'
                 % (self.f_out, self.f0, self.sidebands))
-
-
-def _output_weights(output, width):
-    """The complex output functional of an adjoint row, `width` wide: an
-    index is a unit vector, an array its own entries, zero-padded."""
-    d = np.zeros(width, dtype=complex)
-    if np.isscalar(output):
-        d[int(output)] = 1.0
-    else:
-        out = np.asarray(output, dtype=complex).ravel()
-        d[:len(out)] = out
-    return d
-
-
-def _output_row(output, m):
-    """The real output row of a spectrum: an index (a 0-d value) is a unit
-    vector of width `m`, an array its first `m` entries."""
-    d = np.asarray(output)
-    if d.ndim == 0:
-        row = np.zeros(m, dtype=float)
-        row[int(d)] = 1.0
-        return row
-    return np.asarray(d, dtype=float).ravel()[:m]
 
 
 class PAC(Analysis):
@@ -943,22 +922,7 @@ class PAC(Analysis):
         sideband window truncates.)
 
         History: `doc/shooting_history.md`, `PAC._cy_harmonics`."""
-        return self._period_dft(pss, self._cy_samples(pss, w))
-
-    def _cy_samples(self, pss, w):
-        """`CY(x(t_k), w)` over the orbit, reduced, `(N, n, n)` complex."""
-        fp = pss.factored_period()
-        irn = pss.irefnode
-        xs = np.asarray(pss.waveform[1], dtype=float)
-        nsamp = len(fp.steps)
-        Cs = []
-        for k in range(nsamp):
-            xr = np.asarray(xs[:, k], dtype=float).ravel()
-            xf = xr if xr.shape[0] == pss.cir.n else np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
-            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
-            (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
-            Cs.append(np.asarray(cyk, dtype=complex))
-        return np.asarray(Cs, dtype=complex)
+        return self._period_dft(pss, self._cy_at_states(pss, w))
 
     def _period_dft(self, pss, S):
         """Fourier coefficients over the period of samples `S` `(N, ...)` taken
@@ -1161,8 +1125,8 @@ class PAC(Analysis):
                 out[key] = W
         return out
 
-    @staticmethod
-    def _warn_signed_unused(model, where):
+    @classmethod
+    def _warn_signed_unused(cls, model, where):
         """Warn when an element STATED its signed amplitudes and the fold
         factors that component by sqrt(PSD) anyway: a silent fallback
         reproduces the sign-blind answer, which looks like agreement.
@@ -1170,7 +1134,7 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC._warn_signed_unused`."""
         signed = getattr(model, 'amplitude', None) or {}
         lost = [key for key, B, EF in (getattr(model, 'flicker', None) or [])
-                if key in signed and PAC._uniform_exponent(B, EF) is None]
+                if key in signed and cls._uniform_exponent(B, EF) is None]
         if lost:
             warnings.warn(
                 '%s: %s states SIGNED coloured-noise amplitudes, but its '
@@ -1279,7 +1243,7 @@ class PAC(Analysis):
 
     def _element_cy_samples(self, pss, w, states=None):
         """`{key: (K, m, m)}` -- each leaf element's reduced `CY(x, w)` at the
-        orbit samples `x(t_k)` (the default, indexed like `_cy_samples`, which
+        orbit samples `x(t_k)` (the default, indexed like `_cy_at_states`, which
         they sum to) or at the given `states`."""
         irn = pss.irefnode
         n = pss.cir.n
@@ -1292,7 +1256,7 @@ class PAC(Analysis):
 
     def _cy_at_states(self, pss, w, states=None):
         """The whole circuit's reduced `CY(x, w)` at the orbit samples or at
-        `states`, `(K, m, m)` -- `_cy_samples` generalised."""
+        `states`, `(K, m, m)`."""
         irn = pss.irefnode
         Cs = []
         for xf in self._orbit_states(pss, states):
@@ -1430,14 +1394,8 @@ class PAC(Analysis):
     def _cy_sqrt_harmonics(self, pss, w):
         """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
         the orbit, `(N, n, n)`, for the band-resolved (coloured) fold."""
-        Bs = []
-        for cyk in self._cy_samples(pss, w):
-            cyk = 0.5 * (cyk + cyk.conj().T)
-            lam, U = np.linalg.eigh(cyk)
-            lam = np.clip(np.real(lam), 0.0, None)
-            Bs.append((U * np.sqrt(lam)[None, :]) @ U.conj().T)
-        Bs = np.asarray(Bs, dtype=complex)
-        return self._period_dft(pss, Bs)
+        return self._sqrt_harmonics_of(self._cy_at_states(pss, w),
+                                       lambda Bs: self._period_dft(pss, Bs))
 
     def _cyclostationary_fold(self, pss, freq, rows, model=None):
         """`S(f) = sum_{l,l'} a_l Q_{l,l'} a_{l'}^H` over the gathered
@@ -3010,8 +2968,8 @@ class PAC(Analysis):
             out.append((Bg, float(ef)))
         return out
 
-    @staticmethod
-    def _power_law_weights(nus, ef, richardson=True):
+    @classmethod
+    def _power_law_weights(cls, nus, ef, richardson=True):
         """Weights `q_i` with ``int nu^-ef g(nu) dnu = sum_i q_i g(nu_i)``
         EXACT for `g` linear in ``ln nu`` between the points -- the power law
         integrated analytically, the response interpolated.  On ``[u_i,
@@ -3034,11 +2992,11 @@ class PAC(Analysis):
         History: `doc/shooting_history.md`, `PAC._coloured_covariance`."""
         nus = np.asarray(nus, dtype=float)
         if richardson and nus.size >= 3 and (nus.size - 1) % 2 == 0:
-            q1 = PAC._power_law_weights(nus, ef, richardson=False)
+            q1 = cls._power_law_weights(nus, ef, richardson=False)
             q2 = np.zeros(nus.size)
-            q2[::2] = PAC._power_law_weights(nus[::2], ef, richardson=False)
+            q2[::2] = cls._power_law_weights(nus[::2], ef, richardson=False)
             return (4.0 * q1 - q2) / 3.0
-        wl, wr = PAC._interval_weights(nus[:-1], nus[1:], ef)
+        wl, wr = cls._interval_weights(nus[:-1], nus[1:], ef)
         q = np.zeros(nus.size)
         q[:-1] += wl
         q[1:] += wr
@@ -4808,36 +4766,6 @@ class PAC(Analysis):
             return 0.0
         return float(np.max(np.abs(row[:half] + row[half:2 * half]))) / den
 
-    def _warn_if_orbit_is_asymmetric(self, pss):
-        """⚠ On a strongly asymmetric orbit the modal sum carries an O(h)
-        discretisation residual that the symmetric fixtures never show.
-
-        The residual is the adjoint replay's `O(h)` discretisation error
-        (~6 % at 400 points per period, halving per doubling, against a
-        Monte-Carlo-validated Lyapunov reference; 1.0001 on a symmetric
-        orbit), converging to 1 -- not a defect.  So this warns that the
-        residual is grid-limited on such an orbit and says how to shrink it.
-
-        History: `doc/shooting_history.md`,
-        `PAC._warn_if_orbit_is_asymmetric`.
-        """
-        try:
-            asym = self._orbit_asymmetry(pss)
-        except Exception:
-            return
-        if asym <= self.ORBITAL_ASYMMETRY_LIMIT:
-            return
-        warnings.warn(
-            'PAC.orbital_correlation: this orbit has half-wave asymmetry '
-            '%.3f. On such an orbit the modal sum carries an O(h) '
-            'discretisation residual of the adjoint replay that symmetric '
-            'orbits do not show -- measured 6%% high at 400 points per period '
-            'and halving per doubling against a Monte-Carlo-validated '
-            'reference. Refine the grid to tighten it, or use '
-            'PAC.oscillator_covariance (Lyapunov) for the covariance alone.'
-            % (asym,),
-            RuntimeWarning, stacklevel=3)
-
     def orbital_correlation(self, pss, H=None):
         """`R_yy(0)` and the `C_lhj` of Traversa & Bonani eq (22) — A9 step 3.
 
@@ -5344,6 +5272,21 @@ class PAC(Analysis):
             res['total'][ix] = sp + so + sc
         return res
 
+    def _phase_psd_gate(self, pss, offs, harmonic, what):
+        """With a COLOURED source the modal spectra's phase part is the
+        linearised skirt: refuse the offsets where `phase_psd` would (its
+        corner and power bound), naming the caller.  Returns `|offs|`."""
+        ao = np.abs(np.asarray(offs, dtype=float)).ravel()
+        try:
+            self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic),
+                           frequency_aware=False)
+        except ValueError as e:
+            raise ValueError(
+                'PAC.%s: with a COLOURED source the phase part is the '
+                'linearised skirt, valid only where phase_psd is -- %s'
+                % (what, e)) from None
+        return ao
+
     def _modal_colour(self, pss, offs, harmonic, what):
         """For `modal_spectrum` on a coloured circuit: `(c_white, cy_at)`.
         STATIONARY sources (a modulated one takes `_modal_modulated`;
@@ -5354,15 +5297,7 @@ class PAC(Analysis):
         f0 = 1.0 / float(pss.period)
         w0 = 2.0 * np.pi * f0
         self._cy_reduced(pss, w0)
-        ao = np.abs(np.asarray(offs, dtype=float)).ravel()
-        try:
-            self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic),
-                           frequency_aware=False)
-        except ValueError as e:
-            raise ValueError(
-                'PAC.%s: with a COLOURED source the phase part is the '
-                'linearised skirt, valid only where phase_psd is -- %s'
-                % (what, e)) from None
+        self._phase_psd_gate(pss, offs, harmonic, what)
         x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
         irn = pss.irefnode
         x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
@@ -5395,15 +5330,7 @@ class PAC(Analysis):
             white = np.real(self._cy_at_states(pss, w0, states))
             groups = []
         else:
-            ao = np.abs(np.asarray(offs, dtype=float)).ravel()
-            try:
-                self.phase_psd(pss, np.unique(ao), harmonic=int(harmonic),
-                               frequency_aware=False)
-            except ValueError as e:
-                raise ValueError(
-                    'PAC.%s: with a COLOURED source the phase part is the '
-                    'linearised skirt, valid only where phase_psd is -- %s'
-                    % (what, e)) from None
+            ao = self._phase_psd_gate(pss, offs, harmonic, what)
             model = self._cy_components_model(pss, 1e-3 * f0, f0,
                                               states=states)
             if model is None:
@@ -6596,14 +6523,20 @@ class PAC(Analysis):
         vals, errs, _shapes = self._fa_orders(
             rho_at, None, None, off, None, i, f0, c, a, pref, None, fmax, True)
         worst = max(errs) if errs else 0.0
+        self._warn_lineshape('all-orders', worst, errs, off)
+        return np.asarray(vals).reshape(np.shape(off))
+
+    def _warn_lineshape(self, which, worst, errs, off):
+        """Warn when the `which` lineshape's estimated error passes
+        `LINESHAPE_WARN`, at the offset where it is worst.  (`stacklevel`
+        4: the user's call, through `oscillator_spectrum` and its path.)"""
         if worst > self.LINESHAPE_WARN:
             warnings.warn(
-                'PAC.oscillator_spectrum: the all-orders lineshape carries an '
+                'PAC.oscillator_spectrum: the %s lineshape carries an '
                 'estimated relative error of %.1e at offset %.6g Hz (neither '
                 'the transform nor the linear skirt is resolved better '
-                'there).' % (worst, float(np.atleast_1d(off).ravel()[
-                    int(np.argmax(errs))])), RuntimeWarning, stacklevel=3)
-        return np.asarray(vals).reshape(np.shape(off))
+                'there).' % (which, worst, float(np.atleast_1d(off).ravel()[
+                    int(np.argmax(errs))])), RuntimeWarning, stacklevel=4)
 
     def _carrier_line(self, pss, output, harmonic):
         """The carrier phasor `X` at `harmonic`, refusing an output with no
@@ -6752,13 +6685,7 @@ class PAC(Analysis):
             vals, errs, shapes = dc()
         S = np.asarray(vals).reshape(np.shape(off))
         worst = max(errs) if errs else 0.0
-        if worst > self.LINESHAPE_WARN:
-            warnings.warn(
-                'PAC.oscillator_spectrum: the coloured lineshape carries an '
-                'estimated relative error of %.1e at offset %.6g Hz (neither '
-                'the transform nor the linear skirt is resolved better '
-                'there).' % (worst, float(np.atleast_1d(off).ravel()[
-                    int(np.argmax(errs))])), RuntimeWarning, stacklevel=3)
+        self._warn_lineshape('coloured', worst, errs, off)
         shape = shapes[1]
         if c_w == 0.0 and shape.line_weight > 1e-12:
             warnings.warn(

@@ -19719,7 +19719,7 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
          800        4.6e-05                     8.1e-03
 
     `relAC` halves per doubling: the O(h) residual of the adjoint replay on
-    an asymmetric orbit, documented at `_warn_if_orbit_is_asymmetric`.  The
+    an asymmetric orbit (`doc/shooting_history.md`, `_warn_if_orbit_is_asymmetric`).  The
     bound is 2x the 400-point measurement.  ⚠ Reverting the `C^-T` transform
     in `floquet_modes` takes `relAC` here to 2.98e-01 and this test RED
     (MEASURED, by doing exactly that) -- while the symmetric gate stays GREEN

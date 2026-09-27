@@ -1022,7 +1022,6 @@ class _PPVFloquet(object):
         _tw = self.monodromy_twin()
         if _tw is not self:
             return _tw.frequency_aware_ppv(offset, tol)
-        import scipy.sparse.linalg as spla
         fp = self._state_map()
         ## ⚠ THE DC PPV ONCE PER SOLVED ORBIT (2026-09-26): it was 0.22 s of
         ## every 0.23 s offset, and the coloured folds now take one offset

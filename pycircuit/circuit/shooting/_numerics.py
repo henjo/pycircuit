@@ -238,3 +238,26 @@ def _cx_collect(a, b):
     if isinstance(a, (list, tuple)):
         return type(a)(_cx_collect(x, y) for x, y in zip(a, b))
     return np.asarray(a) + 1j * np.asarray(b)
+
+
+def _output_weights(output, width):
+    """The complex output functional of an adjoint row, `width` wide: an
+    index is a unit vector, an array its own entries, zero-padded."""
+    d = np.zeros(width, dtype=complex)
+    if np.isscalar(output):
+        d[int(output)] = 1.0
+    else:
+        out = np.asarray(output, dtype=complex).ravel()
+        d[:len(out)] = out
+    return d
+
+
+def _output_row(output, m):
+    """The real output row of a spectrum: an index (a 0-d value) is a unit
+    vector of width `m`, an array its first `m` entries."""
+    d = np.asarray(output)
+    if d.ndim == 0:
+        row = np.zeros(m, dtype=float)
+        row[int(d)] = 1.0
+        return row
+    return np.asarray(d, dtype=float).ravel()[:m]
