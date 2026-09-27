@@ -1100,6 +1100,12 @@ class Diode(Circuit):
         same circuit gave **15 residual evaluations the first time and 2 the
         second**, and that difference is device state, not the circuit.
         """
+        self.reset_limit_state()
+
+    def reset_limit_state(self):
+        """Forget `_vlim` -- the limiting state, and all of this device's
+        state -- so the next `limit(x, x0)` seeds it from `x0`
+        (`_limiting.limit_sync`)."""
         if hasattr(self, '_vlim'):
             del self._vlim
 

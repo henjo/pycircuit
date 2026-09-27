@@ -13,7 +13,7 @@ from numpy.linalg import LinAlgError
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
-from pycircuit.circuit._limiting import state_restore, state_snapshot
+from pycircuit.circuit._limiting import limit_sync, state_restore, state_snapshot
 ## The clamp the step controller applies to every accepted step, the force-accept
 ## path in `solve()` included: one bound, named once.  `stepcontroller` imports
 ## nothing from this package, so this is import-safe at module level.
@@ -3234,11 +3234,12 @@ class Transient(Analysis):
         ## `_vlim` is left stale -- and the caller's downstream
         ## `i(Y)`/`G(Y)`/`C(Y)` (the stage derivative K, the returned J,
         ## the estimate) linearise there.  At convergence the junction
-        ## voltage IS the node voltage, so `limit(x, x)` sets `_vlim`
-        ## to it (zero delta) without altering the solution -- the one
-        ## limit() call PCNR needs, purely to make the device state
-        ## consistent for what reads it next.
-        self.cir.limit(x, x, epar)
+        ## voltage IS the node voltage, and `limit_sync` puts `_vlim` on it
+        ## without altering the solution.  ⚠ Not `limit(x, x)` alone, which
+        ## clamps against the stale state: 50 mV short on a hard-driven
+        ## diode, and the next stage's K read there put the TR-BDF2
+        ## waveform 6.7e-3 V off the exact one.
+        limit_sync(self.cir, x, epar)
         return x
 
     ## -- what every stage step shares: the source closure, the implicit stage
@@ -3836,12 +3837,13 @@ class Transient(Analysis):
                 'Radau IIA(3) coupled PCNR stage Newton did not converge')
 
         ## SYNC each device's internal `_vlim` to the converged solution: PCNR
-        ## never called `cir.limit`, so the downstream `i`/`G`/`C` (the K, the
-        ## returned J, the estimate) would otherwise linearise at a stale
-        ## `_vlim`.  At convergence the junction voltage IS the node voltage, so
-        ## `limit(Y, Y)` sets `_vlim` to it at zero delta (see _rk_stage_pcnr).
-        for j in range(3):
-            self.cir.limit(Y[j], Y[j], epar)
+        ## never called `cir.limit`, so the epilogue's `i`/`G` at the step
+        ## end (`_iq`, the returned J) would otherwise linearise at a stale
+        ## `_vlim`.  The step end is the last stage, and `limit_sync` puts
+        ## the state exactly there (see _rk_stage_pcnr); the chain of
+        ## `limit(Y[j], Y[j])` it replaces reached it only while consecutive
+        ## stages were close (its first syncs landed up to 25 mV short).
+        limit_sync(self.cir, Y[-1], epar)
 
         ## THE BRANCH CHECK, CONFIRMED: this path solved with its own Newton,
         ## and the confirmation re-solves the same step equation with the

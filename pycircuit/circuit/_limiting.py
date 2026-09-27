@@ -668,3 +668,49 @@ def state_restore(snap):
     for elem, saved in snap:
         elem.__dict__.clear()
         elem.__dict__.update(saved)
+
+
+def stateful_limiters(cir):
+    """The elements of `cir`, at any depth, that KEEP limiting state -- the
+    ones with `reset_limit_state` (`elements.Diode`).  Every other limiter
+    in the library is state-free: it returns a limited copy, and its
+    device is read at the vector it is handed."""
+    out = []
+
+    def walk(c):
+        elems = getattr(c, 'elements', None)
+        if not elems:
+            return
+        for e in elems.values():
+            if getattr(e, 'reset_limit_state', None) is not None:
+                out.append(e)
+            walk(e)
+    walk(cir)
+    return out
+
+
+def limiter_snapshot(limiters):
+    """`state_snapshot` of the given stateful limiters only, restored by
+    `state_restore`: what a Newton keeping ONE limiting state per stage
+    swaps between its stages."""
+    return [(e, dict(e.__dict__)) for e in limiters]
+
+
+def limit_sync(cir, x, epar, limiters=None):
+    """Put every stateful limiter's state AT `x`, exactly: after a solve
+    that never called `limit` (PCNR), or to read the devices at a point
+    no Newton limited towards, so that the `i` / `G` read next are the
+    device at `x`, not the tangent at another point.
+
+    ⚠ `limit(x, x)` ALONE LANDS SHORT.  It clamps against the STORED state
+    (see `state_snapshot`), and after PCNR that is wherever the last
+    limiting solve left it: measured 25-50 mV short of a diode at 0.72 V,
+    and a TR-BDF2 + PCNR waveform 6.7e-3 V off the exact one.  So each
+    stateful limiter first FORGETS its state (`reset_limit_state`), and
+    `limit(x, x)` then seeds it from its second argument, at zero delta.
+    Only the limiting state: `reset_state` also clears what a run carries
+    (a `TLine`'s history).  `limiters`: `stateful_limiters(cir)`, if in
+    hand."""
+    for e in (stateful_limiters(cir) if limiters is None else limiters):
+        e.reset_limit_state()
+    cir.limit(x, x, epar)

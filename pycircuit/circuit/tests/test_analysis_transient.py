@@ -1766,3 +1766,67 @@ def test_a_pcnr_failure_that_is_not_a_non_convergence_falls_back_on_every_path()
     assert tr_p.pcnr_status in ('partial', 'fell-back'), tr_p.pcnr_status
     assert np.max(np.abs(mid_p - mid_l)) < 1e-9, np.max(np.abs(mid_p - mid_l))
 
+
+def _state_free_diode():
+    """`elements.Diode` with NO stored state: `i` and `G` exact at the node
+    voltage, `limit` returning a limited vector (the `Semiconductor`
+    convention), and no PCNR junction.  Every transient path solves the
+    same step equations at a fixed step, so each must meet this one to its
+    Newton tolerance; a gap is a device read at a stale linearisation."""
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit._limiting import _pnjlim
+
+    class _StateFreeDiode(Diode):
+        pcnr_junctions = ()
+
+        def _vt(self, epar):
+            return self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+
+        def limit(self, x, x0, epar=defaultepar):
+            out = np.array(x, dtype=float)
+            out[0] = out[1] + float(_pnjlim(float(x[0] - x[1]), float(x0[0] - x0[1]),
+                                            self._vt(epar), self.iparv.IS,
+                                            self.toolkit))
+            return out
+
+        def i(self, x, epar=defaultepar):
+            return self.eval_i_pure(x, {'IS': self.iparv.IS}, epar, self.toolkit)
+
+        def G(self, x, epar=defaultepar):
+            g = self.iparv.IS * np.exp(float(x[0] - x[1]) / self._vt(epar)) \
+                / self._vt(epar)
+            return np.array([[g, -g], [-g, g]])
+    return _StateFreeDiode
+
+
+def test_a_stage_pcnr_step_leaves_the_diode_at_its_solution():
+    """After a stage PCNR solve the transient puts each stateful limiter AT
+    the solution (`_limiting.limit_sync`): the next stage's K reads the
+    device there, and PCNR never moved its state.  ⚠ A bare `limit(x, x)`
+    clamped against that stale state (Andreas, 2026-09-27: "reset the
+    device state before the sync").  Measured on a diode driven to 0.85 V:
+    TR-BDF2 + PCNR 50 mV short, its waveform 6.7e-3 V off the exact one
+    (`_state_free_diode`)."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def run(cls, integ, pcnr):
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=20.0, freq=1e3)
+        c['R'] = R(1, 2, r=1.0)
+        c['D'] = cls(2, gnd)
+        c['C'] = C(2, gnd, c=1e-9)
+        tr = Transient(c, integrator=integ(), pcnr=pcnr, reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=5e-4, timestep=2.5e-6, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        return tr, c, np.asarray(res.x, float)[c.get_node_index(2)]
+    _tr, _c, v_ref = run(_state_free_diode(), TRBDF2Integrator, False)
+    tr, _c, v = run(Diode, TRBDF2Integrator, True)
+    assert tr.pcnr_status == 'used' and tr.pcnr_fallbacks == 0, tr.pcnr_status
+    assert max(v_ref) > 0.84, 'the diode is no longer driven past its knee'
+    assert np.max(np.abs(v - v_ref)) < 1e-12, np.max(np.abs(v - v_ref))
+
