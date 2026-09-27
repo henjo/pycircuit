@@ -19373,6 +19373,83 @@ def test_the_line_shape_spectra_refuse_a_harmonic_that_has_no_line():
                                             frequency_aware=False)
 
 
+def test_the_frequency_aware_diffusion_reaches_c_on_a_non_uniform_grid():
+    """`c(f) -> c` as `f -> 0` on ANY grid: the frequency-aware PPV goes to
+    the DC one, so what is left between them is the quadrature alone.
+
+    ⚠ Until 2026-09-27 `frequency_aware_diffusion` weighted its samples with
+    `np.diff(times)` -- the LEFT RECTANGLE, which `_period_weights` names as
+    first order on a non-uniform grid -- while `diffusion_constant` (and so
+    `c(0)`, returned directly) uses `_period_weights`.  On a smoothly varying
+    3:1 grid, measured `c(0+)/c - 1` = -2.0e-3 / -1.0e-3 / -5.1e-4 at N =
+    200 / 400 / 800, and 1e-15 with the shared weights.  (An ALTERNATING 3:1
+    grid hides it -- 8.8e-13 -- because the rectangle's error is `(1/2)
+    integral h'(t) y dt`, which averages out when `h` alternates.)
+    """
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 0.3 * (u - u ** 3 / 3.0) + 0.1 * u * u)
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    n = 200
+    w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)
+    pss = PSS(cir, method='radau', reltol=1e-11)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=2 * np.pi, timestep=2 * np.pi / n, grid=w / w.sum(),
+                  x0=np.array([2.0, 0.0]), maxiterations=60)
+        pac = PAC(cir)
+        c = pac.diffusion_constant(pss)
+        cfa = pac.frequency_aware_diffusion(pss, 1e-7 / float(pss.period))
+    assert abs(cfa / c - 1.0) < 1e-10, cfa / c - 1.0
+
+
+def test_the_frequency_aware_diffusion_reads_a_modulated_source_on_the_ppvs_orbit():
+    """A source that follows the orbit is read at each PPV sample's OWN
+    state -- the orbit the PPV was computed on, `_ppv_states`.
+
+    ⚠ Until 2026-09-27 `frequency_aware_diffusion` read it at `pss.waveform`,
+    on the belief (its comment) that the frequency-aware PPV is solved on the
+    solve's own orbit.  It is not, for trap and euler: their
+    `factored_period()` is the monodromy TWIN's, and so is every PPV built on
+    it.  The two orbits differ by the discretisation; measured c(0+)/c - 1 =
+    -1.3e-4 on trap (1e-13 on gear, which has no twin), 1e-15 after.
+    """
+    cir, pss, pac, ov = _orbit_modulated_vdp('white', method='trap')
+    assert pss.monodromy_twin() is not pss
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        c = pac.diffusion_constant(pss)
+        cfa = pac.frequency_aware_diffusion(pss, 1e-7 / float(pss.period))
+    assert abs(cfa / c - 1.0) < 1e-10, cfa / c - 1.0
+
+
+def test_the_twin_serves_the_whole_frequency_aware_ppv():
+    """On trap and euler the monodromy TWIN serves `ppv()`, `floquet_modes`
+    and `factored_period()` -- and so, whole, `frequency_aware_ppv`: a trap
+    solve's frequency-aware PPV is its twin's, bit for bit.
+
+    ⚠ Until 2026-09-27 it borrowed only the twin's period map and ran the
+    propagation on the trap solve itself: exact on an ODE, but with an
+    ALGEBRAIC node (here the realisation `white_ref`, a source behind a
+    multiplier) the samples read 1.6e-3 off the twin's own, and `c(f)`
+    1.3e-4 -- varying with the offset, so no carrier-frequency factor.
+    """
+    cir, pss, pac, ov = _orbit_modulated_vdp('white_ref', method='trap')
+    tw = pss.monodromy_twin()
+    assert tw is not pss
+    f = 1e-2 / float(pss.period)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _va, ia = pss.frequency_aware_ppv(f)
+        _vb, ib = tw.frequency_aware_ppv(f)
+    assert np.array_equal(np.asarray(ia['samples_eq']), np.asarray(ib['samples_eq']))
+
+
 def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     """The phase Lorentzian with `c(f)` instead of `c` -- built 2026-09-14.
 
@@ -22156,6 +22233,36 @@ def test_the_branch_check_reports_on_a_full_transient_solve(caplog):
     tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
     assert tr._branch_error is None and tr.branch_check == 'on'
     assert tr.statistics.branch_points > 0
+
+
+def test_the_frequency_aware_samples_follow_a_re_solve():
+    """`PAC._fa_samples` caches the frequency-aware PPV per (factored period,
+    offset).  ⚠ Until 2026-09-27 the key was `id(pss.factored_period())` and
+    the entry did not hold the period: re-solving the same PSS on another
+    grid freed it, a new period could be born at the same address, and the
+    cache handed back the OLD grid's samples (measured: 198 rows for a
+    299-point solve, 2 re-solves in 6).  One PAC across re-solves must give
+    what a fresh PAC gives, every time."""
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: 0.1 * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T = 2.0 * np.pi
+    pss = PSS(cir, method='gear', reltol=1e-10)
+    pac = PAC(cir)
+    f = 0.05
+    for n in (120, 180, 120, 180, 120, 180):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / n, x0=np.array([2.0, 0.0]))
+        got = pac._fa_samples(pss, f)
+        want = PAC(cir)._fa_samples(pss, f)
+        assert got.shape == want.shape, (n, got.shape, want.shape)
+        assert np.array_equal(got, want), n
 
 
 def test_the_branch_check_does_not_disturb_device_limiting_state():

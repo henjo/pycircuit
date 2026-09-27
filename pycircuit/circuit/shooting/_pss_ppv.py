@@ -1014,6 +1014,14 @@ class _PPVFloquet(object):
 
         History: `doc/shooting_history.md`, `_PPVFloquet.frequency_aware_ppv`.
         """
+        ## ⚠ THE TWIN SERVES THE WHOLE CALL, as `ppv()` and `floquet_modes`
+        ## do.  Until 2026-09-27 only its period map was borrowed (through
+        ## `_state_map`) and the propagation ran on THIS solve: exact on an
+        ## ODE, but on a circuit with an algebraic node the samples read
+        ## 1.6e-3 off the twin's own on trap (c(f) 1.3e-4).
+        _tw = self.monodromy_twin()
+        if _tw is not self:
+            return _tw.frequency_aware_ppv(offset, tol)
         import scipy.sparse.linalg as spla
         fp = self._state_map()
         ## ⚠ THE DC PPV ONCE PER SOLVED ORBIT (2026-09-26): it was 0.22 s of

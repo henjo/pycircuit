@@ -809,11 +809,14 @@ class PAC(Analysis):
             if colour is None:
                 cyfn = self._cy_cycle_averaged
             else:
+                ## the cycle average with `_cy_cycle_averaged`'s weights
+                ## (`np.diff(times)`, the left rectangle, until 2026-09-27)
                 fp_ = pss.factored_period()
-                hs_ = np.diff(np.asarray(fp_.times, dtype=float))
-                def cyfn(pss_, w_, _m=colour, _h=hs_):
+                tms_ = np.asarray(fp_.times, dtype=float)
+                def cyfn(pss_, w_, _m=colour, _t=tms_, _T=float(fp_.T)):
                     Cs = _m(w_)
-                    ns = min(len(_h), Cs.shape[0])
+                    ns = min(len(_t) - 1, Cs.shape[0])
+                    _h = self._period_weights(_t, ns, _T, pss_)
                     return np.einsum('k,kij->ij', _h[:ns], Cs[:ns]) / float(_h[:ns].sum())
         else:
             cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
@@ -5984,12 +5987,19 @@ class PAC(Analysis):
         `l` the phase transfer of the source band at `f - l f0` (the DC fold's
         convention; see `coloured_diffusion_resolved`).  Cached per offset."""
         cache = self.__dict__.setdefault('_fa_cache', {})
-        key = (id(pss.factored_period()), float(f))
-        if key not in cache:
+        fp = pss.factored_period()
+        key = (id(fp), float(f))
+        hit = cache.get(key)
+        ## ⚠ THE ENTRY HOLDS ITS FACTORED PERIOD AND IS MATCHED BY IDENTITY,
+        ## as `_transverse_cache` is.  Keyed on the id alone (until
+        ## 2026-09-27), a re-solve freed the old period, a new one was born
+        ## at the same address, and the OLD grid's samples came back --
+        ## measured, 198 rows for a 299-point solve, 2 re-solves in 6.
+        if hit is None or hit[0] is not fp:
             m = pss.cir.n - 1
             _v, fi = pss.frequency_aware_ppv(float(f))
-            cache[key] = np.asarray(fi['samples_eq'])[:, :m]
-        return cache[key]
+            hit = cache[key] = (fp, np.asarray(fi['samples_eq'])[:, :m])
+        return hit[1]
 
     def _coloured_diffusion_modulated(self, pss, freqs, harmonics=None,
                                       frequency_aware=False):
@@ -6998,9 +7008,15 @@ class PAC(Analysis):
         base = fi['ppv']
         m = pss.cir.n - 1
         S = np.asarray(fi['samples_eq'])[:, :m]
-        h = np.diff(np.asarray(base['times'], dtype=float))
-        n = min(len(h), S.shape[0])
+        tms = np.asarray(base['times'], dtype=float)
+        n = min(len(tms) - 1, S.shape[0])
         T = float(base['period'])
+        ## ⚠ `_period_weights`, as `diffusion_constant` integrates -- until
+        ## 2026-09-27 `np.diff(times)`, the LEFT RECTANGLE: first order on a
+        ## smoothly non-uniform grid, measured c(0+)/c - 1 = -2.0e-3 /
+        ## -1.0e-3 / -5.1e-4 at N = 200/400/800 (1e-15 with these weights),
+        ## so `c(f)` jumped at f = 0 instead of reaching `c`
+        h = self._period_weights(tms, n, T, pss)
         w0 = 2.0 * np.pi / float(pss.period)
         try:
             cy = 0.5 * np.real(self._cy_reduced(pss, w0))
@@ -7010,12 +7026,15 @@ class PAC(Analysis):
             quad = np.real(np.einsum('ij,jk,ik->i', np.conj(S[:n]), cy, S[:n]))
         else:
             ## ⚠ A MODULATED source (2026-09-26): `CY` at each sample's own
-            ## state, as `diffusion_constant` reads it.  The frequency-aware
-            ## PPV is solved on this solve's OWN orbit (no twin), so its
-            ## samples pair with `pss.waveform`'s columns.
-            W = np.asarray(pss.waveform[1], dtype=float)
+            ## state, as `diffusion_constant` reads it -- the PPV's orbit,
+            ## `_ppv_states`.  ⚠ Not `pss.waveform` (to 2026-09-27): trap and
+            ## euler serve `factored_period()` -- and so this PPV -- from
+            ## their monodromy TWIN, and the solve's own orbit differs from
+            ## the twin's by the discretisation; measured c(0+)/c - 1 =
+            ## -1.3e-4 on trap with a white source following the orbit
+            ## (1e-13 on gear, which has no twin).
             cys = 0.5 * np.real(self._cy_at_states(
-                pss, w0, [W[:, j] for j in range(n)]))
+                pss, w0, self._ppv_states(pss)[:n]))
             quad = np.real(np.einsum('ij,ijk,ik->i', np.conj(S[:n]), cys, S[:n]))
         return float((quad * h[:n]).sum() / T)
 
