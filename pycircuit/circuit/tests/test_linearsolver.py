@@ -401,7 +401,7 @@ def test_every_shooting_surface_runs_under_every_linear_solver():
     from pycircuit.circuit.elements import IS
     from pycircuit.circuit.linearsolver import KLUSolver
     from pycircuit.circuit.shooting import PSS, PAC
-    from pycircuit.circuit.tests.test_analysis_shooting import _vdp_asym
+    from pycircuit.circuit.tests._shooting_fixtures import _vdp_asym
     _circuit.default_toolkit = numeric
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
 

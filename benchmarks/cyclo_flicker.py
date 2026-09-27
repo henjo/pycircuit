@@ -3,7 +3,7 @@ sys.path.insert(0, '/home/andreas/source/pycircuit/pycircuit/circuit/tests')
 src = open(os.path.dirname(os.path.abspath(__file__)) + '/cyclo_gate.py').read().split('cA = build')[0]
 exec(src)
 from pycircuit.circuit.hdl import flicker_noise
-import test_analysis_shooting as TAS
+import _shooting_fixtures as TAS
 class ModFlicker(Behavioural):
     params_as = 'p'
     instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
