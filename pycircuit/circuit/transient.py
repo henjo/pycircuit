@@ -1056,9 +1056,9 @@ class Transient(Analysis):
           to the device-limiting solve that does carry one, exactly as the LMM
           step and DC have always done on a PCNR failure.
 
-        So this is `True` today for everything.  It is kept, and the caller keeps
-        its branch, because the honest-diagnostic bug it was written for is easy
-        to reintroduce: `_solve` used to report that a continuation "could not
+        So this is `True` today for everything.  `_rescue_step` consults it
+        (since 2026-09-27; until then nothing did), because the honest-
+        diagnostic bug it was written for is easy to reintroduce: `_solve` used to report that a continuation "could not
         rescue the point" on a path where none had been attempted.  A new step
         path that reaches neither a ladder nor a fallback should return `False`
         here rather than inherit a message that claims a rescue it never tried.
@@ -5265,14 +5265,15 @@ class Transient(Analysis):
         self._continuation_rescue = True
         try:
             out = self._attempt_step(family, X, t, h, hold, provided_function)
-            self.statistics.gmin_rescues += 1
+            if honours:
+                self.statistics.gmin_rescues += 1
             return out
         except NoConvergenceError as e:
             raise TransientStepError(
                 'Transient solver failed to converge: timestep shrank below '
-                'minstep=%gs at t=%s, and the gmin/gshunt/pseudo-transient '
-                'continuation could not rescue the point: %s'
-                % (self.par.minstep, t, e)) from e
+                'minstep=%gs at t=%s, and this step path carries no '
+                'continuation rescue (neither a ladder nor a fallback to one), '
+                'so none was attempted: %s' % (self.par.minstep, t, e)) from e
         finally:
             self._continuation_rescue = False
 
@@ -5281,3 +5282,15 @@ class Transient(Analysis):
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
+        ## ⚠ WHETHER THIS PATH REACHES A LADDER AT ALL (`_honours_continuation_
+        ## rescue`, consulted here since 2026-09-27 -- it was written to guard
+        ## this message and had no caller): the error must not claim a rescue
+        ## that was never attempted, and a success is a rescue only where one
+        ## could run
+        honours = self._honours_continuation_rescue()
+            if honours:
+                raise TransientStepError(
+                    'Transient solver failed to converge: timestep shrank below '
+                    'minstep=%gs at t=%s, and the gmin/gshunt/pseudo-transient '
+                    'continuation could not rescue the point: %s'
+                    % (self.par.minstep, t, e)) from e

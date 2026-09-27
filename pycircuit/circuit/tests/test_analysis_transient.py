@@ -1512,6 +1512,22 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
         tr.base_integrator = integ()
         assert tr._honours_continuation_rescue() is honours
 
+    ## ... and `_rescue_step` consults it (2026-09-27; it had no caller): the
+    ## failure message names the rescue only where one was attempted
+    from pycircuit.circuit.transient import TransientStatistics, TransientStepError
+    tr = Transient(slam(), toolkit=circuit.numeric)
+    tr.statistics = TransientStatistics()
+
+    def fail(*a, **k):
+        raise NoConvergenceError('the step did not converge')
+    tr._attempt_step = fail
+    for honours, said in ((True, 'could not rescue the point'),
+                          (False, 'carries no continuation rescue')):
+        tr._honours_continuation_rescue = lambda h=honours: h
+        with pytest.raises(TransientStepError, match=said):
+            tr._rescue_step(None, [], 0.0, 1e-12, False, None)
+    assert tr.statistics.gmin_rescues == 0
+
 
 def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
     """A circuit bad enough to need the rescue must actually GET it -- on the
