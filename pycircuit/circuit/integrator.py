@@ -26,9 +26,8 @@ import warnings
 ##     3.0            1.285714                  152.4
 ##     10.0           4.761905               3.59e+13
 ##
-## It bounds *growth* only.  Shrinking is unconditionally zero-stable, which is
-## the whole content of 4e: the guard this constant now protects used to fire on
-## the shrink and leave the growth unwatched.
+## It bounds *growth* only; shrinking is unconditionally zero-stable.
+## History: `doc/transient_history.md`, `integrator.ZERO_STABILITY_RATIO`.
 ZERO_STABILITY_RATIO = 1.0 + math.sqrt(2.0)
 
 ## STAGE 9(a).  The definition moved to `_lte_kernels` so the JAX backend can
@@ -38,35 +37,11 @@ third_divided_difference = _tdd
 
 
 
-## WHY THERE IS NO `lte_formula` PARAMETER.  Removed in stage 9(f), 2026-07-31.
-##
-## It chose between the classic divided-difference estimates and the
-## Yao-Wang-Roychowdhury Table I residuals.  Three changes removed its effect on
-## this backend before it was removed as API:
-##
-##   4g(b)  the trapezoidal estimator stopped differencing `g` (the companion
-##          current), which carries an undamped (-1)^n mode;
-##   4i     both second-order estimators moved onto a shared third-derivative
-##          estimate taken from a divided difference of the CHARGE, which reads
-##          neither formula;
-##   4d     the one-step fallback -- the last place either branch ran -- now takes
-##          the divided-difference form unconditionally, because YWR's TRAP entry
-##          is a uniform-grid formula and its GEAR2 residual is 3/4 of the true
-##          truncation error.
-##
-## So `'ywr'` and `'classic'` produced bit-identical runs for every integrator, and
-## the parameter was kept for a while, accepted and documented as inert.  What
-## settled its removal was the OTHER backend: `jaxtransient.py` carried its own
-## `lte_formula`, where `'classic'` selected a charge-domain estimator whose
-## tolerance applied `lte_abs = 1e-6` -- a VOLTAGE floor -- to a CHARGE.  One
-## microcoulomb, against node charges of pico- to femtocoulombs, so the normalized
-## error could never reach 1 and no step was ever rejected: the controller ran
-## open-loop.  One parameter name meant "selects nothing" here and "selects a
-## broken estimator" there, which is worse than either alone.
-##
-## Both are gone.  Each backend now has exactly one estimator, and passing
-## `lte_formula=` raises TypeError rather than being silently ignored -- a kwarg
-## accepted and discarded is how the JAX defect stayed invisible.
+## WHY THERE IS NO `lte_formula` PARAMETER.  Each backend has exactly one
+## estimator, and passing `lte_formula=` raises TypeError rather than being
+## silently ignored -- a kwarg accepted and discarded is how a broken estimator
+## stays invisible.
+## History: `doc/transient_history.md`, `integrator.py`.
 
 
 class Integrator(ABC):
@@ -86,10 +61,11 @@ class Integrator(ABC):
     """
 
     ## --- CAPABILITY QUERIES (polymorphic dispatch) ---
-    ## The shooting/transient stacks used to branch on `isinstance(...)` and
-    ## method-name strings at ~35 sites; these let a caller ask the METHOD
-    ## instead, so a new integrator arrives with the right answers rather than
-    ## needing an edit at each site.  See doc/integrator_architecture_260906.md.
+    ## These let a caller ask the METHOD instead of branching on
+    ## `isinstance(...)` and method-name strings, so a new integrator arrives
+    ## with the right answers rather than needing an edit at each site.  See
+    ## doc/integrator_architecture_260906.md.
+    ## History: `doc/transient_history.md`, `Integrator`.
 
     def is_stage_method(self) -> bool:
         """True for a Runge-Kutta / stage method, False for a linear-multistep
@@ -267,13 +243,14 @@ class Integrator(ABC):
 
         The controller consumes it by mapping it through ``J^-1`` into the solution
         domain and comparing *that* against ``reltol``/``vabstol``/``iabstol``, which is
-        dimensionally sound.  Comparing the raw return value against a charge tolerance
-        is not: decision 0.3d's option (D) was designed around exactly that and was
-        refuted on it, having reproduced the units defect gate 0.2b recorded on the JAX
-        backend.  If a future estimator needs a charge, it is ``h`` times this.
+        dimensionally sound.  Comparing the raw return value against a charge
+        tolerance is not.  If a future estimator needs a charge, it is ``h``
+        times this.
 
         Returns:
             Tuple[lte_vector, p] -- lte_vector in AMPERES, p the order
+
+        History: `doc/transient_history.md`, `Integrator.compute_lte`.
         """
         pass
 
@@ -290,9 +267,8 @@ class EulerIntegrator(Integrator):
     ORDER = 1
 
     def __init__(self):
-        ## No `lte_formula`: see the module note above.  For
-        ## Backward Euler the two formulas always coincided, so this class never
-        ## had a choice to preserve across an order drop in the first place.
+        ## No `lte_formula`: see the module note above.
+        ## History: `doc/transient_history.md`, `EulerIntegrator.__init__`.
         pass
 
     def get_required_history(self) -> int:
@@ -332,27 +308,19 @@ class EulerIntegrator(Integrator):
 
         ## STAGE 4c -- THE VARIABLE-STEP CORRECTION.
         ##
-        ## Backward Euler's companion current is `(q_n - q_{n-1})/h`, which is a
-        ## centred approximation of `q'` at the MIDPOINT of the step, not at the
-        ## node.  So `g_n - g_{n-1}` differences two midpoint derivatives separated
-        ## by `(h_curr + h_last)/2`, not by `h_curr`, and it therefore estimates
-        ## `((h1+h2)/2) q''` where the truncation error is `(h1/2) q''`.
+        ## Backward Euler's companion current is `(q_n - q_{n-1})/h`, which is
+        ## a centred approximation of `q'` at the MIDPOINT of the step, not at
+        ## the node.  So `g_n - g_{n-1}` differences two midpoint derivatives
+        ## separated by `(h_curr + h_last)/2`, not by `h_curr`, and it
+        ## therefore estimates `((h1+h2)/2) q''` where the truncation error is
+        ## `(h1/2) q''` -- exact on a uniform grid, and off it wrong by
+        ## `(h1+h2)/(2 h1)`: OVERstated on a shrinking step, UNDERstated on a
+        ## growing one.
         ##
-        ## On a uniform grid the two coincide and the estimator is exact, which is
-        ## why this went unnoticed.  Off it, the estimate is wrong by
-        ## `(h1+h2)/(2 h1)` -- measured est/true, before this correction:
-        ##
-        ##     ratio  0.25    0.5     1.0     2.0     4.0
-        ##     est/true  2.5246  1.5089  1.0040  0.7522  0.6265
-        ##
-        ## which is a 4.03x spread across the sweep, and it is the wrong direction
-        ## twice over: on a shrinking step the error is OVERstated (so the
-        ## controller shrinks further than it needs to) and on a growing step it is
-        ## UNDERstated (so the controller grows past what the tolerance allows).
-        ##
-        ## Rescaling by `2 h1 / (h1 + h2)` converts the midpoint spacing back to the
-        ## step.  After: 1.0098 / 1.0059 / 1.0040 / 1.0029 / 1.0024 -- flat to
-        ## within 1% across the same sweep.
+        ## Rescaling by `2 h1 / (h1 + h2)` converts the midpoint spacing back
+        ## to the step; the estimate is then flat to within 1% across step
+        ## ratios 0.25..4.
+        ## History: `doc/transient_history.md`, `EulerIntegrator.compute_lte`.
         scale = 2.0 * h_curr / (h_curr + h_last) if h_last else 1.0
         lte = -0.5 * scale * (gn - gn_1)
         return lte, 2.0  # p=2.0 for Euler LTE h-dependence in step controller
@@ -405,70 +373,46 @@ class TrapezoidalIntegrator(Integrator):
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
 
-        ## STAGE 4g(b) -- DIFFERENCE A MODE-FREE QUANTITY.
-        ##
-        ## What the estimator must produce, from YWR eq (22) with p=1, k=2 and the
-        ## trapezoidal coefficients (alpha = [1/h, -1/h], beta = [1/2, 1/2]), is
+        ## THE ESTIMATE.  What the estimator must produce, from YWR eq (22)
+        ## with p=1, k=2 and the trapezoidal coefficients (alpha = [1/h, -1/h],
+        ## beta = [1/2, 1/2]), is
         ##
         ##     Eg = -(h^2/6) q'''
         ##
         ## once the controller's own J^-1 has absorbed the (q_x + 0.5 h f_x)^-1
-        ## factor.  Table I approximates q''' by a second difference of the
-        ## companion current g; eq (22) does not require that, and the paper's own
-        ## wording is "(22) AND FINITE DIFFERENCE APPROXIMATION" -- the choice of
-        ## difference is free, and for TRAP the g-based choice is what goes wrong.
-        ##
-        ## g carries an undamped parasitic mode.  The trapezoidal companion
-        ## `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}` has homogeneous solution
-        ## `iq_n = -iq_{n-1}`, i.e. `(-1)^n`, and nothing damps it.  Differencing g
-        ## therefore differences that mode, and the estimate depends on the step
-        ## history that preceded it: measured est/true_local at h=1e-9, ratio 1, on
-        ## two different prefixes of the SAME problem, 1.3176 and 0.6780 -- a 1.9x
-        ## swing from history alone.
-        ##
-        ## `d` has no such component.  The trapezoidal relation gives
-        ## `(iq_n + iq_{n-1})/2 = (q_n - q_{n-1})/h = d_n`, and the mode flips sign
-        ## every step, so it CANCELS EXACTLY in that sum.  Expanding about the
-        ## interval midpoint `m_n = (t_n + t_{n-1})/2`,
-        ##
-        ##     d_n = q'(m_n) + (h_n^2/24) q'''(m_n) + O(h^4)
-        ##
-        ## so d samples q' at midpoints and a second divided difference of d OVER
-        ## THE MIDPOINTS estimates q'''/2.  Measured against the local truncation
-        ## error, est/true at ratio 1: 0.9273 / 0.9933 / 0.9993 as h falls
-        ## 1e-8 -> 1e-10, against the g-based form's 0.8067 / 0.6780 / 0.6678 --
-        ## asymptotically exact where the old one holds a 33% underestimate.
-        ##
-        ## The midpoint spacings are the part that must not be got wrong; using
-        ## h_curr/h_last (the NODE spacings) is the same class of error as the
-        ## backward-Euler defect stage 4c fixed.
+        ## factor.  Eq (22) leaves the finite difference free ("(22) AND FINITE
+        ## DIFFERENCE APPROXIMATION"), and for TRAP the companion current g is
+        ## the wrong thing to difference: the recursion
+        ## `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}` has the undamped homogeneous
+        ## solution `(-1)^n`, so a difference of g depends on the step history
+        ## that preceded it (a 1.9x swing on two prefixes of the same problem).
+        ## q''' is therefore taken from a third divided difference of the
+        ## CHARGE.
+        ## History: `doc/transient_history.md`, `TrapezoidalIntegrator.compute_lte`.
         if h_last2 is not None:
             ## STAGE 4i.  Eg = -(h^2/6) q''' and the shared helper returns q'''/6,
             ## so the whole formula is -h^2 times it.
             ##
-            ## 4g(b) differenced `d_k = (q_k - q_{k-1})/h_k` over the interval
-            ## midpoints instead, which removed the parasitic mode and was
-            ## asymptotically exact but kept a +-12% bias at the extremes of the
-            ## reachable step-ratio range: `d_k` carries `(h_k^2/24) q'''`, and that
-            ## term cancels only on a uniform grid.  The charge carries no method
-            ## error at all, so differencing it directly removes the residual --
-            ## measured spread over ratio 0.008..2.414 falls from 1.26x to 1.008x.
+            ## The charge carries no method error, so the estimate holds off a
+            ## uniform grid too: measured spread 1.008x over step ratios 0.008..2.414.
+            ## History: `doc/transient_history.md`, `TrapezoidalIntegrator.compute_lte`.
             return -(h_curr**2) * third_divided_difference(
                 q_curr, q_last, h_curr, h_last, h_last2), 3.0
 
-        ## `h_last2 is None` means q_last[2] is not yet a real past point, which is
-        ## true for exactly ONE step of a run -- the second, where the ring buffer
-        ## still holds the initial charge twice.  Falling back to the g-based form
-        ## for that single step is better than returning zeros, which would make it
-        ## an unchecked step of the kind stage 3 exists to remove.
-        ## THE DIVIDED-DIFFERENCE FORM, AND `lte_formula` DOES NOT SELECT HERE.
-        ## YWR's Table I TRAP entry -- `Eg = -(1/6)(g_n - 2 g_{n-1} + g_{n-2})` --
-        ## carries a single `h` and an UNWEIGHTED second difference, i.e. it is a
-        ## uniform-grid formula, where the same table's GEAR2 entry carries h1 and
-        ## h2 explicitly.  Off a uniform grid it is wrong by O(1/h), and the grid is
-        ## not uniform here: stage 3's opening ramp is still growing the step at the
-        ## one point this fallback runs.  Taking the divided-difference form
-        ## unconditionally is stage 4d's stated fix.
+        ## `h_last2 is None` means q_last[2] is not yet a real past point,
+        ## which is true for exactly ONE step of a run -- the second, where the
+        ## ring buffer still holds the initial charge twice.  Falling back to
+        ## the g-based form for that single step is better than returning
+        ## zeros, which would make it an unchecked step of the kind stage 3
+        ## exists to remove.
+        ##
+        ## It is THE DIVIDED-DIFFERENCE FORM.  YWR's Table I TRAP entry --
+        ## `Eg = -(1/6)(g_n - 2 g_{n-1} + g_{n-2})` -- carries a single `h` and
+        ## an UNWEIGHTED second difference, i.e. it is a uniform-grid formula,
+        ## wrong by O(1/h) off a uniform grid, and the grid is not uniform
+        ## here: stage 3's opening ramp is still growing the step at the one
+        ## point this fallback runs.
+        ## History: `doc/transient_history.md`, `TrapezoidalIntegrator.compute_lte`.
         gn = 2 * (q_curr - q_last[0]) / h_curr - iq_last[0]
         gn_1 = iq_last[0]
         gn_2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
@@ -613,23 +557,21 @@ class ThetaIntegrator(TrapezoidalIntegrator):
         return True
 
     def needs_consistent_iq0(self) -> bool:
-        ## ⚠ THE PREREQUISITE THE LINEAR GATE COULD NOT SEE.  B2's gate solved
-        ## the periodic state in closed form, so it never had an opening step
-        ## and never exercised the seed.  Refusing the Euler opener means this
-        ## method reads `iq_{-1}` on its first step, where the run seeds zero:
-        ## measured, that alone costs a full order (0.97 against 2.00).
+        ## ⚠ THE PREREQUISITE A CLOSED-FORM PERIODIC SOLVE CANNOT SEE.
+        ## Refusing the Euler opener means this method reads `iq_{-1}` on its
+        ## first step, where the run seeds zero: measured, that alone costs a
+        ## full order (0.97 against 2.00).
         ##
         ## ⚠⚠ AND IT IS A JACOBIAN STATEMENT AS WELL AS AN ACCURACY ONE.  The
         ## seed `-(i(x_0) + u(t_0))` is a FUNCTION OF `x_0`, so any Jacobian
         ## taken with respect to `x_0` -- the shooting monodromy above all --
-        ## carries `d(iq_0)/d(x_0) = -G(x_0)`.  `shooting.py` seeded that at
-        ## ZERO for every method (nothing before this one formed a companion
-        ## current at `x_0`), which ANNIHILATED `null(C)` in the monodromy:
-        ## the L-stable opener this class exists to remove, reintroduced in
-        ## the derivative.  Cost 99 shooting evaluations against trap's 3 on a
-        ## LINEAR circuit, where an exact Newton must land in one step; the
-        ## answer was unchanged throughout.  See `PSS._pq_seed_at_x0`.  A NEW
-        ## METHOD THAT RETURNS TRUE HERE INHERITS THAT FIX AND NEEDS NOTHING.
+        ## carries `d(iq_0)/d(x_0) = -G(x_0)`.  Seeding that at zero
+        ## ANNIHILATES `null(C)` in the monodromy: the L-stable opener this
+        ## class exists to remove, reintroduced in the derivative (99 shooting
+        ## evaluations against trap's 3 on a LINEAR circuit, answer unchanged).
+        ## See `PSS._pq_seed_at_x0`.  A NEW METHOD THAT RETURNS TRUE HERE
+        ## INHERITS THAT AND NEEDS NOTHING.
+        ## History: `doc/transient_history.md`, `ThetaIntegrator.needs_consistent_iq0`.
         return True
 
     def check_order_drop(self, h_curr, h_last, is_first_step):
@@ -678,87 +620,53 @@ class Gear2Integrator(Integrator):
 
     def __init__(self):
         ## No `lte_formula`: removed in 9(f) -- see the module note above.
-        ## The history is kept because both entries are recorded results, and both
-        ## are about a choice that no longer exists rather than about this class.
-        ##
-        ## THE DEFAULT USED TO BE 'ywr', chosen belt-and-braces when 'classic' was
-        ## repaired, on the grounds that it had the longer track record.  The price
-        ## was that the YWR GEAR2 residual estimates (1/4) h^2 q''' against a true
-        ## (1/3) h^2 q''', so it reported 3/4 of the truncation error at every step
-        ## where a corrected 'classic' is asymptotically exact.  Stage 4i moved both
-        ## variants onto the divided-difference form, which is the 'classic' one, so
-        ## that optimism is gone rather than merely defaulted around.
-        ##
-        ## THE "5/6" AN EARLIER COMMENT CLAIMED WAS AN ARTEFACT, worth keeping
-        ## because the number is so clean.  5/6 = 0.8333 is what the trapezoidal
-        ## estimator reads when it is handed EXACT derivatives as its `g` history
-        ## instead of the companion currents a real run produces.  Measured against
-        ## the local truncation error with the real history it reads 1.09 / 1.31 /
-        ## 1.33 as h falls 1e-8 -> 1e-10 -- it does not converge at all, let alone
-        ## to 5/6.  Decision 0.3b called the claim measurably wrong; this is the
-        ## measurement, and the mechanism.
+        ## History: `doc/transient_history.md`, `Gear2Integrator.__init__`.
         pass
 
     def get_required_history(self) -> int:
-        ## THREE since stage 4i, for the same reason trapezoidal needs three: the
-        ## METHOD looks back two steps -- `compute_derivatives` uses q_last[0] and
-        ## q_last[1] -- but the ESTIMATOR takes a third divided difference of the
-        ## charge and so needs q_{n-3}.  Until 4g(b) built the `h_last2` plumbing
-        ## this was not available, and the comment in `compute_lte` below recorded
-        ## it as the reason the g-based form had to be used.
+        ## THREE since stage 4i, for the same reason trapezoidal needs three:
+        ## the METHOD looks back two steps -- `compute_derivatives` uses
+        ## q_last[0] and q_last[1] -- but the ESTIMATOR takes a third divided
+        ## difference of the charge and so needs q_{n-3}.
+        ## History: `doc/transient_history.md`, `Gear2Integrator.get_required_history`.
         return 3
 
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
         if is_first_step:
             return EulerIntegrator()
 
-        ## STAGE 4e -- THE GUARD USED TO WATCH THE WRONG DIRECTION.
+        ## STAGE 4e -- THE GROWTH GUARD, which is the stability bound.
+        ## Variable-step BDF-2's parasitic root leaves the unit disc only on
+        ## *growth*, past `ZERO_STABILITY_RATIO`; any ratio below 1 is
+        ## unconditionally zero-stable.
         ##
-        ## The only test here was `if h_curr / h_last < 0.1`, and it was labelled
-        ## as protecting the validity of the high-order polynomial.  It does not:
-        ## variable-step BDF-2's parasitic root leaves the unit disc only on
-        ## *growth*, past `ZERO_STABILITY_RATIO`, and any ratio below 1 is
-        ## unconditionally zero-stable.  So the one ratio that can actually
-        ## destabilise the recursion was unwatched -- which is how the 10x growth
-        ## on `transient.py`'s force-accept path (4b) survived: nothing downstream
-        ## would have caught it.  (The shrink test itself is kept, for a different
-        ## and measured reason; see below.)  Measured on the stiff RLC, this new
-        ## branch fires 0 times, because the controller's own clamp
-        ## (`MAX_GROWTH_RATIO` = 2.0) keeps every normal step inside the bound.
-        ##
-        ## **That makes this a backstop, and a backstop that never fires in a
-        ## healthy run is the point of it** -- it is what turns "no accepted step
-        ## ratio exceeds the bound" from an accident of two clamps agreeing into
-        ## something the integrator enforces for itself.  Dropping to Euler is the
-        ## right response rather than refusing the step: order 1 has no parasitic
+        ## **A backstop, and a backstop that never fires in a healthy run is
+        ## the point of it**: the controller's own clamp (`MAX_GROWTH_RATIO` =
+        ## 2.0) keeps every normal step inside the bound (0 firings on the
+        ## stiff RLC), and this guard turns "no accepted step ratio exceeds the
+        ## bound" from an accident of two clamps agreeing into something the
+        ## integrator enforces for itself.  Dropping to Euler is the right
+        ## response rather than refusing the step: order 1 has no parasitic
         ## root to amplify, so the ratio becomes harmless instead of forbidden.
+        ## History: `doc/transient_history.md`, `Gear2Integrator.check_order_drop`.
         if h_curr / h_last > ZERO_STABILITY_RATIO:
             return EulerIntegrator()
 
-        ## THE SHRINK BRANCH IS KEPT, AND RE-LABELLED.  The plan said replace; the
-        ## measurement said add, so it is added and the reason is written down.
+        ## THE SHRINK BRANCH IS ECONOMICS, NOT STABILITY: a STALLED-ESTIMATE
+        ## heuristic.  A step only shrinks 10x below the last accepted one
+        ## after several consecutive rejections, and what rejects repeatedly is
+        ## a 2nd-order estimate built on a third difference of a solution that
+        ## is not three times differentiable -- i.e. a discontinuity.  Dropping
+        ## to order 1 there is what every simulator does across a corner.  It
+        ## is not idle (3-6 firings a run on the stiff RLC at reltol 1e-5), and
+        ## without it those steps become force-accepted 2nd-order ones.
         ##
-        ## Removing it outright took `Gear2('ywr')` and `Gear2('classic')` from 0
-        ## force-accepts to 1 each on the stiff RLC at reltol 1e-5, because it is
-        ## not idle: it fires 3-6 times a run there.  What it is doing is nothing
-        ## to do with zero-stability -- it is a STALLED-ESTIMATE heuristic.  A step
-        ## only shrinks 10x below the last accepted one after several consecutive
-        ## rejections, and what rejects repeatedly is a 2nd-order estimate built on
-        ## a third difference of a solution that is not three times differentiable
-        ## -- i.e. a discontinuity.  Dropping to order 1 there is what every
-        ## simulator does across a corner, and it is the same medicine 4b now
-        ## administers at the rejection cap, one retry later and after having
-        ## accepted an over-tolerance step to get there.  Deleting it would have
-        ## traded a controlled Euler step for a force-accepted 2nd-order one.
-        ##
-        ## So: the guard above is the stability bound, this one is economics, and
-        ## the defect 4e names was never that this branch existed -- it was that
-        ## this branch was ALL there was, and it was labelled as protecting a
-        ## stability property it has nothing to do with.  **Reconsider if** the
-        ## rejection cap ever becomes rejection-count-aware: `h_curr/h_last < 0.1`
-        ## is a proxy for "we have rejected three times at this time point", and
-        ## the thing it is a proxy for is known exactly one level up in
-        ## `transient.py`, where it would not need a threshold at all.
+        ## **Reconsider if** the rejection cap ever becomes
+        ## rejection-count-aware: `h_curr/h_last < 0.1` is a proxy for "we have
+        ## rejected three times at this time point", and the thing it is a
+        ## proxy for is known exactly one level up in `transient.py`, where it
+        ## would not need a threshold at all.
+        ## History: `doc/transient_history.md`, `Gear2Integrator.check_order_drop`.
         if h_curr / h_last < 0.1 and getattr(self, 'shrink_guard', True):
             return EulerIntegrator()
 
@@ -798,53 +706,31 @@ class Gear2Integrator(Integrator):
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
 
-        ## STAGE 4i -- THE ESTIMATOR USED TO DIFFERENCE THE METHOD'S OWN ERROR.
-        ##
-        ## Gear-2's local truncation error is `-(1/6) h1 (h1+h2) q'''`, so every
-        ## companion current in the history carries an error of exactly that shape.
-        ## Both branches below take a second divided difference of `g` at the
-        ## nodes, which differences those errors along with the signal.  The
-        ## damage was computed by hand before it was measured, and the two agree to
-        ## 0.3% at every step ratio:
-        ##
-        ##     h1/h2      0.008    0.05     0.1    0.25       1       2       4
-        ##     predicted  83.34  13.365   6.727   2.800  1.0000   0.778   0.700
-        ##     measured   83.06   13.32    6.71    2.79   0.998   0.775   0.695
-        ##
-        ## It vanishes exactly at h1 = h2 = h3, which is why the estimator measured
-        ## asymptotically exact (1.000282 against 2/9) on a uniform grid: that
-        ## measurement was taken at the one ratio where the defect is zero.  A step
-        ## ratio of 0.008 is reached after three consecutive rejections, so the
-        ## worst case is not hypothetical -- it is the step where the controller
-        ## has just collapsed the step size and is told the error is 83x worse than
-        ## it is.
-        ##
-        ## The fix is to estimate q''' from the CHARGES, which carry no method
-        ## error.  The obstacle used to be real and was recorded here: Gear-2 kept
-        ## only two past charges, so a third divided difference was unavailable.
-        ## 4g(b) lifted it.
+        ## STAGE 4i -- q''' FROM THE CHARGES, WHICH CARRY NO METHOD ERROR.
+        ## Gear-2's local truncation error is `-(1/6) h1 (h1+h2) q'''`, so
+        ## every companion current in the history carries an error of exactly
+        ## that shape, and a second divided difference of `g` at the nodes
+        ## would difference those errors along with the signal.  That vanishes
+        ## only at h1 = h2 = h3; at a step ratio of 0.008 -- reached after
+        ## three consecutive rejections -- it overstates the error 83x.
+        ## History: `doc/transient_history.md`, `Gear2Integrator.compute_lte`.
         if h_last2 is not None:
             ## Eg = -(1/6) h1 (h1+h2) q''', and the helper returns q'''/6.
             return -h_curr * (h_curr + h_last) * third_divided_difference(
                 q_curr, q_last, h_curr, h_last, h_last2), 3.0
 
-        ## `h_last2 is None` for exactly one step of a run -- the second, before the
-        ## ring buffer holds four real charges.  The g-based form below serves that
-        ## step; returning zeros would make it unchecked, which is the defect stage
-        ## 3 removed from the first step.
+        ## `h_last2 is None` for exactly one step of a run -- the second,
+        ## before the ring buffer holds four real charges.  The g-based form
+        ## below serves that step; returning zeros would make it unchecked,
+        ## which is the defect stage 3 removed from the first step.
         ##
-        ## IT IS THE DIVIDED-DIFFERENCE FORM, NOT YWR's, AND `lte_formula` DOES NOT
-        ## SELECT HERE.  YWR's Table I GEAR2 residual estimates `(1/4) h^2 q'''`
-        ## against a true `(1/3)`, so it reports 3/4 of the truncation error --
-        ## measured on this exact fallback as -2.827659e+01 where the correct value
-        ## is -3.770212e+01.  After 4i this was the ONLY step of a run where the
-        ## choice still had any effect on the CPU path, so taking the accurate one
-        ## unconditionally is what finishes 4d: "delete the branch and keep 'ywr' as
-        ## an alias".
-        ## (The YWR Table I GEAR2 residual that used to be selectable here,
-        ##  `Eg = -(1/8)((h1+h2)/(h1 h2))(h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2})`,
-        ##  is derived and compared against this one in doc/src/circuit/lte_dae.rst;
-        ##  it is not kept as dead code.)
+        ## IT IS THE DIVIDED-DIFFERENCE FORM, NOT YWR's.  YWR's Table I GEAR2
+        ## residual estimates `(1/4) h^2 q'''` against a true `(1/3)`, so it
+        ## reports 3/4 of the truncation error.  (That residual,
+        ## `Eg = -(1/8)((h1+h2)/(h1 h2))(h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2})`,
+        ## is derived and compared against this one in
+        ## doc/src/circuit/lte_dae.rst.)
+        ## History: `doc/transient_history.md`, `Gear2Integrator.compute_lte`.
 
         # --- CLASSIC GEAR-2 LOCAL TRUNCATION ERROR ---
         # Taylor-expanding the VSS companion current above about t_n (the alpha
@@ -856,17 +742,15 @@ class Gear2Integrator(Integrator):
         # has to be estimated here is the THIRD derivative of the charge, scaled
         # by h^2.
         #
-        # A second divided difference of q yields only q'', and Gear-2 keeps just
-        # two past charges (get_required_history() == 2), so a third divided
-        # difference of q is not available at all.  The third derivative is
-        # therefore taken as the second divided difference of g = dq/dt, read off
-        # the companion-current history -- the same information the YWR branch
-        # above uses.  Estimating q'' here and multiplying by h^3 (as this branch
-        # did until 2026-07) is dimensionally not a current: it undershoots the
-        # truncation error by a factor of order h*omega, which on a 1 MHz signal
-        # at nanosecond steps is ~1e-15.  The controller then never rejects a
-        # step, saturates the growth limiter every step, pins h at max_step and
-        # stops responding to reltol/abstol altogether.
+        # On this one step a third divided difference of q is not yet
+        # available, so the third derivative is taken as the second divided
+        # difference of g = dq/dt, read off the companion-current history.
+        # ⚠ Estimating q'' here and multiplying by h^3 is dimensionally not a
+        # current: it undershoots the truncation error by a factor of order
+        # h*omega (~1e-15 for a 1 MHz signal at nanosecond steps), and the
+        # controller then never rejects a step, pins h at max_step and stops
+        # responding to reltol/abstol.
+        ## History: `doc/transient_history.md`, `Gear2Integrator.compute_lte`.
         h1, h2 = h_curr, h_last
         g_n = bdf2_derivative(q_curr, q_last[0], q_last[1], h1, h2)
         g_nm1 = iq_last[0]
@@ -1207,142 +1091,61 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
       numerical solution lands ON the constraint manifold each step.
 
     ⚠⚠ EVERY STABILITY LINE ABOVE IS A PROPERTY OF THE TABLEAU, AND ON A DAE
-    THAT IS ONLY HALF THE PREMISE.  Lamour, Marz & Tischendorf (2013)
-    Example 5.1: applying the IMPLICIT Euler method to a DAE in STANDARD FORM
-    induces the EXPLICIT Euler method on the inner variable -- "the
-    A-stability gets lost when the method is applied to a DAE in standard
-    form", unstable at ``h = 0.0202`` against a limit of ``0.02`` at
-    ``lambda = -100``.  The formulation, not the method, decides whether
-    A-stability transfers.
+    THAT IS ONLY HALF THE PREMISE.  Lamour, Marz & Tischendorf (2013) Example
+    5.1: applying the IMPLICIT Euler method to a DAE in STANDARD FORM induces
+    the EXPLICIT Euler method on the inner variable.  The formulation, not the
+    method, decides whether A-stability transfers.  Charge-oriented MNA is on
+    the right side of that -- it is a properly stated leading term -- and the
+    condition it turns on is ``im D(t)`` time-invariant, which for
+    charge-oriented MNA is ``im C(x)`` constant along the orbit; it moves only
+    on a RANK change (a switch, a device leaving conduction), NOT on a smoothly
+    varying ``C(v) > 0``.  The same term is the premise of IRK(DAE) convergence
+    (Thm 5.7), GLM convergence at stage order (5.9, which is what
+    :class:`NordsieckGLMIntegrator` rests on) and contractivity transfer (6.9)
+    -- relayed from a source reading, not verified here.
 
-    This tree is on the right side of that because charge-oriented MNA IS a
-    properly stated leading term -- but that premise was UNSTATED here until
-    2026-09-10, and an unstated premise is an unprotected one: nothing would
-    notice if a formulation change moved it.  The condition it turns on is
-    ``im D(t)`` time-invariant, which for charge-oriented MNA is ``im C(x)``
-    constant along the orbit; it moves only on a RANK change (a switch, a
-    device leaving conduction), NOT on a smoothly varying ``C(v) > 0``.
+    ⚠⚠ OUR FIXTURES DO NOT EXERCISE IT.  On the index-2 C-V loop, the
+    state-free exponential and the van der Pol ``C(x)`` is LITERALLY CONSTANT
+    (every reactance in them is linear), so those results sit inside the
+    theorem's scope VACUOUSLY.  Whether violating the hypothesis costs order in
+    this implementation is NOT MEASURED; it needs a fixture whose ``rank C(x)``
+    genuinely changes along the orbit -- a ``VSwitch`` in series with a
+    capacitor, not a diode peak detector (this tree's ``Diode`` has no charge).
 
-    ⚠ THE SAME TERM GOVERNS THE GLM CONVERGENCE RESULT.  Prop 4.7 and the
-    proof of Thm 5.7 make it one term in one equation: the IERODE's field is
-    ``u' = R'(t)u + D(t)omega(u,t)``, and the hypothesis exists to kill
-    ``R'(t)u``.  It is the same premise under IRK(DAE) convergence (5.7), GLM
-    convergence at stage order (5.9, which is what
-    :class:`NordsieckGLMIntegrator` rests on) and contractivity transfer
-    (6.9).  Relayed from a source reading, not verified here.
+    CONTRACTIVITY IS TWO GUARANTEES, AND THIS METHOD HAS EXACTLY ONE.
+    B-stability -- contraction of a one-sided-Lipschitz flow in an
+    inner-product norm with NO stepsize restriction, the natural notion for a
+    dissipative circuit of passive elements -- it HAS: Radau IIA is
+    algebraically stable (Hairer & Wanner Thm 12.9).  On a DAE that is a
+    THREE-PART CONDITIONAL (Lamour Ch.6 eq 6.16): B-stable (yes) + a
+    contractive DAE (a property of the circuit) + constant ``im D(t)`` (above);
+    the last two are unverified for every fixture in this tree.  Absolute
+    monotonicity (Kraaijevanger's ``R(A, b)``: componentwise positivity / TVD /
+    bounds) it does NOT have: ``R(A, b) = 0`` for Radau IIA(3) and IIA(2),
+    because ``a_23 = -2/225 - sqrt(6)/75 < 0`` and ``R > 0`` requires
+    ``A >= 0``, so no step size, however small, carries that guarantee.  It
+    matters most at the LARGE steps the order win is bought with, on a stiff
+    switching circuit; nothing in this tree has yet MEASURED such a failure.  A
+    componentwise-bounds test (an RC ladder under a square wave) tests ONLY
+    absolute monotonicity: a violation there does not contradict B-stability,
+    and a clean result does not establish it.
 
-    ⚠⚠ AND OUR FIXTURES DO NOT EXERCISE IT.  Measured 2026-09-10: on the
-    index-2 C-V loop, the state-free exponential and the van der Pol -- the
-    three fixtures behind the GLM order, stage-predictor and noise-floor
-    results -- ``C(x)`` is not merely constant-rank but LITERALLY CONSTANT
-    (``max|C(x1) - C(x2)| == 0`` over random ``x``), because every reactance
-    in them is linear.  So ``im D`` is time-invariant TRIVIALLY and those
-    results sit inside the theorem's scope VACUOUSLY.  Whether violating the
-    hypothesis actually costs order in this implementation is NOT MEASURED and
-    would need a fixture whose ``rank C(x)`` genuinely changes along the orbit.
-
-    What it does NOT have (2026-09-07, measured after the method became the
-    ``PSS`` default): a radius of absolute monotonicity.  Kraaijevanger's
-    ``R(A, b)`` -- computed here from the definition, on the SAME script that
-    returns ``2`` for Crank-Nicolson, ``inf`` for backward Euler and
-    ``1 + sqrt(2)`` for TR-BDF2 at every ``gamma`` against Bonaventura &
-    Della Rocca's closed form -- is ``R(A, b) = 0`` for Radau IIA(3), and
-    for Radau IIA(2) too.  The cause is one tableau entry: ``a_23 =
-    -2/225 - sqrt(6)/75 < 0``, and ``R > 0`` requires ``A >= 0`` entrywise
-    (Kraaijevanger 1991), so NO step size, however small, carries a
-    monotonicity / positivity / TVD guarantee under this method; TR-BDF2's
-    ``~21%`` margin over trapezoidal has no Radau counterpart at all.  This
-    is the theorem, not an accident of the tableau: Kraaijevanger's order
-    barrier for unconditional contractivity is ``p <= 1`` (the "Radau IIA"
-    named there as unconditionally contractive is the ONE-stage member,
-    i.e. backward Euler), and conditional contractivity at ``p = 5`` needs
-    ``A >= 0``, which the collocation tableau does not give.  Practical
-    reading: the order win that reaches 1 ppb at 30-80 points per period
-    is bought with LARGE steps, and large steps are exactly where a method
-    with ``R = 0`` may overshoot or go negative on a stiff switching
-    circuit -- nothing in this tree has yet MEASURED such a failure, so
-    this is a recorded absence of a guarantee, not a recorded failure.
-    ``ESDIRK43`` is in the same position (``R = 0``, its ``a_32 = -1743/31250``
-    and ``min(A) = -0.59``); computed on the coded ``A``/``B`` of all three
-    classes, TR-BDF2 is the ONLY stage method in this file with a positive
-    radius (``2.41421``, the closed form to the digit).
-    AND THE ZERO IS STRUCTURAL, NOT AN ACCIDENT OF THE TABLEAU (peer
-    reading of the same paper, same day): Thm 8.5 of Kraaijevanger 1991,
-    which is BUTCHER's result (headed "J. C. Butcher; private communication
-    1989" -- checked at the source 2026-09-08, on disk as
-    `Kraaijevanger-1991-Contractivity of Runge-Kutta methods.pdf`): "Let
-    (A,b) be an ARBITRARY coefficient scheme with A >= 0. Then the stage
-    order is at most 2. Further, if it equals 2 then A has a zero row" --
-    no irreducibility needed, and the proof says WHICH row: c1 = 0, an
-    EXPLICIT FIRST STAGE, the only shape A >= 0 permits at stage order 2.
-    ``A >= 0`` is NECESSARY for ``R > 0`` (Thm 4.2, Kraaijevanger's own,
-    verbatim "for irreducible coefficient schemes ... R(A,b) > 0 if and
-    only if A >= 0, b > 0 and Inc(A^2) <= Inc(A)"), so a positive radius
-    forces stage order <= 2 AND an explicit first stage for EVERY
-    Runge-Kutta method; Radau IIA(3) has stage order 3, so its
-    negative entry is the theorem showing its face and no better
-    collocation tableau exists to look for.  Chained with Voigtmann's
-    Theorem 5 (index-2 convergence order = min(p, q)): on an index-2
-    circuit a method can carry an ABSOLUTE-MONOTONICITY guarantee OR order
-    above 2, never both -- a Runge-Kutta limitation, not a DIRK one, binding
-    Radau exactly as hard as ESDIRK.  And the split has its theorem
-    (Voigtmann's thesis, Thm 9.5, verified 2026-09-08): a GLM with stage
-    order q = p, nilpotent M_inf, stiffly accurate, keeps full order p on
-    an index-2 DAE at CONSTANT stepsize -- Radau IIA has q = s, p = 2s-1,
-    so it can never meet q = p (measured 5 / 3.05 here); TR-BDF2 (q = p =
-    2) meets it and shows no split (2.04).  The reduction is a property of
-    methods with q < p, not of index-2 as such.
-    ⚠⚠ BUT "CONTRACTIVITY" IS TWO DIFFERENT GUARANTEES, and this method
-    HAS the other one unconditionally (peer correction, same night, from
-    Hairer & Wanner Thm 12.9 p.210 -- on disk all along -- and Lamour Ch.6
-    §6.1): "The methods Gauss, Radau IA, Radau IIA and Lobatto IIIC are
-    algebraically stable and therefore also B-stable."  B-stability is
-    contraction of a one-sided-Lipschitz flow in an inner-product norm,
-    with NO stepsize restriction ("B-stable Runge-Kutta methods reflect
-    contractivity devoid of stepsize restrictions", Lamour) -- the natural
-    notion for a DISSIPATIVE circuit of passive elements.  Absolute
-    monotonicity (Kraaijevanger, SSP) protects componentwise positivity /
-    TVD / bounds and needs ``A >= 0``, hence stage order <= 2.  Each method
-    here has exactly one: Radau IIA(3) is B-stable with ``R(A, b) = 0``;
-    TR-BDF2 has ``R = 1 + sqrt(2)`` and is NOT algebraically stable (Kennedy
-    & Carpenter: a DIRK may have algebraic stability OR stage order two,
-    not both).  So the default is BETTER protected than the paragraph above
-    reads, on the notion that matters most for circuits; the ``R = 0`` gap
-    is the narrower componentwise one.  A componentwise-bounds measurement
-    (an RC ladder under a square wave) tests ONLY absolute monotonicity: a
-    violation there does not contradict B-stability, and a clean result
-    does not establish it.
-    ⚠⚠ AND B-STABILITY IS AN ODE PROPERTY THAT DOES NOT CARRY TO A DAE FOR
-    FREE (peer qualification of the correction above, same night, Lamour
-    Ch.6 §6.2 verbatim): "in general, we cannot expect that algebraically
-    stable Runge-Kutta methods, in particular the implicit Euler method,
-    preserve the decay behavior of the exact DAE solution without strong
-    stepsize restrictions, not even when we restrict the class of DAEs to
-    linear ones.  This depends on how the DAE is formulated."  The
-    condition (their eq 6.16): a properly stated leading term whose
-    ``im D(t)`` -- the IMAGE SPACE of the charge Jacobian, not ``D`` itself
-    -- is independent of ``t``; then the IRK reaches the inherent ODE
-    unchanged and algebraic stability + a contractive DAE give contractivity
-    with no step restriction.  So the default's protection is a THREE-PART
-    CONDITIONAL: B-stable (yes, by theorem) + contractive DAE (a property of
-    the circuit) + constant ``im D(t)`` (a property of the formulation and
-    the circuit -- a smooth nonlinear capacitance of constant rank is fine;
-    a switch, or a device entering/leaving a region where it contributes a
-    state, is what breaks it).  Two of the three are unverified for every
-    fixture in this tree.  ⚠ This tree's ``Diode`` has ``G``/``i`` only, no
-    charge, so a diode peak detector keeps ``im D`` constant by
-    construction and is NOT the structure-change fixture; a ``VSwitch`` in
-    series with a capacitor would be.  TR-BDF2 sits at the corner (stage order 2,
-    ``R = 1 + sqrt(2)``) and its explicit first stage is the zero row the
-    theorem requires -- checked on the coded ``A``: row 0 is the only zero
-    row and ``A >= 0`` holds; Radau IIA(3) has no zero row and ``A >= 0``
-    fails; ESDIRK43 has the explicit stage (clears the NECESSARY condition)
-    and fails ``A >= 0`` on ``a_32 < 0``, so ``R = 0`` anyway.  The check
-    measured Butcher's construction before either reader knew what it was
-    testing: the "zero-row tell" is an explicit-first-stage tell.  The one unexplored exit is the GLM class (Voigtmann: "diagonally
-    implicit methods with high stage order are possible"), where
-    Kraaijevanger's RK theorems do not bind -- whether a GLM can carry high
-    stage order AND a positive radius is OPEN here, not hinted.
+    The zero is STRUCTURAL.  Kraaijevanger 1991 Thm 4.2 (for irreducible
+    schemes ``R > 0`` needs ``A >= 0``) with Thm 8.5 (Butcher's: ``A >= 0``
+    forces stage order <= 2, and at 2 a zero row, i.e. an explicit first stage)
+    means a positive radius forces stage order <= 2 AND an explicit first stage
+    for EVERY Runge-Kutta method; Radau IIA(3) has stage order 3, and no better
+    collocation tableau exists to look for.  Of the coded stage methods only
+    TR-BDF2 has a positive radius (``1 + sqrt(2)``: explicit first stage,
+    ``A >= 0``, and NOT algebraically stable); ESDIRK43 has the explicit stage
+    but ``a_32 < 0``, so ``R = 0``.  With Voigtmann's Theorem 5 (index-2 order
+    = min(p, q)), on an index-2 circuit a Runge-Kutta method carries an
+    absolute-monotonicity guarantee OR order above 2, never both.  Voigtmann's
+    Thm 9.5 (a stiffly accurate GLM with q = p and nilpotent M_inf keeps order
+    p on an index-2 DAE at constant stepsize) is why Radau IIA (q = s, p =
+    2s-1) reads 5 / 3.05 here and TR-BDF2 (q = p = 2) shows no split (2.04).
+    Whether a GLM can carry high stage order AND a positive radius is OPEN
+    here.
 
     The price is that it is FULLY implicit: the three stages are coupled into
     one ``3n`` system, with no explicit first stage to unlock and no
@@ -1366,6 +1169,8 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     interior Radau points and the endpoint) with ``b`` equal to the LAST row of
     ``A`` (stiff accuracy).  This is the IIA family (right Radau, endpoint
     included), NOT IA (left Radau, ``c1 = 0``); do not swap the abscissae.
+
+    History: `doc/transient_history.md`, `RadauIIA3Integrator`.
     """
 
     #: Classical order (B(5) holds; C(3) gives stage order 3).
@@ -1543,9 +1348,8 @@ class NordsieckGLMIntegrator(Integrator):
     from the EXACT vector and from the computed one and requires the same
     order.
 
-    ⚠ SCOPE, and this paragraph has been WRONG TWICE, so read the dates.  The
-    shooting period map on the `r*m` Nordsieck state IS built (`PSS(method=
-    'glm3')` and friends), and so is ADAPTIVE STEPPING (2026-09-10): the
+    ⚠ SCOPE.  The shooting period map on the `r*m` Nordsieck state is built
+    (`PSS(method='glm3')` and friends), and so is ADAPTIVE STEPPING: the
     estimate is the change in the top Nordsieck component,
     `Transient._glm_error_estimate`, delivered through the same `_rk_est` slot
     the Runge-Kutta methods use, with `EMBEDDED_ORDER = p`.
@@ -1583,6 +1387,8 @@ class NordsieckGLMIntegrator(Integrator):
     ``im D`` hypothesis at all.
 
     Still not built: no PCNR stage path; not on the JAX backend.
+
+    History: `doc/transient_history.md`, `NordsieckGLMIntegrator`.
     """
 
     #: overridden by concrete tableaux
@@ -1608,10 +1414,9 @@ class NordsieckGLMIntegrator(Integrator):
         HIGHER Nordsieck components too (`dQ_k = h^k d^k(C dx)/dt^k`), so
         neither `w[:m]` nor `C^T w_0` is the state PPV -- MEASURED against
         radau on van der Pol at Q = 15.9, both are wrong by 2 % in norm and by
-        13x in the small component, and `ppv` used to return the first of them
-        SILENTLY.
+        13x in the small component.
 
-        Since 2026-09-24/25 the map ON THE STATE is built (the startup
+        The map ON THE STATE is built (the startup
         linearised, `_GLMStartup`; `_GLMPeriod.state_map`), and `ppv`,
         `floquet_modes`, PAC, the adjoint rows, pnoise and `sampled_noise`
         read it (`PSS._state_map`).  Still False, because two things keep a
@@ -1623,6 +1428,8 @@ class NordsieckGLMIntegrator(Integrator):
         sample per step, first order (`PAC._lyapunov_pieces_glm`).  The
         covariance surfaces take a radau twin by default
         (`PSS._state_twin`); `monodromy='native'` keeps the GLM's.
+
+        History: `doc/transient_history.md`, `NordsieckGLMIntegrator.carries_own_monodromy`.
         """
         return False
 
@@ -1878,50 +1685,40 @@ class GLM4Integrator(NordsieckGLMIntegrator):
     3.00e-13 (20x) and differential 2.06e-11 against 8.31e-14 (radau 250x),
     with both ratios GROWING as the grid refines since the orders differ.
 
-    ⚠⚠ BUT AT EQUAL WORK RADAU DOMINATES, and the "one factorisation per
-    step" argument for this class is REFUTED on that fixture: timed, glm4
-    takes 2.4x-4.7x radau's wall clock at the SAME grid.  `s = r = p + 1`
-    is five sequential `m x m` stage solves against radau's ONE coupled
-    `3m` solve, and at `m = 3` a dense 9x9 factorisation is trivial while
-    five Newtons are not.  ⚠ THAT EXPLANATION IS WRONG AND IS WITHDRAWN:
-    dense LU is ~n^3/3, so five `m` solves against one `3m` solve is the
-    same ratio at EVERY `m` -- there is no size threshold, and on flops
-    alone glm4 should have been cheaper at m = 3.  MEASURED mechanism
-    (device-evaluation counts, 40 points): glm4 116.2 `i` calls per step
-    against radau's 39.0, i.e. 3.0x the nonlinear work -- more than its
-    stage-count ratio of 5/3, because each of its five stages runs its OWN
-    Newton to convergence while radau solves three stages as one coupled
-    system.  That ratio does not shrink with circuit size and dominates on
-    a circuit with expensive compact models.  (The timing was fair: radau's
-    opt-in cost transform was OFF, so it paid the full dense 3m solve and
-    glm4 still lost; with it ON radau is ~five real m-solve equivalents,
-    factorisation parity.)  The lever, unbuilt, is the STAGE INITIAL GUESS:
-    23 `i` evaluations per stage says the per-stage Newton starts far from
-    its root, and the Nordsieck vector carries the scaled derivatives a
-    Taylor predictor would need.  So this method's claim is accuracy per
-    STEP on the algebraic component, not accuracy per second.
+    ⚠⚠ BUT AT EQUAL WORK RADAU DOMINATES: timed, glm4 takes 2.4x-4.7x radau's
+    wall clock at the SAME grid, so the "one factorisation per step" argument
+    for this class does not hold on that fixture.  The mechanism is nonlinear
+    work, not factorisation (dense LU is ~n^3/3, so five `m` solves against one
+    `3m` solve is the same ratio at EVERY `m`): glm4 makes 116.2 `i` calls per
+    step against radau's 39.0 (40 points), 3.0x -- more than its stage-count
+    ratio of 5/3, because each of its five stages runs its OWN Newton to
+    convergence while radau solves three stages as one coupled system.  That
+    ratio does not shrink with circuit size and dominates on a circuit with
+    expensive compact models.  The lever, unbuilt, is the STAGE INITIAL GUESS:
+    the Nordsieck vector carries the scaled derivatives a Taylor predictor
+    would need.  So this method's claim is accuracy per STEP on the algebraic
+    component, not accuracy per second.
 
     ⚠ THE ABSCISSAE ARE INSIDE [0, 1] BY CONSTRUCTION -- c = [0.173, 0.402,
     0.641, 0.794, 1] -- which matters more for a circuit than for a general
     ODE code (docs session): a stage at `c > 1` evaluates the device models
     PAST the end of the step, further from the operating point the Jacobian
     was formed at, and samples a time-dependent source in a DIFFERENT PWL or
-    pulse SEGMENT rather than extrapolating the same one.  An earlier
-    tableau had c = 1.02 and 1.219; bounding `c` costs nothing theoretically
-    (it is a free parameter, Wright p. 80, and his canonical choice is
-    inside) and, MEASURED, nothing in practice either -- the bounded solve
-    converges in the same ten minutes as the unbounded one.
+    pulse SEGMENT rather than extrapolating the same one.  Bounding `c` costs
+    nothing theoretically (it is a free parameter, Wright p. 80, and his
+    canonical choice is inside) and, measured, nothing in practice either.
 
     ⚠⚠ STILL BADLY SCALED, AND SHIPPED WITH THAT STATED: `B`'s last rows
     carry entries of order 3900 where GLM3's are O(1).  That is a DIFFERENT
-    problem from the abscissae and a magnitude penalty bolted onto the
-    feasibility solve does not fix it (measured: the two constraints
-    together do not converge in 65 minutes where either alone takes ten).
+    problem from the abscissae, and a magnitude penalty bolted onto the
+    feasibility solve does not fix it.
     Wright §3.11 -- *"methods where all coefficients have magnitude less
     than or equal to one CAN BE FOUND for methods of high order"*, findable
     because the construction is linear in the free parameters -- is the
     machinery for it, not more restarts.  Measure before preferring this to
     GLM3 on a circuit with sharp sources; see the roadmap.
+
+    History: `doc/transient_history.md`, `GLM4Integrator`.
     """
     P = 4
     A = [[0.258000000000001, -0, 0, 0, 0],

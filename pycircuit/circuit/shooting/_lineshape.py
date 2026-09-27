@@ -31,7 +31,7 @@ reference, 2026-09-26, in `doc/pss_log_260902.md`):
     the tail).
 
 A SIGNED correction to `c` (the frequency-aware PPV's `c_fa - c_dc`,
-2026-09-26; `PAC._fa_lineshape`) cannot ride on the power-law pieces, which
+`PAC._fa_lineshape`) cannot ride on the power-law pieces, which
 cannot pass a zero.  It is tabulated (`SignedTable`) and its structure
 function taken by QUADPACK (`correction_structure`, `2 sin^2` below
 `beta nu = 2`), splined in its VALUE beside `D_c`, and added.  `D_inf` may
@@ -45,12 +45,14 @@ Far from the carrier the transform is a cancellation, and each offset
 takes it or the SECOND-order skirt (`second_order_skirt`), whichever
 `handover` estimates the smaller error.  Against the mpmath reference
 (`benchmarks/lineshape_reference.py`) the worst is 3.4e-7 on a real
-oscillator's line (it was 6.5e-5 at the handover).
+oscillator's line.
 
 The correction's `rho = c_fa/c_dc - 1` comes from bordered solves.
 `RationalRho` fits it as one rational from ~25 of them; `LogChebyshev` is
 the fallback, taking ~65 to ~139.  Both hold the tolerance relative to
 `1 + rho`.
+
+History: `doc/shooting_history.md`, `_lineshape`.
 """
 import math
 import warnings
@@ -266,10 +268,8 @@ class RationalRho:
 
     ⚠ THE TOLERANCE IS RELATIVE TO `1 + rho` (floored at `REL_FLOOR`), per
     component: what the lineshape needs is `c_fa = c_dc (1 + rho)`, and
-    behind a slow node `1 + rho` falls to ~1e-3.  An absolute 1e-6 on
-    `rho` was then 1e-3 of `c_fa`, and the Chebyshev series held to it was
-    3.1e-5 off in the near skirt against a tight reference, where this is
-    1.3e-8 (2026-09-27).
+    behind a slow node `1 + rho` falls to ~1e-3, where an absolute 1e-6 on
+    `rho` would be 1e-3 of `c_fa`.
 
     The samples lie on a grid of `RATIONAL_PER_DECADE` per decade down from
     `nu_b`, its decades formed by repeated division as the lineshape's probes
@@ -297,7 +297,9 @@ class RationalRho:
     physically identical noise setups gave lineshapes 7.8e-9 apart, each
     correct to its fit; `LogChebyshev`'s fixed nodes kept them 1.9e-13
     apart.  For finite-difference sensitivities through the lineshape, set
-    `PAC.FA_RHO_FIT = 'chebyshev'`."""
+    `PAC.FA_RHO_FIT = 'chebyshev'`.
+
+    History: `doc/shooting_history.md`, `_lineshape.RationalRho`."""
 
     #: the relative tolerance's floor on `1 + rho`
     REL_FLOOR = 1e-4
@@ -771,13 +773,12 @@ class ColouredLineshape:
         err_failed += e if self.quad.last_flag else 0.0
         out = head + 2.0 * tot
         self.quad.note(2.0 * err, out)
-        ## ⚠ QUADPACK'S BOUND IS NOT THIS VALUE'S ERROR (2026-09-27).  It sums
-        ## absolute bounds on O(1) pieces whose tiny difference is the far
-        ## skirt: 100 .. 10^4 times the true error against an mpmath
-        ## reference, which moved the handover half a decade early (6.5e-5
-        ## returned at 1e-2 f0 where the transform was 3.4e-7).  The grid-
-        ## phase difference (`handover`) is the honest part; QUADPACK's bound
-        ## counts only where QUADPACK itself reported failure.
+        ## ⚠ QUADPACK'S BOUND IS NOT THIS VALUE'S ERROR.  It sums absolute
+        ## bounds on O(1) pieces whose tiny difference is the far skirt: 100
+        ## .. 10^4 times the true error against an mpmath reference.  The
+        ## grid-phase difference (`handover`) is the honest part; QUADPACK's
+        ## bound counts only where QUADPACK itself reported failure.
+        ## History: `doc/shooting_history.md`, `_lineshape.ColouredLineshape`.
         self.last_bound = 2.0 * err / max(abs(out), 1e-300)
         self.last_err = 2.0 * err_failed / max(abs(out), 1e-300)
         return out
@@ -808,7 +809,7 @@ def _log_quad(fn, a, b):
 
 def second_order_skirt(f, cfun, q, nu_low, nu_high, c_at_f=None,
                        split=SKIRT_SPLIT):
-    """The lineshape's far skirt to SECOND order in the phase (2026-09-27).
+    """The lineshape's far skirt to SECOND order in the phase.
 
     The linear skirt is `P(f) = q c(f) / f^2` (`q = i^2 f0^2`, `c` the whole
     `c(nu)` from `cfun`; `c_at_f` its exact value at `f` where the caller
@@ -826,7 +827,9 @@ def second_order_skirt(f, cfun, q, nu_low, nu_high, c_at_f=None,
     first order -> 3.0e-6 / 9.0e-8 / 8.1e-9 at 3e-3 / 1e-2 / 3e-2 f0.  On a
     very broad line (3e-4 f0) the expansion parameter is ~1e-2 and it gains
     only ~10x.  `c` is taken constant below `nu_low` and above ~`10
-    nu_high` (the white level)."""
+    nu_high` (the white level).
+
+    History: `doc/shooting_history.md`, `_lineshape.second_order_skirt`."""
     f = abs(float(f))
     x = f / float(split)
     c = lambda v: float(cfun(abs(v)))
@@ -858,12 +861,12 @@ def handover(shapes, off, skirt):
     (`shapes[0]`) plus QUADPACK's bound only where QUADPACK reported
     failure.  The skirt's is its move between the two splits PLUS the square
     of its own second-order correction, `((S2 - P)/P)^2`, the size of the
-    next term.  ⚠ The split move alone read ZERO where the expansion had
-    collapsed: a heavy 1/f line at 3e-4 f0, the phase variance above the
-    split ~1e4, `exp(-sH2)` underflowing to 0 at both splits, the skirt
-    chosen 100 % off.  A non-positive skirt is never taken.  Against the
-    mpmath reference both estimates track the true error within ~2.4x and
-    ~5x (2026-09-27)."""
+    next term.  ⚠ The split move alone reads ZERO where the expansion has
+    collapsed (`exp(-sH2)` underflowing to 0 at both splits).  A
+    non-positive skirt is never taken.  Against the mpmath reference both
+    estimates track the true error within ~2.4x and ~5x.
+
+    History: `doc/shooting_history.md`, `_lineshape.handover`."""
     vals, errs = [], []
     for o in np.atleast_1d(off).ravel():
         s1, s2 = shapes[0](o), shapes[1](o)

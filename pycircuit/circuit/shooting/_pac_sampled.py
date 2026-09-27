@@ -102,17 +102,11 @@ class _SampledNoise(object):
         `sampled_noise` on a log grid of `points_per_decade`, nothing added
         below `fmin`.  Returns an array over `times`.
 
-        ⚠ POWER LAW BETWEEN THE POINTS (`_loglog_integral`, 2026-09-25): the
-        density is interpolated linearly in log-log and each interval
-        integrated exactly, so a white band and any pure power law are
-        exact and the error is second order where the density BENDS.  The
-        linear trapezoid it replaced overestimates a 1/f band by
-        `(r - 1)^3 / 6` per point (r the grid ratio); on the switched
-        sampler at 40 per decade, against a 640-per-decade reference:
-        1/f +3.7e-4 / +5.1e-4 before, +6.6e-5 / +6.1e-5 now; white +
-        1/f +7.7e-5 / +5.1e-4 before, +2.6e-5 / +6.1e-5 now; white 1e-11
-        both.  (The trapezoid in ln f, exact for 1/f, is +2.8e-4 on a
-        white band -- not used.)
+        ⚠ POWER LAW BETWEEN THE POINTS (`_loglog_integral`): the density is
+        interpolated linearly in log-log and each interval integrated
+        exactly, so a white band and any pure power law are exact and the
+        error is second order where the density BENDS (+6.6e-5 on a 1/f
+        switched sampler at 40 per decade).
 
         ⚠ `fmin` AND `fmax` ARE REQUIRED.  With a 1/f source the integral
         grows as `ln(fmax/fmin)` and has no limit at `fmin -> 0`; with white
@@ -151,7 +145,7 @@ class _SampledNoise(object):
             R_k   = int_fmin^fmax S(f; t0) cos(2 pi f k T) df
             rho_k = R_k / R_0
 
-        ⚠ TWO GRIDS (2026-09-25).  ``R_k = int S df + int S (cos - 1) df``:
+        ⚠ TWO GRIDS.  ``R_k = int S df + int S (cos - 1) df``:
         the first takes each grid where it is the finer -- a power law
         between points (`_loglog_integral`) on a log grid of
         `points_per_decade` joined with the linear one below their
@@ -159,10 +153,9 @@ class _SampledNoise(object):
         above it (the top of the band); the second vanishes as f^2 at low f
         and oscillates at high f, so it keeps the LINEAR grid of `nfreq`
         points.
-        On the linear grid alone one interval spanned the whole 1/f low end:
-        on a 1/f sampler R_0 read +0.57 / +0.78 % and R_1..4 +1.2 .. 1.8 %,
-        now +6e-5 and +1e-4 .. 2e-4.  ``R_0 - R_k`` -- the k-cycle and
-        cycle-to-cycle metrics -- is the second integral alone, unchanged.
+        (The linear grid alone spans the whole 1/f low end with one
+        interval.)  ``R_0 - R_k`` -- the k-cycle and cycle-to-cycle metrics
+        -- is the second integral alone.
 
         A crossing is displaced by `delta_y(t0)/slew`, so with `s` the slope
         at `t0` the three metrics A8 names follow directly:

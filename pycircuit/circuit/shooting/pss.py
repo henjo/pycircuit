@@ -372,13 +372,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          ## narrower than a base step is always cut into this many steps, so
          ## its error falls as K^-p in the count, not in N.  radau (p = 5) is
          ## past it by 16; a SECOND-ORDER method (gear, trap, trbdf2, glm2) is
-         ## not -- gear's period on the comparator oscillator reads -2.2e-4 /
-         ## -3.0e-4 / -1.2e-4 / +1.4e-5 at 100 / 200 / 400 / 800 points with 16
-         ## (non-monotone: the window's error crosses gear's own), and converges
-         ## at second order with 256 (+1.05e-4 / +2.2e-5 / +4.4e-6).  Raise it
-         ## for such a method where accuracy below ~1e-4 at a sharp switch
-         ## matters; the default stays 16 (Andreas, 2026-09-25: 256 per
-         ## crossing "is a bit much" as a default).
+         ## not: gear's period on the comparator oscillator is non-monotone in
+         ## the point count at 16 and second order at 256.  Raise it for such
+         ## a method where accuracy below ~1e-4 at a sharp switch matters; the
+         ## default is 16.
+         ## History: `doc/shooting_history.md`, `PSS.parameters`.
          Parameter(name='event_window_steps',
                    desc='Steps a switching window between two landed state '
                         'events is cut into when it holds fewer (>= 2); '
@@ -513,13 +511,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## `monodromy_twin`.  Selects the method that supplies the PPV,
         ## Floquet modes and factored period when a one-step LMM (trap/euler)
         ## solved an autonomous circuit, whose OWN monodromy is first-order
-        ## on a limit cycle (the opener seam).  'radau' (DEFAULT since
-        ## 2026-09-24, Andreas): a Radau IIA twin on the same grid -- the most
-        ## accurate by far (lambda2 / c / d 1e-10 / 2e-11 / 6e-13 against
-        ## trbdf2's 1e-4 / 6e-6 / 8e-5 on van der Pol at 200 points), at about
-        ## trbdf2's cost.  'trbdf2' (the default until then), 'gear' and
-        ## 'esdirk43' select those twins (see `monodromy_twin`).  A Nordsieck
-        ## GLM reads its own map on the state (`_state_map`: `ppv`,
+        ## on a limit cycle (the opener seam).  'radau' (DEFAULT): a Radau
+        ## IIA twin on the same grid -- the most accurate by far (lambda2 / c
+        ## / d 1e-10 / 2e-11 / 6e-13 against trbdf2's 1e-4 / 6e-6 / 8e-5 on
+        ## van der Pol at 200 points), at about trbdf2's cost.  'trbdf2',
+        ## 'gear' and 'esdirk43' select those twins (see `monodromy_twin`).
+        ## A Nordsieck GLM reads its own map on the state (`_state_map`: `ppv`,
         ## `floquet_modes`, PAC, the adjoint rows, pnoise, `sampled_noise`)
         ## and the twin for the covariance surfaces (`_state_twin`).
         ## 'native': the run's OWN plain factorisation --
@@ -1115,9 +1112,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         it does NOT produce a monodromy, so `spectral_radius` is `None`
         after a matrix-free solve.  Built for every kind, driven or free
         period (a Nordsieck GLM through its map on the state, seeded by the
-        linearised startup).  The state-event stage runs matrix-free too
-        (since 2026-09-25; it warned and was skipped before): its bordered
-        system is a mat-vec, one replay per Krylov direction giving the map
+        linearised startup).  The state-event stage runs matrix-free too:
+        its bordered system is a mat-vec, one replay per Krylov direction giving the map
         and the state at every event node (`_state_event_stage`).  ⚠ Those
         figures were taken with a DENSE linear solver on both sides; with a
         sparse one the m~250 gate may move --
@@ -1322,13 +1318,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## anything reads it, so every downstream use sees one value.
         ## ⚠ STATE EVENTS ON A PLAIN MAP OPEN IT AT `x(0)`.  The event stage
         ## needs the map opened there: the manufactured opener's own step
-        ## moves with the first crossing, and that dependence is not carried.
-        ## Measured, trap on the comparator oscillator: with the opener the
-        ## stage failed to converge at 200 points and read -1.2e-3 at 800
-        ## (unstaged -7.2e-4); opened at `x(0)`, +1.4e-4 / +9.1e-6 against
-        ## +6.4e-3 / -7.2e-4 unstaged.  So a plain-map run with declared
-        ## state events defaults `x0_unknown` to True (an explicit value is
-        ## honoured, and False warns that the stage does not run).
+        ## moves with the first crossing, and that dependence is not carried
+        ## (measured with trap on the comparator oscillator).  So a plain-map
+        ## run with declared state events defaults `x0_unknown` to True (an
+        ## explicit value is honoured, and False warns that the stage does
+        ## not run).
+        ## History: `doc/shooting_history.md`, `PSS._solve_prepare`.
         _se_rows = (self.cir.state_events()
                     if state_events and hasattr(self.cir, 'state_events') else [])
         if (x0_unknown is None and _se_rows
@@ -1669,22 +1664,25 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             * STAGE (Radau, TR-BDF2, ESDIRK): self-starting, `z` IS `x_0`,
               `M` the dense stage product (`_walk_stage`).
             * GLM: the method's own map (the startup at the top of the
-              period, then N multivalue steps); ⚠ `M` is APPROXIMATE -- the
-              residual is exact, the Jacobian drops the startup's derivative
-              (see `_walk_glm`); its period column carries the two
-              explicit `T` dependences a multivalue method has.
+              period, then N multivalue steps); `M` is exact through the
+              linearised startup (see `_walk_glm`); its period column
+              carries the two explicit `T` dependences a multivalue method
+              has.
 
             ⚠ THE PERIOD COLUMN IS TRACTABLE ONLY FOR AN AUTONOMOUS CIRCUIT:
             the grid is rebuilt at the current `T` (``dh/dT = h/T`` for every
             step, uniform or not) and the stage derivatives carry no time of
-            their own."""
+            their own.
+
+            History: `doc/shooting_history.md`, `PSS._shoot`."""
             w = self._walk(_kind, z, tms_, hs_, T=T, want_dT=want_dT,
                            open_at_x0=x0_unknown)
             M = w.monodromy()
             ## kept for the checks after the solve: the spectrum is the only
-            ## place a free period announces itself.  (A GLM's too since
-            ## 2026-09-24: its map on `x` is exact once the startup is
-            ## linearised -- see `_walk_glm`.)
+            ## place a free period announces itself.  (A GLM's too: its map
+            ## on `x` is exact once the startup is linearised -- see
+            ## `_walk_glm`.)
+            ## History: `doc/shooting_history.md`, `PSS._shoot`.
             self._monodromy = M
             return (w.z0(), w.end(), M,
                     w.period_column() if want_dT else None)
@@ -1782,12 +1780,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         _width = 2 if _kind == 'pair' else 1
         ## ⚠ EVERY KIND RUNS MATRIX-FREE.  The stage kinds' factored map has
         ## the mat-vec and the walk carries the period column without the
-        ## dense map (radau, trbdf2 and esdirk43 matched their dense solves
-        ## to 1e-15; refused until 2026-09-24 as "a dense stage product").  A
-        ## Nordsieck GLM's factored map acts on its Nordsieck state; the
-        ## Newton's operator on `x_0` is `x_matvec`, the recursion seeded by
-        ## the linearised startup (`_GLMStartup`) -- without it, matrix-free
-        ## glm2 and glm3 diverged on a driven RLC.
+        ## dense map (radau, trbdf2 and esdirk43 match their dense solves to
+        ## 1e-15).  A Nordsieck GLM's factored map acts on its Nordsieck
+        ## state; the Newton's operator on `x_0` is `x_matvec`, the recursion
+        ## seeded by the linearised startup (`_GLMStartup`) -- without it,
+        ## matrix-free glm2 and glm3 diverged on a driven RLC.
+        ## History: `doc/shooting_history.md`, `PSS._shoot`.
         z0 = np.concatenate([np.asarray(x, dtype=float)] * _width)
         tol_z = np.concatenate([_tol] * _width)
         _mf = None
@@ -1832,8 +1830,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     return np.concatenate((top, [v_[k_]]))
                 ## ⚠ THE PERIOD'S COLUMN SCALED TO UNIT NORM: `dx/dT` is
                 ## ~1e6 on a microsecond oscillator against `I - M`'s unit
-                ## columns, and GMRES stalled on the raw operator (trap and
-                ## glm2 on the comparator oscillator, 2026-09-25)
+                ## columns, and GMRES stalls on the raw operator (trap and
+                ## glm2 on the comparator oscillator).
+                ## History: `doc/shooting_history.md`, `PSS._shoot`.
                 _nt = float(np.linalg.norm(Mt_))
                 _cs = np.ones(len(zz))
                 if _nt > 0.0:
@@ -2194,11 +2193,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## ⚠ THE EXCLUDED EDGES ARE TIME, NOT POINTS: 5 % of the period
             ## (at least two steps' worth), which on a uniform grid is the
             ## same `max(2, N // 20)` points.  Counted in points, a grid that
-            ## OPENS WITH A RAMP (gear's, after a landed state event: ten
-            ## doubling steps from 1e-5 T) excluded 3e-4 of the period, and
-            ## the orbit still leaving `x_0` -- displacement about the speed
-            ## times the step, since the elapsed time IS about the step --
-            ## read as a recurrence ("traverses it about 3182 times").
+            ## OPENS WITH A RAMP (gear's, after a landed state event) would
+            ## exclude almost none of the period, and the orbit still leaving
+            ## `x_0` -- displacement about the speed times the step, since the
+            ## elapsed time IS about the step -- would read as a recurrence.
+            ## History: `doc/shooting_history.md`, `PSS._check_fundamental`.
             _tj = np.concatenate(([0.0], np.cumsum(_h)))
             _span = float(_tj[-1])
             _edge_t = max(2, len(_d) // 20) * _span / len(_h) * (1.0 - 1e-9)
@@ -2323,8 +2322,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         under a closing Jacobian) and wander into a false near-solution: gear
         on a smooth 3:1 grid, van der Pol a = 0.3 seeded at `[2, 0]` 7 % below
         its period, drifted to small amplitude and stalled at |F| ~ 1e-3,
-        where proportional converges in 3.6 s.  Found 2026-09-26 with the
-        closing column's missing opening-step term (`_walk_lmm`).
+        where proportional converges in 3.6 s.
         History: `doc/shooting_history.md`, `PSS._closing_fallback`."""
         if (getattr(self, '_period_column', None) != 'closing'
                 or getattr(self, '_period_column_requested', None) != 'auto'

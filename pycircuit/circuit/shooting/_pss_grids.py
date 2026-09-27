@@ -556,11 +556,9 @@ class _PeriodGrids(object):
         ## (its ramp, then the partial step back to the base grid): one
         ## amplification of the parasitic root, bounded, not compounding.
         ## So a bad ratio counts only when TWO others lie within
-        ## `RATIO_ISOLATION` steps.  (Measured on the comparator oscillator
-        ## under gear: smoothing those pairs into doubling ramps never
-        ## improved the period, at 100, 150, 200 or 800 points.)  This
-        ## traversal never drops a step to Euler (`Transient`'s
-        ## `check_order_drop` does not run here).
+        ## `RATIO_ISOLATION` steps.  This traversal never drops a step to
+        ## Euler (`Transient`'s `check_order_drop` does not run here).
+        ## History: `doc/shooting_history.md`, `_PeriodGrids._period_grid`.
         if len(fr) > 1 and self._companion_reach() >= 2:
             from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
             ratios = fr[1:] / fr[:-1]

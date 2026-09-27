@@ -26,10 +26,9 @@ class _AccuracyChecks(object):
         this orbit's converged state and cached.
 
         The twin defaults to Radau IIA (`monodromy='radau'`, the most
-        accurate by far, at about trbdf2's cost; Andreas, 2026-09-24:
-        "Set radau as default twin"); `'trbdf2'` (the default until then),
-        `'esdirk43'` and `'gear'` select those twins, and `'native'` reads
-        the run's own.  Trap's and
+        accurate by far, at about trbdf2's cost); `'trbdf2'`, `'esdirk43'`
+        and `'gear'` select those twins, and `'native'` reads the run's
+        own.  Trap's and
         euler's own monodromy is unusable on a limit cycle (trap's diverges
         with refinement, with either opener; euler's is first order), so
         the STATE keeps the method you asked for and every
@@ -60,14 +59,14 @@ class _AccuracyChecks(object):
                 "map serves as the twin -- 'radau' (the default), 'trbdf2', "
                 "'esdirk43' or 'gear' -- not %r" % (mono,))
         _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
-        ## ⚠ A GLM USES ITS OWN MAP WHERE IT IS BUILT (Andreas, 2026-09-24:
-        ## "For twin use the own map when possible"): measured on van der
+        ## ⚠ A GLM USES ITS OWN MAP WHERE IT IS BUILT: measured on van der
         ## Pol, its `ppv` / `floquet_modes` on the state are second / third
         ## order, and glm3's spectrum is 4.6e-8 of radau's where the trbdf2
         ## twin read 9.7e-7.  `carries_own_monodromy` stays False: a GLM may
         ## not BE the twin -- its map's unit multiplier sits O(h^p) off 1
         ## (the startup seam) and its covariance injection is first order;
         ## the surfaces that feel those take a twin (`_state_twin`).
+        ## History: `doc/shooting_history.md`, `_AccuracyChecks.monodromy_twin`.
         if (mono == 'native'
                 or _integ.carries_own_monodromy()
                 or self._map_kind() == 'glm'
@@ -189,15 +188,15 @@ class _AccuracyChecks(object):
         """`monodromy_twin`, except that a Nordsieck GLM takes its twin
         DRIVEN OR NOT -- for the Lyapunov surfaces alone (`_lyapunov_host`).
         Everything else reads the GLM's own map on the state
-        (`PSS._state_map`; Andreas, 2026-09-25: "Native for all but
-        covariance", then for an oscillator's small-signal surfaces "If GLM
-        is accurate use GLM" -- see `PAC._deflated_solve`).  The covariance
+        (`PSS._state_map`; see `PAC._deflated_solve`).  The covariance
         is the exception on MEASUREMENT: a white source over a GLM step
         reaches the state through its effective weights ``w = l^T B`` (GLM3
         0.359, -0.0167, 0.067, 0.591; GLM4 -26 .. +166), which no per-stage
         sampling can carry with positive variances, so a native injection is
         one shared sample per step -- first order.  `monodromy='native'`
         selects it.
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks._state_twin`.
         """
         host = self.monodromy_twin()
         if (host is self and self._map_kind() == 'glm'
@@ -213,13 +212,15 @@ class _AccuracyChecks(object):
 
         The covariance is propagated on the SAME orbit the Floquet quantities
         use, so this is just the monodromy twin: a trap/euler autonomous run
-        hands its covariance to the twin (`TR-BDF2` by default, `gear` if
-        `monodromy='gear'`) so both come from one consistent orbit; a
+        hands its covariance to the twin (the method `monodromy` names,
+        radau by default) so both come from one consistent orbit; a
         gear/trbdf2 host is its own host.  TR-BDF2's per-step injection is
         built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
         is no Gear-2 fallback -- the injection follows the chosen twin.
         A Nordsieck GLM hands them to its twin driven or not (`_state_twin`:
         radau unless `monodromy='native'`).
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks._lyapunov_host`.
         """
         return self._state_twin()
 
@@ -233,15 +234,15 @@ class _AccuracyChecks(object):
         monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
         use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
         Gear-2 twin if asked.  A Nordsieck GLM reads its own map on the
-        state (`PSS._state_map`; until 2026-09-25 a radau twin).
+        state (`PSS._state_map`).
+
+        History: `doc/shooting_history.md`, `_AccuracyChecks._adjoint_host`.
         """
         return self.monodromy_twin()
 
     ## `grid_error`'s ceiling on a plausible OBSERVED order is the method's
     ## nominal order (`_nominal_order`), read off its integrator for every
-    ## accepted name.  The table it replaced covered 6 of 12 -- esdirk43,
-    ## the GLMs and the aliases `gear2` / `trapezoidal` silently took the
-    ## generic range, the ceiling not applied.
+    ## accepted name.
     ## History: `doc/shooting_history.md`, `_AccuracyChecks.METHOD_ORDER`.
 
     def grid_error(self, evaluate, refine=2, levels=3, label=None):
@@ -336,9 +337,9 @@ class _AccuracyChecks(object):
             twin = type(self)(self.cir, toolkit=self.toolkit,
                               irefnode=self.cir.nodes[self.irefnode], **kv)
             ## ⚠ AND THE SAME MONODROMY TWIN: `monodromy` is an attribute,
-            ## not a Parameter, and the refined runs took the default --
-            ## measured, a trap run under `monodromy='gear'` read the gear
-            ## twin at level 0 and the default twin at levels 1 and 2
+            ## not a Parameter, so a refined run would otherwise read the
+            ## default twin at every level but the first.
+            ## History: `doc/shooting_history.md`, `_AccuracyChecks.grid_error`.
             twin.monodromy = getattr(self, 'monodromy', 'radau')
             sub = dict(args)
             sub['timestep'] = args['timestep'] / float(refine ** _k)
@@ -374,7 +375,8 @@ class _AccuracyChecks(object):
                 ## RUN'S METHOD AND ITS TWIN'S: an oscillator quantity of a
                 ## trap run (its `c`) comes from the twin, and under the radau
                 ## twin it converges at radau's 5.03 -- a trap-only ceiling
-                ## (3.5) withheld a correct estimate.
+                ## (3.5) would withhold a correct estimate.
+                ## History: `doc/shooting_history.md`, `_AccuracyChecks.grid_error`.
                 _hi = max(self._nominal_order(),
                           self._twin_nominal_order()) + 1.5
                 power_law = bool(0.5 <= order <= _hi and _sgn)
@@ -414,14 +416,11 @@ class _AccuracyChecks(object):
     ## the spline lies inside the exactness class -- a cubic for Radau
     ## IIA(3) -- and the estimate reads a SILENT ~0).  For a non-collocation
     ## method (ESDIRK43) only the order clause is established.
+    ## ⚠ THE SMALLEST ODD DEGREE ABOVE THE METHOD'S ORDER, at least 3 (3
+    ## for the second-order methods, quintic for esdirk43, septic for
+    ## radau), which keeps the stage clause for every method here.
+    ## Even degrees trip the check.
     ## History: `doc/shooting_history.md`, `_AccuracyChecks.IDEC_DEGREE`.
-    ## ⚠ THE SMALLEST ODD DEGREE ABOVE THE METHOD'S ORDER, at least 3: the
-    ## rule every measured entry of the table this replaced followed (3 for
-    ## the second-order methods, quintic for esdirk43, septic for radau),
-    ## and it keeps the stage clause for every method here.  The table
-    ## missed the GLMs: glm3 and glm4 fell back to a cubic, and glm4's
-    ## estimate read -6.7e-7 against a true +2.8e-9 (van der Pol, 120
-    ## points; +5.7e-10 quintic).  Even degrees trip the check.
     WARPING_CHECK_TOL = 0.05     # |half-grid / full-grid - 1| above this: the interpolant sets the reading
 
     def _idec_degree(self, method=None):

@@ -57,13 +57,6 @@ class _StateEvents(object):
         ## base nodes dropped), which the remap then scales with the window.
         ## (Not the immediate neighbours': an inserted event leaves a sliver
         ## beside the window, and against that the rule does not fire.)
-        ## ⚠ Until 2026-09-25 it fired only on a window with NO base node
-        ## inside (narrower than one base step): a window spanning 2-7 base
-        ## steps kept them, fewer where a snapped edge stretched one, and the
-        ## staged PWM loop's error was non-monotone in N for every method --
-        ## radau 6.5e-5 / 1.0e-5 / 7.0e-5 / 4.2e-6 / 7.5e-5 / 3.9e-6 of the
-        ## swing at N = 780..805 against radau at 3200 (5e-6 to 1.1e-5 with
-        ## this rule, 5e-7 to 7.6e-6 at 16 steps).
         ## History: `doc/shooting_history.md`, `_land_fractions`.
         base_pts = np.concatenate(([0.0], np.cumsum(np.asarray(base, dtype=float))))
         base_h = np.diff(base_pts)
@@ -80,10 +73,10 @@ class _StateEvents(object):
         return np.diff(pts), np.asarray(landed_sorted, dtype=float)
 
     #: steps the segment between a switching window's two edges is cut into
-    #: -- the default of the solve's `event_window_steps` Parameter.  16 since
-    #: 2026-09-25 (Andreas: "Cut by 16"; 8 before): on the PWM loop the
-    #: staged radau error against a fine reference was 5e-6 to 1.1e-5 of the
-    #: swing at 8, 5e-7 to 7.6e-6 at 16 (N = 780..805)
+    #: -- the default of the solve's `event_window_steps` Parameter.  On the
+    #: PWM loop the staged radau error against a fine reference is 5e-6 to
+    #: 1.1e-5 of the swing at 8, 5e-7 to 7.6e-6 at 16 (N = 780..805).
+    #: History: `doc/shooting_history.md`, `_StateEvents.EVENT_WINDOW_STEPS`.
     EVENT_WINDOW_STEPS = 16
 
     @staticmethod
@@ -303,8 +296,7 @@ class _StateEvents(object):
         (`_matrix_free_newton`; an oscillator through `_free_period_solve`).
         The stage then leaves `_monodromy` None, as the unstaged matrix-free
         solve does, and the event rows' derivatives `G` come from reverse
-        replays (`_finish_state_events`).  Until 2026-09-25 a matrix-free
-        solve warned and skipped the stage.
+        replays (`_finish_state_events`).
 
         History: `doc/shooting_history.md`, `_state_event_stage`."""
         autonomous = phase_row is not None
@@ -439,10 +431,9 @@ class _StateEvents(object):
                                else ()))
         ## ⚠ A STAGE THAT FAILS HANDS BACK STAGE 1, NOT AN EXCEPTION: an
         ## iterate can leave the orbit far enough that an inner step does
-        ## not converge (measured: trap's first columns on a driven PWM loop,
-        ## before they were right, sent `vin` to 1e9 and the whole solve
-        ## raised).  The stage is an improvement on stage 1, never a
+        ## not converge.  The stage is an improvement on stage 1, never a
         ## condition of having a result.
+        ## History: `doc/shooting_history.md`, `_state_event_stage`.
         _solver = None
         if matrix_free:
             def _solver(z0_, ab_, xt_, rt_, mi_):
@@ -514,6 +505,6 @@ class _StateEvents(object):
         ## ⚠ AT THE CIRCUIT'S WIDTH, NOT THE MAP'S: the event row reads the
         ## node's circuit state, so its costate enters the circuit block --
         ## gear's pair map is `2m` wide and its reverse step adds the
-        ## injection to that `m` block (a `2m` row broke `floquet_modes` on
-        ## the first staged gear oscillator, 2026-09-24)
+        ## injection to that `m` block.
+        ## History: `doc/shooting_history.md`, `_event_costate_injection`.
         return _ev.costate_injection(v, len(fp.steps), self.cir.n - 1)

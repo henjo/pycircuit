@@ -319,10 +319,7 @@ class _ShootingNewton(object):
         converging solve costs what the undamped loop costs).  A trial the
         builder cannot evaluate (a `ValueError`, a failed inner step) counts
         as uphill.  ON, as the dense path's `fsolve(line_search=True)` is
-        in every shooting stage (until 2026-09-25 the matrix-free Newton
-        took full steps: the unstaged solve of the PWM loop failed under
-        every method, radau included, and a first staged step from stage
-        1's crossings moved two of them by a whole period).
+        in every shooting stage.
         Written once because the four systems differ ONLY in those two
         things: the plain path's `I - M`, the solved-history path's `2m`
         pair, and the bordered autonomous versions of each (one builder,

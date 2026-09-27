@@ -49,10 +49,6 @@ class _NoiseSources(object):
         functional), so white sources add whatever their modulations; the
         coloured part takes ONE root, so two INDEPENDENT coloured sources
         under different modulations inside such a circuit do not add.
-        Until 2026-09-26 pnoise took one root of the whole `CY` here, white
-        included (4.0e-5 off a correlated pair whose white part follows the
-        orbit and whose 1/f part does not; +7.3 % on a switch + 1/f source),
-        and every other coloured surface refused.
 
         History: `doc/shooting_history.md`, `PAC._cy_colour_model`."""
         ws = self._colour_fit_frequencies(f, f0)
@@ -509,8 +505,9 @@ class _NoiseSources(object):
         hs = self._period_weights(tms, nsamp, T, pss)
         acc = None
         for k in range(nsamp):
-            ## ⚠ `waveform` is FULL width: `xs[:m]` then a second zero read
-            ## every unknown past the reference one slot late (to 2026-09-26)
+            ## ⚠ `waveform` is FULL width: `xs[:m]` then a second zero reads
+            ## every unknown past the reference one slot late
+            ## History: `doc/shooting_history.md`, `PAC._cy_cycle_averaged`.
             xf = self._orbit_states(pss, [xs[:, k]])[0]
             cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
             (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
@@ -820,9 +817,7 @@ class _NoiseSources(object):
                       `w_ref` once, times ``sqrt(s(w))`` from one point;
           otherwise   the element at every point for every frequency.
 
-        ⚠ Until 2026-09-26 every call evaluated EVERY element at every point
-        (and again for every instant): 5.5 M leaf evaluations for 38 band
-        frequencies at one instant, 75 of 79 s."""
+        History: `doc/shooting_history.md`, `PAC._perband_root_sampler`."""
         wref = 2.0 * np.pi * f0
         wt = sorted({float(wlo), wref, 20.0 * np.pi * f0,
                      2.0 * np.pi * (float(L) + 0.5) * f0})

@@ -255,10 +255,9 @@ class _LMMStep(object):
         ## not whenever `b = 0`: a `b = 0` step's own `Pq_n` is still read by
         ## a NEXT step with `b != 0` -- trap's order-dropped Euler OPENER, the
         ## first step of a map opened at `x(0)` (`x0_unknown`).  Keyed on `b`
-        ## alone, trap's opened plain map was not its forward replay's
-        ## transpose: 2.8e-3 on the PWM loop, an injected row 1e-2 off from
-        ## node 2 on (found 2026-09-25 by the matrix-free event stage's
-        ## reverse-replayed event rows).  Gear's `w3` is zero throughout.
+        ## alone, trap's opened plain map would not be its forward replay's
+        ## transpose.  Gear's `w3` is zero throughout.
+        ## History: `doc/shooting_history.md`, `_LMMStep.adjoint`.
         full = bool(b) or bool(np.any(w3))
         rhs = w1 + a[0] * (np.asarray(self.C_new).T @ w3) if full else w1
         t = _complex_solve_transposed(self.lu, rhs)
@@ -307,7 +306,7 @@ class _GLMStep(object):
       width, reference row included) -- where a noise source is evaluated
       (`PAC._stage_states`).
 
-    (Until 2026-09-25 a 13-field tuple read by position.)"""
+    History: `doc/shooting_history.md`, `_GLMStep`."""
 
     __slots__ = ('Kfacs', 'Gs', 'h', 'A', 'U', 'B', 'V', 'Ks', 'rho', 'Qin',
                  'x_in', 'restart_out', 'restarted', 'c', 'Ys')

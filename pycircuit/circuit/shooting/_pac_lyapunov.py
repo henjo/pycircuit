@@ -785,13 +785,13 @@ class _LyapunovCovariance(object):
                 '(see the warning above), and as a whole it is not thermal-'
                 'plus-power-law, so its coloured part cannot be separated from '
                 'the white one.' % what)
-        ## ⚠ A COLOUR THAT IS NOT A POWER LAW (a Lorentzian `IS(noiseTau)`,
-        ## 2026-09-25) has no density to factor out, but a STATIONARY one --
-        ## the same `CY(w)` at every point of the orbit -- needs none: its
-        ## response is linear in the source, so per band frequency `K +=
-        ## sum_kl CY_kl(nu) Re[y_k y_l^H]` over unit sources `e_k` on its
-        ## support (`_coloured_covariance`).  A MODULATED one would need `CY`
-        ## per point per frequency, and stays refused.
+        ## ⚠ A COLOUR THAT IS NOT A POWER LAW (a Lorentzian `IS(noiseTau)`)
+        ## has no density to factor out, but a STATIONARY one -- the same
+        ## `CY(w)` at every point of the orbit -- needs none: its response is
+        ## linear in the source, so per band frequency `K += sum_kl
+        ## CY_kl(nu) Re[y_k y_l^H]` over unit sources `e_k` on its support
+        ## (`_coloured_covariance`).  A MODULATED one: below.
+        ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
         perband, separable, nonseparable = [], [], []
         if model.perband:
             ws = (2.0 * np.pi * f0, 20.0 * np.pi * f0)
@@ -809,7 +809,7 @@ class _LyapunovCovariance(object):
                     if supp.size:
                         perband.append((key, supp))
                     continue
-                ## ⚠ MODULATED AND NOT A POWER LAW (2026-09-26).  SEPARABLE --
+                ## ⚠ MODULATED AND NOT A POWER LAW.  SEPARABLE --
                 ## a level that follows the state under a fixed spectral shape,
                 ## ``C(x, w) = C(x, w_ref) s(w)``, the usual burst / G-R noise
                 ## -- replays one amplitude per point and weights each band
@@ -817,10 +817,11 @@ class _LyapunovCovariance(object):
                 ## point for EVERY band frequency (the quasi-static model
                 ## `pnoise` and `sampled_variance` use, per band).
                 wref = 2.0 * np.pi * f0
-                ## the band's TOP as well as its middle (`pi fmax`, whose
-                ## reason is not recorded): until 2026-09-27 a shape that
-                ## departed only above fmax/2 read as separable.  A probe
-                ## more can only send a source to the exact path.
+                ## the band's TOP as well as its middle (`pi fmax`), so a
+                ## shape that departs only above fmax/2 does not read as
+                ## separable.  A probe more can only send a source to the
+                ## exact path.
+                ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
                 wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
                              np.pi * fmax, 2.0 * np.pi * fmax})
                 Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
@@ -863,8 +864,8 @@ class _LyapunovCovariance(object):
         for key, B, EF in model.flicker:
             ef = self._uniform_exponent(B, EF)
             if ef is None:
-                ## ⚠ EXPONENTS THAT DIFFER BETWEEN ENTRIES (2026-09-26; refused
-                ## before).  Entries in DISJOINT index blocks, one exponent
+                ## ⚠ EXPONENTS THAT DIFFER BETWEEN ENTRIES.  Entries in
+                ## DISJOINT index blocks, one exponent
                 ## each (sources of different slope on branches that share no
                 ## node), are independent components: split exactly.
                 parts = self._split_by_exponent(B, EF)
@@ -951,8 +952,7 @@ class _LyapunovCovariance(object):
         -- the two-sided density `CY/2` over +-nu, `-nu` the conjugate.  A
         log grid, `points_per_decade` as `sampled_variance`'s, the power law
         integrated EXACTLY on each interval and the response linear in `ln
-        nu` (`_power_law_weights`; the trapezoid in `ln nu` it replaced,
-        2026-09-25, was exact for EF = 1 only).  A stationary colour that is
+        nu` (`_power_law_weights`).  A stationary colour that is
         not a power law enters through its `CY(nu)` and unit sources on its
         support.  Gear's PAIR covariance carries `(x_j,
         x_{j-1})`: the previous node's response, node -1 being node N - 1
@@ -965,17 +965,16 @@ class _LyapunovCovariance(object):
         `responses` replaces `_forced_responses` (same signature): an
         oscillator's TRANSVERSE responses (`_transverse_responses`).
 
-        ⚠ THE GRID IS ADAPTIVE (2026-09-25).  A response with a narrow line
-        -- a high-Q tank in a driven circuit, an oscillator's orbital modes
-        at EVERY harmonic -- is under-resolved by a fixed log grid: a Q = 20
-        tank read -10.5 % at 40 per decade (-0.16 % at 160), a van der Pol
-        oscillator's transverse covariance -21 %.  Adaptive Simpson on the
+        ⚠ THE GRID IS ADAPTIVE.  A response with a narrow line -- a high-Q
+        tank in a driven circuit, an oscillator's orbital modes at EVERY
+        harmonic -- is under-resolved by a fixed log grid (a Q = 20 tank
+        reads -10.5 % at 40 per decade).  Adaptive Simpson on the
         log axis: a panel (two equal intervals, the rule above) is compared
         with itself on five points, ``|S_2 - S_1| / 15``, against its share
         (by `ln`-width) of `COLOURED_REFINE_TOL`, and split where it fails.
         ⚠ Not ``|Q_h - Q_2h|``: that is the PLAIN rule's second-order error,
         and driving it below the target refines smooth regions the fourth-
-        order rule already has (a first version hit the point cap).
+        order rule already has.
         `lines` -- ``(centre, half-width)`` in Hz, an oscillator's orbital
         lines -- are resolved first, so a line narrower than the starting
         grid cannot be missed.  `all_nodes=False` keeps node 0 only (a
@@ -1239,7 +1238,7 @@ class _LyapunovCovariance(object):
         `(K0, [K_j])`, the covariance at every step, which is the
         time-varying statistic this exists to produce.
 
-        ⚠ A COLOURED SOURCE NEEDS A BAND (2026-09-25).  With a 1/f source
+        ⚠ A COLOURED SOURCE NEEDS A BAND.  With a 1/f source
         (a `flicker_noise`, a MOS channel's flicker) pass `fmin` -- and
         `fmax`, default the grid's Nyquist `N/2T` -- because a 1/f variance
         grows as `ln(fmax/fmin)` without limit.  The WHITE part of every
@@ -1251,9 +1250,7 @@ class _LyapunovCovariance(object):
         to each method's transfer error (radau 4e-9, gear 5.5e-5 at 100
         points, second order); against `sampled_variance`'s adjoint route
         on a switched sampler to that route's own quadrature (5e-6).
-        Refused: a colour that is not a power law, a component whose
-        exponent differs between its entries, and trap's plain map (its
-        covariance is on the (x, iq) pair).
+        Refused: trap's plain map (its covariance is on the (x, iq) pair).
 
         The noise covariance obeys a Lyapunov recursion alongside the
         trajectory, `K_{j+1} = A_j K_j A_jᵀ + Q_j`, so over one period

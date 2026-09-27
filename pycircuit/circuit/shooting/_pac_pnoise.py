@@ -154,7 +154,7 @@ class _DrivenNoise(object):
                 cyfn = self._cy_cycle_averaged
             else:
                 ## the cycle average with `_cy_cycle_averaged`'s weights
-                ## (`np.diff(times)`, the left rectangle, until 2026-09-27)
+                ## History: `doc/shooting_history.md`, `PAC.pnoise`.
                 fp_ = pss.factored_period()
                 tms_ = np.asarray(fp_.times, dtype=float)
                 def cyfn(pss_, w_, _m=colour, _t=tms_, _T=float(fp_.T)):
@@ -453,10 +453,8 @@ class _DrivenNoise(object):
                 else:
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
                         Bc * (model.w1 / wband(p)) ** EF, _dft))
-            ## (the ONE element, `_one_element_cy` -- until 2026-09-27
-            ## `_element_cy_samples(...)[key]`, which evaluates EVERY element
-            ## at every point for every band to keep one: 48 of 110 s on the
-            ## MOS stage's Lorentzian test; the same array, bit for bit)
+            ## (the ONE element, `_one_element_cy`)
+            ## History: `doc/shooting_history.md`, `PAC._cyclostationary_fold`.
             for key in model.perband:
                 groups.append(lambda p, key=key: self._sqrt_harmonics_of(
                     self._one_element_cy(pss, key, wband(p), None), _dft))

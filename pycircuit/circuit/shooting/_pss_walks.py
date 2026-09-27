@@ -330,8 +330,7 @@ class _PeriodWalks(object):
                         ## (`source`) and not the carried companion
                         ## sensitivity.  (Gear's pair has `b = 0` on every
                         ## step and never reads `Pq`, which is why the lumped
-                        ## forcing below is exact there; on trap's columns on
-                        ## a driven PWM loop it was 0.3-380x off, 2026-09-24.)
+                        ## forcing below is exact there.)
                         ## ⚠ AND NO PREVIOUS-STEP PARTIAL: a one-step
                         ## companion's coefficients depend on `h_n` alone --
                         ## the previous step enters through the CARRIED state
@@ -339,6 +338,7 @@ class _PeriodWalks(object):
                         ## The Euler-theorem estimate above assumes
                         ## coefficients homogeneous in `h`, which theta's
                         ## `1/2 + c h` is not (its columns read up to 358x off).
+                        ## History: `doc/shooting_history.md`, `_PeriodWalks._walk_lmm`.
                         Pk_new, Pqk[k] = _lmm_recursion(
                             Pk[k], Cs, Pqk[k], C_new, alphas, b, solve,
                             source=Ud * float(hsens[_j, k] + _tau[k]),
@@ -373,10 +373,7 @@ class _PeriodWalks(object):
                     ## previous one, so its coefficients move with `T` too --
                     ## the previous-step partial `(dfdT - dfdh h_0) / h_prev`
                     ## (Euler's theorem, as the event columns take it).
-                    ## Missing until 2026-09-26: gear's closing column was
-                    ## 15 % off on a caller's non-uniform grid, and the
-                    ## free-period Newton wandered and failed (radau, one
-                    ## step, 6e-11).
+                    ## History: `doc/shooting_history.md`, `_PeriodWalks._walk_lmm`.
                     if pair and _j == 0:
                         fT = fT + (
                             (np.asarray(self._dfdT, dtype=float).ravel()
@@ -435,9 +432,9 @@ class _PeriodWalks(object):
                         blk = Cs[i] + blk
                     Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
             ## the CALLER'S solver (`_factorise`), as every other stored
-            ## step: until 2026-09-25 the coupled block was `lu_factor`'d
-            ## here whatever `linearsolver=` said (bit-identical under the
-            ## default `DenseSolver`, whose factor is that `lu_factor`)
+            ## step (under the default `DenseSolver` its factor is an
+            ## `lu_factor` pair)
+            ## History: `doc/shooting_history.md`, `_PeriodWalks._stage_step`.
             return _StageStep(Cn, Gs, h, A, b, c, lu=self._factorise(Jb)), Ys
         Kf = []
         for i in range(s):
@@ -599,9 +596,7 @@ class _PeriodWalks(object):
         propagated by the method to the end.  The recursion is seeded with
         the startup LINEARISED (`_GLMStartup`: its p Radau substeps and its
         interpolant, ``dQ_k/dx_0``), so the map on ``x`` is exact, and the
-        period column carries the substeps' own motion with `T`.  (Until
-        2026-09-24 only ``dQ_0/dx_0 = C(x_0)`` was carried: the Jacobian was
-        approximate, and the factored map not the Newton's.)
+        period column carries the substeps' own motion with `T`.
 
         ⚠ EVENT COLUMNS (`hsens`, ``d h_j / d theta_k``; `capture`, the nodes
         the bordered residual reads) run through the same step with the

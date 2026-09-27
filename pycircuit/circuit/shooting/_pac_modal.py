@@ -352,7 +352,7 @@ class _ModalSpectra(object):
         defaults to `ORBITAL_HARMONICS` (capped by the grid), `sidebands` to
         `2 H`.  `output` follows `orbital_spectrum`.
 
-        ⚠ A source whose LEVEL FOLLOWS THE ORBIT (2026-09-26; a MOS
+        ⚠ A source whose LEVEL FOLLOWS THE ORBIT (a MOS
         channel's thermal and flicker noise, a shot noise): its sidebands
         are correlated, so they no longer add in power.  WHITE parts enter
         in the P-form ``sum_{m,m'} T_m (P_{m'-m}/2) T_{m'}^H`` with `P_k`
@@ -367,7 +367,7 @@ class _ModalSpectra(object):
         physics built as a stationary source times the modulating voltage:
         every part to ~1e-13.
 
-        ⚠ A COLOURED SOURCE (2026-09-25): input sideband `m` carries the
+        ⚠ A COLOURED SOURCE: input sideband `m` carries the
         source at ``w - m w0``, and reads `CY` THERE (as `pnoise` does)
         rather than one `CY` for every sideband; the phase-diffusion widths
         `a_j` take `c` from the WHITE part of the sources alone (zero for a
@@ -656,11 +656,10 @@ class _ModalSpectra(object):
         """
         m = pss.cir.n - 1
         irn = pss.irefnode
-        ## ⚠ `waveform` is FULL width (the reference row is in it): until
-        ## 2026-09-26 a zero was inserted a second time, so every unknown past
-        ## the reference was read one slot late -- invisible on van der Pol
-        ## (the inductor current it misread is ~0 at the phase anchor), 0.57
-        ## alignment and a refusal once a DC source sits in the circuit
+        ## ⚠ `waveform` is FULL width (the reference row is in it): a zero
+        ## inserted a second time reads every unknown past the reference one
+        ## slot late
+        ## History: `doc/shooting_history.md`, `PAC._phase_mode_split`.
         xf = self._orbit_states(pss, [np.asarray(pss.waveform[1],
                                                  dtype=float)[:, 0]])[0]
         xr = np.delete(xf, irn)

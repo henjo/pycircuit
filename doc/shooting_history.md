@@ -10393,3 +10393,1253 @@ Bound once: `_lu_solve_split` runs once per step of every coupled replay
 (~20k calls per PAC + adjoint row on the PWM fixture), and a function-local
 import plus `np.iscomplexobj` there was 6 % of that row's profile.
 scipy.linalg is loaded by the package's import already.
+
+
+# The second move, 2026-09-27
+
+The history that accumulated in the code after the first move (the
+coloured-noise, lineshape, frequency-aware and refactor work of
+2026-09-25..27, and the narratives the first move left), moved out the
+same way: the code keeps the present tense and a `History:` pointer; the
+text below is the code's own, VERBATIM, with comment markers and
+indentation removed.  Where a sentence in the code had become WRONG about
+the current code it was rewritten there, and its original is here.
+`pac.py` was split into seven mixin modules on the same day -- a member's
+earlier history sits above under `pac.py`, its later history here under
+its new module.
+
+
+## `pac.py` -- module level
+
+### module docstring
+
+2026-09-27 (the second move, from the code):
+
+The module docstring's lines before the move:
+
+`PAC` keeps its small-signal core here -- the forced and adjoint sideband
+solves, the mixer response, AM/PM and the deflated solve -- and inherits its
+noise themes from the `_pac_*` modules (split 2026-09-27, as `PSS` was on
+2026-09-24):
+
+## `pac.py` -- `PAC`
+
+### `_forced_responses`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's last sentences before the move:
+
+fixed-time correction of the node responses -- `PAC.solve`'s core
+(factored out 2026-09-25 so `_coloured_covariance` reads the same
+responses).  Sets `deflated` and `matvecs` as `solve` did.
+
+### `adjoint_sideband_row`
+
+2026-09-27 (the second move, from the code):
+
+The end of the comment on the bordered row, before the move:
+
+bordered forward solve; unbordered, pnoise on a staged gear
+solve is 10-15 % off (driven), and the row missed the forward
+solve by 8 % on gear's staged oscillator (2026-09-24, when that
+solve first existed).
+
+### `_deflated_solve`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the cached border, before the move:
+
+⚠ THE BORDER, ONCE PER SOLVED ORBIT (2026-09-26): `v` and `u`
+depend only on the converged map, and `ppv()` recomputed them for
+every solve -- 0.22 s each, 14 of `am_pm_noise`'s 27 s (66 solves
+for 16 sidebands).  Kept per (pss, state map, the `ppv` that made
+them); a re-solve builds a new map and misses.  ⚠ THE PRODUCER IS
+PART OF THE KEY: a caller who replaces `pss.ppv` (the border-
+sensitivity test injects perturbed vectors that way) must be
+consulted, and a key of the solve alone served the old vectors.
+
+The comment on the Nordsieck GLM's map, before the move:
+
+⚠⚠ NOT ON A NORDSIECK GLM'S MAP, MEASURED (2026-09-25; Andreas:
+"If GLM is accurate use GLM").  Its map opens with the startup,
+which breaks the discrete phase symmetry: the unit multiplier sits
+``eta = O(h^p)`` off 1 (van der Pol in LC form, glm3 2.35e-5 /
+1.1e-6 at 60 / 120 points; radau 3e-11).  Refined, the answer is
+the discrete operator's and misses the physical one by ``eta /
+(2 pi r)``, `r` the offset in units of f0 (glm3 at 60 points:
+3.8e-3 at 1e-3, 0.35 at 1e-5, and below ``r ~ eta / 2 pi`` the
+pole is gone).  Unrefined -- the pole carried analytically -- it
+is O(h^p) at every offset (3.3e-5 / 3.3e-5 / 8.4e-5 at 1e-3 /
+1e-5 / 1e-7 against radau at 480 points), and forward and adjoint
+then agree to O(eta) rather than the arithmetic (1e-6).
+
+## `_pac_sources.py` -- `_NoiseSources`
+
+### `_cy_colour_model`
+
+2026-09-27 (the second move, from the code):
+
+Until 2026-09-26 pnoise took one root of the whole `CY` here, white
+included (4.0e-5 off a correlated pair whose white part follows the
+orbit and whose 1/f part does not; +7.3 % on a switch + 1/f source),
+and every other coloured surface refused.
+
+### `_cy_cycle_averaged`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the full-width waveform, before the move:
+
+⚠ `waveform` is FULL width: `xs[:m]` then a second zero read
+every unknown past the reference one slot late (to 2026-09-26)
+
+### `_perband_root_sampler`
+
+2026-09-27 (the second move, from the code):
+
+⚠ Until 2026-09-26 every call evaluated EVERY element at every point
+(and again for every instant): 5.5 M leaf evaluations for 38 band
+frequencies at one instant, 75 of 79 s.
+
+## `_pac_pnoise.py` -- `_DrivenNoise`
+
+### `pnoise`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the cyclostationary branch's cycle average, before the move:
+
+the cycle average with `_cy_cycle_averaged`'s weights
+(`np.diff(times)`, the left rectangle, until 2026-09-27)
+
+### `_cyclostationary_fold`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the per-band element, before the move:
+
+(the ONE element, `_one_element_cy` -- until 2026-09-27
+`_element_cy_samples(...)[key]`, which evaluates EVERY element
+at every point for every band to keep one: 48 of 110 s on the
+MOS stage's Lorentzian test; the same array, bit for bit)
+
+## `_pac_lyapunov.py` -- `_LyapunovCovariance`
+
+### `_coloured_prepare`
+
+2026-09-27 (the second move, from the code):
+
+The comment on a colour that is not a power law, before the move (its last
+sentence was superseded on 2026-09-26, when a modulated one was taken):
+
+⚠ A COLOUR THAT IS NOT A POWER LAW (a Lorentzian `IS(noiseTau)`,
+2026-09-25) has no density to factor out, but a STATIONARY one --
+the same `CY(w)` at every point of the orbit -- needs none: its
+response is linear in the source, so per band frequency `K +=
+sum_kl CY_kl(nu) Re[y_k y_l^H]` over unit sources `e_k` on its
+support (`_coloured_covariance`).  A MODULATED one would need `CY`
+per point per frequency, and stays refused.
+
+The first line of the comment on a modulated colour, before the move:
+
+⚠ MODULATED AND NOT A POWER LAW (2026-09-26).  SEPARABLE --
+
+The comment on the separability probes, before the move:
+
+the band's TOP as well as its middle (`pi fmax`, whose
+reason is not recorded): until 2026-09-27 a shape that
+departed only above fmax/2 read as separable.  A probe
+more can only send a source to the exact path.
+
+The first lines of the comment on differing exponents, before the move:
+
+⚠ EXPONENTS THAT DIFFER BETWEEN ENTRIES (2026-09-26; refused
+before).  Entries in DISJOINT index blocks, one exponent
+
+### `_coloured_covariance`
+
+2026-09-27 (the second move, from the code):
+
+nu` (`_power_law_weights`; the trapezoid in `ln nu` it replaced,
+2026-09-25, was exact for EF = 1 only).  A stationary colour that is
+
+⚠ THE GRID IS ADAPTIVE (2026-09-25).  A response with a narrow line
+-- a high-Q tank in a driven circuit, an oscillator's orbital modes
+at EVERY harmonic -- is under-resolved by a fixed log grid: a Q = 20
+tank read -10.5 % at 40 per decade (-0.16 % at 160), a van der Pol
+oscillator's transverse covariance -21 %.  Adaptive Simpson on the
+
+order rule already has (a first version hit the point cap).
+
+### `covariance`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move (the refusals of a non-power-law colour
+and of differing exponents were superseded on 2026-09-25/26, see
+`_coloured_prepare`):
+
+⚠ A COLOURED SOURCE NEEDS A BAND (2026-09-25).  With a 1/f source
+
+Refused: a colour that is not a power law, a component whose
+exponent differs between its entries, and trap's plain map (its
+covariance is on the (x, iq) pair).
+
+## `_pac_osccov.py` -- `_OscillatorCovariance`
+
+### `_transverse_responses`
+
+2026-09-27 (the second move, from the code):
+
+The docstring paragraph on a staged oscillator, before the move:
+
+⚠ ON A STAGED OSCILLATOR (2026-09-25) the map is the TOTAL one
+(`EventColumns.total_matrix`), the source moves the crossings itself
+(``dtheta_f``, `forced_shift`: its ``P_theta dtheta_f`` enters the
+right-hand side), and the node responses are at FIXED times: the
+crossings' motion ``dtheta = dth w + dtheta_f`` enters through
+`_fixed_time_event_columns`, as `_forced_responses` does it.  The
+pole's part, dropped with `y`, moves the crossings along the orbit
+with it, and its fixed-time response is again along ``xdot_j``.
+
+### `oscillator_covariance`
+
+2026-09-27 (the second move, from the code):
+
+The first line of the docstring paragraph on a coloured source, before the move:
+
+⚠ A COLOURED SOURCE (2026-09-25) needs the band `fmin` / `fmax` /
+
+The first lines of the comment on the trapezoidal plain pair, before the move:
+
+⚠ THE TRAPEZOIDAL PLAIN PAIR `(x, iq)` (2026-09-24; refused
+before): its map re-seeds `iq` at every period start, so its
+
+### `oscillator_edge_jitter`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the one orbit, before the move:
+
+ONE ORBIT: the covariance's host (a GLM's or trap's twin) supplies
+the period, the factored period and the PPV as well -- read off
+the run itself they came from another discretisation (trap's own
+period against its twin's covariance, until 2026-09-24)
+
+## `_pac_sampled.py` -- `_SampledNoise`
+
+### `sampled_variance`
+
+2026-09-27 (the second move, from the code):
+
+The docstring paragraph before the move:
+
+⚠ POWER LAW BETWEEN THE POINTS (`_loglog_integral`, 2026-09-25): the
+density is interpolated linearly in log-log and each interval
+integrated exactly, so a white band and any pure power law are
+exact and the error is second order where the density BENDS.  The
+linear trapezoid it replaced overestimates a 1/f band by
+`(r - 1)^3 / 6` per point (r the grid ratio); on the switched
+sampler at 40 per decade, against a 640-per-decade reference:
+1/f +3.7e-4 / +5.1e-4 before, +6.6e-5 / +6.1e-5 now; white +
+1/f +7.7e-5 / +5.1e-4 before, +2.6e-5 / +6.1e-5 now; white 1e-11
+both.  (The trapezoid in ln f, exact for 1/f, is +2.8e-4 on a
+white band -- not used.)
+
+### `jitter_metrics`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+⚠ TWO GRIDS (2026-09-25).  ``R_k = int S df + int S (cos - 1) df``:
+
+On the linear grid alone one interval spanned the whole 1/f low end:
+on a 1/f sampler R_0 read +0.57 / +0.78 % and R_1..4 +1.2 .. 1.8 %,
+now +6e-5 and +1e-4 .. 2e-4.  ``R_0 - R_k`` -- the k-cycle and
+cycle-to-cycle metrics -- is the second integral alone, unchanged.
+
+## `_pac_modal.py` -- `_ModalSpectra`
+
+### `modal_spectrum`
+
+2026-09-27 (the second move, from the code):
+
+The first lines of two docstring paragraphs, before the move:
+
+⚠ A source whose LEVEL FOLLOWS THE ORBIT (2026-09-26; a MOS
+
+⚠ A COLOURED SOURCE (2026-09-25): input sideband `m` carries the
+
+### `_phase_mode_split`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the full-width waveform, before the move:
+
+⚠ `waveform` is FULL width (the reference row is in it): until
+2026-09-26 a zero was inserted a second time, so every unknown past
+the reference was read one slot late -- invisible on van der Pol
+(the inductor current it misread is ~0 at the phase anchor), 0.57
+alignment and a refusal once a DC source sits in the circuit
+
+## `_pac_phase.py` -- `_PhaseNoise`
+
+### `diffusion_constant`
+
+2026-09-27 (the second move, from the code):
+
+The end of the docstring paragraph on a modulated white source, before the move:
+
+own case, `B = B(x(t))`: `CY` is read at each PPV sample's state
+(2026-09-26; before, `_cy_reduced` refused it).
+
+### `_white_diffusion_at`
+
+2026-09-27 (the second move, from the code):
+
+The comment on a modulated source, before the move:
+
+⚠ A MODULATED source (2026-09-26): `CY` at each sample's OWN
+state -- Demir's `B(x(t))` -- instead of `_cy_reduced`'s refusal.
+
+### `coloured_diffusion`
+
+2026-09-27 (the second move, from the code):
+
+Docstring lines before the move:
+
+A source that FOLLOWS THE ORBIT (2026-09-26; refused before): the
+
+signed multiplier reads a different share, as it always did.)
+
+The first line of the comment on a source that follows the orbit, before
+the move:
+
+⚠ A source that follows the orbit (2026-09-26): the l = 0 term
+
+### `coloured_diffusion_resolved`
+
+2026-09-27 (the second move, from the code):
+
+Docstring lines before the move:
+
+⚠ `frequency_aware` (default True, 2026-09-26): `V_l` from the
+
+A source whose level follows the orbit (2026-09-26) takes
+
+The comment on the sample times, before the move:
+
+⚠ Sample `j` is at `t_j` (the PPV pairs it with the orbit's column
+`j`).  Until 2026-09-26 this read `tms[1:1 + n]`, one step late:
+identical on a uniform grid (a common phase), but on a smoothly
+varying one it capped the fold at SECOND order for a white source
+(+8.6e-5 at 200 points, radau) and below FIRST for a coloured one,
+whose harmonics carry different weights (-9.1e-4 / -5.7e-4 /
+-3.2e-4 at 200 / 400 / 800); at `t_j`, 1.3e-8 / 4.9e-10 / 3.9e-11.
+
+The first line of the comment on the frequency-aware PPV, before the move:
+
+⚠ THE FREQUENCY-AWARE PPV (2026-09-26, the default): at each
+
+### `_fa_samples`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the cache entry, before the move:
+
+⚠ THE ENTRY HOLDS ITS FACTORED PERIOD AND IS MATCHED BY IDENTITY,
+as `_transverse_cache` is.  Keyed on the id alone (until
+2026-09-27), a re-solve freed the old period, a new one was born
+at the same address, and the OLD grid's samples came back --
+measured, 198 rows for a 299-point solve, 2 re-solves in 6.
+
+### `_coloured_diffusion_modulated`
+
+2026-09-27 (the second move, from the code):
+
+The docstring before the move:
+
+`coloured_diffusion_resolved` for sources that follow the orbit
+(2026-09-26).  The phase moves as `v_1(t)^T G(t) xi(t)` for each
+component, `xi` a unit process of power `s(nu)` and `G` its columns
+at the PPV's own states, so
+
+    c(f) = c_white + sum_groups sum_l (s(|f - l f0|)/2) |V_l|^2
+
+with `V_l` the Fourier coefficients of the PRODUCT `v_1^T G` -- a
+modulation's harmonics shift the source-side frequency the way
+the PPV's do.  The white parts give `c_white`, Demir's `c` with
+`CY` at each sample's state, flat in `f` (a white process modulated
+is still white).  The same period weights as the stationary form,
+with the samples at their own times.
+
+### `phase_psd`
+
+2026-09-27 (the second move, from the code):
+
+Docstring lines before the move:
+
+⚠ A source MODULATED BY THE OSCILLATOR'S OWN STATE (2026-09-26) is
+
+⚠ `frequency_aware` (default True, 2026-09-26): `c(f)` from the
+
+### `oscillator_spectrum`
+
+2026-09-27 (the second move, from the code):
+
+Docstring lines before the move:
+
+⚠ A COLOURED SOURCE (2026-09-26): with a 1/f source the phase is
+
+`frequency_aware` (default None = True, 2026-09-26) takes `c_fa(nu)`
+
+reference (`benchmarks/lineshape_reference.py`) the worst is 3.4e-7
+on a real oscillator's line and 4.5e-6 on a very broad one; it was
+6.5e-5 at the handover until 2026-09-27.
+
+`all_orders` (2026-09-27): the frequency-aware correction to ALL
+
+at its corrected level.  It is OFF by default for a white source
+(Andreas: "put it off by default"): ~25 bordered solves.  For a
+
+### `_white_all_orders`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+The WHITE line with the frequency-aware PPV to all orders
+(`oscillator_spectrum(all_orders=True)`, 2026-09-27): the Lorentzian's
+
+estimated error.  Normalised, as `lorentzian`.
+
+### `FA_FIRST_ORDER_TOL`
+
+2026-09-27 (the second move, from the code).  The comment on the constant
+before the move (the handover floor of ~1e-4 it cites was superseded on
+2026-09-27, see `LINESHAPE_WARN`):
+
+: the frequency-aware coloured lineshape stays FIRST ORDER in the
+: correction while that order's estimated error is below this, and is
+: taken to all orders above it (`_fa_lineshape`).  The lineshape's own
+: floor, where the transform hands over to the linear skirt, is ~1e-4:
+: tighter than that bought ~1e-6 for 4x the time on an LC with no slow
+: node (5.9 -> 21.6 s, 42 solves, estimate 2.4e-6)
+
+### `LINESHAPE_WARN`
+
+2026-09-27 (the second move, from the code).  The comment on the constant
+before the move:
+
+: the coloured lineshape warns when its estimated error at an offset
+: exceeds this, relative.  (The handover's ~1e-4, set against when this
+: was chosen, was an inflated QUADPACK bound and a first-order skirt;
+: since 2026-09-27 the true worst is 3.4e-7 / 4.5e-6 on a real / a very
+: broad line, `_lineshape.handover`.)
+
+### `_coloured_spectrum`
+
+2026-09-27 (the second move, from the code):
+
+The comments on the handover and on the two grids, before the move:
+
+⚠ THE FAR SKIRT IS A SKIRT, AND THE TRANSFORM CANNOT SAY SO: there
+the lineshape is ~1e-7 of the integrand's scale, and the transform
+finds it by cancellation.  So each offset takes the transform or
+the second-order skirt, whichever carries the smaller estimated
+error (`_lineshape.handover`, 2026-09-27: the transform's
+estimate is its grid-phase move, QUADPACK's bound only where it
+failed; the skirt's is its split move plus its correction
+squared).
+⚠ THE TWO GRIDS ARE ONE DENSITY AT TWO PHASES (2026-09-27): the
+returned grid (2 x TAU_PER_DECADE) against the same density with
+its interior nodes half a step along.  Against HALF the density
+(the grid it replaced) the estimate measured the COARSE grid's
+error: 8 .. 261x the returned value's own (a 320-per-decade
+reference) behind a slow node, a spurious 2e-3 warning at 300
+linewidths; the shifted grid reads 1.2 .. 2.1x, for a third more
+build time.
+
+The comment on the DC line, before the move:
+
+the DC line; built only where it is used (2026-09-27): the
+all-orders path replaces it, and building it anyway was a
+quarter of that path's time
+
+### `_fa_lineshape`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+The frequency-aware PPV in the coloured lineshape (2026-09-26, the
+default).  The fold's frequency-aware samples (one bordered solve a
+
+`self.lineshape_info` says which, and why.  `mode`: None the
+estimate's choice, True all orders, False first order.
+
+### `frequency_aware_diffusion`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+⚠ WHITE sources only, like `diffusion_constant`; a MODULATED one
+(2026-09-26) is read at each sample's state, as there.  Cost:
+
+The comment on the period weights, before the move:
+
+⚠ `_period_weights`, as `diffusion_constant` integrates -- until
+2026-09-27 `np.diff(times)`, the LEFT RECTANGLE: first order on a
+smoothly non-uniform grid, measured c(0+)/c - 1 = -2.0e-3 /
+-1.0e-3 / -5.1e-4 at N = 200/400/800 (1e-15 with these weights),
+so `c(f)` jumped at f = 0 instead of reaching `c`
+
+The comment on a modulated source, before the move:
+
+⚠ A MODULATED source (2026-09-26): `CY` at each sample's own
+state, as `diffusion_constant` reads it -- the PPV's orbit,
+`_ppv_states`.  ⚠ Not `pss.waveform` (to 2026-09-27): trap and
+euler serve `factored_period()` -- and so this PPV -- from
+their monodromy TWIN, and the solve's own orbit differs from
+the twin's by the discretisation; measured c(0+)/c - 1 =
+-1.3e-4 on trap with a white source following the orbit
+(1e-13 on gear, which has no twin).
+
+## `_lineshape.py` -- module level
+
+### module docstring
+
+2026-09-27 (the second move, from the code):
+
+The module docstring's lines before the move:
+
+A SIGNED correction to `c` (the frequency-aware PPV's `c_fa - c_dc`,
+2026-09-26; `PAC._fa_lineshape`) cannot ride on the power-law pieces, which
+
+(`benchmarks/lineshape_reference.py`) the worst is 3.4e-7 on a real
+oscillator's line (it was 6.5e-5 at the handover).
+
+### `RationalRho`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+component: what the lineshape needs is `c_fa = c_dc (1 + rho)`, and
+behind a slow node `1 + rho` falls to ~1e-3.  An absolute 1e-6 on
+`rho` was then 1e-3 of `c_fa`, and the Chebyshev series held to it was
+3.1e-5 off in the near skirt against a tight reference, where this is
+1.3e-8 (2026-09-27).
+
+apart.  For finite-difference sensitivities through the lineshape, set
+`PAC.FA_RHO_FIT = 'chebyshev'`.
+
+### `ColouredLineshape`
+
+2026-09-27 (the second move, from the code):
+
+The comment in `__call__` on QUADPACK's bound, before the move:
+
+⚠ QUADPACK'S BOUND IS NOT THIS VALUE'S ERROR (2026-09-27).  It sums
+absolute bounds on O(1) pieces whose tiny difference is the far
+skirt: 100 .. 10^4 times the true error against an mpmath
+reference, which moved the handover half a decade early (6.5e-5
+returned at 1e-2 f0 where the transform was 3.4e-7).  The grid-
+phase difference (`handover`) is the honest part; QUADPACK's bound
+counts only where QUADPACK itself reported failure.
+
+### `second_order_skirt`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+The lineshape's far skirt to SECOND order in the phase (2026-09-27).
+
+only ~10x.  `c` is taken constant below `nu_low` and above ~`10
+nu_high` (the white level).
+
+### `handover`
+
+2026-09-27 (the second move, from the code):
+
+The docstring lines before the move:
+
+next term.  ⚠ The split move alone read ZERO where the expansion had
+collapsed: a heavy 1/f line at 3e-4 f0, the phase variance above the
+split ~1e4, `exp(-sH2)` underflowing to 0 at both splits, the skirt
+chosen 100 % off.  A non-positive skirt is never taken.  Against the
+mpmath reference both estimates track the true error within ~2.4x and
+~5x (2026-09-27).
+
+### `phase_psd` (a duplicated docstring line)
+
+2026-09-27: the docstring carried this line TWICE in a row; one copy was removed:
+
+each harmonic's colour read at its own source-side frequency.  For
+
+
+## `pss.py` -- `PSS`
+
+### `parameters`
+
+2026-09-27 (the second move, from the code):
+
+The comment above the `event_window_steps` Parameter, before the move:
+
+How finely a switching window is resolved: the segment between
+a threshold switch's two landed edges (`state_events`) is cut into
+this many equal steps whenever it holds fewer -- see
+`_land_fractions`.  It sets the staged solve's floor at the switch
+(on the PWM loop, radau 5e-6 of the swing at 8, below 1e-6 at 16).
+⚠ THE WINDOW'S OWN ERROR DOES NOT REFINE WITH `timestep`: a window
+narrower than a base step is always cut into this many steps, so
+its error falls as K^-p in the count, not in N.  radau (p = 5) is
+past it by 16; a SECOND-ORDER method (gear, trap, trbdf2, glm2) is
+not -- gear's period on the comparator oscillator reads -2.2e-4 /
+-3.0e-4 / -1.2e-4 / +1.4e-5 at 100 / 200 / 400 / 800 points with 16
+(non-monotone: the window's error crosses gear's own), and converges
+at second order with 256 (+1.05e-4 / +2.2e-5 / +4.4e-6).  Raise it
+for such a method where accuracy below ~1e-4 at a sharp switch
+matters; the default stays 16 (Andreas, 2026-09-25: 256 per
+crossing "is a bit much" as a default).
+
+### `__init__`
+
+2026-09-27 (the second move, from the code):
+
+The comment above `self.monodromy`, before the move:
+
+⚠ WHICH MONODROMY THE OSCILLATOR SURFACES READ -- see
+`monodromy_twin`.  Selects the method that supplies the PPV,
+Floquet modes and factored period when a one-step LMM (trap/euler)
+solved an autonomous circuit, whose OWN monodromy is first-order
+on a limit cycle (the opener seam).  'radau' (DEFAULT since
+2026-09-24, Andreas): a Radau IIA twin on the same grid -- the most
+accurate by far (lambda2 / c / d 1e-10 / 2e-11 / 6e-13 against
+trbdf2's 1e-4 / 6e-6 / 8e-5 on van der Pol at 200 points), at about
+trbdf2's cost.  'trbdf2' (the default until then), 'gear' and
+'esdirk43' select those twins (see `monodromy_twin`).  A Nordsieck
+GLM reads its own map on the state (`_state_map`: `ppv`,
+`floquet_modes`, PAC, the adjoint rows, pnoise, `sampled_noise`)
+and the twin for the covariance surfaces (`_state_twin`).
+'native': the run's OWN plain factorisation --
+⚠ the WORST under a one-step method (its `Q` DIVERGES under
+refinement); it is for the gates that measure that defect, not for
+results.  gear and stage-method runs are self-sufficient
+(second-order native monodromy) and ignore this.
+
+### `solve`
+
+2026-09-27 (the second move, from the code):
+
+The `matrix_free` paragraph of the docstring, before the move:
+
+`matrix_free` is RECORDED SCOPE ITEM 6: solve the outer system
+without ever forming the monodromy, propagating ONE vector per
+Krylov iteration instead of `2m` columns per step.  Worth asking for
+on LARGE circuits only -- against a dense-solver dense path it loses
+at m=40 and wins above roughly m=250 (1.36x at m=242, 2.13x at
+m=1002 on the driven solved-history system; systems with `m` rather
+than `2m` columns gain less).  ⚠ It buys that with memory, `2 N m^2`
+doubles of stored factorisations (~800 MB at m=1002, 50 points), and
+it does NOT produce a monodromy, so `spectral_radius` is `None`
+after a matrix-free solve.  Built for every kind, driven or free
+period (a Nordsieck GLM through its map on the state, seeded by the
+linearised startup).  The state-event stage runs matrix-free too
+(since 2026-09-25; it warned and was skipped before): its bordered
+system is a mat-vec, one replay per Krylov direction giving the map
+and the state at every event node (`_state_event_stage`).  ⚠ Those
+figures were taken with a DENSE linear solver on both sides; with a
+sparse one the m~250 gate may move --
+`benchmarks/pss_matrix_free_sparse.py` is the harness, to be run
+quiet before quoting any of this as the sparse answer.
+
+### `_solve_prepare`
+
+2026-09-27 (the second move, from the code):
+
+The comment on state events on a plain map, before the move:
+
+⚠ STATE EVENTS ON A PLAIN MAP OPEN IT AT `x(0)`.  The event stage
+needs the map opened there: the manufactured opener's own step
+moves with the first crossing, and that dependence is not carried.
+Measured, trap on the comparator oscillator: with the opener the
+stage failed to converge at 200 points and read -1.2e-3 at 800
+(unstaged -7.2e-4); opened at `x(0)`, +1.4e-4 / +9.1e-6 against
++6.4e-3 / -7.2e-4 unstaged.  So a plain-map run with declared
+state events defaults `x0_unknown` to True (an explicit value is
+honoured, and False warns that the stage does not run).
+
+### `_shoot`
+
+2026-09-27 (the second move, from the code):
+
+The GLM bullet of `_pmap`'s docstring and the paragraph after it, before the move:
+
+* GLM: the method's own map (the startup at the top of the
+  period, then N multivalue steps); ⚠ `M` is APPROXIMATE -- the
+  residual is exact, the Jacobian drops the startup's derivative
+  (see `_walk_glm`); its period column carries the two
+  explicit `T` dependences a multivalue method has.
+
+⚠ THE PERIOD COLUMN IS TRACTABLE ONLY FOR AN AUTONOMOUS CIRCUIT:
+the grid is rebuilt at the current `T` (``dh/dT = h/T`` for every
+step, uniform or not) and the stage derivatives carry no time of
+their own.
+
+2026-09-27 (the second move, from the code):
+
+The comment above `self._monodromy = M`, before the move:
+
+kept for the checks after the solve: the spectrum is the only
+place a free period announces itself.  (A GLM's too since
+2026-09-24: its map on `x` is exact once the startup is
+linearised -- see `_walk_glm`.)
+
+2026-09-27 (the second move, from the code):
+
+The comment "EVERY KIND RUNS MATRIX-FREE", before the move:
+
+⚠ EVERY KIND RUNS MATRIX-FREE.  The stage kinds' factored map has
+the mat-vec and the walk carries the period column without the
+dense map (radau, trbdf2 and esdirk43 matched their dense solves
+to 1e-15; refused until 2026-09-24 as "a dense stage product").  A
+Nordsieck GLM's factored map acts on its Nordsieck state; the
+Newton's operator on `x_0` is `x_matvec`, the recursion seeded by
+the linearised startup (`_GLMStartup`) -- without it, matrix-free
+glm2 and glm3 diverged on a driven RLC.
+
+2026-09-27 (the second move, from the code):
+
+The comment on the period's column scaling, before the move:
+
+⚠ THE PERIOD'S COLUMN SCALED TO UNIT NORM: `dx/dT` is
+~1e6 on a microsecond oscillator against `I - M`'s unit
+columns, and GMRES stalled on the raw operator (trap and
+glm2 on the comparator oscillator, 2026-09-25)
+
+### `_check_fundamental`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the excluded edges, before the move:
+
+⚠ THE EXCLUDED EDGES ARE TIME, NOT POINTS: 5 % of the period
+(at least two steps' worth), which on a uniform grid is the
+same `max(2, N // 20)` points.  Counted in points, a grid that
+OPENS WITH A RAMP (gear's, after a landed state event: ten
+doubling steps from 1e-5 T) excluded 3e-4 of the period, and
+the orbit still leaving `x_0` -- displacement about the speed
+times the step, since the elapsed time IS about the step --
+read as a recurrence ("traverses it about 3182 times").
+
+### `_closing_fallback`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's "WHY" paragraph, before the move:
+
+⚠ WHY.  From a poor seed state the closing Newton can take a first
+step that swallows the closing step (the grid then scales
+proportionally for that one evaluation, and the function changes
+under a closing Jacobian) and wander into a false near-solution: gear
+on a smooth 3:1 grid, van der Pol a = 0.3 seeded at `[2, 0]` 7 % below
+its period, drifted to small amplitude and stalled at |F| ~ 1e-3,
+where proportional converges in 3.6 s.  Found 2026-09-26 with the
+closing column's missing opening-step term (`_walk_lmm`).
+
+## `_pss_newton.py` -- `_ShootingNewton`
+
+### `_matrix_free_newton`
+
+2026-09-27 (the second move, from the code):
+
+The `line_search` paragraph of the docstring, before the move:
+
+`line_search`: `analysis.fsolve`'s -- the full step tried first and
+kept when it lowers ``||F||``, else halved up to four times, the
+accepted trial's `build` carried into the next iteration (so a
+converging solve costs what the undamped loop costs).  A trial the
+builder cannot evaluate (a `ValueError`, a failed inner step) counts
+as uphill.  ON, as the dense path's `fsolve(line_search=True)` is
+in every shooting stage (until 2026-09-25 the matrix-free Newton
+took full steps: the unstaged solve of the PWM loop failed under
+every method, radau included, and a first staged step from stage
+1's crossings moved two of them by a whole period).
+
+## `_pss_grids.py` -- `_PeriodGrids`
+
+### `_period_grid`
+
+2026-09-27 (the second move, from the code):
+
+The comment on a two-step method's step ratios, before the move:
+
+⚠ A CALLER'S GRID CAN SILENTLY DEMOTE A TWO-STEP METHOD TO FIRST
+ORDER: zero-stable only up to `h_n / h_{n-1} = 1 + sqrt(2)`, it
+converges at first order on a grid whose up-steps past that REPEAT
+(an alternating 3:1 grid: 60 % low on a Q=20 resonator, reported
+converged).  Refining keeps a 3:1 grid 3:1, so the warning names
+the ratio, not a smaller step.  An ISOLATED up-step (an event ramp)
+is harmless at any ratio -- the recursion's factor w/2 acts on the
+difference across the SMALL step, giving the trapezoidal
+predictor -- and so is a PAIR, a landed switching window's exit
+(its ramp, then the partial step back to the base grid): one
+amplification of the parasitic root, bounded, not compounding.
+So a bad ratio counts only when TWO others lie within
+`RATIO_ISOLATION` steps.  (Measured on the comparator oscillator
+under gear: smoothing those pairs into doubling ramps never
+improved the period, at 100, 150, 200 or 800 points.)  This
+traversal never drops a step to Euler (`Transient`'s
+`check_order_drop` does not run here).
+
+## `_pss_events.py` -- `_StateEvents`
+
+### `_land_fractions`
+
+2026-09-27 (the second move, from the code):
+
+The last paragraph of the comment on a switching window's sub-grid, removed from the code:
+
+⚠ Until 2026-09-25 it fired only on a window with NO base node
+inside (narrower than one base step): a window spanning 2-7 base
+steps kept them, fewer where a snapped edge stretched one, and the
+staged PWM loop's error was non-monotone in N for every method --
+radau 6.5e-5 / 1.0e-5 / 7.0e-5 / 4.2e-6 / 7.5e-5 / 3.9e-6 of the
+swing at N = 780..805 against radau at 3200 (5e-6 to 1.1e-5 with
+this rule, 5e-7 to 7.6e-6 at 16 steps).
+
+### `EVENT_WINDOW_STEPS`
+
+2026-09-27 (the second move, from the code):
+
+The comment above `EVENT_WINDOW_STEPS`, before the move:
+
+: steps the segment between a switching window's two edges is cut into
+: -- the default of the solve's `event_window_steps` Parameter.  16 since
+: 2026-09-25 (Andreas: "Cut by 16"; 8 before): on the PWM loop the
+: staged radau error against a fine reference was 5e-6 to 1.1e-5 of the
+: swing at 8, 5e-7 to 7.6e-6 at 16 (N = 780..805)
+
+### `_state_event_stage`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's `matrix_free` paragraph, before the move:
+
+⚠ `matrix_free`: the same bordered system as a MAT-VEC, never forming
+the period map.  The walk is factored (`keep`) and carries only the
+event columns (and the period's); a Krylov direction ``[v; s]`` costs
+ONE forward replay, which gives ``M v`` and the state at every event
+node together:
+
+    J [v; s] = [ v - a M v - a P_theta s ;
+                 W_k (P_{nd_k} v + Pk_{nd_k} s) ;  v[k_phase] ]
+
+(`_matrix_free_newton`; an oscillator through `_free_period_solve`).
+The stage then leaves `_monodromy` None, as the unstaged matrix-free
+solve does, and the event rows' derivatives `G` come from reverse
+replays (`_finish_state_events`).  Until 2026-09-25 a matrix-free
+solve warned and skipped the stage.
+
+2026-09-27 (the second move, from the code):
+
+The comment on a stage that fails, before the move:
+
+⚠ A STAGE THAT FAILS HANDS BACK STAGE 1, NOT AN EXCEPTION: an
+iterate can leave the orbit far enough that an inner step does
+not converge (measured: trap's first columns on a driven PWM loop,
+before they were right, sent `vin` to 1e9 and the whole solve
+raised).  The stage is an improvement on stage 1, never a
+condition of having a result.
+
+### `_event_costate_injection`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the injection's width, before the move:
+
+⚠ AT THE CIRCUIT'S WIDTH, NOT THE MAP'S: the event row reads the
+node's circuit state, so its costate enters the circuit block --
+gear's pair map is `2m` wide and its reverse step adds the
+injection to that `m` block (a `2m` row broke `floquet_modes` on
+the first staged gear oscillator, 2026-09-24)
+
+## `_pss_inner.py` -- `_InnerTransient`
+
+### `_factorise`
+
+2026-09-27 (the second move, from the code):
+
+The comment above `_PerSolve.solve_transposed`, before the move:
+
+⚠ the adjoint surfaces transpose every stored step; without
+this a solver with no `factor` raised `AttributeError` there
+(gear's `ppv` under `KLUSolver`/`AutoSolver` until 2026-09-25)
+
+## `_pss_walks.py` -- `_PeriodWalks`
+
+### `_walk_lmm`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the plain map's event columns, its first paragraph, before the move:
+
+⚠ ON THE PLAIN MAP THE NEXT STEP MAY READ `Pq` --
+trapezoidal's `b != 0` companion carries `iq`, and
+its first step is an order-dropped Euler whose `Pq`
+the second reads -- and the source's motion is a
+CURRENT, not a charge: it enters the solve
+(`source`) and not the carried companion
+sensitivity.  (Gear's pair has `b = 0` on every
+step and never reads `Pq`, which is why the lumped
+forcing below is exact there; on trap's columns on
+a driven PWM loop it was 0.3-380x off, 2026-09-24.)
+
+2026-09-27 (the second move, from the code):
+
+The comment on the closing column's opening step, before the move:
+
+⚠ AND THE OPENING STEP, FOR A TWO-STEP METHOD: the pair
+map opens each period with the CLOSING step as its
+previous one, so its coefficients move with `T` too --
+the previous-step partial `(dfdT - dfdh h_0) / h_prev`
+(Euler's theorem, as the event columns take it).
+Missing until 2026-09-26: gear's closing column was
+15 % off on a caller's non-uniform grid, and the
+free-period Newton wandered and failed (radau, one
+step, 6e-11).
+
+### `_stage_step`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the coupled block's factorisation, before the move:
+
+the CALLER'S solver (`_factorise`), as every other stored
+step: until 2026-09-25 the coupled block was `lu_factor`'d
+here whatever `linearsolver=` said (bit-identical under the
+default `DenseSolver`, whose factor is that `lu_factor`)
+
+### `_walk_glm`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's second paragraph, before the move:
+
+The map shot on is ``x_0 -> x_N``: the Nordsieck vector is built from
+``x_0`` by `Transient._glm_startup` at the top of the period and
+propagated by the method to the end.  The recursion is seeded with
+the startup LINEARISED (`_GLMStartup`: its p Radau substeps and its
+interpolant, ``dQ_k/dx_0``), so the map on ``x`` is exact, and the
+period column carries the substeps' own motion with `T`.  (Until
+2026-09-24 only ``dQ_0/dx_0 = C(x_0)`` was carried: the Jacobian was
+approximate, and the factored map not the Newton's.)
+
+## `_pss_ppv.py` -- `_PPVFloquet`
+
+### `_equation_row_blocks`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's last paragraph, before the move:
+
+⚠ THEY DO NOT DEPEND ON THE FREQUENCY (2026-09-27).  The frequency-
+aware PPV re-evaluated the circuit's `C` (and `G`, for algebraic
+rows) at every sample of every solve, twice: 36 % of a solve, and
+the all-orders lineshape makes ~70 of them.  The batch
+(`_equation_row_batch`) runs the same `np.linalg.solve`s, stacked:
+bit-identical, pinned by a test.
+
+### `_state_map`
+
+2026-09-27 (the second move, from the code):
+
+The docstring before the move:
+
+The period map on the STATE that every state-space consumer reads
+-- `ppv`, `floquet_modes`, `PAC.solve`, the adjoint rows, the
+deflated solve, `sampled_noise`: the factored period, except that a
+Nordsieck GLM's is taken on the state (`_GLMPeriod.state_map`) --
+its own acts on the Nordsieck vector, whose null vector's first
+block holds the higher components fixed.  ⚠ Until 2026-09-24 a
+native GLM's `ppv()` returned that Nordsieck object, `r*m` wide; until
+2026-09-25 PAC and the noise folds read a GLM run from a radau twin
+(named `_ppv_map` then, `ppv`'s alone).
+
+### `frequency_aware_ppv`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the twin, before the move:
+
+⚠ THE TWIN SERVES THE WHOLE CALL, as `ppv()` and `floquet_modes`
+do.  Until 2026-09-27 only its period map was borrowed (through
+`_state_map`) and the propagation ran on THIS solve: exact on an
+ODE, but on a circuit with an algebraic node the samples read
+1.6e-3 off the twin's own on trap (c(f) 1.3e-4).
+
+2026-09-27 (the second move, from the code):
+
+The comment on the DC PPV's cache, before the move:
+
+⚠ THE DC PPV ONCE PER SOLVED ORBIT (2026-09-26): it was 0.22 s of
+every 0.23 s offset, and the coloured folds now take one offset
+per band frequency.  Kept per (state map, tol, the `ppv` that made
+it -- a replaced `self.ppv` is consulted, see `PAC._deflated_solve`);
+a re-solve builds a new map and misses.
+
+### `floquet_modes`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's paragraph on the dense limit, before the move:
+
+⚠ DENSE UP TO `FLOQUET_DENSE_LIMIT` (`n` matvecs, then `eig`: every
+mode); ABOVE IT, THE DOMINANT `nmodes` ONLY (`_floquet_modes_ritz`,
+2026-09-25): a Ritz-certified Arnoldi on the map and on its
+transpose, run on `M` itself -- whose outer spectrum, the slow modes,
+converges first -- not on `I - M`, where the physical `lam_2 -> 1`
+is the smallest `theta` and resolves LAST (Garcia, Romero & Acha
+2022).  Each mode dict then carries `certified` and `ritz_residual`;
+an uncertified mode is warned and flagged, never silent.
+`nmodes=None` is refused there, and so are the modal spectra built
+on it: eq (22) needs ALL the modes, whose weight this repo measured
+spread over m/n = 0.97 of them -- above the limit a spectrum is
+`pnoise`'s.
+
+### `_floquet_modes_ritz`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's last paragraph, before the move:
+
+⚠ DOMINANT MODES ONLY, BY REQUIREMENT, NOT BY BUDGET.  The modal
+spectra need EVERY mode -- orbital weight is spread over m/n = 0.97
+of them (measured on two circuits) and does not follow `|lambda|`
+(Traversa & Bonani, TCAS-I 2011, sec. V) -- so `nmodes=None` is
+refused here, and a spectrum above the limit is `pnoise`'s.  What
+this serves is stability and mode inspection: the multipliers,
+exponents and shapes of the slow modes.  (Built 2026-09-25; until
+then refused outright.)
+
+### `_floquet_mode`
+
+2026-09-27 (the second move, from the code):
+
+The docstring before the move:
+
+One Floquet mode's dict from its multiplier `lk` and its right and
+left eigenvectors `uk`, `vk` at `t = 0` (the map's width `n`):
+biorthonormalised, its periodic parts `p` (a forward replay) and `q`
+(the transposed replay) sampled on `times`.  `residual(uk, lk)` is
+its relative eigen-residual -- the dense matrix's, or the map's
+mat-vec above `FLOQUET_DENSE_LIMIT`; `k` names the mode in a refusal.
+(The loop body of `floquet_modes` until 2026-09-25, moved verbatim.)
+
+2026-09-27 (the second move, from the code):
+
+The comment on the algebraic entries, before the move:
+
+⚠⚠ AND THE ALGEBRAIC ENTRIES ARE SLAVED, NOT ZERO
+(2026-09-26).  `pinv` leaves them at its minimum-norm 0, so a
+source on an algebraic node reached no mode: `modal_spectrum`
+read EXACTLY 0 for one on radau, silently (gear's transposed
+solve carries them).  An algebraic state's column of the
+adjoint equation holds no derivative, whatever the mode's
+exponent, so the PPV's constraint fill applies as it stands
+(`_algebraic_adjoint_fill`), at each sample's own state.
+
+## `_pss_accuracy.py` -- `_AccuracyChecks`
+
+### `monodromy_twin`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's paragraph on the default twin, before the move:
+
+The twin defaults to Radau IIA (`monodromy='radau'`, the most
+accurate by far, at about trbdf2's cost; Andreas, 2026-09-24:
+"Set radau as default twin"); `'trbdf2'` (the default until then),
+`'esdirk43'` and `'gear'` select those twins, and `'native'` reads
+the run's own.  Trap's and
+euler's own monodromy is unusable on a limit cycle (trap's diverges
+with refinement, with either opener; euler's is first order), so
+the STATE keeps the method you asked for and every
+monodromy-derived quantity -- `Q`, the PPV and everything built on
+it, the Floquet modes, the phase-noise surfaces -- comes from the
+twin on the same orbit, re-converged rather than copied (its period
+differs from this one's by O(h^2)).
+
+2026-09-27 (the second move, from the code):
+
+The comment on a GLM's own map, before the move:
+
+⚠ A GLM USES ITS OWN MAP WHERE IT IS BUILT (Andreas, 2026-09-24:
+"For twin use the own map when possible"): measured on van der
+Pol, its `ppv` / `floquet_modes` on the state are second / third
+order, and glm3's spectrum is 4.6e-8 of radau's where the trbdf2
+twin read 9.7e-7.  `carries_own_monodromy` stays False: a GLM may
+not BE the twin -- its map's unit multiplier sits O(h^p) off 1
+(the startup seam) and its covariance injection is first order;
+the surfaces that feel those take a twin (`_state_twin`).
+
+### `_state_twin`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's second paragraph, before the move:
+
+Everything else reads the GLM's own map on the state
+(`PSS._state_map`; Andreas, 2026-09-25: "Native for all but
+covariance", then for an oscillator's small-signal surfaces "If GLM
+is accurate use GLM" -- see `PAC._deflated_solve`).  The covariance
+is the exception on MEASUREMENT: a white source over a GLM step
+reaches the state through its effective weights ``w = l^T B`` (GLM3
+0.359, -0.0167, 0.067, 0.591; GLM4 -26 .. +166), which no per-stage
+sampling can carry with positive variances, so a native injection is
+one shared sample per step -- first order.  `monodromy='native'`
+selects it.
+
+### `_lyapunov_host`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's second paragraph, before the move:
+
+The covariance is propagated on the SAME orbit the Floquet quantities
+use, so this is just the monodromy twin: a trap/euler autonomous run
+hands its covariance to the twin (`TR-BDF2` by default, `gear` if
+`monodromy='gear'`) so both come from one consistent orbit; a
+gear/trbdf2 host is its own host.  TR-BDF2's per-step injection is
+built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
+is no Gear-2 fallback -- the injection follows the chosen twin.
+A Nordsieck GLM hands them to its twin driven or not (`_state_twin`:
+radau unless `monodromy='native'`).
+
+### `_adjoint_host`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's second paragraph, before the move:
+
+The two-stage sideband fold IS built for TR-BDF2
+(`_sideband_forced_trbdf2`, the two-vector injected reverse pass that
+carries the source coupling through both stages), so this is the
+monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
+use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
+Gear-2 twin if asked.  A Nordsieck GLM reads its own map on the
+state (`PSS._state_map`; until 2026-09-25 a radau twin).
+
+### `METHOD_ORDER`
+
+2026-09-27 (the second move, from the code):
+
+The comment before the move:
+
+`grid_error`'s ceiling on a plausible OBSERVED order is the method's
+nominal order (`_nominal_order`), read off its integrator for every
+accepted name.  The table it replaced covered 6 of 12 -- esdirk43,
+the GLMs and the aliases `gear2` / `trapezoidal` silently took the
+generic range, the ceiling not applied.
+
+### `grid_error`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the refined runs' twin, before the move:
+
+⚠ AND THE SAME MONODROMY TWIN: `monodromy` is an attribute,
+not a Parameter, and the refined runs took the default --
+measured, a trap run under `monodromy='gear'` read the gear
+twin at level 0 and the default twin at levels 1 and 2
+
+2026-09-27 (the second move, from the code):
+
+The end of the comment on the observed-order ceiling, before the move:
+
+genuinely converges at ~3.  ⚠ AND IT IS THE HIGHER OF THE
+RUN'S METHOD AND ITS TWIN'S: an oscillator quantity of a
+trap run (its `c`) comes from the twin, and under the radau
+twin it converges at radau's 5.03 -- a trap-only ceiling
+(3.5) withheld a correct estimate.
+
+### `IDEC_DEGREE`
+
+2026-09-27 (the second move, from the code):
+
+The comment's second paragraph, before the move:
+
+⚠ THE SMALLEST ODD DEGREE ABOVE THE METHOD'S ORDER, at least 3: the
+rule every measured entry of the table this replaced followed (3 for
+the second-order methods, quintic for esdirk43, septic for radau),
+and it keeps the stage clause for every method here.  The table
+missed the GLMs: glm3 and glm4 fell back to a cubic, and glm4's
+estimate read -6.7e-7 against a true +2.8e-9 (van der Pol, 120
+points; +5.7e-10 quintic).  Even degrees trip the check.
+
+## `_factored.py` -- `_GLMPeriod`
+
+### `x_matvec_transposed`
+
+2026-09-27 (the second move, from the code):
+
+The docstring's last paragraph, before the move:
+
+`inject[n]` (a staged solve's event rows, `EventColumns.injection`)
+is a costate on `x_n` itself: node `n >= 1` is step `n-1`'s last
+stage, so it seeds that step's adjoint (`Dseed`); node 0 adds to
+the result; a collected state carries its node's.  (Until
+2026-09-25 refused, so `ppv` / `floquet_modes` raised on a staged
+GLM oscillator.)
+
+## `_factored.py` -- `_GLMStateMap`
+
+### class docstring
+
+2026-09-27 (the second move, from the code):
+
+The docstring's last paragraph, before the move:
+
+⚠ TWO REPLAYS, ONE MAP.  `matvec` / `matvec_transposed` are the
+GLM's own (`x_matvec*`: their collected samples are the startup
+projections `ppv` reads).  The FactoredPeriod interface below --
+`_GLMStateStep`s on the per-step state ``(P, x)`` -- is what the generic
+replays run (`PSS._forced_replay`, `_forced_replay_transposed`,
+`_sideband_forced`, `PAC._stage_pass`): the source enters the stages,
+the output rows and the startup that opens a step.  The two agree on
+`M v` and `M^T v` (to round-off, the suite's GLM PAC tests).  Until
+2026-09-25 PAC, pnoise and `sampled_noise` read a GLM run from a radau
+twin; the covariance surfaces still do by default (`_lyapunov_host`).
+
+## `_steps.py` -- `_LMMStep`
+
+### `adjoint`
+
+2026-09-27 (the second move, from the code):
+
+The comment on the costate on `Pq_n`, before the move:
+
+⚠ THE COSTATE ON `Pq_n` (`w3`) IS DROPPED ONLY WHEN IT IS ZERO,
+not whenever `b = 0`: a `b = 0` step's own `Pq_n` is still read by
+a NEXT step with `b != 0` -- trap's order-dropped Euler OPENER, the
+first step of a map opened at `x(0)` (`x0_unknown`).  Keyed on `b`
+alone, trap's opened plain map was not its forward replay's
+transpose: 2.8e-3 on the PWM loop, an injected row 1e-2 off from
+node 2 on (found 2026-09-25 by the matrix-free event stage's
+reverse-replayed event rows).  Gear's `w3` is zero throughout.
+
+## `_steps.py` -- `_GLMStep`
+
+### class docstring
+
+2026-09-27 (the second move, from the code):
+
+The docstring's last line, before the move:
+
+(Until 2026-09-25 a 13-field tuple read by position.)

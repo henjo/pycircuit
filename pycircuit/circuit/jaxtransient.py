@@ -17,14 +17,12 @@ from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.analysis import CircuitResult as Result
 from pycircuit.circuit.analysis import gnd
 
-## Depth of the per-TLine delay-line ring buffer, in accepted steps.  It was the
-## bare literal `10000` in seven places, three of them inside modulo arithmetic,
-## which made it impossible to see that the buffer is a RING: past this many
-## accepted steps `tline_head` wraps and `interp_tlines` starts interpolating
-## against entries from a previous lap.  `cond_fun` stops at the end of the buffer
-## and returns whatever is there, so the result is a plausible wrong waveform with
-## no error and no warning.  `JAXTransient.solve` now checks for the wrap and
-## raises; sizing the buffer from the run instead of fixing it belongs to stage 9.
+## Depth of the per-TLine delay-line ring buffer, in accepted steps.  The
+## buffer is a RING: past this many accepted steps `tline_head` wraps and the
+## delay interpolation reads entries from a previous lap -- a plausible wrong
+## waveform with no error and no warning -- so `JAXTransient.solve` and
+## `solve_batched` check for the wrap after each chunk and raise.
+## History: `doc/transient_history.md`, `jaxtransient.TLINE_HISTORY_DEPTH`.
 TLINE_HISTORY_DEPTH = 10000
 
 ## The CPU's within-time-point excursion clamps (stepcontroller
@@ -40,11 +38,12 @@ class NewtonState(NamedTuple):
     F_norm: Any
     iters: Any
 
-    ## STAGE 9(e).  The loop exits on `F_norm <= conv_tol` OR `iters >= maxiter`
-    ## and the caller took `x` either way, so an unconverged iterate was committed
-    ## as the step's solution and its LTE computed from it.  Measured on a LINEAR
-    ## RC at maxiter=1: 4.97e-2 max error against 4.28e-3, reported as nothing at
-    ## all.  A traced loop cannot raise, so the fact travels out as a flag.
+    ## STAGE 9(e).  Whether the Newton loop CONVERGED or merely ran out of
+    ## iterations: the caller takes `x` either way, so this flag is what keeps
+    ## an unconverged iterate from being committed as the step's solution and
+    ## its LTE computed from it.  A traced loop cannot raise, so the fact
+    ## travels out as a flag.
+    ## History: `doc/transient_history.md`, `NewtonState.converged`.
     converged: Any = True
 
 class TransientState(NamedTuple):
@@ -64,13 +63,14 @@ class TransientState(NamedTuple):
     tline_head: Any     # int32 scalar
 
     ## STAGE 9(c) -- the running maximum of |x| over ALL past steps and ALL
-    ## unknowns.  This is a commercial simulator's `sigglobal`, which `Transient` already ships as
-    ## its default `relref`, and it is what makes an absolute LTE floor of 1e-12
-    ## safe: under `pointlocal` -- each unknown against itself, now -- a node
-    ## carrying no signal drives `ref -> 0`, the tolerance collapses to the floor,
-    ## and the controller chases numerical noise on a quiet node.  The CPU hid that
-    ## for a while by raising the floor a millionfold; `sigglobal` is the fix, and
-    ## this field is what carries it through a traced loop.
+    ## unknowns.  This is a commercial simulator's `sigglobal`, which
+    ## `Transient` ships as its default `relref`, and it is what makes an
+    ## absolute LTE floor of 1e-12 safe: under `pointlocal` -- each unknown
+    ## against itself, now -- a node carrying no signal drives `ref -> 0`, the
+    ## tolerance collapses to the floor, and the controller chases numerical
+    ## noise on a quiet node.  This field is what carries `sigglobal` through a
+    ## traced loop.
+    ## History: `doc/transient_history.md`, `TransientState.sig_max`.
     sig_max: Any = 0.0
     ## P7: the per-row running signal maximum, relref's 'alllocal' and the
     ## unit-split 'sigglobal' reference.  Shape (n,), updated on ACCEPT only
@@ -78,26 +78,25 @@ class TransientState(NamedTuple):
     ## later tolerances).
     ref_running: Any = 0.0
 
-    ## STAGE 9, gate 9-1(b) -- how many steps the controller REJECTED.  Nothing
-    ## reported this, so "a step is actually rejected" -- one of the three CPU
-    ## step-control gates -- was not expressible on this backend, which is the
-    ## asymmetry that let a copied LTE defect survive being fixed twice.  A
-    ## rejected step advances neither `t` nor `step_idx`, so it leaves no trace in
-    ## the output buffers; it has to be counted where it happens.
+    ## STAGE 9, gate 9-1(b) -- how many steps the controller REJECTED.  A
+    ## rejected step advances neither `t` nor `step_idx`, so it leaves no trace
+    ## in the output buffers; it has to be counted where it happens.
+    ## History: `doc/transient_history.md`, `TransientState.n_rejected`.
     n_rejected: Any = 0
 
     ## Steps rejected because the Newton solve did not converge, and steps
-    ## ACCEPTED anyway because `dt` was already at the floor.  The second is the
-    ## one to read: it counts places where the returned waveform is not a solution
-    ## of the circuit equations, which is exactly what 9(e) found happening
-    ## silently.
+    ## ACCEPTED anyway because `dt` was already at the floor.  The second is
+    ## the one to read: it counts places where the returned waveform is not a
+    ## solution of the circuit equations.
+    ## History: `doc/transient_history.md`, `TransientState.n_nonconverged`.
     n_nonconverged: Any = 0
     n_forced_nonconverged: Any = 0
 
-    ## F19(c) (doc/transient_review_260820.md): a step at the dt floor whose
-    ## Newton CONVERGED but whose LTE still failed used to be accepted with no
-    ## trace at all -- the CPU counts these as force_accepts and warns that
-    ## the accepted error is unbounded.  Counted here for the same reason.
+    ## F19(c) (doc/transient_review_260820.md): steps at the dt floor whose
+    ## Newton CONVERGED but whose LTE still failed, accepted anyway.  The CPU
+    ## counts these as force_accepts and warns that the accepted error is
+    ## unbounded; counted here for the same reason.
+    ## History: `doc/transient_history.md`, `TransientState.n_forced_lte`.
     n_forced_lte: Any = 0
 
     ## P18/P25 on this backend: time points the continuation chain was asked
@@ -128,32 +127,12 @@ class TransientState(NamedTuple):
 # Phase 1: Pure Functional Integrators
 # ---------------------------------------------------------------------------
 
-## STAGE 9(a) -- these three were transcriptions of `integrator.py`'s.  They now
-## call the one definition in `_lte_kernels`, which is plain arithmetic and so
-## traces under `jax.jit` unchanged.
-##
-## Euler and Gear-2 were already bit-for-bit the same expression, so those runs do
-## not move.
-##
-## THE TRAPEZOIDAL BRANCH WAS DELETED once (review hygiene): no production
-## path could reach it (at the time, `eval_method` was hardcoded 'gear' at
-## both call sites; P6 has since exposed the choice as the `integrator`
-## Parameter), and its LTE formula was the uniform-grid one -- wrong the
-## moment the step changed, had anyone ever wired it up.  Dead-but-plausible
-## solver branches are exactly how the 3/4-optimism defect survived twice.
-##
-## REBUILT 2026-09-01, and the deletion is why the rebuild is trustworthy:
-## restoring the branch meant restoring only the COMPANION (one shared kernel
-## call), while the estimator had to be written against the charge, not
-## transcribed from the g-based form the old branch used.  Had the branch
-## survived unreachable, the wrong formula would have come back with it.
-##
-## The record said for weeks that "a variable-step trap estimator has not
-## been written".  That was wrong: `trapezoidal_lte` and
-## `third_divided_difference` were already in `_lte_kernels`, already used by
-## the CPU, already plain arithmetic that traces.  What had not been written
-## was the WIRING -- a much smaller claim, and the difference between them is
-## about a day of work someone did not do.
+## STAGE 9(a) -- these three call the one definition in `_lte_kernels`, shared
+## with `integrator.py`, which is plain arithmetic and so traces under
+## `jax.jit` unchanged.  Each ESTIMATOR is written against its own method, not
+## transcribed: the trapezoidal one differences the charge (see
+## `ywr_error_ratio`).
+## History: `doc/transient_history.md`, `jaxtransient.py`.
 
 def backward_euler_step(q_curr, C_curr, q_prev, dt):
     return euler_companion(q_curr, C_curr, q_prev, dt)
@@ -172,19 +151,17 @@ def effective_first_order(state: TransientState):
     True while the run has fewer than two completed steps recorded
     (``h_history[0] == 0`` or ``h_history[1] == 0`` -- RUN-global facts, the
     buffers carry across chunk boundaries) and when the previous accepted
-    step landed on a breakpoint (``force_first_order``, F11).  ONE
-    definition, consumed by the integration dispatch, the LTE estimator, and
-    the step-size exponent alike -- F19's point
-    (doc/transient_review_260820.md): the integration used to fall back to
-    Euler dynamically while the estimator stayed statically Gear-2, so an
-    order-1 step was scored by the order-2 formula on a zero-seeded history
-    with the wrong exponent handed to the step controller.
+    step landed on a breakpoint (``force_first_order``, F11).  ONE definition,
+    consumed by the integration dispatch, the LTE estimator, and the step-size
+    exponent alike (F19, doc/transient_review_260820.md), so an order-1 step is
+    scored by the order-1 formula with the order-1 exponent.
 
     Deliberately NOT ``step_idx < 2``: step_idx is CHUNK-local and resets at
-    every chunk boundary, so the old predicate re-dropped the order (and,
-    once the estimator followed it, re-scored steps) at each boundary --
-    measured as chunking changing a 59-step run to 61 steps.  The history
-    buffers are the run-global truth.
+    every chunk boundary, so that predicate would re-drop the order (and
+    re-score steps) at each boundary and make the step count depend on the
+    chunking.  The history buffers are the run-global truth.
+
+    History: `doc/transient_history.md`, `jaxtransient.effective_first_order`.
     """
     no_history = jnp.logical_or(state.h_history[0] == 0.0,
                                 state.h_history[1] == 0.0)
@@ -216,9 +193,9 @@ def compute_integration(q_curr, C_curr, state: TransientState, method='gear',
 
     def do_trap():
         ## Trapezoidal needs the previous COMPANION CURRENT, which Euler and
-        ## Gear-2 do not -- `iq_history` has been maintained all along (rolled
-        ## on accept only, which is exactly the semantics the recursion
-        ## needs) and until now was read by nobody but the LTE estimator.
+        ## Gear-2 do not.  `iq_history` is rolled on accept only, which is
+        ## exactly the semantics the recursion needs.
+        ## History: `doc/transient_history.md`, `jaxtransient.compute_integration`.
         iq_prev = state.iq_history[0]
         fallback = (effective_first_order(state) if first_order is None
                     else first_order)
@@ -258,13 +235,13 @@ def extrapolate_predictor(state: TransientState):
 def _tline_emfs(t_target, params, history, head):
     """One line's reflected-wave EMFs (e1, e2) AND their time derivatives.
 
-    Extracted from newton_inner_loop's closures (TLine-under-coupled/PCNR
-    port): the delay-line history lives in TransientState and is updated by
-    the shared accept machinery, so the only thing that kept the other
-    assemblies TLine-blind was this code being trapped in one function.  The
-    derivatives are the linear interpolant's segment slope -- free from the
-    same lookup -- and are what Fang's ``p = df/dh`` needs from a source
-    whose value depends on the step size through ``t - TD``.
+    Shared by every assembly (standard, coupled and PCNR): the delay-line
+    history lives in TransientState and is updated by the shared accept
+    machinery.  The derivatives are the linear interpolant's segment slope --
+    free from the same lookup -- and are what Fang's ``p = df/dh`` needs from a
+    source whose value depends on the step size through ``t - TD``.
+
+    History: `doc/transient_history.md`, `jaxtransient._tline_emfs`.
     """
     def cond_fun(idx):
         curr_t = history[(head - idx) % TLINE_HISTORY_DEPTH, 0]
@@ -327,21 +304,20 @@ def _tline_emfs(t_target, params, history, head):
 def tline_stamp_correction(n, tlines_meta):
     """The constant (n, n) correction (transient stamp - DC stamp), per line.
 
-    THE STANDARD-PATH DEFECT THIS FIXES (found while porting TLine under the
-    coupled/PCNR paths, present since the JAX TLine landed): ``TLine.G``
-    selects its stamp on ``len(self.history) == 0`` -- Python state that only
-    the CPU's accept_step writes.  On this backend the traced ring buffer
-    replaced accept_step, the Python history stays empty forever, and every
-    assembly therefore stamped the DC form (the line as an ideal short:
-    v1 - v2 = 0, i1 + i2 = 0) while the injected EMFs assumed the transient
-    form (v - Z0*i = e).  Measured on a matched 1 V line: |v(far end)| =
-    24.5 V, delay 0 -- and NO e2e JAX TLine test existed to see it.
+    WHY IT IS NEEDED: ``TLine.G`` selects its stamp on
+    ``len(self.history) == 0`` -- Python state that only the CPU's accept_step
+    writes.  On this backend the traced ring buffer replaces accept_step and
+    the Python history stays empty forever, so every assembly would stamp the
+    DC form (the line as an ideal short: v1 - v2 = 0, i1 + i2 = 0) while the
+    injected EMFs assume the transient form (v - Z0*i = e).
 
     Both stamps are constants, so their difference is a constant matrix built
     once at trace time; adding it to the assembled J (and dG @ x to the
     residual) converts the DC-stamped rows to the transient form everywhere.
 
     ``tlines_meta`` is [(nodemap6, Z0), ...].
+
+    History: `doc/transient_history.md`, `jaxtransient.tline_stamp_correction`.
     """
     dG = np.zeros((n, n))
     for rows, Z0 in tlines_meta:
@@ -501,32 +477,16 @@ def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
         ## Failure bookkeeping, in three phases: escalate, then DESCEND,
         ## then refine.
         ##
-        ## ⚠ THE DESCENT PHASE WAS MISSING, AND `e_end` WAS THEREFORE A LIE.
-        ## With no rung yet landed the driver escalated toward `e_max` and,
-        ## once that was spent, refined just below `e_start` -- halving from
-        ## `step/2` and giving up at `min_step`.  So the exponents it could
-        ## ever try were
-        ##
-        ##     {e_start, e_start+step, ... e_max}  and
-        ##     {e_start-1, e_start-0.5, e_start-0.25}
-        ##
-        ## and NOTHING BELOW, however low `e_end` was set.  Measured on a
-        ## synthetic rung that converges only for g <= 10^k: the ladder
-        ## landed for k >= -1 and failed for every k <= -2, against an
-        ## `e_end` of -12 advertising a search down to 1e-12.
-        ##
-        ## That is why Psi-tc looked "DC-calibrated" in transient: its first
-        ## rung is at g = 1, and if that one does not converge the ladder
-        ## could not reach the g that would.  Re-scaling the exponents (the
-        ## recorded guess) would only have moved the same one-decade window
-        ## somewhere else -- measured, a half-decade shift rescued 4 of 4
-        ## test circuits while the shipped grid rescued 1 of 4, which looks
-        ## like scale sensitivity and is actually this.
-        ##
-        ## Descending keeps the step and walks `e_low` down to `e_end`, so
-        ## the whole declared range is searched before giving up.  It can
-        ## only make the driver reach further: the phase runs exactly where
-        ## the old code was already about to fail.
+        ## ⚠ THE DESCENT PHASE IS WHAT MAKES `e_end` TRUE.  With no rung yet
+        ## landed, escalation (toward `e_max`) and refinement (halving below
+        ## `e_start`, giving up at `min_step`) alone can only ever try
+        ## {e_start, e_start+step, ... e_max} and {e_start-1, e_start-0.5,
+        ## e_start-0.25} -- nothing below, however low `e_end` is set.
+        ## Descending keeps the step and walks `e_low` down to `e_end`, so the
+        ## whole declared range is searched before giving up.  It can only make
+        ## the driver reach further: the phase runs exactly where the driver
+        ## would otherwise fail.
+        ## History: `doc/transient_history.md`, `jaxtransient._adaptive_ladder_traced`.
         step_f = step / 2.0
         e_escalate = jnp.minimum(e + step, e_max)
         can_escalate = jnp.logical_and(jnp.logical_not(has_last),
@@ -715,22 +675,17 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
                                    state.tline_history, state.tline_head)
 
 
-    ## F6(b) (doc/transient_review_260820.md): THE CPU'S PER-ROW CRITERIA,
-    ## replacing `conv_tol = abstol + reltol * F_norm0` -- which was wrong
-    ## three ways at once.  Flavour: the scalar floor threaded here was
-    ## vabstol, a voltage, against a residual of KCL currents (F6(a) picked
-    ## the majority flavour; the per-row vectors finish the job -- iabstol on
-    ## node rows, vabstol on branch rows, and the transposed pair for the
-    ## update test).  Reference: relative to the INITIAL residual, so a bad
-    ## predictor loosened the target -- false convergence -- while a good
-    ## one collapsed it toward the absolute floor -- spurious
-    ## non-convergence.  Norm: a summed L1, so one badly-failed row diluted
-    ## with circuit size.  The body below mirrors StandardNewton: per-row
-    ## conv_f against reltol*I_scale + abstol, per-row conv_x against the
-    ## step actually taken, both computed on the consistent (F(x), dx) pair
-    ## -- which also retires stage 9(e)'s trailing re-evaluation, since the
-    ## converged flag now travels in state and refers to the pair that
-    ## produced the returned x, exactly as on the CPU.
+    ## F6(b) (doc/transient_review_260820.md): THE CPU'S PER-ROW CRITERIA.  The
+    ## body below mirrors StandardNewton: per-row conv_f against reltol*I_scale
+    ## + abstol (iabstol on node rows, vabstol on branch rows, and the
+    ## transposed pair for the update test), per-row conv_x against the step
+    ## actually taken, both computed on the consistent (F(x), dx) pair -- so
+    ## the converged flag travelling in state refers to the pair that produced
+    ## the returned x, exactly as on the CPU.  ⚠ Not a scalar floor, not a
+    ## target relative to the INITIAL residual, not a summed norm: respectively
+    ## a flavour mismatch, a predictor-dependent target, and a norm diluted by
+    ## circuit size.
+    ## History: `doc/transient_history.md`, `jaxtransient.newton_inner_loop`.
     def cond_fun(nr_state: NewtonState):
         return jnp.logical_and(jnp.logical_not(nr_state.converged),
                                nr_state.iters < maxiter)
@@ -766,28 +721,25 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
         xdiff = jnp.insert(xdiff_sub, irefnode, 0.0)
 
         ## F16 (doc/transient_review_260820.md): the update clamp is a
-        ## PARAMETER, default disabled (jnp.inf -> alpha 1.0).  The hardcoded
-        ## 0.5 V made any swing beyond ~maxiter*0.5 V non-convergent by
-        ## construction with a false "failed to converge" diagnosis -- a 48 V
-        ## rail was unreachable in 100 iterations -- and under the per-row
-        ## criteria (F6(b)) it even made a LINEAR 1 V step need multiple
-        ## clamped iterations.  A flat voltage clamp punishes the linear part
-        ## of the circuit for the nonlinear part's sins; per-junction
-        ## limiting (pnjlim's shape) is the eventual replacement if the JAX
-        ## element set grows junctions.
+        ## PARAMETER, default disabled (jnp.inf -> alpha 1.0).  A flat voltage
+        ## clamp makes any swing beyond ~maxiter*max_dv non-convergent by
+        ## construction, with a false "failed to converge" diagnosis, and
+        ## punishes the linear part of the circuit for the nonlinear part's
+        ## sins; per-junction limiting (pnjlim's shape) is the eventual
+        ## replacement if the JAX element set grows junctions.
+        ## History: `doc/transient_history.md`, `jaxtransient.newton_inner_loop`.
         max_diff = jnp.max(jnp.abs(xdiff))
         alpha = jnp.where(max_diff > max_dv, max_dv / max_diff, 1.0)
         step = alpha * xdiff
         x_next = x + step
 
         I_scale = jnp.abs(J) @ jnp.abs(x_next) + jnp.abs(F)
-        ## THE REDUCED ROWS, not all of them (P11's port found this): the
-        ## reference row is not an equation of the solved system -- its
-        ## residual is whatever KCL imbalance the source terms carry (an
-        ## unbalanced provided_function put the full injection there), and
-        ## scoring it can NEVER be satisfied by any x, which livelocked the
-        ## run at maxiter on every step, silently force-accepting at the dt
-        ## floor.  The CPU's Newton has always tested the reduced system.
+        ## THE REDUCED ROWS, not all of them: the reference row is not an
+        ## equation of the solved system -- its residual is whatever KCL
+        ## imbalance the source terms carry -- and scoring it can NEVER be
+        ## satisfied by any x, which livelocks the run at maxiter on every
+        ## step.  The CPU's Newton tests the reduced system too.
+        ## History: `doc/transient_history.md`, `jaxtransient.newton_inner_loop`.
         conv_f = jnp.all(jnp.delete(
             jnp.abs(F) < reltol * I_scale
             + jnp.broadcast_to(abstol, F.shape), irefnode))
@@ -937,23 +889,12 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
             return euler_lte(g_n, g_nm1), jnp.asarray(2.0)
 
         def _gear_branch(_):
-        ## STAGE 9, gate 9-1(a) -- THE 3/4 OPTIMISM, FOUND A THIRD TIME.
-        ##
-        ## This was YWR's Table I GEAR2 residual,
-        ##     -(1/8) ((h1+h2)/(h1 h2)) (h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2}),
-        ## which on a uniform grid reduces to -(1/4) h^2 q''' against a true BDF-2
-        ## local truncation error of -(1/3) h^2 q'''.  So it reported 3/4 of the
-        ## error at every step -- the solver was 25% optimistic about its own
-        ## accuracy, on the default eval_method of both entry points.
-        ##
-        ## The CPU found and fixed this in stage 4i and the fix never crossed to
-        ## this file, which is precisely the divergence stage 9 exists to close:
-        ## the same defect has now been found three times in two transcriptions.
-        ## Measured here at 2.5e5 against the CPU's 3.333e5 for q''' = 1e6.
-        ##
-        ## The form below is 4i's: estimate q''' from the second divided difference
-        ## of the companion current and multiply by the method's own error
-        ## constant, so the coefficient is derived rather than transcribed.
+        ## STAGE 9, gate 9-1(a) -- the CPU's form (stage 4i): q''' from the
+        ## second divided difference of the companion current, times the
+        ## method's own error constant, so the coefficient is derived rather
+        ## than transcribed.  ⚠ Not YWR's Table I GEAR2 residual, which reports
+        ## 3/4 of the BDF-2 truncation error at every step.
+        ## History: `doc/transient_history.md`, `jaxtransient.ywr_error_ratio`.
             h1, h2 = dt, dt_prev
             ## `second_divided_difference` returns q'''/2 and `gear2_lte`
             ## wants q'''/6, hence the /3.  Both live in `_lte_kernels` so the
@@ -965,9 +906,7 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
 
         Eg, order_p1 = jax.lax.cond(first, _euler_branch, _gear_branch, None)
     elif method in ('trap', 'trapezoidal'):
-        ## ⚠ THIS IS NOT THE GEAR-2 BRANCH WITH A DIFFERENT CONSTANT, and the
-        ## difference is the whole reason the old trapezoidal branch was
-        ## deleted rather than repaired.
+        ## ⚠ THIS IS NOT THE GEAR-2 BRANCH WITH A DIFFERENT CONSTANT.
         ##
         ## The Gear-2 branch above differences the COMPANION CURRENT `g`.
         ## Trapezoidal must not: its recursion
@@ -979,10 +918,7 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
         ## `third_divided_difference` returns q'''/6 and `trapezoidal_lte`
         ## consumes exactly that, so the pairing is stated once (the same
         ## discipline that kept the 3/4 optimism from recurring here).
-        ##
-        ## The deleted branch used YWR Table I's TRAP entry,
-        ## `Eg = -(1/6)(g_n - 2 g_{n-1} + g_{n-2})` -- a uniform-grid formula,
-        ## and `g`-based, so it was wrong twice over.
+        ## History: `doc/transient_history.md`, `jaxtransient.ywr_error_ratio`.
         if q_curr is None:
             raise ValueError(
                 'the trapezoidal LTE differences the charge, so q_curr is '
@@ -1025,12 +961,12 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
     lte = jnp.insert(lte_r, irefnode, 0.0)
 
     ## P7: the CPU's relref modes, selected by a trace-static string.  The
-    ## reference is a per-row VECTOR now; 'sigglobal' collapses each UNIT
-    ## GROUP (node voltages vs branch currents) to its own maximum -- the
-    ## old scalar max over everything mixed volts and amps, which the CPU
-    ## comment warns silently disables node error control on circuits with
-    ## large branch currents.  `local` includes the current iterate, exactly
-    ## as the CPU's `_reference` does.
+    ## reference is a per-row VECTOR; 'sigglobal' collapses each UNIT GROUP
+    ## (node voltages vs branch currents) to its own maximum -- a scalar max
+    ## over everything mixes volts and amps, which silently disables node error
+    ## control on circuits with large branch currents.  `local` includes the
+    ## current iterate, exactly as the CPU's `_reference` does.
+    ## History: `doc/transient_history.md`, `jaxtransient.ywr_error_ratio`.
     local = jnp.maximum(jnp.abs(x_curr), jnp.abs(state.x_history[0]))
     if relref == 'pointlocal':
         ref = local
@@ -1046,11 +982,12 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
                 ref = jnp.concatenate([
                     jnp.full(n_nodes, jnp.max(run[:n_nodes])),
                     jnp.full(n_all - n_nodes, jnp.max(run[n_nodes:]))])
-    ## `lte_abstol` is a per-row VECTOR (volts on node rows, amps on branch rows),
-    ## built by `JAXTransient._lte_abstol`.  A scalar here applies one physical
-    ## kind of tolerance to rows of another -- 0.3a's residual-vs-solution defect,
-    ## which 9(c) exists to avoid repeating.  A scalar still broadcasts, so a
-    ## direct caller that passes one gets the old behaviour rather than an error.
+    ## `lte_abstol` is a per-row VECTOR (volts on node rows, amps on branch
+    ## rows), built by `JAXTransient._lte_abstol`.  A scalar here applies one
+    ## physical kind of tolerance to rows of another (0.3a's
+    ## residual-vs-solution defect); it still broadcasts, so a direct caller
+    ## that passes one gets that behaviour rather than an error.
+    ## History: `doc/transient_history.md`, `jaxtransient.ywr_error_ratio`.
     etol = trtol * (lte_rel * ref + lte_abstol)
     return jnp.max(jnp.abs(lte) / etol), order_p1
 
@@ -1058,17 +995,11 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
 def collect_breakpoints(cir, tend, minbreak=1e-14):
     """Every source discontinuity in ``(0, tend]``, plus ``tend`` itself.
 
-    STAGE 9(d).  This replaces two copies that disagreed.  ``solve`` iterated
-    ``for elem in cir.elements`` -- a **dict**, so it yielded string keys and
-    ``hasattr('V1', 'next_event')`` was False, giving **0 breakpoints, always**.
-    ``solve_batched`` iterated ``.items()`` and was correct, and therefore hit the
-    second bug instead: ``Pulse.next_event`` returned ``t`` itself at ``t = 0``, so
-    the enumeration never advanced and the call **hung**.  Two bugs cancelling, one
-    per copy, which is the argument for having one copy.
+    STAGE 9(d): ONE copy, shared by ``solve`` and ``solve_batched``.  The
+    progress guard below is the difference between a wrong breakpoint list and
+    a wall-clock hang, and only one of those is diagnosable from a stack trace.
 
-    ``Pulse.next_event`` is fixed at the source, but the progress guard below stays:
-    it is the difference between a wrong breakpoint list and a wall-clock hang, and
-    only one of those is diagnosable from a stack trace.
+    History: `doc/transient_history.md`, `jaxtransient.collect_breakpoints`.
     """
     ## Bounded per element (review hygiene item, Phase 3): a periodic source
     ## enumerates 4*f*tend events -- a 1 GHz sine over 1 ms is 4 million list
@@ -1121,11 +1052,11 @@ def collect_breakpoints(cir, tend, minbreak=1e-14):
     ## re-emerges at the far end TD later -- a from-zero kink in an ALGEBRAIC
     ## variable that no element reports.  Registering {corner + TD, corner +
     ## 2*TD} makes those steps breakpoint-landings, which the coupled path's
-    ## post-breakpoint grace (see fang_inner_loop) can then absorb -- the two
-    ## mechanisms only work TOGETHER: arrivals-as-breakpoints alone was tried
-    ## first and falsified, because a registered kink without the grace still
-    ## livelocks on the h-independent relative LTE.  Deeper bounce ancestry
-    ## is truncated, as every SPICE truncates it.
+    ## post-breakpoint grace (see fang_inner_loop) can then absorb.  ⚠ The two
+    ## mechanisms only work TOGETHER: a registered kink without the grace still
+    ## livelocks on the h-independent relative LTE.  Deeper bounce ancestry is
+    ## truncated, as every SPICE truncates it.
+    ## History: `doc/transient_history.md`, `jaxtransient.collect_breakpoints`.
     tline_tds = sorted({float(elem.iparv.TD)
                         for _n, elem in cir.elements.items()
                         if type(elem).__name__ == 'TLine'})
@@ -1160,10 +1091,10 @@ def collect_breakpoints(cir, tend, minbreak=1e-14):
 ## ⚠ PER UNIT ORDER -- `k_I/p` and `k_P/p`, not the bare numerators.  Used
 ## undivided the loop is linearly UNSTABLE (spectral radius 1.12 at p=2, 1.78
 ## at p=3), and it does not look like divergence: the growth clamp converts the
-## growing oscillation into a permanent period-2 limit cycle, measured on the
-## CPU as h alternating 0.857/0.429 for the length of the run.  The only test
-## there asserted `len(steps) > 10`, so it was invisible.  A test pins these
-## against the CPU object so the two definitions cannot drift.
+## growing oscillation into a permanent period-2 limit cycle (h alternating
+## 0.857/0.429 for the length of the run).  A test pins these against the CPU
+## object so the two definitions cannot drift.
+## History: `doc/transient_history.md`, `jaxtransient.PI_K_I`.
 PI_K_I, PI_K_P = 0.3, 0.4
 
 
@@ -1187,16 +1118,16 @@ def _pi_factor(err, last_err, order_p1):
 
 
 def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0, eta=jnp.inf, controller='integral', last_err=0.0):
-    ## THE CPU'S LAW, F17 (doc/transient_review_260820.md): aim at
-    ## target = safety**p, not at err = 1.0 -- the rejection threshold
-    ## itself.  Aiming at the edge meant every successor step that landed a
-    ## hair over 1.0 was a rejected re-solve; measured on rc-vsin at
-    ## reltol 1e-4/1e-6 as a 44%/40% rejection rate, cut to a few percent by
-    ## the safety margin.  `(0.9**p / err)**(1/p) = 0.9 * err**(-1/p)` --
-    ## identical arithmetic to a bare safety multiplier, written in the CPU's
-    ## vocabulary (stepcontroller._band_target) so the backends read as one
-    ## law.  The clamps are the CPU's named constants rather than re-derived
-    ## literals: the shrink floor was 0.1 here against MIN_SHRINK_RATIO=0.2.
+    ## THE CPU'S LAW, F17 (doc/transient_review_260820.md): aim at target =
+    ## safety**p, not at err = 1.0 -- the rejection threshold itself.  Aiming
+    ## at the edge makes every successor step that lands a hair over 1.0 a
+    ## rejected re-solve (measured on rc-vsin at reltol 1e-4/1e-6: a 44%/40%
+    ## rejection rate, a few percent with the margin).
+    ## `(0.9**p / err)**(1/p) = 0.9 * err**(-1/p)` -- identical arithmetic to a
+    ## bare safety multiplier, written in the CPU's vocabulary
+    ## (stepcontroller._band_target) so the backends read as one law.  The
+    ## clamps are the CPU's named constants rather than re-derived literals.
+    ## History: `doc/transient_history.md`, `jaxtransient.calculate_next_dt`.
     from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
                                                   MAX_GROWTH_RATIO)
     safety = 0.9
@@ -1237,20 +1168,12 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
 ## way doc/backend_parity_260821.md P19 records: sec. 3.4's error-ratio step
 ## correction with the eq (18) solution update, hold_h for imposed step sizes,
 ## the within-point excursion clamps and the thwarted-shrink saturation test.
-## (The 'bordered' eq (12) branch was never ported, and was retired on the
-## CPU on 2026-09-27.)  The LTE degree follows the effective order (F19): both degrees are
-## computed and selected, which keeps every shape static under the trace.
+## The LTE degree follows the effective order (F19): both degrees are computed
+## and selected, which keeps every shape static under the trace.
 ##
-## ⚠ CORRECTED 2026-09-01.  This list used to name three more items, and all
-## three had since been done -- PCNR-inside-Fang (it is right below, keyed on
-## `pcnr_meta`), grid_locked "no fixed_timestep on this backend yet"
-## (`fixed_timestep` is a Parameter and gives bit-equal fixed-grid waveforms;
-## only the COMBINATION with coupled_lte is refused, in `solve`), and cir.limit
-## "PCNR's job, next stage" (PCNR shipped, both views).  A scope note written
-## beside the code it scopes is read as current, so it outranks the docstring
-## in a reader's mind while being the thing nobody updates.  **When this and
-## the JAXTransient class docstring disagree, the docstring is the ledger and
-## wins.**  What is genuinely still CPU-only lives there.
+## What is genuinely still CPU-only is listed in the JAXTransient class
+## docstring, which is the ledger.
+## History: `doc/transient_history.md`, `jaxtransient.py`.
 ## ---------------------------------------------------------------------------
 
 class FangState(NamedTuple):
@@ -1302,21 +1225,21 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
     first_order = effective_first_order(state)
     ## The band cannot be evaluated before two accepted points exist.  The
     ## post-breakpoint grace on delay-line circuits arrives through this same
-    ## test: the accept path EMPTIES h_history on a breakpoint landing when
-    ## the circuit has TLines (see do_accept), so the next step reads as
-    ## history-free here.  An explicit `or force_first_order` term was tried
-    ## and reverted -- it duplicated the reset's effect on TLine circuits and
-    ## extended a band-blind step to every breakpoint on circuits that never
-    ## needed it, the exact accuracy cost the CPU measured at 9.8e-4 ->
-    ## 5.4e-3 median on the pulsed RC when its reset ran ungated.
+    ## test: the accept path EMPTIES h_history on a breakpoint landing when the
+    ## circuit has TLines (see do_accept), so the next step reads as
+    ## history-free here.  ⚠ Not `or force_first_order`: that duplicates the
+    ## reset's effect on TLine circuits and extends a band-blind step to every
+    ## breakpoint on circuits that never need it -- the accuracy cost the CPU
+    ## measured at 9.8e-4 -> 5.4e-3 median on the pulsed RC when its reset ran
+    ## ungated.
+    ## History: `doc/transient_history.md`, `jaxtransient.fang_inner_loop`.
     no_hist = state.h_history[0] == 0.0
 
-    ## PCNR comes in two views and fang now takes both.  The PAIR view
+    ## PCNR comes in two views and fang takes both.  The PAIR view
     ## (`pcnr_junctions`) lists pn-junction probes; the DEVICE view (sec. 49)
     ## lets a device own `m` unknowns of mixed kind, which is what every real
-    ## compact model needs.  Until 2026-09-01 only the pair view was wired
-    ## here and the device view reached this function as the literal string
-    ## 'vector' used as an array index.
+    ## compact model needs.
+    ## History: `doc/transient_history.md`, `jaxtransient.fang_inner_loop`.
     _vector = pcnr_meta is not None and pcnr_meta[0] == 'vector'
     _devs = pcnr_meta[1] if _vector else None
     _epar = pcnr_meta[2] if _vector else None
@@ -1531,14 +1454,11 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             q1 = circuit.q(x1, params_tree=params_tree)
             q_prev = state.q_history[0]
             q_prev2 = state.q_history[1]
-            ## THE dh-DERIVATIVE MUST DESCRIBE THE METHOD THE RESIDUAL USED.
-            ## This used to be euler-or-gear2 unconditionally, while the
-            ## residual above is assembled with `method=eval_method` -- so
-            ## `integrator='euler'` with `coupled_lte=True` integrated with
-            ## Euler and then, on every non-first-order step, differentiated a
-            ## GEAR-2 companion with respect to h.  Fang's step-size Newton was
-            ## solving a slightly wrong equation; it still converged on x, which
-            ## is why nothing ever failed and the mismatch survived.
+            ## THE dh-DERIVATIVE MUST DESCRIBE THE METHOD THE RESIDUAL USED
+            ## (`method=eval_method` above).  A mismatch fails silently: Fang's
+            ## step-size Newton then solves a slightly wrong equation and still
+            ## converges on x.
+            ## History: `doc/transient_history.md`, `jaxtransient.fang_inner_loop`.
             p_e = euler_companion_dh(q1, q_prev, h)
             if eval_method == 'euler':
                 ## Euler all the way down: the first-order form IS the method,
@@ -1561,11 +1481,12 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             except NotImplementedError:
                 t_c = t_prev + h
                 ## eps scales with the STEP, not with absolute time: an
-                ## absolute-scaled eps (1e-9 at t << 1) straddled the first
+                ## absolute-scaled eps (1e-9 at t << 1) straddles the first
                 ## pulse edge from inside the opening ramp, so the derivative
-                ## saw the future corner and eq (18) corrupted the solve --
-                ## measured as the coupled path dying at t ~ 1e-12 on any
-                ## driven TLine circuit.
+                ## sees the future corner and eq (18) corrupts the solve -- the
+                ## coupled path then dies at t ~ 1e-12 on any driven TLine
+                ## circuit.
+                ## History: `doc/transient_history.md`, `jaxtransient.fang_inner_loop`.
                 eps = 1e-3 * h
                 u_hi = circuit.u(t_c + eps, analysis=analysis,
                                  params_tree=params_tree)
@@ -1661,9 +1582,8 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
 ## gate leak.  Vector PCNR's unit is the DEVICE: one unknown per limited
 ## quantity, `m` of them, of mixed kind.  Measured on a MosLevel1Hdl,
 ## `pcnr_devices` reports 1 device with m=3 where `pcnr_junction_pairs`
-## reports 2 pairs -- different objects, different laws -- which is the
-## distinction Stage 2 turned on when `pcnr=True` on a MOSFET differential
-## pair fell through to the ordinary solver in silence.
+## reports 2 pairs -- different objects, different laws.
+## History: `doc/transient_history.md`, `jaxtransient.py`.
 ## ---------------------------------------------------------------------------
 
 
@@ -2013,16 +1933,14 @@ def _junction_arrays(circuit):
     supply one, in which case the caller falls back to rebuilding the
     textbook diode from ``IS`` and refuses anything that is not one.
 
-    The traced loop used to rebuild EVERY junction itself as
-    ``IS*(exp(v/VT)-1)`` with a single global VT, reading ``IS`` by name.
-    That silently gave a device whose saturation current is not called
-    ``IS`` a junction carrying no current, and it made multi-junction and
-    charge-storing participants impossible here while the CPU path
-    accepted them.  Asking the device instead removes all three limits at
-    once: any shape, any number of junctions, and charge simply stays in
-    the MNA block exactly as it does on the CPU (this assembly subtracts
-    the junction term at the node voltage and adds it at ``v_lim``; it
-    never touched the charge).
+    Asking the device -- rather than rebuilding every junction as
+    ``IS*(exp(v/VT)-1)`` with a single global VT and ``IS`` read by name -- is
+    what allows any shape and any number of junctions per device, and lets
+    charge simply stay in the MNA block exactly as it does on the CPU (this
+    assembly subtracts the junction term at the node voltage and adds it at
+    ``v_lim``; it never touches the charge).
+
+    History: `doc/transient_history.md`, `jaxtransient._junction_arrays`.
     """
     from pycircuit.circuit.pcnr import pcnr_junctions
     from pycircuit.circuit.circuit import defaultepar as _dp
@@ -2283,29 +2201,25 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
 
 def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None, rescue_meta=None, controller='integral'):
 
-    ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
-    ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
-    ## ~1e-18 short of `tend`, which the breakpoint filter treats as arrived (so it
-    ## drops the clamp) while `t < tend` treats as not arrived (so it takes another
-    ## FULL step).  That is the residual overshoot -- exactly one timestep, measured
-    ## at t[-1] = 5.010e-3 for a requested 5e-3.
+    ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is
+    ## "already reached".  ⚠ The two tests must agree: after many steps the
+    ## accumulated `t` sits ~1e-18 short of `tend`, and a breakpoint filter
+    ## that treats it as arrived while `t < tend` does not takes one extra FULL
+    ## step past `tend`.
+    ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
     t_eps = 1e-12 * max(abs(float(tend)), 1.0)
 
     def time_cond(state: TransientState):
         under_time = state.t < tend - t_eps
         under_chunk = state.step_idx < chunk_size
         ## A forced NON-converged accept is already an unconditional raise
-        ## after the chunk (stage 9(e)) -- no run continues past one -- so
-        ## the chunk exits the moment it happens instead of marching to
-        ## chunk_size at the dt floor first.  P22's mask port measured why
-        ## this matters: with the algebraic rows masked, a cold-start
-        ## circuit whose Newton fails at every h reached the floor honestly
-        ## and then ground out 500 forced steps at ~1 s each on GPU (the
-        ## coupled point is ~100 serial kernel launches per attempt) before
-        ## the raise -- an effective hang.  Pre-mask, the algebraic-row
-        ## error was ACCIDENTALLY load-bearing as a step governor that
-        ## rescued the Newton; the mask removed the accident, this exit
-        ## replaces it with the deliberate escape.
+        ## after the chunk (stage 9(e)) -- no run continues past one -- so the
+        ## chunk exits the moment it happens instead of marching to chunk_size
+        ## at the dt floor first.  That march is an effective hang: with the
+        ## algebraic rows masked (P22), a cold-start circuit whose Newton fails
+        ## at every h reaches the floor honestly, and each forced coupled step
+        ## costs ~1 s on GPU (~100 serial kernel launches per attempt).
+        ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
         alive = state.n_forced_nonconverged == 0
         return jnp.logical_and(jnp.logical_and(under_time, under_chunk),
                                alive)
@@ -2504,16 +2418,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                           method=eval_method,
                                           first_order=first_order)
 
-        ## STAGE 9(f) -- ONE ESTIMATOR.  There used to be a charge-domain branch
-        ## here, selected by `lte_formula='classic'`.  It was deleted rather than
-        ## repaired: its tolerance applied `lte_abs = 1e-6`, a VOLTAGE floor, to a
-        ## CHARGE -- one microcoulomb, against node charges of pico- to
-        ## femtocoulombs -- so the normalized error could not reach 1 and no step
-        ## was ever rejected.  The controller ran open-loop.  Under `solve()` that
-        ## degenerates to a fixed-step run (`dt_max = timestep`), which is why it
-        ## looked plausible; under `solve_batched` (`dt_max = tend/10`) it also
-        ## costs accuracy.  0.2b measured the `J^-1` mapping this branch avoided at
-        ## 1-3% of a step, well under its own 10% keep-it threshold.
+        ## STAGE 9(f) -- ONE ESTIMATOR: `ywr_error_ratio`, which maps its
+        ## residual into the solution domain through the `J` built below and
+        ## applies the per-row tolerances there.  There is no charge-domain
+        ## alternative: a charge compared against a voltage floor can never
+        ## reach an error of 1, and the controller then runs open-loop.
+        ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
         if pcnr_meta is not None and not coupled:
             if pcnr_meta[0] == 'vector':
                 J = pcnr_vector_controller_jacobian(
@@ -2640,41 +2550,41 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 jnp.logical_not(too_accurate)),
             at_floor)
         forced = jnp.logical_and(at_floor, jnp.logical_not(nr_state.converged))
-        ## F19(c): converged Newton, failing LTE, at the floor -- accepted
-        ## with an unbounded truncation error, which the CPU force-accept
-        ## warns about and this path used to swallow silently.
+        ## F19(c): converged Newton, failing LTE, at the floor -- accepted with
+        ## an unbounded truncation error, and counted so the run warns as the
+        ## CPU's force-accept does.
+        ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
         forced_lte = jnp.logical_and(
             at_floor, jnp.logical_and(nr_state.converged,
                                       jnp.logical_not(lte_ok)))
 
         def do_accept(_):
-            ## `state.t + state.dt`, NOT `state.t`.  This step has been accepted, so
-            ## the next one starts where this one ENDS; passing the old time sized the
-            ## next step to reach the breakpoint from the PREVIOUS position and so
-            ## overshot it by about one step.  Measured before the fix: t[-1] of
-            ## 5.0559e-3 against a requested tend of 5e-3, where `Transient` lands on
-            ## it exactly.  `tend` is itself in `t_breaks_array`, which is why the
-            ## overshoot showed up at the end of every run.
+            ## `state.t + state.dt`, NOT `state.t`.  This step has been
+            ## accepted, so the next one starts where this one ENDS; sizing the
+            ## next step from the PREVIOUS position overshoots the next
+            ## breakpoint by about one step -- and `tend` is itself in
+            ## `t_breaks_array`, so every run would end past it.
+            ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
             if coupled and fixed_timestep:
                 ## Under a locked grid fang solved no h -- the step was held --
                 ## so there is no "solved step carries forward" to honour and
                 ## the grid branch below is the right one.  Ordering matters:
-                ## `coupled` used to win unconditionally, which would have
-                ## carried the HELD step forward as if it had been solved and
-                ## quietly re-derived the grid from itself.
+                ## were `coupled` to win here, it would carry the HELD step
+                ## forward as if it had been solved and quietly re-derive the
+                ## grid from itself.
+                ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                 next_dt = jnp.maximum(
                     jnp.minimum(grid_dt, tend - (state.t + state.dt)), dt_min)
             elif coupled:
                 ## The SOLVED step carries forward; breakpoint truncation for
                 ## the NEXT point happens at the next fang entry.  Solved is
-                ## the operative word (P22's mask port measured the hole): a
-                ## NON-converged fang's h is not a solved h -- with the band
-                ## below tolerance it GROWS within the point, so a forced
-                ## floor-accept came back at ~2x dt_min, the at_floor escape
-                ## went un-sticky, and the run crawled at ~100 fang
-                ## iterations per 1e-18 s -- an effective hang where the
-                ## unmasked path reached its post-chunk non-convergence
-                ## raise in seconds.  A forced accept keeps the floor.
+                ## the operative word: a NON-converged fang's h is not a solved
+                ## h -- with the band below tolerance it GROWS within the
+                ## point, so a forced floor-accept would come back at ~2x
+                ## dt_min, the at_floor escape would go un-sticky, and the run
+                ## would crawl at ~100 fang iterations per 1e-18 s, an
+                ## effective hang.  A forced accept keeps the floor.
+                ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                 next_dt = jnp.where(nr_state.converged,
                                     jnp.clip(state.dt, dt_min, dt_max),
                                     jnp.asarray(dt_min))
@@ -2717,33 +2627,23 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 q_hist_base = state.q_history.at[:, p_rows].add(-_d)
 
                 ## ARC 7 (idtmod.md sec. 5.3): the in-trace wrap-crossing dt
-                ## cap, which that section listed as future work because
-                ## `t_breaks_array` is static and a state-dependent event
-                ## cannot enter it.  It enters HERE instead: not as a
+                ## cap.  `t_breaks_array` is static and a state-dependent event
+                ## cannot enter it, so it enters HERE instead: not as a
                 ## breakpoint, but as a cap on the next step, computed from
                 ## state the trace already holds.  Branchless -- no host
                 ## control flow, so it compiles inside `lax.while_loop`.
                 ##
-                ## ⚠ WHAT THIS DOES AND DOES NOT BUY, measured before it was
-                ## built.  A wrap is a discontinuity in the OUTPUT MAP, not in
-                ## the ODE: the gauge shift above keeps the state continuous
-                ## and the sawtooth is an exact `floored_wrap` of it, so there
-                ## is no kink for the integrator to resolve.  Accordingly it
-                ## buys NOTHING in accuracy or cost -- against a tight
-                ## reference on a varying integrand, JAX and the CPU agreed to
-                ## within 1-5% of each other's error (6.171e-03 vs 6.112e-03 at
-                ## reltol 1e-4; 2.925e-04 vs 2.775e-04 at 1e-6) at the same
-                ## step counts, and sec. 5.3's predicted step-collapse at wraps
-                ## DID NOT REPRODUCE (70 points against the CPU's 74, no
-                ## rejection storm).
-                ##
-                ## What it buys is SAMPLE PLACEMENT.  Measured on the exact
-                ## ramp, distance from the true corners: CPU (which has
-                ## breakpoints) 3.55e-15, JAX 3.29e-02 -- up to three output
-                ## timesteps past the corner.  That matters to a consumer that
-                ## RESAMPLES or edge-detects the output, because interpolating
-                ## a sawtooth across an unmarked corner returns values the
-                ## signal never takes (sec. 3.4's consumer discontinuity).
+                ## ⚠ WHAT THIS BUYS IS SAMPLE PLACEMENT, NOT ACCURACY OR COST.
+                ## A wrap is a discontinuity in the OUTPUT MAP, not in the ODE:
+                ## the gauge shift above keeps the state continuous and the
+                ## sawtooth is an exact `floored_wrap` of it, so there is no
+                ## kink for the integrator to resolve.  Without the cap the
+                ## samples land up to three output timesteps past a corner, and
+                ## a consumer that RESAMPLES or edge-detects the output
+                ## interpolates a sawtooth across an unmarked corner, returning
+                ## values the signal never takes (sec. 3.4's consumer
+                ## discontinuity).
+                ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                 ##
                 ## THE PREDICTION is linear, from the step just accepted --
                 ## the CPU's own rule in sec. 5.3 ("the linearly predicted
@@ -2769,20 +2669,16 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                     ## turning an accuracy-neutral change into a cost one.
                     ##
                     ## ⚠ DEFENSIVE AND UNEXERCISED, and said plainly rather
-                    ## than left to look tested.  The case needs a DESCENDING
-                    ## state landing exactly on `offs`: ascending, a landing
-                    ## on the top is shifted to `offs` and the next boundary
-                    ## going up is a full modulus away, so no zero arises.
-                    ## Descending was built and driven (v = -1 into modulus 1,
-                    ## three wraps) and the branch still never fires, because
-                    ## the cap lands just SHORT of the boundary in floating
-                    ## point -- the gauge shift has then already wrapped the
-                    ## state to the top and the distance is again a modulus.
-                    ## Removing this branch changed that run not at all
-                    ## (64 points, corners at 8e-15, both ways).  It is kept
-                    ## because "unreachable in the arithmetic I could
-                    ## construct" is not "unreachable", and the failure it
-                    ## prevents is a step collapse at every wrap.
+                    ## than left to look tested: no constructed run reaches it
+                    ## (ascending, a landing on the top is shifted to `offs`
+                    ## and the next boundary going up is a full modulus away;
+                    ## descending, the cap lands just SHORT of the boundary in
+                    ## floating point, so the gauge shift has already wrapped
+                    ## the state to the top).  It is kept because "unreachable
+                    ## in the arithmetic I could construct" is not
+                    ## "unreachable", and the failure it prevents is a step
+                    ## collapse at every wrap.
+                    ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                     _eps = 1e-12 * p_mods
                     _dist = jnp.where(jnp.abs(_dist) < _eps,
                                       jnp.where(_rate > 0.0, p_mods, -p_mods),
@@ -2871,10 +2767,9 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                 jnp.abs(x_hist_base[0]))),
                 ## CARRIED, not defaulted.  `do_accept` builds a fresh
                 ## TransientState rather than `_replace`-ing, so every field it
-                ## omits silently reverts to the NamedTuple default -- and these are
-                ## cumulative counters.  Omitting them reset the rejection count to
-                ## zero on each accepted step, which made "16 configurations, zero
-                ## rejections" a measurement of the bug rather than of the solver.
+                ## omits silently reverts to the NamedTuple default -- and
+                ## these are cumulative counters.
+                ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                 n_rejected=state.n_rejected,
                 n_nonconverged=state.n_nonconverged,
                 n_forced_nonconverged=state.n_forced_nonconverged
@@ -2884,16 +2779,15 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 n_rescued=state.n_rescued + jnp.where(rescued, 1, 0),
                 ## The PI term differences consecutive ACCEPTED errors.
                 last_err=error_ratio,
-                ## F11: the CPU's breakpoint discipline, ported.  A step that
-                ## LANDS on a breakpoint (calculate_next_dt truncates onto
-                ## them, so landing is exact to t_eps) marks the NEXT step
-                ## "do not trust a 2nd-order polynomial through this point":
+                ## F11: the CPU's breakpoint discipline.  A step that LANDS on
+                ## a breakpoint (calculate_next_dt truncates onto them, so
+                ## landing is exact to t_eps) marks the NEXT step "do not trust
+                ## a 2nd-order polynomial through this point":
                 ## effective_first_order then drops both the integration and
                 ## the error estimate to order 1 for exactly one step, instead
-                ## of differencing a g-history that straddles the corner --
-                ## which cost a rejection burst at every edge (measured on a
-                ## VPulse RC before this line: 38 rejections in 183 accepted
-                ## steps, edge-synchronous).
+                ## of differencing a g-history that straddles the corner, which
+                ## costs an edge-synchronous rejection burst.
+                ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                 force_first_order=(jnp.any(jnp.logical_and(
                     t_breaks_array > state.t + t_eps,
                     t_breaks_array <= state.t + state.dt + t_eps))
@@ -2917,16 +2811,16 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             retry_dt = jnp.maximum(state.dt * shrink, dt_min)
             if coupled:
                 ## The CPU coupled path's outer retry: h *= 0.25 whatever the
-                ## failure flavour (Newton or held-step LTE) -- applied to
-                ## the ENTRY h, not to fang's returned h.  fang GROWS h
-                ## within the point when the (masked) band reads the error
-                ## as tiny, by up to MAX_GROWTH=5x; shrinking the grown h by
-                ## 4x nets a 1.25x GROWTH per reject cycle, so a cold-start
-                ## circuit whose Newton fails at every h never reached the
-                ## dt floor where the forced-accept escape lives -- an
-                ## in-trace livelock the CPU cannot express (its retry loop
-                ## is Python-bounded at 10 attempts).  Measured behind
-                ## P22's mask port; the mask only made it reachable.
+                ## failure flavour (Newton or held-step LTE) -- applied to the
+                ## ENTRY h, not to fang's returned h.  fang GROWS h within the
+                ## point when the (masked) band reads the error as tiny, by up
+                ## to MAX_GROWTH=5x; shrinking the grown h by 4x nets a 1.25x
+                ## GROWTH per reject cycle, so a cold-start circuit whose
+                ## Newton fails at every h would never reach the dt floor where
+                ## the forced-accept escape lives -- an in-trace livelock the
+                ## CPU cannot express (its retry loop is Python-bounded at 10
+                ## attempts).
+                ## History: `doc/transient_history.md`, `jaxtransient.outer_time_loop`.
                 retry_dt = jnp.maximum(
                     jnp.minimum(state.dt, h_entry) * 0.25, dt_min)
             ## P8: a too-accurate rejection retries LARGER (the CPU's eq (15)
@@ -2959,8 +2853,9 @@ class JAXTransientStatistics(object):
     `rejected_steps` is the load-bearing one: a rejected step advances neither `t`
     nor `step_idx`, so it leaves no trace in the output buffers, and without this
     counter the CPU gate "a step is actually rejected" could not be stated on this
-    backend at all.  That is the asymmetry stage 9 exists to remove -- it is why a
-    copied LTE defect had to be found and fixed twice.
+    backend at all.
+
+    History: `doc/transient_history.md`, `JAXTransientStatistics`.
     """
 
     __slots__ = ('accepted_steps', 'rejected_steps', 'signal_max',
@@ -3028,58 +2923,31 @@ class JAXTransient(Analysis):
       lane with its own adaptive (or coupled (x, h)) step sequence.  The
       CPU deliberately has no imitation of it.
 
-    * **CPU-only**: ⚠ EVERY STAGE AND MULTIVALUE METHOD (corrected
-      2026-09-16; the line below had said "nothing" since 2026-09-01 and was
-      read as such by the roadmap).  This backend takes 'gear', 'euler' and
-      'trap' -- the three LMM companions -- and refuses anything else in
-      three places; `radau`, `trbdf2`, `esdirk43` and the GLM family appear
-      nowhere in this file.  So a per-stage Newton has never run here, and
-      putting one of them on this backend is a NEW capability rather than a
-      port of a missing case.  (The coupled 'bordered' eq (12) branch, once
-      refused here, was retired on the CPU on 2026-09-27: after its
-      double-counted term was removed it took the same steps as 'approx'.)
-      Its whole purpose is to trade a few more time points for fewer Newton
-      iterations; under Gear-2 it loses on both.  Porting it would import a
-      defect and call it parity.  See the P19 note for what would reopen it.
-
-      Two items left this list on 2026-09-01.  *Trapezoidal* is now
-      `integrator='trap'` -- the record had said a variable-step estimator
-      "has not been written" when the kernels existed and only the wiring
-      did not; the part that genuinely had to be written is that the
-      estimator differences the CHARGE, since differencing the companion
-      current measures the trap recursion's undamped (-1)^n mode.  *coupled
-      + fixed_timestep* now works: `grid_locked` reduced to one flag, since
-      an over-band HELD step is normally reported unconverged so the caller
-      shrinks, and under a caller-imposed grid shrinking is not available.
+    * **CPU-only**: ⚠ EVERY STAGE AND MULTIVALUE METHOD.  This backend takes
+      'gear', 'euler' and 'trap' -- the three LMM companions -- and refuses
+      anything else in three places; `radau`, `trbdf2`, `esdirk43` and the
+      GLM family appear nowhere in this file.  So a per-stage Newton has
+      never run here, and putting one of them on this backend is a NEW
+      capability rather than a port of a missing case.
 
     * **A P9 asymmetry, deliberate**: under `fixed_timestep` this backend
       bypasses the `max_dv`/`max_di` excursion check; the CPU's coupled loop
       does not, and will shrink and reject on it -- breaking the grid it was
       told to keep.  The grid wins here, on P9's own principle.  The CPU side
       is the one that should change.
+
+    History: `doc/transient_history.md`, `JAXTransient`.
     """
 
-    ## STAGE 9(b)/(c) -- TOLERANCES ARE SETTABLE, AND THEY ARE THE CPU'S.
-    ##
-    ## This class declared no tolerances at all, so `JAXTransient(cir, reltol=1e-6)`
-    ## raised `KeyError: 'parameter reltol not in parameter dictionary'` and there
-    ## was no supported way to ask for a tighter run.  The values were hard-coded
-    ## at the kernel's own defaults (`reltol=1e-3, abstol=1e-6` for Newton;
-    ## `trtol=7.0, lte_rel=1e-3, lte_abs=1e-6` for the LTE, never threaded from
-    ## the caller at all).  Two of those disagreed with `Transient`'s shipped
-    ## defaults, so the two backends were solving to different accuracies while
-    ## presenting as the same analysis.
-    ##
-    ## THE NAMES AND FLAVOURS ARE `Transient`'s DELIBERATELY.  0.3a's residual-vs-
-    ## solution defect on the CPU came from applying one scalar absolute tolerance
-    ## to rows of different physical kinds; the plan's 9(c) warns in as many words
-    ## that threading a scalar here would re-create it.  So the absolute
-    ## tolerances are VECTORS built the same way `Transient` builds them --
-    ## `lte_vabstol` on node rows, `lte_iabstol` on branch rows, because the LTE
-    ## lives in the SOLUTION domain where nodes carry volts and branches carry
-    ## amps.  `relref` is not offered yet: the CPU's `sigglobal` needs a reduction
-    ## over the whole vector inside the traced loop, and that is 9(c)'s remaining
-    ## work rather than something to fake with a scalar.
+    ## STAGE 9(b)/(c) -- TOLERANCES ARE SETTABLE, AND THEY ARE THE CPU'S: the
+    ## names and flavours are `Transient`'s, deliberately, so the two backends
+    ## solve to the same accuracy while presenting as the same analysis.  The
+    ## absolute tolerances are VECTORS built the same way `Transient` builds
+    ## them -- `lte_vabstol` on node rows, `lte_iabstol` on branch rows,
+    ## because the LTE lives in the SOLUTION domain where nodes carry volts and
+    ## branches carry amps.  One scalar absolute tolerance applied to rows of
+    ## different physical kinds is 0.3a's residual-vs-solution defect.
+    ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
     parameters = Analysis.parameters + [
         Parameter(name='reltol', desc='Relative tolerance', unit='',
                   default=1e-4),
@@ -3121,8 +2989,9 @@ class JAXTransient(Analysis):
                   unit='', default=False),
         ## The LTE acceptance band, with the CPU's 'auto' sentinel semantics
         ## (F5): 'auto' resolves to Fang's (0.7, 3.0, 0.15) on the coupled
-        ## path; explicit values pass through verbatim.  The standard JAX
-        ## path does not read the band yet (parity item P8).
+        ## path; explicit values pass through verbatim.  On the standard path
+        ## 'auto' means (0.0, 1.0, None) -- P8, see `_standard_band`.
+        ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
         ## The CPU's StepController strategy, as a trace-time STRING rather
         ## than an injected object.  P17 refuses `nrsolver`/`scaler`/
         ## `linearsolver` because a traced while_loop cannot dispatch into
@@ -3156,21 +3025,14 @@ class JAXTransient(Analysis):
                   desc="Relative per-iteration step-change limit, eq (16); "
                        "'auto' means 0.15 (Fang).",
                   unit='', default='auto'),
-        ## F16: opt-in, OFF by default -- the old hardcoded 0.5 V made any
-        ## swing beyond ~maxiter*0.5 V non-convergent by construction.
+        ## F16: opt-in, OFF by default -- a flat clamp makes any swing beyond
+        ## ~maxiter*max_dv non-convergent by construction.
+        ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
         Parameter(name='max_dv',
                   desc='Largest Newton update per iteration, as a voltage; a '
                        'convergence aid for stiff nonlinear circuits. None '
                        '(default) disables the clamp.',
                   unit='V', default=None),
-        ## STAGE 9(g).  Ported from `Transient`, same name, default and validation.
-        ## DECISION D2 -- the same knob as the CPU's, same name and same
-        ## default, because 9(d) and 9(g) both exist because these two backends
-        ## had drifted apart on exactly this kind of detail.  OWNER DECISION
-        ## (2026-08-21): decoupled from `timestep` and renamed -- `timestep`
-        ## doubling as the cap made gentle circuits step-cap-limited, where no
-        ## tolerance knob could move the run (measured: identical 209-step
-        ## rc-vsin runs at reltol 1e-4 and 1e-6).
         ## The commercial-simulator-class VOLTAGE CHECK -- see the CPU's Parameter
         ## note: on algebraic networks no LTE exists (the charge estimator
         ## is identically zero; P22's mask excludes algebraic rows from the
@@ -3196,37 +3058,32 @@ class JAXTransient(Analysis):
                        'full-swing sinusoid (per-step excursion '
                        '2*pi*swing/N).',
                   unit='', default=64),
+        ## STAGE 9(g), decision D2: the same knob as the CPU's, same name, default
+        ## and validation.  Decoupled from `timestep` by owner decision: a cap
+        ## tied to `timestep` makes gentle circuits step-cap-limited, where no
+        ## tolerance knob can move the run.
+        ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
         Parameter(name='timestep_max',
                   desc='Largest accepted timestep; None means tend/50, the '
                        'SPICE TMAX default. Decoupled from timestep, which '
                        'only sets the opening-step scale',
                   unit='s', default=None),
-        ## P1: `uic`/`minstep` were **kwargs reads -- `solve(uicc=True)` ran
-        ## silently with defaults, the dead-knob defect class at the call
-        ## boundary.  Declared as Parameters (CPU names, CPU defaults); the
-        ## solve()/solve_batched() arguments remain as explicit per-call
-        ## overrides, None meaning "use the Parameter".
-        ## P5's other half: the inherited `analysis` default is not 'tran',
-        ## and a threaded self.par.analysis of anything else makes every
-        ## source's u() return zeros -- caught by the rc-charging gate as an
-        ## all-zero waveform the moment the hardcode was removed.  Same
-        ## re-declaration the CPU Transient makes.
+        ## P1: `uic`/`minstep` are declared Parameters (CPU names, CPU
+        ## defaults) rather than **kwargs reads, so a misspelt knob cannot run
+        ## silently with defaults; the solve()/solve_batched() arguments remain
+        ## as explicit per-call overrides, None meaning "use the Parameter".
+        ## P5's other half: the inherited `analysis` default is not 'tran', and
+        ## a threaded self.par.analysis of anything else makes every source's
+        ## u() return zeros.  Same re-declaration the CPU Transient makes.
+        ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
         Parameter(name='analysis', desc='Analysis name', default='tran'),
-        ## P6: the integrator choice, reachable at last -- the traced loop
-        ## implemented euler and gear all along, but eval_method was
-        ## hardcoded at both call sites.  String-valued on this backend (the
+        ## P6: the integrator choice.  String-valued on this backend (the
         ## traced kernels select by name; there is no Integrator instance to
         ## hold state), which is also why P17 can refuse strategy objects
-        ## without refusing this.
-        ##
-        ## 'trap' joined them 2026-09-01.  This comment said until then that
-        ## trapezoidal "stays CPU-only until someone ports a VARIABLE-STEP
-        ## trap estimator" -- kept here because the sentence was wrong in an
-        ## expensive way: the estimator existed, in `_lte_kernels`, already
-        ## used by the CPU and already traceable.  Only the wiring was
-        ## missing.  ⚠ The trap estimator differences the CHARGE, not the
-        ## companion current, because the trap recursion carries an undamped
-        ## (-1)^n mode; see `ywr_error_ratio`.
+        ## without refusing this.  ⚠ The trap estimator differences the CHARGE,
+        ## not the companion current, because the trap recursion carries an
+        ## undamped (-1)^n mode; see `ywr_error_ratio`.
+        ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
         Parameter(name='integrator',
                   desc="Integration method: 'gear' (default, order 2, the "
                        "CPU's default too), 'euler' (order 1), or 'trap' "
@@ -3240,11 +3097,11 @@ class JAXTransient(Analysis):
         ## initial-state machinery (ic dict -> element ICs -> spanning-tree
         ## capacitor solve) is pure pre-loop Python on names and indices, so
         ## the CPU's methods are bound below unchanged.
-        ## P7: the CPU's relref, same values, same default; 'sigglobal' on
-        ## this backend now splits unit groups (node voltages vs branch
-        ## currents) exactly as the CPU does -- the pre-P7 scalar reference
-        ## mixed volts and amps.  The COUPLED path keeps its scalar
+        ## P7: the CPU's relref, same values, same default; 'sigglobal' on this
+        ## backend splits unit groups (node voltages vs branch currents)
+        ## exactly as the CPU does.  The COUPLED path keeps its scalar
         ## reference (its measured record depends on it; see fang's note).
+        ## History: `doc/transient_history.md`, `JAXTransient.parameters`.
         Parameter(name='relref',
                   desc="Reference for the relative LTE tolerance: 'sigglobal' "
                        "(against the largest signal in the unknown's unit "
@@ -3328,15 +3185,13 @@ class JAXTransient(Analysis):
         if not (self.toolkit and self.toolkit.supports('autodiff')):
             raise ValueError("JAXTransient requires the circuit to use _jaxtoolkit.py.")
 
-        ## P17 -- and this refusal is the PERMANENT contract, not a "not
-        ## yet": `nrsolver`/`scaler`/`linearsolver` are Python strategy
-        ## objects dispatched per iteration, and a traced `jax.lax.while_loop`
-        ## cannot call into them -- ever; that is what tracing means.  They
-        ## used to be accepted in silence (the "thin advertised feature" 0.1c
-        ## warns about, the same defect shape as the `lte_formula` knob
-        ## removed in 9(f)); `linearsolver` joined the refusal at Phase C --
-        ## the traced loop solves with jnp.linalg.solve and a passed solver
-        ## object was still being swallowed.
+        ## P17 -- and this refusal is the PERMANENT contract, not a "not yet":
+        ## `nrsolver`/`scaler`/`linearsolver` are Python strategy objects
+        ## dispatched per iteration, and a traced `jax.lax.while_loop` cannot
+        ## call into them -- ever; that is what tracing means.  Accepting one
+        ## in silence would be a thin advertised feature: the traced loop
+        ## solves with jnp.linalg.solve whatever is passed.
+        ## History: `doc/transient_history.md`, `JAXTransient.__init__`.
         for unsupported in ('nrsolver', 'scaler', 'linearsolver'):
             if kwargs.get(unsupported) is not None:
                 raise NotImplementedError(
@@ -3350,9 +3205,8 @@ class JAXTransient(Analysis):
     ## `_initial_state` and its helpers are pre-loop Python over names and
     ## indices (they build a numpy vector; the chunk loop converts), so the
     ## bound functions run here unchanged, spanning-tree capacitor solve
-    ## included.  The old `node.ic` attribute walk this replaces was dead
-    ## code posing as a feature: nothing in the package or tests ever SET
-    ## node.ic, and a misspelled node name in it could not even be detected.
+    ## included.
+    ## History: `doc/transient_history.md`, `JAXTransient._initial_state`.
     from pycircuit.circuit.transient import Transient as _CPU
     _initial_state = _CPU._initial_state
     _apply_element_ics = _CPU._apply_element_ics
@@ -3400,9 +3254,11 @@ class JAXTransient(Analysis):
         """The clamp on how large an accepted step may grow -- decision D2.
 
         `Transient` resolves identically: None means tend/50, SPICE's TMAX
-        default.  Decoupled from `timestep` by owner decision -- the old
-        None-means-timestep coupling made gentle circuits step-cap-limited,
-        with no tolerance knob able to move the run.
+        default.  Decoupled from `timestep` by owner decision: a cap tied to
+        `timestep` makes gentle circuits step-cap-limited, with no tolerance
+        knob able to move the run.
+
+        History: `doc/transient_history.md`, `JAXTransient._timestep_max`.
         """
         timestep_max = self.par.timestep_max
         if timestep_max is None or timestep_max <= 0:
@@ -3413,10 +3269,12 @@ class JAXTransient(Analysis):
         """Clamp ``dt_max`` to the tightest element step cap (stage 8(d)
         parity).  A TLine cannot be resolved by steps as long as its delay --
         the CPU measured the observed delay at 2.00x TD when dt = TD, with no
-        warning -- and this backend never applied the cap at all: standard-path
-        runs were correct only because the adaptive controller happened to
-        keep steps small, and the coupled path solves h freely and would walk
-        straight past TD/2 on any quiet stretch."""
+        warning.  Without it the standard path is right only while the adaptive
+        controller happens to keep steps small, and the coupled path solves h
+        freely and would walk straight past TD/2 on any quiet stretch.
+
+        History: `doc/transient_history.md`, `JAXTransient._element_cap`.
+        """
         cap = self.cir.max_timestep() \
             if hasattr(self.cir, 'max_timestep') else None
         if cap is not None and cap < dt_max:
@@ -3426,22 +3284,18 @@ class JAXTransient(Analysis):
     def _opening_step(self, timestep):
         """The size of the first step of a run.
 
-        STAGE 9(g), ported from `Transient._opening_step`, which records the
-        measurement: a run opening at `timestep` -- which is also `dt_max`, the
-        largest step the controller may ever take -- makes the first step both the
-        **largest** and the **only unchecked** one, because with no history there is
-        nothing to difference and no truncation error can be estimated.  Its error
-        then dominates everything after it.
-
-        On the CPU that showed up as a global error of 1.3212e-01 at reltol 1e-3,
-        1e-4, 1e-5 AND 1e-6 -- identical to five digits -- while the step count went
-        from 24 to 195.  **Gate 9-1(c) measured the identical signature here**:
-        4.2535e-3 across the same four decades, always at index 1, step count 53 to
-        85.  Eight times the work, or 1.6x, for the same answer.
+        STAGE 9(g), ported from `Transient._opening_step`: a run opening at
+        `timestep` makes the first step a large one and the **only unchecked**
+        one, because with no history there is nothing to difference and no
+        truncation error can be estimated.  Its error then dominates everything
+        after it: tightening reltol adds steps and leaves the error where it
+        is.
 
         Opening at `timestep * 1e-3` costs one cheap step and leaves the controller
         to grow from there, which it does geometrically, so the ramp is paid off
         within a handful of steps.
+
+        History: `doc/transient_history.md`, `JAXTransient._opening_step`.
         """
         firststep = self.par.firststep
         if firststep is None:
@@ -3471,10 +3325,10 @@ class JAXTransient(Analysis):
         """Per-lane (rows, moduli, offsets) for the Phase-2 shift under
         ``solve_batched`` -- roadmap item 3 (idtmod.md sec. 8).
 
-        A swept ``modulus``/``offset`` used to DROP the element from the
-        shift (correct Phase-1 fallback, unbounded state); now the
-        declaration is re-evaluated per lane with the lane's parameter
-        column applied, so swept lanes KEEP the bounded-state property.
+        The declaration is re-evaluated per lane with the lane's parameter
+        column applied, so swept lanes KEEP the bounded-state property rather
+        than dropping to the Phase-1 fallback (correct, but an unbounded
+        state).
         Pre-trace numpy work: swept top-level instances get their
         parameters set per lane, ``periodic_states()`` is re-collected,
         and the originals are restored in ``finally``.  Column order
@@ -3489,6 +3343,8 @@ class JAXTransient(Analysis):
 
         Returns ``(rows int32 (n,), mods (batch, n), offs (batch, n))``
         or ``None`` when nothing declares.
+
+        History: `doc/transient_history.md`, `JAXTransient._periodic_state_arrays_batched`.
         """
         if not hasattr(self.cir, 'periodic_states'):
             return None
@@ -3626,20 +3482,19 @@ class JAXTransient(Analysis):
         ## device view is what stops it recurring here.
         devices = _device_arrays(self.cir, epar)
         if devices is not None:
-            ## ⚠ THE CHARGE IS THE LIMIT HERE, not the current.  Vector
-            ## PCNR shadows a participant's `i`/`G` out of the ordinary
-            ## assembly and re-stamps it at `v_lim` through `pcnr_i`, which
-            ## traces -- so the DEVICE's own `i` never runs, and a device
-            ## whose `i` cannot be traced is still fine.  Its `q` is not
-            ## shadowed: charge stays in the MNA block at the node voltages,
-            ## which is the CPU's documented trade, so the transient DOES
-            ## call it.  Measured 2026-08-31: no class declaring
-            ## `pcnr_probes` has a traceable `q` today.
+            ## ⚠ THE CHARGE IS THE LIMIT HERE, not the current.  Vector PCNR
+            ## shadows a participant's `i`/`G` out of the ordinary assembly and
+            ## re-stamps it at `v_lim` through `pcnr_i`, which traces -- so the
+            ## DEVICE's own `i` never runs, and a device whose `i` cannot be
+            ## traced is still fine.  Its `q` is not shadowed: charge stays in
+            ## the MNA block at the node voltages, which is the CPU's
+            ## documented trade, so the transient DOES call it.
             ##
-            ## Probed once, here, rather than left to fail as a
+            ## Probed once, here, so an untraceable charge is refused at setup
+            ## with a NotImplementedError rather than failing as a
             ## TracerArrayConversionError several frames inside a compiled
-            ## chain -- which is what this refusal replaced, and is worse
-            ## than the NotImplementedError it replaced in turn.
+            ## chain.
+            ## History: `doc/transient_history.md`, `JAXTransient._pcnr_setup`.
             self._pcnr_vector_check_q()
             return ('vector', devices, epar), VT
         meta = _junction_arrays(self.cir)
@@ -3754,13 +3609,11 @@ class JAXTransient(Analysis):
             self.par.lte_vabstol * jnp.ones(n_nodes),
             self.par.lte_iabstol * jnp.ones(n - n_nodes)))
 
-    ## P3: `dt_min=1e-15` was a second, differently-named, three-decades-
-    ## looser floor for the same physical quantity `solve` calls `minstep`
-    ## -- both entry points now read the one `minstep` Parameter (per-call
-    ## override under the same name).  The first argument accepted a node
-    ## object and called get_node_index on it, so its old name `irefnode`
-    ## lied; renamed `refnode`, defaulting to the same object as everywhere
+    ## P3: both entry points read the one `minstep` Parameter for the dt floor
+    ## (per-call override under the same name).  The first argument is a node
+    ## object, named `refnode` and defaulting to the same object as everywhere
     ## else (P4).
+    ## History: `doc/transient_history.md`, `JAXTransient.solve`.
     def _tline_setup(self, x0s):
         """The circuit's TLines for a run starting at `x0s`, one state per
         lane: `(params (T, 2) [TD, Z0], indices (T, 6), history (L, T,
@@ -3768,8 +3621,10 @@ class JAXTransient(Analysis):
         every slot -- `t = -1` so nothing collides with `t = 0`, which sits
         at head 0 -- so the delayed terms read the operating point until the
         run has been going for TD.  `solve` passes one state, `solve_batched`
-        one per lane (one setup since 2026-09-27; the batched copy left the
-        history at zero)."""
+        one per lane.
+
+        History: `doc/transient_history.md`, `JAXTransient._tline_setup`.
+        """
         from pycircuit.circuit.elements import TLine
         tlines = [(name, el) for name, el in self.cir.elements.items()
                   if isinstance(el, TLine)]
@@ -3809,25 +3664,23 @@ class JAXTransient(Analysis):
         import jax.numpy as jnp
         import numpy as np
 
-        ## An override for a class that is not in the vmap evaluation groups was
-        ## SILENTLY IGNORED: `params_tree` is only consumed for classes with
-        ## `eval_i_pure`/`eval_q_pure`, so `{'R': {'r': ...}}` produced N
-        ## bit-identical lanes presented as N samples -- a parameter sweep that
-        ## sweeps nothing, with no symptom (doc/transient_review_260820.md, F2;
-        ## measured with r = 1 ohm vs 1 kohm).  Refuse loudly until the class is
-        ## made batchable.
+        ## An override for a class that is not in the vmap evaluation groups
+        ## would be SILENTLY IGNORED: `params_tree` is only consumed for
+        ## classes with `eval_i_pure`/`eval_q_pure`, so the N lanes would be
+        ## bit-identical -- a parameter sweep that sweeps nothing, with no
+        ## symptom (doc/transient_review_260820.md, F2).  Refuse loudly until
+        ## the class is made batchable.
+        ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
         batchable = {cls.__name__
                      for cls in self.toolkit.evaluation_groups(self.cir)}
-        ## THE TREE IS KEYED BY CLASS NAME -- the vmapped groups are
-        ## per-class stacks, and `batched_contributions` consumes
-        ## `params_tree[cls.__name__]`.  Every test happened to name its
-        ## instance after its class (`c['R'] = R(...)`), which hid this from
-        ## users until an instance named 'R1' was refused with a message
-        ## about classes (roadmap item 1, idtmod.md sec. 8).  An INSTANCE
-        ## key is remapped when unambiguous -- its class has exactly one
-        ## instance -- and refused with the correct spelling otherwise,
-        ## because with several instances the override's per-instance column
-        ## order is the group order, which the caller must address by class.
+        ## THE TREE IS KEYED BY CLASS NAME -- the vmapped groups are per-class
+        ## stacks, and `batched_contributions` consumes
+        ## `params_tree[cls.__name__]`.  An INSTANCE key is remapped when
+        ## unambiguous -- its class has exactly one instance -- and refused
+        ## with the correct spelling otherwise, because with several instances
+        ## the override's per-instance column order is the group order, which
+        ## the caller must address by class.
+        ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
         elements = getattr(self.cir, 'elements', {})
         remapped = {}
         for key, value in override_params_tree.items():
@@ -3926,11 +3779,11 @@ class JAXTransient(Analysis):
 
 
         if dt_max is None:
-            ## STAGE 9(g) -- `timestep`, not `tend/10`.  `solve` and `solve_batched`
-            ## are two entry points of one class and disagreed about this by ~50x,
-            ## so the same circuit at the same requested timestep was error-
-            ## controlled to two different standards depending on which was called.
-            ## `tend/50` matches `solve` and matches the CPU's resolution.
+            ## STAGE 9(g): the same resolution as `solve` and the CPU
+            ## (`_timestep_max`: None means tend/50), so the same circuit at
+            ## the same requested timestep is error-controlled to one standard
+            ## whichever entry point is called.
+            ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
             dt_max = self._timestep_max(tend)
         dt_max = self._element_cap(dt_max)
             
@@ -3959,10 +3812,9 @@ class JAXTransient(Analysis):
         h_hist = jnp.zeros((batch_size, 3))
         
         ## ⚠ each lane's delay history from ITS OWN starting state, as `solve`
-        ## fills it -- until 2026-09-27 it was zeros ("Init with zero for
-        ## now"), and a line carrying DC read 0 V for its first TD: measured,
-        ## a matched 1 V line started from its operating point came out 0.5 V
-        ## off at the first point, where `solve` held it exactly
+        ## fills it: a zeroed history makes a line carrying DC read 0 V for its
+        ## first TD.
+        ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
         tline_params, tline_indices, tline_history, tlines = \
             self._tline_setup(x0_batch)
         n_tlines = len(tlines)
@@ -4062,29 +3914,22 @@ class JAXTransient(Analysis):
             final_state = batched_run_chunk(state, override_params_tree,
                                             _p_mods_lanes, _p_offs_lanes)
 
-            ## PER-LANE COLLECTION, NO PADDING.  The old code trimmed every lane
-            ## to the batch's rectangular [0, max_steps) window and FILLED
-            ## SHORTER LANES FORWARD -- duplicating both the state AND the
-            ## timestamp, so shorter lanes' results carried repeated abscissae
-            ## (which break interpolation downstream), and a lane that had
-            ## already reached tend in a previous chunk had b_len == 0, making
-            ## the fill source `x_chunk[b, -1:0, :]` an EMPTY slice: numpy
-            ## raised "could not broadcast (0,n) into (max_steps,n)" and any
-            ## heterogeneous sweep spanning more than one chunk crashed.
-            ##
-            ## Nothing needs the lanes to be rectangular: chunk-to-chunk state
-            ## flows through `final_state`, and the method returns a separate
-            ## Result per lane, each with its own time base.  So each lane
-            ## simply keeps its own valid slice and the padding -- the only
-            ## code that could crash or corrupt -- is deleted rather than
-            ## guarded (doc/transient_review_260820.md, F1(c); measured with
-            ## c = 1e-9 vs 1e-6 F, CHUNK_SIZE=10).
+            ## PER-LANE COLLECTION, NO PADDING.  Nothing needs the lanes to be
+            ## rectangular: chunk-to-chunk state flows through `final_state`,
+            ## and the method returns a separate Result per lane, each with its
+            ## own time base.  So each lane simply keeps its own valid slice.
+            ## ⚠ Padding shorter lanes forward to a rectangular window would
+            ## duplicate both state and timestamp (repeated abscissae break
+            ## interpolation downstream) and fill from an empty slice for a
+            ## lane already at tend (doc/transient_review_260820.md, F1(c)).
+            ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
             valid_steps = np.array(final_state.step_idx)
             if int(np.max(valid_steps)) == 0:
                 break
-            ## the delay line's ring buffer, per lane, as `solve` checks it
-            ## (never checked here before 2026-09-27: a wrapped buffer reads
-            ## a previous lap's entries with no other symptom)
+            ## the delay line's ring buffer, per lane, as `solve` checks it: a
+            ## wrapped buffer reads a previous lap's entries with no other
+            ## symptom.
+            ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
             lane_steps = lane_steps + valid_steps
             if n_tlines > 0 and int(np.max(lane_steps)) >= TLINE_HISTORY_DEPTH:
                 raise RuntimeError(
@@ -4114,9 +3959,9 @@ class JAXTransient(Analysis):
             b_n_forced_nc = final_state.n_forced_nonconverged
             ## STAGE 9(e) ON THE BATCH, per chunk as `solve` checks it: a lane
             ## whose Newton failed even at dt_min stops itself (`time_cond`'s
-            ## `alive`), and until 2026-09-27 came back as a waveform cut
-            ## short of `tend` with NO error -- measured, 2 points ending at
-            ## t = 1e-18 of 5e-3 on the linear RC where `solve` raises.
+            ## `alive`), and without this raise it would come back as a
+            ## waveform cut short of `tend` with NO error.
+            ## History: `doc/transient_history.md`, `JAXTransient.solve_batched`.
             _dead = np.nonzero(np.asarray(b_n_forced_nc) > 0)[0]
             if _dead.size:
                 _t = np.asarray(final_state.t, dtype=float)
@@ -4284,12 +4129,12 @@ class JAXTransient(Analysis):
             res_buf = jnp.zeros((CHUNK_SIZE, n))
             time_buf = jnp.zeros(CHUNK_SIZE)
         
-            ## `sig_max` and `n_rejected` are RUNNING TOTALS and must cross the chunk
-            ## boundary.  Rebuilding the state without them reset the `sigglobal`
-            ## reference to zero every CHUNK_SIZE steps -- so a long run silently
-            ## reverted to a `pointlocal`-like tolerance at each boundary -- and threw
-            ## the rejection count away.  Same shape as the `_dt_last2` reset the CPU
-            ## side had: a per-run quantity re-seeded by a per-call constructor.
+            ## `sig_max` and `n_rejected` are RUNNING TOTALS and must cross the
+            ## chunk boundary: rebuilding the state without them would reset
+            ## the `sigglobal` reference to zero every CHUNK_SIZE steps -- a
+            ## long run silently reverting to a `pointlocal`-like tolerance at
+            ## each boundary -- and throw the rejection count away.
+            ## History: `doc/transient_history.md`, `JAXTransient.solve`.
             state = TransientState(
                 t=jnp.array(current_t), dt=jnp.array(current_dt), step_idx=jnp.array(0),
                 x_history=x_hist, q_history=q_hist, iq_history=iq_hist, h_history=h_hist,
@@ -4350,14 +4195,15 @@ class JAXTransient(Analysis):
             last_err = final_state.last_err
             force_first = final_state.force_first_order
 
-            ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END MAY
-            ## NEVER ARRIVE.  Rejecting a non-converged step shrinks `dt`; a circuit
-            ## that cannot converge at any step size drives `dt` to `dt_min` and then
-            ## advances by `dt_min` forever.  Measured while writing this: a linear RC
-            ## at maxiter=1 needs ~5e12 steps to reach tend that way, so warning
-            ## "after the run" is a warning that never prints.  That is the trade the
-            ## plan flags for 9(d) -- turning a silent wrong answer into a hang -- and
-            ## it is avoided by raising here, where the loop is bounded by CHUNK_SIZE.
+            ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END
+            ## MAY NEVER ARRIVE.  Rejecting a non-converged step shrinks `dt`;
+            ## a circuit that cannot converge at any step size drives `dt` to
+            ## `dt_min` and then advances by `dt_min` forever (a linear RC at
+            ## maxiter=1 would need ~5e12 steps to reach tend), so a warning
+            ## "after the run" never prints.  Raising here, where the loop is
+            ## bounded by CHUNK_SIZE, keeps a silent wrong answer from turning
+            ## into a hang.
+            ## History: `doc/transient_history.md`, `JAXTransient.solve`.
             if int(n_forced_nc) > 0:
                 raise NoConvergenceError(
                     "jaxtransient: the Newton solve failed to converge at t=%g s "

@@ -14,46 +14,30 @@ from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
 from pycircuit.circuit._limiting import state_restore, state_snapshot
-## The clamp the step controller applies to every accepted step.  The force-accept
-## path in `solve()` is the one place that used to bypass it, and 4b's whole point
-## is that it must not: one bound, named once.  `stepcontroller` imports nothing
-## from this package, so this is import-safe at module level.
+## The clamp the step controller applies to every accepted step, the force-accept
+## path in `solve()` included: one bound, named once.  `stepcontroller` imports
+## nothing from this package, so this is import-safe at module level.
+## History: `doc/transient_history.md`, `transient.py`.
 from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
                                               MIN_SHRINK_RATIO)
 
 ## STAGE 2a -- BLAS thread control, discovered rather than required.
 ##
 ## Circuit matrices are small (n ~ 10^2), so a threaded LAPACK spends more time
-## spawning and synchronising threads than doing the 1.7 MFLOP of work.  Measured
-## on the 139-unknown leapfrog: the whole transient runs **1.72x faster** with BLAS
-## limited to one thread, on a 4-core box.
+## spawning and synchronising threads than doing the work.  The overhead scales
+## with the core count the thread pool spans: on the leapfrog the transient runs
+## 1.72x faster with BLAS limited to one thread on 4 cores, **14-20x** on 24.
 ##
-## `threadpoolctl` IS NOW A DEPENDENCY (2026-08-31, maintainer's decision).
-##
-## It was optional, on the strength of a 1.72x measured on a 4-CORE box, and
-## this comment used to say that making it a hard dependency for 1.72x was the
-## maintainer's call.  The overhead scales with the core count the thread pool
-## spans, so that number was a property of that machine: re-measured on 24
-## cores the same comparison gives **14-20x** (minima 8.2 s against 145.1 s
-## over three interleaved pairs on the leapfrog, identical step counts; 14.2x
-## with a nonlinearity live).  The call was re-taken against 14-20x and went
-## the other way.
-##
-## The import stays guarded anyway, and `blas_single_thread_available()` stays
-## in the API, so a stripped environment degrades to the status quo ante rather
-## than failing to import a circuit simulator.  What changed is that the
-## speedup no longer depends on someone remembering `OMP_NUM_THREADS=1` at the
-## shell -- which is how it was silently forfeited on this machine for weeks.
+## `threadpoolctl` is a dependency.  The import stays guarded anyway, and
+## `blas_single_thread_available()` stays in the API, so a stripped environment
+## degrades to threaded BLAS rather than failing to import a circuit simulator.
 ##
 ## ⚠ THIS LIMIT BELONGS TO THE TRANSIENT AND SHOULD NOT BE COPIED TO `DC` OR
-## `AC`.  Measured 2026-08-31 (work plan 2a-bis): the penalty is per-call
-## thread-pool overhead, crossing over around 50-100 solves, NOT a property of
-## problem size.  A transient runs thousands of small assemblies and solves in
-## a Python loop and so is destroyed by it; DC performs a handful of large
-## operations and PREFERS threads at every size measured (0.57x at n=28 down to
-## **0.43x at n=2503** -- limiting it would cost 2.3x), and AC never flips even
-## over a 500-point sweep (0.80x-0.98x).  Extending this context manager to
-## them is a measured regression, not an oversight.
+## `AC`: the penalty is per-call thread-pool overhead, crossing over around
+## 50-100 solves, NOT a property of problem size.  A transient runs thousands
+## of small assemblies and solves in a Python loop; DC PREFERS threads at every
+## size measured (limiting it would cost up to 2.3x), and AC never flips.
+## History: `doc/transient_history.md`, `transient.py`.
 try:
     from threadpoolctl import threadpool_limits as _threadpool_limits
 except ImportError:
@@ -81,45 +65,30 @@ def _single_threaded_blas():
 def resample_uniform(t, x, npoints=None, step=None, grid=None):
     """Interpolate a transient result onto a UNIFORM time grid.
 
-    STAGE 10.2.  A transient returns the solver's own adaptive points, so their
-    spacing is whatever the step controller chose -- measured at a **1000x**
-    spread on an ordinary RC driven by a sine.  Anything that needs a uniform
-    grid, above all an FFT, therefore has to resample, and every caller has been
-    left to do that themselves: `benchmarks/nonlinear_leapfrog_sweep.py` reads
-
-        spec = np.fft.rfft(np.interp(grid, t, v)) / npt
-
-    -- `np.interp` is LINEAR, applied to a solution the integrator computed to
-    second order.  That throws away an order of accuracy before the transform,
-    which is a real hazard the caller was forced to own rather than a stylistic
-    preference.
+    A transient returns the solver's own adaptive points, so their spacing is
+    whatever the step controller chose.  Anything that needs a uniform grid,
+    above all an FFT, resamples with this rather than with `np.interp`, which
+    is LINEAR and throws away an order of accuracy before the transform.
 
     QUADRATIC, to match the integrator.  Three-point Lagrange through the
     interval's neighbours, the same reasoning `TLine._interpolate_history` gives
     for its own history lookup: a first-order interpolant feeding a second-order
-    method injects error the method never made.  Measured on the solver's real
-    (non-uniform) grid, interpolating a known signal so only the interpolation
-    error is present:
-
-        signal                  linear      quadratic    ratio
-        fundamental           1.12e-03      8.11e-05     13.8x
-        5th harmonic          1.55e-02      1.20e-02      1.3x
-        decaying exponential  2.00e-04      4.90e-06     40.8x
-
-    **The 5th-harmonic row is the honest one**: where the adaptive grid is barely
-    resolving the signal, no interpolant recovers what was not sampled, and the
-    right fix there is a smaller `max_step`, not a cleverer resample.
+    method injects error the method never made (measured 14-41x below linear
+    where the grid resolves the signal, 1.3x where it barely does).  Where the
+    adaptive grid is barely resolving the signal, no interpolant recovers what
+    was not sampled, and the right fix there is a smaller `max_step`, not a
+    cleverer resample.
 
     Give exactly one of ``npoints``, ``step`` or ``grid``.
 
     ``grid`` takes an explicit set of output times, for a caller whose window
-    this function cannot otherwise express.  It was added 2026-08-31 for the
-    caller this docstring already named: an FFT that needs a TRAILING window
-    with ``endpoint=False``, because dropping the duplicated period boundary is
-    what keeps the tones exactly on bins.  Neither ``npoints`` (which spans
-    ``t[0]..t[-1]`` inclusive) nor ``step`` (which starts at ``t[0]``) can say
-    that, which is the likely reason the named caller kept its own `np.interp`
-    for months after this function existed to replace it.
+    this function cannot otherwise express -- an FFT that needs a TRAILING
+    window with ``endpoint=False``, because dropping the duplicated period
+    boundary is what keeps the tones exactly on bins.  Neither ``npoints``
+    (which spans ``t[0]..t[-1]`` inclusive) nor ``step`` (which starts at
+    ``t[0]``) can say that.
+
+    History: `doc/transient_history.md`, `resample_uniform`.
     """
     numpy = np
 
@@ -161,23 +130,21 @@ def resample_uniform(t, x, npoints=None, step=None, grid=None):
 class TransientStatistics(object):
     """What a transient run actually did, as opposed to what it returned.
 
-    STAGE 6(c).  Every number here was already being computed and thrown away --
-    `solve_system` returns its iteration count and the call site bound it to `_`;
-    the step controller knows what it rejected; the force-accept path from 4b
-    counts nothing.  A run that takes 40x more steps than expected is currently
+    Without these counts a run that takes 40x more steps than expected is
     indistinguishable, from the outside, from one that does not.
 
     On the COUPLED path a persistently failing point raises BY DESIGN (F13):
     its steps are solved, not rejected for error, so its only force-accept
     is a step the excursion veto (`max_dv_step`) still refused after
     `_CoupledSteps.max_reject` retries.  `rejected_steps` counts failed Newton
-    attempts too, on every path (one stepping loop since 2026-09-23; the LMM
-    loop alone used to drop them).
+    attempts too, on every path.
 
     The force-accept counter is the one to read first.  It counts steps accepted
-    with an unbounded truncation error, and after 4d it should be zero on every
+    with an unbounded truncation error, and it should be zero on every
     circuit measured -- so a non-zero value is the run telling you that part of
     its own result is not error-controlled.
+
+    History: `doc/transient_history.md`, `TransientStatistics`.
     """
 
     __slots__ = ('accepted_steps', 'rejected_steps', 'newton_iterations',
@@ -201,9 +168,10 @@ class TransientStatistics(object):
         self.state_event_cuts = 0
         ## `branch_check`: steps whose `rank C` fell below its structural
         ## value (screened), and those a re-solve found a second root of.
-        ## ⚠ Slots since 2026-09-27: without them `_branch_count` raised on
-        ## the first screen of every `solve`, the check caught its own error
-        ## and switched itself off -- it never reported on a full solve.
+        ## ⚠ Both must be in `__slots__`: without them `_branch_count` raises
+        ## on the first screen of every `solve`, and the check catches its
+        ## own error and switches itself off.
+        ## History: `doc/transient_history.md`, `TransientStatistics`.
         self.branch_screens = 0
         self.branch_points = 0
         self.min_step = None
@@ -242,19 +210,15 @@ class TransientStatistics(object):
 
 class TransientStepError(NoConvergenceError, RuntimeError):
     """A time point that could not be solved even at `minstep`, after the
-    continuation rescue.  Both a `NoConvergenceError` (what the Runge-Kutta
-    and coupled loops raised) and a `RuntimeError` (what the LMM loop raised)
-    -- one stepping loop since 2026-09-23, so a caller written against either
-    keeps catching it."""
+    continuation rescue.  Both a `NoConvergenceError` and a `RuntimeError`,
+    so a caller written against either catches it.
+
+    History: `doc/transient_history.md`, `TransientStepError`."""
 
 
 ## ---------------------------------------------------------------------------
 ## THE STEP FAMILIES -- what differs between integrators in the one stepping
-## loop of `Transient._solve` (2026-09-23; it was three loops: the LMM loop,
-## `_run_rk_adaptive` and `_solve_coupled`, which had drifted apart -- the
-## excursion bound in two of them, the continuation rescue in two, three
-## Newton-failure ladders, three exception types, two setups).  The loop owns
-## everything else: breakpoints, `tend`, the failure ladder and rescue, the
+## loop of `Transient._solve`.  The loop owns everything else: breakpoints, `tend`, the failure ladder and rescue, the
 ## excursion veto, the rejection budget and force-accept, state events, the
 ## bookkeeping of an accepted step.  A family supplies:
 ##
@@ -268,6 +232,7 @@ class TransientStepError(NoConvergenceError, RuntimeError):
 ## and its retry budget at one time point: `max_retries` attempts in all, of
 ## which `max_reject` may be rejections for error -- then the step is
 ## force-accepted.
+## History: `doc/transient_history.md`, `transient.py`.
 ## ---------------------------------------------------------------------------
 
 class _LMMSteps(object):
@@ -297,7 +262,8 @@ class _LMMSteps(object):
             ## controller the CALLER injected.  Without the distinction, any
             ## object that ran an LMM run first presents this auto-created
             ## controller to a coupled run, which then refuses a controller
-            ## nobody asked for -- 11 tests failed exactly that way.
+            ## nobody asked for.
+            ## History: `doc/transient_history.md`, `_LMMSteps.__init__`.
             tr._step_controller_is_auto = True
         ## ITEM 2+.3 / STAGE 12A: applied to whichever controller is in use,
         ## including one the caller injected, and re-applied every run so a
@@ -616,26 +582,13 @@ class Transient(Analysis):
         from pycircuit.circuit.integrator import (Integrator, Gear2Integrator)
         integrator = getattr(self.par, 'integrator', None)
         if integrator is None:
-            ## P6 OWNER DECISION (2026-08-21): Gear-2 is the shipped default,
-            ## matching the JAX backend at last -- identical scripts used to
-            ## get different methods by backend.  Chosen on the phase-0
-            ## measurement (half the steps and half the wall-clock of Euler
-            ## on the same circuit at the same tolerance) and because the
-            ## estimator work of stages 4g/4i was built for it; the
-            ## conformance harness pins the pair.
-            ##
-            ## P22 RETIRED THE COUPLED EULER CARVE-OUT (same day): the
-            ## Gear-2 coupled livelock traced to eq (6) being measured on
-            ## ALGEBRAIC rows -- the rectifier's source-current row carries
-            ## the diode's dq/dt through KCL, its accepted value holds the
-            ## OLD grid's derivative convention, and the deviation floor
-            ## (2.5e-6 A against etol 3.6e-7) was h-independent.  The
-            ## state-row mask (_state_row_mask) retires that whole class;
-            ## with it, coupled+Gear-2 completes the rectifier in 259
-            ## points against Euler's 769 at the same accuracy (9.7e-3 vs
-            ## 9.9e-3 against a fine reference).  The `coupled` parameter
-            ## the carve-out introduced is GONE -- the dead-knob scan
-            ## flagged it the moment it stopped being read.
+            ## Gear-2 is the shipped default (P6, owner decision), the same
+            ## method as the JAX backend: half the steps and half the
+            ## wall-clock of Euler on the same circuit at the same
+            ## tolerance, and the conformance harness pins the pair.  The
+            ## coupled path uses it too, with eq (6) measured on state rows
+            ## only (`_state_row_mask`, P22).
+            ## History: `doc/transient_history.md`, `Transient._get_integrator`.
             return Gear2Integrator()
         if not isinstance(integrator, Integrator):
             raise TypeError(
@@ -663,23 +616,11 @@ class Transient(Analysis):
          ## NEWTON's x-tolerance on node rows, and nothing else.  Shared with `DC`,
          ## which uses the same value, so the operating point and the steps after it
          ## are solved to the same accuracy.
-         ##
-         ## This used to be 1e-6 and used for BOTH roles.  The 1e-12 -> 1e-6 change
-         ## was reasoned about purely as a step-control knob (see `lte_vabstol`
-         ## below) and its effect on Newton was never measured -- it loosened node
-         ## convergence by 10^6 as a side effect, while `DC.vabstol` stayed at 1e-12,
-         ## so every transient was seeded by an operating point solved a million
-         ## times tighter than any step that followed it.  Decision 0.3a/0.3d in
-         ## `doc/transient_work_plan.md` split the two roles; this is the Newton one.
-         ## ⚠ 1e-6 SINCE 2026-09-19 (Andreas), in DC, Transient, JAXTransient and
-         ## PSS TOGETHER -- the four share one meaning and one default.  It was
-         ## 1e-12, below what double precision can deliver on a node once ANY
-         ## unknown in the circuit is large: a PLL shooting solve reached its
-         ## solution in two iterations and then failed the STEP test for 170 more
-         ## on a node at its zero crossing (`reltol |x|` gone, 1e-12 left)
-         ## against rounding of 1e-09 -- 142 s and "not converged" for an answer
-         ## that 5.7 s delivers at 1e-9 and at 1e-6 alike, digit for digit.
-         ## `lte_vabstol` is NOT this quantity and stays where it is.
+         ## ⚠ 1e-6 in DC, Transient, JAXTransient and PSS TOGETHER -- the four
+         ## share one meaning and one default.  1e-12 is below what double
+         ## precision can deliver on a node once ANY unknown in the circuit is
+         ## large.  `lte_vabstol` is NOT this quantity.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='vabstol',
                    desc='Absolute voltage error tolerance for the Newton solve',
                    unit='V',
@@ -687,29 +628,13 @@ class Transient(Analysis):
          ## THE STEP CONTROLLER's tolerances, which are a different quantity: they
          ## apply to `lte = J^-1 Eg`, not to Newton's residual or its x-update.
          ##
-         ## BACK TO 1e-12, matching `vabstol`, at gate D3-e.  The history is worth
-         ## keeping because it is a clean example of a workaround outliving its
-         ## defect.  This was 1e-12; it was raised to 1e-6 (a commercial simulator's `vabstol`,
-         ## SPICE's VNTOL) because on the 127-unknown leapfrog the timestep
-         ## collapsed to 5 ns against a 39 ns cap -- the controller accepts on
-         ## max(|lte|/etol) over ALL unknowns, most of that circuit's nodes carry no
-         ## signal, and under `pointlocal` the relative reference on a quiet node
-         ## tends to zero, so `etol` degenerated to TRTOL*abstol on numerical noise.
-         ## Raising the floor cut the step count 5.4x.
-         ##
-         ## **That was treating the symptom.**  The cause was `pointlocal`, and
-         ## `sigglobal` -- the default since decision D3 -- references every unknown
-         ## to the largest signal in the circuit, so the reference cannot degenerate
-         ## and the floor is never reached.  Measured at gate D3-e, `lte_vabstol` at
-         ## 1e-6, 1e-9 and 1e-12 give **bit-identical** results under `sigglobal`:
-         ## 403 steps on a pulsed RC and 601 on a circuit with a quiet node, at every
-         ## one of the three values.  Under `pointlocal` the same change costs
-         ## +8.5% and +9.2% -- which is what "load-bearing" looks like, and why the
-         ## workaround was needed then and is not now.
-         ##
-         ## So the principled value returns at measured zero cost.  **If you select
-         ## `relref='pointlocal'`, this floor becomes load-bearing again** and 1e-6
-         ## may be the better choice for your circuit.
+         ## 1e-12.  `sigglobal` (the default `relref`) references every unknown to
+         ## the largest signal in the circuit, so the reference cannot degenerate
+         ## and the floor is never reached: `lte_vabstol` at 1e-6, 1e-9 and 1e-12
+         ## gives **bit-identical** results under it.  **If you select
+         ## `relref='pointlocal'`, this floor becomes load-bearing** (+8.5-9.2%
+         ## steps at 1e-12) and 1e-6 may be the better choice for your circuit.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='lte_vabstol',
                    desc='Absolute voltage tolerance for the local truncation error',
                    unit='V',
@@ -721,36 +646,18 @@ class Transient(Analysis):
          ## What the RELATIVE part of the LTE tolerance is measured against --
          ## A commercial simulator's parameter of the same name, and a commercial simulator's default.
          ##
-         ## `pointlocal` is what pycircuit did for its whole history: each unknown
-         ## referenced to itself, at this instant.  On a node carrying no signal
-         ## that reference tends to zero, so the tolerance collapses to the absolute
-         ## floor and the controller chases numerical noise on an idle node -- which
-         ## is the defect `lte_vabstol` was raised a millionfold to work around.
-         ## Measured on the leapfrog: at `lte_vabstol = 1e-12`, `pointlocal` needs
-         ## 3.53x the steps of the shipped configuration where `sigglobal` needs
-         ## 1.49x, i.e. it removes 81% of the excess.
+         ## `pointlocal` references each unknown to itself, at this instant.  On a
+         ## node carrying no signal that reference tends to zero, so the tolerance
+         ## collapses to the absolute floor and the controller chases numerical
+         ## noise on an idle node.
          ##
-         ## DECISION D3, SECOND ATTEMPT -- `sigglobal` IS NOW THE DEFAULT, as in
-         ## A commercial simulator.  It was adopted, sent back by gate D3-a, and re-run.
-         ##
-         ## What sent it back: referencing the tolerance to the largest signal lets
-         ## steps grow, and on an estimator carrying the trapezoidal `(-1)^n` mode
-         ## that was enough to break the controller's response to `reltol` --
-         ## accuracy stopped falling monotonically as the tolerance tightened.
-         ## 4g(b) and 4i removed that contamination, and on re-run **all six
+         ## `sigglobal` IS THE DEFAULT, as in a commercial simulator; all six
          ## integrator/formula combinations are monotone in both step count and
-         ## error**.
-         ##
-         ## What it buys, measured at MATCHED ACCURACY rather than at matched
-         ## `reltol` -- the two are not the same thing, and comparing step counts at
-         ## equal `reltol` overstates the win because `sigglobal`'s error at a given
-         ## `reltol` is ~1.5x larger:
+         ## error under it.  Measured at MATCHED ACCURACY (its error at a given
+         ## `reltol` is ~1.5x larger, so equal `reltol` overstates the win):
          ##
          ##   euler 1.48-2.06x fewer steps, gear2 1.44-1.60x, trapezoidal 1.31-1.47x
-         ##
-         ## The figure previously recorded here was "1.7-2.5x fewer steps", taken at
-         ## equal `reltol`.  That was a relabelling of the tolerance as much as a
-         ## speedup; the honest worst case is 1.31x.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='relref',
                    desc="Reference for the relative LTE tolerance: 'sigglobal' "
                         "(against the largest signal anywhere -- the default, as in "
@@ -767,13 +674,12 @@ class Transient(Analysis):
          ## F5's lesson (doc/transient_review_260820.md).  Every documented
          ## value is meaningful (0.0 disables the lower bound, 1.0 is the
          ## historical threshold, None disables the damper), so a numeric or
-         ## None default cannot be told apart from an explicit request for it:
-         ## the coupled path used `par.lte_gamma_min or 0.7`, which silently
-         ## replaced an explicit 0.0 with 0.7 and made the documented settings
-         ## unreachable there.  'auto' resolves per path: the standard
+         ## None default cannot be told apart from an explicit request for it.
+         ## 'auto' resolves per path: the standard
          ## controller maps it to (0.0, 1.0, None) inside set_lte_band, the
          ## coupled path maps it to Fang's (0.7, 3.0, 0.15) in _coupled_band.
          ## Any explicit value is honoured verbatim on both paths.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='lte_gamma_min',
                    desc="Lower edge of the LTE acceptance band, as a fraction of "
                         "the LTE tolerance. A step whose normalised error falls "
@@ -802,19 +708,15 @@ class Transient(Analysis):
          ## 'approx'   Fang sec. 3.4: the new step comes from the error RATIO
          ##            (eq 17) and the solution is corrected by eq (18).  The
          ##            default, and the one with the measured record.
-         ## 'bordered' Fang eq (12)/(14), RETIRED 2026-09-27: once its
-         ##            double-counted `q^T dv0` term was removed it took the
-         ##            same steps as 'approx' to every printed digit; asking
-         ##            for it raises, naming this.
+         ## 'bordered' Fang eq (12)/(14), RETIRED: asking for it raises.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='coupled_method',
                    desc="Step-size correction for coupled_lte=True: 'approx' "
                         "(Fang sec 3.4, the only one; 'bordered' was retired "
                         "2026-09-27)",
                    unit='',
                    default='approx'),
-         ## THE RADAU COST TRANSFORM, promoted 2026-09-27 (Andreas: "Promote
-         ## but measure first") from a private switch only tests set.  radau5's
-         ## eig(A^-1) split: one real and one complex m x m solve per
+         ## THE RADAU COST TRANSFORM.  radau5's eig(A^-1) split: one real and one complex m x m solve per
          ## SIMPLIFIED-Newton iteration instead of the dense 3m system, and the
          ## dense full Newton when it stalls.  Measured on a diode-loaded RC
          ## ladder: fixed step 1.74x at m = 102 and 3.05x at m = 402, the answer
@@ -823,6 +725,7 @@ class Transient(Analysis):
          ## (m = 52) to 3.1x (m = 402), at most one fallback per run.  Off by
          ## default: simplified Newton can stall on a strongly nonlinear step,
          ## and the dense solve is the correctness reference.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='radau_transform',
                    desc="Solve each Radau IIA step by the eig(A^-1) cost "
                         "transform: one real and one complex m x m solve per "
@@ -860,14 +763,14 @@ class Transient(Analysis):
                    unit='', default=True),
          ## STAGE 10.3 -- SPICE's `.ic`, for `uic=True`.
          ##
-         ## `uic=True` used to mean "start from a vector of zeros", which is not
-         ## what SPICE means by it and leaves a whole class of circuit
+         ## A start from a vector of zeros leaves a whole class of circuit
          ## unstartable: an LC tank at zero is AT an equilibrium and stays there,
          ## and a latch at zero sits on its metastable point.  Neither can be
          ## simulated at all without a way to say where it starts.
          ##
-         ## Node voltages only, and that is a scope decision rather than an
-         ## oversight -- see `_initial_state` for what is deferred and why.
+         ## Node voltages only: element initial conditions are the elements'
+         ## own `ic` -- see `_initial_state`.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='ic',
                    desc="Initial node voltages for uic=True, as {node: volts}. "
                         "Node may be a name or a Node instance.",
@@ -896,14 +799,12 @@ class Transient(Analysis):
                         'resample_uniform',
                    unit='s',
                    default=None),
-         ## OWNER DECISION (2026-08-21): the cap is DECOUPLED from
-         ## `timestep` and renamed.  `timestep` used to double as the largest
-         ## accepted step, which silently made the step count on gentle
-         ## circuits a property of the requested output density rather than
-         ## of the error control -- the phase-0 "matched order" step
-         ## agreement (211 vs 210) was partly both backends sitting on the
-         ## same cap.  `timestep` now only sets the opening-step scale and
-         ## the fixed_timestep grid.
+         ## The step cap (`timestep_max`) is DECOUPLED from `timestep` (owner
+         ## decision): a shared value makes the step count on gentle circuits a
+         ## property of the requested output density rather than of the error
+         ## control.  `timestep` only sets the opening-step scale and the
+         ## fixed_timestep grid.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          ## The commercial-simulator-class VOLTAGE CHECK: on a purely resistive/
          ## algebraic network (a designer exploring an amplifier topology
          ## with Rs and controlled sources, no reactances yet) NO error
@@ -969,42 +870,30 @@ class Transient(Analysis):
                    desc='Bypass tolerance for device models', unit='V',
                    default=None)]
 
-    ## `irefnode` was accepted here and never read -- the same shape as the dropped-
-    ## `toolkit` defect recorded below, found by the dead-argument scan
-    ## (doc/transient_review_260820.md, F18).  Passing it now fails loudly.
+    ## `irefnode` is not an argument: passing it fails loudly (F18).
+    ## History: `doc/transient_history.md`, `Transient.__init__`.
     def __init__(self, cir, toolkit=None, **kvargs):
-        ## (The class attribute already includes Analysis.parameters; the old
-        ## re-concatenation here double-included the base list -- hygiene.)
-        ## `toolkit` was accepted and then DROPPED -- it was never forwarded, so
-        ## `Transient(cir, toolkit=X)` silently ran on `cir.toolkit` instead.  It
-        ## went unnoticed because callers pass the toolkit the circuit already has,
-        ## which makes the two agree by coincidence rather than by construction.
+        ## `toolkit` is forwarded: `Transient(cir, toolkit=X)` runs on X, not
+        ## on `cir.toolkit`.
+        ## History: `doc/transient_history.md`, `Transient.__init__`.
         super(Transient, self).__init__(cir, toolkit=toolkit, **kvargs)
 
         ## ⚠ PCNR BOOKKEEPING IS INITIALISED HERE, NOT ONLY IN `_solve`.
         ## `_solve` resets these per analysis, which is right -- but SHOOTING
         ## never calls `_solve`: it drives `solve_timestep` directly on its own
-        ## grid, so a transient built for it reached the PCNR paths with the
-        ## attributes absent.  The stage-method fallback tripped over it
-        ## immediately (`AttributeError: 'Transient' object has no attribute
-        ## 'pcnr_solves'`); the LMM path carried the same latent bug and had
-        ## simply never been reached that way.  Defining them at construction
-        ## makes every entry point safe, and `_solve`'s reset still gives each
-        ## analysis a clean count.
+        ## grid, and the PCNR paths read these attributes.  Defining them at
+        ## construction makes every entry point safe, and `_solve`'s reset
+        ## still gives each analysis a clean count.
+        ## History: `doc/transient_history.md`, `Transient.__init__`.
         self.pcnr_solves = 0
         self.pcnr_fallbacks = 0
         self.pcnr_status = 'off'
 
         ## THE REFERENCE NODE IS `self.irefnode`, SET HERE AND NOWHERE ELSE
         ## SPONTANEOUSLY -- `solve()` overwrites it from its `refnode`
-        ## argument.  It used to be set only inside `_solve`, which is the
-        ## hidden-ordering hazard this file itself documents at
-        ## `_apply_voltage_ics`; and `solve_timestep`'s own `refnode=gnd`
-        ## default meant the PCNR path pinned gnd while step control stripped
-        ## the caller's row -- two reference nodes in one solve
-        ## (doc/transient_review_260820.md, F7; measured: pcnr=True with
-        ## refnode='b' held gnd at 0 and let 'b' swing 4 V).  One fact, one
-        ## home.
+        ## argument.  One fact, one home: a second copy (a `refnode=gnd`
+        ## default somewhere) gives two reference nodes in one solve (F7).
+        ## History: `doc/transient_history.md`, `Transient.__init__`.
         self.irefnode = self.cir.get_node_index(gnd)
 
         self._qlast  = None #q history
@@ -1074,12 +963,13 @@ class Transient(Analysis):
           to the device-limiting solve that does carry one, exactly as the LMM
           step and DC have always done on a PCNR failure.
 
-        So this is `True` today for everything.  `_rescue_step` consults it
-        (since 2026-09-27; until then nothing did), because the honest-
-        diagnostic bug it was written for is easy to reintroduce: `_solve` used to report that a continuation "could not
-        rescue the point" on a path where none had been attempted.  A new step
-        path that reaches neither a ladder nor a fallback should return `False`
-        here rather than inherit a message that claims a rescue it never tried.
+        So this is `True` for everything.  `_rescue_step` consults it, so the
+        failure message never says a continuation "could not rescue the point"
+        on a path where none was attempted.  A new step path that reaches
+        neither a ladder nor a fallback should return `False` here rather than
+        inherit a message that claims a rescue it never tried.
+
+        History: `doc/transient_history.md`, `Transient._honours_continuation_rescue`.
         """
         return True
 
@@ -1098,18 +988,13 @@ class Transient(Analysis):
     ## badly `C` degenerates.  A negative conductance is not exotic: it is what
     ## an oscillator's active device is.
     ##
-    ## ⚠⚠ THE OBVIOUS SCREEN DOES NOT WORK HERE, and it was measured before it
-    ## was rejected.  A peer session proposed firing on the STEP MATRIX
-    ## ACQUIRING A NEGATIVE EIGENVALUE -- `C/h + G < 0` needs `C` small AND `G`
-    ## negative, so one number carries both ingredients -- and verified it 6/6
-    ## against root counts on scalar and 2x2 systems.  On real MNA it fires on
-    ## EVERYTHING: measured, min Re eig(J) is negative on the index-2 C-V loop
-    ## (-9.99e-07), on the exponential fixture (-9.90e-07) and on a van der Pol
-    ## (-1.00e+00).  Two independent reasons, both structural: MNA WITH A
-    ## VOLTAGE SOURCE IS A SADDLE-POINT SYSTEM and is indefinite by
-    ## construction, and an OSCILLATOR'S `G` HAS A NEGATIVE EIGENVALUE BY
-    ## DESIGN with no rank drop anywhere.  4 false fires out of 4 ordinary
-    ## circuits, so it cannot gate anything.
+    ## ⚠⚠ THE OBVIOUS SCREEN DOES NOT WORK HERE: firing on the STEP MATRIX
+    ## ACQUIRING A NEGATIVE EIGENVALUE fires on EVERYTHING on real MNA.  Two
+    ## independent reasons, both structural: MNA WITH A VOLTAGE SOURCE IS A
+    ## SADDLE-POINT SYSTEM and is indefinite by construction, and an
+    ## OSCILLATOR'S `G` HAS A NEGATIVE EIGENVALUE BY DESIGN with no rank drop
+    ## anywhere.  4 false fires out of 4 ordinary circuits, so it cannot gate
+    ## anything.
     ##
     ## What is screened instead is the condition itself: `rank C(x)` below the
     ## STRUCTURAL rank -- what `C` has at a generic operating point.  A
@@ -1121,6 +1006,7 @@ class Transient(Analysis):
     ## HEURISTIC amount, so it can MISS a second root -- but when it fires it
     ## has an actual second solution in hand and converged to it.  A warning is
     ## evidence; silence is not.
+    ## History: `doc/transient_history.md`, `Transient.BRANCH_SCREEN_TOL`.
     BRANCH_SCREEN_TOL = 1e-9
 
     def _branch_structural_rank(self):
@@ -1172,15 +1058,14 @@ class Transient(Analysis):
         if C.size == 0:
             return False, None
         ## ⚠ THE SCALE IS THE LARGEST `C` THIS RUN HAS SEEN, not the random
-        ## states' (`scale0`, until 2026-09-27).  Those sit anywhere in +-1 V,
-        ## where a forward junction's diffusion capacitance is e^38 above any
-        ## state the circuit visits: measured 0.217 F on a rectifier, so a
-        ## real 1.7e-10 F junction read as ZERO against 2e-6 F of load, the
-        ## screen fired on 2086 of 2500 steps and the confirmation re-solved
-        ## every one (3.8-4.9x the run; hidden while the check disabled
-        ## itself, see `TransientStatistics`).  The RANK stays structural --
-        ## a running maximum of the rank reads quiet where `C` is zero for the
-        ## whole run -- and for a linear `C` the two scales are one number.
+        ## states' (`scale0`).  Those sit anywhere in +-1 V, where a forward
+        ## junction's diffusion capacitance is e^38 above any state the
+        ## circuit visits, so a real junction reads as ZERO against it and
+        ## the screen fires (and the confirmation re-solves) on most steps.
+        ## The RANK stays structural -- a running maximum of the rank reads
+        ## quiet where `C` is zero for the whole run -- and for a linear `C`
+        ## the two scales are one number.
+        ## History: `doc/transient_history.md`, `Transient._branch_screen`.
         ref = max(getattr(self, '_branch_cmax', 0.0),
                   float(np.max(np.abs(C))))
         self._branch_cmax = ref
@@ -1244,10 +1129,8 @@ class Transient(Analysis):
                 ## ⚠⚠ AND IT MUST ACTUALLY BE A ROOT.  A solver that hands the
                 ## SEED BACK -- converged at iteration zero, or bailed -- looks
                 ## exactly like a second solution to a pure distance test, and
-                ## that is a FALSE ALARM on a default-on diagnostic.  Measured
-                ## on the coupled path before this check existed: the
-                ## "alternative" was 0.7071067811865475 in every component,
-                ## which is precisely the perturbed seed.
+                ## that is a FALSE ALARM on a default-on diagnostic.
+                ## History: `doc/transient_history.md`, `Transient._branch_confirm`.
                 if not self._branch_is_root(func, alt):
                     continue
                 return alt
@@ -1289,11 +1172,11 @@ class Transient(Analysis):
             ## ⚠⚠ A DIAGNOSTIC THAT CHANGES THE SIMULATION IS A DEFECT.  Every
             ## speculative solve writes the devices' limiting state (`Diode`'s
             ## `_vlim`, which its `i` and `G` read), so the NEXT step would
-            ## start from the alternative's linearisation -- measured once:
-            ## `_vlim` 0.0 with the check off, 0.1017 with it on.  It goes
-            ## back EXACTLY, from a snapshot; the `limit(x, x)` re-sync this
-            ## used to do clamps against the stored state and lands short
-            ## above a junction's critical voltage (`state_snapshot`).
+            ## start from the alternative's linearisation.  It goes back
+            ## EXACTLY, from a snapshot: a `limit(x, x)` re-sync clamps against
+            ## the stored state and lands short above a junction's critical
+            ## voltage (`state_snapshot`).
+            ## History: `doc/transient_history.md`, `Transient._branch_after_solve`.
             _snap = state_snapshot(self.cir)
             try:
                 alt = self._branch_confirm(func, x_res, direction)
@@ -1318,11 +1201,11 @@ class Transient(Analysis):
                                                             dtype=float)))))
         except Exception as exc:                               # noqa: BLE001
             ## ⚠⚠ A DIAGNOSTIC MUST NOT BE ABLE TO FAIL A SOLVE -- it runs
-            ## after the answer is in hand and only reports.  BUT A BARE
-            ## `pass` HERE HID ITS OWN FIRST BUG: `self.statistics` does not
-            ## exist on a hand-driven march, the AttributeError was swallowed,
-            ## and the whole check silently did nothing while looking healthy.
-            ## So the failure is recorded and announced ONCE.
+            ## after the answer is in hand and only reports.  But a bare
+            ## `pass` here would hide the check's own bugs (it would silently
+            ## do nothing while looking healthy), so the failure is recorded
+            ## and announced ONCE.
+            ## History: `doc/transient_history.md`, `Transient._branch_after_solve`.
             if not getattr(self, '_branch_error', None):
                 self._branch_error = repr(exc)
                 logging.warning('transient: the branch check itself failed '
@@ -1341,12 +1224,12 @@ class Transient(Analysis):
         if not self._branch_on():
             return
         try:
-            ## ⚠ "FIRED" AND "GAVE A DIRECTION" ARE DIFFERENT ANSWERS, and
-            ## conflating them is why the first version of this read ZERO
-            ## screens on the very fixture it was written for: when `C`
-            ## collapses ENTIRELY the screen returns `(True, None)` -- there is
-            ## no null direction to name because every direction is one -- and
-            ## a `fired = direction` idiom then reads it as "did not fire".
+            ## ⚠ "FIRED" AND "GAVE A DIRECTION" ARE DIFFERENT ANSWERS: when
+            ## `C` collapses ENTIRELY the screen returns `(True, None)` --
+            ## there is no null direction to name because every direction is
+            ## one -- and a `fired = direction` idiom reads it as "did not
+            ## fire".
+            ## History: `doc/transient_history.md`, `Transient._branch_after_coupled`.
             fired = False
             direction = None
             for Yi in Y:
@@ -1368,10 +1251,8 @@ class Transient(Analysis):
             ## see.  The solve leaves the pinned row alone and hands it back
             ## unchanged, the "alternative" differs from the base only in that
             ## row, and its residual is EXACTLY ZERO because it is the same
-            ## physical solution.  Measured: `alt` came back as
-            ## [0.7071, 0.7071] with `r_alt = 0.0`, and that was 5 false alarms
-            ## out of 5 on the attracting control -- which the residual check
-            ## could not catch, the residual being genuinely zero.
+            ## physical solution -- which the residual check cannot catch.
+            ## History: `doc/transient_history.md`, `Transient._branch_after_coupled`.
             n = len(np.asarray(Y[0], dtype=float))
             if direction is not None:
                 d = np.asarray(direction, dtype=float).copy()
@@ -1517,24 +1398,22 @@ class Transient(Analysis):
                 ## Stage 6: lets the solver name a node instead of a row index.
                 row_names=reduced_row_names(self.cir, self.irefnode),
             )
-        ## NARROW, deliberately.  This used to be `except Exception`, which turned
-        ## every failure inside a device model into "the circuit did not converge" --
-        ## a `ZeroDivisionError` from a source with `tr=0`, a `TypeError` from a
-        ## mis-specified parameter, an `AttributeError` from a typo in a subclass.
-        ## All of them were reported as a convergence failure, which sends the reader
-        ## to look at the bias point of a circuit whose real problem is a bug three
+        ## NARROW, deliberately.  A broad `except Exception` would report every
+        ## failure inside a device model (a `ZeroDivisionError`, a `TypeError`, an
+        ## `AttributeError`) as a convergence failure, which sends the reader to
+        ## look at the bias point of a circuit whose real problem is a bug three
         ## frames down.  The solvers already classify what they mean, so only their
         ## own exceptions and genuine linear-algebra failures are translated here;
         ## everything else propagates with its original type and traceback.
+        ## History: `doc/transient_history.md`, `Transient._newton`.
         except SingularMatrix:
             raise
         except NoConvergenceError as e:
             ## The solvers wrap a singular factorisation as NoConvergenceError
             ## ("Singular Jacobian: ..."); promote that to SingularMatrix so callers
             ## can tell "no solution here" from "could not get there".  Matching on
-            ## the message is weak and stage 6 replaces it with a real classification
-            ## off the zero pivot -- but it is what the previous code did, and
-            ## changing the taxonomy is not this stage's job.
+            ## the message is weak.
+            ## History: `doc/transient_history.md`, `Transient._newton`.
             if 'Singular' in str(e) or 'linalgerror' in str(e).lower():
                 raise SingularMatrix(str(e)) from e
             ## ⚠ THE LINE SEARCH, AS A RETRY (owner decision 2026-09-08, "Do 2";
@@ -1577,7 +1456,8 @@ class Transient(Analysis):
         except LinAlgError as e:
             raise SingularMatrix(str(e)) from e
         
-        ## Stage 6(c): this count was bound to `_` and discarded.
+        ## Stage 6(c): the Newton iterations, counted.
+        ## History: `doc/transient_history.md`, `Transient._newton`.
         stats = getattr(self, 'statistics', None)
         if stats is not None:
             stats.newton_iterations += int(_iters)
@@ -1597,8 +1477,8 @@ class Transient(Analysis):
     
 
     
-    ## `method` was accepted and never read (doc/transient_review_260820.md, F18);
-    ## the integrator is selected by the `integrator` Parameter, not per call.
+    ## The integrator is selected by the `integrator` Parameter, not per call.
+    ## History: `doc/transient_history.md`, `Transient.get_diff`.
     def get_diff(self, q, C):
         """Method used to calculate time derivative for charge storing elements (i_eq and g_eq)."""
         # Determine the active integrator based on step size variations
@@ -1643,28 +1523,18 @@ class Transient(Analysis):
     def _opening_step(self, timestep):
         """The size of the first step of a run.
 
-        STAGE 3.  A run used to open at `timestep`, which is also `max_step` -- the
-        largest step the controller is ever allowed to take.  The step controller
-        accepts the first step unevaluated, because with no history there is nothing
-        to difference and no truncation error can be estimated, so that opening step
-        was both the **largest** and the **only unchecked** step in the run.
-
-        Its error then dominated everything after it.  Measured on an RC step
-        response against the analytic solution, trapezoidal, before this method
-        existed: the global error was **1.3212e-01 at reltol 1e-3, 1e-4, 1e-5 AND
-        1e-6** -- identical to five digits -- while the step count went from 24 to
-        195.  Eight times the work for the same answer.  Backward Euler and the
-        two second-order methods also agreed to five digits, which is why the
-        integrator choice appeared not to matter.
+        STAGE 3.  The step controller accepts the first step unevaluated, because
+        with no history there is nothing to difference and no truncation error can
+        be estimated, so the opening step is the **only unchecked** step in the
+        run.  Opened large, its error dominates everything after it: at
+        `timestep`, an RC step response's global error is the same to five digits
+        from reltol 1e-3 to 1e-6, and for every integrator.
 
         Opening at `timestep * 1e-3` costs one cheap step and leaves the controller
         to grow the step from there, which it does geometrically, so the ramp is
         paid off within a handful of steps.
 
-        The principled alternative is a Hairer-style estimate from `q'`/`q''` at the
-        operating point.  The plan asks for the ramp first and a *measurement* of
-        whether the estimate is worth the complexity, rather than an assumption --
-        see the outcome recorded under gate 3-1.
+        History: `doc/transient_history.md`, `Transient._opening_step`.
         """
         firststep = self.par.firststep
         if firststep is None:
@@ -1732,16 +1602,17 @@ class Transient(Analysis):
     def _begin_run(self, x, n):
         """Reset every piece of PER-RUN integrator state and seed the rings.
 
-        The standard and coupled loops (one loop since 2026-09-23) each
-        carried a byte-identical copy of this, and `PSS` needs it too -- it re-integrates one period from a
-        fresh state on every shooting iteration, so "begin a run" happens
-        many times per analysis there.
+        `_solve` calls it, and so does `PSS` -- it re-integrates one period
+        from a fresh state on every shooting iteration, so "begin a run"
+        happens many times per analysis there.
 
         The charge history is rebuilt per run, so the STEP history must be:
         without that, a second `solve()` on the same object starts with a
         stale `_dt_last2` while `_qlast[2]` is the freshly seeded initial
         charge, breaking the invariant 4g(b) relies on -- that
         `h_last2 is not None` exactly when `q_last[2]` is a real past point.
+
+        History: `doc/transient_history.md`, `Transient._begin_run`.
         """
         self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
@@ -1833,11 +1704,11 @@ class Transient(Analysis):
 
         ⚠ Called from the ACCEPT site (through :meth:`_push_history`) and
         nowhere else, so a REJECTED step's stages never become nodes -- they
-        are samples of a trajectory the run then threw away.  (The stage
-        methods' adaptive driver used to be a second accept site that skipped
-        :meth:`_push_history`; one stepping loop since 2026-09-23, and every
-        family accepts through it -- a stage method reads no charge rings, but
-        its idtmod rows need the periodic shifts.)
+        are samples of a trajectory the run then threw away.  Every family
+        accepts through it -- a stage method reads no charge rings, but its
+        idtmod rows need the periodic shifts.
+
+        History: `doc/transient_history.md`, `Transient._pred_promote`.
         """
         pend = getattr(self, '_pred_pending', None)
         if pend is not None:
@@ -1856,10 +1727,9 @@ class Transient(Analysis):
         ## live state and stage vectors -- and the periodic gauge shift
         ## subtracts `n*modulus` from every live history it knows about, so an
         ## aliased entry takes the shift TWICE and the accepted state is
-        ## corrupted.  Measured as a real failure of
-        ## `test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid`,
-        ## and it failed with the predictor switched OFF -- the bookkeeping
-        ## runs either way, so 'off' is a control for the SEED, not for this.
+        ## corrupted.  The bookkeeping runs with the predictor switched OFF
+        ## too, so 'off' is a control for the SEED, not for this.
+        ## History: `doc/transient_history.md`, `Transient._pred_note`.
         for ts, ys in stages:
             h.append((float(ts), np.array(ys, dtype=float)))
         h.append((float(t), np.array(x, dtype=float)))
@@ -1897,15 +1767,16 @@ class Transient(Analysis):
         any other, and being the nearest ones they are what turns a whole-step
         extrapolation into a one-stage-gap one.
 
-        ⚠⚠ THE CLAMP IS NOT OPTIONAL, and it is what the two rejected
-        predictors of the GLM measurement lacked.  A polynomial continued past
-        its last node can leave the region the circuit actually visits, and on
-        an exponential device a 3x overshoot is ``exp(3 dV / VT)``: measured,
-        the worst stage then cost 33 Newton iterations against the old seed's
-        6, while the MEAN still improved -- which is how such a heuristic
-        passes its own gate and fails in use.  The prediction is therefore
-        confined COMPONENTWISE to the range its own nodes span, widened by the
-        motion between the two newest.  The scale comes from the data.
+        ⚠⚠ THE CLAMP IS NOT OPTIONAL.  A polynomial continued past its last
+        node can leave the region the circuit actually visits, and on an
+        exponential device a 3x overshoot is ``exp(3 dV / VT)``: the worst
+        stage then costs several times the old seed's Newton iterations while
+        the MEAN still improves -- which is how such a heuristic passes its
+        own gate and fails in use.  The prediction is therefore confined
+        COMPONENTWISE to the range its own nodes span, widened by the motion
+        between the two newest.  The scale comes from the data.
+
+        History: `doc/transient_history.md`, `Transient._predict_state`.
         """
         if self.stage_predictor == 'off':
             return None
@@ -1963,14 +1834,11 @@ class Transient(Analysis):
             else None
         if motion is None:
             return None
-        ## ⚠ A SELF-VALIDATION GATE WAS BUILT HERE AND REMOVED, because it
-        ## changed nothing measurable: refit at the same degree from the nodes
-        ## one older, retrodict the newest node, and decline when the miss
-        ## exceeded a fraction of the step's motion.  Swept over thresholds
-        ## from 0.1 to infinity it moved ONE reading by 0.8% and every other
-        ## by nothing -- because it looks BACKWARD, and the case it was built
-        ## for is a knee that has not happened yet.  What actually bounds the
-        ## damage is the clamp below.
+        ## ⚠ NO SELF-VALIDATION GATE (retrodict the newest node from the older
+        ## ones, decline on a miss): it changes nothing measurable, because it
+        ## looks BACKWARD, and the case it would be for is a knee that has not
+        ## happened yet.  What actually bounds the damage is the clamp below.
+        ## History: `doc/transient_history.md`, `Transient._predict_state`.
         pred = _fit(take, ttarget)
         if pred is None:
             return None
@@ -1997,13 +1865,11 @@ class Transient(Analysis):
         ## curve a polynomial is being put through -- the gauge shift keeps the
         ## recorded nodes in one gauge, but the fold can also fall between the
         ## newest node and the target, and then the fit runs straight across
-        ## it.  MEASURED as a real failure: on `Idtmod` with the wrap landing
-        ## exactly ON a grid point, where the period map is genuinely
-        ## discontinuous and the PSS is supposed to converge anyway
-        ## (`test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff`),
-        ## predicting these rows stopped the shooting Newton converging at all.
-        ## Those rows keep the old seed -- the newest node's value -- and every
-        ## other row still gets the prediction.
+        ## it (with the wrap exactly ON a grid point, predicting these rows
+        ## stops the shooting Newton converging at all).  Those rows keep the
+        ## old seed -- the newest node's value -- and every other row still
+        ## gets the prediction.
+        ## History: `doc/transient_history.md`, `Transient._predict_state`.
         for row, _m, _o in (getattr(self, '_periodic_rows', None) or ()):
             out[row] = xref[row]
         return out
@@ -2011,15 +1877,16 @@ class Transient(Analysis):
     def _push_history(self, x, X=None):
         """Push one ACCEPTED point onto the integrator's ring buffers.
 
-        Both accept paths in this file carried their own copy of these two
-        lines, and a third caller is arriving (`PSS`, which imposes its own
-        grid and so cannot use either loop).  Three transcriptions of a ring
-        push is how the trailing-window gauge shift below gets applied to two
-        of them and forgotten in the third.
+        The one ring push for every accept site -- `_solve`, and `PSS`, which
+        imposes its own grid and so cannot use the loop -- so the
+        trailing-window gauge shift below cannot be applied to one and
+        forgotten in another.
 
         `X` is the solution window the gauge shift also has to rewrap; a
         caller that keeps no waveform passes none, and then only the state
         and the `_qlast` ring are shifted.
+
+        History: `doc/transient_history.md`, `Transient._push_history`.
         """
         self._iqlast = self.toolkit.concatenate(
             (self.toolkit.array([self._iq]), self._iqlast))[:-1]
@@ -2080,33 +1947,23 @@ class Transient(Analysis):
     def _initial_state(self, refnode):
         """The `uic=True` starting vector: zeros, plus whatever `ic` names.
 
-        STAGE 10.3.  `uic=True` previously meant a vector of zeros, which is not
-        SPICE's meaning and makes a class of circuit unsimulable rather than
-        merely inconvenient: **an LC tank at zero is at an equilibrium** and will
-        sit there forever, and a latch at zero is on its metastable point. There
-        was no way to start either.
+        STAGE 10.3.  A vector of zeros alone makes a class of circuit
+        unsimulable rather than merely inconvenient: **an LC tank at zero is at
+        an equilibrium** and will sit there forever, and a latch at zero is on
+        its metastable point.
 
-        **Node voltages only.** Element-level initial conditions -- SPICE's
-        ``C ... IC=v`` and ``L ... IC=i`` -- are NOT implemented here, and the two
-        are deferred for different reasons:
-
-        * ``L``'s is a branch current, and its unknown exists in the MNA vector,
-          so it needs only a reliable element-to-branch-index mapping. That is
-          mechanical but not free: `SubCircuit.branches` is a flattened list and
-          the element that owns each entry is not recorded.
-        * ``C``'s is a branch *voltage*, which constrains a DIFFERENCE of two
-          node unknowns rather than either of them. A set of such constraints is
-          a spanning-tree problem, not an assignment, and a floating capacitor
-          chain has no unique node-voltage solution without one.
-
-        **Reconsider if** a circuit needs a floating capacitor's initial voltage
-        or a nonzero starting inductor current -- both are real requirements that
-        this does not cover, and neither is expressible by naming node voltages.
+        The analysis-level `ic` names node voltages only.  Element-level
+        initial conditions -- SPICE's ``L ... IC=i`` and ``C ... IC=v``, and a
+        state element's seed -- are applied after it, by `_apply_element_ics`
+        (a ``C``'s constrains a DIFFERENCE of two node unknowns and is solved
+        as a spanning tree in `_apply_voltage_ics`).
 
         The starting vector is deliberately NOT made consistent with the circuit
         equations. Under `uic` there is no operating point by definition; the
         first Newton solve at `t = h` sees these values as history and produces a
         consistent solution from them, which is what SPICE does too.
+
+        History: `doc/transient_history.md`, `Transient._initial_state`.
         """
         n = self.cir.n
         ## numpy, not self.toolkit: this vector is built and MUTATED before
@@ -2177,15 +2034,14 @@ class Transient(Analysis):
             ## range).  `elementnodemap` maps its local x-indices, private
             ## nodes included, onto this circuit's rows.
             ##
-            ## GATED ON `state_ic`, NOT ON A PARAMETER SPELLED `ic`.  This
-            ## test used to read `iparv.ic` first and then never use the
-            ## value on this path -- a NAME check.  A generated model whose
-            ## state seed is called anything else (`x0`, `phi0`) fell through
-            ## it, and `uic=True` started that state at zero while the DC pin
-            ## was perfectly correct: no error, no warning, a wrong waveform.
+            ## GATED ON `state_ic`, NOT ON A PARAMETER SPELLED `ic`: a
+            ## generated model's state seed may be called anything else
+            ## (`x0`, `phi0`), and a NAME check would let `uic=True` start that
+            ## state at zero -- no error, no warning, a wrong waveform.
             ## `IC_KIND == 'state'` and `state_ic` are installed under the
             ## same condition (hdl.py, `state_meta['dc_pins']`), so this is
             ## the same question asked of the thing that answers it.
+            ## History: `doc/transient_history.md`, `Transient._apply_element_ics`.
             if getattr(element, 'IC_KIND', 'current') == 'state':
                 if not hasattr(element, 'state_ic'):
                     continue
@@ -2328,11 +2184,12 @@ class Transient(Analysis):
         loudly instead of being dropped.
         """
         for element in getattr(circuit, 'elements', {}).values():
-            ## Same correction as `_apply_element_ics`: a state element
-            ## declares its seed through `state_ic`, not through a parameter
-            ## named `ic`.  Asking the old question here made the guard
-            ## UNDER-detect, which is the direction that silently drops an
-            ## initial condition instead of refusing it.
+            ## As in `_apply_element_ics`: a state element declares its seed
+            ## through `state_ic`, not through a parameter named `ic`.  Asking
+            ## about `ic` here would make the guard UNDER-detect, which is the
+            ## direction that silently drops an initial condition instead of
+            ## refusing it.
+            ## History: `doc/transient_history.md`, `Transient._descendant_has_ic`.
             kind = getattr(element, 'IC_KIND', 'current')
             if kind == 'state':
                 carries = hasattr(element, 'state_ic')
@@ -2349,19 +2206,18 @@ class Transient(Analysis):
     def _solve_operating_point(self, refnode):
         """Solve the DC operating point that seeds the transient.
 
-        A failure here **raises**.  It used to substitute a vector of zeros, so a
-        circuit that had no operating point at all -- or one whose solve hit a bug in
-        a device model -- returned a complete, plausible-looking waveform computed
-        from a bias point that was never found.  Nothing in the result distinguished
-        that from a successful run, which makes it the most expensive class of defect
-        this module had: it does not fail, it lies.
+        A failure here **raises**.  A substituted vector of zeros would return a
+        complete, plausible-looking waveform computed from a bias point that was
+        never found, indistinguishable from a successful run: it does not fail, it
+        lies.
 
         The inner `DC` is constructed from *this* analysis's configuration rather
-        than from `DC`'s defaults.  Before, `DC(self.cir)` inherited none of the
-        transient's toolkit, environment parameters, tolerances, solver or scaler, so
-        the operating point could be solved at a different temperature, to a
-        different accuracy, and with a different Newton strategy than every step that
-        followed it -- and the mismatch was invisible.
+        than from `DC`'s defaults -- the transient's toolkit, environment
+        parameters, tolerances, solver and scaler -- so the operating point is
+        solved at the same temperature, to the same accuracy, and with the same
+        Newton strategy as every step that follows it.
+
+        History: `doc/transient_history.md`, `Transient._solve_operating_point`.
         """
         from pycircuit.circuit.dcanalysis import DC
 
@@ -2403,12 +2259,10 @@ class Transient(Analysis):
     ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in
     ## A commercial simulator: the LTE estimate is deliberately conservative, so the allowed
     ## truncation error is this many times the Newton-solve tolerance.
-    ## P2 (doc/backend_parity_260821.md): settable at last -- the asymmetry
-    ## was REVERSED, JAX declaring `TRTOL` as a Parameter while this side
-    ## hardcoded a class constant, so a user tuning a commercial simulator's `lteratio`
-    ## could do it on one backend only.  A property rather than the old
-    ## class attribute, so every existing `self.LTERATIO` read follows the
-    ## Parameter and the two cannot drift.
+    ## A property reading the `TRTOL` Parameter (the JAX backend's too, P2),
+    ## so every `self.LTERATIO` read follows the Parameter and the two cannot
+    ## drift.
+    ## History: `doc/transient_history.md`, `Transient.LTERATIO`.
     @property
     def LTERATIO(self):
         return float(self.par.TRTOL)
@@ -2446,9 +2300,11 @@ class Transient(Analysis):
         An increment on a node is a voltage and on a branch is a current, so the
         two vectors are transposed with respect to each other.  Getting this
         backwards is the same class of error stage 0.3d separated for the LTE
-        tolerances: the numbers are dimensionally different quantities that
-        happened to share a default (both 1e-12 until 2026-09-19, when
-        `vabstol` became 1e-6 -- which is what makes a swap visible).
+        tolerances: the numbers are dimensionally different quantities, with
+        different defaults (`iabstol` 1e-12, `vabstol` 1e-6 -- which is what
+        makes a swap visible).
+
+        History: `doc/transient_history.md`, `Transient._newton_xtol_vector`.
         """
         from pycircuit.circuit.analysis import newton_tolerance_vectors
         return newton_tolerance_vectors(
@@ -2458,24 +2314,22 @@ class Transient(Analysis):
     def _companion_at(self, x):
         """``(iq, Geq)``: the step's companion current and conductance at `x`
         (the current ``self._dt``), with the charge cached against the state
-        it belongs to.  One assembly for every step's residual and Jacobian
-        (2026-09-24: it was six copies).
+        it belongs to.  One assembly for every step's residual and Jacobian.
 
-        `self.epar`, not the module-level `defaultepar`.  Omitting it meant
-        every device in a transient was evaluated at defaultepar's T = 300 K
-        whatever the caller asked for, and -- because `Analysis.__init__`
-        attaches `bypasstol` to the analysis's own epar and nowhere else --
-        every device took its `except AttributeError` branch and the `bypass`
-        parameter did nothing at all.
+        `self.epar`, not the module-level `defaultepar`: without it every
+        device is evaluated at defaultepar's T = 300 K whatever the caller
+        asked for, and -- because `Analysis.__init__` attaches `bypasstol` to
+        the analysis's own epar and nowhere else -- the `bypass` parameter
+        does nothing at all.
 
         STAGE 2c.  The charge vector is stashed alongside the state it belongs
         to.  `solve()` needs `q` at the converged point twice more -- once for
-        the step controller and once for the history roll -- and was
-        recomputing the whole assembly both times at an x it had already
-        evaluated.  Measured 5.08 `q` assemblies per accepted step against
-        3.06 for every other stamp; the difference is exactly those two.
+        the step controller and once for the history roll -- and `_q_at`
+        serves both from here instead of repeating the assembly.
         Keyed by the state so a stale value can never be served: the check is
-        identity-then-equality on x, not a bare "did we cache"."""
+        identity-then-equality on x, not a bare "did we cache".
+
+        History: `doc/transient_history.md`, `Transient._companion_at`."""
         C = self.cir.C(x, self.epar)
         q = self.cir.q(x, self.epar)
         self._q_cache = (x, q)
@@ -2485,14 +2339,10 @@ class Transient(Analysis):
         """`u(t)`: the circuit's sources, plus `provided_function(t)`.
 
         ONE CONTRACT: `provided_function(t)` is an extra source term, on every
-        path.  The standard path used to treat it as a post-solve callback
-        `provided_function(f, J, C)` whose result was unpacked and never read,
-        while the coupled and PCNR paths added it to `u` -- two contradictory
-        meanings behind one parameter, flag-selected
-        (doc/transient_review_260820.md, F4).  The callback contract was born
-        dead: its introducing commit says "currently is calculated but returns
-        no value to solve method", and no consumer ever appeared.  The live
-        semantics wins; callback callers break loudly on arity."""
+        path (F4).  A caller written for a post-solve callback
+        `provided_function(f, J, C)` breaks loudly on arity.
+
+        History: `doc/transient_history.md`, `Transient._source_at`."""
         u = self.cir.u(t, self.epar, analysis=self.par.analysis)
         if provided_function is not None:
             u = u + provided_function(t)
@@ -2632,14 +2482,14 @@ class Transient(Analysis):
         ## path actually implements.  Accepting it and using it only for
         ## `relref` would make `tran.step_controller = IntegralController()` look
         ## honoured while doing nothing -- the same class of defect as a
-        ## documented feature that does not exist, which is what this path was
-        ## until now (it silently built its own and ignored the caller's).
+        ## documented feature that does not exist.
         ##
         ## NOT keyed on `lte_gradients`, which would be the obvious test and is
         ## wrong: `q^T` and `d` are implemented and gated but are NOT called on
         ## the shipped path, because sec. 3.4 replaced the eq (12) branch that
         ## used them.  Testing for a method nothing calls would pass controllers
         ## that cannot work and fail ones that can.
+        ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
         injected = getattr(self, 'step_controller', None)
         if getattr(self, '_step_controller_is_auto', False):
             ## Auto-created by `_solve` on an earlier run of this object, not a
@@ -2662,11 +2512,8 @@ class Transient(Analysis):
 
         x = toolkit.array(x_prev, dtype=float).copy()
 
-        ## PCNR ON THE COUPLED PATH.  `pcnr=True` was SILENTLY IGNORED here:
-        ## `_solve` dispatches on `coupled_lte` before it ever looks at `pcnr`,
-        ## so the run took the classic limiter and the parameter did nothing --
-        ## measured as 0 PCNR steps against 4869 `Diode.limit` calls, and results
-        ## bit-identical to `pcnr=False`.
+        ## PCNR ON THE COUPLED PATH: `pcnr=True` is honoured here too.
+        ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
         from pycircuit.circuit import pcnr as _pcnr
         junctions = _pcnr.pcnr_devices(self.cir) if self.par.pcnr else []
         ## `v_lim` is per-time-point state, seeded from the incoming solution and
@@ -2762,21 +2609,11 @@ class Transient(Analysis):
 
             ## `hold_h` -- the step size is IMPOSED, not free.  A step truncated
             ## onto a breakpoint or onto `tend` has its size decided by where it
-            ## must land, so there is nothing for the coupled system to SOLVE.
+            ## must land, so there is nothing for the coupled system to SOLVE
+            ## (solving for its own `h` walks straight off the edge again).
             ##
-            ## Without it the truncation was pointless -- `fang_timestep` solved
-            ## for its own `h` and walked straight off the edge again: 0 of 10
-            ## pulse edges landed on, worst miss 1.24e-7 s, the whole rise time.
-            ##
-            ## BUT "DO NOT SOLVE FOR h" IS NOT "DO NOT CHECK THE ERROR", and
-            ## conflating the two was a defect worth the same scrutiny as the one
-            ## it replaced.  A held step was accepted blind, so its truncation
-            ## error was governed by nothing: on the pulsed RC the maximum error
-            ## sat at 1.465e-2 at BOTH reltol 1e-5 and 1e-6 -- identical across a
-            ## decade of tolerance, the signature of a quantity no tolerance
-            ## controls -- and the mean was 5.9x the standard path's at 1e-6,
-            ## getting worse as the tolerance tightened.
-            ##
+            ## BUT "DO NOT SOLVE FOR h" IS NOT "DO NOT CHECK THE ERROR": a held
+            ## step accepted blind has a truncation error governed by nothing.
             ## A held step whose error is over the band is reported so the
             ## caller can shrink and retry -- UNLESS the grid is locked.
             ##
@@ -2784,10 +2621,8 @@ class Transient(Analysis):
             ## theirs, so shrinking is not an option available to us: the honest
             ## response to an over-tolerance step on a locked grid is to take it
             ## and let the run's accuracy be what the caller asked for, exactly
-            ## as the standard path does. Conflating "truncated onto a
-            ## breakpoint" with "grid imposed by the caller" broke
-            ## `test_fixed_timestep_keeps_the_grid_on_the_coupled_path`: the
-            ## retry shrank `h` and the uniform grid disappeared.
+            ## as the standard path does.
+            ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
             if hold_h and not grid_locked and not eps_ok and err > gamma_max:
                 return x_stage1, h, it + 1, False
 
@@ -2802,35 +2637,27 @@ class Transient(Analysis):
 
             ## --- The LTE condition failed, so the step size must move too.
             ##
-            ## SEC. 3.4's APPROXIMATE NEWTON, NOT EQ (12), AND THE REASON IS
-            ## MEASURED.  Eq (12) recovers `dh` from eq (14), whose denominator
-            ## is `q^T dxh + d`.  Those two terms are the solution's sensitivity
-            ## to the step size and the extrapolation's slope, and BOTH are
-            ## approximately `dv/dt`: their difference is the truncation error's
-            ## derivative, which is tiny by construction.  Measured on a driven
-            ## RC at h = 1.6e-7: `q^T dxh = +1.818e9`, `d = -1.820e9`, denominator
-            ## -2e6.  Three digits lost, and the SIGN of the denominator decided
-            ## by the cancellation -- so `dh` saturated at the eta limit with an
-            ## essentially arbitrary sign and the step drifted down four decades
-            ## while `err` sat at 0.2, far BELOW the band that should have grown
-            ## it.  Eq (12) computes a small quantity as the difference of two
-            ## large ones; this is very likely what sec. 3.4 means by "the
-            ## coupled nonlinear system sometimes is very sensitive to the change
-            ## of step size".
+            ## SEC. 3.4's APPROXIMATE NEWTON, NOT EQ (12).  Eq (12) recovers
+            ## `dh` from eq (14), whose denominator is `q^T dxh + d`.  Those two
+            ## terms are the solution's sensitivity to the step size and the
+            ## extrapolation's slope, and BOTH are approximately `dv/dt`: their
+            ## difference is the truncation error's derivative, which is tiny
+            ## by construction.  Eq (12) computes a small quantity as the
+            ## difference of two large ones (on a driven RC, three digits lost
+            ## and the SIGN of `dh` decided by the cancellation).
             ##
             ## Eq (17) gets the new step from the error RATIO instead, which
             ## involves no cancellation at all.  `step_for_error_ratio` inverts
             ## the node polynomial rather than applying the (tau/eps)^(1/(n+1))
             ## power law, because that law only holds while h >> h_last -- see
             ## `extrapolation_error_weight`.
+            ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
             from pycircuit.circuit._lte_kernels import step_for_error_ratio
 
             target = self._band_centre(ctrl, gamma_min, gamma_max)
 
-            ## (`coupled_method='bordered'`, Fang eq (12)/(14) -- a Newton step
-            ## on the LTE equation with an analytic denominator -- stood here
-            ## until 2026-09-27; retired, see the check above.  History:
-            ## doc/pss_log_260902.md, 2026-09-27, and git.)
+            ## (`coupled_method='bordered'` is retired: see the check above.)
+            ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
             ratio = target / max(err, 1e-300)
             h_new = step_for_error_ratio(h, h_hist, ratio,
                                          1.0 - eta, 1.0 + eta)
@@ -2841,15 +2668,7 @@ class Transient(Analysis):
             ## indistinguishable from "the step size has stopped moving" -- the
             ## definition of converged in eq (16) -- when in fact it stopped
             ## because it hit a wall.
-            ##
-            ## That hole is what let the first step after a pulse edge be
-            ## accepted at 2.0e-7 s when it needed 3.55e-9 s, a factor of 56.
-            ## The step came out of `fang_timestep` at exactly 0.2x its entry
-            ## value -- MIN_SHRINK_RATIO, the within-time-point floor -- after 12
-            ## iterations, reporting converged. It produced v = 0.033333 against
-            ## an analytic 0.018731, a 78% single-step error, and the resulting
-            ## 1.465e-2 was IDENTICAL at reltol 1e-5 and 1e-6 because nothing
-            ## about it was tolerance-controlled.
+            ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
             h_want = step_for_error_ratio(h, h_hist, ratio, 1e-6, 1e6)
             h_new = min(max(h_new, h_floor), h_ceil)
             dh = h_new - h
@@ -2860,17 +2679,12 @@ class Transient(Analysis):
             ## was cut off -- and testing it with `<=` makes the two
             ## indistinguishable, because a clamped `dh` equals `eta*h` exactly.
             ##
-            ## Measured on the pulsed RC: a step that needed to shrink tenfold
-            ## just after a rising edge declared itself converged after a single
-            ## 15% shrink, ran at h = 4.0e-8 s where the standard path used
-            ## 4.4e-9 s, and left a maximum error of 1.465e-2 that was IDENTICAL
-            ## at reltol 1e-5 and 1e-6 -- the signature of an error no tolerance
-            ## governs.
             ## Only a thwarted SHRINK counts. A step that wants to grow and is
             ## held at the cap is the normal state of every adaptive controller
             ## -- growth is bounded by zero stability, not by the error -- and
             ## treating that as unconverged drove `h` to 9.5e-16 at t = 1e-9,
             ## because the opening steps always want to grow faster than allowed.
+            ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
             saturated = h_want < h_floor * (1.0 - 1e-9)
 
             ## Eq (18): correct the solution already computed rather than
@@ -2942,11 +2756,10 @@ class Transient(Analysis):
         etol = self.LTERATIO * (self.par.reltol * ref
                                 + self._lte_abstol_vector())
         ## P22: eq (6) over the STATE rows only -- an infinite tolerance on
-        ## algebraic rows removes them from the band test, the controlling-
-        ## node argmax through this one mechanism (and, until its retirement on
-        ## 2026-09-27, the 'bordered' branch's lte_gradients).  See
-        ## _state_row_mask for the derivation and the measured livelock this
-        ## retires.
+        ## algebraic rows removes them from the band test and the controlling-
+        ## node argmax through this one mechanism.  See _state_row_mask for
+        ## the derivation.
+        ## History: `doc/transient_history.md`, `Transient._lte_tolerance`.
         ## 1e30, not inf: lte_gradients differentiates 1/etol terms, and an
         ## inf there turns a masked row's gradient into 0*inf = NaN.
         mask = getattr(self, '_lte_state_mask', None)
@@ -3010,12 +2823,9 @@ class Transient(Analysis):
         `x_prev`, the ACCEPTED state, before this candidate is looked at --
         so the relative term cannot h-cancel at a signal birth.
 
-        ⚠ THE RUNGE-KUTTA LOOP NEVER HAD IT (fixed 2026-09-23, before the
-        three stepping loops became one).  The check was typed out in the LMM
-        loop and again in the coupled loop: every Runge-Kutta and GLM method
-        ignored both knobs SILENTLY -- on a pulsed RC with 'auto' (bound
-        0.098 V) gear and trap went 70 -> 86 steps and held 0.097 V while
-        radau stayed at 69 steps and 0.0996 V, trbdf2 at 71."""
+        The one stepping loop applies it to every family.
+
+        History: `doc/transient_history.md`, `Transient._excursion_ratio`."""
         if self.par.max_dv_step is None and self.par.max_di_step is None:
             return None
         (_bvs, _cvr), (_bis, _cir_) = self._dv_step_bounds()
@@ -3196,17 +3006,14 @@ class Transient(Analysis):
         `on_fail(exc)` (the path's own warning), a fallback counted and
         `(None, False)`, for the caller to solve by device limiting.
         `pcnr_status` is 'used' / 'partial' / 'fell-back' from the two
-        counts.  (One place since 2026-09-27; the LMM, stage and coupled
-        paths each carried the four lines.)
+        counts.
 
-        ⚠ ANY EXCEPTION FALLS BACK, on every path (Andreas, 2026-09-27), as
-        the LMM step and DC always did: a PCNR failure on one point must not
-        end the run.  The stage and coupled paths used to catch only a
-        non-convergence, and a singular Jacobian then ENDED the transient --
-        measured, Radau + PCNR on a FET cascode with a vanishing capacitor,
-        `LinAlgError: Singular matrix`, where device limiting ran.  Every
-        path's warning names the exception's type, so a genuine bug on the
-        PCNR path is still visible in the log."""
+        ⚠ ANY EXCEPTION FALLS BACK, on every path (Andreas), as in DC: a
+        PCNR failure on one point -- a singular Jacobian included -- must not
+        end the run.  Every path's warning names the exception's type, so a
+        genuine bug on the PCNR path is still visible in the log.
+
+        History: `doc/transient_history.md`, `Transient._pcnr_attempt`."""
         try:
             out = solve()
         except catch as exc:
@@ -3226,7 +3033,8 @@ class Transient(Analysis):
         `assemble(x, v_lim)` returns -- the multistep companion, or the
         stage's effective one.  Returns the converged `(x, v_lim, feval)`;
         raises `NoConvergenceError` (`msg % (t, maxiter)`) otherwise.
-        (One loop since 2026-09-27; each family had its own copy.)"""
+
+        History: `doc/transient_history.md`, `Transient._pcnr_newton`."""
         from pycircuit.circuit import pcnr as _pcnr
         irefnode = self.irefnode
         xtol = self._newton_xtol_vector()
@@ -3244,18 +3052,16 @@ class Transient(Analysis):
             v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, self.epar,
                                  x_old=x)
 
-            ## BOTH residuals, not just the MNA one.
+            ## BOTH residuals, not just the MNA one, as `solve_dc` does.
             ##
-            ## `solve_dc` checks `g_lim` and this path did not, which means it
-            ## could return with `v_lim != e_a - e_b` -- the diode evaluated at a
-            ## voltage that is not the node voltage, so the returned vector is
-            ## not a solution of the circuit at all.  Everything downstream then
-            ## inherits it: the charge history is wrong, and the LTE estimate
-            ## built from that history reads low, so the step controller takes
-            ## large steps believing they are accurate.  Measured on a half-wave
-            ## rectifier as a median accepted error of 0.0066 against a target of
-            ## 0.81, while the actual waveform error was 2.5x worse than the
-            ## classic path's.
+            ## Converging on the MNA one alone can return with
+            ## `v_lim != e_a - e_b` -- the diode evaluated at a voltage that is
+            ## not the node voltage, so the returned vector is not a solution
+            ## of the circuit at all.  Everything downstream then inherits it:
+            ## the charge history is wrong, and the LTE estimate built from
+            ## that history reads low, so the step controller takes large steps
+            ## believing they are accurate.
+            ## History: `doc/transient_history.md`, `Transient._pcnr_newton`.
             lim_ok = _pcnr.lim_converged(g_lim, v_new, reltol,
                                          self.par.vabstol)
             done = lim_ok and bool(self.toolkit.alltrue(
@@ -3281,13 +3087,12 @@ class Transient(Analysis):
         junctions = _pcnr.pcnr_devices(self.cir)
         irefnode = self.irefnode
         ## STAGE PREDICTOR -- and it has to be here, not only on the limiting
-        ## path, or the two stop agreeing.  ⚠ MEASURED as a real failure of
-        ## `test_gate_13_6_pcnr_and_limiting_take_the_same_steps`: with the
-        ## predictor on one path only, the two converge to values that differ
-        ## in the last digits, that moves the LTE estimate, and the step
-        ## sequences part company at 5e-7 by the end of the run.  The gate is
-        ## right and the asymmetry was the defect.  It also seeds `v_lim`, and
-        ## limiting the seed is what fixed PCNR's one documented failure.
+        ## path, or the two stop agreeing: with the predictor on one path
+        ## only, the two converge to values that differ in the last digits,
+        ## that moves the LTE estimate, and the step sequences part company
+        ## (`test_gate_13_6_pcnr_and_limiting_take_the_same_steps`).  It also
+        ## seeds `v_lim`.
+        ## History: `doc/transient_history.md`, `Transient._solve_timestep_pcnr`.
         x = self.toolkit.array(self._pred_or(x0, t), dtype=float).copy()
         v_lim = _pcnr.v_lim_init(junctions, x)
 
@@ -3305,10 +3110,7 @@ class Transient(Analysis):
         ## updates -- and PCNR never calls it, because limiting is the
         ## thing PCNR replaces.  So `_vlim` stays at whatever it was
         ## first set to and the diode's conductance is frozen there:
-        ## measured on a half-wave rectifier as `_vlim` stuck at 0.0 V
-        ## across 2283 `G` evaluations while the junction actually swung
-        ## -18.47 to 0.75 V.  `cir.G(x)` therefore carries NO diode
-        ## conductance at all.
+        ## `cir.G(x)` carries NO diode conductance at all.
         ##
         ## Inside `augmented_system` that cancels -- the same wrong value
         ## is added by `cir.G` and subtracted again -- but the controller
@@ -3320,8 +3122,8 @@ class Transient(Analysis):
         ## convergence `v_lim == e_a - e_b`, so it is exactly the
         ## Jacobian of the residual with respect to `x` -- and it is
         ## `schur_reduce`'s matrix, taken from there rather than
-        ## written out a second time (the copy that used to live here
-        ## knew only the two-terminal `(dia, dib)` shape).
+        ## written out a second time.
+        ## History: `doc/transient_history.md`, `Transient._solve_timestep_pcnr`.
         _g2, _gl2, J_mm2, _Jml2, _Jlm2, didv2 = _pcnr.augmented_system(
             self.cir, x, v_lim, junctions, self.epar,
             u_extra=np.asarray(iq, dtype=float),
@@ -3439,9 +3241,9 @@ class Transient(Analysis):
         self.cir.limit(x, x, epar)
         return x
 
-    ## -- what every stage step shares (2026-09-23: the DIRK, GLM and the three
-    ## Radau steps each carried a copy of the source closure and of the
-    ## epilogue; the DIRK and GLM steps of the implicit stage solve too) ------
+    ## -- what every stage step shares: the source closure, the implicit stage
+    ## solve of the sequential methods, and the epilogue ---------------------
+    ## History: `doc/transient_history.md`, `Transient._stage_source`.
 
     def _stage_source(self, provided_function):
         """`u(t)` for a stage step: the circuit's sources at `t`, plus the
@@ -3468,9 +3270,8 @@ class Transient(Analysis):
         FALLS BACK PER STAGE, as the LMM and coupled steps do: PCNR has no
         continuation ladder, `_newton` does, so a stage PCNR cannot solve is
         handed to the limiting solve rather than ending the transient.
-        (Under a GLM this is E1, 2026-09-16: before it, `pcnr=True` did device
-        limiting there and SAID it had used PCNR -- 3 PCNR solves against
-        39987 `Diode.limit` calls on a half-wave rectifier.)"""
+
+        History: `doc/transient_history.md`, `Transient._solve_implicit_stage`."""
         epar = self.epar
         arr = lambda v: self.toolkit.array(v, dtype=float)
 
@@ -3489,8 +3290,8 @@ class Transient(Analysis):
                     type(exc).__name__, str(exc)[:80]))
             if ok:
                 ## THE BRANCH CHECK, CONFIRMED on the stage equation `_newton`
-                ## would have solved (until 2026-09-24 this path ran NONE:
-                ## neither the screen nor the confirmation)
+                ## would have solved
+                ## History: `doc/transient_history.md`, `Transient._solve_implicit_stage`.
                 if self._branch_on():
                     iref = self.irefnode
                     self._branch_after_solve(
@@ -3538,12 +3339,12 @@ class Transient(Analysis):
         (``A[0]==0``, ``c0==0``) is just ``Y_0 = x_n``.  Stiffly accurate, so
         ``x_{n+1} = Y_{s-1}``.
 
-        ⚠ THIS IS THE GENERIC FORM OF THE OLD `_solve_timestep_trbdf2`.  For
-        TR-BDF2's ESDIRK tableau the two implicit stages share the diagonal
-        ``d = STAGE_DIAG`` (the one-LU property), and the stage form is
-        algebraically identical to the old TR + BDF2-companion writing
-        (verified before the bespoke step was removed).  Any SDIRK/ESDIRK to
-        come reuses this untouched.
+        For TR-BDF2's ESDIRK tableau the two implicit stages share the
+        diagonal ``d = STAGE_DIAG`` (the one-LU property), and the stage form
+        is algebraically identical to the TR + BDF2-companion writing.  Any
+        SDIRK/ESDIRK to come reuses this untouched.
+
+        History: `doc/transient_history.md`, `Transient._rk_step_dirk`.
         """
         integ = self.base_integrator
         A, B, C = integ.butcher()
@@ -3658,33 +3459,24 @@ class Transient(Analysis):
         old guess (the previous stage's converged value), which is the control
         the gate measures against, not a knob to tune.
 
-        ⚠⚠ TWO SIMPLER PREDICTORS WERE BUILT FIRST AND BOTH LOST, on a
-        state-free exponential at 40 and 200 points per period
-        (``benchmarks/stage_predictor.py``; device evaluations against the
-        old guess, then the worst seed error, then the worst stage's Newton
-        iterations):
-
-        ==================  ==============  ============  ===========
-        predictor           device evals    worst seed    worst iters
-        ==================  ==============  ============  ===========
-        old guess           --              7.5e-02       6
-        ``Y_i^prev + dx``   +0.6% to -6%    2.0e-01       13
-        full-step poly      -2% to -18%     7.3e-01       33
-        this one            -12% to -29%    7.5e-02       5
-        ==================  ==============  ============  ===========
-
-        A gate on the MEAN passes all four.  The mechanism is structural: the
-        old guess is always a value the circuit ACTUALLY ATTAINED, so it can
-        never sit in a device's overflow region, while a polynomial continued
-        a whole step can, and on an exponential a 3x overshoot is
-        ``exp(3 dV / VT)``.  ⚠ A ratio test against the step's own motion does
-        NOT screen the bad case -- measured, the bad prediction's displacement
-        is 2.98 of that motion and the TRUE stage spread reaches 2.98 too.
+        ⚠⚠ THE SIMPLER PREDICTORS LOSE (``Y_i^prev + dx``, and a polynomial
+        continued a whole step): a gate on the MEAN passes them, but their
+        worst seed and worst stage are several times the old guess's, where
+        this one is -12% to -29% device evaluations with the old guess's worst
+        case (``benchmarks/stage_predictor.py``).  The mechanism is
+        structural: the old guess is always a value the circuit ACTUALLY
+        ATTAINED, so it can never sit in a device's overflow region, while a
+        polynomial continued a whole step can, and on an exponential a 3x
+        overshoot is ``exp(3 dV / VT)``.  ⚠ A ratio test against the step's
+        own motion does NOT screen the bad case: the bad prediction's
+        displacement and the TRUE stage spread are the same size.
 
         ⚠ The Nordsieck state itself needs a constant step and an unbroken
         predecessor, so this declines exactly where `_glm_Q` would be rescaled
         or restarted; the shared predictor is happy with a variable step, the
         method is not.
+
+        History: `doc/transient_history.md`, `Transient._glm_stage_predictor`.
         """
         if self.stage_predictor == 'off':
             return None
@@ -3742,13 +3534,11 @@ class Transient(Analysis):
         ## one it last CONSUMED, valid at the start.  A step that the
         ## controller REJECTS has already overwritten the first, and the retry
         ## -- which starts from the same `x` at the same `tn`, only with a
-        ## smaller `h` -- then finds no vector valid at `tn` and runs the full
-        ## startup.  MEASURED before this existed: every single step rejected
-        ## once and every step paying a startup (2732 accepted, 2732 rejected,
-        ## 2733 startups on GLM2), 102034 device evaluations against radau's
-        ## 2419 on the same problem -- 42x, and a vicious cycle rather than a
-        ## slow path, because a fresh startup's top component makes the next
-        ## estimate spurious too.
+        ## smaller `h` -- would find no vector valid at `tn` without the second
+        ## and run the full startup: a vicious cycle rather than a slow path
+        ## (every step rejected once, 42x radau's device evaluations), because
+        ## a fresh startup's top component makes the next estimate spurious too.
+        ## History: `doc/transient_history.md`, `Transient._solve_timestep_glm`.
         state = getattr(self, '_glm_Q', None)
         entry = getattr(self, '_glm_Q_at_entry', None)
         Q = None
@@ -3989,13 +3779,13 @@ class Transient(Analysis):
                 ## `cir.i` once `v_lim` == the branch voltage.  `f_eff =
                 ## g_mna - J_ml g_lim` folds the junction current into the
                 ## Newton-STEP right-hand side instead, where it VANISHES as
-                ## `g_lim -> 0`; using it as the residual dropped the junction
-                ## current at convergence and converged the coupled Newton to a
-                ## neighbouring, wrong root (measured: step-1 node error 8.5e-5,
-                ## true stage residual 4e-14 vs 8e-25 for device limiting).  Only
-                ## `G_eff = J_eff` (the Schur-reduced Jacobian) is taken here;
-                ## the junction is eliminated from the step by the correct phase
-                ## (`dx_lim_of` + `refine`) below.
+                ## `g_lim -> 0`; using it as the residual drops the junction
+                ## current at convergence and converges the coupled Newton to a
+                ## neighbouring, wrong root.  Only `G_eff = J_eff` (the
+                ## Schur-reduced Jacobian) is taken here; the junction is
+                ## eliminated from the step by the correct phase (`dx_lim_of` +
+                ## `refine`) below.
+                ## History: `doc/transient_history.md`, `Transient._rk_step_coupled_pcnr`.
                 _f_eff, G_eff = _pcnr.schur_reduce(
                     g_mna, g_lim, J_mm, junctions=junctions, didv=didv)
                 Ki.append(-(np.asarray(g_mna, dtype=float) + src(tstage[j])))
@@ -4030,55 +3820,18 @@ class Transient(Analysis):
         if not converged:
             ## ⚠ THERE IS DELIBERATELY NO CONTINUATION LADDER HERE.  The step
             ## instead FALLS BACK to the device-limiting coupled solve (see the
-            ## caller, `_rk_step_coupled`), which carries one.  A ladder was
-            ## built for this path three times and removed each time; the
-            ## design and the reason are recorded so a fourth attempt starts
-            ## from the evidence rather than repeating it.
+            ## caller, `_rk_step_coupled`), which carries one.
             ##
-            ## THE DESIGN, IF IT IS EVER NEEDED.  A CAPACITANCE ACROSS THE
-            ## LIMITED JUNCTION, anchored at the last accepted state -- the
-            ## two-node incidence stamp of `JunctionGminSteppingNewton` but
-            ## carrying `g (v_j - v_j,n)` instead of `g v_j`, i.e. the
-            ## backward-Euler form of `C = g h a_ii` in parallel with the
-            ## junction.  It rides `pcnr.augmented_system`'s existing
-            ## `u_extra`/`J_extra` hooks (`u_extra` the branch current,
-            ## `J_extra` the 2x2 pattern), so it needs no new plumbing, and the
-            ## Schur reduction carries it by construction.  Two rules that cost
-            ## measurements to learn: the anchor must go ACROSS THE JUNCTION and
-            ## not on every row -- `g * eye(n)` also anchors a voltage source's
-            ## BRANCH-CURRENT row, where `g (i - i_n)` is a conductance on a
-            ## current unknown; and its schedule must start ABOVE the circuit's
-            ## own conductance (`||G(x_n)||inf`), since a first attempt marched
-            ## `g <= 1 S` against a 10 mOhm source and never bit.
-            ##
-            ## IT WORKS AS A MECHANISM: with the anchor present the strong rungs
-            ## converge in TWO iterations with `|g_lim| = 0`, and at the rung
-            ## where a whole-diagonal anchor let the junction gap snap back to
-            ## 359 V the two-node stamp held it to 50 V.
-            ##
-            ## ⚠⚠ WHY IT IS NOT BUILT.  No circuit is known where PCNR fails at
-            ## a normal iteration budget.  PCNR's ONE documented failure -- the
-            ## BJT mirror of `test_dc_pcnr.py` from a uniform 20 V start -- was
-            ## fixed at its source by LIMITING THE SEED (`pcnr.v_lim_init`,
-            ## +20 V: LinAlgError -> 8 iterations), and that docstring already
-            ## says a continuation could never have fixed it: *"No ladder around
-            ## the solve could help, because every rung began by building the
-            ## same Jacobian at the same unlimited seed."*  Re-measured: that
-            ## mirror solves at DC with `pcnr_status='used'`, and driven as a
-            ## transient (pulsed 0->5 V, rise times to 1 ps, steps to 1 ps,
-            ## radau and trbdf2) every combination converges with 0 rungs.
-            ## Transient also suppresses the mode structurally -- PCNR fails on
-            ## a far-off INITIAL GUESS, and every step here starts from the last
-            ## accepted state.
-            ##
-            ## SO THE TRIGGER TO WATCH FOR is a PCNR stage failure whose
-            ## `g_lim` stays large while the MNA state diverges (the signature:
-            ## `|g_lim|` ~ hundreds of volts, `ynorm` running to 1e17) on a
-            ## circuit at a DEFAULT `maxiter`.  ⚠ Do NOT validate a candidate by
-            ## starving `maxiter`: a ladder must end with a PURE solve of the
-            ## original system, so a starved budget defeats the final rung
-            ## whatever the deformation -- two earlier rungs were rejected on
-            ## evidence from exactly that broken instrument.
+            ## No circuit is known where PCNR fails at a normal iteration
+            ## budget, and a transient suppresses its failure mode structurally
+            ## -- PCNR fails on a far-off INITIAL GUESS, and every step here
+            ## starts from the last accepted state.  The design a ladder would
+            ## take, and the failure signature that would justify building it,
+            ## are in the history.  ⚠ Do NOT validate a candidate by starving
+            ## `maxiter`: a ladder must end with a PURE solve of the original
+            ## system, so a starved budget defeats the final rung whatever the
+            ## deformation.
+            ## History: `doc/transient_history.md`, `Transient._rk_step_coupled_pcnr`.
             raise NoConvergenceError(
                 'Radau IIA(3) coupled PCNR stage Newton did not converge')
 
@@ -4166,30 +3919,25 @@ class Transient(Analysis):
                 ## residual blocks (reduced) and dense 3m x 3m Jacobian
                 return self._coupled_stage_system(ctx, qi, Ki, Ci, Gi)
 
-            ## ⚠ BACKTRACKING LINE SEARCH, AS A RETRY (owner decision
-            ## 2026-09-08, "Do 2").  This Newton had no damping at all, and a
+            ## ⚠ BACKTRACKING LINE SEARCH, AS A RETRY (owner decision).  A
             ## whole class of circuits cannot be integrated undamped at ANY
             ## grid: a nonlinearity fed by a branch current through a
             ## capacitor sees the companion difference quotient, whose stage
             ## sensitivity is tau/h, and the undamped basin is 0.94 h/(k tau)
-            ## (measured on a scalar model of one stage, READING-LOG 2.156) --
-            ## refining the grid SHRINKS it in proportion.  A comparator on a
-            ## current sense through a capacitor failed here at every grid
-            ## tried, on every method; with the retry its steps converge.
-            ## The rule and floor are `DampedNewton`'s (Armijo 1e-4, alpha >=
-            ## 0.05).
+            ## (READING-LOG 2.156) -- refining the grid SHRINKS it in
+            ## proportion.  The rule and floor are `DampedNewton`'s (Armijo
+            ## 1e-4, alpha >= 0.05).
             ## ⚠⚠ WHY A RETRY AND NOT A BLANKET SEARCH: a blanket line search
-            ## CHANGED CONVERGED ANSWERS.  At h = 100 tau on a tanh charge
+            ## CHANGES CONVERGED ANSWERS.  At h = 100 tau on a tanh charge
             ## circuit the coupled stage system has more than one root (its
             ## a_23 < 0 makes the coupled equations non-monotone where the
-            ## scalar map is monotone); the undamped-plus-limited path found
+            ## scalar map is monotone); the undamped-plus-limited path finds
             ## the physical one, v in [0, 1], and the damped path a spurious
-            ## one at v = -0.010, and two shooting tests moved with it.  So
-            ## `damped=False` (the first attempt) is the old algorithm bit
-            ## for bit -- the full step always, the old convergence test on
-            ## it -- and the search is tried only after it has failed, before
-            ## the shunt ladder.  Every case that converged before converges
-            ## to the same numbers; the suite is the control.
+            ## one at v = -0.010.  So `damped=False` (the first attempt) is the
+            ## undamped Newton -- the full step always, the undamped
+            ## convergence test on it -- and the search is tried only after it
+            ## has failed, before the shunt ladder.
+            ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
             R, Jbig = assemble(Y)
             converged = False
             for _ in range(maxit):
@@ -4213,21 +3961,16 @@ class Transient(Analysis):
                         step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
                         scale = max(scale, np.max(np.abs(step_i)))
                     R_t, J_t = assemble(Y_trial)
-                    ## ⚠ THE OLD CONVERGENCE TEST, ON THE FULL STEP, BEFORE
-                    ## THE LINE SEARCH SEES IT.  Two wrong versions preceded
-                    ## this one, both caught by the identity control: testing
-                    ## the size of a DAMPED step let a step at the floor stop
-                    ## the iteration short of the root (a tanh charge circuit
-                    ## at h = 100 tau returned v in [-0.010, 0.986] against
-                    ## the undamped [0, 1]); requiring a full step to pass
-                    ## Armijo hung at the roundoff floor, where both residual
-                    ## norms are noise and the test fails by chance, so no
-                    ## full step was ever accepted and every step burned
-                    ## `maxit` iterations.  A converged full step is accepted
-                    ## here exactly as the undamped Newton accepted it, so
-                    ## every case that converged before converges to the same
-                    ## numbers; the search engages only when the full step is
-                    ## neither small nor residual-reducing.
+                    ## ⚠ THE UNDAMPED CONVERGENCE TEST, ON THE FULL STEP,
+                    ## BEFORE THE LINE SEARCH SEES IT.  Testing the size of a
+                    ## DAMPED step lets a step at the floor stop the iteration
+                    ## short of the root; requiring a full step to pass Armijo
+                    ## hangs at the roundoff floor, where both residual norms
+                    ## are noise and the test fails by chance.  A converged
+                    ## full step is accepted here exactly as the undamped
+                    ## Newton accepts it; the search engages only when the full
+                    ## step is neither small nor residual-reducing.
+                    ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
                     if alpha == 1.0:
                         ynorm_t = max(np.max(np.abs(red(Y_trial[i]))) for i in range(3))
                         if scale <= reltol * ynorm_t + abstol:
@@ -4369,14 +4112,9 @@ class Transient(Analysis):
             Y = _stage_newton(seed0)
         except NoConvergenceError:
             ## ⚠ THE CONTINUATION RESCUE REACHES THE COUPLED PATH TOO.  It is
-            ## armed by `_solve` once the step has shrunk to `minstep`, and that
-            ## arming used to do NOTHING here -- `_continuation_rescue` is read
-            ## inside `self._newton`, which the coupled `sm` solve does not go
-            ## through (measured: with the flag set over a 40-step run TR-BDF2
-            ## wrapped the rescue solver 80 times and Radau 0).  So the last
-            ## resort before `_solve` gives up was silently absent on every
-            ## fully-implicit method, and the failure then claimed a ladder had
-            ## been tried when none had.
+            ## armed by `_solve` once the step has shrunk to `minstep`, and
+            ## `_continuation_rescue` is read inside `self._newton`, which the
+            ## coupled solve does not go through -- so it is read here too.
             ##
             ## Only the gshunt rung is offered: it is the one deformation that
             ## is structure-free (every node to ground through `g`, entering
@@ -4386,17 +4124,15 @@ class Transient(Analysis):
             ## `_adaptive_conductance_ladder`.
             ##
             ## ⚠ THE LINE SEARCH IS THE LAST RESORT, AFTER THE LADDER (owner
-            ## decision 2026-09-08, "Do 2").  Tried as the FIRST retry it
-            ## pre-empted the ladder and beat it to a SPURIOUS root on a tanh
-            ## charge circuit at h = 100 tau (v = -0.010 where the ladder's
-            ## homotopy gives the physical [0, 1]); the ladder tracks a
-            ## physical branch and the search does not.  Where no ladder is
-            ## available -- the PSS path never arms one, it drives
-            ## `solve_timestep` on its own grid -- there is nothing to
-            ## pre-empt (an undamped failure used to raise straight out), so
-            ## the search is the one retry there, opt-in through
-            ## `_damped_last_resort`, which PSS sets; a plain adaptive
-            ## transient keeps its step sequence unchanged.
+            ## decision).  As the FIRST retry it pre-empts the ladder and can
+            ## beat it to a SPURIOUS root (a tanh charge circuit at
+            ## h = 100 tau); the ladder tracks a physical branch and the
+            ## search does not.  Where no ladder is available -- the PSS path
+            ## never arms one, it drives `solve_timestep` on its own grid --
+            ## there is nothing to pre-empt, so the search is the one retry
+            ## there, opt-in through `_damped_last_resort`, which PSS sets; a
+            ## plain adaptive transient keeps its step sequence unchanged.
+            ## History: `doc/transient_history.md`, `Transient._rk_step_coupled`.
             if not getattr(self, '_continuation_rescue', False):
                 if getattr(self, '_damped_last_resort', False):
                     Y = _stage_newton(seed0, damped=True)
@@ -4413,13 +4149,13 @@ class Transient(Analysis):
                 self.statistics.gmin_rescues += 1
 
         ## BRANCH DETECTION on the COUPLED path.  ⚠ This path does NOT go
-        ## through `self._newton`, so the check wired there reached the LMM,
-        ## DIRK-sequential and GLM stage paths and left the fully-implicit one
-        ## -- which is the PSS default -- unscreened.  Same screen, same
+        ## through `self._newton`, so the check wired there does not reach
+        ## the fully-implicit method -- which is the PSS default.  Same screen, same
         ## confirmation, but the solve being re-run is the coupled `3m`
         ## `_stage_newton` rather than a single-stage residual, so it needs its
         ## own call: a stage of the block can be at a rank drop while the
         ## others are not, and it is the BLOCK that has to be re-solved.
+        ## History: `doc/transient_history.md`, `Transient._rk_step_coupled`.
         self._branch_after_coupled(_stage_newton, seed0, Y, _block_residual)
 
         ## x_{n+1} == the last stage (stiff accuracy); the stage values are
@@ -4657,11 +4393,11 @@ class Transient(Analysis):
         if isinstance(self.base_integrator, RungeKuttaIntegrator):
             ## ANY Runge-Kutta method: the one tableau-driven stage step, which
             ## picks the DIRK-sequential or fully-implicit-coupled path from the
-            ## tableau's structure.  PCNR (when `par.pcnr`) is the per-stage
-            ## limiting on the DIRK-sequential path -- see `_rk_stage_pcnr`; it
-            ## flows to shooting too, since the inner transient calls this same
-            ## method.  (The FULL coupled path still limits; PCNR-on-coupled is
-            ## a follow-up.)
+            ## tableau's structure.  PCNR (when `par.pcnr`) is the limiting on
+            ## both paths -- see `_rk_stage_pcnr` and `_rk_step_coupled_pcnr`;
+            ## it flows to shooting too, since the inner transient calls this
+            ## same method.
+            ## History: `doc/transient_history.md`, `Transient.solve_timestep`.
             return self._solve_timestep_rk(x0, t, provided_function)
         ## STAGE 13 -- the PCNR path, when asked for and when the circuit has a
         ## device that participates.  A circuit with no PCNR junction falls
@@ -4672,9 +4408,10 @@ class Transient(Analysis):
             ## Gate PARTICIPATION on the device records, not on the
             ## pnj-only pair view: that view exists for the gmin ladders
             ## and is empty for a circuit of pure fetlim/limvds devices,
-            ## so `pcnr=True` on a MOSFET differential pair used to fall
-            ## through to the ordinary solver SILENTLY (vector PCNR
-            ## Stage 2, 2026-08-26).
+            ## so gating on it would let `pcnr=True` on a MOSFET
+            ## differential pair fall through to the ordinary solver
+            ## SILENTLY.
+            ## History: `doc/transient_history.md`, `Transient.solve_timestep`.
             if _pcnr.pcnr_devices(self.cir):
                 ## Same fallback as DC(pcnr=True): a PCNR failure on one
                 ## timestep falls through to the ordinary step solver rather
@@ -4692,8 +4429,8 @@ class Transient(Analysis):
                 ## Asked for, and no device declares a probe.  Falling
                 ## through is right -- refusing would be a worse answer --
                 ## but it must SAY SO, or `pcnr=True` and `pcnr=False` are
-                ## indistinguishable from outside.  Same defect DC carried
-                ## until sec. 47.
+                ## indistinguishable from outside.
+                ## History: `doc/transient_history.md`, `Transient.solve_timestep`.
                 self.pcnr_status = 'no-participants'
 
         n=self.cir.n
@@ -4711,15 +4448,17 @@ class Transient(Analysis):
             at the `x, feval, J, f = ...` site, and the coupled path likewise). Only
             `J` is consumed, by the step controller.
 
-            So `cir.i(x)` and `cir.u(t)` were assembled once per accepted step and
-            discarded.  `C`, `q` and `G` are all still needed -- `C` and `G` build
-            `J`, and `q` feeds the charge cache and the history roll -- so this is
-            not a cheaper approximation of the same work, it is the same work minus
-            two vectors that had no consumer.
+            So `cir.i(x)` and `cir.u(t)` are not assembled here.  `C`, `q` and `G`
+            are all still needed -- `C` and `G` build `J`, and `q` feeds the charge
+            cache and the history roll -- so this is not a cheaper approximation of
+            the same work, it is the same work minus two vectors that have no
+            consumer.
 
             `f` is returned as None rather than a zero vector, so any future caller
             that starts reading it fails loudly instead of silently using zeros --
             which is the whole lesson of stage 1.
+
+            History: `doc/transient_history.md`, `Transient.solve_timestep`.
             """
             _iq, Geq = self._companion_at(x)
             J = self.cir.G(x, self.epar) + Geq
@@ -4740,10 +4479,8 @@ class Transient(Analysis):
         f, J = jacobian_only(x)
         return x, None, J, f
     
-    ## `analytical_eh` was accepted through all three signatures and read by nothing
-    ## (doc/transient_review_260820.md, F8) -- superseded by `coupled_method`,
-    ## which carries the measured record for both branches.  Deleted, so passing
-    ## it raises TypeError instead of being silently discarded.
+    ## `analytical_eh` is not an argument (F8): passing it raises TypeError.
+    ## History: `doc/transient_history.md`, `Transient.solve`.
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         ## Stage 2a: hold BLAS to one thread for the whole run.  It wraps the whole
         ## transient rather than just the linear solve because the win is not in the
@@ -4756,15 +4493,13 @@ class Transient(Analysis):
                                fixed_timestep, coupled_lte)
 
     def _finish_result(self, X, timelist, t_start):
-        """The run's `CircuitResult` (one helper since 2026-09-23, when the
-        three stepping loops each had a copy -- then one loop).
+        """The run's `CircuitResult`.
 
         ⚠ The t=0 point IS part of the result -- SPICE convention, and what
-        the JAX backend already does.  `X[0]` is the operating point (or the
-        uic vector) the run worked to compute; dropping it made every
-        index-aligned backend comparison off by one and left
-        resample_uniform unable to reproduce the initial value
-        (doc/transient_review_260820.md, F12(a)).
+        the JAX backend does.  `X[0]` is the operating point (or the uic
+        vector) the run worked to compute; dropping it makes every
+        index-aligned backend comparison off by one and leaves
+        resample_uniform unable to reproduce the initial value (F12(a)).
 
         STAGE 10.2 -- resampled onto a uniform grid if one was asked for,
         after the run rather than inside it, deliberately: the adaptive grid
@@ -4772,7 +4507,9 @@ class Transient(Analysis):
         choosing its own steps and only the REPORTED points change.  The
         statistics are reachable from the result, not only from the
         analysis (Stage 6(c), F13), so a caller who kept only the waveform
-        can still ask what produced it."""
+        can still ask what produced it.
+
+        History: `doc/transient_history.md`, `Transient._finish_result`."""
         X = self.toolkit.array(X).T
         timelist = self.toolkit.array([0.0] + timelist)
         self.statistics.total_seconds = time.perf_counter() - t_start
@@ -4862,24 +4599,14 @@ class Transient(Analysis):
         ## ⚠ FANG'S COUPLED PATH IS BUILT ON A LINEAR MULTISTEP COMPANION: it
         ## solves the step from eq (6), a solution-space LTE over the step
         ## history.  A stage method or a GLM judges its step by its own
-        ## embedded estimate; under `coupled_lte=True` they died inside
-        ## `compute_derivatives` with a message that never named the flag.
-        ## Refused here, by name, before any work.
-        ## ⚠ AND KEPT REFUSED ON MEASUREMENT (2026-09-25, plan item 4): a
-        ## prototype of the loop around the stage step (eq (6) of the
-        ## method's order, eq (17)'s error-ratio step, the step re-solved)
-        ## against the standard adaptive stage run, on the stage-12
-        ## benchmarks against their closed forms.  It does not keep Fang's
-        ## no-rejection property -- its re-solves outnumber the standard
-        ## run's rejections -- and on the stiff RLC its error is set by no
-        ## tolerance (flat across two decades of reltol: radau 1.21e-3 where
-        ## the standard run reads 1.6e-7 .. 6.5e-10, trbdf2 2.33e-3 against
-        ## 4e-4 .. 1.9e-5, glm2 9.7e-5 against 3.5e-5 .. 1.2e-5), because
-        ## eq (6) needs accepted history and so cannot judge the opening
-        ## steps an embedded estimate judges from the first.  On the driven
-        ## RC it saves steps by integrating less accurately (glm2: 3x fewer
-        ## steps, 8.5x the error).  Script:
+        ## embedded estimate.  Refused here, by name, before any work.
+        ## ⚠ AND REFUSED ON MEASUREMENT: around a stage step the coupled loop
+        ## does not keep Fang's no-rejection property, and on a stiff circuit
+        ## its error is set by no tolerance, because eq (6) needs accepted
+        ## history and so cannot judge the opening steps an embedded estimate
+        ## judges from the first.  Script:
         ## `benchmarks/transient_review/stage12c_fang_stage_methods.py`.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         if coupled_lte:
             from pycircuit.circuit.integrator import RungeKuttaIntegrator
             _integ = self._get_integrator()
@@ -4900,11 +4627,11 @@ class Transient(Analysis):
                     "a multistep integrator." % type(_integ).__name__)
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
-        ## Position matters and cost a test to learn: placed after the initial
-        ## `accept_step(0.0, ...)` this wiped the very history that call had just
-        ## seeded, so `TLine.G` saw an empty buffer and stamped the line as a DC
-        ## SHORT -- v(p1) came out 1.0 where 0.5 is correct.  Elements that carry
-        ## state must be reset before the run seeds them, not after.
+        ## Position matters: after the initial `accept_step(0.0, ...)` this would
+        ## wipe the very history that call seeds, and `TLine.G` would see an empty
+        ## buffer and stamp the line as a DC SHORT.  Elements that carry state
+        ## must be reset before the run seeds them, not after.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         if hasattr(self.cir, 'reset_state'):
             self.cir.reset_state(self.epar)
 
@@ -4979,27 +4706,12 @@ class Transient(Analysis):
         self._branch_warned = False
         self._branch_cmax = 0.0
         _t_run_start = time.perf_counter()
-        ## DECISION D2, 2026-08-01.  The clamp on how large an ACCEPTED step may
-        ## grow.  It defaults to `timestep` -- the historical behaviour, and what
-        ## `.tran tstep` means to most callers -- but it is now reachable.
-        ##
-        ## Measured before deciding.  On a run of ~5 tau the clamp is mostly
-        ## irrelevant: above `timestep ~ 3e-4` the ERROR CONTROLLER becomes binding
-        ## and `max dt` stalls at 2.97e-4 however much slack the clamp is given.
-        ## But on a run of 100 tau, ~99% of it quiescent, it is clamped at every
-        ## setting -- **1027 steps to traverse a dead-flat solution whose error is
-        ## 4.4e-16**.  That cost is paid by exactly the circuits that idle, which is
-        ## most mixed-signal ones.
-        ##
-        ## The DEFAULT is not changed: doing so would move every waveform in the
-        ## package for a benefit only idle-heavy runs see.  SPICE's own default for
-        ## the equivalent knob (`TMAX`) is `(tstop - tstart)/50`, which a caller can
-        ## now ask for directly.
+        ## The clamp on how large an ACCEPTED step may grow (`timestep_max`).
         ## Decoupled from `timestep` by owner decision (see the Parameter):
-        ## None means SPICE's TMAX default, tend/50.  The old
-        ## max_step-below-timestep refusal is moot -- `timestep` no longer
-        ## promises an output density, so a cap below it just clamps the
-        ## opening step like any other.
+        ## None means SPICE's TMAX default, tend/50.  `timestep` promises no
+        ## output density, so a cap below it just clamps the opening step like
+        ## any other.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         max_step = self.par.timestep_max
         if max_step is None or max_step <= 0:
             max_step = tend / 50.0
@@ -5008,13 +4720,13 @@ class Transient(Analysis):
         ##
         ## `TLine` interpolates its history at `t - TD`; with `dt` comparable to
         ## `TD` there is nothing to interpolate between, and the delay simply comes
-        ## out wrong -- measured 2.00x TD at dt = 1e-9, 4.00x at 2e-9 and 8.00x at
-        ## 5e-9 under `fixed_timestep`, with no warning of any kind.  The adaptive
-        ## controller usually rescues it (1.01-1.05x), which is exactly why it went
-        ## unnoticed: the defect only bites the configuration nobody checks.
+        ## out wrong (4x TD at twice the cap under `fixed_timestep`).  The adaptive
+        ## controller usually rescues it, so it only bites the configuration
+        ## nobody checks.
         ##
         ## The cap is asked of the ELEMENTS rather than hard-coded here, so a future
         ## delay element gets it by implementing one method.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
         if element_cap is not None:
             ## Under `fixed_timestep` the caller has taken the grid into their own
@@ -5043,14 +4755,13 @@ class Transient(Analysis):
         ## units of the solution vector x -- volts on node rows, amps on branch rows.
         ## `_newton` needs the other flavour, because there the tolerance applies to
         ## the residual f (KCL currents at nodes), and it builds both separately as
-        ## `abstol`/`xtol`.  This is the `xtol` one; using `_newton`'s `abstol` here
-        ## silently applied iabstol (1 pA) as a *voltage* tolerance to every node,
-        ## which is what made a larger `vabstol` have no effect on node rows at all.
+        ## `abstol`/`xtol`.  This is the `xtol` one; `_newton`'s `abstol` here would
+        ## apply iabstol (1 pA) as a *voltage* tolerance to every node.
         ##
-        ## It reads `lte_vabstol`/`lte_iabstol`, NOT `vabstol`/`iabstol`.  Sharing
-        ## the Newton parameters was decision 0.3a's defect: one knob could not be
-        ## moved for the controller without silently moving Newton's convergence
-        ## criterion with it.
+        ## It reads `lte_vabstol`/`lte_iabstol`, NOT `vabstol`/`iabstol`, so the
+        ## controller's knob moves without silently moving Newton's convergence
+        ## criterion with it (decision 0.3a).
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
                                           self.par.lte_iabstol * ones_branches))
 
@@ -5059,8 +4770,8 @@ class Transient(Analysis):
         ## one step is taken and judged.  Everything below is the same loop
         ## for every method.  A Nordsieck GLM is not a Runge-Kutta method, but
         ## it is self-starting, keeps no charge ring and delivers its own
-        ## estimate through `_rk_est`, so it is a stage family (it once
-        ## reached the LMM controller and died in `get_diff`).
+        ## estimate through `_rk_est`, so it is a stage family.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         from types import SimpleNamespace
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
         run = SimpleNamespace(tend=float(tend), max_step=max_step,
@@ -5080,7 +4791,8 @@ class Transient(Analysis):
         ## and the step is never adapted, so ramping would not open small and grow
         ## -- it would run the ENTIRE simulation at `timestep*1e-3`, a thousand
         ## times more steps for a result the caller explicitly asked to be
-        ## uniform.  Caught by `test_transient_RLC` and three others.
+        ## uniform.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         h = timestep if fixed_timestep else min(self._opening_step(timestep),
                                                 max_step)
         t = 0.0
@@ -5095,14 +4807,14 @@ class Transient(Analysis):
         imposed = False                      # the next attempt's size was imposed (an event cut, the excursion veto)
         ## F14 (doc/transient_review_260820.md): a lower-band GROWTH retry --
         ## the controller redoing a too-ACCURATE step larger -- is a voluntary
-        ## redo, not a failure, and must not trip the force-accept.  Before
-        ## the split, three consecutive growth retries during the opening ramp
-        ## of a QUIESCENT circuit reached the force-accept path: 2 spurious
-        ## warnings on a settled RC with the band at (0.5, 3.0).  Over-tolerance
+        ## redo, not a failure, and must not trip the force-accept (on a
+        ## QUIESCENT circuit the opening ramp's growth retries would reach it
+        ## and warn spuriously).  Over-tolerance
         ## rejections strictly shrink in every controller, growth retries return
         ## only behind a strict-growth guard, so `h_next > h` tells them apart;
         ## the family's `max_retries` bounds both against pathological
         ## alternation.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
         try:
             while t < tend:
                 ## -- 1. where this attempt may end ---------------------------
@@ -5121,12 +4833,13 @@ class Transient(Analysis):
                 t_break = family.next_breakpoint(t)
                 if fixed_timestep:
                     ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS: a
-                    ## breakpoint no longer moves it (a truncation used to be
-                    ## permanent and collapse the step geometrically: 292 steps
-                    ## for 30), but crossing one still drops the order.  `<=`,
+                    ## breakpoint does not move it (a truncation would be
+                    ## permanent and collapse the step geometrically), but
+                    ## crossing one still drops the order.  `<=`,
                     ## TOLERANCED: `t` accumulates by `+= h`, so an edge exactly
                     ## on a grid point is a float knife-edge (measured: the drop
                     ## fired at the first edge and missed every later one).
+                    ## History: `doc/transient_history.md`, `Transient._solve`.
                     landing = t_break <= t + h * (1.0 + 1e-9)
                 elif t + h > t_break:
                     h = float(t_break - t)
@@ -5282,16 +4995,15 @@ class Transient(Analysis):
         continuation chain armed (`_continuation_rescue`, read by `_newton`),
         or a `TransientStepError` naming the point.
 
-        ⚠ IT USED TO BE UNREACHABLE FOR EVERY STAGE METHOD on the default
-        path: the Runge-Kutta loop raised where the LMM loop rescued, so the
-        ladder `_rk_step_coupled` carries could only fire under
-        `fixed_timestep=True`.  One loop, one ladder."""
+        One loop, one ladder: every step family reaches it.
+
+        History: `doc/transient_history.md`, `Transient._rescue_step`."""
         self._dt = h
-        ## ⚠ WHETHER THIS PATH REACHES A LADDER AT ALL (`_honours_continuation_
-        ## rescue`, consulted here since 2026-09-27 -- it was written to guard
-        ## this message and had no caller): the error must not claim a rescue
+        ## ⚠ WHETHER THIS PATH REACHES A LADDER AT ALL
+        ## (`_honours_continuation_rescue`): the error must not claim a rescue
         ## that was never attempted, and a success is a rescue only where one
         ## could run
+        ## History: `doc/transient_history.md`, `Transient._rescue_step`.
         honours = self._honours_continuation_rescue()
         self._continuation_rescue = True
         try:

@@ -26,8 +26,7 @@ class _PhaseNoise(object):
 
         A MODULATED white source (its `CY` follows the orbit: a MOS
         channel's `4kT gamma g_d0(x)`, a shot noise `2qI(x)`) is Demir's
-        own case, `B = B(x(t))`: `CY` is read at each PPV sample's state
-        (2026-09-26; before, `_cy_reduced` refused it).
+        own case, `B = B(x(t))`: `CY` is read at each PPV sample's state.
 
         ⚠ `CY/2`, as in `covariance`: settled against `kT/C`, which is
         external to both (an injection of `Var(i) = CY/h` per step
@@ -86,10 +85,11 @@ class _PhaseNoise(object):
         ## `cy` given: the functional of THAT source matrix (the white part
         ## of a coloured circuit, `_modal_colour`), one matrix or one per
         ## PPV sample `(N, m, m)`
-        ## ⚠ A MODULATED source (2026-09-26): `CY` at each sample's OWN
-        ## state -- Demir's `B(x(t))` -- instead of `_cy_reduced`'s refusal.
+        ## ⚠ A MODULATED source: `CY` at each sample's OWN state -- Demir's
+        ## `B(x(t))` -- where `_cy_reduced` refuses.
         ## The states are the PPV's orbit (`_ppv_states`: a twin's where one
         ## serves the PPV).
+        ## History: `doc/shooting_history.md`, `PAC._white_diffusion_at`.
         if cy is None:
             try:
                 cy = self._cy_reduced(pss, float(w))
@@ -243,7 +243,7 @@ class _PhaseNoise(object):
         REST OF THIS CLASS USES, and it is shared rather than repeated so
         the functions cannot drift apart over that factor.
 
-        A source that FOLLOWS THE ORBIT (2026-09-26; refused before): the
+        A source that FOLLOWS THE ORBIT: the
         l = 0 term of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per
         component, `G` its columns (signed where the element states them,
         `_colour_groups`) -- `vbar^T (CY/2) vbar` when `G` does not move, and
@@ -252,15 +252,16 @@ class _PhaseNoise(object):
         sign of a white source is unobservable (`g xi` and `|g| xi` are one
         process), so its share of this DC term is not a property of the
         noise -- only `c` is.  (Its stationary realisation through a
-        signed multiplier reads a different share, as it always did.)
+        signed multiplier reads a different share.)
 
         History: `doc/shooting_history.md`, `PAC.coloured_diffusion`.
         """
         vbar, _ = self.colour_projection(pss)
         if self._modulated_present(pss):
-            ## ⚠ A source that follows the orbit (2026-09-26): the l = 0 term
+            ## ⚠ A source that follows the orbit: the l = 0 term
             ## of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per component
             ## (`_colour_fold`) -- `vbar^T (CY/2) vbar` when `G` does not move
+            ## History: `doc/shooting_history.md`, `PAC.coloured_diffusion`.
             fr = np.atleast_1d(np.asarray(freqs, dtype=float))
             pos = np.abs(fr[fr != 0.0])
             return self._colour_fold(
@@ -300,7 +301,7 @@ class _PhaseNoise(object):
         than 1e-14 of the PPV's energy is kept, which is all of them that
         can move the sum at double precision.
 
-        ⚠ `frequency_aware` (default True, 2026-09-26): `V_l` from the
+        ⚠ `frequency_aware` (default True): `V_l` from the
         frequency-aware PPV at each offset (`PSS.frequency_aware_ppv`, one
         bordered solve per offset), with the same bands `f - l f0`.  The DC
         PPV assumes a source moves the phase instantly, and behind a slow
@@ -311,7 +312,7 @@ class _PhaseNoise(object):
         DC fold, which reproduces `diffusion_constant` (the Parseval
         identity below).
 
-        A source whose level follows the orbit (2026-09-26) takes
+        A source whose level follows the orbit takes
         `_coloured_diffusion_modulated`: the harmonics of the PRODUCT
         `v_1^T G(t)` per component, and the white parts as Demir's `c`.
 
@@ -333,12 +334,9 @@ class _PhaseNoise(object):
         ## ⚠ THE SAME QUADRATURE `diffusion_constant` USES: one sample per
         ## step, weighted by that step, so that Parseval closes exactly.
         ## ⚠ Sample `j` is at `t_j` (the PPV pairs it with the orbit's column
-        ## `j`).  Until 2026-09-26 this read `tms[1:1 + n]`, one step late:
-        ## identical on a uniform grid (a common phase), but on a smoothly
-        ## varying one it capped the fold at SECOND order for a white source
-        ## (+8.6e-5 at 200 points, radau) and below FIRST for a coloured one,
-        ## whose harmonics carry different weights (-9.1e-4 / -5.7e-4 /
-        ## -3.2e-4 at 200 / 400 / 800); at `t_j`, 1.3e-8 / 4.9e-10 / 3.9e-11.
+        ## `j`).  One step late is identical on a uniform grid (a common
+        ## phase), but on a smoothly varying one it caps the fold's order.
+        ## History: `doc/shooting_history.md`, `PAC.coloured_diffusion_resolved`.
         t = tms[:n]
         h = self._period_weights(t, n, T, pss)
         w0 = 2.0 * np.pi / T
@@ -346,7 +344,7 @@ class _PhaseNoise(object):
         ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
         E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :]          # (nl, n)
         if frequency_aware:
-            ## ⚠ THE FREQUENCY-AWARE PPV (2026-09-26, the default): at each
+            ## ⚠ THE FREQUENCY-AWARE PPV (the default): at each
             ## offset the coefficients of `frequency_aware_ppv(f)`'s periodic
             ## samples, with the SAME bands `f - l f0` -- measured, not read:
             ## a source peaked at f0 + f against its white-through-resonator
@@ -390,10 +388,10 @@ class _PhaseNoise(object):
         key = (id(fp), float(f))
         hit = cache.get(key)
         ## ⚠ THE ENTRY HOLDS ITS FACTORED PERIOD AND IS MATCHED BY IDENTITY,
-        ## as `_transverse_cache` is.  Keyed on the id alone (until
-        ## 2026-09-27), a re-solve freed the old period, a new one was born
-        ## at the same address, and the OLD grid's samples came back --
-        ## measured, 198 rows for a 299-point solve, 2 re-solves in 6.
+        ## as `_transverse_cache` is: keyed on the id alone, a re-solve frees
+        ## the old period, a new one can be born at the same address, and the
+        ## OLD grid's samples come back.
+        ## History: `doc/shooting_history.md`, `PAC._fa_samples`.
         if hit is None or hit[0] is not fp:
             m = pss.cir.n - 1
             _v, fi = pss.frequency_aware_ppv(float(f))
@@ -402,8 +400,8 @@ class _PhaseNoise(object):
 
     def _coloured_diffusion_modulated(self, pss, freqs, harmonics=None,
                                       frequency_aware=False):
-        """`coloured_diffusion_resolved` for sources that follow the orbit
-        (2026-09-26).  The phase moves as `v_1(t)^T G(t) xi(t)` for each
+        """`coloured_diffusion_resolved` for sources that follow the orbit.
+        The phase moves as `v_1(t)^T G(t) xi(t)` for each
         component, `xi` a unit process of power `s(nu)` and `G` its columns
         at the PPV's own states, so
 
@@ -414,7 +412,9 @@ class _PhaseNoise(object):
         the PPV's do.  The white parts give `c_white`, Demir's `c` with
         `CY` at each sample's state, flat in `f` (a white process modulated
         is still white).  The same period weights as the stationary form,
-        with the samples at their own times."""
+        with the samples at their own times.
+
+        History: `doc/shooting_history.md`, `PAC._coloured_diffusion_modulated`."""
         fr = np.atleast_1d(np.asarray(freqs, dtype=float))
         pos = np.abs(fr[fr != 0.0])
         fold = self._colour_fold(pss, float(pos.min()) if pos.size else None,
@@ -562,7 +562,6 @@ class _PhaseNoise(object):
 
         `c(f)` is `coloured_diffusion_resolved`: the phase diffusion with
         each harmonic's colour read at its own source-side frequency.  For
-        each harmonic's colour read at its own source-side frequency.  For
         a white source it is `c` exactly (`c + Gamma(f)` would count the
         `l = 0` term twice).
 
@@ -591,7 +590,7 @@ class _PhaseNoise(object):
         of range.  ⚠ So this is sound for free-running noise and must NOT
         be reused for injection locking, a PLL in lock, or coupled
         oscillators -- there the shift has to stay inside the argument.
-        ⚠ A source MODULATED BY THE OSCILLATOR'S OWN STATE (2026-09-26) is
+        ⚠ A source MODULATED BY THE OSCILLATOR'S OWN STATE is
         the stationary case in this sense: its level `B(x(t + theta))`
         moves with the phase, so `v^T B` is one periodic function of
         `t + theta` driven by a stationary process -- Demir's own form.  A
@@ -606,7 +605,7 @@ class _PhaseNoise(object):
         does not.  Reporting `S_phi` near the carrier is the mistake this
         object invites, so it raises instead.
 
-        ⚠ `frequency_aware` (default True, 2026-09-26): `c(f)` from the
+        ⚠ `frequency_aware` (default True): `c(f)` from the
         frequency-aware PPV (`coloured_diffusion_resolved`), as
         `oscillator_spectrum` takes it for white sources -- the DC PPV
         over-states a source behind a slow node by the path's filter.  The
@@ -832,7 +831,7 @@ class _PhaseNoise(object):
         Reporting `S_phi` near the carrier instead is the mistake that
         object invites.
 
-        ⚠ A COLOURED SOURCE (2026-09-26): with a 1/f source the phase is
+        ⚠ A COLOURED SOURCE: with a 1/f source the phase is
         no longer a Wiener process and the line is not a Lorentzian.  The
         lineshape is then the Fourier transform of `exp(-D(tau)/2)`, with
         `D` the excess phase's structure function built from `phase_psd`'s
@@ -842,7 +841,7 @@ class _PhaseNoise(object):
         phase has no stationary lineshape without a low cutoff; it plays
         the part of the observation time -- and `fmax` defaults to f0/2,
         the phase model's reach.  A white-only circuit is untouched.
-        `frequency_aware` (default None = True, 2026-09-26) takes `c_fa(nu)`
+        `frequency_aware` (default None = True) takes `c_fa(nu)`
         from the frequency-aware PPV: to first order in the change (the
         skirt's `i^2 f0^2 (c_fa - c_dc) / f^2` per offset) while that order's
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
@@ -853,10 +852,9 @@ class _PhaseNoise(object):
         correction (`_lineshape.second_order_skirt`) -- whichever estimates
         the smaller error (`_lineshape.handover`).  Against an mpmath
         reference (`benchmarks/lineshape_reference.py`) the worst is 3.4e-7
-        on a real oscillator's line and 4.5e-6 on a very broad one; it was
-        6.5e-5 at the handover until 2026-09-27.
+        on a real oscillator's line and 4.5e-6 on a very broad one.
 
-        `all_orders` (2026-09-27): the frequency-aware correction to ALL
+        `all_orders`: the frequency-aware correction to ALL
         orders -- `c_fa(nu)` inside the structure function `D`, not per
         offset.  A white source's default is the Lorentzian with `c(f)` per
         offset, first order in the same sense (the core keeps its DC weight,
@@ -864,7 +862,7 @@ class _PhaseNoise(object):
         out); `all_orders=True` builds the full line instead, `fmax`
         (default f0/2) bounding the band, past which the white part is held
         at its corrected level.  It is OFF by default for a white source
-        (Andreas: "put it off by default"): ~25 bordered solves.  For a
+        (~25 bordered solves).  For a
         coloured source None is the estimate's choice (above), True forces
         all orders and False the first.  `self.lineshape_info` says which
         ran.
@@ -913,7 +911,7 @@ class _PhaseNoise(object):
 
     def _white_all_orders(self, pss, offsets, harmonic, c, f0, fmax):
         """The WHITE line with the frequency-aware PPV to all orders
-        (`oscillator_spectrum(all_orders=True)`, 2026-09-27): the Lorentzian's
+        (`oscillator_spectrum(all_orders=True)`): the Lorentzian's
         `exp(-a |tau|)` becomes `exp(-D/2)` with `D` built from `c_fa(nu) = c
         (1 + rho(nu))`, `rho` from `frequency_aware_diffusion` (one bordered
         solve a frequency, `c(0) = c` exactly).  The machinery is the
@@ -921,7 +919,9 @@ class _PhaseNoise(object):
         series from where it dies away up to `fmax`, the change in `D` by
         signed quadrature, the white part held at its corrected level past
         `fmax`, and each offset from the transform or the linear skirt by
-        estimated error.  Normalised, as `lorentzian`."""
+        estimated error.  Normalised, as `lorentzian`.
+
+        History: `doc/shooting_history.md`, `PAC._white_all_orders`."""
         i = int(harmonic)
         fmax = 0.5 * f0 if fmax is None else float(fmax)
         if not (0.0 < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
@@ -980,10 +980,9 @@ class _PhaseNoise(object):
 
     #: the frequency-aware coloured lineshape stays FIRST ORDER in the
     #: correction while that order's estimated error is below this, and is
-    #: taken to all orders above it (`_fa_lineshape`).  The lineshape's own
-    #: floor, where the transform hands over to the linear skirt, is ~1e-4:
-    #: tighter than that bought ~1e-6 for 4x the time on an LC with no slow
-    #: node (5.9 -> 21.6 s, 42 solves, estimate 2.4e-6)
+    #: taken to all orders above it (`_fa_lineshape`): tighter bought ~1e-6
+    #: for 4x the time on an LC with no slow node
+    #: History: `doc/shooting_history.md`, `PAC.FA_FIRST_ORDER_TOL`.
     FA_FIRST_ORDER_TOL = 1e-4
     #: the frequency-aware correction `rho = c_fa/c_dc - 1` is probed a decade
     #: at a time down from `fmax` until it falls below this
@@ -994,10 +993,9 @@ class _PhaseNoise(object):
     FA_RHO_FIT = 'rational'
 
     #: the coloured lineshape warns when its estimated error at an offset
-    #: exceeds this, relative.  (The handover's ~1e-4, set against when this
-    #: was chosen, was an inflated QUADPACK bound and a first-order skirt;
-    #: since 2026-09-27 the true worst is 3.4e-7 / 4.5e-6 on a real / a very
-    #: broad line, `_lineshape.handover`.)
+    #: exceeds this, relative; the true worst is 3.4e-7 / 4.5e-6 on a real /
+    #: a very broad line (`_lineshape.handover`)
+    #: History: `doc/shooting_history.md`, `PAC.LINESHAPE_WARN`.
     LINESHAPE_WARN = 1e-3
 
     def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax,
@@ -1045,24 +1043,22 @@ class _PhaseNoise(object):
         ## the lineshape is ~1e-7 of the integrand's scale, and the transform
         ## finds it by cancellation.  So each offset takes the transform or
         ## the second-order skirt, whichever carries the smaller estimated
-        ## error (`_lineshape.handover`, 2026-09-27: the transform's
+        ## error (`_lineshape.handover`: the transform's
         ## estimate is its grid-phase move, QUADPACK's bound only where it
         ## failed; the skirt's is its split move plus its correction
         ## squared).
-        ## ⚠ THE TWO GRIDS ARE ONE DENSITY AT TWO PHASES (2026-09-27): the
-        ## returned grid (2 x TAU_PER_DECADE) against the same density with
-        ## its interior nodes half a step along.  Against HALF the density
-        ## (the grid it replaced) the estimate measured the COARSE grid's
-        ## error: 8 .. 261x the returned value's own (a 320-per-decade
-        ## reference) behind a slow node, a spurious 2e-3 warning at 300
-        ## linewidths; the shifted grid reads 1.2 .. 2.1x, for a third more
-        ## build time.
+        ## ⚠ THE TWO GRIDS ARE ONE DENSITY AT TWO PHASES: the returned grid
+        ## (2 x TAU_PER_DECADE) against the same density with its interior
+        ## nodes half a step along, so the estimate reads the returned
+        ## value's own error (1.2 .. 2.1x it).  Against HALF the density it
+        ## would measure the COARSE grid's.
+        ## History: `doc/shooting_history.md`, `PAC._coloured_spectrum`.
         off = np.asarray(offsets, dtype=float)
 
         def dc():
-            ## the DC line; built only where it is used (2026-09-27): the
-            ## all-orders path replaces it, and building it anyway was a
-            ## quarter of that path's time
+            ## the DC line; built only where it is used: the all-orders path
+            ## replaces it (and it costs a quarter of that path's time)
+            ## History: `doc/shooting_history.md`, `PAC._coloured_spectrum`.
             shapes = [_lineshape.ColouredLineshape(
                 a, pc, pref, per_decade=2 * _lineshape.TAU_PER_DECADE, shift=sh)
                 for sh in (True, False)]
@@ -1113,8 +1109,8 @@ class _PhaseNoise(object):
 
     def _fa_lineshape(self, pss, fold, pc, off, dc, i, f0, c_w, a, pref,
                       fmin, fmax, mode=None):
-        """The frequency-aware PPV in the coloured lineshape (2026-09-26, the
-        default).  The fold's frequency-aware samples (one bordered solve a
+        """The frequency-aware PPV in the coloured lineshape (the default).
+        The fold's frequency-aware samples (one bordered solve a
         frequency) give the WHITE and the COLOURED parts of `c_fa(nu)`
         separately: `c_w (1 + rho_w)` at every `nu`, and `c_c (1 + rho_c)` on
         `[fmin, fmax]` only, where the colour lives.  ⚠ The white part's
@@ -1148,7 +1144,9 @@ class _PhaseNoise(object):
         order stands.
 
         `self.lineshape_info` says which, and why.  `mode`: None the
-        estimate's choice, True all orders, False first order."""
+        estimate's choice, True all orders, False first order.
+
+        History: `doc/shooting_history.md`, `PAC._fa_lineshape`."""
         colour = lambda nus: np.asarray(
             fold.coloured(np.atleast_1d(np.asarray(nus, dtype=float))), dtype=float)
 
@@ -1332,7 +1330,7 @@ class _PhaseNoise(object):
         orbit `c(f)/c` stays within 1e-3.
 
         ⚠ WHITE sources only, like `diffusion_constant`; a MODULATED one
-        (2026-09-26) is read at each sample's state, as there.  Cost:
+        is read at each sample's state, as there.  Cost:
         one bordered adjoint GMRES per offset (0.25-0.7 s on these fixtures);
         the solve can fail to converge (Lai's own warning about eq. 23), and
         then this raises rather than returning the DC value silently.
@@ -1355,11 +1353,11 @@ class _PhaseNoise(object):
         tms = np.asarray(base['times'], dtype=float)
         n = min(len(tms) - 1, S.shape[0])
         T = float(base['period'])
-        ## ⚠ `_period_weights`, as `diffusion_constant` integrates -- until
-        ## 2026-09-27 `np.diff(times)`, the LEFT RECTANGLE: first order on a
-        ## smoothly non-uniform grid, measured c(0+)/c - 1 = -2.0e-3 /
-        ## -1.0e-3 / -5.1e-4 at N = 200/400/800 (1e-15 with these weights),
-        ## so `c(f)` jumped at f = 0 instead of reaching `c`
+        ## ⚠ `_period_weights`, as `diffusion_constant` integrates: the LEFT
+        ## RECTANGLE (`np.diff(times)`) is first order on a smoothly
+        ## non-uniform grid, and `c(f)` would jump at f = 0 instead of
+        ## reaching `c`
+        ## History: `doc/shooting_history.md`, `PAC.frequency_aware_diffusion`.
         h = self._period_weights(tms, n, T, pss)
         w0 = 2.0 * np.pi / float(pss.period)
         try:
@@ -1369,14 +1367,13 @@ class _PhaseNoise(object):
         if cy is not None:
             quad = np.real(np.einsum('ij,jk,ik->i', np.conj(S[:n]), cy, S[:n]))
         else:
-            ## ⚠ A MODULATED source (2026-09-26): `CY` at each sample's own
+            ## ⚠ A MODULATED source: `CY` at each sample's own
             ## state, as `diffusion_constant` reads it -- the PPV's orbit,
-            ## `_ppv_states`.  ⚠ Not `pss.waveform` (to 2026-09-27): trap and
+            ## `_ppv_states`.  ⚠ Not `pss.waveform`: trap and
             ## euler serve `factored_period()` -- and so this PPV -- from
             ## their monodromy TWIN, and the solve's own orbit differs from
-            ## the twin's by the discretisation; measured c(0+)/c - 1 =
-            ## -1.3e-4 on trap with a white source following the orbit
-            ## (1e-13 on gear, which has no twin).
+            ## the twin's by the discretisation (-1.3e-4 in c(0+)/c on trap).
+            ## History: `doc/shooting_history.md`, `PAC.frequency_aware_diffusion`.
             cys = 0.5 * np.real(self._cy_at_states(
                 pss, w0, self._ppv_states(pss)[:n]))
             quad = np.real(np.einsum('ij,ijk,ik->i', np.conj(S[:n]), cys, S[:n]))

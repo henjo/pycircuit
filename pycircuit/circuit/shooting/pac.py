@@ -3,8 +3,7 @@ point, and `SidebandResponse`.
 
 `PAC` keeps its small-signal core here -- the forced and adjoint sideband
 solves, the mixer response, AM/PM and the deflated solve -- and inherits its
-noise themes from the `_pac_*` modules (split 2026-09-27, as `PSS` was on
-2026-09-24):
+noise themes from the `_pac_*` modules:
 
     _pac_sources.py    the noise sources: CY on the orbit, the colour models,
                        their fits and roots, the guards, the quadrature
@@ -14,6 +13,8 @@ noise themes from the `_pac_*` modules (split 2026-09-27, as `PSS` was on
     _pac_sampled.py    sampled noise, its variance, jitter metrics
     _pac_modal.py      the Floquet-mode (orbital, modal) spectra
     _pac_phase.py      phase noise: diffusion, phase_psd, the lineshape
+
+History: `doc/shooting_history.md`, `pac` (module level).
 """
 import numpy as np
 import warnings
@@ -307,9 +308,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         1, m)`, and the crossings' shifts (None without state events).
         The operator solves (deflated on an oscillator, recycled across the
         sweep otherwise), the bordered event rows on a staged solve and the
-        fixed-time correction of the node responses -- `PAC.solve`'s core
-        (factored out 2026-09-25 so `_coloured_covariance` reads the same
-        responses).  Sets `deflated` and `matvecs` as `solve` did."""
+        fixed-time correction of the node responses -- `PAC.solve`'s core,
+        shared with `_coloured_covariance`.  Sets `deflated` and `matvecs`.
+
+        History: `doc/shooting_history.md`, `PAC._forced_responses`."""
         T = float(fp.T)
         m = self.cir.n - 1
         rhs = []
@@ -595,9 +597,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
             ## off after it.  Radau/trbdf2 and gear's pair map alike, driven
             ## or free period.  Verified by dual consistency against the
             ## bordered forward solve; unbordered, pnoise on a staged gear
-            ## solve is 10-15 % off (driven), and the row missed the forward
-            ## solve by 8 % on gear's staged oscillator (2026-09-24, when that
-            ## solve first existed).
+            ## solve is 10-15 % off (driven) and the row misses the forward
+            ## solve by 8 % on gear's staged oscillator.
+            ## History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
             _autonomous = getattr(pss, 'autonomous', False)
             _ev = EventColumns.of(pss)
             if _ev is not None and not (fp.is_stage or fp.is_pair
@@ -1144,14 +1146,13 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         import scipy.sparse.linalg as spla
         fp = pss._state_map()
         n = fp.width
-        ## ⚠ THE BORDER, ONCE PER SOLVED ORBIT (2026-09-26): `v` and `u`
-        ## depend only on the converged map, and `ppv()` recomputed them for
-        ## every solve -- 0.22 s each, 14 of `am_pm_noise`'s 27 s (66 solves
-        ## for 16 sidebands).  Kept per (pss, state map, the `ppv` that made
-        ## them); a re-solve builds a new map and misses.  ⚠ THE PRODUCER IS
-        ## PART OF THE KEY: a caller who replaces `pss.ppv` (the border-
-        ## sensitivity test injects perturbed vectors that way) must be
-        ## consulted, and a key of the solve alone served the old vectors.
+        ## ⚠ THE BORDER, ONCE PER SOLVED ORBIT: `v` and `u` depend only on
+        ## the converged map, and `ppv()` costs 0.22 s per call.  Kept per
+        ## (pss, state map, the `ppv` that made them); a re-solve builds a
+        ## new map and misses.  ⚠ THE PRODUCER IS PART OF THE KEY: a caller
+        ## who replaces `pss.ppv` (the border-sensitivity test injects
+        ## perturbed vectors that way) must be consulted.
+        ## History: `doc/shooting_history.md`, `PAC._deflated_solve`.
         _ppv_fn = getattr(pss.ppv, '__func__', pss.ppv)
         _border = getattr(self, '_deflation_border', None)
         if (_border is not None and _border[0] is pss and _border[1] is fp
@@ -1224,18 +1225,14 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## answer carries the multiplier's displacement (the staged map's
         ## multiplier, roadmap E8).  On an unstaged oscillator the residual
         ## is already at the tolerance and nothing happens.
-        ## ⚠⚠ NOT ON A NORDSIECK GLM'S MAP, MEASURED (2026-09-25; Andreas:
-        ## "If GLM is accurate use GLM").  Its map opens with the startup,
+        ## ⚠⚠ NOT ON A NORDSIECK GLM'S MAP.  Its map opens with the startup,
         ## which breaks the discrete phase symmetry: the unit multiplier sits
-        ## ``eta = O(h^p)`` off 1 (van der Pol in LC form, glm3 2.35e-5 /
-        ## 1.1e-6 at 60 / 120 points; radau 3e-11).  Refined, the answer is
-        ## the discrete operator's and misses the physical one by ``eta /
-        ## (2 pi r)``, `r` the offset in units of f0 (glm3 at 60 points:
-        ## 3.8e-3 at 1e-3, 0.35 at 1e-5, and below ``r ~ eta / 2 pi`` the
-        ## pole is gone).  Unrefined -- the pole carried analytically -- it
-        ## is O(h^p) at every offset (3.3e-5 / 3.3e-5 / 8.4e-5 at 1e-3 /
-        ## 1e-5 / 1e-7 against radau at 480 points), and forward and adjoint
-        ## then agree to O(eta) rather than the arithmetic (1e-6).
+        ## ``eta = O(h^p)`` off 1.  Refined, the answer is the discrete
+        ## operator's and misses the physical one by ``eta / (2 pi r)``, `r`
+        ## the offset in units of f0.  Unrefined -- the pole carried
+        ## analytically -- it is O(h^p) at every offset, and forward and
+        ## adjoint agree to O(eta) rather than the arithmetic.
+        ## History: `doc/shooting_history.md`, `PAC._deflated_solve`.
         if abs(denom) >= self.DEFLATION_REFINE_MIN and not fp.is_glm:
             def _plain(z_):
                 z_ = np.asarray(z_)

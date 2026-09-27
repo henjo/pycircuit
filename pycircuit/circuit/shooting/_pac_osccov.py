@@ -84,14 +84,16 @@ class _OscillatorCovariance(object):
         the pole's part propagates along the tangent, which the projection
         removes.
 
-        ⚠ ON A STAGED OSCILLATOR (2026-09-25) the map is the TOTAL one
+        ⚠ ON A STAGED OSCILLATOR the map is the TOTAL one
         (`EventColumns.total_matrix`), the source moves the crossings itself
         (``dtheta_f``, `forced_shift`: its ``P_theta dtheta_f`` enters the
         right-hand side), and the node responses are at FIXED times: the
         crossings' motion ``dtheta = dth w + dtheta_f`` enters through
         `_fixed_time_event_columns`, as `_forced_responses` does it.  The
         pole's part, dropped with `y`, moves the crossings along the orbit
-        with it, and its fixed-time response is again along ``xdot_j``."""
+        with it, and its fixed-time response is again along ``xdot_j``.
+
+        History: `doc/shooting_history.md`, `PAC._transverse_responses`."""
         T = float(fp.T)
         m = self.cir.n - 1
         N = len(fp.steps)
@@ -269,7 +271,7 @@ class _OscillatorCovariance(object):
         ``Pi K_orb Pi^T`` in the node space (`_node_projectors`), and with
         `samples=True` `info['transverse_samples']` at every node.
 
-        ⚠ A COLOURED SOURCE (2026-09-25) needs the band `fmin` / `fmax` /
+        ⚠ A COLOURED SOURCE needs the band `fmin` / `fmax` /
         `points_per_decade`, as `covariance`.  Its phase does not diffuse --
         1/f FM grows faster than linearly -- so it has no bounded-plus-
         random-walk split, and it enters the TRANSVERSE covariance alone:
@@ -316,14 +318,15 @@ class _OscillatorCovariance(object):
         u = np.asarray(pinfo['tangent_pair'], dtype=float).ravel()
         xdot = np.asarray(pinfo['xdot'], dtype=float).ravel()
         if n == 2 * m and v.shape[0] == m:
-            ## ⚠ THE TRAPEZOIDAL PLAIN PAIR `(x, iq)` (2026-09-24; refused
-            ## before): its map re-seeds `iq` at every period start, so its
+            ## ⚠ THE TRAPEZOIDAL PLAIN PAIR `(x, iq)`: its map re-seeds `iq`
+            ## at every period start, so its
             ## last `m` columns are zero and its null vectors follow from the
             ## state map's -- the left one `[v; 0]`, the right one the tangent
             ## with the `iq` block it carries, `M[:, :m] u`.  The result is as
             ## good as trap's own map: first order on a limit cycle (d -2.5 %
             ## at 200 points, -1.1 % at 800 on van der Pol, against a radau
             ## reference; the trbdf2 twin -4.8e-6).
+            ## History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
             u = np.asarray(M, dtype=float)[:, :m] @ u[:m]
             v = np.concatenate((v, np.zeros(m)))
         ## rescale the bordered solve's DIRECTION onto the tangent `ppv`
@@ -502,8 +505,8 @@ class _OscillatorCovariance(object):
         self._check_circuit(pss)
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) supplies
         ## the period, the factored period and the PPV as well -- read off
-        ## the run itself they came from another discretisation (trap's own
-        ## period against its twin's covariance, until 2026-09-24)
+        ## the run itself they come from another discretisation
+        ## History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         pss = pss._lyapunov_host()
         K_orb, d, info = self.oscillator_covariance(pss, samples=True)
         m = self.cir.n - 1

@@ -327,9 +327,9 @@ class _GLMPeriod(FactoredPeriod):
         `inject[n]` (a staged solve's event rows, `EventColumns.injection`)
         is a costate on `x_n` itself: node `n >= 1` is step `n-1`'s last
         stage, so it seeds that step's adjoint (`Dseed`); node 0 adds to
-        the result; a collected state carries its node's.  (Until
-        2026-09-25 refused, so `ppv` / `floquet_modes` raised on a staged
-        GLM oscillator.)"""
+        the result; a collected state carries its node's.
+
+        History: `doc/shooting_history.md`, `_GLMPeriod.x_matvec_transposed`."""
         v = np.asarray(v)
         inj = None if inject is None else np.asarray(inject)
         if np.iscomplexobj(v) or (inj is not None and np.iscomplexobj(inj)):
@@ -428,9 +428,11 @@ class _GLMStateMap(object):
     replays run (`PSS._forced_replay`, `_forced_replay_transposed`,
     `_sideband_forced`, `PAC._stage_pass`): the source enters the stages,
     the output rows and the startup that opens a step.  The two agree on
-    `M v` and `M^T v` (to round-off, the suite's GLM PAC tests).  Until
-    2026-09-25 PAC, pnoise and `sampled_noise` read a GLM run from a radau
-    twin; the covariance surfaces still do by default (`_lyapunov_host`)."""
+    `M v` and `M^T v` (to round-off, the suite's GLM PAC tests).  The
+    covariance surfaces read a GLM run from a radau twin by default
+    (`_lyapunov_host`).
+
+    History: `doc/shooting_history.md`, `_GLMStateMap`."""
     is_plain = is_pair = is_stage = False
     is_glm = True
 

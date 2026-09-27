@@ -175,12 +175,13 @@ class _PPVFloquet(object):
         -- or None (the blocks would not fit `EQ_ROW_BLOCK_LIMIT`, or one is
         singular, which the per-sample path warns about and falls back on).
 
-        ⚠ THEY DO NOT DEPEND ON THE FREQUENCY (2026-09-27).  The frequency-
-        aware PPV re-evaluated the circuit's `C` (and `G`, for algebraic
-        rows) at every sample of every solve, twice: 36 % of a solve, and
-        the all-orders lineshape makes ~70 of them.  The batch
+        ⚠ THEY DO NOT DEPEND ON THE FREQUENCY, so they are evaluated once
+        per solved orbit, not at every sample of every frequency-aware
+        solve (the all-orders lineshape makes ~70 of them).  The batch
         (`_equation_row_batch`) runs the same `np.linalg.solve`s, stacked:
-        bit-identical, pinned by a test."""
+        bit-identical, pinned by a test.
+
+        History: `doc/shooting_history.md`, `_PPVFloquet._equation_row_blocks`."""
         key = (N, tuple(rows), tuple(cols))
         cached = getattr(self, '_eq_row_cache', None)
         if cached is not None and cached[0] is fp and cached[1] == key:
@@ -443,10 +444,9 @@ class _PPVFloquet(object):
         deflated solve, `sampled_noise`: the factored period, except that a
         Nordsieck GLM's is taken on the state (`_GLMPeriod.state_map`) --
         its own acts on the Nordsieck vector, whose null vector's first
-        block holds the higher components fixed.  ⚠ Until 2026-09-24 a
-        native GLM's `ppv()` returned that Nordsieck object, `r*m` wide; until
-        2026-09-25 PAC and the noise folds read a GLM run from a radau twin
-        (named `_ppv_map` then, `ppv`'s alone)."""
+        block holds the higher components fixed.
+
+        History: `doc/shooting_history.md`, `_PPVFloquet._state_map`."""
         fp = self.factored_period()
         return fp.state_map() if fp.is_glm else fp
 
@@ -1015,19 +1015,19 @@ class _PPVFloquet(object):
         History: `doc/shooting_history.md`, `_PPVFloquet.frequency_aware_ppv`.
         """
         ## ⚠ THE TWIN SERVES THE WHOLE CALL, as `ppv()` and `floquet_modes`
-        ## do.  Until 2026-09-27 only its period map was borrowed (through
-        ## `_state_map`) and the propagation ran on THIS solve: exact on an
-        ## ODE, but on a circuit with an algebraic node the samples read
-        ## 1.6e-3 off the twin's own on trap (c(f) 1.3e-4).
+        ## do: borrowing only its period map and propagating on THIS solve
+        ## is exact on an ODE, but not on a circuit with an algebraic node.
+        ## History: `doc/shooting_history.md`, `_PPVFloquet.frequency_aware_ppv`.
         _tw = self.monodromy_twin()
         if _tw is not self:
             return _tw.frequency_aware_ppv(offset, tol)
         fp = self._state_map()
-        ## ⚠ THE DC PPV ONCE PER SOLVED ORBIT (2026-09-26): it was 0.22 s of
-        ## every 0.23 s offset, and the coloured folds now take one offset
-        ## per band frequency.  Kept per (state map, tol, the `ppv` that made
-        ## it -- a replaced `self.ppv` is consulted, see `PAC._deflated_solve`);
-        ## a re-solve builds a new map and misses.
+        ## ⚠ THE DC PPV ONCE PER SOLVED ORBIT: it dominates an offset's cost
+        ## (0.22 s of 0.23 s, measured), and the coloured folds take one
+        ## offset per band frequency.  Kept per (state map, tol, the `ppv`
+        ## that made it -- a replaced `self.ppv` is consulted, see
+        ## `PAC._deflated_solve`); a re-solve builds a new map and misses.
+        ## History: `doc/shooting_history.md`, `_PPVFloquet.frequency_aware_ppv`.
         _ppv_fn = getattr(self.ppv, '__func__', self.ppv)
         _base = getattr(self, '_fa_ppv_base', None)
         if (_base is not None and _base[0] is fp and _base[1] == tol
@@ -1202,8 +1202,8 @@ class _PPVFloquet(object):
         needs no reference.
 
         ⚠ DENSE UP TO `FLOQUET_DENSE_LIMIT` (`n` matvecs, then `eig`: every
-        mode); ABOVE IT, THE DOMINANT `nmodes` ONLY (`_floquet_modes_ritz`,
-        2026-09-25): a Ritz-certified Arnoldi on the map and on its
+        mode); ABOVE IT, THE DOMINANT `nmodes` ONLY (`_floquet_modes_ritz`):
+        a Ritz-certified Arnoldi on the map and on its
         transpose, run on `M` itself -- whose outer spectrum, the slow modes,
         converges first -- not on `I - M`, where the physical `lam_2 -> 1`
         is the smallest `theta` and resolves LAST (Garcia, Romero & Acha
@@ -1308,8 +1308,9 @@ class _PPVFloquet(object):
         (Traversa & Bonani, TCAS-I 2011, sec. V) -- so `nmodes=None` is
         refused here, and a spectrum above the limit is `pnoise`'s.  What
         this serves is stability and mode inspection: the multipliers,
-        exponents and shapes of the slow modes.  (Built 2026-09-25; until
-        then refused outright.)"""
+        exponents and shapes of the slow modes.
+
+        History: `doc/shooting_history.md`, `_PPVFloquet._floquet_modes_ritz`."""
         if nmodes is None:
             raise NotImplementedError(
                 'PSS.floquet_modes: this monodromy is %d wide, past '
@@ -1449,7 +1450,8 @@ class _PPVFloquet(object):
         (the transposed replay) sampled on `times`.  `residual(uk, lk)` is
         its relative eigen-residual -- the dense matrix's, or the map's
         mat-vec above `FLOQUET_DENSE_LIMIT`; `k` names the mode in a refusal.
-        (The loop body of `floquet_modes` until 2026-09-25, moved verbatim.)"""
+
+        History: `doc/shooting_history.md`, `_PPVFloquet._floquet_mode`."""
         nrm = complex(np.vdot(vk, uk))
         if abs(nrm) < 1e-30:
             raise ValueError(
@@ -1561,14 +1563,15 @@ class _PPVFloquet(object):
                 _Cj = np.asarray(self._C_at(_Wq[:, min(_j, _nw - 1)]),
                                  dtype=float)
                 q[:, _j] = np.linalg.pinv(_Cj.T) @ q[:, _j]
-            ## ⚠⚠ AND THE ALGEBRAIC ENTRIES ARE SLAVED, NOT ZERO
-            ## (2026-09-26).  `pinv` leaves them at its minimum-norm 0, so a
-            ## source on an algebraic node reached no mode: `modal_spectrum`
-            ## read EXACTLY 0 for one on radau, silently (gear's transposed
-            ## solve carries them).  An algebraic state's column of the
-            ## adjoint equation holds no derivative, whatever the mode's
-            ## exponent, so the PPV's constraint fill applies as it stands
+            ## ⚠⚠ AND THE ALGEBRAIC ENTRIES ARE SLAVED, NOT ZERO.  `pinv`
+            ## leaves them at its minimum-norm 0, and left there a source on
+            ## an algebraic node reaches no mode -- `modal_spectrum` reads
+            ## EXACTLY 0 for it, silently (gear's transposed solve carries
+            ## them).  An algebraic state's column of the adjoint equation
+            ## holds no derivative, whatever the mode's exponent, so the
+            ## PPV's constraint fill applies as it stands
             ## (`_algebraic_adjoint_fill`), at each sample's own state.
+            ## History: `doc/shooting_history.md`, `_PPVFloquet._floquet_mode`.
             _irn = self.irefnode
             _xf0 = np.insert(_Wq[:, 0], _irn, 0.0)
             _arows, _acols = self._algebraic_adjoint_pattern(_xf0)
