@@ -9054,6 +9054,12 @@ measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
 
+2026-09-27 (later): the transform's error estimate compared the returned
+80-per-decade grid with a 40-per-decade one, which measured the COARSE
+grid's error (8 .. 261x the returned value's own, and a spurious warning
+at 300 linewidths behind a slow node).  It now uses the same density at
+the other phase.
+
 2026-09-27: `all_orders`.  A white source's frequency-aware line had been
 the Lorentzian with `c(f)` per offset only, first order in the change:
 -8.4 % at the carrier and -11 % at 10 linewidths with a slow corner 10

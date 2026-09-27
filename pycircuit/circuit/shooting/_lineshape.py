@@ -196,8 +196,12 @@ class LogChebyshev:
             for j in range(N + 1):
                 key = j * (top // N)
                 if key not in vals:
-                    vals[key] = np.atleast_1d(np.asarray(
-                        fun(math.exp(float(u[j]))), dtype=float))
+                    ## the ends at the band edges themselves, not
+                    ## exp(log(.)) of them: a caller's cache of those
+                    ## (the lineshape's probes) then serves them
+                    nu = (nu_b if j == 0 else nu_a if j == N
+                          else math.exp(float(u[j])))
+                    vals[key] = np.atleast_1d(np.asarray(fun(nu), dtype=float))
                 rows.append(vals[key])
             f = np.asarray(rows)                                   # (N+1, k)
             ## the coefficients by the DCT-I
@@ -338,7 +342,8 @@ class ColouredLineshape:
     `ConstantTail`s, summed.  Its `D` (`correction_structure`, the tails
     exact) enters the spline of the TOTAL `D`."""
 
-    def __init__(self, a, pc, pref, per_decade=TAU_PER_DECADE, corr=None):
+    def __init__(self, a, pc, pref, per_decade=TAU_PER_DECADE, corr=None,
+                 shift=False):
         self.a = float(a)
         self.pc, self.pref = pc, float(pref)
         corr = ([] if corr is None else
@@ -354,6 +359,12 @@ class ColouredLineshape:
         self.tlo, self.thi = 1e-3 / nuN, 1e3 / nu0
         n = int(np.ceil(per_decade * np.log10(self.thi / self.tlo)))
         self.taus = np.geomspace(self.tlo, self.thi, n + 1)
+        if shift:
+            ## the interior nodes half a step along: the same density at the
+            ## other phase (the error estimate's second grid)
+            lt = np.log(self.taus)
+            self.taus = np.exp(np.concatenate(
+                ([lt[0]], 0.5 * (lt[:-1] + lt[1:]), [lt[-1]])))
         self.Dinf = 0.0
         if pc is not None:
             p0, pN = pc.nu[0], pc.nu[-1]

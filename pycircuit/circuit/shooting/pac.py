@@ -6494,7 +6494,12 @@ class PAC(Analysis):
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
         above it (the correction's own structure function inside `D`,
         ~65 solves; `_fa_lineshape`, `self.lineshape_info` says which);
-        `False` is the DC lineshape.
+        `False` is the DC lineshape.  Near the carrier the transform is
+        accurate to ~1e-6; the far skirt is the linear one (`phase_psd`'s),
+        taken per offset where its estimated error
+        (`_lineshape.linear_error`) is below the transform's (one tau
+        density at two phases, plus QUADPACK) -- both near 1e-4 at the
+        handover.
 
         `all_orders` (2026-09-27): the frequency-aware correction to ALL
         orders -- `c_fa(nu)` inside the structure function `D`, not per
@@ -6507,11 +6512,7 @@ class PAC(Analysis):
         (Andreas: "put it off by default"): ~65 bordered solves.  For a
         coloured source None is the estimate's choice (above), True forces
         all orders and False the first.  `self.lineshape_info` says which
-        ran.  Near the carrier
-        the transform is accurate to ~1e-6; the far skirt is the linear
-        one (`phase_psd`'s), taken per offset where its estimated error
-        (`_lineshape.linear_error`) is below the transform's (two tau
-        densities plus QUADPACK) -- both near 1e-4 at the handover.
+        ran.
 
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
@@ -6578,8 +6579,7 @@ class PAC(Analysis):
             [self.frequency_aware_diffusion(pss, nu) / c - 1.0, 0.0])
         off = np.asarray(offsets, dtype=float)
         vals, errs, _shapes = self._fa_orders(
-            rho_at, None, None, off, None, None, None, i, f0, c, a, pref,
-            None, fmax, True)
+            rho_at, None, None, off, None, i, f0, c, a, pref, None, fmax, True)
         worst = max(errs) if errs else 0.0
         if worst > self.LINESHAPE_WARN:
             warnings.warn(
@@ -6681,29 +6681,45 @@ class PAC(Analysis):
         ## transform finds it by cancellation (+-2e-3 at 0.1 f0 on the 1/f
         ## fixture, whatever the tolerance).  So each offset takes the
         ## transform or the linear skirt `S_phi`, whichever carries the
-        ## smaller estimated error: the transform's from two tau densities
-        ## plus QUADPACK's, the skirt's from `_lineshape.linear_error`.
-        shapes = [_lineshape.ColouredLineshape(a, pc, pref, per_decade=d)
-                  for d in (_lineshape.TAU_PER_DECADE,
-                            2 * _lineshape.TAU_PER_DECADE)]
+        ## smaller estimated error: the transform's from two tau grids plus
+        ## QUADPACK's, the skirt's from `_lineshape.linear_error`.
+        ## ⚠ THE TWO GRIDS ARE ONE DENSITY AT TWO PHASES (2026-09-27): the
+        ## returned grid (2 x TAU_PER_DECADE) against the same density with
+        ## its interior nodes half a step along.  Against HALF the density
+        ## (the grid it replaced) the estimate measured the COARSE grid's
+        ## error: 8 .. 261x the returned value's own (a 320-per-decade
+        ## reference) behind a slow node, a spurious 2e-3 warning at 300
+        ## linewidths; the shifted grid reads 1.2 .. 2.1x, for a third more
+        ## build time.
         off = np.asarray(offsets, dtype=float)
-        vals, errs = [], []
-        for o in np.atleast_1d(off).ravel():
-            s1, s2 = shapes[0](o), shapes[1](o)
-            err = abs(s2 - s1) / max(abs(s2), 1e-300) + shapes[1].last_err
-            if o != 0.0:
-                el = _lineshape.linear_error(o, i, f0, c_w, pc)
-                if el < err:
-                    s2 = (i * i * f0 * f0
-                          * (c_w + float(fold.coloured([abs(o)])[0])) / o ** 2)
-                    err = el
-            vals.append(s2)
-            errs.append(err)
+
+        def dc():
+            ## the DC line; built only where it is used (2026-09-27): the
+            ## all-orders path replaces it, and building it anyway was a
+            ## quarter of that path's time
+            shapes = [_lineshape.ColouredLineshape(
+                a, pc, pref, per_decade=2 * _lineshape.TAU_PER_DECADE, shift=sh)
+                for sh in (True, False)]
+            vals, errs = [], []
+            for o in np.atleast_1d(off).ravel():
+                s1, s2 = shapes[0](o), shapes[1](o)
+                err = abs(s2 - s1) / max(abs(s2), 1e-300) + shapes[1].last_err
+                if o != 0.0:
+                    el = _lineshape.linear_error(o, i, f0, c_w, pc)
+                    if el < err:
+                        s2 = (i * i * f0 * f0
+                              * (c_w + float(fold.coloured([abs(o)])[0])) / o ** 2)
+                        err = el
+                vals.append(s2)
+                errs.append(err)
+            return vals, errs, shapes
         self.lineshape_info = {'frequency_aware': None}
         if frequency_aware:
             vals, errs, shapes = self._fa_lineshape(
-                pss, fold, pc, off, vals, errs, shapes, i, f0, c_w, a, pref,
-                fmin, fmax, mode=all_orders)
+                pss, fold, pc, off, dc, i, f0, c_w, a, pref, fmin, fmax,
+                mode=all_orders)
+        else:
+            vals, errs, shapes = dc()
         S = np.asarray(vals).reshape(np.shape(off))
         worst = max(errs) if errs else 0.0
         if worst > self.LINESHAPE_WARN:
@@ -6725,8 +6741,8 @@ class PAC(Analysis):
             L = 10.0 * np.log10(np.maximum(S, 1e-300))
         return Sv, L
 
-    def _fa_lineshape(self, pss, fold, pc, off, vals, errs, shapes, i, f0,
-                      c_w, a, pref, fmin, fmax, mode=None):
+    def _fa_lineshape(self, pss, fold, pc, off, dc, i, f0, c_w, a, pref,
+                      fmin, fmax, mode=None):
         """The frequency-aware PPV in the coloured lineshape (2026-09-26, the
         default).  The fold's frequency-aware samples (one bordered solve a
         frequency) give the WHITE and the COLOURED parts of `c_fa(nu)`
@@ -6772,15 +6788,16 @@ class PAC(Analysis):
             return np.array([
                 float(wf[0]) / c_w - 1.0 if c_w > 0.0 else 0.0,
                 float(cf[0]) / cc - 1.0 if cc > 0.0 else 0.0])
-        return self._fa_orders(rho, colour, pc, off, vals, errs, shapes, i,
-                               f0, c_w, a, pref, fmin, fmax, mode)
+        return self._fa_orders(rho, colour, pc, off, dc, i, f0, c_w, a, pref,
+                               fmin, fmax, mode)
 
-    def _fa_orders(self, rho_at, colour, pc, off, vals, errs, shapes, i, f0,
-                   c_w, a, pref, fmin, fmax, mode):
+    def _fa_orders(self, rho_at, colour, pc, off, dc, i, f0, c_w, a, pref,
+                   fmin, fmax, mode):
         """`_fa_lineshape`'s choice and both its paths, for a coloured line
         (`colour`, the DC coloured `c` on `[fmin, fmax]`) or a white one
-        (`colour` None, `pc` None, `vals` unused: `_white_all_orders`).
-        `rho_at(nu)`: `(rho_w, rho_c)`, one bordered solve."""
+        (`colour` None, `pc` None, `dc` None: `_white_all_orders`).
+        `rho_at(nu)`: `(rho_w, rho_c)`, one bordered solve; `dc()` the DC
+        line `(vals, errs, shapes)`, which the first order corrects."""
         from . import _lineshape
         flat = np.atleast_1d(off).ravel()
         if colour is None:
@@ -6802,6 +6819,7 @@ class PAC(Analysis):
                 d += float(colour(nu)[0]) * r[1]
             return d
         if mode is False:
+            vals, errs, shapes = dc()
             for k, o in enumerate(flat):
                 if o != 0.0:
                     ao = abs(float(o))
@@ -6834,6 +6852,7 @@ class PAC(Analysis):
         info = {'estimate': est, 'cinf_estimate': cinf,
                 'probes': len(probes)}
         if mode is None and est <= self.FA_FIRST_ORDER_TOL:
+            vals, errs, shapes = dc()
             for k, o in enumerate(flat):
                 if o != 0.0:
                     ao = abs(float(o))
@@ -6868,10 +6887,10 @@ class PAC(Analysis):
         if clo < fmax:
             tabs.append(_lineshape.SignedTable(
                 lambda v: colour(v) * cheb(v)[1], clo, fmax))
-        shapes = [_lineshape.ColouredLineshape(a, pc, pref, per_decade=d,
-                                               corr=tabs)
-                  for d in (_lineshape.TAU_PER_DECADE,
-                            2 * _lineshape.TAU_PER_DECADE)]
+        ## (one density at two phases, as `_coloured_spectrum`'s)
+        shapes = [_lineshape.ColouredLineshape(
+            a, pc, pref, per_decade=2 * _lineshape.TAU_PER_DECADE, corr=tabs,
+            shift=sh) for sh in (True, False)]
         vals, errs = [], []
         for o in flat:
             s1, s2 = shapes[0](o), shapes[1](o)

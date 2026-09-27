@@ -164,6 +164,68 @@ class _PPVFloquet(object):
             return out
         return self._algebraic_adjoint_fill(out, xf, rows, cols)
 
+    #: `_equation_row_blocks` keeps its per-sample blocks while samples x
+    #: states^2 stays below this (floats); above it the samples are mapped
+    #: one at a time, as before
+    EQ_ROW_BLOCK_LIMIT = 4_000_000
+
+    def _equation_row_blocks(self, fp, Xf, N, m, rows, cols):
+        """The per-sample blocks `_equation_row_ppv` reads from `C(x_j)` and
+        `G(x_j)`, for all `N` samples at once, kept per solved orbit (`fp`)
+        -- or None (the blocks would not fit `EQ_ROW_BLOCK_LIMIT`, or one is
+        singular, which the per-sample path warns about and falls back on).
+
+        ⚠ THEY DO NOT DEPEND ON THE FREQUENCY (2026-09-27).  The frequency-
+        aware PPV re-evaluated the circuit's `C` (and `G`, for algebraic
+        rows) at every sample of every solve, twice: 36 % of a solve, and
+        the all-orders lineshape makes ~70 of them.  The batch
+        (`_equation_row_batch`) runs the same `np.linalg.solve`s, stacked:
+        bit-identical, pinned by a test."""
+        key = (N, tuple(rows), tuple(cols))
+        cached = getattr(self, '_eq_row_cache', None)
+        if cached is not None and cached[0] is fp and cached[1] == key:
+            return cached[2]
+        blocks = None
+        diff = [i for i in range(m) if i not in rows]
+        nz = [j for j in range(m) if j not in cols]
+        if N * m * m <= self.EQ_ROW_BLOCK_LIMIT:
+            BC, BA, GD = [], [], []
+            for j in range(N):
+                xf = Xf[:, j if j < Xf.shape[1] else -1]
+                Cr, = remove_row_col((np.asarray(self.cir.C(xf), dtype=float),),
+                                     self.irefnode, self.toolkit)
+                BC.append(np.asarray(Cr, dtype=float)[np.ix_(diff, nz)].T)
+                if rows and len(rows) == len(cols):
+                    Gr, = remove_row_col((np.asarray(self.cir.G(xf), dtype=float),),
+                                         self.irefnode, self.toolkit)
+                    Gr = np.asarray(Gr, dtype=float)
+                    BA.append(Gr[np.ix_(rows, cols)].T)
+                    GD.append(Gr[np.ix_(diff, cols)].T)
+            BC = np.asarray(BC)
+            ok = bool(np.all(np.linalg.matrix_rank(BC) == BC.shape[-1]))
+            if BA:
+                BA, GD = np.asarray(BA), np.asarray(GD)
+                ok = ok and bool(np.all(np.linalg.matrix_rank(BA) == BA.shape[-1]))
+            if ok:
+                blocks = {'diff': diff, 'nz': nz, 'rows': list(rows),
+                          'C': BC, 'A': BA if len(BA) else None,
+                          'GD': GD if len(GD) else None, 'm': m}
+        self._eq_row_cache = (fp, key, blocks)
+        return blocks
+
+    @staticmethod
+    def _equation_row_batch(V, blocks):
+        """`_equation_row_ppv` on every row of the REAL `(N, m)` array `V`,
+        with the blocks of `_equation_row_blocks`: the same solves, stacked."""
+        V = np.asarray(V, dtype=float)
+        out = np.zeros((V.shape[0], blocks['m']), dtype=float)
+        diff, nz = blocks['diff'], blocks['nz']
+        out[:, diff] = np.linalg.solve(blocks['C'], V[:, nz][..., None])[..., 0]
+        if blocks['A'] is not None:
+            rhs = -np.matmul(blocks['GD'], out[:, diff][..., None])
+            out[:, blocks['rows']] = np.linalg.solve(blocks['A'], rhs)[..., 0]
+        return out
+
     def _algebraic_adjoint_fill(self, vblock, xf, rows, cols):
         """Fill the adjoint's ALGEBRAIC entries, which are SLAVED, not free.
 
@@ -1054,14 +1116,21 @@ class _PPVFloquet(object):
         ## integrate over `info['ppv']['times']` and `['period']` instead.
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            info['samples_eq'] = np.array([
-                self._equation_row_ppv(
-                    np.real(st[:m]), _Xf[:, _j if _j < _Xf.shape[1] else -1],
-                    _alg_rows, _alg_cols)
-                + 1j * self._equation_row_ppv(
-                    np.imag(st[:m]), _Xf[:, _j if _j < _Xf.shape[1] else -1],
-                    _alg_rows, _alg_cols)
-                for _j, st in enumerate(samples)])
+            V = np.asarray(samples)[:, :m]
+            blocks = self._equation_row_blocks(fp, _Xf, V.shape[0], m,
+                                               _alg_rows, _alg_cols)
+            if blocks is not None:
+                info['samples_eq'] = (self._equation_row_batch(np.real(V), blocks)
+                                      + 1j * self._equation_row_batch(np.imag(V), blocks))
+            else:
+                info['samples_eq'] = np.array([
+                    self._equation_row_ppv(
+                        np.real(st[:m]), _Xf[:, _j if _j < _Xf.shape[1] else -1],
+                        _alg_rows, _alg_cols)
+                    + 1j * self._equation_row_ppv(
+                        np.imag(st[:m]), _Xf[:, _j if _j < _Xf.shape[1] else -1],
+                        _alg_rows, _alg_cols)
+                    for _j, st in enumerate(samples)])
         info['period'] = T
         return v, info
 

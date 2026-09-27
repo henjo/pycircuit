@@ -12654,7 +12654,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     f0 = 1.0 / float(pss.period)
     X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
     fcore = np.pi * f0 * f0 * pac._colour_fold(pss, 1e-5 * f0, None, 'x').c_white
-    offs = np.array([0.0, 1.0, 10.0, 100.0, 1000.0]) * fcore
+    offs = np.array([0.0, 1.0, 10.0, 100.0, 300.0, 1000.0]) * fcore
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter('always')
         S_all = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
@@ -12663,7 +12663,9 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     ## corrected level (`ConstantTail`).  Returned to `c_w` there, its edge
     ## rang through `D` and the two tau densities parted 4.7e-3 at 100
     ## linewidths (warned); held, 6.8e-5, and 1000 linewidths is the
-    ## frequency-aware `S_phi` to 3.9e-6
+    ## frequency-aware `S_phi` to 3.9e-6.  ⚠ And at 300 linewidths the
+    ## ESTIMATE: against half the density it read 2e-3 (warned) for a true
+    ## 7.8e-6; one density at two phases reads 1.5e-5 (2026-09-27)
     assert not [r for r in rec if 'estimated relative error' in str(r.message)], \
         [str(r.message) for r in rec]
     with _w.catch_warnings():
@@ -20079,6 +20081,61 @@ def test_the_ppv_border_caches_follow_a_re_solve():
     assert got[0] == ref[0], (got[0], ref[0])
     assert np.array_equal(got[1], ref[1])
 
+
+def test_the_frequency_aware_equation_rows_are_batched_bit_for_bit():
+    """`frequency_aware_ppv`'s equation-row samples (2026-09-27): the
+    per-sample blocks of `C(x_j)` / `G(x_j)` are read once per solved
+    orbit and the solves run stacked (`_equation_row_blocks`,
+    `_equation_row_batch`), instead of re-evaluating the circuit at every
+    sample of every solve (36 % of a solve under the profiler, ~10 % in
+    wall time; with the lazy DC line, the all-orders lineshape 14.4 ->
+    9.5 s).  BIT-identical to the per-sample path at four offsets.  The
+    circuit makes every block move along the orbit: a tanh charge at `v`
+    (`C` varies by 0.27) and a cubic conductance at the ALGEBRAIC node `x`
+    (its fill's `G` block varies by 0.20).  On the plain slow-node LC they
+    are constant, and a batch reading the wrong sample's blocks passed.
+    The re-solve test above covers the cache following a new orbit."""
+    import warnings as _w
+    from pycircuit.circuit.shooting import PSS as _PSS
+    circuit.default_toolkit = circuit.numeric
+    T0 = 6.6634
+    c = SubCircuit()
+    c.add_node('v'); c.add_node('w'); c.add_node('x')
+    c['C'] = C('v', gnd, c=1.0)
+    c['Q'] = BSource('v', gnd, gnd, 'v', q_func=lambda u: 0.3 * np.tanh(u))
+    c['L'] = L('v', 'x', L=1.0)
+    c['Rl'] = R('x', gnd, r=0.2)
+    c['Gx'] = BSource('x', gnd, gnd, 'x', i_func=lambda u: 0.5 * u ** 3)
+    c['B'] = BSource('v', gnd, gnd, 'v',
+                     i_func=lambda u: (u - u ** 3 / 3.0) + 0.25 * (u ** 2 - 2.0))
+    c['Rs'] = R('v', 'w', r=1e2, noisy=False)
+    c['Cs'] = C('w', gnd, c=100.0 * T0 / 1e2)
+    c['nw'] = IS('w', gnd, i=0.0, noisePSD=1e-6)
+    pss = PSS(c, method='gear', reltol=1e-11)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
+    assert pss.converged
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        for nu in (1e-5, 1e-3, 3e-2, 0.4):
+            a = pss.frequency_aware_ppv(nu * f0)[1]['samples_eq']
+            blocks = pss._eq_row_cache[2]
+            assert blocks is not None, 'the batch did not run'
+            assert blocks['A'] is not None and blocks['rows'], 'no algebraic fill'
+            for k in ('C', 'A'):
+                assert np.ptp(blocks[k], axis=0).max() > 0.1, \
+                    '%s does not move along the orbit' % k
+            orig = _PSS._equation_row_blocks
+            _PSS._equation_row_blocks = lambda self, *args: None
+            try:
+                b = pss.frequency_aware_ppv(nu * f0)[1]['samples_eq']
+            finally:
+                _PSS._equation_row_blocks = orig
+            assert np.array_equal(a, b), (nu, float(np.max(np.abs(a - b))))
 
 def test_fsolve_stops_a_stalled_iteration_when_asked():
     """`fsolve(stall_window=W)` (2026-09-26): stop when the best `||F||` of
