@@ -183,6 +183,7 @@ class TransientStatistics(object):
     __slots__ = ('accepted_steps', 'rejected_steps', 'newton_iterations',
                  'force_accepts', 'order_drops', 'breakpoints_hit',
                  'gmin_rescues', 'state_events_hit', 'state_event_cuts',
+                 'branch_screens', 'branch_points',
                  'min_step', 'max_step', 'solve_seconds', 'total_seconds')
 
     def __init__(self):
@@ -198,6 +199,13 @@ class TransientStatistics(object):
         ## history restarted there) and the secant re-solves it took
         self.state_events_hit = 0
         self.state_event_cuts = 0
+        ## `branch_check`: steps whose `rank C` fell below its structural
+        ## value (screened), and those a re-solve found a second root of.
+        ## ⚠ Slots since 2026-09-27: without them `_branch_count` raised on
+        ## the first screen of every `solve`, the check caught its own error
+        ## and switched itself off -- it never reported on a full solve.
+        self.branch_screens = 0
+        self.branch_points = 0
         self.min_step = None
         self.max_step = None
         self.solve_seconds = 0.0
@@ -1145,18 +1153,31 @@ class Transient(Analysis):
         C = np.asarray(self.cir.C(x, self.epar), dtype=float)
         if C.size == 0:
             return False, None
+        ## ⚠ THE SCALE IS THE LARGEST `C` THIS RUN HAS SEEN, not the random
+        ## states' (`scale0`, until 2026-09-27).  Those sit anywhere in +-1 V,
+        ## where a forward junction's diffusion capacitance is e^38 above any
+        ## state the circuit visits: measured 0.217 F on a rectifier, so a
+        ## real 1.7e-10 F junction read as ZERO against 2e-6 F of load, the
+        ## screen fired on 2086 of 2500 steps and the confirmation re-solved
+        ## every one (3.8-4.9x the run; hidden while the check disabled
+        ## itself, see `TransientStatistics`).  The RANK stays structural --
+        ## a running maximum of the rank reads quiet where `C` is zero for the
+        ## whole run -- and for a linear `C` the two scales are one number.
+        ref = max(getattr(self, '_branch_cmax', 0.0),
+                  float(np.max(np.abs(C))))
+        self._branch_cmax = ref
         d = np.abs(np.diag(C))
-        if float(np.max(np.abs(C))) > self.BRANCH_SCREEN_TOL * scale0 \
-                and float(np.max(d)) > self.BRANCH_SCREEN_TOL * scale0:
+        if float(np.max(np.abs(C))) > self.BRANCH_SCREEN_TOL * ref \
+                and float(np.max(d)) > self.BRANCH_SCREEN_TOL * ref:
             ## nothing has collapsed at the cheap level
             if float(np.min(d[d > 0.0]) if np.any(d > 0.0) else 0.0) \
-                    > 1e-6 * scale0:
+                    > 1e-6 * ref:
                 return False, None
         nrm = float(np.max(np.abs(C)))
-        if nrm <= self.BRANCH_SCREEN_TOL * scale0:
+        if nrm <= self.BRANCH_SCREEN_TOL * ref:
             return True, None            # C has collapsed entirely
         U, sv, _Vt = np.linalg.svd(C)
-        r = int((sv > self.BRANCH_SCREEN_TOL * scale0).sum())
+        r = int((sv > self.BRANCH_SCREEN_TOL * ref).sum())
         if r >= r0:
             return False, None
         return True, U[:, -1]
@@ -1289,7 +1310,6 @@ class Transient(Analysis):
                 logging.warning('transient: the branch check itself failed '
                                 '(%s); it is disabled for this run and the '
                                 'solve is unaffected', self._branch_error)
-            self.branch_check = 'off'
 
     def _branch_after_coupled(self, stage_newton, seed0, Y, residual,
                               build=None):
@@ -1300,7 +1320,7 @@ class Transient(Analysis):
         the three stages are unknowns of ONE Newton, so a second root of the
         block is what "the step equation had several roots" means here.
         """
-        if getattr(self, 'branch_check', 'on') != 'on':
+        if not self._branch_on():
             return
         try:
             ## ⚠ "FIRED" AND "GAVE A DIRECTION" ARE DIFFERENT ANSWERS, and
@@ -1377,7 +1397,6 @@ class Transient(Analysis):
                 logging.warning('transient: the branch check itself failed '
                                 '(%s); it is disabled for this run and the '
                                 'solve is unaffected', self._branch_error)
-            self.branch_check = 'off'
 
     def _branch_coupled_scan(self, stage_newton, seed0, base, d, scale,
                              residual):
@@ -1412,6 +1431,14 @@ class Transient(Analysis):
                     continue
                 return gap
         return None
+
+    def _branch_on(self):
+        """`branch_check` is 'on' and has not failed in this run -- a
+        failure is announced once and disables the check until the next
+        `solve` (`_solve` clears `_branch_error`; PSS, which never calls it,
+        keeps a failure for the analysis' life)."""
+        return (getattr(self, 'branch_check', 'on') == 'on'
+                and not getattr(self, '_branch_error', None))
 
     def _branch_count(self, name):
         """Count on `statistics` when there is one, on the instance otherwise
@@ -1538,7 +1565,7 @@ class Transient(Analysis):
             stats.newton_iterations += int(_iters)
 
         ## BRANCH DETECTION -- the screen is O(m) unless something collapsed
-        if getattr(self, 'branch_check', 'on') == 'on':
+        if self._branch_on():
             ## ⚠ the REDUCED function, the one the solver actually solved --
             ## handing it the full-width `func` with a reduced seed is a
             ## dimension mismatch that the diagnostic's own except would eat
@@ -1749,11 +1776,11 @@ class Transient(Analysis):
     ## -- accepted states and, on the sequential paths, this step's already
     ## converged stages -- so a VARIABLE STEP needs no special case, which the
     ## per-tableau formulation this replaces could not do.
-    ## `'on'` (the default) or `'off'`, the pre-predictor seed, which is the
-    ## control every measurement of this feature is made against
     ## `'on'` (the default) or `'off'`: after each Newton, test whether the
     ## step equation had more than one root -- see `_branch_after_solve`
     branch_check = 'on'
+    ## `'on'` (the default) or `'off'`, the pre-predictor seed, which is the
+    ## control every measurement of this feature is made against
     stage_predictor = 'on'
     ## fit order; None means the method's own order, capped at 4
     stage_predictor_degree = None
@@ -3352,7 +3379,7 @@ class Transient(Analysis):
                 ## THE BRANCH CHECK, CONFIRMED: the step equation is the one
                 ## the limiting path solves, so the speculative re-solve is
                 ## that Newton's (`_branch_after_solve`)
-                if getattr(self, 'branch_check', 'on') == 'on':
+                if self._branch_on():
                     self._branch_after_solve(
                         refnode_removed(
                             lambda xx: self._residual_and_jacobian(
@@ -3520,7 +3547,7 @@ class Transient(Analysis):
                 ## THE BRANCH CHECK, CONFIRMED on the stage equation `_newton`
                 ## would have solved (until 2026-09-24 this path ran NONE:
                 ## neither the screen nor the confirmation)
-                if getattr(self, 'branch_check', 'on') == 'on':
+                if self._branch_on():
                     iref = self.irefnode
                     self._branch_after_solve(
                         refnode_removed(func_i, iref, self.toolkit),
@@ -5018,6 +5045,11 @@ class Transient(Analysis):
         ## Stage 6(c).  Created per run, so a second `solve()` reports its own
         ## numbers rather than the sum of every run on this object.
         self.statistics = TransientStatistics()
+        ## the branch check reports (and may fail) once PER RUN, and its
+        ## collapse scale is this run's (`_branch_screen`)
+        self._branch_error = None
+        self._branch_warned = False
+        self._branch_cmax = 0.0
         _t_run_start = time.perf_counter()
         ## DECISION D2, 2026-08-01.  The clamp on how large an ACCEPTED step may
         ## grow.  It defaults to `timestep` -- the historical behaviour, and what

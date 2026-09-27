@@ -22047,8 +22047,11 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
                        reltol=1e-10)
         tr.solve(refnode=_gnd, tend=PER, timestep=PER / 100,
                  fixed_timestep=True)
-    assert getattr(tr.statistics, 'branch_screens', 0) == 0
-    assert getattr(tr.statistics, 'branch_points', 0) == 0
+    ## (attributes, not `getattr(..., 0)`: that default read 0 while the
+    ## check was switching itself off on every full solve, 2026-09-27)
+    assert tr.statistics.branch_screens == 0
+    assert tr.statistics.branch_points == 0
+    assert getattr(tr, '_branch_error', None) is None, tr._branch_error
 
     ## (4) and it is switchable
     prev = Transient.branch_check
@@ -22058,6 +22061,101 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     finally:
         Transient.branch_check = prev
     assert s_off == 0 and p_off == 0, (s_off, p_off)
+
+
+def test_the_branch_check_reports_on_a_full_transient_solve(caplog):
+    """`branch_check` on the path a user takes -- `Transient.solve` -- and
+    not only on the hand-driven marches the test above counts on.
+
+    ⚠⚠ UNTIL 2026-09-27 IT NEVER REPORTED THERE.  `TransientStatistics` has
+    `__slots__`, and `branch_screens` / `branch_points` were not among them,
+    so the first screen of every full solve raised AttributeError in
+    `_branch_count`; the check's own except caught it, logged "the branch
+    check itself failed" and switched the check off for the object's life.
+    The marches have no `statistics` object and count on the instance, so
+    every test passed, and the one full solve asserted
+    `getattr(tr.statistics, 'branch_screens', 0) == 0` -- which the missing
+    attribute satisfied.
+
+    Asserted on the fixture of `test_one_netlist_returns_three_different_
+    solutions_chosen_by_the_newton_seed`, for an LMM and the coupled Radau:
+    the repelling equilibrium is REPORTED (screens, confirmed points, and the
+    logged warning), the attracting control whose `C` degenerates identically
+    is screened and NOT confirmed, and the check is still on afterwards.
+    """
+    import logging
+    import os
+    import sys
+    from pycircuit.circuit.circuit import gnd as _gnd
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import (Gear2Integrator,
+                                              RadauIIA3Integrator)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'benchmarks'))
+    from branch_selection import build
+
+    for cls in (Gear2Integrator, RadauIIA3Integrator):
+        for g in (-1.0, 1.0):
+            caplog.clear()
+            tr = Transient(build(g), integrator=cls(), reltol=1e-10)
+            with caplog.at_level(logging.WARNING):
+                tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50,
+                         fixed_timestep=True)
+            st = tr.statistics
+            logged = [r.getMessage() for r in caplog.records]
+            name = (cls.__name__, g)
+            assert getattr(tr, '_branch_error', None) is None, (name, tr._branch_error)
+            assert not any('branch check itself failed' in m for m in logged), name
+            assert tr.branch_check == 'on', name
+            assert st.branch_screens > 0, (name, st.branch_screens)
+            if g < 0:
+                assert st.branch_points > 0, (name, st.branch_points)
+                assert any('MORE THAN ONE ROOT' in m for m in logged), (name, logged)
+            else:
+                assert st.branch_points == 0, (name, 'FALSE ALARM', st.branch_points)
+                assert not any('MORE THAN ONE ROOT' in m for m in logged), name
+
+    ## ⚠ A REAL JUNCTION IS NOT A RANK DROP.  With the check live, a
+    ## half-wave rectifier screened 2086 of 2500 steps and re-solved each
+    ## (3.8-4.9x the run on three junction circuits): the collapse scale came
+    ## from random states in +-1 V, where the diode's diffusion capacitance
+    ## is 0.217 F, so its real 1.7e-10 F junction read as zero.  The scale is
+    ## the run's own now; a live junction is never screened.
+    import pycircuit.circuit.elements_hdl as eh
+    from pycircuit.circuit.elements import VSin
+    rect = SubCircuit()
+    a, b = rect.add_node('a'), rect.add_node('b')
+    rect['V1'] = VSin(a, _gnd, va=5.0, freq=1e3)
+    rect['D1'] = eh.DiodeSpiceHdl(a, b, IS=1.2e-14, rs=1.5, n=1.06, tt=4e-9,
+                                  cjo=2.3e-12, vj=0.78, m=0.42, eg=1.11,
+                                  xti=3.0, fc=0.5, bv=45.0, ibv=5e-6, kf=0.0,
+                                  af=1.0, area=50.0, tnom=27.0)
+    rect['Rl'] = R(b, _gnd, r=1e4)
+    rect['Cl'] = C(b, _gnd, c=1e-6)
+    rect.update_iparv()
+    tr = Transient(rect)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr.solve(refnode=_gnd, tend=2e-3, timestep=2e-6)
+    assert tr.statistics.accepted_steps > 100
+    assert tr.statistics.branch_screens == 0, tr.statistics.branch_screens
+
+    ## a failure of the check itself disables it for THAT run only: the next
+    ## `solve` on the same object checks again (it used to overwrite
+    ## `branch_check` with 'off' for the object's life)
+    tr = Transient(build(-1.0), integrator=Gear2Integrator(), reltol=1e-10)
+
+    def boom(*a, **kw):
+        raise RuntimeError('screen failed')
+    tr._branch_screen = boom
+    with caplog.at_level(logging.WARNING):
+        tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
+    assert 'screen failed' in str(tr._branch_error)
+    assert tr.statistics.branch_points == 0
+    del tr._branch_screen
+    tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
+    assert tr._branch_error is None and tr.branch_check == 'on'
+    assert tr.statistics.branch_points > 0
 
 
 def test_the_branch_check_does_not_disturb_device_limiting_state():
