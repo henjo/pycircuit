@@ -1453,12 +1453,16 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
     CONDUCTANCE IN THE DEVICE CURRENT (`i + g x`, `G + g I`) rather than as
     `F + g x` on a residual that is in CHARGE units.
 
-    The exercise below forces a failure with a tight iteration budget rather
-    than waiting for a natural one: on this 6-diode slam the coupled Newton
-    cannot converge in 3 iterations, so the step fails outright without the
-    rescue and converges with it.  (No circuit has yet been found that defeats
-    the coupled Newton at a normal budget -- 16 parallel diodes behind 10 mOhm
-    under a 500 V slam at 10 GHz, down to two points per period, all converge.)
+    The exercise below FORCES the failure: the step's plain coupled Newton
+    (no shunt, undamped, from the predictor seed) raises, while the ladder's
+    rungs and its final pure solve, seeded from them, are the real Newton.
+    ⚠ The forcing used to be physical -- a 6-diode slam (400 V through 10
+    mOhm at 5 GHz) at a 3-iteration budget -- until the coupled Newton
+    stopped accepting a limiter that had not come to rest (2026-09-28): the
+    slam then needs more iterations, and a 3-iteration run subdivides its
+    steps for tens of seconds instead of failing.  Forced, the rescue is
+    also checked for landing on the SAME answer: the exact one, from a
+    state-free copy of the diode (`_state_free_diode`).
     """
     from pycircuit.circuit.integrator import (RadauIIA3Integrator,
                                               TRBDF2Integrator)
@@ -1476,35 +1480,52 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
         c['C'] = C(2, gnd, c=1e-16)
         return c
 
-    def run(rescue, maxiter):
-        c = slam()
+    def driven(cls):
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=20.0, freq=1e3)
+        c['R'] = R(1, 2, r=1.0)
+        c['D'] = cls(2, gnd)
+        c['C'] = C(2, gnd, c=1e-9)
+        return c
+
+    plain_failures = []
+
+    def forced(monkey_self, x0, t, provided_function):
+        ctx, newton, residual, seed0 = solver(monkey_self, x0, t,
+                                              provided_function)
+
+        def plain_fails(seed, gshunt=0.0, damped=False):
+            if seed is seed0 and gshunt == 0.0 and not damped:
+                plain_failures.append(t)
+                raise NoConvergenceError('forced: the plain coupled Newton')
+            return newton(seed, gshunt, damped)
+        return ctx, plain_fails, residual, seed0
+    solver = Transient._coupled_stage_solver
+
+    def run(cls, rescue, force):
+        c = driven(cls)
         tr = Transient(c, toolkit=circuit.numeric,
-                       integrator=RadauIIA3Integrator(), reltol=1e-9,
-                       maxiter=maxiter)
+                       integrator=RadauIIA3Integrator(), reltol=1e-9)
         tr._continuation_rescue = rescue
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                tr.solve(tend=4e-10, timestep=1e-10, x0=np.zeros(c.n),
-                         fixed_timestep=True)
-            return True, tr.statistics.gmin_rescues
-        except (NoConvergenceError, RuntimeError):
-            return False, tr.statistics.gmin_rescues
-
-    ok_cold, _ = run(False, 3)
-    assert not ok_cold, \
-        'the coupled Newton now converges at 3 iterations, so this case no ' \
-        'longer exercises the rescue -- tighten it or pick a harder circuit'
-    ok_warm, rescues = run(True, 3)
-    assert ok_warm and rescues > 0, \
-        'the armed continuation rescue did not save the coupled step ' \
-        '(solved=%s, gshunt rescues=%d)' % (ok_warm, rescues)
-
-    ## a budget the plain Newton can meet must NOT invoke the ladder at all
-    ok, rescues = run(True, 8)
-    assert ok and rescues == 0, \
-        'the rescue fired on a step the plain Newton can solve (%d rescues)' \
-        % rescues
+        if force:
+            tr._coupled_stage_solver = forced.__get__(tr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=2e-4, timestep=1e-5, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        return (np.asarray(res.x, float)[c.get_node_index(2)],
+                tr.statistics.gmin_rescues)
+    v_exact, _ = run(_state_free_diode(), False, False)
+    v_plain, rescues = run(Diode, True, False)
+    assert rescues == 0, \
+        'the rescue fired on steps the plain Newton solves (%d rescues)' % rescues
+    v_rescued, rescues = run(Diode, True, True)
+    assert len(plain_failures) == 20 and rescues == 20, \
+        'the armed rescue did not carry every forced step (%d forced, %d ' \
+        'rescued)' % (len(plain_failures), rescues)
+    assert max(v_exact) > 0.8, 'the diode is no longer driven past its knee'
+    for v in (v_plain, v_rescued):
+        assert np.max(np.abs(v - v_exact)) < 1e-9, np.max(np.abs(v - v_exact))
 
     ## and the diagnostic predicate must track which paths really carry it
     for integ, honours in ((TRBDF2Integrator, True),
@@ -1829,4 +1850,78 @@ def test_a_stage_pcnr_step_leaves_the_diode_at_its_solution():
     assert tr.pcnr_status == 'used' and tr.pcnr_fallbacks == 0, tr.pcnr_status
     assert max(v_ref) > 0.84, 'the diode is no longer driven past its knee'
     assert np.max(np.abs(v - v_ref)) < 1e-12, np.max(np.abs(v - v_ref))
+
+
+def _driven_diode(cls, va=20.0, r=1.0):
+    """A diode driven through `r` by a `va`, 1 kHz sine: at 20 V through 1
+    ohm, 0.85 V peak, far enough past the junction's critical voltage that
+    `pnjlim` clamps."""
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, va=va, freq=1e3)
+    c['R'] = R(1, 2, r=r)
+    c['D'] = cls(2, gnd)
+    c['C'] = C(2, gnd, c=1e-9)
+    return c
+
+
+@pytest.mark.parametrize('transform', [False, True])
+def test_the_coupled_radau_newton_meets_the_exact_diode(transform):
+    """Radau's coupled Newton on a STATEFUL limiter (`elements.Diode`, whose
+    `i` / `G` read the tangent at its stored `_vlim`) lands on the exact
+    solution -- a state-free copy of the diode (`_state_free_diode`).
+
+    ⚠ IT DID NOT, TWO WAYS (2026-09-28), on the dense path and the cost
+    transform alike:
+    - the three stages shared ONE `_vlim`, each limited and re-synced
+      against another stage's, and the states settled into a cycle with
+      none on its stage: 1.05e-4 V off at 2.5 us steps;
+    - a small step passed for convergence while the limiter still clamped
+      a stage far below its node voltage, where the diode's tangent
+      carries almost nothing: the first 25 us step came back at 1.67 V
+      where 0.80 V is right (0.87 V off).
+    Each stage now owns its limiting state, and the Newton converges only
+    with every limiter at rest."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def run(cls, timestep, tend):
+        c = _driven_diode(cls)
+        tr = Transient(c, integrator=RadauIIA3Integrator(), reltol=1e-9,
+                       radau_transform=transform)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=tend, timestep=timestep, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        return np.asarray(res.x, float)[c.get_node_index(2)]
+    for timestep, tend in ((2.5e-6, 5e-4), (2.5e-5, 1e-4)):
+        v_ref = run(_state_free_diode(), timestep, tend)
+        v = run(Diode, timestep, tend)
+        assert max(v_ref) > 0.8, 'the diode is no longer driven past its knee'
+        assert np.max(np.abs(v - v_ref)) < 1e-9, (timestep, np.max(np.abs(v - v_ref)))
+
+
+def test_the_radau_estimate_reads_the_diode_at_the_step_start():
+    """The embedded Radau estimate reads `i(x_n)` and `G(x_n)`, and after
+    the step a stateful limiter sits at the step END: read there, `i(x_n)`
+    was the tangent at `x_{n+1}`.  ⚠ Measured (2026-09-28): adaptive Radau
+    on a diode took 5292 steps where the state-free copy of the same diode
+    takes 249 (7259 against 259 at 20 V), 12-16x the wall time, for the
+    same accuracy.  The devices are now synced to `x_n` for those reads and
+    put back; the two diodes take the same steps."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def steps(cls):
+        c = _driven_diode(cls, va=5.0, r=10.0)
+        tr = Transient(c, integrator=RadauIIA3Integrator(), reltol=1e-6)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
+        return len(res.sweep_values)
+    n_exact, n = steps(_state_free_diode()), steps(Diode)
+    assert n <= 1.05 * n_exact, (n, n_exact)
 

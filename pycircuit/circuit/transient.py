@@ -13,7 +13,8 @@ from numpy.linalg import LinAlgError
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
-from pycircuit.circuit._limiting import limit_sync, state_restore, state_snapshot
+from pycircuit.circuit._limiting import (limit_sync, limiter_snapshot, state_restore,
+                                         state_snapshot, stateful_limiters)
 ## The clamp the step controller applies to every accepted step, the force-accept
 ## path in `solve()` included: one bound, named once.  `stepcontroller` imports
 ## nothing from this package, so this is import-safe at module level.
@@ -3856,6 +3857,35 @@ class Transient(Analysis):
             self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
         return Y3, None, J, None
 
+    def _limiters_at_rest(self, Y, S, lims):
+        """Whether every stage's device current, read at the limiting state
+        its Newton solved with (`S[j]`), is the device's EXACT current at
+        `Y[j]` (`limit_sync`) -- within `reltol` and `iabstol`.
+
+        ⚠ A SMALL STEP IS NOT CONVERGENCE WHILE A LIMITER IS CLAMPING.  A
+        `Diode` reads its current as the tangent at `_vlim`; clamped far
+        below the node voltage, that tangent carries almost nothing, and
+        the Newton's next step is tiny because the diode is effectively
+        OFF.  Measured with per-stage states and the step test alone: a
+        diode driven through 1 ohm came back at 6.18 V on a 50 us step (the
+        whole source voltage), "converged" after two iterations.  The
+        ordinary Newton is saved by its residual test (`conv_f`); the
+        coupled one tests the step alone, so it asks the limiters.  Each
+        stage's state is put back."""
+        epar = self.epar
+        reltol = float(self.par.reltol)
+        iabstol = float(self.par.iabstol)
+        at_rest = True
+        for j in range(3):
+            state_restore(S[j])
+            i_state = np.asarray(self.cir.i(Y[j], epar), dtype=float)
+            limit_sync(self.cir, Y[j], epar, lims)
+            i_exact = np.asarray(self.cir.i(Y[j], epar), dtype=float)
+            state_restore(S[j])
+            if np.any(np.abs(i_state - i_exact) > reltol * np.abs(i_exact) + iabstol):
+                at_rest = False
+        return at_rest
+
     def _coupled_stage_solver(self, x0, t, provided_function):
         """The dense coupled step's Newton and residual for the step
         entering at `x0`: ``(ctx, stage_newton, block_residual, seed0)``.
@@ -3877,6 +3907,7 @@ class Transient(Analysis):
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
+        lims = stateful_limiters(self.cir)
 
         def _stage_newton(seed, gshunt=0.0, damped=False):
             """The coupled `3m` Newton, optionally with a node-to-ground shunt.
@@ -3890,25 +3921,35 @@ class Transient(Analysis):
             ground by `g`), so the ladder tracks a physical branch.
             """
             Y = [np.array(y, dtype=float) for y in seed]
+            ## ⚠ EACH STAGE OWNS ITS LIMITING STATE.  The three stages are
+            ## solved SIMULTANEOUSLY, and a stateful limiter (`Diode`) keeps
+            ## ONE `_vlim`, which its `i` / `G` read.  Shared, each stage was
+            ## limited and re-synced against ANOTHER stage's state, and the
+            ## three states could settle into a cycle with none of them on its
+            ## stage: a diode driven to 0.85 V came out 1.05e-4 V off the
+            ## exact solution at 2.5 us steps, and 0.87 V off (1.67 V where
+            ## 0.80 V is right) on the first 25 us step.  So each stage keeps
+            ## its own (`S[j]`), swapped in before it is read or limited --
+            ## the sequential DIRK's Newton per stage, which met the exact
+            ## solution to 5.6e-16 on the same circuit.  Each starts from the
+            ## step's entering state, synced to its seed.
+            if lims:
+                S0 = limiter_snapshot(lims)
+                S = []
+                for j in range(3):
+                    state_restore(S0)
+                    self.cir.limit(Y[j], Y[j], epar)
+                    S.append(limiter_snapshot(lims))
+            else:
+                S = [None] * 3
 
-            def assemble(Y):
-                """Residual and block Jacobian at the stage vector `Y`."""
+            def assemble(Y, S):
+                """Residual and block Jacobian at the stage vector `Y`, each
+                stage read at its own limiting state `S[j]`."""
                 qi, Ki, Ci, Gi = [], [], [], []
                 for j in range(3):
-                    ## SYNC the device limiting state to THIS stage before
-                    ## reading its i/q/C/G.  The three stages are solved
-                    ## SIMULTANEOUSLY but share ONE device `_vlim`, and the
-                    ## step-limit below leaves it at the LAST stage.  Without
-                    ## this re-sync, `cir.i(Y[j])`/`cir.G(Y[j])` for j<2
-                    ## linearise the junction at another stage's voltage
-                    ## (`Diode.i` reads `_vlim`), so the coupled Newton
-                    ## converges cleanly to the root of a WRONG residual -- node
-                    ## error 8.5e-5, true stage residual 3e-16 vs 1e-28, not
-                    ## tightening with `reltol` because the residual is off.
-                    ## `limit(Y[j],Y[j])` restores stage j's `_vlim` at zero
-                    ## delta.  The sequential DIRK path never hits this: each
-                    ## stage owns `_vlim` for its own `self._newton`.
-                    self.cir.limit(Y[j], Y[j], epar)
+                    if S[j] is not None:
+                        state_restore(S[j])
                     qi.append(arr(self.cir.q(Y[j], epar)))
                     i_j = arr(self.cir.i(Y[j], epar))
                     G_j = arr(self.cir.G(Y[j], epar))
@@ -3940,16 +3981,18 @@ class Transient(Analysis):
             ## convergence test on it -- and the search is tried only after it
             ## has failed, before the shunt ladder.
             ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
-            R, Jbig = assemble(Y)
+            R, Jbig = assemble(Y, S)
             converged = False
             for _ in range(maxit):
                 dY = np.linalg.solve(Jbig, -R)
                 Rnorm = float(np.sum(np.abs(R)))
                 alpha = 1.0
                 while True:
-                    Y_trial = []
+                    Y_trial, S_t = [], []
                     scale = 0.0
                     for i in range(3):
+                        if S[i] is not None:
+                            state_restore(S[i])
                         di = alpha * dY[i * m:(i + 1) * m]
                         ## LIMITING IS LOAD-BEARING ON A NONLINEAR JUNCTION.
                         ## Without it the coupled Newton on a diode overshoots
@@ -3960,9 +4003,10 @@ class Transient(Analysis):
                         Y_new = self.cir.limit(Y_prev + tk.insert(di, iref, 0.0),
                                                Y_prev, epar)
                         Y_trial.append(Y_new)
+                        S_t.append(limiter_snapshot(lims) if lims else None)
                         step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
                         scale = max(scale, np.max(np.abs(step_i)))
-                    R_t, J_t = assemble(Y_trial)
+                    R_t, J_t = assemble(Y_trial, S_t)
                     ## ⚠ THE UNDAMPED CONVERGENCE TEST, ON THE FULL STEP,
                     ## BEFORE THE LINE SEARCH SEES IT.  Testing the size of a
                     ## DAMPED step lets a step at the floor stop the iteration
@@ -3972,10 +4016,14 @@ class Transient(Analysis):
                     ## full step is accepted here exactly as the undamped
                     ## Newton accepts it; the search engages only when the full
                     ## step is neither small nor residual-reducing.
+                    ## ⚠ AND ONLY WITH EVERY LIMITER AT REST (`_limiters_at_rest`):
+                    ## a small step is not a converged one while a stateful
+                    ## limiter still holds a stage short of its node voltage.
                     ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
                     if alpha == 1.0:
                         ynorm_t = max(np.max(np.abs(red(Y_trial[i]))) for i in range(3))
-                        if scale <= reltol * ynorm_t + abstol:
+                        if scale <= reltol * ynorm_t + abstol and (
+                                not lims or self._limiters_at_rest(Y_trial, S_t, lims)):
                             converged = True
                             break
                     if not damped:
@@ -3985,7 +4033,7 @@ class Transient(Analysis):
                     if alpha * 0.5 <= 0.05:
                         break                      # floor: keep the smallest tried
                     alpha *= 0.5
-                Y, R, Jbig = Y_trial, R_t, J_t
+                Y, R, Jbig, S = Y_trial, R_t, J_t, S_t
                 if converged:
                     break
             if not converged:
@@ -3993,6 +4041,9 @@ class Transient(Analysis):
                 raise NoConvergenceError(
                     'Radau IIA(3) coupled stage Newton did not converge'
                     + ('' if not gshunt else ' at gshunt=%g S' % gshunt))
+            ## the step end (the last stage) is what the epilogue reads
+            if S[2] is not None:
+                state_restore(S[2])
             return Y
 
         def _block_residual(Ylist):
@@ -4003,10 +4054,20 @@ class Transient(Analysis):
             ⚠ This exists because a FIXED-POINT test was not enough: if the
             solve hands its seed back, re-solving from that seed hands it back
             again and the fixed-point test passes vacuously.  A residual is a
-            measurement; a fixed point of a broken solve is not.
+            measurement; a fixed point of a broken solve is not.  So each
+            stage's devices are read EXACTLY at it (`limit_sync`), not at
+            whatever limiting state the last solve left, which is put back.
             """
-            Ks = [-(arr(self.cir.i(Yj, epar)) + src(tstage[j]))
-                  for j, Yj in enumerate(Ylist)]
+            Ks = []
+            snap = limiter_snapshot(lims) if lims else None
+            try:
+                for j, Yj in enumerate(Ylist):
+                    if lims:
+                        limit_sync(self.cir, Yj, epar, lims)
+                    Ks.append(-(arr(self.cir.i(Yj, epar)) + src(tstage[j])))
+            finally:
+                if snap is not None:
+                    state_restore(snap)
             worst = 0.0
             for i in range(3):
                 Fi = arr(self.cir.q(Ylist[i], epar)) - qn \
@@ -4216,9 +4277,21 @@ class Transient(Analysis):
         Z2 = np.asarray(Y2, dtype=float) - xn
         Z3 = np.asarray(Y3, dtype=float) - xn
         F1 = (dd1 * Z1 + dd2 * Z2 + dd3 * Z3) / h
-        Cn = arr(self.cir.C(xn, epar))
-        Gn = arr(self.cir.G(xn, epar))
-        f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
+        ## ⚠ THE DEVICES AT `x_n`, EXACTLY: after the step a stateful
+        ## limiter sits at the step END, and `i(x_n)` read there is the
+        ## tangent at `x_{n+1}` -- so it is synced to `x_n` for these reads
+        ## and put back (`limit_sync`).
+        lims = stateful_limiters(self.cir)
+        snap = limiter_snapshot(lims) if lims else None
+        try:
+            if lims:
+                limit_sync(self.cir, xn, epar, lims)
+            Cn = arr(self.cir.C(xn, epar))
+            Gn = arr(self.cir.G(xn, epar))
+            f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
+        finally:
+            if snap is not None:
+                state_restore(snap)
         rhs = np.asarray(Cn @ F1) + np.asarray(f0)
         real_factor = (gamma_r / h) * np.asarray(Cn) + np.asarray(Gn)
         (Rf,) = remove_row_col((real_factor,), iref, tk)
@@ -4341,38 +4414,55 @@ class Transient(Analysis):
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
+        ## ⚠ EACH STAGE OWNS ITS LIMITING STATE, and the step converges only
+        ## with every limiter at rest -- as the dense path, and for its
+        ## reasons (`_coupled_stage_solver`): shared, the transform landed
+        ## 1.09e-4 V off the exact solution on a diode driven to 0.85 V.
+        lims = stateful_limiters(self.cir)
+        if lims:
+            S0 = limiter_snapshot(lims)
+            S = []
+            for j in range(3):
+                state_restore(S0)
+                self.cir.limit(Y[j], Y[j], epar)
+                S.append(limiter_snapshot(lims))
+        else:
+            S = [None] * 3
         converged = False
         for _ in range(maxit):
-            ## per-stage limiting sync + single evaluation of q/i per stage.
-            ## The three stages share ONE device `_vlim`; without re-syncing to
-            ## each stage before reading its q/i, stages 0/1 linearise the
-            ## junction at another stage's voltage (`Diode.i` reads `_vlim`) and
-            ## the transform converges to a wrong root -- disagreeing with the
-            ## dense path it must match.  Same fix as :meth:`_rk_step_coupled`.
-            ## (This also computes each stage's `q`/`K` ONCE, not 3x.)
+            ## each stage's q and K read ONCE, at its own limiting state
             qi_all, Ki_all = [], []
             for j in range(3):
-                self.cir.limit(Y[j], Y[j], epar)
+                if S[j] is not None:
+                    state_restore(S[j])
                 qi_all.append(arr(self.cir.q(Y[j], epar)))
                 Ki_all.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
             R, _J = self._coupled_stage_system(ctx, qi_all, Ki_all)
             dY = self._radau_transform_solve(R, Cr, Gr, h)
             scale = 0.0
             for i in range(3):
+                if S[i] is not None:
+                    state_restore(S[i])
                 di = dY[i * m:(i + 1) * m]
                 Y_prev = Y[i]
                 Y_trial = Y_prev + tk.insert(di, iref, 0.0)
                 Y_new = self.cir.limit(Y_trial, Y_prev, epar)
                 Y[i] = Y_new
+                if lims:
+                    S[i] = limiter_snapshot(lims)
                 step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
                 scale = max(scale, np.max(np.abs(step_i)))
             ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
-            if scale <= reltol * ynorm + abstol:
+            if scale <= reltol * ynorm + abstol and (
+                    not lims or self._limiters_at_rest(Y, S, lims)):
                 converged = True
                 break
         if not converged:
             raise NoConvergenceError(
                 'Radau IIA(3) transform (simplified Newton) did not converge')
+        ## the step end (the last stage) is what the epilogue reads
+        if S[2] is not None:
+            state_restore(S[2])
 
         ## THE BRANCH CHECK, CONFIRMED: this path solved with its own Newton,
         ## and the confirmation re-solves the same step equation with the
