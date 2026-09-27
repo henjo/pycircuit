@@ -2868,8 +2868,12 @@ class PAC(Analysis):
                 ## point for EVERY band frequency (the quasi-static model
                 ## `pnoise` and `sampled_variance` use, per band).
                 wref = 2.0 * np.pi * f0
+                ## the band's TOP as well as its middle (`pi fmax`, whose
+                ## reason is not recorded): until 2026-09-27 a shape that
+                ## departed only above fmax/2 read as separable.  A probe
+                ## more can only send a source to the exact path.
                 wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
-                             np.pi * fmax})
+                             np.pi * fmax, 2.0 * np.pi * fmax})
                 Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
                 if self._separable(Cs):
                     Cref = self._one_element_cy(pss, key, wref, states)
