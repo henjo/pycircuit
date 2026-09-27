@@ -488,7 +488,7 @@ The last 0.26 percentage points came from resampling at the integrator's order
 
 ## 5. Open decisions — these need the maintainer, not an implementer
 
-**Status checked 2026-09-23: items 1, 3 and 4 are closed (notes below); item 2 is the one still open.**
+**Status checked 2026-09-27: all four are closed (item 2 on 2026-09-27, notes below).**
 
 1. **`vabstol` serves two roles** (`doc/transient_work_plan.md` 0.3a). It is Newton's
    x-tolerance *and* the LTE tolerance. The 1e-12 -> 1e-6 fix in `e37ddad` was reasoned
@@ -499,11 +499,21 @@ The last 0.26 percentage points came from resampling at the integrator's order
    **✅ RESOLVED (checked 2026-09-23):** `DC.vabstol` and `Transient.vabstol` are both 1e-6
    now (Andreas, 2026-09-19, set together in DC / Transient / JAX / PSS), and the step
    control has its own `lte_vabstol` (1e-12), so the two roles are split.
-2. **Gate 1-3 of `transient_repair_plan.md`** is still open: its 2x threshold was written
+2. **Gate 1-3 of `transient_repair_plan.md`**: its 2x threshold was written
    against a metric later shown to be degenerate, and the sharp reading gives 3.94. Needs
    a threshold justified by the 2/9-vs-1/12 error constants, or an explicit "recorded, not
    resolved".
-   **Still open (checked 2026-09-23).** The rejection storm recorded with it (`trap` +
+   **✅ RESOLVED 2026-09-27 (Andreas: "B").**
+   - The derived bar is 4.2.  The global error constants are BDF-2 1/3 and
+     Trapezoidal 1/12, a ratio of 4; "2/9 vs 1/12" paired two normalisations.
+     4 bounds every regime, so the bar is 4 x 1.05.
+   - Re-measured on today's code: 4.000 where `max_step` binds, 2.876 where
+     the controller does.  The gate passes.
+   - The gate's start-up-free metric is flawed on FIXED grids (BDF-2's
+     history carries the start-up in: 3.12 from point 2, 4.03 from point 20).
+   - Pinned by `test_gear2_error_is_four_times_trapezoidal_at_equal_steps`;
+     the record is in the repair plan.
+   (Was: still open, checked 2026-09-23.) The rejection storm recorded with it (`trap` +
    `'ywr'`, 5348 rejections for 1339 steps) cannot be rerun: `lte_formula` no longer exists
    (removed in 9(f), `integrator.py`), and both variants use the divided-difference form.
 3. **`Gear2`'s default `lte_formula`** (0.3b) — the evidence now runs against the `'ywr'`

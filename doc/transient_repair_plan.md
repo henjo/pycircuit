@@ -119,12 +119,61 @@ that shortfall is not attributable to stage 1:
   is a BDF-2-versus-Trapezoidal property, not a property of the estimate;
 - stage 1 *improved* the number, 6.64 -> 3.86 at `max_step` 2e-4;
 - Gear-2's error constant is 2/9 against Trapezoidal's 1/12, a 2.7x handicap
-  before any step control enters.
+  before any step control enters.  (⚠ CORRECTED 2026-09-27, below: that pairs
+  two normalisations.  The global-error ratio is 4.)
 
 Recorded rather than resolved: the plan's 2x threshold was written against the
 degenerate metric and is not the right threshold for the sharp one. Also seen and
 not investigated: `trap` + `'ywr'` at `max_step` 1e-5 took 5348 rejections for
 1339 steps -- a rejection storm in a path nothing here touches.
+
+**RESOLVED 2026-09-27 (Andreas: "B"; derive the threshold and re-measure on
+today's code): the gate PASSES a derived bar of 4.2; the 2x bar was wrong.**
+
+*The derivation.*  The error RATIO between two linear multistep methods at
+equal steps follows the GLOBAL error constant `C_{p+1} / sigma(1)`, not the
+local one.
+- BDF-2's 2/9 is the local constant in the normalisation `alpha_k = 1`,
+  where `sigma(1) = beta_k = 2/3`, so its global constant is 1/3.
+- Trapezoidal's is 1/12, with `sigma(1) = 1`.
+- The ratio is **4**.  "2/9 against 1/12, 2.7x" above paired two
+  normalisations.
+
+*Where the controller sets the step* it gives Gear relatively smaller steps:
+- both hold their local error at the tolerance;
+- Gear takes (8/3)^(1/3) = 1.39x the steps, each carrying 3/2 the global
+  weight;
+- so the ratio is about 2.1 there.
+
+**4 bounds every regime**, and the bar is 4 x 1.05 = 4.2.
+
+*Measured on today's code* (same case, reltol 1e-4, the start-up-free
+metric):
+
+| `max_step` | steps (gear / trap) | at the cap | ratio | vs 4.2 |
+|---|---|---|---|---|
+| 1e-5 | 523 / 521 | 95 % | **4.000** (the constant) | pass |
+| 2e-4 | 41 / 41 | 42 / 55 % | **2.876** (the controller binds part of the run) | pass |
+
+The recorded 3.94 / 3.86 pass too.
+
+*A flaw in the gate's own metric, found on the way.*  "The exact solution
+from the state at the third point" is start-up-free only on the RAMPED
+adaptive grids the gate uses.
+- On a FIXED grid, BDF-2's next step still reads the second point, which
+  carries the Backward-Euler start-up error.
+- On a single-mode RC at h = 1e-5 the ratio then reads 3.12 from point 2,
+  and 3.99 / 4.03 / 4.03 from points 5 / 20 / 100; the adaptive run reads
+  4.00.
+
+Pinned: `test_gear2_error_is_four_times_trapezoidal_at_equal_steps`
+(`test_analysis_transient.py`, 0.8 s).  It holds the ratio within 2 % of 4
+where the cap binds and on a fixed step started at point 20, and the 4.2
+bar at both gate step sizes.  Poison: Backward Euler in Gear's place reads
+8.04 and fails.
+
+The rejection storm (`trap` + `'ywr'`) cannot be rerun: `lte_formula` was
+removed in 9(f).
 
 **Gate 1-4 (blast radius, the one that decides whether this ships).** Full suite `-m ""`.
 Declared success: 715 passed with **exactly one** expected failure,

@@ -696,6 +696,53 @@ def test_step_count_and_error_respond_to_reltol(name):
         '%s: less than 5x accuracy from a 1e3 tolerance change: %s' % (name, errs)
 
 
+def test_gear2_error_is_four_times_trapezoidal_at_equal_steps():
+    """Gate 1-3 of `doc/transient_repair_plan.md`, closed on a DERIVED bar
+    (2026-09-27; Andreas: "B").
+
+    The gate asked Gear-2's error to be within 2x Trapezoidal's at the same
+    tolerance on this stiff RLC.  Its declared metric was degenerate, and the
+    sharp reading (3.94) was recorded as a failure against a threshold
+    nobody had derived.  The right constant is the GLOBAL error constant
+    `C_{p+1} / sigma(1)`: BDF-2's local 2/9 (normalised `alpha_k = 1`) over
+    `sigma(1) = 2/3` is 1/3, against Trapezoidal's 1/12, a ratio of FOUR.
+    (The record's "2/9 against 1/12, 2.7x" mixed two normalisations.)
+      * Equal steps (`max_step` binds, 95 % of steps here): 4.000.
+      * A fixed step with a start-up-free metric: 4.03.
+      * Where the controller binds (2e-4), it gives Gear relatively smaller
+        steps and the ratio falls (2.876; about (3/2)(8/3)^(1/3) = 2.1 when
+        fully controller-bound).
+    So 4 bounds every regime, and the bar is 4 x 1.05.
+
+    ⚠ The "start-up-free" metric (the exact solution from the state at the
+    third point) is so only on these RAMPED adaptive grids.  On a FIXED
+    grid, BDF-2's next step still reads the second point, which carries the
+    Backward-Euler start-up error.  The ratio then reads 3.12, and 3.99 /
+    4.03 / 4.03 from points 5 / 20 / 100.  The fixed-step check below starts
+    at point 20."""
+    ratios = {}
+    for ms in (2e-4, 1e-5):
+        _n, _r, eg = _stiff_run('gear2', 1e-4, timestep=ms)
+        _n, _r, et = _stiff_run('trap', 1e-4, timestep=ms)
+        ratios[ms] = eg / et
+        assert ratios[ms] <= 4.0 * 1.05, (ms, ratios[ms])
+    assert abs(ratios[1e-5] / 4.0 - 1.0) < 0.02, ratios
+
+    def rc(name, k=20, h=1e-5):
+        c = SubCircuit()
+        c['C1'] = C(1, gnd, c=1e-6)
+        c['R1'] = R(1, gnd, r=1e3)
+        tran = Transient(c, integrator=_make_integrator(name), reltol=1e-4,
+                         timestep_max=h)
+        x0 = np.zeros(c.n)
+        x0[c.get_node_index('1')] = 1.0
+        res = tran.solve(tend=5e-3, timestep=h, x0=x0, fixed_timestep=True)
+        t = np.asarray(res.sweep_values, dtype=float)
+        v = np.asarray(res.v(1, gnd), dtype=float)
+        return float(np.max(np.abs(v[k:] - v[k] * np.exp(-(t[k:] - t[k]) / 1e-3))))
+    fixed = rc('gear2') / rc('trap')
+    assert abs(fixed / 4.0 - 1.0) < 0.02, fixed
+
 def test_companion_conductance_is_exposed_beside_the_companion_current():
     """`_Geq` is the other half of `_iq`, and shooting needs it.
 
