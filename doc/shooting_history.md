@@ -9054,6 +9054,12 @@ measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
 
+2026-09-27 (item 3): the all-orders correction `rho` was a Chebyshev series
+held to an ABSOLUTE 1e-6 on `rho`.  Behind a slow node `1 + rho` is ~1e-3,
+so that was ~1e-3 of `c_fa`, and 3.1e-5 in the near skirt.  It is now one
+rational (`RationalRho`, ~25 solves) held relative to `1 + rho`, with the
+Chebyshev series (relative too) as its fallback.
+
 2026-09-27 (later): the transform's error estimate compared the returned
 80-per-decade grid with a 40-per-decade one, which measured the COARSE
 grid's error (8 .. 261x the returned value's own, and a spurious warning

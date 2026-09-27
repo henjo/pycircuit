@@ -12603,6 +12603,56 @@ def test_the_lineshape_takes_a_signed_correction_to_c_against_a_closed_form():
     assert ch.converged and np.max(np.abs(ch(vs) - rho(vs))) < 1e-6
 
 
+def test_the_rational_rho_fit_and_its_guards():
+    """`_lineshape.RationalRho` (2026-09-27): the all-orders lineshape's
+    correction `rho(nu)` as one barycentric rational (set-valued AAA) from
+    adaptively chosen samples, ~25 where the Chebyshev series takes ~65 --
+    the tolerance RELATIVE to `1 + rho`.  On analytic functions:
+
+      * the banded Lorentzian's `rho` (rational): 20 samples, 7.8e-13;
+      * a WEAK resonance (1e-5 of it, width 0.03, on a half-decade point):
+        the adaptive search alone stops at 13 samples 7.5e-5 off -- the
+        stop is FOOLED -- and the half-decade VERIFICATION catches it,
+        2.1e-10 at 27 (fooled in 11 of 18 such cases, caught in all);
+      * a GENUINE pole in the band: refused ('pole'); with the guard off
+        the fit keeps it.
+    The guards' switches exist for this test alone."""
+    from pycircuit.circuit.shooting import _lineshape
+    nu_a, nu_b, fc = 0.5e-8, 0.5, 1e-4
+    base = lambda v: -0.9 * (1.0 / (1.0 + (v / (30 * fc)) ** 2)
+                             - 1.0 / (1.0 + (v / (0.3 * fc)) ** 2))
+    dense = np.geomspace(nu_a, nu_b, 20000)
+
+    def rel(fit, f):
+        return float(np.max(np.abs(fit(dense) - f(dense))
+                            / np.maximum(np.abs(1.0 + f(dense)), 1e-4)))
+    vec = lambda v: np.array([base(v), 0.0])
+    fit = _lineshape.RationalRho(vec, nu_a, nu_b)
+    assert fit.converged and fit.calls <= 25, (fit.converged, fit.calls)
+    got = fit(dense)
+    assert got.shape == (2, dense.size)
+    assert np.max(np.abs(got[0] - base(dense))) < 1e-9
+    vb = nu_b * 10 ** -3.5
+    g = 0.03 * vb
+    bump = lambda v: base(v) + 1e-5 * g * g / ((v - vb) ** 2 + g * g)
+    fit = _lineshape.RationalRho(bump, nu_a, nu_b)
+    assert fit.converged and rel(fit, bump) < 1e-6, rel(fit, bump)
+    _lineshape.RationalRho.VERIFY = False
+    try:
+        blind = _lineshape.RationalRho(bump, nu_a, nu_b)
+    finally:
+        _lineshape.RationalRho.VERIFY = True
+    assert rel(blind, bump) > 1e-5, 'the verification no longer binds'
+    pole = lambda v: base(v) + 1e-6 / (v / 0.7e-3 - 1.0)
+    fit = _lineshape.RationalRho(pole, nu_a, nu_b)
+    assert not fit.converged and fit.reason == 'pole', (fit.converged, fit.reason)
+    _lineshape.RationalRho.POLE_GUARD = False
+    try:
+        kept = _lineshape.RationalRho(pole, nu_a, nu_b)
+    finally:
+        _lineshape.RationalRho.POLE_GUARD = True
+    assert kept.converged, 'the pole guard no longer binds'
+
 def _fa_core_oscillator(psd, flicker_rel=1e-8):
     """The slow-node LC (tau = 100 T) with white `psd` AND a 1/f source at
     the slow node, `flicker_rel` of it at f0.  That is just above the 1e-9
@@ -12678,7 +12728,18 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
                                           all_orders=False)[0] / X2
     assert info['frequency_aware'] == 'all orders', info
     assert abs(info['cinf_estimate'] / info['cinf'] - 1.0) < 0.1, info
-    assert info['chebyshev_err'] < 1e-6, info
+    assert info['rho_fit'] == 'rational' and info['rho_err'] < 1e-6, info
+    assert info['solves'] <= 40, info
+    ## the rational fit against the Chebyshev series (both relative to 1 +
+    ## rho; the series takes ~139 solves): measured 5.9e-8
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pac.FA_RHO_FIT = 'chebyshev'
+        try:
+            S_ch = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
+        finally:
+            del pac.FA_RHO_FIT
+    assert np.max(np.abs(S_all / S_ch - 1.0)) < 1e-6, S_all / S_ch - 1.0
     first_err = (S_first / S_all - 1.0)[:3]
     assert np.all(first_err < -0.05), first_err
     ## the first-order path's carrier gap is its core weight, exp(-D_corr/2)
@@ -12814,12 +12875,20 @@ def test_the_coloured_lineshape_takes_a_source_that_follows_the_orbit():
     """The coloured lineshape reads `c(f)` from the same fold as `phase_psd`,
     modulated sources included: a SIGNED flicker `k V_v flicker_noise(1)` on
     van der Pol against the same physics as a stationary 1/f source times
-    V_v (`_orbit_modulated_vdp`), at 0 .. 1e-2 f0: 2.5e-13."""
+    V_v (`_orbit_modulated_vdp`), at 0 .. 1e-2 f0: 1.9e-13.
+
+    ⚠ ON THE CHEBYSHEV `rho` (`FA_RHO_FIT = 'chebyshev'`, 2026-09-27).  Its
+    nodes are fixed, so two inputs 1e-13 apart stay 1e-13 apart.  The
+    default rational fit picks its samples adaptively, and a 1e-13
+    difference can change a greedy choice: the two setups then agree to
+    7.8e-9, each correct to its fit (2.3e-7 on `c_fa`, verified).  This
+    test is about the FOLD's equivalence, so it takes the fixed nodes."""
     import warnings as _w
     res = {}
     for kind in ('flicker_ref', 'flicker'):
         _c, pss, pac, ov = _orbit_modulated_vdp(kind)
         f0 = 1.0 / float(pss.period)
+        pac.FA_RHO_FIT = 'chebyshev'
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             res[kind] = pac.oscillator_spectrum(

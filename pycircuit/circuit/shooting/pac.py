@@ -6493,7 +6493,7 @@ class PAC(Analysis):
         skirt's `i^2 f0^2 (c_fa - c_dc) / f^2` per offset) while that order's
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
         above it (the correction's own structure function inside `D`,
-        ~65 solves; `_fa_lineshape`, `self.lineshape_info` says which);
+        ~25 solves; `_fa_lineshape`, `self.lineshape_info` says which);
         `False` is the DC lineshape.  Near the carrier the transform is
         accurate to ~1e-6; the far skirt is the linear one (`phase_psd`'s),
         taken per offset where its estimated error
@@ -6509,7 +6509,7 @@ class PAC(Analysis):
         out); `all_orders=True` builds the full line instead, `fmax`
         (default f0/2) bounding the band, past which the white part is held
         at its corrected level.  It is OFF by default for a white source
-        (Andreas: "put it off by default"): ~65 bordered solves.  For a
+        (Andreas: "put it off by default"): ~25 bordered solves.  For a
         coloured source None is the estimate's choice (above), True forces
         all orders and False the first.  `self.lineshape_info` says which
         ran.
@@ -6627,6 +6627,10 @@ class PAC(Analysis):
     #: the frequency-aware correction `rho = c_fa/c_dc - 1` is probed a decade
     #: at a time down from `fmax` until it falls below this
     FA_RHO_FLOOR = 1e-9
+    #: how the all-orders lineshape represents `rho`: 'rational'
+    #: (`_lineshape.RationalRho`, ~25 solves, falling back to the Chebyshev
+    #: series when a guard refuses it) or 'chebyshev' (`LogChebyshev`, ~65)
+    FA_RHO_FIT = 'rational'
 
     #: the coloured lineshape warns when its estimated error at an offset
     #: exceeds this, relative.  ⚠ Where the transform hands over to the
@@ -6765,8 +6769,9 @@ class PAC(Analysis):
             acting on the change.
 
         TO ALL ORDERS above `FA_FIRST_ORDER_TOL`.  Both ratios as one
-        Chebyshev series in `ln nu` over the probed span
-        (`_lineshape.LogChebyshev`, ~65 solves), and each part's `Delta` in
+        rational over the probed span (`_lineshape.RationalRho`, ~25
+        solves, `FA_RHO_FIT`; the Chebyshev series in `ln nu` if a guard
+        refuses it), and each part's `Delta` in
         `D` by signed quadrature on its own band (`_lineshape.SignedTable`,
         `correction_structure`); the transform as before.
         ⚠ Measured with the slow corner 10 linewidths out: the first order
@@ -6868,13 +6873,30 @@ class PAC(Analysis):
                 'not died away (below %.0e) at %.6g Hz, the lowest probe; the '
                 'part below is left out.' % (self.FA_RHO_FLOOR, nu_lo),
                 RuntimeWarning, stacklevel=4)
-        cheb = _lineshape.LogChebyshev(rho, nu_lo, fmax)
-        if not cheb.converged:
-            warnings.warn(
-                'PAC.oscillator_spectrum: the frequency-aware correction was '
-                'resolved to %.1e only (Chebyshev degree %d); the lineshape is '
-                'no better than that.' % (cheb.err, cheb.c.shape[0] - 1),
-                RuntimeWarning, stacklevel=4)
+        ## `rho` as ONE rational from ~25 adaptive solves; any guard that
+        ## refuses it (verification, a pole on the band, the budget) falls
+        ## back to the Chebyshev series, which reuses every solve made
+        cheb, rho_fit = None, 'chebyshev'
+        if self.FA_RHO_FIT == 'rational':
+            fit = _lineshape.RationalRho(rho, nu_lo, fmax)
+            if fit.converged:
+                cheb, rho_fit = fit, 'rational'
+            else:
+                rho_fit = 'chebyshev (the rational fit: %s)' % fit.reason
+        if cheb is None:
+            ## ⚠ relative to `1 + rho` as the rational fit is (see
+            ## `RationalRho`): the smallest the probes saw, floored
+            w_min = max(min(float(np.min(np.abs(1.0 + rho(v)))) for v in pn),
+                        _lineshape.RationalRho.REL_FLOOR)
+            cheb = _lineshape.LogChebyshev(rho, nu_lo, fmax,
+                                           tol=_lineshape.CHEB_TOL * w_min)
+            if not cheb.converged:
+                warnings.warn(
+                    'PAC.oscillator_spectrum: the frequency-aware correction '
+                    'was resolved to %.1e only (Chebyshev degree %d); the '
+                    'lineshape is no better than that.'
+                    % (cheb.err, cheb.c.shape[0] - 1), RuntimeWarning,
+                    stacklevel=4)
         tabs = []
         if c_w > 0.0:
             tabs.append(_lineshape.SignedTable(
@@ -6905,7 +6927,7 @@ class PAC(Analysis):
             vals.append(s2)
             errs.append(err)
         info.update(frequency_aware='all orders', solves=len(rhos),
-                    chebyshev_err=cheb.err, cinf=shapes[1].cinf)
+                    rho_fit=rho_fit, rho_err=cheb.err, cinf=shapes[1].cinf)
         self.lineshape_info = info
         return vals, errs, shapes
 

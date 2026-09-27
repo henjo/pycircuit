@@ -41,8 +41,10 @@ Lorentzian a closed-form tail.  With a correction the TOTAL `D` is
 splined (the white part and a correction that removes it cancel), and past
 the band the white part is held at its corrected level (`ConstantTail`).
 Gated against a closed form: <= 4.8e-7.
-`LogChebyshev` represents the correction's `rho = c_fa/c_dc - 1` from its
-solves.
+The correction's `rho = c_fa/c_dc - 1` comes from bordered solves.
+`RationalRho` fits it as one rational from ~25 of them; `LogChebyshev` is
+the fallback, taking ~65 to ~139.  Both hold the tolerance relative to
+`1 + rho`.
 """
 import math
 import warnings
@@ -64,6 +66,11 @@ MAX_NODES = 4000
 CHEB_TOL = 1e-6
 #: and its degree doubles (nested points) up to this
 CHEB_MAX = 128
+#: `RationalRho` gives up (the caller falls back to `LogChebyshev`) past
+#: this many samples
+RATIONAL_BUDGET = 40
+#: `RationalRho`'s candidate grid, points per decade of `nu`
+RATIONAL_PER_DECADE = 20
 #: a signed correction is tabulated at this many points per decade of `nu`
 #: for the quadrature (`SignedTable`)
 TABLE_PER_DECADE = 2000
@@ -172,6 +179,229 @@ class _Quad:
 
     def note(self, err, value):
         self.worst = max(self.worst, err / max(abs(value), 1e-300))
+
+
+def _aaa(z, F, tol, mmax, W=None):
+    """Set-valued AAA (Nakatsukasa, Sete & Trefethen 2018): the barycentric
+    rational through support points picked greedily at the largest residual,
+    SHARED by every column of `F` (M, k); the residual is weighted by `W`
+    (M, k) when given.  Returns the history of `(zj, fj, wj)` fits, the last
+    the one that met `tol` on the samples (or used `mmax` support points)."""
+    M, k = F.shape
+    W = np.ones_like(F) if W is None else W
+    rest = np.ones(M, bool)
+    R = np.tile(F.mean(axis=0), (M, 1))
+    J, hist = [], []
+    for m in range(min(mmax, M - 1)):
+        err = np.max(np.abs(F - R) * W, axis=1)
+        err[~rest] = 0.0
+        if m > 0 and err.max() <= tol:
+            break
+        j = int(np.argmax(err))
+        J.append(j)
+        rest[j] = False
+        C = 1.0 / (z[rest][:, None] - z[J][None, :])
+        A = np.vstack([(F[rest, i][:, None] - F[J, i][None, :]) * C
+                       for i in range(k)])
+        _u, _s, Vh = np.linalg.svd(A, full_matrices=False)
+        w = Vh[-1].conj()
+        R = F.copy()
+        R[rest] = (C @ (w[:, None] * F[J])) / (C @ w)[:, None]
+        hist.append((z[J].copy(), F[J].copy(), w.copy()))
+    return hist
+
+
+def _barycentric(z, zj, fj, wj):
+    """The rational `(zj, fj, wj)` at `z`, `(len(z), k)`; exact at a support
+    point."""
+    z = np.asarray(z, dtype=float).ravel()
+    d = z[:, None] - zj[None, :]
+    hit = d == 0.0
+    d[hit] = 1.0
+    C = 1.0 / d
+    out = (C @ (wj[:, None] * fj)) / (C @ wj)[:, None]
+    for r, c in zip(*np.nonzero(hit)):
+        out[r] = fj[c]
+    return out
+
+
+def _barycentric_poles(zj, wj):
+    """The poles of the barycentric rational: the finite eigenvalues of the
+    arrowhead pencil."""
+    from scipy.linalg import eig
+    m = len(zj)
+    B = np.eye(m + 1)
+    B[0, 0] = 0.0
+    E = np.zeros((m + 1, m + 1), dtype=complex)
+    E[0, 1:] = wj
+    E[1:, 0] = 1.0
+    E[1:, 1:] = np.diag(zj)
+    ev = eig(E, B, right=False)
+    return ev[np.isfinite(ev)]
+
+
+class RationalRho:
+    """`rho(nu)` on `[nu_a, nu_b]` as ONE barycentric rational in `nu` (set-
+    valued AAA, the components sharing support), from ADAPTIVELY chosen
+    solves -- the all-orders lineshape's correction in ~25 bordered solves
+    where `LogChebyshev` takes ~65.  `fun` takes one `nu` and returns a
+    number or a 1-D array; the call returns what `LogChebyshev`'s does.
+
+    Why rational: a white source's `c_fa(nu)` IS a rational function of the
+    frequency (its poles the Floquet exponents), and the coloured parts are
+    close to one.  Measured offline on four fixtures and a closed form
+    (175 captured solves each): 22 .. 26 solves, true error 1e-13 .. 5.9e-7.
+
+    ⚠ THE TOLERANCE IS RELATIVE TO `1 + rho` (floored at `REL_FLOOR`), per
+    component: what the lineshape needs is `c_fa = c_dc (1 + rho)`, and
+    behind a slow node `1 + rho` falls to ~1e-3.  An absolute 1e-6 on
+    `rho` was then 1e-3 of `c_fa`, and the Chebyshev series held to it was
+    3.1e-5 off in the near skirt against a tight reference, where this is
+    1.3e-8 (2026-09-27).
+
+    The samples lie on a grid of `RATIONAL_PER_DECADE` per decade down from
+    `nu_b`, its decades formed by repeated division as the lineshape's probes
+    are, so a caller's cache of those serves them.  Starting from the
+    decades, each round fits (tolerance `tol / 10` on the samples) and
+    solves where the fit and its one-support-poorer predecessor disagree
+    most.  It stops after three consecutive such solves are predicted to
+    `tol`.  ⚠⚠ THAT STOP CAN BE FOOLED: a fit in `nu^2` stopped on the slow-
+    node 1/f fixture with a true error of 8e-4, and "the fit no longer moves"
+    did not catch it either.  So three GUARDS:
+      * VERIFY: every half-decade point not yet sampled is solved and must
+        be predicted to `tol`; a miss goes back into the samples and the
+        search resumes (this caught the 8e-4);
+      * POLES: a pole of the fit on the real band (the spurious doublets
+        rational fits are known for; one sat at 0.23 f0 in a 5-point fit on
+        the coloured slow-node LC, where `rho` has none) has the grid points
+        around it solved and the fit redone, up to `POLE_ROUNDS` times;
+        then the fit is refused;
+      * BUDGET: past `budget` samples it gives up.
+    A refusal leaves `converged = False` and `reason`, and the caller falls
+    back.  `err` is the worst verified miss, relative; `calls` the solves.
+
+    ⚠ NOT SMOOTH IN ITS INPUT below its accuracy.  The samples are chosen
+    greedily, so inputs 1e-13 apart can take different sample paths.  Two
+    physically identical noise setups gave lineshapes 7.8e-9 apart, each
+    correct to its fit; `LogChebyshev`'s fixed nodes kept them 1.9e-13
+    apart.  For finite-difference sensitivities through the lineshape, set
+    `PAC.FA_RHO_FIT = 'chebyshev'`."""
+
+    #: the relative tolerance's floor on `1 + rho`
+    REL_FLOOR = 1e-4
+    #: rounds of sampling around a pole on the band before the fit is refused
+    POLE_ROUNDS = 3
+    #: the two guards, switchable only to prove in a test that they bind
+    VERIFY = True
+    POLE_GUARD = True
+
+    def __init__(self, fun, nu_a, nu_b, tol=CHEB_TOL, budget=RATIONAL_BUDGET,
+                 per_decade=RATIONAL_PER_DECADE):
+        pd = int(per_decade)
+        tops, v = [], float(nu_b)
+        while v > float(nu_a) * (1.0 + 1e-12):
+            tops.append(v)
+            v /= 10.0
+        nus = [t * 10.0 ** (-i / pd) for t in tops for i in range(pd)]
+        nus = [x for x in nus if x > float(nu_a) * (1.0 + 1e-12)] + [float(nu_a)]
+        nus = np.asarray(nus)[::-1]                        # ascending
+        self.nu_a, self.nu_b = float(nu_a), float(nu_b)
+        self.scale = float(nu_b)
+        z = nus / self.scale
+        M = len(z)
+        vals = {}
+
+        def at(i):
+            if i not in vals:
+                vals[i] = np.atleast_1d(np.asarray(fun(float(nus[i])), dtype=float))
+            return vals[i]
+
+        def weight(F):
+            ## 1 / max(|1 + rho|, floor): the error allowed scales with c_fa
+            return 1.0 / np.maximum(np.abs(1.0 + np.asarray(F)), self.REL_FLOOR)
+
+        def miss(r_i, i):
+            return float(np.max(np.abs(r_i - at(i)) * weight(at(i))))
+        ## the decades (the caller's probes) and both ends
+        dec = [M - 1 - j * pd for j in range(len(tops)) if M - 1 - j * pd >= 0]
+        S = sorted(set(dec) | {0, M - 1})
+        half = [i for i in range(M) if (M - 1 - i) % pd == pd // 2]
+        self.converged, self.reason, self.err = False, None, np.inf
+
+        def fit(S):
+            F = np.asarray([at(i) for i in S])
+            return _aaa(z[S], F, 0.1 * tol, len(S) - 1, W=weight(F))
+
+        oos = []                   # out-of-sample misses of the last search
+
+        def search(S):
+            conf = 0
+            del oos[:]
+            while len(S) <= budget:
+                hist = fit(S)
+                r = _barycentric(z, *hist[-1])
+                if len(hist) > 1:
+                    d = np.max(np.abs(r - _barycentric(z, *hist[-2])), axis=1)
+                else:
+                    d = np.ones(M)
+                d[S] = -1.0
+                if d.max() < 0.0:
+                    return S, True
+                j = int(np.argmax(d))
+                oos.append(miss(r[j], j))
+                ok = oos[-1] <= tol
+                S = sorted(set(S) | {j})
+                conf = conf + 1 if ok else 0
+                if conf >= 3:
+                    return S, True
+            return S, False
+        pole_rounds = 0
+        while True:
+            S, ok = search(S)
+            if not ok:
+                self.reason = 'budget'
+                break
+            zj, fj, wj = fit(S)[-1]
+            r = _barycentric(z, zj, fj, wj)
+            todo = [i for i in half if i not in S] if self.VERIFY else []
+            misses = [miss(r[i], i) for i in todo]
+            self.err = max(misses + oos[-3:], default=0.0)
+            S = sorted(set(S) | set(todo))
+            if self.err > tol:
+                if len(S) > budget:
+                    self.reason = 'budget'
+                    break
+                continue
+            zj, fj, wj = fit(S)[-1]
+            lo, hi = z.min(), z.max()
+            bad = [p for p in _barycentric_poles(zj, wj)
+                   if lo <= p.real <= hi and abs(p.imag) <= 1e-3 * abs(p.real)
+                   ] if self.POLE_GUARD else []
+            if not bad:
+                self.converged = True
+                self.zj, self.fj, self.wj = zj, fj, wj
+                break
+            pole_rounds += 1
+            if pole_rounds > self.POLE_ROUNDS:
+                self.reason = 'pole'
+                break
+            ## sample the grid points around each pole, then search again
+            for p in bad:
+                k = int(np.searchsorted(z, p.real))
+                S = sorted(set(S) | {max(k - 1, 0), min(k, M - 1)})
+            if len(S) > budget:
+                self.reason = 'budget'
+                break
+        self.calls = len(vals)
+        self.vector = next(iter(vals.values())).shape[0] > 1
+
+    def __call__(self, nu):
+        nu = np.asarray(nu, dtype=float)
+        out = _barycentric(np.clip(nu.ravel(), self.nu_a, self.nu_b)
+                           / self.scale, self.zj, self.fj, self.wj)
+        if self.vector:
+            return out.T.reshape((out.shape[1],) + nu.shape)
+        return out[:, 0].reshape(nu.shape)
 
 
 class LogChebyshev:
