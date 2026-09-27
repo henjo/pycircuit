@@ -1016,36 +1016,50 @@ class _LyapunovCovariance(object):
         ## per-frequency contributions `(G, Dd)` (node covariances, crossings'),
         ## its power-law exponent, and the evaluated frequencies
         terms = []
-        for _key, W, ef in col['comps']:
+
+        def reduced(W):
             ## ⚠ THE COMPONENT'S OWN RANK, not `m` columns: ``W_k U`` with `U`
             ## an orthonormal basis of the stacked rows is the same process
             ## (``U^T zeta`` are independent unit processes) in `rank`
             ## columns -- a two-terminal source's symmetric root has two
             ## proportional columns, three resistors' seven (one term each)
-            Wst = np.asarray(W, dtype=complex).reshape(-1, W.shape[2])
-            _u, sv, vh = np.linalg.svd(Wst, full_matrices=False)
-            r = int(np.sum(sv > 1e-12 * max(float(sv[0]), 1e-300))) if sv.size else 0
-            W = np.einsum('kms,sr->kmr', np.asarray(W, dtype=complex),
-                          vh[:r].conj().T)
+            W = np.asarray(W, dtype=complex)
+            _u, sv_, vh = np.linalg.svd(W.reshape(-1, W.shape[2]),
+                                        full_matrices=False)
+            r = int(np.sum(sv_ > 1e-12 * max(float(sv_[0]), 1e-300))) \
+                if sv_.size else 0
+            return np.einsum('kms,sr->kmr', W, vh[:r].conj().T)
+
+        def column_ev(u_points, shape=None):
+            ## ONE unit column through the response: per band frequency the
+            ## node covariance `y y^H` and the event term `dd dd^H`, scaled by
+            ## `shape(nu)` for a separable source (evaluated first, as it was
+            ## when each kind of column had its own copy of this)
+            def ev(batch):
+                ys, dths = resp(pss, fp, batch, zero, u_points=u_points)
+                out = []
+                for i, nu in enumerate(batch):
+                    sc = shape(nu) if shape is not None else None
+                    y = node_responses(ys[i], nu)
+                    Dd = None
+                    if dths[i] is not None:
+                        dd = np.asarray(dths[i], dtype=complex)
+                        Dd = np.real(np.outer(dd, dd.conj()))
+                        if sc is not None:
+                            Dd = sc * Dd
+                    G = np.real(np.einsum('ji,jk->jik', y, y.conj()))
+                    out.append((G if sc is None else sc * G, Dd))
+                return out
+            return ev
+
+        for _key, W, ef in col['comps']:
+            W = reduced(W)
             for s_ in range(W.shape[2]):
                 Wc = W[:, :, s_]
                 if not np.any(Wc):
                     continue
                 u_points = [Wc[offs[j]:offs[j + 1]] for j in range(N)]
-
-                def ev(batch, u_points=u_points):
-                    ys, dths = resp(pss, fp, batch, zero, u_points=u_points)
-                    out = []
-                    for i, nu in enumerate(batch):
-                        y = node_responses(ys[i], nu)
-                        Dd = None
-                        if dths[i] is not None:
-                            dd = np.asarray(dths[i], dtype=complex)
-                            Dd = np.real(np.outer(dd, dd.conj()))
-                        out.append((np.real(np.einsum('ji,jk->jik', y, y.conj())),
-                                    Dd))
-                    return out
-                terms.append((float(ef), ev, {}))
+                terms.append((float(ef), column_ev(u_points), {}))
         ## a STATIONARY colour that is not a power law: unit sources on its
         ## support, weighted per band frequency by its own `CY(nu)`
         for key, supp in col.get('perband', ()):
@@ -1071,15 +1085,6 @@ class _LyapunovCovariance(object):
                 return out
             terms.append((0.0, ev, {}))
 
-        def reduced(W):
-            ## a component's own rank (see the power-law terms above)
-            W = np.asarray(W, dtype=complex)
-            _u, sv_, vh = np.linalg.svd(W.reshape(-1, W.shape[2]),
-                                        full_matrices=False)
-            r = int(np.sum(sv_ > 1e-12 * max(float(sv_[0]), 1e-300))) \
-                if sv_.size else 0
-            return np.einsum('kms,sr->kmr', W, vh[:r].conj().T)
-
         ## MODULATED, SEPARABLE: one amplitude per point, the spectral shape
         ## `s(nu)` (the element at one point, its dominant entry) per band
         ## frequency
@@ -1091,21 +1096,7 @@ class _LyapunovCovariance(object):
                 return float(np.real(c[pq] / cref))
             for s_ in range(Wr.shape[2]):
                 u_points = [Wr[offs[j]:offs[j + 1], :, s_] for j in range(N)]
-
-                def ev(batch, u_points=u_points, shape=shape):
-                    ys, dths = resp(pss, fp, batch, zero, u_points=u_points)
-                    out = []
-                    for i, nu in enumerate(batch):
-                        sc = shape(nu)
-                        y = node_responses(ys[i], nu)
-                        Dd = None
-                        if dths[i] is not None:
-                            dd = np.asarray(dths[i], dtype=complex)
-                            Dd = sc * np.real(np.outer(dd, dd.conj()))
-                        out.append((sc * np.real(np.einsum('ji,jk->jik', y,
-                                                           y.conj())), Dd))
-                    return out
-                terms.append((0.0, ev, {}))
+                terms.append((0.0, column_ev(u_points, shape), {}))
         ## MODULATED, THE SHAPE MOVING: per band frequency the density at
         ## every point, its root per point, one replay per column
         ## (`cy_at(nu)`: the element's density at every point, or a power law
@@ -1120,13 +1111,9 @@ class _LyapunovCovariance(object):
                     for s_ in range(Wn.shape[2]):
                         u_points = [Wn[offs[j]:offs[j + 1], :, s_]
                                     for j in range(N)]
-                        ys, dths = resp(pss, fp, np.array([nu]), zero,
-                                        u_points=u_points)
-                        y = node_responses(ys[0], nu)
-                        G += np.real(np.einsum('ji,jk->jik', y, y.conj()))
-                        if dths[0] is not None:
-                            dd = np.asarray(dths[0], dtype=complex)
-                            Di = np.real(np.outer(dd, dd.conj()))
+                        Gs, Di = column_ev(u_points)(np.array([nu]))[0]
+                        G += Gs
+                        if Di is not None:
                             Dd = Di if Dd is None else Dd + Di
                     out.append((G, Dd))
                 return out
