@@ -3275,39 +3275,41 @@ class Transient(Analysis):
         d_iq = self.active_integrator.companion_dT(q, self._qlast, h, h_last)
         return self.toolkit.array(d_iq, dtype=float)
 
-    def _solve_timestep_pcnr(self, x0, t, provided_function=None):
-        """One time point by PCNR rather than by limiting -- STAGE 13.
+    def _pcnr_attempt(self, solve, on_fail, catch=NoConvergenceError):
+        """Run `solve()` by PCNR and keep the run's PCNR bookkeeping:
+        `(result, True)` and a solve counted, or -- `catch` raised --
+        `on_fail(exc)` (the path's own warning), a fallback counted and
+        `(None, False)`, for the caller to solve by device limiting.
+        `pcnr_status` is 'used' / 'partial' / 'fell-back' from the two
+        counts.  (One place since 2026-09-27; the LMM, stage and coupled
+        paths each carried the four lines.)"""
+        try:
+            out = solve()
+        except catch as exc:
+            on_fail(exc)
+            self.pcnr_fallbacks += 1
+            self.pcnr_status = ('partial' if self.pcnr_solves
+                                else 'fell-back')
+            return None, False
+        self.pcnr_solves += 1
+        self.pcnr_status = ('used' if not self.pcnr_fallbacks else 'partial')
+        return out, True
 
-        The transient residual is ``f = i(x) + iq + u(t)`` with ``J = G + Geq``,
-        so the companion terms enter the coupled system as the extra blocks
-        `augmented_system` takes; everything else is the DC flow unchanged.
-
-        Returns the same 4-tuple `solve_timestep` does, so the caller cannot tell
-        which produced it -- the step controller and history roll are downstream
-        of both and must stay so.
-        """
+    def _pcnr_newton(self, x, v_lim, junctions, assemble, msg, t):
+        """The PCNR iteration both step families run: the LMM step
+        (`_solve_timestep_pcnr`) and an implicit Runge-Kutta stage
+        (`_rk_stage_pcnr`) differ only in the augmented system
+        `assemble(x, v_lim)` returns -- the multistep companion, or the
+        stage's effective one.  Returns the converged `(x, v_lim, feval)`;
+        raises `NoConvergenceError` (`msg % (t, maxiter)`) otherwise.
+        (One loop since 2026-09-27; each family had its own copy.)"""
         from pycircuit.circuit import pcnr as _pcnr
-
-        junctions = _pcnr.pcnr_devices(self.cir)
         irefnode = self.irefnode
-        ## STAGE PREDICTOR -- and it has to be here, not only on the limiting
-        ## path, or the two stop agreeing.  ⚠ MEASURED as a real failure of
-        ## `test_gate_13_6_pcnr_and_limiting_take_the_same_steps`: with the
-        ## predictor on one path only, the two converge to values that differ
-        ## in the last digits, that moves the LTE estimate, and the step
-        ## sequences part company at 5e-7 by the end of the run.  The gate is
-        ## right and the asymmetry was the defect.  It also seeds `v_lim`, and
-        ## limiting the seed is what fixed PCNR's one documented failure.
-        x = self.toolkit.array(self._pred_or(x0, t), dtype=float).copy()
-        v_lim = _pcnr.v_lim_init(junctions, x)
-
         xtol = self._newton_xtol_vector()
         reltol = self.par.reltol
         feval = 0
-
-        for _it in range(self.par.maxiter):
-            g_mna, g_lim, J_mm, J_ml, J_lm, didv = self._pcnr_augmented(
-                x, v_lim, t, junctions, provided_function)
+        for _it in range(int(self.par.maxiter)):
+            g_mna, g_lim, J_mm, J_ml, J_lm, didv = assemble(x, v_lim)
             feval += 1
 
             dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
@@ -3336,62 +3338,92 @@ class Transient(Analysis):
                 abs(dx_mna) < reltol * abs(x_new) + xtol))
             x, v_lim = x_new, v_new
             if done:
-                iq, Geq = self._companion_at(x)
+                return x, v_lim, feval
+        raise NoConvergenceError(msg % (t, self.par.maxiter))
 
-                ## THE JACOBIAN HANDED TO THE STEP CONTROLLER MUST BE THE ONE
-                ## THIS PATH ACTUALLY SOLVED, and `cir.G(x) + Geq` is not it.
-                ##
-                ## `Diode.G` linearises around `_vlim`, which only `Diode.limit`
-                ## updates -- and PCNR never calls it, because limiting is the
-                ## thing PCNR replaces.  So `_vlim` stays at whatever it was
-                ## first set to and the diode's conductance is frozen there:
-                ## measured on a half-wave rectifier as `_vlim` stuck at 0.0 V
-                ## across 2283 `G` evaluations while the junction actually swung
-                ## -18.47 to 0.75 V.  `cir.G(x)` therefore carries NO diode
-                ## conductance at all.
-                ##
-                ## Inside `augmented_system` that cancels -- the same wrong value
-                ## is added by `cir.G` and subtracted again -- but the controller
-                ## computes `lte = J^-1 Eg`, so handing it that matrix maps the
-                ## truncation error through a Jacobian missing the diode.
-                ##
-                ## The right matrix is the one `predict` factorises: the non-PCNR
-                ## part plus each probe's `didv` column as a rank-one update.  At
-                ## convergence `v_lim == e_a - e_b`, so it is exactly the
-                ## Jacobian of the residual with respect to `x` -- and it is
-                ## `schur_reduce`'s matrix, taken from there rather than
-                ## written out a second time (the copy that used to live here
-                ## knew only the two-terminal `(dia, dib)` shape).
-                _g2, _gl2, J_mm2, _Jml2, _Jlm2, didv2 = _pcnr.augmented_system(
-                    self.cir, x, v_lim, junctions, self.epar,
-                    u_extra=np.asarray(iq, dtype=float),
-                    dense_blocks=False, J_extra=Geq)
-                _f2, J = _pcnr.schur_reduce(_g2, _gl2, J_mm2, junctions=junctions,
-                                            didv=didv2)
-                J = self.toolkit.array(J, dtype=float)
-                f = self.toolkit.array(
-                    self.cir.i(x, self.epar) + iq
-                    + self.cir.u(t, self.epar, analysis=self.par.analysis),
-                    dtype=float)
-                ## and its own predictor node, exactly as the limiting
-                ## path records one -- symmetry is what gate 13-6 asks for
-                self._pred_pending = (t, ())
-                ## THE BRANCH CHECK, CONFIRMED: the step equation is the one
-                ## the limiting path solves, so the speculative re-solve is
-                ## that Newton's (`_branch_after_solve`)
-                if self._branch_on():
-                    self._branch_after_solve(
-                        refnode_removed(
-                            lambda xx: self._residual_and_jacobian(
-                                xx, t, provided_function),
-                            irefnode, self.toolkit),
-                        self.toolkit.concatenate((x[:irefnode],
-                                                  x[irefnode + 1:])))
-                return x, feval, J, f
+    def _solve_timestep_pcnr(self, x0, t, provided_function=None):
+        """One time point by PCNR rather than by limiting -- STAGE 13.
 
-        raise NoConvergenceError(
-            'PCNR did not converge at t=%g after %d iterations'
-            % (t, self.par.maxiter))
+        The transient residual is ``f = i(x) + iq + u(t)`` with ``J = G + Geq``,
+        so the companion terms enter the coupled system as the extra blocks
+        `augmented_system` takes; everything else is the DC flow unchanged.
+
+        Returns the same 4-tuple `solve_timestep` does, so the caller cannot tell
+        which produced it -- the step controller and history roll are downstream
+        of both and must stay so.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+
+        junctions = _pcnr.pcnr_devices(self.cir)
+        irefnode = self.irefnode
+        ## STAGE PREDICTOR -- and it has to be here, not only on the limiting
+        ## path, or the two stop agreeing.  ⚠ MEASURED as a real failure of
+        ## `test_gate_13_6_pcnr_and_limiting_take_the_same_steps`: with the
+        ## predictor on one path only, the two converge to values that differ
+        ## in the last digits, that moves the LTE estimate, and the step
+        ## sequences part company at 5e-7 by the end of the run.  The gate is
+        ## right and the asymmetry was the defect.  It also seeds `v_lim`, and
+        ## limiting the seed is what fixed PCNR's one documented failure.
+        x = self.toolkit.array(self._pred_or(x0, t), dtype=float).copy()
+        v_lim = _pcnr.v_lim_init(junctions, x)
+
+        x, v_lim, feval = self._pcnr_newton(
+            x, v_lim, junctions,
+            lambda x_, v_: self._pcnr_augmented(x_, v_, t, junctions,
+                                                 provided_function),
+            'PCNR did not converge at t=%g after %d iterations', t)
+        iq, Geq = self._companion_at(x)
+
+        ## THE JACOBIAN HANDED TO THE STEP CONTROLLER MUST BE THE ONE
+        ## THIS PATH ACTUALLY SOLVED, and `cir.G(x) + Geq` is not it.
+        ##
+        ## `Diode.G` linearises around `_vlim`, which only `Diode.limit`
+        ## updates -- and PCNR never calls it, because limiting is the
+        ## thing PCNR replaces.  So `_vlim` stays at whatever it was
+        ## first set to and the diode's conductance is frozen there:
+        ## measured on a half-wave rectifier as `_vlim` stuck at 0.0 V
+        ## across 2283 `G` evaluations while the junction actually swung
+        ## -18.47 to 0.75 V.  `cir.G(x)` therefore carries NO diode
+        ## conductance at all.
+        ##
+        ## Inside `augmented_system` that cancels -- the same wrong value
+        ## is added by `cir.G` and subtracted again -- but the controller
+        ## computes `lte = J^-1 Eg`, so handing it that matrix maps the
+        ## truncation error through a Jacobian missing the diode.
+        ##
+        ## The right matrix is the one `predict` factorises: the non-PCNR
+        ## part plus each probe's `didv` column as a rank-one update.  At
+        ## convergence `v_lim == e_a - e_b`, so it is exactly the
+        ## Jacobian of the residual with respect to `x` -- and it is
+        ## `schur_reduce`'s matrix, taken from there rather than
+        ## written out a second time (the copy that used to live here
+        ## knew only the two-terminal `(dia, dib)` shape).
+        _g2, _gl2, J_mm2, _Jml2, _Jlm2, didv2 = _pcnr.augmented_system(
+            self.cir, x, v_lim, junctions, self.epar,
+            u_extra=np.asarray(iq, dtype=float),
+            dense_blocks=False, J_extra=Geq)
+        _f2, J = _pcnr.schur_reduce(_g2, _gl2, J_mm2, junctions=junctions,
+                                    didv=didv2)
+        J = self.toolkit.array(J, dtype=float)
+        f = self.toolkit.array(
+            self.cir.i(x, self.epar) + iq
+            + self.cir.u(t, self.epar, analysis=self.par.analysis),
+            dtype=float)
+        ## and its own predictor node, exactly as the limiting
+        ## path records one -- symmetry is what gate 13-6 asks for
+        self._pred_pending = (t, ())
+        ## THE BRANCH CHECK, CONFIRMED: the step equation is the one
+        ## the limiting path solves, so the speculative re-solve is
+        ## that Newton's (`_branch_after_solve`)
+        if self._branch_on():
+            self._branch_after_solve(
+                refnode_removed(
+                    lambda xx: self._residual_and_jacobian(
+                        xx, t, provided_function),
+                    irefnode, self.toolkit),
+                self.toolkit.concatenate((x[:irefnode],
+                                          x[irefnode + 1:])))
+        return x, feval, J, f
 
     def _solve_timestep_rk(self, x0, t, provided_function=None):
         """One step of ANY Runge-Kutta method, driven by its Butcher tableau --
@@ -3447,9 +3479,7 @@ class Transient(Analysis):
         `NoConvergenceError` if PCNR does not converge (the caller does not fall
         back -- PCNR is the chosen limiting)."""
         from pycircuit.circuit import pcnr as _pcnr
-        from pycircuit.circuit.nrsolver import NoConvergenceError
         junctions = _pcnr.pcnr_devices(self.cir)
-        iref = self.irefnode
         tk = self.toolkit
         epar = self.epar
         ana = self.par.analysis
@@ -3457,44 +3487,33 @@ class Transient(Analysis):
         target = np.asarray(target, dtype=float)
         x = tk.array(guess, dtype=float).copy()
         v_lim = _pcnr.v_lim_init(junctions, x)
-        xtol = self._newton_xtol_vector()
-        reltol = self.par.reltol
-        for _it in range(int(self.par.maxiter)):
-            q = np.asarray(self.cir.q(x, epar), dtype=float)
-            C = self.cir.C(x, epar)
+        def assemble(x_, v_):
+            ## the stage's EFFECTIVE companion in place of the multistep one
+            q = np.asarray(self.cir.q(x_, epar), dtype=float)
+            C = self.cir.C(x_, epar)
             iq_eff = (q - target) / scale
             Geq_eff = np.asarray(C, dtype=float) / scale
             u = np.asarray(self.cir.u(ti, epar, analysis=ana), dtype=float)
             if provided_function is not None:
                 u = u + np.asarray(provided_function(ti), dtype=float)
-            g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
-                self.cir, x, v_lim, junctions, epar,
+            return _pcnr.augmented_system(
+                self.cir, x_, v_, junctions, epar,
                 u_extra=iq_eff + u, dense_blocks=False, J_extra=Geq_eff)
-            dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
-                                           iref, junctions=junctions, didv=didv)
-            x_new = x + dx_mna
-            x_new[iref] = 0.0
-            v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, epar,
-                                 x_old=x)
-            lim_ok = _pcnr.lim_converged(g_lim, v_new, reltol, self.par.vabstol)
-            done = lim_ok and bool(tk.alltrue(
-                abs(dx_mna) < reltol * abs(x_new) + xtol))
-            x, v_lim = x_new, v_new
-            if done:
-                ## SYNC the devices' internal limiting voltage to the converged
-                ## solution.  PCNR never calls `cir.limit`, so each junction's
-                ## `_vlim` is left stale -- and the caller's downstream
-                ## `i(Y)`/`G(Y)`/`C(Y)` (the stage derivative K, the returned J,
-                ## the estimate) linearise there.  At convergence the junction
-                ## voltage IS the node voltage, so `limit(x, x)` sets `_vlim`
-                ## to it (zero delta) without altering the solution -- the one
-                ## limit() call PCNR needs, purely to make the device state
-                ## consistent for what reads it next.
-                self.cir.limit(x, x, epar)
-                return x
-        raise NoConvergenceError(
-            'Radau/DIRK stage PCNR did not converge at t=%g after %d iterations'
-            % (ti, self.par.maxiter))
+        x, _v_lim, _feval = self._pcnr_newton(
+            x, v_lim, junctions, assemble,
+            'Radau/DIRK stage PCNR did not converge at t=%g after %d iterations',
+            ti)
+        ## SYNC the devices' internal limiting voltage to the converged
+        ## solution.  PCNR never calls `cir.limit`, so each junction's
+        ## `_vlim` is left stale -- and the caller's downstream
+        ## `i(Y)`/`G(Y)`/`C(Y)` (the stage derivative K, the returned J,
+        ## the estimate) linearise there.  At convergence the junction
+        ## voltage IS the node voltage, so `limit(x, x)` sets `_vlim`
+        ## to it (zero delta) without altering the solution -- the one
+        ## limit() call PCNR needs, purely to make the device state
+        ## consistent for what reads it next.
+        self.cir.limit(x, x, epar)
+        return x
 
     ## -- what every stage step shares (2026-09-23: the DIRK, GLM and the three
     ## Radau steps each carried a copy of the source closure and of the
@@ -3537,13 +3556,13 @@ class Transient(Analysis):
             J = arr(self.cir.C(x, epar)) + h * aii * arr(self.cir.G(x, epar))
             return f, J
         if self._rk_use_pcnr():
-            from pycircuit.circuit.nrsolver import NoConvergenceError as _NCE
-            try:
-                Y = self._rk_stage_pcnr(target, aii, h, ti, guess,
-                                        provided_function)
-                self.pcnr_solves += 1
-                self.pcnr_status = ('used' if not self.pcnr_fallbacks
-                                    else 'partial')
+            Y, ok = self._pcnr_attempt(
+                lambda: self._rk_stage_pcnr(target, aii, h, ti, guess,
+                                            provided_function),
+                lambda exc: logging.warning(
+                    'transient pcnr=True: %s PCNR failed at t=%g (%s); device '
+                    'limiting for this stage', what, ti, str(exc)[:80]))
+            if ok:
                 ## THE BRANCH CHECK, CONFIRMED on the stage equation `_newton`
                 ## would have solved (until 2026-09-24 this path ran NONE:
                 ## neither the screen nor the confirmation)
@@ -3553,13 +3572,6 @@ class Transient(Analysis):
                         refnode_removed(func_i, iref, self.toolkit),
                         self.toolkit.concatenate((Y[:iref], Y[iref + 1:])))
                 return Y
-            except _NCE as _exc:
-                logging.warning(
-                    'transient pcnr=True: %s PCNR failed at t=%g (%s); device '
-                    'limiting for this stage', what, ti, str(_exc)[:80])
-                self.pcnr_fallbacks += 1
-                self.pcnr_status = ('partial' if self.pcnr_solves
-                                    else 'fell-back')
 
         return self._newton(func_i, guess)
 
@@ -4405,13 +4417,7 @@ class Transient(Analysis):
             ## branch, which per-device limiting resolves order-dependently.
             ## The warning says so, because that is the one case where a silent
             ## fallback would hand back a subtly different orbit.
-            try:
-                out = self._rk_step_coupled_pcnr(x0, t, provided_function)
-                self.pcnr_solves += 1
-                self.pcnr_status = ('used' if not self.pcnr_fallbacks
-                                    else 'partial')
-                return out
-            except NoConvergenceError as exc:
+            def _say(exc):
                 from pycircuit.circuit import pcnr as _pcnr_mod
                 _pairs = [(ra, rb) for _i, _e, ra, rb
                           in _pcnr_mod.pcnr_junctions(self.cir)]
@@ -4422,9 +4428,11 @@ class Transient(Analysis):
                     ' -- ⚠ THIS CIRCUIT HAS PARALLEL JUNCTIONS ON ONE BRANCH, '
                     'which is the case PCNR exists for; the fallback resolves '
                     'them order-dependently' if _parallel else '')
-                self.pcnr_fallbacks += 1
-                self.pcnr_status = ('partial' if self.pcnr_solves
-                                    else 'fell-back')
+            out, ok = self._pcnr_attempt(
+                lambda: self._rk_step_coupled_pcnr(x0, t, provided_function),
+                _say)
+            if ok:
+                return out
         ctx, _stage_newton, _block_residual, seed0 = self._coupled_stage_solver(
             x0, t, provided_function)
         Amat, h, tn, arr, src, tstage = (ctx.Amat, ctx.h, ctx.tn, ctx.arr,
@@ -4743,23 +4751,21 @@ class Transient(Analysis):
             ## through to the ordinary solver SILENTLY (vector PCNR
             ## Stage 2, 2026-08-26).
             if _pcnr.pcnr_devices(self.cir):
-                try:
-                    out = self._solve_timestep_pcnr(x0, t, provided_function)
-                    self.pcnr_solves += 1
-                    self.pcnr_status = ('used' if not self.pcnr_fallbacks
-                                        else 'partial')
-                    return out
-                except Exception as exc:               # noqa: BLE001
-                    ## Same fallback as DC(pcnr=True): a PCNR failure on one
-                    ## timestep falls through to the ordinary step solver
-                    ## rather than ending the transient.  See dcanalysis.
-                    logging.warning(
+                ## Same fallback as DC(pcnr=True): a PCNR failure on one
+                ## timestep falls through to the ordinary step solver rather
+                ## than ending the transient.  See dcanalysis.  (⚠ ANY
+                ## exception here, where the stage paths catch only a
+                ## non-convergence -- kept as it was; narrowing it is a
+                ## behaviour change of its own.)
+                out, ok = self._pcnr_attempt(
+                    lambda: self._solve_timestep_pcnr(x0, t, provided_function),
+                    lambda exc: logging.warning(
                         'transient pcnr=True: PCNR failed at t=%g (%s: %s); '
                         'ordinary solver for this step', t,
-                        type(exc).__name__, str(exc)[:80])
-                    self.pcnr_fallbacks += 1
-                    self.pcnr_status = ('partial' if self.pcnr_solves
-                                        else 'fell-back')
+                        type(exc).__name__, str(exc)[:80]),
+                    catch=Exception)
+                if ok:
+                    return out
             else:
                 ## Asked for, and no device declares a probe.  Falling
                 ## through is right -- refusing would be a worse answer --
