@@ -4077,6 +4077,24 @@ class JAXTransient(Analysis):
             b_n_rejected = final_state.n_rejected
             b_n_nonconverged = final_state.n_nonconverged
             b_n_forced_nc = final_state.n_forced_nonconverged
+            ## STAGE 9(e) ON THE BATCH, per chunk as `solve` checks it: a lane
+            ## whose Newton failed even at dt_min stops itself (`time_cond`'s
+            ## `alive`), and until 2026-09-27 came back as a waveform cut
+            ## short of `tend` with NO error -- measured, 2 points ending at
+            ## t = 1e-18 of 5e-3 on the linear RC where `solve` raises.
+            _dead = np.nonzero(np.asarray(b_n_forced_nc) > 0)[0]
+            if _dead.size:
+                _t = np.asarray(final_state.t, dtype=float)
+                raise NoConvergenceError(
+                    "jaxtransient: the Newton solve failed to converge even at "
+                    "the minimum step dt_min=%g in batch lane(s) %s (at t = %s "
+                    "s), so step(s) would have been committed without solving "
+                    "the circuit equations. The batched transient is NOT "
+                    "complete. Raise maxiter (currently %d), loosen reltol "
+                    "(currently %g), or lower minstep."
+                    % (dt_min, [int(b) for b in _dead],
+                       ', '.join('%g' % _t[b] for b in _dead),
+                       int(self.par.maxiter), float(self.par.reltol)))
             b_n_forced_lte = final_state.n_forced_lte
             b_n_rescued = final_state.n_rescued
             b_last_err = final_state.last_err

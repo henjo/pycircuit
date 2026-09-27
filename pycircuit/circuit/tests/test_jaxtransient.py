@@ -614,6 +614,36 @@ def test_gate_9e_nonconverged_newton_is_not_committed():
         'maxiter materially changed a converged answer: %r' % errs
 
 
+def test_gate_9e_holds_for_solve_batched():
+    """Stage 9(e) on `solve_batched`: a lane whose Newton fails even at the
+    minimum step RAISES, as `solve` does.  ⚠ Until 2026-09-27 the batched path
+    carried the counter and never read it; the lane stopped itself and came
+    back as a waveform cut short of `tend` with no error -- measured, 2
+    points ending at t = 1e-18 of 5e-3 on this RC at maxiter=1.  A healthy
+    batch is untouched (maxiter=100 reaches `tend` in both lanes)."""
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    from pycircuit.circuit import gnd
+
+    def go(maxiter):
+        cir = _rc_circuit()
+        rname = [k for k in cir.elements if k.upper().startswith('R')][0]
+        tran = JAXTransient(cir, maxiter=maxiter)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return tran.solve_batched(
+                refnode=gnd, tend=5e-3, timestep=1e-4, uic=True,
+                override_params_tree={rname: {'r': jnp.array([[1e3], [2e3]])}})
+
+    with pytest.raises(NoConvergenceError, match='failed to converge'):
+        _with_jax_toolkit(lambda: go(1))
+    res = _with_jax_toolkit(lambda: go(100))
+    for r in res:
+        t = np.asarray(r.sweep_values, dtype=float).ravel()
+        assert t[-1] == pytest.approx(5e-3, rel=1e-9), t[-1]
+
+
 def test_gate_9e_converged_flag_is_evaluated_at_the_returned_point():
     """The flag must describe the x that is returned, not the one before it.
 
