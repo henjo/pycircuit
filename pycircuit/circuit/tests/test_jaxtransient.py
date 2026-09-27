@@ -888,6 +888,73 @@ def test_tline_standard_path_matches_cpu_bit_close():
     assert delay == pytest.approx(TD, rel=0.15)
 
 
+
+def _dc_tline(rl=50.0):
+    from pycircuit.circuit.elements import SubCircuit, R, VS, TLine
+    from pycircuit.circuit import gnd
+    c = SubCircuit()
+    c.add_node('a'); c.add_node('b'); c.add_node('s')
+    c['V1'] = VS('s', gnd, v=1.0)
+    c['Rs'] = R('s', 'a', r=50.0)
+    c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
+    c['Rl'] = R('b', gnd, r=rl)
+    return c
+
+
+def test_solve_batched_starts_a_tline_from_each_lanes_operating_point():
+    """A line carrying DC, started from its operating point, stays there --
+    on BOTH entry points.  ⚠ Until 2026-09-27 `solve_batched` left the
+    delay history at zero ("Init with zero for now"), so the delayed terms
+    read 0 V for the first TD: measured, a matched 1 V line came out 0.5 V
+    off at the first point, where `solve` held it exactly.  Two lanes at
+    different loads check that each lane starts from ITS OWN state."""
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit import gnd
+
+    def go():
+        tr = JAXTransient(_dc_tline(), reltol=1e-4, timestep_max=2e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = tr.solve(gnd, tend=4e-9, timestep=2e-10)
+            rs = JAXTransient(_dc_tline(), reltol=1e-4, timestep_max=2e-10).solve_batched(
+                refnode=gnd, tend=4e-9, timestep=2e-10,
+                override_params_tree={'R': {'r': jnp.array([[50.0, 50.0],
+                                                            [50.0, 150.0]])}})
+        return r, rs
+    r, rs = _with_jax_toolkit(go)
+    vb = np.asarray(r.v('b'), float).ravel()
+    assert np.max(np.abs(vb - 0.5)) < 1e-9, np.max(np.abs(vb - 0.5))
+    for lane, want in ((0, 0.5), (1, 0.75)):
+        vl = np.asarray(rs[lane].v('b'), float).ravel()
+        assert np.max(np.abs(vl - want)) < 1e-9, (lane, np.max(np.abs(vl - want)))
+
+
+def test_the_tline_ring_buffer_overflow_raises_on_both_entry_points(monkeypatch):
+    """Past `TLINE_HISTORY_DEPTH` accepted steps the delay buffer wraps and
+    the interpolation reads a previous lap -- a wrong waveform with no other
+    symptom -- so `solve` raises.  ⚠ `solve_batched` never checked (until
+    2026-09-27).  The depth is shrunk to 16 to reach it in a few steps (the
+    traced code reads it when each run is traced)."""
+    import warnings
+    import pycircuit.circuit.jaxtransient as jt
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit import gnd
+    monkeypatch.setattr(jt, 'TLINE_HISTORY_DEPTH', 16)
+
+    def run(batched):
+        tr = JAXTransient(_dc_tline(), reltol=1e-4, timestep_max=2e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            if batched:
+                tr.solve_batched(refnode=gnd, tend=2e-8, timestep=2e-10,
+                                 override_params_tree={'R': {'r': jnp.array([[50.0, 50.0]])}})
+            else:
+                tr.solve(gnd, tend=2e-8, timestep=2e-10)
+    for batched in (False, True):
+        with pytest.raises(RuntimeError, match='overflowed'):
+            _with_jax_toolkit(lambda: run(batched))
+
 def test_tline_element_step_cap_holds_the_delay():
     """Stage 8(d) parity: dt_max is clamped to TD/2 (never applied on this
     backend before the TLine port).  At timestep = 5*TD the uncapped run

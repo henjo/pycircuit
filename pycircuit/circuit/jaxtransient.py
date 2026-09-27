@@ -3765,6 +3765,41 @@ class JAXTransient(Analysis):
     ## object and called get_node_index on it, so its old name `irefnode`
     ## lied; renamed `refnode`, defaulting to the same object as everywhere
     ## else (P4).
+    def _tline_setup(self, x0s):
+        """The circuit's TLines for a run starting at `x0s`, one state per
+        lane: `(params (T, 2) [TD, Z0], indices (T, 6), history (L, T,
+        depth, 5), tlines)`, `tlines` the `(name, element)` pairs.  Each line's delay history holds its DC state at
+        every slot -- `t = -1` so nothing collides with `t = 0`, which sits
+        at head 0 -- so the delayed terms read the operating point until the
+        run has been going for TD.  `solve` passes one state, `solve_batched`
+        one per lane (one setup since 2026-09-27; the batched copy left the
+        history at zero)."""
+        from pycircuit.circuit.elements import TLine
+        tlines = [(name, el) for name, el in self.cir.elements.items()
+                  if isinstance(el, TLine)]
+        tline_params = (jnp.array([[t.iparv.TD, t.iparv.Z0] for _n, t in tlines])
+                        if tlines else jnp.zeros((0, 2)))
+        tline_indices = (jnp.array([self.cir.elementnodemap[n] for n, _t in tlines],
+                                   dtype=jnp.int32)
+                         if tlines else jnp.zeros((0, 6), dtype=jnp.int32))
+
+        def history(x0):
+            if not tlines:
+                return jnp.zeros((0, TLINE_HISTORY_DEPTH, 5))
+            h = jnp.zeros((len(tlines), TLINE_HISTORY_DEPTH, 5))
+            for i, (name, _t) in enumerate(tlines):
+                nodemap = self.cir.elementnodemap[name]
+                subx = x0[nodemap] if len(nodemap) > 0 else jnp.array([])
+                v1 = subx[0] - subx[1]
+                v2 = subx[2] - subx[3]
+                i1 = subx[4]
+                i2 = subx[5]
+                h = h.at[i].set(jnp.array([-1.0, v1, v2, i1, i2]))
+                h = h.at[i, 0].set(jnp.array([0.0, v1, v2, i1, i2]))
+            return h
+        return (tline_params, tline_indices,
+                jnp.stack([history(x0) for x0 in x0s]), tlines)
+
     def solve_batched(self, refnode=gnd, override_params_tree=None, tend=1e-3,
                       timestep=1e-12, CHUNK_SIZE=5000, dt_max=None, uic=None,
                       minstep=None):
@@ -3927,25 +3962,14 @@ class JAXTransient(Analysis):
         iq_hist = jnp.zeros((batch_size, 3, n))
         h_hist = jnp.zeros((batch_size, 3))
         
-        from pycircuit.circuit.elements import TLine
-        tlines = []
-        for instance_name, elem in self.cir.elements.items():
-            if isinstance(elem, TLine):
-                tlines.append((instance_name, elem))
+        ## ⚠ each lane's delay history from ITS OWN starting state, as `solve`
+        ## fills it -- until 2026-09-27 it was zeros ("Init with zero for
+        ## now"), and a line carrying DC read 0 V for its first TD: measured,
+        ## a matched 1 V line started from its operating point came out 0.5 V
+        ## off at the first point, where `solve` held it exactly
+        tline_params, tline_indices, tline_history, tlines = \
+            self._tline_setup(x0_batch)
         n_tlines = len(tlines)
-        tline_params = jnp.zeros((n_tlines, 2))
-        tline_indices = jnp.zeros((n_tlines, 6), dtype=jnp.int32)
-        if n_tlines > 0:
-            tline_history = jnp.zeros((batch_size, n_tlines, TLINE_HISTORY_DEPTH, 5))
-            for i, (name, tline) in enumerate(tlines):
-                nodemap = self.cir.elementnodemap[name]
-                tline_indices = tline_indices.at[i].set(nodemap)
-                tline_params = tline_params.at[i, 0].set(tline.iparv.TD)
-                tline_params = tline_params.at[i, 1].set(tline.iparv.Z0)
-                # Init with zero for now
-        else:
-            tline_history = jnp.zeros((batch_size, 0, TLINE_HISTORY_DEPTH, 5))
-            
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         _tline_dG = (tline_stamp_correction(
             n, [(self.cir.elementnodemap[name], float(t.iparv.Z0))
@@ -3993,6 +4017,7 @@ class JAXTransient(Analysis):
         ## lanes are not kept rectangular).
         x0_np = np.array(x0_batch)
         results_list = [[x0_np[b:b+1, :]] for b in range(batch_size)]
+        lane_steps = np.zeros(batch_size, dtype=int)
         times_list = [[np.zeros(1)] for b in range(batch_size)]
         
         current_t = jnp.zeros(batch_size)
@@ -4061,6 +4086,20 @@ class JAXTransient(Analysis):
             valid_steps = np.array(final_state.step_idx)
             if int(np.max(valid_steps)) == 0:
                 break
+            ## the delay line's ring buffer, per lane, as `solve` checks it
+            ## (never checked here before 2026-09-27: a wrapped buffer reads
+            ## a previous lap's entries with no other symptom)
+            lane_steps = lane_steps + valid_steps
+            if n_tlines > 0 and int(np.max(lane_steps)) >= TLINE_HISTORY_DEPTH:
+                raise RuntimeError(
+                    "TLine delay-line history overflowed in batch lane(s) %s: "
+                    "%d accepted steps against a ring buffer of %d "
+                    "(TLINE_HISTORY_DEPTH). Past this point the buffer wraps and "
+                    "the delay interpolation silently reads entries from a "
+                    "previous lap. Shorten tend, use a larger timestep, or raise "
+                    "TLINE_HISTORY_DEPTH."
+                    % ([int(b) for b in np.nonzero(lane_steps >= TLINE_HISTORY_DEPTH)[0]],
+                       int(np.max(lane_steps)), TLINE_HISTORY_DEPTH))
 
             res_buf = np.array(final_state.results_buffer)
             time_buf = np.array(final_state.time_buffer)
@@ -4182,43 +4221,10 @@ class JAXTransient(Analysis):
             self.cir, tend, float(self.par.minbreak)))
     
         # Extract TLines
-        from pycircuit.circuit.elements import TLine
-        tlines = []
-        for instance_name, elem in self.cir.elements.items():
-            if isinstance(elem, TLine):
-                tlines.append((instance_name, elem))
-    
-        tline_params_list = []
-        tline_indices_list = []
-        for name, tline in tlines:
-            tline_params_list.append([tline.iparv.TD, tline.iparv.Z0])
-            tline_indices_list.append(self.cir.elementnodemap[name])
-        
-        tline_params = jnp.array(tline_params_list) if tline_params_list else jnp.zeros((0, 2))
-        tline_indices = jnp.array(tline_indices_list, dtype=jnp.int32) if tline_indices_list else jnp.zeros((0, 6), dtype=jnp.int32)
-    
-        # We will use a fixed buffer size of 10000 steps for TLines
-        # This covers a 10ns simulation with 1ps steps.
-        # Shape: (N_tlines, 10000, 5) => (t, v1, v2, i1, i2)
+        tline_params, tline_indices, tline_history, tlines = \
+            self._tline_setup([x0])
+        tline_history = tline_history[0]
         n_tlines = len(tlines)
-        if n_tlines > 0:
-            tline_history = jnp.zeros((n_tlines, TLINE_HISTORY_DEPTH, 5))
-            # Initialize with DC values for all history!
-            for i, (name, tline) in enumerate(tlines):
-                # evaluate tline DC state from x0
-                nodemap = self.cir.elementnodemap[name]
-                subx = x0[nodemap] if len(nodemap) > 0 else jnp.array([])
-                v1 = subx[0] - subx[1]
-                v2 = subx[2] - subx[3]
-                i1 = subx[4]
-                i2 = subx[5]
-                init_val = jnp.array([-1.0, v1, v2, i1, i2]) # t=-1.0 to avoid t=0 collisions
-                tline_history = tline_history.at[i].set(init_val)
-                # Ensure t=0 is at head 0
-                tline_history = tline_history.at[i, 0].set(jnp.array([0.0, v1, v2, i1, i2]))
-        else:
-            tline_history = jnp.zeros((0, TLINE_HISTORY_DEPTH, 5))
-        
         tline_head = jnp.array(0, dtype=jnp.int32)
         _tline_dG = (tline_stamp_correction(
             n, [(self.cir.elementnodemap[name], float(t.iparv.Z0))
