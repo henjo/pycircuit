@@ -15,7 +15,14 @@ package of:
     _pss_ppv.py       its adjoint side: PPV, Floquet modes
     _pss_accuracy.py  its accuracy checks: twin, grid_error, warping estimate
     _pss_periodic.py  its states defined up to a modulus (idtmod)
-    pac.py            PAC and SidebandResponse
+    pac.py            PAC (its small-signal core) and SidebandResponse
+    _pac_sources.py   its noise sources: CY on the orbit, colour models, roots
+    _pac_pnoise.py    its pnoise and folds, am_pm_noise, band_spread
+    _pac_lyapunov.py  its periodic covariance and event jitter
+    _pac_osccov.py    its oscillator covariance and edge jitter
+    _pac_sampled.py   its sampled noise and jitter metrics
+    _pac_modal.py     its Floquet-mode spectra
+    _pac_phase.py     its phase noise: diffusion, phase_psd, lineshape
     probe.py          ProbeShooting
     events.py         EventColumns
     diagnostics.py    topological_index, algebraic_conditioning, ...
