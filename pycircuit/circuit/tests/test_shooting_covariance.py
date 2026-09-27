@@ -335,8 +335,12 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
         warnings.simplefilter('ignore')
         Ks = pac0.covariance(p0, fmin=fmin)[o0, o0]
         ## (on the instance: the class keeps its own)
-        pac0._separable = lambda Cs, tol=1e-9: False
+        consulted = []
+        pac0._separable = lambda Cs, tol=1e-9: consulted.append(1) or False
         Kn = pac0.covariance(p0, fmin=fmin)[o0, o0]
+    ## ⚠ the equality below holds VACUOUSLY if the patch is never looked up
+    ## (a refactor that stops reaching `_separable` through the instance)
+    assert consulted, 'the patched _separable was never consulted'
     assert abs(Kn / Ks - 1.0) < 1e-12, Kn / Ks - 1.0
     ## the moving-shape path meets the separable one as the corner stops
     pt, ot, pact = build('element', shape=1e-6, npts=100)

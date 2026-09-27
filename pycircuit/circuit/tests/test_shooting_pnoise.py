@@ -1608,11 +1608,14 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
         warnings.simplefilter('ignore')
         assert pac._cy_colour_model(pss, 0.1e6, f0) is None
         sl, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
-        pac._cy_colour_model = lambda *a_, **k_: None
+        consulted = []
+        pac._cy_colour_model = lambda *a_, **k_: consulted.append(1)
         try:
             slfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
             del pac._cy_colour_model
+    ## ⚠ vacuous if the patch is never looked up
+    assert consulted, 'the patched _cy_colour_model was never consulted'
     assert abs(sl / slfull - 1.0) < 1e-12, (sl, slfull)
     assert abs(sl / sc - 1.0) > 1e-3, (sl, sc)
 

@@ -3098,11 +3098,14 @@ def test_the_frequency_aware_equation_rows_are_batched_bit_for_bit():
                 assert np.ptp(blocks[k], axis=0).max() > 0.1, \
                     '%s does not move along the orbit' % k
             orig = _PSS._equation_row_blocks
-            _PSS._equation_row_blocks = lambda self, *args: None
+            unbatched = []
+            _PSS._equation_row_blocks = lambda self, *args: unbatched.append(1)
             try:
                 b = pss.frequency_aware_ppv(nu * f0)[1]['samples_eq']
             finally:
                 _PSS._equation_row_blocks = orig
+            ## ⚠ vacuous if the patch is never looked up
+            assert unbatched, 'the patched _equation_row_blocks was never consulted'
             assert np.array_equal(a, b), (nu, float(np.max(np.abs(a - b))))
 
 

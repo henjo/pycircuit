@@ -540,6 +540,8 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
             S_ch = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
         finally:
             del pac.FA_RHO_FIT
+    ## ⚠ vacuous if the knob is not read on the instance
+    assert pac.lineshape_info['rho_fit'] == 'chebyshev', pac.lineshape_info
     assert np.max(np.abs(S_all / S_ch - 1.0)) < 1e-6, S_all / S_ch - 1.0
     first_err = (S_first / S_all - 1.0)[:3]
     assert np.all(first_err < -0.05), first_err
@@ -694,6 +696,8 @@ def test_the_coloured_lineshape_takes_a_source_that_follows_the_orbit():
             _w.simplefilter('ignore')
             res[kind] = pac.oscillator_spectrum(
                 pss, np.array([0.0, 1e-4, 1e-2]) * f0, ov, fmin=1e-7 * f0)[1]
+        ## ⚠ vacuous if the knob is not read on the instance
+        assert pac.lineshape_info['rho_fit'] == 'chebyshev', pac.lineshape_info
     err = np.max(np.abs(10 ** ((res['flicker'] - res['flicker_ref']) / 10)
                         - 1.0))
     assert err < 1e-9, err

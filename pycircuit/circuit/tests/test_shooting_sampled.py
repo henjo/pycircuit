@@ -101,13 +101,19 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     pss, pac = build(0.5)
     st = pac._stage_states(pss, pss._state_map())[:7]
     a = pac._one_element_cy(pss, ('n',), 2 * np.pi * 3e5, st)
-    pac._leaf_access = lambda cir, key, irn: None
+    ## ⚠ each equality holds VACUOUSLY if its patch is never looked up (a
+    ## refactor that stops reaching the seam through the instance): count
+    walked, uncached = [], []
+    pac._leaf_access = lambda cir, key, irn: walked.append(1)
     b = pac._one_element_cy(pss, ('n',), 2 * np.pi * 3e5, st)
     del pac._leaf_access
+    assert walked, 'the patched _leaf_access was never consulted'
     assert np.array_equal(a, b)
     cached = sv(pss, pac)
-    pac._cached_root = lambda cy_at: (lambda w: pac._psd_sqrt(cy_at(float(w))))
+    pac._cached_root = lambda cy_at: (uncached.append(1),
+                                      lambda w: pac._psd_sqrt(cy_at(float(w))))[1]
     assert np.array_equal(sv(pss, pac), cached)
+    assert uncached, 'the patched _cached_root was never consulted'
 
 
 def test_the_sampled_variance_is_the_covariance_at_that_instant_for_white_sources():
