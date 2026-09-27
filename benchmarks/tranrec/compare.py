@@ -258,6 +258,12 @@ def main(argv):
     def _norm(W):
         out = {}
         for t, rs in W.items():
+            ## a warning whose stacklevel lands on the recorder's own wrapper
+            ## is located there by line; the line moves when the recorder is
+            ## edited, which is not the code under test moving
+            for r in rs:
+                if r['where'].startswith('tran_recorder.py:'):
+                    r['where'] = 'tran_recorder.py'
             key = '<the tests sharing a cache>' if any(c in str(t) for c in CACHING_TESTS) else t
             out.setdefault(key, []).extend(r for r in rs if not r['cat'].startswith('Pytest'))
         ## the pooled bucket as a SET: the helper runs once per worker that
