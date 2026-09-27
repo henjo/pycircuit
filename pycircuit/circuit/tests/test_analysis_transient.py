@@ -1733,3 +1733,35 @@ def test_theta_integrator_removes_the_opener_it_was_built_to_remove():
     assert z1 < 1.4, \
         'the zero seed should cost about a full order -- if it no longer does, ' \
         'the consistent-iq0 machinery may be unnecessary (got %.2f, %r)' % (z1, ze)
+
+
+def test_a_pcnr_failure_that_is_not_a_non_convergence_falls_back_on_every_path():
+    """PCNR's fallback to device limiting catches ANY exception on every path
+    (Andreas, 2026-09-27), as the LMM step and DC always did.  ⚠ The stage
+    and coupled paths caught only a non-convergence, so a singular Jacobian
+    ENDED the transient: measured, Radau + PCNR on the FET cascode of
+    `test_solve_dc_judges_the_residual_and_not_only_the_step` with a
+    vanishing capacitor on its stiff middle node raised `LinAlgError:
+    Singular matrix`, where device limiting ran to the DC answer.  Now it
+    falls back and lands on the same waveform."""
+    import warnings
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    from pycircuit.circuit.tests.test_limit_fet import _fet, _cascode
+    circuit.default_toolkit = circuit.numeric
+
+    def run(pcnr):
+        c = _cascode(_fet('both'), 40.0, 1.0, 1.2)
+        c['Cm'] = C('mid', gnd, c=1e-21)
+        tr = Transient(c, integrator=RadauIIA3Integrator(), pcnr=pcnr,
+                       reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=2e-8, timestep=1e-9, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        return tr, np.asarray(res.x, float)[c.get_node_index('mid')]
+    tr_l, mid_l = run(False)
+    tr_p, mid_p = run(True)
+    assert tr_p.pcnr_fallbacks > 0, 'the case no longer fails under PCNR'
+    assert tr_p.pcnr_status in ('partial', 'fell-back'), tr_p.pcnr_status
+    assert np.max(np.abs(mid_p - mid_l)) < 1e-9, np.max(np.abs(mid_p - mid_l))
+

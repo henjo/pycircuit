@@ -3172,14 +3172,23 @@ class Transient(Analysis):
         d_iq = self.active_integrator.companion_dT(q, self._qlast, h, h_last)
         return self.toolkit.array(d_iq, dtype=float)
 
-    def _pcnr_attempt(self, solve, on_fail, catch=NoConvergenceError):
+    def _pcnr_attempt(self, solve, on_fail, catch=Exception):
         """Run `solve()` by PCNR and keep the run's PCNR bookkeeping:
         `(result, True)` and a solve counted, or -- `catch` raised --
         `on_fail(exc)` (the path's own warning), a fallback counted and
         `(None, False)`, for the caller to solve by device limiting.
         `pcnr_status` is 'used' / 'partial' / 'fell-back' from the two
         counts.  (One place since 2026-09-27; the LMM, stage and coupled
-        paths each carried the four lines.)"""
+        paths each carried the four lines.)
+
+        ⚠ ANY EXCEPTION FALLS BACK, on every path (Andreas, 2026-09-27), as
+        the LMM step and DC always did: a PCNR failure on one point must not
+        end the run.  The stage and coupled paths used to catch only a
+        non-convergence, and a singular Jacobian then ENDED the transient --
+        measured, Radau + PCNR on a FET cascode with a vanishing capacitor,
+        `LinAlgError: Singular matrix`, where device limiting ran.  Every
+        path's warning names the exception's type, so a genuine bug on the
+        PCNR path is still visible in the log."""
         try:
             out = solve()
         except catch as exc:
@@ -3457,8 +3466,9 @@ class Transient(Analysis):
                 lambda: self._rk_stage_pcnr(target, aii, h, ti, guess,
                                             provided_function),
                 lambda exc: logging.warning(
-                    'transient pcnr=True: %s PCNR failed at t=%g (%s); device '
-                    'limiting for this stage', what, ti, str(exc)[:80]))
+                    'transient pcnr=True: %s PCNR failed at t=%g (%s: %s); '
+                    'device limiting for this stage', what, ti,
+                    type(exc).__name__, str(exc)[:80]))
             if ok:
                 ## THE BRANCH CHECK, CONFIRMED on the stage equation `_newton`
                 ## would have solved (until 2026-09-24 this path ran NONE:
@@ -4320,8 +4330,9 @@ class Transient(Analysis):
                           in _pcnr_mod.pcnr_junctions(self.cir)]
                 _parallel = len(_pairs) != len(set(_pairs))
                 logging.warning(
-                    'transient pcnr=True: coupled PCNR failed at t=%g (%s); '
-                    'device limiting for this step%s', t, str(exc)[:80],
+                    'transient pcnr=True: coupled PCNR failed at t=%g (%s: %s); '
+                    'device limiting for this step%s', t, type(exc).__name__,
+                    str(exc)[:80],
                     ' -- ⚠ THIS CIRCUIT HAS PARALLEL JUNCTIONS ON ONE BRANCH, '
                     'which is the case PCNR exists for; the fallback resolves '
                     'them order-dependently' if _parallel else '')
@@ -4650,17 +4661,14 @@ class Transient(Analysis):
             if _pcnr.pcnr_devices(self.cir):
                 ## Same fallback as DC(pcnr=True): a PCNR failure on one
                 ## timestep falls through to the ordinary step solver rather
-                ## than ending the transient.  See dcanalysis.  (⚠ ANY
-                ## exception here, where the stage paths catch only a
-                ## non-convergence -- kept as it was; narrowing it is a
-                ## behaviour change of its own.)
+                ## than ending the transient.  See dcanalysis and
+                ## `_pcnr_attempt`.
                 out, ok = self._pcnr_attempt(
                     lambda: self._solve_timestep_pcnr(x0, t, provided_function),
                     lambda exc: logging.warning(
                         'transient pcnr=True: PCNR failed at t=%g (%s: %s); '
                         'ordinary solver for this step', t,
-                        type(exc).__name__, str(exc)[:80]),
-                    catch=Exception)
+                        type(exc).__name__, str(exc)[:80]))
                 if ok:
                     return out
             else:
