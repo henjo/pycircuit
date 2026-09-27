@@ -5521,6 +5521,9 @@ it with the host's period was the E3 "sign change".
 
 ### `frequency_aware_ppv`
 
+2026-09-27: the twin serves the WHOLE call, as it serves `ppv()` and `floquet_modes`.  Only its map was borrowed (through `_state_map`) and the propagation ran on the trap solve: exact on an ODE, 1.6e-3 off the twin's own samples with an algebraic node (`c(f)` 1.3e-4).
+
+
 The docstring before the move:
 
 The PPV at a nonzero modulation frequency (Lai 2008, eq. 23).
@@ -6832,6 +6835,9 @@ bordered forward solve (the suite's own PAC test pattern);
 unbordered, pnoise on a staged gear solve was 10-15 % off.
 
 ### `pnoise`
+
+2026-09-27: the cyclostationary stop rule's cycle average took `np.diff(times)` (the left rectangle); it takes `_cy_cycle_averaged`'s `_period_weights` now.  It only decides where the sideband sum stops.
+
 
 The comment above `pnoise` (its last sentence was cut off in the source):
 
@@ -9224,7 +9230,18 @@ away from the fundamental the model also misses where a line DOES
 exist (asymmetric orbit, 2 f0: 0.40 of the Monte Carlo) -- use
 `pnoise` away from the fundamental.
 
+### `_fa_samples`
+
+2026-09-27: the cache held `id(pss.factored_period())` and not the period: a re-solve on another grid freed it, a new period was born at the same address, and the old grid's samples came back (198 rows for a 299-point solve, 2 re-solves in 6).  The entry holds its period and is matched by identity, as `_transverse_cache` is.
+
+### `_coloured_prepare`
+
+2026-09-27: the separability probe read the band at `pi fmax` -- its middle -- among `2 pi x` siblings, with no recorded reason; the per-band sampler probes its band's top.  `2 pi fmax` is added; a probe more can only send a source to the exact path.
+
 ### `frequency_aware_diffusion`
+
+2026-09-27: two defects.  (1) It integrated with `np.diff(times)`, the left rectangle, while `c(0)` uses `_period_weights`: on a smoothly varying 3:1 grid `c(0+)/c - 1` = -2.0e-3 / -1.0e-3 / -5.1e-4 at N = 200 / 400 / 800, 1e-15 with the shared weights (an alternating grid hides it, 8.8e-13).  (2) The modulated branch read `CY` at `pss.waveform` on the belief that the frequency-aware PPV has no twin; for trap and euler it is the twin's, and the orbits differ by the discretisation: -1.3e-4 on trap, now `_ppv_states`, 1e-15.
+
 
 2026-09-26: a MODULATED white source is taken.  `CY` is read at each
 sample's state, on the solve's own orbit, since the frequency-aware PPV
