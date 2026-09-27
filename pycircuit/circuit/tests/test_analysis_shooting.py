@@ -12672,11 +12672,8 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     assert abs(S_all[-1] / sphi - 1.0) < 1e-4, S_all[-1] / sphi - 1.0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        pac.FA_FIRST_ORDER_TOL = np.inf
-        try:
-            S_first = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
-        finally:
-            del pac.FA_FIRST_ORDER_TOL
+        S_first = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0,
+                                          all_orders=False)[0] / X2
     assert info['frequency_aware'] == 'all orders', info
     assert abs(info['cinf_estimate'] / info['cinf'] - 1.0) < 0.1, info
     assert info['chebyshev_err'] < 1e-6, info
@@ -12695,6 +12692,61 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     assert pac.lineshape_info['frequency_aware'] == 'first order', pac.lineshape_info
     assert pac.lineshape_info['estimate'] < pac.FA_FIRST_ORDER_TOL, pac.lineshape_info
 
+
+def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_asked():
+    """`oscillator_spectrum(all_orders=True)` on a WHITE source (2026-09-27;
+    Andreas: "Fix the oscillator_spectrum but put it off by default").  The
+    default stays the Lorentzian with `c(f)` per offset, which is first
+    order in the frequency-aware change: the core keeps its DC weight.  On
+    the slow-node LC with the corner 10 linewidths out (psd 0.7, white
+    only), against all orders:
+
+        linewidths      0        1        10       100      1000
+        default      -8.4 %   -7.7 %   -11 %    -0.95 %  -8.8e-5
+
+    All orders takes 77 bordered solves, 10.8 s, against 0.7 s.  The
+    cross-check is the COLOURED path (`_fa_lineshape`, `rho` from the fold's
+    parts, not `frequency_aware_diffusion`) on the same line with a
+    vanishing flicker.  After the flicker's own effect, taken at DC, is
+    removed, the two agree to 2.3e-6 at every offset."""
+    import warnings as _w
+    pss, pac, ov = _fa_core_oscillator(0.7, flicker_rel=0.0)
+    f0 = 1.0 / float(pss.period)
+    X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
+    fcore = np.pi * f0 * f0 * pac.diffusion_constant(pss)
+    offs = np.array([0.0, 1.0, 10.0, 100.0, 1000.0]) * fcore
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        S_def = pac.oscillator_spectrum(pss, offs, ov)[0] / X2
+        assert pac.lineshape_info['frequency_aware'] == 'first order'
+        S_all = pac.oscillator_spectrum(pss, offs, ov, all_orders=True)[0] / X2
+        info = dict(pac.lineshape_info)
+        S_dc = pac.oscillator_spectrum(pss, offs, ov, frequency_aware=False)[0] / X2
+        sphi = float(pac.phase_psd(pss, [offs[-1]])[0])
+    assert info['frequency_aware'] == 'all orders', info
+    assert not [r for r in rec if 'estimated relative error' in str(r.message)], \
+        [str(r.message) for r in rec]
+    err = S_def / S_all - 1.0
+    assert np.all(err[:3] < -0.05), err
+    ## the default's carrier gap is its core weight, exp(-D_corr(inf)/2)
+    assert abs((1.0 + err[0]) * np.exp(-0.5 * info['cinf']) - 1.0) < 0.03, \
+        (err[0], info['cinf'])
+    assert abs(S_all[-1] / sphi - 1.0) < 2e-4, S_all[-1] / sphi - 1.0
+    ## the coloured path, with the flicker's own (DC) effect taken out
+    pss2, pac2, ov2 = _fa_core_oscillator(0.7, flicker_rel=1e-8)
+    X22 = abs(pac2.carrier_phasor(pss2, ov2, 1)) ** 2
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        S_col = pac2.oscillator_spectrum(pss2, offs, ov2, fmin=1e-4 * f0,
+                                         all_orders=True)[0] / X22
+        S_col_dc = pac2.oscillator_spectrum(pss2, offs, ov2, fmin=1e-4 * f0,
+                                            frequency_aware=False)[0] / X22
+        ## and `all_orders=False` forces the coloured first order
+        pac2.oscillator_spectrum(pss2, offs[:2], ov2, fmin=1e-4 * f0,
+                                 all_orders=False)
+    assert pac2.lineshape_info['frequency_aware'] == 'first order', pac2.lineshape_info
+    gap = (S_col / S_all - 1.0) - (S_col_dc / S_dc - 1.0)
+    assert np.max(np.abs(gap)) < 1e-5, gap
 
 def test_the_oscillator_spectrum_takes_a_coloured_source():
     """`oscillator_spectrum` with a 1/f source (2026-09-26; Andreas: "Do as

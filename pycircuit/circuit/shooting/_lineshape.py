@@ -517,9 +517,14 @@ def linear_error(f, i, f0, c_w, pc):
     convolved with a core of variance `sigma^2`), plus the phase variance
     above `nu_x`, `D_>(nu_x) / 2`, split at `nu_x = f / sqrt(6)` where the two
     balance for a white source.  An ESTIMATE (the second order of the
-    expansion), not a bound."""
+    expansion), not a bound.  `pc` None: a white line."""
     f = abs(float(f))
     nx = f / np.sqrt(6.0)
+    if pc is None:
+        ## (a white line: no coloured pieces)
+        sig2 = 2.0 * i * i * f0 * f0 * c_w * nx
+        above = 2.0 * i * i * f0 * f0 * c_w / nx
+        return 6.0 * sig2 / (f * f) + above
     lo = min(max(nx, pc.nu[0]), pc.nu[-1])
     sig2 = 2.0 * i * i * f0 * f0 * (c_w * nx + pc.moment(0.0, pc.nu[0], lo))
     above = 2.0 * i * i * f0 * f0 * (c_w / nx + pc.moment(-2.0, lo, pc.nu[-1]))

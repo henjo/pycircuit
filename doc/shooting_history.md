@@ -9054,6 +9054,12 @@ measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
 
+2026-09-27: `all_orders`.  A white source's frequency-aware line had been
+the Lorentzian with `c(f)` per offset only, first order in the change:
+-8.4 % at the carrier and -11 % at 10 linewidths with a slow corner 10
+linewidths out.  `all_orders=True` builds it in full (`_white_all_orders`,
+77 solves); it is OFF by default for a white source, at Andreas's request.
+
 2026-09-26 (later): the coloured lineshape's frequency-aware correction was
 FIRST order: `i^2 f0^2 (c_fa - c_dc)/f^2` per offset, with the carrier
 untouched and a warning where it met the core.  Against a closed form with

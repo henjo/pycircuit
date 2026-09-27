@@ -6407,7 +6407,8 @@ class PAC(Analysis):
                         'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
 
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1,
-                            frequency_aware=None, fmin=None, fmax=None):
+                            frequency_aware=None, fmin=None, fmax=None,
+                            all_orders=None):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
 
         ⚠⚠ THIS DOES NOT GO THROUGH `pnoise`'s SIDEBAND FOLD, AND IT CANNOT.
@@ -6493,7 +6494,20 @@ class PAC(Analysis):
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
         above it (the correction's own structure function inside `D`,
         ~65 solves; `_fa_lineshape`, `self.lineshape_info` says which);
-        `False` is the DC lineshape.  Near the carrier
+        `False` is the DC lineshape.
+
+        `all_orders` (2026-09-27): the frequency-aware correction to ALL
+        orders -- `c_fa(nu)` inside the structure function `D`, not per
+        offset.  A white source's default is the Lorentzian with `c(f)` per
+        offset, first order in the same sense (the core keeps its DC weight,
+        `exp(-D_corr(inf)/2)` off; ~8 % with a slow corner 10 linewidths
+        out); `all_orders=True` builds the full line instead, `fmax`
+        (default f0/2) bounding the band, past which the white part is held
+        at its corrected level.  It is OFF by default for a white source
+        (Andreas: "put it off by default"): ~65 bordered solves.  For a
+        coloured source None is the estimate's choice (above), True forces
+        all orders and False the first.  `self.lineshape_info` says which
+        ran.  Near the carrier
         the transform is accurate to ~1e-6; the far skirt is the linear
         one (`phase_psd`'s), taken per offset where its estimated error
         (`_lineshape.linear_error`) is below the transform's (two tau
@@ -6505,14 +6519,21 @@ class PAC(Analysis):
             return self._coloured_spectrum(
                 pss, offsets, output, harmonic, fmin, fmax,
                 frequency_aware=(frequency_aware is None
-                                 or bool(frequency_aware)))
+                                 or bool(frequency_aware)),
+                all_orders=all_orders)
         if frequency_aware is None:
             frequency_aware = True
         c = self.diffusion_constant(pss)
         f0 = 1.0 / float(pss.period)
         self._warn_above_amplitude_pole(offsets, f0)
         X = self._carrier_line(pss, output, harmonic)
-        if frequency_aware:
+        self.lineshape_info = {'frequency_aware': None}
+        if frequency_aware and all_orders:
+            Sv = abs(X) ** 2 * self._white_all_orders(pss, offsets, harmonic,
+                                                      c, f0, fmax)
+        elif frequency_aware:
+            self.lineshape_info = {'frequency_aware': 'first order',
+                                   'estimate': None}
             ## `c(f)` per offset -- one bordered adjoint solve each, cached on
             ## `|offset|` so a symmetric sweep pays once per magnitude.  `c(0)`
             ## is `c` exactly, so the near-carrier lineshape is unchanged.
@@ -6533,6 +6554,41 @@ class PAC(Analysis):
             L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
                                            1e-300))
         return Sv, L
+
+    def _white_all_orders(self, pss, offsets, harmonic, c, f0, fmax):
+        """The WHITE line with the frequency-aware PPV to all orders
+        (`oscillator_spectrum(all_orders=True)`, 2026-09-27): the Lorentzian's
+        `exp(-a |tau|)` becomes `exp(-D/2)` with `D` built from `c_fa(nu) = c
+        (1 + rho(nu))`, `rho` from `frequency_aware_diffusion` (one bordered
+        solve a frequency, `c(0) = c` exactly).  The machinery is the
+        coloured line's (`_fa_orders`) with no colour: `rho` as a Chebyshev
+        series from where it dies away up to `fmax`, the change in `D` by
+        signed quadrature, the white part held at its corrected level past
+        `fmax`, and each offset from the transform or the linear skirt by
+        estimated error.  Normalised, as `lorentzian`."""
+        i = int(harmonic)
+        fmax = 0.5 * f0 if fmax is None else float(fmax)
+        if not (0.0 < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
+            raise ValueError(
+                'PAC.oscillator_spectrum: need 0 < fmax <= f0/2 (%.6g Hz); '
+                'got fmax=%r.' % (0.5 * f0, fmax))
+        a = 2.0 * np.pi ** 2 * i * i * f0 * f0 * c
+        pref = 4.0 * i * i * f0 * f0
+        rho_at = lambda nu: np.array(
+            [self.frequency_aware_diffusion(pss, nu) / c - 1.0, 0.0])
+        off = np.asarray(offsets, dtype=float)
+        vals, errs, _shapes = self._fa_orders(
+            rho_at, None, None, off, None, None, None, i, f0, c, a, pref,
+            None, fmax, True)
+        worst = max(errs) if errs else 0.0
+        if worst > self.LINESHAPE_WARN:
+            warnings.warn(
+                'PAC.oscillator_spectrum: the all-orders lineshape carries an '
+                'estimated relative error of %.1e at offset %.6g Hz (neither '
+                'the transform nor the linear skirt is resolved better '
+                'there).' % (worst, float(np.atleast_1d(off).ravel()[
+                    int(np.argmax(errs))])), RuntimeWarning, stacklevel=3)
+        return np.asarray(vals).reshape(np.shape(off))
 
     def _carrier_line(self, pss, output, harmonic):
         """The carrier phasor `X` at `harmonic`, refusing an output with no
@@ -6580,7 +6636,7 @@ class PAC(Analysis):
     LINESHAPE_WARN = 1e-3
 
     def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax,
-                           frequency_aware=True):
+                           frequency_aware=True, all_orders=None):
         """`oscillator_spectrum` for a coloured source -- see there and
         `_lineshape`."""
         from . import _lineshape
@@ -6647,7 +6703,7 @@ class PAC(Analysis):
         if frequency_aware:
             vals, errs, shapes = self._fa_lineshape(
                 pss, fold, pc, off, vals, errs, shapes, i, f0, c_w, a, pref,
-                fmin, fmax)
+                fmin, fmax, mode=all_orders)
         S = np.asarray(vals).reshape(np.shape(off))
         worst = max(errs) if errs else 0.0
         if worst > self.LINESHAPE_WARN:
@@ -6670,7 +6726,7 @@ class PAC(Analysis):
         return Sv, L
 
     def _fa_lineshape(self, pss, fold, pc, off, vals, errs, shapes, i, f0,
-                      c_w, a, pref, fmin, fmax):
+                      c_w, a, pref, fmin, fmax, mode=None):
         """The frequency-aware PPV in the coloured lineshape (2026-09-26, the
         default).  The fold's frequency-aware samples (one bordered solve a
         frequency) give the WHITE and the COLOURED parts of `c_fa(nu)`
@@ -6704,22 +6760,38 @@ class PAC(Analysis):
         corner is 7e6 linewidths out, the estimate ~1e-7, and the first
         order stands.
 
-        `self.lineshape_info` says which, and why."""
-        from . import _lineshape
-        flat = np.atleast_1d(off).ravel()
+        `self.lineshape_info` says which, and why.  `mode`: None the
+        estimate's choice, True all orders, False first order."""
         colour = lambda nus: np.asarray(
             fold.coloured(np.atleast_1d(np.asarray(nus, dtype=float))), dtype=float)
-        rhos = {}
 
         def rho(nu):
             ## `(rho_w, rho_c)` at `nu`: each part of `c_fa` over its DC one
+            wf, cf = fold.resolved_fa([nu], parts=True)
+            cc = float(colour(nu)[0])
+            return np.array([
+                float(wf[0]) / c_w - 1.0 if c_w > 0.0 else 0.0,
+                float(cf[0]) / cc - 1.0 if cc > 0.0 else 0.0])
+        return self._fa_orders(rho, colour, pc, off, vals, errs, shapes, i,
+                               f0, c_w, a, pref, fmin, fmax, mode)
+
+    def _fa_orders(self, rho_at, colour, pc, off, vals, errs, shapes, i, f0,
+                   c_w, a, pref, fmin, fmax, mode):
+        """`_fa_lineshape`'s choice and both its paths, for a coloured line
+        (`colour`, the DC coloured `c` on `[fmin, fmax]`) or a white one
+        (`colour` None, `pc` None, `vals` unused: `_white_all_orders`).
+        `rho_at(nu)`: `(rho_w, rho_c)`, one bordered solve."""
+        from . import _lineshape
+        flat = np.atleast_1d(off).ravel()
+        if colour is None:
+            colour = lambda nus: np.zeros(np.shape(np.atleast_1d(nus)))
+            fmin = fmax
+        rhos = {}
+
+        def rho(nu):
             nu = float(nu)
             if nu not in rhos:
-                wf, cf = fold.resolved_fa([nu], parts=True)
-                cc = float(colour(nu)[0])
-                rhos[nu] = np.array([
-                    float(wf[0]) / c_w - 1.0 if c_w > 0.0 else 0.0,
-                    float(cf[0]) / cc - 1.0 if cc > 0.0 else 0.0])
+                rhos[nu] = np.asarray(rho_at(nu), dtype=float)
             return rhos[nu]
 
         def delta(nu):
@@ -6729,10 +6801,18 @@ class PAC(Analysis):
             if nu >= fmin:
                 d += float(colour(nu)[0]) * r[1]
             return d
+        if mode is False:
+            for k, o in enumerate(flat):
+                if o != 0.0:
+                    ao = abs(float(o))
+                    vals[k] += i * i * f0 * f0 * delta(ao) / ao ** 2
+            self.lineshape_info = {'frequency_aware': 'first order',
+                                   'estimate': None, 'solves': len(rhos)}
+            return vals, errs, shapes
         ## one probe a decade down from fmax, to where both parts have died
-        ## away (the white one below fmin too); bounded at 12 decades
+        ## away (the white one below fmin too); bounded at 20 decades below
         probes, nu, floored = [], fmax, False
-        for _k in range(int(np.ceil(np.log10(fmax / fmin))) + 12):
+        for _k in range(int(np.ceil(np.log10(fmax / fmin))) + 20):
             probes.append(nu)
             r = rho(nu)
             if (abs(r[0]) < self.FA_RHO_FLOOR
@@ -6753,7 +6833,7 @@ class PAC(Analysis):
                     _lineshape.linear_error(o, i, f0, c_w, pc), 1.0))
         info = {'estimate': est, 'cinf_estimate': cinf,
                 'probes': len(probes)}
-        if est <= self.FA_FIRST_ORDER_TOL:
+        if mode is None and est <= self.FA_FIRST_ORDER_TOL:
             for k, o in enumerate(flat):
                 if o != 0.0:
                     ao = abs(float(o))
@@ -6766,8 +6846,8 @@ class PAC(Analysis):
         if not floored:
             warnings.warn(
                 'PAC.oscillator_spectrum: the frequency-aware correction had '
-                'not died away (below %.0e) at %.6g Hz, 12 decades under fmin; '
-                'the part below is left out.' % (self.FA_RHO_FLOOR, nu_lo),
+                'not died away (below %.0e) at %.6g Hz, the lowest probe; the '
+                'part below is left out.' % (self.FA_RHO_FLOOR, nu_lo),
                 RuntimeWarning, stacklevel=4)
         cheb = _lineshape.LogChebyshev(rho, nu_lo, fmax)
         if not cheb.converged:
