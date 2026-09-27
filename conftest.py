@@ -178,4 +178,18 @@ def pytest_collection_modifyitems(session, config, items):
     rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
     if not rec:
         return
-    items.sort(key=lambda it: -rec.get(it.nodeid, -1.0))
+    ## ⚠ BY NAME WHEN THE NODEID IS NEW (2026-09-27): a test MOVED to another
+    ## file keeps its name, and without this every moved test ran LAST as
+    ## "unknown" -- measured by simulation for the split of
+    ## test_analysis_shooting.py, 1304 s -> ~1370 s until the next full run.
+    ## Only names unique in the record are used.
+    by_name, seen = {}, set()
+    for nid, dur in rec.items():
+        nm = nid.split('::', 1)[-1]
+        if nm in seen:
+            by_name.pop(nm, None)
+        else:
+            by_name[nm] = dur
+            seen.add(nm)
+    items.sort(key=lambda it: -rec.get(
+        it.nodeid, by_name.get(it.nodeid.split('::', 1)[-1], -1.0)))

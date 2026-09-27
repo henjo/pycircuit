@@ -17,6 +17,9 @@ sit in the same places with the same values and takes the relative
 difference over the finite ones.  (Before 2026-09-27 a NaN difference read
 as IDENTICAL here: `nan > tol` is False.)
 
+`--only-common` compares only the tests (and families) recorded on BOTH
+sides -- a subset run against a full recording, while iterating.
+
 `--by-name` keys on the test NAME (`file.py::name[params]` -> `name[params]`)
 instead of the nodeid, for a split test file; a name that occurs in two
 files of one recording keeps its nodeid (counted on the last line).
@@ -24,6 +27,20 @@ files of one recording keeps its nodeid (counted on the last line).
 import sys, glob, pickle, os, argparse
 from collections import Counter
 import numpy as np
+
+
+## ⚠ CONTENT ALONE IS TOO WEAK: 201 of 706 calls are byte-identical to a call
+## in ANOTHER test (shared fixtures), so a match anywhere would hide a
+## genuinely dropped call ~30 % of the time.  A call legitimately moves only
+## between tests that share a per-process cached helper -- today only
+## test_distortion_vs_transient._measure (_MEASUREMENT_CACHE); keep this in
+## step with the tests (grep for per-process caches around Transient, PSS and
+## PAC -- none caches a PSS or PAC result across tests as of 2026-09-27).
+CACHING_TESTS = (
+    'test_distortion_vs_transient.py::',
+    'test_distortion.py::test_higher_truncation_improves_accuracy',
+    'test_distortion.py::test_the_improvement_is_large_enough_to_be_worth_it',
+)
 
 
 def _key_name(nodeid):
@@ -49,7 +66,8 @@ def load(d, by_name):
     collisions = {nm for nm, ids in names.items() if len(ids) > 1}
 
     def tkey(t):
-        if not by_name:
+        ## (a cache-sharing test keeps its nodeid: `CACHING_TESTS` names files)
+        if not by_name or any(c in str(t) for c in CACHING_TESTS):
             return t
         nm = _key_name(str(t))
         return t if nm in collisions else nm
@@ -171,18 +189,6 @@ def sig(r):
     return hash(tuple(parts))
 
 
-## ⚠ CONTENT ALONE IS TOO WEAK: 201 of 706 calls are byte-identical to a call
-## in ANOTHER test (shared fixtures), so a match anywhere would hide a
-## genuinely dropped call ~30 % of the time.  A call legitimately moves only
-## between tests that share a per-process cached helper -- today only
-## test_distortion_vs_transient._measure (_MEASUREMENT_CACHE); keep this in
-## step with the tests (grep for per-process caches around Transient, PSS and
-## PAC -- none caches a PSS or PAC result across tests as of 2026-09-27).
-CACHING_TESTS = (
-    'test_distortion_vs_transient.py::',
-    'test_distortion.py::test_higher_truncation_improves_accuracy',
-    'test_distortion.py::test_the_improvement_is_large_enough_to_be_worth_it',
-)
 
 
 def main(argv):
@@ -192,12 +198,20 @@ def main(argv):
     ap.add_argument('--by-name', action='store_true')
     ap.add_argument('--family', default=None)
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--only-common', action='store_true')
     o = ap.parse_args(argv)
     A, WA, ca = load(o.a, o.by_name)
     B, WB, cb = load(o.b, o.by_name)
     if o.family:
         A = {k: v for k, v in A.items() if k[1] == o.family}
         B = {k: v for k, v in B.items() if k[1] == o.family}
+    if o.only_common:
+        both = {k[0] for k in A} & {k[0] for k in B}
+        fams = {k[1] for k in A} & {k[1] for k in B}
+        A = {k: v for k, v in A.items() if k[0] in both and k[1] in fams}
+        B = {k: v for k, v in B.items() if k[0] in both and k[1] in fams}
+        WA = {t: v for t, v in WA.items() if t in both}
+        WB = {t: v for t, v in WB.items() if t in both}
     say = (lambda *s: None) if o.quiet else print
     caching = lambda k: k[1] == 'transient' and any(c in str(k[0]) for c in CACHING_TESTS)
     sigA = {sig(r) for k, r in A.items() if caching(k)}
@@ -220,6 +234,26 @@ def main(argv):
             print('DIFF', k, A[k].get('name'), '; '.join(msgs)[:800])
         else:
             c['same'] += 1
+    ## ⚠ WARNINGS PER TEST ARE NOT ALL DETERMINISTIC under xdist (measured,
+    ## two runs of one commit: 146 tests differed).  pytest's OWN warnings
+    ## (a class-scoped fixture's deprecation, once per class per worker)
+    ## land on whichever test of the class a worker runs first -- they are
+    ## about the suite, not the code, and are dropped; and a warning from a
+    ## cache-sharing helper lands on whichever of those tests runs it first,
+    ## so theirs are pooled into one bucket, as their calls are matched.
+    def _norm(W):
+        out = {}
+        for t, rs in W.items():
+            key = '<the tests sharing a cache>' if any(c in str(t) for c in CACHING_TESTS) else t
+            out.setdefault(key, []).extend(r for r in rs if not r['cat'].startswith('Pytest'))
+        ## the pooled bucket as a SET: the helper runs once per worker that
+        ## asks, and how many workers ask varies (4 emissions vs 5, measured)
+        pool = out.get('<the tests sharing a cache>')
+        if pool:
+            uniq = {(r['cat'], r['msg'], r['where']): r for r in pool}
+            out['<the tests sharing a cache>'] = list(uniq.values())
+        return {t: rs for t, rs in out.items() if rs}
+    WA, WB = _norm(WA), _norm(WB)
     wbad = wmoved = 0
     if WA or WB:
         for t in sorted(set(WA) | set(WB), key=str):
