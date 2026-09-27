@@ -20,6 +20,11 @@ as IDENTICAL here: `nan > tol` is False.)
 `--only-common` compares only the tests (and families) recorded on BOTH
 sides -- a subset run against a full recording, while iterating.
 
+`--ignore-added-state` ignores a `state` leaf present in B only: across the
+recorder's 2026-09-27 fix (it compared ids, and a reassigned attribute whose
+new value was born at the freed address read as unchanged), a recording made
+before it misses some reassignments at random.
+
 `--by-name` keys on the test NAME (`file.py::name[params]` -> `name[params]`)
 instead of the nodeid, for a split test file; a name that occurs in two
 files of one recording keeps its nodeid (counted on the last line).
@@ -133,8 +138,14 @@ def leaf_diff(x, y, tol):
     return 'rel %.2e' % e, e
 
 
+IGNORE_ADDED_STATE = False
+
+
 def leaves_diff(A, B, what, tol, msgs, worst, k):
     for p in sorted(set(A) | set(B)):
+        if IGNORE_ADDED_STATE and what == 'state' and (
+                p not in A or (p == '' and A[p] == '<empty dict>')):
+            continue
         if p not in A or p not in B:
             msgs.append('%s%s present in one only' % (what, p))
             continue
@@ -199,7 +210,10 @@ def main(argv):
     ap.add_argument('--family', default=None)
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--only-common', action='store_true')
+    ap.add_argument('--ignore-added-state', action='store_true')
     o = ap.parse_args(argv)
+    global IGNORE_ADDED_STATE
+    IGNORE_ADDED_STATE = o.ignore_added_state
     A, WA, ca = load(o.a, o.by_name)
     B, WB, cb = load(o.b, o.by_name)
     if o.family:

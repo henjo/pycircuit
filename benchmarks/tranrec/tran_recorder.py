@@ -54,6 +54,7 @@ _WARN = []
 _CUR = {'id': None, 'k': {}, 'depth': 0, 'orbits': {}}
 _TIMING = ('solve_seconds', 'total_seconds')
 _COV = []
+_ABSENT = object()
 
 ## the public PSS entry points recorded (`solve_timestep` and the
 ## `factored_period*` builders are plumbing, called per step / per replay)
@@ -180,8 +181,12 @@ def _instance_dict(obj):
     return {}
 
 
-def _public_ids(obj):
-    return {n: id(x) for n, x in _instance_dict(obj).items() if not n.startswith('_')}
+def _public_refs(obj):
+    ## ⚠ the OBJECTS, held for the call, not their ids: a value freed during
+    ## the call lets its replacement be born at the same address, and an
+    ## id comparison then reads a reassigned attribute as unchanged (seen,
+    ## 2026-09-27: `sampled_instants` recorded in one gate and not the next)
+    return {n: x for n, x in _instance_dict(obj).items() if not n.startswith('_')}
 
 
 def _wrap(owner, name, fam):
@@ -205,7 +210,7 @@ def _wrap(owner, name, fam):
         self_ = a[0] if bound and a else None
         rec = {'test': _CUR['id'], 'fam': fam, 'name': qual, 'k': k,
                'inp': _safe_flat((a[1:] if bound else a, kw))}
-        before = (_public_ids(self_) if self_ is not None
+        before = (_public_refs(self_) if self_ is not None
                   and kind is not classmethod else None)
         _CUR['depth'] += 1
         try:
@@ -219,7 +224,7 @@ def _wrap(owner, name, fam):
         rec['out'] = _safe_flat(res)
         if before is not None:
             changed = {n: x for n, x in _instance_dict(self_).items()
-                       if not n.startswith('_') and before.get(n) != id(x)}
+                       if not n.startswith('_') and before.get(n, _ABSENT) is not x}
             rec['state'] = _safe_flat(changed)
         if fam == 'pss' and name == 'solve':
             _CUR['orbits'][id(self_)] = 'solve#%d' % k
