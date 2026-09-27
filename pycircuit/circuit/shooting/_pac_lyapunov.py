@@ -1071,8 +1071,10 @@ class _LyapunovCovariance(object):
                     per_k.append(resp(pss, fp, batch, e))
                 out = []
                 for i, nu in enumerate(batch):
-                    cy = np.asarray(self._element_cy_samples(
-                        pss, 2.0 * np.pi * nu, [col['state0']])[key][0],
+                    ## (the ONE element: `_element_cy_samples` evaluated
+                    ## every element to keep this one, per band frequency)
+                    cy = np.asarray(self._one_element_cy(
+                        pss, key, 2.0 * np.pi * nu, [col['state0']])[0],
                         dtype=complex)[np.ix_(supp, supp)]
                     Y = np.array([node_responses(pk[0][i], nu) for pk in per_k])
                     Dd = None

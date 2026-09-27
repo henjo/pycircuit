@@ -453,9 +453,13 @@ class _DrivenNoise(object):
                 else:
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
                         Bc * (model.w1 / wband(p)) ** EF, _dft))
+            ## (the ONE element, `_one_element_cy` -- until 2026-09-27
+            ## `_element_cy_samples(...)[key]`, which evaluates EVERY element
+            ## at every point for every band to keep one: 48 of 110 s on the
+            ## MOS stage's Lorentzian test; the same array, bit for bit)
             for key in model.perband:
                 groups.append(lambda p, key=key: self._sqrt_harmonics_of(
-                    self._element_cy_samples(pss, wband(p))[key], _dft))
+                    self._one_element_cy(pss, key, wband(p), None), _dft))
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =
