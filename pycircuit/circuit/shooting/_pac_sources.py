@@ -861,7 +861,8 @@ class _NoiseSources(object):
         return np.einsum('...ik,...k,...jk->...ij', U,
                          np.sqrt(np.clip(np.real(lam), 0.0, None)), U.conj())
 
-    def _colour_groups(self, pss, model, states, wlo, f0, L, what):
+    def _colour_groups(self, pss, model, states, wlo, f0, L, what,
+                       warn_touch=True):
         """The coloured components of `model` as unit processes through
         their own columns: `('fixed', G, s)` -- columns `G (K, m, r)` at
         `states` and a power weight `s(nu)` (a uniform power law, its
@@ -870,7 +871,11 @@ class _NoiseSources(object):
         power law whose exponent varies across its entries; a per-band
         colour, `_perband_root_sampler`).  A component factored by the root
         of its PSD whose PSD TOUCHES ZERO along the orbit is warned on: if
-        its modulation changes sign there, that root is the `|m|` process."""
+        its modulation changes sign there, that root is the `|m|` process
+        (`warn_touch`; the sample series has never warned it).  Every band
+        root is cached per frequency (`_cached_root`): the sample series
+        reads the same `|f + n f0|` at every instant.  The FIXED groups
+        before the BAND ones is the order the sample series sums them in."""
         signed = getattr(model, 'amplitude', None) or {}
         self._warn_signed_unused(model, 'PAC.%s' % what)
 
@@ -886,21 +891,22 @@ class _NoiseSources(object):
             W = signed.get(key)
             if ef is not None:
                 if W is None:
-                    if touches(Bc):
+                    if warn_touch and touches(Bc):
                         blind.append(key)
                     W = self._psd_sqrt(Bc)
                 groups.append(('fixed', np.asarray(W, dtype=complex),
                                lambda nu, ef=ef, w1=model.w1:
                                (w1 / np.asarray(nu, dtype=float)) ** ef))
             else:
-                if touches(Bc):
+                if warn_touch and touches(Bc):
                     blind.append(key)
-                groups.append(('band', lambda nu, Bc=Bc, EF=EF, w1=model.w1:
-                               self._psd_sqrt(Bc * (w1 / float(nu)) ** EF),
-                               None))
+                groups.append(('band', self._cached_root(
+                    lambda w, Bc=Bc, EF=EF, w1=model.w1: Bc * (w1 / w) ** EF),
+                    None))
         for key in model.perband:
-            if touches(self._one_element_cy(pss, key, 2.0 * np.pi * f0,
-                                            states)):
+            ## (the test costs a CY evaluation per point: only when it can warn)
+            if warn_touch and touches(self._one_element_cy(
+                    pss, key, 2.0 * np.pi * f0, states)):
                 blind.append(key)
             groups.append(('band', self._perband_root_sampler(
                 pss, key, states, wlo, f0, L), None))

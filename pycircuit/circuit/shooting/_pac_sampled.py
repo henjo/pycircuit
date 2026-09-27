@@ -368,18 +368,14 @@ class _SampledNoise(object):
                 lambda w: self._cy_at_states(pss, w, states)))
         else:
             white = [self._psd_sqrt(A) for _key, A in model.white_parts]
-            self._warn_signed_unused(model, 'PAC.sampled_noise')
-            for _key, Bc, EF in model.flicker:
-                ef = self._uniform_exponent(Bc, EF)
-                if ef is not None:
-                    _W = (getattr(model, 'amplitude', None) or {}).get(_key)
-                    scaled.append((_W if _W is not None else self._psd_sqrt(Bc), ef))
-                else:
-                    perband.append(self._cached_root(
-                        lambda w, Bc=Bc, EF=EF: Bc * (model.w1 / w) ** EF))
-            for key in model.perband:
-                perband.append(self._perband_root_sampler(
-                    pss, key, states, 2.0 * np.pi * float(np.min(fr)), f0, L))
+            ## the coloured components as the modal spectra and the folds
+            ## take them (`_colour_groups`): a fixed column set with its power
+            ## weight, or a root per band frequency
+            groups = self._colour_groups(
+                pss, model, states, 2.0 * np.pi * float(np.min(fr)), f0, L,
+                'sampled_noise', warn_touch=False)
+            scaled = [(G, s) for kind, G, s in groups if kind == 'fixed']
+            perband = [G for kind, G, _s in groups if kind == 'band']
 
         tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
         ns = np.arange(-L, L + 1)
@@ -466,9 +462,9 @@ class _SampledNoise(object):
                 for SA in white:
                     R = E @ np.einsum('ji,jik->jk', Sv, SA)
                     _pb += np.sum(np.abs(R) ** 2, axis=1)
-                for SB, ef in scaled:
+                for SB, weight in scaled:
                     R = E @ np.einsum('ji,jik->jk', Sv, SB)
-                    c = (model.w1 / (2.0 * np.pi * np.abs(nu))) ** ef
+                    c = weight(2.0 * np.pi * np.abs(nu))
                     _pb += c * np.sum(np.abs(R) ** 2, axis=1)
                 ## (each per-band component hands back its ROOT, cached per
                 ## frequency: `_perband_root_sampler`)
