@@ -12811,6 +12811,103 @@ def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_as
     gap = (S_col / S_all - 1.0) - (S_col_dc / S_dc - 1.0)
     assert np.max(np.abs(gap)) < 1e-5, gap
 
+#: `benchmarks/lineshape_reference.py`'s values (mpmath quadosc on D exact
+#: through Ci; 30 .. 130 s an offset, so held here): (offset / f0, S)
+_LINESHAPE_REFERENCE = {
+    ## a real oscillator's line: `_lc_osc`'s levels, linewidth 5.5e-8 f0
+    'narrow': (1.7496e-8, 7.5414e-11, [
+        (1e-4, 188.42067129930248), (3e-4, 3.223113074359382),
+        (1e-3, 0.09357472819258551), (3e-3, 0.004740821354755711),
+        (1e-2, 0.0002503903112364973), (3e-2, 2.2233264903779104e-05),
+        (0.1, 1.8250151581836042e-06), (0.3, 1.9719312579969512e-07)]),
+    ## a very broad line (3e-4 f0), the flicker 1x / 100x the white at 1e-3
+    'broad r1': (1e-4, 1e-7, [
+        (3e-4, 232.02317932733632), (1e-3, 190.9054352560955),
+        (3e-3, 42.09442940352864), (1e-2, 1.1883744313501698),
+        (3e-2, 0.11578136501002126), (0.1, 0.010108157518428518),
+        (0.3, 0.0011149225664776597)]),
+    'broad r100': (1e-4, 1e-5, [
+        (3e-4, 24.81165208710349), (1e-3, 24.765433371038284),
+        (3e-3, 24.362930219330035), (1e-2, 20.23369816835472),
+        (3e-2, 4.230113079727684), (0.1, 0.022906421522969535),
+        (0.3, 0.001499721111301821)]),
+}
+
+
+def _handover_against_reference(regime):
+    """The module's lineshape (`_lineshape.handover`, what
+    `oscillator_spectrum` returns) on a reference regime: `(offsets, true
+    relative errors, estimates)`."""
+    from pycircuit.circuit.shooting import _lineshape
+    c_w, k, rows = _LINESHAPE_REFERENCE[regime]
+    fmin, fmax = 1e-7, 0.5
+    offs = np.array([r[0] for r in rows])
+    ref = np.array([r[1] for r in rows])
+    pc, _conv = _lineshape.refine(lambda v: k / np.asarray(v, dtype=float), fmin, fmax)
+    shapes = [_lineshape.ColouredLineshape(2 * np.pi ** 2 * c_w, pc, 4.0,
+                                           per_decade=2 * _lineshape.TAU_PER_DECADE,
+                                           shift=sh) for sh in (True, False)]
+    ctab = _lineshape.ClampedTable(
+        lambda v: c_w + np.where((v >= fmin) & (v <= fmax),
+                                 pc(np.clip(v, fmin, fmax)), 0.0),
+        1e-3 * fmin, 1e3, per_decade=400)
+
+    def skirt(o):
+        cf = c_w + k / o
+        return tuple(_lineshape.second_order_skirt(
+            o, ctab, 1.0, 1e-3 * fmin, fmax, c_at_f=cf, split=sp)
+            for sp in (_lineshape.SKIRT_SPLIT, _lineshape.SKIRT_SPLIT_ALT)) + (
+            cf / (o * o),)
+    vals, errs = _lineshape.handover(shapes, offs, skirt)
+    return offs, np.array(vals) / ref - 1.0, np.array(errs)
+
+
+def test_the_coloured_lineshape_meets_an_independent_reference_across_the_handover():
+    """The transform-to-skirt handover (2026-09-27; Andreas: "Go with A and
+    B"), against mpmath on `D` exact through Ci.
+
+    On a real oscillator's line the output was 6.5e-5 off at 1e-2 f0, the
+    "~1e-4 at the handover".  The transform there was 3.4e-7.
+      * A.  Its ESTIMATE was the fault.  QUADPACK's bound sums absolute
+        bounds on O(1) pieces whose tiny difference is the skirt: 100 ..
+        1e4 times the true error, so the linear skirt was taken half a
+        decade early.  The grid-phase move is honest (within ~2.4x), and
+        QUADPACK flagged no failure anywhere; its bound now counts only
+        where it does.
+      * B.  The skirt is second order (`second_order_skirt`): the phase
+        above a split and the core's spread, taken as corrections:
+        7.8e-4 / 6.5e-5 / 6.9e-6 first order -> 3.0e-6 / 9.0e-8 / 8.1e-9
+        at 3e-3 / 1e-2 / 3e-2 f0.  Its estimate is the split move plus the
+        square of its own correction.  The move alone read ZERO where
+        `exp(-sH2)` underflowed (the heavy 1/f line at 3e-4 f0), and the
+        skirt was taken 100 % off.
+    Worst true error now: 3.4e-7 (real line), 4.0e-7 (heavy flicker), and
+    4.5e-6 on the broad white-dominated line.  There the expansion
+    parameter is ~1e-2, B gains only ~10x, and the transform's floor near
+    0.1 f0 stands."""
+    ## (A alone reached 9.8e-7 on the real line, so the bar there is 5e-7)
+    worst = {'narrow': 5e-7, 'broad r1': 1e-5, 'broad r100': 1e-6}
+    for regime, bar in worst.items():
+        offs, err, est = _handover_against_reference(regime)
+        assert np.max(np.abs(err)) < bar, (regime, dict(zip(offs, err)))
+        ## the estimates are honest where the error is not negligible
+        honest = np.abs(err) <= np.maximum(10.0 * est, 1e-8)
+        assert np.all(honest), (regime, dict(zip(offs, zip(err, est))))
+    ## B pinned on its own: the second-order skirt where it is taken on the
+    ## real line (8e-9 / 1e-9 / 3e-10; the linear skirt 6.9e-6 / 6.3e-7 /
+    ## 7.4e-8)
+    from pycircuit.circuit.shooting import _lineshape
+    c_w, k, rows = _LINESHAPE_REFERENCE['narrow']
+    pc, _conv = _lineshape.refine(lambda v: k / np.asarray(v, dtype=float), 1e-7, 0.5)
+    ctab = _lineshape.ClampedTable(
+        lambda v: c_w + np.where((v >= 1e-7) & (v <= 0.5),
+                                 pc(np.clip(v, 1e-7, 0.5)), 0.0),
+        1e-10, 1e3, per_decade=400)
+    for o, ref in rows[5:]:
+        s2 = _lineshape.second_order_skirt(o, ctab, 1.0, 1e-10, 0.5,
+                                           c_at_f=c_w + k / o)
+        assert abs(s2 / ref - 1.0) < 5e-8, (o, s2 / ref - 1.0)
+
 def test_the_oscillator_spectrum_takes_a_coloured_source():
     """`oscillator_spectrum` with a 1/f source (2026-09-26; Andreas: "Do as
     you suggest").  The phase is then no Wiener process and the line no
@@ -13072,14 +13169,20 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     assert abs(pm / (4 * X2 * sfa) - 1.0) < 5e-3, pm / (4 * X2 * sfa)
     assert pm / (4 * X2 * sdc) < 0.03, pm / (4 * X2 * sdc)
     ## and the coloured LINESHAPE (`oscillator_spectrum`), frequency-aware
-    ## by default: its skirt there IS the frequency-aware `S_phi`
+    ## by default: its skirt there is the frequency-aware `S_phi`, to
+    ## second order
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         L_fa = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0)[0] / X2
         info = dict(pac.lineshape_info)
         L_dc = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0,
                                        frequency_aware=False)[0] / X2
-    assert abs(L_fa[1] / sfa - 1.0) < 1e-6, L_fa[1] / sfa
+    ## the skirt is the frequency-aware S_phi PLUS its second-order
+    ## correction (2026-09-27, `_lineshape.second_order_skirt`): 2.1e-4 here,
+    ## the size the linear skirt was measured to miss by at this offset on a
+    ## real oscillator's line (6.5e-5 at 1e-2 f0, against mpmath).  Until then
+    ## the linear skirt was returned, identical to S_phi to 1e-6
+    assert 1e-5 < abs(L_fa[1] / sfa - 1.0) < 1e-3, L_fa[1] / sfa
     ## the correction reaches this 1/f core (|D_corr(inf)|/2 ~ 5e-4 > the
     ## first order's tolerance), so it is taken to all orders and the
     ## carrier moves by about that (2.2e-4, measured); the first order left

@@ -9054,6 +9054,13 @@ measuring the convention, not the physics.
 
 ### `oscillator_spectrum`
 
+2026-09-27 (2b): the transform-to-skirt handover was ~1e-4, and it was the
+ESTIMATE's fault.  QUADPACK's bound ran 100 .. 1e4x above the transform's
+true error, so the first-order skirt was taken half a decade early (6.5e-5
+at 1e-2 f0 where the transform was 3.4e-7).  The estimate is now the grid-
+phase move, and the skirt second order.  Against mpmath: 3.4e-7 on a real
+oscillator's line.
+
 2026-09-27 (item 3): the all-orders correction `rho` was a Chebyshev series
 held to an ABSOLUTE 1e-6 on `rho`.  Behind a slow node `1 + rho` is ~1e-3,
 so that was ~1e-3 of `c_fa`, and 3.1e-5 in the near skirt.  It is now one

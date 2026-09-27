@@ -41,6 +41,12 @@ Lorentzian a closed-form tail.  With a correction the TOTAL `D` is
 splined (the white part and a correction that removes it cancel), and past
 the band the white part is held at its corrected level (`ConstantTail`).
 Gated against a closed form: <= 4.8e-7.
+Far from the carrier the transform is a cancellation, and each offset
+takes it or the SECOND-order skirt (`second_order_skirt`), whichever
+`handover` estimates the smaller error.  Against the mpmath reference
+(`benchmarks/lineshape_reference.py`) the worst is 3.4e-7 on a real
+oscillator's line (it was 6.5e-5 at the handover).
+
 The correction's `rho = c_fa/c_dc - 1` comes from bordered solves.
 `RationalRho` fits it as one rational from ~25 of them; `LogChebyshev` is
 the fallback, taking ~65 to ~139.  Both hold the tolerance relative to
@@ -166,16 +172,22 @@ def refine(cfun, nu0, nuN, per_decade=NODES_PER_DECADE, tol=NODE_TOL,
 
 class _Quad:
     """QUADPACK with its warnings silenced and its error estimates kept: a
-    caller sums them per result and `note`s the ratio to that result."""
+    caller sums them per result and `note`s the ratio to that result.
+    `last_flag`: whether QUADPACK reported the last call as FAILED (a
+    message, `ier != 0`) -- its bound is then worth trusting; on a normal
+    exit it is an upper bound far above the error (see
+    `ColouredLineshape.__call__`)."""
 
     def __init__(self):
         self.worst = 0.0
+        self.last_flag = False
 
     def __call__(self, f, a, b, **kw):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', integrate.IntegrationWarning)
-            val, err = integrate.quad(f, a, b, **kw)[:2]
-        return val, abs(err)
+            r = integrate.quad(f, a, b, full_output=1, **kw)
+        self.last_flag = len(r) > 3
+        return r[0], abs(r[1])
 
     def note(self, err, value):
         self.worst = max(self.worst, err / max(abs(value), 1e-300))
@@ -510,6 +522,16 @@ class ConstantTail:
         return pref * self.level / self.nu_b
 
 
+class ClampedTable(SignedTable):
+    """A smooth `c(nu)` tabulated as `SignedTable` is, but HELD at its end
+    values outside `[nu_a, nu_b]` (the white level beyond the band) -- the
+    second-order skirt's integrand, evaluated tens of thousands of times per
+    offset."""
+
+    def __call__(self, v):
+        return SignedTable.__call__(self, min(max(float(v), self.nu_a), self.nu_b))
+
+
 def correction_structure(tau, tab, pref, quad):
     """`pref int delta(nu) (1 - cos 2 pi nu tau) / nu^2 dnu` over the table's
     band, SIGNED: `2 sin^2(beta nu / 2)` below `beta nu = 2` (no
@@ -733,23 +755,130 @@ class ColouredLineshape:
         nd = int(np.ceil(np.log10(self.thi / self.tlo)))
         edges = np.concatenate(([0.0], np.geomspace(self.tlo, self.thi,
                                                     nd + 1)))
-        tot, err = 0.0, 0.0
+        tot, err, err_failed = 0.0, 0.0, 0.0
         for lo, hi in zip(edges[:-1], edges[1:]):
             kw = ({'limit': 400} if w == 0.0 else
                   {'weight': 'cos', 'wvar': w, 'limit': 400})
             val, e = self.quad(body, lo, hi, **kw)
             tot += val
             err += e
+            err_failed += e if self.quad.last_flag else 0.0
         kw = ({'limit': 400} if w == 0.0 else
               {'weight': 'cos', 'wvar': w, 'limlst': 200})
         val, e = self.quad(self.g, self.thi, np.inf, **kw)
         tot += val
         err += e
+        err_failed += e if self.quad.last_flag else 0.0
         out = head + 2.0 * tot
         self.quad.note(2.0 * err, out)
-        ## this value's own QUADPACK estimate, relative
-        self.last_err = 2.0 * err / max(abs(out), 1e-300)
+        ## ⚠ QUADPACK'S BOUND IS NOT THIS VALUE'S ERROR (2026-09-27).  It sums
+        ## absolute bounds on O(1) pieces whose tiny difference is the far
+        ## skirt: 100 .. 10^4 times the true error against an mpmath
+        ## reference, which moved the handover half a decade early (6.5e-5
+        ## returned at 1e-2 f0 where the transform was 3.4e-7).  The grid-
+        ## phase difference (`handover`) is the honest part; QUADPACK's bound
+        ## counts only where QUADPACK itself reported failure.
+        self.last_bound = 2.0 * err / max(abs(out), 1e-300)
+        self.last_err = 2.0 * err_failed / max(abs(out), 1e-300)
         return out
+
+
+#: the second-order skirt splits the phase at `f / SKIRT_SPLIT`, and its
+#: error estimate is the move to `f / SKIRT_SPLIT_ALT`
+SKIRT_SPLIT = 10.0
+SKIRT_SPLIT_ALT = 4.0
+
+
+def _log_quad(fn, a, b):
+    """`int_a^b fn(nu) dnu`, `0 < a < b`, by QUADPACK per decade in `ln nu`,
+    held relative (every integrand here is positive)."""
+    if not b > a:
+        return 0.0
+    nd = max(int(math.ceil(math.log10(b / a))), 1)
+    edges = np.geomspace(a, b, nd + 1)
+    tot = 0.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', integrate.IntegrationWarning)
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            tot += integrate.quad(lambda u: fn(math.exp(u)) * math.exp(u),
+                                  math.log(lo), math.log(hi), limit=200,
+                                  epsabs=0.0, epsrel=1e-11)[0]
+    return tot
+
+
+def second_order_skirt(f, cfun, q, nu_low, nu_high, c_at_f=None,
+                       split=SKIRT_SPLIT):
+    """The lineshape's far skirt to SECOND order in the phase (2026-09-27).
+
+    The linear skirt is `P(f) = q c(f) / f^2` (`q = i^2 f0^2`, `c` the whole
+    `c(nu)` from `cfun`; `c_at_f` its exact value at `f` where the caller
+    has one).  Split the phase at `nu_x = f / split` into a core `L` and the
+    rest `H`; then exactly `S = S_L * S_H`, and to second order
+
+        S2 = exp(-sH2) [ P(f) + (M2/2) P''(f) + (1/2) (P_H * P_H)(f) ],
+        sH2 = 2 int_{nu_x}^inf P,   M2 = 2 int_0^{nu_x} nu^2 P,
+
+    `sH2` the phase variance above the split, `M2` the core's spread in
+    frequency, the convolution over `|g|, |f - g| > nu_x`.  These are the
+    two terms `linear_error` bounds, now taken as corrections, so the error
+    is third order.  Against an mpmath reference on a real oscillator's
+    line (linewidth 5.5e-8 f0, 1/f from 1e-7 f0): 7.8e-4 / 6.5e-5 / 6.9e-6
+    first order -> 3.0e-6 / 9.0e-8 / 8.1e-9 at 3e-3 / 1e-2 / 3e-2 f0.  On a
+    very broad line (3e-4 f0) the expansion parameter is ~1e-2 and it gains
+    only ~10x.  `c` is taken constant below `nu_low` and above ~`10
+    nu_high` (the white level)."""
+    f = abs(float(f))
+    x = f / float(split)
+    c = lambda v: float(cfun(abs(v)))
+    P = lambda v: q * c(v) / (v * v)
+    G = max(1e3 * f, 10.0 * float(nu_high))
+    cG = c(G)
+    lo = min(float(nu_low), 0.5 * x)
+    sH2 = 2.0 * q * (_log_quad(lambda v: c(v) / (v * v), x, G) + cG / G)
+    M2 = 2.0 * q * (_log_quad(c, lo, x) + c(lo) * lo)
+    tail = q * q * cG * cG / (3.0 * G ** 3)
+    conv = (_log_quad(lambda g: P(g) * P(f + g), x, G) + tail
+            + _log_quad(lambda g: P(g) * P(g - f), f + x, G) + tail)
+    if f / 2.0 > x:
+        conv += 2.0 * _log_quad(lambda g: P(g) * P(f - g), x, f / 2.0)
+    ## P'' by central differences, Richardson over two steps
+    d = lambda h: (P(f + h) - 2.0 * P(f) + P(f - h)) / (h * h)
+    P2 = (4.0 * d(0.02 * f) - d(0.04 * f)) / 3.0
+    Pf = q * (float(c_at_f) if c_at_f is not None else c(f)) / (f * f)
+    return float(np.exp(-sH2) * (Pf + 0.5 * M2 * P2 + 0.5 * conv))
+
+
+def handover(shapes, off, skirt):
+    """The lineshape per offset: the TRANSFORM (`shapes[1]`) or the second-
+    order SKIRT (`skirt(o)` -> its value at the two splits and the linear
+    skirt `P`), whichever carries the smaller ESTIMATED error.  Returns
+    `(vals, errs)`.
+
+    The transform's estimate is its move to the other grid phase
+    (`shapes[0]`) plus QUADPACK's bound only where QUADPACK reported
+    failure.  The skirt's is its move between the two splits PLUS the square
+    of its own second-order correction, `((S2 - P)/P)^2`, the size of the
+    next term.  ⚠ The split move alone read ZERO where the expansion had
+    collapsed: a heavy 1/f line at 3e-4 f0, the phase variance above the
+    split ~1e4, `exp(-sH2)` underflowing to 0 at both splits, the skirt
+    chosen 100 % off.  A non-positive skirt is never taken.  Against the
+    mpmath reference both estimates track the true error within ~2.4x and
+    ~5x (2026-09-27)."""
+    vals, errs = [], []
+    for o in np.atleast_1d(off).ravel():
+        s1, s2 = shapes[0](o), shapes[1](o)
+        err = abs(s2 - s1) / max(abs(s2), 1e-300) + shapes[1].last_err
+        if o != 0.0:
+            k1, k2, p1 = skirt(o)
+            if k1 > 0.0 and p1 > 0.0:
+                el = (abs(k1 - k2) / k1) + ((k1 - p1) / p1) ** 2
+            else:
+                el = np.inf
+            if el < err:
+                s2, err = k1, el
+        vals.append(s2)
+        errs.append(err)
+    return vals, errs
 
 
 def linear_error(f, i, f0, c_w, pc):

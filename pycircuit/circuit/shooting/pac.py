@@ -6494,12 +6494,13 @@ class PAC(Analysis):
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
         above it (the correction's own structure function inside `D`,
         ~25 solves; `_fa_lineshape`, `self.lineshape_info` says which);
-        `False` is the DC lineshape.  Near the carrier the transform is
-        accurate to ~1e-6; the far skirt is the linear one (`phase_psd`'s),
-        taken per offset where its estimated error
-        (`_lineshape.linear_error`) is below the transform's (one tau
-        density at two phases, plus QUADPACK) -- both near 1e-4 at the
-        handover.
+        `False` is the DC lineshape.  Each offset takes the transform or the
+        far skirt -- `phase_psd`'s linear skirt plus its SECOND-order
+        correction (`_lineshape.second_order_skirt`) -- whichever estimates
+        the smaller error (`_lineshape.handover`).  Against an mpmath
+        reference (`benchmarks/lineshape_reference.py`) the worst is 3.4e-7
+        on a real oscillator's line and 4.5e-6 on a very broad one; it was
+        6.5e-5 at the handover until 2026-09-27.
 
         `all_orders` (2026-09-27): the frequency-aware correction to ALL
         orders -- `c_fa(nu)` inside the structure function `D`, not per
@@ -6633,10 +6634,10 @@ class PAC(Analysis):
     FA_RHO_FIT = 'rational'
 
     #: the coloured lineshape warns when its estimated error at an offset
-    #: exceeds this, relative.  ⚠ Where the transform hands over to the
-    #: linear skirt both sit near 1e-4 (the 1/f fixture, ~1e-2 f0): the
-    #: transform is cancellation-limited there whatever its tau density
-    #: (1.1e-4 at 40/80 per decade, 9.6e-5 at 80/160)
+    #: exceeds this, relative.  (The handover's ~1e-4, set against when this
+    #: was chosen, was an inflated QUADPACK bound and a first-order skirt;
+    #: since 2026-09-27 the true worst is 3.4e-7 / 4.5e-6 on a real / a very
+    #: broad line, `_lineshape.handover`.)
     LINESHAPE_WARN = 1e-3
 
     def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax,
@@ -6680,13 +6681,14 @@ class PAC(Analysis):
                 RuntimeWarning, stacklevel=3)
         a = 2.0 * np.pi ** 2 * i * i * f0 * f0 * c_w
         pref = 4.0 * i * i * f0 * f0
-        ## ⚠ THE FAR SKIRT IS THE LINEAR ONE, AND THE TRANSFORM CANNOT SAY SO:
-        ## there the lineshape is ~1e-7 of the integrand's scale, and the
-        ## transform finds it by cancellation (+-2e-3 at 0.1 f0 on the 1/f
-        ## fixture, whatever the tolerance).  So each offset takes the
-        ## transform or the linear skirt `S_phi`, whichever carries the
-        ## smaller estimated error: the transform's from two tau grids plus
-        ## QUADPACK's, the skirt's from `_lineshape.linear_error`.
+        ## ⚠ THE FAR SKIRT IS A SKIRT, AND THE TRANSFORM CANNOT SAY SO: there
+        ## the lineshape is ~1e-7 of the integrand's scale, and the transform
+        ## finds it by cancellation.  So each offset takes the transform or
+        ## the second-order skirt, whichever carries the smaller estimated
+        ## error (`_lineshape.handover`, 2026-09-27: the transform's
+        ## estimate is its grid-phase move, QUADPACK's bound only where it
+        ## failed; the skirt's is its split move plus its correction
+        ## squared).
         ## ⚠ THE TWO GRIDS ARE ONE DENSITY AT TWO PHASES (2026-09-27): the
         ## returned grid (2 x TAU_PER_DECADE) against the same density with
         ## its interior nodes half a step along.  Against HALF the density
@@ -6704,18 +6706,28 @@ class PAC(Analysis):
             shapes = [_lineshape.ColouredLineshape(
                 a, pc, pref, per_decade=2 * _lineshape.TAU_PER_DECADE, shift=sh)
                 for sh in (True, False)]
-            vals, errs = [], []
-            for o in np.atleast_1d(off).ravel():
-                s1, s2 = shapes[0](o), shapes[1](o)
-                err = abs(s2 - s1) / max(abs(s2), 1e-300) + shapes[1].last_err
-                if o != 0.0:
-                    el = _lineshape.linear_error(o, i, f0, c_w, pc)
-                    if el < err:
-                        s2 = (i * i * f0 * f0
-                              * (c_w + float(fold.coloured([abs(o)])[0])) / o ** 2)
-                        err = el
-                vals.append(s2)
-                errs.append(err)
+            ## the second-order skirt's `c(nu)`: white plus the colour on its
+            ## band, tabulated once from below fmin (the table holds its end
+            ## values, and below fmin `c` is the white level)
+            flat = np.atleast_1d(off).ravel()
+            top = max(1e3 * float(np.max(np.abs(flat))) if flat.size else 0.0,
+                      10.0 * fmax)
+            ctab = _lineshape.ClampedTable(
+                lambda v: c_w + np.where((v >= fmin) & (v <= fmax),
+                                         pc(np.clip(v, fmin, fmax)), 0.0),
+                1e-3 * fmin, top, per_decade=400)
+
+            def skirt(o):
+                ao = abs(float(o))
+                cf = c_w + (float(fold.coloured([ao])[0]) if fmin <= ao <= fmax
+                            else 0.0)
+                return tuple(_lineshape.second_order_skirt(
+                    ao, ctab, i * i * f0 * f0, 1e-3 * fmin, fmax, c_at_f=cf,
+                    split=sp)
+                    for sp in (_lineshape.SKIRT_SPLIT,
+                               _lineshape.SKIRT_SPLIT_ALT)) + (
+                    i * i * f0 * f0 * cf / (ao * ao),)
+            vals, errs = _lineshape.handover(shapes, off, skirt)
             return vals, errs, shapes
         self.lineshape_info = {'frequency_aware': None}
         if frequency_aware:
@@ -6913,19 +6925,33 @@ class PAC(Analysis):
         shapes = [_lineshape.ColouredLineshape(
             a, pc, pref, per_decade=2 * _lineshape.TAU_PER_DECADE, corr=tabs,
             shift=sh) for sh in (True, False)]
-        vals, errs = [], []
-        for o in flat:
-            s1, s2 = shapes[0](o), shapes[1](o)
-            err = abs(s2 - s1) / max(abs(s2), 1e-300) + shapes[1].last_err
-            if o != 0.0:
-                el = _lineshape.linear_error(o, i, f0, c_w, pc)
-                if el < err:
-                    ao = abs(float(o))
-                    s2 = (i * i * f0 * f0 * (c_w + float(colour(ao)[0])
-                                             + delta(ao)) / ao ** 2)
-                    err = el
-            vals.append(s2)
-            errs.append(err)
+        ## the second-order skirt's `c_fa(nu)`: the fit below fmax, the white
+        ## part held at its level there above it (as `D` holds it),
+        ## tabulated once; the value AT each offset is its exact solve
+        rw_top = float(rho(fmax)[0])
+        top = max(1e3 * float(np.max(np.abs(flat))) if flat.size else 0.0,
+                  10.0 * fmax)
+        t_lo = 1e-3 * min(nu_lo, fmin)
+
+        def c_fa(v):
+            v = np.atleast_1d(np.asarray(v, dtype=float))
+            r = np.asarray(cheb(np.clip(v, nu_lo, fmax)), dtype=float).reshape(2, -1)
+            r = np.where(v[None, :] >= nu_lo, r, 0.0)
+            out = c_w * (1.0 + np.where(v <= fmax, r[0], rw_top))
+            band = (v >= fmin) & (v <= fmax)
+            col = np.where(band, colour(np.clip(v, fmin, fmax)), 0.0)
+            return out + col * (1.0 + r[1])
+        ctab = _lineshape.ClampedTable(c_fa, t_lo, top, per_decade=400)
+
+        def skirt(o):
+            ao = abs(float(o))
+            cf = (c_w + (float(colour(ao)[0]) if fmin <= ao <= fmax else 0.0)
+                  + delta(ao))
+            return tuple(_lineshape.second_order_skirt(
+                ao, ctab, i * i * f0 * f0, t_lo, fmax, c_at_f=cf, split=sp)
+                for sp in (_lineshape.SKIRT_SPLIT, _lineshape.SKIRT_SPLIT_ALT)
+                ) + (i * i * f0 * f0 * cf / (ao * ao),)
+        vals, errs = _lineshape.handover(shapes, flat, skirt)
         info.update(frequency_aware='all orders', solves=len(rhos),
                     rho_fit=rho_fit, rho_err=cheb.err, cinf=shapes[1].cinf)
         self.lineshape_info = info
