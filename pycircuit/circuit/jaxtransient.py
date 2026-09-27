@@ -2984,8 +2984,8 @@ class JAXTransient(Analysis):
                   unit='', default=False),
         Parameter(name='coupled_lte',
                   desc="Solve solution and step size together (Fang DAC 2013, "
-                       "sec 3.4 'approx' correction). PCNR-inside-Fang "
-                       "remains CPU-only.",
+                       "sec 3.4 'approx' correction), PCNR inside it "
+                       "included.",
                   unit='', default=False),
         ## The LTE acceptance band, with the CPU's 'auto' sentinel semantics
         ## (F5): 'auto' resolves to Fang's (0.7, 3.0, 0.15) on the coupled
