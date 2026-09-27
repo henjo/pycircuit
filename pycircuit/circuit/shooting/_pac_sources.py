@@ -295,6 +295,85 @@ class _NoiseSources(object):
             out.append(W[keep])
         return np.asarray(out, dtype=complex)
 
+    def _perband_amplitudes(self, pss, key, w, states, C=None):
+        """The per-band element `key`'s SIGNED amplitudes at `w` and
+        `states`, `(K, m, S)` -- one column per independent fluctuation,
+        with the sign of its modulation -- where it states them
+        (`Element.noise_amplitudes`) AND they rebuild its `CY` there (`W
+        W^H = C` to 1e-6); else None, and the caller roots the PSD.
+
+        ⚠ THE ROOT IS WRONG TWO WAYS for a modulated per-band source: the
+        |m| process where a modulation changes sign, and ONE column per
+        point, which merges the element's independent sources.  Measured on
+        two Lorentzians under two modulations in one element: +9 % / +8 %
+        in `sampled_variance` and `covariance` with one modulation crossing
+        zero, and still +2.5 % / +5.8 % with both positive.  Amplitudes that
+        do not rebuild are warned on -- the element's two methods disagree,
+        or it states amplitudes for its coloured sources beside a white one
+        in the same element -- and the root is used there.  `C`: its `CY`
+        at `w` and `states`, if in hand."""
+        W = self._one_element_amplitudes(pss, key, w, states)
+        if W is None:
+            return None
+        if C is None:
+            C = self._one_element_cy(pss, key, w, states)
+        rebuilt = np.einsum('kis,kjs->kij', W, W.conj())
+        if float(np.max(np.abs(rebuilt - C))) > 1e-6 * float(np.max(np.abs(C))):
+            warnings.warn(
+                'PAC: %s states signed noise amplitudes (Element.'
+                'noise_amplitudes) that do not rebuild its CY (W W^H != CY) at '
+                'a band frequency, so there its PSD is rooted instead -- '
+                'SIGN-BLIND, and its independent sources merged.  The two '
+                'methods disagree, or the amplitudes leave out a white source '
+                'of the same element.' % '.'.join(key),
+                RuntimeWarning, stacklevel=2)
+            return None
+        return W
+
+    def _perband_classify(self, pss, key, states, wt):
+        """How the per-band element `key` varies along the orbit, read at
+        the probe frequencies `wt`: `(kind, Cs, Ws)`, `Cs` its `CY` per
+        probe and `Ws` its signed amplitudes per probe (None unless they
+        rebuild the `CY` at every probe, `_perband_amplitudes`).
+
+          'stationary'  the same at every point;
+          'separable'   the same up to one factor per frequency (a level
+                        under a fixed spectral shape);
+          'moving'      neither.
+
+        ⚠ FROM THE AMPLITUDES WHERE STATED: a `CY` that does not move can
+        still carry a sign that does (`k(x) = +-1`), and a separable `CY`
+        can hold columns whose shapes differ -- either would be read as the
+        wrong kind from the `CY`."""
+        Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
+        Ws = [self._perband_amplitudes(pss, key, w_, states, C_)
+              for w_, C_ in zip(wt, Cs)]
+        if any(W_ is None for W_ in Ws):
+            Ws = None
+        X = Cs if Ws is None else Ws
+        if all(float(np.max(np.abs(x_ - x_[:1])))
+               <= 1e-12 * max(float(np.max(np.abs(x_))), 1e-300) for x_ in X):
+            return 'stationary', Cs, Ws
+        return ('separable' if self._separable(X) else 'moving'), Cs, Ws
+
+    def _perband_root(self, pss, key, states, signed):
+        """`w -> (K, m, r)`: the per-band element `key` at every point for
+        every band frequency, cached per frequency -- its signed amplitudes
+        when `signed` (they rebuilt its `CY` at the classification's probes,
+        `_perband_classify`: read without the `CY`, which would double the
+        cost), else the root of its PSD."""
+        cache = {}
+
+        def root(w):
+            k = float(w)
+            if k not in cache:
+                W = (self._one_element_amplitudes(pss, key, k, states)
+                     if signed else None)
+                cache[k] = W if W is not None else self._psd_sqrt(
+                    self._one_element_cy(pss, key, k, states))
+            return cache[k]
+        return root
+
     @staticmethod
     def _separable(Cs, tol=1e-9):
         """Whether ``C(x_j, w_i) = s_i C(x_j, w_0)`` for every point `j` and
@@ -399,13 +478,19 @@ class _NoiseSources(object):
                 white_parts.append((key, A))
             if np.any(B):
                 flicker.append((key, B, EF))
-        if perband:
+        ## (an element whose signed amplitudes rebuild its `CY` at every fit
+        ## frequency is split by them, one column per fluctuation)
+        rooted = [key for key in perband
+                  if any(self._perband_amplitudes(pss, key, w, states,
+                                                  per_w[i][key]) is None
+                         for i, w in enumerate(ws))]
+        if rooted:
             warnings.warn(
                 'PAC: the noise of %s is not thermal-plus-power-law, so it is '
                 'evaluated per band with ONE square root per element: '
                 'independent sources INSIDE such an element are not split '
                 '(measured 4.2e-4 on an EKV stage, thermal + flicker).'
-                % ', '.join('.'.join(k) for k in perband),
+                % ', '.join('.'.join(k) for k in rooted),
                 RuntimeWarning, stacklevel=3)
         w1 = ws[0]
 
@@ -808,31 +893,33 @@ class _NoiseSources(object):
         return root
 
     def _perband_root_sampler(self, pss, key, states, wlo, f0, L):
-        """`w -> (K, m, m)`: the ROOT of one per-band element's `CY` at the
+        """`w -> (K, m, r)`: the COLUMNS of one per-band element at the
         injection points, for the sample series -- the element alone
-        (`_one_element_cy`), cached per frequency, and classified once:
+        (`_one_element_cy`), cached per frequency, and classified once
+        (`_perband_classify`):
 
-          STATIONARY  the same `CY(w)` at every point: one point, broadcast;
-          SEPARABLE   ``C(x, w) = C(x, w_ref) s(w)``: the root per point at
-                      `w_ref` once, times ``sqrt(s(w))`` from one point;
+          STATIONARY  the same at every point: one point, broadcast;
+          SEPARABLE   ``C(x, w) = C(x, w_ref) s(w)``: the columns per point
+                      at `w_ref` once, times ``sqrt(s(w))`` from one point;
           otherwise   the element at every point for every frequency.
+
+        The columns are the element's SIGNED amplitudes where it states
+        them (`_perband_amplitudes`), else the root of its PSD; `.signed`
+        on the returned function says which.
 
         History: `doc/shooting_history.md`, `PAC._perband_root_sampler`."""
         wref = 2.0 * np.pi * f0
         wt = sorted({float(wlo), wref, 20.0 * np.pi * f0,
                      2.0 * np.pi * (float(L) + 0.5) * f0})
-        Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
+        kind, Cs, Ws = self._perband_classify(pss, key, states, wt)
         K = len(states)
-        stationary = all(
-            float(np.max(np.abs(C - C[:1]))) <= 1e-12 * max(float(np.max(np.abs(C))), 1e-300)
-            for C in Cs)
-        if stationary:
+        if kind == 'stationary':
             one = [states[0]]
-            return self._cached_root(lambda w: np.broadcast_to(
+            root = self._cached_root(lambda w: np.broadcast_to(
                 self._one_element_cy(pss, key, w, one), (K,) + Cs[0].shape[1:]))
-        if self._separable(Cs):
-            Cref = self._one_element_cy(pss, key, wref, states)
-            Wref = self._psd_sqrt(Cref)
+        elif kind == 'separable':
+            Cref = Cs[wt.index(wref)]
+            Wref = self._psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
             jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))), Cref.shape)
             xr, cref = [states[jr]], complex(Cref[jr, pi_, qi])
             cache = {}
@@ -843,9 +930,10 @@ class _NoiseSources(object):
                     c = self._one_element_cy(pss, key, k, xr)[0, pi_, qi]
                     cache[k] = np.sqrt(max(float(np.real(c / cref)), 0.0)) * Wref
                 return cache[k]
-            return root
-        return self._cached_root(
-            lambda w: self._one_element_cy(pss, key, w, states))
+        else:
+            root = self._perband_root(pss, key, states, Ws is not None)
+        root.signed = Ws is not None
+        return root
 
     @staticmethod
     def _psd_sqrt(Cs):
@@ -899,12 +987,13 @@ class _NoiseSources(object):
                     lambda w, Bc=Bc, EF=EF, w1=model.w1: Bc * (w1 / w) ** EF),
                     None))
         for key in model.perband:
-            ## (the test costs a CY evaluation per point: only when it can warn)
-            if warn_touch and touches(self._one_element_cy(
+            root = self._perband_root_sampler(pss, key, states, wlo, f0, L)
+            ## (the test costs a CY evaluation per point: only when it can
+            ## warn, and an element's signed amplitudes carry the sign)
+            if warn_touch and not root.signed and touches(self._one_element_cy(
                     pss, key, 2.0 * np.pi * f0, states)):
                 blind.append(key)
-            groups.append(('band', self._perband_root_sampler(
-                pss, key, states, wlo, f0, L), None))
+            groups.append(('band', root, None))
         if blind:
             warnings.warn(
                 'PAC.%s: the PSD of %s touches zero along the orbit and the '

@@ -23,6 +23,8 @@ from pycircuit.circuit.tests._shooting_elements import (_NuModNoise,
 from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _KB,
     _ModLorentzCtl,
+    _ModLorentzSigned,
+    _TwoModLorentz,
     _TEMP,
     _a9_vdp,
     _jitter_sampler,
@@ -110,10 +112,13 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     assert walked, 'the patched _leaf_access was never consulted'
     assert np.array_equal(a, b)
     cached = sv(pss, pac)
-    pac._cached_root = lambda cy_at: (uncached.append(1),
-                                      lambda w: pac._psd_sqrt(cy_at(float(w))))[1]
+    ## (the moving shape's cache is `_perband_root`'s since 2026-09-28, which
+    ## carries an element's signed columns; this element states none)
+    pac._perband_root = lambda pss_, key, states, signed: (
+        uncached.append(1), lambda w: pac._psd_sqrt(
+            pac._one_element_cy(pss_, key, float(w), states)))[1]
     assert np.array_equal(sv(pss, pac), cached)
-    assert uncached, 'the patched _cached_root was never consulted'
+    assert uncached, 'the patched _perband_root was never consulted'
 
 
 def test_the_sampled_variance_is_the_covariance_at_that_instant_for_white_sources():
@@ -1164,6 +1169,117 @@ def test_a_coloured_source_keeps_the_sign_of_its_scale_factor_through_the_period
     ## would pass the |k| process off as signed and silence the warning
     assert _SgnPsdFlicker('out', gnd, 'lo', gnd).noise_amplitudes(
         np.zeros(4), w) is None
+
+
+def _lorentz_lo_rc(kind, vo=0.0, T=1e-6):
+    """A driven RC whose noise is a Lorentzian (not a power law, so it is
+    evaluated per band) times V(lo), ``lo = vo + sin`` (crossing zero at
+    `vo = 0`): as the ELEMENT (`kind` 'signed' or 'psd'), or REALISED -- a
+    stationary Lorentzian through a multiplier by V(lo), the sign in the
+    circuit, exact for every analysis.  Returns `(cir, pss, pac, out)`."""
+    P, tau = 1e-20, 3e-7
+    c = SubCircuit()
+    for nd in ('lo', 'out'):
+        c.add_node(nd)
+    c['Vlo'] = VSin('lo', gnd, va=1.0, vo=vo, freq=1.0 / T)
+    c['Ro'] = R('out', gnd, r=1e3, noisy=False)
+    c['Co'] = C('out', gnd, c=0.5e-9)
+    if kind == 'real':
+        c.add_node('n')
+        c['xi'] = IS('n', gnd, i=0.0, noisePSD=P, noiseTau=tau)
+        c['Rn'] = R('n', gnd, r=1.0, noisy=False)
+        c['M'] = _NuMult('out', gnd, 'n', gnd, 'lo', gnd, k=1.0)
+    else:
+        cls = _ModLorentzSigned if kind == 'signed' else _ModLorentzCtl
+        c['src'] = cls('out', gnd, 'lo', gnd, noisePSD=P, tau=tau, k=1.0)
+    pss = PSS(c, method='radau', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 100, maxiterations=40)
+    return c, pss, PAC(c, toolkit=circuit.numeric), \
+        [str(n) for n in c.nodes].index('out')
+
+
+def test_the_sampler_takes_a_per_band_elements_signed_amplitudes():
+    """The sample series factors a per-band (not power-law) source by the
+    element's SIGNED amplitudes where it states them, as `covariance`
+    already did.  ⚠ It took the root of the PSD -- the |m| process -- so
+    with the modulation crossing zero `sampled_variance` read +115 % /
+    +209 % of the exact answer at 0.3 T / 0.7 T, while `covariance` on the
+    same element was exact (measured 2026-09-27; Andreas: "the sampler
+    should use the element's signed amplitudes").  A PSD-only element keeps
+    the |m| answer: the sign is not in it."""
+    T = 1e-6
+    sv = {}
+    for kind in ('real', 'signed', 'psd'):
+        _c, pss, pac, o = _lorentz_lo_rc(kind, T=T)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            sv[kind] = np.asarray(pac.sampled_variance(
+                pss, o, [0.3 * T, 0.7 * T], 1e-4 / T, 0.5 / T,
+                points_per_decade=10), dtype=float).ravel()
+    assert np.max(np.abs(sv['signed'] / sv['real'] - 1.0)) < 1e-9, sv
+    assert np.min(sv['psd'] / sv['real'] - 1.0) > 1.0, sv
+
+
+def test_a_moving_shape_takes_the_elements_signed_columns_on_every_surface():
+    """A per-band element whose spectral SHAPE moves along the orbit -- two
+    independent Lorentzians under two modulations, one crossing zero
+    (`_TwoModLorentz`) -- is read per band frequency from its SIGNED
+    columns in `sampled_variance`, `covariance` and the cyclostationary
+    `pnoise` (Andreas, 2026-09-27: "Can covariance's own moving-shape path
+    ... be fixed?").  ⚠ All three took one root of the element's PSD per
+    point: SIGN-BLIND, and the two independent sources merged into one
+    column.  Measured against the realisation (each Lorentzian through its
+    own multiplier): +9 % / +8 % (+18 % / +12 % in pnoise) with the
+    modulation crossing zero, and still +2.5 % / +5.8 % with both
+    positive, where only the merging is wrong.  The PSD-only element keeps
+    that answer (bit for bit: its path is unchanged).  The band is cut at
+    1e-2 f0 to keep the test short; the realisation is exact on any band."""
+    T = 1e-6
+    P1, tau1, P2, tau2 = 1e-20, 3e-7, 2e-20, 3e-8
+
+    def build(kind):
+        c = SubCircuit()
+        for nd in ('lo', 'lo2', 'out'):
+            c.add_node(nd)
+        c['Vlo'] = VSin('lo', gnd, va=1.0, vo=0.0, freq=1.0 / T)
+        c['Vlo2'] = VSin('lo2', gnd, va=0.5, vo=1.0, freq=2.0 / T)
+        c['Ro'] = R('out', gnd, r=1e3, noisy=False)
+        c['Co'] = C('out', gnd, c=0.5e-9)
+        if kind == 'real':
+            for i, (p, tau, lo) in enumerate(((P1, tau1, 'lo'), (P2, tau2, 'lo2'))):
+                n = 'n%d' % i
+                c.add_node(n)
+                c['xi%d' % i] = IS(n, gnd, i=0.0, noisePSD=p, noiseTau=tau)
+                c['Rn%d' % i] = R(n, gnd, r=1.0, noisy=False)
+                c['M%d' % i] = _NuMult('out', gnd, n, gnd, lo, gnd, k=1.0)
+        else:
+            c['src'] = _TwoModLorentz('out', gnd, 'lo', gnd, 'lo2', gnd,
+                                      P1=P1, tau1=tau1, P2=P2, tau2=tau2)
+            c['src'].signed = kind == 'signed'
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=40)
+        pac = PAC(c, toolkit=circuit.numeric)
+        o = [str(n) for n in c.nodes].index('out')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            sv = np.asarray(pac.sampled_variance(
+                pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
+                points_per_decade=10), dtype=float).ravel()
+            _K0, Ks = pac.covariance(pss, samples=True, fmin=1e-2 / T,
+                                     points_per_decade=10)
+            pn = np.array([float(np.real(pac.pnoise(
+                pss, fr / T, o, maxsidebands=30, cyclostationary=True)[0]))
+                for fr in (0.013, 0.31)])
+        tms = np.asarray(pss.factored_period().times, dtype=float)
+        cov = np.array([Ks[int(np.argmin(np.abs(tms[:len(Ks)] - t)))][o, o]
+                        for t in (0.3 * T, 0.7 * T)])
+        return np.concatenate((sv, cov, pn))
+    exact, signed = build('real'), build('signed')
+    assert np.max(np.abs(signed / exact - 1.0)) < 1e-9, signed / exact - 1.0
 
 
 def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce():

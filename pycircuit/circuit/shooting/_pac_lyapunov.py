@@ -793,71 +793,59 @@ class _LyapunovCovariance(object):
         ## (`_coloured_covariance`).  A MODULATED one: below.
         ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
         perband, separable, nonseparable = [], [], []
-        if model.perband:
-            ws = (2.0 * np.pi * f0, 20.0 * np.pi * f0)
-            per_w = [self._element_cy_samples(pss, w_, states) for w_ in ws]
-            for key in model.perband:
-                stationary = True
-                for pw in per_w:
-                    Ck = np.asarray(pw[key], dtype=complex)
-                    scale = max(float(np.max(np.abs(Ck))), 1e-300)
-                    if float(np.max(np.abs(Ck - Ck[:1]))) > 1e-12 * scale:
-                        stationary = False
-                if stationary:
-                    C0 = np.asarray(per_w[0][key][0], dtype=complex)
-                    supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
-                    if supp.size:
-                        perband.append((key, supp))
-                    continue
-                ## ⚠ MODULATED AND NOT A POWER LAW.  SEPARABLE --
-                ## a level that follows the state under a fixed spectral shape,
-                ## ``C(x, w) = C(x, w_ref) s(w)``, the usual burst / G-R noise
-                ## -- replays one amplitude per point and weights each band
-                ## frequency by `s`; otherwise the density is read at EVERY
-                ## point for EVERY band frequency (the quasi-static model
-                ## `pnoise` and `sampled_variance` use, per band).
-                wref = 2.0 * np.pi * f0
-                ## the band's TOP as well as its middle (`pi fmax`), so a
-                ## shape that departs only above fmax/2 does not read as
-                ## separable.  A probe more can only send a source to the
-                ## exact path.
-                ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
-                wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
-                             np.pi * fmax, 2.0 * np.pi * fmax})
-                Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
-                if self._separable(Cs):
-                    Cref = self._one_element_cy(pss, key, wref, states)
-                    W0 = self._one_element_amplitudes(pss, key, wref, states)
-                    if W0 is not None:
-                        rebuilt = np.einsum('kis,kjs->kij', W0, W0.conj())
-                        if float(np.max(np.abs(rebuilt - Cref))) > \
-                                1e-6 * float(np.max(np.abs(Cref))):
-                            W0 = None
-                    if W0 is None:
-                        W0 = self._psd_sqrt(Cref)
-                        warnings.warn(
-                            'PAC.%s: the noise of %s is coloured, not a power '
-                            'law, and modulated by the orbit; it states no '
-                            'signed amplitudes, so its level enters as the '
-                            'square root of its PSD -- the |m| process, '
-                            'SIGN-BLIND where the modulation changes sign '
-                            '(Element.noise_amplitudes states the sign).'
-                            % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
-                    jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))),
-                                                   Cref.shape)
-                    separable.append((key, W0, states[jr], (pi_, qi),
-                                      complex(Cref[jr, pi_, qi])))
-                else:
-                    nonseparable.append((key, lambda nu, key=key: self._one_element_cy(
-                        pss, key, 2.0 * np.pi * nu, states)))
-                    warnings.warn(
-                        'PAC.%s: the noise of %s is coloured, not a power law, '
-                        'and its spectral SHAPE changes along the orbit, so its '
-                        'density is read at every point for every band '
-                        'frequency -- the quasi-static model pnoise and '
-                        'sampled_variance use per band, costly here, and '
-                        'SIGN-BLIND (a square root per point).'
-                        % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
+        wref = 2.0 * np.pi * f0
+        ## the band's TOP as well as its middle (`pi fmax`), so a shape that
+        ## departs only above fmax/2 does not read as separable.  A probe
+        ## more can only send a source to the exact path.
+        ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
+        wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
+                     np.pi * fmax, 2.0 * np.pi * fmax})
+        for key in model.perband:
+            ## classified from the element's signed amplitudes where it
+            ## states them, else from its `CY` (`_perband_classify`)
+            kind, Cs, Ws = self._perband_classify(pss, key, states, wt)
+            if kind == 'stationary':
+                C0 = np.asarray(Cs[wt.index(wref)][0], dtype=complex)
+                supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
+                if supp.size:
+                    perband.append((key, supp))
+                continue
+            ## ⚠ MODULATED AND NOT A POWER LAW.  SEPARABLE -- a level that
+            ## follows the state under a fixed spectral shape, ``C(x, w) =
+            ## C(x, w_ref) s(w)``, the usual burst / G-R noise -- replays one
+            ## amplitude per point and weights each band frequency by `s`;
+            ## otherwise the element is read at EVERY point for EVERY band
+            ## frequency (the quasi-static model `pnoise` and
+            ## `sampled_variance` use, per band).  Either takes the element's
+            ## SIGNED amplitudes where it states them, else the root of its
+            ## PSD, warned: the |m| process, and one column per point.
+            if Ws is None:
+                warnings.warn(
+                    'PAC.%s: the noise of %s is coloured, not a power law, and '
+                    'modulated by the orbit; it states no signed amplitudes, so '
+                    'it enters as the square root of its PSD -- the |m| '
+                    'process, SIGN-BLIND where the modulation changes sign, and '
+                    'independent sources inside the element merged into one '
+                    '(Element.noise_amplitudes states both).'
+                    % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
+            if kind == 'separable':
+                Cref = Cs[wt.index(wref)]
+                W0 = self._psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
+                jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))),
+                                               Cref.shape)
+                separable.append((key, W0, states[jr], (pi_, qi),
+                                  complex(Cref[jr, pi_, qi])))
+            else:
+                root = self._perband_root(pss, key, states, Ws is not None)
+                nonseparable.append((key, lambda nu, root=root: root(
+                    2.0 * np.pi * nu)))
+                warnings.warn(
+                    'PAC.%s: the noise of %s is coloured, not a power law, '
+                    'and its spectral SHAPE changes along the orbit, so it is '
+                    'read at every point for every band frequency -- the '
+                    'quasi-static model pnoise and sampled_variance use per '
+                    'band, and costly here.'
+                    % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
         self._warn_signed_unused(model, 'PAC.%s' % what)
         amp = getattr(model, 'amplitude', None) or {}
         comps = []
@@ -879,7 +867,8 @@ class _LyapunovCovariance(object):
                 ## frequency (its white part is already in `white`: the
                 ## element's own `CY` would count it twice)
                 nonseparable.append((key, lambda nu, B=B, EF=EF, w1=model.w1:
-                                     B * (w1 / (2.0 * np.pi * nu)) ** EF))
+                                     self._psd_sqrt(
+                                         B * (w1 / (2.0 * np.pi * nu)) ** EF)))
                 warnings.warn(
                     'PAC.%s: the coloured noise of %s carries different '
                     'power-law exponents in different entries, so it has no '
@@ -1098,15 +1087,15 @@ class _LyapunovCovariance(object):
             for s_ in range(Wr.shape[2]):
                 u_points = [Wr[offs[j]:offs[j + 1], :, s_] for j in range(N)]
                 terms.append((0.0, column_ev(u_points, shape), {}))
-        ## MODULATED, THE SHAPE MOVING: per band frequency the density at
-        ## every point, its root per point, one replay per column
-        ## (`cy_at(nu)`: the element's density at every point, or a power law
-        ## whose exponent differs between entries)
-        for _key, cy_at in col.get('nonseparable', ()):
-            def ev(batch, cy_at=cy_at):
+        ## MODULATED, THE SHAPE MOVING: per band frequency the columns at
+        ## every point, one replay per column (`root_at(nu)`: the element's
+        ## signed amplitudes or the root of its density, or the root of a
+        ## power law whose exponent differs between entries)
+        for _key, root_at in col.get('nonseparable', ()):
+            def ev(batch, root_at=root_at):
                 out = []
                 for nu in batch:
-                    Wn = reduced(self._psd_sqrt(cy_at(nu)))
+                    Wn = reduced(root_at(nu))
                     G = np.zeros((nk, n, n))
                     Dd = None
                     for s_ in range(Wn.shape[2]):

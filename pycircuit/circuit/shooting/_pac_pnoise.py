@@ -379,9 +379,10 @@ class _DrivenNoise(object):
         _signed = getattr(model, 'amplitude', None) or {}
         self._warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
         _all_signed = (getattr(model, 'flicker', None) is not None
-                       and not model.perband
                        and all(k_ in _signed and self._uniform_exponent(B_, E_) is not None
-                               for k_, B_, E_ in model.flicker))
+                               for k_, B_, E_ in model.flicker)
+                       and all(self._perband_amplitudes(pss, k_, 2.0 * np.pi * f0, None)
+                               is not None for k_ in model.perband))
         Cs0 = np.asarray([np.abs(np.diag(np.fft.ifft(Pa, axis=0)[k])) for k in range(Nn)])
         dmax = Cs0.max(axis=0)
         touches = (dmax > 0) & (Cs0.min(axis=0) <= 1e-2 * dmax)
@@ -453,11 +454,19 @@ class _DrivenNoise(object):
                 else:
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
                         Bc * (model.w1 / wband(p)) ** EF, _dft))
-            ## (the ONE element, `_one_element_cy`)
+            ## (the ONE element, `_one_element_cy`; its SIGNED amplitudes
+            ## where it states them, `_perband_amplitudes`, else its root)
             ## History: `doc/shooting_history.md`, `PAC._cyclostationary_fold`.
+            def _perband_at(p, key, signed):
+                W_ = (self._one_element_amplitudes(pss, key, wband(p), None)
+                      if signed else None)
+                return _dft(W_) if W_ is not None else self._sqrt_harmonics_of(
+                    self._one_element_cy(pss, key, wband(p), None), _dft)
             for key in model.perband:
-                groups.append(lambda p, key=key: self._sqrt_harmonics_of(
-                    self._one_element_cy(pss, key, wband(p), None), _dft))
+                ## (signed where the amplitudes rebuild the CY at f0)
+                sg = self._perband_amplitudes(pss, key, 2.0 * np.pi * f0,
+                                              None) is not None
+                groups.append(lambda p, key=key, sg=sg: _perband_at(p, key, sg))
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =
@@ -469,7 +478,14 @@ class _DrivenNoise(object):
                 if key not in cache:
                     cache[key] = sqrt_at(p)
                 return cache[key]
-            BB = np.asarray([_B(p) for p in range(pmin, pmax + 1)], dtype=complex)
+            ## (a band whose signed amplitudes did not rebuild its CY takes
+            ## the root, with another column count: zero columns pad it,
+            ## and add nothing to the pair sum)
+            Bs = [_B(p) for p in range(pmin, pmax + 1)]
+            r = max(b.shape[-1] for b in Bs)
+            BB = np.asarray([b if b.shape[-1] == r else np.concatenate(
+                (b, np.zeros(b.shape[:-1] + (r - b.shape[-1],), dtype=complex)),
+                axis=-1) for b in Bs], dtype=complex)
             total = self._band_resolved_pairs(rows, ls, ks, Nn, pmin, BB, total)
         return float(np.real(total))
 

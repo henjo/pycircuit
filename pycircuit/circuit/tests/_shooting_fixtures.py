@@ -653,6 +653,47 @@ class _ModLorentzCtl(Circuit):
         return self.toolkit.array(out)
 
 
+class _ModLorentzSigned(_ModLorentzCtl):
+    """`_ModLorentzCtl` stating its SIGNED amplitude, ``k V sqrt(P / (1 +
+    (w tau)^2))``, `shape = 0` (`Element.noise_amplitudes`)."""
+
+    def noise_amplitudes(self, x, w=0, epar=None):
+        a = self.iparv.k * float(x[2] - x[3]) * np.sqrt(
+            self.iparv.noisePSD / (1.0 + (float(w) * self.iparv.tau) ** 2))
+        return np.array([[a], [-a], [0.0], [0.0]])
+
+
+class _TwoModLorentz(Circuit):
+    """Two INDEPENDENT Lorentzian currents p -> n in one element, under two
+    modulations: ``V(ap, an) sqrt(P1 L1(w))`` and ``V(bp, bn) sqrt(P2
+    L2(w))``, ``L(w) = 1 / (1 + (w tau)^2)``.  Its `CY` is their sum, whose
+    spectral SHAPE moves along an orbit where the two voltages' ratio does:
+    a per-band source on the moving-shape path.  `signed`: whether it states
+    its two columns (`Element.noise_amplitudes`)."""
+    terminals = ('p', 'n', 'ap', 'an', 'bp', 'bn')
+    instparams = [Parameter(name='P1', desc='', unit='', default=0.0),
+                  Parameter(name='tau1', desc='', unit='s', default=1e-7),
+                  Parameter(name='P2', desc='', unit='', default=0.0),
+                  Parameter(name='tau2', desc='', unit='s', default=1e-8)]
+    signed = False
+
+    def _columns(self, x, w):
+        p = self.iparv
+        c1 = float(x[2] - x[3]) * np.sqrt(p.P1 / (1.0 + (float(w) * p.tau1) ** 2))
+        c2 = float(x[4] - x[5]) * np.sqrt(p.P2 / (1.0 + (float(w) * p.tau2) ** 2))
+        W = np.zeros((6, 2))
+        W[0] = (c1, c2)
+        W[1] = (-c1, -c2)
+        return W
+
+    def CY(self, x, w, epar=None):
+        W = self._columns(x, w)
+        return self.toolkit.array(W @ W.T)
+
+    def noise_amplitudes(self, x, w=0, epar=None):
+        return self._columns(x, w) if self.signed else None
+
+
 def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0, a=0.0):
     """van der Pol with the reactances AND the half-wave symmetry as KNOBS.
 
