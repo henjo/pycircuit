@@ -44,8 +44,11 @@ class ProbeShooting:
 
     def __init__(self, factory, node, refnode=gnd, method='gear',
                  reltol=1e-10, npts=300, maxiterations=30, phase=90.0,
-                 harmonics=1, tones=None, warm_start=True):
+                 harmonics=1, tones=None, warm_start=True, epar=None):
         """`factory()` must return a FRESH circuit WITHOUT the probe.
+
+        `epar` (the environment, its temperature) reaches every `PSS` and
+        `PAC` this builds; `None` is theirs by default.
 
         `tones` overrides `harmonics` with an explicit list of harmonic
         numbers (``[1, 3, 5]`` to skip the even ones).  ⚠ Do not choose it by
@@ -65,8 +68,13 @@ class ProbeShooting:
             raise ValueError('the fundamental (tone 1) must be present, got %r'
                              % (self.tones,))
         self.warm_start = bool(warm_start)
+        self.epar = epar
         self._x0 = None
         self.evaluations = 0
+
+    def _epar_kw(self):
+        """`{'epar': ...}` for the analyses this builds, or nothing."""
+        return {} if self.epar is None else {'epar': self.epar}
 
     ## ---- circuit construction -------------------------------------------
 
@@ -115,7 +123,7 @@ class ProbeShooting:
         import warnings as _w
         cir = self._build(f, amps, phases)
         row = self._probe_row(cir)
-        pss = PSS(cir, method=self.method, reltol=self.reltol)
+        pss = PSS(cir, method=self.method, reltol=self.reltol, **self._epar_kw())
         T = 1.0 / float(f)
         ## ⚠ WARM START: the finite-difference columns perturb a parameter by
         ## ~1e-5, so the trajectory barely moves and solving each from cold is
@@ -194,7 +202,7 @@ class ProbeShooting:
         n = len(self.tones)
         cir = self._build(f, [float(A)] + [0.0] * (n - 1),
                           [self.phase] * n)
-        pss = PSS(cir, method=self.method, reltol=self.reltol)
+        pss = PSS(cir, method=self.method, reltol=self.reltol, **self._epar_kw())
         T = 1.0 / float(f)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
@@ -384,7 +392,7 @@ class ProbeShooting:
         History: `doc/shooting_history.md`, `ProbeShooting._pac_response`.
         """
         tk = cir.toolkit
-        pac = PAC(cir, toolkit=tk)
+        pac = PAC(cir, toolkit=tk, **self._epar_kw())
         ## ⚠ EXCITE SLIGHTLY OFF THE HARMONIC, WHICH REMOVES THE AMBIGUITY
         ## INSTEAD OF GUESSING IT.  Exciting exactly at `j*f0` sends TWO
         ## sidebands to the same absolute output frequency -- `k = m - j` and
@@ -475,7 +483,7 @@ class ProbeShooting:
         ## to avoid).
         cir = self._build(f, amps, phases)
         row = self._probe_row(cir)
-        pss = PSS(cir, method=self.method, reltol=self.reltol)
+        pss = PSS(cir, method=self.method, reltol=self.reltol, **self._epar_kw())
         T = 1.0 / float(f)
         with _w.catch_warnings():
             _w.simplefilter('ignore')

@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 
 from pycircuit.circuit.analysis import remove_row_col
+from pycircuit.circuit.circuit import defaultepar
 
 from ._numerics import insert_ref
 
@@ -84,10 +85,10 @@ def colour_fit(Cs, ws):
     return A, B, EF
 
 
-def leaf_cy_stamps(cir, x, w, prefix=(), only=None):
+def leaf_cy_stamps(cir, x, w, prefix=(), only=None, epar=defaultepar):
     """Yield `(key, G)`: each LEAF element's `CY(x, w)` stamped into
     `cir`'s full `n x n` space, recursing into sub-circuits.  Their sum
-    is `cir.CY(x, w)` (the elements are independent by that method's
+    is `cir.CY(x, w, epar)` (the elements are independent by that method's
     own contract).  `only`: that element's key alone -- nothing else is
     evaluated."""
     n = cir.n
@@ -101,18 +102,19 @@ def leaf_cy_stamps(cir, x, w, prefix=(), only=None):
         rows, cols = rc
         subx = np.asarray(x)[cir.elementnodemap[inst]]
         if getattr(el, 'elements', None):
-            for key, Gc in leaf_cy_stamps(el, subx, w, prefix + (inst,), only):
+            for key, Gc in leaf_cy_stamps(el, subx, w, prefix + (inst,), only,
+                                          epar=epar):
                 G = np.zeros((n, n), dtype=complex)
                 np.add.at(G, (rows, cols), np.asarray(Gc).ravel())
                 yield key, G
         else:
             G = np.zeros((n, n), dtype=complex)
             np.add.at(G, (rows, cols),
-                      np.asarray(el.CY(subx, w), dtype=complex).ravel())
+                      np.asarray(el.CY(subx, w, epar=epar), dtype=complex).ravel())
             yield prefix + (inst,), G
 
 
-def leaf_noise_amplitudes(cir, x, w, prefix=(), only=None):
+def leaf_noise_amplitudes(cir, x, w, prefix=(), only=None, epar=defaultepar):
     """Yield `(key, W)`: each leaf element's SIGNED coloured-noise
     amplitudes (`Element.noise_amplitudes`, where it has them) in `cir`'s
     full `n`-row space, `(n, S)`; keyed like `leaf_cy_stamps`."""
@@ -125,10 +127,11 @@ def leaf_noise_amplitudes(cir, x, w, prefix=(), only=None):
         nodemap = np.asarray(cir.elementnodemap[inst])
         subx = np.asarray(x)[nodemap]
         if getattr(el, 'elements', None):
-            inner = leaf_noise_amplitudes(el, subx, w, prefix + (inst,), only)
+            inner = leaf_noise_amplitudes(el, subx, w, prefix + (inst,), only,
+                                          epar=epar)
         else:
             fn = getattr(el, 'noise_amplitudes', None)
-            Wc = fn(subx, w) if fn is not None else None
+            Wc = fn(subx, w, epar=epar) if fn is not None else None
             inner = [] if Wc is None else [(prefix + (inst,), Wc)]
         for key, Wc in inner:
             Wc = np.asarray(Wc, dtype=complex)
@@ -323,7 +326,7 @@ class NoiseComponents(object):
         `states`, `(K, m, m)`."""
         Cs = []
         for xf in self.xs:
-            cyk = np.asarray(self.cir.CY(xf, w), dtype=complex)
+            cyk = np.asarray(self.cir.CY(xf, w, epar=self.pss.epar), dtype=complex)
             (cyk,) = remove_row_col((cyk,), self.irn, self.pss.toolkit)
             Cs.append(np.asarray(cyk, dtype=complex))
         return np.asarray(Cs, dtype=complex)
@@ -335,7 +338,8 @@ class NoiseComponents(object):
         keep = self.keep
         out = {}
         for xf in self.xs:
-            for key, G in self.leaf_cy_stamps(self.cir, xf, w):
+            for key, G in self.leaf_cy_stamps(self.cir, xf, w,
+                                              epar=self.pss.epar):
                 out.setdefault(key, []).append(G[np.ix_(keep, keep)])
         return {key: np.asarray(v, dtype=complex) for key, v in out.items()}
 
@@ -351,14 +355,17 @@ class NoiseComponents(object):
             xs = self.xs
             out = np.zeros((len(xs), m, m), dtype=complex)
             for k, xf in enumerate(xs):
-                C = np.asarray(el.CY(np.asarray(xf)[nodemap], w), dtype=complex)
+                C = np.asarray(el.CY(np.asarray(xf)[nodemap], w,
+                                     epar=self.pss.epar),
+                               dtype=complex)
                 np.add.at(out[k], (rr, cc), C.ravel()[ok])
             return out
         keep = self.keep
         out = []
         for xf in self.xs:
             G = None
-            for k, Gk in self.leaf_cy_stamps(self.cir, xf, w, only=key):
+            for k, Gk in self.leaf_cy_stamps(self.cir, xf, w, only=key,
+                                             epar=self.pss.epar):
                 if k == key:
                     G = Gk
             out.append(np.zeros((keep.size, keep.size), dtype=complex) if G is None
@@ -372,7 +379,8 @@ class NoiseComponents(object):
         out = []
         for xf in self.xs:
             W = None
-            for k, Wk in self.leaf_noise_amplitudes(self.cir, xf, w, only=key):
+            for k, Wk in self.leaf_noise_amplitudes(self.cir, xf, w, only=key,
+                                                    epar=self.pss.epar):
                 if k == key:
                     W = Wk
             if W is None:
@@ -388,7 +396,8 @@ class NoiseComponents(object):
         keep = self.keep
         acc = {}
         for xf in self.xs:
-            for key, W in self.leaf_noise_amplitudes(self.cir, xf, w1):
+            for key, W in self.leaf_noise_amplitudes(self.cir, xf, w1,
+                                                     epar=self.pss.epar):
                 acc.setdefault(key, []).append(W[keep])
         out = {}
         for key, B, _EF in flicker:

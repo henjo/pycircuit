@@ -5312,3 +5312,85 @@ def test_event_grid_does_not_read_an_earlier_runs_element_state():
     assert list(after.event_times) == list(fresh.event_times), \
         (after.event_times, fresh.event_times)
     assert len(fresh.event_times) == 4, fresh.event_times
+
+
+def test_the_noise_and_the_ppv_are_read_at_the_pss_temperature(monkeypatch):
+    """The noise densities (`CY`, `noise_amplitudes`) and the PPV's
+    linearisation (`C`, `G`, `i`) are read at the PSS's `epar`, the
+    temperature its orbit was solved at.  ⚠ Measured before (2026-09-28):
+    every one used `defaultepar`, so a 400 K PSS's resistor noise was
+    300.15 K's (the pnoise ratio 1.000000 where 400/300.15 is right) and its
+    PPV linearised the devices at 300.15 K."""
+    import warnings
+
+    from pycircuit.circuit.circuit import defaultepar
+    circuit.default_toolkit = circuit.numeric
+    hot = defaultepar.copy()
+    hot.T = 400.0
+
+    def rc():
+        c = SubCircuit()
+        for nn in ('in', 'out'):
+            c.add_node(nn)
+        c['vs'] = VSin('in', gnd, va=0.1, freq=1e3)
+        c['R'] = R('in', 'out', r=1e3)
+        c['C'] = C('out', gnd, c=1e-7)
+        return c
+    S = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for label, kw in (('default', {}), ('hot', {'epar': hot})):
+            cir = rc()
+            pss = PSS(cir, method='radau', reltol=1e-9, **kw)
+            pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
+            assert pss.converged
+            k = cir.get_node_index('out')
+            d = np.zeros(cir.n - 1)
+            d[k - 1 if k > pss.irefnode else k] = 1.0
+            S[label], _used = PAC(cir, toolkit=circuit.numeric).pnoise(
+                pss, 300.0, d, maxsidebands=2)
+    ## a linear circuit: the orbit is the same at both temperatures, so the
+    ## ratio is 4kT's alone
+    assert abs(S['hot'] / S['default'] - 400.0 / defaultepar.T) < 1e-9, \
+        S['hot'] / S['default']
+
+    ## the PPV's device reads, on an oscillator
+    seen = []
+    for name, at in (('C', 0), ('G', 0), ('i', 0), ('CY', 1)):
+        orig = getattr(SubCircuit, name)
+
+        def rec(self, x, *a, _o=orig, _at=at, **k):
+            ep = k.get('epar', a[_at] if len(a) > _at else defaultepar)
+            seen.append(float(ep.T))
+            return _o(self, x, *a, **k)
+        monkeypatch.setattr(SubCircuit, name, rec)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p = PSS(_phase_circuit(), method='radau', reltol=1e-8, epar=hot)
+        p.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=30)
+        assert p.converged
+        del seen[:]
+        p.ppv()
+    assert seen and set(seen) == {400.0}, sorted(set(seen))
+
+
+def test_the_monodromy_twin_takes_every_setting_of_its_pss():
+    """The twin a one-step LMM oscillator reads its monodromy from is the
+    same analysis under another method: every Parameter but `method`.
+    ⚠ Before (2026-09-28) it took four tolerances and `epar`, so `maxiter`,
+    `pcnr`, the solvers, `relref` and the LTE floors never reached the map
+    its PPV was read on."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p = PSS(_phase_circuit(), method='trap', reltol=1e-8, maxiter=77,
+                relref='pointlocal', lte_vabstol=1e-9, TRTOL=5.0)
+        p.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
+        assert p.converged
+        tw = p.monodromy_twin()
+    assert tw is not p and tw.par.method == 'radau'
+    for name in ('reltol', 'maxiter', 'relref', 'lte_vabstol', 'TRTOL',
+                 'steadyratio', 'epar'):
+        assert getattr(tw.par, name) == getattr(p.par, name), \
+            (name, getattr(tw.par, name), getattr(p.par, name))

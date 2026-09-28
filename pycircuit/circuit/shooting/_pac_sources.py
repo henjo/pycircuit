@@ -86,7 +86,7 @@ class _NoiseSources(object):
             ## every unknown past the reference one slot late
             ## History: `doc/shooting_history.md`, `PAC._cy_cycle_averaged`.
             xf = orbit_states(pss, [xs[:, k]])[0]
-            cyk = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            cyk = np.asarray(pss.cir.CY(xf, w, epar=pss.epar), dtype=complex)
             (cyk,) = remove_row_col((cyk,), irn, pss.toolkit)
             cyk = np.asarray(cyk, dtype=complex) * hs[k]
             acc = cyk if acc is None else acc + cyk
@@ -144,7 +144,7 @@ class _NoiseSources(object):
         mats = []
         for xr in states:
             xf = insert_ref(xr, irn)
-            cy = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+            cy = np.asarray(pss.cir.CY(xf, w, epar=pss.epar), dtype=complex)
             (cy,) = remove_row_col((cy,), irn, pss.toolkit)
             mats.append(np.asarray(cy, dtype=complex))
         scale = max(float(np.max(np.abs(mats[0]))), 1e-300)
@@ -198,7 +198,7 @@ class _NoiseSources(object):
         irn = pss.irefnode
         xr = np.asarray(xr, dtype=float).ravel()[:pss.cir.n - 1]
         xf = insert_ref(xr, irn)
-        cy = np.asarray(pss.cir.CY(xf, w), dtype=complex)
+        cy = np.asarray(pss.cir.CY(xf, w, epar=pss.epar), dtype=complex)
         (cy,) = remove_row_col((cy,), irn, pss.toolkit)
         return np.asarray(cy, dtype=complex)
 

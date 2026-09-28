@@ -108,11 +108,20 @@ class _AccuracyChecks(object):
             return cache[method]
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
         kw = dict(self._solve_kwargs)
-        twin = type(self)(self.cir, toolkit=self.toolkit, irefnode=None,
-                          method=method, reltol=self.par.reltol,
-                          iabstol=self.par.iabstol, vabstol=self.par.vabstol,
-                          event_window_steps=self.par.event_window_steps,
-                          epar=self.epar)
+        ## EVERY setting of this analysis (its Parameters, `epar` among
+        ## them) but the method, as `grid_error`'s refined twins take them:
+        ## the twin is the same analysis under another integrator, not a
+        ## default one.  Until 2026-09-28 it took four tolerances (and from
+        ## that morning `epar`), so a PSS's `maxiter`, `pcnr`, solvers,
+        ## `relref` or LTE floors never reached the map its PPV was read on.
+        tkv = {}
+        for _p in self.parameters:
+            try:
+                tkv[_p.name] = getattr(self.par, _p.name)
+            except AttributeError:
+                pass
+        tkv['method'] = method
+        twin = type(self)(self.cir, toolkit=self.toolkit, irefnode=None, **tkv)
         hs = np.asarray(hs, dtype=float)
         ## the same grid: its fractions when it is not uniform, else the
         ## uniform step (a one-step plain state can carry an `hs` whose

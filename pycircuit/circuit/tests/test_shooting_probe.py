@@ -518,3 +518,34 @@ def test_the_pll_lock_range_is_the_loop_bandwidth_and_the_whole_locus_is_predict
     ## the EDGE: beyond the hold-in range there is no locked branch at all
     assert _pll_lambda(K, kvco, offset=0.25, df=105.0) is None, \
         'a locked branch survived past Df_max = %.1f Hz' % dfmax
+
+
+def test_the_probe_analysis_builds_its_analyses_at_its_temperature(monkeypatch):
+    """`ProbeShooting(epar=...)` reaches every `PSS` it builds.  ⚠ Before
+    (2026-09-28) it had no `epar` at all: its PSS and PAC ran at the
+    default temperature whatever the circuit was meant for."""
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.shooting import ProbeShooting
+    from pycircuit.circuit.shooting import probe as _probe
+    circuit.default_toolkit = circuit.numeric
+    hot = defaultepar.copy()
+    hot.T = 400.0
+    seen = []
+
+    class _Recorded(_probe.PSS):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            seen.append(float(self.epar.T))
+    monkeypatch.setattr(_probe, 'PSS', _Recorded)
+
+    def factory():
+        c = SubCircuit()
+        c.add_node('v')
+        c['R'] = R('v', gnd, r=1e3)
+        c['C'] = C('v', gnd, c=1e-7)
+        return c
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ProbeShooting(factory, 'v', npts=50, epar=hot).degenerate_placement(
+            0.5, 1e3)
+    assert seen and set(seen) == {400.0}, seen

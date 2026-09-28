@@ -112,7 +112,7 @@ class _PPVFloquet(object):
         fixture that has no algebraic row.
         """
         m = self.cir.n - 1
-        Cr, = remove_row_col((np.asarray(self.cir.C(xf), dtype=float),),
+        Cr, = remove_row_col((np.asarray(self.cir.C(xf, epar=self.epar), dtype=float),),
                              self.irefnode, self.toolkit)
         Cr = np.asarray(Cr, dtype=float)
         rows = [i for i in range(m) if not np.any(Cr[i, :])]
@@ -143,7 +143,7 @@ class _PPVFloquet(object):
         History: `doc/shooting_history.md`, `_PPVFloquet._equation_row_ppv`.
         """
         m = self.cir.n - 1
-        Cr, = remove_row_col((np.asarray(self.cir.C(xf), dtype=float),),
+        Cr, = remove_row_col((np.asarray(self.cir.C(xf, epar=self.epar), dtype=float),),
                              self.irefnode, self.toolkit)
         Cr = np.asarray(Cr, dtype=float)
         diff = [i for i in range(m) if i not in rows]
@@ -193,11 +193,11 @@ class _PPVFloquet(object):
             BC, BA, GD = [], [], []
             for j in range(N):
                 xf = Xf[:, j if j < Xf.shape[1] else -1]
-                Cr, = remove_row_col((np.asarray(self.cir.C(xf), dtype=float),),
+                Cr, = remove_row_col((np.asarray(self.cir.C(xf, epar=self.epar), dtype=float),),
                                      self.irefnode, self.toolkit)
                 BC.append(np.asarray(Cr, dtype=float)[np.ix_(diff, nz)].T)
                 if rows and len(rows) == len(cols):
-                    Gr, = remove_row_col((np.asarray(self.cir.G(xf), dtype=float),),
+                    Gr, = remove_row_col((np.asarray(self.cir.G(xf, epar=self.epar), dtype=float),),
                                          self.irefnode, self.toolkit)
                     Gr = np.asarray(Gr, dtype=float)
                     BA.append(Gr[np.ix_(rows, cols)].T)
@@ -271,7 +271,7 @@ class _PPVFloquet(object):
                 'entering those rows will be UNDER-COUNTED.'
                 % (len(rows), len(cols)), RuntimeWarning, stacklevel=2)
             return vblock
-        Gr, = remove_row_col((np.asarray(self.cir.G(xf), dtype=float),),
+        Gr, = remove_row_col((np.asarray(self.cir.G(xf, epar=self.epar), dtype=float),),
                              self.irefnode, self.toolkit)
         Gr = np.asarray(Gr, dtype=float)
         diff = [i for i in range(m) if i not in rows]
@@ -356,7 +356,7 @@ class _PPVFloquet(object):
                     _z[np.asarray(_alg_rows, dtype=int)] = 0.0
                 _xj = _Xf[:, _j if _j < _Xf.shape[1] else -1]
                 _Gj, = remove_row_col(
-                    (np.asarray(self.cir.G(_xj), dtype=float),),
+                    (np.asarray(self.cir.G(_xj, epar=self.epar), dtype=float),),
                     self.irefnode, self.toolkit)
                 _Gj = np.asarray(_Gj, dtype=float)
                 _Cj = np.asarray(_cs1[_j], dtype=float)
@@ -555,8 +555,8 @@ class _PPVFloquet(object):
         irn = self.irefnode
         x0r = np.asarray(self._period_state[1], dtype=float).ravel()
         x0f = insert_ref(x0r, irn)
-        qf = -(np.asarray(self.cir.i(x0f)).ravel()
-               + np.asarray(self.cir.u(0.0,
+        qf = -(np.asarray(self.cir.i(x0f, epar=self.epar)).ravel()
+               + np.asarray(self.cir.u(0.0, epar=self.epar,
                                        analysis=self.par.analysis)).ravel())
         q = np.delete(np.asarray(qf, dtype=float), irn)
         qp = np.concatenate((q, np.zeros(n - m)))
@@ -631,7 +631,7 @@ class _PPVFloquet(object):
         ## which is the definition of `q` read backwards.  Least squares
         ## because `C` is singular for a DAE and only its range is
         ## determined.
-        x0red = np.asarray(self.cir.C(x0f))
+        x0red = np.asarray(self.cir.C(x0f, epar=self.epar))
         Cm = np.delete(np.delete(x0red, irn, 0), irn, 1)
         Cu = np.asarray(Cm, dtype=float) @ u[:m]
         denom = float(Cu @ Cu)
