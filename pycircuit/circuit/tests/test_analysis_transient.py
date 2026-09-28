@@ -1852,6 +1852,39 @@ def test_a_stage_pcnr_step_leaves_the_diode_at_its_solution():
     assert np.max(np.abs(v - v_ref)) < 1e-12, np.max(np.abs(v - v_ref))
 
 
+
+def test_an_lmm_pcnr_step_leaves_the_diode_at_its_solution(monkeypatch):
+    """The multistep PCNR step puts each stateful limiter at its solution
+    too (`limit_sync`), as the stage paths do.  PCNR never calls `limit`,
+    so a `Diode`'s `_vlim` stayed where its first read put it, for the
+    whole run: what reads the devices after a PCNR step -- the branch
+    check's confirming re-solve, a limiting fallback's first iteration --
+    started from there.  (The waveform itself was exact: PCNR's own solve
+    and Jacobian exclude the device from the ordinary assembly.)"""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import Gear2Integrator
+    circuit.default_toolkit = circuit.numeric
+    gaps = []
+    step = Transient._solve_timestep_pcnr
+
+    def spy(self, x0, t, provided_function=None):
+        out = step(self, x0, t, provided_function)
+        x = np.asarray(out[0], dtype=float)
+        vj = x[self.cir.get_node_index(2)] - x[self.cir.get_node_index(gnd)]
+        gaps.append(abs(float(getattr(self.cir['D'], '_vlim', np.inf)) - vj))
+        return out
+    monkeypatch.setattr(Transient, '_solve_timestep_pcnr', spy)
+    c = _driven_diode(Diode)
+    tr = Transient(c, integrator=Gear2Integrator(), pcnr=True, reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr.solve(tend=5e-4, timestep=2.5e-6, x0=np.zeros(c.n),
+                 fixed_timestep=True)
+    assert tr.pcnr_status == 'used' and tr.pcnr_fallbacks == 0, tr.pcnr_status
+    assert len(gaps) >= 200 and max(gaps) == 0.0, (len(gaps), max(gaps))
+
+
 def _driven_diode(cls, va=20.0, r=1.0):
     """A diode driven through `r` by a `va`, 1 kHz sine: at 20 V through 1
     ohm, 0.85 V peak, far enough past the junction's critical voltage that
@@ -1900,6 +1933,30 @@ def test_the_coupled_radau_newton_meets_the_exact_diode(transform):
         v = run(Diode, timestep, tend)
         assert max(v_ref) > 0.8, 'the diode is no longer driven past its knee'
         assert np.max(np.abs(v - v_ref)) < 1e-9, (timestep, np.max(np.abs(v - v_ref)))
+
+
+def test_a_rejected_step_leaves_no_device_state_to_its_retry():
+    """Every step starts with each stateful limiter AT its entering point
+    (`Transient.solve_timestep`).  ⚠ A REJECTED attempt left a `Diode`'s
+    `_vlim` at its own end, and the retry's explicit first stage read
+    `i(x_n)` as the tangent there: adaptive TR-BDF2 on a hard-driven diode
+    took 1653 steps where the state-free twin takes 1117 (with PCNR 1221),
+    ESDIRK43 506 against 473 (2026-09-28).  Now within a few steps."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def steps(cls):
+        c = _driven_diode(cls)
+        tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
+        return res.statistics.accepted_steps, res.statistics.rejected_steps
+    (n_twin, rej_twin), (n, _rej) = steps(_state_free_diode()), steps(Diode)
+    assert rej_twin > 100, 'no rejections left to test (%d)' % rej_twin
+    assert n <= 1.05 * n_twin, (n, n_twin)
 
 
 def test_the_radau_estimate_reads_the_diode_at_the_step_start():

@@ -1617,6 +1617,12 @@ class Transient(Analysis):
         """
         self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
+        ## the stateful limiters AT the run's first point: what the devices
+        ## are read at below, and a PSS period's start must not depend on
+        ## where the previous period left them (see `solve_timestep`)
+        self._stateful_lims = stateful_limiters(self.cir)
+        if self._stateful_lims:
+            limit_sync(self.cir, x, self.epar, self._stateful_lims)
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
@@ -3102,21 +3108,23 @@ class Transient(Analysis):
             lambda x_, v_: self._pcnr_augmented(x_, v_, t, junctions,
                                                  provided_function),
             'PCNR did not converge at t=%g after %d iterations', t)
+        ## SYNC the stateful limiters to the solution (`limit_sync`, as the
+        ## stage path does): PCNR never moved them, and what reads the
+        ## devices after this step -- the branch check's confirming
+        ## re-solve, a limiting fallback's first iteration on the next
+        ## step -- would otherwise start from wherever the last limiting
+        ## solve left them.  (`augmented_system` excludes the PCNR devices
+        ## from the ordinary assembly, so nothing PCNR solves reads them.)
+        limit_sync(self.cir, x, self.epar)
         iq, Geq = self._companion_at(x)
 
         ## THE JACOBIAN HANDED TO THE STEP CONTROLLER MUST BE THE ONE
         ## THIS PATH ACTUALLY SOLVED, and `cir.G(x) + Geq` is not it.
         ##
-        ## `Diode.G` linearises around `_vlim`, which only `Diode.limit`
-        ## updates -- and PCNR never calls it, because limiting is the
-        ## thing PCNR replaces.  So `_vlim` stays at whatever it was
-        ## first set to and the diode's conductance is frozen there:
-        ## `cir.G(x)` carries NO diode conductance at all.
-        ##
-        ## Inside `augmented_system` that cancels -- the same wrong value
-        ## is added by `cir.G` and subtracted again -- but the controller
-        ## computes `lte = J^-1 Eg`, so handing it that matrix maps the
-        ## truncation error through a Jacobian missing the diode.
+        ## `cir.G(x)` is the ordinary assembly, and PCNR solved with each
+        ## junction's current taken at its OWN unknown `v_lim` instead;
+        ## the controller computes `lte = J^-1 Eg`, so it must see the
+        ## matrix that was solved.
         ##
         ## The right matrix is the one `predict` factorises: the non-PCNR
         ## part plus each probe's `didv` column as a rank-one update.  At
@@ -4477,6 +4485,20 @@ class Transient(Analysis):
 
     def solve_timestep(self, x0, t, provided_function=None):
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
+        ## ⚠ THE STEP STARTS FROM ITS ENTERING POINT, NOT FROM THE LAST
+        ## ATTEMPT'S DEVICE STATE.  A stateful limiter (`Diode`) reads `i` /
+        ## `G` as the tangent at its stored `_vlim`, and a REJECTED attempt
+        ## leaves that at its own end: the retry's explicit first stage read
+        ## `i(x_n)` there, and adaptive TR-BDF2 on a hard-driven diode took
+        ## 1653 steps where the state-free twin takes 1117 (ESDIRK43 506 /
+        ## 473).  PSS re-enters every period at a new `x0` the same way.
+        ## After an accepted step the state already sits exactly on the
+        ## entering point, so a run without rejections is unchanged.
+        lims = getattr(self, '_stateful_lims', None)
+        if lims is None:
+            lims = self._stateful_lims = stateful_limiters(self.cir)
+        if lims:
+            limit_sync(self.cir, x0, self.epar, lims)
         if getattr(self.base_integrator, 'is_multivalue', lambda: False)():
             ## a Nordsieck general linear method: r = p + 1 values per unknown
             ## carried between steps, DIRK-like sequential stages, a starting
