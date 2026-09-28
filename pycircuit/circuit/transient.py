@@ -236,7 +236,31 @@ class TransientStepError(NoConvergenceError, RuntimeError):
 ## History: `doc/transient_history.md`, `transient.py`.
 ## ---------------------------------------------------------------------------
 
-class _LMMSteps(object):
+class _StepFamily(object):
+    """What the step families share unless they say otherwise: the
+    breakpoints are the transient's own, a step is one `solve_timestep` from
+    `X[-1]` at the size asked, a force-accept takes the step the error test
+    proposed, and nothing is kept between accepts or after the run."""
+
+    def next_breakpoint(self, t):
+        return self.tr._next_breakpoint(t)
+
+    def attempt(self, X, t, h, _hold, provided_function):
+        x_new, _feval, J, _f = self.tr.solve_timestep(
+            X[-1], t + h, provided_function=provided_function)
+        return x_new, h, J
+
+    def h_after_force(self, _h, h_next):
+        return h_next
+
+    def after_accept(self, landing):
+        pass
+
+    def finish(self):
+        pass
+
+
+class _LMMSteps(_StepFamily):
     """Linear multistep methods (euler, trap, theta, gear): a step is one
     companion-model Newton solve, judged by the step controller on the
     divided-difference charge LTE (`IntegralController` unless the caller
@@ -274,14 +298,6 @@ class _LMMSteps(object):
                                         tr.par.lte_gamma_max,
                                         tr.par.lte_eta)
 
-    def next_breakpoint(self, t):
-        return self.tr._next_breakpoint(t)
-
-    def attempt(self, X, t, h, _hold, provided_function):
-        x_new, _feval, J, _f = self.tr.solve_timestep(
-            X[-1], t + h, provided_function=provided_function)
-        return x_new, h, J
-
     def judge(self, X, x_new, h, J, clamped):
         tr, run = self.tr, self.run
         return tr.step_controller.evaluate_step(
@@ -314,14 +330,8 @@ class _LMMSteps(object):
         ## force-accept must not bypass it
         return min(self.run.max_step, h * MAX_GROWTH_RATIO)
 
-    def after_accept(self, landing):
-        pass
 
-    def finish(self):
-        pass
-
-
-class _StageSteps(object):
+class _StageSteps(_StepFamily):
     """Runge-Kutta methods (radau, trbdf2, esdirk43) and Nordsieck GLMs:
     self-starting, so no divided-difference LTE -- a step is judged by the
     method's own embedded estimate, the filtered `_rk_est` the step leaves
@@ -343,14 +353,6 @@ class _StageSteps(object):
         if not run.fixed:
             tr._rk_want_est = True
 
-    def next_breakpoint(self, t):
-        return self.tr._next_breakpoint(t)
-
-    def attempt(self, X, t, h, _hold, provided_function):
-        x_new, _feval, J, _f = self.tr.solve_timestep(
-            X[-1], t + h, provided_function=provided_function)
-        return x_new, h, J
-
     def judge(self, _X, x_new, h, _J, _clamped):
         tk = self.tr.toolkit
         est = tk.array(self.tr._rk_est)
@@ -362,18 +364,12 @@ class _StageSteps(object):
             -1.0 / (order + 1))
         return err <= 1.0, h * min(1.0 / self.K, max(self.K, grow))
 
-    def h_after_force(self, _h, h_next):
-        return h_next
-
-    def after_accept(self, landing):
-        pass
-
     def finish(self):
         if not self.run.fixed:
             self.tr._rk_want_est = False
 
 
-class _CoupledSteps(object):
+class _CoupledSteps(_StepFamily):
     """`coupled_lte=True`: Fang, "A New Time-Stepping Method for Circuit
     Simulation" (DAC 2013).  The solution and the step size are solved
     TOGETHER at each time point (`fang_timestep`, Figure 4's two-stage
@@ -411,6 +407,8 @@ class _CoupledSteps(object):
                      getattr(tr, '_fang_controller', None)):
             if ctrl is not None and hasattr(ctrl, 'set_relref'):
                 ctrl.set_relref(tr.par.relref)
+        ## the coupled step's once-per-run setup (`Transient._fang_setup`)
+        tr._fang_run = tr._fang_setup(tr.par.coupled_method)
         ## F5: the 'auto' band sentinel resolved once, to Fang's values
         self.band = tr._coupled_band()
         self.tline_tds = sorted({float(e.iparv.TD)
@@ -475,9 +473,6 @@ class _CoupledSteps(object):
         ## `reltol`)
         return True, max(h, self.tr.par.minstep)
 
-    def h_after_force(self, _h, h_next):
-        return h_next
-
     def after_accept(self, landing):
         ## COUPLED KINK DISCIPLINE (see the class note): a landing empties
         ## the step ring, on delay-line circuits only
@@ -486,7 +481,7 @@ class _CoupledSteps(object):
             self.tr._dt_last2 = None
 
     def finish(self):
-        pass
+        self.tr._fang_run = None
 
 
 class Transient(Analysis):
@@ -2452,51 +2447,16 @@ class Transient(Analysis):
                 else np.maximum(np.asarray(snapshot, dtype=float), local)
         return result
 
-    def _fang_timestep_inner(self, x_prev, t_prev, h, x_hist,
-                             provided_function, gamma_min, gamma_max,
-                             eta, maxiter, hmin, max_step,
-                             hold_h, grid_locked, method):
-        """One time point of Fang's coupled method: solve for ``(x, h)`` together.
+    def _fang_setup(self, method):
+        """What `_fang_timestep_inner` needs that does not change within a
+        run: the check of `method`, the refusal of an injected controller
+        whose law the coupled path does not implement, the LTE controller
+        (created on first use, `relref` applied), the PCNR devices and the
+        Newton solution tolerance.  `_CoupledSteps` builds it once per run as
+        `_fang_run`; a `fang_timestep` call outside a run builds its own."""
+        from types import SimpleNamespace
 
-        STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
-
-          1. Solve the ordinary ``N`` circuit system at the current ``h`` and
-             update the solution.  This is the existing Newton step, untouched.
-          2. Estimate the LTE (eq 6) and find the controlling node.
-          3. **If the LTE condition holds**, the step size needs no attention --
-             check ordinary convergence and either finish or iterate again.
-          4. **Only if it does not**, form the combined ``(N+1)`` system (eq 12)
-             and solve for a solution update AND a step-size update at once.
-
-        The (N+1) system is therefore NOT formed on every iteration, which is
-        what makes the paper's overhead claim plausible.  There is no rejection
-        path: Figure 3 has none, and the predicted ``h`` is only an initial
-        guess.
-
-        Eq (12) is solved by its Schur complement rather than by factorising an
-        ``(N+1)`` matrix::
-
-            dx0 = -J^-1 f_ckt          dxh = -J^-1 p
-            dh  = -(f_lte + q^T dx0) / (q^T dxh + d)
-            dx  = dx0 + dxh dh
-
-        which needs two solves against the SAME ``J`` -- so with a factor/solve
-        split the second is nearly free.  ``q^T`` has a single nonzero, so the
-        two inner products are one multiply each.
-
-        Returns ``(x, h, iterations, converged)``.
-        """
         from pycircuit.circuit.stepcontroller import SolutionLTEController
-
-        toolkit = self.toolkit
-        n = self.cir.n
-        irefnode = self.irefnode
-        maxiter = self.par.maxiter if maxiter is None else maxiter
-        hmin = self.par.minstep if hmin is None else hmin
-        if max_step is None:
-            max_step = self.par.timestep_max
-            if max_step is None or max_step <= 0:
-                max_step = float('inf')
 
         ## GATE 12-4, last of the four inputs: honour a caller-injected step
         ## controller.
@@ -2539,28 +2499,6 @@ class Transient(Analysis):
         if getattr(ctrl, 'relref', None) != self.par.relref:
             ctrl.set_relref(self.par.relref)
 
-        x = toolkit.array(x_prev, dtype=float).copy()
-
-        ## PCNR ON THE COUPLED PATH: `pcnr=True` is honoured here too.
-        ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
-        from pycircuit.circuit import pcnr as _pcnr
-        junctions = _pcnr.pcnr_devices(self.cir) if self.par.pcnr else []
-        ## `v_lim` is per-time-point state, seeded from the incoming solution and
-        ## carried across the iterations below.
-        v_lim = _pcnr.v_lim_init(junctions, x)
-
-        ## The increment flavour: `dx0` is a solution update, not a residual.
-        xtol = self._newton_xtol_vector()
-        reltol = self.par.reltol
-
-        ## Eq (16) bounds the step change BETWEEN ITERATIONS, and iterating it is
-        ## how the step size collapses inside a single time point: 0.85 per
-        ## iteration over `maxiter` iterations is seven decades.  Measured on the
-        ## charge pump, `h` reached 8.75e-15 s at t=1.1e-5 before the solve gave
-        ## up.  So the TOTAL excursion within one time point is bounded too, by
-        ## the same window the standard controller allows for one step.
-        from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
-                                                      MAX_GROWTH_RATIO)
         if method == 'bordered':
             raise ValueError(
                 "coupled_method='bordered' (Fang eq 12/14) was retired on "
@@ -2573,6 +2511,86 @@ class Transient(Analysis):
             raise ValueError(
                 "coupled_method must be 'approx' (Fang sec 3.4), not %r"
                 % (method,))
+
+        ## PCNR ON THE COUPLED PATH: `pcnr=True` is honoured here too.
+        ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
+        from pycircuit.circuit import pcnr as _pcnr
+        junctions = _pcnr.pcnr_devices(self.cir) if self.par.pcnr else []
+
+        ## The increment flavour: `dx0` is a solution update, not a residual.
+        xtol = self._newton_xtol_vector()
+        return SimpleNamespace(method=method, ctrl=ctrl, junctions=junctions,
+                               xtol=xtol)
+
+    def _fang_timestep_inner(self, x_prev, t_prev, h, x_hist,
+                             provided_function, gamma_min, gamma_max,
+                             eta, maxiter, hmin, max_step,
+                             hold_h, grid_locked, method):
+        """One time point of Fang's coupled method: solve for ``(x, h)`` together.
+
+        STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
+
+          1. Solve the ordinary ``N`` circuit system at the current ``h`` and
+             update the solution.  This is the existing Newton step, untouched.
+          2. Estimate the LTE (eq 6) and find the controlling node.
+          3. **If the LTE condition holds**, the step size needs no attention --
+             check ordinary convergence and either finish or iterate again.
+          4. **Only if it does not**, form the combined ``(N+1)`` system (eq 12)
+             and solve for a solution update AND a step-size update at once.
+
+        The (N+1) system is therefore NOT formed on every iteration, which is
+        what makes the paper's overhead claim plausible.  There is no rejection
+        path: Figure 3 has none, and the predicted ``h`` is only an initial
+        guess.
+
+        Eq (12) is solved by its Schur complement rather than by factorising an
+        ``(N+1)`` matrix::
+
+            dx0 = -J^-1 f_ckt          dxh = -J^-1 p
+            dh  = -(f_lte + q^T dx0) / (q^T dxh + d)
+            dx  = dx0 + dxh dh
+
+        which needs two solves against the SAME ``J`` -- so with a factor/solve
+        split the second is nearly free.  ``q^T`` has a single nonzero, so the
+        two inner products are one multiply each.
+
+        Returns ``(x, h, iterations, converged)``.
+        """
+        toolkit = self.toolkit
+        n = self.cir.n
+        irefnode = self.irefnode
+        maxiter = self.par.maxiter if maxiter is None else maxiter
+        hmin = self.par.minstep if hmin is None else hmin
+        if max_step is None:
+            max_step = self.par.timestep_max
+            if max_step is None or max_step <= 0:
+                max_step = float('inf')
+
+        ## The once-per-run part (the controller, the PCNR devices, the Newton
+        ## solution tolerance, the checks): `_CoupledSteps` builds it when the
+        ## run starts; a direct call outside a run builds its own.
+        run = getattr(self, '_fang_run', None)
+        if run is None or run.method != method:
+            run = self._fang_setup(method)
+        ctrl, junctions, xtol = run.ctrl, run.junctions, run.xtol
+
+        x = toolkit.array(x_prev, dtype=float).copy()
+
+        ## `v_lim` is per-time-point state, seeded from the incoming solution and
+        ## carried across the iterations below.
+        from pycircuit.circuit import pcnr as _pcnr
+        v_lim = _pcnr.v_lim_init(junctions, x)
+
+        reltol = self.par.reltol
+
+        ## Eq (16) bounds the step change BETWEEN ITERATIONS, and iterating it is
+        ## how the step size collapses inside a single time point: 0.85 per
+        ## iteration over `maxiter` iterations is seven decades.  Measured on the
+        ## charge pump, `h` reached 8.75e-15 s at t=1.1e-5 before the solve gave
+        ## up.  So the TOTAL excursion within one time point is bounded too, by
+        ## the same window the standard controller allows for one step.
+        from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
+                                                      MAX_GROWTH_RATIO)
 
         h_entry = h
         h_floor = max(hmin, h_entry * MIN_SHRINK_RATIO)
@@ -3769,7 +3787,7 @@ class Transient(Analysis):
         from pycircuit.circuit.nrsolver import NoConvergenceError
         junctions = _pcnr.pcnr_devices(self.cir)
         ctx = self._coupled_stage_context(x0, t, provided_function)
-        Amat, h, tn, iref = ctx.Amat, ctx.h, ctx.tn, ctx.iref
+        iref = ctx.iref
         arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
                                     ctx.m)
         epar = self.epar
@@ -3875,17 +3893,7 @@ class Transient(Analysis):
         ## `limit(Y[j], Y[j])` it replaces reached it only while consecutive
         ## stages were close (its first syncs landed up to 25 mV short).
         limit_sync(self.cir, Y[-1], epar)
-
-        ## THE BRANCH CHECK, CONFIRMED: this path solved with its own Newton,
-        ## and the confirmation re-solves the same step equation with the
-        ## dense coupled one, built only if the screen fires
-        self._branch_after_coupled(
-            None, None, Y, None,
-            build=lambda: self._coupled_stage_solver(x0, t, provided_function))
-        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src)
-        if getattr(self, '_rk_want_est', False):
-            self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
-        return Y3, None, J, None
+        return self._finish_radau(ctx, x0, t, provided_function, Y)
 
     def _limiters_at_rest(self, Y, S, lims):
         """Whether every stage's device current, read at the limiting state
@@ -4210,9 +4218,6 @@ class Transient(Analysis):
                 return out
         ctx, _stage_newton, _block_residual, seed0 = self._coupled_stage_solver(
             x0, t, provided_function)
-        Amat, h, tn, arr, src, tstage = (ctx.Amat, ctx.h, ctx.tn, ctx.arr,
-                                         ctx.src, ctx.tstage)
-        xn = x0
         from pycircuit.circuit.nrsolver import (NoConvergenceError,
                                                 _adaptive_conductance_ladder)
         try:
@@ -4254,7 +4259,18 @@ class Transient(Analysis):
                 except NoConvergenceError:
                     Y = _stage_newton(seed0, damped=True)
                 self.statistics.gmin_rescues += 1
+        return self._finish_radau(ctx, x0, t, provided_function, Y,
+                                  solver=(_stage_newton, seed0, _block_residual))
 
+    def _finish_radau(self, ctx, x0, t, provided_function, Y, solver=None):
+        """The end every Radau IIA(3) coupled step shares, once its stages `Y`
+        are solved and the devices sit at the last stage's limiting state: the
+        branch check, the step end, the embedded error estimate.
+
+        `solver` is the dense path's own ``(stage_newton, seed0, residual)``.
+        The paths with their own Newton (PCNR, the transform) pass None: the
+        branch check's confirmation then re-solves the same step equation with
+        the dense coupled solver, built only if the screen fires."""
         ## BRANCH DETECTION on the COUPLED path.  ⚠ This path does NOT go
         ## through `self._newton`, so the check wired there does not reach
         ## the fully-implicit method -- which is the PSS default.  Same screen, same
@@ -4263,17 +4279,25 @@ class Transient(Analysis):
         ## own call: a stage of the block can be at a rank drop while the
         ## others are not, and it is the BLOCK that has to be re-solved.
         ## History: `doc/transient_history.md`, `Transient._rk_step_coupled`.
-        self._branch_after_coupled(_stage_newton, seed0, Y, _block_residual)
+        if solver is None:
+            self._branch_after_coupled(
+                None, None, Y, None,
+                build=lambda: self._coupled_stage_solver(x0, t,
+                                                         provided_function))
+        else:
+            self._branch_after_coupled(solver[0], solver[1], Y, solver[2])
 
         ## x_{n+1} == the last stage (stiff accuracy); the stage values are
         ## kept for the shooting monodromy, which needs all three
-        xnp1, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src)
+        xnp1, J = self._finish_stage_step(t, ctx.tstage, Y, ctx.Amat[2, 2],
+                                          ctx.h, ctx.src)
 
         ## THE EMBEDDED 5(3) ERROR ESTIMATE (Hairer & Wanner Vol II, IV.8, the
         ## radau5 estimator), gated so the fixed-step path pays nothing.  See
         ## :meth:`_radau_error_estimate` for the construction and its gates.
         if getattr(self, '_rk_want_est', False):
-            self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
+            self._rk_est = self._radau_error_estimate(x0, Y, ctx.tn, ctx.h,
+                                                      ctx.src, ctx.arr)
         return xnp1, None, J, None
 
     def _radau_error_estimate(self, xn, Y, tn, h, src, arr):
@@ -4433,7 +4457,7 @@ class Transient(Analysis):
         path."""
         from pycircuit.circuit.nrsolver import NoConvergenceError
         ctx = self._coupled_stage_context(x0, t, provided_function)
-        Amat, h, tn, iref = ctx.Amat, ctx.h, ctx.tn, ctx.iref
+        h, iref = ctx.h, ctx.iref
         arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
                                     ctx.m)
         epar = self.epar
@@ -4507,17 +4531,7 @@ class Transient(Analysis):
         ## the step end (the last stage) is what the epilogue reads
         if S[2] is not None:
             state_restore(S[2])
-
-        ## THE BRANCH CHECK, CONFIRMED: this path solved with its own Newton,
-        ## and the confirmation re-solves the same step equation with the
-        ## dense coupled one, built only if the screen fires
-        self._branch_after_coupled(
-            None, None, Y, None,
-            build=lambda: self._coupled_stage_solver(x0, t, provided_function))
-        Y3, J = self._finish_stage_step(t, tstage, Y, Amat[2, 2], h, src)
-        if getattr(self, '_rk_want_est', False):
-            self._rk_est = self._radau_error_estimate(xn, Y, tn, h, src, arr)
-        return Y3, None, J, None
+        return self._finish_radau(ctx, x0, t, provided_function, Y)
 
     def solve_timestep(self, x0, t, provided_function=None):
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
