@@ -1028,6 +1028,13 @@ def test_the_branch_check_solves_the_step_equation_and_restores_device_state_exa
         x[cir.get_node_index('r')] = v0
         tr.epar.t = 0.0
         tr._begin_run(x, cir.n)
+        ## the screen's reference capacitance: what a run that reached this
+        ## rank drop from elsewhere would have seen (`c0` at 1 V from it).
+        ## Starting ON the drop, the run's own largest `C` is ~1e-32, and
+        ## only an EXACT zero registered as a collapse -- which the third
+        ## step hit by a rounding coincidence until 2026-09-28, when a Newton
+        ## that starts its limiter at the seed landed one ulp away.
+        tr._branch_cmax = 1.0
         vl = []
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')

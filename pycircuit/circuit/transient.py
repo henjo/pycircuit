@@ -1373,6 +1373,25 @@ class Transient(Analysis):
         return limiter_func
 
     def _newton(self, func, x0):
+        ## ⚠ THE FIRST EVALUATION IS AT THE SEED, not at the tangent of the
+        ## point before it.  A stateful limiter (`Diode`) reads `i` / `G` as
+        ## the tangent at its stored `_vlim`, which sits at the last solved
+        ## point (`x_n`, or the previous stage), so its Newton's first
+        ## iteration evaluated the predictor as that tangent, spent an
+        ## iteration, and stopped at the tolerance where a state-free device
+        ## converges to rounding.  Measured against the state-free twin:
+        ## 22-88 % more Newton iterations (gear2 681 / 557, TR-BDF2 on a
+        ## rectifier 6517 / 3462), and TR-BDF2's embedded estimate turned
+        ## the tolerance-level stage error, through the diode's 700 S, into
+        ## 301 rejections against 36 (1023 steps against 863).  So the
+        ## limiters are moved toward the seed first -- a LIMITED move from
+        ## the stored state, which a seed past the knee cannot defeat.
+        lims = getattr(self, '_stateful_lims', None)
+        if lims is None:
+            lims = self._stateful_lims = stateful_limiters(self.cir)
+        if lims:
+            x0s = np.array(x0, dtype=float)
+            self.cir.limit(x0s, x0s, self.epar)
         abstol = self._newton_abstol_vector()
         xtol = self._newton_xtol_vector()
         

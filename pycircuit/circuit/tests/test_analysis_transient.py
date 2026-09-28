@@ -1986,6 +1986,49 @@ def test_a_rejected_step_leaves_no_device_state_to_its_retry():
     assert n <= 1.05 * n_twin, (n, n_twin)
 
 
+def test_a_newton_starts_its_stateful_limiters_at_its_seed():
+    """The ordinary Newton moves each stateful limiter toward its seed
+    before the first evaluation (`Transient._newton`), so a `Diode` is read
+    at the predictor, as a state-free device is.  ⚠ It read the predictor
+    as the tangent at the last solved point: one wasted iteration per
+    solve, a Newton that stopped at the tolerance, and -- through the
+    diode's conductance -- a noisy TR-BDF2 estimate: on a half-wave
+    rectifier 1023 steps (301 rejections, 6517 Newton iterations) where
+    the state-free twin takes 863 (36, 3462) (2026-09-28)."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    from pycircuit.circuit import nrsolver
+    circuit.default_toolkit = circuit.numeric
+    iters = [0]
+    solve = nrsolver.StandardNewton.solve_system
+
+    def counting(self, *args, **kw):
+        out = solve(self, *args, **kw)
+        iters[0] += out[1]
+        return out
+
+    def run(cls):
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=5.0, freq=1e3)
+        c['Rs'] = R(1, 3, r=10.0)
+        c['D'] = cls(3, 2)
+        c['C'] = C(2, gnd, c=1e-6)
+        c['RL'] = R(2, gnd, r=1e3)
+        tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6)
+        iters[0] = 0
+        nrsolver.StandardNewton.solve_system = counting
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tr.solve(tend=2e-3, timestep=2e-6, x0=np.zeros(c.n))
+        finally:
+            nrsolver.StandardNewton.solve_system = solve
+        return res.statistics.accepted_steps, iters[0]
+    (n_twin, it_twin), (n, it) = run(_state_free_diode()), run(Diode)
+    assert n <= 1.05 * n_twin and it <= 1.05 * it_twin, (n, n_twin, it, it_twin)
+
+
 def test_the_radau_estimate_reads_the_diode_at_the_step_start():
     """The embedded Radau estimate reads `i(x_n)` and `G(x_n)`, and after
     the step a stateful limiter sits at the step END: read there, `i(x_n)`
