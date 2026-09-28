@@ -3,6 +3,7 @@ metrics.
 """
 import numpy as np
 import warnings
+from ._noise_components import cached_root, psd_sqrt
 from ._numerics import _output_weights
 from .events import EventColumns
 
@@ -46,7 +47,7 @@ class _SampledNoise(object):
         ⚠ SOURCE MODEL, A NAMED CHOICE: MODULATED-STATIONARY, per band --
         `sqrt(CY(x(t), nu))`, the convention of `pnoise(cyclostationary=True)`
         -- with ONE square root per independent component (per leaf element,
-        white part and power-law part separately; `_cy_components_model`).
+        white part and power-law part separately; `NoiseComponents.model`).
         (A joint root of the summed `CY` makes independent sources
         non-additive.)  ⚠ Mahmutoglu & Demir (TCAS-I 62(4), 2015) show
         that a SWITCHED MOSFET's trap (1/f) noise is whitened below the
@@ -351,21 +352,21 @@ class _SampledNoise(object):
             tinj = tms[1:N + 1]
             xs = np.asarray(pss.waveform[1], dtype=float)
             states = [xs[:, (j + 1) % N] for j in range(N)]
-        model = self._cy_components_model(pss, float(np.min(fr)), f0, states)
+        nc = self._noise_components(pss, states)
+        model = nc.model(float(np.min(fr)), f0)
         white, scaled, perband = [], [], []
         if model is None:
             ## the elements do not sum to the circuit's CY (warned) and the
             ## whole is not thermal-plus-power-law: one root of the whole
             ## circuit's CY per band
-            perband.append(self._cached_root(
-                lambda w: self._cy_at_states(pss, w, states)))
+            perband.append(cached_root(nc.cy_at_states))
         else:
-            white = [self._psd_sqrt(A) for _key, A in model.white_parts]
+            white = [psd_sqrt(A) for _key, A in model.white_parts]
             ## the coloured components as the modal spectra and the folds
-            ## take them (`_colour_groups`): a fixed column set with its power
+            ## take them (`colour_groups`): a fixed column set with its power
             ## weight, or a root per band frequency
-            groups = self._colour_groups(
-                pss, model, states, 2.0 * np.pi * float(np.min(fr)), f0, L,
+            groups = nc.colour_groups(
+                model, 2.0 * np.pi * float(np.min(fr)), f0, L,
                 'sampled_noise', warn_touch=False)
             scaled = [(G, s) for kind, G, s in groups if kind == 'fixed']
             perband = [G for kind, G, _s in groups if kind == 'band']
@@ -460,7 +461,7 @@ class _SampledNoise(object):
                     c = weight(2.0 * np.pi * np.abs(nu))
                     _pb += c * np.sum(np.abs(R) ** 2, axis=1)
                 ## (each per-band component hands back its ROOT, cached per
-                ## frequency: `_perband_root_sampler`)
+                ## frequency: `perband_root_sampler`)
                 for comp in perband:
                     for bi, nb in enumerate(nu):
                         R = E[bi] @ np.einsum(

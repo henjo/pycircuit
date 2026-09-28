@@ -25,6 +25,16 @@ from pycircuit.circuit.tests._shooting_elements import (_NuModNoise,
 ## STAGE 11 -- PSS: `method` now selects something, and the inverse is a solve.
 ## ---------------------------------------------------------------------------
 
+def _noise_seam(pac, **overrides):
+    """Hand `pac` a `NoiseComponents` subclass carrying `overrides` (a helper
+    as a staticmethod, a method as a function): the seam the tests of the
+    component model patch.  `del pac._noise_components` undoes it."""
+    from pycircuit.circuit.shooting._noise_components import NoiseComponents
+    cls = type('_Patched', (NoiseComponents,), overrides)
+    pac._noise_components = lambda pss, states=None: cls(pss, states)
+    return cls
+
+
 def _series_rlc(Lv=1e-3, Cv=1e-9, Rv=50.0, va=1.0):
     """Series RLC driven AT resonance, where |v(C)| = Q * va analytically."""
     import numpy as _np

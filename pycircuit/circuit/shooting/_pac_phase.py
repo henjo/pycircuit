@@ -3,6 +3,8 @@ aware), phase_psd and the lineshape.
 """
 import numpy as np
 import warnings
+from ._noise_components import psd_sqrt
+from ._numerics import insert_ref
 
 
 class _PhaseNoise(object):
@@ -94,7 +96,8 @@ class _PhaseNoise(object):
             try:
                 cy = self._cy_reduced(pss, float(w))
             except NotImplementedError:
-                cy = self._cy_at_states(pss, float(w), self._ppv_states(pss))
+                cy = self._noise_components(
+                    pss, self._ppv_states(pss)).cy_at_states(float(w))
         cy = np.asarray(cy)
         if cy.ndim == 3 and cy.shape[0] != S.shape[0]:
             raise ValueError(
@@ -113,7 +116,7 @@ class _PhaseNoise(object):
         try:
             x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
             irn = pss.irefnode
-            x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+            x0f = insert_ref(x0r, irn)
             _arows, _acols = pss._algebraic_adjoint_pattern(x0f)
             _idx2 = False
             if _arows and _acols and len(_arows) == len(_acols):
@@ -246,7 +249,7 @@ class _PhaseNoise(object):
         A source that FOLLOWS THE ORBIT: the
         l = 0 term of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per
         component, `G` its columns (signed where the element states them,
-        `_colour_groups`) -- `vbar^T (CY/2) vbar` when `G` does not move, and
+        `colour_groups`) -- `vbar^T (CY/2) vbar` when `G` does not move, and
         never above `coloured_diffusion_resolved` (Jensen).  ⚠ A modulated
         WHITE part enters through the root of its PSD, a convention: the
         sign of a white source is unobservable (`g xi` and `|g| xi` are one
@@ -444,7 +447,8 @@ class _PhaseNoise(object):
         ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
         E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :] / T      # (nl, n)
         states = self._ppv_states(pss)
-        model = self._cy_components_model(pss, 1e-3 * f0, f0, states=states)
+        nc = self._noise_components(pss, states)
+        model = nc.model(1e-3 * f0, f0)
         if model is None:
             raise NotImplementedError(
                 'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
@@ -454,7 +458,7 @@ class _PhaseNoise(object):
             pss, w0, cy=np.real(np.asarray(model.white))))
         wlo = 2.0 * np.pi * float(flo) if flo else 1e-3 * w0
         fixed, band = [], []
-        groups_all = self._colour_groups(pss, model, states, wlo, f0, L, what)
+        groups_all = nc.colour_groups(model, wlo, f0, L, what)
         for kind, G, s in groups_all:
             if kind == 'fixed':
                 V = E @ np.einsum('jm,jmr->jr', S, G)
@@ -482,7 +486,7 @@ class _PhaseNoise(object):
         white_dc = 0.0
         for _key, A in model.white_parts:
             v0 = E0 @ np.einsum('jm,jmr->jr', S,
-                                self._psd_sqrt(np.real(np.asarray(A))))
+                                psd_sqrt(np.real(np.asarray(A))))
             white_dc += 0.5 * float(np.sum(np.abs(v0) ** 2))
         fixed_dc = [(float(np.sum(np.abs(E0 @ np.einsum('jm,jmr->jr', S, G))
                                   ** 2)), s)
@@ -1374,8 +1378,8 @@ class _PhaseNoise(object):
             ## their monodromy TWIN, and the solve's own orbit differs from
             ## the twin's by the discretisation (-1.3e-4 in c(0+)/c on trap).
             ## History: `doc/shooting_history.md`, `PAC.frequency_aware_diffusion`.
-            cys = 0.5 * np.real(self._cy_at_states(
-                pss, w0, self._ppv_states(pss)[:n]))
+            cys = 0.5 * np.real(self._noise_components(
+                pss, self._ppv_states(pss)[:n]).cy_at_states(w0))
             quad = np.real(np.einsum('ij,ijk,ik->i', np.conj(S[:n]), cys, S[:n]))
         return float((quad * h[:n]).sum() / T)
 

@@ -3,6 +3,8 @@ folds), its AM/PM split and the band spread.
 """
 import numpy as np
 import warnings
+from ._noise_components import (exponent_columns, uniform_exponent,
+                               warn_signed_unused)
 
 
 class _DrivenNoise(object):
@@ -147,9 +149,9 @@ class _DrivenNoise(object):
             ## itself is the convolution after the rows are gathered.  The
             ## colour model is fitted ONCE here and serves both, per element
             ## so independent sources ADD in the coloured fold (see
-            ## `_cy_components_model`); its call is the summed model the
+            ## `NoiseComponents.model`); its call is the summed model the
             ## stop rule reads
-            colour = self._cy_components_model(pss, float(freq), f0)
+            colour = self._noise_components(pss).model(float(freq), f0)
             if colour is None:
                 cyfn = self._cy_cycle_averaged
             else:
@@ -287,7 +289,7 @@ class _DrivenNoise(object):
         sideband window truncates.)
 
         History: `doc/shooting_history.md`, `PAC._cy_harmonics`."""
-        return self._period_dft(pss, self._cy_at_states(pss, w))
+        return self._period_dft(pss, self._noise_components(pss).cy_at_states(w))
 
     @staticmethod
     def _sqrt_harmonics_of(Cs, dft=None):
@@ -305,7 +307,7 @@ class _DrivenNoise(object):
     def _cy_sqrt_harmonics(self, pss, w):
         """`B_k`: the DFT of the symmetric square root of `CY(x(t), w)` over
         the orbit, `(N, n, n)`, for the band-resolved (coloured) fold."""
-        return self._sqrt_harmonics_of(self._cy_at_states(pss, w),
+        return self._sqrt_harmonics_of(self._noise_components(pss).cy_at_states(w),
                                        lambda Bs: self._period_dft(pss, Bs))
 
     def _cyclostationary_fold(self, pss, freq, rows, model=None):
@@ -324,7 +326,7 @@ class _DrivenNoise(object):
         form is pinned against the stationary fold of a stationary FLICKER
         source through the same multiplier.
 
-        The colour model (`_cy_components_model`, fitted once in `pnoise`
+        The colour model (`NoiseComponents.model`, fitted once in `pnoise`
         and shared with the stop rule) and a vectorised pair sum keep the
         coloured call near the white one, exact to 1e-11 against the
         per-band evaluation, which remains the fallback for a colour the
@@ -356,8 +358,9 @@ class _DrivenNoise(object):
         ## frequencies, and gives every band with no further circuit calls;
         ## a colour not of that shape gets the full evaluation.
         Nn = Pa.shape[0]
+        nc = self._noise_components(pss)
         if model is None:
-            model = self._cy_components_model(pss, f, f0)
+            model = nc.model(f, f0)
         ## ⚠ A SPECIFICATION LIMIT, NOT AN IMPLEMENTATION ONE: a coloured
         ## source under a modulation that CHANGES SIGN is not representable
         ## by any fold built from a PSD -- R(t,t') = m(t) m(t') R_c(t-t')
@@ -377,13 +380,13 @@ class _DrivenNoise(object):
         ## ⚠ NOT WHEN EVERY COLOURED COMPONENT CARRIES ITS SIGN: then nothing
         ## below takes a square root of a PSD and there is nothing to warn of
         _signed = getattr(model, 'amplitude', None) or {}
-        self._warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
+        warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
         _all_signed = (getattr(model, 'flicker', None) is not None
                        and all(k_ in _signed and (
-                               self._uniform_exponent(B_, E_) is not None
-                               or self._exponent_columns(B_, E_, _signed[k_]) is not None)
+                               uniform_exponent(B_, E_) is not None
+                               or exponent_columns(B_, E_, _signed[k_]) is not None)
                                for k_, B_, E_ in model.flicker)
-                       and all(self._perband_mode(pss, k_, [2.0 * np.pi * f0], None)
+                       and all(nc.perband_mode(k_, [2.0 * np.pi * f0])
                                is not None for k_ in model.perband))
         Cs0 = np.asarray([np.abs(np.diag(np.fft.ifft(Pa, axis=0)[k])) for k in range(Nn)])
         dmax = Cs0.max(axis=0)
@@ -425,7 +428,7 @@ class _DrivenNoise(object):
         wband = lambda p: 2.0 * np.pi * abs(f - p * f0)
         ## ⚠⚠ ONE SQUARE ROOT PER INDEPENDENT COMPONENT, NOT OF THE SUM: a
         ## joint `sqrt(CY)` makes independent sources with different
-        ## modulations NON-ADDITIVE -- see `_cy_components_model`.
+        ## modulations NON-ADDITIVE -- see `NoiseComponents.model`.
         ## The white parts stay in the exact P-form (linear in `CY`, so
         ## additive already); each coloured part gets its own root, scaled
         ## per band when its exponent is uniform (`sqrt(c B) = sqrt(c)
@@ -444,7 +447,7 @@ class _DrivenNoise(object):
                     total += complex(rows[l] @ Pw[(lp - l) % Nn] @ np.conj(rows[lp]))
             groups = []
             for _key, Bc, EF in model.flicker:
-                ef = self._uniform_exponent(Bc, EF)
+                ef = uniform_exponent(Bc, EF)
                 if ef is not None:
                     ## the element's SIGNED amplitudes where it states them
                     ## (any factor with `W W^dagger = B` serves the pair sum;
@@ -455,8 +458,8 @@ class _DrivenNoise(object):
                                   (model.w1 / wband(p)) ** (0.5 * ef) * SB)
                 else:
                     ## signed columns grouped by their own exponents, where
-                    ## they carry one each (`_exponent_columns`)
-                    _split = (self._exponent_columns(Bc, EF, _signed[_key])
+                    ## they carry one each (`exponent_columns`)
+                    _split = (exponent_columns(Bc, EF, _signed[_key])
                               if _key in _signed else None)
                     if _split is not None:
                         for _Wg, _efg in _split:
@@ -466,18 +469,17 @@ class _DrivenNoise(object):
                         continue
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
                         Bc * (model.w1 / wband(p)) ** EF, _dft))
-            ## (the ONE element, `_one_element_cy`; its SIGNED amplitudes
-            ## where it states them, `_perband_amplitudes`, else its root)
+            ## (the ONE element, `one_element_cy`; its SIGNED amplitudes
+            ## where it states them, `perband_amplitudes`, else its root)
             ## History: `doc/shooting_history.md`, `PAC._cyclostationary_fold`.
             def _perband_at(p, key, mode):
                 if mode is not None:
-                    return _dft(self._perband_amplitudes(pss, key, wband(p),
-                                                         None, mode))
+                    return _dft(nc.perband_amplitudes(key, wband(p), mode))
                 return self._sqrt_harmonics_of(
-                    self._one_element_cy(pss, key, wband(p), None), _dft)
+                    nc.one_element_cy(key, wband(p)), _dft)
             for key in model.perband:
                 ## (its columns where its amplitudes fit its CY at f0)
-                mode = self._perband_mode(pss, key, [2.0 * np.pi * f0], None)
+                mode = nc.perband_mode(key, [2.0 * np.pi * f0])
                 groups.append(lambda p, key=key, mode=mode: _perband_at(p, key, mode))
         for sqrt_at in groups:
             cache = {}

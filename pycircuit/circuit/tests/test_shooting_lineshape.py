@@ -1956,7 +1956,7 @@ def test_noise_correlated_across_elements_is_one_joint_component():
     every coloured surface but pnoise and the sample series until
     2026-09-26, and those two took ONE root of the whole `CY`.  Now the
     whole circuit is one element with a white and a coloured component
-    (`_cy_colour_model`), so it must equal the SAME noise built as one
+    (`NoiseComponents.colour_model`), so it must equal the SAME noise built as one
     element spanning both nodes, which the per-element model splits the
     same way -- bit for bit, measured, stationary and modulated.  pnoise's
     old joint root was 4.0e-5 off that reference with the white part

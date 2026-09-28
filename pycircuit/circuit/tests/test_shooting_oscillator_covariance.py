@@ -14,6 +14,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
 import pytest
 import functools as _functools
+from pycircuit.circuit.shooting._noise_components import psd_sqrt
 from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _comparator_relaxation_oscillator,
     _exact_relaxation_oscillator_model,
@@ -619,7 +620,8 @@ def test_the_transverse_band_integral_is_the_lyapunov_route_for_a_white_source()
             fp = host._state_map()
             counts, states = pac._injection_points(host, fp)
             f0 = 1.0 / float(host.period)
-            W = pac._psd_sqrt(pac._cy_at_states(host, 2 * np.pi * f0, states))
+            W = psd_sqrt(pac._noise_components(host, states).cy_at_states(
+                2 * np.pi * f0))
             col = {'fp': fp, 'counts': counts, 'comps': [(('n',), W, 0.0)],
                    'w1': 2 * np.pi * f0, 'perband': [], 'state0': states[0],
                    'fmin': 1e-7 * f0, 'fmax': 0.5 * len(fp.steps) * f0,

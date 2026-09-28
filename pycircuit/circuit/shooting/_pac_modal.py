@@ -3,7 +3,8 @@ and correlation spectra, and the phase-mode split.
 """
 import numpy as np
 import warnings
-from ._numerics import _output_row
+from ._noise_components import orbit_states
+from ._numerics import _output_row, insert_ref
 from pycircuit.circuit._limiting import devices_at
 
 
@@ -364,7 +365,7 @@ class _ModalSpectra(object):
         where the element states them, else the root of its PSD (warned
         where that PSD touches zero) -- and its rows are the harmonics of
         `q_l^T G`, band `p` weighted by the colour at ``|w - p w0|``
-        (`_modal_modulated`, `_colour_groups`).  Gated against the same
+        (`_modal_modulated`, `NoiseComponents.colour_groups`).  Gated against the same
         physics built as a stationary source times the modulating voltage:
         every part to ~1e-13.
 
@@ -564,19 +565,19 @@ class _ModalSpectra(object):
         `_cy_reduced` still guards this sum).  Refuses the offsets where the
         linearised phase has broken down (`phase_psd`'s corner and power
         bound); `c_white` is the diffusion of the sources' WHITE part alone
-        (`_cy_components_model`); `cy_at(w)` the reduced `CY` at `w`."""
+        (`NoiseComponents.model`); `cy_at(w)` the reduced `CY` at `w`."""
         f0 = 1.0 / float(pss.period)
         w0 = 2.0 * np.pi * f0
         self._cy_reduced(pss, w0)
         self._phase_psd_gate(pss, offs, harmonic, what)
         x0r = np.asarray(pss._period_state[1], dtype=float).ravel()
         irn = pss.irefnode
-        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        x0f = insert_ref(x0r, irn)
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 'ignore', message='PAC: the noise of .* is not '
                 'thermal-plus-power-law')
-            model = self._cy_components_model(pss, 1e-3 * f0, f0, states=[x0f])
+            model = self._noise_components(pss, [x0f]).model(1e-3 * f0, f0)
         if model is None:
             raise NotImplementedError(
                 'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
@@ -591,19 +592,19 @@ class _ModalSpectra(object):
         """For `modal_spectrum` with a MODULATED source: `(c_white, P2,
         groups)` -- `c_white` Demir's `c` of the WHITE parts at their own
         states, `P2` half the harmonics of the white `CY(x(t))` (the
-        P-form), `groups` the coloured components (`_colour_groups`).  A
+        P-form), `groups` the coloured components (`colour_groups`).  A
         coloured circuit is first held to `phase_psd`'s validity, as
         `_modal_colour` does."""
         f0 = 1.0 / float(pss.period)
         w0 = 2.0 * np.pi * f0
         states = self._ppv_states(pss)
         if not coloured:
-            white = np.real(self._cy_at_states(pss, w0, states))
+            white = np.real(self._noise_components(pss, states).cy_at_states(w0))
             groups = []
         else:
             ao = self._phase_psd_gate(pss, offs, harmonic, what)
-            model = self._cy_components_model(pss, 1e-3 * f0, f0,
-                                              states=states)
+            nc = self._noise_components(pss, states)
+            model = nc.model(1e-3 * f0, f0)
             if model is None:
                 raise NotImplementedError(
                     'PAC.%s: this circuit\'s CY is not the sum of its '
@@ -611,9 +612,8 @@ class _ModalSpectra(object):
                     'so its white and coloured parts cannot be separated.  '
                     'PAC.pnoise(cyclostationary=True) gives the total.' % what)
             white = np.real(np.asarray(model.white))
-            groups = self._colour_groups(pss, model, states,
-                                         2.0 * np.pi * float(np.min(ao)), f0,
-                                         L, what)
+            groups = nc.colour_groups(model, 2.0 * np.pi * float(np.min(ao)),
+                                      f0, L, what)
         c_white = float(self._white_diffusion_at(pss, w0, cy=white))
         return c_white, 0.5 * self._period_dft(pss, white), groups
 
@@ -661,8 +661,8 @@ class _ModalSpectra(object):
         ## inserted a second time reads every unknown past the reference one
         ## slot late
         ## History: `doc/shooting_history.md`, `PAC._phase_mode_split`.
-        xf = self._orbit_states(pss, [np.asarray(pss.waveform[1],
-                                                 dtype=float)[:, 0]])[0]
+        xf = orbit_states(pss, [np.asarray(pss.waveform[1],
+                                           dtype=float)[:, 0]])[0]
         xr = np.delete(xf, irn)
         with devices_at(pss.cir, xf, pss.epar):
             i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel(), irn)

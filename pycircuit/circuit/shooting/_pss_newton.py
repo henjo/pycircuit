@@ -4,6 +4,7 @@ matrix-free Newton.
 import numpy as np
 import warnings
 import pycircuit.circuit.analysis as analysis
+from ._numerics import insert_ref
 from pycircuit.circuit._limiting import devices_at
 
 
@@ -101,7 +102,7 @@ class _ShootingNewton(object):
         try:
             xr = np.asarray(z[:-1], dtype=float)
             irn = self.irefnode
-            xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+            xf = insert_ref(xr, irn)
             with devices_at(self.cir, xf, self.epar):
                 r_dc = (np.asarray(self.cir.i(xf, self.epar), dtype=float).ravel()
                         + np.asarray(self.cir.u(0.0, self.epar, analysis='dc'),

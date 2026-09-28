@@ -3,6 +3,8 @@ pieces, the coloured band integral, event jitter.
 """
 import numpy as np
 import warnings
+from ._noise_components import (exponent_columns, psd_sqrt,
+                               uniform_exponent, warn_signed_unused)
 
 
 class _LyapunovCovariance(object):
@@ -10,23 +12,24 @@ class _LyapunovCovariance(object):
     step pieces, the coloured band integral, event jitter.  A theme of `PAC`
     (see `pac.py`)."""
 
-    def _lyap_cy(self, pss, w, xr):
-        """`CY` as the Lyapunov pieces read it: `_cy_at`, except while a
-        COLOURED covariance runs (`_white_cy` set by `covariance` /
-        `event_jitter`), when it is the WHITE part `A(x)` of the component
-        model alone -- the coloured part is added in the frequency domain
-        (`_coloured_covariance`), and `CY` at `w0` would count it again."""
-        white = getattr(self, '_white_cy', None)
+    def _lyap_cy(self, pss, w, xr, white=None):
+        """`CY` as the Lyapunov pieces read it: `_cy_at`, or for a COLOURED
+        covariance the WHITE part `A(x)` of the component model alone
+        (`white`, `_coloured_prepare`'s) -- the coloured part is added in
+        the frequency domain (`_coloured_covariance`), and `CY` at `w0`
+        would count it again."""
         if white is None:
             return self._cy_at(pss, w, xr)
         return white(xr)
 
-    def _lyapunov_pieces(self, pss, what):
+    def _lyapunov_pieces(self, pss, what, white=None):
         """The per-step maps, injections and one-period accumulation.
 
         Returns `(As, Qs, K1, M, m, n)`: the step maps `A_j`, the noise
         injections `Q_j`, the covariance `K1` reached after one period
-        starting from zero, the monodromy `M`, and the two widths.
+        starting from zero, the monodromy `M`, and the two widths.  `white`:
+        the white part of a COLOURED source's `CY` (`_coloured_prepare`),
+        read in place of `CY`; without it a coloured source is refused.
 
         ⚠ SHARED BY THE DRIVEN AND AUTONOMOUS ROUTES ON PURPOSE.  The two
         differ only in what they do with `I - M kron M`: `covariance`
@@ -38,20 +41,20 @@ class _LyapunovCovariance(object):
 
         History: `doc/shooting_history.md`, `PAC._lyapunov_pieces`.
         """
-        if getattr(self, '_white_cy', None) is None:
-            ## (a coloured `covariance` / `event_jitter` has set the WHITE
+        if white is None:
+            ## (a coloured `covariance` / `event_jitter` hands in the WHITE
             ## part for the pieces and adds the coloured one itself)
             self._refuse_coloured(pss, what)
         fp = pss.factored_period()
         if fp.is_glm:
             ## reached with monodromy='native' only (`_lyapunov_host`)
-            return self._lyapunov_pieces_glm(pss, fp.state_map(), what)
+            return self._lyapunov_pieces_glm(pss, fp.state_map(), what, white)
         if fp.is_stage:
             ## the stage method's per-step map + its stage injection (or the
             ## SAME exact Van Loan integral) -- see `_lyapunov_pieces_stage`
-            return self._lyapunov_pieces_stage(pss, fp, what)
+            return self._lyapunov_pieces_stage(pss, fp, what, white)
         if not fp.is_pair:
-            return self._lyapunov_pieces_plain(pss, fp, what)
+            return self._lyapunov_pieces_plain(pss, fp, what, white)
         m = pss.cir.n - 1
         n = fp.width
         hs = np.diff(np.asarray(fp.times, dtype=float))
@@ -66,7 +69,8 @@ class _LyapunovCovariance(object):
         _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
                        pss.irefnode, axis=0)
         cys = [np.real(self._lyap_cy(pss, w0,
-                                     _W[:, min(k + 1, _W.shape[1] - 1)]))
+                                     _W[:, min(k + 1, _W.shape[1] - 1)],
+                                     white))
                for k in range(len(fp.steps))]
 
         ## the C ring as the forward recursion sees it -- see the replays
@@ -113,7 +117,7 @@ class _LyapunovCovariance(object):
         M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
         return As, Qs, K, M, m, n
 
-    def _lyapunov_pieces_plain(self, pss, fp, what):
+    def _lyapunov_pieces_plain(self, pss, fp, what, white=None):
         """`_lyapunov_pieces` for the PLAIN path — the one-step companions.
 
         ⚠ THE PER-STEP STATE DEPENDS ON THE METHOD, and that is the whole
@@ -161,7 +165,8 @@ class _LyapunovCovariance(object):
         _W = np.delete(np.asarray(pss.waveform[1], dtype=float),
                        pss.irefnode, axis=0)
         cys = [np.real(self._lyap_cy(pss, w0,
-                                     _W[:, min(k + 1, _W.shape[1] - 1)]))
+                                     _W[:, min(k + 1, _W.shape[1] - 1)],
+                                     white))
                for k in range(len(fp.steps))]
         C_open = np.asarray(fp.opening[0], dtype=float)
         prevC = [C_open] + [np.asarray(st[1], dtype=float)
@@ -312,7 +317,7 @@ class _LyapunovCovariance(object):
         Qd = 0.5 * (Qd + Qd.T)
         return Emb @ Qd @ Emb.T
 
-    def _lyapunov_pieces_glm(self, pss, sm, what):
+    def _lyapunov_pieces_glm(self, pss, sm, what, white=None):
         """`_lyapunov_pieces` on a Nordsieck GLM's OWN map (`monodromy=
         'native'`; the default hands a GLM run's covariance to a radau twin,
         `_lyapunov_host`).
@@ -367,7 +372,8 @@ class _LyapunovCovariance(object):
             for i, y in enumerate(st.rec.Ys):
                 if wts[i] > 0.0:
                     CY += wts[i] * np.real(np.asarray(self._lyap_cy(
-                        pss, w0, np.delete(np.asarray(y, dtype=float), irn)),
+                        pss, w0, np.delete(np.asarray(y, dtype=float), irn),
+                        white),
                         dtype=complex))
             Q = Tj @ (CY / (2.0 * st.rec.h)) @ Tj.T
             Qs.append(0.5 * (Q + Q.T))
@@ -393,7 +399,7 @@ class _LyapunovCovariance(object):
             seq.append((0.5 * (K + K.T))[:n, :n])
         return seq
 
-    def _lyapunov_pieces_stage(self, pss, fp, what):
+    def _lyapunov_pieces_stage(self, pss, fp, what, white=None):
         """`_lyapunov_pieces` for a Runge-Kutta stage method's Floquet source
         (Radau IIA, TR-BDF2, ESDIRK).
 
@@ -414,7 +420,7 @@ class _LyapunovCovariance(object):
 
         History: `doc/shooting_history.md`, `PAC._lyapunov_pieces_stage`.
         """
-        if getattr(self, '_white_cy', None) is None:
+        if white is None:
             self._refuse_coloured(pss, what)
         m = pss.cir.n - 1
         n = m
@@ -427,12 +433,12 @@ class _LyapunovCovariance(object):
             xk = _W[:, min(k + 1, _W.shape[1] - 1)]
             Cn = np.asarray(pss._C_at(xk), dtype=float)
             Gn = np.asarray(pss._G_at(xk), dtype=float)
-            CYn = self._lyap_cy(pss, w0, xk)
+            CYn = self._lyap_cy(pss, w0, xk, white)
             A_k = np.column_stack([
                 np.asarray(pss._monodromy_matvec_stage([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
-            Q_k = self._stage_injection(pss, fp, k, w0)
+            Q_k = self._stage_injection(pss, fp, k, w0, white)
             Qs.append(Q_k if Q_k is not None
                       else self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
         K = np.zeros((n, n))
@@ -442,7 +448,7 @@ class _LyapunovCovariance(object):
                              for e in np.eye(n)])
         return As, Qs, K, M, m, n
 
-    def _stage_injection(self, pss, fp, k, w):
+    def _stage_injection(self, pss, fp, k, w, white=None):
         """The per-step process-noise covariance `Q_k` of a STAGE method with
         the source entering EVERY stage, or None when the period is not a
         stage method's (then the caller keeps its end-of-step Van Loan).
@@ -489,7 +495,8 @@ class _LyapunovCovariance(object):
                 if wts[i] <= 0.0:
                     continue
                 yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
-                CYi = np.real(np.asarray(self._lyap_cy(pss, w, yi), dtype=complex))
+                CYi = np.real(np.asarray(self._lyap_cy(pss, w, yi, white),
+                                         dtype=complex))
                 Q += wts[i] * self._vanloan_step_injection(
                     np.asarray(pss._C_at(yi), dtype=float),
                     np.asarray(pss._G_at(yi), dtype=float), CYi, h)
@@ -497,7 +504,8 @@ class _LyapunovCovariance(object):
         Q = np.zeros((m, m))
         for i in range(s):
             yi = np.delete(np.asarray(states[k * s + i], dtype=float), irn)
-            CYi = np.real(np.asarray(self._lyap_cy(pss, w, yi), dtype=complex))
+            CYi = np.real(np.asarray(self._lyap_cy(pss, w, yi, white),
+                                         dtype=complex))
             Ti = st.source_response(i)
             Q += Ti @ (CYi / (2.0 * h * bvec[i])) @ Ti.T
         return 0.5 * (Q + Q.T)
@@ -693,21 +701,19 @@ class _LyapunovCovariance(object):
         pss = pss._lyapunov_host()
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'event_jitter')
-        try:
-            As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
-            bordered = self._event_closure(pss, As, Qs, M, m, n)
-            if bordered is None:
-                raise ValueError(
-                    'PAC.event_jitter: this Floquet host carries no event '
-                    'columns (see the warning above); solve with method=\'radau\'.')
-            M_tot, Q_tot, _samples, pieces = bordered
-            S = np.eye(n * n) - np.kron(M_tot, M_tot)
-            K0 = np.linalg.solve(S, Q_tot.reshape(-1)).reshape(n, n)
-            K0 = 0.5 * (K0 + K0.T)
-            dth, Gi, D = pieces['dth'], pieces['Gi'], pieces['D']
-            cov = dth @ K0 @ dth.T + Gi @ D @ Gi.T
-        finally:
-            self._white_cy = None
+        As, Qs, K1, M, m, n = self._lyapunov_pieces(
+            pss, 'covariance', white=None if col is None else col['white'])
+        bordered = self._event_closure(pss, As, Qs, M, m, n)
+        if bordered is None:
+            raise ValueError(
+                'PAC.event_jitter: this Floquet host carries no event '
+                'columns (see the warning above); solve with method=\'radau\'.')
+        M_tot, Q_tot, _samples, pieces = bordered
+        S = np.eye(n * n) - np.kron(M_tot, M_tot)
+        K0 = np.linalg.solve(S, Q_tot.reshape(-1)).reshape(n, n)
+        K0 = 0.5 * (K0 + K0.T)
+        dth, Gi, D = pieces['dth'], pieces['Gi'], pieces['D']
+        cov = dth @ K0 @ dth.T + Gi @ D @ Gi.T
         if col is not None:
             ## the crossings' coloured motion, from the same bordered forced
             ## responses (`_forced_responses`' shifts)
@@ -739,9 +745,9 @@ class _LyapunovCovariance(object):
 
     def _coloured_prepare(self, pss, fmin, fmax, points_per_decade, what):
         """None on a circuit whose sources are all white.  Otherwise the
-        coloured components and the band, and the Lyapunov pieces are set to
-        read the WHITE part of each source (`_white_cy`, `_lyap_cy`) -- the
-        caller clears it.  Refuses what cannot be integrated: no `fmin` (a
+        coloured components and the band, and under `'white'` the WHITE part
+        of each source, `xr -> A(x)`, for the Lyapunov pieces to read in
+        place of `CY` (`_lyap_cy`).  Refuses what cannot be integrated: no `fmin` (a
         1/f variance grows as ``ln(fmax/fmin)`` without limit), a circuit
         whose `CY` is not the sum of its elements'.  A colour that is not a
         power law is taken three ways: STATIONARY (its own `CY(nu)`),
@@ -771,6 +777,7 @@ class _LyapunovCovariance(object):
                 '(N/2T = %.6g Hz); got fmin = %.6g, fmax = %.6g.'
                 % (what, fnyq, fmin, fmax))
         counts, states = self._injection_points(pss, fp)
+        nc = self._noise_components(pss, states)
         with warnings.catch_warnings():
             ## (the per-band FOLD's caveat -- one root per element -- does not
             ## apply here: a per-band component enters through its `CY`
@@ -778,7 +785,7 @@ class _LyapunovCovariance(object):
             warnings.filterwarnings(
                 'ignore', message='PAC: the noise of .* is not '
                 'thermal-plus-power-law')
-            model = self._cy_components_model(pss, fmin, f0, states)
+            model = nc.model(fmin, f0)
         if model is None:
             raise NotImplementedError(
                 'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
@@ -803,8 +810,8 @@ class _LyapunovCovariance(object):
         white_split = []
         for key in model.perband:
             ## classified from the element's signed amplitudes where it
-            ## states them, else from its `CY` (`_perband_classify`)
-            kind, Cs, Ws, mode = self._perband_classify(pss, key, states, wt)
+            ## states them, else from its `CY` (`perband_classify`)
+            kind, Cs, Ws, mode = nc.perband_classify(key, wt)
             if mode == 'white':
                 ## ⚠ ITS WHITE REMAINDER JOINS THE WHITE PART: the band
                 ## integral covers [fmin, fmax] only, and a white source
@@ -813,7 +820,7 @@ class _LyapunovCovariance(object):
                 ## source).  Its signed columns alone are read per band
                 ## frequency -- right for any shape of theirs.
                 white_split.append(key)
-                root = self._perband_root(pss, key, states, 'signed')
+                root = nc.perband_root(key, 'signed')
                 nonseparable.append((key, lambda nu, root=root: root(
                     2.0 * np.pi * nu)))
                 continue
@@ -843,13 +850,13 @@ class _LyapunovCovariance(object):
                     % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
             if kind == 'separable':
                 Cref = Cs[wt.index(wref)]
-                W0 = self._psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
+                W0 = psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
                 jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))),
                                                Cref.shape)
                 separable.append((key, W0, states[jr], (pi_, qi),
                                   complex(Cref[jr, pi_, qi])))
             else:
-                root = self._perband_root(pss, key, states, mode)
+                root = nc.perband_root(key, mode)
                 nonseparable.append((key, lambda nu, root=root: root(
                     2.0 * np.pi * nu)))
                 warnings.warn(
@@ -859,16 +866,16 @@ class _LyapunovCovariance(object):
                     'quasi-static model pnoise and sampled_variance use per '
                     'band, and costly here.'
                     % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
-        self._warn_signed_unused(model, 'PAC.%s' % what)
+        warn_signed_unused(model, 'PAC.%s' % what)
         amp = getattr(model, 'amplitude', None) or {}
         comps = []
         for key, B, EF in model.flicker:
-            ef = self._uniform_exponent(B, EF)
-            split = (self._exponent_columns(B, EF, amp[key])
+            ef = uniform_exponent(B, EF)
+            split = (exponent_columns(B, EF, amp[key])
                      if ef is None and key in amp else None)
             if split is not None:
                 ## the element's signed columns, grouped by their own
-                ## exponents: a uniform power law each (`_exponent_columns`)
+                ## exponents: a uniform power law each (`exponent_columns`)
                 comps.extend((key, np.asarray(Wg, dtype=complex), float(efg))
                              for Wg, efg in split)
                 continue
@@ -880,7 +887,7 @@ class _LyapunovCovariance(object):
                 parts = self._split_by_exponent(B, EF)
                 if parts is not None:
                     for Bg, efg in parts:
-                        comps.append((key, np.asarray(self._psd_sqrt(Bg),
+                        comps.append((key, np.asarray(psd_sqrt(Bg),
                                                       dtype=complex), efg))
                     continue
                 ## otherwise no one amplitude to replay: the moving-shape way,
@@ -888,7 +895,7 @@ class _LyapunovCovariance(object):
                 ## frequency (its white part is already in `white`: the
                 ## element's own `CY` would count it twice)
                 nonseparable.append((key, lambda nu, B=B, EF=EF, w1=model.w1:
-                                     self._psd_sqrt(
+                                     psd_sqrt(
                                          B * (w1 / (2.0 * np.pi * nu)) ** EF)))
                 warnings.warn(
                     'PAC.%s: the coloured noise of %s carries different '
@@ -900,9 +907,9 @@ class _LyapunovCovariance(object):
                 continue
             ## ⚠ THE SIGN: the element's stated amplitudes where it has them
             ## (`W W^H = B` with the sign of the modulation); `sqrt(B)` is
-            ## the sign-blind |m| process (`_warn_signed_unused` said so)
+            ## the sign-blind |m| process (`warn_signed_unused` said so)
             W = amp.get(key)
-            W = np.asarray(W if W is not None else self._psd_sqrt(B), dtype=complex)
+            W = np.asarray(W if W is not None else psd_sqrt(B), dtype=complex)
             comps.append((key, W, float(ef)))
         ## the white part of each source, at the states the pieces read:
         ## the injection points from the batch model, any other state (a
@@ -915,8 +922,9 @@ class _LyapunovCovariance(object):
             ## elements at `sts` (white: read at one frequency)
             out = 0.0
             for key in white_split:
-                C_ = self._one_element_cy(pss, key, wref, sts)
-                W_ = self._one_element_amplitudes(pss, key, wref, sts)
+                at = self._noise_components(pss, sts)
+                C_ = at.one_element_cy(key, wref)
+                W_ = at.one_element_amplitudes(key, wref)
                 out = out + (C_ - np.einsum('kis,kjs->kij', W_, W_.conj()))
             return out
         rem = remainder(states) if white_split else None
@@ -932,7 +940,7 @@ class _LyapunovCovariance(object):
             if key not in cache:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
-                    mdl = self._cy_components_model(pss, fmin, f0, states=[xr])
+                    mdl = self._noise_components(pss, [xr]).model(fmin, f0)
                 if mdl is None:
                     raise NotImplementedError(
                         'PAC.%s: the circuit\'s CY, taken as a whole, is not '
@@ -942,8 +950,8 @@ class _LyapunovCovariance(object):
                 cache[key] = np.asarray(mdl.white[0], dtype=complex) + (
                     remainder([xr])[0] if white_split else 0.0)
             return cache[key]
-        self._white_cy = white
         return {'fp': fp, 'counts': counts, 'comps': comps, 'w1': model.w1,
+                'white': white,
                 'perband': perband, 'separable': separable,
                 'nonseparable': nonseparable, 'state0': states[0],
                 'states': states,
@@ -1093,10 +1101,11 @@ class _LyapunovCovariance(object):
                     per_k.append(resp(pss, fp, batch, e))
                 out = []
                 for i, nu in enumerate(batch):
-                    ## (the ONE element: `_element_cy_samples` evaluated
+                    ## (the ONE element: `element_cy_samples` evaluated
                     ## every element to keep this one, per band frequency)
-                    cy = np.asarray(self._one_element_cy(
-                        pss, key, 2.0 * np.pi * nu, [col['state0']])[0],
+                    cy = np.asarray(self._noise_components(
+                        pss, [col['state0']]).one_element_cy(
+                            key, 2.0 * np.pi * nu)[0],
                         dtype=complex)[np.ix_(supp, supp)]
                     Y = np.array([node_responses(pk[0][i], nu) for pk in per_k])
                     Dd = None
@@ -1116,7 +1125,8 @@ class _LyapunovCovariance(object):
             Wr = reduced(W0)
 
             def shape(nu, key=key, xref=xref, pq=pq, cref=cref):
-                c = self._one_element_cy(pss, key, 2.0 * np.pi * nu, [xref])[0]
+                c = self._noise_components(pss, [xref]).one_element_cy(
+                    key, 2.0 * np.pi * nu)[0]
                 return float(np.real(c[pq] / cref))
             for s_ in range(Wr.shape[2]):
                 u_points = [Wr[offs[j]:offs[j + 1], :, s_] for j in range(N)]
@@ -1339,22 +1349,20 @@ class _LyapunovCovariance(object):
         ## (`_coloured_covariance`)
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'covariance')
-        try:
-            As, Qs, K1, M, m, n = self._lyapunov_pieces(pss, 'covariance')
-            ## a staged solve closes on the TOTAL monodromy with the events'
-            ## noise-driven motion in the injection -- see `_event_closure`
-            bordered = self._event_closure(pss, As, Qs, M, m, n)
-            if bordered is not None:
-                M, K1, _samples, _pieces = bordered
-            S = np.eye(n * n) - np.kron(M, M)
-            K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
-            K0 = 0.5 * (K0 + K0.T)
-            seq = None
-            if samples:
-                seq = (_samples(K0) if bordered is not None
-                       else self._lyap_walk(As, Qs, K0))
-        finally:
-            self._white_cy = None
+        As, Qs, K1, M, m, n = self._lyapunov_pieces(
+            pss, 'covariance', white=None if col is None else col['white'])
+        ## a staged solve closes on the TOTAL monodromy with the events'
+        ## noise-driven motion in the injection -- see `_event_closure`
+        bordered = self._event_closure(pss, As, Qs, M, m, n)
+        if bordered is not None:
+            M, K1, _samples, _pieces = bordered
+        S = np.eye(n * n) - np.kron(M, M)
+        K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
+        K0 = 0.5 * (K0 + K0.T)
+        seq = None
+        if samples:
+            seq = (_samples(K0) if bordered is not None
+                   else self._lyap_walk(As, Qs, K0))
         if col is not None:
             Kc, _dth = self._coloured_covariance(pss, col, m, n,
                                                  all_nodes=bool(samples))

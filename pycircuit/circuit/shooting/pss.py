@@ -12,7 +12,7 @@ from pycircuit.circuit.circuit import gnd
 from pycircuit.post import InternalResultDict
 import pycircuit.circuit.analysis as analysis
 from ._numerics import freq_analysis
-from ._numerics import periodic_spline_weights
+from ._numerics import insert_ref, periodic_spline_weights
 from ._pss_accuracy import _AccuracyChecks
 from ._pss_events import _StateEvents
 from ._pss_grids import _PeriodGrids
@@ -1455,8 +1455,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## starts when the shooting does.
             from pycircuit.circuit.transient import Transient
             _xred = np.asarray(x, dtype=float).reshape(-1)
-            _xfull = np.concatenate((_xred[:irefnode],
-                                     np.zeros(1), _xred[irefnode:]))
+            _xfull = insert_ref(_xred, irefnode)
             _pre = Transient(
                 self.cir, toolkit=self.toolkit, reltol=self.par.reltol,
                 iabstol=self.par.iabstol, vabstol=self.par.vabstol,

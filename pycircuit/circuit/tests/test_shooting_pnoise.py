@@ -17,6 +17,7 @@ import functools as _functools
 from pycircuit.circuit.tests._shooting_elements import (_NuModNoise,
     _NuMult,
     _PllMultPd)
+from pycircuit.circuit.tests._shooting_fixtures import _noise_seam
 from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _a9_vdp,
     _adjoint_ladder,
@@ -1595,12 +1596,12 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     ## route did run.)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        assert pac._cy_colour_model(pss, 0.1e6, f0) is not None
-        pac._colour_fit = lambda Cs, ws: None
+        assert pac._noise_components(pss).colour_model(0.1e6, f0) is not None
+        _noise_seam(pac, colour_fit=staticmethod(lambda Cs, ws: None))
         try:
             sfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
-            del pac._colour_fit
+            del pac._noise_components
     assert sc != sfull and abs(sc / sfull - 1.0) < 1e-9, (sc, sfull)
 
     cy_orig = c.CY
@@ -1612,16 +1613,16 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     c.CY = cy_lorentz
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        assert pac._cy_colour_model(pss, 0.1e6, f0) is None
+        assert pac._noise_components(pss).colour_model(0.1e6, f0) is None
         sl, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         consulted = []
-        pac._cy_colour_model = lambda *a_, **k_: consulted.append(1)
+        _noise_seam(pac, colour_model=lambda *a_, **k_: consulted.append(1))
         try:
             slfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
-            del pac._cy_colour_model
+            del pac._noise_components
     ## ⚠ vacuous if the patch is never looked up
-    assert consulted, 'the patched _cy_colour_model was never consulted'
+    assert consulted, 'the patched colour_model was never consulted'
     assert abs(sl / slfull - 1.0) < 1e-12, (sl, slfull)
     assert abs(sl / sc - 1.0) > 1e-3, (sl, sc)
 
@@ -2041,22 +2042,24 @@ def test_a_weightless_entry_cannot_fail_a_component_into_the_sign_blind_route():
     it now says so.
     """
     import warnings as _w
+    from pycircuit.circuit.shooting._noise_components import (
+        uniform_exponent, warn_signed_unused)
     B = np.zeros((3, 2, 2), dtype=complex)
     EF = np.ones((3, 2, 2))
     B[0, 0, 0] = 7.2e-20
     B[1, 0, 0] = 1.4e-31
     EF[1, 0, 0] = 1.0 - 2.2e-9                    # the 200-point offender
-    assert PAC._uniform_exponent(B, EF) == 1.0
+    assert uniform_exponent(B, EF) == 1.0
     B[2, 0, 0] = 7.1e-9 * 7.2e-20
     EF[2, 0, 0] = 1.0 + 8.1e-9                    # the 1000-point offender
-    assert PAC._uniform_exponent(B, EF) == 1.0
+    assert uniform_exponent(B, EF) == 1.0
     ## the reference is the LARGEST entry's exponent, wherever it sits
-    assert PAC._uniform_exponent(B[::-1], EF[::-1]) == 1.0
+    assert uniform_exponent(B[::-1], EF[::-1]) == 1.0
     ## presence: a genuinely different exponent still fails, even when light
     EF[2, 0, 0] = 2.0
-    assert PAC._uniform_exponent(B, EF) is None
+    assert uniform_exponent(B, EF) is None
     B[2, 0, 0] = 1e-12 * 7.2e-20                  # too light to cost 1e-9
-    assert PAC._uniform_exponent(B, EF) == 1.0
+    assert uniform_exponent(B, EF) == 1.0
 
     ## the visible fallback
     def model():
@@ -2066,12 +2069,12 @@ def test_a_weightless_entry_cannot_fail_a_component_into_the_sign_blind_route():
     model.flicker = [(('M1',), B, EF)]
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter('always')
-        PAC._warn_signed_unused(model, 'here')
+        warn_signed_unused(model, 'here')
     assert len(rec) == 1 and 'SIGN-' in str(rec[0].message), rec
     EF[2, 0, 0] = 1.0
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter('always')
-        PAC._warn_signed_unused(model, 'here')
+        warn_signed_unused(model, 'here')
     assert not rec
 
 
@@ -2145,7 +2148,7 @@ def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
             assert pss.converged
             pac = PAC(c, toolkit=circuit.numeric)
             if blind:
-                pac._signed_amplitudes = lambda *a_, **k_: {}
+                _noise_seam(pac, signed_amplitudes=lambda *a_, **k_: {})
             o = [str(n) for n in c.nodes].index('out')
             s, _nsb = pac.pnoise(pss, 1e-3 * F, o, maxsidebands=40,
                                  cyclostationary=True)

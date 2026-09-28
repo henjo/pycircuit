@@ -4,7 +4,7 @@ modes and the continuous adjoint.
 import numpy as np
 import warnings
 from pycircuit.circuit.analysis import remove_row_col
-from ._numerics import _arnoldi_gmres
+from ._numerics import _arnoldi_gmres, insert_ref
 from .events import EventColumns
 
 
@@ -554,7 +554,7 @@ class _PPVFloquet(object):
         n = fp.width
         irn = self.irefnode
         x0r = np.asarray(self._period_state[1], dtype=float).ravel()
-        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        x0f = insert_ref(x0r, irn)
         qf = -(np.asarray(self.cir.i(x0f)).ravel()
                + np.asarray(self.cir.u(0.0,
                                        analysis=self.par.analysis)).ravel())
@@ -1079,7 +1079,7 @@ class _PPVFloquet(object):
         ## (lifted into `_ppv_propagate`), then the per-step phase
         irn = self.irefnode
         x0r = np.asarray(self._period_state[1], dtype=float).ravel()
-        x0f = np.concatenate((x0r[:irn], np.zeros(1), x0r[irn:]))
+        x0f = insert_ref(x0r, irn)
         _alg_rows, _alg_cols = self._algebraic_adjoint_pattern(x0f)
         states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols)
         st = np.asarray(states_pair, dtype=complex)

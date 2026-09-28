@@ -16,6 +16,8 @@ import pytest
 import functools as _functools
 from pycircuit.circuit.tests._shooting_elements import (_NuMult,
     _SwitchHdl)
+from pycircuit.circuit.shooting._noise_components import separable
+from pycircuit.circuit.tests._shooting_fixtures import _noise_seam
 from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _KB,
     _ModLorentzCtl,
@@ -325,22 +327,25 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     fp = host._state_map()
     _cnt, states = pac._injection_points(host, fp)
     wsp = [2 * np.pi * f for f in (1e3, 1e6, 1e7, 5e7)]
-    assert PAC._separable([pac._one_element_cy(host, ('n',), w, states) for w in wsp])
+    assert separable([pac._noise_components(host, states).one_element_cy(('n',), w)
+                      for w in wsp])
     p5, o5, pac5 = build('element', shape=0.5, npts=100)
     h5 = p5._lyapunov_host()
     _c5, st5 = pac5._injection_points(h5, h5._state_map())
-    assert not PAC._separable([pac5._one_element_cy(h5, ('n',), w, st5) for w in wsp])
+    assert not separable([pac5._noise_components(h5, st5).one_element_cy(('n',), w)
+                          for w in wsp])
     p0, o0, pac0 = build('element', npts=100)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         Ks = pac0.covariance(p0, fmin=fmin)[o0, o0]
-        ## (on the instance: the class keeps its own)
+        ## (on the instance's factory: the class keeps its own)
         consulted = []
-        pac0._separable = lambda Cs, tol=1e-9: consulted.append(1) or False
+        _noise_seam(pac0, separable=staticmethod(
+            lambda Cs, tol=1e-9: consulted.append(1) or False))
         Kn = pac0.covariance(p0, fmin=fmin)[o0, o0]
     ## ⚠ the equality below holds VACUOUSLY if the patch is never looked up
-    ## (a refactor that stops reaching `_separable` through the instance)
-    assert consulted, 'the patched _separable was never consulted'
+    ## (a refactor that stops reaching `separable` through the factory)
+    assert consulted, 'the patched separable was never consulted'
     assert abs(Kn / Ks - 1.0) < 1e-12, Kn / Ks - 1.0
     ## the moving-shape path meets the separable one as the corner stops
     pt, ot, pact = build('element', shape=1e-6, npts=100)
@@ -1065,7 +1070,7 @@ class _ModLorentz(IS):
 
 def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
     """A colour that is NOT a power law (2026-09-25): `IS(noiseTau)`, a
-    Lorentzian ``P / (1 + (w tau)^2)``.  `_cy_components_model` calls it
+    Lorentzian ``P / (1 + (w tau)^2)``.  `NoiseComponents.model` calls it
     per-band, and the band integral refused it; a STATIONARY one enters
     through its own `CY(nu)` and unit sources on its support (no square
     root: `_coloured_covariance`).

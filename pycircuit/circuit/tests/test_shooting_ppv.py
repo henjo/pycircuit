@@ -2161,7 +2161,7 @@ def test_the_orbit_is_read_full_width_past_the_reference_node():
     assert abs(abs(complex(modes[k]['lam'])) - 1.0) < 1e-9
     w = 2.0 * np.pi / float(pss.period)
     fp = pss.factored_period()
-    Cs = pac._cy_at_states(pss, w)
+    Cs = pac._noise_components(pss).cy_at_states(w)
     hs = pac._period_weights(np.asarray(fp.times, dtype=float), Cs.shape[0],
                              float(fp.T), pss)
     ref = np.tensordot(hs, Cs, axes=1) / float(hs.sum())

@@ -23,6 +23,7 @@ from pycircuit.circuit.tests._shooting_elements import (_NuModNoise,
     _SgnPsdFlicker,
     _SwitchFlickerHdl,
     _SwitchHdl)
+from pycircuit.circuit.tests._shooting_fixtures import _noise_seam
 from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _KB,
     _ModLorentzCtl,
@@ -45,7 +46,7 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     sources").  Every band frequency and sideband evaluated EVERY element
     at every injection point, again for every instant: 5.5 M leaf
     evaluations for 38 band frequencies (75 of 79 s).  Now the element
-    alone (`_one_element_cy`, stamped straight into the reduced matrix),
+    alone (`NoiseComponents.one_element_cy`, stamped straight into the reduced matrix),
     the root cached per frequency, and the component classified once:
     STATIONARY (one point), SEPARABLE (the root per point once, times
     ``sqrt(s(w))`` from one point), else every point.  Measured on a driven
@@ -92,7 +93,8 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
         calls[0] = 0
         fast = sv(pss, pac)
         n_fast = calls[0]
-        pac._separable = lambda Cs, tol=1e-9: False       # the general path
+        _noise_seam(pac, separable=staticmethod(
+            lambda Cs, tol=1e-9: False))                   # the general path
         calls[0] = 0
         general = sv(pss, pac)
         n_general = calls[0]
@@ -106,23 +108,25 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     ## per-frequency cache changes nothing
     pss, pac = build(0.5)
     st = pac._stage_states(pss, pss._state_map())[:7]
-    a = pac._one_element_cy(pss, ('n',), 2 * np.pi * 3e5, st)
+    a = pac._noise_components(pss, st).one_element_cy(('n',), 2 * np.pi * 3e5)
     ## ⚠ each equality holds VACUOUSLY if its patch is never looked up (a
-    ## refactor that stops reaching the seam through the instance): count
+    ## refactor that stops reaching the seam through the factory): count
     walked, uncached = [], []
-    pac._leaf_access = lambda cir, key, irn: walked.append(1)
-    b = pac._one_element_cy(pss, ('n',), 2 * np.pi * 3e5, st)
-    del pac._leaf_access
-    assert walked, 'the patched _leaf_access was never consulted'
+    walk = _noise_seam(pac, leaf_access=staticmethod(
+        lambda cir, key, irn: walked.append(1)))
+    b = walk(pss, st).one_element_cy(('n',), 2 * np.pi * 3e5)
+    del pac._noise_components
+    assert walked, 'the patched leaf_access was never consulted'
     assert np.array_equal(a, b)
     cached = sv(pss, pac)
-    ## (the moving shape's cache is `_perband_root`'s since 2026-09-28, which
+    ## (the moving shape's cache is `perband_root`'s since 2026-09-28, which
     ## carries an element's signed columns; this element states none)
-    pac._perband_root = lambda pss_, key, states, signed: (
-        uncached.append(1), lambda w: pac._psd_sqrt(
-            pac._one_element_cy(pss_, key, float(w), states)))[1]
+    def perband_root(self, key, mode):
+        uncached.append(1)
+        return lambda w: self.psd_sqrt(self.one_element_cy(key, float(w)))
+    _noise_seam(pac, perband_root=perband_root)
     assert np.array_equal(sv(pss, pac), cached)
-    assert uncached, 'the patched _perband_root was never consulted'
+    assert uncached, 'the patched perband_root was never consulted'
 
 
 def test_the_sampled_variance_is_the_covariance_at_that_instant_for_white_sources():
@@ -1415,7 +1419,7 @@ def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce(
     ⚠ One more thing the sweep found: at 0.375 alone the two folds read
     bit-identical -- one orbit sample at Vds ~ 0 carried a flicker entry at
     1e-12 of scale whose fitted exponent was rounding, and that failed the
-    whole component into the per-band route.  See `_uniform_exponent`.
+    whole component into the per-band route.  See `uniform_exponent`.
     """
     import os
     import warnings as _w
@@ -1461,12 +1465,12 @@ def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce(
                 for tag in ('signed', 'blind'):
                     pac = PAC(cir, toolkit=circuit.numeric)
                     if tag == 'blind':
-                        pac._signed_amplitudes = lambda *a_, **k_: {}
+                        _noise_seam(pac, signed_amplitudes=lambda *a_, **k_: {})
                     out[tag] = float(np.real(pac.sampled_noise(
                         pss, k, [tq], np.array([10.0]), maxsidebands=40))[0, 0])
                 ## a FRESH PAC: `pac` above is the deliberately blinded one
-                model = PAC(cir, toolkit=circuit.numeric)._cy_components_model(
-                    pss, 10.0, F)
+                model = PAC(cir, toolkit=circuit.numeric)._noise_components(
+                    pss).model(10.0, F)
             return out, model
 
         ## the element states its sign, and its amplitudes rebuild the flicker

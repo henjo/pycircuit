@@ -301,11 +301,9 @@ class _OscillatorCovariance(object):
         pss = pss._lyapunov_host()
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'oscillator_covariance')
-        try:
-            As, Qs, K1, M, m, n = self._lyapunov_pieces(
-                pss, 'oscillator_covariance')
-        finally:
-            self._white_cy = None
+        As, Qs, K1, M, m, n = self._lyapunov_pieces(
+            pss, 'oscillator_covariance',
+            white=None if col is None else col['white'])
         ## a staged oscillator closes on the TOTAL map with the crossings'
         ## noise-driven motion in the injection -- the same `_event_closure`
         ## as `covariance`, whose `u`, `v` below are the total map's already

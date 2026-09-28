@@ -28,6 +28,12 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
     return freqs, X
 
 
+def insert_ref(xr, irn):
+    """The full-width state of a REDUCED one `xr`: a zero at the reference
+    row `irn` (numpy; `PSS._insert_refnode` is the toolkit's)."""
+    return np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
+
+
 def _complex_solve(lu, b):
     """`lu.solve(b)` for a complex `b` against a REAL factorisation.
 
