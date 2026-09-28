@@ -119,6 +119,11 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
           _PhaseNoise, Analysis):
     """Small-signal analysis over a periodic operating point, matrix-free.
 
+    The noise, jitter and phase-noise methods' conventions -- which are
+    one-sided, which 0.5x one-sided or two-sided, which frequency argument
+    is an offset, what each returns -- are tabulated in
+    `doc/pac_noise_conventions.md`.
+
     The operator is the monodromy.  The periodic small-signal system is
 
         (L + alpha B) v = -u,   alpha = exp(-2j pi f T)
