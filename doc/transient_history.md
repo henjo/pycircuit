@@ -1084,6 +1084,23 @@ Jacobian of the residual with respect to `x` -- and it is
 written out a second time (the copy that used to live here
 knew only the two-terminal `(dia, dib)` shape).
 
+2026-09-28: the condensed comment on the controller's Jacobian, as the
+2026-09-27 move left it, before it was rewritten -- `augmented_system`
+excludes the PCNR devices from the ordinary assembly (the skip set), so
+their stamp is no longer "added and subtracted", and the multistep step
+now syncs the limiting state after its Newton (`limit_sync`):
+
+`Diode.G` linearises around `_vlim`, which only `Diode.limit`
+updates -- and PCNR never calls it, because limiting is the
+thing PCNR replaces.  So `_vlim` stays at whatever it was
+first set to and the diode's conductance is frozen there:
+`cir.G(x)` carries NO diode conductance at all.
+
+Inside `augmented_system` that cancels -- the same wrong value
+is added by `cir.G` and subtracted again -- but the controller
+computes `lte = J^-1 Eg`, so handing it that matrix maps the
+truncation error through a Jacobian missing the diode.
+
 ### `_stage_source`
 
 2026-09-27 (moved from the code):
