@@ -1885,6 +1885,33 @@ def test_an_lmm_pcnr_step_leaves_the_diode_at_its_solution(monkeypatch):
     assert len(gaps) >= 200 and max(gaps) == 0.0, (len(gaps), max(gaps))
 
 
+def test_pcnr_takes_precedence_over_the_radau_cost_transform():
+    """`radau_transform=True` with `pcnr=True`: PCNR solves the step (it has
+    no transform variant), and the run says, once, that the transform is
+    not used.  ⚠ The transform ran FIRST and answered every step it
+    converged on with device limiting, so `pcnr=True` did nothing and said
+    nothing (2026-09-28)."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def run(transform):
+        c = _driven_diode(Diode)
+        tr = Transient(c, integrator=RadauIIA3Integrator(), pcnr=True,
+                       reltol=1e-9, radau_transform=transform)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            res = tr.solve(tend=1e-4, timestep=2.5e-6, x0=np.zeros(c.n),
+                           fixed_timestep=True)
+        said = [w for w in caught if 'not combined with pcnr' in str(w.message)]
+        return tr, np.asarray(res.x, float)[c.get_node_index(2)], said
+    tr_d, v_d, said_d = run(False)
+    tr_t, v_t, said_t = run(True)
+    ## (`pcnr_status` read 'used' either way: it is not the evidence)
+    assert np.array_equal(v_t, v_d), np.max(np.abs(v_t - v_d))
+    assert len(said_t) == 1 and not said_d, (len(said_t), len(said_d))
+
 def _driven_diode(cls, va=20.0, r=1.0):
     """A diode driven through `r` by a `va`, 1 kHz sine: at 20 V through 1
     ohm, 0.85 V peak, far enough past the junction's critical voltage that

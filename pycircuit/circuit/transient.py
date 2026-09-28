@@ -732,7 +732,9 @@ class Transient(Analysis):
                         "transform: one real and one complex m x m solve per "
                         "iteration instead of the dense 3m one, falling back "
                         "to the dense solve if it stalls. Measured 1.5-3x "
-                        "faster at m = 50-400. Off by default.",
+                        "faster at m = 50-400. Off by default. With pcnr=True "
+                        "on a circuit PCNR applies to, PCNR's dense coupled "
+                        "solve is used instead (warned).",
                    unit='', default=False),
          ## STAGE 13 -- PCNR instead of limiting, on the transient path too.
          ## Off by default for the same measured reason as on DC: gate 13-4 puts
@@ -1651,6 +1653,7 @@ class Transient(Analysis):
         self._periodic_rows = self._collect_periodic_states()
         self._is_first_step = True
         self._no_history = True
+        self._transform_pcnr_warned = False
         ## The measurement probe's running reference is per-run state too:
         ## carrying one run's signal maximum into the next would make the
         ## relative floor depend on what ran before it.
@@ -4120,7 +4123,21 @@ class Transient(Analysis):
         ``_iq``/``_q_cache`` set so the history push after the step is consistent.
         """
         from pycircuit.circuit.nrsolver import NoConvergenceError
-        if self.par.radau_transform:
+        ## ⚠ PCNR, WHERE ASKED FOR AND APPLICABLE, TAKES PRECEDENCE over the
+        ## cost transform: it is a robustness the caller asked for, it has
+        ## no transform variant, and run first the transform answered every
+        ## step it converged on with device limiting, so `pcnr=True` did
+        ## nothing and said nothing.
+        use_pcnr = self._rk_use_pcnr()
+        if self.par.radau_transform and use_pcnr and \
+                not getattr(self, '_transform_pcnr_warned', False):
+            self._transform_pcnr_warned = True
+            warnings.warn(
+                'Transient: radau_transform=True is not combined with '
+                'pcnr=True -- PCNR has no transform variant, and it takes '
+                'precedence: each step is solved by the dense coupled PCNR '
+                'Newton.', RuntimeWarning, stacklevel=2)
+        if self.par.radau_transform and not use_pcnr:
             try:
                 return self._rk_step_transformed(
                     x0, t, provided_function)
@@ -4130,7 +4147,7 @@ class Transient(Analysis):
                 ## correctness reference and always converges here.
                 self._radau_transform_fallbacks = getattr(
                     self, '_radau_transform_fallbacks', 0) + 1
-        if self._rk_use_pcnr():
+        if use_pcnr:
             ## PCNR is the first-class limiting here too: the coupled solve keeps
             ## its structure but limits every junction, IN EVERY STAGE, by the
             ## joint continuation instead of per-device `cir.limit` -- which is
