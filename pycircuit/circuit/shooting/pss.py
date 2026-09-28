@@ -99,9 +99,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     integrator definition and the limiting/PCNR machinery -- not (2) as a
     controller, and not the stepping loop's breakpoints or its order drop
     after a landing: the shooting lands source edges on its own frozen
-    grid (`event_grid`) and never re-arms the drop, measured MORE accurate
-    without it (`benchmarks/pss_transient_boundary.py` V1; the whole
-    contract is above `Transient._begin_run`).
+    grid (`event_grid`) and never re-arms the drop -- more accurate on a
+    smooth state (`benchmarks/pss_transient_boundary.py` V1), LESS on a
+    stiff one, where trap rings after every landed edge
+    (`benchmarks/landing_order_drop.py`).  The whole contract is above
+    `Transient._begin_run`.
 
     THE SHOOTING JACOBIAN.  Every linear multistep method here writes its
     companion as
@@ -621,9 +623,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         second order.  Its one cost is a CONSTANT, not an order: a two-step
         formula takes an O(h^2 [x'']) hit at the ONE step after a corner,
         where its history straddles the jump in x'' (about 30x trap's
-        there).  Re-arming the stepping loop's order drop at the landed
-        edges costs more than the hit (gear's error 3x, trap's 50-100x;
-        `benchmarks/pss_transient_boundary.py` V1), so the shooting does not.
+        there).  The shooting does not re-arm the stepping loop's order drop
+        at the landed edges: on a smooth state that would cost gear 3x and
+        trap 50-100x (`benchmarks/pss_transient_boundary.py` V1), but on a
+        STIFF state its absence lets trap ring after every edge (the current
+        O(1) off; `benchmarks/landing_order_drop.py`) -- an open trade.
         At a TRUE jump (tr = 0) the gain needs `event_grid` to keep
         both ends of the clamped ramp (see there).
 

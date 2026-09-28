@@ -416,9 +416,9 @@ class _PeriodWalks(object):
         A, b, c = tab
         s = A.shape[0]
         iref = self.irefnode
-        Yf = [np.array(yf, dtype=float) for yf in self._transient()._rk_Y]
+        Yf = [np.array(yf, dtype=float) for yf in self._transient().last_step.Y]
         Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
-              for yf in self._transient()._rk_Y]
+              for yf in self._transient().last_step.Y]
         Cn = np.asarray(self._C_at(xn))
         m = Cn.shape[0]
         if coupled:
@@ -496,9 +496,9 @@ class _PeriodWalks(object):
             x = copy(self.solve_timestep(xn, t, h))
             ## (every fresh start past the period's first step: a growth
             ## restart or a time-key miss, `Transient._solve_timestep_glm`)
-            restarted = bool(getattr(tr, '_glm_restarted', False)) and _j > 0
+            restarted = tr.last_step.restarted and _j > 0
             if _j == 0:
-                trace0 = tr._glm_startup_trace
+                trace0 = tr.last_step.startup
                 if trace0 is None:
                     raise ValueError(
                         'PSS: the GLM startup was replaced '
@@ -509,40 +509,41 @@ class _PeriodWalks(object):
                 ## the step before ends on this node's startup
                 ## (`_GLMStep.forward`)
                 steps[-1].restart_out = self._glm_startup_linearisation(
-                    tr._glm_startup_trace)
-            Qn = np.asarray(tr._glm_Q[0], dtype=float)
+                    tr.last_step.startup)
+            Qn = np.asarray(tr.last_step.nordsieck, dtype=float)
             if Q0 is None:
                 ## the vector the first step actually entered with, i.e. what
                 ## the startup produced from `x_in`.  ⚠ REDUCED: the transient
                 ## carries the Nordsieck vector at FULL width (its rows are
                 ## charges, reference row included); every sensitivity here is
                 ## on the reduced state, so the seed must be too.
-                Q0 = np.asarray(tr._glm_Q_in, dtype=float)[:, [i for i in
+                Q0 = np.asarray(tr.last_step.nordsieck_in, dtype=float)[:, [i for i in
                                                                range(self.cir.n)
                                                                if i != iref]]
             Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
-                  for yf in tr._rk_Y]
+                  for yf in tr.last_step.Y]
             Gs = [np.asarray(self._G_at(Ys[i])) for i in range(s)]
             Kfacs = [self._factorise(np.asarray(self._C_at(Ys[i]))
                                      + h * A[i, i] * Gs[i]) for i in range(s)]
             Ks = [np.asarray(self.toolkit.concatenate((kf[:iref], kf[iref + 1:])),
-                             dtype=float) for kf in tr._rk_K]
+                             dtype=float) for kf in tr.last_step.K]
             ## ⚠ THE RESCALE IS PART OF THE MAP: where the step changes, the
             ## transient scales the Nordsieck vector by `rho^k` before the
             ## step, and the sensitivities must be scaled with it.  Missing,
             ## the map on a 3:1 grid was 0.7 % (glm2) / 2 % (glm3) off its
             ## finite difference, exact on a uniform one.
-            Qin = np.delete(np.asarray(tr._glm_Q_in, dtype=float), iref, axis=1)
+            Qin = np.delete(np.asarray(tr.last_step.nordsieck_in, dtype=float),
+                            iref, axis=1)
             steps.append(_GLMStep(Kfacs, Gs, float(h), A, U, B, V, Ks,
-                                  rho=float(getattr(tr, '_glm_rho', 1.0)),
+                                  rho=float(tr.last_step.rho),
                                   Qin=Qin, x_in=np.asarray(xn, dtype=float),
                                   restart_out=None, restarted=restarted,
                                   c=np.asarray(c, dtype=float),
                                   Ys=[np.array(yf, dtype=float)
-                                      for yf in tr._rk_Y]))
+                                      for yf in tr.last_step.Y]))
             xs.append(np.asarray(x, dtype=float))
-        return (steps, xs, Q0, np.asarray(tr._glm_Q[0], dtype=float), x,
-                trace0)
+        return (steps, xs, Q0, np.asarray(tr.last_step.nordsieck, dtype=float),
+                x, trace0)
 
     @staticmethod
     def _glm_propagate(steps, P, T=None, closing=False):
@@ -713,7 +714,7 @@ class _PeriodWalks(object):
                 tr._pred_reset()
                 tr._glm_startup(float(times[j]), xf, float(rec.h))
                 out.append(self._glm_startup_linearisation(
-                    tr._glm_startup_trace))
+                    tr.last_step.startup))
         finally:
             tr._glm_startup_trace = saved
         return out
@@ -725,7 +726,7 @@ class _PeriodWalks(object):
         with the point evaluations the rest of the map uses (`_C_at`,
         `_G_at`, `_k_at`)."""
         from math import factorial
-        trace = self._transient()._glm_startup_trace if trace is None else trace
+        trace = self._transient().last_step.startup if trace is None else trace
         if trace is None:
             raise ValueError(
                 'PSS: the GLM startup was replaced (`_glm_startup_override`), '

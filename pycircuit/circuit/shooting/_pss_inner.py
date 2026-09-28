@@ -487,7 +487,7 @@ class _InnerTransient(object):
             ## index in disguise; both tests are written against the count.
             _real_past = 2 if tr._dt_last2 is None else 3
             _p = getattr(tr.active_integrator, 'ORDER', 1) + 1
-            _reach = len(tr._companion_coeffs[0]) - 1
+            _reach = len(tr.last_step.coeffs[0]) - 1
             self._lte_valid = _real_past >= _p
             ## `_history_is_solved` says the deepest charge is an UNKNOWN the
             ## solve closed (`_install_history`), not a stand-in -- so there
@@ -509,11 +509,11 @@ class _InnerTransient(object):
         ## the monodromy needs; `_iq` is kept for the caller's own bookkeeping
         ## as before.
         (self._Jf, self._Geq, self._C) = remove_row_col(
-            (J_full, tr._Geq, tr._Cmat), irefnode, toolkit)
+            (J_full, tr.last_step.Geq, tr.last_step.C), irefnode, toolkit)
         ## The coefficients of the integrator that ACTUALLY ran this step --
         ## an order drop on the opening step reports Euler's, which is what
         ## the propagation must use for that step.
-        self._coeffs = tr._companion_coeffs
+        self._coeffs = tr.last_step.coeffs
 
         x = toolkit.concatenate((x_full[:irefnode], x_full[irefnode + 1:]))
         return x

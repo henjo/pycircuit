@@ -217,6 +217,45 @@ class TransientStatistics(object):
 GLMStartupTrace = namedtuple('GLMStartupTrace', 'tn hs p xs Ys starter')
 
 
+class LastStep:
+    """What the last `Transient.solve_timestep` left, for a caller that
+    drives the steps itself (the shooting: `_InnerTransient.solve_timestep`,
+    `_PeriodWalks`); `Transient.last_step` hands one out.
+
+    ⚠ READ-ONLY AND LIVE, NOT A RECORD: each field is the transient's own
+    object, not a copy.  The next step overwrites it, and the periodic
+    gauge shift moves a stage method's `Y[-1]` -- which IS the step's `x`
+    -- in place; so read it before the next step and copy what must
+    outlive it.  (A snapshot would not be bit-identical to the reads it
+    replaces, for exactly that reason.)
+
+    Multistep: `C` (the charge Jacobian at the solution), `Geq` (the
+    companion conductance), `coeffs` (the companion coefficients of the
+    integrator that ACTUALLY ran -- Euler's on an order-dropped step).
+    Stage methods: `Y` (stage states, full width), `K` (stage
+    derivatives).  Nordsieck GLM: `nordsieck_in` (the vector the step
+    entered with, after its rescale), `rho` (that rescale, `h / h_prev`; 1
+    when none), `nordsieck` (the vector it left), `restarted` (it began
+    afresh past the run's opening), `startup` (the last startup's
+    `GLMStartupTrace`; None after `_glm_startup_override`)."""
+    __slots__ = ('_tr',)
+
+    def __init__(self, tr):
+        self._tr = tr
+
+    C = property(lambda self: self._tr._Cmat)
+    Geq = property(lambda self: self._tr._Geq)
+    coeffs = property(lambda self: self._tr._companion_coeffs)
+    Y = property(lambda self: self._tr._rk_Y)
+    K = property(lambda self: self._tr._rk_K)
+    nordsieck_in = property(lambda self: self._tr._glm_Q_in)
+    rho = property(lambda self: getattr(self._tr, '_glm_rho', 1.0))
+    nordsieck = property(lambda self: self._tr._glm_Q[0])
+    restarted = property(
+        lambda self: bool(getattr(self._tr, '_glm_restarted', False)))
+    startup = property(lambda self: self._tr._glm_startup_trace)
+
+
 class TransientStepError(NoConvergenceError, RuntimeError):
     """A time point that could not be solved even at `minstep`, after the
     continuation rescue.  Both a `NoConvergenceError` and a `RuntimeError`,
@@ -1668,6 +1707,11 @@ class Transient(Analysis):
             rows.append((int(row), float(m), float(o)))
         return rows
 
+    @property
+    def last_step(self):
+        """What the last step left, read-only and live (`LastStep`)."""
+        return LastStep(self)
+
     ## -----------------------------------------------------------------------
     ## THE SHOOTING'S USE OF THIS CLASS.  `PSS` drives `solve_timestep` on a
     ## frozen grid and never calls `_solve`.  What it calls, in order (its
@@ -1681,21 +1725,28 @@ class Transient(Analysis):
     ##               two-point history, `_begin_run_on_history`
     ##   per step    `_dt = h`; `solve_timestep`; the reads that need the
     ##               previous step's history (`step_lte`, `residual_dh`,
-    ##               `residual_dT`) BEFORE `_roll_history(x, h)` moves it
+    ##               `residual_dT`) BEFORE `_roll_history(x, h)` moves it;
+    ##               what the step left through `last_step` (`LastStep`)
     ##
     ## Left out on purpose, so the period map is a function of `x0` alone:
     ## `cir.accept_step` (element state -- an Idtmod's wrap prediction; a
     ## TLine's history, which is why the PSS refuses hidden state), the
     ## statistics, the family's `after_accept`, the rescue ladder,
     ## breakpoints (the shooting lands source edges on its own grid,
-    ## `PSS.event_grid`), and the order drop re-armed after a landing --
-    ## measured MORE accurate without it (gear's error 1/3 of the loop's
-    ## rule, trap's 1/50 .. 1/100; `benchmarks/pss_transient_boundary.py`
-    ## V1).  The gauge shift runs in `_roll_history` without the caller's
-    ## window, and the closure folds the whole moduli between (V2).  A GLM
-    ## is never handed its Nordsieck vector: `_begin_run` empties both
-    ## slots, the first step starts afresh at the period's start, and the
-    ## walk reads each step's records back.
+    ## `PSS.event_grid`), and the order drop re-armed after a landing.
+    ## ⚠ THAT LAST ONE IS A TRADE, NOT A WIN.  On a smooth, non-stiff state
+    ## the shooting is more accurate without the drop (gear's error 1/3 of
+    ## the loop's rule, trap's 1/50 .. 1/100;
+    ## `benchmarks/pss_transient_boundary.py` V1); on a STIFF one the drop
+    ## is what damps the corner -- without it trap's current is O(1) off
+    ## after every landed edge and decays only by trap's stiff factor,
+    ## gear's is 10x off for a step (`benchmarks/landing_order_drop.py`).
+    ## The default method (radau) keeps no history across an edge.
+    ## The gauge shift runs in `_roll_history` without the caller's window,
+    ## and the closure folds the whole moduli between (V2).  A GLM is never
+    ## handed its Nordsieck vector: `_begin_run` empties both slots, the
+    ## first step starts afresh at the period's start, and the walk reads
+    ## each step's records back (`last_step`).
     ## History: `doc/pss_log_260902.md`, 2026-09-28 (the interface review).
     ## -----------------------------------------------------------------------
 
@@ -5168,8 +5219,8 @@ class Transient(Analysis):
                 ## polynomial through this point", not "there is no history": the
                 ## rings keep rolling, and the controller is handed `_no_history`
                 ## (true only at the genuine start of a run) so a truncated step
-                ## is still checked (a VSin drive fires `next_event` every
-                ## quarter period).
+                ## is still checked (a pulse train fires four per period;
+                ## a sine none since stage 4g(a), `Sin.next_event`).
                 if landing or order_drop:
                     self._is_first_step = True
                 order_drop = False
