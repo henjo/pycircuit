@@ -477,17 +477,11 @@ class _PeriodWalks(object):
         A, U, B, V, c, p = integ.tableau()
         s = A.shape[0]
         x = copy(x_in)
-        tr._glm_Q = None                      # force the startup at t = 0
-        ## ⚠ AND THE ENTRY SLOT.  It is keyed by the time the step STARTED
-        ## at, so the previous shooting iteration's first step left one at
-        ## t = 0 -- exactly the time this period's first step asks for.  Left
-        ## behind it is picked up in preference to a fresh startup and the
-        ## period map silently reads the LAST iteration's Nordsieck vector.
-        tr._glm_Q_at_entry = None
-        tr._glm_prev = None                   # no stage predictor across the seam
-        tr._pred_reset()                      # nor its node history: the period
-                                              # seam is a DISCONTINUITY in the
-                                              # trajectory a predictor fits
+        ## (`_begin_run` opened the seam: both Nordsieck slots empty, so the
+        ## first step starts afresh at t = 0, and no stage predictor record
+        ## or node history crosses it -- the seam is a DISCONTINUITY in the
+        ## trajectory a predictor fits)
+        ## History: `doc/shooting_history.md`, `_PeriodWalks._glm_period_blocks`.
         steps, xs = [], []
         Q0 = None
         trace0 = None
@@ -495,6 +489,8 @@ class _PeriodWalks(object):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
+            ## (every fresh start past the period's first step: a growth
+            ## restart or a time-key miss, `Transient._solve_timestep_glm`)
             restarted = bool(getattr(tr, '_glm_restarted', False)) and _j > 0
             if _j == 0:
                 trace0 = tr._glm_startup_trace
@@ -715,11 +711,12 @@ class _PeriodWalks(object):
         with the point evaluations the rest of the map uses (`_C_at`,
         `_G_at`, `_k_at`)."""
         from math import factorial
-        from pycircuit.circuit.integrator import RadauIIA3Integrator
-        tn, hs, p, xs, Ys = (self._transient()._glm_startup_trace
-                             if trace is None else trace)
-        A = np.array(RadauIIA3Integrator.A, dtype=float)
-        c = np.array(RadauIIA3Integrator.C, dtype=float)
+        trace = self._transient()._glm_startup_trace if trace is None else trace
+        tn, hs, p, xs, Ys = trace.tn, trace.hs, trace.p, trace.xs, trace.Ys
+        ## the tableau of the method that TOOK the substeps (the trace's)
+        A = np.array(trace.starter.A, dtype=float)
+        c = np.array(trace.starter.C, dtype=float)
+        s = len(c)
         iref = self.irefnode
         m = self.cir.n - 1
 
@@ -731,21 +728,21 @@ class _PeriodWalks(object):
             Yj = [red(y) for y in Ys[j - 1]]
             Ci = [np.asarray(self._C_at(y), dtype=float) for y in Yj]
             Gi = [np.asarray(self._G_at(y), dtype=float) for y in Yj]
-            J = np.zeros((3 * m, 3 * m))
-            for i in range(3):
-                for l_ in range(3):
+            J = np.zeros((s * m, s * m))
+            for i in range(s):
+                for l_ in range(s):
                     blk = hs * A[i, l_] * Gi[l_]
                     if i == l_:
                         blk = blk + Ci[i]
                     J[i * m:(i + 1) * m, l_ * m:(l_ + 1) * m] = blk
             lus.append(self._factorise(J))
-            ts = [tn + (j - 1) * hs + c[l_] * hs for l_ in range(3)]
+            ts = [tn + (j - 1) * hs + c[l_] * hs for l_ in range(s)]
             K = [np.asarray(self._k_at(Yj[l_], ts[l_]), dtype=float)
-                 for l_ in range(3)]
-            fT.append(np.concatenate([sum(A[i, l_] * K[l_] for l_ in range(3))
-                                      for i in range(3)]))
+                 for l_ in range(s)]
+            fT.append(np.concatenate([sum(A[i, l_] * K[l_] for l_ in range(s))
+                                      for i in range(s)]))
             Ud.append([red(self.cir.dudt(ts[l_], analysis=self.par.analysis))
-                       for l_ in range(3)])
+                       for l_ in range(s)])
         Vd = np.array([[float(k) ** jj for jj in range(p + 1)]
                        for k in range(p + 1)])
         Vi = np.linalg.solve(Vd, np.eye(p + 1))

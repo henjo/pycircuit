@@ -5,6 +5,7 @@ import logging
 import contextlib
 import time
 import warnings
+from collections import namedtuple
 
 import numpy as np
 
@@ -207,6 +208,13 @@ class TransientStatistics(object):
                self.min_step if self.min_step is not None else float('nan'),
                self.max_step if self.max_step is not None else float('nan'),
                self.total_seconds, self.solve_seconds, pct))
+
+
+#: What `Transient._glm_startup` did, for a caller that LINEARISES it (the
+#: shooting's GLM period map, `_PeriodWalks._glm_startup_linearisation`): the
+#: start time, the substep, the substep count, the substep states, each
+#: substep's converged stages, and the Runge-Kutta method that took them.
+GLMStartupTrace = namedtuple('GLMStartupTrace', 'tn hs p xs Ys starter')
 
 
 class TransientStepError(NoConvergenceError, RuntimeError):
@@ -1688,9 +1696,15 @@ class Transient(Analysis):
         self._iqlast = self.toolkit.zeros((hist_len, n))
         self._pred_reset()
         ## the Nordsieck slots are per-RUN too: a second solve() on the same
-        ## object must not read the first run's vector
+        ## object must not read the first run's vector -- nor its stage
+        ## predictor the first run's last step.  (The entry slot is keyed by
+        ## the time its step STARTED: a PSS period starts at the time the
+        ## previous traversal's first step did, and a slot left behind would
+        ## be picked up in preference to a fresh startup.)
+        ## History: `doc/shooting_history.md`, `_PeriodWalks._glm_period_blocks`.
         self._glm_Q = None
         self._glm_Q_at_entry = None
+        self._glm_prev = None
         ## ⚠ A ZERO `iq` RING IS ONLY SAFE FOR A METHOD OPENED BY EULER, which
         ## reads no past current.  A method that refuses that opener reads it on
         ## step one, and zero is wrong there -- measured at a full order of
@@ -3577,6 +3591,7 @@ class Transient(Analysis):
         from math import factorial
         integ = self.base_integrator
         A, U, B, V, c, p = integ.tableau()
+        starter = RadauIIA3Integrator()
         override = getattr(self, '_glm_startup_override', None)
         if override is not None:
             return np.asarray(override(tn, x0, h), dtype=float)
@@ -3587,7 +3602,7 @@ class Transient(Analysis):
         Ys = []
         saved = (self.base_integrator, self._dt)
         try:
-            self.base_integrator = RadauIIA3Integrator()
+            self.base_integrator = starter
             self._dt = hs
             for k in range(1, p + 1):
                 xk = self._rk_step_coupled(xs[-1], tn + k * hs, provided_function)[0]
@@ -3598,7 +3613,8 @@ class Transient(Analysis):
         ## what the startup did, for a caller that LINEARISES it (the
         ## shooting analysis's GLM period map: `_GLMStartup`) -- the substep
         ## states and each substep's converged stages
-        self._glm_startup_trace = (float(tn), float(hs), int(p), xs, Ys)
+        self._glm_startup_trace = GLMStartupTrace(float(tn), float(hs), int(p),
+                                                  xs, Ys, starter)
         qs = np.array([np.asarray(self.cir.q(x, epar), dtype=float) for x in xs])   # (p+1, n)
         ## Vandermonde in the scaled variable tau = (t - t_n)/h_s = k: q(tau) = sum_j a_j tau^j
         Vd = np.array([[float(k) ** j for j in range(p + 1)] for k in range(p + 1)])
@@ -3721,6 +3737,11 @@ class Transient(Analysis):
                     self._glm_rho = float(rho)
                 break
         started = Q is None
+        if started and (state is not None or entry is not None):
+            ## a slot existed and did not continue: a fresh start past the
+            ## run's opening is a restart, on growth or on a time-key miss
+            ## alike (the shooting reads the flag, `_glm_period_blocks`)
+            self._glm_restarted = True
         if started:
             Q = self._glm_startup(tn, x0, h, provided_function)
             self.statistics_glm_startups = getattr(self, 'statistics_glm_startups', 0) + 1

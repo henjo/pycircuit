@@ -11392,6 +11392,32 @@ this a solver with no `factor` raised `AttributeError` there
 
 ## `_pss_walks.py` -- `_PeriodWalks`
 
+### `_glm_period_blocks` (2026-09-28)
+
+The period seam's clears moved into `Transient._begin_run`, which
+`_begin_period` had just run (three of the four were duplicates; the stage
+predictor's record `_glm_prev` is now cleared there too -- measured, no
+stale record was ever accepted, `benchmarks/pss_transient_boundary.py`
+V6).  The comments, before the move:
+
+tr._glm_Q = None                      # force the startup at t = 0
+## ⚠ AND THE ENTRY SLOT.  It is keyed by the time the step STARTED
+## at, so the previous shooting iteration's first step left one at
+## t = 0 -- exactly the time this period's first step asks for.  Left
+## behind it is picked up in preference to a fresh startup and the
+## period map silently reads the LAST iteration's Nordsieck vector.
+tr._glm_Q_at_entry = None
+tr._glm_prev = None                   # no stage predictor across the seam
+tr._pred_reset()                      # nor its node history: the period
+                                      # seam is a DISCONTINUITY in the
+                                      # trajectory a predictor fits
+
+With them: the startup trace became a named `GLMStartupTrace` carrying the
+Runge-Kutta method that took the substeps (the linearisation reads its
+tableau instead of a second hard-coded Radau IIA(3)), and every fresh GLM
+start past a run's opening sets `_glm_restarted` (a time-key miss too;
+measured, none occurs on the shooting's grids, V9).
+
 ### `_walk_lmm`
 
 2026-09-27 (the second move, from the code):
