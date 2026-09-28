@@ -28,6 +28,23 @@ MAX_GROWTH_RATIO = 2.0
 MIN_SHRINK_RATIO = 0.2
 
 
+
+def sigglobal_reference(running, n_nodes):
+    """`relref='sigglobal'`'s reference from a running maximum: each unit
+    group -- the first `n_nodes` entries (node voltages), the rest (branch
+    currents) -- collapsed to its largest entry and broadcast back.  With
+    `n_nodes` None (or not splitting the vector) it is one group.  The
+    multistep controllers and the stage family (`transient._StageSteps`)
+    share it."""
+    out = np.array(running, dtype=float, copy=True)
+    if n_nodes is None or n_nodes <= 0 or n_nodes >= len(out):
+        out[:] = np.max(out) if len(out) else 0.0
+        return out
+    out[:n_nodes] = np.max(running[:n_nodes])
+    out[n_nodes:] = np.max(running[n_nodes:])
+    return out
+
+
 class StepController(ABC):
     """
     Abstract Strategy Interface for deciding and predicting time steps.
@@ -202,14 +219,7 @@ class StepController(ABC):
         ## raises TracerArrayConversionError -- loudly -- and no traced path
         ## reaches this class (the JAX transient carries sig_max in its own
         ## state instead), so the conversion is safe as long as that holds.
-        running = self._ref_running
-        out = np.array(running, dtype=float, copy=True)
-        if n_nodes is None or n_nodes <= 0 or n_nodes >= len(out):
-            out[:] = np.max(out) if len(out) else 0.0
-            return out
-        out[:n_nodes] = np.max(running[:n_nodes])
-        out[n_nodes:] = np.max(running[n_nodes:])
-        return out
+        return sigglobal_reference(self._ref_running, n_nodes)
 
     @abstractmethod
     def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):

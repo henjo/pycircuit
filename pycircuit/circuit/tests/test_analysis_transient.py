@@ -1968,7 +1968,11 @@ def test_a_rejected_step_leaves_no_device_state_to_its_retry():
     `_vlim` at its own end, and the retry's explicit first stage read
     `i(x_n)` as the tangent there: adaptive TR-BDF2 on a hard-driven diode
     took 1653 steps where the state-free twin takes 1117 (with PCNR 1221),
-    ESDIRK43 506 against 473 (2026-09-28).  Now within a few steps."""
+    ESDIRK43 506 against 473 (2026-09-28).  Now within a few steps.
+
+    Run under `relref='pointlocal'`: the rejections this test needs came
+    from the pointwise tolerance on the source's zero-crossing current, and
+    under the default 'sigglobal' the twin rejects only 40 steps."""
     import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import TRBDF2Integrator
@@ -1976,7 +1980,8 @@ def test_a_rejected_step_leaves_no_device_state_to_its_retry():
 
     def steps(cls):
         c = _driven_diode(cls)
-        tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6)
+        tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6,
+                       relref='pointlocal')
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
@@ -2052,3 +2057,97 @@ def test_the_radau_estimate_reads_the_diode_at_the_step_start():
     n_exact, n = steps(_state_free_diode()), steps(Diode)
     assert n <= 1.05 * n_exact, (n, n_exact)
 
+
+def test_the_stage_reference_follows_relref_over_accepted_points():
+    """The stage family's tolerance reference (`_StageSteps._reference`) is
+    the multistep family's `relref`: 'pointlocal' ``max(|x_new|, |x_n|)``,
+    'alllocal' each unknown's own running maximum, 'sigglobal' that
+    maximum pooled per unit group (node voltages, branch currents).  The
+    running maximum takes ACCEPTED points only: a rejected candidate's
+    overshoot counts for its own judgement and is then forgotten."""
+    from types import SimpleNamespace
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    from pycircuit.circuit.transient import _StageSteps
+    circuit.default_toolkit = circuit.numeric
+    c = _driven_diode(Diode)            # x = [v1, gnd, v2, i_vs]: 3 nodes
+
+    def family(relref):
+        tr = Transient(c, integrator=TRBDF2Integrator(), relref=relref)
+        return _StageSteps(tr, SimpleNamespace(fixed=True, abstol=None))
+
+    x_n = np.array([2.0, 0.0, 0.5, -1e-3])
+    big = np.array([9.0, 0.0, 0.1, 5.0])          # judged, then rejected
+    x_1 = np.array([1.0, 0.0, 0.2, 1e-6])         # judged, accepted
+    x_2 = np.array([0.5, 0.0, 0.1, 1e-6])
+    expect = {
+        'pointlocal': ([2.0, 0.0, 0.5, 1e-3], [1.0, 0.0, 0.2, 1e-6]),
+        'alllocal': ([2.0, 0.0, 0.5, 1e-3], [2.0, 0.0, 0.5, 1e-3]),
+        'sigglobal': ([2.0, 2.0, 2.0, 1e-3], [2.0, 2.0, 2.0, 1e-3]),
+    }
+    for relref, (after_reject, after_accept) in expect.items():
+        f = family(relref)
+        assert np.array_equal(f._reference(x_n, big),
+                              f._reference(x_n, big)), relref
+        assert np.array_equal(f._reference(x_n, x_1), after_reject), relref
+        assert np.array_equal(f._reference(x_1, x_2), after_accept), relref
+
+
+def test_the_stage_methods_measure_their_error_against_relref():
+    """⚠ Measured (2026-09-28): the stage family's old pointwise reference,
+    ``reltol |x_new|``, set TR-BDF2's step on the source's branch current,
+    whose tolerance collapses to `lte_iabstol` at each zero crossing -- 406
+    of its 414 rejections on the hard-driven diode.  Under `relref` (default
+    'sigglobal', as in the multistep family) it takes 324 attempts where
+    'pointlocal' takes 1537, both 3e-5 V off a fine reference; the two
+    runs end 1.2e-7 V apart."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    circuit.default_toolkit = circuit.numeric
+
+    def run(relref):
+        c = _driven_diode(Diode)
+        tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6,
+                       relref=relref)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
+        st = res.statistics
+        return (st.accepted_steps + st.rejected_steps,
+                float(np.asarray(res.v(2, gnd))[-1]))
+    n_point, v_point = run('pointlocal')
+    n_sig, v_sig = run('sigglobal')
+    assert n_sig < 0.4 * n_point, (n_sig, n_point)
+    assert abs(v_sig - v_point) < 1e-6, (v_sig, v_point)
+
+
+def test_a_stage_method_refuses_an_unknown_relref():
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    circuit.default_toolkit = circuit.numeric
+    c = _driven_diode(Diode)
+    tr = Transient(c, integrator=RadauIIA3Integrator(), relref='nonsense')
+    with pytest.raises(ValueError, match='relref'):
+        tr.solve(tend=1e-5, timestep=1e-6, x0=np.zeros(c.n))
+
+
+def test_adaptive_glm4_does_not_crawl_at_a_source_current_zero():
+    """⚠ Measured (2026-09-28): adaptive GLM4 on the hard-driven diode
+    crawled at h ~ 1e-20 s near t = 0 under the stage family's old
+    pointwise reference, ``|x_new|``.  Its estimate on the source's branch current, whose
+    tolerance was `lte_iabstol` at the current's zero, stayed O(1) however
+    small the step.  Under `relref` (default 'sigglobal') the run takes
+    324 + 40 steps, the smallest 3.7e-12 s."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import GLM4Integrator
+    circuit.default_toolkit = circuit.numeric
+    c = _driven_diode(Diode)
+    tr = Transient(c, integrator=GLM4Integrator(), reltol=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
+    st = res.statistics
+    assert st.accepted_steps + st.rejected_steps < 1000, st
+    assert st.min_step > 1e-15, st

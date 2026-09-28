@@ -219,6 +219,77 @@ controller to a coupled run, which then refuses a controller
 nobody asked for -- 11 tests failed exactly that way.
 
 
+## `transient.py` -- `_StageSteps`
+
+### `class docstring`
+
+2026-09-28 (the stage family honours `relref`; Andreas: "Do as you
+recommend", on item 3 of the exact-diode audit's open items).
+
+The class docstring before the change:
+
+Runge-Kutta methods (radau, trbdf2, esdirk43) and Nordsieck GLMs:
+self-starting, so no divided-difference LTE -- a step is judged by the
+method's own embedded estimate, the filtered `_rk_est` the step leaves
+(a GLM delivers `_glm_error_estimate` through the same slot).  Accept at
+``err <= 1``; the next step is ``h * clamp(0.9 err^(-1/(p+1)), 0.5, 2)``
+with ``p = EMBEDDED_ORDER`` (TR-BDF2 2(3) -> 1/3, Radau 5(3) -> 1/4), so
+one anomalous estimate cannot swing the step wildly.  No history to
+freeze at a corner, so more rejections are meaningful than for an LMM.
+
+The weight was ``reltol |x_new| + abstol`` per unknown: pointwise, and
+blind to `relref`, which the multistep family had honoured since D3
+(default 'sigglobal', as in a commercial simulator).  How it was found:
+TR-BDF2 looked wasteful on the hard-driven diode (20 V / 1 ohm, 1 kHz;
+1530 attempts where esdirk43 took 509 and radau 364 for the same error).
+Its rejection RATE was not the anomaly -- radau rejected 29 % there
+against TR-BDF2's 27 % -- its step count was, and the rows that set the
+step were the source's branch current: 406 of 414 rejections and 1004 of
+1116 accepted steps, at the current's zero crossings, where the pointwise
+tolerance collapses to `lte_iabstol`.  Adaptive GLM4 on the same circuit
+crawled at h ~ 1e-20 s near t = 0 for the same reason.  Three better
+controllers (no growth after a rejection; halving on a second; Gustafsson's
+predictive) cut rejections 2-3x and saved no work: not the cause.
+
+Measured on the real code (reltol 1e-6, attempts and max error against a
+radau reltol 1e-12 fixed-step reference; 'pointlocal' / 'alllocal' /
+'sigglobal'), the stateful Diode -- its state-free twin takes the same
+steps, but for 635 in place of 633 in one cell:
+
+    hard      trbdf2    1537 3e-5 |  368 3e-5 |  324 3e-5
+    hard      radau      294 5e-5 |  179 5e-5 |  190 3e-5
+    hard      esdirk43   488 3e-5 |  132 3e-5 |  130 6e-5
+    hard      glm3      1105 3e-5 |  411 3e-5 |  388 3e-5
+    hard      glm4       649 3e-5 |  383 3e-5 |  364 3e-5
+    rectifier trbdf2     896 6e-5 |  733 6e-5 |  437 7e-5
+    rectifier radau      324 2e-6 |  273 2e-6 |  198 2e-6
+    rectifier esdirk43   207 2e-6 |  176 2e-5 |  143 4e-5
+    rectifier glm3       986 2e-6 |  815 2e-6 |  544 2e-6
+    rectifier glm4       633 2e-6 |  538 2e-6 |  399 2e-6
+
+and at reltol 1e-4 the looser reference costs more where the pointwise
+one had over-delivered: radau on the rectifier 1e-5 -> 4e-5, glm4 on the
+rectifier 2e-6 -> 2e-4, glm4 on a smooth diode 1e-5 -> 2e-4.  Andreas
+chose 'sigglobal' for every method knowing that price: `reltol` now means
+the same thing whatever the integrator.
+
+'pointlocal' is ``max(|x_new|, |x_n|)``, the multistep family's and
+radau5's, not the old ``|x_new|``: within 1-5 % of the old step counts on
+TR-BDF2, radau and esdirk43 where the old counts were measured (1537
+against 1530 on the hard diode), but
+GLM4 does not crawl under it (649 attempts) -- the crawl needed the
+candidate's own zero.  The running maximum takes accepted points only,
+where the multistep controller folds every judged candidate into it; the
+counts moved by at most ~5 % against a candidate-folding prototype
+(TR-BDF2 hard 325 -> 324, radau rectifier 197 -> 198, esdirk43 rectifier
+136 -> 143, GLM4 hard 382 -> 364).
+Tests: `test_the_stage_reference_follows_relref_over_accepted_points`,
+`test_the_stage_methods_measure_their_error_against_relref`,
+`test_a_stage_method_refuses_an_unknown_relref`,
+`test_adaptive_glm4_does_not_crawl_at_a_source_current_zero` (each fails
+on the old code; the last hangs there).
+
+
 ## `transient.py` -- `Transient`
 
 ### `_get_integrator`

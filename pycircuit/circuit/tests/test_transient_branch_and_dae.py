@@ -1163,9 +1163,15 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
         tc = tt[up] - d[up] * (tt[up + 1] - tt[up]) / (d[up + 1] - d[up])
         per = np.diff(tc)[-6:]
         rk[se] = (np.ptp(per) / T_ex, np.mean(per) / T_ex - 1.0, tr, tt, d)
-    ## measured over the last 6 of 14 periods: 3.9e-7 landed, 2.0e-6 unlanded
-    assert rk[True][0] < 1e-6 and rk[False][0] > 1e-6, (rk[True][0], rk[False][0])
-    assert abs(rk[True][1]) < 1e-5 and abs(rk[False][1]) < 1e-5
+    ## measured over the last 6 of 14 periods: 3.9e-7 landed, 2.0e-6 unlanded.
+    ## ⚠ 2026-09-28 the stage family's tolerance follows `relref`, default
+    ## 'sigglobal' (was pointwise): landed mean -3.4e-6 spread 1.5e-6,
+    ## unlanded +2.5e-4 / 1.2e-3 -- landing now buys radau accuracy, as it
+    ## does the coupled path ('pointlocal': -1.3e-6 / 3.5e-7 landed,
+    ## -1.5e-6 / 1.8e-6 unlanded)
+    assert rk[True][0] < 5e-6 and rk[False][0] > 1e-4, (rk[True][0], rk[False][0])
+    assert abs(rk[True][1]) < 1e-5 and abs(rk[False][1]) > 1e-5, \
+        (rk[True][1], rk[False][1])
     assert rk[False][2].statistics.state_events_hit == 0
     ev_rk = np.asarray(rk[True][2].event_times, dtype=float)
     settled_rk = ev_rk[ev_rk > 4 * T_ex]

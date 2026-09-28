@@ -626,6 +626,12 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
     O(h/tau) tracking floor where the state is flat -- see `lte_grid`.)
     Pinned: the fold at least 4x better than uniform at its own count on
     the waveform, held within 5e-4 of kT/C.
+
+    ⚠ 2026-09-28 the grid's radau pre-run judges its error against
+    `relref` (default 'sigglobal'; it was pointwise): the fold at the same
+    `reltol` has 54 points, not 97, for the same waveform error (4.54e-5
+    against 4.51e-5; uniform 54 reads 1.1e-3), and its held variance is
+    0.99950 x kT/C (was 0.999998) -- inside the pin by 3e-6.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric

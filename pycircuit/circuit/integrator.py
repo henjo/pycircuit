@@ -1718,6 +1718,16 @@ class GLM4Integrator(NordsieckGLMIntegrator):
     machinery for it, not more restarts.  Measure before preferring this to
     GLM3 on a circuit with sharp sources; see the roadmap.
 
+    ⚠ WHAT THE SCALING COSTS, MEASURED (2026-09-28): a STAGE error reaches
+    the answer amplified ~2e4x -- a random 1e-9 relative perturbation of the
+    stages moved the hard-diode answer by 1.9e-5.  Each stage's Newton stops
+    somewhere inside its tolerance, so the answer carries that tolerance
+    times ~2e4: on one fixed grid at reltol 1e-9, two solves that differ
+    only in where their stage Newtons stopped (the diode with device
+    limiting, and a state-free twin of it) differ by 4.2e-7 on the hard
+    diode, and meet at reltol 1e-12.  So a fixed-grid answer is uncertain to
+    ~2e4 x the Newton tolerance whatever the grid: tighten `reltol` first.
+
     History: `doc/transient_history.md`, `GLM4Integrator`.
     """
     P = 4

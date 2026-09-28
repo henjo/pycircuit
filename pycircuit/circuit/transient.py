@@ -336,10 +336,29 @@ class _StageSteps(_StepFamily):
     self-starting, so no divided-difference LTE -- a step is judged by the
     method's own embedded estimate, the filtered `_rk_est` the step leaves
     (a GLM delivers `_glm_error_estimate` through the same slot).  Accept at
-    ``err <= 1``; the next step is ``h * clamp(0.9 err^(-1/(p+1)), 0.5, 2)``
+    ``err <= 1``, the RMS over the unknowns of ``est / (reltol ref +
+    abstol)``; the next step is ``h * clamp(0.9 err^(-1/(p+1)), 0.5, 2)``
     with ``p = EMBEDDED_ORDER`` (TR-BDF2 2(3) -> 1/3, Radau 5(3) -> 1/4), so
     one anomalous estimate cannot swing the step wildly.  No history to
-    freeze at a corner, so more rejections are meaningful than for an LMM."""
+    freeze at a corner, so more rejections are meaningful than for an LMM.
+
+    ⚠ `ref` IS THE MULTISTEP FAMILY'S `relref`, default 'sigglobal': each
+    unknown against the largest value of its unit group (node voltages,
+    branch currents) so far.  A pointwise reference collapses to
+    `lte_iabstol` wherever a source's branch current crosses zero, and that
+    row then sets the step: on a hard-driven diode TR-BDF2 takes 1537
+    attempts under 'pointlocal' and 324 under 'sigglobal', for the same
+    error.  The price is where the pointwise reference had over-delivered:
+    esdirk43 on a rectifier at reltol 1e-6 is 2e-6 V off under
+    'pointlocal', 4e-5 under 'sigglobal'.  'pointlocal' is
+    ``max(|x_new|, |x_n|)``, as in the multistep family and radau5.
+    `TRTOL` is NOT applied: these are the embedded pairs' own estimates,
+    not a divided difference to be over-estimated.
+
+    The running maximum takes ACCEPTED points only (`X[-1]` at each
+    judgement); a candidate counts for its own judgement, so a rejected
+    step's overshoot never loosens the rest of the run.
+    History: `doc/transient_history.md`, `_StageSteps`."""
 
     max_reject = max_retries = 12
     SAFETY, K = 0.9, 0.5
@@ -348,15 +367,39 @@ class _StageSteps(_StepFamily):
         self.tr, self.run = tr, run
         n = tr.cir.n
         self.keep = [i for i in range(n) if i != tr.irefnode]
+        from pycircuit.circuit.stepcontroller import RELREF_MODES
+        if tr.par.relref not in RELREF_MODES:
+            raise ValueError("relref must be one of %r, not %r"
+                             % (RELREF_MODES, tr.par.relref))
+        self.relref = tr.par.relref
+        self.n_nodes = len(tr.cir.nodes)
+        self.running = None
         ## an adaptive run asks the step for its estimate; a fixed grid leaves
         ## the flag as the caller set it
         if not run.fixed:
             tr._rk_want_est = True
 
-    def judge(self, _X, x_new, h, _J, _clamped):
+    def _reference(self, x_last, x_new):
+        """The `ref` in ``reltol ref + abstol``, per `relref` (see the class
+        note): the running maximum over the ACCEPTED points, `x_last` folded
+        in, then the candidate `x_new` for this judgement only."""
+        from pycircuit.circuit.stepcontroller import sigglobal_reference
+        last = np.abs(np.asarray(x_last, dtype=float))
+        new = np.abs(np.asarray(x_new, dtype=float))
+        if self.relref == 'pointlocal':
+            return np.maximum(last, new)
+        self.running = last if self.running is None \
+            else np.maximum(self.running, last)
+        ref = np.maximum(self.running, new)
+        if self.relref == 'alllocal':
+            return ref
+        return sigglobal_reference(ref, self.n_nodes)
+
+    def judge(self, X, x_new, h, _J, _clamped):
         tk = self.tr.toolkit
         est = tk.array(self.tr._rk_est)
-        wt = self.tr.par.reltol * tk.abs(x_new) + tk.array(self.run.abstol)
+        wt = (self.tr.par.reltol * tk.array(self._reference(X[-1], x_new))
+              + tk.array(self.run.abstol))
         ek = tk.array([est[i] / wt[i] for i in self.keep])
         err = float((tk.sum(ek * ek) / len(self.keep)) ** 0.5)
         order = int(self.tr.base_integrator.EMBEDDED_ORDER)
@@ -655,7 +698,8 @@ class Transient(Analysis):
          ##   euler 1.48-2.06x fewer steps, gear2 1.44-1.60x, trapezoidal 1.31-1.47x
          ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='relref',
-                   desc="Reference for the relative LTE tolerance: 'sigglobal' "
+                   desc="Reference for the relative LTE tolerance, for every "
+                        "integrator: 'sigglobal' "
                         "(against the largest signal anywhere -- the default, as in "
                         "a commercial simulator), 'pointlocal' (each unknown against itself, "
                         "pycircuit's historical behaviour), or 'alllocal' (against "
