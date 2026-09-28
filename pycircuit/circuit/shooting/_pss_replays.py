@@ -328,6 +328,16 @@ class _FactoredReplays(object):
         self._tran = self._new_transient(self._integrator_for(method))
         try:
             w = self._walk(kind, x0, times, hs, dense=False, keep=True)
+            walk_tr = self._tran
         finally:
             self._tran = tr_saved
-        return w.factored(self, times=times, T=float(T))
+        fp = w.factored(self, times=times, T=float(T))
+        if kind == 'glm':
+            ## ⚠ ITS NODE STARTUPS RUN ON THE TRANSIENT THAT WALKED IT
+            ## (`_glm_node_startups`), not on the PSS's own: `method` may
+            ## differ from the PSS's, and a PSS never solved has none.
+            ## Measured before (2026-09-28): a glm2 PSS asked for a glm3
+            ## period collected node states 2.9e-5 off a glm3 PSS's
+            ## (`benchmarks/pss_transient_boundary.py` V7).
+            fp._walk_tr = walk_tr
+        return fp

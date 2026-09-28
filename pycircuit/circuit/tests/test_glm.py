@@ -673,3 +673,91 @@ def test_sampled_noise_reads_a_glm_run_off_its_own_map():
             got[(method, mono)] = float(PAC(cir).sampled_noise(p, ib, [0.0], [0.1 / per])[0, 0])
     assert got[('glm3', 'radau')] == got[('glm3', 'native')] > 0.0, got
     assert got[('glm3', 'radau')] != got[('radau', 'radau')], got
+
+
+def test_glm_node_startups_run_on_the_transient_that_walked_the_period():
+    """A GLM factored period's node startups (`_glm_node_startups`, what
+    turns a Nordsieck costate into one on the state) run on the transient
+    that WALKED it.  ⚠ Measured before (2026-09-28): they ran on the PSS's
+    current one -- a glm2 PSS asked for a glm3 period collected node states
+    2.9e-5 off a glm3 PSS's, and a PSS never solved raised AttributeError."""
+    from pycircuit.circuit.shooting import PSS
+    per, npts = 1e-3, 40
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p2 = PSS(_cv_loop(per), method='glm2', reltol=1e-12)
+        p2.solve(period=per, timestep=per / npts, maxiterations=40)
+        x0 = np.asarray(p2._period_state[1], float)
+        p3 = PSS(_cv_loop(per), method='glm3', reltol=1e-12)
+        p3.solve(period=per, timestep=per / npts, maxiterations=40)
+        v = np.linspace(1.0, 2.0, p2.cir.n - 1)
+
+        def states(pss, **kw):
+            fp = pss.factored_period_glm(x0, per, npts, **kw)
+            return np.asarray([np.asarray(s_, float) for s_ in
+                               fp.x_matvec_transposed(v, collect=True)[2]])
+        ref = states(p3)
+        scale = np.max(np.abs(ref))
+        got = states(p2, method='glm3')                 # another method's PSS
+        assert np.max(np.abs(got - ref)) <= 1e-12 * scale
+        got = states(PSS(_cv_loop(per), method='glm3'))   # one never solved
+        assert np.max(np.abs(got - ref)) <= 1e-12 * scale
+
+
+def test_a_startup_override_leaves_the_glm_walk_nothing_stale_to_linearise():
+    """`_glm_startup_override` (the order gate's hook) replaces the computed
+    startup, so there is none to linearise.  ⚠ Measured before
+    (2026-09-28): the walk read the PREVIOUS startup's trace silently, or
+    raised AttributeError on a fresh transient; now it says why."""
+    from pycircuit.circuit.shooting import PSS
+    per, npts = 1e-3, 20
+    times = np.linspace(0.0, per, npts + 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p = PSS(_cv_loop(per), method='glm3', reltol=1e-12)
+        p.solve(period=per, timestep=per / npts, maxiterations=40)
+        x0 = np.asarray(p._period_state[1], float)
+        other = p._new_transient(p._integrator_for('glm3'))
+        other._begin_run(np.insert(x0, p.irefnode, 0.0), p.cir.n)
+        tr = p._transient()
+        tr._glm_startup_override = (
+            lambda tn, x_, h: Transient._glm_startup(other, tn, x_, h))
+        try:
+            with pytest.raises(ValueError, match='override'):
+                p._glm_period_blocks(x0, times, np.diff(times))
+        finally:
+            del tr._glm_startup_override
+
+
+def test_a_glm_wraps_its_nordsieck_vector_with_the_state():
+    """The gauge shift (`_apply_periodic_shifts`) moves a GLM's Nordsieck
+    vector with the state it wraps.  ⚠ Measured before (2026-09-28): on an
+    Idtmod ramp the glm2 state row sat 2 moduli further out after every
+    wrap (+2, +4, +6 where radau stays in (-1, 0]) and `Q_0 - q(x)` was -3
+    after three wraps; the output, which reads the state modulo the
+    modulus, was right throughout."""
+    from pycircuit.circuit.elements import VS, Idtmod
+
+    def ramp():
+        c = SubCircuit()
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0)
+        c['R1'] = R(nout, gnd, r=1e3)
+        c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
+        return c
+    out = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for label, integ in (('glm2', GLM2Integrator), ('radau', RadauIIA3Integrator)):
+            c = ramp()
+            tr = Transient(c, integrator=integ(), reltol=1e-9)
+            r_ = tr.solve(tend=3.5, timestep=0.05, x0=np.zeros(c.n),
+                          fixed_timestep=True)
+            out[label] = (tr, np.asarray(r_.x, float), c)
+    tr, X, c = out['glm2']
+    row = [str(n) for n in c.nodes].index('Idtmod.idt_node')
+    assert np.max(np.abs(X[row] - out['radau'][1][row])) < 1e-9
+    q = np.asarray(tr.cir.q(X[:, -1], tr.epar), float)
+    assert abs(float(np.asarray(tr._glm_Q[0], float)[0][row] - q[row])) < 1e-12
+    io = [str(n) for n in c.nodes].index('out')
+    assert np.max(np.abs(X[io] - out['radau'][1][io])) < 1e-9

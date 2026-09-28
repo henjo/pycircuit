@@ -488,7 +488,8 @@ def V8():
 
     PREDICTED: with the override set, the walk reads a STALE trace (from
     the transient's previous startup) -- or raises AttributeError on a
-    transient that never recorded one."""
+    transient that never recorded one.  Fixed (F4, 2026-09-28): the walk
+    refuses with a ValueError naming the override, which is not a defect."""
     per, npts = 1e-3, 20
     times = np.linspace(0.0, per, npts + 1)
     hs = np.diff(times)
@@ -524,7 +525,7 @@ def V8():
     print('V8  a period walked with `_glm_startup_override` set:')
     for label, r in rows:
         print('    %-16s %s' % (label, r))
-    return sum(1 for _l, r in rows if 'STALE' in r or 'Error' in r)
+    return sum(1 for _l, r in rows if 'STALE' in r or 'AttributeError' in r)
 
 
 ## ---------------------------------------------------------------------------

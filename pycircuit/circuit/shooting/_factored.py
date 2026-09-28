@@ -291,7 +291,7 @@ class _GLMPeriod(FactoredPeriod):
     Nordsieck vector; the circuit state at a node is its first block.
     `x_matvec` / `x_matvec_transposed` are the map on the STATE (width `m`,
     what the Newton shoots on), and `state_map` hands them out as a map."""
-    __slots__ = ('startup', '_node_startups', '_state')
+    __slots__ = ('startup', '_node_startups', '_state', '_walk_tr')
     is_glm = True
 
     def step_objects(self):

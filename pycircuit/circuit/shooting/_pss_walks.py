@@ -494,6 +494,12 @@ class _PeriodWalks(object):
             restarted = bool(getattr(tr, '_glm_restarted', False)) and _j > 0
             if _j == 0:
                 trace0 = tr._glm_startup_trace
+                if trace0 is None:
+                    raise ValueError(
+                        'PSS: the GLM startup was replaced '
+                        '(`_glm_startup_override`), so the period has no '
+                        'startup to linearise -- its map on the state needs '
+                        'the computed one.')
             elif restarted:
                 ## the step before ends on this node's startup
                 ## (`_GLMStep.forward`)
@@ -687,8 +693,10 @@ class _PeriodWalks(object):
         vector into one on the STATE: ``v_j = S_j^T lambda_j`` (`ppv`'s
         samples) -- the first block alone, `dphi/dQ_0` with the higher
         components HELD, is the inconsistent object gear's pair also had.
-        Costs one startup (p Radau substeps) per node."""
-        tr = self._transient()
+        Costs one startup (p Radau substeps) per node, each from its own
+        point alone (no stage predictor nodes from elsewhere), on the
+        transient that walked the period."""
+        tr = getattr(fp, '_walk_tr', None) or self._transient()
         iref = self.irefnode
         times = np.asarray(fp.times, dtype=float)
         out = [fp.startup]
@@ -697,6 +705,7 @@ class _PeriodWalks(object):
             for j in range(1, len(fp.steps)):
                 rec = fp.steps[j]
                 xf = np.insert(np.asarray(rec.x_in, dtype=float), iref, 0.0)
+                tr._pred_reset()
                 tr._glm_startup(float(times[j]), xf, float(rec.h))
                 out.append(self._glm_startup_linearisation(
                     tr._glm_startup_trace))
@@ -712,6 +721,11 @@ class _PeriodWalks(object):
         `_G_at`, `_k_at`)."""
         from math import factorial
         trace = self._transient()._glm_startup_trace if trace is None else trace
+        if trace is None:
+            raise ValueError(
+                'PSS: the GLM startup was replaced (`_glm_startup_override`), '
+                'so there is no startup to linearise -- the period map on the '
+                'state needs the computed one.')
         tn, hs, p, xs, Ys = trace.tn, trace.hs, trace.p, trace.xs, trace.Ys
         ## the tableau of the method that TOOK the substeps (the trace's)
         A = np.array(trace.starter.A, dtype=float)

@@ -2088,6 +2088,20 @@ class Transient(Analysis):
                 ## through them reads
                 for _k in range(len(getattr(self, '_pred_hist', ()) or ())):
                     self._pred_hist[_k][1][row] -= d
+                ## ⚠ AND A GLM'S READ WINDOW IS ITS NORDSIECK VECTOR: its
+                ## charge level (block 0) is `q(x)` and moves with the state;
+                ## the scaled derivatives do not see a constant.  Left out,
+                ## the next step continued the UNwrapped charge: measured, the
+                ## state row sat 2 moduli further out after every wrap and
+                ## `Q_0 - q(x)` was -3 after three (outputs right, as they
+                ## read the state modulo the modulus;
+                ## `benchmarks/pss_transient_boundary.py` V10).
+                for slot in ('_glm_Q', '_glm_Q_at_entry'):
+                    rec = getattr(self, slot, None)
+                    if rec is not None:
+                        Q = np.array(rec[0], dtype=float)
+                        Q[0][row] -= d
+                        setattr(self, slot, (Q,) + tuple(rec[1:]))
                 shifted = True
         if shifted:
             self._q_cache = None
@@ -3594,6 +3608,9 @@ class Transient(Analysis):
         starter = RadauIIA3Integrator()
         override = getattr(self, '_glm_startup_override', None)
         if override is not None:
+            ## (nothing computed, nothing to linearise: no trace, not the
+            ## previous startup's -- measured, a stale one was read silently)
+            self._glm_startup_trace = None
             return np.asarray(override(tn, x0, h), dtype=float)
         tk = self.toolkit
         epar = self.epar
