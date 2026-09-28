@@ -1694,8 +1694,7 @@ def test_the_phase_pin_compares_units_on_purpose():
         warnings.simplefilter('ignore')
         pss._begin_period(seed)
         x1 = np.asarray(pss.solve_timestep(seed, times[0], hs[0]), float)
-        x2 = np.asarray(pss.solve_timestep(x1, times[1], hs[0],
-                                           iq_last=pss._iq), float)
+        x2 = np.asarray(pss.solve_timestep(x1, times[1], hs[0]), float)
     step = np.abs(x2 - x1)
     k = int(np.argmax(step))
     k_norm = int(np.argmax(step / np.maximum(swing, 1e-300)))

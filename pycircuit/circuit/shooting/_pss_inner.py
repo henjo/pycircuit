@@ -3,7 +3,6 @@ at a point (C, G, the stage derivative).
 """
 import numpy as np
 from pycircuit.circuit.analysis import remove_row_col
-from pycircuit.circuit.circuit import gnd
 from pycircuit.circuit._limiting import devices_at
 
 
@@ -386,7 +385,7 @@ class _InnerTransient(object):
         return self.toolkit.concatenate(
             (x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
 
-    def solve_timestep(self, x0, t, dt, refnode=gnd, iq_last=None):
+    def solve_timestep(self, x0, t, dt):
         """One timestep of the inner transient, taken by `Transient`.
 
         The integrator is an `Integrator` object driven by
@@ -396,10 +395,9 @@ class _InnerTransient(object):
         listed at `_transient`.
 
         `dt` is imposed by the caller: PSS owns the grid, which is what
-        keeps the period map a smooth function of `x0`.  `iq_last` is
-        retained in the signature for callers that pass it, but the
-        companion history now lives in the `Transient`'s own ring buffers,
-        rolled here through `_push_history`.
+        keeps the period map a smooth function of `x0`.  The companion
+        history lives in the `Transient`'s own ring buffers, rolled here
+        through `_roll_history`.
 
         Backward Euler damps exactly what PSS exists to find (a limit
         cycle's amplitude), which is why `method` matters.
@@ -516,7 +514,6 @@ class _InnerTransient(object):
         ## an order drop on the opening step reports Euler's, which is what
         ## the propagation must use for that step.
         self._coeffs = tr._companion_coeffs
-        self._iq = tr._iq
 
         x = toolkit.concatenate((x_full[:irefnode], x_full[irefnode + 1:]))
         return x

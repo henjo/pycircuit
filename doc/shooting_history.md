@@ -2632,6 +2632,14 @@ does not -- where retaining `N` factorisations from every solve
 would cost `2 N m^2` doubles on every run, which is the memory
 trade `_traverse_factored` documents and most callers never want.
 
+2026-09-28 (the interface's group 3): the replay's own reset of the LTE
+probe went -- `_begin_run` (through `_begin_period` or
+`_install_history`) already clears it, with the reason.  The comment,
+before:
+
+Fresh probe, so `relref='sigglobal'`'s running signal maximum is
+the period's, not something an earlier shooting iteration saw.
+
 ### `_report_lte`
 
 The comment on the three figures, before the move:
@@ -11380,6 +11388,15 @@ never arms the transient's rescue ladder (an owner decision; see
 The `b != 0` refusal in `_install_history` now raises BEFORE the transient
 is opened (only the raise path's state differs).
 
+Group 3: `solve_timestep` lost `refnode` and `iq_last`, never read since
+the companion history moved into the transient's rings (and with them
+`self._iq`, read only to be passed back as `iq_last`).  Its docstring,
+before:
+
+`iq_last` is retained in the signature for callers that pass it,
+but the companion history now lives in the `Transient`'s own ring
+buffers, rolled here through `_push_history`.
+
 ### `_factorise`
 
 2026-09-27 (the second move, from the code):
@@ -11417,6 +11434,13 @@ Runge-Kutta method that took the substeps (the linearisation reads its
 tableau instead of a second hard-coded Radau IIA(3)), and every fresh GLM
 start past a run's opening sets `_glm_restarted` (a time-key miss too;
 measured, none occurs on the shooting's grids, V9).
+
+Group 3: the docstring's first sentence was wrong about the interface,
+and is replaced.  Before:
+
+Drives `Transient._solve_timestep_glm` with the Nordsieck vector fed in
+explicitly, so the startup runs ONCE at `t = 0` and every later step
+continues the multivalue state (no seam inside the period).
 
 ### `_walk_lmm`
 

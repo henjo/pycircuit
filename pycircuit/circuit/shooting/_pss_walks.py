@@ -455,9 +455,14 @@ class _PeriodWalks(object):
     def _glm_period_blocks(self, x_in, times, hs):
         """One period under a Nordsieck GLM, collecting per-step factors.
 
-        Drives `Transient._solve_timestep_glm` with the Nordsieck vector fed in
-        explicitly, so the startup runs ONCE at `t = 0` and every later step
-        continues the multivalue state (no seam inside the period).  Returns
+        Drives `Transient._solve_timestep_glm` (through `solve_timestep`)
+        step by step.  The walk never hands the method its Nordsieck vector:
+        `_begin_run` leaves both slots empty, so the startup runs ONCE, at
+        `t = 0`, and every later step continues the vector the transient
+        keeps itself (no seam inside the period) -- unless it restarts on
+        growth.  What a step did is read back after it (`_glm_Q_in`,
+        `_glm_rho`, `_rk_Y`, `_rk_K`, `_glm_Q`, `_glm_restarted`,
+        `_glm_startup_trace`).  Returns
         ``(steps, xs, Q0, Qend, x_end, trace0)``, each step a `_GLMStep`
         record (its fields are documented there): the stage factors and
         conductances, the tableau, the stage derivatives, abscissae and

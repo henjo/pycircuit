@@ -1668,6 +1668,37 @@ class Transient(Analysis):
             rows.append((int(row), float(m), float(o)))
         return rows
 
+    ## -----------------------------------------------------------------------
+    ## THE SHOOTING'S USE OF THIS CLASS.  `PSS` drives `solve_timestep` on a
+    ## frozen grid and never calls `_solve`.  What it calls, in order (its
+    ## side: `_InnerTransient`, `_PeriodWalks`):
+    ##
+    ##   built       `PSS._new_transient`: the PSS's settings (tolerances,
+    ##               `epar`, `relref`, solvers, PCNR, the method), then
+    ##               `_freeze_grid()` unless the grid is its own (`lte_grid`,
+    ##               `tstab`)
+    ##   per period  `_begin_run(x0)` -- or, for the pair map on a solved
+    ##               two-point history, `_begin_run_on_history`
+    ##   per step    `_dt = h`; `solve_timestep`; the reads that need the
+    ##               previous step's history (`step_lte`, `residual_dh`,
+    ##               `residual_dT`) BEFORE `_roll_history(x, h)` moves it
+    ##
+    ## Left out on purpose, so the period map is a function of `x0` alone:
+    ## `cir.accept_step` (element state -- an Idtmod's wrap prediction; a
+    ## TLine's history, which is why the PSS refuses hidden state), the
+    ## statistics, the family's `after_accept`, the rescue ladder,
+    ## breakpoints (the shooting lands source edges on its own grid,
+    ## `PSS.event_grid`), and the order drop re-armed after a landing --
+    ## measured MORE accurate without it (gear's error 1/3 of the loop's
+    ## rule, trap's 1/50 .. 1/100; `benchmarks/pss_transient_boundary.py`
+    ## V1).  The gauge shift runs in `_roll_history` without the caller's
+    ## window, and the closure folds the whole moduli between (V2).  A GLM
+    ## is never handed its Nordsieck vector: `_begin_run` empties both
+    ## slots, the first step starts afresh at the period's start, and the
+    ## walk reads each step's records back.
+    ## History: `doc/pss_log_260902.md`, 2026-09-28 (the interface review).
+    ## -----------------------------------------------------------------------
+
     def _begin_run(self, x, n):
         """Reset every piece of PER-RUN integrator state and seed the rings.
 

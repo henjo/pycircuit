@@ -26,7 +26,10 @@ class _PeriodGrids(object):
         is parameterised by time, so a source's edges can be walked out once and
         placed.  A STATE-DEPENDENT reset -- `Idtmod`'s wrap -- cannot: its
         `next_event` is a linear prediction from the last accepted point and
-        returns `inf` before a traversal has started, so there is nothing to walk.
+        returns `inf` before a traversal has started, so there is nothing to walk
+        -- once element state is reset, which this does first: after a forward
+        run on the same circuit object the prediction is that run's
+        (`benchmarks/pss_transient_boundary.py` V5).
         The period-map jump at a wrap lies in the OUTPUT map and is fixed in
         the residual (`_close_periodic`), not by the grid; a declared state
         event (`state_events`) is landed by the solve itself, as a Newton

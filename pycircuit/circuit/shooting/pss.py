@@ -96,8 +96,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     damping is invisible to (1) and (3) -- on a Q=20 resonator at 100
     points/period euler, gear2 and trap all converge, at 56 %, 1.2 % and
     0.05 % below the analytic peak.  Driving `Transient` buys one
-    integrator definition, the limiting/PCNR machinery, breakpoints and the
-    order drop -- not (2) as a controller.
+    integrator definition and the limiting/PCNR machinery -- not (2) as a
+    controller, and not the stepping loop's breakpoints or its order drop
+    after a landing: the shooting lands source edges on its own frozen
+    grid (`event_grid`) and never re-arms the drop, measured MORE accurate
+    without it (`benchmarks/pss_transient_boundary.py` V1; the whole
+    contract is above `Transient._begin_run`).
 
     THE SHOOTING JACOBIAN.  Every linear multistep method here writes its
     companion as
@@ -617,7 +621,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         second order.  Its one cost is a CONSTANT, not an order: a two-step
         formula takes an O(h^2 [x'']) hit at the ONE step after a corner,
         where its history straddles the jump in x'' (about 30x trap's
-        there).  At a TRUE jump (tr = 0) the gain needs `event_grid` to keep
+        there).  Re-arming the stepping loop's order drop at the landed
+        edges costs more than the hit (gear's error 3x, trap's 50-100x;
+        `benchmarks/pss_transient_boundary.py` V1), so the shooting does not.
+        At a TRUE jump (tr = 0) the gain needs `event_grid` to keep
         both ends of the clamped ramp (see there).
 
         ⚠ An explicit `True`/`False` is honoured untouched; this only fills in
@@ -1498,7 +1505,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## `phase_rule='reselect'`), not the formulation.
             self._begin_period(x)
             _x1 = self.solve_timestep(x, times[0], hs[0])
-            _x2 = self.solve_timestep(_x1, times[1], hs[0], iq_last=self._iq)
+            _x2 = self.solve_timestep(_x1, times[1], hs[0])
             phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
             self.phase_k = phase_k                  # which coordinate is pinned, for diagnosis
             ## The rule is Aprille & Trick's (oscillator paper, Step 3:
@@ -2029,12 +2036,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
 
         if solved_history:
             self._install_history(x0_ss, xm1_ss, hs[0], h_prev=hs[-1])
-            tr = self._transient()
             X = [np.asarray(x0_ss, dtype=float)]
             walk = list(zip(times[1:], hs[:len(times) - 1]))
         else:
             X = [x0_ss]
-            tr = self._begin_period(x0_ss)
+            self._begin_period(x0_ss)
             ## the manufacturing step, then the loop -- exactly the plain walk
             ## ... unless there was no manufacturing step, in which case the
             ## replay opens AT `x_0` and walks the period alone.  Getting
@@ -2043,9 +2049,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             walk = list(zip(times[1:], hs[:len(times) - 1]))
             if not x0_unknown:
                 walk = [(times[0], hs[0])] + walk
-        ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
-        ## the period's, not something an earlier shooting iteration saw.
-        tr._lte_probe = None
         ## A stage method has no LMM divided-difference LTE (compute_lte
         ## refuses), and the seam/interior split is a property of a manufactured
         ## opener it does not have -- so the replay collects no per-step LTE for

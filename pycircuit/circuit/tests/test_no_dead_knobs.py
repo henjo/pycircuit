@@ -24,7 +24,9 @@ HERE = os.path.dirname(__file__)
 CIRCUIT = os.path.normpath(os.path.join(HERE, '..'))
 
 SCAN_MODULES = ['transient.py', 'jaxtransient.py', 'integrator.py',
-                'stepcontroller.py', 'nrsolver.py', '_lte_kernels.py']
+                'stepcontroller.py', 'nrsolver.py', '_lte_kernels.py',
+                ## the shooting's side of the transient boundary
+                'shooting/_pss_inner.py']
 
 ## (module, function, argument) -> why it is allowed to ignore the argument.
 UNUSED_ARG_ALLOWLIST = {
