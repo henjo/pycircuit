@@ -656,10 +656,19 @@ class _DrivenNoise(object):
         fp = pss.factored_period()
         N = len(fp.steps)
         f0 = 1.0 / float(fp.T)
-        lmax = N // 2 if maxsidebands is None else min(int(maxsidebands),
-                                                       N // 2)
-        cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         k = int(carrier)
+        ## ⚠ BOTH SIDEBANDS OF A PAIR, `k - p` AND `k + p`, WITHIN THE GRID'S
+        ## NYQUIST (`|l| <= N//2`, `adjoint_sideband_row`): so `|p|` up to
+        ## `N//2 - |k|`.  The default used to be `N//2` itself, and every
+        ## call with `carrier >= 1` and no `maxsidebands` raised (2026-09-28).
+        cap = N // 2 - abs(k)
+        if cap < 0:
+            raise ValueError(
+                'PAC.am_pm_noise: carrier %d is above the grid\'s Nyquist '
+                '(%d harmonics at %d points per period) -- use a finer period '
+                'grid.' % (k, N // 2, N))
+        lmax = cap if maxsidebands is None else min(int(maxsidebands), cap)
+        cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         ## ⚠⚠ THE SPLIT IS TAKEN IN THE CARRIER'S FRAME, NOT THE TIME
         ## ORIGIN'S.  AM is the envelope component ALONG the carrier phasor,
         ## so `a + conj(b)` is right only for a cosine-phased carrier;

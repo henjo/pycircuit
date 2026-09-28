@@ -2162,3 +2162,31 @@ def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
     bb, _v = pn(build(False), blind=True)
     assert abs(b / a - 1.0) < 5e-4, b / a
     assert bb / a > 5.0, bb / a
+
+
+def test_am_pm_noise_runs_with_its_default_sideband_count():
+    """`am_pm_noise`'s default `maxsidebands=None` takes every sideband pair
+    `carrier -+ p` the grid's Nyquist allows, `|p| <= N//2 - |carrier|`.  ⚠ It
+    took `N//2`, asked for sideband `carrier + N//2`, and raised "above the
+    grid's Nyquist" for every carrier >= 1 (found by the conventions review,
+    2026-09-28); every call in the suite passed `maxsidebands`."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+    c['R'] = R(1, 2, r=1e4)
+    c['D'] = Diode(2, gnd)
+    c['C'] = C(2, gnd, c=1e-12)
+    T = 1e-6
+    pss = PSS(c, method='gear', reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 40, maxiterations=40)
+        pac = PAC(c, toolkit=circuit.numeric)
+        N = len(pss._adjoint_host().factored_period().steps)
+        default = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1)
+        explicit = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1,
+                                   maxsidebands=N // 2 - 1)
+    assert default[:2] == explicit[:2] and default[2] == explicit[2], (default, explicit)
+    assert max(abs(p_) for p_ in default[2]) == N // 2 - 1
