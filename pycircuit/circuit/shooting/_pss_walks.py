@@ -416,6 +416,7 @@ class _PeriodWalks(object):
         A, b, c = tab
         s = A.shape[0]
         iref = self.irefnode
+        Yf = [np.array(yf, dtype=float) for yf in self._transient()._rk_Y]
         Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
               for yf in self._transient()._rk_Y]
         Cn = np.asarray(self._C_at(xn))
@@ -435,7 +436,8 @@ class _PeriodWalks(object):
             ## step (under the default `DenseSolver` its factor is an
             ## `lu_factor` pair)
             ## History: `doc/shooting_history.md`, `_PeriodWalks._stage_step`.
-            return _StageStep(Cn, Gs, h, A, b, c, lu=self._factorise(Jb)), Ys
+            return _StageStep(Cn, Gs, h, A, b, c, lu=self._factorise(Jb),
+                              Ys=Yf), Ys
         Kf = []
         for i in range(s):
             if abs(A[i, i]) < 1e-14:
@@ -448,7 +450,7 @@ class _PeriodWalks(object):
             else:
                 Ci = np.asarray(self._C_at(Ys[i]))
                 Kf.append(self._factorise(Ci + h * A[i, i] * Gs[i]))
-        return _StageStep(Cn, Gs, h, A, b, c, Kf=Kf), Ys
+        return _StageStep(Cn, Gs, h, A, b, c, Kf=Kf, Ys=Yf), Ys
 
     def _glm_period_blocks(self, x_in, times, hs):
         """One period under a Nordsieck GLM, collecting per-step factors.

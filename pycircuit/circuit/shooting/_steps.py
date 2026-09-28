@@ -37,15 +37,19 @@ class _StageStep(object):
     `c`; never `par.method`'s, which is wrong for a `factored_period_stage`
     built with another `method=`).
 
+    `Ys`: the step's stage states, full width, as the walk solved them --
+    where a modulated source is injected (`PAC._stage_states`).
+
     History: `doc/shooting_history.md`, `_StageStep`.
     """
 
-    __slots__ = ('Cn', 'Gs', 'h', 'A', 'b', 'c', 'lu', 'Kf', 'm', 's')
+    __slots__ = ('Cn', 'Gs', 'h', 'A', 'b', 'c', 'lu', 'Kf', 'm', 's', 'Ys')
 
-    def __init__(self, Cn, Gs, h, A, b, c, lu=None, Kf=None):
+    def __init__(self, Cn, Gs, h, A, b, c, lu=None, Kf=None, Ys=None):
         self.Cn, self.Gs, self.h = Cn, Gs, h
         self.A, self.b, self.c = A, b, c
         self.lu, self.Kf = lu, Kf
+        self.Ys = Ys
         self.m = Cn.shape[0]
         self.s = A.shape[0]
 

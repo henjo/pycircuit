@@ -10475,6 +10475,25 @@ is O(h^p) at every offset (3.3e-5 / 3.3e-5 / 8.4e-5 at 1e-3 /
 1e-5 / 1e-7 against radau at 480 points), and forward and adjoint
 then agree to O(eta) rather than the arithmetic (1e-6).
 
+### `_stage_states`
+
+2026-09-28 (D2: the injection points shared from the PSS walk):
+
+The docstring before the change:
+
+The stage states of one period, `N s` full-width vectors in the
+order of `_stage_times` -- one re-traversal of the converged orbit
+on a FRESH inner transient (the run's own is restored), cached per
+factored period.  A GLM's steps carry theirs (the walk stored them).
+
+That re-traversal re-solved the period PAC had just been handed, and
+wrote `pss._tran` (restored) and `pss._sampled_stage_cache`.  The
+factored period is itself a traversal from the same converged state, so
+its walk now keeps each step's stage states (`_StageStep.Ys`, as
+`_GLMStep` already did) and this reads them.  Measured before the
+change: the walk's states and the re-traversal's BIT-EQUAL, radau,
+TR-BDF2 and esdirk43 on an RC and a rectifier (297 / 594 states each).
+
 ## `_pac_sources.py` -- `_NoiseSources`
 
 ### `_cy_colour_model`

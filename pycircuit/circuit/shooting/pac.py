@@ -904,33 +904,14 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
     def _stage_states(self, pss, fp):
         """The stage states of one period, `N s` full-width vectors in the
-        order of `_stage_times` -- one re-traversal of the converged orbit
-        on a FRESH inner transient (the run's own is restored), cached per
-        factored period.  A GLM's steps carry theirs (the walk stored them)."""
+        order of `_stage_times`: each step's own, as the factored walk
+        solved them (`_StageStep.Ys`; a GLM's steps list their startups'
+        substages too).
+        History: `doc/shooting_history.md`, `PAC._stage_states`."""
         if fp.is_glm:
             return [y for st in fp.step_objects()
                     for y in st.injection_states()]
-        cache = getattr(pss, '_sampled_stage_cache', None)
-        if cache is not None and cache[0] is fp:
-            return cache[1]
-        tms = np.asarray(fp.times, dtype=float)
-        hs = np.diff(tms)
-        m = pss.cir.n - 1
-        x = np.asarray(pss._period_state[1], dtype=float)[:m]
-        saved = getattr(pss, '_tran', None)
-        pss._tran = pss._new_transient(pss._integrator_for(pss.par.method))
-        try:
-            pss._begin_period(x)
-            tr = pss._transient()
-            Ys = []
-            for j in range(len(fp.steps)):
-                x = np.asarray(pss.solve_timestep(x, tms[j + 1], hs[j]),
-                               dtype=float)
-                Ys.extend(np.asarray(y, dtype=float) for y in tr._rk_Y)
-        finally:
-            pss._tran = saved
-        pss._sampled_stage_cache = (fp, Ys)
-        return Ys
+        return [y for st in fp.steps for y in st.Ys]
 
     def _stage_pass(self, pss, fp, lam0, seed=None):
         """One reverse pass of a stage period map (`dirk` or `full`, or a
