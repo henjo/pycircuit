@@ -5221,3 +5221,95 @@ def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():
             p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]), maxiterations=60)
         assert p.converged, method
         assert p.phase_k == 0, (method, p.phase_k)            # v: the raw rule's choice
+
+
+def test_a_pss_shoots_at_the_temperature_it_was_given(monkeypatch):
+    """The PSS's `epar` reaches every analysis it builds (the transients
+    of `_new_transient`, the monodromy twin, the seed's operating point).
+    ⚠ Measured before (2026-09-28):
+    every analysis gets its own copy of `defaultepar`, so a `PSS(epar=...)`
+    at 400 K shot at 300.15 K -- its waveform BIT-EQUAL to the default's,
+    where forward transients at the two temperatures differ by 4.2e-4 V."""
+    import warnings
+
+    from pycircuit.circuit import dcanalysis
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+    seen = []
+    _dc_solve = dcanalysis.DC.solve
+
+    def recording_solve(self, *a, **k):
+        seen.append(float(self.epar.T))
+        return _dc_solve(self, *a, **k)
+    monkeypatch.setattr(dcanalysis.DC, 'solve', recording_solve)
+
+    def build():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=1.0, freq=1e3)
+        c['R'] = R(1, 2, r=1e3)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-7)
+        return c
+    hot = defaultepar.copy()
+    hot.T = 400.0
+    W = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for label, kw in (('default', {}), ('hot', {'epar': hot})):
+            p = PSS(build(), method='radau', reltol=1e-9, **kw)
+            p.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
+            assert p.converged
+            W[label] = (np.asarray(p.waveform[1], float), p)
+        c = build()
+        res = Transient(c, reltol=1e-9, epar=hot).solve(
+            tend=5e-3, timestep=1e-5, x0=np.zeros(c.n))
+        ## the seed's operating point, which only an autonomous run solves
+        del seen[:]
+        PSS(_phase_circuit(), method='trap', reltol=1e-8, epar=hot).solve(
+            period=1e-3, timestep=1e-3 / 100, maxiterations=30)
+    p_hot = W['hot'][1]
+    assert p_hot._transient().epar.T == 400.0
+    assert seen and set(seen) == {400.0}, seen         # the seed's DC
+    assert np.max(np.abs(W['hot'][0] - W['default'][0])) > 1e-5
+    ## and it is the 400 K orbit: the forward run, settled after five
+    ## periods (tau = 0.1 ms), ends where the hot PSS starts
+    io = [str(n) for n in c.nodes].index('2')
+    assert abs(float(np.asarray(res.x, float)[io, -1])
+               - float(W['hot'][0][io, 0])) < 1e-5
+
+
+def test_event_grid_does_not_read_an_earlier_runs_element_state():
+    """`event_grid` walks `cir.next_event`, and an Idtmod's is a prediction
+    from its last ACCEPTED point.  ⚠ Measured before (2026-09-28): after a
+    forward `Transient` to 0.3 T on the same circuit object the grid gained
+    7 spurious events (0.3529, 0.4529, ... -- that run's predicted wraps);
+    after `lte_grid` it did not.  The element state is now reset first."""
+    import warnings
+
+    from pycircuit.circuit.elements import Idtmod, VPulse
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+
+    def build():
+        c = SubCircuit()
+        for nn in ('in', 'out'):
+            c.add_node(nn)
+        c['vs'] = VPulse('in', gnd, v1=0.0, v2=1.0, td=0.05 * T, tr=0.01 * T,
+                         tf=0.01 * T, pw=0.4 * T, per=T)
+        c['I'] = Idtmod('in', gnd, 'out', gnd, modulus=0.1 * T)
+        c['Rl'] = R('out', gnd, r=1e3)
+        return c
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        fresh = PSS(build(), method='radau')
+        fresh.event_grid(T, npts=100)
+        c = build()
+        Transient(c).solve(tend=0.3 * T, timestep=T / 200, x0=np.zeros(c.n))
+        after = PSS(c, method='radau')
+        after.event_grid(T, npts=100)
+    assert list(after.event_times) == list(fresh.event_times), \
+        (after.event_times, fresh.event_times)
+    assert len(fresh.event_times) == 4, fresh.event_times

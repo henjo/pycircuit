@@ -1441,7 +1441,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## the same statement.
             if x0 is None:
                 from pycircuit.circuit.dcanalysis import DC
-                xdc = np.asarray(DC(self.cir, toolkit=self.toolkit).solve().x,
+                ## (at the PSS's temperature too, as `_new_transient`'s
+                ## transients: `benchmarks/pss_transient_boundary.py` V12)
+                xdc = np.asarray(DC(self.cir, toolkit=self.toolkit,
+                                    epar=self.epar.copy()).solve().x,
                                  dtype=float).reshape(-1)
                 x = np.concatenate((xdc[:irefnode], xdc[irefnode + 1:]))
 

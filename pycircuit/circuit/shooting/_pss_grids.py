@@ -56,6 +56,15 @@ class _PeriodGrids(object):
                 raise ValueError('event_grid: give either `npts` or `grid`')
             pts = np.linspace(0.0, 1.0, int(npts) + 1)
 
+        ## ⚠ ELEMENT STATE FROM AN EARLIER RUN IS NOT AN EVENT.  `next_event`
+        ## reads what `accept_step` left -- an Idtmod predicts its next wrap
+        ## from its last ACCEPTED point -- and a forward `Transient` on the
+        ## same circuit object leaves it: measured, 7 spurious events after
+        ## one to 0.3 T (`benchmarks/pss_transient_boundary.py` V5).  Cleared
+        ## as `Transient.solve` clears it; the shooting reads no other
+        ## per-run element state.
+        if hasattr(self.cir, 'reset_state'):
+            self.cir.reset_state(self.epar)
         ## walk the events across one period
         ev = []
         t = 0.0

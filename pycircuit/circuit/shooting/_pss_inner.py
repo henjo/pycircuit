@@ -338,7 +338,13 @@ class _InnerTransient(object):
         ## sites building a transient and a per-site fix would drift.  A no-op
         ## for every other integrator -- see `_theta_biased`.
         integ = self._theta_biased(integ)
+        ## ⚠ THE PSS'S `epar` TOO -- a copy, since the transient writes its
+        ## own `epar.t` as it steps.  Left out, every analysis gets its own
+        ## copy of `defaultepar`, and a `PSS(epar=...)` shot at 300 K
+        ## whatever it said: measured, the waveform at 400 K was BIT-EQUAL
+        ## to the default's (`benchmarks/pss_transient_boundary.py` V12).
         kw = dict(
+            epar=self.epar.copy(),
             reltol=self.par.reltol, iabstol=self.par.iabstol,
             vabstol=self.par.vabstol, maxiter=self.par.maxiter,
             analysis=self.par.analysis,
