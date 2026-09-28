@@ -1966,6 +1966,72 @@ class Transient(Analysis):
         if self._periodic_rows:
             self._apply_periodic_shifts(x, [] if X is None else X)
 
+    def _roll_history(self, x, h, X=None):
+        """Roll the run past one ACCEPTED step of `h` ending at `x`: the ring
+        push (`_push_history`, the gauge shift with it) and the record the
+        next step reads -- `_dt`, the `_dt_last`/`_dt_last2` ring, and the
+        flags that say the run is no longer opening.
+
+        The one accept bookkeeping for the loop (`_solve`) and the shooting
+        (`PSS.solve_timestep`).  What only the loop does at an accept --
+        `cir.accept_step`, the statistics, the family's `after_accept`, the
+        order drop re-armed after a landing -- stays in the loop, and the
+        shooting leaves it out on purpose (the period map must be a function
+        of `x0` alone)."""
+        self._push_history(x, X)
+        self._dt = h
+        self._dt_last2 = self._dt_last
+        self._dt_last = h
+        self._is_first_step = False
+        self._no_history = False
+
+    def _begin_run_on_history(self, x0, x_m1, h, h_prev=None):
+        """Open a run ON a solved two-point history, full-width `x0` and the
+        point `x_m1` one step `h_prev` before it (default `h`), instead of on
+        a seed -- the shooting's pair map (`PSS._install_history`).
+
+        `_begin_run(x_m1)` opens the rings on the earlier point and the
+        charge half of `_push_history` puts `q(x0)` in front of it (no `_iq`
+        roll: no step has been solved, and only a `b = 0` companion, which
+        never reads one, may open this way -- the caller refuses the rest).
+        The flags then say what is true: a step of `h` has been taken and
+        the run is not opening, so nothing drops order.  `_dt_last2` stays
+        None on purpose: the THIRD charge in the ring is `q(x_m1)` repeated,
+        so the LTE estimator's opening reading stays unsound and is
+        discarded.  ⚠ `_dt_last` is the step that PRODUCED `x0`, on a
+        periodic grid the period's LAST one (`h_prev`), not its first."""
+        self._begin_run(x_m1, self.cir.n)
+        self._dt = h
+        q0 = self.cir.q(x0, self.epar)
+        self._qlast = self.toolkit.concatenate(
+            (self.toolkit.array([q0]), self._qlast))[:-1]
+        self._q_cache = None
+        self._is_first_step = False
+        self._no_history = False
+        self._dt_last = h if h_prev is None else h_prev
+        self._dt_last2 = None
+
+    def _freeze_grid(self):
+        """Configure this transient for traversals of a FROZEN grid -- the
+        shooting's (`PSS._new_transient`; its users: the period walks, the
+        replay, `warping_estimate`'s fixed-step run and the transient PAC
+        reaches through `pss._C_at`/`_G_at`/`_k_at`):
+
+        - Gear-2's shrink drop to Euler off (`Gear2Integrator.shrink_guard`):
+          a frozen grid has no stalled estimate, and the drop costs a
+          two-alpha step the shooting adjoint cannot transpose; growth stays
+          guarded;
+        - the damped Newton as the last resort (`_damped_last_resort`), in
+          place of the step reduction an adaptive run makes: a frozen grid
+          cannot shrink (an owner decision; see `_rk_step_coupled`).
+
+        A method, not a Parameter: nothing a caller of `Transient` sets."""
+        try:
+            self.par.integrator.shrink_guard = False
+        except Exception:                                      # noqa: BLE001
+            pass
+        self._damped_last_resort = True
+
     def _apply_periodic_shifts(self, x, X):
         """Rewrap periodic states after an ACCEPTED step -- the gauge shift.
 
@@ -5177,13 +5243,8 @@ class Transient(Analysis):
                     self.statistics.order_drops += 1
                 if hasattr(self.cir, 'accept_step'):
                     self.cir.accept_step(t, X[-1], self.epar)
-                self._push_history(x_new, X)
-                self._dt = h
-                self._dt_last2 = self._dt_last
-                self._dt_last = h
+                self._roll_history(x_new, h, X)
                 family.after_accept(landing)
-                self._is_first_step = False
-                self._no_history = False
                 h = min(h_next, max_step) if not fixed_timestep else timestep
         finally:
             family.finish()

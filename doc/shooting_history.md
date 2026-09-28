@@ -11352,6 +11352,34 @@ the first staged gear oscillator, 2026-09-24)
 
 ## `_pss_inner.py` -- `_InnerTransient`
 
+### `_install_history`, `_new_transient`, `solve_timestep` (2026-09-28)
+
+The shooting <-> transient interface's refactor (plan approved 2026-09-28,
+`doc/pss_log_260902.md`): the hand-written history and frozen-grid writes
+became `Transient` methods -- `_roll_history`, `_begin_run_on_history`,
+`_freeze_grid` -- whose docstrings now carry what these comments said.
+
+`_install_history`'s comment on the charge push, before the move:
+
+The charge half of `_push_history`, without its `_iq` roll: no
+step has been solved yet, so there is no companion current to
+push -- and a `b = 0` companion never reads one, which the guard
+above is what makes true.
+
+`_new_transient`'s comment on the shrink guard, before the move:
+
+a frozen grid has no stalled estimate: the shrink drop to Euler is
+off here (see `Gear2Integrator.shrink_guard`); growth stays guarded
+
+and on the damped Newton:
+
+The line search as the last resort on the shooting path, which
+never arms the transient's rescue ladder (an owner decision; see
+`_rk_step_coupled` and `solve_timestep`).
+
+The `b != 0` refusal in `_install_history` now raises BEFORE the transient
+is opened (only the raise path's state differs).
+
 ### `_factorise`
 
 2026-09-27 (the second move, from the code):

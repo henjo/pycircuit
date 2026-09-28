@@ -90,8 +90,6 @@ class _InnerTransient(object):
         """
         tr = self._transient()
         _alphas, b = tr._get_integrator().companion_coefficients(dt, dt)
-        tr._begin_run(self._insert_refnode(xm1_in), self.cir.n)
-        tr._dt = dt
 
         ## ⚠ A `b != 0` COMPANION IS REFUSED HERE.  Such a method depends on
         ## `x_{-1}` only through `iq_{-1} = -(i(x_{-1}) + u)` (exact at a
@@ -110,22 +108,12 @@ class _InnerTransient(object):
                 'needs `iq_{-1}` itself as the unknown, which is a different '
                 'formulation; this refuses rather than solving a singular '
                 'one.')
-        ## The charge half of `_push_history`, without its `_iq` roll: no
-        ## step has been solved yet, so there is no companion current to
-        ## push -- and a `b = 0` companion never reads one, which the guard
-        ## above is what makes true.
-        q0 = tr.cir.q(self._insert_refnode(x0_in), tr.epar)
-        tr._qlast = self.toolkit.concatenate(
-            (self.toolkit.array([q0]), tr._qlast))[:-1]
-        tr._q_cache = None
-        tr._is_first_step = False
-        tr._no_history = False
         ## ⚠ THE STEP THAT PRODUCED `x_0` IS THE PERIOD'S LAST ONE, NOT ITS
         ## FIRST: `x_{-1}` sits one step BEFORE `x_0`, and on a periodic grid
         ## that step is `hs[-1]`.  On a non-uniform grid, handing `hs[0]` to a
         ## method that reads `h_last` states a step ratio that never happened.
-        tr._dt_last = dt if h_prev is None else h_prev
-        tr._dt_last2 = None
+        tr._begin_run_on_history(self._insert_refnode(x0_in),
+                                 self._insert_refnode(xm1_in), dt, h_prev)
         self._history_is_solved = True
         return tr
 
@@ -346,13 +334,6 @@ class _InnerTransient(object):
         History: `doc/shooting_history.md`, `_InnerTransient._new_transient`.
         """
         from pycircuit.circuit.transient import Transient
-        ## a frozen grid has no stalled estimate: the shrink drop to Euler is
-        ## off here (see `Gear2Integrator.shrink_guard`); growth stays guarded
-        if frozen:
-            try:
-                integ.shrink_guard = False
-            except Exception:                                  # noqa: BLE001
-                pass
         ## ⚠ ONE CHOKE POINT for the theta bias, because there are four call
         ## sites building a transient and a per-site fix would drift.  A no-op
         ## for every other integrator -- see `_theta_biased`.
@@ -370,11 +351,9 @@ class _InnerTransient(object):
             pcnr=self.par.pcnr)
         kw.update(override)
         tr = Transient(self.cir, toolkit=self.toolkit, integrator=integ, **kw)
-        ## The line search as the last resort on the shooting path, which
-        ## never arms the transient's rescue ladder (an owner decision; see
-        ## `_rk_step_coupled` and `solve_timestep`).
+        ## the frozen grid's two settings (`Transient._freeze_grid`)
         if frozen:
-            tr._damped_last_resort = True
+            tr._freeze_grid()
         tr.irefnode = self.irefnode
         return tr
 
@@ -390,6 +369,11 @@ class _InnerTransient(object):
         """
         tr = self._transient()
         tr._begin_run(self._insert_refnode(x_reduced), self.cir.n)
+        ## (a period opened on a SEED is not a solved history: the flag
+        ## `_install_history` sets must not outlive the pair walk that set it
+        ## -- measured, a plain walk on the same object misread its seam,
+        ## `benchmarks/pss_transient_boundary.py` V3)
+        self._history_is_solved = False
         return tr
 
     def _insert_refnode(self, x):
@@ -510,12 +494,11 @@ class _InnerTransient(object):
 
         ## The history advance is the accept path's, called rather than
         ## copied -- and `_dt_last` must roll AFTER the step, because
-        ## `get_diff` read it as `h_last` while solving.
-        tr._push_history(x_full)
-        tr._dt_last2 = tr._dt_last
-        tr._dt_last = dt
-        tr._is_first_step = False
-        tr._no_history = False
+        ## `get_diff` read it as `h_last` while solving.  No window: the
+        ## walk keeps its own states, and the closure folds every block's
+        ## periodic rows, so a whole modulus between them is absorbed
+        ## (measured 1.1e-16, `benchmarks/pss_transient_boundary.py` V2).
+        tr._roll_history(x_full, dt)
 
         ## Reduced-system views for the shooting Jacobian.  `_Geq` is the
         ## companion conductance the step actually used, which is the factor
