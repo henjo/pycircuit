@@ -663,6 +663,23 @@ class _ModLorentzSigned(_ModLorentzCtl):
         return np.array([[a], [-a], [0.0], [0.0]])
 
 
+class _ModLorentzThermal(_ModLorentzSigned):
+    """`_ModLorentzSigned` plus a constant WHITE current noise `white` p -> n
+    in the same element, which states no amplitude for it -- as an HDL device
+    with thermal and G-R noise states its coloured sources only."""
+    instparams = _ModLorentzSigned.instparams + [
+        Parameter(name='white', desc='', unit='', default=0.0)]
+
+    def CY(self, x, w, epar=None):
+        out = np.array(super().CY(x, w, epar), dtype=float)
+        pw = self.iparv.white
+        out[0, 0] += pw
+        out[1, 1] += pw
+        out[0, 1] -= pw
+        out[1, 0] -= pw
+        return self.toolkit.array(out)
+
+
 class _TwoModLorentz(Circuit):
     """Two INDEPENDENT Lorentzian currents p -> n in one element, under two
     modulations: ``V(ap, an) sqrt(P1 L1(w))`` and ``V(bp, bn) sqrt(P2

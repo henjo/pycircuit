@@ -1587,6 +1587,12 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     ## roots them separately.  On the EKV (thermal + flicker in one device)
     ## that in-element difference measured 4.2e-4 -- the cross-ELEMENT
     ## independence, which both routes keep, is what moved 0.319 -> 0.3055.
+    ## ⚠⚠⚠ AND SINCE 2026-09-28 IT IS THE SAME MODEL AGAIN: the EKV states
+    ## its flicker's signed amplitudes, and per band an element is read
+    ## from them plus the root of its WHITE remainder (`_perband_mode`
+    ## 'white') -- white and flicker rooted separately, as the fitted route
+    ## roots them: 3.2e-13 (was 4.2e-4).  (Not bit-equal: the per-band
+    ## route did run.)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         assert pac._cy_colour_model(pss, 0.1e6, f0) is not None
@@ -1595,7 +1601,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
             sfull, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         finally:
             del pac._colour_fit
-    assert 1e-6 < abs(sc / sfull - 1.0) < 1e-3, (sc, sfull)
+    assert sc != sfull and abs(sc / sfull - 1.0) < 1e-9, (sc, sfull)
 
     cy_orig = c.CY
     def cy_lorentz(x, w, **kw):

@@ -94,6 +94,44 @@ class _NuMult(Behavioural):
                             p.k * Branch(a, an).V * Branch(b, bn).V)
 
 
+class _MixedSlopeLo(Behavioural):
+    """Two 1/f sources of DIFFERENT slope (0.8 and 2.0) on two branches of
+    one element, each times V(lo): a component whose exponent differs
+    between entries, stating signed amplitudes (the scale factor outside
+    the noise call)."""
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+    @staticmethod
+    def analog(p, a, an, b, bn, lo, lon):
+        from pycircuit.circuit.hdl import flicker_noise as _fn
+        v = Branch(lo, lon).V
+        return (Contribution(Branch(a, an).I, v * _fn(p.k, 0.8)),
+                Contribution(Branch(b, bn).I, v * _fn(p.k, 2.0)))
+
+
+class _Flicker08(Behavioural):
+    """A stationary 1/f^0.8 current source."""
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+    @staticmethod
+    def analog(p, a, an):
+        from pycircuit.circuit.hdl import flicker_noise as _fn
+        return Contribution(Branch(a, an).I, _fn(p.k, 0.8))
+
+
+class _Flicker20(Behavioural):
+    """A stationary 1/f^2 current source."""
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+    @staticmethod
+    def analog(p, a, an):
+        from pycircuit.circuit.hdl import flicker_noise as _fn
+        return Contribution(Branch(a, an).I, _fn(p.k, 2.0))
+
+
 class _NuModNoise(Behavioural):
     params_as = 'p'
     instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]

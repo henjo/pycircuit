@@ -196,23 +196,64 @@ class _NoiseSources(object):
                 out[key] = W
         return out
 
+    @staticmethod
+    def _exponent_columns(B, EF, W):
+        """`[(W_g, ef_g)]`: the SIGNED columns `W` (at the fit frequency) of a
+        component whose power-law exponent differs between its entries,
+        grouped by their own exponents -- one column is one fluctuation, so
+        one exponent, read at its heaviest entry -- when the groups rebuild
+        the component, ``sum_g W_g W_g^H r^ef_g = B r^EF``, at `r = w1/w` of
+        10 and 0.1 to 1e-6; else None (a column whose entries mix slopes).
+        Each group is then a uniform power law with its own signed columns,
+        exactly as a uniform component is taken."""
+        W = np.asarray(W, dtype=complex)
+        B = np.asarray(B, dtype=complex)
+        EF = np.real(np.asarray(EF, dtype=complex))
+        groups = []
+        for s_ in range(W.shape[2]):
+            a2 = np.abs(W[:, :, s_]) ** 2
+            if not np.any(a2 > 0.0):
+                continue
+            k, i = np.unravel_index(int(np.argmax(a2)), a2.shape)
+            ef = float(EF[k, i, i])
+            for g in groups:
+                if abs(g[0] - ef) <= 1e-6 * max(1.0, abs(ef)):
+                    g[1].append(s_)
+                    break
+            else:
+                groups.append((ef, [s_]))
+        out = [(W[:, :, idx], ef) for ef, idx in groups]
+        for r in (10.0, 0.1):
+            lhs = sum(np.einsum('kis,kjs->kij', Wg, Wg.conj()) * r ** ef
+                      for Wg, ef in out)
+            rhs = B * r ** EF
+            if float(np.max(np.abs(lhs - rhs))) > 1e-6 * max(
+                    float(np.max(np.abs(rhs))), 1e-300):
+                return None
+        return out
+
     @classmethod
     def _warn_signed_unused(cls, model, where):
         """Warn when an element STATED its signed amplitudes and the fold
         factors that component by sqrt(PSD) anyway: a silent fallback
-        reproduces the sign-blind answer, which looks like agreement.
+        reproduces the sign-blind answer, which looks like agreement.  A
+        component whose exponent differs between entries is taken by its
+        columns grouped per exponent (`_exponent_columns`) where they
+        rebuild it; only where they do not is it lost.
 
         History: `doc/shooting_history.md`, `PAC._warn_signed_unused`."""
         signed = getattr(model, 'amplitude', None) or {}
         lost = [key for key, B, EF in (getattr(model, 'flicker', None) or [])
-                if key in signed and cls._uniform_exponent(B, EF) is None]
+                if key in signed and cls._uniform_exponent(B, EF) is None
+                and cls._exponent_columns(B, EF, signed[key]) is None]
         if lost:
             warnings.warn(
                 '%s: %s states SIGNED coloured-noise amplitudes, but its '
-                'power-law exponent is not uniform across its entries, so the '
-                'component is evaluated per band from sqrt(PSD) -- the SIGN-'
-                'BLIND fold (the |m| process).  The result is the pre-2026-09-19 '
-                'one for this component, not the signed physics.'
+                'power-law exponent is not uniform across its entries and its '
+                'columns do not carry one exponent each, so the component is '
+                'evaluated per band from sqrt(PSD) -- the SIGN-BLIND fold (the '
+                '|m| process).  The result is the pre-2026-09-19 one for this '
+                'component, not the signed physics.'
                 % (where, ', '.join('.'.join(k) for k in lost)),
                 RuntimeWarning, stacklevel=4)
 
@@ -295,82 +336,126 @@ class _NoiseSources(object):
             out.append(W[keep])
         return np.asarray(out, dtype=complex)
 
-    def _perband_amplitudes(self, pss, key, w, states, C=None):
-        """The per-band element `key`'s SIGNED amplitudes at `w` and
-        `states`, `(K, m, S)` -- one column per independent fluctuation,
-        with the sign of its modulation -- where it states them
-        (`Element.noise_amplitudes`) AND they rebuild its `CY` there (`W
-        W^H = C` to 1e-6); else None, and the caller roots the PSD.
+    def _perband_mode(self, pss, key, ws, states, Cs=None):
+        """How the per-band element `key` is to be factored, decided over
+        the frequencies `ws` (`Cs`: its `CY` there, if in hand):
 
-        ⚠ THE ROOT IS WRONG TWO WAYS for a modulated per-band source: the
-        |m| process where a modulation changes sign, and ONE column per
-        point, which merges the element's independent sources.  Measured on
-        two Lorentzians under two modulations in one element: +9 % / +8 %
-        in `sampled_variance` and `covariance` with one modulation crossing
-        zero, and still +2.5 % / +5.8 % with both positive.  Amplitudes that
-        do not rebuild are warned on -- the element's two methods disagree,
-        or it states amplitudes for its coloured sources beside a white one
-        in the same element -- and the root is used there.  `C`: its `CY`
-        at `w` and `states`, if in hand."""
+          None      it states no signed amplitudes, or they do not fit its
+                    `CY` (warned): the root of its PSD;
+          'signed'  its SIGNED amplitudes rebuild its `CY` (`W W^H = C` to
+                    1e-6);
+          'white'   they rebuild all but a positive semi-definite REMAINDER
+                    ``C - W W^H`` -- its sources that state no amplitude, on
+                    the HDL contract its WHITE ones (`noise_amplitudes`
+                    carries the coloured sources only) -- which is rooted
+                    beside the signed columns (`_perband_amplitudes`).  A
+                    white source has no correlation across the period for a
+                    sign to act on, so its root loses nothing.  A remainder
+                    that is not white (it moves between `ws`) is sign-blind,
+                    and warned.
+
+        ⚠ THE ROOT OF THE PSD IS WRONG TWO WAYS for a modulated per-band
+        source: the |m| process where a modulation changes sign, and ONE
+        column per point, which merges the element's independent sources.
+        Measured on two Lorentzians under two modulations in one element:
+        +9 % / +8 % in `sampled_variance` and `covariance` with one
+        modulation crossing zero, and still +2.5 % / +5.8 % with both
+        positive."""
+        modes, Rs = [], []
+        for i, w in enumerate(ws):
+            W = self._one_element_amplitudes(pss, key, w, states)
+            if W is None:
+                return None
+            C = (self._one_element_cy(pss, key, w, states) if Cs is None
+                 else np.asarray(Cs[i], dtype=complex))
+            R = C - np.einsum('kis,kjs->kij', W, W.conj())
+            scale = max(float(np.max(np.abs(C))), 1e-300)
+            if float(np.max(np.abs(R))) <= 1e-6 * scale:
+                modes.append('signed')
+                continue
+            Rh = 0.5 * (R + np.conj(np.swapaxes(R, -1, -2)))
+            if float(np.min(np.linalg.eigvalsh(Rh))) < -1e-6 * scale:
+                warnings.warn(
+                    'PAC: %s states signed noise amplitudes (Element.'
+                    'noise_amplitudes) whose W W^H exceeds its CY, so its PSD '
+                    'is rooted instead -- SIGN-BLIND, and its independent '
+                    'sources merged.  The two methods disagree.'
+                    % '.'.join(key), RuntimeWarning, stacklevel=3)
+                return None
+            modes.append('white')
+            Rs.append(R)
+        if 'white' not in modes:
+            return 'signed'
+        if len(Rs) > 1 and max(float(np.max(np.abs(R_ - Rs[0]))) for R_ in Rs[1:]) \
+                > 1e-6 * max(float(np.max(np.abs(Rs[0]))), 1e-300):
+            warnings.warn(
+                'PAC: part of the noise of %s states no signed amplitude and '
+                'is COLOURED (it changes between band frequencies), so that '
+                'part is rooted beside the signed columns -- SIGN-BLIND where '
+                'its modulation changes sign (Element.noise_amplitudes '
+                'states the sign).' % '.'.join(key), RuntimeWarning, stacklevel=3)
+        return 'white'
+
+    def _perband_amplitudes(self, pss, key, w, states, mode, C=None):
+        """The per-band element `key`'s columns at `w` and `states`, `(K, m,
+        r)`, for a `mode` from `_perband_mode`: its SIGNED amplitudes (one
+        column per independent fluctuation, with the sign of its
+        modulation), and for 'white' the root of the remainder ``C - W W^H``
+        on the element's support beside them.  `C`: its `CY` at `w`, if in
+        hand ('white' only reads it)."""
         W = self._one_element_amplitudes(pss, key, w, states)
-        if W is None:
-            return None
+        if mode != 'white':
+            return W
         if C is None:
             C = self._one_element_cy(pss, key, w, states)
-        rebuilt = np.einsum('kis,kjs->kij', W, W.conj())
-        if float(np.max(np.abs(rebuilt - C))) > 1e-6 * float(np.max(np.abs(C))):
-            warnings.warn(
-                'PAC: %s states signed noise amplitudes (Element.'
-                'noise_amplitudes) that do not rebuild its CY (W W^H != CY) at '
-                'a band frequency, so there its PSD is rooted instead -- '
-                'SIGN-BLIND, and its independent sources merged.  The two '
-                'methods disagree, or the amplitudes leave out a white source '
-                'of the same element.' % '.'.join(key),
-                RuntimeWarning, stacklevel=2)
-            return None
-        return W
+        C = np.asarray(C, dtype=complex)
+        R = C - np.einsum('kis,kjs->kij', W, W.conj())
+        d = np.max(np.abs(np.diagonal(C, axis1=-2, axis2=-1)), axis=0)
+        supp = np.nonzero(d > 0.0)[0]
+        Z = np.zeros(C.shape[:2] + (supp.size,), dtype=complex)
+        Z[:, supp, :] = self._psd_sqrt(R[:, supp][:, :, supp])
+        return np.concatenate((np.asarray(W, dtype=complex), Z), axis=-1)
 
     def _perband_classify(self, pss, key, states, wt):
         """How the per-band element `key` varies along the orbit, read at
-        the probe frequencies `wt`: `(kind, Cs, Ws)`, `Cs` its `CY` per
-        probe and `Ws` its signed amplitudes per probe (None unless they
-        rebuild the `CY` at every probe, `_perband_amplitudes`).
+        the probe frequencies `wt`: `(kind, Cs, Ws, mode)`, `Cs` its `CY`
+        per probe, `mode` its factoring (`_perband_mode`) and `Ws` its
+        columns per probe (None for the root of the PSD).
 
           'stationary'  the same at every point;
           'separable'   the same up to one factor per frequency (a level
                         under a fixed spectral shape);
           'moving'      neither.
 
-        ⚠ FROM THE AMPLITUDES WHERE STATED: a `CY` that does not move can
+        ⚠ FROM THE COLUMNS WHERE STATED: a `CY` that does not move can
         still carry a sign that does (`k(x) = +-1`), and a separable `CY`
         can hold columns whose shapes differ -- either would be read as the
         wrong kind from the `CY`."""
         Cs = [self._one_element_cy(pss, key, w_, states) for w_ in wt]
-        Ws = [self._perband_amplitudes(pss, key, w_, states, C_)
-              for w_, C_ in zip(wt, Cs)]
-        if any(W_ is None for W_ in Ws):
-            Ws = None
+        mode = self._perband_mode(pss, key, wt, states, Cs)
+        Ws = None if mode is None else [
+            self._perband_amplitudes(pss, key, w_, states, mode, C_)
+            for w_, C_ in zip(wt, Cs)]
         X = Cs if Ws is None else Ws
         if all(float(np.max(np.abs(x_ - x_[:1])))
                <= 1e-12 * max(float(np.max(np.abs(x_))), 1e-300) for x_ in X):
-            return 'stationary', Cs, Ws
-        return ('separable' if self._separable(X) else 'moving'), Cs, Ws
+            return 'stationary', Cs, Ws, mode
+        return ('separable' if self._separable(X) else 'moving'), Cs, Ws, mode
 
-    def _perband_root(self, pss, key, states, signed):
+    def _perband_root(self, pss, key, states, mode):
         """`w -> (K, m, r)`: the per-band element `key` at every point for
-        every band frequency, cached per frequency -- its signed amplitudes
-        when `signed` (they rebuilt its `CY` at the classification's probes,
-        `_perband_classify`: read without the `CY`, which would double the
+        every band frequency, cached per frequency -- its columns for a
+        `mode` from `_perband_mode` (checked at the classification's
+        probes; 'signed' is read without the `CY`, which would double the
         cost), else the root of its PSD."""
         cache = {}
 
         def root(w):
             k = float(w)
             if k not in cache:
-                W = (self._one_element_amplitudes(pss, key, k, states)
-                     if signed else None)
-                cache[k] = W if W is not None else self._psd_sqrt(
-                    self._one_element_cy(pss, key, k, states))
+                cache[k] = (self._perband_amplitudes(pss, key, k, states, mode)
+                            if mode is not None else self._psd_sqrt(
+                                self._one_element_cy(pss, key, k, states)))
             return cache[k]
         return root
 
@@ -481,9 +566,9 @@ class _NoiseSources(object):
         ## (an element whose signed amplitudes rebuild its `CY` at every fit
         ## frequency is split by them, one column per fluctuation)
         rooted = [key for key in perband
-                  if any(self._perband_amplitudes(pss, key, w, states,
-                                                  per_w[i][key]) is None
-                         for i, w in enumerate(ws))]
+                  if self._perband_mode(pss, key, ws, states,
+                                        [per_w[i][key] for i in range(len(ws))])
+                  is None]
         if rooted:
             warnings.warn(
                 'PAC: the noise of %s is not thermal-plus-power-law, so it is '
@@ -911,7 +996,7 @@ class _NoiseSources(object):
         wref = 2.0 * np.pi * f0
         wt = sorted({float(wlo), wref, 20.0 * np.pi * f0,
                      2.0 * np.pi * (float(L) + 0.5) * f0})
-        kind, Cs, Ws = self._perband_classify(pss, key, states, wt)
+        kind, Cs, Ws, mode = self._perband_classify(pss, key, states, wt)
         K = len(states)
         if kind == 'stationary':
             one = [states[0]]
@@ -931,7 +1016,7 @@ class _NoiseSources(object):
                     cache[k] = np.sqrt(max(float(np.real(c / cref)), 0.0)) * Wref
                 return cache[k]
         else:
-            root = self._perband_root(pss, key, states, Ws is not None)
+            root = self._perband_root(pss, key, states, mode)
         root.signed = Ws is not None
         return root
 
@@ -981,6 +1066,16 @@ class _NoiseSources(object):
                                lambda nu, ef=ef, w1=model.w1:
                                (w1 / np.asarray(nu, dtype=float)) ** ef))
             else:
+                ## (signed columns grouped by their own exponents, where
+                ## they carry one each: a uniform power law per group)
+                split = (self._exponent_columns(Bc, EF, W) if W is not None
+                         else None)
+                if split is not None:
+                    for Wg, efg in split:
+                        groups.append(('fixed', Wg,
+                                       lambda nu, ef=efg, w1=model.w1:
+                                       (w1 / np.asarray(nu, dtype=float)) ** ef))
+                    continue
                 if warn_touch and touches(Bc):
                     blind.append(key)
                 groups.append(('band', self._cached_root(

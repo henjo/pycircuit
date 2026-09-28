@@ -15,6 +15,9 @@ import unittest
 import pytest
 import functools as _functools
 from pycircuit.circuit.tests._shooting_elements import (_NuModNoise,
+    _Flicker08,
+    _Flicker20,
+    _MixedSlopeLo,
     _NuMult,
     _SgnAmpFlicker,
     _SgnPsdFlicker,
@@ -24,6 +27,7 @@ from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _KB,
     _ModLorentzCtl,
     _ModLorentzSigned,
+    _ModLorentzThermal,
     _TwoModLorentz,
     _TEMP,
     _a9_vdp,
@@ -1280,6 +1284,112 @@ def test_a_moving_shape_takes_the_elements_signed_columns_on_every_surface():
         return np.concatenate((sv, cov, pn))
     exact, signed = build('real'), build('signed')
     assert np.max(np.abs(signed / exact - 1.0)) < 1e-9, signed / exact - 1.0
+
+
+def test_signed_columns_beside_a_white_source_of_the_same_element():
+    """A per-band element that states signed amplitudes for its COLOURED
+    source and none for a white one beside it (`_ModLorentzThermal`: an HDL
+    device with thermal and G-R noise states its coloured sources only) is
+    read from its signed columns plus the root of the remainder ``CY - W
+    W^H`` (`_perband_mode` 'white'); in `covariance` that remainder joins
+    the white part, whose Lyapunov path covers every frequency.  ⚠ The
+    amplitudes did not rebuild the CY, so the element fell back to the root
+    of its PSD: +54 .. +110 % against the realisation with the Lorentzian
+    crossing zero (2026-09-28); with the remainder band-limited in
+    `covariance`, -1.4 % / -1.8 %."""
+    T, P, tau, Pw = 1e-6, 1e-20, 3e-7, 2e-21
+
+    def build(kind):
+        c = SubCircuit()
+        for nd in ('lo', 'out'):
+            c.add_node(nd)
+        c['Vlo'] = VSin('lo', gnd, va=1.0, vo=0.0, freq=1.0 / T)
+        c['Ro'] = R('out', gnd, r=1e3, noisy=False)
+        c['Co'] = C('out', gnd, c=0.5e-9)
+        if kind == 'real':
+            c.add_node('n')
+            c['xi'] = IS('n', gnd, i=0.0, noisePSD=P, noiseTau=tau)
+            c['Rn'] = R('n', gnd, r=1.0, noisy=False)
+            c['M'] = _NuMult('out', gnd, 'n', gnd, 'lo', gnd, k=1.0)
+            c['xw'] = IS('out', gnd, i=0.0, noisePSD=Pw)
+        else:
+            c['src'] = _ModLorentzThermal('out', gnd, 'lo', gnd, noisePSD=P,
+                                          tau=tau, k=1.0, white=Pw)
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=40)
+        pac = PAC(c, toolkit=circuit.numeric)
+        o = [str(n) for n in c.nodes].index('out')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            sv = np.asarray(pac.sampled_variance(
+                pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
+                points_per_decade=10), dtype=float).ravel()
+            _K0, Ks = pac.covariance(pss, samples=True, fmin=1e-2 / T,
+                                     points_per_decade=10)
+            pn = np.array([float(np.real(pac.pnoise(
+                pss, fr / T, o, maxsidebands=30, cyclostationary=True)[0]))
+                for fr in (0.013, 0.31)])
+        tms = np.asarray(pss.factored_period().times, dtype=float)
+        cov = np.array([Ks[int(np.argmin(np.abs(tms[:len(Ks)] - t)))][o, o]
+                        for t in (0.3 * T, 0.7 * T)])
+        return np.concatenate((sv, cov, pn))
+    exact, elem = build('real'), build('element')
+    assert np.max(np.abs(elem / exact - 1.0)) < 1e-9, elem / exact - 1.0
+
+
+def test_signed_columns_of_a_mixed_slope_component_are_grouped_by_exponent():
+    """A power-law component whose exponent differs between its entries --
+    two 1/f sources of slope 0.8 and 2.0 on two branches of one element,
+    each times V(lo) crossing zero (`_MixedSlopeLo`) -- is taken by its
+    SIGNED columns grouped by their own exponents (`_exponent_columns`),
+    a uniform power law per group, in `sampled_variance`, `covariance` and
+    the cyclostationary `pnoise`.  ⚠ It was rooted per band from its PSD,
+    warned as sign-blind: 4x to 4800x the realisation (each slope
+    stationary, through its own multiplier) (2026-09-28)."""
+    T, k = 1e-6, 1e-20
+
+    def build(kind):
+        c = SubCircuit()
+        for nd in ('lo', 'a', 'b'):
+            c.add_node(nd)
+        c['Vlo'] = VSin('lo', gnd, va=1.0, vo=0.0, freq=1.0 / T)
+        for nd in ('a', 'b'):
+            c['R' + nd] = R(nd, gnd, r=1e3, noisy=False)
+            c['C' + nd] = C(nd, gnd, c=1e-9)
+        if kind == 'real':
+            for nd, cls in (('a', _Flicker08), ('b', _Flicker20)):
+                c.add_node('n' + nd)
+                c['F' + nd] = cls('n' + nd, gnd, k=k)
+                c['Rn' + nd] = R('n' + nd, gnd, r=1.0, noisy=False)
+                c['M' + nd] = _NuMult(nd, gnd, 'n' + nd, gnd, 'lo', gnd, k=1.0)
+        else:
+            c['src'] = _MixedSlopeLo('a', gnd, 'b', gnd, 'lo', gnd, k=k)
+        pss = PSS(c, method='radau', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 100, maxiterations=40)
+        pac = PAC(c, toolkit=circuit.numeric)
+        names = [str(n) for n in c.nodes]
+        oa, ob = names.index('a'), names.index('b')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            sv = [float(np.ravel(pac.sampled_variance(
+                pss, o, [0.3 * T], 1e-2 / T, 0.5 / T, points_per_decade=10))[0])
+                for o in (oa, ob)]
+            _K0, Ks = pac.covariance(pss, samples=True, fmin=1e-2 / T,
+                                     points_per_decade=10)
+            pn = [float(np.real(pac.pnoise(pss, 0.013 / T, o, maxsidebands=30,
+                                           cyclostationary=True)[0]))
+                  for o in (oa, ob)]
+        tms = np.asarray(pss.factored_period().times, dtype=float)
+        j = int(np.argmin(np.abs(tms[:len(Ks)] - 0.3 * T)))
+        blind = [w for w in caught if 'SIGN-BLIND' in str(w.message)]
+        return np.array(sv + [Ks[j][oa, oa], Ks[j][ob, ob]] + pn), blind
+    (exact, _), (elem, blind) = build('real'), build('element')
+    assert not blind, [str(w.message)[:80] for w in blind]
+    assert np.max(np.abs(elem / exact - 1.0)) < 1e-9, elem / exact - 1.0
 
 
 def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce():

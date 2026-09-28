@@ -379,9 +379,11 @@ class _DrivenNoise(object):
         _signed = getattr(model, 'amplitude', None) or {}
         self._warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
         _all_signed = (getattr(model, 'flicker', None) is not None
-                       and all(k_ in _signed and self._uniform_exponent(B_, E_) is not None
+                       and all(k_ in _signed and (
+                               self._uniform_exponent(B_, E_) is not None
+                               or self._exponent_columns(B_, E_, _signed[k_]) is not None)
                                for k_, B_, E_ in model.flicker)
-                       and all(self._perband_amplitudes(pss, k_, 2.0 * np.pi * f0, None)
+                       and all(self._perband_mode(pss, k_, [2.0 * np.pi * f0], None)
                                is not None for k_ in model.perband))
         Cs0 = np.asarray([np.abs(np.diag(np.fft.ifft(Pa, axis=0)[k])) for k in range(Nn)])
         dmax = Cs0.max(axis=0)
@@ -452,21 +454,31 @@ class _DrivenNoise(object):
                                                 self._sqrt_harmonics_of(Bc, _dft)), ef=ef:
                                   (model.w1 / wband(p)) ** (0.5 * ef) * SB)
                 else:
+                    ## signed columns grouped by their own exponents, where
+                    ## they carry one each (`_exponent_columns`)
+                    _split = (self._exponent_columns(Bc, EF, _signed[_key])
+                              if _key in _signed else None)
+                    if _split is not None:
+                        for _Wg, _efg in _split:
+                            _SBg = _dft(_Wg)
+                            groups.append(lambda p, SB=_SBg, ef=_efg:
+                                          (model.w1 / wband(p)) ** (0.5 * ef) * SB)
+                        continue
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
                         Bc * (model.w1 / wband(p)) ** EF, _dft))
             ## (the ONE element, `_one_element_cy`; its SIGNED amplitudes
             ## where it states them, `_perband_amplitudes`, else its root)
             ## History: `doc/shooting_history.md`, `PAC._cyclostationary_fold`.
-            def _perband_at(p, key, signed):
-                W_ = (self._one_element_amplitudes(pss, key, wband(p), None)
-                      if signed else None)
-                return _dft(W_) if W_ is not None else self._sqrt_harmonics_of(
+            def _perband_at(p, key, mode):
+                if mode is not None:
+                    return _dft(self._perband_amplitudes(pss, key, wband(p),
+                                                         None, mode))
+                return self._sqrt_harmonics_of(
                     self._one_element_cy(pss, key, wband(p), None), _dft)
             for key in model.perband:
-                ## (signed where the amplitudes rebuild the CY at f0)
-                sg = self._perband_amplitudes(pss, key, 2.0 * np.pi * f0,
-                                              None) is not None
-                groups.append(lambda p, key=key, sg=sg: _perband_at(p, key, sg))
+                ## (its columns where its amplitudes fit its CY at f0)
+                mode = self._perband_mode(pss, key, [2.0 * np.pi * f0], None)
+                groups.append(lambda p, key=key, mode=mode: _perband_at(p, key, mode))
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =

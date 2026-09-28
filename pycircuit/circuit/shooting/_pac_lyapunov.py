@@ -800,10 +800,23 @@ class _LyapunovCovariance(object):
         ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
         wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
                      np.pi * fmax, 2.0 * np.pi * fmax})
+        white_split = []
         for key in model.perband:
             ## classified from the element's signed amplitudes where it
             ## states them, else from its `CY` (`_perband_classify`)
-            kind, Cs, Ws = self._perband_classify(pss, key, states, wt)
+            kind, Cs, Ws, mode = self._perband_classify(pss, key, states, wt)
+            if mode == 'white':
+                ## ⚠ ITS WHITE REMAINDER JOINS THE WHITE PART: the band
+                ## integral covers [fmin, fmax] only, and a white source
+                ## belongs to the Lyapunov path over every frequency (band-
+                ## limited, it read -1.4 % / -1.8 % against a separate white
+                ## source).  Its signed columns alone are read per band
+                ## frequency -- right for any shape of theirs.
+                white_split.append(key)
+                root = self._perband_root(pss, key, states, 'signed')
+                nonseparable.append((key, lambda nu, root=root: root(
+                    2.0 * np.pi * nu)))
+                continue
             if kind == 'stationary':
                 C0 = np.asarray(Cs[wt.index(wref)][0], dtype=complex)
                 supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
@@ -836,7 +849,7 @@ class _LyapunovCovariance(object):
                 separable.append((key, W0, states[jr], (pi_, qi),
                                   complex(Cref[jr, pi_, qi])))
             else:
-                root = self._perband_root(pss, key, states, Ws is not None)
+                root = self._perband_root(pss, key, states, mode)
                 nonseparable.append((key, lambda nu, root=root: root(
                     2.0 * np.pi * nu)))
                 warnings.warn(
@@ -851,6 +864,14 @@ class _LyapunovCovariance(object):
         comps = []
         for key, B, EF in model.flicker:
             ef = self._uniform_exponent(B, EF)
+            split = (self._exponent_columns(B, EF, amp[key])
+                     if ef is None and key in amp else None)
+            if split is not None:
+                ## the element's signed columns, grouped by their own
+                ## exponents: a uniform power law each (`_exponent_columns`)
+                comps.extend((key, np.asarray(Wg, dtype=complex), float(efg))
+                             for Wg, efg in split)
+                continue
             if ef is None:
                 ## ⚠ EXPONENTS THAT DIFFER BETWEEN ENTRIES.  Entries in
                 ## DISJOINT index blocks, one exponent
@@ -888,10 +909,22 @@ class _LyapunovCovariance(object):
         ## step end under the Van Loan fallback) fitted on demand
         irn = pss.irefnode
         m = pss.cir.n - 1
+
+        def remainder(sts):
+            ## the white remainders ``C - W W^H`` of the split per-band
+            ## elements at `sts` (white: read at one frequency)
+            out = 0.0
+            for key in white_split:
+                C_ = self._one_element_cy(pss, key, wref, sts)
+                W_ = self._one_element_amplitudes(pss, key, wref, sts)
+                out = out + (C_ - np.einsum('kis,kjs->kij', W_, W_.conj()))
+            return out
+        rem = remainder(states) if white_split else None
         cache = {}
-        for x, A in zip(states, model.white):
+        for k, (x, A) in enumerate(zip(states, model.white)):
             xr = np.delete(np.asarray(x, dtype=float), irn)
-            cache[xr.tobytes()] = np.asarray(A, dtype=complex)
+            cache[xr.tobytes()] = np.asarray(A, dtype=complex) + (
+                rem[k] if rem is not None else 0.0)
 
         def white(xr):
             xr = np.asarray(xr, dtype=float).ravel()[:m]
@@ -906,7 +939,8 @@ class _LyapunovCovariance(object):
                         'thermal-plus-power-law at a state the white part is '
                         'read at, so the white part cannot be separated '
                         'there.' % what)
-                cache[key] = np.asarray(mdl.white[0], dtype=complex)
+                cache[key] = np.asarray(mdl.white[0], dtype=complex) + (
+                    remainder([xr])[0] if white_split else 0.0)
             return cache[key]
         self._white_cy = white
         return {'fp': fp, 'counts': counts, 'comps': comps, 'w1': model.w1,
