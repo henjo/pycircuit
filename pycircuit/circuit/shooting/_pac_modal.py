@@ -4,6 +4,7 @@ and correlation spectra, and the phase-mode split.
 import numpy as np
 import warnings
 from ._numerics import _output_row
+from pycircuit.circuit._limiting import devices_at
 
 
 class _ModalSpectra(object):
@@ -663,7 +664,8 @@ class _ModalSpectra(object):
         xf = self._orbit_states(pss, [np.asarray(pss.waveform[1],
                                                  dtype=float)[:, 0]])[0]
         xr = np.delete(xf, irn)
-        i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel(), irn)
+        with devices_at(pss.cir, xf, pss.epar):
+            i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel(), irn)
         C0 = np.asarray(pss._C_at(xr), dtype=float)
         try:
             xdot0 = np.linalg.solve(C0, -i_red)

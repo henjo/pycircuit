@@ -12,6 +12,7 @@ from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.circuit.dcanalysis import DC
+from pycircuit.circuit._limiting import limit_sync, stateful_limiters
 
 from .toolkit import numeric
 from .transferfunction import TransferFunction
@@ -238,6 +239,10 @@ class TransimpedanceAnalysis(SSAnalysis):
 
         n = self.cir.n
         x = self.toolkit.zeros(n) # This should be the x-vector at the DC operating point
+        ## (and the devices read AT it, not at a stateful limiter's stored
+        ## state from an earlier analysis -- see `dc_steady_state`)
+        if not self.toolkit.symbolic and stateful_limiters(self.cir):
+            limit_sync(self.cir, np.asarray(x, dtype=float), self.epar)
 
         ## Complex frequency variable
         if complexfreq:
@@ -557,6 +562,14 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
             x = resdc.x
     else:
         x = x0 #provide the DC steady-state FIXME: need to add parameter to AC
+        ## ⚠ THE DEVICES AT THE GIVEN POINT.  A stateful limiter (`Diode`)
+        ## reads `G` as the tangent at its stored `_vlim`, which sits wherever
+        ## the last analysis left it -- after a DC sweep, at its LAST point:
+        ## AC at an earlier sweep point read 0.21x the gain and 0.045x the
+        ## output noise (2026-09-28).  The DC solve above leaves it at its
+        ## own answer; a given point is synced to (`limit_sync`).
+        if not toolkit.symbolic and stateful_limiters(cir):
+            limit_sync(cir, np.asarray(x, dtype=float), epar)
 
     G = cir.G(x, epar)
     C = cir.C(x, epar)

@@ -11,6 +11,8 @@ long as it was: the only limiter in the tree was the one that could not expose i
 `semiconductors` can use it without a cycle -- `semiconductors` imports the
 package, and the package imports `elements`.
 """
+from contextlib import contextmanager
+
 import numpy as np
 
 
@@ -714,3 +716,23 @@ def limit_sync(cir, x, epar, limiters=None):
     for e in (stateful_limiters(cir) if limiters is None else limiters):
         e.reset_limit_state()
     cir.limit(x, x, epar)
+
+
+@contextmanager
+def devices_at(cir, x, epar, limiters=None):
+    """Inside the block every stateful limiter sits AT `x` (`limit_sync`),
+    for reads of the devices at a point no Newton has just solved -- a
+    spline sample, a history point, an operating point handed in -- and
+    afterwards each is put back exactly as it was, so the solve around
+    the read does not see it.  A circuit with no stateful limiter pays
+    nothing.  `limiters`: `stateful_limiters(cir)`, if in hand."""
+    lims = stateful_limiters(cir) if limiters is None else limiters
+    if not lims:
+        yield
+        return
+    snap = limiter_snapshot(lims)
+    try:
+        limit_sync(cir, x, epar, lims)
+        yield
+    finally:
+        state_restore(snap)

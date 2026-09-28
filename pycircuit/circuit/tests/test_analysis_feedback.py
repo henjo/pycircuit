@@ -83,3 +83,30 @@ def test_loopanalysis_viiv():
     res = ana.solve(s, complexfreq=True)
 
     assert sympy.simplify(res['loopgain'] - (- A * R1 / (R1 + R2))) == 0
+
+
+def test_the_device_loop_gain_does_not_depend_on_an_earlier_analysis():
+    """`FeedbackDeviceAnalysis` evaluates at its own fixed point, and reads a
+    stateful limiter's device there (`limit_sync`).  ⚠ A `Diode` reads `G`
+    as the tangent at its stored `_vlim`, so the loop gain depended on
+    where an earlier analysis had left it: after a DC solve at a forward
+    bias it read the diode's forward conductance (2026-09-28)."""
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.elements import Diode
+
+    def build():
+        cir = SubCircuit()
+        cir['M1'] = VCCS('g', 's', gnd, 's', gm=20e-3)
+        cir['RL'] = R('s', gnd, r=1e3)
+        cir['D'] = Diode('s', gnd)
+        cir['VS'] = VS('g', gnd, v=5.0)
+        return cir
+
+    def loopgain(cir):
+        return complex(np.asarray(
+            FeedbackDeviceAnalysis(cir, 'M1', toolkit=numeric).solve(1e3)['loopgain']).ravel()[0])
+    cir = build()
+    DC(cir, toolkit=numeric).solve()
+    lg, lg_ref = loopgain(cir), loopgain(build())
+    assert abs(lg / lg_ref - 1.0) < 1e-12, (lg, lg_ref)

@@ -4,6 +4,7 @@ at a point (C, G, the stage derivative).
 import numpy as np
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
+from pycircuit.circuit._limiting import devices_at
 
 
 class _InnerTransient(object):
@@ -59,9 +60,12 @@ class _InnerTransient(object):
         History: `doc/shooting_history.md`, `_InnerTransient._k_at`."""
         tr = self._transient()
         xf = self._insert_refnode(x_reduced)
-        k = -(np.asarray(tr.cir.i(xf, tr.epar), dtype=float)
-              + np.asarray(tr.cir.u(float(t), tr.epar,
-                                    analysis=self.par.analysis), dtype=float))
+        ## (the devices read AT the point -- `devices_at`)
+        with devices_at(tr.cir, np.asarray(xf, dtype=float), tr.epar,
+                        getattr(tr, '_stateful_lims', None)):
+            k = -(np.asarray(tr.cir.i(xf, tr.epar), dtype=float)
+                  + np.asarray(tr.cir.u(float(t), tr.epar,
+                                        analysis=self.par.analysis), dtype=float))
         iref = self.irefnode
         return self.toolkit.concatenate((k[:iref], k[iref + 1:]))
 

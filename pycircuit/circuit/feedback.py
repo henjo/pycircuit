@@ -8,6 +8,7 @@ from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
 from .analysis import remove_row_col, defaultepar
 from .analysis_ss import SSAnalysis, AC, Noise, TransimpedanceAnalysis
+from ._limiting import limit_sync, stateful_limiters
 from pycircuit.post import InternalResultDict, Waveform
 from pycircuit.utilities import combinations, isiterable
 
@@ -174,6 +175,10 @@ class FeedbackDeviceAnalysis(SSAnalysis):
         x = self.toolkit.zeros(self.cir.n) ## FIXME, this should come from the DC analysis
         
         epar = self.epar
+        ## (the devices read AT `x`, not at a stateful limiter's stored state
+        ## from an earlier analysis -- see `analysis_ss.dc_steady_state`)
+        if not self.toolkit.symbolic and stateful_limiters(self.cir):
+            limit_sync(self.cir, np.asarray(x, dtype=float), epar)
         G = self.cir.G(x, epar)
         G_noloop = circuit_noloop.G(x, epar)
 

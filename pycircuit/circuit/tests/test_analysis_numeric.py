@@ -113,3 +113,49 @@ def test_a_frequency_dependent_CY_sweeps():
         n = len(el.terminals)
         cy = np.asarray(el.CY(np.linspace(0.1, 1.0, n), np.array([1.0, 10.0])))
         assert cy.shape == (n, n, 2), (cls.__name__, cy.shape)
+
+
+def test_ac_and_noise_at_a_given_operating_point_read_the_devices_there():
+    """AC and noise at an operating point handed in (`dcx`) read a stateful
+    limiter's device AT that point (`dc_steady_state`), as they do at the one
+    their own DC solve finds.  ⚠ A `Diode` reads `G` as the tangent at its
+    stored `_vlim`, which a DC sweep leaves at its LAST point: AC at an
+    earlier bias point of the sweep read 0.21x the gain and 0.045x the
+    output noise (2026-09-28).  The transimpedance analysis evaluates at
+    its own fixed point, and reads the devices there too."""
+    import warnings
+    from pycircuit.circuit.dcanalysis import DC, DCSweep
+    from pycircuit.circuit.analysis_ss import AC, Noise, TransimpedanceAnalysis
+    circuit.default_toolkit = numeric
+
+    def build(v=0.0):
+        c = SubCircuit()
+        c['vs'] = VS(1, gnd, v=v, vac=1.0)
+        c['R'] = R(1, 2, r=1e3)
+        c['D'] = Diode(2, gnd)
+        return c
+
+    def small_signal(c, dcx=None):
+        kw = {} if dcx is None else {'dcx': dcx}
+        g = complex(np.asarray(AC(c, **kw).solve(np.array([1e3])).v(2, gnd)).ravel()[0])
+        n = float(np.real(Noise(c, inputsrc='vs', outputnodes=(2, gnd),
+                                **kw).solve(1e3)['Svnout']))
+        return g, n
+    vals = np.linspace(0.0, 5.0, 11)
+    c = build()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        x = np.asarray(DCSweep(c).solve('vs', 'v', vals).x, dtype=float)
+    ## the reference: the same point on a circuit no analysis has touched
+    g, n = small_signal(c, dcx=x[:, 3])
+    g_ref, n_ref = small_signal(build(vals[3]), dcx=x[:, 3])
+    assert abs(g / g_ref - 1.0) < 1e-12 and abs(n / n_ref - 1.0) < 1e-12, \
+        (abs(g) / abs(g_ref), n / n_ref)
+
+    def zin(c):
+        res = TransimpedanceAnalysis(c).solve(1e3, [Branch(2, gnd)])
+        return np.asarray(res[0], dtype=complex) if isinstance(res, (list, tuple)) \
+            else np.asarray(res, dtype=complex)
+    c = build(5.0)
+    DC(c).solve()                 # the diode's state now at a forward bias
+    assert np.allclose(zin(c), zin(build(5.0)), rtol=1e-12, atol=0.0)

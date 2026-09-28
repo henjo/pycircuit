@@ -5,6 +5,7 @@ import numpy as np
 import warnings
 from pycircuit.circuit.analysis import NoConvergenceError
 from pycircuit.circuit.circuit import gnd
+from pycircuit.circuit._limiting import devices_at, stateful_limiters
 
 
 class _AccuracyChecks(object):
@@ -546,6 +547,8 @@ class _AccuracyChecks(object):
         autonomous = all(_np.allclose(u0, _u(f * T)) for f in (0.37, 0.71))
         n_per = X.shape[1] - 1
 
+        _lims = stateful_limiters(cir)
+
         def _run(times_i, X_i):
             """One defect-correction pass: the periodic spline through
             (times_i, X_i), its defect, the neighbouring transient at the
@@ -557,8 +560,11 @@ class _AccuracyChecks(object):
             def _defect_source(t):
                 tt = t % T
                 x = _np.asarray(p(tt), dtype=float); xd = _np.asarray(dp(tt), dtype=float)
-                r = (_np.asarray(cir.C(x, epar), dtype=float) @ xd
-                     + _np.asarray(cir.i(x, epar), dtype=float) + _u(t))
+                ## (the devices read AT the spline point, not at the running
+                ## transient's limiting state -- `devices_at`)
+                with devices_at(cir, x, epar, _lims):
+                    r = (_np.asarray(cir.C(x, epar), dtype=float) @ xd
+                         + _np.asarray(cir.i(x, epar), dtype=float) + _u(t))
                 return -r
             tr = self._new_transient(self._integrator_for(self.par.method))
             with warnings.catch_warnings():

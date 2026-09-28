@@ -4686,6 +4686,42 @@ def test_no_analysis_answer_depends_on_a_stale_limiting_state():
         refnode=gnd, tend=1e-3, timestep=1e-3 / 50, fixed_timestep=True).x[-1])
     unmoved('algebraic_conditioning', lambda c: algebraic_conditioning(c)[0])
 
+    ## ⚠ AND AT AN OPERATING POINT HANDED IN (`dcx`, 2026-09-28): the small-
+    ## signal analyses read `G` at the diode's stored state, not at the point
+    ## -- after a DC sweep, its last point.  Measured with this poison before
+    ## the fix: AC 1.0 (the gain collapsed), noise 1.0.
+    from pycircuit.circuit.analysis_ss import Noise
+    x_op = np.asarray(DC(_diode_fixture(), refnode=gnd).solve().x, dtype=float)
+    unmoved('AC at a given operating point', lambda c: np.asarray(
+        AC(c, dcx=x_op).solve(np.array([1e3]), refnode=gnd).v('b', 'gnd')))
+    unmoved('noise at a given operating point', lambda c: Noise(
+        c, inputsrc='vs', outputnodes=('b', gnd), dcx=x_op).solve(1e3)['Svnout'])
+
+
+def test_the_accuracy_estimate_reads_the_devices_at_its_spline():
+    """`PSS.warping_estimate`'s defect source reads `C` and `i` at points of
+    the periodic spline, inside a transient of its own, and a stateful
+    limiter (`Diode`) there read the tangent at that transient's state
+    (`_limiting.devices_at` now puts it at the spline point).  Measured
+    against the state-free twin of the diode (`_state_free_diode`), radau on
+    this fixture: the lag 2.3e-5 off before the fix (1e-4 .. 2.4e-3 on a
+    half-wave rectifier; 2026-09-28)."""
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.tests.test_analysis_transient import _state_free_diode
+    circuit.default_toolkit = circuit.numeric
+
+    def lag(cls):
+        c = _diode_fixture()
+        c['d'] = cls('b', gnd)
+        pss = PSS(c, method='radau', reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=60)
+            return np.asarray(pss.warping_estimate(periods=5)['lag'], dtype=float)
+    a, b = lag(_state_free_diode()), lag(Diode)
+    assert np.max(np.abs(a - b)) <= 1e-9 * np.max(np.abs(a)), \
+        np.max(np.abs(a - b)) / np.max(np.abs(a))
+
 
 def test_a_shooting_solve_sitting_on_its_answer_says_why_it_failed_its_step_test():
     """⚠⚠ "PLAIN PSS ENDS AT N ~ 32 ON A PLL" WAS AN ARTEFACT OF THE STEP TEST.

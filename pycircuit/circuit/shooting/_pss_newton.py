@@ -4,6 +4,7 @@ matrix-free Newton.
 import numpy as np
 import warnings
 import pycircuit.circuit.analysis as analysis
+from pycircuit.circuit._limiting import devices_at
 
 
 class _ShootingNewton(object):
@@ -101,9 +102,10 @@ class _ShootingNewton(object):
             xr = np.asarray(z[:-1], dtype=float)
             irn = self.irefnode
             xf = np.concatenate((xr[:irn], np.zeros(1), xr[irn:]))
-            r_dc = (np.asarray(self.cir.i(xf, self.epar), dtype=float).ravel()
-                    + np.asarray(self.cir.u(0.0, self.epar, analysis='dc'),
-                                 dtype=float).ravel())
+            with devices_at(self.cir, xf, self.epar):
+                r_dc = (np.asarray(self.cir.i(xf, self.epar), dtype=float).ravel()
+                        + np.asarray(self.cir.u(0.0, self.epar, analysis='dc'),
+                                     dtype=float).ravel())
             r_dc = np.delete(r_dc, irn)
             tol = float(getattr(self.par, 'iabstol', 1e-12))
             trivial_orbit = bool(np.abs(r_dc).max() <= self.TRIVIAL_ORBIT_FACTOR * tol)
