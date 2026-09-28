@@ -3,15 +3,17 @@ in the stepping loop and in the shooting, against exact solutions.
 
 THE MECHANISM.  `Transient._solve` re-arms `_is_first_step` after every step
 that lands on a breakpoint (and after a force-accept), so a two-step method
-(gear, trap) takes ONE backward-Euler step there.  The shooting never does:
-it lands edges on its own frozen grid (`PSS.event_grid`) and steps on.
-`pss_transient_boundary.py` V1 measured the shooting on a smooth RC and
-found no drop MORE accurate; this measures the other side.
+(gear, trap) takes ONE backward-Euler step there.  The shooting did not
+until 2026-09-28 -- it landed edges on its own frozen grid (`PSS.event_grid`)
+and stepped on -- and `pss_transient_boundary.py` V1, on a smooth RC, found
+that MORE accurate; this measured the other side, and the shooting now drops
+too (`_InnerTransient.ORDER_DROP_AT_EDGES`, keyed to the edge's node).
 
 'nodrop' (forward): the flag is cleared before each step unless the run is
 genuinely opening (`_no_history`) -- which would also remove the drop after
 a force-accept; the counts are printed (none on these fixtures).
-'drop' (shooting): V1's hook, re-arming the flag at the landed edges.
+'drop' (shooting): `ORDER_DROP_AT_EDGES`, the shooting's DEFAULT since
+2026-09-28 (Andreas: "add the drop"); 'nodrop' switches it off.
 
 MEASURED 2026-09-28 (predictions were written first; B's did not bind):
 
@@ -45,7 +47,6 @@ a stiff state (an algebraic current, a fast parasitic pole) from ringing.
 Which way to go for the shooting's trap/gear is the owner's decision.
 """
 import sys
-import types
 import warnings
 
 import numpy as np
@@ -203,15 +204,8 @@ def table_C():
             for drop in ((False, True) if method in ('trap', 'gear') else (False,)):
                 c = fix[0]()
                 pss = PSS(c, method=method, reltol=1e-10)
-                if drop:
-                    orig = pss.solve_timestep
-
-                    def st(self, x0, t, dt, *a, _o=orig, **k):
-                        if np.any(np.abs((float(t) - float(dt)) % T - fix[3])
-                                  < 1e-9 * T):
-                            self._transient()._is_first_step = True
-                        return _o(x0, t, dt, *a, **k)
-                    pss.solve_timestep = types.MethodType(st, pss)
+                ## (the default since 2026-09-28; False is the old walk)
+                pss.ORDER_DROP_AT_EDGES = bool(drop)
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
                     pss.solve(period=T, timestep=T / N, break_events=True,

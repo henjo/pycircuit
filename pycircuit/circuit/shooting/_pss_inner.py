@@ -11,6 +11,11 @@ class _InnerTransient(object):
     linearised at a point (C, G, the stage derivative).  A theme of `PSS`
     (see `pss.py`)."""
 
+    ## A multistep map drops to one backward-Euler step after each edge the
+    ## grid lands on (`solve_timestep`); False walks the old way, for
+    ## measuring the trade (`benchmarks/landing_order_drop.py`).
+    ORDER_DROP_AT_EDGES = True
+
     def _factorise(self, Jf):
         """One step's `Jf`, factored by the CALLER'S linear solver -- never a
         dense LU directly, which would make every matrix-free run dense-LAPACK
@@ -416,6 +421,35 @@ class _InnerTransient(object):
         ## arms it (see `_transient`); this path's last resort is the line
         ## search.
         tr._dt = dt
+        ## ⚠ THE ORDER DROP AFTER A LANDED EDGE, the stepping loop's own rule
+        ## (it re-arms `_is_first_step` after every step that lands on a
+        ## breakpoint): the step that STARTS on an edge `event_grid` landed
+        ## takes one backward-Euler step, whose coefficients the walk records
+        ## like any step's.  Without it a two-step method straddles the
+        ## corner -- more accurate on a smooth state, but on a STIFF one trap
+        ## RANG after every edge (the current O(1) off, decaying by its stiff
+        ## factor) and gear was 10x off for a step: a trap PSS 22x, a gear
+        ## PSS 11x worse in `v` (`benchmarks/landing_order_drop.py`).
+        ## ⚠ KEYED TO THE EDGE'S NODE, NOT TO AN EXACT TIME: each edge
+        ## belongs to the ONE node whose half-steps either side contain it,
+        ## and the step starting there drops.  The state-event stage remaps
+        ## the grid by stretching it between crossings (`_event_remap`,
+        ## topology frozen), which moves a landed edge's node by as much as
+        ## the crossings move; keyed on time equality a perturbed walk
+        ## missed the drop and the map jumped -- measured, trap's event
+        ## columns 5.6e-2 and 1.1 off their finite differences on the PWM
+        ## loop, and its staged solve did not converge.  (Within half the
+        ## step's OWN length was not structural either: after a short step
+        ## the next start fell inside it.)
+        edges = getattr(self, '_landed_edges', None)
+        if edges is not None and self.ORDER_DROP_AT_EDGES:
+            fr, T = edges
+            s = ((float(t) - float(dt)) / T) % 1.0
+            h_prev = tr._dt_last if tr._dt_last is not None else dt
+            d = fr - s
+            if np.any((d > -0.5 * float(h_prev) / T)
+                      & (d < 0.5 * float(dt) / T)):
+                tr._is_first_step = True
         x_full, J_full = self._transient_step(tr, x0, t)
 
         ## d(residual)/dh at the converged point, for the period

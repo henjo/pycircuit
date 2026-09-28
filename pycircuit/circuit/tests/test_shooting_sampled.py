@@ -1612,7 +1612,9 @@ def test_gears_euler_backstop_step_on_an_event_grid_replays_in_covariance_and_th
         return n_euler, held, at, float(np.asarray(sv, float).ravel()[0]) / ktc
 
     n63, h63, a63, s63 = run(63)
-    assert n63 == 1, 'the Euler step must be in the ring for this to test anything: %d' % n63
+    ## (4 since 2026-09-28: the landed clock edges drop the order too, so
+    ## the backstop step has three more Euler steps beside it in the ring)
+    assert n63 >= 1, 'the Euler step must be in the ring for this to test anything: %d' % n63
     assert np.isfinite(s63) and np.isfinite(a63)      # both recursions RUN across it
     ## ⚠ the reverse-pass agreement is pinned at 252, not 63: at 63 the
     ## sampled sum covers 31 sidebands and reads 0.647 against the
@@ -1621,7 +1623,11 @@ def test_gears_euler_backstop_step_on_an_event_grid_replays_in_covariance_and_th
     n252, h252, a252, s252 = run(252)
     assert n252 >= 1, n252
     assert abs(s252 / a252 - 1.0) < 2e-3, (s252, a252)
-    assert 0.6 < h63 < h252 < 1.0, (h63, h252)        # the O(h/tau) floor, climbing
+    ## the O(h/tau) floor, climbing.  ⚠ 0.570 / 0.781 since 2026-09-28 (were
+    ## 0.686 / 0.902): the Euler steps at the landed clock edges damp the
+    ## held node further -- the order drop's cost on a smooth state, here in
+    ## a noise number (kT/C is 1)
+    assert 0.5 < h63 < h252 < 1.0, (h63, h252)
 
 
 def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():

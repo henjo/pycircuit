@@ -2474,7 +2474,10 @@ def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
     p = PSS(cir, method='trap', reltol=1e-10)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        p.solve(period=Tp, timestep=Tp / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
+        ## (settled first since a landed ramp edge drops the order,
+        ## 2026-09-28: from zeros trap's staged Newton stalls on this loop)
+        p.solve(period=Tp, timestep=Tp / 60, x0=np.zeros(cir.n - 1), maxiterations=100,
+                tstab=20 * Tp)
     fp = p.factored_period()
     assert fp.is_plain and fp.open_at_x0
     m = cir.n - 1

@@ -711,7 +711,6 @@ def V1():
     its exact solution, gear and trap, the error without the drop over the
     error with it (the loop's rule, re-armed at the landed edges) stays in
     [0.3, 3] at every N, and both converge at slope ~2 (1.8 .. 2.2)."""
-    import types
     from pycircuit.circuit.elements import VPulse
     T = 1e-6
     RR, CC = 1e3, 3e-10
@@ -753,19 +752,13 @@ def V1():
             else:
                 out[i] = x
         return out
-    edges = np.array([TD, TD + trise, TD + trise + PW, TD + 2 * trise + PW])
 
     def err(method, N, drop):
         c = pulsed()
         pss = PSS(c, method=method, reltol=1e-10)
-        if drop:
-            orig = pss.solve_timestep
-
-            def st(self, x0, t, dt, *a, **k):
-                if np.any(np.abs((float(t) - float(dt)) % T - edges) < 1e-9 * T):
-                    self._transient()._is_first_step = True
-                return orig(x0, t, dt, *a, **k)
-            pss.solve_timestep = types.MethodType(st, pss)
+        ## (the shooting drops at landed edges since 2026-09-28; the switch
+        ## restores the walk V1 first measured)
+        pss.ORDER_DROP_AT_EDGES = bool(drop)
         pss.solve(period=T, timestep=T / N, break_events=True, maxiterations=40)
         if not pss.converged:
             return float('nan')

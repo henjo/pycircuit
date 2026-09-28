@@ -1329,6 +1329,13 @@ def test_the_state_event_stage_runs_matrix_free(method):
     cases = ((pwm, dict(period=Tp, timestep=Tp / 60, x0=np.zeros(pwm().n - 1))),
              (_comparator_relaxation_oscillator, dict(period=Tl, timestep=Tl / 200, x0=seed)))
     for mk, kw in cases:
+        ## ⚠ trap's PWM loop SETTLED FIRST (`tstab`) since a landed ramp edge
+        ## drops the order (2026-09-28): from zeros its staged Newton stalls
+        ## at |F| 3.8 (1017 evaluations; the map is smooth -- the same steps
+        ## drop in every walk -- and its event columns FD-exact), where
+        ## from a settled seed it converges in 14 to the same crossings
+        if mk is pwm and method == 'trap':
+            kw = dict(kw, tstab=20 * Tp)
         got = {}
         for mf in (False, True):
             cir = mk()

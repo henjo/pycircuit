@@ -645,14 +645,18 @@ def test_event_breaking_defaults_on_for_every_method_and_a_jump_keeps_both_ramp_
     assert PSS(pulsed(0.02 * T), method='gear')._resolve_break_events(False) is False
     assert PSS(pulsed(0.02 * T), method='trap')._resolve_break_events(True) is True
 
-    ## (2) Ramped edges: gear + events second order and ahead of uniform.
-    e_u400, _, _ = err(0.02 * T, 'gear', 400, False)
-    e_e400, _, _ = err(0.02 * T, 'gear', 400, True)
+    ## (2) Ramped edges: gear + events second order.
+    ## ⚠ NO LONGER AHEAD OF UNIFORM ON THIS FIXTURE (2026-09-28): a landed
+    ## edge now drops the order (the stepping loop's rule, `solve_timestep`),
+    ## which on a SMOOTH state costs more than the landing buys -- gear with
+    ## events 6.60e-4 against uniform 3.72e-4 at 400 (1.69e-4 / 9.52e-5 at
+    ## 800), trap 4.61e-4 against 1.30e-4 -- while on a STIFF one it is the
+    ## only grid that does not ring (uniform trap 0.83 of the current there);
+    ## `test_the_landed_edges_drop_the_order_so_a_stiff_state_does_not_ring`.
     e_e800, _, _ = err(0.02 * T, 'gear', 800, True)
     e_e1600, g1600, wr = err(0.02 * T, 'gear', 1600, True)
     assert g1600.break_events is True and len(g1600.event_times) == 4
-    assert e_e400 < e_u400, (e_e400, e_u400)
-    assert e_e1600 < 3e-5, e_e1600
+    assert e_e1600 < 5e-5, e_e1600
     assert 3.3 < e_e800 / e_e1600 < 4.5, (e_e800, e_e1600)
     assert not wr, 'an isolated event insertion must not raise the ratio warning'
 
@@ -666,7 +670,9 @@ def test_event_breaking_defaults_on_for_every_method_and_a_jump_keeps_both_ramp_
     assert e_g800 < 3e-5 and e_g200 / e_g800 > 3.0, (e_g200, e_g800)
     assert not wr, 'a 1e-18 event ramp is an isolated up-step: no ratio warning'
     e_t800, _, _ = err(0.0, 'trap', 800, True)
-    assert e_t800 < 5e-6, e_t800
+    ## (7.5e-6 since trap drops the order at both ramp ends, 2026-09-28:
+    ## 6.4e-7 without; gear's growth guard already dropped there)
+    assert e_t800 < 1e-5, e_t800
     e_r400, _, _ = err(0.0, 'radau', 400, True)
     assert e_r400 < 1e-7, e_r400
 
@@ -1479,10 +1485,16 @@ def test_the_plain_map_lands_state_events_opened_at_x0():
     T = 1e-5
     th_radau = np.array([0.688459, 0.693154, 0.992922, 0.992972])   # radau, 400 pts
     p = PSS(_pwm_loop(T), method='trap', reltol=1e-10)
+    ## ⚠ SETTLED FIRST (`tstab`) since a landed ramp edge drops the order
+    ## (2026-09-28): from zeros the staged Newton then wandered (337
+    ## evaluations, no convergence), though from a settled seed it converges
+    ## in 14 to the same crossings, its event columns FD-exact -- a basin,
+    ## not a Jacobian (the UNSTAGED solve converged from zeros only WITH the
+    ## drop).
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         p.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
-                maxiterations=100)
+                maxiterations=100, tstab=20 * T)
     assert p.converged and p._open_at_x0
     assert np.max(np.abs(np.asarray(p._state_event_fracs) - th_radau)) < 1e-3
 
@@ -1880,3 +1892,40 @@ def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
     assert abs(float(np.max(np.abs(q3.floquet_multipliers))) - 1.0) < 1e-3
     q2 = solve('glm2', 200, True)
     assert abs(q2.period / Tl - 1.0) < 2e-4, q2.period / Tl - 1.0
+
+
+def test_the_landed_edges_drop_the_order_so_a_stiff_state_does_not_ring():
+    """A two-step method takes ONE backward-Euler step after each edge the
+    grid lands on, as the stepping loop does after a breakpoint.  On a
+    STIFF RC (tau = 1e-4 T << h) the resistor current follows the source's
+    slope within tau, so a grid point after the ramp starts reads `C/tr`.
+    ⚠ Measured before (2026-09-28), when the shooting never dropped: trap
+    RANG -- 0.85, 0.73, 0.62 of the current at the first three points after
+    an edge, decaying by its stiff factor -- and gear was 0.42 off for a
+    step; the uniform grid rings as well (trap 0.83).  With the drop 0.039.
+    The drop is keyed to the edge's NODE, which the state-event stage's
+    remap moves (`test_the_plain_map_lands_state_events_opened_at_x0`)."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    RR, TAU, TR = 1e3, 1e-4 * T, 0.02 * T
+    TD, PW = 0.0125 * T, 0.4 * T
+    c = SubCircuit()
+    c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=TD, tr=TR, tf=TR, pw=PW,
+                     per=T)
+    c['R'] = R(1, 2, r=RR)
+    c['C'] = C(2, gnd, c=TAU / RR)
+    i_ramp = (TAU / RR) / TR
+    rows = [str(n) for n in c.nodes]
+    for method in ('trap', 'gear'):
+        pss = PSS(c, method=method, reltol=1e-10)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 400, maxiterations=40)
+        assert pss.converged and pss.break_events
+        ts = np.asarray(pss.waveform[0], float).ravel()
+        X = np.asarray(pss.waveform[1], float)
+        i = (X[rows.index('1')] - X[rows.index('2')]) / RR
+        j0 = int(np.searchsorted(ts, TD * (1 + 1e-9), side='right'))
+        err = np.abs(i[j0:j0 + 3] - i_ramp) / i_ramp
+        assert np.max(err) < 0.1, (method, err)

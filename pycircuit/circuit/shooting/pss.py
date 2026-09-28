@@ -1354,6 +1354,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## `_resolve_break_events`, and `event_grid` for the snap that keeps
         ## it from manufacturing slivers.
         self.break_events = self._resolve_break_events(break_events)
+        self._landed_edges = None
         if self.break_events:
             _ev = (self.event_grid(period, grid=grid) if grid is not None
                    else self.event_grid(period, npts=int(period / dt)))
@@ -1366,6 +1367,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## gives a circuit with no periodic state.
             if self.event_times:
                 grid = _ev
+                ## the edges the grid now lands on, as fractions of the
+                ## period, for the order drop after each (`solve_timestep`);
+                ## a multistep map only -- a stage method or a GLM keeps no
+                ## companion history across the edge to drop
+                if self._map_kind() in ('plain', 'pair'):
+                    self._landed_edges = (
+                        np.asarray(self.event_times, dtype=float),
+                        float(period))
         times, hs = self._period_grid(period, int(period / dt), grid)
         npts = len(times)
         self._grid_fracs = (None if grid is None
