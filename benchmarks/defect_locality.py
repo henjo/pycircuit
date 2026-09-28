@@ -124,7 +124,6 @@ def march(cls, build, h, nsteps, kick_at=None, kick=None):
     xs = [x.copy()]
     zero = np.zeros(cir.n)
     for j in range(1, nsteps + 1):
-        tr._dt_last = tr._dt if j > 1 else None
         tr._dt = h
         tr.epar.t = j * h
         if kick_at is not None and j == kick_at:
@@ -132,7 +131,7 @@ def march(cls, build, h, nsteps, kick_at=None, kick=None):
         else:
             pf = (lambda _t, _z=zero: _z)
         x, _f, _J, _ = tr.solve_timestep(x, j * h, provided_function=pf)
-        tr._push_history(x)
+        tr._roll_history(x, h)          # (clears the opening order drop)
         xs.append(np.asarray(x, dtype=float).copy())
     return np.array(xs)
 
@@ -383,28 +382,33 @@ def locality_below_the_turn(build, label, mu, delta=1e-9, nsteps=8):
 
     MEASURED, `delta = 1e-9` injected at one step through `provided_function`
     (a defect in the residual, which is the theorem's `q_ni`), differenced
-    against the undisturbed run of the same discretisation:
+    against the undisturbed run of the same discretisation, under Gear-2
+    (⚠ REALLY Gear-2 since 2026-09-28: the march never cleared the opening
+    order drop before, so the table this replaces was backward Euler's):
 
         C-V loop, index 2
-          h        sigma_min    |e| at n0    e(n0+1)    e(n0+2..)
-          1e-11    1.999e-02    5.001e-08    5.00e-08   5.00e-14
-          1e-12    2.000e-03    5.000e-07    5.00e-07   5.02e-16
-          1e-13    2.000e-04    5.000e-06    5.00e-06   5.25e-18
+          h        sigma_min    |e| at n0    e(n0+1)    e(n0+2)    e(n0+3..)
+          1e-11    1.999e-02    7.501e-08    1.00e-07   2.50e-08   4.94e-14
+          1e-12    2.000e-03    7.500e-07    1.00e-06   2.50e-07   4.96e-16
+          1e-13    2.000e-04    7.500e-06    1.00e-05   2.50e-06   5.19e-18
           amplification exponent -1.00, -1.00   (Prop 8.10 wants -1 at mu=2)
 
         ExpG, index 1
-          1e-11    9.901e-01    7.178e-10    1.41e-13   1.41e-13
-          1e-12    9.901e-01    7.178e-10    1.42e-14   1.42e-14
-          1e-13    9.901e-01    7.178e-10    1.42e-15   1.42e-15
+          1e-11    9.901e-01    7.178e-10    1.25e-13   1.35e-13
+          1e-12    9.901e-01    7.178e-10    1.26e-14   1.37e-14
+          1e-13    9.901e-01    7.178e-10    1.26e-15   1.37e-15
           amplification exponent -0.00, -0.00   (wants 0 at mu=1)
+
+    The amplified error spans Gear-2's charge window, `3/2 : -2 : 1/2` of
+    `delta/h`, so it lives `mu + 1` steps (Euler's lived `mu`).
 
     THE INSTRUMENT IS ALIVE -- the index-2 amplification is `delta/h` to two
     decimal places, and the index-1 fixture is correctly flat.
 
-    AND THE ANSWER IS LOCAL.  The amplified error lives for `mu` steps and
-    what remains after is `O(h*delta)`: the index-2 tail reads 5.00e-14,
-    5.02e-16, 5.25e-18 as `h` goes 1e-11, 1e-12, 1e-13 -- SHRINKING with
-    refinement, not persisting.  The index-1 defect is gone after one step.
+    AND THE ANSWER IS LOCAL.  The amplified error lives for `mu + 1` steps
+    and what remains after is `O(h*delta)`: the index-2 tail reads 4.94e-14,
+    4.96e-16, 5.19e-18 as `h` goes 1e-11, 1e-12, 1e-13 -- SHRINKING with
+    refinement, not persisting.  The index-1 defect is gone after two.
     That is section 8.4 note (6) confirmed on this tree rather than cited:
     "the errors (1/h^i)delta_l are LOCAL; they are not propagated".
 
@@ -426,14 +430,13 @@ def locality_below_the_turn(build, label, mu, delta=1e-9, nsteps=8):
         xs = [x.copy()]
         zero = np.zeros(cir.n)
         for j in range(1, nsteps + 1):
-            tr._dt_last = tr._dt if j > 1 else None
             tr._dt = h
             tr.epar.t = j * h
             pf = ((lambda _t, _k=np.asarray(kick, dtype=float): _k)
                   if (kick_at is not None and j == kick_at)
                   else (lambda _t, _z=zero: _z))
             x, _f, _J, _ = tr.solve_timestep(x, j * h, provided_function=pf)
-            tr._push_history(x)
+            tr._roll_history(x, h)
             xs.append(np.asarray(x, dtype=float).copy())
         return np.array(xs), tr, cir
 
@@ -453,7 +456,12 @@ def locality_below_the_turn(build, label, mu, delta=1e-9, nsteps=8):
         pert, _t, _c = run(h, kick_at=n0, kick=delta * d)
         e = np.max(np.abs(pert - base), axis=1)
         amps.append(float(e[n0]))
-        tails.append(float(e[n0 + mu]))
+        ## ⚠ AFTER mu + 1 STEPS, NOT mu: a two-step method (Gear-2) still
+        ## READS the defective point one step longer -- its charge window --
+        ## so the amplified error lives mu + k - 1 steps for a k-step method.
+        ## Read at n0 + mu it was still inside that window (3/2 : -2 : 1/2 of
+        ## delta/h), exponent -1, which looked like propagation.
+        tails.append(float(e[n0 + mu + 1]))
         print('     %-9.0e %12.4e %12.4e   %s'
               % (h, sv.min(), e[n0],
                  '  '.join('%.2e' % v for v in e[n0 + 1:n0 + 5])))

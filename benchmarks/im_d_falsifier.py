@@ -208,11 +208,12 @@ def endpoint(cls, build, npts, offset=0.0):
     tr.epar.t = 0.0
     tr._begin_run(x, cir.n)
     for j in range(1, len(times)):
-        tr._dt_last = tr._dt if j > 1 else None
         tr._dt = times[j] - times[j - 1]
         tr.epar.t = times[j]
         x, _f, _J, _ = tr.solve_timestep(x, times[j])
-        tr._push_history(x)
+        ## (the loop's accept: clears the opening order drop -- until
+        ## 2026-09-28 a bare `_push_history`, and "gear" ran as Euler)
+        tr._roll_history(x, times[j] - times[j - 1])
     return float(np.asarray(x, dtype=float)[ia])
 
 
@@ -239,23 +240,6 @@ def branch_test(build, label):
                   % (name, npts, spread, float(v.mean()), tag))
             prev = spread
         print()
-
-
-if __name__ == '__main__':
-    for build, label in ((rank_changing, 'rank-CHANGING (CubicCap)'),
-                         (nonlinear_constant_rank, 'NONLINEAR, rank-constant'),
-                         (constant_rank, 'LINEAR control')):
-        print('rank C along V(a) -- %s' % label)
-        for v, mx, r in rank_probe(build):
-            print('   V=%+6.2f  max|C| %.3e  rank %d' % (v, mx, r))
-        print()
-    branch_test(constant_rank,
-                'CONTROL A: LINEAR C, im D time-invariant')
-    branch_test(nonlinear_constant_rank,
-                'CONTROL B: NONLINEAR C > 0, im D STILL time-invariant '
-                '-- separates the rank change from the nonlinearity')
-    branch_test(rank_changing, 'im D VIOLATED: rank C drops at V = 0')
-    zero_order_sweep()
 
 
 ## ------------------------------------------------------------------------
@@ -327,3 +311,20 @@ def zero_order_sweep():
             print('%-8s %-4d %s   %.3f'
                   % (name, k, '  '.join('%.3e' % x for x in sp), p))
     print()
+
+
+if __name__ == '__main__':
+    for build, label in ((rank_changing, 'rank-CHANGING (CubicCap)'),
+                         (nonlinear_constant_rank, 'NONLINEAR, rank-constant'),
+                         (constant_rank, 'LINEAR control')):
+        print('rank C along V(a) -- %s' % label)
+        for v, mx, r in rank_probe(build):
+            print('   V=%+6.2f  max|C| %.3e  rank %d' % (v, mx, r))
+        print()
+    branch_test(constant_rank,
+                'CONTROL A: LINEAR C, im D time-invariant')
+    branch_test(nonlinear_constant_rank,
+                'CONTROL B: NONLINEAR C > 0, im D STILL time-invariant '
+                '-- separates the rank change from the nonlinearity')
+    branch_test(rank_changing, 'im D VIOLATED: rank C drops at V = 0')
+    zero_order_sweep()

@@ -115,11 +115,10 @@ def march(g, npts, seed=None, predictor='on', cls=Gear2Integrator, tend=1.0):
     try:
         for j in range(1, npts + 1):
             state['j'] = j
-            tr._dt_last = tr._dt if j > 1 else None
             tr._dt = h
             tr.epar.t = j * h
             x, _f, _J, _ = tr.solve_timestep(x, j * h)
-            tr._push_history(x)
+            tr._roll_history(x, h)      # (clears the opening order drop)
     finally:
         Transient._predict_state = orig
         Transient.stage_predictor = 'on'
@@ -182,11 +181,10 @@ def the_orbit_must_engage():
         tr._begin_run(x, cir.n)
         traj = [v0]
         for j in range(1, 401):
-            tr._dt_last = tr._dt if j > 1 else None
             tr._dt = 1.0 / 400
             tr.epar.t = j / 400.0
             x, _f, _J, _ = tr.solve_timestep(x, j / 400.0)
-            tr._push_history(x)
+            tr._roll_history(x, 1.0 / 400)
             traj.append(float(np.asarray(x, dtype=float)[ia]))
         t = np.array(traj)
         print('%8.2f %8.2f %12.3e %12.6f %10s'

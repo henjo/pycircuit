@@ -3479,3 +3479,46 @@ def test_radau_and_esdirk43_serve_as_the_monodromy_twin():
     p.monodromy = 'glm2'
     with pytest.raises(ValueError, match="'radau'"):
         p.monodromy_twin()
+
+
+def test_the_ppv_reads_a_stateful_diode_at_each_orbit_point():
+    """The PPV's own device reads (the algebraic rows' `G`, `q`, `C(0)`)
+    take the devices AT the point, as the map's reads do (`devices_at`).
+    A van der Pol tank clamped by a diode on an ALGEBRAIC node: while the
+    diode is reverse-biased, current into that node can only flow back
+    through the resistor into the tank, so its equation-row PPV equals the
+    tank's (`v_b = v_v / (1 + R g_d)`, `g_d ~ 0`).  ⚠ Measured before
+    (2026-09-28): `Diode.G` linearised at the voltage the last Newton left
+    (conducting, at the period's end) on every sample -- the node's entry
+    98 % off there, and the diffusion constant 3.4x too large."""
+    import warnings
+
+    from pycircuit.circuit.elements import BSource, Diode
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir.add_node('b')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: u - u ** 3 / 3.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['R1'] = R('v', 'b', r=10.0)
+    cir['D'] = Diode('b', gnd)
+    pss = PSS(cir, method='radau', reltol=1e-10)
+    names = [str(n) for n in cir.nodes if str(n) != 'gnd!']
+    x0 = np.zeros(cir.n - 1)
+    x0[names.index('v')] = 2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=2 * np.pi, timestep=2 * np.pi / 400, x0=x0,
+                  maxiterations=60)
+        assert pss.converged
+        _v, info = pss.ppv()
+    S = np.asarray(info['samples_eq'], dtype=float)
+    vb = np.asarray(pss.waveform[1], dtype=float)[
+        [str(n) for n in cir.nodes].index('b')][:len(S)]
+    off = vb < 0.3                                   # the diode reverse-biased
+    assert off.sum() > 100
+    iv, ib = names.index('v'), names.index('b')
+    err = (np.max(np.abs(S[off, ib] - S[off, iv]))
+           / np.max(np.abs(S[off, iv])))
+    assert err < 1e-4, err

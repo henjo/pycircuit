@@ -557,11 +557,13 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             for j in range(1, npts + 1):
-                tr._dt_last = tr._dt if j > 1 else None
                 tr._dt = h
                 tr.epar.t = j * h
                 x, _f, _J, _ = tr.solve_timestep(x, j * h)
-                tr._push_history(x)
+                ## (`_roll_history`, the loop's accept: it clears the opening
+                ## flag, which a bare `_push_history` never did -- every step of a
+                ## "Gear-2" or "trap" march ran as Euler until 2026-09-28)
+                tr._roll_history(x, h)
         assert getattr(tr, '_branch_error', None) is None, tr._branch_error
         return (getattr(tr, 'branch_screens', 0),
                 getattr(tr, 'branch_points', 0))
@@ -768,11 +770,13 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             for j in range(1, npts + 1):
-                tr._dt_last = tr._dt if j > 1 else None
                 tr._dt = h
                 tr.epar.t = j * h
                 x, _f, _J, _ = tr.solve_timestep(x, j * h)
-                tr._push_history(x)
+                ## (`_roll_history`, the loop's accept: it clears the opening
+                ## flag, which a bare `_push_history` never did -- every step of a
+                ## "Gear-2" or "trap" march ran as Euler until 2026-09-28)
+                tr._roll_history(x, h)
         return (np.asarray(x, dtype=float), getattr(cir['d'], '_vlim', None),
                 getattr(tr, 'branch_points', 0))
 
@@ -830,11 +834,13 @@ def test_the_branch_check_confirms_on_every_solve_path():
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             for j in range(1, 4):
-                tr._dt_last = tr._dt if j > 1 else None
                 tr._dt = 1.0 / 200
                 tr.epar.t = j / 200.0
                 x, _f, _J, _ = tr.solve_timestep(x, j / 200.0)
-                tr._push_history(x)
+                ## (`_roll_history`, the loop's accept: it clears the opening
+                ## flag, which a bare `_push_history` never did -- every step of a
+                ## "Gear-2" or "trap" march ran as Euler until 2026-09-28)
+                tr._roll_history(x, 1.0 / 200)
         return (getattr(tr, 'branch_screens', 0), getattr(tr, 'branch_points', 0),
                 getattr(tr, 'branch_screens_unconfirmed', 0),
                 getattr(tr, '_branch_error', None))
@@ -885,9 +891,12 @@ def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
       term is negligible, `J` is effectively resistive, and there is no
       amplification anywhere to find.
 
-    MEASURED, `δ = 1e-9` injected at ONE step through `provided_function` (a
-    defect in the residual — the theorem's `q_ni`), differenced against the
-    undisturbed run of the SAME discretisation so truncation cancels exactly:
+    MEASURED under Gear-2, `δ = 1e-9` injected at ONE step through
+    `provided_function` (a defect in the residual — the theorem's `q_ni`),
+    differenced against the undisturbed run of the SAME discretisation so
+    truncation cancels exactly; the tail read after `μ + 1` steps, since a
+    two-step method still reads the defective point one step longer (read
+    after `μ`, inside that window, it was `δ/2h` and looked PROPAGATED):
 
     ===========  =====================  ==========================
     fixture      amplification at n0    tail after μ steps
@@ -904,6 +913,10 @@ def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
     ⚠ The arm of note (6) covering a variable-coefficient nonlinear MNA is the
     index-2 one, and the margin to the PROPAGATING index-3 case is one index
     level. Nothing here tests index 3.
+
+    ⚠ UNTIL 2026-09-28 THE MARCH WAS BACKWARD EULER, not the Gear-2 it names:
+    it pushed its history without clearing the opening order drop.  The
+    answer is the same for the method it names -- local, one step later.
     """
     import os
     import sys
@@ -1039,11 +1052,13 @@ def test_the_branch_check_solves_the_step_equation_and_restores_device_state_exa
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             for j in range(1, npts + 1):
-                tr._dt_last = tr._dt if j > 1 else None
                 tr._dt = h
                 tr.epar.t = j * h
                 x, _f, _J, _ = tr.solve_timestep(x, j * h)
-                tr._push_history(x)
+                ## (`_roll_history`, the loop's accept: it clears the opening
+                ## flag, which a bare `_push_history` never did -- every step of a
+                ## "Gear-2" or "trap" march ran as Euler until 2026-09-28)
+                tr._roll_history(x, h)
                 vl.append(float(d.__dict__['_vlim']))
         return (np.asarray(x, dtype=float), vl, alts,
                 getattr(tr, 'branch_points', 0), getattr(tr, 'branch_screens', 0))
