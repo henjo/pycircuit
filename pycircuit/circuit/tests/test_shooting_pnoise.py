@@ -1115,7 +1115,7 @@ def test_am_pm_noise_does_not_depend_on_where_t_equals_zero():
             up, _ = pac.pnoise(pss, F0 + fm, k, maxsidebands=30)
             lo, _ = pac.pnoise(pss, F0 - fm, k, maxsidebands=30)
         up, lo = float(np.real(up)), float(np.real(lo))
-        assert abs((am + pm) / (up + lo) - 1.0) < 1e-6, (ph, am + pm, up + lo)
+        assert abs(2.0 * (am + pm) / (up + lo) - 1.0) < 1e-6, (ph, am + pm, up + lo)
         got.append((am, pm))
     (am0, pm0), (am90, pm90) = got
     assert am0 > 2.0 * pm0, \
@@ -1185,12 +1185,12 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
                                             maxsidebands=L)
             up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
             lo, _ = pac.pnoise(pss, f0 - off, 2, maxsidebands=L)
-        return abs((S_am + S_pm) - (up + lo)) / (up + lo), S_am, S_pm
+        return abs(2.0 * (S_am + S_pm) - (up + lo)) / (up + lo), S_am, S_pm
 
     ## 1. the identity holds once the sideband sum has converged
     r64, S_am, S_pm = residual(64)
     assert r64 < 1e-9, \
-        'S_am + S_pm does not equal the noise in the sideband pair it splits ' \
+        '2 (S_am + S_pm) does not equal the noise in the sideband pair it splits ' \
         '(relative residual %.3e) -- the band pairing is wrong' % r64
 
     ## 2. and the residual at low sideband counts is TRUNCATION: it must fall.
@@ -2193,3 +2193,31 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
                                    maxsidebands=N // 2 - 1)
     assert default[:2] == explicit[:2] and default[2] == explicit[2], (default, explicit)
     assert max(abs(p_) for p_ in default[2]) == N // 2 - 1
+
+
+def test_output_takes_a_node_name():
+    """`output` takes a node NAME, a string or a `Node`, besides a reduced
+    index or a weight vector (2026-09-28): the name is resolved to its
+    reduced index, so every surface returns the same numbers either way;
+    the reference node, which has no row, is refused by name."""
+    import warnings
+
+    from pycircuit.circuit.tests._shooting_fixtures import _solve_vdp_noise
+    cir, pss, pac = _solve_vdp_noise(npts=80)
+    names = [str(n) for n in cir.nodes]
+    full = 0 if pss.irefnode != 0 else 1
+    k = full - 1 if full > pss.irefnode else full
+    name = names[full]
+    f0 = 1.0 / float(pss.period)
+    offs = np.array([1e-3, 1e-2]) * f0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for out in (name, cir.get_node(name)):
+            assert np.array_equal(pac.oscillator_spectrum(pss, offs, out)[0],
+                                  pac.oscillator_spectrum(pss, offs, k)[0])
+            assert pac.am_pm_noise(pss, offs[0], out, maxsidebands=8) == \
+                pac.am_pm_noise(pss, offs[0], k, maxsidebands=8)
+            assert pac.pnoise(pss, f0 + offs[0], out, maxsidebands=8) == \
+                pac.pnoise(pss, f0 + offs[0], k, maxsidebands=8)
+    with pytest.raises(ValueError, match='reference node'):
+        pac.carrier_phasor(pss, names[pss.irefnode])

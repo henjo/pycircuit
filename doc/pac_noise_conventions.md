@@ -6,17 +6,24 @@ arguments -- and where the surfaces disagree with each other.  Written
 2026-09-28 from a read of the code (the docstrings where they agree with
 it); a renaming is not implied by anything here.
 
+**Changed 2026-09-28** (Andreas, aligning with a commercial simulator's
+pnoise): `oscillator_spectrum`'s `S_v` is ONE-SIDED (it was 0.5x; `L_dBc`
+unchanged), `am_pm_noise` returns PER-SIDEBAND densities (they were the
+pair's totals, 2x), and `output` takes a node NAME too.  The tables below
+are the new conventions; the list at the end marks what these closed.
+
 ## Shared conventions
 
 - **`CY` is one-sided.** An element's noise density is the one-sided PSD
   (a resistor's `4kT/R`), the scale of `analysis_ss.Noise`'s `Svnout`. The
   variance and diffusion routes use `CY/2` internally (a two-sided
   intensity), which is not visible in their results.
-- **`output` is a REDUCED-state index or a weight vector**, never a node
-  name. The reduced state is the circuit's unknown vector with the
-  reference node's row removed; the tests compute the index by hand, e.g.
-  `[str(n) for n in cir.nodes if str(n) != 'gnd!'].index('out')`. A vector
-  is taken as weights over the reduced unknowns (a differential output).
+- **`output` is a node NAME, a REDUCED-state index, or a weight vector.**
+  A name (a string, or a `Node`) is resolved to its reduced index
+  (`_numerics.output_index`; the reference node is refused).  The reduced
+  state is the circuit's unknown vector with the reference node's row
+  removed.  A vector is taken as weights over the reduced unknowns (a
+  differential output).  Names at the top level of the circuit.
 - **Frequency arguments are one of three kinds** -- an ABSOLUTE output
   frequency, an OFFSET from a carrier harmonic, or a SERIES frequency of a
   sampled sequence -- and the argument names do not tell which (see the
@@ -28,23 +35,23 @@ it); a renaming is not implied by anything here.
 
 | scale | methods |
 |---|---|
-| one-sided PSD of the output, unit^2/Hz | `pnoise`, `sampled_noise` (and `analysis_ss.Noise`) |
-| **0.5 x** a one-sided PSD (`S_v`: carrier power `|X|^2 = A^2/4`) | `oscillator_spectrum` (`S_v`), `orbital_spectrum`, `modal_spectrum`, `correlation_spectrum` |
-| a sideband PAIR's total, one-sided | `am_pm_noise`: `S_am + S_pm = pnoise(k f0 + f) + pnoise(k f0 - f)` |
+| one-sided PSD of the output, unit^2/Hz | `pnoise`, `sampled_noise`, `oscillator_spectrum` (`S_v`: the Lorentzian times the carrier's one-sided power `2 |X|^2 = A^2/2`), `am_pm_noise` per sideband: `2 (S_am + S_pm) = pnoise(k f0 + f) + pnoise(k f0 - f)` (and `analysis_ss.Noise`) |
+| **0.5 x** a one-sided PSD (the carrier PHASOR's square `|X|^2 = A^2/4`) | `orbital_spectrum`, `modal_spectrum`, `correlation_spectrum` |
 | **two-sided** `S_phi`, equal to `L(f)` in linear units (the IEEE one-sided `S_phi` is `2 L`) | `phase_psd`, `lorentzian` (integrates to 1 over `(-inf, inf)`) |
-| dBc/Hz, `10 log10(S_v / |X|^2)` = `L(f)` | `oscillator_spectrum` (`L_dBc`) |
+| dBc/Hz, `10 log10(S_v / (2 |X|^2))` = `L(f)` | `oscillator_spectrum` (`L_dBc`) |
 | variance, unit^2 | `sampled_variance`, `covariance`, `oscillator_covariance` (`K_orb`), `orbital_correlation` |
 | seconds (jitter), s^2 (growth) | `jitter_metrics`, `event_jitter`, `oscillator_edge_jitter`; `oscillator_covariance`'s `d` |
 | diffusion constant `c`, seconds | `diffusion_constant`, `frequency_aware_diffusion`, `coloured_diffusion`, `coloured_diffusion_resolved` |
 
-So near a carrier `pnoise ~ 2 S_v`, and the modal total is `~ pnoise / 2`.
+So near a carrier `pnoise ~ S_v ~ S_pm` (per sideband, where AM is
+small), and the modal total is `~ S_v / 2`.
 
 ## Driven circuits
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
 | `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False` | `(S, sidebands_used)`; also sets `self.alias_stop`, `self.sidebands_used` | `freq`: ABSOLUTE output frequency, scalar | `maxsidebands` -> `N//2` (clamped); `ratio_tol` -> 1e-9, stops after two quiet pairs |
-| `am_pm_noise` | `pss, freq, output, carrier=1, maxsidebands=None, modulated=False` | `(S_am, S_pm, bands)`, each the PAIR total | `freq`: OFFSET from `carrier f0` | `maxsidebands` -> every pair within Nyquist, `N//2 - carrier` (fixed 2026-09-28: it raised) |
+| `am_pm_noise` | `pss, freq, output, carrier=1, maxsidebands=None, modulated=False` | `(S_am, S_pm, bands)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28) | `freq`: OFFSET from `carrier f0` | `maxsidebands` -> every pair within Nyquist, `N//2 - carrier` (fixed 2026-09-28: it raised) |
 | `band_spread` | `pss, output, band, points=9, harmonic=1, quantity='pnoise', **kw` | `(spread, info)` | `band` in units of f0: an OFFSET from `harmonic f0` for 'S_pm', 'S_am', 'oscillator_spectrum', but ABSOLUTE for 'pnoise' | `points=9` |
 | `sampled_noise` | `pss, output, times, freqs, maxsidebands=None, tail=False` | array `(len(times), len(freqs))` | `freqs`: SERIES frequency, `0 < f <= f0/2` | `maxsidebands` -> `N//2 - 1` (raises above) |
 | `sampled_variance` | `pss, output, times, fmin, fmax, points_per_decade=40, maxsidebands=None, tail=False` | array `(len(times),)` | `fmin`, `fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
@@ -63,7 +70,7 @@ So near a carrier `pnoise ~ 2 S_v`, and the modal total is `~ pnoise / 2`.
 | `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, H=None` (+ `sidebands` for correlation) | array | as `modal_spectrum` | `H` -> 32 |
 | `orbital_correlation` | `pss, H=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
 | `oscillator_covariance` | `pss, samples=False, fmin=None, fmax=None, points_per_decade=40` | `(K_orb, d, info)`; `K_orb` in pair space on gear/trap | as `covariance` (colour enters the transverse part only) | |
-| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle, instant, d, projection_share` | -- | `kmax=8`; `output` must be an int |
+| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle, instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
 | `orbital_mode_weights` | `pss, nmodes=None` | `(cw, modes, K_orb)` | -- | |
 | `diffusion_constant` | `pss` | `c`, s | -- | refuses colour |
 | `frequency_aware_diffusion` | `pss, offset` | `c(f)`, s | `offset` scalar, abs taken | refuses colour |
@@ -83,15 +90,16 @@ So near a carrier `pnoise ~ 2 S_v`, and the modal total is `~ pnoise / 2`.
 
 **Can give a wrong number:**
 
-1. **Two sidedness scales under one unit.** `pnoise`, `am_pm_noise` and
-   `sampled_noise` are one-sided; `oscillator_spectrum`'s `S_v` and the
-   orbital/modal/correlation spectra are 0.5x one-sided. Normalising the
-   latter by `A^2/2` instead of `|X|^2 = A^2/4` reads 3 dB low; only
-   `oscillator_spectrum` returns dBc.
+1. **Two sidedness scales under one unit.** `pnoise`, `am_pm_noise`,
+   `sampled_noise` and (since 2026-09-28) `oscillator_spectrum`'s `S_v` are
+   one-sided; the orbital/modal/correlation spectra are 0.5x one-sided --
+   HALF `S_v`. Normalising the latter by `A^2/2` instead of `|X|^2 = A^2/4`
+   reads 3 dB low; only `oscillator_spectrum` returns dBc.
 2. **`phase_psd` is the two-sided `S_phi` (= `L(f)`),** not the IEEE
    one-sided `S_phi = 2 L(f)`; its docstring says only "rad^2/Hz".
-3. **`am_pm_noise` returns pair totals** over both sidebands, not a
-   per-sideband density; on an oscillator `S_pm = 4 S_v`.
+3. ~~**`am_pm_noise` returns pair totals** over both sidebands, not a
+   per-sideband density; on an oscillator `S_pm = 4 S_v`.~~ CLOSED
+   2026-09-28: per sideband, and on an oscillator `S_pm = S_v`.
 4. **`freq` is ABSOLUTE in `pnoise` and an OFFSET in `am_pm_noise` / `am_pm`**
    -- the same name in the same position.
 5. **`band_spread`'s `band` is an offset for three quantities and absolute

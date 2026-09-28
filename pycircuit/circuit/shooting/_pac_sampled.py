@@ -4,7 +4,7 @@ metrics.
 import numpy as np
 import warnings
 from ._noise_components import cached_root, psd_sqrt
-from ._numerics import _output_weights
+from ._numerics import _output_weights, output_index
 from .events import EventColumns
 
 
@@ -93,6 +93,7 @@ class _SampledNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.sampled_noise`.
         """
+        output = output_index(pss, output)
         return self._sampled_series(pss, output, times, freqs, maxsidebands,
                                     tail=tail)
 
@@ -117,6 +118,7 @@ class _SampledNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.sampled_variance`.
         """
+        output = output_index(pss, output)
         f0 = 1.0 / float(pss.factored_period().T)
         fmin, fmax = float(fmin), float(fmax)
         if not (0.0 < fmin < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
@@ -198,6 +200,7 @@ class _SampledNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.jitter_metrics`.
         """
+        output = output_index(pss, output)
         from scipy.integrate import trapezoid
         fp = pss.factored_period()
         T = float(fp.T)

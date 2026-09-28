@@ -2,6 +2,7 @@
 edge jitter and the mode weights.
 """
 import numpy as np
+from ._numerics import output_index
 import warnings
 from .events import EventColumns
 
@@ -499,6 +500,7 @@ class _OscillatorCovariance(object):
 
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
+        output = output_index(pss, output)
         import warnings as _warnings
         self._check_circuit(pss)
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) supplies

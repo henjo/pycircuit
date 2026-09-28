@@ -994,7 +994,7 @@ class _PPVFloquet(object):
         coefficients carries the filter inside `c_k(w_s)` with no explicit
         model of the path (A2, roadmap).  The ratio
         `sum_k |c_k(w_s)|^2 / sum_k |c_k(0)|^2` reproduces `pnoise`'s
-        `S_pm/(4 S_v)` for a source behind a slow node to within 2 % up to
+        `S_pm/S_v` for a source behind a slow node to within 2 % up to
         r = 5e-2; at r = 0.1 the two differ by -6 %, a gap between PM by
         sideband quadrature and phase-mode projection.
 

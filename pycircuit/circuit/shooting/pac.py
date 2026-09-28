@@ -24,7 +24,7 @@ from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
 import pycircuit.circuit.analysis as analysis
 from ._numerics import _arnoldi_gmres
-from ._numerics import _output_weights
+from ._numerics import _output_weights, output_index
 from ._numerics import freq_analysis
 from ._pac_lyapunov import _LyapunovCovariance
 from ._pac_modal import _ModalSpectra
@@ -455,6 +455,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
         History: `doc/shooting_history.md`, `PAC.adjoint_transfer_row`.
         """
+        output = output_index(pss, output)
         import scipy.sparse.linalg as spla
         fp = pss._state_map()
         self._check_circuit(pss)
@@ -526,6 +527,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
         History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
         """
+        output = output_index(pss, output)
         import scipy.sparse.linalg as spla
         fp = pss._state_map()
 
@@ -654,6 +656,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         wrong label -- exactly the mislabelling this object exists to
         prevent.  Ask for the sidebands whose input bands exist.
         """
+        output = output_index(pss, output)
         self._check_circuit(pss)
         f0 = 1.0 / float(pss.period)
         ls = [int(l) for l in sidebands]
@@ -1009,6 +1012,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         for a phasor, since folding discards the phase the AM/PM split is
         made of.
         """
+        output = output_index(pss, output)
         times, _X = pss.waveform
         row = self._output_waveform_row(pss, output)
         t = np.asarray(times, dtype=float)[:-1]
@@ -1059,6 +1063,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
         History: `doc/shooting_history.md`, `PAC.am_pm`.
         """
+        output = output_index(pss, output)
         C = self.carrier_phasor(pss, output, carrier)
         ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
         ## circuit does not produce still has a phasor of ~1e-16 rather

@@ -246,6 +246,23 @@ def _cx_collect(a, b):
     return np.asarray(a) + 1j * np.asarray(b)
 
 
+def output_index(pss, output):
+    """`output` as the PAC methods take it: a node NAME (a string, or a
+    circuit `Node`) is that node's REDUCED-state index -- the reference node
+    has no row, and is refused -- and an index or a weight vector passes as
+    given.  A differential output is a weight vector, as before."""
+    from pycircuit.circuit.circuit import Node
+    if not isinstance(output, (str, Node)):
+        return output
+    k = pss.cir.get_node_index(output)
+    irn = pss.irefnode
+    if k == irn:
+        raise ValueError(
+            'PAC: output %r is the reference node, which has no row in the '
+            'reduced state.' % (output,))
+    return k - 1 if k > irn else k
+
+
 def _output_weights(output, width):
     """The complex output functional of an adjoint row, `width` wide: an
     index is a unit vector, an array its own entries, zero-padded."""

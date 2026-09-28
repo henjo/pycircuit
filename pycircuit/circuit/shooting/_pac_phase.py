@@ -4,7 +4,7 @@ aware), phase_psd and the lineshape.
 import numpy as np
 import warnings
 from ._noise_components import psd_sqrt
-from ._numerics import insert_ref
+from ._numerics import insert_ref, output_index
 
 
 class _PhaseNoise(object):
@@ -793,14 +793,13 @@ class _PhaseNoise(object):
         argument for the split; the efficiency argument (Floquet is cheaper)
         is the weaker one.
 
-        Returns `(S_v, L_dBc)`.  ⚠ `S_v` is the Lorentzian lineshape scaled by
-        `|X_1|^2 = A^2/4`, the carrier PHASOR's square -- which is HALF the
-        carrier power `A^2/2` a one-sided PSD carries, so `S_v` is exactly
-        0.5000x a one-sided PSD of the output voltage (against a reference
-        simulator at every offset over four decades).  The scale is kept
-        rather than doubled because callers may already divide by `|X_1|^2`
-        themselves.  `L_dBc` is `S_v` normalised to the harmonic's own
-        power, in dBc/Hz, and is unaffected.
+        Returns `(S_v, L_dBc)`.  `S_v` is the ONE-SIDED PSD of the output
+        voltage, as `pnoise`'s: the Lorentzian lineshape times the carrier's
+        one-sided power `2 |X_1|^2 = A^2/2` (`X_1 = A/2` the carrier phasor).
+        Against a reference simulator at every offset over four decades.
+        `L_dBc` is `S_v` over that carrier power, in dBc/Hz.  `output`: a
+        reduced index, a weight vector, or a node name.
+        History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
 
         ⚠ NO SWEEP AND NO PER-FREQUENCY SOLVE.  Once the PSS waveform's
         Fourier coefficients and the scalar `c` are known, "we have an
@@ -873,12 +872,16 @@ class _PhaseNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
+        output = output_index(pss, output)
+        ## (the lineshape is built on the carrier PHASOR's square, `S_v / 2`;
+        ## the one-sided PSD doubles it, exactly, and leaves `L_dBc` as is)
         if self._coloured_present(pss):
-            return self._coloured_spectrum(
+            Sv, L = self._coloured_spectrum(
                 pss, offsets, output, harmonic, fmin, fmax,
                 frequency_aware=(frequency_aware is None
                                  or bool(frequency_aware)),
                 all_orders=all_orders)
+            return 2.0 * np.asarray(Sv), L
         if frequency_aware is None:
             frequency_aware = True
         c = self.diffusion_constant(pss)
@@ -911,7 +914,7 @@ class _PhaseNoise(object):
         with np.errstate(divide='ignore'):
             L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
                                            1e-300))
-        return Sv, L
+        return 2.0 * Sv, L
 
     def _white_all_orders(self, pss, offsets, harmonic, c, f0, fmax):
         """The WHITE line with the frequency-aware PPV to all orders

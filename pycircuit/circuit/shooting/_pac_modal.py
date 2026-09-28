@@ -4,7 +4,7 @@ and correlation spectra, and the phase-mode split.
 import numpy as np
 import warnings
 from ._noise_components import orbit_states
-from ._numerics import _output_row, insert_ref
+from ._numerics import _output_row, insert_ref, output_index
 from pycircuit.circuit._limiting import devices_at
 
 
@@ -220,6 +220,7 @@ class _ModalSpectra(object):
 
         History: `doc/shooting_history.md`, `PAC.orbital_spectrum`.
         """
+        output = output_index(pss, output)
         try:
             _asym = self._orbit_asymmetry(pss)
         except Exception:
@@ -304,8 +305,8 @@ class _ModalSpectra(object):
         transfer, which sum to the total.
 
         Returns a dict of arrays at `harmonic*f0 + offsets` (a negative offset
-        is the lower sideband), on the scale of `oscillator_spectrum`'s `S_v`
-        and `orbital_spectrum` (0.5x a one-sided PSD):
+        is the lower sideband), on the scale of `orbital_spectrum`: 0.5x a
+        one-sided PSD, HALF `oscillator_spectrum`'s `S_v`:
 
             'phase', 'orbital', 'correlation', 'total'
             total = phase + orbital + correlation
@@ -379,6 +380,7 @@ class _ModalSpectra(object):
 
         History: `doc/shooting_history.md`, `PAC.modal_spectrum`.
         """
+        output = output_index(pss, output)
         self._check_circuit(pss)
         coloured = self._coloured_present(pss)
         self._refuse_driven(pss, 'modal_spectrum')
@@ -629,6 +631,7 @@ class _ModalSpectra(object):
         coupling exists: -1.1 to -2.4x the orbital term on van der Pol at
         half-wave asymmetry 0.10.
         """
+        output = output_index(pss, output)
         return self.modal_spectrum(pss, offsets, output, harmonic=harmonic,
                                    H=H, sidebands=sidebands)['correlation']
 

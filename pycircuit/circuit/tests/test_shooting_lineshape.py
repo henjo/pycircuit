@@ -503,7 +503,8 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     import warnings as _w
     pss, pac, ov = _fa_core_oscillator(0.7)
     f0 = 1.0 / float(pss.period)
-    X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
+    ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
+    X2 = 2.0 * abs(pac.carrier_phasor(pss, ov, 1)) ** 2
     fcore = np.pi * f0 * f0 * pac._colour_fold(pss, 1e-5 * f0, None, 'x').c_white
     offs = np.array([0.0, 1.0, 10.0, 100.0, 300.0, 1000.0]) * fcore
     with _w.catch_warnings(record=True) as rec:
@@ -578,7 +579,8 @@ def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_as
     import warnings as _w
     pss, pac, ov = _fa_core_oscillator(0.7, flicker_rel=0.0)
     f0 = 1.0 / float(pss.period)
-    X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
+    ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
+    X2 = 2.0 * abs(pac.carrier_phasor(pss, ov, 1)) ** 2
     fcore = np.pi * f0 * f0 * pac.diffusion_constant(pss)
     offs = np.array([0.0, 1.0, 10.0, 100.0, 1000.0]) * fcore
     with _w.catch_warnings(record=True) as rec:
@@ -600,7 +602,7 @@ def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_as
     assert abs(S_all[-1] / sphi - 1.0) < 2e-4, S_all[-1] / sphi - 1.0
     ## the coloured path, with the flicker's own (DC) effect taken out
     pss2, pac2, ov2 = _fa_core_oscillator(0.7, flicker_rel=1e-8)
-    X22 = abs(pac2.carrier_phasor(pss2, ov2, 1)) ** 2
+    X22 = 2.0 * abs(pac2.carrier_phasor(pss2, ov2, 1)) ** 2
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         S_col = pac2.oscillator_spectrum(pss2, offs, ov2, fmin=1e-4 * f0,
@@ -639,7 +641,8 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
     _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
                            fref=1.0 / 6.66, white=1e-6)
     f0 = 1.0 / float(pss.period)
-    X2 = abs(pac.carrier_phasor(pss, 0, 1)) ** 2
+    ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
+    X2 = 2.0 * abs(pac.carrier_phasor(pss, 0, 1)) ** 2
     offs = np.array([0.0, 1e-3, 0.1]) * f0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
@@ -666,7 +669,8 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
                                          frequency_aware=False)[0]
             cw = pac._colour_fold(pss, 1e-7 * f0, None, 'x').c_white
         Lw = pac.lorentzian(offs, cw, f0, 1)
-        devs.append(Sv / abs(pac.carrier_phasor(pss, 0, 1)) ** 2 / Lw - 1.0)
+        ## (over the carrier's one-sided power 2|X|^2)
+        devs.append(Sv / (2.0 * abs(pac.carrier_phasor(pss, 0, 1)) ** 2) / Lw - 1.0)
     ## the line centre moves LINEARLY with the flicker level (9.996x for
     ## 10x; -6.4e-4 at 1e-7 of the white -- the 1/f^3 phase wanders at
     ## the lags that set the core); the skirt stays at the Lorentzian
@@ -766,15 +770,16 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
         fad = np.array([pac.frequency_aware_diffusion(pss, o) for o in offs])
     assert np.max(np.abs(cfa / fad - 1.0)) < 1e-8, cfa / fad
     pss, pac, ov = _slow_node_oscillator('flicker')
-    X2 = abs(pac.carrier_phasor(pss, ov, 1)) ** 2
+    ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
+    X2 = 2.0 * abs(pac.carrier_phasor(pss, ov, 1)) ** 2
     o = 1e-2 * f0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         sfa = float(pac.phase_psd(pss, [o])[0])
         sdc = float(pac.phase_psd(pss, [o], frequency_aware=False)[0])
         pm = pac.am_pm_noise(pss, o, ov, carrier=1, maxsidebands=16)[1]
-    assert abs(pm / (4 * X2 * sfa) - 1.0) < 5e-3, pm / (4 * X2 * sfa)
-    assert pm / (4 * X2 * sdc) < 0.03, pm / (4 * X2 * sdc)
+    assert abs(pm / (X2 * sfa) - 1.0) < 5e-3, pm / (X2 * sfa)
+    assert pm / (X2 * sdc) < 0.03, pm / (X2 * sdc)
     ## and the coloured LINESHAPE (`oscillator_spectrum`), frequency-aware
     ## by default: its skirt there is the frequency-aware `S_phi`, to
     ## second order
@@ -819,10 +824,11 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         o = f_amp
-        X2 = abs(pac.carrier_phasor(pss, 0, 1)) ** 2
+        ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
+        X2 = 2.0 * abs(pac.carrier_phasor(pss, 0, 1)) ** 2
         pm = pac.am_pm_noise(pss, o, 0, carrier=1, maxsidebands=16)[1]
-        rfa = pm / (4 * X2 * float(pac.phase_psd(pss, [o])[0]))
-        rdc = pm / (4 * X2 * float(pac.phase_psd(pss, [o],
+        rfa = pm / (X2 * float(pac.phase_psd(pss, [o])[0]))
+        rdc = pm / (X2 * float(pac.phase_psd(pss, [o],
                                                  frequency_aware=False)[0]))
     assert abs(rfa - 1.0) < 0.02, rfa
     assert rdc < 0.7, rdc
@@ -1080,7 +1086,8 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
             _w.simplefilter('ignore')
             sp, _ = pac2.oscillator_spectrum(p2, offs, 0, harmonic=1)
             so = pac2.orbital_spectrum(p2, offs, 0, harmonic=1, H=4)
-        ratios.append(np.asarray(so) / np.asarray(sp))
+        ## (the orbital spectrum is 0.5x one-sided: half `S_v`)
+        ratios.append(np.asarray(so) / (0.5 * np.asarray(sp)))
     drift = float(np.max(np.abs(ratios[0] / ratios[1] - 1.0)))
     assert drift < 5e-3, \
         'the orbital/phase ratio moved by %.3e over a 100x change in source ' \
@@ -1104,7 +1111,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
                 pk, np.array([fak]), 0, harmonic=1)
             sok = pk_pac.orbital_spectrum(
                 pk, np.array([fak]), 0, harmonic=1, H=4)
-        seen.append(float(sok[0] / spk[0]))
+        seen.append(float(sok[0] / (0.5 * spk[0])))
     for cval, r in zip((0.25, 1.0, 4.0), seen):
         assert abs(r - 0.5) < 0.02, \
             'at C=%g the orbital/phase ratio at its own f_amp is %.4f, not ' \
@@ -1158,7 +1165,8 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         offs = np.array([0.3, 3.0, 10.0]) * f_amp
-        Sph, _ = pac.oscillator_spectrum(pss, offs, 0)
+        ## (on the orbital spectrum's scale, 0.5x one-sided: half `S_v`)
+        Sph = 0.5 * np.asarray(pac.oscillator_spectrum(pss, offs, 0)[0])
         Sorb = pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8)
         for f, sph, sorb in zip(offs, np.asarray(Sph), np.asarray(Sorb)):
             up, _ = pac.pnoise(pss, f0 + f, 0, maxsidebands=16)
@@ -1234,8 +1242,8 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     (Monte-Carlo-confirmed on the first fixture), measured:
 
         van der Pol C=4 Q=8 a=0.30    1 f_amp   10 f_amp
-          pm / 4 S_v, closed form      0.647     0.302
-          pm / 4 S_v, frequency-aware  0.998     0.980
+          pm / S_v, closed form        0.647     0.302
+          pm / S_v, frequency-aware    0.998     0.980
         A2 slow node, tau/T = 100     1e-3 f0   1e-2 f0
           closed form                  0.729     0.027
           frequency-aware              1.004     1.004
@@ -1253,7 +1261,7 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
         S = float(np.asarray(pac.oscillator_spectrum(
             pss, np.array([off]), ov, frequency_aware=fa)[0])[0])
         _am, pm, _ = pac.am_pm_noise(pss, off, ov, carrier=1, maxsidebands=sb)
-        return pm / (4.0 * S)
+        return pm / S
 
     ## 1. AM-to-PM coupling above f_amp
     cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.30)
@@ -1369,7 +1377,8 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
         _w.simplefilter('ignore')
         ## the closed form: this test's claim is about the modal SUM as
         ## `orbital_spectrum`'s docstring states it (DC-PPV phase term)
-        Sph = float(np.asarray(pac.oscillator_spectrum(
+        ## (half `S_v`: the orbital spectrum's scale)
+        Sph = 0.5 * float(np.asarray(pac.oscillator_spectrum(
             pss, off, 0, frequency_aware=False)[0])[0])
         up, _ = pac.pnoise(pss, f0 + off[0], 0, maxsidebands=16)
         lo, _ = pac.pnoise(pss, f0 - off[0], 0, maxsidebands=16)
@@ -1394,7 +1403,7 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
     1/(2 pi Q), white 1e-6 A^2/Hz current noise) and on the LC oscillator
     the modulation stack was certified on:
 
-        f/f0     (up+lo)/(4 S_v)   Q=100    LC mu=1
+        f/f0     (up+lo)/(2 S_v)   Q=100    LC mu=1
         1e-4          1.003                 0.9993
         1e-3          1.284                 0.9993
         1e-2          1.974                 0.9992
@@ -1412,9 +1421,9 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
     absolute scale and the "~1e-12" symptom is not in the noise split.
     Pinned: identity < 1e-9; ratio within 2 % of 1 at 1e-4 f0 and within
     3 % of 2 at 1e-2 and 1e-1 f0; and the LC fixture the closed form was
-    certified on, overlay 1 within 1 % over three decades (below); and S_pm alone within 1 % of 4 S_v at
-    every offset -- S_pm is the PM content of the sideband PAIR, 2 S_v per
-    sideband (the PM part is the Lorentzian everywhere, the AM part is what
+    certified on, overlay 1 within 1 % over three decades (below); and S_pm alone within 1 % of S_v at
+    every offset -- S_pm is the PM content of ONE sideband (the pair's until
+    2026-09-28, when `S_v` became one-sided and `S_pm` per sideband) (the PM part is the Lorentzian everywhere, the AM part is what
     the ratio adds).  ⚠ First written as 2 S_v and failed at 0.997 off:
     the pair, not one sideband.
     """
@@ -1443,11 +1452,11 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
             rows.append((float(np.real(up)), float(np.real(lo)),
                          float(np.real(am)), float(np.real(pm))))
     for (up, lo, am, pm), sv, f, want in zip(rows, Sv, offs, (1.0, 2.0, 2.0)):
-        assert abs((am + pm) - (up + lo)) / (up + lo) < 1e-9, (f / f0, am + pm, up + lo)
-        ratio = (up + lo) / (4.0 * sv)
+        assert abs(2.0 * (am + pm) - (up + lo)) / (up + lo) < 1e-9, (f / f0, am + pm, up + lo)
+        ratio = (up + lo) / (2.0 * sv)
         assert abs(ratio / want - 1.0) < 0.03, \
-            'overlay (up+lo)/(4 S_v) = %.4f at %.0e f0, expected %.0f' % (ratio, f / f0, want)
-        assert abs(pm / (4.0 * sv) - 1.0) < 0.01, (f / f0, pm, 4.0 * sv)
+            'overlay (up+lo)/(2 S_v) = %.4f at %.0e f0, expected %.0f' % (ratio, f / f0, want)
+        assert abs(pm / sv - 1.0) < 0.01, (f / f0, pm, sv)
 
     ## AND ON THE FIXTURE THE MODULATION STACK WAS CERTIFIED ON (Andreas,
     ## 2026-09-08 evening): the LC oscillator at mu = 1 -- the external
@@ -1467,9 +1476,9 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
             lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32)
             am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
             up, lo, am, pm = (float(np.real(x)) for x in (up, lo, am, pm))
-            assert abs((am + pm) - (up + lo)) / (up + lo) < 1e-8, (f / f0, am + pm, up + lo)
-            assert abs((up + lo) / (4.0 * sv) - 1.0) < 0.01, ('LC overlay', f / f0, (up + lo) / (4.0 * sv))
-            assert abs(pm / (4.0 * sv) - 1.0) < 0.01, ('LC S_pm', f / f0, pm, 4.0 * sv)
+            assert abs(2.0 * (am + pm) - (up + lo)) / (up + lo) < 1e-8, (f / f0, am + pm, up + lo)
+            assert abs((up + lo) / (2.0 * sv) - 1.0) < 0.01, ('LC overlay', f / f0, (up + lo) / (2.0 * sv))
+            assert abs(pm / sv - 1.0) < 0.01, ('LC S_pm', f / f0, pm, sv)
 
 
 def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmonics_say():
@@ -1560,7 +1569,7 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
                 lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32)
                 F0 = 1.0 / (1.0 + (2 * np.pi * f * tau) ** 2)
                 pred = (G2[0] * F0 + float(np.sum(G2[1:]))) / float(np.sum(G2)) if src == 'w' else 1.0
-                out.append(((float(np.real(up)) + float(np.real(lo))) / (4.0 * sv), pred))
+                out.append(((float(np.real(up)) + float(np.real(lo))) / (2.0 * sv), pred))
         return abs(G[0]) / abs(G[1]), out
 
     rs = (1e-4, 1e-3, 3.16e-3, 1e-2, 3.16e-2)
@@ -1710,7 +1719,7 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
             _am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
             Sf = pss.frequency_aware_ppv(f)[1]['samples'][:, iw]
             Pf = float(np.sum(np.abs(np.fft.fft(Sf) / Sf.shape[0]) ** 2))
-            assert abs((float(np.real(pm)) / (4.0 * float(Sv[0]))) / (Pf / P0) - 1.0) < tol, (r, pm, Pf / P0)
+            assert abs((float(np.real(pm)) / float(Sv[0])) / (Pf / P0) - 1.0) < tol, (r, pm, Pf / P0)
 
 
 def test_band_spread_tells_a_band_mean_from_a_point_value():
@@ -1810,7 +1819,8 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, 0,
                                                     maxsidebands=16)[0]))
                            for o in offs])
-            old = (np.asarray(pac.oscillator_spectrum(
+            ## (half `S_v`: the modal spectra's scale)
+            old = (0.5 * np.asarray(pac.oscillator_spectrum(
                 pss, offs, 0, frequency_aware=False)[0], dtype=float)
                 + np.asarray(pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8),
                              dtype=float))
@@ -1827,7 +1837,7 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             with _w.catch_warnings():
                 _w.simplefilter('ignore')
                 mn = pac.modal_spectrum(pss, near, 0, H=8, sidebands=16)
-                lor = np.asarray(pac.oscillator_spectrum(
+                lor = 0.5 * np.asarray(pac.oscillator_spectrum(
                     pss, near, 0, frequency_aware=False)[0], dtype=float)
             assert np.max(np.abs(mn['phase'] / lor - 1.0)) < 1e-3, mn['phase'] / lor
             assert np.max(np.abs(mn['correlation'] / mn['phase'])) < 1e-5

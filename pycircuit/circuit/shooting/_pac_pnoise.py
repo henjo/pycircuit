@@ -5,6 +5,7 @@ import numpy as np
 import warnings
 from ._noise_components import (exponent_columns, uniform_exponent,
                                warn_signed_unused)
+from ._numerics import output_index
 
 
 class _DrivenNoise(object):
@@ -117,6 +118,7 @@ class _DrivenNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.pnoise`.
         """
+        output = output_index(pss, output)
         self._check_circuit(pss)
         ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
         ## _forced_replay_transposed), whose two-stage chained transpose is
@@ -554,6 +556,7 @@ class _DrivenNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.band_spread`.
         """
+        output = output_index(pss, output)
         import numpy as _np
         f0 = 1.0 / float(pss.period)
         rs = _np.linspace(float(band[0]), float(band[1]), int(points))
@@ -584,9 +587,11 @@ class _DrivenNoise(object):
                     modulated=False):
         """Output NOISE split into its AM and PM parts at `freq` from `carrier`.
 
-        Returns `(S_am, S_pm, bands_used)`.  The two add to the noise in the
-        pair of sidebands they decompose -- see the identity below -- and are in
-        the same units as :meth:`pnoise`.
+        Returns `(S_am, S_pm, bands_used)`: the AM and PM noise PER SIDEBAND,
+        one-sided densities in the units of :meth:`pnoise` -- half the pair
+        of sidebands they decompose, see the identity below.  `output`: a
+        reduced index, a weight vector, or a node name.
+        History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
 
         ⚠ THIS NEEDS THE SIDEBAND *CORRELATION*, WHICH IS WHY IT IS NOT
         `|m_am|^2` FROM :meth:`am_pm`.  That method is the TRANSFER pair for a
@@ -619,22 +624,22 @@ class _DrivenNoise(object):
 
         ⚠ THE GATE IS AN IDENTITY, NOT A TOLERANCE.  `pnoise` at the upper
         sideband folds precisely the bands `g = freq + p f0`, and at the lower
-        precisely their negatives, so with the factor of one half below
+        precisely their negatives, so
 
-            S_am + S_pm  ==  pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)
+            2 (S_am + S_pm)  ==  pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)
 
         exactly, because `|a+c|^2 + |a-c|^2 = 2|a|^2 + 2|c|^2` leaves no cross
         term.  A pairing error breaks it, which is what the test asserts.
 
         ⚠ ON A FREE-RUNNING OSCILLATOR this split sits on the SAME absolute
         scale as `pnoise` (the identity to 1e-12) and as the externally
-        certified `oscillator_spectrum` (`S_pm = 4 S_v` at every offset: the
-        PM content of the pair IS the Lorentzian, 2 S_v per sideband), with
+        certified `oscillator_spectrum` (`S_pm = S_v` at every offset: the
+        PM content of a sideband IS the Lorentzian), with
         `S_am` rising from ~0 below the AM corner `f0/(2 pi Q_lambda)` to
         `S_pm` above it -- the ratio is an exact Lorentzian
         `u^2/(u_c^2 + u^2)` in `u = offset/f0`, `u_c = 1/(2 pi Q_lambda)`,
-        `Q_lambda = -1/ln|lambda_2|` -- so the pair total is 4 S_v there and
-        8 S_v far out.  "~1e-12 rows" from `am_pm` on a half-wave-symmetric
+        `Q_lambda = -1/ln|lambda_2|` -- so a sideband's total is S_v there and
+        2 S_v far out.  "~1e-12 rows" from `am_pm` on a half-wave-symmetric
         fixture are a symmetry zero, see `am_pm`.  Oscillator magnitudes
         from this are trustworthy.
 
@@ -653,6 +658,7 @@ class _DrivenNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
         """
+        output = output_index(pss, output)
         self._check_circuit(pss)
         pss = pss._adjoint_host()
         fp = pss.factored_period()
@@ -698,4 +704,5 @@ class _DrivenNoise(object):
             S_am += 0.5 * float(np.real(m_am @ cy @ np.conj(m_am)))
             S_pm += 0.5 * float(np.real(m_pm @ cy @ np.conj(m_pm)))
             bands.append(p)
-        return S_am, S_pm, bands
+        ## the pair's totals, halved (exactly): per sideband
+        return 0.5 * S_am, 0.5 * S_pm, bands

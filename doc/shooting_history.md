@@ -10494,6 +10494,44 @@ its walk now keeps each step's stage states (`_StageStep.Ys`, as
 change: the walk's states and the re-traversal's BIT-EQUAL, radau,
 TR-BDF2 and esdirk43 on an RC and a rectifier (297 / 594 states each).
 
+### `oscillator_spectrum`
+
+2026-09-28 (Andreas: `S_v` one-sided, aligned with a commercial
+simulator's pnoise):
+
+The docstring's paragraph on the return, before the change:
+
+Returns `(S_v, L_dBc)`.  ⚠ `S_v` is the Lorentzian lineshape scaled by
+`|X_1|^2 = A^2/4`, the carrier PHASOR's square -- which is HALF the
+carrier power `A^2/2` a one-sided PSD carries, so `S_v` is exactly
+0.5000x a one-sided PSD of the output voltage (against a reference
+simulator at every offset over four decades).  The scale is kept
+rather than doubled because callers may already divide by `|X_1|^2`
+themselves.  `L_dBc` is `S_v` normalised to the harmonic's own
+power, in dBc/Hz, and is unaffected.
+
+The doubling is applied at the return (an exact factor of two), so
+`L_dBc` did not move by a bit.
+
+### `am_pm_noise`
+
+2026-09-28 (Andreas: per sideband, aligned with a commercial simulator's
+per-sideband AM and PM noise):
+
+The docstring before the change, where it stated the scale:
+
+Returns `(S_am, S_pm, bands_used)`.  The two add to the noise in the
+pair of sidebands they decompose -- see the identity below -- and are in
+the same units as :meth:`pnoise`.
+
+    S_am + S_pm  ==  pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)
+
+certified `oscillator_spectrum` (`S_pm = 4 S_v` at every offset: the
+PM content of the pair IS the Lorentzian, 2 S_v per sideband), with
+... so the pair total is 4 S_v there and 8 S_v far out.
+
+The halving is applied at the return (exact).
+
 ## `_pac_sources.py` -- `_NoiseSources`
 
 ### `_cy_colour_model`
