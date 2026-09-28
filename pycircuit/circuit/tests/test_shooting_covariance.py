@@ -632,11 +632,11 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
     Pinned: the fold at least 4x better than uniform at its own count on
     the waveform, held within 5e-4 of kT/C.
 
-    ⚠ 2026-09-28 the grid's radau pre-run judges its error against
-    `relref` (default 'sigglobal'; it was pointwise): the fold at the same
-    `reltol` has 54 points, not 97, for the same waveform error (4.54e-5
-    against 4.51e-5; uniform 54 reads 1.1e-3), and its held variance is
-    0.99950 x kT/C (was 0.999998) -- inside the pin by 3e-6.
+    ⚠ 2026-09-28 the stage methods honour `relref`, and `lte_grid`'s
+    pre-run takes its own, default 'pointlocal': on 'sigglobal' this fold
+    had 54 points and held 0.99950 x kT/C, no better than uniform (the
+    switch opening left coarse); on 'pointlocal' 92 points, 3.7e-5 of the
+    swing, held 0.999996.
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric

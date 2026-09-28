@@ -316,7 +316,7 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
                                                     maxsidebands=16)[0]))
                            for o in offs])
-        ratio = ms['total'] / (pn / 2.0)
+        ratio = ms['total'] / pn
         assert np.max(np.abs(ratio - 1.0)) < 1e-3, (kind, ratio)
         tot[kind] = ms['total']
         if kind == 'coloured':
@@ -380,7 +380,7 @@ def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
         _w.simplefilter('ignore')
         pn = float(np.real(pac.pnoise(pss, f0 + offs[1], ov, maxsidebands=16,
                                       cyclostationary=True)[0]))
-    assert abs(ms['total'][1] / (pn / 2.0) - 1.0) < 1e-9, (ms['total'][1], pn)
+    assert abs(ms['total'][1] / pn - 1.0) < 1e-9, (ms['total'][1], pn)
 
 
 def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
@@ -450,7 +450,7 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
         pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
                                                 maxsidebands=16)[0]))
                        for o in offs])
-    ratio = ms['total'] / (pn / 2.0)
+    ratio = ms['total'] / pn
     assert np.max(np.abs(ratio - 1.0)) < 5e-4, ratio
 
 
@@ -465,8 +465,8 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
     sources' (here none: all exactly 0), with a warning.
 
     Gate, two routes that share only the component model: the cycle-mean
-    transverse variance at the output against ``2 int
-    modal_spectrum['orbital'] df`` over the harmonics (broadening conserves
+    transverse variance at the output against ``int
+    modal_spectrum['orbital'] df`` (one-sided) over the harmonics (broadening conserves
     line power; calibrated on the white fixture: +1.1e-3, and
     `orbital_correlation` -8.5e-4).  Measured on the Lorentzian van der Pol
     (gear): -3.1e-3 at 200 points, -7.8e-4 at 400 (gear's h^2).  The
@@ -495,7 +495,7 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
                     if j == 1 else np.concatenate((-dl[::-1], dl))) * f0
             ms = pac.modal_spectrum(pss, offs, ov, harmonic=j, H=8, sidebands=16)
             tot += trapezoid(ms['orbital'], offs)
-    assert abs(cyc / (2.0 * tot) - 1.0) < 5e-3, cyc / (2.0 * tot) - 1.0
+    assert abs(cyc / tot - 1.0) < 5e-3, cyc / tot - 1.0
     with pytest.raises(NotImplementedError, match='residue sum'):
         pac.orbital_correlation(pss)
     with pytest.raises(NotImplementedError, match='no diffusion constant'):

@@ -1452,15 +1452,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## stuck in.  It runs on its own adaptive grid -- `timestep` is
             ## a first step, not an imposed one -- because nothing here
             ## needs `phi` to be a function of `x_0`; that requirement
-            ## starts when the shooting does.
-            from pycircuit.circuit.transient import Transient
+            ## starts when the shooting does.  Every setting of the PSS
+            ## reaches it, its method included (`_new_transient`, not
+            ## frozen: its own step control).
             _xred = np.asarray(x, dtype=float).reshape(-1)
             _xfull = insert_ref(_xred, irefnode)
-            _pre = Transient(
-                self.cir, toolkit=self.toolkit, reltol=self.par.reltol,
-                iabstol=self.par.iabstol, vabstol=self.par.vabstol,
-                nrsolver=self.par.nrsolver,
-                linearsolver=self.par.linearsolver, scaler=self.par.scaler)
+            _pre = self._new_transient(self._integrator_for(self.par.method),
+                                       frozen=False)
             _res = _pre.solve(refnode=refnode, tend=float(tstab),
                               timestep=dt, x0=_xfull)
             _last = np.asarray(_res.x, dtype=float)[:, -1]

@@ -3222,7 +3222,11 @@ def test_gear_runs_its_ppv_on_the_lte_grid_gear_produced_and_is_told_when_its_un
     fr = np.asarray(fr, float)
     N = len(fr)
     r = fr[1:] / fr[:-1]
-    assert 150 < N < 260, N
+    ## ⚠ 2026-09-28 `lte_grid` designs on its own `relref`, default
+    ## 'pointlocal': 273 points (205 on 'sigglobal', which gear's grid had
+    ## used since D3), and better -- gear -6.9 ppm (2x +3.3), rho - 1 0.041,
+    ## trbdf2 +4.1 ppm, against +17.9 (+12.5), 0.061, +10.4 on 'sigglobal'
+    assert 150 < N < 340, N
     assert 1.0 / 2.414 < fr[0] / fr[-1] < 2.414, fr[0] / fr[-1]     # was 10.53
     assert r.max() < 2.5, r.max()                                     # the controller's clamp
 

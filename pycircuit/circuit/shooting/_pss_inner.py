@@ -323,9 +323,15 @@ class _InnerTransient(object):
                             else ct) / float(T)
         return integ
 
-    def _new_transient(self, integ):
+    def _new_transient(self, integ, frozen=True, **override):
         """A `Transient` on this circuit driven by `integ`, with every
-        strategy and tolerance PSS was given handed through.
+        strategy and tolerance PSS was given handed through (`override`:
+        a setting that differs, as `lte_grid`'s tighter `reltol`).
+
+        `frozen`: the shooting's own traversal of a FROZEN grid -- the
+        shrink drop to Euler off and the damped Newton as the last resort
+        (below).  An ADAPTIVE run from the PSS (`lte_grid`'s, the `tstab`
+        settling run) passes False: every setting, its own step control.
 
         Extracted so the TR-BDF2 monodromy can build a transient on a
         DIFFERENT integrator than `self.par.method` without duplicating the
@@ -342,16 +348,16 @@ class _InnerTransient(object):
         from pycircuit.circuit.transient import Transient
         ## a frozen grid has no stalled estimate: the shrink drop to Euler is
         ## off here (see `Gear2Integrator.shrink_guard`); growth stays guarded
-        try:
-            integ.shrink_guard = False
-        except Exception:                                      # noqa: BLE001
-            pass
+        if frozen:
+            try:
+                integ.shrink_guard = False
+            except Exception:                                  # noqa: BLE001
+                pass
         ## ⚠ ONE CHOKE POINT for the theta bias, because there are four call
         ## sites building a transient and a per-site fix would drift.  A no-op
         ## for every other integrator -- see `_theta_biased`.
         integ = self._theta_biased(integ)
-        tr = Transient(
-            self.cir, toolkit=self.toolkit, integrator=integ,
+        kw = dict(
             reltol=self.par.reltol, iabstol=self.par.iabstol,
             vabstol=self.par.vabstol, maxiter=self.par.maxiter,
             analysis=self.par.analysis,
@@ -362,10 +368,13 @@ class _InnerTransient(object):
             linearsolver=self.par.linearsolver,
             scaler=self.par.scaler,
             pcnr=self.par.pcnr)
+        kw.update(override)
+        tr = Transient(self.cir, toolkit=self.toolkit, integrator=integ, **kw)
         ## The line search as the last resort on the shooting path, which
         ## never arms the transient's rescue ladder (an owner decision; see
         ## `_rk_step_coupled` and `solve_timestep`).
-        tr._damped_last_resort = True
+        if frozen:
+            tr._damped_last_resort = True
         tr.irefnode = self.irefnode
         return tr
 

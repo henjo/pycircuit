@@ -309,7 +309,7 @@ class _PeriodGrids(object):
         return float(np.mean(d))
 
     def lte_grid(self, period, x0=None, refnode=gnd, tstab=None,
-                 reltol=None, timestep=None, fold=True):
+                 reltol=None, timestep=None, fold=True, relref='pointlocal'):
         """Step FRACTIONS for `solve(grid=...)`, derived from an adaptive run.
 
         A transient adapts because it cannot see the future; PSS re-solves
@@ -359,7 +359,19 @@ class _PeriodGrids(object):
         ⚠ THE ADAPTIVE RUN NEEDS A TIGHTER TOLERANCE THAN THE PSS'S OWN: the
         PSS default 1e-4 makes a grid gear cannot use, 1e-5 serves every
         method at the 10-ppm level, hence `min(reltol, LTE_GRID_RELTOL_MAX)`;
-        gear's diffusion constant within a few per cent wants 1e-7.
+        gear's diffusion constant within a few per cent wants 1e-7.  Every
+        other setting of the PSS reaches the run (`_new_transient`).
+
+        ⚠ `relref` IS THE GRID'S OWN, default 'pointlocal' (None: the PSS's
+        `relref`).  A grid is designed from where the run had to step
+        finely, and 'sigglobal' (the answer's default) lets a quiet but
+        decisive instant go coarse.  Measured on a sine-clocked sampler
+        (2026-09-28): the 'sigglobal' grid kept 3 points within 0.02 T of
+        the switch opening where 'pointlocal' keeps 14, and for the held
+        noise was no better than a uniform grid at any count (held variance
+        -5.0e-4 at 54 points, -5.0e-5 at 98; -3.9e-6 at 92 on
+        'pointlocal'), at the same waveform error.  'sigglobal' makes a
+        smaller grid for the waveform alone.
 
         ⚠ TO REPAIR A COARSE SOLVE, CALL THIS FROM ITS CONVERGED STATE WITH A
         SHORT `tstab`.  The fold needs `LTE_FOLD_PERIODS` (24) settled
@@ -374,7 +386,6 @@ class _PeriodGrids(object):
         History: `doc/shooting_history.md`, `_PeriodGrids.lte_grid`.
         """
         import warnings as _warnings
-        from pycircuit.circuit.transient import Transient
         T = float(period)
         if not T > 0.0:
             raise ValueError('lte_grid: period must be positive, got %g' % T)
@@ -389,8 +400,9 @@ class _PeriodGrids(object):
         ## ⚠ THE PSS'S OWN METHOD SHAPES THE GRID: the adaptive run steps
         ## with the PSS's integrator, not the `Transient` default, so the LTE
         ## profile the grid freezes is the one the PSS will pay.
-        tr = Transient(self.cir, toolkit=self.toolkit, reltol=rt,
-                       integrator=self._integrator_for(self.par.method))
+        tr = self._new_transient(
+            self._integrator_for(self.par.method), frozen=False, reltol=rt,
+            relref=self.par.relref if relref is None else relref)
         with _warnings.catch_warnings():
             _warnings.simplefilter('ignore')
             res = tr.solve(refnode=refnode, tend=tstab + T, timestep=h0,

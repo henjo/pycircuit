@@ -9,8 +9,13 @@ it); a renaming is not implied by anything here.
 **Changed 2026-09-28** (Andreas, aligning with a commercial simulator's
 pnoise): `oscillator_spectrum`'s `S_v` is ONE-SIDED (it was 0.5x; `L_dBc`
 unchanged), `am_pm_noise` returns PER-SIDEBAND densities (they were the
-pair's totals, 2x), and `output` takes a node NAME too.  The tables below
-are the new conventions; the list at the end marks what these closed.
+pair's totals, 2x), and `output` takes a node NAME too.  Then the modal,
+orbital and correlation spectra ONE-SIDED as well (they were 0.5x): a real
+output has `S(-f) = S(f)`, so the one-sided PSD is twice the two-sided one
+on BOTH sidebands, which are NOT symmetric about the carrier (measured:
+the lower 2.45x the upper on an asymmetric van der Pol, as `pnoise`) and
+keep their own values.  The tables below are the new conventions; the
+list at the end marks what these closed.
 
 ## Shared conventions
 
@@ -35,8 +40,7 @@ are the new conventions; the list at the end marks what these closed.
 
 | scale | methods |
 |---|---|
-| one-sided PSD of the output, unit^2/Hz | `pnoise`, `sampled_noise`, `oscillator_spectrum` (`S_v`: the Lorentzian times the carrier's one-sided power `2 |X|^2 = A^2/2`), `am_pm_noise` per sideband: `2 (S_am + S_pm) = pnoise(k f0 + f) + pnoise(k f0 - f)` (and `analysis_ss.Noise`) |
-| **0.5 x** a one-sided PSD (the carrier PHASOR's square `|X|^2 = A^2/4`) | `orbital_spectrum`, `modal_spectrum`, `correlation_spectrum` |
+| one-sided PSD of the output, unit^2/Hz | `pnoise`, `sampled_noise`, `oscillator_spectrum` (`S_v`: the Lorentzian times the carrier's one-sided power `2 |X|^2 = A^2/2`), `orbital_spectrum`, `modal_spectrum`, `correlation_spectrum`, `am_pm_noise` per sideband: `2 (S_am + S_pm) = pnoise(k f0 + f) + pnoise(k f0 - f)` (and `analysis_ss.Noise`) |
 | **two-sided** `S_phi`, equal to `L(f)` in linear units (the IEEE one-sided `S_phi` is `2 L`) | `phase_psd`, `lorentzian` (integrates to 1 over `(-inf, inf)`) |
 | dBc/Hz, `10 log10(S_v / (2 |X|^2))` = `L(f)` | `oscillator_spectrum` (`L_dBc`) |
 | variance, unit^2 | `sampled_variance`, `covariance`, `oscillator_covariance` (`K_orb`), `orbital_correlation` |
@@ -44,7 +48,7 @@ are the new conventions; the list at the end marks what these closed.
 | diffusion constant `c`, seconds | `diffusion_constant`, `frequency_aware_diffusion`, `coloured_diffusion`, `coloured_diffusion_resolved` |
 
 So near a carrier `pnoise ~ S_v ~ S_pm` (per sideband, where AM is
-small), and the modal total is `~ S_v / 2`.
+small), and the modal total is `pnoise` at every offset (to its truncation).
 
 ## Driven circuits
 
@@ -90,11 +94,10 @@ small), and the modal total is `~ S_v / 2`.
 
 **Can give a wrong number:**
 
-1. **Two sidedness scales under one unit.** `pnoise`, `am_pm_noise`,
-   `sampled_noise` and (since 2026-09-28) `oscillator_spectrum`'s `S_v` are
-   one-sided; the orbital/modal/correlation spectra are 0.5x one-sided --
-   HALF `S_v`. Normalising the latter by `A^2/2` instead of `|X|^2 = A^2/4`
-   reads 3 dB low; only `oscillator_spectrum` returns dBc.
+1. ~~**Two sidedness scales under one unit.**~~ CLOSED 2026-09-28: every
+   spectrum is one-sided (the orbital/modal/correlation spectra and `S_v`
+   were 0.5x); `phase_psd` stays the two-sided `S_phi = L(f)` (item 2);
+   only `oscillator_spectrum` returns dBc.
 2. **`phase_psd` is the two-sided `S_phi` (= `L(f)`),** not the IEEE
    one-sided `S_phi = 2 L(f)`; its docstring says only "rad^2/Hz".
 3. ~~**`am_pm_noise` returns pair totals** over both sidebands, not a

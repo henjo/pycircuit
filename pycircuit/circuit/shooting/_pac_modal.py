@@ -147,8 +147,9 @@ class _ModalSpectra(object):
     def orbital_spectrum(self, pss, offsets, output, harmonic=1, H=None):
         """`S_yy` — the ORBITAL (amplitude) noise spectrum. A9 step 4.
 
-        Returns `S` at `harmonic*f0 + offsets`, in the same V^2/Hz scale as
-        `oscillator_spectrum`'s `S_v`, so **the two are summed** — which is
+        Returns `S` at `harmonic*f0 + offsets`, a ONE-SIDED PSD in V^2/Hz,
+        the scale of `oscillator_spectrum`'s `S_v` and of `pnoise` (since
+        2026-09-28; it was half that), so **the two are summed** — which is
         what Traversa & Bonani (TCAS-I 2011) say to do:
 
             x(t) = x_s(t + a(t)) + y(t)      a = phase, y = orbital
@@ -297,7 +298,8 @@ class _ModalSpectra(object):
             ## Normalised Lorentzian: integrates to 1 over all `f`, so the
             ## total power is `sum(w) = row^T R row` by construction.
             S = S + w * (gam / np.pi) / ((f - fc) ** 2 + gam ** 2)
-        return S
+        ## (`R` is the two-sided covariance: doubled, exactly, one-sided)
+        return 2.0 * S
 
     def modal_spectrum(self, pss, offsets, output, harmonic=1, H=None,
                        sidebands=None):
@@ -305,8 +307,13 @@ class _ModalSpectra(object):
         transfer, which sum to the total.
 
         Returns a dict of arrays at `harmonic*f0 + offsets` (a negative offset
-        is the lower sideband), on the scale of `orbital_spectrum`: 0.5x a
-        one-sided PSD, HALF `oscillator_spectrum`'s `S_v`:
+        is the lower sideband), each a ONE-SIDED PSD at its own absolute
+        frequency, the scale of `pnoise`, `oscillator_spectrum`'s `S_v` and
+        `orbital_spectrum` (since 2026-09-28; they were half that).  The
+        sidebands are NOT symmetric about the carrier (the lower 2.45x the
+        upper on an asymmetric van der Pol, as `pnoise` there): each keeps
+        its own value.  `output`: a reduced index, a weight vector, or a
+        node name.  History: `doc/shooting_history.md`, `PAC.modal_spectrum`.
 
             'phase', 'orbital', 'correlation', 'total'
             total = phase + orbital + correlation
@@ -544,7 +551,9 @@ class _ModalSpectra(object):
             res['orbital'][ix] = so
             res['correlation'][ix] = sc
             res['total'][ix] = sp + so + sc
-        return res
+        ## (a real output: `S(-f) = S(f)`, so the one-sided PSD is twice the
+        ## two-sided one at every frequency, both sidebands -- exact)
+        return {k: 2.0 * v for k, v in res.items()}
 
     def _phase_psd_gate(self, pss, offs, harmonic, what):
         """With a COLOURED source the modal spectra's phase part is the

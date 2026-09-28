@@ -10532,6 +10532,29 @@ PM content of the pair IS the Lorentzian, 2 S_v per sideband), with
 
 The halving is applied at the return (exact).
 
+### `modal_spectrum`, `orbital_spectrum`
+
+2026-09-28 (Andreas: "make modal one-sided"; `oscillator_spectrum`'s
+`S_v` had been made one-sided the same day):
+
+`modal_spectrum`'s docstring, on the scale, before the change:
+
+Returns a dict of arrays at `harmonic*f0 + offsets` (a negative offset
+is the lower sideband), on the scale of `oscillator_spectrum`'s `S_v`
+and `orbital_spectrum` (0.5x a one-sided PSD):
+
+`orbital_spectrum`'s:
+
+Returns `S` at `harmonic*f0 + offsets`, in the same V^2/Hz scale as
+`oscillator_spectrum`'s `S_v`, so **the two are summed** ...
+
+Both doubled at the return (exact).  Andreas asked first whether the
+spectrum is symmetric: about the CARRIER it is not (the lower sideband
+1.2-2.45x the upper on an asymmetric van der Pol, as `pnoise` there);
+in absolute frequency a real output always is, `S(-f) = S(f)`, which is
+all a one-sided PSD needs -- measured, twice the modal total is `pnoise`
+at its own frequency to 5e-4 on both sidebands.
+
 ## `_pac_sources.py` -- `_NoiseSources`
 
 ### `_cy_colour_model`

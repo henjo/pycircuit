@@ -1086,8 +1086,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
             _w.simplefilter('ignore')
             sp, _ = pac2.oscillator_spectrum(p2, offs, 0, harmonic=1)
             so = pac2.orbital_spectrum(p2, offs, 0, harmonic=1, H=4)
-        ## (the orbital spectrum is 0.5x one-sided: half `S_v`)
-        ratios.append(np.asarray(so) / (0.5 * np.asarray(sp)))
+        ratios.append(np.asarray(so) / np.asarray(sp))
     drift = float(np.max(np.abs(ratios[0] / ratios[1] - 1.0)))
     assert drift < 5e-3, \
         'the orbital/phase ratio moved by %.3e over a 100x change in source ' \
@@ -1111,7 +1110,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
                 pk, np.array([fak]), 0, harmonic=1)
             sok = pk_pac.orbital_spectrum(
                 pk, np.array([fak]), 0, harmonic=1, H=4)
-        seen.append(float(sok[0] / (0.5 * spk[0])))
+        seen.append(float(sok[0] / spk[0]))
     for cval, r in zip((0.25, 1.0, 4.0), seen):
         assert abs(r - 0.5) < 0.02, \
             'at C=%g the orbital/phase ratio at its own f_amp is %.4f, not ' \
@@ -1165,13 +1164,13 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         offs = np.array([0.3, 3.0, 10.0]) * f_amp
-        ## (on the orbital spectrum's scale, 0.5x one-sided: half `S_v`)
-        Sph = 0.5 * np.asarray(pac.oscillator_spectrum(pss, offs, 0)[0])
+        Sph = np.asarray(pac.oscillator_spectrum(pss, offs, 0)[0])
         Sorb = pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8)
         for f, sph, sorb in zip(offs, np.asarray(Sph), np.asarray(Sorb)):
             up, _ = pac.pnoise(pss, f0 + f, 0, maxsidebands=16)
             lo, _ = pac.pnoise(pss, f0 - f, 0, maxsidebands=16)
-            tot = float(np.real(up) + np.real(lo)) / 4.0
+            ## (both one-sided: the mean of the two sidebands)
+            tot = float(np.real(up) + np.real(lo)) / 2.0
             ## the orbital term must be carrying real weight, or `R` is a
             ## statement about the phase term alone
             if f > f_amp:
@@ -1377,12 +1376,11 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
         _w.simplefilter('ignore')
         ## the closed form: this test's claim is about the modal SUM as
         ## `orbital_spectrum`'s docstring states it (DC-PPV phase term)
-        ## (half `S_v`: the orbital spectrum's scale)
-        Sph = 0.5 * float(np.asarray(pac.oscillator_spectrum(
+        Sph = float(np.asarray(pac.oscillator_spectrum(
             pss, off, 0, frequency_aware=False)[0])[0])
         up, _ = pac.pnoise(pss, f0 + off[0], 0, maxsidebands=16)
         lo, _ = pac.pnoise(pss, f0 - off[0], 0, maxsidebands=16)
-    R = float(np.real(up) + np.real(lo)) / (4.0 * (Sph + Sorb))
+    R = float(np.real(up) + np.real(lo)) / (2.0 * (Sph + Sorb))
     assert 0.6 < R < 0.8, \
         'at a = 0.20 pnoise/(S_ph+S_orb) = %.4f at 10 f_amp (measured 0.6914). ' \
         'Near 1 means the cross term became negligible or the sum changed; ' \
@@ -1819,14 +1817,13 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, 0,
                                                     maxsidebands=16)[0]))
                            for o in offs])
-            ## (half `S_v`: the modal spectra's scale)
-            old = (0.5 * np.asarray(pac.oscillator_spectrum(
+            old = (np.asarray(pac.oscillator_spectrum(
                 pss, offs, 0, frequency_aware=False)[0], dtype=float)
                 + np.asarray(pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8),
                              dtype=float))
         parts = ms['phase'] + ms['orbital'] + ms['correlation']
         assert np.max(np.abs(parts - ms['total'])) <= 1e-12 * np.max(ms['total'])
-        ratio = ms['total'] / (pn / 2.0)
+        ratio = ms['total'] / pn
         corr_over_orb = ms['correlation'] / ms['orbital']
         if a == 0.0:
             assert np.max(np.abs(ratio - 1.0)) < 2e-3, ratio
@@ -1837,7 +1834,7 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             with _w.catch_warnings():
                 _w.simplefilter('ignore')
                 mn = pac.modal_spectrum(pss, near, 0, H=8, sidebands=16)
-                lor = 0.5 * np.asarray(pac.oscillator_spectrum(
+                lor = np.asarray(pac.oscillator_spectrum(
                     pss, near, 0, frequency_aware=False)[0], dtype=float)
             assert np.max(np.abs(mn['phase'] / lor - 1.0)) < 1e-3, mn['phase'] / lor
             assert np.max(np.abs(mn['correlation'] / mn['phase'])) < 1e-5
@@ -1846,7 +1843,7 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             ## the correlation is what closes it: large and negative
             assert np.all(corr_over_orb < -1.0), corr_over_orb
             ## and without it the modal sum is far off (a presence claim)
-            old_ratio = old[1:] / (pn[1:] / 2.0)
+            old_ratio = old[1:] / pn[1:]
             assert np.all(old_ratio > 2.0), old_ratio
             np.testing.assert_allclose(
                 pac.correlation_spectrum(pss, offs, 0, H=8, sidebands=16),
