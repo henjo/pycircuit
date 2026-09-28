@@ -97,11 +97,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     points/period euler, gear2 and trap all converge, at 56 %, 1.2 % and
     0.05 % below the analytic peak.  Driving `Transient` buys one
     integrator definition and the limiting/PCNR machinery -- not (2) as a
-    controller, and not the stepping loop's breakpoints or its order drop
-    after a landing: the shooting lands source edges on its own frozen
-    grid (`event_grid`) and never re-arms the drop -- more accurate on a
-    smooth state (`benchmarks/pss_transient_boundary.py` V1), LESS on a
-    stiff one, where trap rings after every landed edge
+    controller, and not the stepping loop's breakpoints: the shooting lands
+    source edges on its own frozen grid (`event_grid`) and takes the loop's
+    order drop after each itself (`_InnerTransient.solve_timestep`) -- less
+    accurate on a smooth state (`benchmarks/pss_transient_boundary.py` V1),
+    and what keeps a stiff one from ringing
     (`benchmarks/landing_order_drop.py`).  The whole contract is above
     `Transient._begin_run`.
 
@@ -618,16 +618,17 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     def _resolve_break_events(self, requested):
         """`break_events`, ON for every method when not given.
 
-        Landing source discontinuities on grid points helps every method,
-        gear included: on a pulsed RC gear + events wins at most N and stays
-        second order.  Its one cost is a CONSTANT, not an order: a two-step
-        formula takes an O(h^2 [x'']) hit at the ONE step after a corner,
-        where its history straddles the jump in x'' (about 30x trap's
-        there).  The shooting does not re-arm the stepping loop's order drop
-        at the landed edges: on a smooth state that would cost gear 3x and
-        trap 50-100x (`benchmarks/pss_transient_boundary.py` V1), but on a
-        STIFF state its absence lets trap ring after every edge (the current
-        O(1) off; `benchmarks/landing_order_drop.py`) -- an open trade.
+        Landing source discontinuities on grid points, with the order drop
+        a multistep method then takes after each (`solve_timestep`, since
+        2026-09-28), is what keeps a STIFF state from ringing: on a stiff
+        RC the uniform grid rings too (trap 0.83, gear 0.51 of the current
+        after a corner), landed-and-dropped does not (0.039;
+        `benchmarks/landing_order_drop.py`).  On a SMOOTH state the drop
+        costs more than the landing buys -- a pulsed RC at 400 points, gear
+        6.60e-4 landed against 3.72e-4 uniform, trap 4.61e-4 against
+        1.30e-4, both still second order -- which is the trade kept for the
+        stiff case.  The stage methods keep no history across an edge and
+        gain from the landing alone.
         At a TRUE jump (tr = 0) the gain needs `event_grid` to keep
         both ends of the clamped ramp (see there).
 

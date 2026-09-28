@@ -1733,15 +1733,14 @@ class Transient(Analysis):
     ## TLine's history, which is why the PSS refuses hidden state), the
     ## statistics, the family's `after_accept`, the rescue ladder,
     ## breakpoints (the shooting lands source edges on its own grid,
-    ## `PSS.event_grid`), and the order drop re-armed after a landing.
-    ## ⚠ THAT LAST ONE IS A TRADE, NOT A WIN.  On a smooth, non-stiff state
-    ## the shooting is more accurate without the drop (gear's error 1/3 of
-    ## the loop's rule, trap's 1/50 .. 1/100;
-    ## `benchmarks/pss_transient_boundary.py` V1); on a STIFF one the drop
-    ## is what damps the corner -- without it trap's current is O(1) off
-    ## after every landed edge and decays only by trap's stiff factor,
-    ## gear's is 10x off for a step (`benchmarks/landing_order_drop.py`).
-    ## The default method (radau) keeps no history across an edge.
+    ## `PSS.event_grid`).  The order drop after a landing it TAKES, as the
+    ## loop does (`_InnerTransient.solve_timestep`, keyed to the edge's
+    ## node), since 2026-09-28 -- a TRADE: on a smooth state the shooting was
+    ## more accurate without it (gear's error 1/3, trap's 1/50 .. 1/100;
+    ## `benchmarks/pss_transient_boundary.py` V1), on a STIFF one it is what
+    ## damps the corner -- without it trap's current was O(1) off after
+    ## every landed edge (`benchmarks/landing_order_drop.py`).  The default
+    ## method (radau) keeps no history across an edge.
     ## The gauge shift runs in `_roll_history` without the caller's window,
     ## and the closure folds the whole moduli between (V2).  A GLM is never
     ## handed its Nordsieck vector: `_begin_run` empties both slots, the
