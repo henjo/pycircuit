@@ -19,6 +19,7 @@ from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
     _comparator_relaxation_oscillator,
     _exact_relaxation_oscillator_model,
     _loss_osc,
+    _orbit_modulated_vdp,
     _rc_noisy,
     _relaxation_oscillator_seed,
     _sampler_fixture,
@@ -1043,3 +1044,46 @@ def test_the_oscillator_edge_jitter_takes_a_coloured_source_as_its_realisation_d
     assert np.all(e['coloured_phase_variance'] > 0.0)
     r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
     assert np.max(np.abs(r)) < 5e-3, r
+
+
+def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation_does():
+    """#17 B2, the ORBIT-MODULATED 1/f path (2026-09-29): a flicker current
+    whose level follows the tank voltage (`k V_v flicker_noise(1)`, signed
+    amplitudes: a POWER-LAW group of columns that move along the orbit)
+    against its realisation -- a stationary 1/f source on an algebraic node
+    times the tank voltage through a multiplier, no added state
+    (`_orbit_modulated_vdp`, asymmetric at a = 0.3 so the 1/f up-converts).
+    Two circuits, two routes into the same physics: the edge jitter's
+    coloured transverse band integral and the fold's phase increment agree
+    to rounding -- measured 3.7e-10 on `k_cycle^2` at every k, 3.7e-10 on
+    `A`, 4.0e-10 on the increment (predicted <= 1e-6 / 1e-5).
+    ⚠ The fixture's unit noise level suits the SPECTRAL ratios it was built
+    for; as a timing it is sigma_t = 19 s, 2.8 periods, which the method's
+    first-order guard refuses -- correctly.  Hence `level = 1e-8` here
+    (sigma_t 1.9e-3 s)."""
+    out = {}
+    for kind in ('flicker', 'flicker_ref'):
+        c, pss, pac, _ov = _orbit_modulated_vdp(kind, method='radau', a=0.3,
+                                                level=1e-8, npts=200)
+        f0 = 1.0 / float(pss.period)
+        Xw = np.asarray(pss.waveform[1], float)
+        grid = np.asarray(pss.factored_period().times, float)[:Xw.shape[1]]
+        full = c.get_node_index('v')
+        red = full if full < c.get_node_index(gnd) else full - 1
+        v = Xw[full]
+        mid = 0.5 * (v.max() + v.min())
+        j = next(k for k in range(2, len(v) - 2)
+                 if (v[k - 1] - mid) < 0 <= (v[k] - mid))
+        tc = grid[j - 1] + (mid - v[j - 1]) / (v[j] - v[j - 1]) \
+            * (grid[j] - grid[j - 1])
+        out[kind] = pac.oscillator_edge_jitter(
+            pss, red, tc, colour_fmin=1e-4 * f0, colour_fmax=20.0 * f0,
+            points_per_decade=20)
+    e, r = out['flicker'], out['flicker_ref']
+    T = 1.0 / f0
+    assert 0.0 < e['sigma_t'] < 1e-3 * T
+    assert np.all(e['coloured_phase_variance'] > 0.0)
+    assert np.max(np.abs(e['k_cycle'] ** 2 / r['k_cycle'] ** 2 - 1.0)) < 1e-8
+    assert abs(e['A'] / r['A'] - 1.0) < 1e-8
+    assert np.max(np.abs(e['coloured_phase_variance']
+                         / r['coloured_phase_variance'] - 1.0)) < 1e-8

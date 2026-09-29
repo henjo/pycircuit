@@ -575,7 +575,8 @@ def _coloured_vdp(kind, Q=8.0, npts=400):
     return c, pss, PAC(c, toolkit=circuit.numeric), ov
 
 
-def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
+def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05, level=1.0,
+                         npts=400):
     """van der Pol (Q = 8, 400 points) with a noise source whose level
     follows the orbit, and its REALISATION: the same physics as a
     STATIONARY source into an algebraic node `n`, times the modulating
@@ -591,6 +592,12 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
       '<kind>_ref'   the realisation of 'white' / 'flicker' / 'lorentz'
       'white_across' a white source between `n` and the tank (1e-4), so
                      a sign error in the adjoint's algebraic entry shows
+
+    `level` scales every source's POWER (the elements' `k` by its root, the
+    references' and the Lorentzians' `noisePSD` by it).  The unit level suits
+    the SPECTRAL ratios this was built for; as a TIMING it is sigma_t = 19 s,
+    2.8 periods, which `oscillator_edge_jitter`'s first-order guard refuses
+    -- the edge-jitter test runs it at 1e-8 (2026-09-29).
     """
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -609,25 +616,26 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
     tau = 0.3 * 2.0 * np.pi
     if kind.endswith('_ref'):
         c.add_node('n')
-        c['xi'] = {'white_ref': lambda: IS('n', gnd, i=0.0, noisePSD=1.0),
-                   'flicker_ref': lambda: _Flicker('n', gnd, i=0.0, noisePSD=1.0),
-                   'lorentz_ref': lambda: IS('n', gnd, i=0.0, noisePSD=1.0,
+        c['xi'] = {'white_ref': lambda: IS('n', gnd, i=0.0, noisePSD=level),
+                   'flicker_ref': lambda: _Flicker('n', gnd, i=0.0,
+                                                   noisePSD=level),
+                   'lorentz_ref': lambda: IS('n', gnd, i=0.0, noisePSD=level,
                                              noiseTau=tau)}[kind]()
         c['Rn'] = R('n', gnd, r=1.0)
         c['M'] = _NuMult('v', gnd, 'n', gnd, *ctl, k=kk)
     elif kind == 'white_across':
         c.add_node('n')
-        c['xi'] = IS('n', 'v', i=0.0, noisePSD=1e-4)
+        c['xi'] = IS('n', 'v', i=0.0, noisePSD=1e-4 * level)
         c['Rn'] = R('n', gnd, r=1.0)
         c['M'] = _NuMult('v', gnd, 'n', gnd, *ctl, k=kk)
     elif kind == 'white':
-        c['src'] = _NuModNoise('v', gnd, *ctl, k=kk)
+        c['src'] = _NuModNoise('v', gnd, *ctl, k=kk * np.sqrt(level))
     elif kind == 'flicker':
-        c['src'] = _SgnAmpFlicker('v', gnd, *ctl, k=kk)
+        c['src'] = _SgnAmpFlicker('v', gnd, *ctl, k=kk * np.sqrt(level))
     elif kind == 'flicker_psd':
-        c['src'] = _SgnPsdFlicker('v', gnd, *ctl, k=kk)
+        c['src'] = _SgnPsdFlicker('v', gnd, *ctl, k=kk * np.sqrt(level))
     else:
-        c['src'] = _ModLorentzCtl('v', gnd, *ctl, noisePSD=1.0, tau=tau, k=kk,
+        c['src'] = _ModLorentzCtl('v', gnd, *ctl, noisePSD=level, tau=tau, k=kk,
                                   shape=0.02 if kind == 'lorentz_moving' else 0.0)
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
     pss = PSS(c, method=method, reltol=1e-12)
@@ -635,7 +643,7 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05):
     x0[0] = 2.0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        pss.solve(period=T, timestep=T / 400, x0=x0, maxiterations=300)
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
     assert pss.converged
     ov = [str(n) for n in c.nodes].index('v')
     return c, pss, PAC(c, toolkit=circuit.numeric), ov
