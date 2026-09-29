@@ -40,8 +40,23 @@ MEASURED 2026-09-29 (this probe, committed):
     every k (each 1.2-1.7 sigma, one set of seeds, so correlated): noted,
     not significant.  ~9 min per seed at 720 periods on a loaded box.
 
+RE-RUN 2026-09-29 (step 2 of the edge-jitter plan), after the law became
+each node's own blended to the instant (1.5182e-6 at k = 1, grid-converged
+to 8e-5 between 240 and 480 points; the nearest-node law above moved 1.2e-2):
+the Monte Carlo on the PSS's OWN grid (h = T/239 -- the first ran T/240)
+with a QUADRATIC crossing estimator beside the linear one, seeds 11-18 x
+720 periods, 14-20 min per seed on a loaded box:
+        k   MC (quadratic)        per-node law       nearest-node law
+        1   1.5049e-6 +- 1.8e-8   1.5182e-6 +0.75s   1.5274e-6 +1.27s
+        2   2.1007e-6 +- 4.7e-8   2.0543e-6 -0.99s   2.0683e-6 -0.69s
+        4   3.2000e-6 +- 1.1e-7   3.1265e-6 -0.64s   3.1501e-6 -0.44s
+        8   5.2888e-6 +- 3.4e-7   5.2710e-6 -0.05s   5.3137e-6 +0.07s
+  (the linear estimator within 0.3 % of the quadratic).  Both laws sit
+  within 1.3 sigma: the Monte Carlo cannot separate them (0.6 % apart, a
+  1.2 % standard error) -- the grid convergence does.
+
 Usage:  python oscillator_edge_jitter_probe.py exact [radau|gear] [npts]
-        python oscillator_edge_jitter_probe.py mc SEED NPER [npts]
+        python oscillator_edge_jitter_probe.py mc SEED NPER [npts] [save.npy]
 """
 import sys
 import time
@@ -155,14 +170,41 @@ def exact(method='radau', npts=240, ks=(1, 2, 4, 8, 16, 64)):
     return r
 
 
-def mc(seed, nper, npts=240, burn=20):
-    """`Var(t_{n+k} - t_n)` from one noisy radau transient."""
+def crossings(v, h, mid, t_start, quadratic=True):
+    """The rising crossings of `mid` after `t_start` in `v` sampled at `k h`:
+    linear between the two samples, or the root of the quadratic through
+    the three samples nearest the crossing."""
+    out = []
+    for k in range(2, len(v) - 1):
+        if (k - 1) * h < t_start or not ((v[k - 1] - mid) < 0 <= (v[k] - mid)):
+            continue
+        frac = (mid - v[k - 1]) / (v[k] - v[k - 1])
+        if quadratic:
+            idx = [k - 2, k - 1, k] if frac < 0.5 else [k - 1, k, k + 1]
+            q = np.polyfit(np.asarray(idx, dtype=float) - (k - 1), v[idx] - mid, 2)
+            r = np.roots(q)
+            r = r[np.abs(r.imag) < 1e-12].real
+            if len(r):
+                frac = float(r[np.argmin(np.abs(r - frac))])
+        out.append((k - 1 + frac) * h)
+    return np.asarray(out)
+
+
+def mc(seed, nper, npts=240, burn=20, save=None):
+    """`Var(t_{n+k} - t_n)` from one noisy radau transient ON THE PSS'S OWN
+    GRID (`h = T/N`, N its steps: the PSS's discrete orbit, crossing at the
+    same fraction of a step every period up to the noise), by a linear and
+    a quadratic crossing estimator.  Until 2026-09-29 it ran `h = T/npts`
+    (240 against the PSS's 239) and the linear estimator alone."""
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     from pycircuit.circuit.transient import Transient
     _cir, pss, _red, _tc, mid = solved('radau', npts)
     T = float(pss.period)
-    h = T / npts
-    nst = int((nper + burn) * npts) + 16
+    grid = np.asarray(pss.factored_period().times, dtype=float)
+    N = len(grid) - 1
+    h = T / N
+    assert np.allclose(np.diff(grid), h, rtol=1e-9, atol=0.0), 'a non-uniform PSS grid'
+    nst = int((nper + burn) * N) + 16
     rng = np.random.default_rng(seed)
     S = 1e-6
     draws = {name: rng.normal(0.0, np.sqrt(S / (2.0 * h)), size=nst)
@@ -182,17 +224,15 @@ def mc(seed, nper, npts=240, burn=20):
         sol = tran.solve(tend=(nper + burn) * T, timestep=h, x0=x0,
                          fixed_timestep=True)
     v = np.asarray(sol.v('o2', gnd), dtype=float)
-    t = np.arange(len(v)) * h
-    cross = []
-    for k in range(1, len(v)):
-        if t[k - 1] >= burn * T and (v[k - 1] - mid) < 0 <= (v[k] - mid):
-            frac = (mid - v[k - 1]) / (v[k] - v[k - 1])
-            cross.append(t[k - 1] + frac * h)
-    cross = np.asarray(cross)
-    out = {'n': len(cross), 'seconds': time.time() - t0}
-    for k in (1, 2, 4, 8):
-        dk = cross[k:] - cross[:-k]
-        out[k] = float(np.var(dk - np.mean(dk), ddof=1))
+    if save:
+        np.save(save, v)
+    out = {'N': N, 'seconds': time.time() - t0}
+    for est in ('lin', 'quad'):
+        cross = crossings(v, h, mid, burn * T, quadratic=(est == 'quad'))
+        out[est] = {'n': len(cross)}
+        for k in (1, 2, 4, 8):
+            dk = cross[k:] - cross[:-k]
+            out[est][k] = float(np.var(dk - np.mean(dk), ddof=1))
     print(seed, out)
     return out
 
@@ -203,4 +243,5 @@ if __name__ == '__main__':
               int(sys.argv[3]) if len(sys.argv) > 3 else 240)
     else:
         mc(int(sys.argv[2]), int(sys.argv[3]),
-           int(sys.argv[4]) if len(sys.argv) > 4 else 240)
+           int(sys.argv[4]) if len(sys.argv) > 4 else 240,
+           save=sys.argv[5] if len(sys.argv) > 5 else None)

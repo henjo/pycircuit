@@ -220,6 +220,9 @@ class _OscillatorCovariance(object):
         closure's samples, and ``u_j = R_j u`` with ``R_j`` the total
         fixed-time map to node j (`_event_closure`); until 2026-09-29 they
         were the plain walk's, which misses the crossings' motion.
+        `info['growth_samples'][j]` is ``d u_j u_j^T`` and
+        `info['tangent_samples'][j]` is ``u_j`` itself -- its first block the
+        orbit's own rate at node j.
 
         ⚠ THIS IS THE OBJECT `covariance` REFUSES TO RETURN: there is no
         periodic solution.  `lambda_1 = 1` gives `lambda_1^2 = 1`, so
@@ -406,12 +409,14 @@ class _OscillatorCovariance(object):
                 ## at node j is the TOTAL fixed-time map's image of `u`.
                 orb = [np.asarray(P, dtype=float)[:n, :n]
                        for P in closure_samples(K_orb)]
-                grw = []
+                grw, tng = [], []
                 for j in range(len(orb)):
                     uj = closure_pieces['map_to'](j) @ u
                     grw.append(d * np.outer(uj[:n], uj[:n]))
+                    tng.append(uj[:n])
             else:
                 orb, grw, K, uj = [K_orb], [d * np.outer(u, u)], K_orb, u
+                tng = [u]
                 ## a GLM's native steps are `(x, P)` wide: pad, read the `x`
                 ## block (`_lyap_walk`)
                 na = As[0].shape[0] if As else n
@@ -423,8 +428,10 @@ class _OscillatorCovariance(object):
                     uj = A @ uj
                     orb.append((0.5 * (K + K.T))[:n, :n])
                     grw.append(d * np.outer(uj[:n], uj[:n]))
+                    tng.append(uj[:n])
             info['samples'] = orb
             info['growth_samples'] = grw
+            info['tangent_samples'] = tng
             info['times'] = np.asarray(pss.factored_period().times,
                                        dtype=float)
         ## the TRANSVERSE covariance in the node space; the coloured sources'
@@ -466,6 +473,8 @@ class _OscillatorCovariance(object):
             for key in ('samples', 'growth_samples'):
                 if key in info:
                     info[key] = [K[:m, :m] for K in info[key]]
+            if 'tangent_samples' in info:
+                info['tangent_samples'] = [t[:m] for t in info['tangent_samples']]
         info['d'] = d
         return K_orb, info
 
@@ -519,17 +528,24 @@ class _OscillatorCovariance(object):
         ⚠ `P - (t/T) G` is the SUPERSEDED prescription and is also wrong; see
         `orbital_correlation`, which gates the projection three ways.
 
-        ⚠ `u_j` COMES BACK FROM `growth_samples[j]`, WHICH IS A RANK-ONE
-        MATRIX `d u_j u_j^T`, not a vector -- its leading eigenpair gives
-        `sqrt(d) u_j`, and `Pi` is invariant to that scale (and to `v`'s), so
-        taking `v` from `ppv()` in a separate call is safe here.  Everything
-        is sliced `[:m, :m]` out of PAIR space.
+        `u_j` is `oscillator_covariance`'s `tangent_samples[j]`, the
+        tangent carried to node j; `Pi` is invariant to its scale (and to
+        `v`'s), so taking `v` from `ppv()` in a separate call is safe here.
+        Everything is sliced `[:m, :m]` out of PAIR space.
 
-        ⚠ THE SLOPE IS A LOCAL QUADRATIC FIT AT THE REQUESTED INSTANT, NOT A
-        TWO-POINT DIFFERENCE.  A threshold crossing sits at a different
-        fraction of a step on every grid, so a straddling difference moves
-        with the grid (it changes sign under refinement, and was 2.8 % low
-        at 240 points); every quantity here goes as `1/s^2`.
+        ⚠ THE LAW IS SELF-CONSISTENT PER NODE AND LINEAR IN THE INSTANT
+        BETWEEN NODES (2026-09-29).  At node j every piece is node j's --
+        `P_j`, `G_j`, `M_j` and the slope ``s_j = e . u_j``, the orbit's own
+        rate there, so ``e^T G_j e / s_j^2 = c T`` exactly -- and the law at
+        the requested instant is the linear blend of the two nodes around
+        it.  Until then the NEAREST node's `P`, `G`, `M` were divided by the
+        slope AT THE INSTANT, up to half a step away on an edge that moves
+        fast: +0.6 / -0.55 / -0.14 % at 240 / 480 / 960 points (k = 1, the
+        A11 chain), the sign flipping with which node was nearest, where
+        the law reads 1.5182 / 1.5181 / 1.5180e-6.  `slew` in the result is
+        the local quadratic fit AT the instant (`edge_slope`), reported:
+        a two-point difference moves with the grid (it changed sign under
+        refinement, and was 2.8 % low at 240 points).
 
         ⚠ When validating this against a transient, run the Monte Carlo on the
         SAME integrator as the PSS, or divide by the slope of the orbit the
@@ -549,7 +565,10 @@ class _OscillatorCovariance(object):
         ⚠ THE INSTANT IS THE CALLER'S.  This does not hunt for a crossing: a
         threshold taken from a simulated record can be biased by startup, and
         that moves the instant off the steepest point.  `instant` in the
-        result is the grid point used.
+        result is the instant the law describes (`time` modulo the period;
+        until 2026-09-29 the nearest grid point, and an instant within half
+        a step of the period's end read node N-1 instead of node 0), `nodes`
+        the two grid nodes around it and `th` its fraction between them.
 
         ⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
         `oscillator_covariance`: `colour_fmin` (and `colour_fmax`, default the
@@ -564,7 +583,8 @@ class _OscillatorCovariance(object):
         cross term with the coloured phase (it enters as `2 A` at every k).
 
         Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`,
-        `k_cycle` (k = 1..kmax), `instant`, `d`, `projection_share` (the
+        `k_cycle` (k = 1..kmax), `instant`, `nodes`, `th`, `d`,
+        `projection_share` (the
         white part's; None without one), `coloured_phase_variance` (the
         coloured increment per k, s^2; zeros when white), `band` (the colour
         band, or None).
@@ -603,69 +623,131 @@ class _OscillatorCovariance(object):
                 'the slope needs at least 5.' % nt)
         times, row = times[:nt], row[:nt]
 
-        ## ⚠ THE SLOPE IS TAKEN AT THE REQUESTED INSTANT, NOT AT THE SNAPPED
-        ## GRID POINT, and the difference is the whole correction.  `time` is
-        ## typically a threshold crossing, which sits at a different FRACTION
-        ## of a step on every grid; differentiating at the nearest sample
-        ## instead reproduces the straddling value, and every quantity here
-        ## goes as 1/s^2.  (`edge_slope`, shared with `jitter_metrics`.)
-        slew, j = edge_slope(times, row, float(time))
+        ## ⚠ THE LAW AT THE REQUESTED INSTANT, from the two nodes around it,
+        ## each SELF-CONSISTENT: `P_j`, `G_j`, `M_j` and the slope `e . u_j`
+        ## (the orbit's own rate at the node) at ONE node, then linear in the
+        ## instant.  Until 2026-09-29 the nearest node's `P`, `G`, `M` over
+        ## the slope AT THE INSTANT: +0.6 / -0.55 / -0.14 % at 240 / 480 /
+        ## 960 points.  The slope at the instant (`edge_slope`, a local
+        ## quadratic fit) is reported as `slew`.
+        tc = float(time) % T
+        slew, _jn = edge_slope(times, row, tc)
         if not abs(slew) > 0.0:
             raise ValueError(
                 'PAC.oscillator_edge_jitter: the slope at t = %.6g is exactly '
                 'zero, so delta_y/slew is undefined. Pass an instant on an '
-                'edge.' % times[j])
+                'edge.' % tc)
+        N = len(info['samples']) - 1
+        tn = np.asarray(fp.times, dtype=float)[:N + 1]
+        ## node N is node 0 a period on (the law is the same there: the
+        ## growth `d u u^T` cancels in it), so an instant in the last step
+        ## blends N-1 and N -- until 2026-09-29 it read node N-1 alone
+        a = int(np.clip(np.searchsorted(tn, tc, side='right') - 1, 0, N - 1))
+        b = a + 1
+        th = float(np.clip((tc - tn[a]) / (tn[b] - tn[a]), 0.0, 1.0))
 
-        Ps = [np.asarray(P, dtype=float)[:m, :m] for P in info['samples']]
-        G = [np.asarray(g, dtype=float)[:m, :m] for g in info['growth_samples']]
         with _warnings.catch_warnings():
             _warnings.simplefilter('ignore')
-            v0, pinfo = pss.ppv()
-        ## ⚠ `samples[j]` IS node j: prepending `v0` pairs node j's covariance
-        ## with the phase vector of node j - 1 -- a one-node shift, first
-        ## order in the step.
+            _v0, pinfo = pss.ppv()
+        ## (the PPV samples cover nodes 0..N-1; node N is node 0)
         vs = [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
-        jj = int(min(j, len(Ps) - 1, len(vs) - 1))
-
         e = np.zeros(m)
         e[int(output)] = 1.0
-        w, U = np.linalg.eigh(G[jj])
-        white = float(w.max()) > 0.0
+        white = float(d) > 0.0
         if not white and not coloured:
             raise ValueError(
-                'PAC.oscillator_edge_jitter: the growth term has collapsed at '
-                'this instant (largest eigenvalue %.3g), so the orbit tangent '
-                'cannot be recovered from it and the phase direction cannot '
-                'be projected out. Is any source noisy?' % float(w.max()))
-        var_prj = var_raw = 0.0
-        if white:
-            uj = U[:, int(np.argmax(w))] * np.sqrt(float(w.max()))
-            den = float(vs[jj] @ uj)
-            if den == 0.0:
+                'PAC.oscillator_edge_jitter: the growth per period is zero and '
+                'no source is coloured -- is any source noisy?')
+
+        c = float(info['c_from_growth'])
+        col = None
+        if coloured:
+            col = self._coloured_prepare(pss, colour_fmin, colour_fmax,
+                                         points_per_decade,
+                                         'oscillator_edge_jitter')
+        As, Qs, _K1, M, _m, n = self._lyapunov_pieces(
+            pss, 'oscillator_edge_jitter',
+            white=None if col is None else col['white'])
+        na = np.asarray(As[0]).shape[0] if As else n
+        width = np.asarray(info['samples'][0]).shape[0]
+        if na != width:
+            raise NotImplementedError(
+                f'PAC.oscillator_edge_jitter: the period map is {na} wide and '
+                f'the covariance {width} -- a Nordsieck GLM read on its '
+                'native map; solve with the default monodromy (its radau '
+                'twin).')
+        ## ⚠ ON A STAGED SOLVE the period map from node `j` carries the
+        ## crossings' motion, ``M_j^k = R_j M_tot^{k-1} S_j`` (`_event_closure`;
+        ## no inverse -- the step maps of a DAE are singular), and the
+        ## samples are its fixed-time ones; otherwise the step maps' product
+        with _warnings.catch_warnings():
+            ## (a host it cannot border, `oscillator_covariance` warned above)
+            _warnings.filterwarnings('ignore', message='PAC.covariance: the '
+                                     'solve is staged on its state events')
+            staged = self._event_closure(pss, As, Qs, M, _m, n)
+        ef = np.zeros(na)
+        ef[int(output)] = 1.0
+
+        def at_node(jn):
+            """Node `jn`'s law over its own slope: `(Var_k for k = 1..kmax,
+            the projected, raw and coloured transverse variance)`, s^2."""
+            uj = np.asarray(info['tangent_samples'][jn], dtype=float)[:m]
+            s2 = float(e @ uj) ** 2
+            if not s2 > 0.0:
                 raise ValueError(
-                    'PAC.oscillator_edge_jitter: the left and right null '
-                    'directions are orthogonal at this instant, so the oblique '
-                    'projection is undefined.')
-            Pi = np.eye(m) - np.outer(uj, vs[jj]) / den
-            ## the ONE-sided projection: the exact law's large-k intercept / 2
-            ## (the two-sided `Pi P Pi^T` dropped the cross term until
-            ## 2026-09-29)
-            var_prj = float(e @ (Pi @ Ps[jj]) @ e)
-            var_raw = float(e @ Ps[jj] @ e)
-        ## a COLOURED source's transverse part at the edge (already projected,
-        ## `_transverse_responses`)
-        var_col = (float(e @ np.asarray(info['coloured_samples'][jj],
-                                       dtype=float)[:m, :m] @ e)
-                   if coloured else 0.0)
-        if var_prj + var_col == 0.0:
+                    'PAC.oscillator_edge_jitter: the orbit is flat in this '
+                    f'output at node {jn} (t = {tn[jn]:.6g}), next to the '
+                    'instant, so delta_y/slew is undefined there. Pass an '
+                    'instant on an edge.')
+            prj = raw = 0.0
+            if white:
+                vj = vs[jn % len(vs)]
+                den = float(vj @ uj)
+                if den == 0.0:
+                    raise ValueError(
+                        'PAC.oscillator_edge_jitter: the left and right null '
+                        f'directions are orthogonal at node {jn}, so the '
+                        'oblique projection is undefined.')
+                ## the ONE-sided projection: the exact law's large-k
+                ## intercept / 2 (the two-sided `Pi P Pi^T` dropped the cross
+                ## term until 2026-09-29)
+                Pm = np.asarray(info['samples'][jn], dtype=float)[:m, :m]
+                Pi = np.eye(m) - np.outer(uj, vj) / den
+                prj = float(e @ (Pi @ Pm) @ e)
+                raw = float(e @ Pm @ e)
+            ## a COLOURED source's transverse part (already projected,
+            ## `_transverse_responses`)
+            var_col = (float(e @ np.asarray(info['coloured_samples'][jn],
+                                           dtype=float)[:m, :m] @ e)
+                       if coloured else 0.0)
+            ## ⚠ THE EXACT k-LAG LAW, in the covariance's own space (a pair
+            ## map's `(x_n, x_{n-1})` on gear)
+            Pf = np.asarray(info['samples'][jn], dtype=float)
+            Gf = np.asarray(info['growth_samples'][jn], dtype=float)
+            if staged is None:
+                Mj = np.eye(na)
+                for i in list(range(jn, len(As))) + list(range(jn)):
+                    Mj = np.asarray(As[i], dtype=float) @ Mj
+            else:
+                M_tot = staged[0]
+                Rj, Sj = staged[3]['period_map_from'](jn)
+            kc, Mk, Mp = [], np.eye(na), np.eye(na)
+            for k in range(1, int(kmax) + 1):
+                if staged is None:
+                    Mk = Mj @ Mk
+                else:
+                    Mk = Rj @ Mp @ Sj
+                    Mp = M_tot @ Mp
+                kc.append(float(ef @ (2.0 * Pf + k * Gf - Mk @ Pf - Pf @ Mk.T) @ ef))
+            return np.asarray(kc) / s2, prj / s2, raw / s2, var_col / s2
+
+        la, lb = at_node(a), at_node(b)
+        kc, A_prj, A_raw, A_col = ((1.0 - th) * x + th * y for x, y in zip(la, lb))
+        if A_prj + A_col == 0.0:
             raise ValueError(
                 'PAC.oscillator_edge_jitter: the projected variance is zero '
                 '-- there is no additive jitter to report.')
-
-        A = var_prj / (slew * slew)
-        A_col = var_col / (slew * slew)
-        if coloured:
-            A = A + A_col
+        A = A_prj + A_col
         if A > 0.0:
             sigma_t = float(np.sqrt(A))
             if not sigma_t < 0.5 * T:
@@ -691,53 +773,6 @@ class _OscillatorCovariance(object):
                 RuntimeWarning, stacklevel=2)
             sigma_t = float('nan')
 
-        c = float(info['c_from_growth'])
-        ## ⚠ THE EXACT k-LAG LAW, in the covariance's own space (a pair map's
-        ## `(x_n, x_{n-1})` on gear): `M_j` the period map from node `jj`
-        col = None
-        if coloured:
-            col = self._coloured_prepare(pss, colour_fmin, colour_fmax,
-                                         points_per_decade,
-                                         'oscillator_edge_jitter')
-        As, Qs, _K1, M, _m, n = self._lyapunov_pieces(
-            pss, 'oscillator_edge_jitter',
-            white=None if col is None else col['white'])
-        na = np.asarray(As[0]).shape[0] if As else n
-        Pf = np.asarray(info['samples'][jj], dtype=float)
-        Gf = np.asarray(info['growth_samples'][jj], dtype=float)
-        if na != Pf.shape[0]:
-            raise NotImplementedError(
-                f'PAC.oscillator_edge_jitter: the period map is {na} wide and '
-                f'the covariance {Pf.shape[0]} -- a Nordsieck GLM read on its '
-                'native map; solve with the default monodromy (its radau '
-                'twin).')
-        ## ⚠ ON A STAGED SOLVE the period map from node `jj` carries the
-        ## crossings' motion, ``M_j^k = R_j M_tot^{k-1} S_j`` (`_event_closure`;
-        ## no inverse -- the step maps of a DAE are singular), and `Pf`, `Gf`
-        ## are its fixed-time samples; otherwise the step maps' product
-        with _warnings.catch_warnings():
-            ## (a host it cannot border, `oscillator_covariance` warned above)
-            _warnings.filterwarnings('ignore', message='PAC.covariance: the '
-                                     'solve is staged on its state events')
-            staged = self._event_closure(pss, As, Qs, M, _m, n)
-        if staged is None:
-            Mj = np.eye(na)
-            for i in list(range(jj, len(As))) + list(range(jj)):
-                Mj = np.asarray(As[i], dtype=float) @ Mj
-        else:
-            M_tot = staged[0]
-            Rj, Sj = staged[3]['period_map_from'](jj)
-        ef = np.zeros(na)
-        ef[int(output)] = 1.0
-        kc, Mk, Mp = [], np.eye(na), np.eye(na)
-        for k in range(1, int(kmax) + 1):
-            if staged is None:
-                Mk = Mj @ Mk
-            else:
-                Mk = Rj @ Mp @ Sj
-                Mp = M_tot @ Mp
-            kc.append(float(ef @ (2.0 * Pf + k * Gf - Mk @ Pf - Pf @ Mk.T) @ ef))
-        kc = np.asarray(kc) / (slew * slew)
         inc = np.zeros(len(kc))
         band = None
         if coloured:
@@ -746,7 +781,7 @@ class _OscillatorCovariance(object):
             band = (float(col['fmin']), float(col['fmax']))
             fold = self._colour_fold(pss, band[0], None,
                                      'oscillator_edge_jitter')
-            inc = fold.increment(float(time), np.arange(1, int(kmax) + 1),
+            inc = fold.increment(tc, np.arange(1, int(kmax) + 1),
                                  band[0], band[1])
             kc = kc + inc + 2.0 * A_col
         return {
@@ -755,9 +790,11 @@ class _OscillatorCovariance(object):
             'c': c,
             'slew': slew,
             'k_cycle': np.sqrt(np.clip(kc, 0.0, None)),
-            'instant': float(times[j]),
+            'instant': tc,
+            'nodes': (a, b),
+            'th': th,
             'd': float(d),
-            'projection_share': (float(var_raw / var_prj - 1.0) if white
+            'projection_share': (float(A_raw / A_prj - 1.0) if white
                                  else None),
             'coloured_phase_variance': inc,
             'band': band,

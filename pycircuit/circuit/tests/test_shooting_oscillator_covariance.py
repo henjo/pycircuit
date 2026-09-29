@@ -989,16 +989,18 @@ def test_the_oscillator_edge_jitter_runs_on_a_staged_solve():
 
     The gate here: the law's OWN large-k limit, ``k_cycle^2 - k e'G_j e/s^2
     -> 2A`` with `A` from the PPV's projector -- an independent object --
-    at the comparator's switching instant (`fb1` at its crossing, an event
-    node: 8e-9 of `k_cycle^2` at k = 8, the held crossings' grid coupling)
-    and on the ramp (`c` at 0.6 T: 1.5e-14).  ⚠ `A` is NEGATIVE at every
+    at the comparator's switching instant (`fb1` at its first crossing, an
+    event node: 3.3e-9 of `k_cycle^2` at k = 8, <= 3.8e-8 at the other
+    three -- the held crossings' grid coupling) and on the ramp (`c` at
+    0.6 T: 1.5e-14).  Each node's law is over the
+    node's own rate (step 2), so its growth term is `k d` exactly; with the
+    slope fitted at the instant it read 8e-6 at the event node, where the
+    rate has a kink.  ⚠ `A` is NEGATIVE at every
     edge of this oscillator (2A / k_cycle_1^2 = -0.27 .. -0.54): the RC lags
     carry the noise across the reset, anti-correlating the transverse and
     the phase deviation -- warned, `sigma_t` nan, `k_cycle` exact.  The
     event term moves `k_cycle^2` by 2e-7 on this fixture (its limit)."""
     import warnings as _w
-
-    from pycircuit.circuit.shooting._numerics import output_index
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     seed, Tl = _relaxation_oscillator_seed(cir)
@@ -1021,10 +1023,7 @@ def test_the_oscillator_edge_jitter_runs_on_a_staged_solve():
         assert np.isnan(r['sigma_t']) and r['A'] < 0.0
         kc = np.asarray(r['k_cycle'])
         assert np.all(np.isfinite(kc)) and np.all(kc > 0.0)
-        j = int(np.argmin(np.abs(times - r['instant'])))
-        oi = int(output_index(q, output))
-        g = float(np.asarray(info['growth_samples'][j])[oi, oi]) / r['slew'] ** 2
-        lim = (kc[-1] ** 2 - kmax * g - 2.0 * r['A']) / kc[-1] ** 2
+        lim = (kc[-1] ** 2 - kmax * float(info['d']) - 2.0 * r['A']) / kc[-1] ** 2
         assert abs(lim) < tol, (output, lim)
 
 
@@ -1096,21 +1095,76 @@ def test_the_oscillator_edge_jitter_is_the_exact_law_the_monte_carlo_measures():
     the PSS's own step, 8 seeds x 720 periods, 5760 crossings) measured
     Var_k = 1.5001e-6 / 2.0227e-6 / 3.058e-6 / 5.05e-6 (+- 2.2e-8 / 3.0e-8 /
     5.5e-8 / 2.0e-7) at k = 1 / 2 / 4 / 8: the exact law at -1.2 to -1.7 sigma,
-    the old k = 1 value (1.6969e-6) at -8.9 sigma.  Radau, 240 points: the
-    law's own numbers are pinned (the probe's), and each sits within 3 sigma
-    of the Monte Carlo."""
+    the old k = 1 value (1.6969e-6) at -8.9 sigma.
+
+    Step 2 of the edge-jitter plan (2026-09-29): the law is each node's own,
+    blended to the instant (1.5182e-6 at k = 1, grid-converged; the
+    nearest node's read 1.5274e-6), and the Monte Carlo was re-run on the
+    PSS's OWN grid (h = T/239; it ran T/240) with a quadratic crossing
+    estimator, seeds 11-18: 1.5049e-6 / 2.1007e-6 / 3.2000e-6 / 5.2888e-6
+    (+- 1.8e-8 / 4.7e-8 / 1.1e-7 / 3.4e-7) -- the law at +0.75 / -0.99 /
+    -0.64 / -0.05 sigma.  ⚠ It cannot tell the two laws apart (0.6 % apart,
+    a 1.2 % standard error); the grid convergence can
+    (`test_the_oscillator_edge_jitter_is_the_law_at_the_requested_instant`).
+    Radau, 240 points: the law's own numbers are pinned, and each sits
+    within 3 sigma of the Monte Carlo."""
     cir, pss, red, tc, _v = _a11_solved(method='radau')
     r = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(pss, red, tc)
     assert 'k_cycle_bound' not in r
     kc2 = r['k_cycle'] ** 2
-    assert abs(kc2[0] / 1.52740e-6 - 1.0) < 1e-4, kc2[0]
-    assert abs(2.0 * r['A'] / 9.86462e-7 - 1.0) < 1e-4, r['A']
-    for k, mc, se in ((1, 1.5001e-6, 2.22e-8), (2, 2.0227e-6, 2.95e-8),
-                      (4, 3.0584e-6, 5.53e-8), (8, 5.0497e-6, 1.99e-7)):
+    assert abs(kc2[0] / 1.51820e-6 - 1.0) < 1e-4, kc2[0]
+    assert abs(2.0 * r['A'] / 9.82048e-7 - 1.0) < 1e-4, r['A']
+    for k, mc, se in ((1, 1.5049e-6, 1.77e-8), (2, 2.1007e-6, 4.67e-8),
+                      (4, 3.2000e-6, 1.14e-7), (8, 5.2888e-6, 3.42e-7)):
         assert abs(kc2[k - 1] - mc) < 3.0 * se, (k, kc2[k - 1], mc)
     ## the law tends to the walk plus the one-sided intercept
     T = float(pss.period)
     assert abs((kc2[0] - r['c'] * T) / (2.0 * r['A']) - 1.0) < 1e-2
+
+
+def test_the_oscillator_edge_jitter_is_the_law_at_the_requested_instant():
+    """Step 2 of the edge-jitter plan (2026-09-29).  The k-lag law was the
+    NEAREST node's `P`, `G`, `M` over the slope AT THE INSTANT -- up to half
+    a step apart on an edge that moves fast -- so it moved with the grid:
+    +0.6 / -0.55 / -0.14 % at 240 / 480 / 960 radau points on the A11 chain
+    (k = 1), the sign flipping with which node was nearest.  Now each node's
+    law is self-consistent -- its slope the orbit's own rate there, `e . u_j`
+    with `u_j` the propagated tangent (`tangent_samples`), which IS the
+    DAE's derivative at the node (`_orbit_rate`, an independent route) to
+    1.2e-8 -- and the law at the instant blends the two nodes around it
+    linearly: 1.5182 / 1.5181 / 1.5180e-6 at 240 / 480 / 960 points, 240
+    and 480 agreeing to 8e-5 at every k (the parent: 1.2e-2).
+
+    The wrap: an instant in the last step blends nodes N-1 and N (node 0 a
+    period on) -- it read node N-1 alone -- so the law is periodic (to
+    rounding) and continuous through t = T (1.1e-8 across it); `instant` is
+    the instant the law describes, `nodes` / `th` the pair and the
+    fraction."""
+    cir, pss, red, tc, _v = _a11_solved(method='radau')
+    cir2, pss2, red2, tc2, _v2 = _a11_solved(method='radau', npts=480)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    r = pac.oscillator_edge_jitter(pss, red, tc)
+    r2 = PAC(cir2, toolkit=circuit.numeric).oscillator_edge_jitter(pss2, red2, tc2)
+    kc, kc2 = r['k_cycle'] ** 2, r2['k_cycle'] ** 2
+    assert np.max(np.abs(kc2 / kc - 1.0)) < 1e-3, kc2 / kc - 1.0
+    a, b = r['nodes']
+    assert r['instant'] == tc and b == a + 1 and 0.0 <= r['th'] <= 1.0
+    ## the propagated tangent IS the orbit's rate at every node
+    _K, info = pac.oscillator_covariance(pss, samples=True)
+    U = np.asarray(info['tangent_samples'], dtype=float)
+    xd = np.asarray(pac._orbit_rate(pss, []), dtype=float)
+    err = np.max(np.abs(U - xd[:len(U)])) / np.max(np.abs(xd))
+    assert err < 1e-6, err
+    ## the wrap: periodic, and continuous through t = T
+    T = float(pss.period)
+    N = len(info['samples']) - 1
+    rp = pac.oscillator_edge_jitter(pss, red, tc + T)
+    assert np.max(np.abs(rp['k_cycle'] / r['k_cycle'] - 1.0)) < 1e-9
+    lo = pac.oscillator_edge_jitter(pss, red, T * (1.0 - 1e-9))
+    hi = pac.oscillator_edge_jitter(pss, red, T * 1e-9)
+    assert lo['nodes'] == (N - 1, N) and hi['nodes'] == (0, 1)
+    wrap = np.max(np.abs(lo['k_cycle'] / hi['k_cycle'] - 1.0))
+    assert wrap < 1e-6, wrap
 
 
 def _vdp_colour_pair(kind, npts=200):
