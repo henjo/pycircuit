@@ -1334,6 +1334,7 @@ def test_the_state_event_stage_runs_matrix_free(method):
         ## at |F| 3.8 (1017 evaluations; the map is smooth -- the same steps
         ## drop in every walk -- and its event columns FD-exact), where
         ## from a settled seed it converges in 14 to the same crossings
+        ## (`_staged_fallback` recovers the zero start since, at ~9x the time)
         if mk is pwm and method == 'trap':
             kw = dict(kw, tstab=20 * Tp)
         got = {}

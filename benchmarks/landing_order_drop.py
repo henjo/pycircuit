@@ -7,12 +7,12 @@ that lands on a breakpoint (and after a force-accept), so a two-step method
 until 2026-09-28 -- it landed edges on its own frozen grid (`PSS.event_grid`)
 and stepped on -- and `pss_transient_boundary.py` V1, on a smooth RC, found
 that MORE accurate; this measured the other side, and the shooting now drops
-too (`_InnerTransient.ORDER_DROP_AT_EDGES`, keyed to the edge's node).
+too (`PSS(order_drop_at_edges=True)`, keyed to the edge's node).
 
 'nodrop' (forward): the flag is cleared before each step unless the run is
 genuinely opening (`_no_history`) -- which would also remove the drop after
 a force-accept; the counts are printed (none on these fixtures).
-'drop' (shooting): `ORDER_DROP_AT_EDGES`, the shooting's DEFAULT since
+'drop' (shooting): `order_drop_at_edges`, the shooting's DEFAULT since
 2026-09-28 (Andreas: "add the drop"); 'nodrop' switches it off.
 
 MEASURED 2026-09-28 (predictions were written first; B's did not bind):
@@ -203,9 +203,9 @@ def table_C():
         for N in (400, 800):
             for drop in ((False, True) if method in ('trap', 'gear') else (False,)):
                 c = fix[0]()
-                pss = PSS(c, method=method, reltol=1e-10)
                 ## (the default since 2026-09-28; False is the old walk)
-                pss.ORDER_DROP_AT_EDGES = bool(drop)
+                pss = PSS(c, method=method, reltol=1e-10,
+                          order_drop_at_edges=bool(drop))
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
                     pss.solve(period=T, timestep=T / N, break_events=True,

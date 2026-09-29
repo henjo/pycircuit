@@ -11,11 +11,6 @@ class _InnerTransient(object):
     linearised at a point (C, G, the stage derivative).  A theme of `PSS`
     (see `pss.py`)."""
 
-    ## A multistep map drops to one backward-Euler step after each edge the
-    ## grid lands on (`solve_timestep`); False walks the old way, for
-    ## measuring the trade (`benchmarks/landing_order_drop.py`).
-    ORDER_DROP_AT_EDGES = True
-
     def _factorise(self, Jf):
         """One step's `Jf`, factored by the CALLER'S linear solver -- never a
         dense LU directly, which would make every matrix-free run dense-LAPACK
@@ -442,7 +437,8 @@ class _InnerTransient(object):
         ## step's OWN length was not structural either: after a short step
         ## the next start fell inside it.)
         edges = getattr(self, '_landed_edges', None)
-        if edges is not None and self.ORDER_DROP_AT_EDGES:
+        ## (`_landed_edges` is None when `order_drop_at_edges` is False)
+        if edges is not None:
             fr, T = edges
             s = ((float(t) - float(dt)) / T) % 1.0
             h_prev = tr._dt_last if tr._dt_last is not None else dt

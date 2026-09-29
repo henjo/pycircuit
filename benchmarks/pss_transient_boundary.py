@@ -755,10 +755,10 @@ def V1():
 
     def err(method, N, drop):
         c = pulsed()
-        pss = PSS(c, method=method, reltol=1e-10)
-        ## (the shooting drops at landed edges since 2026-09-28; the switch
-        ## restores the walk V1 first measured)
-        pss.ORDER_DROP_AT_EDGES = bool(drop)
+        ## (the shooting drops at landed edges since 2026-09-28; the
+        ## Parameter's False restores the walk V1 first measured)
+        pss = PSS(c, method=method, reltol=1e-10,
+                  order_drop_at_edges=bool(drop))
         pss.solve(period=T, timestep=T / N, break_events=True, maxiterations=40)
         if not pss.converged:
             return float('nan')

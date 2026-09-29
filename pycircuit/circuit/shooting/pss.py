@@ -390,6 +390,22 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                         'trbdf2, glm2) at a sharp switch -- its error there '
                         'falls with this count, not with timestep',
                    unit='', default=_StateEvents.EVENT_WINDOW_STEPS),
+         ## THE ORDER DROP AFTER A LANDED EDGE (trap, gear): one backward-Euler
+         ## step after each edge `event_grid` lands, as the stepping loop takes
+         ## after a breakpoint (`_InnerTransient.solve_timestep`).  A TRADE,
+         ## measured (`benchmarks/landing_order_drop.py`): on a STIFF state it
+         ## is what keeps trap from ringing after every edge (the current 0.85
+         ## -> 0.039 off after it) and gear from a 10x error for a step; on a
+         ## smooth one it costs accuracy (a pulsed RC at 400 points: gear 6.6e-4
+         ## against 2.4e-4 without it, trap 4.6e-4 against 5.8e-6).  False
+         ## walks through the edges at full order.
+         ## History: `doc/pss_log_260902.md`, 2026-09-28.
+         Parameter(name='order_drop_at_edges',
+                   desc='trap/gear: one backward-Euler step after each landed '
+                        'source edge (True, the default: no ringing on a '
+                        'stiff state) or none (False: more accurate on a '
+                        'smooth one)',
+                   unit='', default=True),
          Parameter(name='period_column',
                    desc="'auto' (= 'closing' + proportional polish on a caller's grid, 'proportional' on a uniform one), 'proportional' or 'closing': "
                         "which step lengths depend on an unknown period; see "
@@ -1192,11 +1208,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             self._shoot(run)
         except analysis.NoConvergenceError:
             retried = self._closing_fallback(_args)
+            if retried is None:
+                retried = self._staged_fallback(_args)
             if retried is not None:
                 return retried
             raise
         if run.ier != 1:
             retried = self._closing_fallback(_args)
+            if retried is None:
+                retried = self._staged_fallback(_args)
             if retried is not None:
                 return retried
         self._report_convergence(run)
@@ -1355,6 +1375,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## `_resolve_break_events`, and `event_grid` for the snap that keeps
         ## it from manufacturing slivers.
         self.break_events = self._resolve_break_events(break_events)
+        _drop = self.par.order_drop_at_edges
+        if not isinstance(_drop, (bool, np.bool_)):
+            raise TypeError('PSS: order_drop_at_edges must be True or False, '
+                            f'not {_drop!r}')
         self._landed_edges = None
         if self.break_events:
             _ev = (self.event_grid(period, grid=grid) if grid is not None
@@ -1371,8 +1395,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 ## the edges the grid now lands on, as fractions of the
                 ## period, for the order drop after each (`solve_timestep`);
                 ## a multistep map only -- a stage method or a GLM keeps no
-                ## companion history across the edge to drop
-                if self._map_kind() in ('plain', 'pair'):
+                ## companion history across the edge to drop -- and only
+                ## when asked (`order_drop_at_edges`)
+                if self._map_kind() in ('plain', 'pair') and bool(_drop):
                     self._landed_edges = (
                         np.asarray(self.event_times, dtype=float),
                         float(period))
@@ -1398,6 +1423,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## declares events
         self._state_event_fracs = None
         self._event_columns = None
+        ## set by `_staged_fallback` when this solve's answer came from it
+        self.staged_fallback = False
+        self._staged_run = False
+        self._held_stall = None
         if state_events:
             _ws = self.par.event_window_steps
             if not (isinstance(_ws, (int, np.integer)) and int(_ws) >= 2):
@@ -1871,6 +1900,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         _staged = (state_events
                    and (_kind in ('stage', 'pair', 'glm')
                         or (_kind == 'plain' and self._open_at_x0)))
+        ## (`_staged_fallback`: a stage that runs on declared events)
+        self._staged_run = bool(_staged) and bool(
+            hasattr(self.cir, 'state_events') and self.cir.state_events())
         if self.autonomous:
             zT0 = np.concatenate((z0, [period]))
             abstol_z = np.concatenate((tol_z, [_tol[phase_k]]))
@@ -1918,8 +1950,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             (_ier_one == 1) if self._state_event_fracs is not None else None)
         _stall = (_info_one.get('stall_diagnosis')
                   if isinstance(_info_one, dict) else None)
+        ## (held back again when a staged solve that failed will fall back:
+        ## the solve the result comes from reports -- `_staged_fallback`)
         if _stall is not None and _ier != 1:
-            _stall()
+            if (self._staged_run
+                    and not getattr(self, '_staged_fallback_pass', False)
+                    and not getattr(self, '_closing_fallback_pass', False)):
+                self._held_stall = _stall
+            else:
+                _stall()
         x0_ss = z_ss[:m]
         if _kind == 'pair':
             xm1_ss = z_ss[m:]
@@ -2359,6 +2398,64 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         finally:
             self._closing_fallback_pass = False
             self._force_period_column = None
+
+    def _staged_fallback(self, args):
+        """A solve with the circuit's STATE EVENTS as Newton unknowns that
+        failed: solve the ONE-STAGE problem from the same seed (its own
+        opener, `state_events=False`), and when that converges solve the
+        staged problem again seeded at its orbit's `x(0)` (and period).
+        Returns that result, or None when no fallback is due (the run did
+        not stage -- `_shoot`'s `_staged_run` -- or this is already a
+        fallback pass);
+        when the one-stage solve fails too, None, and the caller's solve
+        reports its own failure -- the one-stage solve runs on a TWIN (this
+        analysis's every Parameter), so this object's state is still that
+        solve's, and the stall diagnosis `_shoot` held back is emitted then.
+        `staged_fallback` says an answer came from here.
+
+        ⚠ WHY.  The staged solve's first stage is the map opened AT `x(0)`
+        (`x0_unknown`, the state-event default), and from a poor seed it
+        can fail where the one-stage solve with its manufactured opener
+        converges: trap on the PWM loop from zeros, with the order drop at
+        its landed ramp edges, stalled at |F| 3.8 after 1017 evaluations,
+        while the one-stage solve converged and the staged solve from its
+        orbit converged in 13 to the same crossings (2026-09-28).
+        History: `doc/pss_log_260902.md`, 2026-09-28."""
+        if (not getattr(self, '_staged_run', False)
+                or getattr(self, '_staged_fallback_pass', False)
+                or getattr(self, '_closing_fallback_pass', False)):
+            return None
+        warnings.warn(
+            'PSS: the solve with the state events as Newton unknowns did not '
+            'converge from this seed; solving the one-stage problem first and '
+            'staging from its orbit.', RuntimeWarning, stacklevel=3)
+        kv = {}
+        for _p in self.parameters:
+            try:
+                kv[_p.name] = getattr(self.par, _p.name)
+            except AttributeError:
+                pass
+        one = type(self)(self.cir, toolkit=self.toolkit, irefnode=None, **kv)
+        ## (silent: its diagnoses are about a system no result comes from)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            one.solve(**dict(args, state_events=False, x0_unknown=None))
+        if not one.converged:
+            held, self._held_stall = self._held_stall, None
+            if held is not None:
+                held()
+            return None
+        seed = dict(args, tstab=None, x0=np.delete(
+            np.asarray(one.waveform[1], dtype=float)[:, 0], one.irefnode))
+        if getattr(one, 'autonomous', False):
+            seed['period'] = float(one.period)
+        self._staged_fallback_pass = True
+        try:
+            result = self.solve(**seed)
+        finally:
+            self._staged_fallback_pass = False
+        self.staged_fallback = True
+        return result
 
     def _closing_polish(self, run):
         """`solve`, phase 8: after a 'closing' free-period solve, solve once

@@ -1490,7 +1490,8 @@ def test_the_plain_map_lands_state_events_opened_at_x0():
     ## evaluations, no convergence), though from a settled seed it converges
     ## in 14 to the same crossings, its event columns FD-exact -- a basin,
     ## not a Jacobian (the UNSTAGED solve converged from zeros only WITH the
-    ## drop).
+    ## drop).  `_staged_fallback` recovers the zero start since, at ~9x the
+    ## time (`test_a_staged_solve_that_stalls_falls_back_to_the_one_stage_orbit`).
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         p.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
@@ -1929,3 +1930,48 @@ def test_the_landed_edges_drop_the_order_so_a_stiff_state_does_not_ring():
         j0 = int(np.searchsorted(ts, TD * (1 + 1e-9), side='right'))
         err = np.abs(i[j0:j0 + 3] - i_ramp) / i_ramp
         assert np.max(err) < 0.1, (method, err)
+    ## `order_drop_at_edges=False` walks through the edges at full order:
+    ## trap rings again (the measured 0.85 at the first point)
+    pss = PSS(c, method='trap', reltol=1e-10, order_drop_at_edges=False)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / 400, maxiterations=40)
+    ts = np.asarray(pss.waveform[0], float).ravel()
+    X = np.asarray(pss.waveform[1], float)
+    i = (X[rows.index('1')] - X[rows.index('2')]) / RR
+    j0 = int(np.searchsorted(ts, TD * (1 + 1e-9), side='right'))
+    assert abs(i[j0] - i_ramp) / i_ramp > 0.5, i[j0] / i_ramp
+    with pytest.raises(TypeError, match='order_drop_at_edges'):
+        PSS(c, method='trap', order_drop_at_edges='yes').solve(
+            period=T, timestep=T / 400)
+
+
+def test_a_staged_solve_that_stalls_falls_back_to_the_one_stage_orbit():
+    """`_staged_fallback`: a solve with the state events as Newton unknowns
+    that fails solves the one-stage problem from the same seed (its own
+    opener) and stages from that orbit.  ⚠ Measured before (2026-09-28):
+    trap on the PWM loop from zeros, with the order drop at its landed ramp
+    edges, stalled at |F| 3.8 after 1017 evaluations -- the staged solve's
+    first stage is the map opened AT `x(0)`, which from that seed does not
+    converge, where the one-stage solve with its opener does and the staged
+    solve from its orbit converges in 13."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    th_radau = np.array([0.688459, 0.693154, 0.992922, 0.992972])   # radau, 400 pts
+    p = PSS(_pwm_loop(T), method='trap', reltol=1e-10)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
+                maxiterations=100)
+    assert p.converged and p.staged_fallback
+    assert any('one-stage problem first' in str(r.message) for r in rec)
+    assert np.max(np.abs(np.asarray(p._state_event_fracs) - th_radau)) < 1e-3
+    ## a solve that stages at once does not take it
+    q = PSS(_pwm_loop(T), method='trap', reltol=1e-10,
+            order_drop_at_edges=False)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
+                maxiterations=100)
+    assert q.converged and not q.staged_fallback
