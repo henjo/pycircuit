@@ -1164,8 +1164,11 @@ def test_a_coloured_source_keeps_the_sign_of_its_scale_factor_through_the_period
     ## agree where the sign is definite and part by a factor where it is not
     sb, sc = run('B', 1.5, sampled=True)[0], run('C', 1.5, sampled=True)[0]
     assert abs(sb / sc - 1.0) < 1e-6, sb / sc
-    sb, sc = run('B', 0.0, sampled=True)[0], run('C', 0.0, sampled=True)[0]
+    (sb, wsb), (sc, wsc) = run('B', 0.0, sampled=True), run('C', 0.0, sampled=True)
     assert sb / sc > 1.5, sb / sc
+    ## and the sample series WARNS the |k| fold as the periodic one does
+    ## (it was silent until 2026-09-29)
+    assert wsb and not wsc, (wsb, wsc)
 
     ## the element-level contract
     el = _SgnAmpFlicker('out', gnd, 'lo', gnd, k=2.0)
@@ -1658,7 +1661,9 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
     (the sampled charge from before the edge, where the clock is positive,
     against the charge integrated after it, where it is negative), and
     both routes carry that difference: a sign-blind `sqrt(B)` amplitude,
-    or a modulation frozen at one state, fails here."""
+    or a modulation frozen at one state, fails here.  ⚠ And both WARN the
+    PSD-stated source (the |m| process where the clock changes sign), and
+    neither the signed one: until 2026-09-29 both rooted it silently."""
     import warnings
     out = {}
     for kind, cls in (('amp', _SgnAmpFlicker), ('psd', _SgnPsdFlicker)):
@@ -1670,10 +1675,14 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
         N = len(pss.factored_period().steps)
         jh = int(0.6 * N)
         th = float(np.asarray(pss.factored_period().times)[jh])
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter('always')
             _K0, seq = pac.covariance(pss, samples=True, colour_fmin=1e-6 * f0)
             sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0)[0]
+        blind = sorted({str(r.message).split(':')[0] for r in rec
+                        if 'touches zero along the orbit' in str(r.message)})
+        assert blind == ([] if kind == 'amp' else
+                         ['PAC.covariance', 'PAC.sampled_noise']), (kind, blind)
         out[kind] = seq[jh][io, io]
         assert abs(out[kind] / sv - 1.0 + 3.2e-5) < 1e-5, (kind, out[kind] / sv - 1)
     assert 5e-3 < abs(out['amp'] / out['psd'] - 1.0) < 2e-2, out

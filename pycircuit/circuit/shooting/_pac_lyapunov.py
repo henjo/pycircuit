@@ -4,7 +4,8 @@ pieces, the coloured band integral, event jitter.
 import numpy as np
 import warnings
 from ._noise_components import (exponent_columns, psd_sqrt,
-                               uniform_exponent, warn_signed_unused)
+                               psd_touches_zero, uniform_exponent,
+                               warn_sign_blind, warn_signed_unused)
 
 
 class _LyapunovCovariance(object):
@@ -874,7 +875,7 @@ class _LyapunovCovariance(object):
                     % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
         warn_signed_unused(model, 'PAC.%s' % what)
         amp = getattr(model, 'amplitude', None) or {}
-        comps = []
+        comps, blind = [], []
         for key, B, EF in model.flicker:
             ef = uniform_exponent(B, EF)
             split = (exponent_columns(B, EF, amp[key])
@@ -893,6 +894,8 @@ class _LyapunovCovariance(object):
                 parts = self._split_by_exponent(B, EF)
                 if parts is not None:
                     for Bg, efg in parts:
+                        if psd_touches_zero(Bg) and key not in blind:
+                            blind.append(key)
                         comps.append((key, np.asarray(psd_sqrt(Bg),
                                                       dtype=complex), efg))
                     continue
@@ -915,8 +918,15 @@ class _LyapunovCovariance(object):
             ## (`W W^H = B` with the sign of the modulation); `sqrt(B)` is
             ## the sign-blind |m| process (`warn_signed_unused` said so)
             W = amp.get(key)
+            if W is None and psd_touches_zero(B):
+                blind.append(key)
             W = np.asarray(W if W is not None else psd_sqrt(B), dtype=complex)
             comps.append((key, W, float(ef)))
+        ## ⚠ ROOTED WHERE THE PSD TOUCHES ZERO: the |m| process, warned as
+        ## every surface that roots a PSD warns it (`warn_sign_blind`;
+        ## silent here until 2026-09-29)
+        if blind:
+            warn_sign_blind(what, blind, stacklevel=3)
         ## the white part of each source, at the states the pieces read:
         ## the injection points from the batch model, any other state (a
         ## step end under the Van Loan fallback) fitted on demand

@@ -244,6 +244,40 @@ def warn_signed_unused(model, where):
             RuntimeWarning, stacklevel=4)
 
 
+def psd_touches_zero(C):
+    """Whether a component's PSD, `C (K, m, m)` over the orbit's points,
+    TOUCHES ZERO: a diagonal entry that falls to 1e-2 of its maximum, the
+    necessary condition for its modulation to change sign (the pnoise
+    fold's test).  Where it does, a factor by the root of the PSD is the
+    `|m|` process -- see `warn_sign_blind`."""
+    d = np.abs(np.real(np.diagonal(np.asarray(C), axis1=-2, axis2=-1)))
+    dmax = d.max(axis=0)
+    return bool(np.any((dmax > 0) & (d.min(axis=0) <= 1e-2 * dmax)))
+
+
+def warn_sign_blind(what, keys, stacklevel):
+    """THE one warning for a component factored by the root of its PSD
+    whose PSD touches zero (`psd_touches_zero`) and whose element states no
+    signed amplitudes: the `|m|` process, exact if the modulation keeps its
+    sign, wrong in either direction where it changes sign.  `what` names
+    the PAC surface; `stacklevel` as the caller's own would be.
+
+    ⚠ Every surface that roots a coloured PSD gives it: the modal and
+    lineshape spectra (`colour_groups`), the sample series (from
+    2026-09-29; `warn_touch=False` kept it silent) and the covariance
+    family (`_coloured_prepare`, from 2026-09-29: its power-law flicker was
+    rooted without a word)."""
+    warnings.warn(
+        'PAC.%s: the PSD of %s touches zero along the orbit and the '
+        'element states no signed noise amplitudes, so it is factored '
+        'by the root of its PSD -- the |m| process: exact if the '
+        'modulation keeps its sign, wrong in either direction where it '
+        'changes sign.  Only the element knows the sign '
+        '(Element.noise_amplitudes).'
+        % (what, ', '.join('.'.join(k) for k in keys)),
+        RuntimeWarning, stacklevel=stacklevel + 1)
+
+
 def separable(Cs, tol=1e-9):
     """Whether ``C(x_j, w_i) = s_i C(x_j, w_0)`` for every point `j` and
     frequency `i` -- a level that follows the state under a fixed
@@ -725,7 +759,7 @@ class NoiseComponents(object):
         root.signed = Ws is not None
         return root
 
-    def colour_groups(self, model, wlo, f0, L, what, warn_touch=True):
+    def colour_groups(self, model, wlo, f0, L, what):
         """The coloured components of `model` as unit processes through
         their own columns: `('fixed', G, s)` -- columns `G (K, m, r)` at
         `states` and a power weight `s(nu)` (a uniform power law, its
@@ -735,26 +769,21 @@ class NoiseComponents(object):
         colour, `perband_root_sampler`).  A component factored by the root
         of its PSD whose PSD TOUCHES ZERO along the orbit is warned on: if
         its modulation changes sign there, that root is the `|m|` process
-        (`warn_touch`; the sample series has never warned it).  Every band
+        -- by every consumer (the sample series did not warn it until
+        2026-09-29; its exposure is the same).  Every band
         root is cached per frequency (`cached_root`): the sample series
         reads the same `|f + n f0|` at every instant.  The FIXED groups
         before the BAND ones is the order the sample series sums them in."""
         signed = getattr(model, 'amplitude', None) or {}
         self.warn_signed_unused(model, 'PAC.%s' % what)
-
-        def touches(C):
-            ## the necessary condition for a sign change, as the pnoise fold
-            ## asks it: a diagonal entry that falls to 1e-2 of its maximum
-            d = np.abs(np.real(np.diagonal(np.asarray(C), axis1=-2, axis2=-1)))
-            dmax = d.max(axis=0)
-            return bool(np.any((dmax > 0) & (d.min(axis=0) <= 1e-2 * dmax)))
+        touches = psd_touches_zero
         groups, blind = [], []
         for key, Bc, EF in model.flicker:
             ef = self.uniform_exponent(Bc, EF)
             W = signed.get(key)
             if ef is not None:
                 if W is None:
-                    if warn_touch and touches(Bc):
+                    if touches(Bc):
                         blind.append(key)
                     W = self.psd_sqrt(Bc)
                 groups.append(('fixed', np.asarray(W, dtype=complex),
@@ -771,27 +800,19 @@ class NoiseComponents(object):
                                        lambda nu, ef=efg, w1=model.w1:
                                        (w1 / np.asarray(nu, dtype=float)) ** ef))
                     continue
-                if warn_touch and touches(Bc):
+                if touches(Bc):
                     blind.append(key)
                 groups.append(('band', self.cached_root(
                     lambda w, Bc=Bc, EF=EF, w1=model.w1: Bc * (w1 / w) ** EF),
                     None))
         for key in model.perband:
             root = self.perband_root_sampler(key, wlo, f0, L)
-            ## (the test costs a CY evaluation per point: only when it can
-            ## warn, and an element's signed amplitudes carry the sign)
-            if warn_touch and not root.signed and touches(self.one_element_cy(
+            ## (the test costs a CY evaluation per point: not where an
+            ## element's signed amplitudes carry the sign)
+            if not root.signed and touches(self.one_element_cy(
                     key, 2.0 * np.pi * f0)):
                 blind.append(key)
             groups.append(('band', root, None))
         if blind:
-            warnings.warn(
-                'PAC.%s: the PSD of %s touches zero along the orbit and the '
-                'element states no signed noise amplitudes, so it is factored '
-                'by the root of its PSD -- the |m| process: exact if the '
-                'modulation keeps its sign, wrong in either direction where it '
-                'changes sign.  Only the element knows the sign '
-                '(Element.noise_amplitudes).'
-                % (what, ', '.join('.'.join(k) for k in blind)),
-                RuntimeWarning, stacklevel=4)
+            warn_sign_blind(what, blind, stacklevel=4)
         return groups

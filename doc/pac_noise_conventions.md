@@ -54,6 +54,14 @@ then.
   `offset_fmax`, the lineshape's phase-offset band.
 - **Oscillator surfaces refuse a driven circuit, and the driven-circuit
   surfaces refuse an oscillator**, each by name.
+- **A coloured source rooted from its PSD is WARNED where that PSD touches
+  zero along the orbit** (`_noise_components.warn_sign_blind`, one policy
+  since 2026-09-29).  An element that states no signed amplitudes
+  (`Element.noise_amplitudes`) is factored by `sqrt(PSD)`: the `|m|`
+  process, exact while its modulation keeps its sign and wrong in either
+  direction where it changes sign.  Every surface that roots a coloured
+  PSD says so -- the spectra and the modal family, and since 2026-09-29
+  the sample family and the covariance family, which were silent.
 
 ## The scales, side by side
 

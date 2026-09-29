@@ -374,7 +374,7 @@ class _SampledNoise(object):
             ## weight, or a root per band frequency
             groups = nc.colour_groups(
                 model, 2.0 * np.pi * float(np.min(fr)), f0, L,
-                'sampled_noise', warn_touch=False)
+                'sampled_noise')
             scaled = [(G, s) for kind, G, s in groups if kind == 'fixed']
             perband = [G for kind, G, _s in groups if kind == 'band']
 
