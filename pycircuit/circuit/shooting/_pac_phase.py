@@ -228,10 +228,11 @@ class _PhaseNoise(object):
         return vbar, {'rms': rms, 'symmetry': sym,
                       'samples': S, 'times': tms}
 
-    def coloured_diffusion(self, pss, freqs):
+    def coloured_diffusion(self, pss, offsets):
         """`Gamma(f) = vbar^T (CY(2 pi f)/2) vbar` — the coloured analogue of `c`.
 
-        Returns an array over `freqs`.  `CY` is evaluated at each offset,
+        Returns an array over `offsets` (from the harmonic; `freqs`
+        until 2026-09-29), of either sign and even in them.  `CY` is evaluated at each offset,
         so a source whose density varies with frequency -- which is what
         "coloured" means -- is folded in exactly as a white one is.
 
@@ -266,18 +267,18 @@ class _PhaseNoise(object):
             ## of the modulated fold, `(s(f)/2) |<v_1^T G>|^2` per component
             ## (`_colour_fold`) -- `vbar^T (CY/2) vbar` when `G` does not move
             ## History: `doc/shooting_history.md`, `PAC.coloured_diffusion`.
-            fr = np.atleast_1d(np.asarray(freqs, dtype=float))
+            fr = np.atleast_1d(np.asarray(offsets, dtype=float))
             pos = np.abs(fr[fr != 0.0])
             return self._colour_fold(
                 pss, float(pos.min()) if pos.size else None, None,
                 'coloured_diffusion').dc(fr)
         out = []
-        for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
+        for f in np.atleast_1d(np.asarray(offsets, dtype=float)):
             cy = np.real(self._cy_reduced(pss, 2.0 * np.pi * float(f)))
             out.append(float(vbar @ (0.5 * cy) @ vbar))
         return np.asarray(out)
 
-    def coloured_diffusion_resolved(self, pss, freqs, harmonics=None,
+    def coloured_diffusion_resolved(self, pss, offsets, harmonics=None,
                                     frequency_aware=True):
         """`c(f) = sum_l V_l^H (CY(2 pi |f - l f_0|)/2) V_l` — the fold PER HARMONIC.
 
@@ -285,7 +286,9 @@ class _PhaseNoise(object):
         (the rows `diffusion_constant` contracts), so a source's density is
         read at the SOURCE-SIDE frequency `f - l f_0` for each harmonic it
         folds through -- which is what `pnoise` has done from the start and
-        what a coloured source requires.  Returns an array over `freqs`.
+        what a coloured source requires.  Returns an array over `offsets` (`freqs`
+        until 2026-09-29), of either sign and even in them (`V_{-l}` is
+        `conj(V_l)`; measured equal at +-o on an asymmetric orbit).
 
         ⚠ `c + Gamma(f)` IS NOT THIS: `c` reads `CY` at ONE frequency
         (`2 pi / T`) as if it held at every harmonic, and `Gamma` is exactly
@@ -325,7 +328,7 @@ class _PhaseNoise(object):
         self._check_circuit(pss)
         self._refuse_driven(pss, 'coloured_diffusion_resolved')
         if self._modulated_present(pss):
-            return self._coloured_diffusion_modulated(pss, freqs, harmonics,
+            return self._coloured_diffusion_modulated(pss, offsets, harmonics,
                                                       frequency_aware)
         m = pss.cir.n - 1
         v0, info = pss.ppv()
@@ -357,7 +360,7 @@ class _PhaseNoise(object):
             ## (pnoise PM / phase_psd: DC 0.729 / 0.026 at 1e-3 / 1e-2 f0,
             ## this 1.0001 / 1.0003 for a Lorentzian or 1/f source).
             out = []
-            for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
+            for f in np.atleast_1d(np.asarray(offsets, dtype=float)):
                 Sf = S if f == 0.0 else self._fa_samples(pss, f)
                 Vf = (E @ Sf) / T
                 en = np.sum(np.abs(Vf) ** 2, axis=1)
@@ -374,7 +377,7 @@ class _PhaseNoise(object):
         keep = energy > 1e-14 * energy.sum()
         ls, V = ls[keep], V[keep]
         out = []
-        for f in np.atleast_1d(np.asarray(freqs, dtype=float)):
+        for f in np.atleast_1d(np.asarray(offsets, dtype=float)):
             tot = 0.0
             for l, vl in zip(ls, V):
                 cy = np.real(self._cy_reduced(pss, 2.0 * np.pi * abs(float(f) - l / T)))
@@ -563,7 +566,8 @@ class _PhaseNoise(object):
     def phase_psd(self, pss, offsets, harmonic=1, frequency_aware=True):
         """`L(f)`, the SINGLE-SIDEBAND phase noise at `offsets` from harmonic
         `i`, per Hz relative to the carrier (`10 log10` of it is dBc/Hz) --
-        white AND coloured.
+        white AND coloured.  `offsets > 0`: a zero or negative offset is
+        refused (`L` diverges at zero offset, and that is physical).
 
             L_i(f) = i^2 f_0^2 c(f) / f^2,   c(f) = sum_l V_l^H (CY(f - l f_0)/2) V_l
 
@@ -745,6 +749,8 @@ class _PhaseNoise(object):
 
             S_i(f) = i² f₀² c / (π² i⁴ f₀⁴ c² + f²)
 
+        `offsets` of either sign; even in them.
+
         ⚠ EXACT FOR WHITE SOURCES, not a limiting form.  With coloured
         sources the transform "does not have a simple closed form" and only
         two-regime approximations exist — which is why the diffusion
@@ -777,6 +783,11 @@ class _PhaseNoise(object):
                             frequency_aware=True, offset_fmin=None,
                             offset_fmax=None, all_orders=None):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
+
+        `offsets` of either sign, and the spectrum is EVEN in them (measured
+        equal at +-o on an asymmetric orbit): the lineshape is symmetric
+        about the harmonic.  (The modal family reads a negative offset as
+        the LOWER sideband, which is not the upper's.)
 
         ⚠⚠ THIS DOES NOT GO THROUGH `pnoise`'s SIDEBAND FOLD, AND IT CANNOT.
         The fold is a FREQUENCY-CONVERSION computation, complete for a
@@ -1339,6 +1350,8 @@ class _PhaseNoise(object):
 
     def frequency_aware_diffusion(self, pss, offset):
         """`c(f)` — the phase diffusion constant seen at modulation offset `f`.
+
+        `offset` a scalar of either sign; its magnitude is used.
 
         `c(f) = (1/T) integral v_f^H (CY/2) v_f dt` with `v_f` the
         frequency-aware PPV (`PSS.frequency_aware_ppv`, Lai 2008 eq. 23) on

@@ -139,8 +139,8 @@ def test_orbital_correlation_is_gated_three_ways():
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        R4, _ = pac.orbital_correlation(pss, H=4)
-        R, Cc = pac.orbital_correlation(pss, H=32)
+        R4, _ = pac.orbital_correlation(pss, maxharmonics=4)
+        R, Cc = pac.orbital_correlation(pss, maxharmonics=32)
         Kf, d, info = pac.oscillator_covariance(pss, samples=True)
         modes = pss.floquet_modes(pss)
     assert np.linalg.norm(R - R.T) < 1e-12 * np.linalg.norm(R), 'R not symmetric'
@@ -312,7 +312,7 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
-            ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+            ms = pac.modal_spectrum(pss, offs, ov, maxharmonics=8, maxsidebands=16)
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
                                                     maxsidebands=16,
                                                     sweeptype='absolute')[0]))
@@ -322,7 +322,7 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
         tot[kind] = ms['total']
         if kind == 'coloured':
             with pytest.raises(ValueError, match='linearised skirt'):
-                pac.modal_spectrum(pss, np.array([1e-12]), ov, H=8)
+                pac.modal_spectrum(pss, np.array([1e-12]), ov, maxharmonics=8)
     assert np.max(np.abs(tot['coloured'] / tot['filtered'] - 1.0)) < 5e-4
 
 
@@ -359,7 +359,7 @@ def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
-            ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+            ms = pac.modal_spectrum(pss, offs, ov, maxharmonics=8, maxsidebands=16)
             ph = pac.phase_psd(pss, np.abs(offs[:2]))
         blind = any('touches zero along the orbit' in str(x.message)
                     for x in caught)
@@ -435,7 +435,7 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
-            res[kind] = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+            res[kind] = pac.modal_spectrum(pss, offs, ov, maxharmonics=8, maxsidebands=16)
     for k in ('phase', 'orbital', 'correlation', 'total'):
         err = np.max(np.abs(res['white_ref'][k] / res['white'][k] - 1.0))
         assert err < 1e-9, (k, res['white_ref'][k] / res['white'][k] - 1.0)
@@ -447,7 +447,7 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         offs = np.array([10.0, -10.0]) * f_amp
-        ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
+        ms = pac.modal_spectrum(pss, offs, ov, maxharmonics=8, maxsidebands=16)
         pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
                                                 maxsidebands=16,
                                                 sweeptype='absolute')[0]))
@@ -495,7 +495,7 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
         for j in range(1, 5):
             offs = (np.unique(np.concatenate((-(1.0 - dl[::-1]), -dl[::-1], dl)))
                     if j == 1 else np.concatenate((-dl[::-1], dl))) * f0
-            ms = pac.modal_spectrum(pss, offs, ov, harmonic=j, H=8, sidebands=16)
+            ms = pac.modal_spectrum(pss, offs, ov, harmonic=j, maxharmonics=8, maxsidebands=16)
             tot += trapezoid(ms['orbital'], offs)
     assert abs(cyc / tot - 1.0) < 5e-3, cyc / tot - 1.0
     with pytest.raises(NotImplementedError, match='residue sum'):
@@ -745,7 +745,7 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
-            R, _ = pac.orbital_correlation(pss, H=8)
+            R, _ = pac.orbital_correlation(pss, maxharmonics=8)
             modes = pss.floquet_modes(pss)
             v0, info = pss.ppv()
             Kf, d, ci = pac.oscillator_covariance(pss, samples=True)
@@ -909,7 +909,7 @@ def test_every_period_harmonic_is_a_fourier_integral_on_a_non_uniform_grid():
     with _w.catch_warnings(record=True) as _rec:
         _w.simplefilter('always')
         PAC(cir, toolkit=circuit.numeric).modal_spectrum(
-            pss, np.array([1e-3]), 0, H=8)
+            pss, np.array([1e-3]), 0, maxharmonics=8)
     assert any('off the unit circle' in str(r.message) for r in _rec)
 
 
@@ -970,8 +970,8 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
         pac = PAC(cir, toolkit=circuit.numeric)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            ms = pac.modal_spectrum(pss, np.array([1e-3, 3e-3]), 0, H=8,
-                                    sidebands=16)
+            ms = pac.modal_spectrum(pss, np.array([1e-3, 3e-3]), 0, maxharmonics=8,
+                                    maxsidebands=16)
         return np.concatenate([ms[k] for k in ('phase', 'orbital', 'correlation')])
 
     ## radau: on the unit circle on the 3:1 grid, runs, and agrees with the
@@ -1004,7 +1004,7 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
             PAC(cir, toolkit=circuit.numeric).modal_spectrum(
-                pss, np.array([1e-3]), 0, H=8)
+                pss, np.array([1e-3]), 0, maxharmonics=8)
         assert any('off the unit circle' in str(r.message) for r in rec), method
     g200 = parts(*solve(200, True, 'gear'))
     g400 = parts(*solve(400, True, 'gear'))
@@ -1097,11 +1097,11 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
     ## tangent alignment, never in the orbital sum): gear's R converges to
     ## radau's at ~x3.5 per doubling (2.3e-02 / 7.2e-03 / 2.0e-03 measured)
     Rr, _c = PAC(*[solve(400, True, 'radau')[0]], toolkit=circuit.numeric).orbital_correlation(
-        solve(400, True, 'radau')[1], H=8)
+        solve(400, True, 'radau')[1], maxharmonics=8)
     for method in ('gear', 'trap'):
         cir, pss = solve(400, True, method)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, H=8)
+            R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, maxharmonics=8)
         assert np.all(np.isfinite(R))
         assert np.linalg.norm(R - Rr) / np.linalg.norm(Rr) < 3e-2, method

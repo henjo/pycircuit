@@ -308,7 +308,7 @@ def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
-            res[kind] = (pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16),
+            res[kind] = (pac.modal_spectrum(pss, offs, ov, maxharmonics=8, maxsidebands=16),
                          float(pac.diffusion_constant(pss)),
                          np.array([pac.frequency_aware_diffusion(pss, o)
                                    for o in offs]),
@@ -777,7 +777,7 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
         _w.simplefilter('ignore')
         sfa = float(pac.phase_psd(pss, [o])[0])
         sdc = float(pac.phase_psd(pss, [o], frequency_aware=False)[0])
-        pm = pac.am_pm_noise(pss, o, ov, carrier=1, maxsidebands=16)[1]
+        pm = pac.am_pm_noise(pss, o, ov, harmonic=1, maxsidebands=16)[1]
     assert abs(pm / (X2 * sfa) - 1.0) < 5e-3, pm / (X2 * sfa)
     assert pm / (X2 * sdc) < 0.03, pm / (X2 * sdc)
     ## and the coloured LINESHAPE (`oscillator_spectrum`), frequency-aware
@@ -826,7 +826,7 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
         o = f_amp
         ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
         X2 = 2.0 * abs(pac.carrier_phasor(pss, 0, 1)) ** 2
-        pm = pac.am_pm_noise(pss, o, 0, carrier=1, maxsidebands=16)[1]
+        pm = pac.am_pm_noise(pss, o, 0, harmonic=1, maxsidebands=16)[1]
         rfa = pm / (X2 * float(pac.phase_psd(pss, [o])[0]))
         rdc = pm / (X2 * float(pac.phase_psd(pss, [o],
                                                  frequency_aware=False)[0]))
@@ -1068,9 +1068,9 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         s_peak = float(pac.orbital_spectrum(
-            pss, np.array([1e-6 * f_amp]), 0, H=4)[0])
+            pss, np.array([1e-6 * f_amp]), 0, maxharmonics=4)[0])
         s_half = float(pac.orbital_spectrum(
-            pss, np.array([f_amp]), 0, H=4)[0])
+            pss, np.array([f_amp]), 0, maxharmonics=4)[0])
     assert abs(s_half / s_peak - 0.5) < 5e-3, \
         'the orbital line is at %.6f of its peak one f_amp out, not 0.5 — ' \
         'its half-width is not |Re(mu_2)|/(2 pi)' % (s_half / s_peak)
@@ -1087,7 +1087,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             sp, _ = pac2.oscillator_spectrum(p2, offs, 0, harmonic=1)
-            so = pac2.orbital_spectrum(p2, offs, 0, harmonic=1, H=4)
+            so = pac2.orbital_spectrum(p2, offs, 0, harmonic=1, maxharmonics=4)
         ratios.append(np.asarray(so) / np.asarray(sp))
     drift = float(np.max(np.abs(ratios[0] / ratios[1] - 1.0)))
     assert drift < 5e-3, \
@@ -1111,7 +1111,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
             spk, _ = pk_pac.oscillator_spectrum(
                 pk, np.array([fak]), 0, harmonic=1)
             sok = pk_pac.orbital_spectrum(
-                pk, np.array([fak]), 0, harmonic=1, H=4)
+                pk, np.array([fak]), 0, harmonic=1, maxharmonics=4)
         seen.append(float(sok[0] / spk[0]))
     for cval, r in zip((0.25, 1.0, 4.0), seen):
         assert abs(r - 0.5) < 0.02, \
@@ -1167,7 +1167,7 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         offs = np.array([0.3, 3.0, 10.0]) * f_amp
         Sph = np.asarray(pac.oscillator_spectrum(pss, offs, 0)[0])
-        Sorb = pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8)
+        Sorb = pac.orbital_spectrum(pss, offs, 0, harmonic=1, maxharmonics=8)
         for f, sph, sorb in zip(offs, np.asarray(Sph), np.asarray(Sorb)):
             up, _ = pac.pnoise(pss, f0 + f, 0, maxsidebands=16, sweeptype='absolute')
             lo, _ = pac.pnoise(pss, f0 - f, 0, maxsidebands=16, sweeptype='absolute')
@@ -1218,7 +1218,7 @@ def test_the_line_shape_spectra_refuse_a_harmonic_that_has_no_line():
             for call in (
                     lambda: pac.oscillator_spectrum(pss, offs, 0, harmonic=2,
                                                     frequency_aware=False),
-                    lambda: pac.orbital_spectrum(pss, offs, 0, harmonic=2, H=8)):
+                    lambda: pac.orbital_spectrum(pss, offs, 0, harmonic=2, maxharmonics=8)):
                 if expect_refusal:
                     with pytest.raises(ValueError, match='pnoise'):
                         call()
@@ -1261,7 +1261,7 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     def pm_ratio(pac, pss, off, ov, fa, sb=16):
         S = float(np.asarray(pac.oscillator_spectrum(
             pss, np.array([off]), ov, frequency_aware=fa)[0])[0])
-        _am, pm, _ = pac.am_pm_noise(pss, off, ov, carrier=1, maxsidebands=sb)
+        _am, pm, _ = pac.am_pm_noise(pss, off, ov, harmonic=1, maxsidebands=sb)
         return pm / S
 
     ## 1. AM-to-PM coupling above f_amp
@@ -1369,7 +1369,7 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
     off = np.array([10.0 * f_amp])
     with _w.catch_warnings(record=True) as caught:
         _w.simplefilter('always')
-        Sorb = float(pac.orbital_spectrum(pss, off, 0, harmonic=1, H=8)[0])
+        Sorb = float(pac.orbital_spectrum(pss, off, 0, harmonic=1, maxharmonics=8)[0])
     assert any('over-states' in str(w.message)
                and 'pnoise' in str(w.message) for w in caught), \
         'orbital_spectrum must warn that the sum over-states on an asymmetric ' \
@@ -1448,7 +1448,7 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
         for f in offs:
             up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=16, sweeptype='absolute')
             lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=16, sweeptype='absolute')
-            am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=16)
+            am, pm, _ = pac.am_pm_noise(pss, f, ov, harmonic=1, maxsidebands=16)
             rows.append((float(np.real(up)), float(np.real(lo)),
                          float(np.real(am)), float(np.real(pm))))
     for (up, lo, am, pm), sv, f, want in zip(rows, Sv, offs, (1.0, 2.0, 2.0)):
@@ -1474,7 +1474,7 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
         for f, sv in zip(offs, Sv):
             up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32, sweeptype='absolute')
             lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32, sweeptype='absolute')
-            am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
+            am, pm, _ = pac.am_pm_noise(pss, f, ov, harmonic=1, maxsidebands=32)
             up, lo, am, pm = (float(np.real(x)) for x in (up, lo, am, pm))
             assert abs(2.0 * (am + pm) - (up + lo)) / (up + lo) < 1e-8, (f / f0, am + pm, up + lo)
             assert abs((up + lo) / (2.0 * sv) - 1.0) < 0.01, ('LC overlay', f / f0, (up + lo) / (2.0 * sv))
@@ -1718,7 +1718,7 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
             ## `Pf/P0` -- which is what the default now does internally
             Sv, _ = pac.oscillator_spectrum(pss, np.array([f]), ov,
                                             frequency_aware=False)
-            _am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
+            _am, pm, _ = pac.am_pm_noise(pss, f, ov, harmonic=1, maxsidebands=32)
             Sf = pss.frequency_aware_ppv(f)[1]['samples'][:, iw]
             Pf = float(np.sum(np.abs(np.fft.fft(Sf) / Sf.shape[0]) ** 2))
             assert abs((float(np.real(pm)) / float(Sv[0])) / (Pf / P0) - 1.0) < tol, (r, pm, Pf / P0)
@@ -1817,14 +1817,14 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
-            ms = pac.modal_spectrum(pss, offs, 0, H=8, sidebands=16)
+            ms = pac.modal_spectrum(pss, offs, 0, maxharmonics=8, maxsidebands=16)
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, 0,
                                                     maxsidebands=16,
                                                     sweeptype='absolute')[0]))
                            for o in offs])
             old = (np.asarray(pac.oscillator_spectrum(
                 pss, offs, 0, frequency_aware=False)[0], dtype=float)
-                + np.asarray(pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8),
+                + np.asarray(pac.orbital_spectrum(pss, offs, 0, harmonic=1, maxharmonics=8),
                              dtype=float))
         parts = ms['phase'] + ms['orbital'] + ms['correlation']
         assert np.max(np.abs(parts - ms['total'])) <= 1e-12 * np.max(ms['total'])
@@ -1838,7 +1838,7 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             near = np.array([0.0, lw])
             with _w.catch_warnings():
                 _w.simplefilter('ignore')
-                mn = pac.modal_spectrum(pss, near, 0, H=8, sidebands=16)
+                mn = pac.modal_spectrum(pss, near, 0, maxharmonics=8, maxsidebands=16)
                 lor = np.asarray(pac.oscillator_spectrum(
                     pss, near, 0, frequency_aware=False)[0], dtype=float)
             assert np.max(np.abs(mn['phase'] / lor - 1.0)) < 1e-3, mn['phase'] / lor
@@ -1851,10 +1851,10 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             old_ratio = old[1:] / pn[1:]
             assert np.all(old_ratio > 2.0), old_ratio
             np.testing.assert_allclose(
-                pac.correlation_spectrum(pss, offs, 0, H=8, sidebands=16),
+                pac.correlation_spectrum(pss, offs, 0, maxharmonics=8, maxsidebands=16),
                 ms['correlation'], rtol=0, atol=0)
     with pytest.raises(ValueError, match='harmonic must be >= 1'):
-        pac.modal_spectrum(pss, np.array([f_amp]), 0, harmonic=0, H=8)
+        pac.modal_spectrum(pss, np.array([f_amp]), 0, harmonic=0, maxharmonics=8)
 
 #: the correlated pair of `_xcorr_oscillator`: white `A`, 1/f `B` per node,
 #: correlation `RHO` in each part (white with white, 1/f with 1/f)

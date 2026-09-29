@@ -1015,8 +1015,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 row = row + wgt * Xf[i if i < irn else i + 1]
         return row
 
-    def carrier_phasor(self, pss, output, carrier=1):
-        """The `carrier`-th Fourier coefficient of the steady-state output.
+    def carrier_phasor(self, pss, output, harmonic=1):
+        """The `harmonic`-th Fourier coefficient of the steady-state output.
 
         Computed here rather than taken from `fpss`, whose spectrum is RMS
         and energy-folded -- correct for reporting a magnitude and useless
@@ -1033,19 +1033,19 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## grid (measured 7.5 % off and not converging on a 3:1 one)
         _wq = pss._period_quadrature(pss.factored_period())
         if _wq is None or len(_wq) != len(t):
-            return complex(np.sum(v * np.exp(-1j * carrier * w0 * t)) / len(t))
-        return complex(np.sum(v * np.exp(-1j * carrier * w0 * t) * _wq))
+            return complex(np.sum(v * np.exp(-1j * harmonic * w0 * t)) / len(t))
+        return complex(np.sum(v * np.exp(-1j * harmonic * w0 * t) * _wq))
 
-    def am_pm(self, pss, freq, output, carrier=1, sweeptype=None):
-        """AM and PM modulation indices at `carrier`, per noise/signal source.
+    def am_pm(self, pss, freq, output, harmonic=1, sweeptype=None):
+        """AM and PM modulation indices at `harmonic`, per noise/signal source.
 
         Returns `(m_am, m_pm)`, each a row of length `m`: the modulation a
         unit source at reduced coordinate `i`, driven at `freq`, imposes on
-        the `carrier`-th harmonic of the output.
+        the `harmonic`-th harmonic of the output.
 
-        `freq` by a commercial RF simulator's sweep rule with `carrier` as
+        `freq` by a commercial RF simulator's sweep rule with `harmonic` as
         the reference, as `am_pm_noise`: `sweeptype='relative'` the offset
-        from `carrier*f0` (the source's own, baseband, frequency),
+        from `harmonic*f0` (the source's own, baseband, frequency),
         `'absolute'` the upper output sideband's frequency, `None` relative
         on an AUTONOMOUS PSS and absolute on a driven one.  ⚠ Until
         2026-09-29 an offset on every PSS.  Below, `freq` is the offset.
@@ -1082,8 +1082,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.am_pm`.
         """
         output = output_index(pss, output)
-        freq = sweep_offset(pss, freq, sweeptype, carrier, 'am_pm')
-        C = self.carrier_phasor(pss, output, carrier)
+        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm')
+        C = self.carrier_phasor(pss, output, harmonic)
         ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
         ## circuit does not produce still has a phasor of ~1e-16 rather
         ## than exactly 0, and dividing by it turns "there is no carrier
@@ -1097,9 +1097,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 'no carrier to modulate and AM/PM are not defined. Dividing '
                 'by it would report a huge modulation of nothing. Pick a '
                 'harmonic the circuit actually produces.'
-                % (carrier, abs(C), scale))
-        upper = self.adjoint_sideband_row(pss, freq, output, carrier)[0]
-        lower = self.adjoint_sideband_row(pss, -freq, output, carrier)[0]
+                % (harmonic, abs(C), scale))
+        upper = self.adjoint_sideband_row(pss, freq, output, harmonic)[0]
+        lower = self.adjoint_sideband_row(pss, -freq, output, harmonic)[0]
         return self.am_pm_indices(upper / C, lower / C)
 
     ## `|1 - alpha|` below which the deflated answer is left as recovered:

@@ -1113,7 +1113,7 @@ def test_am_pm_noise_does_not_depend_on_where_t_equals_zero():
         k = full - 1 if full > pss.irefnode else full
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            am, pm, _ = pac.am_pm_noise(pss, fm, k, carrier=1, maxsidebands=30,
+            am, pm, _ = pac.am_pm_noise(pss, fm, k, harmonic=1, maxsidebands=30,
                                         sweeptype='relative')
             up, _ = pac.pnoise(pss, F0 + fm, k, maxsidebands=30)
             lo, _ = pac.pnoise(pss, F0 - fm, k, maxsidebands=30)
@@ -1184,7 +1184,7 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
     def residual(L):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, carrier=1,
+            S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, harmonic=1,
                                             maxsidebands=L, sweeptype='relative')
             up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
             lo, _ = pac.pnoise(pss, f0 - off, 2, maxsidebands=L)
@@ -1658,7 +1658,7 @@ def test_the_am_corner_is_f0_over_2pi_q_lambda_not_4pi():
     ov = [str(n) for n in cir.nodes].index('v')
     u_c = 1.0 / (2.0 * np.pi * q_lam)
     for u, expect in ((0.5 * u_c, 0.2), (u_c, 0.5), (2.0 * u_c, 0.8)):
-        am, pm, _ = pac.am_pm_noise(pss, u * f0, ov, carrier=1, maxsidebands=32)
+        am, pm, _ = pac.am_pm_noise(pss, u * f0, ov, harmonic=1, maxsidebands=32)
         ratio = float(np.real(am) / np.real(pm))
         assert abs(ratio - expect) < 0.01, (u / u_c, ratio, expect)
 
@@ -1791,7 +1791,7 @@ def test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint()
         f0 = 1.0 / float(pss.period)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _am, pm, _ = pac.am_pm_noise(pss, r * f0, ov, carrier=1, maxsidebands=32)
+            _am, pm, _ = pac.am_pm_noise(pss, r * f0, ov, harmonic=1, maxsidebands=32)
         ratio[src] = float(np.real(pm))
         pm_tone[src] = _forward_tone_pm(c, pss, src, tones, r=r)
     double = (pm_tone['w'] / pm_tone['v']) / (ratio['w'] / ratio['v'])
@@ -2192,8 +2192,8 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
         pss.solve(period=T, timestep=T / 40, maxiterations=40)
         pac = PAC(c, toolkit=circuit.numeric)
         N = len(pss._adjoint_host().factored_period().steps)
-        default = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1, sweeptype='relative')
-        explicit = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1,
+        default = pac.am_pm_noise(pss, 0.13 / T, 2, harmonic=1, sweeptype='relative')
+        explicit = pac.am_pm_noise(pss, 0.13 / T, 2, harmonic=1,
                                    maxsidebands=N // 2 - 1, sweeptype='relative')
     assert default[:2] == explicit[:2] and default[2] == explicit[2], (default, explicit)
     assert max(abs(p_) for p_ in default[2]) == N // 2 - 1
@@ -2271,9 +2271,9 @@ def test_the_noise_surfaces_refuse_what_they_used_to_take_silently():
                        match='modulated=True and cyclostationary=True'):
         pac.pnoise(pss, 300.0, k, modulated=True, cyclostationary=True)
     with pytest.raises(ValueError, match='no component at harmonic 2'):
-        pac.am_pm_noise(pss, 100.0, k, carrier=2, sweeptype='relative')
+        pac.am_pm_noise(pss, 100.0, k, harmonic=2, sweeptype='relative')
     ## the carrier it does carry still splits
-    S_am, S_pm, _b = pac.am_pm_noise(pss, 100.0, k, carrier=1, sweeptype='relative')
+    S_am, S_pm, _b = pac.am_pm_noise(pss, 100.0, k, harmonic=1, sweeptype='relative')
     assert S_am > 0.0 and S_pm > 0.0
 
 
@@ -2368,3 +2368,46 @@ def test_the_sweep_is_relative_on_an_oscillator_and_absolute_when_driven():
         pac.pnoise(pss, 300.0, k, relharmnum=2)
     with pytest.raises(ValueError, match='sweeptype must be'):
         pac.pnoise(pss, 300.0, k, sweeptype='offset')
+
+
+def test_a_count_above_the_grid_raises_and_the_knobs_share_their_names():
+    """Items #12-#14 of `doc/pac_noise_conventions.md` (2026-09-29):
+    * an EXPLICIT sideband or harmonic count above what the period grid
+      resolves RAISES -- `pnoise` and `am_pm_noise` clamped it to the
+      grid's Nyquist, and the modal family its harmonic count, without a
+      word (the sampled family already raised); the limit itself and the
+      defaults (as many as the grid resolves) still run;
+    * one name each: `harmonic` (was `carrier` in `am_pm`, `am_pm_noise`,
+      `carrier_phasor`), `maxsidebands` / `maxharmonics` (were `sidebands`
+      / `H` in the modal family), `offsets` (was `freqs` in the coloured
+      diffusion)."""
+    import warnings as _w
+    c, pss, pac = _driven_rc()
+    k = [str(n) for n in c.nodes if str(n) != 'gnd!'].index('out')
+    N = len(pss._adjoint_host().factored_period().steps)
+    with pytest.raises(ValueError, match="above the grid's Nyquist"):
+        pac.pnoise(pss, 300.0, k, maxsidebands=N // 2 + 1)
+    assert np.isfinite(pac.pnoise(pss, 300.0, k, maxsidebands=N // 2)[0])
+    with pytest.raises(ValueError, match='above what the grid resolves'):
+        pac.am_pm_noise(pss, 100.0, k, harmonic=1, maxsidebands=N // 2,
+                        sweeptype='relative')
+    ## `harmonic` everywhere, and the old name refused
+    assert abs(pac.carrier_phasor(pss, k, harmonic=1)) > 0.0
+    m_am, _m_pm = pac.am_pm(pss, 100.0, k, harmonic=1, sweeptype='relative')
+    assert np.all(np.isfinite(m_am))
+    with pytest.raises(TypeError):
+        pac.am_pm(pss, 100.0, k, carrier=1, sweeptype='relative')
+
+    _cir, osc, opac = _vdp_ac(npts=100)
+    f0 = 1.0 / float(osc.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        with pytest.raises(ValueError, match='maxharmonics=1000'):
+            opac.modal_spectrum(osc, [0.1 * f0], 0, maxharmonics=1000)
+        with pytest.raises(ValueError, match='maxharmonics=1000'):
+            opac.orbital_correlation(osc, maxharmonics=1000)
+        ms = opac.modal_spectrum(osc, [0.1 * f0], 0, maxharmonics=4,
+                                 maxsidebands=8)
+        assert np.all(np.isfinite(ms['total']))
+        g = opac.coloured_diffusion_resolved(osc, offsets=[0.1 * f0])
+    assert np.all(np.isfinite(g))

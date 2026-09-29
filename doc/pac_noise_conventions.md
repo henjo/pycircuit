@@ -81,8 +81,8 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
-| `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False, sweeptype=None, relharmnum=None` | `(S, sidebands_used)`; also sets `self.alias_stop`, `self.sidebands_used` | `freq`, scalar, the OUTPUT frequency by the sweep rule: itself when absolute (the default on a driven PSS), `relharmnum f0 + freq` when relative (the default on an oscillator) | `maxsidebands` -> `N//2` (clamped); `ratio_tol` -> 1e-9, stops after two quiet pairs |
-| `am_pm_noise` | `pss, freq, output, carrier=1, maxsidebands=None, modulated=False, sweeptype=None` | `(S_am, S_pm, bands)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28) | `freq` by the sweep rule with `carrier` the harmonic: an OFFSET from `carrier f0` when relative (the default on an oscillator), the upper sideband's own frequency when absolute (the default on a driven PSS) | `maxsidebands` -> every pair within Nyquist, `N//2 - carrier` (fixed 2026-09-28: it raised) |
+| `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False, sweeptype=None, relharmnum=None` | `(S, sidebands_used)`; also sets `self.alias_stop`, `self.sidebands_used` | `freq`, scalar, the OUTPUT frequency by the sweep rule: itself when absolute (the default on a driven PSS), `relharmnum f0 + freq` when relative (the default on an oscillator) | `maxsidebands` -> `N//2` (an explicit count above it raises; clamped silently until 2026-09-29); `ratio_tol` -> 1e-9, stops after two quiet pairs |
+| `am_pm_noise` | `pss, freq, output, harmonic=1, maxsidebands=None, modulated=False, sweeptype=None` | `(S_am, S_pm, bands)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28) | `freq` by the sweep rule with `harmonic` the reference: an OFFSET from `harmonic f0` when relative (the default on an oscillator), the upper sideband's own frequency when absolute (the default on a driven PSS) | `maxsidebands` -> every pair within Nyquist, `N//2 - harmonic` (an explicit count above it raises) |
 | `band_spread` | `pss, output, band, points=9, harmonic=1, quantity='pnoise', **kw` | `(spread, info)` | `band` in units of f0: an OFFSET from `harmonic f0` for every quantity (`**kw` takes no `sweeptype`) | `points=9` |
 | `sampled_noise` | `pss, output, times, freqs, maxsidebands=None, tail=False` | array `(len(times), len(freqs))` | `freqs`: SERIES frequency, `0 < f <= f0/2` | `maxsidebands` -> `N//2 - 1` (raises above) |
 | `sampled_variance` | `pss, output, times, series_fmin, series_fmax, points_per_decade=40, maxsidebands=None, tail=False` | array `(len(times),)` | `series_fmin`, `series_fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
@@ -94,29 +94,29 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
-| `oscillator_spectrum` | `pss, offsets, output, harmonic=1, frequency_aware=True, offset_fmin=None, offset_fmax=None, all_orders=None` | `(S_v, L_dBc)`; sets `self.lineshape_info` | OFFSETS from `harmonic f0`, any sign | `offset_fmin` needed only with colour; `offset_fmax` -> f0/2; `all_orders` with `frequency_aware=False` refused |
+| `oscillator_spectrum` | `pss, offsets, output, harmonic=1, frequency_aware=True, offset_fmin=None, offset_fmax=None, all_orders=None` | `(S_v, L_dBc)`; sets `self.lineshape_info` | OFFSETS from `harmonic f0`, any sign, EVEN in them | `offset_fmin` needed only with colour; `offset_fmax` -> f0/2; `all_orders` with `frequency_aware=False` refused |
 | `phase_psd` | `pss, offsets, harmonic=1, frequency_aware=True` | array, `L(f)` per Hz (the IEEE `S_phi` is `2 L`) | OFFSETS, `> 0` | refuses offsets at or below the Lorentzian corner |
-| `lorentzian` (static) | `offsets, c, f0, harmonic=1` | array, 1/Hz relative to the harmonic's power | OFFSETS, any sign | harmonic 0 returns zeros |
-| `modal_spectrum` | `pss, offsets, output, harmonic=1, H=None, sidebands=None` | dict: `phase, orbital, correlation, total` | OFFSETS, negative = the lower sideband | `H` -> 32 (capped by the grid), `sidebands` -> `2H` |
-| `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, H=None` (+ `sidebands` for correlation) | array | as `modal_spectrum` | `H` -> 32 |
-| `orbital_correlation` | `pss, H=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
+| `lorentzian` (static) | `offsets, c, f0, harmonic=1` | array, 1/Hz relative to the harmonic's power | OFFSETS, any sign, even in them | harmonic 0 returns zeros |
+| `modal_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None, maxsidebands=None` | dict: `phase, orbital, correlation, total` | OFFSETS, negative = the lower sideband (not the upper's) | `maxharmonics` -> 32 capped by the grid (an explicit count above the grid raises), `maxsidebands` -> `2 maxharmonics` |
+| `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None` (+ `maxsidebands` for correlation) | array | as `modal_spectrum` | as `modal_spectrum` |
+| `orbital_correlation` | `pss, maxharmonics=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
 | `oscillator_covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K_orb, d, info)`; `K_orb` `m x m` whatever the method (the pair with `pair=True`) | as `covariance` (colour enters the transverse part only) | |
 | `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle_bound` (the large-`k` upper bound), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
 | `orbital_mode_weights` | `pss, nmodes=None` | `(cw, modes, K_orb)` | -- | |
 | `diffusion_constant` | `pss` | `c`, s | -- | refuses colour |
 | `frequency_aware_diffusion` | `pss, offset` | `c(f)`, s | `offset` scalar, abs taken | refuses colour |
 | `colour_projection` | `pss` | `(vbar, info)`: `rms, symmetry, samples, times` | -- | |
-| `coloured_diffusion` | `pss, freqs` | `Gamma(f)`, the `l = 0` term ONLY | `freqs`: OFFSETS | do not add it to `c` (counts `l = 0` twice); use `coloured_diffusion_resolved` |
-| `coloured_diffusion_resolved` | `pss, freqs, harmonics=None, frequency_aware=True` | `c(f)` over all harmonics | OFFSETS | `harmonics` -> every `l` with > 1e-14 of the PPV energy |
+| `coloured_diffusion` | `pss, offsets` | `Gamma(f)`, the `l = 0` term ONLY | OFFSETS, any sign, even in them | do not add it to `c` (counts `l = 0` twice); use `coloured_diffusion_resolved` |
+| `coloured_diffusion_resolved` | `pss, offsets, harmonics=None, frequency_aware=True` | `c(f)` over all harmonics | OFFSETS, any sign, even in them | `harmonics` -> every `l` with > 1e-14 of the PPV energy |
 
 ## Transfers (not noise)
 
 | method | arguments | returns |
 |---|---|---|
 | `solve` | `pss, freqs, refnode=gnd, recycle=True, sweeptype=None, relharmnum=None` | a `CircuitResult` over the absolute OUTPUT frequencies; `freqs` the SOURCE frequencies by the sweep rule, as `pnoise`'s `freq` |
-| `am_pm` | `pss, freq, output, carrier=1, sweeptype=None` | `(m_am, m_pm)` per unit source; `freq` by the sweep rule, as `am_pm_noise`'s; refuses a missing carrier |
+| `am_pm` | `pss, freq, output, harmonic=1, sweeptype=None` | `(m_am, m_pm)` per unit source; `freq` by the sweep rule, as `am_pm_noise`'s; refuses a missing carrier |
 | `am_pm_indices` | `a, b` | `(a + conj(b), a - conj(b))` |
-| `carrier_phasor` | `pss, output, carrier=1` | the complex Fourier coefficient (`A/2` for `A cos`) |
+| `carrier_phasor` | `pss, output, harmonic=1` | the complex Fourier coefficient (`A/2` for `A cos`) |
 
 ## Where the surfaces disagree
 
@@ -189,16 +189,35 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 **Naming only:**
 
-12. The truncation knob has many names: `maxsidebands` (`N//2`, clamped, in
+12. ~~The truncation knob has many names: `maxsidebands` (`N//2`, clamped, in
     `pnoise`; `N//2 - 1`, raising, in the sampled family), `H`,
     `sidebands` (a count in `modal_spectrum`, a list in
-    `adjoint_sideband_row`), `harmonics`, `kmax`, `nmodes`.
-13. The harmonic is `harmonic` in the spectra and `carrier` in `am_pm`,
-    `am_pm_noise`, `carrier_phasor`.
-14. Frequency names: `freq` (scalar), `freqs` (a series frequency or an
+    `adjoint_sideband_row`), `harmonics`, `kmax`, `nmodes`.~~ CLOSED
+    2026-09-29 (Andreas: "Rename + raise"): a sideband COUNT is
+    `maxsidebands` everywhere (`modal_spectrum`, `correlation_spectrum`
+    said `sidebands`), the PPV / mode harmonic count `maxharmonics` (was
+    `H`); `sidebands` stays a SELECTION of indices (`adjoint_sideband_row`,
+    `mixer_response`), `harmonics` a selection of `l`, and `kmax` /
+    `nmodes` are result lengths, not truncations.  An EXPLICIT count above
+    what the grid resolves raises everywhere (`pnoise`, `am_pm_noise` and
+    the modal harmonic count clamped silently); the defaults are as many as
+    the grid resolves.
+13. ~~The harmonic is `harmonic` in the spectra and `carrier` in `am_pm`,
+    `am_pm_noise`, `carrier_phasor`.~~ CLOSED 2026-09-29: `harmonic`
+    everywhere.
+14. ~~Frequency names: `freq` (scalar), `freqs` (a series frequency or an
     offset), `offsets`, `offset`, `band` (units of f0), `time` vs `times`;
     offset signs differ (`phase_psd` refuses <= 0, `oscillator_spectrum`
-    accepts any, modal/orbital read negative as the lower sideband).
+    accepts any, modal/orbital read negative as the lower sideband).~~
+    CLOSED 2026-09-29: an offset is `offsets` everywhere (the coloured
+    diffusion said `freqs`); `freqs` is left to input and series
+    frequencies, `time` / `times` to one instant or many.  Each offset
+    surface states its sign convention, measured at +-o on an asymmetric
+    orbit: `phase_psd` refuses <= 0; `oscillator_spectrum`, `lorentzian`
+    and the coloured diffusion are EVEN in the offset;
+    `frequency_aware_diffusion` takes its magnitude; the modal family reads
+    a negative offset as the LOWER sideband (1.02-1.06x the upper there,
+    and the correlation term changes sign).
 15. Returns: tuples, dicts, arrays and floats; `covariance` changes arity
     with `samples` while `oscillator_covariance` puts samples in `info`;
     diagnostics go to instance attributes (`alias_stop`, `sidebands_used`,

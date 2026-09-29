@@ -148,8 +148,15 @@ class _DrivenNoise(object):
         T = float(fp.T)
         f0 = 1.0 / T
         tol = self.ALIAS_RATIO_TOL if ratio_tol is None else float(ratio_tol)
-        lmax = N // 2 if maxsidebands is None else min(int(maxsidebands),
-                                                       N // 2)
+        ## ⚠ A COUNT ABOVE THE GRID'S NYQUIST RAISES (as the sampled family
+        ## does); it was clamped to `N//2` without a word until 2026-09-29
+        if maxsidebands is not None and int(maxsidebands) > N // 2:
+            raise ValueError(
+                f'PAC.pnoise: maxsidebands={maxsidebands} is above the grid\'s '
+                f'Nyquist ({N // 2} sidebands at {N} points per period) -- '
+                'use a finer period grid, or leave it None (the default, '
+                'every sideband the grid resolves).')
+        lmax = N // 2 if maxsidebands is None else int(maxsidebands)
 
         w = 2.0 * np.pi * float(freq)
         ## ⚠ `modulated=True` IS HULL & MEYER'S ROUTE, NOT A TOLERANCE
@@ -598,7 +605,7 @@ class _DrivenNoise(object):
                                                   harmonic=harmonic, **kw)
                 v = float(_np.real(Sv[0]))
             elif quantity in ('S_pm', 'S_am'):
-                am, pm, _b = self.am_pm_noise(pss, f, output, carrier=harmonic,
+                am, pm, _b = self.am_pm_noise(pss, f, output, harmonic=harmonic,
                                               sweeptype='relative', **kw)
                 v = float(_np.real(pm if quantity == 'S_pm' else am))
             else:
@@ -615,9 +622,9 @@ class _DrivenNoise(object):
                         'midpoint': mid,
                         'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
 
-    def am_pm_noise(self, pss, freq, output, carrier=1, maxsidebands=None,
+    def am_pm_noise(self, pss, freq, output, harmonic=1, maxsidebands=None,
                     modulated=False, sweeptype=None):
-        """Output NOISE split into its AM and PM parts at `freq` from `carrier`.
+        """Output NOISE split into its AM and PM parts at `freq` from `harmonic`.
 
         Returns `(S_am, S_pm, bands_used)`: the AM and PM noise PER SIDEBAND,
         one-sided densities in the units of :meth:`pnoise` -- half the pair
@@ -626,9 +633,9 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
 
         ⚠ THE SWEEP (`sweeptype`), a commercial RF simulator's rule with
-        `carrier` as the reference harmonic: `'relative'` reads `freq` as
-        the offset from `carrier*f0`, `'absolute'` as the UPPER output
-        sideband's own frequency (the offset is `freq - carrier*f0`), and
+        `harmonic` as the reference harmonic: `'relative'` reads `freq` as
+        the offset from `harmonic*f0`, `'absolute'` as the UPPER output
+        sideband's own frequency (the offset is `freq - harmonic*f0`), and
         `None` is relative on an AUTONOMOUS PSS and absolute on a driven one
         (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it was an offset on
         every PSS.  Below, `freq` is the offset.
@@ -645,11 +652,11 @@ class _DrivenNoise(object):
         place a sign error would produce a plausible wrong answer.
         `adjoint_sideband_row(pss, g, output, l)` is the coefficient at output
         `g + l f0` for a unit source at `g`.  The two output sidebands sit at
-        `carrier*f0 ± freq`, so a REAL noise band whose positive-frequency
+        `harmonic*f0 ± freq`, so a REAL noise band whose positive-frequency
         component is at `g = freq + p f0` reaches
 
-            the UPPER output at `+g` through sideband `l = carrier - p`,
-            the LOWER output at `-g` through sideband `l = carrier + p`,
+            the UPPER output at `+g` through sideband `l = harmonic - p`,
+            the LOWER output at `-g` through sideband `l = harmonic + p`,
 
         the second because a real process has `N(-g) = conj(N(g))` -- and that
         shared realisation IS the correlation.  Both contributions come from ONE
@@ -666,7 +673,7 @@ class _DrivenNoise(object):
         sideband folds precisely the bands `g = freq + p f0`, and at the lower
         precisely their negatives, so
 
-            2 (S_am + S_pm)  ==  pnoise(carrier*f0 + freq) + pnoise(carrier*f0 - freq)
+            2 (S_am + S_pm)  ==  pnoise(harmonic*f0 + freq) + pnoise(harmonic*f0 - freq)
 
         exactly, because `|a+c|^2 + |a-c|^2 = 2|a|^2 + 2|c|^2` leaves no cross
         term.  A pairing error breaks it, which is what the test asserts.
@@ -699,13 +706,13 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
         """
         output = output_index(pss, output)
-        freq = sweep_offset(pss, freq, sweeptype, carrier, 'am_pm_noise')
+        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm_noise')
         self._check_circuit(pss)
         pss = pss._adjoint_host()
         fp = pss.factored_period()
         N = len(fp.steps)
         f0 = 1.0 / float(fp.T)
-        k = int(carrier)
+        k = int(harmonic)
         ## ⚠ BOTH SIDEBANDS OF A PAIR, `k - p` AND `k + p`, WITHIN THE GRID'S
         ## NYQUIST (`|l| <= N//2`, `adjoint_sideband_row`): so `|p|` up to
         ## `N//2 - |k|`.  The default used to be `N//2` itself, and every
@@ -713,10 +720,18 @@ class _DrivenNoise(object):
         cap = N // 2 - abs(k)
         if cap < 0:
             raise ValueError(
-                'PAC.am_pm_noise: carrier %d is above the grid\'s Nyquist '
+                'PAC.am_pm_noise: harmonic %d is above the grid\'s Nyquist '
                 '(%d harmonics at %d points per period) -- use a finer period '
                 'grid.' % (k, N // 2, N))
-        lmax = cap if maxsidebands is None else min(int(maxsidebands), cap)
+        ## (an explicit count above that raises, as in `pnoise`; clamped
+        ## without a word until 2026-09-29)
+        if maxsidebands is not None and int(maxsidebands) > cap:
+            raise ValueError(
+                f'PAC.am_pm_noise: maxsidebands={maxsidebands} is above what '
+                f'the grid resolves at harmonic {k} ({cap}: both sidebands of '
+                f'a pair within the Nyquist, {N // 2} at {N} points per '
+                'period) -- use a finer period grid, or leave it None.')
+        lmax = cap if maxsidebands is None else int(maxsidebands)
         cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
         ## ⚠⚠ THE SPLIT IS TAKEN IN THE CARRIER'S FRAME, NOT THE TIME
         ## ORIGIN'S.  AM is the envelope component ALONG the carrier phasor,
@@ -734,7 +749,7 @@ class _DrivenNoise(object):
                 'PAC.am_pm_noise: the output carries no component at '
                 f'harmonic {k} (|C| = {abs(_C):.3e} against a signal scale '
                 f'of {_scale:.3e}), so there is no carrier to split the noise '
-                'against; `pnoise` at `carrier*f0 +- freq` is the total.')
+                'against; `pnoise` at `harmonic*f0 +- freq` is the total.')
         _rot = np.exp(-1j * np.angle(_C))
         S_am = 0.0
         S_pm = 0.0

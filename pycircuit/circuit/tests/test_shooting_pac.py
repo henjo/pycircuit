@@ -887,7 +887,7 @@ def test_am_pm_refuses_a_harmonic_with_no_carrier():
         pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     pac = PAC(cir, toolkit=circuit.numeric)
     with pytest.raises(ValueError, match='no component at harmonic'):
-        pac.am_pm(pss, 137.0, 1, carrier=57,
+        pac.am_pm(pss, 137.0, 1, harmonic=57,
                   sweeptype='relative')     # far above anything present
 
 
@@ -1252,7 +1252,7 @@ def _ampm_at(refname, fm=5e4, npts=200):
     pac = PAC(cir, toolkit=circuit.numeric)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        am, pm = pac.am_pm(pss, fm, out, carrier=1, sweeptype='relative')
+        am, pm = pac.am_pm(pss, fm, out, harmonic=1, sweeptype='relative')
         car = pac.carrier_phasor(pss, out, 1)
     am = np.asarray(am).ravel()
     pm = np.asarray(pm).ravel()
@@ -1306,7 +1306,7 @@ def test_am_pm_accepts_a_direction_not_only_a_node_index():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         c_diff = pac.carrier_phasor(pss, diff, 1)
-        am, pm = pac.am_pm(pss, 5e4, diff, carrier=1, sweeptype='relative')
+        am, pm = pac.am_pm(pss, 5e4, diff, harmonic=1, sweeptype='relative')
     assert abs(c_diff - c_int) > 1e-3 * abs(c_int), \
         'the differential carrier equals the single-ended one, so this ' \
         'fixture does not exercise the new path'
@@ -1700,7 +1700,7 @@ def test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_s
             warnings.simplefilter('ignore')
             cir, pss, pac = _lc_osc(a=a, psd=1e-6, npts=240)
             f0 = 1.0 / float(pss.period)
-            _m_am, m_pm = pac.am_pm(pss, 1e-3 * f0, 0, carrier=1)
+            _m_am, m_pm = pac.am_pm(pss, 1e-3 * f0, 0, harmonic=1)
         got[a] = float(np.abs(np.asarray(m_pm)).max())
     assert got[0.05] / got[0.0] > 1e6, got
     assert abs((got[0.25] / got[0.05]) / 5.0 - 1.0) < 0.02, got

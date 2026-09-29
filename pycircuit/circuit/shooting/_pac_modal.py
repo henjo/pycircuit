@@ -20,6 +20,22 @@ class _ModalSpectra(object):
     ## inside the smallest asymmetry at which the error was visible.
     ORBITAL_ASYMMETRY_LIMIT = 0.02
 
+    def _harmonic_count(self, maxharmonics, N, what):
+        """The PPV / Floquet-mode harmonics kept, `|h| <= H`: `maxharmonics`,
+        or by default `ORBITAL_HARMONICS` capped by what the `N`-point grid
+        resolves (`N//2 - 1`).  ⚠ An EXPLICIT count above that raises; it
+        was capped without a word until 2026-09-29 (as `H`)."""
+        cap = N // 2 - 1
+        if maxharmonics is None:
+            return min(self.ORBITAL_HARMONICS, cap)
+        if int(maxharmonics) > cap:
+            raise ValueError(
+                f'PAC.{what}: maxharmonics={maxharmonics} is above what the '
+                f'grid resolves ({cap} at {N} points per period) -- use a '
+                'finer period grid, or leave it None (the default, '
+                f'{self.ORBITAL_HARMONICS} capped by the grid).')
+        return int(maxharmonics)
+
     def _orbit_asymmetry(self, pss):
         """Half-wave asymmetry of the orbit, in [0, ~1].
 
@@ -38,15 +54,16 @@ class _ModalSpectra(object):
             return 0.0
         return float(np.max(np.abs(row[:half] + row[half:2 * half]))) / den
 
-    def orbital_correlation(self, pss, H=None):
+    def orbital_correlation(self, pss, maxharmonics=None):
         """`R_yy(0)` and the `C_lhj` of Traversa & Bonani eq (22) — A9 step 3.
 
         Returns `(R, C)`.  `R` is the STATIONARY transverse (orbital)
         state covariance, `m x m` real symmetric — eq (23),
         `R = Σ_{l≥2,h,j} C_lhj`.  `C` maps `(l, h, j)` to the `m x m`
         complex coefficient, over every non-null orbital mode `l ≥ 2` and
-        harmonics `|h|, |j|, |j'| ≤ H`.  `H` defaults to
-        `ORBITAL_HARMONICS`; van der Pol converges by `H = 4`, and a
+        harmonics `|h|, |j|, |j'| ≤ H`, `H = maxharmonics`, default
+        `ORBITAL_HARMONICS` (capped by the grid; an explicit count above
+        it raises); van der Pol converges by `H = 4`, and a
         strongly non-sinusoidal orbit needs more — check by raising it.
 
         ⚠ STATIONARY WHITE SOURCES ONLY, and that is what makes it
@@ -92,7 +109,6 @@ class _ModalSpectra(object):
             'eq (22) is a white-noise residue sum; modal_spectrum takes a '
             'stationary coloured source per sideband, and '
             'oscillator_covariance(colour_fmin=...) its transverse covariance.')
-        H = self.ORBITAL_HARMONICS if H is None else int(H)
         modes = pss.floquet_modes(pss)
         m = self.cir.n - 1
         Tp = float(pss.period)
@@ -118,7 +134,7 @@ class _ModalSpectra(object):
         for k in orb:
             U[k], N = fcoef(modes[k]['p'])
             V[k], _ = fcoef(modes[k]['q'])
-        H = min(H, N // 2 - 1)
+        H = self._harmonic_count(maxharmonics, N, 'orbital_correlation')
         hs = np.arange(-H, H + 1)
         idx = lambda k: k % N
 
@@ -144,10 +160,12 @@ class _ModalSpectra(object):
                             R += term
         return np.real(R), C
 
-    def orbital_spectrum(self, pss, offsets, output, harmonic=1, H=None):
+    def orbital_spectrum(self, pss, offsets, output, harmonic=1,
+                         maxharmonics=None):
         """`S_yy` — the ORBITAL (amplitude) noise spectrum. A9 step 4.
 
-        Returns `S` at `harmonic*f0 + offsets`, a ONE-SIDED PSD in V^2/Hz,
+        Returns `S` at `harmonic*f0 + offsets` (a negative offset is the
+        LOWER sideband, which is not the upper's), a ONE-SIDED PSD in V^2/Hz,
         the scale of `oscillator_spectrum`'s `S_v` and of `pnoise` (since
         2026-09-28; it was half that), so **the two are summed** — which is
         what Traversa & Bonani (TCAS-I 2011) say to do:
@@ -245,7 +263,7 @@ class _ModalSpectra(object):
                 'the total.'
                 % (_asym,),
                 RuntimeWarning, stacklevel=2)
-        R, C = self.orbital_correlation(pss, H=H)
+        R, C = self.orbital_correlation(pss, maxharmonics=maxharmonics)
         modes = pss.floquet_modes(pss)
         c = float(self.diffusion_constant(pss))
         f0 = 1.0 / float(pss.period)
@@ -301,8 +319,8 @@ class _ModalSpectra(object):
         ## (`R` is the two-sided covariance: doubled, exactly, one-sided)
         return 2.0 * S
 
-    def modal_spectrum(self, pss, offsets, output, harmonic=1, H=None,
-                       sidebands=None):
+    def modal_spectrum(self, pss, offsets, output, harmonic=1,
+                       maxharmonics=None, maxsidebands=None):
         """Phase, orbital AND phase-orbital CORRELATION spectra from ONE modal
         transfer, which sum to the total.
 
@@ -358,9 +376,11 @@ class _ModalSpectra(object):
         route.
 
         ⚠ Free-running oscillators and the dense `floquet_modes` only
-        (inherited).  `harmonic >= 1`: harmonic 0 was never measured.  `H`
-        defaults to `ORBITAL_HARMONICS` (capped by the grid), `sidebands` to
-        `2 H`.  `output` follows `orbital_spectrum`.
+        (inherited).  `harmonic >= 1`: harmonic 0 was never measured.  The
+        PPV / mode harmonics kept, `H = maxharmonics`, default to
+        `ORBITAL_HARMONICS` capped by the grid (an explicit count above it
+        raises); the sidebands summed, `maxsidebands`, to `2 H`.  (`H` and
+        `sidebands` until 2026-09-29.)  `output` follows `orbital_spectrum`.
 
         ⚠ A source whose LEVEL FOLLOWS THE ORBIT (a MOS
         channel's thermal and flicker noise, a shot noise): its sidebands
@@ -403,8 +423,8 @@ class _ModalSpectra(object):
         if modulated:
             ## the band reach, for the per-band sources' classification
             N_ = len(self._ppv_states(pss))
-            H_ = min(self.ORBITAL_HARMONICS if H is None else int(H), N_ // 2 - 1)
-            M_ = 2 * H_ if sidebands is None else int(sidebands)
+            H_ = self._harmonic_count(maxharmonics, N_, 'modal_spectrum')
+            M_ = 2 * H_ if maxsidebands is None else int(maxsidebands)
             c_mod, P2, groups = self._modal_modulated(
                 pss, offs, harmonic, coloured, M_ + int(harmonic),
                 'modal_spectrum')
@@ -427,9 +447,8 @@ class _ModalSpectra(object):
         CY2 = (None if coloured or modulated
                else 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0))))
         N = np.asarray(modes[ph[0]]['p']).shape[1] - 1
-        H = self.ORBITAL_HARMONICS if H is None else int(H)
-        H = min(H, N // 2 - 1)
-        M = 2 * H if sidebands is None else int(sidebands)
+        H = self._harmonic_count(maxharmonics, N, 'modal_spectrum')
+        M = 2 * H if maxsidebands is None else int(maxsidebands)
         js = np.arange(-H, H + 1)
         ms = np.arange(-M, M + 1)
         a_j = 0.5 * js.astype(float) ** 2 * w0 ** 2 * c
@@ -628,10 +647,12 @@ class _ModalSpectra(object):
         c_white = float(self._white_diffusion_at(pss, w0, cy=white))
         return c_white, 0.5 * self._period_dft(pss, white), groups
 
-    def correlation_spectrum(self, pss, offsets, output, harmonic=1, H=None,
-                             sidebands=None):
+    def correlation_spectrum(self, pss, offsets, output, harmonic=1,
+                             maxharmonics=None, maxsidebands=None):
         """The FULL-harmonic phase-orbital correlation spectrum:
-        `modal_spectrum(...)['correlation']`.
+        `modal_spectrum(...)['correlation']`, at `harmonic*f0 + offsets` (a
+        negative offset is the LOWER sideband; the term can change sign
+        between the two).
 
         ⚠ It sums to the total with `modal_spectrum`'s own `phase` and
         `orbital` -- NOT with `oscillator_spectrum + orbital_spectrum`, whose
@@ -642,7 +663,8 @@ class _ModalSpectra(object):
         """
         output = output_index(pss, output)
         return self.modal_spectrum(pss, offsets, output, harmonic=harmonic,
-                                   H=H, sidebands=sidebands)['correlation']
+                                   maxharmonics=maxharmonics,
+                                   maxsidebands=maxsidebands)['correlation']
 
     #: the phase mode may sit this far off the unit circle before it is refused
     PHASE_MODE_MAX_DEPARTURE = 1e-3

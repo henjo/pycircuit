@@ -358,7 +358,7 @@ def sweep_frequency(pss, freq, sweeptype, relharmnum, what):
 
 def sweep_offset(pss, freq, sweeptype, harmonic, what):
     """The OFFSET from harmonic `harmonic` that a swept `freq` names, for
-    the surfaces whose reference is their own `carrier` (`am_pm_noise`,
+    the surfaces whose reference is their own `harmonic` (`am_pm_noise`,
     `am_pm`): `freq` itself on a relative sweep, `freq - harmonic * f0` --
     the upper output sideband's frequency -- on an absolute one
     (`sweep_kind`)."""
