@@ -561,6 +561,41 @@ class _PhaseNoise(object):
                         cpart[i] += term
             return (wpart, cpart) if parts else out
         fold.resolved_fa = resolved_fa
+
+        ## the COMPLEX harmonics of each fixed group, all of them: the
+        ## increment at an instant keeps their phases, which `coloured`'s
+        ## |V_l|^2 has averaged away
+        from ._lineshape import edge_increment
+        Vfix = [(E @ np.einsum('jm,jmr->jr', S, G), s)
+                for kind, G, s in groups_all if kind == 'fixed']
+
+        def increment(tj, ks, fmin, fmax):
+            """The COLOURED parts' phase-increment variance over `k` periods
+            from the instant `tj` (seconds^2 of timing, k in `ks`), integrated
+            over the SOURCE band `fmin <= |f| <= fmax` -- `edge_increment`.
+            Not the stationary structure function: a coloured source has
+            memory, so the increment depends on where in the period `tj`
+            sits (the stationary form, their average over `tj`, was 33 % off
+            the exact increment at a van der Pol edge)."""
+            rot = np.exp(1j * ls * w0 * float(tj))[:, None]
+            out = np.zeros(len(np.atleast_1d(ks)))
+            for V, s in Vfix:
+                out += edge_increment(V * rot, ls, s, T, ks, fmin, fmax)
+            for bi, G in enumerate(band_G):
+                def coef(f, G=G, bi=bi):
+                    ## a per-band root's harmonics at the quadrature nodes
+                    ## do not depend on the instant: once per node set
+                    key = (bi, len(f), float(f[0]), float(f[-1]))
+                    if key not in band_cache:
+                        band_cache[key] = np.stack([
+                            E @ np.einsum('jm,jmr->jr', S,
+                                          G(2.0 * np.pi * abs(float(fi))))
+                            for fi in f])
+                    return band_cache[key] * rot[None]
+                out += edge_increment(coef, ls, None, T, ks, fmin, fmax)
+            return out
+        band_cache = {}
+        fold.increment = increment
         return fold
 
     def phase_psd(self, pss, offsets, harmonic=1, frequency_aware=True):

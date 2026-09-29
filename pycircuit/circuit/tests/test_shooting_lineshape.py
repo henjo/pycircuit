@@ -2023,3 +2023,71 @@ def test_the_spectrum_refuses_a_flag_pair_it_used_to_drop():
     Sv, _L = pac.oscillator_spectrum(pss, np.array([0.02 * f0]), 0,
                                      frequency_aware=False)
     assert abs(info['values'][-1] / (float(Sv[0]) * 0.02 ** 2) - 1.0) < 1e-12
+
+
+def test_the_edge_increment_is_white_at_every_instant_and_stationary_on_average():
+    """#17 B1 (2026-09-29): `_lineshape.edge_increment`, the variance of the
+    phase increment over k periods from an INSTANT `t_j`,
+    `int_{t_j}^{t_j+kT} p(t) xi(t) dt` with `p = sum_l V_l e^{j l w0 t}`.
+    * WHITE, it is `c k T` at every instant (Parseval over whole periods),
+      less the band edge: the measured deficit is `r_j / (pi^2 fmax kT)`,
+      `r_j = |p(t_j)|^2 / <|p|^2>` -- the kernel's own error model, pinned;
+    * COLOURED, its AVERAGE over the instants is the stationary structure
+      function `(2/pi^2) int c(nu) sin^2(pi nu kT) / nu^2 dnu` (the lineshape's
+      `D(kT) / (2 pi f0)^2`), while each instant differs: a coloured source
+      has memory.  (On `_coloured_vdp` the 400-instant average met the
+      stationary form to 1.7e-9 and the instants spread 1.66x at k = 1.)"""
+    from scipy.integrate import quad
+
+    from pycircuit.circuit.shooting._lineshape import edge_increment
+    T = 1.0
+    ls = np.arange(-2, 3)
+    V = np.array([0.15j, 0.25, 1.0, 0.25, -0.15j])       # 1 + cos/2 + 0.3 sin 2
+    ks = [1, 2, 4, 8]
+    white = lambda nu: 2.0 * np.ones_like(nu)            # s/2 = 1
+    for tj in (0.0, 0.5, 0.77):
+        p = float(np.real(np.sum(V * np.exp(2j * np.pi * ls * tj))))
+        r = p * p / 1.17
+        got = edge_increment((V * np.exp(2j * np.pi * ls * tj))[:, None], ls,
+                             white, T, ks, 1e-6, 50.0)
+        ## (the model is the band edge's LEADING term: its next order grows
+        ## as k^2 relative -- measured 0.4 / 1.6 / 6.3 / 25 % at k = 1/2/4/8
+        ## where r_j is smallest -- so it is pinned at k = 1, 2)
+        for k, g in zip(ks[:2], got[:2]):
+            deficit = 1.0 - g / (1.17 * k * T)
+            assert abs(deficit / (r / (np.pi ** 2 * 50.0 * k)) - 1.0) < 0.02, \
+                (tj, k, deficit)
+        assert np.all(got <= 1.17 * np.asarray(ks) * T), got
+    ## a coloured (Lorentzian) source: the average over a uniform grid of
+    ## instants is the stationary form, computed independently by `quad`
+    rng = np.random.default_rng(3)
+    ls = np.arange(-4, 5)
+    half = rng.normal(size=4) + 1j * rng.normal(size=4)
+    V = np.concatenate((np.conj(half[::-1]), [1.0], half))
+    tau = 0.3
+    lor = lambda nu: 1.0 / (1.0 + (nu * tau) ** 2)
+    tjs = np.arange(32) / 32.0
+    avg = np.mean([edge_increment(
+        (V * np.exp(2j * np.pi * ls * t))[:, None], ls, lor, T, [1, 3],
+        1e-7, 40.0) for t in tjs], axis=0)
+    def c(nu):
+        return sum(0.5 * lor(2 * np.pi * abs(nu - l)) * abs(v) ** 2
+                   for l, v in zip(ls, V))
+    for i, k in enumerate((1, 3)):
+        def g(nu, k=k):
+            return c(nu) * np.sin(np.pi * nu * k) ** 2 / nu ** 2
+        edges = np.concatenate(([1e-9], np.arange(0.25, 40.25, 0.25)))
+        stat = sum(quad(g, a, b, limit=200)[0]
+                   for a, b in zip(edges[:-1], edges[1:])) * 2 / np.pi ** 2
+        assert abs(avg[i] / stat - 1.0) < 2e-3, (k, avg[i], stat)
+    ## a 1/f source: below 1/(kT) only l = 0 survives, so the increment
+    ## grows as the LOG of the low cutoff, at exactly
+    ## (kT)^2 |V_0|^2 w1 / (2 pi) per unit of ln(1/fmin) -- the observation
+    ## time the k-cycle jitter needs
+    flick = lambda nu: 1.0 / nu                       # s = w1/nu, w1 = 1
+    for k in (1, 4):
+        hi = edge_increment(V[:, None], ls, flick, T, [k], 1e-5, 40.0)[0]
+        lo = edge_increment(V[:, None], ls, flick, T, [k], 1e-7, 40.0)[0]
+        slope = (lo - hi) / np.log(100.0)
+        pred = (k * T) ** 2 * abs(V[4]) ** 2 / (2.0 * np.pi)
+        assert abs(slope / pred - 1.0) < 1e-6, (k, slope, pred)

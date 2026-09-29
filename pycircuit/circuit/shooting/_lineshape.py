@@ -567,6 +567,79 @@ def correction_structure(tau, tab, pref, quad):
     return tot
 
 
+#: Gauss-Legendre points per panel of `edge_increment`'s integral
+INCREMENT_GL = 12
+#: log panels per decade below its first linear panel
+INCREMENT_LOG_PER_DECADE = 8
+
+
+def increment_nodes(fmin, fmax, T, kmax):
+    """Nodes and weights on `[fmin, fmax]` for `edge_increment`: panels of
+    width `1/(2 kmax T)` from `1/(kmax T)` up -- the kernel's features are
+    `1/(k T)` wide and centred on the harmonics, which fall on panel edges --
+    and log panels below, down to `fmin` (a 1/f source's weight sits
+    there); `INCREMENT_GL` Gauss-Legendre points each."""
+    x, w = np.polynomial.legendre.leggauss(INCREMENT_GL)
+    d = 1.0 / (2.0 * float(kmax) * float(T))
+    fmin, fmax = float(fmin), float(fmax)
+    f_lin = min(max(fmin, 2.0 * d), fmax)
+    edges = []
+    if f_lin > fmin:
+        nd = max(1, int(np.ceil(np.log10(f_lin / fmin)
+                                * INCREMENT_LOG_PER_DECADE)))
+        edges.extend(np.geomspace(fmin, f_lin, nd + 1)[:-1])
+    lin = list(np.arange(f_lin, fmax, d))
+    if not lin or fmax - lin[-1] > 1e-9 * d:
+        lin.append(fmax)
+    else:
+        lin[-1] = fmax
+    edges.extend(lin)
+    edges = np.asarray(edges, dtype=float)
+    a, b = edges[:-1], edges[1:]
+    nodes = (0.5 * (b - a))[:, None] * x[None, :] + (0.5 * (a + b))[:, None]
+    weights = (0.5 * (b - a))[:, None] * w[None, :]
+    return nodes.ravel(), weights.ravel()
+
+
+def edge_increment(coef, ls, s, T, ks, fmin, fmax):
+    """`Var_j(k)`, k in `ks`: the variance of the phase increment over `k`
+    periods from an instant `t_j` -- `int_{t_j}^{t_j + kT} v^T G xi dt` for
+    unit processes `xi` of one-sided power `s` through columns whose PPV
+    projection is `v^T G = sum_l V_l e^{j l w0 t}`:
+
+        Var_j(k) = sum_r int_{fmin <= |f| <= fmax} (s(2 pi |f|) / 2)
+                   | kT sum_l (-1)^{k l} coef[l, r] sinc(kT (f + l / T)) |^2 df
+
+    with `coef[l] = V_l e^{j l w0 t_j}` and `f` the SOURCE frequency.  The
+    phase integral's poles at the harmonics are removable and gone here:
+    `sin(pi f kT) / (pi (f + l/T)) = (-1)^{kl} kT sinc(kT (f + l/T))`.
+
+    White (`s` flat) over every frequency it is `c k T` at ANY `t_j`
+    (Parseval over whole periods), and its average over `t_j` is the
+    stationary structure function `D(kT) / (2 pi f0)^2`; a coloured source
+    has memory, and the increment depends on where in the period `t_j`
+    sits.  `coef`: an `(nl, r)` array, or a callable of the frequencies
+    returning `(nf, nl, r)` (a per-band root, whose power is in its columns:
+    then `s` is None).  Both signs of `f` are integrated (complex columns
+    need not pair `V_{-l}` with `conj(V_l)`)."""
+    ks = np.atleast_1d(np.asarray(ks, dtype=int))
+    ls = np.asarray(ls, dtype=float)
+    nodes, weights = increment_nodes(fmin, fmax, T, int(ks.max()))
+    out = np.zeros(len(ks))
+    for sign in (1.0, -1.0):
+        f = sign * nodes
+        a = coef(f) if callable(coef) else np.asarray(coef)
+        sw = (np.full(f.shape, 0.5) if s is None
+              else 0.5 * np.asarray(s(2.0 * np.pi * np.abs(f)), dtype=float))
+        for i, k in enumerate(ks):
+            K = (k * T) * np.sinc((k * T) * (f[:, None] + ls[None, :] / T))
+            K = K * ((-1.0) ** ((k * ls).astype(int) % 2))[None, :]
+            amp = (K @ a) if a.ndim == 2 else np.einsum('fl,flr->fr', K, a)
+            out[i] += float(np.sum(weights * sw
+                                   * np.sum(np.abs(amp) ** 2, axis=1)))
+    return out
+
+
 def phase_structure(tau, pc, pref, quad):
     """`D_c(tau) = pref int c(nu) (1 - cos 2 pi nu tau) / nu^2 dnu` over the
     pieces' span."""
