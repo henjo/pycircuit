@@ -5394,3 +5394,19 @@ def test_the_monodromy_twin_takes_every_setting_of_its_pss():
                  'steadyratio', 'epar'):
         assert getattr(tw.par, name) == getattr(p.par, name), \
             (name, getattr(tw.par, name), getattr(p.par, name))
+
+
+def test_a_pss_keeps_the_toolkit_it_was_given():
+    """`PSS(cir, toolkit=...)` passes its toolkit on.  ⚠ Before (2026-09-29)
+    it was accepted and dropped: every PSS ran on the default toolkit, and
+    so did every twin built with `toolkit=self.toolkit` -- found by the
+    dead-argument guard over the shooting package
+    (`test_no_dead_knobs.py`)."""
+    from pycircuit.circuit import toolkit as _toolkit
+    circuit.default_toolkit = circuit.numeric
+    tk = _toolkit.sparse_numeric
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, va=1.0, freq=1e3)
+    c['R'] = R(1, gnd, r=1e3)
+    assert PSS(c, toolkit=tk).toolkit is tk
+    assert PSS(c).toolkit is circuit.default_toolkit

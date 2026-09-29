@@ -764,7 +764,7 @@ class _PhaseNoise(object):
         return a / (b * b + f * f)
 
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1,
-                            frequency_aware=None, fmin=None, fmax=None,
+                            frequency_aware=True, fmin=None, fmax=None,
                             all_orders=None):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
 
@@ -844,7 +844,7 @@ class _PhaseNoise(object):
         phase has no stationary lineshape without a low cutoff; it plays
         the part of the observation time -- and `fmax` defaults to f0/2,
         the phase model's reach.  A white-only circuit is untouched.
-        `frequency_aware` (default None = True) takes `c_fa(nu)`
+        `frequency_aware` (default True) takes `c_fa(nu)`
         from the frequency-aware PPV: to first order in the change (the
         skirt's `i^2 f0^2 (c_fa - c_dc) / f^2` per offset) while that order's
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
@@ -873,6 +873,12 @@ class _PhaseNoise(object):
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
         output = output_index(pss, output)
+        if all_orders and frequency_aware is False:
+            raise ValueError(
+                'PAC.oscillator_spectrum: all_orders=True is the frequency-'
+                'aware correction to all orders, and frequency_aware=False '
+                'turns the frequency-aware PPV off; the pair was taken as '
+                'frequency_aware=False silently until 2026-09-29.')
         ## (the lineshape is built on the carrier PHASOR's square, `S_v / 2`;
         ## the one-sided PSD doubles it, exactly, and leaves `L_dBc` as is)
         if self._coloured_present(pss):

@@ -1988,3 +1988,32 @@ def test_noise_correlated_across_elements_is_one_joint_component():
         for k, ref in got['ref'].items():
             err = float(np.max(np.abs(got['joint'][k] - ref) / np.abs(ref)))
             assert err <= 1e-12, (mod, k, err)
+
+
+def test_the_spectrum_refuses_a_flag_pair_it_used_to_drop():
+    """Items #5 and #9 of `doc/pac_noise_conventions.md` (2026-09-29):
+    `oscillator_spectrum(frequency_aware=False, all_orders=True)` dropped
+    `all_orders` without a word -- the all-orders line IS the frequency-
+    aware correction; `band_spread` took an unknown `quantity` as 'pnoise'
+    and never passed its `**kw` to `oscillator_spectrum`, though its
+    docstring said so.  `frequency_aware` defaults to True, as it always
+    behaved (the old default None meant True on both paths)."""
+    _cir, pss, pac = _lc_osc()
+    with pytest.raises(ValueError, match='all_orders=True'):
+        pac.oscillator_spectrum(pss, np.array([1e-2]), 0,
+                                frequency_aware=False, all_orders=True)
+    with pytest.raises(ValueError, match='quantity must be'):
+        pac.band_spread(pss, 0, (0.01, 0.02), quantity='S_phi')
+    ## the keywords reach the spectrum: the refused pair above, from here
+    with pytest.raises(ValueError, match='all_orders=True'):
+        pac.band_spread(pss, 0, (0.01, 0.02), points=2,
+                        quantity='oscillator_spectrum',
+                        frequency_aware=False, all_orders=True)
+    ## and a forwarded choice is the spectrum's own
+    _sp, info = pac.band_spread(pss, 0, (0.01, 0.02), points=2,
+                               quantity='oscillator_spectrum',
+                               frequency_aware=False)
+    f0 = 1.0 / float(pss.period)
+    Sv, _L = pac.oscillator_spectrum(pss, np.array([0.02 * f0]), 0,
+                                     frequency_aware=False)
+    assert abs(info['values'][-1] / (float(Sv[0]) * 0.02 ** 2) - 1.0) < 1e-12

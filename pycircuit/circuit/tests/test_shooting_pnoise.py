@@ -2221,3 +2221,52 @@ def test_output_takes_a_node_name():
                 pac.pnoise(pss, f0 + offs[0], k, maxsidebands=8)
     with pytest.raises(ValueError, match='reference node'):
         pac.carrier_phasor(pss, names[pss.irefnode])
+
+
+def _driven_rc():
+    """A sine-driven RC: linear, so its output has no second harmonic."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    for nn in ('in', 'out'):
+        c.add_node(nn)
+    c['vs'] = VSin('in', gnd, va=0.1, freq=1e3)
+    c['R'] = R('in', 'out', r=1e3)
+    c['C'] = C('out', gnd, c=1e-7)
+    pss = PSS(c, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
+    assert pss.converged
+    return c, pss, PAC(c, toolkit=circuit.numeric)
+
+
+def test_the_noise_surfaces_refuse_what_they_used_to_take_silently():
+    """Items #9, #10 and #11 of `doc/pac_noise_conventions.md`, each a
+    wrong number that used to come back without a word (2026-09-29):
+    * an OUTPUT that is not a row or a full-width weight vector -- the
+      sampled family takes `(pss, output, ...)` where the others take
+      `(pss, freq, output)`, and a float index (a frequency?) was truncated
+      to a row, a short vector zero-padded;
+    * `pnoise` given BOTH models of a bias-dependent source took the
+      cyclostationary one;
+    * `am_pm_noise` at a harmonic the output does not carry split the noise
+      UNROTATED, a split that moves with where t = 0 sits (`am_pm` refused
+      the same case)."""
+    c, pss, pac = _driven_rc()
+    k = [str(n) for n in c.nodes if str(n) != 'gnd!'].index('out')
+    m = c.n - 1
+    with pytest.raises(TypeError, match='integer row'):
+        pac.pnoise(pss, 300.0, float(k))
+    with pytest.raises(ValueError, match=f'must be {m} long'):
+        pac.pnoise(pss, 300.0, np.ones(m - 1))
+    with pytest.raises(ValueError, match='outside the reduced state'):
+        pac.pnoise(pss, 300.0, m)
+    with pytest.raises(ValueError,
+                       match='modulated=True and cyclostationary=True'):
+        pac.pnoise(pss, 300.0, k, modulated=True, cyclostationary=True)
+    with pytest.raises(ValueError, match='no component at harmonic 2'):
+        pac.am_pm_noise(pss, 100.0, k, carrier=2)
+    ## the carrier it does carry still splits
+    S_am, S_pm, _b = pac.am_pm_noise(pss, 100.0, k, carrier=1)
+    assert S_am > 0.0 and S_pm > 0.0

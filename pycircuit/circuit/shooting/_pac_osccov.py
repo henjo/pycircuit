@@ -71,8 +71,7 @@ class _OscillatorCovariance(object):
                         out.append((c0, hw))
         return out
 
-    def _transverse_responses(self, pss, fp, freqs, u_ac, recycle=True,
-                              u_points=None):
+    def _transverse_responses(self, pss, fp, freqs, u_ac, u_points=None):
         """`_forced_responses` for an OSCILLATOR's transverse deviation: per
         frequency the steady response at every node projected with
         `_node_projectors`, and no crossings (`[None]`).

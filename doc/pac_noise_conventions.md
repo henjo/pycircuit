@@ -106,9 +106,9 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 4. **`freq` is ABSOLUTE in `pnoise` and an OFFSET in `am_pm_noise` / `am_pm`**
    -- the same name in the same position.
 5. **`band_spread`'s `band` is an offset for three quantities and absolute
-   for 'pnoise'**, and its `**kw` is not forwarded to
-   `oscillator_spectrum` although the docstring says so; an unknown
-   `quantity` silently falls through to 'pnoise'.
+   for 'pnoise'** (open, with item 4).  ~~Its `**kw` is not forwarded to
+   `oscillator_spectrum`; an unknown `quantity` falls through to
+   'pnoise'.~~ CLOSED 2026-09-29: forwarded; an unknown name raises.
 6. **`fmin`/`fmax` name three different bands:** the coloured SOURCE band
    (`covariance`, `event_jitter`, `oscillator_covariance`; ignored when all
    sources are white), the SERIES band that cuts white noise too
@@ -120,15 +120,22 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
    (`event_jitter`), `k_cycle` exact in `jitter_metrics` but a large-`k`
    upper bound in `oscillator_edge_jitter`, `slew` from a central
    difference vs a quadratic fit, `kmax` 4 vs 8.
-9. **Flag combinations dropped silently:** `pnoise` with both `modulated`
+9. ~~**Flag combinations dropped silently:**~~ CLOSED 2026-09-29 for the
+   two that lost a flag (both raise now; `frequency_aware` defaults to
+   True, as it behaved): `pnoise` with both `modulated`
    and `cyclostationary` (cyclostationary wins); `oscillator_spectrum` with
    `frequency_aware=False` drops `all_orders`; `all_orders=None` means
    different things for white and coloured sources; `frequency_aware`
    defaults to None in `oscillator_spectrum` and True elsewhere.
-10. **A missing carrier:** `am_pm` refuses it, `am_pm_noise` proceeds
+10. ~~**A missing carrier:**~~ CLOSED 2026-09-29: `am_pm_noise` refuses
+    it too (`lorentzian`'s zeros at harmonic 0 are the right answer: DC does
+    not broaden).  Was: `am_pm` refuses it, `am_pm_noise` proceeds
     unrotated, `lorentzian` returns zeros for harmonic 0, the oscillator
     spectra refuse.
-11. **Argument order:** `(pss, freq/offsets, output)` for `pnoise`,
+11. ~~**Argument order:**~~ CLOSED 2026-09-29 as a silent wrong number:
+    `output_index` validates an index (an integer row) and a weight vector
+    (exactly the reduced width), so a swapped argument raises.  The orders
+    themselves still differ: `(pss, freq/offsets, output)` for `pnoise`,
     `am_pm_noise` and the spectra, but `(pss, output, ...)` for the sampled
     family, `band_spread` and `oscillator_edge_jitter`. Because `output`
     accepts a vector, a swapped array can be taken as weights silently.

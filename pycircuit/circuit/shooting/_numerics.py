@@ -4,7 +4,7 @@ transposed solves, GMRES by Arnoldi, the periodic spline weights.
 import numpy as np
 
 
-def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
+def freq_analysis(x, t, rms = True, axis=-1):
     """Return dft of equidistant sampled signal x"""
     
     npoints = np.size(x, axis)
@@ -249,10 +249,36 @@ def _cx_collect(a, b):
 def output_index(pss, output):
     """`output` as the PAC methods take it: a node NAME (a string, or a
     circuit `Node`) is that node's REDUCED-state index -- the reference node
-    has no row, and is refused -- and an index or a weight vector passes as
-    given.  A differential output is a weight vector, as before."""
+    has no row, and is refused -- an index an INTEGER row of the reduced
+    state, and a weight vector (a differential output) exactly its width
+    `m = n - 1`.
+
+    ⚠ VALIDATED, because the argument ORDER differs across the surfaces:
+    `(pss, freq, output)` for `pnoise`, `am_pm_noise` and the spectra,
+    `(pss, output, ...)` for the sampled family, `band_spread` and
+    `oscillator_edge_jitter`.  Until 2026-09-29 a swapped argument passed
+    silently -- a frequency array zero-padded or cut into weights, a
+    frequency that happened to be a small integer taken as that row."""
     from pycircuit.circuit.circuit import Node
     if not isinstance(output, (str, Node)):
+        m = pss.cir.n - 1
+        d = np.asarray(output)
+        if d.ndim == 0:
+            if d.dtype.kind not in 'iu':
+                raise TypeError(
+                    'PAC: an output index must be an integer row of the '
+                    'reduced state (or a node name, or a weight vector of '
+                    f'length {m}), not {output!r} -- a frequency in the '
+                    'output position?')
+            if not 0 <= int(d) < m:
+                raise ValueError(
+                    f'PAC: output index {int(d)} is outside the reduced '
+                    f'state (0 .. {m - 1})')
+        elif d.ndim != 1 or d.shape[0] != m:
+            raise ValueError(
+                f'PAC: an output weight vector must be {m} long (the '
+                f'reduced state), not of shape {d.shape} -- a frequency '
+                'array in the output position?')
         return output
     k = pss.cir.get_node_index(output)
     irn = pss.irefnode

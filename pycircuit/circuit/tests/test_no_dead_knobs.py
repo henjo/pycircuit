@@ -23,13 +23,25 @@ import os
 HERE = os.path.dirname(__file__)
 CIRCUIT = os.path.normpath(os.path.join(HERE, '..'))
 
-SCAN_MODULES = ['transient.py', 'jaxtransient.py', 'integrator.py',
-                'stepcontroller.py', 'nrsolver.py', '_lte_kernels.py',
-                ## the shooting's side of the transient boundary
-                'shooting/_pss_inner.py']
+SCAN_MODULES = (['transient.py', 'jaxtransient.py', 'integrator.py',
+                 'stepcontroller.py', 'nrsolver.py', '_lte_kernels.py']
+                ## the whole shooting package (2026-09-29; it found PSS's
+                ## `toolkit` accepted and dropped)
+                + sorted('shooting/' + f for f in os.listdir(
+                    os.path.join(CIRCUIT, 'shooting')) if f.endswith('.py')))
 
 ## (module, function, argument) -> why it is allowed to ignore the argument.
 UNUSED_ARG_ALLOWLIST = {
+    ## The shooting package: helpers kept call-compatible with siblings that
+    ## read the argument, and one public signature.
+    ('shooting/_pac_lyapunov.py', '_lyapunov_pieces_glm', 'what'):
+        'signature uniformity (_lyapunov_pieces_stage/_plain read it)',
+    ('shooting/_pac_phase.py', '_fa_lineshape', 'pss'): 'signature uniformity',
+    ('shooting/pac.py', '_stage_times', 'pss'): 'signature uniformity',
+    ('shooting/pac.py', '_stage_states', 'pss'): 'signature uniformity',
+    ('shooting/pac.py', '_stage_pass', 'pss'): 'signature uniformity',
+    ('shooting/_pss_ppv.py', 'floquet_modes', 'pss_unused'):
+        'public signature: callers pass the PSS positionally',
     ## Helper signatures kept uniform with their sibling that does use ctrl.
     ('transient.py', '_band_centre', 'ctrl'): 'signature uniformity',
     ('transient.py', '_lte_in_band', 'ctrl'): 'signature uniformity',
@@ -152,6 +164,17 @@ def _assert_parameters_reachable(cls, module_files):
     dead = declared - refs - allowed
     assert not dead, (
         '%s declares parameters nothing reads: %s' % (cls.__name__, sorted(dead)))
+
+
+def test_every_pss_and_pac_parameter_is_read():
+    """(2026-09-29) The shooting analyses' Parameters, across the package
+    and the base `Analysis`."""
+    from pycircuit.circuit.shooting import PAC, PSS
+    files = ['analysis.py'] + sorted(
+        'shooting/' + f for f in os.listdir(os.path.join(CIRCUIT, 'shooting'))
+        if f.endswith('.py'))
+    _assert_parameters_reachable(PSS, files)
+    _assert_parameters_reachable(PAC, files)
 
 
 def test_every_transient_parameter_is_read():

@@ -120,6 +120,13 @@ class _DrivenNoise(object):
         """
         output = output_index(pss, output)
         self._check_circuit(pss)
+        if modulated and cyclostationary:
+            raise ValueError(
+                'PAC.pnoise: modulated=True and cyclostationary=True are two '
+                'models of the same bias-dependent source -- one stationary '
+                'source at the cycle-averaged bias, or the cyclostationary '
+                'construction; choose one (given both, the cyclostationary '
+                'one was used silently until 2026-09-29).')
         ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
         ## _forced_replay_transposed), whose two-stage chained transpose is
         ## not built for TR-BDF2, so it falls back to a Gear-2 twin -- see
@@ -557,6 +564,11 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.band_spread`.
         """
         output = output_index(pss, output)
+        if quantity not in ('pnoise', 'S_pm', 'S_am', 'oscillator_spectrum'):
+            raise ValueError(
+                "PAC.band_spread: quantity must be 'pnoise', 'S_pm', 'S_am' "
+                f"or 'oscillator_spectrum', not {quantity!r} (an unknown "
+                "name was taken as 'pnoise' until 2026-09-29)")
         import numpy as _np
         f0 = 1.0 / float(pss.period)
         rs = _np.linspace(float(band[0]), float(band[1]), int(points))
@@ -565,7 +577,7 @@ class _DrivenNoise(object):
             f = float(r) * f0
             if quantity == 'oscillator_spectrum':
                 Sv, _i = self.oscillator_spectrum(pss, _np.array([f]), output,
-                                                  harmonic=harmonic)
+                                                  harmonic=harmonic, **kw)
                 v = float(_np.real(Sv[0]))
             elif quantity in ('S_pm', 'S_am'):
                 am, pm, _b = self.am_pm_noise(pss, f, output, carrier=harmonic,
@@ -683,12 +695,18 @@ class _DrivenNoise(object):
         ## unrotated, the split depends on where t = 0 sits, and the
         ## identity cannot see it (`|a_r|`, `|b_r|` are `|a|`, `|b|`).
         ## `am_pm` divides by the COMPLEX carrier phasor instead.  With no
-        ## carrier at this harmonic the phase is undefined and the split is
-        ## left unrotated, as `am_pm` refuses the same case.
+        ## carrier at this harmonic the phase is undefined, and the split is
+        ## REFUSED, as `am_pm` refuses it (until 2026-09-29 it was left
+        ## unrotated: a split that moved with where t = 0 sits).
         _C = self.carrier_phasor(pss, output, k)
         _scale = float(np.max(np.abs(self._output_waveform_row(pss, output))))
-        _rot = (np.exp(-1j * np.angle(_C))
-                if abs(_C) > 1e-9 * max(_scale, 1e-300) else 1.0)
+        if abs(_C) <= 1e-9 * max(_scale, 1e-300):
+            raise ValueError(
+                'PAC.am_pm_noise: the output carries no component at '
+                f'harmonic {k} (|C| = {abs(_C):.3e} against a signal scale '
+                f'of {_scale:.3e}), so there is no carrier to split the noise '
+                'against; `pnoise` at `carrier*f0 +- freq` is the total.')
+        _rot = np.exp(-1j * np.angle(_C))
         S_am = 0.0
         S_pm = 0.0
         bands = []

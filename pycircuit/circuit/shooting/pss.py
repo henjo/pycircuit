@@ -474,7 +474,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
         self.parameters = super(PSS, self).parameters + self.parameters
-        super(PSS, self).__init__(cir, **kvargs)
+        ## (`toolkit` passed on: until 2026-09-29 it was accepted and dropped,
+        ## so a PSS -- and every twin built with `toolkit=self.toolkit` --
+        ## ran on the default toolkit whatever it was given; found by the
+        ## dead-argument guard over the shooting package)
+        super(PSS, self).__init__(cir, toolkit=toolkit, **kvargs)
         ## The reference row is fixed for the analysis, and both the shooting
         ## loop and the Transient this drives need it.
         self.irefnode = self.cir.get_node_index(
