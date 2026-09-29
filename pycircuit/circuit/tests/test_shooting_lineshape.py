@@ -247,7 +247,7 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     ## routes evaluate `CY` at every step, so a modulated source is inside
     ## their formulation and they RUN -- see `_lyapunov_pieces` and the
     ## switched-capacitor gate below.
-    K, _d, _info = pac.oscillator_covariance(pss)
+    K, _info = pac.oscillator_covariance(pss)
     assert np.all(np.isfinite(np.asarray(K, dtype=float)))
     ## nor `diffusion_constant` (2026-09-26): the same diffusion by the PPV
     c = float(pac.diffusion_constant(pss))
@@ -324,7 +324,7 @@ def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
     _c, pss, pac, ov = _orbit_modulated_vdp('white', method='radau')
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        _K, _d, oi = pac.oscillator_covariance(pss)
+        _K, oi = pac.oscillator_covariance(pss)
         c = float(pac.diffusion_constant(pss))
     assert abs(c / float(oi['c_from_growth']) - 1.0) < 1e-9, \
         (c, oi['c_from_growth'])

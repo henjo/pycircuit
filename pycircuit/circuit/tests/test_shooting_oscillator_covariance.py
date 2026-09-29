@@ -31,7 +31,8 @@ def _osc_cov(npts=240):
     _cir, pss, pac = _solve_vdp_noise(npts=npts)
     ## (pair=True: these tests walk and project in the integrator's pair
     ## space; the default is the m x m node covariance since 2026-09-29)
-    K_orb, d, info = pac.oscillator_covariance(pss, samples=True, pair=True)
+    K_orb, info = pac.oscillator_covariance(pss, samples=True, pair=True)
+    d = info['d']
     return pss, pac, K_orb, d, info
 
 
@@ -62,7 +63,7 @@ def test_the_oscillator_covariance_predicts_the_walk_forty_periods_out():
     As, Qs, _K1, M, _m, n = pac._lyapunov_pieces(pss, 'test')
     ## the split's own periodicity statement: P is periodic UP TO the
     ## growth, which appears exactly once per period -- not periodic
-    P = info['orbital_samples']
+    P = info['samples']
     grow = d * np.outer(u, u)
     assert np.max(np.abs(P[-1] - K_orb - grow)) < 1e-10 * np.max(np.abs(grow))
 
@@ -108,7 +109,7 @@ def test_the_growth_rate_is_the_diffusion_constant_by_another_route():
     errs = []
     for npts in (120, 240, 480):
         _cir, pss, pac = _solve_vdp_noise(npts=npts)
-        _K, _d, info = pac.oscillator_covariance(pss)
+        _K, info = pac.oscillator_covariance(pss)
         c = pac.diffusion_constant(pss)
         errs.append(abs(info['c_from_growth'] / c - 1.0))
     assert errs[0] < 0.03, 'coarsest grid off by %.3f' % errs[0]
@@ -213,7 +214,8 @@ def test_diffusion_constant_sees_noise_on_an_algebraic_row():
     assert abs(c_series / c_parallel - 1.0) < 5e-3, \
         'series %.9e vs parallel %.9e' % (c_series, c_parallel)
 
-    _K, d, _info = pacs.oscillator_covariance(ps)
+    _K, _info = pacs.oscillator_covariance(ps)
+    d = _info['d']
     dT = d / float(ps.period)
     assert abs(c_series / dT - 1.0) < 5e-3, \
         'the PPV route and the Lyapunov route must now agree: c %.9e, ' \
@@ -321,7 +323,8 @@ def test_the_lyapunov_route_matches_an_analytic_external_oracle():
         ## holds `c` to well under the 0.03 % the assertion below is at.
         assert h3_h1 < 5e-3, \
             'the lemma presumes a SINUSOIDAL orbit; h3/h1 came out %.3e' % h3_h1
-        _K, d, _info = pac.oscillator_covariance(pss)
+        _K, _info = pac.oscillator_covariance(pss)
+        d = _info['d']
         ratios.append((d / float(pss.period)) / lemma)
     lo, hi = min(ratios), max(ratios)
     assert abs(hi / lo - 1.0) < 1e-3, \
@@ -345,7 +348,8 @@ def test_diffusion_constant_should_not_depend_on_the_capacitance_scale():
     out = []
     for cc in (0.1, 1.0, 10.0):
         _cir, pss, pac, _amp, _rp, _lemma = _ghanta_tank(cc=cc, ll=1.0)
-        _K, d, _info = pac.oscillator_covariance(pss)
+        _K, _info = pac.oscillator_covariance(pss)
+        d = _info['d']
         out.append(pac.diffusion_constant(pss) / (d / float(pss.period)))
     lo, hi = min(out), max(out)
     assert abs(hi / lo - 1.0) < 1e-2, \
@@ -388,7 +392,7 @@ def _tank_with_rc_probe(rpar, cpar, npts=480):
     names = [str(nd) for nd in cir.nodes]
     iy = names.index('y')
     iy = iy if iy < pss.irefnode else iy - 1
-    K, _d, _i = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(pss)
+    K, _i = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(pss)
     return float(np.asarray(K, dtype=float)[iy, iy]), T0 / npts
 
 
@@ -505,7 +509,8 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
 
     ## native runs on the pair map's own null vectors (2m wide)
     tp.monodromy = 'native'
-    _Kn, dn, info_n = PAC(tp.cir).oscillator_covariance(tp)
+    _Kn, info_n = PAC(tp.cir).oscillator_covariance(tp)
+    dn = info_n['d']
     assert np.shape(info_n['ppv_pair'])[0] == 2 * (tp.cir.n - 1)
     assert np.isfinite(dn) and dn > 0.0
 
@@ -578,7 +583,8 @@ def test_oscillator_covariance_takes_a_coloured_source_on_a_staged_oscillator():
                 err = np.max(np.abs(np.asarray(tv[0])[:n] - full[:n])) \
                     / np.max(np.abs(full[:n]))
                 assert err < 1e-10, (nu / f0, err)
-    (Kw, dw, _iw), (Kc, dc, ic_) = res[False], res[True]
+    (Kw, _iw), (Kc, ic_) = res[False], res[True]
+    dw, dc = _iw['d'], ic_['d']
     assert dc == dw and np.array_equal(Kc, Kw)
     kc = np.asarray(ic_['coloured_samples'])
     assert np.all(np.diagonal(kc, axis1=1, axis2=2) >= -1e-30)
@@ -617,7 +623,7 @@ def test_the_transverse_band_integral_is_the_lyapunov_route_for_a_white_source()
             _w.simplefilter('ignore')
             pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
             pac = PAC(c, toolkit=circuit.numeric)
-            _K, _d, info = pac.oscillator_covariance(pss, samples=True)
+            _K, info = pac.oscillator_covariance(pss, samples=True)
             host = pss._lyapunov_host()
             fp = host._state_map()
             counts, states = pac._injection_points(host, fp)
@@ -844,7 +850,7 @@ def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
     pac = PAC(cir, toolkit=circuit.numeric)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        _K, _d, info = pac.oscillator_covariance(q)
+        _K, info = pac.oscillator_covariance(q)
     assert info['d_residual'] < 1e-11, info['d_residual']
     ## the exact second left mode along the orbit (saltation propagation)
     mdl = _exact_relaxation_oscillator_model()
@@ -895,9 +901,29 @@ def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
             _w.simplefilter('ignore')
             p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
                     maxiterations=60)
-            _K, d, info = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(p)
+            _K, info = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(p)
+            d = info['d']
         out[mono] = (d, info)
     d, info = out['native']
     assert np.shape(info['ppv_pair'])[0] == 4 and info['d_residual'] < 1e-4, info['d_residual']
     assert abs(d / d_ref - 1.0) < 0.05, d / d_ref - 1.0
     assert abs(out['trbdf2'][0] / d_ref - 1.0) < 1e-3, out['trbdf2'][0] / d_ref - 1.0
+
+
+def test_the_oscillator_covariance_and_mode_weights_return_one_shape():
+    """Item #15 of `doc/pac_noise_conventions.md` (2026-09-29):
+    `oscillator_covariance` returns `(K_orb, info)` -- it returned
+    `(K_orb, d, info)` -- with the growth rate `info['d']` and the bounded
+    part per node `info['samples']` (was `'orbital_samples'`);
+    `orbital_mode_weights` returns `(cw, info)` with `info['modes']` and
+    `info['K']` (was `(cw, modes, K)`)."""
+    _cir, pss, pac = _solve_vdp_noise(npts=240)
+    res = pac.oscillator_covariance(pss, samples=True)
+    assert len(res) == 2
+    _K_orb, info = res
+    assert 'orbital_samples' not in info
+    assert {'d', 'samples', 'growth_samples', 'times',
+            'transverse_samples'} <= set(info)
+    assert info['d'] > 0.0 and len(info['samples']) == len(info['growth_samples'])
+    w = pac.orbital_mode_weights(pss)
+    assert len(w) == 2 and set(w[1]) == {'modes', 'K'}

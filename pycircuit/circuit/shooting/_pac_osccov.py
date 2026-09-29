@@ -177,9 +177,11 @@ class _OscillatorCovariance(object):
                               pair=False):
         """The state covariance of a FREE-RUNNING oscillator, split in two.
 
-        Returns `(K_orb, d, info)`.  `K_orb` is the BOUNDED periodic
-        (orbital) part of the covariance at `t = 0`; `d` is the growth per
-        period along the orbit tangent (see the split below).
+        Returns `(K_orb, info)`.  `K_orb` is the BOUNDED periodic
+        (orbital) part of the covariance at `t = 0`; `info['d']` is the
+        growth per period along the orbit tangent (see the split below).
+        ⚠ ONE SHAPE (2026-09-29), the family's `(value, info)`: it returned
+        `(K_orb, d, info)`, and `info['samples']` was `'orbital_samples'`.
 
         ⚠ "BOUNDED" IS NOT "TRANSVERSE".  `K_orb` has the SECULAR growth
         removed and still contains the phase direction's bounded
@@ -197,7 +199,7 @@ class _OscillatorCovariance(object):
         scaled so its first block is `xdot(0)`.
 
         ⚠ WITH `samples=True` THE SPLIT MOVES WITH THE ORBIT, AND THE
-        OBVIOUS READING IS WRONG.  `info['orbital_samples'][j]` is `P(t_j)`,
+        OBVIOUS READING IS WRONG.  `info['samples'][j]` is `P(t_j)`,
         the solution started from `K_orb` at `t = 0`, and it satisfies
 
             K(t_j + n T) = P(t_j) + n d u_j u_j^T,   u_j = Phi(t_j, 0) u
@@ -392,7 +394,7 @@ class _OscillatorCovariance(object):
                 uj = A @ uj
                 orb.append((0.5 * (K + K.T))[:n, :n])
                 grw.append(d * np.outer(uj[:n], uj[:n]))
-            info['orbital_samples'] = orb
+            info['samples'] = orb
             info['growth_samples'] = grw
             info['times'] = np.asarray(pss.factored_period().times,
                                        dtype=float)
@@ -403,7 +405,7 @@ class _OscillatorCovariance(object):
         if samples:
             info['transverse_samples'] = [
                 Pi[j] @ Kj[:m, :m] @ Pi[j].T
-                for j, Kj in enumerate(info['orbital_samples'][:len(Pi)])]
+                for j, Kj in enumerate(info['samples'][:len(Pi)])]
         if col is not None:
             try:
                 Kc, _none = self._coloured_covariance(
@@ -432,10 +434,11 @@ class _OscillatorCovariance(object):
         if not pair:
             K_orb = K_orb[:m, :m]
             info['growth'] = info['growth'][:m, :m]
-            for key in ('orbital_samples', 'growth_samples'):
+            for key in ('samples', 'growth_samples'):
                 if key in info:
                     info[key] = [K[:m, :m] for K in info[key]]
-        return K_orb, d, info
+        info['d'] = d
+        return K_orb, info
 
     def oscillator_edge_jitter(self, pss, output, time, kmax=8):
         """The ADDITIVE (non-accumulating) edge jitter of a FREE-RUNNING
@@ -519,7 +522,8 @@ class _OscillatorCovariance(object):
         ## the run itself they come from another discretisation
         ## History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         pss = pss._lyapunov_host()
-        K_orb, d, info = self.oscillator_covariance(pss, samples=True)
+        K_orb, info = self.oscillator_covariance(pss, samples=True)
+        d = info['d']
         m = self.cir.n - 1
         T = float(pss.period)
         fp = pss.factored_period()
@@ -545,7 +549,7 @@ class _OscillatorCovariance(object):
                 'zero, so delta_y/slew is undefined. Pass an instant on an '
                 'edge.' % times[j])
 
-        Ps = [np.asarray(P, dtype=float)[:m, :m] for P in info['orbital_samples']]
+        Ps = [np.asarray(P, dtype=float)[:m, :m] for P in info['samples']]
         G = [np.asarray(g, dtype=float)[:m, :m] for g in info['growth_samples']]
         with _warnings.catch_warnings():
             _warnings.simplefilter('ignore')
@@ -629,9 +633,11 @@ class _OscillatorCovariance(object):
         so it cannot certify a truncation below whatever the null modes
         carry, however many modes are kept.
 
-        Returns `(cw, modes, K_orb)` with `cw[k, k'] = v_k† K_orb v_k'`,
-        the weight of each pair of Floquet directions in the bounded
-        (orbital) part of the state covariance.
+        Returns `(cw, info)` with `cw[k, k'] = v_k† K_orb v_k'`, the weight
+        of each pair of Floquet directions in the bounded (orbital) part of
+        the state covariance, `info['modes']` those directions and
+        `info['K']` that covariance (pair space on a pair map).  ⚠ ONE SHAPE
+        (2026-09-29): it returned `(cw, modes, K_orb)`.
 
         ⚠ **THIS IS THE BRIDGE BETWEEN THE TWO ROUTES WE ALREADY OWN.**
         `oscillator_covariance` gets `K_orb` from a bordered Kronecker
@@ -664,11 +670,11 @@ class _OscillatorCovariance(object):
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) reads
         ## the modes too, or they would come from another discretisation
         pss = pss._lyapunov_host()
-        K_orb, _d, _info = self.oscillator_covariance(pss, pair=True)
+        K_orb, _info = self.oscillator_covariance(pss, pair=True)
         K = np.asarray(K_orb, dtype=float)
         n = K.shape[0]
         modes = pss.floquet_modes(pss, nmodes=(n if nmodes is None
                                                else int(nmodes)))
         V = np.column_stack([m['v0'] for m in modes])
         cw = V.conj().T @ K @ V
-        return cw, modes, K
+        return cw, {'modes': modes, 'K': K}

@@ -46,7 +46,7 @@ def _cov_ratio(npts, Cval=1e-7, per=1e-3):
         pss.solve(period=per, timestep=per / npts, maxiterations=40)
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
-    K0 = pac.covariance(pss)
+    K0 = pac.covariance(pss)[0]
     irn = pss.irefnode
     k = cir.get_node_index(cir.get_node('b'))
     k = k - 1 if k > irn else k
@@ -119,7 +119,7 @@ def test_the_covariance_refuses_an_oscillator():
     """
     _cir, pss = _solve_slow(None)
     with pytest.raises(ValueError, match='no periodic covariance'):
-        PAC(pss.cir, toolkit=circuit.numeric).covariance(pss)
+        PAC(pss.cir, toolkit=circuit.numeric).covariance(pss)[0]
 
 
 def test_the_covariance_samples_are_periodic_and_positive():
@@ -138,7 +138,8 @@ def test_the_covariance_samples_are_periodic_and_positive():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
-    K0, seq = PAC(cir, toolkit=circuit.numeric).covariance(pss, samples=True)
+    K0, _ci = PAC(cir, toolkit=circuit.numeric).covariance(pss, samples=True)
+    seq = _ci['samples']
 
     rel = np.linalg.norm(seq[-1] - K0) / max(np.linalg.norm(K0), 1e-300)
     assert rel < 1e-8, \
@@ -209,7 +210,7 @@ def test_plain_lyapunov_pieces_are_tied_to_the_shipped_monodromy():
         assert np.all(np.isfinite(K1)) and np.trace(K1) > 0.0, \
             '%s: the one-period noise accumulation is not positive' % method
         ## and the driven Kronecker solve must be NON-singular
-        K0 = pac.covariance(pss)
+        K0 = pac.covariance(pss)[0]
         assert np.all(np.isfinite(K0))
 
 
@@ -251,7 +252,7 @@ def test_plain_covariance_reaches_kTC_like_gear_does():
                           x0=np.zeros(cir.n - 1), maxiterations=100,
                           x0_unknown=False)
             assert pss.converged
-            K0 = PAC(cir).covariance(pss)
+            K0 = PAC(cir).covariance(pss)[0]
             ib = [str(nd) for nd in cir.nodes].index('b')
             ratios.append(float(K0[ib, ib]) / (kT / Cc))
         assert ratios[-1] > 0.95 and ratios[-1] < 1.05, \
@@ -313,11 +314,13 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     ## separable, against its white-through-filter realisation
     pss, o, pac = build('element')
     with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
-        _K, se = pac.covariance(pss, samples=True, colour_fmin=fmin)
+        _K, _ci = pac.covariance(pss, samples=True, colour_fmin=fmin)
+    se = _ci['samples']
     pf, of, pacf = build('filtered')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        _Kf, sf = pacf.covariance(pf, samples=True)
+        _Kf, _ci = pacf.covariance(pf, samples=True)
+        sf = _ci['samples']
     a = np.array([K[o, o] for K in se])
     b = np.array([K[of, of] for K in sf])
     n = min(len(a), len(b))
@@ -337,12 +340,12 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     p0, o0, pac0 = build('element', npts=100)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        Ks = pac0.covariance(p0, colour_fmin=fmin)[o0, o0]
+        Ks = pac0.covariance(p0, colour_fmin=fmin)[0][o0, o0]
         ## (on the instance's factory: the class keeps its own)
         consulted = []
         _noise_seam(pac0, separable=staticmethod(
             lambda Cs, tol=1e-9: consulted.append(1) or False))
-        Kn = pac0.covariance(p0, colour_fmin=fmin)[o0, o0]
+        Kn = pac0.covariance(p0, colour_fmin=fmin)[0][o0, o0]
     ## ⚠ the equality below holds VACUOUSLY if the patch is never looked up
     ## (a refactor that stops reaching `separable` through the factory)
     assert consulted, 'the patched separable was never consulted'
@@ -350,7 +353,7 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     ## the moving-shape path meets the separable one as the corner stops
     pt, ot, pact = build('element', shape=1e-6, npts=100)
     with pytest.warns(RuntimeWarning, match='SHAPE changes along the orbit'):
-        Kt = pact.covariance(pt, colour_fmin=fmin)[ot, ot]
+        Kt = pact.covariance(pt, colour_fmin=fmin)[0][ot, ot]
     assert abs(Kt / Ks - 1.0) < 1e-4, Kt / Ks - 1.0
 
 
@@ -384,8 +387,8 @@ def test_the_coloured_band_integral_resolves_a_high_q_line():
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
     o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
     pac = PAC(c, toolkit=circuit.numeric)
-    a = pac.covariance(pss, colour_fmin=1e3, points_per_decade=10)[o, o]
-    b = pac.covariance(pss, colour_fmin=1e3, points_per_decade=40)[o, o]
+    a = pac.covariance(pss, colour_fmin=1e3, points_per_decade=10)[0][o, o]
+    b = pac.covariance(pss, colour_fmin=1e3, points_per_decade=40)[0][o, o]
     assert abs(a / b - 1.0) < 1e-6, a / b - 1.0
 
 
@@ -437,8 +440,9 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
                       maxiterations=100)
         assert pss.converged
         io = [str(n) for n in cir.nodes if str(n) != 'gnd!'].index('out')
-        K0, Ks = PAC(cir, toolkit=circuit.numeric).covariance(pss,
+        K0, _ci = PAC(cir, toolkit=circuit.numeric).covariance(pss,
                                                               samples=True)
+        Ks = _ci['samples']
         v = np.array([np.asarray(k, dtype=float)[io, io] for k in Ks]) / ktc
         tt = np.linspace(0.0, T, len(v), endpoint=False)
         hold = v[(tt > 0.3 * T) & (tt < 0.45 * T)].mean()
@@ -490,7 +494,7 @@ def test_trbdf2_covariance_converges_to_kTC_at_second_order():
             warnings.simplefilter('ignore')
             pss.solve(period=per, timestep=per / npts, maxiterations=40)
         assert pss.converged
-        K0 = PAC(cir).covariance(pss)
+        K0 = PAC(cir).covariance(pss)[0]
         irn = pss.irefnode
         k = cir.get_node_index(cir.get_node('b'))
         k = k - 1 if k > irn else k
@@ -545,7 +549,7 @@ def test_radau_covariance_converges_to_kTC_faster_than_second_order():
             warnings.simplefilter('ignore')
             pss.solve(period=per, timestep=per / npts, maxiterations=40)
         assert pss.converged
-        K0 = PAC(cir).covariance(pss)
+        K0 = PAC(cir).covariance(pss)[0]
         irn = pss.irefnode
         k = cir.get_node_index(cir.get_node('b'))
         k = k - 1 if k > irn else k
@@ -584,7 +588,8 @@ def test_the_stage_method_covariance_injects_at_the_stages_and_holds_kTC_across_
         cir, pss, io, pac, T = _sampler_fixture_method(
             lambda c: c.__setitem__('S0', _sw()), method, npts)
         N = len(pss.factored_period().steps)
-        _K0, Ks = pac.covariance(pss, samples=True)
+        _K0, _ci = pac.covariance(pss, samples=True)
+        Ks = _ci['samples']
         held = float(np.asarray(Ks[int(0.375 * N)], dtype=float)[io, io]) / ktc
         track = float(np.asarray(Ks[int(0.1 * N)], dtype=float)[io, io]) / ktc
         err[(method, npts)] = (1.0 - held, 1.0 - track)
@@ -610,7 +615,8 @@ def test_the_esdirk43_covariance_holds_kTC_across_a_switching_edge_despite_its_n
         cir, pss, io, pac, T = _sampler_fixture_method(
             lambda c: c.__setitem__('S0', _sw()), 'esdirk43', npts)
         N = len(pss.factored_period().steps)
-        _K0, Ks = pac.covariance(pss, samples=True)
+        _K0, _ci = pac.covariance(pss, samples=True)
+        Ks = _ci['samples']
         held = float(np.asarray(Ks[int(0.375 * N)], dtype=float)[io, io]) / ktc
         track = float(np.asarray(Ks[int(0.1 * N)], dtype=float)[io, io]) / ktc
         err[npts] = (1.0 - held, 1.0 - track)
@@ -692,7 +698,8 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
         errs[label] = float(np.max(np.abs(v - np.interp(ts % T, tsr, vr))) / swing)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            _K0, Ks = PAC(c2, toolkit=circuit.numeric).covariance(p2, samples=True)
+            _K0, _ci = PAC(c2, toolkit=circuit.numeric).covariance(p2, samples=True)
+            Ks = _ci['samples']
         vv = np.array([np.asarray(k, float)[io, io] for k in Ks]) / ktc
         tt = ts[:len(vv)]
         helds[label] = float(vv[(tt > 0.3 * T) & (tt < 0.45 * T)].mean())
@@ -739,7 +746,8 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     exp_n = kT / 1e-12
     exp_h = 4.0 * exp_n
     pac = PAC(cir, toolkit=circuit.numeric)
-    K0, seq = pac.covariance(pss, samples=True)
+    K0, _ci = pac.covariance(pss, samples=True)
+    seq = _ci['samples']
     assert len(seq) == len(ts)
     assert np.linalg.norm(seq[-1] - K0) / np.linalg.norm(K0) < 1e-8
     var_n = np.mean([K[inn, inn] for K in seq])
@@ -757,7 +765,8 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     ev = pss._event_columns
     pss._event_columns = None
     try:
-        _K0u, sequ = pac.covariance(pss, samples=True)
+        _K0u, _ci = pac.covariance(pss, samples=True)
+        sequ = _ci['samples']
     finally:
         pss._event_columns = ev
     ## ⚠ RE-PINNED 2026-09-22 for VSwitch's COMPACT transition: the unbordered
@@ -768,7 +777,8 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     ## and the node-rate correction is what keeps the source silent
     pac._orbit_rate = lambda p, nodes: np.zeros((len(p.waveform[0]), p.cir.n - 1))
     try:
-        _K0z, seqz = pac.covariance(pss, samples=True)
+        _K0z, _ci = pac.covariance(pss, samples=True)
+        seqz = _ci['samples']
     finally:
         del pac._orbit_rate
     share = ((0.925 - ts[j7] / T) / (0.925 - 0.45)) ** 2
@@ -893,7 +903,8 @@ def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
         _c, pss, o, pac = _rc_flicker(method, N)
         Ns = len(pss.factored_period().steps)
         fmax = 0.5 * Ns / float(pss.period)
-        K0, seq = pac.covariance(pss, samples=True, colour_fmin=fmin)
+        K0, _ci = pac.covariance(pss, samples=True, colour_fmin=fmin)
+        seq = _ci['samples']
         rel = K0[o, o] / _rc_band_variance(fmin, fmax) - 1.0
         assert abs(rel) < tol, (method, N, rel)
         assert np.array_equal(K0, seq[0]) and len(seq) == Ns + 1
@@ -905,17 +916,17 @@ def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
     assert 2.5 < rel100 / rel < 5.0, (rel100, rel)
     ## an inner band, fmax below the Nyquist
     _c, pss, o, pac = _rc_flicker('radau', 100)
-    K = pac.covariance(pss, colour_fmin=1e2, colour_fmax=1e7)
+    K = pac.covariance(pss, colour_fmin=1e2, colour_fmax=1e7)[0]
     assert abs(K[o, o] / _rc_band_variance(1e2, 1e7) - 1.0) < 1e-7
     ## (a TypeError, a required argument missing, since 2026-09-29)
     with pytest.raises(TypeError,
                        match='ln\\(colour_fmax/colour_fmin\\)'):
-        pac.covariance(pss)
+        pac.covariance(pss)[0]
     with pytest.raises(ValueError, match='Nyquist'):
-        pac.covariance(pss, colour_fmin=1e3, colour_fmax=1e9)
+        pac.covariance(pss, colour_fmin=1e3, colour_fmax=1e9)[0]
     _c, pss, o, pac = _rc_flicker('trap', 100)
     with pytest.raises(NotImplementedError, match='pair \\(x, iq\\)'):
-        pac.covariance(pss, colour_fmin=fmin)
+        pac.covariance(pss, colour_fmin=fmin)[0]
 
 
 def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part():
@@ -957,7 +968,8 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             j = pac.event_jitter(pss, **band)
-            K0, seq = pac.covariance(pss, samples=True, **band)
+            K0, _ci = pac.covariance(pss, samples=True, **band)
+            seq = _ci['samples']
         red = [str(x) for i, x in enumerate(cir.nodes) if i != pss.irefnode]
         tms = np.asarray(pss.factored_period().times, dtype=float)
         jh = int(np.argmin(abs(tms - 0.7 * T)))
@@ -997,7 +1009,7 @@ def test_a_coloured_covariance_takes_a_flicker_whose_exponent_differs_between_en
         pss, pac, names, (T, Rv, Cv, k) = _mixed_exponent_rc(kind)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
-            K[kind] = pac.covariance(pss, colour_fmin=1e3)
+            K[kind] = pac.covariance(pss, colour_fmin=1e3)[0]
         if kind == 'corr':
             assert any('different power-law exponents' in str(r.message)
                        for r in rec)
@@ -1051,7 +1063,7 @@ def test_a_coloured_covariance_integrates_any_flicker_exponent():
         pac = PAC(c, toolkit=circuit.numeric)
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
         fmin, fmax = 1e3, 0.5 * len(pss.factored_period().steps) / T
-        K = pac.covariance(pss, colour_fmin=fmin)
+        K = pac.covariance(pss, colour_fmin=fmin)[0]
         ref = quad(lambda u: k * np.exp((1.0 - ef) * u) * Rv ** 2
                    / (1.0 + np.exp(2.0 * u) / fc ** 2),
                    np.log(fmin), np.log(fmax), epsabs=0, epsrel=1e-12,
@@ -1130,7 +1142,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
         fN = 0.5 * len(pss.factored_period().steps) / T
         band_ = dict(colour_fmin=1e-6 / T) if kind == 'coloured' else {}
-        out[kind] = (pac.covariance(pss, **band_)[o, o], fN)
+        out[kind] = (pac.covariance(pss, **band_)[0][o, o], fN)
     kc, fN = out['coloured']
     kf, _ = out['filtered']
     assert abs(kc / band(P, Rv, Rv * Cv, tau, 1e-6 / T, fN) - 1.0) < 1e-6
@@ -1175,7 +1187,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         ## separable path -- see
         ## `test_a_coloured_covariance_takes_a_modulated_non_power_law_source`)
         with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
-            Km = PAC(c, toolkit=circuit.numeric).covariance(pss, colour_fmin=1e-6 / T)
+            Km = PAC(c, toolkit=circuit.numeric).covariance(pss, colour_fmin=1e-6 / T)[0]
         assert np.all(np.isfinite(Km)) and np.max(np.diag(Km)) > 0.0
 
 
@@ -1261,16 +1273,18 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
         pac3 = PAC(c3, toolkit=circuit.numeric)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            K0, seq = pac3.covariance(ps, samples=True)
+            K0, _ci = pac3.covariance(ps, samples=True)
+            seq = _ci['samples']
             ## the contrast that matters to a user: NOT staging at all
             pu = PSS(_jitter_sampler(T), method='gear', reltol=1e-9)
             pu.solve(period=T, timestep=T / N, maxiterations=100, state_events=False)
-            _K0u, sequ = PAC(pu.cir, toolkit=circuit.numeric).covariance(pu, samples=True)
+            _K0u, _ci = PAC(pu.cir, toolkit=circuit.numeric).covariance(pu, samples=True)
+            sequ = _ci['samples']
         ## m x m whatever the method (2026-09-29); gear's pair on request
         assert np.shape(K0) == (c3.n - 1, c3.n - 1)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            assert np.shape(pac3.covariance(ps, pair=True)) == (2 * (c3.n - 1),) * 2
+            assert np.shape(pac3.covariance(ps, pair=True)[0]) == (2 * (c3.n - 1),) * 2
         var_n = float(np.mean([K[inn, inn] for K in seq])) / exp_n
         held = float(seq[j7][ih, ih]) / exp_h
         got[N] = held / var_n
@@ -1368,7 +1382,7 @@ def test_the_state_event_stage_runs_matrix_free(method):
                     _w.simplefilter('ignore')
                     out[mf] = (np.asarray(pac.solve(q, [0.3 * f0]).x),
                                pac.adjoint_sideband_row(q, 0.3 * f0, 1, sidebands=[0, 1]),
-                               pac.covariance(q))
+                               pac.covariance(q)[0])
             for a, b in zip(out[True], out[False]):
                 assert rel(a, b) < 1e-9, method
         else:
@@ -1440,7 +1454,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
             p.solve(period=1e-3, timestep=1e-3 / 100)
             pac = PAC(c, toolkit=circuit.numeric)
             res = pac.solve(p, [300.0])
-            K0 = np.asarray(pac.covariance(p), dtype=float)
+            K0 = np.asarray(pac.covariance(p)[0], dtype=float)
         k = int(np.argmin(np.abs(np.asarray(res.sweep_values, dtype=float) - 300.0)))
         x = complex(np.asarray(res.x)[[str(n_) for n_ in c.nodes].index('c'), k])
         return x, K0, p
@@ -1469,9 +1483,11 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
         N = len(pss.factored_period().steps)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            K0t, seq_t = pac.covariance(pss, samples=True)
+            K0t, _ci = pac.covariance(pss, samples=True)
+            seq_t = _ci['samples']
             pss.monodromy = 'native'
-            K0n, seq_n = pac.covariance(pss, samples=True)
+            K0n, _ci = pac.covariance(pss, samples=True)
+            seq_n = _ci['samples']
         jh = int(0.375 * N)
         assert abs(seq_t[jh][io, io] / ktc - 1.0) < 1e-4
         held.append(seq_n[jh][io, io] / ktc - 1.0)
@@ -1522,3 +1538,23 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
     for (x, h), (xr, hr), r in zip(got, ref, (1e-3, 1e-5, 1e-7)):
         assert abs(x / xr - 1.0) < 2e-4, (r, x, xr)
         assert abs(h / hr - 1.0) < 2e-4, (r, h, hr)
+
+
+def test_the_covariance_returns_the_familys_one_shape():
+    """Item #15 of `doc/pac_noise_conventions.md` (2026-09-29): `covariance`
+    returns `(K0, info)` whatever it is asked -- it returned `K0` alone, or
+    `(K0, [K_j])` with `samples=True`, so the arity depended on an argument.
+    `info['samples']` at `info['times']` (one per node, `samples[0]` is
+    `K0`), and with a colour band the coloured part alone in
+    `info['K_coloured']` / `info['coloured_samples']`."""
+    _c, pss, _o, pac = _rc_flicker('radau', 100)
+    K0, info = pac.covariance(pss, colour_fmin=1e3)
+    m = pss.cir.n - 1
+    assert np.shape(K0) == (m, m) and set(info) == {'K_coloured'}
+    K1, info = pac.covariance(pss, samples=True, colour_fmin=1e3)
+    assert np.array_equal(K1, K0)
+    assert set(info) == {'samples', 'times', 'K_coloured', 'coloured_samples'}
+    assert len(info['samples']) == len(info['times'])
+    assert len(info['coloured_samples']) == len(info['samples'])
+    assert np.array_equal(info['samples'][0], K0)
+    assert np.shape(info['K_coloured']) == (m, m)

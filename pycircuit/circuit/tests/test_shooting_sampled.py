@@ -141,7 +141,8 @@ def test_the_sampled_variance_is_the_covariance_at_that_instant_for_white_source
     """
     cir, pss, io, pac, T = _sampler_fixture(lambda c: c.__setitem__('S0', _sw()))
     ktc = _KB * _TEMP / 100e-12
-    _K0, Ks = pac.covariance(pss, samples=True)
+    _K0, _ci = pac.covariance(pss, samples=True)
+    Ks = _ci['samples']
     cov = np.array([np.asarray(k, dtype=float)[io, io] for k in Ks]) / ktc
     grid = np.asarray(pss.factored_period().times, dtype=float)
     kh, kt = 149, 40
@@ -1287,8 +1288,9 @@ def test_a_moving_shape_takes_the_elements_signed_columns_on_every_surface():
             sv = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
                 points_per_decade=10), dtype=float).ravel()
-            _K0, Ks = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
+            _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
+            Ks = _ci['samples']
             pn = np.array([float(np.real(pac.pnoise(
                 pss, fr / T, o, maxsidebands=30, cyclostationary=True)[0]))
                 for fr in (0.013, 0.31)])
@@ -1340,8 +1342,9 @@ def test_signed_columns_beside_a_white_source_of_the_same_element():
             sv = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
                 points_per_decade=10), dtype=float).ravel()
-            _K0, Ks = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
+            _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
+            Ks = _ci['samples']
             pn = np.array([float(np.real(pac.pnoise(
                 pss, fr / T, o, maxsidebands=30, cyclostationary=True)[0]))
                 for fr in (0.013, 0.31)])
@@ -1392,8 +1395,9 @@ def test_signed_columns_of_a_mixed_slope_component_are_grouped_by_exponent():
             sv = [float(np.ravel(pac.sampled_variance(
                 pss, o, [0.3 * T], 1e-2 / T, 0.5 / T, points_per_decade=10))[0])
                 for o in (oa, ob)]
-            _K0, Ks = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
+            _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
+            Ks = _ci['samples']
             pn = [float(np.real(pac.pnoise(pss, 0.013 / T, o, maxsidebands=30,
                                            cyclostationary=True)[0]))
                   for o in (oa, ob)]
@@ -1612,7 +1616,8 @@ def test_gears_euler_backstop_step_on_an_event_grid_replays_in_covariance_and_th
         pac = PAC(cir, toolkit=circuit.numeric)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            _K0, Ks = pac.covariance(p, samples=True)
+            _K0, _ci = pac.covariance(p, samples=True)
+            Ks = _ci['samples']
             sv = pac.sampled_variance(p, io, [0.8 * T], 1.0, 50e3)
         ts = np.asarray(p.waveform[0], float)
         v = np.array([np.asarray(k, float)[io, io] for k in Ks]) / ktc
@@ -1677,7 +1682,8 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
         th = float(np.asarray(pss.factored_period().times)[jh])
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter('always')
-            _K0, seq = pac.covariance(pss, samples=True, colour_fmin=1e-6 * f0)
+            _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-6 * f0)
+            seq = _ci['samples']
             sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0)[0]
         blind = sorted({str(r.message).split(':')[0] for r in rec
                         if 'touches zero along the orbit' in str(r.message)})
@@ -1701,7 +1707,7 @@ def test_a_coloured_covariance_takes_noise_correlated_across_elements():
         pss, pac, names, (T, _Rv, _Cv, _k) = _mixed_exponent_rc(kind)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            K[kind] = pac.covariance(pss, colour_fmin=1e3)
+            K[kind] = pac.covariance(pss, colour_fmin=1e3)[0]
             V[kind] = float(pac.sampled_variance(
                 pss, names.index('o2'), [0.3 * T], 0.01 / T, 0.5 / T,
                 points_per_decade=10)[0])

@@ -574,8 +574,9 @@ class _LyapunovCovariance(object):
         now -- so the sample recursion is not causal step by step; the
         period-level objects are exact.
 
-        Returns ``(M_tot, Q_tot, samples)`` with ``samples(K0)`` the list
-        of per-node covariances.  Built for a host whose per-step maps are
+        Returns ``(M_tot, Q_tot, samples, pieces)`` with ``samples(K0)``
+        the list of per-node covariances and ``pieces`` the closure's
+        parts (`dth`, `Gi`, `D`, `nodes`) `event_jitter` reads.  Built for a host whose per-step maps are
         the state maps (`n == m`) and for gear's PAIR form (`n == 2m`,
         below); any other host, or event columns built on another grid,
         runs UNBORDERED, warned.
@@ -1287,9 +1288,13 @@ class _LyapunovCovariance(object):
         `sid/(4kT g)` runs 1.09 to 3.17), so its tracking limit need not be
         `kT/C`.
 
-        Returns `K0`, the covariance of the circuit state at `t = 0`,
-        `m x m`; with `samples=True`, `(K0, [K_j])`, the covariance at every
-        step, which is the time-varying statistic this exists to produce.
+        Returns `(K0, info)`: `K0` the covariance of the circuit state at
+        `t = 0`, `m x m`; with `samples=True` `info['samples']`, the
+        covariance at every node -- the time-varying statistic this exists
+        to produce -- at `info['times']`; with a colour band the coloured
+        part alone in `info['K_coloured']` (and `info['coloured_samples']`).
+        ⚠ ONE SHAPE (2026-09-29), the family's `(value, info)`: it returned
+        `K0`, or `(K0, [K_j])` with `samples=True`.
         ⚠ `m x m` WHATEVER THE METHOD (2026-09-29): a two-step method's map
         carries `(x_n, x_{n-1})`, and its covariance was returned on that
         pair, `2m x 2m`, the shape depending on the integrator; `pair=True`
@@ -1388,16 +1393,22 @@ class _LyapunovCovariance(object):
         if samples:
             seq = (_samples(K0) if bordered is not None
                    else self._lyap_walk(As, Qs, K0))
+        Kc = None
         if col is not None:
             Kc, _dth = self._coloured_covariance(pss, col, m, n,
                                                  all_nodes=bool(samples))
             K0 = K0 + Kc[0]
             if seq is not None:
                 seq = [a + b for a, b in zip(seq, Kc)]
-        if not pair:
-            K0 = K0[:m, :m]
-            if seq is not None:
-                seq = [K[:m, :m] for K in seq]
-        if not samples:
-            return K0
-        return K0, seq
+        cut = (lambda K: K) if pair else (lambda K: K[:m, :m])
+        K0 = cut(K0)
+        info = {}
+        if seq is not None:
+            info['samples'] = [cut(K) for K in seq]
+            info['times'] = np.asarray(pss.factored_period().times,
+                                       dtype=float)
+        if Kc is not None:
+            info['K_coloured'] = cut(Kc[0])
+            if samples:
+                info['coloured_samples'] = [cut(K) for K in Kc]
+        return K0, info

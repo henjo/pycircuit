@@ -87,7 +87,7 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 | `sampled_noise` | `pss, output, times, freqs, maxsidebands=None, tail=False` | array `(len(times), len(freqs))` | `freqs`: SERIES frequency, `0 < f <= f0/2` | `maxsidebands` -> `N//2 - 1` (raises above) |
 | `sampled_variance` | `pss, output, times, series_fmin, series_fmax, points_per_decade=40, maxsidebands=None, tail=False` | array `(len(times),)` | `series_fmin`, `series_fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
 | `jitter_metrics` | `pss, output, time, series_fmin, series_fmax, kmax=8, maxsidebands=None, nfreq=601, dc_rectangle=False, points_per_decade=40` | dict: `sigma_t, rho, k_cycle` (exact), `cycle_to_cycle, slew` (`edge_slope`), `R, instant` | as `sampled_variance` | `kmax=8` (>= 2) |
-| `covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `K0`, or `(K0, [K at each node])` with `samples=True`; `m x m` whatever the method (a gear/trap pair map's `2m x 2m` with `pair=True`) | `colour_fmin`, `colour_fmax`: the SOURCE band of the COLOURED part only; `colour_fmax` -> the grid's Nyquist | `colour_fmin` required when a source is coloured |
+| `covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K0, info)`: `info['samples']` at `info['times']` with `samples=True`, `info['K_coloured']` (+ `'coloured_samples'`) with a band; `m x m` whatever the method (a gear/trap pair map's `2m x 2m` with `pair=True`) | `colour_fmin`, `colour_fmax`: the SOURCE band of the COLOURED part only; `colour_fmax` -> the grid's Nyquist | `colour_fmin` required when a source is coloured |
 | `event_jitter` | `pss, colour_fmin=None, colour_fmax=None, points_per_decade=40` | dict: `sigma_t` (s), `cov_fraction`, `fractions`, `nodes` | as `covariance` | refuses a solve with no landed events |
 
 ## Oscillators
@@ -100,9 +100,9 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 | `modal_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None, maxsidebands=None` | dict: `phase, orbital, correlation, total` | OFFSETS, negative = the lower sideband (not the upper's) | `maxharmonics` -> 32 capped by the grid (an explicit count above the grid raises), `maxsidebands` -> `2 maxharmonics` |
 | `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None` (+ `maxsidebands` for correlation) | array | as `modal_spectrum` | as `modal_spectrum` |
 | `orbital_correlation` | `pss, maxharmonics=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
-| `oscillator_covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K_orb, d, info)`; `K_orb` `m x m` whatever the method (the pair with `pair=True`) | as `covariance` (colour enters the transverse part only) | |
+| `oscillator_covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K_orb, info)`: the growth `info['d']`, the bounded part per node `info['samples']`; `K_orb` `m x m` whatever the method (the pair with `pair=True`) | as `covariance` (colour enters the transverse part only) | |
 | `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle_bound` (the large-`k` upper bound), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
-| `orbital_mode_weights` | `pss, nmodes=None` | `(cw, modes, K_orb)` | -- | |
+| `orbital_mode_weights` | `pss, nmodes=None` | `(cw, info)`: `info['modes']`, `info['K']` | -- | |
 | `diffusion_constant` | `pss` | `c`, s | -- | refuses colour |
 | `frequency_aware_diffusion` | `pss, offset` | `c(f)`, s | `offset` scalar, abs taken | refuses colour |
 | `colour_projection` | `pss` | `(vbar, info)`: `rms, symmetry, samples, times` | -- | |
@@ -218,10 +218,19 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
     `frequency_aware_diffusion` takes its magnitude; the modal family reads
     a negative offset as the LOWER sideband (1.02-1.06x the upper there,
     and the correlation term changes sign).
-15. Returns: tuples, dicts, arrays and floats; `covariance` changes arity
+15. ~~Returns: tuples, dicts, arrays and floats; `covariance` changes arity
     with `samples` while `oscillator_covariance` puts samples in `info`;
     diagnostics go to instance attributes (`alias_stop`, `sidebands_used`,
-    `sampled_instants`, `lineshape_info`, ...).
+    `sampled_instants`, `lineshape_info`, ...).~~ CLOSED 2026-09-29 for the
+    covariance family (Andreas: "Redesign #15 too"): `(value, info)`, the
+    house pattern of `colour_projection`, `band_spread`, `PSS.ppv` --
+    `covariance -> (K0, info)` whatever `samples` is,
+    `oscillator_covariance -> (K_orb, info)` with `d` in `info['d']` and
+    `'orbital_samples'` renamed `'samples'`, `orbital_mode_weights ->
+    (cw, info)`; the jitter surfaces keep their metric dicts (as
+    `jitter_metrics`).  The instance-attribute diagnostics belong to other
+    surfaces (`pnoise`, `solve`, the lineshape, the sampled family) and are
+    left as they are.
 16. ~~The same refusal raises different exceptions: a missing lower band
     edge is a `NotImplementedError` in `covariance` (`colour_fmin`) and
     `oscillator_spectrum` (`offset_fmin`) but a `TypeError` in the sampled

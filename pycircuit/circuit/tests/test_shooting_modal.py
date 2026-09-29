@@ -57,7 +57,8 @@ def test_the_orbital_covariance_resolves_onto_the_floquet_modes():
     pac = PAC(cir)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        cw, modes, K = pac.orbital_mode_weights(pss)
+        cw, _wi = pac.orbital_mode_weights(pss)
+        modes, K = _wi['modes'], _wi['K']
     U = np.column_stack([m['u0'] for m in modes])
     V = np.column_stack([m['v0'] for m in modes])
 
@@ -141,7 +142,7 @@ def test_orbital_correlation_is_gated_three_ways():
         warnings.simplefilter('ignore')
         R4, _ = pac.orbital_correlation(pss, maxharmonics=4)
         R, Cc = pac.orbital_correlation(pss, maxharmonics=32)
-        Kf, d, info = pac.oscillator_covariance(pss, samples=True)
+        Kf, info = pac.oscillator_covariance(pss, samples=True)
         modes = pss.floquet_modes(pss)
     assert np.linalg.norm(R - R.T) < 1e-12 * np.linalg.norm(R), 'R not symmetric'
     assert np.linalg.norm(R - R4) < 1e-6 * np.linalg.norm(R), \
@@ -178,7 +179,7 @@ def test_orbital_correlation_is_gated_three_ways():
     ## leaves the phase direction's bounded within-period variance and read
     ## 2-6 % against this sum, falling as 1/Q. That was the reference being
     ## the wrong object, and it cost an afternoon.
-    Ps = [np.asarray(P, float)[:m, :m] for P in info['orbital_samples']]
+    Ps = [np.asarray(P, float)[:m, :m] for P in info['samples']]
     G = [np.asarray(gg, float)[:m, :m] for gg in info['growth_samples']]
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -244,9 +245,9 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         Rm, _ = pac.orbital_correlation(pss)
-        Kf, d, info = pac.oscillator_covariance(pss, samples=True)
+        Kf, info = pac.oscillator_covariance(pss, samples=True)
         v0, pinfo = pss.ppv()
-    Ps = [np.asarray(P, float)[:m, :m] for P in info['orbital_samples']]
+    Ps = [np.asarray(P, float)[:m, :m] for P in info['samples']]
     G = [np.asarray(g, float)[:m, :m] for g in info['growth_samples']]
     ts = np.asarray(info['times'], float)[:len(Ps)]
     Tp = float(pss.period)
@@ -480,8 +481,9 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
     with pytest.raises(TypeError, match='COLOURED'):
         pac.oscillator_covariance(pss)
     with pytest.warns(RuntimeWarning, match="WHITE sources' alone"):
-        K_orb, d, info = pac.oscillator_covariance(pss, samples=True,
+        K_orb, info = pac.oscillator_covariance(pss, samples=True,
                                                    colour_fmin=1e-6 * f0)
+    d = info['d']
     assert d == 0.0 and not np.any(K_orb)
     tr = np.asarray(info['transverse_samples'])
     np.testing.assert_allclose(info['K_transverse'], tr[0], rtol=1e-12, atol=0)
@@ -605,7 +607,8 @@ def test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace(
         cir, pss = build(node)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            cw, modes, K = PAC(cir).orbital_mode_weights(pss)
+            cw, _wi = PAC(cir).orbital_mode_weights(pss)
+            modes, K = _wi['modes'], _wi['K']
         cw = np.asarray(cw)
         U = np.column_stack([m['u0'] for m in modes])
         rec = U @ cw @ U.conj().T
@@ -748,7 +751,8 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
             R, _ = pac.orbital_correlation(pss, maxharmonics=8)
             modes = pss.floquet_modes(pss)
             v0, info = pss.ppv()
-            Kf, d, ci = pac.oscillator_covariance(pss, samples=True)
+            Kf, ci = pac.oscillator_covariance(pss, samples=True)
+            d = ci['d']
         return cir, pss, pac, m, Tp, CY2, R, modes, v0, info, Kf, d, ci
     cir, pss, pac, m, Tp, CY2, R, modes, v0, info, Kf, d, ci = gate(400)
 
@@ -769,7 +773,7 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
     assert relAB < 1e-3, 'eq (22) vs the definition integral: %.3e' % relAB
 
     ## route C: obliquely-projected Lyapunov cycle-mean
-    Ps = [np.asarray(x, float)[:m, :m] for x in ci['orbital_samples']]
+    Ps = [np.asarray(x, float)[:m, :m] for x in ci['samples']]
     G = [np.asarray(x, float)[:m, :m] for x in ci['growth_samples']]
     ## `samples[j]` is node j: prepending `v0` shifted every node by one
     ## (the 'first-order Lyapunov route' of 2026-09-20 was this shift)
@@ -795,7 +799,7 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         'order adjoint and the phase-vector list unshifted)' % relAC
     ## and the disagreement is the REFERENCE's: it halves with the grid
     _c2, _p2, _pac2, _m2, _T2, _CY2, R2, _mo2, v02, info2, _K2, _d2, ci2 = gate(200)
-    Ps2 = [np.asarray(x, float)[:m, :m] for x in ci2['orbital_samples']]
+    Ps2 = [np.asarray(x, float)[:m, :m] for x in ci2['samples']]
     G2 = [np.asarray(x, float)[:m, :m] for x in ci2['growth_samples']]
     vs2 = [np.asarray(sv, float)[:m] for sv in info2['samples']]
     proj2 = []

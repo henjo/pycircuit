@@ -407,7 +407,8 @@ def test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin(
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             v, _info = p.ppv()
-            _K, d, _i2 = pac.oscillator_covariance(p)
+            _K, _i2 = pac.oscillator_covariance(p)
+            d = _i2['d']
             Sv, _ = pac.oscillator_spectrum(p, np.array([0.05 / float(p.period)]), 0)
         got[method] = (np.asarray(v)[:m], d / float(p.period), float(Sv[0]),
                        p.monodromy_twin())
