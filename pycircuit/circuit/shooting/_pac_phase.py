@@ -560,9 +560,18 @@ class _PhaseNoise(object):
         return fold
 
     def phase_psd(self, pss, offsets, harmonic=1, frequency_aware=True):
-        """`S_phi(f)` in rad^2/Hz at `offsets` from harmonic `i` — white AND coloured.
+        """`L(f)`, the SINGLE-SIDEBAND phase noise at `offsets` from harmonic
+        `i`, per Hz relative to the carrier (`10 log10` of it is dBc/Hz) --
+        white AND coloured.
 
-            S_phi,i(f) = i^2 f_0^2 c(f) / f^2,   c(f) = sum_l V_l^H (CY(f - l f_0)/2) V_l
+            L_i(f) = i^2 f_0^2 c(f) / f^2,   c(f) = sum_l V_l^H (CY(f - l f_0)/2) V_l
+
+        ⚠ THE CONVENTION IS A COMMERCIAL SIMULATOR'S PHASE NOISE, and not
+        the IEEE one-sided `S_phi(f) = 2 L(f)` (rad^2/Hz).  Its pnoise
+        reports an oscillator's phase noise as `L(f)` alone, the Lorentzian
+        `c f0^2 / ((pi c f0^2)^2 + f^2)` whose skirt this is; it has no
+        rad^2/Hz output.  (Until 2026-09-29 this docstring called the same
+        number "the two-sided S_phi in rad^2/Hz".)
 
         `c(f)` is `coloured_diffusion_resolved`: the phase diffusion with
         each harmonic's colour read at its own source-side frequency.  For

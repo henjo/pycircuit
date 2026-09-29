@@ -29,7 +29,9 @@ from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
 
 def _osc_cov(npts=240):
     _cir, pss, pac = _solve_vdp_noise(npts=npts)
-    K_orb, d, info = pac.oscillator_covariance(pss, samples=True)
+    ## (pair=True: these tests walk and project in the integrator's pair
+    ## space; the default is the m x m node covariance since 2026-09-29)
+    K_orb, d, info = pac.oscillator_covariance(pss, samples=True, pair=True)
     return pss, pac, K_orb, d, info
 
 
@@ -785,8 +787,8 @@ def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_cova
 
     ## 4. the k-lag law: Var -> c k T + 2A, so k_cycle rises from just above
     ##    sqrt(2A) and the walk eventually dominates
-    assert r['k_cycle'][0] >= np.sqrt(2.0 * r['A'])
-    assert np.all(np.diff(r['k_cycle']) > 0)
+    assert r['k_cycle_bound'][0] >= np.sqrt(2.0 * r['A'])
+    assert np.all(np.diff(r['k_cycle_bound']) > 0)
 
     ## 5. refusal on a DRIVEN circuit.
     ## ⚠ THE FIXTURE IS BUILT OUTSIDE THE `raises` BLOCK, DELIBERATELY.  With

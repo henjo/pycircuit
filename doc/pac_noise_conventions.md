@@ -98,8 +98,11 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
    spectrum is one-sided (the orbital/modal/correlation spectra and `S_v`
    were 0.5x); `phase_psd` stays the two-sided `S_phi = L(f)` (item 2);
    only `oscillator_spectrum` returns dBc.
-2. **`phase_psd` is the two-sided `S_phi` (= `L(f)`),** not the IEEE
-   one-sided `S_phi = 2 L(f)`; its docstring says only "rad^2/Hz".
+2. ~~**`phase_psd` is the two-sided `S_phi` (= `L(f)`),** not the IEEE
+   one-sided `S_phi = 2 L(f)`; its docstring says only "rad^2/Hz".~~
+   CLOSED 2026-09-29 (Andreas: match a commercial simulator, else IEEE):
+   that simulator reports an oscillator's phase noise as `L(f)` alone, and
+   `phase_psd` returns exactly that -- documented so; no number moved.
 3. ~~**`am_pm_noise` returns pair totals** over both sidebands, not a
    per-sideband density; on an oscillator `S_pm = 4 S_v`.~~ CLOSED
    2026-09-28: per sideband, and on an oscillator `S_pm = S_v`.
@@ -114,12 +117,15 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
    sources are white), the SERIES band that cuts white noise too
    (`sampled_variance`, `jitter_metrics`), and the phase-offset band for
    colour (`oscillator_spectrum`).
-7. **`covariance` is `m x m` on radau/euler/GLM and `2m x 2m` on gear/trap**
-   (the pair state), so traces, eigenvalues and shapes depend on the method.
-8. **The jitter dictionaries disagree:** `sigma_t` vs `sigma`
+7. ~~**`covariance` is `m x m` on radau/euler/GLM and `2m x 2m` on gear/trap**
+   (the pair state), so traces, eigenvalues and shapes depend on the method.~~ CLOSED 2026-09-29: `m x m` whatever the method,
+   the pair on request (`pair=True`), `oscillator_covariance` too.
+8. ~~**The jitter dictionaries disagree:** `sigma_t` vs `sigma`
    (`event_jitter`), `k_cycle` exact in `jitter_metrics` but a large-`k`
    upper bound in `oscillator_edge_jitter`, `slew` from a central
-   difference vs a quadratic fit, `kmax` 4 vs 8.
+   difference vs a quadratic fit, `kmax` 4 vs 8.~~ CLOSED 2026-09-29:
+   `sigma_t` everywhere, the bound named `k_cycle_bound`, one slope
+   estimator (`edge_slope`, the quadratic fit), `kmax` 8.
 9. ~~**Flag combinations dropped silently:**~~ CLOSED 2026-09-29 for the
    two that lost a flag (both raise now; `frequency_aware` defaults to
    True, as it behaved): `pnoise` with both `modulated`

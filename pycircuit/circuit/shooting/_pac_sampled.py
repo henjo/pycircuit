@@ -4,7 +4,7 @@ metrics.
 import numpy as np
 import warnings
 from ._noise_components import cached_root, psd_sqrt
-from ._numerics import _output_weights, output_index
+from ._numerics import edge_slope, _output_weights, output_index
 from .events import EventColumns
 
 
@@ -133,7 +133,7 @@ class _SampledNoise(object):
                                  tail=tail)
         return self._loglog_integral(np.asarray(S, dtype=float), fs)
 
-    def jitter_metrics(self, pss, output, time, fmin, fmax, kmax=4,
+    def jitter_metrics(self, pss, output, time, fmin, fmax, kmax=8,
                        maxsidebands=None, nfreq=601, dc_rectangle=False,
                        points_per_decade=40):
         """Edge jitter at ONE instant: `sigma_t`, the across-period
@@ -184,10 +184,11 @@ class _SampledNoise(object):
         larger `k`.  ⚠ With a coloured source, LOWER `fmin` -- do not reach
         for the rectangle.
 
-        ⚠ `slew` IS A FINITE DIFFERENCE ON THE PSS GRID, central about the
-        instant actually used, and it converges at FIRST order.  It is
-        returned so a caller can check it rather than trust it; every metric
-        here is inversely proportional to it.
+        ⚠ `slew` IS A LOCAL QUADRATIC FIT at the instant actually used
+        (`edge_slope`, as `oscillator_edge_jitter` takes it; until
+        2026-09-29 a central difference, first order).  It is returned so a
+        caller can check it rather than trust it; every metric here is
+        inversely proportional to it.  `kmax` defaults to 8, as there.
 
         ⚠ THE INSTANT IS THE CALLER'S, deliberately.  This does not hunt for a
         threshold crossing: a threshold inferred from a simulated record can
@@ -255,9 +256,7 @@ class _SampledNoise(object):
         t0 = float(np.asarray(self.sampled_instants, dtype=float).ravel()[0])
         row = np.asarray(self._output_waveform_row(pss, output), dtype=float)
         times = np.asarray(fp.times, dtype=float)[:len(row)]
-        j = int(np.argmin(np.abs(times - t0)))
-        jm, jp = max(j - 1, 0), min(j + 1, len(row) - 1)
-        slew = float((row[jp] - row[jm]) / (times[jp] - times[jm]))
+        slew, _j = edge_slope(times, row, t0)
         ## ⚠ A slope threshold RELATIVE to the steepest slope only describes
         ## the grid (a grid point never lands exactly on a peak) and moves
         ## with N.  What does not move with the grid is the LINEARISATION

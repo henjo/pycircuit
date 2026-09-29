@@ -806,15 +806,15 @@ def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma(
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             j = pac.event_jitter(pss)
-        assert len(j['sigma']) == 4 and len(j['fractions']) == 4
+        assert len(j['sigma_t']) == 4 and len(j['fractions']) == 4
         fr = np.asarray(j['fractions'], dtype=float)
         assert abs(fr[0] - 0.45) < 1e-4 and abs(fr[2] - 0.925) < 1e-3, fr
         ## the two edges of one window cross together: the same sigma
-        assert abs(j['sigma'][0] / j['sigma'][1] - 1.0) < 1e-6
-        assert abs(j['sigma'][2] / j['sigma'][3] - 1.0) < 1e-6
+        assert abs(j['sigma_t'][0] / j['sigma_t'][1] - 1.0) < 1e-6
+        assert abs(j['sigma_t'][2] / j['sigma_t'][3] - 1.0) < 1e-6
         ## the reset edge is faster, so it jitters less
-        assert j['sigma'][2] < 0.1 * j['sigma'][0]
-        out[N] = float(j['sigma'][0])
+        assert j['sigma_t'][2] < 0.1 * j['sigma_t'][0]
+        out[N] = float(j['sigma_t'][0])
     for N, s in out.items():
         assert abs(s / sigma_exact - 1.0) < 1e-2, (N, s, sigma_exact)
     assert abs(out[100] / out[200] - 1.0) < 1e-3, out
@@ -959,7 +959,7 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
         red = [str(x) for i, x in enumerate(cir.nodes) if i != pss.irefnode]
         tms = np.asarray(pss.factored_period().times, dtype=float)
         jh = int(np.argmin(abs(tms - 0.7 * T)))
-        out[flick] = (float(j['sigma'][0]) ** 2,
+        out[flick] = (float(j['sigma_t'][0]) ** 2,
                       seq[jh][red.index('n'), red.index('n')],
                       seq[jh][red.index('hold'), red.index('hold')])
         if flick:
@@ -1151,7 +1151,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
                       state_events=True)
             band_ = dict(fmin=1e-6 / T) if flick else {}
             sig[flick] = float(PAC(cir, toolkit=circuit.numeric).event_jitter(
-                pss, **band_)['sigma'][0]) ** 2
+                pss, **band_)['sigma_t'][0]) ** 2
         fN = 0.5 * len(pss.factored_period().steps) / T
     var_n = band(Pn, Rn, Rn * Cn, tn, 1e-6 / T, fN)
     assert abs((sig[True] - sig[False]) / (var_n / s1 ** 2) - 1.0) < 5e-5, \
@@ -1264,7 +1264,11 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
             pu = PSS(_jitter_sampler(T), method='gear', reltol=1e-9)
             pu.solve(period=T, timestep=T / N, maxiterations=100, state_events=False)
             _K0u, sequ = PAC(pu.cir, toolkit=circuit.numeric).covariance(pu, samples=True)
-        assert np.shape(K0) == (2 * (c3.n - 1), 2 * (c3.n - 1))     # gear's pair width
+        ## m x m whatever the method (2026-09-29); gear's pair on request
+        assert np.shape(K0) == (c3.n - 1, c3.n - 1)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            assert np.shape(pac3.covariance(ps, pair=True)) == (2 * (c3.n - 1),) * 2
         var_n = float(np.mean([K[inn, inn] for K in seq])) / exp_n
         held = float(seq[j7][ih, ih]) / exp_h
         got[N] = held / var_n

@@ -673,7 +673,7 @@ class _LyapunovCovariance(object):
         node with kT/C_n of noise) the turn-off crossing's sigma is the
         analytic ``sqrt(kT/C_n) / s_1``.
 
-        Returns ``{'sigma': (K,) s, 'cov_fraction': (K, K), 'fractions':
+        Returns ``{'sigma_t': (K,) s, 'cov_fraction': (K, K), 'fractions':
         (K,) the crossings' positions, 'nodes': (K,) their grid nodes}``.
         A COLOURED source needs the band `fmin` / `fmax` /
         `points_per_decade`, as `covariance`: the crossings' coloured motion
@@ -721,7 +721,9 @@ class _LyapunovCovariance(object):
             cov = cov + Dc
         cov = 0.5 * (cov + cov.T)
         T = float(pss.period)
-        return {'sigma': np.sqrt(np.clip(np.diag(cov), 0.0, None)) * T,
+        ## (`sigma_t`, the key the other jitter surfaces use; `sigma`
+        ## until 2026-09-29)
+        return {'sigma_t': np.sqrt(np.clip(np.diag(cov), 0.0, None)) * T,
                 'cov_fraction': cov,
                 'fractions': np.asarray(pss._state_event_fracs, dtype=float).copy(),
                 'nodes': list(pieces['nodes'])}
@@ -1248,7 +1250,7 @@ class _LyapunovCovariance(object):
         return K, D
 
     def covariance(self, pss, samples=False, fmin=None, fmax=None,
-                   points_per_decade=40):
+                   points_per_decade=40, pair=False):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
 
         ⚠ A GRID CHOSEN FOR `kT/C` IS NOT A GRID FOR THE PROFILE.  The
@@ -1267,9 +1269,13 @@ class _LyapunovCovariance(object):
         `sid/(4kT g)` runs 1.09 to 3.17), so its tracking limit need not be
         `kT/C`.
 
-        Returns `K0`, the covariance at `t = 0`; with `samples=True`,
-        `(K0, [K_j])`, the covariance at every step, which is the
-        time-varying statistic this exists to produce.
+        Returns `K0`, the covariance of the circuit state at `t = 0`,
+        `m x m`; with `samples=True`, `(K0, [K_j])`, the covariance at every
+        step, which is the time-varying statistic this exists to produce.
+        ⚠ `m x m` WHATEVER THE METHOD (2026-09-29): a two-step method's map
+        carries `(x_n, x_{n-1})`, and its covariance was returned on that
+        pair, `2m x 2m`, the shape depending on the integrator; `pair=True`
+        returns it so.
 
         ⚠ A COLOURED SOURCE NEEDS A BAND.  With a 1/f source
         (a `flicker_noise`, a MOS channel's flicker) pass `fmin` -- and
@@ -1369,6 +1375,10 @@ class _LyapunovCovariance(object):
             K0 = K0 + Kc[0]
             if seq is not None:
                 seq = [a + b for a, b in zip(seq, Kc)]
+        if not pair:
+            K0 = K0[:m, :m]
+            if seq is not None:
+                seq = [K[:m, :m] for K in seq]
         if not samples:
             return K0
         return K0, seq

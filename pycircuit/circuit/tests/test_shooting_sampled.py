@@ -746,6 +746,13 @@ def test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_ser
             'rho_%d = %.6f against exp(-%d) = %.6f' % (
                 k, m['rho'][k - 1], k, np.exp(-k))
     assert m['instant'] == grid[j], (m['instant'], grid[j])
+    ## the slope is the jitter family's one estimator, a local quadratic fit
+    ## at the instant (`edge_slope`; a central difference until 2026-09-29),
+    ## and `kmax` defaults to 8, as `oscillator_edge_jitter`'s does
+    from pycircuit.circuit.shooting._numerics import edge_slope
+    assert m['slew'] == edge_slope(grid, v, m['instant'])[0]
+    import inspect
+    assert inspect.signature(pac.jitter_metrics).parameters['kmax'].default == 8
 
     ## the metrics are functions of rho and sigma_t, by a route that does not
     ## go through R -- an algebra slip in the method would not survive this

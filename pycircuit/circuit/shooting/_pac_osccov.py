@@ -2,7 +2,7 @@
 edge jitter and the mode weights.
 """
 import numpy as np
-from ._numerics import output_index
+from ._numerics import edge_slope, output_index
 import warnings
 from .events import EventColumns
 
@@ -173,7 +173,7 @@ class _OscillatorCovariance(object):
     ## physical argument that it should shrink is wrong.
     ## History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
     def oscillator_covariance(self, pss, samples=False, fmin=None, fmax=None,
-                              points_per_decade=40):
+                              points_per_decade=40, pair=False):
         """The state covariance of a FREE-RUNNING oscillator, split in two.
 
         Returns `(K_orb, d, info)`.  `K_orb` is the BOUNDED periodic
@@ -424,6 +424,15 @@ class _OscillatorCovariance(object):
                 'noise is phase_psd\'s. Its transverse covariance is in '
                 "info['K_coloured'], and info['K_transverse'] holds both.",
                 RuntimeWarning, stacklevel=2)
+        ## ⚠ `m x m` WHATEVER THE METHOD (2026-09-29), as `covariance`: a
+        ## two-step method's pair space is its own, `pair=True` keeps it
+        ## (`orbital_mode_weights` reads the Floquet modes there)
+        if not pair:
+            K_orb = K_orb[:m, :m]
+            info['growth'] = info['growth'][:m, :m]
+            for key in ('orbital_samples', 'growth_samples'):
+                if key in info:
+                    info[key] = [K[:m, :m] for K in info[key]]
         return K_orb, d, info
 
     def oscillator_edge_jitter(self, pss, output, time, kmax=8):
@@ -482,20 +491,21 @@ class _OscillatorCovariance(object):
         Monte Carlo actually runs on -- otherwise the mismatch enters squared
         (an Euler orbit's slope against gear's: 5.7 % at 240 points).
 
-        ⚠ `k_cycle` IS THE LARGE-`k` FORM, with `rho_k` taken to zero.  The
-        orbital part's across-period correlation is not computed here, so at
-        small `k` the true k-cycle jitter is LOWER than this returns (the
-        `(1 - rho_k)` factor is below 1).  Treat small-`k` entries as an upper
-        bound.  For a DRIVEN circuit use `jitter_metrics`, which computes
-        `rho_k` properly from the sample series.
+        ⚠ `k_cycle_bound` IS THE LARGE-`k` FORM, with `rho_k` taken to zero,
+        and named for what it is: the orbital part's across-period
+        correlation is not computed here, so at small `k` the true k-cycle
+        jitter is LOWER (the `(1 - rho_k)` factor is below 1).  (Until
+        2026-09-29 it was `k_cycle`, the key under which `jitter_metrics`
+        returns the EXACT value.)  For a DRIVEN circuit use `jitter_metrics`,
+        which computes `rho_k` from the sample series.
 
         ⚠ THE INSTANT IS THE CALLER'S.  This does not hunt for a crossing: a
         threshold taken from a simulated record can be biased by startup, and
         that moves the instant off the steepest point.  `instant` in the
         result is the grid point used.
 
-        Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`, `k_cycle`
-        (k = 1..kmax), `instant`, `d`, `projection_share`.
+        Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`,
+        `k_cycle_bound` (k = 1..kmax), `instant`, `d`, `projection_share`.
 
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
@@ -519,18 +529,14 @@ class _OscillatorCovariance(object):
                 'PAC.oscillator_edge_jitter: the period grid has %d points; '
                 'the slope needs at least 5.' % nt)
         times, row = times[:nt], row[:nt]
-        j = int(np.argmin(np.abs(times - float(time))))
 
         ## ⚠ THE SLOPE IS TAKEN AT THE REQUESTED INSTANT, NOT AT THE SNAPPED
         ## GRID POINT, and the difference is the whole correction.  `time` is
         ## typically a threshold crossing, which sits at a different FRACTION
         ## of a step on every grid; differentiating at the nearest sample
         ## instead reproduces the straddling value, and every quantity here
-        ## goes as 1/s^2.
-        lo = max(min(j - 2, nt - 5), 0)
-        tt = times[lo:lo + 5] - float(time)
-        a2, b2, _c2 = np.polyfit(tt, row[lo:lo + 5], 2)
-        slew = float(b2)
+        ## goes as 1/s^2.  (`edge_slope`, shared with `jitter_metrics`.)
+        slew, j = edge_slope(times, row, float(time))
         if not abs(slew) > 0.0:
             raise ValueError(
                 'PAC.oscillator_edge_jitter: the slope at t = %.6g is exactly '
@@ -590,7 +596,7 @@ class _OscillatorCovariance(object):
             'A': A,
             'c': c,
             'slew': slew,
-            'k_cycle': np.sqrt(c * ks * T + 2.0 * A),
+            'k_cycle_bound': np.sqrt(c * ks * T + 2.0 * A),
             'instant': float(times[j]),
             'd': float(d),
             'projection_share': float(var_raw / var_prj - 1.0),
@@ -656,7 +662,7 @@ class _OscillatorCovariance(object):
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) reads
         ## the modes too, or they would come from another discretisation
         pss = pss._lyapunov_host()
-        K_orb, _d, _info = self.oscillator_covariance(pss)
+        K_orb, _d, _info = self.oscillator_covariance(pss, pair=True)
         K = np.asarray(K_orb, dtype=float)
         n = K.shape[0]
         modes = pss.floquet_modes(pss, nmodes=(n if nmodes is None

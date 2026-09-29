@@ -246,6 +246,27 @@ def _cx_collect(a, b):
     return np.asarray(a) + 1j * np.asarray(b)
 
 
+def edge_slope(times, row, t):
+    """`(slope, j)`: the waveform `row` sampled at `times`, differentiated at
+    the instant `t` by a LOCAL QUADRATIC FIT through the five grid points
+    around it, and `j` the grid point nearest `t`.  The one slope estimator
+    of the jitter surfaces (`jitter_metrics`, `oscillator_edge_jitter`):
+    a two-point difference straddles a crossing at a different fraction of
+    a step on every grid, so it moves with the grid (it changed sign under
+    refinement, and was 2.8 % low at 240 points), and every jitter goes as
+    `1/slope`."""
+    times = np.asarray(times, dtype=float)
+    row = np.asarray(row, dtype=float)
+    nt = int(min(len(times), len(row)))
+    if nt < 5:
+        raise ValueError(f'the period grid has {nt} points; the slope needs '
+                         'at least 5')
+    j = int(np.argmin(np.abs(times[:nt] - float(t))))
+    lo = max(min(j - 2, nt - 5), 0)
+    _a, b, _c = np.polyfit(times[lo:lo + 5] - float(t), row[lo:lo + 5], 2)
+    return float(b), j
+
+
 def output_index(pss, output):
     """`output` as the PAC methods take it: a node NAME (a string, or a
     circuit `Node`) is that node's REDUCED-state index -- the reference node
