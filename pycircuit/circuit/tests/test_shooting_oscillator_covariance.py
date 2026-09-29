@@ -967,3 +967,79 @@ def test_the_oscillator_edge_jitter_is_the_exact_law_the_monte_carlo_measures():
     ## the law tends to the walk plus the one-sided intercept
     T = float(pss.period)
     assert abs((kc2[0] - r['c'] * T) / (2.0 * r['A']) - 1.0) < 1e-2
+
+
+def _vdp_colour_pair(kind, npts=200):
+    """van der Pol (Q = 8, radau) with ONE physical noise two ways: a
+    Lorentzian `IS(noiseTau = 0.3 T)` on the tank ('coloured'), or white
+    noise through an RC into a linear `BSource` on it ('filtered') -- the
+    exact realisation (one added state).  `(cir, pss, reduced index of the
+    tank, its rising mid-level crossing)`."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    Rf, Cf, g, Pw = 1.0, 0.3 * T, 1e-2, 1e-4
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    if kind == 'coloured':
+        c['n'] = IS('v', gnd, i=0.0, noisePSD=g * g * Pw * Rf * Rf,
+                    noiseTau=Rf * Cf)
+    else:
+        c.add_node('f')
+        c['nw'] = IS('f', gnd, i=0.0, noisePSD=Pw)
+        c['rf'] = R('f', gnd, r=Rf)
+        c['cf'] = C('f', gnd, c=Cf)
+        c['gm'] = BSource('f', gnd, gnd, 'v', i_func=lambda u, _g=g: _g * u)
+    pss = PSS(c, method='radau', reltol=1e-12)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
+    assert pss.converged
+    full = c.get_node_index('v')
+    red = full if full < c.get_node_index(gnd) else full - 1
+    Xw = np.asarray(pss.waveform[1], float)
+    grid = np.asarray(pss.factored_period().times, float)[:Xw.shape[1]]
+    v = Xw[full]
+    mid = 0.5 * (v.max() + v.min())
+    j = next(k for k in range(2, len(v) - 2)
+             if (v[k - 1] - mid) < 0 <= (v[k] - mid))
+    tc = grid[j - 1] + (mid - v[j - 1]) / (v[j] - v[j - 1]) * (grid[j] - grid[j - 1])
+    return c, pss, red, float(tc)
+
+
+def test_the_oscillator_edge_jitter_takes_a_coloured_source_as_its_realisation_does():
+    """#17 B2 (2026-09-29): a COLOURED source in `oscillator_edge_jitter`.
+    Its transverse part joins `A`; its PHASE is the colour fold's
+    INSTANT-SPECIFIC increment (`_lineshape.edge_increment`), not the
+    stationary structure function -- a coloured source has memory, and at
+    this edge the stationary form reads 1.003e-9 against the increment's
+    7.53e-10 at k = 1 (400 points).
+    Gated on the EDGE TIME, which is physical in any coordinates: the element
+    against its exact white realisation (white noise through an RC into the
+    tank) read by the exact law (B4, Monte-Carlo validated).  Predicted
+    <= 0.5 %; measured +1.4e-3 / +2.4e-4 / ... / -4.3e-4 at k = 1..8 on 400
+    points, within 3e-3 here (200 points, the band capped at 20 f0).
+    ⚠ The realisation's own intercept is NEGATIVE (the RC state carries the
+    noise the phase later takes up: anti-correlated), so it has no additive
+    variance -- warned, `sigma_t` nan, `k_cycle` exact."""
+    cw, pw, rw, tw = _vdp_colour_pair('filtered')
+    with pytest.warns(RuntimeWarning, match='NEGATIVE'):
+        w = PAC(cw, toolkit=circuit.numeric).oscillator_edge_jitter(pw, rw, tw)
+    assert w['A'] < 0.0 and np.isnan(w['sigma_t']) and w['band'] is None
+    ce, pe, re_, te = _vdp_colour_pair('coloured')
+    f0 = 1.0 / float(pe.period)
+    pac = PAC(ce, toolkit=circuit.numeric)
+    with pytest.raises(TypeError, match='COLOURED'):
+        pac.oscillator_edge_jitter(pe, re_, te)
+    e = pac.oscillator_edge_jitter(pe, re_, te, colour_fmin=1e-6 * f0,
+                                   colour_fmax=20.0 * f0, points_per_decade=20)
+    assert e['A'] > 0.0 and e['projection_share'] is None
+    assert np.all(e['coloured_phase_variance'] > 0.0)
+    r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
+    assert np.max(np.abs(r)) < 5e-3, r

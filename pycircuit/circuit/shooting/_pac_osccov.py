@@ -440,7 +440,9 @@ class _OscillatorCovariance(object):
         info['d'] = d
         return K_orb, info
 
-    def oscillator_edge_jitter(self, pss, output, time, kmax=8):
+    def oscillator_edge_jitter(self, pss, output, time, kmax=8,
+                               colour_fmin=None, colour_fmax=None,
+                               points_per_decade=40):
         """The ADDITIVE (non-accumulating) edge jitter of a FREE-RUNNING
         oscillator -- the number a clock designer wants at the last buffer,
         and the one `c` does not contain.
@@ -515,8 +517,23 @@ class _OscillatorCovariance(object):
         that moves the instant off the steepest point.  `instant` in the
         result is the grid point used.
 
+        ⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
+        `oscillator_covariance`: `colour_fmin` (and `colour_fmax`, default the
+        grid's Nyquist).  Its transverse part joins `A`
+        (`info['coloured_samples']` at the edge, projected); its PHASE is not
+        a random walk -- it has memory, so the increment over `k` periods
+        depends on WHERE in the period the edge sits -- and enters `k_cycle`
+        as the colour fold's instant-specific increment (`_colour_fold`'s
+        `increment`, `_lineshape.edge_increment`; the stationary structure
+        function was 33 % off it at a van der Pol edge).  Deferred: the
+        coloured transverse part's own across-period correlation and its
+        cross term with the coloured phase (it enters as `2 A` at every k).
+
         Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`,
-        `k_cycle` (k = 1..kmax), `instant`, `d`, `projection_share`.
+        `k_cycle` (k = 1..kmax), `instant`, `d`, `projection_share` (the
+        white part's; None without one), `coloured_phase_variance` (the
+        coloured increment per k, s^2; zeros when white), `band` (the colour
+        band, or None).
 
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
@@ -535,7 +552,15 @@ class _OscillatorCovariance(object):
                 'the edge including the crossings\' motion -- not built.')
         ## (the covariance in the MAP's own space: the exact law contracts
         ## it with the period map; the node block is `[:m, :m]` of it)
-        K_orb, info = self.oscillator_covariance(pss, samples=True, pair=True)
+        with _warnings.catch_warnings():
+            ## (its "K_orb, d and c_from_growth are the WHITE sources' alone"
+            ## is what this method handles below)
+            _warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
+                                     'this circuit has a COLOURED source')
+            K_orb, info = self.oscillator_covariance(
+                pss, samples=True, pair=True, colour_fmin=colour_fmin,
+                colour_fmax=colour_fmax, points_per_decade=points_per_decade)
+        coloured = 'coloured_samples' in info
         d = info['d']
         m = self.cir.n - 1
         T = float(pss.period)
@@ -573,48 +598,81 @@ class _OscillatorCovariance(object):
         vs = [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
         jj = int(min(j, len(Ps) - 1, len(vs) - 1))
 
+        e = np.zeros(m)
+        e[int(output)] = 1.0
         w, U = np.linalg.eigh(G[jj])
-        if not float(w.max()) > 0.0:
+        white = float(w.max()) > 0.0
+        if not white and not coloured:
             raise ValueError(
                 'PAC.oscillator_edge_jitter: the growth term has collapsed at '
                 'this instant (largest eigenvalue %.3g), so the orbit tangent '
                 'cannot be recovered from it and the phase direction cannot '
                 'be projected out. Is any source noisy?' % float(w.max()))
-        uj = U[:, int(np.argmax(w))] * np.sqrt(float(w.max()))
-        den = float(vs[jj] @ uj)
-        if den == 0.0:
+        var_prj = var_raw = 0.0
+        if white:
+            uj = U[:, int(np.argmax(w))] * np.sqrt(float(w.max()))
+            den = float(vs[jj] @ uj)
+            if den == 0.0:
+                raise ValueError(
+                    'PAC.oscillator_edge_jitter: the left and right null '
+                    'directions are orthogonal at this instant, so the oblique '
+                    'projection is undefined.')
+            Pi = np.eye(m) - np.outer(uj, vs[jj]) / den
+            ## the ONE-sided projection: the exact law's large-k intercept / 2
+            ## (the two-sided `Pi P Pi^T` dropped the cross term until
+            ## 2026-09-29)
+            var_prj = float(e @ (Pi @ Ps[jj]) @ e)
+            var_raw = float(e @ Ps[jj] @ e)
+        ## a COLOURED source's transverse part at the edge (already projected,
+        ## `_transverse_responses`)
+        var_col = (float(e @ np.asarray(info['coloured_samples'][jj],
+                                       dtype=float)[:m, :m] @ e)
+                   if coloured else 0.0)
+        if var_prj + var_col == 0.0:
             raise ValueError(
-                'PAC.oscillator_edge_jitter: the left and right null '
-                'directions are orthogonal at this instant, so the oblique '
-                'projection is undefined.')
-        Pi = np.eye(m) - np.outer(uj, vs[jj]) / den
-        e = np.zeros(m)
-        e[int(output)] = 1.0
-        ## the ONE-sided projection: the exact law's large-k intercept / 2
-        ## (the two-sided `Pi P Pi^T` dropped the cross term until 2026-09-29)
-        var_prj = float(e @ (Pi @ Ps[jj]) @ e)
-        var_raw = float(e @ Ps[jj] @ e)
-        if not var_prj > 0.0:
-            raise ValueError(
-                'PAC.oscillator_edge_jitter: the projected variance is %.3g, '
-                'not positive -- there is no additive jitter to report.'
-                % var_prj)
+                'PAC.oscillator_edge_jitter: the projected variance is zero '
+                '-- there is no additive jitter to report.')
 
         A = var_prj / (slew * slew)
-        sigma_t = float(np.sqrt(A))
-        if not sigma_t < 0.5 * T:
-            raise ValueError(
-                'PAC.oscillator_edge_jitter: the implied displacement is '
-                'sigma_t = %.3g s, %.3g of the period -- the first-order '
-                'picture (a crossing moved by delta_y/slew) does not hold '
-                'there. Pass an instant on an edge, or check the source '
-                'levels.' % (sigma_t, sigma_t / T))
+        A_col = var_col / (slew * slew)
+        if coloured:
+            A = A + A_col
+        if A > 0.0:
+            sigma_t = float(np.sqrt(A))
+            if not sigma_t < 0.5 * T:
+                raise ValueError(
+                    'PAC.oscillator_edge_jitter: the implied displacement is '
+                    'sigma_t = %.3g s, %.3g of the period -- the first-order '
+                    'picture (a crossing moved by delta_y/slew) does not hold '
+                    'there. Pass an instant on an edge, or check the source '
+                    'levels.' % (sigma_t, sigma_t / T))
+        else:
+            ## ⚠ A NEGATIVE INTERCEPT IS NOT AN ERROR: `A` is the exact
+            ## law's large-k intercept / 2, and where the transverse and the
+            ## phase deviation at the edge are ANTI-correlated (a slow state
+            ## that carries the noise the phase later takes up: white noise
+            ## through an RC into the tank reads X/A = -1.94) the intercept is
+            ## negative while every `Var_k` is positive -- the walk dominates.
+            ## There is then no additive variance; `k_cycle` is exact anyway.
+            _warnings.warn(
+                'PAC.oscillator_edge_jitter: the k-cycle law\'s intercept is '
+                'NEGATIVE here (A = %.3g s^2): the transverse and the phase '
+                'deviation at this edge are anti-correlated, so there is no '
+                'additive variance (sigma_t is nan); k_cycle is exact.' % A,
+                RuntimeWarning, stacklevel=2)
+            sigma_t = float('nan')
 
         c = float(info['c_from_growth'])
         ## ⚠ THE EXACT k-LAG LAW, in the covariance's own space (a pair map's
         ## `(x_n, x_{n-1})` on gear): `M_j` the period map from node `jj`
+        col = None
+        if coloured:
+            col = self._coloured_prepare(pss, colour_fmin, colour_fmax,
+                                         points_per_decade,
+                                         'oscillator_edge_jitter')
         As, _Qs, _K1, _M, _m, n = self._lyapunov_pieces(
-            pss, 'oscillator_edge_jitter')
+            pss, 'oscillator_edge_jitter',
+            white=None if col is None else col['white'])
         na = np.asarray(As[0]).shape[0] if As else n
         Pf = np.asarray(info['samples'][jj], dtype=float)
         Gf = np.asarray(info['growth_samples'][jj], dtype=float)
@@ -634,6 +692,17 @@ class _OscillatorCovariance(object):
             Mk = Mj @ Mk
             kc.append(float(ef @ (2.0 * Pf + k * Gf - Mk @ Pf - Pf @ Mk.T) @ ef))
         kc = np.asarray(kc) / (slew * slew)
+        inc = np.zeros(len(kc))
+        band = None
+        if coloured:
+            ## the coloured PHASE at this instant (its memory), and the
+            ## coloured transverse part at both edges
+            band = (float(col['fmin']), float(col['fmax']))
+            fold = self._colour_fold(pss, band[0], None,
+                                     'oscillator_edge_jitter')
+            inc = fold.increment(float(time), np.arange(1, int(kmax) + 1),
+                                 band[0], band[1])
+            kc = kc + inc + 2.0 * A_col
         return {
             'sigma_t': sigma_t,
             'A': A,
@@ -642,7 +711,10 @@ class _OscillatorCovariance(object):
             'k_cycle': np.sqrt(np.clip(kc, 0.0, None)),
             'instant': float(times[j]),
             'd': float(d),
-            'projection_share': float(var_raw / var_prj - 1.0),
+            'projection_share': (float(var_raw / var_prj - 1.0) if white
+                                 else None),
+            'coloured_phase_variance': inc,
+            'band': band,
         }
 
     def orbital_mode_weights(self, pss, nmodes=None):
