@@ -978,6 +978,56 @@ def test_a_staged_oscillator_samples_its_covariance_at_fixed_times():
     assert worst_ex < 5e-5, worst_ex
 
 
+def test_the_oscillator_edge_jitter_runs_on_a_staged_solve():
+    """`oscillator_edge_jitter` REFUSED a solve staged on its state events
+    from B4 on: the exact k-lag law needs the period map from the edge's
+    node INCLUDING the crossings' motion.  Now ``M_j^k = R_j M_tot^{k-1}
+    S_j`` (`_event_closure`'s `period_map_from`, gated structurally and
+    against the exact saltation map in
+    `test_a_staged_oscillator_samples_its_covariance_at_fixed_times`), with
+    the closure's fixed-time `P_j`, `G_j` (2026-09-29, step 1c).
+
+    The gate here: the law's OWN large-k limit, ``k_cycle^2 - k e'G_j e/s^2
+    -> 2A`` with `A` from the PPV's projector -- an independent object --
+    at the comparator's switching instant (`fb1` at its crossing, an event
+    node: 8e-9 of `k_cycle^2` at k = 8, the held crossings' grid coupling)
+    and on the ramp (`c` at 0.6 T: 1.5e-14).  ⚠ `A` is NEGATIVE at every
+    edge of this oscillator (2A / k_cycle_1^2 = -0.27 .. -0.54): the RC lags
+    carry the noise across the reset, anti-correlating the transverse and
+    the phase deviation -- warned, `sigma_t` nan, `k_cycle` exact.  The
+    event term moves `k_cycle^2` by 2e-7 on this fixture (its limit)."""
+    import warnings as _w
+
+    from pycircuit.circuit.shooting._numerics import output_index
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    seed, Tl = _relaxation_oscillator_seed(cir)
+    q = PSS(cir, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
+    assert q.converged and q._event_columns is not None
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _K, info = pac.oscillator_covariance(q, samples=True, pair=True)
+    times = np.asarray(q.factored_period().times, dtype=float)
+    first = int(q._event_columns['nodes'][0])
+    kmax = 8
+    for output, t, tol in (('fb1', float(times[first]), 1e-6),
+                           ('c', 0.6 * float(q.period), 1e-10)):
+        with pytest.warns(RuntimeWarning, match='NEGATIVE'):
+            r = pac.oscillator_edge_jitter(q, output, t, kmax=kmax)
+        assert np.isnan(r['sigma_t']) and r['A'] < 0.0
+        kc = np.asarray(r['k_cycle'])
+        assert np.all(np.isfinite(kc)) and np.all(kc > 0.0)
+        j = int(np.argmin(np.abs(times - r['instant'])))
+        oi = int(output_index(q, output))
+        g = float(np.asarray(info['growth_samples'][j])[oi, oi]) / r['slew'] ** 2
+        lim = (kc[-1] ** 2 - kmax * g - 2.0 * r['A']) / kc[-1] ** 2
+        assert abs(lim) < tol, (output, lim)
+
+
 def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
     """`oscillator_covariance` on trap's OWN map (`monodromy='native'`) was
     refused: the plain trapezoidal state is the pair `(x, iq)`, its map

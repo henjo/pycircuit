@@ -537,9 +537,14 @@ class _OscillatorCovariance(object):
         (an Euler orbit's slope against gear's: 5.7 % at 240 points).
 
         `k_cycle` is exact at every `k` -- the same key and meaning as
-        `jitter_metrics`' for a DRIVEN circuit.  ⚠ A STAGED solve (state
-        events) and a Nordsieck GLM's native-width map are refused: their
-        period map from node `j` is not the product of the step maps here.
+        `jitter_metrics`' for a DRIVEN circuit.  On a STAGED solve (state
+        events; refused until 2026-09-29) the period map from node `j`
+        carries the crossings' motion: ``M_j^k = R_j M_tot^{k-1} S_j`` from
+        the event closure (`_event_closure`'s `period_map_from`), `P_j` and
+        `G_j` its fixed-time samples.  ⚠ Gated by its construction only: on
+        the one staged oscillator here the switch's transition sits inside
+        the landed window, and the event term moves `k_cycle^2` by 2e-7.  A
+        Nordsieck GLM's native-width map is refused.
 
         ⚠ THE INSTANT IS THE CALLER'S.  This does not hunt for a crossing: a
         threshold taken from a simulated record can be biased by startup, and
@@ -574,11 +579,6 @@ class _OscillatorCovariance(object):
         ## the run itself they come from another discretisation
         ## History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         pss = pss._lyapunov_host()
-        if getattr(pss, '_event_columns', None) is not None:
-            raise NotImplementedError(
-                'PAC.oscillator_edge_jitter: this solve is STAGED on its state '
-                'events, and the exact k-cycle law needs the period map from '
-                'the edge including the crossings\' motion -- not built.')
         ## (the covariance in the MAP's own space: the exact law contracts
         ## it with the period map; the node block is `[:m, :m]` of it)
         with _warnings.catch_warnings():
@@ -699,7 +699,7 @@ class _OscillatorCovariance(object):
             col = self._coloured_prepare(pss, colour_fmin, colour_fmax,
                                          points_per_decade,
                                          'oscillator_edge_jitter')
-        As, _Qs, _K1, _M, _m, n = self._lyapunov_pieces(
+        As, Qs, _K1, M, _m, n = self._lyapunov_pieces(
             pss, 'oscillator_edge_jitter',
             white=None if col is None else col['white'])
         na = np.asarray(As[0]).shape[0] if As else n
@@ -711,14 +711,31 @@ class _OscillatorCovariance(object):
                 f'the covariance {Pf.shape[0]} -- a Nordsieck GLM read on its '
                 'native map; solve with the default monodromy (its radau '
                 'twin).')
-        Mj = np.eye(na)
-        for i in list(range(jj, len(As))) + list(range(jj)):
-            Mj = np.asarray(As[i], dtype=float) @ Mj
+        ## ⚠ ON A STAGED SOLVE the period map from node `jj` carries the
+        ## crossings' motion, ``M_j^k = R_j M_tot^{k-1} S_j`` (`_event_closure`;
+        ## no inverse -- the step maps of a DAE are singular), and `Pf`, `Gf`
+        ## are its fixed-time samples; otherwise the step maps' product
+        with _warnings.catch_warnings():
+            ## (a host it cannot border, `oscillator_covariance` warned above)
+            _warnings.filterwarnings('ignore', message='PAC.covariance: the '
+                                     'solve is staged on its state events')
+            staged = self._event_closure(pss, As, Qs, M, _m, n)
+        if staged is None:
+            Mj = np.eye(na)
+            for i in list(range(jj, len(As))) + list(range(jj)):
+                Mj = np.asarray(As[i], dtype=float) @ Mj
+        else:
+            M_tot = staged[0]
+            Rj, Sj = staged[3]['period_map_from'](jj)
         ef = np.zeros(na)
         ef[int(output)] = 1.0
-        kc, Mk = [], np.eye(na)
+        kc, Mk, Mp = [], np.eye(na), np.eye(na)
         for k in range(1, int(kmax) + 1):
-            Mk = Mj @ Mk
+            if staged is None:
+                Mk = Mj @ Mk
+            else:
+                Mk = Rj @ Mp @ Sj
+                Mp = M_tot @ Mp
             kc.append(float(ef @ (2.0 * Pf + k * Gf - Mk @ Pf - Pf @ Mk.T) @ ef))
         kc = np.asarray(kc) / (slew * slew)
         inc = np.zeros(len(kc))
