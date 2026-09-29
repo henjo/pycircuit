@@ -686,13 +686,13 @@ def _a11_osc_chain(psd_tank=1e-6, psd_buf=1e-6, nstage=3, cb=0.5):
     return c
 
 
-def _a11_solved(psd_tank=1e-6, psd_buf=1e-6, npts=240):
+def _a11_solved(psd_tank=1e-6, psd_buf=1e-6, npts=240, method='gear'):
     """`(cir, pss, reduced index of the last buffer, crossing time)`."""
     import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _a11_osc_chain(psd_tank, psd_buf)
     m = cir.n - 1
-    pss = PSS(cir, method='gear', reltol=1e-12)
+    pss = PSS(cir, method=method, reltol=1e-12)
     x0 = np.zeros(m)
     x0[0] = 2.0
     with warnings.catch_warnings():
@@ -738,6 +738,13 @@ def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_cova
         MC / analysis = 1.0066 ± 0.0102   (0.64σ from 1.000)
 
     over 124 seed-runs on three grids, once both sides use the same orbit.
+    ⚠ SUPERSEDED 2026-09-29: that analysis was the TWO-sided `A`, whose
+    k-lag intercept drops the transverse-phase cross term; a COMMITTED Monte
+    Carlo (`benchmarks/oscillator_edge_jitter_probe.py`) excludes it at 8.9σ
+    and agrees with the exact law now returned -- see
+    `test_the_oscillator_edge_jitter_is_the_exact_law_the_monte_carlo_measures`.
+    The 2026-09-17 harness was never committed, so its statistic cannot be
+    reproduced.
 
     ⚠⚠ AN EARLIER VERSION OF THIS DOCSTRING CLAIMED A 4σ DEFECT AND IT WAS
     WRONG. An 80-seed campaign gave 1.0571 ± 0.0141 and I recorded it as "the
@@ -772,9 +779,10 @@ def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_cova
 
     ## 2. the projection is not decoration, and its size is a property of the
     ##    SOURCE MIX: the phase direction is what tank noise drives, so a
-    ##    quiet tank makes it vanish.  Measured 0.1611 here against 0.0002
-    ##    when the tank is 1000x quieter.
-    assert 0.10 < r['projection_share'] < 0.25, r['projection_share']
+    ##    quiet tank makes it vanish.  Measured 0.3728 here against 0.00034
+    ##    when the tank is 1000x quieter (the ONE-sided projection since
+    ##    2026-09-29; the two-sided one read 0.1611 / 0.0002).
+    assert 0.30 < r['projection_share'] < 0.45, r['projection_share']
     _c2, p2, red2, tc2, _v2 = _a11_solved(psd_tank=1e-9)
     r2 = PAC(_c2, toolkit=circuit.numeric).oscillator_edge_jitter(p2, red2, tc2)
     assert r2['projection_share'] < 0.01, \
@@ -793,8 +801,8 @@ def test_the_additive_edge_jitter_of_an_oscillator_is_the_projected_bounded_cova
 
     ## 4. the k-lag law: Var -> c k T + 2A, so k_cycle rises from just above
     ##    sqrt(2A) and the walk eventually dominates
-    assert r['k_cycle_bound'][0] >= np.sqrt(2.0 * r['A'])
-    assert np.all(np.diff(r['k_cycle_bound']) > 0)
+    assert r['k_cycle'][0] >= np.sqrt(2.0 * r['A'])
+    assert np.all(np.diff(r['k_cycle']) > 0)
 
     ## 5. refusal on a DRIVEN circuit.
     ## ⚠ THE FIXTURE IS BUILT OUTSIDE THE `raises` BLOCK, DELIBERATELY.  With
@@ -927,3 +935,35 @@ def test_the_oscillator_covariance_and_mode_weights_return_one_shape():
     assert info['d'] > 0.0 and len(info['samples']) == len(info['growth_samples'])
     w = pac.orbital_mode_weights(pss)
     assert len(w) == 2 and set(w[1]) == {'modes', 'K'}
+
+
+def test_the_oscillator_edge_jitter_is_the_exact_law_the_monte_carlo_measures():
+    """#17 B4 of `doc/pac_noise_conventions.md` (Andreas: "Exact k_cycle +
+    fix A", 2026-09-29).  The exact linear k-lag law of the edge time,
+
+        Var_k = e^T (2 P_j + k G_j - M_j^k P_j - P_j M_j^k^T) e / s^2,
+
+    is `k_cycle`, and its large-k intercept `2 A` with the ONE-sided
+    projection `A = e^T Pi P_j e / s^2`.  ⚠ Until 2026-09-29 the method
+    returned `k_cycle_bound = sqrt(c k T + 2 A)` with the TWO-sided
+    `A = e^T Pi P_j Pi^T e / s^2`, which drops the transverse-phase cross term
+    (X/A = -0.150 here).  A committed Monte Carlo
+    (`benchmarks/oscillator_edge_jitter_probe.py`: noisy radau transients at
+    the PSS's own step, 8 seeds x 720 periods, 5760 crossings) measured
+    Var_k = 1.5001e-6 / 2.0227e-6 / 3.058e-6 / 5.05e-6 (+- 2.2e-8 / 3.0e-8 /
+    5.5e-8 / 2.0e-7) at k = 1 / 2 / 4 / 8: the exact law at -1.2 to -1.7 sigma,
+    the old k = 1 value (1.6969e-6) at -8.9 sigma.  Radau, 240 points: the
+    law's own numbers are pinned (the probe's), and each sits within 3 sigma
+    of the Monte Carlo."""
+    cir, pss, red, tc, _v = _a11_solved(method='radau')
+    r = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(pss, red, tc)
+    assert 'k_cycle_bound' not in r
+    kc2 = r['k_cycle'] ** 2
+    assert abs(kc2[0] / 1.52740e-6 - 1.0) < 1e-4, kc2[0]
+    assert abs(2.0 * r['A'] / 9.86462e-7 - 1.0) < 1e-4, r['A']
+    for k, mc, se in ((1, 1.5001e-6, 2.22e-8), (2, 2.0227e-6, 2.95e-8),
+                      (4, 3.0584e-6, 5.53e-8), (8, 5.0497e-6, 1.99e-7)):
+        assert abs(kc2[k - 1] - mc) < 3.0 * se, (k, kc2[k - 1], mc)
+    ## the law tends to the walk plus the one-sided intercept
+    T = float(pss.period)
+    assert abs((kc2[0] - r['c'] * T) / (2.0 * r['A']) - 1.0) < 1e-2

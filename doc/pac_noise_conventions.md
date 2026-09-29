@@ -101,7 +101,7 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 | `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None` (+ `maxsidebands` for correlation) | array | as `modal_spectrum` | as `modal_spectrum` |
 | `orbital_correlation` | `pss, maxharmonics=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
 | `oscillator_covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K_orb, info)`: the growth `info['d']`, the bounded part per node `info['samples']`; `K_orb` `m x m` whatever the method (the pair with `pair=True`) | as `covariance` (colour enters the transverse part only) | |
-| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle_bound` (the large-`k` upper bound), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
+| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A` (the ONE-sided projection, the k-lag law's intercept / 2), `c, slew, k_cycle` (EXACT at every k, as `jitter_metrics`), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
 | `orbital_mode_weights` | `pss, nmodes=None` | `(cw, info)`: `info['modes']`, `info['K']` | -- | |
 | `diffusion_constant` | `pss` | `c`, s | -- | refuses colour |
 | `frequency_aware_diffusion` | `pss, offset` | `c(f)`, s | `offset` scalar, abs taken | refuses colour |
@@ -166,7 +166,10 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
    upper bound in `oscillator_edge_jitter`, `slew` from a central
    difference vs a quadratic fit, `kmax` 4 vs 8.~~ CLOSED 2026-09-29:
    `sigma_t` everywhere, the bound named `k_cycle_bound`, one slope
-   estimator (`edge_slope`, the quadratic fit), `kmax` 8.
+   estimator (`edge_slope`, the quadratic fit), `kmax` 8.  Then (#17 B0/B4,
+   the same day) that bound was found to drop a transverse-phase cross term
+   (a committed Monte Carlo, 8.9 sigma): `oscillator_edge_jitter` returns the
+   EXACT `k_cycle` and the one-sided `A` -- one meaning of `k_cycle` again.
 9. ~~**Flag combinations dropped silently:**~~ CLOSED 2026-09-29 for the
    two that lost a flag (both raise now; `frequency_aware` defaults to
    True, as it behaved): `pnoise` with both `modulated`

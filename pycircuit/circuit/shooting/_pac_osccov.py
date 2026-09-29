@@ -454,13 +454,26 @@ class _OscillatorCovariance(object):
 
         `n d u_j u_j^T` is the random walk ALONG the orbit (that is `c`);
         `P(t_j)` is bounded and does not accumulate.  A crossing is displaced
-        by `delta_y/slew`, so with `s` the slope at `t_j`
+        by `delta_y/slew`, so with `s` the slope at `t_j` and `M_j` the period
+        map from `t_j` (`M_j u_j = u_j`), the k-lag law a designer measures is
+        EXACTLY (linear noise)
 
-            sigma_t^2 = e^T Pi P(t_j) Pi^T e / s^2,  Pi = I - u_j v_j^T/(v_j^T u_j)
+            Var(tau_{n+k} - tau_n) = e^T (2 P_j + k G_j - M_j^k P_j - P_j M_j^k^T) e / s^2
 
-        and the k-lag law that a designer actually measures is
+        (`k_cycle`, `G_j = d u_j u_j^T`), and as `k` grows `M_j^k -> u_j v_j^T /
+        (v_j^T u_j)`, so it tends to `c k T + 2 sigma_t^2` with
 
-            Var(tau_{n+k} - tau_n) = c k T + 2 sigma_t^2 (1 - rho_k)
+            sigma_t^2 = e^T Pi P(t_j) e / s^2,  Pi = I - u_j v_j^T/(v_j^T u_j)
+
+        -- the ONE-sided projection.  ⚠ Until 2026-09-29 this returned
+        `e^T Pi P Pi^T e / s^2` and `k_cycle_bound = sqrt(c k T + 2 A)` with it:
+        that drops the cross term `X = e^T Pi P (I - Pi)^T e / s^2`, the
+        correlation between the transverse and the phase deviation at the
+        edge (X/A = -0.150 on the A11 fixture).  A committed Monte Carlo
+        (`benchmarks/oscillator_edge_jitter_probe.py`: noisy radau transients
+        at the PSS's step, 5760 crossings) agrees with the exact law at
+        k = 1..8 (1.2-1.7 sigma) and excluded the old value at k = 1 by 8.9
+        sigma.
 
         ⚠⚠ `P` ITSELF IS THE WRONG OBJECT, and by a margin that hides easily.
         "Bounded is not transverse": `P` keeps the phase direction's bounded
@@ -487,22 +500,15 @@ class _OscillatorCovariance(object):
         with the grid (it changes sign under refinement, and was 2.8 % low
         at 240 points); every quantity here goes as `1/s^2`.
 
-        Gated against a Monte Carlo of a noisy transient with no PSS, no
-        adjoint and no Lyapunov solve in it (van der Pol tank driving three
-        tanh buffers): `MC / analysis = 1.0066 +/- 0.0102`, with the same
-        orbit on both sides.
         ⚠ When validating this against a transient, run the Monte Carlo on the
         SAME integrator as the PSS, or divide by the slope of the orbit the
         Monte Carlo actually runs on -- otherwise the mismatch enters squared
         (an Euler orbit's slope against gear's: 5.7 % at 240 points).
 
-        ⚠ `k_cycle_bound` IS THE LARGE-`k` FORM, with `rho_k` taken to zero,
-        and named for what it is: the orbital part's across-period
-        correlation is not computed here, so at small `k` the true k-cycle
-        jitter is LOWER (the `(1 - rho_k)` factor is below 1).  (Until
-        2026-09-29 it was `k_cycle`, the key under which `jitter_metrics`
-        returns the EXACT value.)  For a DRIVEN circuit use `jitter_metrics`,
-        which computes `rho_k` from the sample series.
+        `k_cycle` is exact at every `k` -- the same key and meaning as
+        `jitter_metrics`' for a DRIVEN circuit.  ⚠ A STAGED solve (state
+        events) and a Nordsieck GLM's native-width map are refused: their
+        period map from node `j` is not the product of the step maps here.
 
         ⚠ THE INSTANT IS THE CALLER'S.  This does not hunt for a crossing: a
         threshold taken from a simulated record can be biased by startup, and
@@ -510,7 +516,7 @@ class _OscillatorCovariance(object):
         result is the grid point used.
 
         Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`,
-        `k_cycle_bound` (k = 1..kmax), `instant`, `d`, `projection_share`.
+        `k_cycle` (k = 1..kmax), `instant`, `d`, `projection_share`.
 
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
@@ -522,7 +528,14 @@ class _OscillatorCovariance(object):
         ## the run itself they come from another discretisation
         ## History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         pss = pss._lyapunov_host()
-        K_orb, info = self.oscillator_covariance(pss, samples=True)
+        if getattr(pss, '_event_columns', None) is not None:
+            raise NotImplementedError(
+                'PAC.oscillator_edge_jitter: this solve is STAGED on its state '
+                'events, and the exact k-cycle law needs the period map from '
+                'the edge including the crossings\' motion -- not built.')
+        ## (the covariance in the MAP's own space: the exact law contracts
+        ## it with the period map; the node block is `[:m, :m]` of it)
+        K_orb, info = self.oscillator_covariance(pss, samples=True, pair=True)
         d = info['d']
         m = self.cir.n - 1
         T = float(pss.period)
@@ -577,7 +590,9 @@ class _OscillatorCovariance(object):
         Pi = np.eye(m) - np.outer(uj, vs[jj]) / den
         e = np.zeros(m)
         e[int(output)] = 1.0
-        var_prj = float(e @ (Pi @ Ps[jj] @ Pi.T) @ e)
+        ## the ONE-sided projection: the exact law's large-k intercept / 2
+        ## (the two-sided `Pi P Pi^T` dropped the cross term until 2026-09-29)
+        var_prj = float(e @ (Pi @ Ps[jj]) @ e)
         var_raw = float(e @ Ps[jj] @ e)
         if not var_prj > 0.0:
             raise ValueError(
@@ -596,13 +611,35 @@ class _OscillatorCovariance(object):
                 'levels.' % (sigma_t, sigma_t / T))
 
         c = float(info['c_from_growth'])
-        ks = np.arange(1, int(kmax) + 1)
+        ## ⚠ THE EXACT k-LAG LAW, in the covariance's own space (a pair map's
+        ## `(x_n, x_{n-1})` on gear): `M_j` the period map from node `jj`
+        As, _Qs, _K1, _M, _m, n = self._lyapunov_pieces(
+            pss, 'oscillator_edge_jitter')
+        na = np.asarray(As[0]).shape[0] if As else n
+        Pf = np.asarray(info['samples'][jj], dtype=float)
+        Gf = np.asarray(info['growth_samples'][jj], dtype=float)
+        if na != Pf.shape[0]:
+            raise NotImplementedError(
+                f'PAC.oscillator_edge_jitter: the period map is {na} wide and '
+                f'the covariance {Pf.shape[0]} -- a Nordsieck GLM read on its '
+                'native map; solve with the default monodromy (its radau '
+                'twin).')
+        Mj = np.eye(na)
+        for i in list(range(jj, len(As))) + list(range(jj)):
+            Mj = np.asarray(As[i], dtype=float) @ Mj
+        ef = np.zeros(na)
+        ef[int(output)] = 1.0
+        kc, Mk = [], np.eye(na)
+        for k in range(1, int(kmax) + 1):
+            Mk = Mj @ Mk
+            kc.append(float(ef @ (2.0 * Pf + k * Gf - Mk @ Pf - Pf @ Mk.T) @ ef))
+        kc = np.asarray(kc) / (slew * slew)
         return {
             'sigma_t': sigma_t,
             'A': A,
             'c': c,
             'slew': slew,
-            'k_cycle_bound': np.sqrt(c * ks * T + 2.0 * A),
+            'k_cycle': np.sqrt(np.clip(kc, 0.0, None)),
             'instant': float(times[j]),
             'd': float(d),
             'projection_share': float(var_raw / var_prj - 1.0),
