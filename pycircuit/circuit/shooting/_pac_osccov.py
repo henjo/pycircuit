@@ -71,7 +71,8 @@ class _OscillatorCovariance(object):
                         out.append((c0, hw))
         return out
 
-    def _transverse_responses(self, pss, fp, freqs, u_ac, u_points=None):
+    def _transverse_responses(self, pss, fp, freqs, u_ac, u_points=None,
+                              map_node0=False):
         """`_forced_responses` for an OSCILLATOR's transverse deviation: per
         frequency the steady response at every node projected with
         `_node_projectors`, and no crossings (`[None]`).
@@ -92,6 +93,11 @@ class _OscillatorCovariance(object):
         `_fixed_time_event_columns`, as `_forced_responses` does it.  The
         pole's part, dropped with `y`, moves the crossings along the orbit
         with it, and its fixed-time response is again along ``xdot_j``.
+
+        `map_node0`: the bordered solution `wb` itself -- the MAP's state at
+        node 0, map-width (the pair on gear), `v_pair' wb = 0` exactly by the
+        border -- instead of the projected node responses; no replay
+        (`orbital_mode_weights`).
 
         History: `doc/shooting_history.md`, `PAC._transverse_responses`."""
         T = float(fp.T)
@@ -151,6 +157,9 @@ class _OscillatorCovariance(object):
                 wb = np.linalg.solve(B, np.concatenate((rhs, [0.0])))[:nw]
             else:
                 _y, wb = self._deflated_solve(pss, a, rhs, tol=tol, parts=True)
+            if map_node0:
+                out.append(np.asarray(wb, dtype=complex)[None, :])
+                continue
             _e, ysteps = pss._forced_replay(fp, f, u_ac, y0=wb, collect=True,
                                             u_points=u_points)
             Y = np.array([np.asarray(wb)[:m]]
@@ -717,7 +726,8 @@ class _OscillatorCovariance(object):
             'band': band,
         }
 
-    def orbital_mode_weights(self, pss, nmodes=None):
+    def orbital_mode_weights(self, pss, nmodes=None, colour_fmin=None,
+                             colour_fmax=None, points_per_decade=40):
         """`K_orb` resolved onto the Floquet modes — A9's second step.
 
         ⚠⚠⚠ READ THIS FIRST: THE BASIS OMITS THE ANNIHILATED MODES, AND WHAT
@@ -747,6 +757,18 @@ class _OscillatorCovariance(object):
         the state covariance, `info['modes']` those directions and
         `info['K']` that covariance (pair space on a pair map).  ⚠ ONE SHAPE
         (2026-09-29): it returned `(cw, modes, K_orb)`.
+
+        ⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
+        `oscillator_covariance` (`colour_fmin`, `colour_fmax`,
+        `points_per_decade`).  Its part of the bounded covariance is built in
+        the MAP's own space from the bordered solution at node 0
+        (`_transverse_responses(map_node0=True)`): the border makes
+        `v_pair' wb = 0` exactly, so the phase row of the coloured weights is
+        zero by construction (stacking node-projected responses into a pair
+        leaks it at first order).  `info['K_coloured']`,
+        `info['cw_coloured']` hold it; `cw` and `info['K']` the total.  A
+        staged solve is refused for the coloured part (the map-space
+        crossing terms are not built).
 
         ⚠ **THIS IS THE BRIDGE BETWEEN THE TWO ROUTES WE ALREADY OWN.**
         `oscillator_covariance` gets `K_orb` from a bordered Kronecker
@@ -779,11 +801,39 @@ class _OscillatorCovariance(object):
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) reads
         ## the modes too, or they would come from another discretisation
         pss = pss._lyapunov_host()
-        K_orb, _info = self.oscillator_covariance(pss, pair=True)
+        with warnings.catch_warnings():
+            ## (its "K_orb ... the WHITE sources' alone" is handled below)
+            warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
+                                    'this circuit has a COLOURED source')
+            K_orb, _info = self.oscillator_covariance(
+                pss, pair=True, colour_fmin=colour_fmin,
+                colour_fmax=colour_fmax, points_per_decade=points_per_decade)
         K = np.asarray(K_orb, dtype=float)
         n = K.shape[0]
         modes = pss.floquet_modes(pss, nmodes=(n if nmodes is None
                                                else int(nmodes)))
         V = np.column_stack([m['v0'] for m in modes])
         cw = V.conj().T @ K @ V
-        return cw, {'modes': modes, 'K': K}
+        info = {'modes': modes, 'K': K}
+        if 'K_coloured' in _info:
+            if getattr(pss, '_event_columns', None) is not None:
+                raise NotImplementedError(
+                    'PAC.orbital_mode_weights: a COLOURED source on a STAGED '
+                    'solve -- the map-space crossing terms are not built.')
+            col = self._coloured_prepare(pss, colour_fmin, colour_fmax,
+                                         points_per_decade,
+                                         'orbital_mode_weights')
+            try:
+                Kc, _none = self._coloured_covariance(
+                    pss, col, self.cir.n - 1, n,
+                    responses=lambda *a, **k: self._transverse_responses(
+                        *a, map_node0=True, **k),
+                    lines=self._orbital_lines(pss, col['fmin'], col['fmax']),
+                    all_nodes=False, map_node0=True)
+            finally:
+                self._transverse_cache = None
+            Kc = np.asarray(Kc[0], dtype=float)
+            cw_c = V.conj().T @ Kc @ V
+            info.update(K_coloured=Kc, cw_coloured=cw_c, K=K + Kc)
+            cw = cw + cw_c
+        return cw, info

@@ -986,7 +986,7 @@ class _LyapunovCovariance(object):
     COLOURED_REFINE_MAXPTS = 20000
 
     def _coloured_covariance(self, pss, col, m, n, responses=None, lines=(),
-                             all_nodes=True):
+                             all_nodes=True, map_node0=False):
         """The COLOURED sources' covariance at every node and the crossings'
         -- the frequency-domain half of a coloured `covariance` /
         `event_jitter`.  Returns `(K (N + 1, n, n), Cov(dtheta) or None)`.
@@ -1030,7 +1030,9 @@ class _LyapunovCovariance(object):
         `lines` -- ``(centre, half-width)`` in Hz, an oscillator's orbital
         lines -- are resolved first, so a line narrower than the starting
         grid cannot be missed.  `all_nodes=False` keeps node 0 only (a
-        caller that reads `K[0]` or the crossings).
+        caller that reads `K[0]` or the crossings).  `map_node0`: the
+        responses are the MAP's state at node 0, `n` wide, taken as they
+        are (`orbital_mode_weights`: no pair stacking of node responses).
 
         History: `doc/shooting_history.md`, `PAC._coloured_covariance`."""
         fp = col['fp']
@@ -1056,6 +1058,8 @@ class _LyapunovCovariance(object):
         nk = N + 1 if all_nodes else 1
 
         def node_responses(y, nu):
+            if map_node0:
+                return np.asarray(y, dtype=complex)[:1]
             y = np.asarray(y, dtype=complex)[:N + 1]
             if n != m:
                 prev = np.vstack((y[N - 1:N] * np.exp(-2j * np.pi * nu * T),

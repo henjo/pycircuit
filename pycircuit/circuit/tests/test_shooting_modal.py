@@ -1109,3 +1109,58 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
             R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, maxharmonics=8)
         assert np.all(np.isfinite(R))
         assert np.linalg.norm(R - Rr) / np.linalg.norm(Rr) < 3e-2, method
+
+
+def _vdp_tank_noise(tau_over_T, npts=200):
+    """van der Pol (Q = 8, gear -- a PAIR map) with one current source on
+    the tank: white (`tau_over_T` None) or a Lorentzian `IS(noiseTau)` of
+    the same level."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    c = SubCircuit()
+    c.add_node('v')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    kw = {'noiseTau': tau_over_T * T} if tau_over_T else {}
+    c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6, **kw)
+    pss = PSS(c, method='gear', reltol=1e-12)
+    x0 = np.zeros(c.n - 1)
+    x0[0] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
+    assert pss.converged
+    return c, pss
+
+
+def test_the_orbital_mode_weights_take_a_coloured_source_in_the_maps_own_space():
+    """#17 B3 (2026-09-29): `orbital_mode_weights(colour_fmin=...)`.  The
+    coloured part of the bounded covariance is built in the MAP's own space
+    (the pair `(x_n, x_{n-1})` on gear) from the bordered solution at node 0,
+    so the phase row of the coloured weights vanishes BY THE BORDER
+    (`v_pair' wb = 0`): measured 1.1e-12 of their scale -- a stacking of
+    node-projected responses leaks it at first order.  And a Lorentzian whose
+    corner is far above the band (tau = 1e-4 T) is the white source of the
+    same level: the orbital weight agrees with the white Lyapunov route's to
+    1.75e-6 (measured), two routes sharing no integral."""
+    cw_w, pw = _vdp_tank_noise(None)
+    white, _iw = PAC(cw_w, toolkit=circuit.numeric).orbital_mode_weights(pw)
+    cc, pc = _vdp_tank_noise(1e-4)
+    f0 = 1.0 / float(pc.period)
+    pac = PAC(cc, toolkit=circuit.numeric)
+    with pytest.raises(TypeError, match='COLOURED'):
+        pac.orbital_mode_weights(pc)
+    cw, info = pac.orbital_mode_weights(pc, colour_fmin=1e-6 * f0)
+    cwc = info['cw_coloured']
+    assert np.array_equal(cw, cwc)           # every source coloured here
+    kph, _orb = pac._phase_mode_split(pc, info['modes'], 'test')
+    scale = np.max(np.abs(cwc))
+    assert np.max(np.abs(cwc[kph, :])) < 1e-10 * scale
+    assert np.max(np.abs(cwc[:, kph])) < 1e-10 * scale
+    o = [k for k in range(cwc.shape[0]) if k != kph]
+    rel = np.abs(cwc[np.ix_(o, o)] / white[np.ix_(o, o)] - 1.0)
+    assert np.max(rel) < 1e-4, rel
+    assert np.shape(info['K_coloured']) == np.shape(info['K']) ==         (2 * (cc.n - 1),) * 2            # the gear PAIR space

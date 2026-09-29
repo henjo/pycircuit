@@ -242,9 +242,21 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
     in the sampled family (`covariance`, `event_jitter`,
     `oscillator_covariance`, `oscillator_spectrum`).  A surface that cannot
     take colour at all still raises `NotImplementedError`.
-17. Several oscillator surfaces cannot take a coloured source at all
+17. ~~Several oscillator surfaces cannot take a coloured source at all
     (`oscillator_edge_jitter`, `orbital_mode_weights` have no
-    `colour_fmin` to pass; `orbital_*` refuse colour; `modal_spectrum` accepts it).
+    `colour_fmin` to pass; `orbital_*` refuse colour; `modal_spectrum` accepts it).~~
+    CLOSED 2026-09-29 (plan approved): `oscillator_edge_jitter` and
+    `orbital_mode_weights` take `colour_fmin` / `colour_fmax` /
+    `points_per_decade`.  The edge jitter's coloured PHASE is the colour
+    fold's increment at the requested instant (a coloured source has memory:
+    the stationary structure function was 33 % off at a van der Pol edge),
+    gated on the edge time against the source's exact white realisation
+    (1.4e-3); the mode weights' coloured part is built in the map's own
+    space from the bordered solution, so its phase row vanishes (1.1e-12).
+    On the way (B0/B4): the WHITE k-cycle law dropped a transverse-phase
+    cross term -- `k_cycle` is now the exact law (a committed Monte Carlo,
+    8.9 sigma) and `A` the one-sided projection.  `orbital_correlation` /
+    `orbital_spectrum` still refuse colour (`modal_spectrum` covers it).
 18. ~~Stale text: `colour_projection`'s docstring promises "the ratio
     |mean|/rms" under a key that is `symmetry`; three comments still
     describe a Gear-2 fallback for TR-BDF2 that the accuracy host no longer
