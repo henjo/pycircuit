@@ -477,7 +477,7 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
     from scipy.integrate import trapezoid
     _c, pss, pac, ov = _coloured_vdp('coloured', npts=200)
     f0 = 1.0 / float(pss.period)
-    with pytest.raises(NotImplementedError, match='COLOURED'):
+    with pytest.raises(TypeError, match='COLOURED'):
         pac.oscillator_covariance(pss)
     with pytest.warns(RuntimeWarning, match="WHITE sources' alone"):
         K_orb, d, info = pac.oscillator_covariance(pss, samples=True,
@@ -509,7 +509,10 @@ def test_the_white_only_covariance_routines_refuse_colour_with_the_reason():
 
     `oscillator_covariance` (through `_lyapunov_pieces`) and
     `orbital_correlation` read `CY` at `2 pi / T` as if it held at every
-    frequency.  (`covariance` did too until 2026-09-25; it now integrates
+    frequency.  (`oscillator_covariance` integrates the colour over a band
+    since 2026-09-26 and, without one, asks for it -- a TypeError, a
+    required argument, since 2026-09-29; `orbital_correlation` still
+    refuses colour outright.)  (`covariance` did too until 2026-09-25; it now integrates
     the colour over a band and refuses only without one --
     `test_a_coloured_covariance_integrates_the_band_against_the_closed_form`.)  On a coloured source that returns a plausible
     number -- the shape A4d itself names -- so they refuse, and the
@@ -517,11 +520,13 @@ def test_the_white_only_covariance_routines_refuse_colour_with_the_reason():
     at `w0` against `CY` at `10 w0`.
     """
     _c, pss, pac, _ov = _coloured_vdp('coloured', npts=240)
-    for name, call in (
-            ('oscillator_covariance', lambda: pac.oscillator_covariance(pss)),
-            ('orbital_correlation', lambda: pac.orbital_correlation(pss)),
+    for name, exc, call in (
+            ('oscillator_covariance', TypeError,
+             lambda: pac.oscillator_covariance(pss)),
+            ('orbital_correlation', NotImplementedError,
+             lambda: pac.orbital_correlation(pss)),
     ):
-        with pytest.raises(NotImplementedError, match='COLOURED'):
+        with pytest.raises(exc, match='COLOURED'):
             call()
 
 

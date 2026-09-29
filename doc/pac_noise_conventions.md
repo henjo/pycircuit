@@ -203,14 +203,20 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
     with `samples` while `oscillator_covariance` puts samples in `info`;
     diagnostics go to instance attributes (`alias_stop`, `sidebands_used`,
     `sampled_instants`, `lineshape_info`, ...).
-16. The same refusal raises different exceptions: a missing lower band
+16. ~~The same refusal raises different exceptions: a missing lower band
     edge is a `NotImplementedError` in `covariance` (`colour_fmin`) and
     `oscillator_spectrum` (`offset_fmin`) but a `TypeError` in the sampled
-    family (`series_fmin`, a required argument).
+    family (`series_fmin`, a required argument).~~ CLOSED 2026-09-29: a
+    `TypeError` everywhere -- a required argument missing, as Python's own
+    in the sampled family (`covariance`, `event_jitter`,
+    `oscillator_covariance`, `oscillator_spectrum`).  A surface that cannot
+    take colour at all still raises `NotImplementedError`.
 17. Several oscillator surfaces cannot take a coloured source at all
     (`oscillator_edge_jitter`, `orbital_mode_weights` have no
     `colour_fmin` to pass; `orbital_*` refuse colour; `modal_spectrum` accepts it).
-18. Stale text: `colour_projection`'s docstring promises "the ratio
+18. ~~Stale text: `colour_projection`'s docstring promises "the ratio
     |mean|/rms" under a key that is `symmetry`; three comments still
     describe a Gear-2 fallback for TR-BDF2 that the accuracy host no longer
-    uses (it uses the monodromy twin).
+    uses (it uses the monodromy twin).~~ CLOSED 2026-09-29: the key named;
+    the three comments (and `_event_closure`'s host sentence) say what the
+    hosts do.

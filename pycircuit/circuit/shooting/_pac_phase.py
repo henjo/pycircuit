@@ -161,9 +161,10 @@ class _PhaseNoise(object):
         """`<v_1>` — the PPV's TIME AVERAGE, which is a different functional.
 
         Returns `(vbar, info)`.  `vbar` is `(1/T) integral v_1(t) dt` over
-        the orbit; `info` carries the per-entry `rms` and the ratio
-        `|mean|/rms`, which is the number that says whether a coloured
-        source at that node can upconvert at all.
+        the orbit; `info` carries the per-entry `rms`, the ratio
+        `|mean|/rms` under `'symmetry'` -- the number that says whether a
+        coloured source at that node can upconvert at all -- and the PPV
+        `samples` at `times`.
 
         ⚠ COLOURED SOURCES CONTRACT THE SQUARE OF THE MEAN; WHITE ONES
         CONTRACT THE MEAN OF THE SQUARE.  `diffusion_constant` computes
@@ -1030,8 +1031,10 @@ class _PhaseNoise(object):
         self._refuse_driven(pss, 'oscillator_spectrum')
         f0 = 1.0 / float(pss.period)
         i = int(harmonic)
+        ## (a TypeError, a required argument missing, as `_coloured_prepare`
+        ## and the sampled family; NotImplementedError until 2026-09-29)
         if fmin is None:
-            raise NotImplementedError(
+            raise TypeError(
                 'PAC.oscillator_spectrum: a noise source in this circuit is '
                 'COLOURED, and a 1/f^3 phase has no stationary lineshape '
                 'without a low cutoff -- pass offset_fmin (the reciprocal of the '

@@ -575,9 +575,10 @@ class _LyapunovCovariance(object):
         period-level objects are exact.
 
         Returns ``(M_tot, Q_tot, samples)`` with ``samples(K0)`` the list
-        of per-node covariances.  Built for the one-step hosts whose
-        per-step maps are the state maps (`n == m`: radau; trbdf2 borrows
-        its gear twin, which has no columns -- warned, unbordered).
+        of per-node covariances.  Built for a host whose per-step maps are
+        the state maps (`n == m`) and for gear's PAIR form (`n == 2m`,
+        below); any other host, or event columns built on another grid,
+        runs UNBORDERED, warned.
 
         History: `doc/shooting_history.md`, `PAC._event_closure`."""
         ev = getattr(pss, '_event_columns', None)
@@ -766,8 +767,11 @@ class _LyapunovCovariance(object):
         N = len(fp.steps)
         f0 = 1.0 / T
         fnyq = 0.5 * N / T
+        ## ⚠ A TypeError, a REQUIRED ARGUMENT MISSING, as the sampled family
+        ## raises for its `series_fmin` (Python's own); NotImplementedError
+        ## until 2026-09-29, though nothing here is unimplemented
         if fmin is None:
-            raise NotImplementedError(
+            raise TypeError(
                 'PAC.%s: a noise source in this circuit is COLOURED (a 1/f '
                 'source), and its variance grows as '
                 'ln(colour_fmax/colour_fmin) without limit -- pass '
@@ -1360,8 +1364,8 @@ class _LyapunovCovariance(object):
                 'cyclostationary. Use oscillator_covariance() for the '
                 'split into a bounded orbital part and that growth, or '
                 'oscillator_spectrum() for the lineshape it produces.')
-        ## the source-injection surfaces use the gear twin when the Floquet
-        ## source is TR-BDF2 (its two-stage Q_j is not built) -- see
+        ## the host the Lyapunov surfaces read: the monodromy twin (a
+        ## gear/trbdf2 run is its own; TR-BDF2's injection is built) -- see
         ## `_lyapunov_host`
         pss = pss._lyapunov_host()
         ## a COLOURED source: the white part through the recursion below,

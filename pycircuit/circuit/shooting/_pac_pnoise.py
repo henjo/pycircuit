@@ -137,10 +137,10 @@ class _DrivenNoise(object):
                 'construction; choose one (given both, the cyclostationary '
                 'one was used silently until 2026-09-29).')
         ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
-        ## _forced_replay_transposed), whose two-stage chained transpose is
-        ## not built for TR-BDF2, so it falls back to a Gear-2 twin -- see
-        ## `_adjoint_host`.  (covariance/oscillator_covariance use the built
-        ## TR-BDF2 Lyapunov injection via `_lyapunov_host`.)
+        ## _forced_replay_transposed) on the monodromy twin -- see
+        ## `_adjoint_host`: TR-BDF2's two-stage fold is built
+        ## (`_sideband_forced_trbdf2`), so there is no Gear-2 fallback; a
+        ## Gear-2 twin only if `monodromy='gear'` asks for one.
         pss = pss._adjoint_host()
         fp = pss.factored_period()
         m = pss.cir.n - 1

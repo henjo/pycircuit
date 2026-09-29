@@ -907,7 +907,8 @@ def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
     _c, pss, o, pac = _rc_flicker('radau', 100)
     K = pac.covariance(pss, colour_fmin=1e2, colour_fmax=1e7)
     assert abs(K[o, o] / _rc_band_variance(1e2, 1e7) - 1.0) < 1e-7
-    with pytest.raises(NotImplementedError,
+    ## (a TypeError, a required argument missing, since 2026-09-29)
+    with pytest.raises(TypeError,
                        match='ln\\(colour_fmax/colour_fmin\\)'):
         pac.covariance(pss)
     with pytest.raises(ValueError, match='Nyquist'):
@@ -964,7 +965,7 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
                       seq[jh][red.index('n'), red.index('n')],
                       seq[jh][red.index('hold'), red.index('hold')])
         if flick:
-            with pytest.raises(NotImplementedError, match='COLOURED'):
+            with pytest.raises(TypeError, match='COLOURED'):
                 pac.event_jitter(pss)
     (sw, nw, hw), (sc, nc, hc) = out[False], out[True]
     assert abs((sc - sw) / (var_n / s1 ** 2) - 1.0) < 1e-5

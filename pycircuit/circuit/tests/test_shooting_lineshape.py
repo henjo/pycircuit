@@ -653,7 +653,7 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
     dev = S[1e-7][1] / sphi[0] - 1.0
     assert 3e-3 < dev < 1e-2, dev
     assert abs(S[1e-7][2] / sphi[1] - 1.0) < 1e-6, S[1e-7][2] / sphi[1]
-    for bad, exc in (({}, NotImplementedError),
+    for bad, exc in (({}, TypeError),
                      ({'offset_fmin': 1e-7 * f0, 'offset_fmax': f0}, ValueError)):
         with pytest.raises(exc):
             pac.oscillator_spectrum(pss, offs, 0, **bad)
@@ -865,7 +865,8 @@ def test_a_coloured_source_folds_per_harmonic_and_agrees_with_pnoise():
         if kind == 'coloured':
             with pytest.raises(NotImplementedError, match='COLOURED'):
                 pac.diffusion_constant(pss)
-            with pytest.raises(NotImplementedError, match='COLOURED'):
+            ## (asks for its band: a required argument, a TypeError)
+            with pytest.raises(TypeError, match='COLOURED'):
                 pac.oscillator_spectrum(pss, offs, ov)
         else:
             c = pac.diffusion_constant(pss)

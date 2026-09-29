@@ -295,10 +295,10 @@ class _OscillatorCovariance(object):
                 'orbit. A driven circuit has neither -- its covariance '
                 'settles, and I - M kron M is nonsingular. Use '
                 'covariance().')
-        ## the source-injection surfaces use the gear twin when the Floquet
-        ## source is TR-BDF2 (its two-stage Q_j is not built).  Swapped BEFORE
-        ## both the Lyapunov pieces and `ppv` below, so the bordering keeps
-        ## them on one host -- see `_lyapunov_host`.
+        ## the host the Lyapunov surfaces read: the monodromy twin (a
+        ## gear/trbdf2 run is its own; TR-BDF2's injection is built).  Swapped
+        ## BEFORE both the Lyapunov pieces and `ppv` below, so the bordering
+        ## keeps them on one host -- see `_lyapunov_host`.
         pss = pss._lyapunov_host()
         fmin, fmax = colour_fmin, colour_fmax     # (the names the internals use)
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
