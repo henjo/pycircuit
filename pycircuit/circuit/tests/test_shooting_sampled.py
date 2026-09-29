@@ -273,9 +273,9 @@ def test_the_sampled_variance_grows_as_ln_fmin_with_flicker_and_refuses_what_it_
          for r in (1e-4, 1e-3, 1e-2)]
     inc = -np.diff(v)
     assert inc[0] > 0 and abs(inc[0] / inc[1] - 1.0) < 0.05, (v, inc)
-    with pytest.raises(ValueError, match='fmin'):
+    with pytest.raises(ValueError, match='series_fmin'):
         pac.sampled_variance(pss, io, [0.0], 0.0, 0.5 * f0)
-    with pytest.raises(ValueError, match='fmin'):
+    with pytest.raises(ValueError, match='series_fmin'):
         pac.sampled_variance(pss, io, [0.0], 1e-3 * f0, 0.6 * f0)
     with pytest.raises(ValueError, match=r'\(0, f0/2\]'):
         pac.sampled_noise(pss, io, [0.0], [0.0])
@@ -789,9 +789,9 @@ def test_the_across_period_correlation_is_the_cosine_transform_of_the_sample_ser
     ## it is asked for the cheapest possible one.
     with pytest.raises(ValueError, match='kmax'):
         pac.jitter_metrics(pss, red, grid[j], fmin, fmax, kmax=1)
-    with pytest.raises(ValueError, match='fmin'):
+    with pytest.raises(ValueError, match='series_fmin'):
         pac.jitter_metrics(pss, red, grid[j], 0.0, fmax)
-    with pytest.raises(ValueError, match='fmin'):
+    with pytest.raises(ValueError, match='series_fmin'):
         pac.jitter_metrics(pss, red, grid[j], fmin, 0.9 * f0)
     ## ⚠⚠ THE LAST GUARD IS ON THE LINEARISATION, NOT ON "FLATNESS", and the
     ## reason is a number I misread on the way here.  At a peak the central
@@ -1284,7 +1284,7 @@ def test_a_moving_shape_takes_the_elements_signed_columns_on_every_surface():
             sv = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
                 points_per_decade=10), dtype=float).ravel()
-            _K0, Ks = pac.covariance(pss, samples=True, fmin=1e-2 / T,
+            _K0, Ks = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
             pn = np.array([float(np.real(pac.pnoise(
                 pss, fr / T, o, maxsidebands=30, cyclostationary=True)[0]))
@@ -1337,7 +1337,7 @@ def test_signed_columns_beside_a_white_source_of_the_same_element():
             sv = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
                 points_per_decade=10), dtype=float).ravel()
-            _K0, Ks = pac.covariance(pss, samples=True, fmin=1e-2 / T,
+            _K0, Ks = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
             pn = np.array([float(np.real(pac.pnoise(
                 pss, fr / T, o, maxsidebands=30, cyclostationary=True)[0]))
@@ -1389,7 +1389,7 @@ def test_signed_columns_of_a_mixed_slope_component_are_grouped_by_exponent():
             sv = [float(np.ravel(pac.sampled_variance(
                 pss, o, [0.3 * T], 1e-2 / T, 0.5 / T, points_per_decade=10))[0])
                 for o in (oa, ob)]
-            _K0, Ks = pac.covariance(pss, samples=True, fmin=1e-2 / T,
+            _K0, Ks = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
             pn = [float(np.real(pac.pnoise(pss, 0.013 / T, o, maxsidebands=30,
                                            cyclostationary=True)[0]))
@@ -1672,7 +1672,7 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
         th = float(np.asarray(pss.factored_period().times)[jh])
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            _K0, seq = pac.covariance(pss, samples=True, fmin=1e-6 * f0)
+            _K0, seq = pac.covariance(pss, samples=True, colour_fmin=1e-6 * f0)
             sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0)[0]
         out[kind] = seq[jh][io, io]
         assert abs(out[kind] / sv - 1.0 + 3.2e-5) < 1e-5, (kind, out[kind] / sv - 1)
@@ -1692,7 +1692,7 @@ def test_a_coloured_covariance_takes_noise_correlated_across_elements():
         pss, pac, names, (T, _Rv, _Cv, _k) = _mixed_exponent_rc(kind)
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            K[kind] = pac.covariance(pss, fmin=1e3)
+            K[kind] = pac.covariance(pss, colour_fmin=1e3)
             V[kind] = float(pac.sampled_variance(
                 pss, names.index('o2'), [0.3 * T], 0.01 / T, 0.5 / T,
                 points_per_decade=10)[0])

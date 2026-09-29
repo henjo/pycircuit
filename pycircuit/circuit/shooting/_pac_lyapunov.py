@@ -657,7 +657,8 @@ class _LyapunovCovariance(object):
         pieces = {'dth': dth, 'Gi': Gi, 'D': D, 'nodes': nodes, 'E': E}
         return M_tot, Q_tot, samples, pieces
 
-    def event_jitter(self, pss, fmin=None, fmax=None, points_per_decade=40):
+    def event_jitter(self, pss, colour_fmin=None, colour_fmax=None,
+                     points_per_decade=40):
         """The noise-driven JITTER of every landed crossing of a staged,
         driven solve: ``sigma`` in seconds per crossing, and the crossings'
         covariance in fractions of the period.
@@ -675,7 +676,7 @@ class _LyapunovCovariance(object):
 
         Returns ``{'sigma_t': (K,) s, 'cov_fraction': (K, K), 'fractions':
         (K,) the crossings' positions, 'nodes': (K,) their grid nodes}``.
-        A COLOURED source needs the band `fmin` / `fmax` /
+        A COLOURED source needs the band `colour_fmin` / `colour_fmax` /
         `points_per_decade`, as `covariance`: the crossings' coloured motion
         is read off the same bordered forced responses (the coloured part
         of a 1/f threshold's sigma^2 is `Var_band(v_th) / s_1^2` to 1e-6).
@@ -699,6 +700,7 @@ class _LyapunovCovariance(object):
                 'solve with state_events=True on a circuit that declares '
                 'them (a VSwitch).')
         pss = pss._lyapunov_host()
+        fmin, fmax = colour_fmin, colour_fmax     # (the names the internals use)
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'event_jitter')
         As, Qs, K1, M, m, n = self._lyapunov_pieces(
@@ -766,17 +768,19 @@ class _LyapunovCovariance(object):
         if fmin is None:
             raise NotImplementedError(
                 'PAC.%s: a noise source in this circuit is COLOURED (a 1/f '
-                'source), and its variance grows as ln(fmax/fmin) without '
-                'limit -- pass fmin (and fmax, default the grid\'s Nyquist, '
-                '%.6g Hz): the coloured part is integrated over [fmin, fmax] '
-                'in the frequency domain, the white part as for white '
-                'sources.' % (what, fnyq))
+                'source), and its variance grows as '
+                'ln(colour_fmax/colour_fmin) without limit -- pass '
+                'colour_fmin (and colour_fmax, default the grid\'s Nyquist, '
+                '%.6g Hz): the coloured part is integrated over '
+                '[colour_fmin, colour_fmax] in the frequency domain, the '
+                'white part as for white sources.' % (what, fnyq))
         fmin = float(fmin)
         fmax = fnyq if fmax is None else float(fmax)
         if not (0.0 < fmin < fmax <= fnyq * (1.0 + 1e-12)):
             raise ValueError(
-                'PAC.%s: need 0 < fmin < fmax <= the grid\'s Nyquist '
-                '(N/2T = %.6g Hz); got fmin = %.6g, fmax = %.6g.'
+                'PAC.%s: need 0 < colour_fmin < colour_fmax <= the grid\'s '
+                'Nyquist (N/2T = %.6g Hz); got colour_fmin = %.6g, '
+                'colour_fmax = %.6g.'
                 % (what, fnyq, fmin, fmax))
         counts, states = self._injection_points(pss, fp)
         nc = self._noise_components(pss, states)
@@ -1249,8 +1253,8 @@ class _LyapunovCovariance(object):
         K = 0.5 * (K + np.swapaxes(K, 1, 2))
         return K, D
 
-    def covariance(self, pss, samples=False, fmin=None, fmax=None,
-                   points_per_decade=40, pair=False):
+    def covariance(self, pss, samples=False, colour_fmin=None,
+                   colour_fmax=None, points_per_decade=40, pair=False):
         """The periodic (cyclostationary) state covariance — DRIVEN circuits.
 
         ⚠ A GRID CHOSEN FOR `kT/C` IS NOT A GRID FOR THE PROFILE.  The
@@ -1277,11 +1281,11 @@ class _LyapunovCovariance(object):
         pair, `2m x 2m`, the shape depending on the integrator; `pair=True`
         returns it so.
 
-        ⚠ A COLOURED SOURCE NEEDS A BAND.  With a 1/f source
-        (a `flicker_noise`, a MOS channel's flicker) pass `fmin` -- and
-        `fmax`, default the grid's Nyquist `N/2T` -- because a 1/f variance
-        grows as `ln(fmax/fmin)` without limit.  The WHITE part of every
-        source then goes through the recursion below and the COLOURED part
+        ⚠ A COLOURED SOURCE NEEDS A BAND.  With a 1/f source (a
+        `flicker_noise`, a MOS channel's flicker) pass `colour_fmin` -- and
+        `colour_fmax`, default the grid's Nyquist `N/2T` -- because a 1/f
+        variance grows as `ln(colour_fmax/colour_fmin)` without limit.  The
+        WHITE part of every source then goes through the recursion below and the COLOURED part
         is integrated over the band in the frequency domain, per input
         frequency the forced response to the modulated source
         (`_coloured_covariance`; `points_per_decade` as
@@ -1353,6 +1357,7 @@ class _LyapunovCovariance(object):
         ## a COLOURED source: the white part through the recursion below,
         ## the coloured part in the frequency domain over `[fmin, fmax]`
         ## (`_coloured_covariance`)
+        fmin, fmax = colour_fmin, colour_fmax     # (the names the internals use)
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'covariance')
         As, Qs, K1, M, m, n = self._lyapunov_pieces(

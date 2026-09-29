@@ -17,6 +17,14 @@ the lower 2.45x the upper on an asymmetric van der Pol, as `pnoise`) and
 keep their own values.  The tables below are the new conventions; the
 list at the end marks what these closed.
 
+**Changed 2026-09-29** (Andreas: match a commercial simulator where it has
+a convention, else IEEE one-sided): the swept frequency follows that
+simulator's `sweeptype` rule (item 4); the band arguments are named for
+their band (item 6); the covariances are `m x m` whatever the method
+(item 7); one jitter vocabulary (item 8); flag pairs, a missing carrier and
+a swapped argument refused (items 9-11).  The tables are the code as of
+then.
+
 ## Shared conventions
 
 - **`CY` is one-sided.** An element's noise density is the one-sided PSD
@@ -29,10 +37,21 @@ list at the end marks what these closed.
   state is the circuit's unknown vector with the reference node's row
   removed.  A vector is taken as weights over the reduced unknowns (a
   differential output).  Names at the top level of the circuit.
-- **Frequency arguments are one of three kinds** -- an ABSOLUTE output
-  frequency, an OFFSET from a carrier harmonic, or a SERIES frequency of a
-  sampled sequence -- and the argument names do not tell which (see the
-  inconsistencies below).
+- **A swept frequency follows a commercial RF simulator's `sweeptype`
+  rule** (`_numerics.sweep_kind`, since 2026-09-29): `'absolute'` is the
+  frequency itself, `'relative'` an offset from a harmonic of the PSS
+  fundamental, and `None` -- that simulator's 'unspecified', the default --
+  relative on an AUTONOMOUS PSS and absolute on a driven one (an
+  oscillator's period is an output of the solve, so a frequency near a
+  harmonic is only writable as an offset).  `pnoise` and `PAC.solve` take
+  `sweeptype` and `relharmnum` (the harmonic, default 1); `am_pm_noise`
+  and `am_pm` take `sweeptype` with their `carrier` as the harmonic.  The
+  spectra take OFFSETS and the sampled family SERIES frequencies, by name.
+- **A band argument is named for its band:** `colour_fmin` /
+  `colour_fmax`, the band a COLOURED source is integrated over (white
+  sources always over every frequency); `series_fmin` / `series_fmax`, the
+  band of a SAMPLED series, which cuts white noise too; `offset_fmin` /
+  `offset_fmax`, the lineshape's phase-offset band.
 - **Oscillator surfaces refuse a driven circuit, and the driven-circuit
   surfaces refuse an oscillator**, each by name.
 
@@ -41,7 +60,7 @@ list at the end marks what these closed.
 | scale | methods |
 |---|---|
 | one-sided PSD of the output, unit^2/Hz | `pnoise`, `sampled_noise`, `oscillator_spectrum` (`S_v`: the Lorentzian times the carrier's one-sided power `2 |X|^2 = A^2/2`), `orbital_spectrum`, `modal_spectrum`, `correlation_spectrum`, `am_pm_noise` per sideband: `2 (S_am + S_pm) = pnoise(k f0 + f) + pnoise(k f0 - f)` (and `analysis_ss.Noise`) |
-| **two-sided** `S_phi`, equal to `L(f)` in linear units (the IEEE one-sided `S_phi` is `2 L`) | `phase_psd`, `lorentzian` (integrates to 1 over `(-inf, inf)`) |
+| `L(f)`, the single-sideband phase noise per Hz relative to the carrier (a commercial simulator's phase noise; the IEEE one-sided `S_phi` is `2 L`) | `phase_psd`, `lorentzian` (integrates to 1 over `(-inf, inf)`) |
 | dBc/Hz, `10 log10(S_v / (2 |X|^2))` = `L(f)` | `oscillator_spectrum` (`L_dBc`) |
 | variance, unit^2 | `sampled_variance`, `covariance`, `oscillator_covariance` (`K_orb`), `orbital_correlation` |
 | seconds (jitter), s^2 (growth) | `jitter_metrics`, `event_jitter`, `oscillator_edge_jitter`; `oscillator_covariance`'s `d` |
@@ -54,27 +73,27 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
-| `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False` | `(S, sidebands_used)`; also sets `self.alias_stop`, `self.sidebands_used` | `freq`: ABSOLUTE output frequency, scalar | `maxsidebands` -> `N//2` (clamped); `ratio_tol` -> 1e-9, stops after two quiet pairs |
-| `am_pm_noise` | `pss, freq, output, carrier=1, maxsidebands=None, modulated=False` | `(S_am, S_pm, bands)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28) | `freq`: OFFSET from `carrier f0` | `maxsidebands` -> every pair within Nyquist, `N//2 - carrier` (fixed 2026-09-28: it raised) |
-| `band_spread` | `pss, output, band, points=9, harmonic=1, quantity='pnoise', **kw` | `(spread, info)` | `band` in units of f0: an OFFSET from `harmonic f0` for 'S_pm', 'S_am', 'oscillator_spectrum', but ABSOLUTE for 'pnoise' | `points=9` |
+| `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False, sweeptype=None, relharmnum=None` | `(S, sidebands_used)`; also sets `self.alias_stop`, `self.sidebands_used` | `freq`, scalar, the OUTPUT frequency by the sweep rule: itself when absolute (the default on a driven PSS), `relharmnum f0 + freq` when relative (the default on an oscillator) | `maxsidebands` -> `N//2` (clamped); `ratio_tol` -> 1e-9, stops after two quiet pairs |
+| `am_pm_noise` | `pss, freq, output, carrier=1, maxsidebands=None, modulated=False, sweeptype=None` | `(S_am, S_pm, bands)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28) | `freq` by the sweep rule with `carrier` the harmonic: an OFFSET from `carrier f0` when relative (the default on an oscillator), the upper sideband's own frequency when absolute (the default on a driven PSS) | `maxsidebands` -> every pair within Nyquist, `N//2 - carrier` (fixed 2026-09-28: it raised) |
+| `band_spread` | `pss, output, band, points=9, harmonic=1, quantity='pnoise', **kw` | `(spread, info)` | `band` in units of f0: an OFFSET from `harmonic f0` for every quantity (`**kw` takes no `sweeptype`) | `points=9` |
 | `sampled_noise` | `pss, output, times, freqs, maxsidebands=None, tail=False` | array `(len(times), len(freqs))` | `freqs`: SERIES frequency, `0 < f <= f0/2` | `maxsidebands` -> `N//2 - 1` (raises above) |
-| `sampled_variance` | `pss, output, times, fmin, fmax, points_per_decade=40, maxsidebands=None, tail=False` | array `(len(times),)` | `fmin`, `fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
-| `jitter_metrics` | `pss, output, time, fmin, fmax, kmax=4, maxsidebands=None, nfreq=601, dc_rectangle=False, points_per_decade=40` | dict: `sigma_t, rho, k_cycle, cycle_to_cycle, slew, R, instant` | as `sampled_variance` | `kmax=4` (>= 2) |
-| `covariance` | `pss, samples=False, fmin=None, fmax=None, points_per_decade=40` | `K0`, or `(K0, [K at each node])` with `samples=True`; `n x n` with `n = m`, or `2m` on gear/trap pair maps | `fmin`, `fmax`: the SOURCE band of the COLOURED part only; `fmax` -> the grid's Nyquist | `fmin` required when a source is coloured |
-| `event_jitter` | `pss, fmin=None, fmax=None, points_per_decade=40` | dict: `sigma` (s), `cov_fraction`, `fractions`, `nodes` | as `covariance` | refuses a solve with no landed events |
+| `sampled_variance` | `pss, output, times, series_fmin, series_fmax, points_per_decade=40, maxsidebands=None, tail=False` | array `(len(times),)` | `series_fmin`, `series_fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
+| `jitter_metrics` | `pss, output, time, series_fmin, series_fmax, kmax=8, maxsidebands=None, nfreq=601, dc_rectangle=False, points_per_decade=40` | dict: `sigma_t, rho, k_cycle` (exact), `cycle_to_cycle, slew` (`edge_slope`), `R, instant` | as `sampled_variance` | `kmax=8` (>= 2) |
+| `covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `K0`, or `(K0, [K at each node])` with `samples=True`; `m x m` whatever the method (a gear/trap pair map's `2m x 2m` with `pair=True`) | `colour_fmin`, `colour_fmax`: the SOURCE band of the COLOURED part only; `colour_fmax` -> the grid's Nyquist | `colour_fmin` required when a source is coloured |
+| `event_jitter` | `pss, colour_fmin=None, colour_fmax=None, points_per_decade=40` | dict: `sigma_t` (s), `cov_fraction`, `fractions`, `nodes` | as `covariance` | refuses a solve with no landed events |
 
 ## Oscillators
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
-| `oscillator_spectrum` | `pss, offsets, output, harmonic=1, frequency_aware=None, fmin=None, fmax=None, all_orders=None` | `(S_v, L_dBc)`; sets `self.lineshape_info` | OFFSETS from `harmonic f0`, any sign | `frequency_aware` -> True; `fmin` needed only with colour; `fmax` -> f0/2 |
-| `phase_psd` | `pss, offsets, harmonic=1, frequency_aware=True` | array, rad^2/Hz (two-sided, = `L(f)`) | OFFSETS, `> 0` | refuses offsets at or below the Lorentzian corner |
+| `oscillator_spectrum` | `pss, offsets, output, harmonic=1, frequency_aware=True, offset_fmin=None, offset_fmax=None, all_orders=None` | `(S_v, L_dBc)`; sets `self.lineshape_info` | OFFSETS from `harmonic f0`, any sign | `offset_fmin` needed only with colour; `offset_fmax` -> f0/2; `all_orders` with `frequency_aware=False` refused |
+| `phase_psd` | `pss, offsets, harmonic=1, frequency_aware=True` | array, `L(f)` per Hz (the IEEE `S_phi` is `2 L`) | OFFSETS, `> 0` | refuses offsets at or below the Lorentzian corner |
 | `lorentzian` (static) | `offsets, c, f0, harmonic=1` | array, 1/Hz relative to the harmonic's power | OFFSETS, any sign | harmonic 0 returns zeros |
 | `modal_spectrum` | `pss, offsets, output, harmonic=1, H=None, sidebands=None` | dict: `phase, orbital, correlation, total` | OFFSETS, negative = the lower sideband | `H` -> 32 (capped by the grid), `sidebands` -> `2H` |
 | `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, H=None` (+ `sidebands` for correlation) | array | as `modal_spectrum` | `H` -> 32 |
 | `orbital_correlation` | `pss, H=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
-| `oscillator_covariance` | `pss, samples=False, fmin=None, fmax=None, points_per_decade=40` | `(K_orb, d, info)`; `K_orb` in pair space on gear/trap | as `covariance` (colour enters the transverse part only) | |
-| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle, instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
+| `oscillator_covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K_orb, d, info)`; `K_orb` `m x m` whatever the method (the pair with `pair=True`) | as `covariance` (colour enters the transverse part only) | |
+| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A, c, slew, k_cycle_bound` (the large-`k` upper bound), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
 | `orbital_mode_weights` | `pss, nmodes=None` | `(cw, modes, K_orb)` | -- | |
 | `diffusion_constant` | `pss` | `c`, s | -- | refuses colour |
 | `frequency_aware_diffusion` | `pss, offset` | `c(f)`, s | `offset` scalar, abs taken | refuses colour |
@@ -86,7 +105,8 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 | method | arguments | returns |
 |---|---|---|
-| `am_pm` | `pss, freq, output, carrier=1` | `(m_am, m_pm)` per unit source; `freq` an OFFSET; refuses a missing carrier |
+| `solve` | `pss, freqs, refnode=gnd, recycle=True, sweeptype=None, relharmnum=None` | a `CircuitResult` over the absolute OUTPUT frequencies; `freqs` the SOURCE frequencies by the sweep rule, as `pnoise`'s `freq` |
+| `am_pm` | `pss, freq, output, carrier=1, sweeptype=None` | `(m_am, m_pm)` per unit source; `freq` by the sweep rule, as `am_pm_noise`'s; refuses a missing carrier |
 | `am_pm_indices` | `a, b` | `(a + conj(b), a - conj(b))` |
 | `carrier_phasor` | `pss, output, carrier=1` | the complex Fourier coefficient (`A/2` for `A cos`) |
 
@@ -106,17 +126,30 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 3. ~~**`am_pm_noise` returns pair totals** over both sidebands, not a
    per-sideband density; on an oscillator `S_pm = 4 S_v`.~~ CLOSED
    2026-09-28: per sideband, and on an oscillator `S_pm = S_v`.
-4. **`freq` is ABSOLUTE in `pnoise` and an OFFSET in `am_pm_noise` / `am_pm`**
-   -- the same name in the same position.
-5. **`band_spread`'s `band` is an offset for three quantities and absolute
-   for 'pnoise'** (open, with item 4).  ~~Its `**kw` is not forwarded to
+4. ~~**`freq` is ABSOLUTE in `pnoise` and an OFFSET in `am_pm_noise` /
+   `am_pm`** -- the same name in the same position.~~ CLOSED 2026-09-29
+   (Andreas: check what a commercial simulator supports and match; PAC.solve
+   too): that simulator's `sweeptype` rule, `absolute` / `relative` /
+   unspecified (relative on an autonomous PSS, absolute on a driven one),
+   with `relharmnum` the harmonic of a relative sweep -- on `pnoise` and
+   `PAC.solve`; `am_pm_noise` and `am_pm` take `sweeptype` with `carrier`
+   as the harmonic.  ⚠ The DEFAULT moved for `pnoise` / `PAC.solve` on an
+   oscillator (now an offset from `f0`) and for `am_pm_noise` / `am_pm` on
+   a driven circuit (now the upper sideband's frequency); the 44 test
+   calls that relied on the old reading pass it explicitly.
+5. ~~**`band_spread`'s `band` is an offset for three quantities and
+   absolute for 'pnoise'**; its `**kw` is not forwarded to
    `oscillator_spectrum`; an unknown `quantity` falls through to
-   'pnoise'.~~ CLOSED 2026-09-29: forwarded; an unknown name raises.
-6. **`fmin`/`fmax` name three different bands:** the coloured SOURCE band
+   'pnoise'.~~ CLOSED 2026-09-29: an offset from `harmonic f0` for every
+   quantity (the pnoise it samples is the relative sweep), forwarded, an
+   unknown name raises.
+6. ~~**`fmin`/`fmax` name three different bands:** the coloured SOURCE band
    (`covariance`, `event_jitter`, `oscillator_covariance`; ignored when all
    sources are white), the SERIES band that cuts white noise too
    (`sampled_variance`, `jitter_metrics`), and the phase-offset band for
-   colour (`oscillator_spectrum`).
+   colour (`oscillator_spectrum`).~~ CLOSED 2026-09-29 (Andreas: rename
+   per meaning): `colour_fmin/colour_fmax`, `series_fmin/series_fmax`,
+   `offset_fmin/offset_fmax`; the messages say the new names.
 7. ~~**`covariance` is `m x m` on radau/euler/GLM and `2m x 2m` on gear/trap**
    (the pair state), so traces, eigenvalues and shapes depend on the method.~~ CLOSED 2026-09-29: `m x m` whatever the method,
    the pair on request (`pair=True`), `oscillator_covariance` too.
@@ -162,12 +195,13 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
     with `samples` while `oscillator_covariance` puts samples in `info`;
     diagnostics go to instance attributes (`alias_stop`, `sidebands_used`,
     `sampled_instants`, `lineshape_info`, ...).
-16. The same refusal raises different exceptions: a missing `fmin` is a
-    `NotImplementedError` in `covariance` and `oscillator_spectrum` but a
-    `TypeError` in the sampled family (a required argument).
+16. The same refusal raises different exceptions: a missing lower band
+    edge is a `NotImplementedError` in `covariance` (`colour_fmin`) and
+    `oscillator_spectrum` (`offset_fmin`) but a `TypeError` in the sampled
+    family (`series_fmin`, a required argument).
 17. Several oscillator surfaces cannot take a coloured source at all
-    (`oscillator_edge_jitter`, `orbital_mode_weights` have no `fmin` to
-    pass; `orbital_*` refuse colour; `modal_spectrum` accepts it).
+    (`oscillator_edge_jitter`, `orbital_mode_weights` have no
+    `colour_fmin` to pass; `orbital_*` refuse colour; `modal_spectrum` accepts it).
 18. Stale text: `colour_projection`'s docstring promises "the ratio
     |mean|/rms" under a key that is `symmetry`; three comments still
     describe a Gear-2 fallback for TR-BDF2 that the accuracy host no longer

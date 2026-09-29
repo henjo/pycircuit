@@ -313,7 +313,7 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     ## separable, against its white-through-filter realisation
     pss, o, pac = build('element')
     with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
-        _K, se = pac.covariance(pss, samples=True, fmin=fmin)
+        _K, se = pac.covariance(pss, samples=True, colour_fmin=fmin)
     pf, of, pacf = build('filtered')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -337,12 +337,12 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     p0, o0, pac0 = build('element', npts=100)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        Ks = pac0.covariance(p0, fmin=fmin)[o0, o0]
+        Ks = pac0.covariance(p0, colour_fmin=fmin)[o0, o0]
         ## (on the instance's factory: the class keeps its own)
         consulted = []
         _noise_seam(pac0, separable=staticmethod(
             lambda Cs, tol=1e-9: consulted.append(1) or False))
-        Kn = pac0.covariance(p0, fmin=fmin)[o0, o0]
+        Kn = pac0.covariance(p0, colour_fmin=fmin)[o0, o0]
     ## ⚠ the equality below holds VACUOUSLY if the patch is never looked up
     ## (a refactor that stops reaching `separable` through the factory)
     assert consulted, 'the patched separable was never consulted'
@@ -350,7 +350,7 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     ## the moving-shape path meets the separable one as the corner stops
     pt, ot, pact = build('element', shape=1e-6, npts=100)
     with pytest.warns(RuntimeWarning, match='SHAPE changes along the orbit'):
-        Kt = pact.covariance(pt, fmin=fmin)[ot, ot]
+        Kt = pact.covariance(pt, colour_fmin=fmin)[ot, ot]
     assert abs(Kt / Ks - 1.0) < 1e-4, Kt / Ks - 1.0
 
 
@@ -384,8 +384,8 @@ def test_the_coloured_band_integral_resolves_a_high_q_line():
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
     o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
     pac = PAC(c, toolkit=circuit.numeric)
-    a = pac.covariance(pss, fmin=1e3, points_per_decade=10)[o, o]
-    b = pac.covariance(pss, fmin=1e3, points_per_decade=40)[o, o]
+    a = pac.covariance(pss, colour_fmin=1e3, points_per_decade=10)[o, o]
+    b = pac.covariance(pss, colour_fmin=1e3, points_per_decade=40)[o, o]
     assert abs(a / b - 1.0) < 1e-6, a / b - 1.0
 
 
@@ -893,7 +893,7 @@ def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
         _c, pss, o, pac = _rc_flicker(method, N)
         Ns = len(pss.factored_period().steps)
         fmax = 0.5 * Ns / float(pss.period)
-        K0, seq = pac.covariance(pss, samples=True, fmin=fmin)
+        K0, seq = pac.covariance(pss, samples=True, colour_fmin=fmin)
         rel = K0[o, o] / _rc_band_variance(fmin, fmax) - 1.0
         assert abs(rel) < tol, (method, N, rel)
         assert np.array_equal(K0, seq[0]) and len(seq) == Ns + 1
@@ -905,15 +905,16 @@ def test_a_coloured_covariance_integrates_the_band_against_the_closed_form():
     assert 2.5 < rel100 / rel < 5.0, (rel100, rel)
     ## an inner band, fmax below the Nyquist
     _c, pss, o, pac = _rc_flicker('radau', 100)
-    K = pac.covariance(pss, fmin=1e2, fmax=1e7)
+    K = pac.covariance(pss, colour_fmin=1e2, colour_fmax=1e7)
     assert abs(K[o, o] / _rc_band_variance(1e2, 1e7) - 1.0) < 1e-7
-    with pytest.raises(NotImplementedError, match='ln\\(fmax/fmin\\)'):
+    with pytest.raises(NotImplementedError,
+                       match='ln\\(colour_fmax/colour_fmin\\)'):
         pac.covariance(pss)
     with pytest.raises(ValueError, match='Nyquist'):
-        pac.covariance(pss, fmin=1e3, fmax=1e9)
+        pac.covariance(pss, colour_fmin=1e3, colour_fmax=1e9)
     _c, pss, o, pac = _rc_flicker('trap', 100)
     with pytest.raises(NotImplementedError, match='pair \\(x, iq\\)'):
-        pac.covariance(pss, fmin=fmin)
+        pac.covariance(pss, colour_fmin=fmin)
 
 
 def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part():
@@ -951,7 +952,7 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
                       state_events=True)
         assert pss.converged
         pac = PAC(cir, toolkit=circuit.numeric)
-        band = dict(fmin=fmin, fmax=fmax) if flick else {}
+        band = dict(colour_fmin=fmin, colour_fmax=fmax) if flick else {}
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             j = pac.event_jitter(pss, **band)
@@ -995,7 +996,7 @@ def test_a_coloured_covariance_takes_a_flicker_whose_exponent_differs_between_en
         pss, pac, names, (T, Rv, Cv, k) = _mixed_exponent_rc(kind)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
-            K[kind] = pac.covariance(pss, fmin=1e3)
+            K[kind] = pac.covariance(pss, colour_fmin=1e3)
         if kind == 'corr':
             assert any('different power-law exponents' in str(r.message)
                        for r in rec)
@@ -1049,7 +1050,7 @@ def test_a_coloured_covariance_integrates_any_flicker_exponent():
         pac = PAC(c, toolkit=circuit.numeric)
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
         fmin, fmax = 1e3, 0.5 * len(pss.factored_period().steps) / T
-        K = pac.covariance(pss, fmin=fmin)
+        K = pac.covariance(pss, colour_fmin=fmin)
         ref = quad(lambda u: k * np.exp((1.0 - ef) * u) * Rv ** 2
                    / (1.0 + np.exp(2.0 * u) / fc ** 2),
                    np.log(fmin), np.log(fmax), epsabs=0, epsrel=1e-12,
@@ -1127,7 +1128,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         pac = PAC(c, toolkit=circuit.numeric)
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
         fN = 0.5 * len(pss.factored_period().steps) / T
-        band_ = dict(fmin=1e-6 / T) if kind == 'coloured' else {}
+        band_ = dict(colour_fmin=1e-6 / T) if kind == 'coloured' else {}
         out[kind] = (pac.covariance(pss, **band_)[o, o], fN)
     kc, fN = out['coloured']
     kf, _ = out['filtered']
@@ -1149,7 +1150,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
             warnings.simplefilter('ignore')
             pss.solve(period=T, timestep=T / 100, maxiterations=100,
                       state_events=True)
-            band_ = dict(fmin=1e-6 / T) if flick else {}
+            band_ = dict(colour_fmin=1e-6 / T) if flick else {}
             sig[flick] = float(PAC(cir, toolkit=circuit.numeric).event_jitter(
                 pss, **band_)['sigma_t'][0]) ** 2
         fN = 0.5 * len(pss.factored_period().steps) / T
@@ -1173,7 +1174,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         ## separable path -- see
         ## `test_a_coloured_covariance_takes_a_modulated_non_power_law_source`)
         with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
-            Km = PAC(c, toolkit=circuit.numeric).covariance(pss, fmin=1e-6 / T)
+            Km = PAC(c, toolkit=circuit.numeric).covariance(pss, colour_fmin=1e-6 / T)
         assert np.all(np.isfinite(Km)) and np.max(np.diag(Km)) > 0.0
 
 
@@ -1506,7 +1507,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
             pac = PAC(cir, toolkit=circuit.numeric)
             with _w.catch_warnings():
                 _w.simplefilter('ignore')
-                res = pac.solve(q, [f])
+                res = pac.solve(q, [f], sweeptype='absolute')
                 h = complex(np.asarray(pac.adjoint_sideband_row(q, f, io, sidebands=[0]))[0] @ u_ac)
             sv = np.asarray(res.sweep_values, dtype=float)
             X = np.asarray(res.x)[iv]

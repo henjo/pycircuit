@@ -56,7 +56,7 @@ class _SampledNoise(object):
         model, which is outside this analysis.  An agreement with another
         tool on this quantity is agreement on the convention.  A flicker
         spectrum is also singular at DC: keep `f` away from 0 (the band
-        integral takes an explicit `fmin`).
+        integral, `sampled_variance`, takes an explicit `series_fmin`).
 
         Gated against `covariance` (white, held and tracking, at the same
         instant), `adjoint_transfer_row` (the seeded row at `t0 = 0`) and,
@@ -97,12 +97,12 @@ class _SampledNoise(object):
         return self._sampled_series(pss, output, times, freqs, maxsidebands,
                                     tail=tail)
 
-    def sampled_variance(self, pss, output, times, fmin, fmax,
+    def sampled_variance(self, pss, output, times, series_fmin, series_fmax,
                          points_per_decade=40, maxsidebands=None, tail=False):
         """The variance at sampling instants over the SERIES band
-        `[fmin, fmax]`, `0 < fmin < fmax <= f0/2`: the integral of
+        `[series_fmin, series_fmax]`, `0 < series_fmin < series_fmax <= f0/2`: the integral of
         `sampled_noise` on a log grid of `points_per_decade`, nothing added
-        below `fmin`.  Returns an array over `times`.
+        below `series_fmin`.  Returns an array over `times`.
 
         ⚠ POWER LAW BETWEEN THE POINTS (`_loglog_integral`): the density is
         interpolated linearly in log-log and each interval integrated
@@ -110,30 +110,33 @@ class _SampledNoise(object):
         error is second order where the density BENDS (+6.6e-5 on a 1/f
         switched sampler at 40 per decade).
 
-        ⚠ `fmin` AND `fmax` ARE REQUIRED.  With a 1/f source the integral
-        grows as `ln(fmax/fmin)` and has no limit at `fmin -> 0`; with white
-        sources only, the band removes `fmin/(f0/2)` of the full variance
+        ⚠ `series_fmin` AND `series_fmax` ARE REQUIRED.  With a 1/f source the integral
+        grows as `ln(series_fmax/series_fmin)` and has no limit at `series_fmin -> 0`; with white
+        sources only, the band removes `series_fmin/(f0/2)` of the full variance
         because the series PSD is flat.  Nothing is extrapolated into
-        `[0, fmin]`.
+        `[0, series_fmin]`.
 
         History: `doc/shooting_history.md`, `PAC.sampled_variance`.
         """
+        fmin, fmax = series_fmin, series_fmax     # (the names the internals use)
         output = output_index(pss, output)
         f0 = 1.0 / float(pss.factored_period().T)
         fmin, fmax = float(fmin), float(fmax)
         if not (0.0 < fmin < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
             raise ValueError(
-                'PAC.sampled_variance: need 0 < fmin < fmax <= f0/2 = %.6g Hz '
-                '(the sample series\' Nyquist); got fmin = %.6g, fmax = %.6g. '
-                'fmin has no default: a 1/f source makes the variance grow '
-                'as ln(fmax/fmin) without limit.' % (0.5 * f0, fmin, fmax))
+                'PAC.sampled_variance: need 0 < series_fmin < series_fmax '
+                '<= f0/2 = %.6g Hz (the sample series\' Nyquist); got '
+                'series_fmin = %.6g, series_fmax = %.6g. series_fmin has no '
+                'default: a 1/f source makes the variance grow as '
+                'ln(series_fmax/series_fmin) without limit.' % (0.5 * f0, fmin, fmax))
         nf = max(2, int(np.ceil(points_per_decade * np.log10(fmax / fmin))) + 1)
         fs = np.logspace(np.log10(fmin), np.log10(fmax), nf)
         S = self._sampled_series(pss, output, times, fs, maxsidebands,
                                  tail=tail)
         return self._loglog_integral(np.asarray(S, dtype=float), fs)
 
-    def jitter_metrics(self, pss, output, time, fmin, fmax, kmax=8,
+    def jitter_metrics(self, pss, output, time, series_fmin, series_fmax,
+                       kmax=8,
                        maxsidebands=None, nfreq=601, dc_rectangle=False,
                        points_per_decade=40):
         """Edge jitter at ONE instant: `sigma_t`, the across-period
@@ -145,7 +148,7 @@ class _SampledNoise(object):
         `y(t0 + kT)`, so that series' own autocovariance is its cosine
         transform -- no new machinery, and none of Demir 1996:
 
-            R_k   = int_fmin^fmax S(f; t0) cos(2 pi f k T) df
+            R_k   = int_{series_fmin}^{series_fmax} S(f; t0) cos(2 pi f k T) df
             rho_k = R_k / R_0
 
         ⚠ TWO GRIDS.  ``R_k = int S df + int S (cos - 1) df``:
@@ -176,12 +179,12 @@ class _SampledNoise(object):
         against a Monte Carlo of noisy crossings.
 
         ⚠ `dc_rectangle` EXTRAPOLATES, WHICH THE REST OF THIS FAMILY REFUSES
-        TO DO.  `S` is known only on `[fmin, fmax]`; adding `S(fmin)*fmin`
-        assumes the series PSD is FLAT below `fmin`.  That is exact for white
+        TO DO.  `S` is known only on `[series_fmin, series_fmax]`; adding `S(series_fmin)*series_fmin`
+        assumes the series PSD is FLAT below `series_fmin`.  That is exact for white
         sources and WRONG for `1/f`, where the integral has no limit as
-        `fmin -> 0` (see `sampled_variance`).  Hence off by default.
-        Without it, `rho_k` drifts with `fmin` as truncation should, more at
-        larger `k`.  ⚠ With a coloured source, LOWER `fmin` -- do not reach
+        `series_fmin -> 0` (see `sampled_variance`).  Hence off by default.
+        Without it, `rho_k` drifts with `series_fmin` as truncation should, more at
+        larger `k`.  ⚠ With a coloured source, LOWER `series_fmin` -- do not reach
         for the rectangle.
 
         ⚠ `slew` IS A LOCAL QUADRATIC FIT at the instant actually used
@@ -201,6 +204,7 @@ class _SampledNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.jitter_metrics`.
         """
+        fmin, fmax = series_fmin, series_fmax     # (the names the internals use)
         output = output_index(pss, output)
         from scipy.integrate import trapezoid
         fp = pss.factored_period()
@@ -209,10 +213,11 @@ class _SampledNoise(object):
         fmin, fmax = float(fmin), float(fmax)
         if not (0.0 < fmin < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
             raise ValueError(
-                'PAC.jitter_metrics: need 0 < fmin < fmax <= f0/2 = %.6g Hz; '
-                'got fmin = %.6g, fmax = %.6g. As in sampled_variance, fmin '
-                'has no default -- a 1/f source makes R_0 grow as '
-                'ln(fmax/fmin) without limit.' % (0.5 * f0, fmin, fmax))
+                'PAC.jitter_metrics: need 0 < series_fmin < series_fmax <= '
+                'f0/2 = %.6g Hz; got series_fmin = %.6g, series_fmax = %.6g. '
+                'As in sampled_variance, series_fmin has no default -- a 1/f '
+                'source makes R_0 grow as ln(series_fmax/series_fmin) without '
+                'limit.' % (0.5 * f0, fmin, fmax))
         kmax = int(kmax)
         if kmax < 2:
             raise ValueError(

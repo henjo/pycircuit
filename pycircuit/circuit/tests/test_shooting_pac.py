@@ -861,7 +861,7 @@ def test_am_pm_on_a_driven_mixer_is_predominantly_am():
     for r in (0.3, 0.1, 0.03):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            am, pm = pac.am_pm(pss, r * f0, k, 1)
+            am, pm = pac.am_pm(pss, r * f0, k, 1, sweeptype='relative')
         i = int(np.argmax(np.abs(am)))
         assert abs(am[i]) > 1.0, \
             'the AM index is %.3e -- nothing is being modulated' % abs(am[i])
@@ -887,7 +887,8 @@ def test_am_pm_refuses_a_harmonic_with_no_carrier():
         pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     pac = PAC(cir, toolkit=circuit.numeric)
     with pytest.raises(ValueError, match='no component at harmonic'):
-        pac.am_pm(pss, 137.0, 1, carrier=57)     # far above anything present
+        pac.am_pm(pss, 137.0, 1, carrier=57,
+                  sweeptype='relative')     # far above anything present
 
 
 def test_the_deflated_solve_removes_the_harmonic_singularity():
@@ -1251,7 +1252,7 @@ def _ampm_at(refname, fm=5e4, npts=200):
     pac = PAC(cir, toolkit=circuit.numeric)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        am, pm = pac.am_pm(pss, fm, out, carrier=1)
+        am, pm = pac.am_pm(pss, fm, out, carrier=1, sweeptype='relative')
         car = pac.carrier_phasor(pss, out, 1)
     am = np.asarray(am).ravel()
     pm = np.asarray(pm).ravel()
@@ -1305,7 +1306,7 @@ def test_am_pm_accepts_a_direction_not_only_a_node_index():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         c_diff = pac.carrier_phasor(pss, diff, 1)
-        am, pm = pac.am_pm(pss, 5e4, diff, carrier=1)
+        am, pm = pac.am_pm(pss, 5e4, diff, carrier=1, sweeptype='relative')
     assert abs(c_diff - c_int) > 1e-3 * abs(c_int), \
         'the differential carrier equals the single-ended one, so this ' \
         'fixture does not exercise the new path'
@@ -1759,7 +1760,7 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
         y_defl = pac._deflated_solve(pss, a, b, transposed=False, tol=tol)
         assert np.linalg.norm(y_defl - y_plain) < 1e-6 * np.linalg.norm(y_plain)   # measured 1.2e-8: the plain GMRES tolerance
         ## the sweep itself now takes that route
-        res = pac.solve(pss, [(1.0 + 1e-3) * f0])
+        res = pac.solve(pss, [(1.0 + 1e-3) * f0], sweeptype='absolute')
         assert pac.deflated is True and pac.matvecs is None
         ## the pole, carried analytically
         a9, b9 = rhs_and_alpha(1.0 + 1e-9); a10, b10 = rhs_and_alpha(1.0 + 1e-10)
@@ -2254,7 +2255,7 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
             pac = PAC(cir, toolkit=circuit.numeric)
             with _w.catch_warnings():
                 _w.simplefilter('ignore')
-                pac.solve(q, [0.3 / Tq])
+                pac.solve(q, [0.3 / Tq], sweeptype='absolute')
         finally:
             q._event_columns = ev
         tt, yy = pac.time_response[0]
@@ -2277,7 +2278,7 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     pac = PAC(cir, toolkit=circuit.numeric)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        res = pac.solve(q, freqs=[fin])
+        res = pac.solve(q, freqs=[fin], sweeptype='absolute')
         H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
     fout = np.asarray(res.sweep_values, dtype=float)
     Xr = np.asarray(res.x)
@@ -2400,7 +2401,7 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
                 pac = PAC(cir, toolkit=circuit.numeric)
                 with _w.catch_warnings():
                     _w.simplefilter('ignore')
-                    pac.solve(q, [f])
+                    pac.solve(q, [f], sweeptype='absolute')
                 tt, yy = pac.time_response[0]
             except RuntimeError:
                 ## the plain deflated solve borders the fixed-grid map with
@@ -2442,7 +2443,7 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     pac = PAC(cir, toolkit=circuit.numeric)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        res = pac.solve(q, freqs=[fin])
+        res = pac.solve(q, freqs=[fin], sweeptype='absolute')
         H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
     fout = np.asarray(res.sweep_values, dtype=float)
     Xr = np.asarray(res.x)

@@ -509,7 +509,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     offs = np.array([0.0, 1.0, 10.0, 100.0, 300.0, 1000.0]) * fcore
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter('always')
-        S_all = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
+        S_all = pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0)[0] / X2
         info = dict(pac.lineshape_info)
     ## ⚠ the far skirt resolved: past fmax the white part is held at its
     ## corrected level (`ConstantTail`).  Returned to `c_w` there, its edge
@@ -526,7 +526,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     assert abs(S_all[-1] / sphi - 1.0) < 1e-4, S_all[-1] / sphi - 1.0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        S_first = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0,
+        S_first = pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0,
                                           all_orders=False)[0] / X2
     assert info['frequency_aware'] == 'all orders', info
     assert abs(info['cinf_estimate'] / info['cinf'] - 1.0) < 0.1, info
@@ -538,7 +538,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
         _w.simplefilter('ignore')
         pac.FA_RHO_FIT = 'chebyshev'
         try:
-            S_ch = pac.oscillator_spectrum(pss, offs, ov, fmin=1e-5 * f0)[0] / X2
+            S_ch = pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0)[0] / X2
         finally:
             del pac.FA_RHO_FIT
     ## ⚠ vacuous if the knob is not read on the instance
@@ -555,7 +555,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         pac.oscillator_spectrum(pss, [0.0, 1e-3 / float(pss.period)], 0,
-                                fmin=1e-7 / float(pss.period))
+                                offset_fmin=1e-7 / float(pss.period))
     assert pac.lineshape_info['frequency_aware'] == 'first order', pac.lineshape_info
     assert pac.lineshape_info['estimate'] < pac.FA_FIRST_ORDER_TOL, pac.lineshape_info
 
@@ -605,12 +605,12 @@ def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_as
     X22 = 2.0 * abs(pac2.carrier_phasor(pss2, ov2, 1)) ** 2
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        S_col = pac2.oscillator_spectrum(pss2, offs, ov2, fmin=1e-4 * f0,
+        S_col = pac2.oscillator_spectrum(pss2, offs, ov2, offset_fmin=1e-4 * f0,
                                          all_orders=True)[0] / X22
-        S_col_dc = pac2.oscillator_spectrum(pss2, offs, ov2, fmin=1e-4 * f0,
+        S_col_dc = pac2.oscillator_spectrum(pss2, offs, ov2, offset_fmin=1e-4 * f0,
                                             frequency_aware=False)[0] / X22
         ## and `all_orders=False` forces the coloured first order
-        pac2.oscillator_spectrum(pss2, offs[:2], ov2, fmin=1e-4 * f0,
+        pac2.oscillator_spectrum(pss2, offs[:2], ov2, offset_fmin=1e-4 * f0,
                                  all_orders=False)
     assert pac2.lineshape_info['frequency_aware'] == 'first order', pac2.lineshape_info
     gap = (S_col / S_all - 1.0) - (S_col_dc / S_dc - 1.0)
@@ -646,7 +646,7 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
     offs = np.array([0.0, 1e-3, 0.1]) * f0
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        S = {fr: pac.oscillator_spectrum(pss, offs, 0, fmin=fr * f0)[0] / X2
+        S = {fr: pac.oscillator_spectrum(pss, offs, 0, offset_fmin=fr * f0)[0] / X2
              for fr in (1e-5, 1e-7)}
         sphi = pac.phase_psd(pss, offs[1:])
     assert S[1e-7][0] < 0.5 * S[1e-5][0], 'the core did not widen'
@@ -654,7 +654,7 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
     assert 3e-3 < dev < 1e-2, dev
     assert abs(S[1e-7][2] / sphi[1] - 1.0) < 1e-6, S[1e-7][2] / sphi[1]
     for bad, exc in (({}, NotImplementedError),
-                     ({'fmin': 1e-7 * f0, 'fmax': f0}, ValueError)):
+                     ({'offset_fmin': 1e-7 * f0, 'offset_fmax': f0}, ValueError)):
         with pytest.raises(exc):
             pac.oscillator_spectrum(pss, offs, 0, **bad)
     devs = []
@@ -665,7 +665,7 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
             _w.simplefilter('ignore')
             ## the colour's additivity onto the DC Lorentzian (the
             ## frequency-aware skirt moves off it on this asymmetric orbit)
-            Sv = pac.oscillator_spectrum(pss, offs, 0, fmin=1e-7 * f0,
+            Sv = pac.oscillator_spectrum(pss, offs, 0, offset_fmin=1e-7 * f0,
                                          frequency_aware=False)[0]
             cw = pac._colour_fold(pss, 1e-7 * f0, None, 'x').c_white
         Lw = pac.lorentzian(offs, cw, f0, 1)
@@ -699,7 +699,7 @@ def test_the_coloured_lineshape_takes_a_source_that_follows_the_orbit():
         with _w.catch_warnings():
             _w.simplefilter('ignore')
             res[kind] = pac.oscillator_spectrum(
-                pss, np.array([0.0, 1e-4, 1e-2]) * f0, ov, fmin=1e-7 * f0)[1]
+                pss, np.array([0.0, 1e-4, 1e-2]) * f0, ov, offset_fmin=1e-7 * f0)[1]
         ## ⚠ vacuous if the knob is not read on the instance
         assert pac.lineshape_info['rho_fit'] == 'chebyshev', pac.lineshape_info
     err = np.max(np.abs(10 ** ((res['flicker'] - res['flicker_ref']) / 10)
@@ -785,9 +785,9 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     ## second order
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        L_fa = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0)[0] / X2
+        L_fa = pac.oscillator_spectrum(pss, [0.0, o], ov, offset_fmin=1e-7 * f0)[0] / X2
         info = dict(pac.lineshape_info)
-        L_dc = pac.oscillator_spectrum(pss, [0.0, o], ov, fmin=1e-7 * f0,
+        L_dc = pac.oscillator_spectrum(pss, [0.0, o], ov, offset_fmin=1e-7 * f0,
                                        frequency_aware=False)[0] / X2
     ## the skirt is the frequency-aware S_phi PLUS its second-order
     ## correction (2026-09-27, `_lineshape.second_order_skirt`): 2.1e-4 here,
@@ -857,7 +857,8 @@ def test_a_coloured_source_folds_per_harmonic_and_agrees_with_pnoise():
         offs = np.array(ks) * f0
         sphi = pac.phase_psd(pss, offs)
         for k, o, s in zip(ks, offs, sphi):
-            pn = float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov)[0])) / Pc
+            pn = float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov,
+                                          sweeptype='absolute')[0])) / Pc
             assert abs(s / pn - 1.0) < tol, \
                 '%s df/f0=%g: phase_psd %.6e vs pnoise/Pc %.6e' \
                 % (kind, k, s, pn)
@@ -1167,8 +1168,8 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
         Sph = np.asarray(pac.oscillator_spectrum(pss, offs, 0)[0])
         Sorb = pac.orbital_spectrum(pss, offs, 0, harmonic=1, H=8)
         for f, sph, sorb in zip(offs, np.asarray(Sph), np.asarray(Sorb)):
-            up, _ = pac.pnoise(pss, f0 + f, 0, maxsidebands=16)
-            lo, _ = pac.pnoise(pss, f0 - f, 0, maxsidebands=16)
+            up, _ = pac.pnoise(pss, f0 + f, 0, maxsidebands=16, sweeptype='absolute')
+            lo, _ = pac.pnoise(pss, f0 - f, 0, maxsidebands=16, sweeptype='absolute')
             ## (both one-sided: the mean of the two sidebands)
             tot = float(np.real(up) + np.real(lo)) / 2.0
             ## the orbital term must be carrying real weight, or `R` is a
@@ -1378,8 +1379,8 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
         ## `orbital_spectrum`'s docstring states it (DC-PPV phase term)
         Sph = float(np.asarray(pac.oscillator_spectrum(
             pss, off, 0, frequency_aware=False)[0])[0])
-        up, _ = pac.pnoise(pss, f0 + off[0], 0, maxsidebands=16)
-        lo, _ = pac.pnoise(pss, f0 - off[0], 0, maxsidebands=16)
+        up, _ = pac.pnoise(pss, f0 + off[0], 0, maxsidebands=16, sweeptype='absolute')
+        lo, _ = pac.pnoise(pss, f0 - off[0], 0, maxsidebands=16, sweeptype='absolute')
     R = float(np.real(up) + np.real(lo)) / (2.0 * (Sph + Sorb))
     assert 0.6 < R < 0.8, \
         'at a = 0.20 pnoise/(S_ph+S_orb) = %.4f at 10 f_amp (measured 0.6914). ' \
@@ -1444,8 +1445,8 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
         Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
         rows = []
         for f in offs:
-            up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=16)
-            lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=16)
+            up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=16, sweeptype='absolute')
+            lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=16, sweeptype='absolute')
             am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=16)
             rows.append((float(np.real(up)), float(np.real(lo)),
                          float(np.real(am)), float(np.real(pm))))
@@ -1470,8 +1471,8 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
         warnings.simplefilter('ignore')
         Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
         for f, sv in zip(offs, Sv):
-            up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32)
-            lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32)
+            up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32, sweeptype='absolute')
+            lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32, sweeptype='absolute')
             am, pm, _ = pac.am_pm_noise(pss, f, ov, carrier=1, maxsidebands=32)
             up, lo, am, pm = (float(np.real(x)) for x in (up, lo, am, pm))
             assert abs(2.0 * (am + pm) - (up + lo)) / (up + lo) < 1e-8, (f / f0, am + pm, up + lo)
@@ -1563,8 +1564,10 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
             Sv, _ = pac.oscillator_spectrum(pss, offs, ov, frequency_aware=False)
             out = []
             for f, sv in zip(offs, Sv):
-                up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32)
-                lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32)
+                up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32,
+                                   sweeptype='absolute')
+                lo, _ = pac.pnoise(pss, f0 - f, ov, maxsidebands=32,
+                                   sweeptype='absolute')
                 F0 = 1.0 / (1.0 + (2 * np.pi * f * tau) ** 2)
                 pred = (G2[0] * F0 + float(np.sum(G2[1:]))) / float(np.sum(G2)) if src == 'w' else 1.0
                 out.append(((float(np.real(up)) + float(np.real(lo))) / (2.0 * sv), pred))
@@ -1815,7 +1818,8 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
             ms = pac.modal_spectrum(pss, offs, 0, H=8, sidebands=16)
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, 0,
-                                                    maxsidebands=16)[0]))
+                                                    maxsidebands=16,
+                                                    sweeptype='absolute')[0]))
                            for o in offs])
             old = (np.asarray(pac.oscillator_spectrum(
                 pss, offs, 0, frequency_aware=False)[0], dtype=float)
@@ -1949,11 +1953,12 @@ def _xcorr_surfaces(pss, pac, ov, stationary):
     if stationary:
         return out
     out['pnoise'] = np.array([float(np.real(pac.pnoise(
-        pss, o[1], ov, maxsidebands=16, cyclostationary=True)[0]))])
+        pss, o[1], ov, maxsidebands=16, cyclostationary=True,
+        sweeptype='absolute')[0]))])
     out['resolved'] = np.asarray(pac.coloured_diffusion_resolved(pss, o))
     out['gamma'] = np.asarray(pac.coloured_diffusion(pss, o[:1]))
     out['lineshape'] = np.asarray(pac.oscillator_spectrum(
-        pss, [0.0, o[1]], ov, fmin=1e-6 * f0)[0])
+        pss, [0.0, o[1]], ov, offset_fmin=1e-6 * f0)[0])
     return out
 
 

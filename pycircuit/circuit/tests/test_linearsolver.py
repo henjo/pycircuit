@@ -419,7 +419,7 @@ def test_every_shooting_surface_runs_under_every_linear_solver():
                     np.array([m['lam'] for m in pss.floquet_modes()]),
                     np.array([pac.diffusion_constant(pss)]),
                     np.asarray(pac.pnoise(pss, 1.013 / pss.period, 0,
-                                          maxsidebands=6)[0])]
+                                          maxsidebands=6, sweeptype='absolute')[0])]
 
     def rel(a, b):
         a, b = np.asarray(a, dtype=complex), np.asarray(b, dtype=complex)

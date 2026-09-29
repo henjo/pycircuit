@@ -739,7 +739,8 @@ def test_the_coloured_source_agrees_with_its_own_realisation():
         _c, pss, pac, ov = _coloured_vdp(kind)
         f0 = 1.0 / float(pss.period)
         res[kind] = (float(pss.period),
-                     [float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov)[0]))
+                     [float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov,
+                                               sweeptype='absolute')[0]))
                       for k in (1e-2, 1e-3, 1e-4)])
     assert abs(res['coloured'][0] - res['filtered'][0]) < 1e-9 * res['coloured'][0], \
         'the filter changed the PSS: it must stay out of it'
@@ -940,7 +941,8 @@ def test_the_cyclostationarity_probes_lie_on_the_orbit():
         'is vacuous' % (cy_zero, cy_orbit)
     pac = PAC(cir, toolkit=circuit.numeric)
     ov = [str(n) for n in cir.nodes].index('v')
-    S = pac.pnoise(pss, 1.01 / pss.period, ov)[0]   # must not refuse
+    S = pac.pnoise(pss, 1.01 / pss.period, ov,
+                   sweeptype='absolute')[0]   # must not refuse
     assert np.all(np.isfinite(np.real(np.asarray(S))))
 
 
@@ -1111,7 +1113,8 @@ def test_am_pm_noise_does_not_depend_on_where_t_equals_zero():
         k = full - 1 if full > pss.irefnode else full
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            am, pm, _ = pac.am_pm_noise(pss, fm, k, carrier=1, maxsidebands=30)
+            am, pm, _ = pac.am_pm_noise(pss, fm, k, carrier=1, maxsidebands=30,
+                                        sweeptype='relative')
             up, _ = pac.pnoise(pss, F0 + fm, k, maxsidebands=30)
             lo, _ = pac.pnoise(pss, F0 - fm, k, maxsidebands=30)
         up, lo = float(np.real(up)), float(np.real(lo))
@@ -1182,7 +1185,7 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, carrier=1,
-                                            maxsidebands=L)
+                                            maxsidebands=L, sweeptype='relative')
             up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
             lo, _ = pac.pnoise(pss, f0 - off, 2, maxsidebands=L)
         return abs(2.0 * (S_am + S_pm) - (up + lo)) / (up + lo), S_am, S_pm
@@ -1310,19 +1313,20 @@ def test_the_ppv_border_caches_follow_a_re_solve():
     f0 = 1.0 / float(pss.period)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8)
+        pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8, sweeptype='absolute')
         pss.frequency_aware_ppv(0.01 * f0)
         T = float(pss.period)
         pss.solve(period=T, timestep=T / 300, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
         assert pss.converged
-        got = (float(np.real(pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8)[0])),
+        got = (float(np.real(pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8,
+                                        sweeptype='absolute')[0])),
                np.asarray(pss.frequency_aware_ppv(0.01 * f0)[1]['samples_eq']))
         cir2, pss2 = _a9_vdp(a=0.3)
         pss2.solve(period=T, timestep=T / 300, x0=np.array([2.0, 0.0]),
                    maxiterations=300)
         ref = (float(np.real(PAC(cir2, toolkit=circuit.numeric).pnoise(
-                   pss2, f0 * 1.01, 0, maxsidebands=8)[0])),
+                   pss2, f0 * 1.01, 0, maxsidebands=8, sweeptype='absolute')[0])),
                np.asarray(pss2.frequency_aware_ppv(0.01 * f0)[1]['samples_eq']))
     assert got[0] == ref[0], (got[0], ref[0])
     assert np.array_equal(got[1], ref[1])
@@ -2188,9 +2192,9 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
         pss.solve(period=T, timestep=T / 40, maxiterations=40)
         pac = PAC(c, toolkit=circuit.numeric)
         N = len(pss._adjoint_host().factored_period().steps)
-        default = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1)
+        default = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1, sweeptype='relative')
         explicit = pac.am_pm_noise(pss, 0.13 / T, 2, carrier=1,
-                                   maxsidebands=N // 2 - 1)
+                                   maxsidebands=N // 2 - 1, sweeptype='relative')
     assert default[:2] == explicit[:2] and default[2] == explicit[2], (default, explicit)
     assert max(abs(p_) for p_ in default[2]) == N // 2 - 1
 
@@ -2217,8 +2221,9 @@ def test_output_takes_a_node_name():
                                   pac.oscillator_spectrum(pss, offs, k)[0])
             assert pac.am_pm_noise(pss, offs[0], out, maxsidebands=8) == \
                 pac.am_pm_noise(pss, offs[0], k, maxsidebands=8)
-            assert pac.pnoise(pss, f0 + offs[0], out, maxsidebands=8) == \
-                pac.pnoise(pss, f0 + offs[0], k, maxsidebands=8)
+            assert pac.pnoise(pss, f0 + offs[0], out, maxsidebands=8,
+                              sweeptype='absolute') == \
+                pac.pnoise(pss, f0 + offs[0], k, maxsidebands=8, sweeptype='absolute')
     with pytest.raises(ValueError, match='reference node'):
         pac.carrier_phasor(pss, names[pss.irefnode])
 
@@ -2266,7 +2271,100 @@ def test_the_noise_surfaces_refuse_what_they_used_to_take_silently():
                        match='modulated=True and cyclostationary=True'):
         pac.pnoise(pss, 300.0, k, modulated=True, cyclostationary=True)
     with pytest.raises(ValueError, match='no component at harmonic 2'):
-        pac.am_pm_noise(pss, 100.0, k, carrier=2)
+        pac.am_pm_noise(pss, 100.0, k, carrier=2, sweeptype='relative')
     ## the carrier it does carry still splits
-    S_am, S_pm, _b = pac.am_pm_noise(pss, 100.0, k, carrier=1)
+    S_am, S_pm, _b = pac.am_pm_noise(pss, 100.0, k, carrier=1, sweeptype='relative')
     assert S_am > 0.0 and S_pm > 0.0
+
+
+def _vdp_ac(npts=240):
+    """The van der Pol oscillator with a white noise source and a small-
+    signal one (`iac`), for the sweep rule's autonomous side."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: u - u ** 3 / 3.0)
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)
+    pss = PSS(cir, method='gear', reltol=1e-12)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=6.66, timestep=6.66 / npts, x0=np.array([2.0, 0.0]),
+                  maxiterations=80)
+    assert pss.converged and pss.autonomous
+    return cir, pss, PAC(cir, toolkit=circuit.numeric)
+
+
+def test_the_sweep_is_relative_on_an_oscillator_and_absolute_when_driven():
+    """Items #4 and #5 of `doc/pac_noise_conventions.md` (2026-09-29): the
+    swept frequency by a commercial RF simulator's `sweeptype` rule --
+    `'relative'` an offset from `relharmnum * f0` (`am_pm_noise` / `am_pm`:
+    from `carrier * f0`), `'absolute'` the frequency itself, and `None`
+    relative on an AUTONOMOUS PSS, absolute on a driven one.  ⚠ Before,
+    `pnoise` and `PAC.solve` read every frequency as absolute and
+    `am_pm_noise` / `am_pm` every one as an offset, whatever the PSS; and
+    `band_spread` read its band as absolute for 'pnoise' (an offset from
+    DC) and as an offset from the harmonic for the other quantities."""
+    import warnings as _w
+    close = lambda a, b: abs(complex(a) / complex(b) - 1.0) < 1e-12
+    _cir, pss, pac = _vdp_ac(npts=100)
+    f0 = 1.0 / float(pss.period)
+    df = 1e-2 * f0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        ## the oscillator: pnoise and PAC.solve relative by default
+        S = pac.pnoise(pss, df, 0, maxsidebands=8)[0]
+        assert close(S, pac.pnoise(pss, f0 + df, 0, maxsidebands=8,
+                                   sweeptype='absolute')[0])
+        S2 = pac.pnoise(pss, df, 0, maxsidebands=8, relharmnum=2)[0]
+        assert close(S2, pac.pnoise(pss, 2.0 * f0 + df, 0, maxsidebands=8,
+                                    sweeptype='absolute')[0])
+        r = pac.solve(pss, [df])
+        X, fs = np.asarray(r.x), np.asarray(r.sweep_values)
+        a = pac.solve(pss, [f0 + df], sweeptype='absolute')
+        np.testing.assert_allclose(fs, np.asarray(a.sweep_values), rtol=1e-13)
+        np.testing.assert_allclose(X, np.asarray(a.x), rtol=1e-10,
+                                   atol=1e-12 * np.max(np.abs(X)))
+        ## am_pm_noise: an offset from the carrier here, as before, and the
+        ## upper sideband's own frequency when absolute
+        am, pm, _b = pac.am_pm_noise(pss, df, 0, maxsidebands=8)
+        am_a, pm_a, _b = pac.am_pm_noise(pss, f0 + df, 0, maxsidebands=8,
+                                         sweeptype='absolute')
+        assert close(am, am_a) and close(pm, pm_a)
+        ## band_spread: the band is an offset from `harmonic` for pnoise too
+        _sp, info = pac.band_spread(pss, 0, (0.01, 0.02), points=2,
+                                    maxsidebands=8)
+        v = pac.pnoise(pss, f0 + 0.02 * f0, 0, maxsidebands=8,
+                       sweeptype='absolute')[0]
+        assert close(info['values'][-1], float(np.real(v)) * 0.02 ** 2)
+        with pytest.raises(ValueError, match='not a knob here'):
+            pac.band_spread(pss, 0, (0.01, 0.02), points=2,
+                            sweeptype='absolute')
+        with pytest.raises(TypeError, match='integer harmonic'):
+            pac.pnoise(pss, df, 0, relharmnum=1.5)
+
+    ## the driven circuit: absolute by default
+    c, pss, pac = _driven_rc()
+    k = [str(n) for n in c.nodes if str(n) != 'gnd!'].index('out')
+    f0 = 1.0 / float(pss.period)
+    L = {'maxsidebands': 4}
+    S = pac.pnoise(pss, 300.0, k, **L)[0]
+    assert S == pac.pnoise(pss, 300.0, k, sweeptype='absolute', **L)[0]
+    assert close(pac.pnoise(pss, 300.0, k, sweeptype='relative', **L)[0],
+                 pac.pnoise(pss, f0 + 300.0, k, **L)[0])
+    am, pm, _b = pac.am_pm_noise(pss, f0 + 100.0, k, **L)
+    am_r, pm_r, _b = pac.am_pm_noise(pss, 100.0, k, sweeptype='relative',
+                                     **L)
+    assert close(am, am_r) and close(pm, pm_r)
+    m_am, m_pm = pac.am_pm(pss, f0 + 100.0, k)
+    r_am, r_pm = pac.am_pm(pss, 100.0, k, sweeptype='relative')
+    np.testing.assert_allclose(m_am, r_am, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(m_pm, r_pm, rtol=1e-12, atol=0.0)
+    ## refused, not ignored
+    with pytest.raises(ValueError, match='relharmnum=2'):
+        pac.pnoise(pss, 300.0, k, relharmnum=2)
+    with pytest.raises(ValueError, match='sweeptype must be'):
+        pac.pnoise(pss, 300.0, k, sweeptype='offset')

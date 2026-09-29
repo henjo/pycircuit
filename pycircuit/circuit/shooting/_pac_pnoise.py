@@ -5,7 +5,7 @@ import numpy as np
 import warnings
 from ._noise_components import (exponent_columns, uniform_exponent,
                                warn_signed_unused)
-from ._numerics import output_index
+from ._numerics import output_index, sweep_frequency, sweep_offset
 
 
 class _DrivenNoise(object):
@@ -25,7 +25,8 @@ class _DrivenNoise(object):
     ## running phase noise goes through the Floquet/PPV stack instead; see
     ## `oscillator_spectrum` for why the two cannot be unified.
     def pnoise(self, pss, freq, output, ratio_tol=None, maxsidebands=None,
-               modulated=False, cyclostationary=False):
+               modulated=False, cyclostationary=False, sweeptype=None,
+               relharmnum=None):
         """TIME-AVERAGED output noise PSD at `freq`, sidebands folded in.
 
             S(f) = sum_l  h_l CY h_l^H ,   h_l = H_l(f - l f0)
@@ -41,6 +42,13 @@ class _DrivenNoise(object):
         `analysis_ss.Noise`'s `Svnout`.  Gated against `analysis_ss.Noise`
         on a linear circuit, where the sidebands vanish and this reduces
         to the stationary answer (Okumura's `p = 1` case).
+
+        ⚠ THE SWEEP (`sweeptype`, `relharmnum`), a commercial RF simulator's
+        rule: `'absolute'` reads `freq` as the output frequency itself,
+        `'relative'` as the offset `relharmnum * f0 + freq` (`relharmnum`
+        default 1), and `None` is relative on an AUTONOMOUS PSS and absolute
+        on a driven one (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it
+        was absolute on every PSS.
 
         The sources' `CY`, three ways:
 
@@ -119,6 +127,7 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.pnoise`.
         """
         output = output_index(pss, output)
+        freq = sweep_frequency(pss, freq, sweeptype, relharmnum, 'pnoise')
         self._check_circuit(pss)
         if modulated and cyclostationary:
             raise ValueError(
@@ -542,7 +551,11 @@ class _DrivenNoise(object):
         Returns `(spread, info)` with `spread = max/min` of `S(r)·r²` over
         `points` offsets spanning `band = (r_lo, r_hi)` in units of `f0`,
         and `info` carrying the samples, the band MEAN, the value at the
-        band's midpoint, and their ratio.
+        band's midpoint, and their ratio.  The offsets are from harmonic
+        `harmonic` for EVERY quantity -- ⚠ until 2026-09-29 'pnoise' read
+        the band as ABSOLUTE `r f0`, an offset from DC, and the other three
+        as offsets from the harmonic; the sweep is fixed here, so `**kw`
+        takes no `sweeptype` / `relharmnum`.
 
         ⚠⚠ WHY THIS EXISTS.  Far above the AM corner both AM and PM fall as
         `1/r²`, so `S·r²` is flat and a band mean IS a point value, which
@@ -569,6 +582,11 @@ class _DrivenNoise(object):
                 "PAC.band_spread: quantity must be 'pnoise', 'S_pm', 'S_am' "
                 f"or 'oscillator_spectrum', not {quantity!r} (an unknown "
                 "name was taken as 'pnoise' until 2026-09-29)")
+        for k in ('sweeptype', 'relharmnum'):
+            if k in kw:
+                raise ValueError(
+                    f'PAC.band_spread: {k} is not a knob here -- the band is '
+                    'an offset from `harmonic` for every quantity.')
         import numpy as _np
         f0 = 1.0 / float(pss.period)
         rs = _np.linspace(float(band[0]), float(band[1]), int(points))
@@ -581,10 +599,12 @@ class _DrivenNoise(object):
                 v = float(_np.real(Sv[0]))
             elif quantity in ('S_pm', 'S_am'):
                 am, pm, _b = self.am_pm_noise(pss, f, output, carrier=harmonic,
-                                              **kw)
+                                              sweeptype='relative', **kw)
                 v = float(_np.real(pm if quantity == 'S_pm' else am))
             else:
-                v = float(_np.real(self.pnoise(pss, f, output, **kw)[0]))
+                v = float(_np.real(self.pnoise(
+                    pss, f, output, sweeptype='relative',
+                    relharmnum=int(harmonic), **kw)[0]))
             vals.append(v * float(r) ** 2)
         vals = _np.asarray(vals, dtype=float)
         lo = float(_np.min(_np.abs(vals)))
@@ -596,7 +616,7 @@ class _DrivenNoise(object):
                         'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
 
     def am_pm_noise(self, pss, freq, output, carrier=1, maxsidebands=None,
-                    modulated=False):
+                    modulated=False, sweeptype=None):
         """Output NOISE split into its AM and PM parts at `freq` from `carrier`.
 
         Returns `(S_am, S_pm, bands_used)`: the AM and PM noise PER SIDEBAND,
@@ -604,6 +624,14 @@ class _DrivenNoise(object):
         of sidebands they decompose, see the identity below.  `output`: a
         reduced index, a weight vector, or a node name.
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
+
+        ⚠ THE SWEEP (`sweeptype`), a commercial RF simulator's rule with
+        `carrier` as the reference harmonic: `'relative'` reads `freq` as
+        the offset from `carrier*f0`, `'absolute'` as the UPPER output
+        sideband's own frequency (the offset is `freq - carrier*f0`), and
+        `None` is relative on an AUTONOMOUS PSS and absolute on a driven one
+        (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it was an offset on
+        every PSS.  Below, `freq` is the offset.
 
         ⚠ THIS NEEDS THE SIDEBAND *CORRELATION*, WHICH IS WHY IT IS NOT
         `|m_am|^2` FROM :meth:`am_pm`.  That method is the TRANSFER pair for a
@@ -671,6 +699,7 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
         """
         output = output_index(pss, output)
+        freq = sweep_offset(pss, freq, sweeptype, carrier, 'am_pm_noise')
         self._check_circuit(pss)
         pss = pss._adjoint_host()
         fp = pss.factored_period()

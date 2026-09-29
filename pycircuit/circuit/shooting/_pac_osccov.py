@@ -172,8 +172,9 @@ class _OscillatorCovariance(object):
     ## variance RISES despite the faster relaxation (`|lam2|` falls) -- the
     ## physical argument that it should shrink is wrong.
     ## History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
-    def oscillator_covariance(self, pss, samples=False, fmin=None, fmax=None,
-                              points_per_decade=40, pair=False):
+    def oscillator_covariance(self, pss, samples=False, colour_fmin=None,
+                              colour_fmax=None, points_per_decade=40,
+                              pair=False):
         """The state covariance of a FREE-RUNNING oscillator, split in two.
 
         Returns `(K_orb, d, info)`.  `K_orb` is the BOUNDED periodic
@@ -271,7 +272,7 @@ class _OscillatorCovariance(object):
         ``Pi K_orb Pi^T`` in the node space (`_node_projectors`), and with
         `samples=True` `info['transverse_samples']` at every node.
 
-        ⚠ A COLOURED SOURCE needs the band `fmin` / `fmax` /
+        ⚠ A COLOURED SOURCE needs the band `colour_fmin` / `colour_fmax` /
         `points_per_decade`, as `covariance`.  Its phase does not diffuse --
         1/f FM grows faster than linearly -- so it has no bounded-plus-
         random-walk split, and it enters the TRANSVERSE covariance alone:
@@ -299,6 +300,7 @@ class _OscillatorCovariance(object):
         ## both the Lyapunov pieces and `ppv` below, so the bordering keeps
         ## them on one host -- see `_lyapunov_host`.
         pss = pss._lyapunov_host()
+        fmin, fmax = colour_fmin, colour_fmax     # (the names the internals use)
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
                                      'oscillator_covariance')
         As, Qs, K1, M, m, n = self._lyapunov_pieces(

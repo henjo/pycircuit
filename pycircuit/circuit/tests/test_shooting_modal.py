@@ -314,7 +314,8 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
             ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
             pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
-                                                    maxsidebands=16)[0]))
+                                                    maxsidebands=16,
+                                                    sweeptype='absolute')[0]))
                            for o in offs])
         ratio = ms['total'] / pn
         assert np.max(np.abs(ratio - 1.0)) < 1e-3, (kind, ratio)
@@ -379,7 +380,7 @@ def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         pn = float(np.real(pac.pnoise(pss, f0 + offs[1], ov, maxsidebands=16,
-                                      cyclostationary=True)[0]))
+                                      cyclostationary=True, sweeptype='absolute')[0]))
     assert abs(ms['total'][1] / pn - 1.0) < 1e-9, (ms['total'][1], pn)
 
 
@@ -448,7 +449,8 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
         offs = np.array([10.0, -10.0]) * f_amp
         ms = pac.modal_spectrum(pss, offs, ov, H=8, sidebands=16)
         pn = np.array([float(np.real(pac.pnoise(pss, f0 + o, ov,
-                                                maxsidebands=16)[0]))
+                                                maxsidebands=16,
+                                                sweeptype='absolute')[0]))
                        for o in offs])
     ratio = ms['total'] / pn
     assert np.max(np.abs(ratio - 1.0)) < 5e-4, ratio
@@ -479,7 +481,7 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
         pac.oscillator_covariance(pss)
     with pytest.warns(RuntimeWarning, match="WHITE sources' alone"):
         K_orb, d, info = pac.oscillator_covariance(pss, samples=True,
-                                                   fmin=1e-6 * f0)
+                                                   colour_fmin=1e-6 * f0)
     assert d == 0.0 and not np.any(K_orb)
     tr = np.asarray(info['transverse_samples'])
     np.testing.assert_allclose(info['K_transverse'], tr[0], rtol=1e-12, atol=0)

@@ -25,6 +25,7 @@ from pycircuit.circuit.circuit import gnd
 import pycircuit.circuit.analysis as analysis
 from ._numerics import _arnoldi_gmres
 from ._numerics import _output_weights, output_index
+from ._numerics import sweep_frequency, sweep_offset
 from ._numerics import freq_analysis
 from ._pac_lyapunov import _LyapunovCovariance
 from ._pac_modal import _ModalSpectra
@@ -177,8 +178,16 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         self.parameters = super(PAC, self).parameters + self.parameters
         super(PAC, self).__init__(cir, toolkit=toolkit, **kvargs)
 
-    def solve(self, pss, freqs, refnode=gnd, recycle=True):
+    def solve(self, pss, freqs, refnode=gnd, recycle=True, sweeptype=None,
+              relharmnum=None):
         """Sideband response at each frequency in `freqs`.
+
+        `freqs` are the SOURCE's frequencies, by a commercial RF simulator's
+        sweep rule: `sweeptype='absolute'` the frequencies themselves,
+        `'relative'` offsets `relharmnum * f0 + freqs` (`relharmnum` default
+        1), `None` relative on an AUTONOMOUS PSS and absolute on a driven
+        one (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 absolute on every
+        PSS.  The result's sweep values are the absolute OUTPUT frequencies.
 
         `pss` must be a CONVERGED `PSS` -- the periodic operating point is
         what this linearises about, and there is no meaningful small-signal
@@ -190,7 +199,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.solve`.
         """
         toolkit = self.toolkit
-        freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
+        freqs = np.atleast_1d(np.asarray(
+            sweep_frequency(pss, np.asarray(freqs, dtype=float), sweeptype,
+                            relharmnum, 'solve'), dtype=float))
         ## the map on the state (a GLM's own, `_GLMPeriod.state_map`)
         fp = pss._state_map()
         T = float(fp.T)
@@ -1025,12 +1036,19 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
             return complex(np.sum(v * np.exp(-1j * carrier * w0 * t)) / len(t))
         return complex(np.sum(v * np.exp(-1j * carrier * w0 * t) * _wq))
 
-    def am_pm(self, pss, freq, output, carrier=1):
+    def am_pm(self, pss, freq, output, carrier=1, sweeptype=None):
         """AM and PM modulation indices at `carrier`, per noise/signal source.
 
         Returns `(m_am, m_pm)`, each a row of length `m`: the modulation a
         unit source at reduced coordinate `i`, driven at `freq`, imposes on
         the `carrier`-th harmonic of the output.
+
+        `freq` by a commercial RF simulator's sweep rule with `carrier` as
+        the reference, as `am_pm_noise`: `sweeptype='relative'` the offset
+        from `carrier*f0` (the source's own, baseband, frequency),
+        `'absolute'` the upper output sideband's frequency, `None` relative
+        on an AUTONOMOUS PSS and absolute on a driven one.  ⚠ Until
+        2026-09-29 an offset on every PSS.  Below, `freq` is the offset.
 
         ⚠ TWO SOLVES AT ±freq, NOT ONE.  The upper sideband of harmonic `i`
         sits at `i f0 + freq` and the lower at `i f0 - freq`; with the
@@ -1064,6 +1082,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.am_pm`.
         """
         output = output_index(pss, output)
+        freq = sweep_offset(pss, freq, sweeptype, carrier, 'am_pm')
         C = self.carrier_phasor(pss, output, carrier)
         ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
         ## circuit does not produce still has a phasor of ~1e-16 rather

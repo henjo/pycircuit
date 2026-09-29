@@ -310,6 +310,63 @@ def output_index(pss, output):
     return k - 1 if k > irn else k
 
 
+def sweep_kind(pss, sweeptype, what):
+    """The sweep a swept frequency is read on, by a commercial RF
+    simulator's `sweeptype` rule: `'absolute'` (the frequency itself) or
+    `'relative'` (an offset from a harmonic of the PSS fundamental), and
+    `None` -- that simulator's 'unspecified' -- `'relative'` on an
+    AUTONOMOUS PSS and `'absolute'` on a driven one.  On an oscillator the
+    period is an OUTPUT of the solve, so a frequency near a harmonic is only
+    writable as an offset from it.
+
+    ⚠ Until 2026-09-29 there was no rule: `pnoise` and `PAC.solve` read
+    every frequency as absolute and `am_pm_noise` / `am_pm` every one as an
+    offset from the carrier, the same name in the same position, whatever
+    the PSS."""
+    if sweeptype is None:
+        return 'relative' if getattr(pss, 'autonomous', False) else 'absolute'
+    if sweeptype not in ('absolute', 'relative'):
+        raise ValueError(
+            f"PAC.{what}: sweeptype must be 'absolute', 'relative' or None "
+            "(relative on an autonomous PSS, absolute on a driven one), not "
+            f'{sweeptype!r}')
+    return sweeptype
+
+
+def sweep_frequency(pss, freq, sweeptype, relharmnum, what):
+    """The ABSOLUTE frequency a swept `freq` names (`sweep_kind`):
+    `relharmnum * f0 + freq` on a relative sweep (`relharmnum` default 1),
+    `freq` itself on an absolute one.  `freq` a scalar or an array.
+    `relharmnum` on an absolute sweep is refused, not ignored: it names the
+    harmonic a RELATIVE sweep is offset from."""
+    kind = sweep_kind(pss, sweeptype, what)
+    if kind == 'absolute':
+        if relharmnum is not None:
+            raise ValueError(
+                f'PAC.{what}: relharmnum={relharmnum!r} names the harmonic a '
+                'RELATIVE sweep is offset from, and this sweep is absolute'
+                + ('' if sweeptype is not None else
+                   ' (sweeptype=None on a driven PSS)')
+                + " -- pass sweeptype='relative', or drop relharmnum.")
+        return freq
+    k = 1 if relharmnum is None else relharmnum
+    if int(k) != k:
+        raise TypeError(f'PAC.{what}: relharmnum must be an integer '
+                        f'harmonic, not {relharmnum!r}')
+    return int(k) / float(pss.period) + freq
+
+
+def sweep_offset(pss, freq, sweeptype, harmonic, what):
+    """The OFFSET from harmonic `harmonic` that a swept `freq` names, for
+    the surfaces whose reference is their own `carrier` (`am_pm_noise`,
+    `am_pm`): `freq` itself on a relative sweep, `freq - harmonic * f0` --
+    the upper output sideband's frequency -- on an absolute one
+    (`sweep_kind`)."""
+    if sweep_kind(pss, sweeptype, what) == 'relative':
+        return freq
+    return freq - int(harmonic) / float(pss.period)
+
+
 def _output_weights(output, width):
     """The complex output functional of an adjoint row, `width` wide: an
     index is a unit vector, an array its own entries, zero-padded."""

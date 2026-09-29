@@ -773,8 +773,8 @@ class _PhaseNoise(object):
         return a / (b * b + f * f)
 
     def oscillator_spectrum(self, pss, offsets, output, harmonic=1,
-                            frequency_aware=True, fmin=None, fmax=None,
-                            all_orders=None):
+                            frequency_aware=True, offset_fmin=None,
+                            offset_fmax=None, all_orders=None):
         """Free-running output spectrum at `offsets` from harmonic `harmonic`.
 
         ⚠⚠ THIS DOES NOT GO THROUGH `pnoise`'s SIDEBAND FOLD, AND IT CANNOT.
@@ -849,9 +849,9 @@ class _PhaseNoise(object):
         `D` the excess phase's structure function built from `phase_psd`'s
         `c(f)` (`_lineshape`): the WHITE part of the sources gives the
         Lorentzian in closed form, the coloured part `c(f) - c_w` is
-        integrated over `[fmin, fmax]`.  `fmin` is REQUIRED -- a 1/f^3
+        integrated over `[offset_fmin, offset_fmax]`.  `offset_fmin` is REQUIRED -- a 1/f^3
         phase has no stationary lineshape without a low cutoff; it plays
-        the part of the observation time -- and `fmax` defaults to f0/2,
+        the part of the observation time -- and `offset_fmax` defaults to f0/2,
         the phase model's reach.  A white-only circuit is untouched.
         `frequency_aware` (default True) takes `c_fa(nu)`
         from the frequency-aware PPV: to first order in the change (the
@@ -871,7 +871,7 @@ class _PhaseNoise(object):
         offset.  A white source's default is the Lorentzian with `c(f)` per
         offset, first order in the same sense (the core keeps its DC weight,
         `exp(-D_corr(inf)/2)` off; ~8 % with a slow corner 10 linewidths
-        out); `all_orders=True` builds the full line instead, `fmax`
+        out); `all_orders=True` builds the full line instead, `offset_fmax`
         (default f0/2) bounding the band, past which the white part is held
         at its corrected level.  It is OFF by default for a white source
         (~25 bordered solves).  For a
@@ -882,6 +882,7 @@ class _PhaseNoise(object):
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
         output = output_index(pss, output)
+        fmin, fmax = offset_fmin, offset_fmax     # (the names the internals use)
         if all_orders and frequency_aware is False:
             raise ValueError(
                 'PAC.oscillator_spectrum: all_orders=True is the frequency-'
@@ -948,8 +949,8 @@ class _PhaseNoise(object):
         fmax = 0.5 * f0 if fmax is None else float(fmax)
         if not (0.0 < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
             raise ValueError(
-                'PAC.oscillator_spectrum: need 0 < fmax <= f0/2 (%.6g Hz); '
-                'got fmax=%r.' % (0.5 * f0, fmax))
+                'PAC.oscillator_spectrum: need 0 < offset_fmax <= f0/2 '
+                '(%.6g Hz); got offset_fmax=%r.' % (0.5 * f0, fmax))
         a = 2.0 * np.pi ** 2 * i * i * f0 * f0 * c
         pref = 4.0 * i * i * f0 * f0
         rho_at = lambda nu: np.array(
@@ -1033,16 +1034,18 @@ class _PhaseNoise(object):
             raise NotImplementedError(
                 'PAC.oscillator_spectrum: a noise source in this circuit is '
                 'COLOURED, and a 1/f^3 phase has no stationary lineshape '
-                'without a low cutoff -- pass fmin (the reciprocal of the '
+                'without a low cutoff -- pass offset_fmin (the reciprocal of the '
                 'observation time; the coloured part is integrated over '
-                '[fmin, fmax], fmax defaulting to f0/2 = %.6g Hz).'
+                '[offset_fmin, offset_fmax], offset_fmax defaulting to f0/2 '
+                '= %.6g Hz).'
                 % (0.5 * f0))
         fmin = float(fmin)
         fmax = 0.5 * f0 if fmax is None else float(fmax)
         if not (0.0 < fmin < fmax <= 0.5 * f0 * (1.0 + 1e-12)):
             raise ValueError(
-                'PAC.oscillator_spectrum: need 0 < fmin < fmax <= f0/2 '
-                '(%.6g Hz); got fmin=%r, fmax=%r.' % (0.5 * f0, fmin, fmax))
+                'PAC.oscillator_spectrum: need 0 < offset_fmin < offset_fmax '
+                '<= f0/2 (%.6g Hz); got offset_fmin=%r, offset_fmax=%r.'
+                % (0.5 * f0, fmin, fmax))
         self._warn_above_amplitude_pole(offsets, f0)
         X = self._carrier_line(pss, output, i)
         ## the white part's `c` and the coloured part of `c(f)` from one fold
@@ -1122,7 +1125,7 @@ class _PhaseNoise(object):
             warnings.warn(
                 'PAC.oscillator_spectrum: no WHITE source broadens the line, '
                 'so a coherent carrier of weight %.3e remains (exp(-D/2) at '
-                'infinite lag, set by fmin); it is not in the returned '
+                'infinite lag, set by offset_fmin); it is not in the returned '
                 'density.' % shape.line_weight, RuntimeWarning, stacklevel=3)
         Sv = abs(X) ** 2 * S
         with np.errstate(divide='ignore'):

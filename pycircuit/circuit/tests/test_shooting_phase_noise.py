@@ -426,7 +426,7 @@ def test_pnoise_is_phase_psd_times_the_CARRIER_POWER_not_a_psd_convention():
         X = np.asarray(pss.waveform[1], dtype=float)
         amp = float(np.max(np.abs(X[0 if 0 < pss.irefnode else 1])))
         df = f0 * 1e-6
-        S_pn, _sb = pac.pnoise(pss, f0 + df, 0)
+        S_pn, _sb = pac.pnoise(pss, f0 + df, 0, sweeptype='absolute')
         S_ph = float(np.asarray(pac.phase_psd(pss, np.array([df]))).ravel()[0])
         kundert = cc * f0 * f0 / (df * df)
         return amp, S_pn, S_ph, kundert
@@ -588,7 +588,7 @@ def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
     for k in (1e-3, 1e-4):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            S, _ = pac.pnoise(pss, f0 * (1.0 + k), ob)
+            S, _ = pac.pnoise(pss, f0 * (1.0 + k), ob, sweeptype='absolute')
         df = k * f0
         got[k] = float(np.real(S)) / Pc * df * df / (f0 * f0)
 
@@ -1227,7 +1227,8 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
         X = np.asarray(pss.waveform[1], dtype=float)[ov][:-1]
         A1 = 2.0 * abs(np.fft.rfft(X)[1]) / len(X)
         Pc = 0.5 * A1 * A1
-        E = np.array([float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov)[0]))
+        E = np.array([float(np.real(pac.pnoise(pss, f0 * (1.0 + k), ov,
+                                               sweeptype='absolute')[0]))
                       / Pc * k * k / c - 1.0 for k in ks])
         pred = 1.0 / (2.0 * np.pi * Ql)
         fit = least_squares(
@@ -1237,7 +1238,7 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
         if Q == 8.0:
             ## the parity test: the LOWER sideband
             El = np.array([float(np.real(pac.pnoise(pss, f0 * (1.0 - k),
-                                                    ov)[0]))
+                                                    ov, sweeptype='absolute')[0]))
                            / Pc * k * k / c - 1.0 for k in ks])
             fl = least_squares(
                 lambda q: q[0] * ks ** 2 / (ks ** 2 + q[1] ** 2)

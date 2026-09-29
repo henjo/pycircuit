@@ -408,7 +408,7 @@ class ProbeShooting:
         ## large enough to separate the pair.
         delta = self._pac_delta * float(f)
         f_ex = float(excite_harmonic) * float(f) + delta
-        res = pac.solve(pss, freqs=np.array([f_ex]))
+        res = pac.solve(pss, freqs=np.array([f_ex]), sweeptype='absolute')
         fs = np.asarray(res.sweep_values, dtype=float)
         X = np.asarray(res.x)
         ## the excitation phasor actually applied, read from the circuit

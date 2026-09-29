@@ -554,7 +554,7 @@ def test_oscillator_covariance_takes_a_coloured_source_on_a_staged_oscillator():
         if flick:
             with pytest.warns(RuntimeWarning, match="WHITE sources' alone"):
                 res[flick] = pac.oscillator_covariance(pss, samples=True,
-                                                       fmin=1e-4 * f0)
+                                                       colour_fmin=1e-4 * f0)
         else:
             with _w.catch_warnings():
                 _w.simplefilter('ignore')

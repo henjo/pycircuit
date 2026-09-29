@@ -91,7 +91,7 @@ class _ModalSpectra(object):
             pss, 'orbital_correlation',
             'eq (22) is a white-noise residue sum; modal_spectrum takes a '
             'stationary coloured source per sideband, and '
-            'oscillator_covariance(fmin=...) its transverse covariance.')
+            'oscillator_covariance(colour_fmin=...) its transverse covariance.')
         H = self.ORBITAL_HARMONICS if H is None else int(H)
         modes = pss.floquet_modes(pss)
         m = self.cir.n - 1
