@@ -216,7 +216,10 @@ class _OscillatorCovariance(object):
         so `P` is periodic UP TO the growth -- `P(T) = P(0) + d u u^T`, not
         `P(T) = P(0)`.  The walk is along the orbit and the orbit turns, so
         the growth DIRECTION is the propagated tangent rather than a fixed
-        `u`.
+        `u`.  On a STAGED solve both are at FIXED times -- the event
+        closure's samples, and ``u_j = R_j u`` with ``R_j`` the total
+        fixed-time map to node j (`_event_closure`); until 2026-09-29 they
+        were the plain walk's, which misses the crossings' motion.
 
         ⚠ THIS IS THE OBJECT `covariance` REFUSES TO RETURN: there is no
         periodic solution.  `lambda_1 = 1` gives `lambda_1^2 = 1`, so
@@ -321,8 +324,9 @@ class _OscillatorCovariance(object):
         ## noise-driven motion in the injection -- the same `_event_closure`
         ## as `covariance`, whose `u`, `v` below are the total map's already
         _bordered = self._event_closure(pss, As, Qs, M, m, n)
+        closure_samples = closure_pieces = None
         if _bordered is not None:
-            M, K1, _samples_unused, _pieces_unused = _bordered
+            M, K1, closure_samples, closure_pieces = _bordered
 
         v, pinfo = pss.ppv()
         v = np.asarray(v, dtype=float).ravel()
@@ -391,18 +395,34 @@ class _OscillatorCovariance(object):
             ## is `K(t_j + nT) = K_orb(t_j) + n d u_j u_j^T` with `u_j` the
             ## FORWARD-propagated tangent, not `u` held fixed -- the walk
             ## is along the orbit, and the orbit turns.
-            orb, grw, K, uj = [K_orb], [d * np.outer(u, u)], K_orb, u
-            ## a GLM's native steps are `(x, P)` wide: pad, read the `x`
-            ## block (`_lyap_walk`)
-            na = As[0].shape[0] if As else n
-            if na != n:
-                K = np.pad(K_orb, ((0, na - n), (0, na - n)))
-                uj = np.pad(u, (0, na - n))
-            for A, Q in zip(As, Qs):
-                K = A @ K @ A.T + Q
-                uj = A @ uj
-                orb.append((0.5 * (K + K.T))[:n, :n])
-                grw.append(d * np.outer(uj[:n], uj[:n]))
+            if closure_samples is not None:
+                ## ⚠ ON A STAGED SOLVE, THE CLOSURE'S OWN SAMPLES, AT FIXED
+                ## TIMES (`_event_closure`): the plain walk misses the
+                ## crossings' noise-driven motion and closed on `K_orb +
+                ## growth` only to 3.5e-7 of its size on the comparator
+                ## oscillator (5.8e-5 with `event_window_steps=2`), against
+                ## 1.6e-15 --
+                ## it was returned until 2026-09-29.  The growth direction
+                ## at node j is the TOTAL fixed-time map's image of `u`.
+                orb = [np.asarray(P, dtype=float)[:n, :n]
+                       for P in closure_samples(K_orb)]
+                grw = []
+                for j in range(len(orb)):
+                    uj = closure_pieces['map_to'](j) @ u
+                    grw.append(d * np.outer(uj[:n], uj[:n]))
+            else:
+                orb, grw, K, uj = [K_orb], [d * np.outer(u, u)], K_orb, u
+                ## a GLM's native steps are `(x, P)` wide: pad, read the `x`
+                ## block (`_lyap_walk`)
+                na = As[0].shape[0] if As else n
+                if na != n:
+                    K = np.pad(K_orb, ((0, na - n), (0, na - n)))
+                    uj = np.pad(u, (0, na - n))
+                for A, Q in zip(As, Qs):
+                    K = A @ K @ A.T + Q
+                    uj = A @ uj
+                    orb.append((0.5 * (K + K.T))[:n, :n])
+                    grw.append(d * np.outer(uj[:n], uj[:n]))
             info['samples'] = orb
             info['growth_samples'] = grw
             info['times'] = np.asarray(pss.factored_period().times,

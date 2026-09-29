@@ -885,6 +885,99 @@ def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
         assert cos > 0.99999, (j, cos)
 
 
+def test_a_staged_oscillator_samples_its_covariance_at_fixed_times():
+    """On a STAGED solve `oscillator_covariance(samples=True)` returned the
+    PLAIN walk's samples (2026-09-29, step 1 of the edge-jitter plan): its
+    closure is the total map's, the walk misses the crossings' noise-driven
+    motion, and ``samples[N]`` missed ``K_orb + growth`` by 3.5e-7 of its
+    size (5.8e-5 with ``event_window_steps=2``; measured on the parent).
+    Now the closure's FIXED-TIME samples, the growth along ``R_j u``:
+    1.6e-15 (4.7e-16).
+
+    The same closure's period map from node j, ``M_j = R_j S_j``
+    (`_event_closure`'s `period_map_from`), gated structurally --
+    ``R_0 = I``, ``S_0 = M_tot``, ``S_N = I``; ``S_j R_j = M_tot`` and
+    ``M_j u_j = u_j`` to 1e-13 outside the events' span and to the held
+    crossings' grid coupling inside it (4.4e-7 here, 1.3e-7 at 400 points)
+    -- and against the EXACT saltation period map of
+    `_exact_relaxation_oscillator_model` on (c, fb0, fb1) away from the two
+    switching windows: 2.5e-5 at worst (the short ON phase), 1.5e-7..2e-6
+    elsewhere.  ⚠ This fixture cannot show the EVENT term: its switch's
+    transition sits inside the landed window, so ``|P_end dth| / |M|`` is
+    5.9e-8 -- it gates the construction, not the event term's weight."""
+    import warnings as _w
+
+    from scipy.linalg import expm
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    names = [str(n_) for n_ in cir.nodes]
+    seed, Tl = _relaxation_oscillator_seed(cir)
+    q = PSS(cir, method='radau', reltol=1e-9)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
+    assert q.converged and q._event_columns is not None
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        K_orb, info = pac.oscillator_covariance(q, samples=True, pair=True)
+        As, Qs, _K1, M, m, n = pac._lyapunov_pieces(q, 'oscillator_covariance')
+    grow = info['growth']
+    res = np.max(np.abs(info['samples'][-1] - K_orb - grow)) / np.max(np.abs(K_orb + grow))
+    assert res < 1e-12, res
+    M_tot, _Q, _s, pieces = pac._event_closure(q, As, Qs, M, m, n)
+    u = np.asarray(info['tangent_pair'], dtype=float)
+    N, nodes = len(As), pieces['nodes']
+    sc = np.max(np.abs(M_tot))
+    R0, S0 = pieces['period_map_from'](0)
+    _RN, SN = pieces['period_map_from'](N)
+    assert np.max(np.abs(R0 - np.eye(n))) < 1e-12
+    assert np.max(np.abs(S0 - M_tot)) / sc < 1e-12
+    assert np.max(np.abs(SN - np.eye(n))) == 0.0
+    ## the exact saltation period map from model time tau
+    mdl = _exact_relaxation_oscillator_model()
+
+    def M_ref(tau):
+        if tau < mdl.t_off:
+            return (expm(mdl.A_off * tau) @ mdl.S0 @ mdl.E_on @ mdl.S1
+                    @ expm(mdl.A_off * (mdl.t_off - tau)))
+        return (expm(mdl.A_on * (tau - mdl.t_off)) @ mdl.S1 @ mdl.E_off @ mdl.S0
+                @ expm(mdl.A_on * (mdl.T - tau)))
+
+    red = [nm for i, nm in enumerate(names) if i != q.irefnode]
+    idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    sel = [names.index(nm) for nm in ('c', 'fb0', 'fb1')]
+    Xw = np.asarray(q.waveform[1], dtype=float)
+    tg = np.linspace(0.0, mdl.T, 20001)[:-1]
+    orb = np.array([mdl.orbit_at(t) for t in tg])
+    t_shift = float(tg[int(np.argmin(np.linalg.norm(orb - Xw[sel, 0], axis=1)))])
+    ts = np.asarray(q.factored_period().times, dtype=float)
+    Tq = float(q.period)
+    ## a switching window: two crossings landed a sliver apart
+    window = set()
+    for a, b in zip(nodes[:-1], nodes[1:]):
+        if ts[b] - ts[a] < 1e-3 * Tq:
+            window.update(range(a + 1, b))
+    assert len(window) > 20
+    worst_out = worst_in = worst_ex = 0.0
+    for j in range(N + 1):
+        Rj, Sj = pieces['period_map_from'](j)
+        uj = pieces['map_to'](j) @ u
+        er = max(np.max(np.abs(Sj @ Rj - M_tot)) / sc,
+                 np.max(np.abs(Rj @ Sj @ uj - uj)) / np.max(np.abs(uj)))
+        if nodes[0] <= j < nodes[-1]:
+            worst_in = max(worst_in, er)
+        else:
+            worst_out = max(worst_out, er)
+        if j not in window:
+            Mr = M_ref((t_shift + ts[j] * mdl.T / Tq) % mdl.T)
+            worst_ex = max(worst_ex, np.max(np.abs((Rj @ Sj)[np.ix_(idx, idx)] - Mr))
+                           / np.max(np.abs(Mr)))
+    assert worst_out < 1e-11, worst_out
+    assert worst_in < 1e-6, worst_in
+    assert worst_ex < 5e-5, worst_ex
+
+
 def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
     """`oscillator_covariance` on trap's OWN map (`monodromy='native'`) was
     refused: the plain trapezoidal state is the pair `(x, iq)`, its map

@@ -576,10 +576,28 @@ class _LyapunovCovariance(object):
 
         Returns ``(M_tot, Q_tot, samples, pieces)`` with ``samples(K0)``
         the list of per-node covariances and ``pieces`` the closure's
-        parts (`dth`, `Gi`, `D`, `nodes`) `event_jitter` reads.  Built for a host whose per-step maps are
-        the state maps (`n == m`) and for gear's PAIR form (`n == 2m`,
-        below); any other host, or event columns built on another grid,
-        runs UNBORDERED, warned.
+        parts (`dth`, `Gi`, `D`, `nodes`) `event_jitter` reads, and
+        `map_to(j)` / `period_map_from(j)`: the TOTAL fixed-time maps
+        ``R_j`` (node 0 -> t_j) and ``(R_j, S_j)`` with ``S_j`` (t_j -> T)
+        -- the period map from node j is ``M_j = R_j S_j``, its powers
+        ``R_j M_tot^{k-1} S_j`` (no inverse: the step maps of a DAE are
+        singular).  ``S_j`` re-borders the crossings AFTER node j on the
+        state at node j at its FIXED time: ``G^(j)[k] = W_k P_{nd_k<-j}``,
+        ``Gt^(j)[k, l] = W_k (Pk_{nd_k}[:, l] - P_{nd_k<-j} Pk_j^fixed[:, l])``,
+        ``S_j = P_{N<-j} - P_end^(j) Gt^(j)^-1 G^(j)``; ``S_0 = M_tot``,
+        ``S_N = I``, and an event AT node j counts as past (in ``R_j``).
+        The crossings BEFORE node j are HELD: the steps between two
+        crossings scale together, so the grid after node j still moves
+        with the last one -- in the continuum that coupling cancels
+        (fixed-time states propagate by the plain maps), on the grid it
+        leaves ``S_j R_j - M_tot`` nonzero inside the events' span: 4.4e-7
+        / 1.3e-7 of `|M_tot|` at 200 / 400 radau points on the comparator
+        oscillator, 1e-14 with the held term added back, 1e-13 outside
+        the span.
+
+        Built for a host whose per-step maps are the state maps (`n ==
+        m`) and for gear's PAIR form (`n == 2m`, below); any other host,
+        or event columns built on another grid, runs UNBORDERED, warned.
 
         History: `doc/shooting_history.md`, `PAC._event_closure`."""
         ev = getattr(pss, '_event_columns', None)
@@ -657,7 +675,28 @@ class _LyapunovCovariance(object):
                       + Pkf @ Gi @ D @ Gi.T @ Pkf.T)
                 seq.append(0.5 * (Cj + Cj.T))
             return seq
-        pieces = {'dth': dth, 'Gi': Gi, 'D': D, 'nodes': nodes, 'E': E}
+        def map_to(j):
+            return P_nodes[j] + Pk_fixed[j] @ dth
+
+        def period_map_from(j):
+            Rj = map_to(j)
+            Pkf = Pk_fixed[j]
+            ## the plain maps from node j: P_{i <- j}, i = j .. N
+            Pf = [np.eye(n)]
+            for i in range(j, N):
+                Pf.append(np.asarray(As[i], dtype=float)[:n, :n] @ Pf[-1])
+            F = [k for k, nd in enumerate(nodes) if nd > j]
+            if not F:
+                return Rj, Pf[-1]
+            Gj = np.array([W[k][:n] @ Pf[nodes[k] - j] for k in F])
+            Gtj = np.array([[W[k][:n] @ (Pk_nodes[nodes[k]][:, l]
+                                         - Pf[nodes[k] - j] @ Pkf[:, l])
+                             for l in F] for k in F])
+            Pendj = P_end[:, F] - Pf[-1] @ Pkf[:, F]
+            return Rj, Pf[-1] - Pendj @ np.linalg.solve(Gtj, Gj)
+
+        pieces = {'dth': dth, 'Gi': Gi, 'D': D, 'nodes': nodes, 'E': E,
+                  'map_to': map_to, 'period_map_from': period_map_from}
         return M_tot, Q_tot, samples, pieces
 
     def event_jitter(self, pss, colour_fmin=None, colour_fmax=None,
