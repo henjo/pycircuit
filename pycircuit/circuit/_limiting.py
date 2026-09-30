@@ -672,6 +672,17 @@ def state_restore(snap):
         elem.__dict__.update(saved)
 
 
+def has_limiters(cir):
+    """Whether any element of `cir`, at any depth, has a Newton limiter
+    (`limit` on a leaf; a container's own `limit` only walks its elements).
+    With none, `cir.limit` returns its argument unchanged, and the
+    transient's Newton skips the pass (`Transient._newton_limiter`)."""
+    elems = getattr(cir, 'elements', None)
+    if not elems:
+        return hasattr(cir, 'limit')
+    return any(has_limiters(e) for e in elems.values())
+
+
 def stateful_limiters(cir):
     """The elements of `cir`, at any depth, that KEEP limiting state -- the
     ones with `reset_limit_state` (`elements.Diode`).  Every other limiter

@@ -6,6 +6,27 @@ from ._steps import _GLMStateStep
 from ._steps import _LMMStep
 
 
+def dense_map(fp, n=None):
+    """The period map `fp` (a `FactoredPeriod`, or a GLM's `state_map()`) as a
+    dense `n x n` matrix (`n` its width by default), built column by column
+    from `matvec` ONCE per map and width and handed out as a COPY.  Until
+    2026-09-30 every consumer -- `ppv`, `floquet_modes`,
+    `frequency_aware_ppv`, the Lyapunov pieces, the transverse responses --
+    replayed the period `n` times for its own copy; the build is theirs,
+    verbatim, so the matrix is bit-identical."""
+    n = int(fp.width if n is None else n)
+    cache = getattr(fp, '_dense', None)
+    if cache is None:
+        cache = {}
+        fp._dense = cache
+    M = cache.get(n)
+    if M is None:
+        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
+                             for e in np.eye(n)])
+        cache[n] = M
+    return M.copy()
+
+
 class FactoredPeriod(object):
     """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
 
@@ -30,7 +51,7 @@ class FactoredPeriod(object):
     """
 
     __slots__ = ('kind', 'opening', 'steps', 'x_last', 'x_prev', 'width',
-                 'times', 'T', 'open_at_x0', '_pss')
+                 'times', 'T', 'open_at_x0', '_pss', '_dense')
     ## 'glm' is the MULTIVALUE kind: width r*m, see `factored_period_glm`.
 
     ## ONE CLASS PER KIND: `FactoredPeriod(kind, ...)` builds the subclass
@@ -153,9 +174,15 @@ class _LMMPeriod(FactoredPeriod):
     state is ``(P_n, P_{n-1}, Pq_n)`` for both; they differ in how a
     direction seeds it and what the map reads out.  A costate injection
     lands on the circuit state ``P_n``."""
-    __slots__ = ()
+    __slots__ = ('_step_objs',)
 
     def step_objects(self):
+        ## built once per period (every replay asked again: 1.4 s of a
+        ## pnoise profile, 2026-09-30); the steps and times never change
+        try:
+            return self._step_objs
+        except AttributeError:
+            pass
         ring = self._ring()
         tms = self.times
         out = []
@@ -163,6 +190,7 @@ class _LMMPeriod(FactoredPeriod):
             out.append(_LMMStep(st, ring[0], ring[1],
                                 None if tms is None else tms[j + 1]))
             ring = [st[1], ring[0]]
+        self._step_objs = out
         return out
 
     def node(self, c):

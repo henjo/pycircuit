@@ -207,6 +207,30 @@ def _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source=None,
     return Px_new, Pq_new
 
 
+_ZEROS = {}
+
+
+def _zero_like(w):
+    """A shared READ-ONLY zero array shaped like `w`: the costate blocks an
+    LMM step knows are zero (`p2` past a two-term recursion, `pq` when
+    `b = 0`), recognised by IDENTITY (`_is_zero`) so the next step skips
+    `np.any` on them -- together with the allocations, 7 of a pnoise
+    profile's 34 seconds (2026-09-30).  Read-only, so a consumer that wrote
+    into one would raise instead of corrupting every later step."""
+    key = (w.shape, w.dtype.str)
+    z = _ZEROS.get(key)
+    if z is None:
+        z = np.zeros(w.shape, dtype=w.dtype)
+        z.setflags(write=False)
+        _ZEROS[key] = z
+    return z
+
+
+def _is_zero(w):
+    return (isinstance(w, np.ndarray)
+            and _ZEROS.get((w.shape, w.dtype.str)) is w)
+
+
 class _LMMStep(object):
     """One step of a linear multistep method's period map -- the plain map
     (euler, trap, theta) and gear's solved-history pair alike -- with the
@@ -262,7 +286,7 @@ class _LMMStep(object):
         ## alone, trap's opened plain map would not be its forward replay's
         ## transpose.  Gear's `w3` is zero throughout.
         ## History: `doc/shooting_history.md`, `_LMMStep.adjoint`.
-        full = bool(b) or bool(np.any(w3))
+        full = bool(b) or (not _is_zero(w3) and bool(np.any(w3)))
         rhs = w1 + a[0] * (np.asarray(self.C_new).T @ w3) if full else w1
         t = _complex_solve_transposed(self.lu, rhs)
         if t is None:
@@ -273,8 +297,8 @@ class _LMMStep(object):
         Sbar = (w3 - t) if full else -t
         p1 = a[1] * (np.asarray(self.C1).T @ Sbar) + w2
         p2 = (a[2] * (np.asarray(self.C2).T @ Sbar) if len(a) > 2
-              else np.zeros_like(w1))
-        pq = b * Sbar if b else np.zeros_like(w1)
+              else _zero_like(w1))
+        pq = b * Sbar if b else _zero_like(w1)
         return (p1, p2, pq), t
 
     def sources(self, u, jw, _ts, te):

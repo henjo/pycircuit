@@ -5,6 +5,7 @@ import numpy as np
 import warnings
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit._limiting import devices_at
+from ._factored import dense_map
 from ._numerics import _arnoldi_gmres, insert_ref
 from .events import EventColumns
 
@@ -834,8 +835,7 @@ class _PPVFloquet(object):
             ## deflation, reporting the ORBIT TANGENT as the second
             ## multiplier.  The exact eigenvalues deflate the unit root to
             ## machine precision and give the true second multiplier.
-            _Md = np.column_stack([np.asarray(fp.matvec(_e), dtype=float)
-                                   for _e in np.eye(n)])
+            _Md = dense_map(fp, n)
             _lams = np.linalg.eigvals(_Md)
             _keep = np.real(_lams)[np.abs(_lams - 1.0) > 1e-6]
             if _keep.size == _lams.size:
@@ -1125,7 +1125,7 @@ class _PPVFloquet(object):
         mode_content = None
         multipliers = None
         if n <= self.FLOQUET_DENSE_LIMIT:
-            Md = np.column_stack([np.asarray(fp.matvec(e), dtype=float) for e in np.eye(n)])
+            Md = dense_map(fp, n)
             mu, P = np.linalg.eig(Md.T)
             order = np.argsort(-np.abs(mu))
             mu, P = mu[order], P[:, order]
@@ -1259,8 +1259,7 @@ class _PPVFloquet(object):
         if n > self.FLOQUET_DENSE_LIMIT:
             return self._floquet_modes_ritz(fp, n, T, nmodes)
 
-        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
-                             for e in np.eye(n)])
+        M = dense_map(fp, n)
         ## on a staged solve the map is the TOTAL one: the crossings move
         ## with the state, `M + P_theta dtheta/dx_0`
         _ev_fm = EventColumns.of(self, n)

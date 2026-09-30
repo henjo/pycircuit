@@ -1453,7 +1453,17 @@ class Transient(Analysis):
         """The device limiting the step's Newton applies, in reduced
         coordinates: `cir.limit` on the full vector.  One definition for the
         step's own Newton and the branch check's speculative one, which must
-        solve the same equation."""
+        solve the same equation.  `None` when nothing in the circuit
+        limits: `cir.limit` would hand back its argument, and the pass
+        (two inserts and a concatenate per iteration) was 6-10 % of a
+        solve (2026-09-30)."""
+        _has = getattr(self, '_has_limiters', None)
+        if _has is None:
+            from pycircuit.circuit._limiting import has_limiters
+            _has = self._has_limiters = has_limiters(self.cir)
+        if not _has:
+            return None
+
         def limiter_func(xr, x0r):
             x = self.toolkit.insert(xr, self.irefnode, 0.0)
             x0_full = self.toolkit.insert(x0r, self.irefnode, 0.0)

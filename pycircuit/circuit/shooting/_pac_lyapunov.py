@@ -3,6 +3,7 @@ pieces, the coloured band integral, event jitter.
 """
 import numpy as np
 import warnings
+from ._factored import dense_map
 from ._noise_components import (exponent_columns, psd_sqrt,
                                psd_touches_zero, uniform_exponent,
                                warn_sign_blind, warn_signed_unused)
@@ -232,8 +233,7 @@ class _LyapunovCovariance(object):
             M = np.zeros((n, n))
             M[:, :m] = Mp[:, :m]
         else:
-            M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
-                                 for e in np.eye(n)])
+            M = dense_map(fp, n)
         return As, Qs, K, M, m, n
 
     def _vanloan_step_injection(self, Cr, Gr, CYr, h):
@@ -431,22 +431,26 @@ class _LyapunovCovariance(object):
                        pss.irefnode, axis=0)
         As, Qs = [], []
         for k, step in enumerate(fp.steps):
-            xk = _W[:, min(k + 1, _W.shape[1] - 1)]
-            Cn = np.asarray(pss._C_at(xk), dtype=float)
-            Gn = np.asarray(pss._G_at(xk), dtype=float)
-            CYn = self._lyap_cy(pss, w0, xk, white)
             A_k = np.column_stack([
                 np.asarray(pss._monodromy_matvec_stage([step], e), dtype=float)
                 for e in np.eye(m)])
             As.append(A_k)
             Q_k = self._stage_injection(pss, fp, k, w0, white)
-            Qs.append(Q_k if Q_k is not None
-                      else self._vanloan_step_injection(Cn, Gn, CYn, hs[k]))
+            if Q_k is None:
+                ## the end-of-step Van Loan fallback alone reads the
+                ## devices at the node (until 2026-09-30 every step did,
+                ## ~8.7 s of a compact-model call, for a fallback radau
+                ## and trbdf2 never take)
+                xk = _W[:, min(k + 1, _W.shape[1] - 1)]
+                Cn = np.asarray(pss._C_at(xk), dtype=float)
+                Gn = np.asarray(pss._G_at(xk), dtype=float)
+                CYn = self._lyap_cy(pss, w0, xk, white)
+                Q_k = self._vanloan_step_injection(Cn, Gn, CYn, hs[k])
+            Qs.append(Q_k)
         K = np.zeros((n, n))
         for A_k, Q_k in zip(As, Qs):
             K = A_k @ K @ A_k.T + Q_k
-        M = np.column_stack([np.asarray(fp.matvec(e), dtype=float)
-                             for e in np.eye(n)])
+        M = dense_map(fp, n)
         return As, Qs, K, M, m, n
 
     def _stage_injection(self, pss, fp, k, w, white=None):

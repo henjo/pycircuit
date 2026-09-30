@@ -215,7 +215,7 @@ def periodic_spline_weights(t, T, breaks=None):
 ## `np.iscomplexobj`) out of its body.
 ## scipy.linalg is loaded by the package's import already.
 ## History: `doc/shooting_history.md`, `_lu_solve_split`.
-from scipy.linalg import lu_solve as _sla_lu_solve
+from pycircuit.circuit.linearsolver import lu_solve as _sla_lu_solve
 
 
 def _lu_solve_split(lu, b, trans=0):

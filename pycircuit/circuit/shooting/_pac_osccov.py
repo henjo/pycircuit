@@ -2,6 +2,7 @@
 edge jitter and the mode weights.
 """
 import numpy as np
+from ._factored import dense_map
 from ._numerics import _output_row, edge_slope, output_index
 import warnings
 from .events import EventColumns
@@ -115,8 +116,7 @@ class _OscillatorCovariance(object):
             _v, info = pss.ppv()
             vb = np.asarray(_v, dtype=float).ravel()
             ub = np.asarray(info['tangent_pair'], dtype=float).ravel()
-            Md = (np.column_stack([np.asarray(fp.matvec(e), dtype=float)
-                                   for e in np.eye(nw)])
+            Md = (dense_map(fp, nw)
                   if nw <= pss.FLOQUET_DENSE_LIMIT else None)
             staged = None
             _evd = EventColumns.of(pss, nw)

@@ -32,6 +32,40 @@ from abc import ABC, abstractmethod
 
 import numpy
 
+_GETRS = {}
+
+
+def lu_solve(lu_and_piv, b, trans=0):
+    """`scipy.linalg.lu_solve(lu_and_piv, b, trans=trans)`, the same LAPACK
+    `getrs` with the same checks -- a non-finite `b` refused with the same
+    message, the shapes checked, a non-zero `info` raised -- without the
+    array-API wrapper around it, which was 16 of pnoise's 34 profiled
+    seconds (2026-09-30: a replay solves once per step, so a small `m`
+    pays the wrapper millions of times).  Bit-identical results; anything
+    it does not handle (an empty or batched `b`) goes to SciPy's."""
+    lu, piv = lu_and_piv
+    b1 = numpy.asarray(b)
+    if (b1.dtype.char in numpy.typecodes['AllFloat']
+            and not numpy.isfinite(b1).all()):
+        raise ValueError('array must not contain infs or NaNs')
+    if b1.size == 0 or b1.ndim > 2 or lu.ndim != 2:
+        from scipy.linalg import lu_solve as _sla
+        return _sla(lu_and_piv, b, trans=trans)
+    if lu.shape[0] != b1.shape[0]:
+        raise ValueError(f'Shapes of lu {lu.shape} and b {b1.shape} are '
+                         'incompatible')
+    key = (lu.dtype.char, b1.dtype.char)
+    getrs = _GETRS.get(key)
+    if getrs is None:
+        from scipy.linalg import get_lapack_funcs
+        getrs, = get_lapack_funcs(('getrs',), (lu, b1))
+        _GETRS[key] = getrs
+    x, info = getrs(lu, piv, b1, trans=trans, overwrite_b=False)
+    if info == 0:
+        return x
+    raise ValueError(f'illegal value in {-info}th argument of internal '
+                     'gesv|posv')
+
 
 class _Factored(object):
     """A reusable factorisation: whatever the solver made, plus how to use it.
@@ -141,7 +175,7 @@ class DenseSolver(LinearSolver):
         if A.dtype == object:
             return None
         try:
-            from scipy.linalg import lu_factor, lu_solve
+            from scipy.linalg import lu_factor
         except ImportError:                               # pragma: no cover
             return None
         return _Factored(lu_factor(A), lambda f, b: lu_solve(f, b),
