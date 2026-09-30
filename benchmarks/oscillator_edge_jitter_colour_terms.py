@@ -20,6 +20,12 @@ MEASURED 2026-09-29 (400 points; worst over k, always at k = 1):
   node's memory in the transverse part -- the deferred terms -- whatever the
   source's spectrum.
 
+AFTER OPTION 2 (2026-09-30: the exact coloured k-lag law, `PAC._edge_coloured_law`
+-- the output sampled at the edge's nodes, its folded PSD against the k-lag
+kernel): tau = 0.3 T on the tank -1.3e-8 (k = 1), behind the 1 T slow node
+-2e-12 -- the element's frequency route and the realisation's Lyapunov law
+agree to rounding.
+
 `bank` measures what state augmentation would cost a 1/f source: the ripple
 of a Lorentzian bank (the midpoint rule on 1/f = (2/pi) int (1/fc) /
 (1 + (f/fc)^2) dln fc) -- set by where the bank stops beyond the band, not by

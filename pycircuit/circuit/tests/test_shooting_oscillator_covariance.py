@@ -1167,12 +1167,15 @@ def test_the_oscillator_edge_jitter_is_the_law_at_the_requested_instant():
     assert wrap < 1e-6, wrap
 
 
-def _vdp_colour_pair(kind, npts=200):
+def _vdp_colour_pair(kind, npts=200, slow=None):
     """van der Pol (Q = 8, radau) with ONE physical noise two ways: a
     Lorentzian `IS(noiseTau = 0.3 T)` on the tank ('coloured'), or white
     noise through an RC into a linear `BSource` on it ('filtered') -- the
-    exact realisation (one added state).  `(cir, pss, reduced index of the
-    tank, its rising mid-level crossing)`."""
+    exact realisation (one added state).  With `slow` (in periods) the noise
+    enters a SLOW RC node instead, which drives the tank through a unit
+    transconductance: a transverse state with memory across periods (the
+    orbit is unchanged).  `(cir, pss, reduced index of the tank, its rising
+    mid-level crossing)`."""
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
@@ -1183,15 +1186,22 @@ def _vdp_colour_pair(kind, npts=200):
     c['C'] = C('v', gnd, c=1.0)
     c['L'] = L('v', gnd, L=1.0)
     c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    tgt = 'v'
+    if slow is not None:
+        c.add_node('s')
+        c['rs'] = R('s', gnd, r=1.0, noisy=False)
+        c['cs'] = C('s', gnd, c=slow * T)
+        c['gs'] = BSource('s', gnd, gnd, 'v', i_func=lambda u: 1.0 * u)
+        tgt = 's'
     if kind == 'coloured':
-        c['n'] = IS('v', gnd, i=0.0, noisePSD=g * g * Pw * Rf * Rf,
+        c['n'] = IS(tgt, gnd, i=0.0, noisePSD=g * g * Pw * Rf * Rf,
                     noiseTau=Rf * Cf)
     else:
         c.add_node('f')
         c['nw'] = IS('f', gnd, i=0.0, noisePSD=Pw)
         c['rf'] = R('f', gnd, r=Rf)
         c['cf'] = C('f', gnd, c=Cf)
-        c['gm'] = BSource('f', gnd, gnd, 'v', i_func=lambda u, _g=g: _g * u)
+        c['gm'] = BSource('f', gnd, gnd, tgt, i_func=lambda u, _g=g: _g * u)
     pss = PSS(c, method='radau', reltol=1e-12)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
@@ -1213,16 +1223,18 @@ def _vdp_colour_pair(kind, npts=200):
 
 def test_the_oscillator_edge_jitter_takes_a_coloured_source_as_its_realisation_does():
     """#17 B2 (2026-09-29): a COLOURED source in `oscillator_edge_jitter`.
-    Its transverse part joins `A`; its PHASE is the colour fold's
-    INSTANT-SPECIFIC increment (`_lineshape.edge_increment`), not the
-    stationary structure function -- a coloured source has memory, and at
-    this edge the stationary form reads 1.003e-9 against the increment's
-    7.53e-10 at k = 1 (400 points).
+    Its transverse part joins `A`; its phase has memory, so the increment
+    over k periods depends on where the edge sits (at this edge the
+    stationary structure function reads 1.003e-9 against the instant's
+    7.53e-10 at k = 1, 400 points).
     Gated on the EDGE TIME, which is physical in any coordinates: the element
     against its exact white realisation (white noise through an RC into the
-    tank) read by the exact law (B4, Monte-Carlo validated).  Predicted
-    <= 0.5 %; measured +1.4e-3 / +2.4e-4 / ... / -4.3e-4 at k = 1..8 on 400
-    points, within 3e-3 here (200 points, the band capped at 20 f0).
+    tank) read by the exact law (B4, Monte-Carlo validated).  B2's phase
+    increment plus `2 A_col` read +1.4e-3 / ... / -4.3e-4 at k = 1..8 on 400
+    points (within 3e-3 here); the EXACT coloured law (2026-09-30,
+    `_edge_coloured_law`) reads -1.2e-5 .. -1.4e-6 here -- the band capped
+    at 20 f0, which the realisation is not -- and -1.3e-8 on 400 points with
+    the full band.
     ⚠ The realisation's own intercept is NEGATIVE (the RC state carries the
     noise the phase later takes up: anti-correlated), so it has no additive
     variance -- warned, `sigma_t` nan, `k_cycle` exact."""
@@ -1240,7 +1252,37 @@ def test_the_oscillator_edge_jitter_takes_a_coloured_source_as_its_realisation_d
     assert e['A'] > 0.0 and e['projection_share'] is None
     assert np.all(e['coloured_phase_variance'] > 0.0)
     r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
-    assert np.max(np.abs(r)) < 5e-3, r
+    assert np.max(np.abs(r)) < 5e-5, r
+    ## (no white source: the coloured part is all of it)
+    assert np.allclose(e['coloured_variance'], e['k_cycle'] ** 2, rtol=1e-12)
+
+
+def test_the_coloured_edge_jitter_carries_a_slow_node_s_memory():
+    """Step 3 of the edge-jitter plan measured what B2 deferred -- the
+    coloured transverse part's correlation across periods and its cross
+    term with the coloured phase -- at 19 % (k = 1) behind a slow RC node
+    (tau_s = T): the element against its exact white realisation.  Option 2
+    (2026-09-30; Andreas: "do it with option 2"): the output sampled once a
+    period at the edge's nodes, its folded one-sided PSD integrated against
+    the k-lag kernel, the phase pole carried by the bordered solve
+    (`_edge_coloured_law`) -- one transposed solve per folded frequency for
+    every alias.  2.7e-12 here (200 points, kmax 4): the realisation's
+    Lyapunov law and the element's frequency route agree to rounding.
+    FAILS on the parent (0.19)."""
+    import warnings as _w
+    cw, pw, rw, tw = _vdp_colour_pair('filtered', slow=1.0)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        w = PAC(cw, toolkit=circuit.numeric).oscillator_edge_jitter(pw, rw, tw, kmax=4)
+    ce, pe, re_, te = _vdp_colour_pair('coloured', slow=1.0)
+    f0 = 1.0 / float(pe.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        e = PAC(ce, toolkit=circuit.numeric).oscillator_edge_jitter(
+            pe, re_, te, kmax=4, colour_fmin=1e-6 * f0, points_per_decade=20)
+    r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
+    assert np.max(np.abs(r)) < 1e-8, r
+    assert np.allclose(e['coloured_variance'], e['k_cycle'] ** 2, rtol=1e-12)
 
 
 def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation_does():
