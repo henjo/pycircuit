@@ -573,12 +573,21 @@ INCREMENT_GL = 12
 INCREMENT_LOG_PER_DECADE = 8
 
 
-def increment_nodes(fmin, fmax, T, kmax):
+def increment_nodes(fmin, fmax, T, kmax, lines=()):
     """Nodes and weights on `[fmin, fmax]` for `edge_increment`: panels of
     width `1/(2 kmax T)` from `1/(kmax T)` up -- the kernel's features are
     `1/(k T)` wide and centred on the harmonics, which fall on panel edges --
     and log panels below, down to `fmin` (a 1/f source's weight sits
-    there); `INCREMENT_GL` Gauss-Legendre points each."""
+    there); `INCREMENT_GL` Gauss-Legendre points each.
+
+    `lines`: `(centre, half-width)` pairs in the same frequency -- an
+    integrand's own narrow features (`PAC._edge_coloured_law` passes the
+    orbital lines, folded).  Each gets panel edges graded geometrically from
+    its centre, a quarter half-width wide there and doubling to the base
+    panel.  ⚠ A line narrower than a panel falls between its points: a
+    Q = 1000 resonator's line (half-width 1.2e-3 f0) read the edge jitter
+    29 % low, and 4x the points per panel still 5.7e-4 off.  With no
+    `lines` the nodes are the same as before."""
     x, w = np.polynomial.legendre.leggauss(INCREMENT_GL)
     d = 1.0 / (2.0 * float(kmax) * float(T))
     fmin, fmax = float(fmin), float(fmax)
@@ -595,6 +604,19 @@ def increment_nodes(fmin, fmax, T, kmax):
         lin[-1] = fmax
     edges.extend(lin)
     edges = np.asarray(edges, dtype=float)
+    extra = []
+    for c, hw in lines:
+        if not float(hw) > 0.0:
+            continue
+        step = 0.25 * float(hw)
+        extra.append(float(c))
+        while step < d:
+            extra.extend((float(c) - step, float(c) + step))
+            step *= 2.0
+    if extra:
+        extra = np.asarray(extra)
+        edges = np.unique(np.concatenate(
+            (edges, extra[(extra > fmin) & (extra < fmax)])))
     a, b = edges[:-1], edges[1:]
     nodes = (0.5 * (b - a))[:, None] * x[None, :] + (0.5 * (a + b))[:, None]
     weights = (0.5 * (b - a))[:, None] * w[None, :]

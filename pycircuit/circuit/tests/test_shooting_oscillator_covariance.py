@@ -1300,6 +1300,134 @@ def test_the_coloured_edge_jitter_carries_a_slow_node_s_memory():
     assert abs(e['c_coloured'] / w['c'] - 1.0) < 1e-8, (e['c_coloured'], w['c'])
 
 
+def test_the_coloured_edge_jitter_on_a_staged_oscillator_is_its_realisation_s():
+    """The exact coloured law on a solve STAGED on its state events: the
+    comparator relaxation oscillator with a Lorentzian current into `c`
+    (tau = 0.3 T) against its realisation (white noise through a noiseless
+    RC, a linear transconductance into `c`), the resistors' thermal noise in
+    both.  `_edge_coloured_law`'s staged path -- the total map, the
+    crossings' pass one per crossing -- had no test (coverage, 2026-09-30:
+    it passes on the parent).  At the comparator's switching instant (`fb1`
+    at its first crossing), the coloured part 43 % of `k_cycle^2`: 3.6e-8 at
+    k = 1..4, and `intercept='exact'`'s `A` and diffusion alike.
+    ⚠ With `colour_fmin = 1e-6 f0` it read -8.9e-7 .. -3.2e-6, growing with
+    k and unchanged at 400 points: this oscillator's phase responds at DC,
+    so the source BELOW `colour_fmin` -- which the band excludes by
+    definition -- carries a diffusion of ~2 k fmin T times the DC share
+    (the symmetric van der Pol's PPV has none); at 1e-8 f0 it is 100x less."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    out = {}
+    for kind in ('filtered', 'coloured'):
+        cir = _comparator_relaxation_oscillator()
+        _s, Tl = _relaxation_oscillator_seed(cir)
+        tau = 0.3 * Tl
+        if kind == 'coloured':
+            cir['n'] = IS('c', gnd, i=0.0, noisePSD=1e-21, noiseTau=tau)
+        else:
+            cir.add_node('f')
+            cir['nw'] = IS('f', gnd, i=0.0, noisePSD=1e-21 / 1e-6)
+            cir['rf'] = R('f', gnd, r=1.0, noisy=False)
+            cir['cf'] = C('f', gnd, c=tau)
+            cir['gm'] = BSource('f', gnd, gnd, 'c', i_func=lambda u: 1e-3 * u)
+        seed, _T = _relaxation_oscillator_seed(cir)
+        q = PSS(cir, method='radau', reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100,
+                    state_events=True)
+        assert q.converged and q._event_columns is not None
+        times = np.asarray(q.factored_period().times, dtype=float)
+        t = float(times[int(q._event_columns['nodes'][0])])
+        f0 = 1.0 / float(q.period)
+        kw = ({} if kind == 'filtered'
+              else {'colour_fmin': 1e-8 * f0, 'points_per_decade': 20})
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            out[kind] = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(
+                q, 'fb1', t, kmax=4, intercept='exact', **kw)
+    w, e = out['filtered'], out['coloured']
+    r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
+    assert np.max(np.abs(r)) < 2e-7, r
+    assert e['coloured_variance'][0] > 0.3 * e['k_cycle'][0] ** 2
+    assert abs(e['A'] / w['A'] - 1.0) < 1e-4, (e['A'], w['A'])
+    assert abs((e['c'] + e['c_coloured']) / w['c'] - 1.0) < 1e-5, (e['c'], e['c_coloured'], w['c'])
+
+
+def _vdp_resonator_pair(kind, q2, npts=200):
+    """van der Pol (Q = 8, radau) plus a high-Q LC resonator at 2.37 f0
+    (incommensurate) driven by the noise and coupled ONE way into the tank
+    (a linear transconductance): the resonator's Floquet mode folds to
+    0.37 f0 with a half-width f2 / (2 q2).  The noise is a Lorentzian
+    (tau = 0.3 T) into the resonator ('coloured') or its realisation, white
+    noise through a noiseless RC ('filtered').  `(cir, pss, reduced index of
+    the tank, its rising mid-level crossing)`."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    w2 = 2.0 * np.pi * 2.37 / T
+    c = SubCircuit()
+    c.add_node('v')
+    c.add_node('r')
+    c['C'] = C('v', gnd, c=1.0)
+    c['L'] = L('v', gnd, L=1.0)
+    c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    c['c2'] = C('r', gnd, c=1.0)
+    c['l2'] = L('r', gnd, L=1.0 / w2 ** 2)
+    c['r2'] = R('r', gnd, r=q2 / w2, noisy=False)
+    c['gc'] = BSource('r', gnd, gnd, 'v', i_func=lambda u: 0.05 * u)
+    if kind == 'coloured':
+        c['n'] = IS('r', gnd, i=0.0, noisePSD=1e-8, noiseTau=0.3 * T)
+    else:
+        c.add_node('f')
+        c['nw'] = IS('f', gnd, i=0.0, noisePSD=1e-4)
+        c['rf'] = R('f', gnd, r=1.0, noisy=False)
+        c['cf'] = C('f', gnd, c=0.3 * T)
+        c['gm'] = BSource('f', gnd, gnd, 'r', i_func=lambda u: 1e-2 * u)
+    pss = PSS(c, method='radau', reltol=1e-12)
+    full = c.get_node_index('v')
+    red = full if full < c.get_node_index(gnd) else full - 1
+    x0 = np.zeros(c.n - 1)
+    x0[red] = 2.0
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
+    assert pss.converged
+    Xw = np.asarray(pss.waveform[1], float)
+    grid = np.asarray(pss.factored_period().times, float)[:Xw.shape[1]]
+    v = Xw[full]
+    mid = 0.5 * (v.max() + v.min())
+    j = next(k for k in range(2, len(v) - 2)
+             if (v[k - 1] - mid) < 0 <= (v[k] - mid))
+    tc = grid[j - 1] + (mid - v[j - 1]) / (v[j] - v[j - 1]) * (grid[j] - grid[j - 1])
+    return c, pss, red, float(tc)
+
+
+def test_the_coloured_edge_jitter_resolves_a_narrow_orbital_line():
+    """The exact coloured law's folded quadrature (panels `1/(2 kmax T)`
+    wide) does not see a line narrower than a panel: a Q = 1000 resonator
+    coupled into a van der Pol tank -- its mode's line folds to 0.37 f0,
+    half-width 1.2e-3 f0 -- read `k_cycle^2` 29 % LOW against the exact
+    realisation (4x the points per panel: still 5.7e-4 off), silently; at
+    Q = 30 (half-width 0.039 f0) it was right to 1e-12.  The orbital lines
+    (`_orbital_lines`, the old band integral's seeds), folded, now grade the
+    panels geometrically from each centre (`increment_nodes`' `lines`):
+    4e-12 at 400 points (2026-09-30).  FAILS on the parent (0.32 here: 200
+    points, kmax 4)."""
+    import warnings as _w
+    cw, pw, rw, tw = _vdp_resonator_pair('filtered', 1000.0)
+    ce, pe, re_, te = _vdp_resonator_pair('coloured', 1000.0)
+    f0 = 1.0 / float(pe.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        w = PAC(cw, toolkit=circuit.numeric).oscillator_edge_jitter(pw, rw, tw, kmax=4)
+        e = PAC(ce, toolkit=circuit.numeric).oscillator_edge_jitter(
+            pe, re_, te, kmax=4, colour_fmin=1e-6 * f0, points_per_decade=20)
+    r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
+    assert np.max(np.abs(r)) < 1e-8, r
+
+
 def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation_does():
     """#17 B2, the ORBIT-MODULATED 1/f path (2026-09-29): a flicker current
     whose level follows the tank voltage (`k V_v flicker_noise(1)`, signed

@@ -691,7 +691,17 @@ class _OscillatorCovariance(object):
                 g_ = g_ + D.T @ gth
             return g_, cA, gth
 
-        fq, wq = increment_nodes(fmin, 0.5 * f0, T, int(kmax))
+        ## ⚠ THE ORBITAL LINES, FOLDED INTO (0, f0/2]: a lightly damped
+        ## mode's line is narrower than a panel and falls between its
+        ## points -- a Q = 1000 resonator's read 29 % low (`increment_nodes`'
+        ## `lines`); every harmonic of a mode folds to one place
+        folded = set()
+        for c0, hw in self._orbital_lines(pss, fmin, fmax):
+            x = float(c0) % f0
+            folded.add((round(min(x, f0 - x) / f0, 12) * f0,
+                        round(float(hw) / f0, 12) * f0))
+        fq, wq = increment_nodes(fmin, 0.5 * f0, T, int(kmax),
+                                 lines=sorted(folded))
         ks = np.arange(1, int(kmax) + 1)
         ker = 4.0 * np.sin(np.pi * fq[None, :] * ks[:, None] * T) ** 2
         V = np.zeros((len(nodes), len(ks)))
