@@ -258,6 +258,9 @@ class _DrivenNoise(object):
         if (self.alias_stop == 'bound' and maxsidebands is not None
                 and lmax < N // 2):
             self.alias_stop = 'cap'
+        ## (an explicit `maxsidebands=0` asks for the unfolded term alone,
+        ## and stays quiet, as it always did)
+        if self.alias_stop == 'cap' and lmax > 0:
             warnings.warn(
                 'PAC.pnoise: the sideband accumulation stopped at '
                 f'maxsidebands={lmax} (the grid resolves {N // 2} at {N} '

@@ -1323,6 +1323,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## solve for every method that does not care.  A no-op for all of
         ## them (`_theta_biased` type-checks, and tolerates `None`).
         self._theta_period = float(period)
+        ## ⚠ AND DROPPED WHEN THE SETTINGS IT WAS BUILT FROM MOVED
+        ## (`_settings_key`, checked once per solve -- `_transient()` runs
+        ## per step): until 2026-09-30 a new `par.method` crashed the
+        ## re-solve (a Gear-2 transient under a stage walk) and a new
+        ## `reltol` never reached the steps.
+        _key = self._settings_key()
+        if getattr(self, '_tran_key', None) != _key:
+            self._tran = None
+            self._tran_key = _key
         _tr_cached = getattr(self, '_tran', None)
         if _tr_cached is not None:
             self._theta_biased(getattr(_tr_cached.par, 'integrator', None))

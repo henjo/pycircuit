@@ -2151,3 +2151,49 @@ def test_adaptive_glm4_does_not_crawl_at_a_source_current_zero():
     st = res.statistics
     assert st.accepted_steps + st.rejected_steps < 1000, st
     assert st.min_step > 1e-15, st
+
+
+@pytest.mark.parametrize('integ', ['gear2', 'trbdf2'])
+def test_a_node_with_no_error_and_no_tolerance_does_not_blind_the_step_control(integ):
+    """The review of 2026-09-30 (F14): under a zero absolute LTE tolerance
+    and a per-node reference (`relref='pointlocal'`), a node held at 0 V has
+    error 0 AND tolerance 0, and `|lte| / etol` made the normalised error
+    NaN -- which neither rejects nor grows: the multistep controllers
+    ACCEPTED every such step and grew it by the maximum ratio, and the stage
+    family's judge rejected it and grew it (TR-BDF2 on this RC: 4 accepted,
+    48 rejected, 18 % off the charge curve).  `normalised_error` decides
+    0/0 as 0 and x/0 or a NaN as a reject; the zero node is then invisible."""
+    import warnings
+
+    from pycircuit.circuit.elements import VS, VPulse
+    from pycircuit.circuit.integrator import Gear2Integrator, TRBDF2Integrator
+    circuit.default_toolkit = circuit.numeric
+    cls = {'gear2': Gear2Integrator, 'trbdf2': TRBDF2Integrator}[integ]
+
+    def run(zero_node, abstol):
+        c = SubCircuit()
+        c['V'] = VPulse('in', gnd, v1=0.0, v2=1.0, td=1e-7, tr=1e-8, tf=1e-8,
+                        pw=1.0, per=2.0)
+        c['R'] = R('in', 'out', r=1e3)
+        c['C'] = C('out', gnd, c=1e-9)
+        if zero_node:
+            c['Z'] = VS('z', gnd, v=0.0)
+            c['RZ'] = R('z', gnd, r=1e3)
+        tr = Transient(c, integrator=cls(), reltol=1e-4, relref='pointlocal',
+                       lte_vabstol=abstol, lte_iabstol=abstol)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=5e-6, timestep=1e-8, x0=np.zeros(c.n))
+        w = res.v('out')
+        t, y = np.asarray(w.x[0], float), np.asarray(w.y, float)
+        exact = np.where(t > 1.1e-7, 1.0 - np.exp(-(t - 1.1e-7) / 1e-6), 0.0)
+        return float(np.max(np.abs(y - exact)[t > 5e-7]))
+
+    ## (every node starts at exactly 0 V, so without the zero node too the
+    ## zero tolerance met 0/0; the reference is a 1e-15 V/A tolerance,
+    ## which never does)
+    e_ref = run(False, 1e-15)
+    e_plain, e_zero = run(False, 0.0), run(True, 0.0)
+    assert e_ref < 1e-2, e_ref
+    assert abs(e_plain / e_ref - 1.0) < 0.25, (e_ref, e_plain)
+    assert abs(e_zero / e_ref - 1.0) < 0.25, (e_ref, e_zero)

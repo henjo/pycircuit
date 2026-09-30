@@ -2112,7 +2112,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     assert errs[False]['out'] > 5e-4 and errs[False]['fb'] > 1e-3, errs     # 7.6e-4 / 1.6e-3 at 60 points
 
 
-@pytest.mark.parametrize('method', ['radau', 'glm2', 'glm3'])
+@pytest.mark.parametrize('method', ['radau', 'glm2', 'glm3', 'trap', 'euler'])
 def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve(method):
     """Phase B of events-as-unknowns (2026-09-22): `adjoint_sideband_row`
     borders its adjoint solve with the event rows -- the transpose of
@@ -2126,6 +2126,9 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     differs from them by more than 1 %.  2026-09-25: the Nordsieck GLMs on
     their own maps too (two growth restarts in this period): 1e-15, the
     unbordered row 1.1e-3 .. 1.9e-3 off (radau 3.5e-4 .. 4.6e-4).
+    2026-09-30 (the review, F7): the PLAIN map too -- trap and euler were
+    never admitted to the bordering and missed the forward solve by
+    1.9e-3 / 9e-3; now 3.6e-13 / 4e-15.
     """
     import warnings as _w
     from pycircuit.circuit.analysis import remove_row_col
@@ -2566,3 +2569,49 @@ def test_a_relative_sweep_offsets_from_the_carrier_of_the_map_it_solves_on():
     assert abs(S_rel / S_abs - 1.0) < 1e-12, (S_rel, S_abs)
     sv = np.asarray(res.sweep_values, dtype=float)
     assert float(np.min(np.abs(sv - (f0t + df)))) < 1e-9 * f0t, sv
+
+
+def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
+    """The review of 2026-09-30 (F8): on a trap staged OSCILLATOR `PAC.solve`
+    read the monodromy twin's map but the RUN's event columns, whose grids
+    differ (the landed crossings) -- it crashed broadcasting 270 nodes
+    against 236; `adjoint_sideband_row` read the run's columns beside the
+    twin's map too.  Both take the twin whole now: the trap run's response
+    IS its twin's, and meets an independent radau solve to O(h^2)."""
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = _comparator_relaxation_oscillator()
+    cir['ac'] = IS('c', gnd, i=0.0, iac=1e-6)
+    seed, T = _relaxation_oscillator_seed(cir)
+    runs = {}
+    for method in ('trap', 'radau'):
+        p = PSS(cir, method=method, reltol=1e-9)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / 100, x0=seed, maxiterations=100)
+        assert p.converged and p._event_columns is not None, method
+        runs[method] = p
+    tw = runs['trap'].monodromy_twin()
+    assert tw is not runs['trap'] and tw._event_columns is not None
+    io = [str(n) for n in cir.nodes].index('fb1')
+    offs = np.array([1e-3, 0.1]) / float(tw.period)
+
+    def response(p):
+        pac = PAC(cir, toolkit=circuit.numeric)
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            res = pac.solve(p, offs, sweeptype='relative')
+            row = pac.adjoint_sideband_row(p, 1.0 / float(tw.period) + offs[1],
+                                           io, sidebands=[0, 1])
+        fo = np.asarray(res.sweep_values, float)
+        X = np.asarray(res.x)
+        f0p = 1.0 / float(p.monodromy_twin().period)
+        return (np.array([X[io, int(np.argmin(np.abs(fo - (f0p + o))))] for o in offs]),
+                np.asarray(row))
+
+    r_run, h_run = response(runs['trap'])
+    r_twin, h_twin = response(tw)
+    r_rad, _h = response(runs['radau'])
+    assert np.max(np.abs(r_run / r_twin - 1.0)) < 1e-12, r_run / r_twin - 1.0
+    assert np.max(np.abs(h_run - h_twin)) <= 1e-12 * np.max(np.abs(h_twin))
+    assert np.max(np.abs(r_run / r_rad - 1.0)) < 1e-4, r_run / r_rad - 1.0

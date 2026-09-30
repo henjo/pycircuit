@@ -280,6 +280,21 @@ class _InnerTransient(object):
                 self._integrator_for(self.par.method))
         return self._tran
 
+    def _settings_key(self):
+        """What the inner Transient is built from, by VALUE: every Parameter of
+        this analysis and `epar` (a `ParameterDict` by its values -- its
+        `==` compares the parameter DEFINITIONS, so a changed temperature
+        reads as equal).  `repr` keeps floats exact and a strategy object by
+        identity.  `_solve_prepare` drops the cached Transient when it moved."""
+        from pycircuit.utilities.param import ParameterDict
+
+        def _v(x):
+            if isinstance(x, ParameterDict):
+                return repr(sorted(x._values.items()))
+            return repr(x)
+        return (tuple((q.name, _v(getattr(self.par, q.name, None)))
+                      for q in self.parameters), _v(self.epar))
+
     def _theta_biased(self, integ):
         """Give a `ThetaIntegrator` the bias THIS period needs, not a fixture's.
 

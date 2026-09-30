@@ -5475,3 +5475,32 @@ def test_a_period_of_fewer_than_two_steps_is_refused():
     for frac in (2.0, 1.0, 0.51):
         with pytest.raises(ValueError, match='at least two'):
             PSS(c, method='trap').solve(period=1e-5, timestep=frac * 1e-5)
+
+
+def test_a_re_solve_after_a_settings_change_is_the_solve_those_settings_give():
+    """The review of 2026-09-30 (F9): the inner Transient is cached for the
+    analysis's life, and was built from the settings of the FIRST solve --
+    `pss.par.method = 'radau'` on a solved gear PSS crashed the re-solve (a
+    Gear-2 transient under a stage walk), trap -> gear raised the solved-
+    history refusal, and a new `reltol` never reached the steps.  The cache
+    is dropped when the settings it was built from moved (`_settings_key`):
+    the re-solve is bit for bit a fresh analysis's."""
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c['V'] = VSin('in', gnd, va=1.0, freq=1e5)
+    c['R'] = R('in', 'out', r=1e3)
+    c['C'] = C('out', gnd, c=1e-9)
+
+    def solved(p):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-5, timestep=1e-5 / 40)
+        return np.asarray(p.waveform[1], float).copy()
+
+    for attr, v0, v1 in (('method', 'gear', 'radau'), ('method', 'trap', 'gear'),
+                         ('reltol', 1e-4, 1e-12)):
+        p = PSS(c, **{attr: v0})
+        solved(p)
+        setattr(p.par, attr, v1)
+        assert np.array_equal(solved(p), solved(PSS(c, **{attr: v1}))), (attr, v1)
+    assert p._transient().par.reltol == 1e-12

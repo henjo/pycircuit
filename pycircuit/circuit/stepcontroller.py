@@ -29,6 +29,23 @@ MIN_SHRINK_RATIO = 0.2
 
 
 
+def normalised_error(err, tol):
+    """`|err| / tol` per entry, the two degenerate quotients decided rather
+    than left to IEEE: 0/0 (an entry with no error and no tolerance) is 0,
+    x/0 or a non-finite error is +inf -- a reject.
+
+    ⚠ Until 2026-09-30 a 0/0 entry (a node held at 0 V under a zero
+    absolute LTE tolerance) made the maximum NaN, which neither rejects nor
+    grows: a step with another entry 5x over tolerance was ACCEPTED and
+    grown by the maximum ratio."""
+    e = np.abs(np.asarray(err, dtype=float))
+    t = np.asarray(tol, dtype=float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        q = e / t
+    q = np.where((e == 0.0) & (t == 0.0), 0.0, q)
+    return np.where(np.isnan(q), np.inf, q)
+
+
 def sigglobal_reference(running, n_nodes):
     """`relref='sigglobal'`'s reference from a running maximum: each unit
     group -- the first `n_nodes` entries (node voltages), the rest (branch
@@ -320,7 +337,7 @@ class IntegralController(StepController):
         etol = TRTOL * (reltol * ref + abstol)
 
         # 4. Normalize the error
-        err_array = abs(lte) / etol
+        err_array = normalised_error(lte, etol)
         err = float(np.max(err_array))
         ## Exposed under the same name `PIController` uses, so the normalised
         ## error of whichever controller is running can be read from outside.
@@ -513,7 +530,7 @@ class PIController(StepController):
         # threshold matches the target the PI update drives toward.
         ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
         etol = TRTOL * (reltol * ref + abstol)
-        err_array = abs(lte) / etol
+        err_array = normalised_error(lte, etol)
 
         err = float(np.max(err_array))
         exponent = 1.0 / p
@@ -646,7 +663,7 @@ class SolutionLTEController(StepController):
         ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
         etol = TRTOL * (reltol * ref + abstol)
 
-        err_array = abs(lte) / etol
+        err_array = normalised_error(lte, etol)
         ## The reference node is held at zero by construction, so its deviation
         ## is identically zero and cannot be the controlling one; taking the
         ## argmax over the full vector is safe and keeps the index in the

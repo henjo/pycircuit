@@ -21,7 +21,8 @@ from pycircuit.circuit._limiting import (limit_sync, limiter_snapshot, state_res
 ## nothing from this package, so this is import-safe at module level.
 ## History: `doc/transient_history.md`, `transient.py`.
 from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
-                                              MIN_SHRINK_RATIO)
+                                              MIN_SHRINK_RATIO,
+                                              normalised_error)
 
 ## STAGE 2a -- BLAS thread control, discovered rather than required.
 ##
@@ -447,7 +448,10 @@ class _StageSteps(_StepFamily):
         est = tk.array(self.tr._rk_est)
         wt = (self.tr.par.reltol * tk.array(self._reference(X[-1], x_new))
               + tk.array(self.run.abstol))
-        ek = tk.array([est[i] / wt[i] for i in self.keep])
+        ## (`normalised_error`: a 0/0 entry is 0, not a NaN that rejects the
+        ## step and then grows it)
+        ek = tk.array(normalised_error(np.asarray(est)[self.keep],
+                                       np.asarray(wt)[self.keep]))
         err = float((tk.sum(ek * ek) / len(self.keep)) ** 0.5)
         order = int(self.tr.base_integrator.EMBEDDED_ORDER)
         grow = self.SAFETY * (err if err > 1e-16 else 1e-16) ** (
@@ -3152,7 +3156,7 @@ class Transient(Analysis):
             return True, 0.0
         lte = solution_lte(x_curr, list(x_hist[:degree + 1]),
                            list(h_hist[:degree]), h)
-        err = float(np.max(abs(lte) / etol))
+        err = float(np.max(normalised_error(lte, etol)))
         return (gamma_min <= err <= gamma_max), err
 
     def step_lte(self, x_curr, x_last, J):

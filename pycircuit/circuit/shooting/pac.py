@@ -199,12 +199,15 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.solve`.
         """
         toolkit = self.toolkit
-        ## (a relative sweep offsets from the carrier of the map this solves
-        ## on -- `_state_map` reads the monodromy twin's; the run's period
-        ## until 2026-09-30, see `pnoise`)
+        ## ⚠ ONE HOST: the map, its event columns, its period and orbit all
+        ## the monodromy twin's (a trap/euler oscillator's radau twin; `self`
+        ## otherwise).  Until 2026-09-30 the map was the twin's and the event
+        ## columns the run's -- a trap staged oscillator crashed on the two
+        ## grids (270 against 236 nodes) -- and a relative sweep offset from
+        ## the run's carrier.
+        pss = pss.monodromy_twin()
         freqs = np.atleast_1d(np.asarray(
-            sweep_frequency(pss.monodromy_twin(),
-                            np.asarray(freqs, dtype=float), sweeptype,
+            sweep_frequency(pss, np.asarray(freqs, dtype=float), sweeptype,
                             relharmnum, 'solve'), dtype=float))
         ## the map on the state (a GLM's own, `_GLMPeriod.state_map`)
         fp = pss._state_map()
@@ -472,6 +475,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         """
         output = output_index(pss, output)
         import scipy.sparse.linalg as spla
+        ## (one host, as `PAC.solve`: the twin's map WITH the twin's event
+        ## columns and period -- the run's were read beside the twin's map
+        ## until 2026-09-30)
+        pss = pss.monodromy_twin()
         fp = pss._state_map()
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the adjoint row')
@@ -544,6 +551,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         """
         output = output_index(pss, output)
         import scipy.sparse.linalg as spla
+        ## (one host, as `PAC.solve`: the twin's map WITH the twin's event
+        ## columns and period -- the run's were read beside the twin's map
+        ## until 2026-09-30)
+        pss = pss.monodromy_twin()
         fp = pss._state_map()
 
         self._check_circuit(pss)
@@ -622,11 +633,12 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
             ## solve is 10-15 % off (driven) and the row misses the forward
             ## solve by 8 % on gear's staged oscillator.
             ## History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
+            ## ⚠ EVERY MAP KIND: the plain map (trap/euler) stayed unbordered
+            ## until 2026-09-30 -- the kinds were admitted one by one as each
+            ## was verified and the plain one never was -- and its row missed
+            ## the bordered forward solve by 1.9e-3 (trap) / 9e-3 (euler).
             _autonomous = getattr(pss, 'autonomous', False)
             _ev = EventColumns.of(pss)
-            if _ev is not None and not (fp.is_stage or fp.is_pair
-                                        or fp.is_glm):
-                _ev = None
             if _ev is not None:
                 _wq = pss._period_quadrature(fp)
                 cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
@@ -1086,9 +1098,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.am_pm`.
         """
         output = output_index(pss, output)
-        ## (the offset from the carrier of the map the rows are solved on)
-        freq = sweep_offset(pss.monodromy_twin(), freq, sweeptype, harmonic,
-                            'am_pm')
+        ## (one host, as `am_pm_noise`: the carrier, its phasor and the rows
+        ## all the map's the rows are solved on)
+        pss = pss.monodromy_twin()
+        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm')
         C = self.carrier_phasor(pss, output, harmonic)
         ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
         ## circuit does not produce still has a phasor of ~1e-16 rather
