@@ -1247,9 +1247,16 @@ def test_the_oscillator_edge_jitter_takes_a_coloured_source_as_its_realisation_d
     pac = PAC(ce, toolkit=circuit.numeric)
     with pytest.raises(TypeError, match='COLOURED'):
         pac.oscillator_edge_jitter(pe, re_, te)
+    with pytest.raises(ValueError, match='intercept'):
+        pac.oscillator_edge_jitter(pe, re_, te, colour_fmin=1e-6 * f0,
+                                   intercept='transverse')
     e = pac.oscillator_edge_jitter(pe, re_, te, colour_fmin=1e-6 * f0,
                                    colour_fmax=20.0 * f0, points_per_decade=20)
-    assert e['A'] > 0.0 and e['projection_share'] is None
+    ## intercept='white' (the default): no white source, so no additive
+    ## white jitter -- the coloured part is in `k_cycle`, its transverse
+    ## variance reported apart (it was `A` until 2026-09-30)
+    assert e['A'] == 0.0 and e['sigma_t'] == 0.0 and e['projection_share'] is None
+    assert e['coloured_transverse_variance'] > 0.0
     assert np.all(e['coloured_phase_variance'] > 0.0)
     r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
     assert np.max(np.abs(r)) < 5e-5, r
@@ -1268,7 +1275,12 @@ def test_the_coloured_edge_jitter_carries_a_slow_node_s_memory():
     (`_edge_coloured_law`) -- one transposed solve per folded frequency for
     every alias.  2.7e-12 here (200 points, kmax 4): the realisation's
     Lyapunov law and the element's frequency route agree to rounding.
-    FAILS on the parent (0.19)."""
+    FAILS on the parent (0.19).
+
+    And `intercept='exact'` (2026-09-30): the element's large-k intercept and
+    linear diffusion, from its folded PSD's random-walk remainder, are its
+    exact white realisation's (Lyapunov) -- 2.3e-6 and 1.5e-12 at 400
+    points."""
     import warnings as _w
     cw, pw, rw, tw = _vdp_colour_pair('filtered', slow=1.0)
     with _w.catch_warnings():
@@ -1279,10 +1291,13 @@ def test_the_coloured_edge_jitter_carries_a_slow_node_s_memory():
     with _w.catch_warnings():
         _w.simplefilter('ignore')
         e = PAC(ce, toolkit=circuit.numeric).oscillator_edge_jitter(
-            pe, re_, te, kmax=4, colour_fmin=1e-6 * f0, points_per_decade=20)
+            pe, re_, te, kmax=4, colour_fmin=1e-6 * f0, points_per_decade=20,
+            intercept='exact')
     r = e['k_cycle'] ** 2 / w['k_cycle'] ** 2 - 1.0
     assert np.max(np.abs(r)) < 1e-8, r
     assert np.allclose(e['coloured_variance'], e['k_cycle'] ** 2, rtol=1e-12)
+    assert abs(e['A'] / w['A'] - 1.0) < 1e-4, (e['A'], w['A'])
+    assert abs(e['c_coloured'] / w['c'] - 1.0) < 1e-8, (e['c_coloured'], w['c'])
 
 
 def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation_does():
@@ -1315,14 +1330,24 @@ def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation
                  if (v[k - 1] - mid) < 0 <= (v[k] - mid))
         tc = grid[j - 1] + (mid - v[j - 1]) / (v[j] - v[j - 1]) \
             * (grid[j] - grid[j - 1])
-        out[kind] = pac.oscillator_edge_jitter(
-            pss, red, tc, colour_fmin=1e-4 * f0, colour_fmax=20.0 * f0,
-            points_per_decade=20)
+        ## (the element under intercept='exact': a 1/f source has no
+        ## large-k intercept -- nan, warned; `k_cycle` is the same)
+        if kind == 'flicker':
+            with pytest.warns(RuntimeWarning, match='POWER LAW'):
+                out[kind] = pac.oscillator_edge_jitter(
+                    pss, red, tc, colour_fmin=1e-4 * f0, colour_fmax=20.0 * f0,
+                    points_per_decade=20, intercept='exact')
+        else:
+            out[kind] = pac.oscillator_edge_jitter(
+                pss, red, tc, colour_fmin=1e-4 * f0, colour_fmax=20.0 * f0,
+                points_per_decade=20)
     e, r = out['flicker'], out['flicker_ref']
     T = 1.0 / f0
-    assert 0.0 < e['sigma_t'] < 1e-3 * T
+    assert np.isnan(e['A']) and np.isnan(e['sigma_t']) and np.isnan(e['c_coloured'])
+    assert 0.0 < np.sqrt(e['coloured_transverse_variance']) < 1e-3 * T
     assert np.all(e['coloured_phase_variance'] > 0.0)
     assert np.max(np.abs(e['k_cycle'] ** 2 / r['k_cycle'] ** 2 - 1.0)) < 1e-8
-    assert abs(e['A'] / r['A'] - 1.0) < 1e-8
+    assert abs(e['coloured_transverse_variance']
+               / r['coloured_transverse_variance'] - 1.0) < 1e-8
     assert np.max(np.abs(e['coloured_phase_variance']
                          / r['coloured_phase_variance'] - 1.0)) < 1e-8

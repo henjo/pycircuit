@@ -519,7 +519,21 @@ class _OscillatorCovariance(object):
         + alpha P_end^T z)``, `EventColumns.collapsed_zeta`) a sum of one
         per crossing.  Per frequency only the ``(n + 1)`` solve and one
         alias product remain.  Built densely: a map up to
-        `FLOQUET_DENSE_LIMIT` wide."""
+        `FLOQUET_DENSE_LIMIT` wide.
+
+        Returns ``{'V': (len(nodes), kmax), 'alpha': (len(nodes),), 'gint':
+        (len(nodes),), 'settled': bool}``.  THE LARGE-k INTERCEPT: near
+        ``f = 0`` the folded PSD is a random walk's, ``F ~ alpha / (4
+        sin^2(pi f T))`` (`F` is even in `f`, so the next term is flat), and
+        with ``G = F - alpha / (4 sin^2(pi f T))`` the Fejer integral gives
+
+            V_k = alpha k / (2 T) + 2 int G df - 2 int G cos(2 pi f k T) df
+
+        -- a slope `alpha / (2T)` per period and the intercept ``2 int G``
+        (`gint`), the cosine term vanishing as k grows.  ``alpha = 4 sin^2(pi
+        f T) F`` at the lowest frequency; `settled` says it is flat there (a
+        decade up it agrees to 1 %) and no component is a power law -- a
+        1/f source's phase grows faster than linearly and has no intercept."""
         from ._lineshape import increment_nodes
         fp = pss._state_map()
         stage = fp.is_stage or fp.is_glm
@@ -622,6 +636,9 @@ class _OscillatorCovariance(object):
         ks = np.arange(1, int(kmax) + 1)
         ker = 4.0 * np.sin(np.pi * fq[None, :] * ks[:, None] * T) ** 2
         V = np.zeros((len(nodes), len(ks)))
+        alphas, gints, settled = [], [], not col['comps']
+        s2f = 4.0 * np.sin(np.pi * fq * T) ** 2
+        i10 = min(int(np.searchsorted(fq, 10.0 * fq[0])), len(fq) - 1)
         for r_, j in enumerate(nodes):
             k0 = int(j) % N
             cA0 = couplings(seed=(k0, d.astype(complex)))
@@ -673,11 +690,20 @@ class _OscillatorCovariance(object):
                     ## (the hole below fmin around every harmonic n != 0)
                     hole = float(np.sum(pb[ns != 0]))
             V[r_] = (ker * (wq * per_f)[None, :]).sum(axis=1) + fmin * ker[:, 0] * hole
-        return V
+            ## the random walk's slope and the intercept's remainder
+            al = float(s2f[0] * per_f[0])
+            a10 = float(s2f[i10] * per_f[i10])
+            settled = settled and (abs(a10 - al) <= 1e-2 * abs(al) if al != 0.0
+                                   else a10 == 0.0)
+            G = per_f - al / s2f
+            alphas.append(al)
+            gints.append(float(np.sum(wq * G) + fmin * G[0]))
+        return {'V': V, 'alpha': np.asarray(alphas), 'gint': np.asarray(gints),
+                'settled': bool(settled)}
 
     def oscillator_edge_jitter(self, pss, output, time, kmax=8,
                                colour_fmin=None, colour_fmax=None,
-                               points_per_decade=40):
+                               points_per_decade=40, intercept='white'):
         """The ADDITIVE (non-accumulating) edge jitter of a FREE-RUNNING
         oscillator -- the number a clock designer wants at the last buffer,
         and the one `c` does not contain.
@@ -782,15 +808,38 @@ class _OscillatorCovariance(object):
         (the element against its exact white realisation), and more for a
         1/f source.  `coloured_variance` in the result is that part (s^2);
         `coloured_phase_variance` is the fold's phase increment alone
-        (reported, not added); the coloured TRANSVERSE variance still joins
-        `A` (the intercept's transverse part -- its cross term with the
-        coloured phase is in `k_cycle` only).
+        (reported, not added).
+
+        ⚠ WHAT `A` AND `sigma_t` MEAN WITH A COLOURED SOURCE is `intercept`'s
+        choice (2026-09-30; they included the coloured TRANSVERSE variance
+        until then -- for a 1/f source a slow wander, not additive jitter:
+        2A = 7.2e-6 s^2 against k_cycle_1^2 = 1.0e-7 s^2 on an orbit-
+        modulated 1/f van der Pol, where that wander cancels in the
+        increments):
+
+          'white' (default)  the WHITE sources' exact intercept; a coloured
+                             source enters `k_cycle` only (`A = 0`,
+                             `sigma_t = 0` with no white source).
+          'exact'            the whole law's large-k intercept: the white
+                             part's plus the coloured part's, from the folded
+                             PSD's random-walk remainder (`_edge_coloured_law`)
+                             -- nan, warned, where a coloured source has none
+                             (a power law: its phase grows faster than
+                             linearly in k).  A Lorentzian's equals its exact
+                             white realisation's.
+
+        `coloured_transverse_variance` (s^2) is the coloured transverse
+        variance at the edge, and `c_coloured` the coloured sources' linear
+        diffusion (the slope of `k_cycle^2` per `k T`; nan for a power law),
+        both reported in either case.  Without a coloured source the two
+        choices are the same.
 
         Returns a dict: `sigma_t`, `A` (= sigma_t^2), `c`, `slew`,
         `k_cycle` (k = 1..kmax), `instant`, `nodes`, `th`, `d`,
         `projection_share` (the
         white part's; None without one), `coloured_variance` (the coloured
         part of `k_cycle^2` per k, s^2; zeros when white),
+        `coloured_transverse_variance` (s^2), `c_coloured` (s; 0 when white),
         `coloured_phase_variance` (the fold's phase increment per k, s^2;
         zeros when white), `band` (the colour band, or None).
 
@@ -798,6 +847,11 @@ class _OscillatorCovariance(object):
         """
         output = output_index(pss, output)
         import warnings as _warnings
+        if intercept not in ('white', 'exact'):
+            raise ValueError(
+                "PAC.oscillator_edge_jitter: intercept must be 'white' (the "
+                "white sources' exact intercept) or 'exact' (the whole law's, "
+                f"nan for a power-law source); got {intercept!r}.")
         self._check_circuit(pss)
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) supplies
         ## the period, the factored period and the PPV as well -- read off
@@ -948,12 +1002,56 @@ class _OscillatorCovariance(object):
 
         la, lb = at_node(a), at_node(b)
         kc, A_prj, A_raw, A_col = ((1.0 - th) * x + th * y for x, y in zip(la, lb))
-        if A_prj + A_col == 0.0:
+        if not coloured and A_prj == 0.0:
             raise ValueError(
                 'PAC.oscillator_edge_jitter: the projected variance is zero '
                 '-- there is no additive jitter to report.')
-        A = A_prj + A_col
-        if A > 0.0:
+
+        inc = np.zeros(len(kc))
+        cvar = np.zeros(len(kc))
+        band = None
+        A_cx = c_col = 0.0
+        if coloured:
+            band = (float(col['fmin']), float(col['fmax']))
+            ## ⚠ THE EXACT COLOURED k-LAG LAW at both nodes, each over its
+            ## own rate (`_edge_coloured_law`); until 2026-09-30 the fold's
+            ## phase increment + ``2 A_col``, which omits the transverse
+            ## part's memory and its cross term with the phase
+            law = self._edge_coloured_law(pss, col, int(output), (a, b),
+                                          int(kmax))
+            sa, sb = (float(np.asarray(info['tangent_samples'][jn],
+                                       dtype=float)[int(output)]) ** 2
+                      for jn in (a, b))
+            Vn = law['V']
+            cvar = (1.0 - th) * Vn[0] / sa + th * Vn[1] / sb
+            kc = kc + cvar
+            ## the coloured part's own intercept and slope, where they exist
+            if law['settled']:
+                A_cx = (1.0 - th) * law['gint'][0] / sa + th * law['gint'][1] / sb
+                c_col = ((1.0 - th) * law['alpha'][0] / sa
+                         + th * law['alpha'][1] / sb) / (2.0 * T * T)
+            else:
+                A_cx = c_col = float('nan')
+            ## the coloured PHASE increment alone (the fold's), reported
+            fold = self._colour_fold(pss, band[0], None,
+                                     'oscillator_edge_jitter')
+            inc = fold.increment(tc, np.arange(1, int(kmax) + 1),
+                                 band[0], band[1])
+
+        A = A_prj if intercept == 'white' else A_prj + A_cx
+        if np.isnan(A):
+            _warnings.warn(
+                'PAC.oscillator_edge_jitter: intercept=\'exact\' and a '
+                'coloured source here is a POWER LAW, whose phase grows faster '
+                'than linearly in k: the k-cycle law has no large-k intercept, '
+                'so A and sigma_t are nan; k_cycle is exact.',
+                RuntimeWarning, stacklevel=2)
+            sigma_t = float('nan')
+        elif A == 0.0:
+            ## (no white source, intercept='white': none of the jitter is
+            ## additive white jitter; the coloured part is in `k_cycle`)
+            sigma_t = 0.0
+        elif A > 0.0:
             sigma_t = float(np.sqrt(A))
             if not sigma_t < 0.5 * T:
                 raise ValueError(
@@ -978,27 +1076,6 @@ class _OscillatorCovariance(object):
                 RuntimeWarning, stacklevel=2)
             sigma_t = float('nan')
 
-        inc = np.zeros(len(kc))
-        cvar = np.zeros(len(kc))
-        band = None
-        if coloured:
-            band = (float(col['fmin']), float(col['fmax']))
-            ## ⚠ THE EXACT COLOURED k-LAG LAW at both nodes, each over its
-            ## own rate (`_edge_coloured_law`); until 2026-09-30 the fold's
-            ## phase increment + ``2 A_col``, which omits the transverse
-            ## part's memory and its cross term with the phase
-            Vn = self._edge_coloured_law(pss, col, int(output), (a, b),
-                                         int(kmax))
-            sa, sb = (float(np.asarray(info['tangent_samples'][jn],
-                                       dtype=float)[int(output)]) ** 2
-                      for jn in (a, b))
-            cvar = (1.0 - th) * Vn[0] / sa + th * Vn[1] / sb
-            kc = kc + cvar
-            ## the coloured PHASE increment alone (the fold's), reported
-            fold = self._colour_fold(pss, band[0], None,
-                                     'oscillator_edge_jitter')
-            inc = fold.increment(tc, np.arange(1, int(kmax) + 1),
-                                 band[0], band[1])
         return {
             'sigma_t': sigma_t,
             'A': A,
@@ -1012,6 +1089,8 @@ class _OscillatorCovariance(object):
             'projection_share': (float(A_raw / A_prj - 1.0) if white
                                  else None),
             'coloured_variance': cvar,
+            'coloured_transverse_variance': float(A_col),
+            'c_coloured': float(c_col),
             'coloured_phase_variance': inc,
             'band': band,
         }
