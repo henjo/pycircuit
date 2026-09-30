@@ -413,8 +413,13 @@ class _SampledNoise(object):
             _dth = np.asarray(_ev.dth, dtype=float)
             _MtT = _ev.total_matvec(fp.matvec_transposed, transposed=True)
             _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)
-        for ti, k0 in enumerate(k0s):
-            for fi, f in enumerate(fr):
+        ## ⚠ FREQUENCY OUTER, INSTANT INNER: every instant reads the same band
+        ## roots of a frequency, and no two series frequencies share a band
+        ## (`|f + n f0|`, `f` in `(0, f0/2]`), so the roots are dropped once
+        ## the frequency is done -- instant-outer, the cache held every
+        ## frequency's `(K, m, m)` roots at once (the review's M4, 2026-10-01)
+        for fi, f in enumerate(fr):
+            for ti, k0 in enumerate(k0s):
                 alpha = np.exp(-2j * np.pi * f * T)
                 inject = np.zeros((N, m), dtype=complex)
                 inject[k0] = np.exp(-2j * np.pi * f * tms[k0]) * d
@@ -489,4 +494,8 @@ class _SampledNoise(object):
                         _F = abs(_nu_e) + 0.5 * f0
                         dens += _A / (f0 * _F)
                 S[ti, fi] = dens
+            for comp in perband:
+                cache = getattr(comp, 'cache', None)
+                if cache is not None:
+                    cache.clear()
         return S

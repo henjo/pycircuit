@@ -314,6 +314,9 @@ def cached_root(cy_at):
         if k not in cache:
             cache[k] = psd_sqrt(cy_at(k))
         return cache[k]
+    ## (the caller that knows a frequency is done may clear it:
+    ## `_sampled_series`)
+    root.cache = cache
     return root
 
 
@@ -366,16 +369,33 @@ class NoiseComponents(object):
         return np.asarray(Cs, dtype=complex)
 
     def element_cy_samples(self, w):
-        """`{key: (K, m, m)}` -- each leaf element's reduced `CY(x, w)` at the
-        orbit samples `x(t_k)` (the default, indexed like `cy_at_states`, which
-        they sum to) or at the given `states`."""
+        """`{key: (K, m, m)}` -- each NOISY leaf element's reduced `CY(x, w)`
+        at the orbit samples `x(t_k)` (the default, indexed like
+        `cy_at_states`, which they sum to) or at the given `states`.
+
+        ⚠ AN ELEMENT WHOSE CY IS ZERO AT EVERY SAMPLE IS LEFT OUT (a missing
+        key reads as zero): every capacitor, inductor and source stacked a
+        dense complex `(K, m, m)` of zeros -- 25 of 26 keys, 146 MB at
+        m = 14 (the review's M4, 2026-10-01).  A zero stamp is kept as a
+        placeholder until the element shows a non-zero one."""
         keep = self.keep
         out = {}
         for xf in self.xs:
             for key, G in self.leaf_cy_stamps(self.cir, xf, w,
                                               epar=self.pss.epar):
-                out.setdefault(key, []).append(G[np.ix_(keep, keep)])
-        return {key: np.asarray(v, dtype=complex) for key, v in out.items()}
+                g = G[np.ix_(keep, keep)]
+                out.setdefault(key, []).append(g if np.any(g) else None)
+        ## (every leaf, noisy or not, in the circuit's order: `model` keeps
+        ## that order, so its sums add in the order they always did)
+        self._leaf_order = list(out)
+        res = {}
+        for key, v in out.items():
+            if all(x is None for x in v):
+                continue
+            shape = next(x for x in v if x is not None).shape
+            res[key] = np.asarray([np.zeros(shape, dtype=complex) if x is None
+                                   else x for x in v], dtype=complex)
+        return res
 
     def one_element_cy(self, key, w):
         """The reduced `CY(x, w)` of the ONE leaf element `key` at `states`,
@@ -470,8 +490,16 @@ class NoiseComponents(object):
         """
         ws = self.colour_fit_frequencies(f, f0)
         per_w = [self.element_cy_samples(w) for w in ws]
-        keys = [key for key in per_w[0]
-                if any(np.any(per_w[i][key]) for i in range(len(ws)))]
+        ## (every element that is noisy at SOME fit frequency, in the order
+        ## the circuit lists them; one that is zero at a frequency reads as
+        ## zero there)
+        keys = [key for key in self._leaf_order
+                if any(key in pw for pw in per_w)]
+        for pw in per_w:
+            ref = next(iter(pw.values()), None)
+            for key in keys:
+                if key not in pw and ref is not None:
+                    pw[key] = np.zeros_like(ref)
         m = self.cir.n - 1
         N = (len(self.pss.factored_period().steps) if self.states is None
              else len(self.states))
@@ -540,7 +568,8 @@ class NoiseComponents(object):
             if perband:
                 ew = self.element_cy_samples(w)
                 for key in perband:
-                    tot = tot + ew[key]
+                    if key in ew:
+                        tot = tot + ew[key]
             return tot
         model.white = white
         model.white_parts = white_parts
@@ -754,6 +783,7 @@ class NoiseComponents(object):
                     c = self.at(xr).one_element_cy(key, k)[0, pi_, qi]
                     cache[k] = np.sqrt(max(float(np.real(c / cref)), 0.0)) * Wref
                 return cache[k]
+            root.cache = cache
         else:
             root = self.perband_root(key, mode)
         root.signed = Ws is not None

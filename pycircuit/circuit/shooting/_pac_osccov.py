@@ -366,6 +366,7 @@ class _OscillatorCovariance(object):
                 'converged limit cycle.')
         d_closed = float(v @ K1 @ v) / (vu * vu)
 
+        self._check_kron(n, 'oscillator_covariance')
         S = np.eye(n * n) - np.kron(M, M)
         uk = np.kron(u, u)
         vk = np.kron(v, v)

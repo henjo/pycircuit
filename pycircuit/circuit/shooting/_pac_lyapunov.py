@@ -14,6 +14,22 @@ class _LyapunovCovariance(object):
     step pieces, the coloured band integral, event jitter.  A theme of `PAC`
     (see `pac.py`)."""
 
+    ## The dense Lyapunov solves form ``I - M (x) M``, `n^2 x n^2`: 8 n^4 bytes
+    ## before the solve's own copies (n = 200, a gear pair of m = 100: 12.8
+    ## GB).  Above this width they refuse by name instead of being killed by
+    ## the operating system (the review's X4, 2026-10-01); raise it on the
+    ## PAC to go further.
+    LYAPUNOV_DENSE_LIMIT = 110
+
+    def _check_kron(self, n, what):
+        if n > self.LYAPUNOV_DENSE_LIMIT:
+            raise MemoryError(
+                f'PAC.{what}: the dense Lyapunov solve forms an n^2 x n^2 '
+                f'operator (n = {n}: {8.0 * n ** 4 / 1e9:.1f} GB before the '
+                f'solve\'s copies), above LYAPUNOV_DENSE_LIMIT = '
+                f'{self.LYAPUNOV_DENSE_LIMIT}; set pac.LYAPUNOV_DENSE_LIMIT '
+                'higher if the memory is there.')
+
     def _lyap_cy(self, pss, w, xr, white=None):
         """`CY` as the Lyapunov pieces read it: `_cy_at`, or for a COLOURED
         covariance the WHITE part `A(x)` of the component model alone
@@ -757,6 +773,7 @@ class _LyapunovCovariance(object):
                 'PAC.event_jitter: this Floquet host carries no event '
                 'columns (see the warning above); solve with method=\'radau\'.')
         M_tot, Q_tot, _samples, pieces = bordered
+        self._check_kron(n, 'event_jitter')
         S = np.eye(n * n) - np.kron(M_tot, M_tot)
         K0 = np.linalg.solve(S, Q_tot.reshape(-1)).reshape(n, n)
         K0 = 0.5 * (K0 + K0.T)
@@ -1433,6 +1450,7 @@ class _LyapunovCovariance(object):
         bordered = self._event_closure(pss, As, Qs, M, m, n)
         if bordered is not None:
             M, K1, _samples, _pieces = bordered
+        self._check_kron(n, 'covariance')
         S = np.eye(n * n) - np.kron(M, M)
         K0 = np.linalg.solve(S, K1.reshape(-1)).reshape(n, n)
         K0 = 0.5 * (K0 + K0.T)

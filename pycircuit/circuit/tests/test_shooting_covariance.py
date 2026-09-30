@@ -1558,3 +1558,39 @@ def test_the_covariance_returns_the_familys_one_shape():
     assert len(info['coloured_samples']) == len(info['samples'])
     assert np.array_equal(info['samples'][0], K0)
     assert np.shape(info['K_coloured']) == (m, m)
+
+
+def test_the_noise_surfaces_keep_no_stack_for_a_noiseless_element():
+    """The review of 2026-09-30 (M4): `NoiseComponents.element_cy_samples`
+    stacked a dense complex `(K, m, m)` for EVERY leaf element at each of the
+    colour model's fit frequencies -- noiseless capacitors and sources
+    included (25 of 26 keys, 146 MB at m = 14).  A noiseless element is left
+    out now (a missing key reads as zero), and the model the stacks feed is
+    unchanged."""
+    from pycircuit.circuit.shooting._noise_components import NoiseComponents
+    from pycircuit.circuit.tests._shooting_fixtures import _sampler_fixture, _sw
+
+    def els(c):
+        c['S0'] = _sw()
+        c['N0'] = IS('out', gnd, i=0.0, noisePSD=1e-26)
+    _cir, pss, _io, _pac, T = _sampler_fixture(els, npts=100)
+    nc = NoiseComponents(pss)
+    keys = set(nc.element_cy_samples(2.0 * np.pi / T))
+    names = {k[-1] if isinstance(k, tuple) else k for k in keys}
+    assert 'C0' not in names and 'Vin' not in names and 'Vck' not in names, names
+    assert 'N0' in names, names
+
+
+def test_a_dense_lyapunov_solve_refuses_a_size_it_cannot_hold():
+    """The review of 2026-09-30 (X4): the dense Lyapunov solves form ``I - M
+    (x) M``, n^2 x n^2 -- 12.8 GB at n = 200 -- with no check, so a large
+    circuit was killed by the operating system.  Above
+    `LYAPUNOV_DENSE_LIMIT` they refuse by name."""
+    from pycircuit.circuit.tests._shooting_fixtures import _a9_vdp
+    cir, pss = _a9_vdp()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    pac.LYAPUNOV_DENSE_LIMIT = 1
+    with pytest.raises(MemoryError, match='LYAPUNOV_DENSE_LIMIT'), \
+            warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pac.oscillator_covariance(pss)
