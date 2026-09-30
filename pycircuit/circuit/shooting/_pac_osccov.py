@@ -183,7 +183,7 @@ class _OscillatorCovariance(object):
     ## History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
     def oscillator_covariance(self, pss, samples=False, colour_fmin=None,
                               colour_fmax=None, points_per_decade=40,
-                              pair=False):
+                              pair=False, _coloured=True):
         """The state covariance of a FREE-RUNNING oscillator, split in two.
 
         Returns `(K_orb, info)`.  `K_orb` is the BOUNDED periodic
@@ -442,7 +442,9 @@ class _OscillatorCovariance(object):
             info['transverse_samples'] = [
                 Pi[j] @ Kj[:m, :m] @ Pi[j].T
                 for j, Kj in enumerate(info['samples'][:len(Pi)])]
-        if col is not None:
+        ## (`_coloured=False`: the white part alone, for a caller that builds
+        ## the coloured part itself -- `oscillator_edge_jitter`)
+        if col is not None and _coloured:
             try:
                 Kc, _none = self._coloured_covariance(
                     pss, col, m, m, responses=self._transverse_responses,
@@ -478,7 +480,8 @@ class _OscillatorCovariance(object):
         info['d'] = d
         return K_orb, info
 
-    def _edge_coloured_law(self, pss, col, output, nodes, kmax):
+    def _edge_coloured_law(self, pss, col, output, nodes, kmax,
+                           projectors=None):
         """The EXACT coloured k-lag law of an oscillator's output sampled at
         grid nodes: ``V[r, k-1] = Var(y_{n+k} - y_n)``, `y_n` the output at
         node ``nodes[r]`` of period `n`, from the COLOURED components
@@ -533,7 +536,15 @@ class _OscillatorCovariance(object):
         (`gint`), the cosine term vanishing as k grows.  ``alpha = 4 sin^2(pi
         f T) F`` at the lowest frequency; `settled` says it is flat there (a
         decade up it agrees to 1 %) and no component is a power law -- a
-        1/f source's phase grows faster than linearly and has no intercept."""
+        1/f source's phase grows faster than linearly and has no intercept.
+
+        With `projectors` (``Pi_j`` per node, `_node_projectors`'), also the
+        TRANSVERSE part: the output's ``e' Pi_j y`` sampled -- a second seed,
+        ``Pi_j^T e``, whose transfer has no pole -- its VARIANCE (the integral
+        of its folded PSD: `transverse`, the same quantity
+        `oscillator_covariance`'s coloured samples integrate over the source
+        band), and the PHASE part's k-lag law, the full transfer less the
+        transverse one (linear in the seed; `Vphase`)."""
         from ._lineshape import increment_nodes
         fp = pss._state_map()
         stage = fp.is_stage or fp.is_glm
@@ -632,74 +643,111 @@ class _OscillatorCovariance(object):
         for _key, root_at in col.get('nonseparable', ()):
             moving.append(root_at)
 
+        stacked = {}
+
+        def alias_power(Sp, B, nu, keep, fi):
+            ## one sampled transfer's power per alias, over every group
+            pb = np.zeros(len(ns))
+            for W, wt in fixed:
+                R = B[keep] @ np.einsum('ji,jik->jk', Sp, W)
+                pb[keep] += wt(nu[keep]) * np.sum(np.abs(R) ** 2, axis=1)
+            if stationary or moving:
+                Y = B[keep] @ Sp                                 # (kept, m)
+                idx = np.nonzero(keep)[0]
+                for key, supp in stationary:
+                    ## the density at every kept alias, stacked once per
+                    ## folded frequency (both nodes, every seed read it)
+                    if (key, fi) not in stacked:
+                        stacked[(key, fi)] = np.array(
+                            [cy_at(key, None, nu[bi])[np.ix_(supp, supp)]
+                             for bi in idx])
+                    Ys = Y[:, supp]
+                    pb[idx] += np.real(np.einsum('ai,aij,aj->a', Ys,
+                                                 stacked[(key, fi)], Ys.conj()))
+                for root_at in moving:
+                    for bi in idx:
+                        Wn = np.asarray(root_at(nu[bi]), dtype=complex)
+                        R = B[bi] @ np.einsum('ji,jik->jk', Sp, Wn)
+                        pb[bi] += float(np.sum(np.abs(R) ** 2))
+            return pb
+
+        def seeded(k0, dv):
+            ## the reverse pass seeded at node k0 with the functional `dv`:
+            ## its final costate (with the crossings' term on a staged
+            ## solve), its couplings, and its theta-sensitivity
+            dv = np.asarray(dv, dtype=complex)
+            cA = couplings(seed=(k0, dv))
+            if stage:
+                g_ = np.asarray(self._stage_pass(
+                    pss, fp, np.zeros(m, dtype=complex), (k0, dv))[0])
+            else:
+                inject = np.zeros((N, m), dtype=complex)
+                inject[k0] = dv
+                g_ = np.asarray(fp.matvec_transposed(
+                    np.zeros(n, dtype=complex), collect=True, inject=inject)[0])
+            gth = None
+            if _ev is not None:
+                gth = Pkf[k0].T @ dv
+                g_ = g_ + D.T @ gth
+            return g_, cA, gth
+
         fq, wq = increment_nodes(fmin, 0.5 * f0, T, int(kmax))
         ks = np.arange(1, int(kmax) + 1)
         ker = 4.0 * np.sin(np.pi * fq[None, :] * ks[:, None] * T) ** 2
         V = np.zeros((len(nodes), len(ks)))
+        Vph = np.zeros((len(nodes), len(ks)))
+        var_t = np.zeros(len(nodes))
         alphas, gints, settled = [], [], not col['comps']
         s2f = 4.0 * np.sin(np.pi * fq * T) ** 2
         i10 = min(int(np.searchsorted(fq, 10.0 * fq[0])), len(fq) - 1)
         for r_, j in enumerate(nodes):
             k0 = int(j) % N
-            cA0 = couplings(seed=(k0, d.astype(complex)))
-            if stage:
-                g0 = np.asarray(self._stage_pass(
-                    pss, fp, np.zeros(m, dtype=complex), (k0, d.astype(complex)))[0])
-            else:
-                inject = np.zeros((N, m), dtype=complex)
-                inject[k0] = d
-                g0 = np.asarray(fp.matvec_transposed(
-                    np.zeros(n, dtype=complex), collect=True, inject=inject)[0])
-            if _ev is not None:
-                gth0 = Pkf[k0].T @ d
-                g0 = g0 + D.T @ gth0
+            ## the output, and with `projectors` its transverse part
+            dvs = [d] if projectors is None else [
+                d, np.asarray(projectors[r_], dtype=float).T @ d]
+            seeds = [seeded(k0, dv) for dv in dvs]
             B = np.exp(2j * np.pi * ns[:, None] * f0
                        * (tinj[None, :] - tms[k0]))              # (2L+1, K)
-            per_f = np.zeros(len(fq))
-            hole = 0.0
+            nparts = 1 if projectors is None else 3              # full, transverse, phase
+            per_f = np.zeros((nparts, len(fq)))
+            hole = np.zeros(nparts)
             for fi, f in enumerate(fq):
                 alpha = np.exp(-2j * np.pi * f * T)
                 ph = np.exp(-2j * np.pi * f * tms[k0])
-                z = solve_z(alpha, ph * g0)
-                Sv = -(ph * cA0 + alpha * np.tensordot(z, Tz, axes=1))
-                if _ev is not None:
-                    zeta = Z1 @ (ph * gth0) + alpha * (Z2 @ z)
-                    Sv = Sv - np.tensordot(zeta, Tev, axes=1)
-                Sp = np.exp(2j * np.pi * f * tinj)[:, None] * Sv
+                at_f = np.exp(2j * np.pi * f * tinj)[:, None]
+                Sps = []
+                for g0, cA0, gth0 in seeds:
+                    z = solve_z(alpha, ph * g0)
+                    Sv = -(ph * cA0 + alpha * np.tensordot(z, Tz, axes=1))
+                    if _ev is not None:
+                        zeta = Z1 @ (ph * gth0) + alpha * (Z2 @ z)
+                        Sv = Sv - np.tensordot(zeta, Tev, axes=1)
+                    Sps.append(at_f * Sv)
+                if projectors is not None:
+                    Sps.append(Sps[0] - Sps[1])                  # the phase part
                 nu = np.abs(f + ns * f0)
                 keep = (nu >= fmin) & (nu <= fmax * (1.0 + 1e-12))
-                pb = np.zeros(len(ns))
-                for W, wt in fixed:
-                    R = B[keep] @ np.einsum('ji,jik->jk', Sp, W)
-                    pb[keep] += wt(nu[keep]) * np.sum(np.abs(R) ** 2, axis=1)
-                if stationary or moving:
-                    Y = B[keep] @ Sp                             # (kept, m)
-                    idx = np.nonzero(keep)[0]
-                    for key, supp in stationary:
-                        Ys = Y[:, supp]
-                        for q, bi in enumerate(idx):
-                            C = cy_at(key, None, nu[bi])[np.ix_(supp, supp)]
-                            pb[bi] += float(np.real(Ys[q] @ C @ Ys[q].conj()))
-                    for root_at in moving:
-                        for bi in idx:
-                            Wn = np.asarray(root_at(nu[bi]), dtype=complex)
-                            R = B[bi] @ np.einsum('ji,jik->jk', Sp, Wn)
-                            pb[bi] += float(np.sum(np.abs(R) ** 2))
-                per_f[fi] = float(np.sum(pb))
-                if fi == 0:
-                    ## (the hole below fmin around every harmonic n != 0)
-                    hole = float(np.sum(pb[ns != 0]))
-            V[r_] = (ker * (wq * per_f)[None, :]).sum(axis=1) + fmin * ker[:, 0] * hole
+                for q, Sp in enumerate(Sps):
+                    pb = alias_power(Sp, B, nu, keep, fi)
+                    per_f[q, fi] = float(np.sum(pb))
+                    if fi == 0:
+                        ## (the hole below fmin around every harmonic n != 0)
+                        hole[q] = float(np.sum(pb[ns != 0]))
+            V[r_] = (ker * (wq * per_f[0])[None, :]).sum(axis=1) + fmin * ker[:, 0] * hole[0]
+            if projectors is not None:
+                var_t[r_] = float(np.sum(wq * per_f[1])) + fmin * hole[1]
+                Vph[r_] = ((ker * (wq * per_f[2])[None, :]).sum(axis=1)
+                           + fmin * ker[:, 0] * hole[2])
             ## the random walk's slope and the intercept's remainder
-            al = float(s2f[0] * per_f[0])
-            a10 = float(s2f[i10] * per_f[i10])
+            al = float(s2f[0] * per_f[0, 0])
+            a10 = float(s2f[i10] * per_f[0, i10])
             settled = settled and (abs(a10 - al) <= 1e-2 * abs(al) if al != 0.0
                                    else a10 == 0.0)
-            G = per_f - al / s2f
+            G = per_f[0] - al / s2f
             alphas.append(al)
             gints.append(float(np.sum(wq * G) + fmin * G[0]))
         return {'V': V, 'alpha': np.asarray(alphas), 'gint': np.asarray(gints),
-                'settled': bool(settled)}
+                'settled': bool(settled), 'transverse': var_t, 'Vphase': Vph}
 
     def oscillator_edge_jitter(self, pss, output, time, kmax=8,
                                colour_fmin=None, colour_fmax=None,
@@ -807,8 +855,11 @@ class _OscillatorCovariance(object):
         for a Lorentzian on a van der Pol tank, 19 % behind a slow RC node
         (the element against its exact white realisation), and more for a
         1/f source.  `coloured_variance` in the result is that part (s^2);
-        `coloured_phase_variance` is the fold's phase increment alone
-        (reported, not added).
+        `coloured_phase_variance` is its PHASE part alone -- the full
+        transfer less the transverse one, the oblique split at the edge's
+        nodes (reported, not added; the colour fold's increment at the
+        instant until 2026-09-30) -- and `coloured_transverse_variance` its
+        transverse variance, both from the same folded solve.
 
         ⚠ WHAT `A` AND `sigma_t` MEAN WITH A COLOURED SOURCE is `intercept`'s
         choice (2026-09-30; they included the coloured TRANSVERSE variance
@@ -840,8 +891,9 @@ class _OscillatorCovariance(object):
         white part's; None without one), `coloured_variance` (the coloured
         part of `k_cycle^2` per k, s^2; zeros when white),
         `coloured_transverse_variance` (s^2), `c_coloured` (s; 0 when white),
-        `coloured_phase_variance` (the fold's phase increment per k, s^2;
-        zeros when white), `band` (the colour band, or None).
+        `coloured_phase_variance` (the coloured phase part's k-lag
+        variance per k, s^2; zeros when white), `band` (the colour band, or
+        None).
 
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
@@ -865,10 +917,15 @@ class _OscillatorCovariance(object):
             ## is what this method handles below)
             _warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
                                      'this circuit has a COLOURED source')
+            ## (the WHITE part alone: the coloured one -- its transverse
+            ## variance and phase included -- is `_edge_coloured_law`'s, one
+            ## folded solve; the covariance's coloured samples at every node
+            ## cost 29 s of a 67 s call until 2026-09-30)
             K_orb, info = self.oscillator_covariance(
                 pss, samples=True, pair=True, colour_fmin=colour_fmin,
-                colour_fmax=colour_fmax, points_per_decade=points_per_decade)
-        coloured = 'coloured_samples' in info
+                colour_fmax=colour_fmax, points_per_decade=points_per_decade,
+                _coloured=False)
+        coloured = bool(self._coloured_present(pss))
         d = info['d']
         m = self.cir.n - 1
         T = float(pss.period)
@@ -974,11 +1031,8 @@ class _OscillatorCovariance(object):
                 Pi = np.eye(m) - np.outer(uj, vj) / den
                 prj = float(e @ (Pi @ Pm) @ e)
                 raw = float(e @ Pm @ e)
-            ## a COLOURED source's transverse part (already projected,
-            ## `_transverse_responses`)
-            var_col = (float(e @ np.asarray(info['coloured_samples'][jn],
-                                           dtype=float)[:m, :m] @ e)
-                       if coloured else 0.0)
+            ## (a coloured source's transverse part: `_edge_coloured_law`'s)
+            var_col = 0.0
             ## ⚠ THE EXACT k-LAG LAW, in the covariance's own space (a pair
             ## map's `(x_n, x_{n-1})` on gear)
             Pf = np.asarray(info['samples'][jn], dtype=float)
@@ -1017,8 +1071,9 @@ class _OscillatorCovariance(object):
             ## own rate (`_edge_coloured_law`); until 2026-09-30 the fold's
             ## phase increment + ``2 A_col``, which omits the transverse
             ## part's memory and its cross term with the phase
+            Pi = self._node_projectors(pss)
             law = self._edge_coloured_law(pss, col, int(output), (a, b),
-                                          int(kmax))
+                                          int(kmax), projectors=(Pi[a], Pi[b]))
             sa, sb = (float(np.asarray(info['tangent_samples'][jn],
                                        dtype=float)[int(output)]) ** 2
                       for jn in (a, b))
@@ -1032,11 +1087,12 @@ class _OscillatorCovariance(object):
                          + th * law['alpha'][1] / sb) / (2.0 * T * T)
             else:
                 A_cx = c_col = float('nan')
-            ## the coloured PHASE increment alone (the fold's), reported
-            fold = self._colour_fold(pss, band[0], None,
-                                     'oscillator_edge_jitter')
-            inc = fold.increment(tc, np.arange(1, int(kmax) + 1),
-                                 band[0], band[1])
+            ## the coloured TRANSVERSE variance and the PHASE part's k-lag
+            ## variance, reported: the same solve's (until 2026-09-30 the
+            ## covariance's coloured samples and the colour fold's increment,
+            ## 56 s of a 67 s call)
+            A_col = (1.0 - th) * law['transverse'][0] / sa + th * law['transverse'][1] / sb
+            inc = (1.0 - th) * law['Vphase'][0] / sa + th * law['Vphase'][1] / sb
 
         A = A_prj if intercept == 'white' else A_prj + A_cx
         if np.isnan(A):
