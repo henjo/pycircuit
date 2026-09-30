@@ -1048,7 +1048,8 @@ def test_the_sampled_psd_of_a_reset_rc_is_sepke_eq_33_white_and_one_over_f():
     pss = PSS(cir, method='radau', reltol=1e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
+        ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+        pss.solve(period=T, timestep=T / (npts - 1), x0=np.zeros(cir.n - 1),
                   maxiterations=60)
     assert pss.converged
     io = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('out')
@@ -1136,7 +1137,8 @@ def test_a_coloured_source_keeps_the_sign_of_its_scale_factor_through_the_period
         pss = PSS(c, method='gear', reltol=1e-10)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
-            pss.solve(period=T, timestep=T / 200, maxiterations=40)
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            pss.solve(period=T, timestep=T / 199, maxiterations=40)
             o = [str(x) for x in c.nodes].index('out')
             pac = PAC(c, toolkit=circuit.numeric)
             if sampled:

@@ -336,7 +336,8 @@ def test_the_stage_predictor_leaves_a_wrapping_state_alone():
     p = PSS(build(0.0), method='trap', reltol=1e-11)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        p.solve(period=per, timestep=per / 1200, maxiterations=60)
+        ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+        p.solve(period=per, timestep=per / 1199, maxiterations=60)
     assert p.converged
 
     ## and the rule itself: the periodic row keeps the newest node, the others

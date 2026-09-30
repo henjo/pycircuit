@@ -1108,7 +1108,8 @@ def test_the_oscillator_edge_jitter_is_the_exact_law_the_monte_carlo_measures():
     (`test_the_oscillator_edge_jitter_is_the_law_at_the_requested_instant`).
     Radau, 240 points: the law's own numbers are pinned, and each sits
     within 3 sigma of the Monte Carlo."""
-    cir, pss, red, tc, _v = _a11_solved(method='radau')
+    ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+    cir, pss, red, tc, _v = _a11_solved(method='radau', npts=239)
     r = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(pss, red, tc)
     assert 'k_cycle_bound' not in r
     kc2 = r['k_cycle'] ** 2

@@ -1369,7 +1369,8 @@ def test_gear_lands_the_state_events_of_an_autonomous_orbit():
         q = PSS(_comparator_relaxation_oscillator(), method='gear', reltol=1e-9)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
-            q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100,
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            q.solve(period=Tl, timestep=Tl / (N - 1), x0=seed, maxiterations=100,
                     state_events=se)
         assert q.converged, (N, se)
         return q, [str(r.message) for r in rec]
@@ -1421,7 +1422,8 @@ def test_a_state_event_stage_rescues_a_first_stage_that_did_not_converge():
         q = PSS(_comparator_relaxation_oscillator(), method='gear', reltol=1e-9)
         with _w.catch_warnings(record=True) as rec:
             _w.simplefilter('always')
-            q.solve(period=Tl, timestep=Tl / 350, x0=seed,
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            q.solve(period=Tl, timestep=Tl / 349, x0=seed,
                     maxiterations=maxiterations, state_events=True)
         return q, [str(r.message) for r in rec]
 

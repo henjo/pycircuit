@@ -267,6 +267,19 @@ def edge_slope(times, row, t):
     return float(b), j
 
 
+def steps_in(period, timestep):
+    """The number of steps `timestep` asks for over `period`: the floor of
+    `period / timestep`, with a relative slack of 1e-9 so that
+    `timestep = T / N` gives N steps.
+
+    ⚠ `T / (T / N)` is `N - 1e-14` in floating point for 4-6 % of N (N = 80,
+    100, 400 at some periods), and the bare `int()` made those N - 1 --
+    154 of the suite's 1397 solves ran a step short, silently, until
+    2026-09-30.  A timestep that does not divide the period keeps the floor
+    (steps no shorter than asked), so `T / (N + 0.5)` is still N."""
+    return int(float(period) / float(timestep) * (1.0 + 1e-9))
+
+
 def output_index(pss, output):
     """`output` as the PAC methods take it: a node NAME (a string, or a
     circuit `Node`) is that node's REDUCED-state index -- the reference node

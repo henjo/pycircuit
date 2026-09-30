@@ -7,6 +7,8 @@ from pycircuit.circuit.analysis import NoConvergenceError
 from pycircuit.circuit.circuit import gnd
 from pycircuit.circuit._limiting import devices_at, stateful_limiters
 
+from ._numerics import steps_in
+
 
 class _AccuracyChecks(object):
     """How much to trust an answer: the monodromy twin, `grid_error`,
@@ -133,9 +135,11 @@ class _AccuracyChecks(object):
         nonuniform = float(hs.max() / hs.min()) > 1.0 + 1e-9
         grid = (hs / float(hs.sum())) if nonuniform else None
         x0r = np.asarray(x0, dtype=float)[:self.cir.n - 1]
-        ## ⚠ THE STEP COUNT MUST SURVIVE `solve`'s `int(period / timestep)`:
-        ## `T / (T / N)` is not N in floating point; half a step of slack
-        ## makes the floor land on N for every T.
+        ## ⚠ THE STEP COUNT MUST SURVIVE `solve`'s floor (`steps_in`): half
+        ## a step of slack lands it on N for every T whatever the rounding
+        ## (the bare `int()` made `T / (T / N)` N - 1 until 2026-09-30).  N
+        ## is the run's STEPS, `len(times) - 1` (a uniform `hs` has an entry
+        ## per point).
         ## ⚠ THE TWIN TAKES THE DEFAULT PHASE RULE, NOT THIS RUN'S: it must
         ## land on the SAME point of the SAME orbit (what the agreement check
         ## below tests), and `phase_rule='reselect'` lands on another phase.
@@ -145,7 +149,7 @@ class _AccuracyChecks(object):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 twin.solve(refnode=kw.get('refnode', gnd), period=float(T),
-                           x0=x0r, timestep=float(T) / (len(hs) + 0.5),
+                           x0=x0r, timestep=float(T) / (len(times) - 1 + 0.5),
                            grid=grid, maxiterations=_budget,
                            matrix_free=bool(kw.get('matrix_free', False)),
                            state_events=bool(kw.get('state_events', True)),
@@ -420,7 +424,9 @@ class _AccuracyChecks(object):
             ## two-grid call gets and is honest about being unbounded.
             err = deltas[-1]
         rel = err / max(abs(values[-1]), _tiny)
-        _npts_c = int(round(args['period'] / args['timestep']))
+        ## (the count `solve` took: `round` sent `T / (N + 0.5)` to the even
+        ## neighbour until 2026-09-30)
+        _npts_c = steps_in(args['period'], args['timestep'])
         return {'values': values, 'deltas': deltas, 'order': order,
                 'power_law': power_law, 'error': err, 'rel_error': rel,
                 'refine': refine,

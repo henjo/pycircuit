@@ -178,7 +178,8 @@ def test_pss_solved_history_removes_the_gear2_seam():
     predicted = {100: 19.89297, 200: 19.98524, 400: 19.99735}
     plain_err = {100: 2.336e-01, 200: 4.549e-02, 400: 9.924e-03}
     for npts, target in predicted.items():
-        peak, pss = _pss_lte('gear', timestep=1e-3 / npts, reltol=1e-9)
+        ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+        peak, pss = _pss_lte('gear', timestep=1e-3 / (npts - 1), reltol=1e-9)
         assert pss.solved_history and pss.converged
         assert abs(peak - target) < 5e-5, \
             'npts=%d landed at %.5f, not the primed limit cycle %.5f' % (
@@ -1495,12 +1496,13 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     recorded = {100: 19.98407, 200: 20.01524, 400: 20.02255}
     counts = {}
     for K in (100, 200, 400):
-        peak, n_theta, f_theta, pts, rr = _shooting_evaluations('theta', K, T)
+        ## (the record's grid, K - 1 steps: `T / K` gave K - 1 until 2026-09-30)
+        peak, n_theta, f_theta, pts, rr = _shooting_evaluations('theta', K - 1, T)
         assert abs(peak - recorded[K]) < 5e-5, \
             'theta at K=%d moved off the B2 record: %.5f vs %.5f. The seed ' \
             'fixes the JACOBIAN and must not touch the residual.' \
             % (K, peak, recorded[K])
-        _pk, n_trap, _f, _p, rt = _shooting_evaluations('trap', K, T,
+        _pk, n_trap, _f, _p, rt = _shooting_evaluations('trap', K - 1, T,
                                                         x0_unknown=True)
         counts[K] = (n_theta, n_trap)
         ## (2) ⚠ THE CONTRACTION, NOT THE COUNT -- see the docstring.  One
@@ -1524,7 +1526,8 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
             % (n_theta, K, n_trap)
 
     ## (3) THE JACOBIAN ITSELF, delta-swept against an FD of its own residual.
-    _pk, _n, func, pts, _rr = _shooting_evaluations('theta', 200, T)
+    ## (199 steps, the record's K = 200 grid -- see the loop above)
+    _pk, _n, func, pts, _rr = _shooting_evaluations('theta', 199, T)
     for label, x in (('the seed', pts[0]), ('the solution', pts[-1])):
         x = np.asarray(x, float)
         F0, J = func(x.copy())
@@ -1551,13 +1554,13 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     ## (4) AND THE MODE THAT WAS LOST IS THE ONE THE METHOD EXISTS FOR.  With
     ## the seed dropped, `I - M` carries 1 on `null(C)` -- the signature of an
     ## L-stable opener -- instead of `1 - (-(1-theta)/theta)^K = 1.7778`.
-    _pk, _n, func_t, pts_t, _rr = _shooting_evaluations('theta', 200, T)
+    _pk, _n, func_t, pts_t, _rr = _shooting_evaluations('theta', 199, T)
     _F, J_ok = func_t(np.asarray(pts_t[-1], float))
     saved = _PSS._pq_seed_at_x0
     try:
         _PSS._pq_seed_at_x0 = lambda self, x: None
         (peak_n, n_neutered, func_n, pts_n,
-         rr_n) = _shooting_evaluations('theta', 200, T)
+         rr_n) = _shooting_evaluations('theta', 199, T)
         _F, J_bad = func_n(np.asarray(pts_n[-1], float))
     finally:
         _PSS._pq_seed_at_x0 = saved
@@ -1593,7 +1596,8 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     pss2 = PSS(cir2, method='theta', reltol=1e-9)
     with _w.catch_warnings():
         _w.simplefilter('ignore')
-        pss2.solve(period=T, timestep=T / 200, maxiterations=60)
+        ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+        pss2.solve(period=T, timestep=T / 199, maxiterations=60)
     fp = pss2.factored_period()
     assert fp.kind == 'plain', fp.kind
     w = fp.width
@@ -1717,7 +1721,8 @@ def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
             p._theta_biased = lambda integ: integ
         with _w.catch_warnings():
             _w.simplefilter('ignore')
-            res = p.solve(period=T, timestep=T / K, maxiterations=200)
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            res = p.solve(period=T, timestep=T / (K - 1), maxiterations=200)
         assert p.converged
         return float(np.max(np.abs(
             np.asarray(res['tpss'].v(node), float).ravel()))), p

@@ -105,7 +105,8 @@ def test_shooting():
     v2ac = resac.v(2,gnd)
     v2pss = res['tpss'].v(2,gnd)
 
-    t,dt = numeric.linspace(0,period,num=N,endpoint=True,
+    ## (N steps, N + 1 points: `timestep = period / N` is N steps)
+    t,dt = numeric.linspace(0,period,num=N + 1,endpoint=True,
                             retstep=True)
 
     v2ref = numeric.imag(v2ac * numeric.exp(2j*numeric.pi*1/period*t))
@@ -1017,7 +1018,8 @@ def test_the_composed_autonomous_system_removes_the_seam_too():
         pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            res = pss.solve(period=1e-3, timestep=1e-3 / n, maxiterations=30)
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            res = pss.solve(period=1e-3, timestep=1e-3 / (n - 1), maxiterations=30)
         assert pss.converged and pss.autonomous
         rad = np.hypot(
             np.asarray(res['tpss'].v('o'), dtype=float).ravel(),
@@ -3402,7 +3404,8 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         times, hs = pss._period_grid(per, npts, None)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            res = pss.solve(period=per, timestep=per / npts, maxiterations=60)
+            ## (`npts` POINTS, the walk's `_period_grid` above: npts - 1 steps)
+            res = pss.solve(period=per, timestep=per / (npts - 1), maxiterations=60)
         assert pss.converged
         ir = pss.irefnode
         Xw = np.asarray(res['tpss'].x, dtype=float)
@@ -3432,7 +3435,8 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         times, hs = pss._period_grid(per, npts, None)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            res = pss.solve(period=per, timestep=per / npts, maxiterations=60)
+            ## (`npts` POINTS, the walk's `_period_grid` above: npts - 1 steps)
+            res = pss.solve(period=per, timestep=per / (npts - 1), maxiterations=60)
         assert pss.converged
         ir = pss.irefnode
         Xw = np.asarray(res['tpss'].x, dtype=float)
@@ -3632,7 +3636,8 @@ def test_the_manufactured_opening_step_is_INCONSISTENT_on_an_L_I_cutset():
         pss = PSS(cir, method=method, reltol=1e-10)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            pss.solve(period=per, timestep=per / npts,
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            pss.solve(period=per, timestep=per / (npts - 1),
                       x0=np.zeros(cir.n - 1), maxiterations=60,
                       x0_unknown=x0_unknown)
         X = np.asarray(pss.waveform[1], dtype=float)
@@ -5504,3 +5509,30 @@ def test_a_re_solve_after_a_settings_change_is_the_solve_those_settings_give():
         setattr(p.par, attr, v1)
         assert np.array_equal(solved(p), solved(PSS(c, **{attr: v1}))), (attr, v1)
     assert p._transient().par.reltol == 1e-12
+
+
+def test_a_timestep_of_t_over_n_gives_n_steps():
+    """F21 of the review of 2026-09-30 (Andreas: "Fix it so that one gets the
+    actual requested steps"): `T / (T / N)` is `N - 1e-14` in floating point
+    for 4-6 % of N, and `int(period / timestep)` made those N - 1 -- 154 of
+    the suite's 1397 solves ran a step short (400 points were 399).  The
+    count is floored with a relative slack (`steps_in`): `T / N` gives N,
+    `T / (N + 0.5)` still gives N, a timestep that does not divide the
+    period still gives the floor."""
+    from pycircuit.circuit.shooting._numerics import steps_in
+    for T in (1e-6, 1e-5, 1.391837294386364e-06, 2.0 * np.pi, 6.2835, 1e-3):
+        for N in range(2, 5001):
+            assert steps_in(T, T / N) == N, (T, N)
+            assert steps_in(T, T / (N + 0.5)) == N, (T, N)
+    assert steps_in(1.0, 0.3) == 3
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c['V'] = VSin('in', gnd, va=1.0, freq=1e6)
+    c['R'] = R('in', 'out', r=1e3)
+    c['C'] = C('out', gnd, c=1e-12)
+    for N in (80, 100, 400):
+        p = PSS(c, method='gear')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-6, timestep=1e-6 / N)
+        assert len(p.factored_period().times) == N + 1, (N, len(p.factored_period().times))

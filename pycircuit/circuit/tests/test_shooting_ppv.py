@@ -1479,7 +1479,8 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
         x0[0] = 2.0
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+            ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+            pss.solve(period=6.6634, timestep=6.6634 / 239, x0=x0,
                       maxiterations=60, matrix_free=mf)
         assert pss.converged
         with warnings.catch_warnings():
@@ -1513,7 +1514,7 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
             x0[0] = 2.0
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
+                pss.solve(period=6.6634, timestep=6.6634 / 239, x0=x0,
                           maxiterations=60, matrix_free=mf)
                 v, info = pss.ppv()
             pred[mf] = (np.asarray(v).copy(), info['second_multiplier'])
@@ -1535,7 +1536,8 @@ def test_the_ppv_is_unchanged_by_the_gmres_swap():
     a change to *how failure is decided*, not to the mathematics, so the
     values are pinned against what the scipy path produced.
     """
-    _cir, pss, _pac = _vdp_at_Q(16.0, npts=480)
+    ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
+    _cir, pss, _pac = _vdp_at_Q(16.0, npts=479)
     _v, info = pss.ppv()
     assert abs(info['second_multiplier'] - 0.9394257319) < 1e-9, \
         'lambda_2 = %.10f against the 0.9394257319 the scipy path gave' \

@@ -457,12 +457,13 @@ def test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth()
     ## `_wrap_jump` (2026-09-23) it converges on it as well.  Singular
     ## `I - M` is a family of orbits, not a failed solve; the multiplier
     ## says which.
-    lam_open = _pll_lambda(0.0, kvco, offset=0.3)
+    ## (npts=399: (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30))
+    lam_open = _pll_lambda(0.0, kvco, offset=0.3, npts=399)
     assert lam_open is not None and abs(lam_open - 1.0) < 1e-9, \
         'with K = 0 the phase mode must be marginal: |lambda| = %r' % lam_open
 
-    lam_saddle = _pll_lambda(K, kvco, offset=0.0)
-    lam_stable = _pll_lambda(K, kvco, offset=0.25)
+    lam_saddle = _pll_lambda(K, kvco, offset=0.0, npts=399)
+    lam_stable = _pll_lambda(K, kvco, offset=0.25, npts=399)
     assert lam_saddle is not None and lam_stable is not None
     assert abs(lam_saddle / want_saddle - 1.0) < 1e-5, (lam_saddle, want_saddle)
     assert abs(lam_stable / want_stable - 1.0) < 1e-5, (lam_stable, want_stable)
@@ -472,8 +473,8 @@ def test_closing_a_pll_loop_pins_the_marginal_phase_mode_at_the_loop_bandwidth()
 
     ## the PRODUCT is what governs: ten times the gain on the other knob is
     ## the same loop, to the digit.
-    a = _pll_lambda(K, kvco, offset=0.0)
-    b = _pll_lambda(K * 10.0, kvco / 10.0, offset=0.0)
+    a = _pll_lambda(K, kvco, offset=0.0, npts=399)
+    b = _pll_lambda(K * 10.0, kvco / 10.0, offset=0.0, npts=399)
     assert abs(a / b - 1.0) < 1e-9, \
         'kvco*K is the loop gain, so these must agree: %.12f vs %.12f' % (a, b)
 

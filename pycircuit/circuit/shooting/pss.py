@@ -12,7 +12,7 @@ from pycircuit.circuit.circuit import gnd
 from pycircuit.post import InternalResultDict
 import pycircuit.circuit.analysis as analysis
 from ._numerics import freq_analysis
-from ._numerics import insert_ref, periodic_spline_weights
+from ._numerics import insert_ref, periodic_spline_weights, steps_in
 from ._pss_accuracy import _AccuracyChecks
 from ._pss_events import _StateEvents
 from ._pss_grids import _PeriodGrids
@@ -1036,8 +1036,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
 
         `x0` is the seed state (reference node excluded); `None` shoots from
         zeros on a driven circuit and from the operating point on an
-        autonomous one.  `timestep` sets the uniform grid
-        (`int(period / timestep)` points) unless `grid` is given.
+        autonomous one.  `timestep` sets the uniform grid -- `period /
+        timestep` steps, floored (`timestep = T / N` gives N) -- unless
+        `grid` is given.
         `maxiterations` bounds the shooting Newton.
 
         `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
@@ -1350,12 +1351,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
 
         n = self.cir.n
         dt = timestep
+        ## the step count the timestep asks for (`steps_in`: `T / N` is N)
+        _nsteps = steps_in(period, dt)
         ## ⚠ A PERIOD OF FEWER THAN TWO STEPS IS REFUSED: one step did not
         ## converge and none raised an IndexError from deep in the grid
         ## (measured 2026-09-30, every method); `grid` sets its own count.
-        if grid is None and not int(period / dt) >= 2:
+        if grid is None and not _nsteps >= 2:
             raise ValueError(
-                f'PSS: timestep={timestep!r} leaves {int(period / dt)} step(s) '
+                f'PSS: timestep={timestep!r} leaves {_nsteps} step(s) '
                 f'in the period {period!r}; the shooting needs at least two '
                 '-- pass a timestep of at most half the period (or a grid).')
         if x0 is None:
@@ -1405,7 +1408,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         self._landed_edges = None
         if self.break_events:
             _ev = (self.event_grid(period, grid=grid) if grid is not None
-                   else self.event_grid(period, npts=int(period / dt)))
+                   else self.event_grid(period, npts=_nsteps))
             ## ⚠ ONLY replace the grid when there ARE events.  `event_grid`
             ## rebuilds a uniform grid from `linspace` even when it finds none,
             ## and that differs from `_period_grid`'s own in the last bit --
@@ -1424,7 +1427,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     self._landed_edges = (
                         np.asarray(self.event_times, dtype=float),
                         float(period))
-        times, hs = self._period_grid(period, int(period / dt), grid)
+        ## ⚠ `_nsteps` STEPS, so `_nsteps + 1` points on the uniform grid: it
+        ## was built with `_nsteps` POINTS until 2026-09-30 -- one step fewer
+        ## than asked, while `event_grid` (above) always gave `_nsteps`
+        ## steps, so the same timestep gave N steps with a source edge and
+        ## N - 1 without
+        times, hs = self._period_grid(period, _nsteps + 1, grid)
         npts = len(times)
         self._grid_fracs = (None if grid is None
                             else np.asarray(grid, dtype=float))
