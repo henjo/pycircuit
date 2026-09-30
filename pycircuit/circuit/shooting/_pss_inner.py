@@ -157,7 +157,10 @@ class _InnerTransient(object):
         """
         tr = self._transient()
         xf = self._insert_refnode(x_reduced)
-        C = tr.cir.C(xf, tr.epar)
+        ## (the stage Newton's own `C` when it evaluated this very state --
+        ## `Transient._memo_get`, bit-identical)
+        rec = tr._memo_get(xf)
+        C = tr.cir.C(xf, tr.epar) if rec is None else rec['C']
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
 

@@ -1147,7 +1147,10 @@ class Transient(Analysis):
         r0, scale0 = self._branch_structural_rank()
         if r0 <= 0 or scale0 <= 0.0:
             return False, None
-        C = np.asarray(self.cir.C(x, self.epar), dtype=float)
+        _C = self._C_at_state(x)
+        ## (kept for the step's own assembly at this state, which follows)
+        self._C_cache = (x, _C)
+        C = np.asarray(_C, dtype=float)
         if C.size == 0:
             return False, None
         ## ⚠ THE SCALE IS THE LARGEST `C` THIS RUN HAS SEEN, not the random
@@ -1668,6 +1671,62 @@ class Transient(Analysis):
         ## An opening step larger than max_step would be capped on the very next
         ## step anyway, and asking for one is more likely a mistake than an intent.
         return min(firststep, timestep)
+
+    def _memo_clear(self):
+        """Forget the device-evaluation memo (`_memo_get`): at the start of
+        every solve, the one place a caller can change the circuit between
+        two steps."""
+        self._dev_memo = ({}, {})
+
+    def _memo_step(self):
+        """A new step: the current generation becomes the previous one (the
+        step's START is the previous step's last stage)."""
+        memo = getattr(self, '_dev_memo', None) or ({}, {})
+        self._dev_memo = ({}, memo[0])
+
+    def _memo_put(self, x, rec):
+        memo = getattr(self, '_dev_memo', None)
+        if memo is None:
+            memo = self._dev_memo = ({}, {})
+        memo[0][np.asarray(x, dtype=float).tobytes()] = rec
+
+    def _memo_get(self, x):
+        """The device evaluations (`q`, `i`, `C`, `G`, full width) the coupled
+        stage Newton made AT this exact state in this step or the previous
+        one, or None.  A MEMOISATION, as `_q_at`: keyed on the state's bytes,
+        recorded only without a shunt and without a stateful limiter, so the
+        value is the one recomputing gives, bit for bit.  Radau re-read `C`
+        and `G` at states its Newton had just evaluated -- 28 % of a compact
+        MOSFET's PSS solve (2026-09-30)."""
+        memo = getattr(self, '_dev_memo', None)
+        if memo is None or x is None:
+            return None
+        key = np.asarray(x, dtype=float).tobytes()
+        rec = memo[0].get(key)
+        return memo[1].get(key) if rec is None else rec
+
+    def _C_at_state(self, x):
+        """``cir.C(x)``, reusing the last assembly's (`_companion_at`) when it
+        was at this state -- the branch screen reads `C` at the converged
+        point, where `jacobian_only` has just assembled it: 360 of a compact
+        MOSFET's 1500 `C` evaluations on a 40-point gear PSS (2026-09-30).
+        A MEMOISATION, as `_q_at`: identity, then full equality; and never
+        across a stateful limiter (`Diode`), whose device reads its stored
+        state as well as `x`."""
+        rec = self._memo_get(x)
+        if rec is not None:
+            return rec['C']
+        cached = getattr(self, '_C_cache', None)
+        if (cached is not None and not getattr(self, '_stateful_lims', None)
+                and float(getattr(self.epar, 'bypasstol', -1.0) or -1.0) < 0.0):
+            x_cached, C_cached = cached
+            if x_cached is x:
+                return C_cached
+            if (x_cached is not None and x is not None
+                    and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
+                    and bool(self.toolkit.alltrue(x_cached == x))):
+                return C_cached
+        return self.cir.C(x, self.epar)
 
     def _q_at(self, x):
         """``cir.q(x)``, reusing the value computed during the last assembly.
@@ -2587,9 +2646,12 @@ class Transient(Analysis):
         identity-then-equality on x, not a bare "did we cache".
 
         History: `doc/transient_history.md`, `Transient._companion_at`."""
-        C = self.cir.C(x, self.epar)
+        ## (`C` the branch screen may just have read at this state:
+        ## `_C_at_state`, a memoisation)
+        C = self._C_at_state(x)
         q = self.cir.q(x, self.epar)
         self._q_cache = (x, q)
+        self._C_cache = (x, C)
         return self.get_diff(q, C)
 
     def _source_at(self, t, provided_function=None):
@@ -3596,11 +3658,17 @@ class Transient(Analysis):
         epar = self.epar
         arr = lambda v: self.toolkit.array(v, dtype=float)
         xnp1 = Y[-1]
-        qY = self.cir.q(xnp1, epar)
+        rec = self._memo_get(xnp1)
+        if rec is None:
+            qY = self.cir.q(xnp1, epar)
+            i_n = arr(self.cir.i(xnp1, epar))
+            Cm = arr(self.cir.C(xnp1, epar))
+            Gm = arr(self.cir.G(xnp1, epar))
+        else:
+            ## (the stage Newton's own, at this very state)
+            qY, i_n, Cm, Gm = rec['q'], rec['i'], rec['C'], rec['G']
         self._q_cache = (xnp1, qY)
-        self._iq = -(arr(self.cir.i(xnp1, epar)) + src(t))
-        Cm = arr(self.cir.C(xnp1, epar))
-        Gm = arr(self.cir.G(xnp1, epar))
+        self._iq = -(i_n + src(t))
         self._Cmat = Cm
         self._Geq = a_last * h * Gm
         self._effective_method = type(self.base_integrator).__name__
@@ -3969,7 +4037,8 @@ class Transient(Analysis):
         def red(v):
             return np.concatenate((np.asarray(v)[:iref],
                                    np.asarray(v)[iref + 1:]))
-        qn = arr(self.cir.q(x0, self.epar))
+        _rec = self._memo_get(x0)
+        qn = arr(self.cir.q(x0, self.epar)) if _rec is None else _rec['q']
         return SimpleNamespace(
             Amat=np.array(integ.A, dtype=float), h=h, tn=tn, iref=iref,
             arr=arr, red=red, src=self._stage_source(provided_function),
@@ -4189,6 +4258,9 @@ class Transient(Analysis):
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
         lims = stateful_limiters(self.cir)
+        ## (a bypassed device returns its last evaluation for a NEARBY point,
+        ## so its values depend on history: no memo then)
+        _nobypass = float(getattr(epar, 'bypasstol', -1.0) or -1.0) < 0.0
 
         def _stage_newton(seed, gshunt=0.0, damped=False):
             """The coupled `3m` Newton, optionally with a node-to-ground shunt.
@@ -4234,11 +4306,17 @@ class Transient(Analysis):
                     qi.append(arr(self.cir.q(Y[j], epar)))
                     i_j = arr(self.cir.i(Y[j], epar))
                     G_j = arr(self.cir.G(Y[j], epar))
+                    Ci.append(arr(self.cir.C(Y[j], epar)))
+                    ## (the evaluations at this stage, for the step's
+                    ## readers -- `_memo_get`; never under a shunt or a
+                    ## stateful limiter)
+                    if not gshunt and not lims and _nobypass:
+                        self._memo_put(Y[j], {'q': qi[-1], 'i': i_j,
+                                              'C': Ci[-1], 'G': G_j})
                     if gshunt:
                         i_j = i_j + gshunt * np.asarray(Y[j], dtype=float)
                         G_j = G_j + gshunt * np.eye(np.asarray(G_j).shape[0])
                     Ki.append(-(i_j + src(tstage[j])))
-                    Ci.append(arr(self.cir.C(Y[j], epar)))
                     Gi.append(G_j)
                 ## residual blocks (reduced) and dense 3m x 3m Jacobian
                 return self._coupled_stage_system(ctx, qi, Ki, Ci, Gi)
@@ -4459,6 +4537,9 @@ class Transient(Analysis):
                 _say)
             if ok:
                 return out
+        ## (a new step for the device memo: this step's stages, and the
+        ## previous step's, whose last is this step's start)
+        self._memo_step()
         ctx, _stage_newton, _block_residual, seed0 = self._coupled_stage_solver(
             x0, t, provided_function)
         from pycircuit.circuit.nrsolver import (NoConvergenceError,
@@ -4889,6 +4970,8 @@ class Transient(Analysis):
     ## `analytical_eh` is not an argument (F8): passing it raises TypeError.
     ## History: `doc/transient_history.md`, `Transient.solve`.
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+        ## (the caller may have changed the circuit since the last run)
+        self._memo_clear()
         ## Stage 2a: hold BLAS to one thread for the whole run.  It wraps the whole
         ## transient rather than just the linear solve because the win is not in the
         ## solve -- that is ~2% of runtime, so even an infinite speedup there could

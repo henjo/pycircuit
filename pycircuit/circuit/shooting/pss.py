@@ -1333,6 +1333,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         if getattr(self, '_tran_key', None) != _key:
             self._tran = None
             self._tran_key = _key
+        ## (and its device memo forgotten: the caller may have changed the
+        ## circuit since the last solve)
+        if getattr(self, '_tran', None) is not None:
+            self._tran._memo_clear()
         _tr_cached = getattr(self, '_tran', None)
         if _tr_cached is not None:
             self._theta_biased(getattr(_tr_cached.par, 'integrator', None))
