@@ -5,6 +5,7 @@ modules.
 from copy import copy
 import numpy as np
 import warnings
+import weakref
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
@@ -43,6 +44,20 @@ class _SolveRun(object):
 
     def __init__(self, **fields):
         self.__dict__.update(fields)
+
+
+def _kept_residual(fn):
+    """`PSS.shooting_residual`: the solve's residual, raising a clear error
+    once the analysis it holds weakly is gone."""
+    def shooting_residual(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ReferenceError:
+            raise RuntimeError(
+                'PSS.shooting_residual: the PSS it belongs to was deleted -- the '
+                'residual holds its analysis weakly, so keep the PSS alive '
+                'while you evaluate it.') from None
+    return shooting_residual
 
 
 class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
@@ -1192,7 +1207,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         second pass appends to the same list).  `shooting_residual` is always
         kept -- the function the solve drove to zero, returning `(F, J)` --
         so a caller can re-evaluate it, e.g. for a finite-difference check of
-        `J`.
+        `J`.  ⚠ It holds this analysis WEAKLY (since 2026-10-01; a strong
+        reference made every solved PSS a reference cycle): evaluate it
+        while the PSS is alive.
 
         History: `doc/shooting_history.md`, `PSS.solve`.
         """
@@ -1246,6 +1263,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                   state_events=bool(state_events))
         self._monodromy_twin = None
         self._twins = {}
+        ## (caches keyed on the LAST solve's factored period: cleared, not
+        ## left to pin it until the next use -- the review's M2)
+        self._eq_row_cache = self._fa_ppv_base = None
+        self._captured = {}
         ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
         ## `TLine.history` is filled by `cir.accept_step`, which the
         ## TRANSIENT calls at every accepted step and which this analysis
@@ -1643,6 +1664,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         """`solve`, phase 2: THE SHOOTING NEWTON -- the fixed-period or
         free-period system on the method's period map (dense or matrix-free),
         then the state-event stage.  Leaves the solution in `run`."""
+        ## ⚠ THROUGH A WEAK PROXY: the residual closures defined here are
+        ## kept on the analysis (`shooting_residual`), and closing over
+        ## `self` made every solved PSS a reference cycle -- freed only by a
+        ## full garbage collection, so a sweep held every one (the review's
+        ## M1, 2026-09-30).  Nothing here needs the object's identity.
+        self = weakref.proxy(self)  # noqa: PLW0642 -- the point of the line
         toolkit = self.toolkit
         (n, x, period, times, hs, npts, alpha, irefnode) = (
             run.n, run.x, run.period, run.times, run.hs, run.npts, run.alpha,
@@ -1790,7 +1817,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## the residual this solve drives to zero, kept for the caller; with
         ## `trace` every evaluation is recorded (a closing second pass
         ## appends to the first pass's list)
-        self.shooting_residual = func_autonomous if self.autonomous else func
+        self.shooting_residual = _kept_residual(
+            func_autonomous if self.autonomous else func)
         if run.trace:
             if (not getattr(self, '_closing_second_pass', False)
                     or getattr(self, 'shooting_trace', None) is None):

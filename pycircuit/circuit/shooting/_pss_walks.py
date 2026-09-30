@@ -16,6 +16,11 @@ class _PeriodWalks(object):
     `_walk_glm`), dense and/or factored, and their views.  A theme of `PSS`
     (see `pss.py`)."""
 
+    ## `_walk_lmm` records each step's `C` and `Jf` (`Cvec`, `Jtvec`) only
+    ## when asked: two dense matrices per step that no solve reads (the
+    ## review's M3); a test that rebuilds the operator from them sets it
+    _record_cj = False
+
     def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new, solve=None,
                           coeffs=None, source=None):
         """One step of the sensitivity recursion, for ANY seed width.
@@ -187,7 +192,8 @@ class _PeriodWalks(object):
                 ## Kept as the plain map does -- but opening EMPTY: `x_0` is
                 ## an unknown here rather than the result of a step, so
                 ## there is no solved `(C, Jf)` pair at it to record.
-                self.Cvec, self.Jtvec = [], []
+                self.Cvec, self.Jtvec = (([], []) if self._record_cj
+                                         else (None, None))
         else:
             _kind, x_in, open_at_x0 = opening
             self._begin_period(x_in)
@@ -237,8 +243,11 @@ class _PeriodWalks(object):
                     Pq = a_open[0] * Cs[0] if b_open else np.zeros((m, m))
                 ## ⚠ `C_open`, not `self._C`: on the `open_at_x0` path no
                 ## step has run, so `_C` does not exist yet.
-                self.Cvec = [copy(C_open)]
-                self.Jtvec = [] if open_at_x0 else [copy(self._Jf)]
+                if self._record_cj:
+                    self.Cvec = [copy(C_open)]
+                    self.Jtvec = [] if open_at_x0 else [copy(self._Jf)]
+                else:
+                    self.Cvec = self.Jtvec = None
         if dense:
             self.times = times
         if dense or capture is not None:
@@ -280,7 +289,7 @@ class _PeriodWalks(object):
             alphas, b = self._coeffs
             Jf = np.asarray(self._Jf)
             C_new = np.asarray(self._C).copy()
-            if dense:
+            if dense and self._record_cj:
                 self.Cvec.append(copy(self._C))
                 self.Jtvec.append(copy(self._Jf))
             if keep:
@@ -436,7 +445,9 @@ class _PeriodWalks(object):
             ## step (under the default `DenseSolver` its factor is an
             ## `lu_factor` pair)
             ## History: `doc/shooting_history.md`, `_PeriodWalks._stage_step`.
-            return _StageStep(Cn, Gs, h, A, b, c, lu=self._factorise(Jb),
+            ## (no `Gs` kept: the coupled step's solves never read them --
+            ## 3 of its 13 m^2 per step, the review's M3)
+            return _StageStep(Cn, None, h, A, b, c, lu=self._factorise(Jb),
                               Ys=Yf), Ys
         Kf = []
         for i in range(s):

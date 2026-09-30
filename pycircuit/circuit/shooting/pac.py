@@ -18,6 +18,7 @@ History: `doc/shooting_history.md`, `pac` (module level).
 """
 import numpy as np
 import warnings
+import weakref
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
@@ -1276,14 +1277,18 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## History: `doc/shooting_history.md`, `PAC._deflated_solve`.
         _ppv_fn = getattr(pss.ppv, '__func__', pss.ppv)
         _border = getattr(self, '_deflation_border', None)
-        if (_border is not None and _border[0] is pss and _border[1] is fp
+        ## (the analysis held WEAKLY: a PAC kept the last PSS alive after
+        ## its caller dropped it -- the review's M2)
+        if (_border is not None and _border[0]() is pss and _border[1] is fp
                 and _border[4] is _ppv_fn):
             v, u = _border[2], _border[3]
         else:
             _v, info = pss.ppv()
             v = np.asarray(_v, dtype=float)
             u = np.asarray(info['tangent_pair'], dtype=float)
-            self._deflation_border = (pss, fp, v, u, _ppv_fn)
+            _pr = ((lambda _p=pss: _p) if isinstance(pss, weakref.ProxyTypes)
+                   else weakref.ref(pss))
+            self._deflation_border = (_pr, fp, v, u, _ppv_fn)
         vu = float(v @ u)
         if abs(vu) < 1e-300:
             raise ValueError(

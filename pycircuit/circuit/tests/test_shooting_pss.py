@@ -5536,3 +5536,35 @@ def test_a_timestep_of_t_over_n_gives_n_steps():
             warnings.simplefilter('ignore')
             p.solve(period=1e-6, timestep=1e-6 / N)
         assert len(p.factored_period().times) == N + 1, (N, len(p.factored_period().times))
+
+
+@pytest.mark.parametrize('method', ['gear', 'radau', 'trap', 'glm3'])
+def test_a_solved_pss_is_freed_when_its_last_reference_goes(method):
+    """The review of 2026-09-30 (M1): a solved PSS was a REFERENCE CYCLE --
+    `shooting_residual` is a closure over the analysis, and the factored
+    period pointed back at it -- so dropping it freed nothing until a full
+    garbage collection, and a sweep of 30 solves held all 30 (+7 MB each).
+    The closures and the period hold the analysis weakly now: with the
+    collector OFF, `del` frees a solved PSS whose factored period and PPV
+    were built."""
+    import gc
+    import weakref
+    _cir, pss = _review_vdp(method=method, npts=60)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.factored_period()
+        pss.ppv()
+    res = pss.shooting_residual
+    z0 = np.asarray(pss._period_state[1], dtype=float)
+    gc.collect()
+    gc.disable()
+    try:
+        r = weakref.ref(pss)
+        del pss
+        assert r() is None, 'the solved PSS is still alive after del'
+    finally:
+        gc.enable()
+    ## (the residual it kept says what happened, rather than a bare
+    ## ReferenceError from deep inside)
+    with pytest.raises(RuntimeError, match='keep the PSS alive'):
+        res(np.append(z0, 1.0) if method != 'glm3' else z0)

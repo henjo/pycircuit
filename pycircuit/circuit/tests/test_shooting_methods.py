@@ -600,6 +600,7 @@ def _pac_operator_pieces(method, npts=40):
     x0 = np.zeros(N)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
+        pss._record_cj = True                     # (Cvec/Jtvec on request)
         pss._walk('plain', x0, times, hs, T=per)    # records Cvec/Jtvec/times
         Jt = [np.asarray(j).copy() for j in pss.Jtvec]
         Cv = [np.asarray(c).copy() for c in pss.Cvec]
@@ -1427,7 +1428,10 @@ def _shooting_evaluations(method, K, T, **kw):
     pts = [z for z, _F, _J in pss.shooting_trace]
     resid = [float(np.max(np.abs(F))) for _z, F, _J in pss.shooting_trace]
     peak = float(np.max(np.abs(np.asarray(res['tpss'].v('n2'), float).ravel())))
-    return peak, len(pts), pss.shooting_residual, pts, resid
+    ## (the residual holds its analysis weakly since 2026-10-01: the
+    ## returned function keeps the PSS alive)
+    return (peak, len(pts),
+            lambda *a, _p=pss, **k: _p.shooting_residual(*a, **k), pts, resid)
 
 
 def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():

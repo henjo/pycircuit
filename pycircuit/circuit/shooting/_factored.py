@@ -1,7 +1,10 @@
 """A converged period kept factored (`FactoredPeriod`, one class per kind), and
 what one walk of the period produced (`_PeriodWalk`).
 """
+import weakref
+
 import numpy as np
+
 from ._steps import _GLMStateStep
 from ._steps import _LMMStep
 
@@ -51,7 +54,7 @@ class FactoredPeriod(object):
     """
 
     __slots__ = ('kind', 'opening', 'steps', 'x_last', 'x_prev', 'width',
-                 'times', 'T', 'open_at_x0', '_pss', '_dense')
+                 'times', 'T', 'open_at_x0', '_pss', '_dense', '__weakref__')
     ## 'glm' is the MULTIVALUE kind: width r*m, see `factored_period_glm`.
 
     ## ONE CLASS PER KIND: `FactoredPeriod(kind, ...)` builds the subclass
@@ -70,7 +73,11 @@ class FactoredPeriod(object):
     def __init__(self, kind, opening, steps, x_last, x_prev, pss,
                  times=None, T=None, open_at_x0=False):
         self.kind, self.opening, self.steps = kind, opening, steps
-        self.x_last, self.x_prev, self._pss = x_last, x_prev, pss
+        ## (the analysis WEAKLY: it caches this period, and a strong
+        ## reference back made the pair a cycle -- the review's M1)
+        self.x_last, self.x_prev = x_last, x_prev
+        self._pss = (pss if pss is None or isinstance(pss, weakref.ProxyTypes)
+                     else weakref.proxy(pss))
         ## the grid the steps were taken on -- a forced replay needs the
         ## time of each step to evaluate `exp(j w t)` there; reading it off
         ## `pss.times` later is a parallel-indexing trap
@@ -465,7 +472,9 @@ class _GLMStateMap(object):
     is_glm = True
 
     def __init__(self, fp):
-        self._fp = fp
+        ## (weakly: the period caches this map -- `state_map`)
+        self._fp = (fp if isinstance(fp, weakref.ProxyTypes)
+                    else weakref.proxy(fp))
         self.kind = 'glm'
         self.steps, self.times, self.T = fp.steps, fp.times, fp.T
         self.width = fp._pss.cir.n - 1

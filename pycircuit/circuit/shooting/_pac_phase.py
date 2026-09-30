@@ -390,9 +390,15 @@ class _PhaseNoise(object):
         the periodic envelope on the DC PPV's times, its Fourier coefficient
         `l` the phase transfer of the source band at `f - l f0` (the DC fold's
         convention; see `coloured_diffusion_resolved`).  Cached per offset."""
-        cache = self.__dict__.setdefault('_fa_cache', {})
         fp = pss.factored_period()
-        key = (id(fp), float(f))
+        ## ONE period's samples at a time (`(fp, {f: samples})`): keyed on
+        ## `id(fp)` the cache grew with every period it had ever seen and
+        ## pinned each one (the review's M2, 2026-09-30)
+        cache = self.__dict__.get('_fa_cache')
+        if cache is None or cache[0] is not fp:
+            cache = self._fa_cache = (fp, {})
+        cache = cache[1]
+        key = float(f)
         hit = cache.get(key)
         ## ⚠ THE ENTRY HOLDS ITS FACTORED PERIOD AND IS MATCHED BY IDENTITY,
         ## as `_transverse_cache` is: keyed on the id alone, a re-solve frees
